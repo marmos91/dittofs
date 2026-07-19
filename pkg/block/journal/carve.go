@@ -21,11 +21,12 @@ var carveScratchPool = sync.Pool{New: func() any {
 	return &b
 }}
 
-// carveArenaPool recycles the arena backing the pending chunk copies handed to the
-// sink. Both production sinks consume CarveChunk.Data synchronously inside
-// CommitBlock (localBlockSink reads only len; engineBlockSink seals/frames into its
-// own buffer before returning) — neither retains it — so the arena is safe to reuse
-// once flush's CommitBlock returns and pending is cleared.
+// carveArenaPool recycles the per-block arenas backing the pending chunk copies
+// handed to the sink. Both production sinks consume CarveChunk.Data synchronously
+// inside CommitBlock (localBlockSink reads only len; engineBlockSink seals/frames
+// into its own buffer before returning) — neither retains it — so a block's arena
+// is safe to return to the pool once its CommitBlock has returned. Each concurrent
+// block owns a distinct arena so overlapping commits never share backing bytes.
 var carveArenaPool = sync.Pool{New: func() any {
 	var b []byte
 	return &b
@@ -40,9 +41,14 @@ var carveArenaPool = sync.Pool{New: func() any {
 //  2. Stream the dirty bytes through FastCDC -> BLAKE3 -> per-share dedup; novel
 //     chunks accumulate into a block-sized batch.
 //  3. At CarveBlockSize (or the end of a contiguous run) hand the novel chunks to
-//     the sink, which seals, frames, uploads and atomically commits them.
-//  4. Only after the commit returns, flip each carved record's synced flag in
-//     place with a one-byte pwrite (the header CRC excludes Flags, so no rewrite).
+//     the sink, which seals, frames, uploads and atomically commits them. Successive
+//     blocks of one file commit concurrently through a bounded worker pool
+//     (CarveUploadConcurrency) so a single large file's carve is not one PutBlock
+//     at a time; packing itself stays sequential.
+//  4. Only after a block's commit returns — and after every earlier block flipped —
+//     flip each carved record's synced flag in place with a one-byte pwrite (the
+//     header CRC excludes Flags, so no rewrite). The dispatcher applies the flips in
+//     submission order regardless of which upload finishes first.
 //
 // Flipping strictly after the commit is the crash-safety invariant: a crash
 // between the two leaves the records synced=false, so restart re-carves them, and
@@ -247,17 +253,18 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 
 	fileOff := run[0].fileOff
 	flipIdx := 0
-	var pending []CarveChunk
-	var pendingBytes int64
 	// Offsets of every chunk this run tiles (novel or deduped), so the run-end
 	// reap keeps this run's own rows and deletes only superseded ones (#953).
 	newOffsets := make(map[int64]struct{})
 
-	// arena backs every pending chunk copy in one recycled block-sized buffer, so
-	// a run allocates no per-chunk scratch. It holds at most one block's worth of
-	// pending bytes: pendingBytes flushes at CarveBlockSize and one appended chunk
-	// is at most MaxChunkSize, so CarveBlockSize + MaxChunkSize bounds it.
-	// arenaOff resets after each flush, once CommitBlock has consumed the copies.
+	// disp overlaps successive blocks' CommitBlock (upload + commit) while packing
+	// stays sequential. It owns the bounded worker pool, the per-block buffers and
+	// the ordered flip chain; flush hands it a completed block or a bare watermark.
+	disp := newCarveDispatcher(ctx, s, sh, id, run, res, &flipIdx)
+
+	// Each packed block gets its OWN buffer (cap one block plus one overhang chunk)
+	// so its bytes stay live while its CommitBlock runs concurrently with the next
+	// block's packing — the recycled arena of the sequential path can't do that.
 	// Compute in int64 and clamp before the int conversion so a pathological
 	// CarveBlockSize can't silently wrap on 32-bit platforms.
 	arenaCap64 := s.cfg.CarveBlockSize + int64(chunker.MaxChunkSize)
@@ -265,32 +272,36 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 		arenaCap64 = math.MaxInt
 	}
 	arenaCap := int(arenaCap64)
-	arenap := carveArenaPool.Get().(*[]byte)
-	arena := *arenap
-	if cap(arena) < arenaCap {
-		arena = make([]byte, arenaCap)
-	}
-	arena = arena[:cap(arena)]
-	arenaOff := 0
-	defer func() {
-		*arenap = arena
-		carveArenaPool.Put(arenap)
-	}()
 
-	// flush commits the buffered novel chunks (if any) then, since everything up
-	// to watermark is now durable, flips the run's records that end there. The
-	// commit strictly precedes the flip: that is the crash-safety ordering.
-	flush := func(watermark int64) error {
-		if len(pending) > 0 {
-			if err := s.sink.CommitBlock(ctx, pending); err != nil {
-				return err
-			}
-			res.BlocksWritten++
-			pending = nil
-			pendingBytes = 0
-			arenaOff = 0
+	// The block currently being packed. arena is its private buffer (nil until the
+	// first novel chunk claims a pool buffer and a concurrency slot); arenaOff is
+	// the fill cursor. On any early exit these are returned to disp so the slot and
+	// buffer are not leaked.
+	var (
+		pending  []CarveChunk
+		arenap   *[]byte
+		arena    []byte
+		arenaOff int
+	)
+	ensureArena := func() error {
+		if arenap != nil {
+			return nil
 		}
-		return s.flipUpTo(sh, id, run, &flipIdx, watermark)
+		p, err := disp.acquire(arenaCap)
+		if err != nil {
+			return err
+		}
+		arenap, arena, arenaOff = p, *p, 0
+		return nil
+	}
+
+	// flush hands the packed block (if any) and the watermark to the dispatcher,
+	// which commits then flips in submission order. Packing continues immediately;
+	// the commit and flip happen on the pool. Ownership of the buffer moves to the
+	// dispatcher, so the local arena state resets to "no block".
+	flush := func(watermark int64) {
+		disp.submit(pending, arenap, arena, watermark)
+		pending, arenap, arena, arenaOff = nil, nil, nil, 0
 	}
 
 	// buf accumulates bytes for the chunker; it never exceeds one max chunk, so
@@ -302,10 +313,21 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 		*bufp = buf
 		carveScratchPool.Put(bufp)
 	}()
+
+	// packErr is the first error hit while packing (read/dedup/context). It stops
+	// packing but the already-dispatched blocks still drain via disp.wait so no
+	// goroutine or buffer leaks; disp.wait folds it together with any commit error.
+	var packErr error
 	eof := false
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			packErr = err
+			break
+		}
+		// A commit already failed: stop packing so the watermark can't advance past
+		// the failed block. In-flight commits drain in disp.wait.
+		if disp.aborted() {
+			break
 		}
 		for !eof && len(buf) < chunker.MaxChunkSize {
 			n, err := rr.Read(buf[len(buf):cap(buf)])
@@ -317,8 +339,12 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 				break
 			}
 			if err != nil {
-				return err
+				packErr = err
+				break
 			}
+		}
+		if packErr != nil {
+			break
 		}
 		if len(buf) == 0 {
 			break
@@ -332,18 +358,28 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 		}
 
 		h := ChunkHash(blake3.Sum256(buf[:boundary]))
+		// Dedup consults the committed synced-hash oracle. A block being committed
+		// concurrently has NOT yet marked its hashes durable, so this never observes
+		// a sibling block's uncommitted hash as durable — at worst a duplicate chunk
+		// is re-packed, which the content-addressed commit collapses to a no-op.
 		durable, err := s.deduper.IsChunkDurable(ctx, h)
 		if err != nil {
-			return err
+			packErr = err
+			break
 		}
 		if !durable {
-			// Bound proof: pendingBytes < CarveBlockSize before this append (else
-			// the prior iteration flushed and reset arenaOff), and boundary <=
-			// MaxChunkSize, so arenaOff+boundary <= CarveBlockSize-1+MaxChunkSize <
-			// cap. The grow is a fail-loud belt: if that invariant ever breaks (e.g.
-			// a config change), realloc rather than slice out of bounds. Already-
-			// pending Data slices keep pointing at the old backing (still live), so
-			// no copy is needed — the new chunk just lands in the larger arena.
+			if err := ensureArena(); err != nil {
+				packErr = err
+				break
+			}
+			// Bound proof: this block's bytes < CarveBlockSize before this append
+			// (else the prior iteration flushed and started a fresh arena), and
+			// boundary <= MaxChunkSize, so arenaOff+boundary <= CarveBlockSize-1+
+			// MaxChunkSize <= cap. The grow is a fail-loud belt: if that invariant
+			// ever breaks (e.g. a config change), realloc rather than slice out of
+			// bounds. Already-pending Data slices keep pointing at the old backing
+			// (still live), so no copy is needed — the new chunk lands in the larger
+			// arena and the grown slice ships to the dispatcher.
 			if arenaOff+boundary > cap(arena) {
 				arena = make([]byte, arenaOff+boundary)
 			}
@@ -351,25 +387,34 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 			copy(data, buf[:boundary])
 			arenaOff += boundary
 			pending = append(pending, CarveChunk{Hash: h, FileID: id, FileOffset: fileOff, Data: data})
-			pendingBytes += int64(boundary)
 			res.BytesCarved += int64(boundary)
 		}
 		newOffsets[fileOff] = struct{}{}
 		fileOff += int64(boundary)
 		buf = append(buf[:0], buf[boundary:]...)
 
-		if pendingBytes >= s.cfg.CarveBlockSize {
-			if err := flush(fileOff); err != nil {
-				return err
-			}
+		if int64(arenaOff) >= s.cfg.CarveBlockSize {
+			flush(fileOff)
 		}
 		if eof && len(buf) == 0 {
 			break
 		}
 	}
+
+	if packErr != nil {
+		// Abandon the half-packed block (return its slot/buffer) and drain the
+		// blocks already in flight; do not advance the watermark to the run end.
+		disp.discard(arenap, arena)
+		if err := disp.wait(); err != nil {
+			return err
+		}
+		return packErr
+	}
+
 	// Tail: commit any remainder and flip through the end of the run (records
-	// covered only by already-durable chunks flip here too).
-	if err := flush(run[len(run)-1].end()); err != nil {
+	// covered only by already-durable chunks flip here too, via the bare watermark).
+	flush(run[len(run)-1].end())
+	if err := disp.wait(); err != nil {
 		return err
 	}
 	// #953: with every row this run produced now committed, reap the manifest rows

@@ -58,6 +58,13 @@ type Config struct {
 	ShardCount       int           // number of shards, power of two, immutable per store
 	MaxLocalBytes    int64         // local on-disk cap that triggers eviction; 0 = unlimited
 	EvictMaxWait     time.Duration // write-path backpressure budget before ErrLocalStoreFull
+	// CarveUploadConcurrency bounds how many of one file's packed blocks may be
+	// committed (uploaded + committed) at once within a single carve run. Packing
+	// stays sequential; only the block commits overlap, so a single large file's
+	// carve is no longer one PutBlock at a time. Peak carve RAM scales with this
+	// window (window x CarveBlockSize), so keep it modest. Zero falls back to the
+	// default via withDefaults.
+	CarveUploadConcurrency int
 	// ChunkParams sets the per-share FastCDC sizing carve feeds the chunker
 	// (#1569). The zero value (or any params that fail Validate) degrades to
 	// chunker.DefaultParams — the historical 1M/4M/16M profile — so a
@@ -66,12 +73,13 @@ type Config struct {
 }
 
 const (
-	defaultSegmentSize      int64 = 256 << 20
-	defaultCarveBlockSize   int64 = 4 << 20
-	defaultCarveMaxAge            = 5 * time.Second
-	defaultGCDeadRatioForce       = 0.5
-	defaultShardCount             = 16
-	defaultEvictMaxWait           = 30 * time.Second
+	defaultSegmentSize            int64 = 256 << 20
+	defaultCarveBlockSize         int64 = 4 << 20
+	defaultCarveMaxAge                  = 5 * time.Second
+	defaultGCDeadRatioForce             = 0.5
+	defaultShardCount                   = 16
+	defaultEvictMaxWait                 = 30 * time.Second
+	defaultCarveUploadConcurrency       = 8
 )
 
 func (c Config) withDefaults() Config {
@@ -92,6 +100,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.EvictMaxWait <= 0 {
 		c.EvictMaxWait = defaultEvictMaxWait
+	}
+	if c.CarveUploadConcurrency <= 0 {
+		c.CarveUploadConcurrency = defaultCarveUploadConcurrency
 	}
 	if c.ChunkParams.Validate() != nil {
 		c.ChunkParams = chunker.DefaultParams()
