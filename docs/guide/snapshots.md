@@ -502,7 +502,7 @@ Snapshot c12e8d4f removed.
 4. Write a durable **restore-in-progress marker** (see
    [§8.1](#81-automatic-crash-recovery)) naming the safety snapshot,
    immediately before the first destructive step.
-5. Reset the block store's local append-log overlay.
+5. Reset the block store's local journal cache.
 6. Reset the metadata store via its `Resetable` interface.
 7. Replay the snapshot's `metadata.dump` into the empty store.
 8. Walk the restored metadata to build a hash set of every block

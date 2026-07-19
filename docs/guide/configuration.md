@@ -291,13 +291,14 @@ Related glossary terms: [TLS / mTLS](glossary.md#authentication).
 
 Per-share block storage is configured via `dfsctl store` / `dfsctl share` commands (not the server config file). Each share owns an isolated local storage directory plus a reference to a remote store (S3 or filesystem). The block store lives in `pkg/block/engine/` and composes a local tier, a remote tier, the unified CAS-keyed in-memory `Cache`, a syncer (async local-to-remote transfer), and a garbage collector.
 
-#### Append-log tier
+#### Local `fs` store tuning
 
-The local filesystem store writes through per-file append-only logs that are
-compacted into content-addressed chunks (`blocks/{hh}/{hh}/{hex}`) and
-garbage-collected by the mark-sweep GC. This is the only local write path —
-pre-v0.16 `{payloadID}/block-{idx}` layouts must be converted with
-dittofs ≤ v0.21 (`dfs migrate-to-cas`) before the server will start.
+The local filesystem store (`fs`) is a thin adapter over the **journal** — an
+append-only, log-structured write-back cache (`pkg/block/journal/`). Writes
+append to the journal and local-ack; a background carve pass packs dirty ranges
+into packed remote blocks (`blocks/<id>`). Pre-v0.16 `{payloadID}/block-{idx}`
+layouts must be converted with dittofs ≤ v0.21 (`dfs migrate-to-cas`) before the
+server will start.
 
 These keys live inside the per-share `local` block store's `config` JSON
 (passed via `dfsctl store block local add --config '{...}'` or the REST API).
@@ -307,10 +308,10 @@ logs a startup warning.)
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `max_log_bytes` | int | deduced (25% of RAM, floor 1 GiB) | **Per-share** append-log pressure budget; writers block (`ErrPressureTimeout`) when the buffered log exceeds it. This per-store value takes **precedence** over the global `blockstore.local.max_log_bytes` and the system-deduced default. Values above 2^53 (~9 PiB) lose precision through JSON parsing. |
-| `rollup_workers` | int | `2` | Number of rollup goroutines (BLAKE3 + FastCDC) per share. |
-| `stabilization_ms` | int | `250` | Dirty-interval stabilization window in milliseconds before rollup. |
-| `orphan_log_min_age_seconds` | int | `3600` (1h) | Minimum log-file mtime age before the boot-time orphan sweep may unlink it. Prevents fresh (not-yet-rolled-up) logs from being swept when metadata is absent. |
+| `max_log_bytes` | int | deduced (25% of RAM, floor 1 GiB) | **Per-share** local-cache size hint. Still accepted and resolved (per-store value takes **precedence** over the global `blockstore.local.max_log_bytes` and the system-deduced default), but it no longer drives write backpressure — the journal caps on-disk usage and evicts on its own budget. Values above 2^53 (~9 PiB) lose precision through JSON parsing. |
+| `rollup_workers` | int | `2` | **Legacy, inert.** Accepted for config compatibility; the journal carves on its own age/size gate, so this no longer starts any goroutines. |
+| `stabilization_ms` | int | `250` | **Legacy, inert.** Accepted for config compatibility; superseded by the journal's carve batching gate. |
+| `orphan_log_min_age_seconds` | int | `3600` (1h) | **Legacy, inert.** Accepted for config compatibility; there is no separate append-log to orphan-sweep under the journal. |
 
 Env-var mapping follows the dot-path convention:
 `DITTOFS_BLOCKSTORE_LOCAL_FS_MAX_LOG_BYTES`,
@@ -318,20 +319,19 @@ Env-var mapping follows the dot-path convention:
 `DITTOFS_BLOCKSTORE_LOCAL_FS_STABILIZATION_MS`,
 `DITTOFS_BLOCKSTORE_LOCAL_FS_ORPHAN_LOG_MIN_AGE_SECONDS`.
 
-The local `fs` store requires a metadata backend that implements
-`metadata.RollupStore` to persist each log's `rollup_offset`; memory, badger,
-and postgres all qualify.
+There is no `metadata.RollupStore` backend requirement any more — the journal
+owns its local-cache state; a metadata backend only needs the block-record and
+synced-hash contracts (see [implementing stores](../internals/implementing-stores.md)).
 
-##### Append-log pressure budget (`max_log_bytes`)
+##### Write backpressure
 
-`max_log_bytes` is **THE** append-log backpressure lever. The on-disk append
-log buffers freshly-written bytes before the async rollup folds them into CAS
-chunks; once the buffered total exceeds this budget, `AppendWrite` stalls and
-eventually returns `ErrPressureTimeout` (surfaced as disk-full to the
-protocol). It is sized **relative to available memory** — the disk-backed
-pre-flush working set scales with how fast the host absorbs writes — at 25% of
-RAM with a 1 GiB floor (the historical fixed default becomes the minimum on
-small machines). Run `dfs config show --deduced` to see the effective value.
+Under the journal, write backpressure comes from the **local on-disk cap**, not
+an append-log budget: when the cache is full and every segment is pinned by
+not-yet-carved (dirty) bytes, a write waits up to the eviction budget and then
+returns `ErrLocalStoreFull` (surfaced as disk-full to the protocol). A healthy
+remote lets the carve pass drain dirty bytes so eviction frees space and the
+writer proceeds. The `max_log_bytes` value below is retained as a size hint and
+still resolves with the precedence shown, but it no longer gates writes.
 
 The effective budget resolves with the following **precedence** (highest
 first):
@@ -348,7 +348,7 @@ and binds to the env var `DITTOFS_BLOCKSTORE_LOCAL_MAX_LOG_BYTES`:
 ```yaml
 blockstore:
   local:
-    max_log_bytes: 2147483648   # 2 GiB global append-log pressure budget.
+    max_log_bytes: 2147483648   # 2 GiB global local-cache size hint (no longer gates writes).
                                 # 0 / unset = system-deduced default
                                 # (25% of RAM, floor 1 GiB). A per-store
                                 # config max_log_bytes overrides this.
@@ -589,7 +589,7 @@ filling the host volume, the local cache is bounded and writes apply
   explicit `--local-store-size` always wins. **Local-only shares are
   unaffected** — they keep their existing system-deduced local size and never
   apply remote-cache backpressure. The cap is enforced **lazily, on the
-  write/rollup path** (it evicts synced blocks to make room for new writes); it
+  write/carve path** (it evicts synced segments to make room for new writes); it
   is **not** a background reaper, so on an idle or read-only workload the
   resident local tier is not shrunk toward the cap. To reclaim local disk — or
   to force cold, remote-served reads for read-path benchmarking — evict on
@@ -631,7 +631,7 @@ blockstore:
                                              # Defaults to 10 GiB if unset.
     backpressure_max_wait: 60s               # Max time a write stalls for the
                                              # syncer to drain before disk-full.
-    max_log_bytes: 2147483648                # Global append-log pressure budget
+    max_log_bytes: 2147483648                # Global local-cache size hint
                                              # (see above). 0/unset = deduced.
 ```
 
@@ -907,7 +907,7 @@ Badger's own defaults are tiny (256 MiB block, index cache disabled), which
 thrashes on a busy server over a large directory tree. The symptom in the logs
 is `Block cache might be too small ... hit-ratio: 0.26 ... sets-rejected`; every
 cold lookup then walks the LSM tree from disk, which also widens the window for
-the dedup transaction-conflict race and the append-log "pressure wait timed out"
+the dedup transaction-conflict race and the local-cache write-path backpressure
 stall.
 
 By default both sizes **auto-scale with the memory available to the process**,
@@ -919,7 +919,7 @@ so no tuning is required:
 | index | 7.5 %                     | 256 MiB | 2 GiB   |
 
 The fractions are deliberately conservative because the same process also holds
-the append-log, the metadata working set, and read buffers. The available-memory
+the local journal cache, the metadata working set, and read buffers. The available-memory
 figure is the cgroup limit inside a container, or physical RAM otherwise (same
 detection used for block-store sizing). Examples:
 
