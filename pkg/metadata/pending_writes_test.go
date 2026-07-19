@@ -71,3 +71,45 @@ func TestPopAllPending_ReturnsAllEntries(t *testing.T) {
 		t.Fatalf("pending count = %d after pop, want 0", c)
 	}
 }
+
+// TestRestorePending_ReinstatesAndMergesRacingWrite asserts that a state popped
+// for a flush is put back by RestorePending when the flush fails (so the buffered
+// size is not lost), and that a write which raced in after the pop is not
+// clobbered: the size keeps the max and the setuid-clear latches on.
+func TestRestorePending_ReinstatesAndMergesRacingWrite(t *testing.T) {
+	tr := NewPendingWritesTracker()
+	h := FileHandle("share:restore")
+
+	// A deferred write buffers size 100; the flush pops it, then fails.
+	tr.RecordWrite(h, &WriteOperation{Handle: h, NewSize: 100}, true)
+	state, ok := tr.PopPending(h)
+	if !ok {
+		t.Fatal("PopPending: expected buffered state")
+	}
+	if _, ok := tr.GetPending(h); ok {
+		t.Fatal("state must be gone immediately after pop")
+	}
+
+	// No racing write: the state is reinstated verbatim so a later flush retries.
+	tr.RestorePending(h, state)
+	got, ok := tr.GetPending(h)
+	if !ok || got.MaxSize != 100 {
+		t.Fatalf("restore: got %+v ok=%v, want MaxSize=100", got, ok)
+	}
+
+	// Racing write: pop again, a newer write (size 200) lands before the failed
+	// flush restores the old state. The newer size must win; setuid-clear latches.
+	old, _ := tr.PopPending(h)
+	tr.RecordWrite(h, &WriteOperation{Handle: h, NewSize: 200}, false)
+	tr.RestorePending(h, old)
+	merged, ok := tr.GetPending(h)
+	if !ok {
+		t.Fatal("merged state missing after restore")
+	}
+	if merged.MaxSize != 200 {
+		t.Fatalf("merged MaxSize = %d, want 200 (racing write must not be clobbered)", merged.MaxSize)
+	}
+	if !merged.ClearSetuidSetgid {
+		t.Fatal("restored setuid-clear must latch onto the merged state")
+	}
+}

@@ -201,6 +201,44 @@ func (t *PendingWritesTracker) PopPending(handle FileHandle) (*PendingWriteState
 	return state, true
 }
 
+// RestorePending merges a previously popped state back into the tracker after a
+// flush failed, so a later flush retries it instead of the size/mtime update
+// being lost. If a write arrived after the pop (RecordWrite runs without the
+// flush lock), the popped state is merged into that newer entry rather than
+// overwriting it: the size grows to the max, the setuid-clear latches on, and
+// the restored mtime/pre-write attrs/cache fill in only where the newer entry
+// has none. If nothing is present, the popped state is reinstated as-is.
+func (t *PendingWritesTracker) RestorePending(handle FileHandle, state *PendingWriteState) {
+	if state == nil {
+		return
+	}
+	key := handleKey(handle)
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	cur, exists := t.pending[key]
+	if !exists {
+		t.pending[key] = state
+		return
+	}
+	if state.MaxSize > cur.MaxSize {
+		cur.MaxSize = state.MaxSize
+	}
+	if cur.LastMtime.IsZero() && !state.LastMtime.IsZero() {
+		cur.LastMtime = state.LastMtime
+	}
+	if state.ClearSetuidSetgid {
+		cur.ClearSetuidSetgid = true
+	}
+	if cur.PreWriteAttr == nil {
+		cur.PreWriteAttr = state.PreWriteAttr
+	}
+	if cur.CachedFile == nil {
+		cur.CachedFile = state.CachedFile
+	}
+}
+
 // PendingEntry pairs a handle with its pending state.
 type PendingEntry struct {
 	Handle FileHandle

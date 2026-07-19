@@ -405,6 +405,11 @@ func (s *Service) FlushPendingWriteForFile(ctx *AuthContext, handle FileHandle, 
 	}
 
 	if err := s.flushPendingWrite(ctx, handle, state, durable); err != nil {
+		// The state was popped before the flush; a caller that treats this error
+		// as non-fatal would otherwise permanently lose the size/mtime update and
+		// leave metadata stale until the next share-start reconcile. Restore it so
+		// a later flush or COMMIT retries, merging with any write that raced in.
+		s.pendingWrites.RestorePending(handle, state)
 		return true, err
 	}
 
