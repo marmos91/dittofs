@@ -59,14 +59,14 @@ func init() {
 	} {
 		mode, cacheMax := r.mode, r.cacheMax
 		register(newSrcBackend(srcBackend{
-			name: r.name, s3Backed: true, protos: all, srcDir: rcloneMnt, tier: r.tier,
+			name: r.name, s3Backed: true, protos: all, srcDir: rcloneMnt, cacheDir: rcloneCache, tier: r.tier,
 			setup:    func(ctx context.Context, env BackendEnv) error { return rcloneSetup(ctx, env, mode, cacheMax) },
 			teardown: fuseUnmount(rcloneMnt), remount: rcloneRemount,
 		}))
 	}
 
 	register(newSrcBackend(srcBackend{
-		name: "s3ql", s3Backed: true, protos: all, srcDir: s3qlMnt,
+		name: "s3ql", s3Backed: true, protos: all, srcDir: s3qlMnt, cacheDir: s3qlCache,
 		tier:  "durable-to-local cache + async S3; knfsd sync export",
 		setup: s3qlSetup, teardown: s3qlTeardown, remount: s3qlRemount,
 	}))
@@ -97,7 +97,7 @@ func init() {
 	} {
 		meta, wb, cacheSize := j.meta, j.writeback, j.cacheSize
 		register(newSrcBackend(srcBackend{
-			name: j.name, s3Backed: true, protos: all, srcDir: juicefsMnt, tier: j.tier,
+			name: j.name, s3Backed: true, protos: all, srcDir: juicefsMnt, cacheDir: juicefsCache, tier: j.tier,
 			setup:    func(ctx context.Context, env BackendEnv) error { return juicefsSetup(ctx, env, meta, wb, cacheSize) },
 			teardown: juicefsTeardown, remount: juicefsRemount,
 		}))
@@ -123,7 +123,7 @@ func init() {
 	} {
 		useCache, ensureFreeMB := s.useCache, s.ensureFreeMB
 		register(newSrcBackend(srcBackend{
-			name: s.name, s3Backed: true, protos: all, srcDir: s3fsMnt, tier: s.tier,
+			name: s.name, s3Backed: true, protos: all, srcDir: s3fsMnt, cacheDir: s3fsCache, tier: s.tier,
 			setup:    func(ctx context.Context, env BackendEnv) error { return s3fsSetup(ctx, env, useCache, ensureFreeMB) },
 			teardown: fuseUnmount(s3fsMnt), remount: s3fsRemount,
 		}))

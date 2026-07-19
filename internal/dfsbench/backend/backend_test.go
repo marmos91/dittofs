@@ -314,3 +314,34 @@ func TestBenchPath(t *testing.T) {
 		t.Fatalf("enabled: got %q, want %q", got, want)
 	}
 }
+
+// TestReclaimBenchData_TargetsOnlyDataVolume proves the teardown reclaim only
+// deletes paths inside the isolated data volume: it is a no-op on the legacy
+// root-disk fallback (so it never wipes a real system dir like /var/lib) and
+// refuses the mount root and sibling paths.
+func TestReclaimBenchData_TargetsOnlyDataVolume(t *testing.T) {
+	saved := benchDataDir
+	t.Cleanup(func() { benchDataDir = saved })
+
+	// Legacy fallback: nothing is "under" an unmounted volume, so real dirs are safe.
+	benchDataDir = ""
+	for _, dir := range []string{"/var/lib/bench-dittofs", "/var/cache/bench-rclone", "/bench-data/juicefs"} {
+		if isUnderBenchData(dir) {
+			t.Fatalf("fallback: %q must not be treated as under the data volume", dir)
+		}
+	}
+
+	benchDataDir = "/bench-data"
+	safe := []string{"/bench-data", "/var/lib/bench-dittofs", "/bench-data-other/x"}
+	for _, dir := range safe {
+		if isUnderBenchData(dir) {
+			t.Fatalf("mounted: %q must NOT be reclaimable (root or outside the volume)", dir)
+		}
+	}
+	reclaimable := []string{"/bench-data/juicefs", filepath.Join("/bench-data", "rclone")}
+	for _, dir := range reclaimable {
+		if !isUnderBenchData(dir) {
+			t.Fatalf("mounted: %q should be reclaimable (a backend subdir on the volume)", dir)
+		}
+	}
+}
