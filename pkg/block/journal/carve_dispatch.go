@@ -109,6 +109,13 @@ func (d *carveDispatcher) commitAndFlip(chunks []CarveChunk, arenap *[]byte, are
 	var commitErr error
 	if len(chunks) > 0 {
 		commitErr = d.s.sink.CommitBlock(d.ctx, chunks)
+		if commitErr != nil {
+			// Stop packing as soon as any commit fails, even if this block is not
+			// yet the head of the flip chain, so no further blocks are packed and
+			// uploaded past a known failure. firstErr is still recorded in watermark
+			// order below (only the earliest-watermark failure reaches setErr).
+			d.abort.Store(true)
+		}
 	}
 
 	// Wait for the predecessor before flipping so flips apply in watermark order.

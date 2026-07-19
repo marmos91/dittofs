@@ -401,9 +401,12 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 		}
 	}
 
-	if packErr != nil {
-		// Abandon the half-packed block (return its slot/buffer) and drain the
-		// blocks already in flight; do not advance the watermark to the run end.
+	if packErr != nil || disp.aborted() {
+		// A read/dedup error (packErr) or an in-flight commit failure (aborted)
+		// ends the run. Abandon the half-packed block (return its slot/buffer) and
+		// drain the blocks already in flight, but submit nothing more: advancing
+		// the watermark or committing the tail past a failure only adds orphan
+		// uploads. disp.wait returns the commit error in watermark order.
 		disp.discard(arenap, arena)
 		if err := disp.wait(); err != nil {
 			return err
