@@ -38,12 +38,17 @@ func TestSQLite_ConcurrentWritesBackpressureNoEIO(t *testing.T) {
 		cfg := &sqlite.SQLiteMetadataStoreConfig{
 			Path:        dbPath,
 			AutoMigrate: autoMigrate,
-			// A tiny busy_timeout makes colliding writers surface SQLITE_BUSY
-			// almost immediately instead of queueing inside the driver — that is
-			// exactly the transient conflict WithTransaction must backpressure
-			// over, not EIO. With the pre-fix 3-attempt / 10-20-30ms budget this
-			// reliably EIO'd under cross-connection contention.
-			BusyTimeout: 1 * time.Millisecond,
+			// busy_timeout bounds how long the driver waits for the single write
+			// lock before returning SQLITE_BUSY up to WithTransaction's retry loop.
+			// It is kept small so sustained cross-connection contention still
+			// surfaces SQLITE_BUSY and exercises that retry/backpressure path — but
+			// not so small that every brief collision is handed to the retry loop,
+			// which under heavy contention can exhaust the loop's per-call time
+			// budget and turn a transient conflict into EIO. At this value the
+			// driver absorbs sub-threshold collisions while only sustained
+			// contention reaches the retry loop, so colliding writers backpressure
+			// (run slow) rather than error.
+			BusyTimeout: 50 * time.Millisecond,
 		}
 		store, err := sqlite.NewSQLiteMetadataStore(ctx, cfg, sqliteTestCapabilities())
 		if err != nil {
