@@ -155,6 +155,7 @@ type srcBackend struct {
 	tier     string // effective durability tier, surfaced as Backend.Tier
 	protos   []Protocol
 	srcDir   string
+	cacheDir string                                          // on-disk cache under the data volume, reclaimed at teardown; "" = none
 	setup    func(ctx context.Context, env BackendEnv) error // install + FUSE-mount at srcDir; nil = plain dir
 	teardown func(ctx context.Context) error                 // FUSE-unmount; nil = none
 	evict    func(ctx context.Context) error                 // clear tool cache; nil = OS-drop only
@@ -197,6 +198,10 @@ func newSrcBackend(sb srcBackend) *Backend {
 				err = sb.teardown(ctx)
 			}
 			_ = os.RemoveAll(sb.srcDir)
+			// Free the on-disk cache once this system's cells are done, so the data
+			// volume stays bounded by the largest single system, not their sum. srcDir
+			// is only the (empty) mountpoint; the bulk bytes live in cacheDir.
+			reclaimBenchData(sb.cacheDir)
 			return err
 		},
 	}

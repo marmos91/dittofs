@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/dfsbench/exec"
@@ -40,6 +41,30 @@ func benchPath(legacyRoot, sub string) string {
 		return filepath.Join(benchDataDir, sub)
 	}
 	return legacyRoot
+}
+
+// isUnderBenchData reports whether dir sits strictly inside the isolated data
+// volume. It is false when no data volume is mounted (legacy root-disk fallback)
+// and false for the mount root itself, so a caller can only ever target a
+// backend's own subdir under the volume — never a real system dir.
+func isUnderBenchData(dir string) bool {
+	if benchDataDir == "" {
+		return false
+	}
+	root := filepath.Clean(benchDataDir)
+	return filepath.Clean(dir) != root &&
+		strings.HasPrefix(filepath.Clean(dir), root+string(os.PathSeparator))
+}
+
+// reclaimBenchData deletes a finished backend's cache/data dir so the isolated
+// data volume's usage stays bounded by the largest single system instead of the
+// sum of every system that has run. It only removes a path under the data volume
+// (isUnderBenchData), so it is a no-op on the legacy root-disk fallback and can
+// never wipe a real system dir.
+func reclaimBenchData(dir string) {
+	if isUnderBenchData(dir) {
+		_ = os.RemoveAll(dir)
+	}
 }
 
 // dittofs-s3 is the subject: DittoFS serving badger metadata + an S3 remote
