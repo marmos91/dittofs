@@ -109,3 +109,44 @@ func TestNewWithOptionsOpensCleanDir(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 }
+
+// TestNewWithOptionsMigratesLegacy covers the remote-backed upgrade path: with
+// MigrateLegacyLayout set, a pre-journal dir opens instead of failing, the legacy
+// blobs/+logs/ are archived aside (non-destructively) so the journal owns the dir,
+// and the store reports MigratedFromLegacy. A second open is a normal clean open —
+// the guard no longer fires because the legacy dirs are gone.
+func TestNewWithOptionsMigratesLegacy(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "blobs", "0000000000000000.blob"), 1024)
+	writeFile(t, filepath.Join(dir, "logs", "share", "f.log"), 512)
+
+	s, err := NewWithOptions(dir, 1<<30, nil, FSStoreOptions{MigrateLegacyLayout: true})
+	if err != nil {
+		t.Fatalf("NewWithOptions with MigrateLegacyLayout over legacy dir: %v", err)
+	}
+	if !s.MigratedFromLegacy() {
+		t.Fatal("MigratedFromLegacy = false, want true after archiving a legacy dir")
+	}
+
+	// Legacy dirs archived aside (non-destructive), originals gone.
+	for _, sub := range []string{"blobs", "logs"} {
+		if _, err := os.Stat(filepath.Join(dir, sub)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("legacy %s/ still present after migration (err=%v)", sub, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, sub+legacyBackupSuffix)); err != nil {
+			t.Fatalf("archived %s%s missing: %v", sub, legacyBackupSuffix, err)
+		}
+	}
+	_ = s.Close()
+
+	// Second open: dir is now clean (no legacy layout), so a plain open succeeds
+	// and reports no migration — the archive is idempotent across restarts.
+	s2, err := NewWithOptions(dir, 1<<30, nil, FSStoreOptions{MigrateLegacyLayout: true})
+	if err != nil {
+		t.Fatalf("second NewWithOptions after migration: %v", err)
+	}
+	if s2.MigratedFromLegacy() {
+		t.Fatal("MigratedFromLegacy = true on a second open; archive is not idempotent")
+	}
+	_ = s2.Close()
+}

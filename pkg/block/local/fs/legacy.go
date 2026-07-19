@@ -84,3 +84,40 @@ func checkLegacyLayout(dir string) error {
 	}
 	return nil
 }
+
+// legacyBackupSuffix is appended to a pre-journal subdirectory when it is moved
+// aside so the journal can own the directory cleanly. The archived bytes stay on
+// disk untouched under this name.
+const legacyBackupSuffix = ".pre-journal-backup"
+
+// archiveLegacyLayout renames the pre-journal blobs/ and logs/ subdirectories of
+// dir aside to <name>.pre-journal-backup so an empty journal can open cleanly on
+// top of them. It is NON-destructive: the legacy bytes survive under the backup
+// name, and only the remote store's copy plus the metadata manifest are relied
+// on to re-materialize file contents. It only touches a subdirectory that
+// currently exists; a missing one (e.g. a second start after a partial archive)
+// is skipped. A pre-existing backup target is a hard error rather than an
+// overwrite so the operator can inspect it — the guard that gates this call
+// won't fire again once blobs/ and logs/ are gone, so this only runs on the
+// first upgrade start.
+func archiveLegacyLayout(dir string) error {
+	for _, sub := range []string{"blobs", "logs"} {
+		src := filepath.Join(dir, sub)
+		if _, err := os.Stat(src); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		dst := src + legacyBackupSuffix
+		if _, err := os.Stat(dst); err == nil {
+			return fmt.Errorf("archive legacy %q: backup %q already exists; move it aside manually", src, dst)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return fmt.Errorf("archive legacy %q -> %q: %w", src, dst, err)
+		}
+	}
+	return nil
+}
