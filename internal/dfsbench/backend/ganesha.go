@@ -86,8 +86,10 @@ func ganeshaConfig() string {
 
 func ganeshaStart(ctx context.Context) error {
 	// ganesha.nfsd daemonizes by default; -N NIV_EVENT keeps the log terse.
+	// /var/run/ganesha must exist first — ganesha FATALs opening its pidfile there
+	// on a fresh box where the packaging didn't create the runtime dir.
 	if err := exec.Sh(ctx, "sh", "-c",
-		"ganesha.nfsd -f "+ganeshaConf+" -L "+ganeshaLog+" -N NIV_EVENT"); err != nil {
+		"mkdir -p /var/run/ganesha && ganesha.nfsd -f "+ganeshaConf+" -L "+ganeshaLog+" -N NIV_EVENT"); err != nil {
 		return err
 	}
 	if err := waitPort(ctx, ganeshaNFSPort); err != nil {

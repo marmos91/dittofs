@@ -121,7 +121,7 @@ for i in $(seq 1 60); do runuser -u postgres -- pg_isready -q 2>/dev/null && bre
 # Fail loudly with cluster diagnostics if it never came up, rather than letting
 # the provisioning psql below fail with a cryptic connection error (exit 2).
 runuser -u postgres -- pg_isready -q 2>/dev/null || { echo 'postgres cluster never became ready:'; pg_lsclusters 2>/dev/null; exit 1; }
-runuser -u postgres -- psql -v ON_ERROR_STOP=1 <<SQL
+runuser -u postgres -- psql -v ON_ERROR_STOP=1 <<'SQL'
 DROP DATABASE IF EXISTS %[1]s;
 DO $do$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='%[2]s') THEN CREATE ROLE %[2]s LOGIN PASSWORD '%[3]s'; END IF; END $do$;
 CREATE DATABASE %[1]s OWNER %[2]s;
