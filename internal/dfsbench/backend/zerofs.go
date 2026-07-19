@@ -33,32 +33,43 @@ const (
 )
 
 func init() {
-	register(&Backend{
-		Name:     "zerofs",
-		S3Backed: true,
-		// zerofs default (sync_writes=false): writes land in an in-memory memtable
-		// backed by a WAL, flushed to S3 every ~30s; an explicit fsync forces a seal
-		// + flush. So it is durable-on-fsync but buffered between fsyncs — the
-		// closest fair native comparator to DittoFS's local-durable tier, but not
-		// identical (seq-write's fsync_on_close makes its acks durable; a no-fsync
-		// create acks from RAM+WAL). Logged so the table's tier column is honest.
-		Tier: "memtable + WAL, periodic ~30s S3 flush (sync_writes=false); durable on fsync/close",
-		// Native NFSv3 only. nfs4/smb3 are NA (zerofs speaks neither) and auto-skip.
-		Support:  map[Protocol]Support{ProtoNFS3: Native},
-		Setup:    zerofsSetup,
-		Mount:    zerofsMount,
-		Unmount:  func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
-		Teardown: zerofsTeardown,
-		// zerofs is native, not FUSE, but it keeps a local LSM block cache of
-		// decrypted SST blocks — so dropping the OS page cache alone still serves
-		// reads warm. The only way to force cold-from-S3 is to flush + restart the
-		// server on an empty cache dir; that requires the unmount→rebuild→remount
-		// bounce, which is exactly what the runner drives through FlushFUSE.
-		FlushFUSE: zerofsColdBarrier,
-	})
+	// Two durability tiers of the same native server. Default (sync_writes=false):
+	// writes land in an in-memory memtable backed by a WAL, flushed to S3 every
+	// ~30s; an explicit fsync forces a seal + flush — durable-on-fsync but buffered
+	// between fsyncs, the closest fair native comparator to DittoFS's local-durable
+	// tier. zerofs-sync (sync_writes=true) flushes every write to WAL+S3 before ack
+	// — durable-per-write, the strict-remote comparator. syncWrites threads through
+	// setup into the TOML; one backend runs at a time so the shared conf path is safe.
+	for _, z := range []struct {
+		name       string
+		syncWrites bool
+		tier       string
+	}{
+		{"zerofs", false, "memtable + WAL, periodic ~30s S3 flush (sync_writes=false); durable on fsync/close"},
+		{"zerofs-sync", true, "sync_writes=true: every write flushed to WAL+S3 before ack (durable-per-write)"},
+	} {
+		syncWrites := z.syncWrites
+		register(&Backend{
+			Name:     z.name,
+			S3Backed: true,
+			Tier:     z.tier,
+			// Native NFSv3 only. nfs4/smb3 are NA (zerofs speaks neither) and auto-skip.
+			Support:  map[Protocol]Support{ProtoNFS3: Native},
+			Setup:    func(ctx context.Context, env BackendEnv) error { return zerofsSetup(ctx, env, syncWrites) },
+			Mount:    zerofsMount,
+			Unmount:  func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
+			Teardown: zerofsTeardown,
+			// zerofs is native, not FUSE, but it keeps a local LSM block cache of
+			// decrypted SST blocks — so dropping the OS page cache alone still serves
+			// reads warm. The only way to force cold-from-S3 is to flush + restart the
+			// server on an empty cache dir; that requires the unmount→rebuild→remount
+			// bounce, which is exactly what the runner drives through FlushFUSE.
+			FlushFUSE: zerofsColdBarrier,
+		})
+	}
 }
 
-func zerofsSetup(ctx context.Context, env BackendEnv) error {
+func zerofsSetup(ctx context.Context, env BackendEnv, syncWrites bool) error {
 	// Official install script (verifies the published SHA-256, drops a prebuilt
 	// binary) — zerofs isn't in Ubuntu apt.
 	if err := exec.Sh(ctx, "sh", "-c",
@@ -82,7 +93,7 @@ func zerofsSetup(ctx context.Context, env BackendEnv) error {
 	if err := cleanS3Prefix(ctx, zerofsPrefix+"/"); err != nil {
 		return err
 	}
-	if err := os.WriteFile(zerofsConf, []byte(zerofsConfig(env)), 0o644); err != nil {
+	if err := os.WriteFile(zerofsConf, []byte(zerofsConfig(env, syncWrites)), 0o644); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(zerofsCacheDir, 0o755); err != nil {
@@ -112,12 +123,19 @@ func zerofsSetup(ctx context.Context, env BackendEnv) error {
 }
 
 // zerofsConfig renders the TOML. Non-secret fields are filled here; the three
-// ${...} refs stay literal for zerofs to substitute from env at runtime.
-func zerofsConfig(env BackendEnv) string {
+// ${...} refs stay literal for zerofs to substitute from env at runtime. When
+// syncWrites is set, an [lsm] section forces every write through WAL+S3 before
+// ack (the zerofs-sync durable-per-write tier); the default omits it (false).
+// UNSURE: the exact section/key for sync_writes is tuned on the live VM binary.
+func zerofsConfig(env BackendEnv, syncWrites bool) string {
+	lsm := ""
+	if syncWrites {
+		lsm = "\n[lsm]\nsync_writes = true\n"
+	}
 	return fmt.Sprintf(`[storage]
 url = "s3://%s/%s"
 encryption_password = "${ZEROFS_PASSWORD}"
-
+%s
 [cache]
 dir = "%s"
 disk_size_gb = 10
@@ -133,7 +151,7 @@ access_key_id = "${AWS_ACCESS_KEY_ID}"
 secret_access_key = "${AWS_SECRET_ACCESS_KEY}"
 endpoint = "%s"
 default_region = "us-east-1"
-`, env.Bucket, zerofsPrefix, zerofsCacheDir, zerofsNFSPort, zerofsRPCPort, env.Endpoint)
+`, env.Bucket, zerofsPrefix, lsm, zerofsCacheDir, zerofsNFSPort, zerofsRPCPort, env.Endpoint)
 }
 
 func zerofsMount(ctx context.Context, proto Protocol) (string, error) {

@@ -30,26 +30,75 @@ func init() {
 	// remount is the cold-read barrier for every FUSE backend: flush writeback to
 	// S3 + remount empty (see FlushFUSE). No evict needed — the remount replaces
 	// the local cache wholesale.
-	register(newSrcBackend(srcBackend{
-		name: "rclone", s3Backed: true, protos: all, srcDir: rcloneMnt,
-		tier:  "durable-to-local (vfs-cache-mode=writes) + async S3; knfsd sync export",
-		setup: rcloneSetup, teardown: fuseUnmount(rcloneMnt), remount: rcloneRemount,
-	}))
+
+	// rclone: two vfs-cache-mode tiers. writes = writeback (local-ack, async S3);
+	// full also caches reads locally. One backend runs at a time, so the mode is
+	// stashed in a package var (rcloneVfsMode) for remount to reuse.
+	for _, r := range []struct{ name, mode, tier string }{
+		{"rclone", "writes", "durable-to-local (vfs-cache-mode=writes) + async S3; knfsd sync export"},
+		{"rclone-cachefull", "full", "durable-to-local (vfs-cache-mode=full, reads cached) + async S3; knfsd sync export"},
+	} {
+		mode := r.mode
+		register(newSrcBackend(srcBackend{
+			name: r.name, s3Backed: true, protos: all, srcDir: rcloneMnt, tier: r.tier,
+			setup:    func(ctx context.Context, env BackendEnv) error { return rcloneSetup(ctx, env, mode) },
+			teardown: fuseUnmount(rcloneMnt), remount: rcloneRemount,
+		}))
+	}
+
 	register(newSrcBackend(srcBackend{
 		name: "s3ql", s3Backed: true, protos: all, srcDir: s3qlMnt,
 		tier:  "durable-to-local cache + async S3; knfsd sync export",
 		setup: s3qlSetup, teardown: s3qlTeardown, remount: s3qlRemount,
 	}))
-	register(newSrcBackend(srcBackend{
-		name: "juicefs", s3Backed: true, protos: all, srcDir: juicefsMnt,
-		tier:  "durable-to-local (--writeback local cache) + async S3; knfsd sync export",
-		setup: juicefsSetup, teardown: juicefsTeardown, remount: juicefsRemount,
-	}))
-	register(newSrcBackend(srcBackend{
-		name: "s3fs", s3Backed: true, protos: all, srcDir: s3fsMnt,
-		tier:  "durable-on-close to S3 (no writeback); knfsd sync export",
-		setup: s3fsSetup, teardown: fuseUnmount(s3fsMnt), remount: s3fsRemount,
-	}))
+
+	// juicefs: {sqlite, postgres, redis} metadata engine × {writeback, durable}
+	// write tier. writeback (--writeback) is local-ack + async S3; durable flushes
+	// to S3 on every fsync/close. metaKind + writeback are stashed in package vars
+	// at setup so remount rebuilds the identical mount.
+	const (
+		jfsWBTier  = "durable-to-local (--writeback local cache) + async S3; knfsd sync export"
+		jfsDurTier = "durable-on-S3 per fsync/close (no writeback); knfsd sync export"
+	)
+	for _, j := range []struct {
+		name, meta string
+		writeback  bool
+	}{
+		{"juicefs", "sqlite", true},
+		{"juicefs-durable", "sqlite", false},
+		{"juicefs-postgres", "postgres", true},
+		{"juicefs-postgres-durable", "postgres", false},
+		{"juicefs-redis", "redis", true},
+		{"juicefs-redis-durable", "redis", false},
+	} {
+		meta, wb, tier := j.meta, j.writeback, jfsDurTier
+		if wb {
+			tier = jfsWBTier
+		}
+		register(newSrcBackend(srcBackend{
+			name: j.name, s3Backed: true, protos: all, srcDir: juicefsMnt, tier: tier,
+			setup:    func(ctx context.Context, env BackendEnv) error { return juicefsSetup(ctx, env, meta, wb) },
+			teardown: juicefsTeardown, remount: juicefsRemount,
+		}))
+	}
+
+	// s3fs: durable-on-close either way; the difference is whether a local read
+	// cache (use_cache) is kept. useCache is stashed in a package var for remount.
+	for _, s := range []struct {
+		name     string
+		useCache bool
+		tier     string
+	}{
+		{"s3fs", true, "durable-on-close to S3 (no writeback); knfsd sync export"},
+		{"s3fs-nocache", false, "durable-on-close to S3, no local cache; knfsd sync export"},
+	} {
+		useCache := s.useCache
+		register(newSrcBackend(srcBackend{
+			name: s.name, s3Backed: true, protos: all, srcDir: s3fsMnt, tier: s.tier,
+			setup:    func(ctx context.Context, env BackendEnv) error { return s3fsSetup(ctx, env, useCache) },
+			teardown: fuseUnmount(s3fsMnt), remount: s3fsRemount,
+		}))
+	}
 }
 
 // s3Creds reads the S3 credentials from the environment (never from config).
@@ -106,10 +155,18 @@ func fuseUnmount(mnt string) func(context.Context) error {
 
 // benchEnv is the current run's S3 target (one backend runs at a time, so a
 // package var suffices); it lets recipes reach S3 without threading env through
-// every one. juicefsVol is the current juicefs volume name.
+// every one. The rest are the current backend's mode, stashed at setup so the
+// remount (cold-read barrier) rebuilds the identical mount without re-threading:
+// juicefsVol is the current juicefs volume name; juicefsMetaURL/juicefsWriteback
+// the juicefs meta engine + tier; rcloneVfsMode the rclone vfs-cache-mode;
+// s3fsUseCache whether s3fs keeps a local read cache.
 var (
-	benchEnv   BackendEnv
-	juicefsVol string
+	benchEnv         BackendEnv
+	juicefsVol       string
+	juicefsMetaURL   string
+	juicefsWriteback bool
+	rcloneVfsMode    string
+	s3fsUseCache     bool
 )
 
 // flushUnmount unmounts a FUSE mountpoint non-lazily, so the tool flushes its
@@ -166,7 +223,8 @@ func waitMounted(ctx context.Context, mnt string) error {
 	return fmt.Errorf("mount %s not ready after wait", mnt)
 }
 
-func rcloneSetup(ctx context.Context, env BackendEnv) error {
+func rcloneSetup(ctx context.Context, env BackendEnv, mode string) error {
+	rcloneVfsMode = mode // stash for remount's rebuild
 	if err := ensureInstalled(ctx, "rclone", "rclone"); err != nil {
 		return err
 	}
@@ -194,7 +252,7 @@ func rcloneSetup(ctx context.Context, env BackendEnv) error {
 func rcloneMountFUSE(ctx context.Context) error {
 	return exec.Sh(ctx, "rclone", "mount", "bench:"+benchEnv.Bucket+"/rclone", rcloneMnt,
 		"--config", "/etc/bench-rclone.conf", "--cache-dir", rcloneCache,
-		"--vfs-cache-mode", "writes", "--daemon")
+		"--vfs-cache-mode", rcloneVfsMode, "--daemon")
 }
 
 // rcloneRemount flushes rclone's vfs write cache to S3 (non-lazy unmount waits
@@ -220,7 +278,8 @@ func rcloneRemount(ctx context.Context) error {
 	return nil
 }
 
-func s3fsSetup(ctx context.Context, env BackendEnv) error {
+func s3fsSetup(ctx context.Context, env BackendEnv, useCache bool) error {
+	s3fsUseCache = useCache // stash for remount's rebuild
 	if err := ensureInstalled(ctx, "s3fs", "s3fs"); err != nil {
 		return err
 	}
@@ -248,9 +307,15 @@ func s3fsMountFUSE(ctx context.Context) error {
 	// allow_other: smbd's concurrent writers hit EIO on the re-exported mount
 	// without it (numjobs>1 SMB writes fail); knfsd tolerates its absence but
 	// Samba does not. s3fs runs as root here, so no /etc/fuse.conf edit is needed.
-	return exec.Sh(ctx, "s3fs", benchEnv.Bucket, s3fsMnt,
-		"-o", "passwd_file=/etc/passwd-s3fs", "-o", "url="+benchEnv.Endpoint,
-		"-o", "use_path_request_style", "-o", "use_cache="+s3fsCache, "-o", "allow_other")
+	args := []string{benchEnv.Bucket, s3fsMnt,
+		"-o", "passwd_file=/etc/passwd-s3fs", "-o", "url=" + benchEnv.Endpoint,
+		"-o", "use_path_request_style", "-o", "allow_other"}
+	// use_cache is the local read/write cache; the -nocache variant omits it to
+	// measure s3fs with no disk cache at all (still durable-on-close to S3).
+	if s3fsUseCache {
+		args = append(args, "-o", "use_cache="+s3fsCache)
+	}
+	return exec.Sh(ctx, "s3fs", args...)
 }
 
 // s3fsRemount is uniform with the writeback backends' bounce; s3fs is already
@@ -263,7 +328,11 @@ func s3fsRemount(ctx context.Context) error {
 	return s3fsMountFUSE(ctx)
 }
 
-func juicefsSetup(ctx context.Context, env BackendEnv) error {
+// juicefsSetup formats + mounts a fresh juicefs volume. metaKind selects the
+// metadata engine (sqlite | postgres | redis); writeback gates --writeback on
+// the mount (local-ack + async S3 vs. durable-on-fsync/close). Both are stashed
+// in package vars so remount rebuilds the identical mount.
+func juicefsSetup(ctx context.Context, env BackendEnv, metaKind string, writeback bool) error {
 	// juicefs isn't in apt — use its install script (idempotent).
 	if err := exec.Sh(ctx, "sh", "-c",
 		"command -v juicefs >/dev/null || curl -sSL https://d.juicefs.com/install | sh -"); err != nil {
@@ -273,6 +342,13 @@ func juicefsSetup(ctx context.Context, env BackendEnv) error {
 	if err != nil {
 		return err
 	}
+	// Resolve + freshen the metadata engine so each run starts from an empty meta
+	// store (else `format` refuses the reused volume name, or stale inodes leak in).
+	metaURL, err := juicefsPrepareMeta(ctx, metaKind)
+	if err != nil {
+		return err
+	}
+	juicefsMetaURL, juicefsWriteback = metaURL, writeback
 	// A fresh volume name per setup sidesteps `format`'s "not empty" gate: SCW's
 	// S3 LIST is eventually consistent after DELETE (deleted keys reappear in
 	// listings for seconds), so cleaning a fixed prefix then formatting races
@@ -284,9 +360,8 @@ func juicefsSetup(ctx context.Context, env BackendEnv) error {
 	// so the secret stays out of the process list and run.log.
 	_ = os.Setenv("ACCESS_KEY", id)
 	_ = os.Setenv("SECRET_KEY", secret)
-	_ = os.Remove("/var/lib/bench-juicefs.db") // fresh meta db for the fresh volume
 	if err := exec.Sh(ctx, "juicefs", "format", "--storage", "s3",
-		"--bucket", env.Endpoint+"/"+env.Bucket, juicefsMeta, juicefsVol); err != nil {
+		"--bucket", env.Endpoint+"/"+env.Bucket, metaURL, juicefsVol); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(juicefsCache, 0o755); err != nil {
@@ -295,16 +370,59 @@ func juicefsSetup(ctx context.Context, env BackendEnv) error {
 	return juicefsMountFUSE(ctx)
 }
 
-const juicefsMeta = "sqlite3:///var/lib/bench-juicefs.db"
+// juicefsPrepareMeta returns the juicefs metadata URL for metaKind and readies a
+// clean store: the sqlite db file is removed, postgres db dropped+recreated,
+// redis db flushed — so every setup formats onto an empty meta engine.
+func juicefsPrepareMeta(ctx context.Context, metaKind string) (string, error) {
+	switch metaKind {
+	case "sqlite":
+		_ = os.Remove("/var/lib/bench-juicefs.db") // fresh meta db for the fresh volume
+		return "sqlite3:///var/lib/bench-juicefs.db", nil
+	case "postgres":
+		// Reuse the shared postgres provisioner (dittofs.go): drops + recreates a
+		// clean juicefs_meta db each run. juicefs reads the meta password from the
+		// META_PASSWORD env var, never the URL, keeping the secret out of run.log.
+		if err := provisionPostgres(ctx, "juicefs_meta", "juicefs", "juicefs"); err != nil {
+			return "", err
+		}
+		_ = os.Setenv("META_PASSWORD", "juicefs")
+		// No password in the URL — juicefs reads it from META_PASSWORD (set above),
+		// so it never lands in argv/run.log.
+		return "postgres://juicefs@127.0.0.1:5432/juicefs_meta?sslmode=disable", nil
+	case "redis":
+		if err := ensureRedis(ctx); err != nil {
+			return "", err
+		}
+		if err := exec.Sh(ctx, "redis-cli", "-n", "1", "flushdb"); err != nil {
+			return "", err
+		}
+		return "redis://127.0.0.1:6379/1", nil
+	default:
+		return "", fmt.Errorf("juicefs: unknown metadata engine %q", metaKind)
+	}
+}
+
+// ensureRedis installs + starts redis-server for the juicefs redis-meta variants
+// and waits for it to answer PING. Idempotent.
+func ensureRedis(ctx context.Context) error {
+	return exec.Sh(ctx, "sh", "-c", `command -v redis-server >/dev/null || { apt-get update && apt-get install -y redis-server; }
+service redis-server start 2>/dev/null || systemctl start redis-server 2>/dev/null || redis-server --daemonize yes 2>/dev/null || true
+for i in $(seq 1 30); do redis-cli ping 2>/dev/null | grep -q PONG && exit 0; sleep 1; done
+echo 'redis-server never answered PING'; exit 1`)
+}
 
 func juicefsMountFUSE(ctx context.Context) error {
-	// --writeback: local-ack writes + async upload, matching DittoFS's local
-	// store + syncer and rclone's --vfs-cache-mode writes. Off by default in
-	// JuiceFS (default flushes to S3 on fsync/close), so without it the write
-	// pass compares different durability tiers. --cache-size caps the on-disk
-	// cache (default 100 GiB would exceed the VM disk).
-	return exec.Sh(ctx, "juicefs", "mount", "-d", "--writeback",
-		"--cache-dir", juicefsCache, "--cache-size", "10240", juicefsMeta, juicefsMnt)
+	// --writeback (gated by juicefsWriteback): local-ack writes + async upload,
+	// matching DittoFS's local store + syncer and rclone's --vfs-cache-mode writes.
+	// Off in the -durable variants so the write pass compares the JuiceFS default
+	// (flush to S3 on fsync/close). --cache-size caps the on-disk cache (default
+	// 100 GiB would exceed the VM disk).
+	args := []string{"mount", "-d", "--cache-dir", juicefsCache, "--cache-size", "10240"}
+	if juicefsWriteback {
+		args = append(args, "--writeback")
+	}
+	args = append(args, juicefsMetaURL, juicefsMnt)
+	return exec.Sh(ctx, "juicefs", args...)
 }
 
 // juicefsRemount flushes writeback fully to S3, then remounts with an empty
