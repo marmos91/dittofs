@@ -304,6 +304,15 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 		block = block[:cap(block)]
 		blockOff = 0
 	}
+	// If packing exits early (error/cancel) holding an undispatched block, return
+	// its buffer to the pool. dispatchPending sets blockp = nil once a block is
+	// handed to its worker, so a dispatched buffer is never double-put here.
+	defer func() {
+		if blockp != nil {
+			*blockp = block
+			carveArenaPool.Put(blockp)
+		}
+	}()
 
 	// runCtx cancels queued/in-flight uploads on the first CommitBlock error so the
 	// packing loop and the other workers stop promptly.
