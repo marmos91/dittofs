@@ -3,7 +3,6 @@ package metadata_test
 import (
 	"context"
 	"fmt"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,13 +13,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestParentMtimeContention reproduces #1573: concurrent same-directory CREATEs
-// serialize because every create reads+writes the parent inode (mtime/ctime/atime
-// bump in createEntry), which badger's SSI aborts as a conflict, then the retry
-// loop sleeps 1-5ms/attempt. Distinct-directory creates share no key and scale.
+// TestParentMtimeContention guards the invariant that concurrent same-directory
+// CREATEs touch only the new child's disjoint keys and never the parent inode.
+// If a parent mtime/ctime bump is reintroduced into the create transaction,
+// every concurrent same-dir create reads+writes one shared key, which BadgerDB's
+// SSI aborts as a conflict; the retry loop then serializes them on backoff.
 //
-// Absolute ops/s depend on local fsync latency (not comparable to the SCW bench);
-// the SAME-dir vs DISTINCT-dir RATIO is the disk-speed-independent fingerprint.
+// Rather than time that serialization (a wall-clock ratio that swings with
+// runner load), the guard reads the store's SSI conflict counter directly: a
+// healthy build commits every same-dir create first-try, so the counter stays
+// at zero regardless of disk speed, while a reintroduced shared-key write drives
+// it into the hundreds. Throughput is logged for diagnostics only.
 // Run: go test ./pkg/metadata -run TestParentMtimeContention -v
 func TestParentMtimeContention(t *testing.T) {
 	if testing.Short() {
@@ -32,7 +35,10 @@ func TestParentMtimeContention(t *testing.T) {
 		perWorker   = 40
 	)
 
-	newSvc := func(t *testing.T) (*metadata.Service, metadata.FileHandle, *metadata.AuthContext) {
+	// newSvc builds a fresh store (its conflict counter starts at zero) plus the
+	// Service and root handle wired around it. The concrete badger store is
+	// returned so the test can read the conflict counter after a workload.
+	newSvc := func(t *testing.T) (*badger.BadgerMetadataStore, *metadata.Service, metadata.FileHandle, *metadata.AuthContext) {
 		ctx := context.Background()
 		store, err := badger.NewBadgerMetadataStoreWithDefaults(ctx, t.TempDir())
 		require.NoError(t, err)
@@ -53,26 +59,15 @@ func TestParentMtimeContention(t *testing.T) {
 			Identity:   &metadata.Identity{UID: metadata.Uint32Ptr(0), GID: metadata.Uint32Ptr(0)},
 			ClientAddr: "127.0.0.1",
 		}
-		return svc, rootHandle, auth
+		return store, svc, rootHandle, auth
 	}
 
 	fileAttr := &metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644}
 
-	// Case A: sequential creates in one dir — the single-thread fsync floor.
-	seqOps := func() float64 {
-		svc, root, auth := newSvc(t)
-		n := concurrency * perWorker
-		start := time.Now()
-		for i := 0; i < n; i++ {
-			_, _, err := svc.CreateFile(auth, root, fmt.Sprintf("seq-%d", i), fileAttr)
-			require.NoError(t, err)
-		}
-		return float64(n) / time.Since(start).Seconds()
-	}()
-
-	// Case B: concurrent creates, ALL in the same dir — shared parent key => SSI conflict.
-	sameDirOps := func() float64 {
-		svc, root, auth := newSvc(t)
+	// Case A: concurrent creates, ALL in the same dir. A shared parent-inode write
+	// would make every one of these conflict on one key.
+	sameDir := func() (float64, int64) {
+		store, svc, root, auth := newSvc(t)
 		var done int64
 		var wg sync.WaitGroup
 		start := time.Now()
@@ -90,12 +85,13 @@ func TestParentMtimeContention(t *testing.T) {
 		}
 		wg.Wait()
 		require.Equal(t, int64(concurrency*perWorker), done)
-		return float64(done) / time.Since(start).Seconds()
+		return float64(done) / time.Since(start).Seconds(), store.TransactionConflictsForTest()
 	}
 
-	// Case C: concurrent creates, each worker in its OWN dir — no shared key.
-	distinctDirOps := func() float64 {
-		svc, root, auth := newSvc(t)
+	// Case B (control): concurrent creates, each worker in its OWN dir — no shared
+	// key. Proves the harness itself generates no spurious conflicts.
+	distinctDir := func() (float64, int64) {
+		store, svc, root, auth := newSvc(t)
 		dirs := make([]metadata.FileHandle, concurrency)
 		for w := 0; w < concurrency; w++ {
 			d, _, err := svc.CreateDirectory(auth, root, fmt.Sprintf("d%d", w),
@@ -104,6 +100,9 @@ func TestParentMtimeContention(t *testing.T) {
 			dirs[w], err = metadata.EncodeShareHandle("/test", d.ID)
 			require.NoError(t, err)
 		}
+		// Directory creates above bump the parent link count under a per-parent
+		// lock and may legitimately conflict; measure only the file-create phase.
+		baseline := store.TransactionConflictsForTest()
 		var done int64
 		var wg sync.WaitGroup
 		start := time.Now()
@@ -121,37 +120,25 @@ func TestParentMtimeContention(t *testing.T) {
 		}
 		wg.Wait()
 		require.Equal(t, int64(concurrency*perWorker), done)
-		return float64(done) / time.Since(start).Seconds()
+		return float64(done) / time.Since(start).Seconds(), store.TransactionConflictsForTest() - baseline
 	}
 
-	// A single trial's ratio swings with runner scheduling — one stall in the
-	// same-dir phase artificially depresses it. Take the median of a few trials
-	// so a lone noisy sample can't trip the guard, while a genuine reintroduced
-	// shared-key write (which depresses every trial) still fails.
-	const trials = 3
-	ratios := make([]float64, trials)
-	var lastSame, lastDistinct float64
-	for i := range ratios {
-		lastSame = sameDirOps()
-		lastDistinct = distinctDirOps()
-		ratios[i] = lastSame / lastDistinct
-	}
-	sort.Float64s(ratios)
-	ratio := ratios[trials/2]
+	sameOps, sameConflicts := sameDir()
+	distinctOps, distinctConflicts := distinctDir()
 
-	t.Logf("sequential  (1 dir, 1 thread):   %8.0f creates/s", seqOps)
-	t.Logf("concurrent  (1 dir, %2d threads): %8.0f creates/s", concurrency, lastSame)
-	t.Logf("concurrent  (%2d dirs,%2d threads): %8.0f creates/s", concurrency, concurrency, lastDistinct)
-	t.Logf("same-dir / distinct-dir ratio (median of %d): %.2f   (was ~0.5 pre-#1573)", trials, ratio)
+	t.Logf("concurrent  (1 dir, %2d threads): %8.0f creates/s, %d SSI conflicts", concurrency, sameOps, sameConflicts)
+	t.Logf("concurrent  (%2d dirs,%2d threads): %8.0f creates/s, %d SSI conflicts", concurrency, concurrency, distinctOps, distinctConflicts)
 
 	// Regression guard for #1573: with the parent-inode bump coalesced out of the
-	// create transaction, same-dir concurrent creates must no longer be penalized
-	// vs distinct-dir (they were ~0.5x before, walled by SSI conflict-retry). The
-	// floor must sit between that regressed ~0.5x and the scheduler noise a loaded
-	// CI runner adds to a healthy run (observed as low as ~0.69). 0.6 catches a
-	// reintroduced shared-key write while absorbing that noise.
-	require.Greater(t, ratio, 0.6,
-		"same-dir concurrent creates are contention-bound again; a parent-inode write was reintroduced into the create txn (#1573)")
+	// create transaction, concurrent same-dir creates write only disjoint child
+	// keys and commit first-try, so the SSI conflict counter stays at zero. A
+	// reintroduced shared-key parent write makes every concurrent create contend
+	// on one key, driving the counter into the hundreds. The bound sits far above
+	// zero (absorbing any incidental abort) yet far below that regressed level.
+	require.Less(t, sameConflicts, int64(concurrency),
+		"concurrent same-dir creates are conflicting on a shared key; a parent-inode write was reintroduced into the create txn")
+	require.Less(t, distinctConflicts, int64(concurrency),
+		"distinct-dir creates should never conflict; the create path touched an unexpected shared key")
 }
 
 // svc0store adapts *badger.BadgerMetadataStore to the metadata.Store interface
