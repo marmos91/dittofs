@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,8 +17,56 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
-// Maximum number of retries for retryable errors (deadlock, serialization failure)
-const maxTransactionRetries = 3
+// Transaction retry policy (#1769). Under write contention DittoFS must
+// backpressure — block-and-retry until a real budget elapses — not surface EIO
+// to the caller after a fixed handful of attempts. Every competitor
+// (rclone/juicefs) goes slow under the same pressure but never errors; the old
+// 3-attempt / 10-20-30ms budget was routinely exceeded on hot rows (usedBytes
+// counter, parent-dir mtime, quota) under 8 concurrent writers, turning
+// contention into NFS3ErrIO. Only the already-classified transient conflicts
+// (40001 serialization_failure / 40P01 deadlock_detected) are retried;
+// non-transient errors return immediately.
+const (
+	// txRetryBudget bounds how long WithTransaction backpressures on a transient
+	// conflict before giving up and returning the mapped error, so a genuinely
+	// stuck conflict still eventually surfaces — after a real budget, not 60ms.
+	txRetryBudget = 5 * time.Second
+	// txRetryBaseBackoff / txRetryMaxBackoff bound the jittered exponential
+	// backoff between attempts.
+	txRetryBaseBackoff = 5 * time.Millisecond
+	txRetryMaxBackoff  = 200 * time.Millisecond
+)
+
+// txBackoff waits a jittered exponential backoff before the next transaction
+// attempt, bounded by deadline and ctx. It returns true if the caller should
+// retry, or false when the retry budget is exhausted or ctx is done.
+func txBackoff(ctx context.Context, deadline time.Time, attempt int) bool {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return false
+	}
+	// Full-jitter exponential backoff: base<<attempt capped at max, then a
+	// uniform random in (0, d]. Spreads retries so contending writers don't
+	// resynchronize into a thundering herd.
+	d := txRetryMaxBackoff
+	if attempt < 16 {
+		if s := txRetryBaseBackoff << uint(attempt); s > 0 && s < txRetryMaxBackoff {
+			d = s
+		}
+	}
+	if d > remaining {
+		d = remaining
+	}
+	wait := time.Duration(rand.Int64N(int64(d)) + 1)
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
 
 // ============================================================================
 // Transaction Support
@@ -128,8 +177,20 @@ func (s *PostgresMetadataStore) withTransaction(ctx context.Context, fn func(tx 
 	// resets at COMMIT and never leaks across pooled connections.
 	relaxCommit := relaxed && s.config.RelaxedDurability
 
+	// Backpressure deadline (#1769): retry transient conflicts until this budget
+	// elapses rather than EIOing after a fixed attempt count. Honor an earlier
+	// caller deadline if the ctx carries one.
+	deadline := time.Now().Add(txRetryBudget)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+
 	var lastErr error
-	for attempt := 0; attempt < maxTransactionRetries; attempt++ {
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		// Use a timeout for connection acquisition to prevent indefinite blocking
 		// when the pool is exhausted. This is critical under high concurrent load
 		// (e.g., POSIX compliance tests) where all connections might be in use.
@@ -172,9 +233,10 @@ func (s *PostgresMetadataStore) withTransaction(ctx context.Context, fn func(tx 
 			rollbackCancel()
 			if isRetryableError(err) {
 				lastErr = err
-				// Small backoff before retry
-				time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
-				continue
+				if txBackoff(ctx, deadline, attempt) {
+					continue
+				}
+				break
 			}
 			return err
 		}
@@ -186,8 +248,10 @@ func (s *PostgresMetadataStore) withTransaction(ctx context.Context, fn func(tx 
 			commitCancel()
 			if isRetryableError(err) {
 				lastErr = err
-				time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
-				continue
+				if txBackoff(ctx, deadline, attempt) {
+					continue
+				}
+				break
 			}
 			return err
 		}
@@ -202,7 +266,10 @@ func (s *PostgresMetadataStore) withTransaction(ctx context.Context, fn func(tx 
 		return nil // Success
 	}
 
-	// All retries exhausted
+	// Budget exhausted (or ctx done) while backing off on a transient conflict.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return mapPgError(lastErr, "WithTransaction", "")
 }
 
