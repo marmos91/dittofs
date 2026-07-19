@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"sync"
+	"sync/atomic"
 
 	"lukechampine.com/blake3"
 
@@ -238,9 +239,31 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 	return nil
 }
 
+// carveUploadConcurrency is the in-flight upload window for one run, at least 1.
+func (s *Store) carveUploadConcurrency() int {
+	if n := s.cfg.CarveUploadConcurrency; n >= 1 {
+		return n
+	}
+	return 1
+}
+
 // carveRun streams one contiguous dirty run through FastCDC, dedups each chunk,
-// packs novel chunks into blocks (flushed at CarveBlockSize and at the run's end),
-// and flips the run's records to synced as the durable frontier advances.
+// packs novel chunks into blocks (dispatched at CarveBlockSize and at the run's
+// end), and flips the run's records to synced as the durable frontier advances.
+//
+// Packing stays strictly sequential (the chunker reads the run's bytes in order),
+// but each packed block's CommitBlock (PutBlock + metadata commit) runs in its own
+// goroutine, so up to CarveUploadConcurrency block uploads overlap within one file
+// — the lever a single large file's drain needs. The flips stay ordered and
+// crash-safe: block K's flipUpTo runs only after block K-1's flip and after block
+// K's own CommitBlock returned nil (an ordered handoff over prevFlipped). The first
+// CommitBlock error cancels the run and stops the watermark advancing past that
+// block; blocks that already uploaded past it are left as GC-reclaimable orphans.
+//
+// Dedup visibility stays commit-gated: IsChunkDurable is consulted only from this
+// packing goroutine and a hash becomes durable solely inside CommitBlock, so block
+// K never dedups against block K-1's not-yet-committed hashes — the ordered flip
+// then cannot clean bytes that never reached the remote.
 func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interval, res *CarveResult) error {
 	c := chunker.NewChunkerWithParams(s.cfg.ChunkParams)
 	rr := &runReader{s: s, sh: sh, ivs: run}
@@ -253,11 +276,12 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 	// reap keeps this run's own rows and deletes only superseded ones (#953).
 	newOffsets := make(map[int64]struct{})
 
-	// arena backs every pending chunk copy in one recycled block-sized buffer, so
-	// a run allocates no per-chunk scratch. It holds at most one block's worth of
-	// pending bytes: pendingBytes flushes at CarveBlockSize and one appended chunk
-	// is at most MaxChunkSize, so CarveBlockSize + MaxChunkSize bounds it.
-	// arenaOff resets after each flush, once CommitBlock has consumed the copies.
+	// Each packed block gets its OWN block-sized buffer (not one recycled arena):
+	// a block's Data slices are read by its upload goroutine while packing already
+	// fills the next block, so the buffers cannot alias. Peak carve RAM is thus
+	// CarveUploadConcurrency block buffers. A buffer holds at most one block's
+	// pending bytes: pendingBytes dispatches at CarveBlockSize and one appended
+	// chunk is at most MaxChunkSize, so CarveBlockSize + MaxChunkSize bounds it.
 	// Compute in int64 and clamp before the int conversion so a pathological
 	// CarveBlockSize can't silently wrap on 32-bit platforms.
 	arenaCap64 := s.cfg.CarveBlockSize + int64(chunker.MaxChunkSize)
@@ -265,32 +289,94 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 		arenaCap64 = math.MaxInt
 	}
 	arenaCap := int(arenaCap64)
-	arenap := carveArenaPool.Get().(*[]byte)
-	arena := *arenap
-	if cap(arena) < arenaCap {
-		arena = make([]byte, arenaCap)
-	}
-	arena = arena[:cap(arena)]
-	arenaOff := 0
-	defer func() {
-		*arenap = arena
-		carveArenaPool.Put(arenap)
-	}()
 
-	// flush commits the buffered novel chunks (if any) then, since everything up
-	// to watermark is now durable, flips the run's records that end there. The
-	// commit strictly precedes the flip: that is the crash-safety ordering.
-	flush := func(watermark int64) error {
-		if len(pending) > 0 {
-			if err := s.sink.CommitBlock(ctx, pending); err != nil {
-				return err
-			}
-			res.BlocksWritten++
-			pending = nil
-			pendingBytes = 0
-			arenaOff = 0
+	var (
+		blockp   *[]byte // current block's pooled backing; nil until the first novel chunk
+		block    []byte
+		blockOff int
+	)
+	getBlock := func() {
+		blockp = carveArenaPool.Get().(*[]byte)
+		block = *blockp
+		if cap(block) < arenaCap {
+			block = make([]byte, arenaCap)
 		}
-		return s.flipUpTo(sh, id, run, &flipIdx, watermark)
+		block = block[:cap(block)]
+		blockOff = 0
+	}
+
+	// runCtx cancels queued/in-flight uploads on the first CommitBlock error so the
+	// packing loop and the other workers stop promptly.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// sem bounds in-flight uploads; wg joins them; blocksWritten counts committed
+	// blocks (workers race, so it is atomic and folded into res after the join).
+	sem := make(chan struct{}, s.carveUploadConcurrency())
+	var (
+		wg            sync.WaitGroup
+		errMu         sync.Mutex
+		firstErr      error
+		blocksWritten atomic.Int64
+	)
+	setErr := func(e error) {
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = e
+			cancel()
+		}
+		errMu.Unlock()
+	}
+	hadErr := func() bool {
+		errMu.Lock()
+		defer errMu.Unlock()
+		return firstErr != nil
+	}
+
+	// prevFlipped chains the ordered flip: a block waits on the previous block's
+	// channel before flipping and closes its own for the next. Seeded closed so the
+	// first block proceeds immediately.
+	prevFlipped := make(chan struct{})
+	close(prevFlipped)
+
+	// dispatch hands one packed block to an upload goroutine and returns the channel
+	// the next block waits on. It transfers ownership of bp (returned to the pool
+	// once CommitBlock has consumed the chunk copies). The flip runs strictly after
+	// this block's commit succeeds AND the previous block's flip completed.
+	dispatch := func(chunks []CarveChunk, watermark int64, bp *[]byte, prev chan struct{}) chan struct{} {
+		mine := make(chan struct{})
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer close(mine) // release the next block's flip turn, success or not
+			err := s.sink.CommitBlock(runCtx, chunks)
+			carveArenaPool.Put(bp) // CommitBlock consumed the copies; recycle
+			<-sem
+			if err != nil {
+				setErr(err)
+			} else {
+				blocksWritten.Add(1)
+			}
+			<-prev // flip in submission order, strictly after the previous block
+			if err != nil || hadErr() {
+				return // this block failed, or an earlier one did: do not flip
+			}
+			if e := s.flipUpTo(sh, id, run, &flipIdx, watermark); e != nil {
+				setErr(e)
+			}
+		}()
+		return mine
+	}
+	dispatchPending := func(watermark int64) {
+		if len(pending) == 0 {
+			return
+		}
+		*blockp = block // hand back the possibly-grown buffer so the pool recycles it
+		prevFlipped = dispatch(pending, watermark, blockp, prevFlipped)
+		pending = nil
+		pendingBytes = 0
+		blockp = nil // the dispatched buffer is now owned by its worker
 	}
 
 	// buf accumulates bytes for the chunker; it never exceeds one max chunk, so
@@ -303,10 +389,9 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 		carveScratchPool.Put(bufp)
 	}()
 	eof := false
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
+	// Loop while the run is live: an upload failure (or the caller) cancels runCtx,
+	// which stops packing so the join below can surface the error.
+	for runCtx.Err() == nil {
 		for !eof && len(buf) < chunker.MaxChunkSize {
 			n, err := rr.Read(buf[len(buf):cap(buf)])
 			if n > 0 {
@@ -317,7 +402,8 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 				break
 			}
 			if err != nil {
-				return err
+				setErr(err)
+				break
 			}
 		}
 		if len(buf) == 0 {
@@ -332,24 +418,28 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 		}
 
 		h := ChunkHash(blake3.Sum256(buf[:boundary]))
-		durable, err := s.deduper.IsChunkDurable(ctx, h)
+		durable, err := s.deduper.IsChunkDurable(runCtx, h)
 		if err != nil {
-			return err
+			setErr(err)
+			break
 		}
 		if !durable {
+			if blockp == nil {
+				getBlock()
+			}
 			// Bound proof: pendingBytes < CarveBlockSize before this append (else
-			// the prior iteration flushed and reset arenaOff), and boundary <=
-			// MaxChunkSize, so arenaOff+boundary <= CarveBlockSize-1+MaxChunkSize <
+			// the prior iteration dispatched and reset the buffer), and boundary <=
+			// MaxChunkSize, so blockOff+boundary <= CarveBlockSize-1+MaxChunkSize <
 			// cap. The grow is a fail-loud belt: if that invariant ever breaks (e.g.
 			// a config change), realloc rather than slice out of bounds. Already-
 			// pending Data slices keep pointing at the old backing (still live), so
-			// no copy is needed — the new chunk just lands in the larger arena.
-			if arenaOff+boundary > cap(arena) {
-				arena = make([]byte, arenaOff+boundary)
+			// no copy is needed — the new chunk just lands in the larger buffer.
+			if blockOff+boundary > cap(block) {
+				block = make([]byte, blockOff+boundary)
 			}
-			data := arena[arenaOff : arenaOff+boundary : arenaOff+boundary]
+			data := block[blockOff : blockOff+boundary : blockOff+boundary]
 			copy(data, buf[:boundary])
-			arenaOff += boundary
+			blockOff += boundary
 			pending = append(pending, CarveChunk{Hash: h, FileID: id, FileOffset: fileOff, Data: data})
 			pendingBytes += int64(boundary)
 			res.BytesCarved += int64(boundary)
@@ -359,17 +449,30 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 		buf = append(buf[:0], buf[boundary:]...)
 
 		if pendingBytes >= s.cfg.CarveBlockSize {
-			if err := flush(fileOff); err != nil {
-				return err
-			}
+			dispatchPending(fileOff)
 		}
 		if eof && len(buf) == 0 {
 			break
 		}
 	}
-	// Tail: commit any remainder and flip through the end of the run (records
-	// covered only by already-durable chunks flip here too).
-	if err := flush(run[len(run)-1].end()); err != nil {
+	// Tail: dispatch any remainder; its watermark is the run end, so its flip
+	// covers every record up to there. Skip when the run was cancelled (an upload
+	// error, or the caller) — the join below surfaces the reason.
+	if runCtx.Err() == nil {
+		dispatchPending(run[len(run)-1].end())
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	res.BlocksWritten += int(blocksWritten.Load())
+	// Flip any trailing records covered only by already-durable (deduped) chunks:
+	// no block carried their watermark, so advance the frontier to the run end now
+	// that every block committed. A no-op when the tail block already reached it.
+	if err := s.flipUpTo(sh, id, run, &flipIdx, run[len(run)-1].end()); err != nil {
 		return err
 	}
 	// #953: with every row this run produced now committed, reap the manifest rows

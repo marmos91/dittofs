@@ -7,7 +7,23 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
+
+// pollUntil spins on cond until it holds or the timeout elapses. Called from the
+// test goroutine only (it uses t.Fatalf).
+func pollUntil(t *testing.T, cond func() bool, timeout time.Duration, what string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for %s", what)
+}
 
 // fakeClock is a settable Clock for the age-gate tests.
 type fakeClock struct {
@@ -338,7 +354,10 @@ func TestCarveRecordSplitNoPrematureFlip(t *testing.T) {
 	// on-disk synced bit must stay clear — flipping it while a live fragment is
 	// still dirty would let a crash make recovery treat that dirty fragment as
 	// synced, and its bytes would never carve (data loss).
-	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 1 << 20})
+	//
+	// Pin the upload window to 1 so the two blocks commit in submission order and
+	// the "first succeeds, second fails" injection (okCommits) is deterministic.
+	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 1 << 20, CarveUploadConcurrency: 1})
 	ctx := context.Background()
 
 	if err := s.WriteAt(ctx, "f", 0, randBytes(6<<20, 21)); err != nil { // record R = [0,6MiB)
@@ -379,6 +398,170 @@ func TestCarveRecordSplitNoPrematureFlip(t *testing.T) {
 	}
 	if f := recRawFlags(t, s, "f", 0); f&flagSynced == 0 {
 		t.Fatalf("record not flipped after full carve: flags=%#x", f)
+	}
+}
+
+func TestCarveUploadConcurrencyWindow(t *testing.T) {
+	// Packing is sequential, but up to CarveUploadConcurrency block uploads overlap.
+	// Hold every CommitBlock inside onCommit so the window fills, then assert exactly
+	// that many uploads were simultaneously in flight — never more (the sem bound).
+	const window = 4
+	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 256 << 10, CarveUploadConcurrency: window})
+	ctx := context.Background()
+	// Default ~1 MiB min-chunk >= CarveBlockSize, so each chunk is its own block:
+	// 8 MiB -> ~8 blocks, comfortably more than the window.
+	if err := s.WriteAt(ctx, "f", 0, randBytes(8<<20, 40)); err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		mu       sync.Mutex
+		inflight int
+		maxSeen  int
+	)
+	release := make(chan struct{})
+	sink.onCommit = func(_ []CarveChunk) {
+		mu.Lock()
+		inflight++
+		if inflight > maxSeen {
+			maxSeen = inflight
+		}
+		mu.Unlock()
+		<-release // hold the upload so successive blocks pile up against the window
+		mu.Lock()
+		inflight--
+		mu.Unlock()
+	}
+
+	done := make(chan error, 1)
+	go func() { _, err := s.Carve(ctx, CarveOptions{Force: true}); done <- err }()
+
+	pollUntil(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return maxSeen == window
+	}, 5*time.Second, "upload window to fill")
+	// Give any (buggy) unbounded fan-out a moment to overshoot the window.
+	time.Sleep(20 * time.Millisecond)
+	mu.Lock()
+	got := maxSeen
+	mu.Unlock()
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("carve: %v", err)
+	}
+	if got != window {
+		t.Fatalf("peak in-flight uploads = %d, want exactly the window %d", got, window)
+	}
+}
+
+func TestCarveFlipsInWatermarkOrder(t *testing.T) {
+	// A later block's upload finishing first must NOT let its flip jump ahead: the
+	// flip is crash-safety ordering. Hold block0 uncommitted while block1 commits,
+	// then assert nothing has flipped until block0 lands.
+	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 1 << 20, CarveUploadConcurrency: 4})
+	ctx := context.Background()
+	if err := s.WriteAt(ctx, "f", 0, randBytes(2<<20, 41)); err != nil {
+		t.Fatal(err)
+	}
+	total := s.UnsyncedBytes()
+
+	gate0 := make(chan struct{})
+	sink.onCommit = func(chunks []CarveChunk) {
+		if chunks[0].FileOffset == 0 {
+			<-gate0 // the first block's upload finishes last
+		}
+	}
+
+	done := make(chan error, 1)
+	go func() { _, err := s.Carve(ctx, CarveOptions{Force: true}); done <- err }()
+
+	// A later block commits while block0 is gated. Its flip must wait its turn, so
+	// no bytes may drain until block0 is durable.
+	pollUntil(t, func() bool { return sink.blockCount() >= 1 }, 5*time.Second, "a later block to commit")
+	if u := s.UnsyncedBytes(); u != total {
+		t.Fatalf("flip applied out of watermark order: unsynced=%d want %d (nothing may flip before block0)", u, total)
+	}
+	close(gate0)
+	if err := <-done; err != nil {
+		t.Fatalf("carve: %v", err)
+	}
+	if u := s.UnsyncedBytes(); u != 0 {
+		t.Fatalf("post-carve unsynced=%d want 0", u)
+	}
+}
+
+func TestCarveConcurrentCommitErrorStopsWatermark(t *testing.T) {
+	// The first block commits; the second's upload fails. The watermark must stop at
+	// the failed block: block0's bytes drain, block1's stay dirty, and the error
+	// surfaces. Two separate 1 MiB writes give two records so the frontier is exact.
+	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 1 << 20, CarveUploadConcurrency: 4})
+	ctx := context.Background()
+	if err := s.WriteAt(ctx, "f", 0, randBytes(1<<20, 42)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteAt(ctx, "f", 1<<20, randBytes(1<<20, 43)); err != nil {
+		t.Fatal(err)
+	}
+
+	sink.okCommits = 1
+	sink.failErr = errors.New("second block upload fails")
+	// Serialize the two commits so okCommits is deterministic under the window: the
+	// non-first block only reaches the (failing) commit path after block0 committed.
+	sink.onCommit = func(chunks []CarveChunk) {
+		if chunks[0].FileOffset != 0 {
+			for sink.blockCount() < 1 {
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}
+
+	if _, err := s.Carve(ctx, CarveOptions{Force: true}); err == nil {
+		t.Fatalf("expected the second block's commit error to surface")
+	}
+	if u := s.UnsyncedBytes(); u != 1<<20 {
+		t.Fatalf("watermark did not stop at the failed block: unsynced=%d want %d", u, 1<<20)
+	}
+}
+
+func TestCarveDedupVisibilityCommitGated(t *testing.T) {
+	// Block K must not dedup against block K-1's not-yet-committed hash: a durable
+	// verdict on an uncommitted sibling would flip records whose bytes never reached
+	// the remote. Two identical chunks land in two blocks; hold block0 uncommitted
+	// while block1 packs the twin. Block1 must still upload its own block.
+	const chunkSize = 64 << 10
+	fixed := chunker.Params{Min: chunkSize, Avg: chunkSize, Max: chunkSize} // deterministic, twin chunks
+	s, _, sink, _ := carveStore(t, Config{
+		CarveBlockSize:         chunkSize,
+		CarveUploadConcurrency: 4,
+		ChunkParams:            fixed,
+	})
+	ctx := context.Background()
+	x := randBytes(chunkSize, 44)
+	data := append(append([]byte{}, x...), x...) // X ++ X -> two chunks, same hash
+	if err := s.WriteAt(ctx, "f", 0, data); err != nil {
+		t.Fatal(err)
+	}
+
+	gate0 := make(chan struct{})
+	sink.onCommit = func(chunks []CarveChunk) {
+		if chunks[0].FileOffset == 0 {
+			<-gate0 // keep block0's hash uncommitted while block1 packs the twin
+		}
+	}
+
+	done := make(chan error, 1)
+	go func() { _, err := s.Carve(ctx, CarveOptions{Force: true}); done <- err }()
+
+	// block1 commits its own block while block0 is uncommitted. If the twin hash were
+	// visible as durable early, block1 would dedup it away and never reach the sink.
+	pollUntil(t, func() bool { return sink.blockCount() >= 1 }, 5*time.Second, "block1 to commit while block0 gated")
+	close(gate0)
+	if err := <-done; err != nil {
+		t.Fatalf("carve: %v", err)
+	}
+	if n := sink.blockCount(); n != 2 {
+		t.Fatalf("committed %d blocks, want 2: block1 must not dedup on block0's uncommitted hash", n)
 	}
 }
 
