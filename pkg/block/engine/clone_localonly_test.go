@@ -22,9 +22,7 @@ import (
 func newLocalOnlyEngine(t *testing.T, ms metadata.Store) *engine.Store {
 	t.Helper()
 	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, ms, fs.FSStoreOptions{
-		MaxLogBytes:     128 * 1024 * 1024,
-		RollupWorkers:   2,
-		StabilizationMS: 3_600_000, // async rollup never fires; explicit DrainRollups only
+		MaxLogBytes: 128 * 1024 * 1024,
 	})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)

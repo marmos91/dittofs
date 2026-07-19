@@ -120,6 +120,24 @@ func decodeHeader(buf []byte) (recordHeader, error) {
 // surfaces as io.EOF, distinct from corruption.
 var errTornRecord = errors.New("journal: torn record")
 
+// CorruptRangeError reports that a verified warm read found on-disk corruption:
+// the covering record failed its structural/CRC check between recovery and this
+// read (bit rot, or a bug that mutated a valid segment's bytes). It names the
+// file range so the caller can heal it from a remote store or fail closed. The
+// journal is remote-agnostic and never decides heal-vs-fail itself, and it never
+// reports a corrupt range cold — cold zero-fills, which for a local-only read
+// would be a silent-zeros failure.
+type CorruptRangeError struct {
+	FileID FileID
+	Offset int64
+	Len    int64
+}
+
+func (e *CorruptRangeError) Error() string {
+	return fmt.Sprintf("journal: corrupt range for %q [%d,%d): record integrity check failed",
+		e.FileID, e.Offset, e.Offset+e.Len)
+}
+
 // record is a fully decoded and CRC-verified record read back from a segment.
 type record struct {
 	header  recordHeader

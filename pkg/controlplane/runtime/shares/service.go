@@ -1148,6 +1148,12 @@ func (s *Service) createBlockStoreForShare(
 		writeback, requireDurableCommit := resolveDurabilityTier(localStoreCfg, config.Name)
 		bs.SetRequireDurableCommit(requireDurableCommit)
 		share.writeback = writeback
+		// Durable tiers (local-durable and remote) verify warm reads per-record so
+		// on-disk corruption is caught and healed/failed-closed instead of returning
+		// silently-wrong bytes; the writeback tier keeps the raw fast read.
+		if vr, ok := localStore.(interface{ SetVerifyReads(bool) }); ok {
+			vr.SetVerifyReads(!writeback)
+		}
 	} else {
 		logger.Warn("failed to read local block store config for durability tier; defaulting to local",
 			"share", config.Name, "error", cfgErr)

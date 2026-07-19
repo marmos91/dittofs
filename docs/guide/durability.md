@@ -72,6 +72,62 @@ absent these are honored unchanged:
   [Configuration → require_durable_commit](configuration.md#require_durable_commit)
   for the full semantics.
 
+## Read integrity: per-read verification & self-heal
+
+Warm reads (bytes served from the local journal without a remote round-trip) are
+verified **per durability tier** — there is no separate knob, the tier you pick
+above decides it:
+
+| Tier | Warm-read check | On corruption |
+|---|---|---|
+| **`writeback`** | none (raw fast read) | n/a — integrity comes from startup-recovery CRC + remote cold-fetch BLAKE3 |
+| **`local`** *(default)* / **`remote`** | per-record **CRC32** on every warm read | self-heal (remote) or fail closed with **EIO** (local-only) |
+
+On the durable tiers, every warm read re-reads the covering journal record and
+checks its stored CRC32 before returning the requested bytes:
+
+- **Remote-backed share** — on a CRC mismatch the range is **self-healed**: the
+  covering chunk is re-fetched from the remote (S3) block store, which is
+  BLAKE3-verified on the way in, re-hydrated into the local journal, and the read
+  returns the *correct* bytes. The remote is the source of truth; the local tier
+  is a cache.
+- **Local-only share** — there is no good copy to heal from, so the read **fails
+  closed** with `EIO` (`NFS3ERR_IO` / `STATUS_DATA_CHECKSUM_ERROR`). It never
+  returns silently-wrong or zero-filled bytes.
+
+This catches on-disk corruption of a valid segment that happens *after* startup
+recovery (bit rot, or a bug mutating cached segment bytes) — the case the
+startup-recovery CRC and the remote cold-fetch BLAKE3 don't cover on their own.
+
+**Cost.** Verification reads the *whole covering record* to check its CRC, then
+slices out the requested sub-range. For large sequential reads that is free (you
+would read the record anyway); for **small random reads** it adds read
+amplification (a whole record fetched to return a few KiB) plus the CRC32 CPU.
+That is exactly why it is **off on the fast `writeback` default** and on for the
+durability-sensitive tiers.
+
+### Why opt-in-on-durable-tiers (not always-on, not never)
+
+The local tier is a **cache on disk over a verified remote**, not the primary
+copy — so the right trade mirrors our closest analog rather than a replicated
+primary store:
+
+- **[JuiceFS](https://juicefs.com/docs/cloud/guide/cache/)** — an S3-backed
+  filesystem with a local disk cache, like us — makes cache-checksum verification
+  **opt-in** (`--verify-cache-checksum`) for exactly this reason: "consistency
+  depends on the reliability of the disks — if data is tampered with, clients will
+  read bad data." We match that posture and, like JuiceFS, heal by re-fetching from
+  the object store (the source of truth).
+- **Ceph BlueStore** verifies a CRC32c on *every* read and heals from a replica —
+  but BlueStore is a **primary** store (the truth-holder), so always-on verify is
+  the right default there. We (like JuiceFS) are a cache tier over a verified
+  remote, so opt-in-on-durable-tiers is the better fit and preserves the fast
+  default read path.
+- A **background scrubber** (tracked separately as
+  [#1490](https://github.com/marmos91/dittofs/issues/1490)) is a *complement*, not
+  a substitute — Ceph pairs per-read verify with deep-scrub, and so do we
+  (per-read self-heal now, periodic scrub later).
+
 ## Measured throughput per tier
 
 File-create + 4 KiB write, 8 threads, NFSv3, badger + S3 remote (median ops/s;
