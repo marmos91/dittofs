@@ -13,6 +13,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
 )
 
 // PostgresMetadataStore implements the metadata.Store interface using PostgreSQL
@@ -67,15 +68,13 @@ type PostgresMetadataStore struct {
 	// Initialized from a SQL SUM query on startup.
 	usedBytes atomic.Int64
 
-	// userUsage / groupUsage track per-identity usage (bytes + file count) for
-	// regular files, keyed by owner uid / gid. In-memory cache mirroring
-	// usedBytes, seeded from a SQL GROUP BY query on startup (the files table is
-	// the source of truth, so it is always reconstructed correctly). Updated
-	// from a transaction's pending per-identity deltas exactly once on
-	// successful commit. Guarded by quotaMu.
-	quotaMu    sync.Mutex
-	userUsage  map[uint32]*metadata.UsageStat
-	groupUsage map[uint32]*metadata.UsageStat
+	// quota tracks per-identity usage (bytes + file count) for regular files,
+	// keyed by owner uid / gid. In-memory cache mirroring usedBytes, seeded from
+	// a SQL GROUP BY query on startup (the files table is the source of truth, so
+	// it is always reconstructed correctly). Updated from a transaction's pending
+	// per-identity deltas exactly once on successful commit. Guarded by quotaMu.
+	quotaMu sync.Mutex
+	quota   *quota.Cache
 
 	// storeID is the engine-persistent identifier for this store instance,
 	// backed by the server_config.store_id column. Created on first open
@@ -134,6 +133,7 @@ func NewPostgresMetadataStore(
 		logger:       log,
 		ctx:          storeCtx,
 		cancel:       cancel,
+		quota:        quota.NewCache(),
 	}
 
 	// Initialize the usedBytes counter from a SQL SUM query.
@@ -173,8 +173,8 @@ func (s *PostgresMetadataStore) GetUsedBytes() int64 {
 }
 
 // initUsedBytesCounter initializes the store-wide atomic counter from a SQL SUM
-// query and seeds the per-identity usage cache (userUsage / groupUsage) from
-// GROUP BY aggregates. Both are reconstructed from the inodes table (the source
+// query and seeds the per-identity usage cache from GROUP BY aggregates. Both
+// are reconstructed from the inodes table (the source
 // of truth), so a store opened against an existing database is always seeded
 // correctly. The inodes(uid) / inodes(gid) indexes (migration 000033) keep the
 // GROUP BY scans cheap.
@@ -196,8 +196,7 @@ func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error 
 		return err
 	}
 	s.quotaMu.Lock()
-	s.userUsage = userUsage
-	s.groupUsage = groupUsage
+	s.quota.Seed(userUsage, groupUsage)
 	s.quotaMu.Unlock()
 	return nil
 }
@@ -235,49 +234,19 @@ func (s *PostgresMetadataStore) seedUsageByColumn(ctx context.Context, col strin
 func (s *PostgresMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
 	s.quotaMu.Lock()
 	defer s.quotaMu.Unlock()
-	m := s.userUsage
-	if scope == metadata.QuotaScopeGroup {
-		m = s.groupUsage
-	}
-	if u, ok := m[id]; ok {
-		return *u, nil
-	}
-	return metadata.UsageStat{}, nil
+	return s.quota.Get(scope, id), nil
 }
 
 // applyQuotaDelta folds a per-identity usage delta into the in-memory usage
 // cache. Called post-commit (matching usedBytes). Buckets that drop to zero or
 // below are removed.
-func (s *PostgresMetadataStore) applyQuotaDelta(delta map[pgQuotaKey]metadata.UsageStat) {
+func (s *PostgresMetadataStore) applyQuotaDelta(delta map[quota.Key]metadata.UsageStat) {
 	if len(delta) == 0 {
 		return
 	}
 	s.quotaMu.Lock()
 	defer s.quotaMu.Unlock()
-	for k, d := range delta {
-		m := s.userUsage
-		if k.scope == metadata.QuotaScopeGroup {
-			m = s.groupUsage
-		}
-		cur := m[k.id]
-		if cur == nil {
-			cur = &metadata.UsageStat{}
-			m[k.id] = cur
-		}
-		cur.Bytes += d.Bytes
-		cur.Files += d.Files
-		// Negative values indicate accounting drift (should never happen):
-		// clamp to zero so the enforcer never reads a too-permissive total.
-		if cur.Bytes < 0 {
-			cur.Bytes = 0
-		}
-		if cur.Files < 0 {
-			cur.Files = 0
-		}
-		if cur.Bytes == 0 && cur.Files == 0 {
-			delete(m, k.id)
-		}
-	}
+	s.quota.Apply(delta)
 }
 
 // ensureStoreID reads the engine-persistent store_id from server_config; if

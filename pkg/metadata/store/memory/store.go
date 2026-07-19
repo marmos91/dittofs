@@ -14,6 +14,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
 )
 
 // shareData holds the internal representation of a share configuration.
@@ -227,16 +228,15 @@ type MemoryMetadataStore struct {
 	// Only regular files count toward usage; directories, symlinks, etc. do not.
 	usedBytes atomic.Int64
 
-	// userUsage / groupUsage track per-identity usage (bytes + file count) for
-	// regular files, keyed by owner uid / gid. Mirror of usedBytes but keyed by
-	// owner identity for per-user/per-group quota enforcement and reporting.
-	// Guarded by quotaMu (separate from s.mu so the GetQuotaUsage read path and
-	// the transaction commit-apply do not contend with unrelated metadata ops).
-	// Applied from a transaction's pending per-identity deltas exactly once on
-	// successful commit, identical to the usedBytes discipline.
-	quotaMu    sync.Mutex
-	userUsage  map[uint32]*metadata.UsageStat
-	groupUsage map[uint32]*metadata.UsageStat
+	// quota tracks per-identity usage (bytes + file count) for regular files,
+	// keyed by owner uid / gid. Mirror of usedBytes but keyed by owner identity
+	// for per-user/per-group quota enforcement and reporting. Guarded by quotaMu
+	// (separate from s.mu so the GetQuotaUsage read path and the transaction
+	// commit-apply do not contend with unrelated metadata ops). Applied from a
+	// transaction's pending per-identity deltas exactly once on successful
+	// commit, identical to the usedBytes discipline.
+	quotaMu sync.Mutex
+	quota   *quota.Cache
 
 	// storeID is the engine-persistent identifier for this store instance.
 	// Assigned on construction with a fresh ULID and immutable for the life
@@ -350,8 +350,7 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		// ObjectID -> handle-key secondary index.
 		objectIndex: make(map[block.ContentHash]string),
 		// per-identity quota usage counters.
-		userUsage:  make(map[uint32]*metadata.UsageStat),
-		groupUsage: make(map[uint32]*metadata.UsageStat),
+		quota: quota.NewCache(),
 		// Block packing record store.
 		blockRecords: make(map[string]*block.BlockRecord),
 	}
@@ -433,14 +432,7 @@ func (store *MemoryMetadataStore) GetUsedBytes() int64 {
 func (store *MemoryMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
 	store.quotaMu.Lock()
 	defer store.quotaMu.Unlock()
-	m := store.userUsage
-	if scope == metadata.QuotaScopeGroup {
-		m = store.groupUsage
-	}
-	if u, ok := m[id]; ok {
-		return *u, nil
-	}
-	return metadata.UsageStat{}, nil
+	return store.quota.Get(scope, id), nil
 }
 
 // GetStoreID returns the engine-persistent store identifier. Assigned on

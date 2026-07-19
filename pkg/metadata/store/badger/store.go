@@ -13,6 +13,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
 )
 
 // BadgerMetadataStore implements metadata.Store using BadgerDB for persistence.
@@ -147,15 +148,14 @@ type BadgerMetadataStore struct {
 	// Initialized from a full file scan on startup.
 	usedBytes atomic.Int64
 
-	// userUsage / groupUsage track per-identity usage (bytes + file count) for
-	// regular files, keyed by owner uid / gid. In-memory cache mirroring
-	// usedBytes, seeded from a full file scan on startup (so it is always
-	// reconstructed from the durable file rows — back-compatible with existing
-	// dumps). Updated from a transaction's pending per-identity deltas exactly
-	// once on successful commit. Guarded by quotaMu.
-	quotaMu    sync.Mutex
-	userUsage  map[uint32]*metadata.UsageStat
-	groupUsage map[uint32]*metadata.UsageStat
+	// quota tracks per-identity usage (bytes + file count) for regular files,
+	// keyed by owner uid / gid. In-memory cache mirroring usedBytes, seeded from
+	// a full file scan on startup (so it is always reconstructed from the durable
+	// file rows — back-compatible with existing dumps). Updated from a
+	// transaction's pending per-identity deltas exactly once on successful
+	// commit. Guarded by quotaMu.
+	quotaMu sync.Mutex
+	quota   *quota.Cache
 
 	// storeID is the engine-persistent identifier for this store instance,
 	// backed by the cfg:store_id key in BadgerDB. Created on first open of
@@ -368,6 +368,7 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		storeID:           sid,
 		relaxedDurability: config.RelaxedDurability,
 		syncStop:          make(chan struct{}),
+		quota:             quota.NewCache(),
 	}
 
 	// Initialize stats cache with a 5-second TTL for responsive updates
@@ -605,8 +606,7 @@ func (s *BadgerMetadataStore) initUsedBytesCounter() error {
 
 	s.usedBytes.Store(totalUsed)
 	s.quotaMu.Lock()
-	s.userUsage = userUsage
-	s.groupUsage = groupUsage
+	s.quota.Seed(userUsage, groupUsage)
 	s.quotaMu.Unlock()
 	return nil
 }
@@ -616,14 +616,7 @@ func (s *BadgerMetadataStore) initUsedBytesCounter() error {
 func (s *BadgerMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
 	s.quotaMu.Lock()
 	defer s.quotaMu.Unlock()
-	m := s.userUsage
-	if scope == metadata.QuotaScopeGroup {
-		m = s.groupUsage
-	}
-	if u, ok := m[id]; ok {
-		return *u, nil
-	}
-	return metadata.UsageStat{}, nil
+	return s.quota.Get(scope, id), nil
 }
 
 // NewBadgerMetadataStoreWithDefaults creates a new BadgerDB metadata store with sensible defaults.
