@@ -62,6 +62,11 @@ const (
 // instead of aborting the cell on a bare deadline (issue #1668).
 const dittofsDrainTimeout = "15m"
 
+// dittofsUnboundedMaxSize is the default local-journal cap: generous headroom so
+// a sustained write burst measures the tier's throughput, not its saturation
+// cliff (see dittofsSetup). The cache-cap study variants pass a small cap instead.
+const dittofsUnboundedMaxSize = int64(32) * 1024 * 1024 * 1024
+
 // dittofsAddMetadataStore registers the subject's metadata store with the
 // engine selected by kind. badger/sqlite need no server; postgres is
 // provisioned on the (throwaway, single-tenant) bench VM first. All three pair
@@ -167,7 +172,9 @@ func init() {
 				S3Backed: true,
 				Tier:     fmt.Sprintf(t.behavior, e.desc),
 				Support:  map[Protocol]Support{ProtoNFS3: Native, ProtoNFS4: Native, ProtoSMB3: Native},
-				Setup:    func(ctx context.Context, env BackendEnv) error { return dittofsSetup(ctx, env, kind, durability) },
+				Setup: func(ctx context.Context, env BackendEnv) error {
+					return dittofsSetup(ctx, env, kind, durability, dittofsUnboundedMaxSize)
+				},
 				Mount:    dittofsMount,
 				Evict:    dittofsEvict,
 				Unmount:  func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
@@ -175,9 +182,39 @@ func init() {
 			})
 		}
 	}
+
+	// Cache-cap variants for the cache-fill study: on the writeback tier the
+	// local-ack journal is what fills, so hard-cap max_size below the write
+	// working set and observe whether the journal applies backpressure or errors.
+	// badger engine + writeback tier only (the write path under test); the 32 GiB
+	// rows above are the unbounded scenario. Names don't end in a protocol, so
+	// splitSystemLabel won't mis-peel them.
+	for _, c := range []struct {
+		suffix  string
+		maxSize int64
+		cap     string // human cap for the Tier string
+	}{
+		{"-cap256m", 256 * 1024 * 1024, "256 MiB"},
+		{"-cap2g", 2 * 1024 * 1024 * 1024, "2 GiB"},
+	} {
+		maxSize := c.maxSize
+		register(&Backend{
+			Name:     "dittofs-s3-writeback" + c.suffix,
+			S3Backed: true,
+			Tier:     "local-ack (badger, metadata flush relaxed) + async S3 writeback; local cache capped at " + c.cap,
+			Support:  map[Protocol]Support{ProtoNFS3: Native, ProtoNFS4: Native, ProtoSMB3: Native},
+			Setup: func(ctx context.Context, env BackendEnv) error {
+				return dittofsSetup(ctx, env, metaBadger, "writeback", maxSize)
+			},
+			Mount:    dittofsMount,
+			Evict:    dittofsEvict,
+			Unmount:  func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
+			Teardown: dittofsTeardown,
+		})
+	}
 }
 
-func dittofsSetup(ctx context.Context, env BackendEnv, kind dittofsMetaKind, durability string) error {
+func dittofsSetup(ctx context.Context, env BackendEnv, kind dittofsMetaKind, durability string, maxSize int64) error {
 	id, secret, err := s3Creds()
 	if err != nil {
 		return err
@@ -256,17 +293,19 @@ func dittofsSetup(ctx context.Context, env BackendEnv, kind dittofsMetaKind, dur
 	// "durability" enum (local|writeback|remote) is read by resolveDurabilityTier
 	// at share create; "local" is the default so it's harmless to set explicitly.
 	//
-	// max_size gives the local journal generous headroom. The writeback tier
-	// relaxes the metadata fsync that otherwise paces writes, so a sustained
-	// fio write burst outruns the async S3 syncer; with the small default
-	// capacity the journal saturates ("all segments pinned by unsynced bytes")
-	// and writes fail EIO. A realistic writeback cache is sized for the working
-	// set (JuiceFS --writeback does the same), so 32 GiB here measures the tier
-	// at throughput instead of at its saturation cliff.
+	// max_size caps the local journal. The unbounded default (dittofsUnboundedMaxSize,
+	// 32 GiB) gives the writeback tier generous headroom: writeback relaxes the
+	// metadata fsync that otherwise paces writes, so a sustained fio write burst
+	// outruns the async S3 syncer; with a small capacity the journal saturates
+	// ("all segments pinned by unsynced bytes") and writes fail EIO. A realistic
+	// writeback cache is sized for the working set (JuiceFS --writeback does the
+	// same), so the default measures the tier at throughput instead of its
+	// saturation cliff. The cache-cap study variants pass a small maxSize on
+	// purpose, to measure exactly that cliff (backpressure vs error) when it fills.
 	localCfg, err := json.Marshal(map[string]any{
 		"path":       dittofsDataDir + "/blocks",
 		"durability": durability,
-		"max_size":   int64(32) * 1024 * 1024 * 1024,
+		"max_size":   maxSize,
 	})
 	if err != nil {
 		return err
