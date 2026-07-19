@@ -23,21 +23,14 @@ import (
 // ErrStoreClosed is returned by operations on a closed store.
 var ErrStoreClosed = block.ErrStoreClosed
 
-// FSStoreOptions tunes a journal-backed store. Only BackpressureMaxWait and
-// ChunkParams are load-bearing; the rollup/append-log knobs are vestigial,
-// retained so the shares config plumbing compiles.
-//
-// ponytail: RollupWorkers/StabilizationMS/SyncEveryWrite/OrphanLogMinAgeSeconds/
-// MaxLogBytes no longer control anything — the journal carves on its own
-// age/size gate. Drop them once the shares service stops reading them.
+// FSStoreOptions tunes a journal-backed store. BackpressureMaxWait and
+// ChunkParams are load-bearing; MaxLogBytes is retained only as a Stats size
+// hint (it does not gate writes — the journal carves and evicts on its own
+// age/size/disk budget).
 type FSStoreOptions struct {
-	BackpressureMaxWait    time.Duration
-	MaxLogBytes            int64
-	ChunkParams            chunker.Params
-	RollupWorkers          int
-	StabilizationMS        int
-	SyncEveryWrite         bool
-	OrphanLogMinAgeSeconds int
+	BackpressureMaxWait time.Duration
+	MaxLogBytes         int64
+	ChunkParams         chunker.Params
 }
 
 // FSStore is the journal-backed local store. It embeds *journal.Store and

@@ -22,11 +22,9 @@ import (
 )
 
 // Engine wiring constants. Sized for short-lived benchmark runs:
-// 256 MiB rollup log budget, 2 rollup workers, 5 ms stabilization.
+// 256 MiB local cache budget.
 const (
-	writeBenchLogBudget       = 256 * 1024 * 1024
-	writeBenchRollupWorkers   = 2
-	writeBenchStabilizationMS = 5
+	writeBenchLogBudget = 256 * 1024 * 1024
 )
 
 // Default block sizes — match the legacy bench/blockstore shape so

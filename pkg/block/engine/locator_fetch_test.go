@@ -22,9 +22,7 @@ func newLocatorFetchSyncer(t *testing.T) (*Syncer, *remotememory.Store, *metadat
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = ms.Close() })
 	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, ms, fs.FSStoreOptions{
-		MaxLogBytes:     128 * 1024 * 1024,
-		RollupWorkers:   2,
-		StabilizationMS: 5,
+		MaxLogBytes: 128 * 1024 * 1024,
 	})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)

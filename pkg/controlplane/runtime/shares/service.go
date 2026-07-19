@@ -2860,9 +2860,6 @@ func CreateLocalStoreFromConfig(
 	if defaults != nil && defaults.MaxLogBytes > 0 {
 		fsOpts.MaxLogBytes = defaults.MaxLogBytes
 	}
-	if _, ok := config["use_append_log"]; ok {
-		logger.Warn("block store config has use_append_log: append is mandatory in v0.16+, flag is ignored")
-	}
 	if v, ok := config["max_log_bytes"]; ok {
 		if n, ok := v.(float64); ok && n > 0 {
 			// FIX-15: JSON-decoded numbers land here as float64. Values above
@@ -2880,34 +2877,6 @@ func CreateLocalStoreFromConfig(
 			}
 		} else {
 			logger.Warn("block store config has max_log_bytes but it is invalid or non-positive; ignoring", "value", v)
-		}
-	}
-	if v, ok := config["rollup_workers"]; ok {
-		if n, ok := v.(float64); ok && n > 0 {
-			fsOpts.RollupWorkers = int(n)
-		} else {
-			logger.Warn("block store config has rollup_workers but it is invalid or non-positive; ignoring", "value", v)
-		}
-	}
-	if v, ok := config["stabilization_ms"]; ok {
-		if n, ok := v.(float64); ok && n > 0 {
-			fsOpts.StabilizationMS = int(n)
-		} else {
-			logger.Warn("block store config has stabilization_ms but it is invalid or non-positive; ignoring", "value", v)
-		}
-	}
-	if v, ok := config["sync_every_write"]; ok {
-		if b, ok := v.(bool); ok {
-			fsOpts.SyncEveryWrite = b
-		} else {
-			logger.Warn("block store config has sync_every_write but it is not a bool; ignoring", "value", v)
-		}
-	}
-	if v, ok := config["orphan_log_min_age_seconds"]; ok {
-		if n, ok := v.(float64); ok && n > 0 {
-			fsOpts.OrphanLogMinAgeSeconds = int(n)
-		} else {
-			logger.Warn("block store config has orphan_log_min_age_seconds but it is invalid or non-positive; ignoring", "value", v)
 		}
 	}
 	// chunk_size sets the FastCDC Min for this share's rollup chunker (#1569) —
