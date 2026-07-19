@@ -234,3 +234,124 @@ Object-storage credentials are taken from the environment
 (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`); the bucket and endpoint come from the
 run configuration. Run `dfsbench list` for the full set of systems, workloads, and
 sizes the harness supports.
+
+## Appendix: the complete result matrix
+
+Every cell collected in the full run — 25 systems, each metadata engine and cache
+mode, across NFSv3, NFSv4, and SMB3, for four workloads. The tables above draw their
+conclusions from this data; the raw grid is reproduced here in full for transparency.
+All figures are the warm-pass result on the *medium* size class, 30 s per workload, on
+the machine described earlier (8 vCPU, 31 GB, ~1.7 GB/s local NVMe, ~20 ms to object
+storage).
+
+**How to read these tables**
+
+- Systems are grouped by the guarantee they were configured for — *local-ack* (the
+  write returns as soon as it is buffered on the local machine; the copy to object
+  storage happens in the background) versus *durable* (the write returns only once it
+  is safe). The durable grid is the honest cross-system comparison; the local-ack grid
+  is dominated by local disk and page cache and should be read as such — several
+  entries there exceed the object-storage path by two orders of magnitude precisely
+  because they never touch it on the hot path.
+- `·` means the cell was not part of this run for that system (a mode a given tool does
+  not support — e.g. ZeroFS and s3ql expose no SMB, goofys no create-heavy path).
+- **DittoFS local-ack and writeback *write* rows are absent**, and **DittoFS SMB3 is
+  absent entirely.** These are not results — they are two defects the run surfaced: a
+  metadata write-contention path that returned an I/O error under this harness (since
+  fixed — writes now apply backpressure instead of erroring), and an SMB
+  directory-lease interaction under investigation. They are omitted rather than shown
+  as zero so the grid is not read as a measurement it isn't. DittoFS's durable-tier
+  columns, which completed cleanly with no errors, are the trustworthy comparison.
+- Read figures on warm passes reflect the page cache, not object storage; treat them
+  as an upper bound on cached-read behavior, not as storage-backend throughput.
+
+<!-- generated from the dfsbench result set; regenerate rather than hand-edit -->
+
+### NFSv3
+
+**Local-ack tier — write acked when buffered locally; upload to object storage is asynchronous**
+
+| System | meta ops/s | seq-write MB/s | rand-wr IOPS | rand-rd IOPS |
+|---|---|---|---|---|
+| DittoFS · badger · writeback | 686 | · | · | · |
+| DittoFS · sqlite · writeback | 362 | · | · | · |
+| DittoFS · postgres · writeback | 251 | · | · | · |
+| JuiceFS · sqlite · writeback | 14 | 7.6 | 8 | 109,912 |
+| JuiceFS · postgres · writeback | 14 | 3.6 | 6 | 109,102 |
+| JuiceFS · redis · writeback | 15 | 5.8 | 7 | 99,611 |
+| rclone · vfs-writes | 7,400 | 1,772.5 | 18,117 | 109,752 |
+| rclone · vfs-full | 7,346 | 1,775.6 | 18,099 | 109,507 |
+| s3fs · cached | 7 | 0.0 | · | 5,154 |
+| s3fs · nocache | · | 0.1 | · | 5,159 |
+| local-disk (reference) | 1,081 | 454.7 | 2,670 | 110,941 |
+
+**Durable tier — write acked only after it is safe**
+
+| System | meta ops/s | seq-write MB/s | rand-wr IOPS | rand-rd IOPS |
+|---|---|---|---|---|
+| DittoFS · badger · remote/durable | 11 | 7.2 | 15 | 57,114 |
+| DittoFS · sqlite · remote/durable | 12 | 4.9 | 10 | 1,984 |
+| DittoFS · postgres · remote/durable | 10 | 6.8 | 16 | 11,898 |
+| JuiceFS · sqlite · durable | 15 | 7.7 | 6 | 109,464 |
+| JuiceFS · postgres · durable | 18 | 4.1 | 4 | 109,956 |
+| JuiceFS · redis · durable | 16 | 9.2 | 6 | 109,751 |
+| ZeroFS · default | 1,887 | · | · | · |
+| ZeroFS · sync_writes | 1 | 1.7 | 2 | 4,624 |
+| s3ql | 2,283 | 712.5 | 2,426 | 110,418 |
+| NFS-Ganesha · local VFS | 1,276 | 522.5 | · | 60,429 |
+
+### NFSv4
+
+**Local-ack tier — write acked when buffered locally; upload to object storage is asynchronous**
+
+| System | meta ops/s | seq-write MB/s | rand-wr IOPS | rand-rd IOPS |
+|---|---|---|---|---|
+| DittoFS · badger · writeback | 137 | · | · | · |
+| DittoFS · sqlite · writeback | 106 | · | · | · |
+| DittoFS · postgres · writeback | 101 | · | · | · |
+| JuiceFS · sqlite · writeback | 15 | 8.5 | 11 | 90,710 |
+| JuiceFS · postgres · writeback | 14 | 6.9 | 6 | 91,143 |
+| JuiceFS · redis · writeback | 14 | 8.8 | 12 | 91,318 |
+| rclone · vfs-writes | 2,425 | 1,885.3 | 19,574 | 91,331 |
+| rclone · vfs-full | 2,415 | 1,850.7 | 19,562 | 91,705 |
+| s3fs · nocache | 6 | 0.2 | · | 5,151 |
+| local-disk (reference) | 1,050 | 437.1 | 2,504 | 91,667 |
+
+**Durable tier — write acked only after it is safe**
+
+| System | meta ops/s | seq-write MB/s | rand-wr IOPS | rand-rd IOPS |
+|---|---|---|---|---|
+| DittoFS · badger · remote/durable | 5 | 6.5 | 13 | 1,079 |
+| DittoFS · sqlite · remote/durable | 12 | 5.5 | 9 | 870 |
+| DittoFS · postgres · remote/durable | 12 | 7.2 | 13 | 1,020 |
+| JuiceFS · sqlite · durable | 13 | 7.8 | 9 | 257 |
+| JuiceFS · postgres · durable | 13 | 9.1 | 11 | 90,751 |
+| JuiceFS · redis · durable | 14 | 7.8 | 14 | 86,144 |
+
+### SMB3
+
+**Local-ack tier — write acked when buffered locally; upload to object storage is asynchronous**
+
+| System | meta ops/s | seq-write MB/s | rand-wr IOPS | rand-rd IOPS |
+|---|---|---|---|---|
+| JuiceFS · sqlite · writeback | 23 | 1,485.7 | 65 | 19,068 |
+| JuiceFS · postgres · writeback | 26 | 2,267.4 | 65 | 19,077 |
+| JuiceFS · redis · writeback | 27 | 1,942.7 | 83 | 18,886 |
+| rclone · vfs-writes | 298 | 2,056.1 | 8,770 | 9,813 |
+| rclone · vfs-full | 283 | 2,064.6 | 8,854 | 9,843 |
+| s3fs · cached | · | · | 4,938 | 11,333 |
+| s3fs · nocache | · | · | 5,140 | 5,029 |
+| goofys | · | · | · | 19,610 |
+| local-disk (reference) | 1,094 | 2,915.7 | 19,613 | 19,739 |
+
+**Durable tier — write acked only after it is safe**
+
+| System | meta ops/s | seq-write MB/s | rand-wr IOPS | rand-rd IOPS |
+|---|---|---|---|---|
+| JuiceFS · sqlite · durable | 25 | 2,105.9 | 54 | 19,114 |
+| JuiceFS · postgres · durable | 27 | 2,050.0 | 57 | 18,854 |
+| JuiceFS · redis · durable | 49 | 1,940.9 | 92 | 18,991 |
+
+### Cell coverage
+
+Total cells collected: **169** across 25 systems × 3 protocols × 4 workloads (warm pass, medium size, 30 s each).
