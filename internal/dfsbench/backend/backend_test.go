@@ -237,12 +237,12 @@ func TestCompetitorVariants(t *testing.T) {
 		"zerofs-sync":              nfs3Native,
 		"ganesha":                  nfs34Native,
 		// cache-cap variants (3-scenario cache-fill study)
-		"rclone-cap256m":   all,
-		"rclone-cap2g":     all,
-		"juicefs-cap256m":  all,
-		"juicefs-cap2g":    all,
-		"s3fs-cap256m":     all,
-		"s3fs-cap2g":       all,
+		"rclone-cap256m":  all,
+		"rclone-cap2g":    all,
+		"juicefs-cap256m": all,
+		"juicefs-cap2g":   all,
+		"s3fs-cap256m":    all,
+		"s3fs-cap2g":      all,
 	}
 	for name, sup := range want {
 		b, ok := registry[name]
