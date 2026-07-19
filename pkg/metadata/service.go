@@ -948,14 +948,34 @@ func (s *Service) lockParentLinks(a, b FileHandle) func() {
 	return func() { hi.Unlock(); lo.Unlock() }
 }
 
+// createNameShard maps a (parent, name) pair to a shard via FNV-1a over the
+// parent handle key, a separator byte, and the name — computed without
+// allocating the concatenated string. Uses the same FNV constants as
+// parentLinkShard so the distribution is identical.
+func createNameShard(parentHandle FileHandle, name string) uint32 {
+	key := handleKey(parentHandle)
+	var h uint32 = 2166136261
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	h *= 16777619 // separator byte 0x00: XOR is a no-op, only the FNV mix applies
+	for i := 0; i < len(name); i++ {
+		h ^= uint32(name[i])
+		h *= 16777619
+	}
+	return h % parentLinkShardCount
+}
+
 // lockCreateName serializes creation of one (parent, name) so two concurrent
 // creates of the same name in the same directory cannot both pass the
 // in-transaction existence recheck and each insert a distinct inode. Creates of
 // different names hash to (likely) different shards and stay fully concurrent.
 // See the createNameShards field for why the recheck alone is insufficient on a
-// READ COMMITTED store. Callers defer the returned unlock.
+// READ COMMITTED store. The returned unlock is released right after the create
+// transaction commits (covering the recheck and commit), not at function end.
 func (s *Service) lockCreateName(parentHandle FileHandle, name string) func() {
-	mu := &s.createNameShards[parentLinkShard(handleKey(parentHandle)+"\x00"+name)]
+	mu := &s.createNameShards[createNameShard(parentHandle, name)]
 	mu.Lock()
 	return mu.Unlock
 }

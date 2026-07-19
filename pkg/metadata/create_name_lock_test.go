@@ -6,10 +6,12 @@ import (
 )
 
 // TestLockCreateName_SameKeySerializes verifies that lockCreateName mutually
-// excludes concurrent creators of the same (parent, name): many goroutines
-// increment a plain (unsynchronized) counter under the lock and the result must
-// be exact. Run under -race, a broken shard mapping that handed out different
-// mutexes for the same key would both trip the race detector and skew the count.
+// excludes concurrent creators of the same (parent, name): many goroutines each
+// increment a plain (unsynchronized) counter under the lock, many times, and the
+// total must be exact. All goroutines block on a start barrier so they contend
+// from the same instant, and each loops the guarded increment so a broken shard
+// mapping (different mutexes for the same key) loses updates and skews the count
+// even without the race detector; -race also flags it directly.
 // (Distinct names may share a shard by design, so no non-serialization property
 // is asserted here — only the correctness-critical same-key exclusion.)
 func TestLockCreateName_SameKeySerializes(t *testing.T) {
@@ -18,21 +20,29 @@ func TestLockCreateName_SameKeySerializes(t *testing.T) {
 	s := New()
 	parent := FileHandle("parent-handle")
 
-	const n = 200
+	const (
+		goroutines = 100
+		iters      = 50
+	)
+	start := make(chan struct{})
 	var counter int
 	var wg sync.WaitGroup
-	wg.Add(n)
-	for i := 0; i < n; i++ {
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
-			unlock := s.lockCreateName(parent, "same")
-			defer unlock()
-			counter++ // guarded solely by lockCreateName
+			<-start // release all goroutines together to maximize contention
+			for j := 0; j < iters; j++ {
+				unlock := s.lockCreateName(parent, "same")
+				counter++ // guarded solely by lockCreateName
+				unlock()
+			}
 		}()
 	}
+	close(start)
 	wg.Wait()
 
-	if counter != n {
-		t.Fatalf("lockCreateName did not serialize same (parent,name): got %d, want %d", counter, n)
+	if want := goroutines * iters; counter != want {
+		t.Fatalf("lockCreateName did not serialize same (parent,name): got %d, want %d", counter, want)
 	}
 }
