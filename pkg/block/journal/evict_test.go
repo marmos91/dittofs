@@ -255,6 +255,159 @@ func TestEnsureSpaceEvictsSyncedUnderPressure(t *testing.T) {
 	}
 }
 
+// TestEvictForceSealsSyncedActive covers a working set smaller than the
+// segment-roll threshold: every synced record sits in the never-sealed active
+// segment, so before the force-seal fall-through an explicit Evict freed nothing.
+// Now Evict seals the fully-synced active and reclaims it.
+func TestEvictForceSealsSyncedActive(t *testing.T) {
+	s, _ := evictStore(t, Config{}) // 1 shard, 1 MiB segment
+	ctx := context.Background()
+
+	// Two synced 256 KiB records (512 KiB total) stay in the active segment: well
+	// under the 1 MiB roll threshold, so nothing seals on its own.
+	buf := bytes.Repeat([]byte{0x3C}, chunk256)
+	if err := s.Hydrate(ctx, "f", 0, buf); err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+	if err := s.Hydrate(ctx, "f", chunk256, buf); err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+	if segs := sealedSegs(s.shardFor("f")); len(segs) != 0 {
+		t.Fatalf("working set below roll threshold must leave 0 sealed segments, got %d", len(segs))
+	}
+
+	before := s.diskBytes.Load()
+	res, err := s.Evict(ctx, 1<<30)
+	if err != nil {
+		t.Fatalf("Evict: %v", err)
+	}
+	if res.SegmentsEvicted < 1 || res.BytesFreed <= 0 {
+		t.Fatalf("force-seal fall-through must reclaim the synced active, got %+v", res)
+	}
+	if s.diskBytes.Load() >= before {
+		t.Fatalf("local disk usage must drop: before=%d after=%d", before, s.diskBytes.Load())
+	}
+	// The reclaimed range must read back cold (remote-backed), never as a hole.
+	dst := make([]byte, chunk256)
+	if _, cold, err := s.ReadAt(ctx, "f", 0, dst); err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	} else if !cold {
+		t.Fatalf("evicted range must report cold, not a hole")
+	}
+}
+
+// TestEvictForceSealSkipsDirtyActive proves the fall-through never seals (and so
+// never strands) unsynced bytes: an active segment holding dirty records is left
+// untouched, and Evict reclaims nothing.
+func TestEvictForceSealSkipsDirtyActive(t *testing.T) {
+	s, _ := evictStore(t, Config{})
+	ctx := context.Background()
+
+	buf := bytes.Repeat([]byte{0xD1}, chunk256)
+	if err := s.WriteAt(ctx, "f", 0, buf); err != nil { // dirty, unsynced
+		t.Fatalf("WriteAt: %v", err)
+	}
+	res, err := s.Evict(ctx, 1<<30)
+	if err != nil {
+		t.Fatalf("Evict: %v", err)
+	}
+	if res.SegmentsEvicted != 0 {
+		t.Fatalf("dirty active must not be sealed-and-evicted, got %+v", res)
+	}
+	if segs := sealedSegs(s.shardFor("f")); len(segs) != 0 {
+		t.Fatalf("dirty active must not be force-sealed, got %d sealed", len(segs))
+	}
+}
+
+// pretendCarveOneSealed models one slow syncer step: it flips the first dirty
+// sealed segment it finds to fully synced (as carve does after uploading its
+// records) and drops the drained bytes from the unsynced counter, so the segment
+// becomes evictable and the write-path backpressure sees drain progress. It
+// returns false when no dirty sealed segment remains.
+func pretendCarveOneSealed(s *Store) bool {
+	for _, sh := range s.shards {
+		sh.mu.Lock()
+		for _, seg := range sh.sealed {
+			if seg.syncedRecords.Load() < seg.records.Load() {
+				seg.syncedRecords.Store(seg.records.Load())
+				drained := seg.liveBytes.Load()
+				sh.mu.Unlock()
+				s.unsynced.Add(-drained)
+				return true
+			}
+		}
+		sh.mu.Unlock()
+	}
+	return false
+}
+
+// TestBackpressureWaitsForSyncer is the BUG 2 positive case: a writer that
+// outpaces a live (slow) syncer under a tight local cap must backpressure and
+// keep succeeding — never return ErrLocalStoreFull — because the syncer keeps
+// draining unsynced bytes and refreshing the wait budget.
+func TestBackpressureWaitsForSyncer(t *testing.T) {
+	s, _ := evictStore(t, Config{MaxLocalBytes: 2 << 20, EvictMaxWait: 200 * time.Millisecond})
+	ctx := context.Background()
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { // slow syncer: drains one sealed segment every few ms
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(3 * time.Millisecond):
+				pretendCarveOneSealed(s)
+			}
+		}
+	}()
+
+	buf := bytes.Repeat([]byte{0x9E}, chunk256)
+	var off int64
+	for i := 0; i < 60; i++ { // ~15 MiB through a 2 MiB cap
+		if err := s.WriteAt(ctx, "f", off, buf); err != nil {
+			close(done)
+			wg.Wait()
+			t.Fatalf("write %d must backpressure on a live syncer, never fail: %v", i, err)
+		}
+		off += chunk256
+	}
+	close(done)
+	wg.Wait()
+}
+
+// TestBackpressureTerminalWhenNoSyncer is the BUG 2 negative case: with no syncer
+// draining, the unsynced bytes pinning the cap never fall, so the write path must
+// still fail with ErrLocalStoreFull within a bounded budget rather than hang.
+func TestBackpressureTerminalWhenNoSyncer(t *testing.T) {
+	s, _ := evictStore(t, Config{MaxLocalBytes: 2 << 20, EvictMaxWait: 50 * time.Millisecond})
+	ctx := context.Background()
+
+	buf := bytes.Repeat([]byte{0xCD}, chunk256)
+	var off int64
+	var gotFull bool
+	start := time.Now()
+	for i := 0; i < 64; i++ {
+		err := s.WriteAt(ctx, "f", off, buf)
+		if errors.Is(err, ErrLocalStoreFull) {
+			gotFull = true
+			break
+		}
+		if err != nil {
+			t.Fatalf("WriteAt: %v", err)
+		}
+		off += chunk256
+	}
+	if !gotFull {
+		t.Fatalf("expected ErrLocalStoreFull with no syncer to drain the cap")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("backpressure must be bounded, not hang: took %v", elapsed)
+	}
+}
+
 func TestConcurrentWriteEvictRace(t *testing.T) {
 	s, _ := evictStore(t, Config{ShardCount: 4})
 	ctx := context.Background()
