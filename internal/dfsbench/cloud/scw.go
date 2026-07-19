@@ -184,7 +184,8 @@ func deleteDataVolume(ctx context.Context, vm VM) error {
 			return nil
 		}
 		low := bytes.ToLower(out)
-		if bytes.Contains(low, []byte("not found")) || bytes.Contains(low, []byte("does not exist")) {
+		if bytes.Contains(low, []byte("not found")) || bytes.Contains(low, []byte("does not exist")) ||
+			bytes.Contains(low, []byte("cannot find resource")) {
 			return nil
 		}
 		last = fmt.Errorf("%w: %s", err, bytes.TrimSpace(out))

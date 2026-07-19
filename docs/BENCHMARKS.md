@@ -148,6 +148,38 @@ store for a self-contained deployment, a shared SQL database when you want to po
 external tooling at it — not for durable-write speed, where it makes no measurable
 difference.
 
+### What happens when the local cache fills
+
+A writeback cache makes the fast common case fast, but it raises a harder question:
+what does the system do when writes arrive faster than they can be uploaded to object
+storage and the cache runs out of room? The promise a well-behaved system should keep
+is that it **slows down** — backpressures the writer to the speed the uploader can
+sustain — rather than hard-failing the write.
+
+With a bounded cache, DittoFS keeps that promise. Under a sustained large write
+against a 2 GiB cap, the writer blocks and drains to object storage at upload speed:
+the same shape as rclone and JuiceFS, which throttle rather than error under the same
+pressure. Once the bound is generous enough to absorb bursts, the binding constraint
+is object-storage upload throughput, not the cache accounting — and every system in
+this class converges to roughly that upload rate.
+
+Two edges are worth naming plainly:
+
+- **A very small cap plus one large synchronous flush can still outrun the uploader.**
+  A 256 MiB cap combined with a single `fsync` of a multi-gigabyte buffered write asks
+  the cache to absorb far more than it can hold while the uploader drains a small
+  fraction of it; the backpressure window is exhausted and the write surfaces an error.
+  This is bound by upload throughput — the uploader is the lever — not by the cache
+  logic; making the uploader keep up under this load is tracked as follow-up work. Set
+  the cap to comfortably exceed the largest single flush you expect, and the write
+  backpressures cleanly.
+- **Unbounded mode performs no eviction at all.** With the bound turned off, the cache
+  grows until the underlying disk fills, at which point writes fail with `ENOSPC`.
+  This is the inherent risk of removing the bound, and it is why the bounded journal is
+  the safer default: it evicts already-uploaded segments and only ever backpressures on
+  the dirty ones. Competitors diverge here too — an unbounded JuiceFS cache likewise
+  grows to consume tens of gigabytes of disk, while rclone and s3fs self-bound.
+
 ## Throughput and IOPS across mixed workloads
 
 Beyond file creation, the following shows sustained bandwidth and I/O rates for
