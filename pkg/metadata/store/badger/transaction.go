@@ -14,6 +14,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
 )
 
 // ============================================================================
@@ -36,12 +37,11 @@ type badgerTransaction struct {
 	// used to invalidate the read cache (see withTransaction). Reset per attempt
 	// like pendingDelta so a conflict-retry cannot leak a phantom invalidation.
 	dirtyFiles []string
-	// quotaDelta accumulates per-identity usage changes (bytes + file count)
-	// keyed by (scope, id). Captured per attempt and applied to the store's
-	// in-memory userUsage/groupUsage cache exactly once after a successful
-	// commit, identical to pendingDelta (so a conflict-retry cannot
-	// double-count).
-	quotaDelta map[badgerQuotaKey]metadata.UsageStat
+	// quota accumulates per-identity usage changes (bytes + file count) keyed by
+	// (scope, id). Captured per attempt and applied to the store's quota cache
+	// exactly once after a successful commit, identical to pendingDelta (so a
+	// conflict-retry cannot double-count).
+	quota quota.Delta
 	// dirtyShares collects share names whose stored share record this
 	// transaction mutated. Captured per attempt and, after a successful commit,
 	// used to invalidate the share read cache (see withTransaction). Reset per
@@ -56,47 +56,6 @@ type badgerTransaction struct {
 	// invalidation. A stale entry is a spurious ENOENT (negative) or EEXIST
 	// (positive).
 	dirtyDirents []string
-}
-
-// badgerQuotaKey identifies a per-identity usage bucket inside a transaction's
-// accumulated delta.
-type badgerQuotaKey struct {
-	scope metadata.QuotaScope
-	id    uint32
-}
-
-// addQuota records a usage delta for the file's owner identity (both user and
-// group scopes). See memory store addQuota for the create/resize/chown cases.
-func (tx *badgerTransaction) addQuota(uid, gid uint32, bytes, files int64) {
-	if bytes == 0 && files == 0 {
-		return
-	}
-	if tx.quotaDelta == nil {
-		tx.quotaDelta = make(map[badgerQuotaKey]metadata.UsageStat)
-	}
-	u := tx.quotaDelta[badgerQuotaKey{metadata.QuotaScopeUser, uid}]
-	u.Bytes += bytes
-	u.Files += files
-	tx.quotaDelta[badgerQuotaKey{metadata.QuotaScopeUser, uid}] = u
-	g := tx.quotaDelta[badgerQuotaKey{metadata.QuotaScopeGroup, gid}]
-	g.Bytes += bytes
-	g.Files += files
-	tx.quotaDelta[badgerQuotaKey{metadata.QuotaScopeGroup, gid}] = g
-}
-
-// addQuota2 merges a single pre-keyed usage delta (used when folding the
-// per-identity totals returned by deleteShareFiles).
-func (tx *badgerTransaction) addQuota2(k badgerQuotaKey, d metadata.UsageStat) {
-	if d.Bytes == 0 && d.Files == 0 {
-		return
-	}
-	if tx.quotaDelta == nil {
-		tx.quotaDelta = make(map[badgerQuotaKey]metadata.UsageStat)
-	}
-	cur := tx.quotaDelta[k]
-	cur.Bytes += d.Bytes
-	cur.Files += d.Files
-	tx.quotaDelta[k] = cur
 }
 
 // Maximum number of retries for conflict errors.
@@ -154,7 +113,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 		// successful commit and reset per attempt (a retried attempt starts
 		// from zero, so a conflict-retry cannot double-count usedBytes).
 		var pendingDelta int64
-		var quotaDelta map[badgerQuotaKey]metadata.UsageStat
+		var quotaDelta map[quota.Key]metadata.UsageStat
 		var dirtyFiles []string
 		var dirtyShares []string
 		var dirtyDirents []string
@@ -164,7 +123,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 				return fnErr
 			}
 			pendingDelta = tx.pendingDelta
-			quotaDelta = tx.quotaDelta
+			quotaDelta = tx.quota.Map()
 			dirtyFiles = tx.dirtyFiles
 			dirtyShares = tx.dirtyShares
 			dirtyDirents = tx.dirtyDirents
@@ -443,13 +402,13 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 
 		switch {
 		case !hadOldRegular:
-			tx.addQuota(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
 		case oldUID == file.UID && oldGID == file.GID:
-			tx.addQuota(file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
+			tx.quota.Add(file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
 		default:
 			// Chown: move bytes + inode from old owner to new owner.
-			tx.addQuota(oldUID, oldGID, -int64(oldSize), -1)
-			tx.addQuota(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(oldUID, oldGID, -int64(oldSize), -1)
+			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
 		}
 	}
 
@@ -560,7 +519,7 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 				if file.Size > 0 {
 					tx.pendingDelta -= int64(file.Size)
 				}
-				tx.addQuota(file.UID, file.GID, -int64(file.Size), -1)
+				tx.quota.Add(file.UID, file.GID, -int64(file.Size), -1)
 			}
 			existingObjectID = file.ObjectID
 			existingPayloadID = file.PayloadID
@@ -1219,15 +1178,15 @@ func (tx *badgerTransaction) DeleteShare(ctx context.Context, shareName string) 
 	// Tear down all file metadata on the active txn, identical to the pool
 	// path — deleting only the share key would orphan every file/parent/
 	// linkcount/child/objectID entry (store.go:161 contract).
-	freed, quota, err := tx.store.deleteShareFiles(tx.txn, shareName)
+	freed, quotaFreed, err := tx.store.deleteShareFiles(tx.txn, shareName)
 	if err != nil {
 		return err
 	}
 	// Accumulate into the tx pending delta; applied once after a successful
 	// commit so a conflict-retry never double-counts.
 	tx.pendingDelta -= freed
-	for k, d := range quota {
-		tx.addQuota2(k, d)
+	for k, d := range quotaFreed {
+		tx.quota.AddKeyed(k, d)
 	}
 
 	if err := tx.txn.Delete(keyShare(shareName)); err != nil {

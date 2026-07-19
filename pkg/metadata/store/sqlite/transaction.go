@@ -13,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
 )
 
 // Transaction retry policy (#1769). Under write contention DittoFS must
@@ -84,52 +85,11 @@ type sqliteTransaction struct {
 	store        *SQLiteMetadataStore
 	tx           execer
 	pendingDelta int64
-	// quotaDelta accumulates per-identity usage changes (bytes + file count)
-	// keyed by (scope, id). Applied to the store's in-memory userUsage/
-	// groupUsage cache exactly once after a successful commit, identical to
-	// pendingDelta (so a serialization/deadlock retry never double-counts).
-	quotaDelta map[sqQuotaKey]metadata.UsageStat
-}
-
-// sqQuotaKey identifies a per-identity usage bucket inside a transaction's
-// accumulated delta.
-type sqQuotaKey struct {
-	scope metadata.QuotaScope
-	id    uint32
-}
-
-// addQuota records a usage delta for the file's owner identity (both user and
-// group scopes). See memory store addQuota for the create/resize/chown cases.
-func (tx *sqliteTransaction) addQuota(uid, gid uint32, bytes, files int64) {
-	if bytes == 0 && files == 0 {
-		return
-	}
-	if tx.quotaDelta == nil {
-		tx.quotaDelta = make(map[sqQuotaKey]metadata.UsageStat)
-	}
-	u := tx.quotaDelta[sqQuotaKey{metadata.QuotaScopeUser, uid}]
-	u.Bytes += bytes
-	u.Files += files
-	tx.quotaDelta[sqQuotaKey{metadata.QuotaScopeUser, uid}] = u
-	g := tx.quotaDelta[sqQuotaKey{metadata.QuotaScopeGroup, gid}]
-	g.Bytes += bytes
-	g.Files += files
-	tx.quotaDelta[sqQuotaKey{metadata.QuotaScopeGroup, gid}] = g
-}
-
-// addQuotaKeyed merges a single pre-keyed usage delta (used when folding the
-// per-identity totals freed by DeleteShare).
-func (tx *sqliteTransaction) addQuotaKeyed(k sqQuotaKey, d metadata.UsageStat) {
-	if d.Bytes == 0 && d.Files == 0 {
-		return
-	}
-	if tx.quotaDelta == nil {
-		tx.quotaDelta = make(map[sqQuotaKey]metadata.UsageStat)
-	}
-	cur := tx.quotaDelta[k]
-	cur.Bytes += d.Bytes
-	cur.Files += d.Files
-	tx.quotaDelta[k] = cur
+	// quota accumulates per-identity usage changes (bytes + file count) keyed by
+	// (scope, id). Applied to the store's quota cache exactly once after a
+	// successful commit, identical to pendingDelta (so a serialization/deadlock
+	// retry never double-counts).
+	quota quota.Delta
 }
 
 // WithTransaction executes fn within a SQLite transaction.
@@ -207,7 +167,7 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 			s.usedBytes.Add(ptx.pendingDelta)
 		}
 		// Apply per-identity usage deltas once, after commit.
-		s.applyQuotaDelta(ptx.quotaDelta)
+		s.applyQuotaDelta(ptx.quota.Map())
 		return nil // Success
 	}
 
@@ -425,13 +385,13 @@ func (tx *sqliteTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		oldGID := uint32(oldGIDVal.Int64)
 		switch {
 		case !oldWasRegular:
-			tx.addQuota(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
 		case oldUID == file.UID && oldGID == file.GID:
-			tx.addQuota(file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
+			tx.quota.Add(file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
 		default:
 			// Chown: move bytes + inode from old owner to new owner.
-			tx.addQuota(oldUID, oldGID, -int64(oldSize), -1)
-			tx.addQuota(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(oldUID, oldGID, -int64(oldSize), -1)
+			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
 		}
 	}
 
@@ -466,7 +426,7 @@ func (tx *sqliteTransaction) PutFile(ctx context.Context, file *metadata.File) e
 			if file.Size > 0 {
 				tx.pendingDelta += int64(file.Size)
 			}
-			tx.addQuota(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
 		}
 
 		// Debug logging for new file inserts
@@ -541,7 +501,7 @@ func (tx *sqliteTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		if fileSize > 0 {
 			tx.pendingDelta -= fileSize
 		}
-		tx.addQuota(uint32(fileUID), uint32(fileGID), -fileSize, -1)
+		tx.quota.Add(uint32(fileUID), uint32(fileGID), -fileSize, -1)
 	}
 
 	return nil
@@ -1101,7 +1061,7 @@ func (tx *sqliteTransaction) collectShareQuotaFreed(ctx context.Context, shareNa
 		if err := rows.Scan(&id, &bytes, &files); err != nil {
 			return mapDBError(err, "DeleteShare", shareName)
 		}
-		tx.addQuotaKeyed(sqQuotaKey{scope, uint32(id)}, metadata.UsageStat{Bytes: -bytes, Files: -files})
+		tx.quota.AddKeyed(quota.Key{Scope: scope, ID: uint32(id)}, metadata.UsageStat{Bytes: -bytes, Files: -files})
 	}
 	if err := rows.Err(); err != nil {
 		return mapDBError(err, "DeleteShare", shareName)

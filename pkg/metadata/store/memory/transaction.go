@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
 )
 
 // ============================================================================
@@ -27,10 +28,10 @@ import (
 type memoryTransaction struct {
 	store        *MemoryMetadataStore
 	pendingDelta int64
-	// quotaDelta accumulates per-identity usage changes (bytes + file count)
-	// keyed by (scope, id). Applied to the store's userUsage/groupUsage maps
-	// exactly once after a successful commit, identical to pendingDelta.
-	quotaDelta map[quotaKey]metadata.UsageStat
+	// quota accumulates per-identity usage changes (bytes + file count) keyed by
+	// (scope, id). Applied to the store's quota cache exactly once after a
+	// successful commit, identical to pendingDelta.
+	quota quota.Delta
 	// syncedOps buffers SyncedHashStore mutations made inside the closure.
 	// The synced maps live under their own mutex (syncedMu), NOT store.mu, so
 	// they cannot participate in the snapshot/restore rollback: instead the
@@ -45,33 +46,6 @@ type memoryTransaction struct {
 type syncedTxState struct {
 	deleted bool
 	loc     block.ChunkLocator
-}
-
-// quotaKey identifies a per-identity usage bucket inside a transaction's
-// accumulated delta.
-type quotaKey struct {
-	scope metadata.QuotaScope
-	id    uint32
-}
-
-// addQuota records a usage delta for the file's owner identity (both user and
-// group scopes). bytes is the size delta; files is the inode delta (+1 create,
-// -1 delete, 0 for in-place size change).
-func (tx *memoryTransaction) addQuota(uid, gid uint32, bytes, files int64) {
-	if bytes == 0 && files == 0 {
-		return
-	}
-	if tx.quotaDelta == nil {
-		tx.quotaDelta = make(map[quotaKey]metadata.UsageStat)
-	}
-	u := tx.quotaDelta[quotaKey{metadata.QuotaScopeUser, uid}]
-	u.Bytes += bytes
-	u.Files += files
-	tx.quotaDelta[quotaKey{metadata.QuotaScopeUser, uid}] = u
-	g := tx.quotaDelta[quotaKey{metadata.QuotaScopeGroup, gid}]
-	g.Bytes += bytes
-	g.Files += files
-	tx.quotaDelta[quotaKey{metadata.QuotaScopeGroup, gid}] = g
 }
 
 // txSnapshot captures the mutable state of the memory store so a failed
@@ -222,32 +196,9 @@ func (store *MemoryMetadataStore) WithTransaction(ctx context.Context, fn func(t
 		store.usedBytes.Add(tx.pendingDelta)
 	}
 	// Apply per-identity usage deltas once, under quotaMu.
-	if len(tx.quotaDelta) > 0 {
+	if d := tx.quota.Map(); len(d) > 0 {
 		store.quotaMu.Lock()
-		for k, d := range tx.quotaDelta {
-			m := store.userUsage
-			if k.scope == metadata.QuotaScopeGroup {
-				m = store.groupUsage
-			}
-			cur := m[k.id]
-			if cur == nil {
-				cur = &metadata.UsageStat{}
-				m[k.id] = cur
-			}
-			cur.Bytes += d.Bytes
-			cur.Files += d.Files
-			// Negative values indicate accounting drift (should never happen):
-			// clamp to zero so the enforcer never reads a too-permissive total.
-			if cur.Bytes < 0 {
-				cur.Bytes = 0
-			}
-			if cur.Files < 0 {
-				cur.Files = 0
-			}
-			if cur.Bytes == 0 && cur.Files == 0 {
-				delete(m, k.id)
-			}
-		}
+		store.quota.Apply(d)
 		store.quotaMu.Unlock()
 	}
 	// Apply buffered synced-marker mutations once, under syncedMu. Map writes
@@ -346,15 +297,15 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		case !hadOldRegular:
 			// New regular file (create or type change to regular): charge full
 			// size + 1 inode to the new owner.
-			tx.addQuota(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
 		case oldUID == file.UID && oldGID == file.GID:
 			// Same owner: only the byte delta moves.
-			tx.addQuota(file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
+			tx.quota.Add(file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
 		default:
 			// Chown: remove old size + inode from the previous owner, add new
 			// size + inode to the new owner.
-			tx.addQuota(oldUID, oldGID, -int64(oldSize), -1)
-			tx.addQuota(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(oldUID, oldGID, -int64(oldSize), -1)
+			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
 		}
 	}
 
@@ -434,7 +385,7 @@ func (tx *memoryTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		if existing.Attr.Size > 0 {
 			tx.pendingDelta -= int64(existing.Attr.Size)
 		}
-		tx.addQuota(existing.Attr.UID, existing.Attr.GID, -int64(existing.Attr.Size), -1)
+		tx.quota.Add(existing.Attr.UID, existing.Attr.GID, -int64(existing.Attr.Size), -1)
 	}
 
 	// drop ObjectID secondary entry. The "only if mapped
@@ -795,7 +746,7 @@ func (tx *memoryTransaction) DeleteShare(ctx context.Context, shareName string) 
 				if fd.Attr.Size > 0 {
 					tx.pendingDelta -= int64(fd.Attr.Size)
 				}
-				tx.addQuota(fd.Attr.UID, fd.Attr.GID, -int64(fd.Attr.Size), -1)
+				tx.quota.Add(fd.Attr.UID, fd.Attr.GID, -int64(fd.Attr.Size), -1)
 			}
 			// drop ObjectID secondary entry too.
 			if fd.Attr != nil && !fd.Attr.ObjectID.IsZero() {
