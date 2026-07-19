@@ -166,6 +166,12 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 				}
 				break
 			}
+			// A non-busy error may be the ctx's own cancellation/deadline
+			// surfacing through BeginTx; surface that verbatim rather than
+			// masking it as an I/O error.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			return mapDBError(err, "WithTransaction", "")
 		}
 
@@ -189,6 +195,9 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 					continue
 				}
 				break
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
 			}
 			return mapDBError(err, "WithTransaction", "")
 		}

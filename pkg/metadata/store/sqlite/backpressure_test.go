@@ -27,7 +27,10 @@ import (
 // directory row across all of them with a tiny busy_timeout. All mutations
 // must succeed.
 func TestSQLite_ConcurrentWritesBackpressureNoEIO(t *testing.T) {
-	ctx := context.Background()
+	// Bound the whole test: if the retry loop ever fails to terminate, fail
+	// with a clear deadline error instead of hanging until `go test -timeout`.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	dbPath := filepath.Join(t.TempDir(), "backpressure.db")
 
 	newStore := func(autoMigrate bool) metadata.Store {
