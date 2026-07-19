@@ -22,6 +22,11 @@ const (
 	s3qlMnt, s3qlCache       = "/mnt/fuse-s3ql", "/var/cache/bench-s3ql"
 	juicefsMnt, juicefsCache = "/mnt/fuse-juicefs", "/var/cache/bench-juicefs"
 	s3fsMnt, s3fsCache       = "/mnt/fuse-s3fs", "/var/cache/bench-s3fs"
+
+	// juicefsUnboundedCacheMiB is the default --cache-size (MiB): generous headroom
+	// (the tool's own 100 GiB default would exceed the VM disk). The cache-cap
+	// study variants pass a small cache-size instead.
+	juicefsUnboundedCacheMiB = "10240"
 )
 
 func init() {
@@ -32,16 +37,20 @@ func init() {
 	// the local cache wholesale.
 
 	// rclone: two vfs-cache-mode tiers. writes = writeback (local-ack, async S3);
-	// full also caches reads locally. One backend runs at a time, so the mode is
-	// stashed in a package var (rcloneVfsMode) for remount to reuse.
-	for _, r := range []struct{ name, mode, tier string }{
-		{"rclone", "writes", "durable-to-local (vfs-cache-mode=writes) + async S3; knfsd sync export"},
-		{"rclone-cachefull", "full", "durable-to-local (vfs-cache-mode=full, reads cached) + async S3; knfsd sync export"},
+	// full also caches reads locally. The -cap* rows add a vfs cache size cap
+	// (--vfs-cache-max-size) on the writeback tier for the cache-fill study.
+	// One backend runs at a time, so mode + cap are stashed in package vars
+	// (rcloneVfsMode, rcloneVfsCacheMax) for remount to reuse.
+	for _, r := range []struct{ name, mode, cacheMax, tier string }{
+		{"rclone", "writes", "", "durable-to-local (vfs-cache-mode=writes) + async S3; knfsd sync export"},
+		{"rclone-cachefull", "full", "", "durable-to-local (vfs-cache-mode=full, reads cached) + async S3; knfsd sync export"},
+		{"rclone-cap256m", "writes", "256M", "durable-to-local (vfs-cache-mode=writes) + async S3; vfs cache capped at 256 MiB; knfsd sync export"},
+		{"rclone-cap2g", "writes", "2G", "durable-to-local (vfs-cache-mode=writes) + async S3; vfs cache capped at 2 GiB; knfsd sync export"},
 	} {
-		mode := r.mode
+		mode, cacheMax := r.mode, r.cacheMax
 		register(newSrcBackend(srcBackend{
 			name: r.name, s3Backed: true, protos: all, srcDir: rcloneMnt, tier: r.tier,
-			setup:    func(ctx context.Context, env BackendEnv) error { return rcloneSetup(ctx, env, mode) },
+			setup:    func(ctx context.Context, env BackendEnv) error { return rcloneSetup(ctx, env, mode, cacheMax) },
 			teardown: fuseUnmount(rcloneMnt), remount: rcloneRemount,
 		}))
 	}
@@ -60,42 +69,52 @@ func init() {
 		jfsWBTier  = "durable-to-local (--writeback local cache) + async S3; knfsd sync export"
 		jfsDurTier = "durable-on-S3 per fsync/close (no writeback); knfsd sync export"
 	)
+	// cacheSize is --cache-size in MiB; juicefsUnboundedCacheMiB is the default
+	// headroom. The -cap* rows cap it (256 / 2048 MiB) on the writeback tier for
+	// the cache-fill study. Stashed in a package var so remount rebuilds identically.
 	for _, j := range []struct {
-		name, meta string
-		writeback  bool
+		name, meta, cacheSize, tier string
+		writeback                   bool
 	}{
-		{"juicefs", "sqlite", true},
-		{"juicefs-durable", "sqlite", false},
-		{"juicefs-postgres", "postgres", true},
-		{"juicefs-postgres-durable", "postgres", false},
-		{"juicefs-redis", "redis", true},
-		{"juicefs-redis-durable", "redis", false},
+		{"juicefs", "sqlite", juicefsUnboundedCacheMiB, jfsWBTier, true},
+		{"juicefs-durable", "sqlite", juicefsUnboundedCacheMiB, jfsDurTier, false},
+		{"juicefs-postgres", "postgres", juicefsUnboundedCacheMiB, jfsWBTier, true},
+		{"juicefs-postgres-durable", "postgres", juicefsUnboundedCacheMiB, jfsDurTier, false},
+		{"juicefs-redis", "redis", juicefsUnboundedCacheMiB, jfsWBTier, true},
+		{"juicefs-redis-durable", "redis", juicefsUnboundedCacheMiB, jfsDurTier, false},
+		{"juicefs-cap256m", "sqlite", "256", jfsWBTier + "; local cache capped at 256 MiB", true},
+		{"juicefs-cap2g", "sqlite", "2048", jfsWBTier + "; local cache capped at 2 GiB", true},
 	} {
-		meta, wb, tier := j.meta, j.writeback, jfsDurTier
-		if wb {
-			tier = jfsWBTier
-		}
+		meta, wb, cacheSize := j.meta, j.writeback, j.cacheSize
 		register(newSrcBackend(srcBackend{
-			name: j.name, s3Backed: true, protos: all, srcDir: juicefsMnt, tier: tier,
-			setup:    func(ctx context.Context, env BackendEnv) error { return juicefsSetup(ctx, env, meta, wb) },
+			name: j.name, s3Backed: true, protos: all, srcDir: juicefsMnt, tier: j.tier,
+			setup:    func(ctx context.Context, env BackendEnv) error { return juicefsSetup(ctx, env, meta, wb, cacheSize) },
 			teardown: juicefsTeardown, remount: juicefsRemount,
 		}))
 	}
 
 	// s3fs: durable-on-close either way; the difference is whether a local read
-	// cache (use_cache) is kept. useCache is stashed in a package var for remount.
+	// cache (use_cache) is kept. useCache + ensureFreeMB are stashed in package
+	// vars for remount. The -cap* rows pass -o ensure_diskfree=MB — but note s3fs
+	// has NO cache-size knob: ensure_diskfree bounds free-space-KEPT, not cache
+	// size, so on a big cache disk it does not enforce a true 256 MiB / 2 GiB cap
+	// (it only evicts once the backing disk nears full). It's the closest s3fs
+	// offers; a hard cap would need a size-bounded backing filesystem.
 	for _, s := range []struct {
-		name     string
-		useCache bool
-		tier     string
+		name         string
+		useCache     bool
+		ensureFreeMB string
+		tier         string
 	}{
-		{"s3fs", true, "durable-on-close to S3 (no writeback); knfsd sync export"},
-		{"s3fs-nocache", false, "durable-on-close to S3, no local cache; knfsd sync export"},
+		{"s3fs", true, "", "durable-on-close to S3 (no writeback); knfsd sync export"},
+		{"s3fs-nocache", false, "", "durable-on-close to S3, no local cache; knfsd sync export"},
+		{"s3fs-cap256m", true, "256", "durable-on-close to S3; cache ensure_diskfree=256 MiB (see note); knfsd sync export"},
+		{"s3fs-cap2g", true, "2048", "durable-on-close to S3; cache ensure_diskfree=2048 MiB (see note); knfsd sync export"},
 	} {
-		useCache := s.useCache
+		useCache, ensureFreeMB := s.useCache, s.ensureFreeMB
 		register(newSrcBackend(srcBackend{
 			name: s.name, s3Backed: true, protos: all, srcDir: s3fsMnt, tier: s.tier,
-			setup:    func(ctx context.Context, env BackendEnv) error { return s3fsSetup(ctx, env, useCache) },
+			setup:    func(ctx context.Context, env BackendEnv) error { return s3fsSetup(ctx, env, useCache, ensureFreeMB) },
 			teardown: fuseUnmount(s3fsMnt), remount: s3fsRemount,
 		}))
 	}
@@ -158,15 +177,20 @@ func fuseUnmount(mnt string) func(context.Context) error {
 // every one. The rest are the current backend's mode, stashed at setup so the
 // remount (cold-read barrier) rebuilds the identical mount without re-threading:
 // juicefsVol is the current juicefs volume name; juicefsMetaURL/juicefsWriteback
-// the juicefs meta engine + tier; rcloneVfsMode the rclone vfs-cache-mode;
-// s3fsUseCache whether s3fs keeps a local read cache.
+// the juicefs meta engine + tier; juicefsCacheSize the --cache-size (MiB);
+// rcloneVfsMode the rclone vfs-cache-mode; rcloneVfsCacheMax the vfs cache cap
+// ("" = uncapped); s3fsUseCache whether s3fs keeps a local read cache;
+// s3fsEnsureFreeMB the s3fs ensure_diskfree bound ("" = none).
 var (
-	benchEnv         BackendEnv
-	juicefsVol       string
-	juicefsMetaURL   string
-	juicefsWriteback bool
-	rcloneVfsMode    string
-	s3fsUseCache     bool
+	benchEnv          BackendEnv
+	juicefsVol        string
+	juicefsMetaURL    string
+	juicefsWriteback  bool
+	juicefsCacheSize  string
+	rcloneVfsMode     string
+	rcloneVfsCacheMax string
+	s3fsUseCache      bool
+	s3fsEnsureFreeMB  string
 )
 
 // flushUnmount unmounts a FUSE mountpoint non-lazily, so the tool flushes its
@@ -223,8 +247,8 @@ func waitMounted(ctx context.Context, mnt string) error {
 	return fmt.Errorf("mount %s not ready after wait", mnt)
 }
 
-func rcloneSetup(ctx context.Context, env BackendEnv, mode string) error {
-	rcloneVfsMode = mode // stash for remount's rebuild
+func rcloneSetup(ctx context.Context, env BackendEnv, mode, cacheMax string) error {
+	rcloneVfsMode, rcloneVfsCacheMax = mode, cacheMax // stash for remount's rebuild
 	if err := ensureInstalled(ctx, "rclone", "rclone"); err != nil {
 		return err
 	}
@@ -250,9 +274,16 @@ func rcloneSetup(ctx context.Context, env BackendEnv, mode string) error {
 }
 
 func rcloneMountFUSE(ctx context.Context) error {
-	return exec.Sh(ctx, "rclone", "mount", "bench:"+benchEnv.Bucket+"/rclone", rcloneMnt,
+	args := []string{"mount", "bench:" + benchEnv.Bucket + "/rclone", rcloneMnt,
 		"--config", "/etc/bench-rclone.conf", "--cache-dir", rcloneCache,
-		"--vfs-cache-mode", rcloneVfsMode, "--daemon")
+		"--vfs-cache-mode", rcloneVfsMode}
+	// Cap the vfs cache (cache-fill study): rclone evicts the oldest cached files
+	// once the cache exceeds this, applying backpressure rather than erroring.
+	if rcloneVfsCacheMax != "" {
+		args = append(args, "--vfs-cache-max-size", rcloneVfsCacheMax)
+	}
+	args = append(args, "--daemon")
+	return exec.Sh(ctx, "rclone", args...)
 }
 
 // rcloneRemount flushes rclone's vfs write cache to S3 (non-lazy unmount waits
@@ -278,8 +309,8 @@ func rcloneRemount(ctx context.Context) error {
 	return nil
 }
 
-func s3fsSetup(ctx context.Context, env BackendEnv, useCache bool) error {
-	s3fsUseCache = useCache // stash for remount's rebuild
+func s3fsSetup(ctx context.Context, env BackendEnv, useCache bool, ensureFreeMB string) error {
+	s3fsUseCache, s3fsEnsureFreeMB = useCache, ensureFreeMB // stash for remount's rebuild
 	if err := ensureInstalled(ctx, "s3fs", "s3fs"); err != nil {
 		return err
 	}
@@ -314,6 +345,12 @@ func s3fsMountFUSE(ctx context.Context) error {
 	// measure s3fs with no disk cache at all (still durable-on-close to S3).
 	if s3fsUseCache {
 		args = append(args, "-o", "use_cache="+s3fsCache)
+		// ensure_diskfree=MB (cache-cap study): s3fs purges cache to keep MB free
+		// on the cache disk. NOTE this bounds free-space-kept, not cache size — it
+		// is not a true absolute cache cap on a large disk (see the -cap* comment).
+		if s3fsEnsureFreeMB != "" {
+			args = append(args, "-o", "ensure_diskfree="+s3fsEnsureFreeMB)
+		}
 	}
 	return exec.Sh(ctx, "s3fs", args...)
 }
@@ -332,7 +369,8 @@ func s3fsRemount(ctx context.Context) error {
 // metadata engine (sqlite | postgres | redis); writeback gates --writeback on
 // the mount (local-ack + async S3 vs. durable-on-fsync/close). Both are stashed
 // in package vars so remount rebuilds the identical mount.
-func juicefsSetup(ctx context.Context, env BackendEnv, metaKind string, writeback bool) error {
+func juicefsSetup(ctx context.Context, env BackendEnv, metaKind string, writeback bool, cacheSize string) error {
+	juicefsCacheSize = cacheSize // stash for remount's rebuild
 	// juicefs isn't in apt — use its install script (idempotent).
 	if err := exec.Sh(ctx, "sh", "-c",
 		"command -v juicefs >/dev/null || curl -sSL https://d.juicefs.com/install | sh -"); err != nil {
@@ -415,9 +453,9 @@ func juicefsMountFUSE(ctx context.Context) error {
 	// --writeback (gated by juicefsWriteback): local-ack writes + async upload,
 	// matching DittoFS's local store + syncer and rclone's --vfs-cache-mode writes.
 	// Off in the -durable variants so the write pass compares the JuiceFS default
-	// (flush to S3 on fsync/close). --cache-size caps the on-disk cache (default
-	// 100 GiB would exceed the VM disk).
-	args := []string{"mount", "-d", "--cache-dir", juicefsCache, "--cache-size", "10240"}
+	// (flush to S3 on fsync/close). --cache-size (MiB) caps the on-disk cache; the
+	// cache-cap study variants pass a small size (juicefsCacheSize) to fill it.
+	args := []string{"mount", "-d", "--cache-dir", juicefsCache, "--cache-size", juicefsCacheSize}
 	if juicefsWriteback {
 		args = append(args, "--writeback")
 	}
