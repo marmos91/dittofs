@@ -76,6 +76,14 @@ smoke 3s), `--results` (`./bench-results`). One JSON per cell, slug-named.
 - **VM**: `scw` CLI must be authed. Knobs (defaults): `SCW_ZONE=fr-par-1`,
   `SCW_INSTANCE_TYPE=POP2-8C-32G`, `SCW_IMAGE=ubuntu_noble`,
   `SCW_ROOT_VOLUME=sbs:100GB:5000`, `SCW_NAME`, `SCW_SSH_KEY`.
+- **Data volume**: `setup` attaches a separate SBS block volume (default 50 GB,
+  `--data-volume-gb`; `0` disables) mounted at `/bench-data` and points every
+  backend's cache/data dir there, so benchmark I/O never contends with the OS
+  root disk under cache-fill load. Its ID is stored in `.bench-vm.json`
+  (`volume_id`) and `teardown` deletes it with the VM (tolerating an
+  already-gone volume) — **let `teardown` own its lifecycle; a manual `scw block
+  volume delete` just drops the handle from `.bench-vm.json`.** With `--data-volume-gb=0`
+  backends fall back to their old root-disk paths (`/var/lib`, `/var/cache`).
 - `setup` cross-builds `dfsbench`/`dfs`/`dfsctl` (CGO-free linux), pushes over
   SSH, apt-installs fio + nfs/samba + s3fs/rclone/s3ql/juicefs on the VM.
 

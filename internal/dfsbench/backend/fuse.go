@@ -17,16 +17,26 @@ import (
 // Recipe flags/URLs are pinned against each tool's installed version on the VM
 // (the first managed run is where they get tuned — measure, don't assume).
 
+// Mountpoints stay on the root disk (they're empty dirs the FUSE tool mounts
+// over); the on-disk *caches* move to the isolated data volume when one exists,
+// so the bulk of read/write I/O stays off the OS root disk (benchPath).
 const (
-	rcloneMnt, rcloneCache   = "/mnt/fuse-rclone", "/var/cache/bench-rclone"
-	s3qlMnt, s3qlCache       = "/mnt/fuse-s3ql", "/var/cache/bench-s3ql"
-	juicefsMnt, juicefsCache = "/mnt/fuse-juicefs", "/var/cache/bench-juicefs"
-	s3fsMnt, s3fsCache       = "/mnt/fuse-s3fs", "/var/cache/bench-s3fs"
+	rcloneMnt  = "/mnt/fuse-rclone"
+	s3qlMnt    = "/mnt/fuse-s3ql"
+	juicefsMnt = "/mnt/fuse-juicefs"
+	s3fsMnt    = "/mnt/fuse-s3fs"
 
 	// juicefsUnboundedCacheMiB is the default --cache-size (MiB): generous headroom
 	// (the tool's own 100 GiB default would exceed the VM disk). The cache-cap
 	// study variants pass a small cache-size instead.
 	juicefsUnboundedCacheMiB = "10240"
+)
+
+var (
+	rcloneCache  = benchPath("/var/cache/bench-rclone", "rclone")
+	s3qlCache    = benchPath("/var/cache/bench-s3ql", "s3ql")
+	juicefsCache = benchPath("/var/cache/bench-juicefs", "juicefs")
+	s3fsCache    = benchPath("/var/cache/bench-s3fs", "s3fs")
 )
 
 func init() {

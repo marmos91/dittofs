@@ -37,6 +37,10 @@ type VM struct {
 	ServerID string `json:"server_id"`
 	IP       string `json:"ip"`
 	Zone     string `json:"zone"`
+	// VolumeID is the separate bench-data block volume attached by setup
+	// (--data-volume-gb>0). Recorded so teardown deletes it too — a leaked
+	// volume is billed indefinitely. Empty when no data volume was attached.
+	VolumeID string `json:"volume_id,omitempty"`
 }
 
 func saveVM(vm VM) error {
