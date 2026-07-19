@@ -234,8 +234,12 @@ type piece struct {
 	dstEnd   int64
 	loc      SegmentLocation
 	subOff   int64
-	hole     bool
-	cold     bool
+	// recOff is the segment offset of the owning record's header, carried from the
+	// interval so a verified read can re-read the whole covering record and check
+	// its CRC without a second index resolve. Only meaningful for a warm piece.
+	recOff int64
+	hole   bool
+	cold   bool
 }
 
 // plan resolves the read [offset, offset+n) into contiguous pieces. Intervals
@@ -263,6 +267,7 @@ func (fi *fileIndex) plan(offset, n int64) []piece {
 		} else {
 			p.loc = iv.loc
 			p.subOff = pos - iv.fileOff
+			p.recOff = iv.recOff
 		}
 		pieces = append(pieces, p)
 		pos = spanEnd
@@ -333,12 +338,44 @@ func (s *Store) ReadAt(ctx context.Context, id FileID, offset int64, dst []byte)
 		default:
 			seg := segs[i]
 			seg.lastAccess.Store(s.clock.Now().UnixNano())
+			if s.verifyReads.Load() {
+				if rerr := s.verifiedRead(seg, p, out, id, offset); rerr != nil {
+					return int(p.dstStart), false, rerr
+				}
+				continue
+			}
 			if _, rerr := seg.fd.ReadAt(out, p.loc.Offset+p.subOff); rerr != nil {
 				return int(p.dstStart), false, fmt.Errorf("journal: read segment %d@%d: %w", p.loc.SegmentID, p.loc.Offset+p.subOff, rerr)
 			}
 		}
 	}
 	return len(dst), cold, nil
+}
+
+// verifiedRead serves a warm piece with integrity verification: it re-reads the
+// whole record that owns the piece (at p.recOff) and validates its header and
+// payload CRCs via readRecordAt, then copies the requested sub-range out of the
+// verified payload. This trades read amplification (the whole record vs the
+// sub-range) for detecting on-disk corruption a raw pread would return silently.
+// A CRC/torn failure — or an index/record extent that no longer agrees — returns
+// a *CorruptRangeError naming the file range so the caller heals from a remote
+// store or fails closed; it never copies unverified bytes into out.
+func (s *Store) verifiedRead(seg *segmentMeta, p piece, out []byte, id FileID, readOff int64) error {
+	corrupt := &CorruptRangeError{FileID: id, Offset: readOff + p.dstStart, Len: p.dstEnd - p.dstStart}
+	rec, _, err := readRecordAt(seg.fd, p.recOff, s.cfg.SegmentSize)
+	if err != nil {
+		return corrupt
+	}
+	// Offset of the piece's first byte within the verified payload: loc.Offset is
+	// the segment byte for the piece start (interval splits advance it), so
+	// subtracting the record's payload start yields the payload-relative index.
+	payloadStart := p.recOff + recordHeaderSize + int64(len(rec.fileID))
+	within := p.loc.Offset + p.subOff - payloadStart
+	if within < 0 || within+int64(len(out)) > int64(len(rec.payload)) {
+		return corrupt
+	}
+	copy(out, rec.payload[within:within+int64(len(out))])
+	return nil
 }
 
 // releaseGuards drops every held read guard, tolerating the nil holes/cold slots.

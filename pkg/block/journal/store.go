@@ -159,8 +159,21 @@ type Store struct {
 	// Zero value = enabled, the safe default.
 	evictionDisabled atomic.Bool
 
+	// verifyReads turns on per-read record-CRC verification of warm reads (opt-in
+	// for durable tiers; off for the fast writeback path). When off, ReadAt serves
+	// a warm piece with a single raw pread and does no extra work. Set once before
+	// the store serves reads.
+	verifyReads atomic.Bool
+
 	closed atomic.Bool
 }
+
+// SetVerifyReads enables or disables per-read record-CRC verification of warm
+// reads. Durable tiers turn it on so on-disk corruption between recovery and a
+// warm read is caught (and healed/failed-closed by the caller) instead of
+// returning silently-wrong bytes; the writeback tier leaves it off to keep the
+// raw fast read. Called once at share construction, before the store serves reads.
+func (s *Store) SetVerifyReads(v bool) { s.verifyReads.Store(v) }
 
 // Open opens (or creates) a Store rooted at dir. A fresh directory gets one
 // active segment per shard. A populated directory is recovered: the active

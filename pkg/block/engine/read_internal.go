@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 )
 
 // blockRefHashes extracts the ContentHash slice from a ChunkRef list
@@ -32,6 +33,13 @@ func (bs *Store) readAtInternal(ctx context.Context, payloadID string, data []by
 
 	n, cold, err := bs.local.ReadAt(ctx, payloadID, int64(offset), data)
 	if err != nil {
+		var corrupt *journal.CorruptRangeError
+		if errors.As(err, &corrupt) {
+			// A durable-tier warm read detected on-disk corruption. The local bytes
+			// are untrustworthy, so never return them: heal from the remote or fail
+			// closed.
+			return bs.healCorruptWarmRead(ctx, payloadID, data, offset)
+		}
 		return 0, fmt.Errorf("local read failed: %w", err)
 	}
 	if !cold {
@@ -42,6 +50,24 @@ func (bs *Store) readAtInternal(ctx context.Context, payloadID string, data []by
 	// covering remote chunks, then re-read the now-warm window.
 	if err := bs.ensureAndReadFromLocal(ctx, payloadID, data, offset); err != nil {
 		return 0, err
+	}
+	return len(data), nil
+}
+
+// healCorruptWarmRead recovers from on-disk corruption that a durable-tier warm
+// read detected (journal returned *CorruptRangeError). With a remote store it
+// re-fetches the covering chunks through the standard hydrate path — the fetch
+// is BLAKE3-verified and the fresh Hydrate supersedes the corrupt local interval
+// by version — then re-reads the now-healed bytes. Without a remote there is no
+// good copy to heal from, so it fails closed with ErrIntegrityCheckFailed (maps
+// to NFS3ERR_IO) rather than returning corrupt or zero-filled bytes.
+func (bs *Store) healCorruptWarmRead(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
+	if !bs.HasRemoteStore() {
+		return 0, fmt.Errorf("warm read integrity failure for %s at offset %d (local-only, no remote to heal from): %w",
+			payloadID, offset, block.ErrIntegrityCheckFailed)
+	}
+	if err := bs.ensureAndReadFromLocal(ctx, payloadID, data, offset); err != nil {
+		return 0, fmt.Errorf("heal corrupt warm read for %s at offset %d: %w", payloadID, offset, err)
 	}
 	return len(data), nil
 }
