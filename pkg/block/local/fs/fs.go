@@ -61,6 +61,12 @@ func New(dir string, maxDisk int64, fileChunkStore block.EngineFileChunkStore) (
 // The remote is nil: cold-read fetch and Hydrate are driven by the engine, so
 // the journal never reaches the remote itself.
 func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileChunkStore, opts FSStoreOptions) (*FSStore, error) {
+	// Refuse to open a directory written by a pre-journal release as an empty
+	// journal — that would silently serve every stored file as zeros. Fail loud
+	// instead; the legacy bytes stay on disk for a migration to recover.
+	if err := checkLegacyLayout(dir); err != nil {
+		return nil, err
+	}
 	cfg := journal.Config{
 		MaxLocalBytes: maxDisk,
 		EvictMaxWait:  opts.BackpressureMaxWait,
