@@ -134,7 +134,7 @@ type CorruptRangeError struct {
 }
 
 func (e *CorruptRangeError) Error() string {
-	return fmt.Sprintf("journal: corrupt range for %q [%d,%d): record CRC mismatch",
+	return fmt.Sprintf("journal: corrupt range for %q [%d,%d): record integrity check failed",
 		e.FileID, e.Offset, e.Offset+e.Len)
 }
 

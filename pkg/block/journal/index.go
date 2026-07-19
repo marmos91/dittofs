@@ -366,6 +366,13 @@ func (s *Store) verifiedRead(seg *segmentMeta, p piece, out []byte, id FileID, r
 	if err != nil {
 		return corrupt
 	}
+	// The header and payload CRCs do not cover the FileID bytes, so a flipped
+	// FileID (or a stale recOff pointing at another file's record) would pass
+	// readRecordAt yet hand back the wrong file's bytes. Confirm the record we
+	// landed on is this file's before trusting its payload.
+	if string(rec.fileID) != string(id) {
+		return corrupt
+	}
 	// Offset of the piece's first byte within the verified payload: loc.Offset is
 	// the segment byte for the piece start (interval splits advance it), so
 	// subtracting the record's payload start yields the payload-relative index.

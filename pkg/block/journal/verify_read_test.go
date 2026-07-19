@@ -79,6 +79,55 @@ func TestVerifiedReadDetectsCorruption(t *testing.T) {
 	}
 }
 
+// TestVerifiedReadDetectsFileIDCorruption asserts that a flipped FileID byte is
+// caught even though neither the header CRC nor the payload CRC covers the FileID
+// bytes. Without the record-belongs-to-this-file check the read would pass CRC
+// and hand back the wrong file's payload silently.
+func TestVerifiedReadDetectsFileIDCorruption(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t, Config{})
+	s.SetVerifyReads(true)
+
+	payload := bytes.Repeat([]byte("dittofs-verify-"), 512)
+	if err := s.WriteAt(ctx, "f1", 0, payload); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+
+	// Flip a byte inside the record's FileID field (right after the header),
+	// which the CRCs do not cover.
+	sh := s.shardFor("f1")
+	sh.mu.Lock()
+	fi := sh.index["f1"]
+	iv := fi.ivs[0]
+	segID := iv.loc.SegmentID
+	fidOff := iv.recOff + recordHeaderSize // first FileID byte
+	sh.mu.Unlock()
+
+	f, err := os.OpenFile(s.segPath(segID), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open segment: %v", err)
+	}
+	var b [1]byte
+	if _, err := f.ReadAt(b[:], fidOff); err != nil {
+		t.Fatalf("read fileID byte: %v", err)
+	}
+	b[0] ^= 0xFF
+	if _, err := f.WriteAt(b[:], fidOff); err != nil {
+		t.Fatalf("write corrupt fileID byte: %v", err)
+	}
+	_ = f.Close()
+
+	got := make([]byte, len(payload))
+	_, cold, err := s.ReadAt(ctx, "f1", 0, got)
+	var cre *CorruptRangeError
+	if !errors.As(err, &cre) {
+		t.Fatalf("want *CorruptRangeError for flipped FileID, got err=%v", err)
+	}
+	if cold {
+		t.Fatalf("a corrupt range must never be reported cold")
+	}
+}
+
 // TestUnverifiedReadReturnsRawBytes documents that the default (writeback) fast
 // path does NOT verify: it serves the corrupted byte verbatim with a single raw
 // read and no error. That the corrupted byte leaks through is the proof the off
