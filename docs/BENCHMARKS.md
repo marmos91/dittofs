@@ -70,24 +70,28 @@ filesystems:
 
 | System | ops/sec |
 |---|--:|
-| **DittoFS** | **5,700** |
-| rclone (write-cache mode) | 6,200 |
-| JuiceFS (writeback) | 1,900 |
-| s3ql | 1,600 |
+| rclone (write-cache mode) | 7,400 |
+| **DittoFS** (badger) | **997** |
+| JuiceFS (writeback) | 14 |
+| s3fs | 7 |
 
-Against the two systems that are genuine peers — **JuiceFS and s3ql**, both of which
-run a real metadata database and deduplicate data — **DittoFS is three to four times
-faster** (roughly 3× JuiceFS and 3.6× s3ql). The one system ahead of it, rclone in
-its write-cache mode, is about 8% faster, but it is not a comparable product: it is
-a thin pass-through with no deduplication, no content-addressing, no crash-consistent
-metadata database, and support for a single protocol. Staying within 8% of a
-bare-metal pass-through while carrying a full storage engine is the real story here.
+DittoFS runs this at essentially **local-disk speed** — the bare local-disk reference
+on the same machine turns in 1,081 ops/sec, and DittoFS is right behind it at 997
+while carrying a full content-addressed storage engine. rclone's write-cache mode is
+faster still, but it is not a comparable product: a thin pass-through with no
+deduplication, no content-addressing, no crash-consistent metadata database, and
+support for a single protocol. **JuiceFS**, the closest genuine peer, commits its
+metadata database synchronously *even in writeback mode*, so its create rate stays
+pinned near its durable rate (~14 ops/sec); DittoFS's writeback tier instead relaxes
+metadata timing for a small bounded-loss window, which is what buys the ~1,000 ops/sec.
+The two are making different durability promises at this tier, not merely posting
+different speeds.
 
 ### Local-durable: a tier that stands alone
 
 The default tier acknowledges a write once the data is safely on local disk, and
-replicates to object storage afterward. DittoFS runs this at around **900 ops/sec**,
-with an intermediate mode that relaxes only metadata timing reaching about **1,700**.
+replicates to object storage afterward. DittoFS runs this at around **690 ops/sec**
+with badger (about 340 MB/s sequential, ~6,500 random-write IOPS).
 
 Notably, **no competitor offers this middle ground at all.** JuiceFS,
 s3fs, and the others step directly from a bounded-loss local cache to a full
@@ -107,14 +111,15 @@ Measured across repeated runs on the same machine:
 
 | System | ops/sec |
 |---|--:|
-| **DittoFS** | **26** |
-| JuiceFS (default) | 26 |
+| JuiceFS (default) | 16 |
+| **DittoFS** (badger) | **13** |
 | s3fs | 3 |
 
-**DittoFS and JuiceFS finish in a dead heat**, and both are roughly ten times faster
-than s3fs's naive write-through. This tier is entirely bound by object-storage
-round-trip time, so individual runs swing widely — anywhere from about 18 to 40
-operations per second for *both* systems.
+**DittoFS and JuiceFS finish within a few operations per second of each other**
+(13 vs 16 here, median of six repeats), and both are roughly ten times faster than
+s3fs's naive write-through. This tier is entirely bound by object-storage round-trip
+time, so individual runs swing widely from one repeat to the next for *both* systems —
+which is why these rows are reported as medians rather than single passes.
 
 Two systems could not be included fairly. rclone's no-cache mode cannot honor a
 synchronous flush at all — the flush errors out and only a zero-byte placeholder
@@ -132,15 +137,16 @@ create-and-write workload against every engine, and the answer depends entirely 
 the tier:
 
 - **At the synchronous-to-object-storage tier, the engine is invisible.** DittoFS
-  turns in 10–12 ops/sec whether the metadata lives in badger, SQLite, or Postgres;
+  turns in 12–13 ops/sec whether the metadata lives in badger, SQLite, or Postgres;
   JuiceFS turns in 15–18 across SQLite, Postgres, and Redis. The write is gated by a
   network round-trip to object storage, and that round-trip dwarfs anything the
   metadata database does. Pick the engine you want to operate — it will not change
   your durable-write throughput.
 - **At the local-ack tier, the engine matters for DittoFS.** With the object-store
-  round-trip out of the hot path, the metadata engine becomes visible: badger leads,
-  SQLite is roughly half its rate, and Postgres a little behind that (about a 2–3×
-  spread). JuiceFS, by contrast, stays flat across its engines, because it commits
+  round-trip out of the hot path, the metadata engine becomes visible: badger leads by
+  a wide margin (≈1,000 ops/sec), with Postgres and SQLite landing at roughly a third
+  to a half of that (about a 2–3× spread). JuiceFS, by contrast, stays flat across its
+  engines, because it commits
   metadata synchronously to its database even in writeback mode.
 
 The practical takeaway: choose the metadata engine for operability — an embedded
@@ -229,8 +235,9 @@ object-storage round-trip, not by local hardware.
 - It offers a **local-durable middle tier that no competitor provides** — crash-safe
   without an object-storage round-trip on every write.
 - The places it trails are honest and well-understood: a bare-metal pass-through
-  (rclone) edges it by single digits at the writeback tier while offering none of the
-  storage features, and sequential-write bandwidth to a single stream still has room
+  (rclone) is several times faster at the writeback tier while offering none of the
+  storage features — no deduplication, no content-addressing, no crash-consistent
+  metadata database — and sequential-write bandwidth to a single stream still has room
   to grow.
 
 The overall picture is a system that competes at the top of its class while making
