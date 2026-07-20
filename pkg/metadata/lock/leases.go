@@ -1001,6 +1001,9 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 		logger.Debug("AcknowledgeLeaseBreak: lease released to None (record kept until CLOSE)",
 			"leaseKey", fmt.Sprintf("%x", leaseKey))
 		lm.signalBreakWaitLocked(handleKey)
+		// Deliver the next directory RH-lease break on this directory that was
+		// deferred behind this one, so multi-lease dir breaks serialize.
+		lm.dispatchNextDeferredDirBreakLocked(handleKey)
 		return nil
 	}
 

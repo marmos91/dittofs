@@ -234,6 +234,68 @@ func TestOnDirChange_SuppressesParentKeyMatchedDirLease(t *testing.T) {
 	}
 }
 
+// TestOnDirChange_SerializesMultipleDirLeaseBreaks pins the serialized delivery
+// of multiple directory RH-lease breaks (smb2.dirlease.unlink_different_*): when
+// one directory change breaks two dir leases with different keys, only the first
+// break is delivered immediately; acknowledging it delivers the second. Sending
+// both at once produces the client-side lease_break_info.count==2 failure.
+func TestOnDirChange_SerializesMultipleDirLeaseBreaks(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	const handleKey = "/share:dir"
+	key1 := [16]byte{0x01}
+	key2 := [16]byte{0x02}
+
+	mu := &sync.Mutex{}
+	var order [][16]byte
+	lm.RegisterBreakCallbacks(&testBreakCallbacks{
+		onOpLockBreak: func(_ string, l *UnifiedLock, _ uint32) {
+			mu.Lock()
+			order = append(order, l.Lease.LeaseKey)
+			mu.Unlock()
+		},
+	})
+	lm.mu.Lock()
+	lm.unifiedLocks[handleKey] = []*UnifiedLock{
+		{Owner: LockOwner{OwnerID: "h1", ClientID: "smb:c1"},
+			Lease: &OpLock{LeaseKey: key1, LeaseState: LeaseStateRead | LeaseStateHandle, Epoch: 1, IsDirectory: true}},
+		{Owner: LockOwner{OwnerID: "h2", ClientID: "smb:c2"},
+			Lease: &OpLock{LeaseKey: key2, LeaseState: LeaseStateRead | LeaseStateHandle, Epoch: 1, IsDirectory: true}},
+	}
+	lm.reindexHandleLocked(handleKey, nil)
+	lm.mu.Unlock()
+
+	// A change with no parent key breaks both dir leases.
+	lm.OnDirChange(FileHandle(handleKey), DirChangeRemoveEntry, "smb:other", [16]byte{}, false)
+
+	// Only the first break is delivered now; the second is deferred.
+	mu.Lock()
+	got := len(order)
+	var first [16]byte
+	if got == 1 {
+		first = order[0]
+	}
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("expected exactly 1 dir-lease break delivered immediately (RH breaks serialize), got %d", got)
+	}
+
+	// Acknowledging the first break delivers the deferred second break.
+	if err := lm.AcknowledgeLeaseBreak(context.Background(), first, LeaseStateNone, 0); err != nil {
+		t.Fatalf("AcknowledgeLeaseBreak: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 2 {
+		t.Fatalf("acknowledging the first break must deliver the deferred second; got %d total breaks", len(order))
+	}
+	if order[1] == first {
+		t.Fatalf("second break repeated the first lease key %x; expected the other dir lease", first)
+	}
+}
+
 // TestAcknowledgeLeaseBreak_ClearsMirroredSiblings is a regression test for the
 // create/delete-heavy SMB3 stall: a mirrored sibling left Breaking=true after
 // the client's single acknowledge.
