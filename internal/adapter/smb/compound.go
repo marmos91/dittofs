@@ -375,30 +375,37 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo, req
 	// replaces per-command signing).
 	willEncrypt := compoundShouldEncrypt(connInfo, responses[0].respHeader, requestEncrypted)
 
-	var payload []byte
+	// Sum every sub-response's 8-byte-aligned on-wire length up front so the
+	// composed frame is allocated once, then write each header+body+padding
+	// into place rather than growing the payload per command.
+	total := 0
+	for i := range responses {
+		cmdLen := header.HeaderSize + len(responses[i].body)
+		total += cmdLen + (8-cmdLen%8)%8
+	}
+
+	payload := make([]byte, total)
+	offset := 0
 	for i := range responses {
 		body := responses[i].body
+		cmdLen := header.HeaderSize + len(body)
+		cmdLen += (8 - cmdLen%8) % 8
 
-		// Pad body to 8-byte boundary
-		totalLen := header.HeaderSize + len(body)
-		if padding := (8 - totalLen%8) % 8; padding > 0 {
-			body = append(body, make([]byte, padding)...)
-		}
-
-		// Set NextCommand offset for non-last responses
+		// Set NextCommand offset for non-last responses (points past this
+		// command's padded bytes). Must be set before Encode serializes it.
 		if i < len(responses)-1 {
-			responses[i].respHeader.NextCommand = uint32(header.HeaderSize + len(body))
+			responses[i].respHeader.NextCommand = uint32(cmdLen)
 		}
 
-		// Encode header (after setting NextCommand) and build full command bytes
+		// Write header then body into place; the trailing pad bytes stay zero
+		// (payload came from make, which zero-fills).
 		encoded := responses[i].respHeader.Encode()
-		cmdBytes := make([]byte, len(encoded)+len(body))
-		copy(cmdBytes, encoded)
-		copy(cmdBytes[len(encoded):], body)
+		copy(payload[offset:], encoded)
+		copy(payload[offset+len(encoded):], body)
 
-		// Sign this command individually (encrypted sessions use AEAD instead).
-		// If the sub-response's SessionID doesn't map to a known session,
-		// fall back to the first response's session for signing.
+		// Sign this command's slice individually (encrypted sessions use AEAD
+		// instead). If the sub-response's SessionID doesn't map to a known
+		// session, fall back to the first response's session for signing.
 		if sid := responses[i].respHeader.SessionID; sid != 0 {
 			sess, ok := connInfo.Handler.GetSession(sid)
 			if !ok && firstSession != nil {
@@ -407,11 +414,11 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo, req
 			}
 			// Skip per-command signing when the whole frame will be AEAD-encrypted.
 			if ok && sess.ShouldSign() && !willEncrypt {
-				sess.SignMessageOnChannel(connInfo.ConnID, cmdBytes)
+				sess.SignMessageOnChannel(connInfo.ConnID, payload[offset:offset+cmdLen])
 			}
 		}
 
-		payload = append(payload, cmdBytes...)
+		offset += cmdLen
 	}
 
 	// Handle encryption for the whole compound (decision computed above).

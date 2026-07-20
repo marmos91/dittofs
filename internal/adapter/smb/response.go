@@ -28,7 +28,28 @@ func recordRequest(connInfo *ConnInfo, op string, isError bool, start time.Time)
 	if isError {
 		status = "error"
 	}
-	connInfo.Metrics.RecordRequest("smb", strings.ToLower(op), status, time.Since(start))
+	// Dispatch-table op names are a static bounded set, so their lower-cased
+	// labels are precomputed once (metricLabels) instead of lower-casing every
+	// request. Only unknown commands (types.Command.String() fallback) miss the
+	// map and take the rare per-call lower-case.
+	label, ok := metricLabels[op]
+	if !ok {
+		label = strings.ToLower(op)
+	}
+	connInfo.Metrics.RecordRequest("smb", label, status, time.Since(start))
+}
+
+// metricLabels maps each dispatch-table command name to its lower-cased RED
+// metric label. Populated once from DispatchTable so recordRequest avoids a
+// per-request allocation. Built in init because DispatchTable is itself
+// populated in an init (dispatch.go), which runs before this file's init.
+var metricLabels map[string]string
+
+func init() {
+	metricLabels = make(map[string]string, len(DispatchTable))
+	for _, c := range DispatchTable {
+		metricLabels[c.Name] = strings.ToLower(c.Name)
+	}
 }
 
 // commandName resolves a bounded operation label for an SMB2 command code.
@@ -1409,10 +1430,15 @@ func TrackSessionLifecycle(command types.Command, reqSessionID, ctxSessionID uin
 	}
 }
 
-// MakeErrorBody creates a minimal error response body per MS-SMB2 2.2.2.
-// Layout (9 bytes): StructureSize (2) + ErrorContextCount (1) + Reserved (1) + ByteCount (4) + ErrorData (1 padding).
+// errorBody is the shared immutable SMB2 ERROR response body per MS-SMB2 2.2.2.
+// Layout (9 bytes): StructureSize (2, =9) + ErrorContextCount (1) + Reserved (1)
+// + ByteCount (4) + ErrorData (1 padding). Every caller copies it into the
+// outgoing frame (via append or copy) and never mutates it in place, so one
+// backing slice is reused rather than allocating a fresh body per call.
+var errorBody = []byte{9, 0, 0, 0, 0, 0, 0, 0, 0}
+
+// MakeErrorBody returns the shared immutable SMB2 ERROR response body. Callers
+// must only read or copy the returned bytes, never mutate them in place.
 func MakeErrorBody() []byte {
-	body := make([]byte, 9)
-	binary.LittleEndian.PutUint16(body[0:2], 9) // StructureSize
-	return body
+	return errorBody
 }
