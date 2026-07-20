@@ -102,6 +102,12 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 				if after, aErr := store.GetFile(ctx.Context, parentHandle); aErr == nil {
 					wcc.After = CopyFileAttr(&after.FileAttr)
 				}
+				// Recycling still removes the name from its parent, so break the
+				// parent's directory leases exactly as the permanent-delete path
+				// below does — otherwise a caching client keeps serving a stale
+				// listing that still shows the recycled entry. RemoveDirectory's
+				// recycle branch notifies for the same reason.
+				s.notifyDirChange(shareName, parentHandle, lock.DirChangeRemoveEntry, ctx)
 				return recycled, wcc, nil
 			}
 		}

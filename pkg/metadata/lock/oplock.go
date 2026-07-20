@@ -180,6 +180,15 @@ type OpLock struct {
 	// When true, the client has been notified and must acknowledge.
 	Breaking bool
 
+	// BreakDeferred marks a directory-lease break that is in progress
+	// (Breaking=true) but whose wire notification has NOT yet been sent, because
+	// another directory lease on the same directory is breaking ahead of it.
+	// Revoking a directory RH lease waits for the client's acknowledgment (the
+	// handle-caching bit), so when a single directory change breaks several dir
+	// leases they are delivered one at a time: the first is sent immediately and
+	// each acknowledgment dispatches the next deferred one.
+	BreakDeferred bool
+
 	// Epoch is incremented on every lease state change (SMB3).
 	// Used by clients to detect stale state notifications.
 	Epoch uint16
@@ -328,6 +337,7 @@ func (l *OpLock) Clone() *OpLock {
 		BreakToState:        l.BreakToState,
 		BreakingToRequired:  l.BreakingToRequired,
 		Breaking:            l.Breaking,
+		BreakDeferred:       l.BreakDeferred,
 		Epoch:               l.Epoch,
 		BreakStarted:        l.BreakStarted,
 		Reclaim:             l.Reclaim,

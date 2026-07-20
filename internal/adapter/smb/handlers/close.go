@@ -577,20 +577,16 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 					h.purgeBlockStorePayload(ctx.Context, deleteTargetHandle, removedPayloadID, openFile.Path, "CLOSE")
 					h.restoreParentDirFrozenTimestamps(authCtx, deleteParentHandle)
 
-					// Break parent directory leases: deletion changes directory
-					// content. When docSetterKeysDiffer, clear the closer's
-					// parent key so no suppression applies — all dir leases break.
-					if docSetterKeysDiffer {
-						savedKey := openFile.ParentLeaseKey
-						savedHas := openFile.HasParentLeaseKey
-						openFile.HasParentLeaseKey = false
-						openFile.ParentLeaseKey = [16]byte{}
-						h.breakParentDirLeasesForContentChange(ctx, authCtx, openFile)
-						openFile.ParentLeaseKey = savedKey
-						openFile.HasParentLeaseKey = savedHas
-					} else {
-						h.breakParentDirLeasesForContentChange(ctx, authCtx, openFile)
-					}
+					// Removing the entry already broke the parent directory's
+					// leases: RemoveFile / RemoveDirectory notify the dir-change
+					// listener, which breaks every parent dir lease (except the
+					// originator / suppressed key) to None. The parent-key
+					// suppression was applied via the authCtx propagated above
+					// (closer's key when it matches the DOC-setter's key; none
+					// when they differ, so all dir leases break). Dispatching a
+					// second break here would re-break a lease the client may have
+					// already acked and re-cached in the meantime, sending a
+					// duplicate LEASE_BREAK for one logical change.
 
 					if h.NotifyRegistry != nil {
 						parentPath := GetParentPath(openFile.Path)

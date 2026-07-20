@@ -1,8 +1,10 @@
 package lock
 
 import (
+	"context"
 	"sync"
 	"testing"
+	"time"
 )
 
 // dlease2Key is the DLEASE2 lease-key constant smbtorture reuses across every
@@ -41,6 +43,10 @@ func twoSameKeyDirLeases(t *testing.T, lm *Manager, handleKey string, key [16]by
 
 	lm.mu.Lock()
 	lm.unifiedLocks[handleKey] = records
+	// Populate the lease-key index so findLeaseByKey (used by
+	// AcknowledgeLeaseBreak) can resolve these directly-injected records, as it
+	// would for records added through the normal grant path.
+	lm.reindexHandleLocked(handleKey, nil)
 	lm.mu.Unlock()
 
 	return mu, breaksByKey, records
@@ -152,4 +158,194 @@ func TestOnDirChange_DedupsByLeaseKey(t *testing.T) {
 	// BreakToState/BreakingToRequired/Epoch) so a later OnDirChange scan can't
 	// treat the skipped sibling as an active non-breaking lease.
 	assertBothSiblingsBreaking(t, lm, records)
+}
+
+// oneDirLease injects a single RH directory-lease record under handleKey owned by
+// ownerClient with the given key, wires a per-key break counter, and returns it.
+func oneDirLease(t *testing.T, lm *Manager, handleKey, ownerClient string, key [16]byte) (*sync.Mutex, map[[16]byte]int) {
+	t.Helper()
+	mu := &sync.Mutex{}
+	breaks := map[[16]byte]int{}
+	lm.RegisterBreakCallbacks(&testBreakCallbacks{
+		onOpLockBreak: func(_ string, l *UnifiedLock, _ uint32) {
+			mu.Lock()
+			breaks[l.Lease.LeaseKey]++
+			mu.Unlock()
+		},
+	})
+	lm.mu.Lock()
+	lm.unifiedLocks[handleKey] = []*UnifiedLock{{
+		Owner: LockOwner{OwnerID: "h1", ClientID: ownerClient},
+		Lease: &OpLock{LeaseKey: key, LeaseState: LeaseStateRead | LeaseStateHandle, Epoch: 1, IsDirectory: true},
+	}}
+	lm.reindexHandleLocked(handleKey, nil)
+	lm.mu.Unlock()
+	return mu, breaks
+}
+
+// TestOnDirChange_BreaksOriginatorsOtherDirLease reproduces the deterministic
+// count==0 behind smb2.dirlease.unlink_*_and_close. Per MS-SMB2 §3.3.4.20 and the
+// Samba object-store rule, a directory-content change breaks every parent dir
+// lease whose lease key differs from the change's parent lease key — INCLUDING a
+// dir lease the originating client holds on a different handle. Only the
+// parent-key-matched lease is spared; the originating CLIENT must not be
+// blanket-excluded.
+func TestOnDirChange_BreaksOriginatorsOtherDirLease(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	const handleKey = "/share:dir"
+	victimKey := [16]byte{0x02}
+	closerParentKey := [16]byte{0x01} // differs from victimKey → victim must break
+
+	// The victim dir lease is owned by the SAME client that originates the delete.
+	mu, breaks := oneDirLease(t, lm, handleKey, "smb:c1", victimKey)
+
+	lm.OnDirChange(FileHandle(handleKey), DirChangeRemoveEntry, "smb:c1", closerParentKey, true)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if breaks[victimKey] != 1 {
+		t.Fatalf("originator's other-key dir lease got %d breaks, want 1; a blanket "+
+			"client-exclusion wrongly suppressed a lease the parent-key rule says must break "+
+			"(the deterministic smb2.dirlease.unlink_*_and_close count==0)", breaks[victimKey])
+	}
+}
+
+// TestOnDirChange_SuppressesParentKeyMatchedDirLease pins the other half of the
+// rule: the dir lease whose key MATCHES the change's parent lease key is spared
+// (the originator's own cached view), even without any client-level exclusion.
+func TestOnDirChange_SuppressesParentKeyMatchedDirLease(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	const handleKey = "/share:dir"
+	matchedKey := [16]byte{0x07}
+
+	mu, breaks := oneDirLease(t, lm, handleKey, "smb:c1", matchedKey)
+
+	// Parent key == the lease key → parent-key suppression spares it.
+	lm.OnDirChange(FileHandle(handleKey), DirChangeRemoveEntry, "smb:c1", matchedKey, true)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if breaks[matchedKey] != 0 {
+		t.Fatalf("parent-key-matched dir lease got %d breaks, want 0 (must be suppressed)", breaks[matchedKey])
+	}
+}
+
+// TestOnDirChange_SerializesMultipleDirLeaseBreaks pins the serialized delivery
+// of multiple directory RH-lease breaks (smb2.dirlease.unlink_different_*): when
+// one directory change breaks two dir leases with different keys, only the first
+// break is delivered immediately; acknowledging it delivers the second. Sending
+// both at once produces the client-side lease_break_info.count==2 failure.
+func TestOnDirChange_SerializesMultipleDirLeaseBreaks(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	const handleKey = "/share:dir"
+	key1 := [16]byte{0x01}
+	key2 := [16]byte{0x02}
+
+	mu := &sync.Mutex{}
+	var order [][16]byte
+	lm.RegisterBreakCallbacks(&testBreakCallbacks{
+		onOpLockBreak: func(_ string, l *UnifiedLock, _ uint32) {
+			mu.Lock()
+			order = append(order, l.Lease.LeaseKey)
+			mu.Unlock()
+		},
+	})
+	lm.mu.Lock()
+	lm.unifiedLocks[handleKey] = []*UnifiedLock{
+		{Owner: LockOwner{OwnerID: "h1", ClientID: "smb:c1"},
+			Lease: &OpLock{LeaseKey: key1, LeaseState: LeaseStateRead | LeaseStateHandle, Epoch: 1, IsDirectory: true}},
+		{Owner: LockOwner{OwnerID: "h2", ClientID: "smb:c2"},
+			Lease: &OpLock{LeaseKey: key2, LeaseState: LeaseStateRead | LeaseStateHandle, Epoch: 1, IsDirectory: true}},
+	}
+	lm.reindexHandleLocked(handleKey, nil)
+	lm.mu.Unlock()
+
+	// A change with no parent key breaks both dir leases.
+	lm.OnDirChange(FileHandle(handleKey), DirChangeRemoveEntry, "smb:other", [16]byte{}, false)
+
+	// Only the first break is delivered now; the second is deferred.
+	mu.Lock()
+	got := len(order)
+	var first [16]byte
+	if got == 1 {
+		first = order[0]
+	}
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("expected exactly 1 dir-lease break delivered immediately (RH breaks serialize), got %d", got)
+	}
+
+	// Acknowledging the first break delivers the deferred second break.
+	if err := lm.AcknowledgeLeaseBreak(context.Background(), first, LeaseStateNone, 0); err != nil {
+		t.Fatalf("AcknowledgeLeaseBreak: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 2 {
+		t.Fatalf("acknowledging the first break must deliver the deferred second; got %d total breaks", len(order))
+	}
+	if order[1] == first {
+		t.Fatalf("second break repeated the first lease key %x; expected the other dir lease", first)
+	}
+}
+
+// TestAcknowledgeLeaseBreak_ClearsMirroredSiblings is a regression test for the
+// create/delete-heavy SMB3 stall: a mirrored sibling left Breaking=true after
+// the client's single acknowledge.
+//
+// A directory-content-change break dispatches one wire LEASE_BREAK per lease key
+// and mirrors the break stage onto every sibling sharing that key without a
+// second notification (opens sharing a key are one logical lease, MS-SMB2
+// §3.3.5.9 — see assertBothSiblingsBreaking). The client then sends exactly ONE
+// acknowledge for the key, which findLeaseByKey resolves to a single record.
+// Unless the acknowledge clears every record sharing the key, the mirrored
+// sibling stays Breaking=true forever, so WaitForBreakCompletion on that
+// handleKey blocks until the force-complete timeout on every following operation.
+func TestAcknowledgeLeaseBreak_ClearsMirroredSiblings(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	const handleKey = "/share:dir-uuid"
+	_, _, records := twoSameKeyDirLeases(t, lm, handleKey, dlease2Key)
+
+	// Break both same-key dir leases to None: one notification, sibling mirrored.
+	lm.OnDirChange(FileHandle(handleKey), DirChangeRemoveEntry, "smb:3", [16]byte{}, false)
+
+	// The client sends exactly ONE acknowledge for the shared lease key.
+	if err := lm.AcknowledgeLeaseBreak(context.Background(), dlease2Key, LeaseStateNone, 0); err != nil {
+		t.Fatalf("AcknowledgeLeaseBreak: %v", err)
+	}
+
+	// Every record sharing the key — the one findLeaseByKey resolved AND the
+	// mirrored sibling — must land at None with Breaking cleared.
+	lm.mu.Lock()
+	for i, rec := range records {
+		if rec.Lease.Breaking {
+			lm.mu.Unlock()
+			t.Fatalf("record %d (%s): Breaking=true after a single acknowledge; the "+
+				"mirrored sibling was never cleared (WaitForBreakCompletion stalls until "+
+				"the force-complete timeout)", i, rec.Owner.OwnerID)
+		}
+		if rec.Lease.LeaseState != LeaseStateNone {
+			lm.mu.Unlock()
+			t.Fatalf("record %d (%s): LeaseState=%#x after ack-to-None; want None",
+				i, rec.Owner.OwnerID, rec.Lease.LeaseState)
+		}
+	}
+	lm.mu.Unlock()
+
+	// With no record left Breaking, WaitForBreakCompletion returns at once rather
+	// than blocking until the timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := lm.WaitForBreakCompletion(ctx, handleKey); err != nil {
+		t.Fatalf("WaitForBreakCompletion blocked/errored with a stuck mirrored sibling: %v", err)
+	}
 }
