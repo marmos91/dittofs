@@ -236,10 +236,11 @@ func init() {
 				Setup: func(ctx context.Context, env BackendEnv) error {
 					return dittofsSetup(ctx, env, kind, durability, dittofsUnboundedMaxSize)
 				},
-				Mount:    dittofsMount,
-				Evict:    dittofsEvict,
-				Unmount:  func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
-				Teardown: dittofsTeardown,
+				Mount:       dittofsMount,
+				Evict:       dittofsEvict,
+				WaitSettled: dittofsWaitSettled,
+				Unmount:     func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
+				Teardown:    dittofsTeardown,
 			})
 		}
 	}
@@ -267,10 +268,11 @@ func init() {
 			Setup: func(ctx context.Context, env BackendEnv) error {
 				return dittofsSetup(ctx, env, metaBadger, "writeback", maxSize)
 			},
-			Mount:    dittofsMount,
-			Evict:    dittofsEvict,
-			Unmount:  func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
-			Teardown: dittofsTeardown,
+			Mount:       dittofsMount,
+			Evict:       dittofsEvict,
+			WaitSettled: dittofsWaitSettled,
+			Unmount:     func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
+			Teardown:    dittofsTeardown,
 		})
 	}
 }
@@ -476,6 +478,53 @@ func dittofsBlockStats(ctx context.Context) (dittofsBlockTotals, error) {
 		return dittofsBlockTotals{}, fmt.Errorf("parse block stats json: %w\n%s", err, out)
 	}
 	return resp.Totals, nil
+}
+
+// dittofsSettleTimeout bounds how long the warm-read settle waits for the block
+// store's async digestion to go idle before giving up and measuring anyway.
+const dittofsSettleTimeout = 120 * time.Second
+
+// dittofsWaitSettled blocks until the block store's async carve/upload/rollup of
+// freshly-written data goes idle, so the warm read pass measures a settled store
+// (served from the local journal) instead of one still writing CAS chunks to disk
+// and S3 — that concurrent digestion charges the read path for unrelated write
+// I/O and CPU, tanking warm rand-read latency. "Idle" is "no uploads in flight
+// and unsynced bytes no longer shrinking" across consecutive polls, not
+// unsynced==0: a sub-GiB file's final bytes stay pinned in the unsealed append
+// log indefinitely without another write. Polls passively — it never triggers a
+// drain (which can stall) — and on timeout logs and returns nil so a contaminated
+// measurement is surfaced rather than failing the cell.
+func dittofsWaitSettled(ctx context.Context) error {
+	start := time.Now()
+	deadline := start.Add(dittofsSettleTimeout)
+	prev := int64(-1)
+	stable := 0
+	for {
+		st, err := dittofsBlockStats(ctx)
+		if err != nil {
+			return err
+		}
+		if st.PendingUploads == 0 && st.UnsyncedBytes == prev {
+			if stable++; stable >= 2 {
+				_, _ = fmt.Fprintf(exec.CmdOut, "settled: waited %dms for block-store sync to go idle (unsynced=%dMiB, pending=0)\n",
+					time.Since(start).Milliseconds(), st.UnsyncedBytes>>20)
+				return nil
+			}
+		} else {
+			stable = 0
+		}
+		prev = st.UnsyncedBytes
+		if time.Now().After(deadline) {
+			_, _ = fmt.Fprintf(exec.CmdOut, "settle: block store still busy after %s (unsynced=%dMiB, pending=%d) — warm read may be contaminated\n",
+				dittofsSettleTimeout, st.UnsyncedBytes>>20, st.PendingUploads)
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 }
 
 // dittofsDrainDriftFloorBytes is the residual unsynced size the drain loop
