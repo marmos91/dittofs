@@ -791,6 +791,15 @@ func buildResponseHeaderAndBody(reqHeader *header.SMB2Header, ctx *handlers.SMBH
 // harmless undergrant on the next response, not an overgrant.
 func grantConnectionCredits(connInfo *ConnInfo, sessionID uint64, requested, creditCharge uint16) uint16 {
 	credits := connInfo.SessionManager.GrantCredits(sessionID, requested, creditCharge)
+	// Never grant fewer credits than the charge this operation consumes, so the
+	// client's credit balance is conserved and cannot drain to zero (which
+	// deadlocks it — with no credits it cannot send the request that would
+	// replenish them). A multi-credit operation (e.g. a 1 MiB write charges 16)
+	// that granted only 1 would leak credits every op. This floor keeps a
+	// single simple request (charge 1) grant at 1, unchanged from the strategy.
+	if credits < creditCharge {
+		credits = creditCharge
+	}
 	if connInfo.SequenceWindow != nil {
 		credits = connInfo.SequenceWindow.Grant(credits)
 	}
