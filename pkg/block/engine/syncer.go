@@ -780,7 +780,7 @@ func (m *Syncer) wireCarveTargets() {
 			return // remote configured but deps not fully wired yet
 		}
 		deduper := engineDeduper{synced: m.syncedHashStore}
-		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter}
+		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}}
 		m.local.SetCarveTargets(deduper, sink)
 		m.carveTargetsWired = true
 		return
@@ -792,7 +792,7 @@ func (m *Syncer) wireCarveTargets() {
 	// remote is coming — never from recomputeCarveActive (which gates on a
 	// present remote). blockCommitter is nil only for the clone fixture, whose
 	// source has no dirty data so CommitBlock never fires.
-	m.local.SetCarveTargets(localDeduper{}, localBlockSink{committer: m.blockCommitter})
+	m.local.SetCarveTargets(localDeduper{}, localBlockSink{committer: m.blockCommitter, commitLocks: &carveCommitLocks{}})
 	m.carveTargetsWired = true
 }
 

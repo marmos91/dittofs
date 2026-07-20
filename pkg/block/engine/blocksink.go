@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 
 	"lukechampine.com/blake3"
 
@@ -14,6 +15,42 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// numCarveCommitStripes must be a power of two so the stripe index is a mask.
+const numCarveCommitStripes = 256
+
+// carveCommitLocks serializes a payloadID's metadata commit so the within-file
+// carve dispatcher's concurrent CommitBlock calls do not read-modify-write the
+// same File row at once. Each commit re-projects File.Blocks (a PutFile), so two
+// overlapping commits for one file abort under badger's SSI as a transaction
+// conflict; enough contention exhausts the retry budget and surfaces to the
+// carver (the SMB/NFS client sees EDEADLK). The block upload runs OUTSIDE this
+// lock, so overlapping successive blocks' uploads — the point of the concurrent
+// dispatcher — is preserved. Distinct payloadIDs take distinct stripes and still
+// commit concurrently; two that collide on a stripe serialize briefly, which is
+// harmless (the commit transaction is short).
+//
+// A fixed stripe array bounds memory: a long-lived share carving many files
+// never accumulates one mutex per file the way a keyed map would.
+type carveCommitLocks struct {
+	stripes [numCarveCommitStripes]sync.Mutex
+}
+
+// forKey returns the stripe mutex for payloadID, or nil when no stripes are
+// wired (test fixtures that never exercise the concurrent dispatcher). A nil
+// receiver makes the lock a no-op so those callers keep their prior behaviour.
+func (c *carveCommitLocks) forKey(payloadID string) *sync.Mutex {
+	if c == nil {
+		return nil
+	}
+	// FNV-1a over the payloadID, masked to the stripe count (power of two).
+	var h uint32 = 2166136261
+	for i := 0; i < len(payloadID); i++ {
+		h ^= uint32(payloadID[i])
+		h *= 16777619
+	}
+	return &c.stripes[h&(numCarveCommitStripes-1)]
+}
 
 // engineDeduper answers journal's carve dedup oracle from the per-share
 // synced-hash store: a chunk is durable once its hash has been mirrored to the
@@ -49,7 +86,8 @@ func (localDeduper) IsChunkDurable(context.Context, journal.ChunkHash) (bool, er
 // clone fixture has no committer, but its source has no dirty data so CommitBlock
 // never fires — a nil committer there is inert.
 type localBlockSink struct {
-	committer blockCommitter
+	committer   blockCommitter
+	commitLocks *carveCommitLocks
 }
 
 func (s localBlockSink) CommitBlock(ctx context.Context, chunks []journal.CarveChunk) error {
@@ -69,6 +107,12 @@ func (s localBlockSink) CommitBlock(ctx context.Context, chunks []journal.CarveC
 			DataSize: uint32(len(c.Data)),
 			State:    block.BlockStatePending,
 		})
+	}
+	// Serialize this file's commits so overlapping dispatcher calls don't abort
+	// on the shared File-row projection under SSI.
+	if mu := s.commitLocks.forKey(payloadID); mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
 	}
 	return s.committer.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		for _, fc := range fileChunks {
@@ -110,9 +154,10 @@ func (s engineBlockSink) ReapSupersededManifest(ctx context.Context, id journal.
 // rows. It mirrors Syncer.carveAndCommitBlock minus the local-byte resolution —
 // journal hands the plaintext in-hand on each CarveChunk.
 type engineBlockSink struct {
-	sealer    remote.ChunkSealer
-	rbs       remote.RemoteBlockStore
-	committer blockCommitter
+	sealer      remote.ChunkSealer
+	rbs         remote.RemoteBlockStore
+	committer   blockCommitter
+	commitLocks *carveCommitLocks
 }
 
 func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []journal.CarveChunk) error {
@@ -189,7 +234,17 @@ func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []journal.Carve
 		LiveChunkCount: uint32(len(commits)),
 		SyncState:      block.BlockStateRemote,
 	}
-	if err := metadata.DefaultCommitBlock(ctx, s.committer, rec, commits, fileChunks); err != nil {
+	// Only the metadata commit is serialized per file (the shared File-row
+	// projection under SSI); the PutBlock upload above ran concurrently with the
+	// next block's, which is the whole point of the overlapping dispatcher.
+	commit := func() error {
+		if mu := s.commitLocks.forKey(string(chunks[0].FileID)); mu != nil {
+			mu.Lock()
+			defer mu.Unlock()
+		}
+		return metadata.DefaultCommitBlock(ctx, s.committer, rec, commits, fileChunks)
+	}
+	if err := commit(); err != nil {
 		return fmt.Errorf("carve: commit block %s: %w", blockID, err)
 	}
 	return nil
