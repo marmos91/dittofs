@@ -1955,6 +1955,21 @@ func (h *Handler) handleOpenRootCreate(
 			Data: leaseResponse.Encode(),
 		})
 	}
+	// Answer the on-disk-id (QFid) request with the root's stable file ID, the
+	// same value FILE_ALL reports as the inode number. A serverino client that
+	// asks for the on-disk id at mount (instead of a separate query) uses it as
+	// the root inode identity; without this response it derives a fabricated
+	// number that every later stat then contradicts, yielding a stale handle.
+	if FindCreateContext(req.CreateContexts, "QFid") != nil {
+		qfidFileID := h.baseFileUUID(authCtx, nil, "", rootFile.ID)
+		qfidResp := make([]byte, 32)
+		copy(qfidResp[0:16], qfidFileID[:16])
+		copy(qfidResp[16:32], h.ServerGUID[:])
+		resp.CreateContexts = append(resp.CreateContexts, CreateContext{
+			Name: "QFid",
+			Data: qfidResp,
+		})
+	}
 	return resp, nil
 }
 

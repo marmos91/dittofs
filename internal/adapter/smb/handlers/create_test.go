@@ -526,6 +526,43 @@ func TestHandleOpenRootCreate_GrantsRequestedDirLease(t *testing.T) {
 	}
 }
 
+// The on-disk id (QFid) the root open reports must equal the inode number a
+// later FILE_ALL query reports for the root; both derive from the root file's
+// ID. A serverino client latches the QFid value at mount and compares it on
+// every stat, so a mismatch surfaces as a stale handle.
+func TestHandleOpenRootCreate_AnswersQFidWithStableRootID(t *testing.T) {
+	h, authCtx, rootHandle := setupWalkPathTest(t)
+
+	rootFile, err := h.Registry.GetMetadataService().GetFile(authCtx.Context, rootHandle)
+	if err != nil {
+		t.Fatalf("GetFile(root): %v", err)
+	}
+	wantID := h.baseFileUUID(authCtx, nil, "", rootFile.ID)
+
+	req := &CreateRequest{
+		DesiredAccess:     0x00000080, // FILE_READ_ATTRIBUTES
+		CreateDisposition: types.FileOpen,
+		CreateContexts:    []CreateContext{{Name: "QFid"}},
+	}
+	ctx := &SMBHandlerContext{Context: context.Background(), SessionID: 1, TreeID: 1}
+	tree := &TreeConnection{ShareName: "/test"}
+
+	resp, err := h.handleOpenRootCreate(ctx, req, authCtx, rootHandle, tree)
+	if err != nil {
+		t.Fatalf("handleOpenRootCreate: %v", err)
+	}
+	qfid := FindCreateContext(resp.CreateContexts, "QFid")
+	if qfid == nil {
+		t.Fatal("root open did not answer the QFid (on-disk-id) request")
+	}
+	if len(qfid.Data) < 8 {
+		t.Fatalf("QFid response too short: %d bytes", len(qfid.Data))
+	}
+	if got, want := binary.LittleEndian.Uint64(qfid.Data[:8]), binary.LittleEndian.Uint64(wantID[:8]); got != want {
+		t.Errorf("QFid inode = 0x%x, want 0x%x (must match the FILE_ALL IndexNumber source)", got, want)
+	}
+}
+
 func TestWalkPath_ParentNavigation(t *testing.T) {
 	h, authCtx, rootHandle := setupWalkPathTest(t)
 
