@@ -1,18 +1,22 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/controlplane/api/auth"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
-// newTestRouter builds a router + JWT service backed by an in-memory store.
-func newTestRouter(t *testing.T, pprofEnabled bool) (http.Handler, *auth.JWTService) {
+// newTestRouter builds a router + JWT service backed by an in-memory store,
+// returning the store so tests can seed fixtures (e.g. adapters).
+func newTestRouter(t *testing.T, pprofEnabled bool) (http.Handler, *auth.JWTService, store.Store) {
 	t.Helper()
 
 	cpStore, err := store.New(&store.Config{
@@ -33,8 +37,8 @@ func newTestRouter(t *testing.T, pprofEnabled bool) (http.Handler, *auth.JWTServ
 		t.Fatalf("create jwt service: %v", err)
 	}
 
-	router := NewRouter(nil, jwtService, cpStore, pprofEnabled, Timeouts{Restore: 30 * time.Minute, DrainStall: 5 * time.Minute})
-	return router, jwtService
+	router := NewRouter(runtime.New(cpStore), jwtService, cpStore, pprofEnabled, Timeouts{Restore: 30 * time.Minute, DrainStall: 5 * time.Minute})
+	return router, jwtService, cpStore
 }
 
 // tokenFor mints an access token for a user with the given role.
@@ -62,7 +66,7 @@ func tokenForUser(t *testing.T, jwtService *auth.JWTService, role models.UserRol
 // unauthenticated and non-admin requests and only serve admins. pprof dumps
 // can leak in-memory secrets and are DoS vectors, so they must not be open.
 func TestPprofRequiresAdminAuth(t *testing.T) {
-	router, jwtService := newTestRouter(t, true)
+	router, jwtService, _ := newTestRouter(t, true)
 
 	cases := []struct {
 		name       string
@@ -96,37 +100,54 @@ func TestPprofRequiresAdminAuth(t *testing.T) {
 // TestAdapterPortsAuthenticatedNonAdmin verifies the authz split on the
 // adapter read routes: the full listing stays admin/operator-only, while the
 // lean port-discovery endpoint is reachable by any authenticated user (so a
-// plain share-user can find the port to mount). The test router uses a nil
-// runtime, so a request that passes the role gate reaches the handler and
-// panics into a 500 via Recoverer — anything other than 403 proves the gate
-// let it through.
+// plain share-user can find the port to mount) and never exposes adapter
+// Config.
 func TestAdapterPortsAuthenticatedNonAdmin(t *testing.T) {
-	router, jwtService := newTestRouter(t, false)
+	router, jwtService, cpStore := newTestRouter(t, false)
+
+	if _, err := cpStore.CreateAdapter(context.Background(), &models.AdapterConfig{
+		ID:        "nfs-adapter",
+		Type:      "nfs",
+		Enabled:   true,
+		Port:      12049,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed adapter: %v", err)
+	}
+
 	userToken := "Bearer " + tokenFor(t, jwtService, models.RoleUser)
 
-	// Full listing: role-gated, plain user is forbidden.
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/adapters/", nil)
+	// Full listing stays role-gated: a plain user is forbidden.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/adapters", nil)
 	req.Header.Set("Authorization", userToken)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
-		t.Errorf("GET /adapters/ as user = %d, want %d", rec.Code, http.StatusForbidden)
+		t.Errorf("GET /adapters as user = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 
-	// Port discovery: not role-gated, plain user passes the gate.
+	// Port discovery is open to any authenticated user and returns the port.
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/adapters/ports", nil)
 	req.Header.Set("Authorization", userToken)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
-	if rec.Code == http.StatusForbidden {
-		t.Errorf("GET /adapters/ports as user = 403, want it to pass the role gate")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /adapters/ports as user = %d, want %d (body=%q)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"port":12049`) {
+		t.Errorf("ports response missing port: %q", body)
+	}
+	// Config must never leak through the unprivileged endpoint.
+	if body := rec.Body.String(); strings.Contains(body, `"config"`) {
+		t.Errorf("ports response leaked config: %q", body)
 	}
 }
 
 // TestPprofDisabledNotMounted verifies that with pprof disabled the route is
 // absent entirely (404), not merely auth-gated.
 func TestPprofDisabledNotMounted(t *testing.T) {
-	router, jwtService := newTestRouter(t, false)
+	router, jwtService, _ := newTestRouter(t, false)
 
 	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/goroutine?debug=1", nil)
 	req.Header.Set("Authorization", "Bearer "+tokenFor(t, jwtService, models.RoleAdmin))

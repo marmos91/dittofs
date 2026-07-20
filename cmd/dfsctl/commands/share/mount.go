@@ -119,7 +119,7 @@ func runMount(cmd *cobra.Command, args []string) error {
 	// would block a plain share-user before the mount ever touches NFS/SMB.
 	adapters, err := client.ListAdapterPorts()
 	if err != nil {
-		return fmt.Errorf("failed to list adapters: %w\nHint: Is the DittoFS server running?", err)
+		return fmt.Errorf("failed to look up adapter ports: %w\nHint: Is the DittoFS server running?", err)
 	}
 
 	// Resolve server host from current context
