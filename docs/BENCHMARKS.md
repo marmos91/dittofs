@@ -287,13 +287,20 @@ storage).
   because they never touch it on the hot path.
 - `·` means the cell was not part of this run for that system (a mode a given tool does
   not support — e.g. ZeroFS and s3ql expose no SMB, goofys no create-heavy path).
-- **DittoFS local-ack and writeback *write* rows are absent**, and **DittoFS SMB3 is
-  absent entirely.** These are not results — they are two defects the run surfaced: a
-  metadata write-contention path that returned an I/O error under this harness (since
-  fixed — writes now apply backpressure instead of erroring), and an SMB
-  directory-lease interaction under investigation. They are omitted rather than shown
-  as zero so the grid is not read as a measurement it isn't. DittoFS's durable-tier
-  columns, which completed cleanly with no errors, are the trustworthy comparison.
+- **The DittoFS rows were re-measured on a fresh run** after the write-path fix landed;
+  the earlier run's local-ack and writeback *write* columns were absent because a
+  metadata write-contention path returned an I/O error, which now applies backpressure
+  instead. Those columns are now filled. The DittoFS remote/durable rows are the median
+  of six repeats (object-storage latency varies run to run); the local-ack, writeback,
+  and local-durable rows are the median of three; the competitor rows are carried
+  forward unchanged from the earlier run, since their code did not change and their
+  numbers are build-independent. **DittoFS SMB3 remains absent** (an SMB directory-lease
+  interaction under investigation).
+- **A cold (post-eviction) read pass could not be collected for DittoFS.** The harness
+  forces a cold read by draining every buffered upload to object storage and then
+  evicting the local cache; on DittoFS that drain currently stalls with no upload
+  progress, so the cold column is omitted rather than shown as a stalled or partial
+  measurement. All DittoFS figures here are therefore warm.
 - Read figures on warm passes reflect the page cache, not object storage; treat them
   as an upper bound on cached-read behavior, not as storage-backend throughput.
 
@@ -305,9 +312,9 @@ storage).
 
 | System | meta ops/s | seq-write MB/s | rand-wr IOPS | rand-rd IOPS |
 |---|---|---|---|---|
-| DittoFS · badger · writeback | 686 | · | · | · |
-| DittoFS · sqlite · writeback | 362 | · | · | · |
-| DittoFS · postgres · writeback | 251 | · | · | · |
+| DittoFS · badger · writeback | 997 | 376 | 15,105 | 57,050 |
+| DittoFS · sqlite · writeback | 334 | 122 | 1,558 | 2,535 |
+| DittoFS · postgres · writeback | 439 | 297 | 7,833 | 10,182 |
 | JuiceFS · sqlite · writeback | 14 | 7.6 | 8 | 109,912 |
 | JuiceFS · postgres · writeback | 14 | 3.6 | 6 | 109,102 |
 | JuiceFS · redis · writeback | 15 | 5.8 | 7 | 99,611 |
@@ -321,9 +328,12 @@ storage).
 
 | System | meta ops/s | seq-write MB/s | rand-wr IOPS | rand-rd IOPS |
 |---|---|---|---|---|
-| DittoFS · badger · remote/durable | 11 | 7.2 | 15 | 57,114 |
-| DittoFS · sqlite · remote/durable | 12 | 4.9 | 10 | 1,984 |
-| DittoFS · postgres · remote/durable | 10 | 6.8 | 16 | 11,898 |
+| DittoFS · badger · local-durable *(default)* | 687 | 342 | 6,529 | 12,012 |
+| DittoFS · sqlite · local-durable *(default)* | 346 | 115 | 1,521 | 2,425 |
+| DittoFS · postgres · local-durable *(default)* | 253 | 201 | 6,627 | 8,594 |
+| DittoFS · badger · remote/durable | 13 | 5.4 | 17 | 12,149 |
+| DittoFS · sqlite · remote/durable | 13 | 6.7 | 16 | 2,393 |
+| DittoFS · postgres · remote/durable | 12 | 6.8 | 10 | 9,374 |
 | JuiceFS · sqlite · durable | 15 | 7.7 | 6 | 109,464 |
 | JuiceFS · postgres · durable | 18 | 4.1 | 4 | 109,956 |
 | JuiceFS · redis · durable | 16 | 9.2 | 6 | 109,751 |
@@ -331,6 +341,26 @@ storage).
 | ZeroFS · sync_writes | 1 | 1.7 | 2 | 4,624 |
 | s3ql | 2,283 | 712.5 | 2,426 | 110,418 |
 | NFS-Ganesha · local VFS | 1,276 | 522.5 | · | 60,429 |
+
+**Large size (1 GiB files) — DittoFS, warm, single run**
+
+The tables above are the *medium* (1 MiB) size class. The same DittoFS matrix was also
+run on the *large* (1 GiB) size class, recorded below so the large-file behavior is on
+record. Single run per cell, so treat these as indicative, not medians. Local disk is
+included as the reference ceiling.
+
+| System | meta ops/s | seq-write MB/s | rand-wr IOPS | rand-rd IOPS |
+|---|---|---|---|---|
+| DittoFS · badger · local-durable | 595 | 300 | 5,779 | 9,482 |
+| DittoFS · sqlite · local-durable | 455 | 118 | 1,506 | 846 |
+| DittoFS · postgres · local-durable | 497 | 299 | 6,610 | 3,332 |
+| DittoFS · badger · writeback | 975 | 337 | 11,439 | 5,757 |
+| DittoFS · sqlite · writeback | 468 | 126 | 1,604 | 1,205 |
+| DittoFS · postgres · writeback | 459 | 277 | 7,152 | 4,071 |
+| DittoFS · badger · remote/durable | 12 | 7.7 | 15 | 9,534 |
+| DittoFS · sqlite · remote/durable | 12 | 8.5 | 11 | 374 |
+| DittoFS · postgres · remote/durable | 13 | 6.1 | 15 | 1,021 |
+| local-disk (reference) | 1,378 | 471 | 2,099 | 109,023 |
 
 ### NFSv4
 
@@ -387,3 +417,9 @@ storage).
 ### Cell coverage
 
 Total cells collected: **169** across 25 systems × 3 protocols × 4 workloads (warm pass, medium size, 30 s each).
+
+The DittoFS NFSv3 rows above were subsequently re-measured on a fresh run of the fixed
+binary — nine backend/tier combinations (badger/SQLite/Postgres × local-durable/writeback/
+remote) across four workloads and the medium and large size classes, warm pass, with the
+remote/durable cells repeated six times and the local cells three times for the medians
+shown. The competitor rows are unchanged from the run above (their code did not change).
