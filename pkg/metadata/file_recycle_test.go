@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -48,6 +49,41 @@ func newRecycleFixture(t *testing.T) *testFixture {
 		shareName:  shareName,
 		rootHandle: rootHandle,
 	}
+}
+
+// TestRemoveFile_RecycleNotifiesDirChange guards against a caching client
+// serving a stale directory listing after a delete on a trash-enabled share.
+// Recycling still removes the name from its parent, so RemoveFile must break the
+// parent's directory leases (via the dir-change notification) exactly as the
+// permanent-delete path does — otherwise a client holding a directory lease keeps
+// showing the just-recycled entry. RemoveDirectory's recycle branch already notifies.
+func TestRemoveFile_RecycleNotifiesDirChange(t *testing.T) {
+	t.Parallel()
+
+	fx := newRecycleFixture(t)
+	fx.service.SetTrashPolicy(stubTrashPolicy{cfg: metadata.TrashConfig{Enabled: true}})
+	notifier := &recordingNotifier{}
+	fx.service.SetDirChangeNotifier(fx.shareName, notifier)
+
+	_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "victim.txt", &metadata.FileAttr{Mode: 0644})
+	require.NoError(t, err)
+
+	// Trash enabled: this delete routes through the recycle branch.
+	removed, _, err := fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "victim.txt")
+	require.NoError(t, err)
+	require.NotNil(t, removed)
+
+	notifier.mu.Lock()
+	defer notifier.mu.Unlock()
+	removeCalls := 0
+	for _, c := range notifier.calls {
+		if c.ChangeType == lock.DirChangeRemoveEntry {
+			removeCalls++
+		}
+	}
+	assert.Equal(t, 1, removeCalls,
+		"recycling a file must still break the parent's directory leases; without the "+
+			"notification a caching client serves a stale listing that still shows the entry")
 }
 
 func TestRemoveFile_RecyclesWhenTrashEnabled(t *testing.T) {
