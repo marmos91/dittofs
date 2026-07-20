@@ -257,6 +257,7 @@ Full docs live in [`docs/`](docs/), split by audience.
 - [Configuration](docs/guide/configuration.md) — every config key and environment variable, with defaults
 - [CLI Reference](docs/guide/cli.md) — every `dfs` and `dfsctl` command (generated)
 - [Choosing Stores](docs/guide/choosing-stores.md) — picking metadata and block stores
+- [Sizing & Hardware](docs/guide/sizing.md) — how to size the machine that runs `dfs`
 
 **Connect clients**
 
