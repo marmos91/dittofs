@@ -484,12 +484,24 @@ func dittofsBlockStats(ctx context.Context) (dittofsBlockTotals, error) {
 // store's async digestion to go idle before giving up and measuring anyway.
 const dittofsSettleTimeout = 120 * time.Second
 
+// dittofsSettleStableWindow is how long UnsyncedBytes must hold flat before the
+// store counts as idle. The block store carves+uploads on a periodic ticker
+// (UploadInterval, default 2s), so UnsyncedBytes only steps down once per tick
+// and is naturally flat between ticks. The window must exceed one tick, or a
+// sample landing in an inter-tick lull would declare idle while a full carve
+// pass is still queued — restarting mid-measurement and re-contaminating the
+// read. Poll spacing is a fraction of the window so several samples cover it.
+const (
+	dittofsSettleStableWindow = 4 * time.Second
+	dittofsSettlePollInterval = 500 * time.Millisecond
+)
+
 // dittofsWaitSettled blocks until the block store's async carve/upload/rollup of
 // freshly-written data goes idle, so the warm read pass measures a settled store
 // (served from the local journal) instead of one still writing CAS chunks to disk
 // and S3 — that concurrent digestion charges the read path for unrelated write
-// I/O and CPU, tanking warm rand-read latency. "Idle" is "no uploads in flight
-// and unsynced bytes no longer shrinking" across consecutive polls, not
+// I/O and CPU, tanking warm rand-read latency. "Idle" is UnsyncedBytes holding
+// flat for longer than one carve/upload tick (see dittofsSettleStableWindow), not
 // unsynced==0: a sub-GiB file's final bytes stay pinned in the unsealed append
 // log indefinitely without another write. Polls passively — it never triggers a
 // drain (which can stall) — and on timeout logs and returns nil so a contaminated
@@ -498,31 +510,30 @@ func dittofsWaitSettled(ctx context.Context) error {
 	start := time.Now()
 	deadline := start.Add(dittofsSettleTimeout)
 	prev := int64(-1)
-	stable := 0
+	var lastChange time.Time
 	for {
 		st, err := dittofsBlockStats(ctx)
 		if err != nil {
 			return err
 		}
-		if st.PendingUploads == 0 && st.UnsyncedBytes == prev {
-			if stable++; stable >= 2 {
-				_, _ = fmt.Fprintf(exec.CmdOut, "settled: waited %dms for block-store sync to go idle (unsynced=%dMiB, pending=0)\n",
-					time.Since(start).Milliseconds(), st.UnsyncedBytes>>20)
-				return nil
-			}
-		} else {
-			stable = 0
+		now := time.Now()
+		if st.UnsyncedBytes != prev {
+			prev = st.UnsyncedBytes
+			lastChange = now
+		} else if now.Sub(lastChange) >= dittofsSettleStableWindow {
+			_, _ = fmt.Fprintf(exec.CmdOut, "settled: waited %dms for block-store sync to go idle (unsynced=%dMiB, flat %s)\n",
+				time.Since(start).Milliseconds(), st.UnsyncedBytes>>20, dittofsSettleStableWindow)
+			return nil
 		}
-		prev = st.UnsyncedBytes
-		if time.Now().After(deadline) {
-			_, _ = fmt.Fprintf(exec.CmdOut, "settle: block store still busy after %s (unsynced=%dMiB, pending=%d) — warm read may be contaminated\n",
-				dittofsSettleTimeout, st.UnsyncedBytes>>20, st.PendingUploads)
+		if now.After(deadline) {
+			_, _ = fmt.Fprintf(exec.CmdOut, "settle: block store still busy after %s (unsynced=%dMiB) — warm read may be contaminated\n",
+				dittofsSettleTimeout, st.UnsyncedBytes>>20)
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(250 * time.Millisecond):
+		case <-time.After(dittofsSettlePollInterval):
 		}
 	}
 }
