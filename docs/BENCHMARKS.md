@@ -65,8 +65,9 @@ operations per second, grouped by the guarantee each configuration makes.
 ### Writeback: fastest, bounded-loss
 
 At the writeback tier — local acknowledgement, background upload, with a small
-window of possible loss on a crash — DittoFS is comfortably the fastest of the real
-filesystems:
+window of possible loss on a crash — DittoFS runs at essentially local-disk speed,
+ahead of every comparable storage engine (rclone aside, which is a bare pass-through
+rather than a storage engine — see below):
 
 | System | ops/sec |
 |---|--:|
@@ -77,10 +78,16 @@ filesystems:
 
 DittoFS runs this at essentially **local-disk speed** — the bare local-disk reference
 on the same machine turns in 1,081 ops/sec, and DittoFS is right behind it at 997
-while carrying a full content-addressed storage engine. rclone's write-cache mode is
-faster still, but it is not a comparable product: a thin pass-through with no
-deduplication, no content-addressing, no crash-consistent metadata database, and
-support for a single protocol. **JuiceFS**, the closest genuine peer, commits its
+while carrying a full content-addressed storage engine. rclone's write-cache mode posts
+a higher figure, but the comparison is not like-for-like: rclone is a FUSE filesystem
+re-exported over kernel NFS, so it collects a client page-cache and attribute-cache free
+ride that DittoFS's native NFS server does not. This workload is bound by NFS round-trip
+time, not by the store — DittoFS's engine creates files in microseconds, far faster than
+any NFS-mounted figure here reflects — so what the table really measures at this tier is
+the protocol path, where a cached FUSE re-export has the edge. rclone also carries none
+of the storage features: no deduplication, no content-addressing, no crash-consistent
+metadata database, one protocol. The clean native-server-to-native-server comparison is
+DittoFS versus ZeroFS, where DittoFS leads. **JuiceFS**, the closest genuine peer, commits its
 metadata database synchronously *even in writeback mode*, so its create rate stays
 pinned near its durable rate (~14 ops/sec); DittoFS's writeback tier instead relaxes
 metadata timing for a small bounded-loss window, which is what buys the ~1,000 ops/sec.
