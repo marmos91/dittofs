@@ -1028,7 +1028,12 @@ func (s *Service) createBlockStoreForShare(
 	remoteConfigured := config.RemoteBlockStoreID != ""
 	effectiveDefaults := mergeLocalStoreDefaults(localStoreDefaults, config, remoteConfigured)
 
-	localStore, err := CreateLocalStoreFromConfig(ctx, localCfg.Type, localCfg, config.Name, effectiveDefaults, fileChunkStore)
+	// A remote-backed share whose local dir still holds the pre-journal
+	// blobs/+logs/ layout is migrated in place: the local dirs are archived aside
+	// so the journal opens clean, and the bytes are re-materialized from the
+	// remote via a cold seed below. A local-only share passes false so the
+	// guardrail refuses to open a legacy dir (its bytes are the sole copy).
+	localStore, err := CreateLocalStoreFromConfig(ctx, localCfg.Type, localCfg, config.Name, effectiveDefaults, fileChunkStore, remoteConfigured)
 	if err != nil {
 		return fmt.Errorf("failed to create local store: %w", err)
 	}
@@ -1162,6 +1167,29 @@ func (s *Service) createBlockStoreForShare(
 	if err := bs.Start(ctx); err != nil {
 		cleanup()
 		return fmt.Errorf("failed to start BlockStore: %w", err)
+	}
+
+	// If the local dir carried a pre-journal layout that was just archived aside,
+	// the journal opened empty — reads would zero-fill. Seed a cold interval per
+	// manifest extent so reads fault the bytes back in from the remote (cold
+	// fetch is BLAKE3-verified). The metadata manifest survives the upgrade
+	// intact, so this is safe to re-run: a partial seed loses nothing (remote
+	// bytes + manifest are untouched) and a second start finds no legacy dir and
+	// skips straight to a clean open.
+	// ponytail: O(files) manifest scan at startup; a lazy per-read seed is the
+	// upgrade path if this ever bites a share with a huge file count.
+	if m, ok := localStore.(interface{ MigratedFromLegacy() bool }); ok && m.MigratedFromLegacy() {
+		if metaStore, ok := fileChunkStore.(metadata.Store); ok {
+			if serr := SeedColdFromManifest(ctx, bs, metaStore); serr != nil {
+				cleanup()
+				return fmt.Errorf("seed cold intervals after legacy migration: %w", serr)
+			}
+			logger.Info("migrated pre-journal local layout: archived blobs/+logs/ aside and seeded cold intervals from manifest",
+				"share", config.Name)
+		} else {
+			logger.Warn("migrated pre-journal local layout but metadata store is not manifest-capable; reads will zero-fill until rewritten",
+				"share", config.Name)
+		}
 	}
 
 	// Thread the inline metrics recorder into the new store's eviction/
@@ -2824,6 +2852,7 @@ func CreateLocalStoreFromConfig(
 	shareName string,
 	defaults *LocalStoreDefaults,
 	fileChunkStore block.EngineFileChunkStore,
+	migrateLegacy bool,
 ) (local.LocalStore, error) {
 	config, err := cfg.GetConfig()
 	if err != nil {
@@ -2858,6 +2887,11 @@ func CreateLocalStoreFromConfig(
 	// are warned and ignored.
 	var fsOpts fs.FSStoreOptions
 	fsOpts.BackpressureMaxWait = backpressureMaxWait
+	// A remote-backed share may carry a pre-journal blobs/+logs/ layout from an
+	// upgrade; archive it aside so the journal opens clean (the caller then cold-
+	// seeds from the surviving manifest). Local-only shares keep migrateLegacy
+	// false so the guardrail stays fatal.
+	fsOpts.MigrateLegacyLayout = migrateLegacy
 	// Local-cache size-hint default. Precedence (lowest first):
 	// FSStore internal default < global/deduced default (plumbed via
 	// LocalStoreDefaults.MaxLogBytes) < per-store config["max_log_bytes"].
@@ -2997,6 +3031,36 @@ func applyDurableOverride(store any, config map[string]any, label, shareName str
 	}
 	setter.SetDurable(b)
 	logger.Info("block store durability overridden by config", "store", label, "share", shareName, "durable", b)
+}
+
+// SeedColdFromManifest seeds a cold journal interval for every FileChunk in the
+// share's metadata manifest so a subsequent read faults the bytes in from the
+// remote store instead of zero-filling. It is used when the journal has no local
+// copy of the data — after a snapshot restore wiped the local tier, or after a
+// pre-journal upgrade archived the legacy local layout aside. Remote-backed
+// shares only (the caller gates on that); the cold fetch it arms is
+// BLAKE3-verified. One ListFileChunks per payload — O(chunks), acceptable for a
+// rare control-plane / startup path.
+func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metadata.Store) error {
+	return metaStore.EnumeratePayloads(ctx, func(payloadID string) error {
+		rows, err := metaStore.ListFileChunks(ctx, payloadID)
+		if err != nil {
+			return fmt.Errorf("list manifest for %s: %w", payloadID, err)
+		}
+		for _, row := range rows {
+			if row == nil {
+				continue
+			}
+			off, ok := block.ParseChunkOffset(row.ID)
+			if !ok {
+				continue
+			}
+			if err := bs.SeedCold(ctx, payloadID, int64(off), int64(row.DataSize)); err != nil {
+				return fmt.Errorf("seed cold %s: %w", row.ID, err)
+			}
+		}
+		return nil
+	})
 }
 
 // parseRequireDurableCommit reads the optional per-share "require_durable_commit"

@@ -46,7 +46,7 @@ func TestCreateLocalStoreFromConfig_AppendLogMandatory(t *testing.T) {
 	mds := metamem.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = mds.Close() })
 
-	store, err := CreateLocalStoreFromConfig(ctx, "fs", cfg, "test-share", nil, mds)
+	store, err := CreateLocalStoreFromConfig(ctx, "fs", cfg, "test-share", nil, mds, false)
 	if err != nil {
 		t.Fatalf("CreateLocalStoreFromConfig: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestCreateLocalStoreFromConfig_InvalidTypesIgnored(t *testing.T) {
 	mds := metamem.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = mds.Close() })
 
-	store, err := CreateLocalStoreFromConfig(ctx, "fs", cfg, "bad-types", nil, mds)
+	store, err := CreateLocalStoreFromConfig(ctx, "fs", cfg, "bad-types", nil, mds, false)
 	if err != nil {
 		t.Fatalf("CreateLocalStoreFromConfig: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestCreateLocalStoreFromConfig_RollupSurvivesCallerCancel(t *testing.T) {
 	mds := metamem.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = mds.Close() })
 
-	store, err := CreateLocalStoreFromConfig(ctx, "fs", cfg, "cancel-share", nil, mds)
+	store, err := CreateLocalStoreFromConfig(ctx, "fs", cfg, "cancel-share", nil, mds, false)
 	if err != nil {
 		t.Fatalf("CreateLocalStoreFromConfig: %v", err)
 	}

@@ -31,6 +31,13 @@ type FSStoreOptions struct {
 	BackpressureMaxWait time.Duration
 	MaxLogBytes         int64
 	ChunkParams         chunker.Params
+	// MigrateLegacyLayout, when set, makes NewWithOptions archive a detected
+	// pre-journal blobs/+logs/ layout aside (instead of refusing to open) so the
+	// journal opens clean. Only a remote-backed share should set this: the
+	// authoritative bytes then live in the remote store and are re-materialized
+	// from the surviving metadata manifest via cold seeding. A local-only share
+	// must leave it false so the guardrail stays fatal.
+	MigrateLegacyLayout bool
 }
 
 // FSStore is the journal-backed local store. It embeds *journal.Store and
@@ -39,11 +46,20 @@ type FSStoreOptions struct {
 type FSStore struct {
 	*journal.Store
 
-	dir            string
-	maxDisk        int64
-	maxLogBytes    int64
-	fileChunkStore block.EngineFileChunkStore
-	durable        atomic.Bool
+	dir                string
+	maxDisk            int64
+	maxLogBytes        int64
+	fileChunkStore     block.EngineFileChunkStore
+	durable            atomic.Bool
+	migratedFromLegacy bool
+}
+
+// MigratedFromLegacy reports whether NewWithOptions archived a pre-journal
+// blobs/+logs/ layout aside while opening this store. The caller uses it to
+// trigger a one-time cold-seed of the journal from the surviving metadata
+// manifest so reads fault the bytes back in from the remote store.
+func (s *FSStore) MigratedFromLegacy() bool {
+	return s.migratedFromLegacy
 }
 
 var (
@@ -61,10 +77,25 @@ func New(dir string, maxDisk int64, fileChunkStore block.EngineFileChunkStore) (
 // The remote is nil: cold-read fetch and Hydrate are driven by the engine, so
 // the journal never reaches the remote itself.
 func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileChunkStore, opts FSStoreOptions) (*FSStore, error) {
-	// Refuse to open a directory written by a pre-journal release as an empty
-	// journal — that would silently serve every stored file as zeros. Fail loud
-	// instead; the legacy bytes stay on disk for a migration to recover.
-	if err := checkLegacyLayout(dir); err != nil {
+	// A directory written by a pre-journal release (blobs/+logs/) cannot be read
+	// by the journal — opening it as an empty journal would silently serve every
+	// stored file as zeros. A remote-backed share (MigrateLegacyLayout) archives
+	// the legacy dirs aside so the journal opens clean and reads later cold-fetch
+	// from the remote via the surviving manifest; a local-only share fails loud
+	// so its on-disk bytes are not stranded behind an empty journal.
+	migrated := false
+	if opts.MigrateLegacyLayout {
+		legacy, err := hasLegacyLocalLayout(dir)
+		if err != nil {
+			return nil, err
+		}
+		if legacy {
+			if err := archiveLegacyLayout(dir); err != nil {
+				return nil, err
+			}
+			migrated = true
+		}
+	} else if err := checkLegacyLayout(dir); err != nil {
 		return nil, err
 	}
 	cfg := journal.Config{
@@ -77,11 +108,12 @@ func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileCh
 		return nil, err
 	}
 	s := &FSStore{
-		Store:          js,
-		dir:            dir,
-		maxDisk:        maxDisk,
-		maxLogBytes:    opts.MaxLogBytes,
-		fileChunkStore: fileChunkStore,
+		Store:              js,
+		dir:                dir,
+		maxDisk:            maxDisk,
+		maxLogBytes:        opts.MaxLogBytes,
+		fileChunkStore:     fileChunkStore,
+		migratedFromLegacy: migrated,
 	}
 	s.durable.Store(true) // fs-local survives a restart
 	return s, nil
