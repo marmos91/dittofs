@@ -109,6 +109,37 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		}
 	}
 
+	// Consume the sequence numbers for the trailing compound commands too, not
+	// just the first. A client debits one credit per command in a compound
+	// (each carries its own MessageId), so an N-command compound spends N
+	// credits. Consuming only the first leaves the server's credit window
+	// drifting (N-1) higher than the client's real balance every compound; the
+	// grant logic then never sees the client running low and the client
+	// eventually deadlocks with zero credits. Only CANCEL is skipped, matching
+	// the first-command gate above.
+	if connInfo.SequenceWindow != nil {
+		rem := compoundData
+		for len(rem) >= header.HeaderSize {
+			hdr, _, nextRem, err := ParseCompoundCommand(rem)
+			if err != nil {
+				break
+			}
+			rem = nextRem
+			if hdr.Command == types.CommandCancel {
+				continue
+			}
+			charge := session.EffectiveCreditCharge(hdr.CreditCharge)
+			if !connInfo.SequenceWindow.Consume(hdr.MessageID, charge) {
+				logger.Debug("Compound sub-command sequence window validation failed",
+					"command", hdr.Command.String(),
+					"messageID", hdr.MessageID,
+					"creditCharge", charge)
+				failEntireCompound(firstHeader, compoundData, types.StatusInvalidParameter, connInfo, isEncrypted)
+				return
+			}
+		}
+	}
+
 	// Shared per-subcommand tracking (FileID/session/tree inheritance, failure
 	// propagation, response + post-send accumulators). Seeded from the first
 	// command below, then handed to processRemaining for the trailing commands.
@@ -454,13 +485,22 @@ func applyCompoundCreditZeroing(responses []compoundResponse, connInfo *ConnInfo
 	if len(responses) <= 1 {
 		return
 	}
+	// Move each middle response's grant onto the last response rather than
+	// reclaiming it. Per MS-SMB2 3.2.4.1.4 only the last response in a compound
+	// advertises credits, but every sub-request debits one credit, so the client
+	// must be credited for the WHOLE compound on the one response it reads
+	// credits from. Reclaiming the middle grants instead left the last response
+	// advertising only its own single grant, so a stat compound (CREATE +
+	// QUERY_INFO + CLOSE, charge 3, grant ~1) returned fewer credits than it
+	// consumed and a concurrent client drained to a deadlock. The connection
+	// window already counted every sub-response's grant, so consolidating them
+	// onto the wire keeps the server's view and the client's in agreement.
+	var moved uint16
 	for i := 0; i < len(responses)-1; i++ {
-		credits := responses[i].respHeader.Credits
+		moved += responses[i].respHeader.Credits
 		responses[i].respHeader.Credits = 0
-		if credits > 0 && connInfo.SequenceWindow != nil {
-			connInfo.SequenceWindow.Reclaim(credits)
-		}
 	}
+	responses[len(responses)-1].respHeader.Credits += moved
 }
 
 // compoundShouldEncrypt reports whether a compound response (or its single-

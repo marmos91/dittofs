@@ -329,14 +329,15 @@ func TestCompound_MiddleResponsesGrantZeroCredits(t *testing.T) {
 		"first (middle) response should have Credits=0")
 	assert.Equal(t, uint16(0), responses[1].respHeader.Credits,
 		"second (middle) response should have Credits=0")
-	assert.Equal(t, uint16(10), responses[2].respHeader.Credits,
-		"last response should retain its credits")
+	assert.Equal(t, uint16(30), responses[2].respHeader.Credits,
+		"last response should carry the sum of all sub-response credits (10+10+10)")
 }
 
-// TestCompound_ReclaimRollsBackMiddleGrants verifies that when middle compound
-// responses are zeroed, the connection sequence window reclaims those credits
-// so `available` stays in sync with what was advertised to the client (#378).
-func TestCompound_ReclaimRollsBackMiddleGrants(t *testing.T) {
+// TestCompound_MovesMiddleGrantsToLast verifies that the middle compound
+// responses' credits are consolidated onto the last response (the only one a
+// client reads credits from) rather than reclaimed, so the client is credited
+// for the whole compound and its balance is conserved.
+func TestCompound_MovesMiddleGrantsToLast(t *testing.T) {
 	sw := session.NewCommandSequenceWindow(8192)
 	// Simulate each sub-response's pre-zero grant by extending the window.
 	// Three sub-responses of 10 credits each => available = 31 (1 initial + 30).
@@ -353,16 +354,17 @@ func TestCompound_ReclaimRollsBackMiddleGrants(t *testing.T) {
 
 	applyCompoundCreditZeroing(responses, &ConnInfo{SequenceWindow: sw})
 
-	// Middle responses should be zeroed; last retains its credits.
+	// Middle responses are zeroed; their grants move onto the last response, so
+	// it advertises the sum (10 + 10 + 10 = 30).
 	assert.Equal(t, uint16(0), responses[0].respHeader.Credits)
 	assert.Equal(t, uint16(0), responses[1].respHeader.Credits)
-	assert.Equal(t, uint16(10), responses[2].respHeader.Credits)
+	assert.Equal(t, uint16(30), responses[2].respHeader.Credits,
+		"last response should carry the sum of all sub-response grants")
 
-	// Available must have dropped by the reclaimed middle-response credits
-	// (10 + 10 = 20) so it mirrors what the client sees (last response's 10
-	// + whatever was there before the three grants).
-	assert.Equal(t, preZeroAvail-20, sw.Available(),
-		"Reclaim should roll back middle-response grants from `available`")
+	// Consolidation does not reclaim, so `available` is unchanged — it already
+	// counted every sub-response's grant, and the client now receives all of it.
+	assert.Equal(t, preZeroAvail, sw.Available(),
+		"moving credits to the last response must not change the window")
 }
 
 // TestCompound_SequenceWindowExpandedByLastResponse verifies that the sequence
@@ -384,9 +386,12 @@ func TestCompound_SequenceWindowExpandedByLastResponse(t *testing.T) {
 	// Apply compound credit zeroing
 	applyCompoundCreditZeroing(responses, &ConnInfo{})
 
-	// Only the last response should expand the window
+	// The last response carries every sub-response's credits (8 + 8 + 8 = 24);
+	// the middles are zeroed.
 	lastCredits := responses[len(responses)-1].respHeader.Credits
-	assert.Equal(t, uint16(8), lastCredits, "last response should have credits")
+	assert.Equal(t, uint16(24), lastCredits, "last response should carry the consolidated credits")
+	assert.Equal(t, uint16(0), responses[0].respHeader.Credits)
+	assert.Equal(t, uint16(0), responses[1].respHeader.Credits)
 
 	// Simulate the grant from sendCompoundResponses
 	if sw != nil && lastCredits > 0 {
@@ -394,7 +399,7 @@ func TestCompound_SequenceWindowExpandedByLastResponse(t *testing.T) {
 	}
 
 	assert.Equal(t, sizeAfterConsume+uint64(lastCredits), sw.Size(),
-		"window should expand by last response's credits only")
+		"window should expand by the last response's consolidated credits")
 }
 
 // TestCompound_SingleResponseNoZeroing verifies that a compound with a single
