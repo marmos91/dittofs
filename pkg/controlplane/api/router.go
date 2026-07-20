@@ -372,6 +372,12 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				adapterHandler := handlers.NewAdapterHandler(rt)
 				settingsHandler := handlers.NewAdapterSettingsHandler(cpStore, rt)
 
+				// Port discovery: any authenticated user. Returns only
+				// type/port/enabled/running (no adapter Config), so a plain
+				// share-user can find the port to mount without the
+				// admin/operator management view.
+				r.Get("/ports", adapterHandler.ListPorts)
+
 				// Read endpoint: admin + operator (list only)
 				r.Group(func(r chi.Router) {
 					r.Use(apiMiddleware.RequireRole("admin", "operator"))
