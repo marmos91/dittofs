@@ -424,10 +424,14 @@ func dittofsMount(ctx context.Context, proto Protocol) (string, error) {
 	// gone). waitPort above only proves the listener was up right after `adapter
 	// enable`, not after the later share-create reload. Retry so the mount rides
 	// out the reload instead of failing the whole cell over a ~few-second gap.
+	const mountAttempts = 8
 	var err error
-	for attempt := 0; attempt < 8; attempt++ {
+	for attempt := 0; attempt < mountAttempts; attempt++ {
 		if err = exec.Sh(ctx, "mount", "-t", typ, "-o", opts, src, clientMntDir); err == nil {
 			return clientMntDir, nil
+		}
+		if attempt == mountAttempts-1 {
+			break // don't sleep after the last try — surface the failure now
 		}
 		select {
 		case <-ctx.Done():
