@@ -114,7 +114,10 @@ func runMount(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get authenticated client: %w\nHint: Run 'dfsctl login' first", err)
 	}
 
-	adapters, err := client.ListAdapters()
+	// Discover the adapter port via the lean ports endpoint, which any
+	// authenticated user can call. ListAdapters is admin/operator-only and
+	// would block a plain share-user before the mount ever touches NFS/SMB.
+	adapters, err := client.ListAdapterPorts()
 	if err != nil {
 		return fmt.Errorf("failed to list adapters: %w\nHint: Is the DittoFS server running?", err)
 	}

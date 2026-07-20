@@ -93,6 +93,36 @@ func TestPprofRequiresAdminAuth(t *testing.T) {
 	}
 }
 
+// TestAdapterPortsAuthenticatedNonAdmin verifies the authz split on the
+// adapter read routes: the full listing stays admin/operator-only, while the
+// lean port-discovery endpoint is reachable by any authenticated user (so a
+// plain share-user can find the port to mount). The test router uses a nil
+// runtime, so a request that passes the role gate reaches the handler and
+// panics into a 500 via Recoverer — anything other than 403 proves the gate
+// let it through.
+func TestAdapterPortsAuthenticatedNonAdmin(t *testing.T) {
+	router, jwtService := newTestRouter(t, false)
+	userToken := "Bearer " + tokenFor(t, jwtService, models.RoleUser)
+
+	// Full listing: role-gated, plain user is forbidden.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/adapters/", nil)
+	req.Header.Set("Authorization", userToken)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("GET /adapters/ as user = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	// Port discovery: not role-gated, plain user passes the gate.
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/adapters/ports", nil)
+	req.Header.Set("Authorization", userToken)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code == http.StatusForbidden {
+		t.Errorf("GET /adapters/ports as user = 403, want it to pass the role gate")
+	}
+}
+
 // TestPprofDisabledNotMounted verifies that with pprof disabled the route is
 // absent entirely (404), not merely auth-gated.
 func TestPprofDisabledNotMounted(t *testing.T) {

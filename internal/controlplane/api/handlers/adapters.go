@@ -134,6 +134,41 @@ func (h *AdapterHandler) List(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, response)
 }
 
+// AdapterPortResponse is the lean adapter view returned by ListPorts.
+// It carries only what a client needs to reach an adapter's data plane
+// (protocol type and port) and deliberately omits Config so it can be
+// exposed to any authenticated user without leaking bind addresses or
+// protocol-specific settings.
+type AdapterPortResponse struct {
+	Type    string `json:"type"`
+	Port    int    `json:"port"`
+	Enabled bool   `json:"enabled"`
+	Running bool   `json:"running"`
+}
+
+// ListPorts handles GET /api/v1/adapters/ports.
+// Returns type/port/enabled/running for each adapter, with no Config,
+// so any authenticated user can discover the port to mount a share.
+func (h *AdapterHandler) ListPorts(w http.ResponseWriter, r *http.Request) {
+	adapters, err := h.runtime.Store().ListAdapters(r.Context())
+	if err != nil {
+		InternalServerError(w, "Failed to list adapters")
+		return
+	}
+
+	response := make([]AdapterPortResponse, len(adapters))
+	for i, a := range adapters {
+		response[i] = AdapterPortResponse{
+			Type:    a.Type,
+			Port:    a.Port,
+			Enabled: a.Enabled,
+			Running: h.runtime.IsAdapterRunning(a.Type),
+		}
+	}
+
+	WriteJSONOK(w, response)
+}
+
 // Get handles GET /api/v1/adapters/{type}.
 // Gets an adapter configuration by type (admin only).
 func (h *AdapterHandler) Get(w http.ResponseWriter, r *http.Request) {
