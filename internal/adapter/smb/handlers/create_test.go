@@ -6,10 +6,12 @@ import (
 	"path"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -469,6 +471,96 @@ func setupWalkPathTest(t *testing.T) (*Handler, *metadata.AuthContext, metadata.
 	h.Registry = rt
 
 	return h, authCtx, rootHandle
+}
+
+// TestHandleOpenRootCreate_GrantsRequestedDirLease verifies that opening the
+// share root with an RqLs directory-lease request returns OplockLevel=Lease
+// (0xFF) and a lease response context carrying a read-caching state. Without a
+// granted lease a Linux CIFS client cannot cache the root directory's identity
+// at mount, which surfaces later as a stale-handle error under serverino.
+func TestHandleOpenRootCreate_GrantsRequestedDirLease(t *testing.T) {
+	h, authCtx, rootHandle := setupWalkPathTest(t)
+	h.LeaseManager = lease.NewLeaseManager(&staticLockResolver{mgr: lock.NewManager()}, nil)
+
+	leaseKey := [16]byte{0xDE, 0xAD, 0xBE, 0xEF}
+	req := &CreateRequest{
+		OplockLevel:       OplockLevelLease,
+		DesiredAccess:     0x00000080, // FILE_READ_ATTRIBUTES (stat-only open)
+		CreateDisposition: types.FileOpen,
+		CreateContexts: []CreateContext{
+			{
+				Name: LeaseContextTagRequest,
+				Data: encodeV2LeaseContext(
+					leaseKey,
+					lock.LeaseStateRead|lock.LeaseStateHandle,
+					0,
+				),
+			},
+		},
+	}
+	ctx := &SMBHandlerContext{Context: context.Background(), SessionID: 1, TreeID: 1}
+	tree := &TreeConnection{ShareName: "/test"}
+
+	resp, err := h.handleOpenRootCreate(ctx, req, authCtx, rootHandle, tree)
+	if err != nil {
+		t.Fatalf("handleOpenRootCreate returned error: %v", err)
+	}
+	if resp.Status != types.StatusSuccess {
+		t.Fatalf("status = 0x%08x, want STATUS_SUCCESS", resp.Status)
+	}
+	if resp.OplockLevel != OplockLevelLease {
+		t.Fatalf("OplockLevel = 0x%02x, want 0x%02x (Lease)", resp.OplockLevel, OplockLevelLease)
+	}
+
+	leaseResp := FindCreateContext(resp.CreateContexts, LeaseContextTagResponse)
+	if leaseResp == nil {
+		t.Fatal("response missing RqLs lease response context")
+	}
+	granted := binary.LittleEndian.Uint32(leaseResp.Data[16:20])
+	if granted&lock.LeaseStateRead == 0 {
+		t.Errorf("granted lease state = 0x%x (%s), want a read-caching lease",
+			granted, lock.LeaseStateToString(granted))
+	}
+	if granted&lock.LeaseStateWrite != 0 {
+		t.Errorf("granted lease state = 0x%x carries Write bit; directories must not get W", granted)
+	}
+}
+
+// The on-disk id (QFid) the root open reports must equal the inode number a
+// later FILE_ALL query reports for the root; both derive from the root file's
+// ID. A serverino client latches the QFid value at mount and compares it on
+// every stat, so a mismatch surfaces as a stale handle.
+func TestHandleOpenRootCreate_AnswersQFidWithStableRootID(t *testing.T) {
+	h, authCtx, rootHandle := setupWalkPathTest(t)
+
+	rootFile, err := h.Registry.GetMetadataService().GetFile(authCtx.Context, rootHandle)
+	if err != nil {
+		t.Fatalf("GetFile(root): %v", err)
+	}
+	wantID := h.baseFileUUID(authCtx, nil, "", rootFile.ID)
+
+	req := &CreateRequest{
+		DesiredAccess:     0x00000080, // FILE_READ_ATTRIBUTES
+		CreateDisposition: types.FileOpen,
+		CreateContexts:    []CreateContext{{Name: "QFid"}},
+	}
+	ctx := &SMBHandlerContext{Context: context.Background(), SessionID: 1, TreeID: 1}
+	tree := &TreeConnection{ShareName: "/test"}
+
+	resp, err := h.handleOpenRootCreate(ctx, req, authCtx, rootHandle, tree)
+	if err != nil {
+		t.Fatalf("handleOpenRootCreate: %v", err)
+	}
+	qfid := FindCreateContext(resp.CreateContexts, "QFid")
+	if qfid == nil {
+		t.Fatal("root open did not answer the QFid (on-disk-id) request")
+	}
+	if len(qfid.Data) < 8 {
+		t.Fatalf("QFid response too short: %d bytes", len(qfid.Data))
+	}
+	if got, want := binary.LittleEndian.Uint64(qfid.Data[:8]), binary.LittleEndian.Uint64(wantID[:8]); got != want {
+		t.Errorf("QFid inode = 0x%x, want 0x%x (must match the FILE_ALL IndexNumber source)", got, want)
+	}
 }
 
 func TestWalkPath_ParentNavigation(t *testing.T) {

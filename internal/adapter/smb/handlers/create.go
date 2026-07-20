@@ -1865,6 +1865,48 @@ func (h *Handler) handleOpenRootCreate(
 		// No metadata service available: fall back to the resolved mask.
 		grantedAccess = resolveAccessFlags(req.DesiredAccess)
 	}
+	// Grant a directory lease when the open requests one, mirroring the
+	// fresh directory-open path. The root is always a directory, so this
+	// only ever grants a directory lease (never a traditional oplock).
+	// Without a granted lease the client cannot cache the root directory's
+	// identity at mount, so a later stat re-fetches the real inode number
+	// and, under serverino, the mismatch surfaces as a stale-handle error.
+	var grantedOplock uint8
+	var leaseResponse *LeaseResponseContext
+	if req.OplockLevel == OplockLevelLease && h.LeaseManager != nil {
+		if leaseCtx := FindCreateContext(req.CreateContexts, LeaseContextTagRequest); leaseCtx != nil {
+			var newLeaseKey [16]byte
+			if parsed, decErr := DecodeLeaseCreateContext(leaseCtx.Data); decErr == nil && parsed != nil {
+				newLeaseKey = parsed.LeaseKey
+			}
+			disallowWriteLease := h.disallowWriteLeaseForFile(
+				authCtx.Context, rootHandle, newLeaseKey, smbFileID, connClientGUID(ctx),
+			)
+			statOpenLease := isStatOnlyOpen(req.DesiredAccess) &&
+				!isDestructiveDisposition(req.CreateDisposition)
+			var leaseErr error
+			leaseResponse, leaseErr = ProcessLeaseCreateContext(
+				authCtx.Context,
+				h.LeaseManager,
+				leaseCtx.Data,
+				lock.FileHandle(rootHandle),
+				ctx.SessionID,
+				connClientGUID(ctx),
+				fmt.Sprintf("smb:%d", ctx.SessionID),
+				tree.ShareName,
+				true, // the share root is always a directory
+				disallowWriteLease,
+				statOpenLease,
+			)
+			if leaseErr != nil {
+				logger.Debug("CREATE: share-root lease context processing failed", "error", leaseErr)
+			}
+			if leaseResponse != nil {
+				grantedOplock = OplockLevelLease
+			}
+		}
+	}
+
 	openFile := &OpenFile{
 		FileID:         smbFileID,
 		TreeID:         ctx.TreeID,
@@ -1876,6 +1918,17 @@ func (h *Handler) handleOpenRootCreate(
 		GrantedAccess:  grantedAccess,
 		IsDirectory:    true,
 		MetadataHandle: rootHandle,
+		OplockLevel:    grantedOplock,
+	}
+	if leaseResponse != nil && leaseResponse.LeaseState != lock.LeaseStateNone {
+		openFile.LeaseKey = leaseResponse.LeaseKey
+	}
+	// Record the RqLs parent-lease-key linkage so break coordination on this
+	// handle can apply the parent-key suppression rule, matching the non-root
+	// directory-open path.
+	if leaseResponse != nil && leaseResponse.HasParent {
+		openFile.ParentLeaseKey = leaseResponse.ParentLeaseKey
+		openFile.HasParentLeaseKey = true
 	}
 	// Snapshot opener identity so handle-bound ops survive re-auth (#772).
 	h.CaptureOpenerIdentity(ctx, openFile)
@@ -1883,9 +1936,9 @@ func (h *Handler) handleOpenRootCreate(
 
 	creation, access, write, change := FileAttrToSMBTimes(&rootFile.FileAttr)
 
-	return &CreateResponse{
+	resp := &CreateResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-		OplockLevel:     0,
+		OplockLevel:     grantedOplock,
 		CreateAction:    types.FileOpened,
 		CreationTime:    creation,
 		LastAccessTime:  access,
@@ -1895,7 +1948,29 @@ func (h *Handler) handleOpenRootCreate(
 		EndOfFile:       0,
 		FileAttributes:  types.FileAttributeDirectory,
 		FileID:          smbFileID,
-	}, nil
+	}
+	if leaseResponse != nil {
+		resp.CreateContexts = append(resp.CreateContexts, CreateContext{
+			Name: LeaseContextTagResponse,
+			Data: leaseResponse.Encode(),
+		})
+	}
+	// Answer the on-disk-id (QFid) request with the root's stable file ID, the
+	// same value FILE_ALL reports as the inode number. A serverino client that
+	// asks for the on-disk id at mount (instead of a separate query) uses it as
+	// the root inode identity; without this response it derives a fabricated
+	// number that every later stat then contradicts, yielding a stale handle.
+	if FindCreateContext(req.CreateContexts, "QFid") != nil {
+		qfidFileID := h.baseFileUUID(authCtx, nil, "", rootFile.ID)
+		qfidResp := make([]byte, 32)
+		copy(qfidResp[0:16], qfidFileID[:16])
+		copy(qfidResp[16:32], h.ServerGUID[:])
+		resp.CreateContexts = append(resp.CreateContexts, CreateContext{
+			Name: "QFid",
+			Data: qfidResp,
+		})
+	}
+	return resp, nil
 }
 
 // walkPath walks a path from a starting handle, returning the final handle.
