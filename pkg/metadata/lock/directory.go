@@ -172,16 +172,24 @@ func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType
 	canonicalByKey := make(map[[16]byte]*OpLock, len(locks))
 
 	for _, lock := range locks {
-		// Skip originator for the entire lock entry (covers both lease and delegation).
-		if lock.Owner.ClientID == originClientID {
+		// Skip the originator. Client-scoped exclusion covers directory
+		// delegations and, for entry add/rename, the originating client's
+		// directory leases. On entry REMOVAL, directory-lease suppression is
+		// governed solely by the parent lease key (checked below): the removing
+		// handle's own dir lease is spared via its matching parent key, while
+		// every other dir lease on the parent — including other-key leases held by
+		// the same client — must still break. Suppressing removal breaks by client
+		// would wrongly spare an other-key lease the parent-key rule breaks.
+		removalDirLease := changeType == DirChangeRemoveEntry &&
+			lock.Lease != nil && lock.Lease.IsDirectory
+		if lock.Owner.ClientID == originClientID && !removalDirLease {
 			continue
 		}
 
-		// Parent-key suppression: when the originating CREATE / SET_INFO
-		// carries an RqLs with ParentLeaseKey matching a parent dir lease's
-		// LeaseKey, that dir lease MUST NOT be broken (#470 C2). Applies to
-		// dir leases only — file lease / delegation paths below ignore the
-		// exclude key.
+		// Parent-key suppression: when the originating handle carries an RqLs
+		// with ParentLeaseKey matching a parent dir lease's LeaseKey, that dir
+		// lease is not broken (the originator's own cached view). Applies to dir
+		// leases only — file lease / delegation paths below ignore the exclude key.
 		if hasExcludeKey && lock.Lease != nil && lock.Lease.IsDirectory &&
 			lock.Lease.LeaseKey == excludeParentLeaseKey {
 			continue

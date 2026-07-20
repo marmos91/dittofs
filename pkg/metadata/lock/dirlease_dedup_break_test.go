@@ -160,6 +160,80 @@ func TestOnDirChange_DedupsByLeaseKey(t *testing.T) {
 	assertBothSiblingsBreaking(t, lm, records)
 }
 
+// oneDirLease injects a single RH directory-lease record under handleKey owned by
+// ownerClient with the given key, wires a per-key break counter, and returns it.
+func oneDirLease(t *testing.T, lm *Manager, handleKey, ownerClient string, key [16]byte) (*sync.Mutex, map[[16]byte]int) {
+	t.Helper()
+	mu := &sync.Mutex{}
+	breaks := map[[16]byte]int{}
+	lm.RegisterBreakCallbacks(&testBreakCallbacks{
+		onOpLockBreak: func(_ string, l *UnifiedLock, _ uint32) {
+			mu.Lock()
+			breaks[l.Lease.LeaseKey]++
+			mu.Unlock()
+		},
+	})
+	lm.mu.Lock()
+	lm.unifiedLocks[handleKey] = []*UnifiedLock{{
+		Owner: LockOwner{OwnerID: "h1", ClientID: ownerClient},
+		Lease: &OpLock{LeaseKey: key, LeaseState: LeaseStateRead | LeaseStateHandle, Epoch: 1, IsDirectory: true},
+	}}
+	lm.reindexHandleLocked(handleKey, nil)
+	lm.mu.Unlock()
+	return mu, breaks
+}
+
+// TestOnDirChange_BreaksOriginatorsOtherDirLease reproduces the deterministic
+// count==0 behind smb2.dirlease.unlink_*_and_close. Per MS-SMB2 §3.3.4.20 and the
+// Samba object-store rule, a directory-content change breaks every parent dir
+// lease whose lease key differs from the change's parent lease key — INCLUDING a
+// dir lease the originating client holds on a different handle. Only the
+// parent-key-matched lease is spared; the originating CLIENT must not be
+// blanket-excluded.
+func TestOnDirChange_BreaksOriginatorsOtherDirLease(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	const handleKey = "/share:dir"
+	victimKey := [16]byte{0x02}
+	closerParentKey := [16]byte{0x01} // differs from victimKey → victim must break
+
+	// The victim dir lease is owned by the SAME client that originates the delete.
+	mu, breaks := oneDirLease(t, lm, handleKey, "smb:c1", victimKey)
+
+	lm.OnDirChange(FileHandle(handleKey), DirChangeRemoveEntry, "smb:c1", closerParentKey, true)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if breaks[victimKey] != 1 {
+		t.Fatalf("originator's other-key dir lease got %d breaks, want 1; a blanket "+
+			"client-exclusion wrongly suppressed a lease the parent-key rule says must break "+
+			"(the deterministic smb2.dirlease.unlink_*_and_close count==0)", breaks[victimKey])
+	}
+}
+
+// TestOnDirChange_SuppressesParentKeyMatchedDirLease pins the other half of the
+// rule: the dir lease whose key MATCHES the change's parent lease key is spared
+// (the originator's own cached view), even without any client-level exclusion.
+func TestOnDirChange_SuppressesParentKeyMatchedDirLease(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	const handleKey = "/share:dir"
+	matchedKey := [16]byte{0x07}
+
+	mu, breaks := oneDirLease(t, lm, handleKey, "smb:c1", matchedKey)
+
+	// Parent key == the lease key → parent-key suppression spares it.
+	lm.OnDirChange(FileHandle(handleKey), DirChangeRemoveEntry, "smb:c1", matchedKey, true)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if breaks[matchedKey] != 0 {
+		t.Fatalf("parent-key-matched dir lease got %d breaks, want 0 (must be suppressed)", breaks[matchedKey])
+	}
+}
+
 // TestAcknowledgeLeaseBreak_ClearsMirroredSiblings is a regression test for the
 // create/delete-heavy SMB3 stall: a mirrored sibling left Breaking=true after
 // the client's single acknowledge.
