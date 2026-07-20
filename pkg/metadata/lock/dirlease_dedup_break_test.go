@@ -1,8 +1,10 @@
 package lock
 
 import (
+	"context"
 	"sync"
 	"testing"
+	"time"
 )
 
 // dlease2Key is the DLEASE2 lease-key constant smbtorture reuses across every
@@ -41,6 +43,10 @@ func twoSameKeyDirLeases(t *testing.T, lm *Manager, handleKey string, key [16]by
 
 	lm.mu.Lock()
 	lm.unifiedLocks[handleKey] = records
+	// Populate the lease-key index so findLeaseByKey (used by
+	// AcknowledgeLeaseBreak) can resolve these directly-injected records, as it
+	// would for records added through the normal grant path.
+	lm.reindexHandleLocked(handleKey, nil)
 	lm.mu.Unlock()
 
 	return mu, breaksByKey, records
@@ -152,4 +158,58 @@ func TestOnDirChange_DedupsByLeaseKey(t *testing.T) {
 	// BreakToState/BreakingToRequired/Epoch) so a later OnDirChange scan can't
 	// treat the skipped sibling as an active non-breaking lease.
 	assertBothSiblingsBreaking(t, lm, records)
+}
+
+// TestAcknowledgeLeaseBreak_ClearsMirroredSiblings is a regression test for the
+// create/delete-heavy SMB3 stall: a mirrored sibling left Breaking=true after
+// the client's single acknowledge.
+//
+// A directory-content-change break dispatches one wire LEASE_BREAK per lease key
+// and mirrors the break stage onto every sibling sharing that key without a
+// second notification (opens sharing a key are one logical lease, MS-SMB2
+// §3.3.5.9 — see assertBothSiblingsBreaking). The client then sends exactly ONE
+// acknowledge for the key, which findLeaseByKey resolves to a single record.
+// Unless the acknowledge clears every record sharing the key, the mirrored
+// sibling stays Breaking=true forever, so WaitForBreakCompletion on that
+// handleKey blocks until the force-complete timeout on every following operation.
+func TestAcknowledgeLeaseBreak_ClearsMirroredSiblings(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	const handleKey = "/share:dir-uuid"
+	_, _, records := twoSameKeyDirLeases(t, lm, handleKey, dlease2Key)
+
+	// Break both same-key dir leases to None: one notification, sibling mirrored.
+	lm.OnDirChange(FileHandle(handleKey), DirChangeRemoveEntry, "smb:3", [16]byte{}, false)
+
+	// The client sends exactly ONE acknowledge for the shared lease key.
+	if err := lm.AcknowledgeLeaseBreak(context.Background(), dlease2Key, LeaseStateNone, 0); err != nil {
+		t.Fatalf("AcknowledgeLeaseBreak: %v", err)
+	}
+
+	// Every record sharing the key — the one findLeaseByKey resolved AND the
+	// mirrored sibling — must land at None with Breaking cleared.
+	lm.mu.Lock()
+	for i, rec := range records {
+		if rec.Lease.Breaking {
+			lm.mu.Unlock()
+			t.Fatalf("record %d (%s): Breaking=true after a single acknowledge; the "+
+				"mirrored sibling was never cleared (WaitForBreakCompletion stalls until "+
+				"the force-complete timeout)", i, rec.Owner.OwnerID)
+		}
+		if rec.Lease.LeaseState != LeaseStateNone {
+			lm.mu.Unlock()
+			t.Fatalf("record %d (%s): LeaseState=%#x after ack-to-None; want None",
+				i, rec.Owner.OwnerID, rec.Lease.LeaseState)
+		}
+	}
+	lm.mu.Unlock()
+
+	// With no record left Breaking, WaitForBreakCompletion returns at once rather
+	// than blocking until the timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := lm.WaitForBreakCompletion(ctx, handleKey); err != nil {
+		t.Fatalf("WaitForBreakCompletion blocked/errored with a stuck mirrored sibling: %v", err)
+	}
 }

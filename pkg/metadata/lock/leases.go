@@ -996,6 +996,7 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 		lock.Type = lockTypeForLeaseState(LeaseStateNone)
 
 		lm.persistUnifiedLockLocked(lock)
+		lm.clearBreakingSiblingsLocked(leaseKey, lock)
 
 		logger.Debug("AcknowledgeLeaseBreak: lease released to None (record kept until CLOSE)",
 			"leaseKey", fmt.Sprintf("%x", leaseKey))
@@ -1083,6 +1084,7 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 
 	// Persist updated state
 	lm.persistUnifiedLockLocked(lock)
+	lm.clearBreakingSiblingsLocked(leaseKey, lock)
 
 	logger.Debug("AcknowledgeLeaseBreak: break acknowledged",
 		"leaseKey", fmt.Sprintf("%x", leaseKey),
@@ -1091,6 +1093,39 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 
 	lm.signalBreakWaitLocked(handleKey)
 	return nil
+}
+
+// clearBreakingSiblingsLocked syncs every other lease record sharing leaseKey to
+// primary's post-acknowledge state. Opens sharing a lease key are one logical
+// lease: OnDirChange and breakOpLocks put such sibling records into Breaking=true
+// via mirrorBreakStageLocked without ever sending a wire notification (only one
+// break is dispatched for the shared key). A client's single acknowledge resolves
+// through findLeaseByKey to exactly one record, so without this sync the mirrored
+// siblings stay Breaking=true forever and any WaitForBreakCompletion on their
+// handleKey blocks until the force-complete timeout — a per-operation stall under
+// directory churn. Progressive multi-stage breaks (partial acks) are file-lease
+// only and never mirror across a shared key, so they are unaffected. Must hold lm.mu.
+func (lm *Manager) clearBreakingSiblingsLocked(leaseKey [16]byte, primary *UnifiedLock) {
+	for handleKey := range lm.leaseKeyIndex[leaseKey] {
+		cleared := false
+		for _, lock := range lm.unifiedLocks[handleKey] {
+			if lock == primary || lock.Lease == nil ||
+				lock.Lease.LeaseKey != leaseKey || !lock.Lease.Breaking {
+				continue
+			}
+			lock.Lease.LeaseState = primary.Lease.LeaseState
+			lock.Lease.Breaking = false
+			lock.Lease.BreakToState = 0
+			lock.Lease.BreakingToRequired = primary.Lease.BreakingToRequired
+			lock.Lease.BreakStarted = time.Time{}
+			lock.Type = lockTypeForLeaseState(primary.Lease.LeaseState)
+			lm.persistUnifiedLockLocked(lock)
+			cleared = true
+		}
+		if cleared {
+			lm.signalBreakWaitLocked(handleKey)
+		}
+	}
 }
 
 // ReleaseLease releases all lease state for the given lease key.
