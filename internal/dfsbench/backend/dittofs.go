@@ -418,10 +418,24 @@ func dittofsMount(ctx context.Context, proto Protocol) (string, error) {
 	default:
 		return "", fmt.Errorf("dittofs-s3: unsupported protocol %s", proto)
 	}
-	if err := exec.Sh(ctx, "mount", "-t", typ, "-o", opts, src, clientMntDir); err != nil {
-		return "", err
+	// Adding the metadata/block stores and creating the share hot-reloads the
+	// running adapter, which briefly closes and reopens the SMB listener; a mount
+	// that lands in that window fails "Host is down" (the port is momentarily
+	// gone). waitPort above only proves the listener was up right after `adapter
+	// enable`, not after the later share-create reload. Retry so the mount rides
+	// out the reload instead of failing the whole cell over a ~few-second gap.
+	var err error
+	for attempt := 0; attempt < 8; attempt++ {
+		if err = exec.Sh(ctx, "mount", "-t", typ, "-o", opts, src, clientMntDir); err == nil {
+			return clientMntDir, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
 	}
-	return clientMntDir, nil
+	return "", err
 }
 
 // dittofsEvict drops locally-cached blocks so the next read is cold-from-S3.
