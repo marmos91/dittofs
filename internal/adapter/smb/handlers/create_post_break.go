@@ -22,12 +22,17 @@ import (
 // flow can run either inline (sync) or from a resume goroutine (async park on
 // lease break), without rewriting the large post-break block as a closure.
 type createDraft struct {
-	req            *CreateRequest
-	tree           *TreeConnection
-	authCtx        *metadata.AuthContext
-	filename       string
-	baseName       string
-	parentHandle   metadata.FileHandle
+	req          *CreateRequest
+	tree         *TreeConnection
+	authCtx      *metadata.AuthContext
+	filename     string
+	baseName     string
+	parentHandle metadata.FileHandle
+	// parentFile is the parent directory inode loaded once in the pre-break
+	// CREATE path (alongside the parent-create permission gate). createNewFile
+	// reuses it for compression-attribute inheritance instead of re-reading the
+	// same handle. Nil for pure-open dispositions, which never reach createNewFile.
+	parentFile     *metadata.File
 	existingFile   *metadata.File
 	existingHandle metadata.FileHandle
 	fileExists     bool
@@ -718,7 +723,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		}
 	case types.FileCreated:
 		var err error
-		file, fileHandle, err = h.createNewFile(authCtx, parentHandle, baseName, req, d.isDirectoryRequest)
+		file, fileHandle, err = h.createNewFile(authCtx, parentHandle, d.parentFile, baseName, req, d.isDirectoryRequest)
 		if err != nil {
 			// Concurrent-create race: another opener won between our
 			// pre-create lookup and the metadata-store transaction. For
