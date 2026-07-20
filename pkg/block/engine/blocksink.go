@@ -19,6 +19,11 @@ import (
 // numCarveCommitStripes must be a power of two so the stripe index is a mask.
 const numCarveCommitStripes = 256
 
+// Compile-time guard: forKey masks with (numCarveCommitStripes-1), which only
+// yields a valid index when the count is a power of two. If it is not, the
+// unsigned subtraction below underflows and the build fails.
+const _ = uint(-(numCarveCommitStripes & (numCarveCommitStripes - 1)))
+
 // carveCommitLocks serializes a payloadID's metadata commit so the within-file
 // carve dispatcher's concurrent CommitBlock calls do not read-modify-write the
 // same File row at once. Each commit re-projects File.Blocks (a PutFile), so two
