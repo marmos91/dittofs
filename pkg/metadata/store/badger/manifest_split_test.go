@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	badgerdb "github.com/dgraph-io/badger/v4"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -15,7 +16,7 @@ import (
 // version (which advances on every write, even a same-value rewrite), the
 // decoded block list, and whether the key exists. The version is what proves an
 // attr-only write did NOT touch the manifest.
-func readManifest(t *testing.T, s *BadgerMetadataStore, id [16]byte) (version uint64, blocks []block.ChunkRef, exists bool) {
+func readManifest(t *testing.T, s *BadgerMetadataStore, id uuid.UUID) (version uint64, blocks []block.ChunkRef, exists bool) {
 	t.Helper()
 	require.NoError(t, s.db.View(func(txn *badgerdb.Txn) error {
 		item, err := txn.Get(keyFileManifest(id))
