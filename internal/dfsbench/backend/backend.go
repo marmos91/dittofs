@@ -68,6 +68,13 @@ type Backend struct {
 	Unmount  func(ctx context.Context, proto Protocol) error
 	Teardown func(ctx context.Context) error
 
+	// WaitSettled blocks until the backend's async post-write digestion has
+	// quiesced, so a warm read measures a settled store rather than one still
+	// carving/uploading/rolling-up the just-written read target. nil for backends
+	// with no background write amplification (a fresh warm read already reflects
+	// steady state). Best-effort: a settle that times out logs and returns.
+	WaitSettled func(ctx context.Context) error
+
 	// FlushFUSE is the cold-read barrier for backends that keep their own cache:
 	// it flushes writeback to S3 and rebuilds on an empty cache, so the next read
 	// is genuinely cold-from-S3. FUSE backends remount empty (flush + fresh mount);

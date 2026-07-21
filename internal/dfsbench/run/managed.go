@@ -138,6 +138,17 @@ func runPlan(ctx context.Context, p backend.Plan, env backend.BackendEnv, wls, s
 		return err
 	}
 
+	// Let the backend's async post-write digestion quiesce before the warm pass.
+	// A writeback block store carves/uploads/rolls-up the read target on background
+	// goroutines; measuring the warm read mid-digestion charges the read path for
+	// concurrent disk writes and CPU, not the read itself. No-op for backends with
+	// no background write amplification. Best-effort — a settle error just warns.
+	if b.WaitSettled != nil {
+		if err := b.WaitSettled(ctx); err != nil {
+			_, _ = fmt.Fprintf(exec.CmdOut, "warn: settle %s: %v\n", p.SystemLabel(), err)
+		}
+	}
+
 	if err := runPass(ctx, p, "warm", wls, sizes, mnt, opts, f); err != nil {
 		return err
 	}
