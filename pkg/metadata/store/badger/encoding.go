@@ -38,7 +38,6 @@ import (
 // Children Map          "c:"     c:<parentUUID>:<childName>             childUUID (bytes)
 // Shares                "s:"     s:<shareName>                          shareData (JSON)
 // Link Counts           "l:"     l:<uuid>                               uint32 (binary)
-// Device Numbers        "d:"     d:<uuid>                               deviceNumber (JSON)
 // Server Config         "cfg:"   cfg:server                             MetadataServerConfig (JSON)
 // Filesystem Caps       "cap:"   cap:fs                                 FilesystemCapabilities (JSON)
 
@@ -49,7 +48,6 @@ const (
 	prefixChildName    = "cn:" // (parentUUID, childUUID) -> child name (reverse edge)
 	prefixShare        = "s:"
 	prefixLinkCount    = "l:"
-	prefixDeviceNumber = "d:"
 	prefixConfig       = "cfg:"
 	prefixCapabilities = "cap:"
 	prefixObjectID     = "obj:" // ObjectID -> file UUID

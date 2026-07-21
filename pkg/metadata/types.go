@@ -158,18 +158,6 @@ type ShareOptions struct {
 	IdentityMapping *IdentityMapping
 }
 
-// ShareSession represents an active client session on a share.
-type ShareSession struct {
-	// ShareName is the name of the mounted share
-	ShareName string
-
-	// ClientAddr is the network address of the client
-	ClientAddr string
-
-	// MountedAt is the time when the share was mounted
-	MountedAt time.Time
-}
-
 // ============================================================================
 // Server Configuration
 // ============================================================================

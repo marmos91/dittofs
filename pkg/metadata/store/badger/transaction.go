@@ -2,7 +2,6 @@ package badger
 
 import (
 	"context"
-	"encoding/json"
 	goerrors "errors"
 	"fmt"
 	"strings"
@@ -909,26 +908,12 @@ func (tx *badgerTransaction) GetFilesystemMeta(ctx context.Context, shareName st
 		return nil, err
 	}
 
-	item, err := tx.txn.Get(keyFilesystemMeta(shareName))
-	if err == badgerdb.ErrKeyNotFound {
-		// Return defaults
-		return &metadata.FilesystemMeta{
-			Capabilities: tx.store.loadCapabilities(),
-		}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	var metaSvc metadata.FilesystemMeta
-	err = item.Value(func(val []byte) error {
-		return json.Unmarshal(val, &metaSvc)
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &metaSvc, nil
+	// Capabilities are the only persisted part of the filesystem metadata and
+	// live in the cap:fs singleton; statistics are computed on demand via
+	// GetFilesystemStatistics.
+	return &metadata.FilesystemMeta{
+		Capabilities: tx.store.loadCapabilities(),
+	}, nil
 }
 
 func (tx *badgerTransaction) PutFilesystemMeta(ctx context.Context, shareName string, metaSvc *metadata.FilesystemMeta) error {
@@ -936,12 +921,10 @@ func (tx *badgerTransaction) PutFilesystemMeta(ctx context.Context, shareName st
 		return err
 	}
 
-	data, err := json.Marshal(metaSvc)
-	if err != nil {
-		return err
-	}
-
-	return tx.txn.Set(keyFilesystemMeta(shareName), data)
+	// Persist only the capabilities into the cap:fs singleton; statistics are
+	// dynamic and never stored.
+	tx.SetFilesystemCapabilities(metaSvc.Capabilities)
+	return nil
 }
 
 func (tx *badgerTransaction) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
@@ -956,20 +939,12 @@ func (tx *badgerTransaction) GenerateHandle(ctx context.Context, shareName strin
 // Key Helper Functions
 // ============================================================================
 
-func keyFilesystemMeta(shareName string) []byte {
-	return []byte(prefixFilesystemMeta + shareName)
-}
-
 func extractNameFromChildKey(key, prefix []byte) string {
 	if len(key) <= len(prefix) {
 		return ""
 	}
 	return string(key[len(prefix):])
 }
-
-const (
-	prefixFilesystemMeta = "fsmeta:"
-)
 
 // ============================================================================
 // Transaction Shares Operations

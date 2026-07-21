@@ -407,7 +407,7 @@ func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	}
 
 	// Re-initialize transient state.
-	s.sessions = make(map[string]*metadata.ShareSession)
+	s.sessions = make(map[string]*ShareSession)
 
 	// Recompute usedBytes from files (only regular files count).
 	var totalBytes int64
