@@ -19,6 +19,28 @@ type AdapterConfig struct {
 	ParsedConfig map[string]any `gorm:"-" json:"config,omitempty"`
 }
 
+// Default ports an adapter binds to when its configured port is 0. The adapter
+// factory and the unchanged-listener check both resolve a zero port through
+// these, so a reload compares resolved-against-resolved rather than a sentinel
+// against a concrete port — keeping this the single source of truth.
+const (
+	DefaultNFSPort = 12049
+	DefaultSMBPort = 12445
+)
+
+// DefaultPort returns the port an adapter of the given type binds to when its
+// configured port is 0, or 0 when the type has no known default.
+func DefaultPort(adapterType string) int {
+	switch adapterType {
+	case "nfs":
+		return DefaultNFSPort
+	case "smb":
+		return DefaultSMBPort
+	default:
+		return 0
+	}
+}
+
 // TableName returns the table name for AdapterConfig.
 func (AdapterConfig) TableName() string {
 	return "adapters"

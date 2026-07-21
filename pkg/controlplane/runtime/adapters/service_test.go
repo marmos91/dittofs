@@ -203,3 +203,63 @@ func TestUpdateAdapter_PreservesListenerWhenBindUnchanged(t *testing.T) {
 		t.Fatalf("StopAllAdapters: %v", err)
 	}
 }
+
+// TestUpdateAdapter_ZeroPortRebindsFromNonDefault proves that updating an
+// adapter bound to a non-default port with an explicit port 0 ("use the
+// default") rebinds to the default port instead of silently preserving the old
+// listener — which would leave the running port and the persisted (port 0)
+// config out of sync.
+func TestUpdateAdapter_ZeroPortRebindsFromNonDefault(t *testing.T) {
+	const nonDefaultPort = 14445
+
+	var created []*fakeListenerAdapter
+	var mu sync.Mutex
+
+	svc := New(newFakeAdapterStore(), time.Second)
+	// Mirror the real factory: a zero port resolves to the type's default.
+	svc.SetAdapterFactory(func(cfg *models.AdapterConfig) (ProtocolAdapter, error) {
+		a := newFakeListenerAdapter(cfg.Type, resolvePort(cfg.Type, cfg.Port))
+		mu.Lock()
+		created = append(created, a)
+		mu.Unlock()
+		return a, nil
+	})
+
+	ctx := context.Background()
+	if err := svc.CreateAdapter(ctx, &models.AdapterConfig{Type: "smb", Enabled: true, Port: nonDefaultPort}); err != nil {
+		t.Fatalf("CreateAdapter: %v", err)
+	}
+
+	mu.Lock()
+	first := created[0]
+	mu.Unlock()
+	waitReady(t, first)
+
+	// Update with an explicit port 0: resolves to the SMB default, so the
+	// listen address changes and the adapter must rebind.
+	if err := svc.UpdateAdapter(ctx, &models.AdapterConfig{Type: "smb", Enabled: true, Port: 0}); err != nil {
+		t.Fatalf("UpdateAdapter (port 0): %v", err)
+	}
+
+	if got := first.stopCount.Load(); got != 1 {
+		t.Fatalf("old adapter not stopped on rebind to default: stopCount=%d, want 1", got)
+	}
+	mu.Lock()
+	nCreated := len(created)
+	second := created[len(created)-1]
+	mu.Unlock()
+	if nCreated != 2 {
+		t.Fatalf("port 0 did not rebind: created %d adapters, want 2", nCreated)
+	}
+	waitReady(t, second)
+	if svc.GetAdapter("smb") != second {
+		t.Fatal("rebind did not swap to the new adapter instance")
+	}
+	if got := second.Port(); got != models.DefaultSMBPort {
+		t.Fatalf("rebound adapter bound to wrong port: got %d, want default %d", got, models.DefaultSMBPort)
+	}
+
+	if err := svc.StopAllAdapters(); err != nil {
+		t.Fatalf("StopAllAdapters: %v", err)
+	}
+}
