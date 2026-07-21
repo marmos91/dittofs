@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -22,40 +23,128 @@ import (
 //
 // Schema lives in migrations/000012_file_block_refs.up.sql.
 
-// putFileChunkRefs replaces all rows in file_block_refs for fileID with
-// the given blocks. Atomic when called inside a pgx.Tx (the caller's tx).
+// putFileChunkRefs brings the file_block_refs rows for fileID into agreement
+// with blocks by writing only the rows that actually differ, and reports
+// whether any row was written. Atomic when called inside the caller's pgx.Tx.
 //
-// Implementation: DELETE+INSERT. Engine-bug paths are defended by the
-// (file_id, "offset") PK — a duplicate offset would be rejected. The
-// DELETE first ensures stale offsets from a prior list are not left
-// behind when the new list is shorter.
-func putFileChunkRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks []block.ChunkRef) error {
-	if _, err := tx.Exec(ctx, `DELETE FROM file_block_refs WHERE file_id = $1`, fileID); err != nil {
-		return fmt.Errorf("delete file_block_refs for %s: %w", fileID, err)
+// Rather than rewriting the whole manifest on every data write, it diffs the
+// incoming list against the stored rows (keyed by the unique (file_id,
+// "offset") PK) and applies a targeted delta:
+//   - offsets present in blocks whose (size, hash) differ from the stored row,
+//     or that have no stored row, are UPSERTed;
+//   - offsets stored but absent from blocks are DELETEd (a shrink/truncate must
+//     not leave stale higher-offset rows behind);
+//   - offsets whose stored (size, hash) already match are left untouched.
+//
+// The resulting rows are byte-identical to a full DELETE+INSERT of blocks —
+// only the write volume shrinks. When nothing differs it returns false and
+// touches no rows. The delete plus every upsert ship in a single SendBatch to
+// keep round-trips down.
+//
+// hasPriorRefs lets a freshly-inserted file skip the stored-row query: with no
+// prior rows every incoming ref is a plain insert.
+func putFileChunkRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks []block.ChunkRef, hasPriorRefs bool) (bool, error) {
+	upserts, deletes, err := fileChunkRefsDelta(ctx, tx, fileID, blocks, hasPriorRefs)
+	if err != nil {
+		return false, err
 	}
-	if len(blocks) == 0 {
-		return nil
+	if len(upserts) == 0 && len(deletes) == 0 {
+		return false, nil
 	}
+
 	batch := &pgx.Batch{}
-	for _, b := range blocks {
+	if len(deletes) > 0 {
+		// A single ANY() carries the whole removed-offset set as one array
+		// parameter, so a shrink of any size is one statement.
 		batch.Queue(
-			`INSERT INTO file_block_refs (file_id, "offset", size, hash) VALUES ($1, $2, $3, $4)`,
+			`DELETE FROM file_block_refs WHERE file_id = $1 AND "offset" = ANY($2)`,
+			fileID, deletes,
+		)
+	}
+	for _, b := range upserts {
+		batch.Queue(
+			`INSERT INTO file_block_refs (file_id, "offset", size, hash) VALUES ($1, $2, $3, $4)
+			 ON CONFLICT (file_id, "offset") DO UPDATE SET size = excluded.size, hash = excluded.hash`,
 			fileID, int64(b.Offset), int32(b.Size), b.Hash[:],
 		)
 	}
+
 	br := tx.SendBatch(ctx, batch)
 	defer func() { _ = br.Close() }()
-	for range blocks {
+	statements := len(upserts)
+	if len(deletes) > 0 {
+		statements++
+	}
+	for i := 0; i < statements; i++ {
 		if _, err := br.Exec(); err != nil {
-			return fmt.Errorf("insert file_block_ref: %w", err)
+			return false, fmt.Errorf("apply file_block_refs delta: %w", err)
 		}
 	}
-	return nil
+	return true, nil
 }
 
-// PutFileChunkRefsCallCount returns how many times PutFile persisted the
-// file_block_refs manifest (ran past the BlocksDirty gate) since store open.
-// Test-only — proves attr-only writes perform ZERO manifest writes.
+// storedChunkRef is a stored file_block_refs row minus its offset (the map key).
+type storedChunkRef struct {
+	size int32
+	hash []byte
+}
+
+// fileChunkRefsDelta diffs blocks against the rows currently stored for fileID
+// and returns the refs to UPSERT (new offset, or changed size/hash) and the
+// stored offsets to DELETE (absent from blocks). When hasPriorRefs is false the
+// stored set is known-empty, so the query is skipped and every ref is an
+// upsert. Offsets are unique under the (file_id, "offset") PK, so keying the
+// diff on offset is sound.
+func fileChunkRefsDelta(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks []block.ChunkRef, hasPriorRefs bool) ([]block.ChunkRef, []int64, error) {
+	stored := make(map[int64]storedChunkRef)
+	if hasPriorRefs {
+		rows, err := tx.Query(ctx,
+			`SELECT "offset", size, hash FROM file_block_refs WHERE file_id = $1`,
+			fileID,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("query file_block_refs for %s: %w", fileID, err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var off int64
+			var sz int32
+			var raw []byte
+			if err := rows.Scan(&off, &sz, &raw); err != nil {
+				return nil, nil, fmt.Errorf("scan file_block_ref: %w", err)
+			}
+			h := make([]byte, len(raw))
+			copy(h, raw)
+			stored[off] = storedChunkRef{size: sz, hash: h}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, nil, fmt.Errorf("iterate file_block_refs: %w", err)
+		}
+	}
+
+	var upserts []block.ChunkRef
+	incoming := make(map[int64]struct{}, len(blocks))
+	for _, b := range blocks {
+		off := int64(b.Offset)
+		incoming[off] = struct{}{}
+		if s, ok := stored[off]; ok && s.size == int32(b.Size) && bytes.Equal(s.hash, b.Hash[:]) {
+			continue // identical row already stored — no write
+		}
+		upserts = append(upserts, b)
+	}
+	var deletes []int64
+	for off := range stored {
+		if _, ok := incoming[off]; !ok {
+			deletes = append(deletes, off)
+		}
+	}
+	return upserts, deletes, nil
+}
+
+// PutFileChunkRefsCallCount returns how many times PutFile actually wrote
+// file_block_refs rows — the delta upserted or deleted at least one row —
+// since store open. Test-only — proves attr-only writes and no-op
+// re-projections of an unchanged manifest perform ZERO manifest writes.
 func (s *PostgresMetadataStore) PutFileChunkRefsCallCount() int64 {
 	return s.manifestWrites.Load()
 }

@@ -504,9 +504,17 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	// regular files carry ChunkRef payloads; empty/nil Blocks under a dirty
 	// flag performs a DELETE-only pass so no stale rows survive a drop.
 	if file.Type == metadata.FileTypeRegular && file.BlocksDirty {
-		tx.store.manifestWrites.Add(1)
-		if err := putFileChunkRefs(ctx, tx.tx, file.ID, file.Blocks); err != nil {
+		// Apply only the rows that actually changed. An in-place overwrite that
+		// reuses the same chunk boundaries frequently projects an identical
+		// manifest, so putFileChunkRefs writes nothing and reports wrote=false.
+		// Freshly-inserted rows (!updated) have no prior refs, so every ref is
+		// a plain insert. The counter tracks manifests that truly changed.
+		wrote, err := putFileChunkRefs(ctx, tx.tx, file.ID, file.Blocks, updated)
+		if err != nil {
 			return mapPgError(err, "PutFile", "blocks")
+		}
+		if wrote {
+			tx.store.manifestWrites.Add(1)
 		}
 	}
 
