@@ -1,8 +1,10 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -64,6 +66,60 @@ func putFileChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, blocks [
 		}
 	}
 	return nil
+}
+
+// fileChunkRefsUnchanged reports whether the file_block_refs rows already
+// stored for fileID exactly match blocks — same count, offsets, sizes, and
+// hashes. When true, a PutFile carrying an identical manifest can skip the
+// DELETE+INSERT rewrite: the stored rows are already correct. This is the
+// common case for an in-place overwrite that reuses the same chunk
+// boundaries and re-projects the same manifest.
+//
+// Any difference (count, offset, size, or hash) returns false, so the
+// caller performs the full rewrite — false is the safe default: a spurious
+// false only costs a rewrite that was already the previous behaviour, while
+// a spurious true would drop a real change. The incoming list is compared in
+// offset order (offsets are unique under the (file_id, "offset") PK, giving a
+// total order that matches the stored rows' ORDER BY "offset").
+func fileChunkRefsUnchanged(ctx context.Context, tx execer, fileID uuid.UUID, blocks []block.ChunkRef) (bool, error) {
+	// Canonicalise the incoming list into offset order without reordering the
+	// caller's slice.
+	want := make([]block.ChunkRef, len(blocks))
+	copy(want, blocks)
+	sort.Slice(want, func(i, j int) bool { return want[i].Offset < want[j].Offset })
+
+	rows, err := tx.Query(ctx,
+		`SELECT "offset", size, hash FROM file_block_refs WHERE file_id = ?1 ORDER BY "offset" ASC`,
+		fileID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("query file_block_refs for %s: %w", fileID, err)
+	}
+	defer rows.Close()
+
+	i := 0
+	for rows.Next() {
+		var off int64
+		var sz int32
+		var raw []byte
+		if err := rows.Scan(&off, &sz, &raw); err != nil {
+			return false, fmt.Errorf("scan file_block_ref: %w", err)
+		}
+		if i >= len(want) {
+			// More stored rows than incoming — the manifest shrank.
+			return false, nil
+		}
+		w := want[i]
+		if uint64(off) != w.Offset || uint32(sz) != w.Size || !bytes.Equal(raw, w.Hash[:]) {
+			return false, nil
+		}
+		i++
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate file_block_refs: %w", err)
+	}
+	// Equal only when every incoming ref was matched by a stored row.
+	return i == len(want), nil
 }
 
 // PutFileChunkRefsCallCount returns how many times PutFile persisted the
