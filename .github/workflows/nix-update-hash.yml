@@ -2,6 +2,11 @@ name: nix-update-hash
 
 on:
   push:
+    # Branches only — a tag push checks out a detached HEAD, so the bot's
+    # commit+push step cannot push and the job fails. The hash is refreshed on
+    # the branch push that changed the deps; tags inherit the already-correct hash.
+    branches:
+      - "**"
     paths:
       - go.mod
       - go.sum
