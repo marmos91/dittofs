@@ -24,6 +24,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	pkgidentity "github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -2693,9 +2694,10 @@ func (h *Handler) getCachedShares() []rpc.ShareInfo1 {
 		}
 		displayName := strings.TrimPrefix(name, "/")
 		shares = append(shares, rpc.ShareInfo1{
-			Name:    displayName,
-			Type:    rpc.STYPE_DISKTREE,
-			Comment: "DittoFS share",
+			Name:               displayName,
+			Type:               rpc.STYPE_DISKTREE,
+			Comment:            "DittoFS share",
+			SecurityDescriptor: h.shareSecurityDescriptor(name),
 		})
 	}
 
@@ -2703,6 +2705,41 @@ func (h *Handler) getCachedShares() []rpc.ShareInfo1 {
 	h.sharesCacheValid = true
 
 	return shares
+}
+
+// shareSecurityDescriptor builds the self-relative security descriptor served
+// for a share at srvsvc info level 502, so Windows Explorer's Advanced Sharing
+// "Permissions" tab is populated. It mirrors the file Security tab: the share's
+// control-plane grants are projected via ShareRootGrantACL and merged into a
+// synthesized owner+SYSTEM descriptor, surfacing the AD/SID principals that
+// govern the share. Best-effort — a lookup or build failure yields a nil
+// descriptor (a level-502 reply with a null SD) rather than failing the pipe.
+func (h *Handler) shareSecurityDescriptor(shareName string) []byte {
+	if h.Registry == nil {
+		return nil
+	}
+
+	var grantACEs []acl.ACE
+	if grantACL, err := h.Registry.ShareRootGrantACL(context.Background(), shareName); err != nil {
+		logger.Debug("share SD: grant ACL lookup failed (non-fatal)", "share", shareName, "error", err)
+	} else if grantACL != nil {
+		grantACEs = grantACL.ACEs
+	}
+
+	// The share root is owned by uid/gid 0 and carries no explicitly-stored
+	// ACL, so BuildSecurityDescriptorWithGrants synthesizes the owner+SYSTEM
+	// default and merges in the direct AD/SID grants (see buildDACL).
+	root := &metadata.File{}
+	sd, err := BuildSecurityDescriptorWithGrants(
+		root,
+		OwnerSecurityInformation|GroupSecurityInformation|DACLSecurityInformation,
+		grantACEs,
+	)
+	if err != nil {
+		logger.Debug("share SD: build failed (non-fatal)", "share", shareName, "error", err)
+		return nil
+	}
+	return sd
 }
 
 // invalidateShareCache marks the share list cache as stale.
