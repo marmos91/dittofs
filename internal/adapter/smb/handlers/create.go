@@ -1187,9 +1187,25 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// does not also block the other — required by smbtorture
 	// smb2.create.mkdir-visible (deny-WORLD-ADD_FILE inherited ACE must
 	// not block subdirectory creation).
+	//
+	// Load the parent inode exactly once here and reuse it for both the
+	// permission gate and the later compression-attribute inheritance in
+	// createNewFile — a single GetFile replaces the separate reloads each
+	// path used to perform. The compression read only runs on a create
+	// disposition, which is precisely when this block loads the parent.
+	var parentFile *metadata.File
 	if req.CreateDisposition != types.FileOpen {
+		var pErr error
+		parentFile, pErr = metaSvc.GetFile(authCtx.Context, parentHandle)
+		if pErr != nil {
+			logger.Debug("CREATE: parent lookup failed",
+				"path", filename,
+				"disposition", req.CreateDisposition,
+				"error", pErr)
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(pErr)}}, nil
+		}
 		isDirCreate := req.CreateOptions&types.FileDirectoryFile != 0
-		if err := metaSvc.CheckParentCreateAccess(authCtx, parentHandle, isDirCreate); err != nil {
+		if err := metaSvc.CheckParentCreateAccessFile(authCtx, parentHandle, parentFile, isDirCreate); err != nil {
 			logger.Debug("CREATE: parent DACL denies create",
 				"path", filename,
 				"disposition", req.CreateDisposition,
@@ -1433,6 +1449,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		filename:             filename,
 		baseName:             baseName,
 		parentHandle:         parentHandle,
+		parentFile:           parentFile,
 		existingFile:         existingFile,
 		fileExists:           fileExists,
 		createAction:         createAction,
@@ -2033,6 +2050,7 @@ func (h *Handler) walkPath(
 func (h *Handler) createNewFile(
 	authCtx *metadata.AuthContext,
 	parentHandle metadata.FileHandle,
+	parentFile *metadata.File,
 	name string,
 	req *CreateRequest,
 	isDirectory bool,
@@ -2064,8 +2082,7 @@ func (h *Handler) createNewFile(
 	// Per MS-SMB2 2.2.13: FILE_NO_COMPRESSION in CreateOptions suppresses inheritance.
 	metaSvc := h.Registry.GetMetadataService()
 	if req.CreateOptions&types.FileNoCompression == 0 {
-		parentFile, pErr := metaSvc.GetFile(authCtx.Context, parentHandle)
-		if pErr == nil && parentFile.Mode&modeDOSCompressed != 0 {
+		if parentFile != nil && parentFile.Mode&modeDOSCompressed != 0 {
 			fileAttr.Mode |= modeDOSCompressed
 		}
 	}

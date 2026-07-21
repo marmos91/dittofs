@@ -655,7 +655,7 @@ func (s *Service) CheckParentCreateAccess(ctx *AuthContext, parentHandle FileHan
 // re-reading the parent inode via store.GetFile. A caller that already holds the
 // parent File — e.g. createEntry, which loads it once to validate the directory
 // type — passes it here so a single CreateFile no longer loads the same parent
-// handle three times (#1737). The no-ACL path routes through the file-passing
+// handle three times. The no-ACL path routes through the file-passing
 // checkWritePermissionFile so it too avoids a re-fetch. Semantics are
 // byte-for-byte those of CheckParentCreateAccess (same NFSv4 ADD_FILE vs
 // ADD_SUBDIRECTORY mask, same read-only ordering); only the redundant reads go.
