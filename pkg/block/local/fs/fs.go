@@ -153,7 +153,7 @@ func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileCh
 // before an access touches it, so the access observes (and, for a mutation,
 // lands after) the replayed legacy bytes rather than racing them: a later
 // background drain replays the SAME records idempotently and cannot clobber a
-// client write, resurrect a deleted/truncated payload, or serve a read zeros.
+// client write, resurrect a deleted/truncated payload, or serve zeros to a read.
 // A no-op once the migration is done, for any payload not under migration, or
 // when no migration is in flight.
 func (s *FSStore) materializeLegacy(payloadID string) error {
