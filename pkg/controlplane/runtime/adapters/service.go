@@ -159,18 +159,43 @@ func (s *Service) UpdateAdapter(ctx context.Context, cfg *models.AdapterConfig) 
 	return nil
 }
 
+// Default ports an adapter binds to when its configured port is 0. They mirror
+// the ports the adapter factory substitutes for a zero port when it constructs
+// the adapter, so the unchanged-listener check compares resolved against
+// resolved rather than a sentinel against a concrete port.
+const (
+	defaultNFSPort = 12049
+	defaultSMBPort = 12445
+)
+
+// resolvePort returns the port an adapter of the given type binds to, treating
+// a zero port as "use the type's default" — the same substitution the factory
+// applies when it constructs the adapter. Types without a known default keep
+// the raw port unchanged.
+func resolvePort(adapterType string, port int) int {
+	if port != 0 {
+		return port
+	}
+	switch adapterType {
+	case "nfs":
+		return defaultNFSPort
+	case "smb":
+		return defaultSMBPort
+	default:
+		return port
+	}
+}
+
 // sameListenAddr reports whether cfg binds to the same address and port as the
-// already-running adapter, so a reload need not recreate the TCP listener.
+// already-running adapter, so a reload need not recreate the TCP listener. A
+// zero port is resolved to its default first, so re-pointing a non-default-port
+// adapter at the default (port 0) is correctly seen as a change and rebinds,
+// keeping the running listener and the persisted config in agreement.
 func sameListenAddr(entry *adapterEntry, cfg *models.AdapterConfig) bool {
 	if adapterBindAddress(entry.config) != adapterBindAddress(cfg) {
 		return false
 	}
-	// A zero port means "keep the adapter's default port", which the running
-	// adapter has already resolved, so treat it as unchanged.
-	if cfg.Port == 0 {
-		return true
-	}
-	return cfg.Port == entry.adapter.Port()
+	return resolvePort(cfg.Type, cfg.Port) == entry.adapter.Port()
 }
 
 // adapterBindAddress returns the configured bind address, or "" when the
