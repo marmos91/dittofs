@@ -1002,6 +1002,17 @@ func mergeLocalStoreDefaults(defaults *LocalStoreDefaults, config *ShareConfig, 
 	return &merged
 }
 
+// legacyLocalOnlyMigrator is the local-store surface the shares service drives
+// to finish an async pre-journal local-only migration in the background.
+// Implemented by the journal-backed fs store; other backends never satisfy it,
+// so the drive block is a no-op for them.
+type legacyLocalOnlyMigrator interface {
+	MigratedFromLegacyLocalOnly() bool
+	LegacyPendingPayloads() []string
+	MaterializeLegacyPayload(payloadID string) error
+	FinishLegacyMigration() error
+}
+
 // createBlockStoreForShare creates and starts a per-share BlockStore.
 func (s *Service) createBlockStoreForShare(
 	ctx context.Context,
@@ -1190,6 +1201,42 @@ func (s *Service) createBlockStoreForShare(
 			logger.Warn("migrated pre-journal local layout but metadata store is not manifest-capable; reads will zero-fill until rewritten",
 				"share", config.Name)
 		}
+	}
+
+	// A local-only share (no remote to re-fetch from) that carried a complete
+	// pre-journal layout re-ingests its bytes from the surviving append logs in
+	// the BACKGROUND — AddShare must not block on O(total-bytes) work. Reads that
+	// arrive before a payload is drained fault it in per-payload (never zero-
+	// fill). When every payload is drained the archived legacy dirs are deleted;
+	// a crash before then leaves them on disk and the next open resumes. The
+	// final rollup is done here (outside any metadata txn — the coordinator is
+	// non-reentrant), never from inside a read.
+	if m, ok := localStore.(legacyLocalOnlyMigrator); ok && m.MigratedFromLegacyLocalOnly() {
+		shareName := config.Name
+		go func() {
+			// Detached from the AddShare context, which may be cancelled once the
+			// call returns; the store's own close gate stops the drain on shutdown.
+			bgCtx := context.Background()
+			for _, payloadID := range m.LegacyPendingPayloads() {
+				if err := m.MaterializeLegacyPayload(payloadID); err != nil {
+					logger.Error("legacy local-only migration: materialize failed; leaving archive for retry on next start",
+						"share", shareName, "payload", payloadID, "error", err)
+					return
+				}
+			}
+			if err := bs.DrainRollups(bgCtx); err != nil {
+				logger.Error("legacy local-only migration: rollup drain failed; leaving archive for retry on next start",
+					"share", shareName, "error", err)
+				return
+			}
+			if err := m.FinishLegacyMigration(); err != nil {
+				logger.Error("legacy local-only migration: cleanup of archived legacy dirs failed",
+					"share", shareName, "error", err)
+				return
+			}
+			logger.Info("migrated pre-journal local-only layout: re-ingested bytes from append logs and removed the archive",
+				"share", shareName)
+		}()
 	}
 
 	// Thread the inline metrics recorder into the new store's eviction/
@@ -2889,9 +2936,12 @@ func CreateLocalStoreFromConfig(
 	fsOpts.BackpressureMaxWait = backpressureMaxWait
 	// A remote-backed share may carry a pre-journal blobs/+logs/ layout from an
 	// upgrade; archive it aside so the journal opens clean (the caller then cold-
-	// seeds from the surviving manifest). Local-only shares keep migrateLegacy
-	// false so the guardrail stays fatal.
+	// seeds from the surviving manifest). A local-only share has no remote to
+	// re-fetch from, so it takes the async log-only migration path instead: the
+	// bytes are re-ingested from the surviving append logs when they are complete
+	// (no compacted log), and the guardrail stays fatal otherwise.
 	fsOpts.MigrateLegacyLayout = migrateLegacy
+	fsOpts.MigrateLegacyLocalOnly = !migrateLegacy
 	// Local-cache size-hint default. Precedence (lowest first):
 	// FSStore internal default < global/deduced default (plumbed via
 	// LocalStoreDefaults.MaxLogBytes) < per-store config["max_log_bytes"].

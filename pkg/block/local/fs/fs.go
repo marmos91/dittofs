@@ -38,6 +38,15 @@ type FSStoreOptions struct {
 	// from the surviving metadata manifest via cold seeding. A local-only share
 	// must leave it false so the guardrail stays fatal.
 	MigrateLegacyLayout bool
+	// MigrateLegacyLocalOnly, when set, makes NewWithOptions attempt an async,
+	// non-blocking migration of a pre-journal blobs/+logs/ layout on a LOCAL-ONLY
+	// share (no remote): if the append logs are complete (none compacted) the
+	// dirs are archived aside, the journal opens clean, and the bytes are
+	// re-ingested from the logs in the background (with per-payload fault-in on
+	// read). If any log was compacted the guardrail stays fatal (its rolled-up
+	// bytes live only in unrecoverable blobs). Ignored when MigrateLegacyLayout
+	// is set (remote-backed shares take that path instead).
+	MigrateLegacyLocalOnly bool
 }
 
 // FSStore is the journal-backed local store. It embeds *journal.Store and
@@ -52,6 +61,9 @@ type FSStore struct {
 	fileChunkStore     block.EngineFileChunkStore
 	durable            atomic.Bool
 	migratedFromLegacy bool
+	// legacyMig drives an async local-only migration off the pre-journal layout;
+	// nil when there is nothing to migrate. ReadAt faults a payload in through it.
+	legacyMig *legacyMigration
 }
 
 // MigratedFromLegacy reports whether NewWithOptions archived a pre-journal
@@ -84,7 +96,9 @@ func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileCh
 	// from the remote via the surviving manifest; a local-only share fails loud
 	// so its on-disk bytes are not stranded behind an empty journal.
 	migrated := false
-	if opts.MigrateLegacyLayout {
+	var legacyMig *legacyMigration
+	switch {
+	case opts.MigrateLegacyLayout:
 		legacy, err := hasLegacyLocalLayout(dir)
 		if err != nil {
 			return nil, err
@@ -95,8 +109,18 @@ func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileCh
 			}
 			migrated = true
 		}
-	} else if err := checkLegacyLayout(dir); err != nil {
-		return nil, err
+	case opts.MigrateLegacyLocalOnly:
+		// Gate + archive before opening the journal: a refusal must leave no
+		// empty journal behind, and the journal is bound into the migration
+		// once it is open (below).
+		var err error
+		if legacyMig, err = setupLegacyLocalOnlyMigration(dir); err != nil {
+			return nil, err
+		}
+	default:
+		if err := checkLegacyLayout(dir); err != nil {
+			return nil, err
+		}
 	}
 	cfg := journal.Config{
 		MaxLocalBytes: maxDisk,
@@ -107,6 +131,9 @@ func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileCh
 	if err != nil {
 		return nil, err
 	}
+	if legacyMig != nil {
+		legacyMig.store = js
+	}
 	s := &FSStore{
 		Store:              js,
 		dir:                dir,
@@ -114,6 +141,7 @@ func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileCh
 		maxLogBytes:        opts.MaxLogBytes,
 		fileChunkStore:     fileChunkStore,
 		migratedFromLegacy: migrated,
+		legacyMig:          legacyMig,
 	}
 	s.durable.Store(true) // fs-local survives a restart
 	return s, nil
@@ -126,6 +154,15 @@ func (s *FSStore) WriteAt(ctx context.Context, payloadID string, offset int64, d
 }
 
 func (s *FSStore) ReadAt(ctx context.Context, payloadID string, offset int64, dst []byte) (int, bool, error) {
+	// During an async local-only migration a read may arrive before the payload
+	// has been drained from the archived legacy log; fault that one payload in
+	// first so the read never observes a zero-filled hole. A no-op once the
+	// migration is done or for any payload not under migration.
+	if s.legacyMig != nil {
+		if err := s.legacyMig.materialize(payloadID); err != nil {
+			return 0, false, err
+		}
+	}
 	return s.Store.ReadAt(ctx, journal.FileID(payloadID), offset, dst)
 }
 
