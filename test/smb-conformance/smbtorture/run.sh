@@ -635,7 +635,21 @@ else
         else
             log_info "  Running: ${suite}"
         fi
-        run_smbtorture "$suite" 120 "$prefix" "${share:-}" || record_rc $?
+        # Durable-handle and replay suites drive many durable open/
+        # disconnect/reconnect cycles. On the badger-fs profile each of
+        # those persists/consumes a durable handle with a synchronous,
+        # non-coalescing fsync, so the cycles run far slower than on the
+        # memory backend and the default per-suite budget is too tight
+        # under the emulated CI runner (inflated per-fsync latency),
+        # timing the suite out mid-run. Give just those suites more head
+        # room on badger-fs; every other suite/profile keeps 120s.
+        suite_timeout=120
+        if [[ "$PROFILE" == "badger-fs" ]]; then
+            case "$suite" in
+                smb2.replay|smb2.durable-*) suite_timeout=300 ;;
+            esac
+        fi
+        run_smbtorture "$suite" "$suite_timeout" "$prefix" "${share:-}" || record_rc $?
     done
 
     # NOTE: Skipped interactive hold tests:
