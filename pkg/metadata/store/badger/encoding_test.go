@@ -15,16 +15,22 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
-// TestBadgerEncodeFile_BlocksRoundTrip verifies that FileAttr.Blocks
-// round-trips through the Badger JSON encoder
-// (encodeFile/decodeFile) without loss, including ContentHash bytes.
-func TestBadgerEncodeFile_BlocksRoundTrip(t *testing.T) {
+// TestBadgerEncodeFile_ManifestSplit verifies that the chunk manifest is NOT
+// carried in the f: attribute blob (it lives in the sibling fm: key), while the
+// manifest codec round-trips Blocks — including ContentHash bytes — without loss.
+func TestBadgerEncodeFile_ManifestSplit(t *testing.T) {
 	// Build three deterministic content hashes.
 	var h1, h2, h3 block.ContentHash
 	for i := range h1 {
 		h1[i] = byte(i)
 		h2[i] = byte(0xff - i)
 		h3[i] = byte(0xaa)
+	}
+
+	blocks := []block.ChunkRef{
+		{Hash: h1, Offset: 0, Size: 4 * 1024 * 1024},
+		{Hash: h2, Offset: 4 * 1024 * 1024, Size: 4 * 1024 * 1024},
+		{Hash: h3, Offset: 8 * 1024 * 1024, Size: 4 * 1024 * 1024},
 	}
 
 	original := &metadata.File{
@@ -41,11 +47,7 @@ func TestBadgerEncodeFile_BlocksRoundTrip(t *testing.T) {
 			Ctime:        time.Unix(1700000000, 0).UTC(),
 			Atime:        time.Unix(1700000000, 0).UTC(),
 			CreationTime: time.Unix(1700000000, 0).UTC(),
-			Blocks: []block.ChunkRef{
-				{Hash: h1, Offset: 0, Size: 4 * 1024 * 1024},
-				{Hash: h2, Offset: 4 * 1024 * 1024, Size: 4 * 1024 * 1024},
-				{Hash: h3, Offset: 8 * 1024 * 1024, Size: 4 * 1024 * 1024},
-			},
+			Blocks:       blocks,
 		},
 	}
 
@@ -56,21 +58,26 @@ func TestBadgerEncodeFile_BlocksRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, decoded)
 
-	require.Len(t, decoded.Blocks, 3)
-	assert.Equal(t, original.Blocks[0], decoded.Blocks[0])
-	assert.Equal(t, original.Blocks[1], decoded.Blocks[1])
-	assert.Equal(t, original.Blocks[2], decoded.Blocks[2])
+	// The manifest is split out of the attribute blob: encodeFile drops it.
+	assert.Empty(t, decoded.Blocks, "encodeFile must not embed the chunk manifest")
 
-	// Hash bytes preserved exactly.
-	assert.True(t, bytes.Equal(original.Blocks[0].Hash[:], decoded.Blocks[0].Hash[:]))
-	assert.True(t, bytes.Equal(original.Blocks[1].Hash[:], decoded.Blocks[1].Hash[:]))
-	assert.True(t, bytes.Equal(original.Blocks[2].Hash[:], decoded.Blocks[2].Hash[:]))
-
-	// Non-Blocks fields preserved.
+	// Non-Blocks fields still round-trip.
 	assert.Equal(t, original.ID, decoded.ID)
 	assert.Equal(t, original.ShareName, decoded.ShareName)
 	assert.Equal(t, original.Size, decoded.Size)
 	assert.Equal(t, original.Mode, decoded.Mode)
+
+	// The manifest codec (fm: value) round-trips the chunk list exactly.
+	mEnc, err := encodeManifest(blocks)
+	require.NoError(t, err)
+	mDec, err := decodeManifest(mEnc)
+	require.NoError(t, err)
+	require.Len(t, mDec, 3)
+	assert.Equal(t, blocks[0], mDec[0])
+	assert.Equal(t, blocks[1], mDec[1])
+	assert.Equal(t, blocks[2], mDec[2])
+	assert.True(t, bytes.Equal(blocks[0].Hash[:], mDec[0].Hash[:]))
+	assert.True(t, bytes.Equal(blocks[2].Hash[:], mDec[2].Hash[:]))
 
 	// Path is intentionally NOT persisted (#1166): it is always derived from
 	// parent edges on read, so encodeFile zeroes it before serializing. This

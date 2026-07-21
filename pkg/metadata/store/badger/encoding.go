@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -33,7 +34,8 @@ import (
 //
 // Data Type             Prefix   Key Format                              Value Type
 // ==================================================================================
-// File Data             "f:"     f:<uuid>                               File (binary; JSON read-fallback)
+// File Data             "f:"     f:<uuid>                               File attrs (binary; JSON read-fallback)
+// File Manifest         "fm:"    fm:<uuid>                              []block.ChunkRef (JSON)
 // Parent Relationships  "p:"     p:<childUUID>                          parentUUID (bytes)
 // Children Map          "c:"     c:<parentUUID>:<childName>             childUUID (bytes)
 // Shares                "s:"     s:<shareName>                          shareData (JSON)
@@ -43,6 +45,7 @@ import (
 
 const (
 	prefixFile         = "f:"
+	prefixFileManifest = "fm:" // file UUID -> block manifest ([]block.ChunkRef, JSON)
 	prefixParent       = "p:"
 	prefixChild        = "c:"
 	prefixChildName    = "cn:" // (parentUUID, childUUID) -> child name (reverse edge)
@@ -61,6 +64,28 @@ const (
 // keyFile generates a key for file data: "f:<uuid>"
 func keyFile(id uuid.UUID) []byte {
 	return []byte(prefixFile + id.String())
+}
+
+// keyFileManifest generates the block-manifest key: "fm:<uuid>". The manifest
+// (File.Blocks) lives here rather than in the f: attribute blob so an attr-only
+// write (chmod/utimes/close/rename/xattr) does not rewrite the chunk list.
+func keyFileManifest(id uuid.UUID) []byte {
+	return []byte(prefixFileManifest + id.String())
+}
+
+// encodeManifest serializes a block manifest for the fm:<uuid> value. JSON keeps
+// it self-describing and matches the bytes the legacy embedded field carried.
+func encodeManifest(blocks []block.ChunkRef) ([]byte, error) {
+	return json.Marshal(blocks)
+}
+
+// decodeManifest parses an fm:<uuid> value back into a block manifest.
+func decodeManifest(b []byte) ([]block.ChunkRef, error) {
+	var blocks []block.ChunkRef
+	if err := json.Unmarshal(b, &blocks); err != nil {
+		return nil, fmt.Errorf("decode manifest: %w", err)
+	}
+	return blocks, nil
 }
 
 // keyParent generates a key for parent relationship: "p:<childUUID>"
@@ -295,11 +320,9 @@ func encodeFile(file *metadata.File) ([]byte, error) {
 		}
 	}
 	buf = putUvarintField(buf, fIdempotenc, a.IdempotencyToken)
-	if len(a.Blocks) > 0 {
-		if buf, err = putJSONField(buf, fBlocks, a.Blocks); err != nil {
-			return nil, fmt.Errorf("encode blocks: %w", err)
-		}
-	}
+	// Blocks (the chunk manifest) are NOT written here — they live in the
+	// sibling fm:<uuid> key so an attr-only write never rewrites the manifest.
+	// The fBlocks field ID survives only in the decoder as a legacy read shim.
 	if !a.ObjectID.IsZero() {
 		oid := a.ObjectID // [32]byte
 		buf = putField(buf, fObjectID, oid[:])
@@ -417,6 +440,9 @@ func decodeFileBinary(b []byte) (*metadata.File, error) {
 		case fIdempotenc:
 			a.IdempotencyToken = uvOf(val)
 		case fBlocks:
+			// Legacy read shim: blobs written before the fm: manifest split
+			// still embed the chunk list. Newer blobs never carry this field;
+			// their manifest is loaded from fm:<uuid> (see loadManifest).
 			if err := json.Unmarshal(val, &a.Blocks); err != nil {
 				return nil, fmt.Errorf("decode blocks: %w", err)
 			}

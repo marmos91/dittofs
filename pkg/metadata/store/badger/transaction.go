@@ -242,6 +242,12 @@ func (tx *badgerTransaction) getFile(ctx context.Context, handle metadata.FileHa
 		return nil, err
 	}
 
+	// The chunk manifest lives in the sibling fm:<uuid> key (or, for legacy
+	// blobs, is already embedded and left in place by loadManifest).
+	if err := loadManifest(tx.txn, file); err != nil {
+		return nil, err
+	}
+
 	// Look up the link count and set Nlink on the returned file
 	// The link count is stored separately to support hard links
 	linkItem, linkErr := tx.txn.Get(keyLinkCount(fileID))
@@ -407,6 +413,27 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		return err
 	}
 	tx.dirtyFiles = append(tx.dirtyFiles, file.ID.String())
+
+	// Persist the chunk manifest to fm:<uuid> only when it changed. BlocksDirty
+	// is set by the sites that mutate the manifest (carve/truncate/punch); an
+	// attr-only write leaves it false and skips the rewrite — the write-
+	// amplification fix. When the flag is unset but the file carries blocks with
+	// no manifest key yet, the manifest is still written: this covers a fresh
+	// create and migrates a legacy f: blob off its embedded manifest (the new f:
+	// encoding no longer carries it) without rewriting an already-materialized one.
+	writeManifest := file.BlocksDirty
+	if !writeManifest && len(file.Blocks) > 0 {
+		if _, err := tx.txn.Get(keyFileManifest(file.ID)); goerrors.Is(err, badgerdb.ErrKeyNotFound) {
+			writeManifest = true
+		} else if err != nil {
+			return err
+		}
+	}
+	if writeManifest {
+		if err := tx.putManifest(file.ID, file.Blocks); err != nil {
+			return err
+		}
+	}
 
 	// maintain ObjectID -> file UUID secondary index in the
 	// same Txn as the primary file write (atomic on commit).
@@ -1497,6 +1524,12 @@ func (tx *badgerTransaction) loadEnrichedFileByID(fileID uuid.UUID) (*metadata.F
 			}
 			return nil
 		})
+	}
+
+	// GetFileByPayloadID returns the manifest inline (callers such as the flush
+	// coordinator read File.Blocks off it); load it from fm: like GetFile does.
+	if err := loadManifest(tx.txn, file); err != nil {
+		return nil, err
 	}
 
 	file.Path = tx.derivePath(fileID)

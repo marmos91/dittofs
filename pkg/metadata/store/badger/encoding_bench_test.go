@@ -86,9 +86,9 @@ func BenchmarkEncodeFileHot(b *testing.B) {
 	}
 }
 
-// bigFile builds a File with nBlocks ChunkRefs — the shape GetFileForRead
-// decodes on every read of a rolled-up file (a 1 GiB file at the ~1 MiB FastCDC
-// average is ~1024 chunks). The inline Blocks list dominates the JSON decode.
+// bigFile builds a File with nBlocks ChunkRefs. The manifest is now split out of
+// the f: attribute blob into fm:, so encodeFile drops these blocks; bigFile is
+// kept to exercise the attr-blob encode/decode with a realistic attribute set.
 func bigFile(nBlocks int) *metadata.File {
 	blocks := make([]block.ChunkRef, nBlocks)
 	for i := range blocks {
@@ -111,10 +111,12 @@ func bigFile(nBlocks int) *metadata.File {
 	}
 }
 
-// BenchmarkDecodeFile measures decodeFile on a 1024-block File. With the
-// generated easyjson UnmarshalJSON present, decodeFile's json.Unmarshal
-// auto-dispatches to it; remove file_types_easyjson.go to get the reflection
-// baseline. Run: go test -run=xxx -bench=BenchmarkDecodeFile ./pkg/metadata/store/badger/
+// BenchmarkDecodeFile measures decodeFile on the attr blob of a 1024-block File.
+// The manifest is split into fm:, so the decoded blob no longer carries the
+// chunk list; this now measures the attr-only decode. With the generated
+// easyjson UnmarshalJSON present, decodeFile's json.Unmarshal auto-dispatches to
+// it; remove file_types_easyjson.go to get the reflection baseline. Run:
+// go test -run=xxx -bench=BenchmarkDecodeFile ./pkg/metadata/store/badger/
 func BenchmarkDecodeFile(b *testing.B) {
 	enc, err := encodeFile(bigFile(1024))
 	if err != nil {
@@ -130,9 +132,11 @@ func BenchmarkDecodeFile(b *testing.B) {
 	}
 }
 
-// TestEncodeDecodeFile_RoundTrip guards format correctness: a File survives
-// encode -> decode byte-for-byte in its fields (decodeFile zeroes Path per
-// #1166, so we compare with Path cleared).
+// TestEncodeDecodeFile_RoundTrip guards format correctness: a File's attributes
+// survive encode -> decode (decodeFile zeroes Path per #1166). The chunk
+// manifest is split out to the fm: key and is NOT carried in the blob, so a
+// decoded record has empty Blocks; the manifest codec is covered separately by
+// TestBadgerEncodeFile_ManifestSplit and the store round-trip test.
 func TestEncodeDecodeFile_RoundTrip(t *testing.T) {
 	orig := bigFile(37)
 	orig.ACL = nil
@@ -145,13 +149,11 @@ func TestEncodeDecodeFile_RoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.ID != orig.ID || got.ShareName != orig.ShareName || got.Size != orig.Size ||
-		got.Mode != orig.Mode || got.PayloadID != orig.PayloadID || len(got.Blocks) != len(orig.Blocks) {
+		got.Mode != orig.Mode || got.PayloadID != orig.PayloadID {
 		t.Fatalf("round-trip mismatch: got %+v", got.FileAttr)
 	}
-	for i := range orig.Blocks {
-		if got.Blocks[i] != orig.Blocks[i] {
-			t.Fatalf("block %d mismatch: got %+v want %+v", i, got.Blocks[i], orig.Blocks[i])
-		}
+	if len(got.Blocks) != 0 {
+		t.Fatalf("manifest must not ride the attr blob: got %d blocks", len(got.Blocks))
 	}
 	if !got.Mtime.Equal(orig.Mtime) || !got.Ctime.Equal(orig.Ctime) {
 		t.Fatalf("time mismatch: got mtime=%v ctime=%v", got.Mtime, got.Ctime)
