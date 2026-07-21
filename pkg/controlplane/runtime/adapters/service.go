@@ -124,10 +124,29 @@ func (s *Service) DeleteAdapter(ctx context.Context, adapterType string) error {
 	return nil
 }
 
-// UpdateAdapter updates the persisted config, then restarts the adapter.
+// UpdateAdapter updates the persisted config, then reloads the adapter.
+//
+// The reload preserves the running adapter — and with it the live TCP
+// listener and any in-flight connections — when the new config keeps the
+// same listen address (bind address + port) and the adapter stays enabled.
+// A stop/start is only performed when the listen address actually changes or
+// the enabled state flips; other configuration is applied by the live
+// settings reload path or on the next rebind. This keeps a config change
+// (e.g. re-enabling an already-running adapter) from momentarily dropping the
+// accept socket and cutting existing sessions.
 func (s *Service) UpdateAdapter(ctx context.Context, cfg *models.AdapterConfig) error {
 	if err := s.store.UpdateAdapter(ctx, cfg); err != nil {
 		return fmt.Errorf("failed to update adapter config: %w", err)
+	}
+
+	s.mu.RLock()
+	entry, running := s.entries[cfg.Type]
+	s.mu.RUnlock()
+
+	if running && cfg.Enabled && sameListenAddr(entry, cfg) {
+		logger.Info("Adapter listen address unchanged; preserving listener across reload",
+			"type", cfg.Type, "port", entry.adapter.Port())
+		return nil
 	}
 
 	_ = s.stopAdapter(cfg.Type)
@@ -138,6 +157,34 @@ func (s *Service) UpdateAdapter(ctx context.Context, cfg *models.AdapterConfig) 
 	}
 
 	return nil
+}
+
+// sameListenAddr reports whether cfg binds to the same address and port as the
+// already-running adapter, so a reload need not recreate the TCP listener.
+func sameListenAddr(entry *adapterEntry, cfg *models.AdapterConfig) bool {
+	if adapterBindAddress(entry.config) != adapterBindAddress(cfg) {
+		return false
+	}
+	// A zero port means "keep the adapter's default port", which the running
+	// adapter has already resolved, so treat it as unchanged.
+	if cfg.Port == 0 {
+		return true
+	}
+	return cfg.Port == entry.adapter.Port()
+}
+
+// adapterBindAddress returns the configured bind address, or "" when the
+// adapter binds all interfaces (the default).
+func adapterBindAddress(cfg *models.AdapterConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	parsed, err := cfg.GetConfig()
+	if err != nil {
+		return ""
+	}
+	addr, _ := parsed["bind_address"].(string)
+	return addr
 }
 
 func (s *Service) EnableAdapter(ctx context.Context, adapterType string) error {
