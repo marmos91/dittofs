@@ -141,9 +141,10 @@ func fileChunkRefsDelta(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks
 	return upserts, deletes, nil
 }
 
-// PutFileChunkRefsCallCount returns how many times PutFile persisted the
-// file_block_refs manifest (ran past the BlocksDirty gate) since store open.
-// Test-only — proves attr-only writes perform ZERO manifest writes.
+// PutFileChunkRefsCallCount returns how many times PutFile actually wrote
+// file_block_refs rows — the delta upserted or deleted at least one row —
+// since store open. Test-only — proves attr-only writes and no-op
+// re-projections of an unchanged manifest perform ZERO manifest writes.
 func (s *PostgresMetadataStore) PutFileChunkRefsCallCount() int64 {
 	return s.manifestWrites.Load()
 }
