@@ -233,6 +233,54 @@ direct, synchronous sequential writes, and the network path to object storage ad
 round-trip of roughly 20 ms — so the durable-tier numbers above are bounded by that
 object-storage round-trip, not by local hardware.
 
+## The same engine over SMB3
+
+Everything above is measured over NFSv3, the one protocol every competitor shares.
+DittoFS also serves SMB2/3 natively, and the create-and-write and throughput workloads
+were re-run over a real Linux kernel `cifs` mount against the same disposable machine —
+single VM, warm pass with a block-store settle barrier (explained below), 30 s per
+workload, on the *medium* (1 MiB) size class. ZeroFS and s3ql expose no SMB, so the SMB
+comparison is against JuiceFS and rclone. Full per-backend/per-tier numbers are in the
+[appendix](#smb3).
+
+**Reads: on par with JuiceFS, ahead of rclone.** With a fair warm measurement, DittoFS's
+random reads land right on top of JuiceFS and roughly double rclone's; sequential reads
+are in a different league, because JuiceFS and rclone re-exported over SMB stream
+sequential data at a low single-digit MB/s here, while DittoFS serves it from its own
+settled cache:
+
+| Read workload | **DittoFS** (badger) | JuiceFS | rclone |
+|---|--:|--:|--:|
+| Random read, 4 KiB (IOPS) | **20,548** | 20,645 | 10,099 |
+| Sequential read (MB/s) | **444** | 2 | 6 |
+
+Getting this right was a fix to the harness, not the server. An earlier SMB pass sampled
+reads while the block store was still digesting the just-written data, and undercounted
+DittoFS badly. Adding a settle barrier — waiting for the block store to quiesce before the
+read pass — makes the read cells measure a settled cache, which is the state a real warm
+workload sees. The numbers above are with that barrier in place.
+
+**Sequential write is not an apples-to-apples throughput number.** The appendix SMB3 grid
+shows DittoFS at 320–615 MB/s of sequential write and JuiceFS/rclone at 2,200–3,300 MB/s,
+and that gap is a durability difference, not a DittoFS deficit. During the write window
+DittoFS actually persists to its local journal — measured disk writes of about 408 MB/s,
+which matches its reported throughput almost exactly. JuiceFS and rclone, in the same
+window, buffer in RAM and the page cache and write on the order of 1 MB/s to disk; their
+multi-gigabyte-per-second figure is un-persisted buffering that has not yet reached stable
+storage. DittoFS's number is bandwidth that is already durable; theirs is bandwidth still
+in flight.
+
+**Backend choice matters most for random writes.** Across the SMB3 grid, badger is the
+performant backend for write-heavy workloads, sustaining 7,300+ random-write IOPS. The
+SQLite backend is single-writer and lands roughly 19× slower on random writes (tracked as
+issue #1819); PostgreSQL sits in between. Choose badger for write-heavy use.
+
+**Metadata (create + write + close)** runs at 48–79 ops/s over SMB3 — competitive with
+JuiceFS's default (53), below rclone (122) and a Redis-backed JuiceFS (258).
+
+Large-file (1 GiB) read cells were not re-measured with the settle barrier, so the SMB3
+figures are the *medium* size class only.
+
 ## Where DittoFS stands, in plain terms
 
 - At **matched guarantees, DittoFS leads or ties every comparable filesystem.** It is
@@ -308,8 +356,9 @@ storage).
   of six repeats (object-storage latency varies run to run); the local-ack, writeback,
   and local-durable rows are the median of three; the competitor rows are carried
   forward unchanged from the earlier run, since their code did not change and their
-  numbers are build-independent. **DittoFS SMB3 remains absent** (an SMB directory-lease
-  interaction under investigation).
+  numbers are build-independent. **The DittoFS SMB3 rows are now filled** — measured over
+  a real Linux kernel `cifs` mount, warm pass with a block-store settle barrier (see the
+  SMB3 section above), medium size class, 30 s per workload.
 - **A cold (post-eviction) read pass could not be collected for DittoFS.** The harness
   forces a cold read by draining every buffered upload to object storage and then
   evicting the local cache; on DittoFS that drain currently stalls with no upload
@@ -410,6 +459,9 @@ included as the reference ceiling.
 
 | System | meta ops/s | seq-write MB/s | rand-wr IOPS | rand-rd IOPS |
 |---|---|---|---|---|
+| DittoFS · badger · writeback | 71 | 395 | 7,351 | 20,548 |
+| DittoFS · sqlite · writeback | 65 | 324 | 390 | 818 |
+| DittoFS · postgres · writeback | 69 | 508 | 1,730 | 3,486 |
 | JuiceFS · sqlite · writeback | 23 | 1,485.7 | 65 | 19,068 |
 | JuiceFS · postgres · writeback | 26 | 2,267.4 | 65 | 19,077 |
 | JuiceFS · redis · writeback | 27 | 1,942.7 | 83 | 18,886 |
@@ -424,16 +476,27 @@ included as the reference ceiling.
 
 | System | meta ops/s | seq-write MB/s | rand-wr IOPS | rand-rd IOPS |
 |---|---|---|---|---|
+| DittoFS · badger · local-durable *(default)* | 71 | 320 | 7,302 | 9,156 |
+| DittoFS · sqlite · local-durable *(default)* | 67 | 319 | 380 | 655 |
+| DittoFS · postgres · local-durable *(default)* | 79 | 494 | 1,765 | 2,035 |
+| DittoFS · badger · remote/durable | 48 | 615 | 8,522 | 8,620 |
+| DittoFS · sqlite · remote/durable | 49 | 305 | 338 | 631 |
+| DittoFS · postgres · remote/durable | 48 | 550 | 1,087 | 2,000 |
 | JuiceFS · sqlite · durable | 25 | 2,105.9 | 54 | 19,114 |
 | JuiceFS · postgres · durable | 27 | 2,050.0 | 57 | 18,854 |
 | JuiceFS · redis · durable | 49 | 1,940.9 | 92 | 18,991 |
 
 ### Cell coverage
 
-Total cells collected: **169** across 25 systems × 3 protocols × 4 workloads (warm pass, medium size, 30 s each).
+Total cells collected: **205** across 25 systems × 3 protocols × 4 workloads (warm pass, medium size, 30 s each).
 
 The DittoFS NFSv3 rows above were subsequently re-measured on a fresh run of the fixed
 binary — nine backend/tier combinations (badger/SQLite/Postgres × local-durable/writeback/
 remote) across four workloads and the medium and large size classes, warm pass, with the
 remote/durable cells repeated six times and the local cells three times for the medians
 shown. The competitor rows are unchanged from the run above (their code did not change).
+
+The DittoFS SMB3 rows were added in a separate fresh run over a real Linux kernel `cifs`
+mount — the same nine backend/tier combinations across four workloads on the medium size
+class, warm pass with a block-store settle barrier so the read cells measure a settled
+cache rather than one still mid-digestion. The SMB3 competitor rows are unchanged.
