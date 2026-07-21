@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -24,33 +23,147 @@ import (
 //
 // Schema lives in migrations/000012_file_block_refs.up.sql.
 
-// putFileChunkRefs replaces all rows in file_block_refs for fileID with
-// the given blocks. Atomic when called inside a pgx.Tx (the caller's tx).
+// putFileChunkRefs brings the file_block_refs rows for fileID into agreement
+// with blocks by writing only the rows that actually differ, and reports
+// whether any row was written. Atomic when called inside the caller's tx.
 //
-// Implementation: DELETE+INSERT. Engine-bug paths are defended by the
-// (file_id, "offset") PK — a duplicate offset would be rejected. The
-// DELETE first ensures stale offsets from a prior list are not left
-// behind when the new list is shorter.
-func putFileChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, blocks []block.ChunkRef) error {
-	if _, err := tx.Exec(ctx, `DELETE FROM file_block_refs WHERE file_id = ?1`, fileID); err != nil {
-		return fmt.Errorf("delete file_block_refs for %s: %w", fileID, err)
+// Rather than rewriting the whole manifest on every data write, it diffs the
+// incoming list against the stored rows (keyed by the unique (file_id,
+// "offset") PK) and applies a targeted delta:
+//   - offsets present in blocks whose (size, hash) differ from the stored row,
+//     or that have no stored row, are UPSERTed;
+//   - offsets stored but absent from blocks are DELETEd (a shrink/truncate must
+//     not leave stale higher-offset rows behind);
+//   - offsets whose stored (size, hash) already match are left untouched.
+//
+// The resulting rows are byte-identical to a full DELETE+INSERT of blocks —
+// only the write volume shrinks. When nothing differs it returns false and
+// touches no rows (the common in-place-overwrite-with-same-boundaries case).
+//
+// hasPriorRefs lets a freshly-inserted file skip the stored-row query: with no
+// prior rows every incoming ref is a plain insert.
+func putFileChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, blocks []block.ChunkRef, hasPriorRefs bool) (bool, error) {
+	upserts, deletes, err := fileChunkRefsDelta(ctx, tx, fileID, blocks, hasPriorRefs)
+	if err != nil {
+		return false, err
 	}
-	if len(blocks) == 0 {
-		return nil
+	if len(upserts) == 0 && len(deletes) == 0 {
+		return false, nil
 	}
-	// Multi-row INSERT: one statement per batch instead of one Exec per ref
-	// (#1715 #8b). Batches are capped so the bound-parameter count stays under
-	// SQLite's default limit (SQLITE_MAX_VARIABLE_NUMBER); 4 columns per row →
-	// 200 rows = 800 params. The (file_id, "offset") PK rejects a duplicate
-	// offset within any batch.
+	// DELETE removed offsets, then UPSERT changed/new ones. Order is
+	// immaterial (disjoint offset sets) but delete-first keeps a shrink's row
+	// count from transiently peaking.
+	if err := deleteChunkRefOffsets(ctx, tx, fileID, deletes); err != nil {
+		return false, err
+	}
+	if err := upsertChunkRefs(ctx, tx, fileID, upserts); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// storedChunkRef is a stored file_block_refs row minus its offset (the map key).
+type storedChunkRef struct {
+	size int32
+	hash []byte
+}
+
+// fileChunkRefsDelta diffs blocks against the rows currently stored for fileID
+// and returns the refs to UPSERT (new offset, or changed size/hash) and the
+// stored offsets to DELETE (absent from blocks). When hasPriorRefs is false the
+// stored set is known-empty, so the query is skipped and every ref is an
+// upsert. Offsets are unique under the (file_id, "offset") PK, so keying the
+// diff on offset is sound.
+func fileChunkRefsDelta(ctx context.Context, tx execer, fileID uuid.UUID, blocks []block.ChunkRef, hasPriorRefs bool) ([]block.ChunkRef, []int64, error) {
+	stored := make(map[int64]storedChunkRef)
+	if hasPriorRefs {
+		rows, err := tx.Query(ctx,
+			`SELECT "offset", size, hash FROM file_block_refs WHERE file_id = ?1`,
+			fileID,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("query file_block_refs for %s: %w", fileID, err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var off int64
+			var sz int32
+			var raw []byte
+			if err := rows.Scan(&off, &sz, &raw); err != nil {
+				return nil, nil, fmt.Errorf("scan file_block_ref: %w", err)
+			}
+			h := make([]byte, len(raw))
+			copy(h, raw)
+			stored[off] = storedChunkRef{size: sz, hash: h}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, nil, fmt.Errorf("iterate file_block_refs: %w", err)
+		}
+	}
+
+	var upserts []block.ChunkRef
+	incoming := make(map[int64]struct{}, len(blocks))
+	for _, b := range blocks {
+		off := int64(b.Offset)
+		incoming[off] = struct{}{}
+		if s, ok := stored[off]; ok && s.size == int32(b.Size) && bytes.Equal(s.hash, b.Hash[:]) {
+			continue // identical row already stored — no write
+		}
+		upserts = append(upserts, b)
+	}
+	var deletes []int64
+	for off := range stored {
+		if _, ok := incoming[off]; !ok {
+			deletes = append(deletes, off)
+		}
+	}
+	return upserts, deletes, nil
+}
+
+// deleteChunkRefOffsets removes the given offsets for fileID. Offsets are
+// batched into IN-lists capped so the bound-parameter count stays under
+// SQLite's default limit (SQLITE_MAX_VARIABLE_NUMBER).
+func deleteChunkRefOffsets(ctx context.Context, tx execer, fileID uuid.UUID, offsets []int64) error {
+	const perBatch = 200
+	for start := 0; start < len(offsets); start += perBatch {
+		end := start + perBatch
+		if end > len(offsets) {
+			end = len(offsets)
+		}
+		batch := offsets[start:end]
+		var sb strings.Builder
+		sb.WriteString(`DELETE FROM file_block_refs WHERE file_id = ? AND "offset" IN (`)
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, fileID)
+		for i, off := range batch {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteByte('?')
+			args = append(args, off)
+		}
+		sb.WriteByte(')')
+		if _, err := tx.Exec(ctx, sb.String(), args...); err != nil {
+			return fmt.Errorf("delete file_block_refs offsets: %w", err)
+		}
+	}
+	return nil
+}
+
+// upsertChunkRefs inserts-or-updates the given refs for fileID with a multi-row
+// INSERT ... ON CONFLICT per batch instead of one Exec per ref. Batches are
+// capped so the bound-parameter count stays under SQLite's default limit; 4
+// columns per row → 200 rows = 800 params. Incoming offsets are unique under
+// the (file_id, "offset") PK, so no batch upserts the same row twice.
+func upsertChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, refs []block.ChunkRef) error {
 	const colsPerRow = 4
 	const rowsPerBatch = 200
-	for start := 0; start < len(blocks); start += rowsPerBatch {
+	for start := 0; start < len(refs); start += rowsPerBatch {
 		end := start + rowsPerBatch
-		if end > len(blocks) {
-			end = len(blocks)
+		if end > len(refs) {
+			end = len(refs)
 		}
-		batch := blocks[start:end]
+		batch := refs[start:end]
 		var sb strings.Builder
 		sb.WriteString(`INSERT INTO file_block_refs (file_id, "offset", size, hash) VALUES `)
 		args := make([]any, 0, len(batch)*colsPerRow)
@@ -61,65 +174,12 @@ func putFileChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, blocks [
 			sb.WriteString("(?, ?, ?, ?)")
 			args = append(args, fileID, int64(b.Offset), int32(b.Size), b.Hash[:])
 		}
+		sb.WriteString(` ON CONFLICT (file_id, "offset") DO UPDATE SET size = excluded.size, hash = excluded.hash`)
 		if _, err := tx.Exec(ctx, sb.String(), args...); err != nil {
-			return fmt.Errorf("insert file_block_refs batch: %w", err)
+			return fmt.Errorf("upsert file_block_refs batch: %w", err)
 		}
 	}
 	return nil
-}
-
-// fileChunkRefsUnchanged reports whether the file_block_refs rows already
-// stored for fileID exactly match blocks — same count, offsets, sizes, and
-// hashes. When true, a PutFile carrying an identical manifest can skip the
-// DELETE+INSERT rewrite: the stored rows are already correct. This is the
-// common case for an in-place overwrite that reuses the same chunk
-// boundaries and re-projects the same manifest.
-//
-// Any difference (count, offset, size, or hash) returns false, so the
-// caller performs the full rewrite — false is the safe default: a spurious
-// false only costs a rewrite that was already the previous behaviour, while
-// a spurious true would drop a real change. The incoming list is compared in
-// offset order (offsets are unique under the (file_id, "offset") PK, giving a
-// total order that matches the stored rows' ORDER BY "offset").
-func fileChunkRefsUnchanged(ctx context.Context, tx execer, fileID uuid.UUID, blocks []block.ChunkRef) (bool, error) {
-	// Canonicalise the incoming list into offset order without reordering the
-	// caller's slice.
-	want := make([]block.ChunkRef, len(blocks))
-	copy(want, blocks)
-	sort.Slice(want, func(i, j int) bool { return want[i].Offset < want[j].Offset })
-
-	rows, err := tx.Query(ctx,
-		`SELECT "offset", size, hash FROM file_block_refs WHERE file_id = ?1 ORDER BY "offset" ASC`,
-		fileID,
-	)
-	if err != nil {
-		return false, fmt.Errorf("query file_block_refs for %s: %w", fileID, err)
-	}
-	defer rows.Close()
-
-	i := 0
-	for rows.Next() {
-		var off int64
-		var sz int32
-		var raw []byte
-		if err := rows.Scan(&off, &sz, &raw); err != nil {
-			return false, fmt.Errorf("scan file_block_ref: %w", err)
-		}
-		if i >= len(want) {
-			// More stored rows than incoming — the manifest shrank.
-			return false, nil
-		}
-		w := want[i]
-		if uint64(off) != w.Offset || uint32(sz) != w.Size || !bytes.Equal(raw, w.Hash[:]) {
-			return false, nil
-		}
-		i++
-	}
-	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("iterate file_block_refs: %w", err)
-	}
-	// Equal only when every incoming ref was matched by a stored row.
-	return i == len(want), nil
 }
 
 // PutFileChunkRefsCallCount returns how many times PutFile persisted the

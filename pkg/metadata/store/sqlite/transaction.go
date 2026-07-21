@@ -447,24 +447,17 @@ func (tx *sqliteTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	// regular files carry ChunkRef payloads; empty/nil Blocks under a dirty
 	// flag performs a DELETE-only pass so no stale rows survive a drop.
 	if file.Type == metadata.FileTypeRegular && file.BlocksDirty {
-		// On an in-place data overwrite the projected manifest is frequently
-		// identical to what is already stored (same chunk hashes/offsets), so
-		// the DELETE+INSERT is pure write amplification. Skip it when the rows
-		// already match. Freshly-inserted rows (!updated) have no prior refs,
-		// so the compare is skipped and the rewrite always runs.
-		rewrite := true
-		if updated {
-			unchanged, err := fileChunkRefsUnchanged(ctx, tx.tx, file.ID, file.Blocks)
-			if err != nil {
-				return mapDBError(err, "PutFile", "blocks")
-			}
-			rewrite = !unchanged
+		// Apply only the rows that actually changed. An in-place overwrite that
+		// reuses the same chunk boundaries frequently projects an identical
+		// manifest, so putFileChunkRefs writes nothing and reports wrote=false.
+		// Freshly-inserted rows (!updated) have no prior refs, so every ref is
+		// a plain insert. The counter tracks manifests that truly changed.
+		wrote, err := putFileChunkRefs(ctx, tx.tx, file.ID, file.Blocks, updated)
+		if err != nil {
+			return mapDBError(err, "PutFile", "blocks")
 		}
-		if rewrite {
+		if wrote {
 			tx.store.manifestWrites.Add(1)
-			if err := putFileChunkRefs(ctx, tx.tx, file.ID, file.Blocks); err != nil {
-				return mapDBError(err, "PutFile", "blocks")
-			}
 		}
 	}
 
