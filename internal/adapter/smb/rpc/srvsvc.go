@@ -378,15 +378,25 @@ func (h *SRVSVCHandler) buildShareGetInfoError(level, status uint32) []byte {
 }
 
 // parseShareGetInfoRequest extracts the requested share name and info level from
-// a NetrShareGetInfo request stub: [in] ServerName (unique string pointer),
-// [in] NetName (unique string pointer), [in] DWORD Level.
+// a NetrShareGetInfo request stub. Per NDR, top-level pointers marshal their
+// pointee inline in parameter order, so the wire layout is:
+//
+//	[ServerName unique-ptr referent (4 bytes; 0 == null)]
+//	[ServerName conformant/varying string]  -- only when the referent is non-null
+//	[NetName conformant/varying string]     -- no referent id (reference pointer)
+//	[Level (4 bytes)]
+//
+// ServerName is a [unique] pointer (nullable, referent-prefixed). NetName is a
+// [ref] pointer, which carries no referent on the wire — its string follows
+// inline directly.
 func parseShareGetInfoRequest(data []byte) (name string, level uint32, ok bool) {
 	// ServerName is unused for routing; skip its unique-pointer string.
 	_, pos, ok := readUniqueString(data, 0)
 	if !ok {
 		return "", 0, false
 	}
-	name, pos, ok = readUniqueString(data, pos)
+	// NetName is a reference pointer: the string is inline with no referent id.
+	name, pos, ok = readConformantVaryingString(data, pos)
 	if !ok {
 		return "", 0, false
 	}

@@ -8,16 +8,28 @@ import (
 
 // encodeUniqueString builds the NDR wire form of a unique-pointer-prefixed
 // conformant/varying wide string, matching what a client sends for the
-// ServerName and NetName arguments of NetrShareGetInfo.
+// [unique] ServerName argument of NetrShareGetInfo.
 func encodeUniqueString(referent uint32, s string) []byte {
 	buf := appendUint32(nil, referent)
 	return appendConformantVaryingString(buf, s)
 }
 
+// encodeGetInfoRequest builds a NetrShareGetInfo request stub in real Windows
+// wire order: a [unique] ServerName pointer (referent, then its inline string
+// when non-null), the [ref] NetName string inline with no referent, then Level.
+func encodeGetInfoRequest(serverReferent uint32, serverName, netName string, level uint32) []byte {
+	var stub []byte
+	if serverReferent == 0 {
+		stub = appendUint32(nil, 0) // null ServerName unique pointer
+	} else {
+		stub = encodeUniqueString(serverReferent, serverName)
+	}
+	stub = appendConformantVaryingString(stub, netName) // NetName: inline, no referent
+	return appendUint32(stub, level)
+}
+
 func TestParseShareGetInfoRequest(t *testing.T) {
-	stub := encodeUniqueString(0x00020000, "\\\\SERVER")
-	stub = append(stub, encodeUniqueString(0x00020004, "export")...)
-	stub = appendUint32(stub, 502) // Level
+	stub := encodeGetInfoRequest(0x00020000, "\\\\SERVER", "export", 502)
 
 	name, level, ok := parseShareGetInfoRequest(stub)
 	if !ok {
@@ -51,9 +63,7 @@ func TestConformantVaryingStringRoundTrip_NonASCII(t *testing.T) {
 }
 
 func TestParseShareGetInfoRequest_NullServerName(t *testing.T) {
-	stub := appendUint32(nil, 0) // ServerName: null unique pointer
-	stub = append(stub, encodeUniqueString(0x00020004, "data")...)
-	stub = appendUint32(stub, 502)
+	stub := encodeGetInfoRequest(0, "", "data", 502)
 
 	name, level, ok := parseShareGetInfoRequest(stub)
 	if !ok || name != "data" || level != 502 {
@@ -73,9 +83,7 @@ func TestNetrShareGetInfo502RoundTrip(t *testing.T) {
 		SecurityDescriptor: sd,
 	}})
 
-	stub := encodeUniqueString(0x00020000, "\\\\SERVER")
-	stub = append(stub, encodeUniqueString(0x00020004, "export")...)
-	stub = appendUint32(stub, 502)
+	stub := encodeGetInfoRequest(0x00020000, "\\\\SERVER", "export", 502)
 
 	req := &Request{
 		OpNum:     OpNetrShareGetInfo,
@@ -134,9 +142,7 @@ func TestNetrShareGetInfo502RoundTrip(t *testing.T) {
 func TestNetrShareGetInfo_UnknownShare(t *testing.T) {
 	h := NewSRVSVCHandler([]ShareInfo1{{Name: "export", Type: STYPE_DISKTREE}})
 
-	stub := appendUint32(nil, 0) // null ServerName
-	stub = append(stub, encodeUniqueString(0x00020004, "missing")...)
-	stub = appendUint32(stub, 502)
+	stub := encodeGetInfoRequest(0, "", "missing", 502)
 
 	resp := h.HandleRequest(&Request{OpNum: OpNetrShareGetInfo, StubData: stub, Header: Header{CallID: 1}})
 	body := resp[24:]
@@ -149,9 +155,7 @@ func TestNetrShareGetInfo_UnknownShare(t *testing.T) {
 func TestNetrShareGetInfo_UnsupportedLevel(t *testing.T) {
 	h := NewSRVSVCHandler([]ShareInfo1{{Name: "export", Type: STYPE_DISKTREE}})
 
-	stub := appendUint32(nil, 0)
-	stub = append(stub, encodeUniqueString(0x00020004, "export")...)
-	stub = appendUint32(stub, 2) // level 2, unsupported
+	stub := encodeGetInfoRequest(0, "", "export", 2) // level 2, unsupported
 
 	resp := h.HandleRequest(&Request{OpNum: OpNetrShareGetInfo, StubData: stub, Header: Header{CallID: 1}})
 	body := resp[24:]
