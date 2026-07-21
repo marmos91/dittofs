@@ -126,6 +126,13 @@ func (s *BadgerMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*
 						"key", string(key), "error", err)
 					continue
 				}
+				// The manifest lives in fm:<uuid> (legacy blobs embed it). It
+				// feeds the durability HashSet, so a missed load would ship an
+				// incomplete snapshot — abort rather than silently under-count.
+				if err := loadManifest(txn, file); err != nil {
+					return fmt.Errorf("%w: load manifest for %s: %v",
+						metadata.ErrSnapshotAborted, string(key), err)
+				}
 				// Skip unlinked (nlink=0) files: they are dead and GC may have
 				// already reclaimed their blocks, so adding them would make the
 				// snapshot manifest reference hashes absent from remote and fail

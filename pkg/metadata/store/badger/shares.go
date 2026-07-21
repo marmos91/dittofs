@@ -331,6 +331,7 @@ func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName stri
 func deleteFileKeys(txn *badgerdb.Txn, id uuid.UUID, objectID metadata.ContentHash, payloadID metadata.PayloadID) error {
 	keys := [][]byte{
 		keyFile(id),
+		keyFileManifest(id),
 		keyParent(id),
 		keyLinkCount(id),
 	}

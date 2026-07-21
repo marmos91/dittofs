@@ -91,6 +91,50 @@ func copyForRead(f *metadata.File) *metadata.File {
 	return &cp
 }
 
+// loadManifest populates file.Blocks from the fm:<uuid> manifest key. A legacy
+// f: blob that still embeds the manifest arrives with Blocks already set and is
+// left untouched (the next write migrates it to fm:); new-format blobs carry no
+// inline manifest, so the chunk list is read from its sibling key. A missing
+// fm: key means an empty manifest (directory, symlink, or empty regular file).
+func loadManifest(txn *badgerdb.Txn, file *metadata.File) error {
+	if len(file.Blocks) > 0 {
+		return nil // legacy embedded manifest — authoritative for this row
+	}
+	item, err := txn.Get(keyFileManifest(file.ID))
+	if errors.Is(err, badgerdb.ErrKeyNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return item.Value(func(val []byte) error {
+		blocks, derr := decodeManifest(val)
+		if derr != nil {
+			return derr
+		}
+		file.Blocks = blocks
+		return nil
+	})
+}
+
+// putManifest persists (or, when empty, removes) the fm:<uuid> block manifest.
+// An empty manifest — a truncated/empty regular file, a directory, or a symlink
+// — carries no key, so loadManifest reads a missing key as "no blocks". This
+// keeps the manifest coherent when a truncate prunes every chunk.
+func (tx *badgerTransaction) putManifest(id uuid.UUID, blocks []block.ChunkRef) error {
+	if len(blocks) == 0 {
+		if err := tx.txn.Delete(keyFileManifest(id)); err != nil && !errors.Is(err, badgerdb.ErrKeyNotFound) {
+			return err
+		}
+		return nil
+	}
+	data, err := encodeManifest(blocks)
+	if err != nil {
+		return err
+	}
+	return tx.txn.Set(keyFileManifest(id), data)
+}
+
 // PutFile stores or updates file metadata.
 func (s *BadgerMetadataStore) PutFile(ctx context.Context, file *metadata.File) error {
 	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
@@ -170,6 +214,9 @@ func (s *BadgerMetadataStore) GetFileByPayloadID(ctx context.Context, payloadID 
 					// rename/relink can never surface a stale stored path.
 					btx := &badgerTransaction{store: s, txn: txn}
 					file.Path = btx.derivePath(file.ID)
+					if err := loadManifest(txn, file); err != nil {
+						return err
+					}
 					result = file
 					return errFound
 				}
@@ -254,6 +301,9 @@ func (s *BadgerMetadataStore) FindByObjectID(ctx context.Context, objectID block
 
 		f, err := decodeFile(rawFile)
 		if err != nil {
+			return err
+		}
+		if err := loadManifest(txn, f); err != nil {
 			return err
 		}
 

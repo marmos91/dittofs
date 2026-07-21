@@ -804,6 +804,12 @@ func enumeratePrefixFileChunks(ctx context.Context, txn *badger.Txn, fn func(blo
 		}); err != nil {
 			return fmt.Errorf("enumerate file chunks: decode file: %w", err)
 		}
+		// The manifest lives in fm:<uuid> (legacy blobs embed it); the GC live
+		// set is fail-closed, so a missed load would let the sweep reap a live
+		// chunk. loadManifest errors must abort the walk, not skip the file.
+		if err := loadManifest(txn, file); err != nil {
+			return fmt.Errorf("enumerate file chunks: load manifest: %w", err)
+		}
 		// nlink=0 (unlinked) inodes keep their f: record but the file is dead.
 		// Excluding their manifest blocks from the GC live set is what lets the
 		// sweep reclaim orphaned chunks (#1433). Snapshot-held blocks are
