@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,58 +15,15 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlstat"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/txretry"
 )
 
 // Transaction retry policy (#1769). Under write contention DittoFS must
 // backpressure — block-and-retry until a real budget elapses — not surface EIO
-// to the caller after a fixed handful of attempts. Every competitor
-// (rclone/juicefs) goes slow under the same pressure but never errors; the old
-// 3-attempt / 10-20-30ms budget was routinely exceeded on hot rows (usedBytes
-// counter, parent-dir mtime, quota) under 8 concurrent writers, turning
-// contention into NFS3ErrIO. Only the already-classified transient conflicts
-// (sqlite BUSY/LOCKED) are retried; non-transient errors return immediately.
-const (
-	// txRetryBudget bounds how long WithTransaction backpressures on a transient
-	// conflict before giving up and returning the mapped error. Kept in line with
-	// the sqlite busy_timeout (config default 5s) so a genuinely stuck conflict
-	// still eventually surfaces — after a real budget, not 60ms.
-	txRetryBudget = 5 * time.Second
-	// txRetryBaseBackoff / txRetryMaxBackoff bound the jittered exponential
-	// backoff between attempts.
-	txRetryBaseBackoff = 5 * time.Millisecond
-	txRetryMaxBackoff  = 200 * time.Millisecond
-)
-
-// txBackoff waits a jittered exponential backoff before the next transaction
-// attempt, bounded by deadline and ctx. It returns true if the caller should
-// retry, or false when the retry budget is exhausted or ctx is done.
-func txBackoff(ctx context.Context, deadline time.Time, attempt int) bool {
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
-		return false
-	}
-	// Full-jitter exponential backoff: base<<attempt capped at max, then a
-	// uniform random in (0, d]. Spreads retries so contending writers don't
-	// resynchronize into a thundering herd.
-	d := txRetryMaxBackoff
-	if attempt < 16 {
-		if s := txRetryBaseBackoff << uint(attempt); s > 0 && s < txRetryMaxBackoff {
-			d = s
-		}
-	}
-	if d > remaining {
-		d = remaining
-	}
-	wait := time.Duration(rand.Int64N(int64(d)) + 1)
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}
+// to the caller after a fixed handful of attempts. Only the already-classified
+// transient conflicts (sqlite BUSY/LOCKED) are retried; non-transient errors
+// return immediately. The deadline and jittered backoff are shared with the
+// postgres backend in internal/txretry.
 
 // ============================================================================
 // Transaction Support
@@ -106,12 +62,8 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 	}
 
 	// Backpressure deadline (#1769): retry transient conflicts until this budget
-	// elapses rather than EIOing after a fixed attempt count. Honor an earlier
-	// caller deadline if the ctx carries one.
-	deadline := time.Now().Add(txRetryBudget)
-	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-		deadline = d
-	}
+	// elapses rather than EIOing after a fixed attempt count.
+	deadline := txretry.Deadline(ctx)
 
 	var lastErr error
 	for attempt := 0; ; attempt++ {
@@ -123,7 +75,7 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 		if err != nil {
 			if isBusyError(err) {
 				lastErr = err
-				if txBackoff(ctx, deadline, attempt) {
+				if txretry.Backoff(ctx, deadline, attempt) {
 					continue
 				}
 				break
@@ -142,7 +94,7 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 			_ = rawTx.Rollback()
 			if isBusyError(err) {
 				lastErr = err
-				if txBackoff(ctx, deadline, attempt) {
+				if txretry.Backoff(ctx, deadline, attempt) {
 					continue
 				}
 				break
@@ -153,7 +105,7 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 		if err := rawTx.Commit(); err != nil {
 			if isBusyError(err) {
 				lastErr = err
-				if txBackoff(ctx, deadline, attempt) {
+				if txretry.Backoff(ctx, deadline, attempt) {
 					continue
 				}
 				break
