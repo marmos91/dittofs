@@ -51,6 +51,20 @@ type deviceNumber struct {
 	Minor uint32
 }
 
+// ShareSession represents an active client session on a share. Sessions are
+// informational only (monitoring and DUMP) and do not affect access control;
+// the memory store is the only backend that tracks them.
+type ShareSession struct {
+	// ShareName is the name of the mounted share
+	ShareName string
+
+	// ClientAddr is the network address of the client
+	ClientAddr string
+
+	// MountedAt is the time when the share was mounted
+	MountedAt time.Time
+}
+
 // MemoryMetadataStore implements MetadataStore using in-memory storage.
 //
 // This implementation provides a fully functional metadata repository backed
@@ -201,7 +215,7 @@ type MemoryMetadataStore struct {
 	// Key: composite key "shareName|clientAddr"
 	// Value: ShareSession with mount timestamp
 	// Note: Sessions are informational only and don't affect access control
-	sessions map[string]*metadata.ShareSession
+	sessions map[string]*ShareSession
 
 	// fileChunkData holds content-addressed file chunk tracking data.
 	// Initialized lazily on first use.
@@ -341,7 +355,7 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		capabilities:    config.Capabilities,
 		maxStorageBytes: config.MaxStorageBytes,
 		maxFiles:        config.MaxFiles,
-		sessions:        make(map[string]*metadata.ShareSession),
+		sessions:        make(map[string]*ShareSession),
 		// Assign a fresh ULID on construction so every live instance
 		// advertises its own non-empty identity at the API surface. Even
 		// though memory-backed stores do not survive restart, the
