@@ -323,6 +323,7 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.replay.dhv2-pending3l-vs-lease-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-lease ordering; Samba does not reproduce the `-windows` arm. `-sane` counterpart now passes (#749). |
 | smb2.replay.dhv2-pending3o-vs-oplock-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-oplock ordering; Samba does not reproduce the `-windows` arm. `-sane` counterpart now passes (#749). |
 | smb2.replay.dhv2-pending3o-vs-lease-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-lease ordering; Samba does not reproduce the `-windows` arm. `-sane` counterpart now passes (#749). |
+| smb2.replay.replay6 | Windows replay handle allocation | Bucket 10. "Error Codes for DurableHandleReqV2 Replay": after replaying a DH2Q CreateGuid once (which correctly returns the original FileId), the test replays the *same* CreateGuid again and asserts the returned `handle.data[0]/[1]` DIFFER — i.e. the second replay must mint a distinct handle and break the original oplock. That is Windows-specific: Samba (and DittoFS, which models Samba here) resolve a replay by CreateGuid via one persistent replay-cache slot, so every replay returns the SAME open — the conformant behaviour the `dhv2-pending*-vs-*-sane` rows depend on (each replays a completed open twice and requires the same handle both times). The two invariants are mutually exclusive under one replay-cache rule; Samba fails replay6 too. No spec-conformant target for DittoFS. |
 
 **Total: 46 tests permanently out of scope** (25 prior + `dirlease.oplocks` + 20 replay `-windows` arms).
 
@@ -331,6 +332,22 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 `KNOWN_FAILURES_KERBEROS.md` now carries a single row (`smb2.reauth5`, an upstream Samba selftest knownfail) after the #686 Kerberos sweep harvested the stale multi-channel rows. It is loaded only when smbtorture runs with `--use-kerberos`, which the non-Kerberos v1.0 CI job (`.github/workflows/smb-conformance.yml`, running `./run.sh` without `--kerberos`) does not pass, so it does not gate v1.0.
 
 ## Changelog
+
+### 2026-07-21 — replay6 re-added as a Windows-specific known failure (bucket 10)
+
+`smb2.replay.replay6` resurfaces once the harness runs the tail of the
+`smb2.replay` suite (the 2026-05-31 cleanup had removed it because it did not
+execute against the pinned binary). It asserts Windows-specific durable-handle
+replay allocation: replaying the same DH2Q CreateGuid a second time must return
+a *distinct* handle and break the original oplock. Samba resolves a replay by
+CreateGuid through one persistent replay-cache slot, so every replay returns the
+same open — the exact invariant the passing `dhv2-pending*-vs-*-sane` rows
+require (they replay a completed open twice and check the same handle both
+times). The two are mutually exclusive under one replay-cache rule, and Samba
+fails replay6 too, so there is no spec-conformant target. Classified with the
+`-windows` replay arms rather than code-changed, per the documented replay
+architecture (a distinct-handle code fix regressed
+`dhv2-pending1n-vs-violation-lease-close-sane`).
 
 ### 2026-06-02 — #996 fix oplock re-grant: EXCLUSIVE vs conflicting NO-oplock handle must yield NONE, not LEVEL_II
 
