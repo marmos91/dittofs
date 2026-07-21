@@ -149,19 +149,30 @@ func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileCh
 
 // --- string↔FileID data-plane shims (shadow the embedded FileID methods) ---
 
+// materializeLegacy drains payloadID's archived pre-journal log into the journal
+// before an access touches it, so the access observes (and, for a mutation,
+// lands after) the replayed legacy bytes rather than racing them: a later
+// background drain replays the SAME records idempotently and cannot clobber a
+// client write, resurrect a deleted/truncated payload, or serve zeros to a read.
+// A no-op once the migration is done, for any payload not under migration, or
+// when no migration is in flight.
+func (s *FSStore) materializeLegacy(payloadID string) error {
+	if s.legacyMig == nil {
+		return nil
+	}
+	return s.legacyMig.materialize(payloadID)
+}
+
 func (s *FSStore) WriteAt(ctx context.Context, payloadID string, offset int64, data []byte) error {
+	if err := s.materializeLegacy(payloadID); err != nil {
+		return err
+	}
 	return s.Store.WriteAt(ctx, journal.FileID(payloadID), offset, data)
 }
 
 func (s *FSStore) ReadAt(ctx context.Context, payloadID string, offset int64, dst []byte) (int, bool, error) {
-	// During an async local-only migration a read may arrive before the payload
-	// has been drained from the archived legacy log; fault that one payload in
-	// first so the read never observes a zero-filled hole. A no-op once the
-	// migration is done or for any payload not under migration.
-	if s.legacyMig != nil {
-		if err := s.legacyMig.materialize(payloadID); err != nil {
-			return 0, false, err
-		}
+	if err := s.materializeLegacy(payloadID); err != nil {
+		return 0, false, err
 	}
 	return s.Store.ReadAt(ctx, journal.FileID(payloadID), offset, dst)
 }
@@ -175,10 +186,16 @@ func (s *FSStore) Commit(ctx context.Context, payloadID string) error {
 }
 
 func (s *FSStore) Delete(ctx context.Context, payloadID string) error {
+	if err := s.materializeLegacy(payloadID); err != nil {
+		return err
+	}
 	return s.Store.Delete(ctx, journal.FileID(payloadID))
 }
 
 func (s *FSStore) Truncate(ctx context.Context, payloadID string, newSize int64) error {
+	if err := s.materializeLegacy(payloadID); err != nil {
+		return err
+	}
 	return s.Store.Truncate(ctx, journal.FileID(payloadID), newSize)
 }
 

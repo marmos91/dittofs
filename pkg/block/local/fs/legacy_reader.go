@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,14 +107,17 @@ func classifyLegacyLog(path string) (legacyLogState, error) {
 	return legacyLogOK, nil
 }
 
-// legacyLogsMigratable walks logsDir and reports whether every real append log
-// is complete (uncompacted). A compacted or torn header means some bytes are
-// only in the unrecoverable blobs, so the share must not be auto-migrated.
-func legacyLogsMigratable(logsDir string) (bool, error) {
-	migratable := true
-	walkErr := filepath.WalkDir(logsDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
+// firstUnmigratableLog walks logsDir for the first append log that blocks
+// auto-migration and returns a human reason plus that log's path; it returns
+// ("", "", nil) when every real log is complete and replayable. A compacted log
+// means rolled-up bytes now live only in the unrecoverable blobs; a torn or
+// invalid header means the log itself cannot be replayed. Either way the share
+// must not be auto-migrated, and naming the two cases apart keeps the refusal
+// from blaming "compaction" for a log that is merely corrupt.
+func firstUnmigratableLog(logsDir string) (reason, offendingLog string, err error) {
+	walkErr := filepath.WalkDir(logsDir, func(path string, d os.DirEntry, werr error) error {
+		if werr != nil {
+			return werr
 		}
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".log") {
 			return nil
@@ -122,16 +126,20 @@ func legacyLogsMigratable(logsDir string) (bool, error) {
 		if cerr != nil {
 			return cerr
 		}
-		if state == legacyLogCompacted || state == legacyLogUnreadable {
-			migratable = false
+		switch state {
+		case legacyLogCompacted:
+			reason, offendingLog = "an append log was compacted, so some bytes live only in unrecoverable blobs", path
+			return filepath.SkipAll
+		case legacyLogUnreadable:
+			reason, offendingLog = "an append log is torn or has an invalid header, so it cannot be replayed", path
 			return filepath.SkipAll
 		}
 		return nil
 	})
 	if walkErr != nil {
-		return false, walkErr
+		return "", "", walkErr
 	}
-	return migratable, nil
+	return reason, offendingLog, nil
 }
 
 // scanLegacyPayloads walks logsDir and returns a map of payloadID -> absolute
@@ -220,6 +228,12 @@ func readLegacyRecord(r io.Reader) (uint64, []byte, bool, error) {
 	fileOffset := binary.LittleEndian.Uint64(frame[4:12])
 	wantCRC := binary.LittleEndian.Uint32(frame[12:16])
 	if payloadLen > legacyMaxRecordPayload {
+		return 0, nil, false, nil
+	}
+	// The offset and end of the record must fit int64: replay hands the offset
+	// to a WriteAt that takes an int64, and a wider value would wrap negative.
+	// Such a record is unreplayable, so stop the log here like a torn tail.
+	if fileOffset > math.MaxInt64-uint64(payloadLen) {
 		return 0, nil, false, nil
 	}
 	payload := make([]byte, payloadLen)
