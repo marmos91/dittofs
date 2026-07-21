@@ -15,6 +15,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlstat"
 )
 
 // Transaction retry policy (#1769). Under write contention DittoFS must
@@ -1348,7 +1349,7 @@ func (tx *sqliteTransaction) GetFilesystemStatistics(ctx context.Context, handle
 		return nil, mapDBError(err, "GetFilesystemStatistics", "")
 	}
 
-	return buildFilesystemStatistics(bytesUsed, filesUsed), nil
+	return sqlstat.Build(bytesUsed, filesUsed), nil
 }
 
 // ============================================================================
