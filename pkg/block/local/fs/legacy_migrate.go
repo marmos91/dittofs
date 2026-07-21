@@ -95,12 +95,12 @@ func setupLegacyLocalOnlyMigration(dir string) (*legacyMigration, error) {
 	if dirHasEntries(blobsDir) && !dirHasEntries(logsDir) {
 		return nil, refuseLegacyLocalOnly(dir, "blob data has no covering append logs")
 	}
-	migratable, err := legacyLogsMigratable(logsDir)
+	reason, badLog, err := firstUnmigratableLog(logsDir)
 	if err != nil {
 		return nil, err
 	}
-	if !migratable {
-		return nil, refuseLegacyLocalOnly(dir, "an append log was compacted, so some bytes live only in unrecoverable blobs")
+	if reason != "" {
+		return nil, refuseLegacyLocalOnly(dir, fmt.Sprintf("%s: %q", reason, badLog))
 	}
 
 	if err := archiveLegacyLayout(dir); err != nil {

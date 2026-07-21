@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -226,6 +227,125 @@ func TestLegacyLocalOnly_ConcurrentReadAndDrain(t *testing.T) {
 		}
 	}
 	<-done
+}
+
+// TestLegacyLocalOnly_MutationBeforeMaterializeWins proves the write path
+// materializes the archived legacy log BEFORE applying a client mutation, so a
+// later background drain (replaying the same records) cannot clobber the newer
+// mutation. Each sub-case mutates a payload while it is still pending, then runs
+// the drain and asserts the mutation — not the legacy bytes — is what survives.
+func TestLegacyLocalOnly_MutationBeforeMaterializeWins(t *testing.T) {
+	ctx := context.Background()
+
+	// drain runs every still-pending payload through the background path; after a
+	// mutation already fired the shared sync.Once, this must be an idempotent
+	// no-op that leaves the mutation final.
+	drain := func(t *testing.T, s *FSStore) {
+		t.Helper()
+		for _, pid := range s.LegacyPendingPayloads() {
+			if err := s.MaterializeLegacyPayload(pid); err != nil {
+				t.Fatalf("drain MaterializeLegacyPayload(%s): %v", pid, err)
+			}
+		}
+	}
+
+	t.Run("write", func(t *testing.T) {
+		dir := t.TempDir()
+		pid := "share/w.bin"
+		writeLegacyLog(t, filepath.Join(dir, "logs", pid+".log"), 0, []legacyRec{
+			{off: 0, payload: []byte("AAAAAAAAAAAA")},
+		})
+		s, err := NewWithOptions(dir, 1<<30, nil, FSStoreOptions{MigrateLegacyLocalOnly: true})
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		defer func() { _ = s.Close() }()
+
+		// Client writes over the head while the legacy log is still pending.
+		if err := s.WriteAt(ctx, pid, 0, []byte("NEW")); err != nil {
+			t.Fatalf("WriteAt: %v", err)
+		}
+		drain(t, s)
+
+		want := []byte("NEWAAAAAAAAA")
+		if b := journalRead(t, s, pid, len(want)); !bytes.Equal(b, want) {
+			t.Fatalf("legacy replay clobbered the client write: got %q, want %q", b, want)
+		}
+	})
+
+	t.Run("truncate", func(t *testing.T) {
+		dir := t.TempDir()
+		pid := "share/t.bin"
+		writeLegacyLog(t, filepath.Join(dir, "logs", pid+".log"), 0, []legacyRec{
+			{off: 0, payload: []byte("head")},
+			{off: 32, payload: []byte("tail")},
+		})
+		s, err := NewWithOptions(dir, 1<<30, nil, FSStoreOptions{MigrateLegacyLocalOnly: true})
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		defer func() { _ = s.Close() }()
+
+		// Truncate away the tail before the legacy log is drained.
+		if err := s.Truncate(ctx, pid, 4); err != nil {
+			t.Fatalf("Truncate: %v", err)
+		}
+		drain(t, s)
+
+		// A resurrected tail would push the size back out to 36.
+		if size, ok := s.Store.FileSize(ctx, journal.FileID(pid)); !ok || size != 4 {
+			t.Fatalf("legacy replay undid the truncate: size=%d ok=%v, want 4", size, ok)
+		}
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		dir := t.TempDir()
+		pid := "share/d.bin"
+		writeLegacyLog(t, filepath.Join(dir, "logs", pid+".log"), 0, []legacyRec{
+			{off: 0, payload: []byte("doomed bytes")},
+		})
+		s, err := NewWithOptions(dir, 1<<30, nil, FSStoreOptions{MigrateLegacyLocalOnly: true})
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		defer func() { _ = s.Close() }()
+
+		// Delete the payload before the legacy log is drained.
+		if err := s.Delete(ctx, pid); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		drain(t, s)
+
+		// A resurrected payload would report a non-zero size.
+		if size, ok := s.Store.FileSize(ctx, journal.FileID(pid)); ok && size != 0 {
+			t.Fatalf("legacy replay resurrected a deleted payload: size=%d ok=%v", size, ok)
+		}
+	})
+}
+
+// TestLegacyReplay_StopsOnOffsetOverflow proves a record whose end would overflow
+// int64 is treated as a torn tail: replay stops at it (never wrapping to a
+// negative offset) and only the records before it are emitted.
+func TestLegacyReplay_StopsOnOffsetOverflow(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "overflow.log")
+	writeLegacyLog(t, logPath, 0, []legacyRec{
+		{off: 0, payload: []byte("good")},
+		{off: math.MaxUint64 - 1, payload: []byte("overflow")},
+		{off: 8, payload: []byte("unreached")},
+	})
+
+	var got []legacyRec
+	err := replayLegacyLog(logPath, func(off uint64, payload []byte) error {
+		got = append(got, legacyRec{off: off, payload: append([]byte(nil), payload...)})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("replayLegacyLog: %v", err)
+	}
+	if len(got) != 1 || got[0].off != 0 || !bytes.Equal(got[0].payload, []byte("good")) {
+		t.Fatalf("replay did not stop at the overflow record: emitted %+v", got)
+	}
 }
 
 // TestLegacyLocalOnly_RefusesCompacted proves the safety gate: a compacted log
