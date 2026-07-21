@@ -37,15 +37,8 @@ func (s *BadgerMetadataStore) GetRootHandle(ctx context.Context, shareName strin
 	var rootHandle metadata.FileHandle
 	err := s.db.View(func(txn *badgerdb.Txn) error {
 		item, err := txn.Get(keyShare(shareName))
-		if err == badgerdb.ErrKeyNotFound {
-			return &metadata.StoreError{
-				Code:    metadata.ErrNotFound,
-				Message: "share not found",
-				Path:    shareName,
-			}
-		}
 		if err != nil {
-			return err
+			return mapBadgerError(err, "share", shareName)
 		}
 
 		return item.Value(func(val []byte) error {
@@ -84,15 +77,8 @@ func (s *BadgerMetadataStore) GetShareOptions(ctx context.Context, shareName str
 	var opts *metadata.ShareOptions
 	err := s.db.View(func(txn *badgerdb.Txn) error {
 		item, err := txn.Get(keyShare(shareName))
-		if err == badgerdb.ErrKeyNotFound {
-			return &metadata.StoreError{
-				Code:    metadata.ErrNotFound,
-				Message: "share not found",
-				Path:    shareName,
-			}
-		}
 		if err != nil {
-			return err
+			return mapBadgerError(err, "share", shareName)
 		}
 
 		return item.Value(func(val []byte) error {
@@ -164,15 +150,8 @@ func (s *BadgerMetadataStore) UpdateShareOptions(ctx context.Context, shareName 
 
 	err := s.db.Update(func(txn *badgerdb.Txn) error {
 		item, err := txn.Get(keyShare(shareName))
-		if err == badgerdb.ErrKeyNotFound {
-			return &metadata.StoreError{
-				Code:    metadata.ErrNotFound,
-				Message: "share not found",
-				Path:    shareName,
-			}
-		}
 		if err != nil {
-			return err
+			return mapBadgerError(err, "share", shareName)
 		}
 
 		var data *shareData
@@ -214,15 +193,8 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 	var quotaFreed map[quota.Key]metadata.UsageStat
 	err := s.db.Update(func(txn *badgerdb.Txn) error {
 		_, err := txn.Get(keyShare(shareName))
-		if err == badgerdb.ErrKeyNotFound {
-			return &metadata.StoreError{
-				Code:    metadata.ErrNotFound,
-				Message: "share not found",
-				Path:    shareName,
-			}
-		}
 		if err != nil {
-			return err
+			return mapBadgerError(err, "share", shareName)
 		}
 
 		freed, quota, err := s.deleteShareFiles(txn, shareName)

@@ -186,24 +186,14 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 		return err
 	}
 
-	// All retries exhausted. Wrap the raw badgerdb.ErrConflict sentinel into a
-	// recognizable mderrors.StoreError{Code: ErrConflict} (#1245-B). The raw
-	// badger sentinel is badger's SSI optimistic-concurrency abort
-	// ("Transaction Conflict. Please retry"); leaking it bare meant
-	// codebase-wide conflict detection (errors.As(*StoreError) /
-	// mderrors.IsConflictError, the runtime coordinator's mapObjectIDConflict,
-	// and the rollup persister's isObjectIDConflict) could not classify a
-	// hot-key SSI abort as a conflict — so a bulk same-content rollup never
-	// converged to the zero-objectID dedup write and the ticker re-ran the same
-	// payloadID forever. Wrapping (with the raw sentinel reachable via Unwrap
-	// for diagnostics) makes the exhausted SSI conflict recognizable uniformly
-	// with Postgres' 23505 and Memory's StoreError conflict.
+	// All retries exhausted. Classify the raw badgerdb.ErrConflict SSI abort as a
+	// StoreError{Code: ErrConflict} so codebase-wide conflict detection
+	// (errors.As(*StoreError) / IsConflictError, the runtime coordinator's
+	// mapObjectIDConflict, the rollup persister's isObjectIDConflict) recognizes
+	// it uniformly with the SQL backends. The raw sentinel stays reachable via
+	// Cause/Unwrap for diagnostics and errors.Is.
 	if goerrors.Is(lastErr, badgerdb.ErrConflict) {
-		return &mderrors.StoreError{
-			Code:    mderrors.ErrConflict,
-			Message: "badger WithTransaction: transaction conflict (SSI) after exhausting retries",
-			Cause:   lastErr,
-		}
+		return mapBadgerError(lastErr, "badger WithTransaction", "")
 	}
 	return lastErr
 }
@@ -236,14 +226,8 @@ func (tx *badgerTransaction) getFile(ctx context.Context, handle metadata.FileHa
 	}
 
 	item, err := tx.txn.Get(keyFile(fileID))
-	if err == badgerdb.ErrKeyNotFound {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "file not found",
-		}
-	}
 	if err != nil {
-		return nil, err
+		return nil, mapBadgerError(err, "file", "")
 	}
 
 	var file *metadata.File
@@ -501,14 +485,8 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 
 	// Check if exists first and read for size tracking.
 	item, err := tx.txn.Get(keyFile(fileID))
-	if err == badgerdb.ErrKeyNotFound {
-		return &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "file not found",
-		}
-	}
 	if err != nil {
-		return err
+		return mapBadgerError(err, "file", "")
 	}
 
 	// Subtract size from counter for regular files; capture ObjectID and
@@ -554,14 +532,8 @@ func (tx *badgerTransaction) GetChild(ctx context.Context, dirHandle metadata.Fi
 	}
 
 	item, err := tx.txn.Get(keyChild(dirID, name))
-	if err == badgerdb.ErrKeyNotFound {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "child not found",
-		}
-	}
 	if err != nil {
-		return nil, err
+		return nil, mapBadgerError(err, "child", "")
 	}
 
 	var childID uuid.UUID
@@ -628,14 +600,8 @@ func (tx *badgerTransaction) DeleteChild(ctx context.Context, dirHandle metadata
 	}
 
 	item, err := tx.txn.Get(keyChild(dirID, name))
-	if err == badgerdb.ErrKeyNotFound {
-		return &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "child not found",
-		}
-	}
 	if err != nil {
-		return err
+		return mapBadgerError(err, "child", "")
 	}
 
 	// Capture the child UUID so the reverse edge cn:<parent>:<child> can be torn
@@ -843,14 +809,8 @@ func (tx *badgerTransaction) GetParent(ctx context.Context, handle metadata.File
 	}
 
 	item, err := tx.txn.Get(keyParent(fileID))
-	if err == badgerdb.ErrKeyNotFound {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "parent not found",
-		}
-	}
 	if err != nil {
-		return nil, err
+		return nil, mapBadgerError(err, "parent", "")
 	}
 
 	var parentID uuid.UUID
@@ -1021,15 +981,8 @@ func (tx *badgerTransaction) GetRootHandle(ctx context.Context, shareName string
 	}
 
 	item, err := tx.txn.Get(keyShare(shareName))
-	if err == badgerdb.ErrKeyNotFound {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "share not found",
-			Path:    shareName,
-		}
-	}
 	if err != nil {
-		return nil, err
+		return nil, mapBadgerError(err, "share", shareName)
 	}
 
 	var rootHandle metadata.FileHandle
@@ -1054,15 +1007,8 @@ func (tx *badgerTransaction) GetShareOptions(ctx context.Context, shareName stri
 	}
 
 	item, err := tx.txn.Get(keyShare(shareName))
-	if err == badgerdb.ErrKeyNotFound {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "share not found",
-			Path:    shareName,
-		}
-	}
 	if err != nil {
-		return nil, err
+		return nil, mapBadgerError(err, "share", shareName)
 	}
 
 	var opts *metadata.ShareOptions
@@ -1123,15 +1069,8 @@ func (tx *badgerTransaction) UpdateShareOptions(ctx context.Context, shareName s
 	}
 
 	item, err := tx.txn.Get(keyShare(shareName))
-	if err == badgerdb.ErrKeyNotFound {
-		return &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "share not found",
-			Path:    shareName,
-		}
-	}
 	if err != nil {
-		return err
+		return mapBadgerError(err, "share", shareName)
 	}
 
 	var data *shareData
@@ -1167,15 +1106,8 @@ func (tx *badgerTransaction) DeleteShare(ctx context.Context, shareName string) 
 	}
 
 	_, err := tx.txn.Get(keyShare(shareName))
-	if err == badgerdb.ErrKeyNotFound {
-		return &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "share not found",
-			Path:    shareName,
-		}
-	}
 	if err != nil {
-		return err
+		return mapBadgerError(err, "share", shareName)
 	}
 
 	// Tear down all file metadata on the active txn, identical to the pool
