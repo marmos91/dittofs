@@ -159,15 +159,6 @@ func (s *Service) UpdateAdapter(ctx context.Context, cfg *models.AdapterConfig) 
 	return nil
 }
 
-// Default ports an adapter binds to when its configured port is 0. They mirror
-// the ports the adapter factory substitutes for a zero port when it constructs
-// the adapter, so the unchanged-listener check compares resolved against
-// resolved rather than a sentinel against a concrete port.
-const (
-	defaultNFSPort = 12049
-	defaultSMBPort = 12445
-)
-
 // resolvePort returns the port an adapter of the given type binds to, treating
 // a zero port as "use the type's default" — the same substitution the factory
 // applies when it constructs the adapter. Types without a known default keep
@@ -176,14 +167,10 @@ func resolvePort(adapterType string, port int) int {
 	if port != 0 {
 		return port
 	}
-	switch adapterType {
-	case "nfs":
-		return defaultNFSPort
-	case "smb":
-		return defaultSMBPort
-	default:
-		return port
+	if def := models.DefaultPort(adapterType); def != 0 {
+		return def
 	}
+	return port
 }
 
 // sameListenAddr reports whether cfg binds to the same address and port as the

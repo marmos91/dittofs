@@ -10,12 +10,15 @@ import (
 	"github.com/marmos91/dittofs/internal/cli/credentials"
 	"github.com/marmos91/dittofs/internal/cli/prompt"
 	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/spf13/cobra"
 )
 
+// Default ports the client mounts when the server reports no explicit port.
+// Aliased to the server-side defaults so the value has a single source.
 const (
-	defaultNFSPort = 12049
-	defaultSMBPort = 12445
+	defaultNFSPort = models.DefaultNFSPort
+	defaultSMBPort = models.DefaultSMBPort
 )
 
 var (

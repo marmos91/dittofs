@@ -722,7 +722,7 @@ func createAdapterFactory(kerberosConfig *config.KerberosConfig, nlAuth *netlogo
 func createNFSAdapter(cfg *models.AdapterConfig, kerberosConfig *config.KerberosConfig) (runtime.ProtocolAdapter, error) {
 	port := cfg.Port
 	if port == 0 {
-		port = 12049
+		port = models.DefaultNFSPort
 	}
 
 	nfsCfg := nfs.NFSConfig{Enabled: true, Port: port}
@@ -759,7 +759,7 @@ func createNFSAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.KerberosConfig, nlAuth *netlogon.Authenticator) (runtime.ProtocolAdapter, error) {
 	port := cfg.Port
 	if port == 0 {
-		port = 12445
+		port = models.DefaultSMBPort
 	}
 
 	smbCfg := smb.Config{Enabled: true, Port: port}

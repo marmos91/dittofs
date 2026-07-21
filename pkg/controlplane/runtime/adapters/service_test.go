@@ -255,8 +255,8 @@ func TestUpdateAdapter_ZeroPortRebindsFromNonDefault(t *testing.T) {
 	if svc.GetAdapter("smb") != second {
 		t.Fatal("rebind did not swap to the new adapter instance")
 	}
-	if got := second.Port(); got != defaultSMBPort {
-		t.Fatalf("rebound adapter bound to wrong port: got %d, want default %d", got, defaultSMBPort)
+	if got := second.Port(); got != models.DefaultSMBPort {
+		t.Fatalf("rebound adapter bound to wrong port: got %d, want default %d", got, models.DefaultSMBPort)
 	}
 
 	if err := svc.StopAllAdapters(); err != nil {
