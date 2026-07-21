@@ -355,6 +355,26 @@ dittofs v0.21 or earlier (`dfs migrate-to-cas`, removed in later
 releases); the boot guard refuses `.blk` layouts with exit code 78. See
 [the migration guide](block-store-migration.md) for the full runbook.
 
+A share's pre-journal local cache (the `blobs/` + `logs/` on-disk layout
+from v0.26 and earlier) is also migrated automatically on first start:
+
+- **Remote-backed shares** re-materialize their bytes from the remote store
+  using the surviving metadata manifest — always safe.
+- **Local-only shares** (no remote) re-ingest their bytes from the append
+  logs in the background; reads that arrive mid-migration fault their file in
+  on demand, and the old on-disk data is deleted only once every file has
+  been re-ingested (a crash mid-migration simply resumes on the next start).
+
+  This only works when the append logs are complete. A local cache large
+  enough to have *compacted* its logs moved some bytes into the packed
+  `blobs/` substrate, and the index that located them (`local_chunk_index`)
+  is dropped by the metadata schema upgrade — so those bytes cannot be
+  recovered. When any log was compacted, the boot guard refuses to open the
+  share (exit code 78) and leaves every byte on disk untouched. Recover such
+  a share by restoring the metadata store from a **pre-upgrade backup** and
+  reading it with the matching older dittofs release, or by rebuilding the
+  share's contents from its authoritative source.
+
 ## Usage Questions
 
 ### Can I use this with Windows clients?
