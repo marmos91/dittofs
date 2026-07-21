@@ -55,6 +55,12 @@ type badgerTransaction struct {
 	// invalidation. A stale entry is a spurious ENOENT (negative) or EEXIST
 	// (positive).
 	dirtyDirents []string
+	// pendingCapabilities holds a filesystem-capabilities value this transaction
+	// wrote to cap:fs. Captured per attempt and applied to the store's in-memory
+	// copy exactly once after a successful commit, like dirtyFiles, so a
+	// conflict-retry or an aborted commit cannot leave GetFilesystemMeta reporting
+	// a value that never reached durable storage.
+	pendingCapabilities *metadata.FilesystemCapabilities
 }
 
 // Maximum number of retries for conflict errors.
@@ -116,6 +122,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 		var dirtyFiles []string
 		var dirtyShares []string
 		var dirtyDirents []string
+		var pendingCapabilities *metadata.FilesystemCapabilities
 		err := s.db.Update(func(txn *badgerdb.Txn) error {
 			tx := &badgerTransaction{store: s, txn: txn}
 			if fnErr := fn(tx); fnErr != nil {
@@ -126,6 +133,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			dirtyFiles = tx.dirtyFiles
 			dirtyShares = tx.dirtyShares
 			dirtyDirents = tx.dirtyDirents
+			pendingCapabilities = tx.pendingCapabilities
 			return nil
 		})
 
@@ -136,6 +144,12 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			}
 			// Apply per-identity usage deltas once, after commit.
 			s.applyQuotaDelta(quotaDelta)
+			// Apply the staged filesystem-capabilities update once, after commit,
+			// so a persist that never committed can't leave the in-memory copy
+			// (read by GetFilesystemMeta) ahead of durable storage.
+			if pendingCapabilities != nil {
+				s.storeCapabilities(*pendingCapabilities)
+			}
 			// Invalidate the read caches for every file / share this transaction
 			// mutated, AFTER the commit so a concurrent reader that saw the
 			// pre-commit value cannot leave it cached (its generation-guarded
@@ -949,9 +963,9 @@ func (tx *badgerTransaction) PutFilesystemMeta(ctx context.Context, shareName st
 	}
 
 	// Persist only the capabilities into the cap:fs singleton; statistics are
-	// dynamic and never stored.
-	tx.SetFilesystemCapabilities(metaSvc.Capabilities)
-	return nil
+	// dynamic and never stored. writeCapabilities updates the in-memory copy so
+	// GetFilesystemMeta stays coherent and returns any encode/persist error.
+	return tx.writeCapabilities(metaSvc.Capabilities)
 }
 
 func (tx *badgerTransaction) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
@@ -1392,17 +1406,29 @@ func (tx *badgerTransaction) GetFilesystemCapabilities(ctx context.Context, hand
 	return caps, nil
 }
 
+// SetFilesystemCapabilities is the ServerConfig best-effort setter: it persists
+// the capabilities and only logs a failure because the interface is void.
+// Error-sensitive callers use PutFilesystemMeta, which returns the error.
 func (tx *badgerTransaction) SetFilesystemCapabilities(capabilities metadata.FilesystemCapabilities) {
-	tx.store.storeCapabilities(capabilities)
-
-	data, err := encodeFilesystemCapabilities(&capabilities)
-	if err != nil {
-		logger.Error("badger: failed to encode filesystem capabilities", "error", err)
-		return
-	}
-	if err := tx.txn.Set(keyFilesystemCapabilities(), data); err != nil {
+	if err := tx.writeCapabilities(capabilities); err != nil {
 		logger.Error("badger: failed to persist filesystem capabilities", "error", err)
 	}
+}
+
+// writeCapabilities persists the capabilities to the cap:fs singleton and stages
+// the in-memory update, which the enclosing withTransaction applies only after a
+// successful commit so GetFilesystemMeta never reports a value that failed to
+// reach the store. Returns any encode/persist error.
+func (tx *badgerTransaction) writeCapabilities(capabilities metadata.FilesystemCapabilities) error {
+	data, err := encodeFilesystemCapabilities(&capabilities)
+	if err != nil {
+		return fmt.Errorf("encode filesystem capabilities: %w", err)
+	}
+	if err := tx.txn.Set(keyFilesystemCapabilities(), data); err != nil {
+		return fmt.Errorf("persist filesystem capabilities: %w", err)
+	}
+	tx.pendingCapabilities = &capabilities
+	return nil
 }
 
 func (tx *badgerTransaction) GetFilesystemStatistics(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemStatistics, error) {

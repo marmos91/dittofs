@@ -286,7 +286,9 @@ func encodeFile(file *metadata.File) ([]byte, error) {
 	buf = putUvarintField(buf, fMode, uint64(a.Mode))
 	buf = putUvarintField(buf, fUID, uint64(a.UID))
 	buf = putUvarintField(buf, fGID, uint64(a.GID))
-	buf = putUvarintField(buf, fNlink, uint64(a.Nlink))
+	// Nlink is NOT written here — the link count lives in the sibling l:<uuid>
+	// key, which every reader overlays onto the decoded file. The fNlink field
+	// ID survives only in the decoder as a legacy read shim for old records.
 	buf = putUvarintField(buf, fSize, a.Size)
 
 	var err error
@@ -402,6 +404,9 @@ func decodeFileBinary(b []byte) (*metadata.File, error) {
 		case fGID:
 			a.GID = uint32(uvOf(val))
 		case fNlink:
+			// Legacy read shim: current records no longer write this field
+			// (link count lives in the l:<uuid> key and is overlaid on read),
+			// but old records still carry it.
 			a.Nlink = uint32(uvOf(val))
 		case fSize:
 			a.Size = uvOf(val)

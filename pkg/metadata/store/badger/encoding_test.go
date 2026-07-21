@@ -213,6 +213,9 @@ func TestEncodeDecodeFile_AllFields(t *testing.T) {
 	assert.Empty(t, got.Path, "Path must not persist")
 	got.Path = orig.Path // normalize for full-struct compare below
 
+	assert.Zero(t, got.Nlink, "Nlink must not persist (it lives in the l: key)")
+	got.Nlink = orig.Nlink // normalize for full-struct compare below
+
 	// time.Time compares poorly with == across marshal; check each explicitly.
 	for _, tc := range []struct {
 		name string
