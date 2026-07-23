@@ -440,12 +440,16 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 		})
 	}
 	if err := g.Wait(); err != nil {
-		// Our demand budget fired while the caller's own context is still live:
-		// the remote stalled mid-fetch. Surface it as unavailability so the
-		// client fails fast, rather than letting a deadline error bubble up as a
-		// generic read failure. A caller-initiated cancel (ctx already done) is
-		// returned unchanged.
-		if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+		// Distinguish "our demand budget fired" from every other failure by the
+		// DERIVED context, not by matching the error: fetchCtx.Err() is non-nil
+		// only when the budget deadline (or a parent cancel) tripped, and pairing
+		// it with a still-live caller context isolates the budget case from a
+		// caller-initiated cancel. Matching errors.Is(err, DeadlineExceeded)
+		// instead would also catch a deadline surfaced from inside the remote
+		// client and mislabel its origin. When our budget fired the remote
+		// stalled mid-fetch, so surface it as unavailability (fast client error)
+		// rather than a generic read failure; anything else is returned unchanged.
+		if fetchCtx.Err() != nil && ctx.Err() == nil {
 			m.offlineReadsBlocked.Add(1)
 			m.logOfflineRead("EnsureAvailableAndRead", payloadID, offset/uint64(BlockSize))
 			return false, m.remoteUnavailableError()

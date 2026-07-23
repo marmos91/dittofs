@@ -68,7 +68,7 @@ func TestNewSyncer_DefaultsDemandFetchTimeout(t *testing.T) {
 // demand fan-out ran on the caller's unbounded context, so with a background
 // context the read never returned.
 func TestColdRead_DemandFetchFailsFastWhenRemoteStalls(t *testing.T) {
-	ctx := context.Background() // no sub-deadline, as a protocol read effectively has
+	ctx := context.Background() // a protocol read's context carries no sub-deadline
 
 	loc := memorylocal.New()
 	rs := newBlockingRemote()
