@@ -10,7 +10,14 @@ import (
 // permanent no-op, so dead records were never reclaimed and disk usage grew
 // without bound. Open must now derive a soft cap from the volume's free space.
 func TestOpenSetsDefaultLocalCapWhenUnset(t *testing.T) {
-	s, err := Open(t.TempDir(), Config{}, newFakeRemote(), SystemClock())
+	dir := t.TempDir()
+	// The default is only expected when free space is observable. On a platform
+	// where the statfs probe fails Open deliberately leaves the cap unset, so
+	// gate the assertion on the same probe succeeding here.
+	if free, err := diskFreeBytes(dir); err != nil || free == 0 {
+		t.Skipf("free-space probe unavailable (free=%d err=%v); default cap not expected", free, err)
+	}
+	s, err := Open(dir, Config{}, newFakeRemote(), SystemClock())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +49,7 @@ func TestGCReclaimsDeadOverwrites(t *testing.T) {
 	const blk = 4096
 	const slots = 64 // 256 KiB live footprint, rewritten in place
 	data := make([]byte, blk)
-	for i := range 8000 { // ~32 MiB appended for 256 KiB of live data
+	for i := 0; i < 8000; i++ { // ~32 MiB appended for 256 KiB of live data
 		off := int64(i%slots) * blk
 		if err := s.WriteAt(ctx, "f", off, data); err != nil {
 			t.Fatalf("WriteAt #%d: %v", i, err)

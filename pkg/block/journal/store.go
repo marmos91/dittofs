@@ -58,9 +58,10 @@ type Config struct {
 	GCDeadRatioForce float64       // dead/total ratio that forces a repack
 	ShardCount       int           // number of shards, power of two, immutable per store
 	// MaxLocalBytes is the local on-disk cap that triggers eviction. 0 leaves
-	// it unset here: Open computes a free-space-based default for it (see
-	// defaultMaxLocalBytes), so a caller only lands on a genuinely uncapped
-	// store when that probe itself fails.
+	// it unset here: Open derives a free-space-based default (a
+	// defaultMaxLocalBytesFreeFraction share of the store volume's free space)
+	// so a caller only lands on a genuinely uncapped store when that probe
+	// itself fails.
 	MaxLocalBytes int64
 	EvictMaxWait  time.Duration // write-path backpressure budget before ErrLocalStoreFull
 	// CarveUploadConcurrency bounds how many of one file's packed blocks may be
@@ -327,7 +328,11 @@ func (s *Store) startBackgroundGC() {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if _, err := s.GC(ctx, GCOptions{}); err != nil && !errors.Is(err, context.Canceled) {
+				// errClosed races Close (which sets s.closed before cancelling
+				// this loop's context); both it and context.Canceled are the
+				// normal shutdown signal, not a failure worth logging.
+				if _, err := s.GC(ctx, GCOptions{}); err != nil &&
+					!errors.Is(err, context.Canceled) && !errors.Is(err, errClosed) {
 					logger.Warn("journal: background GC pass failed", "error", err)
 				}
 			}
