@@ -175,6 +175,9 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileChunk
 	if config.PrefetchBlocks <= 0 {
 		config.PrefetchBlocks = DefaultPrefetchBlocks
 	}
+	if config.DemandFetchTimeout <= 0 {
+		config.DemandFetchTimeout = DefaultDemandFetchTimeout
+	}
 	// — apply CAS-path defaults.
 	if config.ClaimTimeout <= 0 {
 		config.ClaimTimeout = 10 * time.Minute
