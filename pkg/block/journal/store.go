@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
@@ -56,8 +57,13 @@ type Config struct {
 	CarveMaxAge      time.Duration // age-based carve batching cap
 	GCDeadRatioForce float64       // dead/total ratio that forces a repack
 	ShardCount       int           // number of shards, power of two, immutable per store
-	MaxLocalBytes    int64         // local on-disk cap that triggers eviction; 0 = unlimited
-	EvictMaxWait     time.Duration // write-path backpressure budget before ErrLocalStoreFull
+	// MaxLocalBytes is the local on-disk cap that triggers eviction. 0 leaves
+	// it unset here: Open derives a free-space-based default (a
+	// defaultMaxLocalBytesFreeFraction share of the store volume's free space)
+	// so a caller only lands on a genuinely uncapped store when that probe
+	// itself fails.
+	MaxLocalBytes int64
+	EvictMaxWait  time.Duration // write-path backpressure budget before ErrLocalStoreFull
 	// CarveUploadConcurrency bounds how many of one file's packed blocks may be
 	// committed (uploaded + committed) at once within a single carve run. Packing
 	// stays sequential; only the block commits overlap, so a single large file's
@@ -80,6 +86,14 @@ const (
 	defaultShardCount                   = 16
 	defaultEvictMaxWait                 = 30 * time.Second
 	defaultCarveUploadConcurrency       = 8
+
+	// defaultMaxLocalBytesFreeFraction is the share of a store dir's free disk
+	// space Open claims for an unset MaxLocalBytes. Conservative (not the
+	// whole disk) since the volume is typically shared with other shares and
+	// the host OS; it is a soft pressure threshold, not a hard reservation
+	// (see ensureSpace), so leaving headroom below 100% just makes eviction
+	// engage before the disk is bone dry.
+	defaultMaxLocalBytesFreeFraction = 0.8
 )
 
 func (c Config) withDefaults() Config {
@@ -107,8 +121,8 @@ func (c Config) withDefaults() Config {
 	if c.ChunkParams.Validate() != nil {
 		c.ChunkParams = chunker.DefaultParams()
 	}
-	// MaxLocalBytes intentionally has no default: 0 means "no local cap" (eviction
-	// off), the safe posture until the FSStore adapter wires --local-store-size.
+	// MaxLocalBytes is left untouched here (0 = unset): withDefaults has no dir
+	// to size a free-space-based cap from. Open fills it in once dir is known.
 	return c
 }
 
@@ -177,6 +191,12 @@ type Store struct {
 	verifyReads atomic.Bool
 
 	closed atomic.Bool
+
+	// gcCancel/gcDone govern the background dead-ratio GC loop started by
+	// Open: cancel stops the loop, and Close waits on gcDone so no repack is
+	// still in flight when segment files are closed underneath it.
+	gcCancel context.CancelFunc
+	gcDone   chan struct{}
 }
 
 // SetVerifyReads enables or disables per-read record-CRC verification of warm
@@ -206,6 +226,20 @@ func Open(dir string, cfg Config, remote RemoteStore, clock Clock) (*Store, erro
 		return nil, fmt.Errorf("journal: mkdir %q: %w", dir, err)
 	}
 
+	// An unset cap left the write-path gate (ensureSpace) a permanent no-op,
+	// so dead append-log records were never reclaimed and disk usage grew
+	// without bound under overwrites. Size a soft default off the volume's
+	// free space at open time; a probe failure (unsupported platform, statfs
+	// error) degrades to the old unbounded posture rather than failing Open.
+	if cfg.MaxLocalBytes <= 0 {
+		if free, ferr := diskFreeBytes(dir); ferr == nil && free > 0 {
+			cfg.MaxLocalBytes = int64(float64(free) * defaultMaxLocalBytesFreeFraction)
+		} else if ferr != nil {
+			logger.Warn("journal: could not determine free disk space; local store cap left unset (unbounded growth risk)",
+				"dir", dir, "error", ferr)
+		}
+	}
+
 	s := &Store{
 		dir:       dir,
 		cfg:       cfg,
@@ -223,18 +257,19 @@ func Open(dir string, cfg Config, remote RemoteStore, clock Clock) (*Store, erro
 			_ = s.Close()
 			return nil, err
 		}
-		return s, nil
+	} else {
+		s.shards = make([]*shard, cfg.ShardCount)
+		for i := range s.shards {
+			seg, err := s.createSegment()
+			if err != nil {
+				_ = s.Close()
+				return nil, err
+			}
+			s.shards[i] = newShard(seg)
+		}
 	}
 
-	s.shards = make([]*shard, cfg.ShardCount)
-	for i := range s.shards {
-		seg, err := s.createSegment()
-		if err != nil {
-			_ = s.Close()
-			return nil, err
-		}
-		s.shards[i] = newShard(seg)
-	}
+	s.startBackgroundGC()
 	return s, nil
 }
 
@@ -242,6 +277,10 @@ func Open(dir string, cfg Config, remote RemoteStore, clock Clock) (*Store, erro
 func (s *Store) Close() error {
 	if s.closed.Swap(true) {
 		return nil
+	}
+	if s.gcCancel != nil {
+		s.gcCancel()
+		<-s.gcDone
 	}
 	var firstErr error
 	for _, sh := range s.shards {
@@ -262,6 +301,43 @@ func (s *Store) Close() error {
 		sh.mu.Unlock()
 	}
 	return firstErr
+}
+
+// defaultGCInterval is how often the background loop repacks high-dead-ratio
+// segments. A pass is a near-noop when nothing is at or above GCDeadRatioForce,
+// so a short interval keeps on-disk growth tracking live bytes under
+// overwrite-heavy load without costing an idle store anything meaningful.
+const defaultGCInterval = 30 * time.Second
+
+// startBackgroundGC launches the periodic dead-ratio repack loop. Overwrites
+// leave dead records behind; without proactive repacking they are only
+// reclaimed on the write-path eviction gate, so a store whose writes outpace
+// carve grows until the cap forces backpressure. The loop keeps local bytes
+// bounded relative to live bytes regardless of whether a cap is set. Close
+// cancels it and waits on gcDone before closing segment files.
+func (s *Store) startBackgroundGC() {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.gcCancel = cancel
+	s.gcDone = make(chan struct{})
+	go func() {
+		defer close(s.gcDone)
+		t := time.NewTicker(defaultGCInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				// errClosed races Close (which sets s.closed before cancelling
+				// this loop's context); both it and context.Canceled are the
+				// normal shutdown signal, not a failure worth logging.
+				if _, err := s.GC(ctx, GCOptions{}); err != nil &&
+					!errors.Is(err, context.Canceled) && !errors.Is(err, errClosed) {
+					logger.Warn("journal: background GC pass failed", "error", err)
+				}
+			}
+		}
+	}()
 }
 
 // WriteAt buffers a dirty client write. It never fsyncs; durability is a
