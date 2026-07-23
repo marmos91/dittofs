@@ -412,7 +412,23 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 	//
 	// Readahead is driven from Store.ReadAt on EVERY read (scheduleReadahead),
 	// so the demand path no longer schedules prefetch here.
-	g, gctx := m.fetchGroup(ctx)
+	//
+	// Bound the client-blocking fan-out to DemandFetchTimeout. The health gate
+	// above is only a pre-check: a remote can stall AFTER it passes, and the
+	// remote client's own retry budget (per-request timeout times max attempts)
+	// runs to minutes — far past a protocol client's "server not responding"
+	// deadline, so an unbounded fetch here wedges the mount. The bound derives
+	// from the caller's context, so a real client cancel still wins; only when
+	// our budget fires while the caller is still live do we treat it as an
+	// outage. Background prefetch and explicit warm are NOT bounded by this —
+	// they never block a client.
+	fetchCtx := ctx
+	if d := m.config.DemandFetchTimeout; d > 0 {
+		var cancel context.CancelFunc
+		fetchCtx, cancel = context.WithTimeout(ctx, d)
+		defer cancel()
+	}
+	g, gctx := m.fetchGroup(fetchCtx)
 	for _, p := range toFetch {
 		if gctx.Err() != nil {
 			break // first error/cancel: stop scheduling the remaining chunks
@@ -424,6 +440,16 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 		})
 	}
 	if err := g.Wait(); err != nil {
+		// Our demand budget fired while the caller's own context is still live:
+		// the remote stalled mid-fetch. Surface it as unavailability so the
+		// client fails fast, rather than letting a deadline error bubble up as a
+		// generic read failure. A caller-initiated cancel (ctx already done) is
+		// returned unchanged.
+		if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+			m.offlineReadsBlocked.Add(1)
+			m.logOfflineRead("EnsureAvailableAndRead", payloadID, offset/uint64(BlockSize))
+			return false, m.remoteUnavailableError()
+		}
 		return false, err
 	}
 

@@ -42,6 +42,14 @@ const (
 // resizes the upload window (#1407).
 const uploadControlInterval = 500 * time.Millisecond
 
+// DefaultDemandFetchTimeout bounds a single client-blocking cold read's remote
+// hydration. It is well under a protocol client's "server not responding"
+// window (SMB2/CIFS treats ~180s of silence as a dead server) so a stalled
+// remote surfaces as a fast ErrRemoteUnavailable rather than a wedged mount,
+// yet generous enough that a legitimately slow WAN fetch of a read window
+// still completes.
+const DefaultDemandFetchTimeout = 60 * time.Second
+
 // DefaultPrefetchBlocks is the default number of blocks to prefetch.
 // 64 blocks = 512MB lookahead at 8MB block size.
 const DefaultPrefetchBlocks = 64
@@ -107,6 +115,18 @@ type SyncerConfig struct {
 	// bounds, crash-replay).
 	ManualSync bool
 
+	// DemandFetchTimeout bounds a single client-blocking cold read's remote
+	// hydration. A demand read (ReadAt over not-local bytes) fetches every
+	// covering chunk from the remote inline; if the remote stalls after the
+	// pre-check health gate passed, that fetch would otherwise block for the
+	// remote client's full per-request timeout times its retry budget — minutes,
+	// far past a protocol client's "server not responding" deadline, so the
+	// mount wedges. Bounding the demand fan-out to this budget makes the read
+	// fail fast with ErrRemoteUnavailable instead of hanging. Background
+	// prefetch and explicit warm are NOT bounded by this (they never block a
+	// client). <= 0 falls back to DefaultDemandFetchTimeout.
+	DemandFetchTimeout time.Duration
+
 	// Health check configuration for remote store monitoring.
 	HealthCheckInterval         time.Duration // Probe interval when healthy (default: 30s)
 	HealthCheckFailureThreshold int           // Consecutive failures to mark unhealthy (default: 3)
@@ -130,6 +150,7 @@ func DefaultConfig() SyncerConfig {
 		UploadDelay:                 10 * time.Second,
 		BlockCarveBytes:             DefaultBlockCarveBytes,
 		ParallelUploads:             AdaptiveUploadDefault,
+		DemandFetchTimeout:          DefaultDemandFetchTimeout,
 		HealthCheckInterval:         30 * time.Second,
 		HealthCheckFailureThreshold: 3,
 		UnhealthyCheckInterval:      5 * time.Second,
