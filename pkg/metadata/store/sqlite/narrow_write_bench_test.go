@@ -8,6 +8,7 @@ import (
 	"path"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/sqlite"
@@ -58,6 +59,39 @@ func seedFiles(b *testing.B, store metadata.Store, share string, n int) []string
 	return ids
 }
 
+// seedHandles is seedFiles but returns the file handles (for methods that take a
+// handle rather than a raw id).
+func seedHandles(b *testing.B, store metadata.Store, share string, n int) []metadata.FileHandle {
+	b.Helper()
+	ctx := context.Background()
+	root, err := store.CreateRootDirectory(ctx, share, &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755})
+	if err != nil {
+		b.Fatalf("CreateRootDirectory: %v", err)
+	}
+	rootHandle, err := store.GetRootHandle(ctx, share)
+	if err != nil {
+		b.Fatalf("GetRootHandle: %v", err)
+	}
+	hs := make([]metadata.FileHandle, n)
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("f%06d", i)
+		fp := path.Join(root.Path, name)
+		h, err := store.GenerateHandle(ctx, share, fp)
+		if err != nil {
+			b.Fatalf("GenerateHandle: %v", err)
+		}
+		_, id, _ := metadata.DecodeFileHandle(h)
+		if err := store.PutFile(ctx, &metadata.File{ShareName: share, Path: fp, ID: id,
+			FileAttr: metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644, UID: 1000, GID: 1000}}); err != nil {
+			b.Fatalf("PutFile seed: %v", err)
+		}
+		_ = store.SetParent(ctx, h, rootHandle)
+		_ = store.SetChild(ctx, rootHandle, name, h)
+		hs[i] = h
+	}
+	return hs
+}
+
 // BenchmarkNarrowWrite isolates the two SQL write-path levers against the same
 // populated table the GetFile+PutFile path runs at ~5k IOPS:
 //
@@ -91,6 +125,36 @@ func BenchmarkNarrowWrite(b *testing.B) {
 			for pb.Next() {
 				if _, err := db.ExecContext(ctx, narrowUpdate, int64(4096), int64(1_700_000_000), ids[rng.Intn(nFiles)], share); err != nil {
 					b.Fatalf("exec: %v", err)
+				}
+				atomic.AddInt64(&ops, 1)
+			}
+		})
+		b.StopTimer()
+		if s := b.Elapsed().Seconds(); s > 0 {
+			b.ReportMetric(float64(atomic.LoadInt64(&ops))/s, "iops")
+		}
+	})
+
+	// applydatawrite drives the real production fast path — the DataWriteApplier
+	// method through store.WithTransaction, exactly as io.go's immediateCommitWrite
+	// now calls it (SELECT old + narrow UPDATE, one txn, quota-correct).
+	b.Run("applydatawrite", func(b *testing.B) {
+		store, _ := newStore(b)
+		b.Cleanup(func() { _ = store.Close() })
+		ids := seedHandles(b, store, share, nFiles)
+		ctx := context.Background()
+		var ops int64
+		b.ResetTimer()
+		b.RunParallel(func(pb *testing.PB) {
+			rng := rand.New(rand.NewSource(rand.Int63()))
+			now := time.Now()
+			for pb.Next() {
+				h := ids[rng.Intn(nFiles)]
+				if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+					_, e := tx.(metadata.DataWriteApplier).ApplyDataWrite(ctx, h, 4096, now, false)
+					return e
+				}); err != nil {
+					b.Fatalf("apply: %v", err)
 				}
 				atomic.AddInt64(&ops, 1)
 			}

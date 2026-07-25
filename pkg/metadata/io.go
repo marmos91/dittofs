@@ -306,17 +306,44 @@ func (s *Service) immediateCommitWrite(ctx *AuthContext, intent *WriteOperation)
 		return nil, err
 	}
 
-	// Use transaction for atomic read-modify-write
-	// This ensures max(size) is calculated and applied atomically
+	// Apply metadata changes atomically: max(size) so an out-of-order write at a
+	// lower offset never shrinks the file, and a mtime/ctime stamp.
+	now := time.Now()
+	// POSIX: a non-root writer clears setuid/setgid to prevent privilege escalation.
+	clearSUID := ctx.Identity != nil && ctx.Identity.UID != nil && *ctx.Identity.UID != 0
+
 	var resultFile *File
 	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
-		// Get current file state
+		// Fast path: a single narrow UPDATE (grow size, stamp times, clear suid)
+		// instead of GetFile (aggregate block-refs read) + PutFile (full-row
+		// rewrite), for backends that implement it. Post-op attrs are synthesized
+		// from the pre-write attrs plus the authoritative final size — the same
+		// no-read-back trick the deferred-commit path uses.
+		if applier, ok := tx.(DataWriteApplier); ok {
+			finalSize, err := applier.ApplyDataWrite(ctx.Context, intent.Handle, intent.NewSize, now, clearSUID)
+			if err != nil {
+				return err
+			}
+			attr := *intent.PreWriteAttr
+			attr.Size = finalSize
+			attr.Mtime = now
+			attr.Ctime = now
+			if clearSUID {
+				attr.Mode &= ^uint32(0o6000)
+			}
+			shareName, id, decErr := DecodeFileHandle(intent.Handle)
+			if decErr != nil {
+				return decErr
+			}
+			resultFile = &File{ID: id, ShareName: shareName, FileAttr: attr}
+			return nil
+		}
+
+		// Fallback: full read-modify-write for backends without a narrow path.
 		file, err := tx.GetFile(ctx.Context, intent.Handle)
 		if err != nil {
 			return err
 		}
-
-		// Verify it's still a regular file
 		if file.Type != FileTypeRegular {
 			return &StoreError{
 				Code:    ErrIsDirectory,
@@ -324,30 +351,17 @@ func (s *Service) immediateCommitWrite(ctx *AuthContext, intent *WriteOperation)
 				Path:    file.Path,
 			}
 		}
-
-		// Apply metadata changes
-		now := time.Now()
-
-		// Use max(current_size, new_size) to handle concurrent writes completing out of order
-		// This prevents a write at an earlier offset from shrinking the file
 		if intent.NewSize > file.Size {
 			file.Size = intent.NewSize
 		}
 		file.Mtime = now
 		file.Ctime = now
-
-		// POSIX: Clear setuid/setgid bits when a non-root user writes to a file
-		// This is a security measure to prevent privilege escalation.
-		identity := ctx.Identity
-		if identity != nil && identity.UID != nil && *identity.UID != 0 {
-			file.Mode &= ^uint32(0o6000) // Clear both setuid (04000) and setgid (02000)
+		if clearSUID {
+			file.Mode &= ^uint32(0o6000)
 		}
-
-		// Store updated file
 		if err := tx.PutFile(ctx.Context, file); err != nil {
 			return err
 		}
-
 		resultFile = file
 		return nil
 	})
