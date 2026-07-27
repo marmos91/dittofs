@@ -90,6 +90,28 @@ func checkLegacyLayout(dir string) error {
 // disk untouched under this name.
 const legacyBackupSuffix = ".pre-journal-backup"
 
+// legacyArchivePaths lists the archive directories archiveLegacyLayout would
+// have created under dir, whether or not they exist.
+func legacyArchivePaths(dir string) []string {
+	return []string{
+		filepath.Join(dir, "blobs"+legacyBackupSuffix),
+		filepath.Join(dir, "logs"+legacyBackupSuffix),
+	}
+}
+
+// discardLegacyArchive deletes the archived pre-journal directories. Only call it
+// once the share has been shown to serve its own content from the remote: until
+// then these are the last copy of the pre-journal bytes. A missing directory is
+// not an error — the reap is idempotent, and half of it may already be gone.
+func discardLegacyArchive(dir string) error {
+	for _, path := range legacyArchivePaths(dir) {
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("discard legacy archive %q: %w", path, err)
+		}
+	}
+	return nil
+}
+
 // archiveLegacyLayout renames the pre-journal blobs/ and logs/ subdirectories of
 // dir aside to <name>.pre-journal-backup so an empty journal can open cleanly on
 // top of them. It is NON-destructive: the legacy bytes survive under the backup
@@ -99,7 +121,8 @@ const legacyBackupSuffix = ".pre-journal-backup"
 // is skipped. A pre-existing backup target is a hard error rather than an
 // overwrite so the operator can inspect it — the guard that gates this call
 // won't fire again once blobs/ and logs/ are gone, so this only runs on the
-// first upgrade start.
+// first upgrade start. discardLegacyArchive removes what this leaves behind,
+// once a verified read proves the share no longer needs it.
 func archiveLegacyLayout(dir string) error {
 	for _, sub := range []string{"blobs", "logs"} {
 		src := filepath.Join(dir, sub)

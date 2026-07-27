@@ -74,6 +74,15 @@ func (s *FSStore) MigratedFromLegacy() bool {
 	return s.migratedFromLegacy
 }
 
+// LegacyArchivePaths names the directories the archive step moved aside, so a
+// caller that keeps them can tell the operator where they are.
+func (s *FSStore) LegacyArchivePaths() []string { return legacyArchivePaths(s.dir) }
+
+// DiscardLegacyArchive deletes those directories. The caller is responsible for
+// having established that the share can serve the archived content from
+// elsewhere first — the archive is the last local copy until then.
+func (s *FSStore) DiscardLegacyArchive() error { return discardLegacyArchive(s.dir) }
+
 var (
 	_ local.LocalStore         = (*FSStore)(nil)
 	_ block.DurabilityReporter = (*FSStore)(nil)

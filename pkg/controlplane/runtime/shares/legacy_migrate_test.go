@@ -5,8 +5,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
@@ -46,10 +48,14 @@ func newMigrateEngine(t *testing.T, dir string, ms *metamem.MemoryMetadataStore,
 		t.Fatalf("engine.Start: %v", err)
 	}
 	// The fs store's migration flag is consumed here, the same way
-	// ConfigureBlockStore does it after bs.Start.
-	if m, ok := any(localStore).(interface{ MigratedFromLegacy() bool }); ok && m.MigratedFromLegacy() {
-		if err := SeedColdFromManifest(context.Background(), bs, ms); err != nil {
+	// ConfigureBlockStore does it after bs.Start: seed, verify, then reap.
+	if m, ok := any(localStore).(legacyArchiveMigrator); ok && m.MigratedFromLegacy() {
+		report, err := SeedColdFromManifest(context.Background(), bs, ms)
+		if err != nil {
 			t.Fatalf("SeedColdFromManifest: %v", err)
+		}
+		if err := finishLegacyArchiveMigration(context.Background(), bs, m, report, "test"); err != nil {
+			t.Fatalf("finishLegacyArchiveMigration: %v", err)
 		}
 	}
 	return bs
@@ -136,13 +142,117 @@ func TestLegacyRemoteMigration_ReadsColdFromRemote(t *testing.T) {
 	bs2 := newMigrateEngine(t, dir, ms, rem, true)
 	t.Cleanup(func() { _ = bs2.Close() })
 
-	// Legacy dirs archived aside, not destroyed.
+	// Every chunk is on the remote and a sample read back matched the manifest,
+	// so the archive the migration made is redundant and it takes it away again.
+	// Leaving it is what stranded 55 GiB on a box at 96% disk.
 	for _, sub := range []string{"blobs", "logs"} {
-		if _, err := os.Stat(filepath.Join(dir, sub+".pre-journal-backup")); err != nil {
-			t.Fatalf("legacy %s not archived: %v", sub, err)
+		if _, err := os.Stat(filepath.Join(dir, sub+".pre-journal-backup")); !os.IsNotExist(err) {
+			t.Fatalf("legacy %s archive survived a verified migration: %v", sub, err)
 		}
 	}
 	readAllLegacyFiles(t, bs2, "after migration")
+}
+
+// newEmptyEngine builds an engine over an empty local dir, for the decision
+// branches that need a block store but no planted content.
+func newEmptyEngine(t *testing.T) *engine.Store {
+	t.Helper()
+	ms := metamem.NewMemoryMetadataStoreWithDefaults()
+	t.Cleanup(func() { _ = ms.Close() })
+	return newMigrateEngine(t, t.TempDir(), ms, remotememory.New(), false)
+}
+
+// fakeArchiveMigrator stands in for the fs store so the three ways a migration
+// can end are exercised without planting a layout on disk for each.
+type fakeArchiveMigrator struct {
+	discarded  bool
+	discardErr error
+}
+
+func (f *fakeArchiveMigrator) MigratedFromLegacy() bool { return true }
+func (f *fakeArchiveMigrator) LegacyArchivePaths() []string {
+	return []string{"/nonexistent/blobs.pre-journal-backup"}
+}
+
+func (f *fakeArchiveMigrator) DiscardLegacyArchive() error {
+	if f.discardErr != nil {
+		return f.discardErr
+	}
+	f.discarded = true
+	return nil
+}
+
+// TestFinishLegacyMigration_KeepsArchiveWhenChunksAreNotRemote covers the case
+// the reap must never get wrong: a chunk the manifest does not call remote
+// exists nowhere but the archive, so deleting the archive would destroy it.
+func TestFinishLegacyMigration_KeepsArchiveWhenChunksAreNotRemote(t *testing.T) {
+	bs := newEmptyEngine(t)
+	t.Cleanup(func() { _ = bs.Close() })
+
+	m := &fakeArchiveMigrator{}
+	report := coldSeedReport{payloads: 1, chunks: 4, unsynced: 1}
+	if err := finishLegacyArchiveMigration(context.Background(), bs, m, report, "test"); err != nil {
+		t.Fatalf("unsynced chunks must not fail the migration: %v", err)
+	}
+	if m.discarded {
+		t.Fatal("archive deleted while a chunk had no remote copy")
+	}
+}
+
+// TestFinishLegacyMigration_RefusesOnContentMismatch is the check that would
+// have caught the field failure: bytes come back, the length is right, and the
+// content is not what the manifest says it should be.
+func TestFinishLegacyMigration_RefusesOnContentMismatch(t *testing.T) {
+	dir, ms, rem := plantPreJournalShare(t)
+	bs := newMigrateEngine(t, dir, ms, rem, true)
+	t.Cleanup(func() { _ = bs.Close() })
+
+	m := &fakeArchiveMigrator{}
+	report := coldSeedReport{
+		payloads: 1,
+		chunks:   1,
+		samples: []coldSample{{
+			payloadID: "small-a",
+			offset:    0,
+			length:    64,
+			hash:      block.ContentHash{0xDE, 0xAD}, // not what is stored
+		}},
+	}
+	err := finishLegacyArchiveMigration(context.Background(), bs, m, report, "test")
+	if err == nil {
+		t.Fatal("migration reported success while serving content the manifest disagrees with")
+	}
+	if !strings.Contains(err.Error(), "cannot serve its own data") {
+		t.Fatalf("error should say the share cannot serve its data, got: %v", err)
+	}
+	if m.discarded {
+		t.Fatal("archive deleted despite a failed verification")
+	}
+}
+
+// TestFinishLegacyMigration_UnreadableSampleKeepsArchive separates "wrong" from
+// "unknown": a remote we cannot reach proves nothing, so the share still serves
+// and the archive stays for a later start to verify against.
+func TestFinishLegacyMigration_UnreadableSampleKeepsArchive(t *testing.T) {
+	bs := newEmptyEngine(t)
+	if err := bs.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	m := &fakeArchiveMigrator{}
+	report := coldSeedReport{
+		payloads: 1,
+		chunks:   1,
+		samples:  []coldSample{{payloadID: "small-a", offset: 0, length: 64}},
+	}
+	// Reads against the closed store fail, which is an unavailable remote as far
+	// as verification can tell.
+	if err := finishLegacyArchiveMigration(context.Background(), bs, m, report, "test"); err != nil {
+		t.Fatalf("an unreadable sample must not fail the migration: %v", err)
+	}
+	if m.discarded {
+		t.Fatal("archive deleted without a successful verification")
+	}
 }
 
 // TestLegacyRemoteMigration_ReadsColdAfterRestart is the field failure: the
