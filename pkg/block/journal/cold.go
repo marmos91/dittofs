@@ -119,9 +119,20 @@ func (s *Store) appendCold(entries []coldEntry) error {
 	s.coldMu.Lock()
 	defer s.coldMu.Unlock()
 	if s.coldFD == nil {
+		_, statErr := os.Stat(s.coldPath())
+		created := errors.Is(statErr, os.ErrNotExist)
 		fd, err := os.OpenFile(s.coldPath(), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 		if err != nil {
 			return fmt.Errorf("journal: open cold log: %w", err)
+		}
+		// Syncing the file does not make its directory entry durable. Without
+		// this, a crash right after the first eviction can come back to no
+		// cold.log at all — the exact loss this file exists to prevent.
+		if created {
+			if derr := fsyncDir(s.dir); derr != nil {
+				_ = fd.Close()
+				return fmt.Errorf("journal: fsync dir for cold log: %w", derr)
+			}
 		}
 		s.coldFD = fd
 	}
@@ -129,6 +140,11 @@ func (s *Store) appendCold(entries []coldEntry) error {
 	for _, e := range entries {
 		if e.length <= 0 {
 			continue
+		}
+		if len(e.id) > maxFileIDLen {
+			// FileIDLen is uint16 on disk; a longer ID would be silently
+			// truncated and make every following entry unreplayable.
+			return fmt.Errorf("journal: cold log FileID length %d exceeds max %d", len(e.id), maxFileIDLen)
 		}
 		buf = append(buf, encodeColdEntry(e)...)
 	}
@@ -180,10 +196,13 @@ func (s *Store) rewriteCold(entries []coldEntry) error {
 	}
 	path := s.coldPath()
 	if len(entries) == 0 {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := os.Remove(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
 			return fmt.Errorf("journal: remove cold log: %w", err)
 		}
-		return nil
+		return fsyncDir(s.dir)
 	}
 	tmp := path + ".tmp"
 	fd, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
@@ -207,6 +226,11 @@ func (s *Store) rewriteCold(entries []coldEntry) error {
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("journal: rename cold log: %w", err)
+	}
+	// The rename itself needs a directory flush to be durable; without it a
+	// crash can leave the pre-compaction log — or neither file.
+	if err := fsyncDir(s.dir); err != nil {
+		return fmt.Errorf("journal: fsync dir after cold log rewrite: %w", err)
 	}
 	return nil
 }
