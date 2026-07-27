@@ -298,6 +298,11 @@ func TestHelpTextCommandReferences(t *testing.T) {
 	reportProblems(t, problems)
 }
 
+// sourceRoot is the repository root relative to this package's directory, which
+// is where the test binary runs. filepath.Clean gives it the host separator so
+// the walk root compares and trims equal to the paths WalkDir reports.
+var sourceRoot = filepath.Clean("../..")
+
 // TestSourceStringCommandReferences checks the command references in log lines,
 // error messages and any other string literal in the tree. A message that tells
 // an operator to run a command that does not exist is the same drift as a stale
@@ -305,13 +310,29 @@ func TestHelpTextCommandReferences(t *testing.T) {
 func TestSourceStringCommandReferences(t *testing.T) {
 	var problems []string
 	fset := token.NewFileSet()
-	err := filepath.WalkDir("../..", func(path string, d fs.DirEntry, err error) error {
+	scanned := 0
+	err := filepath.WalkDir(sourceRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // an unreadable dir is not this test's business
 		}
 		if d.IsDir() {
+			// The walk root is named ".." — skipping it would skip everything and
+			// leave the check passing vacuously.
+			if path == sourceRoot {
+				return nil
+			}
+			// Skip dot-directories wholesale, not just .git. A checked-out tree
+			// can hold nested git worktrees under .claude/, each a full copy of
+			// the repo at some other commit — scanning those reports drift
+			// against branches that are not this one, in files that may not even
+			// exist here any more. Named skips would miss the next such
+			// directory; the rule is that the source under test is the visible
+			// tree.
+			if strings.HasPrefix(d.Name(), ".") {
+				return fs.SkipDir
+			}
 			switch d.Name() {
-			case ".git", "vendor", "node_modules", "testdata", ".planning", "docs":
+			case "vendor", "node_modules", "testdata", "docs":
 				return fs.SkipDir
 			}
 			return nil
@@ -319,6 +340,7 @@ func TestSourceStringCommandReferences(t *testing.T) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
+		scanned++
 		file, perr := parser.ParseFile(fset, path, nil, 0)
 		if perr != nil {
 			return nil //nolint:nilerr // a file that does not parse fails the build, not this test
@@ -332,7 +354,7 @@ func TestSourceStringCommandReferences(t *testing.T) {
 			if uerr != nil {
 				return true
 			}
-			where := filepath.ToSlash(strings.TrimPrefix(path, "../../")) + ":" +
+			where := filepath.ToSlash(strings.TrimPrefix(path, sourceRoot+string(filepath.Separator))) + ":" +
 				strconv.Itoa(fset.Position(lit.Pos()).Line)
 			for _, inv := range findInvocations(text, where) {
 				problems = append(problems, checkInvocation(inv)...)
@@ -343,6 +365,12 @@ func TestSourceStringCommandReferences(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("walk source tree: %v", err)
+	}
+	// A directory filter that accidentally matches the walk root skips the whole
+	// tree, and a check that scans nothing passes. Assert it actually looked.
+	if scanned < 500 {
+		t.Fatalf("scanned only %d source files from %s — the walk is being skipped, "+
+			"so this check is passing without looking at anything", scanned, sourceRoot)
 	}
 	reportProblems(t, problems)
 }
