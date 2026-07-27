@@ -29,6 +29,7 @@ import (
 	"unicode"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	dfs "github.com/marmos91/dittofs/cmd/dfs/commands"
 	dfsctl "github.com/marmos91/dittofs/cmd/dfsctl/commands"
@@ -153,10 +154,19 @@ func checkInvocation(inv invocation) []string {
 	var problems []string
 	var flags []string
 
+	skipValue := false
 	for _, tok := range inv.toks {
+		if skipValue {
+			// The previous flag takes a value and it was written as its own
+			// token: `-o json`, `--server https://…`. Consuming it here keeps
+			// "json" from being read as a subcommand.
+			skipValue = false
+			continue
+		}
 		switch {
 		case strings.HasPrefix(tok, "-"):
 			flags = append(flags, tok)
+			skipValue = takesSeparateValue(cmd, tok)
 			continue
 		case placeholderish(tok):
 			// An argument, a placeholder or a value — the command path ends here.
@@ -177,6 +187,49 @@ func checkInvocation(inv invocation) []string {
 	return append(problems, checkFlags(cmd, flags, path, inv.where)...)
 }
 
+// takesSeparateValue reports whether raw is a flag whose value follows as its
+// own token. A `--flag=value` form carries its value already, and a boolean
+// takes none; anything else consumes the token after it. A flag we cannot
+// resolve is assumed to take a value — it is already reported as unknown, and
+// guessing the other way would pile a bogus "no subcommand" on top of it.
+func takesSeparateValue(cmd *cobra.Command, raw string) bool {
+	name := strings.TrimLeft(raw, "-")
+	if strings.Contains(name, "=") || name == "" {
+		return false
+	}
+	// Short flags can be bundled ("-abc"); those are boolean by definition.
+	if !strings.HasPrefix(raw, "--") && len(name) > 1 {
+		return false
+	}
+	f := lookupFlag(cmd, raw, name)
+	if f == nil {
+		return true
+	}
+	// pflag gives a bool flag a NoOptDefVal so it can stand alone.
+	return f.Value.Type() != "bool" && f.NoOptDefVal == ""
+}
+
+// lookupFlag resolves a flag against the command, the flags it inherits, and the
+// root's persistent flags — a flag may be written before the subcommand it
+// belongs to, when the walk has not descended yet.
+func lookupFlag(cmd *cobra.Command, raw, name string) *pflag.Flag {
+	sets := []*pflag.FlagSet{cmd.Flags(), cmd.InheritedFlags(), cmd.PersistentFlags(), cmd.Root().PersistentFlags()}
+	for _, set := range sets {
+		if strings.HasPrefix(raw, "--") {
+			if f := set.Lookup(name); f != nil {
+				return f
+			}
+			continue
+		}
+		if len(name) == 1 {
+			if f := set.ShorthandLookup(name); f != nil {
+				return f
+			}
+		}
+	}
+	return nil
+}
+
 // checkFlags validates the long and short flags named in an invocation against
 // the command it resolved to, including flags inherited from its parents.
 func checkFlags(cmd *cobra.Command, flags, path []string, where string) []string {
@@ -189,18 +242,13 @@ func checkFlags(cmd *cobra.Command, flags, path []string, where string) []string
 		if name == "" || placeholderish(name) {
 			continue
 		}
-		if strings.HasPrefix(raw, "--") {
-			if cmd.Flags().Lookup(name) == nil && cmd.InheritedFlags().Lookup(name) == nil &&
-				cmd.PersistentFlags().Lookup(name) == nil {
-				problems = append(problems, where+": `"+strings.Join(path, " ")+
-					"` has no flag --"+name)
-			}
+		if !strings.HasPrefix(raw, "--") && len(name) != 1 {
+			// A bundle of short flags; not worth unpicking.
 			continue
 		}
-		if len(name) == 1 && cmd.Flags().ShorthandLookup(name) == nil &&
-			cmd.InheritedFlags().ShorthandLookup(name) == nil {
+		if lookupFlag(cmd, raw, name) == nil {
 			problems = append(problems, where+": `"+strings.Join(path, " ")+
-				"` has no flag -"+name)
+				"` has no flag "+strings.SplitN(raw, "=", 2)[0])
 		}
 	}
 	return problems
@@ -329,6 +377,47 @@ func TestDocsCommandReferences(t *testing.T) {
 		t.Fatalf("walk docs: %v", err)
 	}
 	reportProblems(t, problems)
+}
+
+// TestCheckerAcceptsAndRejects pins the checker's own behaviour. A checker that
+// cries wolf gets deleted by the next person it blocks, so the accept cases
+// matter as much as the reject ones — particularly a flag whose value is written
+// as a separate token, where the value must not be read as a subcommand.
+func TestCheckerAcceptsAndRejects(t *testing.T) {
+	accept := []string{
+		"`dfsctl store block local add --name l1`",
+		"`dfsctl -o json share list`",
+		"`dfsctl --server https://host:8443 share list`",
+		"`dfs start`",
+		"`dfsctl share warm <share>`",
+		"dfsctl is the REST client for a running dfs instance",
+		"run `dfsctl login` first",
+	}
+	for _, s := range accept {
+		var problems []string
+		for _, inv := range findInvocations(s, "case") {
+			problems = append(problems, checkInvocation(inv)...)
+		}
+		if len(problems) > 0 {
+			t.Errorf("false positive on %q:\n  %s", s, strings.Join(problems, "\n  "))
+		}
+	}
+
+	reject := []string{
+		"`dfsctl user update alice`",            // it is `user edit`
+		"`dfs config init`",                     // it is `dfs init`
+		"`dfsctl store block add --kind local`", // it is `store block local add`
+		"`dfs init --admin`",                    // no such flag
+	}
+	for _, s := range reject {
+		var problems []string
+		for _, inv := range findInvocations(s, "case") {
+			problems = append(problems, checkInvocation(inv)...)
+		}
+		if len(problems) == 0 {
+			t.Errorf("false negative: %q should have been reported", s)
+		}
+	}
 }
 
 func reportProblems(t *testing.T, problems []string) {
