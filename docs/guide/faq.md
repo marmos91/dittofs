@@ -351,7 +351,7 @@ first start after the upgrade, blocking until done (idempotent and
 resumable — a killed migration converges on the next start).
 
 Stores still on the pre-v0.16 `.blk` layout must first be migrated with
-dittofs v0.21 or earlier (`dfs migrate-to-cas`, removed in later
+dittofs v0.21 or earlier (its `migrate-to-cas` command, removed in later
 releases); the boot guard refuses `.blk` layouts with exit code 78. See
 [the migration guide](block-store-migration.md) for the full runbook.
 

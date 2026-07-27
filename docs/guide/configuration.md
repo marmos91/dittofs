@@ -297,7 +297,7 @@ The local filesystem store (`fs`) is a thin adapter over the **journal** — an
 append-only, log-structured write-back cache (`pkg/block/journal/`). Writes
 append to the journal and local-ack; a background carve pass packs dirty ranges
 into packed remote blocks (`blocks/<id>`). Pre-v0.16 `{payloadID}/block-{idx}`
-layouts must be converted with dittofs ≤ v0.21 (`dfs migrate-to-cas`) before the
+layouts must be converted with dittofs ≤ v0.21 (its `migrate-to-cas` command) before the
 server will start.
 
 These keys live inside the per-share `local` block store's `config` JSON
@@ -1093,7 +1093,7 @@ fresh grace window.
 
 DittoFS supports a unified user management system for both NFS and SMB protocols. Users, groups, and their permissions are stored in the control plane database (see [Database Configuration](#4-database-control-plane)) and can be managed via:
 
-1. **CLI commands** (`dfs user`, `dfs group`) - Recommended for initial setup
+1. **CLI commands** (`dfsctl user`, `dfsctl group`) - Recommended for initial setup
 2. **REST API** - For programmatic management and integrations
 3. **Config file** - For bootstrap configuration (imported on first run)
 
@@ -1992,7 +1992,7 @@ connectivity and start again.
 
 ### Pre-v0.16 `.blk` layouts: migrate with dittofs ≤ v0.21 first
 
-The offline `dfs migrate-to-cas` tool was removed after v0.21. On startup,
+The offline `migrate-to-cas` command was removed after v0.21. On startup,
 `dfs start` still probes each share for the legacy `.blk` layout (a
 `.cas-migrated-v1` sentinel from an old migration short-circuits the probe)
 and refuses to start un-migrated shares:
@@ -2002,7 +2002,7 @@ and refuses to start un-migrated shares:
   dittofs ≤ v0.21 for the `.blk` migration.
 - Halts on the FIRST share that surfaces the legacy layout.
 
-Run `dfs migrate-to-cas` on v0.21, verify the per-share `.cas-migrated-v1`
+Run `migrate-to-cas` with a v0.21 binary, verify the per-share `.cas-migrated-v1`
 sentinel exists, then upgrade — the automatic conversion above finishes the
 job.
 

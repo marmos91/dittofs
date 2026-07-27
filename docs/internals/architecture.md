@@ -1269,7 +1269,7 @@ threading, so changes to the read/write path stay confined to the helpers.
 
 ### Operator surfaces
 
-- `dfsctl blockstore audit-refcounts <share>` runs the refcount
+- `dfsctl store block audit-refcounts <share>` runs the refcount
   reconciliation audit (`∑ FileChunk.RefCount == ∑ len(FileAttr.Blocks)`),
   emits aggregate counts as structured slog INFO, and persists the
   last-run summary at `<localStore>/audit-state/last-inv02.json`. See
@@ -1470,7 +1470,7 @@ chunks remain, that share fails to start (its data would be unreadable anyway).
 
 ### Pre-v0.16 `.blk` → CAS: migrate with dittofs ≤ v0.21
 
-The offline `.blk`→CAS tool (`dfs migrate-to-cas`) shipped through v0.21 and
+The offline `.blk`→CAS tool (`migrate-to-cas`) shipped through v0.21 and
 has been removed. `newFSStore` still probes each share for the legacy `.blk`
 layout on open (a `.cas-migrated-v1` sentinel from an old run short-circuits
 the probe) and returns `block.ErrLegacyLayoutDetected`; the boot guard in

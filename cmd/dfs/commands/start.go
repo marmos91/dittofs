@@ -43,7 +43,8 @@ var isTerminal = func(fd uintptr) bool {
 // EX_CONFIG is the exit code per sysexits(3) — "configuration error".
 // Used by the legacy-layout boot guard when a share directory still
 // contains pre-v0.16 `.blk` files without a `.cas-migrated-v1` sentinel.
-// The operator runs `dfs migrate-to-cas` before retrying.
+// The operator migrates with an older release's migrate-to-cas command
+// before retrying — this release no longer ships it.
 const EX_CONFIG = 78
 
 // exitFn is the production exit path for the legacy-layout boot guard.
@@ -873,13 +874,13 @@ func emitAdminPassword(password string) {
 // formatLegacyLayoutDirective renders the multi-line operator directive
 // printed when LoadSharesFromStore surfaces ErrLegacyLayoutDetected.
 // The full wrapped error message (`share "<name>": share <path>:
-// blockstore: legacy .blk layout detected (run `dfs migrate-to-cas`)`)
+// blockstore: legacy .blk layout detected`)
 // is embedded verbatim so the operator sees BOTH the share name AND
 // the offending path without fragile substring extraction.
 func formatLegacyLayoutDirective(err error) string {
 	return fmt.Sprintf(`Detected legacy .blk layout: %s.
 This release no longer ships the .blk migration tool. Migrate the share
-with dittofs v0.21 or earlier first:
-    dfs migrate-to-cas --share <name>   (dittofs <= v0.21)
+with dittofs v0.21 or earlier first, using that release's binary:
+    <v0.21 dfs> migrate-to-cas --share <name>
 then upgrade; the cas->blocks conversion runs automatically at startup.`, err)
 }
