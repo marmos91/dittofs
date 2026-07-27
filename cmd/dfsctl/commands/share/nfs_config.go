@@ -3,6 +3,7 @@ package share
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
@@ -94,6 +95,43 @@ func init() {
 	nfsConfigCmd.AddCommand(nfsConfigSetCmd)
 }
 
+// NFSConfigDetail renders a share's NFS adapter config as a field/value table.
+type NFSConfigDetail struct {
+	cfg *apiclient.ShareNFSConfig
+}
+
+// Headers implements TableRenderer.
+func (d NFSConfigDetail) Headers() []string {
+	return []string{"FIELD", "VALUE"}
+}
+
+// Rows implements TableRenderer.
+func (d NFSConfigDetail) Rows() [][]string {
+	c := d.cfg
+	netgroup := c.Netgroup
+	if netgroup == "" {
+		netgroup = "(none - all clients allowed)"
+	}
+	rows := [][]string{
+		{"Netgroup", netgroup},
+		{"Squash", c.Squash},
+	}
+	// The anonymous IDs only apply to a squash mode that maps to them, and are
+	// server defaults when unset — show them only when the export overrides them.
+	if c.AnonymousUID != nil {
+		rows = append(rows, []string{"Anonymous UID", fmt.Sprintf("%d", *c.AnonymousUID)})
+	}
+	if c.AnonymousGID != nil {
+		rows = append(rows, []string{"Anonymous GID", fmt.Sprintf("%d", *c.AnonymousGID)})
+	}
+	return append(rows,
+		[]string{"Allow AUTH_SYS", strconv.FormatBool(c.AllowAuthSys)},
+		[]string{"Require Kerberos", strconv.FormatBool(c.RequireKerberos)},
+		[]string{"Min Kerberos level", c.MinKerberosLevel},
+		[]string{"READDIRPLUS", strconv.FormatBool(!c.DisableReaddirplus)},
+	)
+}
+
 func runNFSConfigShow(_ *cobra.Command, args []string) error {
 	client, err := cmdutil.GetAuthenticatedClient()
 	if err != nil {
@@ -105,7 +143,7 @@ func runNFSConfigShow(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get NFS config: %w", err)
 	}
 
-	return cmdutil.PrintResource(os.Stdout, cfg, nil)
+	return cmdutil.PrintResource(os.Stdout, cfg, NFSConfigDetail{cfg: cfg})
 }
 
 func runNFSConfigSet(cmd *cobra.Command, args []string) error {

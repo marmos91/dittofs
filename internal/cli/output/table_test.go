@@ -41,6 +41,18 @@ func TestPrintTable(t *testing.T) {
 	assert.Contains(t, output, "value2")
 }
 
+// TestPrintTableNilRenderer covers the crash a `show` command hit in the field:
+// it passed no renderer, and reaching Headers() through a nil interface took the
+// whole CLI down with a SIGSEGV stack trace. A missing renderer must surface as
+// an ordinary error, and write nothing.
+func TestPrintTableNilRenderer(t *testing.T) {
+	var buf bytes.Buffer
+	err := PrintTable(&buf, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "json", "the error should point the user at -o json")
+	assert.Empty(t, buf.String())
+}
+
 func TestSimpleTable(t *testing.T) {
 	pairs := [][2]string{
 		{"Key1", "Value1"},
