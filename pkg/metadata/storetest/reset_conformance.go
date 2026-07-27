@@ -53,6 +53,13 @@ func ResetThenRestoreConformance(t *testing.T, factory SnapshotableStoreFactory)
 		t.Fatalf("Reset: %v", err)
 	}
 
+	// Quota assertion: Reset must clear the per-identity cache, not just the
+	// share/file maps a stale cache here silently keeps enforcing limits
+	// against data that no longer exists.
+	if u, err := store.GetQuotaUsage(metadata.QuotaScopeUser, 1000); err != nil || u.Bytes != 0 || u.Files != 0 {
+		t.Fatalf("post-Reset GetQuotaUsage(user, 1000) = %+v, err=%v, want zero", u, err)
+	}
+
 	// 3. Empty assertion: ListShares returns zero entries post-Reset.
 	shares, err := store.ListShares(ctx)
 	if err != nil {
@@ -67,6 +74,13 @@ func ResetThenRestoreConformance(t *testing.T, factory SnapshotableStoreFactory)
 	//    ErrRestoreDestinationNotEmpty precondition so Restore must succeed.
 	if err := b.RestoreSnapshot(ctx, &dumpBuf); err != nil {
 		t.Fatalf("Restore post-Reset: %v", err)
+	}
+
+	// Quota assertion: Restore must reseed the cache from the restored files,
+	// not leave it at the post-Reset zero state.
+	const wantBytes = int64((8 << 20) + (6 << 20)) // 14 MiB total
+	if u, err := store.GetQuotaUsage(metadata.QuotaScopeUser, 1000); err != nil || u.Bytes != wantBytes || u.Files != 2 {
+		t.Fatalf("post-Restore GetQuotaUsage(user, 1000) = %+v, err=%v, want {Bytes:%d Files:2}", u, err, wantBytes)
 	}
 
 	// 5. Verify shares + representative file survived round-trip.

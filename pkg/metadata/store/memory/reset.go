@@ -44,6 +44,10 @@ func (s *MemoryMetadataStore) Reset(ctx context.Context) error {
 
 	s.usedBytes.Store(0)
 
+	s.quotaMu.Lock()
+	s.quota.Reset()
+	s.quotaMu.Unlock()
+
 	s.syncedMu.Lock()
 	s.synced = make(map[block.ContentHash]time.Time)
 	s.syncedLocators = nil // clear block locators together with synced markers

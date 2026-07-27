@@ -76,6 +76,10 @@ func RunSnapshotConformanceSuite(t *testing.T, factory SnapshotableStoreFactory)
 	t.Run("UsedBytesAfterRestore", func(t *testing.T) {
 		testSnapshot_UsedBytesAfterRestore(t, factory)
 	})
+
+	t.Run("QuotaUsageAfterRestore", func(t *testing.T) {
+		testSnapshot_QuotaUsageAfterRestore(t, factory)
+	})
 }
 
 // testSnapshot_UsedBytesAfterRestore pins the quota-counter invariant: after
@@ -860,5 +864,44 @@ func testSnapshot_HashSet_Dedup(t *testing.T, factory SnapshotableStoreFactory) 
 	}
 	if !gotHS.Contains(sharedHash) {
 		t.Fatalf("HashSet does not contain the shared hash %x", sharedHash[:8])
+	}
+}
+
+// testSnapshot_QuotaUsageAfterRestore pins the same invariant as
+// UsedBytesAfterRestore, but for the per-identity quota cache: after Restore,
+// GetQuotaUsage for the fixture's owner (uid/gid 1000) MUST reflect the
+// restored files, not a stale or zeroed cache. A backend that recomputes
+// usedBytes but not quota (or that Resets the quota cache instead of
+// reseeding it) passes UsedBytesAfterRestore while silently disabling
+// per-identity quota enforcement this test catches that divergence.
+func testSnapshot_QuotaUsageAfterRestore(t *testing.T, factory SnapshotableStoreFactory) {
+	srcStore := factory(t)
+	srcB := asSnapshotable(t, srcStore)
+	ctx := t.Context()
+
+	populateTestData(t, srcStore, "qb")
+	const wantBytes = int64((8 << 20) + (6 << 20)) // 14 MiB
+	const wantFiles = int64(2)
+
+	var buf bytes.Buffer
+	if _, err := srcB.WriteSnapshot(ctx, &buf); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	dstStore := factory(t)
+	dstB := asSnapshotable(t, dstStore)
+	if err := dstB.RestoreSnapshot(ctx, &buf); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	for _, scope := range []metadata.QuotaScope{metadata.QuotaScopeUser, metadata.QuotaScopeGroup} {
+		got, err := dstStore.GetQuotaUsage(scope, 1000)
+		if err != nil {
+			t.Fatalf("GetQuotaUsage(%v, 1000): %v", scope, err)
+		}
+		if got.Bytes != wantBytes || got.Files != wantFiles {
+			t.Fatalf("restored GetQuotaUsage(%v, 1000) = %+v, want {Bytes:%d Files:%d}",
+				scope, got, wantBytes, wantFiles)
+		}
 	}
 }
