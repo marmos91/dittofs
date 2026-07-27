@@ -241,6 +241,38 @@ func (s *Store) recover() error {
 		logf("journal: WARN %d segment(s) missing .idx sidecar, rebuilding from segment scan (recovery slower)", missingIdx)
 	}
 
+	// Replay the cold log (cold.go). A cold interval owns no record — eviction
+	// unlinked the segment that held its bytes, or the range was seeded cold from
+	// a surviving manifest — so this side-log is the only thing that keeps the
+	// range from coming back as a POSIX hole that reads as zeros. Inserted with
+	// each entry's original Version, so a later warm write shadows it and the
+	// tombstone/truncate passes below clip it exactly like a warm interval.
+	coldLoaded, err := loadCold(s.dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range coldLoaded {
+		if e.length <= 0 {
+			continue
+		}
+		if e.version > maxVersion {
+			maxVersion = e.version
+		}
+		idxMap := indexByShard[s.shardIndex(e.id)]
+		fi := idxMap[e.id]
+		if fi == nil {
+			fi = &fileIndex{}
+			idxMap[e.id] = fi
+		}
+		fi.insert(interval{
+			fileOff: e.fileOff,
+			length:  e.length,
+			version: e.version,
+			synced:  true,
+			cold:    true,
+		})
+	}
+
 	s.nextSeg.Store(maxSegID + 1)
 	// nextVersion increments-then-returns, so storing maxVersion makes the next
 	// issued LSN exactly max(observed)+1 — strictly past every replayed record.
@@ -295,6 +327,21 @@ func (s *Store) recover() error {
 			} else {
 				fi.ivs = kept
 			}
+		}
+	}
+
+	// Compact the cold log once the live set has drifted well below what the log
+	// holds: entries superseded by a later hydrate, buried by a tombstone or
+	// clipped by a truncate are dead weight the next recovery would replay again.
+	// Recovery is the only place the surviving set is known, and rewriting is
+	// atomic (temp + rename), so a crash here keeps the previous log.
+	// ponytail: compaction only at open — the log grows within one uptime only as
+	// fast as eviction marks new ranges cold, which is bounded by the local cap.
+	if live := liveColdEntries(indexByShard); len(coldLoaded) > 2*len(live)+coldCompactFloor {
+		if werr := s.rewriteCold(live); werr != nil {
+			// Non-fatal: a stale-but-valid log costs redundant replay, not
+			// correctness, and refusing to open would strand the whole share.
+			logf("journal: WARN cold log compaction failed, keeping the existing log: %v", werr)
 		}
 	}
 

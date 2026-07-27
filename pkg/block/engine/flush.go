@@ -101,28 +101,24 @@ func (bs *Store) DrainRollups(ctx context.Context) error {
 	return err
 }
 
-// ResetLocalState clears the local store's per-payload append-log state so
-// post-restore reads resolve purely through the restored CAS manifest.
-// The snapshot-restore orchestration calls this BEFORE the metadata Reset()
-// + Restore() (not after): clearing the overlay first leaves no dirty
-// intervals for a background rollup worker to flush into the freshly-restored
-// metadata, so a file modified in place after the snapshot is not served from
-// a stale append-log record overlaid on the restored CAS bytes.
-// SeedCold marks [offset, offset+length) of payloadID as remote-durable-but-not-
-// local so a subsequent read faults it in from the remote store rather than
-// zero-filling. Snapshot restore calls it (per restored FileChunk extent, remote
-// shares only) to re-arm cold reads after ResetLocalState wiped the local tier.
-// No-op when the local store has no remote-hydration support (e.g. the in-memory
-// test store), which the caller only hits on non-remote paths anyway.
-func (bs *Store) SeedCold(ctx context.Context, payloadID string, offset, length int64) error {
+// SeedCold marks payloadID's extents — each an {offset, length} pair — as
+// remote-durable-but-not-local so a subsequent read faults them in from the
+// remote store rather than zero-filling. Callers pass a whole file's extents at
+// once: the local tier persists the markers, and one durable write per file beats
+// one per extent when a caller is seeding an entire manifest. Snapshot restore
+// and the pre-journal upgrade both use it (remote-backed shares only) to arm cold
+// reads over a local tier that holds none of the bytes. No-op when the local store
+// has no remote-hydration support (e.g. the in-memory test store), which the
+// caller only hits on non-remote paths anyway.
+func (bs *Store) SeedCold(ctx context.Context, payloadID string, extents [][2]int64) error {
 	type coldSeeder interface {
-		SeedCold(ctx context.Context, id journal.FileID, offset, length int64) error
+		SeedCold(ctx context.Context, id journal.FileID, extents [][2]int64) error
 	}
 	cs, ok := bs.local.(coldSeeder)
 	if !ok {
 		return nil
 	}
-	return cs.SeedCold(ctx, journal.FileID(payloadID), offset, length)
+	return cs.SeedCold(ctx, journal.FileID(payloadID), extents)
 }
 
 // RestoreToVersion rewinds the local journal to a snapshot's version watermark
@@ -167,6 +163,13 @@ func (bs *Store) JournalVersion() uint64 {
 	return 0
 }
 
+// ResetLocalState drops every file's locally cached ranges so post-restore reads
+// resolve purely through the restored manifest. The snapshot-restore
+// orchestration calls it BEFORE the metadata Reset() + Restore(), not after:
+// clearing the local tier first leaves no dirty interval for a background rollup
+// worker to flush into the freshly-restored metadata, so a file modified in place
+// after the snapshot is never served from a stale local record overlaid on the
+// restored bytes.
 func (bs *Store) ResetLocalState(ctx context.Context) error {
 	if err := bs.enter(); err != nil {
 		return err
