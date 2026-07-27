@@ -80,7 +80,24 @@ func NetBIOSSafe(name string) string {
 }
 
 // MulticastInterfaces returns the interfaces suitable for multicast discovery:
-// up, multicast-capable, and not loopback. Empty when none qualify.
+// up, multicast-capable, not loopback, not point-to-point, and carrying an IPv4
+// address. Empty when none qualify.
+//
+// The last two conditions are what keep the responders quick. Both of them
+// announce by walking this list and sending once per interface, serialized
+// because the multicast egress interface is per-socket state, and each send is
+// capped by a write deadline rather than allowed to block forever. So every
+// interface that cannot carry the traffic still costs the full deadline before
+// the walk moves on. A host with VPN tunnels up shows this plainly: a Mac with
+// 23 "up, multicast, non-loopback" interfaces — six utun tunnels, awdl0, llw0,
+// the anpi/bridge/ap set — spent 4.5 seconds inside a single announce, which
+// delays the listener that starts after it and the shutdown that follows it.
+//
+// A point-to-point link is a tunnel with no LAN segment to be discovered on.
+// An interface with no IPv4 address cannot source these datagrams at all: both
+// responders speak IPv4 only (WS-Discovery advertises IPv4 XAddrs, mDNS binds
+// udp4 and joins the IPv4 group). Neither is a judgement call about which
+// networks matter — they are interfaces the packet provably cannot go out on.
 func MulticastInterfaces() []net.Interface {
 	all, err := net.Interfaces()
 	if err != nil {
@@ -88,18 +105,33 @@ func MulticastInterfaces() []net.Interface {
 	}
 	out := make([]net.Interface, 0, len(all))
 	for _, ifi := range all {
-		if ifi.Flags&net.FlagUp == 0 {
+		addrs, aerr := ifi.Addrs()
+		if aerr != nil {
 			continue
 		}
-		if ifi.Flags&net.FlagMulticast == 0 {
-			continue
+		if multicastEligible(ifi.Flags, addrs) {
+			out = append(out, ifi)
 		}
-		if ifi.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		out = append(out, ifi)
 	}
 	return out
+}
+
+// multicastEligible holds the rule itself, separated from enumerating the host
+// so it can be exercised against interface shapes this machine does not have.
+func multicastEligible(flags net.Flags, addrs []net.Addr) bool {
+	const required = net.FlagUp | net.FlagMulticast
+	if flags&required != required {
+		return false
+	}
+	if flags&(net.FlagLoopback|net.FlagPointToPoint) != 0 {
+		return false
+	}
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // AllHostIPs returns the host's non-loopback, non-link-local unicast IPs across
