@@ -1,6 +1,7 @@
 package output
 
 import (
+	"errors"
 	"io"
 
 	"github.com/olekukonko/tablewriter"
@@ -15,7 +16,16 @@ type TableRenderer interface {
 }
 
 // PrintTable writes data as a formatted table to the writer.
+//
+// A nil renderer is a bug in the calling command, but it must not take the
+// process down: reaching Headers() through a nil interface panics, so a `show`
+// command that forgot its renderer crashes the CLI with a stack trace instead of
+// printing anything. Report it as an error and let the command surface it like
+// any other failure.
 func PrintTable(w io.Writer, data TableRenderer) error {
+	if data == nil {
+		return errors.New("no table renderer for this resource; retry with -o json")
+	}
 	table := tablewriter.NewWriter(w)
 	table.SetHeader(data.Headers())
 
