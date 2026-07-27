@@ -169,6 +169,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Initialize runtime from database (loads metadata stores and shares)
 	rt, err := runtime.InitializeFromStore(ctx, cpStore)
 	if err != nil {
+		// A metadata store whose format this build cannot read gets the same
+		// exit code and directive as a block store in that state.
+		if stop := handleFormatMismatch(err, os.Stderr); stop {
+			return nil
+		}
 		return fmt.Errorf("failed to initialize runtime: %w", err)
 	}
 
@@ -822,24 +827,41 @@ func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 	return smbAdapter, nil
 }
 
+// handleFormatMismatch prints the operator directive and exits 78 when err
+// reports on-disk state this build cannot read. Returns true when it did, so
+// the caller stops.
+//
+// Both store-opening paths must route through here. Metadata stores open in
+// InitializeFromStore and block stores in LoadSharesFromStore; a mismatch on
+// either one is the same condition to an operator and deserves the same exit
+// code and the same directive, not a bare cobra error.
+//
+// Production code MUST go through this helper — direct termination from
+// runStart would bypass the exitFn indirection the test depends on.
+func handleFormatMismatch(err error, stderr *os.File) bool {
+	if err == nil {
+		return false
+	}
+	if !errors.Is(err, block.ErrFutureFormat) && !errors.Is(err, fs.ErrLegacyLocalFormat) {
+		return false
+	}
+	_, _ = fmt.Fprintln(stderr, formatMismatchDirective(err))
+	exitFn(EX_CONFIG)
+	// Unreachable in production (exitFn == os.Exit terminates).
+	// Defensive: in-process tests stub exitFn to NOT terminate.
+	return true
+}
+
 // handleLoadSharesError centralizes the share-loading error policy so
 // the in-process boot-guard test can exercise the exit-78 path without
 // rebuilding the full daemon setup. Returns true when the caller should
-// stop runStart (legacy-layout branch hit; exitFn called); false
-// otherwise (no error, or a non-legacy warn-and-continue).
-//
-// Production code MUST go through this helper — direct termination
-// from runStart would bypass the exitFn indirection the test depends
-// on.
+// stop runStart (format-mismatch branch hit; exitFn called); false
+// otherwise (no error, or a warn-and-continue).
 func handleLoadSharesError(err error, stderr *os.File) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, block.ErrFutureFormat) || errors.Is(err, fs.ErrLegacyLocalFormat) {
-		_, _ = fmt.Fprintln(stderr, formatMismatchDirective(err))
-		exitFn(EX_CONFIG)
-		// Unreachable in production (exitFn == os.Exit terminates).
-		// Defensive: in-process tests stub exitFn to NOT terminate.
+	if handleFormatMismatch(err, stderr) {
 		return true
 	}
 	logger.Warn("Failed to load some shares", "error", err)
@@ -873,10 +895,13 @@ func emitAdminPassword(password string) {
 }
 
 // formatMismatchDirective renders the multi-line operator directive printed
-// when a share cannot be opened because its on-disk format does not match this
-// build. The wrapped error is embedded verbatim so the operator sees the share
-// name, the offending path and the two versions without fragile substring
+// when a store cannot be opened because its on-disk format does not match this
+// build. The wrapped error is embedded verbatim so the operator sees which
+// store, the offending path and the two versions without fragile substring
 // extraction.
+//
+// It covers metadata stores and block stores alike, so the text says "state"
+// rather than naming either: the wrapped error already identifies which one.
 //
 // The two directions need different advice: state from a newer release is a
 // downgrade the operator can undo by going forward again, while a pre-journal
@@ -885,7 +910,7 @@ func formatMismatchDirective(err error) string {
 	if errors.Is(err, block.ErrFutureFormat) {
 		return fmt.Sprintf(`Refusing to start: %s.
 
-This share was written by a newer release of DittoFS. Opening it with this
+This state was written by a newer release of DittoFS. Opening it with this
 build would serve the stored files as zeros rather than fail, so the daemon
 stops instead.
 
