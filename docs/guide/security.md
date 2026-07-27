@@ -170,15 +170,15 @@ Signing behavior:
 - **Required** (default `false`): when `true`, the server rejects unsigned messages from
   established sessions.
 
-Configure via `dfsctl`:
+Configure via `dfsctl`, where the two states above are selected by one tri-state flag
+(`disabled` | `enabled` | `required`):
 
 ```bash
-./dfsctl adapter create --type smb --config '{
-  "signing": {
-    "enabled": true,
-    "required": true
-  }
-}'
+# Advertise signing and reject unsigned messages
+./dfsctl adapter settings smb update --signing required
+
+# Advertise signing but still accept unsigned messages (the default)
+./dfsctl adapter settings smb update --signing enabled
 ```
 
 **Recommendation:** set `required: true` for all production deployments to prevent tampering even

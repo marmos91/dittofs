@@ -867,7 +867,7 @@ func createLocalStore(config LocalStoreConfig) (local.LocalStore, error) {
 Users can then create your store via CLI:
 
 ```bash
-./dfsctl store block add --kind local --name my-store --type mylocal \
+./dfsctl store block local add --name my-store --type mylocal \
   --config '{"path":"/data/blocks"}'
 ```
 

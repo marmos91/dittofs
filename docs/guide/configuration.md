@@ -505,7 +505,7 @@ dfsctl store block remote add --name r1 --type s3 \
   --parallel-uploads 32          # fixed window of 32; 0 (default) = adaptive
 ```
 
-`dfsctl store block remote edit --name r1 --parallel-uploads 0` returns a remote
+`dfsctl store block remote edit r1 --parallel-uploads 0` returns a remote
 to adaptive mode. Observe the live window via the Prometheus gauge
 `dittofs_datapath_upload_window` (target concurrency) alongside
 `dittofs_datapath_uploads_inflight` (actual in-flight uploads); see
@@ -686,7 +686,7 @@ Add a `compression` block to the remote store's `config` JSON when
 creating it:
 
 ```bash
-./dfsctl store block add --kind remote --name prod-s3 --type s3 \
+./dfsctl store block remote add --name prod-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"dfs-production","compression":{"algo":"zstd"}}'
 ```
 
@@ -1253,7 +1253,7 @@ dfsctl user create --username bob --email bob@example.com --groups editors,viewe
 # Inspect and edit
 dfsctl user list
 dfsctl user get alice
-dfsctl user update alice --email alice@example.com
+dfsctl user edit alice --email alice@example.com
 dfsctl user remove alice
 
 # Passwords
@@ -2355,7 +2355,7 @@ Then create stores, shares, and enable adapters via CLI:
 
 ```bash
 ./dfsctl store metadata add --name default --type memory
-./dfsctl store block add --kind local --name default --type fs \
+./dfsctl store block local add --name default --type fs \
   --config '{"path":"/tmp/dittofs-blocks"}'
 ./dfsctl share create --name /export --metadata default --local default
 ./dfsctl adapter enable nfs
@@ -2373,7 +2373,7 @@ logging:
 
 ```bash
 ./dfsctl store metadata add --name dev-memory --type memory
-./dfsctl store block add --kind local --name dev-local --type memory
+./dfsctl store block local add --name dev-local --type memory
 ./dfsctl share create --name /export --metadata dev-memory --local dev-local
 ./dfsctl adapter enable nfs --port 12049
 ```
@@ -2406,9 +2406,9 @@ Then create stores, shares, and enable adapters via CLI:
 # Create stores
 ./dfsctl store metadata add --name prod-badger --type badger \
   --config '{"path":"/var/lib/dittofs/metadata"}'
-./dfsctl store block add --kind local --name prod-local --type fs \
+./dfsctl store block local add --name prod-local --type fs \
   --config '{"path":"/var/lib/dittofs/blocks"}'
-./dfsctl store block add --kind remote --name prod-s3 --type s3 \
+./dfsctl store block remote add --name prod-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"dfs-production"}'
 
 # Create share and grant permissions
@@ -2431,9 +2431,9 @@ Different shares using different storage backends:
   --config '{"path":"/var/lib/dittofs/metadata"}'
 
 # Create block stores
-./dfsctl store block add --kind local --name local-cache --type fs \
+./dfsctl store block local add --name local-cache --type fs \
   --config '{"path":"/var/lib/dittofs/blocks"}'
-./dfsctl store block add --kind remote --name cloud-s3 --type s3 \
+./dfsctl store block remote add --name cloud-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"my-dfs-bucket"}'
 
 # Create shares with different backends
@@ -2460,11 +2460,11 @@ Multiple shares sharing the same metadata database:
   --config '{"path":"/var/lib/dittofs/shared-metadata"}'
 
 # Create block stores
-./dfsctl store block add --kind local --name local-cache --type fs \
+./dfsctl store block local add --name local-cache --type fs \
   --config '{"path":"/var/lib/dittofs/blocks"}'
-./dfsctl store block add --kind remote --name s3-production --type s3 \
+./dfsctl store block remote add --name s3-production --type s3 \
   --config '{"region":"us-east-1","bucket":"prod-bucket"}'
-./dfsctl store block add --kind remote --name s3-archive --type s3 \
+./dfsctl store block remote add --name s3-archive --type s3 \
   --config '{"region":"us-east-1","bucket":"archive-bucket"}'
 
 # Both shares use the same metadata store, different remote stores

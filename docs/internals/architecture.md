@@ -799,9 +799,9 @@ Stores, shares, and adapters are managed at runtime via `dfsctl` (persisted in t
   --config '{"path":"/data/metadata"}'
 
 # Create block stores (local per-share, remote shared across shares)
-./dfsctl store block add --kind local --name local-cache --type fs \
+./dfsctl store block local add --name local-cache --type fs \
   --config '{"path":"/data/cache"}'
-./dfsctl store block add --kind remote --name s3-remote --type s3 \
+./dfsctl store block remote add --name s3-remote --type s3 \
   --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
 # Create shares referencing stores by name (each gets its own BlockStore)
@@ -883,7 +883,7 @@ No custom code required - configure via CLI:
 ```bash
 # Create stores
 ./dfsctl store metadata add --name default-meta --type memory  # or badger, postgres
-./dfsctl store block add --kind local --name default-local --type fs \
+./dfsctl store block local add --name default-local --type fs \
   --config '{"path":"/data/blocks"}'
 
 # Create share referencing stores

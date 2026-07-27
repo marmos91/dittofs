@@ -126,7 +126,7 @@ go build -o dfs cmd/dfs/main.go
 go build -o dfsctl cmd/dfsctl/main.go
 
 # 2. Initialize config (first time only)
-./dfs config init
+./dfs init
 
 # 3. Start DittoFS
 ./dfs start

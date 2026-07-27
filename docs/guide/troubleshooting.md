@@ -288,7 +288,7 @@ ls: cannot access 'file.txt': Stale file handle
    ```bash
    ./dfsctl store metadata add --name persistent --type badger \
      --config '{"path":"/var/lib/dittofs/metadata"}'
-   ./dfsctl store block add --kind local --name default --type memory
+   ./dfsctl store block local add --name default --type memory
    ./dfsctl share create --name /export --metadata persistent --local default
    ```
 
