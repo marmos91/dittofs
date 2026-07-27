@@ -456,7 +456,14 @@ func collectGarbage(
 	// Destroy, not Close: the mark set is scratch for this run only, so the run
 	// directory goes with it whether the run succeeded or failed. Leaving it
 	// behind grows the local store without bound.
-	defer func() { _ = gcs.Destroy() }()
+	// A failure here leaves the directory on disk, so say so: the next sweep
+	// reclaims it an hour later, but silence would make the growth this
+	// removes look like it came back on its own.
+	defer func() {
+		if err := gcs.Destroy(); err != nil {
+			slog.Warn("GC: run dir cleanup failed", "run_id", runID, "err", err)
+		}
+	}()
 
 	snapshotTime := time.Now()
 	slog.Info("GC: mark phase starting",
