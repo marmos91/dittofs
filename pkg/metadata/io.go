@@ -455,6 +455,16 @@ func (s *Service) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *
 	}
 
 	commit := func(tx Transaction) error {
+		// The narrow applier performs exactly this update — grow-only size,
+		// stamped mtime/ctime, optional setuid/setgid clear — in a single
+		// statement. It always stamps the timestamps, so a state carrying no
+		// recorded mtime (SetCachedFile with a size but no write time) still
+		// takes the read-modify-write path below rather than stamping zero.
+		if applier, ok := tx.(DataWriteApplier); ok && !state.LastMtime.IsZero() {
+			_, err := applier.ApplyDataWrite(ctx.Context, handle, state.MaxSize, state.LastMtime, state.ClearSetuidSetgid)
+			return err
+		}
+
 		file, err := tx.GetFile(ctx.Context, handle)
 		if err != nil {
 			return err
