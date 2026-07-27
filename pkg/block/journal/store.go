@@ -192,6 +192,12 @@ type Store struct {
 
 	closed atomic.Bool
 
+	// coldMu guards the cold log's append handle (see cold.go). The log records
+	// every cold interval so a restart still knows those ranges are
+	// remote-resident rather than POSIX holes.
+	coldMu sync.Mutex
+	coldFD *os.File
+
 	// gcCancel/gcDone govern the background dead-ratio GC loop started by
 	// Open: cancel stops the loop, and Close waits on gcDone so no repack is
 	// still in flight when segment files are closed underneath it.
@@ -282,7 +288,7 @@ func (s *Store) Close() error {
 		s.gcCancel()
 		<-s.gcDone
 	}
-	var firstErr error
+	firstErr := s.closeCold()
 	for _, sh := range s.shards {
 		if sh == nil {
 			continue
@@ -356,28 +362,46 @@ func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byt
 // SeedCold registers a byte range as remote-durable-but-not-local: a read of it
 // reports cold so the engine hydrates it from the remote store instead of
 // zero-filling. Snapshot restore seeds the restored FileChunk manifest's extents
-// this way after ResetLocalState wiped the local tier — the bytes live in remote,
-// addressed by the restored manifest. The caller (restore, remote-backed shares
+// this way after the local tier was wiped, and an upgrade that archives a
+// pre-journal layout aside seeds the surviving manifest the same way — the bytes
+// live in remote, addressed by that manifest. The caller (remote-backed shares
 // only) guarantees the range is remotely backed; a hydrate replaces the seeded
 // cold interval with the fetched warm bytes on first read.
-func (s *Store) SeedCold(_ context.Context, id FileID, offset, length int64) error {
+//
+// The markers are persisted before they are indexed: an in-memory-only seed would
+// be lost on the next restart, turning the ranges back into holes that read as
+// zeros with no fetch. Extents are taken a whole file at a time so seeding a
+// manifest costs one fsync per file rather than one per extent.
+func (s *Store) SeedCold(_ context.Context, id FileID, extents [][2]int64) error {
 	if s.closed.Load() {
 		return errClosed
 	}
-	if length <= 0 {
+	entries := make([]coldEntry, 0, len(extents))
+	for _, e := range extents {
+		if e[1] <= 0 {
+			continue
+		}
+		entries = append(entries, coldEntry{id: id, fileOff: e[0], length: e[1], version: s.nextVersion()})
+	}
+	if len(entries) == 0 {
 		return nil
+	}
+	if err := s.appendCold(entries); err != nil {
+		return err
 	}
 	sh := s.shardFor(id)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	fi := sh.indexFor(id)
-	fi.insert(interval{
-		fileOff: offset,
-		length:  length,
-		version: s.nextVersion(),
-		synced:  true,
-		cold:    true,
-	})
+	for _, e := range entries {
+		fi.insert(interval{
+			fileOff: e.fileOff,
+			length:  e.length,
+			version: e.version,
+			synced:  true,
+			cold:    true,
+		})
+	}
 	return nil
 }
 

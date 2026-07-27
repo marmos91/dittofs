@@ -3089,14 +3089,16 @@ func applyDurableOverride(store any, config map[string]any, label, shareName str
 // copy of the data — after a snapshot restore wiped the local tier, or after a
 // pre-journal upgrade archived the legacy local layout aside. Remote-backed
 // shares only (the caller gates on that); the cold fetch it arms is
-// BLAKE3-verified. One ListFileChunks per payload — O(chunks), acceptable for a
-// rare control-plane / startup path.
+// BLAKE3-verified. One ListFileChunks and one SeedCold per payload — O(chunks),
+// acceptable for a rare control-plane / startup path, and seeding a whole file at
+// once keeps the local tier's durable write to one per file.
 func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metadata.Store) error {
 	return metaStore.EnumeratePayloads(ctx, func(payloadID string) error {
 		rows, err := metaStore.ListFileChunks(ctx, payloadID)
 		if err != nil {
 			return fmt.Errorf("list manifest for %s: %w", payloadID, err)
 		}
+		extents := make([][2]int64, 0, len(rows))
 		for _, row := range rows {
 			if row == nil {
 				continue
@@ -3105,9 +3107,10 @@ func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metad
 			if !ok {
 				continue
 			}
-			if err := bs.SeedCold(ctx, payloadID, int64(off), int64(row.DataSize)); err != nil {
-				return fmt.Errorf("seed cold %s: %w", row.ID, err)
-			}
+			extents = append(extents, [2]int64{int64(off), int64(row.DataSize)})
+		}
+		if err := bs.SeedCold(ctx, payloadID, extents); err != nil {
+			return fmt.Errorf("seed cold %s: %w", payloadID, err)
 		}
 		return nil
 	})

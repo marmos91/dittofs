@@ -192,12 +192,41 @@ func evictable(seg *segmentMeta) bool {
 		seg.syncedRecords.Load() == seg.records.Load()
 }
 
-// evictSegment removes one claimed sealed segment. Under the shard lock it
-// rewrites every interval-tree entry backed by the segment to a cold marker — so
-// a later read of that range fetches from the remote store instead of seeing a
-// false POSIX hole, and DataExtents still reports the range as present — then
-// retires the segment. Caller must have claimed seg.busy.
+// evictSegment removes one claimed sealed segment. Every interval-tree entry
+// backed by the segment becomes a cold marker — so a later read of that range
+// fetches from the remote store instead of seeing a false POSIX hole, and
+// DataExtents still reports the range as present — and only then is the segment
+// retired. Caller must have claimed seg.busy.
+//
+// The markers are persisted to the cold log FIRST, while the segment is still on
+// disk: they are the only remaining record that those ranges hold data, so a
+// crash between marking and unlinking must not be able to lose them. Persisting
+// first can at worst leave a marker for bytes that are still local (the eviction
+// did not complete), which costs a needless remote fetch — the opposite order
+// would serve zeros.
 func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (int64, error) {
+	sh.mu.Lock()
+	var entries []coldEntry
+	for id, fi := range sh.index {
+		for k := range fi.ivs {
+			if fi.ivs[k].loc.SegmentID == seg.id && !fi.ivs[k].cold {
+				entries = append(entries, coldEntry{
+					id:      id,
+					fileOff: fi.ivs[k].fileOff,
+					length:  fi.ivs[k].length,
+					version: fi.ivs[k].version,
+				})
+			}
+		}
+	}
+	sh.mu.Unlock()
+
+	if err := s.appendCold(entries); err != nil {
+		// Without a durable marker the range would come back from a restart as a
+		// hole, so keep the segment (and its bytes) instead of evicting blind.
+		return 0, err
+	}
+
 	sh.mu.Lock()
 	for _, fi := range sh.index {
 		for k := range fi.ivs {
