@@ -915,7 +915,7 @@ build would serve the stored files as zeros rather than fail, so the daemon
 stops instead.
 
 Upgrades are one-way. To recover, either:
-  - reinstall the release that wrote this share and start again, or
+  - reinstall the release that wrote this state and start again, or
   - restore the snapshot taken before the upgrade.
 
 No data has been modified.`, err)
