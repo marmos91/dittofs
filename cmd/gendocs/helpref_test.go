@@ -299,8 +299,9 @@ func TestHelpTextCommandReferences(t *testing.T) {
 }
 
 // sourceRoot is the repository root relative to this package's directory, which
-// is where the test binary runs.
-const sourceRoot = "../.."
+// is where the test binary runs. filepath.Clean gives it the host separator so
+// the walk root compares and trims equal to the paths WalkDir reports.
+var sourceRoot = filepath.Clean("../..")
 
 // TestSourceStringCommandReferences checks the command references in log lines,
 // error messages and any other string literal in the tree. A message that tells
@@ -353,7 +354,7 @@ func TestSourceStringCommandReferences(t *testing.T) {
 			if uerr != nil {
 				return true
 			}
-			where := filepath.ToSlash(strings.TrimPrefix(path, sourceRoot+"/")) + ":" +
+			where := filepath.ToSlash(strings.TrimPrefix(path, sourceRoot+string(filepath.Separator))) + ":" +
 				strconv.Itoa(fset.Position(lit.Pos()).Line)
 			for _, inv := range findInvocations(text, where) {
 				problems = append(problems, checkInvocation(inv)...)
