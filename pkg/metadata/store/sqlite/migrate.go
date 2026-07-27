@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata/store/sqlite/migrations"
 )
 
@@ -25,6 +26,13 @@ import (
 // registration while keeping the migrations file-based and versioned.
 func runMigrations(ctx context.Context, db *sql.DB, log *slog.Logger) error {
 	log.Info("Running database migrations...")
+
+	// Migrating a database that is already ahead of this build is not a no-op
+	// worth reporting as "up to date" — refuse it here too, so the manual
+	// migrate path fails as loudly as the open path.
+	if err := checkFormatVersion(ctx, db); err != nil {
+		return err
+	}
 
 	if _, err := db.ExecContext(ctx,
 		`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`,
@@ -61,6 +69,57 @@ func runMigrations(ctx context.Context, db *sql.DB, log *slog.Logger) error {
 		log.Info("No migrations to apply (database is up to date)")
 	} else {
 		log.Info("Migrations completed successfully", "applied", count)
+	}
+	return nil
+}
+
+// checkFormatVersion refuses to open a database migrated past what this build
+// knows how to run against.
+//
+// schema_migrations already records every applied version, so the newest
+// applied row versus the newest embedded migration is the whole comparison — no
+// second stamp is needed. A row above the embedded ceiling means a newer
+// release migrated this database, and its migrations may have dropped or
+// renamed columns this build's queries still name.
+//
+// Without the check that database opens cleanly (runMigrations has nothing to
+// apply, so it reports "up to date") and then fails query by query with raw SQL
+// errors, long after startup. This is a safety check rather than a migration,
+// so it runs on every open regardless of AutoMigrate — the default-off
+// configuration is precisely the one that otherwise inspects nothing at all.
+func checkFormatVersion(ctx context.Context, db *sql.DB) error {
+	var tables int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`,
+	).Scan(&tables); err != nil {
+		return fmt.Errorf("probe schema_migrations: %w", err)
+	}
+	if tables == 0 {
+		// A database no migration has ever touched; runMigrations creates the
+		// table and brings it to the embedded ceiling.
+		return nil
+	}
+
+	var stored sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&stored); err != nil {
+		return fmt.Errorf("read schema_migrations: %w", err)
+	}
+	if !stored.Valid {
+		return nil
+	}
+
+	files, err := upMigrationFiles()
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		return nil
+	}
+	newest := files[len(files)-1].version
+
+	if stored.Int64 > int64(newest) {
+		return fmt.Errorf("%w: metadata database is at schema version %d, this build knows up to version %d",
+			block.ErrFutureFormat, stored.Int64, newest)
 	}
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/block/journal"
@@ -113,6 +114,14 @@ func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileCh
 			return nil, err
 		}
 		if legacy {
+			// The archive step rewrites the share's on-disk shape for good: the
+			// previous release looks for blobs/+logs/ where they no longer are
+			// and opens an empty journal, which serves zeros rather than
+			// failing. Say so before it happens, loudly enough to be found in a
+			// log after the fact, but do not block — the daemon must come up
+			// unattended.
+			logger.Warn("local store: migrating a pre-journal layout — ONE-WAY, the previous release cannot read the result; snapshot this directory before proceeding",
+				"dir", dir)
 			if err := archiveLegacyLayout(dir); err != nil {
 				return nil, err
 			}
@@ -136,7 +145,15 @@ func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileCh
 		EvictMaxWait:  opts.BackpressureMaxWait,
 		ChunkParams:   opts.ChunkParams,
 	}
-	js, err := journal.Open(filepath.Join(dir, "journal"), cfg, nil, journal.SystemClock())
+	// Refuse a journal directory a newer release wrote before touching it: this
+	// binary would scan only the state it knows about and read everything the
+	// newer format holds elsewhere as holes. An unstamped directory predates
+	// stamping and is adopted here, so every subsequent open is guarded.
+	journalDir := filepath.Join(dir, "journal")
+	if err := journal.CheckFormat(journalDir); err != nil {
+		return nil, err
+	}
+	js, err := journal.Open(journalDir, cfg, nil, journal.SystemClock())
 	if err != nil {
 		return nil, err
 	}

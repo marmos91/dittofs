@@ -2,6 +2,7 @@ package badger
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	badger "github.com/dgraph-io/badger/v4"
 	"github.com/oklog/ulid/v2"
 
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
 )
@@ -357,6 +359,14 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		return nil, fmt.Errorf("failed to open BadgerDB at %s: %w", config.DBPath, err)
 	}
 
+	// Refuse a database a newer release wrote before anything reads or writes
+	// through it — a format this build does not understand must fail the open,
+	// not surface as missing data once the store is already serving.
+	if err := ensureFormatVersion(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	// Bootstrap the engine-persistent store_id before serving requests.
 	// ensureStoreID is idempotent — first open writes a fresh ULID,
 	// subsequent opens read the existing value.
@@ -513,6 +523,71 @@ func (s *BadgerMetadataStore) syncIfRelaxed() error {
 	}
 	s.inlineSyncs.Add(1)
 	return s.db.Sync()
+}
+
+// storeFormatVersion is the on-disk format version this build writes and can
+// read. Bump it in any release that changes where existing data lives — moving
+// a field out of a record into a sibling key, renaming a prefix, retiring a
+// key. Those changes are invisible to an older binary: it decodes the record it
+// still recognizes, finds nothing where the moved data used to be, and serves a
+// file with the right size and no content. The stamp is what turns that silent
+// wrong answer into a refusal to open.
+//
+// Adding a NEW key or a new self-describing record field does not need a bump —
+// an older binary skips what it does not know and loses nothing it had.
+const storeFormatVersion uint32 = 1
+
+// formatVersionKey is the BadgerDB key holding storeFormatVersion.
+const formatVersionKey = prefixFormat + "store"
+
+// ensureFormatVersion refuses to open a database a newer release wrote, and
+// stamps the current version otherwise.
+//
+// No stamp means the database predates stamping; it is accepted and stamped so
+// every later open is guarded. A stamp above storeFormatVersion means a newer
+// release owns this data and may have put it in keys this build never reads, so
+// the open fails with block.ErrFutureFormat rather than serving whatever is
+// still legible. A stamp below is raised to the current version: this build is
+// about to write records in its own layout, so the database belongs to it from
+// here on and a downgrade past this point is exactly what the guard must catch.
+func ensureFormatVersion(db *badger.DB) error {
+	var stored uint32
+	err := db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte(formatVersionKey))
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error {
+			if len(v) != 4 {
+				return fmt.Errorf("malformed value: %d bytes, want 4", len(v))
+			}
+			stored = binary.BigEndian.Uint32(v)
+			return nil
+		})
+	})
+	if err != nil {
+		return fmt.Errorf("read %s: %w", formatVersionKey, err)
+	}
+
+	if stored > storeFormatVersion {
+		return fmt.Errorf("%w: metadata store is format v%d, this build reads up to v%d",
+			block.ErrFutureFormat, stored, storeFormatVersion)
+	}
+	if stored == storeFormatVersion {
+		return nil
+	}
+
+	var buf [4]byte
+	binary.BigEndian.PutUint32(buf[:], storeFormatVersion)
+	if err := db.Update(func(txn *badger.Txn) error {
+		return txn.Set([]byte(formatVersionKey), buf[:])
+	}); err != nil {
+		return fmt.Errorf("write %s: %w", formatVersionKey, err)
+	}
+	return nil
 }
 
 // storeIDKey is the BadgerDB key for the engine-persistent store identifier.

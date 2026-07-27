@@ -26,6 +26,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 )
 
@@ -103,6 +104,10 @@ func setupLegacyLocalOnlyMigration(dir string) (*legacyMigration, error) {
 		return nil, refuseLegacyLocalOnly(dir, fmt.Sprintf("%s: %q", reason, badLog))
 	}
 
+	logger.Warn("pre-journal local-only layout detected: archiving it aside and re-ingesting its append logs "+
+		"into the journal. The conversion is one-way — the previous release cannot read the result. "+
+		"Snapshot the store directory before upgrading, and restore that snapshot to go back",
+		"dir", dir)
 	if err := archiveLegacyLayout(dir); err != nil {
 		return nil, err
 	}

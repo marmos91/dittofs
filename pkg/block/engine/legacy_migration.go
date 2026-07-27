@@ -42,6 +42,11 @@ import (
 // standalone locators plus one remote LIST page. Re-running against a
 // migrated share is a no-op.
 
+// migrationProgressInterval is how often the migration reports what it has done
+// so far. Long enough that a small share logs once, short enough that a large
+// one never looks wedged.
+const migrationProgressInterval = 5 * time.Second
+
 // legacyChunkFileMigrator is implemented by the fs-backed local store; the
 // memory local store has no per-chunk file layout and skips Phase L.
 type legacyChunkFileMigrator interface {
@@ -119,6 +124,10 @@ func (m *Syncer) migrateLegacyCASRemote(ctx context.Context) error {
 		if rbs == nil || committer == nil {
 			return fmt.Errorf("cas→blocks migration: %d standalone chunks found but the block substrate is not wired", len(standalone))
 		}
+		logger.Warn("standalone cas chunks detected: re-packing them into blocks and purging the cas/ namespace. "+
+			"The conversion is one-way — the previous release cannot read the re-packed objects. "+
+			"Snapshot the remote bucket before upgrading, and restore that snapshot to go back",
+			"chunks", len(standalone))
 		if err := m.repackStandaloneChunks(ctx, legacy, hasLegacy, sealer, committer, standalone); err != nil {
 			return err
 		}
@@ -204,9 +213,23 @@ func (m *Syncer) repackStandaloneChunks(
 		return nil
 	}
 
-	for _, h := range standalone {
+	// Each chunk costs a remote read, so the loop is logged on a timer: a small
+	// share prints the start line and the completion summary, a large one keeps
+	// reporting instead of leaving the operator unable to tell a slow migration
+	// from a wedged one.
+	started := time.Now()
+	lastLog := started
+	logger.Info("cas→blocks migration: re-packing standalone chunks", "chunks", len(standalone))
+
+	for i, h := range standalone {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if time.Since(lastLog) >= migrationProgressInterval {
+			lastLog = time.Now()
+			logger.Info("cas→blocks migration: re-packing standalone chunks",
+				"chunks_read", i, "chunks_repacked", repacked,
+				"elapsed", time.Since(started).Round(time.Second))
 		}
 		data, err := m.migrationChunkBytes(ctx, legacy, hasLegacy, h)
 		if err != nil {

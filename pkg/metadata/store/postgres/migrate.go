@@ -5,13 +5,17 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
+	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver for database/sql
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres/migrations"
 )
 
@@ -92,6 +96,81 @@ func runMigrations(ctx context.Context, connString string, logger *slog.Logger) 
 		}
 	}
 
+	return nil
+}
+
+// newestEmbeddedVersion returns the highest version among the embedded
+// `NNNNNN_*.up.sql` migrations — the newest schema this build ships.
+func newestEmbeddedVersion() (int64, error) {
+	entries, err := migrations.FS.ReadDir(".")
+	if err != nil {
+		return 0, fmt.Errorf("read migrations dir: %w", err)
+	}
+	var newest int64
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".up.sql") {
+			continue
+		}
+		idx := strings.IndexByte(name, '_')
+		if idx <= 0 {
+			continue
+		}
+		v, perr := strconv.ParseInt(name[:idx], 10, 64)
+		if perr != nil {
+			continue
+		}
+		if v > newest {
+			newest = v
+		}
+	}
+	return newest, nil
+}
+
+// checkFormatVersion refuses to open a database migrated past what this build
+// knows how to run against.
+//
+// golang-migrate does surface this today, but only by accident and only
+// halfway: m.Up() fails with "file does not exist" because the recorded version
+// has no counterpart in the embedded source, and that only happens when
+// AutoMigrate is on — which it is not by default. The default configuration
+// therefore inspects nothing, opens a future schema happily, and then fails
+// query by query with raw SQL errors about columns a later migration dropped or
+// renamed. Reading the recorded version directly makes the failure explicit,
+// immediate, and independent of whether migrations are configured to run.
+func checkFormatVersion(ctx context.Context, pool *pgxpool.Pool) error {
+	var exists bool
+	if err := pool.QueryRow(ctx,
+		`SELECT to_regclass('schema_migrations') IS NOT NULL`,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("probe schema_migrations: %w", err)
+	}
+	if !exists {
+		// A database no migration has ever touched; golang-migrate creates the
+		// table and brings it to the embedded ceiling.
+		return nil
+	}
+
+	var stored *int64
+	if err := pool.QueryRow(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&stored); err != nil {
+		return fmt.Errorf("read schema_migrations: %w", err)
+	}
+	if stored == nil {
+		return nil
+	}
+
+	newest, err := newestEmbeddedVersion()
+	if err != nil {
+		return err
+	}
+	if newest == 0 {
+		return nil
+	}
+
+	if *stored > newest {
+		return fmt.Errorf("%w: metadata database is at schema version %d, this build knows up to version %d",
+			block.ErrFutureFormat, *stored, newest)
+	}
 	return nil
 }
 
