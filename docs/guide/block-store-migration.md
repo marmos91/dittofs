@@ -39,12 +39,12 @@ objects). Restore connectivity and start again.
 
 ## Path-indexed `.blk` (≤ v0.15): migrate with an older release first
 
-The offline `dfs migrate-to-cas` tool shipped through **v0.21** and has
+The offline `migrate-to-cas` command shipped through **v0.21** and has
 been removed. A current server still refuses to start against a `.blk`
 layout (exit code 78) — but the directive now is:
 
 1. Install dittofs v0.21 (or any v0.16–v0.21 release).
-2. Stop the server and run `dfs migrate-to-cas` per that release's
+2. Stop the server and run that release's `migrate-to-cas` per its
    documentation (idempotent, resumable, per-share `.cas-migrated-v1`
    sentinel on success).
 3. Upgrade to the current release. The automatic cas→blocks conversion
