@@ -6,10 +6,12 @@
 // file blocks would OOM if we held the entire live set in a Go map.
 //
 // Each run creates an `incomplete.flag` marker on entry and removes
-// it via MarkComplete() on success. CleanStaleGCStateDirs reclaims
-// any directory whose marker is still present (a crashed prior run).
-// Mark is idempotent; we do not resume a crashed run, we discard and
-// start fresh.
+// it via MarkComplete() on success. Mark is idempotent; we do not
+// resume a crashed run, we discard and start fresh — so a run's
+// directory is worthless the moment the run ends, and Destroy() removes
+// it. CleanStaleGCStateDirs is the backstop for directories no Destroy
+// ever reached: a crashed run (marker still present) or one left behind
+// by a release that did not clean up after itself.
 //
 // last-run.json is written under the gc-state root after a
 // successful run with aggregate counts that the operator and `dfsctl
@@ -32,6 +34,17 @@ import (
 const (
 	gcStateIncompleteFlag = "incomplete.flag"
 	gcStateLastRunFile    = "last-run.json"
+
+	// gcStateCompletedTTL is how long a completed (unflagged) run directory
+	// must have sat untouched before the backstop sweep reclaims it. Destroy
+	// removes a run's own directory, so anything the sweep finds unflagged was
+	// left by an older release or a process that died between MarkComplete and
+	// Destroy. The delay keeps the sweep off a directory another process may
+	// still be sweeping with: same-process runs serialize on the GC root lock,
+	// but cross-process safety needs an OS-level flock this package does not
+	// have yet, and an hour is far longer than the window between MarkComplete
+	// and the end of a sweep.
+	gcStateCompletedTTL = time.Hour
 )
 
 // GCState persists the GC mark-phase live set to disk under a per-runID
@@ -201,11 +214,29 @@ func (g *GCState) Close() error {
 // writes last-run.json under the parent rootDir) use this for diagnostics.
 func (g *GCState) RunDir() string { return g.runDir }
 
-// CleanStaleGCStateDirs removes any per-runID directory under rootDir
-// whose incomplete.flag still exists. Mark is idempotent so we
-// do not resume; we discard and start fresh. Completed dirs (no flag)
-// are left alone — the caller decides retention. The last-run.json file
-// at rootDir's top level is also left alone.
+// Destroy releases the Badger handle and removes the run directory. The mark
+// set is scratch space for one run — a crashed run is discarded rather than
+// resumed, so there is nothing to keep once the run ends, whether it succeeded
+// or failed. Without this the directories accumulate for the life of the
+// deployment; one field box reached 7.2 GiB of them. The run summary the
+// operator actually reads lives in last-run.json at the parent root, which is
+// untouched.
+func (g *GCState) Destroy() error {
+	err := g.Close()
+	if rerr := os.RemoveAll(g.runDir); rerr != nil && err == nil {
+		err = fmt.Errorf("gcstate: remove run dir %s: %w", g.runDir, rerr)
+	}
+	return err
+}
+
+// CleanStaleGCStateDirs reclaims per-runID directories under rootDir that no
+// run still needs: one whose incomplete.flag survives (a crashed run — mark is
+// idempotent, so we discard rather than resume), and one with no flag that has
+// sat untouched for gcStateCompletedTTL (a completed run whose Destroy never
+// ran, either because the process died first or because it predates Destroy).
+// A recently-completed directory is left alone in case another process is still
+// sweeping with it. The last-run.json file at rootDir's top level is never
+// touched.
 func CleanStaleGCStateDirs(rootDir string) error {
 	if rootDir == "" {
 		return nil
@@ -221,14 +252,28 @@ func CleanStaleGCStateDirs(rootDir string) error {
 		if !e.IsDir() {
 			continue
 		}
-		flag := filepath.Join(rootDir, e.Name(), gcStateIncompleteFlag)
-		if _, err := os.Stat(flag); err == nil {
-			if err := os.RemoveAll(filepath.Join(rootDir, e.Name())); err != nil {
-				return fmt.Errorf("gcstate: clean stale dir %s: %w", e.Name(), err)
-			}
+		dir := filepath.Join(rootDir, e.Name())
+		if !gcStateDirReclaimable(dir) {
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("gcstate: clean stale dir %s: %w", e.Name(), err)
 		}
 	}
 	return nil
+}
+
+// gcStateDirReclaimable reports whether a run directory is no longer needed:
+// flagged (crashed mid-mark) or unflagged and older than gcStateCompletedTTL.
+func gcStateDirReclaimable(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, gcStateIncompleteFlag)); err == nil {
+		return true
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return false
+	}
+	return time.Since(info.ModTime()) > gcStateCompletedTTL
 }
 
 // GCRunSummary is the persisted last-run.json shape.
