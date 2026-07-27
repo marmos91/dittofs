@@ -453,7 +453,10 @@ func collectGarbage(
 		_ = PersistLastRunSummary(options.GCStateRoot, gcRunSummaryFromStats(stats, started, time.Now()))
 		return stats
 	}
-	defer func() { _ = gcs.Close() }()
+	// Destroy, not Close: the mark set is scratch for this run only, so the run
+	// directory goes with it whether the run succeeded or failed. Leaving it
+	// behind grows the local store without bound.
+	defer func() { _ = gcs.Destroy() }()
 
 	snapshotTime := time.Now()
 	slog.Info("GC: mark phase starting",

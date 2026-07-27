@@ -127,8 +127,69 @@ func TestGCState_MarkComplete(t *testing.T) {
 	}
 }
 
+// TestGCState_DestroyRemovesRunDir: a finished run leaves nothing behind. The
+// mark set is scratch for one run, and directories that outlive their run grew
+// a field deployment's local store by gigabytes.
+func TestGCState_DestroyRemovesRunDir(t *testing.T) {
+	root := t.TempDir()
+	gcs, err := NewGCState(root, "test-run")
+	if err != nil {
+		t.Fatalf("NewGCState: %v", err)
+	}
+	runDir := gcs.RunDir()
+	if err := gcs.MarkComplete(); err != nil {
+		t.Fatalf("MarkComplete: %v", err)
+	}
+	if err := gcs.Destroy(); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Errorf("run dir survived Destroy: stat err=%v", err)
+	}
+	// Destroy on an already-destroyed state must not error (deferred twice, or
+	// after an explicit call on the success path).
+	if err := gcs.Destroy(); err != nil {
+		t.Errorf("second Destroy: %v", err)
+	}
+}
+
+// TestGCState_CleanStaleGCStateDirs_ReapsOldCompletedDirs: the backstop for
+// directories no Destroy ever reached — a completed run from a release that did
+// not clean up, or a process that died after MarkComplete. Only once they are
+// past the TTL, so a run another process may still be sweeping with survives.
+func TestGCState_CleanStaleGCStateDirs_ReapsOldCompletedDirs(t *testing.T) {
+	root := t.TempDir()
+
+	for _, name := range []string{"old-complete", "fresh-complete"} {
+		gcs, err := NewGCState(root, name)
+		if err != nil {
+			t.Fatalf("NewGCState(%s): %v", name, err)
+		}
+		if err := gcs.MarkComplete(); err != nil {
+			t.Fatalf("MarkComplete(%s): %v", name, err)
+		}
+		_ = gcs.Close()
+	}
+	// Backdate one past the TTL.
+	old := filepath.Join(root, "old-complete")
+	past := time.Now().Add(-2 * gcStateCompletedTTL)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	if err := CleanStaleGCStateDirs(root); err != nil {
+		t.Fatalf("CleanStaleGCStateDirs: %v", err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("completed dir past the TTL was not reclaimed: stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "fresh-complete")); err != nil {
+		t.Errorf("recently completed dir was reclaimed: %v", err)
+	}
+}
+
 // TestGCState_CleanStaleGCStateDirs: removes every <runID>/ dir whose
-// incomplete.flag is still present; leaves complete dirs alone.
+// incomplete.flag is still present; leaves recently completed dirs alone.
 func TestGCState_CleanStaleGCStateDirs(t *testing.T) {
 	root := t.TempDir()
 
