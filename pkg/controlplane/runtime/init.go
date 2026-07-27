@@ -10,6 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/pathutil"
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -262,12 +263,13 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 		}
 
 		if err := rt.AddShare(ctx, shareConfig); err != nil {
-			// Legacy-layout detection is a hard boot stop, not a
-			// per-share warn-and-skip. Surface it so
-			// cmd/dfs/commands/start.go can exit 78 with the operator
-			// directive. Every other AddShare failure stays a
-			// warn-and-skip (preserves existing behavior).
-			if errors.Is(err, block.ErrLegacyLayoutDetected) {
+			// A share whose on-disk format this build cannot read is a hard
+			// boot stop, not a per-share warn-and-skip: warn-and-skip leaves
+			// the daemon running and looking healthy with the share silently
+			// absent. Surface it so cmd/dfs/commands/start.go can exit 78 with
+			// the operator directive. Every other AddShare failure stays a
+			// warn-and-skip.
+			if errors.Is(err, block.ErrFutureFormat) || errors.Is(err, fs.ErrLegacyLocalFormat) {
 				return fmt.Errorf("share %q: %w", share.Name, err)
 			}
 			logger.Warn("Failed to add share to runtime",

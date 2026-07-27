@@ -16,19 +16,19 @@ func TestErrStopWalk_DetectsThroughWrap(t *testing.T) {
 	if !errors.Is(wrapped, block.ErrStopWalk) {
 		t.Fatalf("errors.Is should detect ErrStopWalk through fmt.Errorf wrap; got %v", wrapped)
 	}
-	if errors.Is(wrapped, block.ErrLegacyLayoutDetected) {
+	if errors.Is(wrapped, block.ErrFutureFormat) {
 		t.Fatalf("errors.Is must not cross-match unrelated sentinels")
 	}
 }
 
-// TestErrLegacyLayoutDetected_DetectsThroughWrap pins the boot-guard
-// contract: NewFSStore wraps the sentinel with the
-// share path via fmt.Errorf("%w: share path %s", ...) and cmd/dfs/start
-// matches via errors.Is.
-func TestErrLegacyLayoutDetected_DetectsThroughWrap(t *testing.T) {
-	wrapped := fmt.Errorf("%w: share path %s", block.ErrLegacyLayoutDetected, "/data/share-a")
-	if !errors.Is(wrapped, block.ErrLegacyLayoutDetected) {
-		t.Fatalf("errors.Is should detect ErrLegacyLayoutDetected through fmt.Errorf wrap; got %v", wrapped)
+// TestErrFutureFormat_DetectsThroughWrap pins the boot-guard contract: a
+// store wraps the sentinel with the path and the two format versions via
+// fmt.Errorf("%w: ...", ...) and cmd/dfs/start matches via errors.Is.
+func TestErrFutureFormat_DetectsThroughWrap(t *testing.T) {
+	wrapped := fmt.Errorf("%w: share path %s is format v3, this build reads up to v2",
+		block.ErrFutureFormat, "/data/share-a")
+	if !errors.Is(wrapped, block.ErrFutureFormat) {
+		t.Fatalf("errors.Is should detect ErrFutureFormat through fmt.Errorf wrap; got %v", wrapped)
 	}
 	// The wrapped error must carry the share path in its message — the
 	// boot directive surfaces this verbatim to the operator.
@@ -38,12 +38,12 @@ func TestErrLegacyLayoutDetected_DetectsThroughWrap(t *testing.T) {
 }
 
 // TestSentinelMessages_HaveBlockstorePrefix asserts the existing
-// convention from pkg/block/errors.go (every package sentinel
-// message starts with "blockstore:").
+// convention from pkg/block/errors.go (every block-specific sentinel
+// message starts with "blockstore:"). ErrFutureFormat is excluded on
+// purpose: metadata stores return it too, so it is not about blocks.
 func TestSentinelMessages_HaveBlockstorePrefix(t *testing.T) {
 	for _, e := range []error{
 		block.ErrStopWalk,
-		block.ErrLegacyLayoutDetected,
 	} {
 		if !contains(e.Error(), "blockstore:") {
 			t.Errorf("sentinel %v must use the blockstore: prefix convention", e)

@@ -120,6 +120,13 @@ func NewSQLiteMetadataStore(
 		return nil, fmt.Errorf("failed to ping sqlite database: %w", err)
 	}
 
+	// Guard the schema before anything queries it. This is not a migration, so
+	// it runs whether or not AutoMigrate is set.
+	if err := checkFormatVersion(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	if cfg.AutoMigrate {
 		log.Info("AutoMigrate is enabled, running migrations...")
 		if err := runMigrations(ctx, db, log); err != nil {

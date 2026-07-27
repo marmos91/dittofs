@@ -192,27 +192,24 @@ var (
 	// See BlockStore.Walk.
 	ErrStopWalk = errors.New("blockstore: stop walk")
 
-	// ErrLegacyLayoutDetected is returned by fs.NewWithOptions when
-	// the share directory contains legacy `.blk` files but no
-	// `.cas-migrated-v1` sentinel marker file. The wrapped target
-	// carries the offending share path
+	// ErrFutureFormat is returned when a store opens on-disk state that a
+	// NEWER release wrote and this binary cannot read. It exists because the
+	// alternative is silence: a record whose layout moved to a sibling key, or
+	// a side-log whose name this binary does not know, decodes "successfully"
+	// into a file with the right size and no content — the store serves zeros
+	// and logs nothing.
 	//
-	//   return nil, fmt.Errorf("%w: share path %s", ErrLegacyLayoutDetected, baseDir)
+	// Wrap it with the versions the operator needs to act
 	//
-	// Detection at boot is via errors.Is, not errors.As — the sentinel
-	// is an errors.New value (not a typed struct), so errors.Is is the
-	// idiomatic match
+	//   return fmt.Errorf("%w: %s is at format version %d, this build reads up to %d",
+	//       block.ErrFutureFormat, dir, onDisk, supported)
 	//
-	//   if errors.Is(err, block.ErrLegacyLayoutDetected) { ... }
+	// Boot matches via errors.Is and exits 78 (EX_CONFIG per sysexits(3)).
+	// Detection is per-share but the exit is fatal: a share that cannot be
+	// opened safely must not leave the daemon looking healthy.
 	//
-	// cmd/dfs/start.go unwraps via errors.Is, prints an operator
-	// directive ("Detected legacy `.blk` layout at <path>. v0.16+
-	// requires CAS migration. Run `dfs migrate-to-cas` before
-	// starting."), and exits 78 (EX_CONFIG from sysexits(3)). Per-share
-	// fail-fast: the first un-migrated share halts boot.
-	//
-	// Operator action: run `dfs migrate-to-cas --share <name>` (or
-	// `dfs migrate-to-cas` for all shares) and retry. See
-	// docs/CONFIGURATION.md §migration..
-	ErrLegacyLayoutDetected = errors.New("blockstore: legacy .blk layout detected (migrate with dittofs <= v0.21 first)")
+	// Both block stores and metadata stores return it, so the message carries
+	// no "blockstore:" prefix — unlike the sentinels above, it is not about
+	// blocks.
+	ErrFutureFormat = errors.New("store: on-disk format is newer than this build")
 )

@@ -105,6 +105,13 @@ func NewPostgresMetadataStore(
 		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
 
+	// Guard the schema before anything queries it. This is not a migration, so
+	// it runs whether or not AutoMigrate is set.
+	if err := checkFormatVersion(ctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
 	// Run migrations if AutoMigrate is enabled
 	if cfg.AutoMigrate {
 		log.Info("AutoMigrate is enabled, running migrations...")

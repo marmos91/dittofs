@@ -2,9 +2,8 @@
 // contract DittoFS uses across every storage tier. It is the
 // single source of truth for FileChunk, BlockState, ContentHash, BlockSize
 // the BlockStore + BlockStoreAppend interfaces, the minimal Meta struct
-// the error sentinels (ErrStopWalk, ErrLegacyLayoutDetected
-// ErrChunkNotFound, …), and the on-disk irreversible-state-transition
-// conventions (sentinel marker files).
+// the error sentinels (ErrStopWalk, ErrFutureFormat
+// ErrChunkNotFound, …), and the on-disk format-version convention.
 //
 // # Interface roles
 //
@@ -60,72 +59,27 @@
 //
 // See BlockStore.Walk godoc for the full contract.
 //
-// # Sentinel-file convention (.cas-migrated-vN)
+// # On-disk format versions
 //
-// A project-wide pattern for irreversible on-disk state transitions:
-// a dot-prefixed sentinel marker file named .cas-migrated-vN — where
-// N is the layout-schema version — that proves a state transition
-// completed atomically.
+// Every store stamps the format version of the state it writes and checks
+// that stamp when it opens. A stamp NEWER than the running build is refused
+// with ErrFutureFormat: the alternative is not an error but silence, because
+// a record whose layout moved to a sibling key decodes cleanly into a file
+// with the right size and no content, and the store then serves zeros. Boot
+// treats the refusal as fatal for the whole daemon rather than skipping the
+// share, so a downgraded box cannot come up looking healthy.
 //
-// Lifecycle
-//
-//   - Written by the (now-removed, <= v0.21) migration tooling via
-//     atomic rename ONLY at successful completion of the transition.
-//     A crash mid-migration cannot leave the sentinel behind because
-//     the tooling writes <name>.tmp first, fsyncs, then renames into
-//     place and fsyncs the parent directory.
-//
-//   - Read by backend constructors at open time. *fs.FSStore (via
-//     NewWithOptions → newFSStore) stats <baseDir>/.cas-migrated-v1
-//     before any other I/O. Presence is the ground-truth proof of
-//     completion. Cost is O(1).
-//
-//   - On absence, the constructor runs a depth-capped probe for
-//     legacy `.blk` files in baseDir; if any are found and no
-//     sentinel exists, it returns ErrLegacyLayoutDetected. The boot
-//     guard in cmd/dfs/commands/start.go unwraps via errors.Is,
-//     prints an operator directive, and exits 78 (EX_CONFIG per
-//     sysexits(3)). Per-share fail-fast: the first un-migrated share
-//     halts boot.
-//
-// Per-share placement: the sentinel lives at the share root that
-// production passes to fs.NewWithOptions as baseDir. Per-share semantics
-// (not per-storage-dir global) mean `--share <name>` migrations
-// produce per-share sentinels and partial multi-share runs leave
-// already-migrated shares boot-able while unmigrated ones remain
-// refused.
-//
-// Sentinel contents (JSON):
-//
-//	{
-//	    "Version": "v1",
-//	    "CompletedAt": "2026-05-20T14:30:00Z",
-//	    "ToolVersion": "v1.0.0",
-//	    "ShareDir": "/path/to/share"
-//	}
-//
-// Hand-editing the sentinel is a footgun — it bypasses the boot guard
-// without curing the underlying layout mismatch, leaving a partially
-// migrated store that will surface I/O errors on the first legacy
-// FileChunk access. Treat the file as a one-way irreversibility
-// marker. The recovery procedure for a failed migration lives in
-// docs/CONFIGURATION.md §Migration.
-//
-// Future schema bumps: increment N. New constructors stat the highest
-// version they recognize and refuse anything below. A v2 backend
-// reading a v1 sentinel must surface an explicit
-// "downgrade not supported" error rather than silently accepting it.
-//
-// # Migration tooling
+// The reverse direction — state OLDER than the build — is a migration, not a
+// refusal, and runs automatically at share startup. It is one-way: once it
+// has run, the previous release can no longer read the result. The migration
+// warns about that before it starts.
 //
 // The offline .blk-to-CAS migration tool (`dfs migrate-to-cas`) shipped
 // through dittofs v0.21 and has been removed; shares still on the `.blk`
 // layout must be migrated with an older release before upgrading. The
-// constructors keep honoring the .cas-migrated-v1 sentinels those runs
-// left behind. The follow-on cas->blocks conversion (standalone CAS
-// objects into packed blocks/<id> containers, #1493) is automatic: it
-// runs blocking at share startup (engine.Store.Start), is resumable and
-// idempotent, and needs no tooling or sentinel.
+// follow-on cas->blocks conversion (standalone CAS objects into packed
+// blocks/<id> containers) is automatic: it runs in the background from
+// engine.Store.Start, is resumable and idempotent, and needs no tooling.
 //
 // # Error sentinels
 //
@@ -134,8 +88,8 @@
 // mappings.
 //
 // - ErrStopWalk — Walk callback early-exit signal.
-//   - ErrLegacyLayoutDetected — backend constructor refused an
-//     un-migrated `.blk` layout; migrate with dittofs <= v0.21 first.
+//   - ErrFutureFormat — a store refused on-disk state written by a
+//     newer release than this build can read.
 //   - ErrChunkNotFound — content-addressed chunk is absent
 //     from the store (local or remote).
 //   - ErrChunkContentMismatch — recomputed BLAKE3 disagreed with the

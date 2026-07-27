@@ -42,6 +42,7 @@ import (
 // Link Counts           "l:"     l:<uuid>                               uint32 (binary)
 // Server Config         "cfg:"   cfg:server                             MetadataServerConfig (JSON)
 // Filesystem Caps       "cap:"   cap:fs                                 FilesystemCapabilities (JSON)
+// Format Version        "fmt:"   fmt:store                              uint32 (big-endian binary)
 
 const (
 	prefixFile         = "f:"
@@ -55,6 +56,7 @@ const (
 	prefixCapabilities = "cap:"
 	prefixObjectID     = "obj:" // ObjectID -> file UUID
 	prefixPayloadID    = "pl:"  // PayloadID (content ID) -> file UUID
+	prefixFormat       = "fmt:" // on-disk format version of this database
 )
 
 // ============================================================================

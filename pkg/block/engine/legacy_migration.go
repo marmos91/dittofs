@@ -42,6 +42,11 @@ import (
 // standalone locators plus one remote LIST page. Re-running against a
 // migrated share is a no-op.
 
+// migrationProgressInterval is how often a migration loop whose cost scales with
+// the data reports what it has done so far: long enough that a small store logs
+// nothing extra, short enough that a large one never looks wedged.
+const migrationProgressInterval = 5 * time.Second
+
 // legacyChunkFileMigrator is implemented by the fs-backed local store; the
 // memory local store has no per-chunk file layout and skips Phase L.
 type legacyChunkFileMigrator interface {
@@ -119,6 +124,9 @@ func (m *Syncer) migrateLegacyCASRemote(ctx context.Context) error {
 		if rbs == nil || committer == nil {
 			return fmt.Errorf("cas→blocks migration: %d standalone chunks found but the block substrate is not wired", len(standalone))
 		}
+		logger.Warn("cas→blocks migration: re-packing standalone chunks and purging the cas/ namespace — "+
+			"one-way, the previous release cannot read the result; snapshot the remote bucket before upgrading",
+			"chunks_total", len(standalone))
 		if err := m.repackStandaloneChunks(ctx, legacy, hasLegacy, sealer, committer, standalone); err != nil {
 			return err
 		}
@@ -204,9 +212,20 @@ func (m *Syncer) repackStandaloneChunks(
 		return nil
 	}
 
-	for _, h := range standalone {
+	// Each chunk costs a remote read, so the caller's announcement is followed by
+	// a heartbeat rather than one line per chunk.
+	started := time.Now()
+	lastLog := started
+
+	for i, h := range standalone {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if time.Since(lastLog) >= migrationProgressInterval {
+			lastLog = time.Now()
+			logger.Info("cas→blocks migration: re-packing standalone chunks",
+				"chunks_done", i, "chunks_total", len(standalone), "chunks_repacked", repacked,
+				"elapsed", time.Since(started).Round(time.Second))
 		}
 		data, err := m.migrationChunkBytes(ctx, legacy, hasLegacy, h)
 		if err != nil {

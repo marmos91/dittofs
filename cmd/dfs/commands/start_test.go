@@ -13,9 +13,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
-// TestStart_LegacyLayoutExitCode asserts the boot-guard contract:
+// TestStart_FutureFormatExitCode asserts the boot-guard contract:
 // when LoadSharesFromStore surfaces an error wrapping
-// block.ErrLegacyLayoutDetected, the start command must
+// block.ErrFutureFormat, the start command must
 // (1) print the multi-line operator directive to stderr,
 // (2) exit with code 78 (EX_CONFIG).
 //
@@ -32,8 +32,8 @@ import (
 // runtime.LoadSharesFromStore returns. Capturing the wrap shape
 // (`share "<name>": share <path>: blockstore: legacy ...`) matches
 // what runtime.LoadSharesFromStore produces when AddShare bubbles
-// `ErrLegacyLayoutDetected` from `fs.NewWithOptions`.
-func TestStart_LegacyLayoutExitCode(t *testing.T) {
+// `ErrFutureFormat` from a store constructor.
+func TestStart_FutureFormatExitCode(t *testing.T) {
 	// Stub exitFn to capture the exit code without terminating the process.
 	origExit := exitFn
 	t.Cleanup(func() { exitFn = origExit })
@@ -59,14 +59,14 @@ func TestStart_LegacyLayoutExitCode(t *testing.T) {
 
 	// Synthesize the exact wrap shape runtime.LoadSharesFromStore
 	// produces: `share %q: %w` around the fs.NewWithOptions output, which
-	// is itself `share %s: %w` around block.ErrLegacyLayoutDetected.
+	// is itself `share %s: %w` around block.ErrFutureFormat.
 	sharePath := filepath.Join(t.TempDir(), "share-A")
-	innerErr := fmt.Errorf("share %s: %w", sharePath, block.ErrLegacyLayoutDetected)
+	innerErr := fmt.Errorf("share %s: %w", sharePath, block.ErrFutureFormat)
 	loadErr := fmt.Errorf("share %q: %w", "share-A", innerErr)
 
 	stop := handleLoadSharesError(loadErr, w)
 	if !stop {
-		t.Fatalf("handleLoadSharesError returned stop=false on legacy-layout error")
+		t.Fatalf("handleLoadSharesError returned stop=false on future-format error")
 	}
 
 	// Close the writer so the reader sees EOF, then drain.
@@ -84,7 +84,7 @@ func TestStart_LegacyLayoutExitCode(t *testing.T) {
 	select {
 	case gotCode = <-exitCh:
 	default:
-		t.Fatalf("exitFn was never invoked on legacy-layout error")
+		t.Fatalf("exitFn was never invoked on future-format error")
 	}
 	if gotCode != EX_CONFIG {
 		t.Errorf("captured exit code = %d, want %d", gotCode, EX_CONFIG)
@@ -95,8 +95,9 @@ func TestStart_LegacyLayoutExitCode(t *testing.T) {
 
 	stderr := stderrBuf.String()
 	for _, want := range []string{
-		"Detected legacy .blk layout",
-		"dittofs v0.21 or earlier",
+		"Refusing to start",
+		"written by a newer release",
+		"Upgrades are one-way",
 		sharePath,
 	} {
 		if !strings.Contains(stderr, want) {

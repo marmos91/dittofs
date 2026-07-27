@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/block/journal"
@@ -113,6 +114,12 @@ func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileCh
 			return nil, err
 		}
 		if legacy {
+			// Announce before the archive rewrites the on-disk shape for good,
+			// but do not block on an acknowledgement — the daemon must come up
+			// unattended.
+			logger.Warn("local store: archiving a pre-journal layout aside so the journal opens clean — "+
+				"one-way, the previous release cannot read the result; snapshot this directory before upgrading",
+				"dir", dir)
 			if err := archiveLegacyLayout(dir); err != nil {
 				return nil, err
 			}
@@ -136,7 +143,14 @@ func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileCh
 		EvictMaxWait:  opts.BackpressureMaxWait,
 		ChunkParams:   opts.ChunkParams,
 	}
-	js, err := journal.Open(filepath.Join(dir, "journal"), cfg, nil, journal.SystemClock())
+	// Check the format stamp before touching the journal: a directory a newer
+	// release wrote would otherwise read as holes wherever the newer format
+	// keeps state this binary does not scan.
+	journalDir := filepath.Join(dir, "journal")
+	if err := journal.CheckFormat(journalDir); err != nil {
+		return nil, err
+	}
+	js, err := journal.Open(journalDir, cfg, nil, journal.SystemClock())
 	if err != nil {
 		return nil, err
 	}

@@ -1220,11 +1220,22 @@ func (s *Service) createBlockStoreForShare(
 			// Detached from the AddShare context, which may be cancelled once the
 			// call returns; the store's own close gate stops the drain on shutdown.
 			bgCtx := context.Background()
-			for _, payloadID := range m.LegacyPendingPayloads() {
+			pending := m.LegacyPendingPayloads()
+			started := time.Now()
+			lastLog := started
+			logger.Info("legacy local-only migration: re-ingesting archived append logs",
+				"share", shareName, "payloads_total", len(pending))
+			for i, payloadID := range pending {
 				if err := m.MaterializeLegacyPayload(payloadID); err != nil {
 					logger.Error("legacy local-only migration: materialize failed; leaving archive for retry on next start",
 						"share", shareName, "payload", payloadID, "error", err)
 					return
+				}
+				if time.Since(lastLog) >= migrationProgressInterval {
+					lastLog = time.Now()
+					logger.Info("legacy local-only migration: re-ingesting archived append logs",
+						"share", shareName, "payloads_done", i+1, "payloads_total", len(pending),
+						"elapsed", time.Since(started).Round(time.Second))
 				}
 			}
 			if err := bs.DrainRollups(bgCtx); err != nil {
@@ -3103,6 +3114,11 @@ func applyDurableOverride(store any, config map[string]any, label, shareName str
 // reports success.
 func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metadata.Store) (coldSeedReport, error) {
 	var report coldSeedReport
+	// EnumeratePayloads is a callback iteration with no cheap denominator, so
+	// the heartbeat reports a running count rather than a fraction.
+	started := time.Now()
+	lastLog := started
+	logger.Info("seeding cold intervals from the metadata manifest")
 	err := metaStore.EnumeratePayloads(ctx, func(payloadID string) error {
 		rows, err := metaStore.ListFileChunks(ctx, payloadID)
 		if err != nil {
@@ -3145,6 +3161,12 @@ func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metad
 			return fmt.Errorf("seed cold %s: %w", payloadID, err)
 		}
 		report.payloads++
+		if time.Since(lastLog) >= migrationProgressInterval {
+			lastLog = time.Now()
+			logger.Info("seeding cold intervals from the metadata manifest",
+				"payloads", report.payloads, "chunks", report.chunks,
+				"elapsed", time.Since(started).Round(time.Second))
+		}
 		return nil
 	})
 	return report, err

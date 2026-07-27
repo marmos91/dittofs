@@ -6,8 +6,8 @@
 // tier (per-file append log + rollup) used by the fs backend only;
 // s3 and memory backends implement only BlockStore.
 //
-// Sentinel-file conventions (.cas-migrated-v1) and the legacy-layout
-// boot guard (ErrLegacyLayoutDetected) live in doc.go and errors.go.
+// The on-disk format-version stamp and the boot guard that refuses state
+// from a newer release (ErrFutureFormat) live in doc.go and errors.go.
 
 package block
 

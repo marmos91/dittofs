@@ -20,6 +20,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -41,15 +42,15 @@ var isTerminal = func(fd uintptr) bool {
 }
 
 // EX_CONFIG is the exit code per sysexits(3) — "configuration error".
-// Used by the legacy-layout boot guard when a share directory still
-// contains pre-v0.16 `.blk` files without a `.cas-migrated-v1` sentinel.
-// The operator migrates with an older release's migrate-to-cas command
-// before retrying — this release no longer ships it.
+// Used by the format-mismatch boot guard when a share's on-disk state was
+// written by a release this build cannot read, in either direction: newer
+// state after a downgrade, or a pre-journal layout awaiting migration.
+// Serving either would return zeros for stored files, so boot stops instead.
 const EX_CONFIG = 78
 
-// exitFn is the production exit path for the legacy-layout boot guard.
+// exitFn is the production exit path for the format-mismatch boot guard.
 // Indirected through a package-level var so the in-process boot-guard
-// test (start_test.go::TestStart_LegacyLayoutExitCode) can stub it to
+// test (start_test.go::TestStart_FutureFormatExitCode) can stub it to
 // capture the exit code deterministically without spawning a subprocess.
 // Production code MUST NOT reassign exitFn — only the test does, and
 // only via a t.Cleanup-restored override.
@@ -168,6 +169,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Initialize runtime from database (loads metadata stores and shares)
 	rt, err := runtime.InitializeFromStore(ctx, cpStore)
 	if err != nil {
+		// A metadata store whose format this build cannot read gets the same
+		// exit code and directive as a block store in that state.
+		if stop := handleFormatMismatch(err, os.Stderr); stop {
+			return nil
+		}
 		return fmt.Errorf("failed to initialize runtime: %w", err)
 	}
 
@@ -821,24 +827,41 @@ func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 	return smbAdapter, nil
 }
 
+// handleFormatMismatch prints the operator directive and exits 78 when err
+// reports on-disk state this build cannot read. Returns true when it did, so
+// the caller stops.
+//
+// Both store-opening paths must route through here. Metadata stores open in
+// InitializeFromStore and block stores in LoadSharesFromStore; a mismatch on
+// either one is the same condition to an operator and deserves the same exit
+// code and the same directive, not a bare cobra error.
+//
+// Production code MUST go through this helper — direct termination from
+// runStart would bypass the exitFn indirection the test depends on.
+func handleFormatMismatch(err error, stderr *os.File) bool {
+	if err == nil {
+		return false
+	}
+	if !errors.Is(err, block.ErrFutureFormat) && !errors.Is(err, fs.ErrLegacyLocalFormat) {
+		return false
+	}
+	_, _ = fmt.Fprintln(stderr, formatMismatchDirective(err))
+	exitFn(EX_CONFIG)
+	// Unreachable in production (exitFn == os.Exit terminates).
+	// Defensive: in-process tests stub exitFn to NOT terminate.
+	return true
+}
+
 // handleLoadSharesError centralizes the share-loading error policy so
 // the in-process boot-guard test can exercise the exit-78 path without
 // rebuilding the full daemon setup. Returns true when the caller should
-// stop runStart (legacy-layout branch hit; exitFn called); false
-// otherwise (no error, or a non-legacy warn-and-continue).
-//
-// Production code MUST go through this helper — direct termination
-// from runStart would bypass the exitFn indirection the test depends
-// on.
+// stop runStart (format-mismatch branch hit; exitFn called); false
+// otherwise (no error, or a warn-and-continue).
 func handleLoadSharesError(err error, stderr *os.File) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, block.ErrLegacyLayoutDetected) {
-		_, _ = fmt.Fprintln(stderr, formatLegacyLayoutDirective(err))
-		exitFn(EX_CONFIG)
-		// Unreachable in production (exitFn == os.Exit terminates).
-		// Defensive: in-process tests stub exitFn to NOT terminate.
+	if handleFormatMismatch(err, stderr) {
 		return true
 	}
 	logger.Warn("Failed to load some shares", "error", err)
@@ -871,16 +894,36 @@ func emitAdminPassword(password string) {
 		"or bootstrap with 'dfs start --foreground' in a terminal to have it printed once.")
 }
 
-// formatLegacyLayoutDirective renders the multi-line operator directive
-// printed when LoadSharesFromStore surfaces ErrLegacyLayoutDetected.
-// The full wrapped error message (`share "<name>": share <path>:
-// blockstore: legacy .blk layout detected`)
-// is embedded verbatim so the operator sees BOTH the share name AND
-// the offending path without fragile substring extraction.
-func formatLegacyLayoutDirective(err error) string {
-	return fmt.Sprintf(`Detected legacy .blk layout: %s.
-This release no longer ships the .blk migration tool. Migrate the share
-with dittofs v0.21 or earlier first, using that release's binary:
-    <v0.21 dfs> migrate-to-cas --share <name>
-then upgrade; the cas->blocks conversion runs automatically at startup.`, err)
+// formatMismatchDirective renders the multi-line operator directive printed
+// when a store cannot be opened because its on-disk format does not match this
+// build. The wrapped error is embedded verbatim so the operator sees which
+// store, the offending path and the two versions without fragile substring
+// extraction.
+//
+// It covers metadata stores and block stores alike, so the text says "state"
+// rather than naming either: the wrapped error already identifies which one.
+//
+// The two directions need different advice: state from a newer release is a
+// downgrade the operator can undo by going forward again, while a pre-journal
+// layout is an upgrade that has not run yet.
+func formatMismatchDirective(err error) string {
+	if errors.Is(err, block.ErrFutureFormat) {
+		return fmt.Sprintf(`Refusing to start: %s.
+
+This state was written by a newer release of DittoFS. Opening it with this
+build would serve the stored files as zeros rather than fail, so the daemon
+stops instead.
+
+Upgrades are one-way. To recover, either:
+  - reinstall the release that wrote this state and start again, or
+  - restore the snapshot taken before the upgrade.
+
+No data has been modified.`, err)
+	}
+	return fmt.Sprintf(`Refusing to start: %s.
+
+This share holds a pre-journal blobs/+logs/ layout that this build cannot read
+directly. The bytes are intact on disk — the migration converts them in place
+at startup once the share is configured with a remote, or re-ingests them from
+the append logs for a local-only share.`, err)
 }
