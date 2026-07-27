@@ -73,7 +73,7 @@ go build -o dfs cmd/dfs/main.go
 
 # Run with development settings
 ./dfs init
-./dfs start --log-level DEBUG
+DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
 ```
 
 ## Development Workflow
@@ -95,7 +95,7 @@ go mod download
 ./dfs start
 
 # Run with debug logging and custom settings
-./dfs start --log-level DEBUG
+DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
 
 # Use environment variables for quick config overrides
 DITTOFS_LOGGING_LEVEL=DEBUG DITTOFS_ADAPTERS_NFS_PORT=12049 ./dfs start
