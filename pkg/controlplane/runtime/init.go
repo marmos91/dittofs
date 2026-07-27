@@ -264,13 +264,11 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 
 		if err := rt.AddShare(ctx, shareConfig); err != nil {
 			// A share whose on-disk format this build cannot read is a hard
-			// boot stop, not a per-share warn-and-skip: both directions of
-			// the mismatch (state from a newer release, or a pre-journal
-			// layout from an older one) serve the stored files as zeros if
-			// opened anyway, and a warn-and-skip leaves the daemon running
-			// and looking healthy with the share silently absent. Surface it
-			// so cmd/dfs/commands/start.go can exit 78 with the operator
-			// directive. Every other AddShare failure stays a warn-and-skip.
+			// boot stop, not a per-share warn-and-skip: warn-and-skip leaves
+			// the daemon running and looking healthy with the share silently
+			// absent. Surface it so cmd/dfs/commands/start.go can exit 78 with
+			// the operator directive. Every other AddShare failure stays a
+			// warn-and-skip.
 			if errors.Is(err, block.ErrFutureFormat) || errors.Is(err, fs.ErrLegacyLocalFormat) {
 				return fmt.Errorf("share %q: %w", share.Name, err)
 			}

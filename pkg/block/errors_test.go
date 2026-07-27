@@ -38,8 +38,9 @@ func TestErrFutureFormat_DetectsThroughWrap(t *testing.T) {
 }
 
 // TestSentinelMessages_HaveBlockstorePrefix asserts the existing
-// convention from pkg/block/errors.go (every package sentinel
-// message starts with "blockstore:").
+// convention from pkg/block/errors.go (every block-specific sentinel
+// message starts with "blockstore:"). ErrFutureFormat is excluded on
+// purpose: metadata stores return it too, so it is not about blocks.
 func TestSentinelMessages_HaveBlockstorePrefix(t *testing.T) {
 	for _, e := range []error{
 		block.ErrStopWalk,

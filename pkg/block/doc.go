@@ -3,8 +3,7 @@
 // single source of truth for FileChunk, BlockState, ContentHash, BlockSize
 // the BlockStore + BlockStoreAppend interfaces, the minimal Meta struct
 // the error sentinels (ErrStopWalk, ErrFutureFormat
-// ErrChunkNotFound, …), and the on-disk irreversible-state-transition
-// conventions (sentinel marker files).
+// ErrChunkNotFound, …), and the on-disk format-version convention.
 //
 // # Interface roles
 //

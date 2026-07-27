@@ -48,9 +48,9 @@ var isTerminal = func(fd uintptr) bool {
 // Serving either would return zeros for stored files, so boot stops instead.
 const EX_CONFIG = 78
 
-// exitFn is the production exit path for the legacy-layout boot guard.
+// exitFn is the production exit path for the format-mismatch boot guard.
 // Indirected through a package-level var so the in-process boot-guard
-// test (start_test.go::TestStart_LegacyLayoutExitCode) can stub it to
+// test (start_test.go::TestStart_FutureFormatExitCode) can stub it to
 // capture the exit code deterministically without spawning a subprocess.
 // Production code MUST NOT reassign exitFn — only the test does, and
 // only via a t.Cleanup-restored override.
@@ -836,7 +836,7 @@ func handleLoadSharesError(err error, stderr *os.File) bool {
 		return false
 	}
 	if errors.Is(err, block.ErrFutureFormat) || errors.Is(err, fs.ErrLegacyLocalFormat) {
-		_, _ = fmt.Fprintln(stderr, formatFormatMismatchDirective(err))
+		_, _ = fmt.Fprintln(stderr, formatMismatchDirective(err))
 		exitFn(EX_CONFIG)
 		// Unreachable in production (exitFn == os.Exit terminates).
 		// Defensive: in-process tests stub exitFn to NOT terminate.
@@ -872,16 +872,16 @@ func emitAdminPassword(password string) {
 		"or bootstrap with 'dfs start --foreground' in a terminal to have it printed once.")
 }
 
-// formatFormatMismatchDirective renders the multi-line operator directive
-// printed when a share cannot be opened because its on-disk format does not
-// match this build. The wrapped error is embedded verbatim so the operator sees
-// the share name, the offending path and the two versions without fragile
-// substring extraction.
+// formatMismatchDirective renders the multi-line operator directive printed
+// when a share cannot be opened because its on-disk format does not match this
+// build. The wrapped error is embedded verbatim so the operator sees the share
+// name, the offending path and the two versions without fragile substring
+// extraction.
 //
-// The two directions need different advice, so they get different text: state
-// from a newer release is a downgrade the operator can undo by going forward
-// again, while a pre-journal layout is an upgrade that has not run yet.
-func formatFormatMismatchDirective(err error) string {
+// The two directions need different advice: state from a newer release is a
+// downgrade the operator can undo by going forward again, while a pre-journal
+// layout is an upgrade that has not run yet.
+func formatMismatchDirective(err error) string {
 	if errors.Is(err, block.ErrFutureFormat) {
 		return fmt.Sprintf(`Refusing to start: %s.
 

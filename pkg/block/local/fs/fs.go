@@ -114,13 +114,11 @@ func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileCh
 			return nil, err
 		}
 		if legacy {
-			// The archive step rewrites the share's on-disk shape for good: the
-			// previous release looks for blobs/+logs/ where they no longer are
-			// and opens an empty journal, which serves zeros rather than
-			// failing. Say so before it happens, loudly enough to be found in a
-			// log after the fact, but do not block — the daemon must come up
+			// Announce before the archive rewrites the on-disk shape for good,
+			// but do not block on an acknowledgement — the daemon must come up
 			// unattended.
-			logger.Warn("local store: migrating a pre-journal layout — ONE-WAY, the previous release cannot read the result; snapshot this directory before proceeding",
+			logger.Warn("local store: archiving a pre-journal layout aside so the journal opens clean — "+
+				"one-way, the previous release cannot read the result; snapshot this directory before upgrading",
 				"dir", dir)
 			if err := archiveLegacyLayout(dir); err != nil {
 				return nil, err
@@ -145,10 +143,9 @@ func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileCh
 		EvictMaxWait:  opts.BackpressureMaxWait,
 		ChunkParams:   opts.ChunkParams,
 	}
-	// Refuse a journal directory a newer release wrote before touching it: this
-	// binary would scan only the state it knows about and read everything the
-	// newer format holds elsewhere as holes. An unstamped directory predates
-	// stamping and is adopted here, so every subsequent open is guarded.
+	// Check the format stamp before touching the journal: a directory a newer
+	// release wrote would otherwise read as holes wherever the newer format
+	// keeps state this binary does not scan.
 	journalDir := filepath.Join(dir, "journal")
 	if err := journal.CheckFormat(journalDir); err != nil {
 		return nil, err

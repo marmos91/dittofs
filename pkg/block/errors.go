@@ -193,27 +193,23 @@ var (
 	ErrStopWalk = errors.New("blockstore: stop walk")
 
 	// ErrFutureFormat is returned when a store opens on-disk state that a
-	// NEWER release wrote and this binary cannot read. It is the downgrade
-	// half of the format contract: the legacy sentinels below catch old
-	// state under a new binary, this one catches new state under an old
-	// binary.
-	//
-	// It exists because the alternative is silence. A record whose layout
-	// moved to a sibling key, or a side-log whose name this binary does not
-	// know, decodes "successfully" into a file with the right size and no
-	// content — the store serves zeros and logs nothing. Refusing to open is
-	// the only safe reading of state we do not understand.
+	// NEWER release wrote and this binary cannot read. It exists because the
+	// alternative is silence: a record whose layout moved to a sibling key, or
+	// a side-log whose name this binary does not know, decodes "successfully"
+	// into a file with the right size and no content — the store serves zeros
+	// and logs nothing.
 	//
 	// Wrap it with the versions the operator needs to act
 	//
-	//   return fmt.Errorf("%w: %s is format v%d, this build reads up to v%d",
+	//   return fmt.Errorf("%w: %s is at format version %d, this build reads up to %d",
 	//       block.ErrFutureFormat, dir, onDisk, supported)
 	//
 	// Boot matches via errors.Is and exits 78 (EX_CONFIG per sysexits(3)).
-	// Fail-fast is per-share but fatal: a share that cannot be opened safely
-	// must not leave the daemon looking healthy.
+	// Detection is per-share but the exit is fatal: a share that cannot be
+	// opened safely must not leave the daemon looking healthy.
 	//
-	// Operator action: return to a release that understands the on-disk
-	// format, or restore the pre-upgrade snapshot.
+	// Both block stores and metadata stores return it, so the message carries
+	// no "blockstore:" prefix — unlike the sentinels above, it is not about
+	// blocks.
 	ErrFutureFormat = errors.New("store: on-disk format is newer than this build")
 )

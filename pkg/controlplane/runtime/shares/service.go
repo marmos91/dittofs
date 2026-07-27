@@ -1190,10 +1190,6 @@ func (s *Service) createBlockStoreForShare(
 	// ponytail: O(files) manifest scan at startup; a lazy per-read seed is the
 	// upgrade path if this ever bites a share with a huge file count.
 	if m, ok := localStore.(legacyArchiveMigrator); ok && m.MigratedFromLegacy() {
-		logger.Warn("pre-journal local layout detected: converting this share to the journal format. "+
-			"The conversion is one-way — the previous release cannot read the share once it completes. "+
-			"Snapshot the share directory before upgrading, and restore that snapshot to go back",
-			"share", config.Name)
 		if metaStore, ok := fileChunkStore.(metadata.Store); ok {
 			report, serr := SeedColdFromManifest(ctx, bs, metaStore)
 			if serr != nil {
@@ -1224,9 +1220,6 @@ func (s *Service) createBlockStoreForShare(
 			// Detached from the AddShare context, which may be cancelled once the
 			// call returns; the store's own close gate stops the drain on shutdown.
 			bgCtx := context.Background()
-			// The whole work list is known up front, so progress is a fraction.
-			// Logged on a timer so a small share prints once and a large one
-			// keeps reporting instead of going silent for minutes.
 			pending := m.LegacyPendingPayloads()
 			started := time.Now()
 			lastLog := started
@@ -3122,10 +3115,7 @@ func applyDurableOverride(store any, config map[string]any, label, shareName str
 func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metadata.Store) (coldSeedReport, error) {
 	var report coldSeedReport
 	// EnumeratePayloads is a callback iteration with no cheap denominator, so
-	// progress is a running count. It is logged on a timer rather than per
-	// payload: a small share prints the start line and the summary, a large one
-	// keeps reporting instead of leaving the operator unable to tell a slow
-	// startup from a wedged one.
+	// the heartbeat reports a running count rather than a fraction.
 	started := time.Now()
 	lastLog := started
 	logger.Info("seeding cold intervals from the metadata manifest")
@@ -3181,11 +3171,6 @@ func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metad
 	})
 	return report, err
 }
-
-// migrationProgressInterval is how often a migration loop whose cost scales with
-// the data reports what it has done so far. Long enough that a fast store logs
-// once, short enough that a slow one never looks wedged.
-const migrationProgressInterval = 5 * time.Second
 
 // parseRequireDurableCommit reads the optional per-share "require_durable_commit"
 // bool from the local store config (#1274). Read the same conservative way as

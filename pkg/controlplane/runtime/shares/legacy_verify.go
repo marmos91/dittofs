@@ -18,6 +18,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"time"
+
 	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -30,6 +32,11 @@ import (
 // rather than per-file, so a handful of extents is enough to expose it; the
 // point is to have read *something* before claiming success.
 const coldVerifySamples = 8
+
+// migrationProgressInterval is how often a migration loop whose cost scales with
+// the data reports what it has done so far: long enough that a small store logs
+// nothing extra, short enough that a large one never looks wedged.
+const migrationProgressInterval = 5 * time.Second
 
 // coldSample is one manifest extent the migration will read back and hash.
 type coldSample struct {

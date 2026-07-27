@@ -25,14 +25,13 @@ func readStampVersion(t *testing.T, dir string) int {
 	}
 	var st struct {
 		Version   int    `json:"version"`
-		WrittenBy string `json:"written_by"`
 		WrittenAt string `json:"written_at"`
 	}
 	if err := json.Unmarshal(raw, &st); err != nil {
 		t.Fatalf("parse format stamp %q: %v", raw, err)
 	}
-	if st.WrittenBy == "" || st.WrittenAt == "" {
-		t.Errorf("stamp %q missing operator fields", raw)
+	if st.WrittenAt == "" {
+		t.Errorf("stamp %q missing written_at", raw)
 	}
 	return st.Version
 }
@@ -44,7 +43,7 @@ func writeStamp(t *testing.T, dir string, v int) {
 	if err := os.MkdirAll(filepath.Dir(stampPath(dir)), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	raw := fmt.Sprintf(`{"version":%d,"written_by":"test","written_at":"2026-01-01T00:00:00Z"}`, v)
+	raw := fmt.Sprintf(`{"version":%d,"written_at":"2026-01-01T00:00:00Z"}`, v)
 	if err := os.WriteFile(stampPath(dir), []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
 	}

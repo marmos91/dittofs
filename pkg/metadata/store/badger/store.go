@@ -359,9 +359,9 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		return nil, fmt.Errorf("failed to open BadgerDB at %s: %w", config.DBPath, err)
 	}
 
-	// Refuse a database a newer release wrote before anything reads or writes
-	// through it — a format this build does not understand must fail the open,
-	// not surface as missing data once the store is already serving.
+	// Guard the format before anything reads or writes through the database: a
+	// format this build does not understand must fail the open, not surface as
+	// missing data once the store is already serving.
 	if err := ensureFormatVersion(db); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -526,30 +526,23 @@ func (s *BadgerMetadataStore) syncIfRelaxed() error {
 }
 
 // storeFormatVersion is the on-disk format version this build writes and can
-// read. Bump it in any release that changes where existing data lives — moving
-// a field out of a record into a sibling key, renaming a prefix, retiring a
-// key. Those changes are invisible to an older binary: it decodes the record it
-// still recognizes, finds nothing where the moved data used to be, and serves a
-// file with the right size and no content. The stamp is what turns that silent
-// wrong answer into a refusal to open.
+// read. Bump it in any release that moves where existing data lives — a field
+// out of a record into a sibling key, a renamed prefix, a retired key. An older
+// binary decodes the record it still recognizes, finds nothing where the moved
+// data used to be, and serves a file with the right size and no content.
 //
-// Adding a NEW key or a new self-describing record field does not need a bump —
-// an older binary skips what it does not know and loses nothing it had.
+// Adding a NEW key or a new self-describing record field needs no bump — an
+// older binary skips what it does not know and loses nothing it had.
 const storeFormatVersion uint32 = 1
 
 // formatVersionKey is the BadgerDB key holding storeFormatVersion.
 const formatVersionKey = prefixFormat + "store"
 
 // ensureFormatVersion refuses to open a database a newer release wrote, and
-// stamps the current version otherwise.
-//
-// No stamp means the database predates stamping; it is accepted and stamped so
-// every later open is guarded. A stamp above storeFormatVersion means a newer
-// release owns this data and may have put it in keys this build never reads, so
-// the open fails with block.ErrFutureFormat rather than serving whatever is
-// still legible. A stamp below is raised to the current version: this build is
-// about to write records in its own layout, so the database belongs to it from
-// here on and a downgrade past this point is exactly what the guard must catch.
+// stamps the current version otherwise. An unstamped database predates stamping
+// and is adopted, so every later open is guarded; a stamp below the current
+// version is raised, because this build is about to write records in its own
+// layout and a downgrade past that point is what the guard must catch.
 func ensureFormatVersion(db *badger.DB) error {
 	var stored uint32
 	err := db.View(func(txn *badger.Txn) error {
@@ -573,7 +566,7 @@ func ensureFormatVersion(db *badger.DB) error {
 	}
 
 	if stored > storeFormatVersion {
-		return fmt.Errorf("%w: metadata store is format v%d, this build reads up to v%d",
+		return fmt.Errorf("%w: metadata store is at format version %d, this build reads up to %d",
 			block.ErrFutureFormat, stored, storeFormatVersion)
 	}
 	if stored == storeFormatVersion {

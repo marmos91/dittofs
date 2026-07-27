@@ -42,9 +42,9 @@ import (
 // standalone locators plus one remote LIST page. Re-running against a
 // migrated share is a no-op.
 
-// migrationProgressInterval is how often the migration reports what it has done
-// so far. Long enough that a small share logs once, short enough that a large
-// one never looks wedged.
+// migrationProgressInterval is how often a migration loop whose cost scales with
+// the data reports what it has done so far: long enough that a small store logs
+// nothing extra, short enough that a large one never looks wedged.
 const migrationProgressInterval = 5 * time.Second
 
 // legacyChunkFileMigrator is implemented by the fs-backed local store; the
@@ -124,10 +124,9 @@ func (m *Syncer) migrateLegacyCASRemote(ctx context.Context) error {
 		if rbs == nil || committer == nil {
 			return fmt.Errorf("cas→blocks migration: %d standalone chunks found but the block substrate is not wired", len(standalone))
 		}
-		logger.Warn("standalone cas chunks detected: re-packing them into blocks and purging the cas/ namespace. "+
-			"The conversion is one-way — the previous release cannot read the re-packed objects. "+
-			"Snapshot the remote bucket before upgrading, and restore that snapshot to go back",
-			"chunks", len(standalone))
+		logger.Warn("cas→blocks migration: re-packing standalone chunks and purging the cas/ namespace — "+
+			"one-way, the previous release cannot read the result; snapshot the remote bucket before upgrading",
+			"chunks_total", len(standalone))
 		if err := m.repackStandaloneChunks(ctx, legacy, hasLegacy, sealer, committer, standalone); err != nil {
 			return err
 		}
@@ -213,13 +212,10 @@ func (m *Syncer) repackStandaloneChunks(
 		return nil
 	}
 
-	// Each chunk costs a remote read, so the loop is logged on a timer: a small
-	// share prints the start line and the completion summary, a large one keeps
-	// reporting instead of leaving the operator unable to tell a slow migration
-	// from a wedged one.
+	// Each chunk costs a remote read, so the caller's announcement is followed by
+	// a heartbeat rather than one line per chunk.
 	started := time.Now()
 	lastLog := started
-	logger.Info("cas→blocks migration: re-packing standalone chunks", "chunks", len(standalone))
 
 	for i, h := range standalone {
 		if err := ctx.Err(); err != nil {
@@ -228,7 +224,7 @@ func (m *Syncer) repackStandaloneChunks(
 		if time.Since(lastLog) >= migrationProgressInterval {
 			lastLog = time.Now()
 			logger.Info("cas→blocks migration: re-packing standalone chunks",
-				"chunks_read", i, "chunks_repacked", repacked,
+				"chunks_done", i, "chunks_total", len(standalone), "chunks_repacked", repacked,
 				"elapsed", time.Since(started).Round(time.Second))
 		}
 		data, err := m.migrationChunkBytes(ctx, legacy, hasLegacy, h)

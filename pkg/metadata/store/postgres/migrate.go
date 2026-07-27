@@ -130,14 +130,14 @@ func newestEmbeddedVersion() (int64, error) {
 // checkFormatVersion refuses to open a database migrated past what this build
 // knows how to run against.
 //
-// golang-migrate does surface this today, but only by accident and only
-// halfway: m.Up() fails with "file does not exist" because the recorded version
-// has no counterpart in the embedded source, and that only happens when
-// AutoMigrate is on — which it is not by default. The default configuration
-// therefore inspects nothing, opens a future schema happily, and then fails
-// query by query with raw SQL errors about columns a later migration dropped or
-// renamed. Reading the recorded version directly makes the failure explicit,
-// immediate, and independent of whether migrations are configured to run.
+// schema_migrations already records every applied version, so the newest
+// applied row versus the newest embedded migration is the whole comparison — no
+// second stamp is needed. A row above that ceiling means a newer release
+// migrated this database and may have dropped or renamed columns this build's
+// queries still name. golang-migrate only surfaces that halfway — m.Up() fails
+// with "file does not exist", and only when AutoMigrate is on, which it is not
+// by default — so the database otherwise opens cleanly and then fails query by
+// query with raw SQL errors, long after startup.
 func checkFormatVersion(ctx context.Context, pool *pgxpool.Pool) error {
 	var exists bool
 	if err := pool.QueryRow(ctx,
@@ -168,7 +168,7 @@ func checkFormatVersion(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 
 	if *stored > newest {
-		return fmt.Errorf("%w: metadata database is at schema version %d, this build knows up to version %d",
+		return fmt.Errorf("%w: metadata database is at schema version %d, this build reads up to %d",
 			block.ErrFutureFormat, *stored, newest)
 	}
 	return nil

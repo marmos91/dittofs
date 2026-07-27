@@ -78,15 +78,11 @@ func runMigrations(ctx context.Context, db *sql.DB, log *slog.Logger) error {
 //
 // schema_migrations already records every applied version, so the newest
 // applied row versus the newest embedded migration is the whole comparison — no
-// second stamp is needed. A row above the embedded ceiling means a newer
-// release migrated this database, and its migrations may have dropped or
-// renamed columns this build's queries still name.
-//
-// Without the check that database opens cleanly (runMigrations has nothing to
-// apply, so it reports "up to date") and then fails query by query with raw SQL
-// errors, long after startup. This is a safety check rather than a migration,
-// so it runs on every open regardless of AutoMigrate — the default-off
-// configuration is precisely the one that otherwise inspects nothing at all.
+// second stamp is needed. A row above that ceiling means a newer release
+// migrated this database and may have dropped or renamed columns this build's
+// queries still name. Without the check the database opens cleanly (there is
+// nothing to apply, so migration reports "up to date") and then fails query by
+// query with raw SQL errors, long after startup.
 func checkFormatVersion(ctx context.Context, db *sql.DB) error {
 	var tables int
 	if err := db.QueryRowContext(ctx,
@@ -118,7 +114,7 @@ func checkFormatVersion(ctx context.Context, db *sql.DB) error {
 	newest := files[len(files)-1].version
 
 	if stored.Int64 > int64(newest) {
-		return fmt.Errorf("%w: metadata database is at schema version %d, this build knows up to version %d",
+		return fmt.Errorf("%w: metadata database is at schema version %d, this build reads up to %d",
 			block.ErrFutureFormat, stored.Int64, newest)
 	}
 	return nil
