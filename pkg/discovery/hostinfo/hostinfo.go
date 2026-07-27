@@ -105,27 +105,33 @@ func MulticastInterfaces() []net.Interface {
 	}
 	out := make([]net.Interface, 0, len(all))
 	for _, ifi := range all {
+		// Flags first: they are already in hand, while Addrs is a per-interface
+		// syscall not worth spending on an interface the flags rule out.
+		if !eligibleFlags(ifi.Flags) {
+			continue
+		}
 		addrs, aerr := ifi.Addrs()
 		if aerr != nil {
 			continue
 		}
-		if multicastEligible(ifi.Flags, addrs) {
+		if hasIPv4(addrs) {
 			out = append(out, ifi)
 		}
 	}
 	return out
 }
 
-// multicastEligible holds the rule itself, separated from enumerating the host
-// so it can be exercised against interface shapes this machine does not have.
-func multicastEligible(flags net.Flags, addrs []net.Addr) bool {
+// eligibleFlags reports whether an interface's flags allow discovery traffic.
+func eligibleFlags(flags net.Flags) bool {
 	const required = net.FlagUp | net.FlagMulticast
 	if flags&required != required {
 		return false
 	}
-	if flags&(net.FlagLoopback|net.FlagPointToPoint) != 0 {
-		return false
-	}
+	return flags&(net.FlagLoopback|net.FlagPointToPoint) == 0
+}
+
+// hasIPv4 reports whether any of the addresses is IPv4.
+func hasIPv4(addrs []net.Addr) bool {
 	for _, a := range addrs {
 		if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil {
 			return true

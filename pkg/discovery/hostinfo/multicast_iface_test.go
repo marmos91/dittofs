@@ -51,8 +51,12 @@ func TestMulticastEligible(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := multicastEligible(tc.flags, tc.addrs); got != tc.want {
-				t.Errorf("multicastEligible(%v) = %v, want %v", tc.flags, got, tc.want)
+			// Mirrors the order MulticastInterfaces applies them: flags gate the
+			// address lookup, so an ineligible flag set is excluded regardless
+			// of what addresses the interface carries.
+			got := eligibleFlags(tc.flags) && hasIPv4(tc.addrs)
+			if got != tc.want {
+				t.Errorf("eligible(%v, %v) = %v, want %v", tc.flags, tc.addrs, got, tc.want)
 			}
 		})
 	}
