@@ -1189,14 +1189,17 @@ func (s *Service) createBlockStoreForShare(
 	// skips straight to a clean open.
 	// ponytail: O(files) manifest scan at startup; a lazy per-read seed is the
 	// upgrade path if this ever bites a share with a huge file count.
-	if m, ok := localStore.(interface{ MigratedFromLegacy() bool }); ok && m.MigratedFromLegacy() {
+	if m, ok := localStore.(legacyArchiveMigrator); ok && m.MigratedFromLegacy() {
 		if metaStore, ok := fileChunkStore.(metadata.Store); ok {
-			if serr := SeedColdFromManifest(ctx, bs, metaStore); serr != nil {
+			report, serr := SeedColdFromManifest(ctx, bs, metaStore)
+			if serr != nil {
 				cleanup()
 				return fmt.Errorf("seed cold intervals after legacy migration: %w", serr)
 			}
-			logger.Info("migrated pre-journal local layout: archived blobs/+logs/ aside and seeded cold intervals from manifest",
-				"share", config.Name)
+			if verr := finishLegacyArchiveMigration(ctx, bs, m, report, config.Name); verr != nil {
+				cleanup()
+				return verr
+			}
 		} else {
 			logger.Warn("migrated pre-journal local layout but metadata store is not manifest-capable; reads will zero-fill until rewritten",
 				"share", config.Name)
@@ -3092,8 +3095,15 @@ func applyDurableOverride(store any, config map[string]any, label, shareName str
 // BLAKE3-verified. One ListFileChunks and one SeedCold per payload — O(chunks),
 // acceptable for a rare control-plane / startup path, and seeding a whole file at
 // once keeps the local tier's durable write to one per file.
-func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metadata.Store) error {
-	return metaStore.EnumeratePayloads(ctx, func(payloadID string) error {
+//
+// The report it returns is what the seed observed on the way through: how much
+// it covered, how much of it the manifest does not yet call remote, and a few
+// extents to read back. Seeding alone proves nothing about content, so a caller
+// that archived the only local copy aside is expected to verify before it
+// reports success.
+func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metadata.Store) (coldSeedReport, error) {
+	var report coldSeedReport
+	err := metaStore.EnumeratePayloads(ctx, func(payloadID string) error {
 		rows, err := metaStore.ListFileChunks(ctx, payloadID)
 		if err != nil {
 			return fmt.Errorf("list manifest for %s: %w", payloadID, err)
@@ -3108,12 +3118,36 @@ func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metad
 				continue
 			}
 			extents = append(extents, [2]int64{int64(off), int64(row.DataSize)})
+			report.chunks++
+			// Whether a chunk reached the remote is answered by the synced-hash
+			// store, not by FileChunk.State: the carve path records synced markers
+			// and leaves the row state at Pending for the life of the payload, so
+			// reading State here would call every chunk unsynced. A lookup failure
+			// counts as unsynced — the archive stays when we cannot tell.
+			synced, serr := metaStore.IsSynced(ctx, row.Hash)
+			if serr != nil || !synced {
+				report.unsynced++
+			}
+			// Sample the first hashed extent of the first few payloads. A
+			// zero-length chunk or one with no hash yet cannot be checked
+			// against anything, so it is not worth a sample slot.
+			if len(report.samples) < coldVerifySamples && row.DataSize > 0 &&
+				row.Hash != (block.ContentHash{}) && report.sampledPayload(payloadID) {
+				report.samples = append(report.samples, coldSample{
+					payloadID: payloadID,
+					offset:    int64(off),
+					length:    int64(row.DataSize),
+					hash:      row.Hash,
+				})
+			}
 		}
 		if err := bs.SeedCold(ctx, payloadID, extents); err != nil {
 			return fmt.Errorf("seed cold %s: %w", payloadID, err)
 		}
+		report.payloads++
 		return nil
 	})
+	return report, err
 }
 
 // parseRequireDurableCommit reads the optional per-share "require_durable_commit"
