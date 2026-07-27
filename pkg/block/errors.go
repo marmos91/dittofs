@@ -192,27 +192,28 @@ var (
 	// See BlockStore.Walk.
 	ErrStopWalk = errors.New("blockstore: stop walk")
 
-	// ErrLegacyLayoutDetected is returned by fs.NewWithOptions when
-	// the share directory contains legacy `.blk` files but no
-	// `.cas-migrated-v1` sentinel marker file. The wrapped target
-	// carries the offending share path
+	// ErrFutureFormat is returned when a store opens on-disk state that a
+	// NEWER release wrote and this binary cannot read. It is the downgrade
+	// half of the format contract: the legacy sentinels below catch old
+	// state under a new binary, this one catches new state under an old
+	// binary.
 	//
-	//   return nil, fmt.Errorf("%w: share path %s", ErrLegacyLayoutDetected, baseDir)
+	// It exists because the alternative is silence. A record whose layout
+	// moved to a sibling key, or a side-log whose name this binary does not
+	// know, decodes "successfully" into a file with the right size and no
+	// content — the store serves zeros and logs nothing. Refusing to open is
+	// the only safe reading of state we do not understand.
 	//
-	// Detection at boot is via errors.Is, not errors.As — the sentinel
-	// is an errors.New value (not a typed struct), so errors.Is is the
-	// idiomatic match
+	// Wrap it with the versions the operator needs to act
 	//
-	//   if errors.Is(err, block.ErrLegacyLayoutDetected) { ... }
+	//   return fmt.Errorf("%w: %s is format v%d, this build reads up to v%d",
+	//       block.ErrFutureFormat, dir, onDisk, supported)
 	//
-	// cmd/dfs/start.go unwraps via errors.Is, prints an operator
-	// directive ("Detected legacy `.blk` layout at <path>. v0.16+
-	// requires CAS migration. Run `dfs migrate-to-cas` before
-	// starting."), and exits 78 (EX_CONFIG from sysexits(3)). Per-share
-	// fail-fast: the first un-migrated share halts boot.
+	// Boot matches via errors.Is and exits 78 (EX_CONFIG per sysexits(3)).
+	// Fail-fast is per-share but fatal: a share that cannot be opened safely
+	// must not leave the daemon looking healthy.
 	//
-	// Operator action: run `dfs migrate-to-cas --share <name>` (or
-	// `dfs migrate-to-cas` for all shares) and retry. See
-	// docs/CONFIGURATION.md §migration..
-	ErrLegacyLayoutDetected = errors.New("blockstore: legacy .blk layout detected (migrate with dittofs <= v0.21 first)")
+	// Operator action: return to a release that understands the on-disk
+	// format, or restore the pre-upgrade snapshot.
+	ErrFutureFormat = errors.New("store: on-disk format is newer than this build")
 )
