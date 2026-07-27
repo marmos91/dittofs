@@ -29,7 +29,7 @@ func (tx *postgresTransaction) ApplyDataWrite(
 	if err != nil {
 		return 0, &metadata.StoreError{Code: metadata.ErrInvalidHandle, Message: "invalid file handle"}
 	}
-	var mask int64
+	var mask int32
 	if clearSUID {
 		mask = 0o6000
 	}
@@ -47,19 +47,19 @@ func (tx *postgresTransaction) ApplyDataWrite(
 		),
 		upd AS (
 			UPDATE inodes SET
-				size  = GREATEST(inodes.size, $3),
-				mtime = $4,
-				ctime = $4,
-				mode  = inodes.mode & ~$5
-			WHERE inodes.id = $1 AND inodes.share_name = $2 AND inodes.file_type = $6
+				size  = GREATEST(inodes.size, $3::bigint),
+				mtime = $4::bigint,
+				ctime = $4::bigint,
+				mode  = inodes.mode & ~($5::int)
+			WHERE inodes.id = $1 AND inodes.share_name = $2 AND inodes.file_type = $6::smallint
 			RETURNING inodes.size
 		)
 		SELECT (SELECT size FROM upd), old.size, old.uid, old.gid FROM old
 	`
 	var newSz *int64
 	var oldSize int64
-	var oldUID, oldGID uint32
-	err = tx.tx.QueryRow(ctx, q, id, shareName, int64(newSize), ft, mask, int(metadata.FileTypeRegular)).
+	var oldUID, oldGID int32
+	err = tx.tx.QueryRow(ctx, q, id, shareName, int64(newSize), ft, mask, int16(metadata.FileTypeRegular)).
 		Scan(&newSz, &oldSize, &oldUID, &oldGID)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -75,7 +75,7 @@ func (tx *postgresTransaction) ApplyDataWrite(
 	finalSize := *newSz
 	if delta := finalSize - oldSize; delta != 0 {
 		tx.pendingDelta += delta
-		tx.quota.Add(oldUID, oldGID, delta, 0)
+		tx.quota.Add(uint32(oldUID), uint32(oldGID), delta, 0)
 	}
 	return uint64(finalSize), nil
 }
