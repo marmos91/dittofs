@@ -41,20 +41,14 @@ func BenchmarkWriteThroughput(b *testing.B) {
 	b.Cleanup(func() { _ = store.Close() })
 
 	const share = "/hot"
-	if _, err := store.CreateRootDirectory(ctx, share, &metadata.FileAttr{Mode: 0o755}); err != nil {
-		b.Fatalf("CreateRootDirectory: %v", err)
-	}
-	root, err := store.GetRootHandle(ctx, share)
-	if err != nil {
-		b.Fatalf("GetRootHandle: %v", err)
-	}
+	hot := seedHandles(b, store, share, 1)[0]
 
 	var ops int64
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
-				f, err := tx.GetFile(ctx, root)
+				f, err := tx.GetFile(ctx, hot)
 				if err != nil {
 					return err
 				}
@@ -95,20 +89,14 @@ func BenchmarkWriteThroughputBatched(b *testing.B) {
 			}
 			b.Cleanup(func() { _ = store.Close() })
 			const share = "/hot"
-			if _, err := store.CreateRootDirectory(ctx, share, &metadata.FileAttr{Mode: 0o755}); err != nil {
-				b.Fatalf("CreateRootDirectory: %v", err)
-			}
-			root, err := store.GetRootHandle(ctx, share)
-			if err != nil {
-				b.Fatalf("GetRootHandle: %v", err)
-			}
+			hot := seedHandles(b, store, share, 1)[0]
 
 			var ops int64
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
 					for j := 0; j < batch; j++ {
-						f, err := tx.GetFile(ctx, root)
+						f, err := tx.GetFile(ctx, hot)
 						if err != nil {
 							return err
 						}

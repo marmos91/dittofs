@@ -80,13 +80,20 @@ func seedHandles(b *testing.B, store metadata.Store, share string, n int) []meta
 		if err != nil {
 			b.Fatalf("GenerateHandle: %v", err)
 		}
-		_, id, _ := metadata.DecodeFileHandle(h)
+		_, id, err := metadata.DecodeFileHandle(h)
+		if err != nil {
+			b.Fatalf("DecodeFileHandle: %v", err)
+		}
 		if err := store.PutFile(ctx, &metadata.File{ShareName: share, Path: fp, ID: id,
 			FileAttr: metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644, UID: 1000, GID: 1000}}); err != nil {
 			b.Fatalf("PutFile seed: %v", err)
 		}
-		_ = store.SetParent(ctx, h, rootHandle)
-		_ = store.SetChild(ctx, rootHandle, name, h)
+		if err := store.SetParent(ctx, h, rootHandle); err != nil {
+			b.Fatalf("SetParent: %v", err)
+		}
+		if err := store.SetChild(ctx, rootHandle, name, h); err != nil {
+			b.Fatalf("SetChild: %v", err)
+		}
 		hs[i] = h
 	}
 	return hs

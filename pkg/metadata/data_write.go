@@ -13,8 +13,9 @@ import (
 // synthesize post-op attrs without reading the row back.
 //
 // Optional: transactions that do not implement it fall back to GetFile+PutFile.
-// Only regular files are affected; a missing or non-regular target returns
-// ErrNotFound.
+// Only regular files are affected: a missing target returns ErrNotFound, and a
+// target that exists but is not a regular file returns ErrIsDirectory and is
+// left untouched.
 type DataWriteApplier interface {
 	ApplyDataWrite(ctx context.Context, handle FileHandle, newSize uint64, now time.Time, clearSUID bool) (finalSize uint64, err error)
 }
