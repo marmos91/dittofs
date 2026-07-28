@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"math/rand"
+	"sync"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -210,5 +211,54 @@ func TestJournalCarveSeam_CrashMidCommitReCarveIsNoOp(t *testing.T) {
 	}
 	if u := f2.jrnl.UnsyncedBytes(); u != 0 {
 		t.Fatalf("re-carve did not flip records: unsynced = %d", u)
+	}
+}
+
+// TestJournalCarveSeam_ReportsEachBlockAsItLands pins that the sink reports
+// every block at the moment it commits, rather than the pass reporting a total
+// once it returns. The drain force-carves in a single call that can run for
+// minutes, and its supervisor treats a flat count as a stalled upload — so a
+// count that only moves when the call returns gets a working drain aborted.
+func TestJournalCarveSeam_ReportsEachBlockAsItLands(t *testing.T) {
+	ctx := context.Background()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	mem := remotememory.New()
+
+	sink := realSink(ms, mem)
+	var (
+		mu       sync.Mutex
+		reported []int64 // one entry per block, in landing order
+	)
+	sink.onBlockCommitted = func(bytes int64) {
+		mu.Lock()
+		reported = append(reported, bytes)
+		mu.Unlock()
+	}
+	f := newSeamFixture(t, t.TempDir(), ms, mem, sink)
+
+	// Several times CarveBlockSize (1 MiB here) so one carve lands many blocks.
+	data := seamRandBytes(5<<20, 7)
+	if err := f.jrnl.WriteAt(ctx, "f", 0, data); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	if _, err := f.jrnl.Carve(ctx, journal.CarveOptions{Force: true}); err != nil {
+		t.Fatalf("Carve: %v", err)
+	}
+
+	mu.Lock()
+	got := append([]int64(nil), reported...)
+	mu.Unlock()
+
+	if blocks := countBlocks(t, ctx, mem); len(got) != blocks {
+		t.Fatalf("reported %d blocks, remote holds %d — the report must fire once per block",
+			len(got), blocks)
+	}
+	if len(got) < 2 {
+		t.Fatalf("only %d block(s) landed; the fixture needs a multi-block carve to be meaningful", len(got))
+	}
+	for i, n := range got {
+		if n <= 0 {
+			t.Fatalf("block %d reported %d bytes, want > 0", i, n)
+		}
 	}
 }
