@@ -36,27 +36,27 @@ func NewBaseStore() *Base {
 
 // GetUsedBytes returns the current total logical bytes used by regular files.
 // This is an O(1) atomic read, safe for concurrent access without locks.
-func (s *Base) GetUsedBytes() int64 {
-	return s.usedBytes.Load()
+func (b *Base) GetUsedBytes() int64 {
+	return b.usedBytes.Load()
 }
 
 // GetQuotaUsage returns per-identity usage for the given scope and id.
 // O(1) map read under quotaMu. A missing key returns a zero UsageStat.
-func (s *Base) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
-	s.quotaMu.Lock()
-	defer s.quotaMu.Unlock()
-	return s.quota.Get(scope, id), nil
+func (b *Base) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
+	b.quotaMu.Lock()
+	defer b.quotaMu.Unlock()
+	return b.quota.Get(scope, id), nil
 }
 
 // ApplyQuotaDelta folds a per-identity usage delta into the in-memory usage
 // cache. Called post-commit (matching usedBytes).
-func (s *Base) ApplyQuotaDelta(delta map[quota.Key]metadata.UsageStat) {
+func (b *Base) ApplyQuotaDelta(delta map[quota.Key]metadata.UsageStat) {
 	if len(delta) == 0 {
 		return
 	}
-	s.quotaMu.Lock()
-	defer s.quotaMu.Unlock()
-	s.quota.Apply(delta)
+	b.quotaMu.Lock()
+	defer b.quotaMu.Unlock()
+	b.quota.Apply(delta)
 }
 
 // AddUsedBytes atomically adds delta (positive or negative) to the used-bytes
