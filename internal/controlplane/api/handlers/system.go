@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -76,8 +77,13 @@ func NewSystemHandler(rt *runtime.Runtime, drainStallTimeout time.Duration) *Sys
 //     This mirrors rclone's --timeout (an idle, progress-resetting timeout) and
 //     matches how juicefs/s3ql treat a forced flush — block until done, give up
 //     only on a genuine stall. CAS chunks are at most a few MiB, so even on a
-//     slow link a single chunk finishes well inside any sane idle window; only
-//     a truly wedged remote keeps progress flat long enough to trip it.
+//     slow link a single chunk finishes well inside any sane idle window.
+//
+// What a trip actually means is narrower than "the remote is wedged": the
+// watchdog observes only that no block reached the remote for the window. A
+// stuck carve, a stuck remote, and a drain that never had anything to do are
+// indistinguishable from here, so the 504 reports the observation and how much
+// landed before it, and leaves the diagnosis to the reader.
 //
 // A genuine client disconnect (request context Canceled, as opposed to the
 // deadline-exceeded fired by middleware.Timeout) still aborts the drain.
@@ -110,13 +116,22 @@ func (h *SystemHandler) DrainUploads(w http.ResponseWriter, r *http.Request) {
 
 	logger.Info("Drain uploads requested", "idle_timeout", h.drainStallTimeout)
 	start := time.Now()
+	startProgress := h.runtime.UploadProgress()
 
 	err, stalled := h.runWithIdleWatchdog(ctx, cancel)
 	if err != nil {
-		logger.Error("Drain uploads failed", "error", err, "duration", time.Since(start), "stalled", stalled)
+		// Report what was observed, not what it implies. The watchdog knows only
+		// that the block count stopped moving; whether the remote is wedged, the
+		// carve is stuck, or nothing was ever queued reads identically from here,
+		// and a message that picks one sends the reader after the wrong thing.
+		// How much did land, and over how long, is what narrows it.
+		committed := h.runtime.UploadProgress() - startProgress
+		logger.Error("Drain uploads failed", "error", err, "duration", time.Since(start),
+			"stalled", stalled, "blocks_committed", committed)
 		if stalled {
-			GatewayTimeout(w, "drain uploads stalled: no upload progress within "+
-				h.drainStallTimeout.String()+": "+err.Error())
+			GatewayTimeout(w, fmt.Sprintf(
+				"drain uploads: no block reached the remote for %s; %d committed over the preceding %s: %v",
+				h.drainStallTimeout, committed, time.Since(start).Round(time.Second), err))
 		} else {
 			InternalServerError(w, "drain uploads failed: "+err.Error())
 		}
