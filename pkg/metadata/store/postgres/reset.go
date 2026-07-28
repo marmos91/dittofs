@@ -46,5 +46,7 @@ func (s *PostgresMetadataStore) Reset(ctx context.Context) error {
 		return fmt.Errorf("reset: commit: %w", err)
 	}
 
+	s.ResetUsage()
+
 	return nil
 }
