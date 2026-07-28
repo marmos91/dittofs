@@ -612,10 +612,22 @@ func dittofsEvict(ctx context.Context) error {
 	// large remainder survives (>20% of a non-trivial starting size), the cold pass
 	// would read it from disk — FAIL LOUDLY rather than emit a warm number labelled
 	// "cold". The DiskWr/NetRx columns independently confirm coldness post-hoc.
-	if before.LocalDiskUsed > dittofsColdBarrierFloorBytes && after.LocalDiskUsed > before.LocalDiskUsed/5 {
+	if before.LocalDiskUsed <= dittofsColdBarrierFloorBytes {
+		// Below the floor the drop ratio is noise, so the assertion below cannot
+		// say whether the evict worked. Say that out loud: a silent return reads
+		// in the log exactly like a verified barrier, and the cold cell it labels
+		// may have been served warm.
+		_, _ = fmt.Fprintf(exec.CmdOut,
+			"warn: cold barrier UNVERIFIED — local disk %dMiB→%dMiB, under the %dMiB floor at which the drop is meaningful; treat this cold cell as unconfirmed\n",
+			before.LocalDiskUsed>>20, after.LocalDiskUsed>>20, dittofsColdBarrierFloorBytes>>20)
+		return nil
+	}
+	if after.LocalDiskUsed > before.LocalDiskUsed/5 {
 		return fmt.Errorf("cold barrier failed: local disk only fell %dMiB→%dMiB (want ≥80%% drop); the cold pass would measure locally-served reads, not S3",
 			before.LocalDiskUsed>>20, after.LocalDiskUsed>>20)
 	}
+	_, _ = fmt.Fprintf(exec.CmdOut, "cold barrier ok: local disk %dMiB→%dMiB\n",
+		before.LocalDiskUsed>>20, after.LocalDiskUsed>>20)
 	return nil
 }
 
