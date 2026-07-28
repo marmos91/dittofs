@@ -46,6 +46,23 @@ func TestFormatVersion_CurrentSchemaOpens(t *testing.T) {
 	}
 }
 
+// TestFormatVersion_FutureSchemaRefusesManualMigrate covers the same downgrade
+// through the other door: an operator running migrations by hand after rolling
+// a binary back. Without the guard golang-migrate finds nothing to apply and
+// reports success, which reads as "this database is fine" moments before the
+// open path refuses it.
+func TestFormatVersion_FutureSchemaRefusesManualMigrate(t *testing.T) {
+	newPostgresStore(t)
+	recordFutureMigration(t)
+
+	cfg, _ := postgresTestConfig()
+	if err := postgres.RunMigrations(context.Background(), cfg); err == nil {
+		t.Fatal("migrating a future schema must fail")
+	} else if !errors.Is(err, block.ErrFutureFormat) {
+		t.Fatalf("error must wrap block.ErrFutureFormat; got %v", err)
+	}
+}
+
 // TestFormatVersion_FutureSchemaRefusesOpen is the downgrade case, asserted on
 // both AutoMigrate settings. The guard is a safety check rather than a
 // migration, so the default (AutoMigrate off) configuration — which otherwise
