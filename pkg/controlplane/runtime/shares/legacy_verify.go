@@ -57,10 +57,11 @@ type coldSeedReport struct {
 	// deleted while this is non-zero.
 	unsynced int
 
-	// unplaceable counts manifest rows whose ID carries no parseable offset, so
-	// the range they describe could not be seeded. Reads of those ranges refuse
-	// rather than zero-fill, but the archive still holds the only placeable copy,
-	// so this is reported alongside unsynced when deciding whether to reap.
+	// unplaceable counts manifest rows whose ID carries no parseable offset. Which
+	// bytes they describe is not recoverable from the row, so nothing could be
+	// seeded for them and no later read can serve them. The archive may hold the
+	// only copy that is still placeable, so this is weighed alongside unsynced
+	// when deciding whether to reap.
 	unplaceable int
 
 	// samples are extents to read back, capped at coldVerifySamples.

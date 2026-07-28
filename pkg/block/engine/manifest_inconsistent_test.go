@@ -45,6 +45,24 @@ func TestFindRowCoveringOffset_AbsentRowIsStillAHole(t *testing.T) {
 	}
 }
 
+// An unplaceable row must not cost the reader the rest of the file. Offsets some
+// other row covers still resolve, so a payload with one damaged range stays
+// readable everywhere else.
+func TestFindRowCoveringOffset_UnplaceableRowDoesNotPoisonCoveredOffsets(t *testing.T) {
+	rows := []*block.FileChunk{
+		{ID: "payload-1", DataSize: 4096},         // unplaceable
+		{ID: "payload-1/4096", DataSize: 1 << 20}, // covers 4096..1052672
+	}
+
+	rw, err := findRowCoveringOffset(rows, 8192)
+	if err != nil {
+		t.Fatalf("unexpected error for a covered offset: %v", err)
+	}
+	if rw == nil || rw.absOffset != 4096 {
+		t.Fatalf("rw = %+v, want the row starting at 4096", rw)
+	}
+}
+
 func TestFindRowCoveringOffset_WellFormedRowResolves(t *testing.T) {
 	rows := []*block.FileChunk{
 		{ID: "payload-1/0", DataSize: 4096},

@@ -103,24 +103,37 @@ type rowWithOffset struct {
 // list — acceptable for the FastCDC steady-state (chunks average ~4 MiB
 // so even a 4 GiB file produces ~1000 rows).
 //
-// A row whose ID does not parse is reported as an error rather than skipped.
-// Absence of a row means a hole, which the caller zero-fills; a row that exists
-// but cannot be placed means the manifest disagrees with itself, and silently
-// passing it over would render the bytes it points at as zeros with no error
-// anywhere — data the store still holds, reported to the caller as data the file
-// never had.
+// A row whose ID does not parse cannot be placed, so its range is unknown. That
+// is only fatal to reads it might have covered: if some other row covers target,
+// that answer is unaffected and is returned. Only when nothing covers target does
+// the unplaceable row matter, because then the choice is between reporting a hole
+// — which the caller zero-fills, inventing data the file may never have had — and
+// admitting the manifest is inconsistent. It admits.
+//
+// Scoping it this way keeps one bad row from making a whole payload unreadable.
+// The alternative, refusing the moment such a row is seen at any offset, would
+// take a file that reads correctly apart from one damaged range and make all of
+// it unavailable.
 func findRowCoveringOffset(rows []*block.FileChunk, target uint64) (*rowWithOffset, error) {
+	unplaceable := ""
 	for _, fb := range rows {
 		if fb == nil {
 			continue
 		}
 		abs, ok := block.ParseChunkOffset(fb.ID)
 		if !ok {
-			return nil, fmt.Errorf("%w: malformed FileChunk ID %q", block.ErrManifestInconsistent, fb.ID)
+			if unplaceable == "" {
+				unplaceable = fb.ID
+			}
+			continue
 		}
 		if target >= abs && target < abs+uint64(fb.DataSize) {
 			return &rowWithOffset{fb: fb, absOffset: abs}, nil
 		}
+	}
+	if unplaceable != "" {
+		return nil, fmt.Errorf("%w: nothing covers offset %d and manifest holds unplaceable row %q",
+			block.ErrManifestInconsistent, target, unplaceable)
 	}
 	return nil, nil
 }
