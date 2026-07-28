@@ -135,7 +135,7 @@ func (store *MemoryMetadataStore) GetFilesystemStatistics(ctx context.Context, h
 // Must be called with at least a read lock held.
 func (store *MemoryMetadataStore) computeStatistics() metadata.FilesystemStatistics {
 	// Read usage from atomic counter (O(1), no scan needed).
-	totalSize := uint64(store.usedBytes.Load())
+	totalSize := uint64(store.GetUsedBytes())
 	fileCount := uint64(len(store.files))
 
 	// Report storage limits or defaults

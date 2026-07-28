@@ -43,9 +43,7 @@ func (s *SQLiteMetadataStore) Reset(ctx context.Context) error {
 	committed = true
 
 	// Reset the in-memory counters to match the now-empty tables.
-	s.usedBytes.Store(0)
-	s.quotaMu.Lock()
-	s.quota.Reset()
-	s.quotaMu.Unlock()
+	s.ResetUsage()
+
 	return nil
 }

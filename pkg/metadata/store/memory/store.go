@@ -5,7 +5,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -14,7 +13,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/basestore"
 )
 
 // shareData holds the internal representation of a share configuration.
@@ -237,20 +236,9 @@ type MemoryMetadataStore struct {
 	// recovery. Initialized lazily on first use.
 	recoveryStore *memoryRecoveryStore
 
-	// usedBytes tracks the total logical bytes used by regular files.
-	// Updated atomically on every size-changing operation (create, update, truncate, delete).
-	// Only regular files count toward usage; directories, symlinks, etc. do not.
-	usedBytes atomic.Int64
-
-	// quota tracks per-identity usage (bytes + file count) for regular files,
-	// keyed by owner uid / gid. Mirror of usedBytes but keyed by owner identity
-	// for per-user/per-group quota enforcement and reporting. Guarded by quotaMu
-	// (separate from s.mu so the GetQuotaUsage read path and the transaction
-	// commit-apply do not contend with unrelated metadata ops). Applied from a
-	// transaction's pending per-identity deltas exactly once on successful
-	// commit, identical to the usedBytes discipline.
-	quotaMu sync.Mutex
-	quota   *quota.Cache
+	// baseStore embeds the shared usage accounting state for regular files.
+	// This includes total logical bytes used and per-identity usage for quota
+	*basestore.Base
 
 	// storeID is the engine-persistent identifier for this store instance.
 	// Assigned on construction with a fresh ULID and immutable for the life
@@ -363,8 +351,8 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		storeID: ulid.Make().String(),
 		// ObjectID -> handle-key secondary index.
 		objectIndex: make(map[block.ContentHash]string),
+		Base:        basestore.NewBaseStore(),
 		// per-identity quota usage counters.
-		quota: quota.NewCache(),
 		// Block packing record store.
 		blockRecords: make(map[string]*block.BlockRecord),
 	}
@@ -433,20 +421,6 @@ func NewMemoryMetadataStoreWithDefaults() *MemoryMetadataStore {
 		MaxStorageBytes: 0, // Unlimited (reported as 1TB)
 		MaxFiles:        0, // Unlimited (reported as 1 million)
 	})
-}
-
-// GetUsedBytes returns the current total logical bytes used by regular files.
-// This is an O(1) atomic read, safe for concurrent access without locks.
-func (store *MemoryMetadataStore) GetUsedBytes() int64 {
-	return store.usedBytes.Load()
-}
-
-// GetQuotaUsage returns per-identity usage for the given scope and id.
-// O(1) map read under quotaMu. A missing key returns a zero UsageStat.
-func (store *MemoryMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
-	store.quotaMu.Lock()
-	defer store.quotaMu.Unlock()
-	return store.quota.Get(scope, id), nil
 }
 
 // GetStoreID returns the engine-persistent store identifier. Assigned on

@@ -19,7 +19,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/basestore"
 )
 
 // sqliteDriverName is the database/sql driver name registered by the imported
@@ -51,11 +51,6 @@ type SQLiteMetadataStore struct {
 	// cancel cancels the store context.
 	cancel context.CancelFunc
 
-	// usedBytes tracks the total logical bytes used by regular files. Updated
-	// atomically on every size-changing operation. Initialized from a SQL SUM
-	// query on startup.
-	usedBytes atomic.Int64
-
 	// manifestWrites counts how many times PutFile actually persisted the
 	// file_block_refs manifest (i.e. ran past the BlocksDirty gate). Test-only
 	// observability: it lets the conformance suite prove an attr-only write
@@ -63,11 +58,9 @@ type SQLiteMetadataStore struct {
 	// of the same M rows leaves the same count). Never read in production.
 	manifestWrites atomic.Int64
 
-	// quota tracks per-identity usage (bytes + file count) for regular files,
-	// keyed by owner uid / gid. Seeded from a GROUP BY query on startup and
-	// updated from each committed transaction's deltas. Guarded by quotaMu.
-	quotaMu sync.Mutex
-	quota   *quota.Cache
+	// baseStore embeds the shared usage accounting state for regular files.
+	// This includes total logical bytes used and per-identity usage for quota
+	*basestore.Base
 
 	// storeID is the engine-persistent identifier, backed by
 	// server_config.store_id. Created on first open with a fresh ULID; read
@@ -151,7 +144,7 @@ func NewSQLiteMetadataStore(
 		logger:       log,
 		ctx:          storeCtx,
 		cancel:       cancel,
-		quota:        quota.NewCache(),
+		Base:         basestore.NewBaseStore(),
 	}
 
 	if err := store.initUsedBytesCounter(ctx); err != nil {
@@ -173,11 +166,6 @@ func NewSQLiteMetadataStore(
 	return store, nil
 }
 
-// GetUsedBytes returns the current total logical bytes used by regular files.
-func (s *SQLiteMetadataStore) GetUsedBytes() int64 {
-	return s.usedBytes.Load()
-}
-
 // initUsedBytesCounter initializes the store-wide atomic counter from a SQL SUM
 // query and seeds the per-identity usage cache from GROUP BY aggregates. Both
 // are reconstructed from the inodes table (the source of truth).
@@ -187,7 +175,8 @@ func (s *SQLiteMetadataStore) initUsedBytesCounter(ctx context.Context) error {
 	if err := s.db.QueryRowContext(ctx, query, int(metadata.FileTypeRegular)).Scan(&totalUsed); err != nil {
 		return fmt.Errorf("failed to query used bytes: %w", err)
 	}
-	s.usedBytes.Store(totalUsed)
+
+	s.SetUsedBytes(totalUsed)
 
 	userUsage, err := s.seedUsageByColumn(ctx, "uid")
 	if err != nil {
@@ -197,9 +186,9 @@ func (s *SQLiteMetadataStore) initUsedBytesCounter(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s.quotaMu.Lock()
-	s.quota.Seed(userUsage, groupUsage)
-	s.quotaMu.Unlock()
+
+	s.Seed(userUsage, groupUsage)
+
 	return nil
 }
 
@@ -229,24 +218,6 @@ func (s *SQLiteMetadataStore) seedUsageByColumn(ctx context.Context, col string)
 		return nil, fmt.Errorf("failed iterating %s usage: %w", col, err)
 	}
 	return out, nil
-}
-
-// GetQuotaUsage returns per-identity usage for the given scope and id.
-func (s *SQLiteMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
-	s.quotaMu.Lock()
-	defer s.quotaMu.Unlock()
-	return s.quota.Get(scope, id), nil
-}
-
-// applyQuotaDelta folds a per-identity usage delta into the in-memory usage
-// cache. Called post-commit (matching usedBytes).
-func (s *SQLiteMetadataStore) applyQuotaDelta(delta map[quota.Key]metadata.UsageStat) {
-	if len(delta) == 0 {
-		return
-	}
-	s.quotaMu.Lock()
-	defer s.quotaMu.Unlock()
-	s.quota.Apply(delta)
 }
 
 // ensureStoreID reads the engine-persistent store_id from server_config; if the

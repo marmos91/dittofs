@@ -13,7 +13,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/basestore"
 )
 
 // PostgresMetadataStore implements the metadata.Store interface using PostgreSQL
@@ -63,18 +63,9 @@ type PostgresMetadataStore struct {
 	recoveryStore   *postgresRecoveryStore
 	recoveryStoreMu sync.Mutex
 
-	// usedBytes tracks the total logical bytes used by regular files.
-	// Updated atomically on every size-changing operation (create, update, truncate, delete).
-	// Initialized from a SQL SUM query on startup.
-	usedBytes atomic.Int64
-
-	// quota tracks per-identity usage (bytes + file count) for regular files,
-	// keyed by owner uid / gid. In-memory cache mirroring usedBytes, seeded from
-	// a SQL GROUP BY query on startup (the files table is the source of truth, so
-	// it is always reconstructed correctly). Updated from a transaction's pending
-	// per-identity deltas exactly once on successful commit. Guarded by quotaMu.
-	quotaMu sync.Mutex
-	quota   *quota.Cache
+	// baseStore embeds the shared usage accounting state for regular files.
+	// This includes total logical bytes used and per-identity usage for quota
+	*basestore.Base
 
 	// storeID is the engine-persistent identifier for this store instance,
 	// backed by the server_config.store_id column. Created on first open
@@ -140,7 +131,7 @@ func NewPostgresMetadataStore(
 		logger:       log,
 		ctx:          storeCtx,
 		cancel:       cancel,
-		quota:        quota.NewCache(),
+		Base:         basestore.NewBaseStore(),
 	}
 
 	// Initialize the usedBytes counter from a SQL SUM query.
@@ -173,12 +164,6 @@ func NewPostgresMetadataStore(
 	return store, nil
 }
 
-// GetUsedBytes returns the current total logical bytes used by regular files.
-// This is an O(1) atomic read, safe for concurrent access without locks.
-func (s *PostgresMetadataStore) GetUsedBytes() int64 {
-	return s.usedBytes.Load()
-}
-
 // initUsedBytesCounter initializes the store-wide atomic counter from a SQL SUM
 // query and seeds the per-identity usage cache from GROUP BY aggregates. Both
 // are reconstructed from the inodes table (the source
@@ -192,7 +177,8 @@ func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error 
 	if err != nil {
 		return fmt.Errorf("failed to query used bytes: %w", err)
 	}
-	s.usedBytes.Store(totalUsed)
+
+	s.SetUsedBytes(totalUsed)
 
 	userUsage, err := s.seedUsageByColumn(ctx, "uid")
 	if err != nil {
@@ -202,9 +188,9 @@ func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error 
 	if err != nil {
 		return err
 	}
-	s.quotaMu.Lock()
-	s.quota.Seed(userUsage, groupUsage)
-	s.quotaMu.Unlock()
+
+	s.Seed(userUsage, groupUsage)
+
 	return nil
 }
 
@@ -234,26 +220,6 @@ func (s *PostgresMetadataStore) seedUsageByColumn(ctx context.Context, col strin
 		return nil, fmt.Errorf("failed iterating %s usage: %w", col, err)
 	}
 	return out, nil
-}
-
-// GetQuotaUsage returns per-identity usage for the given scope and id.
-// O(1) cache read under quotaMu. A missing key returns a zero UsageStat.
-func (s *PostgresMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
-	s.quotaMu.Lock()
-	defer s.quotaMu.Unlock()
-	return s.quota.Get(scope, id), nil
-}
-
-// applyQuotaDelta folds a per-identity usage delta into the in-memory usage
-// cache. Called post-commit (matching usedBytes). Buckets that drop to zero or
-// below are removed.
-func (s *PostgresMetadataStore) applyQuotaDelta(delta map[quota.Key]metadata.UsageStat) {
-	if len(delta) == 0 {
-		return
-	}
-	s.quotaMu.Lock()
-	defer s.quotaMu.Unlock()
-	s.quota.Apply(delta)
 }
 
 // ensureStoreID reads the engine-persistent store_id from server_config; if

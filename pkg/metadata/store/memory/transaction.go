@@ -193,13 +193,11 @@ func (store *MemoryMetadataStore) WithTransaction(ctx context.Context, fn func(t
 
 	// Commit succeeded — apply the accumulated usedBytes delta once.
 	if tx.pendingDelta != 0 {
-		store.usedBytes.Add(tx.pendingDelta)
+		store.AddUsedBytes(tx.pendingDelta)
 	}
 	// Apply per-identity usage deltas once, under quotaMu.
 	if d := tx.quota.Map(); len(d) > 0 {
-		store.quotaMu.Lock()
-		store.quota.Apply(d)
-		store.quotaMu.Unlock()
+		store.ApplyQuotaDelta(d)
 	}
 	// Apply buffered synced-marker mutations once, under syncedMu. Map writes
 	// cannot fail, so the commit stays all-or-nothing. A concurrent direct

@@ -140,10 +140,10 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 		if err == nil {
 			// Apply the accumulated usedBytes delta exactly once, after commit.
 			if pendingDelta != 0 {
-				s.usedBytes.Add(pendingDelta)
+				s.AddUsedBytes(pendingDelta)
 			}
 			// Apply per-identity usage deltas once, after commit.
-			s.applyQuotaDelta(quotaDelta)
+			s.ApplyQuotaDelta(quotaDelta)
 			// Apply the staged filesystem-capabilities update once, after commit,
 			// so a persist that never committed can't leave the in-memory copy
 			// (read by GetFilesystemMeta) ahead of durable storage.

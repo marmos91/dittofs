@@ -213,22 +213,10 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 	s.shareCache.invalidate(shareName)
 	// Apply the usedBytes decrement once, after a successful commit.
 	if freedBytes > 0 {
-		s.usedBytes.Add(-freedBytes)
+		s.AddUsedBytes(-freedBytes)
 	}
-	s.applyQuotaDelta(quotaFreed)
+	s.ApplyQuotaDelta(quotaFreed)
 	return nil
-}
-
-// applyQuotaDelta folds a per-identity usage delta into the in-memory usage
-// cache. Called post-commit (matching usedBytes). Buckets that drop to zero or
-// below are removed.
-func (s *BadgerMetadataStore) applyQuotaDelta(delta map[quota.Key]metadata.UsageStat) {
-	if len(delta) == 0 {
-		return
-	}
-	s.quotaMu.Lock()
-	defer s.quotaMu.Unlock()
-	s.quota.Apply(delta)
 }
 
 // deleteShareFiles removes every file inode and its dependent keys (parent,

@@ -15,7 +15,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/basestore"
 )
 
 // BadgerMetadataStore implements metadata.Store using BadgerDB for persistence.
@@ -145,19 +145,9 @@ type BadgerMetadataStore struct {
 	recoveryStore   *badgerRecoveryStore
 	recoveryStoreMu sync.Mutex
 
-	// usedBytes tracks the total logical bytes used by regular files.
-	// Updated atomically on every size-changing operation (create, update, truncate, delete).
-	// Initialized from a full file scan on startup.
-	usedBytes atomic.Int64
-
-	// quota tracks per-identity usage (bytes + file count) for regular files,
-	// keyed by owner uid / gid. In-memory cache mirroring usedBytes, seeded from
-	// a full file scan on startup (so it is always reconstructed from the durable
-	// file rows — back-compatible with existing dumps). Updated from a
-	// transaction's pending per-identity deltas exactly once on successful
-	// commit. Guarded by quotaMu.
-	quotaMu sync.Mutex
-	quota   *quota.Cache
+	// baseStore embeds the shared usage accounting state for regular files.
+	// This includes total logical bytes used and per-identity usage for quota
+	*basestore.Base
 
 	// storeID is the engine-persistent identifier for this store instance,
 	// backed by the cfg:store_id key in BadgerDB. Created on first open of
@@ -385,7 +375,7 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		storeID:           sid,
 		relaxedDurability: config.RelaxedDurability,
 		syncStop:          make(chan struct{}),
-		quota:             quota.NewCache(),
+		Base:              basestore.NewBaseStore(),
 	}
 
 	// Initialize stats cache with a 5-second TTL for responsive updates
@@ -621,12 +611,6 @@ func ensureStoreID(db *badger.DB) (string, error) {
 	return fresh, nil
 }
 
-// GetUsedBytes returns the current total logical bytes used by regular files.
-// This is an O(1) atomic read, safe for concurrent access without locks.
-func (s *BadgerMetadataStore) GetUsedBytes() int64 {
-	return s.usedBytes.Load()
-}
-
 // initUsedBytesCounter scans all file entries once at startup to initialize the
 // store-wide atomic counter and the per-identity usage cache (userUsage /
 // groupUsage). Both are reconstructed from the durable file rows, so a store
@@ -679,19 +663,10 @@ func (s *BadgerMetadataStore) initUsedBytesCounter() error {
 		return err
 	}
 
-	s.usedBytes.Store(totalUsed)
-	s.quotaMu.Lock()
-	s.quota.Seed(userUsage, groupUsage)
-	s.quotaMu.Unlock()
-	return nil
-}
+	s.SetUsedBytes(totalUsed)
+	s.Seed(userUsage, groupUsage)
 
-// GetQuotaUsage returns per-identity usage for the given scope and id.
-// O(1) cache read under quotaMu. A missing key returns a zero UsageStat.
-func (s *BadgerMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
-	s.quotaMu.Lock()
-	defer s.quotaMu.Unlock()
-	return s.quota.Get(scope, id), nil
+	return nil
 }
 
 // NewBadgerMetadataStoreWithDefaults creates a new BadgerDB metadata store with sensible defaults.
