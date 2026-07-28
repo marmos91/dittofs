@@ -613,8 +613,8 @@ func dittofsEvict(ctx context.Context) error {
 	// would read it from disk — FAIL LOUDLY rather than emit a warm number labelled
 	// "cold". The DiskWr/NetRx columns independently confirm coldness post-hoc.
 	if before.LocalDiskUsed <= dittofsColdBarrierFloorBytes {
-		// Below the floor the drop ratio is noise, so the check above cannot say
-		// whether the evict worked. Say that out loud: a silent return here reads
+		// Below the floor the drop ratio is noise, so the assertion below cannot
+		// say whether the evict worked. Say that out loud: a silent return reads
 		// in the log exactly like a verified barrier, and the cold cell it labels
 		// may have been served warm.
 		_, _ = fmt.Fprintf(exec.CmdOut,
