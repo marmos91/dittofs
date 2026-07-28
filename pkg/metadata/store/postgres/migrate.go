@@ -36,6 +36,13 @@ func runMigrations(ctx context.Context, connString string, logger *slog.Logger) 
 		return fmt.Errorf("failed to ping database: %w", err)
 	}
 
+	// Migrating a database that is already ahead of this build is not a no-op
+	// worth reporting as "up to date" — refuse it here too, so the manual
+	// migrate path fails as loudly as the open path.
+	if err := checkFormatVersionDB(ctx, db); err != nil {
+		return err
+	}
+
 	// Create postgres driver instance for migrations
 	driver, err := postgres.WithInstance(db, &postgres.Config{
 		MigrationsTable: "schema_migrations",
@@ -138,11 +145,26 @@ func newestEmbeddedVersion() (int64, error) {
 // with "file does not exist", and only when AutoMigrate is on, which it is not
 // by default — so the database otherwise opens cleanly and then fails query by
 // query with raw SQL errors, long after startup.
+// The open path holds a pgx pool and the manual migrate path holds a
+// database/sql handle, so the guard reads through whichever the caller has
+// rather than opening a second connection to ask two questions.
 func checkFormatVersion(ctx context.Context, pool *pgxpool.Pool) error {
+	return checkFormatVersionWith(ctx, func(ctx context.Context, query string, dest any) error {
+		return pool.QueryRow(ctx, query).Scan(dest)
+	})
+}
+
+func checkFormatVersionDB(ctx context.Context, db *sql.DB) error {
+	return checkFormatVersionWith(ctx, func(ctx context.Context, query string, dest any) error {
+		return db.QueryRowContext(ctx, query).Scan(dest)
+	})
+}
+
+func checkFormatVersionWith(ctx context.Context, scan func(context.Context, string, any) error) error {
 	var exists bool
-	if err := pool.QueryRow(ctx,
-		`SELECT to_regclass('schema_migrations') IS NOT NULL`,
-	).Scan(&exists); err != nil {
+	if err := scan(ctx,
+		`SELECT to_regclass('schema_migrations') IS NOT NULL`, &exists,
+	); err != nil {
 		return fmt.Errorf("probe schema_migrations: %w", err)
 	}
 	if !exists {
@@ -152,7 +174,7 @@ func checkFormatVersion(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 
 	var stored *int64
-	if err := pool.QueryRow(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&stored); err != nil {
+	if err := scan(ctx, `SELECT MAX(version) FROM schema_migrations`, &stored); err != nil {
 		return fmt.Errorf("read schema_migrations: %w", err)
 	}
 	if stored == nil {
