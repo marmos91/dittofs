@@ -123,6 +123,20 @@ const (
 // instead of aborting the cell on a bare deadline (issue #1668).
 const dittofsDrainTimeout = "15m"
 
+// dittofsDrainProgressInterval is how often the drain loop reports the store's
+// unsynced size while a drain-uploads call is in flight. The call prints nothing
+// until it returns and may legitimately run for minutes, so on a timeout the log
+// otherwise says only that the drain did not finish — not whether it was moving.
+// A falling unsynced size means slow; a flat one means wedged, and those two
+// need opposite fixes.
+const dittofsDrainProgressInterval = 30 * time.Second
+
+// dittofsDrainProgressSampleTimeout bounds one progress sample. Comfortably
+// under the sampling interval so a slow sample cannot queue behind the next one,
+// and short enough that an unresponsive server costs one skipped line rather
+// than the rest of the log.
+const dittofsDrainProgressSampleTimeout = 10 * time.Second
+
 // dittofsUnboundedMaxSize is the default local-journal cap: generous headroom so
 // a sustained write burst measures the tier's throughput, not its saturation
 // cliff (see dittofsSetup). The cache-cap study variants pass a small cap instead.
@@ -561,7 +575,10 @@ func dittofsDrainUntilSynced(ctx context.Context) error {
 		// Bound each drain explicitly (issue #1668): a cold-evict drain of a large
 		// working set can exceed the client's 6m default, and the failure surfaces
 		// as a bare "context deadline exceeded" that aborts the cell.
-		if err := exec.Sh(ctx, "dfsctl", "system", "drain-uploads", "--timeout", dittofsDrainTimeout); err != nil {
+		stop := dittofsReportDrainProgress(ctx, i)
+		err := exec.Sh(ctx, "dfsctl", "system", "drain-uploads", "--timeout", dittofsDrainTimeout)
+		stop()
+		if err != nil {
 			return fmt.Errorf("dfsctl system drain-uploads: %w", err)
 		}
 		st, err := dittofsBlockStats(ctx)
@@ -584,6 +601,48 @@ func dittofsDrainUntilSynced(ctx context.Context) error {
 	st, _ := dittofsBlockStats(ctx)
 	return fmt.Errorf("drain-uploads never fell below %dMiB unsynced after %d rounds (unsynced=%dMiB pending_uploads=%d) — cannot force a cold read",
 		dittofsDrainDriftFloorBytes>>20, maxRounds, st.UnsyncedBytes>>20, st.PendingUploads)
+}
+
+// dittofsReportDrainProgress samples the store's unsynced size every
+// dittofsDrainProgressInterval and prints it, until the returned function is
+// called. round labels the samples so consecutive drains stay distinguishable
+// in the log. A sampling error is skipped rather than reported: the sampler is
+// commentary on the drain, and must never be the thing that fails the barrier.
+func dittofsReportDrainProgress(ctx context.Context, round int) func() {
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		ticker := time.NewTicker(dittofsDrainProgressInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// Bound each sample. The drain this reports on is exactly the
+				// situation where the server may be unresponsive, so an unbounded
+				// stats call could hang here for the rest of the run and take the
+				// stop function down with it — the progress log would go quiet at
+				// the moment it is most worth reading, and the barrier would then
+				// block waiting for a sampler that never returns.
+				sctx, cancel := context.WithTimeout(ctx, dittofsDrainProgressSampleTimeout)
+				st, err := dittofsBlockStats(sctx)
+				cancel()
+				if err != nil {
+					continue
+				}
+				_, _ = fmt.Fprintf(exec.CmdOut, "drain round %d: unsynced=%dMiB pending_uploads=%d\n",
+					round, st.UnsyncedBytes>>20, st.PendingUploads)
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-finished
+	}
 }
 
 func dittofsEvict(ctx context.Context) error {
