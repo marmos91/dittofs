@@ -241,10 +241,15 @@ bucket. Forcing that state is not simply a matter of dropping the page cache: th
 tier has to be flushed to the remote and then evicted, and if either half quietly fails
 the "cold" pass measures a local read wearing a cold label.
 
-So each cold cell below is gated on a barrier that flushes, evicts, and then **verifies**
-the local tier actually emptied, refusing the measurement otherwise. The `cold NetRx`
-column is the independent check: bytes genuinely arriving over the network during the
-read. A cold row with meaningful NetRx read the data from object storage.
+So each cold cell below is gated on a barrier that flushes, evicts, and then checks the
+local tier actually emptied — it fails the cell if the tier is still substantially
+populated, and where the working set is too small for that ratio to mean anything
+(under 64 MiB) it reports the cell as unverified rather than passing it silently. Every
+cold cell in the table below cleared the check; none rests on the unverified path.
+
+The `cold NetRx` column is the independent evidence: the rate at which bytes arrived over
+the network during the read, in MB/s. A cold row whose NetRx is comparable to its read
+throughput fetched the data from object storage rather than from local disk.
 
 Sequential is MB/s, random is 4 KiB IOPS, large size class (1 GiB × 4 jobs), NFSv3:
 
