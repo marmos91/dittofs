@@ -102,20 +102,40 @@ type rowWithOffset struct {
 // in rows covers it. The walk is O(N) over the per-payload row
 // list — acceptable for the FastCDC steady-state (chunks average ~4 MiB
 // so even a 4 GiB file produces ~1000 rows).
-func findRowCoveringOffset(rows []*block.FileChunk, target uint64) *rowWithOffset {
+//
+// A row whose ID does not parse cannot be placed, so its range is unknown. That
+// is only fatal to reads it might have covered: if some other row covers target,
+// that answer is unaffected and is returned. Only when nothing covers target does
+// the unplaceable row matter, because then the choice is between reporting a hole
+// — which the caller zero-fills, inventing data the file may never have had — and
+// admitting the manifest is inconsistent. It admits.
+//
+// Scoping it this way keeps one bad row from making a whole payload unreadable.
+// The alternative, refusing the moment such a row is seen at any offset, would
+// take a file that reads correctly apart from one damaged range and make all of
+// it unavailable.
+func findRowCoveringOffset(rows []*block.FileChunk, target uint64) (*rowWithOffset, error) {
+	unplaceable := ""
 	for _, fb := range rows {
 		if fb == nil {
 			continue
 		}
 		abs, ok := block.ParseChunkOffset(fb.ID)
 		if !ok {
+			if unplaceable == "" {
+				unplaceable = fb.ID
+			}
 			continue
 		}
 		if target >= abs && target < abs+uint64(fb.DataSize) {
-			return &rowWithOffset{fb: fb, absOffset: abs}
+			return &rowWithOffset{fb: fb, absOffset: abs}, nil
 		}
 	}
-	return nil
+	if unplaceable != "" {
+		return nil, fmt.Errorf("%w: nothing covers offset %d and manifest holds unplaceable row %q",
+			block.ErrManifestInconsistent, target, unplaceable)
+	}
+	return nil, nil
 }
 
 // chunkAtOffsetResolver is the indexed covering-chunk lookup, implemented only
@@ -142,7 +162,7 @@ func resolveCovering(ctx context.Context, store block.EngineFileChunkStore, payl
 		}
 		abs, ok := block.ParseChunkOffset(fb.ID)
 		if !ok {
-			return nil, 0, fmt.Errorf("resolveCovering: malformed FileChunk ID %q", fb.ID)
+			return nil, 0, fmt.Errorf("%w: malformed FileChunk ID %q", block.ErrManifestInconsistent, fb.ID)
 		}
 		return fb, abs, nil
 	}
@@ -153,7 +173,10 @@ func resolveCovering(ctx context.Context, store block.EngineFileChunkStore, payl
 		}
 		return nil, 0, err
 	}
-	rw := findRowCoveringOffset(rows, off)
+	rw, err := findRowCoveringOffset(rows, off)
+	if err != nil {
+		return nil, 0, err
+	}
 	if rw == nil {
 		return nil, 0, nil
 	}

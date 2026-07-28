@@ -57,6 +57,13 @@ type coldSeedReport struct {
 	// deleted while this is non-zero.
 	unsynced int
 
+	// unplaceable counts manifest rows whose ID carries no parseable offset. Which
+	// bytes they describe is not recoverable from the row, so nothing could be
+	// seeded for them and no later read can serve them. The archive may hold the
+	// only copy that is still placeable, so this is weighed alongside unsynced
+	// when deciding whether to reap.
+	unplaceable int
+
 	// samples are extents to read back, capped at coldVerifySamples.
 	samples []coldSample
 }
@@ -136,11 +143,12 @@ func finishLegacyArchiveMigration(
 			"so refusing to serve zeros — restore the archive or investigate before retrying",
 			shareName, verr, archives)
 	}
-	if report.unsynced > 0 {
-		logger.Warn("migrated pre-journal local layout and verified a sample, but some chunks never reached the remote; "+
-			"keeping the archived blobs/+logs/ because those bytes exist nowhere else",
+	if report.unsynced > 0 || report.unplaceable > 0 {
+		logger.Warn("migrated pre-journal local layout and verified a sample, but some chunks are not accounted for; "+
+			"keeping the archived blobs/+logs/ because those bytes may exist nowhere else",
 			"share", shareName, "payloads", report.payloads, "chunks", report.chunks,
-			"chunks_not_remote", report.unsynced, "archive", archives)
+			"chunks_not_remote", report.unsynced, "chunks_unplaceable", report.unplaceable,
+			"archive", archives)
 		return nil
 	}
 	freed := archiveBytes(archives)
