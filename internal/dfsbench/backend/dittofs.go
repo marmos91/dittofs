@@ -131,6 +131,12 @@ const dittofsDrainTimeout = "15m"
 // need opposite fixes.
 const dittofsDrainProgressInterval = 30 * time.Second
 
+// dittofsDrainProgressSampleTimeout bounds one progress sample. Comfortably
+// under the sampling interval so a slow sample cannot queue behind the next one,
+// and short enough that an unresponsive server costs one skipped line rather
+// than the rest of the log.
+const dittofsDrainProgressSampleTimeout = 10 * time.Second
+
 // dittofsUnboundedMaxSize is the default local-journal cap: generous headroom so
 // a sustained write burst measures the tier's throughput, not its saturation
 // cliff (see dittofsSetup). The cache-cap study variants pass a small cap instead.
@@ -616,7 +622,15 @@ func dittofsReportDrainProgress(ctx context.Context, round int) func() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				st, err := dittofsBlockStats(ctx)
+				// Bound each sample. The drain this reports on is exactly the
+				// situation where the server may be unresponsive, so an unbounded
+				// stats call could hang here for the rest of the run and take the
+				// stop function down with it — the progress log would go quiet at
+				// the moment it is most worth reading, and the barrier would then
+				// block waiting for a sampler that never returns.
+				sctx, cancel := context.WithTimeout(ctx, dittofsDrainProgressSampleTimeout)
+				st, err := dittofsBlockStats(sctx)
+				cancel()
 				if err != nil {
 					continue
 				}
