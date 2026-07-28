@@ -42,7 +42,7 @@ func (s *MemoryMetadataStore) Reset(ctx context.Context) error {
 	s.durableStore = nil
 	s.recoveryStore = nil
 
-	s.ResetUsage()
+	s.base.ResetUsage()
 
 	s.syncedMu.Lock()
 	s.synced = make(map[block.ContentHash]time.Time)

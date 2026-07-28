@@ -59,8 +59,8 @@ type SQLiteMetadataStore struct {
 	manifestWrites atomic.Int64
 
 	// baseStore embeds the shared usage accounting state for regular files.
-	// This includes total logical bytes used and per-identity usage for quota
-	*basestore.Base
+	// This includes total logical bytes used and per-identity usage for quota.
+	base *basestore.Base
 
 	// storeID is the engine-persistent identifier, backed by
 	// server_config.store_id. Created on first open with a fresh ULID; read
@@ -144,7 +144,7 @@ func NewSQLiteMetadataStore(
 		logger:       log,
 		ctx:          storeCtx,
 		cancel:       cancel,
-		Base:         basestore.NewBaseStore(),
+		base:         basestore.NewBaseStore(),
 	}
 
 	if err := store.initUsedBytesCounter(ctx); err != nil {
@@ -166,6 +166,11 @@ func NewSQLiteMetadataStore(
 	return store, nil
 }
 
+// GetUsedBytes returns the current total logical bytes used by regular files.
+func (s *SQLiteMetadataStore) GetUsedBytes() int64 {
+	return s.base.GetUsedBytes()
+}
+
 // initUsedBytesCounter initializes the store-wide atomic counter from a SQL SUM
 // query and seeds the per-identity usage cache from GROUP BY aggregates. Both
 // are reconstructed from the inodes table (the source of truth).
@@ -176,7 +181,7 @@ func (s *SQLiteMetadataStore) initUsedBytesCounter(ctx context.Context) error {
 		return fmt.Errorf("failed to query used bytes: %w", err)
 	}
 
-	s.SetUsedBytes(totalUsed)
+	s.base.SetUsedBytes(totalUsed)
 
 	userUsage, err := s.seedUsageByColumn(ctx, "uid")
 	if err != nil {
@@ -187,7 +192,7 @@ func (s *SQLiteMetadataStore) initUsedBytesCounter(ctx context.Context) error {
 		return err
 	}
 
-	s.Seed(userUsage, groupUsage)
+	s.base.Seed(userUsage, groupUsage)
 
 	return nil
 }
@@ -218,6 +223,11 @@ func (s *SQLiteMetadataStore) seedUsageByColumn(ctx context.Context, col string)
 		return nil, fmt.Errorf("failed iterating %s usage: %w", col, err)
 	}
 	return out, nil
+}
+
+// GetQuotaUsage returns per-identity usage for the given scope and id.
+func (s *SQLiteMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
+	return s.base.GetQuotaUsage(scope, id)
 }
 
 // ensureStoreID reads the engine-persistent store_id from server_config; if the

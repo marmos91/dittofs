@@ -21,6 +21,6 @@ func (s *BadgerMetadataStore) Reset(ctx context.Context) error {
 	if err := s.db.DropAll(); err != nil {
 		return fmt.Errorf("badger reset: drop all: %w", err)
 	}
-	s.ResetUsage()
+	s.base.ResetUsage()
 	return nil
 }

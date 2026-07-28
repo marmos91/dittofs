@@ -64,8 +64,8 @@ type PostgresMetadataStore struct {
 	recoveryStoreMu sync.Mutex
 
 	// baseStore embeds the shared usage accounting state for regular files.
-	// This includes total logical bytes used and per-identity usage for quota
-	*basestore.Base
+	// This includes total logical bytes used and per-identity usage for quota.
+	base *basestore.Base
 
 	// storeID is the engine-persistent identifier for this store instance,
 	// backed by the server_config.store_id column. Created on first open
@@ -131,7 +131,7 @@ func NewPostgresMetadataStore(
 		logger:       log,
 		ctx:          storeCtx,
 		cancel:       cancel,
-		Base:         basestore.NewBaseStore(),
+		base:         basestore.NewBaseStore(),
 	}
 
 	// Initialize the usedBytes counter from a SQL SUM query.
@@ -164,6 +164,12 @@ func NewPostgresMetadataStore(
 	return store, nil
 }
 
+// GetUsedBytes returns the current total logical bytes used by regular files.
+// This is an O(1) atomic read, safe for concurrent access without locks.
+func (s *PostgresMetadataStore) GetUsedBytes() int64 {
+	return s.base.GetUsedBytes()
+}
+
 // initUsedBytesCounter initializes the store-wide atomic counter from a SQL SUM
 // query and seeds the per-identity usage cache from GROUP BY aggregates. Both
 // are reconstructed from the inodes table (the source
@@ -178,7 +184,7 @@ func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error 
 		return fmt.Errorf("failed to query used bytes: %w", err)
 	}
 
-	s.SetUsedBytes(totalUsed)
+	s.base.SetUsedBytes(totalUsed)
 
 	userUsage, err := s.seedUsageByColumn(ctx, "uid")
 	if err != nil {
@@ -189,9 +195,15 @@ func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error 
 		return err
 	}
 
-	s.Seed(userUsage, groupUsage)
+	s.base.Seed(userUsage, groupUsage)
 
 	return nil
+}
+
+// GetQuotaUsage returns per-identity usage for the given scope and id.
+// O(1) cache read under quotaMu. A missing key returns a zero UsageStat.
+func (s *PostgresMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
+	return s.base.GetQuotaUsage(scope, id)
 }
 
 // seedUsageByColumn aggregates per-identity usage (bytes + count) for regular

@@ -439,8 +439,8 @@ func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 		}
 	}
 
-	s.SetUsedBytes(totalBytes)
-	s.Seed(userUID, groupUID)
+	s.base.SetUsedBytes(totalBytes)
+	s.base.Seed(userUID, groupUID)
 
 	return nil
 }

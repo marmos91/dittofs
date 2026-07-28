@@ -118,11 +118,11 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 
 		// Apply the accumulated usedBytes delta exactly once, after commit.
 		if ptx.pendingDelta != 0 {
-			s.AddUsedBytes(ptx.pendingDelta)
+			s.base.AddUsedBytes(ptx.pendingDelta)
 		}
 
 		// Apply per-identity usage deltas once, after commit.
-		s.ApplyQuotaDelta(ptx.quota.Map())
+		s.base.ApplyQuotaDelta(ptx.quota.Map())
 		return nil // Success
 	}
 

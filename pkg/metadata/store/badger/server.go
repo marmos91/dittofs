@@ -152,7 +152,7 @@ func (s *BadgerMetadataStore) GetFilesystemStatistics(ctx context.Context, handl
 	}
 
 	// Read usage from atomic counter (O(1), always fresh).
-	usedSize := uint64(s.GetUsedBytes())
+	usedSize := uint64(s.base.GetUsedBytes())
 
 	// For file count, check cache first.
 	s.statsCache.mu.RLock()

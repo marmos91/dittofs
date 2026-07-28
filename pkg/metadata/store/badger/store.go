@@ -147,7 +147,7 @@ type BadgerMetadataStore struct {
 
 	// baseStore embeds the shared usage accounting state for regular files.
 	// This includes total logical bytes used and per-identity usage for quota
-	*basestore.Base
+	base *basestore.Base
 
 	// storeID is the engine-persistent identifier for this store instance,
 	// backed by the cfg:store_id key in BadgerDB. Created on first open of
@@ -375,7 +375,7 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		storeID:           sid,
 		relaxedDurability: config.RelaxedDurability,
 		syncStop:          make(chan struct{}),
-		Base:              basestore.NewBaseStore(),
+		base:              basestore.NewBaseStore(),
 	}
 
 	// Initialize stats cache with a 5-second TTL for responsive updates
@@ -611,6 +611,12 @@ func ensureStoreID(db *badger.DB) (string, error) {
 	return fresh, nil
 }
 
+// GetUsedBytes returns the current total logical bytes used by regular files.
+// This is an O(1) atomic read, safe for concurrent access without locks.
+func (s *BadgerMetadataStore) GetUsedBytes() int64 {
+	return s.base.GetUsedBytes()
+}
+
 // initUsedBytesCounter scans all file entries once at startup to initialize the
 // store-wide atomic counter and the per-identity usage cache (userUsage /
 // groupUsage). Both are reconstructed from the durable file rows, so a store
@@ -663,10 +669,16 @@ func (s *BadgerMetadataStore) initUsedBytesCounter() error {
 		return err
 	}
 
-	s.SetUsedBytes(totalUsed)
-	s.Seed(userUsage, groupUsage)
+	s.base.SetUsedBytes(totalUsed)
+	s.base.Seed(userUsage, groupUsage)
 
 	return nil
+}
+
+// GetQuotaUsage returns per-identity usage for the given scope and id.
+// O(1) cache read under quotaMu. A missing key returns a zero UsageStat.
+func (s *BadgerMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
+	return s.base.GetQuotaUsage(scope, id)
 }
 
 // NewBadgerMetadataStoreWithDefaults creates a new BadgerDB metadata store with sensible defaults.

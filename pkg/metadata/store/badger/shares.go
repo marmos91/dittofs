@@ -213,9 +213,9 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 	s.shareCache.invalidate(shareName)
 	// Apply the usedBytes decrement once, after a successful commit.
 	if freedBytes > 0 {
-		s.AddUsedBytes(-freedBytes)
+		s.base.AddUsedBytes(-freedBytes)
 	}
-	s.ApplyQuotaDelta(quotaFreed)
+	s.base.ApplyQuotaDelta(quotaFreed)
 	return nil
 }
 
