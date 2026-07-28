@@ -102,20 +102,27 @@ type rowWithOffset struct {
 // in rows covers it. The walk is O(N) over the per-payload row
 // list — acceptable for the FastCDC steady-state (chunks average ~4 MiB
 // so even a 4 GiB file produces ~1000 rows).
-func findRowCoveringOffset(rows []*block.FileChunk, target uint64) *rowWithOffset {
+//
+// A row whose ID does not parse is reported as an error rather than skipped.
+// Absence of a row means a hole, which the caller zero-fills; a row that exists
+// but cannot be placed means the manifest disagrees with itself, and silently
+// passing it over would render the bytes it points at as zeros with no error
+// anywhere — data the store still holds, reported to the caller as data the file
+// never had.
+func findRowCoveringOffset(rows []*block.FileChunk, target uint64) (*rowWithOffset, error) {
 	for _, fb := range rows {
 		if fb == nil {
 			continue
 		}
 		abs, ok := block.ParseChunkOffset(fb.ID)
 		if !ok {
-			continue
+			return nil, fmt.Errorf("%w: malformed FileChunk ID %q", block.ErrManifestInconsistent, fb.ID)
 		}
 		if target >= abs && target < abs+uint64(fb.DataSize) {
-			return &rowWithOffset{fb: fb, absOffset: abs}
+			return &rowWithOffset{fb: fb, absOffset: abs}, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // chunkAtOffsetResolver is the indexed covering-chunk lookup, implemented only
@@ -142,7 +149,7 @@ func resolveCovering(ctx context.Context, store block.EngineFileChunkStore, payl
 		}
 		abs, ok := block.ParseChunkOffset(fb.ID)
 		if !ok {
-			return nil, 0, fmt.Errorf("resolveCovering: malformed FileChunk ID %q", fb.ID)
+			return nil, 0, fmt.Errorf("%w: malformed FileChunk ID %q", block.ErrManifestInconsistent, fb.ID)
 		}
 		return fb, abs, nil
 	}
@@ -153,7 +160,10 @@ func resolveCovering(ctx context.Context, store block.EngineFileChunkStore, payl
 		}
 		return nil, 0, err
 	}
-	rw := findRowCoveringOffset(rows, off)
+	rw, err := findRowCoveringOffset(rows, off)
+	if err != nil {
+		return nil, 0, err
+	}
 	if rw == nil {
 		return nil, 0, nil
 	}
