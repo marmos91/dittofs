@@ -233,6 +233,63 @@ direct, synchronous sequential writes, and the network path to object storage ad
 round-trip of roughly 20 ms — so the durable-tier numbers above are bounded by that
 object-storage round-trip, not by local hardware.
 
+## Cold reads: when the bytes are only in object storage
+
+Every read above is warm — the data is on the local tier. The harder question for a
+filesystem backed by object storage is what a read costs when the bytes are *only* in the
+bucket. Forcing that state is not simply a matter of dropping the page cache: the local
+tier has to be flushed to the remote and then evicted, and if either half quietly fails
+the "cold" pass measures a local read wearing a cold label.
+
+So each cold cell below is gated on a barrier that flushes, evicts, and then **verifies**
+the local tier actually emptied, refusing the measurement otherwise. The `cold NetRx`
+column is the independent check: bytes genuinely arriving over the network during the
+read. A cold row with meaningful NetRx read the data from object storage.
+
+Sequential is MB/s, random is 4 KiB IOPS, large size class (1 GiB × 4 jobs), NFSv3:
+
+| System | seq-read warm | seq-read cold | cold NetRx | rand-rd warm | rand-rd cold |
+|---|---|---|---|---|---|
+| DittoFS · badger · local-durable | 2,094 | 64 | 125 | 9,782 | 7,195 |
+| DittoFS · badger · writeback | 2,743 | 30 | 58 | 45,572 | 32,080 |
+| DittoFS · badger · ack-on-S3 | 2,163 | 18 | 28 | 9,659 | 6,539 |
+| DittoFS · sqlite · local-durable | 27 | 12 | 28 | 354 | 157 |
+| DittoFS · postgres · local-durable | 67 | 19 | 38 | 991 | 641 |
+| ZeroFS | 34 | 45 | 45 | 2,471 | 2,099 |
+| ZeroFS · sync | 320 | 20 | 18 | 2,456 | 1,271 |
+| JuiceFS | 274 | 212 | 221 | 91 | 102 |
+| JuiceFS · durable | 220 | 346 | 358 | 39 | 216 |
+| s3ql | 1,778 | 15 | 13 | 55,885 | 39 |
+| rclone | 1,375 | 57 | 60 | 51,532 | 1.3 |
+| s3fs | 3,117 | 300 | 295 | 56,877 | 1,071 |
+| nfs-ganesha | 5,361 | 1,660 | — | 63,620 | 5,246 |
+| local disk (ceiling) | 6,159 | 1,660 | — | 112,904 | 5,248 |
+
+Read this table with more care than the warm ones.
+
+**The last two rows are not object-storage systems.** `nfs-ganesha` re-exports a local
+directory and `local disk` is the raw ceiling; their "cold" pass only drops the page
+cache, so there is no network fetch and no NetRx. They are the floor for what a cold read
+costs when the bytes never left the machine, not competitors on this axis.
+
+**DittoFS random reads stay close to warm** — 32,080 against 45,572 IOPS on the writeback
+tier, and 7,195 against 9,782 on local-durable. Sequential cold throughput is where the
+object-storage round-trip shows up plainly: 64 MB/s against 2,094 warm.
+
+**JuiceFS reads cold slightly faster than warm here, which is a measurement artifact, not
+a result.** A FUSE re-export gets the kernel page cache on the NFS side that native
+servers do not, and its warm sequential numbers (274, 220 MB/s) are low enough that the
+run-to-run spread swamps the difference. Do not read 346 > 220 as "eviction made it
+faster"; read it as "these two numbers are not distinguishable on this rig."
+
+**The systems that collapse on cold random reads are the interesting ones.** s3ql goes
+55,885 → 39 IOPS and rclone 51,532 → 1.3: a 4 KiB random read that misses their cache
+costs a whole object fetch. DittoFS's chunk-level fetch is what keeps its cold random
+reads within striking distance of warm, and that difference is the point of the design.
+
+The `juicefs-postgres` cold cells are absent — its reads returned EIO after the barrier
+on every attempt, which is a fault in that configuration rather than a measurement.
+
 ## The same engine over SMB3
 
 Everything above is measured over NFSv3, the one protocol every competitor shares.
@@ -489,6 +546,27 @@ included as the reference ceiling.
 ### Cell coverage
 
 Total cells collected: **205** across 25 systems × 3 protocols × 4 workloads (warm pass, medium size, 30 s each).
+
+The cold-read section was measured in a later run of **292 cells** across 16 systems ×
+2 size classes × 8 workloads, warm and cold passes, 30 s each, on one disposable machine.
+Coverage is not uniform and the gaps are worth stating rather than leaving to be inferred:
+
+- **All five DittoFS tiers have complete cold columns** (6 cold cells each). Producing
+  them at all required fixing the drain-uploads supervisor, which was aborting drains that
+  were working — the reason earlier published runs carried no DittoFS cold numbers.
+- **`goofys` is absent entirely.** It failed while laying down its read target, so it
+  contributed no cells rather than partial ones.
+- **`s3fs` is missing its random-write cells.** `fio` wedged past its 300 s watchdog and
+  was force-killed; s3fs rewrites whole objects for 4 KiB random writes.
+- **`juicefs-postgres` has warm cells only.** Its cold reads returned EIO after the
+  barrier.
+- One `dittofs-sqlite` barrier failed on its first attempt (local tier fell only
+  5,453 → 4,665 MiB, short of the 80% required) and passed on a repeat. That cell is from
+  the repeat. The failure has not been reproduced and is not yet explained.
+
+Cold cells below a 64 MiB working set are reported as unverified rather than verified —
+the drop ratio is not meaningful at that size — so a small cold cell means "the barrier
+could not confirm this" rather than "the barrier passed."
 
 The DittoFS NFSv3 rows above were subsequently re-measured on a fresh run of the fixed
 binary — nine backend/tier combinations (badger/SQLite/Postgres × local-durable/writeback/
