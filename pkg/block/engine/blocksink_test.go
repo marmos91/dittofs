@@ -262,3 +262,64 @@ func TestJournalCarveSeam_ReportsEachBlockAsItLands(t *testing.T) {
 		}
 	}
 }
+
+// TestJournalCarveSeam_ScatteredRunsAllFlipSynced pins the contract that matters
+// most about a carve: when it returns, every range it covered is marked synced.
+//
+// The shape is what makes it bite — many small, non-contiguous, mutually novel
+// runs against a block size several of them fit inside, so blocks straddle run
+// boundaries and watermarks have to advance across them. A carve can commit
+// every block and still fail to advance the durable frontier, which leaves the
+// records dirty so the next carve re-carves the same ranges, uploading forever
+// without ever converging. Byte counts and block counts both look healthy while
+// that happens; only the synced state shows it.
+func TestJournalCarveSeam_ScatteredRunsAllFlipSynced(t *testing.T) {
+	const (
+		runs      = 400
+		runSize   = 4 << 10
+		gap       = 8 << 10  // stride > runSize keeps every run non-contiguous
+		blockSize = 64 << 10 // several runs per block, so blocks straddle them
+	)
+	ctx := context.Background()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	mem := remotememory.New()
+
+	j, err := journal.Open(t.TempDir(),
+		journal.Config{CarveBlockSize: blockSize, CarveUploadConcurrency: 4},
+		stubJournalRemote{}, journal.SystemClock())
+	if err != nil {
+		t.Fatalf("journal.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = j.Close() })
+	j.SetCarveTargets(engineDeduper{synced: ms}, realSink(ms, mem))
+
+	// Distinct bytes per run, so nearly every chunk is novel and the carve has to
+	// pack and commit for real rather than dedup its way to the end.
+	for i := 0; i < runs; i++ {
+		if err := j.WriteAt(ctx, "f", int64(i)*gap, seamRandBytes(runSize, int64(i)+1)); err != nil {
+			t.Fatalf("WriteAt %d: %v", i, err)
+		}
+	}
+	want := int64(runs * runSize)
+	if got := j.UnsyncedBytes(); got != want {
+		t.Fatalf("pre-carve unsynced = %d, want %d", got, want)
+	}
+
+	if _, err := j.Carve(ctx, journal.CarveOptions{Force: true}); err != nil {
+		t.Fatalf("Carve: %v", err)
+	}
+
+	if got := j.UnsyncedBytes(); got != 0 {
+		t.Fatalf("post-carve unsynced = %d of %d, want 0 — ranges the carve covered were "+
+			"not flipped synced, so the next carve re-carves them and a drain never converges",
+			got, want)
+	}
+	// A second forced carve must find nothing left to do.
+	res, err := j.Carve(ctx, journal.CarveOptions{Force: true})
+	if err != nil {
+		t.Fatalf("second Carve: %v", err)
+	}
+	if res.BytesCarved != 0 {
+		t.Fatalf("second carve moved %d bytes, want 0 — the first carve left ranges dirty", res.BytesCarved)
+	}
+}
