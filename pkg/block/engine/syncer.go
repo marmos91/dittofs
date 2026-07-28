@@ -420,10 +420,20 @@ func (m *Syncer) dataplaneMetrics() DataplaneMetrics {
 	return nil
 }
 
-// SyncCounts returns lifetime (completed, failed) sync counts: chunks that
+// SyncCounts returns lifetime (completed, failed) sync counts: blocks that
 // reached remote and failed carve upload attempts.
 func (m *Syncer) SyncCounts() (completed, failed int) {
 	return int(m.completedSyncs.Load()), int(m.failedSyncs.Load())
+}
+
+// noteBlockCommitted records one block reaching the remote. Every carve routes
+// its commits through the same sink, so counting here covers both the
+// background dispatcher and the drain's force-carve — the latter runs as a
+// single call that can span minutes, and counting only on its return would
+// leave the progress signal flat for that whole time.
+func (m *Syncer) noteBlockCommitted(bytes int64) {
+	m.completedSyncs.Add(1)
+	m.uploadedBytesWindow.Add(bytes)
 }
 
 // DrainAllUploads performs an immediate synchronous upload of every local
@@ -783,7 +793,7 @@ func (m *Syncer) wireCarveTargets() {
 			return // remote configured but deps not fully wired yet
 		}
 		deduper := engineDeduper{synced: m.syncedHashStore}
-		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}}
+		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter, commitLocks: &carveCommitLocks{}, onBlockCommitted: m.noteBlockCommitted}
 		m.local.SetCarveTargets(deduper, sink)
 		m.carveTargetsWired = true
 		return

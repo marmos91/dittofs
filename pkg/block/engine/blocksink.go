@@ -163,6 +163,12 @@ type engineBlockSink struct {
 	rbs         remote.RemoteBlockStore
 	committer   blockCommitter
 	commitLocks *carveCommitLocks
+	// onBlockCommitted reports each block as it lands, carrying the block's
+	// uploaded byte count. Reporting here rather than after a carve pass returns
+	// is what makes the count advance *during* a long carve: the drain path
+	// force-carves in one call that can run for many minutes, and its supervisor
+	// reads these counters as a liveness signal. Nil in fixtures that don't care.
+	onBlockCommitted func(bytes int64)
 }
 
 func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []journal.CarveChunk) error {
@@ -251,6 +257,9 @@ func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []journal.Carve
 	}
 	if err := commit(); err != nil {
 		return fmt.Errorf("carve: commit block %s: %w", blockID, err)
+	}
+	if s.onBlockCommitted != nil {
+		s.onBlockCommitted(int64(len(blockBytes)))
 	}
 	return nil
 }

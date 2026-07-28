@@ -114,18 +114,13 @@ func (m *Syncer) carvePass(ctx context.Context) {
 			if m.uploadLimiter != nil {
 				defer m.uploadLimiter.Release()
 			}
-			res, err := m.local.Carve(ctx, journal.CarveOptions{FileID: journal.FileID(fileID)})
-			if err != nil {
+			// Success needs no bookkeeping here: the sink feeds the goodput sample
+			// and the completed-sync counter as each block lands, which keeps both
+			// advancing during a pass rather than only at its end.
+			if _, err := m.local.Carve(ctx, journal.CarveOptions{FileID: journal.FileID(fileID)}); err != nil {
 				m.uploadErrWindow.Add(1)
 				m.failedSyncs.Add(1)
 				logger.Warn("carve dispatcher: file carve failed", "file", fileID, "error", err)
-				return
-			}
-			if res.BytesCarved > 0 {
-				// Feed the adaptive-upload goodput sample and the lifetime
-				// completed-sync counter (blocks committed for this file).
-				m.uploadedBytesWindow.Add(res.BytesCarved)
-				m.completedSyncs.Add(int64(res.BlocksWritten))
 			}
 		}(id)
 	}
