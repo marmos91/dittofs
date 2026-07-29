@@ -46,6 +46,10 @@ const (
 	coldHeaderSize = 31
 	coldLogName    = "cold.log"
 
+	// coldSeededName is the marker recording that this journal's cold log has
+	// been seeded from the caller's manifest. See ColdSeeded.
+	coldSeededName = "cold-seeded"
+
 	// coldCompactFloor keeps recovery from rewriting a log that is merely small:
 	// compaction only pays once the dead entries outweigh a few pages of I/O.
 	coldCompactFloor = 1024
@@ -251,6 +255,37 @@ func liveColdEntries(indexByShard []map[FileID]*fileIndex) []coldEntry {
 		}
 	}
 	return out
+}
+
+// ColdSeeded reports whether a caller has already seeded this journal's cold
+// log from its manifest and said so with MarkColdSeeded.
+//
+// A journal that opened empty over data living only on a remote store — an
+// upgrade that archived the previous local layout aside, a restore that wiped
+// the local tier — holds no interval for those ranges, so a read zero-fills
+// instead of fetching. The repair is a manifest scan, which is O(files) and
+// worth doing once rather than on every open. A store whose marker cannot be
+// read is reported unseeded: repeating the scan costs time, skipping it serves
+// zeros.
+func (s *Store) ColdSeeded() bool {
+	_, err := os.Stat(filepath.Join(s.dir, coldSeededName))
+	return err == nil
+}
+
+// MarkColdSeeded records that the cold log has been seeded from a manifest.
+// Call it only once the seed's entries are durable: an open interrupted before
+// this point leaves no marker and seeds again, whereas a marker written early
+// would let an incomplete seed be mistaken for a finished one.
+func (s *Store) MarkColdSeeded() error {
+	fd, err := os.OpenFile(filepath.Join(s.dir, coldSeededName), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("journal: create cold seed marker: %w", err)
+	}
+	if err := fd.Close(); err != nil {
+		return fmt.Errorf("journal: close cold seed marker: %w", err)
+	}
+	// The marker is an empty file, so only the directory entry has to reach disk.
+	return fsyncDir(s.dir)
 }
 
 // closeCold releases the append handle. Idempotent.

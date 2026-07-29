@@ -47,16 +47,11 @@ func newMigrateEngine(t *testing.T, dir string, ms *metamem.MemoryMetadataStore,
 	if err := bs.Start(context.Background()); err != nil {
 		t.Fatalf("engine.Start: %v", err)
 	}
-	// The fs store's migration flag is consumed here, the same way
-	// ConfigureBlockStore does it after bs.Start: seed, verify, then reap.
-	if m, ok := any(localStore).(legacyArchiveMigrator); ok && m.MigratedFromLegacy() {
-		report, err := SeedColdFromManifest(context.Background(), bs, ms)
-		if err != nil {
-			t.Fatalf("SeedColdFromManifest: %v", err)
-		}
-		if err := finishLegacyArchiveMigration(context.Background(), bs, m, report, "test"); err != nil {
-			t.Fatalf("finishLegacyArchiveMigration: %v", err)
-		}
+	// The cold seed runs here the same way createBlockStoreForShare runs it after
+	// bs.Start: seed what the manifest covers and the journal does not, then
+	// verify and reap an archive if this open made one.
+	if err := seedColdIfNeeded(context.Background(), bs, localStore, ms, true, "test"); err != nil {
+		t.Fatalf("seedColdIfNeeded: %v", err)
 	}
 	return bs
 }
@@ -276,4 +271,57 @@ func TestLegacyRemoteMigration_ReadsColdAfterRestart(t *testing.T) {
 	bs3 := newMigrateEngine(t, dir, ms, rem, false)
 	t.Cleanup(func() { _ = bs3.Close() })
 	readAllLegacyFiles(t, bs3, "after migration + restart")
+}
+
+// stripPreJournalLayout leaves the local dir in the state a build that migrated
+// the share and only seeded its cold intervals in memory left behind: the legacy
+// blobs/+logs/ are gone, the manifest and the remote are intact, and the journal
+// holds nothing at all. Nothing about the directory says a migration ever
+// happened, so the flag that drove the one-shot seed reads false forever.
+func stripPreJournalLayout(t *testing.T, dir string) {
+	t.Helper()
+	for _, sub := range []string{"blobs", "logs"} {
+		if err := os.RemoveAll(filepath.Join(dir, sub)); err != nil {
+			t.Fatalf("remove %s: %v", sub, err)
+		}
+	}
+}
+
+// TestColdReseed_AfterMigrationUnderAnEarlierBuild is the cohort the one-shot
+// migration flag cannot reach: the share was migrated by a build whose seeded
+// intervals did not survive the restart, so its manifest ranges are now ordinary
+// POSIX holes. A read of them zero-fills with no fetch and no error — the file is
+// the right length and the wrong content — and no later start repairs it, because
+// the archive rename that used to trigger the seed happened once, under the old
+// build. Opening it must notice the local tier has never been seeded and seed it.
+func TestColdReseed_AfterMigrationUnderAnEarlierBuild(t *testing.T) {
+	dir, ms, rem := plantPreJournalShare(t)
+	stripPreJournalLayout(t, dir)
+
+	bs := newMigrateEngine(t, dir, ms, rem, false)
+	t.Cleanup(func() { _ = bs.Close() })
+	readAllLegacyFiles(t, bs, "after re-seeding a share migrated by an earlier build")
+}
+
+// TestColdReseed_SurvivesRestartAndIsRecordedOnce pins the two halves of the
+// repair that are not about the bytes: the re-seeded intervals are durable (a
+// restart must not put the holes back), and the local tier records that it has
+// been seeded so later starts skip the O(files) manifest scan.
+func TestColdReseed_SurvivesRestartAndIsRecordedOnce(t *testing.T) {
+	dir, ms, rem := plantPreJournalShare(t)
+	stripPreJournalLayout(t, dir)
+
+	bs := newMigrateEngine(t, dir, ms, rem, false)
+	if err := bs.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	// Deliberately no read before the restart: a read would hydrate the bytes
+	// into the journal as warm records and mask a seed that was never persisted.
+	if _, err := os.Stat(filepath.Join(dir, "journal", "cold-seeded")); err != nil {
+		t.Fatalf("the re-seed left no durable record, so every start rescans the manifest: %v", err)
+	}
+
+	bs2 := newMigrateEngine(t, dir, ms, rem, false)
+	t.Cleanup(func() { _ = bs2.Close() })
+	readAllLegacyFiles(t, bs2, "after a re-seed + restart")
 }
