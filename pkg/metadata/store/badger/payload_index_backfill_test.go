@@ -11,46 +11,54 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// openRawBadger gives a bare DB so a store can be seeded with rows that predate
-// the pl: index, which the normal constructor would index on the way in.
-func openRawBadger(t *testing.T) *badgerdb.DB {
+// seedLegacyFiles writes file rows straight through a raw Badger handle at dir,
+// with no pl: entry — the shape of every row written before that index existed.
+// The handle is closed before returning so the store can open the same
+// directory.
+func seedLegacyFiles(t *testing.T, dir string, payloads ...metadata.PayloadID) []*metadata.File {
 	t.Helper()
-	db, err := badgerdb.Open(badgerdb.DefaultOptions(t.TempDir()).WithLogger(nil))
+
+	db, err := badgerdb.Open(badgerdb.DefaultOptions(dir).WithLogger(nil))
 	if err != nil {
-		t.Fatalf("open badger: %v", err)
+		t.Fatalf("open raw badger: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
+	defer func() {
+		if cErr := db.Close(); cErr != nil {
+			t.Fatalf("close raw badger: %v", cErr)
+		}
+	}()
+
+	files := make([]*metadata.File, 0, len(payloads))
+	for _, p := range payloads {
+		f := &metadata.File{
+			ID: uuid.New(),
+			FileAttr: metadata.FileAttr{
+				Type:      metadata.FileTypeRegular,
+				PayloadID: p,
+				Size:      4096,
+			},
+		}
+		enc, encErr := encodeFile(f)
+		if encErr != nil {
+			t.Fatalf("encode file: %v", encErr)
+		}
+		if uErr := db.Update(func(txn *badgerdb.Txn) error {
+			return txn.Set(keyFile(f.ID), enc)
+		}); uErr != nil {
+			t.Fatalf("seed file: %v", uErr)
+		}
+		if hasPayloadIndexAt(t, db, p) {
+			t.Fatalf("%q indexed before open; the fixture is not reproducing a legacy row", p)
+		}
+		files = append(files, f)
+	}
+	return files
 }
 
-// seedLegacyFile writes a file row with no pl: entry — the shape of every row
-// written before the index existed.
-func seedLegacyFile(t *testing.T, db *badgerdb.DB, payload metadata.PayloadID) *metadata.File {
-	t.Helper()
-	f := &metadata.File{
-		ID: uuid.New(),
-		FileAttr: metadata.FileAttr{
-			Type:      metadata.FileTypeRegular,
-			PayloadID: payload,
-			Size:      4096,
-		},
-	}
-	enc, err := encodeFile(f)
-	if err != nil {
-		t.Fatalf("encode file: %v", err)
-	}
-	if err := db.Update(func(txn *badgerdb.Txn) error {
-		return txn.Set(keyFile(f.ID), enc)
-	}); err != nil {
-		t.Fatalf("seed file: %v", err)
-	}
-	return f
-}
-
-func hasPayloadIndex(t *testing.T, db *badgerdb.DB, payload metadata.PayloadID) bool {
+func hasPayloadIndexAt(t *testing.T, db *badgerdb.DB, payload metadata.PayloadID) bool {
 	t.Helper()
 	var found bool
-	err := db.View(func(txn *badgerdb.Txn) error {
+	if err := db.View(func(txn *badgerdb.Txn) error {
 		_, err := txn.Get(keyPayloadID(payload))
 		switch {
 		case err == nil:
@@ -61,107 +69,97 @@ func hasPayloadIndex(t *testing.T, db *badgerdb.DB, payload metadata.PayloadID) 
 		default:
 			return err
 		}
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("probe index: %v", err)
 	}
 	return found
 }
 
-// Rows written before the index existed must get an entry, or every lookup for
-// them falls back to a full keyspace scan — which a caller resolving payloads in
-// a loop turns into quadratic work before any listener binds.
-func TestBackfillPayloadIndex_IndexesLegacyRows(t *testing.T) {
-	db := openRawBadger(t)
-	ctx := context.Background()
-
-	want := []metadata.PayloadID{"payload-a", "payload-b", "payload-c"}
-	for _, p := range want {
-		seedLegacyFile(t, db, p)
-		if hasPayloadIndex(t, db, p) {
-			t.Fatalf("%s indexed before backfill; the fixture is not reproducing a legacy row", p)
-		}
-	}
-
-	if err := backfillPayloadIndex(ctx, db); err != nil {
-		t.Fatalf("backfill: %v", err)
-	}
-
-	for _, p := range want {
-		if !hasPayloadIndex(t, db, p) {
-			t.Errorf("%s still unindexed after backfill", p)
-		}
-	}
-}
-
-// The entry must point at the row it was derived from, otherwise the index
-// resolves to the wrong file and the lookup silently returns another file's
-// metadata.
-func TestBackfillPayloadIndex_EntryResolvesToItsFile(t *testing.T) {
-	db := openRawBadger(t)
-
-	f := seedLegacyFile(t, db, "payload-a")
-	seedLegacyFile(t, db, "payload-b")
-
-	if err := backfillPayloadIndex(context.Background(), db); err != nil {
-		t.Fatalf("backfill: %v", err)
-	}
-
-	var got []byte
-	if err := db.View(func(txn *badgerdb.Txn) error {
-		item, err := txn.Get(keyPayloadID("payload-a"))
-		if err != nil {
-			return err
-		}
-		got, err = item.ValueCopy(nil)
-		return err
-	}); err != nil {
-		t.Fatalf("read index: %v", err)
-	}
-
-	wantID, err := f.ID.MarshalBinary()
+func openStore(t *testing.T, dir string) *BadgerMetadataStore {
+	t.Helper()
+	s, err := NewBadgerMetadataStoreWithDefaults(context.Background(), dir)
 	if err != nil {
-		t.Fatalf("marshal id: %v", err)
+		t.Fatalf("open store: %v", err)
 	}
-	if string(got) != string(wantID) {
-		t.Fatalf("index for payload-a points at %x, want %x", got, wantID)
+	return s
+}
+
+// Rows written before the index existed must be indexed at open. Without it
+// every lookup for them falls back to a full keyspace scan, which a caller
+// resolving payloads in a loop turns into quadratic work before any listener
+// binds.
+func TestOpen_IndexesLegacyRowsByPayload(t *testing.T) {
+	dir := t.TempDir()
+	want := seedLegacyFiles(t, dir, "payload-a", "payload-b", "payload-c")
+
+	store := openStore(t, dir)
+	defer func() { _ = store.Close() }()
+
+	for _, f := range want {
+		got, err := store.GetFileByPayloadID(context.Background(), f.PayloadID)
+		if err != nil {
+			t.Fatalf("GetFileByPayloadID(%q): %v", f.PayloadID, err)
+		}
+		if got == nil || got.ID != f.ID {
+			t.Errorf("payload %q resolved to %v, want file %v", f.PayloadID, got, f.ID)
+		}
+		if !hasPayloadIndexAt(t, store.db, f.PayloadID) {
+			t.Errorf("payload %q still unindexed after open", f.PayloadID)
+		}
 	}
 }
 
-// A second open must not re-scan. Without the marker the cost is paid on every
-// restart, which for a large store is the whole problem this is fixing.
-func TestBackfillPayloadIndex_SkipsSecondRun(t *testing.T) {
-	db := openRawBadger(t)
-	ctx := context.Background()
+// A second open must not repeat the scan. Without the marker the cost is paid on
+// every restart, which for a large store is the whole problem being fixed.
+func TestOpen_SkipsPayloadIndexingOnSecondOpen(t *testing.T) {
+	dir := t.TempDir()
+	seedLegacyFiles(t, dir, "payload-a")
 
-	seedLegacyFile(t, db, "payload-a")
-	if err := backfillPayloadIndex(ctx, db); err != nil {
-		t.Fatalf("first backfill: %v", err)
+	first := openStore(t, dir)
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first: %v", err)
 	}
 
-	// A row seeded after the marker is written stays unindexed, which is how the
-	// test observes that the second call did not scan.
-	seedLegacyFile(t, db, "payload-late")
-	if err := backfillPayloadIndex(ctx, db); err != nil {
-		t.Fatalf("second backfill: %v", err)
-	}
-	if hasPayloadIndex(t, db, "payload-late") {
-		t.Fatal("second backfill re-scanned; the completion marker is not being honoured")
+	// Seeded after the marker was written, so it stays unindexed only if the
+	// second open genuinely skipped the pass.
+	seedLegacyFiles(t, dir, "payload-late")
+
+	second := openStore(t, dir)
+	defer func() { _ = second.Close() }()
+
+	if hasPayloadIndexAt(t, second.db, "payload-late") {
+		t.Fatal("second open re-indexed; the completion marker is not being honoured")
 	}
 }
 
 // A row with no PayloadID has nothing to index, and must not produce an entry
-// under the empty key — which would then be returned for every payload-less
-// lookup.
-func TestBackfillPayloadIndex_SkipsRowsWithoutPayload(t *testing.T) {
-	db := openRawBadger(t)
+// under the empty key — which would then be returned for payload-less lookups.
+func TestOpen_SkipsRowsWithoutPayload(t *testing.T) {
+	dir := t.TempDir()
+	seedLegacyFiles(t, dir, "")
 
-	seedLegacyFile(t, db, "")
+	store := openStore(t, dir)
+	defer func() { _ = store.Close() }()
 
-	if err := backfillPayloadIndex(context.Background(), db); err != nil {
-		t.Fatalf("backfill: %v", err)
-	}
-	if hasPayloadIndex(t, db, "") {
+	if hasPayloadIndexAt(t, store.db, "") {
 		t.Fatal("wrote an index entry for an empty PayloadID")
+	}
+}
+
+// The usedBytes counter shares the scan the indexing rides on, so it must still
+// be seeded correctly when that indexing runs.
+func TestOpen_UsedBytesStillSeededWhileIndexing(t *testing.T) {
+	dir := t.TempDir()
+	files := seedLegacyFiles(t, dir, "payload-a", "payload-b")
+
+	store := openStore(t, dir)
+	defer func() { _ = store.Close() }()
+
+	var want int64
+	for _, f := range files {
+		want += int64(f.Size)
+	}
+	if got := store.usedBytes.Load(); got != want {
+		t.Fatalf("usedBytes = %d, want %d", got, want)
 	}
 }

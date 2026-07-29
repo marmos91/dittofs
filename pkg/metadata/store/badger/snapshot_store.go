@@ -306,7 +306,7 @@ func (s *BadgerMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	// The DB has been fully repopulated, but the in-memory usedBytes counter
 	// still holds the pre-restore value. Recompute it from the restored rows so
 	// GetUsedBytes / GetFilesystemStatistics report correctly without a restart.
-	if err := s.initUsedBytesCounter(); err != nil {
+	if err := s.initUsedBytesAndPayloadIndex(); err != nil {
 		return fmt.Errorf("restore: reinitialize used-bytes counter: %w", err)
 	}
 

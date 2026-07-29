@@ -399,20 +399,11 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		return nil, fmt.Errorf("failed to initialize singletons: %w", err)
 	}
 
-	// Initialize the usedBytes counter from a full file scan.
-	if err := store.initUsedBytesCounter(); err != nil {
+	// Initialize the usedBytes counter from a full file scan, which also writes
+	// the pl: index when this store's rows predate it — one decode pass, not two.
+	if err := store.initUsedBytesAndPayloadIndex(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to initialize used bytes counter: %w", err)
-	}
-
-	// Give every file row carrying a PayloadID its pl: index entry, once. Rows
-	// written before that index existed have none, and each lookup that misses it
-	// falls back to scanning and decoding the whole file keyspace — which callers
-	// that resolve payloads in a loop turn into quadratic work on the startup
-	// path. One linear pass here retires that for the life of the store.
-	if err := backfillPayloadIndex(ctx, db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to index files by payload: %w", err)
 	}
 
 	// Start the background value-log GC loop. Badger reclaims value-log
@@ -642,7 +633,10 @@ func (s *BadgerMetadataStore) GetUsedBytes() int64 {
 // groupUsage). Both are reconstructed from the durable file rows, so a store
 // opened from an existing dump (with no separately persisted counters) is always
 // seeded correctly — back-compatible by construction.
-func (s *BadgerMetadataStore) initUsedBytesCounter() error {
+// A non-nil indexBatch also stages a pl: index entry per file, so a store that
+// still needs indexing by payload pays one scan at open rather than two — the
+// decode is the expensive part and this is the only place already doing it.
+func (s *BadgerMetadataStore) initUsedBytesCounter(indexBatch *badger.WriteBatch) error {
 	var totalUsed int64
 	userUsage := make(map[uint32]*metadata.UsageStat)
 	groupUsage := make(map[uint32]*metadata.UsageStat)
@@ -677,7 +671,7 @@ func (s *BadgerMetadataStore) initUsedBytesCounter() error {
 					addUsage(userUsage, file.UID, int64(file.Size))
 					addUsage(groupUsage, file.GID, int64(file.Size))
 				}
-				return nil
+				return indexFileByPayload(indexBatch, file)
 			})
 			if err != nil {
 				return err
