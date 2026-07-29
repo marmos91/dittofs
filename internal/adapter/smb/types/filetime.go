@@ -39,7 +39,7 @@ func FiletimeToTime(ft uint64) time.Time {
 	ticks := int64(ft) - int64(filetimeUnixDiff)
 	sec := ticks / ticksPerSecond
 	rem := ticks % ticksPerSecond
-	return time.Unix(sec, rem*100)
+	return time.Unix(sec, rem*100).UTC()
 }
 
 // NowFiletime returns the current time as a Windows FILETIME
