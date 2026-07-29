@@ -128,7 +128,16 @@ func (c Config) withDefaults() Config {
 
 // Stats is a coarse snapshot of store state, cheap to compute.
 type Stats struct {
-	Segments      int
+	Segments int
+	// DiskBytes is the physical footprint of the segment files: segment headers
+	// plus record framing plus payload, seeded at recovery from the segments
+	// already on disk and maintained by every append and retire. It is the
+	// figure the eviction gate compares against MaxLocalBytes.
+	DiskBytes int64
+	// LiveBytes and DeadBytes are payload-only accounting, both derived from
+	// record PayloadLen. LiveBytes counts every payload byte a segment has ever
+	// been charged for and DeadBytes the share of those since superseded, so
+	// they overlap and must not be summed into a footprint.
 	LiveBytes     int64
 	DeadBytes     int64
 	UnsyncedBytes int64
@@ -508,6 +517,7 @@ func (s *Store) UnsyncedBytes() int64 { return s.unsynced.Load() }
 // Stats returns a coarse snapshot of store state.
 func (s *Store) Stats() Stats {
 	st := Stats{
+		DiskBytes:     s.diskBytes.Load(),
 		UnsyncedBytes: s.unsynced.Load(),
 		Writes:        s.writes.Load(),
 		Reads:         s.reads.Load(),
