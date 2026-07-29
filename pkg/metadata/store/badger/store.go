@@ -405,6 +405,16 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		return nil, fmt.Errorf("failed to initialize used bytes counter: %w", err)
 	}
 
+	// Give every file row carrying a PayloadID its pl: index entry, once. Rows
+	// written before that index existed have none, and each lookup that misses it
+	// falls back to scanning and decoding the whole file keyspace — which callers
+	// that resolve payloads in a loop turn into quadratic work on the startup
+	// path. One linear pass here retires that for the life of the store.
+	if err := backfillPayloadIndex(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to index files by payload: %w", err)
+	}
+
 	// Start the background value-log GC loop. Badger reclaims value-log
 	// space only when RunValueLogGC is called explicitly; without it the
 	// value log grows without bound (unbounded disk growth). The loop is
