@@ -372,27 +372,51 @@ func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byt
 // be lost on the next restart, turning the ranges back into holes that read as
 // zeros with no fetch. Extents are taken a whole file at a time so seeding a
 // manifest costs one fsync per file rather than one per extent.
+//
+// Only the parts of each extent the file index does not already cover are
+// seeded. A cold interval carries a fresh version, so seeding over a range the
+// journal holds locally would shadow those bytes — including bytes not yet on
+// the remote, which a cold read cannot fetch back. Skipping covered ranges makes
+// the call idempotent and safe to repeat against a store that is only partly
+// missing its markers, at the cost of nothing on a store that has none.
 func (s *Store) SeedCold(_ context.Context, id FileID, extents [][2]int64) error {
 	if s.closed.Load() {
 		return errClosed
 	}
+	sh := s.shardFor(id)
+	sh.mu.Lock()
+	fi := sh.index[id]
 	entries := make([]coldEntry, 0, len(extents))
 	for _, e := range extents {
 		if e[1] <= 0 {
 			continue
 		}
-		entries = append(entries, coldEntry{id: id, fileOff: e[0], length: e[1], version: s.nextVersion()})
+		if fi == nil { // unknown file: the whole extent is a hole
+			entries = append(entries, coldEntry{id: id, fileOff: e[0], length: e[1], version: s.nextVersion()})
+			continue
+		}
+		for _, p := range fi.plan(e[0], e[1]) {
+			if !p.hole {
+				continue
+			}
+			entries = append(entries, coldEntry{
+				id:      id,
+				fileOff: e[0] + p.dstStart,
+				length:  p.dstEnd - p.dstStart,
+				version: s.nextVersion(),
+			})
+		}
 	}
+	sh.mu.Unlock()
 	if len(entries) == 0 {
 		return nil
 	}
 	if err := s.appendCold(entries); err != nil {
 		return err
 	}
-	sh := s.shardFor(id)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
-	fi := sh.indexFor(id)
+	fi = sh.indexFor(id)
 	for _, e := range entries {
 		fi.insert(interval{
 			fileOff: e.fileOff,

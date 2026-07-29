@@ -1180,30 +1180,9 @@ func (s *Service) createBlockStoreForShare(
 		return fmt.Errorf("failed to start BlockStore: %w", err)
 	}
 
-	// If the local dir carried a pre-journal layout that was just archived aside,
-	// the journal opened empty — reads would zero-fill. Seed a cold interval per
-	// manifest extent so reads fault the bytes back in from the remote (cold
-	// fetch is BLAKE3-verified). The metadata manifest survives the upgrade
-	// intact, so this is safe to re-run: a partial seed loses nothing (remote
-	// bytes + manifest are untouched) and a second start finds no legacy dir and
-	// skips straight to a clean open.
-	// ponytail: O(files) manifest scan at startup; a lazy per-read seed is the
-	// upgrade path if this ever bites a share with a huge file count.
-	if m, ok := localStore.(legacyArchiveMigrator); ok && m.MigratedFromLegacy() {
-		if metaStore, ok := fileChunkStore.(metadata.Store); ok {
-			report, serr := SeedColdFromManifest(ctx, bs, metaStore)
-			if serr != nil {
-				cleanup()
-				return fmt.Errorf("seed cold intervals after legacy migration: %w", serr)
-			}
-			if verr := finishLegacyArchiveMigration(ctx, bs, m, report, config.Name); verr != nil {
-				cleanup()
-				return verr
-			}
-		} else {
-			logger.Warn("migrated pre-journal local layout but metadata store is not manifest-capable; reads will zero-fill until rewritten",
-				"share", config.Name)
-		}
+	if err := seedColdIfNeeded(ctx, bs, localStore, fileChunkStore, remoteConfigured, config.Name); err != nil {
+		cleanup()
+		return err
 	}
 
 	// A local-only share (no remote to re-fetch from) that carried a complete

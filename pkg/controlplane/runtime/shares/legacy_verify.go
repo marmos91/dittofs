@@ -25,6 +25,8 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/block/local"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // coldVerifySamples is how many extents the migration reads back. The failure
@@ -165,6 +167,81 @@ func finishLegacyArchiveMigration(
 		"share", shareName, "payloads", report.payloads, "chunks", report.chunks,
 		"samples_verified", len(report.samples), "bytes_reclaimed", freed)
 	return nil
+}
+
+// seedColdIfNeeded gives a local tier the cold intervals its manifest says it is
+// missing, once per local tier.
+//
+// A journal that opened empty over data that lives on the remote — the open that
+// archived a pre-journal layout aside, or any earlier open that did the same
+// under a build that only seeded in memory — holds no interval for those ranges.
+// They are then indistinguishable from POSIX holes: a read zero-fills, does not
+// fetch, and reports no error. So the trigger is not "this open migrated
+// something" (a one-shot the affected stores have already spent) but "this local
+// tier has never been seeded", which stays true until a seed finishes.
+//
+// The marker is written last. An interrupted seed leaves none and repeats on the
+// next open, which costs a rescan and nothing else: seeding skips the ranges the
+// journal already covers, and the remote bytes and the manifest are untouched
+// throughout.
+//
+// Remote-backed shares only. Seeding a cold interval on a share with no remote
+// would point a read at a store that cannot serve it.
+//
+// ponytail: O(files) manifest scan, once per local tier; a lazy per-read seed is
+// the upgrade path if this ever bites a share with a huge file count.
+func seedColdIfNeeded(
+	ctx context.Context,
+	bs *engine.Store,
+	localStore local.LocalStore,
+	fileChunkStore block.EngineFileChunkStore,
+	remoteConfigured bool,
+	shareName string,
+) error {
+	if !remoteConfigured {
+		return nil
+	}
+	tracker, ok := localStore.(coldSeedTracker)
+	if !ok {
+		return nil
+	}
+	m, isMigrator := localStore.(legacyArchiveMigrator)
+	migrated := isMigrator && m.MigratedFromLegacy()
+	if !migrated && tracker.ColdSeeded() {
+		return nil
+	}
+	metaStore, ok := fileChunkStore.(metadata.Store)
+	if !ok {
+		logger.Warn("local tier has no record of a manifest seed but the metadata store cannot enumerate one; "+
+			"ranges held only by the remote will read as zeros",
+			"share", shareName)
+		return nil
+	}
+	report, err := SeedColdFromManifest(ctx, bs, metaStore)
+	if err != nil {
+		return fmt.Errorf("seed cold intervals from manifest: %w", err)
+	}
+	if migrated {
+		if err := finishLegacyArchiveMigration(ctx, bs, m, report, shareName); err != nil {
+			return err
+		}
+	}
+	if err := tracker.MarkColdSeeded(); err != nil {
+		// The seed itself is durable; only the record of it is missing, so the
+		// next open pays for the scan again and reaches the same state.
+		logger.Warn("seeded cold intervals from the manifest but could not record it; the next start will seed again",
+			"share", shareName, "error", err)
+	}
+	return nil
+}
+
+// coldSeedTracker is the local-store surface that remembers, across restarts,
+// whether this local tier has been seeded from the metadata manifest.
+// Implemented by the journal-backed fs store; other backends never satisfy it,
+// so seeding is skipped for them entirely.
+type coldSeedTracker interface {
+	ColdSeeded() bool
+	MarkColdSeeded() error
 }
 
 // legacyArchiveMigrator is the local-store surface driven after a remote-backed
