@@ -2,6 +2,7 @@ package badger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -86,9 +87,11 @@ func backfillPayloadIndex(ctx context.Context, db *badgerdb.DB) error {
 					return nil
 				}
 				key := keyPayloadID(file.PayloadID)
-				if _, gErr := txn.Get(key); gErr == nil {
+				_, gErr := txn.Get(key)
+				if gErr == nil {
 					return nil // already indexed
-				} else if gErr != badgerdb.ErrKeyNotFound {
+				}
+				if !errors.Is(gErr, badgerdb.ErrKeyNotFound) {
 					return gErr
 				}
 				id, mErr := file.ID.MarshalBinary()
@@ -133,11 +136,12 @@ func backfillPayloadIndex(ctx context.Context, db *badgerdb.DB) error {
 func payloadIndexBackfillDone(db *badgerdb.DB) (bool, error) {
 	var done bool
 	err := db.View(func(txn *badgerdb.Txn) error {
-		switch _, err := txn.Get(keyPayloadIndexBackfilled); {
+		_, err := txn.Get(keyPayloadIndexBackfilled)
+		switch {
 		case err == nil:
 			done = true
 			return nil
-		case err == badgerdb.ErrKeyNotFound:
+		case errors.Is(err, badgerdb.ErrKeyNotFound):
 			return nil
 		default:
 			return err

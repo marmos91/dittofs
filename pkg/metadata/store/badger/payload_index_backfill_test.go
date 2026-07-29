@@ -2,6 +2,7 @@ package badger
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	badgerdb "github.com/dgraph-io/badger/v4"
@@ -50,11 +51,12 @@ func hasPayloadIndex(t *testing.T, db *badgerdb.DB, payload metadata.PayloadID) 
 	t.Helper()
 	var found bool
 	err := db.View(func(txn *badgerdb.Txn) error {
-		switch _, err := txn.Get(keyPayloadID(payload)); {
+		_, err := txn.Get(keyPayloadID(payload))
+		switch {
 		case err == nil:
 			found = true
 			return nil
-		case err == badgerdb.ErrKeyNotFound:
+		case errors.Is(err, badgerdb.ErrKeyNotFound):
 			return nil
 		default:
 			return err
