@@ -261,10 +261,16 @@ func (s *FSStore) Durable() bool { return s.durable.Load() }
 func (s *FSStore) SetDurable(v bool) { s.durable.Store(v) }
 
 // Stats maps the journal's coarse stats onto the local.Stats admin shape.
+//
+// DiskUsed reports the journal's physical segment footprint — the same counter
+// the eviction gate compares against the disk limit, seeded at open from the
+// segments already on disk — so the reported usage cannot disagree with the
+// figure eviction acts on, and a store filled by an earlier run reports what it
+// holds rather than only what this process wrote.
 func (s *FSStore) Stats() local.Stats {
 	js := s.Store.Stats()
 	return local.Stats{
-		DiskUsed:    js.LiveBytes + js.DeadBytes,
+		DiskUsed:    js.DiskBytes,
 		MaxDisk:     s.maxDisk,
 		MaxLogBytes: s.maxLogBytes,
 		FileCount:   len(s.Store.ListFiles(context.Background())),
