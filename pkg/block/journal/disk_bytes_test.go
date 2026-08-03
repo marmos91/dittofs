@@ -4,11 +4,17 @@ import (
 	"bytes"
 	"context"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"testing"
 )
 
 // segFileBytes sums the physical size of every .seg file under dir.
+//
+// The size is read from an open handle rather than from the directory entry:
+// the store appends to its active segment without flushing, and a directory
+// entry's cached size may lag those appends until the file is closed, so
+// walking the entries would under-count the segment still being written.
 func segFileBytes(t *testing.T, dir string) int64 {
 	t.Helper()
 	var total int64
@@ -16,13 +22,19 @@ func segFileBytes(t *testing.T, dir string) int64 {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() && filepath.Ext(path) == ".seg" {
-			info, ierr := d.Info()
-			if ierr != nil {
-				return ierr
-			}
-			total += info.Size()
+		if d.IsDir() || filepath.Ext(path) != ".seg" {
+			return nil
 		}
+		f, oerr := os.Open(path)
+		if oerr != nil {
+			return oerr
+		}
+		defer func() { _ = f.Close() }()
+		info, ierr := f.Stat()
+		if ierr != nil {
+			return ierr
+		}
+		total += info.Size()
 		return nil
 	})
 	if err != nil {
