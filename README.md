@@ -91,6 +91,19 @@ Storage QoS, DFS namespaces, kernel oplocks, NTFS-internal pseudo-files) plus a
 handful of upstream-Samba known-fails; none are fixable protocol gaps. See
 [docs/guide/smb.md](docs/guide/smb.md) and [docs/guide/windows.md](docs/guide/windows.md).
 
+## DittoFS PRO
+
+The community edition is fully open source. **DittoFS PRO** adds a web
+management UI and commercial support on top of the same engine, for teams
+running DittoFS in production.
+
+<div align="center">
+  <img src="assets/pro-dashboard.png" alt="DittoFS PRO management console" width="820">
+</div>
+
+Manage users, shares, stores, and protocol adapters from one console. Learn
+more at [dittofs.io/pro](https://dittofs.io/pro).
+
 ## Quick Start
 
 ### Install

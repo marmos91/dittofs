@@ -36,6 +36,70 @@ Encryption already happens at carve today (local is plaintext) — no regression
 Each numbered item below is its own PR off `origin/develop`, signed, assignee marmos91,
 conformance-gated.
 
+## Status & continuation (updated 2026-07-16) — READ FIRST if resuming
+
+If the context was cleared and the instruction is "continue with the plan", this is the
+live state and the ordered next actions. Nothing below is lost.
+
+**Wall A (data plane) — SWITCHOVER MERGED.** The `pkg/block/journal/` library is the live
+local block store on develop. Both stages landed:
+- **S1 = PR #1714 — MERGED** (develop @ 2b5a5cc1): additive carve adapters, `#1569`
+  ChunkParams, the four gap journal methods (incl. crash-safe `Truncate`),
+  `DefaultCommitBlock` `fileChunks` param, `engine/blocksink.go`. Zero live-path change.
+- **S2 = PR #1716 — MERGED** (develop @ 489594417): the atomic switch — journal is the live
+  local store, legacy logblob/fs deleted (~30k lines). Shipped with: **R** (`File.Blocks`
+  materialized from the FileChunk manifest at carve, coherent-by-construction in-txn via
+  `ProjectManifestToBlocks`), **#953** overwrite cold-read corruption fix (superseded manifest
+  rows reaped at carve *run-end*; warm straddle remainders re-marked dirty + re-carved),
+  **remote cold-seed restore** (`RestoreSnapshot` re-seeds cold journal intervals from the
+  restored manifest → hydrate from remote), truncate/punch re-projection, #1405 guard update.
+  - **DEFERRED (tracked #1718):** local-only snapshot-restore under the journal — needs
+    snapshot segment-pinning + version-aware index rebuild (the journal dropped the CAS
+    content-addressed GC-lifetime chunks that made it work incidentally on develop). 5
+    local-only acceptance tests `t.Skip`-ed referencing #1718; remote restore is green.
+  - **fb-split (full #1715 W1 #8)** — remove `Blocks` from the stored row entirely + derive at
+    read time — is now a decoupled follow-up; the switchover ships the *materialized
+    projection* as the bridge.
+  - CI was fully green; the one Windows red (`TestReadDir_StaleVerifierBadCookie`) was a
+    pre-existing timer-granularity flake, hardened separately in **PR #1719** (off develop).
+
+**Wall C (RPC/adapter/auth) — shipped** (C1–C5, PRs #1693–#1698).
+
+**Wall B (metadata plane) — reframed as a cleanup program, audit COMPLETE.** Instead of
+building group-commit (refuted ×3), three read-only audits mapped the whole metadata store.
+Authoritative execution plan: **`.planning/perf/2026-07-15-metadata-cleanup-PLAN.md`**.
+Tracker: **GitHub #1715**. Findings docs: `2026-07-15-metadata-{schema-inventory,entity-model,
+sql-schema}.md`. The plan has three waves:
+- **Wave 1 — independent, ship now** (no journal dep): the biggest is *separating attr-write
+  from manifest-write* (badger `Blocks[]`→`fb:` split; SQL blocks-dirty gate — both backends
+  rewrite the whole manifest on a `chmod` today because `PutFile(File)` conflates the two).
+  Plus: drop dead/redundant SQL indexes + pg `pending_writes`; badger `Nlink` de-dup;
+  `FilesystemMeta`→`cap:fs`; relocate `ShareSession`; delete dead `d:`; fold SUID-clear.
+- **Wave 2 — rides the S2 switchover** (do NOT land on develop before #1692): `flush → relaxed`
+  (the real #1687 dissolution — moves the fsync off `db.lock`); delete `li:`/`ro:` +
+  `local_chunk_index`/`rollup_offsets`; collapse `BlockChunkCommit`→`{Hash,Remote}`; slim
+  `FileChunk`.
+- **Wave 3 — design track** (after the quick wins): reshape the store interface (attr vs
+  manifest mutation) so the manifest amplification fix is structural. **Docs refresh
+  DRAFTED, parked on branch `docs/metadata-store`** (pushed, NO PR): new
+  `docs/internals/metadata-store.md` + edited `implementing-stores.md`. Ship them WITH the
+  Wave-1/2 code PR that changes what they describe (update doc in the same PR) — not standalone.
+
+**Ordered continuation (S2 merged 2026-07-16):**
+1. **Carve throughput (#1717)** — carve is ~90% of the ingest→carve pipeline, and the profile
+   shows ~60% is allocation/GC (25MB/op), not crypto → streaming carve is the top lever.
+   Re-profile on an amd64 VM (arm64-generic BLAKE3 is SIMD-inflated locally).
+2. **Metadata cleanup Wave 1 (#1715, independent-now)** — dead `d:` prefix, dead SQL indexes,
+   `pending_writes`, `Nlink` de-dup, `ShareSession` relocate, `FilesystemMeta`→`cap:fs`, and
+   the fb-split (`fb:`/blocks-dirty gate) — the clean endpoint that retires the S2 projection bridge.
+3. **Metadata cleanup Wave 2 (#1715, journal-gated, now unblocked)** — flush→relaxed (real
+   #1687 dissolution), delete `li:`/`ro:`/`local_chunk_index`/`rollup_offsets`, collapse
+   `BlockChunkCommit`, slim `FileChunk`.
+4. **Local-only snapshot-restore (#1718)** — segment-pinning + version-aware index rebuild; un-skip the 5 tests.
+5. **Ship the parked `docs/metadata-store` branch** WITH the W1/W2 code PR that changes what it describes (not standalone).
+6. **PR #1719** (Windows readdir-verifier flake hardening) — review + merge when CI green.
+(4) Then consider the Wave-3 interface reshape. The docs refresh runs independently now.
+
 **Cross-cutting engineering mandate (applies to every PR below — clean as you go, not a
 separate purge).**
 - **Delete dead code + legacy as each area is touched.** Pre-1.0, no prod users: clean cutover,
