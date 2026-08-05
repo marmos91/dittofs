@@ -127,6 +127,35 @@ type blocksReprojector interface {
 	ReprojectBlocks(ctx context.Context, payloadID string) error
 }
 
+// narrowChunkRow shrinks a manifest row to the surviving prefix of its chunk so
+// coverage lookups stop resolving it for bytes the file no longer holds and a
+// hydrate writes back only that prefix. The remote chunk is untouched — its hash
+// still addresses the full bytes and the verified read still checks them all —
+// and RefCount is unchanged: the file still references the chunk, just less of
+// it. A row already at or below the surviving size, or already reaped, needs
+// nothing.
+func (bs *Store) narrowChunkRow(ctx context.Context, payloadID string, b block.ChunkRef) error {
+	if bs.fileChunkStore == nil {
+		return nil
+	}
+	id := fmt.Sprintf("%s/%d", payloadID, b.Offset)
+	row, err := bs.fileChunkStore.GetFileChunk(ctx, id)
+	if err != nil {
+		if errors.Is(err, block.ErrFileChunkNotFound) {
+			return nil
+		}
+		return fmt.Errorf("narrow block on truncate %s: %w", id, err)
+	}
+	if row == nil || row.DataSize <= b.Size {
+		return nil
+	}
+	row.DataSize = b.Size
+	if err := bs.fileChunkStore.Put(ctx, row); err != nil {
+		return fmt.Errorf("narrow block on truncate %s: %w", id, err)
+	}
+	return nil
+}
+
 func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks []block.ChunkRef, newSize uint64) ([]block.ChunkRef, error) {
 	if err := bs.enter(); err != nil {
 		return currentBlocks, err
@@ -154,8 +183,18 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 				dropped = append(dropped, b)
 				continue
 			}
-			// Block fully or partially before newSize — keep. WriteAt will
-			// re-chunk the partial-tail block; keep it as-is.
+			if b.Offset+uint64(b.Size) > newSize {
+				// Straddles newSize: keep the surviving prefix, but stop the row
+				// claiming the rest. Nothing re-carves the chunk, so a row left
+				// covering the removed range is what a later cold read resolves,
+				// and its hydrate would write those bytes back locally. Narrowed
+				// before the reap below so the reprojection there reads a manifest
+				// that already stops at newSize.
+				b.Size = uint32(newSize - b.Offset)
+				if err := bs.narrowChunkRow(ctx, payloadID, b); err != nil {
+					return currentBlocks, err
+				}
+			}
 			kept = append(kept, b)
 		}
 

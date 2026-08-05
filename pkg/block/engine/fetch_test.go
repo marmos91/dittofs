@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -228,5 +229,50 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToWaiter(t *testing.T) {
 	m.inFlightMu.Unlock()
 	if leaked {
 		t.Errorf("inFlight entry leaked for %s/0; want no entry after error return", payloadID)
+	}
+}
+
+// TestHydrateChunk_WritesOnlyWhatTheRowClaims pins the clamp at the hydrate
+// seam. A remote read returns a chunk in full, so the row's claim is the only
+// thing standing between a shrunk file and the bytes it dropped coming back.
+// The zero case has to fail closed: a row claiming nothing must write nothing,
+// because "claims nothing" arriving at the local tier as "write the whole
+// chunk" is the same resurrection, reached through a sentinel rather than a
+// length. A zero-claim row cannot be picked as a covering row, but warm walks
+// the enumerated rows directly, so one does reach here.
+func TestHydrateChunk_WritesOnlyWhatTheRowClaims(t *testing.T) {
+	ctx := context.Background()
+	const chunkLen = 4096
+	chunk := bytes.Repeat([]byte{0xAB}, chunkLen)
+
+	for _, tc := range []struct {
+		name    string
+		claims  uint32
+		written int
+	}{
+		{"row claims the whole chunk", chunkLen, chunkLen},
+		{"row narrowed to a prefix", 1024, 1024},
+		{"row claims nothing", 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ls := memorylocal.New()
+			m := newFetchSyncer(ls, nil, nil, nil)
+			row := &block.FileChunk{ID: "share/file/0", DataSize: tc.claims}
+			if err := m.hydrateChunk(ctx, row, chunk); err != nil {
+				t.Fatalf("hydrateChunk: %v", err)
+			}
+			got := make([]byte, chunkLen)
+			if _, _, err := ls.ReadAt(ctx, "share/file", 0, got); err != nil {
+				t.Fatalf("ReadAt: %v", err)
+			}
+			for i, b := range got {
+				if i < tc.written && b != 0xAB {
+					t.Fatalf("byte %d is %#x, want the chunk's byte — the claimed prefix was not hydrated", i, b)
+				}
+				if i >= tc.written && b != 0 {
+					t.Fatalf("byte %d is %#x, want a zero hole — hydrate wrote past the row's claim of %d", i, b, tc.claims)
+				}
+			}
+		})
 	}
 }

@@ -243,7 +243,12 @@ type FileChunk struct {
 	// Hash is the BLAKE3-256 of the chunk data. Zero value means pending/incomplete.
 	Hash ContentHash
 
-	// DataSize is the actual bytes written in this chunk.
+	// DataSize is how many of the chunk's bytes belong to this file at this
+	// row's offset — the row's claim, which is what coverage lookups and a
+	// cold-read hydrate honour. It is the chunk's full length except where a
+	// shrink narrowed the row to the prefix that survived: the chunk on the
+	// remote still holds all of its bytes and is still hash-verified over all of
+	// them, the row just stops claiming the tail.
 	DataSize uint32
 
 	// RefCount is the number of files referencing this chunk.

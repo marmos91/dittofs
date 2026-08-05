@@ -5,7 +5,6 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -108,40 +107,17 @@ func runBoundaryShiftStale(t *testing.T, ms metadata.Store) {
 // depends on.
 func assertManifestTiles(t *testing.T, ms metadata.Store, pid string, fileSize int64, label string) {
 	t.Helper()
-	fbl, ok := ms.(interface {
-		ListFileChunks(context.Context, string) ([]*block.FileChunk, error)
-	})
-	if !ok {
-		t.Fatalf("%s: store %T has no ListFileChunks", label, ms)
-	}
-	rows, err := fbl.ListFileChunks(context.Background(), pid)
-	if err != nil {
-		t.Fatalf("%s: ListFileChunks: %v", label, err)
-	}
-	type span struct{ start, end int64 }
-	spans := make([]span, 0, len(rows))
-	for _, r := range rows {
-		abs, ok := block.ParseChunkOffset(r.ID)
-		if !ok {
-			continue
-		}
-		spans = append(spans, span{int64(abs), int64(abs) + int64(r.DataSize)})
-	}
-	for i := 1; i < len(spans); i++ { // insertion sort by start (few rows)
-		for j := i; j > 0 && spans[j].start < spans[j-1].start; j-- {
-			spans[j], spans[j-1] = spans[j-1], spans[j]
-		}
-	}
 	var cursor int64
-	for _, s := range spans {
-		if s.start > cursor {
-			t.Errorf("%s: manifest GAP [%d, %d) — cold read zero-fills this range", label, cursor, s.start)
+	for _, r := range manifestRefs(t, ms, pid) {
+		start, end := int64(r.Offset), int64(r.Offset)+int64(r.Size)
+		if start > cursor {
+			t.Errorf("%s: manifest GAP [%d, %d) — cold read zero-fills this range", label, cursor, start)
 		}
-		if s.start < cursor {
-			t.Errorf("%s: manifest OVERLAP at [%d, %d) — cold read may serve stale bytes", label, s.start, cursor)
+		if start < cursor {
+			t.Errorf("%s: manifest OVERLAP at [%d, %d) — cold read may serve stale bytes", label, start, cursor)
 		}
-		if s.end > cursor {
-			cursor = s.end
+		if end > cursor {
+			cursor = end
 		}
 	}
 	if cursor < fileSize {
