@@ -124,6 +124,21 @@ func (s *Store) recover() error {
 		// CRC-coincidence torn header from making the scanner trust a bogus length.
 		recs, validUpTo := scanValidRecords(fd, s.cfg.SegmentSize, s.cfg.SegmentSize)
 
+		if sealed && len(recs) == 0 {
+			// No write path can produce this: sealing fsyncs the records before it
+			// sets the sealed bit, and every seal is gated on the segment already
+			// holding a record. A sealed header over a record stream that scans
+			// empty therefore means the bytes under it were damaged after the fact.
+			// Skip the segment — no record names its shard, so there is nothing to
+			// attach it to — but leave the file on disk rather than sweeping it:
+			// nothing in the rebuilt index points into it, so unlinking it would
+			// destroy the only remaining copy of whatever payload is still down
+			// there.
+			_ = fd.Close()
+			logf("journal: WARN sealed segment %s scans as zero valid records (damaged first record), skipping it; left in place for inspection", path)
+			continue
+		}
+
 		m := &segmentMeta{id: id, createdAt: createdAt, fd: fd}
 		m.tail.Store(validUpTo)
 		if sealed {

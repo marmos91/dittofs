@@ -3,7 +3,9 @@ package journal
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -330,6 +332,72 @@ func TestOrphanSweepSparesYoung(t *testing.T) {
 	defer func() { _ = r.Close() }()
 	if _, err := os.Stat(s.segPath(orphanID)); err != nil {
 		t.Fatalf("young orphan should be spared, got: %v", err)
+	}
+}
+
+// TestSealedSegmentWithNoValidRecords builds a sealed segment whose record
+// stream is unreadable garbage and asserts recovery completes instead of
+// panicking, skips the segment, leaves its file on disk even past the orphan age
+// gate, warns about it, and serves the store's real data untouched.
+func TestSealedSegmentWithNoValidRecords(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, Config{ShardCount: 1}, newFakeRemote(), SystemClock())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	ctx := context.Background()
+	if err := s.WriteAt(ctx, "f", 0, []byte("real-data")); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	if err := s.Commit(ctx, "f"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// A valid sealed header followed by a record stream that scans as zero valid
+	// records: the damage recovery must survive rather than index into.
+	badID := uint64(7777)
+	old := time.Now().Add(-time.Hour)
+	seg := append(encodeSegHeader(badID, old, segFlagSealed), bytes.Repeat([]byte{0xAB}, 4096)...)
+	if err := os.WriteFile(s.segPath(badID), seg, 0o644); err != nil {
+		t.Fatalf("write damaged sealed seg: %v", err)
+	}
+	// Backdate past the orphan age gate so a sweep would delete it if recovery
+	// ever classified it as an orphan.
+	if err := os.Chtimes(s.segPath(badID), old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	var warned []string
+	prev := logf
+	logf = func(format string, args ...any) { warned = append(warned, fmt.Sprintf(format, args...)) }
+	defer func() { logf = prev }()
+
+	r, err := Open(dir, Config{ShardCount: 1}, newFakeRemote(), fixedClock{t: time.Now()})
+	if err != nil {
+		t.Fatalf("reopen over damaged sealed segment: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+
+	if !strings.Contains(strings.Join(warned, "\n"), "zero valid records") {
+		t.Fatalf("expected a warning naming the damaged sealed segment, got %q", warned)
+	}
+	if _, err := os.Stat(r.segPath(badID)); err != nil {
+		t.Fatalf("damaged sealed segment must be left in place, got: %v", err)
+	}
+	if got := readAll(t, r, "f", len("real-data")); string(got) != "real-data" {
+		t.Fatalf("real data lost: %q", got)
+	}
+	// The skipped segment is attached to no shard.
+	for _, sh := range r.shards {
+		if _, ok := sh.sealed[badID]; ok {
+			t.Fatalf("damaged segment %d was attached to a shard", badID)
+		}
+		if sh.active != nil && sh.active.id == badID {
+			t.Fatalf("damaged segment %d was adopted as an active segment", badID)
+		}
 	}
 }
 
