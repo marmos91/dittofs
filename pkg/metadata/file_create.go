@@ -176,8 +176,13 @@ func (s *Service) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name st
 			return err
 		}
 
-		// Increment target's link count
-		linkCount, _ := tx.GetLinkCount(ctx.Context, targetHandle)
+		// Increment target's link count. A failed read must abort: writing an
+		// nlink below the number of directory entries pointing at the file lets
+		// a later unlink free content that is still referenced.
+		linkCount, err := tx.GetLinkCount(ctx.Context, targetHandle)
+		if err != nil {
+			return err
+		}
 		if err := tx.SetLinkCount(ctx.Context, targetHandle, linkCount+1); err != nil {
 			return err
 		}
