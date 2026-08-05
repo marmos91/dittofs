@@ -416,3 +416,53 @@ func TestLockFile_PerUserReadOnlyDeniesExclusiveLock(t *testing.T) {
 		t.Errorf("LockFile(shared) for read-only user err = %v, want nil", err)
 	}
 }
+
+// TestRemoveFile_StoreReadOnlyShareBlocksDeleteAccessBypass asserts that the
+// upstream DELETE-access grant (AuthContext.HasDeleteAccess, frozen at SMB
+// open time) does not survive the share being toggled read-only at the store
+// level. The per-user ceiling ctx.ShareReadOnly is fixed when the tree is
+// connected, so it stays false across the toggle; only the store-level check
+// closes the window.
+func TestRemoveFile_StoreReadOnlyShareBlocksDeleteAccessBypass(t *testing.T) {
+	f := newTestFixture(t)
+
+	uid, gid := uint32(1000), uint32(1000)
+
+	// Create the victim while the share is still writable.
+	_, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "doomed.txt",
+		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644, UID: uid, GID: gid})
+	require.NoError(t, err)
+
+	// Share flips read-only after the handle was authorized.
+	_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
+	require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
+		&metadata.ShareOptions{ReadOnly: true}))
+
+	authCtx := f.smbDeleteContext(uid, gid)
+	authCtx.ShareReadOnly = false // per-user ceiling frozen at connect time
+
+	_, _, err = f.service.RemoveFile(authCtx, f.rootHandle, "doomed.txt")
+	require.Error(t, err, "a read-only share must block the HasDeleteAccess fast path")
+
+	var storeErr *metadata.StoreError
+	require.True(t, errors.As(err, &storeErr))
+	require.Equal(t, metadata.ErrReadOnly, storeErr.Code,
+		"a genuinely read-only share must map the denial to EROFS/NFS3ERR_ROFS")
+}
+
+// TestRemoveFile_DeleteAccessStillSucceedsOnWritableShare is the companion:
+// the DELETE-access fast path still unlinks on a writable share, including
+// when the caller has no POSIX write bit on the parent (the SMB
+// delete-on-close case the fast path exists for).
+func TestRemoveFile_DeleteAccessStillSucceedsOnWritableShare(t *testing.T) {
+	f := newTestFixture(t)
+
+	uid, gid := uint32(1000), uint32(1000)
+
+	_, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "removable.txt",
+		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644, UID: uid, GID: gid})
+	require.NoError(t, err)
+
+	_, _, err = f.service.RemoveFile(f.smbDeleteContext(uid, gid), f.rootHandle, "removable.txt")
+	require.NoError(t, err, "delete on a writable share must still succeed")
+}

@@ -166,7 +166,7 @@ func (s *Service) PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint
 	// possibly-stale cache (unlike the soft size/quota checks above).
 	permErr := error(nil)
 	if freshFetch {
-		permErr = s.checkWritePermissionFile(ctx, handle, file)
+		permErr = s.CheckWritePermissionFile(ctx, handle, file)
 	} else {
 		permErr = s.checkWritePermission(ctx, handle)
 	}
