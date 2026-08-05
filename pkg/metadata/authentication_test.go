@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -56,32 +57,36 @@ func TestIdentity_HasGID(t *testing.T) {
 
 		assert.True(t, identity.HasGID(300))
 	})
+}
 
-	t.Run("lazy map initialization", func(t *testing.T) {
-		t.Parallel()
-		identity := &Identity{GIDs: []uint32{100, 200, 300}}
+// TestIdentity_HasGID_Concurrent asserts HasGID is safe on an Identity shared by
+// several goroutines, as the SMB per-session identity cache does: one *Identity
+// is handed to every concurrent request on the session.
+func TestIdentity_HasGID_Concurrent(t *testing.T) {
+	t.Parallel()
 
-		// Map should be nil initially
-		assert.Nil(t, identity.gidSet)
+	gids := make([]uint32, 64)
+	for i := range gids {
+		gids[i] = uint32(i) + 100
+	}
+	identity := &Identity{GIDs: gids}
 
-		// First call should initialize map
-		_ = identity.HasGID(200)
-
-		// Map should now be populated
-		assert.NotNil(t, identity.gidSet)
-		assert.Len(t, identity.gidSet, 3)
-	})
-
-	t.Run("subsequent calls use cached map", func(t *testing.T) {
-		t.Parallel()
-		identity := &Identity{GIDs: []uint32{100, 200, 300}}
-
-		// Multiple calls should work correctly
-		assert.True(t, identity.HasGID(100))
-		assert.True(t, identity.HasGID(200))
-		assert.True(t, identity.HasGID(300))
-		assert.False(t, identity.HasGID(400))
-	})
+	const goroutines = 16
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for _, want := range gids {
+				assert.True(t, identity.HasGID(want))
+				assert.False(t, identity.HasGID(want+1_000_000))
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
 }
 
 // ============================================================================
