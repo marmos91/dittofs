@@ -372,6 +372,7 @@ func TestPurgeConflictingDisconnectedHandlesForDataChange(t *testing.T) {
 				_ = store.PutDurableHandle(context.Background(), h)
 			}
 			h := &Handler{DurableStore: store}
+			h.SeedFromDurableHandles(context.Background(), store)
 			got := h.purgeConflictingDisconnectedHandlesForDataChange(
 				context.Background(), metaHandle, tc.excludeLeaseKey, tc.breakBelowH,
 			)
@@ -420,6 +421,7 @@ func TestPurgeConflictingDisconnectedHandlesForOpen(t *testing.T) {
 	})
 
 	h := &Handler{DurableStore: store}
+	h.SeedFromDurableHandles(context.Background(), store)
 	// New RH open with a different key → purges the disconnected RWH (W
 	// must be broken; cascade strips H), leaves the live handle alone.
 	got := h.purgeConflictingDisconnectedHandlesForOpen(
@@ -593,7 +595,7 @@ func TestDurableOpenConflictingOpenPurgesAcrossConnections(t *testing.T) {
 	// lease-backed holder; the V1 DHnC reconnect harness only re-establishes
 	// oplock-backed handles without a lease-request context, so the keep
 	// controls (which assert reconnect success) use leaseKey=zero.
-	seedSessionA := func(store *mockDurableStore, dLeaseState, dShareAccess uint32, oplock uint8, leaseKey [16]byte) {
+	seedSessionA := func(h *Handler, store *mockDurableStore, dLeaseState, dShareAccess uint32, oplock uint8, leaseKey [16]byte) {
 		_ = store.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
 			ID:             "session-A",
 			FileID:         fileID,
@@ -612,6 +614,10 @@ func TestDurableOpenConflictingOpenPurgesAcrossConnections(t *testing.T) {
 			DisconnectedAt: time.Now().Add(-10 * time.Second),
 			TimeoutMs:      60000,
 		})
+		// Rows written straight into the store are invisible to the count
+		// that gates the purge scans; seeding is how a real process picks up
+		// handles it did not persist itself.
+		h.SeedFromDurableHandles(context.Background(), store)
 	}
 
 	// reconnectA models session A's DHnC reconnect through the real entrypoint
@@ -675,7 +681,7 @@ func TestDurableOpenConflictingOpenPurgesAcrossConnections(t *testing.T) {
 		t.Run("purge/"+tc.name, func(t *testing.T) {
 			store := newMockDurableStore()
 			h := &Handler{DurableStore: store}
-			seedSessionA(store, tc.dLeaseState, tc.dShareAccess, tc.dOplock, tc.dLeaseKey)
+			seedSessionA(h, store, tc.dLeaseState, tc.dShareAccess, tc.dOplock, tc.dLeaseKey)
 
 			// BEFORE the fix this purge was a no-op and reconnect returned
 			// SUCCESS. Assert the conflicting open purges exactly one handle.
@@ -711,7 +717,7 @@ func TestDurableOpenConflictingOpenPurgesAcrossConnections(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newMockDurableStore()
 			h := &Handler{DurableStore: store}
-			seedSessionA(store, tc.dLeaseState, tc.dShareAccess, tc.dOplock, [16]byte{})
+			seedSessionA(h, store, tc.dLeaseState, tc.dShareAccess, tc.dOplock, [16]byte{})
 
 			purged := h.purgeConflictingDisconnectedHandlesForOpen(
 				context.Background(), metaHandle,

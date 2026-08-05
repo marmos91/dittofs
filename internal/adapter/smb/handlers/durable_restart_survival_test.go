@@ -179,7 +179,7 @@ func TestDurableHandleNoCollisionAfterReseed(t *testing.T) {
 		t.Fatalf("fresh Handler nextFileID = %d, want 1 (restart counter reset)", got)
 	}
 
-	h.SeedFileIDFromDurableHandles(ctx, store)
+	h.SeedFromDurableHandles(ctx, store)
 
 	// The reseed stores the max persisted persistent half (5000) as the
 	// last-issued value; GenerateFileID pre-increments, so the next minted
