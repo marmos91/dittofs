@@ -145,6 +145,48 @@ func TestEvictSkipsClaimedSegment(t *testing.T) {
 	}
 }
 
+// TestEvictReleasesClaimAfterColdLogFailure: a failed cold-log append must leave
+// the segment reclaimable. Eviction's claim is exclusive, so keeping it past the
+// failure would bar that segment from every later eviction and GC pass until the
+// process restarts, stranding its bytes under the disk pressure eviction relieves.
+func TestEvictReleasesClaimAfterColdLogFailure(t *testing.T) {
+	s, _ := evictStore(t, Config{})
+	ctx := context.Background()
+
+	fillUntilSealed(t, s, "f", true, 1)
+	segs := sealedSegs(s.shardFor("f"))
+	if len(segs) == 0 {
+		t.Fatalf("want a sealed segment to evict")
+	}
+
+	// A directory in place of the cold log file fails the append's open.
+	if err := os.Mkdir(s.coldPath(), 0o755); err != nil {
+		t.Fatalf("Mkdir over cold log path: %v", err)
+	}
+	if _, err := s.Evict(ctx, 1<<30); err == nil {
+		t.Fatalf("a cold-log append failure must surface, not evict blind")
+	}
+	for _, seg := range segs {
+		if _, err := os.Stat(s.segPath(seg.id)); err != nil {
+			t.Fatalf("segment %d must survive the failed eviction, stat err=%v", seg.id, err)
+		}
+	}
+
+	// With the cold log writable again, the segments the failed pass claimed must
+	// be reclaimable.
+	if err := os.Remove(s.coldPath()); err != nil {
+		t.Fatalf("Remove cold log dir: %v", err)
+	}
+	if _, err := s.Evict(ctx, 1<<30); err != nil {
+		t.Fatalf("Evict after the cold log recovered: %v", err)
+	}
+	for _, seg := range segs {
+		if _, err := os.Stat(s.segPath(seg.id)); !os.IsNotExist(err) {
+			t.Fatalf("segment %d stayed claimed after the failed eviction: stat err=%v", seg.id, err)
+		}
+	}
+}
+
 func TestEvictSyncedGateRefusesDirty(t *testing.T) {
 	s, _ := evictStore(t, Config{})
 	ctx := context.Background()

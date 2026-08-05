@@ -204,7 +204,20 @@ func evictable(seg *segmentMeta) bool {
 // first can at worst leave a marker for bytes that are still local (the eviction
 // did not complete), which costs a needless remote fetch — the opposite order
 // would serve zeros.
-func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (int64, error) {
+//
+// A failure drops the claim (as reclaimEmptied does) so a later pass can retry the
+// segment: the claim is exclusive, so keeping it would bar the segment from every
+// subsequent eviction and GC pass, stranding its bytes under the very disk pressure
+// eviction serves. Retrying is safe because the failure leaves the index and the
+// segment untouched; at worst it left markers for bytes that are still local, which
+// the persist-first order already tolerates.
+func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (freed int64, err error) {
+	defer func() {
+		if err != nil {
+			seg.busy.Store(false)
+		}
+	}()
+
 	sh.mu.Lock()
 	var entries []coldEntry
 	for id, fi := range sh.index {
@@ -221,7 +234,7 @@ func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (int64, error) {
 	}
 	sh.mu.Unlock()
 
-	if err := s.appendCold(entries); err != nil {
+	if err = s.appendCold(entries); err != nil {
 		// Without a durable marker the range would come back from a restart as a
 		// hole, so keep the segment (and its bytes) instead of evicting blind.
 		return 0, err
