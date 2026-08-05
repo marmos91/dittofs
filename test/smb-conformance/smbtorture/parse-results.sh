@@ -197,11 +197,34 @@ KNOWN_HITS=0
 TOTAL=0
 
 declare -a NEW_FAILURE_LIST=()
+declare -a KNOWN_STILL_FAILING=()
+declare -a NOW_PASSING_LIST=()
+declare -a INCOMPLETE_LIST=()
 declare -a ALL_RESULTS=()
+
+# Name of the test whose "test:" marker has been seen but whose verdict line
+# has not. Non-empty at the next "test:" marker (or at EOF) means the suite
+# was cut short mid-test — see the incomplete-test handling below.
+open_test=""
 
 while IFS= read -r line; do
     test_name=""
     outcome=""
+
+    # ---------- Test-start marker ----------
+    # "test: NAME" opens a test; the matching success/failure/error/skip line
+    # closes it. A name still open when the next test starts (or at EOF) never
+    # produced a verdict — the per-suite timeout killed smbtorture mid-test.
+    # Such a test is inconclusive: it is neither counted as a pass nor as a
+    # failure, and it is reported separately so a truncated suite cannot read
+    # as a clean run.
+    if [[ "$line" =~ ^test:[[:space:]]+(.*) ]]; then
+        started="${BASH_REMATCH[1]%% *}"
+        [[ "$started" != smb2.* ]] && started="smb2.${started}"
+        [[ -n "$open_test" ]] && INCOMPLETE_LIST+=("$open_test")
+        open_test="$started"
+        continue
+    fi
 
     # ---------- Keyword-prefixed format ----------
     # "success: test.name"
@@ -252,17 +275,27 @@ while IFS= read -r line; do
     # Skip lines that don't match any format
     [[ -z "$test_name" ]] && continue
 
+    # A verdict closes the currently open test.
+    [[ "$test_name" == "$open_test" ]] && open_test=""
+
     TOTAL=$((TOTAL + 1))
     ALL_RESULTS+=("${test_name}|${outcome}")
 
     case "$outcome" in
         pass)
             PASS_COUNT=$((PASS_COUNT + 1))
+            # A blacklisted test that passes is a candidate for removal from
+            # KNOWN_FAILURES.md. Never a failure, but worth surfacing — the
+            # list only shrinks if someone can see what has started passing.
+            if is_known_failure "$test_name"; then
+                NOW_PASSING_LIST+=("$test_name")
+            fi
             ;;
         fail)
             FAIL_COUNT=$((FAIL_COUNT + 1))
             if is_known_failure "$test_name"; then
                 KNOWN_HITS=$((KNOWN_HITS + 1))
+                KNOWN_STILL_FAILING+=("$test_name")
             else
                 NEW_FAILURES=$((NEW_FAILURES + 1))
                 NEW_FAILURE_LIST+=("$test_name")
@@ -273,6 +306,39 @@ while IFS= read -r line; do
             ;;
     esac
 done < "$OUTPUT_FILE"
+
+# A test left open at EOF was killed by the timeout of the last suite run.
+[[ -n "$open_test" ]] && INCOMPLETE_LIST+=("$open_test")
+
+# Reduce the "now passing" candidates to names that passed and never failed.
+# A few smbtorture suites reuse one test name across several parametrised runs
+# (smb2.charset.Testing runs three times), so the raw list carries duplicates
+# and names that both passed and failed — neither is a candidate for removal
+# from the blacklist.
+declare -A _failed_names=()
+for name in "${NEW_FAILURE_LIST[@]+"${NEW_FAILURE_LIST[@]}"}" \
+            "${KNOWN_STILL_FAILING[@]+"${KNOWN_STILL_FAILING[@]}"}"; do
+    _failed_names["$name"]=1
+done
+declare -A _seen_pass=()
+declare -a _now_passing=()
+for name in "${NOW_PASSING_LIST[@]+"${NOW_PASSING_LIST[@]}"}"; do
+    [[ -n "${_failed_names[$name]+_}" ]] && continue
+    [[ -n "${_seen_pass[$name]+_}" ]] && continue
+    _seen_pass["$name"]=1
+    _now_passing+=("$name")
+done
+NOW_PASSING_LIST=("${_now_passing[@]+"${_now_passing[@]}"}")
+
+# Suites the harness gave up on, recorded by run.sh as "filter<TAB>seconds".
+# Everything those suites had not reached is missing from the results above.
+declare -a TIMED_OUT_SUITES=()
+if [[ -n "$RESULTS_DIR" ]] && [[ -f "${RESULTS_DIR}/timeouts.txt" ]]; then
+    while IFS=$'\t' read -r to_filter to_secs; do
+        [[ -z "$to_filter" ]] && continue
+        TIMED_OUT_SUITES+=("${to_filter} (gave up after ${to_secs:-?}s)")
+    done < "${RESULTS_DIR}/timeouts.txt"
+fi
 
 # --------------------------------------------------------------------------
 # Baseline generation
@@ -482,48 +548,72 @@ for entry in "${ALL_RESULTS[@]}"; do
 done
 
 # --------------------------------------------------------------------------
-# Summary
+# Summary — written to both the terminal and summary.txt (which the CI
+# workflow pastes into the job summary). A bare pass/fail count hides the
+# things people actually need: which failures are new, which suites the
+# harness gave up on, and which blacklisted tests have started passing.
 # --------------------------------------------------------------------------
 echo ""
-echo -e "${BOLD}--- Summary ---${NC}"
-echo -e "  Passed:           ${GREEN}${PASS_COUNT}${NC}"
-echo -e "  Known failures:   ${YELLOW}${KNOWN_HITS}${NC}"
-echo -e "  New failures:     ${RED}${NEW_FAILURES}${NC}"
-echo -e "  Skipped:          ${DIM}${SKIP_COUNT}${NC}"
-echo ""
+# report_list TITLE [NAME...] — markdown section, or nothing when empty.
+report_list() {
+    local title="$1"
+    shift
+    [[ $# -eq 0 ]] && return 0
+    echo ""
+    echo "### ${title} ($#)"
+    printf -- '- %s\n' "$@"
+}
 
-# --------------------------------------------------------------------------
-# Write summary.txt for CI step summary
-# --------------------------------------------------------------------------
+report_body() {
+    echo "| Metric | Count |"
+    echo "|--------|-------|"
+    echo "| Total | ${TOTAL} |"
+    echo "| Passed | ${PASS_COUNT} |"
+    echo "| Failed | ${FAIL_COUNT} |"
+    echo "| Known | ${KNOWN_HITS} |"
+    echo "| New Failures | ${NEW_FAILURES} |"
+    echo "| Skipped | ${SKIP_COUNT} |"
+    echo "| Inconclusive | ${#INCOMPLETE_LIST[@]} |"
+    echo "| Suites cut short | ${#TIMED_OUT_SUITES[@]} |"
+
+    report_list "New failures — not in KNOWN_FAILURES.md, these fail the job" \
+        "${NEW_FAILURE_LIST[@]+"${NEW_FAILURE_LIST[@]}"}"
+    report_list "Suites cut short by timeout — everything they did not reach is ungraded" \
+        "${TIMED_OUT_SUITES[@]+"${TIMED_OUT_SUITES[@]}"}"
+    report_list "Tests with no verdict — killed mid-test, neither pass nor fail" \
+        "${INCOMPLETE_LIST[@]+"${INCOMPLETE_LIST[@]}"}"
+    report_list "Known failures that now PASS — candidates to drop from KNOWN_FAILURES.md" \
+        "${NOW_PASSING_LIST[@]+"${NOW_PASSING_LIST[@]}"}"
+    report_list "Known failures still failing" \
+        "${KNOWN_STILL_FAILING[@]+"${KNOWN_STILL_FAILING[@]}"}"
+}
+
 if [[ -n "$RESULTS_DIR" ]] && [[ -d "$RESULTS_DIR" ]]; then
-    {
-        echo "| Metric | Count |"
-        echo "|--------|-------|"
-        echo "| Total | ${TOTAL} |"
-        echo "| Passed | ${PASS_COUNT} |"
-        echo "| Failed | ${FAIL_COUNT} |"
-        echo "| Known | ${KNOWN_HITS} |"
-        echo "| New Failures | ${NEW_FAILURES} |"
-        echo "| Skipped | ${SKIP_COUNT} |"
-    } > "${RESULTS_DIR}/summary.txt"
+    report_body > "${RESULTS_DIR}/summary.txt"
 fi
+report_body
+echo ""
 
 # --------------------------------------------------------------------------
-# Report new failures
+# Verdict
+#
+# The job fails on exactly one thing: failures that are not on the
+# KNOWN_FAILURES.md blacklist. Timeouts and no-verdict tests are reported
+# above but do not move the verdict in either direction — a suite the harness
+# abandoned is evidence of nothing, and failing on it would trade one flake
+# for another.
 # --------------------------------------------------------------------------
 if [[ "$NEW_FAILURES" -gt 0 ]]; then
     echo -e "${RED}${BOLD}RESULT: ${NEW_FAILURES} new failure(s) detected!${NC}"
-    echo ""
-    echo "New failures not in KNOWN_FAILURES.md:"
-    for name in "${NEW_FAILURE_LIST[@]}"; do
-        echo "  - ${name}"
-    done
     echo ""
     echo "To add as known failures, append to KNOWN_FAILURES.md:"
     echo "  | <test-name> | <category> | <reason> | - |"
     echo ""
 else
     echo -e "${GREEN}${BOLD}RESULT: All failures are known. CI green.${NC}"
+    if [[ ${#INCOMPLETE_LIST[@]} -gt 0 || ${#TIMED_OUT_SUITES[@]} -gt 0 ]]; then
+        echo -e "${YELLOW}NOTE: coverage was incomplete — see the timeout sections above.${NC}"
+    fi
     echo ""
 fi
 
