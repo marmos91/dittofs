@@ -182,3 +182,68 @@ func resolveCovering(ctx context.Context, store block.EngineFileChunkStore, payl
 	}
 	return rw.fb, rw.absOffset, nil
 }
+
+// chunkAtOrAfterOffsetResolver is the indexed successor lookup, implemented only
+// by the badger metadata backend. resolveNextChunkStart type-asserts for it and
+// falls back to a ListFileChunks walk otherwise.
+type chunkAtOrAfterOffsetResolver interface {
+	GetFileChunkAtOrAfterOffset(ctx context.Context, payloadID string, off uint64) (*block.FileChunk, error)
+}
+
+// resolveNextChunkStart returns the absolute start offset of the first chunk of
+// payloadID that begins strictly after off, or ok=false when none does — every
+// remaining byte is hole. It is the step a reader takes to cross a hole: off is
+// known to be uncovered, so the next data can only begin later.
+//
+// Asking for off+1 rather than off keeps a zero-length row parked exactly at off
+// from answering with off itself, which would stall a caller that loops on the
+// result.
+//
+// When the store implements chunkAtOrAfterOffsetResolver (badger) the successor
+// comes from the chunk-offset index; a row it names whose ID cannot be placed is
+// an inconsistent manifest, not a hole, so it is reported rather than stepped
+// over — silently skipping it would strand real data and read back as zeros.
+// Other backends fall back to a ListFileChunks walk, which mirrors resolveCovering
+// and is likewise not the profiled hot path. There an unplaceable row needs no
+// separate guard: findRowCoveringOffset already fails resolveCovering for the
+// same payload, so reaching this point proves the manifest holds none.
+func resolveNextChunkStart(ctx context.Context, store block.EngineFileChunkStore, payloadID string, off uint64) (uint64, bool, error) {
+	if store == nil {
+		return 0, false, nil
+	}
+	if r, ok := store.(chunkAtOrAfterOffsetResolver); ok {
+		fb, err := r.GetFileChunkAtOrAfterOffset(ctx, payloadID, off+1)
+		if err != nil || fb == nil {
+			return 0, false, err
+		}
+		abs, ok := block.ParseChunkOffset(fb.ID)
+		if !ok {
+			return 0, false, fmt.Errorf("%w: malformed FileChunk ID %q", block.ErrManifestInconsistent, fb.ID)
+		}
+		return abs, true, nil
+	}
+	rows, err := store.ListFileChunks(ctx, payloadID)
+	if err != nil {
+		if errors.Is(err, block.ErrFileChunkNotFound) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	var (
+		best  uint64
+		found bool
+	)
+	for _, fb := range rows {
+		if fb == nil {
+			continue
+		}
+		abs, parsed := block.ParseChunkOffset(fb.ID)
+		if !parsed || abs <= off {
+			continue
+		}
+		if !found || abs < best {
+			best, found = abs, true
+		}
+	}
+	return best, found, nil
+}

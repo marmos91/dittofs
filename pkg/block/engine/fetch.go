@@ -370,10 +370,20 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 			return false, err
 		}
 		if fb == nil {
-			// Sparse hole at cur: no chunk covers it. Probe the next block
-			// boundary — real files are fully written (no holes). The caller's
-			// re-read zero-fills any bytes left uncovered.
-			cur = (cur/uint64(BlockSize) + 1) * uint64(BlockSize)
+			// Sparse hole at cur: no chunk covers it. Chunk boundaries do not
+			// align to BlockSize, so a hole can be followed by real data inside
+			// the same block; advance to the next chunk that starts after cur
+			// rather than to the next block boundary. Skipping to the boundary
+			// would drop those chunks from the fetch list and the caller's
+			// re-read would then serve them as zeros.
+			next, ok, err := resolveNextChunkStart(ctx, m.fileChunkStore, payloadID, cur)
+			if err != nil {
+				return false, err
+			}
+			if !ok {
+				break // nothing starts past cur — the rest of the window is hole
+			}
+			cur = next
 			continue
 		}
 		// ponytail: no per-hash local-presence probe (journal is not hash-keyed);
