@@ -437,9 +437,15 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// LastAccessTime to the current system time, unless frozen via SET_INFO -1.
 	// IsAtimeFrozen takes openFile.mu (read) so we observe a consistent value
 	// against a concurrent SET_INFO freeze/thaw on the same handle (#606).
+	//
+	// Successive READs on one handle coalesce: the store write happens at most
+	// once per smbAtimeUpdateWindow, and the newest access time is held on the
+	// handle until QUERY_INFO reads it or CLOSE persists it.
 	if !openFile.IsAtimeFrozen() {
 		now := time.Now()
-		_, _ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
+		if noteSmbAccess(openFile, now) {
+			_, _ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
+		}
 	}
 
 	// ========================================================================

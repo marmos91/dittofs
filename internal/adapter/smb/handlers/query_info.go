@@ -295,6 +295,11 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
+	// READ coalesces its LastAccessTime bumps, so the newest access may still be
+	// held on the handle rather than in the store. The frozen-timestamp override
+	// below still wins.
+	applySmbPendingAtime(openFile, file)
+
 	// Per MS-FSA 2.1.5.14.2: Apply frozen timestamp overrides.
 	// When SET_INFO(-1) freezes a timestamp, subsequent operations (WRITE,
 	// child CREATE/DELETE for directories, truncate) may update the store
