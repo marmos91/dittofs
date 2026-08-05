@@ -263,6 +263,26 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				logger.Debug("CLOSE: metadata flushed", "path", openFile.Path)
 			}
 
+			// READ coalesces its LastAccessTime bumps, so the newest access time
+			// may still only live on the handle. Persist it before the
+			// frozen-timestamp restore below, which stays authoritative.
+			//
+			// Only ever advance it: another handle on the same file (or an NFS
+			// client) may have set a newer LastAccessTime since this handle's
+			// last READ, and SetFileAttributes assigns Atime directly, so an
+			// unconditional flush would move it backwards. The compare is a plain
+			// read-then-write — openFile.mu is per-handle and the store offers no
+			// compare-and-set for a single attribute — so it narrows that window
+			// rather than closing it. Losing the race costs at most
+			// smbAtimeUpdateWindow of access-time precision.
+			if pending := takeSmbPendingAtime(openFile); !pending.IsZero() && !openFile.IsAtimeFrozen() {
+				if cur, curErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); curErr == nil && cur.Atime.Before(pending) {
+					if _, atimeErr := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &pending}); atimeErr != nil {
+						logger.Warn("CLOSE: LastAccessTime flush failed", "path", openFile.Path, "error", atimeErr)
+					}
+				}
+			}
+
 			// Per MS-FSA 2.1.5.14.2: After flushing pending writes (which may overwrite
 			// frozen timestamps), restore any timestamps that were frozen via SET_INFO -1.
 			// The deferred commit flush sets Mtime/Ctime to the WRITE time, but if the

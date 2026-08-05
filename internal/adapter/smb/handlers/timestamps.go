@@ -29,6 +29,71 @@ import (
 // smbDelayedWriteWindow is Samba's WRITE_TIME_UPDATE_USEC_DELAY (2 s).
 const smbDelayedWriteWindow = 2 * time.Second
 
+// smbAtimeUpdateWindow bounds how often a READ-driven LastAccessTime bump
+// reaches the metadata store on one handle. Without it every READ RPC costs a
+// read-modify-write of the file's metadata.
+const smbAtimeUpdateWindow = 2 * time.Second
+
+// noteSmbAccess records an access at t on the handle and reports whether it has
+// to reach the metadata store now. When it returns false the time is held on
+// the handle instead, for applySmbPendingAtime / takeSmbPendingAtime. The first
+// access on a handle always writes.
+//
+// Takes openFile.mu (write) — concurrent READ pipelines on the same handle must
+// serialize so exactly one of them takes the store write.
+func noteSmbAccess(openFile *OpenFile, t time.Time) bool {
+	if openFile == nil {
+		return false
+	}
+	openFile.mu.Lock()
+	defer openFile.mu.Unlock()
+	if !openFile.SmbAtimeWrittenAt.IsZero() && t.Sub(openFile.SmbAtimeWrittenAt) < smbAtimeUpdateWindow {
+		// Latest access wins: concurrent READ pipelines on one handle can reach
+		// the lock out of sample order, and an older sample must not lower the
+		// access time the overlay reports or CLOSE persists.
+		if t.After(openFile.SmbPendingAtime) && t.After(openFile.SmbAtimeWrittenAt) {
+			openFile.SmbPendingAtime = t
+		}
+		return false
+	}
+	openFile.SmbAtimeWrittenAt = t
+	openFile.SmbPendingAtime = time.Time{}
+	return true
+}
+
+// takeSmbPendingAtime removes and returns the access time held on the handle
+// since the last store write, or the zero time when there is none. Called at
+// CLOSE so a coalesced bump is not lost with the handle.
+//
+// Takes openFile.mu (write).
+func takeSmbPendingAtime(openFile *OpenFile) time.Time {
+	if openFile == nil {
+		return time.Time{}
+	}
+	openFile.mu.Lock()
+	defer openFile.mu.Unlock()
+	pending := openFile.SmbPendingAtime
+	openFile.SmbPendingAtime = time.Time{}
+	return pending
+}
+
+// applySmbPendingAtime overlays the coalesced access time on top of a
+// freshly-read metadata.File so QUERY_INFO reports the newest access rather
+// than the last one that reached the store. A newer stored value (another
+// handle's explicit set) wins.
+//
+// Takes openFile.mu (read).
+func applySmbPendingAtime(openFile *OpenFile, file *metadata.File) {
+	if openFile == nil || file == nil {
+		return
+	}
+	openFile.mu.RLock()
+	defer openFile.mu.RUnlock()
+	if file.Atime.Before(openFile.SmbPendingAtime) {
+		file.Atime = openFile.SmbPendingAtime
+	}
+}
+
 // armSmbDelayedWriteLocked is the lock-free body of armSmbDelayedWrite.
 // Callers must hold openFile.mu (write).
 func armSmbDelayedWriteLocked(openFile *OpenFile, preMtime time.Time, writeTime time.Time) {

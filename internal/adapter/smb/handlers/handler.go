@@ -558,6 +558,13 @@ type OpenFile struct {
 	SmbWriteFlushAt    time.Time  // wall-clock when the 2s window expires (zero ⇒ already flushed)
 	SmbStickyWriteTime *time.Time // explicit SetBasic write_time — wins over any pending update
 
+	// READ-driven LastAccessTime coalescing: a READ pushes the access time to
+	// the metadata store at most once per smbAtimeUpdateWindow. In between the
+	// newest access time lives on the handle, surfaced by QUERY_INFO and
+	// persisted at CLOSE.
+	SmbAtimeWrittenAt time.Time // when the last READ-driven atime reached the store
+	SmbPendingAtime   time.Time // newest access time not yet written to the store (zero ⇒ none)
+
 	// Oplock state
 	// OplockLevel is the current oplock level for this handle.
 	// Thread safety: This field is written during CREATE (before storing in sync.Map)

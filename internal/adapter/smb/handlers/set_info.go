@@ -631,6 +631,12 @@ func (h *Handler) setFileInfoFromStore(
 		// write_time also makes the value sticky until close. We still hold
 		// openFile.mu (write) here, so use the *Locked helpers.
 		flushSmbDelayedWriteLocked(openFile)
+		// Any LastAccessTime action on this handle — an explicit value or a
+		// freeze/thaw sentinel — makes the client's value authoritative, so drop
+		// the coalesced READ access time CLOSE would otherwise flush over it.
+		if atimeFT != 0 {
+			openFile.SmbPendingAtime = time.Time{}
+		}
 		if setAttrs.Mtime != nil && mtimeFT != 0 && !isFiletimeSentinel(mtimeFT) {
 			setSmbStickyWriteTimeLocked(openFile, *setAttrs.Mtime)
 		}
