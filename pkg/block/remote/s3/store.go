@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -86,6 +87,12 @@ type Config struct {
 
 	// ForcePathStyle forces path-style addressing (required for Localstack/MinIO).
 	ForcePathStyle bool
+
+	// AllowPrivate permits endpoints that resolve to loopback or
+	// private/internal addresses (MinIO, Localstack, a co-located RGW). It
+	// relaxes the same set ValidateEndpoint relaxes, both at config-check time
+	// and on every dial; link-local (cloud metadata) stays refused either way.
+	AllowPrivate bool
 }
 
 // Store is an S3-backed implementation of remote.RemoteStore.
@@ -146,39 +153,7 @@ func NewFromConfig(ctx context.Context, config Config) (*Store, error) {
 		credentials.NewStaticCredentialsProvider(config.AccessKey, config.SecretKey, ""),
 	))
 
-	// Configure HTTP client for parallel uploads. The pool must not cap the
-	// syncer's upload window below its ceiling, or it becomes the hidden
-	// bottleneck: the adaptive controller ramps to engine.AdaptiveUploadCeiling
-	// (64) and downloads run concurrently on the same host, so size for both
-	// (128 conns x ~512KB buffers ≈ 64MB worst case, created on demand). A
-	// pinned --parallel-uploads above this still caps here (#1407 follow-up).
-	httpTransport := &http.Transport{
-		MaxIdleConns:        maxS3ConnsPerHost,
-		MaxIdleConnsPerHost: maxS3ConnsPerHost,
-		MaxConnsPerHost:     maxS3ConnsPerHost,
-		IdleConnTimeout:     90 * time.Second,
-		ForceAttemptHTTP2:   false,
-		TLSNextProto:        make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout: 10 * time.Second,
-		TLSClientConfig: &tls.Config{
-			MinVersion: tls.VersionTLS12,
-			NextProtos: []string{"http/1.1"},
-		},
-		WriteBufferSize:       256 * 1024,
-		ReadBufferSize:        256 * 1024,
-		ExpectContinueTimeout: 0,
-		ResponseHeaderTimeout: 60 * time.Second,
-	}
-
-	httpClient := &http.Client{
-		Transport: httpTransport,
-		Timeout:   s3HTTPRequestTimeout,
-	}
-	opts = append(opts, awsconfig.WithHTTPClient(httpClient))
+	opts = append(opts, awsconfig.WithHTTPClient(newHTTPClient(config.AllowPrivate)))
 
 	maxAttempts := config.MaxRetries
 	if maxAttempts <= 0 {
@@ -231,6 +206,57 @@ func NewFromConfig(ctx context.Context, config Config) (*Store, error) {
 	client := s3.NewFromConfig(awsCfg, s3Opts...)
 
 	return New(client, config), nil
+}
+
+// newHTTPClient builds the HTTP client the S3 SDK issues every request
+// through. It sizes the connection pool for parallel uploads: the pool must
+// not cap the syncer's upload window below its ceiling, or it becomes the
+// hidden bottleneck, since the adaptive controller ramps to
+// engine.AdaptiveUploadCeiling (64) and downloads run concurrently on the same
+// host, so it is sized for both (128 conns x ~512KB buffers ≈ 64MB worst case,
+// created on demand). A pinned --parallel-uploads above this still caps here.
+//
+// It also carries the two runtime halves of the endpoint guard: a dial-time
+// address check and a refusal to follow redirects. allowPrivate relaxes the
+// same private/loopback space ValidateEndpoint relaxes; link-local stays
+// refused either way.
+func newHTTPClient(allowPrivate bool) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConns:        maxS3ConnsPerHost,
+			MaxIdleConnsPerHost: maxS3ConnsPerHost,
+			MaxConnsPerHost:     maxS3ConnsPerHost,
+			IdleConnTimeout:     90 * time.Second,
+			ForceAttemptHTTP2:   false,
+			TLSNextProto:        make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+				// No proxy is configured on this transport, so every
+				// socket the SDK opens passes through this hook.
+				Control: func(_, address string, _ syscall.RawConn) error {
+					return checkDialAddress(address, allowPrivate)
+				},
+			}).DialContext,
+			TLSHandshakeTimeout: 10 * time.Second,
+			TLSClientConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+				NextProtos: []string{"http/1.1"},
+			},
+			WriteBufferSize:       256 * 1024,
+			ReadBufferSize:        256 * 1024,
+			ExpectContinueTimeout: 0,
+			ResponseHeaderTimeout: 60 * time.Second,
+		},
+		Timeout: s3HTTPRequestTimeout,
+		// Never follow a redirect: it would walk the client to a host no
+		// guard has vetted. Handing the 3xx back to the SDK instead of
+		// returning an error keeps a wrong-region PermanentRedirect body
+		// readable as the diagnostic it is.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 // normalizeEndpoint prepends https:// when the endpoint does not already
@@ -312,7 +338,7 @@ func ValidateEndpoint(endpoint string, allowPrivate bool) error {
 		}
 		for _, ipa := range resolved {
 			if a, ok := netip.AddrFromSlice(ipa.IP); ok {
-				ips = append(ips, a.Unmap())
+				ips = append(ips, a)
 			}
 		}
 	}
@@ -327,11 +353,34 @@ func ValidateEndpoint(endpoint string, allowPrivate bool) error {
 	return nil
 }
 
+// checkDialAddress rejects a "host:port" the transport is about to connect to
+// when the host part is an address unsafe to dial. It is the runtime half of
+// the endpoint guard: the address here is already resolved, so a hostname that
+// answers with a safe address at config-check time and an internal one at
+// connect time is caught, and every candidate the resolver returned is
+// checked, not just the first.
+func checkDialAddress(address string, allowPrivate bool) error {
+	addrPort, err := netip.ParseAddrPort(address)
+	if err != nil {
+		return fmt.Errorf("%w: unparseable dial address %q: %v", ErrUnsafeEndpoint, address, err)
+	}
+	return checkEndpointIP(addrPort.Addr(), address, allowPrivate)
+}
+
 // checkEndpointIP rejects a single resolved address that is unsafe to dial.
 func checkEndpointIP(ip netip.Addr, host string, allowPrivate bool) error {
+	// An IPv4 address carried in 4-in-6 form (::ffff:169.254.169.254) reports
+	// false for every IPv4 classification below, so collapse it to plain IPv4
+	// before classifying. Every caller reaches the classifications through
+	// here, so this is the only place that needs to unmap.
+	ip = ip.Unmap()
 	switch {
 	case ip.IsUnspecified():
 		return fmt.Errorf("%w: host %q resolves to unspecified address", ErrUnsafeEndpoint, host)
+	case ip.Is4() && ip.As4()[0] == 0:
+		// 0.0.0.0/8 ("this network"): unroutable, and some stacks treat
+		// 0.x.y.z as an alias for loopback.
+		return fmt.Errorf("%w: host %q resolves to reserved address %s", ErrUnsafeEndpoint, host, ip)
 	case ip.IsMulticast():
 		return fmt.Errorf("%w: host %q resolves to multicast address", ErrUnsafeEndpoint, host)
 	case ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast():
@@ -342,7 +391,13 @@ func checkEndpointIP(ip netip.Addr, host string, allowPrivate bool) error {
 	if allowPrivate {
 		return nil
 	}
-	if ip.IsLoopback() || ip.IsPrivate() || !ip.IsGlobalUnicast() {
+	// 100.64.0.0/10 (shared address space) carries cloud-internal networking
+	// and overlay VPNs. netip classifies it as ordinary global unicast and
+	// IsPrivate does not cover it, so name it here rather than let it pass as
+	// public. Operators reaching an object store over such an overlay opt in
+	// with the same flag they already use for a private endpoint.
+	sharedAddressSpace := ip.Is4() && ip.As4()[0] == 100 && ip.As4()[1]&0xc0 == 64
+	if ip.IsLoopback() || ip.IsPrivate() || sharedAddressSpace || !ip.IsGlobalUnicast() {
 		return fmt.Errorf("%w: host %q resolves to private/internal address %s (set allow_private_endpoint=true to permit)", ErrUnsafeEndpoint, host, ip)
 	}
 	return nil

@@ -3288,6 +3288,7 @@ func CreateRemoteStoreFromConfig(ctx context.Context, storeType string, cfg inte
 		if endpoint != "" && !hasPathStyle {
 			forcePathStyle = true
 		}
+		allowPrivate, _ := config["allow_private_endpoint"].(bool)
 
 		store, err := remotes3.NewFromConfig(ctx, remotes3.Config{
 			Bucket:         bucket,
@@ -3297,6 +3298,7 @@ func CreateRemoteStoreFromConfig(ctx context.Context, storeType string, cfg inte
 			SecretKey:      secretKey,
 			KeyPrefix:      prefix,
 			ForcePathStyle: forcePathStyle,
+			AllowPrivate:   allowPrivate,
 		})
 		if err != nil {
 			return nil, err
