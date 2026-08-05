@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
@@ -200,16 +201,23 @@ type chunkAtOrAfterOffsetResolver interface {
 // result.
 //
 // When the store implements chunkAtOrAfterOffsetResolver (badger) the successor
-// comes from the chunk-offset index; a row it names whose ID cannot be placed is
-// an inconsistent manifest, not a hole, so it is reported rather than stepped
-// over — silently skipping it would strand real data and read back as zeros.
-// Other backends fall back to a ListFileChunks walk, which mirrors resolveCovering
-// and is likewise not the profiled hot path. There an unplaceable row needs no
-// separate guard: findRowCoveringOffset already fails resolveCovering for the
-// same payload, so reaching this point proves the manifest holds none.
+// comes from the chunk-offset index; other backends fall back to a ListFileChunks
+// walk, which mirrors resolveCovering and is likewise not the profiled hot path.
+//
+// Either way a row whose ID cannot be placed is reported rather than stepped
+// over. Unlike coverage, the successor answer is not scoped to a single row: an
+// unplaceable row sits at an unknown offset, so it may be the true successor,
+// and returning a later one would silently reclassify the bytes it holds as hole
+// for the caller to zero-fill. The two lookups here and in resolveCovering are
+// independent — a backend may index coverage without indexing succession, and
+// each walk is its own ListFileChunks snapshot — so the guard cannot be borrowed
+// from findRowCoveringOffset having already run.
 func resolveNextChunkStart(ctx context.Context, store block.EngineFileChunkStore, payloadID string, off uint64) (uint64, bool, error) {
 	if store == nil {
 		return 0, false, nil
+	}
+	if off == math.MaxUint64 {
+		return 0, false, nil // nothing can start after the last representable offset
 	}
 	if r, ok := store.(chunkAtOrAfterOffsetResolver); ok {
 		fb, err := r.GetFileChunkAtOrAfterOffset(ctx, payloadID, off+1)
@@ -218,7 +226,8 @@ func resolveNextChunkStart(ctx context.Context, store block.EngineFileChunkStore
 		}
 		abs, ok := block.ParseChunkOffset(fb.ID)
 		if !ok {
-			return 0, false, fmt.Errorf("%w: malformed FileChunk ID %q", block.ErrManifestInconsistent, fb.ID)
+			return 0, false, fmt.Errorf("%w: nothing covers offset %d and the next chunk is unplaceable row %q",
+				block.ErrManifestInconsistent, off, fb.ID)
 		}
 		return abs, true, nil
 	}
@@ -230,20 +239,31 @@ func resolveNextChunkStart(ctx context.Context, store block.EngineFileChunkStore
 		return 0, false, err
 	}
 	var (
-		best  uint64
-		found bool
+		best        uint64
+		found       bool
+		unplaceable string
 	)
 	for _, fb := range rows {
 		if fb == nil {
 			continue
 		}
 		abs, parsed := block.ParseChunkOffset(fb.ID)
-		if !parsed || abs <= off {
+		if !parsed {
+			if unplaceable == "" {
+				unplaceable = fb.ID
+			}
+			continue
+		}
+		if abs <= off {
 			continue
 		}
 		if !found || abs < best {
 			best, found = abs, true
 		}
+	}
+	if unplaceable != "" {
+		return 0, false, fmt.Errorf("%w: nothing covers offset %d and the manifest holds unplaceable row %q",
+			block.ErrManifestInconsistent, off, unplaceable)
 	}
 	return best, found, nil
 }

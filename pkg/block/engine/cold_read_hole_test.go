@@ -3,6 +3,8 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
+	"math"
 	"math/rand"
 	"testing"
 
@@ -119,5 +121,75 @@ func TestEnsureAvailableAndRead_ChunkAfterHoleIsFetched(t *testing.T) {
 				t.Fatalf("chunk after hole not hydrated: got %x…, want %x…", got[:16], chunk[:16])
 			}
 		})
+	}
+}
+
+// successorStub returns a fixed row from the indexed successor lookup, standing
+// in for a backend whose offset index still points at a row whose ID cannot be
+// placed.
+type successorStub struct {
+	*stubFileChunkStore
+	row *block.FileChunk
+}
+
+func (s *successorStub) GetFileChunkAtOrAfterOffset(_ context.Context, _ string, _ uint64) (*block.FileChunk, error) {
+	return s.row, nil
+}
+
+// TestResolveNextChunkStart_UnplaceableRowIsReported pins the failure mode of a
+// row whose ID carries no offset. Such a row sits at an unknown position, so it
+// may be the very next chunk after the hole being stepped over. Skipping it and
+// returning a later start would hand the caller a wider hole than the file has
+// and the bytes it holds would be zero-filled, so the manifest inconsistency is
+// reported instead.
+//
+// Both lookup branches are covered because neither can lean on the other having
+// run: a backend may index coverage without indexing succession, and the walks
+// are separate snapshots.
+func TestResolveNextChunkStart_UnplaceableRowIsReported(t *testing.T) {
+	ctx := context.Background()
+	const payloadID = "payload-unplaceable"
+	bad := &block.FileChunk{ID: payloadID + "/not-an-offset", DataSize: 4096}
+
+	t.Run("ListFileChunksFallback", func(t *testing.T) {
+		stub := newStubFileChunkStore()
+		if err := stub.Put(ctx, bad); err != nil {
+			t.Fatalf("seed unplaceable row: %v", err)
+		}
+		// A placeable row further out must not become the answer.
+		if err := stub.Put(ctx, &block.FileChunk{ID: payloadID + "/8192", DataSize: 4096}); err != nil {
+			t.Fatalf("seed placeable row: %v", err)
+		}
+		_, _, err := resolveNextChunkStart(ctx, stub, payloadID, 0)
+		if !errors.Is(err, block.ErrManifestInconsistent) {
+			t.Fatalf("resolveNextChunkStart = %v; want ErrManifestInconsistent", err)
+		}
+	})
+
+	t.Run("OffsetIndexed", func(t *testing.T) {
+		store := &successorStub{stubFileChunkStore: newStubFileChunkStore(), row: bad}
+		_, _, err := resolveNextChunkStart(ctx, store, payloadID, 0)
+		if !errors.Is(err, block.ErrManifestInconsistent) {
+			t.Fatalf("resolveNextChunkStart = %v; want ErrManifestInconsistent", err)
+		}
+	})
+}
+
+// TestResolveNextChunkStart_MaxOffsetDoesNotWrap pins the probe-offset guard: at
+// the last representable offset there is no "strictly after", and computing
+// off+1 would wrap to zero and restart the search at the front of the payload.
+func TestResolveNextChunkStart_MaxOffsetDoesNotWrap(t *testing.T) {
+	ctx := context.Background()
+	const payloadID = "payload-max-offset"
+	store := &successorStub{
+		stubFileChunkStore: newStubFileChunkStore(),
+		row:                &block.FileChunk{ID: payloadID + "/0", DataSize: 4096},
+	}
+	got, ok, err := resolveNextChunkStart(ctx, store, payloadID, math.MaxUint64)
+	if err != nil {
+		t.Fatalf("resolveNextChunkStart: %v", err)
+	}
+	if ok {
+		t.Fatalf("resolveNextChunkStart(MaxUint64) = (%d, true); want no successor", got)
 	}
 }
