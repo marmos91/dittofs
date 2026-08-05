@@ -59,6 +59,85 @@ import (
 //     pkg/metadata/lock/leases.go); this state machine only intervenes when
 //     the disconnected handle would have to lose H.
 
+// noteDisconnectedHandle counts one more durable handle persisted in the
+// disconnected state for metaHandle. It MUST be called before the row becomes
+// visible in the DurableHandleStore: a row that exists while the count still
+// reads zero is one the conflict scans skip.
+func (h *Handler) noteDisconnectedHandle(metaHandle []byte) {
+	if len(metaHandle) == 0 {
+		return
+	}
+	h.disconnectedMu.Lock()
+	if h.disconnectedByFile == nil {
+		h.disconnectedByFile = make(map[string]int)
+	}
+	h.disconnectedByFile[string(metaHandle)]++
+	h.disconnectedTotal.Add(1)
+	h.disconnectedMu.Unlock()
+}
+
+// forgetDisconnectedHandle drops one counted disconnected handle for
+// metaHandle. It MUST be called only after the row is gone from the store.
+// Not every delete path reports here; the ones that don't leave an over-count
+// for setDisconnectedHandleCount to reconcile on the next scan of that file.
+func (h *Handler) forgetDisconnectedHandle(metaHandle []byte) {
+	if len(metaHandle) == 0 {
+		return
+	}
+	key := string(metaHandle)
+	h.disconnectedMu.Lock()
+	if n := h.disconnectedByFile[key]; n > 0 {
+		if n == 1 {
+			delete(h.disconnectedByFile, key)
+		} else {
+			h.disconnectedByFile[key] = n - 1
+		}
+		h.disconnectedTotal.Add(-1)
+	}
+	h.disconnectedMu.Unlock()
+}
+
+// setDisconnectedHandleCount reconciles the count for metaHandle against the
+// disconnected rows a scan just left behind in the store. Callers MUST hold
+// durablePurgeMu, which is also held across noteDisconnectedHandle +
+// PutDurableHandle, so no handle can be persisted between the scan's read and
+// this write and be lost by it.
+func (h *Handler) setDisconnectedHandleCount(metaHandle []byte, n int) {
+	if len(metaHandle) == 0 {
+		return
+	}
+	key := string(metaHandle)
+	h.disconnectedMu.Lock()
+	prev := h.disconnectedByFile[key]
+	if n <= 0 {
+		// Clamped rather than trusted: a negative count would read as "no
+		// disconnected handle" and skip a purge that has to happen.
+		n = 0
+		delete(h.disconnectedByFile, key)
+	} else {
+		if h.disconnectedByFile == nil {
+			h.disconnectedByFile = make(map[string]int)
+		}
+		h.disconnectedByFile[key] = n
+	}
+	h.disconnectedTotal.Add(int64(n - prev))
+	h.disconnectedMu.Unlock()
+}
+
+// hasDisconnectedHandles reports whether metaHandle may have a durable handle
+// persisted in the disconnected state. It gates the durablePurgeMu +
+// GetDurableHandlesByFileHandle scans: false is exact, true only means the scan
+// has to run.
+func (h *Handler) hasDisconnectedHandles(metaHandle []byte) bool {
+	if h.disconnectedTotal.Load() == 0 {
+		return false
+	}
+	h.disconnectedMu.RLock()
+	n := h.disconnectedByFile[string(metaHandle)]
+	h.disconnectedMu.RUnlock()
+	return n > 0
+}
+
 // disconnectedHandleAction is the decision the state machine returns for
 // each disconnected handle inspected.
 type disconnectedHandleAction int
@@ -237,16 +316,59 @@ func disconnectedConflictOnDataChange(
 	return disconnectedActionPurge
 }
 
-// purgeConflictingDisconnectedHandlesForOpen scans disconnected handles for
-// the underlying file (keyed by metadata handle) and purges those that
-// conflict with the new open under §3.3.4.18.
+// purgeDisconnectedConflicts purges every disconnected handle on metaHandle
+// that conflicts, and returns how many it removed. Store lookup errors are
+// logged at debug — purge is best-effort and must not block the caller.
 //
-// Returns the number of purged handles. Errors looking up the store are
-// logged at debug — purge is best-effort and must not block CREATE.
+// Files with no disconnected handle skip both durablePurgeMu and the store
+// lookup, which is what keeps this off the cost of every WRITE and SET_INFO;
+// hasDisconnectedHandles is exact in the negative, and noteDisconnectedHandle
+// publishes the count before PutDurableHandle makes a row visible, so no handle
+// can become disconnected between the gate and the caller's operation without
+// being ordered after it. Otherwise durablePurgeMu is held across the
+// Get→Delete window so a concurrent disconnect persist
+// (handler.go:closeFilesWithFilter) cannot Put a new disconnected handle between
+// the snapshot and the per-id Delete.
 //
-// Holds Handler.durablePurgeMu across the Get→Delete window so a concurrent
-// disconnect persist (handler.go:closeFilesMatching) cannot Put a new
-// disconnected handle between our snapshot and the per-id Delete.
+// The surviving rows are counted back, converging an earlier over-count. A row
+// whose delete failed is still in the store, so it counts as surviving.
+func (h *Handler) purgeDisconnectedConflicts(
+	ctx context.Context,
+	metaHandle []byte,
+	reason string,
+	conflicts func(d *lock.PersistedDurableHandle) bool,
+) int {
+	if h.DurableStore == nil || len(metaHandle) == 0 || !h.hasDisconnectedHandles(metaHandle) {
+		return 0
+	}
+	h.durablePurgeMu.Lock()
+	defer h.durablePurgeMu.Unlock()
+	handles, err := h.DurableStore.GetDurableHandlesByFileHandle(ctx, metaHandle)
+	if err != nil {
+		logger.Debug("purgeDisconnectedConflicts: lookup failed",
+			"reason", reason, "error", err)
+		return 0
+	}
+	var purged, kept int
+	for _, d := range handles {
+		// Only consider handles that survived a transport disconnect — the
+		// store may transiently hold pre-disconnect rows on some backends.
+		if d.DisconnectedAt.IsZero() {
+			continue
+		}
+		if !conflicts(d) || !h.purgeOneDisconnectedHandle(ctx, d, reason) {
+			kept++
+			continue
+		}
+		purged++
+	}
+	h.setDisconnectedHandleCount(metaHandle, kept)
+	return purged
+}
+
+// purgeConflictingDisconnectedHandlesForOpen purges the disconnected handles on
+// the underlying file (keyed by metadata handle) that conflict with the new
+// open under §3.3.4.18.
 func (h *Handler) purgeConflictingDisconnectedHandlesForOpen(
 	ctx context.Context,
 	metaHandle []byte,
@@ -255,92 +377,44 @@ func (h *Handler) purgeConflictingDisconnectedHandlesForOpen(
 	newShareAccess uint32,
 	newDesiredAccess uint32,
 ) int {
-	if h.DurableStore == nil || len(metaHandle) == 0 {
-		return 0
-	}
 	newIsStatOnly := isStatOnlyOpen(newDesiredAccess)
-	h.durablePurgeMu.Lock()
-	defer h.durablePurgeMu.Unlock()
-	handles, err := h.DurableStore.GetDurableHandlesByFileHandle(ctx, metaHandle)
-	if err != nil {
-		logger.Debug("purgeConflictingDisconnectedHandlesForOpen: lookup failed",
-			"error", err)
-		return 0
-	}
-	if len(handles) == 0 {
-		return 0
-	}
-	var purged int
-	for _, d := range handles {
-		// Only consider handles that survived a transport disconnect — the
-		// store may transiently hold pre-disconnect rows on some backends.
-		if d.DisconnectedAt.IsZero() {
-			continue
-		}
-		action := disconnectedConflictOnNewOpen(
-			d.LeaseState, d.LeaseKey, d.ShareAccess,
-			newLeaseState, newLeaseKey,
-			newShareAccess, newDesiredAccess, newIsStatOnly,
-		)
-		if action != disconnectedActionPurge {
-			continue
-		}
-		h.purgeOneDisconnectedHandle(ctx, d, "new-open conflict")
-		purged++
-	}
-	return purged
+	return h.purgeDisconnectedConflicts(ctx, metaHandle, "new-open conflict",
+		func(d *lock.PersistedDurableHandle) bool {
+			return disconnectedConflictOnNewOpen(
+				d.LeaseState, d.LeaseKey, d.ShareAccess,
+				newLeaseState, newLeaseKey,
+				newShareAccess, newDesiredAccess, newIsStatOnly,
+			) == disconnectedActionPurge
+		})
 }
 
-// purgeConflictingDisconnectedHandlesForDataChange scans disconnected handles
-// for the underlying file and purges those that would lose H caching due to
-// the actor's WRITE or RENAME.
-//
-// Holds Handler.durablePurgeMu across the Get→Delete window for the same
-// reason as purgeConflictingDisconnectedHandlesForOpen.
+// purgeConflictingDisconnectedHandlesForDataChange purges the disconnected
+// handles on the underlying file that would lose H caching due to the actor's
+// WRITE or RENAME.
 func (h *Handler) purgeConflictingDisconnectedHandlesForDataChange(
 	ctx context.Context,
 	metaHandle []byte,
 	excludeLeaseKey [16]byte,
 	breakToBelowHandle bool,
 ) int {
-	if h.DurableStore == nil || len(metaHandle) == 0 || !breakToBelowHandle {
+	if !breakToBelowHandle {
 		return 0
 	}
-	h.durablePurgeMu.Lock()
-	defer h.durablePurgeMu.Unlock()
-	handles, err := h.DurableStore.GetDurableHandlesByFileHandle(ctx, metaHandle)
-	if err != nil {
-		logger.Debug("purgeConflictingDisconnectedHandlesForDataChange: lookup failed",
-			"error", err)
-		return 0
-	}
-	if len(handles) == 0 {
-		return 0
-	}
-	var purged int
-	for _, d := range handles {
-		if d.DisconnectedAt.IsZero() {
-			continue
-		}
-		action := disconnectedConflictOnDataChange(d.LeaseKey, excludeLeaseKey)
-		if action != disconnectedActionPurge {
-			continue
-		}
-		h.purgeOneDisconnectedHandle(ctx, d, "data-change break")
-		purged++
-	}
-	return purged
+	return h.purgeDisconnectedConflicts(ctx, metaHandle, "data-change break",
+		func(d *lock.PersistedDurableHandle) bool {
+			return disconnectedConflictOnDataChange(d.LeaseKey, excludeLeaseKey) == disconnectedActionPurge
+		})
 }
 
 // purgeOneDisconnectedHandle deletes a single disconnected handle and releases
 // its locks. Mirrors the cleanup half of DurableHandleScavenger.cleanupAndDelete
 // but is callable from CREATE/WRITE/RENAME hot paths without the scavenger
-// ticker overhead.
+// ticker overhead. Returns whether the row is gone from the store.
 func (h *Handler) purgeOneDisconnectedHandle(
 	ctx context.Context,
 	d *lock.PersistedDurableHandle,
 	reason string,
-) {
+) bool {
 	if h.Registry != nil {
 		if metaSvc := h.Registry.GetMetadataService(); metaSvc != nil && len(d.MetadataHandle) > 0 {
 			// Release byte-range locks held by the disconnected open. SMB
@@ -365,13 +439,14 @@ func (h *Handler) purgeOneDisconnectedHandle(
 	if err := h.DurableStore.DeleteDurableHandle(ctx, d.ID); err != nil {
 		logger.Warn("purgeOneDisconnectedHandle: delete failed",
 			"id", d.ID, "path", d.Path, "error", err)
-		return
+		return false
 	}
 	logger.Debug("purgeOneDisconnectedHandle: purged disconnected handle",
 		"id", d.ID,
 		"path", d.Path,
 		"leaseState", fmt.Sprintf("0x%x", d.LeaseState),
 		"reason", reason)
+	return true
 }
 
 // shouldPersistDurableOnDisconnect returns false when an open MUST NOT be

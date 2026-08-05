@@ -32,7 +32,7 @@ func TestSeedFileIDFromDurableHandles(t *testing.T) {
 	_ = store.PutDurableHandle(context.Background(), durableWithFileID("c", 17))
 
 	h := NewHandler() // starts nextFileID at 1
-	h.SeedFileIDFromDurableHandles(context.Background(), store)
+	h.SeedFromDurableHandles(context.Background(), store)
 
 	// First CREATE after seeding must land strictly above the max persisted
 	// FileID (42), so it cannot collide with any reclaimable durable open.
@@ -59,7 +59,7 @@ func TestSeedFileIDFromDurableHandles_NeverLowers(t *testing.T) {
 	}
 	before := h.nextFileID.Load()
 
-	h.SeedFileIDFromDurableHandles(context.Background(), store)
+	h.SeedFromDurableHandles(context.Background(), store)
 
 	if after := h.nextFileID.Load(); after != before {
 		t.Fatalf("counter moved from %d to %d; seed must never lower it", before, after)
@@ -75,7 +75,7 @@ func TestSeedFileIDFromDurableHandles_MaxUint64(t *testing.T) {
 
 	h := NewHandler()
 	start := h.nextFileID.Load()
-	h.SeedFileIDFromDurableHandles(context.Background(), store)
+	h.SeedFromDurableHandles(context.Background(), store)
 
 	if got := h.nextFileID.Load(); got != start {
 		t.Fatalf("counter seeded to %d on max-uint64 handle; want left at %d (no wrap)", got, start)
@@ -93,12 +93,12 @@ func TestSeedFileIDFromDurableHandles_EmptyAndNil(t *testing.T) {
 	h := NewHandler()
 	start := h.nextFileID.Load()
 
-	h.SeedFileIDFromDurableHandles(context.Background(), newMockDurableStore())
+	h.SeedFromDurableHandles(context.Background(), newMockDurableStore())
 	if got := h.nextFileID.Load(); got != start {
 		t.Fatalf("empty store changed counter to %d, want %d", got, start)
 	}
 
-	h.SeedFileIDFromDurableHandles(context.Background(), nil)
+	h.SeedFromDurableHandles(context.Background(), nil)
 	if got := h.nextFileID.Load(); got != start {
 		t.Fatalf("nil store changed counter to %d, want %d", got, start)
 	}

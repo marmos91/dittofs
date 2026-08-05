@@ -192,10 +192,29 @@ type Handler struct {
 	// Without serialization a CREATE in (b) can race against a concurrent
 	// disconnect in (a): the disconnect's PutDurableHandle lands between the
 	// CREATE's Get and Delete, leaving a phantom unreconnectable entry until
-	// the scavenger evicts it. The mutex is coarse-grained (process-wide) but
-	// covers only durable-store IO and the disconnect-time persist step,
-	// neither of which is on the steady-state hot path.
+	// the scavenger evicts it.
+	//
+	// The mutex is process-wide and (b) is reached from WRITE and SET_INFO, so
+	// taking it per operation would serialize every writer in the server behind
+	// one lock plus a durable-store round trip. The (b) scans therefore gate on
+	// disconnectedByFile below and take the mutex only for files that actually
+	// have a disconnected handle.
 	durablePurgeMu sync.Mutex
+
+	// disconnectedByFile counts the durable handles currently persisted in the
+	// DurableHandleStore in the disconnected state, keyed by metadata handle;
+	// disconnectedTotal is their sum, so the common "no disconnected handle
+	// anywhere" case costs one atomic load.
+	//
+	// The counts are an upper bound, never an under-count: an entry is added
+	// BEFORE PutDurableHandle makes the row visible, and under durablePurgeMu,
+	// so no scan can observe zero while a row exists. Not every delete path
+	// decrements — a purge scan reconciles the count for the file it just read
+	// from the store, so an over-count costs one slow-path scan and then
+	// converges. Only the add side is load-bearing.
+	disconnectedMu     sync.RWMutex
+	disconnectedByFile map[string]int
+	disconnectedTotal  atomic.Int64
 
 	// KerberosProvider holds the shared Kerberos keytab/config provider.
 	// Injected by the adapter layer before Serve(). When nil, Kerberos
@@ -1316,6 +1335,12 @@ func (h *Handler) closeFilesWithFilter(
 				// purge windows; see durablePurgeMu comment.
 				h.durablePurgeMu.Lock()
 				persisted := buildPersistedDurableHandle(openFile, username, sessionKeyHash, h.StartTime, leaseState, leaseEpoch)
+				// Count the handle before the row becomes visible, so a
+				// concurrent WRITE/SET_INFO cannot take its fast path over a
+				// file that already has a disconnected handle. A failed Put is
+				// deliberately not un-counted: it may still have written the
+				// row, and the next scan of this file reconciles the count.
+				h.noteDisconnectedHandle(persisted.MetadataHandle)
 				err := h.DurableStore.PutDurableHandle(ctx, persisted)
 				h.durablePurgeMu.Unlock()
 				if err != nil {
@@ -1974,10 +1999,15 @@ func (h *Handler) baseFileUUID(authCtx *metadata.AuthContext, parentHandle metad
 	return fallback
 }
 
-// SeedFileIDFromDurableHandles bumps the persistent-half FileID counter past
-// the highest value already recorded in persisted durable handles, so that
-// after a server restart freshly minted FileIDs cannot collide with the
-// FileID of a still-reclaimable durable open.
+// SeedFromDurableHandles restores the in-memory state derived from persisted
+// durable handles after a restart:
+//
+//   - the persistent-half FileID counter is bumped past the highest value
+//     already recorded, so freshly minted FileIDs cannot collide with the
+//     FileID of a still-reclaimable durable open (detailed below); and
+//   - handles persisted in the disconnected state are counted, so the conflict
+//     scans still see the handles a previous process left behind instead of
+//     taking their fast path over them.
 //
 // Without this, the counter restarts at 1 every process start (see NewHandler;
 // the first issued persistent half is 2, since GenerateFileID pre-increments),
@@ -1992,7 +2022,7 @@ func (h *Handler) baseFileUUID(authCtx *metadata.AuthContext, parentHandle metad
 // The persistent half is the little-endian uint64 in bytes 0..7 of FileID,
 // matching the encoding GenerateFileID writes; the volatile half (bytes 8..15)
 // is zeroed in persisted records and ignored here.
-func (h *Handler) SeedFileIDFromDurableHandles(ctx context.Context, store lock.DurableHandleStore) {
+func (h *Handler) SeedFromDurableHandles(ctx context.Context, store lock.DurableHandleStore) {
 	if store == nil {
 		return
 	}
@@ -2003,13 +2033,20 @@ func (h *Handler) SeedFileIDFromDurableHandles(ctx context.Context, store lock.D
 			"error", err)
 		return
 	}
+	// Same lock the disconnect path holds around its count-then-persist, so a
+	// concurrent scan's reconciliation cannot interleave with these counts.
+	h.durablePurgeMu.Lock()
 	var maxID uint64
 	for _, dh := range handles {
+		if !dh.DisconnectedAt.IsZero() {
+			h.noteDisconnectedHandle(dh.MetadataHandle)
+		}
 		id := binary.LittleEndian.Uint64(dh.FileID[:8])
 		if id > maxID {
 			maxID = id
 		}
 	}
+	h.durablePurgeMu.Unlock()
 	if maxID == 0 {
 		return
 	}

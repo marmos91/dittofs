@@ -192,6 +192,18 @@ func (s *DurableHandleScavenger) cleanupAndDelete(ctx context.Context, h *lock.P
 		logger.Warn("DurableHandleScavenger: failed to delete expired handle",
 			"id", h.ID, "error", err)
 	} else {
+		// The row is gone, so drop it from the count that gates the conflict
+		// scans. Expiry is the terminal state for a handle whose client never
+		// came back; nothing else would clear the count.
+		//
+		// Only rows that were actually counted may be dropped, and only
+		// disconnected rows are ever counted. A row with no DisconnectedAt
+		// looks infinitely expired and reaches here too, but decrementing for
+		// it would steal the count of a genuinely disconnected handle on the
+		// same file and let a later data change skip purging it.
+		if s.handler != nil && !h.DisconnectedAt.IsZero() {
+			s.handler.forgetDisconnectedHandle(h.MetadataHandle)
+		}
 		logger.Debug("DurableHandleScavenger: expired handle cleaned up",
 			"id", h.ID, "path", h.Path, "share", h.ShareName)
 	}
