@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"regexp"
+	"slices"
 
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
@@ -166,11 +167,6 @@ type Identity struct {
 	// Empty for anonymous or simple authentication
 	GIDs []uint32
 
-	// gidSet is a cached map for O(1) group membership lookups
-	// Automatically populated from GIDs on first use
-	// Not exported - internal optimization detail
-	gidSet map[uint32]struct{}
-
 	// Windows-style identity
 	// Used by SMB/CIFS and Windows-based protocols
 
@@ -197,35 +193,12 @@ type Identity struct {
 	Domain string
 }
 
-// HasGID checks if the identity has the specified group ID in its supplementary groups.
+// HasGID reports whether gid is among the identity's supplementary groups.
 //
-// Provides O(1) group membership lookup by lazily building and caching
-// a map on first use. For users with many supplementary groups (e.g., 50-100+),
-// this is significantly faster than linear search.
-//
-// Thread safety: NOT thread-safe. Identity objects should not be
-// shared across goroutines, or callers must provide their own synchronization.
-//
-// Parameters:
-//   - gid: The group ID to check for
-//
-// Returns:
-//   - bool: true if the GID is in the supplementary groups list, false otherwise
+// The scan mutates nothing, so it is safe to call concurrently on one Identity —
+// the SMB session layer shares a single *Identity across all requests on a session.
 func (i *Identity) HasGID(gid uint32) bool {
-	if len(i.GIDs) == 0 {
-		return false
-	}
-
-	// Lazy initialization of the GID set
-	if i.gidSet == nil {
-		i.gidSet = make(map[uint32]struct{}, len(i.GIDs))
-		for _, g := range i.GIDs {
-			i.gidSet[g] = struct{}{}
-		}
-	}
-
-	_, exists := i.gidSet[gid]
-	return exists
+	return slices.Contains(i.GIDs, gid)
 }
 
 // IdentityMapping defines how client identities are transformed.
