@@ -249,7 +249,7 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 // and flips the run's records to synced as the durable frontier advances.
 func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interval, res *CarveResult) error {
 	c := chunker.NewChunkerWithParams(s.cfg.ChunkParams)
-	rr := &runReader{s: s, sh: sh, ivs: run}
+	rr := &runReader{s: s, sh: sh, id: id, ivs: run}
 
 	fileOff := run[0].fileOff
 	flipIdx := 0
@@ -544,15 +544,27 @@ func (s *Store) maybeResetDirtyClock(sh *shard, id FileID) {
 	fi.firstDirtyNanos = 0
 }
 
-// runReader streams a contiguous run's live bytes in file-offset order by
-// preading each interval's payload. It reuses the store's positioned-read path so
-// reads race nothing (segment fds are stable once created).
+// runReader streams a contiguous run's live bytes in file-offset order, serving
+// each interval out of its owning record's CRC-verified payload. Reads race
+// nothing (segment fds are stable once created).
+//
+// The verification is load-bearing rather than defensive: carve hashes whatever
+// it reads and commits it to the remote store as content-addressed data, so a
+// raw pread here would promote latent local bit rot to the authoritative copy of
+// the file. A failed check aborts the run instead, leaving the bytes dirty and
+// local — recoverable, and loud.
 type runReader struct {
 	s   *Store
 	sh  *shard
+	id  FileID
 	ivs []interval
 	i   int   // current interval
 	off int64 // bytes already read from the current interval
+	// rec is the verified record backing the current interval, kept so a record
+	// spanning several Read calls or several intervals is read and verified once
+	// rather than per call. recSeg pairs with rec.segOff to identify it.
+	rec    *record
+	recSeg uint64
 }
 
 func (rr *runReader) Read(p []byte) (int, error) {
@@ -564,13 +576,30 @@ func (rr *runReader) Read(p []byte) (int, error) {
 			rr.off = 0
 			continue
 		}
-		n := int64(len(p))
-		if n > remain {
-			n = remain
+		if rr.rec == nil || rr.recSeg != iv.loc.SegmentID || rr.rec.segOff != iv.recOff {
+			rec, err := rr.s.readRecord(rr.sh, iv.loc.SegmentID, iv.recOff, rr.id)
+			if err != nil {
+				if errors.Is(err, errTornRecord) {
+					return 0, rr.corruptRange(iv, remain)
+				}
+				return 0, err
+			}
+			rr.rec, rr.recSeg = &rec, iv.loc.SegmentID
 		}
-		got, err := rr.s.readPayload(rr.sh, iv.loc, rr.off, p[:n])
-		rr.off += int64(got)
-		return got, err
+		n := min(int64(len(p)), remain)
+		src, ok := rr.rec.payloadRange(iv.loc.Offset+rr.off, n)
+		if !ok {
+			return 0, rr.corruptRange(iv, remain)
+		}
+		copy(p, src)
+		rr.off += n
+		return int(n), nil
 	}
 	return 0, io.EOF
+}
+
+// corruptRange names the still-unread part of iv as the corrupt file range, so
+// the carve failure points at the bytes it refused to hash.
+func (rr *runReader) corruptRange(iv interval, remain int64) error {
+	return &CorruptRangeError{FileID: rr.id, Offset: iv.fileOff + rr.off, Len: remain}
 }

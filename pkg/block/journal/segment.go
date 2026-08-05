@@ -64,9 +64,15 @@ type segmentMeta struct {
 	// busy claims the segment for an exclusive whole-segment operation (evict or
 	// GC repack). A claimer CAS-sets it true so eviction and GC never touch the
 	// same sealed segment concurrently; warm reads and carve don't claim.
-	busy  atomic.Bool
-	fd    *os.File
-	idxFD *os.File // persistent append handle for the .idx sidecar (nil if unavailable)
+	busy atomic.Bool
+	// corrupt marks a segment whose records failed an integrity check while a
+	// repack was copying them forward. GC skips it until the store is reopened, so
+	// one damaged segment cannot stall reclamation for the rest of the shard, and
+	// its bytes stay on disk untouched for the read path to report or heal from
+	// remote.
+	corrupt atomic.Bool
+	fd      *os.File
+	idxFD   *os.File // persistent append handle for the .idx sidecar (nil if unavailable)
 	// readGuard coordinates unlocked preads against a GC/eviction that unlinks the
 	// segment: readers hold it shared across a pread, the reclaimer holds it
 	// exclusive around close+unlink so no read touches a closed fd.
@@ -221,7 +227,7 @@ func (m *segmentMeta) sealInPlace() error {
 // sealSegment seals the shard's active segment, moves it into the sealed set and
 // opens a fresh active segment. The segment's existing fd stays open and serves
 // warm reads from the sealed set; GC/eviction swap it only under its readGuard,
-// so readPayload's snapshot-then-unlocked-pread never touches a closed fd.
+// so readRecord's snapshot-then-unlocked-read never touches a closed fd.
 //
 // Caller must hold sh.mu.
 func (s *Store) sealSegment(sh *shard) error {
@@ -534,22 +540,23 @@ func writeTombstoneRecord(seg *segmentMeta, id FileID, version uint64) (recStart
 	return recStart, nil
 }
 
-// readPayload preads length bytes of a record payload starting subOffset into
-// the payload identified by loc, into dst. It snapshots the segment fd under
-// the shard lock, then preads unlocked. Carve is its only caller and holds the
-// shard's carveMu, which GC/eviction also hold before closing a segment, so the
-// fd cannot close under it. (ReadAt does its own resolve-and-guard — see readAt.)
-func (s *Store) readPayload(sh *shard, loc SegmentLocation, subOffset int64, dst []byte) (int, error) {
+// readRecord resolves a segment under the shard lock, then reads and verifies
+// the record at recOff, handing the whole verified record back for the caller to
+// slice. It snapshots the segment fd under the lock and reads unlocked. Carve is
+// its only caller and holds the shard's carveMu, which GC/eviction also hold
+// before closing a segment, so the fd cannot close under it. (ReadAt does its
+// own resolve-and-guard — see readAt.)
+func (s *Store) readRecord(sh *shard, segID uint64, recOff int64, id FileID) (record, error) {
 	sh.mu.Lock()
-	seg := sh.segment(loc.SegmentID)
+	seg := sh.segment(segID)
 	sh.mu.Unlock()
 	if seg == nil {
-		return 0, fmt.Errorf("journal: unknown segment %d", loc.SegmentID)
+		return record{}, fmt.Errorf("journal: unknown segment %d", segID)
 	}
 	seg.lastAccess.Store(s.clock.Now().UnixNano())
-	n, err := seg.fd.ReadAt(dst, loc.Offset+subOffset)
+	rec, err := readVerifiedRecord(seg.fd, recOff, s.cfg.SegmentSize, id)
 	if err != nil {
-		return n, fmt.Errorf("journal: read segment %d@%d: %w", loc.SegmentID, loc.Offset+subOffset, err)
+		return record{}, fmt.Errorf("journal: read segment %d record %d: %w", segID, recOff, err)
 	}
-	return n, nil
+	return rec, nil
 }

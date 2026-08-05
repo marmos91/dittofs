@@ -251,7 +251,10 @@ func TestVictimMarkersCollectsTruncate(t *testing.T) {
 	seg := sh.active
 	sh.mu.Unlock()
 
-	markers := victimMarkers(seg, s.cfg.SegmentSize)
+	markers, err := victimMarkers(seg, s.cfg.SegmentSize)
+	if err != nil {
+		t.Fatalf("victimMarkers: %v", err)
+	}
 	var found bool
 	for _, m := range markers {
 		if m.flags&flagTruncate != 0 && m.id == "f" {

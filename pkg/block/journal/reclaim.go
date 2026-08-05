@@ -564,6 +564,9 @@ func (s *Store) pickVictim(sh *shard, opts GCOptions) *segmentMeta {
 		if seg.busy.Load() {
 			continue // claimed by eviction or an in-flight repack
 		}
+		if seg.corrupt.Load() {
+			continue // a previous repack could not verify its records; leave it intact
+		}
 		if s.pinned(seg) {
 			// Pinned by a live snapshot: repack relocates bytes but a crash mid-move
 			// plus a rollback needs the pinned records intact at their original
@@ -609,6 +612,7 @@ type liveRec struct {
 	version uint64
 	synced  bool
 	srcOff  int64 // payload offset in the victim
+	recOff  int64 // owning record's header offset in the victim
 }
 
 // findMove returns the index of the move whose logical range fully contains
@@ -651,16 +655,29 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta) (int64, error) {
 			}
 			moves = append(moves, liveRec{
 				id: id, fileOff: iv.fileOff, length: iv.length,
-				version: iv.version, synced: iv.synced, srcOff: iv.loc.Offset,
+				version: iv.version, synced: iv.synced,
+				srcOff: iv.loc.Offset, recOff: iv.recOff,
 			})
 		}
 	}
 	occupied := victim.liveBytes.Load()
 	sh.mu.Unlock()
 
+	// quarantine condemns the victim: it keeps its bytes (a repack that cannot
+	// verify a record must not copy it forward under a fresh CRC) and is skipped
+	// by every later pass, so one damaged segment does not stall the shard.
+	quarantine := func(err error) error {
+		victim.corrupt.Store(true)
+		logf("journal: WARN segment %d failed a repack integrity check; leaving it in place and skipping it: %v", victim.id, err)
+		return err
+	}
+
 	// 1b. Carry forward the victim's tombstones and truncate markers so deletes
 	// and size-downs stay durable until every record they fence is gone.
-	markers := victimMarkers(victim, s.cfg.SegmentSize)
+	markers, err := victimMarkers(victim, s.cfg.SegmentSize)
+	if err != nil {
+		return 0, quarantine(err)
+	}
 
 	if len(moves) == 0 && len(markers) == 0 {
 		return s.dropVictim(sh, victim, occupied)
@@ -682,12 +699,23 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta) (int64, error) {
 		m := moves[i]
 		if m.length < 0 || m.length > maxPayloadLen {
 			cleanup()
-			return 0, fmt.Errorf("journal: repack implausible record length %d in segment %d", m.length, victim.id)
+			return 0, quarantine(fmt.Errorf("journal: repack implausible record length %d in segment %d", m.length, victim.id))
 		}
-		data := make([]byte, int(m.length)) // one interval in RAM at a time
-		if _, rerr := victim.fd.ReadAt(data, m.srcOff); rerr != nil {
+		// Verify the source record before copying it forward: writeDataRecord
+		// stamps a fresh CRC over whatever it is handed, so an unverified copy
+		// would launder on-disk bit rot into a record that passes every later
+		// integrity check. One record in RAM at a time.
+		rec, rerr := readVerifiedRecord(victim.fd, m.recOff, s.cfg.SegmentSize, m.id)
+		if rerr != nil {
 			cleanup()
-			return 0, fmt.Errorf("journal: repack read victim %d@%d: %w", victim.id, m.srcOff, rerr)
+			return 0, quarantine(fmt.Errorf("journal: repack verify victim %d record %d for %q@%d: %w",
+				victim.id, m.recOff, m.id, m.fileOff, rerr))
+		}
+		data, ok := rec.payloadRange(m.srcOff, m.length)
+		if !ok {
+			cleanup()
+			return 0, quarantine(fmt.Errorf("journal: repack victim %d record %d does not frame %q@%d+%d: %w",
+				victim.id, m.recOff, m.id, m.fileOff, m.length, errTornRecord))
 		}
 		poff, werr := writeDataRecord(target, m.id, m.fileOff, m.version, m.synced, data)
 		if werr != nil {
@@ -815,11 +843,18 @@ type markRec struct {
 
 // victimMarkers scans a sealed victim's record stream for the non-data records
 // (tombstones and truncate markers) a repack must carry forward so the deletes
-// and size-downs they encode survive the source segment's reclamation. A sealed
-// segment is trusted intact, so a torn tail (should never occur) simply yields
-// the records read so far.
-func victimMarkers(seg *segmentMeta, segSize int64) []markRec {
-	recs, _ := scanValidRecords(seg.fd, segSize, segSize)
+// and size-downs they encode survive the source segment's reclamation.
+//
+// A scan that stops short of the segment's record end means a record failed its
+// integrity check, and every marker behind it would be silently dropped — the
+// delete or size-down it encodes would come back to life once the victim is
+// reclaimed. That reports an error so the repack leaves the victim alone.
+func victimMarkers(seg *segmentMeta, segSize int64) ([]markRec, error) {
+	recs, validUpTo := scanValidRecords(seg.fd, segSize, segSize)
+	if tail := seg.tail.Load(); validUpTo < tail {
+		return nil, fmt.Errorf("journal: segment %d record stream ends at %d, want %d: %w",
+			seg.id, validUpTo, tail, errTornRecord)
+	}
 	var out []markRec
 	for _, rec := range recs {
 		switch {
@@ -834,7 +869,7 @@ func victimMarkers(seg *segmentMeta, segSize int64) []markRec {
 			})
 		}
 	}
-	return out
+	return out, nil
 }
 
 // writeDataRecord frames one data record at seg's tail, preserving the caller's

@@ -353,35 +353,26 @@ func (s *Store) ReadAt(ctx context.Context, id FileID, offset int64, dst []byte)
 }
 
 // verifiedRead serves a warm piece with integrity verification: it re-reads the
-// whole record that owns the piece (at p.recOff) and validates its header and
-// payload CRCs via readRecordAt, then copies the requested sub-range out of the
-// verified payload. This trades read amplification (the whole record vs the
+// whole record that owns the piece (at p.recOff) and validates it via
+// readVerifiedRecord, then copies the requested sub-range out of the verified
+// payload. This trades read amplification (the whole record vs the
 // sub-range) for detecting on-disk corruption a raw pread would return silently.
 // A CRC/torn failure — or an index/record extent that no longer agrees — returns
 // a *CorruptRangeError naming the file range so the caller heals from a remote
 // store or fails closed; it never copies unverified bytes into out.
 func (s *Store) verifiedRead(seg *segmentMeta, p piece, out []byte, id FileID, readOff int64) error {
 	corrupt := &CorruptRangeError{FileID: id, Offset: readOff + p.dstStart, Len: p.dstEnd - p.dstStart}
-	rec, _, err := readRecordAt(seg.fd, p.recOff, s.cfg.SegmentSize)
+	rec, err := readVerifiedRecord(seg.fd, p.recOff, s.cfg.SegmentSize, id)
 	if err != nil {
 		return corrupt
 	}
-	// The header and payload CRCs do not cover the FileID bytes, so a flipped
-	// FileID (or a stale recOff pointing at another file's record) would pass
-	// readRecordAt yet hand back the wrong file's bytes. Confirm the record we
-	// landed on is this file's before trusting its payload.
-	if string(rec.fileID) != string(id) {
+	// loc.Offset is the segment byte for the piece start (interval splits advance
+	// it), so the payload sub-range is addressed by absolute segment offset.
+	src, ok := rec.payloadRange(p.loc.Offset+p.subOff, int64(len(out)))
+	if !ok {
 		return corrupt
 	}
-	// Offset of the piece's first byte within the verified payload: loc.Offset is
-	// the segment byte for the piece start (interval splits advance it), so
-	// subtracting the record's payload start yields the payload-relative index.
-	payloadStart := p.recOff + recordHeaderSize + int64(len(rec.fileID))
-	within := p.loc.Offset + p.subOff - payloadStart
-	if within < 0 || within+int64(len(out)) > int64(len(rec.payload)) {
-		return corrupt
-	}
-	copy(out, rec.payload[within:within+int64(len(out))])
+	copy(out, src)
 	return nil
 }
 
