@@ -155,11 +155,23 @@ func (s *Store) appendCold(entries []coldEntry) error {
 	if len(buf) == 0 {
 		return nil
 	}
+	// A write that fails part-way (ENOSPC is the likely one: eviction runs because
+	// the volume this log shares with the segments is filling up) leaves a torn
+	// entry at the tail. Replay stops at the first tear, so any entry a later
+	// append puts behind it is lost for good — silent zeros for a range the caller
+	// went on to evict. Roll the tail back to where the batch started so the log
+	// keeps its "only the tail can tear" shape and the caller's retry appends onto
+	// intact bytes.
+	st, err := s.coldFD.Stat()
+	if err != nil {
+		return fmt.Errorf("journal: stat cold log: %w", err)
+	}
+	tail := st.Size()
 	if _, err := s.coldFD.Write(buf); err != nil {
-		return fmt.Errorf("journal: append cold log: %w", err)
+		return errors.Join(fmt.Errorf("journal: append cold log: %w", err), s.coldFD.Truncate(tail))
 	}
 	if err := s.coldFD.Sync(); err != nil {
-		return fmt.Errorf("journal: fsync cold log: %w", err)
+		return errors.Join(fmt.Errorf("journal: fsync cold log: %w", err), s.coldFD.Truncate(tail))
 	}
 	return nil
 }
