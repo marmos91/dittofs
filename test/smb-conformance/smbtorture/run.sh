@@ -408,7 +408,12 @@ run_smbtorture() {
             2>&1 | tee -a "${RESULTS_DIR}/smbtorture-output.txt" || rc=${PIPESTATUS[0]}
     fi
     # Classify the exit code (see _smbtorture_exit handling at end of file):
-    #   124            -> the per-suite timeout fired (a hang we DO want to fail on)
+    #   124            -> the per-suite timeout fired: the harness gave up on this
+    #                     filter. Whatever the suite had not reached yet produced
+    #                     NO result lines at all, so those tests are ungraded —
+    #                     inconclusive, not passing. Recorded in timeouts.txt so
+    #                     parse-results.sh can report the lost coverage instead of
+    #                     letting it read as a clean run.
     #   125            -> docker run/daemon error (image pull 502, OOM-killed
     #                     container, etc.) — a real infrastructure failure
     #   128+N (>=129)  -> the smbtorture CLIENT process was killed by signal N
@@ -421,7 +426,10 @@ run_smbtorture() {
     # treated as infrastructure like 125.
     if [[ $rc -ge 129 ]]; then
         log_warn "smbtorture client crashed (exit code $rc, signal $((rc - 128))) for filter: $filter — client-side bug, not failing the job on this alone"
-    elif [[ $rc -ge 124 ]]; then
+    elif [[ $rc -eq 124 ]]; then
+        log_warn "smbtorture timed out after ${per_timeout}s on filter: $filter — tests it had not reached are UNGRADED (inconclusive)"
+        printf '%s\t%s\n' "$filter" "$per_timeout" >> "${RESULTS_DIR}/timeouts.txt"
+    elif [[ $rc -ge 125 ]]; then
         log_warn "smbtorture infrastructure failure (exit code $rc) for filter: $filter"
     fi
     return $rc

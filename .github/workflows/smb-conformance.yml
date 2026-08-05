@@ -132,6 +132,21 @@ jobs:
           path: test/smb-conformance/results/
           retention-days: 30
 
+  smbtorture-grading:
+    name: smbtorture grading logic
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Guards how the smbtorture job decides pass/fail (parse-results.sh). Runs
+    # on synthetic output in ~1s, no Docker and no server, so a change that
+    # would let a new conformance failure grade green is caught here instead
+    # of in a 40-minute suite run.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Test grading logic
+        run: test/smb-conformance/smbtorture/parse-results_test.sh
+
   smbtorture:
     name: smbtorture / ${{ matrix.profile }}
     runs-on: ubuntu-latest

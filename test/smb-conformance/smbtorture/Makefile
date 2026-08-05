@@ -6,7 +6,7 @@
 
 PROFILE ?= memory
 
-.PHONY: help test test-quick test-full emit-baseline clean
+.PHONY: help test test-quick test-full test-parser emit-baseline clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -22,6 +22,9 @@ test-full: ## Run smbtorture with all profiles
 		echo "=== Profile: $$profile ==="; \
 		./run.sh --profile $$profile || exit 1; \
 	done
+
+test-parser: ## Unit-test parse-results.sh grading (no Docker, ~1s)
+	./parse-results_test.sh
 
 emit-baseline: ## Regenerate baseline-results.md from the latest results dir
 	@RESULTS_DIR=$$(ls -td ../results/smbtorture-*/ 2>/dev/null | head -1); \
