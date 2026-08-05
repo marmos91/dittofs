@@ -192,6 +192,7 @@ func probeRemote(ctx context.Context, bs *models.BlockStoreConfig) (bool, string
 	if endpoint != "" && !hasPathStyle {
 		forcePathStyle = true
 	}
+	allowPrivate, _ := config["allow_private_endpoint"].(bool)
 
 	remoteStore, err := s3.NewFromConfig(ctx, s3.Config{
 		Bucket:         bucket,
@@ -200,6 +201,7 @@ func probeRemote(ctx context.Context, bs *models.BlockStoreConfig) (bool, string
 		AccessKey:      accessKey,
 		SecretKey:      secretKey,
 		ForcePathStyle: forcePathStyle,
+		AllowPrivate:   allowPrivate,
 	})
 	if err != nil {
 		return false, "failed to initialize S3 client"
