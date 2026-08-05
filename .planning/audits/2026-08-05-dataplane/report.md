@@ -17,14 +17,20 @@ All 8 HIGH findings shipped; see closed umbrella #1900.
 | Process-wide SMB write mutex | #1893 | FIXED #1908 |
 | Truncate/PunchHole hydrate clamp (MED x2) | #1911 | OPEN |
 | Carve/repack bypass CRC (MED x2) | #1912 | IN PROGRESS |
-| Recovery panics on empty sealed segment | #1913 | IN PROGRESS |
-| `evictSegment` busy-claim leak | #1914 | IN PROGRESS |
+| Recovery panics on empty sealed segment | #1913 | FIXED #1921 |
+| `evictSegment` busy-claim leak | #1914 | FIXED #1922 (+ torn-tail rollback the fix required) |
 | badger durable-handle index key | #1915 | IN PROGRESS |
 | `cas/` purge cross-share race | #1916 | OPEN |
 | S3 SSRF guard config-time only | #1917 | OPEN |
 | COMMIT authz / delete ceiling / anon ACL | #1918 | OPEN |
 
 Also opened from this work: #1909 (crash-ordering silent zeros), #1910 (smbtorture grading non-determinism).
+
+**Findings surfaced while fixing, not by the audit:**
+
+- #1923 — `smb2.replay.channel-sequence` fails intermittently (byte-identical binary passes and fails). Surfaced while investigating a CI verdict flip; the audit did not look at test stability.
+- The #1914 fix would have introduced a fresh silent-zeros bug: releasing the busy claim enables a retry that appends behind a torn cold-log tail, which `loadCold` then drops forever. Fixed in the same PR.
+- #1910's original diagnosis (grading folds timeouts into pass/fail) was **wrong** — grading was correct; the real hole was that timed-out and never-reached tests vanished silently from the report. Recorded so the wrong theory is not re-derived.
 
 **Severity calibration note:** the carve/repack CRC-bypass findings (#1912) were graded MED here but are arguably HIGH — they do not corrupt data, they promote already-corrupt data to trusted, defeating downstream checksums.
 
@@ -313,7 +319,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] evictSegment leaks a segment's busy claim forever when appendCold fails, permanently blocking reclamation
 
 - **Where:** `pkg/block/journal/reclaim.go:207` · `bugs` · area: block-journal-replay-gc
-> STATUS: TRACKED as #1914
+> STATUS: FIXED in #1914 / PR #1922
 - **Verified:** Confirmed: evictSegment's appendCold branch returns `0, err` with no busy reset, and evict() (reclaim.go:94-97) just propagates. Sibling paths do reset — grep for busy.Store(false) hits only reclaim.go:406 (reclaimEmptied error branch) and 495 (gcShard after repack); the claim CAS sites are 182/402/491. A stuck busy permanently excludes the segment from evictable() (190) and pickVictim, so a single appendCold I/O/ENOSPC failure strands the segment (and its bytes) for the process lifetime — precisely under the disk-pressure condition eviction serves. MED: needs an appendCold failure, and impact is a space leak, not data loss.
 - **Fix:** Reset the claim on failure, mirroring gcShard/reclaimEmptied: in evictSegment's appendCold error branch (and/or in evict()'s caller), add `seg.busy.Store(false)` before returning the error so a future eviction/GC pass can retry the segment.
 
@@ -332,14 +338,14 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] evictSegment scans the whole shard index once per evicted segment
 
 - **Where:** `pkg/block/journal/reclaim.go:207` · `perf` · area: block-journal-replay-gc
-> STATUS: TRACKED as #1914
+> STATUS: FIXED in #1914 / PR #1922
 - **Verified:** CONFIRMED: evictSegment (207-240) walks all of sh.index twice (collect coldEntry, then flip cold) filtering loc.SegmentID==seg.id, each pass under sh.mu; evict() (64-104) loops evictSegment until targetBytes is met. No reverse segment->intervals index exists, so N evicted segments cost O(N×I). REACHABLE from two non-test entrypoints: Evict (shares DrainLocalSynced admin drain, which evicts many segments) and ensureSpace, the write-path capacity gate.
 - **Fix:** When targetBytes requires evicting multiple segments, snapshot per-segment interval buckets once (single pass over sh.index) up front and consume from that snapshot across the evict loop, instead of re-scanning the full index per segment.
 
 ### [MED] Sealed segment with zero valid records panics recovery on recs[0]
 
 - **Where:** `pkg/block/journal/recovery.go:152` · `bugs` · area: block-journal-replay-gc
-> STATUS: TRACKED as #1913
+> STATUS: FIXED in #1913 / PR #1921
 - **Verified:** Confirmed at recovery.go:152: both preceding guards are `!sealed`-qualified (134 empty-active → emptyPool, 140 torn tail → truncate), then `sh := s.shardIndex(FileID(recs[0].fileID))` runs unconditionally. A sealed segment whose first record's header/payload fails scanValidRecords yields len(recs)==0 → index out of range panic during journal Open, i.e. hard startup crash for the share instead of a contained error/orphan. Reachable from the production open path (not test-only). MED: needs on-disk corruption of a sealed segment, but the failure mode (panic, no recovery) is disproportionate.
 - **Fix:** Add a `len(recs) == 0` check that applies regardless of `sealed` (or explicitly for the sealed case) before computing `sh`: either treat it like the orphan case (`orphans = append(orphans, id); continue` after closing/dropping m) or return a wrapped error identifying the corrupt segment, instead of falling through to `recs[0]`.
 
