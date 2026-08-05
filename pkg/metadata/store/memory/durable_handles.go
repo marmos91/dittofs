@@ -64,13 +64,25 @@ func (s *memoryDurableStore) GetDurableHandleByFileID(ctx context.Context, fileI
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	handle := s.lowestHandleForFileID(fileID)
+	if handle == nil {
+		return nil, nil
+	}
+	return cloneDurableHandle(handle), nil
+}
+
+// lowestHandleForFileID returns the handle with the smallest ID among those
+// held on a file, or nil when the file holds none. A file can carry several
+// durable handles at once, so Get and Consume pick by ID rather than by map
+// order to agree on which one they mean. Callers hold the lock.
+func (s *memoryDurableStore) lowestHandleForFileID(fileID [16]byte) *lock.PersistedDurableHandle {
+	var lowest *lock.PersistedDurableHandle
 	for _, handle := range s.handles {
-		if handle.FileID == fileID {
-			return cloneDurableHandle(handle), nil
+		if handle.FileID == fileID && (lowest == nil || handle.ID < lowest.ID) {
+			lowest = handle
 		}
 	}
-
-	return nil, nil
+	return lowest
 }
 
 func (s *memoryDurableStore) GetDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
@@ -107,14 +119,12 @@ func (s *memoryDurableStore) ConsumeDurableHandleByFileID(ctx context.Context, f
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for id, handle := range s.handles {
-		if handle.FileID == fileID {
-			delete(s.handles, id)
-			return cloneDurableHandle(handle), nil
-		}
+	handle := s.lowestHandleForFileID(fileID)
+	if handle == nil {
+		return nil, nil
 	}
-
-	return nil, nil
+	delete(s.handles, handle.ID)
+	return cloneDurableHandle(handle), nil
 }
 
 func (s *memoryDurableStore) ConsumeDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {

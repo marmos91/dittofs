@@ -23,7 +23,7 @@ const (
 	// Index by AppInstanceId: dh:appid:{hex}:{id} -> id (string)
 	prefixDHAppInstanceId = "dh:appid:"
 
-	// Index by FileID: dh:fid:{hex} -> id (string)
+	// Index by FileID: dh:fid:{hex}:{id} -> id (string)
 	prefixDHFileID = "dh:fid:"
 
 	// Index by FileHandle: dh:fh:{hex}:{id} -> id (string)
@@ -56,6 +56,21 @@ func hexEncodeBytes(b []byte) string {
 }
 
 var zeroGUID [16]byte
+
+// fileIDIndexScanPrefix returns the prefix covering every FileID index entry
+// for a file. A file can hold several durable handles at once, so entries are
+// written one per handle under a ":{id}" suffix. Stores written before the
+// suffix existed hold a single unsuffixed entry per FileID; because the hex
+// encoding is a fixed 32 characters, that entry sorts under the same prefix and
+// is picked up by the same scan.
+func fileIDIndexScanPrefix(fileID [16]byte) []byte {
+	return []byte(prefixDHFileID + hexEncode16(fileID))
+}
+
+// fileIDIndexKey returns the FileID index key owned by a single handle.
+func fileIDIndexKey(fileID [16]byte, id string) []byte {
+	return []byte(prefixDHFileID + hexEncode16(fileID) + ":" + id)
+}
 
 func (s *badgerDurableStore) PutDurableHandle(ctx context.Context, handle *lock.PersistedDurableHandle) error {
 	if err := ctx.Err(); err != nil {
@@ -96,8 +111,7 @@ func (s *badgerDurableStore) putDurableHandleTx(txn *badgerdb.Txn, handle *lock.
 		return err
 	}
 
-	fidKey := []byte(prefixDHFileID + hexEncode16(handle.FileID))
-	if err := txn.Set(fidKey, []byte(handle.ID)); err != nil {
+	if err := txn.Set(fileIDIndexKey(handle.FileID, handle.ID), []byte(handle.ID)); err != nil {
 		return err
 	}
 
@@ -131,9 +145,29 @@ func (s *badgerDurableStore) putDurableHandleTx(txn *badgerdb.Txn, handle *lock.
 }
 
 func (s *badgerDurableStore) deleteIndicesTx(txn *badgerdb.Txn, handle *lock.PersistedDurableHandle) error {
-	fidKey := []byte(prefixDHFileID + hexEncode16(handle.FileID))
-	if err := txn.Delete(fidKey); err != nil && err != badgerdb.ErrKeyNotFound {
+	if err := txn.Delete(fileIDIndexKey(handle.FileID, handle.ID)); err != nil && err != badgerdb.ErrKeyNotFound {
 		return err
+	}
+
+	// An unsuffixed FileID entry left by an older store holds one id for the
+	// whole file, so it may belong to a sibling handle that is still live.
+	// Drop it only when it names this handle; the same transaction removes the
+	// primary record, so the two never diverge.
+	legacyKey := fileIDIndexScanPrefix(handle.FileID)
+	legacyItem, err := txn.Get(legacyKey)
+	if err != nil && err != badgerdb.ErrKeyNotFound {
+		return err
+	}
+	if err == nil {
+		owner, err := legacyItem.ValueCopy(nil)
+		if err != nil {
+			return err
+		}
+		if string(owner) == handle.ID {
+			if err := txn.Delete(legacyKey); err != nil {
+				return err
+			}
+		}
 	}
 
 	if handle.CreateGuid != zeroGUID {
@@ -239,7 +273,7 @@ func (s *badgerDurableStore) GetDurableHandleByFileID(ctx context.Context, fileI
 
 	err := s.db.View(func(txn *badgerdb.Txn) error {
 		var err error
-		handle, err = s.getHandleByIndex(txn, []byte(prefixDHFileID+hexEncode16(fileID)))
+		handle, err = s.firstHandleByPrefix(txn, fileIDIndexScanPrefix(fileID))
 		return err
 	})
 
@@ -280,51 +314,69 @@ func (s *badgerDurableStore) getHandlesByPrefix(txn *badgerdb.Txn, prefix []byte
 
 	var result []*lock.PersistedDurableHandle
 	for it.Rewind(); it.Valid(); it.Next() {
-		var id string
-		err := it.Item().Value(func(val []byte) error {
-			id = string(val)
-			return nil
-		})
+		handle, err := s.resolveIndexEntry(txn, it.Item())
 		if err != nil {
 			return nil, err
 		}
-
-		primaryItem, err := txn.Get([]byte(prefixDHID + id))
-		if err == badgerdb.ErrKeyNotFound {
+		if handle == nil {
 			continue // Stale index
 		}
-		if err != nil {
-			return nil, err
-		}
-
-		var handle lock.PersistedDurableHandle
-		err = primaryItem.Value(func(val []byte) error {
-			return json.Unmarshal(val, &handle)
-		})
-		if err != nil {
-			return nil, err
-		}
-
-		result = append(result, &handle)
+		result = append(result, handle)
 	}
 
 	return result, nil
 }
 
-// consumeByIndexTx fetches the handle referenced by indexKey, deletes the
-// primary record and all secondary indices in the same transaction, and
-// returns the previous record (or nil if no match). Used by Consume* APIs to
-// close the V1/V2 reconnect TOCTOU window.
-func (s *badgerDurableStore) consumeByIndexTx(txn *badgerdb.Txn, indexKey []byte) (*lock.PersistedDurableHandle, error) {
-	handle, err := s.getHandleByIndex(txn, indexKey)
-	if err != nil || handle == nil {
+// resolveIndexEntry loads the primary record named by a secondary index entry,
+// returning nil when the entry is stale.
+func (s *badgerDurableStore) resolveIndexEntry(txn *badgerdb.Txn, item *badgerdb.Item) (*lock.PersistedDurableHandle, error) {
+	var id string
+	if err := item.Value(func(val []byte) error {
+		id = string(val)
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 
-	if err := s.deleteDurableHandleTx(txn, handle.ID); err != nil {
+	primaryItem, err := txn.Get([]byte(prefixDHID + id))
+	if err == badgerdb.ErrKeyNotFound {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, err
 	}
-	return handle, nil
+
+	var handle lock.PersistedDurableHandle
+	if err := primaryItem.Value(func(val []byte) error {
+		return json.Unmarshal(val, &handle)
+	}); err != nil {
+		return nil, err
+	}
+	return &handle, nil
+}
+
+// firstHandleByPrefix returns the lowest-keyed live handle under a secondary
+// index prefix, or nil when the prefix resolves to nothing. Badger iterates in
+// key order, so the first entry that still resolves is that handle and the scan
+// stops there rather than reading the rest of the file's entries.
+func (s *badgerDurableStore) firstHandleByPrefix(txn *badgerdb.Txn, prefix []byte) (*lock.PersistedDurableHandle, error) {
+	opts := badgerdb.DefaultIteratorOptions
+	opts.Prefix = prefix
+	opts.PrefetchValues = true
+
+	it := txn.NewIterator(opts)
+	defer it.Close()
+
+	for it.Rewind(); it.Valid(); it.Next() {
+		handle, err := s.resolveIndexEntry(txn, it.Item())
+		if err != nil {
+			return nil, err
+		}
+		if handle != nil {
+			return handle, nil
+		}
+	}
+	return nil, nil
 }
 
 func (s *badgerDurableStore) ConsumeDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
@@ -334,9 +386,15 @@ func (s *badgerDurableStore) ConsumeDurableHandleByFileID(ctx context.Context, f
 
 	var handle *lock.PersistedDurableHandle
 	err := s.db.Update(func(txn *badgerdb.Txn) error {
-		var err error
-		handle, err = s.consumeByIndexTx(txn, []byte(prefixDHFileID+hexEncode16(fileID)))
-		return err
+		found, err := s.firstHandleByPrefix(txn, fileIDIndexScanPrefix(fileID))
+		if err != nil || found == nil {
+			return err
+		}
+		if err := s.deleteDurableHandleTx(txn, found.ID); err != nil {
+			return err
+		}
+		handle = found
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -351,9 +409,15 @@ func (s *badgerDurableStore) ConsumeDurableHandleByCreateGuid(ctx context.Contex
 
 	var handle *lock.PersistedDurableHandle
 	err := s.db.Update(func(txn *badgerdb.Txn) error {
-		var err error
-		handle, err = s.consumeByIndexTx(txn, []byte(prefixDHCreateGuid+hexEncode16(createGuid)))
-		return err
+		found, err := s.getHandleByIndex(txn, []byte(prefixDHCreateGuid+hexEncode16(createGuid)))
+		if err != nil || found == nil {
+			return err
+		}
+		if err := s.deleteDurableHandleTx(txn, found.ID); err != nil {
+			return err
+		}
+		handle = found
+		return nil
 	})
 	if err != nil {
 		return nil, err
