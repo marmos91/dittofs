@@ -32,11 +32,90 @@ func ManifestToChunkRefs(rows []*block.FileChunk) []block.ChunkRef {
 	return refs
 }
 
+// mergeCommittedRefs folds just-written manifest rows into refs — the
+// offset-sorted projection of the manifest as it stood before those rows — and
+// returns what ManifestToChunkRefs would produce over the manifest they landed
+// in. A manifest holds exactly one row per offset, so a row whose offset refs
+// already carries replaces that entry and every other row lands at its sorted
+// position. Rows are applied in slice order, so a batch repeating an offset
+// keeps the last one — the single row the store retains. Rows with an
+// unparseable ID, or addressing another payload, are skipped, matching what the
+// full projection's list-and-sort ignores.
+func mergeCommittedRefs(refs []block.ChunkRef, payloadID string, rows []*block.FileChunk) []block.ChunkRef {
+	byOffset := make(map[uint64]block.ChunkRef, len(rows))
+	for _, r := range rows {
+		if r == nil {
+			continue
+		}
+		off, ok := block.ParseChunkOffset(r.ID)
+		if !ok || chunkPayloadID(r.ID) != payloadID {
+			continue
+		}
+		byOffset[off] = block.ChunkRef{Hash: r.Hash, Offset: off, Size: r.DataSize}
+	}
+	if len(byOffset) == 0 {
+		return refs
+	}
+	added := make([]block.ChunkRef, 0, len(byOffset))
+	for _, ref := range byOffset {
+		added = append(added, ref)
+	}
+	// Offsets are unique here, so this total order is the one the full
+	// projection's sort produces.
+	sort.Slice(added, func(i, j int) bool { return added[i].Offset < added[j].Offset })
+
+	merged := make([]block.ChunkRef, 0, len(refs)+len(added))
+	i, j := 0, 0
+	for i < len(refs) && j < len(added) {
+		switch {
+		case refs[i].Offset < added[j].Offset:
+			merged = append(merged, refs[i])
+			i++
+		case added[j].Offset < refs[i].Offset:
+			merged = append(merged, added[j])
+			j++
+		default: // this batch rewrote the offset — its row wins
+			merged = append(merged, added[j])
+			i++
+			j++
+		}
+	}
+	return append(append(merged, refs[i:]...), added[j:]...)
+}
+
+// ProjectCommittedChunks folds the manifest rows a caller just wrote into
+// File.Blocks, within that same txn, without re-listing the manifest: Blocks
+// already holds the projection of every earlier row, so merging the new rows in
+// at their sorted position yields exactly what ProjectManifestToBlocks
+// re-derives, at the cost of the batch rather than of the whole file — carving
+// one file into many block objects would otherwise re-list and re-sort the whole
+// growing manifest once per object.
+//
+// rows must be exactly the rows just written for payloadID in this txn. An empty
+// Blocks list carries no projection to merge into, so that case re-derives from
+// the manifest — which is also what makes the first commit of a file correct.
+func ProjectCommittedChunks(ctx context.Context, tx Transaction, payloadID string, rows []*block.FileChunk) error {
+	if payloadID == "" {
+		return nil
+	}
+	file, err := fileToProject(ctx, tx, payloadID)
+	if err != nil || file == nil {
+		return err
+	}
+	if len(file.Blocks) == 0 {
+		return reprojectFile(ctx, tx, file, payloadID)
+	}
+	return putProjection(ctx, tx, file, mergeCommittedRefs(file.Blocks, payloadID, rows))
+}
+
 // ProjectManifestToBlocks re-materializes File.Blocks for payloadID from the
 // current FileChunk manifest, within the caller's txn. Every manifest mutation
-// (carve commit, #953 reap + re-carve straddle, truncate) must call this in the
+// (carve commit, reap + re-carve straddle, truncate) must project in the
 // SAME txn that changed the rows, so File.Blocks == projection(rows) always and
 // the raw-row readers (snapshot WriteSnapshot, refcount audit) never see drift.
+// A caller that knows which rows it changed holds that invariant far more
+// cheaply through ProjectCommittedChunks; this full re-derivation is for the
+// ones that don't (a reap, or rows of unknown provenance).
 // A missing file (deleted concurrently) is a no-op. ponytail: this is the
 // switchover bridge; the #1715 fb-split removes File.Blocks from the row entirely
 // and derives at read time, retiring this projection.
@@ -44,40 +123,68 @@ func ProjectManifestToBlocks(ctx context.Context, tx Transaction, payloadID stri
 	if payloadID == "" {
 		return nil
 	}
+	file, err := fileToProject(ctx, tx, payloadID)
+	if err != nil || file == nil {
+		return err
+	}
+	return reprojectFile(ctx, tx, file, payloadID)
+}
+
+// fileToProject resolves the File row the projection writes onto. A missing row
+// (block-layer fixtures with synthetic payloadIDs, or a file deleted between
+// carve and commit) yields (nil, nil) — nothing to project onto.
+func fileToProject(ctx context.Context, tx Transaction, payloadID string) (*File, error) {
+	file, err := tx.GetFileByPayloadID(ctx, PayloadID(payloadID))
+	if err != nil {
+		if IsNotFoundError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("project blocks: get file for %s: %w", payloadID, err)
+	}
+	return file, nil
+}
+
+func reprojectFile(ctx context.Context, tx Transaction, file *File, payloadID string) error {
 	rows, err := tx.ListFileChunks(ctx, payloadID)
 	if err != nil {
 		return fmt.Errorf("project blocks: list manifest for %s: %w", payloadID, err)
 	}
-	file, err := tx.GetFileByPayloadID(ctx, PayloadID(payloadID))
-	if err != nil {
-		// No File row (block-layer fixtures with synthetic payloadIDs, or a file
-		// deleted between carve and commit) → nothing to project onto, no-op.
-		if IsNotFoundError(err) {
-			return nil
-		}
-		return fmt.Errorf("project blocks: get file for %s: %w", payloadID, err)
-	}
-	if file == nil {
-		return nil
-	}
-	file.Blocks = ManifestToChunkRefs(rows)
-	// Re-projection from the manifest IS a manifest write — persist it. This
+	return putProjection(ctx, tx, file, ManifestToChunkRefs(rows))
+}
+
+func putProjection(ctx context.Context, tx Transaction, file *File, refs []block.ChunkRef) error {
+	file.Blocks = refs
+	// A projection from the manifest IS a manifest write — persist it. This
 	// funnels carve/rollup commit (DefaultCommitBlock), the #953 reap+re-carve
 	// (ReapSupersededManifest), and coordinator.ReprojectBlocks.
 	file.BlocksDirty = true
 	return tx.PutFile(ctx, file)
 }
 
+// chunkPayloadID returns the payload prefix of a manifest row ID — everything
+// before the last '/' — or "" when there is no prefix to take. The offset that
+// follows is not validated here, so an ID carrying an empty or non-numeric
+// offset still yields its prefix: callers parse the offset themselves and drop
+// that row, whereas answering "" would skip the projection of the whole batch
+// the row arrived in rather than the one bad row.
+func chunkPayloadID(id string) string {
+	if i := strings.LastIndexByte(id, '/'); i > 0 {
+		return id[:i]
+	}
+	return ""
+}
+
 // payloadIDFromChunks extracts the shared payloadID from a carve pass's FileChunk
 // rows (all rows of one carve belong to one file). Returns "" when the rows are
-// nil/empty or malformed, which callers treat as "skip projection".
+// nil/empty or none of them carries a payload prefix, which callers treat as
+// "skip projection".
 func payloadIDFromChunks(fileChunks []*block.FileChunk) string {
 	for _, fc := range fileChunks {
 		if fc == nil {
 			continue
 		}
-		if i := strings.LastIndexByte(fc.ID, '/'); i > 0 {
-			return fc.ID[:i]
+		if pid := chunkPayloadID(fc.ID); pid != "" {
+			return pid
 		}
 	}
 	return ""
@@ -168,10 +275,12 @@ func DefaultCommitBlock(
 			}
 		}
 		// Materialize File.Blocks from the manifest in this same txn so raw-row
-		// readers (snapshot, audit) stay coherent. Skipped for legacy callers
-		// that pass no fileChunks (nil payloadID). Superseded-row reaping happens
-		// once per carve run (ReapSupersededManifest), not per batch — see below.
-		return ProjectManifestToBlocks(ctx, tx, payloadIDFromChunks(fileChunks))
+		// readers (snapshot, audit) stay coherent — merging only this batch's
+		// rows, since re-deriving from the whole manifest costs a full list and
+		// sort per committed block object. Skipped for legacy callers that pass
+		// no fileChunks (empty payloadID). Superseded-row reaping happens once
+		// per carve run (ReapSupersededManifest), not per batch — see below.
+		return ProjectCommittedChunks(ctx, tx, payloadIDFromChunks(fileChunks), fileChunks)
 	})
 }
 

@@ -125,9 +125,11 @@ func (s localBlockSink) CommitBlock(ctx context.Context, chunks []journal.CarveC
 				return fmt.Errorf("local carve: put manifest row %s: %w", fc.ID, err)
 			}
 		}
-		// Materialize File.Blocks from the manifest — same txn (R). Superseded-row
-		// reaping runs once at run end (ReapSupersededManifest), not per batch.
-		return metadata.ProjectManifestToBlocks(ctx, tx, payloadID)
+		// Materialize File.Blocks from the manifest — same txn (R), merging only
+		// this batch's rows so a multi-batch carve does not re-list and re-sort
+		// the whole growing manifest per batch. Superseded-row reaping runs once
+		// at run end (ReapSupersededManifest), not per batch.
+		return metadata.ProjectCommittedChunks(ctx, tx, payloadID, fileChunks)
 	})
 }
 
