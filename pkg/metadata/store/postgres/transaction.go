@@ -821,9 +821,13 @@ func (tx *postgresTransaction) GetLinkCount(ctx context.Context, handle metadata
 
 	var count uint32
 	err = tx.tx.QueryRow(ctx, `SELECT nlink FROM inodes WHERE id = $1`, fileID).Scan(&count)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		// Not found means count is 0
 		return 0, nil
+	}
+	if err != nil {
+		// A fabricated 0 would let callers treat live content as unreferenced.
+		return 0, mapPgError(err, "GetLinkCount", "")
 	}
 
 	return count, nil
