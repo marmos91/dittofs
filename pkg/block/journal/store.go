@@ -853,6 +853,7 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 						length:  int64(rec.header.PayloadLen),
 						version: rec.header.Version,
 						synced:  rec.header.Flags&flagSynced != 0,
+						recOff:  rec.segOff,
 						loc: SegmentLocation{
 							SegmentID: seg.id,
 							Offset:    rec.segOff + recordHeaderSize + int64(len(rec.fileID)),
@@ -914,11 +915,19 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 			if seg == nil {
 				return fmt.Errorf("journal: restore: source segment %d gone for %q@%d", iv.loc.SegmentID, id, iv.fileOff)
 			}
-			buf := make([]byte, iv.length)
-			if _, err := seg.fd.ReadAt(buf, iv.loc.Offset); err != nil {
-				return fmt.Errorf("journal: restore: read %q@%d from segment %d: %w", id, iv.fileOff, iv.loc.SegmentID, err)
+			// Re-materializing rewrites these bytes as fresh records under a fresh
+			// CRC, so they are verified against the source record first — restoring
+			// a snapshot must not turn on-disk bit rot into trusted content.
+			rec, rerr := readVerifiedRecord(seg.fd, iv.recOff, s.cfg.SegmentSize, id)
+			if rerr != nil {
+				return fmt.Errorf("journal: restore: read %q@%d from segment %d: %w", id, iv.fileOff, iv.loc.SegmentID, rerr)
 			}
-			exts = append(exts, extent{off: iv.fileOff, data: buf})
+			src, ok := rec.payloadRange(iv.loc.Offset, iv.length)
+			if !ok {
+				return fmt.Errorf("journal: restore: segment %d record %d does not frame %q@%d+%d: %w",
+					iv.loc.SegmentID, iv.recOff, id, iv.fileOff, iv.length, errTornRecord)
+			}
+			exts = append(exts, extent{off: iv.fileOff, data: append([]byte(nil), src...)})
 		}
 		// Bury the current head (tombstone Version > head), then re-assert the
 		// V-view as fresh dirty records on top of it.

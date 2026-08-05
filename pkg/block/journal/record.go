@@ -199,6 +199,39 @@ func readRecordAt(r io.ReaderAt, off, maxPayload int64) (record, int64, error) {
 	}, off + recordHeaderSize + body, nil
 }
 
+// readVerifiedRecord reads the record at recOff and returns it only once its
+// header CRC, payload CRC and framed FileID all check out. Every path that
+// copies a payload forward reads through it: each one re-hashes or re-CRCs the
+// bytes it copies, so an unverified read would turn on-disk bit rot into content
+// that passes every later integrity check.
+//
+// The header and payload CRCs deliberately do not cover the FileID bytes, so a
+// flipped FileID — or a stale recOff landing on another file's record — passes
+// readRecordAt while handing back the wrong file's payload. Comparing the framed
+// FileID against the caller's closes that gap.
+func readVerifiedRecord(r io.ReaderAt, recOff, maxPayload int64, id FileID) (record, error) {
+	rec, _, err := readRecordAt(r, recOff, maxPayload)
+	if err != nil {
+		return record{}, err
+	}
+	if string(rec.fileID) != string(id) {
+		return record{}, fmt.Errorf("%w: record at %d frames %q, want %q", errTornRecord, recOff, rec.fileID, id)
+	}
+	return rec, nil
+}
+
+// payloadRange returns the sub-slice of the record's verified payload that
+// starts at segment offset segOff and runs n bytes. ok is false when that range
+// is not wholly inside the payload, meaning the caller's location no longer
+// agrees with what the record actually frames.
+func (rec record) payloadRange(segOff, n int64) (b []byte, ok bool) {
+	within := segOff - (rec.segOff + recordHeaderSize + int64(len(rec.fileID)))
+	if within < 0 || n < 0 || within+n > int64(len(rec.payload)) {
+		return nil, false
+	}
+	return rec.payload[within : within+n], true
+}
+
 // scanValidRecords walks a segment's record stream from the first record to the
 // first torn record or clean end, returning the valid records and the offset up
 // to which the segment is intact. Recovery replays the records and truncates the
