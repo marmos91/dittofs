@@ -69,6 +69,13 @@ type Runtime struct {
 
 	metadataService *metadata.Service
 
+	// netgroupDecisions memoizes recent netgroup allow/deny verdicts keyed by
+	// netgroup and client IP, so a protocol with no mount step does not query the
+	// netgroup store on every request. Entries expire after netgroupDecisionTTL
+	// and expired ones are swept on insert.
+	netgroupDecisionsMu sync.Mutex
+	netgroupDecisions   map[string]netgroupDecision
+
 	adaptersSvc    *adapters.Service
 	storesSvc      *stores.Service
 	sharesSvc      *shares.Service

@@ -3052,6 +3052,12 @@ is a named set of IP addresses, CIDR ranges, or hostnames that can be referenced
 from share security policies to allow or restrict which network endpoints can
 access a share. All subcommands require admin privileges.
 
+Netgroups are part of a share's NFS export policy: they are attached with
+"dfsctl share nfs-config set --netgroup" and are enforced on NFSv3 (at MOUNT)
+and on NFSv4 (on every operation that resolves the share). They do NOT apply to
+SMB — restrict SMB access with share permissions and user authentication
+instead.
+
 **Examples:**
 
 ```bash
@@ -4317,6 +4323,9 @@ Only the flags you supply are changed; omitted flags leave the existing values
 intact. Netgroup changes take effect immediately. Changes to squash mode and
 authentication flavors (--allow-auth-sys, --require-kerberos) apply on the
 next NFS adapter restart.
+
+The netgroup allowlist is NFS export policy: it is enforced on NFSv3 mounts and
+on NFSv4 operations, and has no effect on SMB access to the same share.
 
 ```
 dfsctl share nfs-config set <name> [flags]
