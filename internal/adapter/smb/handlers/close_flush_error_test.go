@@ -28,12 +28,13 @@ import (
 	metamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// setupFlushErrorShare wires a handler + runtime + memory metadata + memory
-// block store with a single read-write share, writes a small payload to a file
-// named "data" under the share root, and registers an OpenFile for it. Returns
-// the handler, a primed SMBHandlerContext, the file's metadata handle, and the
-// FileID of the registered OpenFile.
-func setupFlushErrorShare(t *testing.T) (*Handler, *SMBHandlerContext, metadata.FileHandle, [16]byte) {
+// setupWriteTestShare wires a handler + runtime + the caller's metadata store +
+// a memory block store with a single read-write share, writes a small payload to
+// a file named "data" under the share root, and registers an OpenFile for it. A
+// nil metaStore uses a plain memory metadata store. Returns the handler, a
+// primed SMBHandlerContext, the file's metadata handle, and the FileID of the
+// registered OpenFile.
+func setupWriteTestShare(t *testing.T, metaStore metadata.Store) (*Handler, *SMBHandlerContext, metadata.FileHandle, [16]byte) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -49,7 +50,9 @@ func setupFlushErrorShare(t *testing.T) (*Handler, *SMBHandlerContext, metadata.
 	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "flushmeta", Type: "memory"}); err != nil {
 		t.Fatalf("CreateMetadataStore: %v", err)
 	}
-	metaStore := metamemory.NewMemoryMetadataStoreWithDefaults()
+	if metaStore == nil {
+		metaStore = metamemory.NewMemoryMetadataStoreWithDefaults()
+	}
 	if err := rt.RegisterMetadataStore("flushmeta", metaStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
@@ -173,7 +176,7 @@ func setupFlushErrorShare(t *testing.T) (*Handler, *SMBHandlerContext, metadata.
 // engine.ErrStoreClosed (the same mapping seam fs.ErrPressureTimeout and the
 // other block-store content errors travel through).
 func TestClose_FlushFailure_SurfacedAsNonSuccess(t *testing.T) {
-	h, smbCtx, fileHandle, fileID := setupFlushErrorShare(t)
+	h, smbCtx, fileHandle, fileID := setupWriteTestShare(t, nil)
 
 	// Force the durable flush to fail: close the share's block store so the
 	// CLOSE-time engine.Flush short-circuits with engine.ErrStoreClosed.
@@ -224,7 +227,7 @@ func TestClose_FlushFailure_SurfacedAsNonSuccess(t *testing.T) {
 // returns ErrNoEntity → STATUS_OBJECT_NAME_NOT_FOUND. The two map to distinct
 // statuses, so the assertion proves which one wins.
 func TestClose_FlushFailure_WinsOverDeleteFailure(t *testing.T) {
-	h, smbCtx, fileHandle, fileID := setupFlushErrorShare(t)
+	h, smbCtx, fileHandle, fileID := setupWriteTestShare(t, nil)
 
 	// Arm delete-on-close on the registered handle so the CLOSE delete path runs.
 	openFile, ok := h.GetOpenFile(fileID)

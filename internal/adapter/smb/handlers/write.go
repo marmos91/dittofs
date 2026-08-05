@@ -17,6 +17,19 @@ import (
 // Request and Response Structures
 // ============================================================================
 
+// SMB2 WRITE request Flags [MS-SMB2] 2.2.21. Undefined bits are ignored.
+const (
+	// writeFlagWriteThrough (SMB2_WRITEFLAG_WRITE_THROUGH) asks the server to
+	// put the written bytes on stable storage before it answers the request.
+	// Not valid for the 2.0.2 dialect, where the bit is ignored.
+	writeFlagWriteThrough uint32 = 0x00000001
+
+	// writeFlagWriteUnbuffered (SMB2_WRITEFLAG_WRITE_UNBUFFERED) asks the server
+	// not to cache the written bytes at intermediate layers. Not valid for the
+	// 2.0.2, 2.1 and 3.0 dialects.
+	writeFlagWriteUnbuffered uint32 = 0x00000002
+)
+
 // WriteRequest represents an SMB2 WRITE request from a client [MS-SMB2] 2.2.21.
 // The client specifies a FileID, offset, and data to write to a file.
 // The fixed wire format is exactly 49 bytes, followed by the variable-length data buffer.
@@ -44,11 +57,8 @@ type WriteRequest struct {
 	// RemainingBytes is a hint about remaining bytes to write (usually 0).
 	RemainingBytes uint32
 
-	// Flags controls write behavior.
-	// Common values:
-	//   - 0x00000000: Normal buffered write
-	//   - 0x00000001: Write-through (bypass server cache)
-	//   - 0x00000002: Unbuffered write
+	// Flags controls write behavior; see writeFlagWriteThrough and
+	// writeFlagWriteUnbuffered.
 	Flags uint32
 
 	// Data contains the bytes to write to the file.
@@ -439,15 +449,46 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
-	// SMB requires immediate metadata visibility across sessions (unlike NFS
-	// which has explicit COMMIT). Flush deferred metadata so that other sessions
-	// reading the same file see updated size/timestamps without a FLUSH command.
-	// Relaxed (#1687): visibility comes from the metadata write itself (applied
-	// in-txn), NOT from the fsync — so we can defer the metadata db.Sync off the
-	// per-WRITE ack path. CLOSE and FLUSH remain strict for durability; a crash
-	// before the background fsync is caught by the journal size reconcile.
-	if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, false); flushErr != nil {
-		logger.Debug("WRITE: deferred metadata flush failed (non-fatal)", "path", openFile.Path, "error", flushErr)
+	// Per MS-SMB2 2.2.21 the write-through bit is undefined for the 2.0.2 dialect,
+	// so it is ignored there. A connection with no recorded dialect honors the
+	// bit: over-flushing is safe, silently dropping a requested durability point
+	// is not.
+	writeThrough := req.Flags&writeFlagWriteThrough != 0 &&
+		(ctx.ConnCryptoState == nil || ctx.ConnCryptoState.GetDialect() != types.Dialect0202)
+
+	// A failed durability step must not be acked as success, but it also cannot
+	// return early: CommitWrite has already applied the size/mtime mutation to
+	// the pending-write state, so other sessions can observe the change through
+	// GETINFO whether or not the fsync landed. The post-write bookkeeping below
+	// — frozen-timestamp restore and the change notification — describes a
+	// change that is already visible, so it still has to run. The failure is
+	// carried to the response instead.
+	writeStatus := types.StatusSuccess
+
+	if writeThrough {
+		// Per MS-SMB2 3.3.5.13, a write-through WRITE is its own durability
+		// point, so the deferred-commit optimization below does not apply: take
+		// the same strict pair FLUSH takes — block store commit, then an inline
+		// metadata fsync — and fail the request rather than ack a durability
+		// guarantee that does not hold.
+		if _, flushErr := blockStore.Flush(authCtx.Context, string(writeOp.PayloadID)); flushErr != nil {
+			logger.Warn("WRITE: write-through content flush failed", "path", openFile.Path, "error", flushErr)
+			writeStatus = common.MapContentToSMB(flushErr)
+		} else if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, true); flushErr != nil {
+			logger.Warn("WRITE: write-through metadata flush failed", "path", openFile.Path, "error", flushErr)
+			writeStatus = common.MapToSMB(flushErr)
+		}
+	} else {
+		// SMB requires immediate metadata visibility across sessions (unlike NFS
+		// which has explicit COMMIT). Flush deferred metadata so that other sessions
+		// reading the same file see updated size/timestamps without a FLUSH command.
+		// Relaxed: visibility comes from the metadata write itself (applied
+		// in-txn), NOT from the fsync — so we can defer the metadata db.Sync off the
+		// per-WRITE ack path. CLOSE and FLUSH remain strict for durability; a crash
+		// before the background fsync is caught by the journal size reconcile.
+		if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, false); flushErr != nil {
+			logger.Debug("WRITE: deferred metadata flush failed (non-fatal)", "path", openFile.Path, "error", flushErr)
+		}
 	}
 
 	// Per MS-FSA 2.1.5.14.2: If timestamps are frozen via SET_INFO with -1,
@@ -508,14 +549,18 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		}
 	}
 
+	// ========================================================================
+	// Step 12: Return response
+	// ========================================================================
+
+	if writeStatus != types.StatusSuccess {
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: writeStatus}}, nil
+	}
+
 	logger.Debug("WRITE successful",
 		"path", openFile.Path,
 		"offset", req.Offset,
 		"bytes", len(req.Data))
-
-	// ========================================================================
-	// Step 12: Return success response
-	// ========================================================================
 
 	return &WriteResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
@@ -529,6 +574,19 @@ func (h *Handler) handlePipeWrite(ctx *SMBHandlerContext, req *WriteRequest, ope
 	logger.Debug("WRITE to named pipe",
 		"pipeName", openFile.PipeName,
 		"dataLen", len(req.Data))
+
+	// Per MS-SMB2 3.3.5.13, a server that implements the SMB 3.x dialect family
+	// MUST reject WRITE_THROUGH/WRITE_UNBUFFERED on a named pipe with
+	// STATUS_INVALID_PARAMETER. The condition is on what the server implements,
+	// not on the dialect this connection negotiated, so it keys off the
+	// configured maximum dialect; a server capped below 3.0 keeps ignoring the
+	// bits as the 2.x dialects require.
+	if h.MaxDialect >= types.Dialect0300 && req.Flags&(writeFlagWriteThrough|writeFlagWriteUnbuffered) != 0 {
+		logger.Debug("WRITE: write-through/unbuffered flags are invalid on a named pipe",
+			"pipeName", openFile.PipeName,
+			"flags", req.Flags)
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+	}
 
 	// Get pipe state
 	pipe := h.PipeManager.GetPipe(req.FileID)
