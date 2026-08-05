@@ -159,9 +159,10 @@ func (c *dnsCache) cleanExpiredLocked(now time.Time) {
 // Algorithm:
 //  1. Get share from runtime state (not DB -- use cached share config)
 //  2. If share has no NetgroupName -> return true (empty allowlist = allow all)
-//  3. Get netgroup members from store
-//  4. Match client IP against each member (IP, CIDR, or hostname)
-//  5. Return false if no member matches
+//  3. Return a cached verdict for this netgroup and client IP, if still valid
+//  4. Otherwise get netgroup members from store
+//  5. Match client IP against each member (IP, CIDR, or hostname)
+//  6. Return false if no member matches
 //
 // Per Pitfall 3 (DNS blocking): hostname matching uses cached reverse DNS with
 // 5-minute positive TTL and 1-minute negative TTL. Falls back to IP matching
@@ -193,7 +194,69 @@ func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, cli
 		return true, nil
 	}
 
-	// 3. Get netgroup members from store (requires NetgroupStore interface)
+	// 3. Reuse a recent verdict. It depends only on the netgroup's members and
+	// the client IP, so those two are the whole key: re-pointing a share at a
+	// different netgroup is evaluated immediately. Errors are never cached, so a
+	// failing store keeps failing closed on every call.
+	key := netgroupName + "\x00" + clientIP.String()
+	if allowed, ok := r.cachedNetgroupDecision(key); ok {
+		return allowed, nil
+	}
+
+	allowed, err := r.evaluateNetgroupAccess(ctx, shareName, netgroupName, clientIP)
+	if err != nil {
+		return false, err
+	}
+	r.storeNetgroupDecision(key, allowed)
+	return allowed, nil
+}
+
+// netgroupDecisionTTL bounds how long a netgroup verdict is reused. It trades a
+// short window where a membership edit is not yet visible against querying the
+// netgroup store on every request of a protocol that has no mount step.
+const netgroupDecisionTTL = 30 * time.Second
+
+// netgroupDecision is a cached allow/deny verdict with its expiry.
+type netgroupDecision struct {
+	allowed   bool
+	expiresAt time.Time
+}
+
+// cachedNetgroupDecision returns a non-expired verdict for key, if one exists.
+func (r *Runtime) cachedNetgroupDecision(key string) (allowed bool, ok bool) {
+	r.netgroupDecisionsMu.Lock()
+	defer r.netgroupDecisionsMu.Unlock()
+
+	d, found := r.netgroupDecisions[key]
+	if !found || time.Now().After(d.expiresAt) {
+		return false, false
+	}
+	return d.allowed, true
+}
+
+// storeNetgroupDecision records a verdict for key and sweeps expired entries so
+// the map stays bounded by the clients seen within one TTL window.
+func (r *Runtime) storeNetgroupDecision(key string, allowed bool) {
+	now := time.Now()
+
+	r.netgroupDecisionsMu.Lock()
+	defer r.netgroupDecisionsMu.Unlock()
+
+	if r.netgroupDecisions == nil {
+		r.netgroupDecisions = make(map[string]netgroupDecision)
+	}
+	for k, d := range r.netgroupDecisions {
+		if now.After(d.expiresAt) {
+			delete(r.netgroupDecisions, k)
+		}
+	}
+	r.netgroupDecisions[key] = netgroupDecision{allowed: allowed, expiresAt: now.Add(netgroupDecisionTTL)}
+}
+
+// evaluateNetgroupAccess matches clientIP against the members of netgroupName,
+// consulting the netgroup store. shareName is used for diagnostics only.
+func (r *Runtime) evaluateNetgroupAccess(ctx context.Context, shareName, netgroupName string, clientIP net.IP) (bool, error) {
+	// Get netgroup members from store (requires NetgroupStore interface)
 	ns, ok := r.store.(store.NetgroupStore)
 	if !ok {
 		logger.Warn("Store does not implement NetgroupStore, denying access",
@@ -220,7 +283,7 @@ func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, cli
 	// Initialize DNS cache lazily
 	ensureDNSCache()
 
-	// 4. Match client IP against each member
+	// Match client IP against each member
 	ipString := clientIP.String()
 	for _, member := range members {
 		switch member.Type {
@@ -243,7 +306,7 @@ func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, cli
 		}
 	}
 
-	// 5. No member matches
+	// No member matches
 	return false, nil
 }
 

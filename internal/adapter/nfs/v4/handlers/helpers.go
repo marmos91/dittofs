@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
@@ -87,6 +88,17 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 			AuthMethod: authMethod,
 			Identity:   originalIdentity,
 		}, shareName, nil
+	}
+
+	// Enforce the share's netgroup client allowlist. NFSv4 has no MOUNT
+	// protocol, so the check the v3 MOUNT handler performs never runs for a v4
+	// client: without it here a netgroup-restricted share is reachable from any
+	// address over PUTROOTFH/PUTFH/LOOKUP. This gates every operation that
+	// builds an auth context, including a LOOKUP that crosses from the pseudo-fs
+	// into a share; operations that act on the current filehandle without one
+	// are gated in the PUTFH handler.
+	if err := h.checkNetgroupAccess(ctx, shareName); err != nil {
+		return nil, "", err
 	}
 
 	// Get share for the export-squash permission policy. On error GetShare
@@ -191,6 +203,40 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 	}
 
 	return authCtx, shareName, nil
+}
+
+// checkNetgroupAccess returns NFS4ERR_ACCESS unless the compound's peer is in
+// the netgroup that shareName is restricted to.
+//
+// It fails closed the same way the v3 MOUNT handler does: a lookup error and a
+// no-match both deny. A peer address that cannot be parsed yields a nil IP,
+// which matches no netgroup member and so denies any share that has a netgroup,
+// while leaving shares without one (empty allowlist = allow all) unaffected.
+func (h *Handler) checkNetgroupAccess(ctx *types.CompoundContext, shareName string) error {
+	host := ctx.ClientAddr
+	if hostOnly, _, err := net.SplitHostPort(host); err == nil {
+		host = hostOnly
+	}
+	clientIP := net.ParseIP(host)
+
+	allowed, err := h.Registry.CheckNetgroupAccess(ctx.Context, shareName, clientIP)
+	if err != nil {
+		logger.Warn("NFSv4 netgroup access check failed, denying",
+			"share", shareName, "client", ctx.ClientAddr, "error", err)
+		return &authStatusError{
+			status: types.NFS4ERR_ACCESS,
+			err:    fmt.Errorf("netgroup access check for share %q: %w", shareName, err),
+		}
+	}
+	if !allowed {
+		logger.Warn("NFSv4 access denied: client not in the share's netgroup",
+			"share", shareName, "client", ctx.ClientAddr)
+		return &authStatusError{
+			status: types.NFS4ERR_ACCESS,
+			err:    fmt.Errorf("client %q is not in the netgroup allowed for share %q", ctx.ClientAddr, shareName),
+		}
+	}
+	return nil
 }
 
 // getMetadataServiceForCtx returns the MetadataService from the handler's registry.

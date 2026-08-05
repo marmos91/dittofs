@@ -644,3 +644,79 @@ func TestDNSCache_CleanExpired(t *testing.T) {
 	}
 	c.mu.Unlock()
 }
+
+// --- decision cache tests ---
+
+// TestCheckNetgroupAccess_VerdictIsMemoized documents the staleness window the
+// decision cache introduces: a membership edit is not visible until the cached
+// verdict expires. Verdicts are keyed by netgroup name and client IP only --
+// the share name is not part of the key because the verdict depends solely on
+// the netgroup's members and the client IP, so every share pointing at the same
+// netgroup shares one verdict and the staleness window is per netgroup+client,
+// not per share.
+func TestCheckNetgroupAccess_VerdictIsMemoized(t *testing.T) {
+	rt, _, ngStore := createTestRuntimeWithStore(t)
+	ctx := context.Background()
+
+	if _, err := ngStore.CreateNetgroup(ctx, &models.Netgroup{ID: uuid.New().String(), Name: "office-ips"}); err != nil {
+		t.Fatalf("CreateNetgroup failed: %v", err)
+	}
+	addShareDirect(rt, "/export", "office-ips")
+
+	// Empty netgroup denies, and that verdict is cached.
+	if allowed, err := rt.CheckNetgroupAccess(ctx, "/export", net.ParseIP("192.168.1.100")); err != nil || allowed {
+		t.Fatalf("CheckNetgroupAccess (empty netgroup) = (%v, %v), want (false, nil)", allowed, err)
+	}
+
+	if err := ngStore.AddNetgroupMember(ctx, "office-ips", &models.NetgroupMember{
+		Type:  "ip",
+		Value: "192.168.1.100",
+	}); err != nil {
+		t.Fatalf("AddNetgroupMember failed: %v", err)
+	}
+
+	allowed, err := rt.CheckNetgroupAccess(ctx, "/export", net.ParseIP("192.168.1.100"))
+	if err != nil {
+		t.Fatalf("CheckNetgroupAccess failed: %v", err)
+	}
+	if allowed {
+		t.Error("Expected the cached deny verdict to be reused within the TTL")
+	}
+}
+
+// TestCheckNetgroupAccess_RepointedShareReevaluates verifies the cache key
+// includes the netgroup name, so moving a share to another netgroup takes
+// effect immediately rather than after the TTL.
+func TestCheckNetgroupAccess_RepointedShareReevaluates(t *testing.T) {
+	rt, _, ngStore := createTestRuntimeWithStore(t)
+	ctx := context.Background()
+
+	for _, name := range []string{"empty-group", "office-ips"} {
+		if _, err := ngStore.CreateNetgroup(ctx, &models.Netgroup{ID: uuid.New().String(), Name: name}); err != nil {
+			t.Fatalf("CreateNetgroup(%s) failed: %v", name, err)
+		}
+	}
+	if err := ngStore.AddNetgroupMember(ctx, "office-ips", &models.NetgroupMember{
+		Type:  "ip",
+		Value: "192.168.1.100",
+	}); err != nil {
+		t.Fatalf("AddNetgroupMember failed: %v", err)
+	}
+
+	addShareDirect(rt, "/export", "empty-group")
+	if allowed, err := rt.CheckNetgroupAccess(ctx, "/export", net.ParseIP("192.168.1.100")); err != nil || allowed {
+		t.Fatalf("CheckNetgroupAccess (empty-group) = (%v, %v), want (false, nil)", allowed, err)
+	}
+
+	if err := rt.SetShareNetgroup("/export", "office-ips"); err != nil {
+		t.Fatalf("SetShareNetgroup failed: %v", err)
+	}
+
+	allowed, err := rt.CheckNetgroupAccess(ctx, "/export", net.ParseIP("192.168.1.100"))
+	if err != nil {
+		t.Fatalf("CheckNetgroupAccess failed: %v", err)
+	}
+	if !allowed {
+		t.Error("Expected the new netgroup to be evaluated immediately after re-pointing the share")
+	}
+}

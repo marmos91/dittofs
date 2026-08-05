@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"net"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -33,6 +34,10 @@ type nfsRuntime interface {
 	// Identity / auth.
 	GetIdentityStore() models.IdentityStore
 	ApplyIdentityMapping(shareName string, ident *metadata.Identity) (*metadata.Identity, error)
+
+	// Export-level client allowlist. Reports whether clientIP is a member of the
+	// netgroup the share is restricted to; shares with no netgroup allow all.
+	CheckNetgroupAccess(ctx context.Context, shareName string, clientIP net.IP) (bool, error)
 }
 
 var _ nfsRuntime = (*runtime.Runtime)(nil)
