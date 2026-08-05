@@ -233,8 +233,13 @@ func (m *segmentMeta) sealInPlace() error {
 func (s *Store) sealSegment(sh *shard) error {
 	old := sh.active
 	if err := old.sealInPlace(); err != nil {
+		sh.syncFailed.Store(true)
 		return err
 	}
+	// Sealing fsyncs the segment, and every earlier segment of this shard was
+	// fsynced when it was sealed, so every record appended so far is now durable:
+	// a rotation is a durability point just like a Commit.
+	sh.markSynced(sh.lastVersion)
 	sh.sealed[old.id] = old
 
 	seg, err := s.createSegment()
@@ -319,6 +324,10 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 		return fmt.Errorf("journal: write payload CRC: %w", err)
 	}
 	seg.tail.Store(segOff + recLen)
+	// Stamped under sh.mu, after the record's writes returned: a reader holding
+	// sh.mu therefore sees a Version only once its bytes are in the page cache,
+	// which is what makes it safe for groupCommit to treat as the fsync's ceiling.
+	sh.lastVersion = version
 	seg.liveBytes.Add(int64(len(data)))
 	seg.records.Add(1)
 	seg.noteMinVersion(version)

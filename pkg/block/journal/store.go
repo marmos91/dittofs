@@ -492,8 +492,17 @@ func (sh *shard) groupCommit() error {
 	// the whole batch durable.
 	sh.mu.Lock()
 	seg := sh.active
+	// Ceiling for this fsync: every record at or below it finished its write under
+	// the same lock, so the fsync covers all of them. Records appended after this
+	// read are simply not claimed — conservative in the only safe direction.
+	upTo := sh.lastVersion
 	sh.mu.Unlock()
 	err := sh.segSync(seg)
+	if err != nil {
+		sh.syncFailed.Store(true)
+	} else {
+		sh.markSynced(upTo)
+	}
 
 	sh.commitMu.Lock()
 	if err != nil {
@@ -621,6 +630,47 @@ func (s *Store) FileSize(_ context.Context, id FileID) (int64, bool) {
 	}
 	var size int64
 	for _, iv := range fi.ivs {
+		if e := iv.end(); e > size {
+			size = e
+		}
+	}
+	return size, true
+}
+
+// DurableExtent reports how far a file's bytes survive device loss: the maximum
+// end offset over the intervals whose bytes are already on stable storage. An
+// interval qualifies when a completed fsync covered its record (Version at or
+// below the shard's durable watermark), when it is cold (the bytes live in the
+// remote store and the marker was fsynced before it was indexed), or when it is
+// synced (carved and uploaded). Everything else was only buffered —
+// acknowledged to the client, but gone after a crash.
+//
+// It is the counterpart of FileSize, which reports every interval whether or not
+// its bytes are durable. Callers that publish a size derived from written bytes
+// use this one so the published size can never describe bytes a crash would take
+// away, which would leave the range reading as a hole full of zeros.
+func (s *Store) DurableExtent(_ context.Context, id FileID) (int64, bool) {
+	sh := s.shardFor(id)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	fi := sh.index[id]
+	if fi == nil {
+		return 0, false
+	}
+	synced := sh.syncedVersion.Load()
+	var size int64
+	for _, iv := range fi.ivs {
+		// Intervals are sorted by offset and non-overlapping, but durability is
+		// keyed on Version, which is append order — a later write to an earlier
+		// offset is common. So the scan stops at the first interval whose bytes
+		// could vanish rather than skipping over it: anything beyond it may be
+		// durable on its own, yet reporting it would put the lost range inside
+		// the committed size, which is the hole-of-zeros this exists to prevent.
+		// Gaps between durable intervals are a different thing entirely — never
+		// written, correctly read as zeros — so they do not stop the scan.
+		if !iv.cold && !iv.synced && iv.version > synced {
+			break
+		}
 		if e := iv.end(); e > size {
 			size = e
 		}

@@ -1,6 +1,9 @@
 package journal
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // FNV-1a constants (64-bit), matching fs/logshard.go so a FileID resolves to
 // the same partition as today's payloadID.
@@ -29,6 +32,19 @@ type shard struct {
 	active *segmentMeta
 	sealed map[uint64]*segmentMeta
 	index  map[FileID]*fileIndex
+	// lastVersion is the highest record Version appended to this shard, stamped
+	// under mu once the record's write() returned. syncedVersion is the highest
+	// Version a completed fsync has covered — records above it exist only in the
+	// page cache and vanish on device loss; it is atomic because groupCommit
+	// raises it after releasing mu. DurableExtent reads both.
+	lastVersion   uint64
+	syncedVersion atomic.Uint64
+	// syncFailed goes true the first time an fsync on this shard fails and never
+	// clears, freezing syncedVersion where it stood. It mirrors the stickiness of
+	// errSeq/syncErr and for the same reason: once the kernel has reported a
+	// write-back failure it drops those pages, and the next fsync can return
+	// success without them ever having reached the device.
+	syncFailed atomic.Bool
 	// carveMu serializes a shard's carve passes: the background flush and an
 	// explicit Carve() never build a block from the same records twice. It is
 	// distinct from mu, which serializes appends and index mutation — carve holds
@@ -74,6 +90,21 @@ func newShard(active *segmentMeta) *shard {
 	}
 	sh.commitCond = sync.NewCond(&sh.commitMu)
 	return sh
+}
+
+// markSynced raises the shard's durable watermark to v, which must be a Version
+// an already-completed fsync covered. Monotonic: a seal and an in-flight commit
+// finishing out of order can never walk the watermark back over durable records.
+func (sh *shard) markSynced(v uint64) {
+	if sh.syncFailed.Load() {
+		return
+	}
+	for {
+		cur := sh.syncedVersion.Load()
+		if v <= cur || sh.syncedVersion.CompareAndSwap(cur, v) {
+			return
+		}
+	}
 }
 
 // segment returns the segment with the given ID, active or sealed, or nil.

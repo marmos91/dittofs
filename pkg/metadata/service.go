@@ -48,6 +48,10 @@ type Service struct {
 	dirTimes           *DirTimesTracker                  // coalesced directory mtime/ctime/atime bumps (#1573)
 	writebackShares    map[string]bool                   // shareName -> writeback tier (#1757): relax FILE_SYNC metadata flush
 	deferredCommit     atomic.Bool                       // if true, use deferred commits (default: true); read lock-free on the write hot path
+	// durableExtent answers how far a payload's bytes are on stable storage in
+	// its share's block store. Installed by the control plane, which owns both
+	// tiers; nil wherever there is no block store to ask.
+	durableExtent atomic.Pointer[DurableExtentFunc]
 
 	// parentLinkShards is a fixed bank of mutexes that serialize the parent
 	// directory link-count read-modify-write (the ".." bump) done by mkdir (+1),
@@ -299,6 +303,29 @@ func (s *Service) shareWriteback(shareName string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.writebackShares[shareName]
+}
+
+// DurableExtentFunc reports how far a payload's bytes are on stable storage in
+// the share's block store: bytes below the returned offset survive an unclean
+// shutdown, bytes above it do not. ok is false when the block store cannot
+// answer, which means "unknown" and never "nothing is durable".
+type DurableExtentFunc func(shareName string, payloadID PayloadID) (int64, bool)
+
+// SetDurableExtentResolver installs the block-store lookup flushPendingWrite
+// uses to keep a committed file size from describing bytes that are not durable
+// yet. Without it (unit tests, stores with no block tier) size commits behave as
+// they always have.
+func (s *Service) SetDurableExtentResolver(fn DurableExtentFunc) {
+	s.durableExtent.Store(&fn)
+}
+
+// durableExtentFor asks the installed resolver how far the payload is durable;
+// with no resolver the answer is "unknown".
+func (s *Service) durableExtentFor(shareName string, payloadID PayloadID) (int64, bool) {
+	if fn := s.durableExtent.Load(); fn != nil && *fn != nil {
+		return (*fn)(shareName, payloadID)
+	}
+	return 0, false
 }
 
 // RegisterStoreForShare associates a metadata store with a share.

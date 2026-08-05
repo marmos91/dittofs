@@ -420,6 +420,11 @@ func (s *Store) recover() error {
 		sh := newShard(active)
 		sh.sealed = sealedByShard[i]
 		sh.index = indexByShard[i]
+		// Everything the index holds now was read back off the device and passed
+		// its CRCs, so it survived the crash by definition: the durable watermark
+		// starts at the highest replayed Version rather than at zero.
+		sh.lastVersion = maxVersion
+		sh.syncedVersion.Store(maxVersion)
 		shards[i] = sh
 	}
 

@@ -108,6 +108,11 @@ func (t *PendingWritesTracker) RecordWrite(handle FileHandle, intent *WriteOpera
 		if clearSetuid {
 			state.ClearSetuidSetgid = true
 		}
+		// A state created by SetCachedFile carries no payload, so the first real
+		// write fills in the one the flush needs to locate this file's bytes.
+		if state.PayloadID == "" {
+			state.PayloadID = intent.PayloadID
+		}
 	}
 
 	return state
