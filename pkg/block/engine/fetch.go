@@ -80,7 +80,21 @@ func (m *Syncer) listFileChunksSnapshot(ctx context.Context, payloadID string) (
 // evictable). The (payloadID, offset) are parsed from the row ID
 // "<payloadID>/<offset>" (split on the last '/'). A malformed ID is a hard
 // error — an inconsistent manifest, not a benign miss.
+//
+// Only the bytes the row claims are written (see FileChunk.DataSize). A remote
+// read returns the whole chunk, so on a row a shrink narrowed to its surviving
+// prefix, writing the rest would restore bytes past the file's new end, above
+// the version of the marker that moved it, and a later re-extend would serve
+// them where a zero hole is due. A row claiming nothing therefore writes
+// nothing: the clamp fails closed, since a claim of zero reaching the local tier
+// as "write the whole chunk" is that same resurrection by another route.
 func (m *Syncer) hydrateChunk(ctx context.Context, fb *block.FileChunk, data []byte) error {
+	if claimed := uint64(fb.DataSize); claimed < uint64(len(data)) {
+		data = data[:claimed]
+	}
+	if len(data) == 0 {
+		return nil
+	}
 	i := strings.LastIndexByte(fb.ID, '/')
 	off, ok := block.ParseChunkOffset(fb.ID)
 	if i <= 0 || !ok {
