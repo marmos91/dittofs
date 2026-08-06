@@ -4,7 +4,6 @@ package clients
 
 import (
 	"context"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,29 +18,20 @@ type ClientRecord struct {
 	ClientID     string      `json:"client_id"`
 	Protocol     string      `json:"protocol"` // "nfs" or "smb"
 	Address      string      `json:"address"`
-	User         string      `json:"user"`
 	ConnectedAt  time.Time   `json:"connected_at"`
 	LastActivity time.Time   `json:"last_activity"`
-	Shares       []string    `json:"shares"`
 	NFS          *NfsDetails `json:"nfs,omitempty"`
 	SMB          *SmbDetails `json:"smb,omitempty"`
 }
 
 // NfsDetails holds NFS-specific client information.
 type NfsDetails struct {
-	Version    string `json:"version"`     // "3", "4.0", "4.1"
-	AuthFlavor string `json:"auth_flavor"` // "AUTH_UNIX", "AUTH_NULL", "RPCSEC_GSS"
-	UID        uint32 `json:"uid"`
-	GID        uint32 `json:"gid"`
+	Version string `json:"version"` // "3", "4.0", "4.1"
 }
 
 // SmbDetails holds SMB-specific client information.
 type SmbDetails struct {
 	SessionID uint64 `json:"session_id"`
-	Dialect   string `json:"dialect"` // "3.1.1", "3.0.2", "3.0", "2.1", "2.0.2"
-	Domain    string `json:"domain,omitempty"`
-	Signed    bool   `json:"signed"`
-	Encrypted bool   `json:"encrypted"`
 }
 
 // clientEntry is the map value. It holds the record's structural fields plus a
@@ -55,7 +45,8 @@ type clientEntry struct {
 // Registry provides thread-safe client tracking with TTL-based stale cleanup.
 // It follows the same sub-service pattern as mounts.Tracker.
 //
-// mu guards the map structure and each entry's non-atomic fields (Shares).
+// mu guards the map structure; an entry's remaining fields are set at Register
+// and never mutated again.
 // The per-request activity bump (UpdateActivity) takes only a shared read lock
 // for map safety and stores into the entry's atomic timestamp, so the
 // highest-fan-in call in the system no longer serializes on the write lock.
@@ -135,39 +126,6 @@ func (r *Registry) UpdateActivity(clientID string) {
 	}
 }
 
-// AddShare adds a share to the client's shares list if not already present.
-// No-op if the client does not exist.
-func (r *Registry) AddShare(clientID, share string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	e, ok := r.clients[clientID]
-	if !ok {
-		return
-	}
-	if !slices.Contains(e.Shares, share) {
-		e.Shares = append(e.Shares, share)
-	}
-}
-
-// RemoveShare removes a share from the client's shares list.
-// No-op if the client or share does not exist.
-func (r *Registry) RemoveShare(clientID, share string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	e, ok := r.clients[clientID]
-	if !ok {
-		return
-	}
-	for i, s := range e.Shares {
-		if s == share {
-			e.Shares = append(e.Shares[:i], e.Shares[i+1:]...)
-			return
-		}
-	}
-}
-
 // List returns deep copies of all client records.
 func (r *Registry) List() []*ClientRecord {
 	return r.collect(nil)
@@ -177,14 +135,6 @@ func (r *Registry) List() []*ClientRecord {
 func (r *Registry) ListByProtocol(protocol string) []*ClientRecord {
 	return r.collect(func(c *ClientRecord) bool {
 		return c.Protocol == protocol
-	})
-}
-
-// ListByShare returns deep copies of client records that are connected to the
-// given share.
-func (r *Registry) ListByShare(share string) []*ClientRecord {
-	return r.collect(func(c *ClientRecord) bool {
-		return slices.Contains(c.Shares, share)
 	})
 }
 
@@ -265,13 +215,10 @@ func copyRecord(e *clientEntry) *ClientRecord {
 	return &dst
 }
 
-// deepCopyRefs replaces the reference-typed fields of rec (the Shares slice and
-// the NFS/SMB detail pointers) with independent copies, so the record no longer
-// aliases the caller's or the registry's data.
+// deepCopyRefs replaces the reference-typed fields of rec (the NFS/SMB detail
+// pointers) with independent copies, so the record no longer aliases the
+// caller's or the registry's data.
 func deepCopyRefs(rec *ClientRecord) {
-	if rec.Shares != nil {
-		rec.Shares = append([]string(nil), rec.Shares...)
-	}
 	if rec.NFS != nil {
 		nfsCopy := *rec.NFS
 		rec.NFS = &nfsCopy

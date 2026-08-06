@@ -2858,42 +2858,24 @@ func (s *Service) GetWarm(jobID string) (*WarmJob, bool) {
 	return s.warmJobs.get(jobID)
 }
 
-// deriveGCStateRoot returns the per-share gc-state directory used by the
-// GC engine to persist its run state and last-run.json. Mirrors the path
-// layout used in CreateLocalStoreFromConfig for fs-backed local stores
-// (`<basePath>/shares/<sanitized>/gc-state`). Returns "" for any non-fs
-// backend or when the config does not yield a usable absolute path —
-// engine.PersistLastRunSummary treats "" as "do not persist".
+// deriveGCStateRoot returns the per-share gc-state directory used by the GC
+// engine to persist its run state and last-run.json: the share's local store
+// directory plus a `gc-state` suffix. Returns "" whenever that directory is
+// unresolvable — engine.PersistLastRunSummary treats "" as "do not persist".
 func deriveGCStateRoot(localCfg interface {
 	GetConfig() (map[string]any, error)
 }, shareName string) string {
-	if localCfg == nil {
+	dir := deriveLocalStoreDir(localCfg, shareName)
+	if dir == "" {
 		return ""
 	}
-	cfg, err := localCfg.GetConfig()
-	if err != nil {
-		return ""
-	}
-	basePath, ok := cfg["path"].(string)
-	if !ok || basePath == "" {
-		return ""
-	}
-	expanded, err := pathutil.ExpandPath(basePath)
-	if err != nil {
-		return ""
-	}
-	if !filepath.IsAbs(expanded) {
-		return ""
-	}
-	return filepath.Join(expanded, "shares", sanitizeShareName(shareName), "gc-state")
+	return filepath.Join(dir, "gc-state")
 }
 
 // deriveLocalStoreDir returns the per-share on-disk data directory the
 // migration tool uses to host `.migration-state.jsonl` and the rolling
-// snapshot. Mirrors deriveGCStateRoot's path-extraction logic for
-// fs-backed local stores; returns "" for in-memory or unresolvable
-// configs (the REST status handler treats "" as "no journal available",
-// not an error).
+// snapshot. Returns "" for in-memory or unresolvable configs (the REST
+// status handler treats "" as "no journal available", not an error).
 //
 // Path layout: `<basePath>/shares/<sanitized>/`. Note the absence of a
 // "blocks" or "gc-state" suffix — the migration journal lives at the

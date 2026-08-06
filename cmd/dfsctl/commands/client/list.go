@@ -11,17 +11,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	protocolFlag string
-	shareFlag    string
-)
+var protocolFlag string
 
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List connected clients",
 	Long: `List all clients currently connected to the DittoFS server.
 
-Each row shows the client ID, protocol (NFS or SMB), remote address, authenticated user, mounted shares, and how long the client has been connected. Use --protocol or --share to narrow the output.
+Each row shows the client ID, protocol (NFS or SMB), remote address, and how long the client has been connected. Use --protocol to narrow the output.
 
 Examples:
   # List all connected clients
@@ -30,9 +27,6 @@ Examples:
   # Show only NFS clients
   dfsctl client list --protocol nfs
 
-  # Show only clients connected to a specific share
-  dfsctl client list --share myshare
-
   # Get the client list as JSON
   dfsctl client list -o json`,
 	RunE: runList,
@@ -40,7 +34,6 @@ Examples:
 
 func init() {
 	listCmd.Flags().StringVar(&protocolFlag, "protocol", "", "Filter by protocol (nfs, smb)")
-	listCmd.Flags().StringVar(&shareFlag, "share", "", "Filter by share name")
 }
 
 // ClientList is a list of clients for table rendering.
@@ -48,25 +41,18 @@ type ClientList []apiclient.ClientInfo
 
 // Headers implements TableRenderer.
 func (cl ClientList) Headers() []string {
-	return []string{"CLIENT_ID", "PROTOCOL", "ADDRESS", "USER", "SHARES", "CONNECTED"}
+	return []string{"CLIENT_ID", "PROTOCOL", "ADDRESS", "CONNECTED"}
 }
 
 // Rows implements TableRenderer.
 func (cl ClientList) Rows() [][]string {
 	rows := make([][]string, 0, len(cl))
 	for _, c := range cl {
-		shares := "-"
-		if len(c.Shares) > 0 {
-			shares = strings.Join(c.Shares, ", ")
-		}
-		connected := time.Since(c.ConnectedAt).Truncate(time.Second).String()
 		rows = append(rows, []string{
 			c.ClientID,
 			strings.ToUpper(c.Protocol),
 			c.Address,
-			cmdutil.EmptyOr(c.User, "-"),
-			shares,
-			connected,
+			time.Since(c.ConnectedAt).Truncate(time.Second).String(),
 		})
 	}
 	return rows
@@ -81,9 +67,6 @@ func runList(cmd *cobra.Command, args []string) error {
 	var opts []apiclient.ListClientsOption
 	if protocolFlag != "" {
 		opts = append(opts, apiclient.WithProtocol(protocolFlag))
-	}
-	if shareFlag != "" {
-		opts = append(opts, apiclient.WithShare(shareFlag))
 	}
 
 	clients, err := client.ListClients(opts...)
