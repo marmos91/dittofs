@@ -35,16 +35,18 @@ func (gs GraceState) String() string {
 }
 
 // Operation describes the type of lock operation for grace period checking.
-type Operation struct {
-	// IsReclaim indicates this is a lock reclaim during grace period.
-	IsReclaim bool
+type Operation int
 
-	// IsTest indicates this is a lock test (query) operation.
-	IsTest bool
+const (
+	// OpNew is a new lock request - denied while the grace period is active.
+	OpNew Operation = iota
 
-	// IsNew indicates this is a new lock request (not reclaim or test).
-	IsNew bool
-}
+	// OpReclaim is a reclaim of a lock held before restart - always allowed.
+	OpReclaim
+
+	// OpTest is a lock test (query) - always allowed.
+	OpTest
+)
 
 // GracePeriodManager manages the grace period state machine.
 //
@@ -231,7 +233,7 @@ func (gpm *GracePeriodManager) IsOperationAllowed(op Operation) (bool, error) {
 	}
 
 	// Active state - check operation type
-	if op.IsReclaim || op.IsTest {
+	if op == OpReclaim || op == OpTest {
 		return true, nil
 	}
 

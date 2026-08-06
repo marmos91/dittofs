@@ -1,4 +1,4 @@
-// Package lock provides delegation management for cross-protocol caching.
+// Delegation management for cross-protocol caching.
 //
 // Delegations are the protocol-neutral equivalent of NFS delegations and
 // SMB leases, representing caching permissions granted to a client. Unlike
@@ -9,6 +9,7 @@
 // with leases, and helper functions.
 //
 // Reference: RFC 8881 Section 10 (NFS Delegations)
+
 package lock
 
 import (

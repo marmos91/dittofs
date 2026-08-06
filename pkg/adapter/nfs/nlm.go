@@ -95,10 +95,11 @@ func (s *nlmService) LockFileNLM(
 	// admits reclaims so a prior owner can recover before a third party steals
 	// the range (X/Open NLMv4, RFC 7530 §9.6.2). A non-reclaim request is
 	// rejected with ErrGracePeriod, which the handler maps to NLM4_DENIED_GRACE_PERIOD.
-	allowed, graceErr := s.lockMgr.IsOperationAllowed(lock.Operation{
-		IsNew:     !reclaim,
-		IsReclaim: reclaim,
-	})
+	graceOp := lock.OpNew
+	if reclaim {
+		graceOp = lock.OpReclaim
+	}
+	allowed, graceErr := s.lockMgr.IsOperationAllowed(graceOp)
 	if !allowed {
 		return nil, graceErr
 	}
@@ -383,7 +384,7 @@ func (s *NFSAdapter) processNLMWaiters(handle metadata.FileHandle) {
 		}
 
 		// Try to add the lock
-		enhancedLock := metadata.NewUnifiedLock(
+		enhancedLock := lock.NewUnifiedLock(
 			waiter.Lock.Owner,
 			lock.FileHandle(handle),
 			waiter.Lock.Offset,

@@ -18,10 +18,10 @@ import "sync"
 //   - Graph: A -> B -> A (cycle = deadlock)
 //
 // Usage:
-//  1. Before blocking on a lock, call WouldCauseCycle() to check for deadlock
-//  2. If no cycle, call AddWaiter() to record the wait relationship
-//  3. When lock is granted or request times out, call RemoveWaiter()
-//  4. When lock is released, call RemoveOwner() to clear all wait relationships
+//  1. Before blocking on a lock, call TryAddWaiter(): it checks for a cycle and
+//     records the wait relationship in one atomic step
+//  2. When lock is granted or request times out, call RemoveWaiter()
+//  3. When lock is released, call RemoveOwner() to clear all wait relationships
 //
 // Thread Safety:
 // WaitForGraph is safe for concurrent use by multiple goroutines.
@@ -40,52 +40,33 @@ func NewWaitForGraph() *WaitForGraph {
 	}
 }
 
-// WouldCauseCycle checks if adding edges from waiter to owners would create a cycle.
+// TryAddWaiter records that waiter is waiting for all specified owners, unless
+// doing so would close a cycle in the graph.
 //
-// This MUST be called before blocking on a lock request. If it returns true,
-// the lock request should be denied with ErrDeadlock instead of blocking.
+// The cycle check and the edge insertion happen under a single write lock, so
+// concurrent lock requests can never each observe an acyclic graph and then
+// both commit the edges that together form a cycle.
 //
 // Parameters:
 //   - waiter: The owner ID that wants to wait
 //   - owners: The owner IDs currently holding the conflicting lock(s)
 //
 // Returns:
-//   - true if adding these wait relationships would create a cycle (deadlock)
-//   - false if it's safe to proceed with waiting
-//
-// Algorithm:
-// For each owner in owners, perform DFS from that owner to see if we can
-// reach the waiter. If any path exists, adding waiter -> owner would create
-// a cycle.
-func (wfg *WaitForGraph) WouldCauseCycle(waiter string, owners []string) bool {
-	wfg.mu.RLock()
-	defer wfg.mu.RUnlock()
-
-	// For each owner, check if we can reach waiter from owner
-	for _, owner := range owners {
-		if wfg.canReach(owner, waiter, make(map[string]bool)) {
-			return true // Would create cycle
-		}
-	}
-
-	return false
-}
-
-// AddWaiter records that waiter is waiting for all specified owners.
-//
-// IMPORTANT: Caller MUST call WouldCauseCycle first to ensure this won't
-// create a deadlock. AddWaiter does NOT check for cycles.
-//
-// Parameters:
-//   - waiter: The owner ID that is now waiting
-//   - owners: The owner IDs being waited on
-func (wfg *WaitForGraph) AddWaiter(waiter string, owners []string) {
+//   - true if the edges were recorded and the caller may block; an empty
+//     owners list records nothing and also returns true
+//   - false if the edges would create a cycle (deadlock); nothing is recorded
+//     and the caller must fail the request instead of blocking
+func (wfg *WaitForGraph) TryAddWaiter(waiter string, owners []string) bool {
 	if len(owners) == 0 {
-		return
+		return true
 	}
 
 	wfg.mu.Lock()
 	defer wfg.mu.Unlock()
+
+	if wfg.wouldCauseCycleLocked(waiter, owners) {
+		return false
+	}
 
 	// Get or create the wait set for this waiter
 	waitSet, exists := wfg.edges[waiter]
@@ -98,6 +79,7 @@ func (wfg *WaitForGraph) AddWaiter(waiter string, owners []string) {
 	for _, owner := range owners {
 		waitSet[owner] = struct{}{}
 	}
+	return true
 }
 
 // RemoveWaiter removes all wait relationships where waiter is the source.
@@ -174,8 +156,20 @@ func (wfg *WaitForGraph) Size() int {
 	return len(wfg.edges)
 }
 
+// wouldCauseCycleLocked reports whether adding edges from waiter to owners
+// would close a cycle: for each owner, DFS from that owner looking for a path
+// back to waiter. Must be called with wfg.mu held (read or write).
+func (wfg *WaitForGraph) wouldCauseCycleLocked(waiter string, owners []string) bool {
+	for _, owner := range owners {
+		if wfg.canReach(owner, waiter, make(map[string]bool)) {
+			return true
+		}
+	}
+	return false
+}
+
 // canReach performs DFS to check if we can reach 'to' from 'from'.
-// Must be called with at least RLock held.
+// Must be called with wfg.mu held (read or write).
 func (wfg *WaitForGraph) canReach(from, to string, visited map[string]bool) bool {
 	// Avoid infinite loops
 	if visited[from] {

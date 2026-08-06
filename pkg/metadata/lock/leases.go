@@ -1,4 +1,4 @@
-// Package lock provides lease CRUD operations on the Manager.
+// Lease CRUD operations on the Manager.
 //
 // This file implements RequestLease, AcknowledgeLeaseBreak, ReleaseLease,
 // and GetLeaseState methods on the Manager struct. These are the core lease
@@ -7,6 +7,7 @@
 // All lease state changes go through advanceEpoch to ensure epoch monotonicity.
 //
 // Reference: MS-SMB2 3.3.5.9 Processing an SMB2 CREATE Request
+
 package lock
 
 import (
@@ -158,13 +159,16 @@ func (lm *Manager) findLeaseByKey(leaseKey [16]byte) (string, *UnifiedLock, int)
 // multichannel work (#361) where ClientGuid threading is needed
 // for cross-channel break fan-out anyway.
 //
+// Probes only the buckets leaseKeyIndex names for leaseKey; the ones it omits
+// hold no record for the key and could never have matched.
+//
 // Must be called with lm.mu held (read or write).
 func (lm *Manager) hasLeaseKeyOnOtherFile(leaseKey [16]byte, excludeHandleKey, clientID string) bool {
-	for handleKey, locks := range lm.unifiedLocks {
+	for handleKey := range lm.leaseKeyIndex[leaseKey] {
 		if handleKey == excludeHandleKey {
 			continue
 		}
-		for _, lock := range locks {
+		for _, lock := range lm.unifiedLocks[handleKey] {
 			if lock.Lease == nil || lock.Lease.LeaseKey != leaseKey {
 				continue
 			}

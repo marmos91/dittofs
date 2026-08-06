@@ -1,7 +1,8 @@
-// Package lock provides cross-protocol break coordination helpers.
+// Cross-protocol break coordination helpers.
 //
 // Coordinates break operations that span protocol boundaries (e.g., SMB write
 // breaking NFS delegation, NFS open breaking SMB lease).
+
 package lock
 
 import (

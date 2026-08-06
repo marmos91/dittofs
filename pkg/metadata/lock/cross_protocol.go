@@ -1,7 +1,8 @@
-// Package lock provides cross-protocol translation helpers for lock visibility.
+// Cross-protocol translation helpers for lock visibility.
 //
 // Translates lock information between NLM and SMB for cross-protocol conflict
 // reporting and logging.
+
 package lock
 
 import (
