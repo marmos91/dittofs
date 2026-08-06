@@ -780,7 +780,10 @@ func (h *Handler) setFileInfoFromStore(
 				}
 			}
 
-			// Update open file state
+			// Update open file state. Ops pipelined on this handle read the
+			// name/path pair concurrently (WRITE classifies an ADS write from
+			// it), so read and republish the pair under the handle lock.
+			openFile.mu.Lock()
 			parentPath := GetParentPath(openFile.Path)
 			if parentPath == "" || parentPath == "/" || parentPath == "." {
 				openFile.Path = toName
@@ -788,6 +791,7 @@ func (h *Handler) setFileInfoFromStore(
 				openFile.Path = parentPath + "/" + toName
 			}
 			openFile.FileName = toName
+			openFile.mu.Unlock()
 			h.StoreOpenFile(openFile)
 
 			// Break parent directory leases on rename (content change)
@@ -1186,9 +1190,14 @@ func (h *Handler) setFileInfoFromStore(
 				actualNewPath = parentPath + "/" + toName
 			}
 		}
+		// Ops pipelined on this handle read the name/path/parent triple
+		// concurrently (WRITE snapshots it), so publish all three together
+		// under the handle lock.
+		openFile.mu.Lock()
 		openFile.Path = actualNewPath
 		openFile.FileName = toName
 		openFile.ParentHandle = toDir
+		openFile.mu.Unlock()
 		h.StoreOpenFile(openFile)
 
 		// Per MS-FSA 2.1.5.14.10 (smbtorture smb2.dirlease.rename):

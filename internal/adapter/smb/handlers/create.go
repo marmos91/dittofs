@@ -2180,13 +2180,18 @@ func (h *Handler) updateBaseObjectCtime(
 // Per MS-FSA / NTFS semantics, data writes to an alternate data stream propagate
 // Mtime and Ctime changes to the base object, unless the corresponding timestamp
 // is frozen on the ADS handle.
+//
+// parentHandle is passed in rather than read off openFile so it stays the same
+// directory the caller derived baseObjectName from: SET_INFO rename can move
+// the handle to another parent while the write is in flight.
 func (h *Handler) updateBaseObjectTimestampsForADSWrite(
 	authCtx *metadata.AuthContext,
 	metaSvc *metadata.Service,
 	openFile *OpenFile,
+	parentHandle metadata.FileHandle,
 	baseObjectName string,
 ) {
-	baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseObjectName)
+	baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, baseObjectName)
 	if baseFile == nil {
 		return
 	}

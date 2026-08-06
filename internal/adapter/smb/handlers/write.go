@@ -501,42 +501,54 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	h.StoreOpenFile(openFile)
 
 	// Detect ADS writes once for timestamp propagation and change notification.
+	// A SET_INFO rename on another channel can rewrite the name, the path and
+	// the parent mid-WRITE, so snapshot all three together: re-reading would let
+	// the ADS classification, the parent-atime bump and the change notification
+	// below describe different names.
+	openFile.RLock()
+	fileName, filePath, parentHandle := openFile.FileName, openFile.Path, openFile.ParentHandle
+	openFile.RUnlock()
 	isADSWrite := false
 	var baseFileName string
-	if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 {
+	if colonIdx := strings.Index(fileName, ":"); colonIdx > 0 {
 		isADSWrite = true
-		baseFileName = openFile.FileName[:colonIdx]
+		baseFileName = fileName[:colonIdx]
 	}
 
 	// Per NTFS: Writing to an ADS updates the base object's ChangeTime and
 	// LastWriteTime. Respect frozen state on the ADS handle.
 	if isADSWrite {
-		h.updateBaseObjectTimestampsForADSWrite(authCtx, metaSvc, openFile, baseFileName)
+		h.updateBaseObjectTimestampsForADSWrite(authCtx, metaSvc, openFile, parentHandle, baseFileName)
 	}
 
 	// Per MS-FSA 2.1.5.3: After a successful write, update LastAccessTime
 	// to the current system time, unless frozen via SET_INFO -1.
 	// Per MS-FSA 2.1.4.4: Parent directory's LastAccessTime is also updated.
+	// Both bumps coalesce per handle the way READ's does — see noteSmbAccess
+	// and noteSmbParentAccess.
 	now := time.Now()
 	// IsAtimeFrozen takes openFile.mu (read); see #606.
-	if !openFile.IsAtimeFrozen() {
+	if !openFile.IsAtimeFrozen() && noteSmbAccess(openFile, now) {
 		_, _ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
 	}
-	if len(openFile.ParentHandle) > 0 {
-		_, _ = metaSvc.SetFileAttributes(authCtx, openFile.ParentHandle, &metadata.SetAttrs{Atime: &now})
+	if len(parentHandle) > 0 && noteSmbParentAccess(openFile, now) {
+		_, _ = metaSvc.SetFileAttributes(authCtx, parentHandle, &metadata.SetAttrs{Atime: &now})
 		// Per MS-FSA 2.1.5.14.2: Restore frozen timestamps on the parent directory
 		// if any open handle has them frozen. The SetFileAttributes call above
 		// unconditionally updates atime; if a handle has atime frozen, restore it.
-		h.restoreParentDirFrozenTimestamps(authCtx, openFile.ParentHandle)
+		// Skipped along with a coalesced-away bump: nothing was written to restore.
+		h.restoreParentDirFrozenTimestamps(authCtx, parentHandle)
 	}
 
-	// Update cached PayloadID in OpenFile
-	openFile.PayloadID = writeOp.PayloadID
+	// Publish the payload the metadata store allocated for this file. A file
+	// created empty has none until its first WRITE, and CLOSE reads this to
+	// decide whether to commit block-store content.
+	openFile.SetPayloadID(writeOp.PayloadID)
 
 	if h.NotifyRegistry != nil {
-		parentDirPath := GetParentPath(openFile.Path)
+		parentDirPath := GetParentPath(filePath)
 		if isADSWrite {
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, notifyStreamName(openFile.FileName), FileActionModifiedStream, FileNotifyChangeStreamWrite|FileNotifyChangeStreamSize)
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, notifyStreamName(fileName), FileActionModifiedStream, FileNotifyChangeStreamWrite|FileNotifyChangeStreamSize)
 		} else {
 			// Mirror Samba `notify_fname(... NOTIFY_ACTION_MODIFIED, ...)` from
 			// `vfs_default_pwrite_recv`: a successful WRITE on a regular file
@@ -545,7 +557,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 			// this hook, in-memory backends never observe the kernel inotify
 			// MODIFIED event that real Samba relies on (smb2.notify.valid-req
 			// expects REMOVED + ADDED + MODIFIED for unlink → CREATE → WRITE).
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, openFile.FileName, FileActionModified, FileNotifyChangeSize|FileNotifyChangeLastWrite|FileNotifyChangeAttributes)
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, fileName, FileActionModified, FileNotifyChangeSize|FileNotifyChangeLastWrite|FileNotifyChangeAttributes)
 		}
 	}
 

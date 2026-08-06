@@ -208,8 +208,15 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// (silent write truncation, #1267). The mapped status is recorded and
 	// applied to the response below; handle teardown still runs unconditionally
 	// so the failed flush does not leak the open-file/lease state.
+	// Snapshot the path once for the rest of CLOSE. SET_INFO rename rewrites it
+	// on a live handle, so reading it per use would let a rename landing
+	// mid-close produce log lines, a delete target and a parent path that each
+	// name a different file.
+	closePath := openFile.GetPath()
+
 	var flushFailStatus types.Status
-	if !openFile.IsDirectory && openFile.PayloadID != "" {
+	payloadID := openFile.GetPayloadID()
+	if !openFile.IsDirectory && payloadID != "" {
 		blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, openFile.MetadataHandle)
 		if bsErr != nil {
 			// A ResolveForWrite failure is NOT a block-store content/durability
@@ -218,13 +225,13 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// etc.), mirroring READ/WRITE/FLUSH which map their resolve/handle
 			// errors via common.MapToSMB. Only the CommitBlockStore failure
 			// below is a true content error (MapContentToSMB).
-			logger.Warn("CLOSE: block store not available for handle", "path", openFile.Path, "error", bsErr)
+			logger.Warn("CLOSE: block store not available for handle", "path", closePath, "error", bsErr)
 			flushFailStatus = common.MapToSMB(bsErr)
-		} else if flushErr := common.CommitBlockStore(ctx.Context, blockStore, openFile.PayloadID); flushErr != nil {
-			logger.Warn("CLOSE: flush failed", "path", openFile.Path, "error", flushErr)
+		} else if flushErr := common.CommitBlockStore(ctx.Context, blockStore, payloadID); flushErr != nil {
+			logger.Warn("CLOSE: flush failed", "path", closePath, "error", flushErr)
 			flushFailStatus = common.MapContentToSMB(flushErr)
 		} else {
-			logger.Debug("CLOSE: flushed", "path", openFile.Path, "payloadID", openFile.PayloadID)
+			logger.Debug("CLOSE: flushed", "path", closePath, "payloadID", payloadID)
 		}
 	}
 
@@ -240,7 +247,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
 		authCtx, authErr := BuildAuthContext(ctx)
 		if authErr != nil {
-			logger.Warn("CLOSE: failed to build auth context for metadata flush", "path", openFile.Path, "error", authErr)
+			logger.Warn("CLOSE: failed to build auth context for metadata flush", "path", closePath, "error", authErr)
 		} else {
 			metaSvc := h.Registry.GetMetadataService()
 			// STRICT (durable=true): CLOSE is a durability point (MS-SMB2 3.3.5.10,
@@ -249,7 +256,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// is deliberately NOT relaxed by #1687.
 			flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, true)
 			if metaErr != nil {
-				logger.Warn("CLOSE: metadata flush failed", "path", openFile.Path, "error", metaErr)
+				logger.Warn("CLOSE: metadata flush failed", "path", closePath, "error", metaErr)
 				// Surface the metadata-flush failure too (#1267): if the
 				// deferred size/mtime never persisted, the client must not be
 				// told the CLOSE succeeded. Lower severity than the byte-data
@@ -260,7 +267,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 					flushFailStatus = common.MapToSMB(metaErr)
 				}
 			} else if flushed {
-				logger.Debug("CLOSE: metadata flushed", "path", openFile.Path)
+				logger.Debug("CLOSE: metadata flushed", "path", closePath)
 			}
 
 			// READ coalesces its LastAccessTime bumps, so the newest access time
@@ -278,7 +285,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			if pending := takeSmbPendingAtime(openFile); !pending.IsZero() && !openFile.IsAtimeFrozen() {
 				if cur, curErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); curErr == nil && cur.Atime.Before(pending) {
 					if _, atimeErr := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &pending}); atimeErr != nil {
-						logger.Warn("CLOSE: LastAccessTime flush failed", "path", openFile.Path, "error", atimeErr)
+						logger.Warn("CLOSE: LastAccessTime flush failed", "path", closePath, "error", atimeErr)
 					}
 				}
 			}
@@ -299,12 +306,12 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// (1067-byte files with XSym\n header). On CLOSE, we convert these to
 	// real symlinks in the metadata store for NFS interoperability.
 
-	if !openFile.IsDirectory && openFile.PayloadID != "" && !openFile.DeletePending && !openFile.InitialDeleteOnClose {
+	if !openFile.IsDirectory && payloadID != "" && !openFile.DeletePending && !openFile.InitialDeleteOnClose {
 		// MFsymlink conversion promotes client-controlled file content to a real
 		// symlink, so it is opt-in per share (default disabled).
 		if tree, treeOK := h.GetTree(ctx.TreeID); treeOK && tree.AllowMFsymlink {
 			if converted, _ := h.checkAndConvertMFsymlink(ctx, openFile); converted {
-				logger.Debug("CLOSE: converted MFsymlink to symlink", "path", openFile.Path)
+				logger.Debug("CLOSE: converted MFsymlink to symlink", "path", closePath)
 			}
 		}
 	}
@@ -373,7 +380,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 		metaSvc := h.Registry.GetMetadataService()
 		if unlockErr := metaSvc.UnlockAllForOpen(ctx.Context, openFile.MetadataHandle, openFile.OpenID()); unlockErr != nil {
-			logger.Warn("CLOSE: failed to release locks", "path", openFile.Path, "error", unlockErr)
+			logger.Warn("CLOSE: failed to release locks", "path", closePath, "error", unlockErr)
 		}
 	}
 
@@ -469,7 +476,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				return true
 			})
 			logger.Debug("CLOSE: DOC propagated to other handles (not last)",
-				"path", openFile.Path)
+				"path", closePath)
 		} else if streamHandleExists {
 			// Base file has DOC but open stream handles remain. Per MS-FSA
 			// 2.1.5.4 / 2.1.5.9.7, defer the actual deletion until all
@@ -491,7 +498,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				return true
 			})
 			logger.Debug("CLOSE: base file DOC deferred to stream handles",
-				"path", openFile.Path)
+				"path", closePath)
 		} else {
 			// Last handle: perform the actual delete.
 			//
@@ -568,14 +575,14 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 						resp.Status = common.MapToSMB(deleteErr)
 					}
 					logger.Debug("CLOSE: failed to delete",
-						"path", openFile.Path,
+						"path", closePath,
 						"isDir", openFile.IsDirectory,
 						"deleteTarget", deleteFileName,
 						"status", resp.Status,
 						"error", deleteErr)
 				} else {
 					logger.Debug("CLOSE: deleted",
-						"path", openFile.Path,
+						"path", closePath,
 						"deleteTarget", deleteFileName,
 						"isDir", openFile.IsDirectory,
 						"isBaseFileDelete", isBaseFileDelete)
@@ -588,13 +595,13 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 							cascadeOF = &OpenFile{
 								ParentHandle: deleteParentHandle,
 								FileName:     deleteFileName,
-								Path:         openFile.Path,
+								Path:         closePath,
 							}
 						}
 						h.cascadeDeleteADSStreams(authCtx, metaSvc, cascadeOF)
 					}
 
-					h.purgeBlockStorePayload(ctx.Context, deleteTargetHandle, removedPayloadID, openFile.Path, "CLOSE")
+					h.purgeBlockStorePayload(ctx.Context, deleteTargetHandle, removedPayloadID, closePath, "CLOSE")
 					h.restoreParentDirFrozenTimestamps(authCtx, deleteParentHandle)
 
 					// Removing the entry already broke the parent directory's
@@ -609,7 +616,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 					// duplicate LEASE_BREAK for one logical change.
 
 					if h.NotifyRegistry != nil {
-						parentPath := GetParentPath(openFile.Path)
+						parentPath := GetParentPath(closePath)
 						// Use the resolved delete-target type (base file's, not
 						// the stream open's) and the actual deleteFileName.
 						// NameChangeFilterFor routes ADS names via
@@ -644,7 +651,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	if !openFile.DeletePending && !openFile.IsDirectory && smbWriteTriggered {
 		authCtx, authErr := BuildAuthContext(ctx)
 		if authErr != nil {
-			logger.Warn("CLOSE: failed to build auth context for modified-file dir-lease break", "path", openFile.Path, "error", authErr)
+			logger.Warn("CLOSE: failed to build auth context for modified-file dir-lease break", "path", closePath, "error", authErr)
 		} else {
 			PropagateOpenFileParentLeaseKey(authCtx, openFile)
 			h.breakParentDirLeasesForContentChange(ctx, authCtx, openFile)
@@ -691,14 +698,14 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 							return
 						}
 						logger.Debug("CLOSE: sent STATUS_NOTIFY_CLEANUP (post-close)",
-							"path", openFile.Path,
+							"path", closePath,
 							"messageID", n.MessageID,
 							"asyncId", n.AsyncId)
 					})
 				}
 			}
 			logger.Debug("CLOSE: unregistered pending CHANGE_NOTIFY",
-				"path", openFile.Path,
+				"path", closePath,
 				"messageID", notify.MessageID)
 		}
 	}
@@ -786,7 +793,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 	logger.Debug("CLOSE successful",
 		"fileID", fmt.Sprintf("%x", req.FileID),
-		"path", openFile.Path)
+		"path", closePath)
 
 	// ========================================================================
 	// Step 12: Return success response
@@ -950,7 +957,7 @@ func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFil
 	// plumbing lands in one place (see common/doc.go).
 	// The bytes are copied into a caller-owned slice because the MFsymlink
 	// parse path retains them past Release().
-	result, err := common.ReadFromBlockStore(ctx.Context, blockStore, openFile.PayloadID, 0, uint32(mfsymlink.Size))
+	result, err := common.ReadFromBlockStore(ctx.Context, blockStore, openFile.GetPayloadID(), 0, uint32(mfsymlink.Size))
 	if err != nil {
 		return nil, err
 	}

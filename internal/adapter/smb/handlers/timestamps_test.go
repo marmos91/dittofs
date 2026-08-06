@@ -949,7 +949,7 @@ func TestUpdateBaseObjectTimestampsForADSWrite_PreservesBaseCtimeWhenFrozen(t *t
 	h.StoreOpenFile(adsOpen)
 
 	// Trigger the WRITE-path base-timestamp update.
-	h.updateBaseObjectTimestampsForADSWrite(authCtx, metaSvc, adsOpen, "basedir")
+	h.updateBaseObjectTimestampsForADSWrite(authCtx, metaSvc, adsOpen, adsOpen.ParentHandle, "basedir")
 
 	// Verify the base directory's Ctime is unchanged but Mtime was advanced
 	// (because only Ctime is frozen on the ADS handle).
@@ -962,5 +962,36 @@ func TestUpdateBaseObjectTimestampsForADSWrite_PreservesBaseCtimeWhenFrozen(t *t
 	}
 	if post.Mtime.Equal(pinned) {
 		t.Errorf("base Mtime was not advanced: got %v want != %v", post.Mtime, pinned)
+	}
+}
+
+func TestNoteSmbParentAccessCoalescesWithinWindow(t *testing.T) {
+	base := time.Now()
+	openFile := &OpenFile{}
+
+	if !noteSmbParentAccess(openFile, base) {
+		t.Fatal("first parent access on a handle must write")
+	}
+	if noteSmbParentAccess(openFile, base.Add(smbAtimeUpdateWindow/2)) {
+		t.Error("a bump inside the window must be suppressed")
+	}
+	if noteSmbParentAccess(openFile, base.Add(smbAtimeUpdateWindow-time.Millisecond)) {
+		t.Error("a bump still inside the window must stay suppressed")
+	}
+	if !noteSmbParentAccess(openFile, base.Add(smbAtimeUpdateWindow)) {
+		t.Error("a bump at the window boundary must write again")
+	}
+
+	// Unlike noteSmbAccess, a suppressed parent bump is dropped rather than
+	// held: the parent has no handle here to carry it. Nothing may accumulate
+	// on the file's own pending-atime slot.
+	if !openFile.SmbPendingAtime.IsZero() {
+		t.Errorf("parent bumps leaked into the file's pending atime: %v", openFile.SmbPendingAtime)
+	}
+}
+
+func TestNoteSmbParentAccessNilHandle(t *testing.T) {
+	if noteSmbParentAccess(nil, time.Now()) {
+		t.Error("a nil handle must not report a store write")
 	}
 }
