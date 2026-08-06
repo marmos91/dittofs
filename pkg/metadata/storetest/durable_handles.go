@@ -57,6 +57,14 @@ func RunDurableHandleStoreTests(t *testing.T, factory StoreFactory) {
 		testDurableGetByFileID(t, factory)
 	})
 
+	t.Run("DeleteKeepsSiblingOnSameFileID", func(t *testing.T) {
+		testDurableDeleteKeepsSiblingOnSameFileID(t, factory)
+	})
+
+	t.Run("ConsumeByFileIDKeepsSibling", func(t *testing.T) {
+		testDurableConsumeByFileIDKeepsSibling(t, factory)
+	})
+
 	t.Run("GetByCreateGuid", func(t *testing.T) {
 		testDurableGetByCreateGuid(t, factory)
 	})
@@ -374,6 +382,137 @@ func testDurableGetByFileID(t *testing.T, factory StoreFactory) {
 	}
 	if got != nil {
 		t.Fatalf("expected nil for non-existent FileID, got: %+v", got)
+	}
+}
+
+// testDurableDeleteKeepsSiblingOnSameFileID covers a file held open by more
+// than one durable handle. FileID identifies the file, not the open, so the
+// two handles share it; deleting one must leave the other retrievable both by
+// its own id and by FileID.
+func testDurableDeleteKeepsSiblingOnSameFileID(t *testing.T, factory StoreFactory) {
+	ds := getDurableStore(t, factory)
+	ctx := context.Background()
+
+	first := makeDurableHandle("same-fid-first", "/export")
+	second := makeDurableHandle("same-fid-second", "/export")
+	second.FileID = first.FileID
+
+	if err := ds.PutDurableHandle(ctx, first); err != nil {
+		t.Fatalf("PutDurableHandle(first) error: %v", err)
+	}
+	if err := ds.PutDurableHandle(ctx, second); err != nil {
+		t.Fatalf("PutDurableHandle(second) error: %v", err)
+	}
+
+	if err := ds.DeleteDurableHandle(ctx, first.ID); err != nil {
+		t.Fatalf("DeleteDurableHandle(first) error: %v", err)
+	}
+
+	got, err := ds.GetDurableHandle(ctx, second.ID)
+	if err != nil {
+		t.Fatalf("GetDurableHandle(second) error: %v", err)
+	}
+	assertDurableHandleEqual(t, second, got)
+
+	got, err = ds.GetDurableHandleByFileID(ctx, second.FileID)
+	if err != nil {
+		t.Fatalf("GetDurableHandleByFileID() error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("surviving handle is unreachable by FileID after its sibling was deleted")
+	}
+	assertDurableHandleEqual(t, second, got)
+
+	// The deleted handle must not come back through the FileID index.
+	got, err = ds.GetDurableHandle(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("GetDurableHandle(first) error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("deleted handle still resolves: %+v", got)
+	}
+
+	// The reconnect path reaches the survivor too, not just the plain lookup.
+	consumed, err := ds.ConsumeDurableHandleByFileID(ctx, second.FileID)
+	if err != nil {
+		t.Fatalf("ConsumeDurableHandleByFileID() error: %v", err)
+	}
+	if consumed == nil {
+		t.Fatal("consume returned nil for the surviving handle")
+	}
+	assertDurableHandleEqual(t, second, consumed)
+}
+
+// testDurableConsumeByFileIDKeepsSibling covers a reconnect against a file that
+// carries two durable handles. Consume claims exactly one of them; the other
+// must survive as a complete record, since it still backs a live open.
+func testDurableConsumeByFileIDKeepsSibling(t *testing.T, factory StoreFactory) {
+	ds := getDurableStore(t, factory)
+	ctx := context.Background()
+
+	first := makeDurableHandle("cs-a", "/export")
+	second := makeDurableHandle("cs-b", "/export")
+	second.FileID = first.FileID
+
+	if err := ds.PutDurableHandle(ctx, first); err != nil {
+		t.Fatalf("PutDurableHandle(first) error: %v", err)
+	}
+	if err := ds.PutDurableHandle(ctx, second); err != nil {
+		t.Fatalf("PutDurableHandle(second) error: %v", err)
+	}
+
+	// A reconnect validates the handle Get reports and then claims one with
+	// Consume, so the two must name the same handle while both are present.
+	peeked, err := ds.GetDurableHandleByFileID(ctx, first.FileID)
+	if err != nil {
+		t.Fatalf("GetDurableHandleByFileID() error: %v", err)
+	}
+	if peeked == nil {
+		t.Fatal("FileID lookup returned nil while two handles exist for the FileID")
+	}
+
+	consumed, err := ds.ConsumeDurableHandleByFileID(ctx, first.FileID)
+	if err != nil {
+		t.Fatalf("ConsumeDurableHandleByFileID() error: %v", err)
+	}
+	if consumed == nil {
+		t.Fatal("consume returned nil while two handles exist for the FileID")
+	}
+	if consumed.ID != peeked.ID {
+		t.Fatalf("consume claimed %q but the FileID lookup reported %q; a reconnect would validate one handle and claim another", consumed.ID, peeked.ID)
+	}
+
+	survivor := second
+	if consumed.ID == second.ID {
+		survivor = first
+	}
+
+	got, err := ds.GetDurableHandle(ctx, survivor.ID)
+	if err != nil {
+		t.Fatalf("GetDurableHandle(survivor) error: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("consuming %q also destroyed sibling %q on the same FileID", consumed.ID, survivor.ID)
+	}
+	assertDurableHandleEqual(t, survivor, got)
+
+	// The survivor is still the answer for the FileID, so a later reconnect
+	// against the same file can still claim it.
+	got, err = ds.GetDurableHandleByFileID(ctx, survivor.FileID)
+	if err != nil {
+		t.Fatalf("GetDurableHandleByFileID() error: %v", err)
+	}
+	if got == nil || got.ID != survivor.ID {
+		t.Fatalf("FileID lookup after consume returned %+v, want %q", got, survivor.ID)
+	}
+
+	// The consumed handle is gone for good.
+	got, err = ds.GetDurableHandle(ctx, consumed.ID)
+	if err != nil {
+		t.Fatalf("GetDurableHandle(consumed) error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("consumed handle still resolves: %+v", got)
 	}
 }
 

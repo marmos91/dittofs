@@ -292,7 +292,7 @@ func (s *sqliteDurableStore) GetDurableHandle(ctx context.Context, id string) (*
 }
 
 func (s *sqliteDurableStore) GetDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
-	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles WHERE file_id = ?1 LIMIT 1`
+	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles WHERE file_id = ?1 ORDER BY id LIMIT 1`
 	return scanDurableHandle(s.pool.QueryRow(ctx, query, fileID[:]))
 }
 
@@ -302,9 +302,12 @@ func (s *sqliteDurableStore) GetDurableHandleByCreateGuid(ctx context.Context, c
 }
 
 // ConsumeDurableHandleByFileID atomically fetches and deletes via
-// `DELETE ... RETURNING`, closing the V1 reconnect TOCTOU window.
+// `DELETE ... RETURNING`, closing the V1 reconnect TOCTOU window. A file can
+// hold several durable handles at once and DELETE takes no LIMIT, so the
+// subquery pins the delete to the single row being claimed and leaves the
+// file's other handles untouched.
 func (s *sqliteDurableStore) ConsumeDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
-	query := `DELETE FROM durable_handles WHERE file_id = ?1 RETURNING ` + durableHandleColumns
+	query := `DELETE FROM durable_handles WHERE id = (SELECT id FROM durable_handles WHERE file_id = ?1 ORDER BY id LIMIT 1) RETURNING ` + durableHandleColumns
 	return scanDurableHandle(s.pool.QueryRow(ctx, query, fileID[:]))
 }
 
