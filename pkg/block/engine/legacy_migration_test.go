@@ -77,7 +77,9 @@ func sumLiveChunkCounts(t *testing.T, ctx context.Context, f *carveFixture) (int
 
 // TestMigrateLegacyCAS_RepacksStandaloneChunks proves the core Phase R flow
 // on a plain (undecorated) stack: standalone objects + markers in, packed
-// blocks + rewritten locators + empty cas/ namespace out.
+// blocks + rewritten locators out. The legacy objects are left in place: the
+// cas/ namespace is shared by every share on the remote, so only block GC
+// (which sees them all) may reclaim it.
 func TestMigrateLegacyCAS_RepacksStandaloneChunks(t *testing.T) {
 	ctx := context.Background()
 	base := remotememory.New()
@@ -100,8 +102,8 @@ func TestMigrateLegacyCAS_RepacksStandaloneChunks(t *testing.T) {
 		assertMigrated(t, ctx, f, h, chunks[h.String()])
 	}
 
-	if n, err := base.CountLegacyChunks(ctx); err != nil || n != 0 {
-		t.Fatalf("cas/ namespace not empty after migration: n=%d err=%v", n, err)
+	if n, err := base.CountLegacyChunks(ctx); err != nil || n != len(hashes) {
+		t.Fatalf("migration must not delete cas objects: n=%d want=%d err=%v", n, len(hashes), err)
 	}
 	records, live := sumLiveChunkCounts(t, ctx, f)
 	if live != uint32(len(hashes)) {
@@ -141,8 +143,8 @@ func TestMigrateLegacyCAS_DecoratedStack(t *testing.T) {
 		t.Fatalf("migrateLegacyCASRemote: %v", err)
 	}
 	assertMigrated(t, ctx, f, h, data)
-	if n, _ := base.CountLegacyChunks(ctx); n != 0 {
-		t.Fatalf("cas/ namespace not empty: %d", n)
+	if n, _ := base.CountLegacyChunks(ctx); n != 1 {
+		t.Fatalf("migration must not delete the legacy object: %d", n)
 	}
 }
 
@@ -171,10 +173,11 @@ func TestMigrateLegacyCAS_LostChunkDropsMarker(t *testing.T) {
 	}
 }
 
-// TestMigrateLegacyCAS_PurgesUnreferencedObjects proves Phase P: standalone
-// objects with no marker (pre-flip Put-then-Mark crash orphans) are deleted
-// even when nothing needs repacking.
-func TestMigrateLegacyCAS_PurgesUnreferencedObjects(t *testing.T) {
+// TestMigrateLegacyCAS_KeepsUnreferencedObjects proves the migration deletes
+// nothing: a standalone object with no marker in THIS share may still be the
+// locator target of another share on the same remote, so it survives (block GC
+// reclaims it once every share on the remote is migrated).
+func TestMigrateLegacyCAS_KeepsUnreferencedObjects(t *testing.T) {
 	ctx := context.Background()
 	base := remotememory.New()
 	f := newCarveFixture(t, base, 1<<20)
@@ -187,19 +190,18 @@ func TestMigrateLegacyCAS_PurgesUnreferencedObjects(t *testing.T) {
 	if err := f.syncer.migrateLegacyCASRemote(ctx); err != nil {
 		t.Fatalf("migrateLegacyCASRemote: %v", err)
 	}
-	if n, _ := base.CountLegacyChunks(ctx); n != 0 {
-		t.Fatalf("orphan cas object not purged: %d left", n)
+	if n, _ := base.CountLegacyChunks(ctx); n != 1 {
+		t.Fatalf("orphan cas object must survive the migration: %d left", n)
 	}
 	if records, _ := sumLiveChunkCounts(t, ctx, f); records != 0 {
-		t.Fatalf("purge must not mint block records, got %d", records)
+		t.Fatalf("migration must not mint block records, got %d", records)
 	}
 }
 
-// TestMigrateLegacyCAS_AlreadyRewrittenObjectPurged proves the
-// crash-after-commit-before-delete window: a chunk whose locator was already
-// rewritten but whose standalone object still exists is NOT repacked — the
-// stale object is simply purged.
-func TestMigrateLegacyCAS_AlreadyRewrittenObjectPurged(t *testing.T) {
+// TestMigrateLegacyCAS_AlreadyRewrittenObjectKept proves an already-migrated
+// chunk whose standalone object still exists is NOT repacked a second time,
+// and that the stale object is left for block GC.
+func TestMigrateLegacyCAS_AlreadyRewrittenObjectKept(t *testing.T) {
 	ctx := context.Background()
 	base := remotememory.New()
 	f := newCarveFixture(t, base, 1<<20)
@@ -221,8 +223,8 @@ func TestMigrateLegacyCAS_AlreadyRewrittenObjectPurged(t *testing.T) {
 	if err := f.syncer.migrateLegacyCASRemote(ctx); err != nil {
 		t.Fatalf("re-run: %v", err)
 	}
-	if n, _ := base.CountLegacyChunks(ctx); n != 0 {
-		t.Fatal("stale standalone object should be purged")
+	if n, _ := base.CountLegacyChunks(ctx); n != 1 {
+		t.Fatalf("stale standalone object should survive the migration: %d", n)
 	}
 	if got := countRemoteBlocks(t, ctx, base); got != blocksAfterFirst {
 		t.Fatalf("already-migrated chunk was repacked: blocks %d -> %d", blocksAfterFirst, got)
@@ -294,8 +296,8 @@ func TestMigrateLegacyCAS_ResumeAfterFailure(t *testing.T) {
 	for _, h := range hashes {
 		assertMigrated(t, ctx, f, h, chunks[h.String()])
 	}
-	if n, _ := base.CountLegacyChunks(ctx); n != 0 {
-		t.Fatalf("cas/ not empty after converged migration: %d", n)
+	if n, _ := base.CountLegacyChunks(ctx); n != len(hashes) {
+		t.Fatalf("converged migration must keep every cas object: %d want %d", n, len(hashes))
 	}
 	// Ledger check: no record leaks — every live count is backed by a chunk
 	// whose locator points at that record's block.
@@ -325,4 +327,55 @@ func TestMigrateLegacyCAS_NoRemoteIsNoOp(t *testing.T) {
 	if err := f.syncer.migrateLegacyCASRemote(ctx); err != nil {
 		t.Fatalf("local-only migration should be a no-op: %v", err)
 	}
+}
+
+// TestMigrateLegacyCAS_LeavesOtherSharesChunks proves the cross-share rule.
+// Two shares configured against ONE remote store share a single unscoped cas/
+// namespace, so a share that finishes its migration must not delete objects a
+// share that has not migrated still resolves through a standalone locator —
+// including the deduplicated object both shares point at.
+func TestMigrateLegacyCAS_LeavesOtherSharesChunks(t *testing.T) {
+	ctx := context.Background()
+	base := remotememory.New()
+	migrating := newCarveFixture(t, base, 96)
+	untouched := newCarveFixture(t, base, 96)
+
+	onlyMine := []byte("chunk only the migrating share knows ....")
+	onlyTheirs := []byte("chunk only the other share knows .......")
+	deduped := []byte("identical content stored by both shares .")
+
+	hMine := plantStandaloneChunk(t, ctx, migrating, base, base, onlyMine)
+	hTheirs := plantStandaloneChunk(t, ctx, untouched, base, base, onlyTheirs)
+	hDeduped := plantStandaloneChunk(t, ctx, migrating, base, base, deduped)
+	if got := plantStandaloneChunk(t, ctx, untouched, base, base, deduped); got != hDeduped {
+		t.Fatalf("identical content must hash identically: %s vs %s", got, hDeduped)
+	}
+
+	// One share migrates while the other has not run its migration yet.
+	if err := migrating.syncer.migrateLegacyCASRemote(ctx); err != nil {
+		t.Fatalf("migrateLegacyCASRemote: %v", err)
+	}
+	assertMigrated(t, ctx, migrating, hMine, onlyMine)
+	assertMigrated(t, ctx, migrating, hDeduped, deduped)
+
+	// The other share's chunks are still standalone and must still read.
+	for _, tc := range []struct {
+		hash block.ContentHash
+		want []byte
+	}{{hTheirs, onlyTheirs}, {hDeduped, deduped}} {
+		got, err := untouched.syncer.readStandaloneChunk(ctx, tc.hash)
+		if err != nil {
+			t.Fatalf("un-migrated share lost chunk %s: %v", tc.hash, err)
+		}
+		if !bytes.Equal(got, tc.want) {
+			t.Fatalf("un-migrated share read wrong bytes for %s", tc.hash)
+		}
+	}
+
+	// And it still migrates correctly when its own turn comes.
+	if err := untouched.syncer.migrateLegacyCASRemote(ctx); err != nil {
+		t.Fatalf("second share migrateLegacyCASRemote: %v", err)
+	}
+	assertMigrated(t, ctx, untouched, hTheirs, onlyTheirs)
+	assertMigrated(t, ctx, untouched, hDeduped, deduped)
 }

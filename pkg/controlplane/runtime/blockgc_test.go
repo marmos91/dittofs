@@ -8,6 +8,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/remote"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/health"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -201,5 +202,130 @@ func TestRunBlockGC_NoRemoteShares(t *testing.T) {
 	}
 	if len(*captured) != 0 {
 		t.Fatalf("expected 0 GC calls with no remote shares, got %d", len(*captured))
+	}
+}
+
+// recordingLegacyRemote exposes a fixed legacy cas/ namespace and counts the
+// deletes a GC pass performs on it.
+type recordingLegacyRemote struct {
+	*fakeRemoteStore
+	objects []block.ContentHash
+	deleted int
+}
+
+func (r *recordingLegacyRemote) WalkLegacyChunks(_ context.Context, fn func(block.ContentHash, int64) error) error {
+	for _, h := range r.objects {
+		if err := fn(h, 16); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *recordingLegacyRemote) DeleteLegacyChunk(_ context.Context, _ block.ContentHash) error {
+	r.deleted++
+	return nil
+}
+
+// TestRunBlockGC_LegacyCASPurgeWaitsForEveryShare asserts the cas/ namespace of
+// a shared remote is reclaimed only once no share on that remote still carries
+// a standalone (un-migrated) locator — the namespace is content-addressed and
+// not scoped per share, so an early purge would delete another share's chunks.
+func TestRunBlockGC_LegacyCASPurgeWaitsForEveryShare(t *testing.T) {
+	installCollectGarbageSpy(t)
+	installCollectGarbageLocalSpy(t)
+	ctx := context.Background()
+
+	rs := &recordingLegacyRemote{
+		fakeRemoteStore: &fakeRemoteStore{name: "s3-shared"},
+		objects:         []block.ContentHash{{1}, {2}},
+	}
+	rt := newRuntimeForGC(t, map[string]remote.RemoteStore{
+		"/share-a": rs,
+		"/share-b": rs, // same remote config
+	})
+
+	mds, err := rt.GetMetadataStoreForShare("/share-a")
+	if err != nil {
+		t.Fatalf("GetMetadataStoreForShare: %v", err)
+	}
+	// A share still resolving a chunk through the legacy namespace.
+	standalone := block.ContentHash{1}
+	if err := mds.MarkSynced(ctx, standalone, block.ChunkLocator{}); err != nil {
+		t.Fatalf("MarkSynced: %v", err)
+	}
+	if _, err := rt.RunBlockGC(ctx, "", false); err != nil {
+		t.Fatalf("RunBlockGC: %v", err)
+	}
+	if rs.deleted != 0 {
+		t.Fatalf("purged %d cas objects while a share was still un-migrated", rs.deleted)
+	}
+
+	// Once every share is migrated (locator rewritten onto a packed block) the
+	// namespace is unreferenced. MarkSynced keeps the first locator, so the
+	// stale marker has to go before the migrated one can be recorded.
+	if err := mds.DeleteSynced(ctx, standalone); err != nil {
+		t.Fatalf("DeleteSynced: %v", err)
+	}
+	if err := mds.MarkSynced(ctx, standalone, block.ChunkLocator{BlockID: "blk-1"}); err != nil {
+		t.Fatalf("MarkSynced (migrated): %v", err)
+	}
+	if _, err := rt.RunBlockGC(ctx, "", false); err != nil {
+		t.Fatalf("RunBlockGC (post-migration): %v", err)
+	}
+	if rs.deleted != len(rs.objects) {
+		t.Fatalf("purged %d cas objects, want %d", rs.deleted, len(rs.objects))
+	}
+}
+
+// TestPurgeLegacyCAS_IgnoresStaleShareSnapshot asserts the gate does not trust
+// the caller's share snapshot. That snapshot is taken before the per-remote GC
+// lock, so a share that registers in the window is missing from it — and here
+// that missing share is the one still carrying un-migrated standalone chunks.
+func TestPurgeLegacyCAS_IgnoresStaleShareSnapshot(t *testing.T) {
+	ctx := context.Background()
+	rt := New(nil)
+
+	// Separate metadata stores: the stale snapshot must be unable to see the
+	// second share's markers through the first share's store.
+	stores := map[string]*metadatamemory.MemoryMetadataStore{
+		"meta-a": metadatamemory.NewMemoryMetadataStoreWithDefaults(),
+		"meta-b": metadatamemory.NewMemoryMetadataStoreWithDefaults(),
+	}
+	for name, ms := range stores {
+		if err := rt.RegisterMetadataStore(name, ms); err != nil {
+			t.Fatalf("RegisterMetadataStore(%s): %v", name, err)
+		}
+	}
+
+	rs := &recordingLegacyRemote{
+		fakeRemoteStore: &fakeRemoteStore{name: "s3-shared"},
+		objects:         []block.ContentHash{{1}, {2}},
+	}
+	for _, sh := range []struct{ share, meta string }{{"/share-a", "meta-a"}, {"/share-b", "meta-b"}} {
+		if err := rt.AddShare(ctx, &ShareConfig{Name: sh.share, MetadataStore: sh.meta, Enabled: true}); err != nil {
+			t.Fatalf("AddShare(%s): %v", sh.share, err)
+		}
+		rt.setShareRemoteForTest(sh.share, rs)
+	}
+
+	// The late-registering share has not migrated yet.
+	if err := stores["meta-b"].MarkSynced(ctx, block.ContentHash{1}, block.ChunkLocator{}); err != nil {
+		t.Fatalf("MarkSynced: %v", err)
+	}
+
+	entries := rt.sharesSvc.DistinctRemoteStores()
+	if len(entries) != 1 {
+		t.Fatalf("expected one remote entry, got %d", len(entries))
+	}
+	stale := shares.RemoteStoreEntry{
+		Store:    entries[0].Store,
+		ConfigID: entries[0].ConfigID,
+		Shares:   []string{"/share-a"}, // snapshot predating share-b's registration
+	}
+
+	rt.purgeLegacyCASForEntry(ctx, stale, false, &engine.GCStats{})
+	if rs.deleted != 0 {
+		t.Fatalf("purged %d cas objects using a stale share snapshot", rs.deleted)
 	}
 }

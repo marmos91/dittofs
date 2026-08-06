@@ -34,13 +34,17 @@ import (
 //     most one orphan block object — the same window the live carver has,
 //     reconciled by the PR5 sweep — and never a partially-pointed block
 //     record, so re-runs converge without leaks.
-//   - Phase P purges whatever is left under cas/: after Phase R nothing in
-//     that namespace is referenced (objects either had their locator rewritten
-//     or were never marked synced — the pre-flip Put-then-Mark crash orphans).
+//
+// Migration never DELETES anything under cas/. That namespace is
+// content-addressed and not scoped per share, and one remote store is shared
+// (ref-counted) by every share pointing at the same remote config, so a
+// cas/<hash> object this share just re-packed may still be the standalone
+// locator target of a share that has not migrated yet — which this share
+// cannot see, since it reads only its own metadata. Reclaiming the namespace
+// is the block GC's job: it runs per remote, across every share on it.
 //
 // Detection is state-free (no sentinel, no journal): a metadata scan for
-// standalone locators plus one remote LIST page. Re-running against a
-// migrated share is a no-op.
+// standalone locators. Re-running against a migrated share is a no-op.
 
 // migrationProgressInterval is how often a migration loop whose cost scales with
 // the data reports what it has done so far: long enough that a small store logs
@@ -79,7 +83,7 @@ func (bs *Store) localHasLogBlobSubstrate() bool {
 	return false
 }
 
-// migrateLegacyCASRemote runs Phases R and P against the share's remote store.
+// migrateLegacyCASRemote runs Phase R against the share's remote store.
 func (m *Syncer) migrateLegacyCASRemote(ctx context.Context) error {
 	m.mu.RLock()
 	rbs := m.remoteBlockStore
@@ -124,42 +128,14 @@ func (m *Syncer) migrateLegacyCASRemote(ctx context.Context) error {
 		if rbs == nil || committer == nil {
 			return fmt.Errorf("cas→blocks migration: %d standalone chunks found but the block substrate is not wired", len(standalone))
 		}
-		logger.Warn("cas→blocks migration: re-packing standalone chunks and purging the cas/ namespace — "+
+		logger.Warn("cas→blocks migration: re-packing standalone chunks — "+
 			"one-way, the previous release cannot read the result; snapshot the remote bucket before upgrading",
 			"chunks_total", len(standalone))
 		if err := m.repackStandaloneChunks(ctx, legacy, hasLegacy, sealer, committer, standalone); err != nil {
 			return err
 		}
-	}
-
-	// Phase P — purge the now-unreferenced remainder of the cas/ namespace.
-	// When nothing standalone was found and the remote is unreachable this is
-	// deliberately non-fatal: the purge is pure cleanup and retries next boot.
-	if !hasLegacy {
-		return nil
-	}
-	var purged int
-	purgeErr := legacy.WalkLegacyChunks(ctx, func(h block.ContentHash, _ int64) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := legacy.DeleteLegacyChunk(ctx, h); err != nil {
-			return fmt.Errorf("purge cas object %s: %w", h, err)
-		}
-		purged++
-		return nil
-	})
-	if purgeErr != nil {
-		if len(standalone) == 0 {
-			logger.Warn("cas→blocks migration: cas/ purge skipped (remote unavailable?) — will retry next start",
-				"error", purgeErr)
-			return nil
-		}
-		return fmt.Errorf("cas→blocks migration: purge cas/ namespace: %w", purgeErr)
-	}
-	if purged > 0 || len(standalone) > 0 {
-		logger.Info("cas→blocks migration complete",
-			"repacked_chunks", len(standalone), "purged_objects", purged)
+		logger.Info("cas→blocks migration complete; the legacy cas/ objects stay until block GC reclaims them",
+			"repacked_chunks", len(standalone))
 	}
 	return nil
 }
@@ -196,16 +172,9 @@ func (m *Syncer) repackStandaloneChunks(
 		if err := m.packAndCommitMigrated(ctx, sealer, committer, batch); err != nil {
 			return err
 		}
-		// Locators now point at the new block: the standalone objects are
-		// unreferenced. Delete best-effort; Phase P sweeps any failure.
-		if hasLegacy {
-			for _, c := range batch {
-				if err := legacy.DeleteLegacyChunk(ctx, c.hash); err != nil {
-					logger.Warn("cas→blocks migration: standalone object delete failed (purge will retry)",
-						"hash", c.hash.String(), "error", err)
-				}
-			}
-		}
+		// The locators now point at the new block, but the standalone objects
+		// stay: the same cas/<hash> can still back another share on this
+		// remote. Block GC reclaims them (see the file header).
 		repacked += len(batch)
 		batch = batch[:0]
 		batchBytes = 0
@@ -266,8 +235,9 @@ func (m *Syncer) repackStandaloneChunks(
 }
 
 // migrationChunkBytes returns the BLAKE3-verified plaintext for hash, read from
-// the legacy remote. Verified here because migration is the last gate before the
-// standalone copy is deleted.
+// the legacy remote. Verified here because the re-packed copy inherits this
+// hash: a corrupt legacy object must fail the migration, not be sealed into a
+// block under a hash its bytes do not match.
 func (m *Syncer) migrationChunkBytes(
 	ctx context.Context,
 	legacy remote.LegacyCASStore,
