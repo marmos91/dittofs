@@ -34,7 +34,7 @@ func TestEnterGracePeriod_BlocksNewLocks(t *testing.T) {
 	}
 
 	// New lock should be blocked
-	newLockOp := Operation{IsNew: true}
+	newLockOp := OpNew
 	allowed, err := gpm.IsOperationAllowed(newLockOp)
 	if allowed {
 		t.Error("expected new lock to be blocked during grace period")
@@ -61,7 +61,7 @@ func TestEnterGracePeriod_AllowsReclaims(t *testing.T) {
 	gpm.EnterGracePeriod([]string{"client1"})
 
 	// Reclaim operation should be allowed
-	reclaimOp := Operation{IsReclaim: true}
+	reclaimOp := OpReclaim
 	allowed, err := gpm.IsOperationAllowed(reclaimOp)
 	if !allowed {
 		t.Error("expected reclaim to be allowed during grace period")
@@ -79,7 +79,7 @@ func TestEnterGracePeriod_AllowsTests(t *testing.T) {
 	gpm.EnterGracePeriod([]string{"client1"})
 
 	// Test operation should be allowed
-	testOp := Operation{IsTest: true}
+	testOp := OpTest
 	allowed, err := gpm.IsOperationAllowed(testOp)
 	if !allowed {
 		t.Error("expected test operation to be allowed during grace period")
@@ -103,9 +103,9 @@ func TestExitGracePeriod_AllowsAllOperations(t *testing.T) {
 
 	// All operations should be allowed
 	ops := []Operation{
-		{IsNew: true},
-		{IsReclaim: true},
-		{IsTest: true},
+		OpNew,
+		OpReclaim,
+		OpTest,
 	}
 
 	for _, op := range ops {
@@ -232,8 +232,8 @@ func TestGracePeriod_ThreadSafety(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
-			_, _ = gpm.IsOperationAllowed(Operation{IsNew: true})
-			_, _ = gpm.IsOperationAllowed(Operation{IsReclaim: true})
+			_, _ = gpm.IsOperationAllowed(OpNew)
+			_, _ = gpm.IsOperationAllowed(OpReclaim)
 		}
 	}()
 

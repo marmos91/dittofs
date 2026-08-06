@@ -1,4 +1,4 @@
-// Package lock provides a bounded notification queue for directory change events.
+// Bounded notification queue for directory change events.
 //
 // The NotificationQueue collects directory change notifications for clients
 // holding directory delegations. When the queue reaches its capacity, it
@@ -9,6 +9,7 @@
 // This is used by directory delegation holders to receive fine-grained
 // change notifications (add, remove, rename) or, on overflow, a signal
 // that a full directory rescan is required.
+
 package lock
 
 import (

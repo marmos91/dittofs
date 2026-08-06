@@ -43,19 +43,27 @@ func (h *Handler) parkLockOnConflict(
 	lockSeqEnabled bool,
 	lockSeqIndex uint32,
 	lockSeqNumber uint8,
-) (uint64, bool) {
-	// Deadlock detection: probe the conflicting holder via TestLock and
-	// check the WFG. If granting our wait would close a cycle, refuse to
-	// park — the inline-retry fallback then exits with LOCK_NOT_GRANTED.
+) (asyncId uint64, parked bool) {
+	// Deadlock detection: probe the conflicting holders via TestLock and record
+	// the wait edges in the WFG. TryAddWaiter refuses when they would close a
+	// cycle, and the inline-retry fallback then exits with LOCK_NOT_GRANTED.
+	// The edges go in before the async slot is reserved so concurrent callers
+	// see the wait immediately; the deferred unwind prunes them unless we park,
+	// where resumePendingLock prunes them on every exit path.
 	owners := h.conflictHolders(openFile.MetadataHandle, fileLock)
 	if h.LockWaitGraph != nil && len(owners) > 0 {
-		if h.LockWaitGraph.WouldCauseCycle(fileLock.OpenID, owners) {
+		if !h.LockWaitGraph.TryAddWaiter(fileLock.OpenID, owners) {
 			logger.Debug("LOCK: deadlock detected, refusing to park",
 				"waiter", fileLock.OpenID,
 				"owners", owners,
 				"messageID", ctx.MessageID)
 			return 0, false
 		}
+		defer func() {
+			if !parked {
+				h.LockWaitGraph.RemoveWaiter(fileLock.OpenID)
+			}
+		}()
 	}
 
 	if !ctx.TryReserveAsync() {
@@ -65,7 +73,7 @@ func (h *Handler) parkLockOnConflict(
 		return 0, false
 	}
 
-	asyncId := h.generateAsyncId()
+	asyncId = h.generateAsyncId()
 
 	// Wait context: independent of the request's Context (which would be
 	// torn down as soon as we return StatusPending). Cancellable by
@@ -97,13 +105,6 @@ func (h *Handler) parkLockOnConflict(
 			"messageID", ctx.MessageID,
 			"error", err)
 		return 0, false
-	}
-
-	// Add WFG edges before starting the resume goroutine so concurrent
-	// callers see the wait relationship. The resume goroutine prunes them
-	// via RemoveWaiter on every exit path.
-	if h.LockWaitGraph != nil && len(owners) > 0 {
-		h.LockWaitGraph.AddWaiter(fileLock.OpenID, owners)
 	}
 
 	go h.resumePendingLock(waitCtx, pending, openFile, fileLock)

@@ -119,7 +119,7 @@ type LockManager interface {
 
 	// RequestLease requests a new or upgraded lease on a file or directory.
 	// Returns the granted state (may be less than requested), epoch, and error.
-	// isDirectory=true restricts to ValidDirectoryLeaseStates.
+	// isDirectory=true restricts to validDirectoryLeaseStates.
 	RequestLease(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
 		parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
 		requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error)
@@ -1489,10 +1489,13 @@ func (lm *Manager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) bool {
 	// notifications (the break_twice / v2_breaking3 regression class). Compute
 	// the max of the requested epoch and every matching record's current epoch,
 	// then assign that single max to all of them so the lease has one epoch.
+	//
+	// Probes only the buckets leaseKeyIndex names for leaseKey; the ones it
+	// omits hold no record for the key and could never have matched.
 	target := epoch
 	var matches []*UnifiedLock
-	for _, locks := range lm.unifiedLocks {
-		for _, lock := range locks {
+	for handleKey := range lm.leaseKeyIndex[leaseKey] {
+		for _, lock := range lm.unifiedLocks[handleKey] {
 			if lock.Lease == nil || lock.Lease.LeaseKey != leaseKey {
 				continue
 			}

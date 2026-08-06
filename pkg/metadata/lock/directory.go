@@ -1,4 +1,4 @@
-// Package lock provides directory lease management and change notification.
+// Directory lease management and change notification.
 //
 // This file implements the DirChangeNotifier interface and the recently-broken
 // cache that prevents lease grant storms on frequently-changed directories.
@@ -9,6 +9,7 @@
 // TTL window to prevent immediate re-grant followed by another break.
 //
 // Reference: MS-SMB2 3.3.4.7 Object Store Indicates a Lease Break
+
 package lock
 
 import (

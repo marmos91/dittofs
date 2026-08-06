@@ -160,10 +160,7 @@ func (ct *ConnectionTracker) RegisterClient(clientID, adapterType, remoteAddr st
 
 	currentCount := ct.adapterCounts[adapterType]
 	if currentCount >= limit {
-		return &errors.StoreError{
-			Code:    errors.ErrConnectionLimitReached,
-			Message: "connection limit reached for adapter",
-		}
+		return errors.NewConnectionLimitError(adapterType, limit)
 	}
 
 	// Create new registration

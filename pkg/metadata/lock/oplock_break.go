@@ -1,9 +1,9 @@
-// Package lock provides lock management types and operations for the metadata package.
-// This file implements the lease break timeout scanner.
+// Lease break timeout scanner.
 //
 // The OpLockBreakScanner monitors breaking leases and force-revokes them on timeout.
 // Per MS-SMB2 and CONTEXT.md: "Force revoke on timeout - don't retry, just revoke
 // and allow conflicting operation"
+
 package lock
 
 import (

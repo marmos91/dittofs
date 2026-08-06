@@ -1,11 +1,11 @@
-// Package lock provides lock management types and operations for the metadata package.
-// This file contains SMB2/3 lease types integrated with the unified lock manager.
+// SMB2/3 lease types integrated with the unified lock manager.
 //
 // SMB2.1+ leases provide client caching permissions using Read/Write/Handle flags.
 // Leases are whole-file (not byte-range) and use a 128-bit client-generated key
 // to group multiple file handles into a single caching unit.
 //
 // Reference: MS-SMB2 2.2.13.2.8 SMB2_CREATE_REQUEST_LEASE_V2
+
 package lock
 
 import (
@@ -113,10 +113,10 @@ func breakSentinelForReason(reason BreakReason) uint32 {
 	}
 }
 
-// ValidFileLeaseStates contains all valid lease state combinations for files.
+// validFileLeaseStates contains all valid lease state combinations for files.
 // Per MS-SMB2: Write and Handle alone are not valid; they require Read.
 // Valid combinations: None, R, RH, RW, RWH
-var ValidFileLeaseStates = []uint32{
+var validFileLeaseStates = []uint32{
 	LeaseStateNone,                                      // 0x00 - No caching
 	LeaseStateRead,                                      // 0x01 - Read only
 	LeaseStateRead | LeaseStateHandle,                   // 0x03 - Read + Handle
@@ -124,14 +124,14 @@ var ValidFileLeaseStates = []uint32{
 	LeaseStateRead | LeaseStateWrite | LeaseStateHandle, // 0x07 - Full (RWH)
 }
 
-// ValidDirectoryLeaseStates contains valid lease state combinations for directories.
+// validDirectoryLeaseStates contains valid lease state combinations for directories.
 // Per MS-SMB2 3.3.5.9: directories support Read and Handle caching but NOT
 // Write caching. Write caching requires exclusive access semantics that don't
 // apply to directory opens.
 // When RWH is requested, bestGrantableState will downgrade to RH.
 // When RW is requested, bestGrantableState will downgrade to R.
 // Valid combinations: None, R, RH
-var ValidDirectoryLeaseStates = []uint32{
+var validDirectoryLeaseStates = []uint32{
 	LeaseStateNone,                    // 0x00 - No caching
 	LeaseStateRead,                    // 0x01 - Read only
 	LeaseStateRead | LeaseStateHandle, // 0x03 - Read + Handle
@@ -210,7 +210,7 @@ type OpLock struct {
 	ParentLeaseKey [16]byte
 
 	// IsDirectory indicates this lease is on a directory.
-	// When true, valid lease states are restricted to ValidDirectoryLeaseStates
+	// When true, valid lease states are restricted to validDirectoryLeaseStates
 	// (None, R, RH).
 	IsDirectory bool
 
@@ -315,7 +315,7 @@ func LeaseStateToString(state uint32) string {
 // Valid file states: None, R, RW, RH, RWH
 // Invalid states: W alone, H alone, WH (Write/Handle without Read)
 func IsValidFileLeaseState(state uint32) bool {
-	return slices.Contains(ValidFileLeaseStates, state)
+	return slices.Contains(validFileLeaseStates, state)
 }
 
 // IsValidDirectoryLeaseState returns true if the state is a valid lease combination for directories.
@@ -323,7 +323,7 @@ func IsValidFileLeaseState(state uint32) bool {
 // Valid directory states: None, R, RH
 // Invalid: W alone, H alone, WH, RW, RWH (Write not valid for directories)
 func IsValidDirectoryLeaseState(state uint32) bool {
-	return slices.Contains(ValidDirectoryLeaseStates, state)
+	return slices.Contains(validDirectoryLeaseStates, state)
 }
 
 // Clone creates a deep copy of the OpLock.

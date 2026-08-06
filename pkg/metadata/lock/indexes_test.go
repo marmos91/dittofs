@@ -287,3 +287,154 @@ func TestIndex_ReclaimAddsToIndex(t *testing.T) {
 	assert.Equal(t, "fileR", hk)
 	require.NotNil(t, lk, "restored lease must be resolvable via the index")
 }
+
+// ============================================================================
+// Index lookup vs full scan equivalence
+// ============================================================================
+
+// scanLeaseKeyMatches is the reference implementation SetLeaseEpoch used before
+// it consulted leaseKeyIndex: a full sweep of every handleKey bucket collecting
+// every record bound to leaseKey.
+func scanLeaseKeyMatches(lm *Manager, leaseKey [16]byte) map[string]bool {
+	out := make(map[string]bool)
+	for _, locks := range lm.unifiedLocks {
+		for _, l := range locks {
+			if l.Lease != nil && l.Lease.LeaseKey == leaseKey {
+				out[l.ID] = true
+			}
+		}
+	}
+	return out
+}
+
+// scanHasLeaseKeyOnOtherFile is the reference implementation
+// hasLeaseKeyOnOtherFile used before it consulted leaseKeyIndex.
+func scanHasLeaseKeyOnOtherFile(lm *Manager, leaseKey [16]byte, excludeHandleKey, clientID string) bool {
+	for handleKey, locks := range lm.unifiedLocks {
+		if handleKey == excludeHandleKey {
+			continue
+		}
+		for _, l := range locks {
+			if l.Lease == nil || l.Lease.LeaseKey != leaseKey {
+				continue
+			}
+			if l.Owner.ClientID != clientID {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// buildMixedLockSet populates a Manager with a realistic mix: the same numeric
+// lease key bound on several files by different clients, distinct keys, a
+// directory lease, byte-range (non-lease) records, and a released record — so
+// the index-vs-scan comparison covers empty buckets and shared keys rather than
+// just the happy path. Returns the lease keys and handle keys in play.
+func buildMixedLockSet(t *testing.T, mgr *Manager) (keys [][16]byte, handleKeys []string) {
+	t.Helper()
+	ctx := context.Background()
+
+	keyA := [16]byte{0xA}
+	keyB := [16]byte{0xB}
+	keyC := [16]byte{0xC}
+	// keyD is never granted: probes for it must come back empty from both paths.
+	keyD := [16]byte{0xD}
+
+	grants := []struct {
+		file     string
+		key      [16]byte
+		client   string
+		isDir    bool
+		newState uint32
+	}{
+		{"file1", keyA, "client1", false, LeaseStateRead},
+		{"file2", keyA, "client2", false, LeaseStateRead},
+		{"file3", keyA, "client3", false, LeaseStateRead | LeaseStateHandle},
+		{"file1", keyB, "client2", false, LeaseStateRead},
+		{"dir1", keyC, "client1", true, LeaseStateRead | LeaseStateHandle},
+	}
+	for _, g := range grants {
+		_, _, err := mgr.RequestLease(ctx, FileHandle(g.file), g.key, [16]byte{},
+			"owner-"+g.file+"-"+g.client, g.client, "/share", g.newState, g.isDir)
+		require.NoError(t, err)
+	}
+
+	// Byte-range records on a file with no lease at all, plus one on a file that
+	// does hold a lease — both must be invisible to every lease-key probe.
+	for _, br := range []struct{ file, client string }{{"file4", "client1"}, {"file2", "client1"}} {
+		err := mgr.AddUnifiedLock(br.file, NewUnifiedLock(
+			LockOwner{OwnerID: "nlm:" + br.file + ":" + br.client, ClientID: br.client, ShareName: "/share"},
+			FileHandle(br.file), 0, 4096, LockTypeExclusive))
+		require.NoError(t, err)
+	}
+
+	// Release one holder of the shared key so a bucket drops out of the index.
+	require.NoError(t, mgr.ReleaseLeaseForHandle(ctx, "file3", keyA))
+
+	return [][16]byte{keyA, keyB, keyC, keyD},
+		[]string{"file1", "file2", "file3", "file4", "dir1", "absent"}
+}
+
+// TestSetLeaseEpoch_IndexMatchesFullScan proves the leaseKeyIndex-driven record
+// selection in SetLeaseEpoch reaches the same records a full unifiedLocks sweep
+// would, and converges every one of them.
+func TestSetLeaseEpoch_IndexMatchesFullScan(t *testing.T) {
+	t.Parallel()
+	mgr := NewManager()
+	keys, _ := buildMixedLockSet(t, mgr)
+	assertIndexesConsistent(t, mgr)
+
+	for _, key := range keys {
+		mgr.mu.RLock()
+		want := scanLeaseKeyMatches(mgr, key)
+		mgr.mu.RUnlock()
+
+		// SetLeaseEpoch reports found iff the scan found records, and lifts
+		// every matching record to the same epoch.
+		ok := mgr.SetLeaseEpoch(key, 7)
+		assert.Equal(t, len(want) > 0, ok, "SetLeaseEpoch found-flag must match the scan for key %x", key)
+
+		mgr.mu.RLock()
+		for _, locks := range mgr.unifiedLocks {
+			for _, l := range locks {
+				if l.Lease != nil && l.Lease.LeaseKey == key {
+					assert.Equal(t, uint16(7), l.Lease.Epoch,
+						"every record for key %x must converge to the target epoch", key)
+				}
+			}
+		}
+		mgr.mu.RUnlock()
+	}
+}
+
+// TestHasLeaseKeyOnOtherFile_IndexMatchesFullScan proves the index-driven
+// uniqueness probe answers identically to the full scan it replaced, across
+// every (key, excluded bucket, client) triple the fixture can produce.
+func TestHasLeaseKeyOnOtherFile_IndexMatchesFullScan(t *testing.T) {
+	t.Parallel()
+	mgr := NewManager()
+	keys, handleKeys := buildMixedLockSet(t, mgr)
+	assertIndexesConsistent(t, mgr)
+
+	clients := []string{"client1", "client2", "client3", "client4", ""}
+
+	mgr.mu.RLock()
+	defer mgr.mu.RUnlock()
+
+	checked := 0
+	for _, key := range keys {
+		for _, exclude := range handleKeys {
+			for _, client := range clients {
+				want := scanHasLeaseKeyOnOtherFile(mgr, key, exclude, client)
+				got := mgr.hasLeaseKeyOnOtherFile(key, exclude, client)
+				assert.Equal(t, want, got,
+					"key=%x exclude=%s client=%s", key, exclude, client)
+				checked++
+			}
+		}
+	}
+	// Guard against the fixture silently collapsing to a trivial case.
+	require.Greater(t, checked, 50, "expected a broad triple sweep")
+}

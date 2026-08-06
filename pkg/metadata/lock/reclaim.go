@@ -1,4 +1,4 @@
-// Package lock provides unified lease reclaim for both SMB and NFS protocols.
+// Unified lease reclaim for both SMB and NFS protocols.
 //
 // Lease reclaim is used during grace period after server restart. Clients
 // that held leases before the restart can reclaim them during the grace window.
@@ -7,6 +7,7 @@
 // exists (via HandleChecker) since deleted directories cannot have leases reclaimed.
 //
 // Reference: MS-SMB2 3.3.5.9 Processing an SMB2 CREATE Request (Lease Reclaim)
+
 package lock
 
 import (

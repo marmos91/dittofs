@@ -1043,7 +1043,7 @@ func TestManager_GracePeriod_Delegation(t *testing.T) {
 	}
 
 	// New locks should be denied
-	allowed, err := lm.IsOperationAllowed(Operation{IsNew: true})
+	allowed, err := lm.IsOperationAllowed(OpNew)
 	if allowed {
 		t.Fatal("Expected new lock to be denied during grace period")
 	}
@@ -1052,7 +1052,7 @@ func TestManager_GracePeriod_Delegation(t *testing.T) {
 	}
 
 	// Reclaims should be allowed
-	allowed, err = lm.IsOperationAllowed(Operation{IsReclaim: true})
+	allowed, err = lm.IsOperationAllowed(OpReclaim)
 	if !allowed {
 		t.Fatal("Expected reclaim to be allowed during grace period")
 	}
@@ -1081,7 +1081,7 @@ func TestManager_GracePeriod_NilManager(t *testing.T) {
 		t.Fatal("Expected not in grace period without manager")
 	}
 
-	allowed, err := lm.IsOperationAllowed(Operation{IsNew: true})
+	allowed, err := lm.IsOperationAllowed(OpNew)
 	if !allowed || err != nil {
 		t.Fatal("Expected all operations allowed without grace period manager")
 	}
@@ -1279,13 +1279,18 @@ func TestSetLeaseEpoch_UpdatesAllMatchingRecords(t *testing.T) {
 	lm := NewManager()
 	leaseKey := [16]byte{0xaa, 0xbb, 0xcc}
 
+	// Seeding unifiedLocks directly skips the mutation paths that maintain the
+	// reverse indexes, so reconcile each bucket the way those paths do —
+	// lease-key lookups resolve through leaseKeyIndex.
 	lm.mu.Lock()
 	lm.unifiedLocks["/share:fileA"] = []*UnifiedLock{
 		{Owner: LockOwner{OwnerID: "oA"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 1}},
 	}
+	lm.reindexHandleLocked("/share:fileA", nil)
 	lm.unifiedLocks["/share:fileB"] = []*UnifiedLock{
 		{Owner: LockOwner{OwnerID: "oB"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 1}},
 	}
+	lm.reindexHandleLocked("/share:fileB", nil)
 	lm.mu.Unlock()
 
 	if !lm.SetLeaseEpoch(leaseKey, 7) {
@@ -1330,9 +1335,11 @@ func TestSetLeaseEpoch_ConvergesDivergentRecords(t *testing.T) {
 	lm.unifiedLocks["/share:fileA"] = []*UnifiedLock{
 		{Owner: LockOwner{OwnerID: "oA"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 5}},
 	}
+	lm.reindexHandleLocked("/share:fileA", nil)
 	lm.unifiedLocks["/share:fileB"] = []*UnifiedLock{
 		{Owner: LockOwner{OwnerID: "oB"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 1}},
 	}
+	lm.reindexHandleLocked("/share:fileB", nil)
 	lm.mu.Unlock()
 
 	// Request a lower epoch (4) than the highest existing record (5). All
@@ -1365,6 +1372,7 @@ func TestSetLeaseEpoch_Persists(t *testing.T) {
 	lm.unifiedLocks["/share:fileA"] = []*UnifiedLock{
 		{ID: "lease-1", Owner: LockOwner{OwnerID: "oA"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 1}},
 	}
+	lm.reindexHandleLocked("/share:fileA", nil)
 	lm.mu.Unlock()
 
 	if !lm.SetLeaseEpoch(leaseKey, 9) {

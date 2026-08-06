@@ -2,6 +2,8 @@ package lock
 
 import (
 	stderrors "errors"
+	"fmt"
+	"strings"
 
 	"github.com/marmos91/dittofs/pkg/metadata/errors"
 )
@@ -66,7 +68,7 @@ func NewLockConflictError(path string, conflict *UnifiedLockConflict) *errors.St
 func NewDeadlockError(waiter string, blockedBy []string) *errors.StoreError {
 	return &errors.StoreError{
 		Code:    errors.ErrDeadlock,
-		Message: "deadlock detected",
+		Message: fmt.Sprintf("deadlock detected: waiting on %s", strings.Join(blockedBy, ", ")),
 		Path:    waiter,
 	}
 }
@@ -75,7 +77,7 @@ func NewDeadlockError(waiter string, blockedBy []string) *errors.StoreError {
 func NewGracePeriodError(remainingSeconds int) *errors.StoreError {
 	return &errors.StoreError{
 		Code:    errors.ErrGracePeriod,
-		Message: "grace period active, new locks blocked",
+		Message: fmt.Sprintf("grace period active, new locks blocked (%ds remaining)", remainingSeconds),
 	}
 }
 
@@ -83,6 +85,6 @@ func NewGracePeriodError(remainingSeconds int) *errors.StoreError {
 func NewLockLimitExceededError(limitType string, current, max int) *errors.StoreError {
 	return &errors.StoreError{
 		Code:    errors.ErrLockLimitExceeded,
-		Message: limitType + " lock limit exceeded",
+		Message: fmt.Sprintf("%s lock limit exceeded (%d/%d)", limitType, current, max),
 	}
 }

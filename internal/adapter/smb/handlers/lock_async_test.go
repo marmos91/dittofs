@@ -45,10 +45,12 @@ func TestLockOwnerOf(t *testing.T) {
 func TestLockWaitGraph_DeadlockDetection_Cycle(t *testing.T) {
 	wfg := lock.NewWaitForGraph()
 	// A waits for B.
-	wfg.AddWaiter("A", []string{"B"})
+	if !wfg.TryAddWaiter("A", []string{"B"}) {
+		t.Fatal("expected A->B to be recorded on an empty graph")
+	}
 	// B trying to wait for A would close a cycle.
-	if !wfg.WouldCauseCycle("B", []string{"A"}) {
-		t.Error("expected cycle (A->B->A), got no cycle")
+	if wfg.TryAddWaiter("B", []string{"A"}) {
+		t.Error("expected cycle (A->B->A) to be refused, got accepted")
 	}
 }
 
@@ -56,20 +58,22 @@ func TestLockWaitGraph_DeadlockDetection_Cycle(t *testing.T) {
 func TestLockWaitGraph_DeadlockDetection_NoCycle(t *testing.T) {
 	wfg := lock.NewWaitForGraph()
 	// A -> B is fine.
-	wfg.AddWaiter("A", []string{"B"})
+	if !wfg.TryAddWaiter("A", []string{"B"}) {
+		t.Fatal("expected A->B to be recorded on an empty graph")
+	}
 	// C -> A: no cycle.
-	if wfg.WouldCauseCycle("C", []string{"A"}) {
-		t.Error("expected no cycle for C->A->B, got cycle")
+	if !wfg.TryAddWaiter("C", []string{"A"}) {
+		t.Error("expected C->A->B to be accepted, got refused as a cycle")
 	}
 }
 
 // TestLockWaitGraph_RemoveWaiter prunes the waiter so future requests succeed.
 func TestLockWaitGraph_RemoveWaiter(t *testing.T) {
 	wfg := lock.NewWaitForGraph()
-	wfg.AddWaiter("A", []string{"B"})
+	wfg.TryAddWaiter("A", []string{"B"})
 	wfg.RemoveWaiter("A")
 	// B can now safely wait for A.
-	if wfg.WouldCauseCycle("B", []string{"A"}) {
-		t.Error("expected no cycle after RemoveWaiter, still got cycle")
+	if !wfg.TryAddWaiter("B", []string{"A"}) {
+		t.Error("expected B->A to be accepted after RemoveWaiter, got refused")
 	}
 }
