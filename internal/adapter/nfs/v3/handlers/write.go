@@ -163,11 +163,11 @@ func (h *Handler) Write(
 	// lookup. On a cold cache (WRITE before any FSINFO) we fetch once and
 	// populate it; the common mount sequence (FSINFO precedes WRITE) keeps the
 	// store off the hot WRITE path entirely.
-	maxWriteSize := cachedMaxWriteSize()
+	maxWriteSize := fsMaxWriteSize.Load()
 	if maxWriteSize == 0 {
 		if caps, capErr := metaSvc.GetFilesystemCapabilities(ctx.Context, fileHandle); capErr == nil && caps != nil {
 			maxWriteSize = caps.MaxWriteSize
-			setMaxWriteSize(maxWriteSize)
+			cacheMax(&fsMaxWriteSize, maxWriteSize)
 		}
 	}
 	if maxWriteSize > 0 && uint32(len(req.Data)) > maxWriteSize {

@@ -452,3 +452,60 @@ func TestRead_PermissionGranted(t *testing.T) {
 	assert.EqualValues(t, types.NFS3OK, resp.Status)
 	assert.Equal(t, content, resp.Data)
 }
+
+// TestRead_ShortReadToAdvertisedRtmax verifies a READ whose Count exceeds the
+// advertised rtmax (FSINFO MaxReadSize) is served short rather than sizing a
+// buffer from the client-supplied Count. RFC 1813 Section 3.3.6 lets the server
+// return fewer bytes than requested; Eof stays false so the client re-reads the
+// remainder.
+func TestRead_ShortReadToAdvertisedRtmax(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	caps, err := fx.MetaStore.GetFilesystemCapabilities(fx.Context().Context, fx.RootHandle)
+	require.NoError(t, err)
+	const rtmax = uint32(16)
+	caps.MaxReadSize = rtmax
+	fx.MetaStore.SetFilesystemCapabilities(*caps)
+
+	content := []byte("0123456789abcdefghijklmnopqrstuv")
+	fileHandle := fx.CreateFile("big.txt", content)
+
+	resp, err := fx.Handler.Read(fx.Context(), &handlers.ReadRequest{
+		Handle: fileHandle,
+		Offset: 0,
+		Count:  1 << 20, // far beyond both rtmax and the file size
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, resp.Status, "over-large READ should short-read, not error")
+
+	assert.EqualValues(t, rtmax, resp.Count, "Count must reflect the clamped byte total")
+	assert.Equal(t, content[:rtmax], resp.Data, "no more than rtmax bytes may be materialized")
+	assert.False(t, resp.Eof, "a clamped read that stopped short of EOF must not report EOF")
+}
+
+// TestRead_UnknownRtmaxServesUnclamped verifies the clamp fails safe when the
+// advertised rtmax is unknown (zero): the read is served in full rather than
+// clamped to zero bytes, which a client would see as data loss.
+func TestRead_UnknownRtmaxServesUnclamped(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	caps, err := fx.MetaStore.GetFilesystemCapabilities(fx.Context().Context, fx.RootHandle)
+	require.NoError(t, err)
+	caps.MaxReadSize = 0
+	fx.MetaStore.SetFilesystemCapabilities(*caps)
+
+	content := []byte("rtmax unknown, serve everything")
+	fileHandle := fx.CreateFile("unclamped.txt", content)
+
+	resp, err := fx.Handler.Read(fx.Context(), &handlers.ReadRequest{
+		Handle: fileHandle,
+		Offset: 0,
+		Count:  1 << 20, // a Count a populated rtmax would have clamped
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, resp.Status)
+
+	assert.EqualValues(t, len(content), resp.Count, "an unknown rtmax must not clamp the read to zero")
+	assert.Equal(t, content, resp.Data)
+	assert.True(t, resp.Eof)
+}

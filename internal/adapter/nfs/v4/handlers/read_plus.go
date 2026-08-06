@@ -93,7 +93,7 @@ func (h *Handler) handleReadPlus(ctx *types.CompoundContext, reader io.Reader) *
 		return readPlusErr(common.MapToNFS4(err))
 	}
 	if file.Type != metadata.FileTypeRegular {
-		return readPlusErr(types.NFS4ERR_ISDIR)
+		return readPlusErr(readTypeError(file.Type))
 	}
 
 	// Empty file or read entirely past EOF: an empty content array with EOF set.
@@ -149,13 +149,13 @@ func (h *Handler) buildReadPlusContents(ctx *types.CompoundContext, file *metada
 	// Derive the data/hole segmentation from the block-store engine's full
 	// multi-tier data view (append-log + in-memory + persisted CAS) — the same
 	// view READ reconstructs — so READ_PLUS never reports a hole where written-
-	// but-not-yet-rolled-up data exists (RFC 7862, #1481). Resolving the engine
+	// but-not-yet-rolled-up data exists (RFC 7862). Resolving the engine
 	// here also reuses it for the data-run reads below. Fall back to the CAS
 	// block list if the engine can't be resolved or DataExtents errors, so
 	// READ_PLUS never regresses (including the all-hole/no-registry path, which
 	// must stay lazy — see the data-run guard below).
 	var blockStore *engine.Store
-	segs := block.Segments(file.Blocks, file.Size)
+	var segs []block.Segment
 	if h.Registry != nil {
 		if bs, err := common.ResolveForRead(ctx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH)); err == nil {
 			blockStore = bs
@@ -163,6 +163,9 @@ func (h *Handler) buildReadPlusContents(ctx *types.CompoundContext, file *metada
 				segs = block.SegmentsExtents(ext, file.Size)
 			}
 		}
+	}
+	if len(segs) == 0 {
+		segs = block.Segments(file.Blocks, file.Size)
 	}
 	var contents []readPlusContent
 

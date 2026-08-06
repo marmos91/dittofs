@@ -241,8 +241,31 @@ func (h *Handler) Read(
 		}, nil
 	}
 
+	// Clamp the requested count to the rtmax advertised by FSINFO
+	// (GetFilesystemCapabilities().MaxReadSize) so the read limit can never
+	// drift from what the client was told, and so a client-supplied Count
+	// cannot size a server-side buffer beyond that limit. RFC 1813 permits a
+	// READ reply to carry fewer bytes than requested, so an over-large Count is
+	// served short (the reply Count and Eof describe the bytes actually read)
+	// rather than rejected — the same contract WRITE applies to wtmax. rtmax
+	// comes from the process-wide cache FSINFO populates; on a cold cache (READ
+	// before any FSINFO) fetch it once and populate it.
+	count := req.Count
+	maxReadSize := fsMaxReadSize.Load()
+	if maxReadSize == 0 {
+		if caps, capErr := metaSvc.GetFilesystemCapabilities(ctx.Context, fileHandle); capErr == nil && caps != nil {
+			maxReadSize = caps.MaxReadSize
+			cacheMax(&fsMaxReadSize, maxReadSize)
+		}
+	}
+	if maxReadSize > 0 && count > maxReadSize {
+		logger.DebugCtx(ctx.Context, "READ: short-read to advertised rtmax",
+			"requested", count, "rtmax", maxReadSize, "client", clientIP)
+		count = maxReadSize
+	}
+
 	// Calculate actual read length (clamped to file size)
-	readEnd := min(req.Offset+uint64(req.Count), file.Size)
+	readEnd := min(req.Offset+uint64(count), file.Size)
 	actualLength := uint32(readEnd - req.Offset)
 
 	// All reads go through BlockStore.ReadAt which reads from block store.
