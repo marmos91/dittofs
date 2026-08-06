@@ -15,22 +15,33 @@ All 8 HIGH findings shipped; see closed umbrella #1900.
 | `ProjectManifestToBlocks` O(N^2) | #1896 | FIXED #1906 |
 | Netgroup unenforced on NFSv4 | #1898 | FIXED #1907 |
 | Process-wide SMB write mutex | #1893 | FIXED #1908 |
-| Truncate/PunchHole hydrate clamp (MED x2) | #1911 | OPEN |
-| Carve/repack bypass CRC (MED x2) | #1912 | IN PROGRESS |
+| Truncate/PunchHole hydrate clamp (MED x2) | #1911 | FIXED #1933 |
+| Carve/repack bypass CRC (MED x2) | #1912 | FIXED #1925 |
 | Recovery panics on empty sealed segment | #1913 | FIXED #1921 |
 | `evictSegment` busy-claim leak | #1914 | FIXED #1922 (+ torn-tail rollback the fix required) |
-| badger durable-handle index key | #1915 | IN PROGRESS |
-| `cas/` purge cross-share race | #1916 | OPEN |
-| S3 SSRF guard config-time only | #1917 | OPEN |
-| COMMIT authz / delete ceiling / anon ACL | #1918 | OPEN |
+| badger durable-handle index key | #1915 | FIXED #1926 (+ postgres UNIQUE index drop) |
+| `cas/` purge cross-share race | #1916 | FIXED #1928 |
+| S3 SSRF guard config-time only | #1917 | FIXED #1927 |
+| COMMIT authz / delete ceiling / anon ACL | #1918 | FIXED #1932 |
+| Committed size past the durable extent | — | FIXED #1929 |
+| Lock-manager MED batch (8 findings) | — | FIXED #1935 |
 
-Also opened from this work: #1909 (crash-ordering silent zeros), #1910 (smbtorture grading non-determinism).
+Every issue escalated out of this audit is now closed. The remaining work is the
+unescalated MED and LOW tail, batched by package.
+
+Also opened from this work: #1909 (crash-ordering silent zeros, still open),
+#1910 (smbtorture grading non-determinism, fixed in #1919).
 
 **Findings surfaced while fixing, not by the audit:**
 
 - #1923 — `smb2.replay.channel-sequence` fails intermittently (byte-identical binary passes and fails). Surfaced while investigating a CI verdict flip; the audit did not look at test stability.
 - The #1914 fix would have introduced a fresh silent-zeros bug: releasing the busy claim enables a retry that appends behind a torn cold-log tail, which `loadCold` then drops forever. Fixed in the same PR.
 - #1910's original diagnosis (grading folds timeouts into pass/fail) was **wrong** — grading was correct; the real hole was that timed-out and never-reached tests vanished silently from the report. Recorded so the wrong theory is not re-derived.
+- #1866 is **not a flaky test**. It was filed as "failed once in CI, not reproducible"; chasing it off a red PR run produced a deterministic repro on clean develop in 0.11s. `WaitForSnapshot` returns the orchestration error only while a live `doneCh` is in the registry, but `unregisterSnap` deletes that entry the moment the goroutine finishes — so when orchestration completes before the caller waits, the wrapped sentinel is dropped and a **failed** snapshot is returned with a **nil** error. The REST layer maps that sentinel to HTTP 500, so the wait endpoint reports success for a snapshot that failed, and the faster a snapshot fails the likelier it is reported fine. `cancelAndWaitInFlightSnaps` already works around the identical hazard in one place. A faithful fix needs the failure *kind* persisted on the row, which currently stores only the message string.
+- #1936 — develop's E2E job has been red since 2026-07-28 and nothing tracked it. Two unrelated failures: `TestBlocksFlipLifecycle_NFS/_SMB` regressed at `1f95b389` (#1890, which intentionally redefined `disk_used` as the physical segment footprint, so the test's `require.Zero` is only reachable if GC also retires the emptied segment file), and `TestNLMAxisInterop`, older, where nlockmgr never registers in the test namespace's rpcbind. E2E is push-only on develop and gates no PR, which is why it survived 9+ days.
+- #1930 (disabled-share purge gate), #1931 (`Get`/`Consume` naming different handles), #1934 (`resolveCovering` order-dependence) — all raised by fixes, all awaiting a decision rather than a patch.
+
+**On the review gates:** Copilot's findings ran 4 real / 2 refuted across this work, and the sub-agent reviewer missed every real one. The two real findings on #1933 shared a shape worth naming — *a sentinel value silently disabling a guard* (`DataSize == 0` skipping the clamp; a 32-bit `int()` wrap doing the same). Both would have failed open, which is the same failure direction as the silent-zeros family the audit exists to close. Copilot is not redundant with the reviewer sub-agent and must be checked immediately before merge, not once when the PR opens — it re-reviews each new commit.
 
 **Severity calibration note:** the carve/repack CRC-bypass findings (#1912) were graded MED here but are arguably HIGH — they do not corrupt data, they promote already-corrupt data to trusted, defeating downstream checksums.
 
@@ -258,7 +269,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Truncate keeps a ChunkRef whose byte range extends past newSize; cold-read hydrate can resurrect truncated-away bytes / grow local storage past the new size
 
 - **Where:** `pkg/block/engine/readwrite.go:151` · `bugs` · area: block-engine-readwrite
-> STATUS: TRACKED as #1911
+> STATUS: FIXED in #1933 (#1911) — hydrate now writes only the bytes the row still claims, taking the second option below (narrow the row) rather than dropping it. Copilot found two fail-open holes in the first cut: the clamp was skipped when `DataSize == 0`, which is unreachable via the demand cold read but reachable via `WarmAll` (it walks enumerated rows with no size filter), and `int(fb.DataSize)` could wrap on a 32-bit platform and skip the clamp the same way. Both would have re-opened exactly this finding through a zero rather than a wrong length.
 - **Verified:** Confirmed: drop predicate is only b.Offset >= newSize (readwrite.go:151-160); straddling tail row keeps original Hash/Size. journal Store.Truncate (store.go:708-730) only CLIPS the local interval to newSize and does NOT re-mark it dirty, so nothing re-carves the straddling manifest row — unlike the PunchHole case, no dirty bytes are involved, so the tail chunk's segment is already fully synced and immediately evictable (reclaim.go:190). A cold read at any offset inside that chunk resolves the un-narrowed row and hydrateChunk (fetch.go:83) writes the FULL fb.DataSize at the chunk's absolute offset with no size clamp; the hydrate record carries a higher version than the truncate marker (store.go:683-685 explicitly does not fence later versions), so bytes past newSize come back into the local index. Re-extending the file then serves those stale bytes where a zero hole is required. Downgraded to MED: needs eviction + cold read + re-extend, and metadata Size still clamps ordinary reads.
 - **Fix:** For the kept partial-tail block, don't keep the ChunkRef verbatim: either drop/supersede its FileChunk manifest row too (same reap path as the fully-past blocks) so a subsequent read of that offset falls through to a hole/re-carve, or truncate the returned ChunkRef's Size to newSize-b.Offset and persist a correspondingly truncated manifest row before returning.
 
