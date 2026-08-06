@@ -87,6 +87,14 @@ type EvaluateContext struct {
 	// Empty when the session is POSIX-only.
 	GroupSIDs []string
 
+	// Anonymous marks the requester as carrying no identity (no UID was
+	// resolved for the session). Its UID/GID/Who fields are then Go zero
+	// values that name no principal, so only EVERYONE@ may match; without
+	// this flag the zero UID/GID collide with GROUP@ on a root-group-owned
+	// file and with an explicit "0@localdomain" ACE, handing an
+	// unauthenticated session the rights written for uid/gid 0.
+	Anonymous bool
+
 	// RequesterHasTakeOwnership indicates whether the requester holds the
 	// SeTakeOwnershipPrivilege (MS-DTYP §2.5.3.2). Only privilege holders
 	// receive WRITE_OWNER implicitly when they own the file. On Windows
@@ -378,6 +386,13 @@ func EvaluateGranted(a *ACL, evalCtx *EvaluateContext, probeMask uint32) uint32 
 // Mirrors Samba `libcli/security/access_check.c::se_access_check` handling
 // of `SID_OWNER_RIGHTS` / `SEC_RIGHTS_OWNER_RIGHTS`.
 func aceMatchesWhoWithOwnerRights(ace *ACE, evalCtx *EvaluateContext, ownerRightsPresent bool) bool {
+	// An identity-less requester matches EVERYONE@ and nothing else: its
+	// zero-valued UID/GID/Who name no principal, so every arm below must
+	// miss rather than collide with uid/gid 0.
+	if evalCtx.Anonymous {
+		return ace.Who == SpecialEveryone
+	}
+
 	requesterIsOwner := evalCtx.UID == evalCtx.FileOwnerUID
 
 	switch ace.Who {

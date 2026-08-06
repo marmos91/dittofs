@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"errors"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
@@ -78,7 +80,9 @@ type CommitResponse struct {
 // Flushes cached unstable writes to stable storage for a file byte range.
 // Delegates to BlockStore.Flush and MetadataService.FlushPendingWriteForFile.
 // Triggers cache-to-store transfer; returns WCC data and server boot-time write verifier.
-// Errors: NFS3ErrNoEnt (file not found), NFS3ErrIsDir (directory handle), NFS3ErrIO (flush failure).
+// Errors: NFS3ErrNoEnt (file not found), NFS3ErrIsDir (directory handle),
+// NFS3ErrAccess / NFS3ErrRofs (no write permission on the file or its share),
+// NFS3ErrIO (flush failure).
 func (h *Handler) Commit(
 	ctx *NFSHandlerContext,
 	req *CommitRequest,
@@ -131,6 +135,45 @@ func (h *Handler) Commit(
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir},
 			AttrBefore:      wccBefore,
 			AttrAfter:       wccAfter,
+		}, nil
+	}
+
+	// Enforce write permission before forcing anything to stable storage.
+	// COMMIT (RFC 1813 3.3.21) is the durability half of WRITE, so it takes
+	// the same gate WRITE takes via PrepareWrite — otherwise any client
+	// holding a traversable handle could force flush + upload work on a file
+	// it may not modify. knfsd likewise verifies the handle with
+	// NFSD_MAY_WRITE for COMMIT.
+	//
+	// The gate runs against the file loaded above, which may be the
+	// pending-write cached copy — a mode change made after the writes were
+	// accepted is therefore not seen until the cache is flushed. That window
+	// is deliberate: those bytes already passed the write gate, and refusing
+	// to make accepted data durable would strand it.
+	authCtx, err := h.GetCachedAuthContext(ctx)
+	if err != nil {
+		if ctx.Context.Err() != nil {
+			return nil, ctx.Context.Err()
+		}
+		logAuthCtxError(ctx.Context, err, "COMMIT",
+			"handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
+		return &CommitResponse{
+			NFSResponseBase: NFSResponseBase{Status: authDenialStatus(err)},
+			AttrBefore:      wccBefore,
+			AttrAfter:       h.convertFileAttrToNFS(handle, &file.FileAttr),
+		}, nil
+	}
+
+	if err := metaSvc.CheckWritePermissionFile(authCtx, handle, file); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		status := common.MapToNFS3(err)
+		logger.DebugCtx(ctx.Context, "COMMIT denied", "handle", fmt.Sprintf("0x%x", req.Handle), "status", status, "client", clientIP, "error", err)
+		return &CommitResponse{
+			NFSResponseBase: NFSResponseBase{Status: status},
+			AttrBefore:      wccBefore,
+			AttrAfter:       h.convertFileAttrToNFS(handle, &file.FileAttr),
 		}, nil
 	}
 
@@ -207,20 +250,16 @@ func (h *Handler) Commit(
 		}, nil
 	}
 
-	// Build auth context for metadata flush
-	authCtx, authErr := h.GetCachedAuthContext(ctx)
-	if authErr == nil {
-		// Flush pending metadata for this specific file
-		// Relaxed metadata commit (#1687): COMMIT already forced the block data
-		// durable above; the size/mtime fsync is deferred to the background syncer,
-		// with the journal size reconcile on restart as the crash-safety net.
-		flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, handle, false)
-		if metaErr != nil {
-			logger.WarnCtx(ctx.Context, "COMMIT: metadata flush failed", "handle", fmt.Sprintf("0x%x", req.Handle), "error", metaErr)
-			// Continue - content is flushed, metadata will be fixed eventually
-		} else if flushed {
-			logger.DebugCtx(ctx.Context, "COMMIT: flushed pending metadata", "handle", fmt.Sprintf("0x%x", req.Handle))
-		}
+	// Flush pending metadata for this specific file.
+	// Relaxed metadata commit: COMMIT already forced the block data durable
+	// above; the size/mtime fsync is deferred to the background syncer, with
+	// the journal size reconcile on restart as the crash-safety net.
+	flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, handle, false)
+	if metaErr != nil {
+		logger.WarnCtx(ctx.Context, "COMMIT: metadata flush failed", "handle", fmt.Sprintf("0x%x", req.Handle), "error", metaErr)
+		// Continue - content is flushed, metadata will be fixed eventually
+	} else if flushed {
+		logger.DebugCtx(ctx.Context, "COMMIT: flushed pending metadata", "handle", fmt.Sprintf("0x%x", req.Handle))
 	}
 
 	// wccAfter is already correct: GetFileCached returned the file with pending

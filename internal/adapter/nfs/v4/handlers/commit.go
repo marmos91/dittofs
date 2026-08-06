@@ -94,6 +94,22 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 		}
 	}
 
+	// Enforce write permission before forcing anything to stable storage.
+	// COMMIT (RFC 7530 16.5) is the durability half of WRITE, so it takes the
+	// same gate WRITE takes via PrepareWrite — otherwise any client holding a
+	// traversable filehandle could force flush + upload work on a file it may
+	// not modify. knfsd likewise verifies the handle with NFSD_MAY_WRITE for
+	// COMMIT.
+	if err := metaSvc.CheckWritePermissionFile(authCtx, fileHandle, file); err != nil {
+		status := common.MapToNFS4(err)
+		logger.Debug("NFSv4 COMMIT denied", "status", status, "error", err, "client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: status,
+			OpCode: types.OP_COMMIT,
+			Data:   encodeStatusOnly(status),
+		}
+	}
+
 	// If no content, just return success
 	if file.PayloadID == "" {
 		logger.Debug("NFSv4 COMMIT: no content to flush", "client", ctx.ClientAddr)

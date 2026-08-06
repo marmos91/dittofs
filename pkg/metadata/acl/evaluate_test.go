@@ -947,6 +947,7 @@ func TestHasTakeOwnershipPrivilege(t *testing.T) {
 // miss. See #540.
 func anonRootOwnedCtx() *EvaluateContext {
 	return &EvaluateContext{
+		Anonymous:    true,
 		UID:          0,
 		FileOwnerUID: AnonymousFileOwnerUID,
 		FileOwnerGID: 0,
@@ -1017,5 +1018,55 @@ func TestEvaluate_Anonymous_EveryoneStillMatches(t *testing.T) {
 	// But nothing beyond what EVERYONE@ grants.
 	if Evaluate(a, ctx, ACE4_WRITE_DATA) {
 		t.Error("#540: anonymous must not receive bits outside the EVERYONE@ grant")
+	}
+}
+
+// TestEvaluate_Anonymous_NoLocalDomainOrGroupMatch asserts that an
+// identity-less requester does not pick up ACEs written for uid/gid 0. Its
+// zero-valued UID/GID name no principal, so neither an explicit
+// "0@localdomain" ACE nor GROUP@ on a root-group-owned file may match.
+func TestEvaluate_Anonymous_NoLocalDomainOrGroupMatch(t *testing.T) {
+	localDomain := &ACL{
+		ACEs: []ACE{
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: "0@localdomain"},
+		},
+	}
+	if Evaluate(localDomain, anonRootOwnedCtx(), ACE4_READ_DATA) {
+		t.Error("anonymous must not match a 0@localdomain ACE via its zero-valued UID")
+	}
+
+	group := &ACL{
+		ACEs: []ACE{
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialGroup},
+		},
+	}
+	if Evaluate(group, anonRootOwnedCtx(), ACE4_READ_DATA) {
+		t.Error("anonymous must not match GROUP@ on a gid-0 owned file via its zero-valued GID")
+	}
+}
+
+// TestEvaluate_AuthenticatedRoot_MatchesLocalDomainAndGroup is the companion:
+// a real uid-0 identity still matches the very ACEs the anonymous requester is
+// denied, so confining anonymous to EVERYONE@ costs an authenticated root
+// nothing.
+func TestEvaluate_AuthenticatedRoot_MatchesLocalDomainAndGroup(t *testing.T) {
+	rootCtx := &EvaluateContext{UID: 0, GID: 0, FileOwnerUID: 500, FileOwnerGID: 0}
+
+	localDomain := &ACL{
+		ACEs: []ACE{
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: "0@localdomain"},
+		},
+	}
+	if !Evaluate(localDomain, rootCtx, ACE4_READ_DATA) {
+		t.Error("an authenticated uid-0 requester must still match its 0@localdomain ACE")
+	}
+
+	group := &ACL{
+		ACEs: []ACE{
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialGroup},
+		},
+	}
+	if !Evaluate(group, rootCtx, ACE4_READ_DATA) {
+		t.Error("an authenticated requester in the file's owning group must still match GROUP@")
 	}
 }

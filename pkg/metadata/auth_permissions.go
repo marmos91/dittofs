@@ -418,10 +418,11 @@ func evaluateACLPermissions(
 		// owner-implicit RC|WRITE_DAC pass by forcing FileOwnerUID to
 		// the AnonymousFileOwnerUID sentinel — without it the requester's
 		// zero-valued UID would collapse onto a root-owned file's owner.
-		// EVERYONE@ ACEs still match. GROUP@ and the "<n>@localdomain"
-		// form may still match on UID/GID-0 owned files (residuals
-		// tracked under #540).
+		// Anonymous additionally confines matching to EVERYONE@, so the
+		// zero-valued UID/GID cannot pick up GROUP@ on a root-group-owned
+		// file or an explicit "0@localdomain" ACE.
 		evalCtx := &acl.EvaluateContext{
+			Anonymous:    true,
 			FileOwnerUID: acl.AnonymousFileOwnerUID,
 			FileOwnerGID: file.GID,
 		}
@@ -576,16 +577,16 @@ func (s *Service) shareForbidsWrites(ctx *AuthContext, handle FileHandle) bool {
 // the share's default "read" permission — see the NFS share-permission
 // resolver), and such a denial is an ordinary permission denial (EACCES), not a
 // read-only filesystem.
+//
+// The share name comes from the handle, which encodes share identity — the
+// same source storeForHandle routes on — so no inode fetch is needed to learn
+// which share's options to read.
 func (s *Service) shareIsReadOnly(ctx *AuthContext, handle FileHandle) bool {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return false
 	}
-	file, err := store.GetFile(ctx.Context, handle)
-	if err != nil {
-		return false
-	}
-	shareOpts, err := store.GetShareOptions(ctx.Context, file.ShareName)
+	shareOpts, err := store.GetShareOptions(ctx.Context, shareNameForHandle(handle))
 	return err == nil && shareOpts != nil && shareOpts.ReadOnly
 }
 
@@ -594,11 +595,12 @@ func (s *Service) checkWritePermission(ctx *AuthContext, handle FileHandle) erro
 	return s.checkPermission(ctx, handle, PermissionWrite, "write permission denied")
 }
 
-// checkWritePermissionFile is checkWritePermission on an already-loaded file —
-// PrepareWrite holds the file (its own cache/fetch) before checking, so this
-// avoids the permission path's redundant re-fetch (store.GetFile + derivePath +
-// JSON decode) on every write.
-func (s *Service) checkWritePermissionFile(ctx *AuthContext, handle FileHandle, file *File) error {
+// CheckWritePermissionFile verifies write permission on an already-loaded file,
+// without re-fetching it — the write-side sibling of CheckReadPermissionFile.
+// PrepareWrite uses it to skip the permission path's redundant re-fetch
+// (store.GetFile + derivePath + JSON decode) on every write, and the NFS COMMIT
+// handler to gate its forced flush on the File it already loaded.
+func (s *Service) CheckWritePermissionFile(ctx *AuthContext, handle FileHandle, file *File) error {
 	return s.checkPermissionFile(ctx, handle, file, PermissionWrite, "write permission denied")
 }
 
@@ -656,7 +658,7 @@ func (s *Service) CheckParentCreateAccess(ctx *AuthContext, parentHandle FileHan
 // parent File — e.g. createEntry, which loads it once to validate the directory
 // type — passes it here so a single CreateFile no longer loads the same parent
 // handle three times. The no-ACL path routes through the file-passing
-// checkWritePermissionFile so it too avoids a re-fetch. Semantics are
+// CheckWritePermissionFile so it too avoids a re-fetch. Semantics are
 // byte-for-byte those of CheckParentCreateAccess (same NFSv4 ADD_FILE vs
 // ADD_SUBDIRECTORY mask, same read-only ordering); only the redundant reads go.
 func (s *Service) CheckParentCreateAccessFile(ctx *AuthContext, parentHandle FileHandle, file *File, isDirectory bool) error {
@@ -672,7 +674,7 @@ func (s *Service) CheckParentCreateAccessFile(ctx *AuthContext, parentHandle Fil
 	// POSIX-write check so mode bits / share-level grants apply uniformly. Reuse
 	// the already-loaded parent so the write check does not re-fetch the inode.
 	if file.ACL == nil {
-		return s.checkWritePermissionFile(ctx, parentHandle, file)
+		return s.CheckWritePermissionFile(ctx, parentHandle, file)
 	}
 
 	shareOpts, _ := store.GetShareOptions(ctx.Context, file.ShareName)
@@ -747,8 +749,15 @@ func (s *Service) CheckParentCreateAccessFile(ctx *AuthContext, parentHandle Fil
 // extensions (e.g. explicit DELETE ACE evaluation) and kept for signature
 // stability across call sites.
 func (s *Service) checkDeletePermission(ctx *AuthContext, parentHandle FileHandle, _ *File) error {
-	// Rule 1: upstream DELETE-access grant.
-	if ctx.HasDeleteAccess && !ctx.ShareReadOnly {
+	// Rule 1: upstream DELETE-access grant. shareForbidsWrites checks both
+	// read-only ceilings — the per-user one, frozen when the tree was
+	// connected, and the store-level share option, which can turn read-only
+	// while that tree connection or an open handle is still held. The
+	// store-level arm is not redundant with the per-user one and must not be
+	// dropped as an apparent duplicate: it is the only one that sees a share
+	// flipped read-only after the grant was frozen. It costs one share-options
+	// lookup, and only when the per-user ceiling is not already set.
+	if ctx.HasDeleteAccess && !s.shareForbidsWrites(ctx, parentHandle) {
 		return nil
 	}
 
@@ -1161,8 +1170,10 @@ func buildFileAccessEvalContext(file *File, authCtx *AuthContext) *acl.EvaluateC
 		// FileOwnerUID is forced to the AnonymousFileOwnerUID sentinel so
 		// the anonymous requester's zero-valued UID cannot collapse onto a
 		// root-owned file's owner and pick up OWNER@ ACEs plus the
-		// MS-DTYP §2.5.3.2 owner-implicit RC|WRITE_DAC grant. See #540.
+		// MS-DTYP §2.5.3.2 owner-implicit RC|WRITE_DAC grant. Anonymous
+		// confines the DACL walk to EVERYONE@.
 		return &acl.EvaluateContext{
+			Anonymous:    true,
 			FileOwnerUID: acl.AnonymousFileOwnerUID,
 			FileOwnerGID: file.GID,
 		}

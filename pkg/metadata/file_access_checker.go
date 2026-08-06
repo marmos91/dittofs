@@ -97,8 +97,9 @@ func buildAttrEvalContext(attr *FileAttr, authCtx *AuthContext) *acl.EvaluateCon
 		// Anonymous: force FileOwnerUID to the AnonymousFileOwnerUID sentinel so
 		// the requester's zero-valued UID cannot collapse onto a root-owned
 		// entry's owner and pick up OWNER@ ACEs plus the MS-DTYP §2.5.3.2
-		// owner-implicit grant. See #540.
+		// owner-implicit grant. Anonymous confines the DACL walk to EVERYONE@.
 		return &acl.EvaluateContext{
+			Anonymous:    true,
 			FileOwnerUID: acl.AnonymousFileOwnerUID,
 			FileOwnerGID: attr.GID,
 		}

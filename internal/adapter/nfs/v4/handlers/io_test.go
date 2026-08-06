@@ -1327,3 +1327,48 @@ func TestStateid4_EncodeDecode(t *testing.T) {
 		t.Errorf("other = %v, want %v", decoded.Other, original.Other)
 	}
 }
+
+// ============================================================================
+// COMMIT permission tests
+// ============================================================================
+
+// TestCommit_PermissionDenied verifies COMMIT is gated on write permission:
+// a non-root caller cannot force a flush of a mode-000 root-owned file.
+// Without the gate any client holding a traversable filehandle could drive
+// stable-storage flushes and uploads on files it may not modify.
+func TestCommit_PermissionDenied(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+
+	fileHandle := fx.createRegularFile(t, fx.rootHandle, "rootonly.txt", 0o000, 0, 0)
+
+	ctx := newRealFSContext(1000, 1000)
+	ctx.CurrentFH = make([]byte, len(fileHandle))
+	copy(ctx.CurrentFH, fileHandle)
+
+	result := fx.handler.handleCommit(ctx, bytes.NewReader(encodeCommitArgs(0, 0)))
+
+	if result.Status != types.NFS4ERR_ACCESS {
+		t.Errorf("COMMIT on a mode-000 root-owned file by non-root status = %d, want NFS4ERR_ACCESS (%d)",
+			result.Status, types.NFS4ERR_ACCESS)
+	}
+}
+
+// TestCommit_PermissionGranted is the companion: the owner of a writable file
+// still commits successfully, so the gate costs the normal write-then-commit
+// flow nothing.
+func TestCommit_PermissionGranted(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+
+	fileHandle := fx.createRegularFile(t, fx.rootHandle, "mine.txt", 0o644, 1000, 1000)
+	fx.writeContent(t, fileHandle, []byte("committed content"))
+
+	ctx := newRealFSContext(1000, 1000)
+	ctx.CurrentFH = make([]byte, len(fileHandle))
+	copy(ctx.CurrentFH, fileHandle)
+
+	result := fx.handler.handleCommit(ctx, bytes.NewReader(encodeCommitArgs(0, 0)))
+
+	if result.Status != types.NFS4_OK {
+		t.Errorf("COMMIT by the file owner status = %d, want NFS4_OK", result.Status)
+	}
+}
