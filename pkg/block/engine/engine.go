@@ -448,6 +448,23 @@ func (bs *Store) LocalForTest() local.LocalStore { return bs.local }
 // metadata file sizes against the journal's durable high-water mark (#1687).
 func (bs *Store) Local() local.LocalStore { return bs.local }
 
+// DurableExtent reports how far a payload's bytes are on stable storage: bytes
+// below the returned offset survive an unclean shutdown, bytes above it were
+// only buffered and are gone after one. ok is false when the local tier cannot
+// answer (no local store, or one with no durability model), which callers must
+// read as "unknown", never as "nothing is durable". Callers publish file sizes
+// against it so a persisted size never describes bytes a crash would take away,
+// which would leave the range reading as a hole full of zeros.
+func (bs *Store) DurableExtent(ctx context.Context, payloadID metadata.PayloadID) (int64, bool) {
+	reporter, ok := bs.local.(interface {
+		DurableExtent(ctx context.Context, payloadID string) (int64, bool)
+	})
+	if !ok {
+		return 0, false
+	}
+	return reporter.DurableExtent(ctx, string(payloadID))
+}
+
 // LocalStore returns nil: the journal-backed local tier is a per-file byte
 // cache, not a content-addressed block.Store, so there is no hash-namespace to
 // sweep. The journal self-manages local segment reclaim (dead-byte GC +

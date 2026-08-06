@@ -448,10 +448,36 @@ func (s *Service) FlushPendingWriteForFile(ctx *AuthContext, handle FileHandle, 
 // but before the background fsync cannot truncate ACK'd data because
 // reconcileMetadataSizeFromJournal grows metadata.Size up to the journal's
 // durable high-water mark on share start (max-only, never shrinks).
+//
+// Whatever the commit's own durability, the size it writes is held to the block
+// store's durable extent: a size may never describe bytes the block store would
+// lose in a crash. Such a size outliving its data degrades the range into an
+// ordinary sparse hole that reads back as zeros with no error — indistinguishable
+// from real data. Holding the size back instead yields what the write path
+// already promised: uncommitted bytes are simply not there, and the file is short
+// rather than silently wrong.
 func (s *Service) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *PendingWriteState, durable bool) error {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return err
+	}
+
+	// Bytes held back stay in the pending state, so readers still see the ACK'd
+	// size through the pending-write merge, and the first flush after the data is
+	// committed (NFS COMMIT / FILE_SYNC, SMB CLOSE / FLUSH, a segment rotation)
+	// publishes them. If the process dies before that, share start regrows the
+	// size from the journal's recovered extent — never past it.
+	size := state.MaxSize
+	if end, ok := s.durableExtentFor(shareNameForHandle(handle), state.PayloadID); ok {
+		// Floor the extent before widening it. A negative can only arrive from a
+		// resolver that breaks its contract, but converting one straight to uint64
+		// would wrap to a maximal bound, so the comparison below would pass every
+		// size through and the clamp would quietly stop clamping — the range it
+		// exists to withhold would be published and read back as zeros. Flooring
+		// makes an unusable answer withhold everything instead of nothing.
+		if durable := uint64(max(end, 0)); durable < size {
+			size = durable
+		}
 	}
 
 	commit := func(tx Transaction) error {
@@ -461,7 +487,7 @@ func (s *Service) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *
 		// recorded mtime (SetCachedFile with a size but no write time) still
 		// takes the read-modify-write path below rather than stamping zero.
 		if applier, ok := tx.(DataWriteApplier); ok && !state.LastMtime.IsZero() {
-			_, err := applier.ApplyDataWrite(ctx.Context, handle, state.MaxSize, state.LastMtime, state.ClearSetuidSetgid)
+			_, err := applier.ApplyDataWrite(ctx.Context, handle, size, state.LastMtime, state.ClearSetuidSetgid)
 			return err
 		}
 
@@ -471,8 +497,8 @@ func (s *Service) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *
 		}
 
 		// Apply pending changes
-		if state.MaxSize > file.Size {
-			file.Size = state.MaxSize
+		if size > file.Size {
+			file.Size = size
 		}
 		// Only update timestamps if a real write recorded a non-zero mtime.
 		// A zero LastMtime means this state was created by SetCachedFile for
@@ -490,9 +516,21 @@ func (s *Service) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *
 	}
 
 	if durable {
-		return store.WithTransaction(ctx.Context, commit)
+		err = store.WithTransaction(ctx.Context, commit)
+	} else {
+		err = withRelaxedTransaction(store, ctx.Context, commit)
 	}
-	return withRelaxedTransaction(store, ctx.Context, commit)
+	if err != nil {
+		return err
+	}
+
+	// Anything held back above is still uncommitted, so put the state back: the
+	// next flush retries it once the data behind it is durable. RestorePending
+	// merges, so a write that raced in keeps the larger size.
+	if size < state.MaxSize {
+		s.pendingWrites.RestorePending(handle, state)
+	}
+	return nil
 }
 
 // GetPendingSize returns the pending size for a file if there are uncommitted writes.

@@ -226,6 +226,10 @@ func (s *FSStore) FileSize(ctx context.Context, payloadID string) (int64, bool) 
 	return s.Store.FileSize(ctx, journal.FileID(payloadID))
 }
 
+func (s *FSStore) DurableExtent(ctx context.Context, payloadID string) (int64, bool) {
+	return s.Store.DurableExtent(ctx, journal.FileID(payloadID))
+}
+
 func (s *FSStore) DataExtents(ctx context.Context, payloadID string, fileSize int64) ([][2]uint64, error) {
 	return s.Store.DataExtents(ctx, journal.FileID(payloadID), fileSize)
 }

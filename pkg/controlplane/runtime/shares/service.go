@@ -273,6 +273,15 @@ type MetadataWritebackSetter interface {
 	SetShareWriteback(shareName string, writeback bool)
 }
 
+// MetadataDurableExtentSetter gives the metadata service a way to ask how far a
+// payload's bytes are on stable storage, so a committed file size never runs
+// ahead of the data it describes. Only the control plane can answer: it owns
+// both the metadata store and the per-share block store. The concrete
+// *metadata.Service satisfies it.
+type MetadataDurableExtentSetter interface {
+	SetDurableExtentResolver(fn metadata.DurableExtentFunc)
+}
+
 // BlockStoreConfigProvider resolves block store configurations from the control plane DB.
 //
 // A share's LocalBlockStoreID/RemoteBlockStoreID normally hold the block store
@@ -722,6 +731,12 @@ func (s *Service) AddShare(
 		wb.SetShareWriteback(config.Name, share.writeback)
 	}
 
+	// Let size commits consult the block store's durable extent. The resolver is
+	// share-agnostic, so re-installing it on every AddShare is idempotent.
+	if de, ok := metadataSvc.(MetadataDurableExtentSetter); ok {
+		de.SetDurableExtentResolver(s.durableExtent)
+	}
+
 	// Phase 4: Convert the reservation into a registry entry under s.mu.
 	// Only now is the share visible to protocol handlers. The reservation has
 	// held the name exclusively since Phase 0, so registry[name] cannot already
@@ -750,6 +765,21 @@ func (s *Service) AddShare(
 	s.notifyShareChange()
 
 	return nil
+}
+
+// durableExtent reports how far a payload's bytes are on stable storage in its
+// share's block store. A share with no block store answers "unknown" (false),
+// and the caller then commits the size unclamped as before.
+//
+// It is the commit-time half of the size invariant whose restart-time half is
+// reconcileMetadataSizeFromJournal: a persisted size never runs ahead of the
+// durable data, and share start grows it back up to that data.
+func (s *Service) durableExtent(shareName string, payloadID metadata.PayloadID) (int64, bool) {
+	bs, err := s.GetBlockStoreForShare(shareName)
+	if err != nil || bs == nil {
+		return 0, false
+	}
+	return bs.DurableExtent(context.Background(), payloadID)
 }
 
 // reconcileMetadataSizeFromJournal grows each file's metadata size up to the
