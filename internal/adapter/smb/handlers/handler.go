@@ -417,8 +417,14 @@ type TreeConnection struct {
 // read-modify-write region; release before any I/O to the metadata store to
 // keep the critical section bounded. Atomic-typed fields
 // (NotifyOverflowed/NotifyMaxBufferSize/NotifyCompletionFilter) and immutable
-// fields (FileID/TreeID/SessionID/Path/MetadataHandle/PayloadID/CreateOptions)
-// are safe to access without the mutex.
+// fields (FileID/TreeID/SessionID/MetadataHandle/CreateOptions) are safe to
+// access without the mutex.
+//
+// PayloadID, Path, FileName and ParentHandle are NOT immutable: the first WRITE
+// on a file created empty caches the payload the metadata store allocated,
+// SET_REPARSE_POINT and COPYCHUNK replace it, and SET_INFO rename rewrites the
+// name/path/parent triple. Reach them through GetPayloadID / SetPayloadID and
+// GetFileName, or under `mu` directly.
 type OpenFile struct {
 	// mu guards the mutable fields listed in the struct comment above. Held
 	// across QueryDirectory enumeration R-M-W, freeze/thaw bookkeeping in
@@ -583,6 +589,11 @@ type OpenFile struct {
 	// persisted at CLOSE.
 	SmbAtimeWrittenAt time.Time // when the last READ-driven atime reached the store
 	SmbPendingAtime   time.Time // newest access time not yet written to the store (zero ⇒ none)
+
+	// SmbParentAtimeWrittenAt bounds the parent-directory LastAccessTime bump a
+	// WRITE performs, the way SmbAtimeWrittenAt bounds the file's. A suppressed
+	// bump is dropped rather than deferred — see noteSmbParentAccess.
+	SmbParentAtimeWrittenAt time.Time
 
 	// Oplock state
 	// OplockLevel is the current oplock level for this handle.
@@ -843,6 +854,41 @@ func (f *OpenFile) IsAtimeFrozen() bool {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	return f.AtimeFrozen
+}
+
+// GetPayloadID returns the cached payload identifier under the read lock.
+// WRITE, SET_REPARSE_POINT and COPYCHUNK publish it on a live handle, so
+// readers on other channels must not touch the field directly.
+func (f *OpenFile) GetPayloadID() metadata.PayloadID {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.PayloadID
+}
+
+// SetPayloadID publishes a new cached payload identifier under the write lock.
+func (f *OpenFile) SetPayloadID(id metadata.PayloadID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.PayloadID = id
+}
+
+// GetFileName returns the name within the parent directory under the read lock.
+// SET_INFO rename rewrites it on a live handle, so a caller needing the name
+// alongside Path or ParentHandle must snapshot the group under RLock instead.
+func (f *OpenFile) GetFileName() string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.FileName
+}
+
+// GetPath returns the full path under the read lock. SET_INFO rename rewrites
+// it on a live handle, so a caller needing the path alongside FileName or
+// ParentHandle must snapshot the group under RLock instead of calling this
+// once per field.
+func (f *OpenFile) GetPath() string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.Path
 }
 
 // IsMtimeFrozen returns the MtimeFrozen flag under the read lock.
@@ -1388,7 +1434,7 @@ func (h *Handler) closeFilesWithFilter(
 		}
 
 		// Flush cache if needed
-		if !openFile.IsDirectory && openFile.PayloadID != "" {
+		if !openFile.IsDirectory && openFile.GetPayloadID() != "" {
 			h.flushFileCache(ctx, openFile)
 		}
 
@@ -1905,29 +1951,33 @@ func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64, isDiscon
 // flushFileCache flushes cached data for an open file.
 // This is a helper used during cleanup to ensure data durability.
 func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
-	if openFile.PayloadID == "" {
+	payloadID := openFile.GetPayloadID()
+	if payloadID == "" {
 		return
 	}
+	// Snapshot once: a rename landing mid-flush would otherwise let the three
+	// log lines below name different paths for the same operation.
+	path := openFile.GetPath()
 
 	blockStore, err := h.Registry.GetBlockStoreForShare(openFile.ShareName)
 	if err != nil {
 		logger.Warn("flushFileCache: block store not available for handle",
-			"path", openFile.Path,
+			"path", path,
 			"error", err)
 		return
 	}
 
 	// Use blocking Flush for immediate durability
-	_, flushErr := blockStore.Flush(ctx, string(openFile.PayloadID))
+	_, flushErr := blockStore.Flush(ctx, string(payloadID))
 	if flushErr != nil {
 		logger.Warn("flushFileCache: flush failed",
-			"path", openFile.Path,
-			"payloadID", openFile.PayloadID,
+			"path", path,
+			"payloadID", payloadID,
 			"error", flushErr)
 	} else {
 		logger.Debug("flushFileCache: flushed",
-			"path", openFile.Path,
-			"payloadID", openFile.PayloadID)
+			"path", path,
+			"payloadID", payloadID)
 	}
 }
 

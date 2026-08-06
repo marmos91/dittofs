@@ -61,6 +61,29 @@ func noteSmbAccess(openFile *OpenFile, t time.Time) bool {
 	return true
 }
 
+// noteSmbParentAccess records a parent-directory access at t on the handle and
+// reports whether it has to reach the metadata store now. The first access on a
+// handle always writes.
+//
+// Unlike noteSmbAccess, a suppressed bump is dropped rather than held: the
+// parent directory has no handle here to carry it and no QUERY_INFO overlay to
+// surface it, so its LastAccessTime trails the newest write by at most
+// smbAtimeUpdateWindow instead of serializing every WRITE on the parent row.
+//
+// Takes openFile.mu (write).
+func noteSmbParentAccess(openFile *OpenFile, t time.Time) bool {
+	if openFile == nil {
+		return false
+	}
+	openFile.mu.Lock()
+	defer openFile.mu.Unlock()
+	if !openFile.SmbParentAtimeWrittenAt.IsZero() && t.Sub(openFile.SmbParentAtimeWrittenAt) < smbAtimeUpdateWindow {
+		return false
+	}
+	openFile.SmbParentAtimeWrittenAt = t
+	return true
+}
+
 // takeSmbPendingAtime removes and returns the access time held on the handle
 // since the last store write, or the zero time when there is none. Called at
 // CLOSE so a coalesced bump is not lost with the handle.

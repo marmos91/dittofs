@@ -1061,6 +1061,14 @@ func buildPersistedDurableHandle(
 	leaseState uint32,
 	leaseEpoch uint16,
 ) *lock.PersistedDurableHandle {
+	// The handle lock is held across the whole snapshot rather than per field.
+	// SET_INFO rename rewrites Path, FileName and ParentHandle together, and
+	// this row is replayed on reconnect: reading them at different instants
+	// could persist one rename's name against another's parent, which no later
+	// operation would correct. Field reads and copies only, no store I/O.
+	openFile.mu.RLock()
+	defer openFile.mu.RUnlock()
+
 	// Clone MetadataHandle to avoid aliasing the live OpenFile's slice
 	metaHandle := make([]byte, len(openFile.MetadataHandle))
 	copy(metaHandle, openFile.MetadataHandle)

@@ -552,7 +552,7 @@ func (h *Handler) executeCopyChunks(
 
 	// Update cached PayloadID on destination (matches write.go pattern).
 	// This ensures close.go flushes block store data correctly.
-	dstOpen.PayloadID = lastWritePayloadID
+	dstOpen.SetPayloadID(lastWritePayloadID)
 
 	// Per MS-FSA 2.1.5.14.2: restore frozen timestamps after writes
 	h.restoreFrozenTimestamps(authCtx, dstOpen)
