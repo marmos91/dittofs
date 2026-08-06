@@ -1372,3 +1372,82 @@ func TestCommit_PermissionGranted(t *testing.T) {
 		t.Errorf("COMMIT by the file owner status = %d, want NFS4_OK", result.Status)
 	}
 }
+
+// createNonRegular creates a non-regular, non-directory object and returns its handle.
+func (fx *ioTestFixture) createNonRegular(t *testing.T, name string, fileType metadata.FileType) metadata.FileHandle {
+	t.Helper()
+
+	var uid, gid uint32
+	authCtx := &metadata.AuthContext{
+		Context:    context.Background(),
+		ClientAddr: "test:9999",
+		AuthMethod: "unix",
+		Identity:   &metadata.Identity{UID: &uid, GID: &gid},
+	}
+
+	attr := &metadata.FileAttr{Mode: 0o644}
+
+	var file *metadata.File
+	var err error
+	if fileType == metadata.FileTypeSymlink {
+		file, _, err = fx.metaSvc.CreateSymlink(authCtx, fx.rootHandle, name, "/target", attr)
+	} else {
+		file, _, err = fx.metaSvc.CreateSpecialFile(authCtx, fx.rootHandle, name, fileType, attr, 1, 3)
+	}
+	if err != nil {
+		t.Fatalf("create %q: %v", name, err)
+	}
+
+	fh, err := metadata.EncodeFileHandle(file)
+	if err != nil {
+		t.Fatalf("encode handle: %v", err)
+	}
+	return fh
+}
+
+// TestReadNonRegularType pins the per-file-type error READ and READ_PLUS owe a
+// client that reads a non-regular filehandle (see readTypeError for the RFC
+// derivation). Collapsing every non-regular type to NFS4ERR_ISDIR tells a
+// client a FIFO is a directory.
+func TestReadNonRegularType(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+
+	// READ and READ_PLUS decode the same stateid/offset/count argument triple.
+	args := encodeReadArgs(&anonymousStateid, 0, 1024)
+
+	cases := []struct {
+		name     string
+		fileType metadata.FileType
+		want     uint32
+	}{
+		{"directory", metadata.FileTypeDirectory, types.NFS4ERR_ISDIR},
+		{"symlink", metadata.FileTypeSymlink, types.NFS4ERR_SYMLINK},
+		{"fifo", metadata.FileTypeFIFO, types.NFS4ERR_INVAL},
+		{"socket", metadata.FileTypeSocket, types.NFS4ERR_INVAL},
+		{"blockdev", metadata.FileTypeBlockDevice, types.NFS4ERR_INVAL},
+		{"chardev", metadata.FileTypeCharDevice, types.NFS4ERR_INVAL},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var handle metadata.FileHandle
+			if tc.fileType == metadata.FileTypeDirectory {
+				handle = fx.createDirectory(t, fx.rootHandle, "dir_"+tc.name)
+			} else {
+				handle = fx.createNonRegular(t, "obj_"+tc.name, tc.fileType)
+			}
+
+			ctx := newRealFSContext(0, 0)
+			ctx.CurrentFH = handle
+			if got := fx.handler.handleRead(ctx, bytes.NewReader(args)).Status; got != tc.want {
+				t.Errorf("READ status = %d, want %d", got, tc.want)
+			}
+
+			ctx = newRealFSContext(0, 0)
+			ctx.CurrentFH = handle
+			if got := fx.handler.handleReadPlus(ctx, bytes.NewReader(args)).Status; got != tc.want {
+				t.Errorf("READ_PLUS status = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

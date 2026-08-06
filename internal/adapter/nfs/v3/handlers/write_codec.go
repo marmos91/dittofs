@@ -189,47 +189,11 @@ func (resp *WriteResponse) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("failed to write status: %w", err)
 	}
 
-	// Write WCC data (Weak Cache Consistency)
-	// WCC data is included in both success and error cases to help
-	// clients maintain cache consistency.
+	// WCC (Weak Cache Consistency) data is included in both success and error
+	// cases to help clients maintain cache consistency.
 
-	// Write pre-op attributes
-	if resp.AttrBefore != nil {
-		// Present flag = TRUE (1)
-		if err := binary.Write(&buf, binary.BigEndian, uint32(1)); err != nil {
-			return nil, fmt.Errorf("failed to write pre-op present flag: %w", err)
-		}
-
-		// Write WCC attributes (size, mtime, ctime)
-		if err := binary.Write(&buf, binary.BigEndian, resp.AttrBefore.Size); err != nil {
-			return nil, fmt.Errorf("failed to write pre-op size: %w", err)
-		}
-
-		if err := binary.Write(&buf, binary.BigEndian, resp.AttrBefore.Mtime.Seconds); err != nil {
-			return nil, fmt.Errorf("failed to write pre-op mtime seconds: %w", err)
-		}
-
-		if err := binary.Write(&buf, binary.BigEndian, resp.AttrBefore.Mtime.Nseconds); err != nil {
-			return nil, fmt.Errorf("failed to write pre-op mtime nseconds: %w", err)
-		}
-
-		if err := binary.Write(&buf, binary.BigEndian, resp.AttrBefore.Ctime.Seconds); err != nil {
-			return nil, fmt.Errorf("failed to write pre-op ctime seconds: %w", err)
-		}
-
-		if err := binary.Write(&buf, binary.BigEndian, resp.AttrBefore.Ctime.Nseconds); err != nil {
-			return nil, fmt.Errorf("failed to write pre-op ctime nseconds: %w", err)
-		}
-	} else {
-		// Present flag = FALSE (0)
-		if err := binary.Write(&buf, binary.BigEndian, uint32(0)); err != nil {
-			return nil, fmt.Errorf("failed to write pre-op absent flag: %w", err)
-		}
-	}
-
-	// Write post-op attributes
-	if err := xdr.EncodeOptionalFileAttr(&buf, resp.AttrAfter); err != nil {
-		return nil, fmt.Errorf("failed to encode post-op attributes: %w", err)
+	if err := xdr.EncodeWccData(&buf, resp.AttrBefore, resp.AttrAfter); err != nil {
+		return nil, fmt.Errorf("failed to encode wcc data: %w", err)
 	}
 
 	// Error case: Return early if status is not OK

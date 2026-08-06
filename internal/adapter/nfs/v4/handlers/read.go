@@ -144,10 +144,11 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 
 	// Verify it's a regular file
 	if file.Type != metadata.FileTypeRegular {
+		status := readTypeError(file.Type)
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_ISDIR,
+			Status: status,
 			OpCode: types.OP_READ,
-			Data:   encodeStatusOnly(types.NFS4ERR_ISDIR),
+			Data:   encodeStatusOnly(status),
 		}
 	}
 
@@ -218,6 +219,27 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 		"client", ctx.ClientAddr)
 
 	return encodeRead4resok(eof, readResult.Data)
+}
+
+// readTypeError maps a non-regular file type to the error READ and READ_PLUS
+// must report for it.
+//
+// RFC 7530 Section 16.23.4: a directory is NFS4ERR_ISDIR, "otherwise,
+// NFS4ERR_INVAL is returned". RFC 5661 Section 18.22.3 — which RFC 7862
+// Section 15.10.3 makes READ_PLUS inherit — splits a symbolic link out of that
+// "otherwise" case as NFS4ERR_SYMLINK, an error RFC 7530 Section 13.2 also
+// lists as valid for READ. The remaining types (block/char device, socket,
+// FIFO) stay NFS4ERR_INVAL rather than RFC 5661's NFS4ERR_WRONG_TYPE, which
+// does not exist in RFC 7530 — this handler serves v4.0 compounds as well.
+func readTypeError(fileType metadata.FileType) uint32 {
+	switch fileType {
+	case metadata.FileTypeDirectory:
+		return types.NFS4ERR_ISDIR
+	case metadata.FileTypeSymlink:
+		return types.NFS4ERR_SYMLINK
+	default:
+		return types.NFS4ERR_INVAL
+	}
 }
 
 // encodeRead4resok encodes a successful READ4 response.
