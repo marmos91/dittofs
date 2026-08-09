@@ -67,11 +67,11 @@ func encodeOpenUncheckedSizeArgs(
 // succeed (the create is idempotent), returning a valid stateid rather than
 // NFS4ERR_EXIST.
 func TestOpen_Exclusive4_RetrySameVerifier(t *testing.T) {
-	const clientID = uint64(0xCAFE)
 	owner := []byte("excl-owner")
 	const verf = uint64(0x0123456789abcdef)
 
 	fx := newIOTestFixture(t, "/export")
+	clientID := testClientID(t, fx.handler.StateManager, "excl-test-client")
 	ctx := newRealFSContext(0, 0)
 
 	open := func() *types.CompoundResult {
@@ -107,10 +107,10 @@ func TestOpen_Exclusive4_RetrySameVerifier(t *testing.T) {
 // retransmitted with a DIFFERENT verifier (i.e. a genuine conflict on an
 // already-existing file) returns NFS4ERR_EXIST.
 func TestOpen_Exclusive4_RetryDifferentVerifier(t *testing.T) {
-	const clientID = uint64(0xBEEF)
 	owner := []byte("excl-owner2")
 
 	fx := newIOTestFixture(t, "/export")
+	clientID := testClientID(t, fx.handler.StateManager, "excl-test-client")
 	ctx := newRealFSContext(0, 0)
 
 	open := func(verf uint64) *types.CompoundResult {
@@ -135,10 +135,10 @@ func TestOpen_Exclusive4_RetryDifferentVerifier(t *testing.T) {
 // pre-existing non-exclusive file (whose idempotency token defaults to 0): it
 // must return NFS4ERR_EXIST rather than being mistaken for an idempotent retry.
 func TestOpen_Exclusive4_ZeroVerifierOnExistingFileConflicts(t *testing.T) {
-	const clientID = uint64(0xABCD)
 	owner := []byte("zero-verf-owner")
 
 	fx := newIOTestFixture(t, "/export")
+	clientID := testClientID(t, fx.handler.StateManager, "excl-test-client")
 	ctx := newRealFSContext(0, 0)
 
 	// Pre-create a file via a normal (non-exclusive) path -> token stays 0.
@@ -158,10 +158,10 @@ func TestOpen_Exclusive4_ZeroVerifierOnExistingFileConflicts(t *testing.T) {
 // OPEN that requests a size change (truncate) but does not carry WRITE access
 // is rejected with NFS4ERR_OPENMODE, mirroring the SETATTR size-change gating.
 func TestOpen_Unchecked4_SizeOnReadOnlyOpenRejected(t *testing.T) {
-	const clientID = uint64(0x5151)
 	owner := []byte("ro-trunc-owner")
 
 	fx := newIOTestFixture(t, "/export")
+	clientID := testClientID(t, fx.handler.StateManager, "excl-test-client")
 	ctx := newRealFSContext(0, 0)
 
 	fh := fx.createRegularFile(t, fx.rootHandle, "ro.txt", 0o644, 0, 0)
@@ -191,10 +191,10 @@ func TestOpen_Unchecked4_SizeOnReadOnlyOpenRejected(t *testing.T) {
 // UNCHECKED4 OPEN of an existing file applies the supplied createattrs. A
 // requested size=0 must truncate the file's metadata size to zero.
 func TestOpen_Unchecked4_ExistingFileTruncates(t *testing.T) {
-	const clientID = uint64(0xF00D)
 	owner := []byte("unchecked-owner")
 
 	fx := newIOTestFixture(t, "/export")
+	clientID := testClientID(t, fx.handler.StateManager, "excl-test-client")
 	ctx := newRealFSContext(0, 0)
 
 	// Create a file and give it some content/size.

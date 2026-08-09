@@ -63,7 +63,7 @@ func TestOpenStateByFile_OpenThenCloseRemovesFromIndex(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	fh := []byte("fh-open-close")
 
-	stateid := openConfirmed(t, sm, 0, []byte("owner-oc"), fh,
+	stateid := openConfirmed(t, sm, registerTestClient(t, sm), []byte("owner-oc"), fh,
 		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_NONE)
 
 	if n := fileIndexLen(sm, fh); n != 1 {
@@ -87,9 +87,9 @@ func TestOpenStateByFile_MultipleOwnersSameFile(t *testing.T) {
 	fh := []byte("fh-multi-owner")
 
 	// Two distinct owners with non-conflicting share modes (both READ, no deny).
-	sidA := openConfirmed(t, sm, 0, []byte("ownerA"), fh,
+	sidA := openConfirmed(t, sm, registerTestClient(t, sm), []byte("ownerA"), fh,
 		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE)
-	openConfirmed(t, sm, 0, []byte("ownerB"), fh,
+	openConfirmed(t, sm, registerTestClient(t, sm), []byte("ownerB"), fh,
 		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE)
 
 	if n := fileIndexLen(sm, fh); n != 2 {
@@ -140,14 +140,15 @@ func TestOpenStateByFile_FreeStateidRemovesFromIndex(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	fh := []byte("fh-free-stateid")
 
-	stateid := openConfirmed(t, sm, 0, []byte("owner-free"), fh,
+	clientID := registerTestClient(t, sm)
+	stateid := openConfirmed(t, sm, clientID, []byte("owner-free"), fh,
 		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_NONE)
 	if n := fileIndexLen(sm, fh); n != 1 {
 		t.Fatalf("after open: index len = %d, want 1", n)
 	}
 
 	sm.mu.Lock()
-	err := sm.freeOpenStateidLocked(0, &stateid)
+	err := sm.freeOpenStateidLocked(clientID, &stateid)
 	sm.mu.Unlock()
 	if err != nil {
 		t.Fatalf("freeOpenStateidLocked: %v", err)

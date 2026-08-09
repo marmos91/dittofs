@@ -27,7 +27,6 @@ import (
 // (so new OPENs are unconstrained, as before), while still being retained for
 // CLOSE replay via closedOwnerByOther.
 func TestOpen_CreateGuarded_AfterCloseSameOwner(t *testing.T) {
-	const clientID = uint64(0x12345678)
 	owner := []byte("pjdfstest-open-owner")
 
 	decodeStateid := func(t *testing.T, data []byte) *types.Stateid4 {
@@ -46,6 +45,7 @@ func TestOpen_CreateGuarded_AfterCloseSameOwner(t *testing.T) {
 	run := func(t *testing.T, file2Seq uint32) uint32 {
 		t.Helper()
 		fx := newIOTestFixture(t, "/export")
+		clientID := testClientID(t, fx.handler.StateManager, "after-close-client")
 		// Operate as the export-root owner (UID/GID 1000) so the GUARDED
 		// creates succeed; this test exercises open-owner seqid semantics,
 		// not permission enforcement, so the specific UID is immaterial.

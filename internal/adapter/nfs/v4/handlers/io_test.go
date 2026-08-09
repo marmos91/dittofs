@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/pkg/block/engine"
@@ -321,6 +322,35 @@ func encodeCommitArgs(offset uint64, count uint32) []byte {
 	return buf.Bytes()
 }
 
+// testClientID returns the ID of a confirmed v4.0 client on sm, registering it
+// on first use and returning the same ID for the same name afterwards.
+//
+// OPEN rejects a clientid that never completed SETCLIENTID /
+// SETCLIENTID_CONFIRM, so tests that drive OPEN must present an established
+// client rather than an arbitrary number. Distinct names give distinct clients.
+func testClientID(t *testing.T, sm *state.StateManager, name string) uint64 {
+	t.Helper()
+
+	for _, record := range sm.ListV40Clients() {
+		if record.ClientIDString == name {
+			return record.ClientID
+		}
+	}
+
+	result, err := sm.SetClientID(name, [8]byte{1, 2, 3, 4, 5, 6, 7, 8}, state.CallbackInfo{
+		Program: 0x40000000,
+		NetID:   "tcp",
+		Addr:    "127.0.0.1.8.1",
+	}, "127.0.0.1:1234")
+	if err != nil {
+		t.Fatalf("SetClientID(%s): %v", name, err)
+	}
+	if err := sm.ConfirmClientID(result.ClientID, result.ConfirmVerifier); err != nil {
+		t.Fatalf("ConfirmClientID(%s): %v", name, err)
+	}
+	return result.ClientID
+}
+
 // ============================================================================
 // OPEN Tests
 // ============================================================================
@@ -336,12 +366,12 @@ func TestOpen_CreateFile_Success(t *testing.T) {
 		1,                             // seqid
 		types.OPEN4_SHARE_ACCESS_BOTH, // share_access
 		types.OPEN4_SHARE_DENY_NONE,   // share_deny
-		0x12345678,                    // clientid
-		[]byte("test-owner"),          // owner
-		types.OPEN4_CREATE,            // opentype
-		types.UNCHECKED4,              // createmode
-		types.CLAIM_NULL,              // claim_type
-		"newfile.txt",                 // filename
+		testClientID(t, fx.handler.StateManager, "io-test-client"), // clientid
+		[]byte("test-owner"), // owner
+		types.OPEN4_CREATE,   // opentype
+		types.UNCHECKED4,     // createmode
+		types.CLAIM_NULL,     // claim_type
+		"newfile.txt",        // filename
 	)
 
 	result := fx.handler.handleOpen(ctx, bytes.NewReader(args))
@@ -422,7 +452,7 @@ func TestOpen_ExistingFile_NocreateSuccess(t *testing.T) {
 		1,
 		types.OPEN4_SHARE_ACCESS_READ,
 		types.OPEN4_SHARE_DENY_NONE,
-		0x12345678,
+		testClientID(t, fx.handler.StateManager, "io-test-client"),
 		[]byte("test-owner"),
 		types.OPEN4_NOCREATE,
 		0,
@@ -448,7 +478,7 @@ func TestOpen_NocreateNonexistent_ReturnsNOENT(t *testing.T) {
 		1,
 		types.OPEN4_SHARE_ACCESS_READ,
 		types.OPEN4_SHARE_DENY_NONE,
-		0x12345678,
+		testClientID(t, fx.handler.StateManager, "io-test-client"),
 		[]byte("test-owner"),
 		types.OPEN4_NOCREATE,
 		0,
@@ -477,7 +507,7 @@ func TestOpen_GuardedExisting_ReturnsEXIST(t *testing.T) {
 		1,
 		types.OPEN4_SHARE_ACCESS_BOTH,
 		types.OPEN4_SHARE_DENY_NONE,
-		0x12345678,
+		testClientID(t, fx.handler.StateManager, "io-test-client"),
 		[]byte("test-owner"),
 		types.OPEN4_CREATE,
 		types.GUARDED4,
@@ -506,7 +536,7 @@ func TestOpen_UncheckedExisting_OpensFile(t *testing.T) {
 		1,
 		types.OPEN4_SHARE_ACCESS_BOTH,
 		types.OPEN4_SHARE_DENY_NONE,
-		0x12345678,
+		testClientID(t, fx.handler.StateManager, "io-test-client"),
 		[]byte("test-owner"),
 		types.OPEN4_CREATE,
 		types.UNCHECKED4,
@@ -533,7 +563,7 @@ func TestOpen_PseudoFS_ReturnsROFS(t *testing.T) {
 		1,
 		types.OPEN4_SHARE_ACCESS_BOTH,
 		types.OPEN4_SHARE_DENY_NONE,
-		0x12345678,
+		0x12345678, // rejected before any state work: the pseudo-fs is read-only
 		[]byte("test-owner"),
 		types.OPEN4_CREATE,
 		types.UNCHECKED4,
@@ -576,7 +606,7 @@ func TestOpen_InvalidFilename(t *testing.T) {
 		1,
 		types.OPEN4_SHARE_ACCESS_READ,
 		types.OPEN4_SHARE_DENY_NONE,
-		0x12345678,
+		testClientID(t, fx.handler.StateManager, "io-test-client"),
 		[]byte("test-owner"),
 		types.OPEN4_NOCREATE,
 		0,
@@ -589,6 +619,29 @@ func TestOpen_InvalidFilename(t *testing.T) {
 	if result.Status != types.NFS4ERR_BADNAME {
 		t.Errorf("OPEN with slash status = %d, want NFS4ERR_BADNAME (%d)",
 			result.Status, types.NFS4ERR_BADNAME)
+	}
+}
+
+// TestOpen_UnknownClientID_ReturnsStaleClientID checks that the handler
+// surfaces the state layer's rejection of an OPEN whose clientid names no
+// established client. RFC 7530 Section 13.2 lists NFS4ERR_STALE_CLIENTID among
+// OPEN's valid responses; it is what tells the client to run SETCLIENTID.
+func TestOpen_UnknownClientID_ReturnsStaleClientID(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+
+	ctx := newRealFSContext(0, 0)
+	setCurrentFH(ctx, fx.rootHandle)
+
+	args := encodeOpenArgs(
+		1, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE,
+		0xDEADBEEFCAFEF00D, []byte("ghost-owner"),
+		types.OPEN4_CREATE, types.UNCHECKED4, types.CLAIM_NULL, "ghost.txt",
+	)
+
+	result := fx.handler.handleOpen(ctx, bytes.NewReader(args))
+	if result.Status != types.NFS4ERR_STALE_CLIENTID {
+		t.Errorf("OPEN with an unregistered clientid status = %d, want NFS4ERR_STALE_CLIENTID (%d)",
+			result.Status, types.NFS4ERR_STALE_CLIENTID)
 	}
 }
 
@@ -606,7 +659,7 @@ func TestOpenConfirm_Success(t *testing.T) {
 
 	openArgs := encodeOpenArgs(
 		1, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE,
-		0x12345678, []byte("test-owner"),
+		testClientID(t, fx.handler.StateManager, "io-test-client"), []byte("test-owner"),
 		types.OPEN4_CREATE, types.UNCHECKED4, types.CLAIM_NULL, "file.txt",
 	)
 	openResult := fx.handler.handleOpen(ctx, bytes.NewReader(openArgs))
@@ -1180,7 +1233,7 @@ func TestWriteReadRoundtrip(t *testing.T) {
 
 	openArgs := encodeOpenArgs(
 		1, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE,
-		0x12345678, []byte("test-owner"),
+		testClientID(t, fx.handler.StateManager, "io-test-client"), []byte("test-owner"),
 		types.OPEN4_CREATE, types.UNCHECKED4, types.CLAIM_NULL, "roundtrip.txt",
 	)
 	openResult := fx.handler.handleOpen(ctx, bytes.NewReader(openArgs))

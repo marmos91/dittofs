@@ -46,11 +46,11 @@ func TestOpenFile_ShareDeny_BlocksConflictingAccessAcrossOwners(t *testing.T) {
 	fh := []byte("fh-deny-write")
 
 	// Owner A opens WRITE and denies WRITE to everyone else.
-	openConfirmed(t, sm, 0, []byte("ownerA"), fh,
+	openConfirmed(t, sm, registerTestClient(t, sm), []byte("ownerA"), fh,
 		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_WRITE)
 
 	// Owner B's OPEN requesting WRITE access must be refused.
-	_, err := sm.OpenFile(0, []byte("ownerB"), 1, fh,
+	_, err := sm.OpenFile(registerTestClient(t, sm), []byte("ownerB"), 1, fh,
 		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
 	expectShareDenied(t, err)
 }
@@ -60,12 +60,12 @@ func TestOpenFile_ShareDeny_RequestedDenyExcludesExistingAccess(t *testing.T) {
 	fh := []byte("fh-existing-read")
 
 	// Owner A holds a plain READ open with no deny.
-	openConfirmed(t, sm, 0, []byte("ownerA"), fh,
+	openConfirmed(t, sm, registerTestClient(t, sm), []byte("ownerA"), fh,
 		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE)
 
 	// Owner B tries to open and DENY_READ — its requested deny excludes A's
 	// existing read access, so the OPEN must be refused.
-	_, err := sm.OpenFile(0, []byte("ownerB"), 1, fh,
+	_, err := sm.OpenFile(registerTestClient(t, sm), []byte("ownerB"), 1, fh,
 		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_READ, types.CLAIM_NULL)
 	expectShareDenied(t, err)
 }
@@ -74,10 +74,10 @@ func TestOpenFile_ShareDeny_NonConflictingCombosSucceed(t *testing.T) {
 	t.Run("read_deny_none_then_read", func(t *testing.T) {
 		sm := NewStateManager(90 * time.Second)
 		fh := []byte("fh-ok-read-read")
-		openConfirmed(t, sm, 0, []byte("ownerA"), fh,
+		openConfirmed(t, sm, registerTestClient(t, sm), []byte("ownerA"), fh,
 			types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE)
 		// Second reader, no deny — no conflict.
-		if _, err := sm.OpenFile(0, []byte("ownerB"), 1, fh,
+		if _, err := sm.OpenFile(registerTestClient(t, sm), []byte("ownerB"), 1, fh,
 			types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); err != nil {
 			t.Fatalf("non-conflicting OPEN should succeed: %v", err)
 		}
@@ -86,10 +86,10 @@ func TestOpenFile_ShareDeny_NonConflictingCombosSucceed(t *testing.T) {
 	t.Run("deny_write_then_read", func(t *testing.T) {
 		sm := NewStateManager(90 * time.Second)
 		fh := []byte("fh-ok-denywrite-read")
-		openConfirmed(t, sm, 0, []byte("ownerA"), fh,
+		openConfirmed(t, sm, registerTestClient(t, sm), []byte("ownerA"), fh,
 			types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_WRITE)
 		// B requests READ only; A denies WRITE, not READ — no conflict.
-		if _, err := sm.OpenFile(0, []byte("ownerB"), 1, fh,
+		if _, err := sm.OpenFile(registerTestClient(t, sm), []byte("ownerB"), 1, fh,
 			types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); err != nil {
 			t.Fatalf("non-conflicting OPEN should succeed: %v", err)
 		}
@@ -101,12 +101,12 @@ func TestOpenFile_ShareDeny_SameOwnerAccumulatesNoConflict(t *testing.T) {
 	fh := []byte("fh-same-owner")
 
 	// Owner A opens WRITE + DENY_WRITE.
-	openConfirmed(t, sm, 0, []byte("ownerA"), fh,
+	openConfirmed(t, sm, registerTestClient(t, sm), []byte("ownerA"), fh,
 		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_WRITE)
 
 	// The SAME owner re-opening the same file with WRITE must NOT self-conflict;
 	// bits accumulate per owner (RFC 7530 Section 9.1.7).
-	if _, err := sm.OpenFile(0, []byte("ownerA"), 3, fh,
+	if _, err := sm.OpenFile(registerTestClient(t, sm), []byte("ownerA"), 3, fh,
 		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_WRITE, types.CLAIM_NULL); err != nil {
 		t.Fatalf("same-owner re-open should not conflict: %v", err)
 	}
@@ -117,14 +117,14 @@ func TestOpenFile_ShareDeny_ReleasedAfterClose(t *testing.T) {
 	fh := []byte("fh-deny-released")
 
 	// Owner A opens with DENY_WRITE then closes.
-	aStateid := openConfirmed(t, sm, 0, []byte("ownerA"), fh,
+	aStateid := openConfirmed(t, sm, registerTestClient(t, sm), []byte("ownerA"), fh,
 		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_WRITE)
 	if _, err := sm.CloseFile(&aStateid, 3); err != nil {
 		t.Fatalf("CloseFile: %v", err)
 	}
 
 	// With A's reservation gone, owner B may now open WRITE.
-	if _, err := sm.OpenFile(0, []byte("ownerB"), 1, fh,
+	if _, err := sm.OpenFile(registerTestClient(t, sm), []byte("ownerB"), 1, fh,
 		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); err != nil {
 		t.Fatalf("OPEN after conflicting open closed should succeed: %v", err)
 	}
@@ -133,11 +133,11 @@ func TestOpenFile_ShareDeny_ReleasedAfterClose(t *testing.T) {
 func TestOpenFile_ShareDeny_DifferentFilesDoNotConflict(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
-	openConfirmed(t, sm, 0, []byte("ownerA"), []byte("fh-file-1"),
+	openConfirmed(t, sm, registerTestClient(t, sm), []byte("ownerA"), []byte("fh-file-1"),
 		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_WRITE)
 
 	// A deny on file-1 must not affect an OPEN of file-2.
-	if _, err := sm.OpenFile(0, []byte("ownerB"), 1, []byte("fh-file-2"),
+	if _, err := sm.OpenFile(registerTestClient(t, sm), []byte("ownerB"), 1, []byte("fh-file-2"),
 		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); err != nil {
 		t.Fatalf("OPEN of a different file should succeed: %v", err)
 	}

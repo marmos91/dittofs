@@ -30,11 +30,11 @@ func TestEnumerateOpenFiles_OpenThenClose(t *testing.T) {
 	fhA := []byte("fh-enum-a")
 	fhB := []byte("fh-enum-b")
 
-	sidA := openConfirmed(t, sm, 0, []byte("owner-enum-a"), fhA,
+	sidA := openConfirmed(t, sm, registerTestClient(t, sm), []byte("owner-enum-a"), fhA,
 		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE)
-	openConfirmed(t, sm, 0, []byte("owner-enum-b1"), fhB,
+	openConfirmed(t, sm, registerTestClient(t, sm), []byte("owner-enum-b1"), fhB,
 		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE)
-	openConfirmed(t, sm, 0, []byte("owner-enum-b2"), fhB,
+	openConfirmed(t, sm, registerTestClient(t, sm), []byte("owner-enum-b2"), fhB,
 		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE)
 
 	got := enumerateHandles(t, sm)
@@ -59,7 +59,7 @@ func TestEnumerateOpenFiles_OpenThenClose(t *testing.T) {
 // enumeration (the GC hold consumer fails closed on them).
 func TestEnumerateOpenFiles_CallbackErrorPropagates(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
-	openConfirmed(t, sm, 0, []byte("owner-err"), []byte("fh-err"),
+	openConfirmed(t, sm, registerTestClient(t, sm), []byte("owner-err"), []byte("fh-err"),
 		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE)
 
 	boom := errors.New("boom")

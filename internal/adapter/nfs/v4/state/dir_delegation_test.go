@@ -528,10 +528,23 @@ func TestDirDelegation_Concurrent(t *testing.T) {
 // Helper Functions
 // ============================================================================
 
-// registerTestClient creates a confirmed v4.0 client for testing.
+// registerTestClient creates a confirmed v4.0 client for testing, or returns
+// the one it already created: a second SETCLIENTID/SETCLIENTID_CONFIRM for the
+// same name replaces the client record with one whose OpenOwners map is empty,
+// dropping the open-owners any earlier OpenFile registered on it.
 func registerTestClient(t *testing.T, sm *StateManager) uint64 {
 	t.Helper()
-	return registerTestClientWithName(t, sm, "test-client-dir-deleg")
+
+	const name = "test-client-dir-deleg"
+
+	sm.mu.RLock()
+	existing := sm.clientsByName[name]
+	sm.mu.RUnlock()
+	if existing != nil {
+		return existing.ClientID
+	}
+
+	return registerTestClientWithName(t, sm, name)
 }
 
 // registerTestV41Client creates a v4.1 client record for testing.
@@ -544,6 +557,7 @@ func registerTestV41Client(t *testing.T, sm *StateManager) uint64 {
 	record := &V41ClientRecord{
 		ClientID:   clientID,
 		OwnerID:    []byte("test-v41-client-dir-deleg"),
+		Confirmed:  true,
 		ClientAddr: "127.0.0.1",
 		CreatedAt:  time.Now(),
 		Lease:      NewLeaseState(clientID, 90*time.Second, nil),

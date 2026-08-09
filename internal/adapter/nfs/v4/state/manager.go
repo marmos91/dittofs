@@ -692,6 +692,38 @@ func (sm *StateManager) GetClient(clientID uint64) *ClientRecord {
 	return sm.clientsByID[clientID]
 }
 
+// validateClientLocked checks that clientID names a confirmed client whose
+// lease is still live. It gates operations carrying a clientid rather than a
+// stateid, where that clientid is the request's only identity. A client exists
+// only once SETCLIENTID is followed by SETCLIENTID_CONFIRM (v4.1: EXCHANGE_ID
+// then CREATE_SESSION), so anything short of that is NFS4ERR_STALE_CLIENTID
+// (RFC 7530 Sections 9.1.1 and 13.1.10.2). A confirmed client whose lease
+// lapsed in the window before onLeaseExpired reaps its record gets
+// NFS4ERR_EXPIRED instead (Section 9.6.3.2); both send the client through the
+// same recovery, so the distinction only names what happened.
+//
+// Caller must hold sm.mu (read or write).
+func (sm *StateManager) validateClientLocked(clientID uint64) error {
+	var confirmed bool
+	var lease *LeaseState
+	switch record, v41 := sm.clientsByID[clientID], sm.v41ClientsByID[clientID]; {
+	case record != nil:
+		confirmed, lease = record.Confirmed, record.Lease
+	case v41 != nil:
+		confirmed, lease = v41.Confirmed, v41.Lease
+	default:
+		return ErrStaleClientID
+	}
+
+	if !confirmed {
+		return ErrStaleClientID
+	}
+	if lease != nil && lease.IsExpired() {
+		return ErrExpired
+	}
+	return nil
+}
+
 // RemoveClient removes a client record and all associated state.
 // Used by lease expiry to clean up expired clients.
 func (sm *StateManager) RemoveClient(clientID uint64) {
@@ -1115,6 +1147,11 @@ func (sm *StateManager) OpenFile(
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	if err := sm.validateClientLocked(clientID); err != nil {
+		logger.Debug("OpenFile: invalid client id", "client_id", clientID, "error", err)
+		return nil, err
+	}
+
 	// Look up or create the open-owner
 	ownerKey := makeOwnerKey(clientID, ownerData)
 	owner, ownerExists := sm.openOwners[ownerKey]
@@ -1157,7 +1194,7 @@ func (sm *StateManager) OpenFile(
 		copy(owner.OwnerData, ownerData)
 		sm.openOwners[ownerKey] = owner
 
-		// Register with client record if available
+		// Nil for v4.1 clients, torn down by purgeV41Client instead.
 		if clientRecord != nil {
 			clientRecord.OpenOwners[string(ownerData)] = owner
 		}
