@@ -96,7 +96,7 @@ func testSnapshot_UsedBytesAfterRestore(t *testing.T, factory SnapshotableStoreF
 
 	// populateTestData writes two regular files of 8 MiB and 6 MiB.
 	populateTestData(t, srcStore, "ub")
-	const wantBytes = int64((8 << 20) + (6 << 20))
+	const wantBytes = PopulateTestDataUsedBytes
 
 	if got := srcStore.GetUsedBytes(); got != wantBytes {
 		t.Fatalf("source GetUsedBytes() = %d, want %d (fixture sanity)", got, wantBytes)
@@ -266,6 +266,13 @@ func asSnapshotable(t *testing.T, store metadata.Store) metadata.Snapshotable {
 	}
 	return b
 }
+
+// PopulateTestDataUsedBytes is the total logical size (8 MiB + 6 MiB) of the
+// two regular files populateTestData creates, the single source of truth
+// for assertions that depend on that fixture's size, so a future change to
+// the fixture can't silently leave a stale assertion passing for the wrong
+// reason.
+const PopulateTestDataUsedBytes = int64((8 << 20) + (6 << 20))
 
 // populateTestData creates a share with two files carrying ChunkRef hashes.
 // Returns the share name and the list of unique hashes used.
@@ -880,7 +887,7 @@ func testSnapshot_QuotaUsageAfterRestore(t *testing.T, factory SnapshotableStore
 	ctx := t.Context()
 
 	populateTestData(t, srcStore, "qb")
-	const wantBytes = int64((8 << 20) + (6 << 20)) // 14 MiB
+	const wantBytes = PopulateTestDataUsedBytes // 14 MiB
 	const wantFiles = int64(2)
 
 	var buf bytes.Buffer

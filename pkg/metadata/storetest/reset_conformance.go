@@ -54,8 +54,8 @@ func ResetThenRestoreConformance(t *testing.T, factory SnapshotableStoreFactory)
 	}
 
 	// Quota assertion: Reset must clear the per-identity cache, not just the
-	// share/file maps a stale cache here silently keeps enforcing limits
-	// against data that no longer exists.
+	// share/file maps. A stale cache here would silently keep enforcing
+	// limits against data that no longer exists.
 	if u, err := store.GetQuotaUsage(metadata.QuotaScopeUser, 1000); err != nil || u.Bytes != 0 || u.Files != 0 {
 		t.Fatalf("post-Reset GetQuotaUsage(user, 1000) = %+v, err=%v, want zero", u, err)
 	}
@@ -78,7 +78,7 @@ func ResetThenRestoreConformance(t *testing.T, factory SnapshotableStoreFactory)
 
 	// Quota assertion: Restore must reseed the cache from the restored files,
 	// not leave it at the post-Reset zero state.
-	const wantBytes = int64((8 << 20) + (6 << 20)) // 14 MiB total
+	const wantBytes = PopulateTestDataUsedBytes // 14 MiB total
 	if u, err := store.GetQuotaUsage(metadata.QuotaScopeUser, 1000); err != nil || u.Bytes != wantBytes || u.Files != 2 {
 		t.Fatalf("post-Restore GetQuotaUsage(user, 1000) = %+v, err=%v, want {Bytes:%d Files:2}", u, err, wantBytes)
 	}
