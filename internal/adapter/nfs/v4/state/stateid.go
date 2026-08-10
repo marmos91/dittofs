@@ -465,33 +465,10 @@ func (sm *StateManager) freeLockStateidLocked(clientID uint64, stateid *types.St
 	delete(sm.lockStateByOther, stateid.Other)
 
 	// Remove actual locks from unified lock manager
-	if lm := sm.lockManagerFor(lockState.FileHandle); lm != nil && lockState.LockOwner != nil {
-		ownerID := lockState.LockOwner.LockManagerOwnerID()
-		handleKey := string(lockState.FileHandle)
-		for _, l := range lm.ListUnifiedLocks(handleKey) {
-			if l.Owner.OwnerID == ownerID {
-				_ = lm.RemoveUnifiedLock(handleKey, l.Owner, l.Offset, l.Length)
-			}
-		}
-	}
+	sm.removeOwnerLocksLocked(lockState)
 
-	// Remove lock-owner from lockOwners map only when no other LockState
-	// still references this owner (reference-count to zero). A LockOwner can
-	// be shared across multiple LockState entries (one per open-state/file),
-	// so deleting it on the first free would blind replay-detection and the
-	// owner caches for the still-live lock states.
-	if lockState.LockOwner != nil {
-		ownerStillReferenced := false
-		for _, ls := range sm.lockStateByOther {
-			if ls.LockOwner == lockState.LockOwner {
-				ownerStillReferenced = true
-				break
-			}
-		}
-		if !ownerStillReferenced {
-			delete(sm.lockOwners, lockState.LockOwner.Key())
-		}
-	}
+	// Drop the lock-owner once nothing references it any more.
+	sm.dropLockOwnerIfUnreferencedLocked(lockState.LockOwner)
 
 	// Remove from parent open state's LockStates slice
 	if lockState.OpenState != nil {

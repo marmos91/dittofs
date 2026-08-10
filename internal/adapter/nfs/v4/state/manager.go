@@ -760,19 +760,7 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 				delete(sm.lockStateByOther, lockState.Stateid.Other)
 
 				// Remove actual locks from unified lock manager
-				if lm := sm.lockManagerFor(lockState.FileHandle); lm != nil {
-					ownerID := lockState.LockOwner.LockManagerOwnerID()
-					handleKey := string(lockState.FileHandle)
-					locks := lm.ListUnifiedLocks(handleKey)
-					for _, l := range locks {
-						if l.Owner.OwnerID == ownerID {
-							_ = lm.RemoveUnifiedLock(
-								handleKey,
-								l.Owner, l.Offset, l.Length,
-							)
-						}
-					}
-				}
+				sm.removeOwnerLocksLocked(lockState)
 
 				// Remove lock-owner from lockOwners map
 				if lockState.LockOwner != nil {
@@ -1077,7 +1065,7 @@ func (sm *StateManager) OpenFile(
 	fileHandle []byte,
 	shareAccess, shareDeny uint32,
 	claimType uint32,
-) (*OpenFileResult, error) {
+) (result *OpenFileResult, err error) {
 	// Grace period checks (before acquiring sm.mu)
 	switch claimType {
 	case types.CLAIM_NULL:
@@ -1158,9 +1146,9 @@ func (sm *StateManager) OpenFile(
 		// New owner: create it
 		clientRecord := sm.clientsByID[clientID]
 		owner = &OpenOwner{
-			ClientID:     clientID,
-			OwnerData:    make([]byte, len(ownerData)),
-			LastSeqID:    0, // Will be set to seqid after success
+			ClientID:  clientID,
+			OwnerData: make([]byte, len(ownerData)),
+
 			Confirmed:    false,
 			OpenStates:   make([]*OpenState, 0),
 			ClientRecord: clientRecord,
@@ -1174,6 +1162,11 @@ func (sm *StateManager) OpenFile(
 			clientRecord.OpenOwners[string(ownerData)] = owner
 		}
 	}
+
+	// The seqid is now this owner's, whatever the OPEN goes on to return: a
+	// failure below (share reservation conflict) consumes it just as success
+	// does, and the client advances either way.
+	defer func() { owner.consumeSeqidOnError(seqid, err) }()
 
 	// Enforce share reservations across open-owners (RFC 7530 Section 9.7 /
 	// Section 16.16.5; Linux nfsd nfs4_share_conflict). This runs AFTER the
@@ -1383,7 +1376,7 @@ func (sm *StateManager) CacheLockOwnerResult(clientID uint64, ownerData []byte, 
 //   - Increments the stateid seqid
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32) (*OpenSeqResult, error) {
+func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32) (result *OpenSeqResult, err error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -1397,6 +1390,10 @@ func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32) (*Ope
 	}
 
 	owner := openState.Owner
+
+	// The request is attributable to this owner, so any failure below consumes
+	// its seqid (RFC 7530 Section 9.1.7).
+	defer func() { owner.consumeSeqidOnError(seqid, err) }()
 
 	// Validate seqid on the owner
 	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
@@ -1473,7 +1470,7 @@ func (sm *StateManager) ConfirmOpenV41(stateid *types.Stateid4) error {
 //   - Returns a zeroed stateid
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*OpenSeqResult, error) {
+func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (result *OpenSeqResult, err error) {
 	// Handle special stateids (all-zeros, all-ones): no state to clean up
 	if stateid.IsSpecialStateid() {
 		return &OpenSeqResult{}, nil
@@ -1501,6 +1498,13 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*OpenS
 
 	owner := openState.Owner
 
+	// The request is attributable to this owner, so any failure below consumes
+	// its seqid (RFC 7530 Section 9.1.7). NFS4ERR_LOCKS_HELD is the case that
+	// matters in practice: a database closing a file while byte-range locks are
+	// outstanding hits it routinely, and leaving the seqid behind would answer
+	// every later CLOSE and LOCK for this owner with NFS4ERR_BAD_SEQID.
+	defer func() { owner.consumeSeqidOnError(seqid, err) }()
+
 	// Validate seqid on the owner
 	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
 	if seqid != 0 {
@@ -1519,10 +1523,9 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*OpenS
 		}
 	}
 
-	// Check for held locks before closing
-	// Per RFC 7530, CLOSE MUST fail if byte-range locks are held.
-	// Client must LOCKU all locks before CLOSE.
-	if len(openState.LockStates) > 0 {
+	// Refuse while ranges are genuinely held -- RFC 7530 Section 16.2.4 permits
+	// refusing or freeing, and this server refuses.
+	if sm.hasOutstandingLocksLocked(openState) {
 		return nil, &NFS4StateError{
 			Status:  types.NFS4ERR_LOCKS_HELD,
 			Message: "cannot close: byte-range locks still held, use LOCKU first",
@@ -1532,6 +1535,16 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*OpenS
 	// Remove the open state from the "other" map and per-file index.
 	delete(sm.openStateByOther, stateid.Other)
 	sm.removeOpenStateFromFileLocked(openState)
+
+	// The open's lock stateids die with it: they hold no ranges (checked above)
+	// and nothing may use them once the open they derive from is gone.
+	for _, lockState := range openState.LockStates {
+		delete(sm.lockStateByOther, lockState.Stateid.Other)
+	}
+	for _, lockState := range openState.LockStates {
+		sm.dropLockOwnerIfUnreferencedLocked(lockState.LockOwner)
+	}
+	openState.LockStates = nil
 
 	// Remember which retained owner this now-closed stateid belonged to so a
 	// retransmitted CLOSE can still resolve the owner's cached reply.
@@ -1577,6 +1590,67 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*OpenS
 	}, nil
 }
 
+// hasOutstandingLocksLocked reports whether any byte-range lock derived from
+// openState is still held in the lock manager. Not the same question as whether
+// openState has lock stateids: one stays valid after LOCKU frees its last range
+// (RFC 7530 Section 9.1.4.4), so that count never drops back to zero.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) hasOutstandingLocksLocked(openState *OpenState) bool {
+	for _, lockState := range openState.LockStates {
+		if lockState.LockOwner == nil {
+			continue
+		}
+		lm := sm.lockManagerFor(lockState.FileHandle)
+		if lm == nil {
+			continue
+		}
+		ownerID := lockState.LockOwner.LockManagerOwnerID()
+		for _, l := range lm.ListUnifiedLocks(string(lockState.FileHandle)) {
+			if l.Owner.OwnerID == ownerID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// removeOwnerLocksLocked releases every byte-range lock that lockState's owner
+// holds on lockState's file.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) removeOwnerLocksLocked(lockState *LockState) {
+	lm := sm.lockManagerFor(lockState.FileHandle)
+	if lm == nil || lockState.LockOwner == nil {
+		return
+	}
+	ownerID := lockState.LockOwner.LockManagerOwnerID()
+	handleKey := string(lockState.FileHandle)
+	for _, l := range lm.ListUnifiedLocks(handleKey) {
+		if l.Owner.OwnerID == ownerID {
+			_ = lm.RemoveUnifiedLock(handleKey, l.Owner, l.Offset, l.Length)
+		}
+	}
+}
+
+// dropLockOwnerIfUnreferencedLocked removes a lock-owner from the owner table
+// once no lock state references it any more. A lock-owner is shared across the
+// opens it locked (one lock state per open-state/file), so dropping it with the
+// first of them would blind replay detection for the ones still live.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) dropLockOwnerIfUnreferencedLocked(lockOwner *LockOwner) {
+	if lockOwner == nil {
+		return
+	}
+	for _, ls := range sm.lockStateByOther {
+		if ls.LockOwner == lockOwner {
+			return
+		}
+	}
+	delete(sm.lockOwners, lockOwner.Key())
+}
+
 // DowngradeOpen implements the OPEN_DOWNGRADE operation's state management.
 //
 // Per RFC 7530 Section 16.19:
@@ -1587,7 +1661,7 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*OpenS
 //   - Increments the stateid seqid
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, newShareAccess, newShareDeny uint32) (*OpenSeqResult, error) {
+func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, newShareAccess, newShareDeny uint32) (result *OpenSeqResult, err error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -1601,6 +1675,10 @@ func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, new
 	}
 
 	owner := openState.Owner
+
+	// The request is attributable to this owner, so any failure below consumes
+	// its seqid (RFC 7530 Section 9.1.7), the NFS4ERR_INVAL rejections included.
+	defer func() { owner.consumeSeqidOnError(seqid, err) }()
 
 	// Validate seqid on the owner
 	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
@@ -1816,7 +1894,7 @@ func (sm *StateManager) LockNew(
 	lockClientID uint64, lockOwnerData []byte, lockSeqid uint32,
 	openStateid *types.Stateid4, openSeqid uint32,
 	fileHandle []byte, lockType uint32, offset, length uint64, reclaim bool,
-) (*LockResult, error) {
+) (result *LockResult, err error) {
 	// Grace period check (before acquiring sm.mu)
 	if !reclaim {
 		if err := sm.CheckGraceForNewState(); err != nil {
@@ -1833,12 +1911,17 @@ func (sm *StateManager) LockNew(
 		return nil, ErrBadStateid
 	}
 
+	// The request is attributable to this open-owner, so any failure below
+	// consumes its seqid (RFC 7530 Section 9.1.7). The lock-owner's own seqid is
+	// dealt with once that owner exists, further down.
+	defer func() { openState.Owner.consumeSeqidOnError(openSeqid, err) }()
+
 	// 2. Validate open-owner seqid.
 	// In the open_to_lock_owner4 (LockNew) path the LOCK advances BOTH the
 	// open-owner and lock-owner seqids, so a retransmit is a replay against
 	// both. The authoritative cached reply lives on the lock-owner (it is the
 	// LOCK reply), so on an open-owner replay we do not fail here; we resolve
-	// the lock-owner below (step 6) and return its cached result.
+	// the lock-owner below (step 4) and return its cached result.
 	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
 	openSeqIsReplay := false
 	if openSeqid != 0 {
@@ -1853,12 +1936,7 @@ func (sm *StateManager) LockNew(
 		}
 	}
 
-	// 3. Validate open mode for lock type
-	if err := validateOpenModeForLock(openState, lockType); err != nil {
-		return nil, err
-	}
-
-	// 4. Probe the lock-owner WITHOUT allocating. Seqid validation (step 6)
+	// 3. Probe the lock-owner WITHOUT allocating. Seqid validation (step 4)
 	// must run before any state is inserted into the maps; otherwise a bad
 	// lock seqid would strand a freshly-allocated lock-owner / lock-state
 	// (they would be reused by a later valid LOCK with a wrong LastSeqID=0
@@ -1866,7 +1944,7 @@ func (sm *StateManager) LockNew(
 	loKey := makeLockOwnerKey(lockClientID, lockOwnerData)
 	lockOwner, ownerExists := sm.lockOwners[loKey]
 
-	// 6. Validate lock seqid on lock-owner BEFORE any allocation.
+	// 4. Validate lock seqid on lock-owner BEFORE any allocation.
 	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
 	if lockSeqid != 0 {
 		if ownerExists {
@@ -1903,13 +1981,13 @@ func (sm *StateManager) LockNew(
 		return nil, ErrBadSeqid
 	}
 
-	// 4b. Find or create lock-owner -- only after seqid validation passes.
+	// 5. Find or create lock-owner -- only after seqid validation passes.
 	if !ownerExists {
 		clientRecord := sm.clientsByID[lockClientID]
 		lockOwner = &LockOwner{
-			ClientID:     lockClientID,
-			OwnerData:    make([]byte, len(lockOwnerData)),
-			LastSeqID:    0,
+			ClientID:  lockClientID,
+			OwnerData: make([]byte, len(lockOwnerData)),
+
 			ClientRecord: clientRecord,
 			key:          loKey,
 		}
@@ -1917,7 +1995,19 @@ func (sm *StateManager) LockNew(
 		sm.lockOwners[loKey] = lockOwner
 	}
 
-	// 5. Find or create lock state for (lock-owner, open-state) pair
+	// The lock-owner now exists, so its seqid can be consumed like the
+	// open-owner's above. Nothing is lost by starting here: every failure before
+	// this point is a seqid verdict, and those are exempt anyway.
+	defer func() { lockOwner.consumeSeqidOnError(lockSeqid, err) }()
+
+	// 6. Validate open mode for lock type. This runs after both seqid checks so
+	// a bad seqid, which must leave the sequence untouched, outranks
+	// NFS4ERR_OPENMODE, which consumes it.
+	if err := validateOpenModeForLock(openState, lockType); err != nil {
+		return nil, err
+	}
+
+	// 7. Find or create lock state for (lock-owner, open-state) pair
 	var lockState *LockState
 	for _, ls := range openState.LockStates {
 		if ls.LockOwner == lockOwner {
@@ -1945,7 +2035,7 @@ func (sm *StateManager) LockNew(
 		sm.lockStateByOther[other] = lockState
 	}
 
-	// 7. Acquire the lock via unified lock manager
+	// 8. Acquire the lock via unified lock manager
 	denied, err := sm.acquireLock(ctx, lockState, lockType, offset, length, reclaim)
 	if err != nil {
 		return nil, err
@@ -1962,7 +2052,7 @@ func (sm *StateManager) LockNew(
 		}, nil
 	}
 
-	// 8. Success: update state
+	// 9. Success: update state
 	lockState.Stateid.Seqid = nextSeqID(lockState.Stateid.Seqid)
 	lockOwner.LastSeqID = lockSeqid
 	openState.Owner.LastSeqID = openSeqid
@@ -1984,7 +2074,7 @@ func (sm *StateManager) LockExisting(
 	ctx context.Context,
 	lockStateid *types.Stateid4, lockSeqid uint32,
 	fileHandle []byte, lockType uint32, offset, length uint64, reclaim bool,
-) (*LockResult, error) {
+) (result *LockResult, err error) {
 	// Grace period check
 	if !reclaim {
 		if err := sm.CheckGraceForNewState(); err != nil {
@@ -2005,6 +2095,11 @@ func (sm *StateManager) LockExisting(
 	}
 
 	lockOwner := lockState.LockOwner
+
+	// The request is attributable to this lock-owner, so any failure below
+	// consumes its seqid (RFC 7530 Section 9.1.7), the stateid and open-mode
+	// rejections included.
+	defer func() { lockOwner.consumeSeqidOnError(lockSeqid, err) }()
 
 	// 2. Validate lock seqid on lock-owner FIRST.
 	// A LOCK replay resends the original (pre-LOCK) lock stateid, whose seqid is
@@ -2276,7 +2371,7 @@ func (sm *StateManager) TestLock(
 func (sm *StateManager) UnlockFile(
 	lockStateid *types.Stateid4, seqid uint32,
 	lockType uint32, offset, length uint64,
-) (*LockResult, error) {
+) (result *LockResult, err error) {
 	// Special stateids cannot be used with LOCKU
 	if lockStateid.IsSpecialStateid() {
 		return nil, ErrBadStateid
@@ -2296,6 +2391,11 @@ func (sm *StateManager) UnlockFile(
 	}
 
 	lockOwner := lockState.LockOwner
+
+	// The request is attributable to this lock-owner, so any failure below
+	// consumes its seqid (RFC 7530 Section 9.1.7), the stateid rejections
+	// included.
+	defer func() { lockOwner.consumeSeqidOnError(seqid, err) }()
 
 	// 2. Validate seqid on lock-owner FIRST.
 	// A LOCKU replay resends the original (pre-LOCKU) lock stateid, whose seqid

@@ -1,7 +1,9 @@
 package state
 
 import (
+	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -27,6 +29,114 @@ const (
 )
 
 // ============================================================================
+// Owner Sequence
+// ============================================================================
+
+// ownerSeq is the seqid sequence an open- or lock-owner carries: the last seqid
+// processed and the reply cached for replaying it. Both owner kinds embed it, so
+// the sequencing rules of RFC 7530 Section 9.1.7 are written once — as Linux
+// nfsd writes them once on the struct nfs4_stateowner both its owner kinds
+// embed.
+type ownerSeq struct {
+	// LastSeqID is the last seqid processed for this owner. Failed operations
+	// advance it too; see consumeSeqidOnError.
+	LastSeqID uint32
+
+	// LastResult is the cached result of the last operation on this owner.
+	// Used for replay detection (same seqid returns cached result).
+	LastResult *CachedResult
+}
+
+// ValidateSeqID checks whether a seqid is valid for this owner.
+//
+// Per RFC 7530 Section 9.1.7:
+//   - Expected = LastSeqID + 1 (with wrap: 0xFFFFFFFF -> 1, not 0)
+//   - seqid == expected -> SeqIDOK
+//   - seqid == LastSeqID -> SeqIDReplay
+//   - else -> SeqIDBad
+func (os *ownerSeq) ValidateSeqID(seqid uint32) SeqIDValidation {
+	expected := nextSeqID(os.LastSeqID)
+
+	if seqid == expected {
+		return SeqIDOK
+	}
+	if seqid == os.LastSeqID {
+		return SeqIDReplay
+	}
+	return SeqIDBad
+}
+
+// consumeSeqidOnError advances this owner's sequence to seqid and caches the
+// failed reply, for an operation that failed after reaching seqid checking. It
+// is a no-op on success — the success paths advance the seqid themselves, and
+// the handler caches the encoded reply — and on the errors failedSeqidReply
+// exempts.
+//
+// Operations defer it as soon as they resolve the owner, so it covers every
+// outcome below that point including ones added later. That is safe before the
+// seqid check itself because its two verdicts, NFS4ERR_BAD_SEQID and a replay,
+// are both exempt; nfsd relies on the same property to call nfsd4_bump_seqid
+// unconditionally from a single exit point per operation.
+func (os *ownerSeq) consumeSeqidOnError(seqid uint32, err error) {
+	if status, consumed := failedSeqidReply(err); consumed {
+		os.LastSeqID = seqid
+		os.LastResult = &CachedResult{Status: status, Data: encodeStatusReply(status)}
+	}
+}
+
+// failedSeqidReply reports the status to record for an operation that failed
+// after reaching seqid checking, and whether that failure consumes the seqid at
+// all.
+//
+// Per RFC 7530 Section 9.1.7 an owner's sequence advances on every operation
+// that reaches seqid checking, whether or not it then succeeds. Only the errors
+// listed below leave it untouched, because they mean the request was never
+// attributable to the owner and the client does not advance its own sequence
+// either. Everything else — NFS4ERR_LOCKS_HELD, NFS4ERR_SHARE_DENIED,
+// NFS4ERR_OPENMODE, NFS4ERR_INVAL, … — consumes the seqid: a server that keeps
+// it falls permanently one behind the client, and every later operation for that
+// owner is answered NFS4ERR_BAD_SEQID, which the client can only escape by
+// tearing the owner down. The list matches nfsd's seqid_mutating_err().
+func failedSeqidReply(err error) (status uint32, consumed bool) {
+	if err == nil {
+		return 0, false
+	}
+
+	// A replay returns the previous operation's reply; it neither re-runs that
+	// operation nor moves the sequence on.
+	var replayErr *ReplayError
+	if errors.As(err, &replayErr) {
+		return replayErr.Status, false
+	}
+
+	var stateErr *NFS4StateError
+	if !errors.As(err, &stateErr) {
+		// Unclassified failure: the client sees NFS4ERR_SERVERFAULT, which is not
+		// exempt, so the seqid is consumed like any other failure.
+		return types.NFS4ERR_SERVERFAULT, true
+	}
+
+	switch stateErr.Status {
+	case types.NFS4ERR_STALE_CLIENTID, types.NFS4ERR_STALE_STATEID,
+		types.NFS4ERR_BAD_STATEID, types.NFS4ERR_BAD_SEQID,
+		types.NFS4ERR_BADXDR, types.NFS4ERR_RESOURCE,
+		types.NFS4ERR_NOFILEHANDLE, types.NFS4ERR_MOVED:
+		return stateErr.Status, false
+	}
+	return stateErr.Status, true
+}
+
+// encodeStatusReply encodes the reply body of a failed operation: the status
+// alone, which is all an NFSv4 operation carries when it fails. It must stay
+// byte-identical to what the handlers return for an error (encodeStatusOnly), so
+// a replay of the failed request reproduces the original response exactly.
+func encodeStatusReply(status uint32) []byte {
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, status)
+	return b
+}
+
+// ============================================================================
 // OpenOwner
 // ============================================================================
 
@@ -45,12 +155,8 @@ type OpenOwner struct {
 	// OwnerData is the opaque owner identifier from the client.
 	OwnerData []byte
 
-	// LastSeqID is the last successfully processed seqid for this owner.
-	LastSeqID uint32
-
-	// LastResult is the cached result of the last operation on this owner.
-	// Used for replay detection (same seqid returns cached result).
-	LastResult *CachedResult
+	// ownerSeq carries this owner's seqid sequence and replay cache.
+	ownerSeq
 
 	// Confirmed indicates whether OPEN_CONFIRM has been called for this owner.
 	// New owners created by OPEN must be confirmed before the open state is usable.
@@ -78,25 +184,6 @@ func (oo *OpenOwner) Key() openOwnerKey {
 		return makeOwnerKey(oo.ClientID, oo.OwnerData)
 	}
 	return oo.key
-}
-
-// ValidateSeqID checks whether a seqid is valid for this open-owner.
-//
-// Per RFC 7530 Section 9.1.7:
-//   - Expected = LastSeqID + 1 (with wrap: 0xFFFFFFFF -> 1, not 0)
-//   - seqid == expected -> SeqIDOK
-//   - seqid == LastSeqID -> SeqIDReplay
-//   - else -> SeqIDBad
-func (oo *OpenOwner) ValidateSeqID(seqid uint32) SeqIDValidation {
-	expected := nextSeqID(oo.LastSeqID)
-
-	if seqid == expected {
-		return SeqIDOK
-	}
-	if seqid == oo.LastSeqID {
-		return SeqIDReplay
-	}
-	return SeqIDBad
 }
 
 // ============================================================================

@@ -947,7 +947,7 @@ func TestDowngradeOpen_ZeroAccess(t *testing.T) {
 // ============================================================================
 
 func TestOpenOwner_ValidateSeqID(t *testing.T) {
-	owner := &OpenOwner{LastSeqID: 5}
+	owner := &OpenOwner{ownerSeq: ownerSeq{LastSeqID: 5}}
 
 	tests := []struct {
 		name     string

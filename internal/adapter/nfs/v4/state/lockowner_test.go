@@ -14,28 +14,28 @@ import (
 // ============================================================================
 
 func TestLockOwnerValidateSeqID_OK(t *testing.T) {
-	lo := &LockOwner{LastSeqID: 5}
+	lo := &LockOwner{ownerSeq: ownerSeq{LastSeqID: 5}}
 	if v := lo.ValidateSeqID(6); v != SeqIDOK {
 		t.Errorf("ValidateSeqID(6) = %d, want SeqIDOK", v)
 	}
 }
 
 func TestLockOwnerValidateSeqID_Replay(t *testing.T) {
-	lo := &LockOwner{LastSeqID: 5}
+	lo := &LockOwner{ownerSeq: ownerSeq{LastSeqID: 5}}
 	if v := lo.ValidateSeqID(5); v != SeqIDReplay {
 		t.Errorf("ValidateSeqID(5) = %d, want SeqIDReplay", v)
 	}
 }
 
 func TestLockOwnerValidateSeqID_Bad(t *testing.T) {
-	lo := &LockOwner{LastSeqID: 5}
+	lo := &LockOwner{ownerSeq: ownerSeq{LastSeqID: 5}}
 	if v := lo.ValidateSeqID(10); v != SeqIDBad {
 		t.Errorf("ValidateSeqID(10) = %d, want SeqIDBad", v)
 	}
 }
 
 func TestLockOwnerValidateSeqID_WrapAround(t *testing.T) {
-	lo := &LockOwner{LastSeqID: 0xFFFFFFFF}
+	lo := &LockOwner{ownerSeq: ownerSeq{LastSeqID: 0xFFFFFFFF}}
 	// Wrap: 0xFFFFFFFF + 1 = 1 (not 0)
 	if v := lo.ValidateSeqID(1); v != SeqIDOK {
 		t.Errorf("ValidateSeqID(1) after 0xFFFFFFFF = %d, want SeqIDOK", v)
@@ -664,16 +664,17 @@ func TestCloseFile_LocksHeld(t *testing.T) {
 		t.Fatalf("UnlockFile failed: %v", unlockErr)
 	}
 
-	// Now CLOSE should succeed (lock state still exists but no active locks)
-	// However, LockStates slice still has the LockState entry (it persists after LOCKU).
-	// We need to RELEASE_LOCKOWNER first to clean up the LockStates list.
+	// The lock stateid outlives the LOCKU, so RELEASE_LOCKOWNER is the client's
+	// way to retire it. CLOSE no longer depends on that having happened -- it
+	// asks the lock manager for outstanding ranges, not for lock stateids.
 	relErr := sm.ReleaseLockOwner(clientID, []byte("close-lock-owner"))
 	if relErr != nil {
 		t.Fatalf("ReleaseLockOwner failed: %v", relErr)
 	}
 
-	// Now CLOSE should succeed
-	closedRes, closeErr := sm.CloseFile(openStateid, openSeqid+2)
+	// The retry carries the NEXT seqid: the failed CLOSE consumed openSeqid+2,
+	// so resending that one would (correctly) replay its NFS4ERR_LOCKS_HELD.
+	closedRes, closeErr := sm.CloseFile(openStateid, openSeqid+3)
 	if closeErr != nil {
 		t.Fatalf("CloseFile after unlock+release failed: %v", closeErr)
 	}

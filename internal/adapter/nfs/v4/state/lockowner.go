@@ -26,12 +26,8 @@ type LockOwner struct {
 	// OwnerData is the opaque owner identifier from the client.
 	OwnerData []byte
 
-	// LastSeqID is the last successfully processed seqid for this owner.
-	LastSeqID uint32
-
-	// LastResult is the cached result of the last operation on this owner.
-	// Used for replay detection (same seqid returns cached result).
-	LastResult *CachedResult
+	// ownerSeq carries this owner's seqid sequence and replay cache.
+	ownerSeq
 
 	// ClientRecord is a back-reference to the owning client record.
 	ClientRecord *ClientRecord
@@ -50,25 +46,6 @@ func (lo *LockOwner) Key() lockOwnerKey {
 		return makeLockOwnerKey(lo.ClientID, lo.OwnerData)
 	}
 	return lo.key
-}
-
-// ValidateSeqID checks whether a seqid is valid for this lock-owner.
-//
-// Uses the same algorithm as OpenOwner.ValidateSeqID:
-//   - Expected = LastSeqID + 1 (with wrap: 0xFFFFFFFF -> 1, not 0)
-//   - seqid == expected -> SeqIDOK
-//   - seqid == LastSeqID -> SeqIDReplay
-//   - else -> SeqIDBad
-func (lo *LockOwner) ValidateSeqID(seqid uint32) SeqIDValidation {
-	expected := nextSeqID(lo.LastSeqID)
-
-	if seqid == expected {
-		return SeqIDOK
-	}
-	if seqid == lo.LastSeqID {
-		return SeqIDReplay
-	}
-	return SeqIDBad
 }
 
 // ============================================================================
