@@ -14,6 +14,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/backup"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
 )
 
 const (
@@ -408,40 +409,24 @@ func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 
 	// Re-initialize transient state.
 	s.sessions = make(map[string]*ShareSession)
-	groupUsage := make(map[uint32]*metadata.UsageStat)
-	userUsage := make(map[uint32]*metadata.UsageStat)
 
-	// Recompute usedBytes from files (only regular files count)
-	// and reconstruct the quota cache from the restored files
-	// since UNIX/NFS stores based on user and group, we need to aggregate the usage stats for each user and group.
+	// Recompute both usage mirrors from the restored regular files: the
+	// store-wide byte total and the per-owner buckets the quota cache serves.
+	// A cache left at its pre-restore contents reports usage for files that
+	// no longer exist.
 	var totalBytes int64
+	var usage quota.Delta
 	for _, fd := range s.files {
 		if fd.Attr != nil && fd.Attr.Type == metadata.FileTypeRegular {
 			totalBytes += int64(fd.Attr.Size)
-
-			u := userUsage[fd.Attr.UID]
-			if u == nil {
-				u = &metadata.UsageStat{}
-				userUsage[fd.Attr.UID] = u
-			}
-
-			u.Bytes += int64(fd.Attr.Size)
-			u.Files++
-
-			g := groupUsage[fd.Attr.GID]
-			if g == nil {
-				g = &metadata.UsageStat{}
-				groupUsage[fd.Attr.GID] = g
-			}
-
-			g.Bytes += int64(fd.Attr.Size)
-			g.Files++
+			usage.Add(fd.Attr.UID, fd.Attr.GID, int64(fd.Attr.Size), 1)
 		}
 	}
 	s.usedBytes.Store(totalBytes)
 
 	s.quotaMu.Lock()
-	s.quota.Seed(userUsage, groupUsage)
+	s.quota.Reset()
+	s.quota.Apply(usage.Map())
 	s.quotaMu.Unlock()
 
 	return nil

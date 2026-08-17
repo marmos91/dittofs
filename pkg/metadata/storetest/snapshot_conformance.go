@@ -73,30 +73,25 @@ func RunSnapshotConformanceSuite(t *testing.T, factory SnapshotableStoreFactory)
 		testSnapshot_ExcludesUnlinkedFileChunks(t, factory)
 	})
 
-	t.Run("UsedBytesAfterRestore", func(t *testing.T) {
-		testSnapshot_UsedBytesAfterRestore(t, factory)
-	})
-
-	t.Run("QuotaUsageAfterRestore", func(t *testing.T) {
-		testSnapshot_QuotaUsageAfterRestore(t, factory)
+	t.Run("UsageCountersAfterRestore", func(t *testing.T) {
+		testSnapshot_UsageCountersAfterRestore(t, factory)
 	})
 }
 
-// testSnapshot_UsedBytesAfterRestore pins the quota-counter invariant: after
-// Restore the in-memory usedBytes counter MUST reflect the restored regular-file
-// bytes, not the destination's pre-restore value. GetUsedBytes feeds the quota
-// guard in metadata/io.go; a stale 0 (the value a freshly-opened store holds on
-// an empty DB) silently disables quota enforcement until the process restarts.
-// The postgres restore path failed to recompute the counter; memory and badger
-// recompute it. This conformance test catches the divergence for every backend.
-func testSnapshot_UsedBytesAfterRestore(t *testing.T, factory SnapshotableStoreFactory) {
+// testSnapshot_UsageCountersAfterRestore pins both usage mirrors: after
+// Restore the store-wide usedBytes counter AND the per-identity quota cache
+// MUST reflect the restored regular files, not the destination's pre-restore
+// values. GetUsedBytes feeds the quota guard in metadata/io.go and
+// GetQuotaUsage feeds per-user/per-group enforcement; a stale 0 (the value a
+// freshly-opened store holds on an empty DB) silently disables enforcement
+// until the process restarts.
+func testSnapshot_UsageCountersAfterRestore(t *testing.T, factory SnapshotableStoreFactory) {
 	srcStore := factory(t)
 	srcB := asSnapshotable(t, srcStore)
 	ctx := t.Context()
 
-	// populateTestData writes two regular files of 8 MiB and 6 MiB.
 	populateTestData(t, srcStore, "ub")
-	const wantBytes = PopulateTestDataUsedBytes
+	const wantBytes = populateTestDataUsedBytes
 
 	if got := srcStore.GetUsedBytes(); got != wantBytes {
 		t.Fatalf("source GetUsedBytes() = %d, want %d (fixture sanity)", got, wantBytes)
@@ -107,7 +102,7 @@ func testSnapshot_UsedBytesAfterRestore(t *testing.T, factory SnapshotableStoreF
 		t.Fatalf("Snapshot: %v", err)
 	}
 
-	// Restore into a fresh store, whose usedBytes counter starts at 0.
+	// Restore into a fresh store, whose usage counters start at 0.
 	dstStore := factory(t)
 	dstB := asSnapshotable(t, dstStore)
 	if err := dstB.RestoreSnapshot(ctx, &buf); err != nil {
@@ -115,7 +110,18 @@ func testSnapshot_UsedBytesAfterRestore(t *testing.T, factory SnapshotableStoreF
 	}
 
 	if got := dstStore.GetUsedBytes(); got != wantBytes {
-		t.Fatalf("restored GetUsedBytes() = %d, want %d — restore did not recompute the quota counter", got, wantBytes)
+		t.Errorf("restored GetUsedBytes() = %d, want %d — restore did not recompute the store-wide counter", got, wantBytes)
+	}
+
+	for _, scope := range []metadata.QuotaScope{metadata.QuotaScopeUser, metadata.QuotaScopeGroup} {
+		got, err := dstStore.GetQuotaUsage(scope, 1000)
+		if err != nil {
+			t.Fatalf("GetQuotaUsage(%v, 1000): %v", scope, err)
+		}
+		if got.Bytes != wantBytes || got.Files != 2 {
+			t.Errorf("restored GetQuotaUsage(%v, 1000) = %+v, want {Bytes:%d Files:2} — restore did not reseed the quota cache",
+				scope, got, wantBytes)
+		}
 	}
 }
 
@@ -267,12 +273,10 @@ func asSnapshotable(t *testing.T, store metadata.Store) metadata.Snapshotable {
 	return b
 }
 
-// PopulateTestDataUsedBytes is the total logical size (8 MiB + 6 MiB) of the
-// two regular files populateTestData creates, the single source of truth
-// for assertions that depend on that fixture's size, so a future change to
-// the fixture can't silently leave a stale assertion passing for the wrong
-// reason.
-const PopulateTestDataUsedBytes = int64((8 << 20) + (6 << 20))
+// populateTestDataUsedBytes is the total logical size of the two regular
+// files populateTestData creates (8 MiB + 6 MiB); both are owned by
+// uid/gid 1000.
+const populateTestDataUsedBytes = int64((8 << 20) + (6 << 20))
 
 // populateTestData creates a share with two files carrying ChunkRef hashes.
 // Returns the share name and the list of unique hashes used.
@@ -871,44 +875,5 @@ func testSnapshot_HashSet_Dedup(t *testing.T, factory SnapshotableStoreFactory) 
 	}
 	if !gotHS.Contains(sharedHash) {
 		t.Fatalf("HashSet does not contain the shared hash %x", sharedHash[:8])
-	}
-}
-
-// testSnapshot_QuotaUsageAfterRestore pins the same invariant as
-// UsedBytesAfterRestore, but for the per-identity quota cache: after Restore,
-// GetQuotaUsage for the fixture's owner (uid/gid 1000) MUST reflect the
-// restored files, not a stale or zeroed cache. A backend that recomputes
-// usedBytes but not quota (or that Resets the quota cache instead of
-// reseeding it) passes UsedBytesAfterRestore while silently disabling
-// per-identity quota enforcement this test catches that divergence.
-func testSnapshot_QuotaUsageAfterRestore(t *testing.T, factory SnapshotableStoreFactory) {
-	srcStore := factory(t)
-	srcB := asSnapshotable(t, srcStore)
-	ctx := t.Context()
-
-	populateTestData(t, srcStore, "qb")
-	const wantBytes = PopulateTestDataUsedBytes // 14 MiB
-	const wantFiles = int64(2)
-
-	var buf bytes.Buffer
-	if _, err := srcB.WriteSnapshot(ctx, &buf); err != nil {
-		t.Fatalf("Snapshot: %v", err)
-	}
-
-	dstStore := factory(t)
-	dstB := asSnapshotable(t, dstStore)
-	if err := dstB.RestoreSnapshot(ctx, &buf); err != nil {
-		t.Fatalf("Restore: %v", err)
-	}
-
-	for _, scope := range []metadata.QuotaScope{metadata.QuotaScopeUser, metadata.QuotaScopeGroup} {
-		got, err := dstStore.GetQuotaUsage(scope, 1000)
-		if err != nil {
-			t.Fatalf("GetQuotaUsage(%v, 1000): %v", scope, err)
-		}
-		if got.Bytes != wantBytes || got.Files != wantFiles {
-			t.Fatalf("restored GetQuotaUsage(%v, 1000) = %+v, want {Bytes:%d Files:%d}",
-				scope, got, wantBytes, wantFiles)
-		}
 	}
 }
