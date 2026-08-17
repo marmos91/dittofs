@@ -291,7 +291,7 @@ func (s *FSStore) Stats() local.Stats {
 		DiskUsed:    js.DiskBytes,
 		MaxDisk:     s.maxDisk,
 		MaxLogBytes: s.maxLogBytes,
-		FileCount:   s.Store.FileCount(),
+		FileCount:   s.FileCount(),
 	}
 }
 
