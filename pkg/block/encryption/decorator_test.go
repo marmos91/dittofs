@@ -310,3 +310,23 @@ func TestNewRemote_RejectsNilInputs(t *testing.T) {
 		t.Fatal("want error for unknown AEAD")
 	}
 }
+
+// TestGetRange_InvalidLengthOnAbsentBlock pins the order of the two checks: an
+// invalid length is rejected before the block is fetched, so a caller passing a
+// bad length learns that rather than being told the block is missing. Asserting
+// this needs a block that does not exist — when the block is present, a length
+// check placed after the fetch returns ErrInvalidSize just the same, and the
+// ordering goes untested.
+func TestGetRange_InvalidLengthOnAbsentBlock(t *testing.T) {
+	d, err := NewRemote(remotememory.New(), EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	absent := hashOf([]byte("never stored"))
+	for _, length := range []int64{0, -1, -1024} {
+		_, err := d.GetRange(context.Background(), absent, 0, length)
+		if !errors.Is(err, block.ErrInvalidSize) {
+			t.Errorf("length=%d: got %v, want wraps ErrInvalidSize", length, err)
+		}
+	}
+}
