@@ -222,7 +222,18 @@ func (s *FSStore) Truncate(ctx context.Context, payloadID string, newSize int64)
 	return s.Store.Truncate(ctx, journal.FileID(payloadID), newSize)
 }
 
+// FileSize drains the payload's archived legacy log first for the same reason
+// ReadAt does: until those records land in the journal the file's high-water
+// mark reads back as zero (or short), which is indistinguishable from a file
+// that genuinely holds no bytes. The signature carries no error, so a drain
+// failure reports "not found" — the caller then falls back to its own size
+// source rather than trusting a truncated answer.
 func (s *FSStore) FileSize(ctx context.Context, payloadID string) (int64, bool) {
+	if err := s.materializeLegacy(payloadID); err != nil {
+		logger.Error("local store: draining an archived legacy payload for a size query",
+			"payload_id", payloadID, "error", err)
+		return 0, false
+	}
 	return s.Store.FileSize(ctx, journal.FileID(payloadID))
 }
 
@@ -230,7 +241,14 @@ func (s *FSStore) DurableExtent(ctx context.Context, payloadID string) (int64, b
 	return s.Store.DurableExtent(ctx, journal.FileID(payloadID))
 }
 
+// DataExtents drains the payload's archived legacy log first. SEEK_DATA and
+// READ_PLUS answer from these extents without ever issuing a read, so an
+// un-drained range would be reported as a genuine sparse hole and a sparse-aware
+// copy would skip bytes the file actually holds.
 func (s *FSStore) DataExtents(ctx context.Context, payloadID string, fileSize int64) ([][2]uint64, error) {
+	if err := s.materializeLegacy(payloadID); err != nil {
+		return nil, err
+	}
 	return s.Store.DataExtents(ctx, journal.FileID(payloadID), fileSize)
 }
 
@@ -248,10 +266,6 @@ func (s *FSStore) ListFiles(ctx context.Context) []string {
 // Start is a no-op: the journal has no background goroutines of its own (carve
 // and eviction are driven by the engine's syncer).
 func (s *FSStore) Start(context.Context) {}
-
-// SetRetentionPolicy is a no-op: the journal evicts whole fully-synced segments
-// approx-LRU and honors no pin/ttl/lru knob.
-func (s *FSStore) SetRetentionPolicy(block.RetentionPolicy, time.Duration) {}
 
 // SetMetrics is a no-op today — journal eviction/backpressure metrics are not
 // wired through the local tier. ponytail: wire journal counters here if the
@@ -277,7 +291,7 @@ func (s *FSStore) Stats() local.Stats {
 		DiskUsed:    js.DiskBytes,
 		MaxDisk:     s.maxDisk,
 		MaxLogBytes: s.maxLogBytes,
-		FileCount:   len(s.Store.ListFiles(context.Background())),
+		FileCount:   s.Store.FileCount(),
 	}
 }
 

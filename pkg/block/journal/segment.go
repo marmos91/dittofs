@@ -434,9 +434,12 @@ func (s *Store) appendTombstone(ctx context.Context, id FileID) (uint64, error) 
 			Flags:      flagTombstone,
 		}.encode())
 	}
-	fd := seg.fd
 	sh.mu.Unlock()
-	if err := fd.Sync(); err != nil {
+	// Durability goes through the shard's commit leader rather than a private
+	// fd.Sync: the record is already written, so a barrier that starts now covers
+	// it, and a burst of concurrent deletes on one shard rides a single fsync
+	// instead of one each.
+	if err := sh.groupCommit(); err != nil {
 		return 0, fmt.Errorf("journal: fsync tombstone: %w", err)
 	}
 	return version, nil
@@ -490,9 +493,10 @@ func (s *Store) appendTruncateMarker(ctx context.Context, id FileID, newSize int
 			Flags:      flagTruncate,
 		}.encode())
 	}
-	fd := seg.fd
 	sh.mu.Unlock()
-	if err := fd.Sync(); err != nil {
+	// Same commit-leader path as the tombstone: the marker's bytes are written,
+	// so any barrier that starts after this point makes them durable.
+	if err := sh.groupCommit(); err != nil {
 		return 0, fmt.Errorf("journal: fsync truncate marker: %w", err)
 	}
 	return version, nil
@@ -563,7 +567,7 @@ func (s *Store) readRecord(sh *shard, segID uint64, recOff int64, id FileID) (re
 		return record{}, fmt.Errorf("journal: unknown segment %d", segID)
 	}
 	seg.lastAccess.Store(s.clock.Now().UnixNano())
-	rec, err := readVerifiedRecord(seg.fd, recOff, s.cfg.SegmentSize, id)
+	rec, err := readVerifiedRecord(seg.fd, recOff, s.cfg.SegmentSize, id, nil)
 	if err != nil {
 		return record{}, fmt.Errorf("journal: read segment %d record %d: %w", segID, recOff, err)
 	}

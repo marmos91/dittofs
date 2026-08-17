@@ -164,7 +164,7 @@ type Store interface {
 //
 // Note: the narrowed LocalStore interface that lands keeps
 // additional lifecycle / admin methods (Truncate, EvictMemory
-// SetRetentionPolicy, SetEvictionEnabled, Stats, ListFiles
+// SetEvictionEnabled, Stats, ListFiles
 // GetStoredFileSize, Healthcheck, SyncFileChunks, SyncFileChunksForFile
 // Flush, Start, Close) as a strict admin-superset of BlockStoreAppend.
 // Those methods belong on LocalStore (boot-path / observability /

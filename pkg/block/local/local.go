@@ -2,9 +2,7 @@ package local
 
 import (
 	"context"
-	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/health"
 )
@@ -104,11 +102,6 @@ type LocalStore interface {
 	// unhealthy, cold-marking a range would strand unrecoverable bytes, so
 	// eviction is paused.
 	SetEvictionEnabled(enabled bool)
-
-	// SetRetentionPolicy is a compatibility no-op on the journal-native local
-	// store: the journal evicts whole fully-synced segments approx-LRU and does
-	// not honor a pin/ttl/lru knob. Retained so the health/admin path compiles.
-	SetRetentionPolicy(policy block.RetentionPolicy, ttl time.Duration)
 
 	// --- Lifecycle ---
 

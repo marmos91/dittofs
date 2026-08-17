@@ -457,8 +457,7 @@ type LocalStore interface {
     UnsyncedBytes() int64
     Evict(ctx context.Context, targetBytes int64) (journal.EvictResult, error)
     SetEvictionEnabled(enabled bool)
-    // ... plus lifecycle (Start, Close), Stats, Healthcheck, and a
-    // no-op SetRetentionPolicy retained for admin-path compatibility.
+    // ... plus lifecycle (Start, Close), Stats, and Healthcheck.
 }
 ```
 

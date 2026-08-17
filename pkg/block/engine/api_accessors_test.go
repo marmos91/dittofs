@@ -3,9 +3,7 @@ package engine
 import (
 	"context"
 	"testing"
-	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/health"
 )
 
@@ -75,13 +73,10 @@ func TestStore_Accessors(t *testing.T) {
 	_ = bs.LocalStats()
 }
 
-// TestStore_RetentionAndEvictionSetters exercises the delegating setters
-// (they must not panic and must accept valid policies).
-func TestStore_RetentionAndEvictionSetters(t *testing.T) {
+// TestStore_EvictionSetter exercises the delegating setter (it must not panic).
+func TestStore_EvictionSetter(t *testing.T) {
 	bs := newTestEngine(t, 64*1024*1024, 0)
 
-	bs.SetRetentionPolicy(block.RetentionLRU, time.Hour)
-	bs.SetRetentionPolicy(block.RetentionPin, 0)
 	bs.SetEvictionEnabled(true)
 	bs.SetEvictionEnabled(false)
 }

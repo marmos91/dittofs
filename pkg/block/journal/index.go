@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"sync"
+
+	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
 // SegmentLocation points at a record payload inside a shared segment. It
@@ -352,6 +355,16 @@ func (s *Store) ReadAt(ctx context.Context, id FileID, offset int64, dst []byte)
 	return len(dst), cold, nil
 }
 
+// maxPooledRecordScratch bounds what a verified read hands back to the pool. A
+// record is at most one FastCDC chunk, and the chunker's 16 MiB hard ceiling is
+// far above the average cut — retaining a buffer that big would pin it for the
+// process lifetime to serve a read that almost never repeats, so an oversized
+// one is dropped for the GC instead.
+const maxPooledRecordScratch = chunker.AvgChunkSize
+
+// recordScratchPool recycles the whole-record buffers verified reads need.
+var recordScratchPool = sync.Pool{New: func() any { return new([]byte) }}
+
 // verifiedRead serves a warm piece with integrity verification: it re-reads the
 // whole record that owns the piece (at p.recOff) and validates it via
 // readVerifiedRecord, then copies the requested sub-range out of the verified
@@ -362,7 +375,19 @@ func (s *Store) ReadAt(ctx context.Context, id FileID, offset int64, dst []byte)
 // store or fails closed; it never copies unverified bytes into out.
 func (s *Store) verifiedRead(seg *segmentMeta, p piece, out []byte, id FileID, readOff int64) error {
 	corrupt := &CorruptRangeError{FileID: id, Offset: readOff + p.dstStart, Len: p.dstEnd - p.dstStart}
-	rec, err := readVerifiedRecord(seg.fd, p.recOff, s.cfg.SegmentSize, id)
+	// The whole record is read to verify it, so the scratch buffer is sized to a
+	// record, not to the request. Recycling it keeps a warm read from allocating
+	// (and the GC from collecting) one of those per piece per read.
+	scratch := recordScratchPool.Get().(*[]byte)
+	defer func() {
+		if cap(*scratch) <= maxPooledRecordScratch {
+			recordScratchPool.Put(scratch)
+		}
+	}()
+	rec, err := readVerifiedRecord(seg.fd, p.recOff, s.cfg.SegmentSize, id, *scratch)
+	if rec.buf != nil {
+		*scratch = rec.buf // keep a buffer the read had to grow
+	}
 	if err != nil {
 		return corrupt
 	}

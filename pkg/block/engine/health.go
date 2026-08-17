@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/health"
 )
 
@@ -80,12 +79,6 @@ func (bs *Store) Healthcheck(ctx context.Context) health.Report {
 // HasRemoteStore returns true if this Store has a remote store configured.
 func (bs *Store) HasRemoteStore() bool {
 	return bs.remote != nil
-}
-
-// SetRetentionPolicy updates the retention policy on the underlying local store.
-// Delegates to the local store's SetRetentionPolicy method.
-func (bs *Store) SetRetentionPolicy(policy block.RetentionPolicy, ttl time.Duration) {
-	bs.local.SetRetentionPolicy(policy, ttl)
 }
 
 // SetEvictionEnabled controls whether the local store can evict blocks to free disk space.
