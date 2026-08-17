@@ -21,6 +21,9 @@ import (
 // 5-byte DFCMP magic prefix.
 type Decorator struct {
 	remote.Passthrough
+	// inner is the wrapped store, held separately because Passthrough keeps
+	// its own copy unexported to stay off this type's public surface.
+	inner remote.RemoteStore
 	algo  Algo
 	codec codec
 }
@@ -36,7 +39,8 @@ func NewRemote(inner remote.RemoteStore, p CompressionPolicy) (*Decorator, error
 		return nil, err
 	}
 	return &Decorator{
-		Passthrough: remote.Passthrough{Inner: inner},
+		Passthrough: remote.NewPassthrough(inner),
+		inner:       inner,
 		algo:        p.Algo,
 		codec:       c,
 	}, nil
@@ -56,7 +60,7 @@ func (d *Decorator) Put(ctx context.Context, hash block.ContentHash, data []byte
 	if err != nil {
 		return err
 	}
-	cs, err := remote.CASInner(d.Inner)
+	cs, err := remote.CASInner(d.inner)
 	if err != nil {
 		return err
 	}
@@ -73,7 +77,7 @@ func (d *Decorator) SealChunk(ctx context.Context, hash block.ContentHash, plain
 	if err != nil {
 		return nil, err
 	}
-	sealer, ok := d.Inner.(remote.ChunkSealer)
+	sealer, ok := d.inner.(remote.ChunkSealer)
 	if !ok {
 		return nil, remote.ErrChunkReadUnsupported
 	}
@@ -111,7 +115,7 @@ func (d *Decorator) sealLayer(data []byte) ([]byte, error) {
 
 // Get returns the plaintext for the block identified by hash.
 func (d *Decorator) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
-	cs, err := remote.CASInner(d.Inner)
+	cs, err := remote.CASInner(d.inner)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +181,7 @@ func (d *Decorator) GetRange(ctx context.Context, hash block.ContentHash, offset
 // framed blocks this requires a short range-GET to parse the frame
 // header.
 func (d *Decorator) Head(ctx context.Context, hash block.ContentHash) (block.Meta, error) {
-	cs, err := remote.CASInner(d.Inner)
+	cs, err := remote.CASInner(d.inner)
 	if err != nil {
 		return block.Meta{}, err
 	}
@@ -208,7 +212,7 @@ func (d *Decorator) plaintextSizeFor(ctx context.Context, hash block.ContentHash
 	if probeLen <= 0 {
 		return wireSize, nil
 	}
-	cs, err := remote.CASInner(d.Inner)
+	cs, err := remote.CASInner(d.inner)
 	if err != nil {
 		return 0, err
 	}
@@ -230,7 +234,7 @@ func (d *Decorator) plaintextSizeFor(ctx context.Context, hash block.ContentHash
 // for each framed block before invoking the user callback. Per-block
 // probe errors halt the walk and are surfaced to the caller.
 func (d *Decorator) Walk(ctx context.Context, fn func(hash block.ContentHash, meta block.Meta) error) error {
-	cs, err := remote.CASInner(d.Inner)
+	cs, err := remote.CASInner(d.inner)
 	if err != nil {
 		return err
 	}
@@ -252,7 +256,7 @@ func (d *Decorator) Walk(ctx context.Context, fn func(hash block.ContentHash, me
 // the engine verifies the BLAKE3 after the full stack. hash is unused at this
 // layer. Implements remote.ChunkReader (#1414).
 func (d *Decorator) ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error) {
-	pcr, ok := d.Inner.(remote.ChunkReader)
+	pcr, ok := d.inner.(remote.ChunkReader)
 	if !ok {
 		return nil, remote.ErrChunkReadUnsupported
 	}

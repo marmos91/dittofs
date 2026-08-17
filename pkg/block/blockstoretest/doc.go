@@ -1,10 +1,10 @@
 // Package blockstoretest provides a unified conformance suite for the
-// BlockStore contract declared in pkg/block/blockstore.go.
+// block.Store contract declared in pkg/block/blockstore.go.
 //
 // Two top-level entrypoints are exposed:
 //
 //   - BlockStoreConformance(t, factory) — runs the CAS-keyed contract
-//     suite against any BlockStore implementation. The s3 and memory
+//     suite against any block.Store implementation. The s3 and memory
 //     backends and the compression / encryption decorators call it.
 //   - RemoteBlockStoreConformance(t, factory) — runs the block-keyed
 //     (non-CAS) contract suite against any RemoteBlockStore
@@ -14,7 +14,7 @@
 // There is no append-log conformance entrypoint. The local tier
 // (*fs.FSStore) is not hash-keyed — it exposes the payload-keyed
 // local.LocalStore surface (WriteAt / ReadAt / Hydrate / Commit) and so
-// implements neither BlockStore nor RemoteBlockStore. It is covered by
+// implements neither block.Store nor RemoteBlockStore. It is covered by
 // its own package-local tests in pkg/block/local/fs and by the journal
 // suites, not by anything here.
 //

@@ -20,6 +20,9 @@ import (
 // unchanged from the perspective of callers above the decorator.
 type EncryptedRemote struct {
 	remote.Passthrough
+	// inner is the wrapped store, held separately because Passthrough keeps
+	// its own copy unexported to stay off this type's public surface.
+	inner    remote.RemoteStore
 	aead     AEAD
 	provider keyprovider.KeyProvider
 }
@@ -38,7 +41,8 @@ func NewRemote(inner remote.RemoteStore, policy EncryptionPolicy, provider keypr
 		return nil, err
 	}
 	return &EncryptedRemote{
-		Passthrough: remote.Passthrough{Inner: inner},
+		Passthrough: remote.NewPassthrough(inner),
+		inner:       inner,
 		aead:        policy.AEAD,
 		provider:    provider,
 	}, nil
@@ -55,7 +59,7 @@ func (d *EncryptedRemote) Put(ctx context.Context, hash block.ContentHash, data 
 	if err != nil {
 		return err
 	}
-	cs, err := remote.CASInner(d.Inner)
+	cs, err := remote.CASInner(d.inner)
 	if err != nil {
 		return err
 	}
@@ -72,7 +76,7 @@ func (d *EncryptedRemote) SealChunk(ctx context.Context, hash block.ContentHash,
 	if err != nil {
 		return nil, err
 	}
-	sealer, ok := d.Inner.(remote.ChunkSealer)
+	sealer, ok := d.inner.(remote.ChunkSealer)
 	if !ok {
 		return nil, remote.ErrChunkReadUnsupported
 	}
@@ -111,7 +115,7 @@ func (d *EncryptedRemote) sealLayer(ctx context.Context, hash block.ContentHash,
 
 // Get returns the plaintext for the block identified by hash.
 func (d *EncryptedRemote) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
-	cs, err := remote.CASInner(d.Inner)
+	cs, err := remote.CASInner(d.inner)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +146,7 @@ func (d *EncryptedRemote) GetRange(ctx context.Context, hash block.ContentHash, 
 // 16-byte authentication tag, so plaintext_size = wire_size -
 // header_size - aeadTagSize.
 func (d *EncryptedRemote) Head(ctx context.Context, hash block.ContentHash) (block.Meta, error) {
-	cs, err := remote.CASInner(d.Inner)
+	cs, err := remote.CASInner(d.inner)
 	if err != nil {
 		return block.Meta{}, err
 	}
@@ -161,7 +165,7 @@ func (d *EncryptedRemote) Head(ctx context.Context, hash block.ContentHash) (blo
 // Walk rewrites Meta.Size to plaintext size for each block via the same
 // range-GET probe as Head. Per-block probe errors halt the walk.
 func (d *EncryptedRemote) Walk(ctx context.Context, fn func(hash block.ContentHash, meta block.Meta) error) error {
-	cs, err := remote.CASInner(d.Inner)
+	cs, err := remote.CASInner(d.inner)
 	if err != nil {
 		return err
 	}
@@ -184,7 +188,7 @@ func (d *EncryptedRemote) plaintextSizeFor(ctx context.Context, hash block.Conte
 	if probeLen <= 0 {
 		return 0, ErrCiphertextWithoutFrame
 	}
-	cs, err := remote.CASInner(d.Inner)
+	cs, err := remote.CASInner(d.inner)
 	if err != nil {
 		return 0, err
 	}
@@ -214,7 +218,7 @@ func (d *EncryptedRemote) plaintextSizeFor(ctx context.Context, hash block.Conte
 // standalone object. No verification here — the engine verifies the BLAKE3 after
 // the full stack. Implements remote.ChunkReader (#1414).
 func (d *EncryptedRemote) ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error) {
-	pcr, ok := d.Inner.(remote.ChunkReader)
+	pcr, ok := d.inner.(remote.ChunkReader)
 	if !ok {
 		return nil, remote.ErrChunkReadUnsupported
 	}

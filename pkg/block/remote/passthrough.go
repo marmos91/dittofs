@@ -27,16 +27,22 @@ import (
 // whether the backend is reachable. Has and Delete forward because both
 // key off the content hash, which a transform leaves unchanged.
 type Passthrough struct {
-	// Inner is the wrapped store. Decorators read it directly to reach
-	// capabilities their transform participates in (ChunkReader,
-	// ChunkSealer).
-	Inner RemoteStore
+	// inner is the wrapped store. It stays unexported so that embedding
+	// Passthrough cannot promote a handle to the untransformed store into a
+	// decorator's public surface: a caller holding that handle could read and
+	// write bytes straight past the transform. Decorators that need the store
+	// to reach a capability their transform participates in (ChunkReader,
+	// ChunkSealer) keep their own reference.
+	inner RemoteStore
 }
+
+// NewPassthrough builds a Passthrough forwarding to inner.
+func NewPassthrough(inner RemoteStore) Passthrough { return Passthrough{inner: inner} }
 
 // blockInner returns the inner store as a RemoteBlockStore, or an error
 // when the wrapped store does not support block-keyed objects.
 func (p Passthrough) blockInner() (RemoteBlockStore, error) {
-	rbs, ok := p.Inner.(RemoteBlockStore)
+	rbs, ok := p.inner.(RemoteBlockStore)
 	if !ok {
 		return nil, ErrChunkReadUnsupported
 	}
@@ -129,7 +135,7 @@ func (p Passthrough) WalkBlocks(ctx context.Context, fn func(blockID string, met
 // Has reports presence by probing inner.Head. NotFound errors map to
 // (false, nil); any other backend error propagates.
 func (p Passthrough) Has(ctx context.Context, hash block.ContentHash) (bool, error) {
-	cs, err := CASInner(p.Inner)
+	cs, err := CASInner(p.inner)
 	if err != nil {
 		return false, err
 	}
@@ -144,7 +150,7 @@ func (p Passthrough) Has(ctx context.Context, hash block.ContentHash) (bool, err
 
 // Delete removes the standalone object keyed by hash.
 func (p Passthrough) Delete(ctx context.Context, hash block.ContentHash) error {
-	cs, err := CASInner(p.Inner)
+	cs, err := CASInner(p.inner)
 	if err != nil {
 		return err
 	}
@@ -160,18 +166,18 @@ func (p Passthrough) DeleteLegacyChunk(ctx context.Context, hash block.ContentHa
 
 // Close releases inner resources. A decorator holding resources of its
 // own overrides this and closes both.
-func (p Passthrough) Close() error { return p.Inner.Close() }
+func (p Passthrough) Close() error { return p.inner.Close() }
 
 // HealthCheck delegates to inner.
-func (p Passthrough) HealthCheck(ctx context.Context) error { return p.Inner.HealthCheck(ctx) }
+func (p Passthrough) HealthCheck(ctx context.Context) error { return p.inner.HealthCheck(ctx) }
 
 // Healthcheck delegates to inner.
 func (p Passthrough) Healthcheck(ctx context.Context) health.Report {
-	return p.Inner.Healthcheck(ctx)
+	return p.inner.Healthcheck(ctx)
 }
 
 // Durable delegates to the wrapped store via block.IsDurable. Transforming
 // block bodies does not change where the bytes ultimately land, so a durable
 // inner store stays durable through a decorator; a wrapped store that does not
 // report durability falls back to the conservative default (false).
-func (p Passthrough) Durable() bool { return block.IsDurable(p.Inner) }
+func (p Passthrough) Durable() bool { return block.IsDurable(p.inner) }
