@@ -287,17 +287,17 @@ DittoFS uses a Service-oriented architecture where **stores are simple CRUD inte
 
 **Block Store (Local):**
 
-1. Implement `pkg/block/local.LocalStore` interface. It embeds the
-   content-addressed `block.BlockStoreAppend` surface (`Put`, `Get`,
-   `GetRange`, `Has`, `Delete`, `Head`, `Walk`, plus `AppendWrite` /
-   `DeleteAppendLog`) and adds per-payload admin, lifecycle, rollup-drain,
-   and retention methods — see `pkg/block/local/local.go` for the full list.
-2. Storage is content-addressed (keyed by `block.ContentHash`), not by
-   block ID/offset
+1. Implement the `pkg/block/local.LocalStore` interface. It is the
+   journal-native surface keyed by `(payloadID, offset)` — `WriteAt`,
+   `ReadAt`, `Hydrate`, `Commit`, `Truncate`, `Delete` — plus carve,
+   eviction, lifecycle and retention methods. See `pkg/block/local/local.go`
+   for the full list.
+2. Storage is payload-keyed, NOT content-addressed: the local tier is a
+   per-file byte cache, so it does not implement `block.Store`.
 3. Each share gets an isolated local storage directory
-4. Test with the conformance suite in `pkg/block/blockstoretest/`
-   (`BlockStoreConformance` for the CAS contract, `BlockStoreAppendConformance`
-   for the append-write absorber)
+4. The `pkg/block/blockstoretest/` suites do not apply here — they target the
+   hash-keyed and block-keyed remote surfaces. Model tests on the existing
+   package tests under `pkg/block/local/` and `pkg/block/journal/`.
 
 **Block Store (Remote):**
 

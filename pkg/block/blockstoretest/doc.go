@@ -1,30 +1,25 @@
 // Package blockstoretest provides a unified conformance suite for the
-// BlockStore and BlockStoreAppend contracts declared in
-// pkg/block/blockstore.go.
+// BlockStore contract declared in pkg/block/blockstore.go.
 //
-// Three top-level entrypoints are exposed:
+// Two top-level entrypoints are exposed:
 //
 //   - BlockStoreConformance(t, factory) — runs the CAS-keyed contract
-//     suite against any BlockStore implementation. The fs, s3, and
-//     memory backends all call this entrypoint.
-//   - BlockStoreAppendConformance(t, factory) — runs the random-write
-//     absorber suite against any BlockStoreAppend implementation. Only
-//     the fs backend implements BlockStoreAppend and therefore calls
-//     this entrypoint.
+//     suite against any BlockStore implementation. The s3 and memory
+//     backends and the compression / encryption decorators call it.
 //   - RemoteBlockStoreConformance(t, factory) — runs the block-keyed
 //     (non-CAS) contract suite against any RemoteBlockStore
 //     implementation. The memory and s3 backends both call this
 //     entrypoint.
 //
-// This package replaces pkg/block/local/localtest and
-// pkg/block/remote/remotetest. The three fs-internal scenarios
-// that cannot be expressed through the interface surface
-// (PressureChannel_INV05, TornWriteRecovery_LSL06,
-// RollupOffsetMonotone_INV03) live in
-// pkg/block/local/fs/appendlog_internals_test.go.
+// There is no append-log conformance entrypoint. The local tier
+// (*fs.FSStore) is not hash-keyed — it exposes the payload-keyed
+// local.LocalStore surface (WriteAt / ReadAt / Hydrate / Commit) and so
+// implements neither BlockStore nor RemoteBlockStore. It is covered by
+// its own package-local tests in pkg/block/local/fs and by the journal
+// suites, not by anything here.
 //
-// Each scenario uses a factory that returns a fresh (BlockStore
-// cleanup) pair per subtest, so subtests do not share state and
-// teardown is deterministic. See conformance.go and appendlog.go for
-// the factory type definitions.
+// Each scenario uses a factory that returns a fresh (store, cleanup)
+// pair per subtest, so subtests do not share state and teardown is
+// deterministic. See conformance.go and remoteblock.go for the factory
+// type definitions.
 package blockstoretest

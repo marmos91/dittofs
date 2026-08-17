@@ -1,28 +1,26 @@
 // Package blockstore defines the unified content-addressed block storage
 // contract DittoFS uses across every storage tier. It is the
 // single source of truth for FileChunk, BlockState, ContentHash, BlockSize
-// the BlockStore + BlockStoreAppend interfaces, the minimal Meta struct
-// the error sentinels (ErrStopWalk, ErrFutureFormat
+// the Store interface, the minimal Meta struct, the error sentinels
+// (ErrStopWalk, ErrFutureFormat
 // ErrChunkNotFound, …), and the on-disk format-version convention.
 //
 // # Interface roles
 //
-// Two interfaces, both keyed by ContentHash, replace the earlier
-// v0.15 split (LocalStore: 22 methods, RemoteStore: 12 methods):
+// One hash-keyed interface replaces the earlier v0.15 split
+// (LocalStore: 22 methods, RemoteStore: 12 methods):
 //
-//   - BlockStore — the unified surface for content-addressed CRUD
+//   - Store — the unified surface for content-addressed CRUD
 //     (Put / Get / GetRange / Has / Delete / Head / Walk). Idempotent
 //     same-bytes Put, no opaque "block key" strings, every method
 //     takes a context.Context first. Implemented by:
-//     *pkg/block/local/fs.FSStore (local CAS chunks);
-//     *pkg/block/remote/s3.Store (S3-backed CAS);
-//     *pkg/block/remote/memory.Store (in-memory CAS for tests).
+//     *pkg/block/remote/s3.Store and *pkg/block/remote/memory.Store
+//     (behind the migration-only legacy-CAS path), and by the
+//     compression / encryption decorators.
 //
-//   - BlockStoreAppend — embeds BlockStore and adds AppendWrite +
-//     DeleteAppendLog for the random-write absorber tier (the per-file
-//     append log + FastCDC rollup loop on the fs backend). s3 and
-//     memory backends do NOT implement this — they only see rolled-up
-//     Put calls.
+// The local random-write absorber tier (per-file append log + FastCDC
+// rollup on the fs backend) is payload-keyed, not hash-keyed: it lives
+// on pkg/block/local.LocalStore and is not part of this contract.
 //
 // Meta (the value returned by Head and surfaced via Walk) carries
 // minimal fields:
@@ -102,14 +100,15 @@
 //
 // # Sub-packages
 //
-//   - local: LocalStore admin-superset interface + the *fs.FSStore
-//     implementation (the only BlockStoreAppend).
-//   - remote: Remote backend implementations (s3, memory) that
-//     implement BlockStore only.
-//   - blockstoretest: Unified conformance suite. Two entrypoints —
-//     BlockStoreConformance(t, factory) and
-//     BlockStoreAppendConformance(t, factory) — let backends opt
-//     into the contract surface they claim.
+//   - local: the payload-keyed LocalStore interface + the *fs.FSStore
+//     implementation.
+//   - remote: the block-keyed RemoteStore contract, its backend
+//     implementations (s3, memory), and Passthrough, the forwarding
+//     base the compression / encryption decorators embed.
+//   - blockstoretest: conformance suites — BlockStoreConformance for
+//     the hash-keyed Store surface and RemoteBlockStoreConformance for
+//     the block-keyed one — let backends opt into the contract surface
+//     they claim.
 //   - engine: BlockStore engine composing local store + syncer +
 //     unified Cache + metadata.
 //   - chunker: FastCDC chunker used by both writes and by the

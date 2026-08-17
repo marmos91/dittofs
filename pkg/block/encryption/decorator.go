@@ -5,16 +5,13 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"errors"
 	"fmt"
-	"io"
 
 	"golang.org/x/crypto/chacha20poly1305"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/encryption/keyprovider"
 	"github.com/marmos91/dittofs/pkg/block/remote"
-	"github.com/marmos91/dittofs/pkg/health"
 )
 
 // EncryptedRemote wraps a remote.RemoteStore and transparently encrypts
@@ -22,7 +19,7 @@ import (
 // remains the CAS key — dedup, GC, and verification semantics are
 // unchanged from the perspective of callers above the decorator.
 type EncryptedRemote struct {
-	inner    remote.RemoteStore
+	remote.Passthrough
 	aead     AEAD
 	provider keyprovider.KeyProvider
 }
@@ -40,7 +37,11 @@ func NewRemote(inner remote.RemoteStore, policy EncryptionPolicy, provider keypr
 	if _, err := newAEAD(policy.AEAD, make([]byte, 32)); err != nil {
 		return nil, err
 	}
-	return &EncryptedRemote{inner: inner, aead: policy.AEAD, provider: provider}, nil
+	return &EncryptedRemote{
+		Passthrough: remote.Passthrough{Inner: inner},
+		aead:        policy.AEAD,
+		provider:    provider,
+	}, nil
 }
 
 // Put encrypts data and stores the framed result under hash. The block
@@ -54,7 +55,7 @@ func (d *EncryptedRemote) Put(ctx context.Context, hash block.ContentHash, data 
 	if err != nil {
 		return err
 	}
-	cs, err := d.casInner()
+	cs, err := remote.CASInner(d.Inner)
 	if err != nil {
 		return err
 	}
@@ -71,7 +72,7 @@ func (d *EncryptedRemote) SealChunk(ctx context.Context, hash block.ContentHash,
 	if err != nil {
 		return nil, err
 	}
-	sealer, ok := d.inner.(remote.ChunkSealer)
+	sealer, ok := d.Inner.(remote.ChunkSealer)
 	if !ok {
 		return nil, remote.ErrChunkReadUnsupported
 	}
@@ -110,7 +111,7 @@ func (d *EncryptedRemote) sealLayer(ctx context.Context, hash block.ContentHash,
 
 // Get returns the plaintext for the block identified by hash.
 func (d *EncryptedRemote) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
-	cs, err := d.casInner()
+	cs, err := remote.CASInner(d.Inner)
 	if err != nil {
 		return nil, err
 	}
@@ -132,30 +133,7 @@ func (d *EncryptedRemote) GetRange(ctx context.Context, hash block.ContentHash, 
 	if err != nil {
 		return nil, err
 	}
-	if offset < 0 || offset > int64(len(full)) {
-		return nil, fmt.Errorf("%w: offset %d out of bounds (size %d)", block.ErrInvalidOffset, offset, len(full))
-	}
-	end := min(offset+length, int64(len(full)))
-	out := make([]byte, end-offset)
-	copy(out, full[offset:end])
-	return out, nil
-}
-
-// Has reports presence by probing inner.Head. NotFound errors map to
-// (false, nil); any other backend error propagates.
-func (d *EncryptedRemote) Has(ctx context.Context, hash block.ContentHash) (bool, error) {
-	cs, err := d.casInner()
-	if err != nil {
-		return false, err
-	}
-	_, err = cs.Head(ctx, hash)
-	if err == nil {
-		return true, nil
-	}
-	if errors.Is(err, block.ErrChunkNotFound) {
-		return false, nil
-	}
-	return false, err
+	return remote.SliceRange(full, offset, length)
 }
 
 // Head returns Meta whose Size is the plaintext byte length, derived
@@ -164,7 +142,7 @@ func (d *EncryptedRemote) Has(ctx context.Context, hash block.ContentHash) (bool
 // 16-byte authentication tag, so plaintext_size = wire_size -
 // header_size - aeadTagSize.
 func (d *EncryptedRemote) Head(ctx context.Context, hash block.ContentHash) (block.Meta, error) {
-	cs, err := d.casInner()
+	cs, err := remote.CASInner(d.Inner)
 	if err != nil {
 		return block.Meta{}, err
 	}
@@ -183,7 +161,7 @@ func (d *EncryptedRemote) Head(ctx context.Context, hash block.ContentHash) (blo
 // Walk rewrites Meta.Size to plaintext size for each block via the same
 // range-GET probe as Head. Per-block probe errors halt the walk.
 func (d *EncryptedRemote) Walk(ctx context.Context, fn func(hash block.ContentHash, meta block.Meta) error) error {
-	cs, err := d.casInner()
+	cs, err := remote.CASInner(d.Inner)
 	if err != nil {
 		return err
 	}
@@ -206,7 +184,7 @@ func (d *EncryptedRemote) plaintextSizeFor(ctx context.Context, hash block.Conte
 	if probeLen <= 0 {
 		return 0, ErrCiphertextWithoutFrame
 	}
-	cs, err := d.casInner()
+	cs, err := remote.CASInner(d.Inner)
 	if err != nil {
 		return 0, err
 	}
@@ -228,15 +206,6 @@ func (d *EncryptedRemote) plaintextSizeFor(ctx context.Context, hash block.Conte
 	return plain, nil
 }
 
-// Delete is a straight passthrough.
-func (d *EncryptedRemote) Delete(ctx context.Context, hash block.ContentHash) error {
-	cs, err := d.casInner()
-	if err != nil {
-		return err
-	}
-	return cs.Delete(ctx, hash)
-}
-
 // ReadChunk reads the chunk's encrypted wire bytes from the inner store's
 // block object and decrypts them against hash as the AEAD AAD, returning the
 // plaintext (for the next layer up / the engine). A block stores each chunk's
@@ -245,7 +214,7 @@ func (d *EncryptedRemote) Delete(ctx context.Context, hash block.ContentHash) er
 // standalone object. No verification here — the engine verifies the BLAKE3 after
 // the full stack. Implements remote.ChunkReader (#1414).
 func (d *EncryptedRemote) ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error) {
-	pcr, ok := d.inner.(remote.ChunkReader)
+	pcr, ok := d.Inner.(remote.ChunkReader)
 	if !ok {
 		return nil, remote.ErrChunkReadUnsupported
 	}
@@ -258,102 +227,12 @@ func (d *EncryptedRemote) ReadChunk(ctx context.Context, blockID string, offset,
 
 // Close releases inner resources and the provider.
 func (d *EncryptedRemote) Close() error {
-	innerErr := d.inner.Close()
+	innerErr := d.Passthrough.Close()
 	provErr := d.provider.Close()
 	if innerErr != nil {
 		return innerErr
 	}
 	return provErr
-}
-
-func (d *EncryptedRemote) HealthCheck(ctx context.Context) error { return d.inner.HealthCheck(ctx) }
-
-func (d *EncryptedRemote) Healthcheck(ctx context.Context) health.Report {
-	return d.inner.Healthcheck(ctx)
-}
-
-// Durable delegates to the wrapped store via block.IsDurable. Encrypting block
-// bodies does not change where the bytes ultimately land, so a durable inner
-// store stays durable through the decorator; a wrapped store that does not
-// report durability falls back to the conservative default (false).
-func (d *EncryptedRemote) Durable() bool {
-	return block.IsDurable(d.inner)
-}
-
-// --- remote.RemoteBlockStore passthrough (#1414) ---
-//
-// Packed block objects carry per-chunk wire frames that were already sealed via
-// SealChunk; the assembled block must NOT be re-encrypted at the block level.
-// So every block-keyed operation passes through verbatim to the inner store.
-// This lets a decorated remote satisfy remote.RemoteBlockStore (the carve path
-// asserts it) while the per-chunk transform stays in SealChunk/ReadChunk.
-
-// blockInner returns the inner store as a remote.RemoteBlockStore, or an error
-// when the wrapped store does not support block-keyed objects.
-func (d *EncryptedRemote) blockInner() (remote.RemoteBlockStore, error) {
-	rbs, ok := d.inner.(remote.RemoteBlockStore)
-	if !ok {
-		return nil, remote.ErrChunkReadUnsupported
-	}
-	return rbs, nil
-}
-
-// casInner exposes the inner store's hash-keyed CAS surface (block.Store),
-// used only by the legacy standalone-CAS read path (block.Store methods +
-// ReadBlockVerified in legacy_cas_migration.go). Every shipped remote backend
-// and decorator implements block.Store, so the assertion succeeds in practice;
-// it returns an error rather than panicking for defense in depth.
-func (d *EncryptedRemote) casInner() (block.Store, error) {
-	cs, ok := d.inner.(block.Store)
-	if !ok {
-		return nil, remote.ErrChunkReadUnsupported
-	}
-	return cs, nil
-}
-
-// PutBlock stores the assembled block verbatim (already-sealed frames).
-func (d *EncryptedRemote) PutBlock(ctx context.Context, blockID string, r io.Reader) error {
-	rbs, err := d.blockInner()
-	if err != nil {
-		return err
-	}
-	return rbs.PutBlock(ctx, blockID, r)
-}
-
-// GetBlock returns the raw block object verbatim.
-func (d *EncryptedRemote) GetBlock(ctx context.Context, blockID string) ([]byte, error) {
-	rbs, err := d.blockInner()
-	if err != nil {
-		return nil, err
-	}
-	return rbs.GetBlock(ctx, blockID)
-}
-
-// GetBlockRange returns raw block bytes verbatim; per-chunk decrypt is ReadChunk.
-func (d *EncryptedRemote) GetBlockRange(ctx context.Context, blockID string, offset, length int64) ([]byte, error) {
-	rbs, err := d.blockInner()
-	if err != nil {
-		return nil, err
-	}
-	return rbs.GetBlockRange(ctx, blockID, offset, length)
-}
-
-// DeleteBlock removes the block object.
-func (d *EncryptedRemote) DeleteBlock(ctx context.Context, blockID string) error {
-	rbs, err := d.blockInner()
-	if err != nil {
-		return err
-	}
-	return rbs.DeleteBlock(ctx, blockID)
-}
-
-// WalkBlocks enumerates block objects.
-func (d *EncryptedRemote) WalkBlocks(ctx context.Context, fn func(blockID string, meta block.Meta) error) error {
-	rbs, err := d.blockInner()
-	if err != nil {
-		return err
-	}
-	return rbs.WalkBlocks(ctx, fn)
 }
 
 // decrypt parses the frame, unwraps the block key, and authenticated-

@@ -92,7 +92,9 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
 
 7. **Store contracts** live in `pkg/metadata/storetest/` — any new metadata backend must pass
    that conformance suite. Block stores have a unified suite in `pkg/block/blockstoretest/`
-   (`BlockStoreConformance` + `BlockStoreAppendConformance`).
+   (`BlockStoreConformance` for the hash-keyed `block.Store` surface,
+   `RemoteBlockStoreConformance` for the block-keyed one). The local tier is
+   payload-keyed and is covered by its own package tests, not by that suite.
 
 ## Code comments
 
