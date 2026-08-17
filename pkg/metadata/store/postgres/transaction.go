@@ -360,23 +360,28 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	// pgx.ErrNoRows means it did not, so we fall through to INSERT.
 	var oldSizeVal sql.NullInt64
 	var oldUIDVal, oldGIDVal, oldTypeVal sql.NullInt64
-	updated := true
-	scanErr := tx.tx.QueryRow(ctx, updateQuery,
-		file.Type, file.Mode, file.UID, file.GID, file.Size,
-		sqlcodec.TimeToFiletime(file.Atime), sqlcodec.TimeToFiletime(file.Mtime),
-		sqlcodec.TimeToFiletime(file.Ctime), sqlcodec.TimeToFiletime(file.CreationTime),
-		payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
-		file.Hidden, aclJSON, easJSON, objectIDArg,
-		deletedAtArg, file.OriginalPath, file.DeletedBy,
-		file.ID, file.ShareName,
-	).Scan(&oldSizeVal, &oldUIDVal, &oldGIDVal, &oldTypeVal)
-	switch {
-	case scanErr == nil:
-		// Row existed and was updated; oldSizeVal holds the pre-update size.
-	case errors.Is(scanErr, pgx.ErrNoRows):
-		updated = false
-	default:
-		return mapPgError(scanErr, "PutFile", "")
+	// A caller that knows the inode is new skips the probe entirely: on a
+	// create the round-trip can only ever report "no such row", and a stale
+	// claim surfaces as the INSERT's duplicate-key error.
+	updated := !file.NewInode
+	if updated {
+		scanErr := tx.tx.QueryRow(ctx, updateQuery,
+			file.Type, file.Mode, file.UID, file.GID, file.Size,
+			sqlcodec.TimeToFiletime(file.Atime), sqlcodec.TimeToFiletime(file.Mtime),
+			sqlcodec.TimeToFiletime(file.Ctime), sqlcodec.TimeToFiletime(file.CreationTime),
+			payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
+			file.Hidden, aclJSON, easJSON, objectIDArg,
+			deletedAtArg, file.OriginalPath, file.DeletedBy,
+			file.ID, file.ShareName,
+		).Scan(&oldSizeVal, &oldUIDVal, &oldGIDVal, &oldTypeVal)
+		switch {
+		case scanErr == nil:
+			// Row existed and was updated; oldSizeVal holds the pre-update size.
+		case errors.Is(scanErr, pgx.ErrNoRows):
+			updated = false
+		default:
+			return mapPgError(scanErr, "PutFile", "")
+		}
 	}
 
 	// Track size delta for regular files after a successful update.
@@ -462,7 +467,8 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		// manifest, so putFileChunkRefs writes nothing and reports wrote=false.
 		// Freshly-inserted rows (!updated) have no prior refs, so every ref is
 		// a plain insert. The counter tracks manifests that truly changed.
-		wrote, err := putFileChunkRefs(ctx, tx.tx, file.ID, file.Blocks, updated)
+		wrote, scanned, err := putFileChunkRefs(ctx, tx.tx, file.ID, file.Blocks, updated, file.BlocksDirtyOffsets)
+		tx.store.manifestRowsScanned.Add(int64(scanned))
 		if err != nil {
 			return mapPgError(err, "PutFile", "blocks")
 		}
@@ -1378,14 +1384,15 @@ func (tx *postgresTransaction) GetFileByPayloadID(ctx context.Context, payloadID
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
 			f.hidden, f.acl, f.eas, f.object_id,
-			f.deleted_at, f.original_path, f.deleted_by, f.nlink
+			f.deleted_at, f.original_path, f.deleted_by, f.nlink,
+			` + blockRefsAggExpr + `
 		FROM inodes f
 		WHERE f.content_id_hash = md5($1)
 		LIMIT 1
 	`
 
 	row := tx.tx.QueryRow(ctx, query, string(payloadID))
-	file, err := sqlcodec.FileRowToFileWithNlink(row)
+	file, err := sqlcodec.FileRowToFileWithNlinkAndBlocks(row, true)
 	if err != nil {
 		return nil, mapPgError(err, "GetFileByPayloadID", string(payloadID))
 	}

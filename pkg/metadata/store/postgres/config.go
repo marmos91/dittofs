@@ -29,9 +29,13 @@ type PostgresMetadataStoreConfig struct {
 	QueryTimeout   time.Duration `mapstructure:"query_timeout"`   // Default: 30s
 
 	// Features
-	PrepareStatements bool          `mapstructure:"prepare_statements"` // Default: true
-	AutoMigrate       bool          `mapstructure:"auto_migrate"`       // Default: false (manual control)
-	StatsCacheTTL     time.Duration `mapstructure:"stats_cache_ttl"`    // Default: 5s
+
+	// DisablePreparedStatements turns off pgx's per-connection prepared-statement
+	// cache, which a pooler in transaction-pooling mode cannot serve. Default
+	// false: statements are prepared and cached.
+	DisablePreparedStatements bool          `mapstructure:"disable_prepared_statements"`
+	AutoMigrate               bool          `mapstructure:"auto_migrate"`    // Default: false (manual control)
+	StatsCacheTTL             time.Duration `mapstructure:"stats_cache_ttl"` // Default: 5s
 
 	// RelaxedDurability defers commit-time WAL flush for pure-namespace metadata
 	// writes via SET LOCAL synchronous_commit=off, honoring the same
@@ -79,9 +83,6 @@ func (c *PostgresMetadataStoreConfig) ApplyDefaults() {
 	}
 
 	// Feature defaults
-	// PrepareStatements defaults to false (Go zero value), but we want true
-	// So we'll explicitly set it in the factory function if not specified by user
-
 	if c.StatsCacheTTL == 0 {
 		c.StatsCacheTTL = 5 * time.Second
 	}

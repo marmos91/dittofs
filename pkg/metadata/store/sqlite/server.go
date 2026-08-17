@@ -83,48 +83,7 @@ func (s *SQLiteMetadataStore) SetFilesystemCapabilities(capabilities metadata.Fi
 	// Update database (best effort - don't fail if it errors)
 	// This is called during initialization, so database updates are non-critical
 	ctx := context.Background()
-	query := `
-		INSERT INTO filesystem_capabilities (
-			id, max_read_size, preferred_read_size, max_write_size, preferred_write_size,
-			max_file_size, max_filename_len, max_path_len, max_hard_link_count,
-			supports_hard_links, supports_symlinks, case_sensitive, case_preserving,
-			supports_acls, time_resolution
-		) VALUES (
-			1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
-		)
-		ON CONFLICT (id) DO UPDATE SET
-			max_read_size = EXCLUDED.max_read_size,
-			preferred_read_size = EXCLUDED.preferred_read_size,
-			max_write_size = EXCLUDED.max_write_size,
-			preferred_write_size = EXCLUDED.preferred_write_size,
-			max_file_size = EXCLUDED.max_file_size,
-			max_filename_len = EXCLUDED.max_filename_len,
-			max_path_len = EXCLUDED.max_path_len,
-			max_hard_link_count = EXCLUDED.max_hard_link_count,
-			supports_hard_links = EXCLUDED.supports_hard_links,
-			supports_symlinks = EXCLUDED.supports_symlinks,
-			case_sensitive = EXCLUDED.case_sensitive,
-			case_preserving = EXCLUDED.case_preserving,
-			supports_acls = EXCLUDED.supports_acls,
-			time_resolution = EXCLUDED.time_resolution
-	`
-
-	_, err := s.exec(ctx, query,
-		capabilities.MaxReadSize,
-		capabilities.PreferredReadSize,
-		capabilities.MaxWriteSize,
-		capabilities.PreferredWriteSize,
-		capabilities.MaxFileSize,
-		capabilities.MaxFilenameLen,
-		capabilities.MaxPathLen,
-		capabilities.MaxHardLinkCount,
-		capabilities.SupportsHardLinks,
-		capabilities.SupportsSymlinks,
-		capabilities.CaseSensitive,
-		capabilities.CasePreserving,
-		capabilities.SupportsACLs,
-		capabilities.TimestampResolution,
-	)
+	_, err := s.exec(ctx, upsertCapabilitiesSQL, capabilityArgs(capabilities)...)
 
 	// Log error but don't fail - capabilities are already cached
 	if err != nil {

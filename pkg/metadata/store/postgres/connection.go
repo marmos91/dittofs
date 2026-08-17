@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -34,6 +35,18 @@ func createConnectionPool(ctx context.Context, cfg *PostgresMetadataStoreConfig,
 	// Set query timeout as statement timeout
 	if cfg.QueryTimeout > 0 {
 		poolConfig.ConnConfig.RuntimeParams["statement_timeout"] = fmt.Sprintf("%dms", cfg.QueryTimeout.Milliseconds())
+	}
+
+	// By default pgx keeps a per-connection prepared-statement cache, which
+	// names statements on the server. A pooler in transaction-pooling mode hands
+	// a different backend to each transaction, so those names resolve on the
+	// wrong session and queries fail with "prepared statement does not exist".
+	// Disabling the cache switches to unnamed extended-protocol statements,
+	// which carry no server-side name while still binding parameters
+	// server-side (unlike the simple protocol, which interpolates them
+	// client-side).
+	if cfg.DisablePreparedStatements {
+		poolConfig.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
 	}
 
 	// Configure logging (optional, can be adjusted)

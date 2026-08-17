@@ -100,7 +100,7 @@ func (s *PostgresMetadataStore) CreateShare(ctx context.Context, share *metadata
 	// primary key (the ON CONFLICT upsert just re-points root_file_id, leaving
 	// at most one root). (Production also serializes share creation upstream in
 	// the control plane.)
-	existing, err := s.getExistingRootDirectory(ctx, share.Name)
+	existing, err := s.getExistingRootDirectory(ctx, s.queryRow, share.Name)
 	if err != nil {
 		return fmt.Errorf("create share %q: check existing: %w", share.Name, err)
 	}
@@ -208,7 +208,12 @@ func (s *PostgresMetadataStore) ListShares(ctx context.Context) ([]string, error
 // Root Directory Operations
 // ============================================================================
 
-// CreateRootDirectory creates the root directory for a share
+// CreateRootDirectory creates the root directory for a share.
+//
+// The whole probe-then-create sequence runs in one transaction through
+// WithTransaction, so a serialization failure or deadlock retries under the
+// package's backoff and a concurrent caller cannot slip between the probe and
+// the insert and leave an orphaned root inode behind.
 func (s *PostgresMetadataStore) CreateRootDirectory(
 	ctx context.Context,
 	shareName string,
@@ -221,6 +226,26 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 		}
 	}
 
+	var root *metadata.File
+	err := s.WithTransaction(ctx, func(mtx metadata.Transaction) error {
+		var txErr error
+		root, txErr = s.createRootDirectoryTx(ctx, mtx.(*postgresTransaction).tx, shareName, attr)
+		return txErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return root, nil
+}
+
+// createRootDirectoryTx holds the probe/reconcile/create body, run against the
+// caller's transaction.
+func (s *PostgresMetadataStore) createRootDirectoryTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	shareName string,
+	attr *metadata.FileAttr,
+) (*metadata.File, error) {
 	// Apply defaults
 	uid := attr.UID
 	gid := attr.GID
@@ -236,7 +261,7 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 	)
 
 	// Check if root directory already exists (idempotent behavior)
-	existingRoot, err := s.getExistingRootDirectory(ctx, shareName)
+	existingRoot, err := s.getExistingRootDirectory(ctx, tx.QueryRow, shareName)
 	if err == nil && existingRoot != nil {
 		// Check if root directory attributes need to be updated from config
 		// This handles the case where the config changed since the share was first created
@@ -273,7 +298,7 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 				SET mode = $1, uid = $2, gid = $3, ctime = $4
 				WHERE id = $5
 			`
-			_, err := s.exec(ctx, updateQuery,
+			_, err := tx.Exec(ctx, updateQuery,
 				int32(existingRoot.Mode),
 				int32(existingRoot.UID),
 				int32(existingRoot.GID),
@@ -295,13 +320,6 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 		}
 		return existingRoot, nil
 	}
-
-	// Begin transaction with connection acquire timeout
-	tx, err := s.beginTx(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Generate UUID for root directory
 	rootID := uuid.New()
@@ -359,11 +377,6 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 		return nil, mapPgError(err, "CreateRootDirectory", shareName)
 	}
 
-	// Commit transaction
-	if err := tx.Commit(ctx); err != nil {
-		return nil, mapPgError(err, "CreateRootDirectory", shareName)
-	}
-
 	s.logger.Info("Root directory created successfully",
 		"share", shareName,
 		"root_id", rootID,
@@ -393,7 +406,7 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 
 // getExistingRootDirectory checks if a root directory already exists for the share
 // and returns it if found. Returns nil, nil if not found.
-func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, shareName string) (*metadata.File, error) {
+func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, queryRow rowQuerier, shareName string) (*metadata.File, error) {
 	// Resolve the root inode via shares.root_file_id (the share row is the
 	// authoritative pointer to its root) now that the path column is gone (#1166).
 	query := `
@@ -418,7 +431,7 @@ func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, sh
 		nlink        int32
 	)
 
-	err := s.queryRow(ctx, query, shareName).Scan(
+	err := queryRow(ctx, query, shareName).Scan(
 		&id,
 		&fileType,
 		&mode,

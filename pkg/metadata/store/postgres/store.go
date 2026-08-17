@@ -37,6 +37,12 @@ type PostgresMetadataStore struct {
 	// of the same M rows leaves the same count). Never read in production.
 	manifestWrites atomic.Int64
 
+	// manifestRowsScanned counts the stored file_block_refs rows the manifest
+	// diff has had to read since open. Test-only observability: it is what
+	// BlocksDirtyOffsets bounds, so a test can prove a scoped commit reads the
+	// changed offsets rather than the whole file. Never read in production.
+	manifestRowsScanned atomic.Int64
+
 	// ctx is the store context (for graceful shutdown)
 	ctx context.Context
 
@@ -167,7 +173,7 @@ func NewPostgresMetadataStore(
 		"database", cfg.Database,
 		"max_conns", cfg.MaxConns,
 		"stats_cache_ttl", cfg.StatsCacheTTL,
-		"prepare_statements", cfg.PrepareStatements,
+		"prepared_statements", !cfg.DisablePreparedStatements,
 	)
 
 	return store, nil
@@ -328,46 +334,38 @@ func (s *PostgresMetadataStore) Close() error {
 	return nil
 }
 
-// initializeFilesystemCapabilities inserts or updates filesystem capabilities in the database
-func initializeFilesystemCapabilities(ctx context.Context, pool *pgxpool.Pool, caps metadata.FilesystemCapabilities) error {
-	query := `
-		INSERT INTO filesystem_capabilities (
-			id,
-			max_read_size,
-			preferred_read_size,
-			max_write_size,
-			preferred_write_size,
-			max_file_size,
-			max_filename_len,
-			max_path_len,
-			max_hard_link_count,
-			supports_hard_links,
-			supports_symlinks,
-			case_sensitive,
-			case_preserving,
-			supports_acls,
-			time_resolution
-		) VALUES (
-			1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
-		)
-		ON CONFLICT (id) DO UPDATE SET
-			max_read_size = EXCLUDED.max_read_size,
-			preferred_read_size = EXCLUDED.preferred_read_size,
-			max_write_size = EXCLUDED.max_write_size,
-			preferred_write_size = EXCLUDED.preferred_write_size,
-			max_file_size = EXCLUDED.max_file_size,
-			max_filename_len = EXCLUDED.max_filename_len,
-			max_path_len = EXCLUDED.max_path_len,
-			max_hard_link_count = EXCLUDED.max_hard_link_count,
-			supports_hard_links = EXCLUDED.supports_hard_links,
-			supports_symlinks = EXCLUDED.supports_symlinks,
-			case_sensitive = EXCLUDED.case_sensitive,
-			case_preserving = EXCLUDED.case_preserving,
-			supports_acls = EXCLUDED.supports_acls,
-			time_resolution = EXCLUDED.time_resolution
-	`
+// upsertCapabilitiesSQL writes the single filesystem_capabilities row. Shared
+// by store construction and SetFilesystemCapabilities so the two can never
+// persist a different column set.
+const upsertCapabilitiesSQL = `
+	INSERT INTO filesystem_capabilities (
+		id, max_read_size, preferred_read_size, max_write_size, preferred_write_size,
+		max_file_size, max_filename_len, max_path_len, max_hard_link_count,
+		supports_hard_links, supports_symlinks, case_sensitive, case_preserving,
+		supports_acls, time_resolution
+	) VALUES (
+		1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+	)
+	ON CONFLICT (id) DO UPDATE SET
+		max_read_size = EXCLUDED.max_read_size,
+		preferred_read_size = EXCLUDED.preferred_read_size,
+		max_write_size = EXCLUDED.max_write_size,
+		preferred_write_size = EXCLUDED.preferred_write_size,
+		max_file_size = EXCLUDED.max_file_size,
+		max_filename_len = EXCLUDED.max_filename_len,
+		max_path_len = EXCLUDED.max_path_len,
+		max_hard_link_count = EXCLUDED.max_hard_link_count,
+		supports_hard_links = EXCLUDED.supports_hard_links,
+		supports_symlinks = EXCLUDED.supports_symlinks,
+		case_sensitive = EXCLUDED.case_sensitive,
+		case_preserving = EXCLUDED.case_preserving,
+		supports_acls = EXCLUDED.supports_acls,
+		time_resolution = EXCLUDED.time_resolution
+`
 
-	_, err := pool.Exec(ctx, query,
+// capabilityArgs binds a capability set to upsertCapabilitiesSQL's placeholders.
+func capabilityArgs(caps metadata.FilesystemCapabilities) []any {
+	return []any{
 		caps.MaxReadSize,
 		caps.PreferredReadSize,
 		caps.MaxWriteSize,
@@ -382,7 +380,11 @@ func initializeFilesystemCapabilities(ctx context.Context, pool *pgxpool.Pool, c
 		caps.CasePreserving,
 		caps.SupportsACLs,
 		caps.TimestampResolution,
-	)
+	}
+}
 
+// initializeFilesystemCapabilities inserts or updates filesystem capabilities in the database
+func initializeFilesystemCapabilities(ctx context.Context, pool *pgxpool.Pool, caps metadata.FilesystemCapabilities) error {
+	_, err := pool.Exec(ctx, upsertCapabilitiesSQL, capabilityArgs(caps)...)
 	return err
 }

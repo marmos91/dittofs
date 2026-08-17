@@ -100,7 +100,7 @@ func (s *SQLiteMetadataStore) CreateShare(ctx context.Context, share *metadata.S
 	// primary key (the ON CONFLICT upsert just re-points root_file_id, leaving
 	// at most one root). (Production also serializes share creation upstream in
 	// the control plane.)
-	existing, err := s.getExistingRootDirectory(ctx, share.Name)
+	existing, err := s.getExistingRootDirectory(ctx, s.conn(), share.Name)
 	if err != nil {
 		return fmt.Errorf("create share %q: check existing: %w", share.Name, err)
 	}
@@ -208,7 +208,12 @@ func (s *SQLiteMetadataStore) ListShares(ctx context.Context) ([]string, error) 
 // Root Directory Operations
 // ============================================================================
 
-// CreateRootDirectory creates the root directory for a share
+// CreateRootDirectory creates the root directory for a share.
+//
+// The whole probe-then-create sequence runs in one transaction through
+// WithTransaction, so a SQLITE_BUSY collision retries under the package's
+// backoff and a concurrent caller cannot slip between the probe and the
+// insert and leave an orphaned root inode behind.
 func (s *SQLiteMetadataStore) CreateRootDirectory(
 	ctx context.Context,
 	shareName string,
@@ -221,6 +226,26 @@ func (s *SQLiteMetadataStore) CreateRootDirectory(
 		}
 	}
 
+	var root *metadata.File
+	err := s.WithTransaction(ctx, func(mtx metadata.Transaction) error {
+		var txErr error
+		root, txErr = s.createRootDirectoryTx(ctx, mtx.(*sqliteTransaction).tx, shareName, attr)
+		return txErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return root, nil
+}
+
+// createRootDirectoryTx holds the probe/reconcile/create body, run against the
+// caller's transaction.
+func (s *SQLiteMetadataStore) createRootDirectoryTx(
+	ctx context.Context,
+	tx execer,
+	shareName string,
+	attr *metadata.FileAttr,
+) (*metadata.File, error) {
 	// Apply defaults
 	uid := attr.UID
 	gid := attr.GID
@@ -236,7 +261,7 @@ func (s *SQLiteMetadataStore) CreateRootDirectory(
 	)
 
 	// Check if root directory already exists (idempotent behavior)
-	existingRoot, err := s.getExistingRootDirectory(ctx, shareName)
+	existingRoot, err := s.getExistingRootDirectory(ctx, tx, shareName)
 	if err == nil && existingRoot != nil {
 		// Check if root directory attributes need to be updated from config
 		// This handles the case where the config changed since the share was first created
@@ -273,7 +298,7 @@ func (s *SQLiteMetadataStore) CreateRootDirectory(
 				SET mode = ?1, uid = ?2, gid = ?3, ctime = ?4
 				WHERE id = ?5
 			`
-			_, err := s.exec(ctx, updateQuery,
+			_, err := tx.Exec(ctx, updateQuery,
 				int32(existingRoot.Mode),
 				int32(existingRoot.UID),
 				int32(existingRoot.GID),
@@ -295,19 +320,6 @@ func (s *SQLiteMetadataStore) CreateRootDirectory(
 		}
 		return existingRoot, nil
 	}
-
-	// Begin transaction.
-	rawTx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, mapDBError(err, "CreateRootDirectory", shareName)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = rawTx.Rollback()
-		}
-	}()
-	tx := execer{e: rawTx, op: "CreateRootDirectory"}
 
 	// Generate UUID for root directory
 	rootID := uuid.New()
@@ -365,12 +377,6 @@ func (s *SQLiteMetadataStore) CreateRootDirectory(
 		return nil, mapDBError(err, "CreateRootDirectory", shareName)
 	}
 
-	// Commit transaction
-	if err := rawTx.Commit(); err != nil {
-		return nil, mapDBError(err, "CreateRootDirectory", shareName)
-	}
-	committed = true
-
 	s.logger.Info("Root directory created successfully",
 		"share", shareName,
 		"root_id", rootID,
@@ -400,7 +406,7 @@ func (s *SQLiteMetadataStore) CreateRootDirectory(
 
 // getExistingRootDirectory checks if a root directory already exists for the share
 // and returns it if found. Returns nil, nil if not found.
-func (s *SQLiteMetadataStore) getExistingRootDirectory(ctx context.Context, shareName string) (*metadata.File, error) {
+func (s *SQLiteMetadataStore) getExistingRootDirectory(ctx context.Context, tx execer, shareName string) (*metadata.File, error) {
 	// Resolve the root inode via shares.root_file_id (the share row is the
 	// authoritative pointer to its root) now that the path column is gone (#1166).
 	query := `
@@ -425,7 +431,7 @@ func (s *SQLiteMetadataStore) getExistingRootDirectory(ctx context.Context, shar
 		nlink        int32
 	)
 
-	err := s.queryRow(ctx, query, shareName).Scan(
+	err := tx.QueryRow(ctx, query, shareName).Scan(
 		&id,
 		&fileType,
 		&mode,

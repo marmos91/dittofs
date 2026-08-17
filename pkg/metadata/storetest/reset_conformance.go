@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -38,6 +39,20 @@ func ResetThenRestoreConformance(t *testing.T, factory SnapshotableStoreFactory)
 	// reuses the same backing DB across the Snapshot suite and this suite.
 	shareName, uniqueHashes := populateTestData(t, store, "rst")
 
+	// Block records live outside the file tree, so Reset and Restore have to
+	// carry them explicitly — nothing rebuilds a block's sync state or
+	// live-chunk count from the manifest.
+	blockRec := block.BlockRecord{
+		BlockID:        "rst-blk-001",
+		BlockHash:      block.ContentHash{5, 5, 5},
+		Length:         8192,
+		LiveChunkCount: 2,
+		SyncState:      block.BlockStateRemote,
+	}
+	if err := store.PutBlockRecord(ctx, blockRec); err != nil {
+		t.Fatalf("PutBlockRecord: %v", err)
+	}
+
 	// 1. Back up the populated store into a buffer.
 	var dumpBuf bytes.Buffer
 	hs, err := b.WriteSnapshot(ctx, &dumpBuf)
@@ -51,6 +66,12 @@ func ResetThenRestoreConformance(t *testing.T, factory SnapshotableStoreFactory)
 	// 2. Reset the SAME store in place — no close/reopen.
 	if err := r.Reset(ctx); err != nil {
 		t.Fatalf("Reset: %v", err)
+	}
+
+	if _, found, err := store.GetBlockRecord(ctx, blockRec.BlockID); err != nil {
+		t.Fatalf("post-Reset GetBlockRecord: %v", err)
+	} else if found {
+		t.Errorf("block record %q survived Reset", blockRec.BlockID)
 	}
 
 	// Reset must clear the per-identity quota cache too, not just the
@@ -74,6 +95,14 @@ func ResetThenRestoreConformance(t *testing.T, factory SnapshotableStoreFactory)
 	//    ErrRestoreDestinationNotEmpty precondition so Restore must succeed.
 	if err := b.RestoreSnapshot(ctx, &dumpBuf); err != nil {
 		t.Fatalf("Restore post-Reset: %v", err)
+	}
+
+	if got, found, err := store.GetBlockRecord(ctx, blockRec.BlockID); err != nil {
+		t.Fatalf("post-Restore GetBlockRecord: %v", err)
+	} else if !found {
+		t.Errorf("block record %q missing after Restore", blockRec.BlockID)
+	} else if got != blockRec {
+		t.Errorf("restored block record = %+v, want %+v", got, blockRec)
 	}
 
 	// Restore must reseed the quota cache from the restored files, not leave

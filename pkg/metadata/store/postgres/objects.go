@@ -156,32 +156,27 @@ func (s *PostgresMetadataStore) DecrementRefCount(ctx context.Context, id string
 // DecrementRefCountAndReap atomically decrements ref_count and, when it hits 0,
 // deletes the row — both statements run inside ONE transaction so the
 // decrement-and-reap is atomic and TOCTOU-free against a concurrent AddRef
-// (which takes the same row lock). The conditional `ref_count = 0` predicate on
-// the DELETE means a concurrent bump that landed between the two statements
-// (impossible within the row lock, but defended anyway) leaves the row alive.
-// Returns (0, nil) when the row is already absent — a swept row is not a caller
-// error.
+// (which takes the same row lock). Returns (0, nil) when the row is already
+// absent — a swept row is not a caller error. Running through WithTransaction
+// also gives a serialization failure or deadlock the package's bounded retry
+// instead of surfacing it as a hard error.
 func (s *PostgresMetadataStore) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
-	tx, err := s.beginTx(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("decrement-and-reap begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	newCount, err := decrementAndReapTx(ctx, tx, id)
+	var newCount uint32
+	err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		var txErr error
+		newCount, txErr = tx.DecrementRefCountAndReap(ctx, id)
+		return txErr
+	})
 	if err != nil {
 		return 0, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("decrement-and-reap commit: %w", err)
 	}
 	return newCount, nil
 }
 
 // decrementAndReapTx runs the -1 UPDATE then a conditional DELETE on the given
-// pgx.Tx. Shared by the pool-backed store method and the postgresTransaction
-// method so both surfaces behave identically. Returns ErrFileChunkNotFound
-// mapped to (0, nil) — i.e. a missing row is tolerated.
+// pgx.Tx. The `ref_count = 0` predicate on the DELETE means a bump that landed
+// between the two statements leaves the row alive. Returns (0, nil) for an
+// already-swept row rather than ErrFileChunkNotFound.
 func decrementAndReapTx(ctx context.Context, tx pgx.Tx, id string) (uint32, error) {
 	var newCount uint32
 	err := tx.QueryRow(ctx,

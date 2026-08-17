@@ -32,6 +32,11 @@ const poolConnectionAcquireTimeout = 10 * time.Second
 // All operations use the same poolConnectionAcquireTimeout (10s) as WithTransaction
 // for consistency.
 
+// rowQuerier is the single-row query surface an open transaction (pgx.Tx.QueryRow)
+// and the pool wrapper (PostgresMetadataStore.queryRow) both satisfy, so one
+// query body can run on either.
+type rowQuerier func(ctx context.Context, sql string, args ...any) pgx.Row
+
 // queryRow executes a query that returns at most one row with connection acquire timeout.
 // This prevents indefinite blocking when the pool is exhausted.
 func (s *PostgresMetadataStore) queryRow(ctx context.Context, sql string, args ...any) pgx.Row {
@@ -127,32 +132,6 @@ func (s *PostgresMetadataStore) exec(ctx context.Context, sql string, args ...an
 		return pgconn.CommandTag{}, mapPgError(err, "exec", sql)
 	}
 	return tag, nil
-}
-
-// beginTx starts a transaction with connection acquire timeout.
-// This prevents indefinite blocking when the pool is exhausted.
-// Caller MUST commit or rollback the returned transaction.
-func (s *PostgresMetadataStore) beginTx(ctx context.Context) (pgx.Tx, error) {
-	// Check context before acquiring connection
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// Apply connection acquire timeout
-	acquireCtx, cancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
-	defer cancel()
-
-	// Begin transaction (this acquires a connection)
-	tx, err := s.pool.Begin(acquireCtx)
-	if err != nil {
-		if acquireCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-			// Acquire timed out, not the parent context
-			return nil, fmt.Errorf("connection acquire timeout after %v: pool may be exhausted", poolConnectionAcquireTimeout)
-		}
-		return nil, mapPgError(err, "beginTx", "")
-	}
-
-	return tx, nil
 }
 
 // ============================================================================

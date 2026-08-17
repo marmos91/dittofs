@@ -114,6 +114,27 @@ type FileAttr struct {
 	// hold Blocks inline.
 	BlocksDirty bool `json:"-"`
 
+	// BlocksDirtyOffsets narrows BlocksDirty to the offsets that can possibly
+	// differ from what the SQL backends already store, so their manifest diff
+	// costs the changed range rather than the whole file. Transient and
+	// request-scoped like BlocksDirty, and never persisted.
+	//
+	// nil means "unknown": the backend must diff the entire stored manifest.
+	// Non-nil (empty included) is a promise that every offset outside the set
+	// is already stored exactly as Blocks holds it — so the backend may read,
+	// upsert and delete only within the set. Only a caller that folded a known
+	// row set into an already-coherent Blocks projection can make that promise;
+	// a caller that re-derived Blocks from scratch must leave this nil.
+	BlocksDirtyOffsets []uint64 `json:"-"`
+
+	// NewInode marks a File the caller has just constructed and knows has no
+	// row yet, so a store that would otherwise probe for one can insert
+	// straight away. Transient, request-scoped and never persisted. Only a
+	// caller holding the create's exclusivity guarantee may set it: a store is
+	// entitled to skip its existence check, and an inode that does exist then
+	// surfaces as a duplicate-key error rather than an update.
+	NewInode bool `json:"-"`
+
 	// ObjectID is the BLAKE3 Merkle root over ChunkRef.Hash values sorted
 	// by Offset, populated lazily at the post-Flush coordinator hook
 	// (). All-zero sentinel means

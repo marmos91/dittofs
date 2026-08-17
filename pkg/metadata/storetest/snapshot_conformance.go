@@ -341,6 +341,19 @@ func testSnapshot_RoundTrip(t *testing.T, factory SnapshotableStoreFactory) {
 
 	ctx := t.Context()
 
+	// Block records carry sync state and live-chunk counts the GC and syncer
+	// rebuild nothing from, so they have to survive the round trip too.
+	blockRec := block.BlockRecord{
+		BlockID:        "rt-blk-001",
+		BlockHash:      block.ContentHash{7, 7, 7},
+		Length:         4096,
+		LiveChunkCount: 3,
+		SyncState:      block.BlockStateRemote,
+	}
+	if err := srcStore.PutBlockRecord(ctx, blockRec); err != nil {
+		t.Fatalf("PutBlockRecord: %v", err)
+	}
+
 	// Snapshot to buffer.
 	var buf bytes.Buffer
 	hashes, err := srcB.WriteSnapshot(ctx, &buf)
@@ -415,6 +428,17 @@ func testSnapshot_RoundTrip(t *testing.T, factory SnapshotableStoreFactory) {
 	}
 	if len(betaFile.Blocks) != 2 {
 		t.Fatalf("beta.Blocks len = %d, want 2", len(betaFile.Blocks))
+	}
+
+	gotRec, found, err := dstStore.GetBlockRecord(ctx, blockRec.BlockID)
+	if err != nil {
+		t.Fatalf("GetBlockRecord after restore: %v", err)
+	}
+	if !found {
+		t.Fatalf("block record %q missing after restore", blockRec.BlockID)
+	}
+	if gotRec != blockRec {
+		t.Errorf("restored block record = %+v, want %+v", gotRec, blockRec)
 	}
 }
 

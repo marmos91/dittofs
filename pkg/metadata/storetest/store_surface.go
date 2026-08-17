@@ -3,9 +3,11 @@ package storetest
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -501,6 +503,11 @@ func testGetFileByPayloadID(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile() failed: %v", err)
 	}
 	file.PayloadID = payloadID
+	file.Blocks = []block.ChunkRef{
+		{Hash: hashOfSeed("pid-b0"), Offset: 0, Size: 4096},
+		{Hash: hashOfSeed("pid-b1"), Offset: 4096, Size: 2048},
+	}
+	file.BlocksDirty = true
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile() with PayloadID failed: %v", err)
 	}
@@ -515,12 +522,38 @@ func testGetFileByPayloadID(t *testing.T, factory StoreFactory) {
 	if got.PayloadID != payloadID {
 		t.Errorf("GetFileByPayloadID returned PayloadID %q, want %q", got.PayloadID, payloadID)
 	}
+	// Manifest projection reads the file back by payload ID and merges the rows
+	// it just wrote into Blocks, so a backend that hands back an empty list
+	// silently degrades into a full re-derivation. Both variants must carry it.
+	assertPayloadBlocks(t, "store", got, file.Blocks)
+
+	if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		txGot, txErr := tx.GetFileByPayloadID(ctx, payloadID)
+		if txErr != nil {
+			return txErr
+		}
+		assertPayloadBlocks(t, "transaction", txGot, file.Blocks)
+		return nil
+	}); err != nil {
+		t.Fatalf("tx GetFileByPayloadID(known) failed: %v", err)
+	}
 
 	// Miss: an unknown PayloadID returns not-found.
 	if _, err := store.GetFileByPayloadID(ctx, metadata.PayloadID("does-not-exist")); err == nil {
 		t.Error("GetFileByPayloadID(unknown) should fail")
 	} else if !metadata.IsNotFoundError(err) {
 		t.Errorf("GetFileByPayloadID(unknown): got %v, want not-found", err)
+	}
+}
+
+// assertPayloadBlocks reports whether got carries exactly want, offset-ordered.
+func assertPayloadBlocks(t *testing.T, variant string, got *metadata.File, want []block.ChunkRef) {
+	t.Helper()
+	if got == nil {
+		t.Fatalf("%s GetFileByPayloadID returned nil file", variant)
+	}
+	if !slices.Equal(got.Blocks, want) {
+		t.Errorf("%s GetFileByPayloadID Blocks: got %+v, want %+v", variant, got.Blocks, want)
 	}
 }
 

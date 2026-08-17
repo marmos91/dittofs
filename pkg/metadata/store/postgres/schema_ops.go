@@ -57,7 +57,7 @@ func (s *PostgresMetadataStore) ListSchemasByPrefix(ctx context.Context, prefix 
 		WHERE schema_name LIKE $1
 		ORDER BY schema_name
 	`
-	rows, err := s.pool.Query(ctx, query, prefix+"%")
+	rows, err := s.query(ctx, query, prefix+"%")
 	if err != nil {
 		return nil, fmt.Errorf("query schemata: %w", err)
 	}
@@ -109,7 +109,7 @@ func (s *PostgresMetadataStore) DropSchema(ctx context.Context, schemaName strin
 	// by never contain `"`; this is defense in depth only.
 	safe := `"` + strings.ReplaceAll(schemaName, `"`, `""`) + `"`
 	sql := fmt.Sprintf(`DROP SCHEMA IF EXISTS %s CASCADE`, safe)
-	if _, err := s.pool.Exec(ctx, sql); err != nil {
+	if _, err := s.exec(ctx, sql); err != nil {
 		return fmt.Errorf("drop schema %q: %w", schemaName, err)
 	}
 	return nil

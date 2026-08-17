@@ -447,6 +447,11 @@ func (s *Service) createEntry(
 			}
 		}
 
+		// The inode ID was minted for this create and the guard above found no
+		// entry under this name, so no row can exist yet and the store can
+		// insert without probing for one.
+		newFile.NewInode = true
+
 		// Store the entry
 		if err := tx.PutFile(ctx.Context, newFile); err != nil {
 			return err
@@ -482,6 +487,11 @@ func (s *Service) createEntry(
 		return nil
 	})
 	unlockCreateName()
+
+	// The hint describes the insert that just ran. Clear it before the struct
+	// escapes into the read cache and the caller, so a later update through the
+	// same struct cannot inherit a promise that no longer holds.
+	newFile.NewInode = false
 
 	if err != nil {
 		return nil, nil, err

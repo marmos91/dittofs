@@ -21,9 +21,6 @@ type SQLiteMetadataStoreConfig struct {
 	// than fail. Default: 5s.
 	BusyTimeout time.Duration `mapstructure:"busy_timeout"`
 
-	// QueryTimeout bounds an individual statement. Default: 30s.
-	QueryTimeout time.Duration `mapstructure:"query_timeout"`
-
 	// AutoMigrate runs embedded migrations on open when true. Default: false
 	// (the factory enables it explicitly, matching the Postgres backend).
 	AutoMigrate bool `mapstructure:"auto_migrate"`
@@ -37,9 +34,6 @@ type SQLiteMetadataStoreConfig struct {
 func (c *SQLiteMetadataStoreConfig) ApplyDefaults() {
 	if c.BusyTimeout == 0 {
 		c.BusyTimeout = 5 * time.Second
-	}
-	if c.QueryTimeout == 0 {
-		c.QueryTimeout = 30 * time.Second
 	}
 	if c.StatsCacheTTL == 0 {
 		c.StatsCacheTTL = 5 * time.Second
