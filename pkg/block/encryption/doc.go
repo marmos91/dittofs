@@ -13,14 +13,14 @@
 //   - On read: decode header → unwrap block key via the provider →
 //     authenticated-decrypt the payload.
 //
-// # Master-key rotation is not supported
+// # Master-key rotation
 //
-// A provider holds exactly one master key and rejects any frame wrapped
-// under a different one, so changing a share's master key makes every
-// block written under the previous key permanently unreadable. Unlike
-// key-management services that keep retired key versions live for
-// decrypt, this package has no retired-key set and no re-wrap tooling.
-// Treat a share's master key as fixed for the life of its data; see
+// A provider holds one current master key plus a set of retired,
+// decrypt-only ones. Frames record the id of the key that wrapped them,
+// so retiring a key keeps existing blocks readable while new writes move
+// onto the new key. There is no re-wrap tooling, so a retired key must
+// stay configured for as long as any block references it; dropping it
+// makes those blocks permanently unreadable. See
 // [github.com/marmos91/dittofs/pkg/block/encryption/keyprovider] for the
 // full behaviour.
 //

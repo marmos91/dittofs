@@ -59,14 +59,37 @@ func newKMIPProvider(ctx context.Context, cfg Config) (*kmipProvider, error) {
 	if cfg.TimeoutMS > 0 {
 		timeout = time.Duration(cfg.TimeoutMS) * time.Millisecond
 	}
-	key, err := fetchKMIPSymmetricKey(ctx, cfg.Endpoint, tlsCfg, cfg.KeyUID, timeout)
+	key, err := fetchKMIPKey(ctx, cfg, tlsCfg, cfg.KeyUID, timeout)
+	if err != nil {
+		return nil, err
+	}
+	// A KMIP key is identified by the uid the operator configured, so a
+	// retired uid is its own master key id with nothing to look up.
+	retired, err := loadRetiredKeys(cfg.KeyUID, cfg.RetiredKeyUIDs, func(uid string) (string, []byte, error) {
+		k, err := fetchKMIPKey(ctx, cfg, tlsCfg, uid, timeout)
+		return uid, k, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &kmipProvider{aesGCMKEK: aesGCMKEK{
+		masterKey:   key,
+		masterKeyID: cfg.KeyUID,
+		retired:     retired,
+	}}, nil
+}
+
+// fetchKMIPKey retrieves one symmetric key from the HSM and enforces the
+// AES-256 length the wrap layer requires.
+func fetchKMIPKey(ctx context.Context, cfg Config, tlsCfg *tls.Config, uid string, timeout time.Duration) ([]byte, error) {
+	key, err := fetchKMIPSymmetricKey(ctx, cfg.Endpoint, tlsCfg, uid, timeout)
 	if err != nil {
 		return nil, err
 	}
 	if len(key) != 32 {
-		return nil, fmt.Errorf("%w: kmip key has unexpected length %d (want 32 for AES-256)", ErrInvalidConfig, len(key))
+		return nil, fmt.Errorf("%w: kmip key %q has unexpected length %d (want 32 for AES-256)", ErrInvalidConfig, uid, len(key))
 	}
-	return &kmipProvider{aesGCMKEK: aesGCMKEK{masterKey: key, masterKeyID: cfg.KeyUID}}, nil
+	return key, nil
 }
 
 func buildKMIPTLSConfig(cfg Config) (*tls.Config, error) {
