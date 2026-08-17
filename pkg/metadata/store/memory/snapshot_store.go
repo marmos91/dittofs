@@ -408,15 +408,41 @@ func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 
 	// Re-initialize transient state.
 	s.sessions = make(map[string]*ShareSession)
+	groupUsage := make(map[uint32]*metadata.UsageStat)
+	userUsage := make(map[uint32]*metadata.UsageStat)
 
-	// Recompute usedBytes from files (only regular files count).
+	// Recompute usedBytes from files (only regular files count)
+	// and reconstruct the quota cache from the restored files
+	// since UNIX/NFS stores based on user and group, we need to aggregate the usage stats for each user and group.
 	var totalBytes int64
 	for _, fd := range s.files {
 		if fd.Attr != nil && fd.Attr.Type == metadata.FileTypeRegular {
 			totalBytes += int64(fd.Attr.Size)
+
+			u := userUsage[fd.Attr.UID]
+			if u == nil {
+				u = &metadata.UsageStat{}
+				userUsage[fd.Attr.UID] = u
+			}
+
+			u.Bytes += int64(fd.Attr.Size)
+			u.Files++
+
+			g := groupUsage[fd.Attr.GID]
+			if g == nil {
+				g = &metadata.UsageStat{}
+				groupUsage[fd.Attr.GID] = g
+			}
+
+			g.Bytes += int64(fd.Attr.Size)
+			g.Files++
 		}
 	}
 	s.usedBytes.Store(totalBytes)
+
+	s.quotaMu.Lock()
+	s.quota.Seed(userUsage, groupUsage)
+	s.quotaMu.Unlock()
 
 	return nil
 }

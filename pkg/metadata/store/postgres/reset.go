@@ -45,6 +45,9 @@ func (s *PostgresMetadataStore) Reset(ctx context.Context) error {
 	if _, err := pgRaw.Exec(ctx, "COMMIT").ReadAll(); err != nil {
 		return fmt.Errorf("reset: commit: %w", err)
 	}
-
+	s.usedBytes.Store(0)
+	s.quotaMu.Lock()
+	s.quota.Reset()
+	s.quotaMu.Unlock()
 	return nil
 }
