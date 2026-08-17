@@ -2,9 +2,9 @@
 //
 // This file declares the single CAS-keyed surface that replaces the
 // split LocalStore (22 methods) + RemoteStore (12 methods) of v0.15.
-// BlockStoreAppend extends BlockStore with the random-write absorber
-// tier (per-file append log + rollup) used by the fs backend only;
-// s3 and memory backends implement only BlockStore.
+// It covers the hash-keyed tier only. The local random-write absorber
+// (per-file append log + rollup) is payload-keyed, not hash-keyed, and
+// is declared on pkg/block/local.LocalStore instead.
 //
 // The on-disk format-version stamp and the boot guard that refuses state
 // from a newer release (ErrFutureFormat) live in doc.go and errors.go.
@@ -39,8 +39,8 @@ type Meta struct {
 	LastModified time.Time
 }
 
-// Store is the content-addressed block storage contract for the LOCAL tier.
-// Every implementation is keyed by ContentHash (BLAKE3-256, 32 bytes)
+// Store is the content-addressed block storage contract. Every
+// implementation is keyed by ContentHash (BLAKE3-256, 32 bytes)
 // no opaque "block key" strings appear on this surface.
 //
 // The production REMOTE tier no longer exposes this hash-keyed surface — it is
@@ -52,8 +52,13 @@ type Meta struct {
 // this interface.
 //
 // Implementations
-//   - pkg/block/local/fs.FSStore (also implements BlockStoreAppend)
 //   - pkg/block/remote/s3.Store, pkg/block/remote/memory.Store (legacy-CAS only)
+//   - the compression / encryption decorators, which forward this surface
+//     inward through remote.Passthrough
+//
+// The local tier does NOT implement this interface: pkg/block/local/fs.FSStore
+// is payload-keyed (WriteAt / ReadAt / Hydrate / Commit) and satisfies
+// pkg/block/local.LocalStore instead.
 //
 // All methods take ctx context.Context as the first argument and MUST
 // honor cancellation. All hash arguments are the full 32-byte
@@ -150,64 +155,6 @@ type Store interface {
 	//
 	// See block.ErrStopWalk for the sentinel doc.
 	Walk(ctx context.Context, fn func(hash ContentHash, meta Meta) error) error
-}
-
-// BlockStoreAppend extends BlockStore with the random-write absorber
-// tier used by the local fs backend only. The append log absorbs
-// adapter writes that arrive out-of-order or below the FastCDC chunk
-// boundary; a background rollup loop chunks the log into CAS objects
-// via Put and then trims the log via DeleteAppendLog (or implicitly
-// during the rollup, backend's choice).
-//
-// Remote backends (s3, memory) do NOT implement this interface — they
-// only see the rolled-up Put calls.
-//
-// Note: the narrowed LocalStore interface that lands keeps
-// additional lifecycle / admin methods (Truncate, EvictMemory
-// SetEvictionEnabled, Stats, ListFiles
-// GetStoredFileSize, Healthcheck, SyncFileChunks, SyncFileChunksForFile
-// Flush, Start, Close) as a strict admin-superset of BlockStoreAppend.
-// Those methods belong on LocalStore (boot-path / observability /
-// retention), NOT on BlockStoreAppend — the append surface here is
-// strictly the byte-level write-absorber contract.
-type BlockStoreAppend interface {
-	Store
-
-	// AppendWrite stages random-offset bytes for payloadID into the
-	// per-file append log. Subsequent FastCDC rollup consumes the log
-	// after the stabilization window and emits CAS chunks via Put.
-	//
-	// The interval [offset, offset+len(data)) is tracked so the rollup
-	// can later compute a deterministic chunking over the consolidated
-	// stream. Implementations MUST be safe under concurrent calls for
-	// the same payloadID (per-file mutex; see *fs.FSStore.AppendWrite
-	// godoc for the full pressure / tombstone / mutex semantics).
-	//
-	// Empty data is a no-op (returns nil). Context cancellation while
-	// waiting on log-bytes pressure surfaces as ctx.Err().
-	AppendWrite(ctx context.Context, payloadID string, data []byte, offset uint64) error
-
-	// DeleteAppendLog removes the per-file append log and its tracked
-	// intervals for payloadID. The engine invokes this on a file-level
-	// dedup hit to discard speculative chunks the syncer was about to
-	// upload.
-	//
-	// Implementations MUST be safe to call when no log exists for the
-	// payload (no-op return nil). After DeleteAppendLog returns, the
-	// payload's append-log state is fully reset; a subsequent
-	// AppendWrite for the same payloadID MUST succeed and start a
-	// fresh log (recreate semantics). Files created after #1166 PR-3
-	// get a UUID-based PayloadID (metadata/file_helpers.go
-	// buildPayloadID), so 'unlink + create at same path' allocates a
-	// fresh content_id rather than reusing one; this method is still
-	// invoked on delete with the deleted file's own PayloadID to reclaim
-	// its append-log state. Backends that maintain a tombstone for
-	// race-safety reasons MUST clear it before DeleteAppendLog returns.
-	//
-	// Orphan content-addressed chunks already emitted by a prior
-	// rollup are NOT removed here — they are swept by the mark-sweep
-	// GC.
-	DeleteAppendLog(ctx context.Context, payloadID string) error
 }
 
 // DurabilityReporter is an optional capability a block store (local or

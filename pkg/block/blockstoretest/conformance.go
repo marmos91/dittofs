@@ -17,8 +17,8 @@ import (
 // registers cleanup via t.Cleanup so subtests do not share state.
 //
 // The cleanup closure is responsible for closing the store and removing
-// any backing storage (e.g. tempdir teardown for the fs backend). It
-// MUST be safe to invoke when the store has not yet performed any I/O.
+// any backing storage (e.g. tempdir teardown for a disk-backed backend).
+// It MUST be safe to invoke when the store has not yet performed any I/O.
 //
 // Factory is intentionally a defined type (not a type alias) so the
 // conformance suite can refer to it by name in godoc and so backends
@@ -59,9 +59,6 @@ type Factory func(t *testing.T) (block.Store, func())
 //   - Put accepts a payload whose bytes do not match the supplied hash:
 //     the no-verify-on-Put contract is the caller's responsibility, and
 //     Get returns whatever bytes were stored under that key.
-//
-// Backends that also implement BlockStoreAppend additionally call
-// BlockStoreAppendConformance.
 func BlockStoreConformance(t *testing.T, factory Factory) {
 	t.Helper()
 	t.Run("Put_Get_Roundtrip", func(t *testing.T) { testPutGetRoundtrip(t, factory) })
@@ -81,11 +78,8 @@ func BlockStoreConformance(t *testing.T, factory Factory) {
 	t.Run("Put_WrongHash_NoVerify", func(t *testing.T) { testPutWrongHashNoVerify(t, factory) })
 }
 
-// blake3Sum is the conformance suite's shared hashing helper. It mirrors
-// blake3ContentHash at pkg/block/local/fs/rollup.go:449 — the
-// rollup loop hashes chunk bytes the same way before storing them, so
-// the suite's fixtures share the rollup's content-address contract.
-// Shared with appendlog.go (same package, no import needed).
+// blake3Sum is the conformance suite's hashing helper: BLAKE3-256 over
+// the fixture bytes, the same content-address key the stores use.
 func blake3Sum(b []byte) block.ContentHash {
 	var h block.ContentHash
 	sum := blake3.Sum256(b)

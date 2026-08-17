@@ -482,7 +482,7 @@ the two-tier local design.
 
 The journal-native `LocalStore` surface is `(payloadID, offset)`-keyed, not the
 content-addressed `block.Store` surface, so the `blockstoretest` suites below
-(`BlockStoreConformance` / `BlockStoreAppendConformance`) do **not** apply to a
+(`BlockStoreConformance` / `RemoteBlockStoreConformance`) do **not** apply to a
 local store — they target the CAS `block.Store` surface that remote stores
 implement (see [Implementing a Remote Store](#implementing-a-remote-store)). The
 in-tree local stores are exercised by their own package tests under

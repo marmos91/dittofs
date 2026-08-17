@@ -46,7 +46,7 @@ func TestNormalizeEndpoint(t *testing.T) {
 // path. CI wires Localstack; local developers may run with `make
 // e2e-s3` or by exporting the env directly.
 //
-// Per the S3 backend does NOT implement BlockStoreAppend; only
+// The S3 backend is hash-keyed only behind the legacy-CAS path, so
 // BlockStoreConformance runs here. The x-amz-meta-content-hash
 // header round-trip is exercised by verifier_test.go (the header is an
 // fs-internal defense-in-depth marker and is not part of the unified

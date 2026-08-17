@@ -31,11 +31,6 @@ func (d *EncryptedRemote) ReadLegacyChunkVerified(ctx context.Context, hash bloc
 	return d.ReadBlockVerified(ctx, hash, hash)
 }
 
-// DeleteLegacyChunk implements remote.LegacyCASStore.
-func (d *EncryptedRemote) DeleteLegacyChunk(ctx context.Context, hash block.ContentHash) error {
-	return d.Delete(ctx, hash)
-}
-
 // ReadBlockVerified GETs the standalone object, decrypts it, then re-verifies
 // the BLAKE3 hash over the plaintext.
 func (d *EncryptedRemote) ReadBlockVerified(ctx context.Context, hash block.ContentHash, expected block.ContentHash) ([]byte, error) {

@@ -17,8 +17,8 @@ import (
 
 // TestStore_BlockStoreConformance runs the unified
 // BlockStoreConformance suite against the in-memory remote backend.
-// Per the remote backends implement only BlockStore (no
-// BlockStoreAppend); only BlockStoreConformance runs here.
+// The remote backends expose the hash-keyed Store surface only behind
+// the legacy-CAS path, so BlockStoreConformance runs here.
 //
 // The inline TestStore_* tests below remain in place as a fine-grained
 // per-method baseline (data-isolation defensive copies, closed-store

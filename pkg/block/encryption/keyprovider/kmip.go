@@ -30,10 +30,13 @@ const kmipDefaultTimeout = 5 * time.Second
 // Trade-off vs full HSM-resident envelope ops (KMIP Encrypt / Decrypt)
 // the master-key bytes live in process memory while the daemon runs, so
 // a compromise of the daemon's address space recovers the key. The HSM
-// is still the canonical custodian — operators rotate by writing a new
-// key to the HSM and restarting the daemon. A follow-up can move Wrap
-// inside the HSM via KMIP Encrypt / Decrypt without changing this
-// package's public surface (the KeyProvider interface stays the same).
+// is still the canonical custodian. A follow-up can move Wrap inside the
+// HSM via KMIP Encrypt / Decrypt without changing this package's public
+// surface (the KeyProvider interface stays the same).
+//
+// Pointing KeyUID at a different HSM key does NOT rotate the master key:
+// only the newly fetched key is held, so every block wrapped under the
+// previous key becomes permanently unreadable. See the package doc.
 type kmipProvider struct {
 	aesGCMKEK
 }

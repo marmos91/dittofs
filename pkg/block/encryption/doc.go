@@ -2,8 +2,7 @@
 // encrypts block payloads before they leave the host and decrypts them
 // on the way back, preserving the BLAKE3-over-plaintext CAS key.
 //
-// The design is standard envelope encryption (matches AWS SSE-KMS
-// MinIO+KES, HashiCorp Vault Transit)
+// The design is standard envelope encryption:
 //
 //   - A master key is held by a [keyprovider.KeyProvider] (local key file
 //     or external KMIP HSM). The master key never directly encrypts a
@@ -13,6 +12,17 @@
 //     master key (the wrapped bytes live in the frame header).
 //   - On read: decode header → unwrap block key via the provider →
 //     authenticated-decrypt the payload.
+//
+// # Master-key rotation is not supported
+//
+// A provider holds exactly one master key and rejects any frame wrapped
+// under a different one, so changing a share's master key makes every
+// block written under the previous key permanently unreadable. Unlike
+// key-management services that keep retired key versions live for
+// decrypt, this package has no retired-key set and no re-wrap tooling.
+// Treat a share's master key as fixed for the life of its data; see
+// [github.com/marmos91/dittofs/pkg/block/encryption/keyprovider] for the
+// full behaviour.
 //
 // The decorator should sit BELOW any compression decorator: compress on
 // the way down, then encrypt; decrypt on the way up, then decompress.

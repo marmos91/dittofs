@@ -7,6 +7,22 @@
 // (KEK) and the per-block data key is a Data-Encryption-Key (DEK). The
 // plain names "master key" and "block key" are used throughout this
 // package's prose to keep the role of each thing obvious.
+//
+// # Master-key rotation is NOT supported
+//
+// Every implementation holds exactly one master key. There is no keyring
+// of retired keys: Unwrap returns ErrWrongMasterKey whenever the id
+// recorded in a block's frame header differs from the single id the
+// provider holds. Pointing a running share at a different master key
+// therefore makes every block wrapped under the previous one
+// permanently unreadable — there is no recovery path once the old key
+// is gone.
+//
+// Rotating safely would mean re-wrapping every existing block under the
+// new master key (read with a provider holding the old key, write with
+// one holding the new) and only decommissioning the old key once that
+// pass has completed. No such tool ships today, so treat a share's
+// master key as fixed for the life of its data.
 package keyprovider
 
 import (
@@ -23,14 +39,16 @@ type KeyProvider interface {
 	// Wrap protects a block key (typically 32 bytes) under the provider's
 	// master key. Returns the wrapped bytes plus the stable identifier of
 	// the master key used; the identifier is recorded in the on-wire
-	// frame header so Unwrap can route to the right master key after a
-	// future rotation.
+	// frame header so Unwrap can reject a block that was wrapped under a
+	// different master key instead of failing with an opaque
+	// authentication error.
 	Wrap(ctx context.Context, blockKey []byte) (wrapped []byte, masterKeyID string, err error)
 
 	// Unwrap recovers the original block key. masterKeyID is the value
-	// recorded by an earlier Wrap; single-key providers may ignore it.
-	// Returns ErrWrongMasterKey if the recorded id does not match any
-	// master key this provider knows about.
+	// recorded by an earlier Wrap. Every implementation holds exactly one
+	// master key, so Unwrap returns ErrWrongMasterKey whenever the
+	// recorded id is not that one; blocks wrapped under any other key
+	// cannot be recovered (see the package doc on rotation).
 	Unwrap(ctx context.Context, wrapped []byte, masterKeyID string) ([]byte, error)
 
 	// CurrentMasterKeyID returns the identifier that Wrap will record.

@@ -31,11 +31,6 @@ func (d *Decorator) ReadLegacyChunkVerified(ctx context.Context, hash block.Cont
 	return d.ReadBlockVerified(ctx, hash, hash)
 }
 
-// DeleteLegacyChunk implements remote.LegacyCASStore.
-func (d *Decorator) DeleteLegacyChunk(ctx context.Context, hash block.ContentHash) error {
-	return d.Delete(ctx, hash)
-}
-
 // ReadBlockVerified GETs the standalone object, decodes it, then re-verifies
 // the BLAKE3 hash over the plaintext. Streaming verification over the wire
 // bytes is not possible once the body is compressed.
