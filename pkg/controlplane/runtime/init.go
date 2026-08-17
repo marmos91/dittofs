@@ -142,6 +142,10 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 		if minConns, ok := config["min_conns"].(float64); ok {
 			pgCfg.MinConns = int32(minConns)
 		}
+		// Prepared statements stay on unless the operator turns them off, so the
+		// zero value is the shipped behaviour and a store built without this key
+		// keeps the cache.
+		pgCfg.DisablePreparedStatements = configBoolDefault(config, "disable_prepared_statements", false)
 
 		pgCfg.AutoMigrate = true
 
