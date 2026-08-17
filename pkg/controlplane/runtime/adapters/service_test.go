@@ -268,8 +268,11 @@ func TestUpdateAdapter_ZeroPortRebindsFromNonDefault(t *testing.T) {
 // slowStopAdapter keeps its serve goroutine alive after Stop returns, so a test
 // can observe the window between "stop requested" and "adapter actually gone".
 type slowStopAdapter struct {
-	protocol   string
-	port       int
+	protocol string
+	port     int
+	// stopOnce guards stopCalled: a teardown that times out leaves the entry in
+	// place, so a later attempt calls Stop on the same adapter again.
+	stopOnce   sync.Once
 	stopCalled chan struct{}
 	release    chan struct{}
 }
@@ -290,7 +293,7 @@ func (a *slowStopAdapter) Serve(ctx context.Context) error {
 }
 
 func (a *slowStopAdapter) Stop(context.Context) error {
-	close(a.stopCalled)
+	a.stopOnce.Do(func() { close(a.stopCalled) })
 	return nil
 }
 
@@ -382,4 +385,38 @@ func TestUpdateAdapter_ReturnsRestartFailure(t *testing.T) {
 	if persisted == nil || persisted.Port != 14446 {
 		t.Fatalf("requested config not persisted after failed restart: %+v", persisted)
 	}
+}
+
+// TestUpdateAdapter_NoPreservedListenerAfterStopTimeout proves that a reload
+// following a teardown that timed out does not report success by claiming to
+// preserve a listener. The timed-out stop has already cancelled the entry's
+// context, so the adapter behind it is on its way out and its socket is not
+// reusable; treating the retained entry as a live listener would hand the caller
+// a success for an adapter that is going away.
+func TestUpdateAdapter_NoPreservedListenerAfterStopTimeout(t *testing.T) {
+	svc := New(newFakeAdapterStore(), 50*time.Millisecond)
+
+	stuck := newSlowStopAdapter("nfs", 12049)
+	if err := svc.AddAdapter(stuck); err != nil {
+		t.Fatalf("AddAdapter: %v", err)
+	}
+
+	// The serve goroutine never returns, so the stop cannot confirm and times out.
+	if err := svc.stopAdapter("nfs"); err == nil {
+		t.Fatal("stopAdapter reported success while the serve goroutine was still running")
+	}
+
+	// The entry is deliberately still held, so a competing start stays refused.
+	if err := svc.AddAdapter(newSlowStopAdapter("nfs", 12049)); err == nil {
+		t.Fatal("AddAdapter admitted a second nfs adapter over a cancelled entry")
+	}
+
+	err := svc.UpdateAdapter(context.Background(), &models.AdapterConfig{
+		Type: "nfs", Port: 12049, Enabled: true,
+	})
+	if err == nil {
+		t.Fatal("UpdateAdapter returned success for an adapter whose context was already cancelled")
+	}
+
+	close(stuck.release)
 }

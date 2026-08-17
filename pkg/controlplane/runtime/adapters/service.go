@@ -50,6 +50,13 @@ type adapterEntry struct {
 	// stopping marks a teardown in progress: the entry is still in the map,
 	// but the adapter is on its way out. Guarded by Service.mu.
 	stopping bool
+
+	// cancelled records that the entry's context was already cancelled by a
+	// teardown that then timed out waiting for the serve goroutine. The entry
+	// stays in the map to keep holding the type against a competing start, but
+	// the adapter behind it is no longer serving, so it must never be treated as
+	// a live listener that a reload can reuse. Guarded by Service.mu.
+	cancelled bool
 }
 
 // Service manages protocol adapter lifecycle.
@@ -149,7 +156,7 @@ func (s *Service) UpdateAdapter(ctx context.Context, cfg *models.AdapterConfig) 
 
 	s.mu.RLock()
 	entry, ok := s.entries[cfg.Type]
-	running := ok && !entry.stopping
+	running := ok && !entry.stopping && !entry.cancelled
 	s.mu.RUnlock()
 
 	if running && cfg.Enabled && sameListenAddr(entry, cfg) {
@@ -305,6 +312,7 @@ func (s *Service) stopAdapter(adapterType string) error {
 	case <-ctx.Done():
 		s.mu.Lock()
 		entry.stopping = false
+		entry.cancelled = true
 		s.mu.Unlock()
 		logger.Warn("Adapter stop timed out", "type", adapterType)
 		return fmt.Errorf("adapter %s stop timed out", adapterType)
