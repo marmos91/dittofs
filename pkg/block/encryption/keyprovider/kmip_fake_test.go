@@ -144,26 +144,41 @@ func kmipFailureResponse(t *testing.T) ttlv.TTLV {
 // startFakeKMIP runs a TLS listener that answers one connection with resp.
 func startFakeKMIP(t *testing.T, tlsCfg *tls.Config, resp ttlv.TTLV) *fakeKMIPServer {
 	t.Helper()
+	return startFakeKMIPSeq(t, tlsCfg, resp)
+}
+
+// startFakeKMIPSeq answers one connection per response, in order. Each
+// fetchKMIPSymmetricKey call dials afresh, so a provider that fetches a
+// current key plus N retired uids consumes N+1 responses in the order the
+// uids are configured. Callers that need only one exchange use
+// startFakeKMIP.
+func startFakeKMIPSeq(t *testing.T, tlsCfg *tls.Config, resps ...ttlv.TTLV) *fakeKMIPServer {
+	t.Helper()
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", tlsCfg)
 	if err != nil {
 		t.Fatalf("tls.Listen: %v", err)
 	}
-	s := &fakeKMIPServer{ln: ln, resp: resp}
+	s := &fakeKMIPServer{ln: ln}
+	if len(resps) > 0 {
+		s.resp = resps[0]
+	}
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		conn, err := ln.Accept()
-		if err != nil {
-			return // listener closed
+		for _, resp := range resps {
+			conn, err := ln.Accept()
+			if err != nil {
+				return // listener closed
+			}
+			_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+			// Drain the request: read one framed TTLV so we don't reply
+			// before the client finishes writing (avoids a RST on some
+			// platforms).
+			if _, err := readOneFrame(conn); err == nil {
+				_, _ = conn.Write(resp)
+			}
+			_ = conn.Close()
 		}
-		defer func() { _ = conn.Close() }()
-		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
-		// Drain the request: read one framed TTLV so we don't reply before
-		// the client finishes writing (avoids a RST on some platforms).
-		if _, err := readOneFrame(conn); err != nil {
-			return
-		}
-		_, _ = conn.Write(s.resp)
 	}()
 	t.Cleanup(func() {
 		_ = ln.Close()

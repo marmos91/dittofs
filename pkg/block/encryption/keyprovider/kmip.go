@@ -70,6 +70,7 @@ func newKMIPProvider(ctx context.Context, cfg Config) (*kmipProvider, error) {
 		return uid, k, err
 	})
 	if err != nil {
+		zeroKey(key)
 		return nil, err
 	}
 	return &kmipProvider{aesGCMKEK: aesGCMKEK{

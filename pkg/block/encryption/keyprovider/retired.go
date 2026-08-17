@@ -33,11 +33,18 @@ func loadRetiredKeys(currentID string, refs []string, load retiredKeyLoader) (ma
 				"ref", ref, "error", err)
 			continue
 		}
+		// Both rejections below happen after the key material is already
+		// in memory, so zero what was loaded before unwinding — a failed
+		// construction has no Close to do it later.
 		if masterKeyID == currentID {
+			zeroKey(key)
+			zeroKeys(retired)
 			return nil, fmt.Errorf("%w: retired key %q has the same id %q as the current key",
 				ErrInvalidConfig, ref, masterKeyID)
 		}
 		if _, dup := retired[masterKeyID]; dup {
+			zeroKey(key)
+			zeroKeys(retired)
 			return nil, fmt.Errorf("%w: two retired keys share the id %q (second was %q)",
 				ErrInvalidConfig, masterKeyID, ref)
 		}
@@ -47,4 +54,20 @@ func loadRetiredKeys(currentID string, refs []string, load retiredKeyLoader) (ma
 		return nil, nil
 	}
 	return retired, nil
+}
+
+// zeroKey overwrites key material in place. Best-effort, same caveat as
+// aesGCMKEK.Close: the Go runtime may still hold copies on the GC heap.
+func zeroKey(key []byte) {
+	for i := range key {
+		key[i] = 0
+	}
+}
+
+// zeroKeys zeroes and drops every entry in an id → key map.
+func zeroKeys(keys map[string][]byte) {
+	for id, key := range keys {
+		zeroKey(key)
+		delete(keys, id)
+	}
 }

@@ -90,6 +90,7 @@ func newLocalProvider(cfg Config) (*localProvider, error) {
 		return loadLocalKeyFile(path, passphrase)
 	})
 	if err != nil {
+		zeroKey(masterKey)
 		return nil, err
 	}
 	return &localProvider{aesGCMKEK: aesGCMKEK{
@@ -322,16 +323,9 @@ func (k *aesGCMKEK) Unwrap(_ context.Context, wrapped []byte, masterKeyID string
 // Best-effort — the Go runtime makes no guarantee the bytes are not
 // retained on a GC heap.
 func (k *aesGCMKEK) Close() error {
-	for i := range k.masterKey {
-		k.masterKey[i] = 0
-	}
+	zeroKey(k.masterKey)
 	k.masterKey = nil
-	for id, key := range k.retired {
-		for i := range key {
-			key[i] = 0
-		}
-		delete(k.retired, id)
-	}
+	zeroKeys(k.retired)
 	return nil
 }
 
