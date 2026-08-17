@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -262,4 +263,160 @@ func TestUpdateAdapter_ZeroPortRebindsFromNonDefault(t *testing.T) {
 	if err := svc.StopAllAdapters(); err != nil {
 		t.Fatalf("StopAllAdapters: %v", err)
 	}
+}
+
+// slowStopAdapter keeps its serve goroutine alive after Stop returns, so a test
+// can observe the window between "stop requested" and "adapter actually gone".
+type slowStopAdapter struct {
+	protocol string
+	port     int
+	// stopOnce guards stopCalled: a teardown that times out leaves the entry in
+	// place, so a later attempt calls Stop on the same adapter again.
+	stopOnce   sync.Once
+	stopCalled chan struct{}
+	release    chan struct{}
+}
+
+func newSlowStopAdapter(protocol string, port int) *slowStopAdapter {
+	return &slowStopAdapter{
+		protocol:   protocol,
+		port:       port,
+		stopCalled: make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+}
+
+func (a *slowStopAdapter) Serve(ctx context.Context) error {
+	<-ctx.Done()
+	<-a.release
+	return ctx.Err()
+}
+
+func (a *slowStopAdapter) Stop(context.Context) error {
+	a.stopOnce.Do(func() { close(a.stopCalled) })
+	return nil
+}
+
+func (a *slowStopAdapter) Protocol() string                          { return a.protocol }
+func (a *slowStopAdapter) Port() int                                 { return a.port }
+func (a *slowStopAdapter) Healthcheck(context.Context) health.Report { return health.Report{} }
+
+// TestStopAdapter_HoldsEntryUntilAdapterConfirmsStopped proves the registry
+// keeps describing an adapter that is still alive: a start of the same type
+// issued mid-teardown is refused rather than racing the outgoing adapter for
+// its listening socket, and the entry disappears only once the serve goroutine
+// has exited.
+func TestStopAdapter_HoldsEntryUntilAdapterConfirmsStopped(t *testing.T) {
+	svc := New(newFakeAdapterStore(), 5*time.Second)
+
+	outgoing := newSlowStopAdapter("nfs", 12049)
+	if err := svc.AddAdapter(outgoing); err != nil {
+		t.Fatalf("AddAdapter: %v", err)
+	}
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- svc.stopAdapter("nfs") }()
+
+	select {
+	case <-outgoing.stopCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stopAdapter never reached the adapter's Stop")
+	}
+
+	// Teardown is in flight and the serve goroutine still holds the socket.
+	if !svc.IsAdapterRunning("nfs") {
+		t.Fatal("adapter reported as not running while its serve goroutine is still alive")
+	}
+	replacement := newSlowStopAdapter("nfs", 12049)
+	if err := svc.AddAdapter(replacement); err == nil {
+		t.Fatal("AddAdapter admitted a second nfs adapter while the previous one was still stopping")
+	}
+
+	close(outgoing.release)
+	if err := <-stopped; err != nil {
+		t.Fatalf("stopAdapter: %v", err)
+	}
+
+	if svc.IsAdapterRunning("nfs") {
+		t.Fatal("entry not removed after the adapter confirmed it stopped")
+	}
+	if err := svc.AddAdapter(replacement); err != nil {
+		t.Fatalf("AddAdapter after confirmed stop: %v", err)
+	}
+
+	close(replacement.release)
+	if err := svc.StopAllAdapters(); err != nil {
+		t.Fatalf("StopAllAdapters: %v", err)
+	}
+}
+
+// TestUpdateAdapter_ReturnsRestartFailure proves a failed restart is reported to
+// the caller instead of leaving it with a success response for an adapter that
+// is down, and that the requested config stays persisted so the next start
+// retries it.
+func TestUpdateAdapter_ReturnsRestartFailure(t *testing.T) {
+	st := newFakeAdapterStore()
+	svc := New(st, time.Second)
+
+	var factoryCalls atomic.Int32
+	svc.SetAdapterFactory(func(cfg *models.AdapterConfig) (ProtocolAdapter, error) {
+		if factoryCalls.Add(1) > 1 {
+			return nil, errors.New("listen: address already in use")
+		}
+		return newFakeListenerAdapter(cfg.Type, cfg.Port), nil
+	})
+
+	ctx := context.Background()
+	if err := svc.CreateAdapter(ctx, &models.AdapterConfig{Type: "smb", Enabled: true, Port: 14445}); err != nil {
+		t.Fatalf("CreateAdapter: %v", err)
+	}
+
+	err := svc.UpdateAdapter(ctx, &models.AdapterConfig{Type: "smb", Enabled: true, Port: 14446})
+	if err == nil {
+		t.Fatal("UpdateAdapter reported success although the adapter failed to restart")
+	}
+	if svc.IsAdapterRunning("smb") {
+		t.Fatal("adapter reported as running after a failed restart")
+	}
+
+	st.mu.Lock()
+	persisted := st.byType["smb"]
+	st.mu.Unlock()
+	if persisted == nil || persisted.Port != 14446 {
+		t.Fatalf("requested config not persisted after failed restart: %+v", persisted)
+	}
+}
+
+// TestUpdateAdapter_NoPreservedListenerAfterStopTimeout proves that a reload
+// following a teardown that timed out does not report success by claiming to
+// preserve a listener. The timed-out stop has already cancelled the entry's
+// context, so the adapter behind it is on its way out and its socket is not
+// reusable; treating the retained entry as a live listener would hand the caller
+// a success for an adapter that is going away.
+func TestUpdateAdapter_NoPreservedListenerAfterStopTimeout(t *testing.T) {
+	svc := New(newFakeAdapterStore(), 50*time.Millisecond)
+
+	stuck := newSlowStopAdapter("nfs", 12049)
+	if err := svc.AddAdapter(stuck); err != nil {
+		t.Fatalf("AddAdapter: %v", err)
+	}
+
+	// The serve goroutine never returns, so the stop cannot confirm and times out.
+	if err := svc.stopAdapter("nfs"); err == nil {
+		t.Fatal("stopAdapter reported success while the serve goroutine was still running")
+	}
+
+	// The entry is deliberately still held, so a competing start stays refused.
+	if err := svc.AddAdapter(newSlowStopAdapter("nfs", 12049)); err == nil {
+		t.Fatal("AddAdapter admitted a second nfs adapter over a cancelled entry")
+	}
+
+	err := svc.UpdateAdapter(context.Background(), &models.AdapterConfig{
+		Type: "nfs", Port: 12049, Enabled: true,
+	})
+	if err == nil {
+		t.Fatal("UpdateAdapter returned success for an adapter whose context was already cancelled")
+	}
+
+	close(stuck.release)
 }

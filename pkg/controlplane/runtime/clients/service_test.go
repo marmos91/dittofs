@@ -12,14 +12,7 @@ func TestRegisterAndList(t *testing.T) {
 		ClientID: "client-1",
 		Protocol: "nfs",
 		Address:  "192.168.1.1:1234",
-		User:     "alice",
-		Shares:   []string{"/export"},
-		NFS: &NfsDetails{
-			Version:    "4.1",
-			AuthFlavor: "AUTH_UNIX",
-			UID:        1000,
-			GID:        1000,
-		},
+		NFS:      &NfsDetails{Version: "4.1"},
 	}
 	reg.Register(rec)
 
@@ -36,9 +29,6 @@ func TestRegisterAndList(t *testing.T) {
 	}
 	if c.Address != "192.168.1.1:1234" {
 		t.Errorf("expected address, got %s", c.Address)
-	}
-	if c.User != "alice" {
-		t.Errorf("expected alice, got %s", c.User)
 	}
 	if c.ConnectedAt.IsZero() {
 		t.Error("ConnectedAt should be set automatically")
@@ -91,42 +81,28 @@ func TestListByProtocol(t *testing.T) {
 	}
 }
 
-func TestListByShare(t *testing.T) {
-	reg := NewRegistry(0)
-	reg.Register(&ClientRecord{ClientID: "c1", Protocol: "nfs", Shares: []string{"/export", "/data"}})
-	reg.Register(&ClientRecord{ClientID: "c2", Protocol: "smb", Shares: []string{"/data"}})
-
-	exportClients := reg.ListByShare("/export")
-	if len(exportClients) != 1 {
-		t.Fatalf("expected 1 client on /export, got %d", len(exportClients))
-	}
-	if exportClients[0].ClientID != "c1" {
-		t.Errorf("expected c1, got %s", exportClients[0].ClientID)
-	}
-
-	dataClients := reg.ListByShare("/data")
-	if len(dataClients) != 2 {
-		t.Fatalf("expected 2 clients on /data, got %d", len(dataClients))
-	}
-}
-
 func TestGet(t *testing.T) {
 	reg := NewRegistry(0)
-	reg.Register(&ClientRecord{ClientID: "c1", Protocol: "nfs", User: "bob"})
+	reg.Register(&ClientRecord{ClientID: "c1", Protocol: "nfs", NFS: &NfsDetails{Version: "3"}})
 
 	c := reg.Get("c1")
 	if c == nil {
 		t.Fatal("expected record, got nil")
 	}
-	if c.User != "bob" {
-		t.Errorf("expected bob, got %s", c.User)
+	if c.NFS == nil || c.NFS.Version != "3" {
+		t.Fatalf("expected NFS version 3, got %+v", c.NFS)
 	}
 
-	// Get returns copy — mutating should not affect registry.
-	c.User = "changed"
+	// Get returns a deep copy — mutating it must not reach the registry, and
+	// the detail pointers must not alias the stored ones either.
+	c.Protocol = "changed"
+	c.NFS.Version = "changed"
 	c2 := reg.Get("c1")
-	if c2.User != "bob" {
-		t.Error("Get should return copy, mutation should not affect registry")
+	if c2.Protocol != "nfs" {
+		t.Error("Get should return a copy; protocol mutation reached the registry")
+	}
+	if c2.NFS.Version != "3" {
+		t.Error("Get should deep-copy NFS details; mutation reached the registry")
 	}
 
 	// Non-existent returns nil.
@@ -150,51 +126,6 @@ func TestUpdateActivity(t *testing.T) {
 
 	// No-op for non-existent.
 	reg.UpdateActivity("nope")
-}
-
-func TestAddShare(t *testing.T) {
-	reg := NewRegistry(0)
-	reg.Register(&ClientRecord{ClientID: "c1", Protocol: "nfs", Shares: []string{"/export"}})
-
-	reg.AddShare("c1", "/data")
-	c := reg.Get("c1")
-	if len(c.Shares) != 2 {
-		t.Fatalf("expected 2 shares, got %d", len(c.Shares))
-	}
-
-	// Adding duplicate should not create duplicates.
-	reg.AddShare("c1", "/data")
-	c = reg.Get("c1")
-	if len(c.Shares) != 2 {
-		t.Fatalf("expected 2 shares (no dup), got %d", len(c.Shares))
-	}
-
-	// No-op for non-existent.
-	reg.AddShare("nope", "/x")
-}
-
-func TestRemoveShare(t *testing.T) {
-	reg := NewRegistry(0)
-	reg.Register(&ClientRecord{ClientID: "c1", Protocol: "nfs", Shares: []string{"/export", "/data"}})
-
-	reg.RemoveShare("c1", "/export")
-	c := reg.Get("c1")
-	if len(c.Shares) != 1 {
-		t.Fatalf("expected 1 share, got %d", len(c.Shares))
-	}
-	if c.Shares[0] != "/data" {
-		t.Errorf("expected /data, got %s", c.Shares[0])
-	}
-
-	// Removing non-existent share is no-op.
-	reg.RemoveShare("c1", "/nope")
-	c = reg.Get("c1")
-	if len(c.Shares) != 1 {
-		t.Fatalf("expected 1 share still, got %d", len(c.Shares))
-	}
-
-	// No-op for non-existent client.
-	reg.RemoveShare("nope", "/data")
 }
 
 func TestSweep(t *testing.T) {
@@ -250,33 +181,13 @@ func TestCount(t *testing.T) {
 	}
 }
 
-func TestCopyOnReadSharesSlice(t *testing.T) {
-	reg := NewRegistry(0)
-	reg.Register(&ClientRecord{ClientID: "c1", Protocol: "nfs", Shares: []string{"/a", "/b"}})
-
-	c := reg.Get("c1")
-	c.Shares[0] = "MUTATED"
-
-	c2 := reg.Get("c1")
-	if c2.Shares[0] != "/a" {
-		t.Error("copy-on-read failed: shares slice was mutated through returned copy")
-	}
-}
-
 func TestSmbDetails(t *testing.T) {
 	reg := NewRegistry(0)
 	reg.Register(&ClientRecord{
 		ClientID: "smb-1",
 		Protocol: "smb",
 		Address:  "10.0.0.1:445",
-		User:     "DOMAIN\\admin",
-		SMB: &SmbDetails{
-			SessionID: 12345,
-			Dialect:   "3.1.1",
-			Domain:    "EXAMPLE",
-			Signed:    true,
-			Encrypted: true,
-		},
+		SMB:      &SmbDetails{SessionID: 12345},
 	})
 
 	c := reg.Get("smb-1")
@@ -285,14 +196,5 @@ func TestSmbDetails(t *testing.T) {
 	}
 	if c.SMB.SessionID != 12345 {
 		t.Errorf("expected session 12345, got %d", c.SMB.SessionID)
-	}
-	if c.SMB.Dialect != "3.1.1" {
-		t.Errorf("expected 3.1.1, got %s", c.SMB.Dialect)
-	}
-	if !c.SMB.Signed {
-		t.Error("expected signed=true")
-	}
-	if !c.SMB.Encrypted {
-		t.Error("expected encrypted=true")
 	}
 }

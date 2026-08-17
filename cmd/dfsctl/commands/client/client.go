@@ -11,7 +11,7 @@ var Cmd = &cobra.Command{
 	Short: "Manage connected clients",
 	Long: `Manage connected NFS and SMB clients on the DittoFS server.
 
-Use these commands to inspect which clients are currently connected, filter by protocol or share, and forcefully disconnect misbehaving sessions. All operations require admin privileges.
+Use these commands to inspect which clients are currently connected, filter by protocol, and forcefully disconnect misbehaving sessions. All operations require admin privileges.
 
 Examples:
   # List all connected clients across NFS and SMB
@@ -19,9 +19,6 @@ Examples:
 
   # Show only NFS clients
   dfsctl client list --protocol nfs
-
-  # Show clients connected to a specific share
-  dfsctl client list --share myshare
 
   # Disconnect a specific client by its ID
   dfsctl client disconnect nfs-42 --force`,

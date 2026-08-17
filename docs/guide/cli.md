@@ -1480,7 +1480,7 @@ List connected clients
 
 List all clients currently connected to the DittoFS server.
 
-Each row shows the client ID, protocol (NFS or SMB), remote address, authenticated user, mounted shares, and how long the client has been connected. Use --protocol or --share to narrow the output.
+Each row shows the client ID, protocol (NFS or SMB), remote address, and how long the client has been connected. Use --protocol to narrow the output.
 
 ```
 dfsctl client list [flags]
@@ -1495,9 +1495,6 @@ dfsctl client list
 # Show only NFS clients
 dfsctl client list --protocol nfs
 
-# Show only clients connected to a specific share
-dfsctl client list --share myshare
-
 # Get the client list as JSON
 dfsctl client list -o json
 ```
@@ -1506,7 +1503,6 @@ Flags:
 
 ```
       --protocol string   Filter by protocol (nfs, smb)
-      --share string      Filter by share name
 ```
 
 Global flags:

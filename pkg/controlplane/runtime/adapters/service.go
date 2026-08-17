@@ -43,9 +43,19 @@ type AdapterFactory func(cfg *models.AdapterConfig) (ProtocolAdapter, error)
 type adapterEntry struct {
 	adapter ProtocolAdapter
 	config  *models.AdapterConfig
-	ctx     context.Context
 	cancel  context.CancelFunc
 	errCh   chan error
+
+	// stopping marks a teardown in progress: the entry is still in the map,
+	// but the adapter is on its way out. Guarded by Service.mu.
+	stopping bool
+
+	// cancelled records that the entry's context was already cancelled by a
+	// teardown that then timed out waiting for the serve goroutine. The entry
+	// stays in the map to keep holding the type against a competing start, but
+	// the adapter behind it is no longer serving, so it must never be treated as
+	// a live listener that a reload can reuse. Guarded by Service.mu.
+	cancelled bool
 }
 
 // Service manages protocol adapter lifecycle.
@@ -134,16 +144,23 @@ func (s *Service) DeleteAdapter(ctx context.Context, adapterType string) error {
 // settings reload path or on the next rebind. This keeps a config change
 // (e.g. re-enabling an already-running adapter) from momentarily dropping the
 // accept socket and cutting existing sessions.
+//
+// A failed restart is returned, not logged: the caller must not see success for
+// an adapter that is down. The new config stays persisted — it is the requested
+// state, and the next start retries it from the store.
 func (s *Service) UpdateAdapter(ctx context.Context, cfg *models.AdapterConfig) error {
 	if err := s.store.UpdateAdapter(ctx, cfg); err != nil {
 		return fmt.Errorf("failed to update adapter config: %w", err)
 	}
 
 	s.mu.RLock()
-	entry, running := s.entries[cfg.Type]
+	entry, ok := s.entries[cfg.Type]
+	// A stopping or cancelled entry is on its way out, so its listener is not
+	// reusable even though the entry is still in the map.
+	serving := ok && !entry.stopping && !entry.cancelled
 	s.mu.RUnlock()
 
-	if running && cfg.Enabled && sameListenAddr(entry, cfg) {
+	if serving && cfg.Enabled && sameListenAddr(entry, cfg) {
 		logger.Info("Adapter listen address unchanged; preserving listener across reload",
 			"type", cfg.Type, "port", entry.adapter.Port())
 		return nil
@@ -152,7 +169,7 @@ func (s *Service) UpdateAdapter(ctx context.Context, cfg *models.AdapterConfig) 
 	_ = s.stopAdapter(cfg.Type)
 	if cfg.Enabled {
 		if err := s.startAdapter(cfg); err != nil {
-			logger.Warn("Failed to restart adapter after update", "type", cfg.Type, "error", err)
+			return fmt.Errorf("failed to restart adapter after update: %w", err)
 		}
 	}
 
@@ -236,8 +253,8 @@ func (s *Service) startAdapter(cfg *models.AdapterConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.entries[cfg.Type]; exists {
-		return fmt.Errorf("adapter %s already running", cfg.Type)
+	if err := s.typeClaimedLocked(cfg.Type); err != nil {
+		return err
 	}
 
 	if s.factory == nil {
@@ -253,6 +270,12 @@ func (s *Service) startAdapter(cfg *models.AdapterConfig) error {
 	return nil
 }
 
+// stopAdapter tears down the running adapter of the given type. Its entry stays
+// in the map for the whole teardown and is dropped only once the serve goroutine
+// confirms it exited, so a concurrent start of the same type is refused instead
+// of racing the outgoing adapter for its listening socket. A stop that times out
+// keeps the entry too — the adapter is still alive — and only clears the
+// stopping mark so a later attempt can retry.
 func (s *Service) stopAdapter(adapterType string) error {
 	s.mu.Lock()
 	entry, exists := s.entries[adapterType]
@@ -260,7 +283,11 @@ func (s *Service) stopAdapter(adapterType string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("adapter %s not running", adapterType)
 	}
-	delete(s.entries, adapterType)
+	if entry.stopping {
+		s.mu.Unlock()
+		return fmt.Errorf("adapter %s is already stopping", adapterType)
+	}
+	entry.stopping = true
 	s.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
@@ -275,9 +302,16 @@ func (s *Service) stopAdapter(adapterType string) error {
 	entry.cancel()
 	select {
 	case <-entry.errCh:
+		s.mu.Lock()
+		delete(s.entries, adapterType)
+		s.mu.Unlock()
 		logger.Info("Adapter stopped", "type", adapterType)
 		return nil
 	case <-ctx.Done():
+		s.mu.Lock()
+		entry.stopping = false
+		entry.cancelled = true
+		s.mu.Unlock()
 		logger.Warn("Adapter stop timed out", "type", adapterType)
 		return fmt.Errorf("adapter %s stop timed out", adapterType)
 	}
@@ -361,8 +395,8 @@ func (s *Service) AddAdapter(adapter ProtocolAdapter) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.entries[adapterType]; exists {
-		return fmt.Errorf("adapter %s already running", adapterType)
+	if err := s.typeClaimedLocked(adapterType); err != nil {
+		return err
 	}
 
 	cfg := &models.AdapterConfig{Type: adapterType, Port: adapter.Port(), Enabled: true}
@@ -392,6 +426,24 @@ func (s *Service) ForceCloseClientConnection(protocol, addr string) bool {
 	return false
 }
 
+// typeClaimedLocked returns an error when an entry still holds adapterType, so
+// no new adapter of that type may claim it: either one is serving, or a teardown
+// has not yet released the listening socket. Returns nil when the type is free.
+// Caller must hold mu.
+func (s *Service) typeClaimedLocked(adapterType string) error {
+	e, exists := s.entries[adapterType]
+	switch {
+	case !exists:
+		return nil
+	case e.stopping:
+		return fmt.Errorf("adapter %s is still stopping", adapterType)
+	case e.cancelled:
+		return fmt.Errorf("adapter %s did not confirm shutdown and still holds its socket", adapterType)
+	default:
+		return fmt.Errorf("adapter %s already running", adapterType)
+	}
+}
+
 // registerAndRunAdapterLocked starts the adapter in a goroutine. Caller must hold mu.
 func (s *Service) registerAndRunAdapterLocked(adp ProtocolAdapter, cfg *models.AdapterConfig) {
 	if setter, ok := adp.(RuntimeSetter); ok && s.runtime != nil {
@@ -413,7 +465,6 @@ func (s *Service) registerAndRunAdapterLocked(adp ProtocolAdapter, cfg *models.A
 	s.entries[cfg.Type] = &adapterEntry{
 		adapter: adp,
 		config:  cfg,
-		ctx:     ctx,
 		cancel:  cancel,
 		errCh:   errCh,
 	}

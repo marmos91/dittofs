@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -168,13 +169,13 @@ type Runtime struct {
 	runtimeCtx    context.Context
 	runtimeCancel context.CancelFunc
 
-	identityChangeCallbacks []func()
+	identityChangeCallbacks callbackList
 
 	// identityProviderChangeCallbacks fire when an identity provider's
 	// configuration (LDAP/Kerberos) is changed via the API. Adapters register a
 	// closure that rebuilds and re-injects their identity resolver so a new
-	// directory config takes effect without a restart. Guarded by mu.
-	identityProviderChangeCallbacks []func()
+	// directory config takes effect without a restart.
+	identityProviderChangeCallbacks callbackList
 
 	// ldapConfig is the optional LDAP/AD identity provider configuration set at
 	// startup from the server config. When present and Enabled, BuildIdentityResolver
@@ -1114,34 +1115,50 @@ func (r *Runtime) NetlogonController() *netlogon.Controller {
 	return c
 }
 
-// OnIdentityMappingChange registers a callback invoked when identity mappings
-// are created or deleted via the API. Adapters use this to invalidate their
-// identity resolver caches. Returns an unsubscribe function.
-func (r *Runtime) OnIdentityMappingChange(fn func()) func() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.identityChangeCallbacks = append(r.identityChangeCallbacks, fn)
-	idx := len(r.identityChangeCallbacks) - 1
+// callbackList is a subscribe/notify list of parameterless callbacks. The zero
+// value is ready to use. Unsubscribing nils the slot rather than removing it,
+// so indices handed to earlier subscribers stay valid; notify snapshots the
+// slice and fires outside the lock, so a callback may re-enter the list.
+type callbackList struct {
+	mu  sync.Mutex
+	fns []func()
+}
+
+// add registers fn and returns a function that unsubscribes it.
+func (c *callbackList) add(fn func()) func() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fns = append(c.fns, fn)
+	idx := len(c.fns) - 1
 	return func() {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		if idx < len(r.identityChangeCallbacks) {
-			r.identityChangeCallbacks[idx] = nil
-		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.fns[idx] = nil
 	}
 }
 
-// NotifyIdentityMappingChange fires all registered identity change callbacks.
-func (r *Runtime) NotifyIdentityMappingChange() {
-	r.mu.RLock()
-	cbs := make([]func(), len(r.identityChangeCallbacks))
-	copy(cbs, r.identityChangeCallbacks)
-	r.mu.RUnlock()
-	for _, fn := range cbs {
+// notify fires every registered callback.
+func (c *callbackList) notify() {
+	c.mu.Lock()
+	fns := slices.Clone(c.fns)
+	c.mu.Unlock()
+	for _, fn := range fns {
 		if fn != nil {
 			fn()
 		}
 	}
+}
+
+// OnIdentityMappingChange registers a callback invoked when identity mappings
+// are created or deleted via the API. Adapters use this to invalidate their
+// identity resolver caches. Returns an unsubscribe function.
+func (r *Runtime) OnIdentityMappingChange(fn func()) func() {
+	return r.identityChangeCallbacks.add(fn)
+}
+
+// NotifyIdentityMappingChange fires all registered identity change callbacks.
+func (r *Runtime) NotifyIdentityMappingChange() {
+	r.identityChangeCallbacks.notify()
 }
 
 // OnIdentityProviderConfigChange registers a callback invoked when an identity
@@ -1149,31 +1166,13 @@ func (r *Runtime) NotifyIdentityMappingChange() {
 // and re-inject their identity resolver so a new LDAP directory config takes
 // effect without a restart. Returns an unsubscribe function.
 func (r *Runtime) OnIdentityProviderConfigChange(fn func()) func() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.identityProviderChangeCallbacks = append(r.identityProviderChangeCallbacks, fn)
-	idx := len(r.identityProviderChangeCallbacks) - 1
-	return func() {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		if idx < len(r.identityProviderChangeCallbacks) {
-			r.identityProviderChangeCallbacks[idx] = nil
-		}
-	}
+	return r.identityProviderChangeCallbacks.add(fn)
 }
 
 // NotifyIdentityProviderConfigChange fires all registered identity-provider
 // config change callbacks.
 func (r *Runtime) NotifyIdentityProviderConfigChange() {
-	r.mu.RLock()
-	cbs := make([]func(), len(r.identityProviderChangeCallbacks))
-	copy(cbs, r.identityProviderChangeCallbacks)
-	r.mu.RUnlock()
-	for _, fn := range cbs {
-		if fn != nil {
-			fn()
-		}
-	}
+	r.identityProviderChangeCallbacks.notify()
 }
 
 // --- Settings Access ---

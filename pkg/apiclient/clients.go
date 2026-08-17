@@ -11,29 +11,20 @@ type ClientRecord struct {
 	ClientID     string      `json:"client_id"`
 	Protocol     string      `json:"protocol"`
 	Address      string      `json:"address"`
-	User         string      `json:"user"`
 	ConnectedAt  time.Time   `json:"connected_at"`
 	LastActivity time.Time   `json:"last_activity"`
-	Shares       []string    `json:"shares"`
 	NFS          *NfsDetails `json:"nfs,omitempty"`
 	SMB          *SmbDetails `json:"smb,omitempty"`
 }
 
 // NfsDetails holds NFS-specific client information.
 type NfsDetails struct {
-	Version    string `json:"version"`
-	AuthFlavor string `json:"auth_flavor"`
-	UID        uint32 `json:"uid"`
-	GID        uint32 `json:"gid"`
+	Version string `json:"version"`
 }
 
 // SmbDetails holds SMB-specific client information.
 type SmbDetails struct {
 	SessionID uint64 `json:"session_id"`
-	Dialect   string `json:"dialect"`
-	Domain    string `json:"domain,omitempty"`
-	Signed    bool   `json:"signed"`
-	Encrypted bool   `json:"encrypted"`
 }
 
 // ListClientsOption configures a ListClients call.
@@ -41,17 +32,11 @@ type ListClientsOption func(*listClientsOpts)
 
 type listClientsOpts struct {
 	protocol string
-	share    string
 }
 
 // WithProtocol filters client list by protocol ("nfs" or "smb").
 func WithProtocol(protocol string) ListClientsOption {
 	return func(o *listClientsOpts) { o.protocol = protocol }
-}
-
-// WithShare filters client list by share name.
-func WithShare(share string) ListClientsOption {
-	return func(o *listClientsOpts) { o.share = share }
 }
 
 // ListClients returns all connected clients, optionally filtered.
@@ -64,9 +49,6 @@ func (c *Client) ListClients(opts ...ListClientsOption) ([]ClientRecord, error) 
 	query := url.Values{}
 	if o.protocol != "" {
 		query.Set("protocol", o.protocol)
-	}
-	if o.share != "" {
-		query.Set("share", o.share)
 	}
 
 	path := "/api/v1/clients"
