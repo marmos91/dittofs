@@ -54,13 +54,13 @@ type ownerSeq struct {
 //   - seqid == expected -> SeqIDOK
 //   - seqid == LastSeqID -> SeqIDReplay
 //   - else -> SeqIDBad
-func (os *ownerSeq) ValidateSeqID(seqid uint32) SeqIDValidation {
-	expected := nextSeqID(os.LastSeqID)
+func (seq *ownerSeq) ValidateSeqID(seqid uint32) SeqIDValidation {
+	expected := nextSeqID(seq.LastSeqID)
 
 	if seqid == expected {
 		return SeqIDOK
 	}
-	if seqid == os.LastSeqID {
+	if seqid == seq.LastSeqID {
 		return SeqIDReplay
 	}
 	return SeqIDBad
@@ -77,10 +77,10 @@ func (os *ownerSeq) ValidateSeqID(seqid uint32) SeqIDValidation {
 // seqid check itself because its two verdicts, NFS4ERR_BAD_SEQID and a replay,
 // are both exempt; nfsd relies on the same property to call nfsd4_bump_seqid
 // unconditionally from a single exit point per operation.
-func (os *ownerSeq) consumeSeqidOnError(seqid uint32, err error) {
+func (seq *ownerSeq) consumeSeqidOnError(seqid uint32, err error) {
 	if status, consumed := failedSeqidReply(err); consumed {
-		os.LastSeqID = seqid
-		os.LastResult = &CachedResult{Status: status, Data: encodeStatusReply(status)}
+		seq.LastSeqID = seqid
+		seq.LastResult = &CachedResult{Status: status, Data: encodeStatusReply(status)}
 	}
 }
 

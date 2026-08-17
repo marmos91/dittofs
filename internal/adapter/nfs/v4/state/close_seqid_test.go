@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -77,5 +78,108 @@ func TestCloseFile_LocksHeldStillAdvancesSeqid(t *testing.T) {
 				"client and server disagree about it from here on (seqid=%d)", openSeqid)
 		}
 		t.Fatalf("CLOSE after releasing locks failed: %v", err)
+	}
+}
+
+// ============================================================================
+// Errors exempt under RFC 7530 Section 9.1.7 must leave the seqid alone
+// ============================================================================
+
+// TestCloseFile_BadSeqidLeavesOwnerSeqidUntouched pins the seqid across a
+// rejected CLOSE. NFS4ERR_BAD_SEQID is on the exempt list of RFC 7530 Section
+// 9.1.7: the client does not advance its sequence after one, so neither may the
+// server.
+func TestCloseFile_BadSeqidLeavesOwnerSeqidUntouched(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	sm.SetLockManager(lock.NewManager())
+
+	_, _, openStateid, openSeqid := setupClientAndOpenState(t, sm)
+
+	// A seqid the owner never reached: neither the expected next one nor a
+	// replay of the last.
+	if _, err := sm.CloseFile(openStateid, openSeqid+7); !errors.Is(err, ErrBadSeqid) {
+		t.Fatalf("CLOSE at an out-of-sequence seqid: got %v, want NFS4ERR_BAD_SEQID", err)
+	}
+
+	// The client is still at the seqid it was, and so must the server be.
+	if _, err := sm.CloseFile(openStateid, openSeqid+1); err != nil {
+		t.Fatalf("CLOSE at the expected seqid after a rejected one failed: %v "+
+			"(the rejected request advanced the open-owner seqid; it must not)", err)
+	}
+}
+
+// TestUnlockFile_BadStateidLeavesLockOwnerSeqidUntouched pins the seqid across a
+// LOCKU whose stateid seqid runs ahead of the server's. NFS4ERR_BAD_STATEID is
+// on the exempt list of RFC 7530 Section 9.1.7: the client leaves its sequence
+// where it was, so the server must too.
+func TestUnlockFile_BadStateidLeavesLockOwnerSeqidUntouched(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	sm.SetLockManager(lock.NewManager())
+
+	clientID, fileHandle, openStateid, openSeqid := setupClientAndOpenState(t, sm)
+
+	lockSeqid := uint32(1)
+	lockRes, err := sm.LockNew(context.Background(),
+		clientID, []byte("lock-owner"), lockSeqid,
+		openStateid, openSeqid+1,
+		fileHandle, types.WRITE_LT, 0, 100, false,
+	)
+	if err != nil {
+		t.Fatalf("LockNew failed: %v", err)
+	}
+
+	ahead := lockRes.Stateid
+	ahead.Seqid = nextSeqID(ahead.Seqid)
+	if _, err := sm.UnlockFile(&ahead, lockSeqid+1, types.WRITE_LT, 0, 100); !errors.Is(err, ErrBadStateid) {
+		t.Fatalf("LOCKU with a stateid ahead of the server's: got %v, want NFS4ERR_BAD_STATEID", err)
+	}
+
+	// The retry carries the right stateid at the same lock-owner seqid, which
+	// the server must still be expecting.
+	if _, err := sm.UnlockFile(&lockRes.Stateid, lockSeqid+1, types.WRITE_LT, 0, 100); err != nil {
+		t.Fatalf("LOCKU retried after NFS4ERR_BAD_STATEID failed: %v "+
+			"(the rejected request advanced the lock-owner seqid; it must not)", err)
+	}
+}
+
+// TestDowngradeOpen_ReplayLeavesOwnerSeqidUntouched pins the seqid and the
+// reply cache across a retransmit. RFC 7530 Section 9.1.7 returns the stored
+// response for a request at the last seqid without re-executing it, so it moves
+// neither.
+func TestDowngradeOpen_ReplayLeavesOwnerSeqidUntouched(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	clientID, _, openStateid, openSeqid := setupClientAndOpenState(t, sm)
+
+	seqid := openSeqid + 1
+	if _, err := sm.DowngradeOpen(openStateid, seqid,
+		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE); err != nil {
+		t.Fatalf("OPEN_DOWNGRADE failed: %v", err)
+	}
+
+	// As the handler does on success: cache the encoded reply for replay.
+	cached := []byte("encoded OPEN_DOWNGRADE reply")
+	sm.CacheOpenOwnerResult(clientID, []byte("open-owner"), types.NFS4_OK, cached)
+
+	// Every retransmit gets that reply back, not just the first.
+	for i := range 2 {
+		_, err := sm.DowngradeOpen(openStateid, seqid,
+			types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE)
+		var replayErr *ReplayError
+		if !errors.As(err, &replayErr) {
+			t.Fatalf("retransmit %d of OPEN_DOWNGRADE: got %v, want a replay", i+1, err)
+		}
+		if replayErr.Status != types.NFS4_OK || !bytes.Equal(replayErr.Data, cached) {
+			t.Fatalf("retransmit %d replayed status=%d data=%q, want status=%d data=%q "+
+				"(the replay consumed the seqid and overwrote the cached reply)",
+				i+1, replayErr.Status, replayErr.Data, types.NFS4_OK, cached)
+		}
+	}
+
+	// The sequence is still where the successful OPEN_DOWNGRADE left it.
+	if _, err := sm.DowngradeOpen(openStateid, seqid+1,
+		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE); err != nil {
+		t.Fatalf("OPEN_DOWNGRADE after replays failed: %v "+
+			"(a replay advanced the open-owner seqid; it must not)", err)
 	}
 }
