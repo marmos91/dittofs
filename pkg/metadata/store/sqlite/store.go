@@ -63,6 +63,12 @@ type SQLiteMetadataStore struct {
 	// of the same M rows leaves the same count). Never read in production.
 	manifestWrites atomic.Int64
 
+	// manifestRowsScanned counts the stored file_block_refs rows the manifest
+	// diff has had to read since open. Test-only observability: it is what
+	// BlocksDirtyOffsets bounds, so a test can prove a scoped commit reads the
+	// changed offsets rather than the whole file. Never read in production.
+	manifestRowsScanned atomic.Int64
+
 	// quota tracks per-identity usage (bytes + file count) for regular files,
 	// keyed by owner uid / gid. Seeded from a GROUP BY query on startup and
 	// updated from each committed transaction's deltas. Guarded by quotaMu.
@@ -300,46 +306,38 @@ func (s *SQLiteMetadataStore) Close() error {
 	return nil
 }
 
-// initializeFilesystemCapabilities inserts or updates filesystem capabilities.
-func initializeFilesystemCapabilities(ctx context.Context, db *sql.DB, caps metadata.FilesystemCapabilities) error {
-	query := `
-		INSERT INTO filesystem_capabilities (
-			id,
-			max_read_size,
-			preferred_read_size,
-			max_write_size,
-			preferred_write_size,
-			max_file_size,
-			max_filename_len,
-			max_path_len,
-			max_hard_link_count,
-			supports_hard_links,
-			supports_symlinks,
-			case_sensitive,
-			case_preserving,
-			supports_acls,
-			time_resolution
-		) VALUES (
-			1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-		)
-		ON CONFLICT (id) DO UPDATE SET
-			max_read_size = excluded.max_read_size,
-			preferred_read_size = excluded.preferred_read_size,
-			max_write_size = excluded.max_write_size,
-			preferred_write_size = excluded.preferred_write_size,
-			max_file_size = excluded.max_file_size,
-			max_filename_len = excluded.max_filename_len,
-			max_path_len = excluded.max_path_len,
-			max_hard_link_count = excluded.max_hard_link_count,
-			supports_hard_links = excluded.supports_hard_links,
-			supports_symlinks = excluded.supports_symlinks,
-			case_sensitive = excluded.case_sensitive,
-			case_preserving = excluded.case_preserving,
-			supports_acls = excluded.supports_acls,
-			time_resolution = excluded.time_resolution
-	`
+// upsertCapabilitiesSQL writes the single filesystem_capabilities row. Shared
+// by store construction and SetFilesystemCapabilities so the two can never
+// persist a different column set.
+const upsertCapabilitiesSQL = `
+	INSERT INTO filesystem_capabilities (
+		id, max_read_size, preferred_read_size, max_write_size, preferred_write_size,
+		max_file_size, max_filename_len, max_path_len, max_hard_link_count,
+		supports_hard_links, supports_symlinks, case_sensitive, case_preserving,
+		supports_acls, time_resolution
+	) VALUES (
+		1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+	)
+	ON CONFLICT (id) DO UPDATE SET
+		max_read_size = excluded.max_read_size,
+		preferred_read_size = excluded.preferred_read_size,
+		max_write_size = excluded.max_write_size,
+		preferred_write_size = excluded.preferred_write_size,
+		max_file_size = excluded.max_file_size,
+		max_filename_len = excluded.max_filename_len,
+		max_path_len = excluded.max_path_len,
+		max_hard_link_count = excluded.max_hard_link_count,
+		supports_hard_links = excluded.supports_hard_links,
+		supports_symlinks = excluded.supports_symlinks,
+		case_sensitive = excluded.case_sensitive,
+		case_preserving = excluded.case_preserving,
+		supports_acls = excluded.supports_acls,
+		time_resolution = excluded.time_resolution
+`
 
-	_, err := db.ExecContext(ctx, query,
+// capabilityArgs binds a capability set to upsertCapabilitiesSQL's placeholders.
+func capabilityArgs(caps metadata.FilesystemCapabilities) []any {
+	return []any{
 		caps.MaxReadSize,
 		caps.PreferredReadSize,
 		caps.MaxWriteSize,
@@ -354,6 +352,11 @@ func initializeFilesystemCapabilities(ctx context.Context, db *sql.DB, caps meta
 		caps.CasePreserving,
 		caps.SupportsACLs,
 		caps.TimestampResolution,
-	)
+	}
+}
+
+// initializeFilesystemCapabilities inserts or updates filesystem capabilities.
+func initializeFilesystemCapabilities(ctx context.Context, db *sql.DB, caps metadata.FilesystemCapabilities) error {
+	_, err := db.ExecContext(ctx, upsertCapabilitiesSQL, capabilityArgs(caps)...)
 	return err
 }

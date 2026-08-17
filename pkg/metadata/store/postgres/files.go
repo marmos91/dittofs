@@ -465,14 +465,15 @@ func (s *PostgresMetadataStore) GetFileByPayloadID(ctx context.Context, payloadI
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
 			f.hidden, f.acl, f.eas, f.object_id,
-			f.deleted_at, f.original_path, f.deleted_by, f.nlink
+			f.deleted_at, f.original_path, f.deleted_by, f.nlink,
+			` + blockRefsAggExpr + `
 		FROM inodes f
 		WHERE f.content_id_hash = md5($1)
 		LIMIT 1
 	`
 
 	row := s.queryRow(ctx, query, string(payloadID))
-	file, err := sqlcodec.FileRowToFileWithNlink(row)
+	file, err := sqlcodec.FileRowToFileWithNlinkAndBlocks(row, true)
 	if err != nil {
 		return nil, mapPgError(err, "GetFileByPayloadID", string(payloadID))
 	}

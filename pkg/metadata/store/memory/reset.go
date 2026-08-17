@@ -34,6 +34,7 @@ func (s *MemoryMetadataStore) Reset(ctx context.Context) error {
 	s.pendingWrites = make(map[string]*metadata.WriteOperation)
 	s.sessions = make(map[string]*ShareSession)
 	s.objectIndex = make(map[block.ContentHash]string)
+	s.blockRecords = make(map[string]*block.BlockRecord)
 	s.serverConfig = metadata.MetadataServerConfig{}
 
 	s.fileChunkData = nil

@@ -42,24 +42,28 @@ import (
 //
 // hasPriorRefs lets a freshly-inserted file skip the stored-row query: with no
 // prior rows every incoming ref is a plain insert.
-func putFileChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, blocks []block.ChunkRef, hasPriorRefs bool) (bool, error) {
-	upserts, deletes, err := fileChunkRefsDelta(ctx, tx, fileID, blocks, hasPriorRefs)
+//
+// scope, when non-nil, restricts the whole delta to those offsets — see
+// fileChunkRefsDelta. The returned count is how many stored rows the diff had
+// to read, which is what a scope bounds.
+func putFileChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, blocks []block.ChunkRef, hasPriorRefs bool, scope []uint64) (bool, int, error) {
+	upserts, deletes, scanned, err := fileChunkRefsDelta(ctx, tx, fileID, blocks, hasPriorRefs, scope)
 	if err != nil {
-		return false, err
+		return false, scanned, err
 	}
 	if len(upserts) == 0 && len(deletes) == 0 {
-		return false, nil
+		return false, scanned, nil
 	}
 	// DELETE removed offsets, then UPSERT changed/new ones. Order is
 	// immaterial (disjoint offset sets) but delete-first keeps a shrink's row
 	// count from transiently peaking.
 	if err := deleteChunkRefOffsets(ctx, tx, fileID, deletes); err != nil {
-		return false, err
+		return false, scanned, err
 	}
 	if err := upsertChunkRefs(ctx, tx, fileID, upserts); err != nil {
-		return false, err
+		return false, scanned, err
 	}
-	return true, nil
+	return true, scanned, nil
 }
 
 // storedChunkRef is a stored file_block_refs row minus its offset (the map key).
@@ -74,30 +78,26 @@ type storedChunkRef struct {
 // stored set is known-empty, so the query is skipped and every ref is an
 // upsert. Offsets are unique under the (file_id, "offset") PK, so keying the
 // diff on offset is sound.
-func fileChunkRefsDelta(ctx context.Context, tx execer, fileID uuid.UUID, blocks []block.ChunkRef, hasPriorRefs bool) ([]block.ChunkRef, []int64, error) {
+//
+// scope, when non-nil, is the caller's promise that no offset outside it can
+// differ from what is stored. The stored-row query, the incoming scan and the
+// delete set are then all confined to it, so a commit that touches a handful of
+// chunks costs a handful of rows instead of the file's entire manifest. A nil
+// scope keeps the full diff, which is what a caller that re-derived the
+// manifest from scratch needs.
+func fileChunkRefsDelta(ctx context.Context, tx execer, fileID uuid.UUID, blocks []block.ChunkRef, hasPriorRefs bool, scope []uint64) ([]block.ChunkRef, []int64, int, error) {
+	var inScope map[int64]struct{}
+	if scope != nil {
+		inScope = make(map[int64]struct{}, len(scope))
+		for _, off := range scope {
+			inScope[int64(off)] = struct{}{}
+		}
+	}
+
 	stored := make(map[int64]storedChunkRef)
 	if hasPriorRefs {
-		rows, err := tx.Query(ctx,
-			`SELECT "offset", size, hash FROM file_block_refs WHERE file_id = ?1`,
-			fileID,
-		)
-		if err != nil {
-			return nil, nil, fmt.Errorf("query file_block_refs for %s: %w", fileID, err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var off int64
-			var sz int32
-			var raw []byte
-			if err := rows.Scan(&off, &sz, &raw); err != nil {
-				return nil, nil, fmt.Errorf("scan file_block_ref: %w", err)
-			}
-			h := make([]byte, len(raw))
-			copy(h, raw)
-			stored[off] = storedChunkRef{size: sz, hash: h}
-		}
-		if err := rows.Err(); err != nil {
-			return nil, nil, fmt.Errorf("iterate file_block_refs: %w", err)
+		if err := scanStoredChunkRefs(ctx, tx, fileID, inScope, stored); err != nil {
+			return nil, nil, len(stored), err
 		}
 	}
 
@@ -105,6 +105,11 @@ func fileChunkRefsDelta(ctx context.Context, tx execer, fileID uuid.UUID, blocks
 	incoming := make(map[int64]struct{}, len(blocks))
 	for _, b := range blocks {
 		off := int64(b.Offset)
+		if inScope != nil {
+			if _, ok := inScope[off]; !ok {
+				continue
+			}
+		}
 		incoming[off] = struct{}{}
 		if s, ok := stored[off]; ok && s.size == int32(b.Size) && bytes.Equal(s.hash, b.Hash[:]) {
 			continue // identical row already stored — no write
@@ -117,7 +122,67 @@ func fileChunkRefsDelta(ctx context.Context, tx execer, fileID uuid.UUID, blocks
 			deletes = append(deletes, off)
 		}
 	}
-	return upserts, deletes, nil
+	return upserts, deletes, len(stored), nil
+}
+
+// scanStoredChunkRefs loads the stored rows for fileID into out. A nil inScope
+// reads the whole manifest; otherwise only those offsets are read, in IN-list
+// batches capped the same way as the write helpers so the bound-parameter count
+// stays under SQLite's default limit.
+func scanStoredChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, inScope map[int64]struct{}, out map[int64]storedChunkRef) error {
+	const selectRefs = `SELECT "offset", size, hash FROM file_block_refs WHERE file_id = ?`
+	if inScope == nil {
+		return scanChunkRefBatch(ctx, tx, fileID, selectRefs, []any{fileID}, out)
+	}
+
+	offsets := make([]int64, 0, len(inScope))
+	for off := range inScope {
+		offsets = append(offsets, off)
+	}
+	const perBatch = 200
+	for start := 0; start < len(offsets); start += perBatch {
+		batch := offsets[start:min(start+perBatch, len(offsets))]
+		var sb strings.Builder
+		sb.WriteString(selectRefs)
+		sb.WriteString(` AND "offset" IN (`)
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, fileID)
+		for i, off := range batch {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteByte('?')
+			args = append(args, off)
+		}
+		sb.WriteByte(')')
+		if err := scanChunkRefBatch(ctx, tx, fileID, sb.String(), args, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func scanChunkRefBatch(ctx context.Context, tx execer, fileID uuid.UUID, query string, args []any, out map[int64]storedChunkRef) error {
+	rows, err := tx.Query(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("query file_block_refs for %s: %w", fileID, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var off int64
+		var sz int32
+		var raw []byte
+		if err := rows.Scan(&off, &sz, &raw); err != nil {
+			return fmt.Errorf("scan file_block_ref: %w", err)
+		}
+		h := make([]byte, len(raw))
+		copy(h, raw)
+		out[off] = storedChunkRef{size: sz, hash: h}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate file_block_refs: %w", err)
+	}
+	return nil
 }
 
 // deleteChunkRefOffsets removes the given offsets for fileID. Offsets are
@@ -188,6 +253,14 @@ func upsertChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, refs []bl
 // re-projections of an unchanged manifest perform ZERO manifest writes.
 func (s *SQLiteMetadataStore) PutFileChunkRefsCallCount() int64 {
 	return s.manifestWrites.Load()
+}
+
+// PutFileChunkRefsManifestRowsScanned returns how many stored file_block_refs
+// rows PutFile's manifest diff has read since store open. Test-only — proves a
+// scoped commit's read cost tracks the changed offsets, not the file's total
+// chunk count.
+func (s *SQLiteMetadataStore) PutFileChunkRefsManifestRowsScanned() int64 {
+	return s.manifestRowsScanned.Load()
 }
 
 // deleteFileChunkRefs removes all rows for fileID. The FK cascade

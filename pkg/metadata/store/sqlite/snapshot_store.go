@@ -27,7 +27,9 @@ const sqliteEngineTag = "sqlite"
 // file_blocks IS in backupTables, so the dumped row shape changes one column.
 // v4 drops the dead block_store_key column from file_blocks (migration 000008);
 // file_blocks IS in backupTables, so the dumped row shape changes one column.
-const sqliteSchemaVersion uint32 = 4
+// v5 adds the block_records section, matching what the postgres backend has
+// always dumped; RestoreSnapshot rejects the older streams that lack it.
+const sqliteSchemaVersion uint32 = 5
 
 // backupTables lists every table dumped by WriteSnapshot and reloaded by RestoreSnapshot, in a
 // FK-safe order for restore (parents before children). inodes must precede
@@ -48,6 +50,10 @@ var backupTables = []string{
 	"server_config",
 	"server_epoch",
 	"filesystem_capabilities",
+	// block_records has no foreign keys, so it restores anywhere in the
+	// order. Omitting it dropped every block's sync state and live-chunk
+	// count across snapshot/restore and left them behind on Reset.
+	"block_records",
 }
 
 // isKnownTable guards Restore against an unexpected table name in the stream.

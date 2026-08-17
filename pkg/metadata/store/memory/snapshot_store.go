@@ -62,6 +62,12 @@ type memoryBackupSnapshot struct {
 	SyncedLocators map[block.ContentHash]block.ChunkLocator
 	ObjectIndex    map[block.ContentHash]string
 
+	// BlockRecords carries each block's sync state and live-chunk count.
+	// Nothing rebuilds those from the file manifest, so dropping them across
+	// a restore leaves the GC and the syncer blind to every existing block.
+	// Additive gob field: an older dump decodes it to nil.
+	BlockRecords map[string]*block.BlockRecord
+
 	// ServerConfigCustomSettingsJSON holds the JSON-encoded form of
 	// ServerConfig.CustomSettings. Gob cannot encode map[string]any
 	// out of the box; we JSON-encode here and decode on restore.
@@ -126,6 +132,7 @@ func (s *MemoryMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*
 		Capabilities:  s.capabilities,
 		StoreID:       s.storeID,
 		ObjectIndex:   s.objectIndex,
+		BlockRecords:  s.blockRecords,
 	}
 
 	// Acquire syncedMu to read synced safely — governed by its own mutex, not
@@ -346,6 +353,7 @@ func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	s.syncedMu.Unlock()
 
 	s.objectIndex = snap.ObjectIndex
+	s.blockRecords = snap.BlockRecords
 
 	// Ensure nil maps are initialized to empty (store invariant).
 	if s.shares == nil {
@@ -371,6 +379,9 @@ func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	}
 	if s.objectIndex == nil {
 		s.objectIndex = make(map[block.ContentHash]string)
+	}
+	if s.blockRecords == nil {
+		s.blockRecords = make(map[string]*block.BlockRecord)
 	}
 
 	// Restore lazy sub-stores (nil snapshot = never initialized).

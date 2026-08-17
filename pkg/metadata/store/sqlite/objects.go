@@ -44,18 +44,7 @@ var _ block.FileChunkStore = (*SQLiteMetadataStore)(nil)
 // FileChunkStore interface; kept as a backend
 // method for engine-internal callers.
 func (s *SQLiteMetadataStore) GetFileChunk(ctx context.Context, id string) (*metadata.FileChunk, error) {
-	query := `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
-		FROM file_blocks WHERE id = ?1`
-	row := s.queryRow(ctx, query, id)
-
-	block, err := scanFileChunk(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, metadata.ErrFileChunkNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get file chunk: %w", err)
-	}
-	return block, nil
+	return getFileChunkTx(ctx, s.conn(), id)
 }
 
 // Put stores or updates a file chunk.
@@ -71,29 +60,84 @@ func (s *SQLiteMetadataStore) GetFileChunk(ctx context.Context, id string) (*met
 // and badger backends always store the hash inline on the row, so this
 // matches their behavior.
 func (s *SQLiteMetadataStore) Put(ctx context.Context, block *metadata.FileChunk) error {
+	return putFileChunkTx(ctx, s.conn(), block)
+}
+
+// Delete removes a file chunk by its ID.
+func (s *SQLiteMetadataStore) Delete(ctx context.Context, id string) error {
+	return deleteFileChunkTx(ctx, s.conn(), id)
+}
+
+// IncrementRefCount atomically increments a block's RefCount.
+func (s *SQLiteMetadataStore) IncrementRefCount(ctx context.Context, id string) error {
+	return incrementRefCountTx(ctx, s.conn(), id)
+}
+
+// DecrementRefCount atomically decrements a block's RefCount.
+func (s *SQLiteMetadataStore) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
+	return decrementRefCountTx(ctx, s.conn(), id)
+}
+
+// DecrementRefCountAndReap atomically decrements ref_count and, when it hits 0,
+// deletes the row — both statements run inside ONE transaction so the
+// decrement-and-reap is atomic and TOCTOU-free against a concurrent AddRef
+// (which takes the same row lock). Returns (0, nil) when the row is already
+// absent — a swept row is not a caller error. Running through WithTransaction
+// also gives a SQLITE_BUSY collision the package's bounded retry instead of
+// surfacing it as a hard error.
+func (s *SQLiteMetadataStore) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
+	var newCount uint32
+	err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		var txErr error
+		newCount, txErr = tx.DecrementRefCountAndReap(ctx, id)
+		return txErr
+	})
+	if err != nil {
+		return 0, err
+	}
+	return newCount, nil
+}
+
+// The bodies below carry the file_blocks CRUD SQL once. Both the pool path and
+// the transaction path run them over their own executor, so the two surfaces
+// cannot drift apart.
+
+// getFileChunkTx reads one chunk row by ID, mapping a missing row to
+// ErrFileChunkNotFound.
+func getFileChunkTx(ctx context.Context, x execer, id string) (*metadata.FileChunk, error) {
+	row := x.QueryRow(ctx, `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
+		FROM file_blocks WHERE id = ?1`, id)
+	chunk, err := scanFileChunk(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, metadata.ErrFileChunkNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get file chunk: %w", err)
+	}
+	return chunk, nil
+}
+
+// putFileChunkTx inserts or updates one chunk row.
+//
+// ref_count is omitted from the ON CONFLICT update list so a concurrent
+// IncrementRefCount / DecrementRefCount (atomic SQL +1 / -1 UPDATEs) cannot be
+// overwritten by a stale in-memory RefCount; the INSERT path still writes the
+// caller's value verbatim. hash uses COALESCE so a zero-hash Put never NULLs a
+// previously persisted good hash. LastSyncAttemptAt persists as NULL when zero
+// so the janitor's `last_sync_attempt_at < cutoff` predicate skips
+// never-claimed rows instead of matching every Pending row.
+func putFileChunkTx(ctx context.Context, x execer, chunk *metadata.FileChunk) error {
 	var hashStr *string
-	if !block.Hash.IsZero() {
-		h := block.Hash.String()
+	if !chunk.Hash.IsZero() {
+		h := chunk.Hash.String()
 		hashStr = &h
 	}
-	// persist LastSyncAttemptAt as NULL when zero so the
-	// janitor's WHERE last_sync_attempt_at < cutoff predicate excludes
-	// never-claimed rows naturally instead of matching every Pending row.
 	var lastSyncAttemptAt *time.Time
-	if !block.LastSyncAttemptAt.IsZero() {
-		t := block.LastSyncAttemptAt
+	if !chunk.LastSyncAttemptAt.IsZero() {
+		t := chunk.LastSyncAttemptAt
 		lastSyncAttemptAt = &t
 	}
-
-	// Omit ref_count from the ON CONFLICT UPDATE list so concurrent
-	// IncrementRefCount / DecrementRefCount (which run as atomic SQL `+1` /
-	// `-1` UPDATEs) cannot be silently overwritten by a stale
-	// Put-with-in-memory-RefCount. RefCount on the INSERT path is still set
-	// verbatim from the caller's *FileChunk (matches the contract for new
-	// rows). For existing rows, RefCount mutates exclusively through
-	// Increment/Decrement. hash uses COALESCE so a zero-hash Put never NULLs
-	// a previously-persisted good hash.
-	query := `
+	_, err := x.Exec(ctx, `
 		INSERT INTO file_blocks (id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
 		ON CONFLICT (id) DO UPDATE SET
@@ -101,48 +145,47 @@ func (s *SQLiteMetadataStore) Put(ctx context.Context, block *metadata.FileChunk
 			data_size = EXCLUDED.data_size,
 			last_access = EXCLUDED.last_access,
 			state = EXCLUDED.state,
-			last_sync_attempt_at = EXCLUDED.last_sync_attempt_at`
-	_, err := s.exec(ctx, query,
-		block.ID, hashStr, block.DataSize,
-		block.RefCount, block.LastAccess, block.CreatedAt, block.State, lastSyncAttemptAt)
+			last_sync_attempt_at = EXCLUDED.last_sync_attempt_at`,
+		chunk.ID, hashStr, chunk.DataSize,
+		chunk.RefCount, chunk.LastAccess, chunk.CreatedAt, chunk.State, lastSyncAttemptAt)
 	if err != nil {
 		return fmt.Errorf("put file chunk: %w", err)
 	}
 	return nil
 }
 
-// Delete removes a file chunk by its ID. Renamed from DeleteFileChunk in
-func (s *SQLiteMetadataStore) Delete(ctx context.Context, id string) error {
-	result, err := s.exec(ctx, `DELETE FROM file_blocks WHERE id = ?1`, id)
+// deleteFileChunkTx removes one chunk row, reporting ErrFileChunkNotFound when
+// no row matched.
+func deleteFileChunkTx(ctx context.Context, x execer, id string) error {
+	result, err := x.Exec(ctx, `DELETE FROM file_blocks WHERE id = ?1`, id)
 	if err != nil {
 		return fmt.Errorf("delete file chunk: %w", err)
 	}
-	rows := result.RowsAffected()
-	if rows == 0 {
+	if result.RowsAffected() == 0 {
 		return metadata.ErrFileChunkNotFound
 	}
 	return nil
 }
 
-// IncrementRefCount atomically increments a block's RefCount.
-func (s *SQLiteMetadataStore) IncrementRefCount(ctx context.Context, id string) error {
-	result, err := s.exec(ctx,
-		`UPDATE file_blocks SET ref_count = ref_count + 1 WHERE id = ?1`, id)
+// incrementRefCountTx bumps one chunk's ref_count by 1.
+func incrementRefCountTx(ctx context.Context, x execer, id string) error {
+	result, err := x.Exec(ctx, `UPDATE file_blocks SET ref_count = ref_count + 1 WHERE id = ?1`, id)
 	if err != nil {
 		return fmt.Errorf("increment ref count: %w", err)
 	}
-	rows := result.RowsAffected()
-	if rows == 0 {
+	if result.RowsAffected() == 0 {
 		return metadata.ErrFileChunkNotFound
 	}
 	return nil
 }
 
-// DecrementRefCount atomically decrements a block's RefCount.
-func (s *SQLiteMetadataStore) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
-	query := `UPDATE file_blocks SET ref_count = MAX(ref_count - 1, 0) WHERE id = ?1 RETURNING ref_count`
+// decrementRefCountTx drops one chunk's ref_count by 1, flooring at 0, and
+// returns the remaining count.
+func decrementRefCountTx(ctx context.Context, x execer, id string) (uint32, error) {
 	var newCount uint32
-	err := s.queryRow(ctx, query, id).Scan(&newCount)
+	err := x.QueryRow(ctx,
+		`UPDATE file_blocks SET ref_count = MAX(ref_count - 1, 0) WHERE id = ?1 RETURNING ref_count`,
+		id).Scan(&newCount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, metadata.ErrFileChunkNotFound
 	}
@@ -152,35 +195,40 @@ func (s *SQLiteMetadataStore) DecrementRefCount(ctx context.Context, id string) 
 	return newCount, nil
 }
 
-// DecrementRefCountAndReap atomically decrements ref_count and, when it hits 0,
-// deletes the row — both statements run inside ONE transaction so the
-// decrement-and-reap is atomic and TOCTOU-free against a concurrent AddRef
-// (which takes the same row lock). The conditional `ref_count = 0` predicate on
-// the DELETE means a concurrent bump that landed between the two statements
-// (impossible within the row lock, but defended anyway) leaves the row alive.
-// Returns (0, nil) when the row is already absent — a swept row is not a caller
-// error.
-func (s *SQLiteMetadataStore) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
-	rawTx, err := s.db.BeginTx(ctx, nil)
+// addRefTx bumps ref_count on every Remote row carrying hash, reporting
+// ErrUnknownHash when none does.
+func addRefTx(ctx context.Context, x execer, hash block.ContentHash) error {
+	result, err := x.Exec(ctx,
+		`UPDATE file_blocks SET ref_count = ref_count + 1 WHERE hash = ?1 AND state = 2 /* Remote */`,
+		hash.String())
 	if err != nil {
-		return 0, fmt.Errorf("decrement-and-reap begin tx: %w", err)
+		return fmt.Errorf("add ref: %w", err)
 	}
-	defer func() { _ = rawTx.Rollback() }()
-
-	newCount, err := decrementAndReapTx(ctx, execer{e: rawTx, op: "DecrementRefCountAndReap"}, id)
-	if err != nil {
-		return 0, err
+	if result.RowsAffected() == 0 {
+		return metadata.ErrUnknownHash
 	}
-	if err := rawTx.Commit(); err != nil {
-		return 0, fmt.Errorf("decrement-and-reap commit: %w", err)
-	}
-	return newCount, nil
+	return nil
 }
 
-// decrementAndReapTx runs the -1 UPDATE then a conditional DELETE on the given
-// pgx.Tx. Shared by the pool-backed store method and the sqliteTransaction
-// method so both surfaces behave identically. Returns ErrFileChunkNotFound
-// mapped to (0, nil) — i.e. a missing row is tolerated.
+// getByHashTx resolves a Remote chunk by content hash, returning (nil, nil)
+// when none matches.
+func getByHashTx(ctx context.Context, x execer, hash metadata.ContentHash) (*metadata.FileChunk, error) {
+	row := x.QueryRow(ctx, `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
+		FROM file_blocks WHERE hash = ?1 AND state = 2 /* Remote */`, hash.String())
+	chunk, err := scanFileChunk(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find file chunk by hash: %w", err)
+	}
+	return chunk, nil
+}
+
+// decrementAndReapTx runs the -1 UPDATE then a conditional DELETE. The
+// `ref_count = 0` predicate on the DELETE means a bump that landed between the
+// two statements leaves the row alive. Returns (0, nil) for an already-swept
+// row rather than ErrFileChunkNotFound.
 func decrementAndReapTx(ctx context.Context, tx execer, id string) (uint32, error) {
 	var newCount uint32
 	err := tx.QueryRow(ctx,
@@ -238,16 +286,7 @@ func (s *SQLiteMetadataStore) AddRef(ctx context.Context, hash block.ContentHash
 	// not a valid dedup donor, so AddRef must miss it and return
 	// ErrUnknownHash exactly as before, letting the caller fall back to
 	// the full Put path.
-	result, err := s.exec(ctx,
-		`UPDATE file_blocks SET ref_count = ref_count + 1 WHERE hash = ?1 AND state = 2 /* Remote */`,
-		hash.String())
-	if err != nil {
-		return fmt.Errorf("add ref: %w", err)
-	}
-	if result.RowsAffected() == 0 {
-		return metadata.ErrUnknownHash
-	}
-	return nil
+	return addRefTx(ctx, s.conn(), hash)
 }
 
 // GetByHash looks up a finalized block by its content hash.
@@ -256,18 +295,7 @@ func (s *SQLiteMetadataStore) AddRef(ctx context.Context, hash block.ContentHash
 // Pending or Syncing rows have not been confirmed on the remote and
 // are unsafe dedup targets.
 func (s *SQLiteMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileChunk, error) {
-	query := `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
-		FROM file_blocks WHERE hash = ?1 AND state = 2 /* Remote */`
-	row := s.queryRow(ctx, query, hash.String())
-
-	block, err := scanFileChunk(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("find file chunk by hash: %w", err)
-	}
-	return block, nil
+	return getByHashTx(ctx, s.conn(), hash)
 }
 
 // ListFileChunks returns all blocks belonging to a file, ordered by block index.
@@ -509,167 +537,56 @@ func scanFileChunkRows(rows scanRows) ([]*metadata.FileChunk, error) {
 // Ensure sqliteTransaction implements FileChunkStore
 var _ block.FileChunkStore = (*sqliteTransaction)(nil)
 
-// The FileChunkStore methods on
-// sqliteTransaction MUST execute against the txn's own pgx.Tx, not the
-// public store's connection-pool helpers. Previously every method just
-// called `tx.store.X(...)` which routed through the pool — defeating
-// rollback for any caller that bumped RefCount inside WithTransaction
-// then encountered a downstream PutFile failure (silent
-// leak). All proxies below are now tx-bound; non-mutating
-// helpers keep the pool path because no caller mutates state through them.
+// Every FileChunkStore method below runs on the transaction's own executor,
+// never the store's pool helpers: a pool connection cannot see the
+// transaction's uncommitted writes and would survive its rollback, so a caller
+// that bumped RefCount inside WithTransaction and then hit a downstream
+// PutFile failure would leak the bump.
 
 func (tx *sqliteTransaction) GetFileChunk(ctx context.Context, id string) (*metadata.FileChunk, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	query := `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
-		FROM file_blocks WHERE id = ?1`
-	row := tx.tx.QueryRow(ctx, query, id)
-	block, err := scanFileChunk(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, metadata.ErrFileChunkNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get file chunk: %w", err)
-	}
-	return block, nil
+	return getFileChunkTx(ctx, tx.tx, id)
 }
 
 func (tx *sqliteTransaction) Put(ctx context.Context, block *metadata.FileChunk) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	var hashStr *string
-	if !block.Hash.IsZero() {
-		h := block.Hash.String()
-		hashStr = &h
-	}
-	var lastSyncAttemptAt *time.Time
-	if !block.LastSyncAttemptAt.IsZero() {
-		t := block.LastSyncAttemptAt
-		lastSyncAttemptAt = &t
-	}
-	// Omit ref_count from the ON CONFLICT update list (matches the pool-path
-	// Put). RefCount mutates only via Increment/Decrement. hash uses COALESCE
-	// so a zero-hash Put never NULLs a previously-persisted good hash.
-	query := `
-		INSERT INTO file_blocks (id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-		ON CONFLICT (id) DO UPDATE SET
-			hash = COALESCE(EXCLUDED.hash, file_blocks.hash),
-			data_size = EXCLUDED.data_size,
-			last_access = EXCLUDED.last_access,
-			state = EXCLUDED.state,
-			last_sync_attempt_at = EXCLUDED.last_sync_attempt_at`
-	_, err := tx.tx.Exec(ctx, query,
-		block.ID, hashStr, block.DataSize,
-		block.RefCount, block.LastAccess, block.CreatedAt, block.State, lastSyncAttemptAt)
-	if err != nil {
-		return fmt.Errorf("put file chunk: %w", err)
-	}
-	return nil
+	return putFileChunkTx(ctx, tx.tx, block)
 }
 
 func (tx *sqliteTransaction) Delete(ctx context.Context, id string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	result, err := tx.tx.Exec(ctx, `DELETE FROM file_blocks WHERE id = ?1`, id)
-	if err != nil {
-		return fmt.Errorf("delete file chunk: %w", err)
-	}
-	if result.RowsAffected() == 0 {
-		return metadata.ErrFileChunkNotFound
-	}
-	return nil
+	return deleteFileChunkTx(ctx, tx.tx, id)
 }
 
-// IncrementRefCount runs the +1 UPDATE on the active pgx.Tx so a
-// subsequent rollback undoes the bump (fix). Production callers
-// route here through metadataCoordinator.IncrementRefCount when ctx
-// carries an active tx via metadata.WithTx.
+// IncrementRefCount bumps ref_count on the active transaction so a subsequent
+// rollback undoes it. Production callers reach here through
+// metadataCoordinator.IncrementRefCount when ctx carries an active tx.
 func (tx *sqliteTransaction) IncrementRefCount(ctx context.Context, id string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	result, err := tx.tx.Exec(ctx,
-		`UPDATE file_blocks SET ref_count = ref_count + 1 WHERE id = ?1`, id)
-	if err != nil {
-		return fmt.Errorf("increment ref count: %w", err)
-	}
-	if result.RowsAffected() == 0 {
-		return metadata.ErrFileChunkNotFound
-	}
-	return nil
+	return incrementRefCountTx(ctx, tx.tx, id)
 }
 
-// DecrementRefCount runs the -1 UPDATE on the active pgx.Tx so a
-// subsequent rollback undoes the decrement (fix).
+// DecrementRefCount drops ref_count on the active transaction so a subsequent
+// rollback undoes it.
 func (tx *sqliteTransaction) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	query := `UPDATE file_blocks SET ref_count = MAX(ref_count - 1, 0) WHERE id = ?1 RETURNING ref_count`
-	var newCount uint32
-	err := tx.tx.QueryRow(ctx, query, id).Scan(&newCount)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, metadata.ErrFileChunkNotFound
-	}
-	if err != nil {
-		return 0, fmt.Errorf("decrement ref count: %w", err)
-	}
-	return newCount, nil
+	return decrementRefCountTx(ctx, tx.tx, id)
 }
 
-// DecrementRefCountAndReap runs the -1 UPDATE + reap-at-zero DELETE on the
-// active pgx.Tx so a subsequent rollback undoes both. Returns (0, nil) when the
-// row is already absent.
+// DecrementRefCountAndReap runs the -1 UPDATE and the reap-at-zero DELETE on
+// the active transaction so a subsequent rollback undoes both. Returns
+// (0, nil) when the row is already absent.
 func (tx *sqliteTransaction) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
 	return decrementAndReapTx(ctx, tx.tx, id)
 }
 
-// AddRef runs the +1 UPDATE keyed by hash on the active pgx.Tx so a
-// subsequent rollback undoes the bump (parity for the
-// LRU hit path). Returns metadata.ErrUnknownHash when no row matches.
+// AddRef bumps ref_count keyed by hash on the active transaction so a
+// subsequent rollback undoes it. Returns metadata.ErrUnknownHash when no row
+// matches.
 func (tx *sqliteTransaction) AddRef(ctx context.Context, hash block.ContentHash, _ string, _ block.ChunkRef) error {
 	// payloadID + blockRef accepted for future GC traceability;
 	// postgres backend records ref count only — parameters intentionally
 	// blanked.
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	// state = 2 (Remote) scoping mirrors the pool-path AddRef and the
-	// memory/badger backends — a Pending row is not a valid dedup donor.
-	result, err := tx.tx.Exec(ctx,
-		`UPDATE file_blocks SET ref_count = ref_count + 1 WHERE hash = ?1 AND state = 2 /* Remote */`,
-		hash.String())
-	if err != nil {
-		return fmt.Errorf("add ref: %w", err)
-	}
-	if result.RowsAffected() == 0 {
-		return metadata.ErrUnknownHash
-	}
-	return nil
+	return addRefTx(ctx, tx.tx, hash)
 }
 
 func (tx *sqliteTransaction) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileChunk, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	query := `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
-		FROM file_blocks WHERE hash = ?1 AND state = 2 /* Remote */`
-	row := tx.tx.QueryRow(ctx, query, hash.String())
-	block, err := scanFileChunk(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("find file chunk by hash: %w", err)
-	}
-	return block, nil
+	return getByHashTx(ctx, tx.tx, hash)
 }
 
 // ListFileChunks / EnumerateFileChunks run on the active

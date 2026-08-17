@@ -41,7 +41,9 @@ func ManifestToChunkRefs(rows []*block.FileChunk) []block.ChunkRef {
 // keeps the last one — the single row the store retains. Rows with an
 // unparseable ID, or addressing another payload, are skipped, matching what the
 // full projection's list-and-sort ignores.
-func mergeCommittedRefs(refs []block.ChunkRef, payloadID string, rows []*block.FileChunk) []block.ChunkRef {
+// It also returns the offsets it touched — always non-nil, so callers can hand
+// the store the exact set that may differ from the rows it already holds.
+func mergeCommittedRefs(refs []block.ChunkRef, payloadID string, rows []*block.FileChunk) ([]block.ChunkRef, []uint64) {
 	byOffset := make(map[uint64]block.ChunkRef, len(rows))
 	for _, r := range rows {
 		if r == nil {
@@ -53,12 +55,14 @@ func mergeCommittedRefs(refs []block.ChunkRef, payloadID string, rows []*block.F
 		}
 		byOffset[off] = block.ChunkRef{Hash: r.Hash, Offset: off, Size: r.DataSize}
 	}
-	if len(byOffset) == 0 {
-		return refs
-	}
 	added := make([]block.ChunkRef, 0, len(byOffset))
-	for _, ref := range byOffset {
+	changed := make([]uint64, 0, len(byOffset))
+	for off, ref := range byOffset {
 		added = append(added, ref)
+		changed = append(changed, off)
+	}
+	if len(added) == 0 {
+		return refs, changed
 	}
 	// Offsets are unique here, so this total order is the one the full
 	// projection's sort produces.
@@ -80,7 +84,7 @@ func mergeCommittedRefs(refs []block.ChunkRef, payloadID string, rows []*block.F
 			j++
 		}
 	}
-	return append(append(merged, refs[i:]...), added[j:]...)
+	return append(append(merged, refs[i:]...), added[j:]...), changed
 }
 
 // ProjectCommittedChunks folds the manifest rows a caller just wrote into
@@ -105,7 +109,8 @@ func ProjectCommittedChunks(ctx context.Context, tx Transaction, payloadID strin
 	if len(file.Blocks) == 0 {
 		return reprojectFile(ctx, tx, file, payloadID)
 	}
-	return putProjection(ctx, tx, file, mergeCommittedRefs(file.Blocks, payloadID, rows))
+	merged, changed := mergeCommittedRefs(file.Blocks, payloadID, rows)
+	return putProjection(ctx, tx, file, merged, changed)
 }
 
 // ProjectManifestToBlocks re-materializes File.Blocks for payloadID from the
@@ -149,16 +154,27 @@ func reprojectFile(ctx context.Context, tx Transaction, file *File, payloadID st
 	if err != nil {
 		return fmt.Errorf("project blocks: list manifest for %s: %w", payloadID, err)
 	}
-	return putProjection(ctx, tx, file, ManifestToChunkRefs(rows))
+	// A full re-derivation says nothing about which offsets moved, so the
+	// store gets no scope and diffs everything.
+	return putProjection(ctx, tx, file, ManifestToChunkRefs(rows), nil)
 }
 
-func putProjection(ctx context.Context, tx Transaction, file *File, refs []block.ChunkRef) error {
+// putProjection persists refs as the file's manifest projection. changed, when
+// non-nil, is the only set of offsets that can differ from what the store
+// already holds; nil leaves the store to work that out for itself.
+func putProjection(ctx context.Context, tx Transaction, file *File, refs []block.ChunkRef, changed []uint64) error {
 	file.Blocks = refs
 	// A projection from the manifest IS a manifest write — persist it. This
-	// funnels carve/rollup commit (DefaultCommitBlock), the #953 reap+re-carve
+	// funnels carve/rollup commit (DefaultCommitBlock), the reap+re-carve
 	// (ReapSupersededManifest), and coordinator.ReprojectBlocks.
 	file.BlocksDirty = true
-	return tx.PutFile(ctx, file)
+	file.BlocksDirtyOffsets = changed
+	err := tx.PutFile(ctx, file)
+	// The scope describes this write only — clearing it stops a caller that
+	// reuses the struct for a wider manifest mutation from inheriting a promise
+	// that no longer holds.
+	file.BlocksDirtyOffsets = nil
+	return err
 }
 
 // chunkPayloadID returns the payload prefix of a manifest row ID — everything
