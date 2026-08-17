@@ -80,9 +80,13 @@ func SliceRange(full []byte, offset, length int64) ([]byte, error) {
 	if offset < 0 || offset > int64(len(full)) {
 		return nil, fmt.Errorf("%w: offset %d out of bounds (size %d)", block.ErrInvalidOffset, offset, len(full))
 	}
-	end := min(offset+length, int64(len(full)))
-	out := make([]byte, end-offset)
-	copy(out, full[offset:end])
+	// Clamp the count rather than the end offset: offset+length overflows for a
+	// large length and wraps negative, which would size the copy negatively.
+	// offset is already bounded by len(full), so the remaining count cannot go
+	// negative and offset+n cannot exceed len(full).
+	n := min(length, int64(len(full))-offset)
+	out := make([]byte, n)
+	copy(out, full[offset:offset+n])
 	return out, nil
 }
 
