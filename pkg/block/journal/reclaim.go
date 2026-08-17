@@ -234,14 +234,35 @@ func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (freed int64, err erro
 	}
 	sh.mu.Unlock()
 
+	// The files this segment backs are exactly the ones the scan produced an
+	// entry for, deduplicated.
+	backed := make(map[FileID]struct{}, len(entries))
+	for _, e := range entries {
+		backed[e.id] = struct{}{}
+	}
+
 	if err = s.appendCold(entries); err != nil {
 		// Without a durable marker the range would come back from a restart as a
 		// hole, so keep the segment (and its bytes) instead of evicting blind.
 		return 0, err
 	}
 
+	// Flip only the files the scan above found backed by this segment, rather
+	// than walking the shard index a second time. No file can join that set in
+	// between: the segment is sealed (nothing appends to it) and claimed, so no
+	// repack can repoint an interval into it either. A file that LEFT the set —
+	// its interval superseded while the cold log was being written — simply has
+	// nothing left to flip.
+	//
+	// ponytail: one full index walk remains, in the scan above. Removing it needs
+	// a segment→intervals reverse index, worth building only if eviction shows up
+	// in a profile.
 	sh.mu.Lock()
-	for _, fi := range sh.index {
+	for id := range backed {
+		fi := sh.index[id]
+		if fi == nil {
+			continue
+		}
 		for k := range fi.ivs {
 			if fi.ivs[k].loc.SegmentID == seg.id && !fi.ivs[k].cold {
 				fi.ivs[k].cold = true
@@ -489,13 +510,19 @@ func (s *Store) gcShard(ctx context.Context, sh *shard, opts GCOptions) (reclaim
 	sh.carveMu.Lock()
 	defer sh.carveMu.Unlock()
 
+	// Live bytes per segment are summed once for the whole pass instead of per
+	// victim: rebuilding them means walking every interval of every file under
+	// the same lock the read path takes, and a repack only changes the two
+	// segments it touches. repackSegment keeps the map in step as it goes.
+	live := shardLiveBytes(sh)
+
 	// Bounded: each repack removes one victim from the sealed set, and the fresh
 	// target it writes carries no dead bytes, so it is never re-picked.
 	for {
 		if err := ctx.Err(); err != nil {
 			return reclaimed, count, err
 		}
-		victim := s.pickVictim(sh, opts)
+		victim := s.pickVictim(sh, opts, live)
 		if victim == nil {
 			return reclaimed, count, nil
 		}
@@ -504,7 +531,7 @@ func (s *Store) gcShard(ctx context.Context, sh *shard, opts GCOptions) (reclaim
 		if !victim.busy.CompareAndSwap(false, true) {
 			continue
 		}
-		net, err := s.repackSegment(sh, victim)
+		net, err := s.repackSegment(sh, victim, live)
 		victim.busy.Store(false)
 		if err != nil {
 			return reclaimed, count, err
@@ -532,30 +559,37 @@ func (s *Store) pinned(seg *segmentMeta) bool {
 	return mv != 0 && mv <= pv
 }
 
+// shardLiveBytes sums each segment's still-live (non-cold) indexed bytes in one
+// pass over the shard's interval index. Cold intervals are excluded: their bytes
+// no longer occupy the segment, and counting them would make an evicted segment
+// look live. Caller holds no lock.
+func shardLiveBytes(sh *shard) map[uint64]int64 {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	live := make(map[uint64]int64, len(sh.sealed))
+	for _, fi := range sh.index {
+		for _, iv := range fi.ivs {
+			if !iv.cold {
+				live[iv.loc.SegmentID] += iv.length
+			}
+		}
+	}
+	return live
+}
+
 // pickVictim returns the sealed segment with the highest dead fraction, or nil
 // if none qualifies. A segment carrying no dead bytes is never a victim (there
 // is nothing to reclaim), which is also what keeps a tombstone-only segment from
-// being repacked into an identical one forever. Live bytes are summed
-// authoritatively from the interval index (robust to the recovery-time deadBytes
-// approximation and to the extra dead a crash-during-repack leaves behind); a
-// segment's dead fraction is dead/occupied. Without Force, a victim must reach
-// GCDeadRatioForce.
-func (s *Store) pickVictim(sh *shard, opts GCOptions) *segmentMeta {
+// being repacked into an identical one forever. live carries each segment's
+// still-live indexed bytes, summed authoritatively from the interval index
+// (robust to the recovery-time deadBytes approximation and to the extra dead a
+// crash-during-repack leaves behind); a segment's dead fraction is
+// dead/occupied. Without Force, a victim must reach GCDeadRatioForce.
+func (s *Store) pickVictim(sh *shard, opts GCOptions, live map[uint64]int64) *segmentMeta {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	if len(sh.sealed) == 0 {
 		return nil
-	}
-	live := make(map[uint64]int64, len(sh.sealed))
-	for _, fi := range sh.index {
-		for _, iv := range fi.ivs {
-			if iv.cold {
-				continue
-			}
-			if _, ok := sh.sealed[iv.loc.SegmentID]; ok {
-				live[iv.loc.SegmentID] += iv.length
-			}
-		}
 	}
 
 	var best *segmentMeta
@@ -615,14 +649,26 @@ type liveRec struct {
 	recOff  int64 // owning record's header offset in the victim
 }
 
+// movesByVersion buckets a repack's moves by record Version so the index-repoint
+// loop can find a move's covering range without rescanning the whole slice per
+// interval. A Version identifies one written record, so a bucket holds only the
+// remnants a later overwrite split that record into — a handful, not len(moves).
+func movesByVersion(moves []liveRec) map[uint64][]int {
+	byVer := make(map[uint64][]int, len(moves))
+	for i := range moves {
+		byVer[moves[i].version] = append(byVer[moves[i].version], i)
+	}
+	return byVer
+}
+
 // findMove returns the index of the move whose logical range fully contains
 // [lo, hi) at the given version, or -1. A concurrent overwrite may have trimmed
 // or split a victim interval since the snapshot; the trimmed remnant is still a
 // sub-range of exactly one original move, so this repoints it to the right byte.
-func findMove(moves []liveRec, lo, hi int64, ver uint64) int {
-	for i := range moves {
+func findMove(moves []liveRec, byVer map[uint64][]int, lo, hi int64, ver uint64) int {
+	for _, i := range byVer[ver] {
 		m := moves[i]
-		if m.version == ver && m.fileOff <= lo && hi <= m.fileOff+m.length {
+		if m.fileOff <= lo && hi <= m.fileOff+m.length {
 			return i
 		}
 	}
@@ -644,7 +690,10 @@ func findMove(moves []liveRec, lo, hi int64, ver uint64) int {
 // byte-identically and the next GC pass (seeing the victim fully superseded)
 // reclaims it. Version and the synced flag are copied verbatim, never reissued,
 // so newest-wins survives the physical move.
-func (s *Store) repackSegment(sh *shard, victim *segmentMeta) (int64, error) {
+// live is the caller's per-segment live-byte view: repackSegment retires the
+// victim's entry and records the target's so a following pickVictim sees the
+// move without re-summing the shard.
+func (s *Store) repackSegment(sh *shard, victim *segmentMeta, live map[uint64]int64) (int64, error) {
 	// 1a. Snapshot the victim's live intervals under the shard lock.
 	sh.mu.Lock()
 	var moves []liveRec
@@ -705,7 +754,7 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta) (int64, error) {
 		// stamps a fresh CRC over whatever it is handed, so an unverified copy
 		// would launder on-disk bit rot into a record that passes every later
 		// integrity check. One record in RAM at a time.
-		rec, rerr := readVerifiedRecord(victim.fd, m.recOff, s.cfg.SegmentSize, m.id)
+		rec, rerr := readVerifiedRecord(victim.fd, m.recOff, s.cfg.SegmentSize, m.id, nil)
 		if rerr != nil {
 			cleanup()
 			return 0, quarantine(fmt.Errorf("journal: repack verify victim %d record %d for %q@%d: %w",
@@ -756,15 +805,17 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta) (int64, error) {
 	s.diskBytes.Add(target.tail.Load() - segHeaderSize)
 
 	// 4. Repoint the index, skipping intervals a concurrent write superseded.
+	byVer := movesByVersion(moves)
 	sh.mu.Lock()
 	remaining := 0
+	relocatedLive := int64(0)
 	for _, fi := range sh.index {
 		for k := range fi.ivs {
 			iv := &fi.ivs[k]
 			if iv.cold || iv.loc.SegmentID != victim.id {
 				continue
 			}
-			mi := findMove(moves, iv.fileOff, iv.end(), iv.version)
+			mi := findMove(moves, byVer, iv.fileOff, iv.end(), iv.version)
 			if mi < 0 {
 				// No source move covers it — must never drop the victim while a
 				// live interval still points into it.
@@ -775,6 +826,7 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta) (int64, error) {
 			iv.loc.SegmentID = target.id
 			iv.loc.Offset = newOff[mi] + delta
 			iv.recOff = newOff[mi] - recordHeaderSize - int64(len(moves[mi].id))
+			relocatedLive += iv.length
 		}
 	}
 	sh.sealed[target.id] = target
@@ -800,6 +852,11 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta) (int64, error) {
 	if _, err := s.retireSegment(sh, victim); err != nil {
 		return 0, err
 	}
+	// The victim is gone and the target now holds its survivors. Every early
+	// return above leaves the victim in place, so its entry stays valid there.
+	// live is private to the GC pass, which is single-goroutine under gcMu.
+	delete(live, victim.id)
+	live[target.id] = relocatedLive
 
 	net := occupied - relocated
 	if net < 0 {

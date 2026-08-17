@@ -1106,7 +1106,6 @@ func (s *Service) createBlockStoreForShare(
 	localStore.SetEvictionEnabled(remoteStore != nil && config.RetentionPolicy != block.RetentionPin)
 	// Note: SetSkipFsync was removed. Local-disk durability is now
 	// unconditional (the syncer will refetch from S3 on the rare crash path).
-	localStore.SetRetentionPolicy(config.RetentionPolicy, config.RetentionTTL)
 
 	syncerCfg := buildSyncerConfigFromDefaults(syncerDefaults)
 	// A per-remote parallel_uploads override pins the carver's upload window;
@@ -1794,11 +1793,10 @@ func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *st
 		share.RetentionTTL = *retentionTTL
 	}
 
-	// Propagate retention policy changes to the BlockStore at runtime.
-	// The policy applies lazily on the next eviction cycle.
+	// Only the pin/non-pin distinction reaches the block store: the local tier
+	// evicts whole fully-synced segments approx-LRU and has no ttl or lru knob to
+	// receive, so the rest of the policy is metadata the API reports back.
 	if (retentionPolicy != nil || retentionTTL != nil) && share.BlockStore != nil {
-		share.BlockStore.SetRetentionPolicy(share.RetentionPolicy, share.RetentionTTL)
-
 		// Pin mode disables eviction; switching away from pin re-enables it
 		// (unless the share is local-only, in which case eviction stays disabled).
 		if share.RetentionPolicy == block.RetentionPin {

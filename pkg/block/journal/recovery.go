@@ -293,57 +293,8 @@ func (s *Store) recover() error {
 	// issued LSN exactly max(observed)+1 — strictly past every replayed record.
 	s.version.Store(maxVersion)
 
-	// Honor tombstones: a delete's tombstone Version exceeds every prior write to
-	// that file, so drop the file's intervals older than it. A rewrite after the
-	// delete carries a higher Version and survives, recreating the file.
-	for _, idxMap := range indexByShard {
-		for fid, fi := range idxMap {
-			tv, deleted := tombstones[fid]
-			if !deleted {
-				continue
-			}
-			kept := fi.ivs[:0]
-			for _, iv := range fi.ivs {
-				if iv.version > tv {
-					kept = append(kept, iv)
-				}
-			}
-			if len(kept) == 0 {
-				delete(idxMap, fid)
-			} else {
-				fi.ivs = kept
-			}
-		}
-	}
-
-	// Honor truncate markers: a size-down's marker Version exceeds every write it
-	// buries, so drop the file's intervals past newSize (and clip a straddling
-	// one) for every interval at or below the marker. A write that raced past the
-	// truncate carries a higher Version and survives, re-extending the file.
-	for _, idxMap := range indexByShard {
-		for fid, fi := range idxMap {
-			tm, ok := truncations[fid]
-			if !ok {
-				continue
-			}
-			kept := fi.ivs[:0]
-			for _, iv := range fi.ivs {
-				if iv.version > tm.version || iv.end() <= tm.newSize {
-					kept = append(kept, iv)
-					continue
-				}
-				if iv.fileOff < tm.newSize {
-					kept = append(kept, iv.clamp(iv.fileOff, tm.newSize))
-				}
-				// else entirely past newSize: drop it.
-			}
-			if len(kept) == 0 {
-				delete(idxMap, fid)
-			} else {
-				fi.ivs = kept
-			}
-		}
-	}
+	applyTombstones(indexByShard, tombstones)
+	applyTruncations(indexByShard, truncations)
 
 	// Compact the cold log once the live set has drifted well below what the log
 	// holds: entries superseded by a later hydrate, buried by a tombstone or
@@ -451,6 +402,66 @@ func (s *Store) recover() error {
 	s.diskBytes.Store(disk)
 	ok = true
 	return nil
+}
+
+// applyTombstones drops each deleted file's intervals older than its tombstone.
+// A delete's tombstone Version exceeds every prior write to that file, so a
+// rewrite after the delete carries a higher Version, survives, and recreates the
+// file.
+func applyTombstones(indexByShard []map[FileID]*fileIndex, tombstones map[FileID]uint64) {
+	for _, idxMap := range indexByShard {
+		for fid, fi := range idxMap {
+			tv, deleted := tombstones[fid]
+			if !deleted {
+				continue
+			}
+			keepIntervals(idxMap, fid, fi, func(iv interval) (interval, bool) {
+				return iv, iv.version > tv
+			})
+		}
+	}
+}
+
+// applyTruncations drops (or clips) each truncated file's intervals past
+// newSize. A size-down's marker Version exceeds every write it buries, so a
+// write that raced past the truncate carries a higher Version, survives, and
+// re-extends the file.
+func applyTruncations(indexByShard []map[FileID]*fileIndex, truncations map[FileID]truncMark) {
+	for _, idxMap := range indexByShard {
+		for fid, fi := range idxMap {
+			tm, ok := truncations[fid]
+			if !ok {
+				continue
+			}
+			keepIntervals(idxMap, fid, fi, func(iv interval) (interval, bool) {
+				switch {
+				case iv.version > tm.version || iv.end() <= tm.newSize:
+					return iv, true
+				case iv.fileOff < tm.newSize: // straddles newSize: clip it
+					return iv.clamp(iv.fileOff, tm.newSize), true
+				default: // entirely past newSize
+					return iv, false
+				}
+			})
+		}
+	}
+}
+
+// keepIntervals rewrites fi's intervals in place to those keep accepts, dropping
+// the file from idxMap when nothing survives — an empty fileIndex would read as
+// a file that exists and holds no bytes rather than as no file at all.
+func keepIntervals(idxMap map[FileID]*fileIndex, fid FileID, fi *fileIndex, keep func(interval) (interval, bool)) {
+	kept := fi.ivs[:0]
+	for _, iv := range fi.ivs {
+		if out, ok := keep(iv); ok {
+			kept = append(kept, out)
+		}
+	}
+	if len(kept) == 0 {
+		delete(idxMap, fid)
+		return
+	}
+	fi.ivs = kept
 }
 
 // idxMissing reports whether a segment's .idx sidecar is absent.

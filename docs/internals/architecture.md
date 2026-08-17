@@ -329,8 +329,9 @@ Under disk pressure the journal evicts whole **fully-synced** segments
 approx-LRU; only ranges already carved to the remote qualify, so eviction
 never destroys the only copy of dirty bytes. Eviction is health-gated: while
 the remote is unhealthy, cold-marking a range would strand unrecoverable
-bytes, so eviction is paused. There is no pin/ttl/lru retention knob
-(`SetRetentionPolicy` is a no-op on the journal-native store).
+bytes, so eviction is paused. The journal-native store has no pin/ttl/lru
+retention knob; only the pin/non-pin distinction reaches it, as the switch that
+enables or disables eviction.
 
 The journal's own garbage collection (repack) only relocates live cache bytes
 between local segments to reclaim dead space — it **never** touches the remote

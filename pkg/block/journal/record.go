@@ -139,11 +139,14 @@ func (e *CorruptRangeError) Error() string {
 }
 
 // record is a fully decoded and CRC-verified record read back from a segment.
+// fileID and payload alias buf, so a caller that recycles buf must be done with
+// all three.
 type record struct {
 	header  recordHeader
 	fileID  []byte
 	payload []byte
-	segOff  int64 // record start offset within the segment
+	buf     []byte // backing store for fileID and payload
+	segOff  int64  // record start offset within the segment
 }
 
 // readRecordAt reads and fully validates the record at segment offset off.
@@ -155,7 +158,11 @@ type record struct {
 // A torn or corrupt record returns errTornRecord; a clean boundary (no bytes
 // left) returns io.EOF. On success it also returns the offset of the next
 // record so a scan can advance.
-func readRecordAt(r io.ReaderAt, off, maxPayload int64) (record, int64, error) {
+//
+// scratch, when it has the capacity, backs the record body instead of a fresh
+// allocation; the returned record's buf reports what was actually used so a
+// pooling caller can recycle it. Pass nil to always allocate.
+func readRecordAt(r io.ReaderAt, off, maxPayload int64, scratch []byte) (record, int64, error) {
 	var hdrBuf [recordHeaderSize]byte
 	n, err := r.ReadAt(hdrBuf[:], off)
 	if err != nil {
@@ -179,7 +186,11 @@ func readRecordAt(r io.ReaderAt, off, maxPayload int64) (record, int64, error) {
 	if int64(int(body)) != body {
 		return record{}, 0, fmt.Errorf("%w: record length %d out of range", errTornRecord, body)
 	}
-	buf := make([]byte, body)
+	buf := scratch[:0]
+	if int64(cap(buf)) < body {
+		buf = make([]byte, body)
+	}
+	buf = buf[:body]
 	if _, err := r.ReadAt(buf, off+recordHeaderSize); err != nil {
 		// A truncated payload (torn write) shows up as EOF here, mid-record —
 		// corruption, not a clean boundary.
@@ -195,6 +206,7 @@ func readRecordAt(r io.ReaderAt, off, maxPayload int64) (record, int64, error) {
 		header:  h,
 		fileID:  buf[:h.FileIDLen],
 		payload: payload,
+		buf:     buf,
 		segOff:  off,
 	}, off + recordHeaderSize + body, nil
 }
@@ -209,8 +221,8 @@ func readRecordAt(r io.ReaderAt, off, maxPayload int64) (record, int64, error) {
 // flipped FileID — or a stale recOff landing on another file's record — passes
 // readRecordAt while handing back the wrong file's payload. Comparing the framed
 // FileID against the caller's closes that gap.
-func readVerifiedRecord(r io.ReaderAt, recOff, maxPayload int64, id FileID) (record, error) {
-	rec, _, err := readRecordAt(r, recOff, maxPayload)
+func readVerifiedRecord(r io.ReaderAt, recOff, maxPayload int64, id FileID, scratch []byte) (record, error) {
+	rec, _, err := readRecordAt(r, recOff, maxPayload, scratch)
 	if err != nil {
 		return record{}, err
 	}
@@ -239,7 +251,9 @@ func (rec record) payloadRange(segOff, n int64) (b []byte, ok bool) {
 func scanValidRecords(r io.ReaderAt, segSize, maxPayload int64) (recs []record, validUpTo int64) {
 	off := int64(segHeaderSize)
 	for off < segSize {
-		rec, next, err := readRecordAt(r, off, maxPayload)
+		// No scratch: recovery keeps every payload it scans, so the records must
+		// not share one recycled buffer.
+		rec, next, err := readRecordAt(r, off, maxPayload, nil)
 		if err != nil {
 			break
 		}

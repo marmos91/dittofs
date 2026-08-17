@@ -76,15 +76,17 @@ func (bs *Store) Stats() (*block.Stats, error) {
 		return nil, err
 	}
 	defer bs.closeMu.RUnlock()
+	// FileCount comes from the same Stats snapshot; listing every payload ID
+	// just to take its length would walk (and lock) the whole local index a
+	// second time for a number already in hand.
 	localStats := bs.local.Stats()
-	files := bs.local.ListFiles(context.Background())
 	used := uint64(localStats.DiskUsed)
 	total := uint64(localStats.MaxDisk)
 	avail := uint64(0)
 	if total > used {
 		avail = total - used
 	}
-	count := uint64(len(files))
+	count := uint64(localStats.FileCount)
 	avg := uint64(0)
 	if count > 0 {
 		avg = used / count
@@ -144,7 +146,7 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 		// FileCount is the cheap local-only count here; the full-stats path
 		// (withBlockCounts) overwrites it with the authoritative distinct-payload
 		// count from the metadata so it reflects rolled-up files too (#1374).
-		FileCount:           len(bs.local.ListFiles(context.Background())),
+		FileCount:           localStats.FileCount,
 		LocalDiskUsed:       localStats.DiskUsed,
 		LocalDiskMax:        localStats.MaxDisk,
 		LocalMemUsed:        localStats.MemUsed,

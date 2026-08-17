@@ -42,7 +42,7 @@ func TestReadRecordRoundTrip(t *testing.T) {
 	rec := frameRecord("file-xyz", 4096, bytes.Repeat([]byte("payload"), 300), 7, flagSynced)
 	seg := segmentBytes(rec)
 
-	got, next, err := readRecordAt(bytes.NewReader(seg), segHeaderSize, int64(len(seg)))
+	got, next, err := readRecordAt(bytes.NewReader(seg), segHeaderSize, int64(len(seg)), nil)
 	if err != nil {
 		t.Fatalf("readRecordAt: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestReadRecordTruncatedHeader(t *testing.T) {
 	// Cut the record mid-header: only a few header bytes survive. A partial
 	// header (n>0 then EOF) is a torn write, NOT a clean boundary.
 	seg := segmentBytes(rec[:5])
-	_, _, err := readRecordAt(bytes.NewReader(seg), segHeaderSize, 1<<20)
+	_, _, err := readRecordAt(bytes.NewReader(seg), segHeaderSize, 1<<20, nil)
 	if !errors.Is(err, errTornRecord) {
 		t.Fatalf("expected errTornRecord on partial header, got %v", err)
 	}
@@ -79,7 +79,7 @@ func TestReadRecordCleanEOF(t *testing.T) {
 	seg := segmentBytes(rec)
 	// Reading exactly at the end of the stream (zero bytes available) is a clean
 	// boundary: io.EOF, distinct from a torn record.
-	_, _, err := readRecordAt(bytes.NewReader(seg), int64(len(seg)), 1<<20)
+	_, _, err := readRecordAt(bytes.NewReader(seg), int64(len(seg)), 1<<20, nil)
 	if !errors.Is(err, io.EOF) || errors.Is(err, errTornRecord) {
 		t.Fatalf("expected clean io.EOF at stream end, got %v", err)
 	}
@@ -89,7 +89,7 @@ func TestReadRecordTruncatedPayload(t *testing.T) {
 	rec := frameRecord("f", 0, bytes.Repeat([]byte("z"), 1000), 1, 0)
 	// Drop the trailing payload + CRC: header is whole, body is torn.
 	seg := segmentBytes(rec[:recordHeaderSize+1+100])
-	_, _, err := readRecordAt(bytes.NewReader(seg), segHeaderSize, 1<<20)
+	_, _, err := readRecordAt(bytes.NewReader(seg), segHeaderSize, 1<<20, nil)
 	if !errors.Is(err, errTornRecord) {
 		t.Fatalf("expected errTornRecord on truncated payload, got %v", err)
 	}
@@ -100,7 +100,7 @@ func TestReadRecordCorruptPayload(t *testing.T) {
 	seg := segmentBytes(rec)
 	// Flip a payload byte in place: header still validates, payload CRC must not.
 	seg[segHeaderSize+recordHeaderSize+1+10] ^= 0xFF
-	_, _, err := readRecordAt(bytes.NewReader(seg), segHeaderSize, 1<<20)
+	_, _, err := readRecordAt(bytes.NewReader(seg), segHeaderSize, 1<<20, nil)
 	if !errors.Is(err, errTornRecord) {
 		t.Fatalf("expected errTornRecord on corrupt payload, got %v", err)
 	}
@@ -122,7 +122,7 @@ func TestReadRecordPayloadLenCeiling(t *testing.T) {
 	}, fileID)
 	seg := segmentBytes(hdr) // no real payload follows
 
-	_, _, err := readRecordAt(bytes.NewReader(seg), segHeaderSize, 4<<20 /* 4 MiB ceiling */)
+	_, _, err := readRecordAt(bytes.NewReader(seg), segHeaderSize, 4<<20 /* 4 MiB ceiling */, nil)
 	if !errors.Is(err, errTornRecord) {
 		t.Fatalf("expected errTornRecord from PayloadLen ceiling, got %v", err)
 	}

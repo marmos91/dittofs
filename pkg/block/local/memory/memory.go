@@ -8,7 +8,6 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"lukechampine.com/blake3"
 
@@ -59,9 +58,11 @@ func (s *MemoryStore) writeLocked(payloadID string, offset int64, data []byte) i
 	}
 	end := offset + int64(len(data))
 	if int64(len(f.buf)) < end {
-		grown := make([]byte, end)
-		copy(grown, f.buf)
-		f.buf = grown
+		// Extend through append so the runtime's geometric growth amortizes the
+		// copy. Allocating exactly `end` each time would re-copy the whole buffer
+		// on every extending write, making a sequential file O(n^2) to fill. The
+		// appended bytes are zero, which keeps the gap-filling semantics.
+		f.buf = append(f.buf, make([]byte, end-int64(len(f.buf)))...)
 	}
 	copy(f.buf[offset:end], data)
 	return int64(len(data))
@@ -281,9 +282,6 @@ func (s *MemoryStore) Evict(context.Context, int64) (journal.EvictResult, error)
 
 // SetEvictionEnabled is a no-op.
 func (s *MemoryStore) SetEvictionEnabled(bool) {}
-
-// SetRetentionPolicy is a no-op.
-func (s *MemoryStore) SetRetentionPolicy(block.RetentionPolicy, time.Duration) {}
 
 // Start is a no-op.
 func (s *MemoryStore) Start(context.Context) {}

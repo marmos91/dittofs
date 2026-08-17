@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block/journal"
@@ -177,6 +178,50 @@ func TestLegacyLocalOnly_MigratesFaultsInAndFinishes(t *testing.T) {
 	}
 	if b := journalRead(t, s2, p1, len(want1)); !bytes.Equal(b, want1) {
 		t.Fatalf("after re-open p1 = %q, want %q", b, want1)
+	}
+}
+
+// TestLegacyLocalOnly_SizeAndExtentsFaultIn covers the two queries that answer
+// without ever issuing a read. An un-drained payload must not report a zero size
+// or an empty extent list: SEEK_DATA/READ_PLUS take the extents as authoritative,
+// so a missing extent is a genuine sparse hole and a sparse-aware copy silently
+// drops the bytes behind it. Each query gets its own payload because the drain is
+// once-per-payload — sharing one would let the first call hide the second's bug.
+func TestLegacyLocalOnly_SizeAndExtentsFaultIn(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	// A gap between the two records makes the extent answer non-trivial: the
+	// middle really is a hole, the two ends really are not.
+	recs := []legacyRec{
+		{off: 0, payload: []byte("head")},
+		{off: 4096, payload: []byte("tail")},
+	}
+	const wantSize = 4096 + 4
+
+	sizePayload := "share/size.bin"
+	extentPayload := "share/extent.bin"
+	writeLegacyLog(t, filepath.Join(dir, "logs", sizePayload+".log"), 0, recs)
+	writeLegacyLog(t, filepath.Join(dir, "logs", extentPayload+".log"), 0, recs)
+
+	s, err := NewWithOptions(dir, 1<<30, nil, FSStoreOptions{MigrateLegacyLocalOnly: true})
+	if err != nil {
+		t.Fatalf("NewWithOptions(MigrateLegacyLocalOnly): %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	got, ok := s.FileSize(ctx, sizePayload)
+	if !ok || got != wantSize {
+		t.Fatalf("FileSize(un-drained) = (%d, %v), want (%d, true)", got, ok, wantSize)
+	}
+
+	extents, err := s.DataExtents(ctx, extentPayload, wantSize)
+	if err != nil {
+		t.Fatalf("DataExtents(un-drained): %v", err)
+	}
+	want := [][2]uint64{{0, 4}, {4096, 4100}}
+	if !reflect.DeepEqual(extents, want) {
+		t.Fatalf("DataExtents(un-drained) = %v, want %v", extents, want)
 	}
 }
 

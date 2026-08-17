@@ -686,6 +686,20 @@ func (s *Store) SetEvictionEnabled(enabled bool) {
 	s.evictionDisabled.Store(!enabled)
 }
 
+// FileCount reports how many files the journal indexes. It is what a caller that
+// only wants the count should use: ListFiles builds and returns a slice of every
+// FileID to answer the same question, which on a large store allocates (and
+// grows) a slice under every shard lock the read path also takes.
+func (s *Store) FileCount() int {
+	n := 0
+	for _, sh := range s.shards {
+		sh.mu.Lock()
+		n += len(sh.index)
+		sh.mu.Unlock()
+	}
+	return n
+}
+
 // ListFiles returns every FileID with a live index entry across all shards, in
 // no guaranteed order. It lets a caller drive a bulk reset (Delete every file)
 // without tracking IDs itself.
@@ -968,7 +982,7 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 			// Re-materializing rewrites these bytes as fresh records under a fresh
 			// CRC, so they are verified against the source record first — restoring
 			// a snapshot must not turn on-disk bit rot into trusted content.
-			rec, rerr := readVerifiedRecord(seg.fd, iv.recOff, s.cfg.SegmentSize, id)
+			rec, rerr := readVerifiedRecord(seg.fd, iv.recOff, s.cfg.SegmentSize, id, nil)
 			if rerr != nil {
 				return fmt.Errorf("journal: restore: read %q@%d from segment %d: %w", id, iv.fileOff, iv.loc.SegmentID, rerr)
 			}
