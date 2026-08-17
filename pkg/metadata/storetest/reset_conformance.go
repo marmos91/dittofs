@@ -63,11 +63,24 @@ func ResetThenRestoreConformance(t *testing.T, factory SnapshotableStoreFactory)
 		t.Fatalf("WriteSnapshot HashSet.Len() = %d, want %d", hs.Len(), len(uniqueHashes))
 	}
 
+	// Read the share options once before Reset so any share-options cache the
+	// backend keeps is warm, and the post-Reset check below exercises the
+	// cache rather than the backing store.
+	if _, err := store.GetShareOptions(ctx, shareName); err != nil {
+		t.Fatalf("GetShareOptions(%q) pre-Reset: %v", shareName, err)
+	}
+
 	// 2. Reset the SAME store in place — no close/reopen.
 	if err := r.Reset(ctx); err != nil {
 		t.Fatalf("Reset: %v", err)
 	}
 
+	// Reset must re-derive every in-memory structure built from the dropped
+	// records, not just the durable ones. A surviving share-options entry is a
+	// permission decision made against a share that no longer exists.
+	if _, err := store.GetShareOptions(ctx, shareName); err == nil {
+		t.Fatalf("post-Reset GetShareOptions(%q) succeeded, want an error", shareName)
+	}
 	if _, found, err := store.GetBlockRecord(ctx, blockRec.BlockID); err != nil {
 		t.Fatalf("post-Reset GetBlockRecord: %v", err)
 	} else if found {
