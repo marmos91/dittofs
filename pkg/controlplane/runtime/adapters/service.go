@@ -43,7 +43,6 @@ type AdapterFactory func(cfg *models.AdapterConfig) (ProtocolAdapter, error)
 type adapterEntry struct {
 	adapter ProtocolAdapter
 	config  *models.AdapterConfig
-	ctx     context.Context
 	cancel  context.CancelFunc
 	errCh   chan error
 
@@ -156,10 +155,12 @@ func (s *Service) UpdateAdapter(ctx context.Context, cfg *models.AdapterConfig) 
 
 	s.mu.RLock()
 	entry, ok := s.entries[cfg.Type]
-	running := ok && !entry.stopping && !entry.cancelled
+	// A stopping or cancelled entry is on its way out, so its listener is not
+	// reusable even though the entry is still in the map.
+	serving := ok && !entry.stopping && !entry.cancelled
 	s.mu.RUnlock()
 
-	if running && cfg.Enabled && sameListenAddr(entry, cfg) {
+	if serving && cfg.Enabled && sameListenAddr(entry, cfg) {
 		logger.Info("Adapter listen address unchanged; preserving listener across reload",
 			"type", cfg.Type, "port", entry.adapter.Port())
 		return nil
@@ -252,11 +253,8 @@ func (s *Service) startAdapter(cfg *models.AdapterConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if e, exists := s.entries[cfg.Type]; exists {
-		if e.stopping {
-			return fmt.Errorf("adapter %s is still stopping", cfg.Type)
-		}
-		return fmt.Errorf("adapter %s already running", cfg.Type)
+	if err := s.typeClaimedLocked(cfg.Type); err != nil {
+		return err
 	}
 
 	if s.factory == nil {
@@ -397,11 +395,8 @@ func (s *Service) AddAdapter(adapter ProtocolAdapter) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if e, exists := s.entries[adapterType]; exists {
-		if e.stopping {
-			return fmt.Errorf("adapter %s is still stopping", adapterType)
-		}
-		return fmt.Errorf("adapter %s already running", adapterType)
+	if err := s.typeClaimedLocked(adapterType); err != nil {
+		return err
 	}
 
 	cfg := &models.AdapterConfig{Type: adapterType, Port: adapter.Port(), Enabled: true}
@@ -431,6 +426,24 @@ func (s *Service) ForceCloseClientConnection(protocol, addr string) bool {
 	return false
 }
 
+// typeClaimedLocked returns an error when an entry still holds adapterType, so
+// no new adapter of that type may claim it: either one is serving, or a teardown
+// has not yet released the listening socket. Returns nil when the type is free.
+// Caller must hold mu.
+func (s *Service) typeClaimedLocked(adapterType string) error {
+	e, exists := s.entries[adapterType]
+	switch {
+	case !exists:
+		return nil
+	case e.stopping:
+		return fmt.Errorf("adapter %s is still stopping", adapterType)
+	case e.cancelled:
+		return fmt.Errorf("adapter %s did not confirm shutdown and still holds its socket", adapterType)
+	default:
+		return fmt.Errorf("adapter %s already running", adapterType)
+	}
+}
+
 // registerAndRunAdapterLocked starts the adapter in a goroutine. Caller must hold mu.
 func (s *Service) registerAndRunAdapterLocked(adp ProtocolAdapter, cfg *models.AdapterConfig) {
 	if setter, ok := adp.(RuntimeSetter); ok && s.runtime != nil {
@@ -452,7 +465,6 @@ func (s *Service) registerAndRunAdapterLocked(adp ProtocolAdapter, cfg *models.A
 	s.entries[cfg.Type] = &adapterEntry{
 		adapter: adp,
 		config:  cfg,
-		ctx:     ctx,
 		cancel:  cancel,
 		errCh:   errCh,
 	}
