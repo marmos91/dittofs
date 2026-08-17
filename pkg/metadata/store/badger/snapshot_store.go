@@ -188,6 +188,11 @@ func (s *BadgerMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 		return metadata.ErrRestoreDestinationNotEmpty
 	}
 
+	// The restored records replace whatever the share read cache was built
+	// from, and the failure path drops everything again — either way an
+	// entry that outlives this call is a wrong permission decision.
+	defer s.shareCache.invalidateAll()
+
 	// Read envelope header.
 	engineTag, payloadReader, acc, err := backup.ReadHeader(r)
 	if err != nil {

@@ -74,6 +74,15 @@ func (c *shareReadCache) invalidate(shareName string) {
 	c.m.Delete(shareName)
 }
 
+// invalidateAll drops every entry, for callers that replace the whole backing
+// store rather than a single share record (Reset, RestoreSnapshot). Same
+// ordering rule as invalidate: bump gen first so an in-flight populate against
+// the pre-wipe generation cannot re-insert after the clear.
+func (c *shareReadCache) invalidateAll() {
+	c.gen.Add(1)
+	c.m.Clear()
+}
+
 // cloneShareOptions returns a caller-owned deep copy of opts: the struct is
 // copied and every reference-bearing field (three string slices and the
 // IdentityMapping pointee, itself holding *uint32/*uint32/*string) is cloned so
