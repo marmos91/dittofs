@@ -229,7 +229,10 @@ func (sm *StateManager) deleteDelegByOtherLocked(other [types.NFS4_OTHER_SIZE]by
 // DelegationState, and stores it in both the delegByOther and
 // delegByFile maps.
 //
-// Returns the DelegationState for the caller to encode in the OPEN response.
+// Returns the DelegationState for the caller to encode in the OPEN response,
+// or nil when the delegation is refused — the per-client limit is reached, or
+// the unified lock manager rejects it because the file already carries a
+// conflicting lease or byte-range lock. A nil return means OPEN_DELEGATE_NONE.
 //
 // Caller must NOT hold sm.mu (method acquires it).
 func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, delegType uint32) *DelegationState {
