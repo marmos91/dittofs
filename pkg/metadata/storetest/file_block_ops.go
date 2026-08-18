@@ -232,6 +232,108 @@ func runFileChunkOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("DecrementRefCountAndReap", func(t *testing.T) {
 		testDecrementRefCountAndReap(t, factory)
 	})
+
+	// The batched form the reap loops call must leave exactly what applying the
+	// single-id form to each id in turn leaves, and must roll the whole set back
+	// when the enclosing transaction fails.
+	t.Run("DecrementRefCountAndReapMany", func(t *testing.T) {
+		testDecrementRefCountAndReapMany(t, factory)
+	})
+}
+
+// seedChunkRows puts one row per id with the given RefCount, hashed from the id
+// so each row carries its own hash-index entry.
+func seedChunkRows(t *testing.T, store metadata.Store, refCount uint32, ids ...string) {
+	t.Helper()
+	for _, id := range ids {
+		if err := store.Put(t.Context(), &block.FileChunk{
+			ID:         id,
+			Hash:       hashOfSeed(id),
+			State:      block.BlockStateRemote,
+			DataSize:   4096,
+			RefCount:   refCount,
+			LastAccess: time.Now(),
+			CreatedAt:  time.Now(),
+		}); err != nil {
+			t.Fatalf("Put(%s): %v", id, err)
+		}
+	}
+}
+
+// chunkRowPresent reports whether the row still exists.
+func chunkRowPresent(t *testing.T, store metadata.Store, id string) bool {
+	t.Helper()
+	_, err := asLegacy(t, store).GetFileChunk(t.Context(), id)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, metadata.ErrFileChunkNotFound) {
+		return false
+	}
+	t.Fatalf("GetFileChunk(%s): %v", id, err)
+	return false
+}
+
+// testDecrementRefCountAndReapMany pins the batched reap against the
+// single-id form it replaces: the same rows survive or vanish, a missing id is
+// tolerated, and a failure inside the transaction reaps nothing at all.
+func testDecrementRefCountAndReapMany(t *testing.T, factory StoreFactory) {
+	t.Helper()
+
+	// The batched call must reap the refcount-1 rows, leave the refcount-2 row
+	// at 1, and tolerate an id no row ever had.
+	t.Run("MatchesPerIDResult", func(t *testing.T) {
+		store := factory(t)
+		ctx := t.Context()
+		seedChunkRows(t, store, 1, "many/0", "many/4096")
+		seedChunkRows(t, store, 2, "many/8192")
+
+		if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+			return tx.DecrementRefCountAndReapMany(ctx,
+				[]string{"many/0", "many/4096", "many/8192", "many/never-existed"})
+		}); err != nil {
+			t.Fatalf("DecrementRefCountAndReapMany: %v", err)
+		}
+
+		for _, id := range []string{"many/0", "many/4096"} {
+			if chunkRowPresent(t, store, id) {
+				t.Errorf("row %s survived the batched reap; want it gone at refcount 0", id)
+			}
+			if byHash, err := store.GetByHash(ctx, hashOfSeed(id)); err != nil {
+				t.Fatalf("GetByHash(%s): %v", id, err)
+			} else if byHash != nil {
+				t.Errorf("GetByHash(%s) = %+v after reap; want nil (hash must leave the live set)", id, byHash)
+			}
+		}
+		if !chunkRowPresent(t, store, "many/8192") {
+			t.Error("row many/8192 was reaped; want it alive at refcount 1")
+		}
+	})
+
+	// The whole set is one transaction, so an error raised after the batched
+	// call rolls every row back — no half-reaped manifest.
+	t.Run("RollsBackWholeSet", func(t *testing.T) {
+		store := factory(t)
+		ctx := t.Context()
+		seedChunkRows(t, store, 1, "rollback/0", "rollback/4096")
+
+		errAbort := errors.New("abort after reap")
+		err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+			if err := tx.DecrementRefCountAndReapMany(ctx, []string{"rollback/0", "rollback/4096"}); err != nil {
+				return err
+			}
+			return errAbort
+		})
+		if !errors.Is(err, errAbort) {
+			t.Fatalf("WithTransaction err = %v, want %v", err, errAbort)
+		}
+
+		for _, id := range []string{"rollback/0", "rollback/4096"} {
+			if !chunkRowPresent(t, store, id) {
+				t.Errorf("row %s stayed reaped after rollback; want it restored", id)
+			}
+		}
+	})
 }
 
 // testDecrementRefCountAndReap pins the DecrementRefCountAndReap contract:

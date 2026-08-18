@@ -281,3 +281,15 @@ func TestMetadataCoordinator_FakeImpl_FailureModes(t *testing.T) {
 		t.Errorf("incHashes recorded=%d (want 2 — failure on call 2 should not record)", len(fc.incHashes))
 	}
 }
+
+// DecrementRefCountAndReapMany is the batched reap the engine reclaim paths
+// use. Looping the single-offset form keeps whatever bookkeeping and error
+// injection that form already carries.
+func (f *fakeCoordinator) DecrementRefCountAndReapMany(ctx context.Context, payloadID string, offsets []uint64) error {
+	for _, offset := range offsets {
+		if _, err := f.DecrementRefCountAndReap(ctx, payloadID, offset); err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -75,6 +75,19 @@ type MetadataCoordinator interface {
 	// a silently drifting projection.
 	ReprojectBlocks(ctx context.Context, payloadID string) error
 
+	// DecrementRefCountAndReapMany is DecrementRefCountAndReap over a whole set
+	// of the payload's offsets, with identical per-row semantics (exact
+	// "{payloadID}/{offset}" identity, reap at 0, absent row tolerated). Engine
+	// invokes it from the Truncate / PunchHole / Delete reap paths, which drop
+	// every manifest row of a range at once — tens of thousands of rows for a
+	// large file — so the whole set resolves in a fixed number of statements
+	// instead of one metadata round trip per row. The counts are not reported
+	// back: the reap paths never read them.
+	//
+	// offsets MUST be distinct: each names one row, and reaping a row twice
+	// would strip a reference the file does not hold.
+	DecrementRefCountAndReapMany(ctx context.Context, payloadID string, offsets []uint64) error
+
 	// PersistFileChunks updates FileAttr.Blocks AND FileAttr.ObjectID
 	// for a given file in a single metadata txn. It is invoked by the
 	// runtime coordinator wrapper (which resolves payloadID → fileHandle

@@ -1203,3 +1203,15 @@ func (tx *badgerTransaction) ListFileChunks(ctx context.Context, payloadID strin
 func (tx *badgerTransaction) EnumerateFileChunks(ctx context.Context, fn func(blockpkg.ContentHash) error) error {
 	return enumerateFileChunksTxn(ctx, tx.txn, fn)
 }
+
+// DecrementRefCountAndReapMany reaps every id under the active badger.Txn, so a
+// rollback discards the whole set. Badger is embedded, so the batch is the
+// per-id sequence.
+func (tx *badgerTransaction) DecrementRefCountAndReapMany(ctx context.Context, ids []string) error {
+	for _, id := range ids {
+		if _, err := tx.DecrementRefCountAndReap(ctx, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
