@@ -1633,3 +1633,31 @@ func TestGrantDelegation_DeniedWhileForeignByteRangeLockHeld(t *testing.T) {
 		t.Fatal("expected the NFSv4 LOCK to be denied by the conflicting NLM lock")
 	}
 }
+
+// TestLockT_IgnoresOwnDelegation keeps LOCKT and LOCK answering alike while a
+// delegation is outstanding: the holder's own delegation is not a conflict it
+// would ever hit, but another client's still is.
+func TestLockT_IgnoresOwnDelegation(t *testing.T) {
+	lm := lock.NewManager()
+	sm := NewStateManager(90 * time.Second)
+	sm.SetLockManagerResolver(func(_ []byte) lock.LockManager { return lm })
+
+	clientID, fileHandle, _, _ := setupClientAndOpenState(t, sm)
+	setCBPathUp(sm, clientID)
+
+	if deleg := sm.GrantDelegation(clientID, fileHandle, types.OPEN_DELEGATE_WRITE); deleg == nil {
+		t.Fatal("expected the delegation to be granted on an unlocked file")
+	}
+
+	denied, err := sm.TestLock(clientID, []byte("nfs-owner"), fileHandle, types.WRITE_LT, 0, 100)
+	if err != nil {
+		t.Fatalf("TestLock returned error: %v", err)
+	}
+	if denied != nil {
+		t.Fatal("LOCKT must not report the client's own delegation as a conflict")
+	}
+
+	if denied, err = sm.TestLock(clientID+1, []byte("other-owner"), fileHandle, types.WRITE_LT, 0, 100); err != nil || denied == nil {
+		t.Fatalf("LOCKT from another client must see the delegation; denied=%v err=%v", denied, err)
+	}
+}

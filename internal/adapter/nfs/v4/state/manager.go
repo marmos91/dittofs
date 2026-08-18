@@ -2311,9 +2311,11 @@ func (sm *StateManager) TestLock(
 		mappedType = lock.LockTypeExclusive
 	}
 
-	// Create a temporary test lock (not added to the manager)
+	// Create a temporary test lock (not added to the manager). It carries the
+	// same client identity an actual LOCK would, so LOCKT reports the client's
+	// own delegation as free rather than as a conflict it would never hit.
 	testLock := &lock.UnifiedLock{
-		Owner:  lock.LockOwner{OwnerID: ownerID},
+		Owner:  lock.LockOwner{OwnerID: ownerID, ClientID: nfsClientIdentity(clientID)},
 		Offset: offset,
 		Length: length,
 		Type:   mappedType,
