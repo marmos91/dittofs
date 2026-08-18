@@ -166,7 +166,7 @@ type LockManager interface {
 	// ========================================================================
 
 	// GrantDelegation grants a delegation on a file.
-	// Returns error if conflicting leases exist.
+	// Returns error if a conflicting lease or byte-range lock exists.
 	GrantDelegation(handleKey string, delegation *Delegation) error
 
 	// RevokeDelegation force-revokes a delegation, removing it from the lock map.
@@ -2930,7 +2930,8 @@ func (lm *Manager) mirrorBreakStageLocked(sibling *UnifiedLock, canonical *OpLoc
 // ============================================================================
 
 // GrantDelegation grants a delegation on a file.
-// Returns error if conflicting leases exist or the file was recently broken.
+// Returns error if a conflicting lease or byte-range lock exists, or the file
+// was recently broken.
 func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) error {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
