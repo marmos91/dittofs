@@ -1593,10 +1593,10 @@ func TestProcessDurableHandleContext_V2RejectZeroCreateGuid(t *testing.T) {
 }
 
 // TestProcessDurableReconnectContext_ConsumeAtomicV1 verifies that the V1
-// reconnect path claims through ConsumeDurableHandle — i.e. two concurrent
-// reconnect attempts for the same persisted FileID cannot both succeed.
-// Mocks a store that releases its internal lock between Get and Delete
-// would expose a TOCTOU window; the Consume contract closes it.
+// reconnect path claims through ConsumeDurableHandle, so two reconnect
+// attempts for the same persisted FileID cannot both succeed. A store that
+// released its lock between a separate Get and Delete would leave a TOCTOU
+// window; claiming through Consume closes it.
 func TestProcessDurableReconnectContext_ConsumeAtomicV1(t *testing.T) {
 	store := newMockDurableStore()
 	ctx := context.Background()

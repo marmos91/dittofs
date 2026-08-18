@@ -218,8 +218,8 @@ func (s *badgerDurableStore) GetDurableHandle(ctx context.Context, id string) (*
 	return handle, nil
 }
 
-// getDurableHandleTx reads the primary record for an ID, returning nil when it
-// does not exist. Callers supply the transaction.
+// getDurableHandleTx reads the primary record for an ID inside the caller's
+// transaction, returning nil when it does not exist.
 func (s *badgerDurableStore) getDurableHandleTx(txn *badgerdb.Txn, id string) (*lock.PersistedDurableHandle, error) {
 	item, err := txn.Get([]byte(prefixDHID + id))
 	if err == badgerdb.ErrKeyNotFound {
@@ -444,23 +444,12 @@ func (s *badgerDurableStore) DeleteDurableHandle(ctx context.Context, id string)
 }
 
 func (s *badgerDurableStore) deleteDurableHandleTx(txn *badgerdb.Txn, id string) error {
-	item, err := txn.Get([]byte(prefixDHID + id))
-	if err == badgerdb.ErrKeyNotFound {
-		return nil // Already gone
-	}
-	if err != nil {
-		return err
+	handle, err := s.getDurableHandleTx(txn, id)
+	if err != nil || handle == nil {
+		return err // nil handle means already gone
 	}
 
-	var handle lock.PersistedDurableHandle
-	err = item.Value(func(val []byte) error {
-		return json.Unmarshal(val, &handle)
-	})
-	if err != nil {
-		return err
-	}
-
-	if err := s.deleteIndicesTx(txn, &handle); err != nil {
+	if err := s.deleteIndicesTx(txn, handle); err != nil {
 		return err
 	}
 
