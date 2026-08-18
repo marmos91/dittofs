@@ -67,7 +67,8 @@ type RollupStopper interface {
 // MachineSIDStore provides access to the SettingsStore for machine SID
 // persistence. The lifecycle service uses this to load or generate the
 // machine SID on first boot, ensuring consistent identity mapping across
-// restarts.
+// restarts. When the SID is not operator-pinned, a read or write failure
+// aborts startup.
 type MachineSIDStore interface {
 	GetSetting(ctx context.Context, key string) (string, error)
 	SetSetting(ctx context.Context, key, value string) error
@@ -178,8 +179,10 @@ func (s *Service) initMachineSID(ctx context.Context, store MachineSIDStore) err
 
 	stored, err := store.GetSetting(ctx, machineSIDKey)
 	if err != nil {
-		logger.Warn("Failed to read machine SID from store, generating new one", "error", err)
-		stored = ""
+		// A read failure is not an empty store: falling through would generate
+		// a fresh SID over the stored one, rebinding every local UID->SID
+		// encoding and orphaning the descriptors written against the old machine.
+		return fmt.Errorf("failed to read machine SID: %w", err)
 	}
 
 	if stored != "" {
@@ -195,15 +198,18 @@ func (s *Service) initMachineSID(ctx context.Context, store MachineSIDStore) err
 		}
 	}
 
-	// First boot: generate and persist
-	s.sidMapper = sid.GenerateMachineSID()
-	sidStr := s.sidMapper.MachineSIDString()
+	// First boot: generate, persist, then publish. An in-memory-only SID is
+	// replaced by a different random one on the next boot, leaving every
+	// descriptor written in between naming a machine that no longer exists.
+	mapper := sid.GenerateMachineSID()
+	sidStr := mapper.MachineSIDString()
 
 	if err := store.SetSetting(ctx, machineSIDKey, sidStr); err != nil {
-		logger.Error("Failed to persist machine SID", "sid", sidStr, "error", err)
-	} else {
-		logger.Info("Generated and persisted machine SID", "sid", sidStr)
+		return fmt.Errorf("failed to persist machine SID: %w", err)
 	}
+
+	s.sidMapper = mapper
+	logger.Info("Generated and persisted machine SID", "sid", sidStr)
 	return nil
 }
 

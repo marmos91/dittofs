@@ -51,6 +51,7 @@ type fakeSIDStore struct {
 	mu     sync.Mutex
 	vals   map[string]string
 	getErr error
+	setErr error
 	setHit bool
 }
 
@@ -64,6 +65,9 @@ func (f *fakeSIDStore) GetSetting(ctx context.Context, key string) (string, erro
 }
 
 func (f *fakeSIDStore) SetSetting(ctx context.Context, key, value string) error {
+	if f.setErr != nil {
+		return f.setErr
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.setHit = true
@@ -313,13 +317,32 @@ func TestInitMachineSIDInvalidStoredRegenerates(t *testing.T) {
 	}
 }
 
-// A read error from the store is tolerated: a SID is still generated.
-func TestInitMachineSIDReadErrorGenerates(t *testing.T) {
+// A read error is not an empty store: initialization fails instead of
+// generating a replacement SID that would overwrite the stored one.
+func TestInitMachineSIDReadErrorFails(t *testing.T) {
 	s := New(0)
 	store := &fakeSIDStore{getErr: errors.New("db down")}
-	mustInitMachineSID(t, s, store)
-	if s.SIDMapper() == nil {
-		t.Error("SID mapper should still be generated despite read error")
+	if err := s.initMachineSID(context.Background(), store); err == nil {
+		t.Fatal("read error must return an error, not generate a replacement")
+	}
+	if s.SIDMapper() != nil {
+		t.Error("no SID mapper should be set when the store cannot be read")
+	}
+	if store.setHit {
+		t.Error("a read error must not overwrite the stored machine SID")
+	}
+}
+
+// A first-boot persist failure aborts: an in-memory-only SID would be replaced
+// by a different one on the next boot.
+func TestInitMachineSIDPersistErrorFails(t *testing.T) {
+	s := New(0)
+	store := &fakeSIDStore{setErr: errors.New("db down")}
+	if err := s.initMachineSID(context.Background(), store); err == nil {
+		t.Fatal("persist failure must return an error, not serve an ephemeral SID")
+	}
+	if s.SIDMapper() != nil {
+		t.Error("no SID mapper should be published when the SID is not durable")
 	}
 }
 
