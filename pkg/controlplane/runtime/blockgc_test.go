@@ -398,8 +398,8 @@ func TestPurgeLegacyCAS_ConfiguredShareNotRegistered(t *testing.T) {
 			t.Fatalf("AddShare(%s): %v", name, err)
 		}
 	}
-	// Only the first share registers — the second stands for one that is
-	// disabled at boot or whose AddShare failed and was warn-and-skipped.
+	// Only the first share registers — the second stands for one whose
+	// AddShare failed and was warn-and-skipped.
 	register("/share-a")
 
 	rs := &recordingLegacyRemote{
@@ -411,6 +411,27 @@ func TestPurgeLegacyCAS_ConfiguredShareNotRegistered(t *testing.T) {
 	rt.purgeLegacyCASForEntry(ctx, entry, false, &engine.GCStats{})
 	if rs.deleted != 0 {
 		t.Fatalf("purged %d cas objects while a configured share was unregistered", rs.deleted)
+	}
+
+	// A row whose remote reference resolves to no configured store blocks the
+	// purge too: it is most likely a stale name for this since-renamed remote.
+	rows, err := cp.ListShares(ctx)
+	if err != nil {
+		t.Fatalf("ListShares: %v", err)
+	}
+	for _, row := range rows {
+		if row.Name != "/share-b" {
+			continue
+		}
+		stale := "renamed-away"
+		row.RemoteBlockStoreID = &stale
+		if err := cp.UpdateShare(ctx, row); err != nil {
+			t.Fatalf("UpdateShare: %v", err)
+		}
+	}
+	rt.purgeLegacyCASForEntry(ctx, entry, false, &engine.GCStats{})
+	if rs.deleted != 0 {
+		t.Fatalf("purged %d cas objects while a share held an unresolvable remote reference", rs.deleted)
 	}
 
 	// With every configured share registered and migrated, the purge proceeds.
