@@ -462,8 +462,9 @@ type LocalStore interface {
 ```
 
 A write buffers a dirty range and local-acks without fsync; `Commit` is the
-durability point. On a cold read `ReadAt` returns `cold=true` and the engine
-`Hydrate`s the range back from the remote store. `Carve` packs a file's dirty
+durability point. `ReadAt` reports both evicted (`ReadState.Cold`) and uncovered
+(`ReadState.Hole`) ranges; the engine reconciles either against the FileChunk
+manifest and `Hydrate`s whatever the manifest says is remote-resident. `Carve` packs a file's dirty
 ranges into remote blocks via the injected `BlockSink` (see the carve pass in
 [the architecture doc](architecture.md#carve-local--remote)); `Evict` frees
 whole fully-synced segments under pressure.

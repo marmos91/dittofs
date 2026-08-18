@@ -310,11 +310,16 @@ dispatcher is suppressed and `Flush`/`SyncNow` are the sole carve drivers.
 
 `ReadAt` resolves by `(payloadID, offset)`. A range present in the journal is
 served straight from its segment. A range that was written but has since been
-evicted returns `cold=true`; the engine then resolves the chunk's remote
-locator from the FileChunk manifest, ranged-GETs its enclosing `blocks/<id>`
-object, decodes the wire frame, recomputes BLAKE3 over the chunk bytes, and —
-on success — hydrates the verified bytes back into the journal so subsequent
-reads are warm.
+evicted reports `ReadState.Cold`, and a range the journal has no interval for
+reports `ReadState.Hole`; the engine reconciles both against the FileChunk
+manifest, since the journal alone cannot tell a never-written range from one
+whose interval it lost. For each covering row it resolves the remote locator,
+ranged-GETs the enclosing `blocks/<id>` object, decodes the wire frame,
+recomputes BLAKE3 over the chunk bytes, and — on success — hydrates the verified
+bytes back into the journal so subsequent reads are warm. A range no row covers
+is a genuine sparse hole and stays zero-filled, unless the payload holds a row
+whose ID carries no offset: that range is unknown, so the read refuses with
+`ErrManifestInconsistent` rather than inventing zeros.
 
 Integrity is fail-closed: every remote fetch is BLAKE3-verified before the
 bytes reach the caller, and a mismatch is returned as an error (and counted),
