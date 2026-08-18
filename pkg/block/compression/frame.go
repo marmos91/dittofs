@@ -32,18 +32,28 @@ func frameOverhead(origSize uint64) int {
 	return FrameHeaderFixedSize + n
 }
 
+// appendFrameHeader appends the frame header for a body declaring origSize
+// plaintext bytes. The body follows it directly on the wire:
+//
+//	[magic | algo | uvarint(origSize) | body]
+//
+// Appending lets the caller reserve the header in the same buffer the codec
+// streams the body into, so no second allocate-and-copy is needed.
+func appendFrameHeader(out []byte, algo Algo, origSize uint64) []byte {
+	out = append(out, FrameMagic[:]...)
+	out = append(out, byte(algo))
+	var sizeBuf [maxOrigSizeVarint]byte
+	n := binary.PutUvarint(sizeBuf[:], origSize)
+	return append(out, sizeBuf[:n]...)
+}
+
 // encodeFrame builds the wire form for a compressed body
 //
 //	[magic | algo | uvarint(origSize) | body]
 func encodeFrame(algo Algo, origSize uint64, body []byte) []byte {
 	out := make([]byte, 0, FrameHeaderFixedSize+maxOrigSizeVarint+len(body))
-	out = append(out, FrameMagic[:]...)
-	out = append(out, byte(algo))
-	var sizeBuf [maxOrigSizeVarint]byte
-	n := binary.PutUvarint(sizeBuf[:], origSize)
-	out = append(out, sizeBuf[:n]...)
-	out = append(out, body...)
-	return out
+	out = appendFrameHeader(out, algo, origSize)
+	return append(out, body...)
 }
 
 // hasFrameMagic reports whether b begins with the 5-byte DFCMP prefix.

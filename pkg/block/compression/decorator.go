@@ -89,8 +89,14 @@ func (d *Decorator) SealChunk(ctx context.Context, hash block.ContentHash, plain
 // compressed body when that is strictly smaller than the input, otherwise the
 // raw plaintext (incompressible blocks skip the frame).
 func (d *Decorator) sealLayer(data []byte) ([]byte, error) {
-	var compressed bytes.Buffer
-	enc, err := d.codec.EncodeStream(&compressed)
+	// Reserve the frame header up front and let the codec stream the compressed
+	// body straight after it, so the buffer already holds the wire form when the
+	// frame wins — no second allocate-and-copy of the whole body. The buffer
+	// still grows on demand from there, so an incompressible block costs no more
+	// than the body it produces.
+	origSize := uint64(len(data))
+	framed := bytes.NewBuffer(appendFrameHeader(make([]byte, 0, FrameHeaderFixedSize+maxOrigSizeVarint), d.algo, origSize))
+	enc, err := d.codec.EncodeStream(framed)
 	if err != nil {
 		return nil, fmt.Errorf("compression: EncodeStream: %w", err)
 	}
@@ -102,13 +108,12 @@ func (d *Decorator) sealLayer(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("compression: encoder close: %w", err)
 	}
 
-	wire := data
-	body := compressed.Bytes()
-	origSize := uint64(len(data))
-	if frameOverhead(origSize)+len(body) < len(data) {
-		wire = encodeFrame(d.algo, origSize, body)
+	// framed.Len() is header + body, the exact byte count the frame would put on
+	// the wire; incompressible blocks skip the frame and travel as plaintext.
+	if framed.Len() < len(data) {
+		return framed.Bytes(), nil
 	}
-	return wire, nil
+	return data, nil
 }
 
 // --- read path ----------------------------------------------------------

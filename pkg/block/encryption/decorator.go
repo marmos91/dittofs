@@ -100,17 +100,19 @@ func (d *EncryptedRemote) sealLayer(ctx context.Context, hash block.ContentHash,
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("encryption: read nonce: %w", err)
 	}
-	ciphertext := aead.Seal(nil, nonce, data, hash[:])
 
 	wrappedKey, masterKeyID, err := d.provider.Wrap(ctx, blockKey)
 	if err != nil {
 		return nil, fmt.Errorf("encryption: wrap block key: %w", err)
 	}
-	wire, err := encodeFrame(d.aead, masterKeyID, wrappedKey, nonce, ciphertext)
+	// Build the frame header first and seal straight onto it: Seal appends the
+	// ciphertext into the space the header reserved, so the wire frame costs one
+	// buffer instead of a standalone ciphertext plus a copy of it.
+	wire, err := appendFrameHeader(nil, d.aead, masterKeyID, wrappedKey, nonce, len(data)+aead.Overhead())
 	if err != nil {
 		return nil, err
 	}
-	return wire, nil
+	return aead.Seal(wire, nonce, data, hash[:]), nil
 }
 
 // Get returns the plaintext for the block identified by hash.

@@ -78,6 +78,24 @@ func frameHeaderSize(b []byte) (headerLen int, framed bool, err error) {
 //	 | byte(len(nonce)) | nonce
 //	 | ciphertext+tag]
 func encodeFrame(aead AEAD, masterKeyID string, wrappedKey, nonce, ciphertext []byte) ([]byte, error) {
+	out, err := appendFrameHeader(nil, aead, masterKeyID, wrappedKey, nonce, len(ciphertext))
+	if err != nil {
+		return nil, err
+	}
+	return append(out, ciphertext...), nil
+}
+
+// appendFrameHeader appends everything up to (but excluding) the ciphertext to
+// out, sized so a ciphertext of ciphertextLen bytes appended afterwards fits
+// without regrowing. Sealing directly into the returned buffer produces the
+// wire frame without a separate ciphertext allocation and copy.
+func appendFrameHeader(
+	out []byte,
+	aead AEAD,
+	masterKeyID string,
+	wrappedKey, nonce []byte,
+	ciphertextLen int,
+) ([]byte, error) {
 	if len(masterKeyID) > MaxMasterKeyIDSize {
 		return nil, fmt.Errorf("encryption: master_key_id length %d exceeds cap %d", len(masterKeyID), MaxMasterKeyIDSize)
 	}
@@ -88,8 +106,12 @@ func encodeFrame(aead AEAD, masterKeyID string, wrappedKey, nonce, ciphertext []
 		return nil, fmt.Errorf("encryption: nonce length %d out of range (1..%d)", len(nonce), MaxNonceSize)
 	}
 
-	headerCap := frameHeaderFixedSize + maxVarint + len(masterKeyID) + maxVarint + len(wrappedKey) + 1 + len(nonce) + len(ciphertext)
-	out := make([]byte, 0, headerCap)
+	frameCap := frameHeaderFixedSize + maxVarint + len(masterKeyID) + maxVarint + len(wrappedKey) + 1 + len(nonce) + ciphertextLen
+	if cap(out)-len(out) < frameCap {
+		grown := make([]byte, len(out), len(out)+frameCap)
+		copy(grown, out)
+		out = grown
+	}
 	out = append(out, FrameMagic[:]...)
 	out = append(out, FrameVersion, byte(aead), wrapKindKeyProvider)
 
@@ -104,7 +126,6 @@ func encodeFrame(aead AEAD, masterKeyID string, wrappedKey, nonce, ciphertext []
 
 	out = append(out, byte(len(nonce)))
 	out = append(out, nonce...)
-	out = append(out, ciphertext...)
 	return out, nil
 }
 
