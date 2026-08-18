@@ -125,6 +125,21 @@ get_known_reason() { kf_reason "$1"; }
 # --------------------------------------------------------------------------
 CONN_FAIL_PATTERN="Establishing SMB2 connection failed"
 NO_MEMORY_PATTERN="NT_STATUS_NO_MEMORY"
+
+# smb2.replay.channel-sequence draws two of its sixteen ChannelSequence values
+# at random from [0x7fff, 0xfffe] and [0, 0x7fff] and expects
+# STATUS_FILE_NOT_AVAILABLE for both. Each range includes 0x7fff, which is not
+# stale: MS-SMB2 3.3.5.2.10 updates the Open when the unsigned 16-bit
+# difference "is less than or equal to 0x7FFF", and the same table asserts a
+# fixed 0x7fff row must return STATUS_SUCCESS against the same tracked value.
+# When a draw lands on that boundary the two rows contradict each other and no
+# conformant server can satisfy both — Samba's own server returns success there
+# too. The test prints the drawn value before running each row, so the
+# contradiction is identifiable and only that draw is excused; a
+# channel-sequence failure without it is graded normally.
+CSN_BOUNDARY_PATTERN="CSN 0x7fff, expecting: NT_STATUS_FILE_NOT_AVAILABLE"
+CSN_TEST_PATTERN="channel-sequence"
+
 TEMP_OUTPUT=$(mktemp)
 
 # is_result_marker LINE — true if LINE begins a new test/result record, i.e.
@@ -134,14 +149,21 @@ is_result_marker() {
 }
 
 # Buffer holding a pending failure/error header plus its detail lines while we
-# decide whether the block is a connection flake. pending_block is non-empty
-# iff we are inside a failure/error block.
+# decide whether the block is an environment flake rather than a real failure.
+# pending_block is non-empty iff we are inside a failure/error block.
 declare -a pending_block=()
-pending_is_connflake=false
+pending_is_flake=false
+
+# Set while the currently running test has printed the self-contradictory
+# ChannelSequence draw described above; cleared at every test boundary.
+csn_boundary_drawn=false
 
 flush_pending() {
     [[ ${#pending_block[@]} -eq 0 ]] && return
-    if $pending_is_connflake; then
+    if $csn_boundary_drawn && [[ "${pending_block[0]}" == *"$CSN_TEST_PATTERN"* ]]; then
+        pending_is_flake=true
+    fi
+    if $pending_is_flake; then
         # Reclassify the header (failure:/error:) to skip:; emit detail verbatim.
         local header="${pending_block[0]}"
         header="${header/#failure:/skip:}"
@@ -155,7 +177,7 @@ flush_pending() {
         printf '%s\n' "${pending_block[@]}" >> "$TEMP_OUTPUT"
     fi
     pending_block=()
-    pending_is_connflake=false
+    pending_is_flake=false
 }
 
 while IFS= read -r line; do
@@ -167,6 +189,7 @@ while IFS= read -r line; do
         if [[ "$line" =~ ^(failure|error):[[:space:]]+ ]]; then
             pending_block=("$line")
         else
+            [[ "$line" == test:* ]] && csn_boundary_drawn=false
             printf '%s\n' "$line" >> "$TEMP_OUTPUT"
         fi
         continue
@@ -176,13 +199,14 @@ while IFS= read -r line; do
         # Inside a pending failure/error detail block.
         pending_block+=("$line")
         if [[ "$line" == *"$CONN_FAIL_PATTERN"* || "$line" == *"$NO_MEMORY_PATTERN"* ]]; then
-            pending_is_connflake=true
+            pending_is_flake=true
         fi
         # A closing "]" ends the bracketed detail block.
         [[ "$line" == "]" ]] && flush_pending
         continue
     fi
 
+    [[ "$line" == *"$CSN_BOUNDARY_PATTERN"* ]] && csn_boundary_drawn=true
     printf '%s\n' "$line" >> "$TEMP_OUTPUT"
 done < "$OUTPUT_FILE"
 flush_pending

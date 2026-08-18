@@ -114,3 +114,34 @@ func TestVerifyChannelSequence_SeedNonZero(t *testing.T) {
 		t.Fatal("write below seeded csn should be rejected")
 	}
 }
+
+// TestVerifyChannelSequence_ForwardBoundary pins the largest difference that
+// still counts as a forward step. MS-SMB2 §3.3.5.2.10 updates the Open when the
+// unsigned 16-bit difference "is less than or equal to 0x7FFF", so 0x7fff ahead
+// of the tracked sequence is accepted and 0x8000 ahead is not. Samba draws two
+// of its channel-sequence table rows at random from ranges that include 0x7fff
+// while expecting a rejection, which is why that draw can never pass.
+func TestVerifyChannelSequence_ForwardBoundary(t *testing.T) {
+	f := &OpenFile{}
+	if !f.VerifyChannelSequence(0, true) {
+		t.Fatal("seed write at csn=0 should be allowed")
+	}
+	if !f.VerifyChannelSequence(0x7fff, true) {
+		t.Fatal("csn=0x7fff is a forward step and must be allowed")
+	}
+	if f.channelSeq != 0x7fff {
+		t.Fatalf("expected tracked csn to advance to 0x7fff, got 0x%04x", f.channelSeq)
+	}
+	// Resending on the now-current sequence is still allowed.
+	if !f.VerifyChannelSequence(0x7fff, true) {
+		t.Fatal("write on the current csn should be allowed")
+	}
+	// One past the boundary reads as a wrapped (stale) counter, not a step.
+	g := &OpenFile{}
+	if !g.VerifyChannelSequence(0, true) {
+		t.Fatal("seed write at csn=0 should be allowed")
+	}
+	if g.VerifyChannelSequence(0x8000, true) {
+		t.Fatal("csn=0x8000 exceeds the forward window and must be rejected")
+	}
+}

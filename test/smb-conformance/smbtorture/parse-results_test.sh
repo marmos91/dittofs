@@ -155,6 +155,36 @@ failure: smb2.lock.lock1 [ expected ]
 EOF
 assert_not_output "flapping name withheld" "### Known failures that now PASS"
 
+# -- smb2.replay.channel-sequence draws a ChannelSequence at random and, once
+# in 32768 draws, lands on 0x7fff while expecting STATUS_FILE_NOT_AVAILABLE —
+# a value the same table elsewhere requires to succeed. That draw is excused;
+# any other channel-sequence failure is graded normally. --
+run_case "self-contradictory CSN draw does not fail the job" 0 <<'EOF'
+test: smb2.replay.channel-sequence
+Testing setinfo (replay: true) with CSN 0x7fff, expecting: NT_STATUS_FILE_NOT_AVAILABLE
+failure: smb2.replay.channel-sequence [
+failed to test CSN with replay flag
+]
+EOF
+
+run_case "channel-sequence failure without the draw still fails" 1 <<'EOF'
+test: smb2.replay.channel-sequence
+Testing setinfo (replay: true) with CSN 0x7ffe, expecting: NT_STATUS_FILE_NOT_AVAILABLE
+failure: smb2.replay.channel-sequence [
+failed to test CSN with replay flag
+]
+EOF
+
+run_case "the excused draw does not leak into the next test" 1 <<'EOF'
+test: smb2.replay.channel-sequence
+Testing setinfo (replay: true) with CSN 0x7fff, expecting: NT_STATUS_FILE_NOT_AVAILABLE
+failure: smb2.replay.channel-sequence [
+failed to test CSN with replay flag
+]
+test: smb2.replay.replay3
+failure: smb2.replay.replay3 [ unrelated ]
+EOF
+
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then
     echo "PASS: all parse-results.sh grading tests passed"

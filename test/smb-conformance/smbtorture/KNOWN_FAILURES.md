@@ -333,6 +333,39 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 
 ## Changelog
 
+### 2026-08-18 — #1923 `channel-sequence`: excuse the self-contradictory random CSN draw
+
+`smb2.replay.channel-sequence` flipped the badger-fs verdict between two runs of
+a byte-identical binary. It is not a product bug and not a KNOWN_FAILURES row —
+the test contradicts itself on one draw in 32768.
+
+`test_channel_sequence_table` in `source4/torture/smb2/replay.c` runs a
+16-row table of ChannelSequence values against one Open. Fourteen rows are
+fixed; two are drawn at random — `rand() % 0x8000 + 0x7fff` (range
+`[0x7fff, 0xfffe]`) and `rand() % 0x8000` (range `[0, 0x7fff]`) — and both
+expect `STATUS_FILE_NOT_AVAILABLE` on the grounds that the value is stale or
+too far ahead. Both ranges include `0x7fff`, which is neither: MS-SMB2
+§3.3.5.2.10 updates the Open when the unsigned 16-bit difference "is less than
+or equal to 0x7FFF", and row 5 of the very same table asserts a fixed `0x7fff`
+against the same tracked value must return `STATUS_SUCCESS`. When a draw lands
+on the boundary the two rows demand opposite answers, so no conformant server
+can pass. Samba's own `smbd_smb2_request_dispatch_update_counts` flips the
+comparison only when `abs(cmp) > INT16_MAX`, which is false at `0x7fff`, so
+Samba returns success there too and fails the row as well.
+
+The failing run drew it directly:
+
+```
+Testing setinfo (replay: true) with CSN 0x7fff, expecting: NT_STATUS_FILE_NOT_AVAILABLE
+WARNING!: replay.c:4627: status was NT_STATUS_OK, expected NT_STATUS_FILE_NOT_AVAILABLE
+```
+
+`parse-results.sh` now reclassifies a `channel-sequence` failure to `skip:`
+only when that exact draw was printed during the test, in the same pre-pass
+that already excuses connection flakes. Any other channel-sequence failure —
+including a genuine regression in the mechanism — is graded normally, and the
+test stays off the blacklist.
+
 ### 2026-07-21 — replay6 re-added as a Windows-specific known failure (bucket 10)
 
 `smb2.replay.replay6` resurfaces once the harness runs the tail of the
