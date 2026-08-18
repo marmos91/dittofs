@@ -31,9 +31,9 @@ func blockRefHashes(refs []block.ChunkRef) []block.ContentHash {
 // A hole is reconciled because the local tier cannot tell a never-written range
 // from one whose cold interval it lost: cold seeding cannot place a manifest row
 // whose ID carries no offset, so that range arrives here as a plain hole and
-// only the manifest can say its zeros would be invented. It also makes this view
-// and DataExtents' the same union of journal and manifest, so SEEK and READ
-// agree on where the data is.
+// only the manifest can say its zeros would be invented. DataExtents widens its
+// map to the whole file for such a row, so SEEK reports data where READ refuses
+// — never a hole where READ would have refused.
 //
 // A fully warm read never consults the manifest, and neither does a hole on a
 // local-only share, where there is no remote to hydrate from.

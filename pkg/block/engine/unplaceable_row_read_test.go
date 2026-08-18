@@ -154,3 +154,39 @@ func TestReadAt_GenuineHoleStillZeroFills(t *testing.T) {
 		})
 	}
 }
+
+// TestDataExtents_UnplaceableRowReportsWholeFileAsData closes the other op on
+// the same seam. SEEK and READ_PLUS derive their hole map from DataExtents and
+// never call READ for a range it calls hole, so the covering walk's guard cannot
+// protect them: a sparse-copy client would skip the range on SEEK alone and lose
+// the bytes. An unplaceable row therefore widens the map to the whole file —
+// over-reporting data is the RFC-safe direction, and it forces the READ that
+// refuses.
+//
+// Both callers drop an error from DataExtents and fall back to the CAS block
+// list, which cannot see the row either, so refusing here would change nothing.
+func TestDataExtents_UnplaceableRowReportsWholeFileAsData(t *testing.T) {
+	for _, b := range manifestBackends() {
+		t.Run(b.name, func(t *testing.T) {
+			ctx := context.Background()
+			bs, fbs, rs, shs := newRemoteBackedEngine(t, b)
+			const payloadID = "payload-extents-unplaceable"
+			const fileSize = 16384
+
+			// Real data at [0, 4096) plus a row whose range cannot be placed.
+			seedSyncedRemoteChunk(t, fbs, rs, shs, payloadID, 0, bytes.Repeat([]byte{0x5A}, 4096))
+			if err := fbs.Put(ctx, &block.FileChunk{ID: payloadID + "/not-an-offset", DataSize: 4096}); err != nil {
+				t.Fatalf("seed unplaceable row: %v", err)
+			}
+
+			ext, err := bs.DataExtents(ctx, payloadID, fileSize)
+			if err != nil {
+				t.Fatalf("DataExtents: %v", err)
+			}
+			want := [][2]uint64{{0, fileSize}}
+			if len(ext) != 1 || ext[0] != want[0] {
+				t.Fatalf("DataExtents = %v; want %v (a hole here is a range SEEK lets a client skip)", ext, want)
+			}
+		})
+	}
+}
