@@ -346,12 +346,19 @@ fixed; two are drawn at random — `rand() % 0x8000 + 0x7fff` (range
 expect `STATUS_FILE_NOT_AVAILABLE` on the grounds that the value is stale or
 too far ahead. Both ranges include `0x7fff`, which is neither: MS-SMB2
 §3.3.5.2.10 updates the Open when the unsigned 16-bit difference "is less than
-or equal to 0x7FFF", and row 5 of the very same table asserts a fixed `0x7fff`
-against the same tracked value must return `STATUS_SUCCESS`. When a draw lands
-on the boundary the two rows demand opposite answers, so no conformant server
-can pass. Samba's own `smbd_smb2_request_dispatch_update_counts` flips the
-comparison only when `abs(cmp) > INT16_MAX`, which is false at `0x7fff`, so
-Samba returns success there too and fails the row as well.
+or equal to 0x7FFF".
+
+The table is unsatisfiable when a draw lands there, whichever way a server
+resolves a `+0x7fff` difference. Accept it and the drawn row fails, because it
+demanded a rejection. Reject it and rows 5, 6 and 10 — fixed rows that pass
+today — fail instead, because each depends on `+0x7fff` being a forward step.
+No deterministic server passes both arms.
+
+Samba is in the first camp: `smbd_smb2_request_dispatch_update_counts` flips
+the comparison only when `abs(cmp) > INT16_MAX`, which is false at `0x7fff`, so
+it accepts and fails the drawn row too. Its `pre_request_count` gate cannot
+save it either — `smbd_smb2_request_reply_update_counts` drains the gauges on
+every reply, and no earlier row takes the branch that raises them.
 
 The failing run drew it directly:
 
