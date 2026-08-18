@@ -118,12 +118,13 @@ var errPutFileInjected = errors.New("injected PutFile failure")
 // is called for the targeted file ID.
 var errLinkCountInjected = errors.New("injected GetLinkCount failure")
 
-// faultyStore wraps a MetadataStore and, inside WithTransaction, makes
-// tx.PutFile fail for a single targeted file ID. Everything else delegates to
-// the real store so the rest of the rename runs normally up to the injected
-// failure. Keying on the inode ID (not File.Path) keeps the fault stable: Path
-// is now always derived on read (#1166), so it is no longer a reliable
-// discriminator at PutFile time.
+// faultyStore wraps a MetadataStore and, inside WithTransaction, injects
+// targeted failures into tx.PutFile, tx.GetLinkCount and tx.GetChild — each
+// keyed by its own field, so a test arms only the one it needs. Everything
+// else delegates to the real store, so the operation under test runs normally
+// up to the injected failure. The faults key on the inode ID rather than
+// File.Path, because Path is always derived on read and so is not a reliable
+// discriminator at call time.
 type faultyStore struct {
 	metadata.Store
 	failID uuid.UUID // file ID whose PutFile should fail
