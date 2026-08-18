@@ -1,12 +1,15 @@
 package runtime
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/marmos91/dittofs/internal/pathutil"
+	"github.com/marmos91/dittofs/pkg/block/encryption"
+	"github.com/marmos91/dittofs/pkg/block/encryption/keyprovider"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	s3store "github.com/marmos91/dittofs/pkg/block/remote/s3"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -97,6 +100,9 @@ func ValidateBlockStoreConfig(kind models.BlockStoreKind, storeType string, cfg 
 			if err := validateParallelUploads(config); err != nil {
 				return err
 			}
+			if err := validateEncryptionSubconfig(config); err != nil {
+				return err
+			}
 			return nil
 		default:
 			return fmt.Errorf("unsupported remote block store type: %s", storeType)
@@ -154,6 +160,49 @@ func validateParallelUploads(config map[string]any) error {
 	}
 	if n < 0 || n > engine.MaxParallelUploads {
 		return fmt.Errorf("parallel_uploads: must be between 0 and %d (got %d)", engine.MaxParallelUploads, int(n))
+	}
+	return nil
+}
+
+// validateEncryptionSubconfig accepts the parsed `encryption` value from a
+// BlockStoreConfig and verifies its shape. An absent key is allowed
+// (encryption is opt-in). When present, the value is run through the same
+// encryption.ParsePolicy the attach path uses — so the accepted object shape
+// and AEAD names never drift from it — and the key config is then checked for
+// the fields its provider kind requires. Reachability (opening the key file,
+// dialling the KMIP server) is left to attach time.
+func validateEncryptionSubconfig(config map[string]any) error {
+	raw, ok := config["encryption"]
+	if !ok {
+		return nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("encryption: %w", err)
+	}
+	policy, err := encryption.ParsePolicy(encoded)
+	if err != nil {
+		return err
+	}
+	switch policy.Key.Kind {
+	case keyprovider.KindLocal:
+		if policy.Key.File == "" {
+			return errors.New("encryption.key.file is required for the local key provider")
+		}
+	case keyprovider.KindKMIP:
+		if policy.Key.Endpoint == "" {
+			return errors.New("encryption.key.endpoint is required for the kmip key provider")
+		}
+		if policy.Key.KeyUID == "" {
+			return errors.New("encryption.key.key_uid is required for the kmip key provider")
+		}
+		if policy.Key.ClientCert == "" || policy.Key.ClientKey == "" {
+			return errors.New("encryption.key.client_cert and encryption.key.client_key are required for the kmip key provider")
+		}
+	case "":
+		return errors.New("encryption.key.kind is required (want local or kmip)")
+	default:
+		return fmt.Errorf("encryption.key.kind: unsupported value %q (want local or kmip)", policy.Key.Kind)
 	}
 	return nil
 }
