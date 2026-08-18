@@ -336,6 +336,17 @@ func (ul *UnifiedLock) ConflictsWith(other *UnifiedLock) bool {
 		return false
 	}
 
+	// A delegation stands for its holder's caching rights over the whole file,
+	// not for a lock, so it never conflicts with a byte-range lock the same
+	// client takes: on recall the client must send the LOCK operations for the
+	// locks it granted locally (RFC 7530 Section 10.4.4), and those must not be
+	// denied by the delegation it is about to return. Different clients still
+	// conflict, which is what keeps a delegation and a foreign lock apart.
+	if (ul.IsDelegation() || other.IsDelegation()) &&
+		ul.Owner.ClientID != "" && ul.Owner.ClientID == other.Owner.ClientID {
+		return false
+	}
+
 	// Both shared = no conflict.
 	if ul.Type == LockTypeShared && other.Type == LockTypeShared {
 		return false

@@ -2117,7 +2117,7 @@ func (lm *Manager) BreakLeasesForByteRangeLock(handleKey string, excludeOwner *L
 	// delegation's whole-file row also blocks the lock in AddUnifiedLock, so
 	// without the recall the lock stays denied until the delegation's lease
 	// expires — even after the original holder released.
-	lm.breakDelegations(handleKey, excludeOwner, func(_ *Delegation) bool {
+	lm.breakDelegations(handleKey, excludeOwner, func(*Delegation) bool {
 		return true
 	})
 
@@ -2218,11 +2218,12 @@ func (lm *Manager) WaitForBreakCompletionExceptKey(ctx context.Context, handleKe
 // DELEGRETURN, whose handler must take the StateManager mutex; waiting for it
 // here while that same mutex is held would be a circular wait (only force-
 // broken after the bounded timeout, then re-stalled on the next LOCK, since
-// forceCompleteBreaksExceptKey only force-completes leases). Skipping
-// delegations is also correct: BreakLeasesForByteRangeLock never marks a
-// delegation Breaking, and a byte-range lock never conflicts with a delegation
-// (UnifiedLock.ConflictsWith ignores delegations), so there is nothing to wait
-// for. On timeout the breaking leases are force-downgraded to None (Samba
+// forceCompleteBreaksExceptKey only force-completes leases). Not waiting stays
+// correct: BreakLeasesForByteRangeLock has already dispatched the recall by the
+// time this runs, and the delegation's whole-file row keeps AddUnifiedLock
+// denying the acquire until the client returns it, so the lock is retried
+// rather than granted alongside an unrecalled delegation. On timeout the
+// breaking leases are force-downgraded to None (Samba
 // lease_timeout parity) and ctx.Err() is returned.
 func (lm *Manager) WaitForByteRangeLeaseBreak(ctx context.Context, handleKey string) error {
 	for {
@@ -2947,11 +2948,9 @@ func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) err
 	// one write delegation per file) are enforced by the protocol layer (NFS
 	// state manager, SMB handler) before calling GrantDelegation.
 	for _, lock := range locks {
-		if lock.Lease != nil {
-			if DelegationConflictsWithLease(delegation, lock.Lease) {
-				return fmt.Errorf("delegation conflicts with existing lease (state=%s)",
-					LeaseStateToString(lock.Lease.LeaseState))
-			}
+		if lock.Lease != nil && DelegationConflictsWithLease(delegation, lock.Lease) {
+			return fmt.Errorf("delegation conflicts with existing lease (state=%s)",
+				LeaseStateToString(lock.Lease.LeaseState))
 		}
 	}
 
@@ -2981,18 +2980,22 @@ func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) err
 	// SMB locks in locks. The delegation is weighed as the whole-file byte-range
 	// lock it stands in for, so a write delegation (exclusive) is denied by any
 	// foreign lock and a read delegation (shared) only by a foreign exclusive
-	// one — the same rule byte-range locks apply to each other.
-	asByteRange := *newLock
-	asByteRange.Delegation = nil
+	// one — the same rule byte-range locks apply to each other, including its
+	// exemption for the holder's own client.
 	for _, lock := range locks {
 		if lock.Lease != nil || lock.Delegation != nil {
 			continue
 		}
-		if asByteRange.ConflictsWith(lock) {
+		if newLock.ConflictsWith(lock) {
 			return fmt.Errorf("delegation conflicts with existing byte-range lock (owner=%s)",
 				lock.Owner.OwnerID)
 		}
 	}
+	// The SMB map needs a plain byte-range stand-in: fileLockConflictsWithUnified
+	// excludes delegation rows by design. SMB locks never share a client with an
+	// NFS delegation, so no same-client exemption applies here.
+	asByteRange := *newLock
+	asByteRange.Delegation = nil
 	smbLocks := lm.locks[handleKey]
 	for i := range smbLocks {
 		if fileLockConflictsWithUnified(&smbLocks[i], &asByteRange) {

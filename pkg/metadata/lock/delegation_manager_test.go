@@ -523,3 +523,56 @@ func TestManager_BreakLeasesForByteRangeLock_RecallsDelegation(t *testing.T) {
 	assert.True(t, delegations[0].Breaking, "delegation should be recalled by a byte-range lock")
 	assert.Len(t, delegRecalls.getRecalls(), 1, "OnDelegationRecall should have been called")
 }
+
+// TestManager_AddUnifiedLock_SameClientAsOwnDelegation covers what a client
+// must be able to do on recall: send the LOCK operations for the locks it
+// granted locally while its delegation is still outstanding. Its own delegation
+// must not deny them, while another client's still does.
+func TestManager_AddUnifiedLock_SameClientAsOwnDelegation(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	require.NoError(t, lm.GrantDelegation("file1", NewDelegation(DelegTypeWrite, "nfs4:5", "/export", false)))
+
+	require.NoError(t, lm.AddUnifiedLock("file1", &UnifiedLock{
+		ID:         "own-lock",
+		Owner:      LockOwner{OwnerID: "nfs4:5:aa", ClientID: "nfs4:5"},
+		FileHandle: FileHandle("file1"),
+		Offset:     0,
+		Length:     100,
+		Type:       LockTypeExclusive,
+	}))
+
+	err := lm.AddUnifiedLock("file1", &UnifiedLock{
+		ID:         "foreign-lock",
+		Owner:      LockOwner{OwnerID: "nlm:client-v3:1:aa", ClientID: "nlm:client-v3"},
+		FileHandle: FileHandle("file1"),
+		Offset:     0,
+		Length:     100,
+		Type:       LockTypeExclusive,
+	})
+	require.Error(t, err, "another client's lock is still denied by the delegation")
+}
+
+// TestManager_BreakLeasesForByteRangeLock_SkipsOwnDelegation pins the exclusion
+// the recall relies on: a client taking a byte-range lock must not recall its
+// own delegation, which it identifies by the client identity both rows carry.
+func TestManager_BreakLeasesForByteRangeLock_SkipsOwnDelegation(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	delegRecalls := &delegationRecallTracker{}
+	lm.RegisterBreakCallbacks(delegRecalls)
+
+	require.NoError(t, lm.GrantDelegation("file1", NewDelegation(DelegTypeWrite, "nfs4:5", "/export", false)))
+
+	require.NoError(t, lm.BreakLeasesForByteRangeLock("file1", &LockOwner{
+		OwnerID:  "nfs4:5:aa",
+		ClientID: "nfs4:5",
+	}))
+
+	delegations := lm.ListDelegations("file1")
+	require.Len(t, delegations, 1)
+	assert.False(t, delegations[0].Breaking, "a client's own delegation must not be recalled by its own lock")
+	assert.Empty(t, delegRecalls.getRecalls())
+}

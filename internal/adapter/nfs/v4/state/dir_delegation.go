@@ -103,21 +103,25 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 		CookieVerf:       cookieVerf,
 	}
 
-	sm.delegByOther[other] = deleg
-	sm.delegByFile[fhKey] = append(sm.delegByFile[fhKey], deleg)
-
+	// The lock manager decides first: a delegation it rejects must not reach the
+	// client, which would otherwise cache directory state the conflicting holder
+	// keeps changing. See GrantDelegation.
 	if lm := sm.lockManagerFor(fhCopy); lm != nil {
 		// See GrantDelegation comment: NFS delegations lack share context at this layer.
-		lockDeleg := lock.NewDelegation(lock.DelegTypeRead, fmt.Sprintf("%d", clientID), "", true)
+		lockDeleg := lock.NewDelegation(lock.DelegTypeRead, nfsClientIdentity(clientID), "", true)
 		lockDeleg.NotificationMask = notifMask
 		if err := lm.GrantDelegation(fhKey, lockDeleg); err != nil {
-			logger.Debug("LockManager directory delegation grant failed, continuing with local state",
+			logger.Debug("directory delegation denied by lock manager",
+				"client_id", clientID,
 				"error", err)
-		} else {
-			sm.delegStateidMap[lockDeleg.DelegationID] = stateid
-			deleg.LockManagerDelegID = lockDeleg.DelegationID
+			return nil, err
 		}
+		sm.delegStateidMap[lockDeleg.DelegationID] = stateid
+		deleg.LockManagerDelegID = lockDeleg.DelegationID
 	}
+
+	sm.delegByOther[other] = deleg
+	sm.delegByFile[fhKey] = append(sm.delegByFile[fhKey], deleg)
 
 	logger.Info("Directory delegation granted",
 		"client_id", clientID,

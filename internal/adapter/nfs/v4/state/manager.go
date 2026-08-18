@@ -2184,7 +2184,7 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 	// Build the protocol-agnostic lock owner
 	owner := lock.LockOwner{
 		OwnerID:   lockState.LockOwner.LockManagerOwnerID(),
-		ClientID:  fmt.Sprintf("nfs4:%d", lockState.LockOwner.ClientID),
+		ClientID:  nfsClientIdentity(lockState.LockOwner.ClientID),
 		ShareName: "",
 	}
 
@@ -2438,7 +2438,7 @@ func (sm *StateManager) UnlockFile(
 	if lm := sm.lockManagerFor(lockState.FileHandle); lm != nil {
 		owner := lock.LockOwner{
 			OwnerID:   lockOwner.LockManagerOwnerID(),
-			ClientID:  fmt.Sprintf("nfs4:%d", lockOwner.ClientID),
+			ClientID:  nfsClientIdentity(lockOwner.ClientID),
 			ShareName: "",
 		}
 

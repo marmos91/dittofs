@@ -88,6 +88,14 @@ func makeLockOwnerKey(clientID uint64, ownerData []byte) lockOwnerKey {
 // other protocols (e.g. SMB) sharing the unified lock map.
 const lockManagerOwnerIDPrefix = "nfs4:"
 
+// nfsClientIdentity builds the LockManager client identity for an NFSv4 client.
+// Every row this StateManager puts in the unified lock map — byte-range locks
+// and delegations alike — carries it, so break paths that exclude by client can
+// tell a client's own state from another client's.
+func nfsClientIdentity(clientID uint64) string {
+	return fmt.Sprintf("%s%d", lockManagerOwnerIDPrefix, clientID)
+}
+
 // lockManagerOwnerID builds the LockManager owner ID for an NFSv4 lock-owner.
 // It is exactly lockManagerOwnerIDPrefix + makeLockOwnerKey(...) so the lock
 // manager identity stays in lock-step with the internal lock-owner map key:
