@@ -175,6 +175,17 @@ failed to test CSN with replay flag
 ]
 EOF
 
+run_case "one draw excuses only one failure block" 1 <<'EOF'
+test: smb2.replay.channel-sequence
+Testing setinfo (replay: true) with CSN 0x7fff, expecting: NT_STATUS_FILE_NOT_AVAILABLE
+failure: smb2.replay.channel-sequence [
+failed to test CSN with replay flag
+]
+failure: smb2.replay.channel-sequence [
+a second, unrelated failure
+]
+EOF
+
 run_case "the excused draw does not leak into the next test" 1 <<'EOF'
 test: smb2.replay.channel-sequence
 Testing setinfo (replay: true) with CSN 0x7fff, expecting: NT_STATUS_FILE_NOT_AVAILABLE

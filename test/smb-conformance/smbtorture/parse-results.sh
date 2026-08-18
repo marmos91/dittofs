@@ -181,6 +181,9 @@ while IFS= read -r line; do
         if [[ "$line" =~ ^(failure|error):[[:space:]]+ ]]; then
             pending_block=("$line")
             if $csn_boundary_drawn && [[ "$line" == *channel-sequence* ]]; then
+                # One draw excuses one failure; a second block in the same
+                # test is graded normally.
+                csn_boundary_drawn=false
                 pending_is_flake=true
             fi
         else
