@@ -11,13 +11,13 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journal"
 )
 
-// WarmResult summarizes a WarmAll run: how many blocks were fetched from the
-// remote tier, how many bytes that fetch moved, and how many blocks were
-// already physically present locally (skipped without a remote round-trip).
+// WarmResult summarizes a WarmAll run: how many chunks were fetched from the
+// remote tier and how many bytes that fetch moved. Every enumerated chunk is
+// fetched, so BlocksFetched is also the run's total work — see WarmAll for why
+// there is no already-local count.
 type WarmResult struct {
-	BlocksFetched      int64 `json:"blocks_fetched"`
-	BytesFetched       int64 `json:"bytes_fetched"`
-	BlocksAlreadyLocal int64 `json:"blocks_already_local"`
+	BlocksFetched int64 `json:"blocks_fetched"`
+	BytesFetched  int64 `json:"bytes_fetched"`
 }
 
 // warmTarget identifies one FileChunk row that must be fetched. It carries the
@@ -33,17 +33,24 @@ type warmTarget struct {
 // WarmAll proactively materializes every block of every payload in this share
 // onto the local CAS tier by reusing the per-block fetch primitive
 // (fetchResolvedBlock). It enumerates payloads from the authoritative metadata
-// (fileChunkStore.EnumeratePayloads) and the per-payload FileChunk rows, skips
-// any block already present locally, and fetches the rest with bounded
-// concurrency (SyncerConfig.ParallelDownloads). Enumerating the metadata rather
-// than the local store's ListFiles is what lets warm materialize payloads whose
-// append log was discarded after rollup — their FileChunk rows survive, but
+// (fileChunkStore.EnumeratePayloads) and the per-payload FileChunk rows, and
+// fetches every one of them with bounded concurrency
+// (SyncerConfig.ParallelDownloads). Enumerating the metadata rather than the
+// local store's ListFiles is what lets warm materialize payloads whose append
+// log was discarded after rollup — their FileChunk rows survive, but
 // local.ListFiles no longer reports them, so the old surface made warm a silent
 // no-op on rolled-up shares (#1374).
 //
+// Already-local chunks are re-fetched rather than skipped. The local tier is
+// keyed by (payloadID, offset) and exposes no per-range residency probe: its
+// DataExtents reports evicted ranges as data, so using it to decide "already
+// local" would skip exactly the cold chunks warm exists to fetch. Re-hydrating a
+// warm chunk is idempotent, so the cost of not knowing is a redundant GET, while
+// the cost of guessing wrong is a warm run that silently does nothing.
+//
 // progress (may be nil) is invoked after each block is processed with the
 // running (done, total) counts so callers can drive a poll/UI. total is the
-// number of NOT-already-local blocks (the blocks this run will actually fetch).
+// number of enumerated chunks, which is what this run will fetch.
 //
 // A nil remote tier is an error: there is nothing to warm from. A fetch that
 // fails with fs.ErrDiskFull is terminal — the bounded local tier cannot hold
@@ -57,14 +64,13 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		return WarmResult{}, errors.New("warm: share has no remote tier to warm from")
 	}
 
-	// Enumerate all FileChunk rows and split into already-local (counted,
-	// skipped) and to-fetch (the work list). The enumeration walks the same
-	// surface as populateBlockCounts: fileChunkStore.EnumeratePayloads ->
+	// Enumerate all FileChunk rows into the work list. The enumeration walks the
+	// same surface as populateBlockCounts: fileChunkStore.EnumeratePayloads ->
 	// per-payload ListFileChunks (the authoritative metadata, which survives
-	// rollup). Each to-fetch target carries the resolved row so the worker
-	// fetches by the row in hand (fetchResolvedBlock) instead of round-tripping
-	// through a BlockSize-aligned blockIdx lookup, which would miss every
-	// non-aligned FastCDC chunk (#1374).
+	// rollup). Each target carries the resolved row so the worker fetches by the
+	// row in hand (fetchResolvedBlock) instead of round-tripping through a
+	// BlockSize-aligned blockIdx lookup, which would miss every non-aligned
+	// FastCDC chunk (#1374).
 	var payloadIDs []string
 	if err := m.fileChunkStore.EnumeratePayloads(ctx, func(payloadID string) error {
 		payloadIDs = append(payloadIDs, payloadID)
@@ -73,10 +79,7 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		return WarmResult{}, fmt.Errorf("warm: enumerate payloads: %w", err)
 	}
 
-	var (
-		targets      []warmTarget
-		alreadyLocal int64
-	)
+	var targets []warmTarget
 	for _, payloadID := range payloadIDs {
 		if err := ctx.Err(); err != nil {
 			return WarmResult{}, err
@@ -92,9 +95,6 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 			if _, ok := block.ParseChunkOffset(fb.ID); !ok {
 				continue
 			}
-			// ponytail: no per-hash local-presence probe (journal is not
-			// hash-keyed), so warm every covering chunk. Re-hydrating an
-			// already-warm chunk is idempotent — a redundant GET at worst.
 			targets = append(targets, warmTarget{payloadID: payloadID, fb: fb})
 		}
 	}
@@ -104,7 +104,7 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		progress(0, total)
 	}
 	if total == 0 {
-		return WarmResult{BlocksAlreadyLocal: alreadyLocal}, nil
+		return WarmResult{}, nil
 	}
 
 	var (
@@ -163,17 +163,11 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		})
 	}
 
-	if err := g.Wait(); err != nil {
-		return WarmResult{
-			BlocksFetched:      blocksFetched.Load(),
-			BytesFetched:       bytesFetched.Load(),
-			BlocksAlreadyLocal: alreadyLocal,
-		}, err
-	}
-
+	// Counts are read after Wait so both the success and failure returns report
+	// everything that actually landed.
+	err := g.Wait()
 	return WarmResult{
-		BlocksFetched:      blocksFetched.Load(),
-		BytesFetched:       bytesFetched.Load(),
-		BlocksAlreadyLocal: alreadyLocal,
-	}, nil
+		BlocksFetched: blocksFetched.Load(),
+		BytesFetched:  bytesFetched.Load(),
+	}, err
 }

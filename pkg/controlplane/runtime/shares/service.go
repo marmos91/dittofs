@@ -2843,9 +2843,8 @@ func (s *Service) StartWarm(_ context.Context, shareName string) (*WarmJob, erro
 	job := s.warmJobs.start(shareName, usedBytes, func(ctx context.Context, progress func(done, total int64)) (warmAllResult, error) {
 		res, err := bs.WarmAll(ctx, progress)
 		return warmAllResult{
-			BlocksFetched:      res.BlocksFetched,
-			BytesFetched:       res.BytesFetched,
-			BlocksAlreadyLocal: res.BlocksAlreadyLocal,
+			BlocksFetched: res.BlocksFetched,
+			BytesFetched:  res.BytesFetched,
 		}, err
 	})
 	return job, nil

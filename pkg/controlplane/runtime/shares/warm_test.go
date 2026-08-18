@@ -122,7 +122,7 @@ func TestWarmRegistry_WarnsOnEmptyEnumerationNonEmptyShare(t *testing.T) {
 
 	// A run that DID enumerate blocks must not warn even if used bytes > 0.
 	jobOK := r.start("/full", 4096, func(_ context.Context, _ func(done, total int64)) (warmAllResult, error) {
-		return warmAllResult{BlocksAlreadyLocal: 3}, nil
+		return warmAllResult{BlocksFetched: 3}, nil
 	})
 	waitFor(t, func() bool {
 		j, _ := r.get(jobOK.ID)

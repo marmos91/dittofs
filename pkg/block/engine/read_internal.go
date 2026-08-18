@@ -78,12 +78,27 @@ func (bs *Store) healCorruptWarmRead(ctx context.Context, payloadID string, data
 // the covering FileChunk rows, does one BLAKE3-verified ranged read per chunk,
 // and Hydrates the plaintext at the chunk's file offset; a range with no remote
 // chunk (genuine sparse hole) is left for ReadAt's zero-fill below.
+//
+// The re-read's cold flag is the post-condition, not a leftover: hydration is
+// supposed to have made every written-but-evicted byte in the window local
+// again, so a window still reporting cold means some byte the manifest claims
+// was written could not be brought back. ReadAt zero-fills what it cannot serve,
+// so accepting a cold re-read would hand the caller zeros for real data with no
+// error anywhere. Fail closed instead. A never-written hole does not report
+// cold, so a genuinely sparse file still reads as zeros; a zero-length window
+// never reaches here (readAtInternal returns early), and would report cold=false
+// regardless, so the guard has nothing to fail open on.
 func (bs *Store) ensureAndReadFromLocal(ctx context.Context, payloadID string, dest []byte, offset uint64) error {
 	if _, err := bs.syncer.EnsureAvailableAndRead(ctx, payloadID, offset, uint32(len(dest)), dest); err != nil {
 		return fmt.Errorf("cold read hydrate failed: %w", err)
 	}
-	if _, _, err := bs.local.ReadAt(ctx, payloadID, int64(offset), dest); err != nil {
+	_, cold, err := bs.local.ReadAt(ctx, payloadID, int64(offset), dest)
+	if err != nil {
 		return fmt.Errorf("read after hydrate failed: %w", err)
+	}
+	if cold {
+		return fmt.Errorf("window for %s at offset %d (%d bytes) is still cold after hydrate: %w",
+			payloadID, offset, len(dest), block.ErrChunkNotFound)
 	}
 	return nil
 }
@@ -146,32 +161,63 @@ type chunkAtOffsetResolver interface {
 	GetFileChunkAtOffset(ctx context.Context, payloadID string, off uint64) (*block.FileChunk, error)
 }
 
-// resolveCovering returns the FileChunk covering absolute byte offset off and
-// its parsed absolute start offset, or (nil, 0, nil) for a hole. When the store
-// implements chunkAtOffsetResolver (badger) it uses the indexed single-chunk
-// lookup that avoids enumerating the whole per-payload manifest; otherwise it
-// falls back to ListFileChunks + findRowCoveringOffset (memory/sqlite/postgres —
-// not the profiled hot path).
-func resolveCovering(ctx context.Context, store block.EngineFileChunkStore, payloadID string, off uint64) (*block.FileChunk, uint64, error) {
-	if store == nil {
-		return nil, 0, nil
+// chunkWindowResolver answers covering and successor lookups for one payload
+// across a whole window walk. A backend that indexes the lookup is asked per
+// offset, exactly as a single-shot resolve would. A backend without the index
+// falls back to a ListFileChunks scan, and a walk crossing K chunks would then
+// pay K full per-payload manifest fetches; the resolver takes that scan once and
+// answers every offset of the walk from the same rows, so the walk costs one
+// fetch regardless of how many chunks it spans.
+//
+// The snapshot is deliberately scoped to a single walk. A manifest mutating
+// mid-walk yields a torn view either way, and one consistent view is the safer
+// of the two.
+type chunkWindowResolver struct {
+	store     block.EngineFileChunkStore
+	payloadID string
+	rows      []*block.FileChunk
+	listed    bool
+}
+
+func newChunkWindowResolver(store block.EngineFileChunkStore, payloadID string) *chunkWindowResolver {
+	return &chunkWindowResolver{store: store, payloadID: payloadID}
+}
+
+// list returns the payload's manifest rows, scanning at most once per resolver.
+// A payload with no rows caches the empty snapshot too, so a sparse payload is
+// not re-scanned on every offset of the walk.
+func (r *chunkWindowResolver) list(ctx context.Context) ([]*block.FileChunk, error) {
+	if r.listed {
+		return r.rows, nil
 	}
-	if r, ok := store.(chunkAtOffsetResolver); ok {
-		fb, err := r.GetFileChunkAtOffset(ctx, payloadID, off)
+	rows, err := r.store.ListFileChunks(ctx, r.payloadID)
+	if err != nil {
+		if errors.Is(err, block.ErrFileChunkNotFound) {
+			r.listed = true
+			return nil, nil
+		}
+		return nil, err
+	}
+	r.rows, r.listed = rows, true
+	return rows, nil
+}
+
+// covering returns the FileChunk covering absolute byte offset off and its
+// parsed absolute start offset, or (nil, 0, nil) for a hole.
+func (r *chunkWindowResolver) covering(ctx context.Context, off uint64) (*block.FileChunk, uint64, error) {
+	if idx, ok := r.store.(chunkAtOffsetResolver); ok {
+		fb, err := idx.GetFileChunkAtOffset(ctx, r.payloadID, off)
 		if err != nil || fb == nil {
 			return nil, 0, err
 		}
-		abs, ok := block.ParseChunkOffset(fb.ID)
-		if !ok {
+		abs, parsed := block.ParseChunkOffset(fb.ID)
+		if !parsed {
 			return nil, 0, fmt.Errorf("%w: malformed FileChunk ID %q", block.ErrManifestInconsistent, fb.ID)
 		}
 		return fb, abs, nil
 	}
-	rows, err := store.ListFileChunks(ctx, payloadID)
+	rows, err := r.list(ctx)
 	if err != nil {
-		if errors.Is(err, block.ErrFileChunkNotFound) {
-			return nil, 0, nil
-		}
 		return nil, 0, err
 	}
 	rw, err := findRowCoveringOffset(rows, off)
@@ -182,6 +228,20 @@ func resolveCovering(ctx context.Context, store block.EngineFileChunkStore, payl
 		return nil, 0, nil
 	}
 	return rw.fb, rw.absOffset, nil
+}
+
+// resolveCovering returns the FileChunk covering absolute byte offset off and
+// its parsed absolute start offset, or (nil, 0, nil) for a hole. When the store
+// implements chunkAtOffsetResolver (badger) it uses the indexed single-chunk
+// lookup that avoids enumerating the whole per-payload manifest; otherwise it
+// falls back to ListFileChunks + findRowCoveringOffset (memory/sqlite/postgres —
+// not the profiled hot path). Callers walking a whole window should hold a
+// chunkWindowResolver instead so the fallback scan is paid once.
+func resolveCovering(ctx context.Context, store block.EngineFileChunkStore, payloadID string, off uint64) (*block.FileChunk, uint64, error) {
+	if store == nil {
+		return nil, 0, nil
+	}
+	return newChunkWindowResolver(store, payloadID).covering(ctx, off)
 }
 
 // chunkAtOrAfterOffsetResolver is the indexed successor lookup, implemented only
@@ -208,34 +268,36 @@ type chunkAtOrAfterOffsetResolver interface {
 // over. Unlike coverage, the successor answer is not scoped to a single row: an
 // unplaceable row sits at an unknown offset, so it may be the true successor,
 // and returning a later one would silently reclassify the bytes it holds as hole
-// for the caller to zero-fill. The two lookups here and in resolveCovering are
-// independent — a backend may index coverage without indexing succession, and
-// each walk is its own ListFileChunks snapshot — so the guard cannot be borrowed
-// from findRowCoveringOffset having already run.
+// for the caller to zero-fill. The coverage and succession lookups are
+// independent — a backend may index coverage without indexing succession — so
+// the guard cannot be borrowed from findRowCoveringOffset having already run,
+// even when both fall back to the same snapshot.
 func resolveNextChunkStart(ctx context.Context, store block.EngineFileChunkStore, payloadID string, off uint64) (uint64, bool, error) {
 	if store == nil {
 		return 0, false, nil
 	}
+	return newChunkWindowResolver(store, payloadID).nextStart(ctx, off)
+}
+
+// nextStart is resolveNextChunkStart over this resolver's snapshot.
+func (r *chunkWindowResolver) nextStart(ctx context.Context, off uint64) (uint64, bool, error) {
 	if off == math.MaxUint64 {
 		return 0, false, nil // nothing can start after the last representable offset
 	}
-	if r, ok := store.(chunkAtOrAfterOffsetResolver); ok {
-		fb, err := r.GetFileChunkAtOrAfterOffset(ctx, payloadID, off+1)
+	if idx, ok := r.store.(chunkAtOrAfterOffsetResolver); ok {
+		fb, err := idx.GetFileChunkAtOrAfterOffset(ctx, r.payloadID, off+1)
 		if err != nil || fb == nil {
 			return 0, false, err
 		}
-		abs, ok := block.ParseChunkOffset(fb.ID)
-		if !ok {
+		abs, parsed := block.ParseChunkOffset(fb.ID)
+		if !parsed {
 			return 0, false, fmt.Errorf("%w: nothing covers offset %d and the next chunk is unplaceable row %q",
 				block.ErrManifestInconsistent, off, fb.ID)
 		}
 		return abs, true, nil
 	}
-	rows, err := store.ListFileChunks(ctx, payloadID)
+	rows, err := r.list(ctx)
 	if err != nil {
-		if errors.Is(err, block.ErrFileChunkNotFound) {
-			return 0, false, nil
-		}
 		return 0, false, err
 	}
 	var (

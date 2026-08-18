@@ -215,6 +215,13 @@ func walkAuditShareFiles(ctx context.Context, store metadata.Store, dirHandle me
 			return fmt.Errorf("list children: %w", err)
 		}
 		for _, e := range entries {
+			// The per-entry GetFile is load-bearing, not an oversight: e.Attr is
+			// the READDIRPLUS projection, and the relational backends leave its
+			// Blocks slice and PayloadID unloaded because hydrating ChunkRefs per
+			// row would make a listing quadratic. Building the file from e.Attr
+			// would hand the audit an empty manifest for every file and report a
+			// clean zero-ref result on a share full of dangling refs — the audit
+			// would fail open on exactly the corruption it exists to find.
 			child, err := store.GetFile(ctx, e.Handle)
 			if err != nil {
 				return fmt.Errorf("get file %q: %w", e.Name, err)

@@ -354,6 +354,10 @@ func (c *reapCoordinator) FindByObjectID(_ context.Context, _ block.ObjectID) ([
 	return nil, nil
 }
 
+// ReprojectBlocks is a no-op: this fake does not model the Blocks
+// projection.
+func (c *reapCoordinator) ReprojectBlocks(_ context.Context, _ string) error { return nil }
+
 func (c *reapCoordinator) GetFileObjectID(_ context.Context, _ string) (block.ObjectID, error) {
 	return block.ObjectID{}, nil
 }

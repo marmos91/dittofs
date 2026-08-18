@@ -175,6 +175,10 @@ func (f *fakeCoordinator) FindByObjectID(_ context.Context, oid block.ObjectID) 
 // sentinel + nil when the map is unset / payload absent. Mirrors the
 // runtime coordinator's "no row → zero ObjectID" disposition so unit
 // tests exercise the same trigger-condition code path as production.
+// ReprojectBlocks is a no-op: this fake does not model the Blocks
+// projection.
+func (f *fakeCoordinator) ReprojectBlocks(_ context.Context, _ string) error { return nil }
+
 func (f *fakeCoordinator) GetFileObjectID(_ context.Context, payloadID string) (block.ObjectID, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
