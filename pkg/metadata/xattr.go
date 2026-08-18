@@ -118,12 +118,25 @@ func baseNameForHandle(ctx context.Context, files Files, handle FileHandle, file
 	return parent, base, nil
 }
 
-// findStreamChild scans the parent directory for a "<base>:<name>" child whose
-// stream name matches name case-insensitively, returning its handle, attrs, and
-// whether a match was found. parent may be nil (no streams).
+// findStreamChild resolves the "<base>:<name>" child of the parent directory,
+// returning its handle, attrs, and whether a match was found. parent may be nil
+// (no streams). The exact child name is tried first through the directory's
+// name index; only when no child carries that exact name does the parent get
+// scanned, which is what makes a stream name differing from the request in case
+// still resolve.
 func findStreamChild(ctx context.Context, files Files, parent FileHandle, baseName, name string) (FileHandle, *FileAttr, bool, error) {
 	if parent == nil || baseName == "" {
 		return nil, nil, false, nil
+	}
+	switch handle, err := files.GetChild(ctx, parent, streamChildPrefix(baseName)+name); {
+	case err == nil && handle != nil:
+		file, ferr := files.GetFile(ctx, handle)
+		if ferr != nil {
+			return nil, nil, false, ferr
+		}
+		return handle, &file.FileAttr, true, nil
+	case err != nil && !IsNotFoundError(err):
+		return nil, nil, false, err
 	}
 	cursor := ""
 	for {

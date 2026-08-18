@@ -253,6 +253,17 @@ func testXattrStreamBackedGet(t *testing.T, factory StoreFactory) {
 	if !found || !bytes.Equal(val, content) {
 		t.Fatalf("stream-backed Get = (%q, %v), want (%q, true)", val, found, content)
 	}
+
+	// A request whose casing differs from the stored stream name resolves to the
+	// same stream: the exact-name lookup misses and the parent scan matches it
+	// case-insensitively.
+	val, found, err = metadata.ResolveGetXattr(ctx, store, handle, "SV", testReader(content))
+	if err != nil {
+		t.Fatalf("ResolveGetXattr(stream, mixed case): %v", err)
+	}
+	if !found || !bytes.Equal(val, content) {
+		t.Fatalf("case-insensitive stream Get = (%q, %v), want (%q, true)", val, found, content)
+	}
 }
 
 func testXattrStreamPrecedence(t *testing.T, factory StoreFactory) {
