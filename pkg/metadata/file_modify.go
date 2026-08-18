@@ -799,6 +799,40 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	// persists), never corrupt data.
 	now := time.Now()
 	txErr := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
+		// The GetChild lookups above ran outside this transaction and are
+		// advisory only: a concurrent rename or unlink can retarget or remove
+		// either name in the gap, and no lock covers a file rename. Re-resolve
+		// both namespace edges through the transaction and abort when they no
+		// longer match what was read, so two renames onto the same destination
+		// cannot both commit and orphan an inode. Reading the child keys
+		// through the transaction also enters them in its read set, which lets
+		// an optimistic backend detect the write-write conflict it otherwise
+		// cannot see.
+		txSrcHandle, srcErr := tx.GetChild(ctx.Context, fromDir, fromName)
+		if srcErr != nil {
+			return srcErr
+		}
+		if string(txSrcHandle) != string(srcHandle) {
+			return &StoreError{
+				Code:    ErrConflict,
+				Message: "source entry changed during rename",
+				Path:    fromName,
+			}
+		}
+		txDstHandle, dstErr := tx.GetChild(ctx.Context, toDir, toName)
+		if dstErr != nil && !IsNotFoundError(dstErr) {
+			return dstErr
+		}
+		dstNowExists := dstErr == nil
+		if dstNowExists != (dstFile != nil) ||
+			(dstNowExists && string(txDstHandle) != string(dstHandle)) {
+			return &StoreError{
+				Code:    ErrConflict,
+				Message: "destination entry changed during rename",
+				Path:    toName,
+			}
+		}
+
 		// Re-read the source/destination directories inside the transaction so
 		// the pre-op snapshots and the timestamp mutations derive from the same
 		// committed state (After then monotonic w.r.t. Before).

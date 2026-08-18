@@ -477,11 +477,16 @@ func (s *Service) createEntry(
 		// mkdirs in one directory serialize on it — acceptable, mkdir is rare
 		// relative to file create, which is fully disjoint above.
 		if fileType == FileTypeDirectory {
+			// The read is tx-critical: a failed GetLinkCount must roll the
+			// whole create back rather than commit the new directory with the
+			// parent's ".." count left un-incremented, which permanently
+			// under-reports the parent's nlink.
 			parentLinkCount, err := tx.GetLinkCount(ctx.Context, parentHandle)
-			if err == nil {
-				if err := tx.SetLinkCount(ctx.Context, parentHandle, parentLinkCount+1); err != nil {
-					return err
-				}
+			if err != nil {
+				return err
+			}
+			if err := tx.SetLinkCount(ctx.Context, parentHandle, parentLinkCount+1); err != nil {
+				return err
 			}
 		}
 		return nil
