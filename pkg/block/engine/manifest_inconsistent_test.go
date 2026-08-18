@@ -80,3 +80,28 @@ func TestFindRowCoveringOffset_WellFormedRowResolves(t *testing.T) {
 		t.Fatalf("absOffset = %d, want 4096", rw.absOffset)
 	}
 }
+
+// Overlapping rows resolve to the greatest start, matching the indexed badger
+// lookup. A truncate narrows a straddling row to the new size and a later write
+// re-carves from an earlier boundary, so the narrowed row keeps claiming bytes
+// the new row also covers; the newer row holds what the last write put there.
+func TestFindRowCoveringOffset_OverlapResolvesToGreatestStart(t *testing.T) {
+	rows := []*block.FileChunk{
+		{ID: "payload-1/0", DataSize: 8192},    // narrowed survivor, reached first
+		{ID: "payload-1/4096", DataSize: 4096}, // newer row over [4096, 8192)
+	}
+
+	rw, err := findRowCoveringOffset(rows, 5000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rw == nil || rw.absOffset != 4096 {
+		t.Fatalf("rw = %+v, want the row starting at 4096", rw)
+	}
+
+	// Offsets only the older row covers still resolve to it.
+	rw, err = findRowCoveringOffset(rows, 1000)
+	if err != nil || rw == nil || rw.absOffset != 0 {
+		t.Fatalf("findRowCoveringOffset(1000) = %+v, %v; want the row at 0", rw, err)
+	}
+}

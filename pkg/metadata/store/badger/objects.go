@@ -451,6 +451,11 @@ func loadFileChunkAtIndexOffset(txn *badger.Txn, payloadID string, off uint64) (
 // offset without materializing the whole manifest (no per-row Get, no JSON
 // unmarshal, no sort), then two point Gets fetch the winning row.
 //
+// Largest-start only decides anything if rows overlap, which a truncate followed
+// by a re-carving write can produce. It resolves to the newer row, and the
+// engine's ListFileChunks fallback picks the same one so both paths answer a
+// read alike.
+//
 // ponytail: O(n) keys-only scan per read; upgrade to a big-endian fb-off index
 // for a true O(log n) reverse-seek only if profiling at real N still shows it.
 func (s *BadgerMetadataStore) GetFileChunkAtOffset(_ context.Context, payloadID string, off uint64) (*metadata.FileChunk, error) {

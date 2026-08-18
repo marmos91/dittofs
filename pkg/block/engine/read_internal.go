@@ -115,8 +115,18 @@ type rowWithOffset struct {
 // The alternative, refusing the moment such a row is seen at any offset, would
 // take a file that reads correctly apart from one damaged range and make all of
 // it unavailable.
+//
+// When two rows cover target the greatest start wins, which is what the indexed
+// badger lookup returns. Returning whichever row the walk reached first made the
+// answer depend on ListFileChunks ordering, so the same read could serve
+// different bytes on different backends. Overlap is not hypothetical: a truncate
+// narrows a straddling row to the new size, and a later write re-carves from an
+// earlier chunk boundary, leaving the narrowed row still claiming bytes the new
+// row also covers. The greater start is the newer row, so it is also the one
+// holding the bytes the last write put there.
 func findRowCoveringOffset(rows []*block.FileChunk, target uint64) (*rowWithOffset, error) {
 	unplaceable := ""
+	var hit *rowWithOffset
 	for _, fb := range rows {
 		if fb == nil {
 			continue
@@ -129,14 +139,16 @@ func findRowCoveringOffset(rows []*block.FileChunk, target uint64) (*rowWithOffs
 			continue
 		}
 		if target >= abs && target < abs+uint64(fb.DataSize) {
-			return &rowWithOffset{fb: fb, absOffset: abs}, nil
+			if hit == nil || abs > hit.absOffset {
+				hit = &rowWithOffset{fb: fb, absOffset: abs}
+			}
 		}
 	}
-	if unplaceable != "" {
+	if hit == nil && unplaceable != "" {
 		return nil, fmt.Errorf("%w: nothing covers offset %d and manifest holds unplaceable row %q",
 			block.ErrManifestInconsistent, target, unplaceable)
 	}
-	return nil, nil
+	return hit, nil
 }
 
 // chunkAtOffsetResolver is the indexed covering-chunk lookup, implemented only
