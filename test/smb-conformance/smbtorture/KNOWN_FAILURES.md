@@ -367,6 +367,21 @@ Testing setinfo (replay: true) with CSN 0x7fff, expecting: NT_STATUS_FILE_NOT_AV
 WARNING!: replay.c:4627: status was NT_STATUS_OK, expected NT_STATUS_FILE_NOT_AVAILABLE
 ```
 
+Confirmed against real Samba, not just derived from its source. smbtorture
+4.22.6 was run against smbd 4.22.6 (`quay.io/samba.org/samba-server:v0.8`) with
+libc `rand()` forced to 0 via `LD_PRELOAD`, which makes `csn_rand_high` draw
+exactly `0x7fff` every time:
+
+```
+Testing write (replay: false) with CSN 0x7fff, expecting: NT_STATUS_FILE_NOT_AVAILABLE
+WARNING!: replay.c:4627: status was NT_STATUS_OK, expected NT_STATUS_FILE_NOT_AVAILABLE
+```
+
+Same file, same line, same expected/actual pair as the DittoFS failure. Without
+the preload the same Samba passes the whole table, including the fixed `0x7fff`
+row that requires `STATUS_SUCCESS` — which is the contradiction, observed on
+upstream's own server.
+
 `parse-results.sh` now reclassifies a `channel-sequence` failure to `skip:`
 only when that exact draw was printed during the test, in the same pre-pass
 that already excuses connection flakes. Any other channel-sequence failure —
