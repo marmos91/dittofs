@@ -37,13 +37,15 @@ import (
 // The store is safe for concurrent use from multiple goroutines, but it holds
 // no store-wide mutex. The metadata data path is serialized by BadgerDB's own
 // MVCC transactions: conflicting writers fail to commit and are retried by
-// withTransaction. Only the in-memory side state carries explicit locks, each
-// scoped to the subsystem it guards (capabilities, the lazily built lock /
-// client / durable / recovery sub-stores, quotas, and the stats cache).
+// withTransaction. In-memory side state is guarded per subsystem rather than
+// globally: a mutex each for capabilities, the lazily built lock / client /
+// durable / recovery sub-stores, quotas, and the stats cache, while the read /
+// parent / dirent / share caches are lock-free (sync.Map plus generation
+// counters).
 //
 // Storage Model:
 // The store uses a key-value model with namespaced prefixes to organize different
-// data types (see keys.go for detailed schema documentation). This approach provides:
+// data types (see encoding.go for detailed schema documentation). This approach provides:
 //   - No schema conflicts between data types
 //   - Efficient point lookups (O(1))
 //   - Fast range scans for directory listings and sessions
@@ -52,8 +54,9 @@ import (
 // File Handle Strategy:
 // GenerateHandle ignores the path it is given and mints a fresh random UUID
 // handle scoped to the share, so a handle is independent of the name a file is
-// reachable under and survives renames. See encoding.go for the handle layout
-// and the key namespace it indexes.
+// reachable under and survives renames. The handle layout is owned by
+// metadata.EncodeShareHandle; the UUID it carries is what every key namespace
+// in encoding.go is indexed by.
 type BadgerMetadataStore struct {
 	// db is the BadgerDB database handle (thread-safe, uses internal MVCC)
 	db *badger.DB

@@ -104,19 +104,10 @@ type ShareSession struct {
 //
 // Handle Generation:
 //
-// File handles are generated using path-based identifiers in the format:
-// "shareName:fullPath" (e.g., "/export:/images/photo.jpg").
-//
-// This approach ensures:
-//   - Determinism: Same path always generates the same handle
-//   - Reversibility: Path can be extracted from handle for import/export
-//   - Stability: Handles remain stable across server restarts
-//   - Human-readable: Easy to debug and inspect
-//   - Import-ready: Enables future filesystem import features
-//
-// The path-based approach matches the BadgerDB metadata store implementation,
-// ensuring consistent behavior across all metadata store backends. This
-// consistency is critical for implementing metadata import/export features.
+// generateFileHandle ignores the path it is given and encodes a fresh UUID
+// against the share name via metadata.EncodeShareHandle, so a handle is
+// independent of the name a file is reachable under and survives renames.
+// The badger backend mints handles the same way.
 //
 // Consistency Guarantees:
 //
