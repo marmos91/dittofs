@@ -80,3 +80,26 @@ func TestFindRowCoveringOffset_WellFormedRowResolves(t *testing.T) {
 		t.Fatalf("absOffset = %d, want 4096", rw.absOffset)
 	}
 }
+
+// Overlap is an invariant the carve maintains, not one the lookup may assume:
+// the row this walk reaches first need not be the one the indexed badger path
+// (largest start) returns, and both read back as ordinary data.
+func TestFindRowCoveringOffset_OverlappingRowsAreReported(t *testing.T) {
+	rows := []*block.FileChunk{
+		{ID: "payload-1/0", DataSize: 8192},
+		{ID: "payload-1/4096", DataSize: 4096}, // overlaps [4096, 8192)
+	}
+
+	rw, err := findRowCoveringOffset(rows, 5000)
+	if err == nil {
+		t.Fatalf("offset 5000 returned rw=%v err=nil; two rows cover it", rw)
+	}
+	if !errors.Is(err, block.ErrManifestInconsistent) {
+		t.Fatalf("err = %v, want it to wrap ErrManifestInconsistent", err)
+	}
+	// Offsets only one row covers stay readable.
+	rw, err = findRowCoveringOffset(rows, 1000)
+	if err != nil || rw == nil || rw.absOffset != 0 {
+		t.Fatalf("findRowCoveringOffset(1000) = %+v, %v; want the row at 0", rw, err)
+	}
+}

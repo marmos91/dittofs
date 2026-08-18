@@ -115,8 +115,14 @@ type rowWithOffset struct {
 // The alternative, refusing the moment such a row is seen at any offset, would
 // take a file that reads correctly apart from one damaged range and make all of
 // it unavailable.
+//
+// Two rows covering target is reported rather than resolved: which one this walk
+// reaches first depends on ListFileChunks ordering, while the indexed badger
+// lookup takes the greatest start, so either choice could serve bytes the other
+// path would not.
 func findRowCoveringOffset(rows []*block.FileChunk, target uint64) (*rowWithOffset, error) {
 	unplaceable := ""
+	var hit *rowWithOffset
 	for _, fb := range rows {
 		if fb == nil {
 			continue
@@ -129,14 +135,18 @@ func findRowCoveringOffset(rows []*block.FileChunk, target uint64) (*rowWithOffs
 			continue
 		}
 		if target >= abs && target < abs+uint64(fb.DataSize) {
-			return &rowWithOffset{fb: fb, absOffset: abs}, nil
+			if hit != nil {
+				return nil, fmt.Errorf("%w: offset %d covered by both %q and %q",
+					block.ErrManifestInconsistent, target, hit.fb.ID, fb.ID)
+			}
+			hit = &rowWithOffset{fb: fb, absOffset: abs}
 		}
 	}
-	if unplaceable != "" {
+	if hit == nil && unplaceable != "" {
 		return nil, fmt.Errorf("%w: nothing covers offset %d and manifest holds unplaceable row %q",
 			block.ErrManifestInconsistent, target, unplaceable)
 	}
-	return nil, nil
+	return hit, nil
 }
 
 // chunkAtOffsetResolver is the indexed covering-chunk lookup, implemented only
