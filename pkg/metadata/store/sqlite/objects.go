@@ -674,3 +674,43 @@ func (s *SQLiteMetadataStore) InjectCorruptHashRow(ctx context.Context, blockID 
 	}
 	return nil
 }
+
+// decrementAndReapManyTx applies the -1 UPDATE and the reap-at-zero DELETE to a
+// whole id set, two statements per batch instead of two per id. The
+// `ref_count = 0` predicate on the DELETE means a bump that landed between the
+// two statements leaves that row alive, and an id with no row is a no-op — the
+// same outcomes decrementAndReapTx produces one row at a time. SQLite caps how
+// many parameters one statement may bind, so a large set runs as several
+// batches.
+func decrementAndReapManyTx(ctx context.Context, tx execer, ids []string) error {
+	const maxIDsPerStatement = 500
+	for len(ids) > 0 {
+		batch := ids[:min(len(ids), maxIDsPerStatement)]
+		ids = ids[len(batch):]
+
+		args := make([]any, len(batch))
+		for i, id := range batch {
+			args[i] = id
+		}
+		in := " WHERE id IN (?" + strings.Repeat(",?", len(batch)-1) + ")"
+
+		if _, err := tx.Exec(ctx,
+			`UPDATE file_blocks SET ref_count = MAX(ref_count - 1, 0)`+in, args...); err != nil {
+			return fmt.Errorf("decrement ref count: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM file_blocks`+in+` AND ref_count = 0`, args...); err != nil {
+			return fmt.Errorf("reap zero-ref block: %w", err)
+		}
+	}
+	return nil
+}
+
+// DecrementRefCountAndReapMany runs the batched decrement + reap on the active
+// transaction so a subsequent rollback undoes the whole set.
+func (tx *sqliteTransaction) DecrementRefCountAndReapMany(ctx context.Context, ids []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return decrementAndReapManyTx(ctx, tx.tx, ids)
+}

@@ -148,6 +148,23 @@ func (bs *Store) narrowChunkRow(ctx context.Context, payloadID string, b block.C
 	return nil
 }
 
+// distinctOffsets returns each ChunkRef's offset once, in first-seen order.
+// Every offset names its own manifest row, so a malformed list repeating one
+// must still reap it a single time — reaping twice would drop a reference the
+// file does not hold.
+func distinctOffsets(refs []block.ChunkRef) []uint64 {
+	offsets := make([]uint64, 0, len(refs))
+	seen := make(map[uint64]struct{}, len(refs))
+	for _, b := range refs {
+		if _, done := seen[b.Offset]; done {
+			continue
+		}
+		seen[b.Offset] = struct{}{}
+		offsets = append(offsets, b.Offset)
+	}
+	return offsets
+}
+
 func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks []block.ChunkRef, newSize uint64) ([]block.ChunkRef, error) {
 	if err := bs.enter(); err != nil {
 		return currentBlocks, err
@@ -207,15 +224,8 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 		// the chunk only when no row anywhere references it — so reaping this
 		// file's own rows by ID strands nothing another file still references.
 		if bs.coordinator != nil {
-			reaped := make(map[uint64]struct{}, len(dropped))
-			for _, b := range dropped {
-				if _, done := reaped[b.Offset]; done {
-					continue
-				}
-				reaped[b.Offset] = struct{}{}
-				if _, err := bs.coordinator.DecrementRefCountAndReap(ctx, payloadID, b.Offset); err != nil {
-					return currentBlocks, fmt.Errorf("reap block on truncate-drop %s/%d: %w", payloadID, b.Offset, err)
-				}
+			if err := bs.coordinator.DecrementRefCountAndReapMany(ctx, payloadID, distinctOffsets(dropped)); err != nil {
+				return currentBlocks, fmt.Errorf("reap blocks on truncate-drop %s: %w", payloadID, err)
 			}
 			// Re-materialize File.Blocks from the surviving manifest: the reap
 			// dropped the tail rows, so the projection must catch up or
@@ -300,15 +310,8 @@ func (bs *Store) PunchHole(ctx context.Context, payloadID string, currentBlocks 
 			kept = append(kept, b)
 		}
 		if bs.coordinator != nil {
-			reaped := make(map[uint64]struct{}, len(dropped))
-			for _, b := range dropped {
-				if _, done := reaped[b.Offset]; done {
-					continue
-				}
-				reaped[b.Offset] = struct{}{}
-				if _, err := bs.coordinator.DecrementRefCountAndReap(ctx, payloadID, b.Offset); err != nil {
-					return currentBlocks, fmt.Errorf("reap block on punch %s/%d: %w", payloadID, b.Offset, err)
-				}
+			if err := bs.coordinator.DecrementRefCountAndReapMany(ctx, payloadID, distinctOffsets(dropped)); err != nil {
+				return currentBlocks, fmt.Errorf("reap blocks on punch %s: %w", payloadID, err)
 			}
 			// Re-materialize File.Blocks from the surviving manifest after the
 			// reap dropped the punched rows.
@@ -390,60 +393,38 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Ch
 		bs.loadCache().OnRead(payloadID, nil, 0)
 	}
 
-	// Decrement RefCount for every ChunkRef hash before remote cleanup
-	// so the coordinator's bookkeeping is consistent even if the remote
-	// sweep fails (Truncate / janitor will reconcile orphans).
+	// Reap this file's manifest rows before remote cleanup so the coordinator's
+	// bookkeeping is consistent even if the remote sweep fails (Truncate /
+	// janitor will reconcile orphans). Rows go by exact ID "{payloadID}/{offset}"
+	// — the same content hash at TWO offsets is TWO rows and BOTH must go, while
+	// SIBLING rows in other files keep the hash in the GC live set, so dropping
+	// this file's rows strands nothing another file still references.
 	//
-	// continue past coordinator errors so the syncer.Delete
-	// remote sweep ALWAYS runs. Returning early left the local data
-	// deleted, the metadata partially decremented, and the remote alive
-	// forever — operators saw inconsistent state until GC's next pass
-	// (hours). Now we capture the first coordinator error, finish
-	// decrementing the rest, run the remote sweep unconditionally, and
-	// return errors.Join of both surfaces so the caller sees the full
-	// picture.
+	// A coordinator failure does NOT return early: the syncer.Delete remote
+	// sweep must ALWAYS run. Returning early left the local data deleted, the
+	// metadata untouched, and the remote alive forever — operators saw
+	// inconsistent state until GC's next pass (hours). The error is captured,
+	// the remote sweep runs unconditionally, and errors.Join of both surfaces
+	// goes back to the caller. The reap applies to the whole manifest or to none
+	// of it, so a failure leaves rows the GC reconcile still reclaims, never a
+	// half-decremented file.
+	//
+	// Deliberately do NOT clear the synced marker here. The marker means "these
+	// bytes are on the remote", which stays TRUE after the last reference is
+	// reaped — the remote object lives until the GC sweep physically deletes it.
+	// The steady-state remote sweep derives orphan candidates from
+	// (synced − live); clearing the marker at unlink removes the just-orphaned
+	// hash from that candidate set, so the remote object becomes invisible to GC
+	// and leaks forever (only a full-Walk reconcile could ever find it again).
+	// The sweep clears the marker itself, immediately after it deletes the
+	// remote object (sweepFromSyncedIndex / sweepByWalk → DeleteSynced), which
+	// keeps `synced` a faithful subset of remote contents. A re-Put before GC
+	// correctly skips re-upload (bytes still remote-resident); a re-Put after GC
+	// re-uploads (GC already cleared the marker).
 	var coordErr error
 	if len(blocks) > 0 && bs.coordinator != nil {
-		// Reap each block's OWN row by exact ID "{payloadID}/{offset}". Each
-		// {payloadID}/offset row is independent and unique per offset, so reap
-		// each block once, deduped by OFFSET (a defensive guard against a
-		// malformed duplicate-offset list). The SAME content hash at TWO
-		// offsets in this file is TWO rows and BOTH must be reaped.
-		//
-		// By-ID, not by-hash: cross-file dedup keep-alive is provided by
-		// SIBLING rows in other files keeping the hash in EnumerateFileChunks
-		// (the GC live set). GC sweeps the chunk only when no row anywhere
-		// references the hash, so removing this file's own rows by ID strands
-		// nothing another file still references.
-		reaped := make(map[uint64]struct{}, len(blocks))
-		for _, b := range blocks {
-			if _, done := reaped[b.Offset]; done {
-				continue
-			}
-			reaped[b.Offset] = struct{}{}
-			// Reap at RefCount 0 so the row leaves EnumerateFileChunks once no
-			// sibling references the hash, letting the GC sweep reclaim the
-			// remote chunk (#832).
-			//
-			// Deliberately do NOT clear the synced marker here. The marker means
-			// "these bytes are on the remote", which stays TRUE after the last
-			// reference is reaped — the remote object lives until the GC sweep
-			// physically deletes it. Since #1458 the steady-state remote sweep
-			// derives orphan candidates from (synced − live); clearing the marker
-			// at unlink removes the just-orphaned hash from that candidate set, so
-			// the remote object becomes invisible to GC and leaks forever (only a
-			// full-Walk reconcile could ever find it again). The sweep clears the
-			// marker itself, immediately after it deletes the remote object
-			// (sweepFromSyncedIndex / sweepByWalk → DeleteSynced), which keeps
-			// `synced` a faithful subset of remote contents. A re-Put before GC
-			// correctly skips re-upload (bytes still remote-resident); a re-Put
-			// after GC re-uploads (GC already cleared the marker) (#1433).
-			if _, err := bs.coordinator.DecrementRefCountAndReap(ctx, payloadID, b.Offset); err != nil {
-				if coordErr == nil {
-					coordErr = fmt.Errorf("reap block on delete %s/%d: %w", payloadID, b.Offset, err)
-				}
-				continue
-			}
+		if err := bs.coordinator.DecrementRefCountAndReapMany(ctx, payloadID, distinctOffsets(blocks)); err != nil {
+			coordErr = fmt.Errorf("reap blocks on delete %s: %w", payloadID, err)
 		}
 	}
 

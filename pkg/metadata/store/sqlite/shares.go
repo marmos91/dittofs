@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 )
 
@@ -52,6 +53,16 @@ func (s *SQLiteMetadataStore) GetShareOptions(ctx context.Context, shareName str
 		return nil, err
 	}
 
+	// Cache fast path: skip the SELECT + decode on a hit. Return a deep copy so
+	// callers can never mutate the shared cache entry.
+	if cached, ok := s.shareCache.Get(shareName); ok {
+		return sharecache.Clone(cached), nil
+	}
+
+	// Snapshot the invalidation generation BEFORE the backing read so a write
+	// that races this read cannot leave a stale value cached (Store checks it).
+	gen := s.shareCache.Generation()
+
 	query := `SELECT options FROM shares WHERE share_name = ?1`
 
 	var optionsJSON []byte
@@ -67,7 +78,8 @@ func (s *SQLiteMetadataStore) GetShareOptions(ctx context.Context, shareName str
 		}
 	}
 
-	return &options, nil
+	s.shareCache.Store(shareName, &options, gen)
+	return sharecache.Clone(&options), nil
 }
 
 // ============================================================================
@@ -146,6 +158,9 @@ func (s *SQLiteMetadataStore) UpdateShareOptions(ctx context.Context, shareName 
 
 	query := `UPDATE shares SET options = ?1 WHERE share_name = ?2`
 	result, err := s.exec(ctx, query, optionsData, shareName)
+	// Drop the cached options AFTER the write lands, whatever it reported: an
+	// extra invalidation costs a re-read, a missed one is a stale permission.
+	s.shareCache.InvalidateAll()
 	if err != nil {
 		return err
 	}
@@ -228,8 +243,12 @@ func (s *SQLiteMetadataStore) CreateRootDirectory(
 
 	var root *metadata.File
 	err := s.WithTransaction(ctx, func(mtx metadata.Transaction) error {
+		stx := mtx.(*sqliteTransaction)
+		// The body rewrites the shares row without going through the tx method
+		// that would flag it, so flag it here.
+		stx.sharesDirty = true
 		var txErr error
-		root, txErr = s.createRootDirectoryTx(ctx, mtx.(*sqliteTransaction).tx, shareName, attr)
+		root, txErr = s.createRootDirectoryTx(ctx, stx.tx, shareName, attr)
 		return txErr
 	})
 	if err != nil {

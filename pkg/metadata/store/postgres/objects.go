@@ -750,3 +750,29 @@ func (s *PostgresMetadataStore) InjectCorruptHashRow(ctx context.Context, blockI
 	}
 	return nil
 }
+
+// DecrementRefCountAndReapMany applies the -1 UPDATE and the reap-at-zero
+// DELETE to the whole id set in two statements on the active transaction, so a
+// subsequent rollback undoes both. The `ref_count = 0` predicate on the DELETE
+// means a bump that landed between the two statements leaves that row alive,
+// and an id with no row is a no-op — the same outcomes decrementAndReapTx
+// produces one row at a time.
+func (tx *postgresTransaction) DecrementRefCountAndReapMany(ctx context.Context, ids []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	if _, err := tx.tx.Exec(ctx,
+		`UPDATE file_blocks SET ref_count = GREATEST(ref_count - 1, 0) WHERE id = ANY($1)`,
+		ids); err != nil {
+		return fmt.Errorf("decrement ref count: %w", err)
+	}
+	if _, err := tx.tx.Exec(ctx,
+		`DELETE FROM file_blocks WHERE id = ANY($1) AND ref_count = 0`,
+		ids); err != nil {
+		return fmt.Errorf("reap zero-ref block: %w", err)
+	}
+	return nil
+}

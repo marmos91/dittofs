@@ -1482,3 +1482,7 @@ func TestResolveGracePeriod(t *testing.T) {
 		})
 	}
 }
+
+func (c *reapCoordinator) DecrementRefCountAndReapMany(ctx context.Context, payloadID string, offsets []uint64) error {
+	return reapEach(ctx, payloadID, offsets, c.DecrementRefCountAndReap)
+}

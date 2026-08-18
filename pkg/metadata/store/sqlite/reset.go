@@ -37,6 +37,9 @@ func (s *SQLiteMetadataStore) Reset(ctx context.Context) error {
 		return fmt.Errorf("reset: %w", err)
 	}
 
+	// The share records are gone; anything cached from them is stale.
+	defer s.shareCache.InvalidateAll()
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("reset: commit: %w", err)
 	}

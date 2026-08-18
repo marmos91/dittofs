@@ -205,3 +205,18 @@ func (tx *memoryTransaction) DeleteSynced(ctx context.Context, hash block.Conten
 	tx.syncedOps[hash] = syncedTxState{deleted: true}
 	return nil
 }
+
+// PutSyncedLocators overwrites the marker of every chunk. The tx-local op map
+// is in-process, so the batch is the per-chunk sequence: recording the delete
+// and then the mark leaves exactly the state DeleteSynced+MarkSynced would.
+func (tx *memoryTransaction) PutSyncedLocators(ctx context.Context, chunks []block.BlockChunkCommit) error {
+	for _, c := range chunks {
+		if err := tx.DeleteSynced(ctx, c.Hash); err != nil {
+			return err
+		}
+		if err := tx.MarkSynced(ctx, c.Hash, c.Remote); err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -261,3 +261,39 @@ func (tx *postgresTransaction) DeleteSynced(ctx context.Context, hash block.Cont
 	}
 	return nil
 }
+
+// PutSyncedLocators overwrites the marker of every chunk. The upserts are
+// pipelined as one batch, so a commit packing hundreds of chunks costs a single
+// network round trip instead of two per chunk. Each upsert is its own
+// statement, executed in slice order, so a repeated hash ends on the locator of
+// its last occurrence — the same row the sequential delete-then-mark pair
+// leaves behind.
+func (tx *postgresTransaction) PutSyncedLocators(ctx context.Context, chunks []block.BlockChunkCommit) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(chunks) == 0 {
+		return nil
+	}
+	batch := &pgx.Batch{}
+	for _, c := range chunks {
+		blockID, off, length := locatorArgs(c.Remote)
+		batch.Queue(
+			`INSERT INTO synced_hashes (hash, synced_at, block_id, block_offset, block_length)
+				VALUES ($1, NOW(), $2, $3, $4)
+				ON CONFLICT (hash) DO UPDATE SET
+					synced_at = excluded.synced_at,
+					block_id = excluded.block_id,
+					block_offset = excluded.block_offset,
+					block_length = excluded.block_length`,
+			c.Hash[:], blockID, off, length)
+	}
+	br := tx.tx.SendBatch(ctx, batch)
+	defer func() { _ = br.Close() }()
+	for range chunks {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("postgres tx synced put locators: %w", err)
+		}
+	}
+	return nil
+}

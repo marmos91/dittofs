@@ -10,6 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
 )
 
 // ============================================================================
@@ -66,13 +67,13 @@ func (s *BadgerMetadataStore) GetShareOptions(ctx context.Context, shareName str
 
 	// Cache fast path: skip the badger View txn + share-record decode on a hit.
 	// Return a deep copy so callers can never mutate the shared cache entry.
-	if cached, ok := s.shareCache.get(shareName); ok {
-		return cloneShareOptions(cached), nil
+	if cached, ok := s.shareCache.Get(shareName); ok {
+		return sharecache.Clone(cached), nil
 	}
 
 	// Snapshot the invalidation generation BEFORE the backing read so a write
 	// that races this read cannot leave a stale value cached (store() checks it).
-	gen := s.shareCache.generation()
+	gen := s.shareCache.Generation()
 
 	var opts *metadata.ShareOptions
 	err := s.db.View(func(txn *badgerdb.Txn) error {
@@ -96,8 +97,8 @@ func (s *BadgerMetadataStore) GetShareOptions(ctx context.Context, shareName str
 		return nil, err
 	}
 
-	s.shareCache.store(shareName, opts, gen)
-	return cloneShareOptions(opts), nil
+	s.shareCache.Store(shareName, opts, gen)
+	return sharecache.Clone(opts), nil
 }
 
 // ============================================================================
@@ -137,7 +138,7 @@ func (s *BadgerMetadataStore) CreateShare(ctx context.Context, share *metadata.S
 		return txn.Set(keyShare(share.Name), encoded)
 	})
 	if err == nil {
-		s.shareCache.invalidate(share.Name)
+		s.shareCache.Invalidate(share.Name)
 	}
 	return err
 }
@@ -178,7 +179,7 @@ func (s *BadgerMetadataStore) UpdateShareOptions(ctx context.Context, shareName 
 		return txn.Set(keyShare(shareName), updatedData)
 	})
 	if err == nil {
-		s.shareCache.invalidate(shareName)
+		s.shareCache.Invalidate(shareName)
 	}
 	return err
 }
@@ -210,7 +211,7 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 		return err
 	}
 	// Drop any cached options for the removed share, after a successful commit.
-	s.shareCache.invalidate(shareName)
+	s.shareCache.Invalidate(shareName)
 	// Apply the usedBytes decrement once, after a successful commit.
 	if freedBytes > 0 {
 		s.usedBytes.Add(-freedBytes)
@@ -455,7 +456,7 @@ func (s *BadgerMetadataStore) CreateRootDirectory(ctx context.Context, shareName
 	// configured attrs), a write that bypasses WithTransaction's dirty-file
 	// tracking — so drop the root's own cache entries too, or a re-attach with
 	// changed ownership keeps serving the previous UID/GID.
-	s.shareCache.invalidate(shareName)
+	s.shareCache.Invalidate(shareName)
 	if rootFile != nil {
 		id := rootFile.ID.String()
 		s.readCache.invalidate(id)

@@ -222,3 +222,14 @@ func createRealFile(t *testing.T, store metadata.Store, shareName, name string, 
 	}
 	return payloadID, handle
 }
+
+// DecrementRefCountAndReapMany loops the single-offset form so this double
+// keeps whatever bookkeeping and error injection that form already carries.
+func (c *testCoordinator) DecrementRefCountAndReapMany(ctx context.Context, payloadID string, offsets []uint64) error {
+	for _, offset := range offsets {
+		if _, err := c.DecrementRefCountAndReap(ctx, payloadID, offset); err != nil {
+			return err
+		}
+	}
+	return nil
+}

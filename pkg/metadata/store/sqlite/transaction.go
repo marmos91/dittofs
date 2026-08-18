@@ -48,6 +48,11 @@ type sqliteTransaction struct {
 	// successful commit, identical to pendingDelta (so a serialization/deadlock
 	// retry never double-counts).
 	quota quota.Delta
+	// sharesDirty records that this transaction wrote a share record, so the
+	// store's ShareOptions cache is dropped after the commit. A stale entry is
+	// a wrong permission decision, and shares are few enough that clearing the
+	// whole cache costs one re-read each.
+	sharesDirty bool
 }
 
 // WithTransaction executes fn within a SQLite transaction.
@@ -116,6 +121,12 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 			return mapDBError(err, "WithTransaction", "")
 		}
 
+		// Drop the ShareOptions cache once, after the commit, so a reader that
+		// saw the pre-commit value cannot leave it cached (its generation-guarded
+		// populate loses).
+		if ptx.sharesDirty {
+			s.shareCache.InvalidateAll()
+		}
 		// Apply the accumulated usedBytes delta exactly once, after commit.
 		if ptx.pendingDelta != 0 {
 			s.usedBytes.Add(ptx.pendingDelta)
@@ -908,6 +919,7 @@ func (tx *sqliteTransaction) CreateShare(ctx context.Context, share *metadata.Sh
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	tx.sharesDirty = true
 
 	optionsData, err := json.Marshal(share.Options)
 	if err != nil {
@@ -928,6 +940,7 @@ func (tx *sqliteTransaction) UpdateShareOptions(ctx context.Context, shareName s
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	tx.sharesDirty = true
 
 	optionsData, err := json.Marshal(options)
 	if err != nil {
@@ -955,6 +968,7 @@ func (tx *sqliteTransaction) DeleteShare(ctx context.Context, shareName string) 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	tx.sharesDirty = true
 
 	// Sum the regular-file bytes about to be removed so the usedBytes
 	// counter stays accurate without a full recompute. A failed Scan must not
@@ -1074,6 +1088,7 @@ func (tx *sqliteTransaction) CreateRootDirectory(ctx context.Context, shareName 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	tx.sharesDirty = true
 
 	if shareName == "" {
 		return nil, &metadata.StoreError{

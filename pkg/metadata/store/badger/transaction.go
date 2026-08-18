@@ -162,7 +162,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 				s.parentCache.invalidate(id)
 			}
 			for _, name := range dirtyShares {
-				s.shareCache.invalidate(name)
+				s.shareCache.Invalidate(name)
 			}
 			// Drop dirent-cache entries for every (parentID,name) whose forward
 			// edge this transaction wrote or deleted, so a subsequent existence

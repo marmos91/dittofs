@@ -281,3 +281,24 @@ func TestMetadataCoordinator_FakeImpl_FailureModes(t *testing.T) {
 		t.Errorf("incHashes recorded=%d (want 2 — failure on call 2 should not record)", len(fc.incHashes))
 	}
 }
+
+func (f *fakeCoordinator) DecrementRefCountAndReapMany(ctx context.Context, payloadID string, offsets []uint64) error {
+	return reapEach(ctx, payloadID, offsets, f.DecrementRefCountAndReap)
+}
+
+// reapEach implements the batched reap as a loop over the single-offset form,
+// so a test double keeps whatever bookkeeping and error injection that form
+// already carries.
+func reapEach(
+	ctx context.Context,
+	payloadID string,
+	offsets []uint64,
+	reap func(context.Context, string, uint64) (uint32, error),
+) error {
+	for _, offset := range offsets {
+		if _, err := reap(ctx, payloadID, offset); err != nil {
+			return err
+		}
+	}
+	return nil
+}

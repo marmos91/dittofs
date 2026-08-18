@@ -373,3 +373,7 @@ func TestEngine_Delete_PreservesSyncedMarker(t *testing.T) {
 		}
 	})
 }
+
+func (c *refcountCoordinator) DecrementRefCountAndReapMany(ctx context.Context, payloadID string, offsets []uint64) error {
+	return reapEach(ctx, payloadID, offsets, c.DecrementRefCountAndReap)
+}

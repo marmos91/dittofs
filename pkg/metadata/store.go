@@ -269,6 +269,29 @@ type Transaction interface {
 	// authoritative manifest in the same txn (ProjectManifestToBlocks). All four
 	// backend transactions already implement it.
 	ListFileChunks(ctx context.Context, payloadID string) ([]*block.FileChunk, error)
+
+	// PutSyncedLocators records the synced marker and remote locator of every
+	// chunk, overwriting whatever marker each hash already carries. It is the
+	// batched form of DeleteSynced-then-MarkSynced per chunk and produces the
+	// same rows, but a backend that talks over a network issues it in a single
+	// round trip instead of two per chunk — a block object packs hundreds of
+	// chunks per commit. An empty slice is a no-op; a hash repeated within one
+	// call keeps the locator of its last occurrence, matching what the
+	// sequential form leaves behind.
+	PutSyncedLocators(ctx context.Context, chunks []block.BlockChunkCommit) error
+
+	// DecrementRefCountAndReapMany applies DecrementRefCountAndReap to every id
+	// at once: each row's RefCount drops by one and the row is deleted when its
+	// new count is 0, with an absent row tolerated exactly as the single-id form
+	// tolerates it. Reap loops walk a whole file's manifest — tens of thousands
+	// of rows for a large truncate or unlink — so a backend that talks over a
+	// network resolves the set in a fixed number of statements rather than one
+	// per row. The counts are not reported back: the reap paths never read them.
+	//
+	// ids MUST be distinct. Each id names one row, so a repeated id would
+	// decrement it twice and strip a reference the file does not hold; a backend
+	// resolving the whole set in one statement cannot detect the repeat.
+	DecrementRefCountAndReapMany(ctx context.Context, ids []string) error
 }
 
 // ============================================================================

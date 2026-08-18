@@ -20,6 +20,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
 )
 
 // sqliteDriverName is the database/sql driver name registered by the imported
@@ -74,6 +75,12 @@ type SQLiteMetadataStore struct {
 	// updated from each committed transaction's deltas. Guarded by quotaMu.
 	quotaMu sync.Mutex
 	quota   *quota.Cache
+
+	// shareCache caches decoded ShareOptions so the permission funnel every
+	// read/write/create/setattr traverses does not re-run the options SELECT
+	// and JSON decode per op. Every share-record write invalidates it after
+	// commit — a stale entry is a wrong permission decision.
+	shareCache sharecache.Cache
 
 	// storeID is the engine-persistent identifier, backed by
 	// server_config.store_id. Created on first open with a fresh ULID; read

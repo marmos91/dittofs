@@ -16,44 +16,44 @@ import (
 // Fault-injecting helpers for atomicity subtests
 // ===========================================================================
 
-// errMarkSyncedInjected is the sentinel returned by faultyMarkSyncedStore.
-var errMarkSyncedInjected = errors.New("injected MarkSynced failure")
+// errSyncedLocatorsInjected is the sentinel returned by faultySyncedStore.
+var errSyncedLocatorsInjected = errors.New("injected PutSyncedLocators failure")
 
-// faultyMarkSyncedStore wraps a Store and makes the FIRST transactional
-// MarkSynced fail (DefaultCommitBlock marks chunks synced inside the commit
-// transaction), then delegates subsequent calls. CommitBlock delegates to
-// metadata.DefaultCommitBlock with itself as the receiver so the injected
-// transaction is actually exercised.
-type faultyMarkSyncedStore struct {
+// faultySyncedStore wraps a Store and makes the FIRST transactional
+// PutSyncedLocators fail (DefaultCommitBlock records the chunks' synced markers
+// inside the commit transaction), then delegates subsequent calls. CommitBlock
+// delegates to metadata.DefaultCommitBlock with itself as the receiver so the
+// injected transaction is actually exercised.
+type faultySyncedStore struct {
 	metadata.Store
 	mu        sync.Mutex
 	hasFailed bool
 }
 
-func (f *faultyMarkSyncedStore) WithTransaction(ctx context.Context, fn func(metadata.Transaction) error) error {
+func (f *faultySyncedStore) WithTransaction(ctx context.Context, fn func(metadata.Transaction) error) error {
 	return f.Store.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return fn(&faultyMarkSyncedTx{Transaction: tx, parent: f})
+		return fn(&faultySyncedTx{Transaction: tx, parent: f})
 	})
 }
 
-func (f *faultyMarkSyncedStore) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
+func (f *faultySyncedStore) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
 	return metadata.DefaultCommitBlock(ctx, f, rec, chunks, nil)
 }
 
-type faultyMarkSyncedTx struct {
+type faultySyncedTx struct {
 	metadata.Transaction
-	parent *faultyMarkSyncedStore
+	parent *faultySyncedStore
 }
 
-func (tx *faultyMarkSyncedTx) MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error {
+func (tx *faultySyncedTx) PutSyncedLocators(ctx context.Context, chunks []block.BlockChunkCommit) error {
 	tx.parent.mu.Lock()
 	first := !tx.parent.hasFailed
 	tx.parent.hasFailed = true
 	tx.parent.mu.Unlock()
 	if first {
-		return errMarkSyncedInjected
+		return errSyncedLocatorsInjected
 	}
-	return tx.Transaction.MarkSynced(ctx, hash, loc)
+	return tx.Transaction.PutSyncedLocators(ctx, chunks)
 }
 
 func runCommitBlockOps(t *testing.T, store metadata.Store) {
@@ -203,7 +203,7 @@ func runCommitBlockOps(t *testing.T, store metadata.Store) {
 	})
 
 	t.Run("Atomicity", func(t *testing.T) {
-		t.Run("MarkSyncedFailureRollsBack", func(t *testing.T) {
+		t.Run("SyncedLocatorFailureRollsBack", func(t *testing.T) {
 			t.Parallel()
 
 			rec := block.BlockRecord{
@@ -220,21 +220,22 @@ func runCommitBlockOps(t *testing.T, store metadata.Store) {
 				},
 			}
 
-			faulty := &faultyMarkSyncedStore{Store: store}
+			faulty := &faultySyncedStore{Store: store}
 
-			// First call: MarkSynced fails INSIDE the commit transaction → the
-			// whole commit rolls back. Nothing may be visible afterwards.
+			// First call: the synced-marker write fails INSIDE the commit
+			// transaction → the whole commit rolls back. Nothing may be
+			// visible afterwards.
 			err := faulty.CommitBlock(ctx, rec, chunks)
-			require.Error(t, err, "first CommitBlock must fail on injected MarkSynced failure")
-			require.ErrorIs(t, err, errMarkSyncedInjected)
+			require.Error(t, err, "first CommitBlock must fail on injected PutSyncedLocators failure")
+			require.ErrorIs(t, err, errSyncedLocatorsInjected)
 
 			_, found, err := store.GetBlockRecord(ctx, rec.BlockID)
 			require.NoError(t, err)
-			assert.False(t, found, "block record must not persist after MarkSynced rollback")
+			assert.False(t, found, "block record must not persist after synced-marker rollback")
 
 			synced, err := store.IsSynced(ctx, chunks[0].Hash)
 			require.NoError(t, err)
-			assert.False(t, synced, "chunk must not be synced after MarkSynced rollback")
+			assert.False(t, synced, "chunk must not be synced after synced-marker rollback")
 
 			// Retry with no more faults: the full commit lands.
 			err = faulty.CommitBlock(ctx, rec, chunks)
@@ -262,7 +263,7 @@ func runCommitBlockOps(t *testing.T, store metadata.Store) {
 		// (zero-BlockID) form written by the legacy CAS mirror — must have it
 		// OVERWRITTEN by the new block locator. This is the semantics the
 		// cas→blocks migration relies on: MarkSynced alone is first-wins, but
-		// CommitBlock's DeleteSynced-then-MarkSynced is last-wins.
+		// CommitBlock's PutSyncedLocators is last-wins.
 		h := makeHash(0x40)
 		require.NoError(t, store.MarkSynced(ctx, h, block.ChunkLocator{}),
 			"pre-seeding standalone locator")
@@ -289,5 +290,50 @@ func runCommitBlockOps(t *testing.T, store metadata.Store) {
 		require.True(t, found)
 		assert.Equal(t, remote, locator,
 			"CommitBlock must overwrite the standalone locator with the block locator")
+	})
+
+	t.Run("BatchedLocatorsMatchPerChunkWrites", func(t *testing.T) {
+		// A commit carries every chunk's locator in one batched write. The rows
+		// it leaves must be the ones a per-chunk delete-then-mark sequence would
+		// leave: each hash resolves to its own locator, a pre-seeded standalone
+		// marker is overwritten, and a hash repeated inside the batch ends on
+		// the LAST locator given for it (the zero-chunk dedup that punch-hole
+		// produces repeats a hash within one carve).
+		hA, hB, hDup := makeHash(0x50), makeHash(0x51), makeHash(0x52)
+		require.NoError(t, store.MarkSynced(ctx, hB, block.ChunkLocator{}),
+			"pre-seeding standalone locator for the overwrite case")
+
+		rec := block.BlockRecord{
+			BlockID:        "commit-batched",
+			BlockHash:      makeHash(0x05),
+			Length:         4096,
+			LiveChunkCount: 3,
+			SyncState:      block.BlockStateRemote,
+		}
+		locA := block.ChunkLocator{BlockID: rec.BlockID, WireOffset: 0, WireLength: 1024}
+		locB := block.ChunkLocator{BlockID: rec.BlockID, WireOffset: 1024, WireLength: 1024}
+		dupFirst := block.ChunkLocator{BlockID: rec.BlockID, WireOffset: 2048, WireLength: 1024}
+		dupLast := block.ChunkLocator{BlockID: rec.BlockID, WireOffset: 3072, WireLength: 1024}
+		require.NoError(t, store.CommitBlock(ctx, rec, []block.BlockChunkCommit{
+			{Hash: hA, Remote: locA},
+			{Hash: hB, Remote: locB},
+			{Hash: hDup, Remote: dupFirst},
+			{Hash: hDup, Remote: dupLast},
+		}))
+
+		for _, want := range []struct {
+			hash block.ContentHash
+			loc  block.ChunkLocator
+			name string
+		}{
+			{hA, locA, "fresh chunk"},
+			{hB, locB, "overwritten standalone chunk"},
+			{hDup, dupLast, "repeated chunk keeps its last locator"},
+		} {
+			got, found, err := store.GetLocator(ctx, want.hash)
+			require.NoError(t, err)
+			require.True(t, found, "%s must be synced after the batched commit", want.name)
+			assert.Equal(t, want.loc, got, "%s", want.name)
+		}
 	})
 }
