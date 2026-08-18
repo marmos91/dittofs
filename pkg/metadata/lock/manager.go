@@ -2978,13 +2978,8 @@ func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) err
 	// lock it stands in for, so a write delegation (exclusive) is denied by any
 	// foreign lock and a read delegation (shared) only by a foreign exclusive
 	// one — the same rule byte-range locks apply to each other.
-	asByteRange := &UnifiedLock{
-		Owner:      newLock.Owner,
-		FileHandle: newLock.FileHandle,
-		Offset:     0,
-		Length:     0,
-		Type:       newLock.Type,
-	}
+	asByteRange := *newLock
+	asByteRange.Delegation = nil
 	for _, lock := range locks {
 		if lock.Lease != nil || lock.Delegation != nil {
 			continue
@@ -2996,7 +2991,7 @@ func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) err
 	}
 	smbLocks := lm.locks[handleKey]
 	for i := range smbLocks {
-		if fileLockConflictsWithUnified(&smbLocks[i], asByteRange) {
+		if fileLockConflictsWithUnified(&smbLocks[i], &asByteRange) {
 			return fmt.Errorf("delegation conflicts with existing SMB byte-range lock (owner=%s)",
 				lockOwnerID(&smbLocks[i]))
 		}
