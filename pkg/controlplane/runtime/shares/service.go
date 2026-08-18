@@ -3131,15 +3131,13 @@ func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metad
 			}
 			off, ok := block.ParseChunkOffset(row.ID)
 			if !ok {
-				// Report rather than pass over in silence. Which range this row
-				// describes cannot be recovered — that is what makes it unplaceable
-				// — so the row is logged verbatim and seeding continues. The boot is
-				// not failed: one such row in a large store is not worth stranding
-				// every other share. Leaving the range unseeded is safe because the
-				// engine reconciles an uncovered read against the manifest whether or
-				// not the range is cold, so a read that finds nothing covering the
-				// offset it wants refuses with ErrManifestInconsistent rather than
-				// serving zeros.
+				// Which range this row describes cannot be recovered — that is what
+				// makes it unplaceable — so it is logged verbatim and seeding
+				// continues: one such row is not worth stranding every other share.
+				// Leaving the range unseeded is safe because the engine reconciles an
+				// uncovered read against the manifest whether or not the range is
+				// cold, so it refuses with ErrManifestInconsistent rather than serving
+				// zeros.
 				logger.Error("cold seed: unplaceable manifest row, range will not be seeded",
 					"payload", payloadID, "row", row.ID, "size", row.DataSize)
 				report.unplaceable++

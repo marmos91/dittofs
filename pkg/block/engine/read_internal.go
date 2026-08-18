@@ -23,24 +23,20 @@ func blockRefHashes(refs []block.ChunkRef) []block.ContentHash {
 // readAtInternal reads from the primary payloadID via the journal-backed local
 // tier. journal.ReadAt fills dst with the file's local bytes, zero-fills the
 // rest, and reports whether the window held evicted (cold) or uncovered (hole)
-// ranges. Either way the engine reconciles against the CAS manifest: it hydrates
-// every covering chunk from the remote store (verified) back into the journal
-// and re-reads, so the re-read serves the fetched bytes. A range no manifest row
-// covers is a genuinely sparse hole and stays zero-filled — RFC-safe.
+// ranges. Both are reconciled against the CAS manifest: the covering chunks are
+// hydrated from the remote store (verified) back into the journal and re-read. A
+// range no manifest row covers is a genuinely sparse hole and stays zero-filled
+// — RFC-safe.
 //
-// A hole is reconciled for the same reason a cold range is: the local tier alone
-// cannot tell a never-written range from one whose interval the tier lost — a
-// snapshot restore or a pre-journal upgrade re-seeds cold intervals from the
-// manifest and cannot seed a row whose ID does not parse. Consulting the
-// manifest on a hole is what puts such a payload in front of the covering walk's
-// ErrManifestInconsistent guard instead of serving its zeros. It also makes this
-// view and DataExtents' the same union of journal and manifest, which is what
-// keeps NFSv4.2 SEEK and READ from disagreeing about where the data is.
+// A hole is reconciled because the local tier cannot tell a never-written range
+// from one whose cold interval it lost: cold seeding cannot place a manifest row
+// whose ID carries no offset, so that range arrives here as a plain hole and
+// only the manifest can say its zeros would be invented. It also makes this view
+// and DataExtents' the same union of journal and manifest, so SEEK and READ
+// agree on where the data is.
 //
-// A fully warm read — every byte covered by a live local interval — returns
-// without touching the manifest, so the hot path is unchanged. So does any hole
-// on a local-only share: with no remote there is nothing to hydrate and nothing
-// carves manifest rows, so the reconcile would only re-read the same zeros.
+// A fully warm read never consults the manifest, and neither does a hole on a
+// local-only share, where there is no remote to hydrate from.
 func (bs *Store) readAtInternal(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
 	if len(data) == 0 {
 		return 0, nil
@@ -57,7 +53,8 @@ func (bs *Store) readAtInternal(ctx context.Context, payloadID string, data []by
 		}
 		return 0, fmt.Errorf("local read failed: %w", err)
 	}
-	if !st.Cold && !(st.Hole && bs.HasRemoteStore()) {
+	reconcile := st.Cold || (st.Hole && bs.HasRemoteStore())
+	if !reconcile {
 		return n, nil
 	}
 

@@ -11,8 +11,8 @@ import (
 // within [0, fileSize) that hold data across ALL tiers the engine reads from:
 // the local append log + in-memory buffer (via local.DataExtents) UNION the
 // persisted CAS FileChunk manifest. This is the same union readAtInternal
-// reconstructs — it reconciles an uncovered read against the manifest too —
-// expressed as a hole map, so SEEK and READ agree on where the data is.
+// reconstructs, expressed as a hole map, so SEEK and READ agree on where the
+// data is.
 //
 // NFSv4.2 SEEK and READ_PLUS use it instead of deriving holes from the
 // persisted CAS block list alone: that list is empty/partial for

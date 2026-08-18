@@ -443,6 +443,42 @@ func loadFileChunkAtIndexOffset(txn *badger.Txn, payloadID string, off uint64) (
 	return &fc, nil
 }
 
+// scanChunkIndexOffsets walks the keys-only fb-file:{payloadID}: index and
+// returns the offset best keeps, plus the first key suffix that does not parse
+// as one. Such a suffix is a row ID's suffix verbatim, so the row sits at an
+// unknown offset and its caller must refuse rather than report a hole the reader
+// would zero-fill.
+func scanChunkIndexOffsets(txn *badger.Txn, payloadID string, keep func(cand, best uint64, have bool) bool) (bestOff uint64, found bool, unplaceable string) {
+	prefix := []byte(fileChunkFilePrefix + payloadID + ":")
+	opts := badger.DefaultIteratorOptions
+	opts.Prefix = prefix
+	opts.PrefetchValues = false // keys only — the offset lives in the key
+	it := txn.NewIterator(opts)
+	defer it.Close()
+
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		suffix := string(it.Item().Key()[len(prefix):])
+		cand, perr := strconv.ParseUint(suffix, 10, 64)
+		if perr != nil {
+			if unplaceable == "" {
+				unplaceable = suffix
+			}
+			continue
+		}
+		if keep(cand, bestOff, found) {
+			bestOff, found = cand, true
+		}
+	}
+	return bestOff, found, unplaceable
+}
+
+// errUnplaceableRow reports that off cannot be resolved because the manifest
+// holds a row whose range is unknown.
+func errUnplaceableRow(payloadID, suffix string, off uint64) error {
+	return fmt.Errorf("%w: cannot resolve offset %d for payload %q: manifest holds unplaceable row %q",
+		blockpkg.ErrManifestInconsistent, off, payloadID, payloadID+"/"+suffix)
+}
+
 // GetFileChunkAtOffset returns the FileChunk covering absolute byte offset off
 // for payloadID — the row with the largest chunkOffset <= off whose range
 // [chunkOffset, chunkOffset+DataSize) contains off — or (nil, nil) for a sparse
@@ -456,50 +492,25 @@ func loadFileChunkAtIndexOffset(txn *badger.Txn, payloadID string, off uint64) (
 // engine's ListFileChunks fallback picks the same one so both paths answer a
 // read alike.
 //
-// An index key whose suffix does not parse belongs to a row whose ID does not
-// parse — the index suffix is the ID's suffix verbatim — so the row sits at an
-// unknown offset. Skipping it would report a hole the caller zero-fills, which
-// invents data the file may never have had. It is reported instead, but only
-// when nothing else covers off: one bad row must not make a whole payload
-// unreadable. This mirrors findRowCoveringOffset, the walk used by the backends
-// with no such index.
+// An unplaceable row only matters when nothing else covers off: one bad row must
+// not make a whole payload unreadable. This mirrors findRowCoveringOffset, the
+// walk used by the backends with no such index.
 //
 // ponytail: O(n) keys-only scan per read; upgrade to a big-endian fb-off index
 // for a true O(log n) reverse-seek only if profiling at real N still shows it.
 func (s *BadgerMetadataStore) GetFileChunkAtOffset(_ context.Context, payloadID string, off uint64) (*metadata.FileChunk, error) {
 	var result *metadata.FileChunk
 	err := s.db.View(func(txn *badger.Txn) error {
-		prefix := []byte(fileChunkFilePrefix + payloadID + ":")
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = prefix
-		opts.PrefetchValues = false // keys only — the offset lives in the key
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		var (
-			bestOff     uint64
-			found       bool
-			unplaceable string
-		)
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			suffix := it.Item().Key()[len(prefix):]
-			cand, perr := strconv.ParseUint(string(suffix), 10, 64)
-			if perr != nil {
-				if unplaceable == "" {
-					unplaceable = string(suffix)
-				}
-				continue
-			}
-			if cand <= off && (!found || cand > bestOff) {
-				bestOff, found = cand, true
-			}
-		}
+		bestOff, found, unplaceable := scanChunkIndexOffsets(txn, payloadID,
+			func(cand, best uint64, have bool) bool {
+				return cand <= off && (!have || cand > best)
+			})
+		// A hole, unless an unplaceable row leaves it in doubt.
 		uncovered := func() error {
 			if unplaceable == "" {
 				return nil
 			}
-			return fmt.Errorf("%w: nothing covers offset %d for payload %q and the manifest holds unplaceable row %q",
-				blockpkg.ErrManifestInconsistent, off, payloadID, payloadID+"/"+unplaceable)
+			return errUnplaceableRow(payloadID, unplaceable, off)
 		}
 		if !found {
 			return uncovered()
@@ -547,34 +558,12 @@ func (s *BadgerMetadataStore) GetFileChunkAtOffset(_ context.Context, payloadID 
 func (s *BadgerMetadataStore) GetFileChunkAtOrAfterOffset(_ context.Context, payloadID string, off uint64) (*metadata.FileChunk, error) {
 	var result *metadata.FileChunk
 	err := s.db.View(func(txn *badger.Txn) error {
-		prefix := []byte(fileChunkFilePrefix + payloadID + ":")
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = prefix
-		opts.PrefetchValues = false // keys only — the offset lives in the key
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		var (
-			bestOff     uint64
-			found       bool
-			unplaceable string
-		)
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			suffix := it.Item().Key()[len(prefix):]
-			cand, perr := strconv.ParseUint(string(suffix), 10, 64)
-			if perr != nil {
-				if unplaceable == "" {
-					unplaceable = string(suffix)
-				}
-				continue
-			}
-			if cand >= off && (!found || cand < bestOff) {
-				bestOff, found = cand, true
-			}
-		}
+		bestOff, found, unplaceable := scanChunkIndexOffsets(txn, payloadID,
+			func(cand, best uint64, have bool) bool {
+				return cand >= off && (!have || cand < best)
+			})
 		if unplaceable != "" {
-			return fmt.Errorf("%w: nothing covers offset %d for payload %q and the manifest holds unplaceable row %q",
-				blockpkg.ErrManifestInconsistent, off, payloadID, payloadID+"/"+unplaceable)
+			return errUnplaceableRow(payloadID, unplaceable, off)
 		}
 		if !found {
 			return nil // nothing starts at or after off — past the last chunk
