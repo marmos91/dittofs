@@ -188,8 +188,9 @@ type BadgerMetadataStore struct {
 	// durable/relaxed classification is wired correctly.
 	inlineSyncs atomic.Int64
 
-	// txnConflicts counts SSI ErrConflict aborts observed by the withTransaction
-	// retry loop (one per retried attempt). It is a pure contention fingerprint:
+	// txnConflicts counts SSI ErrConflict aborts observed by the retry loops
+	// (withTransaction and updateWithConflictRetry), one per retried attempt.
+	// It is a pure contention fingerprint:
 	// transactions that touch disjoint keys never bump it, so concurrent writers
 	// sharing a hot key (e.g. a parent inode) are the only thing that drives it
 	// up. Tests read it to assert a workload stays conflict-free.
