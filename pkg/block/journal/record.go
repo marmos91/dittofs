@@ -70,7 +70,7 @@ func crc(b []byte) uint32 { return crc32.Checksum(b, crcTable) }
 // copying a large payload, so the sum is chained rather than taken over one
 // contiguous buffer.
 func recordCRC(fileID, payload []byte) uint32 {
-	return crc32.Update(crc32.Checksum(fileID, crcTable), crcTable, payload)
+	return crc32.Update(crc(fileID), crcTable, payload)
 }
 
 // recordHeader is the decoded fixed-size portion of a record.
@@ -238,7 +238,7 @@ func readRecordAt(r io.ReaderAt, off, maxPayload int64, scratch []byte) (record,
 }
 
 // readVerifiedRecord reads the record at recOff and returns it only once its
-// header CRC, payload CRC and framed FileID all check out. Every path that
+// header CRC, body CRC and framed FileID all check out. Every path that
 // copies a payload forward reads through it: each one re-hashes or re-CRCs the
 // bytes it copies, so an unverified read would turn on-disk bit rot into content
 // that passes every later integrity check.

@@ -177,11 +177,10 @@ var _ io.ReaderAt = (*bytes.Reader)(nil)
 // trailing CRC over the payload alone. Journals written before the FileID
 // joined the CRC domain still hold records shaped like this.
 func frameRecordV1(id string, offset int64, payload []byte, version uint64, flags uint8) []byte {
-	fileID := []byte(id)
 	out := frameRecord(id, offset, payload, version, flags)
 	out[0] = recordMagicV1
 	binary.LittleEndian.PutUint32(out[25:29], crc(out[:headerCRCCovers]))
-	binary.LittleEndian.PutUint32(out[recordHeaderSize+len(fileID)+len(payload):], crc(payload))
+	binary.LittleEndian.PutUint32(out[recordHeaderSize+len(id)+len(payload):], crc(payload))
 	return out
 }
 
