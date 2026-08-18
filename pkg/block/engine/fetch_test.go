@@ -109,7 +109,7 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToCaller(t *testing.T) {
 		t.Fatalf("resolveCovering: %v", err)
 	}
 
-	gotData, downloaded, err := m.inlineFetchOrWait(ctx, payloadID, 0, fb)
+	gotData, downloaded, err := m.inlineFetchOrWait(ctx, payloadID, 0, fb, hydrateSpan{})
 	if err == nil {
 		t.Fatalf("inlineFetchOrWait returned nil err; want error wrapping %v", errBoomLocalPut)
 	}
@@ -166,7 +166,7 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToWaiter(t *testing.T) {
 	}
 	chA := make(chan result, 1)
 	go func() {
-		d, dl, e := m.inlineFetchOrWait(ctx, payloadID, 0, fb)
+		d, dl, e := m.inlineFetchOrWait(ctx, payloadID, 0, fb, hydrateSpan{})
 		chA <- result{d, dl, e}
 	}()
 
@@ -182,7 +182,7 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToWaiter(t *testing.T) {
 	// the waiter branch, and blocks on <-existing.done.
 	chB := make(chan result, 1)
 	go func() {
-		d, dl, e := m.inlineFetchOrWait(ctx, payloadID, 0, fb)
+		d, dl, e := m.inlineFetchOrWait(ctx, payloadID, 0, fb, hydrateSpan{})
 		chB <- result{d, dl, e}
 	}()
 
@@ -258,7 +258,7 @@ func TestHydrateChunk_WritesOnlyWhatTheRowClaims(t *testing.T) {
 			ls := memorylocal.New()
 			m := newFetchSyncer(ls, nil, nil, nil)
 			row := &block.FileChunk{ID: "share/file/0", DataSize: tc.claims}
-			if err := m.hydrateChunk(ctx, row, chunk); err != nil {
+			if err := m.hydrateChunk(ctx, row, chunk, hydrateSpan{}); err != nil {
 				t.Fatalf("hydrateChunk: %v", err)
 			}
 			got := make([]byte, chunkLen)

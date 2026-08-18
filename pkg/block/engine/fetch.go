@@ -37,10 +37,24 @@ func (m *Syncer) fetchGroup(ctx context.Context) (*errgroup.Group, context.Conte
 }
 
 // coveringChunk pairs a manifest row with the block index its first byte falls
-// in, which is the in-flight dedup slot the fetch registers under.
+// in, which is the in-flight dedup slot the fetch registers under, and with the
+// absolute byte range of the window that this row — and no later-starting row —
+// holds.
 type coveringChunk struct {
 	blockIdx uint64
 	fb       *block.FileChunk
+	span     hydrateSpan
+}
+
+// hydrateSpan is the absolute byte range of a chunk that may be written back
+// into the local tier. Coverage resolves an overlap to the greatest start, so a
+// row that straddles a later row's start no longer holds the bytes past that
+// start; hydrating its full extent would put the older bytes over the newer
+// row's head, and the local tier keeps whichever landed last rather than
+// whichever row coverage prefers. A zero To means the row's whole extent.
+type hydrateSpan struct {
+	From uint64
+	To   uint64
 }
 
 // collectCoveringChunks returns every manifest row covering [start, end), in
@@ -60,6 +74,16 @@ type coveringChunk struct {
 // cursor by one byte, so a degenerate manifest cannot spin the walk; it can only
 // make the walk re-probe, never make it terminate early and report the rest of
 // the window as hole.
+//
+// The cursor advances to the end of the resolved row's CLAIM, not to the end of
+// its extent, so a row that straddles a later row's start hands the walk over at
+// that start instead of consuming the bytes the later row holds. Each entry
+// carries the range it was resolved for, which is what the fetch writes back.
+//
+// The walk begins at the start of the row covering start, not at start itself,
+// so a window opening mid-chunk still hydrates that chunk whole and any row
+// hidden between the chunk's start and the window's is resolved rather than
+// written over.
 func (m *Syncer) collectCoveringChunks(ctx context.Context, payloadID string, start, end uint64) ([]coveringChunk, error) {
 	if m.fileChunkStore == nil {
 		return nil, nil
@@ -68,9 +92,12 @@ func (m *Syncer) collectCoveringChunks(ctx context.Context, payloadID string, st
 	// index every lookup falls back to a full per-payload manifest scan, and the
 	// resolver's snapshot turns K of those into one.
 	res := newChunkWindowResolver(m.fileChunkStore, payloadID)
+	if fb, absOff, err := res.coveringRow(ctx, start); err == nil && fb != nil && absOff < start {
+		start = absOff
+	}
 	var out []coveringChunk
 	for cur := start; cur < end; {
-		fb, absOff, err := res.covering(ctx, cur)
+		fb, absOff, claimEnd, err := res.covering(ctx, cur)
 		if err != nil {
 			return nil, err
 		}
@@ -85,12 +112,15 @@ func (m *Syncer) collectCoveringChunks(ctx context.Context, payloadID string, st
 			cur = next
 			continue
 		}
-		out = append(out, coveringChunk{blockIdx: absOff / uint64(BlockSize), fb: fb})
-		next := absOff + uint64(fb.DataSize)
-		if next <= cur {
-			next = cur + 1 // a zero/short DataSize row must still advance the walk
+		if claimEnd <= cur {
+			claimEnd = cur + 1 // a zero/short DataSize row must still advance the walk
 		}
-		cur = next
+		out = append(out, coveringChunk{
+			blockIdx: absOff / uint64(BlockSize),
+			fb:       fb,
+			span:     hydrateSpan{From: cur, To: claimEnd},
+		})
+		cur = claimEnd
 	}
 	return out, nil
 }
@@ -125,7 +155,12 @@ func (m *Syncer) listFileChunksSnapshot(ctx context.Context, payloadID string) (
 // them where a zero hole is due. A row claiming nothing therefore writes
 // nothing: the clamp fails closed, since a claim of zero reaching the local tier
 // as "write the whole chunk" is that same resurrection by another route.
-func (m *Syncer) hydrateChunk(ctx context.Context, fb *block.FileChunk, data []byte) error {
+//
+// span narrows that further to the part of the extent the row still holds, which
+// is the range the caller's walk resolved it for (see hydrateSpan). A zero span
+// writes the whole claimed extent, which is what a caller holding a row but no
+// window wants.
+func (m *Syncer) hydrateChunk(ctx context.Context, fb *block.FileChunk, data []byte, span hydrateSpan) error {
 	if claimed := uint64(fb.DataSize); claimed < uint64(len(data)) {
 		data = data[:claimed]
 	}
@@ -141,7 +176,32 @@ func (m *Syncer) hydrateChunk(ctx context.Context, fb *block.FileChunk, data []b
 		// "<payloadID>/<offset>"), so this only affects hash-only unit fixtures.
 		return nil
 	}
+	if span.To > 0 {
+		lo, hi := clampSpan(span, off, uint64(len(data)))
+		if lo >= hi {
+			return nil
+		}
+		off, data = off+lo, data[lo:hi]
+	}
 	return m.local.Hydrate(ctx, fb.ID[:i], int64(off), data)
+}
+
+// clampSpan converts an absolute hydrate span into offsets within a chunk's
+// downloaded bytes, which start at absolute offset chunkStart and run for n. A
+// span reaching outside the chunk is trimmed to it rather than rejected: the
+// window a walk resolved and the extent the remote returned are two independent
+// facts, and only their intersection is safe to write.
+func clampSpan(span hydrateSpan, chunkStart, n uint64) (lo, hi uint64) {
+	if span.From > chunkStart {
+		lo = span.From - chunkStart
+	}
+	if span.To > chunkStart {
+		hi = span.To - chunkStart
+	}
+	if hi > n {
+		hi = n
+	}
+	return lo, hi
 }
 
 // dispatchRemoteFetch routes a per-block S3 GET through the CAS verified-
@@ -333,7 +393,7 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 	// fanning out here would multiply the pool's concurrency by the chunks per
 	// block behind the window that bounds it.
 	for _, c := range chunks {
-		if _, _, err := m.inlineFetchOrWait(ctx, payloadID, c.blockIdx, c.fb); err != nil {
+		if _, _, err := m.inlineFetchOrWait(ctx, payloadID, c.blockIdx, c.fb, c.span); err != nil {
 			return err
 		}
 	}
@@ -348,7 +408,7 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 // start at arbitrary, non-BlockSize-aligned offsets, and a blockIdx lookup
 // would miss every non-aligned chunk and silently skip it). Returns nil data
 // when the row has no actionable remote key (sparse / never-uploaded).
-func (m *Syncer) fetchResolvedBlock(ctx context.Context, fb *block.FileChunk) ([]byte, error) {
+func (m *Syncer) fetchResolvedBlock(ctx context.Context, fb *block.FileChunk, span hydrateSpan) ([]byte, error) {
 	if fb == nil {
 		return nil, nil
 	}
@@ -385,7 +445,7 @@ func (m *Syncer) fetchResolvedBlock(ctx context.Context, fb *block.FileChunk) ([
 	// offset (parsed from fb.ID) so a subsequent read serves them warm. The
 	// bytes are already durable on the remote, so Hydrate marks the record clean
 	// (immediately evictable).
-	if err := m.hydrateChunk(ctx, fb, data); err != nil {
+	if err := m.hydrateChunk(ctx, fb, data, span); err != nil {
 		return nil, fmt.Errorf("hydrate downloaded block %s locally: %w", storeKey, err)
 	}
 
@@ -472,7 +532,7 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 		}
 		p := p
 		g.Go(func() error {
-			_, _, err := m.inlineFetchOrWait(gctx, payloadID, p.blockIdx, p.fb)
+			_, _, err := m.inlineFetchOrWait(gctx, payloadID, p.blockIdx, p.fb, p.span)
 			return err
 		})
 	}
@@ -503,17 +563,24 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 // Returns (data, true, nil) for inline download, (nil, false, nil) if piggybacked on existing.
 //
 // fb is the caller's already-resolved covering FileChunk for the block; a nil
-// fb is a sparse block (nothing to fetch).
-func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockIdx uint64, fb *block.FileChunk) ([]byte, bool, error) {
+// fb is a sparse block (nothing to fetch). span is the part of the chunk the
+// caller resolved this row for, which is what gets written back locally.
+func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockIdx uint64, fb *block.FileChunk, span hydrateSpan) ([]byte, bool, error) {
 	// Dedup key must be per-CHUNK, not per-block: a read window can span several
 	// chunks that live in the same 8 MiB block (FastCDC chunks are typically
 	// smaller than BlockSize), so keying by blockIdx alone would make the second
 	// chunk piggyback on the first's in-flight slot and never get downloaded.
 	// fb.ID is "<payloadID>/<absOffset>" — unique per chunk — and demand and
 	// prefetch resolve the same fb.ID for the same chunk, so they still dedup.
+	//
+	// The span joins the key because a row overlapped by a later one holds two
+	// disjoint pieces of a window, and each piece has to be written back; a
+	// piggyback would drop the second and leave those bytes cold. Both the
+	// demand walk and the prefetch walk open a chunk at its own start, so the
+	// ordinary single-piece case still shares one slot.
 	key := inFlightKey(payloadID, blockIdx)
 	if fb != nil {
-		key = fb.ID
+		key = fmt.Sprintf("%s@%d", fb.ID, span.From)
 	}
 
 	m.inFlightMu.Lock()
@@ -588,7 +655,7 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 	// be treated as a successful download: propagate it to the caller AND every
 	// in-flight waiter via completionErr so no consumer trusts unpersisted bytes
 	// (disk-full / local-IO failure → permanent remote re-fetch otherwise).
-	if writeErr := m.hydrateChunk(ctx, fb, data); writeErr != nil {
+	if writeErr := m.hydrateChunk(ctx, fb, data, span); writeErr != nil {
 		logger.Error("inline download: local hydrate failed",
 			"block", key, "error", writeErr)
 		completionErr = fmt.Errorf("inline fetch: hydrate locally %s: %w", key, writeErr)

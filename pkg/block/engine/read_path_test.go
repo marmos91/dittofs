@@ -38,7 +38,7 @@ func TestReadPath_BlockLocator_Plaintext(t *testing.T) {
 		t.Fatalf("expected block locator, got standalone: %+v", loc)
 	}
 
-	got, err := f.syncer.fetchResolvedBlock(ctx, &block.FileChunk{Hash: h})
+	got, err := f.syncer.fetchResolvedBlock(ctx, &block.FileChunk{Hash: h}, hydrateSpan{})
 	if err != nil {
 		t.Fatalf("fetchResolvedBlock: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestReadPath_BlockLocator_ThroughCompress(t *testing.T) {
 		t.Fatalf("expected block locator, got standalone: %+v", loc)
 	}
 
-	got, err := f.syncer.fetchResolvedBlock(ctx, &block.FileChunk{Hash: h})
+	got, err := f.syncer.fetchResolvedBlock(ctx, &block.FileChunk{Hash: h}, hydrateSpan{})
 	if err != nil {
 		t.Fatalf("fetchResolvedBlock (compress): %v", err)
 	}
@@ -112,7 +112,7 @@ func TestReadPath_BlockLocator_ThroughCompressEncrypt(t *testing.T) {
 		t.Fatalf("expected block locator, got standalone: %+v", loc)
 	}
 
-	got, err := f.syncer.fetchResolvedBlock(ctx, &block.FileChunk{Hash: h})
+	got, err := f.syncer.fetchResolvedBlock(ctx, &block.FileChunk{Hash: h}, hydrateSpan{})
 	if err != nil {
 		t.Fatalf("fetchResolvedBlock (compress+encrypt): %v", err)
 	}
@@ -158,7 +158,7 @@ func TestReadPath_StandaloneLocatorServedViaFallback(t *testing.T) {
 		t.Fatalf("MarkSynced: %v", err)
 	}
 
-	got, err := syncer.fetchResolvedBlock(ctx, &block.FileChunk{ID: "share/standalone/0", Hash: h})
+	got, err := syncer.fetchResolvedBlock(ctx, &block.FileChunk{ID: "share/standalone/0", Hash: h}, hydrateSpan{})
 	if err != nil {
 		t.Fatalf("fetchResolvedBlock: want standalone fallback to serve, got err=%v", err)
 	}
@@ -183,7 +183,7 @@ func TestReadPath_StandaloneLocatorMissingEverywhere(t *testing.T) {
 		t.Fatalf("MarkSynced: %v", err)
 	}
 
-	got, err := f.syncer.fetchResolvedBlock(ctx, &block.FileChunk{ID: "share/lost/0", Hash: h})
+	got, err := f.syncer.fetchResolvedBlock(ctx, &block.FileChunk{ID: "share/lost/0", Hash: h}, hydrateSpan{})
 	if !errors.Is(err, block.ErrChunkNotFound) {
 		t.Fatalf("fetchResolvedBlock: want ErrChunkNotFound, got err=%v", err)
 	}

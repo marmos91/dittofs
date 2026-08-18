@@ -227,9 +227,41 @@ func (r *chunkWindowResolver) list(ctx context.Context) ([]*block.FileChunk, err
 	return rows, nil
 }
 
-// covering returns the FileChunk covering absolute byte offset off and its
-// parsed absolute start offset, or (nil, 0, nil) for a hole.
-func (r *chunkWindowResolver) covering(ctx context.Context, off uint64) (*block.FileChunk, uint64, error) {
+// covering returns the FileChunk covering absolute byte offset off, its parsed
+// absolute start offset, and the offset at which its claim on the bytes from
+// off onwards ends, or (nil, 0, 0, nil) for a hole.
+//
+// The claim ends at the row's own end, or at the start of the next row that
+// begins inside it, whichever comes first. Coverage resolves an overlap to the
+// greatest start, so from the first byte of a later-starting row it is that row
+// that holds the bytes, and the straddling row's remaining extent describes
+// bytes it no longer owns. A caller that consumed the straddler's full extent
+// would step over the later row entirely and, on the fetch path, write the
+// older bytes over the newer row's head.
+//
+// A successor lookup that cannot be answered is returned as an error rather
+// than read as "nothing starts later": that reading would hand back the row's
+// full extent, which is the widest possible claim and the one that lets a stale
+// straddler be written over a newer row's head.
+func (r *chunkWindowResolver) covering(ctx context.Context, off uint64) (*block.FileChunk, uint64, uint64, error) {
+	fb, abs, err := r.coveringRow(ctx, off)
+	if err != nil || fb == nil {
+		return nil, 0, 0, err
+	}
+	claimEnd := abs + uint64(fb.DataSize)
+	next, ok, err := r.nextPlaceableStart(ctx, off)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	if ok && next < claimEnd {
+		claimEnd = next
+	}
+	return fb, abs, claimEnd, nil
+}
+
+// coveringRow resolves the row covering off and its absolute start offset,
+// through the backend's chunk-offset index when it has one.
+func (r *chunkWindowResolver) coveringRow(ctx context.Context, off uint64) (*block.FileChunk, uint64, error) {
 	if idx, ok := r.store.(chunkAtOffsetResolver); ok {
 		fb, err := idx.GetFileChunkAtOffset(ctx, r.payloadID, off)
 		if err != nil || fb == nil {
@@ -266,7 +298,7 @@ func resolveCovering(ctx context.Context, store block.EngineFileChunkStore, payl
 	if store == nil {
 		return nil, 0, nil
 	}
-	return newChunkWindowResolver(store, payloadID).covering(ctx, off)
+	return newChunkWindowResolver(store, payloadID).coveringRow(ctx, off)
 }
 
 // chunkAtOrAfterOffsetResolver is the indexed successor lookup, implemented only
@@ -353,4 +385,67 @@ func (r *chunkWindowResolver) nextStart(ctx context.Context, off uint64) (uint64
 			block.ErrManifestInconsistent, off, unplaceable)
 	}
 	return best, found, nil
+}
+
+// nextPlaceableStart returns the absolute start offset of the first placeable
+// chunk that begins strictly after off, or ok=false when none does. It is what
+// bounds a resolved row's claim, so unlike nextStart — which steps across a
+// hole, where a row parked at an unknown offset may be the very data being
+// stepped over — a row whose ID carries no offset is skipped rather than
+// reported: it sits at no offset at all, so it can never be the later row that
+// ends another row's claim, and refusing here would fail every covered read of a
+// payload that reads correctly apart from one damaged row.
+//
+// The offset index refuses the same question outright, because the caller it
+// was built for is the hole step. Its refusal is taken here as "ask the manifest
+// instead", where the unplaceable row can simply be passed over; every other
+// failure is returned. What the answer must never become is "nothing starts
+// later", which hands the caller the row's full extent — the widest claim there
+// is, and the one this bound exists to narrow.
+func (r *chunkWindowResolver) nextPlaceableStart(ctx context.Context, off uint64) (uint64, bool, error) {
+	if off == math.MaxUint64 {
+		return 0, false, nil // nothing can start after the last representable offset
+	}
+	if idx, ok := r.store.(chunkAtOrAfterOffsetResolver); ok {
+		fb, err := idx.GetFileChunkAtOrAfterOffset(ctx, r.payloadID, off+1)
+		switch {
+		case err != nil && !errors.Is(err, block.ErrManifestInconsistent):
+			return 0, false, err
+		case err == nil && fb == nil:
+			return 0, false, nil
+		case err == nil:
+			if abs, parsed := block.ParseChunkOffset(fb.ID); parsed {
+				return abs, true, nil
+			}
+		}
+	}
+	rows, err := r.list(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	best, found := minStartAfter(rows, off)
+	return best, found, nil
+}
+
+// minStartAfter returns the smallest start offset among rows that begins
+// strictly after off. A row whose ID carries no offset is skipped: it sits at an
+// unknown place, so it can neither confirm nor deny a successor.
+func minStartAfter(rows []*block.FileChunk, off uint64) (uint64, bool) {
+	var (
+		best  uint64
+		found bool
+	)
+	for _, fb := range rows {
+		if fb == nil {
+			continue
+		}
+		abs, parsed := block.ParseChunkOffset(fb.ID)
+		if !parsed || abs <= off {
+			continue
+		}
+		if !found || abs < best {
+			best, found = abs, true
+		}
+	}
+	return best, found
 }

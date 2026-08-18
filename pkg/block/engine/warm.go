@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -30,6 +32,7 @@ type WarmResult struct {
 type warmTarget struct {
 	payloadID string
 	fb        *block.FileChunk
+	span      hydrateSpan
 }
 
 // WarmAll proactively materializes every block of every payload in this share
@@ -90,14 +93,40 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		if err != nil {
 			return WarmResult{}, fmt.Errorf("warm: list blocks for %s: %w", payloadID, err)
 		}
+		// Every placeable row start, ascending, so each row's claim end is a
+		// binary search rather than another walk of the manifest.
+		starts := make([]uint64, 0, len(rows))
 		for _, fb := range rows {
 			if fb == nil {
 				continue
 			}
-			if _, ok := block.ParseChunkOffset(fb.ID); !ok {
+			if absOff, ok := block.ParseChunkOffset(fb.ID); ok {
+				starts = append(starts, absOff)
+			}
+		}
+		slices.Sort(starts)
+
+		for _, fb := range rows {
+			if fb == nil {
 				continue
 			}
-			targets = append(targets, warmTarget{payloadID: payloadID, fb: fb})
+			absOff, ok := block.ParseChunkOffset(fb.ID)
+			if !ok {
+				continue
+			}
+			// A row is warmed only over the bytes it still holds: a row
+			// straddling a later row's start hands them over at that start, and
+			// hydrating its full extent would leave its older bytes over the
+			// newer row's head (see hydrateSpan). A row overlapped in its middle
+			// therefore warms only up to that later row, and the remainder past
+			// it is left for the demand read to fetch — one row here means one
+			// range, and filling the gap with the older bytes is the outcome
+			// this clamp exists to prevent.
+			span := hydrateSpan{From: absOff, To: absOff + uint64(fb.DataSize)}
+			if i := sort.Search(len(starts), func(i int) bool { return starts[i] > absOff }); i < len(starts) && starts[i] < span.To {
+				span.To = starts[i]
+			}
+			targets = append(targets, warmTarget{payloadID: payloadID, fb: fb, span: span})
 		}
 	}
 
@@ -148,7 +177,7 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		}
 		t := t
 		g.Go(func() error {
-			data, err := m.fetchResolvedBlock(gctx, t.fb)
+			data, err := m.fetchResolvedBlock(gctx, t.fb, t.span)
 			if err != nil {
 				if errors.Is(err, journal.ErrLocalStoreFull) {
 					return fmt.Errorf("warm: local tier full while fetching %s (raise local_store_size or evict): %w",
