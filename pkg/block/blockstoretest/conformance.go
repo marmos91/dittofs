@@ -34,6 +34,10 @@ type Factory func(t *testing.T) (block.Store, func())
 //
 //   - Put + Get round-trip with no-aliasing of internal storage.
 //   - Get on an unstored hash returns block.ErrChunkNotFound.
+//   - Has on an unstored hash returns (false, nil) — a definitive miss,
+//     never (false, err).
+//   - Head on an unstored hash returns block.ErrChunkNotFound.
+//   - GetRange on an unstored hash returns block.ErrChunkNotFound.
 //   - GetRange returns the requested byte sub-range.
 //   - Delete is durable and is observable via a subsequent Get miss.
 //   - Walk enumerates every object with non-zero LastModified.
@@ -63,6 +67,9 @@ func BlockStoreConformance(t *testing.T, factory Factory) {
 	t.Helper()
 	t.Run("Put_Get_Roundtrip", func(t *testing.T) { testPutGetRoundtrip(t, factory) })
 	t.Run("Get_NotFound", func(t *testing.T) { testGetNotFound(t, factory) })
+	t.Run("Has_NotFound", func(t *testing.T) { testHasNotFound(t, factory) })
+	t.Run("Head_NotFound", func(t *testing.T) { testHeadNotFound(t, factory) })
+	t.Run("GetRange_NotFound", func(t *testing.T) { testGetRangeNotFound(t, factory) })
 	t.Run("GetRange", func(t *testing.T) { testGetRange(t, factory) })
 	t.Run("Delete", func(t *testing.T) { testDelete(t, factory) })
 	t.Run("Walk", func(t *testing.T) { testWalk(t, factory) })
@@ -132,13 +139,7 @@ func testGetNotFound(t *testing.T, factory Factory) {
 	t.Cleanup(cleanup)
 	ctx := context.Background()
 
-	// Non-zero arbitrary hash so the assertion does not collide with any
-	// hypothetical "all-zero hash" sentinel a backend might special-case.
-	var missing block.ContentHash
-	missing[0] = 0xDE
-	missing[31] = 0xAD
-
-	data, err := bs.Get(ctx, missing)
+	data, err := bs.Get(ctx, missingHash())
 	if err == nil {
 		t.Fatalf("Get on missing hash: expected error, got nil (data len=%d)", len(data))
 	}
@@ -149,6 +150,69 @@ func testGetNotFound(t *testing.T, factory Factory) {
 	}
 	if data != nil {
 		t.Fatalf("Get on missing hash: want nil data, got %d bytes", len(data))
+	}
+}
+
+// missingHash returns a non-zero hash no fixture in this suite stores, so a
+// miss assertion cannot collide with an "all-zero hash" sentinel a backend
+// might special-case.
+func missingHash() block.ContentHash {
+	var h block.ContentHash
+	h[0] = 0xDE
+	h[31] = 0xAD
+	return h
+}
+
+func testHasNotFound(t *testing.T, factory Factory) {
+	bs, cleanup := factory(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	// Store an unrelated object first: a backend that answers Has from a
+	// bulk listing must still report a definitive miss for a key it does
+	// not hold, not "the store is empty so anything goes".
+	other := []byte("has-not-found: unrelated resident object")
+	if err := bs.Put(ctx, blake3Sum(other), other); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	// BlockStore contract: (false, nil) is a confirmed miss; an error means
+	// the backend could not answer. Callers distinguish the two, so a
+	// backend that folds a miss into an error breaks them.
+	ok, err := bs.Has(ctx, missingHash())
+	if err != nil {
+		t.Fatalf("Has on missing hash: want (false, nil), got error %v", err)
+	}
+	if ok {
+		t.Fatal("Has on missing hash: want false, got true")
+	}
+}
+
+func testHeadNotFound(t *testing.T, factory Factory) {
+	bs, cleanup := factory(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	m, err := bs.Head(ctx, missingHash())
+	if err == nil {
+		t.Fatalf("Head on missing hash: expected error, got nil (meta=%+v)", m)
+	}
+	if !errors.Is(err, block.ErrChunkNotFound) {
+		t.Fatalf("Head on missing hash: want ErrChunkNotFound, got %v", err)
+	}
+}
+
+func testGetRangeNotFound(t *testing.T, factory Factory) {
+	bs, cleanup := factory(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	data, err := bs.GetRange(ctx, missingHash(), 0, 8)
+	if err == nil {
+		t.Fatalf("GetRange on missing hash: expected error, got nil (data len=%d)", len(data))
+	}
+	if !errors.Is(err, block.ErrChunkNotFound) {
+		t.Fatalf("GetRange on missing hash: want ErrChunkNotFound, got %v", err)
 	}
 }
 
