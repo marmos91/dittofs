@@ -279,22 +279,31 @@ func (fi *fileIndex) plan(offset, n int64) []piece {
 	return pieces
 }
 
+// ReadState reports what the local tier found under a read window. Cold ranges
+// were written but evicted, so the caller hydrates from the remote store and
+// retries. Hole ranges have no local interval at all: the journal zero-fills
+// them, but only the manifest can say whether they are genuinely sparse.
+type ReadState struct {
+	Cold bool
+	Hole bool
+}
+
 // ReadAt fills dst with the file's bytes at offset. Ranges never written locally
-// are POSIX holes and are zero-filled. Ranges written but evicted are reported
-// via cold so the caller can hydrate from the remote store and retry; their dst
-// bytes are zero-filled as a placeholder until that cold-read path is wired.
-func (s *Store) ReadAt(ctx context.Context, id FileID, offset int64, dst []byte) (n int, cold bool, err error) {
+// are POSIX holes and are zero-filled; ranges written but evicted are zero-filled
+// as a placeholder. Both are reported through the returned ReadState so the
+// caller can reconcile them against the CAS manifest.
+func (s *Store) ReadAt(ctx context.Context, id FileID, offset int64, dst []byte) (n int, st ReadState, err error) {
 	if err := ctx.Err(); err != nil {
-		return 0, false, err
+		return 0, ReadState{}, err
 	}
 	if s.closed.Load() {
-		return 0, false, errClosed
+		return 0, ReadState{}, errClosed
 	}
 	if offset < 0 {
-		return 0, false, fmt.Errorf("journal: negative offset %d", offset)
+		return 0, ReadState{}, fmt.Errorf("journal: negative offset %d", offset)
 	}
 	if len(dst) == 0 {
-		return 0, false, nil
+		return 0, ReadState{}, nil
 	}
 	s.reads.Add(1)
 
@@ -304,7 +313,7 @@ func (s *Store) ReadAt(ctx context.Context, id FileID, offset int64, dst []byte)
 	if fi == nil { // unknown file: all hole
 		sh.mu.Unlock()
 		clear(dst)
-		return len(dst), false, nil
+		return len(dst), ReadState{Hole: true}, nil
 	}
 	pieces := fi.plan(offset, int64(len(dst)))
 	// Resolve and read-guard each data piece's segment while the index and the
@@ -321,7 +330,7 @@ func (s *Store) ReadAt(ctx context.Context, id FileID, offset int64, dst []byte)
 		if seg == nil {
 			sh.mu.Unlock()
 			releaseGuards(segs)
-			return int(p.dstStart), false, fmt.Errorf("journal: unknown segment %d", p.loc.SegmentID)
+			return int(p.dstStart), ReadState{}, fmt.Errorf("journal: unknown segment %d", p.loc.SegmentID)
 		}
 		seg.readGuard.RLock()
 		segs[i] = seg
@@ -334,25 +343,26 @@ func (s *Store) ReadAt(ctx context.Context, id FileID, offset int64, dst []byte)
 		switch {
 		case p.hole:
 			clear(out)
+			st.Hole = true
 		case p.cold:
 			clear(out)
-			cold = true
+			st.Cold = true
 			s.coldReads.Add(1)
 		default:
 			seg := segs[i]
 			seg.lastAccess.Store(s.clock.Now().UnixNano())
 			if s.verifyReads.Load() {
 				if rerr := s.verifiedRead(seg, p, out, id, offset); rerr != nil {
-					return int(p.dstStart), false, rerr
+					return int(p.dstStart), ReadState{}, rerr
 				}
 				continue
 			}
 			if _, rerr := seg.fd.ReadAt(out, p.loc.Offset+p.subOff); rerr != nil {
-				return int(p.dstStart), false, fmt.Errorf("journal: read segment %d@%d: %w", p.loc.SegmentID, p.loc.Offset+p.subOff, rerr)
+				return int(p.dstStart), ReadState{}, fmt.Errorf("journal: read segment %d@%d: %w", p.loc.SegmentID, p.loc.Offset+p.subOff, rerr)
 			}
 		}
 	}
-	return len(dst), cold, nil
+	return len(dst), st, nil
 }
 
 // maxPooledRecordScratch bounds what a verified read hands back to the pool. A

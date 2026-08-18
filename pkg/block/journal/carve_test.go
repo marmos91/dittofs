@@ -236,8 +236,8 @@ func TestCarveRoundTripAndFlip(t *testing.T) {
 	}
 	// Warm read still returns the data unchanged.
 	got := make([]byte, len(data))
-	if _, cold, err := s.ReadAt(ctx, "f", 0, got); err != nil || cold {
-		t.Fatalf("ReadAt: err=%v cold=%v", err, cold)
+	if _, st, err := s.ReadAt(ctx, "f", 0, got); err != nil || st.Cold {
+		t.Fatalf("ReadAt: err=%v cold=%v", err, st.Cold)
 	}
 	if string(got) != string(data) {
 		t.Fatalf("warm read mismatch after carve")

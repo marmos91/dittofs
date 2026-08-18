@@ -56,8 +56,8 @@ func TestVerifiedReadDetectsCorruption(t *testing.T) {
 
 	// Baseline: a verified read of the intact record round-trips.
 	got := make([]byte, len(payload))
-	if _, cold, err := s.ReadAt(ctx, "f1", 0, got); err != nil || cold {
-		t.Fatalf("baseline verified read: err=%v cold=%v", err, cold)
+	if _, st, err := s.ReadAt(ctx, "f1", 0, got); err != nil || st.Cold {
+		t.Fatalf("baseline verified read: err=%v cold=%v", err, st.Cold)
 	}
 	if !bytes.Equal(got, payload) {
 		t.Fatalf("baseline verified read mismatch")
@@ -66,12 +66,12 @@ func TestVerifiedReadDetectsCorruption(t *testing.T) {
 	corruptFirstPayloadByte(t, s, "f1")
 
 	clear(got)
-	_, cold, err := s.ReadAt(ctx, "f1", 0, got)
+	_, st, err := s.ReadAt(ctx, "f1", 0, got)
 	var cre *CorruptRangeError
 	if !errors.As(err, &cre) {
 		t.Fatalf("want *CorruptRangeError, got err=%v", err)
 	}
-	if cold {
+	if st.Cold {
 		t.Fatalf("a corrupt range must never be reported cold (cold zero-fills)")
 	}
 	if cre.FileID != "f1" {
@@ -118,12 +118,12 @@ func TestVerifiedReadDetectsFileIDCorruption(t *testing.T) {
 	_ = f.Close()
 
 	got := make([]byte, len(payload))
-	_, cold, err := s.ReadAt(ctx, "f1", 0, got)
+	_, st, err := s.ReadAt(ctx, "f1", 0, got)
 	var cre *CorruptRangeError
 	if !errors.As(err, &cre) {
 		t.Fatalf("want *CorruptRangeError for flipped FileID, got err=%v", err)
 	}
-	if cold {
+	if st.Cold {
 		t.Fatalf("a corrupt range must never be reported cold")
 	}
 }
@@ -143,9 +143,9 @@ func TestUnverifiedReadReturnsRawBytes(t *testing.T) {
 	corruptFirstPayloadByte(t, s, "f1")
 
 	got := make([]byte, len(payload))
-	n, cold, err := s.ReadAt(ctx, "f1", 0, got)
-	if err != nil || cold || n != len(payload) {
-		t.Fatalf("raw read: err=%v cold=%v n=%d", err, cold, n)
+	n, st, err := s.ReadAt(ctx, "f1", 0, got)
+	if err != nil || st.Cold || n != len(payload) {
+		t.Fatalf("raw read: err=%v cold=%v n=%d", err, st.Cold, n)
 	}
 	if bytes.Equal(got, payload) {
 		t.Fatalf("expected the corrupted byte to leak through the unverified fast path")

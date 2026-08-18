@@ -73,6 +73,12 @@ func runFileChunkOpsTests(t *testing.T, factory StoreFactory) {
 		testGetFileChunkAtOrAfterOffset(t, factory)
 	})
 
+	// An unplaceable row must be reported by both indexed lookups rather than
+	// skipped, so the read path can refuse instead of zero-filling.
+	t.Run("IndexedLookups_UnplaceableRow", func(t *testing.T) {
+		testIndexedLookups_UnplaceableRow(t, factory)
+	})
+
 	// the syncer claim cycle stamps
 	// LastSyncAttemptAt = now when flipping a block to Syncing, and the
 	// restart-recovery janitor compares it against ClaimTimeout. Every
@@ -448,6 +454,55 @@ func testGetFileChunkAtOffset(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFileChunkAtOffset(unknown): %v", err)
 	} else if got != nil {
 		t.Errorf("GetFileChunkAtOffset(unknown payload) = %q, want nil", got.ID)
+	}
+}
+
+// testIndexedLookups_UnplaceableRow pins what an indexed backend must do with a
+// row whose ID carries no parseable offset: its range is unknown, so reporting a
+// hole there would have the caller zero-fill bytes the file may hold.
+//
+// The covering lookup is scoped — one bad row must not make a whole payload
+// unreadable, so an offset another row covers still answers from that row and
+// only an uncovered offset refuses. The successor lookup is not scoped: an
+// unplaceable row sits at an unknown offset, so it may be the true successor and
+// returning a later one would widen the hole.
+func testIndexedLookups_UnplaceableRow(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	covering, hasCovering := store.(chunkAtOffsetProbe)
+	successor, hasSuccessor := store.(chunkAtOrAfterProbe)
+	if !hasCovering && !hasSuccessor {
+		t.Skipf("backend %T implements neither indexed lookup", store)
+	}
+
+	const payloadID = "file-unplaceable"
+	rows := []*block.FileChunk{
+		{ID: payloadID + "/0", State: block.BlockStatePending, DataSize: 20, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: payloadID + "/not-an-offset", State: block.BlockStatePending, DataSize: 20, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+	}
+	for _, b := range rows {
+		if err := store.Put(ctx, b); err != nil {
+			t.Fatalf("Put(%s): %v", b.ID, err)
+		}
+	}
+
+	if hasCovering {
+		got, err := covering.GetFileChunkAtOffset(ctx, payloadID, 0)
+		if err != nil {
+			t.Fatalf("GetFileChunkAtOffset(0) over a covered offset: %v", err)
+		}
+		if got == nil || got.ID != payloadID+"/0" {
+			t.Errorf("GetFileChunkAtOffset(0) = %v, want %s", got, payloadID+"/0")
+		}
+		if _, err := covering.GetFileChunkAtOffset(ctx, payloadID, 100); !errors.Is(err, block.ErrManifestInconsistent) {
+			t.Errorf("GetFileChunkAtOffset(100) = %v, want ErrManifestInconsistent", err)
+		}
+	}
+	if hasSuccessor {
+		if _, err := successor.GetFileChunkAtOrAfterOffset(ctx, payloadID, 0); !errors.Is(err, block.ErrManifestInconsistent) {
+			t.Errorf("GetFileChunkAtOrAfterOffset(0) = %v, want ErrManifestInconsistent", err)
+		}
 	}
 }
 

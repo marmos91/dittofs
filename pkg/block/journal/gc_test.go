@@ -147,8 +147,8 @@ func TestGCForcedRepackPreservesData(t *testing.T) {
 
 	// keep survives byte-identically; gone stays deleted.
 	got := make([]byte, len(keep))
-	if _, cold, err := s.ReadAt(ctx, "keep", 0, got); err != nil || cold {
-		t.Fatalf("ReadAt keep: err=%v cold=%v", err, cold)
+	if _, st, err := s.ReadAt(ctx, "keep", 0, got); err != nil || st.Cold {
+		t.Fatalf("ReadAt keep: err=%v cold=%v", err, st.Cold)
 	}
 	if !bytes.Equal(got, keep) {
 		t.Fatalf("keep not byte-identical after repack")
@@ -243,8 +243,8 @@ func TestGCCrashBeforeUnlinkOrphanSwept(t *testing.T) {
 	defer func() { _ = r.Close() }()
 
 	got := make([]byte, len(keep))
-	if _, cold, err := r.ReadAt(ctx, "keep", 0, got); err != nil || cold {
-		t.Fatalf("ReadAt keep after recovery: err=%v cold=%v", err, cold)
+	if _, st, err := r.ReadAt(ctx, "keep", 0, got); err != nil || st.Cold {
+		t.Fatalf("ReadAt keep after recovery: err=%v cold=%v", err, st.Cold)
 	}
 	if !bytes.Equal(got, keep) {
 		t.Fatalf("keep not byte-identical after crash-before-unlink recovery")

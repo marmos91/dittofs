@@ -99,26 +99,28 @@ func (s *MemoryStore) Hydrate(_ context.Context, payloadID string, offset int64,
 }
 
 // ReadAt copies bytes into dst; never-written ranges are zero-filled holes.
-// Memory never evicts, so cold is always false.
-func (s *MemoryStore) ReadAt(_ context.Context, payloadID string, offset int64, dst []byte) (int, bool, error) {
+// Memory never evicts, so Cold is always false. The flat buffer cannot record
+// which bytes were written, so Hole is reported only for the part of the window
+// past the buffer's end — interior holes are indistinguishable from zeros here.
+func (s *MemoryStore) ReadAt(_ context.Context, payloadID string, offset int64, dst []byte) (int, journal.ReadState, error) {
 	if offset < 0 {
-		return 0, false, block.ErrInvalidOffset
+		return 0, journal.ReadState{}, block.ErrInvalidOffset
 	}
 	if len(dst) == 0 {
-		return 0, false, nil
+		return 0, journal.ReadState{}, nil
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.closed {
-		return 0, false, ErrStoreClosed
+		return 0, journal.ReadState{}, ErrStoreClosed
 	}
 	clear(dst)
 	f := s.files[payloadID]
 	if f == nil || offset >= int64(len(f.buf)) {
-		return len(dst), false, nil
+		return len(dst), journal.ReadState{Hole: true}, nil
 	}
-	copy(dst, f.buf[offset:])
-	return len(dst), false, nil
+	n := copy(dst, f.buf[offset:])
+	return len(dst), journal.ReadState{Hole: n < len(dst)}, nil
 }
 
 // Commit is a no-op: memory has no durable substrate.

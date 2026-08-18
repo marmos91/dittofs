@@ -442,7 +442,7 @@ and per-method contract; the representative methods are:
 type LocalStore interface {
     // --- Data plane (payloadID + offset keyed) ---
     WriteAt(ctx context.Context, payloadID string, offset int64, data []byte) error
-    ReadAt(ctx context.Context, payloadID string, offset int64, dst []byte) (n int, cold bool, err error)
+    ReadAt(ctx context.Context, payloadID string, offset int64, dst []byte) (n int, st journal.ReadState, err error)
     Hydrate(ctx context.Context, payloadID string, offset int64, data []byte) error // fill from remote on cold read
     Commit(ctx context.Context, payloadID string) error                             // fsync buffered writes
     FileSize(ctx context.Context, payloadID string) (int64, bool)
@@ -462,11 +462,12 @@ type LocalStore interface {
 ```
 
 A write buffers a dirty range and local-acks without fsync; `Commit` is the
-durability point. On a cold read `ReadAt` returns `cold=true` and the engine
-`Hydrate`s the range back from the remote store. `Carve` packs a file's dirty
-ranges into remote blocks via the injected `BlockSink` (see the carve pass in
-[the architecture doc](architecture.md#carve-local--remote)); `Evict` frees
-whole fully-synced segments under pressure.
+durability point. `ReadAt` reports both evicted (`ReadState.Cold`) and uncovered
+(`ReadState.Hole`) ranges; the engine reconciles either against the FileChunk
+manifest and `Hydrate`s whatever the manifest says is remote-resident. `Carve`
+packs a file's dirty ranges into remote blocks via the injected `BlockSink` (see
+the carve pass in [the architecture doc](architecture.md#carve-local--remote));
+`Evict` frees whole fully-synced segments under pressure.
 
 ### Reference Implementation
 

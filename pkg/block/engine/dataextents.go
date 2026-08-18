@@ -10,14 +10,20 @@ import (
 // DataExtents returns the sorted, non-overlapping byte ranges [start, end)
 // within [0, fileSize) that hold data across ALL tiers the engine reads from:
 // the local append log + in-memory buffer (via local.DataExtents) UNION the
-// persisted CAS FileChunk manifest. This is the same data view ReadAt
-// reconstructs, expressed as a hole map.
+// persisted CAS FileChunk manifest. This is the same union readAtInternal
+// reconstructs, expressed as a hole map, so SEEK and READ agree on where the
+// data is.
 //
 // NFSv4.2 SEEK and READ_PLUS use it instead of deriving holes from the
 // persisted CAS block list alone: that list is empty/partial for
 // written-but-not-yet-rolled-up data, so a CAS-only map reports a hole where
 // data exists — which RFC 7862 forbids (a sparse-copy client skips the real
 // data, silently losing it). #1481.
+//
+// The map may over-report data but must never under-report it. Both callers
+// ignore an error from here and fall back to the CAS block list, which cannot
+// see an unplaceable row either, so a row whose range is unknown widens the map
+// to the whole file rather than failing.
 func (bs *Store) DataExtents(ctx context.Context, payloadID string, fileSize uint64) ([][2]uint64, error) {
 	if err := bs.enter(); err != nil {
 		return nil, err
@@ -40,11 +46,23 @@ func (bs *Store) DataExtents(ctx context.Context, payloadID string, fileSize uin
 			return nil, lerr
 		}
 		for _, fb := range rows {
-			if fb == nil || fb.Hash.IsZero() {
-				continue // pending/incomplete chunk — no committed bytes yet
+			if fb == nil {
+				continue
 			}
 			off, ok := block.ParseChunkOffset(fb.ID)
-			if !ok || off >= fileSize {
+			if !ok {
+				// The row's range is unknown, so no extent can stand for it, and
+				// leaving it out would call its bytes hole. Report the whole file
+				// as data instead: over-reporting is the RFC-safe direction, and it
+				// keeps a sparse-copy client from skipping the range on SEEK alone —
+				// the READ it is then forced to issue refuses with
+				// ErrManifestInconsistent rather than inventing zeros.
+				return [][2]uint64{{0, fileSize}}, nil
+			}
+			if fb.Hash.IsZero() {
+				continue // pending/incomplete chunk — no committed bytes yet
+			}
+			if off >= fileSize {
 				continue
 			}
 			end := off + uint64(fb.DataSize)

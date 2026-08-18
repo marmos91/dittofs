@@ -193,9 +193,9 @@ func (s *FSStore) WriteAt(ctx context.Context, payloadID string, offset int64, d
 	return s.Store.WriteAt(ctx, journal.FileID(payloadID), offset, data)
 }
 
-func (s *FSStore) ReadAt(ctx context.Context, payloadID string, offset int64, dst []byte) (int, bool, error) {
+func (s *FSStore) ReadAt(ctx context.Context, payloadID string, offset int64, dst []byte) (int, journal.ReadState, error) {
 	if err := s.materializeLegacy(payloadID); err != nil {
-		return 0, false, err
+		return 0, journal.ReadState{}, err
 	}
 	return s.Store.ReadAt(ctx, journal.FileID(payloadID), offset, dst)
 }

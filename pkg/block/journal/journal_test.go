@@ -61,11 +61,11 @@ func TestAppendReadRoundTrip(t *testing.T) {
 
 	// Full read back.
 	got := make([]byte, len(payload))
-	n, cold, err := s.ReadAt(ctx, "file-a", 0, got)
+	n, st, err := s.ReadAt(ctx, "file-a", 0, got)
 	if err != nil {
 		t.Fatalf("ReadAt: %v", err)
 	}
-	if cold {
+	if st.Cold {
 		t.Fatalf("unexpected cold read")
 	}
 	if n != len(payload) || !bytes.Equal(got, payload) {
