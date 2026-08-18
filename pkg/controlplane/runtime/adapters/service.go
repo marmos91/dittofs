@@ -229,9 +229,8 @@ func (s *Service) EnableAdapter(ctx context.Context, adapterType string) error {
 
 	if err := s.startAdapter(cfg); err != nil {
 		// Roll back the persisted flag so the store does not advertise an
-		// adapter that never started. Use a fresh bounded context, not the
-		// caller's: the request may already be canceled, and that must not
-		// abort the cleanup.
+		// adapter that never started. A fresh context keeps an already-canceled
+		// request from aborting the cleanup.
 		rbCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 		defer cancel()
 		cfg.Enabled = false

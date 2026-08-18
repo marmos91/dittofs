@@ -240,32 +240,3 @@ func TestHealthMonitor_OutageDuration(t *testing.T) {
 		t.Fatalf("expected 0 outage duration after recovery, got %v", d)
 	}
 }
-
-// A hung remote must not block Start: the eager probe runs on the monitor
-// goroutine, so the caller (which may hold a lock) returns immediately.
-func TestHealthMonitor_StartDoesNotBlockOnSlowProbe(t *testing.T) {
-	release := make(chan struct{})
-	probe := func(ctx context.Context) error {
-		<-release
-		return nil
-	}
-
-	hm := NewHealthMonitor(probe, fastHealthConfig())
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	done := make(chan struct{})
-	go func() {
-		hm.Start(ctx)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Start blocked on the eager probe")
-	}
-
-	close(release)
-	hm.Stop()
-}

@@ -14,10 +14,9 @@ type MountInfo struct {
 	AdapterData any // Protocol-specific details (e.g., NFS mount path, SMB session ID)
 }
 
-// mountKey identifies one mount. The three components are separate fields
-// rather than a joined string so a value containing the separator (an IPv6
-// client address, a share name with a colon) cannot collide with a different
-// triple.
+// mountKey identifies one mount. The components stay separate fields rather
+// than a joined string so a value containing the separator (an IPv6 client
+// address, a share name with a colon) cannot collide with a different triple.
 type mountKey struct {
 	Protocol   string
 	ClientAddr string

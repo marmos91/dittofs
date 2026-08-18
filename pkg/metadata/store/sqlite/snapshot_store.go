@@ -1,7 +1,6 @@
 package sqlite
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/binary"
@@ -492,21 +491,23 @@ func readCell(r io.Reader) (any, error) {
 	}
 }
 
-// readSized reads a u32-length-prefixed byte run. The length comes from an
-// unverified stream (the envelope CRC only covers the whole payload, so it is
-// checked after the rows are parsed), so the buffer grows as bytes arrive
-// instead of being allocated from the declared length up front: a corrupt or
-// truncated stream fails on EOF having used only the bytes it actually held.
+// readSized reads a u32-length-prefixed byte run. The declared length is not
+// trusted for the allocation - the envelope CRC covers the whole payload and is
+// only verified once the rows are parsed - so the buffer grows as bytes arrive
+// and a truncated stream fails having used only the bytes it actually held.
 func readSized(r io.Reader) ([]byte, error) {
 	n, err := readU32(r)
 	if err != nil {
 		return nil, err
 	}
-	var buf bytes.Buffer
-	if _, err := io.CopyN(&buf, r, int64(n)); err != nil {
+	buf, err := io.ReadAll(io.LimitReader(r, int64(n)))
+	if err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	if uint32(len(buf)) != n {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return buf, nil
 }
 
 func writeString(w io.Writer, s string) error {

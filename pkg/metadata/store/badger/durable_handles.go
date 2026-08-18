@@ -29,9 +29,7 @@ const (
 	// Index by FileHandle: dh:fh:{hex}:{id} -> id (string)
 	prefixDHFileHandle = "dh:fh:"
 
-	// Index by Share: dh:share:{hex(name)}:{id} -> id (string). The share name
-	// is hex-encoded so a ':' inside it cannot forge an extra key segment
-	// (see shareIndexPrefix).
+	// Index by Share: dh:share:{hex(name)}:{id} -> id (string)
 	prefixDHShare = "dh:share:"
 )
 
@@ -61,13 +59,9 @@ var zeroGUID [16]byte
 
 // shareIndexPrefix returns the Share index prefix covering every durable handle
 // of one share. Hex-encoding the name keeps the ':' separator unambiguous, so a
-// share whose name embeds ':' cannot plant entries that a prefix scan for
-// another share matches.
-//
-// The format change needs no on-disk migration: durable handles are ephemeral
-// reconnect state with a bounded timeout, and the primary dh:id:{uuid} records
-// (which every other lookup uses) are untouched, so entries left by a
-// pre-upgrade run are unreachable by the new scans and expire on their own.
+// share whose name embeds ':' cannot plant entries that a scan for another
+// share matches. Index entries written before the encoding are unreachable by
+// these scans and expire with the handles themselves.
 func shareIndexPrefix(shareName string) string {
 	return prefixDHShare + hex.EncodeToString([]byte(shareName)) + ":"
 }
