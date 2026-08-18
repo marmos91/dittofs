@@ -64,11 +64,7 @@ func DeduceDefaults(d SystemDetector) *DeducedDefaults {
 		localStoreSize = MinLocalStoreSize
 	}
 
-	rbRaw := mem / 8
-	if rbRaw > uint64(math.MaxInt64) {
-		rbRaw = uint64(math.MaxInt64)
-	}
-	readBufferSize := int64(rbRaw)
+	readBufferSize := ClampToInt64(mem / 8)
 	readBufferClamped := readBufferSize < MinReadBufferSize
 	if readBufferClamped {
 		readBufferSize = MinReadBufferSize
