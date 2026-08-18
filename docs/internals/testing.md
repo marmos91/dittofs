@@ -34,6 +34,7 @@ For the end-user guide to connecting a Windows client, see
   - [WPTS (Windows Protocol Test Suites)](#wpts-windows-protocol-test-suites)
   - [smbtorture (Samba Test Suite)](#smbtorture-samba-test-suite)
   - [Running both suites](#running-both-suites)
+- [Device-loss crash testing (dm-flakey)](#device-loss-crash-testing-dm-flakey)
 
 ---
 
@@ -427,3 +428,41 @@ SMB-related code.
 
 > Do not run two instances of the e2e or conformance suites concurrently — they share a Docker
 > container name and will collide. Run them serially and `docker rm -f` between runs if needed.
+
+---
+
+## Device-loss crash testing (dm-flakey)
+
+`test/crash/device-loss.sh` answers one question: can an acknowledged write come back
+as the right size with zero content? Losing an uncommitted write in a crash is expected;
+returning plausible-looking zeros for it is not, because no reader can tell the difference.
+
+**`kill -9` does not test this.** The page cache outlives process death, so the data is
+still there when the server restarts. Only device-level loss exposes the asymmetry between
+metadata that reached stable storage and data that did not.
+
+The rig puts the metadata store and the local block store on an ext4 filesystem over
+`dm-flakey`, writes self-identifying 4096-byte records over SMB (`cache=none`, so every
+`write()` is answered by the server), then swaps the device table to `drop_writes` with
+`dmsetup suspend --noflush --nolockfs` — from that instant only bytes that genuinely
+reached the device survive. The writer is stopped before the swap, so every record in its
+ack log was answered while the device was healthy, and the ack log itself is fsynced to a
+different disk. After the swap the server is killed, the device is restored to what
+survived, and the file is read back.
+
+```bash
+sudo ./test/crash/device-loss.sh ./dfs ./dfsctl [write-seconds] [commit-every]
+```
+
+`commit-every` is how often the writer calls `fsync` (0 = never). The two modes test
+opposite directions:
+
+- **`0`** — nothing is ever committed, so nothing may be published. The file must come
+  back short (or empty), never full-size-and-zeroed.
+- **`64`** (default) — a durable prefix exists. Every fsynced record must read back
+  byte-exact; only records written since the last fsync may be missing.
+
+The verdict fails on any record that reads as zeros or garbage inside the file's own
+size, and on any fsynced record that is missing.
+
+Requires root, Linux with `dm-flakey`, `cifs-utils`, and `python3` — a VM, not a laptop.
