@@ -170,8 +170,10 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 		// detection so a racing writer triggers an automatic retry.
 		linkCount, lcErr := tx.GetLinkCount(ctx.Context, fileHandle)
 		if lcErr != nil {
-			// If we can't get link count, assume 1.
-			linkCount = 1
+			// Never guess the count. Assuming "last link" would report the
+			// content free while another hard link still references it, so an
+			// unreadable count aborts the remove.
+			return lcErr
 		}
 
 		// Handle link count

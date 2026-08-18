@@ -117,3 +117,86 @@ func TestValidateParallelUploads(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateEncryptionSubconfig(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     map[string]any
+		wantErr string // substring; "" means accept
+	}{
+		{"absent", map[string]any{}, ""},
+		{"local_ok", map[string]any{"encryption": map[string]any{
+			"key": map[string]any{"kind": "local", "file": "/etc/dittofs/share.key"},
+		}}, ""},
+		{"local_with_aead", map[string]any{"encryption": map[string]any{
+			"aead": "xchacha20-poly1305",
+			"key":  map[string]any{"kind": "local", "file": "/k"},
+		}}, ""},
+		{"kmip_ok", map[string]any{"encryption": map[string]any{
+			"key": map[string]any{
+				"kind": "kmip", "endpoint": "kmip.example:5696", "key_uid": "uid-1",
+				"client_cert": "/c.pem", "client_key": "/c.key",
+			},
+		}}, ""},
+		{"wrong_type_block", map[string]any{"encryption": "on"}, "expected JSON object"},
+		{"unknown_aead", map[string]any{"encryption": map[string]any{
+			"aead": "rot13",
+			"key":  map[string]any{"kind": "local", "file": "/k"},
+		}}, "unsupported aead"},
+		{"missing_kind", map[string]any{"encryption": map[string]any{}}, "kind is required"},
+		{"unknown_kind", map[string]any{"encryption": map[string]any{
+			"key": map[string]any{"kind": "vault"},
+		}}, "unsupported value"},
+		{"local_missing_file", map[string]any{"encryption": map[string]any{
+			"key": map[string]any{"kind": "local"},
+		}}, "file is required"},
+		{"kmip_missing_endpoint", map[string]any{"encryption": map[string]any{
+			"key": map[string]any{"kind": "kmip", "key_uid": "uid-1"},
+		}}, "endpoint is required"},
+		{"kmip_missing_key_uid", map[string]any{"encryption": map[string]any{
+			"key": map[string]any{"kind": "kmip", "endpoint": "kmip.example:5696"},
+		}}, "key_uid is required"},
+		{"kmip_missing_client_cert", map[string]any{"encryption": map[string]any{
+			"key": map[string]any{
+				"kind": "kmip", "endpoint": "kmip.example:5696", "key_uid": "uid-1",
+				"client_key": "/c.key",
+			},
+		}}, "client_cert"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateEncryptionSubconfig(tc.cfg)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %q does not contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidateBlockStoreConfig_S3_RejectsBadEncryption pins that the s3 case
+// actually calls the encryption validator — a validator nobody wires up is
+// dead code, and the bad config would only surface at share-attach time.
+func TestValidateBlockStoreConfig_S3_RejectsBadEncryption(t *testing.T) {
+	cfg := configMap{
+		"bucket":            "b",
+		"access_key_id":     "ak",
+		"secret_access_key": "sk",
+		"encryption":        map[string]any{"key": map[string]any{"kind": "vault"}},
+	}
+	err := ValidateBlockStoreConfig(models.BlockStoreKindRemote, "s3", cfg)
+	if err == nil {
+		t.Fatal("want error for an unsupported key provider kind, got nil")
+	}
+	if !strings.Contains(err.Error(), "encryption.key.kind") {
+		t.Fatalf("error %q does not mention encryption.key.kind", err)
+	}
+}

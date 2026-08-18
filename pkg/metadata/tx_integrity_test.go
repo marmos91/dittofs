@@ -114,6 +114,10 @@ func TestRemoveFile_ConcurrentCreateHardLink(t *testing.T) {
 // called for the targeted file ID.
 var errPutFileInjected = errors.New("injected PutFile failure")
 
+// errLinkCountInjected is returned by the fault-injecting tx when GetLinkCount
+// is called for the targeted file ID.
+var errLinkCountInjected = errors.New("injected GetLinkCount failure")
+
 // faultyStore wraps a MetadataStore and, inside WithTransaction, makes
 // tx.PutFile fail for a single targeted file ID. Everything else delegates to
 // the real store so the rest of the rename runs normally up to the injected
@@ -123,17 +127,24 @@ var errPutFileInjected = errors.New("injected PutFile failure")
 type faultyStore struct {
 	metadata.Store
 	failID uuid.UUID // file ID whose PutFile should fail
+	// failLinkCountID is the file ID whose in-transaction GetLinkCount fails.
+	failLinkCountID uuid.UUID
 }
 
 func (f *faultyStore) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
 	return f.Store.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return fn(&faultyTx{Transaction: tx, failID: f.failID})
+		return fn(&faultyTx{
+			Transaction:     tx,
+			failID:          f.failID,
+			failLinkCountID: f.failLinkCountID,
+		})
 	})
 }
 
 type faultyTx struct {
 	metadata.Transaction
-	failID uuid.UUID
+	failID          uuid.UUID
+	failLinkCountID uuid.UUID
 }
 
 func (t *faultyTx) PutFile(ctx context.Context, file *metadata.File) error {
@@ -141,6 +152,15 @@ func (t *faultyTx) PutFile(ctx context.Context, file *metadata.File) error {
 		return errPutFileInjected
 	}
 	return t.Transaction.PutFile(ctx, file)
+}
+
+func (t *faultyTx) GetLinkCount(ctx context.Context, handle metadata.FileHandle) (uint32, error) {
+	if t.failLinkCountID != uuid.Nil {
+		if _, id, err := metadata.DecodeFileHandle(handle); err == nil && id == t.failLinkCountID {
+			return 0, errLinkCountInjected
+		}
+	}
+	return t.Transaction.GetLinkCount(ctx, handle)
 }
 
 // TestMove_RollsBackOnPutFileFailure asserts the rename is atomic: when the
@@ -214,4 +234,45 @@ func TestMove_RollsBackOnPutFileFailure(t *testing.T) {
 	// ...and the destination name was NOT created.
 	_, err = store.GetChild(ctx, destHandle, "moved.txt")
 	require.Error(t, err, "destination entry must not exist after rollback")
+}
+
+// TestRemoveFile_LinkCountReadFailureAborts pins that an unreadable link count
+// aborts the remove instead of being guessed as "last link". Guessing reports
+// the content free (a non-empty PayloadID the caller reaps) while a second hard
+// link still references it, so the blocks vanish out from under that link.
+func TestRemoveFile_LinkCountReadFailureAborts(t *testing.T) {
+	t.Parallel()
+	fx := newTestFixture(t)
+	ctx := context.Background()
+
+	faulty := &faultyStore{Store: fx.store}
+	svc := metadata.New()
+	require.NoError(t, svc.RegisterStoreForShare(fx.shareName, faulty))
+	authCtx := fx.rootContext()
+
+	_, _, err := svc.CreateFile(authCtx, fx.rootHandle, "a.txt", &metadata.FileAttr{Mode: 0644})
+	require.NoError(t, err)
+	target, err := fx.store.GetChild(ctx, fx.rootHandle, "a.txt")
+	require.NoError(t, err)
+	_, err = svc.CreateHardLink(authCtx, fx.rootHandle, "b.txt", target)
+	require.NoError(t, err)
+
+	_, targetID, err := metadata.DecodeFileHandle(target)
+	require.NoError(t, err)
+
+	// Arm the fault on the removed inode's link-count read, after setup.
+	faulty.failLinkCountID = targetID
+
+	removed, _, err := svc.RemoveFile(authCtx, fx.rootHandle, "a.txt")
+	require.ErrorIs(t, err, errLinkCountInjected, "an unreadable link count must abort the remove")
+	assert.Nil(t, removed, "no file record may be returned when the remove aborted")
+
+	// The entry survives, so the second link still resolves the content the
+	// caller would otherwise have reaped.
+	faulty.failLinkCountID = uuid.Nil
+	_, err = fx.store.GetChild(ctx, fx.rootHandle, "a.txt")
+	require.NoError(t, err, "the entry must survive an aborted remove")
+	lc, err := fx.store.GetLinkCount(ctx, target)
+	require.NoError(t, err)
+	assert.Equal(t, uint32(2), lc, "link count must be untouched by the aborted remove")
 }

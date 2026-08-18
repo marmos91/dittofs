@@ -450,8 +450,17 @@ func (s *BadgerMetadataStore) CreateRootDirectory(ctx context.Context, shareName
 	}
 
 	// Both branches (createNewRoot / loadExistingRoot) rewrite the share record,
-	// so drop any cached options for it after the commit.
+	// so drop any cached options for it after the commit. loadExistingRoot may
+	// also rewrite the root inode (mode/UID/GID reconciliation against the
+	// configured attrs), a write that bypasses WithTransaction's dirty-file
+	// tracking — so drop the root's own cache entries too, or a re-attach with
+	// changed ownership keeps serving the previous UID/GID.
 	s.shareCache.invalidate(shareName)
+	if rootFile != nil {
+		id := rootFile.ID.String()
+		s.readCache.invalidate(id)
+		s.parentCache.invalidate(id)
+	}
 
 	return rootFile, nil
 }

@@ -240,3 +240,58 @@ func TestHealthMonitor_OutageDuration(t *testing.T) {
 		t.Fatalf("expected 0 outage duration after recovery, got %v", d)
 	}
 }
+
+// TestHealthMonitor_StopJoinsProbe pins that Stop() waits for an in-flight
+// probe. The probe dials the remote store, and Syncer.Close() stops the monitor
+// right before the owning Store closes that remote — a Stop that only signalled
+// would leave a probe reading a closed store.
+func TestHealthMonitor_StopJoinsProbe(t *testing.T) {
+	// Each probe publishes its own release channel and blocks on it, so the
+	// test controls exactly when a probe finishes without racing on shared
+	// channel variables.
+	probes := make(chan chan struct{}, 4)
+
+	hm := NewHealthMonitor(func(context.Context) error {
+		rel := make(chan struct{})
+		probes <- rel
+		<-rel
+		return nil
+	}, fastHealthConfig())
+
+	// Start runs an eager synchronous probe before launching the loop; let it
+	// through so the probe pinned below is the ticker-driven one.
+	go hm.Start(context.Background())
+	select {
+	case rel := <-probes:
+		close(rel)
+	case <-time.After(5 * time.Second):
+		t.Fatal("eager probe never ran")
+	}
+
+	var pinned chan struct{}
+	select {
+	case pinned = <-probes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("loop probe never ran")
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		hm.Stop()
+		close(stopDone)
+	}()
+
+	select {
+	case <-stopDone:
+		t.Fatal("HealthMonitor.Stop returned while a probe was still in flight — monitorLoop was not joined")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(pinned)
+
+	select {
+	case <-stopDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("HealthMonitor.Stop did not return after the probe was released")
+	}
+}

@@ -143,6 +143,15 @@ func (hm *HealthMonitor) monitorLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
+			// A tick queued while the previous probe was running is still
+			// pending when a stop arrives, and select picks randomly between
+			// the two. Re-check the stop first so Stop's join never waits on
+			// one more probe round-trip against an unreachable remote.
+			select {
+			case <-hm.stopCh:
+				return
+			default:
+			}
 			err := hm.probeFunc(ctx)
 			if err != nil {
 				// Don't count context cancellation as a health failure — we're shutting down.

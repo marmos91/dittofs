@@ -289,17 +289,30 @@ func ApplyIdentityMapping(identity *Identity, mapping *IdentityMapping) *Identit
 
 	// Map privileged users to anonymous (root squashing)
 	if mapping.MapPrivilegedToAnonymous {
+		squashed := false
+
 		// Unix: Check for root (UID 0)
 		if result.UID != nil && *result.UID == 0 {
 			result.UID = mapping.AnonymousUID
 			result.GID = mapping.AnonymousGID
 			result.GIDs = nil
+			squashed = true
 		}
 
 		// Windows: Check for Administrator SID
 		if result.SID != nil && IsAdministratorSID(*result.SID) {
 			result.SID = mapping.AnonymousSID
 			result.GroupSIDs = nil
+			squashed = true
+		}
+
+		// Drop the named principal along with the numeric identity: ACL
+		// evaluation matches ACEs on Username/Domain too, so leaving them set
+		// would let an ACE naming the squashed principal re-grant exactly the
+		// privilege the squash removed.
+		if squashed {
+			result.Username = ""
+			result.Domain = ""
 		}
 	}
 

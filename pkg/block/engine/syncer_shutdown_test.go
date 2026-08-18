@@ -121,3 +121,63 @@ func TestSyncerClose_JoinsInFlightDownloadWorker(t *testing.T) {
 		t.Fatal("metadata store was accessed after Close — download worker outlived Syncer.Close (#1722)")
 	}
 }
+
+// TestSyncerClose_JoinsCarveDispatcher pins the second half of the shutdown
+// contract: Close() must not return while the background carve dispatcher is
+// still inside the local store. The dispatcher touches local (and, through it,
+// the remote) and the owning Store closes both immediately after Close returns,
+// so an unjoined pass is a use-after-close.
+//
+// Deterministic: the fixture's Carve blocks until the test releases it, and the
+// syncer has no remote (DrainAllUploads short-circuits) and no queue, so the
+// goroutine join is the only thing Close can block on.
+func TestSyncerClose_JoinsCarveDispatcher(t *testing.T) {
+	fl := &carveFanoutLocal{
+		files:   []string{"pinned"},
+		started: make(chan string, 1),
+		release: make(chan struct{}),
+		carved:  map[string]int{},
+	}
+
+	cfg := DefaultConfig()
+	cfg.UploadInterval = time.Millisecond
+	m := &Syncer{
+		local:         fl,
+		uploadLimiter: newDynamicSemaphore(2),
+		stopCh:        make(chan struct{}),
+		config:        cfg,
+	}
+	m.carveActive.Store(true)
+
+	m.startPeriodicUploader(context.Background())
+
+	select {
+	case <-fl.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("carve dispatcher never entered local.Carve")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		_ = m.Close()
+		close(closeDone)
+	}()
+
+	select {
+	case <-closeDone:
+		t.Fatal("Syncer.Close returned while a carve pass was still inside the local store — the carve dispatcher was not joined")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(fl.release)
+
+	select {
+	case <-closeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Syncer.Close did not return after the carve was released")
+	}
+
+	if n := fl.inFlight.Load(); n != 0 {
+		t.Fatalf("carve still in flight after Close returned: %d", n)
+	}
+}
