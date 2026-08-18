@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -657,36 +658,39 @@ func (r *Runtime) sharesForRemote(configID string) []string {
 	return nil
 }
 
-// configuredSharesForRemote counts the persisted share rows that reference a
-// remote-store config, whether or not they are registered. A share can be
-// configured yet absent from the registry — its metadata store is missing, or
-// AddShare failed and LoadSharesFromStore only warned and skipped it — and such
-// a share never ran its cas→blocks migration, so its chunks are exactly the
-// standalone cas/<hash> objects a purge would delete.
+// unregisteredConfiguredShare names a share whose persisted row references a
+// remote-store config while the registry does not carry it — disabled at boot,
+// unknown metadata store, or an AddShare that LoadSharesFromStore only warned
+// about and skipped. Such a share never ran its cas→blocks migration, so its
+// chunks are exactly the standalone cas/<hash> objects a purge would delete.
 //
-// Returns 0 for a Runtime with no config store and for the test-only remote
-// binding, neither of which has persisted shares to disagree about.
-func (r *Runtime) configuredSharesForRemote(ctx context.Context, configID string) (int, error) {
+// Empty when every configured share on the remote is registered, and for a
+// Runtime with no config store or a test-only remote binding, neither of which
+// has persisted rows to disagree about.
+func (r *Runtime) unregisteredConfiguredShare(ctx context.Context, configID string, registered []string) (string, error) {
 	if r.store == nil || configID == "" {
-		return 0, nil
+		return "", nil
 	}
 	cfg, err := r.store.GetBlockStoreByID(ctx, configID)
 	if err != nil {
-		return 0, fmt.Errorf("resolve remote block store %s: %w", configID, err)
+		return "", fmt.Errorf("resolve remote block store %s: %w", configID, err)
 	}
 	rows, err := r.store.ListShares(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("list configured shares: %w", err)
+		return "", fmt.Errorf("list configured shares: %w", err)
 	}
-	var n int
 	for _, sh := range rows {
 		// Rows written before block stores were referenced by UUID hold the
 		// config name instead, and both forms resolve to this one store.
-		if ref := derefString(sh.RemoteBlockStoreID); ref == configID || ref == cfg.Name {
-			n++
+		ref := derefString(sh.RemoteBlockStoreID)
+		if ref != configID && ref != cfg.Name {
+			continue
+		}
+		if !slices.Contains(registered, sh.Name) {
+			return sh.Name, nil
 		}
 	}
-	return n, nil
+	return "", nil
 }
 
 // purgeLegacyCASForEntry reclaims what is left of the pre-flip cas/ namespace
@@ -733,19 +737,17 @@ func (r *Runtime) purgeLegacyCASForEntry(ctx context.Context, entry shares.Remot
 			"configID", entry.ConfigID)
 		return
 	}
-	// Deleting is the irreversible side, so an unexplained gap between the
-	// configured and the registered share set blocks the purge outright rather
-	// than gating on a share list that disagrees with the registry the
-	// enumeration below walks.
-	configured, err := r.configuredSharesForRemote(ctx, entry.ConfigID)
+	// The enumeration below only walks registered shares, so a configured one
+	// missing from that set blocks the purge outright.
+	unregistered, err := r.unregisteredConfiguredShare(ctx, entry.ConfigID, shareNames)
 	if err != nil {
 		logger.Warn("GC: legacy cas/ purge skipped — configured shares for this remote could not be read",
 			"configID", entry.ConfigID, "err", err)
 		return
 	}
-	if configured > len(shareNames) {
+	if unregistered != "" {
 		logger.Info("GC: legacy cas/ purge skipped — a configured share on this remote is not registered, so its chunks may still be un-migrated",
-			"configID", entry.ConfigID, "configured", configured, "registered", len(shareNames))
+			"configID", entry.ConfigID, "share", unregistered)
 		return
 	}
 	for _, shareName := range shareNames {

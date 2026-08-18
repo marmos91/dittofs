@@ -355,18 +355,13 @@ func TestPurgeLegacyCAS_ConfiguredShareNotRegistered(t *testing.T) {
 		}
 	})
 
-	metaIDs := map[string]string{}
-	for _, name := range []string{"meta-a", "meta-b"} {
-		id, err := cp.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: name, Type: "memory"})
-		if err != nil {
-			t.Fatalf("CreateMetadataStore(%s): %v", name, err)
-		}
-		metaIDs[name] = id
-		if err := rt.RegisterMetadataStore(name, metadatamemory.NewMemoryMetadataStoreWithDefaults()); err != nil {
-			t.Fatalf("RegisterMetadataStore(%s): %v", name, err)
-		}
+	metaID, err := cp.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "meta", Type: "memory"})
+	if err != nil {
+		t.Fatalf("CreateMetadataStore: %v", err)
 	}
-
+	if err := rt.RegisterMetadataStore("meta", metadatamemory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+		t.Fatalf("RegisterMetadataStore: %v", err)
+	}
 	remoteID, err := cp.CreateBlockStore(ctx, &models.BlockStoreConfig{
 		Name: "shared-remote", Kind: models.BlockStoreKindRemote, Type: "memory",
 	})
@@ -375,44 +370,43 @@ func TestPurgeLegacyCAS_ConfiguredShareNotRegistered(t *testing.T) {
 	}
 
 	// Both shares are configured against that one remote.
-	type shareFixture struct{ name, meta, local string }
-	fixtures := []shareFixture{
-		{"/share-a", "meta-a", createFSLocalBlockStore(t, cp, "fs-a")},
-		{"/share-b", "meta-b", createFSLocalBlockStore(t, cp, "fs-b")},
+	locals := map[string]string{
+		"/share-a": createFSLocalBlockStore(t, cp, "fs-a"),
+		"/share-b": createFSLocalBlockStore(t, cp, "fs-b"),
 	}
-	for _, sh := range fixtures {
+	for name, local := range locals {
 		if _, err := cp.CreateShare(ctx, &models.Share{
-			Name:               sh.name,
-			MetadataStoreID:    metaIDs[sh.meta],
-			LocalBlockStoreID:  sh.local,
+			Name:               name,
+			MetadataStoreID:    metaID,
+			LocalBlockStoreID:  local,
 			RemoteBlockStoreID: &remoteID,
 			Enabled:            true,
 		}); err != nil {
-			t.Fatalf("CreateShare(%s): %v", sh.name, err)
+			t.Fatalf("CreateShare(%s): %v", name, err)
 		}
 	}
 
-	register := func(sh shareFixture) {
+	register := func(name string) {
 		t.Helper()
 		if err := rt.AddShare(ctx, &ShareConfig{
-			Name:               sh.name,
-			MetadataStore:      sh.meta,
-			LocalBlockStoreID:  sh.local,
+			Name:               name,
+			MetadataStore:      "meta",
+			LocalBlockStoreID:  locals[name],
 			RemoteBlockStoreID: remoteID,
 			Enabled:            true,
 		}); err != nil {
-			t.Fatalf("AddShare(%s): %v", sh.name, err)
+			t.Fatalf("AddShare(%s): %v", name, err)
 		}
 	}
 	// Only the first share registers — the second stands for one that is
 	// disabled at boot or whose AddShare failed and was warn-and-skipped.
-	register(fixtures[0])
+	register("/share-a")
 
 	rs := &recordingLegacyRemote{
 		fakeRemoteStore: &fakeRemoteStore{name: "s3-shared"},
 		objects:         []block.ContentHash{{1}, {2}},
 	}
-	entry := shares.RemoteStoreEntry{Store: rs, ConfigID: remoteID, Shares: []string{fixtures[0].name}}
+	entry := shares.RemoteStoreEntry{Store: rs, ConfigID: remoteID, Shares: []string{"/share-a"}}
 
 	rt.purgeLegacyCASForEntry(ctx, entry, false, &engine.GCStats{})
 	if rs.deleted != 0 {
@@ -420,7 +414,7 @@ func TestPurgeLegacyCAS_ConfiguredShareNotRegistered(t *testing.T) {
 	}
 
 	// With every configured share registered and migrated, the purge proceeds.
-	register(fixtures[1])
+	register("/share-b")
 	rt.purgeLegacyCASForEntry(ctx, entry, false, &engine.GCStats{})
 	if rs.deleted != len(rs.objects) {
 		t.Fatalf("purged %d cas objects, want %d", rs.deleted, len(rs.objects))
