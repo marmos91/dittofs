@@ -8,21 +8,13 @@
 // plain names "master key" and "block key" are used throughout this
 // package's prose to keep the role of each thing obvious.
 //
-// # Master-key rotation is NOT supported
-//
-// Every implementation holds exactly one master key. There is no keyring
-// of retired keys: Unwrap returns ErrWrongMasterKey whenever the id
-// recorded in a block's frame header differs from the single id the
-// provider holds. Pointing a running share at a different master key
-// therefore makes every block wrapped under the previous one
-// permanently unreadable — there is no recovery path once the old key
-// is gone.
-//
-// Rotating safely would mean re-wrapping every existing block under the
-// new master key (read with a provider holding the old key, write with
-// one holding the new) and only decommissioning the old key once that
-// pass has completed. No such tool ships today, so treat a share's
-// master key as fixed for the life of its data.
+// A provider holds one current master key plus any number of retired
+// ones. Wrap always uses the current key and records its identifier in
+// the frame; Unwrap resolves that identifier against current-plus-retired
+// and fails only when it matches none. Retiring a key therefore keeps
+// existing blocks readable while new writes move onto the new key. There
+// is no bulk re-wrap, so a retired key must stay configured for as long
+// as any block references it.
 package keyprovider
 
 import (
@@ -39,16 +31,14 @@ type KeyProvider interface {
 	// Wrap protects a block key (typically 32 bytes) under the provider's
 	// master key. Returns the wrapped bytes plus the stable identifier of
 	// the master key used; the identifier is recorded in the on-wire
-	// frame header so Unwrap can reject a block that was wrapped under a
-	// different master key instead of failing with an opaque
-	// authentication error.
+	// frame header so Unwrap can route the block to the master key that
+	// wrapped it, current or retired.
 	Wrap(ctx context.Context, blockKey []byte) (wrapped []byte, masterKeyID string, err error)
 
 	// Unwrap recovers the original block key. masterKeyID is the value
-	// recorded by an earlier Wrap. Every implementation holds exactly one
-	// master key, so Unwrap returns ErrWrongMasterKey whenever the
-	// recorded id is not that one; blocks wrapped under any other key
-	// cannot be recovered (see the package doc on rotation).
+	// recorded by an earlier Wrap. Unwrap resolves it against the current
+	// master key and any retired ones, and returns ErrWrongMasterKey only
+	// when it matches none of them.
 	Unwrap(ctx context.Context, wrapped []byte, masterKeyID string) ([]byte, error)
 
 	// CurrentMasterKeyID returns the identifier that Wrap will record.
@@ -80,6 +70,13 @@ type Config struct {
 	// Local-specific fields (Kind == KindLocal).
 	File string `json:"file,omitempty"`
 
+	// RetiredFiles lists key files whose master keys are decrypt-only:
+	// blocks wrapped under them stay readable, but nothing is wrapped
+	// under them again. Rotating means pointing File at a new key file
+	// and moving the previous path into this list. Empty by default, so
+	// a config written before rotation existed behaves as it always did.
+	RetiredFiles []string `json:"retired_files,omitempty"`
+
 	// KMIP-specific fields (Kind == KindKMIP).
 	Endpoint   string `json:"endpoint,omitempty"`
 	ServerCA   string `json:"server_ca,omitempty"`
@@ -87,6 +84,10 @@ type Config struct {
 	ClientKey  string `json:"client_key,omitempty"`
 	KeyUID     string `json:"key_uid,omitempty"`
 	TimeoutMS  int    `json:"timeout_ms,omitempty"`
+
+	// RetiredKeyUIDs is the KMIP counterpart of RetiredFiles: uids the
+	// HSM still holds, fetched at startup for decrypt only.
+	RetiredKeyUIDs []string `json:"retired_key_uids,omitempty"`
 }
 
 // Sentinel errors. All provider implementations wrap these so callers can
@@ -97,8 +98,8 @@ var (
 	ErrInvalidConfig = errors.New("keyprovider: invalid config")
 
 	// ErrWrongMasterKey indicates the masterKeyID recorded in the wrapped
-	// payload does not match the master key currently held by the
-	// provider.
+	// payload matches neither the current master key nor any retired one
+	// held by the provider.
 	ErrWrongMasterKey = errors.New("keyprovider: master key id mismatch")
 
 	// ErrUnwrapFailed indicates the wrapped bytes failed authenticated

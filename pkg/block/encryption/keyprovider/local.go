@@ -82,19 +82,42 @@ func newLocalProvider(cfg Config) (*localProvider, error) {
 	if passphrase == "" {
 		return nil, ErrPassphraseMissing
 	}
-	raw, err := os.ReadFile(cfg.File)
+	masterKeyID, masterKey, err := loadLocalKeyFile(cfg.File, passphrase)
 	if err != nil {
-		return nil, fmt.Errorf("keyprovider: read key file: %w", err)
+		return nil, err
+	}
+	retired, err := loadRetiredKeys(masterKeyID, cfg.RetiredFiles, func(path string) (string, []byte, error) {
+		return loadLocalKeyFile(path, passphrase)
+	})
+	if err != nil {
+		zeroKey(masterKey)
+		return nil, err
+	}
+	return &localProvider{aesGCMKEK: aesGCMKEK{
+		masterKey:   masterKey,
+		masterKeyID: masterKeyID,
+		retired:     retired,
+	}}, nil
+}
+
+// loadLocalKeyFile reads one passphrase-protected key file and returns
+// the master key id it records alongside the unwrapped key material.
+// Every key file carries its own id, so a retired file identifies itself
+// without the operator restating it in config.
+func loadLocalKeyFile(path, passphrase string) (string, []byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", nil, fmt.Errorf("keyprovider: read key file: %w", err)
 	}
 	kf, err := decodeKeyFile(raw)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	masterKey, err := unwrapMasterKey(kf, passphrase)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	return &localProvider{aesGCMKEK: aesGCMKEK{masterKey: masterKey, masterKeyID: kf.MasterKeyID}}, nil
+	return kf.MasterKeyID, masterKey, nil
 }
 
 // GenerateKeyFile produces the bytes of a fresh passphrase-protected key
@@ -225,12 +248,37 @@ func unwrapMasterKey(kf *localKeyFile, passphrase string) ([]byte, error) {
 // aesGCMKEK is the shared Wrap / Unwrap / Close implementation used by
 // any provider that holds an in-memory 32-byte symmetric KEK. The
 // wrapped layout is `nonce || ciphertext-with-tag` under AES-256-GCM.
+//
+// Wrap always uses masterKey and records masterKeyID. Unwrap resolves the
+// id recorded in the frame against the current key plus retired, so a
+// block wrapped under a previous master key stays readable after the
+// current key changes. Retired keys are decrypt-only: nothing is ever
+// wrapped under them again.
 type aesGCMKEK struct {
 	masterKey   []byte
 	masterKeyID string
+
+	// retired maps a master key id to decrypt-only key material. Written
+	// once during construction and read-only thereafter, so it needs no
+	// lock alongside the concurrent Wrap / Unwrap calls.
+	retired map[string][]byte
 }
 
 func (k *aesGCMKEK) CurrentMasterKeyID() string { return k.masterKeyID }
+
+// keyForID returns the master key that wrapped a frame recording
+// masterKeyID. An empty id means the frame predates id recording and can
+// only have come from the current key.
+func (k *aesGCMKEK) keyForID(masterKeyID string) ([]byte, error) {
+	if masterKeyID == "" || masterKeyID == k.masterKeyID {
+		return k.masterKey, nil
+	}
+	if key, ok := k.retired[masterKeyID]; ok {
+		return key, nil
+	}
+	return nil, fmt.Errorf("%w: frame wrapped under %q, have current %q and %d retired",
+		ErrWrongMasterKey, masterKeyID, k.masterKeyID, len(k.retired))
+}
 
 func (k *aesGCMKEK) Wrap(_ context.Context, blockKey []byte) ([]byte, string, error) {
 	if len(blockKey) == 0 {
@@ -251,10 +299,11 @@ func (k *aesGCMKEK) Wrap(_ context.Context, blockKey []byte) ([]byte, string, er
 }
 
 func (k *aesGCMKEK) Unwrap(_ context.Context, wrapped []byte, masterKeyID string) ([]byte, error) {
-	if masterKeyID != "" && masterKeyID != k.masterKeyID {
-		return nil, fmt.Errorf("%w: have %q want %q", ErrWrongMasterKey, k.masterKeyID, masterKeyID)
+	masterKey, err := k.keyForID(masterKeyID)
+	if err != nil {
+		return nil, err
 	}
-	aead, err := newGCM(k.masterKey)
+	aead, err := newGCM(masterKey)
 	if err != nil {
 		return nil, err
 	}
@@ -270,13 +319,13 @@ func (k *aesGCMKEK) Unwrap(_ context.Context, wrapped []byte, masterKeyID string
 	return plain, nil
 }
 
-// Close zeros the master key bytes in memory. Best-effort — the Go
-// runtime makes no guarantee the bytes are not retained on a GC heap.
+// Close zeros the master key bytes in memory, retired keys included.
+// Best-effort — the Go runtime makes no guarantee the bytes are not
+// retained on a GC heap.
 func (k *aesGCMKEK) Close() error {
-	for i := range k.masterKey {
-		k.masterKey[i] = 0
-	}
+	zeroKey(k.masterKey)
 	k.masterKey = nil
+	zeroKeys(k.retired)
 	return nil
 }
 

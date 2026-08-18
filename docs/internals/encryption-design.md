@@ -4,7 +4,7 @@
 
 ## Envelope encryption design
 
-Standard envelope encryption, following the same shape as AWS SSE-KMS, MinIO + KES, and HashiCorp Vault Transit. Note that unlike those services, DittoFS keeps no retired master keys and therefore does not support rotation — see [Master-key rotation is not supported](#master-key-rotation-is-not-supported) below.
+Standard envelope encryption, following the same shape as AWS SSE-KMS, MinIO + KES, and HashiCorp Vault Transit:
 
 1. A **master key** is held by a key provider (local file or KMIP-speaking HSM). The master key never directly encrypts a block.
 2. For each block, a fresh 32-byte **block key** is generated from `crypto/rand` and used with an AEAD to encrypt the payload.
@@ -49,15 +49,7 @@ master key  (held by key provider; local file or KMIP HSM)
                      └── AEAD-encrypts ──► block payload
 ```
 
-Each frame records the identifier of the master key that wrapped its block key. Today that identifier is only used to *reject* a frame wrapped under a different master key, with `ErrWrongMasterKey`. It leaves room for a multi-key `Unwrap` to be added later without changing the frame format, but no such lookup exists.
-
-## Master-key rotation is not supported
-
-A `KeyProvider` holds exactly one master key. There is no retired-key set: `Unwrap` returns `ErrWrongMasterKey` for every frame whose recorded identifier is not the single one held.
-
-**Changing a share's master key destroys access to all data already written under the old key.** This applies to every provider — writing a new key file, or pointing `key_uid` at a different HSM key. There is no recovery path once the old key is gone, and no re-wrap tooling ships today.
-
-Rotating safely would mean reading every block with a provider holding the old key, re-writing it with one holding the new key, and only then decommissioning the old key. Until that exists, treat a share's master key as fixed for the life of its data. `docs/guide/encryption.md` carries the operator-facing version of this warning.
+The master key identifier stored in each frame is what makes rotation possible without changing the frame format: `Wrap` always uses the current master key and records its id, while `Unwrap` resolves the recorded id against the current key plus a configured set of retired, decrypt-only keys. In NIST SP 800-57 terms that split is the key-wrapping key's originator-usage period (encrypt) versus its longer recipient-usage period (decrypt).
 
 ## KMIP provider behavior and HSM integration
 
@@ -65,7 +57,9 @@ The KMIP provider fetches the configured master key from the HSM at startup usin
 
 This is a real KMIP integration (mutual-TLS, KMIP 1.4 protocol via `github.com/gemalto/kmip-go`) but it is **not** HSM-resident envelope encryption — the master-key bytes do live in the daemon's address space while it runs. A future iteration can move wrap / unwrap into the HSM via KMIP `Encrypt` / `Decrypt` operations without changing the `KeyProvider` interface; the public surface stays the same.
 
-Pointing `key_uid` at a different HSM key is **not** a rotation procedure: only the newly fetched key is held, so every block wrapped under the previous key becomes permanently unreadable. See [Master-key rotation is not supported](#master-key-rotation-is-not-supported).
+Retired uids are fetched the same way at startup, one `Get` each, so the cost of keeping a key retired is one extra fetch per daemon start.
+
+To rotate: write a new key to the HSM, move the outgoing `key_uid` into `retired_key_uids`, set `key_uid` to the new key, and restart the share. Existing blocks stay decryptable because every frame carries the identifier of the master key that wrapped its block key, and that key is still configured. Dropping the uid from `retired_key_uids` instead — or deleting it from the HSM — makes those blocks unreadable, and no bulk re-wrap exists yet to move them off it.
 
 ### Validating against a KMIP server
 

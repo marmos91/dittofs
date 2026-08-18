@@ -65,14 +65,26 @@ encryption:
     kind: local               # local | kmip
     # kind=local
     file: /etc/dittofs/keys/share.key
+    retired_files:            # optional, decrypt-only (see rotation below)
+      - /etc/dittofs/keys/share-2026-02.key
     # kind=kmip
     endpoint: kms.example.com:5696
     server_ca: /etc/dittofs/kmip/ca.pem
     client_cert: /etc/dittofs/kmip/client.pem
     client_key:  /etc/dittofs/kmip/client.key
     key_uid: 12345-abcde-...
+    retired_key_uids:         # optional, decrypt-only
+      - 09876-zyxwv-...
     timeout_ms: 5000
 ```
+
+`file` / `key_uid` name the **current** master key: everything written from
+now on is wrapped under it. `retired_files` / `retired_key_uids` name keys
+that are used for decryption only. Both retired lists default to empty, so
+a config written before rotation existed keeps behaving exactly as it did.
+
+All retired keys share the current key's passphrase
+(`DITTOFS_ENCRYPTION_PASSPHRASE`); there is no per-file passphrase.
 
 ### AEAD cipher choices
 
@@ -98,11 +110,45 @@ Adding an `encryption` block to a remote store that already contains plaintext b
 
 Recommendation: create new remote stores with encryption enabled, migrate data across, then decommission the unencrypted store.
 
-### Master-key rotation requires a full re-encrypt
+### Retiring a master key is one-way — you cannot un-retire what you deleted
 
-There is no key-rotation tooling in this release. Every stored frame records the master-key identifier that wrapped its block key; after rotating to a new master key (writing a new `key_file` or registering a new KMIP key UID), `Unwrap` will return `ErrWrongMasterKey` for every block written under the prior key. The data is **not recoverable** without the prior master key.
+Rotation is supported, and does not re-encrypt any data. Every stored frame
+records the identifier of the master key that wrapped its block key, so
+`Unwrap` routes each block to the key it was written under.
 
-If you must rotate today: keep the old master key available, stage a new remote store under the new key, and copy data across before retiring the old store. A future release will ship a bulk re-wrap command and multi-key `Unwrap`.
+To rotate:
+
+1. Generate the new key file the same way you generated the first one (the
+   `GenerateKeyFile` helper above — there is no dedicated subcommand), or
+   register the new key UID with the HSM.
+2. Move the **current** `file` / `key_uid` value into `retired_files` /
+   `retired_key_uids`.
+3. Point `file` / `key_uid` at the new key.
+4. Restart the share.
+
+From that point, new blocks are wrapped under the new key and old blocks
+keep decrypting under the retired one. Nothing is ever wrapped under a
+retired key again.
+
+The hazard is step 2 in reverse. Dropping a key from `retired_files`, or
+deleting the key file it names, makes every block still wrapped under that
+key **permanently unreadable** — there is no bulk re-wrap command yet, so
+there is no supported way to move existing blocks onto the current key and
+no way to enumerate which blocks still reference an old one. Until that
+ships, treat retired keys as keep-forever: leave them configured and keep
+the key material backed up. Retiring a key costs one HSM fetch or one file
+read at startup, so a handful of them is not a burden worth trimming.
+
+Two operational notes:
+
+- A retired key that cannot be read at startup is logged and skipped rather
+  than being fatal — blocks under it become unreadable, but the share (and
+  every other share on the daemon) still starts. A missing **current** key
+  is still fatal.
+- Two keys claiming the same identifier is rejected at startup, because
+  which one `Unwrap` picks would otherwise be arbitrary. This is what
+  listing the same file twice, or listing the current key as retired, will
+  produce.
 
 ### AAD is per-block, not per-share
 
@@ -110,7 +156,7 @@ The associated data bound into the AEAD is the 32-byte BLAKE3 plaintext hash. It
 
 ## What's not in scope (yet)
 
-- **Master-key rotation tooling** — the frame already records `master_key_id`, so a future bulk rewrite job can re-wrap.
+- **Bulk re-wrap** — rotation works (see above), but there is no job that reads blocks under a retired key and rewrites them under the current one, and no way to enumerate which blocks still reference a given key. Both are required before a retired key can ever be safely dropped.
 - **Filename / size / timestamp encryption** — out of scope; metadata stays unencrypted.
 - **Encrypted disk cache tier** — current cache holds plaintext in RAM / disk; use an encrypted filesystem underneath if needed.
 - **FIPS 140-3 mode** — would require swapping Argon2id for PBKDF2-SHA256, pinning AES-only AEADs, and building with the BoringCrypto tag.
