@@ -124,10 +124,10 @@ func (h *Handler) Write(
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.DebugCtx(ctx.Context, "WRITE", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "count", bytesize.ByteSize(req.Count), "stable", req.Stable, "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "WRITE", "handle", xdr.LazyHandle(req.Handle), "offset", bytesize.ByteSize(req.Offset), "count", bytesize.ByteSize(req.Count), "stable", req.Stable, "client", clientIP, "auth", ctx.AuthFlavor)
 
 	if ctx.isContextCancelled() {
-		logWarn(ctx.Context, ctx.Context.Err(), "WRITE cancelled", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
+		logWarn(ctx.Context, ctx.Context.Err(), "WRITE cancelled", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -135,7 +135,7 @@ func (h *Handler) Write(
 	// is applied as a short-write below, derived from the advertised wtmax.
 
 	if err := validateWriteRequest(req); err != nil {
-		logWarn(ctx.Context, err, "WRITE validation failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
+		logWarn(ctx.Context, err, "WRITE validation failed", "handle", xdr.LazyHandle(req.Handle), "client", clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -199,11 +199,11 @@ func (h *Handler) Write(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.DebugCtx(ctx.Context, "WRITE cancelled during auth context building", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP, "error", ctx.Context.Err())
+			logger.DebugCtx(ctx.Context, "WRITE cancelled during auth context building", "handle", xdr.LazyHandle(req.Handle), "client", clientIP, "error", ctx.Context.Err())
 			return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		logAuthCtxError(ctx.Context, err, "WRITE", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
+		logAuthCtxError(ctx.Context, err, "WRITE", "handle", xdr.LazyHandle(req.Handle), "client", clientIP)
 
 		// No WCC data available - we haven't called PrepareWrite yet
 		return &WriteResponse{
@@ -225,7 +225,7 @@ func (h *Handler) Write(
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
-		logger.WarnCtx(ctx.Context, "WRITE cancelled before PrepareWrite", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
+		logger.WarnCtx(ctx.Context, "WRITE cancelled before PrepareWrite", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
 
 		// No WCC data available - we haven't called PrepareWrite yet
 		return &WriteResponse{
@@ -238,7 +238,7 @@ func (h *Handler) Write(
 		// Map store error to NFS status
 		status := common.MapToNFS3(err)
 
-		logger.WarnCtx(ctx.Context, "WRITE failed: PrepareWrite error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP, "error", err)
+		logger.WarnCtx(ctx.Context, "WRITE failed: PrepareWrite error", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP, "error", err)
 
 		// No WCC data available - PrepareWrite failed so we don't have file attributes
 		return h.buildWriteErrorResponse(status, fileHandle, nil, nil), nil
@@ -249,7 +249,7 @@ func (h *Handler) Write(
 
 	// Check context before write operation
 	if ctx.isContextCancelled() {
-		logger.WarnCtx(ctx.Context, "WRITE cancelled before write", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
+		logger.WarnCtx(ctx.Context, "WRITE cancelled before write", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
 		return h.buildWriteErrorResponse(types.NFS3ErrIO, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
 
@@ -258,7 +258,7 @@ func (h *Handler) Write(
 	// plumbing lands in one place (see common/doc.go).
 	err = common.WriteToBlockStore(ctx.Context, blockStore, writeIntent.PayloadID, req.Data, req.Offset)
 	if err != nil {
-		logError(ctx.Context, err, "WRITE failed: BlockStore write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "payload_id", writeIntent.PayloadID, "client", clientIP)
+		logError(ctx.Context, err, "WRITE failed: BlockStore write error", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", len(req.Data), "payload_id", writeIntent.PayloadID, "client", clientIP)
 		status := common.MapContentToNFS3(err)
 		return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
@@ -266,7 +266,7 @@ func (h *Handler) Write(
 
 	updatedFile, err := metaSvc.CommitWrite(authCtx, writeIntent)
 	if err != nil {
-		logError(ctx.Context, err, "WRITE failed: CommitWrite error (content written but metadata not updated)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP)
+		logError(ctx.Context, err, "WRITE failed: CommitWrite error (content written but metadata not updated)", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP)
 
 		// Content is written but metadata not updated - this is an inconsistent state
 		// Map error to NFS status
@@ -299,7 +299,7 @@ func (h *Handler) Write(
 	if req.Stable >= DataSyncWrite {
 		if err := h.flushStableWrite(ctx, metaSvc, blockStore, fileHandle, writeIntent.PayloadID, authCtx, req.Stable); err != nil {
 			logError(ctx.Context, err, "WRITE: stable flush failed, downgrading to UNSTABLE",
-				"handle", fmt.Sprintf("0x%x", req.Handle), "stable_requested", req.Stable, "client", clientIP)
+				"handle", xdr.LazyHandle(req.Handle), "stable_requested", req.Stable, "client", clientIP)
 		} else {
 			committed = req.Stable
 		}
@@ -359,7 +359,7 @@ func (h *Handler) flushStableWrite(
 			return err
 		}
 		logger.WarnCtx(ctx.Context, "WRITE: DATA_SYNC metadata flush failed (data durable, will reconcile)",
-			"handle", fmt.Sprintf("0x%x", handle), "error", err)
+			"handle", xdr.LazyHandle(handle), "error", err)
 	}
 	return nil
 }

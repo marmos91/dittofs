@@ -6,6 +6,16 @@ import (
 	"testing"
 )
 
+// encodeFrame builds the full wire frame, the way the seal path does by
+// sealing the ciphertext onto appendFrameHeader's output.
+func encodeFrame(aead AEAD, masterKeyID string, wrappedKey, nonce, ciphertext []byte) ([]byte, error) {
+	out, err := appendFrameHeader(nil, aead, masterKeyID, wrappedKey, nonce, len(ciphertext))
+	if err != nil {
+		return nil, err
+	}
+	return append(out, ciphertext...), nil
+}
+
 func TestFrame_RoundTrip(t *testing.T) {
 	masterID := "01234567-89ab-cdef-0123-456789abcdef"
 	wrappedKey := bytes.Repeat([]byte{0xA1}, 60)

@@ -23,27 +23,19 @@ const maxOrigSizeVarint = binary.MaxVarintLen64
 // generous vs FastCDC's ~16 MiB max chunk; tune if larger chunks land.
 const MaxFramedPlaintextSize = 64 * 1024 * 1024
 
-// frameOverhead returns the header byte count for a frame declaring
-// the given plaintext size. Used by callers that need to know the
-// total wire size of a hypothetical frame without building it.
-func frameOverhead(origSize uint64) int {
-	var buf [maxOrigSizeVarint]byte
-	n := binary.PutUvarint(buf[:], origSize)
-	return FrameHeaderFixedSize + n
-}
-
-// encodeFrame builds the wire form for a compressed body
+// appendFrameHeader appends the header of a frame declaring origSize plaintext
+// bytes; the compressed body follows it directly on the wire:
 //
 //	[magic | algo | uvarint(origSize) | body]
-func encodeFrame(algo Algo, origSize uint64, body []byte) []byte {
-	out := make([]byte, 0, FrameHeaderFixedSize+maxOrigSizeVarint+len(body))
+//
+// Appending lets the caller reserve the header in the same buffer the codec
+// streams the body into, so no second allocate-and-copy is needed.
+func appendFrameHeader(out []byte, algo Algo, origSize uint64) []byte {
 	out = append(out, FrameMagic[:]...)
 	out = append(out, byte(algo))
 	var sizeBuf [maxOrigSizeVarint]byte
 	n := binary.PutUvarint(sizeBuf[:], origSize)
-	out = append(out, sizeBuf[:n]...)
-	out = append(out, body...)
-	return out
+	return append(out, sizeBuf[:n]...)
 }
 
 // hasFrameMagic reports whether b begins with the 5-byte DFCMP prefix.

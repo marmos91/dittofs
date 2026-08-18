@@ -216,21 +216,32 @@ func (h *Handler) buildReadPlusContents(ctx *types.CompoundContext, file *metada
 // encodeReadPlusResok encodes a successful READ_PLUS reply: status, eof, and the
 // content array (each member tagged NFS4_CONTENT_DATA or NFS4_CONTENT_HOLE).
 func encodeReadPlusResok(eof bool, contents []readPlusContent) *types.CompoundResult {
-	var buf bytes.Buffer
-	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
-	_ = xdr.WriteBool(&buf, eof)
-	_ = xdr.WriteUint32(&buf, uint32(len(contents)))
+	// Pre-size the buffer so encoding never regrows it: status + eof + count,
+	// then per member a hole (tag + offset + length) or data (tag + offset +
+	// opaque length + bytes + up to 3 bytes of XDR padding).
+	size := 12
+	for i := range contents {
+		if contents[i].Hole {
+			size += 20
+			continue
+		}
+		size += 16 + len(contents[i].Data) + 3
+	}
+	buf := bytes.NewBuffer(make([]byte, 0, size))
+	_ = xdr.WriteUint32(buf, types.NFS4_OK)
+	_ = xdr.WriteBool(buf, eof)
+	_ = xdr.WriteUint32(buf, uint32(len(contents)))
 	for i := range contents {
 		c := &contents[i]
 		if c.Hole {
-			_ = xdr.WriteUint32(&buf, types.NFS4_CONTENT_HOLE)
-			_ = xdr.WriteUint64(&buf, c.Offset)
-			_ = xdr.WriteUint64(&buf, c.Length)
+			_ = xdr.WriteUint32(buf, types.NFS4_CONTENT_HOLE)
+			_ = xdr.WriteUint64(buf, c.Offset)
+			_ = xdr.WriteUint64(buf, c.Length)
 			continue
 		}
-		_ = xdr.WriteUint32(&buf, types.NFS4_CONTENT_DATA)
-		_ = xdr.WriteUint64(&buf, c.Offset)
-		_ = xdr.WriteXDROpaque(&buf, c.Data)
+		_ = xdr.WriteUint32(buf, types.NFS4_CONTENT_DATA)
+		_ = xdr.WriteUint64(buf, c.Offset)
+		_ = xdr.WriteXDROpaque(buf, c.Data)
 	}
 	return &types.CompoundResult{Status: types.NFS4_OK, OpCode: types.OP_READ_PLUS, Data: buf.Bytes()}
 }

@@ -114,12 +114,17 @@ func (s *MemoryStore) ReadAt(_ context.Context, payloadID string, offset int64, 
 	if s.closed {
 		return 0, journal.ReadState{}, ErrStoreClosed
 	}
-	clear(dst)
 	f := s.files[payloadID]
 	if f == nil || offset >= int64(len(f.buf)) {
+		clear(dst)
 		return len(dst), journal.ReadState{Hole: true}, nil
 	}
+	// Zero only the tail the copy does not cover; pre-clearing the whole of dst
+	// would write the copied prefix twice.
 	n := copy(dst, f.buf[offset:])
+	if n < len(dst) {
+		clear(dst[n:])
+	}
 	return len(dst), journal.ReadState{Hole: n < len(dst)}, nil
 }
 

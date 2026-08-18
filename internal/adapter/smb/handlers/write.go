@@ -168,7 +168,7 @@ func (resp *WriteResponse) Encode() ([]byte, error) {
 // bytes successfully written.
 func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteResponse, error) {
 	logger.Debug("WRITE request",
-		"fileID", fmt.Sprintf("%x", req.FileID),
+		"fileID", lazyFileID(req.FileID),
 		"offset", req.Offset,
 		"length", req.Length)
 
@@ -178,7 +178,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
-		logger.Debug("WRITE: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
+		logger.Debug("WRITE: file handle not found (closed)", "fileID", lazyFileID(req.FileID))
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileClosed}}, nil
 	}
 
@@ -602,7 +602,7 @@ func (h *Handler) handlePipeWrite(ctx *SMBHandlerContext, req *WriteRequest, ope
 	// Get pipe state
 	pipe := h.PipeManager.GetPipe(req.FileID)
 	if pipe == nil {
-		logger.Debug("WRITE: pipe not found", "fileID", fmt.Sprintf("%x", req.FileID))
+		logger.Debug("WRITE: pipe not found", "fileID", lazyFileID(req.FileID))
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
 	}
 
