@@ -657,6 +657,38 @@ func (r *Runtime) sharesForRemote(configID string) []string {
 	return nil
 }
 
+// configuredSharesForRemote counts the persisted share rows that reference a
+// remote-store config, whether or not they are registered. A share can be
+// configured yet absent from the registry — its metadata store is missing, or
+// AddShare failed and LoadSharesFromStore only warned and skipped it — and such
+// a share never ran its cas→blocks migration, so its chunks are exactly the
+// standalone cas/<hash> objects a purge would delete.
+//
+// Returns 0 for a Runtime with no config store and for the test-only remote
+// binding, neither of which has persisted shares to disagree about.
+func (r *Runtime) configuredSharesForRemote(ctx context.Context, configID string) (int, error) {
+	if r.store == nil || configID == "" {
+		return 0, nil
+	}
+	cfg, err := r.store.GetBlockStoreByID(ctx, configID)
+	if err != nil {
+		return 0, fmt.Errorf("resolve remote block store %s: %w", configID, err)
+	}
+	rows, err := r.store.ListShares(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list configured shares: %w", err)
+	}
+	var n int
+	for _, sh := range rows {
+		// Rows written before block stores were referenced by UUID hold the
+		// config name instead, and both forms resolve to this one store.
+		if ref := derefString(sh.RemoteBlockStoreID); ref == configID || ref == cfg.Name {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // purgeLegacyCASForEntry reclaims what is left of the pre-flip cas/ namespace
 // on one remote. The namespace is content-addressed and NOT scoped per share,
 // so a cas/<hash> object is reclaimable only once no share on this remote can
@@ -699,6 +731,21 @@ func (r *Runtime) purgeLegacyCASForEntry(ctx context.Context, entry shares.Remot
 	if len(shareNames) == 0 {
 		logger.Info("GC: legacy cas/ purge skipped — no registered share claims this remote",
 			"configID", entry.ConfigID)
+		return
+	}
+	// Deleting is the irreversible side, so an unexplained gap between the
+	// configured and the registered share set blocks the purge outright rather
+	// than gating on a share list that disagrees with the registry the
+	// enumeration below walks.
+	configured, err := r.configuredSharesForRemote(ctx, entry.ConfigID)
+	if err != nil {
+		logger.Warn("GC: legacy cas/ purge skipped — configured shares for this remote could not be read",
+			"configID", entry.ConfigID, "err", err)
+		return
+	}
+	if configured > len(shareNames) {
+		logger.Info("GC: legacy cas/ purge skipped — a configured share on this remote is not registered, so its chunks may still be un-migrated",
+			"configID", entry.ConfigID, "configured", configured, "registered", len(shareNames))
 		return
 	}
 	for _, shareName := range shareNames {

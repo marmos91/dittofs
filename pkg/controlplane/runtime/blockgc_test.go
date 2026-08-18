@@ -8,7 +8,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/remote"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
+	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/health"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -327,5 +329,100 @@ func TestPurgeLegacyCAS_IgnoresStaleShareSnapshot(t *testing.T) {
 	rt.purgeLegacyCASForEntry(ctx, stale, false, &engine.GCStats{})
 	if rs.deleted != 0 {
 		t.Fatalf("purged %d cas objects using a stale share snapshot", rs.deleted)
+	}
+}
+
+// TestPurgeLegacyCAS_ConfiguredShareNotRegistered asserts the gate refuses to
+// purge while a share configured against the remote is absent from the
+// registry. Such a share never ran its cas→blocks migration, so the standalone
+// objects the purge would delete are exactly its live data.
+func TestPurgeLegacyCAS_ConfiguredShareNotRegistered(t *testing.T) {
+	ctx := context.Background()
+
+	cp, err := cpstore.New(&cpstore.Config{
+		Type:   cpstore.DatabaseTypeSQLite,
+		SQLite: cpstore.SQLiteConfig{Path: ":memory:"},
+	})
+	if err != nil {
+		t.Fatalf("cpstore.New: %v", err)
+	}
+	t.Cleanup(func() { _ = cp.Close() })
+
+	rt := New(cp)
+	t.Cleanup(func() {
+		for _, name := range rt.ListShares() {
+			_ = rt.RemoveShare(name)
+		}
+	})
+
+	metaIDs := map[string]string{}
+	for _, name := range []string{"meta-a", "meta-b"} {
+		id, err := cp.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: name, Type: "memory"})
+		if err != nil {
+			t.Fatalf("CreateMetadataStore(%s): %v", name, err)
+		}
+		metaIDs[name] = id
+		if err := rt.RegisterMetadataStore(name, metadatamemory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+			t.Fatalf("RegisterMetadataStore(%s): %v", name, err)
+		}
+	}
+
+	remoteID, err := cp.CreateBlockStore(ctx, &models.BlockStoreConfig{
+		Name: "shared-remote", Kind: models.BlockStoreKindRemote, Type: "memory",
+	})
+	if err != nil {
+		t.Fatalf("CreateBlockStore(remote): %v", err)
+	}
+
+	// Both shares are configured against that one remote.
+	type shareFixture struct{ name, meta, local string }
+	fixtures := []shareFixture{
+		{"/share-a", "meta-a", createFSLocalBlockStore(t, cp, "fs-a")},
+		{"/share-b", "meta-b", createFSLocalBlockStore(t, cp, "fs-b")},
+	}
+	for _, sh := range fixtures {
+		if _, err := cp.CreateShare(ctx, &models.Share{
+			Name:               sh.name,
+			MetadataStoreID:    metaIDs[sh.meta],
+			LocalBlockStoreID:  sh.local,
+			RemoteBlockStoreID: &remoteID,
+			Enabled:            true,
+		}); err != nil {
+			t.Fatalf("CreateShare(%s): %v", sh.name, err)
+		}
+	}
+
+	register := func(sh shareFixture) {
+		t.Helper()
+		if err := rt.AddShare(ctx, &ShareConfig{
+			Name:               sh.name,
+			MetadataStore:      sh.meta,
+			LocalBlockStoreID:  sh.local,
+			RemoteBlockStoreID: remoteID,
+			Enabled:            true,
+		}); err != nil {
+			t.Fatalf("AddShare(%s): %v", sh.name, err)
+		}
+	}
+	// Only the first share registers — the second stands for one that is
+	// disabled at boot or whose AddShare failed and was warn-and-skipped.
+	register(fixtures[0])
+
+	rs := &recordingLegacyRemote{
+		fakeRemoteStore: &fakeRemoteStore{name: "s3-shared"},
+		objects:         []block.ContentHash{{1}, {2}},
+	}
+	entry := shares.RemoteStoreEntry{Store: rs, ConfigID: remoteID, Shares: []string{fixtures[0].name}}
+
+	rt.purgeLegacyCASForEntry(ctx, entry, false, &engine.GCStats{})
+	if rs.deleted != 0 {
+		t.Fatalf("purged %d cas objects while a configured share was unregistered", rs.deleted)
+	}
+
+	// With every configured share registered and migrated, the purge proceeds.
+	register(fixtures[1])
+	rt.purgeLegacyCASForEntry(ctx, entry, false, &engine.GCStats{})
+	if rs.deleted != len(rs.objects) {
+		t.Fatalf("purged %d cas objects, want %d", rs.deleted, len(rs.objects))
 	}
 }
