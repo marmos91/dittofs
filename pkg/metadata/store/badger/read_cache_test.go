@@ -42,8 +42,11 @@ func TestReadCache_NoStaleReadAfterMutation(t *testing.T) {
 	handle := putFileForTest(t, s, "/s", "/f", 0o644, 4)
 
 	got, err := s.GetFileForRead(ctx, handle) // populates the cache
-	if err != nil || got.Mode != 0o644 {
-		t.Fatalf("first read: mode=%o err=%v", got.Mode, err)
+	if err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	if got.Mode != 0o644 {
+		t.Fatalf("first read: mode=%o, want 644", got.Mode)
 	}
 
 	// Mutate via PutFile — must invalidate the cache.
