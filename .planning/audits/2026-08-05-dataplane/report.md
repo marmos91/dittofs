@@ -51,10 +51,29 @@ did not exist), #1953 (overlapping manifest rows).
   `NfsDetails.Version` is still hardcoded `"3"` at `pkg/adapter/nfs/connection.go:109` while the
   same connection dispatches both versions.
 
-The remaining tail is the LOW findings (220, largely untouched) and the MED findings whose fix is
-a structural refactor rather than a patch — the god-object and duplicated-CRUD entries across
-`pkg/metadata/lock/`, `pkg/metadata/store/{postgres,sqlite}/` and `runtime/shares`, which #1828
-subsumes, plus `recover()` in `pkg/block/journal/recovery.go`.
+**What is still open.** 34 MED findings carry no status. Two of them are in flight (#1957 closes
+the two SMB `OpenFile` lock races), and roughly two thirds are structural refactors rather than
+patches — the god-object and duplicated-CRUD entries across `pkg/metadata/lock/`,
+`pkg/metadata/store/{badger,postgres,sqlite}/` and `runtime/shares`, which #1828 subsumes, plus
+`recover()` in `pkg/block/journal/recovery.go`. The rest are correctness or cost findings nobody
+has picked up:
+
+| Finding | Where | Dimension |
+|---|---|---|
+| WRITE issues two extra unbatched `SetFileAttributes` round trips per call | `internal/adapter/smb/handlers/write.go:481` | perf |
+| Per-block sequential metadata round-trips on the Truncate/PunchHole/Delete reap loops | `pkg/block/engine/readwrite.go:178` | perf |
+| Per-chunk `DeleteSynced`+`MarkSynced` loop issues 2N unbatched round-trips | `pkg/metadata/block_record_store.go:159` | perf |
+| `checkFilePermissionsFile` does an uncached `GetShareOptions` round trip per check | `pkg/metadata/auth_permissions.go:267` | perf |
+| GETXATTR scans the parent directory instead of resolving in O(1) | `pkg/metadata/xattr.go:121` | perf |
+| `createEntry` link-count read-modify-write serializes concurrent creates | `pkg/metadata/file_create.go:470` | bugs |
+| `Move()` has no in-transaction TOCTOU recheck of source/destination | `pkg/metadata/file_modify.go:657` | gaps |
+| `WaitForGraph` exposes a check-then-act pair; concurrent LOCKs can build an undetected cycle | `pkg/metadata/lock/deadlock.go:60` | structure |
+| Single share-wide ALL lock taken per lock-manager operation | `pkg/metadata/lock/manager.go:702` | perf |
+| `pendingWrites` / `deviceNumbers` are fully dead state | `pkg/metadata/store/memory/store.go:187,196` | bloat |
+
+The 220 LOW findings are untouched. They were never triaged past the verify gate, so a LOW sweep
+should re-check each against the tree first — several MED findings above were already closed by
+unrelated work (#1906, #1932, #1939) and had gone unnoticed until this refresh.
 
 Also opened from this work: #1909 (crash-ordering silent zeros, still open),
 #1910 (smbtorture grading non-determinism, fixed in #1919).
@@ -207,24 +226,28 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] READ has no rtmax clamp — client-controlled Count drives a non-pooled allocation up to 1GB per request
 
 - **Where:** `internal/adapter/nfs/v3/handlers/read.go:245` · `perf` · area: adapter-nfs-v3-rw-commit
+> STATUS: FIXED in #1939 — READ clamps Count to caps.MaxReadSize
 - **Verified:** Asymmetry confirmed: cachedMaxWriteSize is referenced only in write.go:166; read.go:245-251 computes actualLength = min(offset+Count, file.Size)-offset with no rtmax reference, validation caps Count at 1GB (read_validation.go:53-61), and common.ReadFromBlockStore does pool.Get(count) which falls to a bare make() above largeSize (bufpool.go:158-161), with Put refusing non-class capacities (bufpool.go:186-203). So an oversized-but-valid READ against a large file allocates up to ~1GB unpooled per RPC. Downgraded to MED: conforming clients honour the advertised rtmax, so this is a malicious/misbehaving-client memory-DoS hardening gap, not steady-state hot-path cost.
 - **Fix:** Clamp actualLength to the cached/advertised MaxReadSize (mirror cachedMaxWriteSize()/setMaxWriteSize() from write.go, e.g. cachedMaxReadSize()) before calling common.ReadFromBlockStore, short-reading (RFC 1813 explicitly permits returning fewer bytes than requested) instead of allocating up to the full 1GB validation ceiling.
 
 ### [MED] buildReadPlusContents always computes block.Segments() even though it's discarded in the common (registry-configured) path
 
 - **Where:** `internal/adapter/nfs/v4/handlers/read_plus.go:158` · `perf` · area: adapter-nfs-v4-rw-commit
+> STATUS: FIXED in #1939 — block.Segments is computed only on the fallback path
 - **Verified:** CONFIRMED: read_plus.go:158 `segs := block.Segments(file.Blocks, file.Size)` runs unconditionally, then :163 `segs = block.SegmentsExtents(ext, file.Size)` overwrites it whenever Registry resolves and DataExtents succeeds — the expected path. Discarded work is real: block.Segments -> normalizedExtents (holemap.go:46) allocates a [][2]uint64 of len(refs), runs sort.Slice (line 71), merges, then SegmentsExtents allocates a []Segment of len*2+1. That is an O(n log n) sort + two slice allocs per READ_PLUS, thrown away. For a large file (e.g. 1 GiB at 128 KiB chunks = ~8k refs) this is a millisecond-class waste on the data plane; the fix is a pure code-motion into the fallback branch.
 - **Fix:** Compute segs lazily: try engine DataExtents first, fall back to block.Segments(file.Blocks, file.Size) only when Registry is nil or DataExtents errors.
 
 ### [MED] WRITE mutates OpenFile.PayloadID without lock, contradicting its own "immutable, safe without mutex" doc and racing unguarded readers
 
 - **Where:** `internal/adapter/smb/handlers/write.go:493` · `bugs` · area: adapter-smb-rw
+> STATUS: TRACKED in #1940 (PR #1957) — the OpenFile name triple is published as one atomic value
 - **Verified:** Confirmed: write.go:493 `openFile.PayloadID = writeOp.PayloadID` with no lock; handler.go:401-402 lists PayloadID among 'immutable fields ... safe to access without the mutex' — factually wrong. Unguarded readers confirmed at close.go:212 (`openFile.PayloadID != ""` gating CommitBlockStore flush) and durable_context.go:1092 (persisted durable-handle snapshot). handler.go:392-395 itself documents that clients pipeline ops on one FileID (incl. multi-channel), and OpenFile lives in a sync.Map shared across connections, so concurrency is reachable. Downgraded HIGH->MED: window is the one-time ''->id transition on first write, and a CLOSE concurrent with an in-flight WRITE is already client-undefined; still a genuine data race (string header, -race-flaggable) that can drop the CLOSE flush.
 - **Fix:** Guard the write.go:493 assignment (plus set_reparse_point.go:256 / ioctl_copychunk.go:555) and the read sites (close.go:212, durable_context.go:1092) with openFile.mu, or drop the cached field and re-fetch PayloadID from metadata at CLOSE/durable-snapshot time. At minimum fix the handler.go struct comment.
 
 ### [MED] WRITE reads OpenFile.FileName without lock while SET_INFO rename mutates it concurrently
 
 - **Where:** `internal/adapter/smb/handlers/write.go:465` · `bugs` · area: adapter-smb-rw
+> STATUS: TRACKED in #1940 (PR #1957)
 - **Verified:** CONFIRMED: write.go:465 strings.Index(openFile.FileName, ":") with no lock; set_info.go:784 and :1184 assign openFile.FileName with no mu held (the only mu.Lock regions in that file are 401-481 and 632-637, unrelated). handler.go:401-402 lists the immutable set as FileID/TreeID/SessionID/Path/MetadataHandle/PayloadID/CreateOptions — FileName is not in it, and handler.go:393 states WRITE can be dispatched concurrently with other ops on the same handle (multi-channel). Unsynchronized string field = genuine data race (torn ptr/len read is memory-unsafe in Go), plus wrong ADS classification / notify stream name at 465-473 and 495-509. Keeping MED: a real race, but the reachable damage is limited to change-notify naming and ADS timestamp propagation.
 - **Fix:** Read openFile.FileName under openFile.mu.RLock() in write.go and take openFile.mu.Lock() around the FileName/Path mutation in set_info.go:784 and :1184.
 
@@ -513,6 +536,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] checkDeletePermission Rule 1 skips store-level share ReadOnly check (ceiling asymmetry vs. rest of file)
 
 - **Where:** `pkg/metadata/auth_permissions.go:749` · `slop` · area: metadata-auth-permissions
+> STATUS: FIXED in #1932 — Rule 1 goes through shareForbidsWrites
 - **Verified:** CONFIRMED at auth_permissions.go:751 `if ctx.HasDeleteAccess && !ctx.ShareReadOnly { return nil }` with no store-level lookup. Asymmetry is real: line 305 (checkFilePermissionsFile) gates on `!ctx.ShareReadOnly && !shareReadOnly` after a live GetShareOptions at line 267; line 690 (CheckParentCreateAccess) gates on `ctx.ShareReadOnly || storeReadOnly` after GetShareOptions at 678; helper s.shareIsReadOnly (line 579) already exists and is used at 538/567. REACHABLE: HasDeleteAccess is set on exactly one non-test path, internal/adapter/smb/handlers/close.go:493, which then calls RemoveFile (file_remove.go:76) / RemoveDirectory (directory.go:175) → checkDeletePermission; neither caller does its own share-readonly gate. ctx.ShareReadOnly is derived per-op from ctx.Permission (auth_helper.go:92/177/419), but ctx.Permission is frozen at tree-connect, so an UpdateShareOptions ReadOnly flip is not seen by an already-connected tree. Downgraded HIGH→MED: exploit window needs an admin toggling a share read-only while a DELETE_ON_CLOSE handle is already open — narrow, not remotely triggerable.
 - **Fix:** In checkDeletePermission, before the Rule 1 short-circuit, also fetch the live share option (via s.shareIsReadOnly(ctx, parentHandle)) and require it be false, mirroring checkFilePermissionsFile: `if ctx.HasDeleteAccess && !ctx.ShareReadOnly && !s.shareIsReadOnly(ctx, parentHandle) { return nil }`.
 
@@ -813,12 +837,14 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] READ on non-regular, non-directory filehandle (symlink/device/socket/FIFO) wrongly returns NFS4ERR_ISDIR instead of NFS4ERR_INVAL
 
 - **Where:** `internal/adapter/nfs/v4/handlers/read.go:146` · `gaps` · area: nfsv4-read-write-commit-readplus
+> STATUS: FIXED in #1939 — readTypeError returns SYMLINK for links and INVAL for the remaining types
 - **Verified:** CONFIRMED: internal/adapter/nfs/v4/handlers/read.go:146-152 returns NFS4ERR_ISDIR for ANY file.Type != FileTypeRegular (FileTypeSymlink/Block/Char/Socket/FIFO all exist in pkg/metadata/file_types.go). REACHABLE: handleRead registered at register_v40.go:48 (h.v40DispatchTable[types.OP_READ]); special stateids are accepted (read.go:70-74, openState==nil bypasses share-access), so a plain PUTFH/LOOKUP(symlink)+READ with the anonymous stateid reaches line 146. NOT spec-correct: RFC 7530 §16.23.4 — dir → NFS4ERR_ISDIR, symlink → NFS4ERR_SYMLINK, otherwise → NFS4ERR_INVAL (RFC 5661 §18.22.3 uses WRONG_TYPE for the 'otherwise' case). No existing test pins the wrong mapping: io_test.go:900/917 only assert ISDIR for a directory and the pseudo-fs. Fix: switch on file.Type — Directory→ISDIR, Symlink→NFS4ERR_SYMLINK, default→NFS4ERR_INVAL.
 - **Fix:** Split the check: `if file.Type == metadata.FileTypeDirectory { return NFS4ERR_ISDIR }` then `else if file.Type != metadata.FileTypeRegular { return NFS4ERR_INVAL }` (mirror pkg/metadata/io.go's PrepareWrite logic).
 
 ### [MED] READ_PLUS same ISDIR-for-everything bug as READ
 
 - **Where:** `internal/adapter/nfs/v4/handlers/read_plus.go:95` · `gaps` · area: nfsv4-read-write-commit-readplus
+> STATUS: FIXED in #1939 — shares readTypeError with READ
 - **Verified:** CONFIRMED: read_plus.go:95-97 identical collapse (file.Type != FileTypeRegular → readPlusErr(NFS4ERR_ISDIR)). REACHABLE: handleReadPlus registered at register_v42.go:19 (h.v42DispatchTable[types.OP_READ_PLUS]); same special-stateid bypass at read_plus.go:74-79. Same RFC 7530 §16.23.4 / RFC 7862 §15.10 violation as idx 7 (symlink→NFS4ERR_SYMLINK, other non-regular→INVAL/WRONG_TYPE). No conformance test pins ISDIR for non-dir types. Fix both call sites with one shared helper.
 - **Fix:** Same split as read.go: NFS4ERR_ISDIR only for metadata.FileTypeDirectory, NFS4ERR_INVAL for every other non-regular type.
 
