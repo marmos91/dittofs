@@ -292,7 +292,8 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// ========================================================================
 
 	// GetFileForRead skips the expensive File.Path derivation; read.go never
-	// reads file.Path (loggers use openFile.Path, symlink uses file.LinkTarget).
+	// reads file.Path (loggers use the handle's own name, symlink uses
+	// file.LinkTarget).
 	file, err := metaSvc.GetFileForRead(authCtx.Context, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("READ: failed to get file metadata", "path", path, "error", err)

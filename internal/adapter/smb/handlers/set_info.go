@@ -788,10 +788,9 @@ func (h *Handler) setFileInfoFromStore(
 			// Update open file state. The handle lock serializes this
 			// read-modify-write against a concurrent rename on the same handle.
 			openFile.mu.Lock()
-			cur := openFile.Name()
-			newName := *cur
+			newName := openFile.Name()
+			parentPath := GetParentPath(newName.Path)
 			newName.FileName = toName
-			parentPath := GetParentPath(cur.Path)
 			if parentPath == "" || parentPath == "/" || parentPath == "." {
 				newName.Path = toName
 			} else {

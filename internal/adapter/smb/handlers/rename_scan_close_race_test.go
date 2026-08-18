@@ -36,12 +36,13 @@ func storeHolder(h *Handler, metaHandle, parentHandle metadata.FileHandle) (hold
 		FileID:         holderID,
 		MetadataHandle: metaHandle,
 		ShareAccess:    0,                  // lacks FILE_SHARE_DELETE → checkShareDeleteConflict trips
-		DesiredAccess:  uint32(0x00010000), // DELETE → checkParentDirRenameConflict trips,
+		DesiredAccess:  uint32(0x00010000), // DELETE → checkParentDirRenameConflict trips
 	}).WithName(OpenName{ParentHandle: parentHandle}))
 	childID = h.GenerateFileID()
 	h.StoreOpenFile((&OpenFile{
 		FileID:         childID,
-		MetadataHandle: metadata.FileHandle{0xCC}, // child of the directory being renamed,
+		MetadataHandle: metadata.FileHandle{0xCC},
+		// parent handle below makes it a child of the directory being renamed
 	}).WithName(OpenName{ParentHandle: metaHandle}))
 	return holderID, childID
 }

@@ -792,16 +792,14 @@ type OpenName struct {
 	ParentHandle metadata.FileHandle
 }
 
-// emptyOpenName is what Name reports for a handle that was never named.
-var emptyOpenName = &OpenName{}
-
-// Name returns the current name triple. Never nil, and safe to call while
-// holding the handle lock.
-func (f *OpenFile) Name() *OpenName {
+// Name returns the current name triple, zero if the handle was never named.
+// Returned by value so callers cannot mutate the published name; safe to call
+// while holding the handle lock.
+func (f *OpenFile) Name() OpenName {
 	if n := f.name.Load(); n != nil {
-		return n
+		return *n
 	}
-	return emptyOpenName
+	return OpenName{}
 }
 
 // SetName publishes a new name triple. Callers renaming a live handle must

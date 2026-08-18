@@ -57,7 +57,7 @@ func TestClose_PrimesAuthContextFromOpenFile(t *testing.T) {
 		TreeID:    treeID,
 		SessionID: sess.SessionID,
 		// No MetadataHandle / PayloadID — Close skips the BlockStore /
-		// metadata-flush paths entirely, but Step 2b primer still runs.,
+		// metadata-flush paths entirely, but Step 2b primer still runs.
 	}).WithName(OpenName{Path: "/share/a.txt"})
 	h.StoreOpenFile(openFile)
 
@@ -181,7 +181,7 @@ func TestRead_DeniesOnGrantedAccessStripped(t *testing.T) {
 	openFile := (&OpenFile{
 		FileID:        [16]byte{0xDE, 0xAD},
 		DesiredAccess: uint32(types.FileReadData), // requested
-		GrantedAccess: 0,                          // DACL stripped it,
+		GrantedAccess: 0,                          // DACL stripped it
 	}).WithName(OpenName{Path: "/share/secret.txt"})
 	h.StoreOpenFile(openFile)
 
@@ -207,7 +207,7 @@ func TestRead_AllowsOnGrantedAccess(t *testing.T) {
 	openFile := (&OpenFile{
 		FileID:        [16]byte{0xBE, 0xEF},
 		DesiredAccess: 0,                          // pre-DACL not relevant
-		GrantedAccess: uint32(types.FileReadData), // DACL granted,
+		GrantedAccess: uint32(types.FileReadData), // DACL granted
 	}).WithName(OpenName{Path: "/share/public.txt"})
 	h.StoreOpenFile(openFile)
 
@@ -234,7 +234,7 @@ func TestWrite_DeniesOnGrantedAccessStripped(t *testing.T) {
 	openFile := (&OpenFile{
 		FileID:        [16]byte{0xCA, 0xFE},
 		DesiredAccess: uint32(types.FileWriteData), // requested
-		GrantedAccess: 0,                           // DACL stripped it,
+		GrantedAccess: 0,                           // DACL stripped it
 	}).WithName(OpenName{Path: "/share/ro.txt"})
 	h.StoreOpenFile(openFile)
 

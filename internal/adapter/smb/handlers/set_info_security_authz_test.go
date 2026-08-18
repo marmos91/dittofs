@@ -75,7 +75,7 @@ func setupSecurityAuthzTest(t *testing.T) (*Handler, *OpenFile, *metadata.AuthCo
 		FileID:         [16]byte{9, 9, 9, 9},
 		MetadataHandle: fileHandle,
 		ShareName:      shareName,
-		// GrantedAccess intentionally zero; caller stamps per test.,
+		// GrantedAccess intentionally zero; caller stamps per test.
 	}).WithName(OpenName{Path: "g.dat", FileName: "g.dat", ParentHandle: rootHandle})
 	h.StoreOpenFile(openFile)
 	return h, openFile, authCtx
