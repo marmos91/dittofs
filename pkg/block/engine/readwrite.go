@@ -406,11 +406,9 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Ch
 	// to none of it, so a failure leaves rows the GC reconcile still reclaims,
 	// never a half-decremented file.
 	//
-	// Reap each block's OWN row by exact ID "{payloadID}/{offset}". Each
-	// {payloadID}/offset row is independent and unique per offset, so reap each
-	// block once, deduped by OFFSET (a defensive guard against a malformed
-	// duplicate-offset list). The SAME content hash at TWO offsets in this file
-	// is TWO rows and BOTH must be reaped.
+	// Reap each block's OWN row by exact ID "{payloadID}/{offset}". The SAME
+	// content hash at TWO offsets in this file is TWO rows and BOTH must be
+	// reaped.
 	//
 	// By-ID, not by-hash: cross-file dedup keep-alive is provided by SIBLING
 	// rows in other files keeping the hash in EnumerateFileChunks (the GC live

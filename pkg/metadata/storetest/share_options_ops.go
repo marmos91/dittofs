@@ -89,15 +89,14 @@ func runShareOptionsOps(t *testing.T, factory StoreFactory) {
 		_, err := store.GetShareOptions(ctx, "/opts-rollback")
 		require.NoError(t, err)
 
-		wantErr := errRollbackShareOptions
 		err = store.WithTransaction(ctx, func(tx metadata.Transaction) error {
 			if err := tx.UpdateShareOptions(ctx, "/opts-rollback",
 				&metadata.ShareOptions{ReadOnly: true}); err != nil {
 				return err
 			}
-			return wantErr
+			return errRollbackShareOptions
 		})
-		require.ErrorIs(t, err, wantErr)
+		require.ErrorIs(t, err, errRollbackShareOptions)
 
 		got, err := store.GetShareOptions(ctx, "/opts-rollback")
 		require.NoError(t, err)

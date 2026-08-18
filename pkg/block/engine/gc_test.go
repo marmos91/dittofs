@@ -1483,14 +1483,7 @@ func TestResolveGracePeriod(t *testing.T) {
 	}
 }
 
-// DecrementRefCountAndReapMany is the batched reap the engine reclaim paths
-// use. Looping the single-offset form keeps whatever bookkeeping and error
-// injection that form already carries.
+// DecrementRefCountAndReapMany is the batched reap the engine reclaim paths use.
 func (c *reapCoordinator) DecrementRefCountAndReapMany(ctx context.Context, payloadID string, offsets []uint64) error {
-	for _, offset := range offsets {
-		if _, err := c.DecrementRefCountAndReap(ctx, payloadID, offset); err != nil {
-			return err
-		}
-	}
-	return nil
+	return reapEach(ctx, payloadID, offsets, c.DecrementRefCountAndReap)
 }
