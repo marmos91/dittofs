@@ -873,7 +873,27 @@ func (tx *badgerTransaction) GetLinkCount(ctx context.Context, handle metadata.F
 
 	item, err := tx.txn.Get(keyLinkCount(fileID))
 	if err == badgerdb.ErrKeyNotFound {
-		return 0, nil
+		// The count lives outside the inode record, so an existing inode whose
+		// l: key was never written resolves to the same default-by-type GetFile
+		// overlays: reporting 0 for a live entry contradicts GetFile on the same
+		// row and reads as "fully unlinked" to callers that treat the count as a
+		// liveness signal. Only a missing inode record is genuinely 0.
+		fileItem, fileErr := tx.txn.Get(keyFile(fileID))
+		if fileErr == badgerdb.ErrKeyNotFound {
+			return 0, nil
+		}
+		if fileErr != nil {
+			return 0, fileErr
+		}
+		raw, valErr := fileItem.ValueCopy(nil)
+		if valErr != nil {
+			return 0, valErr
+		}
+		file, decErr := decodeFile(raw)
+		if decErr != nil {
+			return 0, decErr
+		}
+		return fileLinkCountTxn(tx.txn, file), nil
 	}
 	if err != nil {
 		return 0, err
