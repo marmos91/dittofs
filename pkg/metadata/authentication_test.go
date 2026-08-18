@@ -538,7 +538,10 @@ func TestCopyFileAttr(t *testing.T) {
 		assert.Nil(t, result)
 	})
 
-	t.Run("copies all fields", func(t *testing.T) {
+	// Populates only the scalar fields, so it cannot detect a field the copy
+	// drops. TestCopyFileAttr_CopiesEveryField in copy_file_attr_test.go walks
+	// the struct reflectively and is the one that covers completeness.
+	t.Run("copies the scalar fields", func(t *testing.T) {
 		t.Parallel()
 		now := time.Now()
 		original := &FileAttr{

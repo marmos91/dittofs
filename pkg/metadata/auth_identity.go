@@ -5,8 +5,6 @@ import (
 	"net"
 	"regexp"
 	"slices"
-
-	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
 // AuthContext contains authentication information for access control checks.
@@ -359,34 +357,40 @@ func MatchesIPPattern(clientIP string, pattern string) bool {
 //
 // Useful when returning file attributes to callers to prevent
 // external modification of internal state.
+//
+// The struct is copied by value so a field added to FileAttr is carried over
+// without touching this function; only the reference-typed members below need
+// explicit clones. Enumerating fields by hand here silently drops whatever the
+// list has not kept up with.
 func CopyFileAttr(attr *FileAttr) *FileAttr {
 	if attr == nil {
 		return nil
 	}
 
-	// Deep copy ACL if present
-	var aclCopy *acl.ACL
+	c := *attr
+
 	if attr.ACL != nil {
-		aces := make([]acl.ACE, len(attr.ACL.ACEs))
-		copy(aces, attr.ACL.ACEs)
-		aclCopy = &acl.ACL{ACEs: aces}
+		aclCopy := *attr.ACL
+		aclCopy.ACEs = slices.Clone(attr.ACL.ACEs)
+		aclCopy.SACL = slices.Clone(attr.ACL.SACL)
+		c.ACL = &aclCopy
 	}
 
-	return &FileAttr{
-		Type:         attr.Type,
-		Mode:         attr.Mode,
-		UID:          attr.UID,
-		GID:          attr.GID,
-		Nlink:        attr.Nlink,
-		Size:         attr.Size,
-		Atime:        attr.Atime,
-		Mtime:        attr.Mtime,
-		Ctime:        attr.Ctime,
-		CreationTime: attr.CreationTime,
-		PayloadID:    attr.PayloadID,
-		LinkTarget:   attr.LinkTarget,
-		Rdev:         attr.Rdev,
-		Hidden:       attr.Hidden,
-		ACL:          aclCopy,
+	if attr.EAs != nil {
+		eas := make(map[string][]byte, len(attr.EAs))
+		for k, v := range attr.EAs {
+			eas[k] = slices.Clone(v)
+		}
+		c.EAs = eas
 	}
+
+	c.Blocks = slices.Clone(attr.Blocks)
+	c.BlocksDirtyOffsets = slices.Clone(attr.BlocksDirtyOffsets)
+
+	if attr.DeletedAt != nil {
+		deletedAt := *attr.DeletedAt
+		c.DeletedAt = &deletedAt
+	}
+
+	return &c
 }
