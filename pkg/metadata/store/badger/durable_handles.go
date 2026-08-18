@@ -29,7 +29,9 @@ const (
 	// Index by FileHandle: dh:fh:{hex}:{id} -> id (string)
 	prefixDHFileHandle = "dh:fh:"
 
-	// Index by Share: dh:share:{name}:{id} -> id (string)
+	// Index by Share: dh:share:{hex(name)}:{id} -> id (string). The share name
+	// is hex-encoded so a ':' inside it cannot forge an extra key segment
+	// (see shareIndexPrefix).
 	prefixDHShare = "dh:share:"
 )
 
@@ -56,6 +58,19 @@ func hexEncodeBytes(b []byte) string {
 }
 
 var zeroGUID [16]byte
+
+// shareIndexPrefix returns the Share index prefix covering every durable handle
+// of one share. Hex-encoding the name keeps the ':' separator unambiguous, so a
+// share whose name embeds ':' cannot plant entries that a prefix scan for
+// another share matches.
+//
+// The format change needs no on-disk migration: durable handles are ephemeral
+// reconnect state with a bounded timeout, and the primary dh:id:{uuid} records
+// (which every other lookup uses) are untouched, so entries left by a
+// pre-upgrade run are unreachable by the new scans and expire on their own.
+func shareIndexPrefix(shareName string) string {
+	return prefixDHShare + hex.EncodeToString([]byte(shareName)) + ":"
+}
 
 // fileIDIndexScanPrefix returns the prefix covering every FileID index entry
 // for a file. A file can hold several durable handles at once, so entries are
@@ -136,7 +151,7 @@ func (s *badgerDurableStore) putDurableHandleTx(txn *badgerdb.Txn, handle *lock.
 		}
 	}
 
-	shareKey := []byte(prefixDHShare + handle.ShareName + ":" + handle.ID)
+	shareKey := []byte(shareIndexPrefix(handle.ShareName) + handle.ID)
 	if err := txn.Set(shareKey, []byte(handle.ID)); err != nil {
 		return err
 	}
@@ -191,7 +206,7 @@ func (s *badgerDurableStore) deleteIndicesTx(txn *badgerdb.Txn, handle *lock.Per
 		}
 	}
 
-	shareKey := []byte(prefixDHShare + handle.ShareName + ":" + handle.ID)
+	shareKey := []byte(shareIndexPrefix(handle.ShareName) + handle.ID)
 	if err := txn.Delete(shareKey); err != nil && err != badgerdb.ErrKeyNotFound {
 		return err
 	}
@@ -502,7 +517,7 @@ func (s *badgerDurableStore) ListDurableHandlesByShare(ctx context.Context, shar
 	var result []*lock.PersistedDurableHandle
 	err := s.db.View(func(txn *badgerdb.Txn) error {
 		var err error
-		result, err = s.getHandlesByPrefix(txn, []byte(prefixDHShare+shareName+":"))
+		result, err = s.getHandlesByPrefix(txn, []byte(shareIndexPrefix(shareName)))
 		return err
 	})
 	if err != nil {

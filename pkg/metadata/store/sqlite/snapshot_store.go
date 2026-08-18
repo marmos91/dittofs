@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/binary"
@@ -475,28 +476,37 @@ func readCell(r io.Reader) (any, error) {
 		}
 		return math.Float64frombits(binary.LittleEndian.Uint64(b[:])), nil
 	case cellText:
-		n, err := readU32(r)
+		buf, err := readSized(r)
 		if err != nil {
-			return nil, err
-		}
-		buf := make([]byte, n)
-		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
 		return string(buf), nil
 	case cellBlob:
-		n, err := readU32(r)
+		buf, err := readSized(r)
 		if err != nil {
-			return nil, err
-		}
-		buf := make([]byte, n)
-		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
 		return buf, nil
 	default:
 		return nil, fmt.Errorf("unknown cell kind %d", kind[0])
 	}
+}
+
+// readSized reads a u32-length-prefixed byte run. The length comes from an
+// unverified stream (the envelope CRC only covers the whole payload, so it is
+// checked after the rows are parsed), so the buffer grows as bytes arrive
+// instead of being allocated from the declared length up front: a corrupt or
+// truncated stream fails on EOF having used only the bytes it actually held.
+func readSized(r io.Reader) ([]byte, error) {
+	n, err := readU32(r)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	if _, err := io.CopyN(&buf, r, int64(n)); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func writeString(w io.Writer, s string) error {

@@ -152,3 +152,21 @@ func TestTrackerConcurrent(t *testing.T) {
 	// race detector finding no data races.
 	_ = mt.Count()
 }
+
+// Distinct (protocol, client, share) triples must not share a slot when a
+// component contains the key separator.
+func TestTracker_ColonInComponentsDoesNotCollide(t *testing.T) {
+	mt := NewTracker()
+	mt.Record("1.2.3.4:111", "nfs", "export", nil)
+	mt.Record("1.2.3.4", "nfs", "111:export", nil)
+
+	if got := mt.Count(); got != 2 {
+		t.Fatalf("expected 2 distinct mounts, got %d", got)
+	}
+	if !mt.Remove("1.2.3.4:111", "nfs", "export") {
+		t.Fatal("failed to remove the first mount")
+	}
+	if got := mt.Count(); got != 1 {
+		t.Fatalf("expected 1 mount left, got %d", got)
+	}
+}

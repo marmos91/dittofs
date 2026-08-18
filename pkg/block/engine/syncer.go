@@ -705,11 +705,6 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 	}
 	m.periodicStarted = true
 
-	interval := m.config.UploadInterval
-	if interval <= 0 {
-		interval = 2 * time.Second
-	}
-	_ = interval
 	// Carve collaborators are wired by recomputeCarveActive once all deps are
 	// present; launch the dispatcher that periodically packs the journal's dirty
 	// ranges into remote blocks.
