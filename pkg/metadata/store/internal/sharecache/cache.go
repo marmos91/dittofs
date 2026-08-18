@@ -10,7 +10,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// Cache is a lock-free cache of decoded ShareOptions keyed by share name, so
+// Cache holds decoded ShareOptions keyed by share name in a sync.Map, so
 // the permission funnel every read, write, create and setattr traverses
 // (checkFilePermissionsFile → GetShareOptions) skips the backend read and the
 // options decode on every op. Server pprof of a warm random-read run showed
