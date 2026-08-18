@@ -38,6 +38,9 @@ type HealthMonitor struct {
 
 	stopCh   chan struct{}
 	stopOnce gosync.Once
+	// wg counts the monitor loop so Stop can join it, keeping a probe from
+	// running against a remote store the caller is about to close.
+	wg gosync.WaitGroup
 }
 
 // NewHealthMonitor creates a new HealthMonitor. If probeFunc is nil, the monitor
@@ -90,14 +93,24 @@ func (hm *HealthMonitor) Start(ctx context.Context) {
 		logger.Info("Remote store initial probe succeeded")
 	}
 
-	go hm.monitorLoop(ctx)
+	hm.wg.Add(1)
+	go func() {
+		defer hm.wg.Done()
+		hm.monitorLoop(ctx)
+	}()
 }
 
-// Stop signals the health monitor goroutine to exit. Safe to call multiple times.
+// Stop signals the health monitor goroutine to exit and waits for it. Safe to
+// call multiple times. The wait is bounded because the loop can be inside a
+// probe against an unreachable remote; a monitor that outlives its budget is
+// logged rather than allowed to wedge shutdown.
 func (hm *HealthMonitor) Stop() {
 	hm.stopOnce.Do(func() {
 		close(hm.stopCh)
 	})
+	if !waitBounded(&hm.wg, defaultShutdownTimeout) {
+		logger.Warn("Health monitor did not exit before shutdown timeout")
+	}
 }
 
 // IsHealthy returns the current health state. Always true if probeFunc is nil.

@@ -39,11 +39,11 @@ type Syncer struct {
 	// read it without taking m.mu — avoiding both a data race with
 	// SetRemoteStore and a pendingMu→m.mu lock-ordering edge.
 	hasRemote atomic.Bool
-	// the syncer is one of the engine-internal
-	// callers that still reaches into the wider EngineFileChunkStore
-	// surface (GetFileChunk for dual-read resolve, ListFileChunks for
-	// GetFileSize/Exists). routes reads through
-	// FileAttr.Blocks and lets us drop the wider interface.
+	// fileChunkStore is the per-file chunk manifest, and the syncer needs the
+	// wide EngineFileChunkStore surface rather than a narrower one because it
+	// reads the manifest three different ways: GetFileChunk to resolve a single
+	// row, ListFileChunks to enumerate a payload for GetFileSize/Exists and the
+	// window walks, and the offset-indexed lookups where a backend offers them.
 	fileChunkStore block.EngineFileChunkStore // Required: enables content-addressed deduplication
 
 	// syncedHashStore persists per-CAS-hash local→remote sync state. The
@@ -84,6 +84,12 @@ type Syncer struct {
 	readaheadPruning atomic.Bool  // single-pruner guard for the bound
 
 	stopCh chan struct{} // Signals periodic uploader to stop
+	// bgWG counts the long-lived loops started by startPeriodicUploader. Close
+	// joins them so it does not return while one is still calling into the
+	// local or remote store, which the engine closes as soon as Close returns.
+	// The join is bounded: a loop parked in a remote call past the shutdown
+	// timeout is logged and left behind rather than allowed to wedge shutdown.
+	bgWG   gosync.WaitGroup
 	closed bool
 	mu     gosync.RWMutex
 
@@ -581,16 +587,16 @@ func (m *Syncer) Exists(ctx context.Context, payloadID string) (bool, error) {
 	return false, nil
 }
 
-// Truncate removes blocks beyond the new size from the remote store.
+// Truncate is a no-op on the remote side; the CAS objects a truncate orphans
+// are reclaimed by the GC sweep.
 //
 // Post-Phase-17 the engine is CAS-keyed: there is no per-file remote key
 // prefix to enumerate. Truncate's metadata-side RefCount decrement runs
 // inside engine.Truncate (which prunes FileAttr.Blocks and decrements per
-// dropped hash); orphan CAS objects are reclaimed by the GC sweep. This
-// method therefore becomes a no-op at the remote-side after
-// kept as a stable seam for callers (engine.Truncate invokes it
-// unconditionally) and so the legacy prefix-scan pattern is unambiguously
-// gone.
+// dropped hash), which is what makes a hash sweepable. This method is kept as
+// a stable seam for callers — engine.Truncate invokes it unconditionally — and
+// so the absence of the legacy prefix scan is explicit rather than inferred
+// from a missing call.
 func (m *Syncer) Truncate(ctx context.Context, payloadID string, newSize uint64) error {
 	if err := m.checkReady(ctx); err != nil {
 		return err
@@ -609,13 +615,13 @@ func (m *Syncer) Truncate(ctx context.Context, payloadID string, newSize uint64)
 	return nil
 }
 
-// Delete removes all blocks for a file from the remote store.
+// Delete is a no-op on the remote side; engine.Delete drives the deletion.
 //
 // Post-Phase-17 the engine is CAS-keyed: file deletion routes through the
-// refcount path (engine.Delete decrements RefCount per ChunkRef hash and
-// orphan CAS objects are reclaimed by GC). The legacy per-file prefix
-// sweep is gone — Delete now records the deletion intent and lets
-// the refcount + GC mechanism do the work.
+// refcount path — engine.Delete decrements RefCount per ChunkRef hash, and the
+// GC sweep reclaims the CAS objects that leaves orphaned. Nothing is removed or
+// recorded here. The legacy per-file prefix sweep is gone, and this method is
+// kept as a stable seam for the call in engine.Delete.
 func (m *Syncer) Delete(ctx context.Context, payloadID string) error {
 	if err := m.checkReady(ctx); err != nil {
 		return err
@@ -707,14 +713,22 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 	// Carve collaborators are wired by recomputeCarveActive once all deps are
 	// present; launch the dispatcher that periodically packs the journal's dirty
 	// ranges into remote blocks.
-	go m.carveDispatcher(ctx)
+	m.bgWG.Add(1)
+	go func() {
+		defer m.bgWG.Done()
+		m.carveDispatcher(ctx)
+	}()
 
 	// Adaptive mode (ParallelUploads unset): launch the goodput controller that
 	// resizes the upload window to saturate the uplink (#1407). Pinned
 	// --parallel-uploads leaves uploadController nil and keeps the fixed window;
 	// publish it once so the gauge reflects it instead of reading 0.
 	if m.uploadController != nil {
-		go m.runUploadController(ctx, uploadControlInterval)
+		m.bgWG.Add(1)
+		go func() {
+			defer m.bgWG.Done()
+			m.runUploadController(ctx, uploadControlInterval)
+		}()
 	} else if mx := m.dataplaneMetrics(); mx != nil && m.uploadLimiter != nil {
 		mx.SetUploadWindow(m.uploadLimiter.Limit())
 	}
@@ -939,7 +953,33 @@ func (m *Syncer) Close() error {
 		m.queue.Stop(defaultShutdownTimeout)
 	}
 
+	// Join the background loops LAST. They observe stopCh, but a carve pass can
+	// be parked in an upload that only the drain and queue stop above release,
+	// so joining earlier would deadlock. Joining at all is what stops Close from
+	// returning while a pass is still reading the local store or writing the
+	// remote — the engine closes both the moment Close returns.
+	if !waitBounded(&m.bgWG, defaultShutdownTimeout) {
+		logger.Warn("Syncer background loops did not exit before shutdown timeout")
+	}
+
 	return nil
+}
+
+// waitBounded waits for wg, reporting whether it drained before timeout. The
+// wait is bounded because a background loop can be parked in a remote call with
+// its own retry budget: shutdown logs and proceeds rather than wedging on it.
+func waitBounded(wg *gosync.WaitGroup, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // HealthCheck verifies the remote store is accessible.

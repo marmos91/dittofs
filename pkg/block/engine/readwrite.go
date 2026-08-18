@@ -119,14 +119,6 @@ func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []
 // hash. The new []ChunkRef list is returned for the caller to persist
 // via PutFile. When currentBlocks is empty the legacy path runs and
 // the returned slice is empty (dual-read shim semantics).
-// blocksReprojector is an optional coordinator capability: re-materialize
-// FileAttr.Blocks from the surviving FileChunk manifest after a reap. The
-// production metadataCoordinator implements it; unit-test coordinator fakes that
-// don't touch Blocks projection simply don't, and the reproject is skipped.
-type blocksReprojector interface {
-	ReprojectBlocks(ctx context.Context, payloadID string) error
-}
-
 // narrowChunkRow shrinks a manifest row to the surviving prefix of its chunk so
 // coverage lookups stop resolving it for bytes the file no longer holds and a
 // hydrate writes back only that prefix. The remote chunk is untouched — its hash
@@ -225,13 +217,11 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 					return currentBlocks, fmt.Errorf("reap block on truncate-drop %s/%d: %w", payloadID, b.Offset, err)
 				}
 			}
-			// Re-materialize File.Blocks from the surviving manifest (R): the reap
-			// dropped the tail rows, so the projection must catch up or snapshot/audit
-			// over-count. Optional capability — test fakes skip it.
-			if rp, ok := bs.coordinator.(blocksReprojector); ok {
-				if err := rp.ReprojectBlocks(ctx, payloadID); err != nil {
-					return currentBlocks, fmt.Errorf("reproject after truncate %s: %w", payloadID, err)
-				}
+			// Re-materialize File.Blocks from the surviving manifest: the reap
+			// dropped the tail rows, so the projection must catch up or
+			// snapshot/audit over-count.
+			if err := bs.coordinator.ReprojectBlocks(ctx, payloadID); err != nil {
+				return currentBlocks, fmt.Errorf("reproject after truncate %s: %w", payloadID, err)
 			}
 		}
 	}
@@ -320,12 +310,10 @@ func (bs *Store) PunchHole(ctx context.Context, payloadID string, currentBlocks 
 					return currentBlocks, fmt.Errorf("reap block on punch %s/%d: %w", payloadID, b.Offset, err)
 				}
 			}
-			// Re-materialize File.Blocks from the surviving manifest (R) after the
-			// reap dropped the punched rows. Optional capability — test fakes skip it.
-			if rp, ok := bs.coordinator.(blocksReprojector); ok {
-				if err := rp.ReprojectBlocks(ctx, payloadID); err != nil {
-					return currentBlocks, fmt.Errorf("reproject after punch %s: %w", payloadID, err)
-				}
+			// Re-materialize File.Blocks from the surviving manifest after the
+			// reap dropped the punched rows.
+			if err := bs.coordinator.ReprojectBlocks(ctx, payloadID); err != nil {
+				return currentBlocks, fmt.Errorf("reproject after punch %s: %w", payloadID, err)
 			}
 		}
 	}

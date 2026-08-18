@@ -223,11 +223,7 @@ func TestNilRemoteStoreFetchBlock(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	data, err := m.fetchBlock(ctx, "test/file.bin", 0)
-	if err != nil {
+	if err := m.fetchBlock(ctx, "test/file.bin", 0); err != nil {
 		t.Fatalf("fetchBlock with nil remoteStore should not error, got: %v", err)
-	}
-	if data != nil {
-		t.Error("fetchBlock with nil remoteStore should return nil data")
 	}
 }

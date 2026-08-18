@@ -86,9 +86,8 @@ func newWarmRegistry() *warmRegistry {
 // warmAllResult mirrors engine.WarmResult without coupling the registry to the
 // engine package. The adapter in StartWarm bridges the two.
 type warmAllResult struct {
-	BlocksFetched      int64
-	BytesFetched       int64
-	BlocksAlreadyLocal int64
+	BlocksFetched int64
+	BytesFetched  int64
 }
 
 // start launches a warm run for shareName against run on a DETACHED context
@@ -97,10 +96,10 @@ type warmAllResult struct {
 // share, the existing job is returned and run is not invoked.
 //
 // usedBytes is the share's currently-stored byte count (captured by the
-// caller before launching). When the run completes with zero enumerable
-// blocks (nothing fetched AND nothing already-local) but usedBytes > 0, the
-// job's Warning field is set: a non-empty share with no warmable blocks is a
-// strong hint that block metadata is missing (#1374).
+// caller before launching). When the run completes having enumerated zero
+// blocks but usedBytes > 0, the job's Warning field is set: a non-empty share
+// with no warmable blocks is a strong hint that block metadata is missing
+// (#1374).
 func (r *warmRegistry) start(shareName string, usedBytes int64, run func(ctx context.Context, progress func(done, total int64)) (warmAllResult, error)) *WarmJob {
 	r.mu.Lock()
 	if existingID, ok := r.active[shareName]; ok {
@@ -167,11 +166,16 @@ func (r *warmRegistry) start(shareName string, usedBytes int64, run func(ctx con
 		case err == nil:
 			j.State = WarmStateDone
 			j.BlocksDone = j.BlocksTotal
-			// Total enumerable blocks for the run = fetched + already-local.
-			// If that is zero yet the share reports stored bytes, the warm
-			// found nothing to do on a non-empty share — surface a warning
-			// (#1374) rather than a silent no-op success.
-			if res.BlocksFetched+res.BlocksAlreadyLocal == 0 && usedBytes > 0 {
+			// The gate is the ENUMERATED total, not the fetched count: a row
+			// that is sparse or not yet synced to the remote is enumerated and
+			// walked but fetches no bytes, so keying off BlocksFetched would
+			// warn about missing metadata on a share whose metadata is fine.
+			// j.BlocksTotal is the target count the run reported through
+			// progress, and stays 0 only when the enumeration itself found
+			// nothing. If that is zero yet the share reports stored bytes, the
+			// warm found nothing to do on a non-empty share — surface a
+			// warning (#1374) rather than a silent no-op success.
+			if j.BlocksTotal == 0 && usedBytes > 0 {
 				j.Warning = fmt.Sprintf(
 					"warm found 0 enumerable blocks for share %s but it has %d bytes on the local disk tier — block metadata may be missing",
 					shareName, usedBytes)

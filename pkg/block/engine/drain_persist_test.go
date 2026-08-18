@@ -139,6 +139,10 @@ func (c *testCoordinator) FindByObjectID(ctx context.Context, objectID block.Obj
 	return c.store.FindByObjectID(ctx, objectID)
 }
 
+// ReprojectBlocks is a no-op: this fake does not model the Blocks
+// projection.
+func (c *testCoordinator) ReprojectBlocks(_ context.Context, _ string) error { return nil }
+
 func (c *testCoordinator) GetFileObjectID(ctx context.Context, payloadID string) (block.ObjectID, error) {
 	var zero block.ObjectID
 	file, err := c.store.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))

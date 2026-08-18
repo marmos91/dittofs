@@ -36,26 +36,63 @@ func (m *Syncer) fetchGroup(ctx context.Context) (*errgroup.Group, context.Conte
 	return g, gctx
 }
 
-// resolveFileChunk returns the FileChunk whose chunk range covers the
-// byte window [blockIdx*BlockSize, (blockIdx+1)*BlockSize) for payloadID
-// or (nil, nil) if no row covers that window (sparse / not yet uploaded).
+// coveringChunk pairs a manifest row with the block index its first byte falls
+// in, which is the in-flight dedup slot the fetch registers under.
+type coveringChunk struct {
+	blockIdx uint64
+	fb       *block.FileChunk
+}
+
+// collectCoveringChunks returns every manifest row covering [start, end), in
+// ascending offset order. It is the shared window walk behind the cold-read
+// demand fetch and the readahead prefetch.
 //
-// Post-Phase-18 the engine writers (ObjectIDPersister, ChunkEmitter)
-// encode the chunk's absolute byte Offset in the trailing component of
-// the FileChunk ID — not a synthetic blockIdx — because FastCDC chunk
-// boundaries do not align to BlockSize. Looking up by
-// "{payloadID}/{blockIdx*BlockSize}" therefore misses every non-first
-// chunk in a multi-chunk file. We instead enumerate the per-payload row
-// list and find the row whose [absOffset, absOffset+DataSize) interval
-// covers blockIdx*BlockSize, mirroring readLocalByHash's
-// findRowCoveringOffset walk.
+// Resolving one row per BlockSize-aligned offset is not enough: the engine
+// writers encode a chunk's absolute byte offset in the trailing component of its
+// FileChunk ID, and FastCDC boundaries do not align to BlockSize, so an 8 MiB
+// block routinely holds several chunks. A walk that resolved only the row at the
+// block-aligned offset would see the block's first chunk and silently drop every
+// chunk behind it.
 //
-// Post-Phase-17 the engine read path is CAS-only — fb.Hash MUST be non-
-// zero for any reachable block; the dispatchRemoteFetch helper enforces
-// this.
-func (m *Syncer) resolveFileChunk(ctx context.Context, payloadID string, blockIdx uint64) (*block.FileChunk, error) {
-	fb, _, err := resolveCovering(ctx, m.fileChunkStore, payloadID, blockIdx*uint64(BlockSize))
-	return fb, err
+// A hole steps to the next chunk that STARTS after the uncovered offset, not to
+// the next block boundary, because a hole can be followed by real data inside
+// the same block. A row that claims zero or too few bytes still advances the
+// cursor by one byte, so a degenerate manifest cannot spin the walk; it can only
+// make the walk re-probe, never make it terminate early and report the rest of
+// the window as hole.
+func (m *Syncer) collectCoveringChunks(ctx context.Context, payloadID string, start, end uint64) ([]coveringChunk, error) {
+	if m.fileChunkStore == nil {
+		return nil, nil
+	}
+	// One resolver for the whole walk: on a backend without the chunk-offset
+	// index every lookup falls back to a full per-payload manifest scan, and the
+	// resolver's snapshot turns K of those into one.
+	res := newChunkWindowResolver(m.fileChunkStore, payloadID)
+	var out []coveringChunk
+	for cur := start; cur < end; {
+		fb, absOff, err := res.covering(ctx, cur)
+		if err != nil {
+			return nil, err
+		}
+		if fb == nil {
+			next, ok, err := res.nextStart(ctx, cur)
+			if err != nil {
+				return nil, err
+			}
+			if !ok || next >= end {
+				break // nothing starts inside the window past cur — the rest is hole
+			}
+			cur = next
+			continue
+		}
+		out = append(out, coveringChunk{blockIdx: absOff / uint64(BlockSize), fb: fb})
+		next := absOff + uint64(fb.DataSize)
+		if next <= cur {
+			next = cur + 1 // a zero/short DataSize row must still advance the walk
+		}
+		cur = next
+	}
+	return out, nil
 }
 
 // listFileChunksSnapshot returns a point-in-time snapshot of the whole
@@ -245,50 +282,62 @@ func (m *Syncer) readChunkVerified(ctx context.Context, loc block.ChunkLocator, 
 	return data, nil
 }
 
-// fetchBlock downloads a single block from the remote store and writes it to the
-// local store. It backs the SyncQueue's prefetch/download workers, so it is the
-// engine's readahead fetch path (scheduleReadahead).
-// Returns nil data for sparse blocks (no FileChunk entry or missing S3 object).
-// Returns nil data when remoteStore is nil (local-only mode -- no remote data
-// exists) or when the block is already resident locally (nothing to fetch).
+// fetchBlock stages every chunk of one block into the local store. It backs the
+// SyncQueue's prefetch/download workers, so it is the engine's readahead fetch
+// path (scheduleReadahead), and the downloaded bytes are consumed by the
+// subsequent local read, not returned here.
 //
-// The fetch is routed through inlineFetchOrWait so it registers in the in-flight
-// dedup map: a concurrent demand read for the same block piggybacks on this
-// prefetch instead of issuing its own S3 GET. That shared budget is what keeps
-// total remote concurrency bounded when the readahead window overlaps demand.
-func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, error) {
+// It stages the whole block, not just the chunk at the block-aligned offset. A
+// block spans BlockSize bytes while FastCDC chunks are typically far smaller, so
+// resolving a single covering row left everything behind that row's first chunk
+// cold: readahead promised a block of lookahead and delivered one chunk of it,
+// and the demand read then paid the remote round-trips readahead exists to hide.
+//
+// A sparse block (no covering rows) and local-only mode (nil remoteStore) are
+// both nothing-to-do successes. Each chunk's fetch routes through
+// inlineFetchOrWait so it registers in the in-flight dedup map: a concurrent
+// demand read for the same chunk piggybacks on this prefetch instead of issuing
+// its own S3 GET. That shared budget is what keeps total remote concurrency
+// bounded when the readahead window overlaps demand.
+func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint64) error {
 	if !m.canProcess(ctx) {
-		return nil, ErrClosed
+		return ErrClosed
 	}
 
 	if m.remoteStore == nil {
 		logger.Debug("syncer: skipping fetchBlock, no remote store")
-		return nil, nil // No remote data exists
+		return nil // No remote data exists
 	}
 
 	// Health gate: fail fast when remote is unreachable
 	if !m.IsRemoteHealthy() {
 		m.offlineReadsBlocked.Add(1)
 		m.logOfflineRead("fetchBlock", payloadID, blockIdx)
-		return nil, m.remoteUnavailableError()
+		return m.remoteUnavailableError()
 	}
 
-	fb, err := m.resolveFileChunk(ctx, payloadID, blockIdx)
+	start := blockIdx * uint64(BlockSize)
+	chunks, err := m.collectCoveringChunks(ctx, payloadID, start, start+uint64(BlockSize))
 	if err != nil {
-		return nil, err
-	}
-	if fb == nil {
-		return nil, nil
+		return err
 	}
 
 	// ponytail: no local-presence probe — the journal is (payloadID,offset)-
 	// keyed, not hash-keyed, so there is no cheap per-hash Has(). Prefetch just
 	// fetches; the in-flight dedup collapses concurrent duplicates and Hydrate
-	// is idempotent, so a re-fetch of an already-warm block is at worst a
+	// is idempotent, so a re-fetch of an already-warm chunk is at worst a
 	// redundant GET (best-effort readahead). Add a journal residency probe here
 	// if redundant prefetch GETs ever show up in profiles.
-	data, _, err := m.inlineFetchOrWait(ctx, payloadID, blockIdx, fb)
-	return data, err
+	//
+	// Chunks are staged serially: this already runs on a SyncQueue worker, and
+	// fanning out here would multiply the pool's concurrency by the chunks per
+	// block behind the window that bounds it.
+	for _, c := range chunks {
+		if _, _, err := m.inlineFetchOrWait(ctx, payloadID, c.blockIdx, c.fb); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // fetchResolvedBlock downloads the already-resolved FileChunk row from the
@@ -365,51 +414,15 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 	end := offset + uint64(length)
 
 	// Resolve EVERY chunk covering [offset, end), not just the chunk at each
-	// 8 MiB block-aligned offset. FastCDC chunks are typically smaller than
-	// BlockSize, so a block holds several chunks and a read window routinely
-	// spans chunk boundaries. The old loop iterated block indices and resolved
-	// only the chunk covering blockIdx*BlockSize, so every read window past a
-	// block's first chunk went unfetched — served as zeros/stale bytes — and
-	// only the block-aligned chunks were staged locally. Walk the actual
-	// covering chunks (mirrors readLocalByHash / fillFromCASManifest) so the
-	// whole window is downloaded.
-	type pending struct {
-		blockIdx uint64
-		fb       *block.FileChunk
-	}
-	var toFetch []pending
-	for cur := offset; cur < end; {
-		fb, absOff, err := resolveCovering(ctx, m.fileChunkStore, payloadID, cur)
-		if err != nil {
-			return false, err
-		}
-		if fb == nil {
-			// Sparse hole at cur: no chunk covers it. Chunk boundaries do not
-			// align to BlockSize, so a hole can be followed by real data inside
-			// the same block; advance to the next chunk that starts after cur
-			// rather than to the next block boundary. Skipping to the boundary
-			// would drop those chunks from the fetch list and the caller's
-			// re-read would then serve them as zeros.
-			next, ok, err := resolveNextChunkStart(ctx, m.fileChunkStore, payloadID, cur)
-			if err != nil {
-				return false, err
-			}
-			if !ok {
-				break // nothing starts past cur — the rest of the window is hole
-			}
-			cur = next
-			continue
-		}
-		// ponytail: no per-hash local-presence probe (journal is not hash-keyed);
-		// the caller only reaches here after journal.ReadAt reported the window
-		// cold, so fetch every covering chunk. Hydrate is idempotent for any
-		// already-warm sub-range.
-		toFetch = append(toFetch, pending{blockIdx: absOff / uint64(BlockSize), fb: fb})
-		next := absOff + uint64(fb.DataSize)
-		if next <= cur {
-			next = cur + 1 // guard: a zero/short DataSize row must still advance
-		}
-		cur = next
+	// 8 MiB block-aligned offset (see collectCoveringChunks).
+	//
+	// ponytail: no per-hash local-presence probe (journal is not hash-keyed);
+	// the caller only reaches here after journal.ReadAt reported the window
+	// cold, so fetch every covering chunk. Hydrate is idempotent for any
+	// already-warm sub-range.
+	toFetch, err := m.collectCoveringChunks(ctx, payloadID, offset, end)
+	if err != nil {
+		return false, err
 	}
 	if len(toFetch) == 0 {
 		// Nothing to fetch (pure hole) — the caller re-reads and zero-fills.

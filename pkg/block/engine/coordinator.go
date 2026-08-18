@@ -64,11 +64,23 @@ type MetadataCoordinator interface {
 	// not a caller error.
 	DecrementRefCountAndReap(ctx context.Context, payloadID string, offset uint64) (uint32, error)
 
+	// ReprojectBlocks re-materializes FileAttr.Blocks from the file's
+	// surviving FileChunk manifest. Engine invokes it after the Truncate
+	// and PunchHole reap loops, where dropping manifest rows leaves the
+	// Blocks projection stale and snapshot/audit over-counting.
+	//
+	// Required, not optional: a coordinator that skips the reprojection
+	// leaves that over-count in place, and making it part of the interface
+	// is what turns "forgot to reproject" into a compile error rather than
+	// a silently drifting projection.
+	ReprojectBlocks(ctx context.Context, payloadID string) error
+
 	// PersistFileChunks updates FileAttr.Blocks AND FileAttr.ObjectID
-	// for a given file in a single metadata txn. Engine invokes this
-	// from the local store's rollup-completion callback (the
-	// ObjectIDPersister wired in engine.New). The runtime wrapper
-	// resolves payloadID → fileHandle and runs PutFile in one txn.
+	// for a given file in a single metadata txn. It is invoked by the
+	// runtime coordinator wrapper (which resolves payloadID → fileHandle
+	// and runs PutFile in one txn) after a Flush persists a file's chunk
+	// manifest — the engine itself no longer drives it from a local-store
+	// chunk-lifecycle hook, of which none remain.
 	//
 	// ObjectID is the BLAKE3 Merkle root over blocks (computed by
 	// block.ComputeObjectID at rollup commit time). Pass an

@@ -297,6 +297,5 @@ func (q *SyncQueue) processDownload(ctx context.Context, req TransferRequest) er
 		return nil
 	}
 
-	_, err := q.manager.fetchBlock(ctx, req.PayloadID, req.BlockIndex)
-	return err
+	return q.manager.fetchBlock(ctx, req.PayloadID, req.BlockIndex)
 }

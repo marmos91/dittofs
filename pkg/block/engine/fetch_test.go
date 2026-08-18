@@ -104,9 +104,9 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToCaller(t *testing.T) {
 
 	m := newFetchSyncer(loc, rs, fbs, mds)
 
-	fb, err := m.resolveFileChunk(ctx, payloadID, 0)
+	fb, _, err := resolveCovering(ctx, m.fileChunkStore, payloadID, 0)
 	if err != nil {
-		t.Fatalf("resolveFileChunk: %v", err)
+		t.Fatalf("resolveCovering: %v", err)
 	}
 
 	gotData, downloaded, err := m.inlineFetchOrWait(ctx, payloadID, 0, fb)
@@ -152,9 +152,9 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToWaiter(t *testing.T) {
 
 	m := newFetchSyncer(loc, rs, fbs, mds)
 
-	fb, err := m.resolveFileChunk(ctx, payloadID, 0)
+	fb, _, err := resolveCovering(ctx, m.fileChunkStore, payloadID, 0)
 	if err != nil {
-		t.Fatalf("resolveFileChunk: %v", err)
+		t.Fatalf("resolveCovering: %v", err)
 	}
 
 	// Goroutine A: enters inlineFetchOrWait first, registers the in-flight
