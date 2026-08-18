@@ -64,8 +64,7 @@ func New() *Store {
 
 // PutBlock writes the content of r under blocks/<blockID>. Implements
 // remote.RemoteBlockStore. Idempotent: a second call overwrites silently.
-// io.ReadAll returns a freshly allocated buffer owned by this store, so callers
-// may reuse r after return.
+// io.ReadAll allocates the stored buffer, so callers may reuse r after return.
 func (s *Store) PutBlock(_ context.Context, blockID string, r io.Reader) error {
 	data, err := io.ReadAll(r)
 	if err != nil {

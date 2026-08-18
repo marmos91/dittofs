@@ -105,9 +105,9 @@ func (d *EncryptedRemote) sealLayer(ctx context.Context, hash block.ContentHash,
 	if err != nil {
 		return nil, fmt.Errorf("encryption: wrap block key: %w", err)
 	}
-	// Build the frame header first and seal straight onto it: Seal appends the
-	// ciphertext into the space the header reserved, so the wire frame costs one
-	// buffer instead of a standalone ciphertext plus a copy of it.
+	// Seal straight onto the header: Seal appends the ciphertext into the space
+	// the header reserved, so the wire frame costs one buffer instead of a
+	// standalone ciphertext plus a copy of it.
 	wire, err := appendFrameHeader(nil, d.aead, masterKeyID, wrappedKey, nonce, len(data)+aead.Overhead())
 	if err != nil {
 		return nil, err

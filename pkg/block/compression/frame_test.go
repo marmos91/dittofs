@@ -8,6 +8,13 @@ import (
 	"testing"
 )
 
+// encodeFrame builds the full wire form for a compressed body, the way the
+// seal path does by streaming the body onto appendFrameHeader's output.
+func encodeFrame(algo Algo, origSize uint64, body []byte) []byte {
+	out := make([]byte, 0, FrameHeaderFixedSize+maxOrigSizeVarint+len(body))
+	return append(appendFrameHeader(out, algo, origSize), body...)
+}
+
 func TestEncodeDecodeFrame_RoundTrip(t *testing.T) {
 	cases := []struct {
 		name     string

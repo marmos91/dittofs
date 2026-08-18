@@ -216,11 +216,9 @@ func (h *Handler) buildReadPlusContents(ctx *types.CompoundContext, file *metada
 // encodeReadPlusResok encodes a successful READ_PLUS reply: status, eof, and the
 // content array (each member tagged NFS4_CONTENT_DATA or NFS4_CONTENT_HOLE).
 func encodeReadPlusResok(eof bool, contents []readPlusContent) *types.CompoundResult {
-	// Pre-size the buffer to the exact wire size so encoding does not grow (and
-	// reallocate) the backing slice mid-write:
-	//   status(4) + eof bool(4) + content count(4), then per member either a
-	//   hole (tag 4 + offset 8 + length 8) or data (tag 4 + offset 8 +
-	//   opaque-length 4 + bytes + XDR pad 0-3).
+	// Pre-size the buffer so encoding never regrows it: status + eof + count,
+	// then per member a hole (tag + offset + length) or data (tag + offset +
+	// opaque length + bytes + up to 3 bytes of XDR padding).
 	size := 12
 	for i := range contents {
 		if contents[i].Hole {

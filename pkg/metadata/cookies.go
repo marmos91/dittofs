@@ -57,27 +57,23 @@ func NewCookieManager() *CookieManager {
 	}
 }
 
-// FNV-1a 64-bit constants.
 const (
-	fnvOffset64 = 14695981039346656037
-	fnvPrime64  = 1099511628211
+	fnvOffset64 uint64 = 14695981039346656037
+	fnvPrime64  uint64 = 1099511628211
 )
 
-// fnv1a64 is the FNV-1a 64-bit hash of handle followed by name. It is written
-// out as a plain loop rather than through hash/fnv so a READDIR page hashing
-// one cookie per directory entry allocates nothing: the hash.Hash64 box and
-// the string-to-[]byte conversion its Write would need both disappear. The
-// digest is byte-for-byte the same as hash/fnv produces for the same input,
-// so cookies stay stable across restarts.
+// fnv1a64 is the FNV-1a 64-bit hash of handle followed by name. Written as a
+// plain loop rather than through hash/fnv so a READDIR page hashing one cookie
+// per directory entry allocates nothing: the hash.Hash64 box and the
+// string-to-[]byte conversion its Write would need both disappear. The digest
+// matches hash/fnv byte-for-byte, so cookies stay stable across restarts.
 func fnv1a64(handle FileHandle, name string) uint64 {
-	h := uint64(fnvOffset64)
+	h := fnvOffset64
 	for _, b := range handle {
-		h ^= uint64(b)
-		h *= fnvPrime64
+		h = (h ^ uint64(b)) * fnvPrime64
 	}
-	for i := 0; i < len(name); i++ {
-		h ^= uint64(name[i])
-		h *= fnvPrime64
+	for _, b := range []byte(name) {
+		h = (h ^ uint64(b)) * fnvPrime64
 	}
 	return h
 }

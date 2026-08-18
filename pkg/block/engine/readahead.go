@@ -45,8 +45,7 @@ func (m *Syncer) planWindow(payloadID string, start, end uint64) (from, to uint6
 
 	// Lock-free per-payload lookup. A gosync.Map keeps the read hot path free of
 	// the global mutex that previously serialized every read here. Load first so
-	// the steady-state hit does not build a throwaway raState per read; only a
-	// miss falls through to LoadOrStore.
+	// the steady-state hit does not build a throwaway raState per read.
 	v, loaded := m.readahead.Load(payloadID)
 	if !loaded {
 		v, loaded = m.readahead.LoadOrStore(payloadID, &raState{})

@@ -119,8 +119,8 @@ func (s *MemoryStore) ReadAt(_ context.Context, payloadID string, offset int64, 
 		clear(dst)
 		return len(dst), journal.ReadState{Hole: true}, nil
 	}
-	// Zero only the tail the file does not cover; the copied prefix is
-	// overwritten anyway, so pre-clearing it would write those bytes twice.
+	// Zero only the tail the copy does not cover; pre-clearing the whole of dst
+	// would write the copied prefix twice.
 	n := copy(dst, f.buf[offset:])
 	if n < len(dst) {
 		clear(dst[n:])

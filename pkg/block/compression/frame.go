@@ -23,8 +23,8 @@ const maxOrigSizeVarint = binary.MaxVarintLen64
 // generous vs FastCDC's ~16 MiB max chunk; tune if larger chunks land.
 const MaxFramedPlaintextSize = 64 * 1024 * 1024
 
-// appendFrameHeader appends the frame header for a body declaring origSize
-// plaintext bytes. The body follows it directly on the wire:
+// appendFrameHeader appends the header of a frame declaring origSize plaintext
+// bytes; the compressed body follows it directly on the wire:
 //
 //	[magic | algo | uvarint(origSize) | body]
 //
@@ -36,15 +36,6 @@ func appendFrameHeader(out []byte, algo Algo, origSize uint64) []byte {
 	var sizeBuf [maxOrigSizeVarint]byte
 	n := binary.PutUvarint(sizeBuf[:], origSize)
 	return append(out, sizeBuf[:n]...)
-}
-
-// encodeFrame builds the wire form for a compressed body
-//
-//	[magic | algo | uvarint(origSize) | body]
-func encodeFrame(algo Algo, origSize uint64, body []byte) []byte {
-	out := make([]byte, 0, FrameHeaderFixedSize+maxOrigSizeVarint+len(body))
-	out = appendFrameHeader(out, algo, origSize)
-	return append(out, body...)
 }
 
 // hasFrameMagic reports whether b begins with the 5-byte DFCMP prefix.

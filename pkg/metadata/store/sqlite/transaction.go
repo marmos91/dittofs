@@ -183,9 +183,8 @@ func (tx *sqliteTransaction) GetFile(ctx context.Context, handle metadata.FileHa
 		return nil, mapDBError(err, "GetFile", "")
 	}
 
-	// Debug logging to trace file type issues. Gated so the id formatting and
-	// variadic boxing are skipped entirely when Debug is off — GetFile runs on
-	// every lookup.
+	// Debug logging to trace file type issues, gated so the id formatting and
+	// variadic boxing are skipped when Debug is off.
 	if tx.store.logger.Enabled(ctx, slog.LevelDebug) {
 		tx.store.logger.Debug("GetFile retrieved",
 			"id", id.String(),
@@ -518,8 +517,8 @@ func (tx *sqliteTransaction) GetChild(ctx context.Context, dirHandle metadata.Fi
 		return nil, mapDBError(err, "GetChild", name)
 	}
 
-	// Debug logging to trace child lookup. Gated so the parent-id formatting is
-	// skipped when Debug is off — GetChild runs on every path component.
+	// Debug logging to trace child lookup, gated so the parent-id formatting is
+	// skipped when Debug is off.
 	if tx.store.logger.Enabled(ctx, slog.LevelDebug) {
 		tx.store.logger.Debug("GetChild found",
 			"parent_id", parentID.String(),
