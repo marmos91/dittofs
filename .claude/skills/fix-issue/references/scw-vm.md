@@ -18,9 +18,12 @@ Destroying someone's development VM is unrecoverable, so the rule is absolute:
 you created it.**
 
 ```bash
-cat .bench-vm.json          # note server_id
+[ -f .bench-vm.json ] && cat .bench-vm.json || echo "no .bench-vm.json — nothing recorded"
 scw instance server list    # confirm name/tags match the VM you created
 ```
+
+No `.bench-vm.json` means no VM is recorded, so there is nothing to tear down —
+that is a clean state, not an error.
 
 If the recorded `server_id` is not the one you provisioned, do not tear down.
 Stop and report — this is one of the skill's hard stop conditions.

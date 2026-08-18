@@ -18,7 +18,7 @@ code without running it.
 Other agents work this repo concurrently. Never build in the primary checkout.
 
 ```bash
-cd /Users/marmos91/Projects/dittofs
+cd "$(git rev-parse --show-toplevel)"
 git fetch origin && git log --oneline -1 origin/develop   # know your base
 git worktree add ~/dittofs-worktrees/<slug> -b fix/<issue>-<slug> origin/develop
 ```
