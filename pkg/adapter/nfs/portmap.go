@@ -98,10 +98,9 @@ func (s *NFSAdapter) registerWithSystemEnabled() bool {
 	return *s.config.Portmapper.RegisterWithSystem
 }
 
-// systemPortmapAddr is the dial address of the host's system rpcbind.
-func systemPortmapAddr() string {
-	return fmt.Sprintf("127.0.0.1:%d", sysreg.SystemPortmapPort)
-}
+// systemPortmapAddr is the dial address of the host's system rpcbind. A var so
+// a test can point the registration at a dead address instead of the host's.
+var systemPortmapAddr = fmt.Sprintf("127.0.0.1:%d", sysreg.SystemPortmapPort)
 
 // startSystemPortmapRegistration registers DittoFS's services with the host's
 // system rpcbind (port 111) when adapters.nfs.portmapper.register_with_system is
@@ -139,7 +138,7 @@ func (s *NFSAdapter) startSystemPortmapRegistration(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, systemRegTimeout)
 	defer cancel()
 
-	addr := systemPortmapAddr()
+	addr := systemPortmapAddr
 	if err := sysreg.Ping(ctx, addr); err != nil {
 		logger.Warn("No system portmapper reachable; NFSv3 locking needs `nolock`",
 			"addr", addr, "error", err)
@@ -177,7 +176,7 @@ func (s *NFSAdapter) stopSystemPortmapRegistration() {
 	defer cancel()
 
 	mappings := s.systemRegMappings()
-	if err := sysreg.Unregister(ctx, systemPortmapAddr(), mappings); err != nil {
+	if err := sysreg.Unregister(ctx, systemPortmapAddr, mappings); err != nil {
 		logger.Warn("Failed to unregister services from system portmapper", "error", err)
 		return
 	}

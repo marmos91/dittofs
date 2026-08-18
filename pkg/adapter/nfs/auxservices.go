@@ -33,13 +33,8 @@ func (s *NFSAdapter) startEnabledAuxServices(ctx context.Context) {
 		logger.Info("Portmapper disabled by configuration")
 	}
 
-	// System rpcbind registration (port 111). Best-effort and time-bounded;
-	// sysregSidecar.Start never returns an error, so the branch is defensive.
-	if s.registerWithSystemEnabled() {
-		if err := s.sidecars.Start(sysregSidecar{s}); err != nil {
-			logger.Debug("System rpcbind registration sidecar failed to start", "error", err)
-		}
-	}
+	// System rpcbind registration (port 111). Best-effort and time-bounded.
+	s.reconcileSysreg()
 
 	// UDP transport for NLM/NSM/MOUNT (issue #1353). Non-fatal: TCP continues.
 	if s.isUDPEnabled() {
@@ -125,11 +120,36 @@ func (p portmapSidecar) Name() string                    { return "portmapper" }
 func (p portmapSidecar) Start(ctx context.Context) error { return p.a.startPortmapper(ctx) }
 func (p portmapSidecar) Stop(context.Context) error      { p.a.stopPortmapper(); return nil }
 
+// reconcileSysreg starts or stops the host-rpcbind registration to match the
+// live setting, so toggling it takes effect without restarting the adapter.
+// Called from Serve (initial start) and from applyNFSSettings (live toggle);
+// Group.Reconcile is a no-op until Serve has seeded the group.
+//
+// The transition itself talks to rpcbind and is bounded by systemRegTimeout, so
+// it runs in the background: the callers are the accept loop and the
+// settings-watcher goroutine, and an unreachable rpcbind must not stall either.
+// Reconcile tolerates a start racing shutdown, and the state check keeps the
+// steady-state call (every accepted connection) allocation-free.
+func (s *NFSAdapter) reconcileSysreg() {
+	if s.sidecars.IsRunning(sysregSidecarName) == s.registerWithSystemEnabled() {
+		return
+	}
+	go func() {
+		err := s.sidecars.Reconcile(sysregSidecarName, s.registerWithSystemEnabled(),
+			func() auxsvc.Service { return sysregSidecar{s} })
+		if err != nil {
+			logger.Debug("System rpcbind registration sidecar failed to start", "error", err)
+		}
+	}()
+}
+
+const sysregSidecarName = "sysreg"
+
 // sysregSidecar wraps registration of DittoFS's services with the host rpcbind.
 // Start registers; Stop unregisters. Both are best-effort and self-gating.
 type sysregSidecar struct{ a *NFSAdapter }
 
-func (r sysregSidecar) Name() string { return "sysreg" }
+func (r sysregSidecar) Name() string { return sysregSidecarName }
 func (r sysregSidecar) Start(ctx context.Context) error {
 	r.a.startSystemPortmapRegistration(ctx)
 	return nil

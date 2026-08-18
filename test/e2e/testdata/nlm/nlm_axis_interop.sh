@@ -98,9 +98,13 @@ dctl share nfs-config set /export --squash root_to_admin 2>/dev/null || dctl sha
 dctl adapter settings nfs update --portmapper-register-with-system --udp-enabled || { log "nfs settings FAIL"; exit 1; }
 dctl adapter enable nfs --port $NFSP || { log "nfs enable FAIL"; exit 1; }
 dctl adapter enable smb --port $SMBP || { log "smb enable FAIL"; exit 1; }
-sleep 1
-
-# NLM (100021) must be registered in sns's rpcbind
+# NLM (100021) must be registered in sns's rpcbind. The adapter picks the
+# register-with-system setting up from the settings poll, so wait rather than
+# sampling once.
+for _ in $(seq 1 60); do
+  $NS rpcinfo -p $SIP 2>/dev/null | grep -q 100021 && break
+  sleep 0.5
+done
 if $NS rpcinfo -p $SIP 2>/dev/null | grep -q 100021; then
   log "NLM registered:"; $NS rpcinfo -p $SIP 2>/dev/null | grep 100021 | sed 's/^/[nlm]   /'
 else
