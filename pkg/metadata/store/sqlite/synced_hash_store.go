@@ -106,6 +106,26 @@ func syncedMark(ctx context.Context, x execer, hash block.ContentHash, loc block
 	return nil
 }
 
+// syncedUpsert writes the marker via x, overwriting an existing row's timestamp
+// and locator (last-wins). The three locator columns plus synced_at are every
+// column the table carries besides the key, so this leaves the same row a
+// DELETE followed by an INSERT would.
+func syncedUpsert(ctx context.Context, x execer, hash block.ContentHash, loc block.ChunkLocator) error {
+	blockID, off, length := locatorArgs(loc)
+	if _, err := x.Exec(ctx,
+		`INSERT INTO synced_hashes (hash, synced_at, block_id, block_offset, block_length)
+			VALUES (?1, CURRENT_TIMESTAMP, ?2, ?3, ?4)
+			ON CONFLICT (hash) DO UPDATE SET
+				synced_at = excluded.synced_at,
+				block_id = excluded.block_id,
+				block_offset = excluded.block_offset,
+				block_length = excluded.block_length`,
+		hash[:], blockID, off, length); err != nil {
+		return fmt.Errorf("sqlite synced upsert: %w", err)
+	}
+	return nil
+}
+
 // syncedGetLocator reads the marker's locator via x.
 func syncedGetLocator(ctx context.Context, x execer, hash block.ContentHash) (block.ChunkLocator, bool, error) {
 	row := x.QueryRow(ctx,
@@ -242,4 +262,19 @@ func (tx *sqliteTransaction) DeleteSynced(ctx context.Context, hash block.Conten
 		return err
 	}
 	return syncedDelete(ctx, tx.tx, hash)
+}
+
+// PutSyncedLocators overwrites the marker of every chunk. SQLite is in-process,
+// so the saving is per-chunk statement count: one upsert replaces the
+// DELETE + INSERT pair the sequential form issues.
+func (tx *sqliteTransaction) PutSyncedLocators(ctx context.Context, chunks []block.BlockChunkCommit) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for _, c := range chunks {
+		if err := syncedUpsert(ctx, tx.tx, c.Hash, c.Remote); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -242,11 +242,11 @@ type BlockRecordStore interface {
 //
 //   - Idempotent on BlockID: if the block record already exists the function
 //     is a no-op (LiveChunkCount is not double-counted, locators untouched).
-//   - Locator writes are LAST-WINS: DeleteSynced-then-MarkSynced inside the
-//     tx overwrites any existing locator with the new block locator. The
-//     direct MarkSynced method stays first-wins; CommitBlock needs overwrite
-//     because the cas→blocks migration re-commits chunks whose standalone
-//     (zero-BlockID) locators must be rewritten to point into the new block.
+//   - Locator writes are LAST-WINS: PutSyncedLocators inside the tx overwrites
+//     any existing locator with the new block locator. The direct MarkSynced
+//     method stays first-wins; CommitBlock needs overwrite because the
+//     cas→blocks migration re-commits chunks whose standalone (zero-BlockID)
+//     locators must be rewritten to point into the new block.
 //
 // Exported so Store implementations in sub-packages can delegate CommitBlock
 // to this shared logic.
@@ -279,14 +279,12 @@ func DefaultCommitBlock(
 				return err
 			}
 		}
-		for _, c := range chunks {
-			// DeleteSynced + MarkSynced = locator overwrite (last-wins), see
-			// the function comment. MarkSynced alone would be first-wins and
-			// leave a stale standalone locator in place.
-			if err := tx.DeleteSynced(ctx, c.Hash); err != nil {
-				return err
-			}
-			if err := tx.MarkSynced(ctx, c.Hash, c.Remote); err != nil {
+		// Locator overwrite (last-wins), see the function comment. MarkSynced
+		// alone would be first-wins and leave a stale standalone locator in
+		// place; the batched write applies the overwrite for the whole commit
+		// at once rather than two calls per chunk.
+		if len(chunks) > 0 {
+			if err := tx.PutSyncedLocators(ctx, chunks); err != nil {
 				return err
 			}
 		}

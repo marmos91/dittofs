@@ -269,6 +269,16 @@ type Transaction interface {
 	// authoritative manifest in the same txn (ProjectManifestToBlocks). All four
 	// backend transactions already implement it.
 	ListFileChunks(ctx context.Context, payloadID string) ([]*block.FileChunk, error)
+
+	// PutSyncedLocators records the synced marker and remote locator of every
+	// chunk, overwriting whatever marker each hash already carries. It is the
+	// batched form of DeleteSynced-then-MarkSynced per chunk and produces the
+	// same rows, but a backend that talks over a network issues it in a single
+	// round trip instead of two per chunk — a block object packs hundreds of
+	// chunks per commit. An empty slice is a no-op; a hash repeated within one
+	// call keeps the locator of its last occurrence, matching what the
+	// sequential form leaves behind.
+	PutSyncedLocators(ctx context.Context, chunks []block.BlockChunkCommit) error
 }
 
 // ============================================================================
