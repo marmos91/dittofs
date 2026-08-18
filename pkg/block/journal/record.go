@@ -15,7 +15,7 @@ import (
 // On-disk header layout (recordHeaderSize bytes), little-endian:
 //
 //	off  size  field
-//	0    1     MagicByte     0xD5, torn-write scan anchor
+//	0    1     MagicByte     framing version, torn-write scan anchor
 //	1    1     HeaderLen     currently recordHeaderSize
 //	2    2     FileIDLen
 //	4    8     FileOffset
@@ -25,13 +25,22 @@ import (
 //	25   4     HeaderCRC32   covers bytes [0,24) — deliberately EXCLUDES Flags
 //
 // then FileIDLen bytes of FileID, PayloadLen bytes of payload, then a trailing
-// PayloadCRC32 (4 bytes) over the payload only.
+// BodyCRC32 (4 bytes). The magic byte says what that trailing CRC covers.
 //
 // HeaderCRC32 excluding Flags is load-bearing: carve completion flips the
 // synced bit in place with a single one-byte pwrite without invalidating the
 // header CRC or rewriting the record.
 const (
-	recordMagic      = 0xD5
+	// recordMagicV1 anchors the original framing, whose trailing CRC covered the
+	// payload alone — the FileID bytes fell outside every sum, so a flipped
+	// FileID still verified and handed the payload to the wrong file.
+	// recordMagicV2 anchors the current framing, whose trailing CRC covers the
+	// FileID bytes followed by the payload. Reads accept both and pick the
+	// matching CRC domain from the magic byte; every write emits V2, and GC
+	// repack re-frames surviving V1 records as V2 as it copies them forward.
+	recordMagicV1 = 0xD5
+	recordMagicV2 = 0xD6
+
 	recordHeaderSize = 29 // Magic..HeaderCRC32 inclusive
 	headerCRCCovers  = 24 // Magic..Version, excludes Flags
 	payloadCRCSize   = 4
@@ -55,6 +64,15 @@ var crcTable = crc32.MakeTable(crc32.Castagnoli)
 
 func crc(b []byte) uint32 { return crc32.Checksum(b, crcTable) }
 
+// recordCRC returns a record's trailing CRC: one sum over the FileID bytes
+// followed by the payload, so a flipped FileID fails verification exactly the
+// way a flipped payload byte does. Writers frame the two separately to avoid
+// copying a large payload, so the sum is chained rather than taken over one
+// contiguous buffer.
+func recordCRC(fileID, payload []byte) uint32 {
+	return crc32.Update(crc(fileID), crcTable, payload)
+}
+
 // recordHeader is the decoded fixed-size portion of a record.
 type recordHeader struct {
 	FileIDLen  uint16
@@ -75,7 +93,7 @@ func recordLen(fileIDLen, payloadLen int) int64 {
 // large payload is never copied.
 func encodeHeader(h recordHeader, fileID []byte) []byte {
 	buf := make([]byte, recordHeaderSize+len(fileID))
-	buf[0] = recordMagic
+	buf[0] = recordMagicV2
 	buf[1] = recordHeaderSize
 	binary.LittleEndian.PutUint16(buf[2:4], h.FileIDLen)
 	binary.LittleEndian.PutUint64(buf[4:12], h.FileOffset)
@@ -94,7 +112,7 @@ func decodeHeader(buf []byte) (recordHeader, error) {
 	if len(buf) < recordHeaderSize {
 		return recordHeader{}, fmt.Errorf("journal: short record header: %d bytes", len(buf))
 	}
-	if buf[0] != recordMagic {
+	if buf[0] != recordMagicV1 && buf[0] != recordMagicV2 {
 		return recordHeader{}, fmt.Errorf("journal: bad record magic 0x%02x", buf[0])
 	}
 	if buf[1] != recordHeaderSize {
@@ -115,7 +133,7 @@ func decodeHeader(buf []byte) (recordHeader, error) {
 
 // errTornRecord marks a record that fails structural validation: bad magic,
 // header CRC, an implausible PayloadLen, a payload that runs past the written
-// bytes, or a payload CRC mismatch. A recovery tail-scan stops at the first
+// bytes, or a body CRC mismatch. A recovery tail-scan stops at the first
 // torn record and truncates there. A clean end-of-data (nothing left to read)
 // surfaces as io.EOF, distinct from corruption.
 var errTornRecord = errors.New("journal: torn record")
@@ -154,7 +172,8 @@ type record struct {
 // It is the single point that decides a record is trustworthy: it validates the
 // header CRC, then rejects any PayloadLen above maxPayload BEFORE allocating so
 // a header CRC that validates by coincidence on a torn tail can never make the
-// reader trust a bogus length and blow up memory, then verifies the payload CRC.
+// reader trust a bogus length and blow up memory, then verifies the body CRC
+// over the framed FileID and payload.
 // A torn or corrupt record returns errTornRecord; a clean boundary (no bytes
 // left) returns io.EOF. On success it also returns the offset of the next
 // record so a scan can advance.
@@ -199,8 +218,15 @@ func readRecordAt(r io.ReaderAt, off, maxPayload int64, scratch []byte) (record,
 	payloadEnd := int64(h.FileIDLen) + int64(h.PayloadLen)
 	payload := buf[h.FileIDLen:payloadEnd]
 	wantCRC := binary.LittleEndian.Uint32(buf[payloadEnd:])
-	if got := crc(payload); got != wantCRC {
-		return record{}, 0, fmt.Errorf("%w: payload CRC mismatch", errTornRecord)
+	// The magic byte selects the CRC domain: V2 folds the FileID in ahead of the
+	// payload, V1 covered the payload alone. buf holds FileID and payload
+	// contiguously, so the V2 sum is just the leading slice of it.
+	summed := payload
+	if hdrBuf[0] == recordMagicV2 {
+		summed = buf[:payloadEnd]
+	}
+	if got := crc(summed); got != wantCRC {
+		return record{}, 0, fmt.Errorf("%w: body CRC mismatch", errTornRecord)
 	}
 	return record{
 		header:  h,
@@ -212,14 +238,14 @@ func readRecordAt(r io.ReaderAt, off, maxPayload int64, scratch []byte) (record,
 }
 
 // readVerifiedRecord reads the record at recOff and returns it only once its
-// header CRC, payload CRC and framed FileID all check out. Every path that
+// header CRC, body CRC and framed FileID all check out. Every path that
 // copies a payload forward reads through it: each one re-hashes or re-CRCs the
 // bytes it copies, so an unverified read would turn on-disk bit rot into content
 // that passes every later integrity check.
 //
-// The header and payload CRCs deliberately do not cover the FileID bytes, so a
-// flipped FileID — or a stale recOff landing on another file's record — passes
-// readRecordAt while handing back the wrong file's payload. Comparing the framed
+// The CRCs catch a flipped FileID but say nothing about which file the caller
+// meant: a stale recOff landing squarely on another file's intact record passes
+// readRecordAt while handing back that file's payload. Comparing the framed
 // FileID against the caller's closes that gap.
 func readVerifiedRecord(r io.ReaderAt, recOff, maxPayload int64, id FileID, scratch []byte) (record, error) {
 	rec, _, err := readRecordAt(r, recOff, maxPayload, scratch)

@@ -20,7 +20,7 @@ func frameRecord(id string, offset int64, payload []byte, version uint64, flags 
 		Flags:      flags,
 	}, fileID)
 	var crcBuf [payloadCRCSize]byte
-	binary.LittleEndian.PutUint32(crcBuf[:], crc(payload))
+	binary.LittleEndian.PutUint32(crcBuf[:], recordCRC(fileID, payload))
 	out := make([]byte, 0, len(hdr)+len(payload)+payloadCRCSize)
 	out = append(out, hdr...)
 	out = append(out, payload...)
@@ -172,3 +172,72 @@ func TestScanValidRecordsCleanEnd(t *testing.T) {
 
 // io.ReaderAt sanity: the reader must not mutate the source slice.
 var _ io.ReaderAt = (*bytes.Reader)(nil)
+
+// frameRecordV1 builds a record in the original framing: magic 0xD5 and a
+// trailing CRC over the payload alone. Journals written before the FileID
+// joined the CRC domain still hold records shaped like this.
+func frameRecordV1(id string, offset int64, payload []byte, version uint64, flags uint8) []byte {
+	out := frameRecord(id, offset, payload, version, flags)
+	out[0] = recordMagicV1
+	binary.LittleEndian.PutUint32(out[25:29], crc(out[:headerCRCCovers]))
+	binary.LittleEndian.PutUint32(out[recordHeaderSize+len(id)+len(payload):], crc(payload))
+	return out
+}
+
+func TestReadRecordAcceptsV1Framing(t *testing.T) {
+	payload := bytes.Repeat([]byte("v1"), 64)
+	seg := segmentBytes(frameRecordV1("legacy-file", 8192, payload, 3, flagSynced))
+
+	got, next, err := readRecordAt(bytes.NewReader(seg), segHeaderSize, int64(len(seg)), nil)
+	if err != nil {
+		t.Fatalf("readRecordAt on V1 record: %v", err)
+	}
+	if string(got.fileID) != "legacy-file" || got.header.FileOffset != 8192 || got.header.Version != 3 {
+		t.Fatalf("V1 record decoded wrong: %+v id=%q", got.header, got.fileID)
+	}
+	if !bytes.Equal(got.payload, payload) {
+		t.Fatalf("V1 payload mismatch")
+	}
+	if want := int64(len(seg)); next != want {
+		t.Fatalf("next = %d want %d", next, want)
+	}
+}
+
+func TestReadRecordCorruptFileID(t *testing.T) {
+	rec := frameRecord("file-abc", 0, bytes.Repeat([]byte("z"), 64), 1, 0)
+	// Flip a bit inside the framed FileID. The header CRC does not cover these
+	// bytes, so only the body CRC can catch it.
+	rec[recordHeaderSize+2] ^= 0x01
+	seg := segmentBytes(rec)
+
+	if _, _, err := readRecordAt(bytes.NewReader(seg), segHeaderSize, 1<<20, nil); !errors.Is(err, errTornRecord) {
+		t.Fatalf("expected errTornRecord on flipped FileID, got %v", err)
+	}
+}
+
+func TestWrittenRecordsUseV2Framing(t *testing.T) {
+	rec := frameRecord("f", 0, []byte("hello"), 1, 0)
+	if rec[0] != recordMagicV2 {
+		t.Fatalf("encodeHeader wrote magic 0x%02x, want 0x%02x", rec[0], recordMagicV2)
+	}
+}
+
+// TestReadRecordV1CorruptFileIDUndetected pins the residual exposure the V2
+// framing was introduced to close: in a V1 record no CRC covers the FileID, so
+// a flipped byte there still verifies and the payload comes back attributed to
+// whatever file the damaged bytes now spell. Records already on disk cannot be
+// retroactively covered; repack re-frames them as V2 as it copies them forward.
+func TestReadRecordV1CorruptFileIDUndetected(t *testing.T) {
+	payload := bytes.Repeat([]byte("z"), 64)
+	rec := frameRecordV1("file-abc", 0, payload, 1, 0)
+	rec[recordHeaderSize+2] ^= 0x01
+	seg := segmentBytes(rec)
+
+	got, _, err := readRecordAt(bytes.NewReader(seg), segHeaderSize, 1<<20, nil)
+	if err != nil {
+		t.Fatalf("V1 framing unexpectedly rejected a flipped FileID: %v", err)
+	}
+	if string(got.fileID) == "file-abc" {
+		t.Fatalf("FileID was not actually corrupted by the test")
+	}
+}

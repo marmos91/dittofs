@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- **Journal record CRC now covers the framed FileID.** A record's trailing CRC
+  summed only the payload, leaving the FileID bytes outside every checksum: bit
+  rot or a torn write there verified clean and recovery replayed the payload
+  under whatever file the damaged bytes spelled. The trailing CRC now covers
+  `FileID || payload`, and the record magic byte carries the framing version so
+  readers pick the matching CRC domain per record. Journals written by earlier
+  builds are read unchanged; GC repack re-frames surviving records as it copies
+  them forward. Downgrading after this change is one-way — an older build reads
+  a new record as a torn tail and truncates the segment there.
+
 ### Added
 
 - **Block-level compression on remote stores (opt-in).** A new

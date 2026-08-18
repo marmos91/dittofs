@@ -445,3 +445,66 @@ func TestConcurrentReadWriteAfterRecovery(t *testing.T) {
 		}
 	}
 }
+
+// TestRecoveryReadsV1FramedRecords models opening a journal that a build
+// predating the FileID's inclusion in the record CRC left behind: the segment
+// holds V1-framed records ahead of, and interleaved with, records this build
+// writes. Recovery must replay both and every byte must read back.
+func TestRecoveryReadsV1FramedRecords(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, Config{ShardCount: 1}, newFakeRemote(), SystemClock())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	ctx := context.Background()
+
+	current := bytes.Repeat([]byte("current-"), 100)
+	if err := s.WriteAt(ctx, "current-file", 0, current); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	if err := s.Commit(ctx, "current-file"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	segPath := s.segPath(0)
+	cfg, clock := s.cfg, s.clock
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Splice a V1-framed record for a second file onto the segment's tail, the
+	// way the older build would have written it.
+	legacy := bytes.Repeat([]byte("legacy-"), 200)
+	fd, err := os.OpenFile(segPath, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open segment: %v", err)
+	}
+	if _, err := fd.Write(frameRecordV1("legacy-file", 0, legacy, 1<<20, 0)); err != nil {
+		t.Fatalf("append V1 record: %v", err)
+	}
+	if err := fd.Close(); err != nil {
+		t.Fatalf("close segment: %v", err)
+	}
+
+	r, err := Open(dir, cfg, newFakeRemote(), clock)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+
+	if got := readAll(t, r, "legacy-file", len(legacy)); !bytes.Equal(got, legacy) {
+		t.Fatalf("V1-framed record did not survive recovery")
+	}
+	if got := readAll(t, r, "current-file", len(current)); !bytes.Equal(got, current) {
+		t.Fatalf("V2-framed record corrupted by V1 recovery")
+	}
+
+	// A write after recovery lands in the same segment behind the V1 record and
+	// must read back too, proving mixed framing in one segment is fine.
+	more := bytes.Repeat([]byte("after-"), 50)
+	if err := r.WriteAt(ctx, "after-file", 0, more); err != nil {
+		t.Fatalf("WriteAt after recovery: %v", err)
+	}
+	if got := readAll(t, r, "after-file", len(more)); !bytes.Equal(got, more) {
+		t.Fatalf("post-recovery write corrupted")
+	}
+}
