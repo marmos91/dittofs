@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local"
 	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
@@ -71,11 +72,11 @@ func TestFetchBlock_StagesEveryChunkInBlock(t *testing.T) {
 				// Poison the destination so an unhydrated range fails loudly
 				// instead of matching a zero-filled read.
 				got := bytes.Repeat([]byte{0xAA}, chunkSize)
-				n, cold, err := loc.ReadAt(ctx, payloadID, want.offset, got)
+				n, st, err := loc.ReadAt(ctx, payloadID, want.offset, got)
 				if err != nil {
 					t.Fatalf("local ReadAt at %d: %v", want.offset, err)
 				}
-				if cold {
+				if st.Cold {
 					t.Fatalf("chunk at %d still cold: prefetch skipped it", want.offset)
 				}
 				if n != chunkSize {
@@ -97,8 +98,8 @@ type alwaysColdLocal struct {
 	local.LocalStore
 }
 
-func (alwaysColdLocal) ReadAt(_ context.Context, _ string, _ int64, dst []byte) (int, bool, error) {
-	return len(dst), true, nil
+func (alwaysColdLocal) ReadAt(_ context.Context, _ string, _ int64, dst []byte) (int, journal.ReadState, error) {
+	return len(dst), journal.ReadState{Cold: true}, nil
 }
 
 // TestReadAtInternal_StillColdAfterHydrateFailsClosed pins the post-hydrate
