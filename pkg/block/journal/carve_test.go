@@ -80,12 +80,21 @@ func (s *fakeSink) CommitBlock(_ context.Context, chunks []CarveChunk) error {
 		return failErr
 	}
 	s.mu.Lock()
-	s.blocks++
+	// A batch whose chunks all deduped carries manifest rows only (Data nil): the
+	// real sink frames and uploads nothing for it, so it is not a written block.
+	wroteBlock := false
 	for _, c := range chunks {
+		if c.Data == nil {
+			continue
+		}
 		cp := make([]byte, len(c.Data))
 		copy(cp, c.Data)
 		s.chunks[c.FileOffset] = cp
 		s.dedup.markDurable(c.Hash)
+		wroteBlock = true
+	}
+	if wroteBlock {
+		s.blocks++
 	}
 	s.mu.Unlock()
 	return nil

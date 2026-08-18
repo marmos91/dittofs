@@ -241,19 +241,21 @@ func (s *MemoryStore) Carve(ctx context.Context, opts journal.CarveOptions) (jou
 			continue
 		}
 		h := journal.ChunkHash(blake3.Sum256(data))
+		cc := journal.CarveChunk{Hash: h, FileID: journal.FileID(id), FileOffset: 0, Size: len(data), Data: data}
 		if d != nil {
+			// Already remote-durable: hand the sink a row-only chunk so the manifest
+			// still records it, but upload nothing.
 			if durable, err := d.IsChunkDurable(ctx, h); err == nil && durable {
-				s.markCarved(id)
-				continue
+				cc.Data = nil
 			}
 		}
-		if err := sink.CommitBlock(ctx, []journal.CarveChunk{{
-			Hash: h, FileID: journal.FileID(id), FileOffset: 0, Data: data,
-		}}); err != nil {
+		if err := sink.CommitBlock(ctx, []journal.CarveChunk{cc}); err != nil {
 			return res, err
 		}
-		res.BlocksWritten++
-		res.BytesCarved += int64(len(data))
+		if cc.Data != nil {
+			res.BlocksWritten++
+			res.BytesCarved += int64(len(data))
+		}
 		s.markCarved(id)
 	}
 	return res, nil
