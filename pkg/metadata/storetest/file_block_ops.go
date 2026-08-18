@@ -73,6 +73,12 @@ func runFileChunkOpsTests(t *testing.T, factory StoreFactory) {
 		testGetFileChunkAtOrAfterOffset(t, factory)
 	})
 
+	// Manifest rows can overlap, and every backend must resolve an overlap the
+	// same way or the same read serves different bytes on different backends.
+	t.Run("GetFileChunkAtOffset_OverlappingRows", func(t *testing.T) {
+		testGetFileChunkAtOffset_OverlappingRows(t, factory)
+	})
+
 	// An unplaceable row must be reported by both indexed lookups rather than
 	// skipped, so the read path can refuse instead of zero-filling.
 	t.Run("IndexedLookups_UnplaceableRow", func(t *testing.T) {
@@ -454,6 +460,66 @@ func testGetFileChunkAtOffset(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFileChunkAtOffset(unknown): %v", err)
 	} else if got != nil {
 		t.Errorf("GetFileChunkAtOffset(unknown payload) = %q, want nil", got.ID)
+	}
+}
+
+// testGetFileChunkAtOffset_OverlappingRows pins how the covering lookup resolves
+// rows that overlap, which a truncate-narrow plus a re-carving write produces,
+// as does a carve run whose reap leaves a row straddling the run start.
+//
+// Two rules, and the second is the one an index gets wrong. Where two rows cover
+// an offset the greater start wins: it is the newer row, so it holds what the
+// last write put there. And where the greatest start at or below the offset does
+// NOT reach it — a short row nested inside a straddler — the straddler still
+// covers, so the answer is that straddler and not a hole. Reporting a hole there
+// has the reader zero-fill over live data.
+func testGetFileChunkAtOffset_OverlappingRows(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	probe, ok := store.(chunkAtOffsetProbe)
+	if !ok {
+		t.Skipf("backend %T does not implement GetFileChunkAtOffset", store)
+	}
+
+	// A straddler over [0,100) with a short row nested at [40,50): coverage is
+	// the nested row over [40,50) and the straddler everywhere else in [0,100).
+	const payloadID = "file-overlap"
+	rows := []*block.FileChunk{
+		{ID: payloadID + "/0", State: block.BlockStatePending, DataSize: 100, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: payloadID + "/40", State: block.BlockStatePending, DataSize: 10, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+	}
+	for _, b := range rows {
+		if err := store.Put(ctx, b); err != nil {
+			t.Fatalf("Put(%s): %v", b.ID, err)
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		off  uint64
+		want string
+	}{
+		{"before-the-nested-row", 30, payloadID + "/0"},
+		{"nested-row-start", 40, payloadID + "/40"},
+		{"nested-row-last-byte", 49, payloadID + "/40"},
+		{"straddler-resumes-after-the-nested-row", 50, payloadID + "/0"},
+		{"straddler-last-byte", 99, payloadID + "/0"},
+		{"past-both", 100, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := probe.GetFileChunkAtOffset(ctx, payloadID, tc.off)
+			if err != nil {
+				t.Fatalf("GetFileChunkAtOffset(%d): %v", tc.off, err)
+			}
+			gotID := ""
+			if got != nil {
+				gotID = got.ID
+			}
+			if gotID != tc.want {
+				t.Errorf("GetFileChunkAtOffset(%d) = %q, want %q", tc.off, gotID, tc.want)
+			}
+		})
 	}
 }
 

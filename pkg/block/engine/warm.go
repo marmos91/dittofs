@@ -117,7 +117,11 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 			// A row is warmed only over the bytes it still holds: a row
 			// straddling a later row's start hands them over at that start, and
 			// hydrating its full extent would leave its older bytes over the
-			// newer row's head (see hydrateSpan).
+			// newer row's head (see hydrateSpan). A row overlapped in its middle
+			// therefore warms only up to that later row, and the remainder past
+			// it is left for the demand read to fetch — one row here means one
+			// range, and filling the gap with the older bytes is the outcome
+			// this clamp exists to prevent.
 			span := hydrateSpan{From: absOff, To: absOff + uint64(fb.DataSize)}
 			if i := sort.Search(len(starts), func(i int) bool { return starts[i] > absOff }); i < len(starts) && starts[i] < span.To {
 				span.To = starts[i]

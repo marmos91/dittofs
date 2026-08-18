@@ -8,7 +8,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // TestEnsureAvailableAndRead_StraddlerDoesNotShadowLaterRow pins what a cold
@@ -28,26 +27,28 @@ import (
 // contained, a walk that consumed the straddler's extent never resolves the
 // contained row at all, so it is never fetched.
 //
+// A third shape parks an unplaceable row in the same manifest. Bounding a row's
+// claim needs the successor lookup, and the offset index refuses that question
+// outright once any row cannot be placed — a refusal that must not be read as
+// "nothing starts later", which is the row's full extent and the very claim the
+// bound exists to narrow.
+//
 // Both store shapes are exercised because they resolve coverage and succession
 // by different means — an offset index versus a manifest walk.
 func TestEnsureAvailableAndRead_StraddlerDoesNotShadowLaterRow(t *testing.T) {
 	const oneMiB = 1024 * 1024
 
 	for _, shape := range []struct {
-		name      string
-		laterOff  uint64
-		laterSize int
+		name        string
+		laterOff    uint64
+		laterSize   int
+		unplaceable bool
 	}{
-		{"LaterRowStartsInside", 4 * oneMiB, 2 * oneMiB},
-		{"LaterRowFullyContained", 2 * oneMiB, oneMiB},
+		{name: "LaterRowStartsInside", laterOff: 4 * oneMiB, laterSize: 2 * oneMiB},
+		{name: "LaterRowFullyContained", laterOff: 2 * oneMiB, laterSize: oneMiB},
+		{name: "AlongsideAnUnplaceableRow", laterOff: 4 * oneMiB, laterSize: 2 * oneMiB, unplaceable: true},
 	} {
-		for _, backend := range []struct {
-			name string
-			wrap func(*stubFileChunkStore) block.EngineFileChunkStore
-		}{
-			{"ListFileChunksFallback", func(s *stubFileChunkStore) block.EngineFileChunkStore { return s }},
-			{"OffsetIndexed", func(s *stubFileChunkStore) block.EngineFileChunkStore { return &indexedChunkStore{s} }},
-		} {
+		for _, backend := range manifestBackends() {
 			t.Run(shape.name+"/"+backend.name, func(t *testing.T) {
 				ctx := context.Background()
 				payloadID := "payload-overlapping-rows"
@@ -58,13 +59,17 @@ func TestEnsureAvailableAndRead_StraddlerDoesNotShadowLaterRow(t *testing.T) {
 
 				loc := memorylocal.New()
 				rs := remotememory.New()
-				stub := newStubFileChunkStore()
-				mds := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+				fbs, shs := backend.build(t)
 
-				seedSyncedRemoteChunk(t, stub, rs, mds, payloadID, straddlerOff, straddler)
-				seedSyncedRemoteChunk(t, stub, rs, mds, payloadID, shape.laterOff, later)
+				seedSyncedRemoteChunk(t, fbs, rs, shs, payloadID, straddlerOff, straddler)
+				seedSyncedRemoteChunk(t, fbs, rs, shs, payloadID, shape.laterOff, later)
+				if shape.unplaceable {
+					if err := fbs.Put(ctx, &block.FileChunk{ID: payloadID + "/not-an-offset", DataSize: 4096}); err != nil {
+						t.Fatalf("seed unplaceable row: %v", err)
+					}
+				}
 
-				m := newFetchSyncer(loc, rs, backend.wrap(stub), mds)
+				m := newFetchSyncer(loc, rs, fbs, shs)
 
 				laterEnd := shape.laterOff + uint64(shape.laterSize)
 				end := uint64(straddlerOff + straddlerSize)

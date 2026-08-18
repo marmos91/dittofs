@@ -502,47 +502,60 @@ func errUnplaceableRow(payloadID, suffix string, off uint64) error {
 // engine's ListFileChunks fallback picks the same row, so both paths answer a
 // read alike.
 //
+// Answering alike is why candidates are tried in descending start order rather
+// than only the largest one. The largest start at or below off need not reach
+// off at all — a row nested inside a straddler ends before it while the
+// straddler still holds those bytes — and stopping at that row would report a
+// hole the reader zero-fills over live data, where the walk finds the straddler.
+// A start whose row the index no longer resolves is passed over for the same
+// reason: it is the index that is stale, not the manifest that is empty there.
+//
 // An unplaceable row only matters when nothing else covers off: one bad row must
 // not make a whole payload unreadable. This mirrors findRowCoveringOffset, the
 // walk used by the backends with no such index.
 //
-// ponytail: O(n) keys-only scan per read; upgrade to a big-endian fb-off index
-// for a true O(log n) reverse-seek only if profiling at real N still shows it.
+// ponytail: O(n) keys-only scan per candidate, and only an overlap yields more
+// than one candidate; upgrade to a big-endian fb-off index for a true O(log n)
+// reverse-seek only if profiling at real N still shows it.
 func (s *BadgerMetadataStore) GetFileChunkAtOffset(_ context.Context, payloadID string, off uint64) (*metadata.FileChunk, error) {
 	var result *metadata.FileChunk
 	err := s.db.View(func(txn *badger.Txn) error {
-		bestOff, found, unplaceable := scanChunkIndexOffsets(txn, payloadID,
-			func(cand, best uint64, have bool) bool {
-				return cand <= off && (!have || cand > best)
-			})
-		// A hole, unless an unplaceable row leaves it in doubt.
-		uncovered := func() error {
-			if unplaceable == "" {
-				return nil
+		for limit := off; ; {
+			bestOff, found, unplaceable := scanChunkIndexOffsets(txn, payloadID,
+				func(cand, best uint64, have bool) bool {
+					return cand <= limit && (!have || cand > best)
+				})
+			// A hole, unless an unplaceable row leaves it in doubt.
+			uncovered := func() error {
+				if unplaceable == "" {
+					return nil
+				}
+				return errUnplaceableRow(payloadID, unplaceable, off)
 			}
-			return errUnplaceableRow(payloadID, unplaceable, off)
-		}
-		if !found {
-			return uncovered()
-		}
+			if !found {
+				return uncovered()
+			}
 
-		fc, ferr := loadFileChunkAtIndexOffset(txn, payloadID, bestOff)
-		if ferr != nil {
-			return ferr
+			fc, ferr := loadFileChunkAtIndexOffset(txn, payloadID, bestOff)
+			if ferr != nil {
+				return ferr
+			}
+			// Covering guard keyed on the row's OWN start offset (the source of
+			// truth), not the index key, so an inconsistent index can't serve a
+			// neighbour chunk's bytes into a hole. off-abs is overflow-free since
+			// the scan guarantees abs <= off.
+			if fc != nil {
+				abs, ok := blockpkg.ParseChunkOffset(fc.ID)
+				if ok && off >= abs && off-abs < uint64(fc.DataSize) {
+					result = fc
+					return nil
+				}
+			}
+			if bestOff == 0 {
+				return uncovered() // no earlier start left to try
+			}
+			limit = bestOff - 1
 		}
-		if fc == nil {
-			return uncovered() // stale index entry — treat as a hole
-		}
-		// Covering guard keyed on the row's OWN start offset (the source of
-		// truth), not the index key, so an inconsistent index can't serve a
-		// neighbour chunk's bytes into a hole. off-abs is overflow-free since
-		// the scan guarantees abs <= off.
-		abs, ok := blockpkg.ParseChunkOffset(fc.ID)
-		if !ok || off < abs || off-abs >= uint64(fc.DataSize) {
-			return uncovered()
-		}
-		result = fc
-		return nil
 	})
 	if err != nil {
 		return nil, err
