@@ -11,10 +11,12 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journal"
 )
 
-// WarmResult summarizes a WarmAll run: how many chunks were fetched from the
-// remote tier and how many bytes that fetch moved. Every enumerated chunk is
-// fetched, so BlocksFetched is also the run's total work — see WarmAll for why
-// there is no already-local count.
+// WarmResult summarizes a WarmAll run: how many chunks came back from the
+// remote tier and how many bytes they moved. Every enumerated chunk is
+// attempted, but a chunk that is sparse or not yet synced returns no data and
+// is not counted, so BlocksFetched is what landed, not the size of the work
+// list — callers that need the enumerated total read it from the progress
+// callback. See WarmAll for why there is no already-local count.
 type WarmResult struct {
 	BlocksFetched int64 `json:"blocks_fetched"`
 	BytesFetched  int64 `json:"bytes_fetched"`

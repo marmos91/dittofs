@@ -85,8 +85,10 @@ type Syncer struct {
 
 	stopCh chan struct{} // Signals periodic uploader to stop
 	// bgWG counts the long-lived loops started by startPeriodicUploader. Close
-	// joins them so it cannot return while one is still calling into the local
-	// or remote store, which the engine closes as soon as Close returns.
+	// joins them so it does not return while one is still calling into the
+	// local or remote store, which the engine closes as soon as Close returns.
+	// The join is bounded: a loop parked in a remote call past the shutdown
+	// timeout is logged and left behind rather than allowed to wedge shutdown.
 	bgWG   gosync.WaitGroup
 	closed bool
 	mu     gosync.RWMutex
