@@ -2,7 +2,6 @@ package metadata
 
 import (
 	"container/list"
-	"hash/fnv"
 	"sync"
 )
 
@@ -58,6 +57,31 @@ func NewCookieManager() *CookieManager {
 	}
 }
 
+// FNV-1a 64-bit constants.
+const (
+	fnvOffset64 = 14695981039346656037
+	fnvPrime64  = 1099511628211
+)
+
+// fnv1a64 is the FNV-1a 64-bit hash of handle followed by name. It is written
+// out as a plain loop rather than through hash/fnv so a READDIR page hashing
+// one cookie per directory entry allocates nothing: the hash.Hash64 box and
+// the string-to-[]byte conversion its Write would need both disappear. The
+// digest is byte-for-byte the same as hash/fnv produces for the same input,
+// so cookies stay stable across restarts.
+func fnv1a64(handle FileHandle, name string) uint64 {
+	h := uint64(fnvOffset64)
+	for _, b := range handle {
+		h ^= uint64(b)
+		h *= fnvPrime64
+	}
+	for i := 0; i < len(name); i++ {
+		h ^= uint64(name[i])
+		h *= fnvPrime64
+	}
+	return h
+}
+
 // GenerateCookie creates a unique cookie for a directory entry.
 // The cookie is based on the directory handle and entry name.
 // Returns 0 if the name is empty (indicating end of directory).
@@ -70,10 +94,7 @@ func (cm *CookieManager) GenerateCookie(dirHandle FileHandle, name string) uint6
 	}
 
 	// Generate cookie by hashing dirHandle + name
-	h := fnv.New64a()
-	h.Write([]byte(dirHandle))
-	h.Write([]byte(name))
-	cookie := h.Sum64()
+	cookie := fnv1a64(dirHandle, name)
 
 	// Ensure cookie is never 0 (reserved for start of directory)
 	if cookie == 0 {

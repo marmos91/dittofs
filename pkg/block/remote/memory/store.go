@@ -64,7 +64,8 @@ func New() *Store {
 
 // PutBlock writes the content of r under blocks/<blockID>. Implements
 // remote.RemoteBlockStore. Idempotent: a second call overwrites silently.
-// A defensive copy is taken via io.ReadAll; callers may reuse r after return.
+// io.ReadAll returns a freshly allocated buffer owned by this store, so callers
+// may reuse r after return.
 func (s *Store) PutBlock(_ context.Context, blockID string, r io.Reader) error {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -78,9 +79,7 @@ func (s *Store) PutBlock(_ context.Context, blockID string, r io.Reader) error {
 	if s.blocksByID == nil {
 		s.blocksByID = make(map[string]*memBlock)
 	}
-	copied := make([]byte, len(data))
-	copy(copied, data)
-	s.blocksByID[blockID] = &memBlock{data: copied, lastModified: s.nowFn()}
+	s.blocksByID[blockID] = &memBlock{data: data, lastModified: s.nowFn()}
 	return nil
 }
 

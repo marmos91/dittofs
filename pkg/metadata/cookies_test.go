@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"fmt"
+	"hash/fnv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -244,4 +245,23 @@ func TestCookieManager_RoundTrip(t *testing.T) {
 			seen[cookie] = true
 		}
 	})
+}
+
+// TestFNV1a64MatchesHashFNV pins the inlined digest to hash/fnv's output.
+// Cookies are handed to clients and must resolve after a restart, so the
+// hash must never drift from the one that produced the stored mappings.
+func TestFNV1a64MatchesHashFNV(t *testing.T) {
+	handles := []FileHandle{nil, {}, {0x00}, {0xde, 0xad, 0xbe, 0xef}, []byte("share:0123456789abcdef")}
+	names := []string{"", ".", "..", "a", "file.txt", "a very long entry name with spaces and ünïcödé"}
+
+	for _, h := range handles {
+		for _, n := range names {
+			want := fnv.New64a()
+			want.Write([]byte(h))
+			want.Write([]byte(n))
+			if got := fnv1a64(h, n); got != want.Sum64() {
+				t.Errorf("fnv1a64(%q, %q) = %d, want %d", h, n, got, want.Sum64())
+			}
+		}
+	}
 }
