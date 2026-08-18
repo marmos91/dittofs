@@ -2108,6 +2108,16 @@ func (lm *Manager) CheckAndBreakLeasesForSMBOpen(handleKey string, excludeOwner 
 // disallows in practice) are skipped: there is no read cache to flush.
 // The break target is None — full revocation — not "strip W" or "strip H".
 func (lm *Manager) BreakLeasesForByteRangeLock(handleKey string, excludeOwner *LockOwner) error {
+	// An outstanding NFSv4 delegation is recalled for the same reason: the
+	// delegated client handles byte-range locks locally, so while it holds the
+	// delegation it can neither see this lock nor have its own locks seen. The
+	// delegation's whole-file row also blocks the lock in AddUnifiedLock, so
+	// without the recall the lock stays denied until the delegation's lease
+	// expires — even after the original holder released.
+	lm.breakDelegations(handleKey, excludeOwner, func(_ *Delegation) bool {
+		return true
+	})
+
 	return lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, BreakReasonUnspecified, func(lease *OpLock) bool {
 		return lease.HasRead()
 	})
@@ -2954,6 +2964,42 @@ func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) err
 		Type:       delegationToLockType(delegation.DelegType),
 		AcquiredAt: time.Now(),
 		Delegation: delegation,
+	}
+
+	// A byte-range lock already held on this file denies the delegation. A
+	// delegated client is entitled to satisfy its own byte-range locks locally,
+	// without ever asking the server, so handing out a delegation over an
+	// existing lock makes that lock invisible to the delegated client — the
+	// cross-protocol conflict that AddUnifiedLock enforces in the other
+	// direction would simply never be evaluated.
+	//
+	// Both lock maps are consulted: NLM/NFSv4 locks live in unifiedLocks and
+	// SMB locks in locks. The delegation is weighed as the whole-file byte-range
+	// lock it stands in for, so a write delegation (exclusive) is denied by any
+	// foreign lock and a read delegation (shared) only by a foreign exclusive
+	// one — the same rule byte-range locks apply to each other.
+	asByteRange := &UnifiedLock{
+		Owner:      newLock.Owner,
+		FileHandle: newLock.FileHandle,
+		Offset:     0,
+		Length:     0,
+		Type:       newLock.Type,
+	}
+	for _, lock := range locks {
+		if lock.Lease != nil || lock.Delegation != nil {
+			continue
+		}
+		if asByteRange.ConflictsWith(lock) {
+			return fmt.Errorf("delegation conflicts with existing byte-range lock (owner=%s)",
+				lock.Owner.OwnerID)
+		}
+	}
+	smbLocks := lm.locks[handleKey]
+	for i := range smbLocks {
+		if fileLockConflictsWithUnified(&smbLocks[i], asByteRange) {
+			return fmt.Errorf("delegation conflicts with existing SMB byte-range lock (owner=%s)",
+				lockOwnerID(&smbLocks[i]))
+		}
 	}
 
 	lm.unifiedLocks[handleKey] = append(locks, newLock)
