@@ -184,6 +184,7 @@ func (s *BadgerMetadataStore) GetFileByPayloadID(ctx context.Context, payloadID 
 			}
 
 			item := it.Item()
+			var matchID uuid.UUID
 			err := item.Value(func(val []byte) error {
 				file, err := decodeFile(val)
 				if err != nil {
@@ -191,40 +192,18 @@ func (s *BadgerMetadataStore) GetFileByPayloadID(ctx context.Context, payloadID 
 				}
 
 				if file.PayloadID == payloadID {
-					// Look up link count for this file
-					linkItem, linkErr := txn.Get(keyLinkCount(file.ID))
-					switch linkErr {
-					case nil:
-						_ = linkItem.Value(func(linkVal []byte) error {
-							count, countErr := decodeUint32(linkVal)
-							if countErr == nil {
-								file.Nlink = count
-							}
-							return nil
-						})
-					case badgerdb.ErrKeyNotFound:
-						// Default based on file type
-						if file.Type == metadata.FileTypeDirectory {
-							file.Nlink = 2
-						} else {
-							file.Nlink = 1
-						}
-					}
-					// Derive Path from the parent keyspace (#1166) so a
-					// rename/relink can never surface a stale stored path.
-					btx := &badgerTransaction{store: s, txn: txn}
-					file.Path = btx.derivePath(file.ID)
-					if err := loadManifest(txn, file); err != nil {
-						return err
-					}
-					result = file
+					matchID = file.ID
 					return errFound
 				}
 				return nil
 			})
 
 			if err == errFound {
-				return nil
+				// Re-load through the shared enrichment path so an unindexed
+				// row returns the same shape as the fast path: link count,
+				// derived path and the chunk manifest from the fm: key.
+				result, err = btx.loadEnrichedFileByID(matchID)
+				return err
 			}
 			if err != nil {
 				return err

@@ -110,7 +110,7 @@ func (s *BadgerMetadataStore) CreateShare(ctx context.Context, share *metadata.S
 		return err
 	}
 
-	err := s.db.Update(func(txn *badgerdb.Txn) error {
+	err := s.updateWithConflictRetry(ctx, func(txn *badgerdb.Txn) error {
 		_, err := txn.Get(keyShare(share.Name))
 		if err == nil {
 			return &metadata.StoreError{
@@ -148,7 +148,7 @@ func (s *BadgerMetadataStore) UpdateShareOptions(ctx context.Context, shareName 
 		return err
 	}
 
-	err := s.db.Update(func(txn *badgerdb.Txn) error {
+	err := s.updateWithConflictRetry(ctx, func(txn *badgerdb.Txn) error {
 		item, err := txn.Get(keyShare(shareName))
 		if err != nil {
 			return mapBadgerError(err, "share", shareName)
@@ -191,7 +191,7 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 
 	var freedBytes int64
 	var quotaFreed map[quota.Key]metadata.UsageStat
-	err := s.db.Update(func(txn *badgerdb.Txn) error {
+	err := s.updateWithConflictRetry(ctx, func(txn *badgerdb.Txn) error {
 		_, err := txn.Get(keyShare(shareName))
 		if err != nil {
 			return mapBadgerError(err, "share", shareName)
@@ -243,8 +243,8 @@ func (s *BadgerMetadataStore) applyQuotaDelta(delta map[quota.Key]metadata.Usage
 // deleteShareFiles returns the total regular-file bytes it removed (freedBytes)
 // rather than mutating usedBytes inline. The caller applies the decrement once
 // after a successful commit — the tx-path accumulates it into the transaction's
-// pendingDelta and the pool-path applies it after db.Update returns nil — so a
-// conflict/serialization retry that re-runs the enclosing Update never
+// pendingDelta and the pool-path applies it only once updateWithConflictRetry
+// returns nil — so a conflict retry that re-runs the enclosing Update never
 // double-counts. The counter is statfs-only, not quota-enforcing.
 func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName string) (freedBytes int64, quotaFreed map[quota.Key]metadata.UsageStat, err error) {
 	type doomed struct {
@@ -433,7 +433,7 @@ func (s *BadgerMetadataStore) CreateRootDirectory(ctx context.Context, shareName
 
 	var rootFile *metadata.File
 
-	err := s.db.Update(func(txn *badgerdb.Txn) error {
+	err := s.updateWithConflictRetry(ctx, func(txn *badgerdb.Txn) error {
 		// Check if share already exists
 		item, err := txn.Get(keyShare(shareName))
 		if err == nil {
@@ -507,21 +507,9 @@ func (s *BadgerMetadataStore) loadExistingRoot(txn *badgerdb.Txn, item *badgerdb
 		return fmt.Errorf("failed to decode existing root file: %w", err)
 	}
 
-	// Look up link count for the root file
-	linkItem, linkErr := txn.Get(keyLinkCount(rootID))
-	switch linkErr {
-	case nil:
-		_ = linkItem.Value(func(linkVal []byte) error {
-			count, countErr := decodeUint32(linkVal)
-			if countErr == nil {
-				(*rootFile).Nlink = count
-			}
-			return nil
-		})
-	case badgerdb.ErrKeyNotFound:
-		// Root directories always have at least 2 links
-		(*rootFile).Nlink = 2
-	}
+	// A root directory with no stored link count falls back to the directory
+	// default of 2.
+	(*rootFile).Nlink = fileLinkCountTxn(txn, *rootFile)
 
 	// Update attributes if config changed
 	needsUpdate := false

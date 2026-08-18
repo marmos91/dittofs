@@ -262,26 +262,9 @@ func (tx *badgerTransaction) getFile(ctx context.Context, handle metadata.FileHa
 		return nil, err
 	}
 
-	// Look up the link count and set Nlink on the returned file
-	// The link count is stored separately to support hard links
-	linkItem, linkErr := tx.txn.Get(keyLinkCount(fileID))
-	switch linkErr {
-	case nil:
-		_ = linkItem.Value(func(val []byte) error {
-			count, decErr := decodeUint32(val)
-			if decErr == nil {
-				file.Nlink = count
-			}
-			return nil
-		})
-	case badgerdb.ErrKeyNotFound:
-		// No link count stored - use default based on file type
-		if file.Type == metadata.FileTypeDirectory {
-			file.Nlink = 2
-		} else {
-			file.Nlink = 1
-		}
-	}
+	// The link count is stored separately to support hard links; a missing
+	// key falls back to the type default.
+	file.Nlink = fileLinkCountTxn(tx.txn, file)
 
 	// Derive File.Path from the parent/children keyspace rather than trusting
 	// the stored proto field (#1166): parent edges are the sole source of
@@ -799,25 +782,7 @@ func (tx *badgerTransaction) ListChildren(ctx context.Context, dirHandle metadat
 				if decErr != nil {
 					return decErr
 				}
-				// Look up link count for this file
-				linkItem, linkErr := tx.txn.Get(keyLinkCount(childID))
-				switch linkErr {
-				case nil:
-					_ = linkItem.Value(func(linkVal []byte) error {
-						count, countErr := decodeUint32(linkVal)
-						if countErr == nil {
-							file.Nlink = count
-						}
-						return nil
-					})
-				case badgerdb.ErrKeyNotFound:
-					// Default based on file type
-					if file.Type == metadata.FileTypeDirectory {
-						file.Nlink = 2
-					} else {
-						file.Nlink = 1
-					}
-				}
+				file.Nlink = fileLinkCountTxn(tx.txn, file)
 				entry.Attr = &file.FileAttr
 				return nil
 			})
@@ -1224,21 +1189,9 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 			return nil, err
 		}
 
-		// Look up link count for the root file
-		linkItem, linkErr := tx.txn.Get(keyLinkCount(rootID))
-		switch linkErr {
-		case nil:
-			_ = linkItem.Value(func(linkVal []byte) error {
-				count, countErr := decodeUint32(linkVal)
-				if countErr == nil {
-					rootFile.Nlink = count
-				}
-				return nil
-			})
-		case badgerdb.ErrKeyNotFound:
-			// Root directories always have at least 2 links
-			rootFile.Nlink = 2
-		}
+		// A root directory with no stored link count falls back to the
+		// directory default of 2.
+		rootFile.Nlink = fileLinkCountTxn(tx.txn, rootFile)
 
 		return rootFile, nil
 	} else if err != badgerdb.ErrKeyNotFound {
@@ -1533,24 +1486,10 @@ func (tx *badgerTransaction) loadEnrichedFileByID(fileID uuid.UUID) (*metadata.F
 		return nil, err
 	}
 
-	// The link count is secondary data stored under a separate key. Mirror
-	// GetFile and the legacy scan path: a missing or unreadable link-count key
-	// never fails the lookup. Seed the type default first so any such case
-	// returns a sensible Nlink rather than 0 (#1435 review), then override it
-	// with the stored count when the key reads and decodes cleanly.
-	if file.Type == metadata.FileTypeDirectory {
-		file.Nlink = 2
-	} else {
-		file.Nlink = 1
-	}
-	if linkItem, linkErr := tx.txn.Get(keyLinkCount(fileID)); linkErr == nil {
-		_ = linkItem.Value(func(linkVal []byte) error {
-			if count, cErr := decodeUint32(linkVal); cErr == nil {
-				file.Nlink = count
-			}
-			return nil
-		})
-	}
+	// The link count is secondary data stored under a separate key. A missing
+	// or unreadable key never fails the lookup: it falls back to the type
+	// default so the file never comes back with Nlink 0.
+	file.Nlink = fileLinkCountTxn(tx.txn, file)
 
 	// GetFileByPayloadID returns the manifest inline (callers such as the flush
 	// coordinator read File.Blocks off it); load it from fm: like GetFile does.
@@ -1625,7 +1564,7 @@ func (tx *badgerTransaction) GetFileByPayloadID(ctx context.Context, payloadID m
 		}
 
 		item := it.Item()
-		var result *metadata.File
+		var matchID uuid.UUID
 		err := item.Value(func(val []byte) error {
 			file, decErr := decodeFile(val)
 			if decErr != nil {
@@ -1633,37 +1572,25 @@ func (tx *badgerTransaction) GetFileByPayloadID(ctx context.Context, payloadID m
 			}
 
 			if file.PayloadID == payloadID {
-				// Look up link count for this file
-				linkItem, linkErr := tx.txn.Get(keyLinkCount(file.ID))
-				switch linkErr {
-				case nil:
-					_ = linkItem.Value(func(linkVal []byte) error {
-						count, countErr := decodeUint32(linkVal)
-						if countErr == nil {
-							file.Nlink = count
-						}
-						return nil
-					})
-				case badgerdb.ErrKeyNotFound:
-					// Default based on file type
-					if file.Type == metadata.FileTypeDirectory {
-						file.Nlink = 2
-					} else {
-						file.Nlink = 1
-					}
-				}
-				// Derive Path from the parent keyspace (#1166) so a
-				// rename/relink can never surface a stale stored path —
-				// consistent with the store-level GetFileByPayloadID and GetFile.
-				file.Path = tx.derivePath(file.ID)
-				result = file
+				matchID = file.ID
 				return errFound
 			}
 			return nil
 		})
 
 		if err == errFound {
-			return result, nil
+			// Re-load through the shared enrichment path so an unindexed row
+			// returns the same shape as the fast path: link count, derived
+			// path and — critically for callers that read File.Blocks — the
+			// chunk manifest from the sibling fm: key.
+			file, lErr := tx.loadEnrichedFileByID(matchID)
+			if lErr != nil {
+				return nil, lErr
+			}
+			if file != nil {
+				return file, nil
+			}
+			break
 		}
 		if err != nil {
 			return nil, err
