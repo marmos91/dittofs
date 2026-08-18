@@ -347,13 +347,13 @@ func (tx *badgerTransaction) DeleteSynced(_ context.Context, hash block.ContentH
 // PutSyncedLocators overwrites the marker of every chunk. Badger is embedded,
 // so the batch is the per-chunk sequence against the same txn: the delete makes
 // the following mark record the new locator instead of preserving the old one.
-func (tx *badgerTransaction) PutSyncedLocators(_ context.Context, chunks []block.BlockChunkCommit) error {
+func (tx *badgerTransaction) PutSyncedLocators(ctx context.Context, chunks []block.BlockChunkCommit) error {
 	for _, c := range chunks {
-		if err := deleteSyncedTxn(tx.txn, c.Hash); err != nil {
-			return fmt.Errorf("badger tx synced put locators: %w", err)
+		if err := tx.DeleteSynced(ctx, c.Hash); err != nil {
+			return err
 		}
-		if err := markSyncedTxn(tx.txn, c.Hash, c.Remote); err != nil {
-			return fmt.Errorf("badger tx synced put locators: %w", err)
+		if err := tx.MarkSynced(ctx, c.Hash, c.Remote); err != nil {
+			return err
 		}
 	}
 	return nil

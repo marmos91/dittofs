@@ -129,6 +129,9 @@ func findStreamChild(ctx context.Context, files Files, parent FileHandle, baseNa
 		return nil, nil, false, nil
 	}
 	exact, err := files.GetChild(ctx, parent, streamChildPrefix(baseName)+name)
+	if err != nil && !IsNotFoundError(err) {
+		return nil, nil, false, err
+	}
 	if err == nil && exact != nil {
 		file, err := files.GetFile(ctx, exact)
 		if err != nil {
@@ -136,9 +139,7 @@ func findStreamChild(ctx context.Context, files Files, parent FileHandle, baseNa
 		}
 		return exact, &file.FileAttr, true, nil
 	}
-	if err != nil && !IsNotFoundError(err) {
-		return nil, nil, false, err
-	}
+
 	cursor := ""
 	for {
 		entries, next, err := files.ListChildren(ctx, parent, cursor, 0)

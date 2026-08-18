@@ -8,10 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// errRollbackShareOptions aborts a transaction after it wrote share options, so
-// the rollback case can prove the write never becomes visible.
-var errRollbackShareOptions = errors.New("rollback share options")
-
 // runShareOptionsOps pins the freshness of GetShareOptions. It is the read every
 // permission check funnels through, so backends cache it — and a cached entry
 // that outlives the write that superseded it is a wrong permission decision, not
@@ -89,14 +85,15 @@ func runShareOptionsOps(t *testing.T, factory StoreFactory) {
 		_, err := store.GetShareOptions(ctx, "/opts-rollback")
 		require.NoError(t, err)
 
+		errRollback := errors.New("abort after the options write")
 		err = store.WithTransaction(ctx, func(tx metadata.Transaction) error {
 			if err := tx.UpdateShareOptions(ctx, "/opts-rollback",
 				&metadata.ShareOptions{ReadOnly: true}); err != nil {
 				return err
 			}
-			return errRollbackShareOptions
+			return errRollback
 		})
-		require.ErrorIs(t, err, errRollbackShareOptions)
+		require.ErrorIs(t, err, errRollback)
 
 		got, err := store.GetShareOptions(ctx, "/opts-rollback")
 		require.NoError(t, err)

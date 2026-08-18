@@ -282,7 +282,6 @@ func TestMetadataCoordinator_FakeImpl_FailureModes(t *testing.T) {
 	}
 }
 
-// DecrementRefCountAndReapMany is the batched reap the engine reclaim paths use.
 func (f *fakeCoordinator) DecrementRefCountAndReapMany(ctx context.Context, payloadID string, offsets []uint64) error {
 	return reapEach(ctx, payloadID, offsets, f.DecrementRefCountAndReap)
 }

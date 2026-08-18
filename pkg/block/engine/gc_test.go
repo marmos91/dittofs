@@ -1483,7 +1483,6 @@ func TestResolveGracePeriod(t *testing.T) {
 	}
 }
 
-// DecrementRefCountAndReapMany is the batched reap the engine reclaim paths use.
 func (c *reapCoordinator) DecrementRefCountAndReapMany(ctx context.Context, payloadID string, offsets []uint64) error {
 	return reapEach(ctx, payloadID, offsets, c.DecrementRefCountAndReap)
 }

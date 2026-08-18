@@ -393,37 +393,26 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Ch
 		bs.loadCache().OnRead(payloadID, nil, 0)
 	}
 
-	// Decrement RefCount for every ChunkRef hash before remote cleanup
-	// so the coordinator's bookkeeping is consistent even if the remote
-	// sweep fails (Truncate / janitor will reconcile orphans).
+	// Reap this file's manifest rows before remote cleanup so the coordinator's
+	// bookkeeping is consistent even if the remote sweep fails (Truncate /
+	// janitor will reconcile orphans). Rows go by exact ID "{payloadID}/{offset}"
+	// — the same content hash at TWO offsets is TWO rows and BOTH must go, while
+	// SIBLING rows in other files keep the hash in the GC live set, so dropping
+	// this file's rows strands nothing another file still references.
 	//
 	// A coordinator failure does NOT return early: the syncer.Delete remote
 	// sweep must ALWAYS run. Returning early left the local data deleted, the
 	// metadata untouched, and the remote alive forever — operators saw
 	// inconsistent state until GC's next pass (hours). The error is captured,
 	// the remote sweep runs unconditionally, and errors.Join of both surfaces
-	// goes back to the caller. The reap either applies to the whole manifest or
-	// to none of it, so a failure leaves rows the GC reconcile still reclaims,
-	// never a half-decremented file.
-	//
-	// Reap each block's OWN row by exact ID "{payloadID}/{offset}". The SAME
-	// content hash at TWO offsets in this file is TWO rows and BOTH must be
-	// reaped.
-	//
-	// By-ID, not by-hash: cross-file dedup keep-alive is provided by SIBLING
-	// rows in other files keeping the hash in EnumerateFileChunks (the GC live
-	// set). GC sweeps the chunk only when no row anywhere references the hash,
-	// so removing this file's own rows by ID strands nothing another file still
-	// references.
-	//
-	// Rows are reaped at RefCount 0 so a hash leaves EnumerateFileChunks once no
-	// sibling references it, letting the GC sweep reclaim the remote chunk
-	// (#832).
+	// goes back to the caller. The reap applies to the whole manifest or to none
+	// of it, so a failure leaves rows the GC reconcile still reclaims, never a
+	// half-decremented file.
 	//
 	// Deliberately do NOT clear the synced marker here. The marker means "these
 	// bytes are on the remote", which stays TRUE after the last reference is
 	// reaped — the remote object lives until the GC sweep physically deletes it.
-	// Since #1458 the steady-state remote sweep derives orphan candidates from
+	// The steady-state remote sweep derives orphan candidates from
 	// (synced − live); clearing the marker at unlink removes the just-orphaned
 	// hash from that candidate set, so the remote object becomes invisible to GC
 	// and leaks forever (only a full-Walk reconcile could ever find it again).
@@ -431,7 +420,7 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Ch
 	// remote object (sweepFromSyncedIndex / sweepByWalk → DeleteSynced), which
 	// keeps `synced` a faithful subset of remote contents. A re-Put before GC
 	// correctly skips re-upload (bytes still remote-resident); a re-Put after GC
-	// re-uploads (GC already cleared the marker) (#1433).
+	// re-uploads (GC already cleared the marker).
 	var coordErr error
 	if len(blocks) > 0 && bs.coordinator != nil {
 		if err := bs.coordinator.DecrementRefCountAndReapMany(ctx, payloadID, distinctOffsets(blocks)); err != nil {

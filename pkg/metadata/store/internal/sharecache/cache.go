@@ -1,6 +1,5 @@
-// Package sharecache caches decoded ShareOptions for the permission hot path.
-// Every metadata backend resolves the same options on every read, write, create
-// and setattr, and the record changes only on a rare admin reconfigure.
+// Package sharecache caches decoded ShareOptions for the permission hot path,
+// shared by every metadata backend.
 package sharecache
 
 import (
@@ -69,9 +68,9 @@ func (c *Cache) Store(shareName string, opts *metadata.ShareOptions, genAtRead u
 
 // Invalidate drops shareName and advances the generation so any in-flight
 // populate for a now-superseded value is rejected. MUST be called AFTER the
-// write commits. Order matters: bump gen BEFORE delete (see fileReadCache) so a
-// concurrent reader that snapshotted the old generation cannot re-insert a
-// pre-write value after the delete.
+// write commits. Order matters: bump gen BEFORE delete, so a concurrent reader
+// that snapshotted the old generation cannot re-insert a pre-write value after
+// the delete.
 func (c *Cache) Invalidate(shareName string) {
 	c.gen.Add(1)
 	c.m.Delete(shareName)

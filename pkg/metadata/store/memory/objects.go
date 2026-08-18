@@ -553,7 +553,7 @@ func (s *MemoryMetadataStore) InjectRefCountLeak(_ context.Context, blockID stri
 // write lock. The map is in-process, so the batch is the per-id sequence.
 func (tx *memoryTransaction) DecrementRefCountAndReapMany(ctx context.Context, ids []string) error {
 	for _, id := range ids {
-		if _, err := tx.store.decrementAndReapLocked(ctx, id); err != nil {
+		if _, err := tx.DecrementRefCountAndReap(ctx, id); err != nil {
 			return err
 		}
 	}

@@ -161,15 +161,11 @@ func (c *metadataCoordinator) DecrementRefCountAndReap(ctx context.Context, payl
 }
 
 // DecrementRefCountAndReapMany reaps the payload's rows for every offset in one
-// metadata transaction. Same txn-binding rule as the single-offset form: a
-// caller-bound metadata.Transaction on ctx carries the reap, so the caller's
-// rollback undoes it; the engine's Truncate/PunchHole/Delete reclaim path binds
+// metadata transaction. Same txn-binding and ErrFileChunkNotFound tolerance as
+// the single-offset form: a caller-bound metadata.Transaction on ctx carries the
+// reap so the caller's rollback undoes it, and the engine's reclaim path binds
 // none and gets a transaction of its own — one for the whole set, where the
 // single-offset form opened one per row.
-//
-// ErrFileChunkNotFound is tolerated for the same reason as there: an
-// already-reaped row, or one a dedup-miss fallback never created, is not a
-// caller error.
 func (c *metadataCoordinator) DecrementRefCountAndReapMany(ctx context.Context, payloadID string, offsets []uint64) error {
 	if len(offsets) == 0 {
 		return nil
