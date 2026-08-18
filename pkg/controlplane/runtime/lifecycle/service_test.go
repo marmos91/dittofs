@@ -337,7 +337,7 @@ func TestInitMachineSIDReadErrorFails(t *testing.T) {
 // by a different one on the next boot.
 func TestInitMachineSIDPersistErrorFails(t *testing.T) {
 	s := New(0)
-	store := &fakeSIDStore{vals: map[string]string{}, setErr: errors.New("db down")}
+	store := &fakeSIDStore{setErr: errors.New("db down")}
 	if err := s.initMachineSID(context.Background(), store); err == nil {
 		t.Fatal("persist failure must return an error, not serve an ephemeral SID")
 	}
