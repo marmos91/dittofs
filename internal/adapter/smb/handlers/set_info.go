@@ -727,7 +727,10 @@ func (h *Handler) setFileInfoFromStore(
 		if strings.HasPrefix(newPath, ":") {
 			// Extract the base file name from the current open file name.
 			// The current file is an ADS: "basefile:streamname"
-			baseName := openFile.Name().FileName
+			// One snapshot: the move below must not take its directory from
+			// one rename and its name from another.
+			oldName := openFile.Name()
+			baseName := oldName.FileName
 			if colonIdx := strings.Index(baseName, ":"); colonIdx > 0 {
 				baseName = baseName[:colonIdx]
 			}
@@ -739,22 +742,21 @@ func (h *Handler) setFileInfoFromStore(
 
 			// Build new child name: basefile + new stream suffix
 			toName := baseName + newPath
-			toDir := openFile.Name().ParentHandle
+			toDir := oldName.ParentHandle
 
 			// Save old path info for notification before modification
-			oldPath := openFile.Name().Path
-			oldFileName := openFile.Name().FileName
-			oldParentPath := GetParentPath(oldPath)
+			oldFileName := oldName.FileName
+			oldParentPath := GetParentPath(oldName.Path)
 
 			// Per MS-FSA 2.1.5.14.10: Save mtime/ctime before rename
 			restoreTimestamps := h.saveTimestamps(authCtx, openFile.MetadataHandle)
 
 			// Perform the rename
 			metaSvc := h.Registry.GetMetadataService()
-			_, err = metaSvc.Move(authCtx, toDir, openFile.Name().FileName, toDir, toName)
+			_, err = metaSvc.Move(authCtx, toDir, oldFileName, toDir, toName)
 			if err != nil {
 				logger.Debug("SET_INFO: stream rename failed",
-					"from", openFile.Name().FileName,
+					"from", oldFileName,
 					"to", toName,
 					"error", err)
 				return setInfoStatus(common.MapToSMB(err)), nil
@@ -770,7 +772,8 @@ func (h *Handler) setFileInfoFromStore(
 			if h.NotifyRegistry != nil {
 				tree, ok := h.GetTree(openFile.TreeID)
 				if ok {
-					newParentPath := GetParentPath(openFile.Name().Path)
+					// A stream rename stays in the same directory.
+					newParentPath := oldParentPath
 					if newParentPath == "" || newParentPath == "." {
 						newParentPath = "/"
 					}
@@ -858,8 +861,8 @@ func (h *Handler) setFileInfoFromStore(
 		}
 
 		// Validate we have source info
-		if len(openFile.Name().ParentHandle) == 0 {
-			logger.Debug("SET_INFO: cannot rename root directory", "path", openFile.Name().Path)
+		if srcName := openFile.Name(); len(srcName.ParentHandle) == 0 {
+			logger.Debug("SET_INFO: cannot rename root directory", "path", srcName.Path)
 			return setInfoStatus(types.StatusAccessDenied), nil
 		}
 
@@ -1244,8 +1247,8 @@ func (h *Handler) setFileInfoFromStore(
 		wasDeletePending := openFile.DeletePending
 
 		// Validate we have parent info for deletion
-		if deletePending && len(openFile.Name().ParentHandle) == 0 {
-			logger.Debug("SET_INFO: cannot delete root directory", "path", openFile.Name().Path)
+		if delName := openFile.Name(); deletePending && len(delName.ParentHandle) == 0 {
+			logger.Debug("SET_INFO: cannot delete root directory", "path", delName.Path)
 			return setInfoStatus(types.StatusAccessDenied), nil
 		}
 
@@ -2073,10 +2076,11 @@ func checkSetInfoSecurityAccess(grantedAccess, additionalInfo uint32) (types.Sta
 // after the triggering request's response, matching Samba's tevent-cycle
 // `send_break_to_none` semantics.
 func (h *Handler) breakParentDirLeasesForContentChange(ctx *SMBHandlerContext, authCtx *metadata.AuthContext, openFile *OpenFile) {
-	if len(openFile.Name().ParentHandle) == 0 {
+	parentHandle := openFile.Name().ParentHandle
+	if len(parentHandle) == 0 {
 		return
 	}
-	h.breakParentDirLeasesForContentChangeOn(ctx, authCtx, openFile.Name().ParentHandle, openFile)
+	h.breakParentDirLeasesForContentChangeOn(ctx, authCtx, parentHandle, openFile)
 }
 
 // breakParentDirLeasesForContentChangeOn is the multi-parent variant used by

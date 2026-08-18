@@ -662,8 +662,8 @@ func (h *Handler) resolveBaseFileAttrForADS(authCtx *metadata.AuthContext, openF
 
 // buildFileInfoFromStore builds file information based on class using metadata store.
 func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *metadata.File, openFile *OpenFile, class types.FileInfoClass) ([]byte, error) {
-	// One snapshot for every arm below: the response must describe a single
-	// name, not a path from before a rename and a file name from after it.
+	// One snapshot for every arm below, so the response cannot mix a path
+	// from before a rename with a file name from after it.
 	name := openFile.Name()
 	switch class {
 	case types.FileBasicInformation:
@@ -1013,14 +1013,14 @@ func (h *Handler) buildFileStreamInformation(authCtx *metadata.AuthContext, file
 
 	// Enumerate ADS entries from the parent directory.
 	// ADS are stored as children with names like "baseName:streamname:$DATA".
-	if len(openFile.Name().ParentHandle) > 0 {
+	if len(name.ParentHandle) > 0 {
 		metaSvc := h.Registry.GetMetadataService()
 		store, storeErr := metaSvc.GetStoreForShare(shareNameForOpenFile(openFile))
 		if storeErr == nil {
 			prefix := baseName + ":"
 			cursor := ""
 			for {
-				entries, nextCursor, listErr := store.ListChildren(ctx, openFile.Name().ParentHandle, cursor, 1000)
+				entries, nextCursor, listErr := store.ListChildren(ctx, name.ParentHandle, cursor, 1000)
 				if listErr != nil {
 					break
 				}

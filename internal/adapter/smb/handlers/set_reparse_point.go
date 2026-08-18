@@ -226,7 +226,7 @@ func (h *Handler) convertOpenFileToNativeSymlink(ctx *SMBHandlerContext, openFil
 	if removed != nil {
 		removedPayloadID = removed.PayloadID
 	}
-	h.purgeBlockStorePayload(ctx.Context, openFile.MetadataHandle, removedPayloadID, openFile.Name().Path, "SET_REPARSE_POINT")
+	h.purgeBlockStorePayload(ctx.Context, openFile.MetadataHandle, removedPayloadID, name.Path, "SET_REPARSE_POINT")
 
 	symlink, _, err := metaSvc.CreateSymlink(authCtx, parentHandle, fileName, target, &metadata.FileAttr{})
 	if err != nil {
@@ -238,7 +238,7 @@ func (h *Handler) convertOpenFileToNativeSymlink(ctx *SMBHandlerContext, openFil
 			Type: metadata.FileTypeRegular, Mode: 0o644,
 		}); reErr != nil {
 			logger.Warn("SET_REPARSE_POINT: symlink create failed and placeholder rollback failed",
-				"path", openFile.Name().Path, "createErr", err, "rollbackErr", reErr)
+				"path", name.Path, "createErr", err, "rollbackErr", reErr)
 		}
 		return fmt.Errorf("failed to create symlink: %w", err)
 	}
@@ -260,7 +260,7 @@ func (h *Handler) convertOpenFileToNativeSymlink(ctx *SMBHandlerContext, openFil
 	// Notify directory watchers of the placeholder→symlink replacement so client
 	// directory views (Finder/Explorer) refresh without a full re-enumeration.
 	if h.NotifyRegistry != nil {
-		parentPath := GetParentPath(openFile.Name().Path)
+		parentPath := GetParentPath(name.Path)
 		h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, fileName, FileActionRemoved, FileNotifyChangeFileName)
 		h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, fileName, FileActionAdded, FileNotifyChangeFileName)
 	}

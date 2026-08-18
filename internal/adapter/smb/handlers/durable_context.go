@@ -1022,13 +1022,12 @@ func ProcessAppInstanceId(
 
 	for _, h := range existing {
 		if handler != nil {
-			cleanupFile := &OpenFile{
+			cleanupFile := (&OpenFile{
 				FileID:         h.FileID,
 				ShareName:      h.ShareName,
 				MetadataHandle: h.MetadataHandle,
 				PayloadID:      metadata.PayloadID(h.PayloadID),
-			}
-			cleanupFile.SetName(OpenName{Path: h.Path})
+			}).WithName(OpenName{Path: h.Path})
 			handler.flushFileCache(ctx, cleanupFile)
 			if len(h.MetadataHandle) > 0 && handler.Registry != nil {
 				if metaSvc := handler.Registry.GetMetadataService(); metaSvc != nil {

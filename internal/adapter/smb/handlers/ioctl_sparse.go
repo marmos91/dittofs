@@ -57,12 +57,13 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 		logger.Debug("IOCTL FSCTL_SET_SPARSE: file handle not found", "fileID", fmt.Sprintf("%x", fileID))
 		return NewErrorResult(types.StatusFileClosed), nil
 	}
+	path := openFile.Name().Path
 
 	// FSCTL_SET_SPARSE is a file-only operation. Directories take
 	// STATUS_INVALID_PARAMETER per MS-FSA §2.1.5.9.36 and Windows behaviour.
 	if openFile.IsDirectory {
 		logger.Debug("IOCTL FSCTL_SET_SPARSE: rejected on directory",
-			"path", openFile.Name().Path)
+			"path", path)
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
@@ -77,7 +78,7 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 		uint32(types.FileWriteAttributes)
 	if openFile.GrantedAccess&setSparseGate == 0 {
 		logger.Debug("IOCTL FSCTL_SET_SPARSE: handle lacks WRITE_DATA/APPEND_DATA/WRITE_ATTRIBUTES",
-			"path", openFile.Name().Path,
+			"path", path,
 			"granted", fmt.Sprintf("0x%08X", openFile.GrantedAccess))
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
@@ -104,12 +105,12 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 	attrs := modeBitMaskAttrs(modeDOSSparse, setSparse)
 	if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &attrs); err != nil {
 		logger.Warn("IOCTL FSCTL_SET_SPARSE: failed to persist mode",
-			"path", openFile.Name().Path, "error", err)
+			"path", path, "error", err)
 		return NewErrorResult(common.MapToSMB(err)), nil
 	}
 
 	logger.Debug("IOCTL FSCTL_SET_SPARSE: applied",
-		"path", openFile.Name().Path, "sparse", setSparse)
+		"path", path, "sparse", setSparse)
 	resp := buildIoctlResponse(FsctlSetSparse, fileID, nil)
 	return NewResult(types.StatusSuccess, resp), nil
 }
@@ -146,11 +147,12 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 		logger.Debug("IOCTL FSCTL_QUERY_ALLOCATED_RANGES: file handle not found", "fileID", fmt.Sprintf("%x", fileID))
 		return NewErrorResult(types.StatusFileClosed), nil
 	}
+	path := openFile.Name().Path
 
 	// MS-FSA §2.1.5.10.4 / Samba `fsctl_qar`: requires FILE_READ_DATA.
 	if openFile.GrantedAccess&uint32(types.FileReadData) == 0 {
 		logger.Debug("IOCTL FSCTL_QUERY_ALLOCATED_RANGES: handle lacks FILE_READ_DATA",
-			"path", openFile.Name().Path,
+			"path", path,
 			"granted", fmt.Sprintf("0x%08X", openFile.GrantedAccess))
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
@@ -202,7 +204,7 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 			ranges, err = h.scanAllocatedRanges(authCtx, openFile, &file.FileAttr, allocStart, allocEnd)
 			if err != nil {
 				logger.Warn("IOCTL FSCTL_QUERY_ALLOCATED_RANGES: scan failed",
-					"path", openFile.Name().Path, "error", err)
+					"path", path, "error", err)
 				return NewErrorResult(common.MapContentToSMB(err)), nil
 			}
 		} else {
@@ -223,7 +225,7 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 	// STATUS_BUFFER_TOO_SMALL. Samba fsctl_qar gates the same way.
 	if maxOut < fileAllocatedRangeBufSize {
 		logger.Debug("IOCTL FSCTL_QUERY_ALLOCATED_RANGES: buffer too small",
-			"path", openFile.Name().Path, "maxOut", maxOut)
+			"path", path, "maxOut", maxOut)
 		return NewErrorResult(types.StatusBufferTooSmall), nil
 	}
 
@@ -374,6 +376,7 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 		logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: file handle not found", "fileID", fmt.Sprintf("%x", fileID))
 		return NewErrorResult(types.StatusFileClosed), nil
 	}
+	path := openFile.Name().Path
 	if openFile.IsDirectory || openFile.IsPipe {
 		return NewErrorResult(types.StatusInvalidDeviceRequest), nil
 	}
@@ -381,7 +384,7 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 	// MS-FSA §2.1.5.10.35: SET_ZERO_DATA requires FILE_WRITE_DATA.
 	if openFile.GrantedAccess&uint32(types.FileWriteData) == 0 {
 		logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: handle lacks FILE_WRITE_DATA",
-			"path", openFile.Name().Path,
+			"path", path,
 			"granted", fmt.Sprintf("0x%08X", openFile.GrantedAccess))
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
@@ -406,7 +409,7 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 	}
 	if beyond > zeroDataMaxFileSize {
 		logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: range exceeds MAXFILESIZE",
-			"path", openFile.Name().Path, "beyond", beyond)
+			"path", path, "beyond", beyond)
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
@@ -451,7 +454,7 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 		true, // isWrite
 	); err != nil {
 		logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: blocked by lock",
-			"path", openFile.Name().Path, "offset", fileOffset, "length", beyond-fileOffset)
+			"path", path, "offset", fileOffset, "length", beyond-fileOffset)
 		return NewErrorResult(types.StatusFileLockConflict), nil
 	}
 
@@ -462,7 +465,7 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 		lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
 		if breakErr := h.LeaseManager.BreakReadLeasesOnWrite(lockFileHandle, openFile.ShareName, openFile.LeaseKey); breakErr != nil {
 			logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: oplock break failed (non-fatal)",
-				"path", openFile.Name().Path, "error", breakErr)
+				"path", path, "error", breakErr)
 		}
 	}
 
@@ -471,7 +474,7 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 			return NewErrorResult(types.StatusCancelled), nil
 		}
 		logger.Warn("IOCTL FSCTL_SET_ZERO_DATA: write failed",
-			"path", openFile.Name().Path, "error", err)
+			"path", path, "error", err)
 		return NewErrorResult(common.MapContentToSMB(err)), nil
 	}
 
@@ -482,7 +485,7 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 	// journal size reconcile on restart; CLOSE/FLUSH remain strict.
 	if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, false); flushErr != nil {
 		logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: deferred metadata flush failed (non-fatal)",
-			"path", openFile.Name().Path, "error", flushErr)
+			"path", path, "error", flushErr)
 	}
 
 	resp := buildIoctlResponse(FsctlSetZeroData, fileID, nil)

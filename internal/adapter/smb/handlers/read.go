@@ -177,6 +177,8 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		return h.handlePipeRead(ctx, req, openFile)
 	}
 
+	path := openFile.Name().Path
+
 	// ========================================================================
 	// Step 2b: Validate read access
 	// ========================================================================
@@ -195,7 +197,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 
 	if !hasReadAccess(openFile.GrantedAccess) {
 		logger.Debug("READ: no read access on handle",
-			"path", openFile.Name().Path,
+			"path", path,
 			"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess))
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 	}
@@ -205,7 +207,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// ========================================================================
 
 	if openFile.IsDirectory {
-		logger.Debug("READ: cannot read from directory", "path", openFile.Name().Path)
+		logger.Debug("READ: cannot read from directory", "path", path)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidDeviceRequest}}, nil
 	}
 
@@ -217,12 +219,12 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// exceeding INT64_MAX are invalid. Windows returns STATUS_INVALID_PARAMETER.
 	const int64Max = uint64(1<<63 - 1) // 0x7FFFFFFFFFFFFFFF
 	if req.Offset > int64Max {
-		logger.Debug("READ: invalid offset (high bit set)", "path", openFile.Name().Path, "offset", req.Offset)
+		logger.Debug("READ: invalid offset (high bit set)", "path", path, "offset", req.Offset)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
 	if req.Length > 0 && req.Offset > int64Max-uint64(req.Length) {
 		// offset + length would exceed INT64_MAX
-		logger.Debug("READ: offset+length exceeds INT64_MAX", "path", openFile.Name().Path,
+		logger.Debug("READ: offset+length exceeds INT64_MAX", "path", path,
 			"offset", req.Offset, "length", req.Length)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
@@ -237,7 +239,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// the clamp never rejects every read.
 	if h.MaxReadSize > 0 && req.Length > h.MaxReadSize {
 		logger.Debug("READ: length exceeds negotiated MaxReadSize",
-			"path", openFile.Name().Path, "length", req.Length, "maxReadSize", h.MaxReadSize)
+			"path", path, "length", req.Length, "maxReadSize", h.MaxReadSize)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
 
@@ -271,7 +273,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	metaSvc := h.Registry.GetMetadataService()
 	blockStore, err := common.ResolveForRead(ctx.Context, h.Registry, openFile.MetadataHandle)
 	if err != nil {
-		logger.Warn("READ: block store not available for handle", "path", openFile.Name().Path, "error", err)
+		logger.Warn("READ: block store not available for handle", "path", path, "error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
 	}
 
@@ -293,7 +295,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// reads file.Path (loggers use openFile.Path, symlink uses file.LinkTarget).
 	file, err := metaSvc.GetFileForRead(authCtx.Context, openFile.MetadataHandle)
 	if err != nil {
-		logger.Debug("READ: failed to get file metadata", "path", openFile.Name().Path, "error", err)
+		logger.Debug("READ: failed to get file metadata", "path", path, "error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
@@ -311,13 +313,13 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		if file.Type == metadata.FileTypeDirectory {
 			rerr = &metadata.StoreError{Code: metadata.ErrIsDirectory, Message: "cannot read directory"}
 		}
-		logger.Debug("READ: not a regular file", "path", openFile.Name().Path, "type", file.Type)
+		logger.Debug("READ: not a regular file", "path", path, "type", file.Type)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(rerr)}}, nil
 	}
 
 	// Validate read permission on the already-loaded file (no re-fetch).
 	if err := metaSvc.CheckReadPermissionFile(authCtx, openFile.MetadataHandle, file); err != nil {
-		logger.Debug("READ: permission check failed", "path", openFile.Name().Path, "error", err)
+		logger.Debug("READ: permission check failed", "path", path, "error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
@@ -338,7 +340,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 			uint64(req.Length),
 			false, // isWrite = false for read operations
 		); err != nil {
-			logger.Debug("READ: blocked by lock", "path", openFile.Name().Path, "offset", req.Offset, "length", req.Length)
+			logger.Debug("READ: blocked by lock", "path", path, "offset", req.Offset, "length", req.Length)
 			return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileLockConflict}}, nil
 		}
 	}
@@ -355,7 +357,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	//   - Non-zero length read at/past EOF: STATUS_END_OF_FILE
 	//   - Non-zero length read on empty file (no payload): STATUS_END_OF_FILE
 	if req.Length == 0 && req.MinimumCount == 0 {
-		logger.Debug("READ: zero-length read (success)", "path", openFile.Name().Path,
+		logger.Debug("READ: zero-length read (success)", "path", path,
 			"offset", req.Offset, "size", fileSize)
 		// MS-FSA 2.1.5.2: even a zero-byte successful READ advances
 		// CurrentByteOffset to req.Offset (offset + 0 bytes returned).
@@ -369,7 +371,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	}
 
 	if file.PayloadID == "" || fileSize == 0 || req.Offset >= fileSize {
-		logger.Debug("READ: at or beyond EOF", "path", openFile.Name().Path,
+		logger.Debug("READ: at or beyond EOF", "path", path,
 			"offset", req.Offset, "size", fileSize,
 			"hasPayload", file.PayloadID != "")
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusEndOfFile}}, nil
@@ -385,7 +387,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Per MS-SMB2: if actual bytes available < MinimumCount, return EOF.
 	// This handles cases where min_count exceeds what's readable from the file.
 	if req.MinimumCount > 0 && actualLength < req.MinimumCount {
-		logger.Debug("READ: available bytes less than MinimumCount", "path", openFile.Name().Path,
+		logger.Debug("READ: available bytes less than MinimumCount", "path", path,
 			"available", actualLength, "minCount", req.MinimumCount)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusEndOfFile}}, nil
 	}
@@ -402,7 +404,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// already returns the buffer internally, so ReleaseData stays nil.
 	readResult, err := common.ReadFromBlockStore(authCtx.Context, blockStore, file.PayloadID, req.Offset, actualLength)
 	if err != nil {
-		logger.Warn("READ: content read failed", "path", openFile.Name().Path, "error", err)
+		logger.Warn("READ: content read failed", "path", path, "error", err)
 		// common.MapContentToSMB mirrors the old ContentErrorToSMBStatus
 		// behavior and handles ErrRemoteUnavailable. ReleaseData stays nil
 		// because ReadFromBlockStore has already released the pooled buffer
@@ -411,7 +413,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	}
 
 	logger.Debug("READ successful",
-		"path", openFile.Name().Path,
+		"path", path,
 		"offset", req.Offset,
 		"requested", req.Length,
 		"actual", len(readResult.Data))
@@ -487,11 +489,13 @@ func (h *Handler) handleSymlinkRead(
 	file *metadata.File,
 	req *ReadRequest,
 ) (*ReadResponse, error) {
+	path := openFile.Name().Path
+
 	// Generate MFsymlink content from the symlink target
 	mfsymlinkData, err := mfsymlink.Encode(file.LinkTarget)
 	if err != nil {
 		logger.Warn("READ: failed to encode MFsymlink",
-			"path", openFile.Name().Path,
+			"path", path,
 			"target", file.LinkTarget,
 			"error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
@@ -502,7 +506,7 @@ func (h *Handler) handleSymlinkRead(
 	// Handle offset beyond EOF
 	if req.Offset >= fileSize {
 		logger.Debug("READ: symlink offset beyond EOF",
-			"path", openFile.Name().Path,
+			"path", path,
 			"offset", req.Offset,
 			"size", fileSize)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusEndOfFile}}, nil
@@ -515,7 +519,7 @@ func (h *Handler) handleSymlinkRead(
 	data := mfsymlinkData[req.Offset:readEnd]
 
 	logger.Debug("READ: symlink (MFsymlink)",
-		"path", openFile.Name().Path,
+		"path", path,
 		"target", file.LinkTarget,
 		"offset", req.Offset,
 		"requested", req.Length,

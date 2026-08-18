@@ -783,9 +783,6 @@ type OpenFile struct {
 	OpenerIsNull  bool
 }
 
-// OpenID returns a unique identifier for this open file handle.
-// This is used for per-open byte-range lock ownership per MS-SMB2.
-// The identifier is derived from the SMB FileID, which is unique per open.
 // OpenName is the name triple of an open handle: full path, name within the
 // parent, and parent directory handle. SET_INFO rename replaces all three at
 // once, so they are published and read as one immutable value.
@@ -820,6 +817,9 @@ func (f *OpenFile) WithName(n OpenName) *OpenFile {
 	return f
 }
 
+// OpenID returns a unique identifier for this open file handle.
+// This is used for per-open byte-range lock ownership per MS-SMB2.
+// The identifier is derived from the SMB FileID, which is unique per open.
 func (f *OpenFile) OpenID() string {
 	if f.cachedOpenID == "" {
 		f.cachedOpenID = fmt.Sprintf("%x", f.FileID)
@@ -2334,7 +2334,8 @@ func (h *Handler) isFileOrBaseDeletePending(fileHandle metadata.FileHandle, file
 		if !bdp {
 			return true
 		}
-		existingBase := adsBasePath(existing.Name().Path)
+		existingPath := existing.Name().Path
+		existingBase := adsBasePath(existingPath)
 		if openBase == "" {
 			// Opening a base file: match against any stream of this base.
 			if strings.EqualFold(existingBase, filePath) {
@@ -2345,7 +2346,7 @@ func (h *Handler) isFileOrBaseDeletePending(fileHandle metadata.FileHandle, file
 			// Opening a stream: match against a sibling stream sharing the
 			// same base path, or against a base-file handle of that base.
 			if strings.EqualFold(existingBase, openBase) ||
-				strings.EqualFold(existing.Name().Path, openBase) {
+				strings.EqualFold(existingPath, openBase) {
 				pending = true
 				return false
 			}
@@ -2431,12 +2432,13 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 		sameFile := bytes.Equal(existing.MetadataHandle, fileHandle)
 		crossStream := false
 		if !sameFile {
-			existingBase := adsBasePath(existing.Name().Path)
+			existingPath := existing.Name().Path
+			existingBase := adsBasePath(existingPath)
 			baseVsStream := false
 			if newBase == "" && existingBase != "" {
 				baseVsStream = strings.EqualFold(existingBase, filePath)
 			} else if newBase != "" && existingBase == "" {
-				baseVsStream = strings.EqualFold(newBase, existing.Name().Path)
+				baseVsStream = strings.EqualFold(newBase, existingPath)
 			}
 			if !baseVsStream {
 				return true
@@ -2655,10 +2657,11 @@ func (h *Handler) snapshotOpenChildren(dirHandle metadata.FileHandle) []metadata
 	var children []metadata.FileHandle
 	h.files.Range(func(_, value any) bool {
 		of := value.(*OpenFile)
-		if len(of.Name().ParentHandle) == 0 || len(of.MetadataHandle) == 0 {
+		parent := of.Name().ParentHandle
+		if len(parent) == 0 || len(of.MetadataHandle) == 0 {
 			return true
 		}
-		if !bytes.Equal(of.Name().ParentHandle, dirHandle) {
+		if !bytes.Equal(parent, dirHandle) {
 			return true
 		}
 		children = append(children, of.MetadataHandle)
@@ -2674,10 +2677,11 @@ func (h *Handler) anyOpenChild(dirHandle metadata.FileHandle) bool {
 	open := false
 	h.files.Range(func(_, value any) bool {
 		of := value.(*OpenFile)
-		if len(of.Name().ParentHandle) == 0 {
+		parent := of.Name().ParentHandle
+		if len(parent) == 0 {
 			return true
 		}
-		if !bytes.Equal(of.Name().ParentHandle, dirHandle) {
+		if !bytes.Equal(parent, dirHandle) {
 			return true
 		}
 		open = true

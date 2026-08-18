@@ -595,8 +595,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 						// Use a synthetic OpenFile with the base file's info.
 						cascadeOF := openFile
 						if isBaseFileDelete {
-							cascadeOF = &OpenFile{}
-							cascadeOF.SetName(OpenName{
+							cascadeOF = (&OpenFile{}).WithName(OpenName{
 								Path:         closePath,
 								FileName:     deleteFileName,
 								ParentHandle: deleteParentHandle,
@@ -1026,7 +1025,7 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 	}
 
 	logger.Debug("CLOSE: converted MFsymlink",
-		"path", openFile.Name().Path,
+		"path", name.Path,
 		"target", target)
 
 	return nil
