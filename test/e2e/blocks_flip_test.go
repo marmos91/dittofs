@@ -214,11 +214,16 @@ func runBlocksFlipSuite(t *testing.T, cli *helpers.CLIRunner, lsHelper *framewor
 	require.Empty(t, helpers.ListCASKeys(t, lsHelper, bucket),
 		"[%s] GC must not introduce cas/ objects", io.proto)
 
+	// local_disk_used is the physical journal footprint, so the unlink's
+	// tombstone record and its segment header survive GC. What must be gone is
+	// the payload: anything under the framing allowance holds no file data.
+	const framingAllowance int64 = 64 << 10
 	statsAfterGC := helpers.GetBlockStats(t, cli, shareName)
-	require.Zero(t, statsAfterGC.Totals.LocalDiskUsed,
-		"[%s] GC must free the local block too (local disk used should be 0, got %d)",
+	require.LessOrEqual(t, statsAfterGC.Totals.LocalDiskUsed, framingAllowance,
+		"[%s] GC must free the local block too (local disk used should be framing only, got %d of %d written)",
+		io.proto, statsAfterGC.Totals.LocalDiskUsed, payloadSize)
+	t.Logf("[%s] step 3: GC freed the block on both tiers (remote blocks/ empty, local disk %d bytes of framing)",
 		io.proto, statsAfterGC.Totals.LocalDiskUsed)
-	t.Logf("[%s] step 3: GC freed the block on both tiers (remote blocks/ empty, local disk 0)", io.proto)
 
 	// ---- Step 4: corruption — tamper a remote block → read fails closed ----
 	exerciseBlocksCorruption(t, cli, lsHelper, bucket, shareName, io)

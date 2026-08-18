@@ -99,7 +99,10 @@ func (s *NFSAdapter) registerWithSystemEnabled() bool {
 }
 
 // systemPortmapAddr is the dial address of the host's system rpcbind.
-func systemPortmapAddr() string {
+func (s *NFSAdapter) systemPortmapAddr() string {
+	if s.sysregAddr != "" {
+		return s.sysregAddr
+	}
 	return fmt.Sprintf("127.0.0.1:%d", sysreg.SystemPortmapPort)
 }
 
@@ -139,7 +142,7 @@ func (s *NFSAdapter) startSystemPortmapRegistration(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, systemRegTimeout)
 	defer cancel()
 
-	addr := systemPortmapAddr()
+	addr := s.systemPortmapAddr()
 	if err := sysreg.Ping(ctx, addr); err != nil {
 		logger.Warn("No system portmapper reachable; NFSv3 locking needs `nolock`",
 			"addr", addr, "error", err)
@@ -177,7 +180,7 @@ func (s *NFSAdapter) stopSystemPortmapRegistration() {
 	defer cancel()
 
 	mappings := s.systemRegMappings()
-	if err := sysreg.Unregister(ctx, systemPortmapAddr(), mappings); err != nil {
+	if err := sysreg.Unregister(ctx, s.systemPortmapAddr(), mappings); err != nil {
 		logger.Warn("Failed to unregister services from system portmapper", "error", err)
 		return
 	}

@@ -97,9 +97,10 @@ func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
 	s.config.UDP.Enabled = &udpEnabled
 	logger.Debug("NFS adapter: applied UDP transport setting from DB", "enabled", settings.UDPEnabled)
 
-	// mDNS advertiser: unlike portmapper/UDP (which take effect on the next
-	// restart), the mDNS sidecar is toggled live here — start or stop it to
-	// match the setting. No-op until Serve has started the auxsvc group.
+	// The host-rpcbind registration and the mDNS advertiser are toggled live to
+	// match the settings; the embedded portmapper and the UDP listener still
+	// take effect on the next restart.
+	s.reconcileSysreg()
 	s.reconcileDiscovery()
 }
 

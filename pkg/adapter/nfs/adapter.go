@@ -152,6 +152,15 @@ type NFSAdapter struct {
 	// Stop() may race Serve() (Stop is documented safe to call concurrently).
 	sysregActive atomic.Bool
 
+	// sysregReconciling guards the background registration reconcile so a burst
+	// of settings applies (one per accepted connection) collapses into a single
+	// in-flight transition instead of a goroutine per call.
+	sysregReconciling atomic.Bool
+
+	// sysregAddr overrides the system rpcbind dial address. Empty means the
+	// well-known one; a test sets it to keep the host's rpcbind untouched.
+	sysregAddr string
+
 	// udpConn is the UDP listener serving NLM/NSM/MOUNT when the UDP transport
 	// is enabled (adapters.nfs.udp.enabled). nil when UDP is disabled.
 	udpConn *net.UDPConn
