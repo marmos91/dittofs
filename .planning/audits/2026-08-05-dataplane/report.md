@@ -2,8 +2,9 @@
 
 # Status annotations
 
-Findings that have since been actioned are marked inline below with a `> STATUS:` line.
-All 8 HIGH findings shipped; see closed umbrella #1900.
+Findings that have since been actioned are marked inline below with a `> STATUS:` line
+(`FIXED`, `TRACKED`, `PARTIAL`, or `REFUTED`). Last refreshed 2026-08-18, against develop
+`29928f16`. All 8 HIGH findings shipped; see closed umbrella #1900.
 
 | Finding | Issue | Outcome |
 |---|---|---|
@@ -26,8 +27,34 @@ All 8 HIGH findings shipped; see closed umbrella #1900.
 | Committed size past the durable extent | — | FIXED #1929 |
 | Lock-manager MED batch (8 findings) | — | FIXED #1935 |
 
-Every issue escalated out of this audit is now closed. The remaining work is the
-unescalated MED and LOW tail, batched by package.
+Every issue escalated out of this audit is closed. The unescalated MED tail was then
+swept in five per-package batches:
+
+| Batch | PR | Covers |
+|---|---|---|
+| runtime | #1943 | adapter restart/stop lifecycle, dead client-tracking surface, callback + path-derivation dedup |
+| journal + local store | #1948 | reclaim/recovery correctness, fault-in seam on `FileSize`/`DataExtents`, group-commit, local-store cleanups |
+| SQL stores | #1949 | `GetFileByPayloadID` manifest aggregation + scoped diff, snapshot/reset block-record state, transaction-convention and retry gaps |
+| decorators | #1946 | shared `remote.Passthrough`, dead `BlockStoreAppend` contract, truthful rotation docs |
+| block engine | #1959 | whole-block readahead, cold re-read failing closed, per-walk manifest snapshot, shutdown joins |
+
+Also landed since: #1947 (memory-restore reseed via `quota.Delta`), #1950 (badger share-cache
+purge on `Reset`/`RestoreSnapshot`), #1951 (master-key rotation, the feature #1946's docs said
+did not exist), #1953 (overlapping manifest rows).
+
+**Two findings are only half closed** — both marked `PARTIAL` inline:
+
+- **badger caches on `Reset`/`RestoreSnapshot`** (#1961). #1950 flushes `shareCache`. `readCache`,
+  `parentCache` and `direntCache` are still not flushed, so a restore can keep serving
+  pre-restore file attrs and dirent hits. Same reachability as the original finding.
+- **`/api/v1/clients` misreports NFSv4** (#1962). #1943 dropped the eight never-populated fields, but
+  `NfsDetails.Version` is still hardcoded `"3"` at `pkg/adapter/nfs/connection.go:109` while the
+  same connection dispatches both versions.
+
+The remaining tail is the LOW findings (220, largely untouched) and the MED findings whose fix is
+a structural refactor rather than a patch — the god-object and duplicated-CRUD entries across
+`pkg/metadata/lock/`, `pkg/metadata/store/{postgres,sqlite}/` and `runtime/shares`, which #1828
+subsumes, plus `recover()` in `pkg/block/journal/recovery.go`.
 
 Also opened from this work: #1909 (crash-ordering silent zeros, still open),
 #1910 (smbtorture grading non-determinism, fixed in #1919).
@@ -39,7 +66,9 @@ Also opened from this work: #1909 (crash-ordering silent zeros, still open),
 - #1910's original diagnosis (grading folds timeouts into pass/fail) was **wrong** — grading was correct; the real hole was that timed-out and never-reached tests vanished silently from the report. Recorded so the wrong theory is not re-derived.
 - #1866 is **not a flaky test**. It was filed as "failed once in CI, not reproducible"; chasing it off a red PR run produced a deterministic repro on clean develop in 0.11s. `WaitForSnapshot` returns the orchestration error only while a live `doneCh` is in the registry, but `unregisterSnap` deletes that entry the moment the goroutine finishes — so when orchestration completes before the caller waits, the wrapped sentinel is dropped and a **failed** snapshot is returned with a **nil** error. The REST layer maps that sentinel to HTTP 500, so the wait endpoint reports success for a snapshot that failed, and the faster a snapshot fails the likelier it is reported fine. `cancelAndWaitInFlightSnaps` already works around the identical hazard in one place. A faithful fix needs the failure *kind* persisted on the row, which currently stores only the message string.
 - #1936 — develop's E2E job has been red since 2026-07-28 and nothing tracked it. Two unrelated failures: `TestBlocksFlipLifecycle_NFS/_SMB` regressed at `1f95b389` (#1890, which intentionally redefined `disk_used` as the physical segment footprint, so the test's `require.Zero` is only reachable if GC also retires the emptied segment file), and `TestNLMAxisInterop`, older, where nlockmgr never registers in the test namespace's rpcbind. E2E is push-only on develop and gates no PR, which is why it survived 9+ days.
-- #1930 (disabled-share purge gate), #1931 (`Get`/`Consume` naming different handles), #1934 (`resolveCovering` order-dependence) — all raised by fixes, all awaiting a decision rather than a patch.
+- #1930 (disabled-share purge gate), #1931 (`Get`/`Consume` naming different handles), #1934 (`resolveCovering` order-dependence) — all raised by fixes. #1934 shipped as #1953; the other two still await a decision rather than a patch.
+- #1934's premise — that overlapping manifest rows are latent and cannot occur today — was **false**. A randomized mutation soak hit overlap in 3 of 24 seeds: `Truncate` narrows a straddling row, a later write re-carves from an earlier chunk boundary, and nothing reaps the narrowed row's tail. Erroring on overlap turned correct cold reads into hard failures, so #1953 ships greatest-start (matching badger) instead.
+- #1956 — the same soak found a pre-existing bug the audit missed: after `PunchHole`, a cold read of the punched range does not read back as zeros (RFC 7862 DEALLOCATE contract). 5 of 24 seeds. Same silent-wrong-data family as #1879, #1888, #1894, #1909, #1911.
 
 **On the review gates:** Copilot's findings ran 4 real / 2 refuted across this work, and the sub-agent reviewer missed every real one. The two real findings on #1933 shared a shape worth naming — *a sentinel value silently disabling a guard* (`DataSize == 0` skipping the clamp; a 32-bit `int()` wrap doing the same). Both would have failed open, which is the same failure direction as the silent-zeros family the audit exists to close. Copilot is not redundant with the reviewer sub-agent and must be checked immediately before merge, not once when the PR opens — it re-reviews each new commit.
 
@@ -208,30 +237,35 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Package doc + godoc advertise BlockStoreAppendConformance and appendlog.go that don't exist; FSStore never wired to any conformance suite
 
 - **Where:** `pkg/block/blockstoretest/doc.go:8` · `structure` · area: block-conformance-suite · *re-confirmed*
+> STATUS: FIXED in #1946 — block.BlockStoreAppend and the contract doc claiming it deleted
 - **Verified:** CONFIRMED on this tree: repo-wide grep for `func BlockStoreAppendConformance` returns nothing (only BlockStoreConformance conformance.go:65 and RemoteBlockStoreConformance remoteblock.go:50). Package dir has only conformance.go/remoteblock.go/doc.go — no appendlog.go. doc.go also cites pkg/block/local/fs/appendlog_internals_test.go which does not exist (fs dir has only legacy*/disk_used/format tests). blockstoretest.* callers are compression, encryption, s3, memory — fs is NOT among them, contradicting doc.go:8-9 ("The fs, s3, and memory backends all call this entrypoint") and conformance.go:63-64. Real coverage hole hidden behind confident godoc. MED not HIGH: no runtime defect, docs + missing test wiring.
 - **Fix:** Either implement BlockStoreAppendConformance (and appendlog.go) and wire pkg/block/local/fs/*_test.go to call blockstoretest.BlockStoreConformance + BlockStoreAppendConformance, or strip the false claims from doc.go/conformance.go godoc until they exist.
 
 ### [MED] EncryptedRemote and compression.Decorator are ~90% duplicate boilerplate — no shared base
 
 - **Where:** `pkg/block/encryption/decorator.go:283` · `structure` · area: block-crypto-compression
+> STATUS: FIXED in #1946 — shared remote.Passthrough
 - **Verified:** Confirmed by side-by-side read: encryption/decorator.go:283-357 vs compression/decorator.go:315-389 are line-for-line identical modulo the receiver type and comment wording (blockInner/casInner/PutBlock/GetBlock/GetBlockRange/DeleteBlock/WalkBlocks). legacy_cas_migration.go: a type-normalized diff of the two 53/54-line files yields only comment-text differences — structurally byte-identical. Both packages are live (block.Store/remote.RemoteStore assertions). ~300 duplicated lines across two live decorators is real drift surface.
 - **Fix:** Extract the passthrough scaffolding into pkg/block/remote (e.g. remote/passthrough.go: type Passthrough struct{ inner RemoteStore } with casInner/blockInner/Close/HealthCheck/Healthcheck/Durable/PutBlock/GetBlock/GetBlockRange/DeleteBlock/WalkBlocks/Has/GetRange/Walk taking a decode func). EncryptedRemote and compression.Decorator embed it and supply only Put/Get/SealChunk/ReadChunk plus the encode/decode hook. Same for the LegacyCASStore forwards.
 
 ### [MED] ~150 lines of identical passthrough plumbing duplicated verbatim between the two decorators
 
 - **Where:** `pkg/block/compression/decorator.go:325` · `bloat` · area: block-encryption-compression
+> STATUS: FIXED in #1946 — shared remote.Passthrough
 - **Verified:** CONFIRMED. pkg/block/compression/decorator.go:325-389 (blockInner/casInner/PutBlock/GetBlock/GetBlockRange/DeleteBlock/WalkBlocks/HealthCheck/Healthcheck/Durable) vs pkg/block/encryption/decorator.go:293-357 — bodies byte-identical modulo receiver name; GetRange/Has/Delete same. Even the '--- remote.RemoteBlockStore passthrough' banner comment is duplicated near-verbatim. REACHABLE: both constructed in prod at pkg/controlplane/runtime/shares/service.go:1564 (encryption.NewRemote) and :1592 (compression.NewRemote). Fix: one embedded `passthrough{inner remote.RemoteStore}` struct in a shared pkg, embed in both decorators; each keeps only Get/Head/SealChunk/ReadChunk/Close.
 - **Fix:** Extract a small embeddable helper (e.g. `remote.BlockPassthrough{ inner remote.RemoteStore }`) implementing blockInner/casInner/PutBlock/GetBlock/GetBlockRange/DeleteBlock/WalkBlocks/HealthCheck/Healthcheck/Durable once; embed it in both Decorator and EncryptedRemote. Cuts ~150 duplicated lines to one shared implementation.
 
 ### [MED] Master-key rotation is documented/promised but not implemented — old blocks become permanently unreadable after rotation
 
 - **Where:** `pkg/block/encryption/keyprovider/provider.go:26` · `gaps` · area: block-encryption-compression
+> STATUS: DOCS CORRECTED in #1946; rotation IMPLEMENTED in #1951 (retired-key set) — open at time of writing
 - **Verified:** CONFIRMED. Both providers embed a single aesGCMKEK (local.go:68-98, kmip.go:37-67) holding one masterKey/masterKeyID (local.go:227-231); Unwrap (local.go:253-256) returns ErrWrongMasterKey whenever the frame's id != the single held id — no keyring of retired keys anywhere in the package. Interface doc (provider.go:24-29) promises routing 'to the right master key after a future rotation' and kmip.go:29-31 documents rotation as 'write a new key to the HSM and restart the daemon'; doc.go:1-6 claims parity with SSE-KMS/KES/Vault Transit which keep old versions decryptable. Following the documented procedure orphans every previously wrapped block. Reachable: keyprovider.NewProvider + encryption.NewRemote at shares/service.go:1560-1564 (non-test). Fix: either accept a list of retired keys (id→key map) in Config and route Unwrap by id, or delete the rotation promise from the docs until implemented.
 - **Fix:** Either (a) make Config/KeyProvider support a list of master keys (current + N retired), so Unwrap can look up by masterKeyID across the set while Wrap always uses CurrentMasterKeyID — mirrors how Vault Transit/SSE-KMS keep old key versions live for decrypt-only; or (b) if only one key is ever supported, remove the 'route to the right master key after a future rotation' claim from provider.go and the 'operators rotate...and restart' claim from kmip.go, and document that rotation requires a full re-encrypt (rewrap every block) before decommissioning the old key, e.g. via a rewrap tool that reads with the old provider and writes with the new one.
 
 ### [MED] walkAuditShareFiles: N+1 GetFile per directory entry, ignoring already-populated DirEntry.Attr
 
 - **Where:** `pkg/block/engine/audit_state.go:218` · `perf` · area: block-engine-carve-gc
+> STATUS: REFUTED in #1959 — the per-entry GetFile is load-bearing (the READDIRPLUS projection leaves Blocks/PayloadID unloaded on the relational backends); documented in place
 - **Verified:** CONFIRMED: walkAuditShareFiles' inner loop unconditionally does `child, err := store.GetFile(ctx, e.Handle)` for every entry returned by ListChildren, then switches on child.Type. metadata.DirEntry.Attr (validation.go:39-42) exists precisely so callers 'can avoid per-entry GetFile() calls', and it is populated on the store-level path: sqlite files.go:356 sets `Attr: attr`, and badger's store-level ListChildren (files.go:395-409) delegates straight to badgerTransaction.ListChildren which fills Attr — so the fix pays off on the default backend too. REACHABLE from non-test entrypoints: dfsctl store block audit (cmd/dfsctl/commands/store/block/audit.go:44) → API handler blockstore_audit.go:72 → Runtime.AuditRefcounts. Downgraded HIGH→MED: this is an operator-triggered offline audit walk, not the data plane — cost is a slower audit run, not client-visible latency.
 - **Fix:** Use e.Attr when non-nil (recurse on e.Attr.Type; build the *metadata.File from e.Handle+e.Attr for regular files) and fall back to GetFile(ctx, e.Handle) only when e.Attr is nil.
 
@@ -245,24 +279,28 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] WarmAll claims to skip already-local blocks and report them but never does — BlocksAlreadyLocal is dead, every warm re-fetches everything
 
 - **Where:** `pkg/block/engine/warm.go:88` · `gaps` · area: block-engine-cold-eviction-seed
+> STATUS: FIXED in #1959 — BlocksAlreadyLocal dropped; the skip it advertised cannot be implemented over an offset-keyed local tier
 - **Verified:** CONFIRMED at warm.go:76-108. `alreadyLocal` declared line 78, never incremented (only read at 107/170/177) ⇒ WarmResult.BlocksAlreadyLocal is always 0 despite its godoc at :16 and the API json tag `blocks_already_local`. Loop 88-99 appends every parseable row unconditionally; the ponytail comment at 95-98 concedes there is no local-presence probe, directly contradicting the function godoc at :36-37 ('skips any block already present locally') and :45-46 ('total is the number of NOT-already-local blocks'). fetchResolvedBlock (fetch.go:288-330) has no local short-circuit — it always dispatchRemoteFetch then hydrateChunk, so every warm run does pay full remote GETs. Reachable in production: shares/service.go:2804 → engine.Store.WarmAll (engine.go:541) → Syncer.WarmAll. Downgraded to MED: no correctness/data loss, and the ponytail comment shows the re-fetch is a known accepted cost (journal is offset-keyed, not hash-keyed) — the defect is the godoc + the always-zero field in an operator-visible JSON result. Fix: either drop BlocksAlreadyLocal and correct the two godoc paragraphs, or probe residency via local.DataExtents(payloadID) once per payload and skip rows fully covered.
 - **Fix:** Either add a cheap local-presence check (e.g. probe bs.local.DataExtents/FileSize coverage for the chunk's offset range before adding it to targets) and increment alreadyLocal on skip, or fix the docs/API to stop promising skip-already-local behavior and stop reporting a field that's structurally always zero.
 
 ### [MED] Readahead worker fetch only resolves the first chunk of a block, silently drops trailing chunks
 
 - **Where:** `pkg/block/engine/fetch.go:57` · `gaps` · area: block-engine-read-fetch
+> STATUS: FIXED in #1959
 - **Verified:** CONFIRMED. fetch.go:56-59 resolveFileChunk does ONE resolveCovering probe at blockIdx*BlockSize (BlockSize=8MiB, pkg/block/types.go:17); fetchBlock (fetch.go:262) uses it and nothing else. Contrast EnsureAvailableAndRead (fetch.go:366-388) which loops resolveCovering advancing by fb.DataSize, with an in-repo comment stating 'FastCDC chunks are typically smaller than BlockSize, so a block holds several chunks' and that the old single-probe loop left everything past a block's first chunk unfetched. Reachable non-test: readwrite.go:32 Store.ReadAt -> scheduleReadahead -> EnqueuePrefetch -> sync_queue.go:300 q.manager.fetchBlock. Effect is perf only (demand path still correct), so MED not HIGH. Fix: give fetchBlock the same covering-chunk walk over [blockIdx*BlockSize,(blockIdx+1)*BlockSize) and fetch each row.
 - **Fix:** Either resolve and enqueue all chunks covering the block's byte range in resolveFileChunk/fetchBlock, or document explicitly that prefetch is best-effort single-chunk-per-block and rely on demand fetch for the rest.
 
 ### [MED] Post-hydrate re-read discards its own cold flag
 
 - **Where:** `pkg/block/engine/read_internal.go:84` · `gaps` · area: block-engine-read-fetch
+> STATUS: FIXED in #1959
 - **Verified:** CONFIRMED at read_internal.go:84: `if _, _, err := bs.local.ReadAt(ctx, payloadID, int64(offset), dest); err != nil` — n and cold both discarded. readAtInternal:51-54 then returns len(data), nil unconditionally; healCorruptWarmRead:69-72 same. Production path (NFS/SMB read → Store.ReadAt). Real given idx 6 makes leftover-cold actually happen, and independently under evict-racing-hydrate. Silent zeros instead of EIO — same failure mode #1850/#1879 were opened for. Not a spec question. Fix: `n, cold, err := ...; if cold { return fmt.Errorf("window still cold after hydrate for %s at %d: %w", payloadID, offset, block.ErrChunkNotFound) }`.
 - **Fix:** Check the returned cold flag from the post-hydrate ReadAt; if still cold, treat as a hydrate failure (error out) rather than returning success.
 
 ### [MED] N+1 full-manifest scan per covering-chunk in cold-read fetch loop (non-indexed backends)
 
 - **Where:** `pkg/block/engine/fetch.go:367` · `perf` · area: block-engine-readwrite
+> STATUS: FIXED in #1959
 - **Verified:** CONFIRMED: EnsureAvailableAndRead's window loop (fetch.go:366-388) calls resolveCovering once per covering chunk (`for cur := offset; cur < end;` … `cur = next` advancing by fb.DataSize). resolveCovering (read_internal.go:154-184) takes the indexed GetFileChunkAtOffset path only when the store implements chunkAtOffsetResolver, else falls through to `store.ListFileChunks(ctx, payloadID)` + findRowCoveringOffset — a full per-payload manifest fetch and O(N) scan per offset. So K covering chunks ⇒ K full manifest fetches, O(K·N). REACHABLE: sqlite/postgres/memory are selectable metadata backends and this is the demand-fetch cold-read path. Downgraded HIGH→MED: the function's own doc already flags the fallback as 'not the profiled hot path', badger (the default) has the index, and a cold read is dominated by the remote object fetch that follows — but the fix is trivial and the O(K·N) is real.
 - **Fix:** In EnsureAvailableAndRead (and resolveFileChunk's blockIdx path), when the store does not implement chunkAtOffsetResolver, call listFileChunksSnapshot(ctx, payloadID) ONCE for the whole window, then resolve every covering chunk in-memory via findRowCoveringOffset against that single snapshot (mirroring DataExtents), instead of letting resolveCovering re-issue ListFileChunks per offset.
 
@@ -282,48 +320,56 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] blocksReprojector: one-impl capability interface probed twice, only to dodge test fakes
 
 - **Where:** `pkg/block/engine/readwrite.go:126` · `structure` · area: block-engine-readwrite · *re-confirmed*
+> STATUS: FIXED in #1959 — ReprojectBlocks is now a MetadataCoordinator method
 - **Verified:** CONFIRMED: interface declared readwrite.go:126-128, identical `rp, ok := bs.coordinator.(blocksReprojector)` guards at :193 (Truncate) and :287 (PunchHole). Grep shows exactly ONE implementation repo-wide: shares/coordinator.go:168 (*metadataCoordinator). Doc comment itself states the only non-implementers are unit-test fakes. Violates repo's explicit convention (no one-impl capability interfaces), and the ok=false branch silently skips a correctness-relevant Blocks re-projection — a future second coordinator that forgets the method gets over-counted snapshots with no compile error.
 - **Fix:** Add ReprojectBlocks to MetadataCoordinator and call bs.coordinator.ReprojectBlocks unconditionally in Truncate and PunchHole; test fakes implement a no-op.
 
 ### [MED] PersistFileChunks doc describes a rollup-completion callback that engine.go says no longer exists
 
 - **Where:** `pkg/block/engine/coordinator.go:67` · `comments` · area: block-engine-readwrite-core
+> STATUS: FIXED in #1959 (doc)
 - **Verified:** Confirmed: coordinator.go:67-71 says 'Engine invokes this from the local store's rollup-completion callback (the ObjectIDPersister wired in engine.New)'. engine.go:193-197 says the opposite ('Chunk-lifecycle hooks are gone with the journal switchover ... There is no rollup-completion persister, no write-side cache warm hook, and no per-chunk emitter') and New (engine.go:163-205) wires no callback. grep: ObjectIDPersister has zero declarations tree-wide, comment-only (engine.go:100, readwrite.go:504/553/566/572, fetch.go:43, 2 tests). Engine also never calls PersistFileChunks outside coordinator_test.go:245 — ErrPersistFileChunksNotWired exists for that. Reachable: MetadataCoordinator impl is production (pkg/controlplane/runtime/shares/coordinator.go:195, injected per shares/service.go). Fix: replace the callback sentence with 'invoked by the runtime coordinator wrapper' or drop it; MED not HIGH — comment rot, no runtime effect.
 - **Fix:** Update coordinator.go's PersistFileChunks doc to say who actually calls it now (per engine.go: the carve BlockSink's commit txn), drop the ObjectIDPersister/engine.New claim.
 
 ### [MED] Background goroutines (carveDispatcher, runUploadController, HealthMonitor.monitorLoop) are not joined on shutdown
 
 - **Where:** `pkg/block/engine/syncer.go:710` · `structure` · area: block-engine-syncer-drain
+> STATUS: FIXED in #1959 — HealthMonitor.Stop and Syncer.Close now join under a bounded wait
 - **Verified:** CONFIRMED: `go m.carveDispatcher(ctx)` (:710) and `go m.runUploadController(ctx, ...)` (:717) launched with no WaitGroup; Syncer.Close() (:915-943) closes stopCh, calls healthMonitor.Stop(), DrainAllUploads, queue.Stop(timeout) and returns without joining either. HealthMonitor.Stop() (sync_health.go:97-101) closes stopCh under stopOnce, never joins monitorLoop. Contrast SyncQueue.Stop which does join. Materially reachable: engine.go:376-386 Close() calls syncer.Close() then immediately bs.local.Close() / bs.remote.Close(), while a carvePass in flight is still calling m.local.ListFiles/Carve and monitorLoop may still be running probeFunc against the remote — use-after-close/goroutine-leak race. Partially mitigated (carvePass derives a stopCh-cancelled ctx) but the join is genuinely absent.
 - **Fix:** Add a sync.WaitGroup to Syncer and HealthMonitor covering carveDispatcher/runUploadController/monitorLoop; Add(1) before each `go`, Done() on return, Wait() with SyncQueue.Stop's timeout pattern inside Close()/Stop().
 
 ### [MED] Truncate: misleading summary line contradicts documented no-op behavior
 
 - **Where:** `pkg/block/engine/syncer.go:584` · `comments` · area: block-engine-syncer-drain
+> STATUS: FIXED in #1959 (doc)
 - **Verified:** Confirmed at syncer.go:584-593. Godoc summary line 584 'Truncate removes blocks beyond the new size from the remote store' contradicts the body (595-609: checkReady, nil-remote skip, health-gate warn, then bare 'return nil'). Line 590 is genuinely truncated mid-sentence: '…becomes a no-op at the remote-side after' followed by 'kept as a stable seam for callers'. Reachable: engine.Truncate invokes m.syncer.Truncate unconditionally on the production truncate path. Fix: summary → 'Truncate is a no-op on the remote side; CAS objects are reclaimed by GC.' and repair the dangling clause. MED — first line of godoc states the opposite of the behaviour.
 - **Fix:** Reword summary to e.g. "Truncate is a no-op at the remote layer; per-file cleanup is handled by RefCount decrement + GC." and fix the truncated sentence at line 590.
 
 ### [MED] Garbled/incomplete comment on fileChunkStore field
 
 - **Where:** `pkg/block/engine/syncer.go:42` · `comments` · area: block-engine-syncer-drain
+> STATUS: FIXED in #1959 (doc)
 - **Verified:** CONFIRMED syncer.go:42-46. Two defects, not one: (a) field comment opens 'the syncer is one of the engine-internal callers' with no 'fileChunkStore is...' lead; (b) sentence 'surface (GetFileChunk for dual-read resolve, ListFileChunks for GetFileSize/Exists). routes reads through FileAttr.Blocks and lets us drop the wider interface.' has no subject and is unparseable. Field type IS still block.EngineFileChunkStore (line 47), so 'lets us drop the wider interface' describes a state that never arrived — actively misleading. Production: NewSyncer syncer.go:168. Fix: rewrite as one sentence naming fileChunkStore + why the wide surface is still needed.
 - **Fix:** Rewrite as a complete sentence, e.g. "Other engine internals route reads through FileAttr.Blocks and no longer need the wider interface; the syncer is one of the few callers left that still reaches into it."
 
 ### [MED] Delete: summary and body claim don't match the actual no-op implementation
 
 - **Where:** `pkg/block/engine/syncer.go:612` · `comments` · area: block-engine-syncer-drain
+> STATUS: FIXED in #1959 (doc)
 - **Verified:** CONFIRMED syncer.go:612-634. Doc says 'Delete removes all blocks for a file from the remote store' and 'Delete now records the deletion intent'. Body: checkReady → nil-remote early return → IsRemoteHealthy warn return → 'return nil' (line 633). Nothing removed, nothing recorded — pure no-op. Real deletion is refcount decrement in engine.Delete. Reachable: readwrite.go:423 'delErr := bs.syncer.Delete(ctx, payloadID)'. Fix: retitle 'Delete is a no-op on the remote side; engine.Delete drives refcount+GC' or delete the method and its call site.
 - **Fix:** Reword to state this Syncer.Delete is a no-op retained as a stable seam; the refcount/GC-driven deletion happens in engine.Delete, not here.
 
 ### [MED] Verified warm read allocates a fresh whole-record buffer per read, no pooling
 
 - **Where:** `pkg/block/journal/record.go:182` · `perf` · area: block-journal-core
+> STATUS: FIXED in #1948 — the record read takes a caller-supplied buffer
 - **Verified:** CONFIRMED: record.go:182 `buf := make([]byte, body)` where body = FileIDLen + full PayloadLen + CRC; index.go:341-345 calls verifiedRead per warm piece of every ReadAt when verifyReads is set, and verifiedRead (363-386) calls readRecordAt(seg.fd, p.recOff, SegmentSize) then copies only the sub-range. REACHABLE and ON by default for durable shares: shares/service.go:1170-1171 SetVerifyReads(!writeback). Cost is per-read whole-record alloc + read + CRC on the data-plane read path — more than a micro-opt (the alloc is sized to the record, not the request).
 - **Fix:** Pool the readRecordAt scratch buffer (sync.Pool sized to SegmentSize/record ceiling, or per-shard reusable buffer under an appropriate lock) instead of make()-ing a fresh slice every call; reset before reuse per the pooling convention already used elsewhere in the block-store hot path.
 
 ### [MED] Delete/Truncate fsync bypasses shard group-commit coalescing
 
 - **Where:** `pkg/block/journal/segment.go:424` · `perf` · area: block-journal-core · *re-confirmed*
+> STATUS: FIXED in #1948 — tombstone durability goes through the shard commit leader
 - **Verified:** CONFIRMED: appendTombstone releases sh.mu then does `if err := fd.Sync(); err != nil { … 'journal: fsync tombstone' }`, and appendTruncateMarker does the identical raw `fd.Sync()` ('journal: fsync truncate marker'). Neither calls sh.groupCommit(); grep shows groupCommit is invoked only from Store.Commit (store.go:451). groupCommit (store.go:464-510) is a general per-shard leader/follower fsync coalescer that re-reads sh.active fresh and is safe for these callers (its own comment covers the rotation case). So a burst of concurrent Delete/Truncate hashing to one shard pays one full disk barrier each, exactly what #1736 built groupCommit to eliminate. Kept MED rather than HIGH: bulk unlink also pays a metadata-store durable txn per op, so removing this halves rather than transforms the cost, and delete/truncate is not the profiled data-plane hot path.
 - **Fix:** Route appendTombstone/appendTruncateMarker's durability step through sh.groupCommit() (store.go:464) instead of calling fd.Sync() directly, so concurrent deletes/truncates on one shard piggyback on a single fsync the way concurrent Commit callers already do.
 
@@ -337,12 +383,14 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] pickVictim rebuilds full shard live-byte map every call, GC pass becomes O(victims × intervals)
 
 - **Where:** `pkg/block/journal/reclaim.go:530` · `perf` · area: block-journal-replay-gc
+> STATUS: FIXED in #1948 — the live-byte map is summed once per GC pass
 - **Verified:** CONFIRMED: pickVictim (reclaim.go:528-546) takes sh.mu and walks every fi in sh.index and every iv to rebuild `live` on each call; gcShard (475-505) loops pickVictim->repackSegment until nil, so cost is O(V×I) per pass with sh.mu held (same lock ReadAt uses). REACHABLE: background GC goroutine store.go:349 `s.GC(ctx, GCOptions{})` on defaultGCInterval ticker, plus API POST /shares/{name}/blockstore/gc (block_gc.go:144). Only the repacked segment's counts change between iterations, so the rescan is genuinely redundant.
 - **Fix:** Compute live-byte-per-segment once per gcShard call (or maintain incrementally, subtracting relocated bytes from the source segment and not rescanning others), reuse across the victim-picking loop; only the just-repacked segment's counts need updating between iterations.
 
 ### [MED] findMove is a linear scan inside repack's index-repoint loop → O(moves²) per segment repack
 
 - **Where:** `pkg/block/journal/reclaim.go:726` · `perf` · area: block-journal-replay-gc
+> STATUS: FIXED in #1948 — moves are bucketed by version
 - **Verified:** CONFIRMED: findMove (605-613) is a plain linear scan over `moves`; repackSegment step 4 (718-737, under sh.mu) calls it once per index interval still pointing at the victim, and that set is the same order as len(moves) (both derived from the victim's live records). A heavily-overwritten victim with thousands of small live fragments makes the repoint O(moves²) while holding sh.mu. REACHABLE via the same background-GC path (store.go:349) and the GC API handler.
 - **Fix:** Build a map[key]int (key = fileOff+version, or index moves by original record so a direct index/key lookup works) once before the step-4 loop instead of re-scanning the slice per interval.
 
@@ -383,30 +431,35 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] FSStore.FileSize and DataExtents skip the legacy fault-in seam, so SEEK/READ_PLUS and size queries see holes/zero-size for un-drained pre-journal payloads
 
 - **Where:** `pkg/block/local/fs/fs.go:225` · `bugs` · area: block-local · *re-confirmed*
+> STATUS: FIXED in #1948
 - **Verified:** Confirmed asymmetry in source: WriteAt/ReadAt/Delete/Truncate each call s.materializeLegacy first; FileSize and DataExtents delegate straight to s.Store. Reachable in production — shares/service.go:2937 sets fsOpts.MigrateLegacyLocalOnly, and legacy_migrate.go's own doc states the fault-in exists so 'a read never observes zeros'. engine.DataExtents (dataextents.go:31) is called by NFSv4.2 SEEK/READ_PLUS with no prior ReadAt, so an un-drained payload's log-only (never rolled-up, hence no FileChunk row to union in) bytes report as a hole → RFC 7862 sparse-copy loss. MED not HIGH: bounded to the one-time async drain window, and rolled-up ranges are still covered by the manifest union in dataextents.go.
 - **Fix:** Call s.materializeLegacy(payloadID) at the top of FSStore.FileSize and FSStore.DataExtents (mirroring WriteAt/ReadAt/Delete/Truncate), same as the other four data-plane shims. FileSize currently has no error return to propagate a materialize failure through — either add one or fall back to logging+treating as not-found consistent with existing error handling in the package.
 
 ### [MED] FSStore.Stats() does a full O(files) journal scan + slice alloc just to get a count
 
 - **Where:** `pkg/block/local/fs/fs.go:276` · `perf` · area: block-local
+> STATUS: FIXED in #1948 — Stats reads journal.Store.FileCount
 - **Verified:** CONFIRMED fs.go:276 `FileCount: len(s.Store.ListFiles(...))`; journal Store.ListFiles (store.go ~641) locks every shard and appends every FileID to an unpreallocated slice. REACHABLE non-test: engine/stats.go:79 (Store.Stats -> runtime.GetShareUsage:706 -> api/handlers/shares.go:1626) and engine/stats.go:125/244 (getStats -> shares/service.go:2639 GetStatsLite, :2801 warm start). Aggravating: GetStatsLite's own doc says it is 'O(1)-ish and safe to call on a hot path such as a metrics scrape' — false, it walks every shard; engine.Stats() additionally calls local.ListFiles a SECOND time (stats.go:80). runtime/metrics.go:21 already comments 'Avoid GetShareUsage here' because of this cost, i.e. the cost is known real. Shard locks contend with WriteAt/ReadAt.
 - **Fix:** Add a cheap Count() on journal.Store that sums shard index sizes under lock without building/returning a slice, and call that from Stats() instead of ListFiles().
 
 ### [MED] SetRetentionPolicy is a no-op in every LocalStore implementation but stays a required interface method that live callers invoke with real config
 
 - **Where:** `pkg/block/local/local.go:111` · `structure` · area: block-local · *re-confirmed*
+> STATUS: FIXED in #1948 — SetRetentionPolicy removed from the interface
 - **Verified:** CONFIRMED: local.go:108-111 declares it as a 'compatibility no-op'; fs.go:250 and memory.go:286 are empty bodies; engine/health.go:87 delegates; live calls at shares/service.go:1067 and :1758. Knob is user-settable over REST (handlers/shares.go:357-370 ParseRetentionPolicy/ValidateRetentionPolicy) so RetentionTTL is validated then silently discarded. Only RetentionPin survives, and via a separate SetEvictionEnabled call (service.go:1064), not this method.
 - **Fix:** Remove SetRetentionPolicy from the LocalStore interface and its two no-op implementations; delete (or explicitly no-op with a comment at the call site, not the interface) the calls in shares/service.go. If retention tuning is ever reintroduced, add it back as a capability interface asserted only against backends that support it.
 
 ### [MED] MemoryStore.writeLocked: exact-size realloc+full-copy on every growing write — O(n^2) total
 
 - **Where:** `pkg/block/local/memory/memory.go:60` · `perf` · area: block-local
+> STATUS: FIXED in #1948 — the grow path appends instead of exact-size reallocating
 - **Verified:** CONFIRMED: writeLocked does `if int64(len(f.buf)) < end { grown := make([]byte, end); copy(grown, f.buf); f.buf = grown }` with zero capacity slack — every extending WriteAt reallocates and copies the whole buffer, so N sequential appends copy O(n^2) bytes. REACHABLE from a non-test entrypoint: pkg/controlplane/runtime/shares/service.go:3036 `case "memory": store := localmemory.New()` is a selectable local_store type in the share config, reached through the same factory as the fs backend. Downgraded HIGH→MED: the memory backend is not the default or recommended production local store (fs/journal is), so the O(n^2) is real but confined to an opt-in configuration.
 - **Fix:** Grow via append() so Go's amortized geometric growth applies: `if int64(len(f.buf)) < end { f.buf = append(f.buf, make([]byte, end-int64(len(f.buf)))...) }`. Same zero-fill semantics, amortized O(1) instead of a full copy per growing write.
 
 ### [MED] Package doc comment describes a superseded design (stale/misleading)
 
 - **Where:** `pkg/block/remote/doc.go:1` · `comments` · area: block-remote · *re-confirmed*
+> STATUS: FIXED in #1946
 - **Verified:** CONFIRMED pkg/block/remote/doc.go (whole file, 9 lines): claims backends '(S3, filesystem, memory)' and 'Key format: "{payloadID}/block-{blockIdx}"'. Both refuted in-package: remote.go:1-16 + :66-73 state the production surface is opaque blockID with on-wire key block.FormatBlockKey(blockID) = 'blocks/<blockID>'; ls pkg/block/remote shows only memory/ and s3/ subpackages — no filesystem backend exists. Package is production (remote.RemoteStore consumed at engine/syncer.go:36,168). Two competing 'Package remote' doc comments in one package, the stale one wins alphabetically in godoc. Fix: delete doc.go — remote.go already carries the authoritative package comment.
 - **Fix:** Delete doc.go's stale content and fold a short package comment into remote.go (which already carries the real, current doc), or rewrite doc.go to match remote.go's description (blocks/<blockID>, s3 + memory backends only).
 
@@ -484,6 +537,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Reset()/RestoreSnapshot wipe BadgerDB but never invalidate the four in-process caches
 
 - **Where:** `pkg/metadata/store/badger/reset.go:17` · `gaps` · area: metadata-badger-cache-index · *re-confirmed*
+> STATUS: PARTIAL — #1950 flushes shareCache on Reset and RestoreSnapshot. readCache, parentCache and direntCache are still not flushed, so a restore can keep serving pre-restore file attrs and dirent hits. Tracked in #1961
 - **Verified:** CONFIRMED. badger/reset.go:17-25 Reset = ctx check + s.db.DropAll(), nothing else; snapshot_store.go:181+ RestoreSnapshot streams via WriteBatch (never through badgerTransaction, so no dirtyFiles/dirtyDirents invalidation in transaction.go:157-172) and only calls initUsedBytesAndPayloadIndex at :309. read_cache.go has NO TTL — entries die only on invalidate() or pruneToHalf at 8192 cap. Reachable non-test: runtime/snapshot.go:1549 resetable.Reset(ctx) and :1567 snapshotable.RestoreSnapshot on the store from GetMetadataStoreForShare (:1438) = the live instance that served the share. GetFileForRead (files.go:44-58) / GetShareOptions return on cache hit without touching badger, and a restore of the same share reuses the same fileID UUIDs + shareName, so warm keys keep serving pre-restore attrs. Mitigated only by the share staying disabled post-restore (snapshot.go:1646 comment) — no cache flush anywhere. Fix: add a store-wide flush (bump gen + clear sync.Maps on all four caches) at the end of Reset.
 - **Fix:** Add a clear() method to each cache type (fileReadCache, direntCache, shareReadCache) that bumps gen, calls m.Clear() (Go 1.23+ sync.Map.Clear, safe for concurrent readers) and resets the counter, then call s.readCache.clear(); s.parentCache.clear(); s.direntCache.clear(); s.shareCache.clear() in Reset() right after a successful DropAll.
 
@@ -606,6 +660,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] SetFilesystemCapabilities duplicates the exact upsert query from initializeFilesystemCapabilities
 
 - **Where:** `pkg/metadata/store/postgres/server.go:74` · `bloat` · area: metadata-postgres-support
+> STATUS: FIXED in #1949 — one filesystem_capabilities upsert per backend
 - **Verified:** CONFIRMED. server.go:74-98 and store.go:333-368 carry the same 15-column `INSERT INTO filesystem_capabilities (...) VALUES (1,$1..$14) ON CONFLICT (id) DO UPDATE SET ...` with the same 14-arg list; only the executor differs (s.exec + Warn-on-error vs pool.Exec + returned error). initializeFilesystemCapabilities is called from NewPostgresMetadataStore (production, mirrored by sqlite/store.go:140). Caveat on criterion 2: store-level SetFilesystemCapabilities currently has no non-test caller (only storetest/store_surface.go:580) but is a mandatory metadata.Store interface method (pkg/metadata/store.go:236) compiled into the binary, so it is not deletable dead code. Fix: one package-level const upsertCapabilitiesSQL + capsArgs(caps) helper used by both.
 - **Fix:** Factor the query + arg-binding into one shared helper (e.g. upsertFilesystemCapabilities(ctx, execer, caps)) taking anything with Exec(ctx, sql, args...), called from both the constructor and SetFilesystemCapabilities.
 
@@ -624,12 +679,14 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] QueryTimeout config field is parsed and defaulted but never applied to any query
 
 - **Where:** `pkg/metadata/store/sqlite/config.go:24` · `bloat` · area: metadata-sqlite-support
+> STATUS: FIXED in #1949 — the unread QueryTimeout knob is gone
 - **Verified:** CONFIRMED. grep QueryTimeout in pkg/metadata/store/sqlite/ returns exactly 4 hits: config.go:24 (doc 'bounds an individual statement'), :25 (field), :41-42 (default 30s). Never in DSN() pragmas, never a context.WithTimeout, never touched by pool_helpers.go. Contrast postgres/connection.go:35-36 which maps it to statement_timeout. Config is operator-facing and live-constructed in prod (runtime/init.go:183, runtime/stores/service.go:218) via mapstructure key query_timeout — operator sets it, silently gets nothing. Fix: apply it (context.WithTimeout in query/queryRow/exec) or delete the field.
 - **Fix:** Either wire QueryTimeout into a per-statement context.WithTimeout in pool_helpers.go's execer (query/exec paths), or delete the field and its mapstructure tag/doc comment from SQLiteMetadataStoreConfig.
 
 ### [MED] filesystem_capabilities upsert SQL duplicated verbatim between store.go and server.go
 
 - **Where:** `pkg/metadata/store/sqlite/store.go:304` · `bloat` · area: metadata-sqlite-support
+> STATUS: FIXED in #1949
 - **Verified:** CONFIRMED. store.go:304-359 initializeFilesystemCapabilities and server.go:79-133 SetFilesystemCapabilities issue the same 14-column INSERT INTO filesystem_capabilities ... ON CONFLICT(id) DO UPDATE with the same 14-column excluded-list; differ only in ? vs ?1 placeholders and db.ExecContext vs s.exec. Both prod: store.go:140 calls the free function from NewSQLiteMetadataStore; SetFilesystemCapabilities is an interface method (mirrored again at transaction.go:1285). Column change must be made twice. Fix: keep one statement (const) and have startup call it.
 - **Fix:** Construct the SQLiteMetadataStore struct earlier in NewSQLiteMetadataStore (before initUsedBytesCounter) and call store.SetFilesystemCapabilities(capabilities) instead of the separate initializeFilesystemCapabilities(ctx, db, capabilities) free function; delete the duplicate.
 
@@ -668,36 +725,42 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Reset() leaves per-identity quota cache stale — diverges from sqlite's Reset contract
 
 - **Where:** `pkg/metadata/store/memory/reset.go:20` · `bugs` · area: metadata-store-memory
+> STATUS: FIXED in #1949
 - **Verified:** Confirmed: memory/reset.go zeroes s.usedBytes (line 44) and every map but never touches s.quota; sqlite/reset.go:47-49 does `s.quotaMu.Lock(); s.quota.Reset(); s.quotaMu.Unlock()`. Memory store has a real quota.Cache (store.go:253) read by GetQuotaUsage (store.go:445-449). Reachable from prod: pkg/controlplane/runtime/snapshot.go:1442 type-asserts metadata.Resetable and calls resetable.Reset(ctx) at :1549 on the snapshot-restore path, reached from internal/controlplane/api/handlers/snapshot.go. MED not HIGH: memory backend, quota reporting/enforcement skew only.
 - **Fix:** Add `s.quotaMu.Lock(); s.quota.Reset(); s.quotaMu.Unlock()` inside Reset(), mirroring sqlite/reset.go:47-49.
 
 ### [MED] RestoreSnapshot() recomputes usedBytes but never reseeds the per-identity quota cache
 
 - **Where:** `pkg/metadata/store/memory/snapshot_store.go:412` · `bugs` · area: metadata-store-memory
+> STATUS: FIXED in #1949
 - **Verified:** Confirmed: memory/snapshot_store.go:411-419 recomputes only s.usedBytes; no s.quota touch. sqlite/snapshot_store.go:296 calls initUsedBytesCounter, which (store.go:184-203) both stores usedBytes AND s.quota.Seed(userUsage, groupUsage). Reachable: runtime/snapshot.go:1567 snapshotable.RestoreSnapshot on the API restore path. Combined with idx 2 the cache keeps pre-restore values (the seed's 'reads all zeros' detail is off, but the missing reseed is real). MED: quota skew after restore, memory backend only.
 - **Fix:** While summing totalBytes over s.files, also accumulate per-uid/per-gid UsageStat maps and call s.quotaMu.Lock(); s.quota.Seed(userUsage, groupUsage); s.quotaMu.Unlock(), matching sqlite's post-restore initUsedBytesCounter.
 
 ### [MED] PrepareStatements config flag is declared and logged but never wired into the pgxpool connection config
 
 - **Where:** `pkg/metadata/store/postgres/connection.go:27` · `perf` · area: metadata-store-postgres-support
+> STATUS: FIXED in #1949 — renamed DisablePreparedStatements and wired into the pool config
 - **Verified:** CONFIRMED: createConnectionPool (connection.go:12-68) sets MaxConns/MinConns/lifetimes/statement_timeout only; no DefaultQueryExecMode, no StatementCacheCapacity, no reference to cfg.PrepareStatements anywhere in the pool build. Only other use is the log line at store.go:170 ("prepare_statements", cfg.PrepareStatements). Field is declared config.go:32 with documented default true. Reachable: createConnectionPool is the sole pool constructor for the postgres store. Dead knob — setting prepare_statements=false (the PgBouncer transaction-pooling escape hatch) has zero effect.
 - **Fix:** Wire PrepareStatements into poolConfig.ConnConfig.DefaultQueryExecMode (pgx.QueryExecModeCacheStatement when true, QueryExecModeSimpleProtocol/DescribeExec when false) in createConnectionPool.
 
 ### [MED] durable_handles.go / clients.go / client_recovery.go bypass the pool acquire-timeout wrapper pool_helpers.go exists specifically to enforce
 
 - **Where:** `pkg/metadata/store/postgres/durable_handles.go:236` · `structure` · area: metadata-store-postgres-support
+> STATUS: FIXED in #1949
 - **Verified:** CONFIRMED: postgresDurableStore{pool *pgxpool.Pool} (durable_handles.go:14-20), postgresClientStore (clients.go:28-34), postgresRecoveryStore (client_recovery.go:23-29) each hold the raw pool; direct s.pool.Exec/Query/QueryRow counts 12 / 6 / 4, plus schema_ops.go:60,112. All three are built from the live store (durable_handles.go:380, clients.go:199, client_recovery.go:152), so non-test reachable. pool_helpers.go:20-32 states verbatim that pgxpool has no built-in acquire timeout and 'without these helpers, any pool operation can hang forever under high concurrent load'; poolConnectionAcquireTimeout=10s never applies on these paths. Genuine fail-fast gap on SMB durable-handle reconnect / NFSv4 client recovery.
 - **Fix:** Route postgresDurableStore, postgresClientStore, postgresRecoveryStore through PostgresMetadataStore's query/exec/queryRow helpers instead of holding a raw *pgxpool.Pool, or give them a small execer interface implemented by a thin wrapper that applies the same acquire-timeout. Do the same for schema_ops.go's ListSchemasByPrefix/DropSchema.
 
 ### [MED] fileChunkRefsDelta re-reads and diffs the entire stored manifest on every BlocksDirty PutFile, cost scales with total file chunk count not with the changed range
 
 - **Where:** `pkg/metadata/store/postgres/file_block_refs.go:98` · `perf` · area: metadata-store-postgres-write
+> STATUS: FIXED in #1949 — BlocksDirtyOffsets scopes the manifest diff to the touched range
 - **Verified:** Confirmed: fileChunkRefsDelta (98+) does `SELECT "offset", size, hash FROM file_block_refs WHERE file_id = $1` into a map whenever hasPriorRefs, then builds a second O(N) incoming map to compute upserts/deletes. Reachable: transaction.go:465 `putFileChunkRefs(ctx, tx.tx, file.ID, file.Blocks, updated)` runs on every PutFile with BlocksDirty (i.e. every carve/commit), and file.Blocks is the whole projected manifest. So each commit re-reads and re-compares all N stored rows regardless of how few offsets changed — O(N) per write, ~O(N^2) over a large file's lifetime (a multi-GB file at 128KiB chunks is 10k+ rows re-read per commit, plus the hash bytes over the wire). Kept MED: unbounded growth with file size on the write path, not a micro-opt.
 - **Fix:** Carry the changed-offset set (or a modified-range hint) from where the manifest projection is built into PutFile so putFileChunkRefs can target its UPSERT/DELETE without a full-table diff read per commit.
 
 ### [MED] CreateRootDirectory bypasses the package's own WithTransaction convention, losing conflict retry
 
 - **Where:** `pkg/metadata/store/postgres/shares.go:269` · `structure` · area: metadata-store-postgres-write
+> STATUS: FIXED in #1949 — runs through WithTransaction
 - **Verified:** CONFIRMED: the needsUpdate branch issues a bare pool s.exec(ctx, updateQuery,...) (shares.go:269-285) with no transaction; the create branch hand-rolls s.beginTx / defer Rollback / tx.Commit (shares.go:299-368). Neither goes through s.WithTransaction, whose retry loop on 40001/40P01 exists at transaction.go:52-59/88/148/163 and is used by every sibling write. So a transient serialization failure/deadlock fails the call instead of retrying. Reachable from prod: shares/service.go:903 calls metadataStore.CreateRootDirectory on share create/bootstrap. MED not HIGH: this path runs at share creation, so real conflicts are rare.
 - **Fix:** Route both branches through s.WithTransaction(ctx, func(tx metadata.Transaction) error {...}) like every other mutation in the package, or wrap the bespoke tx with the same isRetryableError/backoff loop transaction.go already provides.
 
@@ -710,24 +773,28 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] PutFile costs 2 round-trips for every file CREATE (no-op UPDATE, then INSERT)
 
 - **Where:** `pkg/metadata/store/postgres/transaction.go:262` · `perf` · area: metadata-store-postgres-write
+> STATUS: FIXED in #1949 — the create path carries NewInode so PutFile skips the probe that can only miss
 - **Verified:** Confirmed: updateQuery (CTE `old` + FOR UPDATE + UPDATE ... RETURNING old.size) issued unconditionally at 262; `if !updated` INSERT fallback at ~409-425. Reachable — pkg/metadata/file_create.go:188/446 call tx.PutFile for freshly created inodes, so the UPDATE matches zero rows on every CREATE/MKDIR/symlink by construction. That is a guaranteed extra client-server round-trip (not pipelined; pgx Exec then Exec) inside the txn on the create path, which is the documented write wall for this tree. Kept MED: real per-create latency in the 0.1-1ms range over a network link, though the seed's one-statement fix is not directly implementable on current PG.
 - **Fix:** Pass an is-new hint from the create path (file_create.go) so PutFile skips the guaranteed-miss UPDATE and goes straight to INSERT. Note: the seed's 'INSERT ... ON CONFLICT DO UPDATE RETURNING old.*' shape does not work pre-PG18 (OLD in RETURNING is PG18+), and the CTE exists precisely to return the pre-update size/uid/gid under FOR UPDATE — so collapsing to one statement requires either the is-new hint or keeping the CTE for the update case only.
 
 ### [MED] backupTables omits block_records — snapshot/restore/reset silently diverge from postgres backend and drop block-record state
 
 - **Where:** `pkg/metadata/store/sqlite/snapshot_store.go:36` · `slop` · area: metadata-store-sqlite-support
+> STATUS: FIXED in #1949 — block_records is in backupTables, pinned by conformance, sqlite snapshot schema v5
 - **Verified:** CONFIRMED: sqlite backupTables (snapshot_store.go:35-50) lists 14 tables — inodes, shares, filesystem_meta, parent_child_map, file_blocks, file_block_refs, locks, nsm_client_registrations, durable_handles, v4_client_recovery, synced_hashes, server_config, server_epoch, filesystem_capabilities — and does NOT include block_records. Postgres's equivalent (postgres/snapshot_store.go:58-73) ends with "block_records". The table is real and live on sqlite: pkg/metadata/store/sqlite/block_record_store.go issues INSERT/SELECT/DELETE/walk against block_records (lines 41/63/77/90/143). reset.go:13 confirms Reset reuses the same backupTables slice, so Reset also skips it despite its 'empty every metadata table' contract, and RestoreSnapshot's truncate leaves stale rows behind. REACHABLE via dfsctl snapshot/restore/reset. Downgraded HIGH→MED: admin-triggered path, and block_records is partly rebuildable by the reconcile/reclaim walk — but stale live_chunk_count after restore is a genuine GC hazard.
 - **Fix:** Add "block_records" to backupTables in pkg/metadata/store/sqlite/snapshot_store.go (FK-safe position, matching postgres), bump sqliteSchemaVersion with a comment documenting the addition, and add a WriteSnapshot/RestoreSnapshot round-trip test asserting block_records rows survive.
 
 ### [MED] objects.go duplicates FileChunkStore CRUD SQL between pool and tx paths
 
 - **Where:** `pkg/metadata/store/sqlite/objects.go:73` · `structure` · area: metadata-store-sqlite-write
+> STATUS: FIXED in #1949
 - **Verified:** CONFIRMED. Pool Put(73-111)/Delete/Increment/Decrement/AddRef(229-251)/GetByHash(258-271) vs tx copies (Put~545, Delete, Increment, AddRef 637-656, GetByHash 658-673) carry byte-identical query literals ('UPDATE file_blocks SET ref_count = ref_count + 1 WHERE hash = ?1 AND state = 2', same 8-col INSERT..ON CONFLICT). Both surfaces already funnel through the same `execer` shim (pool_helpers.go), and decrementAndReapTx(ctx, execer, id) proves the extraction works in-file (called with execer{e:rawTx} at 164 and tx.tx at 631). ~100 lines duplicated on the chunk ref-count write path. Reachable via block/engine coordinator.
 - **Fix:** Extract execer-parameterized bodies (putFileChunkTx, deleteFileChunkTx, incrementRefCountTx, decrementRefCountTx, addRefTx, getByHashTx) alongside the existing decrementAndReapTx, and have both *SQLiteMetadataStore and *sqliteTransaction call them.
 
 ### [MED] CreateRootDirectory and DecrementRefCountAndReap bypass the package's own busy/backoff retry wrapper
 
 - **Where:** `pkg/metadata/store/sqlite/shares.go:300` · `structure` · area: metadata-store-sqlite-write
+> STATUS: FIXED in #1949 — runs through WithTransaction
 - **Verified:** CONFIRMED. shares.go:300 `rawTx, err := s.db.BeginTx(ctx, nil)` + hand-rolled commit/rollback + execer{e:rawTx,op:"CreateRootDirectory"}; objects.go:164 same shape for DecrementRefCountAndReap. Neither touches txretry.Deadline/Backoff, which transaction.go:59-133 implements as the documented package-wide backpressure policy (comment at 21-26). Both reachable non-test: CreateRootDirectory <- pkg/controlplane/runtime/shares/service.go:903; DecrementRefCountAndReap <- pkg/block/engine/readwrite.go:185/280/414 and runtime/blockgc_reconcile.go:168. Mitigating: DSN sets _pragma=busy_timeout (config.go:98, default 5s) and both txns open with a write as first statement, so plain BUSY is driver-absorbed — the gap is only when busy_timeout expires, where every other mutation would keep retrying to the txretry budget and these return EIO. Real inconsistency, MED not HIGH.
 - **Fix:** Rewrite both to run inside s.WithTransaction(ctx, func(tx metadata.Transaction) error {...}), calling the existing tx-level counterparts (tx.CreateRootDirectory, decrementAndReapTx via tx.tx) instead of opening a raw *sql.Tx.
 
@@ -758,36 +825,42 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] UpdateAdapter swallows startAdapter failure after persisting new config
 
 - **Where:** `pkg/controlplane/runtime/adapters/service.go:152` · `bugs` · area: runtime-adapters
+> STATUS: FIXED in #1943
 - **Verified:** Confirmed at service.go:152-159: after `_ = s.stopAdapter(cfg.Type)`, a startAdapter failure is only logger.Warn'd and UpdateAdapter returns nil, with the new Enabled config already committed at :138. Inconsistent with CreateAdapter (:96-109, rolls back and returns the error) and EnableAdapter (:213-215, returns it). Reachable: runtime.go:339 -> internal/controlplane/api/handlers/adapters.go:275 -> dfsctl adapter edit/enable/disable. Result: API 200 while the adapter is down and s.entries has no entry. MED not HIGH: control-plane state divergence, self-heals on restart, no data path impact.
 - **Fix:** Return the error instead of only logging: `if err := s.startAdapter(cfg); err != nil { return fmt.Errorf("failed to restart adapter after update: %w", err) }`.
 
 ### [MED] stopAdapter removes the map entry before the adapter is confirmed stopped
 
 - **Where:** `pkg/controlplane/runtime/adapters/service.go:263` · `bugs` · area: runtime-adapters
+> STATUS: FIXED in #1943 — the entry is held until Stop returns
 - **Verified:** Code confirmed verbatim: line 263 `delete(s.entries, adapterType)` runs under the lock BEFORE adapter.Stop/cancel/errCh wait; the ctx.Done() branch returns an error with the entry already gone. Reachable from 4 non-test callers (service.go:116 DeleteAdapter, :152 UpdateAdapter, :226 DisableAdapter, :296 StopAllAdapters). startAdapter's only duplicate guard is `s.entries[cfg.Type]` (line 239), so post-timeout a re-enable spawns a second Serve goroutine on the same port. Downgraded HIGH->MED: only reachable when Stop exceeds shutdownTimeout, i.e. a wedged adapter, not a normal path.
 - **Fix:** Only delete(s.entries, adapterType) after the success branch (`<-entry.errCh`); on the timeout branch, leave the entry in the map (or mark it as still-stopping) so a subsequent start is rejected instead of racing a still-live adapter.
 
 ### [MED] Client share-tracking API built but never wired from either production registration path
 
 - **Where:** `pkg/controlplane/runtime/clients/service.go:140` · `bloat` · area: runtime-identity-clients
+> STATUS: FIXED in #1943 — the unwired share-tracking API is gone
 - **Verified:** CONFIRMED and worse than bloat: Registry.AddShare (clients/service.go:140) / RemoveShare (:155) have zero non-test callers; both production Register sites — pkg/adapter/nfs/connection.go (ClientRecord{ClientID,Protocol,Address,NFS}) and pkg/adapter/smb/connection.go (…,SMB) — omit Shares entirely, and nothing else writes e.Shares. So ClientRecord.Shares is always nil, and the LIVE API path internal/controlplane/api/handlers/clients.go:51 registry.ListByShare(share) always returns [] for any ?share= query. Reachable=true (user-visible endpoint silently empty), so this is a functional gap, not pure dead weight.
 - **Fix:** Either wire AddShare/RemoveShare into the mount/share-attach path (e.g. call from wherever a client's export/share association is established) or delete Shares/AddShare/RemoveShare/ListByShare + the API share filter.
 
 ### [MED] ClientRecord/NfsDetails/SmbDetails fields declared but never populated by any production caller
 
 - **Where:** `pkg/controlplane/runtime/clients/service.go:22` · `bloat` · area: runtime-identity-clients
+> STATUS: PARTIAL — #1943 dropped the eight never-populated fields. The v4 sub-claim is still open: NfsDetails.Version is hardcoded "3" at pkg/adapter/nfs/connection.go:109, so /api/v1/clients misreports every v4 client. Tracked in #1962
 - **Verified:** CONFIRMED, including the v4 sub-claim. Only two prod constructors exist: pkg/adapter/nfs/connection.go:105-110 sets ClientID/Protocol/Address + NfsDetails{Version:"3"}, and pkg/adapter/smb/connection.go:93-98 sets ClientID/Protocol/Address + SmbDetails{SessionID}. Registry has no field-mutating method (only Register/Deregister/Get/UpdateActivity/Add|RemoveShare/List*). Grep for User/AuthFlavor/Domain/Signed/Encrypted/Dialect assignments hits ONLY clients/service_test.go:15,19,272,276-278,289. So ClientRecord.User(22), NfsDetails.AuthFlavor/UID/GID(33-35), SmbDetails.Dialect(41)/Domain/Signed/Encrypted(42-44) are always zero in the API response — 8 fields, not 6. v4 sub-claim CONFIRMED: the same NFSConnection dispatches both versions (connection.go:177-183, `case rpc.NFSVersion3` / `case rpc.NFSVersion4`) yet Version is hardcoded "3", so /api/v1/clients misreports every v4 client. Fix: drop the never-filled fields, or populate them (Version from call.Version, the auth flavor plus UID and GID from the AuthContext, and the dialect along with the signed and encrypted flags from the SMB session).
 - **Fix:** Either thread real values through at registration (auth flavor, UID and GID from the AuthContext; the negotiated dialect and message-integrity state held by the SMB session; the real negotiated NFS version) or drop the unused fields until there's a caller for them.
 
 ### [MED] Identical callback-registry logic duplicated for two unrelated notification channels
 
 - **Where:** `pkg/controlplane/runtime/runtime.go:1113` · `bloat` · area: runtime-lifecycle-core
+> STATUS: FIXED in #1943 — both channels share one callbackList
 - **Verified:** CONFIRMED verbatim duplication. runtime.go:1113-1138 vs 1144-1170 are identical modulo the field name (identityChangeCallbacks:164 vs identityProviderChangeCallbacks:170): append-under-Lock, captured-index unsubscribe that nils the slot, Notify = RLock+copy+iterate+nil-check. REACHABLE both: OnIdentityMappingChange from pkg/adapter/nfs/nlm.go:738, pkg/adapter/smb/adapter.go:782, pkg/adapter/nfs/adapter.go:622; Notify from pkg/controlplane/api/router.go:446,460. OnIdentityProviderConfigChange from smb/adapter.go:693,790,841 and nfs/nlm.go:705; Notify from internal/controlplane/api/handlers/identity_providers.go:221,382. Fix: one `type callbackList struct{ mu sync.Mutex; fns []func() }` with Add/Notify, two fields of that type.
 - **Fix:** Extract a small unexported type, e.g. `type callbackList struct { mu sync.Mutex; cbs []func() }` with `Add(fn func()) func()` and `Notify()` methods, and give Runtime two `callbackList` fields instead of two `[]func()` fields plus four hand-written methods. The four public On*/Notify* methods on Runtime become one-line delegations.
 
 ### [MED] deriveGCStateRoot and deriveLocalStoreDir are near-verbatim duplicates
 
 - **Where:** `pkg/controlplane/runtime/shares/service.go:2825` · `bloat` · area: runtime-shares
+> STATUS: FIXED in #1943 — deriveGCStateRoot calls deriveLocalStoreDir
 - **Verified:** CONFIRMED. shares/service.go:2825-2847 and 2861-2883 are line-for-line identical (nil guard, GetConfig(), cfg["path"].(string) ok/empty guard, pathutil.ExpandPath, filepath.IsAbs guard); only the terminal Join differs (extra "gc-state" segment). REACHABLE: both called from prod at service.go:1254 (share.gcStateRoot) and :1258 (share.localStoreDir) inside share creation. Fix: deriveGCStateRoot = { d := deriveLocalStoreDir(cfg,name); if d=="" {return ""}; return filepath.Join(d,"gc-state") }.
 - **Fix:** Extract a shared helper, e.g. `func deriveShareBaseDir(cfg interface{ GetConfig() (map[string]any, error) }, shareName string) (string, bool)` returning the expanded `<base>/shares/<sanitized>` dir, then have deriveGCStateRoot do `base, ok := deriveShareBaseDir(...); if !ok { return "" }; return filepath.Join(base, "gc-state")` and deriveLocalStoreDir just return `base`.
 
@@ -952,6 +1025,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] WarmAll's BlocksAlreadyLocal stat is dead code — always 0, contradicts its own doc comment
 - **Where:** `pkg/block/engine/warm.go:78` · `slop` · *re-confirmed*
+> STATUS: FIXED in #1959
 - **Fix:** Delete the dead alreadyLocal var + BlocksAlreadyLocal field and the stale 'split into already-local/to-fetch' doc (warm.go:16, 20-21, 60-61), and simplify the shares/warm.go:174 check to use the enumerated-target count.
 
 ### [LOW] WarmAll always re-downloads every chunk from remote, even chunks already resident locally
@@ -960,6 +1034,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] WarmResult.BlocksAlreadyLocal / alreadyLocal counter declared but never incremented
 - **Where:** `pkg/block/engine/warm.go:78` · `structure` · *re-confirmed*
+> STATUS: FIXED in #1959
 - **Fix:** Delete alreadyLocal + WarmResult.BlocksAlreadyLocal (and the shares/warm.go:174 term, service.go:2808 field) and fix the :61 doc comment; or implement the local-presence skip it promises.
 
 ### [LOW] Unnecessary pre-1.22 loop-variable-capture idiom
