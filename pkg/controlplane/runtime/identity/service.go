@@ -29,7 +29,7 @@ func New() *Service { return &Service{} }
 func (s *Service) ApplyIdentityMapping(shareName string, identity *metadata.Identity, provider ShareProvider) (*metadata.Identity, error) {
 	info, err := provider.GetShareIdentityInfo(shareName)
 	if err != nil {
-		return nil, fmt.Errorf("share %q not found", shareName)
+		return nil, fmt.Errorf("share %q: %w", shareName, err)
 	}
 
 	effective := &metadata.Identity{

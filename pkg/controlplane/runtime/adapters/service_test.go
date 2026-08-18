@@ -43,6 +43,17 @@ func (f *fakeAdapterStore) UpdateAdapter(_ context.Context, a *models.AdapterCon
 	return nil
 }
 
+func (f *fakeAdapterStore) GetAdapter(_ context.Context, t string) (*models.AdapterConfig, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a, ok := f.byType[t]
+	if !ok {
+		return nil, errors.New("adapter not found")
+	}
+	cp := *a
+	return &cp, nil
+}
+
 func (f *fakeAdapterStore) DeleteAdapter(_ context.Context, t string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -419,4 +430,37 @@ func TestUpdateAdapter_NoPreservedListenerAfterStopTimeout(t *testing.T) {
 	}
 
 	close(stuck.release)
+}
+
+// A failed start must not leave the persisted config claiming the adapter is
+// enabled.
+func TestEnableAdapter_RollsBackEnabledOnStartFailure(t *testing.T) {
+	st := newFakeAdapterStore()
+	svc := New(st, time.Second)
+
+	startFails := false
+	svc.SetAdapterFactory(func(cfg *models.AdapterConfig) (ProtocolAdapter, error) {
+		if startFails {
+			return nil, errors.New("boom")
+		}
+		return newFakeListenerAdapter(cfg.Type, cfg.Port), nil
+	})
+
+	ctx := context.Background()
+	if err := svc.CreateAdapter(ctx, &models.AdapterConfig{Type: "nfs", Enabled: false, Port: 14449}); err != nil {
+		t.Fatalf("CreateAdapter: %v", err)
+	}
+
+	startFails = true
+	if err := svc.EnableAdapter(ctx, "nfs"); err == nil {
+		t.Fatal("expected EnableAdapter to fail when the adapter cannot start")
+	}
+
+	stored, err := st.GetAdapter(ctx, "nfs")
+	if err != nil {
+		t.Fatalf("GetAdapter: %v", err)
+	}
+	if stored.Enabled {
+		t.Fatal("persisted config still claims the adapter is enabled after a failed start")
+	}
 }

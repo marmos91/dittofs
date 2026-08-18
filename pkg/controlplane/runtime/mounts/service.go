@@ -14,27 +14,32 @@ type MountInfo struct {
 	AdapterData any // Protocol-specific details (e.g., NFS mount path, SMB session ID)
 }
 
+// mountKey identifies one mount. The components stay separate fields rather
+// than a joined string so a value containing the separator (an IPv6 client
+// address, a share name with a colon) cannot collide with a different triple.
+type mountKey struct {
+	Protocol   string
+	ClientAddr string
+	ShareName  string
+}
+
 // Tracker provides thread-safe mount tracking across all protocol adapters.
 type Tracker struct {
 	mu     sync.RWMutex
-	mounts map[string]*MountInfo // keyed by protocol:client:share
+	mounts map[mountKey]*MountInfo
 }
 
 func NewTracker() *Tracker {
 	return &Tracker{
-		mounts: make(map[string]*MountInfo),
+		mounts: make(map[mountKey]*MountInfo),
 	}
-}
-
-func mountKey(protocol, clientAddr, shareName string) string {
-	return protocol + ":" + clientAddr + ":" + shareName
 }
 
 func (mt *Tracker) Record(clientAddr, protocol, shareName string, adapterData any) {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
 
-	key := mountKey(protocol, clientAddr, shareName)
+	key := mountKey{Protocol: protocol, ClientAddr: clientAddr, ShareName: shareName}
 	mt.mounts[key] = &MountInfo{
 		ClientAddr:  clientAddr,
 		Protocol:    protocol,
@@ -48,7 +53,7 @@ func (mt *Tracker) Remove(clientAddr, protocol, shareName string) bool {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
 
-	key := mountKey(protocol, clientAddr, shareName)
+	key := mountKey{Protocol: protocol, ClientAddr: clientAddr, ShareName: shareName}
 	if _, exists := mt.mounts[key]; exists {
 		delete(mt.mounts, key)
 		return true
@@ -90,7 +95,7 @@ func (mt *Tracker) RemoveAll() int {
 	defer mt.mu.Unlock()
 
 	count := len(mt.mounts)
-	mt.mounts = make(map[string]*MountInfo)
+	mt.mounts = make(map[mountKey]*MountInfo)
 	return count
 }
 

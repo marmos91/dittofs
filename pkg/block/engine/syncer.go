@@ -643,6 +643,18 @@ func (m *Syncer) Delete(ctx context.Context, payloadID string) error {
 // Must be called after New() to enable async uploads.
 // When remoteStore is nil (local-only mode), the periodic syncer is skipped.
 func (m *Syncer) Start(ctx context.Context) {
+	// The health monitor's eager probe is a network round trip, so it runs
+	// after m.mu is released: every read and flush path takes that lock, and
+	// holding it for a remote timeout stalls them all. Start still returns only
+	// once the probe has settled, so callers may read the health state.
+	if hm := m.startLocked(ctx); hm != nil {
+		hm.Start(ctx)
+	}
+}
+
+// startLocked performs the locked half of Start and returns the health monitor
+// still to be started, or nil in local-only mode.
+func (m *Syncer) startLocked(ctx context.Context) *HealthMonitor {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -652,7 +664,7 @@ func (m *Syncer) Start(ctx context.Context) {
 
 	if m.remoteStore == nil {
 		logger.Info("Syncer started in local-only mode (no remote store)")
-		return
+		return nil
 	}
 
 	// one-shot janitor pass before the periodic uploader
@@ -667,13 +679,14 @@ func (m *Syncer) Start(ctx context.Context) {
 	// (its recovered interval index re-marks every not-yet-carved record dirty
 	// on Open), so the carve dispatcher re-drains them without a reconcile walk.
 
-	m.startHealthMonitor(ctx)
+	hm := m.newHealthMonitorLocked()
 	m.startPeriodicUploader(ctx)
+	return hm
 }
 
-// startHealthMonitor creates and starts the health monitor for the remote store.
-// Must be called with m.mu held.
-func (m *Syncer) startHealthMonitor(ctx context.Context) {
+// newHealthMonitorLocked creates and wires the health monitor for the remote
+// store, without starting it. Must be called with m.mu held.
+func (m *Syncer) newHealthMonitorLocked() *HealthMonitor {
 	m.healthMonitor = NewHealthMonitor(m.remoteStore.HealthCheck, m.config)
 	// Wrap the user's callback to also reset the offline-read WARN flag
 	// on each healthy->unhealthy transition.
@@ -686,7 +699,7 @@ func (m *Syncer) startHealthMonitor(ctx context.Context) {
 			userCallback(healthy)
 		}
 	})
-	m.healthMonitor.Start(ctx)
+	return m.healthMonitor
 }
 
 // startPeriodicUploader launches the carve dispatcher and the maintenance
@@ -705,11 +718,6 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 	}
 	m.periodicStarted = true
 
-	interval := m.config.UploadInterval
-	if interval <= 0 {
-		interval = 2 * time.Second
-	}
-	_ = interval
 	// Carve collaborators are wired by recomputeCarveActive once all deps are
 	// present; launch the dispatcher that periodically packs the journal's dirty
 	// ranges into remote blocks.
@@ -1008,17 +1016,32 @@ func (m *Syncer) HealthCheck(ctx context.Context) error {
 // (seedPendingFromDisk), not immediately. Not currently wired into any
 // production control-plane path; Start() is the seeded entry point.
 func (m *Syncer) SetRemoteStore(ctx context.Context, remoteStore remote.RemoteStore) error {
+	hm, err := m.setRemoteStoreLocked(ctx, remoteStore)
+	if err != nil {
+		return err
+	}
+
+	// Eager probe outside m.mu; see Start.
+	hm.Start(ctx)
+
+	logger.Info("Remote store attached, periodic syncer started")
+	return nil
+}
+
+// setRemoteStoreLocked performs the locked half of SetRemoteStore and returns
+// the health monitor still to be started.
+func (m *Syncer) setRemoteStoreLocked(ctx context.Context, remoteStore remote.RemoteStore) (*HealthMonitor, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.closed {
-		return ErrClosed
+		return nil, ErrClosed
 	}
 	if m.remoteStore != nil {
-		return errors.New("remote store already set")
+		return nil, errors.New("remote store already set")
 	}
 	if remoteStore == nil {
-		return errors.New("remoteStore must not be nil")
+		return nil, errors.New("remoteStore must not be nil")
 	}
 
 	m.remoteStore = remoteStore
@@ -1026,9 +1049,7 @@ func (m *Syncer) SetRemoteStore(ctx context.Context, remoteStore remote.RemoteSt
 	m.recomputeCarveActive()
 	m.local.SetEvictionEnabled(true)
 
-	m.startHealthMonitor(ctx)
+	hm := m.newHealthMonitorLocked()
 	m.startPeriodicUploader(ctx)
-
-	logger.Info("Remote store attached, periodic syncer started")
-	return nil
+	return hm, nil
 }

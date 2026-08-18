@@ -1,6 +1,10 @@
 package metadata
 
-import "time"
+import (
+	"time"
+
+	"github.com/marmos91/dittofs/internal/logger"
+)
 
 // quotaDimension is one enforceable axis of a quota check (bytes or inodes).
 type quotaDimension struct {
@@ -50,7 +54,11 @@ func (s *Service) checkIdentityQuotas(shareName string, store Store, uid, gid ui
 func (s *Service) enforceOne(shareName string, store Store, scope QuotaScope, usageID uint32, iq IdentityQuota, byteDelta, fileDelta int64) error {
 	usage, err := store.GetQuotaUsage(scope, usageID)
 	if err != nil {
-		// Usage lookup failure must not wedge writes; treat as no-quota.
+		// Usage lookup failure must not wedge writes; treat as no-quota. Log it
+		// so a persistently broken usage counter is visible instead of silently
+		// disabling enforcement.
+		logger.Error("quota: usage lookup failed, allowing write",
+			"share", shareName, "scope", scope.String(), "id", usageID, "error", err)
 		return nil
 	}
 

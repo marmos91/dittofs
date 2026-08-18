@@ -475,28 +475,39 @@ func readCell(r io.Reader) (any, error) {
 		}
 		return math.Float64frombits(binary.LittleEndian.Uint64(b[:])), nil
 	case cellText:
-		n, err := readU32(r)
+		buf, err := readSized(r)
 		if err != nil {
-			return nil, err
-		}
-		buf := make([]byte, n)
-		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
 		return string(buf), nil
 	case cellBlob:
-		n, err := readU32(r)
+		buf, err := readSized(r)
 		if err != nil {
-			return nil, err
-		}
-		buf := make([]byte, n)
-		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
 		return buf, nil
 	default:
 		return nil, fmt.Errorf("unknown cell kind %d", kind[0])
 	}
+}
+
+// readSized reads a u32-length-prefixed byte run. The declared length is not
+// trusted for the allocation - the envelope CRC covers the whole payload and is
+// only verified once the rows are parsed - so the buffer grows as bytes arrive
+// and a truncated stream fails having used only the bytes it actually held.
+func readSized(r io.Reader) ([]byte, error) {
+	n, err := readU32(r)
+	if err != nil {
+		return nil, err
+	}
+	buf, err := io.ReadAll(io.LimitReader(r, int64(n)))
+	if err != nil {
+		return nil, err
+	}
+	if uint32(len(buf)) != n {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return buf, nil
 }
 
 func writeString(w io.Writer, s string) error {

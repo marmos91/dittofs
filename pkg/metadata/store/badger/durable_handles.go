@@ -29,7 +29,7 @@ const (
 	// Index by FileHandle: dh:fh:{hex}:{id} -> id (string)
 	prefixDHFileHandle = "dh:fh:"
 
-	// Index by Share: dh:share:{name}:{id} -> id (string)
+	// Index by Share: dh:share:{hex(name)}:{id} -> id (string)
 	prefixDHShare = "dh:share:"
 )
 
@@ -56,6 +56,15 @@ func hexEncodeBytes(b []byte) string {
 }
 
 var zeroGUID [16]byte
+
+// shareIndexPrefix returns the Share index prefix covering every durable handle
+// of one share. Hex-encoding the name keeps the ':' separator unambiguous, so a
+// share whose name embeds ':' cannot plant entries that a scan for another
+// share matches. Index entries written before the encoding are unreachable by
+// these scans and expire with the handles themselves.
+func shareIndexPrefix(shareName string) string {
+	return prefixDHShare + hex.EncodeToString([]byte(shareName)) + ":"
+}
 
 // fileIDIndexScanPrefix returns the prefix covering every FileID index entry
 // for a file. A file can hold several durable handles at once, so entries are
@@ -136,7 +145,7 @@ func (s *badgerDurableStore) putDurableHandleTx(txn *badgerdb.Txn, handle *lock.
 		}
 	}
 
-	shareKey := []byte(prefixDHShare + handle.ShareName + ":" + handle.ID)
+	shareKey := []byte(shareIndexPrefix(handle.ShareName) + handle.ID)
 	if err := txn.Set(shareKey, []byte(handle.ID)); err != nil {
 		return err
 	}
@@ -191,7 +200,7 @@ func (s *badgerDurableStore) deleteIndicesTx(txn *badgerdb.Txn, handle *lock.Per
 		}
 	}
 
-	shareKey := []byte(prefixDHShare + handle.ShareName + ":" + handle.ID)
+	shareKey := []byte(shareIndexPrefix(handle.ShareName) + handle.ID)
 	if err := txn.Delete(shareKey); err != nil && err != badgerdb.ErrKeyNotFound {
 		return err
 	}
@@ -502,7 +511,7 @@ func (s *badgerDurableStore) ListDurableHandlesByShare(ctx context.Context, shar
 	var result []*lock.PersistedDurableHandle
 	err := s.db.View(func(txn *badgerdb.Txn) error {
 		var err error
-		result, err = s.getHandlesByPrefix(txn, []byte(prefixDHShare+shareName+":"))
+		result, err = s.getHandlesByPrefix(txn, []byte(shareIndexPrefix(shareName)))
 		return err
 	})
 	if err != nil {

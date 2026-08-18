@@ -1383,6 +1383,10 @@ func (s *Service) RebindShareBlockStore(
 	oldRemoteConfigID := share.remoteConfigID
 	s.mu.RUnlock()
 
+	// Cancel any in-flight warm job for this share so it cannot keep fetching
+	// into the block store that is about to be drained and closed.
+	s.warmJobs.cancelForShare(name)
+
 	// Flush pending uploads to the OLD remote before teardown so switching or
 	// detaching a remote does not strand unmirrored blocks. Best-effort: a drain
 	// error must not block the rebind.
