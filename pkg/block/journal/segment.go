@@ -319,7 +319,7 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 		return fmt.Errorf("journal: write payload: %w", err)
 	}
 	var crcBuf [payloadCRCSize]byte
-	binary.LittleEndian.PutUint32(crcBuf[:], crc(data))
+	binary.LittleEndian.PutUint32(crcBuf[:], recordCRC(fileID, data))
 	if _, err := seg.fd.WriteAt(crcBuf[:], payloadOff+int64(len(data))); err != nil {
 		return fmt.Errorf("journal: write payload CRC: %w", err)
 	}
@@ -523,7 +523,7 @@ func writeTruncateRecord(seg *segmentMeta, id FileID, version uint64, newSize in
 		return 0, fmt.Errorf("journal: write truncate header: %w", err)
 	}
 	var crcBuf [payloadCRCSize]byte
-	binary.LittleEndian.PutUint32(crcBuf[:], crc(nil))
+	binary.LittleEndian.PutUint32(crcBuf[:], recordCRC(fileID, nil))
 	if _, err = seg.fd.WriteAt(crcBuf[:], recStart+int64(len(hdr))); err != nil {
 		return 0, fmt.Errorf("journal: write truncate CRC: %w", err)
 	}
@@ -545,7 +545,7 @@ func writeTombstoneRecord(seg *segmentMeta, id FileID, version uint64) (recStart
 		return 0, fmt.Errorf("journal: write tombstone header: %w", err)
 	}
 	var crcBuf [payloadCRCSize]byte
-	binary.LittleEndian.PutUint32(crcBuf[:], crc(nil))
+	binary.LittleEndian.PutUint32(crcBuf[:], recordCRC(fileID, nil))
 	if _, err = seg.fd.WriteAt(crcBuf[:], recStart+int64(len(hdr))); err != nil {
 		return 0, fmt.Errorf("journal: write tombstone CRC: %w", err)
 	}

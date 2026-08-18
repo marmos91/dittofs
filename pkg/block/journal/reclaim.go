@@ -955,7 +955,7 @@ func writeDataRecord(seg *segmentMeta, id FileID, fileOff int64, version uint64,
 		return 0, fmt.Errorf("journal: repack write payload: %w", err)
 	}
 	var crcBuf [payloadCRCSize]byte
-	binary.LittleEndian.PutUint32(crcBuf[:], crc(data))
+	binary.LittleEndian.PutUint32(crcBuf[:], recordCRC(fileID, data))
 	if _, err = seg.fd.WriteAt(crcBuf[:], payloadOff+int64(len(data))); err != nil {
 		return 0, fmt.Errorf("journal: repack write CRC: %w", err)
 	}
