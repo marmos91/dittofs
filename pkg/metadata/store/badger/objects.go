@@ -166,6 +166,10 @@ func (s *BadgerMetadataStore) updateWithConflictRetry(ctx context.Context, fn fu
 		}
 		if err == badger.ErrConflict {
 			lastErr = err
+			// Record the SSI abort on the same counter WithTransaction uses,
+			// so a workload's conflict rate is visible no matter which retry
+			// loop it went through.
+			s.txnConflicts.Add(1)
 			baseDelay := time.Duration(1+attempt) * time.Millisecond
 			jitter := time.Duration(attempt) * time.Millisecond
 			time.Sleep(baseDelay + jitter)
@@ -173,7 +177,12 @@ func (s *BadgerMetadataStore) updateWithConflictRetry(ctx context.Context, fn fu
 		}
 		return err
 	}
-	return lastErr
+	// Retries exhausted. Map the raw sentinel to StoreError{Code: ErrConflict}
+	// the way WithTransaction does: IsConflictError and the object-ID conflict
+	// rules match only the wrapped form, so returning the bare sentinel would
+	// leave an exhausted conflict unclassified on this backend while the SQL
+	// backends classify the same condition.
+	return mapBadgerError(lastErr, "updateWithConflictRetry", "")
 }
 
 // IncrementRefCount atomically increments a block's RefCount. Retries
