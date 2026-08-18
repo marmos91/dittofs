@@ -75,7 +75,8 @@ type CarveChunk struct {
 	Hash       ChunkHash
 	FileID     FileID
 	FileOffset int64  // logical offset of the chunk within the file
-	Data       []byte // plaintext; the sink seals it before framing
+	Size       int    // chunk length; authoritative when Data is nil
+	Data       []byte // plaintext; nil when the chunk deduped (nothing to upload)
 }
 
 // BlockSink seals, frames, uploads (PutBlock) and atomically commits one block's
@@ -277,11 +278,15 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 	// first novel chunk claims a pool buffer and a concurrency slot); arenaOff is
 	// the fill cursor. On any early exit these are returned to disp so the slot and
 	// buffer are not leaked.
+	// batchBytes counts the run bytes this batch tiles, deduped chunks included,
+	// so a fully deduped batch (empty arena) is still bounded and committed on the
+	// same cadence as one carrying bytes.
 	var (
-		pending  []CarveChunk
-		arenap   *[]byte
-		arena    []byte
-		arenaOff int
+		pending    []CarveChunk
+		arenap     *[]byte
+		arena      []byte
+		arenaOff   int
+		batchBytes int64
 	)
 	ensureArena := func() error {
 		if arenap != nil {
@@ -301,7 +306,7 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 	// dispatcher, so the local arena state resets to "no block".
 	flush := func(watermark int64) {
 		disp.submit(pending, arenap, arena, watermark)
-		pending, arenap, arena, arenaOff = nil, nil, nil, 0
+		pending, arenap, arena, arenaOff, batchBytes = nil, nil, nil, 0, 0
 	}
 
 	// buf accumulates bytes for the chunker; it never exceeds one max chunk, so
@@ -367,6 +372,10 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 			packErr = err
 			break
 		}
+		// A deduped chunk has nothing to upload but still needs its manifest row:
+		// the run-end reap deletes every row in the run span the run did not write,
+		// so dropping it here leaves the range on a stale straddler or on nothing.
+		cc := CarveChunk{Hash: h, FileID: id, FileOffset: fileOff, Size: boundary}
 		if !durable {
 			if err := ensureArena(); err != nil {
 				packErr = err
@@ -386,14 +395,16 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 			data := arena[arenaOff : arenaOff+boundary : arenaOff+boundary]
 			copy(data, buf[:boundary])
 			arenaOff += boundary
-			pending = append(pending, CarveChunk{Hash: h, FileID: id, FileOffset: fileOff, Data: data})
+			cc.Data = data
 			res.BytesCarved += int64(boundary)
 		}
+		pending = append(pending, cc)
+		batchBytes += int64(boundary)
 		newOffsets[fileOff] = struct{}{}
 		fileOff += int64(boundary)
 		buf = append(buf[:0], buf[boundary:]...)
 
-		if int64(arenaOff) >= s.cfg.CarveBlockSize {
+		if batchBytes >= s.cfg.CarveBlockSize {
 			flush(fileOff)
 		}
 		if eof && len(buf) == 0 {

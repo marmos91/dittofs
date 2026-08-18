@@ -87,22 +87,35 @@ func (d *carveDispatcher) acquire(arenaCap int) (*[]byte, error) {
 // block's final backing slice (it may have grown past the pooled buffer while
 // packing), stored back into the pool on completion.
 func (d *carveDispatcher) submit(chunks []CarveChunk, arenap *[]byte, arena []byte, watermark int64) {
+	// A batch of only deduped chunks holds no arena and so has claimed no slot in
+	// acquire; take one here so its commit is throttled like any other. Giving up
+	// on a cancelled context is safe: the commit below fails on the same context.
+	slot := arenap != nil
+	if !slot && len(chunks) > 0 {
+		select {
+		case d.sem <- struct{}{}:
+			slot = true
+		case <-d.ctx.Done():
+		}
+	}
 	mine := make(chan bool, 1)
 	prev := d.prev
 	d.prev = mine
 	d.wg.Add(1)
-	go d.commitAndFlip(chunks, arenap, arena, watermark, prev, mine)
+	go d.commitAndFlip(chunks, arenap, arena, watermark, prev, mine, slot)
 }
 
-func (d *carveDispatcher) commitAndFlip(chunks []CarveChunk, arenap *[]byte, arena []byte, watermark int64, prev, mine chan bool) {
+func (d *carveDispatcher) commitAndFlip(chunks []CarveChunk, arenap *[]byte, arena []byte, watermark int64, prev, mine chan bool, slot bool) {
 	defer d.wg.Done()
+	if slot {
+		// Release the slot only after CommitBlock has consumed the Data slices
+		// (the sink copies them before returning) and the flip ran.
+		defer func() { <-d.sem }()
+	}
 	if arenap != nil {
-		// Free the buffer and the slot only after CommitBlock has consumed the
-		// Data slices (the sink copies them before returning) and the flip ran.
 		defer func() {
 			*arenap = arena
 			carveArenaPool.Put(arenap)
-			<-d.sem
 		}()
 	}
 
@@ -126,7 +139,9 @@ func (d *carveDispatcher) commitAndFlip(chunks []CarveChunk, arenap *[]byte, are
 		if err := d.s.flipUpTo(d.sh, d.id, d.run, d.flipIdx, watermark); err != nil {
 			d.setErr(err)
 			ok = false
-		} else if len(chunks) > 0 {
+		} else if arenap != nil {
+			// An arena is claimed only by a chunk carrying bytes: a batch of purely
+			// deduped chunks writes manifest rows but no block.
 			d.res.BlocksWritten++
 		}
 	case proceed && commitErr != nil:

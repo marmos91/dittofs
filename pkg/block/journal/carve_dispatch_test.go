@@ -101,6 +101,16 @@ func (s *ctrlSink) releaseAll() {
 	}
 }
 
+// reset re-gates the sink and clears its counters so a second carve pass can be
+// observed on its own.
+func (s *ctrlSink) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.openAll = false
+	s.blocks, s.inFlight, s.maxInFlight = 0, 0, 0
+	s.arrived = make(chan int64, 512)
+}
+
 func (s *ctrlSink) peak() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -301,5 +311,49 @@ func TestCarveConcurrentCommitErrorStopsWatermark(t *testing.T) {
 	}
 	if f := recRawFlags(t, s, "f", failAt); f&flagSynced != 0 {
 		t.Fatalf("failed block's record flipped synced: off=%d flags=%#x", failAt, f)
+	}
+}
+
+// TestCarveConcurrencyBoundedWhenDeduped: a re-carve whose chunks all dedup
+// packs no bytes, so its batches carry manifest rows only and claim no arena.
+// They must still be throttled by the upload window — otherwise a large punched
+// range, where every zero chunk dedups, submits a commit per batch unthrottled.
+func TestCarveConcurrencyBoundedWhenDeduped(t *testing.T) {
+	const window = 4
+	s, sink := ctrlStore(t, window)
+	writeAdjacent(t, s, "f", 128, 4<<10)
+
+	// First pass ungated: it marks every hash durable, so the re-carve dedups.
+	sink.releaseAll()
+	if _, err := s.Carve(context.Background(), CarveOptions{Force: true}); err != nil {
+		t.Fatalf("first carve: %v", err)
+	}
+	sink.reset()
+
+	forceDirty(t, s, "f")
+	done := carveAsync(s)
+
+	for i := 0; i < window; i++ {
+		select {
+		case <-sink.arrived:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d of %d row-only commits reached the sink", i, window)
+		}
+	}
+	select {
+	case off := <-sink.arrived:
+		t.Fatalf("more than window=%d row-only commits in flight (extra at off %d)", window, off)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	sink.releaseAll()
+	if err := <-done; err != nil {
+		t.Fatalf("re-carve: %v", err)
+	}
+	if got := sink.peak(); got != window {
+		t.Fatalf("peak in-flight row-only commits = %d, want exactly the window %d", got, window)
+	}
+	if s.UnsyncedBytes() != 0 {
+		t.Fatalf("post-carve unsynced=%d want 0", s.UnsyncedBytes())
 	}
 }

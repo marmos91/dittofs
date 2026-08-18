@@ -95,42 +95,56 @@ type localBlockSink struct {
 	commitLocks *carveCommitLocks
 }
 
+// manifestRows projects a carve batch into its per-file FileChunk rows. Data is
+// nil for a deduped chunk, so the row length comes from Size.
+func manifestRows(chunks []journal.CarveChunk) []*block.FileChunk {
+	rows := make([]*block.FileChunk, 0, len(chunks))
+	for i := range chunks {
+		c := chunks[i]
+		size := len(c.Data)
+		if c.Data == nil {
+			size = c.Size
+		}
+		rows = append(rows, &block.FileChunk{
+			ID:       fmt.Sprintf("%s/%d", c.FileID, c.FileOffset),
+			Hash:     block.ContentHash(c.Hash),
+			DataSize: uint32(size),
+			State:    block.BlockStatePending,
+		})
+	}
+	return rows
+}
+
+// commitManifestRows writes a batch's manifest rows and re-materializes
+// File.Blocks in one txn — the entire output of the local sink, and of a remote
+// batch whose chunks all deduped. Merging only this batch's rows keeps a
+// multi-batch carve from re-listing and re-sorting the whole growing manifest
+// per batch; superseded rows are reaped once at run end.
+func commitManifestRows(ctx context.Context, committer blockCommitter, locks *carveCommitLocks, payloadID string, rows []*block.FileChunk) error {
+	if committer == nil {
+		return fmt.Errorf("carve: no transactional committer wired")
+	}
+	// Serialize this file's commits so overlapping dispatcher calls don't abort
+	// on the shared File-row projection under SSI.
+	if mu := locks.forKey(payloadID); mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	return committer.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		for _, fc := range rows {
+			if err := tx.Put(ctx, fc); err != nil {
+				return fmt.Errorf("carve: put manifest row %s: %w", fc.ID, err)
+			}
+		}
+		return metadata.ProjectCommittedChunks(ctx, tx, payloadID, rows)
+	})
+}
+
 func (s localBlockSink) CommitBlock(ctx context.Context, chunks []journal.CarveChunk) error {
 	if len(chunks) == 0 {
 		return nil
 	}
-	if s.committer == nil {
-		return fmt.Errorf("local carve: no transactional committer wired")
-	}
-	payloadID := string(chunks[0].FileID)
-	fileChunks := make([]*block.FileChunk, 0, len(chunks))
-	for i := range chunks {
-		c := chunks[i]
-		fileChunks = append(fileChunks, &block.FileChunk{
-			ID:       fmt.Sprintf("%s/%d", c.FileID, c.FileOffset),
-			Hash:     block.ContentHash(c.Hash),
-			DataSize: uint32(len(c.Data)),
-			State:    block.BlockStatePending,
-		})
-	}
-	// Serialize this file's commits so overlapping dispatcher calls don't abort
-	// on the shared File-row projection under SSI.
-	if mu := s.commitLocks.forKey(payloadID); mu != nil {
-		mu.Lock()
-		defer mu.Unlock()
-	}
-	return s.committer.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		for _, fc := range fileChunks {
-			if err := tx.Put(ctx, fc); err != nil {
-				return fmt.Errorf("local carve: put manifest row %s: %w", fc.ID, err)
-			}
-		}
-		// Materialize File.Blocks from the manifest — same txn (R), merging only
-		// this batch's rows so a multi-batch carve does not re-list and re-sort
-		// the whole growing manifest per batch. Superseded-row reaping runs once
-		// at run end (ReapSupersededManifest), not per batch.
-		return metadata.ProjectCommittedChunks(ctx, tx, payloadID, fileChunks)
-	})
+	return commitManifestRows(ctx, s.committer, s.commitLocks, string(chunks[0].FileID), manifestRows(chunks))
 }
 
 // ReapSupersededManifest implements journal's optional run-end reap: once a carve
@@ -178,20 +192,33 @@ func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []journal.Carve
 		return nil
 	}
 
+	// Rows cover the whole batch; only chunks carrying bytes are framed and
+	// uploaded. A deduped chunk is already remote-durable, so its row is all that
+	// is missing — and it must land, or the run-end reap leaves the range with no
+	// manifest coverage.
+	fileChunks := manifestRows(chunks)
+	var rawBytes int64
+	novel := 0
+	for i := range chunks {
+		if chunks[i].Data != nil {
+			novel++
+			rawBytes += int64(len(chunks[i].Data))
+		}
+	}
+	if novel == 0 {
+		return commitManifestRows(ctx, s.committer, s.commitLocks, string(chunks[0].FileID), fileChunks)
+	}
+
 	blockID, err := newBlockID()
 	if err != nil {
 		return err
 	}
 
-	var rawBytes int64
-	for i := range chunks {
-		rawBytes += int64(len(chunks[i].Data))
-	}
 	var buf bytes.Buffer
 	// Pre-size so the block lands in one backing array: raw bytes plus per-chunk
 	// codec/seal headroom. Best-effort — skipped on an absurd size rather than
 	// risk a negative int conversion.
-	if grow := rawBytes + int64(len(chunks))*256 + 512; grow > 0 && grow <= math.MaxInt {
+	if grow := rawBytes + int64(novel)*256 + 512; grow > 0 && grow <= math.MaxInt {
 		buf.Grow(int(grow))
 	}
 	// nil header-sealer: bodies are sealed per-chunk below, matching the carver.
@@ -200,10 +227,12 @@ func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []journal.Carve
 		return fmt.Errorf("carve: new builder: %w", err)
 	}
 
-	commits := make([]block.BlockChunkCommit, 0, len(chunks))
-	fileChunks := make([]*block.FileChunk, 0, len(chunks))
+	commits := make([]block.BlockChunkCommit, 0, novel)
 	for i := range chunks {
 		c := chunks[i]
+		if c.Data == nil {
+			continue // deduped: manifest row only, nothing to frame
+		}
 		h := block.ContentHash(c.Hash)
 
 		wire := c.Data
@@ -220,12 +249,6 @@ func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []journal.Carve
 		// Local stays zero — the journal owns the local bytes, so there is no
 		// log-blob location to record (DefaultCommitBlock treats zero as "none").
 		commits = append(commits, block.BlockChunkCommit{Hash: h, Remote: chunkLoc})
-		fileChunks = append(fileChunks, &block.FileChunk{
-			ID:       fmt.Sprintf("%s/%d", c.FileID, c.FileOffset),
-			Hash:     h,
-			DataSize: uint32(len(c.Data)),
-			State:    block.BlockStatePending,
-		})
 	}
 	if _, err := builder.Finish(); err != nil {
 		return fmt.Errorf("carve: finish block: %w", err)
