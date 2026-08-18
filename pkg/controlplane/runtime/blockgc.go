@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/remote"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -657,6 +659,56 @@ func (r *Runtime) sharesForRemote(configID string) []string {
 	return nil
 }
 
+// unregisteredConfiguredShare names a share whose persisted row references a
+// remote-store config while the registry does not carry it — an unknown
+// metadata store, or any other AddShare failure LoadSharesFromStore only warned
+// about and skipped. Such a share never ran its cas→blocks migration, so its
+// chunks are exactly the standalone cas/<hash> objects a purge would delete.
+//
+// Empty when every configured share on the remote is registered, and for a
+// Runtime with no config store or a test-only remote binding, neither of which
+// has persisted rows to disagree about.
+func (r *Runtime) unregisteredConfiguredShare(ctx context.Context, configID string, registered []string) (string, error) {
+	if r.store == nil || configID == "" {
+		return "", nil
+	}
+	cfg, err := r.store.GetBlockStoreByID(ctx, configID)
+	if err != nil {
+		return "", fmt.Errorf("resolve remote block store %s: %w", configID, err)
+	}
+	remotes, err := r.store.ListBlockStores(ctx, models.BlockStoreKindRemote)
+	if err != nil {
+		return "", fmt.Errorf("list remote block stores: %w", err)
+	}
+	rows, err := r.store.ListShares(ctx)
+	if err != nil {
+		return "", fmt.Errorf("list configured shares: %w", err)
+	}
+	for _, sh := range rows {
+		ref := derefString(sh.RemoteBlockStoreID)
+		if ref == "" || slices.Contains(registered, sh.Name) {
+			continue
+		}
+		// Rows written before block stores were referenced by UUID hold the
+		// config name instead, and both forms resolve to this one store. A
+		// reference matching no remote at all is treated as this one's: it is
+		// most likely a stale name for a since-renamed config, and the share
+		// that carries it is exactly the one that failed to register.
+		if ref == configID || ref == cfg.Name || !knownRemoteRef(remotes, ref) {
+			return sh.Name, nil
+		}
+	}
+	return "", nil
+}
+
+// knownRemoteRef reports whether a share row's remote reference resolves to one
+// of the configured remote block stores, by UUID or by legacy name.
+func knownRemoteRef(remotes []*models.BlockStoreConfig, ref string) bool {
+	return slices.ContainsFunc(remotes, func(c *models.BlockStoreConfig) bool {
+		return c.ID == ref || c.Name == ref
+	})
+}
+
 // purgeLegacyCASForEntry reclaims what is left of the pre-flip cas/ namespace
 // on one remote. The namespace is content-addressed and NOT scoped per share,
 // so a cas/<hash> object is reclaimable only once no share on this remote can
@@ -699,6 +751,19 @@ func (r *Runtime) purgeLegacyCASForEntry(ctx context.Context, entry shares.Remot
 	if len(shareNames) == 0 {
 		logger.Info("GC: legacy cas/ purge skipped — no registered share claims this remote",
 			"configID", entry.ConfigID)
+		return
+	}
+	// The enumeration below only walks registered shares, so a configured one
+	// missing from that set blocks the purge outright.
+	unregistered, err := r.unregisteredConfiguredShare(ctx, entry.ConfigID, shareNames)
+	if err != nil {
+		logger.Warn("GC: legacy cas/ purge skipped — configured shares for this remote could not be read",
+			"configID", entry.ConfigID, "err", err)
+		return
+	}
+	if unregistered != "" {
+		logger.Info("GC: legacy cas/ purge skipped — a configured share on this remote is not registered, so its chunks may still be un-migrated",
+			"configID", entry.ConfigID, "share", unregistered)
 		return
 	}
 	for _, shareName := range shareNames {

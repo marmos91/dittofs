@@ -8,7 +8,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/remote"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
+	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/health"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -327,5 +329,118 @@ func TestPurgeLegacyCAS_IgnoresStaleShareSnapshot(t *testing.T) {
 	rt.purgeLegacyCASForEntry(ctx, stale, false, &engine.GCStats{})
 	if rs.deleted != 0 {
 		t.Fatalf("purged %d cas objects using a stale share snapshot", rs.deleted)
+	}
+}
+
+// TestPurgeLegacyCAS_ConfiguredShareNotRegistered asserts the gate refuses to
+// purge while a share configured against the remote is absent from the
+// registry. Such a share never ran its cas→blocks migration, so the standalone
+// objects the purge would delete are exactly its live data.
+func TestPurgeLegacyCAS_ConfiguredShareNotRegistered(t *testing.T) {
+	ctx := context.Background()
+
+	cp, err := cpstore.New(&cpstore.Config{
+		Type:   cpstore.DatabaseTypeSQLite,
+		SQLite: cpstore.SQLiteConfig{Path: ":memory:"},
+	})
+	if err != nil {
+		t.Fatalf("cpstore.New: %v", err)
+	}
+	t.Cleanup(func() { _ = cp.Close() })
+
+	rt := New(cp)
+
+	metaID, err := cp.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "meta", Type: "memory"})
+	if err != nil {
+		t.Fatalf("CreateMetadataStore: %v", err)
+	}
+	if err := rt.RegisterMetadataStore("meta", metadatamemory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+		t.Fatalf("RegisterMetadataStore: %v", err)
+	}
+	remoteID, err := cp.CreateBlockStore(ctx, &models.BlockStoreConfig{
+		Name: "shared-remote", Kind: models.BlockStoreKindRemote, Type: "memory",
+	})
+	if err != nil {
+		t.Fatalf("CreateBlockStore(remote): %v", err)
+	}
+
+	// Both shares are configured against that one remote.
+	locals := map[string]string{
+		"/share-a": createFSLocalBlockStore(t, cp, "fs-a"),
+		"/share-b": createFSLocalBlockStore(t, cp, "fs-b"),
+	}
+	// Registered AFTER the local stores so t.Cleanup's LIFO order closes each
+	// share's block store — releasing its journal fds — before those stores'
+	// t.TempDir() is removed. On Windows an open handle blocks the unlink.
+	t.Cleanup(func() {
+		for _, name := range rt.ListShares() {
+			_ = rt.RemoveShare(name)
+		}
+	})
+	for name, local := range locals {
+		if _, err := cp.CreateShare(ctx, &models.Share{
+			Name:               name,
+			MetadataStoreID:    metaID,
+			LocalBlockStoreID:  local,
+			RemoteBlockStoreID: &remoteID,
+			Enabled:            true,
+		}); err != nil {
+			t.Fatalf("CreateShare(%s): %v", name, err)
+		}
+	}
+
+	register := func(name string) {
+		t.Helper()
+		if err := rt.AddShare(ctx, &ShareConfig{
+			Name:               name,
+			MetadataStore:      "meta",
+			LocalBlockStoreID:  locals[name],
+			RemoteBlockStoreID: remoteID,
+			Enabled:            true,
+		}); err != nil {
+			t.Fatalf("AddShare(%s): %v", name, err)
+		}
+	}
+	// Only the first share registers — the second stands for one whose
+	// AddShare failed and was warn-and-skipped.
+	register("/share-a")
+
+	rs := &recordingLegacyRemote{
+		fakeRemoteStore: &fakeRemoteStore{name: "s3-shared"},
+		objects:         []block.ContentHash{{1}, {2}},
+	}
+	entry := shares.RemoteStoreEntry{Store: rs, ConfigID: remoteID, Shares: []string{"/share-a"}}
+
+	rt.purgeLegacyCASForEntry(ctx, entry, false, &engine.GCStats{})
+	if rs.deleted != 0 {
+		t.Fatalf("purged %d cas objects while a configured share was unregistered", rs.deleted)
+	}
+
+	// A row whose remote reference resolves to no configured store blocks the
+	// purge too: it is most likely a stale name for this since-renamed remote.
+	rows, err := cp.ListShares(ctx)
+	if err != nil {
+		t.Fatalf("ListShares: %v", err)
+	}
+	for _, row := range rows {
+		if row.Name != "/share-b" {
+			continue
+		}
+		stale := "renamed-away"
+		row.RemoteBlockStoreID = &stale
+		if err := cp.UpdateShare(ctx, row); err != nil {
+			t.Fatalf("UpdateShare: %v", err)
+		}
+	}
+	rt.purgeLegacyCASForEntry(ctx, entry, false, &engine.GCStats{})
+	if rs.deleted != 0 {
+		t.Fatalf("purged %d cas objects while a share held an unresolvable remote reference", rs.deleted)
+	}
+
+	// With every configured share registered and migrated, the purge proceeds.
+	register("/share-b")
+	rt.purgeLegacyCASForEntry(ctx, entry, false, &engine.GCStats{})
+	if rs.deleted != len(rs.objects) {
+		t.Fatalf("purged %d cas objects, want %d", rs.deleted, len(rs.objects))
 	}
 }
