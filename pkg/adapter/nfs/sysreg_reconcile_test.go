@@ -11,12 +11,8 @@ import (
 // Toggling the register-with-system setting must start and stop the sysreg
 // sidecar on a running adapter, without a restart.
 func TestReconcileSysregTogglesSidecar(t *testing.T) {
-	prev := systemPortmapAddr
 	// Dead address: registration finds no portmapper and gives up immediately.
-	systemPortmapAddr = "127.0.0.1:1"
-	t.Cleanup(func() { systemPortmapAddr = prev })
-
-	a := &NFSAdapter{sidecars: auxsvc.NewGroup()}
+	a := &NFSAdapter{sidecars: auxsvc.NewGroup(), sysregAddr: "127.0.0.1:1"}
 	a.sidecars.SetBaseContext(context.Background())
 
 	a.reconcileSysreg()

@@ -131,11 +131,21 @@ func (p portmapSidecar) Stop(context.Context) error      { p.a.stopPortmapper();
 // Reconcile tolerates a start racing shutdown, and the state check keeps the
 // steady-state call (every accepted connection) allocation-free.
 func (s *NFSAdapter) reconcileSysreg() {
-	if s.sidecars.IsRunning(sysregSidecarName) == s.registerWithSystemEnabled() {
+	// Read the setting once, on the caller's goroutine: applyNFSSettings writes
+	// it, so the background transition must not read it again.
+	want := s.registerWithSystemEnabled()
+	if s.sidecars.IsRunning(sysregSidecarName) == want {
+		return
+	}
+	// One transition at a time: the callers fire per accepted connection, and
+	// the running state only flips once the transition finishes. A flip that
+	// arrives mid-transition is picked up by the next apply.
+	if !s.sysregReconciling.CompareAndSwap(false, true) {
 		return
 	}
 	go func() {
-		err := s.sidecars.Reconcile(sysregSidecarName, s.registerWithSystemEnabled(),
+		defer s.sysregReconciling.Store(false)
+		err := s.sidecars.Reconcile(sysregSidecarName, want,
 			func() auxsvc.Service { return sysregSidecar{s} })
 		if err != nil {
 			logger.Debug("System rpcbind registration sidecar failed to start", "error", err)
