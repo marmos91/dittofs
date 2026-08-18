@@ -30,8 +30,6 @@ func (s *MemoryMetadataStore) Reset(ctx context.Context) error {
 	s.parents = make(map[string]metadata.FileHandle)
 	s.children = make(map[string]map[string]metadata.FileHandle)
 	s.linkCounts = make(map[string]uint32)
-	s.deviceNumbers = make(map[string]*deviceNumber)
-	s.pendingWrites = make(map[string]*metadata.WriteOperation)
 	s.sessions = make(map[string]*ShareSession)
 	s.objectIndex = make(map[block.ContentHash]string)
 	s.blockRecords = make(map[string]*block.BlockRecord)

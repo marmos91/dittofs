@@ -45,12 +45,6 @@ type fileData struct {
 	ShareName string
 }
 
-// deviceNumber stores major and minor device numbers for special files.
-type deviceNumber struct {
-	Major uint32
-	Minor uint32
-}
-
 // ShareSession represents an active client session on a share. Sessions are
 // informational only (monitoring and DUMP) and do not affect access control;
 // the memory store is the only backend that tracks them.
@@ -75,10 +69,12 @@ type ShareSession struct {
 //   - Systems where persistence is handled by external mechanisms
 //
 // Thread Safety:
-// All operations are protected by a single read-write mutex (mu), making the
-// store safe for concurrent access from multiple goroutines. This coarse-grained
-// locking is simple and correct, though fine-grained locking could improve
-// concurrency for high-throughput scenarios.
+// The store is safe for concurrent use from multiple goroutines. A store-wide
+// read-write mutex (mu) covers the metadata maps below, taken for read on
+// queries and for write on mutations. It is not the only lock: quota usage
+// (quotaMu), the SyncedHashStore markers (syncedMu) and each lazily built
+// sub-store (lock, client, durable, recovery) carry their own, and usedBytes is
+// atomic — all kept off mu so they do not contend with unrelated metadata ops.
 //
 // Storage Model:
 //
@@ -105,29 +101,15 @@ type ShareSession struct {
 //     to them. When linkCounts reaches 0, the file's content can be deleted.
 //     Directories always have linkCounts ≥ 2 (parent entry + "." self-reference).
 //
-//     7. Write Operations (pendingWrites):
-//     Tracks in-flight write operations for the two-phase write protocol.
-//     Maps operation IDs to WriteOperation structs containing the file handle,
-//     new size, and other metadata needed to commit the write.
-//
-//     8. Server Configuration (serverConfig):
+//     5. Server Configuration (serverConfig):
 //     Stores global server settings that apply across all shares and operations.
 //
 // Handle Generation:
 //
-// File handles are generated using path-based identifiers in the format:
-// "shareName:fullPath" (e.g., "/export:/images/photo.jpg").
-//
-// This approach ensures:
-//   - Determinism: Same path always generates the same handle
-//   - Reversibility: Path can be extracted from handle for import/export
-//   - Stability: Handles remain stable across server restarts
-//   - Human-readable: Easy to debug and inspect
-//   - Import-ready: Enables future filesystem import features
-//
-// The path-based approach matches the BadgerDB metadata store implementation,
-// ensuring consistent behavior across all metadata store backends. This
-// consistency is critical for implementing metadata import/export features.
+// generateFileHandle ignores the path it is given and encodes a fresh UUID
+// against the share name via metadata.EncodeShareHandle, so a handle is
+// independent of the name a file is reachable under and survives renames.
+// The badger backend mints handles the same way.
 //
 // Consistency Guarantees:
 //
@@ -135,15 +117,14 @@ type ShareSession struct {
 //   - Every file in 'files' has an entry in 'linkCounts' (≥ 1 for regular files)
 //   - Every file in 'files' has an entry in 'parents' (except root directories)
 //   - Every entry in 'children' corresponds to a valid file in 'files'
-//   - Every symlink in 'files' has an entry in 'symlinkTargets'
-//   - Every regular file in 'files' has an entry in 'payloadIDs'
 //   - Parent-child relationships are bidirectional (if A is parent of B, then B is in A's children)
 //
 // These invariants are maintained by all operations and can be verified by
 // consistency checking tools.
 type MemoryMetadataStore struct {
-	// mu protects all fields in this struct for concurrent access.
-	// Operations acquire read locks for queries and write locks for mutations.
+	// mu guards the metadata maps in this struct; fields carrying their own lock
+	// (quotaMu, syncedMu, the lazy sub-stores) and the atomic counters are not
+	// covered. Read locks are taken for queries, write locks for mutations.
 	mu sync.RWMutex
 
 	// shares maps share names to their configuration and root handles.
@@ -179,21 +160,6 @@ type MemoryMetadataStore struct {
 	//   - Directories start at 2 ("." and parent's entry), increment with subdirectories
 	//   - When count reaches 0, file content can be deleted
 	linkCounts map[string]uint32
-
-	// deviceNumbers stores major and minor device numbers for block and character devices.
-	// Key: string representation of FileHandle
-	// Value: struct containing major and minor numbers
-	// Note: Only populated for FileTypeBlockDevice and FileTypeCharDevice
-	deviceNumbers map[string]*deviceNumber
-
-	// pendingWrites tracks in-flight write operations for two-phase writes.
-	// Key: operation ID (opaque string, typically UUID)
-	// Value: WriteOperation struct with file handle, new size, timestamps, etc.
-	// Notes:
-	//   - Created by PrepareWrite
-	//   - Consumed by CommitWrite
-	//   - Should be cleaned up on timeout/cancellation
-	pendingWrites map[string]*metadata.WriteOperation
 
 	// serverConfig stores global server configuration.
 	// This includes settings that apply across all shares and operations.
@@ -350,8 +316,6 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		parents:         make(map[string]metadata.FileHandle),
 		children:        make(map[string]map[string]metadata.FileHandle),
 		linkCounts:      make(map[string]uint32),
-		deviceNumbers:   make(map[string]*deviceNumber),
-		pendingWrites:   make(map[string]*metadata.WriteOperation),
 		capabilities:    config.Capabilities,
 		maxStorageBytes: config.MaxStorageBytes,
 		maxFiles:        config.MaxFiles,

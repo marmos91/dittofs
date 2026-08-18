@@ -59,13 +59,12 @@ type syncedTxState struct {
 // the rest are replaced (not mutated) by the tx methods, but copying keeps
 // the snapshot robust against future in-place edits.
 type txSnapshot struct {
-	shares        map[string]*shareData
-	files         map[string]*fileData
-	parents       map[string]metadata.FileHandle
-	children      map[string]map[string]metadata.FileHandle
-	linkCounts    map[string]uint32
-	deviceNumbers map[string]*deviceNumber
-	objectIndex   map[block.ContentHash]string
+	shares      map[string]*shareData
+	files       map[string]*fileData
+	parents     map[string]metadata.FileHandle
+	children    map[string]map[string]metadata.FileHandle
+	linkCounts  map[string]uint32
+	objectIndex map[block.ContentHash]string
 	// hadFileChunkData records whether fileChunkData was allocated at snapshot
 	// time. If the closure lazily allocated it (initFileChunkData) and then
 	// failed, restore must reset the struct's maps to non-nil empties (or it
@@ -90,16 +89,15 @@ func (store *MemoryMetadataStore) snapshotLocked() *txSnapshot {
 		// CreateRootDirectory set RootHandle) — a shallow map clone would share
 		// those pointers and let the mutation leak into the snapshot, defeating
 		// rollback. Copy each struct (same discipline as fileChunkData.blocks).
-		shares:        make(map[string]*shareData, len(store.shares)),
-		files:         maps.Clone(store.files),
-		parents:       maps.Clone(store.parents),
-		children:      make(map[string]map[string]metadata.FileHandle, len(store.children)),
-		linkCounts:    maps.Clone(store.linkCounts),
-		deviceNumbers: maps.Clone(store.deviceNumbers),
-		objectIndex:   maps.Clone(store.objectIndex),
-		serverConfig:  store.serverConfig,
-		capabilities:  store.capabilities,
-		blockRecords:  make(map[string]*block.BlockRecord, len(store.blockRecords)),
+		shares:       make(map[string]*shareData, len(store.shares)),
+		files:        maps.Clone(store.files),
+		parents:      maps.Clone(store.parents),
+		children:     make(map[string]map[string]metadata.FileHandle, len(store.children)),
+		linkCounts:   maps.Clone(store.linkCounts),
+		objectIndex:  maps.Clone(store.objectIndex),
+		serverConfig: store.serverConfig,
+		capabilities: store.capabilities,
+		blockRecords: make(map[string]*block.BlockRecord, len(store.blockRecords)),
 	}
 	for k, v := range store.shares {
 		sc := *v
@@ -134,7 +132,6 @@ func (store *MemoryMetadataStore) restoreLocked(snap *txSnapshot) {
 	store.parents = snap.parents
 	store.children = snap.children
 	store.linkCounts = snap.linkCounts
-	store.deviceNumbers = snap.deviceNumbers
 	store.objectIndex = snap.objectIndex
 	store.serverConfig = snap.serverConfig
 	store.capabilities = snap.capabilities
@@ -402,7 +399,6 @@ func (tx *memoryTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 	delete(tx.store.parents, key)
 	delete(tx.store.children, key)
 	delete(tx.store.linkCounts, key)
-	delete(tx.store.deviceNumbers, key)
 
 	return nil
 }
@@ -758,7 +754,6 @@ func (tx *memoryTransaction) DeleteShare(ctx context.Context, shareName string) 
 			delete(tx.store.parents, key)
 			delete(tx.store.children, key)
 			delete(tx.store.linkCounts, key)
-			delete(tx.store.deviceNumbers, key)
 		}
 	}
 

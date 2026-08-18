@@ -29,35 +29,34 @@ import (
 //
 // Key Features:
 //   - Persistent storage with crash recovery (WAL-based)
-//   - Path-based file handles for import/export capability
+//   - UUID file handles, stable across renames and restarts
 //   - ACID transactions for complex operations
 //   - Efficient range scans for directory listings
-//   - Concurrent access with proper locking
 //
 // Thread Safety:
-// All operations are protected by a single read-write mutex (mu), making the
-// store safe for concurrent access from multiple goroutines. This coarse-grained
-// locking is simple and correct, though fine-grained locking could improve
-// concurrency for high-throughput scenarios.
+// The store is safe for concurrent use from multiple goroutines, but it holds
+// no store-wide mutex. The metadata data path is serialized by BadgerDB's own
+// MVCC transactions: conflicting writers fail to commit and are retried by
+// withTransaction. In-memory side state is guarded per subsystem rather than
+// globally: a mutex each for capabilities, the lazily built lock / client /
+// durable / recovery sub-stores, quotas, and the stats cache, while the read /
+// parent / dirent / share caches are lock-free (sync.Map plus generation
+// counters).
 //
 // Storage Model:
 // The store uses a key-value model with namespaced prefixes to organize different
-// data types (see keys.go for detailed schema documentation). This approach provides:
+// data types (see encoding.go for detailed schema documentation). This approach provides:
 //   - No schema conflicts between data types
 //   - Efficient point lookups (O(1))
 //   - Fast range scans for directory listings and sessions
 //   - Self-documenting database structure
 //
 // File Handle Strategy:
-// File handles are generated from filesystem paths, providing deterministic and
-// reversible handle generation. This enables:
-//   - Importing existing filesystems into DittoFS
-//   - Reconstructing metadata from content stores
-//   - Debugging with human-readable handles
-//   - Stable handles across server restarts
-//
-// For paths exceeding NFS limits (64 bytes), handles are automatically converted
-// to hash-based format with reverse mapping stored in the database.
+// GenerateHandle ignores the path it is given and mints a fresh random UUID
+// handle scoped to the share, so a handle is independent of the name a file is
+// reachable under and survives renames. The handle layout is owned by
+// metadata.EncodeShareHandle; the UUID it carries is what the per-file key
+// namespaces in encoding.go are indexed by.
 type BadgerMetadataStore struct {
 	// db is the BadgerDB database handle (thread-safe, uses internal MVCC)
 	db *badger.DB
