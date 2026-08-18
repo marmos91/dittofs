@@ -99,3 +99,49 @@ func BenchmarkGetFileForRead_Cached(b *testing.B) {
 		}
 	}
 }
+
+// TestCreateRootDirectory_InvalidatesRootReadCache guards the re-attach path:
+// CreateRootDirectory reconciles an existing root's mode/UID/GID against the
+// configured attrs with a raw txn.Set, which bypasses the dirty-file tracking
+// that normally drops read-cache entries. A cached root must not survive that
+// rewrite, or every later lookup serves the previous ownership.
+func TestCreateRootDirectory_InvalidatesRootReadCache(t *testing.T) {
+	s, err := NewBadgerMetadataStoreWithDefaults(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	ctx := context.Background()
+
+	attr := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755, UID: 1000, GID: 1000}
+	root, err := s.CreateRootDirectory(ctx, "/s", attr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handle, err := metadata.EncodeFileHandle(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeded, err := s.GetFileForRead(ctx, handle)
+	if err != nil {
+		t.Fatalf("seed read: %v", err)
+	}
+	if seeded.UID != 1000 {
+		t.Fatalf("seed read: uid=%d, want 1000", seeded.UID)
+	}
+
+	// Re-attach the share with different ownership, as a config change does.
+	reattached := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755, UID: 2000, GID: 2000}
+	if _, err := s.CreateRootDirectory(ctx, "/s", reattached); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.GetFileForRead(ctx, handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UID != 2000 || got.GID != 2000 {
+		t.Fatalf("stale root served from cache after re-attach: uid=%d gid=%d, want 2000/2000", got.UID, got.GID)
+	}
+}

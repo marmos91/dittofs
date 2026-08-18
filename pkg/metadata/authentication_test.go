@@ -247,6 +247,71 @@ func TestApplyIdentityMapping(t *testing.T) {
 		assert.Equal(t, "testuser", result.Username)
 		assert.Equal(t, "EXAMPLE", result.Domain)
 	})
+
+	t.Run("MapPrivilegedToAnonymous clears Username and Domain for root", func(t *testing.T) {
+		t.Parallel()
+		identity := &Identity{
+			UID:      Uint32Ptr(0),
+			GID:      Uint32Ptr(0),
+			Username: "root",
+			Domain:   "EXAMPLE",
+		}
+		mapping := &IdentityMapping{
+			MapPrivilegedToAnonymous: true,
+			AnonymousUID:             &anonUID,
+			AnonymousGID:             &anonGID,
+		}
+
+		result := ApplyIdentityMapping(identity, mapping)
+
+		// ACL evaluation resolves Who from Username/Domain, so a squashed
+		// identity that keeps them can still match an ACE naming the
+		// privileged principal — re-granting what the squash removed.
+		assert.Empty(t, result.Username)
+		assert.Empty(t, result.Domain)
+	})
+
+	t.Run("MapPrivilegedToAnonymous clears Username and Domain for administrator SID", func(t *testing.T) {
+		t.Parallel()
+		adminSID := "S-1-5-32-544"
+		identity := &Identity{
+			SID:      &adminSID,
+			Username: "Administrator",
+			Domain:   "CORP",
+		}
+		mapping := &IdentityMapping{
+			MapPrivilegedToAnonymous: true,
+			AnonymousSID:             &anonSID,
+		}
+
+		result := ApplyIdentityMapping(identity, mapping)
+
+		assert.Empty(t, result.Username)
+		assert.Empty(t, result.Domain)
+	})
+
+	t.Run("MapPrivilegedToAnonymous keeps Username and Domain for unprivileged identity", func(t *testing.T) {
+		t.Parallel()
+		userSID := "S-1-5-21-1-2-3-1001"
+		identity := &Identity{
+			UID:      Uint32Ptr(1000),
+			GID:      Uint32Ptr(1000),
+			SID:      &userSID,
+			Username: "testuser",
+			Domain:   "EXAMPLE",
+		}
+		mapping := &IdentityMapping{
+			MapPrivilegedToAnonymous: true,
+			AnonymousUID:             &anonUID,
+			AnonymousGID:             &anonGID,
+			AnonymousSID:             &anonSID,
+		}
+
+		result := ApplyIdentityMapping(identity, mapping)
+
+		assert.Equal(t, "testuser", result.Username)
+		assert.Equal(t, "EXAMPLE", result.Domain)
+	})
 }
 
 // ============================================================================
