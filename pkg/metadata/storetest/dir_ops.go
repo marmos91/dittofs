@@ -16,6 +16,7 @@ func runDirOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("RemoveEmptyDirectory", func(t *testing.T) { testRemoveEmptyDirectory(t, factory) })
 	t.Run("NestedDirectories", func(t *testing.T) { testNestedDirectories(t, factory) })
 	t.Run("RootDirectoryIdempotent", func(t *testing.T) { testRootDirectoryIdempotent(t, factory) })
+	t.Run("LinkCountAgreesWithGetFile", func(t *testing.T) { testLinkCountAgreesWithGetFile(t, factory) })
 }
 
 // testCreateDirectory verifies that creating a directory results in the correct type and link count.
@@ -291,5 +292,84 @@ func testRootDirectoryIdempotent(t *testing.T, factory StoreFactory) {
 	// Both should return the same file (at least same share)
 	if root1.ShareName != root2.ShareName {
 		t.Errorf("ShareName mismatch: %q vs %q", root1.ShareName, root2.ShareName)
+	}
+}
+
+// testLinkCountAgreesWithGetFile verifies that GetLinkCount reports the same
+// hard-link count as GetFile for an inode whose count was never explicitly
+// stored. Backends keep the count outside the inode record (a separate key or
+// a nullable column), so "never written" is a state both surfaces must resolve
+// the same way: a GetLinkCount answering 0 while GetFile answers 2 makes
+// read-modify-write callers persist a wrong count, and 0 reads as "fully
+// unlinked" to anything treating the count as a liveness signal.
+func testLinkCountAgreesWithGetFile(t *testing.T, factory StoreFactory) {
+	cases := []struct {
+		name  string
+		ftype metadata.FileType
+	}{
+		{"Directory", metadata.FileTypeDirectory},
+		{"RegularFile", metadata.FileTypeRegular},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := factory(t)
+			rootHandle := createTestShare(t, store, "/test")
+			ctx := t.Context()
+
+			const name = "nolinkcount"
+			fullPath := childFullPath(t, store, rootHandle, name)
+
+			handle, err := store.GenerateHandle(ctx, "/test", fullPath)
+			if err != nil {
+				t.Fatalf("GenerateHandle() failed: %v", err)
+			}
+			_, id, err := metadata.DecodeFileHandle(handle)
+			if err != nil {
+				t.Fatalf("DecodeFileHandle() failed: %v", err)
+			}
+
+			// SetLinkCount is deliberately never called, which is what leaves
+			// the count unwritten.
+			entry := &metadata.File{
+				ShareName: "/test",
+				Path:      fullPath,
+				FileAttr: metadata.FileAttr{
+					Type: tc.ftype,
+					Mode: 0755,
+					UID:  1000,
+					GID:  1000,
+				},
+			}
+			entry.ID = id
+			if err := store.PutFile(ctx, entry); err != nil {
+				t.Fatalf("PutFile() failed: %v", err)
+			}
+			// Both namespace edges, so the only thing left unset is the link
+			// count. Backends that derive File.Path from parent edges otherwise
+			// see an entry that is reachable by name but has no parent.
+			if err := store.SetParent(ctx, handle, rootHandle); err != nil {
+				t.Fatalf("SetParent() failed: %v", err)
+			}
+			if err := store.SetChild(ctx, rootHandle, name, handle); err != nil {
+				t.Fatalf("SetChild() failed: %v", err)
+			}
+
+			file, err := store.GetFile(ctx, handle)
+			if err != nil {
+				t.Fatalf("GetFile() failed: %v", err)
+			}
+			count, err := store.GetLinkCount(ctx, handle)
+			if err != nil {
+				t.Fatalf("GetLinkCount() failed: %v", err)
+			}
+
+			if count == 0 {
+				t.Errorf("GetLinkCount() = 0 for a live %v; a live entry is never fully unlinked", tc.ftype)
+			}
+			if count != file.Nlink {
+				t.Errorf("GetLinkCount() = %d, GetFile().Nlink = %d; both surfaces must agree", count, file.Nlink)
+			}
+		})
 	}
 }
