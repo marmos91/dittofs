@@ -67,7 +67,8 @@ type RollupStopper interface {
 // MachineSIDStore provides access to the SettingsStore for machine SID
 // persistence. The lifecycle service uses this to load or generate the
 // machine SID on first boot, ensuring consistent identity mapping across
-// restarts. A read or write failure aborts startup.
+// restarts. When the SID is not operator-pinned, a read or write failure
+// aborts startup.
 type MachineSIDStore interface {
 	GetSetting(ctx context.Context, key string) (string, error)
 	SetSetting(ctx context.Context, key, value string) error
