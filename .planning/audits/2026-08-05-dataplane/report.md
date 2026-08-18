@@ -68,16 +68,10 @@ did not exist), #1953 (overlapping manifest rows).
 
 | Finding | Where | Dimension |
 |---|---|---|
-| WRITE issues two extra unbatched `SetFileAttributes` round trips per call | `internal/adapter/smb/handlers/write.go:481` | perf |
 | Per-block sequential metadata round-trips on the Truncate/PunchHole/Delete reap loops | `pkg/block/engine/readwrite.go:178` | perf |
 | Per-chunk `DeleteSynced`+`MarkSynced` loop issues 2N unbatched round-trips | `pkg/metadata/block_record_store.go:159` | perf |
 | `checkFilePermissionsFile` does an uncached `GetShareOptions` round trip per check | `pkg/metadata/auth_permissions.go:267` | perf |
 | GETXATTR scans the parent directory instead of resolving in O(1) | `pkg/metadata/xattr.go:121` | perf |
-| `createEntry` link-count read-modify-write serializes concurrent creates | `pkg/metadata/file_create.go:470` | bugs |
-| `Move()` has no in-transaction TOCTOU recheck of source/destination | `pkg/metadata/file_modify.go:657` | gaps |
-| `WaitForGraph` exposes a check-then-act pair; concurrent LOCKs can build an undetected cycle | `pkg/metadata/lock/deadlock.go:60` | structure |
-| Single share-wide ALL lock taken per lock-manager operation | `pkg/metadata/lock/manager.go:702` | perf |
-| `pendingWrites` / `deviceNumbers` are fully dead state | `pkg/metadata/store/memory/store.go:187,196` | bloat |
 
 **The 220 LOW findings** were never triaged past the verify gate — unlike the HIGH and MED
 entries, none carries a `Verified:` paragraph, so each is a claim rather than an established fact.
@@ -267,6 +261,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] WRITE issues two extra unbatched SetFileAttributes round trips (file atime + parent atime) per call
 
 - **Where:** `internal/adapter/smb/handlers/write.go:481` · `perf` · area: adapter-smb-rw
+> STATUS: FIXED in #1938 — the noteSmbAccess/noteSmbParentAccess per-handle coalescing window collapses the file and parent atime bumps, which is the debounce the finding asked for.
 - **Verified:** CONFIRMED verbatim: after CommitWrite (line 434) and the deferred FlushPendingWriteForFile (449), write.go:482 does metaSvc.SetFileAttributes(file, Atime) and :485 does SetFileAttributes(openFile.ParentHandle, Atime), followed by restoreParentDirFrozenTimestamps(:489). Reachable: Handler.Write is the SMB2 WRITE entrypoint. Three+ synchronous metadata round trips per WRITE, and the parent-directory bump serializes every WRITE to any file in a directory on the same parent row — the same RMW-contention shape the codebase fixed elsewhere for mkdir nlink, and directly contradicting the deferral rationale in its own comment at 445-448.
 - **Fix:** Fold file+parent atime into the same CommitWrite transaction, or defer/debounce it the way FlushPendingWriteForFile was relaxed, instead of two extra blocking store round trips per WRITE.
 
@@ -586,12 +581,14 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Struct doc claims a single mutex that doesn't exist
 
 - **Where:** `pkg/metadata/store/badger/store.go:38` · `comments` · area: metadata-badger-support
+> STATUS: FIXED in #1970 — no mu field exists; the doc now describes MVCC serialization with per-subsystem locks. The identical false claim in the memory backend was corrected with it.
 - **Verified:** CONFIRMED badger/store.go:37-41 'All operations are protected by a single read-write mutex (mu)'. BadgerMetadataStore has NO `mu` field; grep shows only capsMu(103), lockStoreMu(134), clientStoreMu(138), durableStoreMu(142), recoveryStoreMu(146), quotaMu(159) + a nested statsCache mu(129); concurrency is badger MVCC txns. Reachable: NewBadgerMetadataStore ← WithDefaults/WithDefaultsAndCaches ← runtime/init.go:97 and runtime/stores/service.go:192 (default backend). MED: a reader reasoning about locking/deadlocks from this is actively misled.
 - **Fix:** Rewrite to describe the actual model: badger MVCC transactions for the data path + separate fine-grained mutexes per subsystem, or delete the paragraph.
 
 ### [MED] "File Handle Strategy" doc block contradicts the UUID-handle design described later in the same file
 
 - **Where:** `pkg/metadata/store/badger/store.go:51` · `comments` · area: metadata-badger-support
+> STATUS: FIXED in #1970 — GenerateHandle ignores its path argument and mints a UUID; the doc now says so.
 - **Verified:** CONFIRMED badger/store.go:51-60 'File handles are generated from filesystem paths ... reversible ... paths exceeding 64 bytes converted to hash-based format with reverse mapping'. Actual impl badger/shares.go:20-25 GenerateHandle IGNORES its `path` arg and returns metadata.GenerateNewHandle(shareName); there is no hash-reverse-mapping keyspace. Contradicting 'UUID-Based File Identification' section is in encoding.go:25-31, not 'the same file' as the claim states — minor misattribution, defect itself stands. Reachable: same default-backend constructors as idx 7.
 - **Fix:** Delete the stale "File Handle Strategy" paragraph and the "Path-based file handles for import/export capability" bullet under Key Features; keep only the UUID-based section that matches current code.
 
@@ -605,6 +602,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Link-count-with-type-default lookup reinvented 6 times instead of reusing fileLinkCountTxn
 
 - **Where:** `pkg/metadata/store/badger/transaction.go:267` · `bloat` · area: metadata-badger-write-txn
+> STATUS: FIXED in #1972 — the six open-coded blocks call fileLinkCountTxn, and the hidden bug is closed: the tx-scoped GetFileByPayloadID legacy scan returned without loadManifest, so unindexed rows came back with empty Blocks. Both fallbacks route through loadEnrichedFileByID. A separate divergence found here is tracked as #1973.
 - **Verified:** CONFIRMED, including the divergence. The Get(keyLinkCount)->switch nil/ErrKeyNotFound->default 2 (dir) / 1 block is present verbatim at transaction.go:267-284, 802-824, 1228-1241 (root variant, defaults 2), 1541-1553 (seed-then-override phrasing), 1636-1654, and files.go:194-212. objects.go:837 fileLinkCountTxn implements exactly this fallback and is called only from objects.go:585, objects.go:821 and snapshot_store.go:143 — none of the six. Divergence confirmed by reading tx GetFileByPayloadID (transaction.go:1603): the fast path returns loadEnrichedFileByID (which calls loadManifest at :1557) but the legacy full-scan branch sets Nlink + derivePath and returns WITHOUT loadManifest, while the store-level twin does call it (files.go:217) — so a pre-#1435 unindexed row resolved inside a txn comes back with empty Blocks. Reachable: tx.GetFileByPayloadID called from pkg/controlplane/runtime/shares/service.go:802, shares/coordinator.go:197, pkg/metadata/block_record_store.go:51. Fix: one applyLinkCount(txn,*File) helper (fileLinkCountTxn setter form) at all six sites, and add the missing loadManifest(tx.txn, file) in the legacy-scan branch.
 - **Fix:** Replace all six blocks with file.Nlink = fileLinkCountTxn(tx.txn, file) (or txn directly at store level), and add the missing loadManifest call to transaction.go's GetFileByPayloadID scan branch, or better, route it through loadEnrichedFileByID entirely.
 
@@ -624,19 +622,21 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] createEntry silently skips the parent directory's link-count bump on mkdir when GetLinkCount errors
 
 - **Where:** `pkg/metadata/file_create.go:470` · `bugs` · area: metadata-file-io-write
+> STATUS: FIXED in #1972 — the `if err == nil` guard discarded a failed parent GetLinkCount while the tx still committed the new directory, leaving parent nlink permanently one short. The read is now tx-critical and propagates, matching how Move and RemoveDirectory already treat it.
 - **Verified:** Confirmed verbatim at file_create.go:469-476: `parentLinkCount, err := tx.GetLinkCount(...); if err == nil { SetLinkCount(parentLinkCount+1) }` — non-nil err drops the '..' nlink bump while the tx still commits the new dir + child edge, and the error is discarded with no log. Reachable: core mkdir path. Contrast confirmed at file_modify.go:831-834 ("The read is tx-critical: a failed GetLinkCount must roll the...") and :884/:894, which DO propagate — same read, opposite treatment in the same package. Compounding factor: on postgres/sqlite tx.GetLinkCount itself swallows errors into (0,nil) (postgres/transaction.go:823, sqlite/transaction.go:~770), so on those backends the failure mode is worse — parent nlink is silently SET TO 1, not skipped.
 - **Fix:** Either propagate the error to abort the whole create (matching the RemoveDirectory / Move treatment of the same read), or at minimum log at Error level when skipped so it isn't silently lost.
 
 ### [MED] RemoveFile silently assumes nlink=1 on GetLinkCount failure — can delete content still referenced by surviving hard links
 
 - **Where:** `pkg/metadata/file_remove.go:171` · `bugs` · area: metadata-file-io-write
-> STATUS: FIXED in #1901 (caller safety net now reachable)
+> STATUS: FIXED in #1975 — an earlier revision of this file marked it fixed by #1901; that was wrong. #1901 only made the SQL backends propagate GetLinkCount errors, which makes the `linkCount = 1` guess MORE reachable, not less. The fallback survived on develop verbatim. #1975 returns the error instead, which is safe because backends report a missing count as (0, nil) rather than an error.
 - **Verified:** Confirmed verbatim at file_remove.go:171-174 (`if lcErr != nil { linkCount = 1 }`), inside the same tx whose own comment (163-170) calls this read tx-critical for exactly the nlink→0 decision. Inconsistent with the sibling handling in file_modify.go:831-834 ('The read is tx-critical: a failed GetLinkCount must roll the...') and 884/894, which return the error. Reachable: RemoveFile is the NFS/SMB unlink path. On a transient backend read error a multiply-linked file takes the last-link branch, leaves returnFile.PayloadID populated and the caller reaps content still referenced by surviving names. MED: needs a GetLinkCount failure, but the outcome is silent data loss.
 - **Fix:** Return lcErr instead of defaulting: `if lcErr != nil { return lcErr }` — abort the transaction (and the whole RemoveFile call) on a failed link-count read, consistent with how Move.go and RemoveDirectory already treat GetLinkCount errors as tx-critical.
 
 ### [MED] Service struct is a god object mixing store routing, NLM locking, quota policy, dir-notification wiring, and hot-path write coordination
 
 - **Where:** `pkg/metadata/service.go:40` · `structure` · area: metadata-file-io-write
+> STATUS: DEFERRED to #1967 — 128 Service receivers with quota state, lock managers, unified views, removeGen and dir-notifiers all sharing s.mu. Splitting it is a lock-ownership redesign that must preserve the removeGen register/remove TOCTOU and the NFSv4 grace-coordinator lockstep.
 - **Verified:** CONFIRMED from source: Service (service.go:40+) carries stores/storeCache/lockManagers/unifiedViews/dirChangeNotifiers/pendingWrites/dirTimes/writebackShares/deferredCommit + parentLinkShards + createNameShards + cookies + quotas + identityQuotas + quotaGracePersist + removeGen + graceDuration + graceCoordinator + byteRangeReleaseHook; 126 `func (s *Service)` receivers across pkg/metadata. Orthogonal concerns (quota policy, lock-manager lifecycle, dir-change notify) share the struct that also holds write hot-path state — materially inflates blast radius. Contrasts with runtime's own sub-service split per CLAUDE.md.
 - **Fix:** Extract QuotaManager (quota get/set/enforce methods + identity quota state) and a LockManagerRegistry (lockManagers/unifiedViews/grace-period wiring) into their own types that Service composes, mirroring runtime's sub-service split. Leaves Service holding store routing + pendingWrites/dirTimes (the actual write-path state).
 
@@ -649,12 +649,14 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Single share-wide mutex serializes ALL lock ops on synchronous per-op store I/O
 
 - **Where:** `pkg/metadata/lock/manager.go:702` · `perf` · area: metadata-lock-core-manager
+> STATUS: DEFERRED to #1967 — striping lm.mu per handleKey is not bounded: the same mutex guards the manager-global leaseKeyIndex and clientHandleIndex that every per-handle mutation writes, plus epoch, breakCallbacks, recentlyBroken, breakWaitChans, gracePeriod and ~12 genuinely cross-bucket traversals. Re-homing that state IS the adjacent god-object refactor.
 - **Verified:** CONFIRMED: Manager has one sync.RWMutex for the whole share (L702); putLockLocked/deletePersistedLocked (L1276, L1296) make a synchronous lockStore round-trip bounded by persistTimeout=3s (L754) and their doc comments require the caller to hold lm.mu. So one file's store latency blocks every other file's lock/lease op in the share. REACHABLE: every NFS NLM lock and SMB lease grant/release. Severity MED not HIGH: the serialization is a deliberate ordering fix (comment cites the reorder/resurrection bug class it eliminates), persistence is best-effort with a 3s cap, and lock ops are far lower-rate than read/write — but under lease-heavy SMB workloads the share-wide queueing is a genuine throughput ceiling.
 - **Fix:** Shard the critical section per handleKey (striped mutex) so lock ops on different files don't queue behind each other's store RTT. Do NOT simply move the persist outside mu — putLockLocked's contract (manager.go:1265-1276) is that mutex order == store order; any fix must preserve per-handle ordering (e.g. per-handle serialized queue).
 
 ### [MED] SetLeaseEpoch scans every handleKey bucket instead of using leaseKeyIndex
 
 - **Where:** `pkg/metadata/lock/manager.go:1493` · `perf` · area: metadata-lock-core-manager
+> STATUS: FIXED in #1935 — SetLeaseEpoch iterates leaseKeyIndex[leaseKey] and scans only those buckets, keeping the update-every-matching-record collection and two-pass max-epoch convergence. Equivalence test: TestSetLeaseEpoch_IndexMatchesFullScan.
 - **Verified:** CONFIRMED: L1493-1503 ranges the whole lm.unifiedLocks map (every handleKey bucket, every lock) to collect leaseKey matches. leaseKeyIndex exists and — per its own doc — ref-counts EVERY bucket holding a key, so it is a complete candidate set and using it preserves the 'update every matching record' requirement that the comment justifies (findLeaseByKey's first-match-only is why the author avoided it, but the index itself is not first-match). REACHABLE from SMB CREATE: handlers/create.go:950 and handlers/lease_context.go:510 → smb/lease/manager.go:1219 → this. Cost is O(all locks in the share) per lease-granting/upgrading open. MED not HIGH: constant is small per record and lease opens are not the highest-rate op, but it degrades with total outstanding locks rather than with actual contention.
 - **Fix:** Iterate lm.leaseKeyIndex[leaseKey] for candidate handleKeys and scan only lm.unifiedLocks[handleKey] in those buckets (same pattern as findLeaseByKey, leases.go:129-141), keeping the existing two-pass max-epoch convergence semantics.
 
@@ -668,6 +670,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] hasLeaseKeyOnOtherFile full-manager scan bypasses existing leaseKeyIndex
 
 - **Where:** `pkg/metadata/lock/leases.go:162` · `perf` · area: metadata-lock-lease-oplock
+> STATUS: FIXED in #1935 — hasLeaseKeyOnOtherFile ranges leaseKeyIndex[leaseKey], skips excludeHandleKey and checks Owner.ClientID per bucket. Equivalence test: TestHasLeaseKeyOnOtherFile_IndexMatchesFullScan.
 - **Verified:** Confirmed: leases.go:162-179 ranges all of lm.unifiedLocks; called at leases.go:387 inside lm.mu.Lock() on every RequestLease with requestedState != None, i.e. every lease-granting SMB CREATE (non-test path via adapter lease manager). leaseKeyIndex (indexes.go) is derived state reconciled on every mutation and already used by findLeaseByKey/clearBreakingSiblingsLocked for exactly this lookup, so the bounded fix is available and semantically equivalent. Real, but per-entry work is a pointer deref + compare, so HIGH is overstated — MED (scales with total open-file lock records under the global write mutex).
 - **Fix:** Use lm.leaseKeyIndex[leaseKey] to get the candidate handleKey buckets (same pattern as findLeaseByKey), skip excludeHandleKey, and scan only lm.unifiedLocks[handleKey] for those buckets checking Owner.ClientID — bounded by the (small) number of files actually holding that lease key instead of every file on the server.
 
@@ -688,18 +691,21 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] WaitForGraph exposes check-then-act pair; concurrent LOCK requests can build an undetected cycle
 
 - **Where:** `pkg/metadata/lock/deadlock.go:60` · `structure` · area: metadata-lock-nlm-deadlock-grace
+> STATUS: FIXED in #1935 — WouldCauseCycle + AddWaiter collapsed into TryAddWaiter under one write lock; the sole caller (smb/handlers/lock_async.go:55) uses it.
 - **Verified:** Confirmed: WouldCauseCycle (deadlock.go:60, RLock/RUnlock) and AddWaiter (deadlock.go:82, separate Lock) are separate; real caller parkLockOnConflict does WouldCauseCycle at lock_async.go:52 then TryReserveAsync/generateAsyncId/context.WithTimeout/PendingLockRegistry.Register before AddWaiter at :106 — no lock held across the gap, so two concurrent parks can both pass the check and close a cycle. Graph built in production (handler.go:904 LockWaitGraph: lock.NewWaitForGraph()). Downgraded from HIGH: the missed cycle is not a hang — every parked lock is bounded by asyncBlockingLockTimeout (waitCtx at lock_async.go:73), so the undetected deadlock resolves as a late LOCK_NOT_GRANTED instead of a permanent wedge, and the window is narrow.
 - **Fix:** Collapse into one atomic method, e.g. TryAddWaiter(waiter string, owners []string) bool that holds a single Lock for both the cycle check and the edge insert, returning false (no edges added) if it would cycle. Delete/deprecate the separate WouldCauseCycle+AddWaiter public pair or keep them only as building blocks under one lock.
 
 ### [MED] pendingWrites map is fully dead state
 
 - **Where:** `pkg/metadata/store/memory/store.go:196` · `bloat` · area: metadata-memory-backend
+> STATUS: FIXED in #1970 — pendingWrites had no producer or consumer; the field and its alloc/reset/snapshot plumbing are gone.
 - **Verified:** CONFIRMED dead. Exhaustive grep of pkg/metadata/store/memory for `pendingWrites` yields only: doc comment store.go:108, decl store.go:189-196, alloc store.go:354, reset.go:34, and snapshot round-trip snapshot_store.go:124/337/368-369. No PrepareWrite/CommitWrite/read of the map anywhere in the package or its transaction (transaction.go has zero hits). Distinct from the live pkg/metadata/service.go pendingWrites *PendingWritesTracker (different type, real users). Reachable pkg: NewMemoryMetadataStoreWithDefaults called from pkg/controlplane/runtime/init.go:65 and stores/service.go:176. Fix: delete field + its alloc/reset/snapshot plumbing (and the Snapshot.PendingWrites gob field).
 - **Fix:** Delete the field and its init/reset/snapshot plumbing, or implement PrepareWrite/CommitWrite if two-phase writes are actually needed.
 
 ### [MED] deviceNumbers map + deviceNumber struct are fully dead
 
 - **Where:** `pkg/metadata/store/memory/store.go:187` · `bloat` · area: metadata-memory-backend
+> STATUS: FIXED in #1970 — deviceNumbers had zero insertion sites; device major/minor ride on FileAttr.Rdev. Map, struct and plumbing removed, gob decode-compatibility verified both directions.
 - **Verified:** CONFIRMED dead. `grep -rn 'deviceNumbers\[' pkg/` returns ZERO hits — no insertion exists anywhere; the only accesses are maps.Clone (transaction.go:98), snapshot restore (transaction.go:137, snapshot_store.go:336/365-366), two deletes (transaction.go:405, 761), alloc (store.go:353), reset (reset.go:33), gob field (snapshot_store.go:123). Since nothing ever writes a key, a restored snapshot can only ever be empty too, so the map is unreachable state by construction. deviceNumber struct (store.go:49-52) has no other user; device major/minor rides on metadata.File fields instead. Reachable pkg (init.go:65, stores/service.go:176). Fix: delete the map, the deviceNumber struct, the two deletes, the clone/restore lines and the Snapshot.DeviceNumbers field.
 - **Fix:** Remove deviceNumber/deviceNumbers entirely, or wire it up in PutFile for FileTypeBlockDevice/FileTypeCharDevice if device files need it.
 
@@ -762,6 +768,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Share-lifecycle writes bypass the store's own SSI-conflict retry contract; comment claims a retry that doesn't exist
 
 - **Where:** `pkg/metadata/store/badger/shares.go:194` · `slop` · area: metadata-store-badger-write-txn
+> STATUS: FIXED in #1972 — CreateShare, UpdateShareOptions, DeleteShare and CreateRootDirectory routed through updateWithConflictRetry, so ErrConflict no longer escapes unmapped. Worst on DeleteShare, which reads every f: row into the read set.
 - **Verified:** CONFIRMED: shares.go uses raw `s.db.Update(` at lines 113 (CreateShare), 151 (UpdateShareOptions), 194 (DeleteShare), 436 (CreateRootDirectory) — grep shows updateWithConflictRetry is referenced only from objects.go:157/182/210/245/301 and block_record_store.go:280, never from shares.go; withTransaction's retry loop (transaction.go:110-116, maxTransactionRetries) is likewise not on this path. So a single badgerdb.ErrConflict aborts the op and escapes unmapped (mapBadgerError is applied only to the inner txn.Get). deleteShareFiles' doc comment asserting the 'pool-path applies it after db.Update returns nil — so conflict/serialization retry re-runs the enclosing Update' describes a retry that does not exist on DeleteShare. REACHABLE via the runtime AddShare/RemoveShare/UpdateShareOptions control-plane paths. Downgraded HIGH→MED: share lifecycle ops are rare admin operations with low SSI-conflict probability; blast radius is a spurious error return + unwrapped sentinel, not data loss.
 - **Fix:** Route CreateShare, UpdateShareOptions, DeleteShare and CreateRootDirectory through s.updateWithConflictRetry(ctx, fn) (objects.go:157) instead of a bare s.db.Update(fn), and fix or delete deleteShareFiles' false retry claim.
 
@@ -852,12 +859,14 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Move() has no in-transaction TOCTOU recheck of source/destination entries
 
 - **Where:** `pkg/metadata/file_modify.go:657` · `gaps` · area: metadata-write-coordination
+> STATUS: FIXED in #1972 — both names were resolved only outside the tx and no lock covers a rename, so two renames onto the same destination both SetChild and orphan an inode. Both edges are re-resolved with tx.GetChild inside the tx, which also enters the child keys in the read set so badger SSI can see the conflict.
 - **Verified:** CONFIRMED. Move reads srcHandle/srcFile (file_modify.go:657-664) and dstHandle/dstFile (699-705) via store.GetChild/GetFile outside the tx; the withRelaxedTransaction body (801-900+) re-reads only the two DIRECTORY inodes (tx.GetFile) and then acts on the stale dstFile/srcHandle — no tx.GetChild(fromDir,fromName) or tx.GetChild(toDir,toName) recheck anywhere. Contrast CreateHardLink (file_create.go:163-171: 'Re-check existence inside the transaction to close the TOCTOU race ... same pattern as createEntry') and createEntry (file_create.go:264-268 'OUTER check advisory only'). No lock covers it either: lockCreateName is used only by the create paths (file_create.go:148,431) and lockParentLinks (file_modify.go:792) only fires for cross-parent DIRECTORY renames, so concurrent file renames onto the same dest both SetChild → last writer wins, first inode orphaned, and badger SSI can't see the conflict because the child key was never read through the tx. Reachable: NFSv3 rename.go:258, NFSv4 rename.go:152, SMB set_info.go:746/1116. Fix: re-read both entries with tx.GetChild inside the tx and re-run the type/not-empty/dst checks against that.
 - **Fix:** Inside the withRelaxedTransaction closure, re-resolve srcHandle via tx.GetChild(fromDir, fromName) and dstHandle via tx.GetChild(toDir, toName), and abort (return the appropriate StoreError) if either no longer matches what was read outside the transaction, mirroring the recheck already done in createEntry/CreateHardLink.
 
 ### [MED] write_codec.go reimplements xdr.EncodeWccData/encodeWccAttr inline instead of reusing it
 
 - **Where:** `internal/adapter/nfs/v3/handlers/write_codec.go:192` · `bloat` · area: nfsv3-read-write-commit
+> STATUS: FIXED in #1939 — WriteResponse.Encode calls xdr.EncodeWccData. Byte-identity with the old inline routine was checked against all six pre-op/post-op/status combinations before the claim was accepted.
 - **Verified:** CONFIRMED. write_codec.go:196-232 hand-writes the pre-op present flag + Size/Mtime.Seconds/Mtime.Nseconds/Ctime.Seconds/Ctime.Nseconds (else branch writes uint32(0)), then calls xdr.EncodeOptionalFileAttr for post-op at :231 — which is exactly xdr.EncodeWccData (internal/adapter/nfs/xdr/encode.go:113-135: present flag -> encodeWccAttr(:157) -> EncodeOptionalFileAttr). Byte-identical output. Every other mutating v3 codec already reuses it: commit_codec.go:125, setattr_codec.go:150, create_codec.go:134, mkdir_codec.go:109, rmdir_codec.go:133, remove_codec.go:125, rename_codec.go:146/152, link_codec.go:141, symlink_codec.go:182, mknod_codec.go:182 — WRITE is the lone holdout. REACHABLE: WriteResponse.Encode is the live NFSv3 WRITE reply encoder. Fix: replace :195-233 with `xdr.EncodeWccData(&buf, resp.AttrBefore, resp.AttrAfter)`.
 - **Fix:** Replace write_codec.go lines 192-233 with a single `if err := xdr.EncodeWccData(&buf, resp.AttrBefore, resp.AttrAfter); err != nil { return nil, fmt.Errorf("failed to encode wcc data: %w", err) }`, matching commit_codec.go.
 
@@ -947,6 +956,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] COMMIT silently skips metadata flush and logs nothing when auth-context build fails
 - **Where:** `internal/adapter/nfs/v3/handlers/commit.go:211` · `bugs`
+> STATUS: FIXED in #1932 — logAuthCtxError + authDenialStatus; COMMIT now logs and fails the RPC, the silent-continue path is gone.
 - **Fix:** Log the authErr (e.g. logAuthCtxError(ctx.Context, authErr, "COMMIT", ...)) even though COMMIT proceeds without failing the RPC, so operators can see the flush was skipped.
 
 ### [LOW] CommitResponse.WriteVerifier doc comment describes an unimplemented placeholder that the code already implements correctly
@@ -955,6 +965,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] Unconditional fmt.Sprintf hex-formatting of file handle on every READ/WRITE/COMMIT call, not gated by debug level
 - **Where:** `internal/adapter/nfs/v3/handlers/read.go:116` · `perf`
+> STATUS: FIXED in #1978 — the handle was hex-formatted on every READ/WRITE/COMMIT regardless of log level; now an xdr.LazyHandle slog.LogValuer.
 - **Fix:** Wrap read.go:116/250/279-280, write.go:127, commit.go:89 in `if logger.IsDebugEnabled() { ... }`, matching internal/adapter/common/write_payload.go:131.
 
 ### [LOW] CompoundResult error-literal repeated ~9x per file instead of using sibling's helper pattern
@@ -967,10 +978,12 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] READ_PLUS response buffer not pre-sized, unlike sibling READ handler
 - **Where:** `internal/adapter/nfs/v4/handlers/read_plus.go:216` · `perf`
+> STATUS: FIXED in #1978 — reply buffer pre-sized to the exact wire size, matching encodeRead4resok.
 - **Fix:** Compute total wire size up front (12 + per-segment: hole 20B, data 12+len(Data)+pad) and preallocate like encodeRead4resok does.
 
 ### [LOW] fmt.Sprintf hex-formats FileID on every READ/WRITE call regardless of log level
 - **Where:** `internal/adapter/smb/handlers/write.go:161` · `perf`
+> STATUS: FIXED in #1978 — SMB READ/WRITE entry logs go through a lazyFileID LogValuer instead of formatting unconditionally.
 - **Fix:** Pass req.FileID as a raw []byte/[16]byte structured field (LogValuer/fmt.Stringer, formatted only when the record is emitted) instead of eager fmt.Sprintf at the call site.
 
 ### [LOW] BlockStoreConformance godoc references a nonexistent BlockStoreAppendConformance call
@@ -979,6 +992,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] BlockStoreConformance never exercises Head/Has/GetRange on a missing hash, despite the interface pinning ErrChunkNotFound/(false,nil) for exactly that case
 - **Where:** `pkg/block/blockstoretest/conformance.go:65` · `gaps`
+> STATUS: CLOSED in #1975 — Has_NotFound / Head_NotFound / GetRange_NotFound added to the shared block-store conformance suite. Has_NotFound stores an unrelated object first so a listing-backed backend must still report a definitive miss.
 - **Fix:** Add Has_NotFound (assert (false, nil) on an unstored hash), Head_NotFound (assert errors.Is(err, block.ErrChunkNotFound)), and GetRange_NotFound (assert errors.Is(err, block.ErrChunkNotFound) on an absent hash) subtests to BlockStoreConformance, mirroring the existing Get_NotFound pattern (conformance.go:136-159).
 
 ### [LOW] doc.go describes a BlockStoreAppendConformance entrypoint and appendlog files that don't exist
@@ -1015,14 +1029,17 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] Compressed write path double-allocates and double-copies the compressed body
 - **Where:** `pkg/block/compression/frame.go:45` · `perf`
+> STATUS: FIXED in #1978 — header reserved in the buffer the codec streams into. Measured 20.6 MB to 14.7 MB allocated per 4 MiB semi-compressible Put; the frame-vs-plaintext decision is numerically unchanged.
 - **Fix:** Presize compressed (bytes.NewBuffer(make([]byte,0,len(data)))) to cut growth reallocations, and/or reserve FrameHeaderFixedSize+maxOrigSizeVarint up front and stream the codec output after it so encodeFrame's separate allocate-and-copy is unnecessary.
 
 ### [LOW] Encrypted write path double-allocates and double-copies the ciphertext
 - **Where:** `pkg/block/encryption/frame.go:107` · `perf`
+> STATUS: FIXED in #1978 — aead.Seal appends onto the header buffer, dropping the standalone ciphertext allocation and copy. The reservation is exact, so Seal never reallocates.
 - **Fix:** Build frame header into `out` first, then `out = aead.Seal(out, nonce, data, hash[:])` to append ciphertext in place; drop the separate ciphertext alloc in sealLayer and the append-copy in encodeFrame.
 
 ### [LOW] AES-GCM cipher rebuilt from scratch on every block-key Wrap/Unwrap call
 - **Where:** `pkg/block/encryption/keyprovider/local.go:239` · `perf`
+> STATUS: WONTFIX — real, but dwarfed by the per-chunk AEAD seal, and a cached AEAD would outlive Close()'s key zeroization.
 - **Fix:** Cache the cipher.AEAD once on aesGCMKEK (lazily on first use or in newLocalProvider/newKMIPProvider) and have Wrap/Unwrap reuse it; a new provider instance already covers key rotation.
 
 ### [LOW] Legacy-only block.Store CAS surface left in the primary decorator file instead of legacy_cas_migration.go
@@ -1063,6 +1080,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] compactOneBlock re-fetches per-chunk locators via GetLocator instead of reusing the already-scanned EnumerateSynced result
 - **Where:** `pkg/block/engine/compaction.go:237` · `perf`
+> STATUS: WONTFIX — background GC pass, not a request path; a locator snapshot would also change move-decision freshness.
 - **Fix:** In CompactBlocks' EnumerateSynced callback (line 143), also build a hash->locator map alongside liveBytes and pass it into compactOneBlock instead of calling v.GetLocator per record.
 
 ### [LOW] CollectGarbage doc comment contradicts markPhase's actual fail-closed hard-error behavior
@@ -1075,6 +1093,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] Unconditional raState allocation on every read, even on map hit
 - **Where:** `pkg/block/engine/readahead.go:48` · `perf`
+> STATUS: FIXED in #1978 — Load before LoadOrStore, so a readahead hit no longer builds a throwaway raState on the per-read path.
 - **Fix:** Load first, only allocate on miss: `v, loaded := m.readahead.Load(payloadID); if !loaded { v, loaded = m.readahead.LoadOrStore(payloadID, &raState{}) }`.
 
 ### [LOW] WarmAll's BlocksAlreadyLocal stat is dead code — always 0, contradicts its own doc comment
@@ -1084,6 +1103,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] WarmAll always re-downloads every chunk from remote, even chunks already resident locally
 - **Where:** `pkg/block/engine/warm.go:95` · `perf`
+> STATUS: REFUTED — the code already carries a comment explaining the probe is impossible (the journal is not hash-keyed), and WarmAll is an operator one-shot rather than a hot path.
 - **Fix:** Probe local residency (e.g. via the journal/local store) per FileChunk before dispatching the remote fetch, skip already-resident chunks, and increment the existing (currently dead) alreadyLocal counter instead of always going remote.
 
 ### [LOW] WarmResult.BlocksAlreadyLocal / alreadyLocal counter declared but never incremented
@@ -1177,10 +1197,12 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] Eager remote health probe runs synchronously while Syncer.mu is held, stalling every read/flush call during share startup
 - **Where:** `pkg/block/engine/syncer.go:664` · `bugs`
+> STATUS: FIXED in #1971 — Start/SetRemoteStore split into a locked half so the eager health probe runs with m.mu released. Kept synchronous deliberately: engine.go:269 reconciles local eviction from IsRemoteHealthy() right after Start returns, so deferring the probe would leave eviction enabled through the first probe RTT with the remote down.
 - **Fix:** Release m.mu before calling hm.Start(ctx), or make HealthMonitor.Start's eager probe itself asynchronous (spawn the probe+state-transition in the goroutine instead of running it inline before go hm.monitorLoop(ctx)). At minimum bound the eager probe with a short context.WithTimeout so the Syncer.Start() critical section has a hard ceiling.
 
 ### [LOW] Dead computed variable in startPeriodicUploader — copy-paste drift
 - **Where:** `pkg/block/engine/syncer.go:702` · `slop`
+> STATUS: FIXED in #1971 — dead UploadInterval computation deleted; carve_dispatch.go:35 owns that read.
 - **Fix:** Delete lines 702-706 (interval computation + `_ = interval`) from startPeriodicUploader; carveDispatcher already owns and defaults its own interval independently.
 
 ### [LOW] Syncer is a god object bundling fetch-dedup, readahead, health, adaptive upload control, carve wiring and queue ownership
@@ -1189,10 +1211,12 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] Dead UploadInterval computation in startPeriodicUploader — discarded via blank identifier
 - **Where:** `pkg/block/engine/syncer.go:702` · `bugs`
+> STATUS: FIXED in #1971 — dead UploadInterval computation deleted; carve_dispatch.go:35 owns that read.
 - **Fix:** Delete lines 702-706 (the interval/default/blank-assignment) from startPeriodicUploader; leave carveDispatcher as the single owner of that config read.
 
 ### [LOW] Dead code: interval computed then discarded via `_ = interval`
 - **Where:** `pkg/block/engine/syncer.go:702` · `structure` · *re-confirmed*
+> STATUS: FIXED in #1971 — dead UploadInterval computation deleted; carve_dispatch.go:35 owns that read.
 - **Fix:** Delete syncer.go:702-706 (`interval := m.config.UploadInterval`, the `<= 0` default, and `_ = interval`); carve_dispatch.go:35 already reads m.config.UploadInterval and applies its own default.
 
 ### [LOW] Stale comment references removed addPendingHash/pendingMu symbols
@@ -1201,10 +1225,12 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] Syncer.Close() / HealthMonitor.Stop() don't join background goroutines before returning — use-after-close race on local/remote teardown
 - **Where:** `pkg/block/engine/syncer.go:914` · `gaps`
+> STATUS: FIXED in #1959 — the bgWG/waitBounded and HealthMonitor joins landed after the audit tree. #1975 adds the two coverage tests (both verified failing against the pre-fix build) plus a stop-over-queued-tick guard so the join cannot wait on one more probe.
 - **Fix:** Add a sync.WaitGroup to Syncer covering carveDispatcher and runUploadController (Add(1) before each `go`, Done() on return) and one to HealthMonitor covering monitorLoop; Wait() on it inside Close()/Stop() using the same timeout pattern SyncQueue.Stop already uses, before returning.
 
 ### [LOW] Record checksum never covers the FileID bytes — silent misattribution on bit rot
 - **Where:** `pkg/block/journal/record.go:85` · `gaps`
+> STATUS: TRACKED as #1976 — the FileID bytes genuinely fall outside the CRC'd span, but every fix changes the on-disk record layout and cannot read existing journals. Needs a format version and a migration, not a sweep patch.
 - **Fix:** Extend the CRC coverage to include the FileID bytes: either widen headerCRCCovers-style checksum to cover Magic..Version+FileID (recomputed on every append, which is cheap since FileID is short) and updated at the same one-byte Flags-flip site as today (Flags stays excluded, everything else including FileID included), or fold the FileID into the existing payload CRC computation (crc(fileID) combined with crc(payload), e.g. running the crc32 update sequentially over fileID then payload) so readRecordAt's validation catches a corrupted FileID the same way it catches a corrupted payload.
 
 ### [LOW] appendTombstone / appendTruncateMarker are near-duplicate ~45-line methods
@@ -1257,6 +1283,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] MemoryStore.ReadAt: unconditional clear(dst) before copy doubles memory writes on the common fully-covered read
 - **Where:** `pkg/block/local/memory/memory.go:114` · `perf`
+> STATUS: FIXED in #1978 — only the tail the copy misses is zeroed.
 - **Fix:** Only zero the uncovered tail: n := copy(dst, f.buf[offset:]); if n < len(dst) { clear(dst[n:]) } (keep the existing early clear+return for the f == nil || offset >= len(f.buf) branch).
 
 ### [LOW] memory.ErrStoreClosed is a redundant same-value alias kept 'for backward compatibility'
@@ -1265,6 +1292,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] Redundant double copy on every memory-backend PutBlock
 - **Where:** `pkg/block/remote/memory/store.go:69` · `perf`
+> STATUS: FIXED in #1978 — redundant copy dropped; io.ReadAll already returns a private buffer and every read path copies out.
 - **Fix:** Drop the second copy; store `data` directly: s.blocksByID[blockID] = &memBlock{data: data, lastModified: s.nowFn()}.
 
 ### [LOW] RemoteStore capability-interface doc directly contradicts the interface it documents
@@ -1297,6 +1325,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] GenerateCookie allocates a boxed hash.Hash64 + byte-slice copies per directory entry, on every READDIR page
 - **Where:** `pkg/metadata/cookies.go:73` · `perf`
+> STATUS: FIXED in #1978 — FNV-1a inlined, removing 3 allocations per dirent. A test pins the digest against hash/fnv so cookies stay stable across restarts.
 - **Fix:** Inline FNV-1a as a plain loop over the string bytes (no hash.Hash interface, no []byte conversion): XOR-multiply into a local uint64. Drops all 3 allocations per call.
 
 ### [LOW] pkg/metadata/errors.go + lock_exports.go are wholesale back-compat re-export shims, doubling the package's public API surface
@@ -1309,6 +1338,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] GetQuotaUsage failure silently disables quota enforcement, zero logging
 - **Where:** `pkg/metadata/quota_enforce.go:51` · `bugs`
+> STATUS: FIXED in #1971 — a GetQuotaUsage failure now logs at Error before degrading to no-quota.
 - **Fix:** Log the failure, e.g. `logger.Error("quota: usage lookup failed, allowing write", "share", shareName, "scope", scope, "id", usageID, "error", err)` before returning nil, so a persistently broken quota backend is visible instead of silently degrading enforcement.
 
 ### [LOW] errors.go: entire file is a dead-weight deprecated re-export shim over pkg/metadata/errors and pkg/metadata/lock
@@ -1321,6 +1351,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] root_squash / admin-squash leaves Username+Domain unsquashed, letting named-principal ACEs re-grant privileged identity
 - **Where:** `pkg/metadata/auth_identity.go:317` · `gaps`
+> STATUS: FIXED in #1975 — root/admin squash now clears Username and Domain. ACL evaluation resolves Who from them, so a named-principal ACE re-granted the privilege the squash had just removed.
 - **Fix:** In the MapPrivilegedToAnonymous branch of ApplyIdentityMapping (auth_identity.go ~320-330), clear result.Username and result.Domain the same way MapAllToAnonymous does, so no named-principal ACE can match a squashed identity.
 
 ### [LOW] Redundant "Check context" comment restates the next line verbatim
@@ -1337,6 +1368,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] evaluateWithACL walks the whole ACL once per requested-permission bit instead of one single-pass EvaluateGranted call
 - **Where:** `pkg/metadata/auth_permissions.go:489` · `perf`
+> STATUS: WONTFIX — the loop only evaluates requested bits, normally one. Folding the masks risks DENY and owner-implicit drift for no measurable gain.
 - **Fix:** OR the ACE masks of all set Permission bits, call acl.EvaluateGranted(fileACL, evalCtx, combined) once (acl/evaluate.go:292), then map granted mask back through permToACLMask (pm.mask&granted==pm.mask).
 
 ### [LOW] FileAccessChecker: single-implementation capability interface declared in the producer package
@@ -1345,6 +1377,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] CreateRootDirectory's UID/GID reconciliation on an existing root writes the file record without invalidating readCache/parentCache
 - **Where:** `pkg/metadata/store/badger/shares.go:546` · `gaps`
+> STATUS: FIXED in #1975 — CreateRootDirectory invalidates readCache and parentCache for the root; a re-attach with changed UID/GID served stale ownership before the fix.
 - **Fix:** In CreateRootDirectory, after a successful commit, also invalidate s.readCache and s.parentCache for rootFile.ID.String() unconditionally (cheap even when nothing changed), alongside the existing shareCache.invalidate call.
 
 ### [LOW] Lazy-init mutex-guarded singleton wrappers add indirection with zero benefit
@@ -1357,6 +1390,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] Reset() does not zero usedBytes/quota counters, unlike the sqlite/postgres reference implementations — stale accounting survives a failed restore
 - **Where:** `pkg/metadata/store/badger/reset.go:21` · `gaps`
+> STATUS: REFUTED — Reset() already zeroes usedBytes and the quota cache, and failRestore is consistent given the empty-store precondition.
 - **Fix:** Zero s.usedBytes and reset the quota cache directly inside Reset() (mirroring sqlite/postgres), and additionally do the same in failRestore before returning, so both call sites leave counters consistent with the DB's actual (empty) contents rather than depending on a downstream success path that may never run.
 
 ### [LOW] Comment narrates a past bug/fix instead of describing current behavior
@@ -1381,6 +1415,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] badgerTransaction.GetFileByPayloadID legacy-scan fallback returns File without its block manifest
 - **Where:** `pkg/metadata/store/badger/transaction.go:1603` · `gaps`
+> STATUS: FIXED in #1972 — the legacy scan branch returned without loading the manifest, so unindexed rows resolved with empty Blocks. #1972 routes both the tx- and store-level fallbacks through loadEnrichedFileByID, closing the drift that caused it.
 - **Fix:** Add the same `if err := loadManifest(tx.txn, file); err != nil { return nil, err }` call before `result = file; return errFound` in the legacy-scan branch of badgerTransaction.GetFileByPayloadID (transaction.go, inside the item.Value closure around line 1658), matching files.go:217 and loadEnrichedFileByID's loadManifest call.
 
 ### [LOW] Redundant "Decode/Encode handle" comments restate the next line verbatim
@@ -1497,6 +1532,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] Redundant 'Debug logging' comment restates the obvious call beneath it
 - **Where:** `pkg/metadata/store/sqlite/transaction.go:496` · `comments`
+> STATUS: FIXED in #1978 — three ad-hoc Debug logs gated on logger.Enabled; GetChild runs per path component.
 - **Fix:** Delete the comment.
 
 ### [LOW] Package-level mutable global cache-size config instead of threading through store config
@@ -1509,10 +1545,12 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] ShareName not hex-encoded before building dh:share: index key — same injection class the package already flags/mitigates for MonName
 - **Where:** `pkg/metadata/store/badger/durable_handles.go:125` · `security`
+> STATUS: FIXED in #1971 — share name hex-encoded through a new shareIndexPrefix on put/delete/list, mirroring lockIndexPrefix. No migration needed.
 - **Fix:** Hex-encode ShareName like monNameIndexPrefix does: prefixDHShare + hex.EncodeToString([]byte(handle.ShareName)) + ":" + handle.ID, consistently in putDurableHandleTx:125, deleteIndicesTx:160 and ListDurableHandlesByShare:478.
 
 ### [LOW] Redundant Get+Unmarshal of durable handle already decoded in caller
 - **Where:** `pkg/metadata/store/badger/durable_handles.go:324` · `perf`
+> STATUS: WONTFIX — SMB reconnect and the expiry janitor, not a per-request path.
 - **Fix:** Add a deleteDurableHandleTx variant taking the already-decoded *lock.PersistedDurableHandle (straight to deleteIndicesTx + txn.Delete); keep the id-only form as a thin wrapper. Use it from consumeByIndexTx and keep the handle (not just the id) in the DeleteExpiredDurableHandles View pass.
 
 ### [LOW] durable_handles.go: secondary-index add/remove hand-duplicated per index type across put and delete
@@ -1533,10 +1571,12 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] PutFile probes fm: manifest key on every attr-only write forever, even after migration is complete
 - **Where:** `pkg/metadata/store/badger/transaction.go:438` · `perf`
+> STATUS: WONTFIX — a stale 'manifest externalized' flag would mean a manifest silently not written. Trading a data-loss risk for one point Get is the wrong side of the bargain.
 - **Fix:** Track manifest-externalized state on the in-memory File (transient field set by loadManifest when it reads fm:, mirroring BlocksDirty) and skip the existence probe once set.
 
 ### [LOW] ListChildren does 2 extra point-Gets per directory entry (N+1)
 - **Where:** `pkg/metadata/store/badger/transaction.go:795` · `perf`
+> STATUS: DEFERRED to #1828 — a real N+1, but eliminating it needs a new batched store-interface method and a matching conformance-suite change across every backend.
 - **Fix:** Split into an attrs-optional variant so the 2N extra Gets are paid only when the caller actually needs per-entry Attr (READDIRPLUS/SMB query-directory), not for plain READDIR, xattr enumeration, or the limit=1 is-empty probes.
 
 ### [LOW] withTransaction's retry loop never re-checks context cancellation between attempts
@@ -1553,6 +1593,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] GetFileByPayloadID is an unindexed O(n) full-store scan (store and tx variants)
 - **Where:** `pkg/metadata/store/memory/files.go:362` · `perf`
+> STATUS: WONTFIX — the memory store clones itself entirely on every mutation by design; one O(n) among many changes nothing.
 - **Fix:** Add payloadIndex map[metadata.PayloadID]string alongside objectIndex, maintained in tx.PutFile/tx.DeleteFile the same way, and resolve GetFileByPayloadID through it.
 
 ### [LOW] Store-level read CRUD methods duplicate transaction-level methods body-for-body instead of sharing a *Locked helper
@@ -1565,10 +1606,12 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] derivePathLocked does O(fanout) child-name scan per ancestor level on every GetFile call
 - **Where:** `pkg/metadata/store/memory/store.go:557` · `perf`
+> STATUS: WONTFIX — same: the memory store's whole-store clone per mutation dominates.
 - **Fix:** Maintain a parentName side index (map handleKey→edge name) updated in SetChild/DeleteChild alongside `parents`, so derivePathLocked does an O(1) lookup per level instead of childNameLocked's full childrenMap scan.
 
 ### [LOW] WithTransaction clones the entire store (all maps, including every directory's children) on every single mutating call
 - **Where:** `pkg/metadata/store/memory/transaction.go:87` · `perf`
+> STATUS: WONTFIX — same: the memory store's whole-store clone per mutation dominates.
 - **Fix:** Copy-on-write only the map entries the closure touches (record mutated keys and restore just those), or at minimum stop maps.Clone-ing children[k] for directories the closure never touches (transaction.go:108-110).
 
 ### [LOW] Two divergent code paths mint file handles for the same concept depending on tx vs non-tx caller
@@ -1577,6 +1620,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] PrepareStatements config knob is validated/logged but never wired to the pgx pool
 - **Where:** `pkg/metadata/store/postgres/config.go:32` · `bugs` · *re-confirmed*
+> STATUS: FIXED in #1949 — renamed DisablePreparedStatements and wired to DefaultQueryExecMode.
 - **Fix:** Either wire cfg.PrepareStatements into poolConfig.ConnConfig.DefaultQueryExecMode (e.g. pgx.QueryExecModeSimpleProtocol when false) in createConnectionPool, and set the documented true default in ApplyDefaults; or remove the field/claims if it's not meant to be functional.
 
 ### [LOW] Raw-connection-acquire-with-timeout boilerplate duplicated instead of factored into pool_helpers.go
@@ -1605,10 +1649,12 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] RestoreSnapshot cell decoder allocates buffer from unvalidated length before reading, unbounded on a corrupt/truncated stream
 - **Where:** `pkg/metadata/store/sqlite/snapshot_store.go:476` · `bugs`
+> STATUS: FIXED in #1971 — readSized no longer allocates from an unverified u32 length.
 - **Fix:** Bound `n` before allocating -- reject if n exceeds a fixed max cell size, or read via io.CopyN into a growable buffer instead of make([]byte, n) up front.
 
 ### [LOW] RestoreSnapshot decodes untrusted length-prefixed cell data with no size cap, before CRC verification
 - **Where:** `pkg/metadata/store/sqlite/snapshot_store.go:471` · `security`
+> STATUS: FIXED in #1971 — same readSized change.
 - **Fix:** Cap per-cell text/blob length before allocating (fixed constant), and/or CRC-verify the payload stream before parsing rows.
 
 ### [LOW] block_record_store.go duplicates full SQL bodies between pool and tx paths instead of sharing via execer, unlike sibling synced_hash_store.go
@@ -1621,6 +1667,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] Unconditional, eagerly-evaluated Debug logging on every transactional GetFile/GetChild call allocates on the hottest metadata path
 - **Where:** `pkg/metadata/store/sqlite/transaction.go:496` · `perf`
+> STATUS: FIXED in #1978 — three ad-hoc Debug logs gated on logger.Enabled; GetChild runs per path component.
 - **Fix:** Drop these ad-hoc debug logs, or gate behind `if tx.store.logger.Enabled(ctx, slog.LevelDebug)` so the String()/boxing cost is paid only when Debug is on.
 
 ### [LOW] sqliteTransaction Files/Shares/ServerConfig impls split into one 1344-line transaction.go, unlike every other domain
@@ -1629,7 +1676,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] RemoveFile falls back to linkCount=1 on GetLinkCount error, risking premature content deletion
 - **Where:** `pkg/metadata/file_remove.go:171` · `gaps`
-> STATUS: FIXED in #1901 (caller safety net now reachable)
+> STATUS: FIXED in #1975 — an earlier revision of this file marked it fixed by #1901; that was wrong. #1901 only made the SQL backends propagate GetLinkCount errors, which makes the `linkCount = 1` guess MORE reachable, not less. The fallback survived on develop verbatim. #1975 returns the error instead, which is safe because backends report a missing count as (0, nil) rather than an error.
 - **Fix:** Do not fall back to 1 on error; return lcErr (aborting the transaction) so the caller retries instead of risking content being reaped while another hard link remains.
 
 ### [LOW] Stale process-artifact text embedded in doc comment
@@ -1670,6 +1717,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] EnableAdapter persists Enabled=true before start succeeds, no rollback on failure
 - **Where:** `pkg/controlplane/runtime/adapters/service.go:208` · `bugs`
+> STATUS: FIXED in #1971 — EnableAdapter rolls back the persisted flag on start failure, using a fresh bounded context.
 - **Fix:** On startAdapter failure revert cfg.Enabled=false and persist it best-effort (log rollback failure) before returning the original error, mirroring CreateAdapter's rollback at lines 96-109.
 
 ### [LOW] adapterEntry.ctx is a write-only dead field
@@ -1698,6 +1746,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] ValidateBlockStoreConfig never shape-checks the "encryption" sub-config, unlike compression/parallel_uploads
 - **Where:** `pkg/controlplane/runtime/blockstore_init.go:71` · `gaps`
+> STATUS: FIXED in #1975 — validateEncryptionSubconfig reuses encryption.ParsePolicy so shapes and AEAD names cannot drift from the attach path, and checks each provider kind's required fields including the KMIP client cert pair.
 - **Fix:** Add a validateEncryptionSubconfig(config map[string]any) error mirroring validateCompressionSubconfig: if config["encryption"] is absent, return nil (opt-in); otherwise require a JSON object, validate an optional "aead" string against the three known values, and validate "key.kind" is "local" (requires "file") or "kmip" (requires "endpoint"/"key_uid"). Call it in the s3 case next to validateCompressionSubconfig/validateParallelUploads (blockstore_init.go line ~94-98).
 
 ### [LOW] DiscoveryName takes no ctx and calls context.Background() for its store I/O
@@ -1706,6 +1755,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] MetricsSnapshot N+1 DB query: ListSnapshots called per-share every scrape
 - **Where:** `pkg/controlplane/runtime/metrics.go:27` · `perf`
+> STATUS: WONTFIX — per-scrape with N = shares; batching it needs a new store API.
 - **Fix:** Add batch store.ListSnapshotsForShares(ctx, shareNames) (or ListAllSnapshots) and bucket in memory; same batching for the quota-usage loop.
 
 ### [LOW] Package-level mutable global DNS cache instead of a Runtime-scoped field
@@ -1730,6 +1780,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] GetShareIdentityInfo error swallowed and replaced with fabricated "not found" message
 - **Where:** `pkg/controlplane/runtime/identity/service.go:30` · `bugs`
+> STATUS: FIXED in #1971 — the underlying error is wrapped instead of replaced with a fabricated message.
 - **Fix:** Wrap instead of discard: return nil, fmt.Errorf("share %q: %w", shareName, err).
 
 ### [LOW] Error swallows wrapped cause, drops %w
@@ -1738,6 +1789,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] Client registry has no update path for per-client protocol/identity fields — permanently stuck at connect-time stub values
 - **Where:** `pkg/controlplane/runtime/clients/service.go:62` · `gaps`
+> STATUS: TRACKED on #1962 — ClientRecord has no update path at all; entries are write-once apart from the LastActivity atomic. Closing it needs new Registry mutators plus wiring from both adapters, so it widens #1962 rather than being separable.
 - **Fix:** Add Registry methods to merge-update an existing entry post-registration, e.g. `UpdateUser(clientID, user string)`, `UpdateNFSDetails(clientID string, fn func(*NfsDetails))`, `UpdateSMBDetails(clientID string, fn func(*SmbDetails))` (same read-lock-and-mutate-in-place pattern as AddShare/RemoveShare), and wire adapters to call them once the real version/dialect/signing/identity is known (NFS: per-call from AuthContext/call.Version; SMB: after NEGOTIATE and SESSION_SETUP).
 
 ### [LOW] Long parameter list / positional dependency injection across three methods
@@ -1746,6 +1798,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] First-boot machine-SID persist failure is silently swallowed, breaking the documented restart-stability invariant
 - **Where:** `pkg/controlplane/runtime/lifecycle/service.go:202` · `gaps`
+> STATUS: TRACKED as #1977 — confirmed swallowed, but making it fatal would stop the server starting for every other protocol on a transient hiccup while registering one adapter. Policy call, deliberately not taken in a sweep.
 - **Fix:** Treat a first-boot persist failure as fatal to Serve() (return the error, matching the pinned-SID invalid-pin precedent already in this function) rather than continuing with an in-memory-only SID; or, at minimum, retry/verify the write and refuse to start serving SMB identity mapping until the SID is durably stored.
 
 ### [LOW] Deprecated NFSClientProvider shim duplicates the generic adapter-provider API it says to use instead
@@ -1766,6 +1819,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] mountKey uses naive colon-join → composite key collisions between distinct (protocol, client, share) tuples
 - **Where:** `pkg/controlplane/runtime/mounts/service.go:29` · `bugs`
+> STATUS: FIXED in #1971 — map keyed by a struct instead of a concatenated string.
 - **Fix:** Use a struct{Protocol, ClientAddr, ShareName string} as the map key directly, or length-prefix the components.
 
 ### [LOW] dnsResolver interface — one-impl abstraction kept only for a test fake
@@ -1794,6 +1848,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] RebindShareBlockStore does not cancel in-flight warm jobs before tearing down the old block store
 - **Where:** `pkg/controlplane/runtime/shares/service.go:1348` · `bugs`
+> STATUS: FIXED in #1971 — cancelForShare runs before drain/close and after pre-validation.
 - **Fix:** Call s.warmJobs.cancelForShare(name) in RebindShareBlockStore before oldBS.DrainAllUploads/Close, mirroring RemoveShare's ordering.
 
 ### [LOW] Service mixes generic registry, engine factory, and Postgres-specific schema admin — SRP violation
