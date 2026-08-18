@@ -241,6 +241,9 @@ func (s *SQLiteMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	if hasShares {
 		return metadata.ErrRestoreDestinationNotEmpty
 	}
+	// The restore replaces the whole backing store, so nothing cached from the
+	// pre-restore share records may survive it.
+	defer s.shareCache.InvalidateAll()
 
 	engineTag, payloadR, acc, err := backup.ReadHeader(r)
 	if err != nil {

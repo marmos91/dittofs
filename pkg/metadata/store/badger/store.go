@@ -16,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
 )
 
 // BadgerMetadataStore implements metadata.Store using BadgerDB for persistence.
@@ -114,7 +115,7 @@ type BadgerMetadataStore struct {
 	// GetShareOptions (17.4% of server CPU on warm random-read) skips the
 	// badger View txn + JSON decode. Invalidated after every committed
 	// share-record write; a stale entry is a wrong permission decision.
-	shareCache shareReadCache
+	shareCache sharecache.Cache
 
 	// statsCache caches filesystem statistics to avoid expensive database scans.
 	// Filesystem statistics require scanning all file entries, which can be slow.

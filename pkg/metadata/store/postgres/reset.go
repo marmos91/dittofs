@@ -42,6 +42,9 @@ func (s *PostgresMetadataStore) Reset(ctx context.Context) error {
 		return fmt.Errorf("reset: %w", err)
 	}
 
+	// The share records are gone; anything cached from them is stale.
+	defer s.shareCache.InvalidateAll()
+
 	if _, err := pgRaw.Exec(ctx, "COMMIT").ReadAll(); err != nil {
 		return fmt.Errorf("reset: commit: %w", err)
 	}

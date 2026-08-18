@@ -259,6 +259,10 @@ func (s *PostgresMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader
 		return metadata.ErrRestoreDestinationNotEmpty
 	}
 
+	// The restore replaces the whole backing store, so nothing cached from the
+	// pre-restore share records may survive it.
+	defer s.shareCache.InvalidateAll()
+
 	// Read envelope header -- validates magic, version, engine tag.
 	engineTag, payloadR, acc, err := backup.ReadHeader(r)
 	if err != nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
 )
 
 // PostgresMetadataStore implements the metadata.Store interface using PostgreSQL
@@ -81,6 +82,12 @@ type PostgresMetadataStore struct {
 	// per-identity deltas exactly once on successful commit. Guarded by quotaMu.
 	quotaMu sync.Mutex
 	quota   *quota.Cache
+
+	// shareCache caches decoded ShareOptions so the permission funnel every
+	// read/write/create/setattr traverses does not re-run the options SELECT
+	// and JSON decode per op. Every share-record write invalidates it after
+	// commit — a stale entry is a wrong permission decision.
+	shareCache sharecache.Cache
 
 	// storeID is the engine-persistent identifier for this store instance,
 	// backed by the server_config.store_id column. Created on first open

@@ -189,6 +189,13 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	t.Run("SyncedHashTxOps", func(t *testing.T) {
 		runSyncedHashTxOps(t, factory(t))
 	})
+
+	// ShareOptionsOps pins the freshness of the read every permission check
+	// funnels through: backends cache it, and a cached entry that survives the
+	// write superseding it is a wrong permission decision.
+	t.Run("ShareOptionsOps", func(t *testing.T) {
+		runShareOptionsOps(t, factory)
+	})
 }
 
 // createTestShare is a helper that creates a share and root directory for testing.
