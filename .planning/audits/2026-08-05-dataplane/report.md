@@ -2,9 +2,11 @@
 
 # Status annotations
 
-Findings that have since been actioned are marked inline below with a `> STATUS:` line
-(`FIXED`, `TRACKED`, `PARTIAL`, or `REFUTED`). Last refreshed 2026-08-18, against develop
-`29928f16`. All 8 HIGH findings shipped; see closed umbrella #1900.
+The audit itself was run against the tree recorded below (`origin/develop @ 7eeec0da`) and has
+not been rerun. What follows is a status layer over those findings: each one that has since been
+actioned carries a `> STATUS:` line (`FIXED`, `TRACKED`, `PARTIAL`, or `REFUTED`). Those markers
+were last re-verified on 2026-08-18 against develop `29928f16`. All 8 HIGH findings shipped; see
+closed umbrella #1900.
 
 | Finding | Issue | Outcome |
 |---|---|---|
@@ -260,7 +262,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Package doc + godoc advertise BlockStoreAppendConformance and appendlog.go that don't exist; FSStore never wired to any conformance suite
 
 - **Where:** `pkg/block/blockstoretest/doc.go:8` · `structure` · area: block-conformance-suite · *re-confirmed*
-> STATUS: FIXED in #1946 — block.BlockStoreAppend and the contract doc claiming it deleted
+> STATUS: FIXED in #1946 — block.BlockStoreAppend is deleted, along with the contract doc that claimed FSStore implemented it
 - **Verified:** CONFIRMED on this tree: repo-wide grep for `func BlockStoreAppendConformance` returns nothing (only BlockStoreConformance conformance.go:65 and RemoteBlockStoreConformance remoteblock.go:50). Package dir has only conformance.go/remoteblock.go/doc.go — no appendlog.go. doc.go also cites pkg/block/local/fs/appendlog_internals_test.go which does not exist (fs dir has only legacy*/disk_used/format tests). blockstoretest.* callers are compression, encryption, s3, memory — fs is NOT among them, contradicting doc.go:8-9 ("The fs, s3, and memory backends all call this entrypoint") and conformance.go:63-64. Real coverage hole hidden behind confident godoc. MED not HIGH: no runtime defect, docs + missing test wiring.
 - **Fix:** Either implement BlockStoreAppendConformance (and appendlog.go) and wire pkg/block/local/fs/*_test.go to call blockstoretest.BlockStoreConformance + BlockStoreAppendConformance, or strip the false claims from doc.go/conformance.go godoc until they exist.
 
@@ -281,7 +283,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Master-key rotation is documented/promised but not implemented — old blocks become permanently unreadable after rotation
 
 - **Where:** `pkg/block/encryption/keyprovider/provider.go:26` · `gaps` · area: block-encryption-compression
-> STATUS: DOCS CORRECTED in #1946; rotation IMPLEMENTED in #1951 (retired-key set) — open at time of writing
+> STATUS: PARTIAL — #1946 made the docs truthful by removing the rotation procedure the provider could not honour. The retired-key set that makes rotation actually work is #1951, still open
 - **Verified:** CONFIRMED. Both providers embed a single aesGCMKEK (local.go:68-98, kmip.go:37-67) holding one masterKey/masterKeyID (local.go:227-231); Unwrap (local.go:253-256) returns ErrWrongMasterKey whenever the frame's id != the single held id — no keyring of retired keys anywhere in the package. Interface doc (provider.go:24-29) promises routing 'to the right master key after a future rotation' and kmip.go:29-31 documents rotation as 'write a new key to the HSM and restart the daemon'; doc.go:1-6 claims parity with SSE-KMS/KES/Vault Transit which keep old versions decryptable. Following the documented procedure orphans every previously wrapped block. Reachable: keyprovider.NewProvider + encryption.NewRemote at shares/service.go:1560-1564 (non-test). Fix: either accept a list of retired keys (id→key map) in Config and route Unwrap by id, or delete the rotation promise from the docs until implemented.
 - **Fix:** Either (a) make Config/KeyProvider support a list of master keys (current + N retired), so Unwrap can look up by masterKeyID across the set while Wrap always uses CurrentMasterKeyID — mirrors how Vault Transit/SSE-KMS keep old key versions live for decrypt-only; or (b) if only one key is ever supported, remove the 'route to the right master key after a future rotation' claim from provider.go and the 'operators rotate...and restart' claim from kmip.go, and document that rotation requires a full re-encrypt (rewrap every block) before decommissioning the old key, e.g. via a rewrap tool that reads with the old provider and writes with the new one.
 
