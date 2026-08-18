@@ -7,6 +7,10 @@ import "testing"
 // for a modifying opcode (WRITE/SET_INFO/IOCTL) and asserts the accept/reject
 // decision matches the upstream expected NT_STATUS at every step. This is the
 // authoritative spec for smb2.replay.channel-sequence.
+//
+// Rows i3 and i8 stand in for two values the test draws at random from ranges
+// that both include 0x7fff while expecting a rejection — the value row i5
+// requires to succeed. That draw demands both outcomes and can never pass.
 func TestVerifyChannelSequence_SambaTable(t *testing.T) {
 	// allow == true means the op is expected to succeed (NT_STATUS_OK);
 	// allow == false means it must be rejected (NT_STATUS_FILE_NOT_AVAILABLE).

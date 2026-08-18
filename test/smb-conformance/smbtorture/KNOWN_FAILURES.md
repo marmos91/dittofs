@@ -333,6 +333,61 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 
 ## Changelog
 
+### 2026-08-18 — #1923 `channel-sequence`: excuse the self-contradictory random CSN draw
+
+`smb2.replay.channel-sequence` flipped the badger-fs verdict between two runs of
+a byte-identical binary. It is not a product bug and not a KNOWN_FAILURES row —
+the test contradicts itself on one draw in 32768.
+
+`test_channel_sequence_table` in `source4/torture/smb2/replay.c` runs a
+16-row table of ChannelSequence values against one Open. Fourteen rows are
+fixed; two are drawn at random — `rand() % 0x8000 + 0x7fff` (range
+`[0x7fff, 0xfffe]`) and `rand() % 0x8000` (range `[0, 0x7fff]`) — and both
+expect `STATUS_FILE_NOT_AVAILABLE` on the grounds that the value is stale or
+too far ahead. Both ranges include `0x7fff`, which is neither: MS-SMB2
+§3.3.5.2.10 updates the Open when the unsigned 16-bit difference "is less than
+or equal to 0x7FFF".
+
+The table is unsatisfiable when a draw lands there, whichever way a server
+resolves a `+0x7fff` difference. Accept it and the drawn row fails, because it
+demanded a rejection. Reject it and rows 5, 6 and 10 — fixed rows that pass
+today — fail instead, because each depends on `+0x7fff` being a forward step.
+No deterministic server passes both arms.
+
+Samba is in the first camp: `smbd_smb2_request_dispatch_update_counts` flips
+the comparison only when `abs(cmp) > INT16_MAX`, which is false at `0x7fff`, so
+it accepts and fails the drawn row too. Its `pre_request_count` gate cannot
+save it either — `smbd_smb2_request_reply_update_counts` drains the gauges on
+every reply, and no earlier row takes the branch that raises them.
+
+The failing run drew it directly:
+
+```
+Testing setinfo (replay: true) with CSN 0x7fff, expecting: NT_STATUS_FILE_NOT_AVAILABLE
+WARNING!: replay.c:4627: status was NT_STATUS_OK, expected NT_STATUS_FILE_NOT_AVAILABLE
+```
+
+Confirmed against real Samba, not just derived from its source. smbtorture
+4.22.6 was run against smbd 4.22.6 (`quay.io/samba.org/samba-server:v0.8`) with
+libc `rand()` forced to 0 via `LD_PRELOAD`, which makes `csn_rand_high` draw
+exactly `0x7fff` every time:
+
+```
+Testing write (replay: false) with CSN 0x7fff, expecting: NT_STATUS_FILE_NOT_AVAILABLE
+WARNING!: replay.c:4627: status was NT_STATUS_OK, expected NT_STATUS_FILE_NOT_AVAILABLE
+```
+
+Same file, same line, same expected/actual pair as the DittoFS failure. Without
+the preload the same Samba passes the whole table, including the fixed `0x7fff`
+row that requires `STATUS_SUCCESS` — which is the contradiction, observed on
+upstream's own server.
+
+`parse-results.sh` now reclassifies a `channel-sequence` failure to `skip:`
+only when that exact draw was printed during the test, in the same pre-pass
+that already excuses connection flakes. Any other channel-sequence failure —
+including a genuine regression in the mechanism — is graded normally, and the
+test stays off the blacklist.
+
 ### 2026-07-21 — replay6 re-added as a Windows-specific known failure (bucket 10)
 
 `smb2.replay.replay6` resurfaces once the harness runs the tail of the
