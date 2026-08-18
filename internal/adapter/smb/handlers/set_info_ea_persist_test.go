@@ -61,18 +61,15 @@ func setupEATest(t *testing.T) (*Handler, *metadata.AuthContext, *OpenFile) {
 	h := NewHandler()
 	h.Registry = rt
 
-	open := &OpenFile{
+	open := (&OpenFile{
 		FileID:         [16]byte{0xEA, 0x01},
 		MetadataHandle: handle,
-		ParentHandle:   rootHandle,
-		FileName:       "ea.txt",
-		Path:           "ea.txt",
 		ShareName:      shareName,
 		GrantedAccess: uint32(types.FileWriteEA) | uint32(types.FileReadEA) |
 			uint32(types.FileWriteAttributes) | uint32(types.FileReadAttributes) |
 			uint32(types.Delete),
 		DesiredAccess: uint32(types.FileWriteEA) | uint32(types.FileReadEA),
-	}
+	}).WithName(OpenName{Path: "ea.txt", FileName: "ea.txt", ParentHandle: rootHandle})
 	h.StoreOpenFile(open)
 	return h, authCtx, open
 }

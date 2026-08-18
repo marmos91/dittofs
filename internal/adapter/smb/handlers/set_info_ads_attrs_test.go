@@ -100,15 +100,12 @@ func setupADSAttrPropagationTest(t *testing.T, basePOSIXMode uint32) (
 	h := NewHandler()
 	h.Registry = rt
 
-	streamOpen := &OpenFile{
+	streamOpen := (&OpenFile{
 		FileID:         [16]byte{0xAD, 0x5A, 0x77, 0x52, 0xC0, 0x01},
 		MetadataHandle: streamHandle,
-		ParentHandle:   rootHandle,
-		FileName:       "base.txt:s",
-		Path:           "base.txt:s",
 		ShareName:      shareName,
 		DesiredAccess:  uint32(types.FileWriteAttributes) | uint32(types.FileWriteData) | uint32(types.FileReadData),
-	}
+	}).WithName(OpenName{Path: "base.txt:s", FileName: "base.txt:s", ParentHandle: rootHandle})
 	h.StoreOpenFile(streamOpen)
 
 	return h, authCtx, baseHandle, streamHandle, streamOpen

@@ -76,15 +76,12 @@ func setupBasicInfoTimestampTest(t *testing.T) (
 	h := NewHandler()
 	h.Registry = rt
 
-	open := &OpenFile{
+	open := (&OpenFile{
 		FileID:         [16]byte{0x75, 0x73, 0x31},
 		MetadataHandle: fileHandle,
-		ParentHandle:   rootHandle,
-		FileName:       "ts.txt",
-		Path:           "ts.txt",
 		ShareName:      shareName,
 		DesiredAccess:  uint32(types.FileWriteAttributes) | uint32(types.FileReadAttributes),
-	}
+	}).WithName(OpenName{Path: "ts.txt", FileName: "ts.txt", ParentHandle: rootHandle})
 	h.StoreOpenFile(open)
 
 	return h, authCtx, fileHandle, open

@@ -70,13 +70,12 @@ func setupConcurrentDirTest(t *testing.T, nChildren int) (*Handler, *OpenFile, *
 	const treeID uint32 = 1
 	h.StoreTree(&TreeConnection{TreeID: treeID, ShareName: shareName})
 
-	open := &OpenFile{
+	open := (&OpenFile{
 		FileID:         h.GenerateFileID(),
 		TreeID:         treeID,
-		Path:           shareName,
 		IsDirectory:    true,
 		MetadataHandle: rootHandle,
-	}
+	}).WithName(OpenName{Path: shareName})
 	h.StoreOpenFile(open)
 
 	smbCtx := &SMBHandlerContext{
@@ -315,6 +314,51 @@ func TestBaseFileDeletePending_ConcurrentClose_NoRace(t *testing.T) {
 			stream.mu.RUnlock()
 		}
 	}()
+
+	wg.Wait()
+}
+
+// TestOpenName_ConcurrentRenameAndRead_NoRace pins the name triple: readers
+// racing a rename must never see a path from one rename against the file name
+// or parent handle of another, and must never trip the race detector.
+func TestOpenName_ConcurrentRenameAndRead_NoRace(t *testing.T) {
+	openFile := &OpenFile{}
+	openFile.SetName(OpenName{Path: "/dir0/f0", FileName: "f0", ParentHandle: metadata.FileHandle("p0")})
+
+	const iterations = 500
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := range iterations {
+			n := fmt.Sprintf("f%d", i)
+			openFile.SetName(OpenName{
+				Path:         fmt.Sprintf("/dir%d/%s", i, n),
+				FileName:     n,
+				ParentHandle: metadata.FileHandle(fmt.Sprintf("p%d", i)),
+			})
+		}
+	}()
+
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range iterations {
+				name := openFile.Name()
+				suffix := name.FileName[1:]
+				if name.Path != "/dir"+suffix+"/"+name.FileName {
+					t.Errorf("torn name: path %q, fileName %q", name.Path, name.FileName)
+					return
+				}
+				if string(name.ParentHandle) != "p"+suffix {
+					t.Errorf("torn name: parent %q, fileName %q", name.ParentHandle, name.FileName)
+					return
+				}
+			}
+		}()
+	}
 
 	wg.Wait()
 }

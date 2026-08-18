@@ -83,15 +83,12 @@ func setupSparsePreservationTest(t *testing.T, seedFSCTLBits uint32) (
 	h := NewHandler()
 	h.Registry = rt
 
-	open := &OpenFile{
+	open := (&OpenFile{
 		FileID:         [16]byte{0x59, 0x9A, 0x12, 0x33},
 		MetadataHandle: fileHandle,
-		ParentHandle:   rootHandle,
-		FileName:       "sparse.txt",
-		Path:           "sparse.txt",
 		ShareName:      shareName,
 		DesiredAccess:  uint32(types.FileWriteAttributes),
-	}
+	}).WithName(OpenName{Path: "sparse.txt", FileName: "sparse.txt", ParentHandle: rootHandle})
 	h.StoreOpenFile(open)
 
 	return h, authCtx, fileHandle, open

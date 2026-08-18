@@ -27,14 +27,12 @@ func TestClose_PendingNotifyCleanup_DeferredViaPostSend(t *testing.T) {
 	copy(fileID[:], []byte{0xab, 0xcd, 0xef, 0x01})
 
 	// Install a directory open file so the CLOSE handler reaches step 10.
-	openFile := &OpenFile{
+	openFile := (&OpenFile{
 		FileID:      fileID,
-		FileName:    "watched-dir",
-		Path:        "/share/watched-dir",
 		IsDirectory: true,
 		ShareName:   "share",
 		OplockLevel: OplockLevelNone,
-	}
+	}).WithName(OpenName{Path: "/share/watched-dir", FileName: "watched-dir"})
 	h.StoreOpenFile(openFile)
 
 	// Register a pending CHANGE_NOTIFY with a callback that flips an atomic
@@ -132,14 +130,12 @@ func TestClose_NoPendingNotify_PostSendNil(t *testing.T) {
 	var fileID [16]byte
 	copy(fileID[:], []byte{0x11, 0x22, 0x33, 0x44})
 
-	openFile := &OpenFile{
+	openFile := (&OpenFile{
 		FileID:      fileID,
-		FileName:    "plain-dir",
-		Path:        "/share/plain-dir",
 		IsDirectory: true,
 		ShareName:   "share",
 		OplockLevel: OplockLevelNone,
-	}
+	}).WithName(OpenName{Path: "/share/plain-dir", FileName: "plain-dir"})
 	h.StoreOpenFile(openFile)
 
 	ctx := &SMBHandlerContext{

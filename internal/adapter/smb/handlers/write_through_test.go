@@ -187,12 +187,11 @@ func TestPipeWrite_WriteThroughFlags(t *testing.T) {
 			h.MaxDialect = tc.maxDialect
 
 			pipeID := [16]byte{9}
-			h.StoreOpenFile(&OpenFile{
+			h.StoreOpenFile((&OpenFile{
 				FileID:   pipeID,
 				IsPipe:   true,
 				PipeName: "srvsvc",
-				Path:     "srvsvc",
-			})
+			}).WithName(OpenName{Path: "srvsvc"}))
 
 			resp, err := h.Write(smbCtx, &WriteRequest{
 				FileID: pipeID,

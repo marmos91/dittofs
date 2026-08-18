@@ -818,7 +818,6 @@ func validateAndRestore(
 	restored := &OpenFile{
 		FileID:        restoreFileID,
 		SessionID:     sessionID,
-		Path:          handle.Path,
 		ShareName:     handle.ShareName,
 		DesiredAccess: handle.DesiredAccess,
 		// Restore the original DACL-evaluated GrantedAccess persisted at
@@ -859,8 +858,6 @@ func validateAndRestore(
 		IsPersistent:  handle.IsPersistent,
 		OpenTime:      handle.CreatedAt,
 		DeletePending: handle.DeletePending,
-		ParentHandle:  handle.ParentHandle,
-		FileName:      handle.FileName,
 		IsDirectory:   handle.IsDirectory,
 		PositionInfo:  handle.PositionInfo,
 		// Restore the ClientGUID recorded at the original CREATE so a
@@ -880,6 +877,11 @@ func validateAndRestore(
 		RequestedAllocSize: handle.RequestedAllocSize,
 		// IsDurable is NOT set on restore -- client must re-request durability
 	}
+	restored.SetName(OpenName{
+		Path:         handle.Path,
+		FileName:     handle.FileName,
+		ParentHandle: handle.ParentHandle,
+	})
 
 	// Persisted record was removed by the consume() call above; no
 	// further store mutation is required here.
@@ -1008,13 +1010,12 @@ func ProcessAppInstanceId(
 
 	for _, h := range existing {
 		if handler != nil {
-			cleanupFile := &OpenFile{
+			cleanupFile := (&OpenFile{
 				FileID:         h.FileID,
-				Path:           h.Path,
 				ShareName:      h.ShareName,
 				MetadataHandle: h.MetadataHandle,
 				PayloadID:      metadata.PayloadID(h.PayloadID),
-			}
+			}).WithName(OpenName{Path: h.Path})
 			handler.flushFileCache(ctx, cleanupFile)
 			if len(h.MetadataHandle) > 0 && handler.Registry != nil {
 				if metaSvc := handler.Registry.GetMetadataService(); metaSvc != nil {
@@ -1049,13 +1050,13 @@ func buildPersistedDurableHandle(
 	leaseState uint32,
 	leaseEpoch uint16,
 ) *lock.PersistedDurableHandle {
-	// The handle lock is held across the whole snapshot rather than per field.
-	// SET_INFO rename rewrites Path, FileName and ParentHandle together, and
-	// this row is replayed on reconnect: reading them at different instants
-	// could persist one rename's name against another's parent, which no later
-	// operation would correct. Field reads and copies only, no store I/O.
+	// The handle lock covers the other mutable fields read below. The name
+	// triple comes from a single load, so the persisted row — which is
+	// replayed on reconnect — cannot mix one rename's name with another's
+	// parent. Field reads and copies only, no store I/O.
 	openFile.mu.RLock()
 	defer openFile.mu.RUnlock()
+	name := openFile.Name()
 
 	// Clone MetadataHandle to avoid aliasing the live OpenFile's slice
 	metaHandle := make([]byte, len(openFile.MetadataHandle))
@@ -1063,9 +1064,9 @@ func buildPersistedDurableHandle(
 
 	// Clone ParentHandle to avoid aliasing
 	var parentHandle []byte
-	if len(openFile.ParentHandle) > 0 {
-		parentHandle = make([]byte, len(openFile.ParentHandle))
-		copy(parentHandle, openFile.ParentHandle)
+	if len(name.ParentHandle) > 0 {
+		parentHandle = make([]byte, len(name.ParentHandle))
+		copy(parentHandle, name.ParentHandle)
 	}
 
 	// Per MS-SMB2 3.2.4.4: when the client reconnects via DHnC, the volatile
@@ -1078,7 +1079,7 @@ func buildPersistedDurableHandle(
 	return &lock.PersistedDurableHandle{
 		ID:              uuid.New().String(),
 		FileID:          persistentFileID,
-		Path:            openFile.Path,
+		Path:            name.Path,
 		ShareName:       openFile.ShareName,
 		DesiredAccess:   openFile.DesiredAccess,
 		GrantedAccess:   openFile.GrantedAccess,
@@ -1102,7 +1103,7 @@ func buildPersistedDurableHandle(
 		ServerStartTime: serverStartTime,
 		DeletePending:   openFile.DeletePending,
 		ParentHandle:    parentHandle,
-		FileName:        openFile.FileName,
+		FileName:        name.FileName,
 		IsDirectory:     openFile.IsDirectory,
 		PositionInfo:    openFile.PositionInfo,
 		OriginalFileID:  openFile.FileID,

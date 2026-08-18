@@ -52,14 +52,13 @@ func TestClose_PrimesAuthContextFromOpenFile(t *testing.T) {
 		ShareName: "/share",
 	})
 
-	openFile := &OpenFile{
+	openFile := (&OpenFile{
 		FileID:    [16]byte{0x01, 0x02},
 		TreeID:    treeID,
 		SessionID: sess.SessionID,
-		Path:      "/share/a.txt",
 		// No MetadataHandle / PayloadID — Close skips the BlockStore /
 		// metadata-flush paths entirely, but Step 2b primer still runs.
-	}
+	}).WithName(OpenName{Path: "/share/a.txt"})
 	h.StoreOpenFile(openFile)
 
 	// Build a ctx with zero session/tree state — mirrors the dispatcher,
@@ -121,12 +120,11 @@ func TestFlush_PrimesAuthContextFromOpenFile(t *testing.T) {
 		ShareName: "/share2",
 	})
 
-	openFile := &OpenFile{
+	openFile := (&OpenFile{
 		FileID:    [16]byte{0x10, 0x20},
 		TreeID:    treeID,
 		SessionID: sess.SessionID,
-		Path:      "/share2/b.txt",
-	}
+	}).WithName(OpenName{Path: "/share2/b.txt"})
 
 	ctx := NewSMBHandlerContext(context.TODO(), "127.0.0.1:0", 0, 0, 1)
 	if ctx.User != nil {
@@ -180,12 +178,11 @@ func TestFlush_PrimesAuthContextFromOpenFile(t *testing.T) {
 func TestRead_DeniesOnGrantedAccessStripped(t *testing.T) {
 	h := NewHandler()
 
-	openFile := &OpenFile{
+	openFile := (&OpenFile{
 		FileID:        [16]byte{0xDE, 0xAD},
-		Path:          "/share/secret.txt",
 		DesiredAccess: uint32(types.FileReadData), // requested
 		GrantedAccess: 0,                          // DACL stripped it
-	}
+	}).WithName(OpenName{Path: "/share/secret.txt"})
 	h.StoreOpenFile(openFile)
 
 	ctx := NewSMBHandlerContext(context.TODO(), "127.0.0.1:0", 0, 0, 1)
@@ -207,12 +204,11 @@ func TestRead_DeniesOnGrantedAccessStripped(t *testing.T) {
 func TestRead_AllowsOnGrantedAccess(t *testing.T) {
 	h := NewHandler()
 
-	openFile := &OpenFile{
+	openFile := (&OpenFile{
 		FileID:        [16]byte{0xBE, 0xEF},
-		Path:          "/share/public.txt",
 		DesiredAccess: 0,                          // pre-DACL not relevant
 		GrantedAccess: uint32(types.FileReadData), // DACL granted
-	}
+	}).WithName(OpenName{Path: "/share/public.txt"})
 	h.StoreOpenFile(openFile)
 
 	ctx := NewSMBHandlerContext(context.TODO(), "127.0.0.1:0", 0, 0, 1)
@@ -235,12 +231,11 @@ func TestRead_AllowsOnGrantedAccess(t *testing.T) {
 func TestWrite_DeniesOnGrantedAccessStripped(t *testing.T) {
 	h := NewHandler()
 
-	openFile := &OpenFile{
+	openFile := (&OpenFile{
 		FileID:        [16]byte{0xCA, 0xFE},
-		Path:          "/share/ro.txt",
 		DesiredAccess: uint32(types.FileWriteData), // requested
 		GrantedAccess: 0,                           // DACL stripped it
-	}
+	}).WithName(OpenName{Path: "/share/ro.txt"})
 	h.StoreOpenFile(openFile)
 
 	ctx := NewSMBHandlerContext(context.TODO(), "127.0.0.1:0", 0, 0, 1)

@@ -1795,11 +1795,10 @@ func (h *Handler) handlePipeCreate(ctx *SMBHandlerContext, req *CreateRequest, t
 	h.PipeManager.CreatePipe(smbFileID, pipeName)
 
 	// Store open file entry for the pipe
-	openFile := &OpenFile{
+	openFile := (&OpenFile{
 		FileID:        smbFileID,
 		TreeID:        ctx.TreeID,
 		SessionID:     ctx.SessionID,
-		Path:          req.FileName,
 		ShareName:     tree.ShareName,
 		OpenTime:      time.Now(),
 		DesiredAccess: req.DesiredAccess,
@@ -1808,7 +1807,7 @@ func (h *Handler) handlePipeCreate(ctx *SMBHandlerContext, req *CreateRequest, t
 		IsDirectory:   false,
 		IsPipe:        true,
 		PipeName:      pipeName,
-	}
+	}).WithName(OpenName{Path: req.FileName})
 	h.StoreOpenFile(openFile)
 
 	logger.Debug("CREATE pipe successful",
@@ -1928,7 +1927,6 @@ func (h *Handler) handleOpenRootCreate(
 		FileID:         smbFileID,
 		TreeID:         ctx.TreeID,
 		SessionID:      ctx.SessionID,
-		Path:           "",
 		ShareName:      tree.ShareName,
 		OpenTime:       time.Now(),
 		DesiredAccess:  req.DesiredAccess,

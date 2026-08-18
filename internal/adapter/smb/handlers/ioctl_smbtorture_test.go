@@ -143,7 +143,7 @@ func TestIoctl_SmbtortureFspAsyncSleep_RespectsSleepDuration(t *testing.T) {
 	}
 
 	fileID := [16]byte{0xAB, 0xCD, 0xEF}
-	h.StoreOpenFile(&OpenFile{FileID: fileID, Path: "bug14769"})
+	h.StoreOpenFile((&OpenFile{FileID: fileID}).WithName(OpenName{Path: "bug14769"}))
 
 	const delayMs uint8 = 30
 	body := buildSmbtortureFspAsyncSleepRequest(fileID, delayMs)
@@ -174,7 +174,7 @@ func TestIoctl_SmbtortureFspAsyncSleep_BadInputLengthInvalidParameter(t *testing
 	}
 
 	fileID := [16]byte{0x11, 0x22, 0x33}
-	h.StoreOpenFile(&OpenFile{FileID: fileID, Path: "bad-input"})
+	h.StoreOpenFile((&OpenFile{FileID: fileID}).WithName(OpenName{Path: "bad-input"}))
 
 	// 0-byte InputBuffer (InputCount=0). Envelope is just the fixed 56 bytes.
 	body := buildSmbtortureIoctlRequest(FsctlSmbtortureFspAsyncSleep)

@@ -230,18 +230,15 @@ func TestSetSecurityInfoThenQueryDirectory_AccessBasedHidesPartialMask(t *testin
 			// setSecurityInfo (handle must hold WRITE_DAC per
 			// MS-SMB2 §3.3.5.21.3) is satisfied. Mirrors smbtorture which
 			// opens with SEC_RIGHTS_FILE_ALL before the SETINFO.
-			fileOpen := &OpenFile{
+			fileOpen := (&OpenFile{
 				FileID:         h.GenerateFileID(),
 				TreeID:         smbCtx.TreeID,
 				SessionID:      smbCtx.SessionID,
 				ShareName:      "/hideunread",
 				MetadataHandle: childHandle,
-				ParentHandle:   baseDirHandle,
-				FileName:       "testfile",
-				Path:           "/hideunread/smb2-testsd/testfile",
 				DesiredAccess:  secRightsFileFull,
 				GrantedAccess:  secRightsFileFull,
-			}
+			}).WithName(OpenName{Path: "/hideunread/smb2-testsd/testfile", FileName: "testfile", ParentHandle: baseDirHandle})
 			h.StoreOpenFile(fileOpen)
 
 			// Build and apply the wire SD via the same handler entrypoint
@@ -277,18 +274,16 @@ func TestSetSecurityInfoThenQueryDirectory_AccessBasedHidesPartialMask(t *testin
 			// smbtorture `torture_smb2_testdir(tree1, BASEDIR, &dhandle)`
 			// step where the enumeration happens against the subdirectory,
 			// not the share root.
-			dirOpen := &OpenFile{
+			dirOpen := (&OpenFile{
 				FileID:         h.GenerateFileID(),
 				TreeID:         smbCtx.TreeID,
 				SessionID:      smbCtx.SessionID,
 				ShareName:      "/hideunread",
 				MetadataHandle: baseDirHandle,
-				ParentHandle:   rootHandle,
-				Path:           "/hideunread/smb2-testsd",
 				IsDirectory:    true,
 				DesiredAccess:  secRightsFileFull,
 				GrantedAccess:  secRightsFileFull,
-			}
+			}).WithName(OpenName{Path: "/hideunread/smb2-testsd", ParentHandle: rootHandle})
 			h.StoreOpenFile(dirOpen)
 
 			qResp := callABEQuery(t, h, smbCtx, dirOpen.FileID)

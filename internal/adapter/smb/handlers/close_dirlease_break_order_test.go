@@ -113,16 +113,14 @@ func TestClose_DirLeaseRelease_AfterOpenFileRemoval(t *testing.T) {
 	}
 
 	// Register the holder's OpenFile (the conflicting dst-parent dir handle).
-	openFile := &OpenFile{
+	openFile := (&OpenFile{
 		FileID:         fileID,
-		FileName:       "dst-parent",
-		Path:           "/share/dst-parent",
 		IsDirectory:    true,
 		ShareName:      shareName,
 		OplockLevel:    OplockLevelLease,
 		LeaseKey:       leaseKey,
 		MetadataHandle: dirMetaHandle,
-	}
+	}).WithName(OpenName{Path: "/share/dst-parent", FileName: "dst-parent"})
 	h.StoreOpenFile(openFile)
 
 	ctx := &SMBHandlerContext{

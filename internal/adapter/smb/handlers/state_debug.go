@@ -95,7 +95,7 @@ func (h *Handler) AuditSessionCleanup(sessionID uint64) int {
 			logger.Warn("LEAKED open file after session cleanup",
 				"sessionID", sessionID,
 				"fileID", fmt.Sprintf("%x", f.FileID),
-				"path", f.Path,
+				"path", f.Name().Path,
 				"shareName", f.ShareName,
 				"openTime", f.OpenTime,
 			)

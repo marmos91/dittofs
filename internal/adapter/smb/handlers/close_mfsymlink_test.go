@@ -160,19 +160,16 @@ func setupMFsymlinkShare(t *testing.T, allowMFsymlink bool, target string) (*Han
 	})
 
 	fileID := [16]byte{1}
-	openFile := &OpenFile{
+	openFile := (&OpenFile{
 		FileID:         fileID,
 		TreeID:         treeID,
 		SessionID:      sess.SessionID,
-		Path:           fileName,
 		ShareName:      shareName,
 		DesiredAccess:  uint32(types.FileReadData | types.FileWriteData),
 		GrantedAccess:  uint32(types.FileReadData | types.FileWriteData),
 		MetadataHandle: fileHandle,
 		PayloadID:      committed.PayloadID,
-		ParentHandle:   rootHandle,
-		FileName:       fileName,
-	}
+	}).WithName(OpenName{Path: fileName, FileName: fileName, ParentHandle: rootHandle})
 	h.StoreOpenFile(openFile)
 
 	smbCtx := &SMBHandlerContext{

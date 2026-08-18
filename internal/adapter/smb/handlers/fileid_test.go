@@ -41,15 +41,12 @@ func TestFileID_StableAcrossViews(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncodeFileHandle: %v", err)
 	}
-	openFile := &OpenFile{
+	openFile := (&OpenFile{
 		FileID:         [16]byte{1},
 		MetadataHandle: fileHandle,
-		ParentHandle:   rootHandle,
-		FileName:       "foo",
-		Path:           "foo",
 		ShareName:      "/fid",
 		GrantedAccess:  0x001F01FF,
-	}
+	}).WithName(OpenName{Path: "foo", FileName: "foo", ParentHandle: rootHandle})
 
 	t.Run("QFid", func(t *testing.T) {
 		qfid := h.baseFileUUID(authCtx, rootHandle, "foo", file.ID)
@@ -141,15 +138,12 @@ func TestFileID_StreamMatchesBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncodeFileHandle: %v", err)
 	}
-	openStream := &OpenFile{
+	openStream := (&OpenFile{
 		FileID:         [16]byte{2},
 		MetadataHandle: streamHandle,
-		ParentHandle:   rootHandle,
-		FileName:       "foo:bar",
-		Path:           "foo:bar",
 		ShareName:      "/fid",
 		GrantedAccess:  0x001F01FF,
-	}
+	}).WithName(OpenName{Path: "foo:bar", FileName: "foo:bar", ParentHandle: rootHandle})
 
 	qfid := h.baseFileUUID(authCtx, rootHandle, "foo:bar", stream.ID)
 	if got := binary.LittleEndian.Uint64(qfid[:8]); got != expected {
@@ -208,11 +202,10 @@ func TestFileID_UniqueAcrossSiblings(t *testing.T) {
 			}
 			info, err := h.buildFileInfoFromStore(
 				authCtx, f,
-				&OpenFile{
-					MetadataHandle: fh, ParentHandle: rootHandle,
-					FileName: name, Path: name, ShareName: "/fid",
+				(&OpenFile{
+					MetadataHandle: fh, ShareName: "/fid",
 					GrantedAccess: 0x001F01FF,
-				},
+				}).WithName(OpenName{Path: name, FileName: name, ParentHandle: rootHandle}),
 				types.FileInternalInformation,
 			)
 			if err != nil {
@@ -240,16 +233,13 @@ func readFirstNamedEntryFileID(
 ) uint64 {
 	t.Helper()
 
-	dirOpen := &OpenFile{
+	dirOpen := (&OpenFile{
 		FileID:         [16]byte{0xDD},
 		MetadataHandle: dirHandle,
-		ParentHandle:   dirHandle,
-		FileName:       "",
-		Path:           "",
 		ShareName:      "/fid",
 		IsDirectory:    true,
 		GrantedAccess:  0x001F01FF,
-	}
+	}).WithName(OpenName{Path: "", FileName: "", ParentHandle: dirHandle})
 	h.StoreOpenFile(dirOpen)
 
 	req := &QueryDirectoryRequest{

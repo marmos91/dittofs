@@ -291,7 +291,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 
 	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
-		logger.Debug("QUERY_INFO: failed to get file", "path", openFile.Path, "error", err)
+		logger.Debug("QUERY_INFO: failed to get file", "path", openFile.Name().Path, "error", err)
 		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
@@ -627,13 +627,14 @@ func (h *Handler) handlePipeFileInfo(req *QueryInfoRequest, openFile *OpenFile) 
 // The returned FileAttr is a copy with the stream handle's frozen timestamp
 // overrides applied so QUERY_INFO returns the correct value for frozen handles.
 func (h *Handler) resolveBaseFileAttrForADS(authCtx *metadata.AuthContext, openFile *OpenFile) *metadata.FileAttr {
-	colonIdx := strings.Index(openFile.FileName, ":")
-	if colonIdx <= 0 || len(openFile.ParentHandle) == 0 {
+	name := openFile.Name()
+	colonIdx := strings.Index(name.FileName, ":")
+	if colonIdx <= 0 || len(name.ParentHandle) == 0 {
 		return nil
 	}
 	metaSvc := h.Registry.GetMetadataService()
-	baseFileName := openFile.FileName[:colonIdx]
-	baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseFileName)
+	baseFileName := name.FileName[:colonIdx]
+	baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, name.ParentHandle, baseFileName)
 	if baseFile == nil {
 		return nil
 	}
@@ -661,6 +662,9 @@ func (h *Handler) resolveBaseFileAttrForADS(authCtx *metadata.AuthContext, openF
 
 // buildFileInfoFromStore builds file information based on class using metadata store.
 func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *metadata.File, openFile *OpenFile, class types.FileInfoClass) ([]byte, error) {
+	// One snapshot for every arm below, so the response cannot mix a path
+	// from before a rename with a file name from after it.
+	name := openFile.Name()
 	switch class {
 	case types.FileBasicInformation:
 		// Per NTFS: ADS (alternate data streams) share the base file's
@@ -687,7 +691,7 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 
 	case types.FileInternalInformation:
 		// FILE_INTERNAL_INFORMATION [MS-FSCC] 2.4.20 (8 bytes)
-		fileID := h.baseFileUUID(authCtx, openFile.ParentHandle, openFile.FileName, file.ID)
+		fileID := h.baseFileUUID(authCtx, name.ParentHandle, name.FileName, file.ID)
 		w := smbenc.NewWriter(8)
 		w.WriteUint64(binary.LittleEndian.Uint64(fileID[:8]))
 		return w.Bytes(), nil
@@ -763,7 +767,7 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 
 	case types.FileNameInformation:
 		// FILE_NAME_INFORMATION [MS-FSCC] 2.4.26 (4 bytes + variable)
-		nameBytes := encodeUTF16LE(toSMBPath(openFile.Path))
+		nameBytes := encodeUTF16LE(toSMBPath(name.Path))
 		w := smbenc.NewWriter(4 + len(nameBytes))
 		w.WriteUint32(uint32(len(nameBytes))) // FileNameLength
 		w.WriteBytes(nameBytes)
@@ -772,10 +776,10 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 	case types.FileAlternateNameInformation:
 		// FILE_ALTERNATE_NAME_INFORMATION [MS-FSCC] 2.4.5 (4 bytes + variable)
 		// Returns the 8.3 short name
-		shortNameBytes := generate83ShortName(openFile.FileName)
+		shortNameBytes := generate83ShortName(name.FileName)
 		if shortNameBytes == nil {
 			// For root or entries without a short name, use the filename itself
-			shortNameBytes = encodeUTF16LE(openFile.FileName)
+			shortNameBytes = encodeUTF16LE(name.FileName)
 		}
 		w := smbenc.NewWriter(4 + len(shortNameBytes))
 		w.WriteUint32(uint32(len(shortNameBytes))) // FileNameLength
@@ -795,7 +799,7 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		// directory, the name is empty.
 		filePath := file.Path
 		if filePath == "" {
-			filePath = openFile.Path
+			filePath = name.Path
 		}
 		// Strip the share-root leading separator: file.Path is stored as
 		// "/dir/name" but the normalized form is share-relative (matches
@@ -820,7 +824,7 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		// ADS handles report the base file's UUID so a client comparing this
 		// against FileInternalInformation on the same handle gets a consistent
 		// 128-bit identity (refs #478).
-		fileID := h.baseFileUUID(authCtx, openFile.ParentHandle, openFile.FileName, file.ID)
+		fileID := h.baseFileUUID(authCtx, name.ParentHandle, name.FileName, file.ID)
 		w := smbenc.NewWriter(24)
 		w.WriteUint64(ntfsVolumeSerialNumber) // VolumeSerialNumber
 		w.WriteBytes(fileID[:16])             // FileId (128-bit)
@@ -908,10 +912,12 @@ func (h *Handler) buildFileAllInformationFromStore(authCtx *metadata.AuthContext
 	if baseAttr := h.resolveBaseFileAttrForADS(authCtx, openFile); baseAttr != nil {
 		attr = baseAttr
 	}
+	// One snapshot: this response carries both the path and the file name.
+	name := openFile.Name()
 	basicInfo := FileAttrToFileBasicInfoWithName(attr, basenameForHidden(openFile))
 	standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, openFile.DeletePending)
 	standardInfo.AllocationSize = effectiveAllocationSize(standardInfo.EndOfFile, openFile.RequestedAllocSize)
-	nameBytes := encodeUTF16LE(toSMBPath(openFile.Path))
+	nameBytes := encodeUTF16LE(toSMBPath(name.Path))
 
 	// Fixed part: 96 bytes + NameInformation header (4 bytes for length) + name data
 	// Minimum total per Linux kernel requirement: 104 bytes (100 fixed + 4 for FileNameLength)
@@ -927,7 +933,7 @@ func (h *Handler) buildFileAllInformationFromStore(authCtx *metadata.AuthContext
 	copy(info[40:64], standardBytes)
 
 	// Build remaining fields sequentially using smbenc Writer
-	internalFileID := h.baseFileUUID(authCtx, openFile.ParentHandle, openFile.FileName, file.ID)
+	internalFileID := h.baseFileUUID(authCtx, name.ParentHandle, name.FileName, file.ID)
 	fileIndex := binary.LittleEndian.Uint64(internalFileID[:8])
 
 	w := smbenc.NewWriter(36)
@@ -961,7 +967,8 @@ func (h *Handler) buildFileStreamInformation(authCtx *metadata.AuthContext, file
 	ctx := authCtx.Context
 	// Determine the base file name. If the open file is itself an ADS
 	// (e.g., "file.txt:stream1:$DATA"), find the base file first.
-	baseName := openFile.FileName
+	name := openFile.Name()
+	baseName := name.FileName
 	if colonIdx := strings.Index(baseName, ":"); colonIdx > 0 {
 		baseName = baseName[:colonIdx]
 	}
@@ -984,9 +991,9 @@ func (h *Handler) buildFileStreamInformation(authCtx *metadata.AuthContext, file
 	// Look up the base file to determine its type.
 	isBaseDirectory := openFile.IsDirectory
 	var defaultSize uint64
-	if !isBaseDirectory && strings.Contains(openFile.FileName, ":") && len(openFile.ParentHandle) > 0 {
+	if !isBaseDirectory && strings.Contains(name.FileName, ":") && len(name.ParentHandle) > 0 {
 		metaSvc := h.Registry.GetMetadataService()
-		if baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseName); baseFile != nil {
+		if baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, name.ParentHandle, baseName); baseFile != nil {
 			if baseFile.Type == metadata.FileTypeDirectory {
 				isBaseDirectory = true
 			}
@@ -1006,14 +1013,14 @@ func (h *Handler) buildFileStreamInformation(authCtx *metadata.AuthContext, file
 
 	// Enumerate ADS entries from the parent directory.
 	// ADS are stored as children with names like "baseName:streamname:$DATA".
-	if len(openFile.ParentHandle) > 0 {
+	if len(name.ParentHandle) > 0 {
 		metaSvc := h.Registry.GetMetadataService()
 		store, storeErr := metaSvc.GetStoreForShare(shareNameForOpenFile(openFile))
 		if storeErr == nil {
 			prefix := baseName + ":"
 			cursor := ""
 			for {
-				entries, nextCursor, listErr := store.ListChildren(ctx, openFile.ParentHandle, cursor, 1000)
+				entries, nextCursor, listErr := store.ListChildren(ctx, name.ParentHandle, cursor, 1000)
 				if listErr != nil {
 					break
 				}
@@ -1374,10 +1381,11 @@ func basenameForHidden(openFile *OpenFile) string {
 	if openFile == nil {
 		return ""
 	}
-	if openFile.FileName != "" {
-		return openFile.FileName
+	name := openFile.Name()
+	if name.FileName != "" {
+		return name.FileName
 	}
-	p := openFile.Path
+	p := name.Path
 	if i := strings.LastIndexAny(p, "/\\"); i >= 0 {
 		return p[i+1:]
 	}

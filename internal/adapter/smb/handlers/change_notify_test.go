@@ -1762,16 +1762,15 @@ func TestChangeNotify_HandlePermissions_GrantedAccessGate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := NewHandler()
 
-			h.StoreOpenFile(&OpenFile{
+			h.StoreOpenFile((&OpenFile{
 				FileID:        fileID,
 				TreeID:        treeID,
 				SessionID:     sessionID,
-				Path:          "/HPERM",
 				ShareName:     "share1",
 				DesiredAccess: tc.desiredAccess,
 				GrantedAccess: tc.grantedAccess,
 				IsDirectory:   true,
-			})
+			}).WithName(OpenName{Path: "/HPERM"}))
 
 			ctx := &SMBHandlerContext{
 				SessionID:       sessionID,
@@ -1847,16 +1846,15 @@ func TestChangeNotify_StickyMaxBufferSize_SubsumesValidReq(t *testing.T) {
 	var fileID [16]byte
 	copy(fileID[:], []byte{0x77, 0x88})
 
-	openFile := &OpenFile{
+	openFile := (&OpenFile{
 		FileID:        fileID,
 		IsDirectory:   true,
 		ShareName:     "share1",
-		Path:          "/dir",
 		SessionID:     1,
 		TreeID:        1,
 		DesiredAccess: 0x00000001, // FILE_LIST_DIRECTORY
 		GrantedAccess: 0x00000001,
-	}
+	}).WithName(OpenName{Path: "/dir"})
 	h.StoreOpenFile(openFile)
 
 	makeCtx := func() *SMBHandlerContext {
@@ -1931,10 +1929,9 @@ func TestChangeNotify_FirstLargeBuffer_ThenSmallUsesRequest(t *testing.T) {
 	h.MaxTransactSize = 1 << 20
 
 	fileID := [16]byte{0x11}
-	openFile := &OpenFile{
-		FileID: fileID, IsDirectory: true, ShareName: "share1",
-		Path: "/dir", SessionID: 1, TreeID: 1, DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
-	}
+	openFile := (&OpenFile{
+		FileID: fileID, IsDirectory: true, ShareName: "share1", SessionID: 1, TreeID: 1, DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
+	}).WithName(OpenName{Path: "/dir"})
 	h.StoreOpenFile(openFile)
 
 	makeCtx := func() *SMBHandlerContext {
@@ -1991,10 +1988,9 @@ func TestChangeNotify_FirstZeroBuffer_StickyAtZero(t *testing.T) {
 	h.MaxTransactSize = 1 << 20
 
 	fileID := [16]byte{0x99}
-	openFile := &OpenFile{
-		FileID: fileID, IsDirectory: true, ShareName: "share1",
-		Path: "/dir", SessionID: 1, TreeID: 1, DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
-	}
+	openFile := (&OpenFile{
+		FileID: fileID, IsDirectory: true, ShareName: "share1", SessionID: 1, TreeID: 1, DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
+	}).WithName(OpenName{Path: "/dir"})
 	h.StoreOpenFile(openFile)
 
 	makeCtx := func() *SMBHandlerContext {
@@ -2161,11 +2157,10 @@ func TestChangeNotify_PreArrivalCancel_HandlerReturnsCancelledSync(t *testing.T)
 	h.MaxTransactSize = 1 << 20
 
 	fileID := [16]byte{0x42}
-	openFile := &OpenFile{
-		FileID: fileID, IsDirectory: true, ShareName: "share1",
-		Path: "/dir", SessionID: 1, TreeID: 1,
+	openFile := (&OpenFile{
+		FileID: fileID, IsDirectory: true, ShareName: "share1", SessionID: 1, TreeID: 1,
 		DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
-	}
+	}).WithName(OpenName{Path: "/dir"})
 	h.StoreOpenFile(openFile)
 
 	ctx := &SMBHandlerContext{

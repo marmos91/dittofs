@@ -150,30 +150,26 @@ func TestCopyChunk_SparseDest_LeadingGapReadsZeros(t *testing.T) {
 	const treeID uint32 = 1
 	h.StoreTree(&TreeConnection{TreeID: treeID, SessionID: sess.SessionID, ShareName: shareName})
 
-	srcOpen := &OpenFile{
+	srcOpen := (&OpenFile{
 		FileID:         [16]byte{1},
 		TreeID:         treeID,
 		SessionID:      sess.SessionID,
-		Path:           "src",
 		ShareName:      shareName,
 		DesiredAccess:  uint32(types.FileReadData | types.FileWriteData),
 		GrantedAccess:  uint32(types.FileReadData | types.FileWriteData),
 		MetadataHandle: srcHandle,
 		PayloadID:      srcFile.PayloadID,
-	}
-	dstOpen := &OpenFile{
+	}).WithName(OpenName{Path: "src"})
+	dstOpen := (&OpenFile{
 		FileID:         [16]byte{2},
 		TreeID:         treeID,
 		SessionID:      sess.SessionID,
-		Path:           "dst",
 		ShareName:      shareName,
 		DesiredAccess:  uint32(types.FileReadData | types.FileWriteData),
 		GrantedAccess:  uint32(types.FileReadData | types.FileWriteData),
 		MetadataHandle: dstHandle,
 		PayloadID:      dstFile.PayloadID,
-		ParentHandle:   rootHandle,
-		FileName:       "dst",
-	}
+	}).WithName(OpenName{Path: "dst", FileName: "dst", ParentHandle: rootHandle})
 	h.StoreOpenFile(srcOpen)
 	h.StoreOpenFile(dstOpen)
 
@@ -355,17 +351,16 @@ func TestCopyChunk_SparseDest_SurvivesPriorPayloadReuse(t *testing.T) {
 	const treeID uint32 = 1
 	h.StoreTree(&TreeConnection{TreeID: treeID, SessionID: sess.SessionID, ShareName: shareName})
 
-	srcOpen := &OpenFile{
+	srcOpen := (&OpenFile{
 		FileID:         [16]byte{1},
 		TreeID:         treeID,
 		SessionID:      sess.SessionID,
-		Path:           "src",
 		ShareName:      shareName,
 		DesiredAccess:  uint32(types.FileReadData | types.FileWriteData),
 		GrantedAccess:  uint32(types.FileReadData | types.FileWriteData),
 		MetadataHandle: srcHandle,
 		PayloadID:      srcFile.PayloadID,
-	}
+	}).WithName(OpenName{Path: "src"})
 	h.StoreOpenFile(srcOpen)
 
 	smbCtx := &SMBHandlerContext{
@@ -392,19 +387,16 @@ func TestCopyChunk_SparseDest_SurvivesPriorPayloadReuse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EncodeFileHandle dst: %v", err)
 		}
-		of := &OpenFile{
+		of := (&OpenFile{
 			FileID:         fileID,
 			TreeID:         treeID,
 			SessionID:      sess.SessionID,
-			Path:           "dst",
 			ShareName:      shareName,
 			DesiredAccess:  uint32(types.FileReadData | types.FileWriteData | types.Delete),
 			GrantedAccess:  uint32(types.FileReadData | types.FileWriteData | types.Delete),
 			MetadataHandle: dstHandle,
 			PayloadID:      dstFile.PayloadID,
-			ParentHandle:   rootHandle,
-			FileName:       "dst",
-		}
+		}).WithName(OpenName{Path: "dst", FileName: "dst", ParentHandle: rootHandle})
 		h.StoreOpenFile(of)
 		return of, dstHandle
 	}

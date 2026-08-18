@@ -133,13 +133,12 @@ func setupABEQueryDirTest(t *testing.T, abe bool, callerUID, callerGID uint32, c
 		AccessBasedEnumeration: abe,
 	})
 
-	open := &OpenFile{
+	open := (&OpenFile{
 		FileID:         h.GenerateFileID(),
 		TreeID:         treeID,
-		Path:           shareName,
 		IsDirectory:    true,
 		MetadataHandle: rootHandle,
-	}
+	}).WithName(OpenName{Path: shareName})
 	h.StoreOpenFile(open)
 
 	// SMB session carries a User struct (callerUID / callerGID);
@@ -326,12 +325,11 @@ func setupQueryDirTest(t *testing.T, names []string) (*Handler, *OpenFile, *meta
 	h := NewHandler()
 	h.Registry = rt
 
-	open := &OpenFile{
+	open := (&OpenFile{
 		FileID:         h.GenerateFileID(),
-		Path:           shareName,
 		IsDirectory:    true,
 		MetadataHandle: rootHandle,
-	}
+	}).WithName(OpenName{Path: shareName})
 	h.StoreOpenFile(open)
 
 	smbCtx := &SMBHandlerContext{Context: context.Background()}

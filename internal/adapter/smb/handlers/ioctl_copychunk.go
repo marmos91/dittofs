@@ -104,7 +104,7 @@ func (h *Handler) handleSrvRequestResumeKey(ctx *SMBHandlerContext, body []byte)
 	// FSCTL_SRV_COPYCHUNK operation, not at resume key issuance time.
 
 	logger.Debug("IOCTL FSCTL_SRV_REQUEST_RESUME_KEY",
-		"path", openFile.Path,
+		"path", openFile.Name().Path,
 		"fileID", fmt.Sprintf("%x", fileID))
 
 	// Generate an opaque resume key and store the mapping
@@ -183,7 +183,7 @@ func (h *Handler) handleSrvCopyChunk(ctx *SMBHandlerContext, body []byte) (*Hand
 
 	logger.Debug("IOCTL FSCTL_SRV_COPYCHUNK",
 		"ctlCode", fmt.Sprintf("0x%08X", ctlCode),
-		"dstPath", dstOpen.Path,
+		"dstPath", dstOpen.Name().Path,
 		"chunkCount", chunkCount)
 
 	// Resolve source file from resume key via the opaque key store
@@ -208,11 +208,11 @@ func (h *Handler) handleSrvCopyChunk(ctx *SMBHandlerContext, body []byte) (*Hand
 
 	// Validate that neither source nor destination is a directory or pipe
 	if srcOpen.IsDirectory || srcOpen.IsPipe {
-		logger.Debug("COPYCHUNK: source is directory or pipe", "path", srcOpen.Path)
+		logger.Debug("COPYCHUNK: source is directory or pipe", "path", srcOpen.Name().Path)
 		return NewErrorResult(types.StatusInvalidDeviceRequest), nil
 	}
 	if dstOpen.IsDirectory || dstOpen.IsPipe {
-		logger.Debug("COPYCHUNK: destination is directory or pipe", "path", dstOpen.Path)
+		logger.Debug("COPYCHUNK: destination is directory or pipe", "path", dstOpen.Name().Path)
 		return NewErrorResult(types.StatusInvalidDeviceRequest), nil
 	}
 
@@ -247,27 +247,28 @@ func (h *Handler) handleSrvCopyChunk(ctx *SMBHandlerContext, body []byte) (*Hand
 // Destination requires FILE_WRITE_DATA or FILE_APPEND_DATA.
 // For FSCTL_SRV_COPYCHUNK (not COPYCHUNK_WRITE), destination also requires FILE_READ_DATA.
 func validateCopyChunkAccess(ctlCode uint32, src, dst *OpenFile) types.Status {
+	srcPath, dstPath := src.Name().Path, dst.Name().Path
 	srcAccess := types.AccessMask(src.GrantedAccess)
 	dstAccess := types.AccessMask(dst.GrantedAccess)
 
 	// Source must have read or execute
 	if srcAccess&types.FileReadData == 0 && srcAccess&types.FileExecute == 0 {
 		logger.Debug("COPYCHUNK: source lacks read/execute access",
-			"path", src.Path, "access", fmt.Sprintf("0x%08X", src.GrantedAccess))
+			"path", srcPath, "access", fmt.Sprintf("0x%08X", src.GrantedAccess))
 		return types.StatusAccessDenied
 	}
 
 	// Destination must have write or append
 	if dstAccess&types.FileWriteData == 0 && dstAccess&types.FileAppendData == 0 {
 		logger.Debug("COPYCHUNK: destination lacks write access",
-			"path", dst.Path, "access", fmt.Sprintf("0x%08X", dst.GrantedAccess))
+			"path", dstPath, "access", fmt.Sprintf("0x%08X", dst.GrantedAccess))
 		return types.StatusAccessDenied
 	}
 
 	// FSCTL_SRV_COPYCHUNK (not _WRITE) also requires read on destination
 	if ctlCode == FsctlSrvCopyChunk && dstAccess&types.FileReadData == 0 {
 		logger.Debug("COPYCHUNK: destination lacks read access (required for non-WRITE variant)",
-			"path", dst.Path, "access", fmt.Sprintf("0x%08X", dst.GrantedAccess))
+			"path", dstPath, "access", fmt.Sprintf("0x%08X", dst.GrantedAccess))
 		return types.StatusAccessDenied
 	}
 
@@ -357,25 +358,27 @@ func (h *Handler) executeCopyChunks(
 	srcOpen, dstOpen *OpenFile,
 	chunks []copyChunk,
 ) (*HandlerResult, error) {
+	srcPath, dstPath := srcOpen.Name().Path, dstOpen.Name().Path
+
 	metaSvc := h.Registry.GetMetadataService()
 
 	// Get source block store and file metadata
 	srcBlockStore, err := h.Registry.GetBlockStoreForShare(srcOpen.ShareName)
 	if err != nil {
-		logger.Warn("COPYCHUNK: source block store unavailable", "path", srcOpen.Path, "error", err)
+		logger.Warn("COPYCHUNK: source block store unavailable", "path", srcPath, "error", err)
 		return NewErrorResult(types.StatusInternalError), nil
 	}
 
 	srcFile, err := metaSvc.GetFileForRead(ctx.Context, srcOpen.MetadataHandle)
 	if err != nil {
-		logger.Debug("COPYCHUNK: failed to get source file", "path", srcOpen.Path, "error", err)
+		logger.Debug("COPYCHUNK: failed to get source file", "path", srcPath, "error", err)
 		return NewErrorResult(common.MapToSMB(err)), nil
 	}
 
 	// Get destination block store
 	dstBlockStore, err := h.Registry.GetBlockStoreForShare(dstOpen.ShareName)
 	if err != nil {
-		logger.Warn("COPYCHUNK: destination block store unavailable", "path", dstOpen.Path, "error", err)
+		logger.Warn("COPYCHUNK: destination block store unavailable", "path", dstPath, "error", err)
 		return NewErrorResult(types.StatusInternalError), nil
 	}
 
@@ -407,7 +410,7 @@ func (h *Handler) executeCopyChunks(
 	if h.LeaseManager != nil {
 		lockFileHandle := lock.FileHandle(dstOpen.MetadataHandle)
 		if breakErr := h.LeaseManager.BreakReadLeasesOnWrite(lockFileHandle, dstOpen.ShareName, dstOpen.LeaseKey); breakErr != nil {
-			logger.Debug("COPYCHUNK: oplock break failed (non-fatal)", "path", dstOpen.Path, "error", breakErr)
+			logger.Debug("COPYCHUNK: oplock break failed (non-fatal)", "path", dstPath, "error", breakErr)
 		}
 	}
 
@@ -439,7 +442,7 @@ func (h *Handler) executeCopyChunks(
 		// durability from the journal reconcile on restart; CLOSE/FLUSH stay strict.
 		if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, dstOpen.MetadataHandle, false); flushErr != nil {
 			logger.Debug("COPYCHUNK: deferred metadata flush failed (non-fatal)",
-				"dstPath", dstOpen.Path, "error", flushErr)
+				"dstPath", dstPath, "error", flushErr)
 		}
 	}
 
@@ -483,7 +486,7 @@ func (h *Handler) executeCopyChunks(
 		n, err := srcBlockStore.ReadAt(ctx.Context, srcPayloadID, nil, data, chunk.SourceOffset)
 		if err != nil {
 			logger.Warn("COPYCHUNK: source read failed",
-				"chunk", i, "srcPath", srcOpen.Path, "error", err)
+				"chunk", i, "srcPath", srcPath, "error", err)
 			// COPYCHUNK source read is a content-path op: MapContentToSMB
 			// maps a closed-store error (source share removed
 			// mid-copy) to STATUS_FILE_CLOSED and preserves the
@@ -511,7 +514,7 @@ func (h *Handler) executeCopyChunks(
 		writeOp, err := metaSvc.PrepareWrite(authCtx, dstOpen.MetadataHandle, newSize)
 		if err != nil {
 			logger.Warn("COPYCHUNK: prepare write failed",
-				"chunk", i, "dstPath", dstOpen.Path, "error", err)
+				"chunk", i, "dstPath", dstPath, "error", err)
 			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
 				common.MapToSMB(err), chunksWritten, totalBytesWritten), nil
@@ -523,7 +526,7 @@ func (h *Handler) executeCopyChunks(
 		// thread the destination's FileAttr.Blocks update.
 		if _, err := dstBlockStore.WriteAt(ctx.Context, string(writeOp.PayloadID), nil, data, chunk.TargetOffset); err != nil {
 			logger.Warn("COPYCHUNK: destination write failed",
-				"chunk", i, "dstPath", dstOpen.Path, "error", err)
+				"chunk", i, "dstPath", dstPath, "error", err)
 			// COPYCHUNK destination write is a content-path op:
 			// MapContentToSMB maps a closed-store error (dest share removed
 			// mid-copy) to STATUS_FILE_CLOSED and preserves the
@@ -537,7 +540,7 @@ func (h *Handler) executeCopyChunks(
 		// Commit write metadata
 		if _, err := metaSvc.CommitWrite(authCtx, writeOp); err != nil {
 			logger.Warn("COPYCHUNK: commit write failed",
-				"chunk", i, "dstPath", dstOpen.Path, "error", err)
+				"chunk", i, "dstPath", dstPath, "error", err)
 			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
 				types.StatusInternalError, chunksWritten, totalBytesWritten), nil
@@ -567,13 +570,13 @@ func (h *Handler) executeCopyChunks(
 	if !dstOpen.IsAtimeFrozen() {
 		_, _ = metaSvc.SetFileAttributes(authCtx, dstOpen.MetadataHandle, &metadata.SetAttrs{Atime: &now})
 	}
-	if len(dstOpen.ParentHandle) > 0 {
-		_, _ = metaSvc.SetFileAttributes(authCtx, dstOpen.ParentHandle, &metadata.SetAttrs{Atime: &now})
-		h.restoreParentDirFrozenTimestamps(authCtx, dstOpen.ParentHandle)
+	if dstParent := dstOpen.Name().ParentHandle; len(dstParent) > 0 {
+		_, _ = metaSvc.SetFileAttributes(authCtx, dstParent, &metadata.SetAttrs{Atime: &now})
+		h.restoreParentDirFrozenTimestamps(authCtx, dstParent)
 	}
 
 	logger.Debug("COPYCHUNK: completed successfully",
-		"srcPath", srcOpen.Path, "dstPath", dstOpen.Path,
+		"srcPath", srcPath, "dstPath", dstPath,
 		"chunks", chunksWritten, "totalBytes", totalBytesWritten)
 
 	return copyChunkSuccessResponse(ctlCode, dstFileID, chunksWritten, totalBytesWritten), nil

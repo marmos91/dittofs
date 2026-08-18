@@ -72,9 +72,7 @@ func TestRead_SymlinkRead_LeavesReleaseDataNil(t *testing.T) {
 		Length: 1067, // MFsymlink spec size
 		Offset: 0,
 	}
-	openFile := &OpenFile{
-		Path: "/test/link",
-	}
+	openFile := (&OpenFile{}).WithName(OpenName{Path: "/test/link"})
 	file := &metadata.File{
 		Path: "/test/link",
 		FileAttr: metadata.FileAttr{
@@ -150,7 +148,7 @@ func TestHandleSymlinkRead_AdvancesPositionInfo(t *testing.T) {
 		Length: 100,
 		Offset: 10,
 	}
-	openFile := &OpenFile{Path: "/test/link"}
+	openFile := (&OpenFile{}).WithName(OpenName{Path: "/test/link"})
 	file := &metadata.File{
 		Path: "/test/link",
 		FileAttr: metadata.FileAttr{

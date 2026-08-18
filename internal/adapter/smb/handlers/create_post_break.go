@@ -1276,7 +1276,6 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		FileID:               smbFileID,
 		TreeID:               ctx.TreeID,
 		SessionID:            ctx.SessionID,
-		Path:                 filename,
 		ShareName:            tree.ShareName,
 		OpenTime:             time.Now(),
 		DesiredAccess:        req.DesiredAccess,
@@ -1284,8 +1283,6 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		IsDirectory:          file.Type == metadata.FileTypeDirectory,
 		MetadataHandle:       fileHandle,
 		PayloadID:            file.PayloadID,
-		ParentHandle:         parentHandle,
-		FileName:             baseName,
 		OplockLevel:          grantedOplock,
 		ShareAccess:          req.ShareAccess,
 		CreateOptions:        req.CreateOptions,
@@ -1303,6 +1300,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		// but its CREATE must still be replay-cacheable (MS-SMB2 §3.3.5.9).
 		ReplayCreateGuid: dh2qCreateGuid(req),
 	}
+	openFile.SetName(OpenName{Path: filename, FileName: baseName, ParentHandle: parentHandle})
 
 	if leaseResponse != nil && leaseResponse.LeaseState != lock.LeaseStateNone {
 		openFile.LeaseKey = leaseResponse.LeaseKey
