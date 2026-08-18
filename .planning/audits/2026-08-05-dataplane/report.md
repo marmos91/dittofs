@@ -53,12 +53,18 @@ did not exist), #1953 (overlapping manifest rows).
   `NfsDetails.Version` is still hardcoded `"3"` at `pkg/adapter/nfs/connection.go:109` while the
   same connection dispatches both versions.
 
-**What is still open.** 34 MED findings carry no status. Two of them are in flight (#1957 closes
-the two SMB `OpenFile` lock races), and roughly two thirds are structural refactors rather than
-patches — the god-object and duplicated-CRUD entries across `pkg/metadata/lock/`,
-`pkg/metadata/store/{badger,postgres,sqlite}/` and `runtime/shares`, which #1828 subsumes, plus
-`recover()` in `pkg/block/journal/recovery.go`. The rest are correctness or cost findings nobody
-has picked up:
+**The MED tail is now accounted for.** Of the 34 findings that carried no status:
+
+- **2 are in flight** — the SMB `OpenFile` lock races, closed by #1957.
+- **15 are structural debt, deliberately deferred** and marked `DEFERRED` inline. Seven are the
+  pool-path-vs-transaction-path CRUD duplication, the three copy-pasted generation-guarded caches,
+  and the duplicated config-reconciliation body across `badger`/`postgres`/`sqlite`; #1828 subsumes
+  all of them. The other eight — `recover()` in `pkg/block/journal/recovery.go`, the lock-manager
+  and lease god-functions, `runtime/shares/service.go`, and the triplicated ACL evaluation context
+  — are tracked as #1967. None has a behavioural defect attached; each is a refactor whose value is
+  drift resistance, not a fix.
+- **17 are correctness or cost findings**, now batched into four PRs by area (metadata write path,
+  lock-manager index use, per-op round-trips, adapters and dead state). The headline entries:
 
 | Finding | Where | Dimension |
 |---|---|---|
@@ -73,9 +79,14 @@ has picked up:
 | Single share-wide ALL lock taken per lock-manager operation | `pkg/metadata/lock/manager.go:702` | perf |
 | `pendingWrites` / `deviceNumbers` are fully dead state | `pkg/metadata/store/memory/store.go:187,196` | bloat |
 
-The 220 LOW findings are untouched. They were never triaged past the verify gate, so a LOW sweep
-should re-check each against the tree first — several MED findings above were already closed by
-unrelated work (#1906, #1932, #1939) and had gone unnoticed until this refresh.
+**The 220 LOW findings** were never triaged past the verify gate — unlike the HIGH and MED
+entries, none carries a `Verified:` paragraph, so each is a claim rather than an established fact.
+Any sweep must re-check them against the tree before acting: several MED findings above turned out
+to have been closed already by unrelated work (#1906, #1932, #1939) and had gone unnoticed until
+this refresh, and at least one MED premise was outright false. They break down as 64 `structure`,
+60 `comments`, 42 `bloat`, 21 `perf`, 11 `gaps`, 10 `bugs`, 10 `slop`, 2 `security` — so roughly
+two thirds are comment, dead-code and refactor entries, and the 44 `bugs`/`security`/`gaps`/`perf`
+ones are where the value is. The first three of those tranches are being swept now.
 
 Also opened from this work: #1909 (crash-ordering silent zeros, still open),
 #1910 (smbtorture grading non-determinism, fixed in #1919).
@@ -436,6 +447,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] recover() is a ~375-line god-function mixing 8+ unrelated concerns
 
 - **Where:** `pkg/block/journal/recovery.go:60` · `structure` · area: block-journal-replay-gc
+> STATUS: DEFERRED to #1967 — confirmed structural debt with no behavioural defect; tracked as a refactor, not batched as a fix.
 - **Verified:** Confirmed: func boundaries show recover() spans 60-436 (next func idxMissing at 437) = ~375 lines; single body threads actives/sealedByShard/indexByShard/emptyPool/orphans/tombstones/truncations/unsynced/missingIdx locals across segment scan, torn-tail truncate, idx rebuild, cold-log replay+compaction, counter reconcile, orphan sweep. Only helpers are idxMissing/rebuildIdx/sweepOrphans/fileSize. Reachable from Store open (non-test). Genuine maintainability/testability issue on the replay-correctness path.
 - **Fix:** Extract named Store methods per phase, e.g. scanAndClassifySegments, replayRecords(indexByShard) tombstones/truncations, applyColdLog(indexByShard), reconcileByteCounters(indexByShard, sealedByShard, actives), assignActiveSegments(actives, emptyPool). Keep recover() as the orchestrator that calls them in order.
 
@@ -512,12 +524,14 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Evaluate() and EvaluateGranted() duplicate the entire DACL-walk algorithm
 
 - **Where:** `pkg/metadata/acl/evaluate.go:170` · `structure` · area: metadata-acl-errors-backup · *re-confirmed*
+> STATUS: DEFERRED to #1967 — confirmed structural debt with no behavioural defect; tracked as a refactor, not batched as a fix.
 - **Verified:** CONFIRMED line-by-line: owner-rights pre-scan (195-212 vs 302-319), ACE accumulation switch with identical `ace.AccessMask &^ (allowedBits|deniedBits)` first-match-wins (217-250 vs 324-351), and owner-implicit tail incl. RequesterHasTakeOwnership (263-268 vs 353-358) are byte-equivalent; only the early-term mask and return type differ. Both reachable from non-test code: Evaluate at auth_permissions.go:493/722/1067 and file_access_checker.go:83; EvaluateGranted at auth_permissions.go:959/998/1107. MED stands — duplicated security-critical access-check algorithm with no mechanism keeping the copies in sync.
 - **Fix:** Extract a private walkDACL(a *ACL, evalCtx *EvaluateContext, mask uint32) (allowed, denied uint32) that runs the owner-rights pre-scan + ACE loop + owner-implicit tail once. Evaluate becomes allowed,_ := walkDACL(...); return allowed&requestedMask == requestedMask; EvaluateGranted becomes allowed,_ := walkDACL(...); return allowed & probeMask.
 
 ### [MED] acl.EvaluateContext construction duplicated 3x (inline + 2 near-identical builders)
 
 - **Where:** `pkg/metadata/auth_permissions.go:441` · `bloat` · area: metadata-auth
+> STATUS: DEFERRED to #1967 — confirmed structural debt with no behavioural defect; tracked as a refactor, not batched as a fix.
 - **Verified:** CONFIRMED 3x copy. Identical ~25-line block (anonymous AnonymousFileOwnerUID sentinel branch, then UID/GIDs/GID/Who switch/SID/GroupSIDs/RequesterHasTakeOwnership) at auth_permissions.go:415-467 (inline in evaluateACLPermissions), auth_permissions.go:1159-1198 (buildFileAccessEvalContext), file_access_checker.go:95-134 (buildAttrEvalContext). Only differences: owner source (file.UID/GID vs attr.UID/GID) and the root-bypass that sits before construction in evaluateACLPermissions. Both comment headers self-admit the mirroring. All three on prod paths (NFS CheckPermissions, SMB CheckFileAccess, SMB ABE). Fix: one buildEvalContext(ownerUID, ownerGID uint32, authCtx) and have all three call it; evaluateACLPermissions keeps only its root/ReadOnly branch.
 - **Fix:** Extract one helper, e.g. buildEvalContext(identity *Identity, ownerUID, ownerGID uint32) *acl.EvaluateContext, and call it from evaluateACLPermissions, buildFileAccessEvalContext, and buildAttrEvalContext (the latter two just pass file.UID/file.GID or attr.UID/attr.GID).
 
@@ -545,6 +559,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] ACL EvaluateContext construction triplicated (self-described as 'mirrors X' three times) instead of one shared builder
 
 - **Where:** `pkg/metadata/auth_permissions.go:1159` · `structure` · area: metadata-auth-permissions
+> STATUS: DEFERRED to #1967 — confirmed structural debt with no behavioural defect; tracked as a refactor, not batched as a fix.
 - **Verified:** CONFIRMED three copies, near-identical incl. comments: inline in evaluateACLPermissions (auth_permissions.go:~416-466, incl. the AnonymousFileOwnerUID sentinel branch), buildFileAccessEvalContext (:1159-1198, doc literally says 'mirrors evaluateACLPermissions'), buildAttrEvalContext (file_access_checker.go:95-134, doc says 'mirrors buildFileAccessEvalContext'). File embeds FileAttr (file_types.go: `FileAttr` embedded), so buildFileAccessEvalContext(file,ctx) == buildAttrEvalContext(&file.FileAttr,ctx) with zero behavior change; buildFileAccessEvalContext has 4 prod call sites (auth_permissions.go:715/958/1066/1100). Security-relevant drift risk is genuine (#540 sentinel had to be replicated). MED not HIGH: no current divergence between the copies.
 - **Fix:** Delete buildFileAccessEvalContext and the inline block in evaluateACLPermissions; make buildAttrEvalContext(attr *FileAttr, authCtx *AuthContext) the single builder and call it everywhere via &file.FileAttr.
 
@@ -557,6 +572,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] fileReadCache and direntCache duplicate the entire generation-guarded store/invalidate/prune logic
 
 - **Where:** `pkg/metadata/store/badger/create_cache.go:78` · `bloat` · area: metadata-badger-cache-index
+> STATUS: DEFERRED to #1828 — subsumed by the metadata-store unification (SQL family + KV family behind a shared base); not fixable as an isolated patch.
 - **Verified:** CONFIRMED. create_cache.go direntCache (struct m sync.Map/n atomic.Int64/gen atomic.Uint64/prune atomic.Bool; get/store/invalidate/pruneToHalf) is a line-for-line twin of read_cache.go fileReadCache incl. the identical gen-recheck-after-Swap comment, the CompareAndDelete-only-if-not-superseded step, the gen-bump-BEFORE-LoadAndDelete ordering note, and the CompareAndSwap-guarded halve loop; only the value type (direntEntry vs *metadata.File) and the cap const differ. No shared generic helper exists in pkg/. Reachable: both caches live on BadgerMetadataStore, the default production store. Fix: one generic `type genCache[V comparable]` with get/store/invalidate/pruneToHalf(cap int) — both value types are comparable so sync.Map CompareAndDelete works unchanged.
 - **Fix:** Extract a generic genCache[V any] type (parametrized on the stored value) shared by fileReadCache and direntCache; direntCache becomes genCache[direntEntry], fileReadCache becomes genCache[*metadata.File]. shareReadCache can stay separate since it deliberately omits cap/prune (shares are few).
 
@@ -582,6 +598,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] BlockRecordStore CRUD fully duplicated between store-level and tx-level instead of sharing a *Txn helper
 
 - **Where:** `pkg/metadata/store/badger/block_record_store.go:50` · `bloat` · area: metadata-badger-write-txn
+> STATUS: DEFERRED to #1828 — subsumed by the metadata-store unification (SQL family + KV family behind a shared base); not fixable as an isolated patch.
 - **Verified:** CONFIRMED. block_record_store.go:50-162 (tx methods) and :168-312 (store methods) each implement encode/Set, Get+decode, Delete-with-ErrKeyNotFound-swallow, prefix iterate+decode+collect, and the floor-at-0 RMW; store level only adds ctx.Err() guards, db.Update/db.View wrappers, and updateWithConflictRetry on DecrLiveChunkCount. Established sibling pattern confirmed: objects.go:52 reapBlockTxn, objects.go:679 listFileChunksTxn factor the txn-scoped body. Reachable: production callers of the store-level surface at pkg/controlplane/runtime/blockgc_reconcile_reclaim.go:63, pkg/block/engine/gc_block.go:138, compaction.go:155, reconcile.go:179; tx-level via pkg/metadata/block_record_store.go:145. Fix: extract putBlockRecordTxn/getBlockRecordTxn/deleteBlockRecordTxn/walkBlockRecordsTxn/decrLiveChunkTxn(*badger.Txn,...) and call from both layers.
 - **Fix:** Extract putBlockRecordTx/getBlockRecordTx/deleteBlockRecordTx/walkBlockRecordsTx(txn *badgerdb.Txn, ...) helpers; have both tx.XxxBlockRecord and BadgerMetadataStore.XxxBlockRecord call them, matching the pattern already used elsewhere in the package.
 
@@ -644,6 +661,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Manager is a god object spanning 8+ unrelated responsibilities
 
 - **Where:** `pkg/metadata/lock/manager.go:701` · `structure` · area: metadata-lock-core-manager
+> STATUS: DEFERRED to #1967 — confirmed structural debt with no behavioural defect; tracked as a refactor, not batched as a fix.
 - **Verified:** CONFIRMED. type Manager at manager.go:701 holds, under ONE lm.mu: locks (legacy byte-range), unifiedLocks, breakCallbacks, leaseKeyIndex/clientHandleIndex, gracePeriod, handleChecker, lockStore, clientRecoveryStore, epoch, recentlyBroken, breakWaitChans, delegationRecallTimeout, onByteRangeRelease. 121 *Manager methods across the package; manager.go alone is 131 KB and the concerns are split by filename only (leases.go 54 K, oplock.go, delegation.go, grace.go, reclaim.go, directory.go) with the single type reassembled across them. Production type (implements LockManager, one per share). Seed's method count (~95) understated; MED stands — no wrong behavior, but genuine cross-concern serialization and review burden.
 - **Fix:** Extract cohesive sub-components with narrow ownership (ByteRangeLockTable, LeaseBreaker, DelegationTable, GracePeriodController), each with its own mutex, composed inside Manager which becomes a thin facade delegating to them.
 
@@ -656,12 +674,14 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] requestLeaseImplWithMode: 440-line god function, mixes 8+ concerns
 
 - **Where:** `pkg/metadata/lock/leases.go:259` · `structure` · area: metadata-lock-lease-oplock
+> STATUS: DEFERRED to #1967 — confirmed structural debt with no behavioural defect; tracked as a refactor, not batched as a fix.
 - **Verified:** Confirmed: func at leases.go:259, next func at 723 => ~464 lines; signature carries 11 params incl 3 trailing bools (isDirectory, isTraditionalOplock, suppressConflictBreak). Reachable via lease request path (SMB create/lease). Pure structure/maintainability though — no wrong behavior demonstrated, so HIGH is overstated; MED given the area's break-ordering bug history (#1701/#1806).
 - **Fix:** Extract named steps: normalizeRequest, checkCrossFileUniqueness, checkDelegationConflict, handleSameKeyLease, resolveCrossKeyConflict, grant. Replace trailing bools with a small LeaseRequest struct.
 
 ### [MED] acknowledgeLeaseBreakImpl: 200-line function mixing ack validation, tombstone/timeout classification, progressive multi-stage dispatch
 
 - **Where:** `pkg/metadata/lock/leases.go:902` · `structure` · area: metadata-lock-lease-oplock
+> STATUS: DEFERRED to #1967 — confirmed structural debt with no behavioural defect; tracked as a refactor, not batched as a fix.
 - **Verified:** CONFIRMED: func starts at 902 and closes at 1099 (~198 lines) under a single lm.mu held by defer, covering not-found, !Breaking late-ACK/BrokenViaTimeout tombstone classification, epoch validation, subset check, ack-to-None cleanup, and progressive-stage recompute with unlock/relock via closure. Reachable via the exported AcknowledgeLeaseBreak on the SMB lease-break path. MED stands: this is the exact seam that produced the #1701 double-break bug, so the density has demonstrated correctness cost — though it is still a refactor, not a live defect.
 - **Fix:** Split into: classifyLateAck(lock) (handles not-breaking cases), applyAckToNone(lock), applyProgressiveAck(lock, acknowledgedState) — each independently testable.
 
@@ -693,12 +713,14 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] ListChildren duplicated near-verbatim between pool path and tx path
 
 - **Where:** `pkg/metadata/store/postgres/transaction.go:624` · `bloat` · area: metadata-postgres-write
+> STATUS: DEFERRED to #1828 — subsumed by the metadata-store unification (SQL family + KV family behind a shared base); not fixable as an isolated patch.
 - **Verified:** CONFIRMED by direct diff. Diffed transaction.go:624-777 against files.go:200-376: only 57 diff lines, and every one is a comment-wording difference except two — the receiver/signature line and tx.tx.Query(ctx,...) vs s.query(ctx,...). Query text, scan loop, ACL hydration (the '#532' block appears in both), ObjectID sentinel handling, recycle-bin deleted_at decode and lenient ACL-unmarshal are byte-identical logic. Both are live interface methods (Transaction.ListChildren / MetadataStore.ListChildren). Fix: one helper taking the query executor, both call it.
 - **Fix:** Extract the query+scan body into a shared helper taking a minimal query interface (QueryRow/Query — pgx.Tx and the pool wrapper already satisfy the same shape), called from both the pool method and the tx method.
 
 ### [MED] GetChild/GetParent/GetLinkCount/GetFilesystemMeta/GetFile duplicated pool-vs-tx
 
 - **Where:** `pkg/metadata/store/postgres/transaction.go:529` · `bloat` · area: metadata-postgres-write
+> STATUS: DEFERRED to #1828 — subsumed by the metadata-store unification (SQL family + KV family behind a shared base); not fixable as an isolated patch.
 - **Verified:** CONFIRMED. Pairs verified byte-for-byte: GetChild tx transaction.go:529-561 vs files.go (`SELECT dc.child_id FROM parent_child_map dc WHERE dc.parent_id=$1 AND dc.child_name=$2`, only tx.tx.QueryRow vs s.queryRow + an extra Debug log differ); GetParent (`SELECT parent_id FROM parent_child_map WHERE child_id=$1 LIMIT 1`) identical; GetLinkCount (`SELECT nlink FROM inodes WHERE id=$1`, same swallow-error->0 behavior) identical; GetFilesystemMeta (`SELECT meta FROM filesystem_meta WHERE share_name=$1`, same default-on-miss with tx.store.capabilities vs s.capabilities) identical; GetFile identical 24-column SELECT incl. inodePathExpr + blockRefsAggExpr + FileRowToFileWithNlinkAndBlocks. Reachable: NewPostgresMetadataStore called at pkg/controlplane/runtime/init.go:168. Fix: hoist each query to a package-level const and share a scan helper over a pgx Row-source (queryRow func or a rowQuerier iface the pool+tx both satisfy) — files.go methods become one-liners.
 - **Fix:** Same fix as ListChildren: one implementation per operation parameterized over pgx.Row/pgx.Rows-returning interface, called from both PostgresMetadataStore and postgresTransaction.
 
@@ -726,6 +748,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Three copy-pasted generation-guarded cache implementations instead of one generic type
 
 - **Where:** `pkg/metadata/store/badger/read_cache.go:31` · `structure` · area: metadata-store-badger-cache-index
+> STATUS: DEFERRED to #1828 — subsumed by the metadata-store unification (SQL family + KV family behind a shared base); not fixable as an isolated patch.
 - **Verified:** CONFIRMED. fileReadCache (read_cache.go:31-110) and direntCache (create_cache.go:42-124) are field-for-field identical (m/n/gen/prune) with identical generation()/get()/store() gen-guard + CompareAndDelete-on-race /invalidate() bump-then-delete, and pruneToHalf (95-110 vs 109-124) differs only in the cap const name. shareReadCache (share_read_cache.go:30-75) repeats the same gen/store/invalidate discipline minus cap. Three hand-maintained copies of a concurrency-critical invalidation invariant whose own comments call it correctness/permission-critical; a fix applied to one and missed in another reintroduces a stale hit. Go 1.25 generics + comparable V works for *metadata.File, direntEntry (deliberately made comparable, see create_cache.go:51), *ShareOptions. Reachable: all three on the badger read/create hot paths.
 - **Fix:** Collapse to one genCache[V comparable] {m sync.Map; n atomic.Int64; gen atomic.Uint64; prune atomic.Bool; cap int64} with get/store/invalidate/pruneToHalf written once; cap=0 = unbounded (shareReadCache). fileReadCache/direntCache/shareReadCache become thin wrappers only where key shape (direntKey) or clone-on-read (cloneShareOptions) differs.
 
@@ -745,6 +768,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Share CRUD duplicated between pool-path (no retry) and transaction-path (retried), already caused one bug that had to be fixed twice
 
 - **Where:** `pkg/metadata/store/badger/shares.go:108` · `structure` · area: metadata-store-badger-write-txn
+> STATUS: DEFERRED to #1828 — subsumed by the metadata-store unification (SQL family + KV family behind a shared base); not fixable as an isolated patch.
 - **Verified:** CONFIRMED: shares.go:108-212 (CreateShare/UpdateShareOptions/DeleteShare) call s.db.Update(...) directly with ZERO conflict retry, and duplicate badgerTransaction.CreateShare/UpdateShareOptions/DeleteShare (transaction.go:1045-1148) body-for-body (same keyShare/shareData/encode logic, same StoreError). DeleteShare drives deleteShareFiles which reads every f: row into the txn read set — the highest-conflict-probability op, unretried, and a raw badgerdb.ErrConflict escapes to the caller unmapped. Reachable from dfsctl share create/delete via runtime. MED not HIGH: needs a concurrent write to the same share to bite.
 - **Fix:** Make BadgerMetadataStore.CreateShare/UpdateShareOptions/DeleteShare thin wrappers over s.WithTransaction delegating to the badgerTransaction implementations, eliminating the second copy and giving pool-path share mutations the same bounded retry and StoreError wrapping.
 
@@ -793,6 +817,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] ~180 lines of config-reconciliation business logic duplicated verbatim between postgres and sqlite backends
 
 - **Where:** `pkg/metadata/store/postgres/shares.go:212` · `structure` · area: metadata-store-postgres-write
+> STATUS: DEFERRED to #1828 — subsumed by the metadata-store unification (SQL family + KV family behind a shared base); not fixable as an isolated patch.
 - **Verified:** CONFIRMED by direct diff of postgres/shares.go:200-400 vs sqlite/shares.go:200-400: the entire CreateRootDirectory body — idempotency check, mode/uid/gid needsUpdate diff with identical log lines, insert, and metadata.File construction — is identical apart from receiver type, $n vs ?n placeholders, mapPgError vs mapDBError, and the tx begin/rollback idiom. Real business logic (config reconciliation), not boilerplate, maintained in two places. MED not HIGH: drift risk, no current behavioral divergence; matches the repo's own sqlite/postgres unification target.
 - **Fix:** Hoist the idempotency check + per-field diff + File construction into a shared SQL-family/dialect helper, leaving only the parameterized INSERT/UPDATE SQL per backend.
 
@@ -895,6 +920,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Service is a god object — 49 methods / ~3300 LOC mixing unrelated responsibilities
 
 - **Where:** `pkg/controlplane/runtime/shares/service.go:471` · `structure` · area: runtime-shares-lifecycle
+> STATUS: DEFERRED to #1967 — confirmed structural debt with no behavioural defect; tracked as a refactor, not batched as a fix.
 - **Verified:** Confirmed and if anything understated: file is 3310 lines, 54 `func (s *Service)` methods. Struct at :471 carries registry+reservations+remoteStores map+two callback registries+metricsRec etc. remoteStores ref-counting (acquireRemoteStore :1449, releaseRemoteStore :1597, plus rebind paths :1372-1433, :2446-2546) is a self-contained sub-concern still inline. Precedent for the extraction exists in-package (warm.go/warmRegistry). Reachable — this is the live share service.
 - **Fix:** Extract remote-store ref-counting into its own type (mirroring warmRegistry: e.g. `remoteStorePool` with its own mutex, `acquire`/`release`), and extract the per-field config setters (UpdateShare, SetShareSquash, SetShareTrashConfig, SetShareNetgroup, kerberos setters) into a separate share-config file/type. Service keeps registry CRUD + composition of these sub-components.
 
