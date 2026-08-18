@@ -69,10 +69,11 @@ type ShareSession struct {
 //   - Systems where persistence is handled by external mechanisms
 //
 // Thread Safety:
-// All operations are protected by a single read-write mutex (mu), making the
-// store safe for concurrent access from multiple goroutines. This coarse-grained
-// locking is simple and correct, though fine-grained locking could improve
-// concurrency for high-throughput scenarios.
+// The store is safe for concurrent use from multiple goroutines. A store-wide
+// read-write mutex (mu) covers the metadata maps below, taken for read on
+// queries and for write on mutations. Two subsystems are deliberately kept off
+// it so they do not contend with unrelated metadata operations: per-identity
+// quota usage (quotaMu) and the SyncedHashStore sync markers (syncedMu).
 //
 // Storage Model:
 //
@@ -115,8 +116,6 @@ type ShareSession struct {
 //   - Every file in 'files' has an entry in 'linkCounts' (≥ 1 for regular files)
 //   - Every file in 'files' has an entry in 'parents' (except root directories)
 //   - Every entry in 'children' corresponds to a valid file in 'files'
-//   - Every symlink in 'files' has an entry in 'symlinkTargets'
-//   - Every regular file in 'files' has an entry in 'payloadIDs'
 //   - Parent-child relationships are bidirectional (if A is parent of B, then B is in A's children)
 //
 // These invariants are maintained by all operations and can be verified by
