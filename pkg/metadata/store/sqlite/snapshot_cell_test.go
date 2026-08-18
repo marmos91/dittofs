@@ -19,6 +19,7 @@ func TestReadCell_TruncatedLengthDoesNotPreallocate(t *testing.T) {
 		stream.WriteString("short")
 
 		var before, after runtime.MemStats
+		runtime.GC()
 		runtime.ReadMemStats(&before)
 		if _, err := readCell(bytes.NewReader(stream.Bytes())); err == nil {
 			t.Fatalf("kind %d: expected an error on a truncated cell", kind)
