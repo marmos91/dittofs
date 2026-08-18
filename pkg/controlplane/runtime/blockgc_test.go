@@ -349,11 +349,6 @@ func TestPurgeLegacyCAS_ConfiguredShareNotRegistered(t *testing.T) {
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
-	t.Cleanup(func() {
-		for _, name := range rt.ListShares() {
-			_ = rt.RemoveShare(name)
-		}
-	})
 
 	metaID, err := cp.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "meta", Type: "memory"})
 	if err != nil {
@@ -374,6 +369,14 @@ func TestPurgeLegacyCAS_ConfiguredShareNotRegistered(t *testing.T) {
 		"/share-a": createFSLocalBlockStore(t, cp, "fs-a"),
 		"/share-b": createFSLocalBlockStore(t, cp, "fs-b"),
 	}
+	// Registered AFTER the local stores so t.Cleanup's LIFO order closes each
+	// share's block store — releasing its journal fds — before those stores'
+	// t.TempDir() is removed. On Windows an open handle blocks the unlink.
+	t.Cleanup(func() {
+		for _, name := range rt.ListShares() {
+			_ = rt.RemoveShare(name)
+		}
+	})
 	for name, local := range locals {
 		if _, err := cp.CreateShare(ctx, &models.Share{
 			Name:               name,
