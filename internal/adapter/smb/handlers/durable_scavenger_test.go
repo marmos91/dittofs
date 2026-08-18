@@ -67,28 +67,15 @@ func (s *mockDurableStore) GetDurableHandleByCreateGuid(_ context.Context, guid 
 	return nil, nil
 }
 
-func (s *mockDurableStore) ConsumeDurableHandleByFileID(_ context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
+func (s *mockDurableStore) ConsumeDurableHandle(_ context.Context, id string) (*lock.PersistedDurableHandle, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for id, h := range s.handles {
-		if h.FileID == fileID {
-			delete(s.handles, id)
-			return h, nil
-		}
+	h, ok := s.handles[id]
+	if !ok {
+		return nil, nil
 	}
-	return nil, nil
-}
-
-func (s *mockDurableStore) ConsumeDurableHandleByCreateGuid(_ context.Context, guid [16]byte) (*lock.PersistedDurableHandle, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for id, h := range s.handles {
-		if h.CreateGuid == guid {
-			delete(s.handles, id)
-			return h, nil
-		}
-	}
-	return nil, nil
+	delete(s.handles, id)
+	return h, nil
 }
 
 func (s *mockDurableStore) GetDurableHandlesByAppInstanceId(_ context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {

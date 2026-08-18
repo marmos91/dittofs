@@ -61,8 +61,8 @@ func RunDurableHandleStoreTests(t *testing.T, factory StoreFactory) {
 		testDurableDeleteKeepsSiblingOnSameFileID(t, factory)
 	})
 
-	t.Run("ConsumeByFileIDKeepsSibling", func(t *testing.T) {
-		testDurableConsumeByFileIDKeepsSibling(t, factory)
+	t.Run("ConsumeKeepsSibling", func(t *testing.T) {
+		testDurableConsumeKeepsSibling(t, factory)
 	})
 
 	t.Run("GetByCreateGuid", func(t *testing.T) {
@@ -93,12 +93,8 @@ func RunDurableHandleStoreTests(t *testing.T, factory StoreFactory) {
 		testDurableDeleteExpiredKeepsActive(t, factory)
 	})
 
-	t.Run("ConsumeByFileIDAtomic", func(t *testing.T) {
-		testDurableConsumeByFileIDAtomic(t, factory)
-	})
-
-	t.Run("ConsumeByCreateGuidAtomic", func(t *testing.T) {
-		testDurableConsumeByCreateGuidAtomic(t, factory)
+	t.Run("ConsumeAtomic", func(t *testing.T) {
+		testDurableConsumeAtomic(t, factory)
 	})
 }
 
@@ -433,9 +429,9 @@ func testDurableDeleteKeepsSiblingOnSameFileID(t *testing.T, factory StoreFactor
 	}
 
 	// The reconnect path reaches the survivor too, not just the plain lookup.
-	consumed, err := ds.ConsumeDurableHandleByFileID(ctx, second.FileID)
+	consumed, err := ds.ConsumeDurableHandle(ctx, second.ID)
 	if err != nil {
-		t.Fatalf("ConsumeDurableHandleByFileID() error: %v", err)
+		t.Fatalf("ConsumeDurableHandle() error: %v", err)
 	}
 	if consumed == nil {
 		t.Fatal("consume returned nil for the surviving handle")
@@ -443,10 +439,11 @@ func testDurableDeleteKeepsSiblingOnSameFileID(t *testing.T, factory StoreFactor
 	assertDurableHandleEqual(t, second, consumed)
 }
 
-// testDurableConsumeByFileIDKeepsSibling covers a reconnect against a file that
-// carries two durable handles. Consume claims exactly one of them; the other
-// must survive as a complete record, since it still backs a live open.
-func testDurableConsumeByFileIDKeepsSibling(t *testing.T, factory StoreFactory) {
+// testDurableConsumeKeepsSibling covers a reconnect against a file that
+// carries two durable handles. Consume names the handle by ID, so it claims
+// exactly the one validation ran against and never a sibling — even when the
+// named handle is already gone and a sibling on the same file remains.
+func testDurableConsumeKeepsSibling(t *testing.T, factory StoreFactory) {
 	ds := getDurableStore(t, factory)
 	ctx := context.Background()
 
@@ -461,58 +458,46 @@ func testDurableConsumeByFileIDKeepsSibling(t *testing.T, factory StoreFactory) 
 		t.Fatalf("PutDurableHandle(second) error: %v", err)
 	}
 
-	// A reconnect validates the handle Get reports and then claims one with
-	// Consume, so the two must name the same handle while both are present.
-	peeked, err := ds.GetDurableHandleByFileID(ctx, first.FileID)
+	consumed, err := ds.ConsumeDurableHandle(ctx, first.ID)
 	if err != nil {
-		t.Fatalf("GetDurableHandleByFileID() error: %v", err)
-	}
-	if peeked == nil {
-		t.Fatal("FileID lookup returned nil while two handles exist for the FileID")
-	}
-
-	consumed, err := ds.ConsumeDurableHandleByFileID(ctx, first.FileID)
-	if err != nil {
-		t.Fatalf("ConsumeDurableHandleByFileID() error: %v", err)
+		t.Fatalf("ConsumeDurableHandle() error: %v", err)
 	}
 	if consumed == nil {
-		t.Fatal("consume returned nil while two handles exist for the FileID")
+		t.Fatal("consume returned nil for a live handle")
 	}
-	if consumed.ID != peeked.ID {
-		t.Fatalf("consume claimed %q but the FileID lookup reported %q; a reconnect would validate one handle and claim another", consumed.ID, peeked.ID)
-	}
+	assertDurableHandleEqual(t, first, consumed)
 
-	survivor := second
-	if consumed.ID == second.ID {
-		survivor = first
-	}
-
-	got, err := ds.GetDurableHandle(ctx, survivor.ID)
+	got, err := ds.GetDurableHandle(ctx, second.ID)
 	if err != nil {
 		t.Fatalf("GetDurableHandle(survivor) error: %v", err)
 	}
 	if got == nil {
-		t.Fatalf("consuming %q also destroyed sibling %q on the same FileID", consumed.ID, survivor.ID)
+		t.Fatalf("consuming %q also destroyed sibling %q on the same FileID", first.ID, second.ID)
 	}
-	assertDurableHandleEqual(t, survivor, got)
+	assertDurableHandleEqual(t, second, got)
 
 	// The survivor is still the answer for the FileID, so a later reconnect
 	// against the same file can still claim it.
-	got, err = ds.GetDurableHandleByFileID(ctx, survivor.FileID)
+	got, err = ds.GetDurableHandleByFileID(ctx, second.FileID)
 	if err != nil {
 		t.Fatalf("GetDurableHandleByFileID() error: %v", err)
 	}
-	if got == nil || got.ID != survivor.ID {
-		t.Fatalf("FileID lookup after consume returned %+v, want %q", got, survivor.ID)
+	if got == nil || got.ID != second.ID {
+		t.Fatalf("FileID lookup after consume returned %+v, want %q", got, second.ID)
 	}
 
-	// The consumed handle is gone for good.
-	got, err = ds.GetDurableHandle(ctx, consumed.ID)
+	// Re-consuming the claimed ID reports nothing rather than falling through
+	// to the sibling: a reconnect whose validated handle was reaped meanwhile
+	// must fail, not claim an unvalidated handle.
+	got, err = ds.ConsumeDurableHandle(ctx, first.ID)
 	if err != nil {
-		t.Fatalf("GetDurableHandle(consumed) error: %v", err)
+		t.Fatalf("second ConsumeDurableHandle() error: %v", err)
 	}
 	if got != nil {
-		t.Fatalf("consumed handle still resolves: %+v", got)
+		t.Fatalf("consuming a gone handle claimed %q instead of reporting nil", got.ID)
+	}
+	if got, err = ds.GetDurableHandle(ctx, second.ID); err != nil || got == nil {
+		t.Fatalf("sibling lost to a consume naming a gone handle (err=%v)", err)
 	}
 }
 
@@ -778,24 +763,23 @@ func testDurableDeleteExpiredKeepsActive(t *testing.T, factory StoreFactory) {
 	}
 }
 
-// testDurableConsumeByFileIDAtomic verifies that ConsumeDurableHandleByFileID
-// atomically returns the persisted record and removes it from the store, so
-// a second concurrent reconnect attempt for the same FileID cannot also
-// claim the handle. Closes the TOCTOU window present in the old
-// Get-then-Delete pattern.
-func testDurableConsumeByFileIDAtomic(t *testing.T, factory StoreFactory) {
+// testDurableConsumeAtomic verifies that ConsumeDurableHandle atomically
+// returns the persisted record and removes it, so a second concurrent
+// reconnect claiming the same handle cannot also succeed. Closes the TOCTOU
+// window present in the old Get-then-Delete pattern.
+func testDurableConsumeAtomic(t *testing.T, factory StoreFactory) {
 	ds := getDurableStore(t, factory)
 	ctx := context.Background()
 
-	handle := makeDurableHandle("consume-fid-1", "/export")
+	handle := makeDurableHandle("consume-1", "/export")
 	if err := ds.PutDurableHandle(ctx, handle); err != nil {
 		t.Fatalf("PutDurableHandle() error: %v", err)
 	}
 
 	// First consume returns the record.
-	got, err := ds.ConsumeDurableHandleByFileID(ctx, handle.FileID)
+	got, err := ds.ConsumeDurableHandle(ctx, handle.ID)
 	if err != nil {
-		t.Fatalf("ConsumeDurableHandleByFileID() error: %v", err)
+		t.Fatalf("ConsumeDurableHandle() error: %v", err)
 	}
 	if got == nil {
 		t.Fatal("first consume returned nil; expected record")
@@ -803,52 +787,15 @@ func testDurableConsumeByFileIDAtomic(t *testing.T, factory StoreFactory) {
 	assertDurableHandleEqual(t, handle, got)
 
 	// Second consume sees nothing.
-	got, err = ds.ConsumeDurableHandleByFileID(ctx, handle.FileID)
+	got, err = ds.ConsumeDurableHandle(ctx, handle.ID)
 	if err != nil {
-		t.Fatalf("second ConsumeDurableHandleByFileID() error: %v", err)
+		t.Fatalf("second ConsumeDurableHandle() error: %v", err)
 	}
 	if got != nil {
 		t.Errorf("second consume returned a record, want nil — atomicity broken")
 	}
 
 	// Primary GetDurableHandle also reports gone.
-	got, err = ds.GetDurableHandle(ctx, handle.ID)
-	if err != nil {
-		t.Fatalf("GetDurableHandle() error: %v", err)
-	}
-	if got != nil {
-		t.Errorf("primary key still resolves after consume: %+v", got)
-	}
-}
-
-// testDurableConsumeByCreateGuidAtomic is the V2 counterpart of
-// testDurableConsumeByFileIDAtomic.
-func testDurableConsumeByCreateGuidAtomic(t *testing.T, factory StoreFactory) {
-	ds := getDurableStore(t, factory)
-	ctx := context.Background()
-
-	handle := makeDurableHandle("consume-cguid-1", "/export")
-	if err := ds.PutDurableHandle(ctx, handle); err != nil {
-		t.Fatalf("PutDurableHandle() error: %v", err)
-	}
-
-	got, err := ds.ConsumeDurableHandleByCreateGuid(ctx, handle.CreateGuid)
-	if err != nil {
-		t.Fatalf("ConsumeDurableHandleByCreateGuid() error: %v", err)
-	}
-	if got == nil {
-		t.Fatal("first consume returned nil; expected record")
-	}
-	assertDurableHandleEqual(t, handle, got)
-
-	got, err = ds.ConsumeDurableHandleByCreateGuid(ctx, handle.CreateGuid)
-	if err != nil {
-		t.Fatalf("second ConsumeDurableHandleByCreateGuid() error: %v", err)
-	}
-	if got != nil {
-		t.Errorf("second consume returned a record, want nil — atomicity broken")
-	}
-
 	got, err = ds.GetDurableHandle(ctx, handle.ID)
 	if err != nil {
 		t.Fatalf("GetDurableHandle() error: %v", err)

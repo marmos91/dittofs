@@ -301,20 +301,12 @@ func (s *sqliteDurableStore) GetDurableHandleByCreateGuid(ctx context.Context, c
 	return scanDurableHandle(s.pool.QueryRow(ctx, query, createGuid[:]))
 }
 
-// ConsumeDurableHandleByFileID atomically fetches and deletes via
-// `DELETE ... RETURNING`, closing the V1 reconnect TOCTOU window. A file can
-// hold several durable handles at once and DELETE takes no LIMIT, so the
-// subquery pins the delete to the single row being claimed and leaves the
-// file's other handles untouched.
-func (s *sqliteDurableStore) ConsumeDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
-	query := `DELETE FROM durable_handles WHERE id = (SELECT id FROM durable_handles WHERE file_id = ?1 ORDER BY id LIMIT 1) RETURNING ` + durableHandleColumns
-	return scanDurableHandle(s.pool.QueryRow(ctx, query, fileID[:]))
-}
-
-// ConsumeDurableHandleByCreateGuid is the V2 counterpart.
-func (s *sqliteDurableStore) ConsumeDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
-	query := `DELETE FROM durable_handles WHERE create_guid = ?1 RETURNING ` + durableHandleColumns
-	return scanDurableHandle(s.pool.QueryRow(ctx, query, createGuid[:]))
+// ConsumeDurableHandle atomically fetches and deletes via
+// `DELETE ... RETURNING`. Keying on the primary key claims exactly the row the
+// caller validated and leaves the file's other handles untouched.
+func (s *sqliteDurableStore) ConsumeDurableHandle(ctx context.Context, id string) (*lock.PersistedDurableHandle, error) {
+	query := `DELETE FROM durable_handles WHERE id = ?1 RETURNING ` + durableHandleColumns
+	return scanDurableHandle(s.pool.QueryRow(ctx, query, id))
 }
 
 func (s *sqliteDurableStore) GetDurableHandlesByAppInstanceId(ctx context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {
@@ -426,12 +418,8 @@ func (s *SQLiteMetadataStore) GetDurableHandleByCreateGuid(ctx context.Context, 
 	return s.getDurableStore().GetDurableHandleByCreateGuid(ctx, createGuid)
 }
 
-func (s *SQLiteMetadataStore) ConsumeDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().ConsumeDurableHandleByFileID(ctx, fileID)
-}
-
-func (s *SQLiteMetadataStore) ConsumeDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().ConsumeDurableHandleByCreateGuid(ctx, createGuid)
+func (s *SQLiteMetadataStore) ConsumeDurableHandle(ctx context.Context, id string) (*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().ConsumeDurableHandle(ctx, id)
 }
 
 func (s *SQLiteMetadataStore) GetDurableHandlesByAppInstanceId(ctx context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {

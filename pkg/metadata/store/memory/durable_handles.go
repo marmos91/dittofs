@@ -73,8 +73,8 @@ func (s *memoryDurableStore) GetDurableHandleByFileID(ctx context.Context, fileI
 
 // lowestHandleForFileID returns the handle with the smallest ID among those
 // held on a file, or nil when the file holds none. A file can carry several
-// durable handles at once, so Get and Consume pick by ID rather than by map
-// order to agree on which one they mean. Callers hold the lock.
+// durable handles at once, so the pick is by ID rather than by map order to
+// stay stable across repeated lookups. Callers hold the lock.
 func (s *memoryDurableStore) lowestHandleForFileID(fileID [16]byte) *lock.PersistedDurableHandle {
 	var lowest *lock.PersistedDurableHandle
 	for _, handle := range s.handles {
@@ -107,46 +107,20 @@ func (s *memoryDurableStore) GetDurableHandleByCreateGuid(ctx context.Context, c
 	return nil, nil
 }
 
-func (s *memoryDurableStore) ConsumeDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
+func (s *memoryDurableStore) ConsumeDurableHandle(ctx context.Context, id string) (*lock.PersistedDurableHandle, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
-	}
-
-	if fileID == ([16]byte{}) {
-		return nil, nil
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	handle := s.lowestHandleForFileID(fileID)
-	if handle == nil {
+	handle, exists := s.handles[id]
+	if !exists {
 		return nil, nil
 	}
-	delete(s.handles, handle.ID)
+	delete(s.handles, id)
 	return cloneDurableHandle(handle), nil
-}
-
-func (s *memoryDurableStore) ConsumeDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	if createGuid == ([16]byte{}) {
-		return nil, nil
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for id, handle := range s.handles {
-		if handle.CreateGuid == createGuid {
-			delete(s.handles, id)
-			return cloneDurableHandle(handle), nil
-		}
-	}
-
-	return nil, nil
 }
 
 func (s *memoryDurableStore) GetDurableHandlesByAppInstanceId(ctx context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {
@@ -331,12 +305,8 @@ func (s *MemoryMetadataStore) GetDurableHandleByCreateGuid(ctx context.Context, 
 	return s.getDurableStore().GetDurableHandleByCreateGuid(ctx, createGuid)
 }
 
-func (s *MemoryMetadataStore) ConsumeDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().ConsumeDurableHandleByFileID(ctx, fileID)
-}
-
-func (s *MemoryMetadataStore) ConsumeDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().ConsumeDurableHandleByCreateGuid(ctx, createGuid)
+func (s *MemoryMetadataStore) ConsumeDurableHandle(ctx context.Context, id string) (*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().ConsumeDurableHandle(ctx, id)
 }
 
 func (s *MemoryMetadataStore) GetDurableHandlesByAppInstanceId(ctx context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {

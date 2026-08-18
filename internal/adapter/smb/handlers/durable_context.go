@@ -509,10 +509,9 @@ func processV1Reconnect(
 	// Non-destructive lookup: validation-failure paths (share/path/username/
 	// access mismatch) must leave the persisted handle reclaimable until
 	// expiry — a transient mismatched retry should not destroy a valid
-	// durable open. The TOCTOU window is closed on the *success* path
-	// (claimDurableHandleByFileID below) which atomically re-reads via
-	// Consume; a second concurrent reconnect that also passes validation
-	// will find the handle already gone and return OBJECT_NAME_NOT_FOUND.
+	// durable open. The success path claims this exact handle by ID
+	// (validateAndRestore); a second concurrent reconnect that also passes
+	// validation finds it gone and returns OBJECT_NAME_NOT_FOUND.
 	handle, err := durableStore.GetDurableHandleByFileID(ctx, fileID)
 	if err != nil {
 		logger.Warn("processV1Reconnect: store error", "error", err)
@@ -547,10 +546,7 @@ func processV1Reconnect(
 	checkPath := persistedHasLease
 
 	openFile, status, restoreErr := validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
-		sessionKeyHash, shareName, filename, checkPath,
-		func(ctx context.Context) (*lock.PersistedDurableHandle, error) {
-			return durableStore.ConsumeDurableHandleByFileID(ctx, fileID)
-		})
+		sessionKeyHash, shareName, filename, checkPath)
 	return openFile, handle.LeaseState, handle.LeaseEpoch, handle.OriginalFileID, status, restoreErr
 }
 
@@ -676,16 +672,8 @@ func processV2Reconnect(
 	// open, junk fname on reconnect) MUST succeed. The path check stays on only for
 	// lease-backed reconnects, where a wrong-fname-with-lease reconnect is the final
 	// negative-ladder rung that yields INVALID_PARAMETER.
-	consume := func(ctx context.Context) (*lock.PersistedDurableHandle, error) {
-		if zeroCreateGuid {
-			// V1-via-DH2C reconnect: consume by FileID (the CreateGuid is
-			// zero and unusable as a key — see the lookup branch above).
-			return durableStore.ConsumeDurableHandleByFileID(ctx, lookupFileID)
-		}
-		return durableStore.ConsumeDurableHandleByCreateGuid(ctx, createGuid)
-	}
 	openFile, status, restoreErr := validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
-		sessionKeyHash, shareName, filename, persistedHasLease, consume)
+		sessionKeyHash, shareName, filename, persistedHasLease)
 	return openFile, handle.LeaseState, handle.LeaseEpoch, handle.OriginalFileID, status, restoreErr
 }
 
@@ -700,11 +688,12 @@ func processV2Reconnect(
 // checked reopens only, via checkPath), handle expiry, and backing-file
 // existence.
 //
-// consume is invoked on the success path to atomically remove the persisted
-// record. If consume returns nil, another goroutine has already claimed the
-// handle — the reconnect fails with OBJECT_NAME_NOT_FOUND. This is the only
-// place that mutates the durable store on reconnect, which is what makes the
-// path safe against the V1/V2 reconnect TOCTOU window.
+// On the success path the persisted record is claimed by ID, so the row
+// removed is the one just validated even if a sibling handle on the same file
+// appears or is reaped meanwhile. If it is already gone another goroutine
+// claimed it and the reconnect fails with OBJECT_NAME_NOT_FOUND. This is the
+// only place that mutates the durable store on reconnect, which is what makes
+// the path safe against the V1/V2 reconnect TOCTOU window.
 //
 // The share/path/identity matching itself lives in the lock domain
 // (PersistedDurableHandle.ValidateReconnect, pkg/metadata/lock) per CLAUDE.md
@@ -720,7 +709,6 @@ func validateAndRestore(
 	shareName string,
 	filename string,
 	checkPath bool,
-	consume func(ctx context.Context) (*lock.PersistedDurableHandle, error),
 ) (*OpenFile, types.Status, error) {
 	// Identity/path/share matching is owned by the lock domain. Map the typed
 	// mismatch back to the SMB status the reconnect ladder expects (share →
@@ -796,11 +784,11 @@ func validateAndRestore(
 		}
 	}
 
-	// All checks passed — atomically consume the persisted record. If
+	// All checks passed — atomically consume the record just validated. If
 	// somebody else (a concurrent reconnect from a retrying client) already
-	// claimed it, consume returns nil and we fail OBJECT_NAME_NOT_FOUND
-	// rather than handing out a second OpenFile against the same handle.
-	consumed, err := consume(ctx)
+	// claimed it, this returns nil and we fail OBJECT_NAME_NOT_FOUND rather
+	// than handing out a second OpenFile against the same handle.
+	consumed, err := durableStore.ConsumeDurableHandle(ctx, handle.ID)
 	if err != nil {
 		logger.Warn("validateAndRestore: consume failed", "error", err)
 		return nil, types.StatusInternalError, err
