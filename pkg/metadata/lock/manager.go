@@ -216,6 +216,9 @@ type LockManager interface {
 	// Leases without Read caching (None, W-only) are not broken: they cannot
 	// be caching reads. The locker's own lease must be excluded via
 	// excludeOwner.ExcludeLeaseKey ("nobreakself" per MS-SMB2 3.3.5.9).
+	// Outstanding NFSv4 delegations on the file are recalled as well: a
+	// delegated client answers byte-range locks locally, so it can neither
+	// see this lock nor have its own locks seen.
 	BreakLeasesForByteRangeLock(handleKey string, excludeOwner *LockOwner) error
 
 	// BreakLeasesOnOpenConflict breaks existing leases before an SMB CREATE
