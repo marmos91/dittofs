@@ -78,9 +78,7 @@ type hydrateSpan struct {
 // The cursor advances to the end of the resolved row's CLAIM, not to the end of
 // its extent, so a row that straddles a later row's start hands the walk over at
 // that start instead of consuming the bytes the later row holds. Each entry
-// carries the range it was resolved for, which is what the fetch writes back —
-// a straddler that would otherwise hydrate its pre-overwrite bytes over the
-// newer row's head.
+// carries the range it was resolved for, which is what the fetch writes back.
 //
 // The walk begins at the start of the row covering start, not at start itself,
 // so a window opening mid-chunk still hydrates that chunk whole and any row
@@ -94,7 +92,7 @@ func (m *Syncer) collectCoveringChunks(ctx context.Context, payloadID string, st
 	// index every lookup falls back to a full per-payload manifest scan, and the
 	// resolver's snapshot turns K of those into one.
 	res := newChunkWindowResolver(m.fileChunkStore, payloadID)
-	if fb, absOff, _, err := res.covering(ctx, start); err == nil && fb != nil && absOff < start {
+	if fb, absOff, err := res.coveringRow(ctx, start); err == nil && fb != nil && absOff < start {
 		start = absOff
 	}
 	var out []coveringChunk
@@ -158,14 +156,10 @@ func (m *Syncer) listFileChunksSnapshot(ctx context.Context, payloadID string) (
 // nothing: the clamp fails closed, since a claim of zero reaching the local tier
 // as "write the whole chunk" is that same resurrection by another route.
 //
-// span narrows that further to the part of the extent the row still holds. Rows
-// can overlap, and coverage resolves an overlap to the greatest start, so a row
-// straddling a later row's start no longer holds the bytes past it. The local
-// tier keeps whichever hydrate landed last, which is decided by download timing
-// rather than by which row coverage prefers, so writing the full extent puts the
-// older row's pre-overwrite bytes over the newer row's head — read back with no
-// error once the newer bytes have been evicted. A zero span writes the whole
-// claimed extent, which is what a caller holding a row but no window wants.
+// span narrows that further to the part of the extent the row still holds, which
+// is the range the caller's walk resolved it for (see hydrateSpan). A zero span
+// writes the whole claimed extent, which is what a caller holding a row but no
+// window wants.
 func (m *Syncer) hydrateChunk(ctx context.Context, fb *block.FileChunk, data []byte, span hydrateSpan) error {
 	if claimed := uint64(fb.DataSize); claimed < uint64(len(data)) {
 		data = data[:claimed]

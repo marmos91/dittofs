@@ -352,48 +352,32 @@ func (r *chunkWindowResolver) nextStart(ctx context.Context, off uint64) (uint64
 	if err != nil {
 		return 0, false, err
 	}
-	if unplaceable := firstUnplaceable(rows); unplaceable != "" {
-		return 0, false, fmt.Errorf("%w: nothing covers offset %d and the manifest holds unplaceable row %q",
-			block.ErrManifestInconsistent, off, unplaceable)
-	}
-	best, found := minStartAfter(rows, off)
-	return best, found, nil
-}
-
-// minStartAfter returns the smallest start offset among rows that begins
-// strictly after off. A row whose ID carries no offset is skipped: it sits at an
-// unknown place, so it can neither confirm nor deny a successor. A caller for
-// which that ambiguity is fatal checks firstUnplaceable itself.
-func minStartAfter(rows []*block.FileChunk, off uint64) (uint64, bool) {
 	var (
-		best  uint64
-		found bool
+		best        uint64
+		found       bool
+		unplaceable string
 	)
 	for _, fb := range rows {
 		if fb == nil {
 			continue
 		}
 		abs, parsed := block.ParseChunkOffset(fb.ID)
-		if !parsed || abs <= off {
+		if !parsed {
+			if unplaceable == "" {
+				unplaceable = fb.ID
+			}
+			continue
+		}
+		if abs <= off {
 			continue
 		}
 		if !found || abs < best {
 			best, found = abs, true
 		}
 	}
-	return best, found
-}
-
-// firstUnplaceable returns the ID of the first row whose ID carries no offset,
-// or "" when every row can be placed.
-func firstUnplaceable(rows []*block.FileChunk) string {
-	for _, fb := range rows {
-		if fb == nil {
-			continue
-		}
-		if _, ok := block.ParseChunkOffset(fb.ID); !ok {
-			return fb.ID
-		}
+	if unplaceable != "" {
+		return 0, false, fmt.Errorf("%w: nothing covers offset %d and the manifest holds unplaceable row %q",
+			block.ErrManifestInconsistent, off, unplaceable)
 	}
-	return ""
+	return best, found, nil
 }

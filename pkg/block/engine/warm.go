@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -91,6 +93,19 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		if err != nil {
 			return WarmResult{}, fmt.Errorf("warm: list blocks for %s: %w", payloadID, err)
 		}
+		// Every placeable row start, ascending, so each row's claim end is a
+		// binary search rather than another walk of the manifest.
+		starts := make([]uint64, 0, len(rows))
+		for _, fb := range rows {
+			if fb == nil {
+				continue
+			}
+			if absOff, ok := block.ParseChunkOffset(fb.ID); ok {
+				starts = append(starts, absOff)
+			}
+		}
+		slices.Sort(starts)
+
 		for _, fb := range rows {
 			if fb == nil {
 				continue
@@ -99,14 +114,13 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 			if !ok {
 				continue
 			}
-			// Rows can overlap, and coverage resolves an overlap to the greatest
-			// start, so a row straddling a later row's start no longer holds the
-			// bytes past it. Fetches run concurrently and the local tier keeps
-			// whichever landed last, so warming a straddler's full extent would
-			// leave the older bytes over the newer row's head at random.
+			// A row is warmed only over the bytes it still holds: a row
+			// straddling a later row's start hands them over at that start, and
+			// hydrating its full extent would leave its older bytes over the
+			// newer row's head (see hydrateSpan).
 			span := hydrateSpan{From: absOff, To: absOff + uint64(fb.DataSize)}
-			if next, hasNext := minStartAfter(rows, absOff); hasNext && next < span.To {
-				span.To = next
+			if i := sort.Search(len(starts), func(i int) bool { return starts[i] > absOff }); i < len(starts) && starts[i] < span.To {
+				span.To = starts[i]
 			}
 			targets = append(targets, warmTarget{payloadID: payloadID, fb: fb, span: span})
 		}
