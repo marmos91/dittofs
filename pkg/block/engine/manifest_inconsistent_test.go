@@ -81,9 +81,9 @@ func TestFindRowCoveringOffset_WellFormedRowResolves(t *testing.T) {
 	}
 }
 
-// Overlap is an invariant the carve maintains, not one the lookup may assume:
-// the row this walk reaches first need not be the one the indexed badger path
-// (largest start) returns, and both read back as ordinary data.
+// Non-overlap is an invariant the carve maintains, not one the lookup may
+// assume: the row this walk reaches first need not be the one the indexed
+// badger path (largest start) returns, and both read back as ordinary data.
 func TestFindRowCoveringOffset_OverlappingRowsAreReported(t *testing.T) {
 	rows := []*block.FileChunk{
 		{ID: "payload-1/0", DataSize: 8192},

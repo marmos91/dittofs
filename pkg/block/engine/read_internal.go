@@ -116,10 +116,10 @@ type rowWithOffset struct {
 // take a file that reads correctly apart from one damaged range and make all of
 // it unavailable.
 //
-// Two rows covering target is reported rather than resolved: which one this walk
-// reaches first depends on ListFileChunks ordering, while the indexed badger
-// lookup takes the greatest start, so either choice could serve bytes the other
-// path would not.
+// Two rows covering target are reported rather than resolved: which one this
+// walk reaches first depends on ListFileChunks ordering, while the indexed
+// badger lookup takes the greatest start, so either choice could serve bytes the
+// other path would not.
 func findRowCoveringOffset(rows []*block.FileChunk, target uint64) (*rowWithOffset, error) {
 	unplaceable := ""
 	var hit *rowWithOffset

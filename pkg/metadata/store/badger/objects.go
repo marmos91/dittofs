@@ -453,8 +453,8 @@ func loadFileChunkAtIndexOffset(txn *badger.Txn, payloadID string, off uint64) (
 //
 // Largest-start only decides anything if rows overlap, which the carve's
 // re-tiling prevents. The keys-only scan cannot detect overlap — the row lengths
-// are in the values — so this path picks the newest writer where the engine's
-// ListFileChunks fallback reports the broken tiling.
+// are in the values — so where the engine's ListFileChunks fallback reports a
+// broken tiling, this path returns the greatest-start row regardless.
 //
 // ponytail: O(n) keys-only scan per read; upgrade to a big-endian fb-off index
 // for a true O(log n) reverse-seek only if profiling at real N still shows it.
