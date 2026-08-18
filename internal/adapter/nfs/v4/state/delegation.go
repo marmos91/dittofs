@@ -3,7 +3,6 @@ package state
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -229,7 +228,10 @@ func (sm *StateManager) deleteDelegByOtherLocked(other [types.NFS4_OTHER_SIZE]by
 // DelegationState, and stores it in both the delegByOther and
 // delegByFile maps.
 //
-// Returns the DelegationState for the caller to encode in the OPEN response.
+// Returns the DelegationState for the caller to encode in the OPEN response,
+// or nil when the delegation is refused — the per-client limit is reached, or
+// the unified lock manager rejects it because the file already carries a
+// conflicting lease or byte-range lock. A nil return means OPEN_DELEGATE_NONE.
 //
 // Caller must NOT hold sm.mu (method acquires it).
 func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, delegType uint32) *DelegationState {
@@ -261,11 +263,14 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 		DelegType:  delegType,
 	}
 
-	sm.delegByOther[other] = deleg
-
 	fhKey := string(fileHandle)
-	sm.delegByFile[fhKey] = append(sm.delegByFile[fhKey], deleg)
 
+	// Register with the unified lock manager before the delegation is published
+	// into delegByOther/delegByFile. The manager owns the cross-protocol view —
+	// leases, and byte-range locks taken over NLM, NFSv4 and SMB — so its
+	// refusal is authoritative: a client that got a delegation the manager
+	// rejected would satisfy byte-range locks locally and never observe the
+	// conflicting lock the manager knows about.
 	if lm := sm.lockManagerFor(fileHandle); lm != nil {
 		lmDelegType := lock.DelegTypeRead
 		if deleg.DelegType == types.OPEN_DELEGATE_WRITE {
@@ -276,15 +281,23 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 		// This reduces observability in LockManager logs but does not affect
 		// correctness. To add share context, GrantDelegation would need to
 		// accept a shareName parameter threaded from the OPEN handler.
-		lockDeleg := lock.NewDelegation(lmDelegType, fmt.Sprintf("%d", clientID), "", false)
+		// The client identity matches the one v4 byte-range lock owners carry
+		// (see acquireLock), so break paths that exclude by client can tell a
+		// client's own delegation from another client's.
+		lockDeleg := lock.NewDelegation(lmDelegType, nfsClientIdentity(clientID), "", false)
 		if err := lm.GrantDelegation(fhKey, lockDeleg); err != nil {
-			logger.Debug("LockManager delegation grant failed, continuing with local state",
+			logger.Debug("delegation denied by lock manager",
+				"client_id", clientID,
+				"deleg_type", delegType,
 				"error", err)
-		} else {
-			sm.delegStateidMap[lockDeleg.DelegationID] = stateid
-			deleg.LockManagerDelegID = lockDeleg.DelegationID
+			return nil
 		}
+		sm.delegStateidMap[lockDeleg.DelegationID] = stateid
+		deleg.LockManagerDelegID = lockDeleg.DelegationID
 	}
+
+	sm.delegByOther[other] = deleg
+	sm.delegByFile[fhKey] = append(sm.delegByFile[fhKey], deleg)
 
 	logger.Info("Delegation granted",
 		"client_id", clientID,

@@ -2,6 +2,7 @@ package state
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"io"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================
@@ -1580,5 +1582,82 @@ func TestSendRecallV41_StopCh(t *testing.T) {
 		// OK -- exited promptly.
 	case <-time.After(2 * time.Second):
 		t.Fatal("sendRecallV41 goroutine did not exit within 2s after sender.Stop()")
+	}
+}
+
+// TestGrantDelegation_DeniedWhileForeignByteRangeLockHeld covers the
+// cross-protocol path an NFSv4 client takes when a kernel NFSv3 client already
+// holds an NLM lock on the file. A delegated client answers its own byte-range
+// locks locally and never sends LOCK, so granting a delegation over the NLM
+// lock would let the NFSv4 client take a conflicting lock the server never
+// sees. The delegation must be refused, which forces the LOCK onto the wire
+// where the unified manager denies it.
+func TestGrantDelegation_DeniedWhileForeignByteRangeLockHeld(t *testing.T) {
+	lm := lock.NewManager()
+	sm := NewStateManager(90 * time.Second)
+	sm.SetLockManagerResolver(func(_ []byte) lock.LockManager { return lm })
+
+	clientID, fileHandle, openStateid, openSeqid := setupClientAndOpenState(t, sm)
+	setCBPathUp(sm, clientID)
+
+	// A kernel NFSv3 client holds an exclusive NLM lock on bytes [0,100).
+	if err := lm.AddUnifiedLock(string(fileHandle), &lock.UnifiedLock{
+		ID:         "nlm-lock",
+		Owner:      lock.LockOwner{OwnerID: "nlm:client-v3:1:aa", ClientID: "nlm:client-v3"},
+		FileHandle: lock.FileHandle(fileHandle),
+		Offset:     0,
+		Length:     100,
+		Type:       lock.LockTypeExclusive,
+		AcquiredAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seeding NLM lock failed: %v", err)
+	}
+
+	if deleg := sm.GrantDelegation(clientID, fileHandle, types.OPEN_DELEGATE_WRITE); deleg != nil {
+		t.Fatal("delegation must not be granted while another protocol holds a byte-range lock")
+	}
+	if delegs := lm.ListDelegations(string(fileHandle)); len(delegs) != 0 {
+		t.Fatalf("expected no delegation registered, got %d", len(delegs))
+	}
+
+	// The client, undelegated, sends the LOCK — which the NLM lock denies.
+	res, err := sm.LockNew(context.Background(),
+		clientID, []byte("nfs-owner"), 1,
+		openStateid, openSeqid,
+		fileHandle, types.WRITE_LT, 0, 100, false,
+	)
+	if err != nil {
+		t.Fatalf("LockNew returned error: %v", err)
+	}
+	if res == nil || res.Denied == nil {
+		t.Fatal("expected the NFSv4 LOCK to be denied by the conflicting NLM lock")
+	}
+}
+
+// TestLockT_IgnoresOwnDelegation keeps LOCKT and LOCK answering alike while a
+// delegation is outstanding: the holder's own delegation is not a conflict it
+// would ever hit, but another client's still is.
+func TestLockT_IgnoresOwnDelegation(t *testing.T) {
+	lm := lock.NewManager()
+	sm := NewStateManager(90 * time.Second)
+	sm.SetLockManagerResolver(func(_ []byte) lock.LockManager { return lm })
+
+	clientID, fileHandle, _, _ := setupClientAndOpenState(t, sm)
+	setCBPathUp(sm, clientID)
+
+	if deleg := sm.GrantDelegation(clientID, fileHandle, types.OPEN_DELEGATE_WRITE); deleg == nil {
+		t.Fatal("expected the delegation to be granted on an unlocked file")
+	}
+
+	denied, err := sm.TestLock(clientID, []byte("nfs-owner"), fileHandle, types.WRITE_LT, 0, 100)
+	if err != nil {
+		t.Fatalf("TestLock returned error: %v", err)
+	}
+	if denied != nil {
+		t.Fatal("LOCKT must not report the client's own delegation as a conflict")
+	}
+
+	if denied, err = sm.TestLock(clientID+1, []byte("other-owner"), fileHandle, types.WRITE_LT, 0, 100); err != nil || denied == nil {
+		t.Fatalf("LOCKT from another client must see the delegation; denied=%v err=%v", denied, err)
 	}
 }

@@ -2184,7 +2184,7 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 	// Build the protocol-agnostic lock owner
 	owner := lock.LockOwner{
 		OwnerID:   lockState.LockOwner.LockManagerOwnerID(),
-		ClientID:  fmt.Sprintf("nfs4:%d", lockState.LockOwner.ClientID),
+		ClientID:  nfsClientIdentity(lockState.LockOwner.ClientID),
 		ShareName: "",
 	}
 
@@ -2311,9 +2311,11 @@ func (sm *StateManager) TestLock(
 		mappedType = lock.LockTypeExclusive
 	}
 
-	// Create a temporary test lock (not added to the manager)
+	// Create a temporary test lock (not added to the manager). It carries the
+	// same client identity an actual LOCK would, so LOCKT reports the client's
+	// own delegation as free rather than as a conflict it would never hit.
 	testLock := &lock.UnifiedLock{
-		Owner:  lock.LockOwner{OwnerID: ownerID},
+		Owner:  lock.LockOwner{OwnerID: ownerID, ClientID: nfsClientIdentity(clientID)},
 		Offset: offset,
 		Length: length,
 		Type:   mappedType,
@@ -2438,7 +2440,7 @@ func (sm *StateManager) UnlockFile(
 	if lm := sm.lockManagerFor(lockState.FileHandle); lm != nil {
 		owner := lock.LockOwner{
 			OwnerID:   lockOwner.LockManagerOwnerID(),
-			ClientID:  fmt.Sprintf("nfs4:%d", lockOwner.ClientID),
+			ClientID:  nfsClientIdentity(lockOwner.ClientID),
 			ShareName: "",
 		}
 

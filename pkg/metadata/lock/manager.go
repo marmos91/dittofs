@@ -166,7 +166,7 @@ type LockManager interface {
 	// ========================================================================
 
 	// GrantDelegation grants a delegation on a file.
-	// Returns error if conflicting leases exist.
+	// Returns error if a conflicting lease or byte-range lock exists.
 	GrantDelegation(handleKey string, delegation *Delegation) error
 
 	// RevokeDelegation force-revokes a delegation, removing it from the lock map.
@@ -216,6 +216,9 @@ type LockManager interface {
 	// Leases without Read caching (None, W-only) are not broken: they cannot
 	// be caching reads. The locker's own lease must be excluded via
 	// excludeOwner.ExcludeLeaseKey ("nobreakself" per MS-SMB2 3.3.5.9).
+	// Outstanding NFSv4 delegations on the file are recalled as well: a
+	// delegated client answers byte-range locks locally, so it can neither
+	// see this lock nor have its own locks seen.
 	BreakLeasesForByteRangeLock(handleKey string, excludeOwner *LockOwner) error
 
 	// BreakLeasesOnOpenConflict breaks existing leases before an SMB CREATE
@@ -2108,6 +2111,16 @@ func (lm *Manager) CheckAndBreakLeasesForSMBOpen(handleKey string, excludeOwner 
 // disallows in practice) are skipped: there is no read cache to flush.
 // The break target is None — full revocation — not "strip W" or "strip H".
 func (lm *Manager) BreakLeasesForByteRangeLock(handleKey string, excludeOwner *LockOwner) error {
+	// An outstanding NFSv4 delegation is recalled for the same reason: the
+	// delegated client handles byte-range locks locally, so while it holds the
+	// delegation it can neither see this lock nor have its own locks seen. The
+	// delegation's whole-file row also blocks the lock in AddUnifiedLock, so
+	// without the recall the lock stays denied until the delegation's lease
+	// expires — even after the original holder released.
+	lm.breakDelegations(handleKey, excludeOwner, func(*Delegation) bool {
+		return true
+	})
+
 	return lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, BreakReasonUnspecified, func(lease *OpLock) bool {
 		return lease.HasRead()
 	})
@@ -2205,11 +2218,12 @@ func (lm *Manager) WaitForBreakCompletionExceptKey(ctx context.Context, handleKe
 // DELEGRETURN, whose handler must take the StateManager mutex; waiting for it
 // here while that same mutex is held would be a circular wait (only force-
 // broken after the bounded timeout, then re-stalled on the next LOCK, since
-// forceCompleteBreaksExceptKey only force-completes leases). Skipping
-// delegations is also correct: BreakLeasesForByteRangeLock never marks a
-// delegation Breaking, and a byte-range lock never conflicts with a delegation
-// (UnifiedLock.ConflictsWith ignores delegations), so there is nothing to wait
-// for. On timeout the breaking leases are force-downgraded to None (Samba
+// forceCompleteBreaksExceptKey only force-completes leases). Not waiting stays
+// correct: BreakLeasesForByteRangeLock has already dispatched the recall by the
+// time this runs, and the delegation's whole-file row keeps AddUnifiedLock
+// denying the acquire until the client returns it, so the lock is retried
+// rather than granted alongside an unrecalled delegation. On timeout the
+// breaking leases are force-downgraded to None (Samba
 // lease_timeout parity) and ctx.Err() is returned.
 func (lm *Manager) WaitForByteRangeLeaseBreak(ctx context.Context, handleKey string) error {
 	for {
@@ -2917,7 +2931,8 @@ func (lm *Manager) mirrorBreakStageLocked(sibling *UnifiedLock, canonical *OpLoc
 // ============================================================================
 
 // GrantDelegation grants a delegation on a file.
-// Returns error if conflicting leases exist or the file was recently broken.
+// Returns error if a conflicting lease or byte-range lock exists, or the file
+// was recently broken.
 func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) error {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
@@ -2933,11 +2948,9 @@ func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) err
 	// one write delegation per file) are enforced by the protocol layer (NFS
 	// state manager, SMB handler) before calling GrantDelegation.
 	for _, lock := range locks {
-		if lock.Lease != nil {
-			if DelegationConflictsWithLease(delegation, lock.Lease) {
-				return fmt.Errorf("delegation conflicts with existing lease (state=%s)",
-					LeaseStateToString(lock.Lease.LeaseState))
-			}
+		if lock.Lease != nil && DelegationConflictsWithLease(delegation, lock.Lease) {
+			return fmt.Errorf("delegation conflicts with existing lease (state=%s)",
+				LeaseStateToString(lock.Lease.LeaseState))
 		}
 	}
 
@@ -2954,6 +2967,41 @@ func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) err
 		Type:       delegationToLockType(delegation.DelegType),
 		AcquiredAt: time.Now(),
 		Delegation: delegation,
+	}
+
+	// A byte-range lock already held on this file denies the delegation. A
+	// delegated client is entitled to satisfy its own byte-range locks locally,
+	// without ever asking the server, so handing out a delegation over an
+	// existing lock makes that lock invisible to the delegated client — the
+	// cross-protocol conflict that AddUnifiedLock enforces in the other
+	// direction would simply never be evaluated.
+	//
+	// Both lock maps are consulted: NLM/NFSv4 locks live in unifiedLocks and
+	// SMB locks in locks. The delegation is weighed as the whole-file byte-range
+	// lock it stands in for, so a write delegation (exclusive) is denied by any
+	// foreign lock and a read delegation (shared) only by a foreign exclusive
+	// one — the same rule byte-range locks apply to each other, including its
+	// exemption for the holder's own client.
+	for _, lock := range locks {
+		if lock.Lease != nil || lock.Delegation != nil {
+			continue
+		}
+		if newLock.ConflictsWith(lock) {
+			return fmt.Errorf("delegation conflicts with existing byte-range lock (owner=%s)",
+				lock.Owner.OwnerID)
+		}
+	}
+	// The SMB map needs a plain byte-range stand-in: fileLockConflictsWithUnified
+	// excludes delegation rows by design. SMB locks never share a client with an
+	// NFS delegation, so no same-client exemption applies here.
+	asByteRange := *newLock
+	asByteRange.Delegation = nil
+	smbLocks := lm.locks[handleKey]
+	for i := range smbLocks {
+		if fileLockConflictsWithUnified(&smbLocks[i], &asByteRange) {
+			return fmt.Errorf("delegation conflicts with existing SMB byte-range lock (owner=%s)",
+				lockOwnerID(&smbLocks[i]))
+		}
 	}
 
 	lm.unifiedLocks[handleKey] = append(locks, newLock)

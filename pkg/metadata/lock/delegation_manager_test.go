@@ -422,3 +422,157 @@ func (d *delegationRecallTracker) getRecalls() []delegationRecallEvent {
 	copy(result, d.recalls)
 	return result
 }
+
+// ============================================================================
+// Delegation vs byte-range lock
+// ============================================================================
+
+// TestManager_GrantDelegation_DeniedByByteRangeLock covers the cross-protocol
+// invariant a delegation must not break: a client holding a delegation may
+// satisfy byte-range locks locally, so a delegation granted over an existing
+// NLM/NFSv4 lock hides that lock from the delegated client entirely.
+func TestManager_GrantDelegation_DeniedByByteRangeLock(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+
+	// A kernel NFSv3 client holds an exclusive NLM lock on the whole file.
+	require.NoError(t, lm.AddUnifiedLock("file1", &UnifiedLock{
+		ID:         "nlm-lock",
+		Owner:      LockOwner{OwnerID: "nlm:client-v3:1:aa", ClientID: "nlm:client-v3"},
+		FileHandle: FileHandle("file1"),
+		Offset:     0,
+		Length:     0,
+		Type:       LockTypeExclusive,
+	}))
+
+	err := lm.GrantDelegation("file1", NewDelegation(DelegTypeWrite, "5", "/export", false))
+	require.Error(t, err, "write delegation must be denied while an NLM lock is held")
+	assert.Empty(t, lm.ListDelegations("file1"))
+
+	err = lm.GrantDelegation("file1", NewDelegation(DelegTypeRead, "5", "/export", false))
+	require.Error(t, err, "read delegation must be denied while an exclusive NLM lock is held")
+	assert.Empty(t, lm.ListDelegations("file1"))
+}
+
+// TestManager_GrantDelegation_DeniedBySMBByteRangeLock covers the same rule for
+// the SMB byte-range map, which is separate from unifiedLocks.
+func TestManager_GrantDelegation_DeniedBySMBByteRangeLock(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+
+	require.NoError(t, lm.Lock("file1", FileLock{
+		SessionID: 7,
+		OpenID:    "open-1",
+		Offset:    0,
+		Length:    100,
+		Exclusive: true,
+		ClientID:  "smb:7",
+	}))
+
+	err := lm.GrantDelegation("file1", NewDelegation(DelegTypeWrite, "5", "/export", false))
+	require.Error(t, err, "write delegation must be denied while an SMB byte-range lock is held")
+	assert.Empty(t, lm.ListDelegations("file1"))
+}
+
+// TestManager_GrantDelegation_ReadDelegationAllowedWithSharedLock pins the
+// other half of the rule: a shared lock does not conflict with the shared
+// whole-file row a read delegation records, so read caching stays available.
+func TestManager_GrantDelegation_ReadDelegationAllowedWithSharedLock(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+
+	require.NoError(t, lm.AddUnifiedLock("file1", &UnifiedLock{
+		ID:         "nlm-shared",
+		Owner:      LockOwner{OwnerID: "nlm:client-v3:1:aa", ClientID: "nlm:client-v3"},
+		FileHandle: FileHandle("file1"),
+		Offset:     0,
+		Length:     100,
+		Type:       LockTypeShared,
+	}))
+
+	require.NoError(t, lm.GrantDelegation("file1", NewDelegation(DelegTypeRead, "5", "/export", false)))
+	assert.Len(t, lm.ListDelegations("file1"), 1)
+}
+
+// TestManager_BreakLeasesForByteRangeLock_RecallsDelegation covers the reverse
+// direction: a byte-range lock arriving after a delegation was granted must
+// recall it. Without the recall the delegation's whole-file row denies the lock
+// for as long as the delegation lives, so the lock stays denied even after the
+// original holder released.
+func TestManager_BreakLeasesForByteRangeLock_RecallsDelegation(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	delegRecalls := &delegationRecallTracker{}
+	lm.RegisterBreakCallbacks(delegRecalls)
+
+	require.NoError(t, lm.GrantDelegation("file1", NewDelegation(DelegTypeWrite, "5", "/export", false)))
+
+	// An NLM client now takes a byte-range lock on the same file.
+	err := lm.BreakLeasesForByteRangeLock("file1", &LockOwner{
+		OwnerID:  "nlm:client-v3:1:aa",
+		ClientID: "nlm:client-v3",
+	})
+	require.NoError(t, err)
+
+	delegations := lm.ListDelegations("file1")
+	require.Len(t, delegations, 1)
+	assert.True(t, delegations[0].Breaking, "delegation should be recalled by a byte-range lock")
+	assert.Len(t, delegRecalls.getRecalls(), 1, "OnDelegationRecall should have been called")
+}
+
+// TestManager_AddUnifiedLock_SameClientAsOwnDelegation covers what a client
+// must be able to do on recall: send the LOCK operations for the locks it
+// granted locally while its delegation is still outstanding. Its own delegation
+// must not deny them, while another client's still does.
+func TestManager_AddUnifiedLock_SameClientAsOwnDelegation(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	require.NoError(t, lm.GrantDelegation("file1", NewDelegation(DelegTypeWrite, "nfs4:5", "/export", false)))
+
+	require.NoError(t, lm.AddUnifiedLock("file1", &UnifiedLock{
+		ID:         "own-lock",
+		Owner:      LockOwner{OwnerID: "nfs4:5:aa", ClientID: "nfs4:5"},
+		FileHandle: FileHandle("file1"),
+		Offset:     0,
+		Length:     100,
+		Type:       LockTypeExclusive,
+	}))
+
+	err := lm.AddUnifiedLock("file1", &UnifiedLock{
+		ID:         "foreign-lock",
+		Owner:      LockOwner{OwnerID: "nlm:client-v3:1:aa", ClientID: "nlm:client-v3"},
+		FileHandle: FileHandle("file1"),
+		Offset:     0,
+		Length:     100,
+		Type:       LockTypeExclusive,
+	})
+	require.Error(t, err, "another client's lock is still denied by the delegation")
+}
+
+// TestManager_BreakLeasesForByteRangeLock_SkipsOwnDelegation pins the exclusion
+// the recall relies on: a client taking a byte-range lock must not recall its
+// own delegation, which it identifies by the client identity both rows carry.
+func TestManager_BreakLeasesForByteRangeLock_SkipsOwnDelegation(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	delegRecalls := &delegationRecallTracker{}
+	lm.RegisterBreakCallbacks(delegRecalls)
+
+	require.NoError(t, lm.GrantDelegation("file1", NewDelegation(DelegTypeWrite, "nfs4:5", "/export", false)))
+
+	require.NoError(t, lm.BreakLeasesForByteRangeLock("file1", &LockOwner{
+		OwnerID:  "nfs4:5:aa",
+		ClientID: "nfs4:5",
+	}))
+
+	delegations := lm.ListDelegations("file1")
+	require.Len(t, delegations, 1)
+	assert.False(t, delegations[0].Breaking, "a client's own delegation must not be recalled by its own lock")
+	assert.Empty(t, delegRecalls.getRecalls())
+}
