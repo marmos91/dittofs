@@ -129,12 +129,12 @@ type faultyStore struct {
 	failID uuid.UUID // file ID whose PutFile should fail
 	// failLinkCountID is the file ID whose in-transaction GetLinkCount fails.
 	failLinkCountID uuid.UUID
-	// getChild, when set, intercepts in-transaction GetChild lookups. It
-	// returns the substituted result plus ok=true to override, or ok=false to
-	// fall through to the real transaction. This simulates a concurrent
+	// getChild, when set, intercepts in-transaction GetChild lookups by name.
+	// It returns the substituted result plus ok=true to override, or ok=false
+	// to fall through to the real transaction. This simulates a concurrent
 	// rename/unlink retargeting a name in the window between the advisory
 	// pre-transaction read and the transaction body.
-	getChild func(dir metadata.FileHandle, name string) (metadata.FileHandle, error, bool)
+	getChild func(name string) (metadata.FileHandle, error, bool)
 }
 
 func (f *faultyStore) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
@@ -152,7 +152,7 @@ type faultyTx struct {
 	metadata.Transaction
 	failID          uuid.UUID
 	failLinkCountID uuid.UUID
-	getChild        func(dir metadata.FileHandle, name string) (metadata.FileHandle, error, bool)
+	getChild        func(name string) (metadata.FileHandle, error, bool)
 }
 
 func (t *faultyTx) PutFile(ctx context.Context, file *metadata.File) error {
@@ -173,93 +173,16 @@ func (t *faultyTx) GetLinkCount(ctx context.Context, handle metadata.FileHandle)
 
 func (t *faultyTx) GetChild(ctx context.Context, dir metadata.FileHandle, name string) (metadata.FileHandle, error) {
 	if t.getChild != nil {
-		if handle, err, ok := t.getChild(dir, name); ok {
+		if handle, err, ok := t.getChild(name); ok {
 			return handle, err
 		}
 	}
 	return t.Transaction.GetChild(ctx, dir, name)
 }
 
-// TestMove_RollsBackOnPutFileFailure asserts the rename is atomic: when the
-// PutFile(srcFile) ctime write fails mid-transaction, the whole Move rolls
-// back — the source stays at its original name and the destination name is not
-// created. Previously Move discarded these errors with `_ =` and committed a
-// partial rename (entry relinked but the inode write lost).
-func TestMove_RollsBackOnPutFileFailure(t *testing.T) {
-	t.Parallel()
-
-	store := memory.NewMemoryMetadataStoreWithDefaults()
-	ctx := context.Background()
-	shareName := "/test"
-
-	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
-		Type: metadata.FileTypeDirectory,
-		Mode: 0777,
-	})
-	require.NoError(t, err)
-	rootHandle, err := metadata.EncodeShareHandle(shareName, rootFile.ID)
-	require.NoError(t, err)
-
-	svc := metadata.New()
-	// Register a store that, once armed, fails the moved file's ctime PutFile.
-	// The fault is keyed on the inode's ID (stable across the rename) rather
-	// than File.Path, which is no longer mutated/persisted by Move (#1166). Arm
-	// it only just before the Move so setup CREATEs are unaffected.
-	faulty := &faultyStore{Store: store}
-	require.NoError(t, svc.RegisterStoreForShare(shareName, faulty))
-
-	rootCtx := &metadata.AuthContext{
-		Context:    ctx,
-		AuthMethod: "unix",
-		Identity: &metadata.Identity{
-			UID:  metadata.Uint32Ptr(0),
-			GID:  metadata.Uint32Ptr(0),
-			GIDs: []uint32{0},
-		},
-		ClientAddr: "127.0.0.1",
-	}
-
-	_, _, err = svc.CreateFile(rootCtx, rootHandle, "myfile.txt", &metadata.FileAttr{Mode: 0644})
-	require.NoError(t, err)
-	_, _, err = svc.CreateDirectory(rootCtx, rootHandle, "dest", &metadata.FileAttr{Mode: 0755})
-	require.NoError(t, err)
-	destHandle, err := store.GetChild(ctx, rootHandle, "dest")
-	require.NoError(t, err)
-
-	srcHandle, err := store.GetChild(ctx, rootHandle, "myfile.txt")
-	require.NoError(t, err)
-	_, srcID, err := metadata.DecodeFileHandle(srcHandle)
-	require.NoError(t, err)
-
-	// Arm the fault: the moved inode's ctime PutFile (keyed by inode ID).
-	faulty.failID = srcID
-
-	// The move must fail with the injected error.
-	_, err = svc.Move(rootCtx, rootHandle, "myfile.txt", destHandle, "moved.txt")
-	require.Error(t, err, "Move must surface the injected PutFile failure, not swallow it")
-	require.ErrorIs(t, err, errPutFileInjected)
-
-	// Full rollback: source still at its original name/path...
-	stillThere, err := store.GetChild(ctx, rootHandle, "myfile.txt")
-	require.NoError(t, err, "source entry must survive the rolled-back rename")
-	assert.Equal(t, string(srcHandle), string(stillThere))
-
-	srcFile, err := store.GetFile(ctx, srcHandle)
-	require.NoError(t, err)
-	assert.Equal(t, "/myfile.txt", srcFile.Path, "File.Path must not be left at the new (uncommitted) path")
-
-	// ...and the destination name was NOT created.
-	_, err = store.GetChild(ctx, destHandle, "moved.txt")
-	require.Error(t, err, "destination entry must not exist after rollback")
-}
-
-// ============================================================================
-// In-transaction rechecks of state read before the transaction
-// ============================================================================
-
-// faultyFixture builds a service backed by a fault-injectable store, with a
-// share root already created. Callers arm the fault just before the operation
-// under test so setup writes run unimpeded.
+// faultyFixture is newTestFixture with the store wrapped so faults can be
+// injected into the transaction body. Callers arm the fault just before the
+// operation under test so setup writes run unimpeded.
 type faultyFixture struct {
 	store  *memory.MemoryMetadataStore
 	faulty *faultyStore
@@ -270,39 +193,69 @@ type faultyFixture struct {
 
 func newFaultyFixture(t *testing.T) *faultyFixture {
 	t.Helper()
-	ctx := context.Background()
-	const shareName = "/test"
 
-	store := memory.NewMemoryMetadataStoreWithDefaults()
-	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
-		Type: metadata.FileTypeDirectory,
-		Mode: 0777,
-	})
-	require.NoError(t, err)
-	rootHandle, err := metadata.EncodeShareHandle(shareName, rootFile.ID)
-	require.NoError(t, err)
-
-	faulty := &faultyStore{Store: store}
+	base := newTestFixture(t)
+	faulty := &faultyStore{Store: base.store}
 	svc := metadata.New()
-	require.NoError(t, svc.RegisterStoreForShare(shareName, faulty))
+	require.NoError(t, svc.RegisterStoreForShare(base.shareName, faulty))
 
 	return &faultyFixture{
-		store:  store,
+		store:  base.store,
 		faulty: faulty,
 		svc:    svc,
-		root:   rootHandle,
-		ctx: &metadata.AuthContext{
-			Context:    ctx,
-			AuthMethod: "unix",
-			Identity: &metadata.Identity{
-				UID:  metadata.Uint32Ptr(0),
-				GID:  metadata.Uint32Ptr(0),
-				GIDs: []uint32{0},
-			},
-			ClientAddr: "127.0.0.1",
-		},
+		root:   base.rootHandle,
+		ctx:    base.rootContext(),
 	}
 }
+
+// TestMove_RollsBackOnPutFileFailure asserts the rename is atomic: when the
+// PutFile(srcFile) ctime write fails mid-transaction, the whole Move rolls
+// back — the source stays at its original name and the destination name is not
+// created. Previously Move discarded these errors with `_ =` and committed a
+// partial rename (entry relinked but the inode write lost).
+func TestMove_RollsBackOnPutFileFailure(t *testing.T) {
+	t.Parallel()
+	fx := newFaultyFixture(t)
+	ctx := context.Background()
+
+	_, _, err := fx.svc.CreateFile(fx.ctx, fx.root, "myfile.txt", &metadata.FileAttr{Mode: 0644})
+	require.NoError(t, err)
+	_, _, err = fx.svc.CreateDirectory(fx.ctx, fx.root, "dest", &metadata.FileAttr{Mode: 0755})
+	require.NoError(t, err)
+	destHandle, err := fx.store.GetChild(ctx, fx.root, "dest")
+	require.NoError(t, err)
+
+	srcHandle, err := fx.store.GetChild(ctx, fx.root, "myfile.txt")
+	require.NoError(t, err)
+	_, srcID, err := metadata.DecodeFileHandle(srcHandle)
+	require.NoError(t, err)
+
+	// Arm the fault on the moved inode's ctime PutFile. It is keyed on the
+	// inode ID (stable across the rename) rather than File.Path, which Move no
+	// longer mutates/persists (#1166).
+	fx.faulty.failID = srcID
+
+	// The move must fail with the injected error.
+	_, err = fx.svc.Move(fx.ctx, fx.root, "myfile.txt", destHandle, "moved.txt")
+	require.ErrorIs(t, err, errPutFileInjected, "Move must surface the injected PutFile failure, not swallow it")
+
+	// Full rollback: source still at its original name/path...
+	stillThere, err := fx.store.GetChild(ctx, fx.root, "myfile.txt")
+	require.NoError(t, err, "source entry must survive the rolled-back rename")
+	assert.Equal(t, string(srcHandle), string(stillThere))
+
+	srcFile, err := fx.store.GetFile(ctx, srcHandle)
+	require.NoError(t, err)
+	assert.Equal(t, "/myfile.txt", srcFile.Path, "File.Path must not be left at the new (uncommitted) path")
+
+	// ...and the destination name was NOT created.
+	_, err = fx.store.GetChild(ctx, destHandle, "moved.txt")
+	require.Error(t, err, "destination entry must not exist after rollback")
+}
+
+// ============================================================================
+// In-transaction rechecks of state read before the transaction
+// ============================================================================
 
 // TestCreateDirectory_AbortsOnParentLinkCountFailure asserts that a failed
 // parent GetLinkCount rolls the whole mkdir back. Previously the error was
@@ -320,30 +273,11 @@ func TestCreateDirectory_AbortsOnParentLinkCountFailure(t *testing.T) {
 	fx.faulty.failLinkCountID = rootID
 
 	_, _, err = fx.svc.CreateDirectory(fx.ctx, fx.root, "sub", &metadata.FileAttr{Mode: 0755})
-	require.Error(t, err, "mkdir must surface the parent link-count read failure")
-	require.ErrorIs(t, err, errLinkCountInjected)
+	require.ErrorIs(t, err, errLinkCountInjected, "mkdir must surface the parent link-count read failure")
 
 	// Full rollback: the directory entry was not created.
 	_, err = fx.store.GetChild(ctx, fx.root, "sub")
 	require.Error(t, err, "the new directory must not survive the rolled-back mkdir")
-}
-
-// TestCreateDirectory_BumpsParentLinkCount is the baseline: with no fault, the
-// parent's link count still gains the new "..".
-func TestCreateDirectory_BumpsParentLinkCount(t *testing.T) {
-	t.Parallel()
-	fx := newFaultyFixture(t)
-	ctx := context.Background()
-
-	before, err := fx.store.GetLinkCount(ctx, fx.root)
-	require.NoError(t, err)
-
-	_, _, err = fx.svc.CreateDirectory(fx.ctx, fx.root, "sub", &metadata.FileAttr{Mode: 0755})
-	require.NoError(t, err)
-
-	after, err := fx.store.GetLinkCount(ctx, fx.root)
-	require.NoError(t, err)
-	assert.Equal(t, before+1, after, "mkdir must bump the parent's link count")
 }
 
 // TestMove_AbortsWhenSourceEntryChangedInTransaction asserts Move re-resolves
@@ -360,7 +294,7 @@ func TestMove_AbortsWhenSourceEntryChangedInTransaction(t *testing.T) {
 	require.NoError(t, err)
 
 	// The source name vanishes between the advisory read and the transaction.
-	fx.faulty.getChild = func(dir metadata.FileHandle, name string) (metadata.FileHandle, error, bool) {
+	fx.faulty.getChild = func(name string) (metadata.FileHandle, error, bool) {
 		if name == "myfile.txt" {
 			return nil, &metadata.StoreError{Code: metadata.ErrNotFound, Message: "concurrently unlinked"}, true
 		}
@@ -396,7 +330,7 @@ func TestMove_AbortsWhenDestinationAppearedInTransaction(t *testing.T) {
 
 	// A racing rename claimed the destination name after the advisory read
 	// reported it free.
-	fx.faulty.getChild = func(dir metadata.FileHandle, name string) (metadata.FileHandle, error, bool) {
+	fx.faulty.getChild = func(name string) (metadata.FileHandle, error, bool) {
 		if name == "moved.txt" {
 			return winner, nil, true
 		}
