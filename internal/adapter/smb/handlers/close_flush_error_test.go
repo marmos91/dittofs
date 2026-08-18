@@ -144,19 +144,16 @@ func setupWriteTestShare(t *testing.T, metaStore metadata.Store) (*Handler, *SMB
 	})
 
 	fileID := [16]byte{7}
-	openFile := &OpenFile{
+	openFile := (&OpenFile{
 		FileID:         fileID,
 		TreeID:         treeID,
 		SessionID:      sess.SessionID,
-		Path:           fileName,
 		ShareName:      shareName,
 		DesiredAccess:  uint32(types.FileReadData | types.FileWriteData),
 		GrantedAccess:  uint32(types.FileReadData | types.FileWriteData),
 		MetadataHandle: fileHandle,
 		PayloadID:      committed.PayloadID,
-		ParentHandle:   rootHandle,
-		FileName:       fileName,
-	}
+	}).WithName(OpenName{Path: fileName, FileName: fileName, ParentHandle: rootHandle})
 	h.StoreOpenFile(openFile)
 
 	smbCtx := &SMBHandlerContext{
@@ -246,7 +243,7 @@ func TestClose_FlushFailure_WinsOverDeleteFailure(t *testing.T) {
 		Identity:        &metadata.Identity{UID: &uid, GID: &gid},
 		HasDeleteAccess: true,
 	}
-	if _, _, err := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
+	if _, _, err := metaSvc.RemoveFile(authCtx, openFile.Name().ParentHandle, openFile.Name().FileName); err != nil {
 		t.Fatalf("out-of-band RemoveFile: %v", err)
 	}
 

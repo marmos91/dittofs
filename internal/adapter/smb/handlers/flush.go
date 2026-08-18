@@ -213,20 +213,20 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	metaSvc := h.Registry.GetMetadataService()
 	blockStore, err := h.Registry.GetBlockStoreForShare(openFile.ShareName)
 	if err != nil {
-		logger.Warn("FLUSH: block store not available for handle", "path", openFile.Path, "error", err)
+		logger.Warn("FLUSH: block store not available for handle", "path", openFile.Name().Path, "error", err)
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
 	}
 
 	// Verify file exists
 	file, err := metaSvc.GetFileForRead(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
-		logger.Debug("FLUSH: file not found", "path", openFile.Path, "error", err)
+		logger.Debug("FLUSH: file not found", "path", openFile.Name().Path, "error", err)
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
 	// Check if there's content to flush
 	if file.PayloadID == "" {
-		logger.Debug("FLUSH: no content to flush", "path", openFile.Path)
+		logger.Debug("FLUSH: no content to flush", "path", openFile.Name().Path)
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
 	}
 
@@ -236,7 +236,7 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 
 	_, flushErr := blockStore.Flush(ctx.Context, string(file.PayloadID))
 	if flushErr != nil {
-		logger.Warn("FLUSH: failed", "path", openFile.Path, "error", flushErr)
+		logger.Warn("FLUSH: failed", "path", openFile.Name().Path, "error", flushErr)
 		// FLUSH is a content-path op (same as NFS COMMIT): MapContentToSMB
 		// maps a closed-store error (the share was removed/hot-reloaded
 		// mid-flush) to STATUS_FILE_CLOSED and preserves the
@@ -262,16 +262,16 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 
 	authCtx, authErr := BuildAuthContext(ctx)
 	if authErr != nil {
-		logger.Warn("FLUSH: failed to build auth context for metadata flush", "path", openFile.Path, "error", authErr)
+		logger.Warn("FLUSH: failed to build auth context for metadata flush", "path", openFile.Name().Path, "error", authErr)
 	} else {
 		// STRICT (durable=true): SMB FLUSH is an explicit client fsync request, so
 		// the metadata commit must fsync inline — deliberately NOT relaxed (#1687).
 		flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, true)
 		if metaErr != nil {
-			logger.Warn("FLUSH: metadata flush failed", "path", openFile.Path, "error", metaErr)
+			logger.Warn("FLUSH: metadata flush failed", "path", openFile.Name().Path, "error", metaErr)
 			// Continue - content is flushed, metadata will be fixed eventually
 		} else if flushed {
-			logger.Debug("FLUSH: metadata flushed", "path", openFile.Path)
+			logger.Debug("FLUSH: metadata flushed", "path", openFile.Name().Path)
 		}
 	}
 
@@ -281,7 +281,7 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	flushSmbDelayedWrite(openFile)
 	h.StoreOpenFile(openFile)
 
-	logger.Debug("FLUSH successful", "path", openFile.Path)
+	logger.Debug("FLUSH successful", "path", openFile.Name().Path)
 
 	// ========================================================================
 	// Step 5: Return success response

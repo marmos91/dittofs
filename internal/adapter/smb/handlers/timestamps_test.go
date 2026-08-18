@@ -58,15 +58,12 @@ func setupTimestampTest(t *testing.T) (*Handler, *metadata.AuthContext, metadata
 	h := NewHandler()
 	h.Registry = rt
 
-	openFile := &OpenFile{
+	openFile := (&OpenFile{
 		FileID:         [16]byte{1, 2, 3, 4},
 		MetadataHandle: fileHandle,
-		ParentHandle:   rootHandle,
-		FileName:       "f.dat",
-		Path:           "f.dat",
 		ShareName:      shareName,
 		DesiredAccess:  uint32(types.FileWriteAttributes) | uint32(types.FileWriteData) | uint32(types.FileReadData) | uint32(types.Delete),
-	}
+	}).WithName(OpenName{Path: "f.dat", FileName: "f.dat", ParentHandle: rootHandle})
 	h.StoreOpenFile(openFile)
 
 	return h, authCtx, fileHandle, openFile
@@ -512,16 +509,13 @@ func TestDirFreezeTimestamps_ChildCreate_AllFrozen(t *testing.T) {
 	h.Registry = rt
 
 	// Step 2: "Open" the directory (create an OpenFile).
-	dirOpenFile := &OpenFile{
+	dirOpenFile := (&OpenFile{
 		FileID:         [16]byte{0xAA},
 		MetadataHandle: dirHandle,
-		ParentHandle:   rootHandle,
-		FileName:       "testdir",
-		Path:           "testdir",
 		ShareName:      shareName,
 		IsDirectory:    true,
 		DesiredAccess:  uint32(types.FileWriteAttributes) | uint32(types.FileReadAttributes),
-	}
+	}).WithName(OpenName{Path: "testdir", FileName: "testdir", ParentHandle: rootHandle})
 	h.StoreOpenFile(dirOpenFile)
 
 	// Step 3: Freeze all four timestamps via SET_INFO(-1).
@@ -657,16 +651,13 @@ func TestDirFreezeTimestamps_ChildCreate_WalkPath(t *testing.T) {
 
 	h := NewHandler()
 	h.Registry = rt
-	dirOpenFile := &OpenFile{
+	dirOpenFile := (&OpenFile{
 		FileID:         [16]byte{0xCC},
 		MetadataHandle: dirHandle,
-		ParentHandle:   rootHandle,
-		FileName:       "testdir",
-		Path:           "testdir",
 		ShareName:      shareName,
 		IsDirectory:    true,
 		DesiredAccess:  uint32(types.FileWriteAttributes) | uint32(types.FileReadAttributes),
-	}
+	}).WithName(OpenName{Path: "testdir", FileName: "testdir", ParentHandle: rootHandle})
 	h.StoreOpenFile(dirOpenFile)
 
 	freezeAll := makeBasicInfoBuffer(filetimeFreeze, filetimeFreeze, filetimeFreeze, filetimeFreeze, 0)
@@ -815,16 +806,13 @@ func TestDirFreezeTimestamps_ChildCreate_SingleField(t *testing.T) {
 
 			h := NewHandler()
 			h.Registry = rt
-			dirOpenFile := &OpenFile{
+			dirOpenFile := (&OpenFile{
 				FileID:         [16]byte{0xBB},
 				MetadataHandle: dirHandle,
-				ParentHandle:   rootHandle,
-				FileName:       "testdir",
-				Path:           "testdir",
 				ShareName:      shareName,
 				IsDirectory:    true,
 				DesiredAccess:  uint32(types.FileWriteAttributes) | uint32(types.FileReadAttributes),
-			}
+			}).WithName(OpenName{Path: "testdir", FileName: "testdir", ParentHandle: rootHandle})
 			h.StoreOpenFile(dirOpenFile)
 
 			// Freeze only the target timestamp.
@@ -934,22 +922,19 @@ func TestUpdateBaseObjectTimestampsForADSWrite_PreservesBaseCtimeWhenFrozen(t *t
 
 	h := NewHandler()
 	h.Registry = rt
-	adsOpen := &OpenFile{
+	adsOpen := (&OpenFile{
 		FileID:         [16]byte{0xAD, 0x5C},
 		MetadataHandle: streamHandle,
-		ParentHandle:   rootHandle,
-		FileName:       "basedir:streamname",
-		Path:           "basedir:streamname",
 		ShareName:      shareName,
 		IsDirectory:    false,
 		DesiredAccess:  uint32(types.FileWriteData) | uint32(types.FileWriteAttributes),
 		CtimeFrozen:    true, // SET_INFO -1 on ChangeTime
 		FrozenCtime:    &pinned,
-	}
+	}).WithName(OpenName{Path: "basedir:streamname", FileName: "basedir:streamname", ParentHandle: rootHandle})
 	h.StoreOpenFile(adsOpen)
 
 	// Trigger the WRITE-path base-timestamp update.
-	h.updateBaseObjectTimestampsForADSWrite(authCtx, metaSvc, adsOpen, adsOpen.ParentHandle, "basedir")
+	h.updateBaseObjectTimestampsForADSWrite(authCtx, metaSvc, adsOpen, adsOpen.Name().ParentHandle, "basedir")
 
 	// Verify the base directory's Ctime is unchanged but Mtime was advanced
 	// (because only Ctime is frozen on the ADS handle).

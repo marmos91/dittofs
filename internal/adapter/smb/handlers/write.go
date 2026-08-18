@@ -205,7 +205,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 
 	if !hasWriteAccess(openFile.GrantedAccess) {
 		logger.Debug("WRITE: no write access on handle",
-			"path", openFile.Path,
+			"path", openFile.Name().Path,
 			"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess))
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 	}
@@ -215,7 +215,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// ========================================================================
 
 	if openFile.IsDirectory {
-		logger.Debug("WRITE: cannot write to directory", "path", openFile.Path)
+		logger.Debug("WRITE: cannot write to directory", "path", openFile.Name().Path)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidDeviceRequest}}, nil
 	}
 
@@ -231,24 +231,24 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	const int64Max = uint64(1<<63 - 1)        // 0x7FFFFFFFFFFFFFFF
 	const maxFileSize = uint64(0xFFFFFFF0000) // NTFS max file size (~16TB)
 	if req.Offset > int64Max {
-		logger.Debug("WRITE: invalid offset (high bit set)", "path", openFile.Path, "offset", req.Offset)
+		logger.Debug("WRITE: invalid offset (high bit set)", "path", openFile.Name().Path, "offset", req.Offset)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
 	if len(req.Data) > 0 {
 		writeEnd := req.Offset + uint64(len(req.Data))
 		if writeEnd < req.Offset || writeEnd > int64Max {
-			logger.Debug("WRITE: offset+length overflow or exceeds INT64_MAX", "path", openFile.Path,
+			logger.Debug("WRITE: offset+length overflow or exceeds INT64_MAX", "path", openFile.Name().Path,
 				"offset", req.Offset, "length", len(req.Data))
 			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 		}
 		if writeEnd > maxFileSize {
-			logger.Debug("WRITE: offset+length exceeds MAXFILESIZE", "path", openFile.Path,
+			logger.Debug("WRITE: offset+length exceeds MAXFILESIZE", "path", openFile.Name().Path,
 				"offset", req.Offset, "length", len(req.Data), "maxFileSize", maxFileSize)
 			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 		}
 		if writeEnd == maxFileSize {
 			// Writing right up to MAXFILESIZE boundary: Windows returns DISK_FULL
-			logger.Debug("WRITE: at MAXFILESIZE boundary", "path", openFile.Path,
+			logger.Debug("WRITE: at MAXFILESIZE boundary", "path", openFile.Name().Path,
 				"offset", req.Offset, "length", len(req.Data))
 			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDiskFull}}, nil
 		}
@@ -261,7 +261,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// value so the clamp never rejects every write.
 	if h.MaxWriteSize > 0 && uint32(len(req.Data)) > h.MaxWriteSize {
 		logger.Debug("WRITE: length exceeds negotiated MaxWriteSize",
-			"path", openFile.Path, "length", len(req.Data), "maxWriteSize", h.MaxWriteSize)
+			"path", openFile.Name().Path, "length", len(req.Data), "maxWriteSize", h.MaxWriteSize)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
 
@@ -294,7 +294,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// ========================================================================
 
 	if !HasWritePermission(ctx) {
-		logger.Debug("WRITE: access denied", "path", openFile.Path, "permission", ctx.Permission)
+		logger.Debug("WRITE: access denied", "path", openFile.Name().Path, "permission", ctx.Permission)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 	}
 
@@ -305,7 +305,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Per MS-SMB2: zero-length writes are valid no-ops that return success
 	// with 0 bytes written. Skip the prepare/write/commit cycle.
 	if len(req.Data) == 0 {
-		logger.Debug("WRITE: zero-length write (no-op)", "path", openFile.Path, "offset", req.Offset)
+		logger.Debug("WRITE: zero-length write (no-op)", "path", openFile.Name().Path, "offset", req.Offset)
 		return &WriteResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
 			Count:           0,
@@ -320,7 +320,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	metaSvc := h.Registry.GetMetadataService()
 	blockStore, err := common.ResolveForWrite(ctx.Context, h.Registry, openFile.MetadataHandle)
 	if err != nil {
-		logger.Warn("WRITE: block store not available for handle", "path", openFile.Path, "error", err)
+		logger.Warn("WRITE: block store not available for handle", "path", openFile.Name().Path, "error", err)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
 	}
 
@@ -358,7 +358,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		uint64(len(req.Data)),
 		true, // isWrite = true for write operations
 	); err != nil {
-		logger.Debug("WRITE: blocked by lock", "path", openFile.Path, "offset", req.Offset, "length", len(req.Data))
+		logger.Debug("WRITE: blocked by lock", "path", openFile.Name().Path, "offset", req.Offset, "length", len(req.Data))
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileLockConflict}}, nil
 	}
 
@@ -373,7 +373,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	if h.LeaseManager != nil {
 		lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
 		if breakErr := h.LeaseManager.BreakReadLeasesOnWrite(lockFileHandle, openFile.ShareName, openFile.LeaseKey); breakErr != nil {
-			logger.Debug("WRITE: oplock break failed (non-fatal)", "path", openFile.Path, "error", breakErr)
+			logger.Debug("WRITE: oplock break failed (non-fatal)", "path", openFile.Name().Path, "error", breakErr)
 		}
 	}
 
@@ -391,7 +391,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 			true, // WRITE breaks Read leases to NONE — break_to lacks H.
 		); purged > 0 {
 			logger.Debug("WRITE: purged disconnected handles on data change",
-				"path", openFile.Path,
+				"path", openFile.Name().Path,
 				"count", purged)
 		}
 	}
@@ -421,7 +421,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	newSize := req.Offset + uint64(len(req.Data))
 	writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
 	if err != nil {
-		logger.Debug("WRITE: prepare failed", "path", openFile.Path, "error", err)
+		logger.Debug("WRITE: prepare failed", "path", openFile.Name().Path, "error", err)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
@@ -433,7 +433,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// plumbing lands in one place (see common/doc.go).
 	err = common.WriteToBlockStore(authCtx.Context, blockStore, writeOp.PayloadID, req.Data, req.Offset)
 	if err != nil {
-		logger.Warn("WRITE: content write failed", "path", openFile.Path, "error", err)
+		logger.Warn("WRITE: content write failed", "path", openFile.Name().Path, "error", err)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: common.MapContentToSMB(err)}}, nil
 	}
 
@@ -443,7 +443,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 
 	_, err = metaSvc.CommitWrite(authCtx, writeOp)
 	if err != nil {
-		logger.Warn("WRITE: commit failed", "path", openFile.Path, "error", err)
+		logger.Warn("WRITE: commit failed", "path", openFile.Name().Path, "error", err)
 		// Data was written but metadata not updated - this is an inconsistent state
 		// but we still report the error
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
@@ -472,10 +472,10 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		// metadata fsync — and fail the request rather than ack a durability
 		// guarantee that does not hold.
 		if _, flushErr := blockStore.Flush(authCtx.Context, string(writeOp.PayloadID)); flushErr != nil {
-			logger.Warn("WRITE: write-through content flush failed", "path", openFile.Path, "error", flushErr)
+			logger.Warn("WRITE: write-through content flush failed", "path", openFile.Name().Path, "error", flushErr)
 			writeStatus = common.MapContentToSMB(flushErr)
 		} else if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, true); flushErr != nil {
-			logger.Warn("WRITE: write-through metadata flush failed", "path", openFile.Path, "error", flushErr)
+			logger.Warn("WRITE: write-through metadata flush failed", "path", openFile.Name().Path, "error", flushErr)
 			writeStatus = common.MapToSMB(flushErr)
 		}
 	} else {
@@ -487,7 +487,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		// per-WRITE ack path. CLOSE and FLUSH remain strict for durability; a crash
 		// before the background fsync is caught by the journal size reconcile.
 		if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, false); flushErr != nil {
-			logger.Debug("WRITE: deferred metadata flush failed (non-fatal)", "path", openFile.Path, "error", flushErr)
+			logger.Debug("WRITE: deferred metadata flush failed (non-fatal)", "path", openFile.Name().Path, "error", flushErr)
 		}
 	}
 
@@ -505,9 +505,8 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// the parent mid-WRITE, so snapshot all three together: re-reading would let
 	// the ADS classification, the parent-atime bump and the change notification
 	// below describe different names.
-	openFile.RLock()
-	fileName, filePath, parentHandle := openFile.FileName, openFile.Path, openFile.ParentHandle
-	openFile.RUnlock()
+	name := openFile.Name()
+	fileName, filePath, parentHandle := name.FileName, name.Path, name.ParentHandle
 	isADSWrite := false
 	var baseFileName string
 	if colonIdx := strings.Index(fileName, ":"); colonIdx > 0 {
@@ -570,7 +569,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	logger.Debug("WRITE successful",
-		"path", openFile.Path,
+		"path", openFile.Name().Path,
 		"offset", req.Offset,
 		"bytes", len(req.Data))
 

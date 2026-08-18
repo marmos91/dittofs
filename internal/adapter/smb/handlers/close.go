@@ -212,7 +212,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// on a live handle, so reading it per use would let a rename landing
 	// mid-close produce log lines, a delete target and a parent path that each
 	// name a different file.
-	closePath := openFile.GetPath()
+	closePath := openFile.Name().Path
 
 	var flushFailStatus types.Status
 	payloadID := openFile.GetPayloadID()
@@ -401,6 +401,9 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	if openFile.DeletePending || openFile.BaseFileDeletePending {
+		// One snapshot of the name: the delete below must not mix the parent
+		// directory from one rename with the file name from another.
+		docName := openFile.Name()
 		// Per MS-FSA 2.1.5.4: delete-on-close only removes the file when the
 		// LAST handle closes. If other handles on the same file exist, propagate
 		// the DOC flag + the original DOC-setter's parent key to remaining handles
@@ -412,7 +415,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 		// stream handles — are closed. The stream handles are marked with
 		// BaseFileDeletePending so the CLOSE of the last stream triggers the
 		// base file removal (smbtorture smb2.streams.delete).
-		isBaseFile := !strings.Contains(openFile.FileName, ":")
+		isBaseFile := !strings.Contains(docName.FileName, ":")
 		otherHandleExists := false
 		streamHandleExists := false
 
@@ -432,8 +435,8 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 		// For base file DOC: also check for open stream handles.
 		if !otherHandleExists && isBaseFile && !openFile.BaseFileDeletePending {
-			basePrefix := openFile.FileName + ":"
-			h.rangeStreamsOfBase(openFile.FileID, openFile.ParentHandle, basePrefix, func(other *OpenFile) bool {
+			basePrefix := docName.FileName + ":"
+			h.rangeStreamsOfBase(openFile.FileID, docName.ParentHandle, basePrefix, func(other *OpenFile) bool {
 				streamHandleExists = true
 				return false
 			})
@@ -482,15 +485,15 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// 2.1.5.4 / 2.1.5.9.7, defer the actual deletion until all
 			// stream handles close. Mark them with BaseFileDeletePending so
 			// the last stream CLOSE triggers the base file removal.
-			basePrefix := openFile.FileName + ":"
-			h.rangeStreamsOfBase(openFile.FileID, openFile.ParentHandle, basePrefix, func(other *OpenFile) bool {
+			basePrefix := docName.FileName + ":"
+			h.rangeStreamsOfBase(openFile.FileID, docName.ParentHandle, basePrefix, func(other *OpenFile) bool {
 				// Guard the write: concurrent readers on the stream handle
 				// (QUERY_INFO / open path via isFileOrBaseDeletePending) may be
 				// reading these fields on `other`.
 				other.mu.Lock()
 				other.BaseFileDeletePending = true
-				other.BaseFileDeleteParentHandle = openFile.ParentHandle
-				other.BaseFileDeleteFileName = openFile.FileName
+				other.BaseFileDeleteParentHandle = docName.ParentHandle
+				other.BaseFileDeleteFileName = docName.FileName
 				other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
 				other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
 				other.mu.Unlock()
@@ -504,8 +507,8 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			//
 			// If this is a stream handle with BaseFileDeletePending, delete the
 			// base file (not the stream — the stream is a child of the base).
-			deleteParentHandle := openFile.ParentHandle
-			deleteFileName := openFile.FileName
+			deleteParentHandle := docName.ParentHandle
+			deleteFileName := docName.FileName
 			isBaseFileDelete := false
 			if openFile.BaseFileDeletePending {
 				deleteParentHandle = openFile.BaseFileDeleteParentHandle
@@ -592,11 +595,12 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 						// Use a synthetic OpenFile with the base file's info.
 						cascadeOF := openFile
 						if isBaseFileDelete {
-							cascadeOF = &OpenFile{
-								ParentHandle: deleteParentHandle,
-								FileName:     deleteFileName,
+							cascadeOF = &OpenFile{}
+							cascadeOF.SetName(OpenName{
 								Path:         closePath,
-							}
+								FileName:     deleteFileName,
+								ParentHandle: deleteParentHandle,
+							})
 						}
 						h.cascadeDeleteADSStreams(authCtx, metaSvc, cascadeOF)
 					}
@@ -854,7 +858,7 @@ func (h *Handler) releaseHandleLeaseRecord(ctx context.Context, openFile *OpenFi
 
 	if hasOtherOpenSameFile {
 		logger.Debug(caller+": lease handle closed (other opens share lease key on same file)",
-			"path", openFile.Path)
+			"path", openFile.Name().Path)
 		return
 	}
 
@@ -862,12 +866,12 @@ func (h *Handler) releaseHandleLeaseRecord(ctx context.Context, openFile *OpenFi
 	// lease record. Other files sharing the key keep theirs.
 	if err := h.LeaseManager.ReleaseLeaseForHandle(ctx, lock.FileHandle(openFile.MetadataHandle), leaseKey, openFile.ShareName); err != nil {
 		logger.Debug(caller+": failed to release lease",
-			"path", openFile.Path,
+			"path", openFile.Name().Path,
 			"leaseKey", fmt.Sprintf("%x", leaseKey),
 			"error", err)
 	} else {
 		logger.Debug(caller+": released lease (last open on this file)",
-			"path", openFile.Path,
+			"path", openFile.Name().Path,
 			"leaseKey", fmt.Sprintf("%x", leaseKey))
 	}
 	// Unregister oplock FileID mapping if this was a traditional oplock.
@@ -915,7 +919,7 @@ func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *Ope
 	// Read content to verify MFsymlink format
 	content, err := h.readMFsymlinkContent(ctx, openFile)
 	if err != nil {
-		logger.Debug("CLOSE: failed to read MFsymlink content", "path", openFile.Path, "error", err)
+		logger.Debug("CLOSE: failed to read MFsymlink content", "path", openFile.Name().Path, "error", err)
 		return false, nil // Not fatal, just don't convert
 	}
 
@@ -927,7 +931,7 @@ func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *Ope
 	// Parse the symlink target
 	target, err := mfsymlink.Decode(content)
 	if err != nil {
-		logger.Debug("CLOSE: invalid MFsymlink format", "path", openFile.Path, "error", err)
+		logger.Debug("CLOSE: invalid MFsymlink format", "path", openFile.Name().Path, "error", err)
 		return false, nil // Don't convert invalid MFsymlinks
 	}
 
@@ -935,7 +939,7 @@ func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *Ope
 	err = h.convertToRealSymlink(ctx, openFile, target)
 	if err != nil {
 		logger.Warn("CLOSE: failed to convert MFsymlink to symlink",
-			"path", openFile.Path,
+			"path", openFile.Name().Path,
 			"target", target,
 			"error", err)
 		return false, err
@@ -971,7 +975,8 @@ func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFil
 // convertToRealSymlink removes the regular file and creates a symlink in its place.
 func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFile, target string) error {
 	// Validate required fields
-	if len(openFile.ParentHandle) == 0 || openFile.FileName == "" {
+	name := openFile.Name()
+	if len(name.ParentHandle) == 0 || name.FileName == "" {
 		return fmt.Errorf("missing parent handle or filename for MFsymlink conversion")
 	}
 
@@ -994,8 +999,8 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 	}
 
 	// Get the parent handle and filename for removal and creation
-	parentHandle := openFile.ParentHandle
-	fileName := openFile.FileName
+	parentHandle := name.ParentHandle
+	fileName := name.FileName
 
 	// Remove the regular file
 	metaSvc := h.Registry.GetMetadataService()
@@ -1010,7 +1015,7 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 	if removed != nil {
 		removedPayloadID = removed.PayloadID
 	}
-	h.purgeBlockStorePayload(ctx.Context, openFile.MetadataHandle, removedPayloadID, openFile.Path, "CLOSE")
+	h.purgeBlockStorePayload(ctx.Context, openFile.MetadataHandle, removedPayloadID, name.Path, "CLOSE")
 
 	// Create the real symlink with default attributes
 	// Pass empty FileAttr - CreateSymlink will apply defaults
@@ -1021,7 +1026,7 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 	}
 
 	logger.Debug("CLOSE: converted MFsymlink",
-		"path", openFile.Path,
+		"path", openFile.Name().Path,
 		"target", target)
 
 	return nil
@@ -1039,10 +1044,11 @@ func (h *Handler) rangeStreamsOfBase(selfFileID [16]byte, parentHandle metadata.
 		if other.FileID == selfFileID || other.IsPipe {
 			return true
 		}
-		if !bytes.Equal(other.ParentHandle, parentHandle) {
+		otherName := other.Name()
+		if !bytes.Equal(otherName.ParentHandle, parentHandle) {
 			return true
 		}
-		if len(other.FileName) <= len(basePrefix) || !strings.EqualFold(other.FileName[:len(basePrefix)], basePrefix) {
+		if len(otherName.FileName) <= len(basePrefix) || !strings.EqualFold(otherName.FileName[:len(basePrefix)], basePrefix) {
 			return true
 		}
 		return fn(other)
@@ -1054,21 +1060,22 @@ func (h *Handler) rangeStreamsOfBase(selfFileID [16]byte, parentHandle metadata.
 // in the parent directory with names like "baseFile:streamName:$DATA".
 // Per MS-FSA 2.1.5.9.7, deleting a file deletes all its streams.
 func (h *Handler) cascadeDeleteADSStreams(authCtx *metadata.AuthContext, metaSvc *metadata.Service, openFile *OpenFile) {
-	prefix := openFile.FileName + ":"
+	name := openFile.Name()
+	prefix := name.FileName + ":"
 
 	// Enumerate parent directory children to find ADS entries.
 	// Use ReadDirectory with a large buffer to get all entries.
-	page, err := metaSvc.ReadDirectory(authCtx, openFile.ParentHandle, 0, 1<<20)
+	page, err := metaSvc.ReadDirectory(authCtx, name.ParentHandle, 0, 1<<20)
 	if err != nil {
 		logger.Debug("CLOSE: cascade ADS delete: failed to read parent directory",
-			"path", openFile.Path,
+			"path", name.Path,
 			"error", err)
 		return
 	}
 
 	for _, entry := range page.Entries {
 		if len(entry.Name) > len(prefix) && strings.EqualFold(entry.Name[:len(prefix)], prefix) {
-			_, _, deleteErr := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, entry.Name)
+			_, _, deleteErr := metaSvc.RemoveFile(authCtx, name.ParentHandle, entry.Name)
 			if deleteErr != nil {
 				logger.Debug("CLOSE: cascade ADS delete: failed to remove stream",
 					"stream", entry.Name,

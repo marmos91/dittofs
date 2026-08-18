@@ -16,7 +16,7 @@ import (
 
 func TestFileCompressionInformation(t *testing.T) {
 	h := NewHandler()
-	openFileStub := &OpenFile{FileName: "test.txt", Path: "test.txt"}
+	openFileStub := (&OpenFile{}).WithName(OpenName{Path: "test.txt", FileName: "test.txt"})
 
 	t.Run("RegularFile", func(t *testing.T) {
 		file := &metadata.File{
@@ -112,7 +112,7 @@ func TestFileCompressionInformation(t *testing.T) {
 
 func TestFileAttributeTagInformation(t *testing.T) {
 	h := NewHandler()
-	openFileStub := &OpenFile{FileName: "test.txt", Path: "test.txt"}
+	openFileStub := (&OpenFile{}).WithName(OpenName{Path: "test.txt", FileName: "test.txt"})
 
 	t.Run("RegularFile", func(t *testing.T) {
 		file := &metadata.File{
@@ -170,7 +170,7 @@ func TestBuildFileInfoFromStore_FileStreamInformation(t *testing.T) {
 	h := NewHandler()
 
 	// OpenFile stub used for tests that don't depend on OpenFile fields.
-	openFileStub := &OpenFile{FileName: "test.txt", Path: "test.txt"}
+	openFileStub := (&OpenFile{}).WithName(OpenName{Path: "test.txt", FileName: "test.txt"})
 
 	t.Run("RegularFile", func(t *testing.T) {
 		file := &metadata.File{
@@ -341,12 +341,10 @@ func TestFileAccessInformation_ReturnsGrantedAccess(t *testing.T) {
 	// standard rights. This is the exact 0x00070080 the GENERIC test asks
 	// for; the pre-fix code would have returned 0x001F01FF (FILE_ALL_ACCESS).
 	const expected uint32 = 0x00070080
-	openFile := &OpenFile{
-		FileName:      "test.txt",
-		Path:          "test.txt",
+	openFile := (&OpenFile{
 		DesiredAccess: uint32(types.MaximumAllowed),
 		GrantedAccess: expected,
-	}
+	}).WithName(OpenName{Path: "test.txt", FileName: "test.txt"})
 	info, err := h.buildFileInfoFromStore(
 		&metadata.AuthContext{Context: context.Background(), Identity: &metadata.Identity{}},
 		file, openFile, types.FileAccessInformation,
@@ -382,12 +380,10 @@ func TestFileAllInformation_AccessInformationReturnsGrantedAccess(t *testing.T) 
 	// Mirrors the FileAccessInformation test: open made with MAXIMUM_ALLOWED
 	// whose effective DACL grant is 0x00070080, not FILE_ALL_ACCESS.
 	const expected uint32 = 0x00070080
-	openFile := &OpenFile{
-		FileName:      "test.txt",
-		Path:          "test.txt",
+	openFile := (&OpenFile{
 		DesiredAccess: uint32(types.MaximumAllowed),
 		GrantedAccess: expected,
-	}
+	}).WithName(OpenName{Path: "test.txt", FileName: "test.txt"})
 	info, err := h.buildFileInfoFromStore(
 		&metadata.AuthContext{Context: context.Background(), Identity: &metadata.Identity{}},
 		file, openFile, types.FileAllInformation,
@@ -420,10 +416,7 @@ func TestFilePositionInformation_RoundTrip(t *testing.T) {
 			Size: 0,
 		},
 	}
-	openFile := &OpenFile{
-		FileName: "test.txt",
-		Path:     "test.txt",
-	}
+	openFile := (&OpenFile{}).WithName(OpenName{Path: "test.txt", FileName: "test.txt"})
 	authCtx := &metadata.AuthContext{Context: context.Background(), Identity: &metadata.Identity{}}
 
 	// Drive the full SET → QUERY round-trip through the actual handlers so

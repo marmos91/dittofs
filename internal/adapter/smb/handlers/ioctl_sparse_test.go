@@ -65,13 +65,12 @@ func TestSetSparse_AccessDenied(t *testing.T) {
 	for i := range fileID {
 		fileID[i] = byte(0x10 + i)
 	}
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:        fileID,
-		Path:          "/sparse_perms",
 		ShareName:     "share1",
 		DesiredAccess: uint32(types.FileReadData),
 		GrantedAccess: uint32(types.FileReadData),
-	})
+	}).WithName(OpenName{Path: "/sparse_perms"}))
 	ctx := &SMBHandlerContext{Context: context.Background()}
 
 	body := buildSparseIoctlRequest(FsctlSetSparse, fileID, nil)
@@ -93,14 +92,13 @@ func TestSetSparse_DirectoryRejected(t *testing.T) {
 	for i := range fileID {
 		fileID[i] = byte(0x20 + i)
 	}
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:        fileID,
-		Path:          "/sparse_dir",
 		ShareName:     "share1",
 		DesiredAccess: uint32(types.FileWriteData),
 		GrantedAccess: uint32(types.FileWriteData),
 		IsDirectory:   true,
-	})
+	}).WithName(OpenName{Path: "/sparse_dir"}))
 	ctx := &SMBHandlerContext{Context: context.Background()}
 
 	body := buildSparseIoctlRequest(FsctlSetSparse, fileID, nil)
@@ -126,13 +124,12 @@ func TestQueryAllocatedRanges_MalformedInput(t *testing.T) {
 	for i := range fileID {
 		fileID[i] = byte(0x40 + i)
 	}
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:        fileID,
-		Path:          "/qar_malformed",
 		ShareName:     "share1",
 		DesiredAccess: uint32(types.FileReadData),
 		GrantedAccess: uint32(types.FileReadData),
-	})
+	}).WithName(OpenName{Path: "/qar_malformed"}))
 	ctx := &SMBHandlerContext{Context: context.Background()}
 
 	// 8 bytes is half the required size.
@@ -155,13 +152,12 @@ func TestQueryAllocatedRanges_NegativeOffset(t *testing.T) {
 	for i := range fileID {
 		fileID[i] = byte(0x50 + i)
 	}
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:        fileID,
-		Path:          "/qar_ob1",
 		ShareName:     "share1",
 		DesiredAccess: uint32(types.FileReadData),
 		GrantedAccess: uint32(types.FileReadData),
-	})
+	}).WithName(OpenName{Path: "/qar_ob1"}))
 	ctx := &SMBHandlerContext{Context: context.Background()}
 
 	// Set high bit on FileOffset (negative when treated as int64).
@@ -187,13 +183,12 @@ func TestSetZeroData_AccessDenied(t *testing.T) {
 	for i := range fileID {
 		fileID[i] = byte(0x60 + i)
 	}
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:        fileID,
-		Path:          "/zero_perms",
 		ShareName:     "share1",
 		DesiredAccess: uint32(types.FileReadData),
 		GrantedAccess: uint32(types.FileReadData),
-	})
+	}).WithName(OpenName{Path: "/zero_perms"}))
 	ctx := &SMBHandlerContext{Context: context.Background()}
 
 	input := make([]byte, 16) // 16 zero bytes — fileOffset = beyond = 0
@@ -215,13 +210,12 @@ func TestSetZeroData_InverseRange(t *testing.T) {
 	for i := range fileID {
 		fileID[i] = byte(0x70 + i)
 	}
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:        fileID,
-		Path:          "/zero_inverse",
 		ShareName:     "share1",
 		DesiredAccess: uint32(types.FileWriteData),
 		GrantedAccess: uint32(types.FileWriteData),
-	})
+	}).WithName(OpenName{Path: "/zero_inverse"}))
 	ctx := &SMBHandlerContext{Context: context.Background()}
 
 	// FileOffset = 100, BeyondFinalZero = 50.
@@ -248,13 +242,12 @@ func TestSetZeroData_ZeroLengthIsNoop(t *testing.T) {
 	for i := range fileID {
 		fileID[i] = byte(0x80 + i)
 	}
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:        fileID,
-		Path:          "/zero_noop",
 		ShareName:     "share1",
 		DesiredAccess: uint32(types.FileWriteData),
 		GrantedAccess: uint32(types.FileWriteData),
-	})
+	}).WithName(OpenName{Path: "/zero_noop"}))
 	ctx := &SMBHandlerContext{Context: context.Background()}
 
 	w := smbenc.NewWriter(16)

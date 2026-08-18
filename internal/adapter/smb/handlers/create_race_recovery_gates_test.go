@@ -217,16 +217,15 @@ func TestCreate_RaceRecovery_OverwriteIfDeniedByShareMode(t *testing.T) {
 		fileReadData      uint32 = 0x00000001
 		fileShareReadOnly uint32 = 0x00000001
 	)
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:         h.GenerateFileID(),
 		TreeID:         smbCtx.TreeID,
 		SessionID:      smbCtx.SessionID,
-		Path:           "winner.txt",
 		ShareName:      smbCtx.ShareName,
 		DesiredAccess:  fileReadData,
 		ShareAccess:    fileShareReadOnly,
 		MetadataHandle: winnerHandle,
-	})
+	}).WithName(OpenName{Path: "winner.txt"}))
 
 	requesterUID := uint32(0)
 	requesterGID := uint32(0)

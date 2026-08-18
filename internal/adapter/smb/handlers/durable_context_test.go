@@ -581,8 +581,8 @@ func TestProcessDurableReconnectContext_V1Success(t *testing.T) {
 	if restored == nil {
 		t.Fatal("Expected restored ReconnectResult, got nil")
 	}
-	if restored.OpenFile.Path != "test.txt" {
-		t.Errorf("Path = %s, want test.txt", restored.OpenFile.Path)
+	if restored.OpenFile.Name().Path != "test.txt" {
+		t.Errorf("Path = %s, want test.txt", restored.OpenFile.Name().Path)
 	}
 	if restored.OpenFile.DesiredAccess != 0x12019F {
 		t.Errorf("DesiredAccess = 0x%x, want 0x12019F", restored.OpenFile.DesiredAccess)
@@ -733,8 +733,8 @@ func TestProcessDurableReconnectContext_V2Success(t *testing.T) {
 	if restored == nil {
 		t.Fatal("Expected restored ReconnectResult, got nil")
 	}
-	if restored.OpenFile.Path != "report.docx" {
-		t.Errorf("Path = %s, want report.docx", restored.OpenFile.Path)
+	if restored.OpenFile.Name().Path != "report.docx" {
+		t.Errorf("Path = %s, want report.docx", restored.OpenFile.Name().Path)
 	}
 	if !restored.IsV2 {
 		t.Error("Expected IsV2=true for V2 reconnect")
@@ -956,7 +956,7 @@ func TestProcessDurableReconnectContext_V2OplockJunkFnameIgnored(t *testing.T) {
 	if status != types.StatusSuccess {
 		t.Fatalf("Expected STATUS_SUCCESS (non-lease V2 ignores fname), got %s", status)
 	}
-	if restored == nil || restored.OpenFile.Path != "test.txt" {
+	if restored == nil || restored.OpenFile.Name().Path != "test.txt" {
 		t.Fatalf("expected restored open with original path test.txt, got %+v", restored)
 	}
 	// Reconnect restores the ORIGINAL granted access, never the request's.
@@ -1753,8 +1753,8 @@ func TestProcessDurableReconnectContext_V1OplockIgnoresPath(t *testing.T) {
 	if res == nil || res.OpenFile == nil {
 		t.Fatal("Expected restored OpenFile")
 	}
-	if res.OpenFile.Path != "real.dat" {
-		t.Errorf("Restored Path = %q, want %q", res.OpenFile.Path, "real.dat")
+	if res.OpenFile.Name().Path != "real.dat" {
+		t.Errorf("Restored Path = %q, want %q", res.OpenFile.Name().Path, "real.dat")
 	}
 }
 
@@ -2041,8 +2041,8 @@ func assertReopen2OK(t *testing.T, res *ReconnectResult, status types.Status, er
 		t.Errorf("GrantedAccess = 0x%x, want original 0x%x (junk request access must be ignored)",
 			res.OpenFile.GrantedAccess, wantGranted)
 	}
-	if res.OpenFile.Path != "reopen2.dat" {
-		t.Errorf("Path = %q, want original reopen2.dat", res.OpenFile.Path)
+	if res.OpenFile.Name().Path != "reopen2.dat" {
+		t.Errorf("Path = %q, want original reopen2.dat", res.OpenFile.Name().Path)
 	}
 }
 

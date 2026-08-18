@@ -287,7 +287,7 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	defer h.ReleaseOpenFile(req.FileID)
 
 	if !openFile.IsDirectory {
-		logger.Debug("QUERY_DIRECTORY: not a directory", "path", openFile.Path)
+		logger.Debug("QUERY_DIRECTORY: not a directory", "path", openFile.Name().Path)
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
 
@@ -392,7 +392,7 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	// (#728) where one handle deletes files mid-enumeration on another.
 	page, err := metaSvc.ReadDirectory(authCtx, openFile.MetadataHandle, 0, maxDirectoryReadBytes)
 	if err != nil {
-		logger.Debug("QUERY_DIRECTORY: failed to read directory", "path", openFile.Path, "error", err)
+		logger.Debug("QUERY_DIRECTORY: failed to read directory", "path", openFile.Name().Path, "error", err)
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
@@ -587,7 +587,7 @@ doneLoop:
 	}
 
 	logger.Debug("QUERY_DIRECTORY successful",
-		"path", openFile.Path,
+		"path", openFile.Name().Path,
 		"bufferSize", len(result),
 		"entries", entriesReturned)
 

@@ -68,18 +68,15 @@ func setupACLToggleTest(t *testing.T, shareName string, canonicalize bool) (*Han
 	h := NewHandler()
 	h.Registry = rt
 
-	openFile := &OpenFile{
+	openFile := (&OpenFile{
 		FileID:         [16]byte{1, 2, 3, 4},
 		MetadataHandle: fileHandle,
-		ParentHandle:   rootHandle,
-		FileName:       "f.dat",
-		Path:           "f.dat",
 		ShareName:      shareName,
 		DesiredAccess:  uint32(types.FileWriteAttributes) | uint32(types.WriteDac),
 		// Refs #559: setSecurityInfo gates on the open's GrantedAccess
 		// (Samba fsp->access_mask); SECINFO_DACL requires WRITE_DAC.
 		GrantedAccess: uint32(types.FileWriteAttributes) | uint32(types.WriteDac),
-	}
+	}).WithName(OpenName{Path: "f.dat", FileName: "f.dat", ParentHandle: rootHandle})
 	h.StoreOpenFile(openFile)
 
 	return h, openFile, authCtx

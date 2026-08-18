@@ -71,7 +71,7 @@ func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	// FILE_WRITE_DATA bit check matches Samba's semantics.
 	if openFile.GrantedAccess&uint32(types.FileWriteData) == 0 {
 		logger.Debug("IOCTL FSCTL_SET_COMPRESSION: missing FILE_WRITE_DATA",
-			"path", openFile.Path,
+			"path", openFile.Name().Path,
 			"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess))
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
@@ -175,7 +175,7 @@ func (h *Handler) buildObjectIDResponse(ctlCode uint32, body []byte) (*HandlerRe
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
-	logger.Debug("IOCTL object ID", "ctlCode", ctlCode, "path", openFile.Path)
+	logger.Debug("IOCTL object ID", "ctlCode", ctlCode, "path", openFile.Name().Path)
 
 	// FILE_OBJECTID_BUFFER: ObjectId(16) + BirthVolumeId(16) + BirthObjectId(16) + DomainId(16)
 	output := make([]byte, 64)
@@ -203,7 +203,7 @@ func (h *Handler) handleMarkHandle(ctx *SMBHandlerContext, body []byte) (*Handle
 		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
-	logger.Debug("IOCTL FSCTL_MARK_HANDLE", "path", openFile.Path, "isDir", openFile.IsDirectory)
+	logger.Debug("IOCTL FSCTL_MARK_HANDLE", "path", openFile.Name().Path, "isDir", openFile.IsDirectory)
 
 	// Per MS-FSA 2.1.5.9.20: if StreamType == DirectoryStream, fail
 	if openFile.IsDirectory {
@@ -227,7 +227,7 @@ func (h *Handler) handleQueryFileRegions(ctx *SMBHandlerContext, body []byte) (*
 		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
-	logger.Debug("IOCTL FSCTL_QUERY_FILE_REGIONS", "path", openFile.Path)
+	logger.Debug("IOCTL FSCTL_QUERY_FILE_REGIONS", "path", openFile.Name().Path)
 
 	// Get file size from metadata
 	metaSvc := h.Registry.GetMetadataService()

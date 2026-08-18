@@ -54,13 +54,12 @@ func TestHandleSetCompression_AccessGate_DeniesWithoutWriteData(t *testing.T) {
 	}
 
 	fileID := [16]byte{0x01, 0x02, 0x03, 0x04}
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID: fileID,
-		Path:   "compress_perms_no_write_data",
 		// FILE_APPEND_DATA | FILE_WRITE_ATTRIBUTES — the smbtorture-shaped
 		// mask that strips FILE_WRITE_DATA from SEC_RIGHTS_FILE_WRITE.
 		GrantedAccess: uint32(types.FileAppendData) | uint32(types.FileWriteAttributes),
-	})
+	}).WithName(OpenName{Path: "compress_perms_no_write_data"}))
 
 	// CompressionFormat=COMPRESSION_FORMAT_DEFAULT (matches one of the two
 	// formats smbtorture submits before asserting ACCESS_DENIED).
@@ -89,11 +88,10 @@ func TestHandleSetCompression_AccessGate_DeniesReadOnly(t *testing.T) {
 	}
 
 	fileID := [16]byte{0x05, 0x06, 0x07, 0x08}
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:        fileID,
-		Path:          "compress_perms_read_only",
 		GrantedAccess: uint32(types.FileReadData) | uint32(types.FileReadAttributes),
-	})
+	}).WithName(OpenName{Path: "compress_perms_read_only"}))
 
 	body := buildSetCompressionRequest(fileID, []byte{0x00, 0x00}) // COMPRESSION_FORMAT_NONE
 
@@ -123,11 +121,10 @@ func TestHandleSetCompression_AccessGate_PassesWithWriteData(t *testing.T) {
 	}
 
 	fileID := [16]byte{0x09, 0x0A, 0x0B, 0x0C}
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:        fileID,
-		Path:          "compress_perms_with_write_data",
 		GrantedAccess: uint32(types.FileWriteData),
-	})
+	}).WithName(OpenName{Path: "compress_perms_with_write_data"}))
 
 	// Zero-length InputBuffer — gate must pass first, then
 	// parseIoctlInputData rejects on len < 2.

@@ -420,11 +420,11 @@ type TreeConnection struct {
 // fields (FileID/TreeID/SessionID/MetadataHandle/CreateOptions) are safe to
 // access without the mutex.
 //
-// PayloadID, Path, FileName and ParentHandle are NOT immutable: the first WRITE
-// on a file created empty caches the payload the metadata store allocated,
+// PayloadID and the name triple are NOT immutable: the first WRITE on a file
+// created empty caches the payload the metadata store allocated,
 // SET_REPARSE_POINT and COPYCHUNK replace it, and SET_INFO rename rewrites the
-// name/path/parent triple. Reach them through GetPayloadID / SetPayloadID and
-// GetFileName, or under `mu` directly.
+// name/path/parent triple. Reach the payload through GetPayloadID /
+// SetPayloadID and the triple through Name / SetName.
 type OpenFile struct {
 	// mu guards the mutable fields listed in the struct comment above. Held
 	// across QueryDirectory enumeration R-M-W, freeze/thaw bookkeeping in
@@ -432,10 +432,12 @@ type OpenFile struct {
 	// QUERY_INFO frozen/delayed-write overlay reads.
 	mu sync.RWMutex
 
+	// name is the current OpenName. Read via Name, publish via SetName.
+	name atomic.Pointer[OpenName]
+
 	FileID        [16]byte
 	TreeID        uint32
 	SessionID     uint64
-	Path          string
 	ShareName     string
 	cachedOpenID  string // cached hex(FileID) for hot-path lock operations
 	OpenTime      time.Time
@@ -532,10 +534,8 @@ type OpenFile struct {
 	// CLOSE time. Required by smbtorture smb2.dirlease.{unlink_same,
 	// unlink_different}_initial_and_close which open a file with initial
 	// DOC and then immediately open a SECOND handle to it (must succeed).
-	DeletePending        bool                // committed shared DOC (visible to other opens)
-	InitialDeleteOnClose bool                // per-handle initial DOC from CREATE FILE_DELETE_ON_CLOSE
-	ParentHandle         metadata.FileHandle // Parent directory handle for deletion
-	FileName             string              // File name within parent for deletion
+	DeletePending        bool // committed shared DOC (visible to other opens)
+	InitialDeleteOnClose bool // per-handle initial DOC from CREATE FILE_DELETE_ON_CLOSE
 
 	// ShareAccess stores the sharing mode from the CREATE request.
 	// Used for share mode conflict checking during rename and other operations.
@@ -786,6 +786,40 @@ type OpenFile struct {
 // OpenID returns a unique identifier for this open file handle.
 // This is used for per-open byte-range lock ownership per MS-SMB2.
 // The identifier is derived from the SMB FileID, which is unique per open.
+// OpenName is the name triple of an open handle: full path, name within the
+// parent, and parent directory handle. SET_INFO rename replaces all three at
+// once, so they are published and read as one immutable value.
+type OpenName struct {
+	Path         string
+	FileName     string
+	ParentHandle metadata.FileHandle
+}
+
+// emptyOpenName is what Name reports for a handle that was never named.
+var emptyOpenName = &OpenName{}
+
+// Name returns the current name triple. Never nil, and safe to call while
+// holding the handle lock.
+func (f *OpenFile) Name() *OpenName {
+	if n := f.name.Load(); n != nil {
+		return n
+	}
+	return emptyOpenName
+}
+
+// SetName publishes a new name triple. Callers renaming a live handle must
+// hold `mu` across the read-modify-write so two renames cannot interleave.
+func (f *OpenFile) SetName(n OpenName) {
+	f.name.Store(&n)
+}
+
+// WithName publishes n and returns f, so a handle can be built and named in a
+// single expression.
+func (f *OpenFile) WithName(n OpenName) *OpenFile {
+	f.SetName(n)
+	return f
+}
+
 func (f *OpenFile) OpenID() string {
 	if f.cachedOpenID == "" {
 		f.cachedOpenID = fmt.Sprintf("%x", f.FileID)
@@ -870,25 +904,6 @@ func (f *OpenFile) SetPayloadID(id metadata.PayloadID) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.PayloadID = id
-}
-
-// GetFileName returns the name within the parent directory under the read lock.
-// SET_INFO rename rewrites it on a live handle, so a caller needing the name
-// alongside Path or ParentHandle must snapshot the group under RLock instead.
-func (f *OpenFile) GetFileName() string {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return f.FileName
-}
-
-// GetPath returns the full path under the read lock. SET_INFO rename rewrites
-// it on a live handle, so a caller needing the path alongside FileName or
-// ParentHandle must snapshot the group under RLock instead of calling this
-// once per field.
-func (f *OpenFile) GetPath() string {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return f.Path
 }
 
 // IsMtimeFrozen returns the MtimeFrozen flag under the read lock.
@@ -1227,7 +1242,7 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 		if unlockErr := metaSvc.UnlockAllForOpen(ctx, openFile.MetadataHandle, openFile.OpenID()); unlockErr != nil {
 			logger.Warn("ReleaseAllLocksForSession: failed to release locks",
 				"share", openFile.ShareName,
-				"path", openFile.Path,
+				"path", openFile.Name().Path,
 				"error", unlockErr)
 		}
 
@@ -1373,7 +1388,7 @@ func (h *Handler) closeFilesWithFilter(
 			persistGated := !shouldPersistDurableOnDisconnect(leaseState, openHasLocks(metaSvc, openFile))
 			if persistGated {
 				logger.Debug(caller+": durable persist refused (BR-lock without W lease)",
-					"path", openFile.Path,
+					"path", openFile.Name().Path,
 					"leaseState", fmt.Sprintf("0x%x", leaseState),
 					"hasBRLocks", true)
 			} else {
@@ -1391,12 +1406,12 @@ func (h *Handler) closeFilesWithFilter(
 				h.durablePurgeMu.Unlock()
 				if err != nil {
 					logger.Warn(caller+": failed to persist durable handle",
-						"path", openFile.Path,
+						"path", openFile.Name().Path,
 						"error", err)
 					// Fall through to normal close on persistence failure
 				} else {
 					logger.Debug(caller+": durable handle persisted for reconnect",
-						"path", openFile.Path,
+						"path", openFile.Name().Path,
 						"fileID", fmt.Sprintf("%x", openFile.FileID),
 						"timeout", openFile.DurableTimeoutMs)
 					// Do NOT release locks, flush caches, or execute delete-on-close
@@ -1488,11 +1503,12 @@ func (h *Handler) closeFilesWithFilter(
 					return true
 				})
 				logger.Debug(caller+": initial DOC propagated to other handles (not last)",
-					"path", openFile.Path)
+					"path", openFile.Name().Path)
 				isInitialDocOnly = false // delete handled by remaining sibling
 			}
 		}
-		if (openFile.DeletePending || isInitialDocOnly) && len(openFile.ParentHandle) > 0 && openFile.FileName != "" {
+		docName := openFile.Name()
+		if (openFile.DeletePending || isInitialDocOnly) && len(docName.ParentHandle) > 0 && docName.FileName != "" {
 			h.handleDeleteOnClose(ctx, sess, openFile, caller)
 		}
 
@@ -1645,6 +1661,7 @@ func (h *Handler) purgeBlockStorePayload(ctx context.Context, handle metadata.Fi
 // would deadlock — the holder can only ack after the triggering request
 // returns.
 func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session, openFile *OpenFile, caller string) {
+	name := openFile.Name()
 	authCtx := h.buildCleanupAuthContext(ctx, sess)
 	// Thread the closing handle's RqLs ParentLeaseKey so notifyDirChange can
 	// apply the MS-SMB2 §3.3.4.20 / Samba `dirlease_should_break` parent-key
@@ -1660,24 +1677,24 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 		// smb2.lease.v1_bug15148 to count=2).
 		excludeOwner := &lock.LockOwner{ClientID: fmt.Sprintf("smb:%d", openFile.SessionID)}
 		if breakErr := h.LeaseManager.BreakFileHandleLeasesOnDelete(lockFileHandle, openFile.ShareName, excludeOwner); breakErr != nil {
-			logger.Debug(caller+": file Handle lease break on delete failed", "path", openFile.Path, "error", breakErr)
+			logger.Debug(caller+": file Handle lease break on delete failed", "path", name.Path, "error", breakErr)
 		}
 	}
 
 	var deleted bool
 	if openFile.IsDirectory {
-		if _, err := metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
-			logger.Debug(caller+": failed to delete directory", "path", openFile.Path, "error", err)
+		if _, err := metaSvc.RemoveDirectory(authCtx, name.ParentHandle, name.FileName); err != nil {
+			logger.Debug(caller+": failed to delete directory", "path", name.Path, "error", err)
 		} else {
-			logger.Debug(caller+": directory deleted", "path", openFile.Path)
+			logger.Debug(caller+": directory deleted", "path", name.Path)
 			deleted = true
 		}
 	} else {
-		removed, _, err := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName)
+		removed, _, err := metaSvc.RemoveFile(authCtx, name.ParentHandle, name.FileName)
 		if err != nil {
-			logger.Debug(caller+": failed to delete file", "path", openFile.Path, "error", err)
+			logger.Debug(caller+": failed to delete file", "path", name.Path, "error", err)
 		} else {
-			logger.Debug(caller+": file deleted", "path", openFile.Path)
+			logger.Debug(caller+": file deleted", "path", name.Path)
 			deleted = true
 			// Purge content via RemoveFile's RETURNED PayloadID — empty when
 			// content must survive (surviving hard link / recycle to trash).
@@ -1685,7 +1702,7 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 			if removed != nil {
 				removedPayloadID = removed.PayloadID
 			}
-			h.purgeBlockStorePayload(ctx, openFile.MetadataHandle, removedPayloadID, openFile.Path, caller)
+			h.purgeBlockStorePayload(ctx, openFile.MetadataHandle, removedPayloadID, name.Path, caller)
 		}
 	}
 
@@ -1957,7 +1974,7 @@ func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
 	}
 	// Snapshot once: a rename landing mid-flush would otherwise let the three
 	// log lines below name different paths for the same operation.
-	path := openFile.GetPath()
+	path := openFile.Name().Path
 
 	blockStore, err := h.Registry.GetBlockStoreForShare(openFile.ShareName)
 	if err != nil {
@@ -2035,6 +2052,13 @@ func (h *Handler) GenerateTreeID() uint32 {
 // AsyncIds must be unique within a connection and non-zero.
 func (h *Handler) generateAsyncId() uint64 {
 	return h.nextAsyncId.Add(1)
+}
+
+// notifyOpenFileModified emits a FileActionModified notification for the
+// handle, taking the parent path and stream name from one name snapshot.
+func (h *Handler) notifyOpenFileModified(openFile *OpenFile, filter uint32) {
+	name := openFile.Name()
+	h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(name.Path), notifyStreamName(name.FileName), FileActionModified, filter)
 }
 
 // baseFileUUID returns the base file's UUID for an ADS path, or fallback for non-ADS.
@@ -2310,7 +2334,7 @@ func (h *Handler) isFileOrBaseDeletePending(fileHandle metadata.FileHandle, file
 		if !bdp {
 			return true
 		}
-		existingBase := adsBasePath(existing.Path)
+		existingBase := adsBasePath(existing.Name().Path)
 		if openBase == "" {
 			// Opening a base file: match against any stream of this base.
 			if strings.EqualFold(existingBase, filePath) {
@@ -2321,7 +2345,7 @@ func (h *Handler) isFileOrBaseDeletePending(fileHandle metadata.FileHandle, file
 			// Opening a stream: match against a sibling stream sharing the
 			// same base path, or against a base-file handle of that base.
 			if strings.EqualFold(existingBase, openBase) ||
-				strings.EqualFold(existing.Path, openBase) {
+				strings.EqualFold(existing.Name().Path, openBase) {
 				pending = true
 				return false
 			}
@@ -2407,12 +2431,12 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 		sameFile := bytes.Equal(existing.MetadataHandle, fileHandle)
 		crossStream := false
 		if !sameFile {
-			existingBase := adsBasePath(existing.Path)
+			existingBase := adsBasePath(existing.Name().Path)
 			baseVsStream := false
 			if newBase == "" && existingBase != "" {
 				baseVsStream = strings.EqualFold(existingBase, filePath)
 			} else if newBase != "" && existingBase == "" {
-				baseVsStream = strings.EqualFold(newBase, existing.Path)
+				baseVsStream = strings.EqualFold(newBase, existing.Name().Path)
 			}
 			if !baseVsStream {
 				return true
@@ -2557,11 +2581,11 @@ func logRenameConflictHolder(gate string, renamer, holder *OpenFile) {
 	logger.Debug("SET_INFO rename conflict holder",
 		"gate", gate,
 		"renamerFileID", fmt.Sprintf("%x", renamer.FileID),
-		"renamerPath", renamer.Path,
+		"renamerPath", renamer.Name().Path,
 		"renamerSession", renamer.SessionID,
 		"renamerTree", renamer.TreeID,
 		"holderFileID", fmt.Sprintf("%x", holder.FileID),
-		"holderPath", holder.Path,
+		"holderPath", holder.Name().Path,
 		"holderShare", holder.ShareName,
 		"holderSession", holder.SessionID,
 		"holderTree", holder.TreeID,
@@ -2631,10 +2655,10 @@ func (h *Handler) snapshotOpenChildren(dirHandle metadata.FileHandle) []metadata
 	var children []metadata.FileHandle
 	h.files.Range(func(_, value any) bool {
 		of := value.(*OpenFile)
-		if len(of.ParentHandle) == 0 || len(of.MetadataHandle) == 0 {
+		if len(of.Name().ParentHandle) == 0 || len(of.MetadataHandle) == 0 {
 			return true
 		}
-		if !bytes.Equal(of.ParentHandle, dirHandle) {
+		if !bytes.Equal(of.Name().ParentHandle, dirHandle) {
 			return true
 		}
 		children = append(children, of.MetadataHandle)
@@ -2650,10 +2674,10 @@ func (h *Handler) anyOpenChild(dirHandle metadata.FileHandle) bool {
 	open := false
 	h.files.Range(func(_, value any) bool {
 		of := value.(*OpenFile)
-		if len(of.ParentHandle) == 0 {
+		if len(of.Name().ParentHandle) == 0 {
 			return true
 		}
-		if !bytes.Equal(of.ParentHandle, dirHandle) {
+		if !bytes.Equal(of.Name().ParentHandle, dirHandle) {
 			return true
 		}
 		open = true

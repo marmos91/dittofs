@@ -128,7 +128,7 @@ func (h *Handler) handleGetReparsePoint(ctx *SMBHandlerContext, body []byte) (*H
 	target, _, err := metaSvc.ReadSymlink(authCtx, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("IOCTL GET_REPARSE_POINT: not a symlink or read failed",
-			"path", openFile.Path, "error", err)
+			"path", openFile.Name().Path, "error", err)
 		// Check if it's not a symlink
 		if storeErr, ok := err.(*metadata.StoreError); ok && storeErr.Code == metadata.ErrInvalidArgument {
 			return NewErrorResult(types.StatusNotAReparsePoint), nil
@@ -136,7 +136,7 @@ func (h *Handler) handleGetReparsePoint(ctx *SMBHandlerContext, body []byte) (*H
 		return NewErrorResult(common.MapToSMB(err)), nil
 	}
 
-	logger.Debug("IOCTL GET_REPARSE_POINT: symlink target", "path", openFile.Path, "target", target)
+	logger.Debug("IOCTL GET_REPARSE_POINT: symlink target", "path", openFile.Name().Path, "target", target)
 
 	// Build SYMBOLIC_LINK_REPARSE_DATA_BUFFER [MS-FSCC] 2.1.2.4
 	reparseData := buildSymlinkReparseBuffer(target)
@@ -467,7 +467,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 
 	// Verify it's a directory
 	if !openFile.IsDirectory {
-		logger.Debug("CHANGE_NOTIFY: not a directory", "path", openFile.Path)
+		logger.Debug("CHANGE_NOTIFY: not a directory", "path", openFile.Name().Path)
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
@@ -507,7 +507,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	const fileListDirectory uint32 = 0x00000001
 	if openFile.GrantedAccess&fileListDirectory == 0 {
 		logger.Debug("CHANGE_NOTIFY: missing FILE_LIST_DIRECTORY access",
-			"path", openFile.Path,
+			"path", openFile.Name().Path,
 			"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess),
 			"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
 		return NewErrorResult(types.StatusAccessDenied), nil
@@ -520,7 +520,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	}
 
 	// Build the watch path (share-relative)
-	watchPath := openFile.Path
+	watchPath := openFile.Name().Path
 	if watchPath == "" {
 		watchPath = "/"
 	}
@@ -1010,7 +1010,7 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 
 	useV3 := maxMajorVersion >= 3
 
-	fileNameBytes := encodeUTF16LE(openFile.FileName)
+	fileNameBytes := encodeUTF16LE(openFile.Name().FileName)
 	fileAttrs := uint32(FileAttrToSMBAttributes(&file.FileAttr))
 
 	// Note: Usn, TimeStamp, Reason, SourceInfo, SecurityId are stub zeros.
@@ -1077,7 +1077,7 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 		usnVersion = 3
 	}
 	logger.Debug("IOCTL READ_FILE_USN_DATA: success",
-		"path", openFile.Path,
+		"path", openFile.Name().Path,
 		"version", usnVersion)
 	return NewResult(types.StatusSuccess, resp), nil
 }
@@ -1120,7 +1120,7 @@ func (h *Handler) handlePipeTransceive(ctx *SMBHandlerContext, body []byte) (*Ha
 
 	if !openFile.IsPipe {
 		logger.Debug("IOCTL PIPE_TRANSCEIVE: not a pipe",
-			"path", openFile.Path)
+			"path", openFile.Name().Path)
 		return NewErrorResult(types.StatusInvalidDeviceRequest), nil
 	}
 

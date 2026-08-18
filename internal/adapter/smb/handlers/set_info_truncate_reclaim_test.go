@@ -85,17 +85,14 @@ func setupTruncateTest(t *testing.T) (*Handler, *metadata.AuthContext, *OpenFile
 	h := NewHandler()
 	h.Registry = rt
 
-	open := &OpenFile{
+	open := (&OpenFile{
 		FileID:         [16]byte{0x7C, 0x01},
 		MetadataHandle: handle,
-		ParentHandle:   rootHandle,
-		FileName:       "repro.bin",
-		Path:           "repro.bin",
 		ShareName:      shareName,
 		GrantedAccess: uint32(types.FileWriteData) | uint32(types.FileReadData) |
 			uint32(types.FileWriteAttributes) | uint32(types.FileReadAttributes),
 		DesiredAccess: uint32(types.FileWriteData) | uint32(types.FileReadData),
-	}
+	}).WithName(OpenName{Path: "repro.bin", FileName: "repro.bin", ParentHandle: rootHandle})
 	h.StoreOpenFile(open)
 	return h, authCtx, open
 }

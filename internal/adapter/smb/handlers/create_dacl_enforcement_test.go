@@ -662,16 +662,15 @@ func runDestructiveShareViolationCase(t *testing.T, fname string, disposition ty
 		t.Fatalf("EncodeFileHandle: %v", err)
 	}
 	firstFileID := h.GenerateFileID()
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:         firstFileID,
 		TreeID:         smbCtx.TreeID,
 		SessionID:      smbCtx.SessionID,
-		Path:           fname,
 		ShareName:      smbCtx.ShareName,
 		DesiredAccess:  fileReadData,
 		ShareAccess:    fileShareRead,
 		MetadataHandle: encHandle,
-	})
+	}).WithName(OpenName{Path: fname}))
 
 	// Second handle: destructive disposition, READ_DATA, SHARE_READ.
 	draft := makeDraftWithShareAccess(t, tree, requesterAuth, rootHandle, existingFile, fname,
@@ -755,16 +754,15 @@ func TestCreate_OpenWithReadShareDoesNotConflictExistingHolder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncodeFileHandle: %v", err)
 	}
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:         h.GenerateFileID(),
 		TreeID:         smbCtx.TreeID,
 		SessionID:      smbCtx.SessionID,
-		Path:           "open_share.txt",
 		ShareName:      smbCtx.ShareName,
 		DesiredAccess:  fileReadData,
 		ShareAccess:    fileShareRead,
 		MetadataHandle: encHandle,
-	})
+	}).WithName(OpenName{Path: "open_share.txt"}))
 
 	draft := makeDraftWithShareAccess(t, tree, requesterAuth, rootHandle, existingFile, "open_share.txt",
 		fileReadData, fileShareRead, types.FileOpen, types.FileOpened)

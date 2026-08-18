@@ -239,7 +239,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 
 	// Pipes don't support locking
 	if openFile.IsPipe {
-		logger.Debug("LOCK: pipes don't support locking", "path", openFile.Path)
+		logger.Debug("LOCK: pipes don't support locking", "path", openFile.Name().Path)
 		return NewErrorResult(types.StatusInvalidDeviceRequest), nil
 	}
 
@@ -351,7 +351,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 		if breakErr := h.LeaseManager.BreakLeasesOnByteRangeLock(lockFileHandle, openFile.ShareName, &lock.LockOwner{
 			ExcludeLeaseKey: openFile.LeaseKey,
 		}); breakErr != nil {
-			logger.Debug("LOCK: lease break failed (non-fatal)", "path", openFile.Path, "error", breakErr)
+			logger.Debug("LOCK: lease break failed (non-fatal)", "path", openFile.Name().Path, "error", breakErr)
 		}
 	}
 

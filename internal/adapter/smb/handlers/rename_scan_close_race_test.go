@@ -32,19 +32,17 @@ import (
 // rename conflict scans see a live conflict until the holder is removed.
 func storeHolder(h *Handler, metaHandle, parentHandle metadata.FileHandle) (holderID, childID [16]byte) {
 	holderID = h.GenerateFileID()
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:         holderID,
 		MetadataHandle: metaHandle,
-		ParentHandle:   parentHandle,
 		ShareAccess:    0,                  // lacks FILE_SHARE_DELETE → checkShareDeleteConflict trips
-		DesiredAccess:  uint32(0x00010000), // DELETE → checkParentDirRenameConflict trips
-	})
+		DesiredAccess:  uint32(0x00010000), // DELETE → checkParentDirRenameConflict trips,
+	}).WithName(OpenName{ParentHandle: parentHandle}))
 	childID = h.GenerateFileID()
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:         childID,
-		MetadataHandle: metadata.FileHandle{0xCC},
-		ParentHandle:   metaHandle, // child of the directory being renamed
-	})
+		MetadataHandle: metadata.FileHandle{0xCC}, // child of the directory being renamed,
+	}).WithName(OpenName{ParentHandle: metaHandle}))
 	return holderID, childID
 }
 
@@ -63,12 +61,11 @@ func TestRenameScan_vs_Close_Serialized_NoRace(t *testing.T) {
 
 	// The renamer's own directory open (IsDirectory so anyOpenChild applies).
 	renamerID := h.GenerateFileID()
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:         renamerID,
 		MetadataHandle: metaHandle,
 		IsDirectory:    true,
-		ParentHandle:   parentHandle,
-	})
+	}).WithName(OpenName{ParentHandle: parentHandle}))
 
 	const iters = 2000
 	var torn atomic.Bool         // true while a CLOSE is mid-removal under the mutex
@@ -154,12 +151,11 @@ func TestRenameScan_vs_Close_NegativeControl(t *testing.T) {
 		h := NewHandler()
 
 		renamerID := h.GenerateFileID()
-		h.StoreOpenFile(&OpenFile{
+		h.StoreOpenFile((&OpenFile{
 			FileID:         renamerID,
 			MetadataHandle: metaHandle,
 			IsDirectory:    true,
-			ParentHandle:   parentHandle,
-		})
+		}).WithName(OpenName{ParentHandle: parentHandle}))
 		renamer, _ := h.files.Load(string(renamerID[:]))
 		of := renamer.(*OpenFile)
 

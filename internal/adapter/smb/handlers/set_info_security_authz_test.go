@@ -71,15 +71,12 @@ func setupSecurityAuthzTest(t *testing.T) (*Handler, *OpenFile, *metadata.AuthCo
 	h := NewHandler()
 	h.Registry = rt
 
-	openFile := &OpenFile{
+	openFile := (&OpenFile{
 		FileID:         [16]byte{9, 9, 9, 9},
 		MetadataHandle: fileHandle,
-		ParentHandle:   rootHandle,
-		FileName:       "g.dat",
-		Path:           "g.dat",
 		ShareName:      shareName,
-		// GrantedAccess intentionally zero; caller stamps per test.
-	}
+		// GrantedAccess intentionally zero; caller stamps per test.,
+	}).WithName(OpenName{Path: "g.dat", FileName: "g.dat", ParentHandle: rootHandle})
 	h.StoreOpenFile(openFile)
 	return h, openFile, authCtx
 }

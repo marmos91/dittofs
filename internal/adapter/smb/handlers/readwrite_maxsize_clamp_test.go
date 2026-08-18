@@ -18,11 +18,10 @@ func TestRead_ClampsLengthToMaxReadSize(t *testing.T) {
 	}
 
 	fileID := [16]byte{0x11}
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:        fileID,
-		Path:          "/file",
 		GrantedAccess: uint32(types.FileReadData),
-	})
+	}).WithName(OpenName{Path: "/file"}))
 
 	// Length one byte over the advertised maximum.
 	req := &ReadRequest{
@@ -49,11 +48,10 @@ func TestRead_AtMaxReadSizeNotRejectedByClamp(t *testing.T) {
 	h := NewHandler()
 
 	fileID := [16]byte{0x22}
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:        fileID,
-		Path:          "/file",
 		GrantedAccess: uint32(types.FileReadData),
-	})
+	}).WithName(OpenName{Path: "/file"}))
 
 	req := &ReadRequest{
 		FileID: fileID,
@@ -84,11 +82,10 @@ func TestWrite_ClampsLengthToMaxWriteSize(t *testing.T) {
 	}
 
 	fileID := [16]byte{0x33}
-	h.StoreOpenFile(&OpenFile{
+	h.StoreOpenFile((&OpenFile{
 		FileID:        fileID,
-		Path:          "/file",
 		GrantedAccess: uint32(types.FileWriteData),
-	})
+	}).WithName(OpenName{Path: "/file"}))
 
 	req := &WriteRequest{
 		FileID: fileID,

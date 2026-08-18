@@ -358,7 +358,7 @@ func (h *Handler) setFileInfoFromStore(
 		ctimeFT := ftR.ReadUint64()
 
 		logger.Debug("SET_INFO: FileBasicInformation raw FILETIME values",
-			"path", openFile.Path,
+			"path", openFile.Name().Path,
 			"creationFT", fmt.Sprintf("0x%016X", creationFT),
 			"atimeFT", fmt.Sprintf("0x%016X", atimeFT),
 			"mtimeFT", fmt.Sprintf("0x%016X", mtimeFT),
@@ -403,17 +403,18 @@ func (h *Handler) setFileInfoFromStore(
 		var preFile *metadata.File
 		if needPreFile {
 			var err error
-			if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 && len(openFile.ParentHandle) > 0 {
+			name := openFile.Name()
+			if colonIdx := strings.Index(name.FileName, ":"); colonIdx > 0 && len(name.ParentHandle) > 0 {
 				// ADS: capture base file timestamps.
-				baseFileName := openFile.FileName[:colonIdx]
-				if baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseFileName); baseFile != nil {
+				baseFileName := name.FileName[:colonIdx]
+				if baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, name.ParentHandle, baseFileName); baseFile != nil {
 					preFile = baseFile
 				}
 			}
 			if preFile == nil {
 				preFile, err = metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
 				if err != nil {
-					logger.Warn("SET_INFO: failed to read file for freeze/unfreeze", "path", openFile.Path, "error", err)
+					logger.Warn("SET_INFO: failed to read file for freeze/unfreeze", "path", openFile.Name().Path, "error", err)
 				}
 			}
 		}
@@ -479,7 +480,7 @@ func (h *Handler) setFileInfoFromStore(
 
 		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			openFile.mu.Unlock() // release before returning; refs #606.
-			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Path, "error", err)
+			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Name().Path, "error", err)
 			return setInfoStatus(common.MapToSMB(err)), nil
 		}
 
@@ -513,9 +514,10 @@ func (h *Handler) setFileInfoFromStore(
 		// propagate is logged at the metadata layer and does not roll back
 		// the stream's own SET_INFO (the stream is the explicitly-targeted
 		// handle and its write has already succeeded above).
-		if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 && len(openFile.ParentHandle) > 0 {
-			baseFileName := openFile.FileName[:colonIdx]
-			if baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseFileName); baseFile != nil {
+		adsName := openFile.Name()
+		if colonIdx := strings.Index(adsName.FileName, ":"); colonIdx > 0 && len(adsName.ParentHandle) > 0 {
+			baseFileName := adsName.FileName[:colonIdx]
+			if baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, adsName.ParentHandle, baseFileName); baseFile != nil {
 				basePropagate := &metadata.SetAttrs{
 					Mtime:        setAttrs.Mtime,
 					Ctime:        setAttrs.Ctime,
@@ -555,7 +557,7 @@ func (h *Handler) setFileInfoFromStore(
 			case filetimeFreeze:
 				openFile.BtimeFrozen = true
 				openFile.FrozenBtime = &preFile.CreationTime
-				logger.Debug("SET_INFO: froze CreationTime", "path", openFile.Path, "value", preFile.CreationTime)
+				logger.Debug("SET_INFO: froze CreationTime", "path", openFile.Name().Path, "value", preFile.CreationTime)
 			case filetimeUnfreeze:
 				openFile.BtimeFrozen = false
 				openFile.FrozenBtime = nil
@@ -566,7 +568,7 @@ func (h *Handler) setFileInfoFromStore(
 			case filetimeFreeze:
 				openFile.MtimeFrozen = true
 				openFile.FrozenMtime = &preFile.Mtime
-				logger.Debug("SET_INFO: froze LastWriteTime", "path", openFile.Path, "value", preFile.Mtime)
+				logger.Debug("SET_INFO: froze LastWriteTime", "path", openFile.Name().Path, "value", preFile.Mtime)
 			case filetimeUnfreeze:
 				openFile.MtimeFrozen = false
 				openFile.FrozenMtime = nil
@@ -577,7 +579,7 @@ func (h *Handler) setFileInfoFromStore(
 			case filetimeFreeze:
 				openFile.CtimeFrozen = true
 				openFile.FrozenCtime = &preFile.Ctime
-				logger.Debug("SET_INFO: froze ChangeTime", "path", openFile.Path, "value", preFile.Ctime)
+				logger.Debug("SET_INFO: froze ChangeTime", "path", openFile.Name().Path, "value", preFile.Ctime)
 			case filetimeUnfreeze:
 				openFile.CtimeFrozen = false
 				openFile.FrozenCtime = nil
@@ -618,7 +620,7 @@ func (h *Handler) setFileInfoFromStore(
 			v := *val
 			*frozen = true
 			*frozenVal = &v
-			logger.Debug("SET_INFO: explicit set pins timestamp", "field", label, "path", openFile.Path, "value", v)
+			logger.Debug("SET_INFO: explicit set pins timestamp", "field", label, "path", openFile.Name().Path, "value", v)
 		}
 		freezeOnExplicitSet(creationFT, &openFile.BtimeFrozen, &openFile.FrozenBtime, setAttrs.CreationTime, "CreationTime")
 		freezeOnExplicitSet(mtimeFT, &openFile.MtimeFrozen, &openFile.FrozenMtime, setAttrs.Mtime, "LastWriteTime")
@@ -666,7 +668,7 @@ func (h *Handler) setFileInfoFromStore(
 				nf |= FileNotifyChangeLastWrite
 			}
 			if nf != 0 {
-				h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, nf)
+				h.notifyOpenFileModified(openFile, nf)
 			}
 		}
 
@@ -685,7 +687,7 @@ func (h *Handler) setFileInfoFromStore(
 		// the pre-DACL DesiredAccess — same fix class as #616 (ChangeNotify).
 		if !hasDeleteAccess(openFile.GrantedAccess) {
 			logger.Debug("SET_INFO: rename without DELETE access",
-				"path", openFile.Path,
+				"path", openFile.Name().Path,
 				"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess))
 			return setInfoStatus(types.StatusAccessDenied), nil
 		}
@@ -706,7 +708,7 @@ func (h *Handler) setFileInfoFromStore(
 		h.renameScanMu.Unlock()
 		if shareDeleteConflict {
 			logger.Debug("SET_INFO: rename blocked by sharing violation",
-				"path", openFile.Path,
+				"path", openFile.Name().Path,
 				"fileID", fmt.Sprintf("%x", openFile.FileID))
 			return setInfoStatus(types.StatusSharingViolation), nil
 		}
@@ -725,7 +727,7 @@ func (h *Handler) setFileInfoFromStore(
 		if strings.HasPrefix(newPath, ":") {
 			// Extract the base file name from the current open file name.
 			// The current file is an ADS: "basefile:streamname"
-			baseName := openFile.FileName
+			baseName := openFile.Name().FileName
 			if colonIdx := strings.Index(baseName, ":"); colonIdx > 0 {
 				baseName = baseName[:colonIdx]
 			}
@@ -737,11 +739,11 @@ func (h *Handler) setFileInfoFromStore(
 
 			// Build new child name: basefile + new stream suffix
 			toName := baseName + newPath
-			toDir := openFile.ParentHandle
+			toDir := openFile.Name().ParentHandle
 
 			// Save old path info for notification before modification
-			oldPath := openFile.Path
-			oldFileName := openFile.FileName
+			oldPath := openFile.Name().Path
+			oldFileName := openFile.Name().FileName
 			oldParentPath := GetParentPath(oldPath)
 
 			// Per MS-FSA 2.1.5.14.10: Save mtime/ctime before rename
@@ -749,10 +751,10 @@ func (h *Handler) setFileInfoFromStore(
 
 			// Perform the rename
 			metaSvc := h.Registry.GetMetadataService()
-			_, err = metaSvc.Move(authCtx, toDir, openFile.FileName, toDir, toName)
+			_, err = metaSvc.Move(authCtx, toDir, openFile.Name().FileName, toDir, toName)
 			if err != nil {
 				logger.Debug("SET_INFO: stream rename failed",
-					"from", openFile.FileName,
+					"from", openFile.Name().FileName,
 					"to", toName,
 					"error", err)
 				return setInfoStatus(common.MapToSMB(err)), nil
@@ -768,7 +770,7 @@ func (h *Handler) setFileInfoFromStore(
 			if h.NotifyRegistry != nil {
 				tree, ok := h.GetTree(openFile.TreeID)
 				if ok {
-					newParentPath := GetParentPath(openFile.Path)
+					newParentPath := GetParentPath(openFile.Name().Path)
 					if newParentPath == "" || newParentPath == "." {
 						newParentPath = "/"
 					}
@@ -780,17 +782,19 @@ func (h *Handler) setFileInfoFromStore(
 				}
 			}
 
-			// Update open file state. Ops pipelined on this handle read the
-			// name/path pair concurrently (WRITE classifies an ADS write from
-			// it), so read and republish the pair under the handle lock.
+			// Update open file state. The handle lock serializes this
+			// read-modify-write against a concurrent rename on the same handle.
 			openFile.mu.Lock()
-			parentPath := GetParentPath(openFile.Path)
+			cur := openFile.Name()
+			newName := *cur
+			newName.FileName = toName
+			parentPath := GetParentPath(cur.Path)
 			if parentPath == "" || parentPath == "/" || parentPath == "." {
-				openFile.Path = toName
+				newName.Path = toName
 			} else {
-				openFile.Path = parentPath + "/" + toName
+				newName.Path = parentPath + "/" + toName
 			}
-			openFile.FileName = toName
+			openFile.SetName(newName)
 			openFile.mu.Unlock()
 			h.StoreOpenFile(openFile)
 
@@ -821,7 +825,7 @@ func (h *Handler) setFileInfoFromStore(
 			// to directory handles, so fall back to same-directory rename.
 			logger.Debug("SET_INFO: rename with non-zero RootDirectory (using same-dir fallback)",
 				"rootDirectory", fmt.Sprintf("%x", renameInfo.RootDirectory))
-			toDir = openFile.ParentHandle
+			toDir = openFile.Name().ParentHandle
 			toName = path.Base(newPath)
 		} else {
 			// RootDirectory is zero: FileName is a full path from the share root.
@@ -854,8 +858,8 @@ func (h *Handler) setFileInfoFromStore(
 		}
 
 		// Validate we have source info
-		if len(openFile.ParentHandle) == 0 {
-			logger.Debug("SET_INFO: cannot rename root directory", "path", openFile.Path)
+		if len(openFile.Name().ParentHandle) == 0 {
+			logger.Debug("SET_INFO: cannot rename root directory", "path", openFile.Name().Path)
 			return setInfoStatus(types.StatusAccessDenied), nil
 		}
 
@@ -907,7 +911,7 @@ func (h *Handler) setFileInfoFromStore(
 			h.renameScanMu.Unlock()
 			if openChild {
 				logger.Debug("SET_INFO: dir rename blocked by open child",
-					"dir", openFile.Path)
+					"dir", openFile.Name().Path)
 				return setInfoStatus(types.StatusAccessDenied), nil
 			}
 		}
@@ -946,7 +950,7 @@ func (h *Handler) setFileInfoFromStore(
 		h.renameScanMu.Lock()
 		conflict := h.checkParentDirRenameConflict(openFile.FileID, toDir)
 		h.renameScanMu.Unlock()
-		if conflict && !bytes.Equal(toDir, openFile.ParentHandle) {
+		if conflict && !bytes.Equal(toDir, openFile.Name().ParentHandle) {
 			h.breakDstParentDirHandleLeasesForRename(authCtx, toDir, openFile)
 			// Re-check after the strip-H break drained (the holder's break
 			// handler may have closed its conflicting open). If the
@@ -961,7 +965,7 @@ func (h *Handler) setFileInfoFromStore(
 		}
 		if conflict {
 			logger.Debug("SET_INFO: rename blocked by destination-parent sharing violation",
-				"path", openFile.Path,
+				"path", openFile.Name().Path,
 				"toDir", fmt.Sprintf("%x", toDir),
 				"fileID", fmt.Sprintf("%x", openFile.FileID))
 			return setInfoStatus(types.StatusSharingViolation), nil
@@ -1037,7 +1041,7 @@ func (h *Handler) setFileInfoFromStore(
 					true, // RENAME break_to strips H.
 				); purged > 0 {
 					logger.Debug("SET_INFO: purged disconnected handles on rename",
-						"src", openFile.Path,
+						"src", openFile.Name().Path,
 						"dst", newPath,
 						"count", purged)
 				}
@@ -1089,20 +1093,20 @@ func (h *Handler) setFileInfoFromStore(
 			h.renameScanMu.Unlock()
 			if dstStillOpen {
 				logger.Debug("SET_INFO: rename overwrite blocked by open handle on destination",
-					"src", openFile.Path,
+					"src", openFile.Name().Path,
 					"dst", newPath)
 				return setInfoStatus(types.StatusAccessDenied), nil
 			}
 		}
 
-		// Save old path info for notification before modification
-		oldPath := openFile.Path
-		oldFileName := openFile.FileName
+		// Save the pre-rename name for notification and for the post-rename
+		// dir-lease break on the source parent, which the update below
+		// replaces with toDir.
+		oldName := openFile.Name()
+		oldPath := oldName.Path
+		oldFileName := oldName.FileName
 		oldParentPath := GetParentPath(oldPath)
-		// Snapshot src-parent handle so the post-rename dir-lease break can
-		// fire on the source parent (line 862 update below overwrites
-		// openFile.ParentHandle to toDir).
-		srcParentHandle := openFile.ParentHandle
+		srcParentHandle := oldName.ParentHandle
 
 		// Per MS-FSA 2.1.5.14.10: Save mtime/ctime before rename so we can
 		// restore them after. Rename should NOT update the file's timestamps.
@@ -1123,10 +1127,10 @@ func (h *Handler) setFileInfoFromStore(
 		}
 
 		// Perform the rename/move
-		_, err = metaSvc.Move(authCtx, openFile.ParentHandle, openFile.FileName, toDir, toName)
+		_, err = metaSvc.Move(authCtx, srcParentHandle, oldFileName, toDir, toName)
 		if err != nil {
 			logger.Debug("SET_INFO: rename failed",
-				"from", openFile.Path,
+				"from", openFile.Name().Path,
 				"to", newPath,
 				"error", err)
 			return setInfoStatus(common.MapToSMB(err)), nil
@@ -1137,8 +1141,8 @@ func (h *Handler) setFileInfoFromStore(
 
 		// Per MS-FSA 2.1.5.14.2: Restore frozen timestamps on parent directories.
 		// Move updates both source and destination parent directory timestamps.
-		h.restoreParentDirFrozenTimestamps(authCtx, openFile.ParentHandle)
-		if !bytes.Equal(toDir, openFile.ParentHandle) {
+		h.restoreParentDirFrozenTimestamps(authCtx, srcParentHandle)
+		if !bytes.Equal(toDir, srcParentHandle) {
 			h.restoreParentDirFrozenTimestamps(authCtx, toDir)
 		}
 
@@ -1172,7 +1176,7 @@ func (h *Handler) setFileInfoFromStore(
 			} else {
 				logger.Debug("SET_INFO: rename notifications skipped, tree lookup failed",
 					"treeID", openFile.TreeID,
-					"from", openFile.Path,
+					"from", openFile.Name().Path,
 					"to", newPath)
 			}
 		}
@@ -1183,20 +1187,17 @@ func (h *Handler) setFileInfoFromStore(
 		actualNewPath := newPath
 		if !bytes.Equal(renameInfo.RootDirectory[:], zeroRootDir[:]) {
 			// Handle-relative rename: build path from parent path + new name
-			parentPath := GetParentPath(openFile.Path)
+			parentPath := GetParentPath(openFile.Name().Path)
 			if parentPath == "" || parentPath == "/" {
 				actualNewPath = toName
 			} else {
 				actualNewPath = parentPath + "/" + toName
 			}
 		}
-		// Ops pipelined on this handle read the name/path/parent triple
-		// concurrently (WRITE snapshots it), so publish all three together
-		// under the handle lock.
+		// The handle lock serializes this against a concurrent rename on the
+		// same handle; readers get the triple from the single atomic swap.
 		openFile.mu.Lock()
-		openFile.Path = actualNewPath
-		openFile.FileName = toName
-		openFile.ParentHandle = toDir
+		openFile.SetName(OpenName{Path: actualNewPath, FileName: toName, ParentHandle: toDir})
 		openFile.mu.Unlock()
 		h.StoreOpenFile(openFile)
 
@@ -1243,8 +1244,8 @@ func (h *Handler) setFileInfoFromStore(
 		wasDeletePending := openFile.DeletePending
 
 		// Validate we have parent info for deletion
-		if deletePending && len(openFile.ParentHandle) == 0 {
-			logger.Debug("SET_INFO: cannot delete root directory", "path", openFile.Path)
+		if deletePending && len(openFile.Name().ParentHandle) == 0 {
+			logger.Debug("SET_INFO: cannot delete root directory", "path", openFile.Name().Path)
 			return setInfoStatus(types.StatusAccessDenied), nil
 		}
 
@@ -1254,7 +1255,7 @@ func (h *Handler) setFileInfoFromStore(
 		if deletePending {
 			if !hasDeleteAccess(openFile.GrantedAccess) {
 				logger.Debug("SET_INFO: delete disposition without DELETE access",
-					"path", openFile.Path,
+					"path", openFile.Name().Path,
 					"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess))
 				return setInfoStatus(types.StatusAccessDenied), nil
 			}
@@ -1266,7 +1267,7 @@ func (h *Handler) setFileInfoFromStore(
 				if fileErr == nil {
 					attrs := FileAttrToSMBAttributes(&file.FileAttr)
 					if attrs&types.FileAttributeReadonly != 0 {
-						logger.Debug("SET_INFO: delete disposition on read-only file", "path", openFile.Path)
+						logger.Debug("SET_INFO: delete disposition on read-only file", "path", openFile.Name().Path)
 						return setInfoStatus(types.StatusCannotDelete), nil
 					}
 				}
@@ -1291,7 +1292,7 @@ func (h *Handler) setFileInfoFromStore(
 				lockFileHandle, openFile.ShareName, excludeOwner,
 			); breakErr != nil {
 				logger.Debug("SET_INFO: delete-disposition handle lease break failed",
-					"path", openFile.Path, "error", breakErr)
+					"path", openFile.Name().Path, "error", breakErr)
 			}
 		}
 
@@ -1305,7 +1306,7 @@ func (h *Handler) setFileInfoFromStore(
 		h.StoreOpenFile(openFile)
 
 		logger.Debug("SET_INFO: delete disposition set",
-			"path", openFile.Path,
+			"path", openFile.Name().Path,
 			"deletePending", deletePending,
 			"class", class)
 		return setInfoStatus(types.StatusSuccess), nil
@@ -1331,7 +1332,7 @@ func (h *Handler) setFileInfoFromStore(
 		if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
 			lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
 			if breakErr := h.LeaseManager.BreakReadLeasesOnWrite(lockFileHandle, openFile.ShareName, openFile.LeaseKey); breakErr != nil {
-				logger.Debug("SET_INFO: oplock break on EOF set failed (non-fatal)", "path", openFile.Path, "error", breakErr)
+				logger.Debug("SET_INFO: oplock break on EOF set failed (non-fatal)", "path", openFile.Name().Path, "error", breakErr)
 			}
 			// MS-SMB2 §3.3.4.18: truncation is a data-modifying op that
 			// breaks Level-II Read leases to NONE — purge any disconnected
@@ -1344,7 +1345,7 @@ func (h *Handler) setFileInfoFromStore(
 					true,
 				); purged > 0 {
 					logger.Debug("SET_INFO: purged disconnected handles on EOF set",
-						"path", openFile.Path,
+						"path", openFile.Name().Path,
 						"count", purged)
 				}
 			}
@@ -1366,7 +1367,7 @@ func (h *Handler) setFileInfoFromStore(
 			true,
 		); err != nil {
 			logger.Debug("SET_INFO: truncation blocked by lock",
-				"path", openFile.Path, "newSize", newSize)
+				"path", openFile.Name().Path, "newSize", newSize)
 			return setInfoStatus(types.StatusFileLockConflict), nil
 		}
 
@@ -1382,7 +1383,7 @@ func (h *Handler) setFileInfoFromStore(
 
 		_, err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 		if err != nil {
-			logger.Debug("SET_INFO: failed to set EOF", "path", openFile.Path, "error", err)
+			logger.Debug("SET_INFO: failed to set EOF", "path", openFile.Name().Path, "error", err)
 			return setInfoStatus(common.MapToSMB(err)), nil
 		}
 
@@ -1393,7 +1394,7 @@ func (h *Handler) setFileInfoFromStore(
 		// SETATTR/CREATE-truncate drive the same common helper.
 		if rErr := common.ReclaimTruncatedBlocks(authCtx.Context, h.Registry, openFile.MetadataHandle, preFile, newSize); rErr != nil {
 			logger.Warn("SET_INFO: block store truncate reclaim failed",
-				"path", openFile.Path, "size", newSize, "error", rErr)
+				"path", openFile.Name().Path, "size", newSize, "error", rErr)
 		}
 
 		// Restore frozen timestamps after truncation (which updates Mtime/Ctime)
@@ -1411,7 +1412,7 @@ func (h *Handler) setFileInfoFromStore(
 		h.breakParentDirLeasesForContentChange(ctx, authCtx, openFile)
 
 		if h.NotifyRegistry != nil {
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, FileNotifyChangeSize)
+			h.notifyOpenFileModified(openFile, FileNotifyChangeSize)
 		}
 
 		return setInfoStatus(types.StatusSuccess), nil
@@ -1445,7 +1446,7 @@ func (h *Handler) setFileInfoFromStore(
 		if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
 			lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
 			if breakErr := h.LeaseManager.BreakReadLeasesOnWrite(lockFileHandle, openFile.ShareName, openFile.LeaseKey); breakErr != nil {
-				logger.Debug("SET_INFO: oplock break on allocation set failed (non-fatal)", "path", openFile.Path, "error", breakErr)
+				logger.Debug("SET_INFO: oplock break on allocation set failed (non-fatal)", "path", openFile.Name().Path, "error", breakErr)
 			}
 		}
 		// Record the requested reservation per-handle so a later QUERY_INFO on
@@ -1477,7 +1478,7 @@ func (h *Handler) setFileInfoFromStore(
 						Size: &requested,
 					}); err != nil {
 						logger.Debug("SET_INFO: allocation-driven truncate failed",
-							"path", openFile.Path, "error", err)
+							"path", openFile.Name().Path, "error", err)
 						return setInfoStatus(common.MapToSMB(err)), nil
 					}
 					// Discard block data past the new EOF (curFile is the pre-op
@@ -1486,14 +1487,14 @@ func (h *Handler) setFileInfoFromStore(
 					// bytes as content instead of zeros.
 					if rErr := common.ReclaimTruncatedBlocks(authCtx.Context, h.Registry, openFile.MetadataHandle, curFile, requested); rErr != nil {
 						logger.Warn("SET_INFO: allocation-driven block truncate reclaim failed",
-							"path", openFile.Path, "size", requested, "error", rErr)
+							"path", openFile.Name().Path, "size", requested, "error", rErr)
 					}
 					h.restoreFrozenTimestamps(authCtx, openFile)
 					flushSmbDelayedWrite(openFile)
 					h.StoreOpenFile(openFile)
 					h.breakParentDirLeasesForContentChange(ctx, authCtx, openFile)
 					if h.NotifyRegistry != nil {
-						h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, FileNotifyChangeSize)
+						h.notifyOpenFileModified(openFile, FileNotifyChangeSize)
 					}
 				}
 			}
@@ -1548,13 +1549,13 @@ func (h *Handler) setFileInfoFromStore(
 		entries, decErr := decodeFullEaEntries(buffer)
 		if decErr != nil {
 			logger.Debug("SET_INFO: FileFullEaInformation decode failed",
-				"path", openFile.Path, "error", decErr)
+				"path", openFile.Name().Path, "error", decErr)
 			return setInfoStatus(types.StatusInvalidParameter), nil
 		}
 		for _, e := range entries {
 			if isReservedACLXattrName(e.name) {
 				logger.Debug("SET_INFO: FileFullEaInformation reserved name rejected",
-					"path", openFile.Path, "name", e.name)
+					"path", openFile.Name().Path, "name", e.name)
 				return setInfoStatus(types.StatusAccessDenied), nil
 			}
 		}
@@ -1567,14 +1568,14 @@ func (h *Handler) setFileInfoFromStore(
 		setAttrs := &metadata.SetAttrs{EAMutations: eaMutationsFromEntries(entries)}
 		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			logger.Debug("SET_INFO: FileFullEaInformation persist failed",
-				"path", openFile.Path, "error", err)
+				"path", openFile.Name().Path, "error", err)
 			return setInfoStatus(common.MapToSMB(err)), nil
 		}
 
 		logger.Debug("SET_INFO: FileFullEaInformation persisted",
-			"path", openFile.Path, "count", len(entries))
+			"path", openFile.Name().Path, "count", len(entries))
 		if h.NotifyRegistry != nil {
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, FileNotifyChangeEa)
+			h.notifyOpenFileModified(openFile, FileNotifyChangeEa)
 		}
 		return setInfoStatus(types.StatusSuccess), nil
 
@@ -1665,7 +1666,7 @@ func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFil
 	openFile.mu.RUnlock()
 
 	logger.Debug("restoreFrozenTimestamps: restoring",
-		"path", openFile.Path,
+		"path", openFile.Name().Path,
 		"mtimeFrozen", mtimeFrozen,
 		"ctimeFrozen", ctimeFrozen,
 		"atimeFrozen", atimeFrozen,
@@ -1675,7 +1676,7 @@ func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFil
 
 	metaSvc := h.Registry.GetMetadataService()
 	if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, restoreAttrs); err != nil {
-		logger.Debug("restoreFrozenTimestamps: failed", "path", openFile.Path, "error", err)
+		logger.Debug("restoreFrozenTimestamps: failed", "path", openFile.Name().Path, "error", err)
 		return
 	}
 
@@ -1720,13 +1721,13 @@ func (h *Handler) restoreParentDirFrozenTimestamps(authCtx *metadata.AuthContext
 		metaSvc := h.Registry.GetMetadataService()
 		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, restoreAttrs); err != nil {
 			logger.Debug("restoreParentDirFrozenTimestamps: failed",
-				"path", openFile.Path, "error", err)
+				"path", openFile.Name().Path, "error", err)
 		} else {
 			// IsMtimeFrozen / IsCtimeFrozen / IsAtimeFrozen each take
 			// openFile.mu (read); see #606. Cheap because the parent-dir
 			// frozen log line is debug-gated.
 			logger.Debug("restoreParentDirFrozenTimestamps: restored",
-				"path", openFile.Path,
+				"path", openFile.Name().Path,
 				"mtimeFrozen", openFile.IsMtimeFrozen(),
 				"ctimeFrozen", openFile.IsCtimeFrozen(),
 				"atimeFrozen", openFile.IsAtimeFrozen())
@@ -1831,7 +1832,7 @@ func (h *Handler) setSecurityInfo(
 	// already captured the DACL-evaluated rights at CREATE time.
 	if status, ok := checkSetInfoSecurityAccess(openFile.GrantedAccess, additionalInfo); !ok {
 		logger.Debug("SET_INFO Security: handle lacks required access",
-			"path", openFile.Path,
+			"path", openFile.Name().Path,
 			"additionalInfo", fmt.Sprintf("0x%x", additionalInfo),
 			"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess))
 		return setInfoStatus(status), nil
@@ -1844,7 +1845,7 @@ func (h *Handler) setSecurityInfo(
 
 	ownerUID, ownerGID, fileACL, err := ParseSecurityDescriptorWithOptions(buffer, opts)
 	if err != nil {
-		logger.Debug("SET_INFO: failed to parse security descriptor", "path", openFile.Path, "error", err)
+		logger.Debug("SET_INFO: failed to parse security descriptor", "path", openFile.Name().Path, "error", err)
 		return setInfoStatus(types.StatusInvalidParameter), nil
 	}
 
@@ -1887,11 +1888,11 @@ func (h *Handler) setSecurityInfo(
 				curUID, curGID = cur.UID, cur.GID
 			}
 			if ownerReject && !isCurrentOwnerSID(reqOwnerSID, curUID) {
-				logger.Debug("SET_INFO Security: owner change requested with foreign-domain SID", "path", openFile.Path)
+				logger.Debug("SET_INFO Security: owner change requested with foreign-domain SID", "path", openFile.Name().Path)
 				return setInfoStatus(types.StatusInvalidOwner), nil
 			}
 			if groupReject && !isCurrentGroupSID(reqGroupSID, curGID) {
-				logger.Debug("SET_INFO Security: group change requested with foreign-domain SID", "path", openFile.Path)
+				logger.Debug("SET_INFO Security: group change requested with foreign-domain SID", "path", openFile.Name().Path)
 				return setInfoStatus(types.StatusNoneMapped), nil
 			}
 		}
@@ -1940,19 +1941,19 @@ func (h *Handler) setSecurityInfo(
 
 	if !changed {
 		if h.NotifyRegistry != nil {
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, FileNotifyChangeSecurity)
+			h.notifyOpenFileModified(openFile, FileNotifyChangeSecurity)
 		}
 		return setInfoStatus(types.StatusSuccess), nil
 	}
 
 	_, err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 	if err != nil {
-		logger.Debug("SET_INFO: failed to set security info", "path", openFile.Path, "error", err)
+		logger.Debug("SET_INFO: failed to set security info", "path", openFile.Name().Path, "error", err)
 		return setInfoStatus(common.MapToSMB(err)), nil
 	}
 
 	if h.NotifyRegistry != nil {
-		h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, FileNotifyChangeSecurity)
+		h.notifyOpenFileModified(openFile, FileNotifyChangeSecurity)
 	}
 
 	return setInfoStatus(types.StatusSuccess), nil
@@ -2072,10 +2073,10 @@ func checkSetInfoSecurityAccess(grantedAccess, additionalInfo uint32) (types.Sta
 // after the triggering request's response, matching Samba's tevent-cycle
 // `send_break_to_none` semantics.
 func (h *Handler) breakParentDirLeasesForContentChange(ctx *SMBHandlerContext, authCtx *metadata.AuthContext, openFile *OpenFile) {
-	if len(openFile.ParentHandle) == 0 {
+	if len(openFile.Name().ParentHandle) == 0 {
 		return
 	}
-	h.breakParentDirLeasesForContentChangeOn(ctx, authCtx, openFile.ParentHandle, openFile)
+	h.breakParentDirLeasesForContentChangeOn(ctx, authCtx, openFile.Name().ParentHandle, openFile)
 }
 
 // breakParentDirLeasesForContentChangeOn is the multi-parent variant used by
@@ -2113,7 +2114,7 @@ func (h *Handler) breakParentDirLeasesForContentChangeOn(ctx *SMBHandlerContext,
 	// exclusion — same-client breaks fire when the key doesn't match.
 	excludeParentKey := openFile.ParentLeaseKey
 	hasExcludeKey := openFile.HasParentLeaseKey
-	path := openFile.Path
+	path := openFile.Name().Path
 	parentDbg := fmt.Sprintf("%x", parentHandle)
 	shareName := openFile.ShareName
 
@@ -2166,7 +2167,7 @@ func (h *Handler) breakDstParentDirHandleLeasesForRename(authCtx *metadata.AuthC
 	excludeParentKey := openFile.ParentLeaseKey
 	hasExcludeKey := openFile.HasParentLeaseKey
 	if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(authCtx.Context, parentLockHandle, openFile.ShareName, "", excludeParentKey, hasExcludeKey); breakErr != nil {
-		logger.Debug("SET_INFO: dst-parent dir Handle lease pre-break failed", "path", openFile.Path, "dstParent", fmt.Sprintf("%x", dstParent), "error", breakErr)
+		logger.Debug("SET_INFO: dst-parent dir Handle lease pre-break failed", "path", openFile.Name().Path, "dstParent", fmt.Sprintf("%x", dstParent), "error", breakErr)
 	}
 }
 
@@ -2247,7 +2248,7 @@ func (h *Handler) handleFileLinkInformation(
 	// Hard-linking a directory is forbidden (MS-FSA 2.1.5.14.5).
 	if openFile.IsDirectory {
 		logger.Debug("SET_INFO: hardlink on directory rejected",
-			"path", openFile.Path)
+			"path", openFile.Name().Path)
 		return setInfoStatus(types.StatusFileIsADirectory), nil
 	}
 
@@ -2270,7 +2271,7 @@ func (h *Handler) handleFileLinkInformation(
 		// fall back to same-directory link.
 		logger.Debug("SET_INFO: hardlink with non-zero RootDirectory (using same-dir fallback)",
 			"rootDirectory", fmt.Sprintf("%x", linkInfo.RootDirectory))
-		dstDir = openFile.ParentHandle
+		dstDir = openFile.Name().ParentHandle
 		linkName = path.Base(newPath)
 	} else {
 		tree, ok := h.GetTree(openFile.TreeID)
@@ -2321,7 +2322,7 @@ func (h *Handler) handleFileLinkInformation(
 
 	if _, err := metaSvc.CreateHardLink(authCtx, dstDir, linkName, openFile.MetadataHandle); err != nil {
 		logger.Debug("SET_INFO: CreateHardLink failed",
-			"src", openFile.Path, "dst", newPath, "error", err)
+			"src", openFile.Name().Path, "dst", newPath, "error", err)
 		return setInfoStatus(common.MapToSMB(err)), nil
 	}
 
@@ -2375,7 +2376,7 @@ func (h *Handler) handleFileLinkInformation(
 	}
 
 	logger.Debug("SET_INFO: hardlink created",
-		"src", openFile.Path, "dst", newPath, "name", linkName)
+		"src", openFile.Name().Path, "dst", newPath, "name", linkName)
 	return setInfoStatus(types.StatusSuccess), nil
 }
 
