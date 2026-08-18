@@ -107,11 +107,11 @@ func TestEnsureAvailableAndRead_ChunkAfterHoleIsFetched(t *testing.T) {
 
 			// Poison the destination so an unhydrated range fails instead of hiding in zeros.
 			got := bytes.Repeat([]byte{0xAA}, chunkSize)
-			n, cold, err := loc.ReadAt(ctx, payloadID, holeEnd, got)
+			n, st, err := loc.ReadAt(ctx, payloadID, holeEnd, got)
 			if err != nil {
 				t.Fatalf("local ReadAt after fetch: %v", err)
 			}
-			if cold {
+			if st.Cold {
 				t.Fatalf("local ReadAt reports cold after fetch; chunk at %d was never hydrated", holeEnd)
 			}
 			if n != chunkSize {

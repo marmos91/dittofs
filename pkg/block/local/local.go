@@ -35,11 +35,11 @@ type LocalStore interface {
 	// durability is a separate Commit.
 	WriteAt(ctx context.Context, payloadID string, offset int64, data []byte) error
 
-	// ReadAt fills dst with the file's bytes at offset. Never-written ranges are
-	// POSIX holes and are zero-filled. Ranges written but evicted return
-	// cold=true (dst zero-filled as a placeholder) so the caller hydrates from
-	// the remote store and retries.
-	ReadAt(ctx context.Context, payloadID string, offset int64, dst []byte) (n int, cold bool, err error)
+	// ReadAt fills dst with the file's bytes at offset. Never-written ranges and
+	// evicted ranges are both zero-filled and reported through ReadState, so the
+	// caller can hydrate a cold range from the remote store and reconcile a hole
+	// against the CAS manifest before trusting the zeros.
+	ReadAt(ctx context.Context, payloadID string, offset int64, dst []byte) (n int, st journal.ReadState, err error)
 
 	// Hydrate writes bytes fetched from the remote store during a cold read.
 	// Same append primitive as WriteAt, but the record is born clean (already

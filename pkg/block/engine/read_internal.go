@@ -21,18 +21,32 @@ func blockRefHashes(refs []block.ChunkRef) []block.ContentHash {
 }
 
 // readAtInternal reads from the primary payloadID via the journal-backed local
-// tier. journal.ReadAt fills dst with the file's local bytes and zero-fills
-// never-written holes; if any requested byte was written-but-evicted it reports
-// cold=true. On a cold read the engine hydrates the covering chunks from the
-// remote store (verified) back into the journal and re-reads, so a warm re-read
-// serves the fetched bytes. A genuinely sparse hole (no remote chunk) stays
-// zero-filled — RFC-safe.
+// tier. journal.ReadAt fills dst with the file's local bytes, zero-fills the
+// rest, and reports whether the window held evicted (cold) or uncovered (hole)
+// ranges. Either way the engine reconciles against the CAS manifest: it hydrates
+// every covering chunk from the remote store (verified) back into the journal
+// and re-reads, so the re-read serves the fetched bytes. A range no manifest row
+// covers is a genuinely sparse hole and stays zero-filled — RFC-safe.
+//
+// A hole is reconciled for the same reason a cold range is: the local tier alone
+// cannot tell a never-written range from one whose interval the tier lost — a
+// snapshot restore or a pre-journal upgrade re-seeds cold intervals from the
+// manifest and cannot seed a row whose ID does not parse. Consulting the
+// manifest on a hole is what puts such a payload in front of the covering walk's
+// ErrManifestInconsistent guard instead of serving its zeros. It also makes this
+// view and DataExtents' the same union of journal and manifest, which is what
+// keeps NFSv4.2 SEEK and READ from disagreeing about where the data is.
+//
+// A fully warm read — every byte covered by a live local interval — returns
+// without touching the manifest, so the hot path is unchanged. So does any hole
+// on a local-only share: with no remote there is nothing to hydrate and nothing
+// carves manifest rows, so the reconcile would only re-read the same zeros.
 func (bs *Store) readAtInternal(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
 	if len(data) == 0 {
 		return 0, nil
 	}
 
-	n, cold, err := bs.local.ReadAt(ctx, payloadID, int64(offset), data)
+	n, st, err := bs.local.ReadAt(ctx, payloadID, int64(offset), data)
 	if err != nil {
 		var corrupt *journal.CorruptRangeError
 		if errors.As(err, &corrupt) {
@@ -43,12 +57,10 @@ func (bs *Store) readAtInternal(ctx context.Context, payloadID string, data []by
 		}
 		return 0, fmt.Errorf("local read failed: %w", err)
 	}
-	if !cold {
+	if !st.Cold && !(st.Hole && bs.HasRemoteStore()) {
 		return n, nil
 	}
 
-	// Cold: some requested bytes are written-but-evicted. Fetch + hydrate the
-	// covering remote chunks, then re-read the now-warm window.
 	if err := bs.ensureAndReadFromLocal(ctx, payloadID, data, offset); err != nil {
 		return 0, err
 	}
@@ -75,9 +87,11 @@ func (bs *Store) healCorruptWarmRead(ctx context.Context, payloadID string, data
 
 // ensureAndReadFromLocal hydrates every remote-resident chunk covering the
 // window into the local journal, then re-reads. EnsureAvailableAndRead resolves
-// the covering FileChunk rows, does one BLAKE3-verified ranged read per chunk,
-// and Hydrates the plaintext at the chunk's file offset; a range with no remote
-// chunk (genuine sparse hole) is left for ReadAt's zero-fill below.
+// the covering FileChunk rows — refusing with ErrManifestInconsistent when an
+// uncovered offset sits on a payload holding an unplaceable row — does one
+// BLAKE3-verified ranged read per chunk, and Hydrates the plaintext at the
+// chunk's file offset; a range with no remote chunk (genuine sparse hole) is
+// left for ReadAt's zero-fill below.
 //
 // The re-read's cold flag is the post-condition, not a leftover: hydration is
 // supposed to have made every written-but-evicted byte in the window local
@@ -90,13 +104,13 @@ func (bs *Store) healCorruptWarmRead(ctx context.Context, payloadID string, data
 // regardless, so the guard has nothing to fail open on.
 func (bs *Store) ensureAndReadFromLocal(ctx context.Context, payloadID string, dest []byte, offset uint64) error {
 	if _, err := bs.syncer.EnsureAvailableAndRead(ctx, payloadID, offset, uint32(len(dest)), dest); err != nil {
-		return fmt.Errorf("cold read hydrate failed: %w", err)
+		return fmt.Errorf("manifest reconcile for %s at offset %d failed: %w", payloadID, offset, err)
 	}
-	_, cold, err := bs.local.ReadAt(ctx, payloadID, int64(offset), dest)
+	_, st, err := bs.local.ReadAt(ctx, payloadID, int64(offset), dest)
 	if err != nil {
 		return fmt.Errorf("read after hydrate failed: %w", err)
 	}
-	if cold {
+	if st.Cold {
 		return fmt.Errorf("window for %s at offset %d (%d bytes) is still cold after hydrate: %w",
 			payloadID, offset, len(dest), block.ErrChunkNotFound)
 	}

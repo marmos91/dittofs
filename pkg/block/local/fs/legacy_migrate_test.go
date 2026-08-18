@@ -130,11 +130,11 @@ func TestLegacyLocalOnly_MigratesFaultsInAndFinishes(t *testing.T) {
 	// Fault-in: a read of p1 materializes just that payload and returns the real
 	// bytes (would be zeros before the fix).
 	got1 := make([]byte, len(want1))
-	n, cold, err := s.ReadAt(ctx, p1, 0, got1)
+	n, st, err := s.ReadAt(ctx, p1, 0, got1)
 	if err != nil {
 		t.Fatalf("ReadAt(p1): %v", err)
 	}
-	if cold {
+	if st.Cold {
 		t.Fatal("ReadAt(p1) reported cold on a local-only store")
 	}
 	if n < len(want1) || !bytes.Equal(got1, want1) {

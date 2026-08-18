@@ -9,7 +9,7 @@ import (
 )
 
 // allZero reports whether b is entirely zero bytes — the shape a silent
-// zero-fill takes when a cold range is mistaken for a POSIX hole.
+// zero-fill takes when a st.Cold range is mistaken for a POSIX hole.
 func allZero(b []byte) bool {
 	for _, c := range b {
 		if c != 0 {
@@ -20,8 +20,8 @@ func allZero(b []byte) bool {
 }
 
 // TestColdIntervalSurvivesReopen is the regression for a share serving all-zeros
-// after a restart. A cold interval owns no record, so if it is only held in
-// memory the reopened store sees a hole, ReadAt zero-fills and reports cold=false
+// after a restart. A st.Cold interval owns no record, so if it is only held in
+// memory the reopened store sees a hole, ReadAt zero-fills and reports st.Cold=false
 // — the engine never fetches, and the read silently returns zeros for data that
 // is safe on the remote.
 func TestColdIntervalSurvivesReopen(t *testing.T) {
@@ -38,18 +38,18 @@ func TestColdIntervalSurvivesReopen(t *testing.T) {
 	fillUntilSealed(t, s, "f", true, 2)
 
 	// Drain the shard: a large target evicts every qualifying segment, including
-	// the force-sealed active, so offset 0 is unambiguously cold afterwards.
+	// the force-sealed active, so offset 0 is unambiguously st.Cold afterwards.
 	if _, err := s.Evict(ctx, 1<<30); err != nil {
 		t.Fatalf("Evict: %v", err)
 	}
 
 	dst := make([]byte, chunk256)
-	_, cold, err := s.ReadAt(ctx, "f", 0, dst)
+	_, st, err := s.ReadAt(ctx, "f", 0, dst)
 	if err != nil {
 		t.Fatalf("ReadAt before reopen: %v", err)
 	}
-	if !cold {
-		t.Fatal("ReadAt before reopen: cold=false, want true after evicting the range")
+	if !st.Cold {
+		t.Fatal("ReadAt before reopen: st.Cold=false, want true after evicting the range")
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -62,20 +62,20 @@ func TestColdIntervalSurvivesReopen(t *testing.T) {
 	defer func() { _ = s2.Close() }()
 
 	dst2 := make([]byte, chunk256)
-	n, cold, err := s2.ReadAt(ctx, "f", 0, dst2)
+	n, st, err := s2.ReadAt(ctx, "f", 0, dst2)
 	if err != nil {
 		t.Fatalf("ReadAt after reopen: %v", err)
 	}
-	if !cold {
-		t.Errorf("ReadAt after reopen: cold=false — the evicted range reads as a hole, so the caller returns %d zero bytes without fetching from the remote", n)
+	if !st.Cold {
+		t.Errorf("ReadAt after reopen: st.Cold=false — the evicted range reads as a hole, so the caller returns %d zero bytes without fetching from the remote", n)
 	}
 	if !allZero(dst2) {
-		t.Errorf("ReadAt after reopen: cold range should still zero-fill its placeholder bytes")
+		t.Errorf("ReadAt after reopen: st.Cold range should still zero-fill its placeholder bytes")
 	}
 }
 
 // TestSeedColdSurvivesReopen covers the seeded flavor: an upgrade that archives a
-// pre-journal layout aside (or a snapshot restore) seeds cold intervals from the
+// pre-journal layout aside (or a snapshot restore) seeds st.Cold intervals from the
 // surviving manifest against an otherwise empty journal. Losing them on restart
 // is what left a migrated share serving zeros.
 func TestSeedColdSurvivesReopen(t *testing.T) {
@@ -101,14 +101,14 @@ func TestSeedColdSurvivesReopen(t *testing.T) {
 	defer func() { _ = s2.Close() }()
 
 	dst := make([]byte, 4096)
-	if _, cold, err := s2.ReadAt(ctx, "f", 0, dst); err != nil {
+	if _, st, err := s2.ReadAt(ctx, "f", 0, dst); err != nil {
 		t.Fatalf("ReadAt after reopen: %v", err)
-	} else if !cold {
-		t.Error("ReadAt after reopen: cold=false — a seeded cold range reads as a hole, so reads return zeros with no remote fetch")
+	} else if !st.Cold {
+		t.Error("ReadAt after reopen: st.Cold=false — a seeded st.Cold range reads as a hole, so reads return zeros with no remote fetch")
 	}
 }
 
-// TestColdLogSupersededByLaterWrite checks the version ordering: a cold entry
+// TestColdLogSupersededByLaterWrite checks the version ordering: a st.Cold entry
 // replayed at recovery must not shadow a warm write that landed after it.
 func TestColdLogSupersededByLaterWrite(t *testing.T) {
 	ctx := context.Background()
@@ -140,12 +140,12 @@ func TestColdLogSupersededByLaterWrite(t *testing.T) {
 	defer func() { _ = s2.Close() }()
 
 	got := make([]byte, 4096)
-	_, cold, err := s2.ReadAt(ctx, "f", 0, got)
+	_, st, err := s2.ReadAt(ctx, "f", 0, got)
 	if err != nil {
 		t.Fatalf("ReadAt after reopen: %v", err)
 	}
-	if cold {
-		t.Error("ReadAt after reopen: cold=true — the stale cold entry shadowed the newer local write")
+	if st.Cold {
+		t.Error("ReadAt after reopen: st.Cold=true — the stale st.Cold entry shadowed the newer local write")
 	}
 	if !bytes.Equal(got, want) {
 		t.Error("ReadAt after reopen: did not return the bytes written after the seed")
@@ -177,10 +177,10 @@ func TestColdLogTornTailKeepsIntactEntries(t *testing.T) {
 	path := filepath.Join(dir, coldLogName)
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read cold log: %v", err)
+		t.Fatalf("read st.Cold log: %v", err)
 	}
 	if err := os.WriteFile(path, raw[:len(raw)-1], 0o644); err != nil {
-		t.Fatalf("truncate cold log: %v", err)
+		t.Fatalf("truncate st.Cold log: %v", err)
 	}
 
 	s2, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
@@ -190,15 +190,15 @@ func TestColdLogTornTailKeepsIntactEntries(t *testing.T) {
 	defer func() { _ = s2.Close() }()
 
 	dst := make([]byte, 4096)
-	if _, cold, err := s2.ReadAt(ctx, "f", 0, dst); err != nil {
+	if _, st, err := s2.ReadAt(ctx, "f", 0, dst); err != nil {
 		t.Fatalf("ReadAt: %v", err)
-	} else if !cold {
+	} else if !st.Cold {
 		t.Error("the entry before the torn tail was dropped; only the torn one should be lost")
 	}
 }
 
 // TestSeedColdLeavesLocalBytesAlone is what makes a re-seed safe to run against a
-// store that is only partly missing its markers. A cold interval carries a fresh
+// store that is only partly missing its markers. A st.Cold interval carries a fresh
 // version, so seeding a range the journal already holds would shadow those bytes
 // — and a chunk not yet on the remote cannot be fetched back, so the read would
 // fail or return zeros for data that exists only locally.
@@ -223,21 +223,21 @@ func TestSeedColdLeavesLocalBytesAlone(t *testing.T) {
 	}
 
 	got := make([]byte, 4096)
-	_, cold, err := s.ReadAt(ctx, "f", 4096, got)
+	_, st, err := s.ReadAt(ctx, "f", 4096, got)
 	if err != nil {
 		t.Fatalf("ReadAt over the written range: %v", err)
 	}
-	if cold {
+	if st.Cold {
 		t.Error("the seed shadowed a range the journal holds locally; the read now needs a remote copy that may not exist")
 	}
 	if !bytes.Equal(got, want) {
 		t.Error("the seed replaced locally-written bytes")
 	}
-	// The ranges on either side had nothing local, so they must be cold.
+	// The ranges on either side had nothing local, so they must be st.Cold.
 	for _, off := range []int64{0, 8192} {
-		if _, cold, err := s.ReadAt(ctx, "f", off, make([]byte, 4096)); err != nil {
+		if _, st, err := s.ReadAt(ctx, "f", off, make([]byte, 4096)); err != nil {
 			t.Fatalf("ReadAt at %d: %v", off, err)
-		} else if !cold {
+		} else if !st.Cold {
 			t.Errorf("range at %d was not seeded, so it reads as a hole and returns zeros with no remote fetch", off)
 		}
 	}
@@ -263,14 +263,14 @@ func TestSeedColdIsIdempotent(t *testing.T) {
 	}
 	first, err := os.Stat(filepath.Join(dir, coldLogName))
 	if err != nil {
-		t.Fatalf("stat cold log: %v", err)
+		t.Fatalf("stat st.Cold log: %v", err)
 	}
 	if err := s.SeedCold(ctx, "f", extents); err != nil {
 		t.Fatalf("SeedCold again: %v", err)
 	}
 	second, err := os.Stat(filepath.Join(dir, coldLogName))
 	if err != nil {
-		t.Fatalf("stat cold log: %v", err)
+		t.Fatalf("stat st.Cold log: %v", err)
 	}
 	if second.Size() != first.Size() {
 		t.Errorf("re-seeding appended %d bytes for ranges already covered; the log grows on every open",

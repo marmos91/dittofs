@@ -230,11 +230,11 @@ func TestEvictedRangeReadsCold(t *testing.T) {
 
 	// The evicted range must read back as cold (not a zero-filled hole).
 	dst := make([]byte, chunk256)
-	_, cold, err := s.ReadAt(ctx, "f", 0, dst)
+	_, st, err := s.ReadAt(ctx, "f", 0, dst)
 	if err != nil {
 		t.Fatalf("ReadAt: %v", err)
 	}
-	if !cold {
+	if !st.Cold {
 		t.Fatalf("evicted range must report cold, not a hole")
 	}
 	// DataExtents must still report the evicted range as present.
@@ -331,9 +331,9 @@ func TestEvictForceSealsSyncedActive(t *testing.T) {
 	}
 	// The reclaimed range must read back cold (remote-backed), never as a hole.
 	dst := make([]byte, chunk256)
-	if _, cold, err := s.ReadAt(ctx, "f", 0, dst); err != nil {
+	if _, st, err := s.ReadAt(ctx, "f", 0, dst); err != nil {
 		t.Fatalf("ReadAt: %v", err)
-	} else if !cold {
+	} else if !st.Cold {
 		t.Fatalf("evicted range must report cold, not a hole")
 	}
 }

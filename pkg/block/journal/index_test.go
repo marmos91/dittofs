@@ -145,19 +145,22 @@ func TestColdMarkerReadAndExtents(t *testing.T) {
 
 	// Reading the cold range reports cold; reading a true hole does not.
 	dst := make([]byte, 10)
-	_, cold, err := s.ReadAt(ctx, "f", 100, dst)
+	_, st, err := s.ReadAt(ctx, "f", 100, dst)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cold {
+	if !st.Cold {
 		t.Fatalf("expected cold read over evicted range")
 	}
-	_, cold, err = s.ReadAt(ctx, "f", 50, dst) // gap between the two writes
+	_, st, err = s.ReadAt(ctx, "f", 50, dst) // gap between the two writes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cold {
+	if st.Cold {
 		t.Fatalf("hole must not report cold")
+	}
+	if !st.Hole {
+		t.Fatalf("gap between two writes must report a hole")
 	}
 
 	// Both the warm and the evicted range are present in DataExtents.

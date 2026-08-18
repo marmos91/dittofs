@@ -456,6 +456,14 @@ func loadFileChunkAtIndexOffset(txn *badger.Txn, payloadID string, off uint64) (
 // engine's ListFileChunks fallback picks the same one so both paths answer a
 // read alike.
 //
+// An index key whose suffix does not parse belongs to a row whose ID does not
+// parse — the index suffix is the ID's suffix verbatim — so the row sits at an
+// unknown offset. Skipping it would report a hole the caller zero-fills, which
+// invents data the file may never have had. It is reported instead, but only
+// when nothing else covers off: one bad row must not make a whole payload
+// unreadable. This mirrors findRowCoveringOffset, the walk used by the backends
+// with no such index.
+//
 // ponytail: O(n) keys-only scan per read; upgrade to a big-endian fb-off index
 // for a true O(log n) reverse-seek only if profiling at real N still shows it.
 func (s *BadgerMetadataStore) GetFileChunkAtOffset(_ context.Context, payloadID string, off uint64) (*metadata.FileChunk, error) {
@@ -469,21 +477,32 @@ func (s *BadgerMetadataStore) GetFileChunkAtOffset(_ context.Context, payloadID 
 		defer it.Close()
 
 		var (
-			bestOff uint64
-			found   bool
+			bestOff     uint64
+			found       bool
+			unplaceable string
 		)
 		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
 			suffix := it.Item().Key()[len(prefix):]
 			cand, perr := strconv.ParseUint(string(suffix), 10, 64)
 			if perr != nil {
-				continue // tolerate a malformed index row, like parseBlockIdx
+				if unplaceable == "" {
+					unplaceable = string(suffix)
+				}
+				continue
 			}
 			if cand <= off && (!found || cand > bestOff) {
 				bestOff, found = cand, true
 			}
 		}
+		uncovered := func() error {
+			if unplaceable == "" {
+				return nil
+			}
+			return fmt.Errorf("%w: nothing covers offset %d for payload %q and the manifest holds unplaceable row %q",
+				blockpkg.ErrManifestInconsistent, off, payloadID, payloadID+"/"+unplaceable)
+		}
 		if !found {
-			return nil // nothing starts at or before off — hole
+			return uncovered()
 		}
 
 		fc, ferr := loadFileChunkAtIndexOffset(txn, payloadID, bestOff)
@@ -491,7 +510,7 @@ func (s *BadgerMetadataStore) GetFileChunkAtOffset(_ context.Context, payloadID 
 			return ferr
 		}
 		if fc == nil {
-			return nil // stale index entry — treat as a hole
+			return uncovered() // stale index entry — treat as a hole
 		}
 		// Covering guard keyed on the row's OWN start offset (the source of
 		// truth), not the index key, so an inconsistent index can't serve a
@@ -499,7 +518,7 @@ func (s *BadgerMetadataStore) GetFileChunkAtOffset(_ context.Context, payloadID 
 		// the scan guarantees abs <= off.
 		abs, ok := blockpkg.ParseChunkOffset(fc.ID)
 		if !ok || off < abs || off-abs >= uint64(fc.DataSize) {
-			return nil
+			return uncovered()
 		}
 		result = fc
 		return nil
@@ -518,6 +537,11 @@ func (s *BadgerMetadataStore) GetFileChunkAtOffset(_ context.Context, payloadID 
 // and stale-index-as-absent semantics as GetFileChunkAtOffset. No covering guard:
 // the successor is returned regardless of whether it contains off.
 //
+// An unplaceable row is fatal here whatever else the scan finds, unlike in
+// GetFileChunkAtOffset: sitting at an unknown offset, it may be the true
+// successor, and returning a later one would reclassify the bytes it holds as
+// hole for the caller to zero-fill.
+//
 // ponytail: O(n) keys-only scan per hole; shares the fb-off-index upgrade path
 // with GetFileChunkAtOffset if profiling at real N ever demands O(log n).
 func (s *BadgerMetadataStore) GetFileChunkAtOrAfterOffset(_ context.Context, payloadID string, off uint64) (*metadata.FileChunk, error) {
@@ -531,18 +555,26 @@ func (s *BadgerMetadataStore) GetFileChunkAtOrAfterOffset(_ context.Context, pay
 		defer it.Close()
 
 		var (
-			bestOff uint64
-			found   bool
+			bestOff     uint64
+			found       bool
+			unplaceable string
 		)
 		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
 			suffix := it.Item().Key()[len(prefix):]
 			cand, perr := strconv.ParseUint(string(suffix), 10, 64)
 			if perr != nil {
-				continue // tolerate a malformed index row, like parseBlockIdx
+				if unplaceable == "" {
+					unplaceable = string(suffix)
+				}
+				continue
 			}
 			if cand >= off && (!found || cand < bestOff) {
 				bestOff, found = cand, true
 			}
+		}
+		if unplaceable != "" {
+			return fmt.Errorf("%w: nothing covers offset %d for payload %q and the manifest holds unplaceable row %q",
+				blockpkg.ErrManifestInconsistent, off, payloadID, payloadID+"/"+unplaceable)
 		}
 		if !found {
 			return nil // nothing starts at or after off — past the last chunk

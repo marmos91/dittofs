@@ -3135,9 +3135,11 @@ func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metad
 				// describes cannot be recovered — that is what makes it unplaceable
 				// — so the row is logged verbatim and seeding continues. The boot is
 				// not failed: one such row in a large store is not worth stranding
-				// every other share. A later read that finds nothing covering the
-				// offset it wants, on a payload holding a row like this, refuses with
-				// ErrManifestInconsistent rather than serving zeros.
+				// every other share. Leaving the range unseeded is safe because the
+				// engine reconciles an uncovered read against the manifest whether or
+				// not the range is cold, so a read that finds nothing covering the
+				// offset it wants refuses with ErrManifestInconsistent rather than
+				// serving zeros.
 				logger.Error("cold seed: unplaceable manifest row, range will not be seeded",
 					"payload", payloadID, "row", row.ID, "size", row.DataSize)
 				report.unplaceable++

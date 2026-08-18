@@ -39,7 +39,7 @@ func putChunkBlock(t testing.TB, ctx context.Context, rbs remote.RemoteBlockStor
 // through the remote's ChunkReader. Returns the chunk's content hash.
 func seedSyncedRemoteChunk(
 	t testing.TB,
-	fbs *stubFileChunkStore,
+	fbs block.FileChunkStore,
 	rbs remote.RemoteBlockStore,
 	shs metadata.SyncedHashStore,
 	payloadID string,
