@@ -23,15 +23,6 @@ const maxOrigSizeVarint = binary.MaxVarintLen64
 // generous vs FastCDC's ~16 MiB max chunk; tune if larger chunks land.
 const MaxFramedPlaintextSize = 64 * 1024 * 1024
 
-// frameOverhead returns the header byte count for a frame declaring
-// the given plaintext size. Used by callers that need to know the
-// total wire size of a hypothetical frame without building it.
-func frameOverhead(origSize uint64) int {
-	var buf [maxOrigSizeVarint]byte
-	n := binary.PutUvarint(buf[:], origSize)
-	return FrameHeaderFixedSize + n
-}
-
 // appendFrameHeader appends the frame header for a body declaring origSize
 // plaintext bytes. The body follows it directly on the wire:
 //
