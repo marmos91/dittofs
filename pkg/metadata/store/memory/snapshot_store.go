@@ -39,17 +39,15 @@ const (
 // caches (sessions) and config limits
 // (maxStorageBytes, maxFiles) are excluded.
 type memoryBackupSnapshot struct {
-	Shares        map[string]*shareData
-	Files         map[string]*fileData
-	Parents       map[string]metadata.FileHandle
-	Children      map[string]map[string]metadata.FileHandle
-	LinkCounts    map[string]uint32
-	DeviceNumbers map[string]*deviceNumber
-	PendingWrites map[string]*metadata.WriteOperation
-	ServerConfig  metadata.MetadataServerConfig
-	Capabilities  metadata.FilesystemCapabilities
-	StoreID       string
-	Synced        map[block.ContentHash]time.Time
+	Shares       map[string]*shareData
+	Files        map[string]*fileData
+	Parents      map[string]metadata.FileHandle
+	Children     map[string]map[string]metadata.FileHandle
+	LinkCounts   map[string]uint32
+	ServerConfig metadata.MetadataServerConfig
+	Capabilities metadata.FilesystemCapabilities
+	StoreID      string
+	Synced       map[block.ContentHash]time.Time
 	// SyncedLocators preserves the remote block locator for synced hashes packed
 	// into a block (#1414). Without it a restore keeps the synced SET but drops
 	// each hash's BlockID, so a block-resident hash resolves as standalone and its
@@ -122,17 +120,15 @@ func (s *MemoryMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*
 	// held in the snapshot, so we keep the lock through encoding
 	// to ensure snapshot isolation (ConcurrentWriter conformance).
 	snap := memoryBackupSnapshot{
-		Shares:        s.shares,
-		Files:         s.files,
-		Parents:       s.parents,
-		Children:      s.children,
-		LinkCounts:    s.linkCounts,
-		DeviceNumbers: s.deviceNumbers,
-		PendingWrites: s.pendingWrites,
-		Capabilities:  s.capabilities,
-		StoreID:       s.storeID,
-		ObjectIndex:   s.objectIndex,
-		BlockRecords:  s.blockRecords,
+		Shares:       s.shares,
+		Files:        s.files,
+		Parents:      s.parents,
+		Children:     s.children,
+		LinkCounts:   s.linkCounts,
+		Capabilities: s.capabilities,
+		StoreID:      s.storeID,
+		ObjectIndex:  s.objectIndex,
+		BlockRecords: s.blockRecords,
 	}
 
 	// Acquire syncedMu to read synced safely — governed by its own mutex, not
@@ -341,8 +337,6 @@ func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	s.parents = snap.Parents
 	s.children = snap.Children
 	s.linkCounts = snap.LinkCounts
-	s.deviceNumbers = snap.DeviceNumbers
-	s.pendingWrites = snap.PendingWrites
 	s.serverConfig = snap.ServerConfig
 	s.capabilities = snap.Capabilities
 	s.storeID = snap.StoreID
@@ -370,12 +364,6 @@ func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	}
 	if s.linkCounts == nil {
 		s.linkCounts = make(map[string]uint32)
-	}
-	if s.deviceNumbers == nil {
-		s.deviceNumbers = make(map[string]*deviceNumber)
-	}
-	if s.pendingWrites == nil {
-		s.pendingWrites = make(map[string]*metadata.WriteOperation)
 	}
 	if s.objectIndex == nil {
 		s.objectIndex = make(map[block.ContentHash]string)

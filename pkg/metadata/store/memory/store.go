@@ -45,12 +45,6 @@ type fileData struct {
 	ShareName string
 }
 
-// deviceNumber stores major and minor device numbers for special files.
-type deviceNumber struct {
-	Major uint32
-	Minor uint32
-}
-
 // ShareSession represents an active client session on a share. Sessions are
 // informational only (monitoring and DUMP) and do not affect access control;
 // the memory store is the only backend that tracks them.
@@ -105,12 +99,7 @@ type ShareSession struct {
 //     to them. When linkCounts reaches 0, the file's content can be deleted.
 //     Directories always have linkCounts ≥ 2 (parent entry + "." self-reference).
 //
-//     7. Write Operations (pendingWrites):
-//     Tracks in-flight write operations for the two-phase write protocol.
-//     Maps operation IDs to WriteOperation structs containing the file handle,
-//     new size, and other metadata needed to commit the write.
-//
-//     8. Server Configuration (serverConfig):
+//     5. Server Configuration (serverConfig):
 //     Stores global server settings that apply across all shares and operations.
 //
 // Handle Generation:
@@ -179,21 +168,6 @@ type MemoryMetadataStore struct {
 	//   - Directories start at 2 ("." and parent's entry), increment with subdirectories
 	//   - When count reaches 0, file content can be deleted
 	linkCounts map[string]uint32
-
-	// deviceNumbers stores major and minor device numbers for block and character devices.
-	// Key: string representation of FileHandle
-	// Value: struct containing major and minor numbers
-	// Note: Only populated for FileTypeBlockDevice and FileTypeCharDevice
-	deviceNumbers map[string]*deviceNumber
-
-	// pendingWrites tracks in-flight write operations for two-phase writes.
-	// Key: operation ID (opaque string, typically UUID)
-	// Value: WriteOperation struct with file handle, new size, timestamps, etc.
-	// Notes:
-	//   - Created by PrepareWrite
-	//   - Consumed by CommitWrite
-	//   - Should be cleaned up on timeout/cancellation
-	pendingWrites map[string]*metadata.WriteOperation
 
 	// serverConfig stores global server configuration.
 	// This includes settings that apply across all shares and operations.
@@ -350,8 +324,6 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		parents:         make(map[string]metadata.FileHandle),
 		children:        make(map[string]map[string]metadata.FileHandle),
 		linkCounts:      make(map[string]uint32),
-		deviceNumbers:   make(map[string]*deviceNumber),
-		pendingWrites:   make(map[string]*metadata.WriteOperation),
 		capabilities:    config.Capabilities,
 		maxStorageBytes: config.MaxStorageBytes,
 		maxFiles:        config.MaxFiles,
