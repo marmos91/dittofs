@@ -127,18 +127,13 @@ CONN_FAIL_PATTERN="Establishing SMB2 connection failed"
 NO_MEMORY_PATTERN="NT_STATUS_NO_MEMORY"
 
 # smb2.replay.channel-sequence draws two of its sixteen ChannelSequence values
-# at random from [0x7fff, 0xfffe] and [0, 0x7fff] and expects
-# STATUS_FILE_NOT_AVAILABLE for both. Each range includes 0x7fff, which is not
-# stale: MS-SMB2 3.3.5.2.10 updates the Open when the unsigned 16-bit
-# difference "is less than or equal to 0x7FFF", and the same table asserts a
-# fixed 0x7fff row must return STATUS_SUCCESS against the same tracked value.
-# When a draw lands on that boundary the two rows contradict each other and no
-# conformant server can satisfy both — Samba's own server returns success there
-# too. The test prints the drawn value before running each row, so the
-# contradiction is identifiable and only that draw is excused; a
-# channel-sequence failure without it is graded normally.
+# at random and expects STATUS_FILE_NOT_AVAILABLE for both, but both ranges
+# include 0x7fff — the largest legal forward step, which another row of the
+# same table requires to succeed. That draw contradicts itself, so no server
+# can pass it. The test prints the drawn value before running the row, and
+# only a failure carrying that line is excused; every other
+# channel-sequence failure is graded normally.
 CSN_BOUNDARY_PATTERN="CSN 0x7fff, expecting: NT_STATUS_FILE_NOT_AVAILABLE"
-CSN_TEST_PATTERN="channel-sequence"
 
 TEMP_OUTPUT=$(mktemp)
 
@@ -160,9 +155,6 @@ csn_boundary_drawn=false
 
 flush_pending() {
     [[ ${#pending_block[@]} -eq 0 ]] && return
-    if $csn_boundary_drawn && [[ "${pending_block[0]}" == *"$CSN_TEST_PATTERN"* ]]; then
-        pending_is_flake=true
-    fi
     if $pending_is_flake; then
         # Reclassify the header (failure:/error:) to skip:; emit detail verbatim.
         local header="${pending_block[0]}"
@@ -188,6 +180,9 @@ while IFS= read -r line; do
         flush_pending
         if [[ "$line" =~ ^(failure|error):[[:space:]]+ ]]; then
             pending_block=("$line")
+            if $csn_boundary_drawn && [[ "$line" == *channel-sequence* ]]; then
+                pending_is_flake=true
+            fi
         else
             [[ "$line" == test:* ]] && csn_boundary_drawn=false
             printf '%s\n' "$line" >> "$TEMP_OUTPUT"
