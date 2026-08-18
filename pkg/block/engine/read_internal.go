@@ -142,7 +142,7 @@ type rowWithOffset struct {
 // take a file that reads correctly apart from one damaged range and make all of
 // it unavailable.
 //
-// When two rows cover target the greatest start wins, which is what the indexed
+// When two rows cover target, the greatest start wins, which is what the indexed
 // badger lookup returns. Returning whichever row the walk reached first made the
 // answer depend on ListFileChunks ordering, so the same read could serve
 // different bytes on different backends. Overlap is not hypothetical: a truncate
@@ -164,7 +164,9 @@ func findRowCoveringOffset(rows []*block.FileChunk, target uint64) (*rowWithOffs
 			}
 			continue
 		}
-		if target >= abs && target < abs+uint64(fb.DataSize) {
+		// target-abs is overflow-free because target >= abs is checked first;
+		// abs+DataSize would wrap on an absurd offset.
+		if target >= abs && target-abs < uint64(fb.DataSize) {
 			if hit == nil || abs > hit.absOffset {
 				hit = &rowWithOffset{fb: fb, absOffset: abs}
 			}

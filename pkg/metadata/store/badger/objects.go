@@ -488,8 +488,9 @@ func errUnplaceableRow(payloadID, suffix string, off uint64) error {
 // unmarshal, no sort), then two point Gets fetch the winning row.
 //
 // Largest-start only decides anything if rows overlap, which a truncate followed
-// by a re-carving write can produce. It resolves to the newer row, and the
-// engine's ListFileChunks fallback picks the same one so both paths answer a
+// by a re-carving write can produce: the narrowed survivor starts before the row
+// the later carve emits, so the greater start is the newer row there. The
+// engine's ListFileChunks fallback picks the same row, so both paths answer a
 // read alike.
 //
 // An unplaceable row only matters when nothing else covers off: one bad row must
