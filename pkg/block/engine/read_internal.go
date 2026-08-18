@@ -227,9 +227,36 @@ func (r *chunkWindowResolver) list(ctx context.Context) ([]*block.FileChunk, err
 	return rows, nil
 }
 
-// covering returns the FileChunk covering absolute byte offset off and its
-// parsed absolute start offset, or (nil, 0, nil) for a hole.
-func (r *chunkWindowResolver) covering(ctx context.Context, off uint64) (*block.FileChunk, uint64, error) {
+// covering returns the FileChunk covering absolute byte offset off, its parsed
+// absolute start offset, and the offset at which its claim on the bytes from
+// off onwards ends, or (nil, 0, 0, nil) for a hole.
+//
+// The claim ends at the row's own end, or at the start of the next row that
+// begins inside it, whichever comes first. Coverage resolves an overlap to the
+// greatest start, so from the first byte of a later-starting row it is that row
+// that holds the bytes, and the straddling row's remaining extent describes
+// bytes it no longer owns. A caller that consumed the straddler's full extent
+// would step over the later row entirely and, on the fetch path, write the
+// older bytes over the newer row's head.
+//
+// A successor lookup that fails is treated as "no later row known" rather than
+// propagated: a row whose ID cannot be placed must not make a covered read
+// fail, which is the same scoping findRowCoveringOffset applies.
+func (r *chunkWindowResolver) covering(ctx context.Context, off uint64) (*block.FileChunk, uint64, uint64, error) {
+	fb, abs, err := r.coveringRow(ctx, off)
+	if err != nil || fb == nil {
+		return nil, 0, 0, err
+	}
+	claimEnd := abs + uint64(fb.DataSize)
+	if next, ok, nextErr := r.nextStart(ctx, off); nextErr == nil && ok && next < claimEnd {
+		claimEnd = next
+	}
+	return fb, abs, claimEnd, nil
+}
+
+// coveringRow resolves the row covering off and its absolute start offset,
+// through the backend's chunk-offset index when it has one.
+func (r *chunkWindowResolver) coveringRow(ctx context.Context, off uint64) (*block.FileChunk, uint64, error) {
 	if idx, ok := r.store.(chunkAtOffsetResolver); ok {
 		fb, err := idx.GetFileChunkAtOffset(ctx, r.payloadID, off)
 		if err != nil || fb == nil {
@@ -266,7 +293,7 @@ func resolveCovering(ctx context.Context, store block.EngineFileChunkStore, payl
 	if store == nil {
 		return nil, 0, nil
 	}
-	return newChunkWindowResolver(store, payloadID).covering(ctx, off)
+	return newChunkWindowResolver(store, payloadID).coveringRow(ctx, off)
 }
 
 // chunkAtOrAfterOffsetResolver is the indexed successor lookup, implemented only
@@ -325,32 +352,48 @@ func (r *chunkWindowResolver) nextStart(ctx context.Context, off uint64) (uint64
 	if err != nil {
 		return 0, false, err
 	}
+	if unplaceable := firstUnplaceable(rows); unplaceable != "" {
+		return 0, false, fmt.Errorf("%w: nothing covers offset %d and the manifest holds unplaceable row %q",
+			block.ErrManifestInconsistent, off, unplaceable)
+	}
+	best, found := minStartAfter(rows, off)
+	return best, found, nil
+}
+
+// minStartAfter returns the smallest start offset among rows that begins
+// strictly after off. A row whose ID carries no offset is skipped: it sits at an
+// unknown place, so it can neither confirm nor deny a successor. A caller for
+// which that ambiguity is fatal checks firstUnplaceable itself.
+func minStartAfter(rows []*block.FileChunk, off uint64) (uint64, bool) {
 	var (
-		best        uint64
-		found       bool
-		unplaceable string
+		best  uint64
+		found bool
 	)
 	for _, fb := range rows {
 		if fb == nil {
 			continue
 		}
 		abs, parsed := block.ParseChunkOffset(fb.ID)
-		if !parsed {
-			if unplaceable == "" {
-				unplaceable = fb.ID
-			}
-			continue
-		}
-		if abs <= off {
+		if !parsed || abs <= off {
 			continue
 		}
 		if !found || abs < best {
 			best, found = abs, true
 		}
 	}
-	if unplaceable != "" {
-		return 0, false, fmt.Errorf("%w: nothing covers offset %d and the manifest holds unplaceable row %q",
-			block.ErrManifestInconsistent, off, unplaceable)
+	return best, found
+}
+
+// firstUnplaceable returns the ID of the first row whose ID carries no offset,
+// or "" when every row can be placed.
+func firstUnplaceable(rows []*block.FileChunk) string {
+	for _, fb := range rows {
+		if fb == nil {
+			continue
+		}
+		if _, ok := block.ParseChunkOffset(fb.ID); !ok {
+			return fb.ID
+		}
 	}
-	return best, found, nil
+	return ""
 }

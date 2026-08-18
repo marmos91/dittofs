@@ -30,6 +30,7 @@ type WarmResult struct {
 type warmTarget struct {
 	payloadID string
 	fb        *block.FileChunk
+	span      hydrateSpan
 }
 
 // WarmAll proactively materializes every block of every payload in this share
@@ -94,10 +95,20 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 			if fb == nil {
 				continue
 			}
-			if _, ok := block.ParseChunkOffset(fb.ID); !ok {
+			absOff, ok := block.ParseChunkOffset(fb.ID)
+			if !ok {
 				continue
 			}
-			targets = append(targets, warmTarget{payloadID: payloadID, fb: fb})
+			// Rows can overlap, and coverage resolves an overlap to the greatest
+			// start, so a row straddling a later row's start no longer holds the
+			// bytes past it. Fetches run concurrently and the local tier keeps
+			// whichever landed last, so warming a straddler's full extent would
+			// leave the older bytes over the newer row's head at random.
+			span := hydrateSpan{From: absOff, To: absOff + uint64(fb.DataSize)}
+			if next, hasNext := minStartAfter(rows, absOff); hasNext && next < span.To {
+				span.To = next
+			}
+			targets = append(targets, warmTarget{payloadID: payloadID, fb: fb, span: span})
 		}
 	}
 
@@ -148,7 +159,7 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		}
 		t := t
 		g.Go(func() error {
-			data, err := m.fetchResolvedBlock(gctx, t.fb)
+			data, err := m.fetchResolvedBlock(gctx, t.fb, t.span)
 			if err != nil {
 				if errors.Is(err, journal.ErrLocalStoreFull) {
 					return fmt.Errorf("warm: local tier full while fetching %s (raise local_store_size or evict): %w",
