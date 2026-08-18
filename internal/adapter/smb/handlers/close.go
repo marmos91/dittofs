@@ -208,10 +208,10 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// (silent write truncation, #1267). The mapped status is recorded and
 	// applied to the response below; handle teardown still runs unconditionally
 	// so the failed flush does not leak the open-file/lease state.
-	// Snapshot the path once for the rest of CLOSE. SET_INFO rename rewrites it
-	// on a live handle, so reading it per use would let a rename landing
-	// mid-close produce log lines, a delete target and a parent path that each
-	// name a different file.
+	// Snapshot the path once so the flush and teardown log lines below all
+	// name the same file even if a rename lands mid-close. The delete block
+	// takes its own snapshot: the delete must act on the handle's name as of
+	// the delete, not as of CLOSE entry.
 	closePath := openFile.Name().Path
 
 	var flushFailStatus types.Status
@@ -479,7 +479,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				return true
 			})
 			logger.Debug("CLOSE: DOC propagated to other handles (not last)",
-				"path", closePath)
+				"path", docName.Path)
 		} else if streamHandleExists {
 			// Base file has DOC but open stream handles remain. Per MS-FSA
 			// 2.1.5.4 / 2.1.5.9.7, defer the actual deletion until all
@@ -501,7 +501,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				return true
 			})
 			logger.Debug("CLOSE: base file DOC deferred to stream handles",
-				"path", closePath)
+				"path", docName.Path)
 		} else {
 			// Last handle: perform the actual delete.
 			//
@@ -578,14 +578,14 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 						resp.Status = common.MapToSMB(deleteErr)
 					}
 					logger.Debug("CLOSE: failed to delete",
-						"path", closePath,
+						"path", docName.Path,
 						"isDir", openFile.IsDirectory,
 						"deleteTarget", deleteFileName,
 						"status", resp.Status,
 						"error", deleteErr)
 				} else {
 					logger.Debug("CLOSE: deleted",
-						"path", closePath,
+						"path", docName.Path,
 						"deleteTarget", deleteFileName,
 						"isDir", openFile.IsDirectory,
 						"isBaseFileDelete", isBaseFileDelete)
@@ -596,7 +596,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 						cascadeOF := openFile
 						if isBaseFileDelete {
 							cascadeOF = (&OpenFile{}).WithName(OpenName{
-								Path:         closePath,
+								Path:         docName.Path,
 								FileName:     deleteFileName,
 								ParentHandle: deleteParentHandle,
 							})
@@ -604,7 +604,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 						h.cascadeDeleteADSStreams(authCtx, metaSvc, cascadeOF)
 					}
 
-					h.purgeBlockStorePayload(ctx.Context, deleteTargetHandle, removedPayloadID, closePath, "CLOSE")
+					h.purgeBlockStorePayload(ctx.Context, deleteTargetHandle, removedPayloadID, docName.Path, "CLOSE")
 					h.restoreParentDirFrozenTimestamps(authCtx, deleteParentHandle)
 
 					// Removing the entry already broke the parent directory's
@@ -619,7 +619,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 					// duplicate LEASE_BREAK for one logical change.
 
 					if h.NotifyRegistry != nil {
-						parentPath := GetParentPath(closePath)
+						parentPath := GetParentPath(docName.Path)
 						// Use the resolved delete-target type (base file's, not
 						// the stream open's) and the actual deleteFileName.
 						// NameChangeFilterFor routes ADS names via
