@@ -71,9 +71,10 @@ type ShareSession struct {
 // Thread Safety:
 // The store is safe for concurrent use from multiple goroutines. A store-wide
 // read-write mutex (mu) covers the metadata maps below, taken for read on
-// queries and for write on mutations. Two subsystems are deliberately kept off
-// it so they do not contend with unrelated metadata operations: per-identity
-// quota usage (quotaMu) and the SyncedHashStore sync markers (syncedMu).
+// queries and for write on mutations. It is not the only lock: quota usage
+// (quotaMu), the SyncedHashStore markers (syncedMu) and each lazily built
+// sub-store (lock, client, durable, recovery) carry their own, and usedBytes is
+// atomic — all kept off mu so they do not contend with unrelated metadata ops.
 //
 // Storage Model:
 //
@@ -121,8 +122,9 @@ type ShareSession struct {
 // These invariants are maintained by all operations and can be verified by
 // consistency checking tools.
 type MemoryMetadataStore struct {
-	// mu protects all fields in this struct for concurrent access.
-	// Operations acquire read locks for queries and write locks for mutations.
+	// mu guards the metadata maps in this struct; fields carrying their own lock
+	// (quotaMu, syncedMu, the lazy sub-stores) and the atomic counters are not
+	// covered. Read locks are taken for queries, write locks for mutations.
 	mu sync.RWMutex
 
 	// shares maps share names to their configuration and root handles.

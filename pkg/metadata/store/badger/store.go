@@ -55,8 +55,8 @@ import (
 // GenerateHandle ignores the path it is given and mints a fresh random UUID
 // handle scoped to the share, so a handle is independent of the name a file is
 // reachable under and survives renames. The handle layout is owned by
-// metadata.EncodeShareHandle; the UUID it carries is what every key namespace
-// in encoding.go is indexed by.
+// metadata.EncodeShareHandle; the UUID it carries is what the per-file key
+// namespaces in encoding.go are indexed by.
 type BadgerMetadataStore struct {
 	// db is the BadgerDB database handle (thread-safe, uses internal MVCC)
 	db *badger.DB
