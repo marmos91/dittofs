@@ -1,0 +1,24 @@
+package xdr
+
+import (
+	"encoding/hex"
+	"log/slog"
+)
+
+// LazyHandle wraps a raw file handle and defers its "0x…" hex rendering to
+// log-emit time via slog.LogValuer. Handlers build one per op on the READ /
+// WRITE / COMMIT hot path, where most ops never emit at their log level, so
+// the formatting and its allocation are skipped entirely. It renders exactly
+// like fmt.Sprintf("0x%x", handle).
+type LazyHandle []byte
+
+// LogValue implements slog.LogValuer so the hex string is built only when a
+// record is actually emitted (skipped for filtered-out levels).
+func (h LazyHandle) LogValue() slog.Value {
+	return slog.StringValue(h.String())
+}
+
+// String renders the handle eagerly, for the rare non-logging caller.
+func (h LazyHandle) String() string {
+	return "0x" + hex.EncodeToString(h)
+}

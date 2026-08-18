@@ -90,15 +90,15 @@ func (h *Handler) Commit(
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.DebugCtx(ctx.Context, "COMMIT", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "COMMIT", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "auth", ctx.AuthFlavor)
 
 	if ctx.isContextCancelled() {
-		logger.WarnCtx(ctx.Context, "COMMIT cancelled", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
+		logger.WarnCtx(ctx.Context, "COMMIT cancelled", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	if err := validateCommitRequest(req); err != nil {
-		logger.WarnCtx(ctx.Context, "COMMIT validation failed", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", err)
+		logger.WarnCtx(ctx.Context, "COMMIT validation failed", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", err)
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -112,13 +112,13 @@ func (h *Handler) Commit(
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
-		logger.WarnCtx(ctx.Context, "COMMIT cancelled before GetFile", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP, "error", ctx.Context.Err())
+		logger.WarnCtx(ctx.Context, "COMMIT cancelled before GetFile", "handle", xdr.LazyHandle(req.Handle), "client", clientIP, "error", ctx.Context.Err())
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	file, err := metaSvc.GetFileCached(ctx.Context, handle)
 	if err != nil {
-		logger.WarnCtx(ctx.Context, "COMMIT failed: file not found", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP, "error", err)
+		logger.WarnCtx(ctx.Context, "COMMIT failed: file not found", "handle", xdr.LazyHandle(req.Handle), "client", clientIP, "error", err)
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
@@ -127,7 +127,7 @@ func (h *Handler) Commit(
 
 	// Verify this is not a directory
 	if file.Type == metadata.FileTypeDirectory {
-		logger.WarnCtx(ctx.Context, "COMMIT failed: handle is a directory", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
+		logger.WarnCtx(ctx.Context, "COMMIT failed: handle is a directory", "handle", xdr.LazyHandle(req.Handle), "client", clientIP)
 
 		wccAfter := h.convertFileAttrToNFS(handle, &file.FileAttr)
 
@@ -156,7 +156,7 @@ func (h *Handler) Commit(
 			return nil, ctx.Context.Err()
 		}
 		logAuthCtxError(ctx.Context, err, "COMMIT",
-			"handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
+			"handle", xdr.LazyHandle(req.Handle), "client", clientIP)
 		return &CommitResponse{
 			NFSResponseBase: NFSResponseBase{Status: authDenialStatus(err)},
 			AttrBefore:      wccBefore,
@@ -169,7 +169,7 @@ func (h *Handler) Commit(
 			return nil, err
 		}
 		status := common.MapToNFS3(err)
-		logger.DebugCtx(ctx.Context, "COMMIT denied", "handle", fmt.Sprintf("0x%x", req.Handle), "status", status, "client", clientIP, "error", err)
+		logger.DebugCtx(ctx.Context, "COMMIT denied", "handle", xdr.LazyHandle(req.Handle), "status", status, "client", clientIP, "error", err)
 		return &CommitResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},
 			AttrBefore:      wccBefore,
@@ -179,7 +179,7 @@ func (h *Handler) Commit(
 
 	// Check context before potentially long flush operation
 	if ctx.isContextCancelled() {
-		logger.WarnCtx(ctx.Context, "COMMIT cancelled before flush", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
+		logger.WarnCtx(ctx.Context, "COMMIT cancelled before flush", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
 
 		// Get updated attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
@@ -200,7 +200,7 @@ func (h *Handler) Commit(
 	// Check if there's content to flush
 	if file.PayloadID == "" {
 		logger.DebugCtx(ctx.Context, "COMMIT: no content to flush")
-		logger.DebugCtx(ctx.Context, "COMMIT successful (no content)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
+		logger.DebugCtx(ctx.Context, "COMMIT successful (no content)", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
 		return &CommitResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 			AttrBefore:      wccBefore,
@@ -236,7 +236,7 @@ func (h *Handler) Commit(
 	// plumbing lands in one place (see common/doc.go).
 	flushErr := common.CommitBlockStore(ctx.Context, blockStore, file.PayloadID)
 	if flushErr != nil {
-		logError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "payload_id", file.PayloadID, "client", clientIP)
+		logError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", xdr.LazyHandle(req.Handle), "payload_id", file.PayloadID, "client", clientIP)
 
 		// Try to get updated attributes for error response
 		if updatedFile, getErr := metaSvc.GetFile(ctx.Context, handle); getErr == nil {
@@ -256,10 +256,10 @@ func (h *Handler) Commit(
 	// the journal size reconcile on restart as the crash-safety net.
 	flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, handle, false)
 	if metaErr != nil {
-		logger.WarnCtx(ctx.Context, "COMMIT: metadata flush failed", "handle", fmt.Sprintf("0x%x", req.Handle), "error", metaErr)
+		logger.WarnCtx(ctx.Context, "COMMIT: metadata flush failed", "handle", xdr.LazyHandle(req.Handle), "error", metaErr)
 		// Continue - content is flushed, metadata will be fixed eventually
 	} else if flushed {
-		logger.DebugCtx(ctx.Context, "COMMIT: flushed pending metadata", "handle", fmt.Sprintf("0x%x", req.Handle))
+		logger.DebugCtx(ctx.Context, "COMMIT: flushed pending metadata", "handle", xdr.LazyHandle(req.Handle))
 	}
 
 	// wccAfter is already correct: GetFileCached returned the file with pending

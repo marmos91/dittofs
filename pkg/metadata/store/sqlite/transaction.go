@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -182,13 +183,17 @@ func (tx *sqliteTransaction) GetFile(ctx context.Context, handle metadata.FileHa
 		return nil, mapDBError(err, "GetFile", "")
 	}
 
-	// Debug logging to trace file type issues
-	tx.store.logger.Debug("GetFile retrieved",
-		"id", id.String(),
-		"share", shareName,
-		"path", file.Path,
-		"file_type", int(file.Type),
-		"size", file.Size)
+	// Debug logging to trace file type issues. Gated so the id formatting and
+	// variadic boxing are skipped entirely when Debug is off — GetFile runs on
+	// every lookup.
+	if tx.store.logger.Enabled(ctx, slog.LevelDebug) {
+		tx.store.logger.Debug("GetFile retrieved",
+			"id", id.String(),
+			"share", shareName,
+			"path", file.Path,
+			"file_type", int(file.Type),
+			"size", file.Size)
+	}
 
 	return file, nil
 }
@@ -399,13 +404,16 @@ func (tx *sqliteTransaction) PutFile(ctx context.Context, file *metadata.File) e
 			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
 		}
 
-		// Debug logging for new file inserts
-		tx.store.logger.Debug("PutFile inserted",
-			"id", file.ID.String(),
-			"share", file.ShareName,
-			"path", file.Path,
-			"file_type", int(file.Type),
-			"size", file.Size)
+		// Debug logging for new file inserts, gated so the id formatting is
+		// skipped when Debug is off.
+		if tx.store.logger.Enabled(ctx, slog.LevelDebug) {
+			tx.store.logger.Debug("PutFile inserted",
+				"id", file.ID.String(),
+				"share", file.ShareName,
+				"path", file.Path,
+				"file_type", int(file.Type),
+				"size", file.Size)
+		}
 	}
 
 	// persist FileAttr.Blocks into file_block_refs — but ONLY when the caller
@@ -510,12 +518,15 @@ func (tx *sqliteTransaction) GetChild(ctx context.Context, dirHandle metadata.Fi
 		return nil, mapDBError(err, "GetChild", name)
 	}
 
-	// Debug logging to trace child lookup
-	tx.store.logger.Debug("GetChild found",
-		"parent_id", parentID.String(),
-		"child_name", name,
-		"child_id", childID,
-		"share", shareName)
+	// Debug logging to trace child lookup. Gated so the parent-id formatting is
+	// skipped when Debug is off — GetChild runs on every path component.
+	if tx.store.logger.Enabled(ctx, slog.LevelDebug) {
+		tx.store.logger.Debug("GetChild found",
+			"parent_id", parentID.String(),
+			"child_name", name,
+			"child_id", childID,
+			"share", shareName)
+	}
 
 	return encodeFileHandle(shareName, childID)
 }

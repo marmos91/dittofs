@@ -155,7 +155,7 @@ func recordReadProgress(open *OpenFile, offset uint64, bytesReturned uint64) {
 // is at or beyond EOF.
 func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse, error) {
 	logger.Debug("READ request",
-		"fileID", fmt.Sprintf("%x", req.FileID),
+		"fileID", lazyFileID(req.FileID),
 		"offset", req.Offset,
 		"length", req.Length)
 
@@ -165,7 +165,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
-		logger.Debug("READ: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
+		logger.Debug("READ: file handle not found (closed)", "fileID", lazyFileID(req.FileID))
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileClosed}}, nil
 	}
 
@@ -560,7 +560,7 @@ func (h *Handler) handlePipeRead(ctx *SMBHandlerContext, req *ReadRequest, openF
 	// Get pipe state
 	pipe := h.PipeManager.GetPipe(req.FileID)
 	if pipe == nil {
-		logger.Debug("READ: pipe not found", "fileID", fmt.Sprintf("%x", req.FileID))
+		logger.Debug("READ: pipe not found", "fileID", lazyFileID(req.FileID))
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
 	}
 

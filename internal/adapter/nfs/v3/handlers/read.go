@@ -106,17 +106,17 @@ func (h *Handler) Read(
 	// Check if the client has disconnected or the request has timed out
 	// before we start any expensive operations.
 	if ctx.isContextCancelled() {
-		logger.DebugCtx(ctx.Context, "READ: request cancelled at entry", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "READ: request cancelled at entry", "handle", xdr.LazyHandle(req.Handle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.DebugCtx(ctx.Context, "READ", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "count", bytesize.ByteSize(req.Count), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "READ", "handle", xdr.LazyHandle(req.Handle), "offset", bytesize.ByteSize(req.Offset), "count", bytesize.ByteSize(req.Count), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	if err := validateReadRequest(req); err != nil {
-		logger.WarnCtx(ctx.Context, "READ validation failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP, "error", err)
+		logger.WarnCtx(ctx.Context, "READ validation failed", "handle", xdr.LazyHandle(req.Handle), "client", clientIP, "error", err)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -143,7 +143,7 @@ func (h *Handler) Read(
 
 	// Verify it's a regular file (not a directory or special file)
 	if file.Type != metadata.FileTypeRegular {
-		logger.WarnCtx(ctx.Context, "READ failed: not a regular file", "handle", fmt.Sprintf("0x%x", req.Handle), "type", file.Type, "client", clientIP)
+		logger.WarnCtx(ctx.Context, "READ failed: not a regular file", "handle", xdr.LazyHandle(req.Handle), "type", file.Type, "client", clientIP)
 
 		// Return file attributes even on error for cache consistency
 		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
@@ -157,7 +157,7 @@ func (h *Handler) Read(
 	// Context Cancellation Check - After Metadata Lookup
 	// Check again before opening content (which may be expensive)
 	if ctx.isContextCancelled() {
-		logger.DebugCtx(ctx.Context, "READ: request cancelled after metadata lookup", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
+		logger.DebugCtx(ctx.Context, "READ: request cancelled after metadata lookup", "handle", xdr.LazyHandle(req.Handle), "client", clientIP)
 		return nil, ctx.Context.Err()
 	}
 
@@ -171,7 +171,7 @@ func (h *Handler) Read(
 			return nil, ctx.Context.Err()
 		}
 		logAuthCtxError(ctx.Context, err, "READ",
-			"handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
+			"handle", xdr.LazyHandle(req.Handle), "client", clientIP)
 		return &ReadResponse{
 			NFSResponseBase: NFSResponseBase{Status: authDenialStatus(err)},
 			Attr:            h.convertFileAttrToNFS(fileHandle, &file.FileAttr),
@@ -196,7 +196,7 @@ func (h *Handler) Read(
 			return nil, err
 		}
 		status := common.MapToNFS3(err)
-		logger.DebugCtx(ctx.Context, "READ denied", "handle", fmt.Sprintf("0x%x", req.Handle), "status", status, "client", clientIP, "error", err)
+		logger.DebugCtx(ctx.Context, "READ denied", "handle", xdr.LazyHandle(req.Handle), "status", status, "client", clientIP, "error", err)
 		return &ReadResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},
 			Attr:            h.convertFileAttrToNFS(fileHandle, &file.FileAttr),
@@ -213,7 +213,7 @@ func (h *Handler) Read(
 
 	// If file has no content, return empty data with EOF
 	if file.PayloadID == "" || file.Size == 0 {
-		logger.DebugCtx(ctx.Context, "READ: empty file", "handle", fmt.Sprintf("0x%x", req.Handle), "size", bytesize.ByteSize(file.Size), "client", clientIP)
+		logger.DebugCtx(ctx.Context, "READ: empty file", "handle", xdr.LazyHandle(req.Handle), "size", bytesize.ByteSize(file.Size), "client", clientIP)
 
 		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
@@ -228,7 +228,7 @@ func (h *Handler) Read(
 
 	// If offset is at or beyond EOF, return empty data with EOF
 	if req.Offset >= file.Size {
-		logger.DebugCtx(ctx.Context, "READ: offset beyond EOF", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "size", bytesize.ByteSize(file.Size), "client", clientIP)
+		logger.DebugCtx(ctx.Context, "READ: offset beyond EOF", "handle", xdr.LazyHandle(req.Handle), "offset", bytesize.ByteSize(req.Offset), "size", bytesize.ByteSize(file.Size), "client", clientIP)
 
 		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
@@ -270,17 +270,17 @@ func (h *Handler) Read(
 
 	// All reads go through BlockStore.ReadAt which reads from block store.
 
-	logger.DebugCtx(ctx.Context, "READ: reading from BlockStore", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", actualLength, "payload_id", file.PayloadID)
+	logger.DebugCtx(ctx.Context, "READ: reading from BlockStore", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", actualLength, "payload_id", file.PayloadID)
 	readResult, readErr := common.ReadFromBlockStore(ctx.Context, blockStore, file.PayloadID, req.Offset, actualLength)
 	if readErr != nil {
 		// Check if cancellation error
 		if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
-			logger.DebugCtx(ctx.Context, "READ: request cancelled during ReadAt", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "client", clientIP)
+			logger.DebugCtx(ctx.Context, "READ: request cancelled during ReadAt", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "client", clientIP)
 			return nil, readErr
 		}
 
 		// I/O error
-		logError(ctx.Context, readErr, "READ failed", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "client", clientIP)
+		logError(ctx.Context, readErr, "READ failed", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "client", clientIP)
 		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 		return &ReadResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -299,7 +299,7 @@ func (h *Handler) Read(
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
-	logger.DebugCtx(ctx.Context, "READ successful", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "read", bytesize.ByteSize(n), "eof", eof, "client", clientIP)
+	logger.DebugCtx(ctx.Context, "READ successful", "handle", xdr.LazyHandle(req.Handle), "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "read", bytesize.ByteSize(n), "eof", eof, "client", clientIP)
 
 	logger.DebugCtx(ctx.Context, "READ details", "size", bytesize.ByteSize(file.Size), "type", nfsAttr.Type, "mode", fmt.Sprintf("%o", file.Mode))
 
