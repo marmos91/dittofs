@@ -451,10 +451,10 @@ func loadFileChunkAtIndexOffset(txn *badger.Txn, payloadID string, off uint64) (
 // offset without materializing the whole manifest (no per-row Get, no JSON
 // unmarshal, no sort), then two point Gets fetch the winning row.
 //
-// Largest-start only decides anything if rows overlap, which the carve's
-// re-tiling prevents. The keys-only scan cannot detect overlap — the row lengths
-// are in the values — so where the engine's ListFileChunks fallback reports a
-// broken tiling, this path returns the greatest-start row regardless.
+// Largest-start only decides anything if rows overlap, which a truncate followed
+// by a re-carving write can produce. It resolves to the newer row, and the
+// engine's ListFileChunks fallback picks the same one so both paths answer a
+// read alike.
 //
 // ponytail: O(n) keys-only scan per read; upgrade to a big-endian fb-off index
 // for a true O(log n) reverse-seek only if profiling at real N still shows it.

@@ -169,13 +169,13 @@ var (
 	// discarded and this error surfaces — bad bytes never reach the caller.
 	ErrChunkContentMismatch = errors.New("blockstore: chunk content hash mismatch")
 
-	// ErrManifestInconsistent is returned when a payload's manifest cannot be read
-	// as a tiling of the file: a FileChunk ID that carries no parseable
-	// "<payloadID>/<offset>", or two rows covering the same offset. Neither is
-	// treated as a hole: a hole is the *absence* of a row and reads back as zeros
-	// by design, so passing over an unplaceable row would serve zeros for a range
-	// the store still holds bytes for, with nothing logged and no error returned.
-	// Reads refuse instead, which turns silent corruption into a diagnosable one.
+	// ErrManifestInconsistent is returned when a payload's manifest holds a row
+	// that cannot be placed in the file — today, a FileChunk ID that does not
+	// carry a parseable "<payloadID>/<offset>". It is deliberately not treated as
+	// a hole: a hole is the *absence* of a row and reads back as zeros by design,
+	// so passing over an unplaceable row would serve zeros for a range the store
+	// still holds bytes for, with nothing logged and no error returned. Reads
+	// refuse instead, which turns silent corruption into a diagnosable one.
 	ErrManifestInconsistent = errors.New("blockstore: file manifest inconsistent")
 
 	// ErrChunkRefMissing is returned by engine.ReadAt when a ChunkRef.Hash

@@ -81,23 +81,25 @@ func TestFindRowCoveringOffset_WellFormedRowResolves(t *testing.T) {
 	}
 }
 
-// Non-overlap is an invariant the carve maintains, not one the lookup may
-// assume: the row this walk reaches first need not be the one the indexed
-// badger path (largest start) returns, and both read back as ordinary data.
-func TestFindRowCoveringOffset_OverlappingRowsAreReported(t *testing.T) {
+// Overlapping rows resolve to the greatest start, matching the indexed badger
+// lookup. A truncate narrows a straddling row to the new size and a later write
+// re-carves from an earlier boundary, so the narrowed row keeps claiming bytes
+// the new row also covers; the newer row holds what the last write put there.
+func TestFindRowCoveringOffset_OverlapResolvesToGreatestStart(t *testing.T) {
 	rows := []*block.FileChunk{
-		{ID: "payload-1/0", DataSize: 8192},
-		{ID: "payload-1/4096", DataSize: 4096}, // overlaps [4096, 8192)
+		{ID: "payload-1/0", DataSize: 8192},    // narrowed survivor, reached first
+		{ID: "payload-1/4096", DataSize: 4096}, // newer row over [4096, 8192)
 	}
 
 	rw, err := findRowCoveringOffset(rows, 5000)
-	if err == nil {
-		t.Fatalf("offset 5000 returned rw=%v err=nil; two rows cover it", rw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !errors.Is(err, block.ErrManifestInconsistent) {
-		t.Fatalf("err = %v, want it to wrap ErrManifestInconsistent", err)
+	if rw == nil || rw.absOffset != 4096 {
+		t.Fatalf("rw = %+v, want the row starting at 4096", rw)
 	}
-	// Offsets only one row covers stay readable.
+
+	// Offsets only the older row covers still resolve to it.
 	rw, err = findRowCoveringOffset(rows, 1000)
 	if err != nil || rw == nil || rw.absOffset != 0 {
 		t.Fatalf("findRowCoveringOffset(1000) = %+v, %v; want the row at 0", rw, err)
