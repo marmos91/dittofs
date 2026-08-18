@@ -66,12 +66,21 @@ kill_server() {
   return 1
 }
 
-# unmount detaches lazily and then waits for the mount to actually be gone, so a
-# slow teardown cannot be mistaken for a filesystem that did not survive.
-unmount() {
-  umount -l "$1" 2>/dev/null
+# umount_smb detaches lazily: the server it talks to has just been killed, so a
+# plain unmount would sit waiting for a reply that is never coming. Nothing here
+# holds the block device, so a deferred teardown cannot reach it.
+umount_smb() { umount -l "$WORK/smb" 2>/dev/null; }
+
+# umount_data does a real unmount, retried while the dying server releases its
+# fds. A lazy one would detach the mount point and return while writeback is
+# still pending, and that pending work could then land on the healed device
+# after the table is restored - the crash model must not leak across that line.
+# Retrying also keeps a slow teardown from being read as a filesystem that did
+# not survive.
+umount_data() {
   for _ in {1..100}; do
-    mountpoint -q "$1" || return 0
+    mountpoint -q "$DATA" || return 0
+    umount "$DATA" 2>/dev/null && return 0
     sleep 0.1
   done
   return 1
@@ -80,8 +89,8 @@ unmount() {
 cleanup() {
   pkill -9 -f "$WORK/writer.py" 2>/dev/null
   kill_server
-  unmount "$WORK/smb"
-  unmount "$DATA"
+  umount_smb
+  umount_data
   dmsetup remove -f "$DEV" 2>/dev/null
   losetup -j "$IMG" 2>/dev/null | cut -d: -f1 | xargs -r losetup -d 2>/dev/null
 }
@@ -195,8 +204,8 @@ log "device lost after $(wc -l < "$ACKS") acknowledged records"
 
 kill -9 $WRITER 2>/dev/null; wait $WRITER 2>/dev/null
 kill_server || fail "server would not die"
-unmount "$WORK/smb" || fail "smb mount would not detach"
-unmount "$DATA" || fail "flaky filesystem would not unmount"
+umount_smb
+umount_data || fail "flaky filesystem would not unmount"
 
 # --- restore what survived -------------------------------------------------
 retable linear "$LOOP" 0 || fail "restore device"
