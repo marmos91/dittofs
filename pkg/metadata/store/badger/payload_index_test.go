@@ -159,3 +159,40 @@ func TestPayloadIndex_MovesOnPayloadIDChange(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, fileID, got.ID)
 }
+
+// TestPayloadIndex_TxScanFallbackReturnsManifest pins the transaction-scoped
+// GetFileByPayloadID scan fallback to the same shape as its index fast path.
+// The scan branch used to build the result inline and returned without loading
+// the sibling fm: manifest, so an unindexed row resolved inside a transaction
+// came back with an empty Blocks slice — a silently truncated manifest for
+// every caller that reads File.Blocks off it.
+func TestPayloadIndex_TxScanFallbackReturnsManifest(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewBadgerMetadataStoreWithDefaults(ctx, t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	const shareName = "/s"
+	root := mkPayloadShare(t, store, shareName)
+	handle := mkChunkedFile(t, store, shareName, root, "big.bin", "/big.bin", 4)
+	_, fileID, err := metadata.DecodeFileHandle(handle)
+	require.NoError(t, err)
+	pid := metadata.PayloadID("/big.bin")
+
+	// Drop the pl: entry so the lookup takes the legacy full-scan branch.
+	require.NoError(t, store.db.Update(func(txn *badgerdb.Txn) error {
+		return txn.Delete(keyPayloadID(pid))
+	}))
+
+	require.NoError(t, store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		got, err := tx.GetFileByPayloadID(ctx, pid)
+		if err != nil {
+			return err
+		}
+		require.Equal(t, fileID, got.ID)
+		require.Len(t, got.Blocks, 4, "scan fallback must load the fm: manifest")
+		require.Equal(t, uint32(1), got.Nlink, "scan fallback must resolve the link count")
+		require.Equal(t, "/big.bin", got.Path, "scan fallback must derive the path")
+		return nil
+	}))
+}
