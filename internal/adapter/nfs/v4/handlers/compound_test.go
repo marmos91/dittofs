@@ -2650,3 +2650,23 @@ func TestIsOperationBlocked_CacheHit(t *testing.T) {
 		t.Errorf("OP_DELEGPURGE should be cleared after empty SetBlockedOps")
 	}
 }
+
+// TestProcessCompound_RecordsMinorVersion verifies that the decoded
+// minorversion is left on the compound context. The NFS adapter reads it there
+// to report the client's exact dialect ("4.0" / "4.1" / "4.2") rather than the
+// bare major version the RPC header carries.
+func TestProcessCompound_RecordsMinorVersion(t *testing.T) {
+	for _, minorVersion := range []uint32{0, 1, 2} {
+		h := newTestHandler()
+		ctx := newTestCompoundContext()
+
+		data := buildCompoundArgs(nil, minorVersion, []uint32{types.OP_PUTROOTFH})
+		if _, err := h.ProcessCompound(ctx, data); err != nil {
+			t.Fatalf("minorversion %d: ProcessCompound error: %v", minorVersion, err)
+		}
+
+		if ctx.MinorVersion != minorVersion {
+			t.Errorf("ctx.MinorVersion = %d, want %d", ctx.MinorVersion, minorVersion)
+		}
+	}
+}
