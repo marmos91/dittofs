@@ -223,13 +223,12 @@ type Store struct {
 	coldMu sync.Mutex
 	coldFD *os.File
 
-	// bgCancel stops the two background loops started by Open — the dead-ratio
-	// repack and the dirty-age commit. Close cancels it and waits on both done
-	// channels so neither loop is still touching a segment when its file is
-	// closed underneath it.
+	// bgCancel stops the background loops started by Open — the dead-ratio
+	// repack and the dirty-age commit. Close cancels it and waits on bgWG so
+	// neither loop is still touching a segment when its file is closed
+	// underneath it.
 	bgCancel context.CancelFunc
-	gcDone   chan struct{}
-	syncDone chan struct{}
+	bgWG     sync.WaitGroup
 
 	// failTombstone/failTruncate are test seams: when either equals the FileID
 	// of a Delete or Truncate, the corresponding marker append returns an error
@@ -320,9 +319,8 @@ func (s *Store) Close() error {
 	}
 	if s.bgCancel != nil {
 		s.bgCancel()
-		<-s.gcDone
-		<-s.syncDone
 	}
+	s.bgWG.Wait()
 	firstErr := s.closeCold()
 	for _, sh := range s.shards {
 		if sh == nil {
@@ -351,14 +349,17 @@ func (s *Store) Close() error {
 const defaultGCInterval = 30 * time.Second
 
 // startBackground launches the store's periodic loops. Close cancels them and
-// waits for both to return before closing segment files.
+// waits for each to return before closing segment files. A negative DirtyExpiry
+// leaves the dirty-age loop unstarted.
 func (s *Store) startBackground() {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.bgCancel = cancel
-	s.gcDone = make(chan struct{})
-	s.syncDone = make(chan struct{})
-	go s.gcLoop(ctx)
-	go s.syncLoop(ctx)
+	s.bgWG.Add(1)
+	go func() { defer s.bgWG.Done(); s.gcLoop(ctx) }()
+	if s.cfg.DirtyExpiry > 0 {
+		s.bgWG.Add(1)
+		go func() { defer s.bgWG.Done(); s.syncLoop(ctx) }()
+	}
 }
 
 // gcLoop is the periodic dead-ratio repack. Overwrites leave dead records
@@ -367,7 +368,6 @@ func (s *Store) startBackground() {
 // forces backpressure. The loop keeps local bytes bounded relative to live
 // bytes regardless of whether a cap is set.
 func (s *Store) gcLoop(ctx context.Context) {
-	defer close(s.gcDone)
 	t := time.NewTicker(defaultGCInterval)
 	defer t.Stop()
 	for {
@@ -386,19 +386,11 @@ func (s *Store) gcLoop(ctx context.Context) {
 	}
 }
 
-// syncLoop bounds the age of unfsynced writes. Commit is otherwise driven only
-// by a client asking for durability (NFS COMMIT, SMB FLUSH/CLOSE), by segment
-// rotation and by Close, so a writer that never asks leaves acknowledged bytes
-// in the page cache until its shard rotates — 256 MiB away, at any age. Once
-// per DirtyExpiry this commits every shard still holding records no completed
-// fsync covers, which costs an idle store nothing and never runs on the ack
-// path. It is a ceiling on the loss window, not a durability guarantee: only a
-// returned Commit says the bytes reached the device.
+// syncLoop commits the shards holding unfsynced records once per DirtyExpiry,
+// bounding how long an acknowledged write can sit in the page cache. It is
+// dirty-driven, so an idle store never fsyncs, and it runs off the ack path, so
+// it adds no write latency. See Config.DirtyExpiry.
 func (s *Store) syncLoop(ctx context.Context) {
-	defer close(s.syncDone)
-	if s.cfg.DirtyExpiry < 0 {
-		return
-	}
 	t := time.NewTicker(s.cfg.DirtyExpiry)
 	defer t.Stop()
 	for {
@@ -417,7 +409,7 @@ func (s *Store) syncLoop(ctx context.Context) {
 // fsync and never duplicates work.
 func (s *Store) commitDirtyShards() {
 	for _, sh := range s.shards {
-		if sh == nil || !sh.dirty() {
+		if !sh.dirty() {
 			continue
 		}
 		if err := sh.groupCommit(); err != nil {

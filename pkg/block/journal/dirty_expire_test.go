@@ -7,11 +7,10 @@ import (
 	"time"
 )
 
-// openDirtyExpireStore opens a store whose dirty-age loop fires quickly and
-// returns it with a per-shard fsync spy already installed on the shard owning
-// id. The spy is installed before the first write, so the loop — which reads
-// segSync only once a shard is dirty, behind that shard's mutex — can never
-// observe it unset.
+// openDirtyExpireStore opens a store whose dirty-age loop fires quickly, with
+// an fsync spy on the shard owning id. The loop reads segSync only once a shard
+// is dirty, behind that shard's mutex, and the spy is installed before any
+// write, so it can never observe it unset.
 func openDirtyExpireStore(t *testing.T, id FileID, expiry time.Duration) (*Store, *shard, *atomic.Int32) {
 	t.Helper()
 	s, err := Open(t.TempDir(), Config{DirtyExpiry: expiry}, newFakeRemote(), SystemClock())
@@ -28,9 +27,8 @@ func openDirtyExpireStore(t *testing.T, id FileID, expiry time.Duration) (*Store
 	return s, sh, &syncs
 }
 
-// TestDirtyExpiry_CommitsWithoutExplicitCommit is the regression test for the
-// unbounded non-durable window: a client that writes and never asks for
-// durability must still have its bytes fsynced within the dirty-age interval.
+// A client that writes and never asks for durability must still have its bytes
+// fsynced within the dirty-age interval.
 func TestDirtyExpiry_CommitsWithoutExplicitCommit(t *testing.T) {
 	const id FileID = "unfsynced"
 	s, sh, syncs := openDirtyExpireStore(t, id, 20*time.Millisecond)
@@ -61,8 +59,7 @@ func TestDirtyExpiry_CommitsWithoutExplicitCommit(t *testing.T) {
 	}
 }
 
-// TestDirtyExpiry_IdleStoreDoesNotSync proves the loop is dirty-driven: with
-// nothing written it must never fsync, so an idle store pays nothing.
+// The loop is dirty-driven: with nothing written it must never fsync.
 func TestDirtyExpiry_IdleStoreDoesNotSync(t *testing.T) {
 	_, _, syncs := openDirtyExpireStore(t, "idle", 5*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
@@ -71,8 +68,8 @@ func TestDirtyExpiry_IdleStoreDoesNotSync(t *testing.T) {
 	}
 }
 
-// TestDirtyExpiry_Disabled proves a negative interval turns the loop off, so
-// the historical "no promise without fsync" posture stays available.
+// A negative interval turns the loop off, keeping the strict
+// "no promise without fsync" posture available.
 func TestDirtyExpiry_Disabled(t *testing.T) {
 	const id FileID = "disabled"
 	s, sh, syncs := openDirtyExpireStore(t, id, -1)

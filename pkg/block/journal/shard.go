@@ -108,9 +108,9 @@ func (sh *shard) markSynced(v uint64) {
 }
 
 // dirty reports whether the shard holds appended records that no completed
-// fsync has covered. A shard whose fsync has already failed is never reported
-// dirty: syncFailed freezes syncedVersion for good, so retrying would fsync on
-// every pass without the watermark ever advancing.
+// fsync has covered. A shard whose fsync already failed is never dirty:
+// syncFailed freezes syncedVersion for good, so retrying would fsync every
+// pass without the watermark ever advancing.
 func (sh *shard) dirty() bool {
 	if sh.syncFailed.Load() {
 		return false

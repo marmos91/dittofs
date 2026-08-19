@@ -32,10 +32,9 @@ type FSStoreOptions struct {
 	BackpressureMaxWait time.Duration
 	MaxLogBytes         int64
 	ChunkParams         chunker.Params
-	// DirtyExpiry bounds how long a write may sit in the page cache before the
-	// journal fsyncs it on its own. Zero takes the journal default; negative
-	// disables the loop, leaving fsync (NFS COMMIT, SMB FLUSH/CLOSE) and
-	// segment rotation as the only durability points.
+	// DirtyExpiry bounds how long a write may sit unfsynced; see
+	// journal.Config.DirtyExpiry. Zero takes the journal default, negative
+	// disables the loop.
 	DirtyExpiry time.Duration
 	// MigrateLegacyLayout, when set, makes NewWithOptions archive a detected
 	// pre-journal blobs/+logs/ layout aside (instead of refusing to open) so the
