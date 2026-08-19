@@ -772,7 +772,8 @@ func (tx *sqliteTransaction) GetParent(ctx context.Context, handle metadata.File
 
 func (tx *sqliteTransaction) SetParent(ctx context.Context, handle metadata.FileHandle, parentHandle metadata.FileHandle) error {
 	// Parent is tracked via the parent_child_map table, already handled by SetChild.
-	return nil
+	// Still honours context cancellation, matching the store-level SetParent.
+	return ctx.Err()
 }
 
 func (tx *sqliteTransaction) GetLinkCount(ctx context.Context, handle metadata.FileHandle) (uint32, error) {

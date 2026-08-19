@@ -114,6 +114,11 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 
 	var lastErr error
 	for attempt := 0; attempt < int(maxTransactionRetries.Load()); attempt++ {
+		// Re-check between attempts so a cancellation during the conflict
+		// backoff stops the loop instead of burning the remaining retries.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		// pendingDelta is captured outside db.Update so it is read after a
 		// successful commit and reset per attempt (a retried attempt starts
 		// from zero, so a conflict-retry cannot double-count usedBytes).

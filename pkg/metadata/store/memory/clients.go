@@ -44,19 +44,7 @@ func (s *memoryClientStore) PutClientRegistration(ctx context.Context, reg *lock
 	defer s.mu.Unlock()
 
 	// Clone the registration to prevent external modifications
-	stored := &lock.PersistedClientRegistration{
-		ClientID:     reg.ClientID,
-		MonName:      reg.MonName,
-		Priv:         reg.Priv,
-		CallbackHost: reg.CallbackHost,
-		CallbackProg: reg.CallbackProg,
-		CallbackVers: reg.CallbackVers,
-		CallbackProc: reg.CallbackProc,
-		RegisteredAt: reg.RegisteredAt,
-		ServerEpoch:  reg.ServerEpoch,
-	}
-
-	s.registrations[reg.ClientID] = stored
+	s.registrations[reg.ClientID] = cloneClientRegistration(reg)
 	return nil
 }
 

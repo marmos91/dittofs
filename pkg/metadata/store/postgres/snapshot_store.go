@@ -85,10 +85,7 @@ func (s *PostgresMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) 
 	}
 
 	// Acquire a dedicated connection for raw protocol-level COPY operations.
-	acquireCtx, acquireCancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
-	defer acquireCancel()
-
-	conn, err := s.pool.Acquire(acquireCtx)
+	conn, err := s.acquireConn(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("backup: acquire connection: %w", err)
 	}
@@ -290,10 +287,7 @@ func (s *PostgresMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader
 	tableCount := binary.LittleEndian.Uint32(countBuf[:])
 
 	// Acquire a dedicated connection for raw COPY FROM operations.
-	acquireCtx, acquireCancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
-	defer acquireCancel()
-
-	conn, err := s.pool.Acquire(acquireCtx)
+	conn, err := s.acquireConn(ctx)
 	if err != nil {
 		return fmt.Errorf("restore: acquire connection: %w", err)
 	}
