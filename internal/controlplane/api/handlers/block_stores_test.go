@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	stdruntime "runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -956,6 +957,16 @@ func TestBlockStoreHandler_Update_EncryptionCannotBeRemoved(t *testing.T) {
 		w := update(t, encrypted, `{"bucket":"b","region":"eu-west-1","access_key_id":"AK","secret_access_key":"SK","encryption":null}`)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+	})
+
+	t.Run("unparseable config reports the parse error", func(t *testing.T) {
+		w := update(t, encrypted, `not json`)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "cannot be removed") {
+			t.Fatalf("invalid JSON reported as an encryption removal: %s", w.Body.String())
 		}
 	})
 

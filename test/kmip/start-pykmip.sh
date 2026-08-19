@@ -14,6 +14,9 @@ CERTS="${1:-$HERE/certs}"
 ENV_FILE="${2:-/dev/stdout}"
 CONTAINER=dittofs-pykmip
 IMAGE=python:3.11-slim
+# Pinned: an unpinned server would let a PyKMIP release change what these
+# tests assert about without any change on this side.
+PYKMIP_VERSION=0.10.0
 
 CERTS="$("$HERE/gen-certs.sh" "$CERTS")"
 CERTS="$(cd "$CERTS" && pwd)"
@@ -32,7 +35,7 @@ docker run -d --name "$CONTAINER" -p 5696:5696 \
   -v "$CERTS:/certs:ro" \
   -v "$HERE:/work:ro" \
   "$IMAGE" \
-  sh -c 'pip install --no-cache-dir pykmip && mkdir -p /etc/pykmip/policies && exec pykmip-server -f /work/server.conf' \
+  sh -c 'pip install --no-cache-dir pykmip=='"$PYKMIP_VERSION"' && mkdir -p /etc/pykmip/policies && exec pykmip-server -f /work/server.conf' \
   >/dev/null
 
 # pip install then server start; the port is the readiness signal.
