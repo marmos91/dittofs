@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	stdruntime "runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -907,4 +908,72 @@ func isValidHealthStatus(s health.Status) bool {
 	default:
 		return false
 	}
+}
+
+// TestBlockStoreHandler_Update_EncryptionCannotBeRemoved pins the
+// one-way door: blocks already written to an encrypted store carry an
+// encryption frame, and an undecorated store would hand that framed
+// ciphertext back as plaintext, so an update that drops the policy is
+// refused. Changing the policy in place stays allowed.
+func TestBlockStoreHandler_Update_EncryptionCannotBeRemoved(t *testing.T) {
+	const encrypted = `{"bucket":"b","region":"us-east-1","access_key_id":"AK","secret_access_key":"SK",` +
+		`"encryption":{"algorithm":"aes-256-gcm","key":{"kind":"local","file":"/k.pem"}}}`
+
+	update := func(t *testing.T, initial, cfg string) *httptest.ResponseRecorder {
+		t.Helper()
+		cpStore, handler := setupBlockStoreTest(t)
+		bs := &models.BlockStoreConfig{
+			ID: uuid.New().String(), Name: "enc-test", Kind: models.BlockStoreKindRemote,
+			Type: "s3", Config: initial, CreatedAt: time.Now(),
+		}
+		if _, err := cpStore.CreateBlockStore(context.Background(), bs); err != nil {
+			t.Fatalf("CreateBlockStore: %v", err)
+		}
+		body, _ := json.Marshal(UpdateBlockStoreRequest{Config: &cfg})
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/store/block/remote/enc-test", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req = withBlockStoreKindAndName(req, "remote", "enc-test")
+		w := httptest.NewRecorder()
+		handler.Update(w, req)
+		return w
+	}
+
+	t.Run("removal rejected", func(t *testing.T) {
+		w := update(t, encrypted, `{"bucket":"b","region":"eu-west-1","access_key_id":"AK","secret_access_key":"SK"}`)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+	})
+
+	t.Run("policy change allowed", func(t *testing.T) {
+		w := update(t, encrypted, `{"bucket":"b","region":"eu-west-1","access_key_id":"AK","secret_access_key":"SK",`+
+			`"encryption":{"algorithm":"aes-256-gcm","key":{"kind":"local","file":"/k2.pem"}}}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+		}
+	})
+
+	t.Run("nulling the policy is removal", func(t *testing.T) {
+		w := update(t, encrypted, `{"bucket":"b","region":"eu-west-1","access_key_id":"AK","secret_access_key":"SK","encryption":null}`)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+	})
+
+	t.Run("unparseable config reports the parse error", func(t *testing.T) {
+		w := update(t, encrypted, `not json`)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "cannot be removed") {
+			t.Fatalf("invalid JSON reported as an encryption removal: %s", w.Body.String())
+		}
+	})
+
+	t.Run("never encrypted stays editable", func(t *testing.T) {
+		w := update(t, `{"bucket":"b","region":"us-east-1","access_key_id":"AK","secret_access_key":"SK"}`, `{"bucket":"b","region":"eu-west-1","access_key_id":"AK","secret_access_key":"SK"}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+		}
+	})
 }

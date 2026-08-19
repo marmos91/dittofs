@@ -114,6 +114,12 @@ var (
 	// ErrKeyFileCorrupt indicates a local key file failed to parse — bad
 	// PEM, bad JSON, or out-of-range KDF parameters.
 	ErrKeyFileCorrupt = errors.New("keyprovider: key file corrupt")
+
+	// ErrKeyStateUnusable indicates an external key store reports the key
+	// in a state that forbids the use being made of it: a current master
+	// key that is anything other than Active, or a retired one whose
+	// material the store has destroyed.
+	ErrKeyStateUnusable = errors.New("keyprovider: key state unusable")
 )
 
 // NewProvider constructs a KeyProvider from the parsed Config. Dispatch

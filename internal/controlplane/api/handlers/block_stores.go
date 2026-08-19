@@ -250,8 +250,30 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 		// Read paths redact secrets to "********"; reconcile any sentinel
 		// the client echoed back so we never overwrite a real credential
 		// with the redaction marker.
+		previous := bs.Config
 		bs.Config = mergeRedactedSecrets(bs.Config, *req.Config)
 		bs.ParsedConfig = nil
+		// Blocks already written to an encrypted store carry an encryption
+		// frame. Dropping the policy does not fail anywhere downstream — the
+		// undecorated store would hand that framed ciphertext back as if it
+		// were plaintext — so the removal is refused here.
+		// The stored blob's parse result is discarded because an
+		// unparseable one cannot have carried a policy that was ever in
+		// effect: building the encrypted store parses the same blob and
+		// fails first, so no block was written under it. Neither write path
+		// can store such a blob either — validation below, and the same
+		// check on create, both parse before persisting.
+		hadEncryption, _ := hasEncryptionPolicy(previous)
+		hasEncryption, parsed := hasEncryptionPolicy(bs.Config)
+		// An unparseable incoming blob is left to the config validation
+		// below, which reports the parse error rather than a removal the
+		// request may not have asked for.
+		if parsed && hadEncryption && !hasEncryption {
+			BadRequest(w, "Encryption cannot be removed from a block store once enabled: "+
+				"blocks already written are encrypted and would be served as ciphertext. "+
+				"Change the encryption policy instead, or move the share to a new block store.")
+			return
+		}
 	}
 
 	// Re-validate on any type/config change so a no-op PUT does not

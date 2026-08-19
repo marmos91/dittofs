@@ -322,3 +322,17 @@ func HandleStoreError(w http.ResponseWriter, err error) {
 	status, msg := MapStoreError(err)
 	WriteProblem(w, status, http.StatusText(status), msg)
 }
+
+// hasEncryptionPolicy reports whether a block-store config blob carries an
+// "encryption" sub-config, and whether the blob parsed at all. A
+// present-but-null value counts as absent, so nulling the key reads as
+// removing it rather than as keeping a policy that does not exist. A blob
+// that will not parse answers (false, false): callers that care about a
+// policy disappearing must not read a parse failure as its removal.
+func hasEncryptionPolicy(blob string) (present, parsed bool) {
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(blob), &obj); err != nil {
+		return false, false
+	}
+	return obj["encryption"] != nil, true
+}
