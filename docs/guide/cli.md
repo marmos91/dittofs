@@ -718,6 +718,7 @@ Global flags:
         - [`dfsctl store block remote list`](#dfsctl-store-block-remote-list) — List remote block stores
         - [`dfsctl store block remote remove`](#dfsctl-store-block-remote-remove) — Remove a remote block store
       - [`dfsctl store block stats`](#dfsctl-store-block-stats) — Show block store statistics
+    - [`dfsctl store check`](#dfsctl-store-check) — Scan manifests for ranges no chunk covers
     - [`dfsctl store metadata`](#dfsctl-store-metadata) — Manage metadata stores
       - [`dfsctl store metadata add`](#dfsctl-store-metadata-add) — Add a metadata store
       - [`dfsctl store metadata edit`](#dfsctl-store-metadata-edit) — Edit a metadata store
@@ -1400,7 +1401,7 @@ Manage connected clients
 
 Manage connected NFS and SMB clients on the DittoFS server.
 
-Use these commands to inspect which clients are currently connected, filter by protocol or share, and forcefully disconnect misbehaving sessions. All operations require admin privileges.
+Use these commands to inspect which clients are currently connected, filter by protocol, and forcefully disconnect misbehaving sessions. All operations require admin privileges.
 
 **Examples:**
 
@@ -1410,9 +1411,6 @@ dfsctl client list
 
 # Show only NFS clients
 dfsctl client list --protocol nfs
-
-# Show clients connected to a specific share
-dfsctl client list --share myshare
 
 # Disconnect a specific client by its ID
 dfsctl client disconnect nfs-42 --force
@@ -6398,6 +6396,73 @@ Flags:
 
 ```
       --share string   Show stats for a specific share only
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl store check`
+
+Scan manifests for ranges no chunk covers
+
+Scan the store for files whose manifest does not describe the whole file.
+
+Per payload the scan compares the byte ranges the manifest rows cover against
+the file's recorded size and reports three structural defects:
+
+```
+* ranges no manifest row covers
+* rows that exist but carry no parseable chunk offset, so no reader can place
+  them — a read of such a range refuses rather than serving bytes
+* rows whose content hash the synced-hash store has no record of
+```
+
+The scan is metadata-only. No block is fetched, no file data is read and no
+remote object is touched, so it costs a metadata walk regardless of how much
+data the store holds and incurs no egress. It answers "how many files are
+affected" without reading every file. It does NOT verify block contents —
+remote fetches are already hash-verified on the read path.
+
+An uncovered range is only reported as damage when the file's own block list
+claims data lives there. A range nothing claims cannot be told apart from a
+legitimate sparse hole or from bytes written but not yet rolled up into the
+manifest, so it is counted separately and never fails the command. Pass
+--include-holes to list those ranges too.
+
+The unknown-hash check is skipped on a share with no remote store: nothing is
+ever marked synced there, so every row would be reported.
+
+With no argument every share is scanned. The command exits non-zero when
+damage is found, so it can be scripted (`dfsctl store check || alert`).
+
+```
+dfsctl store check [share] [flags]
+```
+
+**Examples:**
+
+```bash
+dfsctl store check
+dfsctl store check myshare
+dfsctl store check myshare --include-holes
+dfsctl store check myshare -o json
+```
+
+Flags:
+
+```
+      --include-holes   list uncovered ranges that no file claims (legitimate for sparse files)
 ```
 
 Global flags:

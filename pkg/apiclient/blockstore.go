@@ -246,3 +246,26 @@ func (c *Client) BlockStoreAuditRefcounts(shareName string) (*BlockStoreAuditRes
 		struct{}{},
 	)
 }
+
+// BlockStoreManifestCheckResult is the response body for
+// POST /api/v1/shares/{name}/audit/manifest. Mirrors the server-side
+// handlers.BlockStoreManifestCheckResponse shape.
+type BlockStoreManifestCheckResult struct {
+	Result *engine.ManifestCheckResult `json:"result"`
+}
+
+// BlockStoreCheckManifests runs the metadata-only manifest-coverage scan for
+// the named share. Per payload the server compares the byte ranges the
+// manifest rows cover against the file's recorded size and reports uncovered
+// ranges, rows carrying no parseable chunk offset, and rows whose hash the
+// synced-hash store does not know.
+//
+// No block is fetched and no remote object is touched, so the call costs a
+// metadata walk regardless of how much data the share holds.
+func (c *Client) BlockStoreCheckManifests(shareName string) (*BlockStoreManifestCheckResult, error) {
+	return createResource[BlockStoreManifestCheckResult](
+		c,
+		fmt.Sprintf("/api/v1/shares/%s/audit/manifest", url.PathEscape(normalizeShareNameForAPI(shareName))),
+		struct{}{},
+	)
+}
