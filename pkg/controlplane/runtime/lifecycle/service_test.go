@@ -148,7 +148,7 @@ func TestSetAPIServerPanicsAfterServe(t *testing.T) {
 	s := New(time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Serve returns immediately on cancelled ctx
-	_ = s.Serve(ctx, nil, &fakeAdapters{}, nil, nil, nil, nil, nil)
+	_ = s.Serve(ctx, Deps{AdapterLoader: &fakeAdapters{}})
 
 	defer func() {
 		if recover() == nil {
@@ -172,7 +172,14 @@ func TestServeGracefulShutdownOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := s.Serve(ctx, settings, adapters, flusher, closer, nil, drainer, rollups)
+	err := s.Serve(ctx, Deps{
+		Settings:        settings,
+		AdapterLoader:   adapters,
+		MetadataFlusher: flusher,
+		StoreCloser:     closer,
+		SnapshotDrainer: drainer,
+		RollupStopper:   rollups,
+	})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}
@@ -213,7 +220,7 @@ func TestServeAdapterLoadFailure(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := s.Serve(ctx, nil, adapters, nil, closer, nil, nil, nil)
+	err := s.Serve(ctx, Deps{AdapterLoader: adapters, StoreCloser: closer})
 	if err == nil {
 		t.Fatal("expected error from adapter load failure")
 	}
@@ -235,7 +242,7 @@ func TestServeAPIServerFailureTriggersShutdown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := s.Serve(ctx, nil, &fakeAdapters{}, nil, closer, nil, nil, nil)
+	err := s.Serve(ctx, Deps{AdapterLoader: &fakeAdapters{}, StoreCloser: closer})
 	if err == nil || !errors.Is(err, api.startErr) {
 		t.Errorf("err = %v, want wrapped %v", err, api.startErr)
 	}
@@ -247,16 +254,26 @@ func TestServeAPIServerFailureTriggersShutdown(t *testing.T) {
 	}
 }
 
+// A Deps without an AdapterLoader is a programming error: both startup and
+// shutdown dereference it unconditionally, so Serve rejects it instead of
+// panicking.
+func TestServeRequiresAdapterLoader(t *testing.T) {
+	s := New(time.Second)
+	if err := s.Serve(context.Background(), Deps{}); err == nil {
+		t.Fatal("expected error for Deps without an AdapterLoader")
+	}
+}
+
 // Serve uses sync.Once: a second call is a no-op and returns nil.
 func TestServeOnlyRunsOnce(t *testing.T) {
 	s := New(time.Second)
 	adapters := &fakeAdapters{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_ = s.Serve(ctx, nil, adapters, nil, nil, nil, nil, nil)
+	_ = s.Serve(ctx, Deps{AdapterLoader: adapters})
 
 	second := &fakeAdapters{}
-	if err := s.Serve(ctx, nil, second, nil, nil, nil, nil, nil); err != nil {
+	if err := s.Serve(ctx, Deps{AdapterLoader: second}); err != nil {
 		t.Errorf("second Serve = %v, want nil", err)
 	}
 	if second.loaded {

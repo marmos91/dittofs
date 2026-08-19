@@ -224,63 +224,72 @@ func (s *Service) SetAPIServer(server AuxiliaryServer) {
 	}
 }
 
-// Serve starts all components and blocks until shutdown.
-//
-// The machineSIDStore parameter is used to load or generate the machine SID
-// for Windows identity mapping. Pass nil to use an ephemeral SID (testing).
-//
-// The snapshotDrainer parameter is invoked as the FIRST shutdown step so
-// in-flight snapshot orchestration goroutines are cancelled and drained
-// BEFORE StopAllAdapters + CloseMetadataStores — otherwise those
-// goroutines would race a closing metadata store / control-plane DB.
-// Pass nil to skip snapshot draining (tests that do not exercise the
-// snapshot pipeline).
-func (s *Service) Serve(
-	ctx context.Context,
-	settings SettingsInitializer,
-	adapterLoader AdapterLoader,
-	metadataFlusher MetadataFlusher,
-	storeCloser StoreCloser,
-	machineSIDStore MachineSIDStore,
-	snapshotDrainer SnapshotDrainer,
-	rollupStopper RollupStopper,
-) error {
+// Deps are the collaborators Serve drives through startup and shutdown. Every
+// field except AdapterLoader is optional; a nil field skips the step it owns.
+type Deps struct {
+	// Settings loads adapter settings once and then polls for changes.
+	Settings SettingsInitializer
+
+	// AdapterLoader starts the configured adapters and stops them on shutdown.
+	// Required.
+	AdapterLoader AdapterLoader
+
+	// MetadataFlusher drains pending metadata writes during shutdown.
+	MetadataFlusher MetadataFlusher
+
+	// StoreCloser closes the metadata stores, last of the data-plane steps.
+	StoreCloser StoreCloser
+
+	// MachineSIDStore loads or generates the machine SID used for Windows
+	// identity mapping. Nil yields an ephemeral SID (testing).
+	MachineSIDStore MachineSIDStore
+
+	// SnapshotDrainer is invoked as the FIRST shutdown step so in-flight
+	// snapshot orchestration goroutines are cancelled and drained BEFORE
+	// StopAllAdapters + CloseMetadataStores — otherwise those goroutines would
+	// race a closing metadata store / control-plane DB.
+	SnapshotDrainer SnapshotDrainer
+
+	// RollupStopper fences the per-share rollup workers before the metadata
+	// stores close.
+	RollupStopper RollupStopper
+}
+
+// Serve starts all components and blocks until shutdown. It fails fast when
+// Deps.AdapterLoader is missing, which both startup and shutdown dereference
+// unconditionally.
+func (s *Service) Serve(ctx context.Context, deps Deps) error {
+	if deps.AdapterLoader == nil {
+		return fmt.Errorf("lifecycle: Deps.AdapterLoader is required")
+	}
+
 	var err error
 
 	s.serveOnce.Do(func() {
 		s.served = true
-		err = s.serve(ctx, settings, adapterLoader, metadataFlusher, storeCloser, machineSIDStore, snapshotDrainer, rollupStopper)
+		err = s.serve(ctx, deps)
 	})
 
 	return err
 }
 
-func (s *Service) serve(
-	ctx context.Context,
-	settings SettingsInitializer,
-	adapterLoader AdapterLoader,
-	metadataFlusher MetadataFlusher,
-	storeCloser StoreCloser,
-	machineSIDStore MachineSIDStore,
-	snapshotDrainer SnapshotDrainer,
-	rollupStopper RollupStopper,
-) error {
+func (s *Service) serve(ctx context.Context, deps Deps) error {
 	logger.Info("Starting DittoFS runtime")
 
 	// Initialize machine SID BEFORE any adapters start.
 	// This ensures consistent identity mapping for all connections.
-	if err := s.initMachineSID(ctx, machineSIDStore); err != nil {
+	if err := s.initMachineSID(ctx, deps.MachineSIDStore); err != nil {
 		return fmt.Errorf("failed to initialize machine SID: %w", err)
 	}
 
-	if settings != nil {
-		if err := settings.LoadInitial(ctx); err != nil {
+	if deps.Settings != nil {
+		if err := deps.Settings.LoadInitial(ctx); err != nil {
 			logger.Warn("Failed to load initial adapter settings", "error", err)
 		}
-		settings.Start(ctx)
+		deps.Settings.Start(ctx)
 	}
 
-	if err := adapterLoader.LoadAdaptersFromStore(ctx); err != nil {
+	if err := deps.AdapterLoader.LoadAdaptersFromStore(ctx); err != nil {
 		return fmt.Errorf("failed to load adapters: %w", err)
 	}
 
@@ -304,22 +313,15 @@ func (s *Service) serve(
 		shutdownErr = fmt.Errorf("API server error: %w", err)
 	}
 
-	s.shutdown(settings, adapterLoader, metadataFlusher, storeCloser, snapshotDrainer, rollupStopper)
+	s.shutdown(deps)
 
 	logger.Info("DittoFS runtime stopped")
 	return shutdownErr
 }
 
-func (s *Service) shutdown(
-	settings SettingsInitializer,
-	adapterLoader AdapterLoader,
-	metadataFlusher MetadataFlusher,
-	storeCloser StoreCloser,
-	snapshotDrainer SnapshotDrainer,
-	rollupStopper RollupStopper,
-) {
-	if settings != nil {
-		settings.Stop()
+func (s *Service) shutdown(deps Deps) {
+	if deps.Settings != nil {
+		deps.Settings.Stop()
 	}
 
 	// Drain in-flight snapshot orchestration goroutines BEFORE stopping
@@ -329,19 +331,19 @@ func (s *Service) shutdown(
 	// timeout. Orphans after the timeout will still exit on their own
 	// since runtimeCtx is already cancelled; we just may proceed before
 	// every wg.Done fires.
-	if snapshotDrainer != nil {
+	if deps.SnapshotDrainer != nil {
 		drainCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
-		snapshotDrainer.ShutdownSnapshots(drainCtx)
+		deps.SnapshotDrainer.ShutdownSnapshots(drainCtx)
 		cancel()
 	}
 
 	logger.Info("Stopping all adapters")
-	if err := adapterLoader.StopAllAdapters(); err != nil {
+	if err := deps.AdapterLoader.StopAllAdapters(); err != nil {
 		logger.Warn("Error stopping adapters", "error", err)
 	}
 
-	if metadataFlusher != nil {
-		flushed, err := metadataFlusher.FlushAllPendingWritesForShutdown(s.shutdownTimeout)
+	if deps.MetadataFlusher != nil {
+		flushed, err := deps.MetadataFlusher.FlushAllPendingWritesForShutdown(s.shutdownTimeout)
 		if err != nil {
 			logger.Warn("Error flushing pending writes", "error", err, "flushed", flushed)
 		} else if flushed > 0 {
@@ -354,14 +356,14 @@ func (s *Service) shutdown(
 	// through the metadata store, so an in-flight rollup must be drained while
 	// the DB is still open or it races the close ("sql: database is closed").
 	// Runs after StopAllAdapters (no new writes create fresh rollup work).
-	if rollupStopper != nil {
+	if deps.RollupStopper != nil {
 		rollupCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
-		rollupStopper.StopRollups(rollupCtx)
+		deps.RollupStopper.StopRollups(rollupCtx)
 		cancel()
 	}
 
-	if storeCloser != nil {
-		storeCloser.CloseMetadataStores()
+	if deps.StoreCloser != nil {
+		deps.StoreCloser.CloseMetadataStores()
 	}
 
 	if s.apiServer != nil {

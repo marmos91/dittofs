@@ -817,7 +817,15 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		logger.Error("restore recovery returned error (continuing startup)", "error", err)
 	}
 
-	return r.lifecycleSvc.Serve(ctx, r.settingsWatcher, r.adaptersSvc, r.metadataService, r.storesSvc, r.store, r, r)
+	return r.lifecycleSvc.Serve(ctx, lifecycle.Deps{
+		Settings:        r.settingsWatcher,
+		AdapterLoader:   r.adaptersSvc,
+		MetadataFlusher: r.metadataService,
+		StoreCloser:     r.storesSvc,
+		MachineSIDStore: r.store,
+		SnapshotDrainer: r,
+		RollupStopper:   r,
+	})
 }
 
 // StopRollups stops + drains every share's block-store rollup worker pool.
