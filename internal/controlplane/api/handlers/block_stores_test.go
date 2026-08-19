@@ -915,7 +915,7 @@ func isValidHealthStatus(s health.Status) bool {
 // ciphertext back as plaintext, so an update that drops the policy is
 // refused. Changing the policy in place stays allowed.
 func TestBlockStoreHandler_Update_EncryptionCannotBeRemoved(t *testing.T) {
-	const encrypted = `{"bucket":"b","region":"us-east-1",` +
+	const encrypted = `{"bucket":"b","region":"us-east-1","access_key_id":"AK","secret_access_key":"SK",` +
 		`"encryption":{"algorithm":"aes-256-gcm","key":{"kind":"local","file":"/k.pem"}}}`
 
 	update := func(t *testing.T, initial, cfg string) *httptest.ResponseRecorder {
@@ -925,7 +925,7 @@ func TestBlockStoreHandler_Update_EncryptionCannotBeRemoved(t *testing.T) {
 			ID: uuid.New().String(), Name: "enc-test", Kind: models.BlockStoreKindRemote,
 			Type: "s3", Config: initial, CreatedAt: time.Now(),
 		}
-		if err := cpStore.CreateBlockStore(context.Background(), bs); err != nil {
+		if _, err := cpStore.CreateBlockStore(context.Background(), bs); err != nil {
 			t.Fatalf("CreateBlockStore: %v", err)
 		}
 		body, _ := json.Marshal(UpdateBlockStoreRequest{Config: &cfg})
@@ -938,14 +938,14 @@ func TestBlockStoreHandler_Update_EncryptionCannotBeRemoved(t *testing.T) {
 	}
 
 	t.Run("removal rejected", func(t *testing.T) {
-		w := update(t, encrypted, `{"bucket":"b","region":"eu-west-1"}`)
+		w := update(t, encrypted, `{"bucket":"b","region":"eu-west-1","access_key_id":"AK","secret_access_key":"SK"}`)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
 		}
 	})
 
 	t.Run("policy change allowed", func(t *testing.T) {
-		w := update(t, encrypted, `{"bucket":"b","region":"eu-west-1",`+
+		w := update(t, encrypted, `{"bucket":"b","region":"eu-west-1","access_key_id":"AK","secret_access_key":"SK",`+
 			`"encryption":{"algorithm":"aes-256-gcm","key":{"kind":"local","file":"/k2.pem"}}}`)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
@@ -953,7 +953,7 @@ func TestBlockStoreHandler_Update_EncryptionCannotBeRemoved(t *testing.T) {
 	})
 
 	t.Run("never encrypted stays editable", func(t *testing.T) {
-		w := update(t, `{"bucket":"b","region":"us-east-1"}`, `{"bucket":"b","region":"eu-west-1"}`)
+		w := update(t, `{"bucket":"b","region":"us-east-1","access_key_id":"AK","secret_access_key":"SK"}`, `{"bucket":"b","region":"eu-west-1","access_key_id":"AK","secret_access_key":"SK"}`)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
 		}
