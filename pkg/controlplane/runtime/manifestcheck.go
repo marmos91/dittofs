@@ -51,7 +51,7 @@ func (r *Runtime) CheckManifests(ctx context.Context, shareName string) (*engine
 	}
 	res.SyncedCheckSkipped = skipped
 	logger.Info("store check: complete",
-		"share", shareName,
+		logger.KeyShare, shareName,
 		"files_scanned", res.FilesScanned,
 		"damaged_payloads", res.DamagedPayloads,
 		"claimed_uncovered_bytes", res.ClaimedUncoveredBytes,

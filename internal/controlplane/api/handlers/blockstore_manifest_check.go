@@ -68,7 +68,7 @@ func (h *BlockStoreManifestCheckHandler) RunManifestCheck(w http.ResponseWriter,
 			NotFound(w, "share not found: "+name)
 			return
 		}
-		logger.Debug("Store check error", "share", name, "error", err)
+		logger.Debug("Store check error", logger.KeyShare, name, "error", err)
 		// The underlying error can carry filesystem paths; it is logged at
 		// Debug above rather than returned in the body.
 		InternalServerError(w, "store check failed")
@@ -76,7 +76,7 @@ func (h *BlockStoreManifestCheckHandler) RunManifestCheck(w http.ResponseWriter,
 	}
 
 	logger.Info("Store check complete",
-		"share", name,
+		logger.KeyShare, name,
 		"files_scanned", res.FilesScanned,
 		"damaged_payloads", res.DamagedPayloads,
 		"claimed_uncovered_bytes", res.ClaimedUncoveredBytes,
