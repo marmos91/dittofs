@@ -141,15 +141,9 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 		return writeErr(types.NFS4ERR_SERVERFAULT)
 	}
 
-	// Preserve the NFSv4-specific nil-Registry guard at the call site
-	// (previously lived inside the local getBlockStoreForHandle).
-	if h.Registry == nil {
-		logger.Debug("NFSv4 WRITE no registry configured", "client", ctx.ClientAddr)
-		return writeErr(types.NFS4ERR_SERVERFAULT)
-	}
-	blockStore, err := common.ResolveForWrite(ctx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH))
-	if err != nil {
-		return writeErr(types.NFS4ERR_SERVERFAULT)
+	blockStore, errResult := h.resolveBlockStore(ctx, types.OP_WRITE, true)
+	if errResult != nil {
+		return errResult
 	}
 
 	// Calculate new size with overflow check

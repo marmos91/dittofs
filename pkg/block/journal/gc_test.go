@@ -343,9 +343,9 @@ func TestDeleteFailedTombstoneLeavesIndexIntact(t *testing.T) {
 	}
 	before := s.UnsyncedBytes()
 
-	testFailTombstone = "f"
+	s.failTombstone = "f"
 	err := s.Delete(ctx, "f")
-	testFailTombstone = ""
+	s.failTombstone = ""
 	if err == nil {
 		t.Fatal("Delete: want error from failed tombstone append, got nil")
 	}

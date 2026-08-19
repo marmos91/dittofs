@@ -175,7 +175,6 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		if gctx.Err() != nil {
 			break // first error/cancel: stop scheduling the remaining fetches
 		}
-		t := t
 		g.Go(func() error {
 			data, err := m.fetchResolvedBlock(gctx, t.fb, t.span)
 			if err != nil {

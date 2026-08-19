@@ -267,7 +267,7 @@ func (s *Adapter) SetRuntime(rtAny any) {
 		// This allows NFS handlers to trigger lease breaks on SMB clients
 		// without importing the SMB handler package.
 		oplockBreaker := smblease.NewSMBOplockBreaker(resolver)
-		rt.SetAdapterProvider(adapter.OplockBreakerProviderKey, oplockBreaker)
+		rt.SetAdapterProvider(runtime.OplockBreakerProviderKey, oplockBreaker)
 
 		// Register SMBBreakHandler as BreakCallbacks on each share's LockManager.
 		breakHandler := smblease.NewSMBBreakHandler(leaseMgr, notifier)

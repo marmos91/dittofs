@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
+	"github.com/marmos91/dittofs/pkg/metadata/storetest"
 )
 
 // TestPostgresSyncedHashStore_Suite exercises the shared SyncedHashStore
@@ -66,6 +67,6 @@ func TestPostgresSyncedHashStore_Suite(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	metadata.RunSyncedHashStoreSuite(t, store)
-	metadata.RunSyncedHashEnumeratorSuite(t, store)
+	storetest.RunSyncedHashStoreSuite(t, store)
+	storetest.RunSyncedHashEnumeratorSuite(t, store)
 }

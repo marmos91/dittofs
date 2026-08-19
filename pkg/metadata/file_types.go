@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -162,6 +163,48 @@ type FileAttr struct {
 	// DeletedBy is the principal (AuthContext Identity.Username, or its UID as
 	// a string when no username is known) that recycled the node. Display only.
 	DeletedBy string `json:"deleted_by,omitempty"`
+}
+
+// CopyFileAttr creates a deep copy of a FileAttr structure.
+//
+// Useful when returning file attributes to callers to prevent
+// external modification of internal state.
+//
+// The struct is copied by value so a field added to FileAttr is carried over
+// without touching this function; only the reference-typed members below need
+// explicit clones. Enumerating fields by hand here silently drops whatever the
+// list has not kept up with.
+func CopyFileAttr(attr *FileAttr) *FileAttr {
+	if attr == nil {
+		return nil
+	}
+
+	c := *attr
+
+	if attr.ACL != nil {
+		aclCopy := *attr.ACL
+		aclCopy.ACEs = slices.Clone(attr.ACL.ACEs)
+		aclCopy.SACL = slices.Clone(attr.ACL.SACL)
+		c.ACL = &aclCopy
+	}
+
+	if attr.EAs != nil {
+		eas := make(map[string][]byte, len(attr.EAs))
+		for k, v := range attr.EAs {
+			eas[k] = slices.Clone(v)
+		}
+		c.EAs = eas
+	}
+
+	c.Blocks = slices.Clone(attr.Blocks)
+	c.BlocksDirtyOffsets = slices.Clone(attr.BlocksDirtyOffsets)
+
+	if attr.DeletedAt != nil {
+		deletedAt := *attr.DeletedAt
+		c.DeletedAt = &deletedAt
+	}
+
+	return &c
 }
 
 // SetAttrs specifies which attributes to update in a SetFileAttributes call.

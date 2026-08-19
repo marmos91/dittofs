@@ -125,16 +125,9 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 	}
 
 	// Get per-share block store and read data.
-	// Preserve the NFSv4-specific nil-Registry guard at the call site (previously
-	// lived inside the local getBlockStoreForHandle). Keeping the guard here
-	// avoids leaking an NFSv4 concern into common.ResolveForRead.
-	if h.Registry == nil {
-		logger.Debug("NFSv4 READ no registry configured", "client", ctx.ClientAddr)
-		return readErr(types.NFS4ERR_SERVERFAULT)
-	}
-	blockStore, err := common.ResolveForRead(ctx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH))
-	if err != nil {
-		return readErr(types.NFS4ERR_SERVERFAULT)
+	blockStore, errResult := h.resolveBlockStore(ctx, types.OP_READ, false)
+	if errResult != nil {
+		return errResult
 	}
 
 	// NOTE: NFSv4 READ now allocates via internal/adapter/pool (through

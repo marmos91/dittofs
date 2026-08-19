@@ -84,16 +84,10 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 		return encodeCommit4resok()
 	}
 
-	// Preserve the NFSv4-specific nil-Registry guard at the call site
-	// (previously lived inside the local getBlockStoreForHandle).
-	if h.Registry == nil {
-		logger.Debug("NFSv4 COMMIT no registry configured", "client", ctx.ClientAddr)
-		return commitErr(types.NFS4ERR_SERVERFAULT)
-	}
 	// Get per-share block store and flush
-	blockStore, err := common.ResolveForWrite(ctx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH))
-	if err != nil {
-		return commitErr(types.NFS4ERR_SERVERFAULT)
+	blockStore, errResult := h.resolveBlockStore(ctx, types.OP_COMMIT, true)
+	if errResult != nil {
+		return errResult
 	}
 
 	// Routed through common.CommitBlockStore so any future []ChunkRef

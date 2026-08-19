@@ -21,6 +21,7 @@
 // and re-adds every current one, so the index is always reconstructed from the
 // authoritative slice and can never silently drift. All index access requires
 // lm.mu (write for mutation, read or write for lookup).
+
 package lock
 
 // ensureIndexes lazily initializes the reverse-index maps. The index maps are

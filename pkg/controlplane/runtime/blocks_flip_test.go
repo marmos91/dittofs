@@ -150,8 +150,12 @@ func remoteForShare(t *testing.T, rt *Runtime) (remote.RemoteStore, remote.Remot
 
 func countCAS(t *testing.T, rs remote.RemoteStore) int {
 	t.Helper()
+	legacy, ok := rs.(remote.LegacyCASStore)
+	if !ok {
+		t.Fatalf("remote store %T does not implement LegacyCASStore", rs)
+	}
 	n := 0
-	if err := rs.WalkLegacyChunks(context.Background(), func(block.ContentHash, int64) error { n++; return nil }); err != nil {
+	if err := legacy.WalkLegacyChunks(context.Background(), func(block.ContentHash, int64) error { n++; return nil }); err != nil {
 		t.Fatalf("WalkLegacyChunks (cas count): %v", err)
 	}
 	return n

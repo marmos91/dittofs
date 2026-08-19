@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/sqlite"
+	"github.com/marmos91/dittofs/pkg/metadata/storetest"
 )
 
 // newSQLiteSyncedTestStore builds a fresh, migrated SQLite store for the
@@ -29,12 +29,12 @@ func newSQLiteSyncedTestStore(t *testing.T) *sqlite.SQLiteMetadataStore {
 // TestSQLiteSyncedHashStore_Suite runs the shared SyncedHashStore conformance
 // suite against the SQLite backend.
 func TestSQLiteSyncedHashStore_Suite(t *testing.T) {
-	metadata.RunSyncedHashStoreSuite(t, newSQLiteSyncedTestStore(t))
+	storetest.RunSyncedHashStoreSuite(t, newSQLiteSyncedTestStore(t))
 }
 
 // TestSQLiteSyncedHashEnumerator_Suite exercises the LIST-free GC sweep's
 // EnumerateSynced contract against the SQLite backend, covering the
 // synced_at TIMESTAMP scan into time.Time.
 func TestSQLiteSyncedHashEnumerator_Suite(t *testing.T) {
-	metadata.RunSyncedHashEnumeratorSuite(t, newSQLiteSyncedTestStore(t))
+	storetest.RunSyncedHashEnumeratorSuite(t, newSQLiteSyncedTestStore(t))
 }

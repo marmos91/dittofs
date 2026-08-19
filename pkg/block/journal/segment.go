@@ -404,7 +404,7 @@ func (s *Store) appendTombstone(ctx context.Context, id FileID) (uint64, error) 
 	if len(fileID) > maxFileIDLen {
 		return 0, fmt.Errorf("journal: FileID length %d exceeds max %d", len(fileID), maxFileIDLen)
 	}
-	if testFailTombstone != "" && id == testFailTombstone {
+	if s.failTombstone != "" && id == s.failTombstone {
 		// Test seam: model a durability failure (e.g. a failed fsync) before any
 		// state is persisted. Delete must then leave its in-memory index untouched.
 		return 0, fmt.Errorf("journal: injected tombstone failure for %q", id)
@@ -446,11 +446,6 @@ func (s *Store) appendTombstone(ctx context.Context, id FileID) (uint64, error) 
 	return version, nil
 }
 
-// testFailTombstone, when it equals a Delete's FileID, makes appendTombstone
-// return an error before persisting anything, modeling a durability failure.
-// Always empty in production.
-var testFailTombstone FileID
-
 // appendTruncateMarker frames a zero-payload truncate marker for id (FileOffset
 // carries newSize) and fsyncs the shard's active segment, returning the marker's
 // Version. Like appendTombstone, the fsync makes the truncation at least as
@@ -464,7 +459,7 @@ func (s *Store) appendTruncateMarker(ctx context.Context, id FileID, newSize int
 	if len(fileID) > maxFileIDLen {
 		return 0, fmt.Errorf("journal: FileID length %d exceeds max %d", len(fileID), maxFileIDLen)
 	}
-	if testFailTruncate != "" && id == testFailTruncate {
+	if s.failTruncate != "" && id == s.failTruncate {
 		return 0, fmt.Errorf("journal: injected truncate failure for %q", id)
 	}
 	recLen := recordLen(len(fileID), 0)
@@ -502,11 +497,6 @@ func (s *Store) appendTruncateMarker(ctx context.Context, id FileID, newSize int
 	}
 	return version, nil
 }
-
-// testFailTruncate, when it equals a Truncate's FileID, makes
-// appendTruncateMarker return an error before persisting anything, modeling a
-// durability failure. Always empty in production.
-var testFailTruncate FileID
 
 // writeTruncateRecord frames a zero-payload truncate marker at seg's tail, with
 // FileOffset carrying newSize, and advances the tail. Shared by the live

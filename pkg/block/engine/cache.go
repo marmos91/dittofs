@@ -85,7 +85,6 @@ type Cache struct {
 	trackers  map[string]*seqTracker // payloadID -> tracker
 	reqCh     chan prefetchReq
 	loadFn    loadByHashFn
-	ctx       context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 
@@ -187,7 +186,6 @@ func NewCache(maxBytes int64, workers int, loadFn loadByHashFn) *Cache {
 		maxBytes: maxBytes,
 		reqCh:    make(chan prefetchReq, reqQueueSize),
 		loadFn:   loadFn,
-		ctx:      ctx,
 		cancel:   cancel,
 	}
 

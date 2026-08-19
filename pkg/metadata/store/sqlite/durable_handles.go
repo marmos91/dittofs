@@ -31,13 +31,15 @@ const durableHandleColumns = `
 	client_guid
 `
 
-func scanDurableHandle(row scanRow) (*lock.PersistedDurableHandle, error) {
+// scanDurableHandleFields decodes one row over durableHandleColumns from either
+// a single-row or a multi-row scan.
+func scanDurableHandleFields(scan func(dest ...any) error) (*lock.PersistedDurableHandle, error) {
 	var h lock.PersistedDurableHandle
 	var fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes, originalFileIDBytes, clientGuidBytes []byte
 	var positionInfoSigned, requestedAllocSizeSigned int64
 	var leaseEpochSigned int32
 
-	err := row.Scan(
+	err := scan(
 		&h.ID,
 		&fileIDBytes,
 		&h.Path,
@@ -71,10 +73,6 @@ func scanDurableHandle(row scanRow) (*lock.PersistedDurableHandle, error) {
 		&h.IsPersistent,
 		&clientGuidBytes,
 	)
-
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -90,62 +88,29 @@ func scanDurableHandle(row scanRow) (*lock.PersistedDurableHandle, error) {
 	return &h, nil
 }
 
+// scanDurableHandle decodes a single row, returning (nil, nil) when the query
+// matched nothing.
+func scanDurableHandle(row scanRow) (*lock.PersistedDurableHandle, error) {
+	h, err := scanDurableHandleFields(row.Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
 func scanDurableHandleRows(rows scanRows) ([]*lock.PersistedDurableHandle, error) {
 	defer rows.Close()
 
 	var result []*lock.PersistedDurableHandle
 	for rows.Next() {
-		var h lock.PersistedDurableHandle
-		var fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes, originalFileIDBytes, clientGuidBytes []byte
-		var positionInfoSigned, requestedAllocSizeSigned int64
-		var leaseEpochSigned int32
-
-		err := rows.Scan(
-			&h.ID,
-			&fileIDBytes,
-			&h.Path,
-			&h.ShareName,
-			&h.DesiredAccess,
-			&h.GrantedAccess,
-			&h.ShareAccess,
-			&h.CreateOptions,
-			&h.MetadataHandle,
-			&h.PayloadID,
-			&h.OplockLevel,
-			&leaseKeyBytes,
-			&h.LeaseState,
-			&leaseEpochSigned,
-			&createGuidBytes,
-			&appInstanceIdBytes,
-			&h.Username,
-			&sessionKeyHashBytes,
-			&h.IsV2,
-			&h.CreatedAt,
-			&h.DisconnectedAt,
-			&h.TimeoutMs,
-			&h.ServerStartTime,
-			&h.DeletePending,
-			&h.ParentHandle,
-			&h.FileName,
-			&h.IsDirectory,
-			&positionInfoSigned,
-			&originalFileIDBytes,
-			&requestedAllocSizeSigned,
-			&h.IsPersistent,
-			&clientGuidBytes,
-		)
+		h, err := scanDurableHandleFields(rows.Scan)
 		if err != nil {
 			return nil, err
 		}
-
-		h.LeaseEpoch = uint16(leaseEpochSigned)
-		h.PositionInfo = uint64(positionInfoSigned)
-		h.RequestedAllocSize = uint64(requestedAllocSizeSigned)
-		copyFixedByteArrays(&h, fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes, clientGuidBytes)
-		if len(originalFileIDBytes) == 16 {
-			copy(h.OriginalFileID[:], originalFileIDBytes)
-		}
-		result = append(result, &h)
+		result = append(result, h)
 	}
 
 	if err := rows.Err(); err != nil {

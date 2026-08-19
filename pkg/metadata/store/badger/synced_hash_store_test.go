@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/storetest"
 )
 
 // newSyncedHashTestStore opens a fresh Badger store in a temp dir for the
@@ -29,7 +29,7 @@ func newSyncedHashTestStore(t *testing.T) *BadgerMetadataStore {
 // concurrent Mark/Delete on top of Badger's MVCC transactions.
 func TestBadgerSyncedHashStore_Suite(t *testing.T) {
 	s := newSyncedHashTestStore(t)
-	metadata.RunSyncedHashStoreSuite(t, s)
+	storetest.RunSyncedHashStoreSuite(t, s)
 }
 
 // TestBadgerSyncedHashEnumerator_Suite exercises the LIST-free GC sweep's
@@ -38,5 +38,5 @@ func TestBadgerSyncedHashStore_Suite(t *testing.T) {
 // enumeration.
 func TestBadgerSyncedHashEnumerator_Suite(t *testing.T) {
 	s := newSyncedHashTestStore(t)
-	metadata.RunSyncedHashEnumeratorSuite(t, s)
+	storetest.RunSyncedHashEnumeratorSuite(t, s)
 }

@@ -212,6 +212,13 @@ type Store struct {
 	// still in flight when segment files are closed underneath it.
 	gcCancel context.CancelFunc
 	gcDone   chan struct{}
+
+	// failTombstone/failTruncate are test seams: when either equals the FileID
+	// of a Delete or Truncate, the corresponding marker append returns an error
+	// before persisting anything, modeling a durability failure. Always empty in
+	// production.
+	failTombstone FileID
+	failTruncate  FileID
 }
 
 // SetVerifyReads enables or disables per-read record-CRC verification of warm

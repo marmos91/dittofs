@@ -1,16 +1,9 @@
-// Package metadata — synced_hash_store_suite.go.
-//
-// Shared conformance suite for the SyncedHashStore interface. Each
-// metadata backend (memory, badger, postgres) invokes this suite to
+// Shared conformance suite for the metadata.SyncedHashStore interface. Each
+// metadata backend (memory, badger, postgres, sqlite) invokes this suite to
 // prove it upholds the idempotency + isolation + concurrency contract.
-//
-// The suite lives in the metadata package rather than under storetest
-// to keep the dependency direction clean: the interface itself lives
-// here and the suite is logically paired with it. Backend test files
-// in pkg/metadata/store/{memory,badger,postgres} call
-// RunSyncedHashStoreSuite(t, store) from a per-backend Test*_Suite
-// function.
-package metadata
+// Backend test files call RunSyncedHashStoreSuite(t, store) from a per-backend
+// Test*_Suite function.
+package storetest
 
 import (
 	"context"
@@ -21,12 +14,13 @@ import (
 	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// mustHash derives a deterministic ContentHash from a string. Used to
+// mustSyncedHash derives a deterministic ContentHash from a string. Used to
 // scope subtests on a shared store instance — each subtest picks a
 // distinct seed so its state cannot collide with another subtest's.
-func mustHash(seed string) block.ContentHash {
+func mustSyncedHash(seed string) block.ContentHash {
 	return blake3.Sum256([]byte(seed))
 }
 
@@ -35,18 +29,18 @@ func mustHash(seed string) block.ContentHash {
 //
 //	func TestBadgerSyncedHashStore_Suite(t *testing.T) {
 //	    s := openTestStore(t)
-//	    metadata.RunSyncedHashStoreSuite(t, s)
+//	    storetest.RunSyncedHashStoreSuite(t, s)
 //	}
 //
 // Each subtest uses a distinct hash seed so subtests on a shared store
 // instance do not collide. Callers MUST pass a freshly-created store —
 // the suite does not reset state between subtests.
-func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
+func RunSyncedHashStoreSuite(t *testing.T, s metadata.SyncedHashStore) {
 	t.Helper()
 
 	t.Run("IsSyncedBeforeMark", func(t *testing.T) {
 		ctx := context.Background()
-		h := mustHash("suite-is-synced-before-mark")
+		h := mustSyncedHash("suite-is-synced-before-mark")
 		got, err := s.IsSynced(ctx, h)
 		if err != nil {
 			t.Fatalf("IsSynced unset: %v", err)
@@ -58,7 +52,7 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 
 	t.Run("MarkThenIsSynced", func(t *testing.T) {
 		ctx := context.Background()
-		h := mustHash("suite-mark-then-is-synced")
+		h := mustSyncedHash("suite-mark-then-is-synced")
 
 		if err := s.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
 			t.Fatalf("first MarkSynced: %v", err)
@@ -86,8 +80,8 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 
 	t.Run("IsolationBetweenHashes", func(t *testing.T) {
 		ctx := context.Background()
-		hA := mustHash("suite-iso-a")
-		hB := mustHash("suite-iso-b")
+		hA := mustSyncedHash("suite-iso-a")
+		hB := mustSyncedHash("suite-iso-b")
 
 		if err := s.MarkSynced(ctx, hA, block.ChunkLocator{}); err != nil {
 			t.Fatalf("MarkSynced hA: %v", err)
@@ -111,7 +105,7 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 
 	t.Run("MarkIdempotent", func(t *testing.T) {
 		ctx := context.Background()
-		h := mustHash("suite-mark-idempotent")
+		h := mustSyncedHash("suite-mark-idempotent")
 
 		if err := s.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
 			t.Fatalf("first MarkSynced: %v", err)
@@ -130,7 +124,7 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 
 	t.Run("GetLocatorUnsynced", func(t *testing.T) {
 		ctx := context.Background()
-		h := mustHash("suite-get-locator-unsynced")
+		h := mustSyncedHash("suite-get-locator-unsynced")
 		loc, ok, err := s.GetLocator(ctx, h)
 		if err != nil {
 			t.Fatalf("GetLocator unsynced: %v", err)
@@ -150,7 +144,7 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 		// also covers backward compatibility: a pre-locator row carries the
 		// same (no-block) state.
 		ctx := context.Background()
-		h := mustHash("suite-standalone-locator")
+		h := mustSyncedHash("suite-standalone-locator")
 		if err := s.MarkSynced(ctx, h, block.ChunkLocator{WireLength: 1234}); err != nil {
 			t.Fatalf("MarkSynced standalone: %v", err)
 		}
@@ -169,7 +163,7 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 	t.Run("BlockLocatorRoundTrip", func(t *testing.T) {
 		// A block locator must round-trip exactly through MarkSynced/GetLocator.
 		ctx := context.Background()
-		h := mustHash("suite-block-locator")
+		h := mustSyncedHash("suite-block-locator")
 		want := block.ChunkLocator{BlockID: "block-abc123", WireOffset: 4096, WireLength: 65536}
 		if err := s.MarkSynced(ctx, h, want); err != nil {
 			t.Fatalf("MarkSynced block: %v", err)
@@ -188,7 +182,7 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 
 	t.Run("DeleteSyncedAfterMark", func(t *testing.T) {
 		ctx := context.Background()
-		h := mustHash("suite-delete-after-mark")
+		h := mustSyncedHash("suite-delete-after-mark")
 
 		if err := s.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
 			t.Fatalf("MarkSynced: %v", err)
@@ -218,7 +212,7 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 		// op committed last) — only the no-panic / no-error invariant is
 		// asserted.
 		ctx := context.Background()
-		h := mustHash("suite-concurrent-mark-delete")
+		h := mustSyncedHash("suite-concurrent-mark-delete")
 
 		const goroutines = 16
 		var wg sync.WaitGroup
@@ -251,7 +245,7 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 // without widening the package's exported interface surface. Backend tests
 // pass their concrete store; Go checks satisfaction structurally at the call.
 type syncedHashEnumerating interface {
-	SyncedHashStore
+	metadata.SyncedHashStore
 	EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, loc block.ChunkLocator, syncedAt time.Time) error) error
 }
 
@@ -266,9 +260,9 @@ func RunSyncedHashEnumeratorSuite(t *testing.T, e syncedHashEnumerating) {
 	t.Run("EnumerateSynced", func(t *testing.T) {
 		ctx := context.Background()
 		before := time.Now()
-		hA := mustHash("enum-suite-a") // block-resident locator
-		hB := mustHash("enum-suite-b") // standalone (pre-flip) locator
-		hGone := mustHash("enum-suite-gone")
+		hA := mustSyncedHash("enum-suite-a") // block-resident locator
+		hB := mustSyncedHash("enum-suite-b") // standalone (pre-flip) locator
+		hGone := mustSyncedHash("enum-suite-gone")
 
 		// hA carries a real block locator; hB is standalone. EnumerateSynced must
 		// yield each marker's locator (folded into the scan) identical to what

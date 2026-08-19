@@ -529,7 +529,6 @@ func (m *Syncer) EnsureAvailable(ctx context.Context, payloadID string, offset u
 		if gctx.Err() != nil {
 			break // first error/cancel: stop scheduling the remaining chunks
 		}
-		p := p
 		g.Go(func() error {
 			_, _, err := m.inlineFetchOrWait(gctx, payloadID, p.blockIdx, p.fb, p.span)
 			return err

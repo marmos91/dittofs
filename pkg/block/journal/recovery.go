@@ -2,12 +2,13 @@ package journal
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // orphanMinAge gates the recovery orphan sweep: a segment file that recovery
@@ -17,11 +18,6 @@ import (
 // unlink ordering, where a crash before unlink leaves a harmless orphan — young
 // enough that it might belong to an operation still in flight is left in place.
 const orphanMinAge = 5 * time.Minute
-
-// logf is recovery's warning sink, overridable in tests. Recovery is otherwise
-// silent; it only speaks up for events an operator should notice (a rebuilt
-// index sidecar, a swept orphan).
-var logf = log.Printf
 
 // truncMark records the highest-Version truncate marker seen for a file during
 // recovery: the new size and the Version that fences which intervals it clips.
@@ -135,7 +131,8 @@ func (s *Store) recover() error {
 			// destroy the only remaining copy of whatever payload is still down
 			// there.
 			_ = fd.Close()
-			logf("journal: WARN sealed segment %s scans as zero valid records (damaged first record), skipping it; left in place for inspection", path)
+			logger.Warn("journal: sealed segment scans as zero valid records (damaged first record), skipping it; left in place for inspection",
+				"segment_path", path)
 			continue
 		}
 
@@ -253,7 +250,8 @@ func (s *Store) recover() error {
 	}
 
 	if missingIdx > 0 {
-		logf("journal: WARN %d segment(s) missing .idx sidecar, rebuilding from segment scan (recovery slower)", missingIdx)
+		logger.Warn("journal: segments missing .idx sidecar, rebuilding from segment scan (recovery slower)",
+			"segments", missingIdx)
 	}
 
 	// Replay the cold log (cold.go). A cold interval owns no record — eviction
@@ -307,7 +305,7 @@ func (s *Store) recover() error {
 		if werr := s.rewriteCold(live); werr != nil {
 			// Non-fatal: a stale-but-valid log costs redundant replay, not
 			// correctness, and refusing to open would strand the whole share.
-			logf("journal: WARN cold log compaction failed, keeping the existing log: %v", werr)
+			logger.Warn("journal: cold log compaction failed, keeping the existing log", "err", werr)
 		}
 	}
 

@@ -55,6 +55,29 @@ func (p *shareIdentityProvider) GetShareIdentityInfo(shareName string) (*identit
 	}, nil
 }
 
+// keyedMutex is a lazily-populated registry of per-key locks. The same key
+// always yields the same pointer, so independent callers that look a key up
+// separately still serialize against each other.
+type keyedMutex[M any] struct {
+	mu sync.Mutex
+	m  map[string]*M
+}
+
+// get returns the lock registered for key, registering a fresh one on first use.
+func (k *keyedMutex[M]) get(key string) *M {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.m == nil {
+		k.m = make(map[string]*M)
+	}
+	l, ok := k.m[key]
+	if !ok {
+		l = new(M)
+		k.m[key] = l
+	}
+	return l
+}
+
 // Runtime manages all runtime state for shares and protocol adapters.
 // It composes sub-services for adapters, stores, shares, mounts,
 // lifecycle, and identity mapping.
@@ -134,8 +157,7 @@ type Runtime struct {
 	// looks up the SAME mutex pointer here, so a per-instance mutex on
 	// the provider can never collude with a delete on a different
 	// provider instance.
-	snapDeleteLocks   map[string]*sync.RWMutex
-	snapDeleteLocksMu sync.Mutex
+	snapDeleteLocks keyedMutex[sync.RWMutex]
 
 	// restoreLocks serializes RestoreSnapshot per share. Restore requires
 	// the share be disabled, but two concurrent restore calls both observe
@@ -145,8 +167,7 @@ type Runtime struct {
 	// per-share mutex held for the whole restore makes a second concurrent
 	// restore fail fast with models.ErrRestoreInProgress. Keyed by share
 	// name; the same pointer is reused per share via restoreLock().
-	restoreLocks   map[string]*sync.Mutex
-	restoreLocksMu sync.Mutex
+	restoreLocks keyedMutex[sync.Mutex]
 
 	// remoteGCLocks serializes block-store GC sweeps that touch the same
 	// remote, keyed by the remote-store config UUID used for ref-counting.
@@ -159,8 +180,7 @@ type Runtime struct {
 	// different engine gc-state roots, so the engine's per-root lock does not
 	// serialize them against each other; holding this lock around each
 	// remote's sweep does, while leaving DISTINCT remotes fully parallel.
-	remoteGCLocks   map[string]*sync.Mutex
-	remoteGCLocksMu sync.Mutex
+	remoteGCLocks keyedMutex[sync.Mutex]
 
 	// runtimeCtx is a long-lived ctx cancelled by Runtime.Shutdown.
 	// Snapshot orchestration goroutines derive their
@@ -205,9 +225,6 @@ func New(s store.Store) *Runtime {
 		clientRegistry:   NewClientRegistry(),
 		adapterProviders: make(map[string]any),
 		snapInFlight:     make(map[string]*snapInFlight),
-		snapDeleteLocks:  make(map[string]*sync.RWMutex),
-		restoreLocks:     make(map[string]*sync.Mutex),
-		remoteGCLocks:    make(map[string]*sync.Mutex),
 		storesSvc:        stores.New(),
 		sharesSvc:        shares.New(),
 		lifecycleSvc:     lifecycle.New(DefaultShutdownTimeout),
@@ -1205,15 +1222,16 @@ func (r *Runtime) SetAdapterProvider(key string, p any) {
 	// Wrap in a stable holder: atomic.Value.Store panics on a nil interface or
 	// a changing concrete type, but SetAdapterProvider accepts nil and may be
 	// called more than once — the holder keeps the stored type constant.
-	if key == oplockBreakerProviderKey {
+	if key == OplockBreakerProviderKey {
 		r.oplockBreaker.Store(oplockProviderHolder{p: p})
 	}
 }
 
-// oplockBreakerProviderKey mirrors adapter.OplockBreakerProviderKey. It is
-// duplicated (not imported) because pkg/adapter imports this package; a
-// mismatch would surface immediately in cross-protocol oplock e2e tests.
-const oplockBreakerProviderKey = "oplock_breaker"
+// OplockBreakerProviderKey is the adapter provider key for the OplockBreaker.
+// Used with SetAdapterProvider / GetAdapterProvider to register and retrieve
+// the cross-protocol oplock breaker without import cycles between protocol
+// packages.
+const OplockBreakerProviderKey = "oplock_breaker"
 
 // oplockProviderHolder gives the oplockBreaker atomic.Value a single, stable
 // concrete type so nil providers and repeat registrations never panic Store.
