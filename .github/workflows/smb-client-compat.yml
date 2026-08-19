@@ -505,15 +505,9 @@ jobs:
           # Report what actually happened. A fixed all-green table would claim
           # passes for a run whose assertions never executed, or failed.
           $outcome = '${{ steps.netuse.outcome }}'
-          $mark = if ($outcome -eq 'success') { ':white_check_mark:' } else { ':x:' }
           $summary = @('## SMB Client Compatibility: Windows', '')
-          if ($outcome -eq 'skipped') {
-            $reason = 'TCP 445 stayed owned by the hosted-runner kernel SMB listener (srvnet.sys, PID 4). The Windows redirector always connects to TCP 445 and UNC syntax has no port field, so net use cannot reach DittoFS on any other port. Freeing 445 needs srvnet.sys unloaded, which a hosted runner cannot do without a reboot. Diagnostics were still captured and uploaded.'
-            Write-Host "::notice title=Windows net use tests skipped::$reason"
-            $summary += ":warning: **net use tests skipped** - $reason"
-            $summary += ''
-            $summary += 'Run this job on a self-hosted or VM runner where 445 can be claimed to exercise the Windows redirector against DittoFS.'
-          } else {
+          if ($outcome -eq 'success' -or $outcome -eq 'failure') {
+            $mark = if ($outcome -eq 'success') { ':white_check_mark:' } else { ':x:' }
             $summary += @(
               '| Test | Status |'
               '|------|--------|'
@@ -523,6 +517,17 @@ jobs:
               "| Directory listing | $mark |"
               "| Delete | $mark |"
             )
+          } elseif ($env:SMB445_FREE -eq 'false') {
+            # Only the measured-and-unmet precondition gets this explanation.
+            $reason = 'TCP 445 stayed owned by the hosted-runner kernel SMB listener (srvnet.sys, PID 4). The Windows redirector always connects to TCP 445 and UNC syntax has no port field, so net use cannot reach DittoFS on any other port. Freeing 445 needs srvnet.sys unloaded, which a hosted runner cannot do without a reboot. Diagnostics were still captured and uploaded.'
+            Write-Host "::notice title=Windows net use tests skipped::$reason"
+            $summary += ":warning: **net use tests skipped** - $reason"
+            $summary += ''
+            $summary += 'Run this job on a self-hosted or VM runner where 445 can be claimed to exercise the Windows redirector against DittoFS.'
+          } else {
+            # netuse is also skipped when an earlier step failed or the job was
+            # cancelled, which is not the 445 story.
+            $summary += ":x: **net use tests did not run** - an earlier step in the job failed or the job was cancelled."
           }
           $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
