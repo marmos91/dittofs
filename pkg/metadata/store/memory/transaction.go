@@ -170,9 +170,9 @@ func (store *MemoryMetadataStore) restoreLocked(snap *txSnapshot) {
 // backend.
 //
 // Scope: the snapshot covers the file/directory/share/fileblock metadata maps.
-// The separately-mutexed lock store (memoryLockStore, area-5) is NOT snapshotted
-// — lock persistence runs in its own transactions and is not mixed with
-// file-metadata mutations in a single WithTransaction.
+// Lock state (memoryLockStore) is NOT snapshotted — lock persistence runs in its
+// own transactions and is not mixed with file-metadata mutations in a single
+// WithTransaction. It is guarded by the same store-wide mutex taken here.
 func (store *MemoryMetadataStore) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
