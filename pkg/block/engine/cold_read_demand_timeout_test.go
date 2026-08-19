@@ -82,10 +82,9 @@ func TestColdRead_DemandFetchFailsFastWhenRemoteStalls(t *testing.T) {
 	m.config.PrefetchBlocks = 0                          // isolate the demand loop
 	m.config.DemandFetchTimeout = 200 * time.Millisecond // short fail-fast budget under test
 
-	dest := make([]byte, 4096)
 	done := make(chan error, 1)
 	go func() {
-		err := m.EnsureAvailableAndRead(ctx, "p", 0, uint32(len(dest)), dest)
+		err := m.EnsureAvailableAndRead(ctx, "p", 0, 4096)
 		done <- err
 	}()
 

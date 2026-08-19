@@ -460,7 +460,7 @@ func blockRange(offset uint64, length uint32) (start, end uint64) {
 // EnsureAvailableAndRead hydrates the local tier for [offset, offset+length) so
 // the caller's subsequent local read is served warm. Demanded chunks are
 // downloaded inline in the caller's goroutine; prefetch uses the worker pool.
-func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, offset uint64, length uint32, dest []byte) error {
+func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, offset uint64, length uint32) error {
 	if length == 0 {
 		return nil
 	}
@@ -502,8 +502,8 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 	// wall. fetchGroup bounds the fan-out by ParallelDownloads; inlineFetchOrWait
 	// stages each chunk into the local tier and dedups concurrent callers (now
 	// keyed per chunk), so the fan-out is race-free and the first error cancels
-	// the rest via gctx. We deliberately do NOT copy to dest here: a chunk can
-	// start mid-window, so a block-relative copy is wrong — the caller's
+	// the rest via gctx. Hydration never fills the caller's buffer: a chunk can
+	// start mid-window, so a block-relative copy would be wrong — the caller's
 	// readLocalByHash does the correct per-offset assembly from the now-local
 	// chunks. The extra local pass is cheap next to the S3 GETs just eliminated.
 	//

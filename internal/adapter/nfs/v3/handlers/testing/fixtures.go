@@ -462,7 +462,6 @@ func (f *HandlerTestFixture) ReadContent(path string) []byte {
 
 	// Read content using BlockStore
 	content := make([]byte, size)
-	// Nil []ChunkRef => dual-read shim path.
 	n, err := f.BlockStore.ReadAt(ctx, string(file.PayloadID), content, 0)
 	if err != nil {
 		f.t.Fatalf("Failed to read content from %q: %v", path, err)

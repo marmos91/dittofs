@@ -44,8 +44,7 @@ func TestColdRead_DemandFetchIsConcurrent(t *testing.T) {
 	m := newFetchSyncer(loc, rs, fbs, mds)
 	m.config.PrefetchBlocks = 0 // isolate the demand loop from the prefetch pump
 
-	dest := make([]byte, nBlocks*BlockSize)
-	if err := m.EnsureAvailableAndRead(ctx, "p", 0, uint32(len(dest)), dest); err != nil {
+	if err := m.EnsureAvailableAndRead(ctx, "p", 0, uint32(nBlocks*BlockSize)); err != nil {
 		t.Fatalf("EnsureAvailableAndRead: %v", err)
 	}
 

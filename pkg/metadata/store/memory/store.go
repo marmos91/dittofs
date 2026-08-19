@@ -584,9 +584,8 @@ func (store *MemoryMetadataStore) childNameLocked(
 
 // generateFileHandle returns a fresh UUID-based handle for a file in the
 // named share, in the standard "shareName:uuid" format. It panics on the
-// only failure metadata.GenerateNewHandle can report — a share name long
-// enough to push the encoded handle past the 64-byte NFS limit — because
-// share names are length-validated before a share is ever registered.
+// only failure GenerateNewHandle can report — a share name long enough to
+// push the encoded handle past 64 bytes — which share creation rejects.
 func (store *MemoryMetadataStore) generateFileHandle(shareName string) metadata.FileHandle {
 	handle, err := metadata.GenerateNewHandle(shareName)
 	if err != nil {

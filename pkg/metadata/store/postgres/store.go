@@ -147,8 +147,8 @@ func NewPostgresMetadataStore(
 		cancel:       cancel,
 		quota:        quota.NewCache(),
 	}
-	// The substores derive only from pool, which is never reassigned, so they
-	// are bound once here rather than lazily behind a mutex.
+	// The substores derive only from pool, which is never reassigned, so bind
+	// them once here.
 	store.lockStore = newPostgresLockStore(pool)
 	store.clientStore = newPostgresClientStore(store)
 	store.durableStore = newPostgresDurableStore(store)

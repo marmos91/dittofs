@@ -159,8 +159,8 @@ func NewSQLiteMetadataStore(
 		cancel:       cancel,
 		quota:        quota.NewCache(),
 	}
-	// The substores derive only from db, which is never reassigned, so they
-	// are bound once here rather than lazily behind a mutex.
+	// The substores derive only from db, which is never reassigned, so bind
+	// them once here.
 	store.lockStore = newSQLiteLockStore(store.conn())
 	store.clientStore = newSQLiteClientStore(store.conn())
 	store.durableStore = newSQLiteDurableStore(store.conn())

@@ -384,8 +384,8 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		syncStop:          make(chan struct{}),
 		quota:             quota.NewCache(),
 	}
-	// The substores hold nothing but db, which is never reassigned, so they
-	// are bound once here rather than lazily behind a mutex.
+	// The substores derive only from db, which is never reassigned, so bind
+	// them once here.
 	store.lockStore = newBadgerLockStore(db)
 	store.clientStore = newBadgerClientStore(db)
 	store.durableStore = newBadgerDurableStore(db)

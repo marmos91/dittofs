@@ -100,7 +100,7 @@ func (bs *Store) healCorruptWarmRead(ctx context.Context, payloadID string, data
 // never reaches here (readAtInternal returns early), and would report cold=false
 // regardless, so the guard has nothing to fail open on.
 func (bs *Store) ensureAndReadFromLocal(ctx context.Context, payloadID string, dest []byte, offset uint64) error {
-	if err := bs.syncer.EnsureAvailableAndRead(ctx, payloadID, offset, uint32(len(dest)), dest); err != nil {
+	if err := bs.syncer.EnsureAvailableAndRead(ctx, payloadID, offset, uint32(len(dest))); err != nil {
 		return fmt.Errorf("manifest reconcile for %s at offset %d failed: %w", payloadID, offset, err)
 	}
 	_, st, err := bs.local.ReadAt(ctx, payloadID, int64(offset), dest)

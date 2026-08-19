@@ -480,8 +480,6 @@ func (h *Handler) executeCopyChunks(
 		}
 
 		// Read from source using pre-allocated buffer.
-		// Nil []ChunkRef triggers the dual-read shim. A later refactor
-		// will thread the source's FileAttr.Blocks here.
 		data := buf[:chunk.Length]
 		n, err := srcBlockStore.ReadAt(ctx.Context, srcPayloadID, data, chunk.SourceOffset)
 		if err != nil {
