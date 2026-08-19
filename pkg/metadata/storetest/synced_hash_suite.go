@@ -17,7 +17,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// mustHash derives a deterministic ContentHash from a string. Used to
+// mustSyncedHash derives a deterministic ContentHash from a string. Used to
 // scope subtests on a shared store instance — each subtest picks a
 // distinct seed so its state cannot collide with another subtest's.
 func mustSyncedHash(seed string) block.ContentHash {
