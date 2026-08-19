@@ -211,30 +211,14 @@ func (h *Handler) Read(
 		}
 	}
 
-	// If file has no content, return empty data with EOF
-	if file.PayloadID == "" || file.Size == 0 {
-		logger.DebugCtx(ctx.Context, "READ: empty file", "handle", xdr.LazyHandle(req.Handle), "size", bytesize.ByteSize(file.Size), "client", clientIP)
-
-		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
-
-		return &ReadResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
-			Attr:            nfsAttr,
-			Count:           0,
-			Eof:             true,
-			Data:            []byte{},
-		}, nil
-	}
-
-	// If offset is at or beyond EOF, return empty data with EOF
-	if req.Offset >= file.Size {
-		logger.DebugCtx(ctx.Context, "READ: offset beyond EOF", "handle", xdr.LazyHandle(req.Handle), "offset", bytesize.ByteSize(req.Offset), "size", bytesize.ByteSize(file.Size), "client", clientIP)
-
-		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
+	// Nothing to serve: the file has no payload, or the read starts at or past
+	// EOF (which covers a zero-size file). Both answer with an empty, EOF reply.
+	if file.PayloadID == "" || req.Offset >= file.Size {
+		logger.DebugCtx(ctx.Context, "READ: nothing to serve", "handle", xdr.LazyHandle(req.Handle), "offset", bytesize.ByteSize(req.Offset), "size", bytesize.ByteSize(file.Size), "client", clientIP)
 
 		return &ReadResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
-			Attr:            nfsAttr,
+			Attr:            h.convertFileAttrToNFS(fileHandle, &file.FileAttr),
 			Count:           0,
 			Eof:             true,
 			Data:            []byte{},

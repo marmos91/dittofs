@@ -53,13 +53,7 @@ func BumpBootVerifier() {
 // caller can safely embed it in a response buffer without aliasing
 // the atomic's pointer.
 func bootVerifierBytes() [8]byte {
-	v := serverBootVerifier.Load()
-	if v == nil {
-		// Defensive: init() ran, so this should never trigger.
-		var zero [8]byte
-		return zero
-	}
-	return *v
+	return *serverBootVerifier.Load()
 }
 
 // handleWrite implements the WRITE operation (RFC 7530 Section 16.36).
@@ -70,57 +64,33 @@ func bootVerifierBytes() [8]byte {
 func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
-		return &types.CompoundResult{
-			Status: status,
-			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(status),
-		}
+		return writeErr(status)
 	}
 
 	// Pseudo-fs is read-only
 	if pseudofs.IsPseudoFSHandle(ctx.CurrentFH) {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_ROFS,
-			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(types.NFS4ERR_ROFS),
-		}
+		return writeErr(types.NFS4ERR_ROFS)
 	}
 
 	// Decode WRITE4args
 	stateid, err := types.DecodeStateid4(reader)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
-			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-		}
+		return writeErr(types.NFS4ERR_BADXDR)
 	}
 
 	offset, err := xdr.DecodeUint64(reader)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
-			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-		}
+		return writeErr(types.NFS4ERR_BADXDR)
 	}
 
 	stable, err := xdr.DecodeUint32(reader)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
-			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-		}
+		return writeErr(types.NFS4ERR_BADXDR)
 	}
 
 	data, err := xdr.DecodeOpaque(reader)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
-			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-		}
+		return writeErr(types.NFS4ERR_BADXDR)
 	}
 
 	// Validate stateid via StateManager for a write-family operation.
@@ -136,11 +106,7 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 			"error", stateErr,
 			"nfs_status", nfsStatus,
 			"client", ctx.ClientAddr)
-		return &types.CompoundResult{
-			Status: nfsStatus,
-			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(nfsStatus),
-		}
+		return writeErr(nfsStatus)
 	}
 
 	// Check that the open state includes WRITE access (OPEN4_SHARE_ACCESS_WRITE or BOTH).
@@ -150,11 +116,7 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 			logger.Debug("NFSv4 WRITE rejected: read-only open",
 				"share_access", openState.ShareAccess,
 				"client", ctx.ClientAddr)
-			return &types.CompoundResult{
-				Status: types.NFS4ERR_OPENMODE,
-				OpCode: types.OP_WRITE,
-				Data:   encodeStatusOnly(types.NFS4ERR_OPENMODE),
-			}
+			return writeErr(types.NFS4ERR_OPENMODE)
 		}
 	}
 
@@ -170,51 +132,31 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 	if err != nil {
 		logger.Debug("NFSv4 WRITE auth context failed", "error", err, "client", ctx.ClientAddr)
 		st := nfs4StatusForAuthError(err)
-		return &types.CompoundResult{
-			Status: st,
-			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(st),
-		}
+		return writeErr(st)
 	}
 
 	// Get services
 	metaSvc, err := getMetadataServiceForCtx(h)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
-			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
-		}
+		return writeErr(types.NFS4ERR_SERVERFAULT)
 	}
 
 	// Preserve the NFSv4-specific nil-Registry guard at the call site
 	// (previously lived inside the local getBlockStoreForHandle).
 	if h.Registry == nil {
 		logger.Debug("NFSv4 WRITE no registry configured", "client", ctx.ClientAddr)
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
-			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
-		}
+		return writeErr(types.NFS4ERR_SERVERFAULT)
 	}
 	blockStore, err := common.ResolveForWrite(ctx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH))
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
-			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
-		}
+		return writeErr(types.NFS4ERR_SERVERFAULT)
 	}
 
 	// Calculate new size with overflow check
 	newSize := offset + uint64(len(data))
 	if newSize < offset {
 		// Overflow
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_FBIG,
-			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(types.NFS4ERR_FBIG),
-		}
+		return writeErr(types.NFS4ERR_FBIG)
 	}
 
 	fileHandle := metadata.FileHandle(ctx.CurrentFH)
@@ -226,11 +168,7 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 			"error", err,
 			"status", status,
 			"client", ctx.ClientAddr)
-		return &types.CompoundResult{
-			Status: status,
-			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(status),
-		}
+		return writeErr(status)
 	}
 
 	// Trace SUID/SGID-related writes for debugging
@@ -255,11 +193,7 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 			"error", err,
 			"payloadID", intent.PayloadID,
 			"client", ctx.ClientAddr)
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_IO,
-			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(types.NFS4ERR_IO),
-		}
+		return writeErr(types.NFS4ERR_IO)
 	}
 
 	_, err = metaSvc.CommitWrite(authCtx, intent)
@@ -269,11 +203,7 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 			"error", err,
 			"status", status,
 			"client", ctx.ClientAddr)
-		return &types.CompoundResult{
-			Status: status,
-			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(status),
-		}
+		return writeErr(status)
 	}
 
 	logger.Debug("NFSv4 WRITE successful",
@@ -300,5 +230,14 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 		Status: types.NFS4_OK,
 		OpCode: types.OP_WRITE,
 		Data:   buf.Bytes(),
+	}
+}
+
+// writeErr builds a WRITE error result (status only).
+func writeErr(status uint32) *types.CompoundResult {
+	return &types.CompoundResult{
+		Status: status,
+		OpCode: types.OP_WRITE,
+		Data:   encodeStatusOnly(status),
 	}
 }
