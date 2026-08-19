@@ -89,6 +89,16 @@ func (c *fileReadCache) invalidate(key string) {
 	}
 }
 
+// invalidateAll drops every entry, for callers that replace the whole backing
+// store rather than a single file record (Reset, RestoreSnapshot). Same
+// ordering rule as invalidate: bump gen before clearing, so an in-flight
+// populate against the pre-wipe generation cannot re-insert after the clear.
+func (c *fileReadCache) invalidateAll() {
+	c.gen.Add(1)
+	c.m.Clear()
+	c.n.Store(0)
+}
+
 // pruneToHalf best-effort trims the map back toward half the cap on overflow.
 // One pruner at a time; entries drop in Range order (arbitrary) — a dropped file
 // just re-populates on its next read.
