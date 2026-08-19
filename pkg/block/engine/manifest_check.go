@@ -293,8 +293,9 @@ func checkFileManifest(
 		}
 	}
 
+	claimed = coalesceExtents(claimed)
 	for _, hole := range uncoveredRanges(coalesceExtents(covered), f.Size) {
-		for _, piece := range splitByClaim(hole, coalesceExtents(claimed)) {
+		for _, piece := range splitByClaim(hole, claimed) {
 			appendCapped(&finding.Uncovered, piece, &finding.Truncated)
 		}
 	}
