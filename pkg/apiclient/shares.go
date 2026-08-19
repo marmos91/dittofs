@@ -80,7 +80,11 @@ type Share struct {
 	// Status is the server's health report for the share. A share the server
 	// refused to serve reports unhealthy with the reason in Message, which is
 	// the only place that refusal is visible outside the server log.
-	Status health.Report `json:"status"`
+	//
+	// Omitted when empty: a server that sends no status must not be rendered
+	// as one reporting a zero-value report, which would carry an empty Status
+	// and a year-zero CheckedAt that no server ever produced.
+	Status *health.Report `json:"status,omitempty"`
 }
 
 // CreateShareRequest is the request to create a share.
