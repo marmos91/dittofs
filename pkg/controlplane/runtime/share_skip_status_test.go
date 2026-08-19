@@ -31,7 +31,7 @@ func TestHealthcheckShare_SkippedReportsUnhealthyWithReason(t *testing.T) {
 	}
 
 	const reason = "master key is Deactivated at the HSM"
-	rt.MarkShareSkipped("/refused", reason)
+	rt.markShareSkipped("/refused", reason)
 
 	rep = rt.HealthcheckShare(context.Background(), "/refused")
 	if rep.Status != health.StatusUnhealthy {
@@ -47,13 +47,13 @@ func TestHealthcheckShare_SkippedReportsUnhealthyWithReason(t *testing.T) {
 func TestHealthcheckShare_SkipReasonClearedOnAddAndRemove(t *testing.T) {
 	rt := newRuntimeForSkipStatus()
 
-	rt.MarkShareSkipped("/s", "remote endpoint unreachable")
-	if _, skipped := rt.ShareSkipReason("/s"); !skipped {
+	rt.markShareSkipped("/s", "remote endpoint unreachable")
+	if _, skipped := rt.shareSkipReason("/s"); !skipped {
 		t.Fatal("expected the skip reason to be recorded")
 	}
 
 	rt.clearShareSkipped("/s")
-	if _, skipped := rt.ShareSkipReason("/s"); skipped {
+	if _, skipped := rt.shareSkipReason("/s"); skipped {
 		t.Error("expected the skip reason to be cleared")
 	}
 
@@ -68,13 +68,13 @@ func TestHealthcheckShare_SkipReasonClearedOnAddAndRemove(t *testing.T) {
 func TestShareSkipReason_IsPerShare(t *testing.T) {
 	rt := newRuntimeForSkipStatus()
 
-	rt.MarkShareSkipped("/a", "reason a")
+	rt.markShareSkipped("/a", "reason a")
 	rt.clearShareSkipped("/b")
 
-	if reason, skipped := rt.ShareSkipReason("/a"); !skipped || reason != "reason a" {
-		t.Errorf("ShareSkipReason(/a) = (%q, %v), want (\"reason a\", true)", reason, skipped)
+	if reason, skipped := rt.shareSkipReason("/a"); !skipped || reason != "reason a" {
+		t.Errorf("shareSkipReason(/a) = (%q, %v), want (\"reason a\", true)", reason, skipped)
 	}
-	if _, skipped := rt.ShareSkipReason("/b"); skipped {
-		t.Error("ShareSkipReason(/b) reported a reason that was never recorded")
+	if _, skipped := rt.shareSkipReason("/b"); skipped {
+		t.Error("shareSkipReason(/b) reported a reason that was never recorded")
 	}
 }

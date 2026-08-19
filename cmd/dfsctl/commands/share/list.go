@@ -68,9 +68,9 @@ func (sl ShareList) Rows() [][]string {
 		if s.Enabled {
 			enabled = "yes"
 		}
-		status := s.Status
-		if status == "" {
-			status = "-"
+		status := "-"
+		if s.Status != "" {
+			status = s.Status
 		}
 		rows = append(rows, []string{s.Name, s.MetadataStore, s.LocalBlockStore, s.RemoteBlockStore, s.Quota, s.Used, s.DefaultPermission, s.Retention, enabled, status})
 	}

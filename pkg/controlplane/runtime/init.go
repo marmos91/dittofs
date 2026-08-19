@@ -263,7 +263,7 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 		}
 		if shareConfig == nil {
 			// Share references an unknown metadata store; already logged.
-			rt.MarkShareSkipped(share.Name, "metadata store "+share.MetadataStoreID+" is not configured")
+			rt.markShareSkipped(share.Name, "metadata store "+share.MetadataStoreID+" is not configured")
 			continue
 		}
 
@@ -280,7 +280,7 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			logger.Warn("Failed to add share to runtime",
 				"share", share.Name,
 				"error", err)
-			rt.MarkShareSkipped(share.Name, err.Error())
+			rt.markShareSkipped(share.Name, err.Error())
 			continue
 		}
 

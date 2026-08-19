@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -439,10 +440,10 @@ func (r *Runtime) LocalStoreDir(shareName string) (string, error) {
 	return r.sharesSvc.LocalStoreDir(shareName)
 }
 
-// MarkShareSkipped records that a share exists in the control-plane store but
+// markShareSkipped records that a share exists in the control-plane store but
 // is not being served, along with the reason. The reason is surfaced verbatim
 // by HealthcheckShare, so it should read as an operator-facing explanation.
-func (r *Runtime) MarkShareSkipped(name, reason string) {
+func (r *Runtime) markShareSkipped(name, reason string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.skippedShares == nil {
@@ -456,19 +457,12 @@ func (r *Runtime) MarkShareSkipped(name, reason string) {
 func (r *Runtime) SkippedShares() map[string]string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if len(r.skippedShares) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(r.skippedShares))
-	for name, reason := range r.skippedShares {
-		out[name] = reason
-	}
-	return out
+	return maps.Clone(r.skippedShares)
 }
 
-// ShareSkipReason returns the reason the named share is not being served, and
+// shareSkipReason returns the reason the named share is not being served, and
 // whether such a reason was recorded.
-func (r *Runtime) ShareSkipReason(name string) (string, bool) {
+func (r *Runtime) shareSkipReason(name string) (string, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	reason, ok := r.skippedShares[name]
@@ -537,7 +531,7 @@ func (r *Runtime) HealthcheckShare(ctx context.Context, shareName string) health
 		// registry exactly like one that was never configured. Report the
 		// recorded reason as unhealthy so the refusal is visible, rather than
 		// letting it read as an indeterminate probe.
-		if reason, skipped := r.ShareSkipReason(shareName); skipped {
+		if reason, skipped := r.shareSkipReason(shareName); skipped {
 			return earlyReturn(health.StatusUnhealthy, "share not served: "+reason)
 		}
 		return earlyReturn(health.StatusUnknown, "share not found: "+err.Error())
