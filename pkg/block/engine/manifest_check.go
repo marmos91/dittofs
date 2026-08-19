@@ -18,7 +18,8 @@ const maxManifestCheckFindings = 1000
 
 // maxManifestCheckRangesPerPayload bounds the per-payload range and row lists
 // for the same reason: one heavily fragmented file must not be able to fill the
-// whole report on its own.
+// whole report on its own. The counters and the payload's damaged verdict are
+// taken before an entry is dropped, so the cap never hides damage.
 const maxManifestCheckRangesPerPayload = 32
 
 // ByteRange is a half-open [Start, End) span of a payload that no manifest row
@@ -64,26 +65,22 @@ type PayloadFinding struct {
 	UnknownHashRows []string `json:"unknown_hash_rows,omitempty"`
 
 	// Truncated reports that at least one of the lists above stopped short
-	// of the payload's full set.
+	// of the payload's full set. The counts on the enclosing
+	// ManifestCheckResult, and Damaged below, stay exact past that point.
 	Truncated bool `json:"truncated,omitempty"`
-}
 
-// Damaged reports whether this payload holds evidence of manifest damage, as
-// opposed to holes the scan cannot tell apart from sparseness.
-func (p *PayloadFinding) Damaged() bool {
-	if len(p.UnplaceableRows) > 0 || len(p.UnknownHashRows) > 0 {
-		return true
-	}
-	for _, r := range p.Uncovered {
-		if r.Claimed {
-			return true
-		}
-	}
-	return false
+	// Damaged reports whether this payload holds evidence of manifest
+	// damage — a claimed-but-uncovered span, an unplaceable row or an
+	// unknown hash — as opposed to holes the scan cannot tell apart from
+	// sparseness. It is decided as the payload is scanned, so a payload
+	// whose lists were truncated still reports damage found past the cap.
+	Damaged bool `json:"damaged,omitempty"`
 }
 
 // ManifestCheckResult is the outcome of a manifest-coverage scan over one
-// share. Every count is exact; only the Findings list is capped.
+// share. Every count is exact — the per-payload detail lists and the Findings
+// list are capped, but the totals are taken as each defect is found, before
+// anything is dropped for display.
 type ManifestCheckResult struct {
 	// Share is the share whose metadata store was scanned.
 	Share string `json:"share"`
@@ -191,15 +188,7 @@ func CheckManifests(ctx context.Context, share string, store metadata.Store, che
 	}
 	if err := walkAuditShareFiles(ctx, store, rootHandle, "", func(path string, f *metadata.File) error {
 		result.FilesScanned++
-		finding, err := checkFileManifest(ctx, store, path, f, checkSynced)
-		if err != nil {
-			return err
-		}
-		if finding == nil {
-			return nil
-		}
-		result.accumulate(finding)
-		return nil
+		return checkFileManifest(ctx, store, path, f, checkSynced, result)
 	}); err != nil {
 		return nil, fmt.Errorf("store check: walk share %q: %w", share, err)
 	}
@@ -209,24 +198,14 @@ func CheckManifests(ctx context.Context, share string, store metadata.Store, che
 	return result, nil
 }
 
-// accumulate folds one payload's finding into the running totals and appends
-// it to the capped detail list.
-func (r *ManifestCheckResult) accumulate(f *PayloadFinding) {
+// record appends one payload's finding to the capped detail list. The totals
+// are already in place by the time it runs — they are taken as each defect is
+// found, so a defect dropped from a display list still counts.
+func (r *ManifestCheckResult) record(f *PayloadFinding) {
 	r.PayloadsWithFindings++
-	if f.Damaged() {
+	if f.Damaged {
 		r.DamagedPayloads++
 	}
-	for _, rng := range f.Uncovered {
-		r.UncoveredRanges++
-		r.UncoveredBytes += rng.End - rng.Start
-		if rng.Claimed {
-			r.ClaimedUncoveredRanges++
-			r.ClaimedUncoveredBytes += rng.End - rng.Start
-		}
-	}
-	r.UnplaceableRows += uint64(len(f.UnplaceableRows))
-	r.UnknownHashRows += uint64(len(f.UnknownHashRows))
-
 	if len(r.Findings) >= maxManifestCheckFindings {
 		r.FindingsTruncated = true
 		return
@@ -246,19 +225,21 @@ func checkFileManifest(
 	path string,
 	f *metadata.File,
 	checkSynced bool,
-) (*PayloadFinding, error) {
+	res *ManifestCheckResult,
+) error {
 	payloadID := string(f.PayloadID)
 	if payloadID == "" {
-		return nil, nil
+		return nil
 	}
 
 	rows, err := store.ListFileChunks(ctx, payloadID)
 	if err != nil && !errors.Is(err, block.ErrFileChunkNotFound) {
-		return nil, fmt.Errorf("list file chunks for payload %q: %w", payloadID, err)
+		return fmt.Errorf("list file chunks for payload %q: %w", payloadID, err)
 	}
 
 	finding := &PayloadFinding{Path: path, PayloadID: payloadID, Size: f.Size}
 	covered := make([][2]uint64, 0, len(rows))
+	var found bool
 
 	for _, row := range rows {
 		if row == nil {
@@ -266,6 +247,8 @@ func checkFileManifest(
 		}
 		off, ok := block.ParseChunkOffset(row.ID)
 		if !ok {
+			res.UnplaceableRows++
+			finding.Damaged, found = true, true
 			appendCapped(&finding.UnplaceableRows, row.ID, &finding.Truncated)
 			continue
 		}
@@ -275,9 +258,11 @@ func checkFileManifest(
 		if checkSynced {
 			synced, serr := store.IsSynced(ctx, row.Hash)
 			if serr != nil {
-				return nil, fmt.Errorf("is synced %s: %w", row.Hash, serr)
+				return fmt.Errorf("is synced %s: %w", row.Hash, serr)
 			}
 			if !synced {
+				res.UnknownHashRows++
+				finding.Damaged, found = true, true
 				appendCapped(&finding.UnknownHashRows, row.ID, &finding.Truncated)
 			}
 		}
@@ -296,18 +281,29 @@ func checkFileManifest(
 	claimed = coalesceExtents(claimed)
 	for _, hole := range uncoveredRanges(coalesceExtents(covered), f.Size) {
 		for _, piece := range splitByClaim(hole, claimed) {
+			found = true
+			res.UncoveredRanges++
+			res.UncoveredBytes += piece.End - piece.Start
+			if piece.Claimed {
+				res.ClaimedUncoveredRanges++
+				res.ClaimedUncoveredBytes += piece.End - piece.Start
+				finding.Damaged = true
+			}
 			appendCapped(&finding.Uncovered, piece, &finding.Truncated)
 		}
 	}
 
-	if len(finding.Uncovered) == 0 && len(finding.UnplaceableRows) == 0 && len(finding.UnknownHashRows) == 0 {
-		return nil, nil
+	if !found {
+		return nil
 	}
-	return finding, nil
+	res.record(finding)
+	return nil
 }
 
 // appendCapped appends to a per-payload detail list until it reaches
-// maxManifestCheckRangesPerPayload, flagging truncation once it stops.
+// maxManifestCheckRangesPerPayload, flagging truncation once it stops. It
+// bounds only what is shown: the totals and the damaged verdict are taken
+// before it runs, so dropping an entry here never changes the result.
 func appendCapped[T any](dst *[]T, v T, truncated *bool) {
 	if len(*dst) >= maxManifestCheckRangesPerPayload {
 		*truncated = true

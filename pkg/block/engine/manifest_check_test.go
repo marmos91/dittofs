@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -237,7 +238,7 @@ func TestCheckManifests_HolesAndUnknownHashes(t *testing.T) {
 			if len(df.Uncovered) != 1 || df.Uncovered[0] != (ByteRange{Start: 0, End: 4096, Claimed: true}) {
 				t.Fatalf("damaged payload: Uncovered = %v, want one claimed [0,4096)", df.Uncovered)
 			}
-			if !df.Damaged() {
+			if !df.Damaged {
 				t.Fatal("damaged payload: Damaged() = false")
 			}
 
@@ -248,7 +249,7 @@ func TestCheckManifests_HolesAndUnknownHashes(t *testing.T) {
 			if len(sf.Uncovered) != 1 || sf.Uncovered[0] != (ByteRange{Start: 0, End: 4096, Claimed: false}) {
 				t.Fatalf("sparse payload: Uncovered = %v, want one unclaimed [0,4096)", sf.Uncovered)
 			}
-			if sf.Damaged() {
+			if sf.Damaged {
 				t.Fatal("sparse payload: Damaged() = true, want false — an unclaimed hole is not damage")
 			}
 
@@ -386,5 +387,56 @@ func TestUncoveredRanges(t *testing.T) {
 	// A row overhanging the recorded size still covers everything below it.
 	if n := len(uncoveredRanges([][2]uint64{{0, 100}}, 40)); n != 0 {
 		t.Fatalf("overhanging coverage reported %d uncovered ranges", n)
+	}
+}
+
+// TestCheckManifests_CapDoesNotHideDamage pins that the per-payload display
+// cap bounds only what is listed. A file fragmented past the cap by holes
+// nothing claims must still report the claimed range that follows them —
+// dropping it would make the scan exit clean on a damaged store, the exact
+// silence this command exists to end.
+func TestCheckManifests_CapDoesNotHideDamage(t *testing.T) {
+	ctx := t.Context()
+	const share = "fragmented"
+	store, root := newCheckStore(t, "memory", share)
+
+	// Alternate covered and uncovered 4 KiB pages so the file opens with
+	// more unclaimed holes than the per-payload list can hold, then claim a
+	// final page that no row covers.
+	const holes = maxManifestCheckRangesPerPayload + 4
+	var (
+		rows []seedRow
+		refs []seedRef
+	)
+	for i := 0; i < holes; i++ {
+		off := uint64(i)*8192 + 4096
+		rows = append(rows, seedRow{strconv.FormatUint(off, 10), 4096, 1})
+		refs = append(refs, seedRef{off, 4096, 1})
+	}
+	damagedOff := uint64(holes) * 8192
+	refs = append(refs, seedRef{damagedOff, 4096, 2})
+	payloadID := seedCheckFile(t, store, share, root, "f", damagedOff+4096, rows, refs)
+
+	res, err := CheckManifests(ctx, share, store, false)
+	if err != nil {
+		t.Fatalf("CheckManifests: %v", err)
+	}
+	if res.ClaimedUncoveredRanges != 1 || res.ClaimedUncoveredBytes != 4096 {
+		t.Fatalf("ClaimedUncoveredRanges=%d ClaimedUncoveredBytes=%d, want 1 and 4096",
+			res.ClaimedUncoveredRanges, res.ClaimedUncoveredBytes)
+	}
+	if res.UncoveredRanges != holes+1 {
+		t.Fatalf("UncoveredRanges = %d, want %d", res.UncoveredRanges, holes+1)
+	}
+	if res.DamagedPayloads != 1 || !res.Damaged() {
+		t.Fatalf("DamagedPayloads=%d Damaged=%v, want 1 and true", res.DamagedPayloads, res.Damaged())
+	}
+	f := findingFor(t, res, payloadID)
+	if f == nil || !f.Damaged {
+		t.Fatalf("finding = %+v, want Damaged", f)
+	}
+	if !f.Truncated || len(f.Uncovered) != maxManifestCheckRangesPerPayload {
+		t.Fatalf("Truncated=%v len(Uncovered)=%d, want true and %d",
+			f.Truncated, len(f.Uncovered), maxManifestCheckRangesPerPayload)
 	}
 }

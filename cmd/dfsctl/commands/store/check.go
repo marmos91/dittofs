@@ -213,8 +213,13 @@ func checkFindingNotes(f *engine.PayloadFinding) []string {
 	for _, id := range f.UnknownHashRows {
 		notes = append(notes, "hash unknown to the synced-hash store: row "+id)
 	}
-	if len(notes) > 0 && f.Truncated {
+	if f.Truncated {
 		notes = append(notes, "(more, truncated)")
+	}
+	if len(notes) == 0 && f.Damaged {
+		// The payload is damaged but every listed range is an unclaimed
+		// hole that --include-holes would suppress. Never drop it.
+		notes = append(notes, "damaged; detail truncated")
 	}
 	return notes
 }
