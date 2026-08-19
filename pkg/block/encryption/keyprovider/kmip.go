@@ -16,6 +16,8 @@ import (
 	"github.com/gemalto/kmip-go"
 	"github.com/gemalto/kmip-go/kmip14"
 	"github.com/gemalto/kmip-go/ttlv"
+
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // kmipDefaultTimeout bounds a single Get round-trip against the KMIP
@@ -59,13 +61,42 @@ func newKMIPProvider(ctx context.Context, cfg Config) (*kmipProvider, error) {
 	if cfg.TimeoutMS > 0 {
 		timeout = time.Duration(cfg.TimeoutMS) * time.Millisecond
 	}
+	// The state check runs before the Get so that key material the HSM has
+	// disowned is never pulled into this process at all.
+	state, err := fetchKMIPKeyState(ctx, cfg.Endpoint, tlsCfg, cfg.KeyUID, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if state != kmip14.StateActive {
+		return nil, fmt.Errorf("%w: kmip key %q is in state %s at the HSM, not Active; "+
+			"the encrypted remote will not come up until the configured key_uid names an Active key",
+			ErrKeyStateUnusable, cfg.KeyUID, state)
+	}
 	key, err := fetchKMIPKey(ctx, cfg, tlsCfg, cfg.KeyUID, timeout)
 	if err != nil {
 		return nil, err
 	}
 	// A KMIP key is identified by the uid the operator configured, so a
 	// retired uid is its own master key id with nothing to look up.
+	//
+	// A retired key is decrypt-only, so states that would disqualify the
+	// current key do not disqualify it: blocks already written under it
+	// still have to be readable. Only a key whose material the HSM has
+	// destroyed is unusable, and a compromised one is loaded with a loud
+	// warning because it is the input to a re-wrap decision.
 	retired, err := loadRetiredKeys(cfg.KeyUID, cfg.RetiredKeyUIDs, func(uid string) (string, []byte, error) {
+		state, err := fetchKMIPKeyState(ctx, cfg.Endpoint, tlsCfg, uid, timeout)
+		if err != nil {
+			return uid, nil, err
+		}
+		switch state {
+		case kmip14.StateDestroyed, kmip14.StateDestroyedCompromised:
+			return uid, nil, fmt.Errorf("%w: kmip key %q is in state %s at the HSM, so its material is gone",
+				ErrKeyStateUnusable, uid, state)
+		case kmip14.StateCompromised:
+			logger.Warn("retired master key is marked Compromised at the HSM; blocks already written are still being read under it",
+				"key_uid", uid)
+		}
 		k, err := fetchKMIPKey(ctx, cfg, tlsCfg, uid, timeout)
 		return uid, k, err
 	})
@@ -116,10 +147,75 @@ func buildKMIPTLSConfig(cfg Config) (*tls.Config, error) {
 	return tlsCfg, nil
 }
 
-// fetchKMIPSymmetricKey opens a TLS connection to the KMIP server, sends
-// a single Get request for the configured unique identifier, and returns
-// the raw key material bytes. The connection is closed before return.
+// fetchKMIPSymmetricKey asks the KMIP server for the object stored under
+// the configured unique identifier and returns its raw key material.
 func fetchKMIPSymmetricKey(ctx context.Context, endpoint string, tlsCfg *tls.Config, keyUID string, timeout time.Duration) ([]byte, error) {
+	raw, err := kmipRoundTrip(ctx, endpoint, tlsCfg, timeout,
+		kmip14.OperationGet, kmip.GetRequestPayload{UniqueIdentifier: keyUID})
+	if err != nil {
+		return nil, err
+	}
+	var payload kmip.GetResponsePayload
+	if err := ttlv.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("keyprovider: kmip decode Get payload: %w", err)
+	}
+	if payload.ObjectType != kmip14.ObjectTypeSymmetricKey {
+		return nil, fmt.Errorf("keyprovider: kmip key %s is not a symmetric key (got object type %d)", keyUID, payload.ObjectType)
+	}
+	if payload.SymmetricKey == nil {
+		return nil, errors.New("keyprovider: kmip Get response missing SymmetricKey")
+	}
+	return extractSymmetricKeyMaterial(payload.SymmetricKey.KeyBlock.KeyValue)
+}
+
+// kmipGetAttributesRequestPayload and kmipGetAttributesResponsePayload
+// carry the GetAttributes operation, which the KMIP library models no
+// types for. GetAttributes is read-only: it reports on an object and can
+// neither create nor modify one, so the client credential needs no write
+// capability at the HSM.
+type kmipGetAttributesRequestPayload struct {
+	UniqueIdentifier string
+	AttributeName    []string
+}
+
+type kmipGetAttributesResponsePayload struct {
+	UniqueIdentifier string
+	Attribute        []kmip.Attribute
+}
+
+// fetchKMIPKeyState reads the KMIP State attribute of one object. The
+// State is how an HSM says "stop using this" — an operator who revokes a
+// key expects that to reach every consumer of it — so a state that cannot
+// be read is an error rather than an assumed Active.
+func fetchKMIPKeyState(ctx context.Context, endpoint string, tlsCfg *tls.Config, keyUID string, timeout time.Duration) (kmip14.State, error) {
+	stateName := kmip14.TagState.CanonicalName()
+	raw, err := kmipRoundTrip(ctx, endpoint, tlsCfg, timeout,
+		kmip14.OperationGetAttributes,
+		kmipGetAttributesRequestPayload{UniqueIdentifier: keyUID, AttributeName: []string{stateName}})
+	if err != nil {
+		return 0, err
+	}
+	var payload kmipGetAttributesResponsePayload
+	if err := ttlv.Unmarshal(raw, &payload); err != nil {
+		return 0, fmt.Errorf("keyprovider: kmip decode GetAttributes payload: %w", err)
+	}
+	for _, attr := range payload.Attribute {
+		if attr.AttributeName != stateName {
+			continue
+		}
+		value, ok := attr.AttributeValue.(ttlv.EnumValue)
+		if !ok {
+			return 0, fmt.Errorf("keyprovider: kmip key %s State attribute has unexpected go type %T", keyUID, attr.AttributeValue)
+		}
+		return kmip14.State(value), nil
+	}
+	return 0, fmt.Errorf("keyprovider: kmip key %s returned no State attribute", keyUID)
+}
+
+// kmipRoundTrip opens a TLS connection to the KMIP server, sends a
+// single-item batch carrying one operation, and returns that item's
+// response payload. The connection is closed before return.
+func kmipRoundTrip(ctx context.Context, endpoint string, tlsCfg *tls.Config, timeout time.Duration, op kmip14.Operation, reqPayload any) (ttlv.TTLV, error) {
 	dialer := &net.Dialer{Timeout: timeout}
 	conn, err := tls.DialWithDialer(dialer, "tcp", endpoint, tlsCfg)
 	if err != nil {
@@ -140,8 +236,8 @@ func fetchKMIPSymmetricKey(ctx context.Context, endpoint string, tlsCfg *tls.Con
 			BatchCount:      1,
 		},
 		BatchItem: []kmip.RequestBatchItem{{
-			Operation:      kmip14.OperationGet,
-			RequestPayload: kmip.GetRequestPayload{UniqueIdentifier: keyUID},
+			Operation:      op,
+			RequestPayload: reqPayload,
 		}},
 	}
 	reqTTLV, err := ttlv.Marshal(req)
@@ -165,24 +261,14 @@ func fetchKMIPSymmetricKey(ctx context.Context, endpoint string, tlsCfg *tls.Con
 	}
 	item := resp.BatchItem[0]
 	if item.ResultStatus != kmip14.ResultStatusSuccess {
-		return nil, fmt.Errorf("keyprovider: kmip Get failed: status=%d reason=%d message=%q",
-			item.ResultStatus, item.ResultReason, item.ResultMessage)
+		return nil, fmt.Errorf("keyprovider: kmip %v failed: status=%d reason=%d message=%q",
+			op, item.ResultStatus, item.ResultReason, item.ResultMessage)
 	}
-	var payload kmip.GetResponsePayload
 	raw, ok := item.ResponsePayload.(ttlv.TTLV)
 	if !ok {
-		return nil, fmt.Errorf("keyprovider: kmip Get payload is not TTLV (got %T)", item.ResponsePayload)
+		return nil, fmt.Errorf("keyprovider: kmip %v payload is not TTLV (got %T)", op, item.ResponsePayload)
 	}
-	if err := ttlv.Unmarshal(raw, &payload); err != nil {
-		return nil, fmt.Errorf("keyprovider: kmip decode Get payload: %w", err)
-	}
-	if payload.ObjectType != kmip14.ObjectTypeSymmetricKey {
-		return nil, fmt.Errorf("keyprovider: kmip key %s is not a symmetric key (got object type %d)", keyUID, payload.ObjectType)
-	}
-	if payload.SymmetricKey == nil {
-		return nil, errors.New("keyprovider: kmip Get response missing SymmetricKey")
-	}
-	return extractSymmetricKeyMaterial(payload.SymmetricKey.KeyBlock.KeyValue)
+	return raw, nil
 }
 
 // extractSymmetricKeyMaterial pulls the raw byte material out of a KMIP
