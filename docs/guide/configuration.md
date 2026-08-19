@@ -471,6 +471,29 @@ Notes:
   the default stands. Applies to `fs` local stores; `memory` local stores ignore
   it (in-RAM reads have no amplification).
 
+#### Dirty-age fsync ceiling (`dirty_expire_seconds`)
+
+A client that writes and never issues an NFS `COMMIT`/`FILE_SYNC` or an SMB
+`FLUSH`/`CLOSE` never asks the server for durability. A background loop fsyncs
+each journal shard still holding uncommitted records once per interval, so those
+writes reach the device within roughly that window instead of waiting for the
+shard's next 256 MiB segment rotation.
+
+```sh
+# Default is 30s; tighten it, or set a negative value to disable the loop
+dfsctl store block local edit <share> --config '{"dirty_expire_seconds": 5}'
+```
+
+- Default **30 s**, on for every share; the loop costs an idle store nothing and
+  never runs on the ack path.
+- Negative disables it, leaving the client's own fsync and segment rotation as
+  the only durability points — the loss window is then unbounded in time.
+- Values below 1 s are clamped with a warning; non-numeric values are ignored.
+- This is a **ceiling on the loss window, not a durability guarantee**: only a
+  returned `COMMIT`/`FLUSH` says the bytes are on the device. See
+  [Durability & QoS tiers](durability.md#the-dirty-age-ceiling-dirty_expire_seconds).
+- Applies to `fs` local stores; `memory` local stores ignore it.
+
 #### GC knobs
 
 The CAS write path uses an async syncer and a fail-closed mark-sweep

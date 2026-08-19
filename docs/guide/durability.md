@@ -72,6 +72,48 @@ absent these are honored unchanged:
   [Configuration → require_durable_commit](configuration.md#require_durable_commit)
   for the full semantics.
 
+## The dirty-age ceiling (`dirty_expire_seconds`)
+
+The tiers above describe what must be durable **before an ack**. They say nothing
+about a client that never asks for durability at all — one that writes and never
+issues an NFS `COMMIT`/`FILE_SYNC` or an SMB `FLUSH`/`CLOSE`. Nothing in the
+protocol obliges it to, and plenty of writers don't.
+
+For such a writer the journal's durability points used to be: segment rotation
+(every 256 MiB, per shard) and shutdown. Neither is age-based, so acknowledged
+bytes could sit in the page cache indefinitely — a device-loss test wrote 35 MB
+over 20 seconds with no fsync and lost every byte of it, including the ones
+acknowledged at the very start of the run. Nothing was corrupted (the
+committed-size clamp returns the file short rather than full-size-and-zeroed),
+but the loss window had no ceiling in time.
+
+A background loop now commits every shard still holding unfsynced records once
+per interval, mirroring Linux writeback's `dirty_expire_centisecs`:
+
+| | Value |
+|---|---|
+| Default | **30 s**, on for every share, local-only and remote-backed alike |
+| Scope | per-share, in the local block-store config |
+| Cost on the write path | none — the loop runs off the ack path and only touches shards that are actually dirty |
+
+```bash
+# Tighter ceiling on a share holding work you do not want to redo
+dfsctl store block local edit <share> --config '{"dirty_expire_seconds": 5}'
+
+# Turn it off: back to "no promise without fsync", unbounded in time
+dfsctl store block local edit <share> --config '{"dirty_expire_seconds": -1}'
+```
+
+**This is a ceiling, not a guarantee.** `fsync` remains the only *synchronous*
+durability point: a returned NFS `COMMIT` or SMB `FLUSH` says the bytes reached
+the device, and nothing else does. The interval only bounds how much a
+never-fsyncing writer can lose — it does not make an un-fsynced write durable,
+and a crash mid-interval still loses everything written since the last pass.
+Applications that care about a specific write must still `fsync` it.
+
+Values below 1 s are clamped with a warning; an interval that short issues disk
+barriers faster than a disk retires them.
+
 ## Read integrity: per-read verification & self-heal
 
 Warm reads (bytes served from the local journal without a remote round-trip) are
