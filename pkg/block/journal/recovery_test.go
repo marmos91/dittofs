@@ -3,13 +3,24 @@ package journal
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/marmos91/dittofs/internal/logger"
 )
+
+// captureWarnings routes the process logger into a buffer for the duration of
+// the test and returns an accessor for what was logged.
+func captureWarnings(t *testing.T) func() string {
+	t.Helper()
+	var buf bytes.Buffer
+	logger.InitWithWriter(&buf, "WARN", "text", false)
+	t.Cleanup(func() { logger.InitWithWriter(os.Stdout, "INFO", "text", false) })
+	return buf.String
+}
 
 // reopen closes s and opens a fresh Store over the same directory, exercising
 // the recovery path.
@@ -235,13 +246,10 @@ func TestMissingIdxRebuilt(t *testing.T) {
 		t.Fatalf("remove sealed .idx: %v", err)
 	}
 
-	var warned bool
-	prev := logf
-	logf = func(format string, args ...any) { warned = true }
-	defer func() { logf = prev }()
+	warned := captureWarnings(t)
 
 	r := reopen(t, s)
-	if !warned {
+	if !strings.Contains(warned(), "missing .idx sidecar") {
 		t.Fatalf("expected a Warn for the missing .idx")
 	}
 	if _, err := os.Stat(r.idxPath(0)); err != nil {
@@ -370,10 +378,7 @@ func TestSealedSegmentWithNoValidRecords(t *testing.T) {
 		t.Fatalf("chtimes: %v", err)
 	}
 
-	var warned []string
-	prev := logf
-	logf = func(format string, args ...any) { warned = append(warned, fmt.Sprintf(format, args...)) }
-	defer func() { logf = prev }()
+	warned := captureWarnings(t)
 
 	r, err := Open(dir, Config{ShardCount: 1}, newFakeRemote(), fixedClock{t: time.Now()})
 	if err != nil {
@@ -381,8 +386,8 @@ func TestSealedSegmentWithNoValidRecords(t *testing.T) {
 	}
 	defer func() { _ = r.Close() }()
 
-	if !strings.Contains(strings.Join(warned, "\n"), "zero valid records") {
-		t.Fatalf("expected a warning naming the damaged sealed segment, got %q", warned)
+	if !strings.Contains(warned(), "zero valid records") {
+		t.Fatalf("expected a warning naming the damaged sealed segment, got %q", warned())
 	}
 	if _, err := os.Stat(r.segPath(badID)); err != nil {
 		t.Fatalf("damaged sealed segment must be left in place, got: %v", err)

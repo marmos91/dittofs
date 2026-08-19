@@ -39,6 +39,8 @@ import (
 	"hash/crc32"
 	"os"
 	"path/filepath"
+
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 const (
@@ -191,7 +193,8 @@ func loadCold(dir string) ([]coldEntry, error) {
 	for off := 0; off < len(raw); {
 		e, n, derr := decodeColdEntry(raw[off:])
 		if derr != nil {
-			logf("journal: WARN cold log torn at offset %d, keeping %d intact entry(ies): %v", off, len(out), derr)
+			logger.Warn("journal: cold log torn, keeping the intact entries",
+				"offset", off, "intact_entries", len(out), "err", derr)
 			break
 		}
 		out = append(out, e)

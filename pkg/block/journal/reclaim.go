@@ -718,7 +718,8 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta, live map[uint64]in
 	// by every later pass, so one damaged segment does not stall the shard.
 	quarantine := func(err error) error {
 		victim.corrupt.Store(true)
-		logf("journal: WARN segment %d failed a repack integrity check; leaving it in place and skipping it: %v", victim.id, err)
+		logger.Warn("journal: segment failed a repack integrity check; leaving it in place and skipping it",
+			"segment", victim.id, "err", err)
 		return err
 	}
 
@@ -837,7 +838,8 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta, live map[uint64]in
 		// Defensive: nothing writes to a sealed segment, so this cannot happen;
 		// keep the victim to preserve those bytes rather than lose data. The
 		// target is a redundant orphan the next pass reclaims.
-		logf("journal: WARN repack left %d live interval(s) in segment %d; keeping it", remaining, victim.id)
+		logger.Warn("journal: repack left live intervals in the victim segment; keeping it",
+			"segment", victim.id, "live_intervals", remaining)
 		return 0, nil
 	}
 
