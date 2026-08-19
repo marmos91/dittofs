@@ -6,19 +6,34 @@ import (
 )
 
 // ============================================================================
-// Re-exported types from errors package for backward compatibility
+// Public error surface of package metadata
 // ============================================================================
+//
+// The names below are package metadata's error API. Callers across the tree —
+// every protocol adapter, the control-plane API handlers, the block engine and
+// all four metadata store backends — construct, compare and type-switch on
+// them as metadata.StoreError, metadata.ErrNotFound, metadata.IsNotFoundError
+// and the rest.
+//
+// The implementations live in pkg/metadata/errors and pkg/metadata/lock
+// because neither of those packages may import metadata: metadata imports
+// both, so the dependency only runs one way. That lets the store backends and
+// the lock manager raise and inspect the same errors without a cycle — all
+// four backends import pkg/metadata/errors directly — while the aliases here
+// keep the API reachable from the package that owns it.
+//
+// These are aliases, not wrappers, so a value built through either spelling is
+// the identical type and compares equal. Removing or renaming a name here
+// breaks every caller of the metadata package; it is not the cleanup of an
+// unused shim.
 
 // StoreError is re-exported from the errors package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/errors directly.
 type StoreError = errors.StoreError
 
 // ErrorCode is re-exported from the errors package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/errors directly.
 type ErrorCode = errors.ErrorCode
 
-// Re-exported error codes for backward compatibility.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/errors directly.
+// The error codes callers compare StoreError.Code against.
 const (
 	ErrNotFound               = errors.ErrNotFound
 	ErrAccessDenied           = errors.ErrAccessDenied
@@ -49,178 +64,150 @@ const (
 )
 
 // ============================================================================
-// Re-exported types from lock package for backward compatibility
+// Lock types, re-exported so lock-aware errors stay reachable here
 // ============================================================================
 
 // LockConflict is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type LockConflict = lock.LockConflict
 
 // UnifiedLockConflict is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type UnifiedLockConflict = lock.UnifiedLockConflict
 
 // ============================================================================
-// Error Factory Functions (backward compatibility wrappers)
+// Error Factory Functions
 // ============================================================================
 
 // NewNotFoundError creates a StoreError for when a file, directory, or share is not found.
-// Deprecated: Use errors.NewNotFoundError directly.
 func NewNotFoundError(path string, entityType string) *StoreError {
 	return errors.NewNotFoundError(path, entityType)
 }
 
 // NewPermissionDeniedError creates a StoreError for permission denied errors.
-// Deprecated: Use errors.NewPermissionDeniedError directly.
 func NewPermissionDeniedError(path string) *StoreError {
 	return errors.NewPermissionDeniedError(path)
 }
 
 // NewIsDirectoryError creates a StoreError for when a file operation is attempted on a directory.
-// Deprecated: Use errors.NewIsDirectoryError directly.
 func NewIsDirectoryError(path string) *StoreError {
 	return errors.NewIsDirectoryError(path)
 }
 
 // NewNotDirectoryError creates a StoreError for when a directory operation is attempted on a non-directory.
-// Deprecated: Use errors.NewNotDirectoryError directly.
 func NewNotDirectoryError(path string) *StoreError {
 	return errors.NewNotDirectoryError(path)
 }
 
 // NewInvalidHandleError creates a StoreError for malformed file handles.
-// Deprecated: Use errors.NewInvalidHandleError directly.
 func NewInvalidHandleError() *StoreError {
 	return errors.NewInvalidHandleError()
 }
 
 // NewStaleHandleError creates a StoreError for handles that decode but name a
 // share that no longer exists.
-// Deprecated: Use errors.NewStaleHandleError directly.
 func NewStaleHandleError(shareName string) *StoreError {
 	return errors.NewStaleHandleError(shareName)
 }
 
 // NewNotEmptyError creates a StoreError for when a directory is not empty.
-// Deprecated: Use errors.NewNotEmptyError directly.
 func NewNotEmptyError(path string) *StoreError {
 	return errors.NewNotEmptyError(path)
 }
 
 // NewAlreadyExistsError creates a StoreError for when a file/directory already exists.
-// Deprecated: Use errors.NewAlreadyExistsError directly.
 func NewAlreadyExistsError(path string) *StoreError {
 	return errors.NewAlreadyExistsError(path)
 }
 
 // NewConflictError creates a StoreError for ObjectID concurrent-write conflicts.
-// Deprecated: Use errors.NewConflictError directly.
 func NewConflictError(op, message string) *StoreError {
 	return errors.NewConflictError(op, message)
 }
 
 // NewInvalidArgumentError creates a StoreError for invalid arguments.
-// Deprecated: Use errors.NewInvalidArgumentError directly.
 func NewInvalidArgumentError(message string) *StoreError {
 	return errors.NewInvalidArgumentError(message)
 }
 
 // NewAccessDeniedError creates a StoreError for share-level access denial.
-// Deprecated: Use errors.NewAccessDeniedError directly.
 func NewAccessDeniedError(reason string) *StoreError {
 	return errors.NewAccessDeniedError(reason)
 }
 
 // NewLockedError creates a StoreError for lock conflicts.
-// Deprecated: Use lock.NewLockedError directly.
 func NewLockedError(path string, conflict *LockConflict) *StoreError {
 	return lock.NewLockedError(path, conflict)
 }
 
 // NewLockNotFoundError creates a StoreError for unlock operations on non-existent locks.
-// Deprecated: Use lock.NewLockNotFoundError directly.
 func NewLockNotFoundError(path string) *StoreError {
 	return lock.NewLockNotFoundError(path)
 }
 
 // NewQuotaExceededError creates a StoreError for quota exceeded errors.
-// Deprecated: Use errors.NewQuotaExceededError directly.
 func NewQuotaExceededError(path string) *StoreError {
 	return errors.NewQuotaExceededError(path)
 }
 
 // NewPrivilegeRequiredError creates a StoreError for operations requiring root.
-// Deprecated: Use errors.NewPrivilegeRequiredError directly.
 func NewPrivilegeRequiredError(operation string) *StoreError {
 	return errors.NewPrivilegeRequiredError(operation)
 }
 
 // NewNameTooLongError creates a StoreError for paths/names exceeding limits.
-// Deprecated: Use errors.NewNameTooLongError directly.
 func NewNameTooLongError(path string) *StoreError {
 	return errors.NewNameTooLongError(path)
 }
 
 // NewDeadlockError creates a StoreError for deadlock detection.
-// Deprecated: Use lock.NewDeadlockError directly.
 func NewDeadlockError(waiter string, blockedBy []string) *StoreError {
 	return lock.NewDeadlockError(waiter, blockedBy)
 }
 
 // NewGracePeriodError creates a StoreError for grace period blocking.
-// Deprecated: Use lock.NewGracePeriodError directly.
 func NewGracePeriodError(remainingSeconds int) *StoreError {
 	return lock.NewGracePeriodError(remainingSeconds)
 }
 
 // NewLockLimitExceededError creates a StoreError for lock limit violations.
-// Deprecated: Use lock.NewLockLimitExceededError directly.
 func NewLockLimitExceededError(limitType string, current, max int) *StoreError {
 	return lock.NewLockLimitExceededError(limitType, current, max)
 }
 
 // NewLockConflictError creates a StoreError for lock conflicts (upgrade, etc.).
-// Deprecated: Use lock.NewLockConflictError directly.
 func NewLockConflictError(path string, conflict *UnifiedLockConflict) *StoreError {
 	return lock.NewLockConflictError(path, conflict)
 }
 
 // ============================================================================
-// Error Helper Functions (backward compatibility wrappers)
+// Error Helper Functions
 // ============================================================================
 
 // IsNotFoundError checks if an error is a StoreError with ErrNotFound code.
-// Deprecated: Use errors.IsNotFoundError directly.
 func IsNotFoundError(err error) bool {
 	return errors.IsNotFoundError(err)
 }
 
 // IsLockConflictError checks if an error is a StoreError with ErrLockConflict code.
-// Deprecated: Use errors.IsLockConflictError directly.
 func IsLockConflictError(err error) bool {
 	return errors.IsLockConflictError(err)
 }
 
 // IsDeadlockError checks if an error is a StoreError with ErrDeadlock code.
-// Deprecated: Use errors.IsDeadlockError directly.
 func IsDeadlockError(err error) bool {
 	return errors.IsDeadlockError(err)
 }
 
 // IsConflictError checks if an error is a StoreError with ErrConflict code.
-// Deprecated: Use errors.IsConflictError directly.
 func IsConflictError(err error) bool {
 	return errors.IsConflictError(err)
 }
 
 // IsInvalidHandleError checks if an error is a StoreError with ErrInvalidHandle code.
-// Deprecated: Use errors.IsInvalidHandleError directly.
 func IsInvalidHandleError(err error) bool {
 	return errors.IsInvalidHandleError(err)
 }
 
 // IsStaleHandleError checks if an error is a StoreError with ErrStaleHandle code.
-// Deprecated: Use errors.IsStaleHandleError directly.
 func IsStaleHandleError(err error) bool {
 	return errors.IsStaleHandleError(err)
 }
