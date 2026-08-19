@@ -71,6 +71,15 @@ type Config struct {
 	// window (window x CarveBlockSize), so keep it modest. Zero falls back to the
 	// default via withDefaults.
 	CarveUploadConcurrency int
+	// DirtyExpiry bounds how long an appended record may sit unfsynced. A
+	// background loop commits every shard still holding uncovered records once
+	// per interval, so a client that never asks for durability (no NFS COMMIT,
+	// no SMB FLUSH/CLOSE) still has its writes reach the device within roughly
+	// this window instead of waiting for the shard's next 256 MiB rotation. It
+	// is a ceiling on the loss window, not a guarantee: fsync remains the only
+	// synchronous durability point. Zero falls back to the default via
+	// withDefaults; negative disables the loop entirely.
+	DirtyExpiry time.Duration
 	// ChunkParams sets the per-share FastCDC sizing carve feeds the chunker.
 	// The zero value (or any params that fail Validate) degrades to
 	// chunker.DefaultParams — the historical 1M/4M/16M profile — so a
@@ -86,6 +95,10 @@ const (
 	defaultShardCount                   = 16
 	defaultEvictMaxWait                 = 30 * time.Second
 	defaultCarveUploadConcurrency       = 8
+	// defaultDirtyExpiry mirrors Linux writeback's dirty_expire_centisecs
+	// default: an unfsynced write is pushed to the device once it is about
+	// this old.
+	defaultDirtyExpiry = 30 * time.Second
 
 	// defaultMaxLocalBytesFreeFraction is the share of a store dir's free disk
 	// space Open claims for an unset MaxLocalBytes. Conservative (not the
@@ -117,6 +130,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.CarveUploadConcurrency <= 0 {
 		c.CarveUploadConcurrency = defaultCarveUploadConcurrency
+	}
+	if c.DirtyExpiry == 0 {
+		c.DirtyExpiry = defaultDirtyExpiry
 	}
 	if c.ChunkParams.Validate() != nil {
 		c.ChunkParams = chunker.DefaultParams()
@@ -207,11 +223,12 @@ type Store struct {
 	coldMu sync.Mutex
 	coldFD *os.File
 
-	// gcCancel/gcDone govern the background dead-ratio GC loop started by
-	// Open: cancel stops the loop, and Close waits on gcDone so no repack is
-	// still in flight when segment files are closed underneath it.
-	gcCancel context.CancelFunc
-	gcDone   chan struct{}
+	// bgCancel stops the background loops started by Open — the dead-ratio
+	// repack and the dirty-age commit. Close cancels it and waits on bgWG so
+	// neither loop is still touching a segment when its file is closed
+	// underneath it.
+	bgCancel context.CancelFunc
+	bgWG     sync.WaitGroup
 
 	// failTombstone/failTruncate are test seams: when either equals the FileID
 	// of a Delete or Truncate, the corresponding marker append returns an error
@@ -291,7 +308,7 @@ func Open(dir string, cfg Config, remote RemoteStore, clock Clock) (*Store, erro
 		}
 	}
 
-	s.startBackgroundGC()
+	s.startBackground()
 	return s, nil
 }
 
@@ -300,10 +317,10 @@ func (s *Store) Close() error {
 	if s.closed.Swap(true) {
 		return nil
 	}
-	if s.gcCancel != nil {
-		s.gcCancel()
-		<-s.gcDone
+	if s.bgCancel != nil {
+		s.bgCancel()
 	}
+	s.bgWG.Wait()
 	firstErr := s.closeCold()
 	for _, sh := range s.shards {
 		if sh == nil {
@@ -331,35 +348,74 @@ func (s *Store) Close() error {
 // overwrite-heavy load without costing an idle store anything meaningful.
 const defaultGCInterval = 30 * time.Second
 
-// startBackgroundGC launches the periodic dead-ratio repack loop. Overwrites
-// leave dead records behind; without proactive repacking they are only
-// reclaimed on the write-path eviction gate, so a store whose writes outpace
-// carve grows until the cap forces backpressure. The loop keeps local bytes
-// bounded relative to live bytes regardless of whether a cap is set. Close
-// cancels it and waits on gcDone before closing segment files.
-func (s *Store) startBackgroundGC() {
+// startBackground launches the store's periodic loops. Close cancels them and
+// waits for each to return before closing segment files. A negative DirtyExpiry
+// leaves the dirty-age loop unstarted.
+func (s *Store) startBackground() {
 	ctx, cancel := context.WithCancel(context.Background())
-	s.gcCancel = cancel
-	s.gcDone = make(chan struct{})
-	go func() {
-		defer close(s.gcDone)
-		t := time.NewTicker(defaultGCInterval)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				// errClosed races Close (which sets s.closed before cancelling
-				// this loop's context); both it and context.Canceled are the
-				// normal shutdown signal, not a failure worth logging.
-				if _, err := s.GC(ctx, GCOptions{}); err != nil &&
-					!errors.Is(err, context.Canceled) && !errors.Is(err, errClosed) {
-					logger.Warn("journal: background GC pass failed", "error", err)
-				}
+	s.bgCancel = cancel
+	s.bgWG.Add(1)
+	go func() { defer s.bgWG.Done(); s.gcLoop(ctx) }()
+	if s.cfg.DirtyExpiry > 0 {
+		s.bgWG.Add(1)
+		go func() { defer s.bgWG.Done(); s.syncLoop(ctx) }()
+	}
+}
+
+// gcLoop is the periodic dead-ratio repack. Overwrites leave dead records
+// behind; without proactive repacking they are only reclaimed on the write-path
+// eviction gate, so a store whose writes outpace carve grows until the cap
+// forces backpressure. The loop keeps local bytes bounded relative to live
+// bytes regardless of whether a cap is set.
+func (s *Store) gcLoop(ctx context.Context) {
+	t := time.NewTicker(defaultGCInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			// errClosed races Close (which sets s.closed before cancelling
+			// this loop's context); both it and context.Canceled are the
+			// normal shutdown signal, not a failure worth logging.
+			if _, err := s.GC(ctx, GCOptions{}); err != nil &&
+				!errors.Is(err, context.Canceled) && !errors.Is(err, errClosed) {
+				logger.Warn("journal: background GC pass failed", "error", err)
 			}
 		}
-	}()
+	}
+}
+
+// syncLoop commits the shards holding unfsynced records once per DirtyExpiry,
+// bounding how long an acknowledged write can sit in the page cache. It is
+// dirty-driven, so an idle store never fsyncs, and it runs off the ack path, so
+// it adds no write latency. See Config.DirtyExpiry.
+func (s *Store) syncLoop(ctx context.Context) {
+	t := time.NewTicker(s.cfg.DirtyExpiry)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.commitDirtyShards()
+		}
+	}
+}
+
+// commitDirtyShards fsyncs each shard holding records above its durable
+// watermark. groupCommit coalesces with any concurrent client commit, so
+// overlapping with a carve pass or an explicit Commit costs at most one extra
+// fsync and never duplicates work.
+func (s *Store) commitDirtyShards() {
+	for _, sh := range s.shards {
+		if !sh.dirty() {
+			continue
+		}
+		if err := sh.groupCommit(); err != nil {
+			logger.Warn("journal: dirty-age commit failed", "error", err)
+		}
+	}
 }
 
 // WriteAt buffers a dirty client write. It never fsyncs; durability is a

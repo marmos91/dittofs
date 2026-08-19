@@ -2904,6 +2904,42 @@ func deriveLocalStoreDir(localCfg interface {
 	return filepath.Join(expanded, "shares", sanitizeShareName(shareName))
 }
 
+const (
+	// minDirtyExpire is the shortest dirty-age commit interval a share may
+	// configure. Anything below it is a misconfiguration rather than a tuning
+	// choice: the loop would issue barriers faster than a disk retires them.
+	minDirtyExpire = time.Second
+	// maxDirtyExpireSeconds is where a seconds value stops fitting a
+	// time.Duration (~292 years).
+	maxDirtyExpireSeconds = float64(math.MaxInt64 / int64(time.Second))
+)
+
+// dirtyExpiryFromConfig reads the dirty_expire_seconds key, which caps how long
+// an acknowledged write may stay in the page cache before the journal fsyncs it
+// on its own. Zero (absent, or an unusable value) leaves the journal default in
+// place; a negative value disables the loop, leaving the client's own fsync and
+// segment rotation as the only durability points.
+func dirtyExpiryFromConfig(config map[string]any) time.Duration {
+	v, ok := config["dirty_expire_seconds"]
+	if !ok {
+		return 0
+	}
+	n, isNum := v.(float64)
+	if !isNum || math.IsNaN(n) || math.Abs(n) > maxDirtyExpireSeconds {
+		logger.Warn("block store config has dirty_expire_seconds but it is invalid; ignoring", "value", v)
+		return 0
+	}
+	d := time.Duration(n * float64(time.Second))
+	// A sub-second interval would put a disk barrier on the store far more often
+	// than it can retire one; a typo must not do that.
+	if n > 0 && d < minDirtyExpire {
+		logger.Warn("block store config dirty_expire_seconds is below the floor; clamping",
+			"value", n, "floor", minDirtyExpire)
+		return minDirtyExpire
+	}
+	return d
+}
+
 // CreateLocalStoreFromConfig creates a local store instance from a block store config.
 func CreateLocalStoreFromConfig(
 	ctx context.Context,
@@ -2985,6 +3021,7 @@ func CreateLocalStoreFromConfig(
 			logger.Warn("block store config has max_log_bytes but it is invalid or non-positive; ignoring", "value", v)
 		}
 	}
+	fsOpts.DirtyExpiry = dirtyExpiryFromConfig(config)
 	// chunk_size sets the FastCDC Min for this share's carve chunker (#1569) —
 	// the dominant knob for effective chunk size and thus random-read
 	// amplification. Avg/Max are derived (4x/8x Min) unless chunk_max overrides
