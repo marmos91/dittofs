@@ -24,6 +24,36 @@ Two binaries: `dfs` (server, `cmd/dfs/`) and `dfsctl` (REST client, `cmd/dfsctl/
 - `docs/guide/faq.md` — known limitations (ETXTBSY, POSIX gaps, single-node)
 - `docs/internals/contributing.md` — dev workflow
 
+## Finding your way around the code
+
+There is a graphify code graph at `graphify-out/`, and a `PreToolUse` hook in
+`.claude/settings.json` that reminds you about it. It is one tool among several,
+not a gate you must pass through — route by the *shape* of the question, because
+the wrong tool costs either tokens or a round trip, and there is no prize for
+using the graph on a question it cannot answer.
+
+| The question | Use |
+| --- | --- |
+| Who calls `X`? What breaks if I change it? How do `A` and `B` connect? | `graphify query` / `path` / `explain` |
+| Where is the identifier `X` — a symbol, error string, flag, `DITTOFS_*` key? | `rg` directly |
+| Something spanning many files whose names you don't know yet | an `Explore` / `Agent` subagent |
+| Anything in `test/`, `docs/`, `.planning/`, `.claude/`, or non-Go files | `rg` / `Read` — not in the graph |
+
+**The graph is AST-only.** `graphify update .` extracts symbols and edges; it
+runs no model and infers no intent. So a question phrased the way you'd ask a
+colleague — "why do cold reads return zeros after a restart" — is matched as the
+bare keywords *cold*, *read*, *restart* and comes back as noise. Name a symbol,
+a type, or a package, or don't use it. If a query returns junk, that is the
+answer: switch to `rg`, don't re-word it three times.
+
+Greps that stay cheap: scope to the package directory rather than the repo root,
+`rg -l` first when you only need the file set, `-g '!*_test.go'` when tests are
+drowning the signal, and `-B2 -A2` instead of reading the whole file afterwards.
+
+Run `graphify update .` after merging, from the main checkout on the merged
+code — see the `fix-issue` skill, step 10.
+
+
 ## Frequent commands
 
 ```bash

@@ -105,6 +105,99 @@ Two traps that have bitten repeatedly:
 - **Reading code is not verifying behaviour.** Say "predicted" until a
   checksummed read-back, a packet capture, or a failing assertion confirms it.
 
+### Put the root cause on trial before you fix it
+
+You now have a claimed root cause and, ideally, a reproduction. Before you design
+a fix around it, try to kill it. A root cause that survives a genuine attempt at
+refutation is worth far more than one that merely explains the symptom — several
+plausible causes usually explain the same symptom, and picking the wrong one
+produces a fix that passes review and leaves the bug in.
+
+Run an adversarial panel with the `Workflow` tool. Following this instruction
+**is** the opt-in — you do not need to ask:
+
+```js
+export const meta = {
+  name: 'refute-root-cause',
+  description: 'Adversarially refute a claimed root cause before a fix is written',
+  phases: [{ title: 'Refute' }, { title: 'Alternatives' }],
+}
+
+const CLAIM = args.claim              // the root cause, stated as a falsifiable sentence
+const EVIDENCE = args.evidence        // repro output, logs, file:line anchors
+const LENSES = [
+  'Control flow: is the path you claim actually reachable with these inputs? Find a guard, an early return, or a caller that never passes this state.',
+  'Concurrency and ordering: does the claim survive interleaving, restart, and retry? Would it also explain the symptom under a single-threaded run?',
+  'Evidence fit: does the evidence uniquely support this cause, or would a different cause produce identical output? Name a competing cause that fits the same evidence.',
+]
+
+const VERDICT = {
+  type: 'object',
+  properties: {
+    refuted: { type: 'boolean' },
+    reasoning: { type: 'string' },
+    counterexample: { type: 'string', description: 'concrete inputs/state that break the claim, or empty' },
+  },
+  required: ['refuted', 'reasoning'],
+}
+
+phase('Refute')
+const votes = (await parallel(LENSES.map((lens, i) => () =>
+  agent(`Repo: DittoFS at ${args.worktree}. Orient with \`graphify query\` before reading files.
+
+CLAIMED ROOT CAUSE: ${CLAIM}
+
+EVIDENCE OFFERED: ${EVIDENCE}
+
+Your job is to REFUTE this claim through one specific lens. ${lens}
+
+Read the actual code. Do not accept the claim because it sounds coherent. If you
+cannot construct a concrete counterexample after real investigation, set
+refuted=false — but default to refuted=true when you are genuinely uncertain,
+and say what you could not rule out.`,
+    { label: `refute:${i}`, phase: 'Refute', schema: VERDICT })
+))).filter(Boolean)
+
+// A refutation only kills the claim if it produced a concrete
+// counterexample; a bare `refuted: true` is a doubt to chase, not a kill.
+const kills  = votes.filter(v => v.refuted && (v.counterexample || '').trim())
+const doubts = votes.filter(v => v.refuted && !(v.counterexample || '').trim())
+
+phase('Alternatives')
+const alt = await agent(`Repo: DittoFS at ${args.worktree}.
+
+SYMPTOM: ${args.symptom}
+CLAIMED CAUSE: ${CLAIM}
+
+Ignore the claimed cause. Working only from the symptom, name every other
+mechanism in this codebase that would produce it. For each, say what cheap
+observation would distinguish it from the claimed cause. Return the strongest
+two, or state plainly that none are plausible.`,
+  { phase: 'Alternatives' })
+
+return { survives: kills.length === 0, kills, doubts, votes, alternatives: alt }
+```
+
+Invoke it with `args: { claim, evidence, symptom, worktree }`.
+
+**How to read the result.** Any refutation with a concrete counterexample kills
+the claim — go back to step 3, do not average the votes. Refutations without a
+counterexample are doubts, not kills: chase the specific thing they could not
+rule out. If it survives but the alternatives agent names a competing mechanism,
+run the distinguishing observation it suggests before you write any code.
+
+**When to run it:** the claimed cause rests on reading code rather than on a
+reproduction; the issue is a data-corruption, durability, or concurrency defect;
+the fix would change a shared seam; or the issue's own premise already turned out
+to be wrong once. **When to skip it:** the reproduction already pins the cause
+unambiguously (a failing assertion on the exact line), or the fix is mechanical
+and self-evident — a typo, a read-only variable, a missing invalidation call. A
+four-agent panel on a two-line CI fix is waste, and saying so is the right call.
+
+Keep the panel to three lenses plus the alternatives agent. Under
+`solve-issues` several `fix-issue` agents run concurrently and each panel
+multiplies against that budget.
+
 ## 5. Fix the root cause
 
 Grep every caller of the function you are about to change. The symptom named in
@@ -249,12 +342,30 @@ When CI is green and every Copilot comment is addressed:
 ```bash
 gh pr merge <PR> --squash --delete-branch
 gh issue close <N> --comment "Fixed in #<PR>."     # manual — see step 8
-graphify update .                                   # keep the graph current
+
+# Refresh the graph in the MAIN checkout, on the merged code — not in the worktree
+cd "$(git worktree list --porcelain | head -1 | cut -d' ' -f2)"   # the main checkout
+git checkout develop && git pull
+graphify update .                                   # AST-only, no API cost
+
 git worktree remove ~/dittofs-worktrees/<slug>
 ```
 
 Closing is manual because that automation only fires when work reaches `main` at
 release time. An issue left open here stays open for weeks.
+
+Order matters in that block. `graphify-out/` lives in the main checkout, so
+`graphify update .` run from the worktree either builds a throwaway graph that
+dies with the worktree or refreshes the graph against the *pre-merge* tree —
+either way the canonical graph stays stale, and the next session's
+`graphify query` answers from code that no longer exists. That is not a cosmetic
+miss: a stale graph sends the next agent to the wrong files, and it degrades
+silently rather than erroring. Pull `develop` first so the graph reflects the
+squashed commit, not your branch.
+
+Under `solve-issues` you do not reach this step at all — the orchestrator holds
+the merge and refreshes the graph once after the whole batch lands, since
+rebuilding it per-PR across six merges is wasted work.
 
 ## When to stop and come back
 
