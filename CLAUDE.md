@@ -103,6 +103,27 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
   numbers, no CI/runner/OS names, no phase/plan/decision IDs. Those belong in
   commit messages, PR descriptions, or `.planning/`, not in source.
 
+### `ponytail:` markers
+
+A `ponytail:` comment marks a **knowingly-simple implementation**, naming its ceiling and
+the upgrade path that would justify replacing it:
+
+```go
+// ponytail: O(n) keys-only scan per candidate, and only an overlap yields more
+// than one candidate; upgrade to a big-endian fb-off index for a true O(log n)
+// reverse-seek only if profiling at real N still shows it.
+func (s *BadgerMetadataStore) GetFileChunkAtOffset(...)
+```
+
+They are a **debt ledger, not TODOs**: each one records a decision that was correct at the
+time along with the evidence that would overturn it. There are 19 of them, mostly in
+`pkg/block/engine`, `pkg/block/journal` and `pkg/metadata/store`.
+
+This is the one sanctioned exception to the "no external references" rule above — the
+prefix is what makes the set harvestable as a group. Keep the marker when editing nearby
+code; drop it only when the shortcut is actually replaced, not when the comment is merely
+reworded.
+
 ## Commits & PRs
 
 - Never mention Claude Code, AI tools, or add `Co-Authored-By` lines for AI.
