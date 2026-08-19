@@ -235,19 +235,22 @@ func (lm *Manager) hasPersistedLeaseKeyOnOtherFile(ctx context.Context, leaseKey
 	return false
 }
 
-// requestLeaseImplWithMode is the underlying lease-grant implementation with
-// the additional `isTraditionalOplock` flag distinguishing real SMB2.1+ leases
-// from synthetic-key records modeling traditional oplocks (LEVEL_II/Exclusive/
-// Batch). The flag is consumed by `bestGrantableState` to apply the MS-SMB2
-// §3.3.5.9 cross-tier rules:
+// leaseRequest carries one lease-grant request through the steps of the grant
+// path. It is normalized once by requestLeaseImpl and then passed by value to
+// each step, so no step can observe a pre-normalization state.
+//
+// `isTraditionalOplock` distinguishes real SMB2.1+ leases from synthetic-key
+// records modeling traditional oplocks (LEVEL_II/Exclusive/Batch). The flag is
+// consumed by `bestGrantableState` to apply the MS-SMB2 §3.3.5.9 cross-tier
+// rules:
 //
 //   - traditional-oplock requestor + any other-key holder with H bit → NONE
 //     (Samba `state.got_handle_lease` in `delay_for_oplock_fn`)
 //   - real-lease requestor + any other-key traditional-oplock holder → strip H
 //     (Samba `state.got_oplock`)
 //
-// And it propagates the flag onto the new record via `createAndGrantLease`
-// so subsequent grants can detect it.
+// And it propagates onto the new record via `createAndGrantLease` so subsequent
+// grants can detect it.
 //
 // `suppressConflictBreak` carves out the stat-open case (MS-SMB2 §3.3.5.9.8 /
 // Samba `is_lease_stat_open` in source3/smbd/open.c). A stat-open requester
@@ -260,36 +263,52 @@ func (lm *Manager) hasPersistedLeaseKeyOnOtherFile(ctx context.Context, leaseKey
 // Write bit that the stat-opener's Read "conflicts" with, producing the
 // intermittent spurious break that smb2.lease.statopen4's CHECK_NO_BREAK
 // observes (#751).
-func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
-	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
-	requestedState uint32, isDirectory bool, isTraditionalOplock bool,
-	suppressConflictBreak bool) (grantedState uint32, epoch uint16, err error) {
+type leaseRequest struct {
+	fileHandle     FileHandle
+	handleKey      string // string(fileHandle), the unifiedLocks bucket key
+	leaseKey       [16]byte
+	parentLeaseKey [16]byte
+	ownerID        string
+	clientID       string
+	shareName      string
+	state          uint32 // requested lease state, normalized
 
-	// Coerce no-Read caching combinations (W=0x04, H=0x02, HW=0x06) to
-	// LeaseState=None and grant successfully. Per Samba
-	// source3/smbd/open.c::delay_for_oplock the rule "any W or H without R
-	// → SMB2_LEASE_NONE" applies universally (files and directories alike)
-	// and is enforced before any conflict resolution. The smbtorture
-	// smb2.lease.request matrix asserts NT_STATUS_OK with granted state=""
-	// for H, W, and HW.
-	//
-	// Gate explicitly on the R/W/H bits (mask off reserved bits first) so
-	// requests like 0x09 (R + reserved bit 0x08) are still treated as
-	// R-bearing and pass through to bestGrantableState rather than being
-	// coerced to None — matching Samba's behavior of ignoring reserved
-	// bits while still honoring Read.
-	//
-	// Returning here (instead of falling through to bestGrantableState) is
-	// deliberate: that helper's degradation chain ends at LeaseStateRead,
-	// which would wrongly grant R for a W/H/HW request whose original
-	// intent was a non-Read caching right.
+	isDirectory           bool
+	isTraditionalOplock   bool
+	suppressConflictBreak bool
+}
+
+// isNoReadCachingCombination reports whether a requested state asks for W, H or
+// HW caching without R. Per Samba source3/smbd/open.c::delay_for_oplock the
+// rule "any W or H without R → SMB2_LEASE_NONE" applies universally (files and
+// directories alike) and is enforced before any conflict resolution. The
+// smbtorture smb2.lease.request matrix asserts NT_STATUS_OK with granted
+// state="" for H, W, and HW.
+//
+// The gate is on the R/W/H bits with reserved bits masked off first, so a
+// request like 0x09 (R + reserved bit 0x08) is still treated as R-bearing and
+// passes through to bestGrantableState rather than being coerced to None —
+// matching Samba's behavior of ignoring reserved bits while still honoring Read.
+func isNoReadCachingCombination(state uint32) bool {
 	const knownLeaseBits = LeaseStateRead | LeaseStateWrite | LeaseStateHandle
-	maskedKnown := requestedState & knownLeaseBits
-	if maskedKnown != LeaseStateNone && maskedKnown&LeaseStateRead == 0 {
+	masked := state & knownLeaseBits
+	return masked != LeaseStateNone && masked&LeaseStateRead == 0
+}
+
+// requestLeaseImpl is the underlying lease-grant implementation. It normalizes
+// the request, answers the cheap denials and probes, then resolves conflicts
+// under lm.mu and grants the best available state.
+func (lm *Manager) requestLeaseImpl(ctx context.Context, req leaseRequest) (grantedState uint32, epoch uint16, err error) {
+	// Coerce no-Read caching combinations to LeaseState=None and grant
+	// successfully. Returning here (instead of falling through to
+	// bestGrantableState) is deliberate: that helper's degradation chain ends at
+	// LeaseStateRead, which would wrongly grant R for a W/H/HW request whose
+	// original intent was a non-Read caching right.
+	if isNoReadCachingCombination(req.state) {
 		logger.Debug("RequestLease: no-Read caching combination, coercing to None",
-			"state", LeaseStateToString(requestedState),
-			"fileHandle", string(fileHandle),
-			"isDirectory", isDirectory)
+			"state", LeaseStateToString(req.state),
+			"fileHandle", string(req.fileHandle),
+			"isDirectory", req.isDirectory)
 		return LeaseStateNone, 0, nil
 	}
 
@@ -304,71 +323,18 @@ func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle File
 	// directory view as authoritative, serves a stale (empty) listing from
 	// cache, and deletes the folder without first enumerating and removing its
 	// children — so the rmdir fails with STATUS_DIRECTORY_NOT_EMPTY (#1570).
-	if isDirectory {
-		requestedState &^= LeaseStateWrite
+	if req.isDirectory {
+		req.state &^= LeaseStateWrite
 	}
 
-	handleKey := string(fileHandle)
+	req.handleKey = string(req.fileHandle)
 
-	// LeaseStateNone probe: clients (and smbtorture breaking4 / upgrade2)
-	// issue empty-state requests to query the current lease without taking
-	// new caching rights. Per Samba upgrade2 the response is the current
-	// state of any same-key lease (R returns R, RH returns RH, …) — *not*
-	// always None. A None probe with no same-key lease still returns None
-	// trivially, short-circuited here so we don't enter the cross-key break
-	// dispatch path with requestedState=None.
-	if requestedState == LeaseStateNone {
-		lm.mu.Lock()
-		for _, lock := range lm.unifiedLocks[handleKey] {
-			if lock.Lease == nil || lock.Lease.LeaseKey != leaseKey {
-				continue
-			}
-			currentState := lock.Lease.LeaseState
-			epoch := lock.Lease.Epoch
-			breaking := lock.Lease.Breaking
-			lm.mu.Unlock()
-			if breaking {
-				logger.Debug("RequestLease: None-probe on breaking same-key lease, surfacing break-in-progress",
-					"fileHandle", handleKey,
-					"currentState", LeaseStateToString(currentState),
-					"epoch", epoch)
-				return currentState, epoch, ErrLeaseBreakInProgress
-			}
-			return currentState, epoch, nil
-		}
-		lm.mu.Unlock()
-		return LeaseStateNone, 0, nil
+	if req.state == LeaseStateNone {
+		return lm.probeLeaseState(req)
 	}
 
-	// Check recently-broken cache for directories
-	if isDirectory && lm.recentlyBroken != nil && lm.recentlyBroken.IsRecentlyBroken(handleKey) {
-		logger.Debug("RequestLease: directory recently broken, denying",
-			"fileHandle", handleKey)
-		return LeaseStateNone, 0, nil
-	}
-
-	// Per MS-SMB2 §3.3.5.9.8: if any byte-range lock is outstanding on the
-	// file, the server MUST grant leaseState = NONE. Check both the
-	// persisted lockStore (NLM-side) and the in-memory lm.locks map
-	// (SMB2 LOCK callers; not yet pushed through lockStore).
-	if lm.hasByteRangeLockConflictForLease(ctx, handleKey, requestedState, clientID) {
-		logger.Debug("RequestLease: byte-range lock conflict, denying lease",
-			"fileHandle", handleKey,
-			"requestedState", LeaseStateToString(requestedState))
-		return LeaseStateNone, 0, nil
-	}
-
-	// Cross-file lease-key uniqueness — persisted backstop for post-restart
-	// state. The in-memory check inside lm.mu below catches the steady-state
-	// case; this pre-check covers the window after a restart but before the
-	// owning client has reclaimed the lease into memory.
-	if lm.hasPersistedLeaseKeyOnOtherFile(ctx, leaseKey, handleKey, clientID) {
-		logger.Debug("RequestLease: lease key already bound to another file (persisted record)",
-			"leaseKey", fmt.Sprintf("%x", leaseKey),
-			"fileHandle", handleKey,
-			"clientID", clientID,
-			"requestedState", LeaseStateToString(requestedState))
-		return LeaseStateNone, 0, ErrLeaseKeyInUse
+	if denied, derr := lm.preGrantDenial(ctx, req); denied {
+		return LeaseStateNone, 0, derr
 	}
 
 	lm.mu.Lock()
@@ -382,67 +348,181 @@ func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle File
 	// a false-positive, and where two parallel grants on different files
 	// could both observe "no conflict" and create duplicate records.
 	//
-	// Skipped on None probes: zero-state requests are pure state queries that
-	// cannot acquire caching rights and are not subject to lease_match.
 	// Same-file reopen (h1a/h1b in smbtorture breaking2) lands in the same
 	// handleKey bucket and is allowed; ack-to-None records persisted under
 	// the original handleKey still count as bindings here (handle-bound
 	// lifetime, PR #452).
-	if requestedState != LeaseStateNone && lm.hasLeaseKeyOnOtherFile(leaseKey, handleKey, clientID) {
+	if lm.hasLeaseKeyOnOtherFile(req.leaseKey, req.handleKey, req.clientID) {
 		lm.mu.Unlock()
 		logger.Debug("RequestLease: lease key already bound to another file for this client",
-			"leaseKey", fmt.Sprintf("%x", leaseKey),
-			"fileHandle", handleKey,
-			"clientID", clientID,
-			"requestedState", LeaseStateToString(requestedState))
+			"leaseKey", fmt.Sprintf("%x", req.leaseKey),
+			"fileHandle", req.handleKey,
+			"clientID", req.clientID,
+			"requestedState", LeaseStateToString(req.state))
 		return LeaseStateNone, 0, ErrLeaseKeyInUse
 	}
 
-	locks := lm.unifiedLocks[handleKey]
+	locks := lm.unifiedLocks[req.handleKey]
 
-	// Check for delegation conflicts before granting a lease
-	for _, lock := range locks {
-		if lock.Delegation != nil {
-			// Create a temporary OpLock to check coexistence
-			tempLease := &OpLock{LeaseState: requestedState}
-			if DelegationConflictsWithLease(lock.Delegation, tempLease) {
-				lm.mu.Unlock()
-				logger.Debug("RequestLease: delegation conflict, denying lease",
-					"fileHandle", handleKey,
-					"delegationType", lock.Delegation.DelegType.String(),
-					"requestedState", LeaseStateToString(requestedState))
-				return LeaseStateNone, 0, fmt.Errorf("lease denied: conflicts with %s delegation on file",
-					lock.Delegation.DelegType.String())
-			}
-		}
+	if deleg := conflictingDelegation(locks, req.state); deleg != nil {
+		lm.mu.Unlock()
+		logger.Debug("RequestLease: delegation conflict, denying lease",
+			"fileHandle", req.handleKey,
+			"delegationType", deleg.DelegType.String(),
+			"requestedState", LeaseStateToString(req.state))
+		return LeaseStateNone, 0, fmt.Errorf("lease denied: conflicts with %s delegation on file",
+			deleg.DelegType.String())
 	}
 
-	// Search for existing lease with same key
+	if handled, state, ep, serr := lm.resolveSameKeyLeaseLocked(req, locks); handled {
+		lm.mu.Unlock()
+		return state, ep, serr
+	}
+
+	// No existing lease with the same key: break conflicting other-key holders,
+	// then grant the best available state (may be less than requested).
+	locks = lm.breakConflictingLeasesLocked(req, locks)
+
+	// After any break (or no-op skip), find the best grantable state.
+	// Per MS-SMB2 3.3.5.9: the server MUST grant the best available oplock
+	// level. Try the full requested state first, then progressively lower
+	// states: strip Write, then strip Handle, then Read only, then None.
+	grantState := bestGrantableState(locks, req.leaseKey, req.state, req.isDirectory, req.isTraditionalOplock)
+	if grantState == LeaseStateNone {
+		lm.mu.Unlock()
+		logger.Debug("RequestLease: no compatible state after conflict resolution",
+			"fileHandle", req.handleKey,
+			"requestedState", LeaseStateToString(req.state))
+		return LeaseStateNone, 0, nil
+	}
+
+	granted, grantedEpoch := lm.createAndGrantLease(ctx, req, grantState)
+	lm.mu.Unlock()
+
+	logger.Debug("RequestLease: granted lease",
+		"fileHandle", req.handleKey,
+		"requested", LeaseStateToString(req.state),
+		"granted", LeaseStateToString(granted),
+		"isDirectory", req.isDirectory,
+		"downgraded", grantState != req.state,
+		"epoch", grantedEpoch)
+
+	return granted, grantedEpoch, nil
+}
+
+// probeLeaseState answers a LeaseStateNone request. Clients (and smbtorture
+// breaking4 / upgrade2) issue empty-state requests to query the current lease
+// without taking new caching rights. Per Samba upgrade2 the response is the
+// current state of any same-key lease (R returns R, RH returns RH, …) — *not*
+// always None. A None probe with no same-key lease returns None trivially. The
+// probe short-circuits the whole grant path so a None request never enters the
+// cross-key break dispatch, and it is exempt from lease_match uniqueness: a
+// zero-state request cannot acquire caching rights.
+func (lm *Manager) probeLeaseState(req leaseRequest) (uint32, uint16, error) {
+	lm.mu.Lock()
+	for _, lock := range lm.unifiedLocks[req.handleKey] {
+		if lock.Lease == nil || lock.Lease.LeaseKey != req.leaseKey {
+			continue
+		}
+		currentState := lock.Lease.LeaseState
+		epoch := lock.Lease.Epoch
+		breaking := lock.Lease.Breaking
+		lm.mu.Unlock()
+		if breaking {
+			logger.Debug("RequestLease: None-probe on breaking same-key lease, surfacing break-in-progress",
+				"fileHandle", req.handleKey,
+				"currentState", LeaseStateToString(currentState),
+				"epoch", epoch)
+			return currentState, epoch, ErrLeaseBreakInProgress
+		}
+		return currentState, epoch, nil
+	}
+	lm.mu.Unlock()
+	return LeaseStateNone, 0, nil
+}
+
+// preGrantDenial runs the lock-free denials that precede conflict resolution:
+// the directory recently-broken cache, the byte-range lock conflict gate, and
+// the persisted cross-file lease-key uniqueness backstop. denied=true means the
+// caller must answer LeaseStateNone with the returned error (nil for a plain
+// denial).
+func (lm *Manager) preGrantDenial(ctx context.Context, req leaseRequest) (bool, error) {
+	if req.isDirectory && lm.recentlyBroken != nil && lm.recentlyBroken.IsRecentlyBroken(req.handleKey) {
+		logger.Debug("RequestLease: directory recently broken, denying",
+			"fileHandle", req.handleKey)
+		return true, nil
+	}
+
+	// Per MS-SMB2 §3.3.5.9.8: if any byte-range lock is outstanding on the
+	// file, the server MUST grant leaseState = NONE. Check both the
+	// persisted lockStore (NLM-side) and the in-memory lm.locks map
+	// (SMB2 LOCK callers; not yet pushed through lockStore).
+	if lm.hasByteRangeLockConflictForLease(ctx, req.handleKey, req.state, req.clientID) {
+		logger.Debug("RequestLease: byte-range lock conflict, denying lease",
+			"fileHandle", req.handleKey,
+			"requestedState", LeaseStateToString(req.state))
+		return true, nil
+	}
+
+	// Cross-file lease-key uniqueness — persisted backstop for post-restart
+	// state. The in-memory check inside lm.mu catches the steady-state case;
+	// this pre-check covers the window after a restart but before the owning
+	// client has reclaimed the lease into memory.
+	if lm.hasPersistedLeaseKeyOnOtherFile(ctx, req.leaseKey, req.handleKey, req.clientID) {
+		logger.Debug("RequestLease: lease key already bound to another file (persisted record)",
+			"leaseKey", fmt.Sprintf("%x", req.leaseKey),
+			"fileHandle", req.handleKey,
+			"clientID", req.clientID,
+			"requestedState", LeaseStateToString(req.state))
+		return true, ErrLeaseKeyInUse
+	}
+
+	return false, nil
+}
+
+// conflictingDelegation returns the first delegation on the file that cannot
+// coexist with a lease in the requested state, or nil. Must hold lm.mu.
+func conflictingDelegation(locks []*UnifiedLock, requestedState uint32) *Delegation {
+	for _, lock := range locks {
+		if lock.Delegation == nil {
+			continue
+		}
+		// Create a temporary OpLock to check coexistence
+		tempLease := &OpLock{LeaseState: requestedState}
+		if DelegationConflictsWithLease(lock.Delegation, tempLease) {
+			return lock.Delegation
+		}
+	}
+	return nil
+}
+
+// resolveSameKeyLeaseLocked answers a request whose lease key already holds a
+// record on this file: break-in-progress, exact no-op, valid upgrade, or a
+// non-superset request. handled=false means no same-key record exists and the
+// caller falls through to cross-key conflict resolution. Must hold lm.mu; the
+// caller releases it.
+func (lm *Manager) resolveSameKeyLeaseLocked(req leaseRequest, locks []*UnifiedLock) (handled bool, state uint32, epoch uint16, err error) {
 	for i, lock := range locks {
-		if lock.Lease == nil || lock.Lease.LeaseKey != leaseKey {
+		if lock.Lease == nil || lock.Lease.LeaseKey != req.leaseKey {
 			continue
 		}
 
-		// Same-key found
 		currentState := lock.Lease.LeaseState
 
 		// Per MS-SMB2 3.3.5.9.8: If the lease is in Breaking state, do NOT
 		// modify it. Return the current LeaseState and signal break-in-progress
 		// to the caller so it can set SMB2_LEASE_FLAG_BREAK_IN_PROGRESS (0x02).
 		if lock.Lease.Breaking {
-			epoch := lock.Lease.Epoch
-			lm.mu.Unlock()
 			logger.Debug("RequestLease: same-key lease is breaking, returning current state with break-in-progress",
-				"fileHandle", handleKey,
+				"fileHandle", req.handleKey,
 				"currentState", LeaseStateToString(currentState),
-				"epoch", epoch)
-			return currentState, epoch, ErrLeaseBreakInProgress
+				"epoch", lock.Lease.Epoch)
+			return true, currentState, lock.Lease.Epoch, ErrLeaseBreakInProgress
 		}
 
 		// Same state requested - return current (no-op)
-		if currentState == requestedState {
-			lm.mu.Unlock()
-			return currentState, lock.Lease.Epoch, nil
+		if currentState == req.state {
+			return true, currentState, lock.Lease.Epoch, nil
 		}
 
 		// Check if this is a valid upgrade AND can coexist with any other
@@ -452,41 +532,38 @@ func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle File
 		// If the upgrade would conflict, leave the current state unchanged
 		// — the rule explicitly forbids breaking other holders to satisfy
 		// a same-key upgrade.
-		canUpgrade := isValidUpgrade(currentState, requestedState)
+		canUpgrade := isValidUpgrade(currentState, req.state)
 		if canUpgrade {
-			requestedLease := &OpLock{LeaseKey: leaseKey, LeaseState: requestedState}
+			requestedLease := &OpLock{LeaseKey: req.leaseKey, LeaseState: req.state}
 			for _, other := range locks {
-				if other.Lease == nil || other.Lease.LeaseKey == leaseKey {
+				if other.Lease == nil || other.Lease.LeaseKey == req.leaseKey {
 					continue
 				}
 				if OpLocksConflict(other.Lease, requestedLease) {
 					canUpgrade = false
 					logger.Debug("RequestLease: upgrade blocked by other-key holder",
-						"fileHandle", handleKey,
+						"fileHandle", req.handleKey,
 						"current", LeaseStateToString(currentState),
-						"requested", LeaseStateToString(requestedState),
+						"requested", LeaseStateToString(req.state),
 						"otherState", LeaseStateToString(other.Lease.LeaseState))
 					break
 				}
 			}
 		}
 		if canUpgrade {
-			// Upgrade the lease
-			locks[i].Lease.LeaseState = requestedState
+			locks[i].Lease.LeaseState = req.state
 			advanceEpoch(locks[i].Lease)
 
 			logger.Debug("RequestLease: upgraded lease",
-				"fileHandle", handleKey,
+				"fileHandle", req.handleKey,
 				"from", LeaseStateToString(currentState),
-				"to", LeaseStateToString(requestedState),
+				"to", LeaseStateToString(req.state),
 				"epoch", locks[i].Lease.Epoch)
 
 			// Persist if store available
 			lm.persistUnifiedLockLocked(locks[i])
 
-			epoch := locks[i].Lease.Epoch
-			lm.mu.Unlock()
-			return requestedState, epoch, nil
+			return true, req.state, locks[i].Lease.Epoch, nil
 		}
 
 		// Non-superset request (downgrade or sidegrade): per Samba upgrade2,
@@ -496,19 +573,24 @@ func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle File
 		// Returning None here would silently drop the holder's caching
 		// rights and break the smbtorture upgrade / upgrade2 / upgrade3
 		// matrix.
-		epoch := locks[i].Lease.Epoch
-		lm.mu.Unlock()
 		logger.Debug("RequestLease: same-key non-superset request, returning existing state",
-			"fileHandle", handleKey,
+			"fileHandle", req.handleKey,
 			"current", LeaseStateToString(currentState),
-			"requested", LeaseStateToString(requestedState))
-		return currentState, epoch, nil
+			"requested", LeaseStateToString(req.state))
+		return true, currentState, locks[i].Lease.Epoch, nil
 	}
+	return false, LeaseStateNone, 0, nil
+}
 
-	// No existing lease with same key. Check for cross-key conflicts.
-	// Per MS-SMB2 3.3.5.9: break conflicting leases, then grant the best
-	// available state (may be less than requested).
-	var breakDispatched bool
+// breakConflictingLeasesLocked walks the other-key holders on this file and,
+// per MS-SMB2 3.3.5.9, initiates the break against the first one that conflicts
+// with the requested state. At most one break is started per request.
+//
+// Must hold lm.mu on entry; lm.mu is held again on return, but the lock IS
+// released around the notification dispatch, so the caller must treat any slice
+// or pointer it held across this call as stale. The returned slice is the
+// current lock list for the file and replaces the caller's.
+func (lm *Manager) breakConflictingLeasesLocked(req leaseRequest, locks []*UnifiedLock) []*UnifiedLock {
 	for _, lock := range locks {
 		if lock.Lease == nil {
 			continue
@@ -516,189 +598,157 @@ func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle File
 
 		// Create temporary OpLock for conflict check
 		requested := &OpLock{
-			LeaseKey:   leaseKey,
-			LeaseState: requestedState,
+			LeaseKey:   req.leaseKey,
+			LeaseState: req.state,
 		}
 
-		if OpLocksConflict(lock.Lease, requested) {
-			// Stat-open carve-out (Samba `is_lease_stat_open`): the requester
-			// only wants to cache attributes and must NOT force the existing
-			// holder to drop its caches. Skip the break entirely; the
-			// stat-opener falls through to bestGrantableState and receives the
-			// best state it can coexist with. Suppressing dispatch here (rather
-			// than at the CREATE layer alone) closes the timing window that made
-			// the break depend on whether the holder still carried its Write bit
-			// (#751 smb2.lease.statopen4 CHECK_NO_BREAK).
-			if suppressConflictBreak {
-				logger.Debug("RequestLease: stat-open requester, suppressing cross-key break",
-					"fileHandle", handleKey,
-					"existingKey", fmt.Sprintf("%x", lock.Lease.LeaseKey),
-					"existingState", LeaseStateToString(lock.Lease.LeaseState),
-					"requestedState", LeaseStateToString(requestedState))
-				continue
-			}
+		if !OpLocksConflict(lock.Lease, requested) {
+			continue
+		}
 
-			// CREATE-time SMB share-mode/disposition checks run before
-			// RqLs processing, so the cross-key conflicts that reach this
-			// path are non-violating, non-destructive lease conflicts —
-			// strip Write, keep Read + Handle. RWH→RH, RW→R.
-			//
-			// Effective state mirrors OpLocksConflict's view: a breaking
-			// holder's pending downgrade (BreakingToRequired) is what the
-			// new opener will actually contend with, so the break-to is
-			// computed against that rather than the pre-break LeaseState.
-			// Without this, a holder mid-break to RH still triggers a
-			// fresh "strip W" dispatch here because LeaseState is still
-			// RWH on paper — even though BreakingToRequired (RH) already
-			// equals breakTo and the AND-merge below would be the only
-			// useful action.
-			effectiveState := lock.Lease.LeaseState
-			if lock.Lease.Breaking {
-				effectiveState = lock.Lease.BreakingToRequired
-			}
-			breakTo := ComputeLeaseBreakTo(effectiveState, BreakReasonDefault)
-
-			// If the existing lease's effective state already satisfies
-			// the break-to target, no further dispatch is needed: either
-			// the holder has no Write bit to strip (e.g. fresh RH), or
-			// the in-flight break is heading there already (cumulative
-			// target via prior pre-RqLs break). The new opener proceeds
-			// straight to bestGrantableState; the holder either stays put
-			// or completes its in-flight break on its own.
-			if breakTo == effectiveState {
-				logger.Debug("RequestLease: cross-key conflict already satisfied by holder effective state, skipping break",
-					"fileHandle", handleKey,
-					"existingKey", fmt.Sprintf("%x", lock.Lease.LeaseKey),
-					"existingState", LeaseStateToString(lock.Lease.LeaseState),
-					"effectiveState", LeaseStateToString(effectiveState),
-					"breaking", lock.Lease.Breaking,
-					"requestedState", LeaseStateToString(requestedState))
-				break
-			}
-
-			// Already-breaking lease: the SMB CREATE handler dispatches the
-			// pre-RqLs break via BreakLeasesOnOpenConflict before invoking
-			// RequestLease (see create_post_break.go::breakAndMaybeParkCreate).
-			// AND-merge the new opener's target into BreakingToRequired but
-			// suppress dispatch and epoch bump — re-marking would put a
-			// duplicate LEASE_BREAK_NOTIFICATION on the wire and double-bump
-			// the epoch. Mirrors the cumulative-target semantics in
-			// breakOpLocks; the next progressive stage (if any) is dispatched
-			// from acknowledgeLeaseBreakImpl after the in-flight ACK arrives.
-			//
-			// Required by smbtorture smb2.multichannel.leases.test3 (#436):
-			// exactly ONE RWH→RH break, not two.
-			//
-			// Falls through to bestGrantableState WITHOUT setting
-			// breakDispatched: we never released lm.mu, so the post-break
-			// re-Lock below must be skipped to avoid self-deadlock.
-			if lock.Lease.Breaking {
-				lock.Lease.BreakingToRequired &= breakTo
-				lm.persistUnifiedLockLocked(lock)
-				logger.Debug("RequestLease: cross-key conflict on already-breaking lease, suppressed duplicate break",
-					"fileHandle", handleKey,
-					"existingKey", fmt.Sprintf("%x", lock.Lease.LeaseKey),
-					"requestedKey", fmt.Sprintf("%x", leaseKey),
-					"existingBreakingTo", LeaseStateToString(lock.Lease.BreakingToRequired),
-					"requestedState", LeaseStateToString(requestedState))
-				break
-			}
-
-			logger.Debug("RequestLease: cross-key conflict, initiating break",
-				"fileHandle", handleKey,
+		// Stat-open carve-out (Samba `is_lease_stat_open`): the requester
+		// only wants to cache attributes and must NOT force the existing
+		// holder to drop its caches. Skip the break entirely; the
+		// stat-opener falls through to bestGrantableState and receives the
+		// best state it can coexist with. Suppressing dispatch here (rather
+		// than at the CREATE layer alone) closes the timing window that made
+		// the break depend on whether the holder still carried its Write bit
+		// (#751 smb2.lease.statopen4 CHECK_NO_BREAK).
+		if req.suppressConflictBreak {
+			logger.Debug("RequestLease: stat-open requester, suppressing cross-key break",
+				"fileHandle", req.handleKey,
 				"existingKey", fmt.Sprintf("%x", lock.Lease.LeaseKey),
-				"requestedKey", fmt.Sprintf("%x", leaseKey),
 				"existingState", LeaseStateToString(lock.Lease.LeaseState),
-				"requestedState", LeaseStateToString(requestedState),
-				"breakToState", LeaseStateToString(breakTo))
-
-			// Mark lease as breaking before dispatching callbacks. This is the
-			// open-time lease-conflict downgrade (breakTo computed with
-			// BreakReasonDefault above), so record the reason for symmetry with
-			// breakOpLocks — a deadbeat holder that times out here must also
-			// surface STATUS_UNSUCCESSFUL on a late ack.
-			lock.Lease.Breaking = true
-			lock.Lease.BreakToState = breakTo
-			lock.Lease.BreakingToRequired = breakTo
-			lock.Lease.BreakStarted = time.Now()
-			lock.Lease.BreakReason = BreakReasonDefault
-			advanceEpoch(lock.Lease)
-
-			// Persist the breaking state
-			lm.persistUnifiedLockLocked(lock)
-
-			// Clone the lock before releasing mu so that dispatchOpLockBreak
-			// receives a snapshot. Without this, concurrent AcknowledgeLeaseBreak
-			// can mutate the live *UnifiedLock while the callback reads it.
-			lockSnapshot := lock.Clone()
-
-			// Release lock before dispatching break callbacks. The dispatch
-			// itself is synchronous: by the time dispatchOpLockBreak returns,
-			// the LEASE_BREAK_NOTIFICATION is already on the wire to the
-			// existing client (see internal/adapter/smb/lease/notifier.go,
-			// SMBBreakHandler.OnOpLockBreak which calls SendLeaseBreak inline).
-			// Per MS-SMB2 3.3.4.7 the notification ordering requirement is
-			// therefore satisfied without further synchronization.
-			lm.mu.Unlock()
-			lm.dispatchOpLockBreak(handleKey, lockSnapshot, breakTo)
-
-			// Do NOT wait for the LEASE_BREAK_ACK before returning to the
-			// second opener. Waiting here causes a fatal deadlock in
-			// multi-client scenarios such as WPTS
-			// BVT_DirectoryLeasing_LeaseBreakOnMultiClients: the test (and
-			// in general any single-threaded client driver) only sends the
-			// ack from the first client AFTER the second client's CREATE
-			// returns. Blocking the second CREATE on that ack prevents the
-			// ack from ever being sent, and the wait either burns the
-			// client's CREATE timeout or runs out our own bounded deadline
-			// for nothing.
-			//
-			// The breaking lease remains in unifiedLocks with Breaking=true
-			// and BreakToState set; OpLocksConflict (oplock.go:229-233)
-			// already evaluates conflicts against BreakToState in that case,
-			// so bestGrantableState below computes the correct downgraded
-			// grant for the new opener without needing the ack to land
-			// first. The same async-dispatch pattern is used by
-			// internal/adapter/smb/lease/manager.go BreakHandleLeasesOnOpenAsync,
-			// whose comment explicitly documents this deadlock.
-			breakDispatched = true
-			break
+				"requestedState", LeaseStateToString(req.state))
+			continue
 		}
-	}
 
-	// After any break (or no-op skip), find the best grantable state.
-	// Per MS-SMB2 3.3.5.9: the server MUST grant the best available oplock
-	// level. Try the full requested state first, then progressively lower
-	// states: strip Write, then strip Handle, then Read only, then None.
-	if breakDispatched {
-		lm.mu.Lock()
-		locks = lm.unifiedLocks[handleKey]
-	}
-	// lm.mu is held here (either from initial Lock or re-Lock after break)
+		// CREATE-time SMB share-mode/disposition checks run before
+		// RqLs processing, so the cross-key conflicts that reach this
+		// path are non-violating, non-destructive lease conflicts —
+		// strip Write, keep Read + Handle. RWH→RH, RW→R.
+		//
+		// Effective state mirrors OpLocksConflict's view: a breaking
+		// holder's pending downgrade (BreakingToRequired) is what the
+		// new opener will actually contend with, so the break-to is
+		// computed against that rather than the pre-break LeaseState.
+		// Without this, a holder mid-break to RH still triggers a
+		// fresh "strip W" dispatch here because LeaseState is still
+		// RWH on paper — even though BreakingToRequired (RH) already
+		// equals breakTo and the AND-merge below would be the only
+		// useful action.
+		effectiveState := lock.Lease.LeaseState
+		if lock.Lease.Breaking {
+			effectiveState = lock.Lease.BreakingToRequired
+		}
+		breakTo := ComputeLeaseBreakTo(effectiveState, BreakReasonDefault)
 
-	grantState := bestGrantableState(locks, leaseKey, requestedState, isDirectory, isTraditionalOplock)
-	if grantState == LeaseStateNone {
+		// If the existing lease's effective state already satisfies
+		// the break-to target, no further dispatch is needed: either
+		// the holder has no Write bit to strip (e.g. fresh RH), or
+		// the in-flight break is heading there already (cumulative
+		// target via prior pre-RqLs break). The new opener proceeds
+		// straight to bestGrantableState; the holder either stays put
+		// or completes its in-flight break on its own.
+		if breakTo == effectiveState {
+			logger.Debug("RequestLease: cross-key conflict already satisfied by holder effective state, skipping break",
+				"fileHandle", req.handleKey,
+				"existingKey", fmt.Sprintf("%x", lock.Lease.LeaseKey),
+				"existingState", LeaseStateToString(lock.Lease.LeaseState),
+				"effectiveState", LeaseStateToString(effectiveState),
+				"breaking", lock.Lease.Breaking,
+				"requestedState", LeaseStateToString(req.state))
+			return locks
+		}
+
+		// Already-breaking lease: the SMB CREATE handler dispatches the
+		// pre-RqLs break via BreakLeasesOnOpenConflict before invoking
+		// RequestLease (see create_post_break.go::breakAndMaybeParkCreate).
+		// AND-merge the new opener's target into BreakingToRequired but
+		// suppress dispatch and epoch bump — re-marking would put a
+		// duplicate LEASE_BREAK_NOTIFICATION on the wire and double-bump
+		// the epoch. Mirrors the cumulative-target semantics in
+		// breakOpLocks; the next progressive stage (if any) is dispatched
+		// from acknowledgeLeaseBreakImpl after the in-flight ACK arrives.
+		//
+		// Required by smbtorture smb2.multichannel.leases.test3 (#436):
+		// exactly ONE RWH→RH break, not two.
+		//
+		// Returns the caller's slice unchanged: lm.mu was never released, so
+		// re-reading unifiedLocks would be pointless work.
+		if lock.Lease.Breaking {
+			lock.Lease.BreakingToRequired &= breakTo
+			lm.persistUnifiedLockLocked(lock)
+			logger.Debug("RequestLease: cross-key conflict on already-breaking lease, suppressed duplicate break",
+				"fileHandle", req.handleKey,
+				"existingKey", fmt.Sprintf("%x", lock.Lease.LeaseKey),
+				"requestedKey", fmt.Sprintf("%x", req.leaseKey),
+				"existingBreakingTo", LeaseStateToString(lock.Lease.BreakingToRequired),
+				"requestedState", LeaseStateToString(req.state))
+			return locks
+		}
+
+		logger.Debug("RequestLease: cross-key conflict, initiating break",
+			"fileHandle", req.handleKey,
+			"existingKey", fmt.Sprintf("%x", lock.Lease.LeaseKey),
+			"requestedKey", fmt.Sprintf("%x", req.leaseKey),
+			"existingState", LeaseStateToString(lock.Lease.LeaseState),
+			"requestedState", LeaseStateToString(req.state),
+			"breakToState", LeaseStateToString(breakTo))
+
+		// Mark lease as breaking before dispatching callbacks. This is the
+		// open-time lease-conflict downgrade (breakTo computed with
+		// BreakReasonDefault above), so record the reason for symmetry with
+		// breakOpLocks — a deadbeat holder that times out here must also
+		// surface STATUS_UNSUCCESSFUL on a late ack.
+		lock.Lease.Breaking = true
+		lock.Lease.BreakToState = breakTo
+		lock.Lease.BreakingToRequired = breakTo
+		lock.Lease.BreakStarted = time.Now()
+		lock.Lease.BreakReason = BreakReasonDefault
+		advanceEpoch(lock.Lease)
+
+		// Persist the breaking state
+		lm.persistUnifiedLockLocked(lock)
+
+		// Clone the lock before releasing mu so that dispatchOpLockBreak
+		// receives a snapshot. Without this, concurrent AcknowledgeLeaseBreak
+		// can mutate the live *UnifiedLock while the callback reads it.
+		lockSnapshot := lock.Clone()
+
+		// Release lock before dispatching break callbacks. The dispatch
+		// itself is synchronous: by the time dispatchOpLockBreak returns,
+		// the LEASE_BREAK_NOTIFICATION is already on the wire to the
+		// existing client (see internal/adapter/smb/lease/notifier.go,
+		// SMBBreakHandler.OnOpLockBreak which calls SendLeaseBreak inline).
+		// Per MS-SMB2 3.3.4.7 the notification ordering requirement is
+		// therefore satisfied without further synchronization.
 		lm.mu.Unlock()
-		logger.Debug("RequestLease: no compatible state after conflict resolution",
-			"fileHandle", handleKey,
-			"requestedState", LeaseStateToString(requestedState))
-		return LeaseStateNone, 0, nil
+		lm.dispatchOpLockBreak(req.handleKey, lockSnapshot, breakTo)
+
+		// Do NOT wait for the LEASE_BREAK_ACK before returning to the
+		// second opener. Waiting here causes a fatal deadlock in
+		// multi-client scenarios such as WPTS
+		// BVT_DirectoryLeasing_LeaseBreakOnMultiClients: the test (and
+		// in general any single-threaded client driver) only sends the
+		// ack from the first client AFTER the second client's CREATE
+		// returns. Blocking the second CREATE on that ack prevents the
+		// ack from ever being sent, and the wait either burns the
+		// client's CREATE timeout or runs out our own bounded deadline
+		// for nothing.
+		//
+		// The breaking lease remains in unifiedLocks with Breaking=true
+		// and BreakToState set; OpLocksConflict (oplock.go:229-233)
+		// already evaluates conflicts against BreakToState in that case,
+		// so bestGrantableState computes the correct downgraded grant for
+		// the new opener without needing the ack to land first. The same
+		// async-dispatch pattern is used by
+		// internal/adapter/smb/lease/manager.go BreakHandleLeasesOnOpenAsync,
+		// whose comment explicitly documents this deadlock.
+		lm.mu.Lock()
+		return lm.unifiedLocks[req.handleKey]
 	}
-
-	granted, epoch := lm.createAndGrantLease(ctx, handleKey, fileHandle,
-		leaseKey, parentLeaseKey, ownerID, clientID, shareName,
-		grantState, isDirectory, isTraditionalOplock)
-	lm.mu.Unlock()
-
-	logger.Debug("RequestLease: granted lease",
-		"fileHandle", handleKey,
-		"requested", LeaseStateToString(requestedState),
-		"granted", LeaseStateToString(granted),
-		"isDirectory", isDirectory,
-		"downgraded", grantState != requestedState,
-		"epoch", epoch)
-
-	return granted, epoch, nil
+	return locks
 }
 
 // bestGrantableState finds the best lease state that can be granted without
@@ -850,44 +900,35 @@ func downgradeCandidates(requestedState uint32, isDirectory bool) []uint32 {
 // createAndGrantLease creates a new lease lock, appends it to unifiedLocks[handleKey],
 // persists it, and returns the granted state. Must be called with lm.mu held; the
 // caller is responsible for unlocking after this returns.
-func (lm *Manager) createAndGrantLease(
-	ctx context.Context,
-	handleKey string,
-	fileHandle FileHandle,
-	leaseKey, parentLeaseKey [16]byte,
-	ownerID, clientID, shareName string,
-	requestedState uint32,
-	isDirectory bool,
-	isTraditionalOplock bool,
-) (uint32, uint16) {
+func (lm *Manager) createAndGrantLease(_ context.Context, req leaseRequest, grantState uint32) (uint32, uint16) {
 	newLock := &UnifiedLock{
 		ID: uuid.New().String(),
 		Owner: LockOwner{
-			OwnerID:   ownerID,
-			ClientID:  clientID,
-			ShareName: shareName,
+			OwnerID:   req.ownerID,
+			ClientID:  req.clientID,
+			ShareName: req.shareName,
 		},
-		FileHandle: fileHandle,
+		FileHandle: req.fileHandle,
 		Offset:     0,
 		Length:     0,
-		Type:       lockTypeForLeaseState(requestedState),
+		Type:       lockTypeForLeaseState(grantState),
 		AcquiredAt: time.Now(),
 		Lease: &OpLock{
-			LeaseKey:            leaseKey,
-			LeaseState:          requestedState,
-			ParentLeaseKey:      parentLeaseKey,
-			IsDirectory:         isDirectory,
-			IsTraditionalOplock: isTraditionalOplock,
+			LeaseKey:            req.leaseKey,
+			LeaseState:          grantState,
+			ParentLeaseKey:      req.parentLeaseKey,
+			IsDirectory:         req.isDirectory,
+			IsTraditionalOplock: req.isTraditionalOplock,
 			Epoch:               1, // New leases start at epoch 1
 		},
 	}
 
-	lm.unifiedLocks[handleKey] = append(lm.unifiedLocks[handleKey], newLock)
-	lm.indexAddLockLocked(handleKey, newLock)
+	lm.unifiedLocks[req.handleKey] = append(lm.unifiedLocks[req.handleKey], newLock)
+	lm.indexAddLockLocked(req.handleKey, newLock)
 
 	lm.persistUnifiedLockLocked(newLock)
 
-	return requestedState, 1
+	return grantState, 1
 }
 
 // lockTypeForLeaseState returns the appropriate LockType for a lease state.
@@ -903,7 +944,7 @@ func lockTypeForLeaseState(state uint32) LockType {
 // The client must acknowledge with a state <= breakToState. If acknowledgedState
 // is LeaseStateNone, the lease is downgraded to None but the record is kept
 // alive until the holding handle CLOSEs (see ack-to-None block below).
-func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]byte,
+func (lm *Manager) acknowledgeLeaseBreakImpl(_ context.Context, leaseKey [16]byte,
 	acknowledgedState uint32, epoch uint16) error {
 
 	lm.mu.Lock()
@@ -915,99 +956,15 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 	}
 
 	if !lock.Lease.Breaking {
-		// Late ACK after server-side timeout: forceCompleteBreaks already
-		// auto-revoked the lease to None and tagged BrokenViaTimeout. The
-		// client's late ACK is then a benign acknowledgment of a break the
-		// server has already completed — return STATUS_OK silently,
-		// regardless of which (subset) state the client names. We do NOT
-		// resurrect any bits: LeaseState stays None. BrokenViaTimeout is
-		// left untouched so the downstream grant-coercion path
-		// (OnlyTimeoutTombstoneRecords) still treats the record as a
-		// tombstone for smbtorture batch22b semantics.
-		//
-		// The acknowledgedState is intentionally NOT constrained to None:
-		// a parked share-violation CREATE that force-completes the holder's
-		// RWH lease (revoking to None) races the holder's deferred Handle-
-		// strip ACK (break-to RW). When the 5 s force-complete wins under CI
-		// jitter, the holder ACKs RW post-timeout and must still succeed —
-		// smbtorture dhv2-pending1n-vs-violation-lease-ack-sane (#1322).
-		// forceCompleteBreaks zeroes BreakToState, so there is no surviving
-		// break-to to validate the subset against; the tombstoned None is
-		// the authoritative outcome either way.
-		//
-		// Also required by WPTS BVT_DirectoryLeasing_ReadWriteHandleCaching
-		// (#454) where the SUT controller's synchronous CreateFile holds the
-		// test client past the 5 s parent-break timeout, so the ACK can only
-		// be sent post-force-complete. smbtorture breaking2 / breaking5 ACK
-		// within the breaking window, so their post-ack duplicate has
-		// BrokenViaTimeout=false and still surfaces as STATUS_UNSUCCESSFUL
-		// via the fall-through below.
-		if lock.Lease.BrokenViaTimeout && lock.Lease.LeaseState == LeaseStateNone {
-			// A plain open-time lease-conflict downgrade (BreakReasonDefault on
-			// a file lease) that the holder ignored straight through the force-
-			// complete is a genuine deadbeat: MS-SMB2 §3.3.5.22.2 requires the
-			// late ACK to fail with STATUS_UNSUCCESSFUL (smb2.lease.timeout).
-			// Other force-completes — sharing-violation handle-strips (#1322)
-			// and parent-directory breaks (#454/WPTS) — fire under CI jitter
-			// while the holder's ACK is merely in flight, and must still
-			// succeed. The break reason, recorded at break time and preserved
-			// across force-complete, is the only signal that distinguishes
-			// them (post-force-complete state is otherwise identical).
-			if lock.Lease.BreakReason == BreakReasonDefault && !lock.Lease.IsDirectory {
-				logger.Debug("AcknowledgeLeaseBreak: late ACK after lease-conflict force-complete → UNSUCCESSFUL",
-					"leaseKey", fmt.Sprintf("%x", leaseKey),
-					"acknowledgedState", LeaseStateToString(acknowledgedState))
-				return ErrLeaseAckNotBreaking
-			}
-			logger.Debug("AcknowledgeLeaseBreak: late ACK after timeout force-complete, treating as success",
-				"leaseKey", fmt.Sprintf("%x", leaseKey),
-				"acknowledgedState", LeaseStateToString(acknowledgedState),
-				"breakReason", lock.Lease.BreakReason)
-			return nil
-		}
-		return ErrLeaseAckNotBreaking
+		return classifyLateAck(lock, leaseKey, acknowledgedState)
 	}
 
-	// Validate epoch if provided (V2 staleness check).
-	// The epoch was already advanced during break initiation, so the client
-	// should echo the current epoch value from the break notification.
-	if epoch != 0 && lock.Lease.Epoch != epoch {
-		return fmt.Errorf("stale epoch: expected %d, got %d", lock.Lease.Epoch, epoch)
+	if err := validateAck(lock, acknowledgedState, epoch); err != nil {
+		return err
 	}
 
-	// Client cannot claim bits not offered (bitwise subset check).
-	// Per MS-SMB2 3.3.5.22.2, this must surface as STATUS_REQUEST_NOT_ACCEPTED.
-	if acknowledgedState & ^lock.Lease.BreakToState != 0 {
-		return fmt.Errorf("%w: %s exceeds break-to %s",
-			ErrAcknowledgedStateExceedsBreakTo,
-			LeaseStateToString(acknowledgedState),
-			LeaseStateToString(lock.Lease.BreakToState))
-	}
-
-	// Ack-to-None: keep the record alive at LeaseState=None until the holding
-	// handle CLOSEs (ReleaseLeaseForHandle removes it). This mirrors Samba
-	// behavior and lets the wrapper distinguish a duplicate ack on an
-	// already-released lease (record present, Breaking=false → ErrLeaseAck-
-	// NotBreaking → STATUS_UNSUCCESSFUL, smbtorture breaking2/breaking5)
-	// from a CLOSE-beat-ack race (record gone → ErrLeaseAckNotFound →
-	// silent success, WPTS BVT_DirectoryLeasing_ReadWriteHandleCaching).
 	if acknowledgedState == LeaseStateNone {
-		lock.Lease.LeaseState = LeaseStateNone
-		lock.Lease.Breaking = false
-		lock.Lease.BreakToState = 0
-		lock.Lease.BreakingToRequired = LeaseStateNone
-		lock.Lease.BreakStarted = time.Time{}
-		lock.Type = lockTypeForLeaseState(LeaseStateNone)
-
-		lm.persistUnifiedLockLocked(lock)
-		lm.clearBreakingSiblingsLocked(leaseKey, lock)
-
-		logger.Debug("AcknowledgeLeaseBreak: lease released to None (record kept until CLOSE)",
-			"leaseKey", fmt.Sprintf("%x", leaseKey))
-		lm.signalBreakWaitLocked(handleKey)
-		// Deliver the next directory RH-lease break on this directory that was
-		// deferred behind this one, so multi-lease dir breaks serialize.
-		lm.dispatchNextDeferredDirBreakLocked(handleKey)
+		lm.completeAckToNoneLocked(handleKey, leaseKey, lock)
 		return nil
 	}
 
@@ -1024,64 +981,10 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 	lock.Type = lockTypeForLeaseState(acknowledgedState)
 
 	// Progressive multi-stage break: if the cumulative final target
-	// (BreakingToRequired) is stricter than what the client just
-	// acknowledged, dispatch the next stage. Mirrors Samba
-	// `downgrade_lease` (source3/smbd/smb2_oplock.c lines 569-586): if the
-	// acked state still has W or H, the next target keeps R as an
-	// intermediate; otherwise drop straight to the cumulative required.
-	//
-	// This produces the smbtorture breaking3 / v2_breaking3 wire shape:
-	//   ack RWH→RH  ⇒ next target = R  ⇒ wire: RH→R
-	//   ack RH→R    ⇒ next target = 0  ⇒ wire: R→""
-	if acknowledgedState != LeaseStateNone &&
-		acknowledgedState&^lock.Lease.BreakingToRequired != 0 {
-		nextTarget := nextProgressiveBreakTarget(acknowledgedState, lock.Lease.BreakingToRequired)
-		snapshot := lm.applyBreakStageLocked(lock, nextTarget)
-
-		// Persist the next-stage state BEFORE releasing lm.mu so the durable
-		// store reflects Breaking=true / BreakToState=nextTarget. Otherwise a
-		// crash between the ACK-clear (Breaking=false written above) and the
-		// next-stage-set would lose the second progressive stage on restart,
-		// leaving parked CREATEs to wait until the scanner timeout. The persist
-		// MUST land, so errors are logged (not swallowed) by the helper.
-		lm.persistUnifiedLockLocked(lock)
-
-		logger.Debug("AcknowledgeLeaseBreak: progressive break next stage",
-			"leaseKey", fmt.Sprintf("%x", leaseKey),
-			"ackedState", LeaseStateToString(acknowledgedState),
-			"required", LeaseStateToString(lock.Lease.BreakingToRequired),
-			"nextTarget", LeaseStateToString(nextTarget),
-			"epoch", lock.Lease.Epoch)
-
-		// Release lm.mu before dispatching to avoid deadlock with the
-		// SMB transport callback (mirrors breakOpLocks pattern). Wrap in a
-		// closure with a deferred re-Lock so the surrounding function's
-		// `defer lm.mu.Unlock()` always sees the mutex held — without this,
-		// a panic inside dispatchOpLockBreak would unwind through an
-		// unlocked mutex and the outer defer would double-unlock.
-		func() {
-			lm.mu.Unlock()
-			defer lm.mu.Lock()
-			lm.dispatchOpLockBreak(handleKey, snapshot, nextTarget)
-		}()
-
-		// Re-validate: a concurrent CLOSE / release / timeout could have
-		// removed the lease during the dispatch window. The `lock` pointer
-		// may now reference an orphaned UnifiedLock — read fields off the
-		// re-found record (or signal waiters and return when gone).
-		_, currentLock, _ := lm.findLeaseByKey(leaseKey)
-		if currentLock == nil {
-			lm.signalBreakWaitLocked(handleKey)
-			return nil
-		}
-
-		// Signal waiters only when the break has fully drained: either the
-		// inline fire-and-forget path already updated LeaseState to nextTarget
-		// (no further ACK will arrive), or a concurrent path removed the lease.
-		// Otherwise the break is still in progress and waiters must keep waiting.
-		if nextTarget == currentLock.Lease.LeaseState {
-			lm.signalBreakWaitLocked(handleKey)
-		}
+	// (BreakingToRequired) is stricter than what the client just acknowledged,
+	// the break is not done and the next stage goes out now.
+	if acknowledgedState&^lock.Lease.BreakingToRequired != 0 {
+		lm.dispatchNextBreakStageLocked(handleKey, leaseKey, lock, acknowledgedState)
 		return nil
 	}
 
@@ -1100,6 +1003,167 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 
 	lm.signalBreakWaitLocked(handleKey)
 	return nil
+}
+
+// classifyLateAck answers an ACK for a lease that is no longer Breaking.
+//
+// Late ACK after server-side timeout: forceCompleteBreaks already auto-revoked
+// the lease to None and tagged BrokenViaTimeout. The client's late ACK is then a
+// benign acknowledgment of a break the server has already completed — return
+// STATUS_OK silently, regardless of which (subset) state the client names. We do
+// NOT resurrect any bits: LeaseState stays None. BrokenViaTimeout is left
+// untouched so the downstream grant-coercion path (OnlyTimeoutTombstoneRecords)
+// still treats the record as a tombstone for smbtorture batch22b semantics.
+//
+// The acknowledgedState is intentionally NOT constrained to None: a parked
+// share-violation CREATE that force-completes the holder's RWH lease (revoking
+// to None) races the holder's deferred Handle-strip ACK (break-to RW). When the
+// 5 s force-complete wins under CI jitter, the holder ACKs RW post-timeout and
+// must still succeed — smbtorture dhv2-pending1n-vs-violation-lease-ack-sane
+// (#1322). forceCompleteBreaks zeroes BreakToState, so there is no surviving
+// break-to to validate the subset against; the tombstoned None is the
+// authoritative outcome either way.
+//
+// Also required by WPTS BVT_DirectoryLeasing_ReadWriteHandleCaching (#454) where
+// the SUT controller's synchronous CreateFile holds the test client past the 5 s
+// parent-break timeout, so the ACK can only be sent post-force-complete.
+// smbtorture breaking2 / breaking5 ACK within the breaking window, so their
+// post-ack duplicate has BrokenViaTimeout=false and still surfaces as
+// STATUS_UNSUCCESSFUL via the fall-through. Must hold lm.mu.
+func classifyLateAck(lock *UnifiedLock, leaseKey [16]byte, acknowledgedState uint32) error {
+	if !lock.Lease.BrokenViaTimeout || lock.Lease.LeaseState != LeaseStateNone {
+		return ErrLeaseAckNotBreaking
+	}
+
+	// A plain open-time lease-conflict downgrade (BreakReasonDefault on a file
+	// lease) that the holder ignored straight through the force-complete is a
+	// genuine deadbeat: MS-SMB2 §3.3.5.22.2 requires the late ACK to fail with
+	// STATUS_UNSUCCESSFUL (smb2.lease.timeout). Other force-completes —
+	// sharing-violation handle-strips (#1322) and parent-directory breaks
+	// (#454/WPTS) — fire under CI jitter while the holder's ACK is merely in
+	// flight, and must still succeed. The break reason, recorded at break time
+	// and preserved across force-complete, is the only signal that distinguishes
+	// them (post-force-complete state is otherwise identical).
+	if lock.Lease.BreakReason == BreakReasonDefault && !lock.Lease.IsDirectory {
+		logger.Debug("AcknowledgeLeaseBreak: late ACK after lease-conflict force-complete → UNSUCCESSFUL",
+			"leaseKey", fmt.Sprintf("%x", leaseKey),
+			"acknowledgedState", LeaseStateToString(acknowledgedState))
+		return ErrLeaseAckNotBreaking
+	}
+	logger.Debug("AcknowledgeLeaseBreak: late ACK after timeout force-complete, treating as success",
+		"leaseKey", fmt.Sprintf("%x", leaseKey),
+		"acknowledgedState", LeaseStateToString(acknowledgedState),
+		"breakReason", lock.Lease.BreakReason)
+	return nil
+}
+
+// validateAck rejects a stale epoch and an over-claiming acknowledged state.
+// Must hold lm.mu.
+func validateAck(lock *UnifiedLock, acknowledgedState uint32, epoch uint16) error {
+	// Validate epoch if provided (V2 staleness check).
+	// The epoch was already advanced during break initiation, so the client
+	// should echo the current epoch value from the break notification.
+	if epoch != 0 && lock.Lease.Epoch != epoch {
+		return fmt.Errorf("stale epoch: expected %d, got %d", lock.Lease.Epoch, epoch)
+	}
+
+	// Client cannot claim bits not offered (bitwise subset check).
+	// Per MS-SMB2 3.3.5.22.2, this must surface as STATUS_REQUEST_NOT_ACCEPTED.
+	if acknowledgedState & ^lock.Lease.BreakToState != 0 {
+		return fmt.Errorf("%w: %s exceeds break-to %s",
+			ErrAcknowledgedStateExceedsBreakTo,
+			LeaseStateToString(acknowledgedState),
+			LeaseStateToString(lock.Lease.BreakToState))
+	}
+	return nil
+}
+
+// completeAckToNoneLocked keeps the record alive at LeaseState=None until the
+// holding handle CLOSEs (ReleaseLeaseForHandle removes it). This mirrors Samba
+// behavior and lets the wrapper distinguish a duplicate ack on an already-
+// released lease (record present, Breaking=false → ErrLeaseAckNotBreaking →
+// STATUS_UNSUCCESSFUL, smbtorture breaking2/breaking5) from a CLOSE-beat-ack
+// race (record gone → ErrLeaseAckNotFound → silent success, WPTS
+// BVT_DirectoryLeasing_ReadWriteHandleCaching). Must hold lm.mu.
+func (lm *Manager) completeAckToNoneLocked(handleKey string, leaseKey [16]byte, lock *UnifiedLock) {
+	lock.Lease.LeaseState = LeaseStateNone
+	lock.Lease.Breaking = false
+	lock.Lease.BreakToState = 0
+	lock.Lease.BreakingToRequired = LeaseStateNone
+	lock.Lease.BreakStarted = time.Time{}
+	lock.Type = lockTypeForLeaseState(LeaseStateNone)
+
+	lm.persistUnifiedLockLocked(lock)
+	lm.clearBreakingSiblingsLocked(leaseKey, lock)
+
+	logger.Debug("AcknowledgeLeaseBreak: lease released to None (record kept until CLOSE)",
+		"leaseKey", fmt.Sprintf("%x", leaseKey))
+	lm.signalBreakWaitLocked(handleKey)
+	// Deliver the next directory RH-lease break on this directory that was
+	// deferred behind this one, so multi-lease dir breaks serialize.
+	lm.dispatchNextDeferredDirBreakLocked(handleKey)
+}
+
+// dispatchNextBreakStageLocked sends the next stage of a progressive multi-stage
+// break, for an ACK that landed short of the cumulative final target. Mirrors
+// Samba `downgrade_lease` (source3/smbd/smb2_oplock.c lines 569-586): if the
+// acked state still has W or H, the next target keeps R as an intermediate;
+// otherwise it drops straight to the cumulative required.
+//
+// This produces the smbtorture breaking3 / v2_breaking3 wire shape:
+//
+//	ack RWH→RH  ⇒ next target = R  ⇒ wire: RH→R
+//	ack RH→R    ⇒ next target = 0  ⇒ wire: R→""
+//
+// Must hold lm.mu on entry; lm.mu is held again on return, but it IS released
+// around the dispatch, so `lock` must be treated as stale afterwards.
+func (lm *Manager) dispatchNextBreakStageLocked(handleKey string, leaseKey [16]byte, lock *UnifiedLock, acknowledgedState uint32) {
+	nextTarget := nextProgressiveBreakTarget(acknowledgedState, lock.Lease.BreakingToRequired)
+	snapshot := lm.applyBreakStageLocked(lock, nextTarget)
+
+	// Persist the next-stage state BEFORE releasing lm.mu so the durable
+	// store reflects Breaking=true / BreakToState=nextTarget. Otherwise a
+	// crash between the ACK-clear (Breaking=false written by the caller) and
+	// the next-stage-set would lose the second progressive stage on restart,
+	// leaving parked CREATEs to wait until the scanner timeout. The persist
+	// MUST land, so errors are logged (not swallowed) by the helper.
+	lm.persistUnifiedLockLocked(lock)
+
+	logger.Debug("AcknowledgeLeaseBreak: progressive break next stage",
+		"leaseKey", fmt.Sprintf("%x", leaseKey),
+		"ackedState", LeaseStateToString(acknowledgedState),
+		"required", LeaseStateToString(lock.Lease.BreakingToRequired),
+		"nextTarget", LeaseStateToString(nextTarget),
+		"epoch", lock.Lease.Epoch)
+
+	// Release lm.mu before dispatching to avoid deadlock with the SMB transport
+	// callback (mirrors breakOpLocks pattern). The deferred re-Lock keeps the
+	// caller's `defer lm.mu.Unlock()` correct even if dispatchOpLockBreak panics
+	// — without it the unwind would run through an unlocked mutex and the outer
+	// defer would double-unlock.
+	func() {
+		lm.mu.Unlock()
+		defer lm.mu.Lock()
+		lm.dispatchOpLockBreak(handleKey, snapshot, nextTarget)
+	}()
+
+	// Re-validate: a concurrent CLOSE / release / timeout could have removed the
+	// lease during the dispatch window. The `lock` pointer may now reference an
+	// orphaned UnifiedLock — read fields off the re-found record (or signal
+	// waiters and return when gone).
+	_, currentLock, _ := lm.findLeaseByKey(leaseKey)
+	if currentLock == nil {
+		lm.signalBreakWaitLocked(handleKey)
+		return
+	}
+
+	// Signal waiters only when the break has fully drained: either the inline
+	// fire-and-forget path already updated LeaseState to nextTarget (no further
+	// ACK will arrive), or a concurrent path removed the lease. Otherwise the
+	// break is still in progress and waiters must keep waiting.
+	if nextTarget == currentLock.Lease.LeaseState {
+		lm.signalBreakWaitLocked(handleKey)
+	}
 }
 
 // clearBreakingSiblingsLocked syncs every other lease record sharing leaseKey to

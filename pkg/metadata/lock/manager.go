@@ -1386,7 +1386,18 @@ func sessionIDFromOwnerID(ownerID string) (uint64, bool) {
 func (lm *Manager) RequestLease(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
 	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
 	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
-	return lm.requestLeaseImplWithMode(ctx, fileHandle, leaseKey, parentLeaseKey, ownerID, clientID, shareName, requestedState, isDirectory, false, false)
+	return lm.requestLeaseImpl(ctx, leaseRequest{
+		fileHandle:            fileHandle,
+		leaseKey:              leaseKey,
+		parentLeaseKey:        parentLeaseKey,
+		ownerID:               ownerID,
+		clientID:              clientID,
+		shareName:             shareName,
+		state:                 requestedState,
+		isDirectory:           isDirectory,
+		isTraditionalOplock:   false,
+		suppressConflictBreak: false,
+	})
 }
 
 // RequestLeaseAsOplock is the traditional-oplock variant of RequestLease.
@@ -1400,8 +1411,18 @@ func (lm *Manager) RequestLease(ctx context.Context, fileHandle FileHandle, leas
 func (lm *Manager) RequestLeaseAsOplock(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
 	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
 	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
-	return lm.requestLeaseImplWithMode(ctx, fileHandle, leaseKey, parentLeaseKey,
-		ownerID, clientID, shareName, requestedState, isDirectory, true, false)
+	return lm.requestLeaseImpl(ctx, leaseRequest{
+		fileHandle:            fileHandle,
+		leaseKey:              leaseKey,
+		parentLeaseKey:        parentLeaseKey,
+		ownerID:               ownerID,
+		clientID:              clientID,
+		shareName:             shareName,
+		state:                 requestedState,
+		isDirectory:           isDirectory,
+		isTraditionalOplock:   true,
+		suppressConflictBreak: false,
+	})
 }
 
 // RequestLeaseStatOpen is the stat-open variant of RequestLease. The SMB
@@ -1419,8 +1440,18 @@ func (lm *Manager) RequestLeaseAsOplock(ctx context.Context, fileHandle FileHand
 func (lm *Manager) RequestLeaseStatOpen(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
 	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
 	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
-	return lm.requestLeaseImplWithMode(ctx, fileHandle, leaseKey, parentLeaseKey,
-		ownerID, clientID, shareName, requestedState, isDirectory, false, true)
+	return lm.requestLeaseImpl(ctx, leaseRequest{
+		fileHandle:            fileHandle,
+		leaseKey:              leaseKey,
+		parentLeaseKey:        parentLeaseKey,
+		ownerID:               ownerID,
+		clientID:              clientID,
+		shareName:             shareName,
+		state:                 requestedState,
+		isDirectory:           isDirectory,
+		isTraditionalOplock:   false,
+		suppressConflictBreak: true,
+	})
 }
 
 // AcknowledgeLeaseBreak processes a client's lease break acknowledgment.
