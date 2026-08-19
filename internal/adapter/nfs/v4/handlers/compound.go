@@ -330,7 +330,6 @@ func (h *Handler) ProcessCompound(compCtx *types.CompoundContext, data []byte) (
 	if err != nil {
 		return nil, fmt.Errorf("decode COMPOUND minorversion: %w", err)
 	}
-	compCtx.MinorVersion = minorVersion
 
 	// Decode number of operations
 	numOps, err := xdr.DecodeUint32(reader)
@@ -353,6 +352,7 @@ func (h *Handler) ProcessCompound(compCtx *types.CompoundContext, data []byte) (
 			"client", compCtx.ClientAddr)
 		return encodeCompoundResponse(types.NFS4ERR_MINOR_VERS_MISMATCH, tag, nil)
 	}
+	compCtx.MinorVersion, compCtx.MinorVersionAccepted = minorVersion, true
 
 	switch minorVersion {
 	case types.NFS4_MINOR_VERSION_0:

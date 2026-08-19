@@ -260,3 +260,63 @@ func TestClientRegistry_VersionFromCompoundMinorVersion(t *testing.T) {
 		t.Fatal("Serve did not return after the client closed")
 	}
 }
+
+// TestClientRegistry_RefusedMinorVersionNotReported verifies that a minorversion
+// the server refuses is never written to the registry. NFS4ERR_MINOR_VERS_MISMATCH
+// is answered with a well-formed reply and a nil error, so the error alone
+// cannot be used to tell a refusal from a served COMPOUND, and a client can put
+// any uint32 in that field. The connection stays on the "4" the RPC header
+// carried.
+func TestClientRegistry_RefusedMinorVersionNotReported(t *testing.T) {
+	const clientID = "nfs-1"
+
+	adapter := New(NFSConfig{Enabled: true, Port: 12049})
+	rt := runtime.New(nil)
+	adapter.Registry = rt
+	adapter.v4Handler = v4handlers.NewHandler(rt, pseudofs.New())
+
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		NewNFSConnection(adapter, server, 1).Serve(ctx)
+	}()
+
+	waitForClient(t, rt, clientID)
+
+	call := encodeCall(0xCAFEF00D, rpc.ProgramNFS, rpc.NFSVersion4, 1 /* COMPOUND */, encodeCompoundArgs(99))
+	if _, err := client.Write(call); err != nil {
+		t.Fatalf("writing COMPOUND: %v", err)
+	}
+	readReply(t, client)
+
+	if got := reportedVersion(t, rt, clientID); got != "4" {
+		t.Errorf("reported version: got %q, want %q (a refused minorversion must not be reported)", got, "4")
+	}
+
+	_ = client.Close()
+	select {
+	case <-served:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after the client closed")
+	}
+}
+
+// TestNoteNFSVersion_MinorVersionIsNotAPrefixMatch verifies that a two-digit
+// minor version on record does not swallow a later single-digit one. Only the
+// bare major is allowed to be superseded, so "4.1" still replaces "4.10".
+func TestNoteNFSVersion_MinorVersionIsNotAPrefixMatch(t *testing.T) {
+	conn, rt := newRegisteredConnection(t)
+
+	conn.noteNFSVersion("4.10")
+	conn.noteNFSVersion("4.1")
+
+	if got := reportedVersion(t, rt, conn.clientID); got != "4.1" {
+		t.Errorf("reported version: got %q, want %q", got, "4.1")
+	}
+}

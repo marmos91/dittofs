@@ -279,16 +279,22 @@ func (c *NFSConnection) dispatchRequest(ctx context.Context, clientAddr string, 
 // the dispatch path reports it: the program version gives "3" or "4", and the
 // COMPOUND minorversion refines "4" to "4.0"/"4.1"/"4.2" once decoded.
 //
-// Nothing is published while the version already on record starts with the one
-// being reported, which covers both an unchanged version and a bare major
-// arriving after the minor-qualified form it is a prefix of. A steady-state
-// connection therefore stops taking the registry write lock after its first
-// calls.
+// Nothing is published while the version on record already says as much or
+// more: an unchanged version, or the bare major that every RPC header carries
+// arriving after a COMPOUND refined it to "4.1". Matching on version+"." rather
+// than on the bare prefix keeps "4.1" from reading as a refinement of "4.10".
+// A steady-state connection therefore stops taking the registry write lock
+// after its first calls.
 func (c *NFSConnection) noteNFSVersion(version string) {
-	if cur, _ := c.nfsVersion.Load().(string); strings.HasPrefix(cur, version) {
+	cur, _ := c.nfsVersion.Load().(string)
+	if cur == version || strings.HasPrefix(cur, version+".") {
 		return
 	}
 	if rt := c.server.Registry; rt != nil && c.clientID != "" {
+		// ponytail: last writer wins. Two dispatch goroutines can both pass the
+		// check above, so a v4.1 connection can briefly report "4" until its
+		// next COMPOUND corrects it. Needs a compare-and-swap plus ordered
+		// stores only if this field ever gates behaviour instead of reporting.
 		c.nfsVersion.Store(version)
 		rt.Clients().SetNFSVersion(c.clientID, version)
 	}

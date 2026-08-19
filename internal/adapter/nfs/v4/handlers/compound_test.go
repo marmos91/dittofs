@@ -2665,8 +2665,39 @@ func TestProcessCompound_RecordsMinorVersion(t *testing.T) {
 			t.Fatalf("minorversion %d: ProcessCompound error: %v", minorVersion, err)
 		}
 
+		if !ctx.MinorVersionAccepted {
+			t.Errorf("minorversion %d: MinorVersionAccepted = false, want true", minorVersion)
+		}
 		if ctx.MinorVersion != minorVersion {
 			t.Errorf("ctx.MinorVersion = %d, want %d", ctx.MinorVersion, minorVersion)
 		}
+	}
+}
+
+// TestProcessCompound_RefusedMinorVersionNotRecorded verifies that a
+// minorversion outside the accepted range is not left on the context. The
+// refusal is answered with NFS4ERR_MINOR_VERS_MISMATCH and a nil error, so a
+// caller that read MinorVersion on a nil error alone would treat a dialect the
+// server never served as the client's version.
+func TestProcessCompound_RefusedMinorVersionNotRecorded(t *testing.T) {
+	h := newTestHandler()
+	ctx := newTestCompoundContext()
+
+	data := buildCompoundArgs(nil, 99, []uint32{types.OP_PUTROOTFH})
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	decoded, err := decodeCompoundResponse(resp)
+	if err != nil {
+		t.Fatalf("decode response error: %v", err)
+	}
+	if decoded.Status != types.NFS4ERR_MINOR_VERS_MISMATCH {
+		t.Fatalf("status = %d, want NFS4ERR_MINOR_VERS_MISMATCH (%d)", decoded.Status, types.NFS4ERR_MINOR_VERS_MISMATCH)
+	}
+
+	if ctx.MinorVersionAccepted {
+		t.Error("MinorVersionAccepted = true for a refused minorversion, want false")
 	}
 }
