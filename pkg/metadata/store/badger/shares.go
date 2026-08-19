@@ -601,10 +601,9 @@ func (s *BadgerMetadataStore) createNewRoot(txn *badgerdb.Txn, shareName string,
 	}
 
 	// Preserve existing share configuration (e.g. ShareOptions written
-	// by a prior CreateShare call) when materializing the root row.
-	// The original code wrote a fresh `metadata.Share{Name: shareName}`
-	// here, silently wiping any Options the caller had set via
-	// CreateShare.
+	// by a prior CreateShare call) when materializing the root row:
+	// writing a fresh metadata.Share{Name: shareName} here would wipe
+	// any Options the caller already set.
 	preservedShare := metadata.Share{Name: shareName}
 	if existingItem, getErr := txn.Get(keyShare(shareName)); getErr == nil {
 		if vErr := existingItem.Value(func(val []byte) error {

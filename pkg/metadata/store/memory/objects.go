@@ -62,15 +62,14 @@ func (s *MemoryMetadataStore) GetFileChunk(ctx context.Context, id string) (*met
 	return s.getFileChunkLocked(ctx, id)
 }
 
-// Put stores or updates a file chunk. Renamed from PutFileChunk to
-// match the narrowed interface.
+// Put stores or updates a file chunk.
 func (s *MemoryMetadataStore) Put(ctx context.Context, block *metadata.FileChunk) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.putFileChunkLocked(ctx, block)
 }
 
-// Delete removes a file chunk by its ID. Renamed from DeleteFileChunk.
+// Delete removes a file chunk by its ID.
 func (s *MemoryMetadataStore) Delete(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -124,7 +123,7 @@ func (s *MemoryMetadataStore) AddRef(ctx context.Context, hash block.ContentHash
 }
 
 // GetByHash looks up a finalized block by its content hash.
-// Returns nil without error if not found. Renamed from FindFileChunkByHash
+// Returns nil without error if not found.
 func (s *MemoryMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileChunk, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

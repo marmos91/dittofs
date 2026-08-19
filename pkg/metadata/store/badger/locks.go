@@ -92,34 +92,29 @@ func (s *badgerLockStore) PutLock(ctx context.Context, lk *lock.PersistedLock) e
 
 // putLockTx persists a lock within an existing transaction.
 func (s *badgerLockStore) putLockTx(txn *badgerdb.Txn, lk *lock.PersistedLock) error {
-	// Serialize lock to JSON
 	data, err := json.Marshal(lk)
 	if err != nil {
 		return fmt.Errorf("failed to marshal lock: %w", err)
 	}
 
-	// Store primary key
 	primaryKey := []byte(prefixLock + lk.ID)
 	if err := txn.Set(primaryKey, data); err != nil {
 		return err
 	}
 
-	// Store secondary indexes (value is just the lock ID for reference)
+	// Secondary-index values are just the lock ID.
 	lockIDBytes := []byte(lk.ID)
 
-	// Index by file
 	fileKey := []byte(lockIndexPrefix(prefixLockByFile, lk.FileID) + lk.ID)
 	if err := txn.Set(fileKey, lockIDBytes); err != nil {
 		return err
 	}
 
-	// Index by owner
 	ownerKey := []byte(lockIndexPrefix(prefixLockByOwner, lk.OwnerID) + lk.ID)
 	if err := txn.Set(ownerKey, lockIDBytes); err != nil {
 		return err
 	}
 
-	// Index by client
 	clientKey := []byte(lockIndexPrefix(prefixLockByClient, lk.ClientID) + lk.ID)
 	if err := txn.Set(clientKey, lockIDBytes); err != nil {
 		return err
@@ -182,19 +177,17 @@ func (s *badgerLockStore) DeleteLock(ctx context.Context, lockID string) error {
 
 // deleteLockTx removes a lock within an existing transaction.
 func (s *badgerLockStore) deleteLockTx(txn *badgerdb.Txn, lockID string) error {
-	// First, get the lock to know which indexes to delete
+	// Read the lock first: its FileID/OwnerID/ClientID name the index keys.
 	lk, err := s.getLockTx(txn, lockID)
 	if err != nil {
 		return err
 	}
 
-	// Delete primary key
 	primaryKey := []byte(prefixLock + lockID)
 	if err := txn.Delete(primaryKey); err != nil {
 		return err
 	}
 
-	// Delete secondary indexes
 	fileKey := []byte(lockIndexPrefix(prefixLockByFile, lk.FileID) + lockID)
 	if err := txn.Delete(fileKey); err != nil && err != badgerdb.ErrKeyNotFound {
 		return err

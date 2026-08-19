@@ -42,12 +42,10 @@ func (s *Service) CheckShareAccess(ctx context.Context, shareName, clientAddr, a
 		return nil, nil, err
 	}
 
-	// Check context cancellation
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
 
-	// Get share options using CRUD operation
 	opts, err := store.GetShareOptions(ctx, shareName)
 	if err != nil {
 		return nil, nil, err
@@ -232,12 +230,10 @@ func (s *Service) checkFilePermissions(ctx *AuthContext, handle FileHandle, requ
 		return 0, err
 	}
 
-	// Check context
 	if err := ctx.Context.Err(); err != nil {
 		return 0, err
 	}
 
-	// Get file data using CRUD method
 	file, err := store.GetFile(ctx.Context, handle)
 	if err != nil {
 		return 0, err
@@ -258,7 +254,6 @@ func (s *Service) checkFilePermissionsFile(ctx *AuthContext, handle FileHandle, 
 		return 0, err
 	}
 
-	// Check context
 	if err := ctx.Context.Err(); err != nil {
 		return 0, err
 	}

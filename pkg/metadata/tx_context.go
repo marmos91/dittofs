@@ -11,9 +11,9 @@ type txContextKey struct{}
 // transaction is retrievable via TxFromContext from anywhere in the
 // call chain.
 //
-// (review iteration 1): wired by common.CopyPayload
-// (and any future caller that needs to bind engine-level RefCount
-// mutations to its WithTransaction-owned tx). The per-share
+// It is wired by common.CopyPayload (and any other caller that needs to
+// bind engine-level RefCount mutations to its WithTransaction-owned tx).
+// The per-share
 // metadataCoordinator (pkg/controlplane/runtime/shares/coordinator.go)
 // reads this on every IncrementRefCount / DecrementRefCount call so the
 // underlying SQL/Badger UPDATE shares the caller's txn — without it

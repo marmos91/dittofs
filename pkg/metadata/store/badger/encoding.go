@@ -38,11 +38,14 @@ import (
 // File Manifest         "fm:"    fm:<uuid>                              []block.ChunkRef (JSON)
 // Parent Relationships  "p:"     p:<childUUID>                          parentUUID (bytes)
 // Children Map          "c:"     c:<parentUUID>:<childName>             childUUID (bytes)
+// Child Name (reverse)  "cn:"    cn:<parentUUID>:<childUUID>            child name (bytes)
 // Shares                "s:"     s:<shareName>                          shareData (JSON)
 // Link Counts           "l:"     l:<uuid>                               uint32 (binary)
 // Server Config         "cfg:"   cfg:server                             MetadataServerConfig (JSON)
 // Filesystem Caps       "cap:"   cap:fs                                 FilesystemCapabilities (JSON)
 // Format Version        "fmt:"   fmt:store                              uint32 (big-endian binary)
+// ObjectID Index        "obj:"   obj:<contentHash>                      file UUID (bytes)
+// PayloadID Index       "pl:"    pl:<payloadID>                         file UUID (bytes)
 
 const (
 	prefixFile         = "f:"
