@@ -104,11 +104,13 @@ Argon2id parameters (m = 64 MiB, t = 3, p = 4) match the OWASP 2024 password-sto
 
 Read this section before turning encryption on in production.
 
-### Enable encryption at remote-store creation time only
+### Enable encryption at remote-store creation time only, and never remove it
 
 Adding an `encryption` block to a remote store that already contains plaintext blocks will make every existing block **permanently unreadable** through the share — `Get` will return `ErrCiphertextWithoutFrame` because the stored bytes lack the DFENC frame header. The decorator refuses to interpret unframed bytes on an encryption-enabled share; that is intentional (any other behaviour would let a tampered-S3 actor force a plaintext downgrade).
 
 Recommendation: create new remote stores with encryption enabled, migrate data across, then decommission the unencrypted store.
+
+The reverse direction is refused outright: an update that removes the `encryption` block from a store that has one returns `400 Bad Request`. Blocks already written carry a DFENC frame, and an undecorated store would hand that framed ciphertext back to clients as if it were plaintext without erroring anywhere. Changing the encryption policy in place — rotating the key, retiring an old one — stays allowed. To genuinely stop encrypting, create a new store and migrate onto it.
 
 ### Retiring a master key is one-way — you cannot un-retire what you deleted
 
@@ -150,6 +152,24 @@ Two operational notes:
   listing the same file twice, or listing the current key as retired, will
   produce.
 
+### A KMIP key that is not Active stops the share from starting
+
+The KMIP provider reads the object's **State** attribute (via read-only `GetAttributes`) before fetching any key material, and refuses to bring the encrypted store up unless the current `key_uid` is `Active`. `Deactivated`, `Compromised`, `Pre-Active` and `Destroyed` are all rejected, with the state and the uid named in the error. Revoking a key at the HSM is the standardised way of saying "stop using this", so it stops us using it; there is no read-only or degraded mode, and no way to override the check from config.
+
+The practical trap is `Deactivated`, which is the state a key normally enters when it is rotated out at the HSM end. If someone rotates in the HSM without moving `key_uid` on the DittoFS side, the share will not come back after its next restart. Rotate in both places, in that order.
+
+Retired uids are judged by a looser rule, because blocks already written under them have to stay readable:
+
+| State of a `retired_key_uids` entry | Behaviour |
+|---|---|
+| `Active`, `Deactivated`, `Pre-Active` | Loaded normally — `Deactivated` is the expected steady state for a retired key |
+| `Compromised` | Loaded, with a `WARN` recording that data is still being read under a compromised key. Treat that line as the trigger for a re-wrap decision |
+| `Destroyed` | Skipped, naming the state. The HSM has no material to return; blocks under that key are unreadable |
+
+A server that answers `GetAttributes` without a State attribute is treated as an error rather than as `Active` — an unreadable state is not evidence that the key is usable.
+
+Only a share whose store fails this way is affected: the daemon logs the refusal and starts without it, rather than failing the whole start. Note that a share skipped this way is currently visible only in the log — `dfsctl share list` will not flag it.
+
 ### AAD is per-block, not per-share
 
 The associated data bound into the AEAD is the 32-byte BLAKE3 plaintext hash. It binds ciphertext to its CAS address but does **not** bind it to a share identity. Two shares that reference the same remote store config — and therefore share the same master key — could decrypt each other's blocks if an attacker with direct object-store write access moved blocks between share namespaces. This is acceptable for the supported configuration (one remote-store config per workload) but is a hazard if you reuse one master key across security-domain-distinct shares. Do not do that.
@@ -159,4 +179,6 @@ The associated data bound into the AEAD is the 32-byte BLAKE3 plaintext hash. It
 - **Bulk re-wrap** — rotation works (see above), but there is no job that reads blocks under a retired key and rewrites them under the current one, and no way to enumerate which blocks still reference a given key. Both are required before a retired key can ever be safely dropped.
 - **Filename / size / timestamp encryption** — out of scope; metadata stays unencrypted.
 - **Encrypted disk cache tier** — current cache holds plaintext in RAM / disk; use an encrypted filesystem underneath if needed.
+- **Key provisioning over KMIP** — deliberate, not unfinished. The client only ever reads: `Get` and `GetAttributes`. It cannot `Create`, `Register`, `Activate`, `Revoke` or `Destroy`, so the credential DittoFS holds cannot be used to make or destroy key material, and provisioning stays an out-of-band operator responsibility. This mirrors how KMS-backed storage works elsewhere (S3 SSE-KMS calls `GenerateDataKey`/`Decrypt`; it does not create CMKs). Give the DittoFS client a read-only credential.
+- **`Locate` by key name** — resolving a human-readable key name to a uid is read-only and would be an ergonomics win, but is not implemented; configure the uid directly.
 - **FIPS 140-3 mode** — would require swapping Argon2id for PBKDF2-SHA256, pinning AES-only AEADs, and building with the BoringCrypto tag.
