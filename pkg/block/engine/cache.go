@@ -43,19 +43,20 @@ type cacheInterface interface {
 var _ cacheInterface = (*Cache)(nil)
 var _ cacheInterface = nullCache{}
 
-// The Cache is populated lazily: on first read of a hash, and on the
-// write side via the OnChunkComplete wiring in engine.go. There is no
-// proactive warm on share-open, so the restart-then-read path always
-// starts cold.
+// The Cache is populated only on the write side, via the OnChunkComplete
+// wiring in engine.go. There is no read-through: loadByHash always misses,
+// because the journal local store is (payloadID, offset)-keyed and has no
+// content-addressed read to serve a hash lookup from. So nothing a read
+// pulls in ever lands here, and the restart-then-read path always starts
+// cold and stays cold until writes repopulate it.
 
 // Cache is the single-type, CAS-keyed in-memory cache. It folds the
 // prefetch worker pool into one type.
 //
-// On miss, bytes are loaded via local.Get(ctx, hash) —
-// engine.loadByHash. The Cache copies the returned []byte into its
-// LRU slot (buffer ownership). No mmap/page-cache fast path exists
-// production workloads are warm-cache and the per-miss alloc is
-// uncontended.
+// On miss the Cache calls its loadFn (engine.loadByHash), which returns
+// ErrChunkNotFound unconditionally, so a miss stays a miss. Were a
+// hash-keyed local read to exist, the Cache would copy the returned []byte
+// into its LRU slot rather than retain it.
 //
 // Thread safety: read path takes RLock for hits, promotes LRU under
 // WLock; mutations are WLock-only. The trackerMu is a separate lock so
