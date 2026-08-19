@@ -302,8 +302,8 @@ func applyImplInfo(record *V41ClientRecord, clientImplId []types.NfsImplId4) {
 	}
 }
 
-// purgeV41Client removes a V41ClientRecord from both lookup maps
-// and destroys all associated sessions.
+// purgeV41Client removes a V41ClientRecord from both lookup maps, releases the
+// open and lock state its owners hold, and destroys all associated sessions.
 // Only deletes from v41ClientsByOwner if the map entry still points to this
 // record (guards against a concurrent createV41Client having already replaced it).
 // Caller must hold sm.mu.
@@ -318,6 +318,8 @@ func (sm *StateManager) purgeV41Client(record *V41ClientRecord) {
 	if record.Lease != nil {
 		record.Lease.Stop()
 	}
+
+	sm.removeClientOpenStateLocked(record.ClientID)
 
 	// Clean up all delegations (file + directory) for this client
 	for other, deleg := range sm.delegByOther {
@@ -464,32 +466,7 @@ func (sm *StateManager) EvictV40Client(clientID uint64) error {
 		record.Lease.Stop()
 	}
 
-	// Remove all open states and lock states for all owners
-	for _, owner := range record.OpenOwners {
-		for _, openState := range owner.OpenStates {
-			for _, lockState := range openState.LockStates {
-				delete(sm.lockStateByOther, lockState.Stateid.Other)
-
-				// Remove actual locks from unified lock manager (matches onLeaseExpired)
-				if lm := sm.lockManagerFor(lockState.FileHandle); lm != nil && lockState.LockOwner != nil {
-					ownerID := lockState.LockOwner.LockManagerOwnerID()
-					handleKey := string(lockState.FileHandle)
-					for _, l := range lm.ListUnifiedLocks(handleKey) {
-						if l.Owner.OwnerID == ownerID {
-							_ = lm.RemoveUnifiedLock(handleKey, l.Owner, l.Offset, l.Length)
-						}
-					}
-				}
-
-				if lockState.LockOwner != nil {
-					delete(sm.lockOwners, lockState.LockOwner.Key())
-				}
-			}
-			delete(sm.openStateByOther, openState.Stateid.Other)
-			sm.removeOpenStateFromFileLocked(openState)
-		}
-		delete(sm.openOwners, owner.Key())
-	}
+	sm.removeClientOpenStateLocked(clientID)
 
 	// Clean up delegations for the evicted client
 	for other, deleg := range sm.delegByOther {

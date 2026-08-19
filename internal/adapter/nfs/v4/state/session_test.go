@@ -1034,6 +1034,80 @@ func TestReaper_ActiveLeaseNotCleaned(t *testing.T) {
 	}
 }
 
+// TestReaper_ExpiredLeaseReleasesOpenState checks that reaping a client whose
+// lease lapsed also releases the open state its owners hold. v4.1 OPENs run
+// through the same OpenFile path as v4.0 and land in sm.openOwners, but the
+// V41ClientRecord has no owner list of its own, so a purge that only walked the
+// record left them behind — with their share reservations still denying every
+// other client, and no client record left to ever CLOSE them.
+func TestReaper_ExpiredLeaseReleasesOpenState(t *testing.T) {
+	const lease = 20 * time.Millisecond
+	sm := NewStateManager(lease)
+	defer sm.Shutdown()
+
+	clientID, seqID := registerV41Client(t, sm)
+	if _, _, err := sm.CreateSession(
+		clientID, seqID, 0,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+	); err != nil {
+		t.Fatalf("CreateSession error: %v", err)
+	}
+
+	fh := []byte("fh-shared")
+	if _, err := sm.OpenFile(clientID, []byte("owner-a"), 1, fh,
+		types.OPEN4_SHARE_ACCESS_BOTH,
+		types.OPEN4_SHARE_DENY_WRITE,
+		types.CLAIM_NULL,
+	); err != nil {
+		t.Fatalf("OpenFile error: %v", err)
+	}
+
+	// Let the lease lapse, then run the sweep the reaper goroutine runs.
+	time.Sleep(3 * lease)
+	sm.reapExpiredSessions()
+
+	sm.mu.RLock()
+	_, clientLives := sm.v41ClientsByID[clientID]
+	owners := len(sm.openOwners)
+	opens := len(sm.openStateByOther)
+	sm.mu.RUnlock()
+
+	if clientLives {
+		t.Fatal("expired v4.1 client still registered after reap")
+	}
+	if owners != 0 {
+		t.Errorf("openOwners = %d, want 0: purged client's open-owners leaked", owners)
+	}
+	if opens != 0 {
+		t.Errorf("openStateByOther = %d, want 0: purged client's open states leaked", opens)
+	}
+
+	// The reservation must die with the client: another client opening the same
+	// file for writing has nothing left to conflict with.
+	var verifier [8]byte
+	copy(verifier[:], "verify02")
+	other, err := sm.ExchangeID([]byte("second-client"), verifier, 0, nil, "10.0.0.2:12345")
+	if err != nil {
+		t.Fatalf("ExchangeID error for second client: %v", err)
+	}
+	if _, _, err := sm.CreateSession(
+		other.ClientID, other.SequenceID, 0,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+	); err != nil {
+		t.Fatalf("CreateSession error for second client: %v", err)
+	}
+	if _, err := sm.OpenFile(other.ClientID, []byte("owner-b"), 1, fh,
+		types.OPEN4_SHARE_ACCESS_WRITE,
+		types.OPEN4_SHARE_DENY_NONE,
+		types.CLAIM_NULL,
+	); err != nil {
+		if errors.Is(err, ErrShareDenied) {
+			t.Fatal("share reservation of the reaped client still denies other clients")
+		}
+		t.Fatalf("OpenFile error for second client: %v", err)
+	}
+}
+
 func TestReaper_ContextCancellation(t *testing.T) {
 	sm := NewStateManager(DefaultLeaseDuration)
 	ctx, cancel := context.WithCancel(context.Background())
