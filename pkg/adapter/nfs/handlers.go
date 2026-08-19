@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 
 	nfs "github.com/marmos91/dittofs/internal/adapter/nfs"
@@ -433,6 +434,13 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 		start := time.Now()
 		result, err := c.server.v4Handler.ProcessCompound(compCtx, data)
 		c.recordOp("COMPOUND", start, err == nil)
+
+		// The COMPOUND carries the minorversion, so the registry's "4" can now
+		// be refined to the exact dialect. Only meaningful once the compound
+		// decoded; on a wire error the field is still zero.
+		if err == nil {
+			c.noteNFSVersion("4." + strconv.FormatUint(uint64(compCtx.MinorVersion), 10))
+		}
 
 		// After COMPOUND completes, check if this connection was bound for
 		// back-channel. If so, register a ConnWriter and PendingCBReplies

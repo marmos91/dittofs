@@ -330,6 +330,7 @@ func (h *Handler) ProcessCompound(compCtx *types.CompoundContext, data []byte) (
 	if err != nil {
 		return nil, fmt.Errorf("decode COMPOUND minorversion: %w", err)
 	}
+	compCtx.MinorVersion = minorVersion
 
 	// Decode number of operations
 	numOps, err := xdr.DecodeUint32(reader)

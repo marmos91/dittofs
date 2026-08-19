@@ -26,7 +26,11 @@ type ClientRecord struct {
 
 // NfsDetails holds NFS-specific client information.
 type NfsDetails struct {
-	Version string `json:"version"` // "3", "4.0", "4.1"
+	// Version is the NFS protocol version observed on the connection: "3",
+	// "4", or a minor-qualified "4.0"/"4.1"/"4.2". It is empty until the
+	// client's first NFS call, because a connection is registered when it is
+	// accepted and the version is not on the wire until then.
+	Version string `json:"version"`
 }
 
 // SmbDetails holds SMB-specific client information.
@@ -45,8 +49,9 @@ type clientEntry struct {
 // Registry provides thread-safe client tracking with TTL-based stale cleanup.
 // It follows the same sub-service pattern as mounts.Tracker.
 //
-// mu guards the map structure; an entry's remaining fields are set at Register
-// and never mutated again.
+// mu guards the map structure and an entry's non-atomic fields. Those fields
+// are set at Register and only ever changed again by SetNFSVersion, which takes
+// the write lock, so readers under the read lock always see a consistent record.
 // The per-request activity bump (UpdateActivity) takes only a shared read lock
 // for map safety and stores into the entry's atomic timestamp, so the
 // highest-fan-in call in the system no longer serializes on the write lock.
@@ -87,6 +92,20 @@ func (r *Registry) Register(record *ClientRecord) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.clients[record.ClientID] = e
+}
+
+// SetNFSVersion records the NFS protocol version observed for a client. The
+// version cannot be supplied at Register time: a connection is registered when
+// it is accepted, before any RPC has arrived, and the same connection can carry
+// both v3 and v4 calls. The adapter therefore fills it in from the dispatched
+// calls, only when the value changes. No-op if the client is not registered.
+func (r *Registry) SetNFSVersion(clientID, version string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if e, ok := r.clients[clientID]; ok {
+		e.NFS = &NfsDetails{Version: version}
+	}
 }
 
 // Deregister removes and returns a client record. Returns nil if not found.
