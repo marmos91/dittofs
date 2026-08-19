@@ -11,7 +11,9 @@ USER 65532:65532
 # - 12049: NFS server (default)
 # - 12445: SMB server (default)
 # - 8080: REST API (health checks, management)
-# - 9090: Prometheus metrics endpoint (default)
+# - 9090: Prometheus metrics endpoint. Opt-in and loopback-bound by default,
+#         so publishing this port alone exposes nothing: enable metrics and set
+#         their host to 0.0.0.0 for it to be reachable from outside the container.
 # - 5353/udp: mDNS / DNS-SD network discovery (macOS Finder, Linux Avahi)
 # - 3702/udp: WS-Discovery (Windows Explorer Network)
 # - 5357/tcp: WS-Discovery device metadata (HTTP)
