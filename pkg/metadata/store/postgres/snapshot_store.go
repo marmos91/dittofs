@@ -85,7 +85,7 @@ func (s *PostgresMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) 
 	}
 
 	// Acquire a dedicated connection for raw protocol-level COPY operations.
-	conn, err := s.acquireConn(ctx)
+	conn, err := s.acquireConn(ctx, "Backup", "COPY TO")
 	if err != nil {
 		return nil, fmt.Errorf("backup: acquire connection: %w", err)
 	}
@@ -287,7 +287,7 @@ func (s *PostgresMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader
 	tableCount := binary.LittleEndian.Uint32(countBuf[:])
 
 	// Acquire a dedicated connection for raw COPY FROM operations.
-	conn, err := s.acquireConn(ctx)
+	conn, err := s.acquireConn(ctx, "Restore", "COPY FROM")
 	if err != nil {
 		return fmt.Errorf("restore: acquire connection: %w", err)
 	}

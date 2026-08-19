@@ -32,15 +32,6 @@ const poolConnectionAcquireTimeout = 10 * time.Second
 // All operations use the same poolConnectionAcquireTimeout (10s) as WithTransaction
 // for consistency.
 
-// acquireConn takes a connection from the pool under the shared acquire
-// timeout, which scopes the wait only: the returned connection runs its
-// statements on ctx. Callers MUST Release it.
-func (s *PostgresMetadataStore) acquireConn(ctx context.Context) (*pgxpool.Conn, error) {
-	acquireCtx, cancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
-	defer cancel()
-	return s.pool.Acquire(acquireCtx)
-}
-
 // rowQuerier is the single-row query surface an open transaction (pgx.Tx.QueryRow)
 // and the pool wrapper (PostgresMetadataStore.queryRow) both satisfy, so one
 // query body can run on either.

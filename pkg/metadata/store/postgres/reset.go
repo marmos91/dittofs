@@ -20,7 +20,7 @@ func (s *PostgresMetadataStore) Reset(ctx context.Context) error {
 		return fmt.Errorf("reset cancelled: %w", err)
 	}
 
-	conn, err := s.acquireConn(ctx)
+	conn, err := s.acquireConn(ctx, "Reset", "reset")
 	if err != nil {
 		return fmt.Errorf("reset: acquire connection: %w", err)
 	}
