@@ -82,7 +82,6 @@ func (c *dnsCache) lookupAddr(ip string) ([]string, error) {
 	// Cache miss or expired - perform lookup
 	hostnames, err := net.LookupAddr(ip)
 
-	// Store result
 	var ttl time.Duration
 	if err != nil {
 		ttl = c.negTTL
@@ -123,7 +122,6 @@ func (c *dnsCache) lookupHost(hostname string) ([]string, error) {
 	// Cache miss or expired - perform lookup
 	addrs, err := net.LookupHost(hostname)
 
-	// Store result
 	var ttl time.Duration
 	if err != nil {
 		ttl = c.negTTL
@@ -281,7 +279,6 @@ func (r *Runtime) evaluateNetgroupAccess(ctx context.Context, shareName, netgrou
 
 	ensureDNSCache()
 
-	// Match client IP against each member
 	ipString := clientIP.String()
 	for _, member := range members {
 		switch member.Type {
@@ -304,7 +301,6 @@ func (r *Runtime) evaluateNetgroupAccess(ctx context.Context, shareName, netgrou
 		}
 	}
 
-	// No member matches
 	return false, nil
 }
 
