@@ -255,8 +255,14 @@ type Deps struct {
 	RollupStopper RollupStopper
 }
 
-// Serve starts all components and blocks until shutdown.
+// Serve starts all components and blocks until shutdown. It fails fast when
+// Deps.AdapterLoader is missing, which both startup and shutdown dereference
+// unconditionally.
 func (s *Service) Serve(ctx context.Context, deps Deps) error {
+	if deps.AdapterLoader == nil {
+		return fmt.Errorf("lifecycle: Deps.AdapterLoader is required")
+	}
+
 	var err error
 
 	s.serveOnce.Do(func() {

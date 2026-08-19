@@ -254,6 +254,16 @@ func TestServeAPIServerFailureTriggersShutdown(t *testing.T) {
 	}
 }
 
+// A Deps without an AdapterLoader is a programming error: both startup and
+// shutdown dereference it unconditionally, so Serve rejects it instead of
+// panicking.
+func TestServeRequiresAdapterLoader(t *testing.T) {
+	s := New(time.Second)
+	if err := s.Serve(context.Background(), Deps{}); err == nil {
+		t.Fatal("expected error for Deps without an AdapterLoader")
+	}
+}
+
 // Serve uses sync.Once: a second call is a no-op and returns nil.
 func TestServeOnlyRunsOnce(t *testing.T) {
 	s := New(time.Second)
