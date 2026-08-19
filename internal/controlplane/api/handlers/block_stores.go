@@ -257,6 +257,12 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 		// frame. Dropping the policy does not fail anywhere downstream — the
 		// undecorated store would hand that framed ciphertext back as if it
 		// were plaintext — so the removal is refused here.
+		// The stored blob's parse result is discarded because an
+		// unparseable one cannot have carried a policy that was ever in
+		// effect: building the encrypted store parses the same blob and
+		// fails first, so no block was written under it. Neither write path
+		// can store such a blob either — validation below, and the same
+		// check on create, both parse before persisting.
 		hadEncryption, _ := hasEncryptionPolicy(previous)
 		hasEncryption, parsed := hasEncryptionPolicy(bs.Config)
 		// An unparseable incoming blob is left to the config validation
