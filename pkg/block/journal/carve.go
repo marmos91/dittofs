@@ -98,7 +98,7 @@ type BlockSink interface {
 // committed every row it produced, journal calls ReapSupersededManifest so the
 // sink can delete the manifest rows the run superseded — keeping the per-file
 // FileChunk manifest a gap-free, overlap-free tiling of [0,size) after a partial
-// overwrite (#953). runStart/runEnd bound the re-carved (dirty) range; newOffsets
+// overwrite. runStart/runEnd bound the re-carved (dirty) range; newOffsets
 // are the chunk offsets this run wrote (so the reap keeps them and deletes only
 // stale straddlers/interior rows). Sinks without a metadata store (test fakes)
 // simply don't implement it and the reap is skipped.
@@ -111,7 +111,7 @@ type supersededReaper interface {
 var errCarveNotWired = errors.New("journal: carve targets not wired (SetCarveTargets)")
 
 // SetCarveTargets injects the carve collaborators. Call once before the first
-// Carve; the production impls are wired here at PR7, tests pass fakes.
+// Carve; production wires the real impls, tests pass fakes.
 func (s *Store) SetCarveTargets(d Deduper, sink BlockSink) {
 	s.deduper = d
 	s.sink = sink
@@ -255,7 +255,7 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 	fileOff := run[0].fileOff
 	flipIdx := 0
 	// Offsets of every chunk this run tiles (novel or deduped), so the run-end
-	// reap keeps this run's own rows and deletes only superseded ones (#953).
+	// reap keeps this run's own rows and deletes only superseded ones.
 	newOffsets := make(map[int64]struct{})
 
 	// disp overlaps successive blocks' CommitBlock (upload + commit) while packing
@@ -431,7 +431,7 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 	if err := disp.wait(); err != nil {
 		return err
 	}
-	// #953: with every row this run produced now committed, reap the manifest rows
+	// With every row this run produced now committed, reap the manifest rows
 	// the run superseded (stale straddlers / interior chunks the fresh tiling
 	// replaced). One pass at run end is correct across a multi-batch run — no single
 	// batch span contains a seam-spanning straddler, and reaping the run span per

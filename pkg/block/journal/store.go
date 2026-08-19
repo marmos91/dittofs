@@ -72,7 +72,7 @@ type Config struct {
 	// default via withDefaults.
 	CarveUploadConcurrency int
 	// ChunkParams sets the per-share FastCDC sizing carve feeds the chunker
-	// (#1569). The zero value (or any params that fail Validate) degrades to
+	// The zero value (or any params that fail Validate) degrades to
 	// chunker.DefaultParams — the historical 1M/4M/16M profile — so a
 	// misconfiguration is never a hard error, matching the fs store.
 	ChunkParams chunker.Params
@@ -178,7 +178,7 @@ type Store struct {
 	// eviction/GC path so a local-only snapshot's bytes — the only durable copy —
 	// survive until the snapshot is deleted. DERIVED: the runtime recomputes it as
 	// max(JournalVersion) over live snapshots and calls SetPinVersion; the journal
-	// only reads it (reclaim.go). See #1718.
+	// only reads it (reclaim.go).
 	pinVersion atomic.Uint64
 	unsynced   atomic.Int64 // dirty bytes not yet carved to remote
 	diskBytes  atomic.Int64 // total on-disk segment bytes (headers + records), the eviction gate input
@@ -460,7 +460,7 @@ func (s *Store) Commit(ctx context.Context, id FileID) error {
 // caller whose bytes are on a since-sealed segment is durable no matter which fd
 // the leader synced. This is the per-shard sync-leader the fio rand-write-4k
 // burst (iodepth=32 × numjobs=4) needs; without it every one of ~128 in-flight
-// commits pays a full disk barrier (#1736).
+// commits pays a full disk barrier.
 func (sh *shard) groupCommit() error {
 	sh.commitMu.Lock()
 	myGen := sh.reqSeq
@@ -833,7 +833,7 @@ func (s *Store) nextVersion() uint64 { return s.version.Add(1) }
 // JournalVersion returns the current global LSN watermark: every record written
 // so far carries a Version at or below it. Snapshot create captures this after
 // draining rollups so the snapshot pins exactly the records that make up its
-// point-in-time view (#1718).
+// point-in-time view.
 func (s *Store) JournalVersion() uint64 { return s.version.Load() }
 
 // SetPinVersion sets the highest live-snapshot watermark. The runtime derives it
@@ -851,7 +851,7 @@ func (s *Store) PinVersion() uint64 { return s.pinVersion.Load() }
 // still pins for rollback) stay intact. It is the local-only snapshot-restore
 // primitive: the journal is the only durable copy of the bytes, so a plain rewind
 // is not restart-safe (recover() would resurrect the >V head) and the >V records
-// cannot be deleted. See #1718.
+// cannot be deleted.
 //
 // Two phases:
 //
