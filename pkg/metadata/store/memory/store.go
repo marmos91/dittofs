@@ -9,7 +9,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/google/uuid"
 	"github.com/oklog/ulid/v2"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -106,10 +105,9 @@ type ShareSession struct {
 //
 // Handle Generation:
 //
-// generateFileHandle ignores the path it is given and encodes a fresh UUID
-// against the share name via metadata.EncodeShareHandle, so a handle is
-// independent of the name a file is reachable under and survives renames.
-// The badger backend mints handles the same way.
+// generateFileHandle encodes a fresh UUID against the share name, so a
+// handle is independent of the name a file is reachable under and survives
+// renames. The badger backend mints handles the same way.
 //
 // Consistency Guarantees:
 //
@@ -584,45 +582,16 @@ func (store *MemoryMetadataStore) childNameLocked(
 	return best
 }
 
-// generateFileHandle creates a UUID-based file handle from a share name.
-//
-// Generates a new UUID for each file and encodes it with the
-// share name to create a unique file handle in the format:
-//
-//	Format: "shareName:uuid"
-//	Example: "/export:550e8400-e29b-41d4-a716-446655440000"
-//	Size: share name length + 37 bytes (1 colon + 36 UUID chars)
-//
-// UUID-based handles provide:
-//   - Guaranteed uniqueness (no collisions)
-//   - NFS compatibility (typically under 64 bytes)
-//   - Stable identifiers (UUID doesn't change)
-//   - No path length limitations
-//
-// Note: The fullPath parameter is currently unused but kept for compatibility
-// with existing code. In the future, if path tracking is needed, it should be
-// stored separately in the fileData structure.
-//
-// Parameters:
-//   - shareName: The share name this file belongs to
-//   - fullPath: Reserved for future use (currently ignored)
-//
-// Returns:
-//   - FileHandle: A UUID-based file handle
-func (store *MemoryMetadataStore) generateFileHandle(shareName, fullPath string) metadata.FileHandle {
-	// Generate a new UUID for this file
-	id := uuid.New()
-
-	// Encode the handle using the standard format
-	handle, err := metadata.EncodeShareHandle(shareName, id)
+// generateFileHandle returns a fresh UUID-based handle for a file in the
+// named share, in the standard "shareName:uuid" format. It panics on the
+// only failure metadata.GenerateNewHandle can report — a share name long
+// enough to push the encoded handle past the 64-byte NFS limit — because
+// share names are length-validated before a share is ever registered.
+func (store *MemoryMetadataStore) generateFileHandle(shareName string) metadata.FileHandle {
+	handle, err := metadata.GenerateNewHandle(shareName)
 	if err != nil {
-		// This should never happen for valid share names and UUIDs
-		// If it does, generate a fallback handle
-		// In practice, this error only occurs if the encoded handle exceeds 64 bytes,
-		// which is unlikely for reasonable share names
 		panic(fmt.Sprintf("failed to encode file handle: %v", err))
 	}
-
 	return handle
 }
 

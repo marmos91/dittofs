@@ -623,78 +623,58 @@ func (s *postgresLockStore) reclaimLeaseTx(ctx context.Context, tx pgx.Tx, fileH
 // Ensure PostgresMetadataStore implements LockStore
 var _ lock.LockStore = (*PostgresMetadataStore)(nil)
 
-// initLockStore ensures the lock store is initialized.
-func (s *PostgresMetadataStore) initLockStore() {
-	s.lockStoreMu.Lock()
-	defer s.lockStoreMu.Unlock()
-	if s.lockStore == nil {
-		s.lockStore = newPostgresLockStore(s.pool)
-	}
-}
-
 // PutLock persists a lock.
 func (s *PostgresMetadataStore) PutLock(ctx context.Context, lk *lock.PersistedLock) error {
-	s.initLockStore()
 	return s.lockStore.PutLock(ctx, lk)
 }
 
 // GetLock retrieves a lock by ID.
 func (s *PostgresMetadataStore) GetLock(ctx context.Context, lockID string) (*lock.PersistedLock, error) {
-	s.initLockStore()
 	return s.lockStore.GetLock(ctx, lockID)
 }
 
 // DeleteLock removes a lock by ID.
 func (s *PostgresMetadataStore) DeleteLock(ctx context.Context, lockID string) error {
-	s.initLockStore()
 	return s.lockStore.DeleteLock(ctx, lockID)
 }
 
 // ListLocks returns locks matching the query.
 func (s *PostgresMetadataStore) ListLocks(ctx context.Context, query lock.LockQuery) ([]*lock.PersistedLock, error) {
-	s.initLockStore()
 	return s.lockStore.ListLocks(ctx, query)
 }
 
 // DeleteLocksByClient removes all locks for a client.
 func (s *PostgresMetadataStore) DeleteLocksByClient(ctx context.Context, clientID string) (int, error) {
-	s.initLockStore()
 	return s.lockStore.DeleteLocksByClient(ctx, clientID)
 }
 
 // DeleteLocksByFile removes all locks for a file.
 func (s *PostgresMetadataStore) DeleteLocksByFile(ctx context.Context, fileID string) (int, error) {
-	s.initLockStore()
 	return s.lockStore.DeleteLocksByFile(ctx, fileID)
 }
 
 // GetServerEpoch returns current server epoch.
 func (s *PostgresMetadataStore) GetServerEpoch(ctx context.Context) (uint64, error) {
-	s.initLockStore()
 	return s.lockStore.GetServerEpoch(ctx)
 }
 
 // IncrementServerEpoch increments and returns new epoch.
 func (s *PostgresMetadataStore) IncrementServerEpoch(ctx context.Context) (uint64, error) {
-	s.initLockStore()
 	return s.lockStore.IncrementServerEpoch(ctx)
 }
 
 // GetCleanShutdown reports whether the previous run shut down gracefully.
 func (s *PostgresMetadataStore) GetCleanShutdown(ctx context.Context) (bool, error) {
-	s.initLockStore()
 	return s.lockStore.GetCleanShutdown(ctx)
 }
 
 // SetCleanShutdown records the clean-shutdown marker durably.
 func (s *PostgresMetadataStore) SetCleanShutdown(ctx context.Context, clean bool) error {
-	s.initLockStore()
 	return s.lockStore.SetCleanShutdown(ctx, clean)
 }
 
 // ReclaimLease reclaims an existing lease during grace period.
 func (s *PostgresMetadataStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
-	s.initLockStore()
 	return s.lockStore.ReclaimLease(ctx, fileHandle, leaseKey, clientID)
 }
 
@@ -706,56 +686,45 @@ func (s *PostgresMetadataStore) ReclaimLease(ctx context.Context, fileHandle loc
 var _ lock.LockStore = (*postgresTransaction)(nil)
 
 func (ptx *postgresTransaction) PutLock(ctx context.Context, lk *lock.PersistedLock) error {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.putLockTx(ctx, ptx.tx, lk)
 }
 
 func (ptx *postgresTransaction) GetLock(ctx context.Context, lockID string) (*lock.PersistedLock, error) {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.getLockTx(ctx, ptx.tx, lockID)
 }
 
 func (ptx *postgresTransaction) DeleteLock(ctx context.Context, lockID string) error {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.deleteLockTx(ctx, ptx.tx, lockID)
 }
 
 func (ptx *postgresTransaction) ListLocks(ctx context.Context, query lock.LockQuery) ([]*lock.PersistedLock, error) {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.listLocksTx(ctx, ptx.tx, query)
 }
 
 func (ptx *postgresTransaction) DeleteLocksByClient(ctx context.Context, clientID string) (int, error) {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.deleteLocksByClientTx(ctx, ptx.tx, clientID)
 }
 
 func (ptx *postgresTransaction) DeleteLocksByFile(ctx context.Context, fileID string) (int, error) {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.deleteLocksByFileTx(ctx, ptx.tx, fileID)
 }
 
 func (ptx *postgresTransaction) GetServerEpoch(ctx context.Context) (uint64, error) {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.getServerEpochTx(ctx, ptx.tx)
 }
 
 func (ptx *postgresTransaction) IncrementServerEpoch(ctx context.Context) (uint64, error) {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.incrementServerEpochTx(ctx, ptx.tx)
 }
 
 func (ptx *postgresTransaction) GetCleanShutdown(ctx context.Context) (bool, error) {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.getCleanShutdownTx(ctx, ptx.tx)
 }
 
 func (ptx *postgresTransaction) SetCleanShutdown(ctx context.Context, clean bool) error {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.setCleanShutdownTx(ctx, ptx.tx, clean)
 }
 
 func (ptx *postgresTransaction) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.reclaimLeaseTx(ctx, ptx.tx, fileHandle, leaseKey, clientID)
 }

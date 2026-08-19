@@ -51,24 +51,16 @@ type PostgresMetadataStore struct {
 	cancel context.CancelFunc
 
 	// lockStore holds persisted lock data for NLM/SMB lock persistence.
-	// Initialized lazily via initLockStore().
-	lockStore   *postgresLockStore
-	lockStoreMu sync.Mutex
+	lockStore *postgresLockStore
 
 	// clientStore holds NSM client registration persistence.
-	// Initialized lazily via getClientStore().
-	clientStore   *postgresClientStore
-	clientStoreMu sync.Mutex
+	clientStore *postgresClientStore
 
 	// durableStore holds SMB3 durable handle persistence.
-	// Initialized lazily via getDurableStore().
-	durableStore   *postgresDurableStore
-	durableStoreMu sync.Mutex
+	durableStore *postgresDurableStore
 
 	// recoveryStore holds NFSv4 client-recovery persistence.
-	// Initialized lazily via getRecoveryStore().
-	recoveryStore   *postgresRecoveryStore
-	recoveryStoreMu sync.Mutex
+	recoveryStore *postgresRecoveryStore
 
 	// usedBytes tracks the total logical bytes used by regular files.
 	// Updated atomically on every size-changing operation (create, update, truncate, delete).
@@ -155,6 +147,12 @@ func NewPostgresMetadataStore(
 		cancel:       cancel,
 		quota:        quota.NewCache(),
 	}
+	// The substores derive only from pool, which is never reassigned, so they
+	// are bound once here rather than lazily behind a mutex.
+	store.lockStore = newPostgresLockStore(pool)
+	store.clientStore = newPostgresClientStore(store)
+	store.durableStore = newPostgresDurableStore(store)
+	store.recoveryStore = newPostgresRecoveryStore(store)
 
 	// Initialize the usedBytes counter from a SQL SUM query.
 	if err := store.initUsedBytesCounter(ctx); err != nil {
@@ -179,7 +177,6 @@ func NewPostgresMetadataStore(
 		"host", cfg.Host,
 		"database", cfg.Database,
 		"max_conns", cfg.MaxConns,
-		"stats_cache_ttl", cfg.StatsCacheTTL,
 		"prepared_statements", !cfg.DisablePreparedStatements,
 	)
 

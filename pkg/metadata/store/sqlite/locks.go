@@ -612,78 +612,58 @@ func (s *sqliteLockStore) reclaimLeaseTx(ctx context.Context, tx execer, fileHan
 // Ensure SQLiteMetadataStore implements LockStore
 var _ lock.LockStore = (*SQLiteMetadataStore)(nil)
 
-// initLockStore ensures the lock store is initialized.
-func (s *SQLiteMetadataStore) initLockStore() {
-	s.lockStoreMu.Lock()
-	defer s.lockStoreMu.Unlock()
-	if s.lockStore == nil {
-		s.lockStore = newSQLiteLockStore(s.conn())
-	}
-}
-
 // PutLock persists a lock.
 func (s *SQLiteMetadataStore) PutLock(ctx context.Context, lk *lock.PersistedLock) error {
-	s.initLockStore()
 	return s.lockStore.PutLock(ctx, lk)
 }
 
 // GetLock retrieves a lock by ID.
 func (s *SQLiteMetadataStore) GetLock(ctx context.Context, lockID string) (*lock.PersistedLock, error) {
-	s.initLockStore()
 	return s.lockStore.GetLock(ctx, lockID)
 }
 
 // DeleteLock removes a lock by ID.
 func (s *SQLiteMetadataStore) DeleteLock(ctx context.Context, lockID string) error {
-	s.initLockStore()
 	return s.lockStore.DeleteLock(ctx, lockID)
 }
 
 // ListLocks returns locks matching the query.
 func (s *SQLiteMetadataStore) ListLocks(ctx context.Context, query lock.LockQuery) ([]*lock.PersistedLock, error) {
-	s.initLockStore()
 	return s.lockStore.ListLocks(ctx, query)
 }
 
 // DeleteLocksByClient removes all locks for a client.
 func (s *SQLiteMetadataStore) DeleteLocksByClient(ctx context.Context, clientID string) (int, error) {
-	s.initLockStore()
 	return s.lockStore.DeleteLocksByClient(ctx, clientID)
 }
 
 // DeleteLocksByFile removes all locks for a file.
 func (s *SQLiteMetadataStore) DeleteLocksByFile(ctx context.Context, fileID string) (int, error) {
-	s.initLockStore()
 	return s.lockStore.DeleteLocksByFile(ctx, fileID)
 }
 
 // GetServerEpoch returns current server epoch.
 func (s *SQLiteMetadataStore) GetServerEpoch(ctx context.Context) (uint64, error) {
-	s.initLockStore()
 	return s.lockStore.GetServerEpoch(ctx)
 }
 
 // IncrementServerEpoch increments and returns new epoch.
 func (s *SQLiteMetadataStore) IncrementServerEpoch(ctx context.Context) (uint64, error) {
-	s.initLockStore()
 	return s.lockStore.IncrementServerEpoch(ctx)
 }
 
 // GetCleanShutdown reports whether the previous run shut down gracefully.
 func (s *SQLiteMetadataStore) GetCleanShutdown(ctx context.Context) (bool, error) {
-	s.initLockStore()
 	return s.lockStore.GetCleanShutdown(ctx)
 }
 
 // SetCleanShutdown records the clean-shutdown marker durably.
 func (s *SQLiteMetadataStore) SetCleanShutdown(ctx context.Context, clean bool) error {
-	s.initLockStore()
 	return s.lockStore.SetCleanShutdown(ctx, clean)
 }
 
 // ReclaimLease reclaims an existing lease during grace period.
 func (s *SQLiteMetadataStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
-	s.initLockStore()
 	return s.lockStore.ReclaimLease(ctx, fileHandle, leaseKey, clientID)
 }
 
@@ -695,56 +675,45 @@ func (s *SQLiteMetadataStore) ReclaimLease(ctx context.Context, fileHandle lock.
 var _ lock.LockStore = (*sqliteTransaction)(nil)
 
 func (ptx *sqliteTransaction) PutLock(ctx context.Context, lk *lock.PersistedLock) error {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.putLockTx(ctx, ptx.tx, lk)
 }
 
 func (ptx *sqliteTransaction) GetLock(ctx context.Context, lockID string) (*lock.PersistedLock, error) {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.getLockTx(ctx, ptx.tx, lockID)
 }
 
 func (ptx *sqliteTransaction) DeleteLock(ctx context.Context, lockID string) error {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.deleteLockTx(ctx, ptx.tx, lockID)
 }
 
 func (ptx *sqliteTransaction) ListLocks(ctx context.Context, query lock.LockQuery) ([]*lock.PersistedLock, error) {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.listLocksTx(ctx, ptx.tx, query)
 }
 
 func (ptx *sqliteTransaction) DeleteLocksByClient(ctx context.Context, clientID string) (int, error) {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.deleteLocksByClientTx(ctx, ptx.tx, clientID)
 }
 
 func (ptx *sqliteTransaction) DeleteLocksByFile(ctx context.Context, fileID string) (int, error) {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.deleteLocksByFileTx(ctx, ptx.tx, fileID)
 }
 
 func (ptx *sqliteTransaction) GetServerEpoch(ctx context.Context) (uint64, error) {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.getServerEpochTx(ctx, ptx.tx)
 }
 
 func (ptx *sqliteTransaction) IncrementServerEpoch(ctx context.Context) (uint64, error) {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.incrementServerEpochTx(ctx, ptx.tx)
 }
 
 func (ptx *sqliteTransaction) GetCleanShutdown(ctx context.Context) (bool, error) {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.getCleanShutdownTx(ctx, ptx.tx)
 }
 
 func (ptx *sqliteTransaction) SetCleanShutdown(ctx context.Context, clean bool) error {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.setCleanShutdownTx(ctx, ptx.tx, clean)
 }
 
 func (ptx *sqliteTransaction) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
-	ptx.store.initLockStore()
 	return ptx.store.lockStore.reclaimLeaseTx(ctx, ptx.tx, fileHandle, leaseKey, clientID)
 }

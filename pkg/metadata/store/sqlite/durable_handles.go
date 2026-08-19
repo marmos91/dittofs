@@ -393,57 +393,48 @@ func (s *sqliteDurableStore) DeleteExpiredDurableHandles(ctx context.Context, no
 
 var _ lock.DurableHandleStore = (*SQLiteMetadataStore)(nil)
 
-func (s *SQLiteMetadataStore) getDurableStore() *sqliteDurableStore {
-	s.durableStoreMu.Lock()
-	defer s.durableStoreMu.Unlock()
-	if s.durableStore == nil {
-		s.durableStore = newSQLiteDurableStore(s.conn())
-	}
-	return s.durableStore
-}
-
 func (s *SQLiteMetadataStore) PutDurableHandle(ctx context.Context, handle *lock.PersistedDurableHandle) error {
-	return s.getDurableStore().PutDurableHandle(ctx, handle)
+	return s.durableStore.PutDurableHandle(ctx, handle)
 }
 
 func (s *SQLiteMetadataStore) GetDurableHandle(ctx context.Context, id string) (*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().GetDurableHandle(ctx, id)
+	return s.durableStore.GetDurableHandle(ctx, id)
 }
 
 func (s *SQLiteMetadataStore) GetDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().GetDurableHandleByFileID(ctx, fileID)
+	return s.durableStore.GetDurableHandleByFileID(ctx, fileID)
 }
 
 func (s *SQLiteMetadataStore) GetDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().GetDurableHandleByCreateGuid(ctx, createGuid)
+	return s.durableStore.GetDurableHandleByCreateGuid(ctx, createGuid)
 }
 
 func (s *SQLiteMetadataStore) ConsumeDurableHandle(ctx context.Context, id string) (*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().ConsumeDurableHandle(ctx, id)
+	return s.durableStore.ConsumeDurableHandle(ctx, id)
 }
 
 func (s *SQLiteMetadataStore) GetDurableHandlesByAppInstanceId(ctx context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().GetDurableHandlesByAppInstanceId(ctx, appInstanceId)
+	return s.durableStore.GetDurableHandlesByAppInstanceId(ctx, appInstanceId)
 }
 
 func (s *SQLiteMetadataStore) GetDurableHandlesByFileHandle(ctx context.Context, fileHandle []byte) ([]*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().GetDurableHandlesByFileHandle(ctx, fileHandle)
+	return s.durableStore.GetDurableHandlesByFileHandle(ctx, fileHandle)
 }
 
 func (s *SQLiteMetadataStore) DeleteDurableHandle(ctx context.Context, id string) error {
-	return s.getDurableStore().DeleteDurableHandle(ctx, id)
+	return s.durableStore.DeleteDurableHandle(ctx, id)
 }
 
 func (s *SQLiteMetadataStore) ListDurableHandles(ctx context.Context) ([]*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().ListDurableHandles(ctx)
+	return s.durableStore.ListDurableHandles(ctx)
 }
 
 func (s *SQLiteMetadataStore) ListDurableHandlesByShare(ctx context.Context, shareName string) ([]*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().ListDurableHandlesByShare(ctx, shareName)
+	return s.durableStore.ListDurableHandlesByShare(ctx, shareName)
 }
 
 func (s *SQLiteMetadataStore) DeleteExpiredDurableHandles(ctx context.Context, now time.Time) (int, error) {
-	return s.getDurableStore().DeleteExpiredDurableHandles(ctx, now)
+	return s.durableStore.DeleteExpiredDurableHandles(ctx, now)
 }
 
 // DurableHandleStore returns this store as a DurableHandleStore.

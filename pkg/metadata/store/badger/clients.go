@@ -306,44 +306,34 @@ func (s *badgerClientStore) DeleteClientRegistrationsByMonName(ctx context.Conte
 // Ensure BadgerMetadataStore implements ClientRegistrationStore
 var _ lock.ClientRegistrationStore = (*BadgerMetadataStore)(nil)
 
-// getClientStore returns the client store, initializing if needed.
-func (s *BadgerMetadataStore) getClientStore() *badgerClientStore {
-	s.clientStoreMu.Lock()
-	defer s.clientStoreMu.Unlock()
-	if s.clientStore == nil {
-		s.clientStore = newBadgerClientStore(s.db)
-	}
-	return s.clientStore
-}
-
 // PutClientRegistration stores or updates a client registration.
 func (s *BadgerMetadataStore) PutClientRegistration(ctx context.Context, reg *lock.PersistedClientRegistration) error {
-	return s.getClientStore().PutClientRegistration(ctx, reg)
+	return s.clientStore.PutClientRegistration(ctx, reg)
 }
 
 // GetClientRegistration retrieves a registration by client ID.
 func (s *BadgerMetadataStore) GetClientRegistration(ctx context.Context, clientID string) (*lock.PersistedClientRegistration, error) {
-	return s.getClientStore().GetClientRegistration(ctx, clientID)
+	return s.clientStore.GetClientRegistration(ctx, clientID)
 }
 
 // DeleteClientRegistration removes a registration by client ID.
 func (s *BadgerMetadataStore) DeleteClientRegistration(ctx context.Context, clientID string) error {
-	return s.getClientStore().DeleteClientRegistration(ctx, clientID)
+	return s.clientStore.DeleteClientRegistration(ctx, clientID)
 }
 
 // ListClientRegistrations returns all stored registrations.
 func (s *BadgerMetadataStore) ListClientRegistrations(ctx context.Context) ([]*lock.PersistedClientRegistration, error) {
-	return s.getClientStore().ListClientRegistrations(ctx)
+	return s.clientStore.ListClientRegistrations(ctx)
 }
 
 // DeleteAllClientRegistrations removes all registrations.
 func (s *BadgerMetadataStore) DeleteAllClientRegistrations(ctx context.Context) (int, error) {
-	return s.getClientStore().DeleteAllClientRegistrations(ctx)
+	return s.clientStore.DeleteAllClientRegistrations(ctx)
 }
 
 // DeleteClientRegistrationsByMonName removes all registrations monitoring a specific host.
 func (s *BadgerMetadataStore) DeleteClientRegistrationsByMonName(ctx context.Context, monName string) (int, error) {
-	return s.getClientStore().DeleteClientRegistrationsByMonName(ctx, monName)
+	return s.clientStore.DeleteClientRegistrationsByMonName(ctx, monName)
 }
 
 // ClientRegistrationStore returns this store as a ClientRegistrationStore.

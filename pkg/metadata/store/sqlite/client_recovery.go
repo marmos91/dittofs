@@ -142,34 +142,24 @@ func (s *sqliteRecoveryStore) RecordReclaimComplete(ctx context.Context, clientI
 // Ensure SQLiteMetadataStore implements ClientRecoveryStore.
 var _ lock.ClientRecoveryStore = (*SQLiteMetadataStore)(nil)
 
-// getRecoveryStore returns the recovery store, initializing if needed.
-func (s *SQLiteMetadataStore) getRecoveryStore() *sqliteRecoveryStore {
-	s.recoveryStoreMu.Lock()
-	defer s.recoveryStoreMu.Unlock()
-	if s.recoveryStore == nil {
-		s.recoveryStore = newSQLiteRecoveryStore(s.conn())
-	}
-	return s.recoveryStore
-}
-
 // PutClientRecovery stores or replaces a client recovery record.
 func (s *SQLiteMetadataStore) PutClientRecovery(ctx context.Context, rec *lock.V4ClientRecoveryRecord) error {
-	return s.getRecoveryStore().PutClientRecovery(ctx, rec)
+	return s.recoveryStore.PutClientRecovery(ctx, rec)
 }
 
 // DeleteClientRecovery removes a client recovery record.
 func (s *SQLiteMetadataStore) DeleteClientRecovery(ctx context.Context, clientIDString string) error {
-	return s.getRecoveryStore().DeleteClientRecovery(ctx, clientIDString)
+	return s.recoveryStore.DeleteClientRecovery(ctx, clientIDString)
 }
 
 // ListClientRecovery returns all stored client recovery records.
 func (s *SQLiteMetadataStore) ListClientRecovery(ctx context.Context) ([]*lock.V4ClientRecoveryRecord, error) {
-	return s.getRecoveryStore().ListClientRecovery(ctx)
+	return s.recoveryStore.ListClientRecovery(ctx)
 }
 
 // RecordReclaimComplete marks a client's recovery record reclaim-complete.
 func (s *SQLiteMetadataStore) RecordReclaimComplete(ctx context.Context, clientIDString string) error {
-	return s.getRecoveryStore().RecordReclaimComplete(ctx, clientIDString)
+	return s.recoveryStore.RecordReclaimComplete(ctx, clientIDString)
 }
 
 // ClientRecoveryStore returns this store as a ClientRecoveryStore.

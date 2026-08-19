@@ -13,9 +13,7 @@ import (
 const builtinAdministratorsSID = "S-1-5-32-544"
 
 // domainAdminSIDPattern matches the local/domain Administrator account SID
-// (S-1-5-21-{auth1}-{auth2}-{auth3}-500). Mirrors the pattern in
-// pkg/metadata/auth_identity.go::IsAdministratorSID. Kept local to the
-// acl package to avoid a cyclic import from pkg/metadata.
+// (S-1-5-21-{auth1}-{auth2}-{auth3}-500).
 var domainAdminSIDPattern = regexp.MustCompile(`^S-1-5-21-\d+-\d+-\d+-500$`)
 
 // HasTakeOwnershipPrivilege reports whether the given requester SID +
@@ -27,18 +25,20 @@ var domainAdminSIDPattern = regexp.MustCompile(`^S-1-5-21-\d+-\d+-\d+-500$`)
 // the MS-DTYP §2.5.3.2 owner-implicit WRITE_OWNER grant is restricted
 // to admins, matching Samba access_check.c::se_access_check_implicit_owner.
 func HasTakeOwnershipPrivilege(requesterSID string, groupSIDs []string) bool {
-	if isAdminSID(requesterSID) {
+	if IsAdminSID(requesterSID) {
 		return true
 	}
 	for _, g := range groupSIDs {
-		if isAdminSID(g) {
+		if IsAdminSID(g) {
 			return true
 		}
 	}
 	return false
 }
 
-func isAdminSID(sid string) bool {
+// IsAdminSID reports whether the SID is BUILTIN\Administrators or a
+// local/domain Administrator (RID 500) account.
+func IsAdminSID(sid string) bool {
 	if sid == "" {
 		return false
 	}

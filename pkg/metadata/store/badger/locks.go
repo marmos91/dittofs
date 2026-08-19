@@ -533,78 +533,58 @@ func (s *badgerLockStore) ReclaimLease(ctx context.Context, fileHandle lock.File
 // Ensure BadgerMetadataStore implements LockStore
 var _ lock.LockStore = (*BadgerMetadataStore)(nil)
 
-// initLockStore ensures the lock store is initialized.
-func (s *BadgerMetadataStore) initLockStore() {
-	s.lockStoreMu.Lock()
-	defer s.lockStoreMu.Unlock()
-	if s.lockStore == nil {
-		s.lockStore = newBadgerLockStore(s.db)
-	}
-}
-
 // PutLock persists a lock.
 func (s *BadgerMetadataStore) PutLock(ctx context.Context, lk *lock.PersistedLock) error {
-	s.initLockStore()
 	return s.lockStore.PutLock(ctx, lk)
 }
 
 // GetLock retrieves a lock by ID.
 func (s *BadgerMetadataStore) GetLock(ctx context.Context, lockID string) (*lock.PersistedLock, error) {
-	s.initLockStore()
 	return s.lockStore.GetLock(ctx, lockID)
 }
 
 // DeleteLock removes a lock by ID.
 func (s *BadgerMetadataStore) DeleteLock(ctx context.Context, lockID string) error {
-	s.initLockStore()
 	return s.lockStore.DeleteLock(ctx, lockID)
 }
 
 // ListLocks returns locks matching the query.
 func (s *BadgerMetadataStore) ListLocks(ctx context.Context, query lock.LockQuery) ([]*lock.PersistedLock, error) {
-	s.initLockStore()
 	return s.lockStore.ListLocks(ctx, query)
 }
 
 // DeleteLocksByClient removes all locks for a client.
 func (s *BadgerMetadataStore) DeleteLocksByClient(ctx context.Context, clientID string) (int, error) {
-	s.initLockStore()
 	return s.lockStore.DeleteLocksByClient(ctx, clientID)
 }
 
 // DeleteLocksByFile removes all locks for a file.
 func (s *BadgerMetadataStore) DeleteLocksByFile(ctx context.Context, fileID string) (int, error) {
-	s.initLockStore()
 	return s.lockStore.DeleteLocksByFile(ctx, fileID)
 }
 
 // GetServerEpoch returns current server epoch.
 func (s *BadgerMetadataStore) GetServerEpoch(ctx context.Context) (uint64, error) {
-	s.initLockStore()
 	return s.lockStore.GetServerEpoch(ctx)
 }
 
 // IncrementServerEpoch increments and returns new epoch.
 func (s *BadgerMetadataStore) IncrementServerEpoch(ctx context.Context) (uint64, error) {
-	s.initLockStore()
 	return s.lockStore.IncrementServerEpoch(ctx)
 }
 
 // GetCleanShutdown reports whether the previous run shut down gracefully.
 func (s *BadgerMetadataStore) GetCleanShutdown(ctx context.Context) (bool, error) {
-	s.initLockStore()
 	return s.lockStore.GetCleanShutdown(ctx)
 }
 
 // SetCleanShutdown records the clean-shutdown marker durably.
 func (s *BadgerMetadataStore) SetCleanShutdown(ctx context.Context, clean bool) error {
-	s.initLockStore()
 	return s.lockStore.SetCleanShutdown(ctx, clean)
 }
 
 // ReclaimLease reclaims an existing lease during grace period.
 func (s *BadgerMetadataStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
-	s.initLockStore()
 	return s.lockStore.ReclaimLease(ctx, fileHandle, leaseKey, clientID)
 }
 
@@ -619,7 +599,6 @@ func (tx *badgerTransaction) PutLock(ctx context.Context, lk *lock.PersistedLock
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	tx.store.initLockStore()
 	return tx.store.lockStore.putLockTx(tx.txn, lk)
 }
 
@@ -627,7 +606,6 @@ func (tx *badgerTransaction) GetLock(ctx context.Context, lockID string) (*lock.
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	tx.store.initLockStore()
 	return tx.store.lockStore.getLockTx(tx.txn, lockID)
 }
 
@@ -635,7 +613,6 @@ func (tx *badgerTransaction) DeleteLock(ctx context.Context, lockID string) erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	tx.store.initLockStore()
 	return tx.store.lockStore.deleteLockTx(tx.txn, lockID)
 }
 
@@ -643,7 +620,6 @@ func (tx *badgerTransaction) ListLocks(ctx context.Context, query lock.LockQuery
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	tx.store.initLockStore()
 	return tx.store.lockStore.listLocksTx(tx.txn, query)
 }
 
@@ -654,7 +630,6 @@ func (tx *badgerTransaction) DeleteLocksByClient(ctx context.Context, clientID s
 	// Operate within the caller's transaction so the deletions are atomic with
 	// the rest of the operation and are discarded if WithTransaction retries on
 	// an OCC conflict (the store-level method would commit out-of-band).
-	tx.store.initLockStore()
 	return tx.store.lockStore.deleteLocksByIndexPrefixTx(tx.txn, []byte(lockIndexPrefix(prefixLockByClient, clientID)))
 }
 
@@ -662,7 +637,6 @@ func (tx *badgerTransaction) DeleteLocksByFile(ctx context.Context, fileID strin
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	tx.store.initLockStore()
 	return tx.store.lockStore.deleteLocksByIndexPrefixTx(tx.txn, []byte(lockIndexPrefix(prefixLockByFile, fileID)))
 }
 
@@ -670,7 +644,6 @@ func (tx *badgerTransaction) GetServerEpoch(ctx context.Context) (uint64, error)
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	tx.store.initLockStore()
 	return tx.store.lockStore.getServerEpochTx(tx.txn)
 }
 
@@ -682,7 +655,6 @@ func (tx *badgerTransaction) IncrementServerEpoch(ctx context.Context) (uint64, 
 	// its own db.Update, so on an OCC retry of the outer transaction the epoch
 	// would be bumped once per attempt (double-increment); keeping it in tx.txn
 	// makes the increment exactly-once per committed transaction.
-	tx.store.initLockStore()
 	return tx.store.lockStore.incrementServerEpochTx(tx.txn)
 }
 
@@ -690,7 +662,6 @@ func (tx *badgerTransaction) GetCleanShutdown(ctx context.Context) (bool, error)
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	tx.store.initLockStore()
 	return tx.store.lockStore.GetCleanShutdown(ctx)
 }
 
@@ -701,7 +672,6 @@ func (tx *badgerTransaction) SetCleanShutdown(ctx context.Context, clean bool) e
 	// Write within the caller's transaction so the marker is only durable if
 	// the outer transaction commits (the store-level method commits out-of-band
 	// regardless of the outer transaction's fate).
-	tx.store.initLockStore()
 	return tx.store.lockStore.setCleanShutdownTx(tx.txn, clean)
 }
 
@@ -709,6 +679,5 @@ func (tx *badgerTransaction) ReclaimLease(ctx context.Context, fileHandle lock.F
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	tx.store.initLockStore()
 	return tx.store.lockStore.ReclaimLease(ctx, fileHandle, leaseKey, clientID)
 }
