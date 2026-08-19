@@ -29,18 +29,27 @@ func (r *Runtime) CheckManifests(ctx context.Context, shareName string) (*engine
 		return nil, err
 	}
 
-	checkSynced := false
-	if bs, bsErr := r.sharesSvc.GetBlockStoreForShare(shareName); bsErr != nil {
-		logger.Debug("store check: block store lookup failed, skipping the synced-hash check",
-			"share", shareName, "error", bsErr)
-	} else if bs != nil {
-		checkSynced = bs.HasRemoteStore()
+	var (
+		checkSynced bool
+		skipped     string
+	)
+	bs, bsErr := r.sharesSvc.GetBlockStoreForShare(shareName)
+	switch {
+	case bsErr != nil || bs == nil:
+		skipped = "block store could not be resolved for this share"
+		logger.Warn("store check: block store lookup failed, cannot run the synced-hash check",
+			logger.KeyShare, shareName, "error", bsErr)
+	case !bs.HasRemoteStore():
+		skipped = "share has no remote store"
+	default:
+		checkSynced = true
 	}
 
 	res, err := engine.CheckManifests(ctx, shareName, mds, checkSynced)
 	if err != nil {
 		return nil, err
 	}
+	res.SyncedCheckSkipped = skipped
 	logger.Info("store check: complete",
 		"share", shareName,
 		"files_scanned", res.FilesScanned,

@@ -131,7 +131,13 @@ func printCheckTables(results []*engine.ManifestCheckResult) error {
 		}
 		unknown := fmt.Sprintf("%d", r.UnknownHashRows)
 		if !r.SyncedHashesChecked {
-			unknown = "not checked (no remote store resolved for this share)"
+			// Say which of the two suppressing conditions applied: nothing
+			// to check, or a check that could not be run.
+			reason := r.SyncedCheckSkipped
+			if reason == "" {
+				reason = "reason not recorded"
+			}
+			unknown = "not checked (" + reason + ")"
 		}
 		pairs := [][2]string{
 			{"Share", r.Share},

@@ -161,6 +161,7 @@ func TestCheckCmd_UnclaimedHoleIsNotDamage(t *testing.T) {
 		return &engine.ManifestCheckResult{
 			Share:                "myshare",
 			FilesScanned:         1,
+			SyncedCheckSkipped:   "share has no remote store",
 			PayloadsWithFindings: 1,
 			UncoveredRanges:      1,
 			UncoveredBytes:       4096,
@@ -190,7 +191,7 @@ func TestCheckCmd_UnclaimedHoleIsNotDamage(t *testing.T) {
 	if !strings.Contains(out, "--include-holes") {
 		t.Errorf("output must point at --include-holes when holes were suppressed; got %q", out)
 	}
-	if !strings.Contains(out, "not checked (no remote store resolved") {
+	if !strings.Contains(out, "not checked (share has no remote store") {
 		t.Errorf("a skipped synced-hash check must say so rather than print 0; got %q", out)
 	}
 
@@ -246,4 +247,33 @@ func TestCheckCmd_Registered(t *testing.T) {
 		}
 	}
 	t.Fatal("checkCmd not registered on store.Cmd")
+}
+
+// TestCheckCmd_SkipReasonDistinguishesCases pins that the two conditions
+// suppressing the unknown-hash check are reported apart. A share with no
+// remote store has nothing that check could find; a share whose block store
+// could not be resolved has a check that could not be run, and telling the
+// second operator the first thing sends them away from a real fault.
+func TestCheckCmd_SkipReasonDistinguishesCases(t *testing.T) {
+	for _, reason := range []string{
+		"share has no remote store",
+		"block store could not be resolved for this share",
+	} {
+		s := newCheckServer(t)
+		s.results["myshare"] = &engine.ManifestCheckResult{
+			Share:              "myshare",
+			FilesScanned:       1,
+			SyncedCheckSkipped: reason,
+		}
+		withCheckTestServer(t, s.URL)
+
+		out := captureStdoutCheck(t, func() {
+			if err := runStoreCheck(checkCmd, []string{"myshare"}); err != nil {
+				t.Fatalf("runStoreCheck: %v", err)
+			}
+		})
+		if !strings.Contains(out, "not checked ("+reason+")") {
+			t.Errorf("output must name the skip reason %q; got %q", reason, out)
+		}
+	}
 }

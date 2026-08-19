@@ -97,10 +97,17 @@ type ManifestCheckResult struct {
 	// FilesScanned is the number of regular files walked.
 	FilesScanned uint64 `json:"files_scanned"`
 
-	// SyncedHashesChecked reports whether the unknown-hash check ran. It is
-	// skipped on a share with no remote store, where nothing is ever marked
-	// synced and every row would otherwise be reported.
+	// SyncedHashesChecked reports whether the unknown-hash check ran.
 	SyncedHashesChecked bool `json:"synced_hashes_checked"`
+
+	// SyncedCheckSkipped names why the unknown-hash check did not run, and
+	// is empty when it ran. Two conditions suppress it and they mean
+	// opposite things to an operator: a share with no remote store has
+	// nothing that check could find, while a share whose block store could
+	// not be resolved has a check that could not be performed — reporting
+	// the second as the first tells someone with a broken block store that
+	// there was nothing to look for.
+	SyncedCheckSkipped string `json:"synced_check_skipped,omitempty"`
 
 	// PayloadsWithFindings is the number of payloads the scan had something
 	// to report about, damage or not.
