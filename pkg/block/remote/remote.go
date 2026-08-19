@@ -63,8 +63,8 @@ type RemoteStore interface {
 }
 
 // RemoteBlockStore is the block-keyed (non-CAS) remote store contract for
-// objects stored under the "blocks/" prefix. Implemented
-// by pkg/block/remote/s3.Store and pkg/block/remote/memory.Store.
+// objects stored under the "blocks/" prefix. Implemented by
+// pkg/block/remote/s3.Store and pkg/block/remote/memory.Store.
 //
 // Objects are keyed by an opaque blockID string; the on-disk/on-wire key shape
 // is block.FormatBlockKey(blockID) = "blocks/<blockID>". This is the production
@@ -129,12 +129,13 @@ type ChunkReader interface {
 }
 
 // ChunkSealer is the write-side counterpart to ChunkReader, and likewise a
-// mandatory member of RemoteStore. The block carver calls SealChunk on the (possibly decorated) remote
-// store to transform one chunk's raw plaintext bytes into the wire bytes that
-// land inside a packed block object — applying exactly the same per-chunk
-// compression/encryption transforms the standalone CAS Put path applies, in the
-// same order. The carver then frames the returned wire bytes into the block via
-// blockcodec and uploads the assembled block with RemoteBlockStore.PutBlock.
+// mandatory member of RemoteStore. The block carver calls SealChunk on the
+// (possibly decorated) remote store to transform one chunk's raw plaintext
+// bytes into the wire bytes that land inside a packed block object — applying
+// exactly the same per-chunk compression/encryption transforms the standalone
+// CAS Put path applies, in the same order. The carver then frames the returned
+// wire bytes into the block via blockcodec and uploads the assembled block
+// with RemoteBlockStore.PutBlock.
 //
 // SealChunk MUST be byte-for-byte symmetric with ChunkReader.ReadChunk:
 // ReadChunk(GetBlockRange(SealChunk(hash, plaintext))) == plaintext. The base
