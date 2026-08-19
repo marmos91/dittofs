@@ -1,9 +1,11 @@
 package lock
 
 import (
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
@@ -385,4 +387,162 @@ func (ct *ConnectionTracker) Close() {
 	// Clear all state
 	ct.clients = make(map[string]*ClientRegistration)
 	ct.adapterCounts = make(map[string]int)
+}
+
+// ============================================================================
+// Connection/Cleanup Operations
+// ============================================================================
+
+// RemoveAllLocks removes all locks (legacy, unified, and delegations) for a file.
+//
+// The persisted bulk-delete runs synchronously under lm.mu (handleKey is the
+// FileID used when persisting): keeping it ordered with single-record PutLock/
+// DeleteLock prevents a concurrent acquire on the same file from racing this
+// delete to the store and leaving an orphaned record behind (R3-1 class).
+func (lm *Manager) RemoveAllLocks(handleKey string) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	delete(lm.locks, handleKey)
+	old := lm.unifiedLocks[handleKey]
+	delete(lm.unifiedLocks, handleKey)
+	lm.reindexHandleLocked(handleKey, old)
+	delete(lm.breakWaitChans, handleKey)
+
+	if lm.lockStore != nil {
+		ctx, cancel := withPersistTimeout()
+		defer cancel()
+		if _, err := lm.lockStore.DeleteLocksByFile(ctx, handleKey); err != nil {
+			logger.Error("RemoveAllLocks: failed to delete persisted locks", "handleKey", handleKey, "error", err)
+		}
+	}
+}
+
+// RemoveClientLocks removes all unified locks held by a specific client. The
+// persisted bulk-delete runs synchronously under lm.mu for the same ordering
+// reason as RemoveAllLocks.
+//
+// clientHandleIndex (clientID -> set of handleKeys, see indexes.go) bounds the
+// work to the buckets the client actually appears in instead of scanning every
+// entry in unifiedLocks under the global mutex.
+func (lm *Manager) RemoveClientLocks(clientID string) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	// Snapshot the affected handleKeys before mutating: reindexHandleLocked
+	// updates clientHandleIndex underneath us, so iterating the map directly
+	// would mutate it mid-range.
+	var handleKeys []string
+	for handleKey := range lm.clientHandleIndex[clientID] {
+		handleKeys = append(handleKeys, handleKey)
+	}
+
+	for _, handleKey := range handleKeys {
+		locks := lm.unifiedLocks[handleKey]
+		var remaining []*UnifiedLock
+		for _, lock := range locks {
+			if lock.Owner.ClientID != clientID {
+				remaining = append(remaining, lock)
+			}
+		}
+		if len(remaining) == 0 {
+			delete(lm.unifiedLocks, handleKey)
+		} else {
+			lm.unifiedLocks[handleKey] = remaining
+		}
+		lm.reindexHandleLocked(handleKey, locks)
+	}
+
+	if lm.lockStore != nil {
+		ctx, cancel := withPersistTimeout()
+		defer cancel()
+		if _, err := lm.lockStore.DeleteLocksByClient(ctx, clientID); err != nil {
+			logger.Error("RemoveClientLocks: failed to delete persisted locks", "clientID", clientID, "error", err)
+		}
+	}
+}
+
+// ReleaseByOwnerPrefix removes every unified lock whose Owner.OwnerID begins
+// with the given prefix and returns the number of locks released.
+//
+// This is used for NSM crash cleanup: when a client crashes, NLM must release
+// all locks it held. NLM owner IDs are formatted as
+// "nlm:{caller_name}:{svid}:{oh_hex}", so passing "nlm:{caller_name}:" releases
+// every byte-range lock the crashed client held across all files in this share
+// without touching locks from other protocols (SMB/NFSv4 use different prefixes)
+// or other NLM clients. The trailing ":" in the caller-supplied prefix prevents
+// "nlm:client1:" from matching "nlm:client10:".
+//
+// The persisted bulk-delete runs synchronously under lm.mu for the same
+// ordering reason as RemoveClientLocks. Calling with a prefix that matches no
+// locks is safe and returns 0.
+//
+// Unlike RemoveClientLocks, this intentionally keeps the full unifiedLocks
+// scan: the predicate is a prefix match on Owner.OwnerID, and there is no
+// reverse index keyed by OwnerID prefix (an exact-OwnerID index could not
+// answer a prefix query without either materializing every prefix or scanning
+// the index keys anyway, so it would not bound the work). NSM crash cleanup is
+// rare and not on the steady-state lease/lock hot path, so the scan is
+// acceptable; the index maintenance below still keeps clientHandleIndex /
+// leaseKeyIndex consistent for the records this removes.
+func (lm *Manager) ReleaseByOwnerPrefix(prefix string) int {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	released := 0
+	for handleKey, locks := range lm.unifiedLocks {
+		var remaining []*UnifiedLock
+		mutated := false
+		for _, lock := range locks {
+			if strings.HasPrefix(lock.Owner.OwnerID, prefix) {
+				lm.deleteUnifiedLockLocked(lock)
+				released++
+				mutated = true
+				continue
+			}
+			remaining = append(remaining, lock)
+		}
+		if !mutated {
+			continue
+		}
+		if len(remaining) == 0 {
+			delete(lm.unifiedLocks, handleKey)
+		} else {
+			lm.unifiedLocks[handleKey] = remaining
+		}
+		lm.reindexHandleLocked(handleKey, locks)
+	}
+
+	return released
+}
+
+// GetStats returns current lock manager statistics.
+func (lm *Manager) GetStats() ManagerStats {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	totalLegacy := 0
+	for _, locks := range lm.locks {
+		totalLegacy += len(locks)
+	}
+
+	totalUnified := 0
+	for _, locks := range lm.unifiedLocks {
+		totalUnified += len(locks)
+	}
+
+	fileSet := make(map[string]struct{})
+	for key := range lm.locks {
+		fileSet[key] = struct{}{}
+	}
+	for key := range lm.unifiedLocks {
+		fileSet[key] = struct{}{}
+	}
+
+	return ManagerStats{
+		TotalLegacyLocks:   totalLegacy,
+		TotalUnifiedLocks:  totalUnified,
+		TotalFiles:         len(fileSet),
+		BreakCallbackCount: len(lm.breakCallbacks),
+		GracePeriodActive:  lm.gracePeriod != nil && lm.gracePeriod.GetState() == GraceStateActive,
+	}
 }

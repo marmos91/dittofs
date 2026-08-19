@@ -387,3 +387,78 @@ func (gpm *GracePeriodManager) Close() {
 	gpm.expectedClients = make(map[string]bool)
 	gpm.reclaimedClients = make(map[string]bool)
 }
+
+// ============================================================================
+// Grace Period Delegation
+// ============================================================================
+
+// EnterGracePeriod transitions to grace period state.
+// If no grace period manager is configured, this is a no-op.
+func (lm *Manager) EnterGracePeriod(expectedClients []string) {
+	if lm.gracePeriod != nil {
+		lm.gracePeriod.EnterGracePeriod(expectedClients)
+	}
+}
+
+// ExitGracePeriod manually exits the grace period.
+// If no grace period manager is configured, this is a no-op.
+func (lm *Manager) ExitGracePeriod() {
+	if lm.gracePeriod != nil {
+		lm.gracePeriod.ExitGracePeriod()
+	}
+}
+
+// AbortGracePeriod cancels a pending grace timer WITHOUT firing the onGraceEnd
+// callback. Used to discard a manager that lost a registration race: its
+// orphaned timer must never run, because onGraceEnd sweeps the shared lock
+// store (RemoveClientLocks) and ends the surviving NFSv4 grace machine — both
+// would corrupt the published manager's state. If no grace period manager is
+// configured, this is a no-op.
+func (lm *Manager) AbortGracePeriod() {
+	if lm.gracePeriod != nil {
+		lm.gracePeriod.Close()
+	}
+}
+
+// IsOperationAllowed checks if a lock operation is allowed in the current state.
+// If no grace period manager is configured, all operations are allowed.
+func (lm *Manager) IsOperationAllowed(op Operation) (bool, error) {
+	if lm.gracePeriod != nil {
+		return lm.gracePeriod.IsOperationAllowed(op)
+	}
+	return true, nil
+}
+
+// MarkReclaimed records that a client has reclaimed their locks.
+// If no grace period manager is configured, this is a no-op.
+func (lm *Manager) MarkReclaimed(clientID string) {
+	if lm.gracePeriod != nil {
+		lm.gracePeriod.MarkReclaimed(clientID)
+	}
+}
+
+// IsInGracePeriod returns true if grace period is currently active.
+func (lm *Manager) IsInGracePeriod() bool {
+	if lm.gracePeriod != nil {
+		return lm.gracePeriod.GetState() == GraceStateActive
+	}
+	return false
+}
+
+// GetExpectedClients returns the client IDs the grace period is waiting on to
+// reclaim. Returns nil if no grace period manager is configured.
+func (lm *Manager) GetExpectedClients() []string {
+	if lm.gracePeriod != nil {
+		return lm.gracePeriod.GetExpectedClients()
+	}
+	return nil
+}
+
+// GetReclaimedClients returns the client IDs that have reclaimed during the
+// current grace period. Returns nil if no grace period manager is configured.
+func (lm *Manager) GetReclaimedClients() []string {
+	if lm.gracePeriod != nil {
+		return lm.gracePeriod.GetReclaimedClients()
+	}
+	return nil
+}
