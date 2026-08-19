@@ -67,7 +67,7 @@ var _ cacheInterface = nullCache{}
 // without going through the Store boundary.
 //
 // Cross-file dedup: two payloads referencing the same ContentHash
-// share one cache entry. Eviction is hash-scoped (LRU)
+// share one cache entry. Eviction is hash-scoped (LRU);
 // InvalidateFile is surgical (drops only the explicitly-listed hashes
 // for a file, preserving any shared entries).
 type Cache struct {
