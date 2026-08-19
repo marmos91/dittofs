@@ -287,8 +287,8 @@ func (bs *Store) Start(ctx context.Context) error {
 // block by ContentHash. It is a permanent no-op miss: the journal local store
 // is (payloadID,offset)-keyed, not hash-keyed, so there is no local
 // content-addressed read to prefetch through. Cold reads hydrate covering
-// chunks from the remote on demand (read_internal.go), which leaves the CAS
-// read cache hint-only. Remote fallback is deliberately not wired here —
+// chunks from the remote on demand (read_internal.go). ponytail: that leaves
+// the CAS read cache hint-only. Remote fallback is deliberately not wired here —
 // prefetch is best-effort and must not block on a remote round-trip.
 func (bs *Store) loadByHash(_ context.Context, _ block.ContentHash) ([]byte, error) {
 	return nil, block.ErrChunkNotFound

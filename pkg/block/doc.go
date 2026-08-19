@@ -140,7 +140,7 @@
 // for both markers and either retires them (deletion) or re-targets
 // them to a specific milestone tag.
 //
-// Apply the markers on the symbol's godoc, not on internal callers
+// Apply the markers on the symbol's godoc, not on internal callers:
 // the goal is for `grep -rn 'TRANSITIONAL-' ./pkg/block` to
 // enumerate every deferral surface in one pass and for new contributors
 // to recognize the convention without consulting a roadmap.
