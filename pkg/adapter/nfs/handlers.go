@@ -437,7 +437,7 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 
 		// The COMPOUND carries the minorversion, so the registry's "4" can now
 		// be refined to the exact dialect. Only meaningful once the compound
-		// decoded; on a wire error the field is still zero.
+		// has decoded; on a wire error the field is still zero.
 		if err == nil {
 			c.noteNFSVersion("4." + strconv.FormatUint(uint64(compCtx.MinorVersion), 10))
 		}

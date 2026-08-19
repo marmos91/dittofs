@@ -279,12 +279,13 @@ func (c *NFSConnection) dispatchRequest(ctx context.Context, clientAddr string, 
 // the dispatch path reports it: the program version gives "3" or "4", and the
 // COMPOUND minorversion refines "4" to "4.0"/"4.1"/"4.2" once decoded.
 //
-// The registry write lock is only taken when the value actually changes, and a
-// bare major never overwrites the minor-qualified form it is a prefix of, so a
-// steady-state connection stops touching the registry after its first calls.
+// Nothing is published while the version already on record starts with the one
+// being reported, which covers both an unchanged version and a bare major
+// arriving after the minor-qualified form it is a prefix of. A steady-state
+// connection therefore stops taking the registry write lock after its first
+// calls.
 func (c *NFSConnection) noteNFSVersion(version string) {
-	cur, _ := c.nfsVersion.Load().(string)
-	if cur == version || strings.HasPrefix(cur, version) {
+	if cur, _ := c.nfsVersion.Load().(string); strings.HasPrefix(cur, version) {
 		return
 	}
 	if rt := c.server.Registry; rt != nil && c.clientID != "" {
