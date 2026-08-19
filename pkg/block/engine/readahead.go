@@ -29,7 +29,7 @@ type raState struct {
 // should be scheduled.
 //
 // Unlike the old geometric planReadahead (which ramped 1->2->4 and only ran on
-// a local miss inside EnsureAvailableAndRead), this keeps a FULL fixed window of
+// a local miss inside EnsureAvailable), this keeps a FULL fixed window of
 // config.PrefetchBlocks blocks in flight ahead of the frontier and is driven on
 // EVERY read (local hits included) via scheduleReadahead. A sequential reader
 // serving from the local tier therefore keeps the window sliding forward instead
@@ -135,7 +135,7 @@ func (m *Syncer) scheduleReadahead(payloadID string, offset uint64, length uint3
 	}
 	// Best-effort enqueue: EnqueuePrefetch drops when the SyncQueue is saturated.
 	// A dropped block is NOT a window hole — the reader's own demand fetch
-	// (EnsureAvailableAndRead) still serves it, just without the prefetch head
+	// (EnsureAvailable) still serves it, just without the prefetch head
 	// start. We deliberately do NOT roll scheduledUpTo back on a drop: under a
 	// saturated queue, degrading prefetch to demand is the correct backpressure,
 	// and re-enqueue churn on every read would only deepen the saturation. The

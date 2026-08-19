@@ -54,7 +54,7 @@ func (s *indexedChunkStore) GetFileChunkAtOrAfterOffset(ctx context.Context, pay
 	return best, nil
 }
 
-// TestEnsureAvailableAndRead_ChunkAfterHoleIsFetched pins the sparse-hole step
+// TestEnsureAvailable_ChunkAfterHoleIsFetched pins the sparse-hole step
 // in the per-window fetch loop. The payload is a hole over [0, 1 MiB) with a
 // real remote-resident chunk at [1 MiB, 3 MiB) — both inside the first 8 MiB
 // block, which is the routine shape because FastCDC chunks average well under
@@ -68,7 +68,7 @@ func (s *indexedChunkStore) GetFileChunkAtOrAfterOffset(ctx context.Context, pay
 //
 // Both store shapes are exercised because they resolve the successor by
 // different means — an offset index versus a manifest walk.
-func TestEnsureAvailableAndRead_ChunkAfterHoleIsFetched(t *testing.T) {
+func TestEnsureAvailable_ChunkAfterHoleIsFetched(t *testing.T) {
 	const (
 		oneMiB     = 1024 * 1024
 		holeEnd    = 1 * oneMiB
@@ -100,8 +100,8 @@ func TestEnsureAvailableAndRead_ChunkAfterHoleIsFetched(t *testing.T) {
 
 			m := newFetchSyncer(loc, rs, tc.wrap(stub), mds)
 
-			if err := m.EnsureAvailableAndRead(ctx, payloadID, 0, readLength); err != nil {
-				t.Fatalf("EnsureAvailableAndRead: %v", err)
+			if err := m.EnsureAvailable(ctx, payloadID, 0, readLength); err != nil {
+				t.Fatalf("EnsureAvailable: %v", err)
 			}
 
 			// Poison the destination so an unhydrated range fails instead of hiding in zeros.

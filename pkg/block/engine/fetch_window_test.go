@@ -118,7 +118,7 @@ func (alwaysColdLocal) ReadAt(_ context.Context, _ string, _ int64, dst []byte) 
 func TestReadAtInternal_StillColdAfterHydrateFailsClosed(t *testing.T) {
 	ctx := context.Background()
 
-	// No remote: EnsureAvailableAndRead returns without hydrating anything, so
+	// No remote: EnsureAvailable returns without hydrating anything, so
 	// the window is still cold on the re-read.
 	bs := &Store{
 		local:  alwaysColdLocal{},

@@ -17,7 +17,7 @@ import (
 // file, carve re-chunks ONLY the dirty sub-range and never reaps the superseded
 // FileChunk rows. The per-file FileChunk manifest is the SOLE resolver for cold
 // (evicted) reads — an evicted interval carries no remote locator, so
-// EnsureAvailableAndRead / GetFileChunkAtOffset must find a covering row. So a
+// EnsureAvailable / GetFileChunkAtOffset must find a covering row. So a
 // manifest that no longer tiles [0, fileSize) exactly is silent data corruption:
 //
 //   - a GAP  → cold read of the uncovered range returns zero-fill (shrink case)

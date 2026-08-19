@@ -457,10 +457,10 @@ func blockRange(offset uint64, length uint32) (start, end uint64) {
 	return offset / uint64(BlockSize), (offset + uint64(length) - 1) / uint64(BlockSize)
 }
 
-// EnsureAvailableAndRead hydrates the local tier for [offset, offset+length) so
+// EnsureAvailable hydrates the local tier for [offset, offset+length) so
 // the caller's subsequent local read is served warm. Demanded chunks are
 // downloaded inline in the caller's goroutine; prefetch uses the worker pool.
-func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, offset uint64, length uint32) error {
+func (m *Syncer) EnsureAvailable(ctx context.Context, payloadID string, offset uint64, length uint32) error {
 	if length == 0 {
 		return nil
 	}
@@ -492,7 +492,7 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 	// Health gate: fail fast when remote is unreachable
 	if !m.IsRemoteHealthy() {
 		m.offlineReadsBlocked.Add(1)
-		m.logOfflineRead("EnsureAvailableAndRead", payloadID, offset/uint64(BlockSize))
+		m.logOfflineRead("EnsureAvailable", payloadID, offset/uint64(BlockSize))
 		return m.remoteUnavailableError()
 	}
 
@@ -548,7 +548,7 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 		// rather than a generic read failure; anything else is returned unchanged.
 		if fetchCtx.Err() != nil && ctx.Err() == nil {
 			m.offlineReadsBlocked.Add(1)
-			m.logOfflineRead("EnsureAvailableAndRead", payloadID, offset/uint64(BlockSize))
+			m.logOfflineRead("EnsureAvailable", payloadID, offset/uint64(BlockSize))
 			return m.remoteUnavailableError()
 		}
 		return err
@@ -616,7 +616,7 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 		return nil, true, nil
 	}
 
-	// Caller (EnsureAvailableAndRead) already verified remoteStore != nil.
+	// Caller (EnsureAvailable) already verified remoteStore != nil.
 	// CAS verified-read dispatch — legacy branch has been removed.
 	storeKey, data, err := m.dispatchRemoteFetch(ctx, fb)
 	if err != nil {

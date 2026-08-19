@@ -117,7 +117,7 @@ func drainPrefetch(q *SyncQueue) []uint64 {
 // probes whether a block is local. This is exactly what the two prior refuted
 // attempts lacked (they only advanced on a local MISS, so a sequential reader
 // serving from the local tier stalled). Fails on develop, where readahead was
-// driven from the on-miss path in EnsureAvailableAndRead.
+// driven from the on-miss path in EnsureAvailable.
 //
 // NOTE: a structural guard is necessary but NOT sufficient — the throughput win
 // must be confirmed by a real-VM cold-read A/B (see the design doc's method).
