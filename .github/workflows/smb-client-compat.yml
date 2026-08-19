@@ -308,6 +308,7 @@ jobs:
           go build -o dfsctl.exe cmd/dfsctl/main.go
 
       - name: Free TCP 445 for DittoFS (best-effort)
+        id: free445
         shell: pwsh
         run: |
           # #879 ROOT CAUSE: the Windows redirector (`net use \\host\share`)
@@ -342,6 +343,10 @@ jobs:
             Start-Sleep -Seconds 2
           }
           Write-Host "TCP 445 freed for DittoFS: $freed (false => hosted-runner kernel listener; net use cannot reach DittoFS without a reboot)"
+          # Publish the result so the net use assertions can skip honestly
+          # instead of failing on a precondition this step just measured as
+          # unmet. Without the gate the job can never pass on a hosted runner.
+          "freed=$($freed.ToString().ToLower())" >> $env:GITHUB_OUTPUT
           (Get-NetTCPConnection -LocalPort 445 -State Listen -ErrorAction SilentlyContinue) | Format-Table -AutoSize
           # sc.exe returns nonzero when a service is already stopped, which pwsh
           # would otherwise propagate as a step failure. This step is
@@ -396,6 +401,7 @@ jobs:
           (Get-NetTCPConnection -LocalPort 445 -State Listen -ErrorAction SilentlyContinue) | Format-Table -AutoSize
 
       - name: Test net use operations
+        if: steps.free445.outputs.freed == 'true'
         shell: pwsh
         run: |
           # Mount SMB share
@@ -431,6 +437,15 @@ jobs:
 
           # Disconnect
           net use Z: /delete /yes
+
+      - name: Report skipped net use assertions
+        if: steps.free445.outputs.freed != 'true'
+        shell: pwsh
+        run: |
+          Write-Host "SKIPPED: the runner's kernel SMB listener (srvnet.sys, PID 4) still owns TCP 445."
+          Write-Host "The Windows redirector has no port field in UNC syntax, so net use cannot reach"
+          Write-Host "DittoFS on 12445. Freeing 445 needs a reboot, which a hosted runner cannot do."
+          Write-Host "The macOS and Linux jobs still exercise the same SMB server end to end."
 
       - name: Stop packet capture (#879 diagnosis)
         if: always()
@@ -493,16 +508,23 @@ jobs:
         if: always()
         shell: pwsh
         run: |
+          $ran = "${{ steps.free445.outputs.freed }}" -eq "true"
+          $status = if ($ran) { ":white_check_mark:" } else { ":fast_forward: skipped" }
+          $note = if ($ran) { "" } else {
+            "Skipped: the runner's kernel SMB listener owns TCP 445, so ``net use`` cannot reach DittoFS. See the ""Free TCP 445"" step."
+          }
           @"
           ## SMB Client Compatibility: Windows
 
           | Test | Status |
           |------|--------|
-          | net use mount | :white_check_mark: |
-          | File create/read | :white_check_mark: |
-          | Directory create | :white_check_mark: |
-          | Directory listing | :white_check_mark: |
-          | Delete | :white_check_mark: |
+          | net use mount | $status |
+          | File create/read | $status |
+          | Directory create | $status |
+          | Directory listing | $status |
+          | Delete | $status |
+
+          $note
           "@ >> $env:GITHUB_STEP_SUMMARY
 
       - name: Cleanup
@@ -510,5 +532,7 @@ jobs:
         shell: pwsh
         run: |
           net use Z: /delete /yes 2>$null
-          $pid = $env:DFS_PID
-          if ($pid) { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue }
+          # $pid is a read-only automatic variable (the current process id);
+          # assigning to it throws and fails the step before the cleanup runs.
+          $dfsPid = $env:DFS_PID
+          if ($dfsPid) { Stop-Process -Id $dfsPid -Force -ErrorAction SilentlyContinue }
