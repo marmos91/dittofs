@@ -2,11 +2,55 @@ package storetest
 
 import (
 	"bytes"
+	"context"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// fileForReadStore and createCacheStore mirror the optional fast-path
+// interfaces the metadata service probes for. A backend that implements them
+// answers from its own derived caches, which is exactly the state this suite
+// has to see torn down by Reset and RestoreSnapshot; a backend that does not
+// falls back to the plain Store methods below.
+type fileForReadStore interface {
+	GetFileForRead(ctx context.Context, handle metadata.FileHandle) (*metadata.File, error)
+}
+
+type createCacheStore interface {
+	GetFileForCreate(ctx context.Context, handle metadata.FileHandle) (*metadata.File, error)
+	GetChildForCreate(ctx context.Context, dirHandle metadata.FileHandle, name string) (metadata.FileHandle, error)
+}
+
+// readFile loads handle through the backend's read fast path when it has one,
+// so any file-read cache behind it is both warmed and consulted.
+func readFile(ctx context.Context, store metadata.Store, handle metadata.FileHandle) (*metadata.File, error) {
+	if r, ok := store.(fileForReadStore); ok {
+		return r.GetFileForRead(ctx, handle)
+	}
+	return store.GetFile(ctx, handle)
+}
+
+// readParent loads a directory through the backend's create fast path when it
+// has one, so any parent-directory cache behind it is warmed and consulted.
+func readParent(ctx context.Context, store metadata.Store, handle metadata.FileHandle) (*metadata.File, error) {
+	if c, ok := store.(createCacheStore); ok {
+		return c.GetFileForCreate(ctx, handle)
+	}
+	return store.GetFile(ctx, handle)
+}
+
+// lookupChild resolves name through the backend's create fast path when it has
+// one, so any directory-entry cache behind it is warmed and consulted. That
+// cache also holds negative entries, so calling this against an empty store
+// arms a cached ABSENT that a later restore has to clear.
+func lookupChild(ctx context.Context, store metadata.Store, dir metadata.FileHandle, name string) (metadata.FileHandle, error) {
+	if c, ok := store.(createCacheStore); ok {
+		return c.GetChildForCreate(ctx, dir, name)
+	}
+	return store.GetChild(ctx, dir, name)
+}
 
 // asResetable is a helper that type-asserts a MetadataStore to Resetable,
 // calling t.Fatal if the assertion fails. Mirrors asSnapshotable.
@@ -63,11 +107,26 @@ func ResetThenRestoreConformance(t *testing.T, factory SnapshotableStoreFactory)
 		t.Fatalf("WriteSnapshot HashSet.Len() = %d, want %d", hs.Len(), len(uniqueHashes))
 	}
 
-	// Read the share options once before Reset so any share-options cache the
-	// backend keeps is warm, and the post-Reset check below exercises the
-	// cache rather than the backing store.
+	// Warm every cache the backend derives from the records Reset is about to
+	// drop, so the post-Reset checks below exercise the caches rather than the
+	// backing store: share options, the file read path, the parent-directory
+	// read path, and the directory-entry lookup.
 	if _, err := store.GetShareOptions(ctx, shareName); err != nil {
 		t.Fatalf("GetShareOptions(%q) pre-Reset: %v", shareName, err)
+	}
+	rootHandle, err := store.GetRootHandle(ctx, shareName)
+	if err != nil {
+		t.Fatalf("GetRootHandle(%q) pre-Reset: %v", shareName, err)
+	}
+	alphaHandle, err := lookupChild(ctx, store, rootHandle, "alpha.bin")
+	if err != nil {
+		t.Fatalf("lookup alpha.bin pre-Reset: %v", err)
+	}
+	if _, err := readFile(ctx, store, alphaHandle); err != nil {
+		t.Fatalf("read alpha.bin pre-Reset: %v", err)
+	}
+	if _, err := readParent(ctx, store, rootHandle); err != nil {
+		t.Fatalf("read root pre-Reset: %v", err)
 	}
 
 	// 2. Reset the SAME store in place — no close/reopen.
@@ -85,6 +144,20 @@ func ResetThenRestoreConformance(t *testing.T, factory SnapshotableStoreFactory)
 		t.Fatalf("post-Reset GetBlockRecord: %v", err)
 	} else if found {
 		t.Errorf("block record %q survived Reset", blockRec.BlockID)
+	}
+
+	// The same rule applies to every other derived cache: a file whose record
+	// was dropped must not still be readable, a dropped directory must not
+	// still resolve, and a dropped directory entry must not still be found.
+	// This lookup also arms a negative dirent entry for the restore below.
+	if _, err := readFile(ctx, store, alphaHandle); err == nil {
+		t.Errorf("post-Reset read of alpha.bin succeeded, want an error")
+	}
+	if _, err := readParent(ctx, store, rootHandle); err == nil {
+		t.Errorf("post-Reset read of the root directory succeeded, want an error")
+	}
+	if _, err := lookupChild(ctx, store, rootHandle, "alpha.bin"); err == nil {
+		t.Errorf("post-Reset lookup of alpha.bin succeeded, want an error")
 	}
 
 	// Reset must clear the per-identity quota cache too, not just the
@@ -141,18 +214,23 @@ func ResetThenRestoreConformance(t *testing.T, factory SnapshotableStoreFactory)
 		t.Fatalf("share %q not found post-Restore (shares: %v)", shareName, restored)
 	}
 
-	rootHandle, err := store.GetRootHandle(ctx, shareName)
+	rootHandle, err = store.GetRootHandle(ctx, shareName)
 	if err != nil {
 		t.Fatalf("GetRootHandle(%q): %v", shareName, err)
 	}
 
-	alphaHandle, err := store.GetChild(ctx, rootHandle, "alpha.bin")
+	// Resolved through the caching lookup so the ABSENT entry armed while the
+	// store was empty has to have been cleared by the restore.
+	alphaHandle, err = lookupChild(ctx, store, rootHandle, "alpha.bin")
 	if err != nil {
-		t.Fatalf("GetChild alpha.bin: %v", err)
+		t.Fatalf("lookup alpha.bin post-Restore: %v", err)
 	}
-	alphaFile, err := store.GetFile(ctx, alphaHandle)
+	if _, err := readParent(ctx, store, rootHandle); err != nil {
+		t.Fatalf("read root post-Restore: %v", err)
+	}
+	alphaFile, err := readFile(ctx, store, alphaHandle)
 	if err != nil {
-		t.Fatalf("GetFile alpha: %v", err)
+		t.Fatalf("read alpha post-Restore: %v", err)
 	}
 	if alphaFile.Size != 8<<20 {
 		t.Errorf("alpha.Size = %d, want %d", alphaFile.Size, 8<<20)
@@ -164,13 +242,13 @@ func ResetThenRestoreConformance(t *testing.T, factory SnapshotableStoreFactory)
 		t.Fatalf("alpha.Blocks len = %d, want 2", len(alphaFile.Blocks))
 	}
 
-	betaHandle, err := store.GetChild(ctx, rootHandle, "beta.bin")
+	betaHandle, err := lookupChild(ctx, store, rootHandle, "beta.bin")
 	if err != nil {
-		t.Fatalf("GetChild beta.bin: %v", err)
+		t.Fatalf("lookup beta.bin post-Restore: %v", err)
 	}
-	betaFile, err := store.GetFile(ctx, betaHandle)
+	betaFile, err := readFile(ctx, store, betaHandle)
 	if err != nil {
-		t.Fatalf("GetFile beta: %v", err)
+		t.Fatalf("read beta post-Restore: %v", err)
 	}
 	if betaFile.Size != 6<<20 {
 		t.Errorf("beta.Size = %d, want %d", betaFile.Size, 6<<20)
