@@ -341,7 +341,7 @@ gh pr merge <PR> --squash --delete-branch
 gh issue close <N> --comment "Fixed in #<PR>."     # manual — see step 8
 
 # Refresh the graph in the MAIN checkout, on the merged code — not in the worktree
-cd /Users/marmos91/Projects/dittofs
+cd "$(git rev-parse --show-toplevel)"
 git checkout develop && git pull
 graphify update .                                   # AST-only, no API cost
 
