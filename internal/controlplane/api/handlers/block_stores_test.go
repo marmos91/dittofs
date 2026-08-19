@@ -952,6 +952,13 @@ func TestBlockStoreHandler_Update_EncryptionCannotBeRemoved(t *testing.T) {
 		}
 	})
 
+	t.Run("nulling the policy is removal", func(t *testing.T) {
+		w := update(t, encrypted, `{"bucket":"b","region":"eu-west-1","access_key_id":"AK","secret_access_key":"SK","encryption":null}`)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+	})
+
 	t.Run("never encrypted stays editable", func(t *testing.T) {
 		w := update(t, `{"bucket":"b","region":"us-east-1","access_key_id":"AK","secret_access_key":"SK"}`, `{"bucket":"b","region":"eu-west-1","access_key_id":"AK","secret_access_key":"SK"}`)
 		if w.Code != http.StatusOK {
