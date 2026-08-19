@@ -13,8 +13,8 @@ import (
 
 // TestMetadataCoordinator_RoutesThroughContextTx pins the CR-01 contract:
 // when the caller binds an active metadata.Transaction into ctx via
-// metadata.WithTx, the coordinator's IncrementRefCount / DecrementRefCount
-// MUST run through that tx (so a downstream caller-side failure rolls back
+// metadata.WithTx, the coordinator's IncrementRefCount /
+// DecrementRefCountAndReap MUST run through that tx (so a downstream caller-side failure rolls back
 // every refcount mutation atomically), not through the public
 // MetadataStore surface (which routes per-call to the connection pool).
 //
@@ -58,13 +58,11 @@ func TestMetadataCoordinator_RoutesThroughContextTx(t *testing.T) {
 			t.Errorf("IncrementRefCount routed through tx: got %d calls, want 1", rec.incrementCalls)
 		}
 
-		got, err := coord.DecrementRefCount(txCtx, hash)
-		if err != nil {
+		if _, err := coord.DecrementRefCountAndReap(txCtx, "share", 0); err != nil {
 			return err
 		}
-		_ = got
 		if rec.decrementCalls != 1 {
-			t.Errorf("DecrementRefCount routed through tx: got %d calls, want 1", rec.decrementCalls)
+			t.Errorf("DecrementRefCountAndReap routed through tx: got %d calls, want 1", rec.decrementCalls)
 		}
 		return nil
 	}); err != nil {
@@ -100,12 +98,12 @@ func TestMetadataCoordinator_FallsBackToPublicStoreWithoutTx(t *testing.T) {
 
 	// No WithTx in ctx — coordinator should fall through to the public
 	// store. Decrement once and verify the row was actually mutated.
-	count, err := coord.DecrementRefCount(ctx, hash)
+	count, err := coord.DecrementRefCountAndReap(ctx, "share", 1)
 	if err != nil {
-		t.Fatalf("DecrementRefCount: %v", err)
+		t.Fatalf("DecrementRefCountAndReap: %v", err)
 	}
 	if count != 1 {
-		t.Errorf("DecrementRefCount returned count=%d, want 1", count)
+		t.Errorf("DecrementRefCountAndReap returned count=%d, want 1", count)
 	}
 
 	got, err := store.GetByHash(ctx, hash)
@@ -225,7 +223,7 @@ func (r *recordingTx) IncrementRefCount(ctx context.Context, id string) error {
 	return r.Transaction.IncrementRefCount(ctx, id)
 }
 
-func (r *recordingTx) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
+func (r *recordingTx) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
 	r.decrementCalls++
-	return r.Transaction.DecrementRefCount(ctx, id)
+	return r.Transaction.DecrementRefCountAndReap(ctx, id)
 }

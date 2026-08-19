@@ -373,7 +373,7 @@ func (s *MemoryMetadataStore) putFileChunkLocked(_ context.Context, block *metad
 	s.fileChunkData.blocks[block.ID] = &stored
 
 	// Update hash index for finalized blocks
-	if block.IsFinalized() {
+	if block.IsRemote() {
 		s.fileChunkData.hashIndex[block.Hash] = block.ID
 	}
 	return nil
@@ -389,7 +389,7 @@ func (s *MemoryMetadataStore) deleteFileChunkLocked(_ context.Context, id string
 	}
 
 	// Remove from hash index
-	if block.IsFinalized() {
+	if block.IsRemote() {
 		if s.fileChunkData.hashIndex[block.Hash] == id {
 			delete(s.fileChunkData.hashIndex, block.Hash)
 		}

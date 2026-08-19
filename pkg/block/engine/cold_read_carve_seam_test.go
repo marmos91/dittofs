@@ -54,7 +54,7 @@ func TestColdReadAtCarveSeam_PunchedRangeStaysZero(t *testing.T) {
 	}
 
 	got := make([]byte, length)
-	if _, err := bs.ReadAt(ctx, pid, nil, got, off); err != nil {
+	if _, err := bs.ReadAt(ctx, pid, got, off); err != nil {
 		t.Fatalf("cold read: %v", err)
 	}
 	for i, b := range got {

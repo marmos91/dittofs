@@ -101,7 +101,7 @@ func TestEnsureAvailableAndRead_ChunkAfterHoleIsFetched(t *testing.T) {
 			m := newFetchSyncer(loc, rs, tc.wrap(stub), mds)
 
 			dest := make([]byte, readLength)
-			if _, err := m.EnsureAvailableAndRead(ctx, payloadID, 0, readLength, dest); err != nil {
+			if err := m.EnsureAvailableAndRead(ctx, payloadID, 0, readLength, dest); err != nil {
 				t.Fatalf("EnsureAvailableAndRead: %v", err)
 			}
 

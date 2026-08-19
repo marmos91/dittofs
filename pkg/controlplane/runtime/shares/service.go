@@ -2438,7 +2438,7 @@ func (s *Service) XattrStreamReader() metadata.StreamContentReader {
 			return nil, err
 		}
 		buf := make([]byte, int(attr.Size))
-		n, rerr := bs.ReadAt(ctx, string(attr.PayloadID), nil, buf, 0)
+		n, rerr := bs.ReadAt(ctx, string(attr.PayloadID), buf, 0)
 		if rerr != nil && rerr != io.EOF && rerr != io.ErrUnexpectedEOF {
 			return nil, rerr
 		}

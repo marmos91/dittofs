@@ -143,7 +143,7 @@ func TestWarmReadSelfHeal_RemoteHeals(t *testing.T) {
 	corruptSegmentByte(t, filepath.Join(dir, "journal"))
 
 	got := make([]byte, size)
-	n, err := bs.ReadAt(ctx, pid, nil, got, 0)
+	n, err := bs.ReadAt(ctx, pid, got, 0)
 	if err != nil {
 		t.Fatalf("ReadAt after corruption should self-heal, got: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestWarmReadSelfHeal_LocalOnlyFailsClosed(t *testing.T) {
 	corruptSegmentByte(t, filepath.Join(dir, "journal"))
 
 	got := make([]byte, size)
-	_, err := bs.ReadAt(ctx, pid, nil, got, 0)
+	_, err := bs.ReadAt(ctx, pid, got, 0)
 	if err == nil {
 		t.Fatalf("local-only corrupt read must fail closed, got nil error")
 	}

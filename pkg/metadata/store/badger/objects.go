@@ -56,7 +56,7 @@ func reapBlockTxn(txn *badger.Txn, id string, block *metadata.FileChunk) error {
 	if pid, idx, ok := splitBlockID(id); ok {
 		_ = txn.Delete([]byte(fileChunkFilePrefix + pid + ":" + idx))
 	}
-	if block.IsFinalized() {
+	if block.IsRemote() {
 		_ = txn.Delete([]byte(fileChunkHashPrefix + block.Hash.String()))
 	}
 	return nil
@@ -113,7 +113,7 @@ func (s *BadgerMetadataStore) Put(ctx context.Context, block *metadata.FileChunk
 		}
 
 		// Update hash index for finalized blocks
-		if block.IsFinalized() {
+		if block.IsRemote() {
 			hashKey := []byte(fileChunkHashPrefix + block.Hash.String())
 			return txn.Set(hashKey, []byte(block.ID))
 		}
@@ -980,7 +980,7 @@ func (tx *badgerTransaction) Put(ctx context.Context, block *metadata.FileChunk)
 			return err
 		}
 	}
-	if block.IsFinalized() {
+	if block.IsRemote() {
 		hashKey := []byte(fileChunkHashPrefix + block.Hash.String())
 		return tx.txn.Set(hashKey, []byte(block.ID))
 	}

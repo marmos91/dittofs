@@ -275,11 +275,6 @@ func (b *FileChunk) IsRemote() bool {
 	return b.State == BlockStateRemote
 }
 
-// IsFinalized returns true if the chunk's upload is complete (State==Remote).
-func (b *FileChunk) IsFinalized() bool {
-	return b.State == BlockStateRemote
-}
-
 // ParseBlockID extracts the payloadID and block index from an internal
 // blockID string. BlockID format: "{payloadID}/{blockIdx}" where payloadID
 // may itself contain '/' characters (only the LAST '/' separates the index).

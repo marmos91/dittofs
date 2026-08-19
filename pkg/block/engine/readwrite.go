@@ -16,10 +16,9 @@ import (
 //
 // After a successful read the engine drives the offset-based readahead window
 // (Syncer.scheduleReadahead) so a sequential reader keeps the local read-serving
-// tier populated ahead of the read frontier. This fires on EVERY read — the
-// `blocks` argument is ignored here (the hot NFS/SMB path passes nil), so the
+// tier populated ahead of the read frontier. This fires on EVERY read; the
 // window is computed purely from offset+len(data).
-func (bs *Store) ReadAt(ctx context.Context, payloadID string, blocks []block.ChunkRef, data []byte, offset uint64) (int, error) {
+func (bs *Store) ReadAt(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
 	if err := bs.enter(); err != nil {
 		return 0, err
 	}
@@ -28,7 +27,6 @@ func (bs *Store) ReadAt(ctx context.Context, payloadID string, blocks []block.Ch
 	if err != nil {
 		return n, err
 	}
-	_ = blocks // opaque to the readahead driver; kept for interface symmetry
 	bs.syncer.scheduleReadahead(payloadID, offset, uint32(len(data)))
 	return n, nil
 }
@@ -614,10 +612,6 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	// persists this as dst's FileAttr.Blocks in the same metadata txn, so the
 	// rows above and this manifest stay consistent (same hashes + offsets).
 	dst := append([]block.ChunkRef(nil), srcBlocks...)
-
-	// srcPayloadID is retained in the signature for future use (cache prefetch
-	// hints, identity-based dedup) and to match the public Writer interface.
-	_ = srcPayloadID
 
 	return dst, nil
 }

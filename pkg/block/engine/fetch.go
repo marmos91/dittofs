@@ -457,18 +457,18 @@ func blockRange(offset uint64, length uint32) (start, end uint64) {
 	return offset / uint64(BlockSize), (offset + uint64(length) - 1) / uint64(BlockSize)
 }
 
-// EnsureAvailableAndRead downloads blocks and copies data directly to dest, avoiding
-// a second local ReadAt. Demanded blocks are downloaded inline in the caller's goroutine
-// prefetch uses the worker pool. Returns (filled, error).
-func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, offset uint64, length uint32, dest []byte) (bool, error) {
+// EnsureAvailableAndRead hydrates the local tier for [offset, offset+length) so
+// the caller's subsequent local read is served warm. Demanded chunks are
+// downloaded inline in the caller's goroutine; prefetch uses the worker pool.
+func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, offset uint64, length uint32, dest []byte) error {
 	if length == 0 {
-		return false, nil
+		return nil
 	}
 	if !m.canProcess(ctx) {
-		return false, ErrClosed
+		return ErrClosed
 	}
 	if m.remoteStore == nil {
-		return false, nil // Local-only: all data must be in local store, no downloads possible
+		return nil // Local-only: all data must be in local store, no downloads possible
 	}
 
 	end := offset + uint64(length)
@@ -482,18 +482,18 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 	// already-warm sub-range.
 	toFetch, err := m.collectCoveringChunks(ctx, payloadID, offset, end)
 	if err != nil {
-		return false, err
+		return err
 	}
 	if len(toFetch) == 0 {
 		// Nothing to fetch (pure hole) — the caller re-reads and zero-fills.
-		return false, nil
+		return nil
 	}
 
 	// Health gate: fail fast when remote is unreachable
 	if !m.IsRemoteHealthy() {
 		m.offlineReadsBlocked.Add(1)
 		m.logOfflineRead("EnsureAvailableAndRead", payloadID, offset/uint64(BlockSize))
-		return false, m.remoteUnavailableError()
+		return m.remoteUnavailableError()
 	}
 
 	// Download the missing chunks concurrently rather than one S3 round-trip at
@@ -549,14 +549,14 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 		if fetchCtx.Err() != nil && ctx.Err() == nil {
 			m.offlineReadsBlocked.Add(1)
 			m.logOfflineRead("EnsureAvailableAndRead", payloadID, offset/uint64(BlockSize))
-			return false, m.remoteUnavailableError()
+			return m.remoteUnavailableError()
 		}
-		return false, err
+		return err
 	}
 
 	// Bytes are now local (or genuinely sparse); the caller re-reads via
 	// readLocalByHash for the correct assembly.
-	return false, nil
+	return nil
 }
 
 // inlineFetchOrWait downloads a block inline or waits for an in-flight download.

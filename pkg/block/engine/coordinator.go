@@ -34,11 +34,6 @@ type MetadataCoordinator interface {
 	// (under the caller's metadata txn).
 	IncrementRefCount(ctx context.Context, hash block.ContentHash) error
 
-	// DecrementRefCount atomically decrements; returns the new count.
-	// Engine invokes this from dedup/rollback bookkeeping. Plain decrement
-	// — the FileChunk index row survives at RefCount 0.
-	DecrementRefCount(ctx context.Context, hash block.ContentHash) (uint32, error)
-
 	// DecrementRefCountAndReap atomically decrements and, when the new count
 	// is 0, deletes the FileChunk index row identified by the exact block ID
 	// "{payloadID}/{offset}" so its hash leaves EnumerateFileChunks once no

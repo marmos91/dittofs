@@ -163,7 +163,7 @@ func TestFileChunkStore_FindByHash_Found(t *testing.T) {
 		Hash:     hash,
 		DataSize: 2048,
 		RefCount: 1,
-		// IsFinalized() now means State==Remote — only
+		// IsRemote() now means State==Remote — only
 		// Remote rows enter the hash index for dedup lookups.
 		State: metadata.BlockStateRemote,
 	}

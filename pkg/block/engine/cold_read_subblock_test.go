@@ -63,7 +63,7 @@ func TestColdReadIntegrity_SubBlockChunks(t *testing.T) {
 			buf[j] = 0xAA // poison so an unfilled window fails instead of hiding in zeros
 		}
 		off := uint64(i) * oneMiB
-		n, err := bs.ReadAt(ctx, pid, nil, buf, off)
+		n, err := bs.ReadAt(ctx, pid, buf, off)
 		if err != nil {
 			t.Fatalf("ReadAt off=%d: %v", off, err)
 		}

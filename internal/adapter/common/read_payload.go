@@ -59,7 +59,7 @@ func ReadFromBlockStore(
 	// thread here in a later adapter-helper refactor; until then the
 	// engine resolves via the legacy {payloadID}/block-{N} path and the
 	// result is identical.
-	n, readErr := blockStore.ReadAt(ctx, string(payloadID), nil, data, offset)
+	n, readErr := blockStore.ReadAt(ctx, string(payloadID), data, offset)
 
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
 		return BlockReadResult{Data: data[:n], EOF: true}, nil

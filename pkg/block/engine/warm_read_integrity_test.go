@@ -143,7 +143,7 @@ func runWarmReadIntegrity(t *testing.T, ms metadata.Store) {
 		for i := range buf {
 			buf[i] = 0xAA // poison
 		}
-		n, err := bs.ReadAt(ctx, pid, nil, buf, off)
+		n, err := bs.ReadAt(ctx, pid, buf, off)
 		if err != nil {
 			fail("ReadAt off=%d len=%d: %v", off, len(buf), err)
 			return

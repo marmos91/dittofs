@@ -193,7 +193,7 @@ func TestReadAt_BasicRoundtrip(t *testing.T) {
 	}
 
 	buf := make([]byte, len(data))
-	n, err := bs.ReadAt(ctx, payloadID, nil, buf, 0)
+	n, err := bs.ReadAt(ctx, payloadID, buf, 0)
 	if err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestReadAt_CacheDisabled(t *testing.T) {
 	}
 
 	buf := make([]byte, len(data))
-	n, err := bs.ReadAt(ctx, payloadID, nil, buf, 0)
+	n, err := bs.ReadAt(ctx, payloadID, buf, 0)
 	if err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
@@ -258,12 +258,8 @@ func TestReadAt_DoesNotInvokeCacheOnReadPath(t *testing.T) {
 	rec := &recordingCache{}
 	bs.cache = rec
 
-	// A non-empty []ChunkRef used to force the old OnRead hint; it is now ignored.
-	refs := []block.ChunkRef{
-		{Hash: hashN(0xAA), Offset: 0, Size: uint32(len(data))},
-	}
 	buf := make([]byte, len(data))
-	if _, err := bs.ReadAt(ctx, payloadID, refs, buf, 0); err != nil {
+	if _, err := bs.ReadAt(ctx, payloadID, buf, 0); err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
 	if !bytes.Equal(buf, data) {
@@ -298,7 +294,7 @@ func TestEngine_NullCache_NoNilChecks(t *testing.T) {
 		t.Fatalf("WriteAt panicked or errored: %v", err)
 	}
 	buf := make([]byte, len(data))
-	if _, err := bs.ReadAt(ctx, payloadID, nil, buf, 0); err != nil {
+	if _, err := bs.ReadAt(ctx, payloadID, buf, 0); err != nil {
 		t.Fatalf("ReadAt panicked or errored: %v", err)
 	}
 	if _, err := bs.Truncate(ctx, payloadID, nil, uint64(len(data))); err != nil {

@@ -222,7 +222,7 @@ func TestCommitBlockStore_Strict_ConfigOverride_FlipsBehavior(t *testing.T) {
 	// And the inverse: fs local forced durable=false under strict mode now
 	// requires a durable remote that it does not have → ErrNotDurableYet.
 	fsBS := strict(newTestEngine(t))
-	if fsLocal := fsBS.LocalForTest(); fsLocal != nil {
+	if fsLocal := fsBS.Local(); fsLocal != nil {
 		if setter, ok := fsLocal.(interface{ SetDurable(bool) }); ok {
 			setter.SetDurable(false)
 		} else {

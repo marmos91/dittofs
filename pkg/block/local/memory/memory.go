@@ -21,9 +21,6 @@ var (
 	_ block.DurabilityReporter = (*MemoryStore)(nil)
 )
 
-// ErrStoreClosed is an alias for block.ErrStoreClosed for backward compatibility.
-var ErrStoreClosed = block.ErrStoreClosed
-
 // memFile is one file's byte buffer plus its not-yet-carved byte count.
 type memFile struct {
 	buf      []byte
@@ -76,7 +73,7 @@ func (s *MemoryStore) WriteAt(_ context.Context, payloadID string, offset int64,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return ErrStoreClosed
+		return block.ErrStoreClosed
 	}
 	n := s.writeLocked(payloadID, offset, data)
 	s.files[payloadID].unsynced += n
@@ -92,7 +89,7 @@ func (s *MemoryStore) Hydrate(_ context.Context, payloadID string, offset int64,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return ErrStoreClosed
+		return block.ErrStoreClosed
 	}
 	s.writeLocked(payloadID, offset, data)
 	return nil
@@ -112,7 +109,7 @@ func (s *MemoryStore) ReadAt(_ context.Context, payloadID string, offset int64, 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.closed {
-		return 0, journal.ReadState{}, ErrStoreClosed
+		return 0, journal.ReadState{}, block.ErrStoreClosed
 	}
 	f := s.files[payloadID]
 	if f == nil || offset >= int64(len(f.buf)) {

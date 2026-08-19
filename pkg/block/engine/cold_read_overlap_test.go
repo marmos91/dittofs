@@ -77,7 +77,7 @@ func TestEnsureAvailableAndRead_StraddlerDoesNotShadowLaterRow(t *testing.T) {
 					end = laterEnd
 				}
 				dest := make([]byte, end-straddlerOff)
-				if _, err := m.EnsureAvailableAndRead(ctx, payloadID, straddlerOff, uint32(len(dest)), dest); err != nil {
+				if err := m.EnsureAvailableAndRead(ctx, payloadID, straddlerOff, uint32(len(dest)), dest); err != nil {
 					t.Fatalf("EnsureAvailableAndRead: %v", err)
 				}
 

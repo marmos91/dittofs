@@ -158,16 +158,6 @@ type GCStats struct {
 
 	// Legacy aggregator fields (compat aliases — see finalizeStats).
 
-	// Deprecated: SharesScanned is retained on the REST/dfsctl wire for
-	// compatibility with older clients but is never populated by the
-	// mark-sweep engine and will always be zero. New consumers should
-	// rely on HashesMarked / the per-share log lines instead.
-	SharesScanned int
-	// Deprecated: BlocksScanned is retained on the REST/dfsctl wire for
-	// compatibility with older clients but is never populated by the
-	// mark-sweep engine and will always be zero. New consumers should
-	// rely on ObjectsSwept / HashesMarked instead.
-	BlocksScanned  int
 	OrphanFiles    int   // = ObjectsSwept.
 	OrphanBlocks   int   // = ObjectsSwept.
 	BytesReclaimed int64 // = BytesFreed.
@@ -178,11 +168,6 @@ type GCStats struct {
 type Options struct {
 	// DryRun if true, only reports orphans without deleting.
 	DryRun bool
-
-	// MaxOrphansPerShare is preserved for API compatibility but has no
-	// effect in the mark-sweep algorithm — the sweep runs to completion.
-	// A future plan can repurpose this if a cap becomes useful.
-	MaxOrphansPerShare int
 
 	// ProgressCallback is called periodically with progress updates.
 	// May be nil. Invoked once per completed sweep pass.

@@ -434,15 +434,6 @@ func (bs *Store) SetMetrics(rec local.MetricsRecorder) {
 	}
 }
 
-// --- Test helpers ---
-
-// LocalForTest returns the engine's underlying local store as the
-// local.LocalStore interface. Used by cross-package test fixtures
-// (e.g. internal/adapter/common) that need to drive rollup or other
-// admin paths against the concrete *fs.FSStore via a type assertion.
-// Do not use in production code.
-func (bs *Store) LocalForTest() local.LocalStore { return bs.local }
-
 // Local returns the engine's underlying local store (the journal-backed tier),
 // or nil if the store has no local tier. Used by share startup to reconcile
 // metadata file sizes against the journal's durable high-water mark (#1687).

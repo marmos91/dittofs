@@ -41,7 +41,7 @@ func TestCarveDedupedChunk_KeepsManifestRow(t *testing.T) {
 		t.Fatalf("DrainLocalSynced: %v", err)
 	}
 	got := make([]byte, half)
-	if _, err := bs.ReadAt(ctx, pid, nil, got, half); err != nil {
+	if _, err := bs.ReadAt(ctx, pid, got, half); err != nil {
 		t.Fatalf("cold ReadAt: %v", err)
 	}
 	if i := firstDiff(data, got); i >= 0 {
@@ -86,7 +86,7 @@ func TestPunchHole_RepunchReadsBackZerosCold(t *testing.T) {
 		t.Fatalf("DrainLocalSynced: %v", err)
 	}
 	got := make([]byte, size)
-	if _, err := bs.ReadAt(ctx, pid, nil, got, 0); err != nil {
+	if _, err := bs.ReadAt(ctx, pid, got, 0); err != nil {
 		t.Fatalf("cold ReadAt: %v", err)
 	}
 	if i := firstDiff(data, got); i >= 0 {

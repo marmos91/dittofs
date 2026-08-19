@@ -91,7 +91,7 @@ func TestReadAt_UncoveredOffsetOnUnplaceableRowRefuses(t *testing.T) {
 			}
 
 			got := bytes.Repeat([]byte{0xAA}, 4096)
-			_, err := bs.ReadAt(ctx, payloadID, nil, got, 0)
+			_, err := bs.ReadAt(ctx, payloadID, got, 0)
 			if !errors.Is(err, block.ErrManifestInconsistent) {
 				t.Fatalf("ReadAt = %v; want ErrManifestInconsistent (served zeros: %v)",
 					err, bytes.Equal(got, make([]byte, 4096)))
@@ -117,7 +117,7 @@ func TestReadAt_CoveredOffsetIgnoresUnplaceableRow(t *testing.T) {
 			}
 
 			got := make([]byte, len(want))
-			if _, err := bs.ReadAt(ctx, payloadID, nil, got, 0); err != nil {
+			if _, err := bs.ReadAt(ctx, payloadID, got, 0); err != nil {
 				t.Fatalf("ReadAt over a covered offset: %v", err)
 			}
 			if !bytes.Equal(got, want) {
@@ -141,7 +141,7 @@ func TestReadAt_GenuineHoleStillZeroFills(t *testing.T) {
 			seedSyncedRemoteChunk(t, fbs, rs, shs, payloadID, 4096, bytes.Repeat([]byte{0x5A}, 4096))
 
 			got := bytes.Repeat([]byte{0xAA}, 4096)
-			n, err := bs.ReadAt(ctx, payloadID, nil, got, 0)
+			n, err := bs.ReadAt(ctx, payloadID, got, 0)
 			if err != nil {
 				t.Fatalf("ReadAt over a sparse hole: %v", err)
 			}

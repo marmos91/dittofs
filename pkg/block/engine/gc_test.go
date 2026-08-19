@@ -318,14 +318,6 @@ func (c *reapCoordinator) IncrementRefCount(ctx context.Context, hash block.Cont
 	return c.store.IncrementRefCount(ctx, fb.ID)
 }
 
-func (c *reapCoordinator) DecrementRefCount(ctx context.Context, hash block.ContentHash) (uint32, error) {
-	fb, err := c.store.GetByHash(ctx, hash)
-	if err != nil || fb == nil {
-		return 0, err
-	}
-	return c.store.DecrementRefCount(ctx, fb.ID)
-}
-
 func (c *reapCoordinator) DecrementRefCountAndReap(ctx context.Context, payloadID string, offset uint64) (uint32, error) {
 	// Mirrors the production coordinator: reap by EXACT ID — no hash resolution.
 	// The engine rollup creates per-chunk rows keyed "{payloadID}/{offset}" in

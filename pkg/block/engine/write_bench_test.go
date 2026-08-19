@@ -226,7 +226,7 @@ func BenchmarkMixedRW(b *testing.B) {
 			}
 			continue
 		}
-		if _, err := bs.ReadAt(ctx, pid, nil, rbuf, off); err != nil {
+		if _, err := bs.ReadAt(ctx, pid, rbuf, off); err != nil {
 			b.Fatalf("ReadAt i=%d: %v", i, err)
 		}
 	}

@@ -309,7 +309,7 @@ func TestPunchHole_ReadsBackAsZeros(t *testing.T) {
 	}
 
 	buf := make([]byte, 300)
-	if _, err := bs.ReadAt(ctx, payloadID, nil, buf, 0); err != nil {
+	if _, err := bs.ReadAt(ctx, payloadID, buf, 0); err != nil {
 		t.Fatalf("ReadAt: %v", err)
 	}
 	for i := 0; i < 100; i++ {

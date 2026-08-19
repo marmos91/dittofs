@@ -57,7 +57,7 @@ func newLocalOnlyEngine(t *testing.T, ms metadata.Store) *engine.Store {
 func readWhole(t *testing.T, bs *engine.Store, payloadID string, size int) []byte {
 	t.Helper()
 	out := make([]byte, size)
-	n, err := bs.ReadAt(context.Background(), payloadID, nil, out, 0)
+	n, err := bs.ReadAt(context.Background(), payloadID, out, 0)
 	if err != nil && err != io.EOF {
 		t.Fatalf("ReadAt(%s): %v", payloadID, err)
 	}

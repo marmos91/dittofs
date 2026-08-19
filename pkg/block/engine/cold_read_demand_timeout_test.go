@@ -85,7 +85,7 @@ func TestColdRead_DemandFetchFailsFastWhenRemoteStalls(t *testing.T) {
 	dest := make([]byte, 4096)
 	done := make(chan error, 1)
 	go func() {
-		_, err := m.EnsureAvailableAndRead(ctx, "p", 0, uint32(len(dest)), dest)
+		err := m.EnsureAvailableAndRead(ctx, "p", 0, uint32(len(dest)), dest)
 		done <- err
 	}()
 

@@ -58,25 +58,6 @@ func (c *refcountCoordinator) IncrementRefCount(_ context.Context, hash block.Co
 	return nil
 }
 
-func (c *refcountCoordinator) DecrementRefCount(_ context.Context, hash block.ContentHash) (uint32, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.decrementErr != nil && c.decrementErrHash == hash {
-		err := c.decrementErr
-		c.decrementErr = nil
-		return 0, err
-	}
-	cur := c.counts[hash]
-	if cur == 0 {
-		// Treat as already-zero; mirrors backend semantics where
-		// underflow is clamped.
-		return 0, nil
-	}
-	cur--
-	c.counts[hash] = cur
-	return cur, nil
-}
-
 // DecrementRefCountAndReap is keyed by EXACT ID "{payloadID}/{offset}" (the
 // production reap-path contract). It resolves the ID to the hash it bookkeeps,
 // then mirrors DecrementRefCount (including the single-shot error injection) and
