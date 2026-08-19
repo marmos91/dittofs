@@ -208,10 +208,14 @@ func runEditInteractive(client *apiclient.Client, name string, current *apiclien
 		if newSecretKey != "" {
 			newConfig["secret_access_key"] = newSecretKey
 		}
-		// Carry forward server-side tuning the interactive prompts don't
-		// cover, so an interactive edit doesn't silently reset it.
-		if v, ok := currentConfig["parallel_uploads"]; ok {
-			newConfig["parallel_uploads"] = v
+		// Carry forward server-side settings the interactive prompts don't
+		// cover, so an interactive edit doesn't silently reset them. The
+		// encryption policy in particular has no edit prompt and no edit
+		// flag, so dropping it here would be unrecoverable from the CLI.
+		for _, key := range []string{"parallel_uploads", "encryption", "compression"} {
+			if v, ok := currentConfig[key]; ok {
+				newConfig[key] = v
+			}
 		}
 
 		req.Config = newConfig

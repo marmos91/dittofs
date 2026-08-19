@@ -322,3 +322,15 @@ func HandleStoreError(w http.ResponseWriter, err error) {
 	status, msg := MapStoreError(err)
 	WriteProblem(w, status, http.StatusText(status), msg)
 }
+
+// hasEncryptionPolicy reports whether a block-store config blob carries an
+// "encryption" sub-config. A blob that will not parse reports false: there
+// is no policy to be read out of it either way.
+func hasEncryptionPolicy(blob string) bool {
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(blob), &obj); err != nil {
+		return false
+	}
+	_, ok := obj["encryption"]
+	return ok
+}
