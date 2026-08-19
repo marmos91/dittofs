@@ -142,8 +142,8 @@ func TestTruncateFailureLeavesStateIntact(t *testing.T) {
 	}
 	before := s.UnsyncedBytes()
 
-	testFailTruncate = "f"
-	defer func() { testFailTruncate = "" }()
+	s.failTruncate = "f"
+	defer func() { s.failTruncate = "" }()
 	if err := s.Truncate(ctx, "f", 400); err == nil {
 		t.Fatalf("expected injected truncate failure")
 	}
