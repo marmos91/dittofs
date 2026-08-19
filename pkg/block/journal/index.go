@@ -130,7 +130,7 @@ func (fi *fileIndex) insert(iv interval) (dirtyRemoved, dirtyAdded int64, dead [
 	// three per-insert slice allocations (newFrags, survivors, merged) and the
 	// sort.Slice the general punch-and-merge path below pays. These dominate a
 	// random-4K workload: the fill phase is all gap insertions, the steady state
-	// all exact-offset overwrites (#1736).
+	// all exact-offset overwrites.
 	switch {
 	case lo == len(fi.ivs) || fi.ivs[lo].fileOff >= ne:
 		// (a) Gap insertion: [ns, ne) overlaps nothing (the search guarantees the
@@ -178,7 +178,7 @@ func (fi *fileIndex) insert(iv interval) (dirtyRemoved, dirtyAdded int64, dead [
 					dirtyRemoved += ov
 				}
 			}
-			// #953: a partial overwrite of a warm (synced, non-cold) interval
+			// A partial overwrite of a warm (synced, non-cold) interval
 			// leaves surviving fragments still pointing at the old chunk's bytes,
 			// whose FileChunk manifest row now straddles the overwrite. Re-mark
 			// them dirty so the next carve re-chunks them into fresh, non-straddling
@@ -208,7 +208,7 @@ func (fi *fileIndex) insert(iv interval) (dirtyRemoved, dirtyAdded int64, dead [
 
 // remarkFragmentsDirty flips warm (synced, non-cold) fragments of a
 // partially-superseded interval to dirty so the next carve re-chunks them into
-// fresh non-straddling manifest rows (#953-A). It returns the bytes newly made
+// fresh non-straddling manifest rows. It returns the bytes newly made
 // dirty so the caller keeps the unsynced counter accurate. Cold fragments are
 // skipped — they hold no local bytes to re-chunk (the remainder-hydration tail).
 func remarkFragmentsDirty(frags []interval) (added int64) {

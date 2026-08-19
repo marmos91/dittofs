@@ -229,7 +229,6 @@ func (tx *badgerTransaction) getFile(ctx context.Context, handle metadata.FileHa
 		return nil, err
 	}
 
-	// Decode handle to get UUID
 	_, fileID, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return nil, &metadata.StoreError{
@@ -495,7 +494,6 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		return err
 	}
 
-	// Decode handle to get UUID
 	_, fileID, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return &metadata.StoreError{
@@ -804,7 +802,6 @@ func (tx *badgerTransaction) GetParent(ctx context.Context, handle metadata.File
 		return nil, err
 	}
 
-	// Decode handle to get UUID and share name
 	shareName, fileID, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return nil, &metadata.StoreError{
@@ -862,7 +859,6 @@ func (tx *badgerTransaction) GetLinkCount(ctx context.Context, handle metadata.F
 		return 0, err
 	}
 
-	// Decode handle to get UUID
 	_, fileID, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return 0, &metadata.StoreError{
@@ -916,7 +912,6 @@ func (tx *badgerTransaction) SetLinkCount(ctx context.Context, handle metadata.F
 		return err
 	}
 
-	// Decode handle to get UUID
 	_, fileID, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return &metadata.StoreError{

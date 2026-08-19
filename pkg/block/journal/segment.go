@@ -58,7 +58,7 @@ type segmentMeta struct {
 	// Segments fill sequentially, so a segment's records span a contiguous
 	// [minVersion, maxVersion]; minVersion<=pinVersion means the segment holds a
 	// record at or below a live snapshot's watermark and must not be evicted or
-	// GC-repacked while that snapshot lives (#1718). Set on the first append and
+	// GC-repacked while that snapshot lives. Set on the first append and
 	// reconstructed during the recovery scan and repack.
 	minVersion atomic.Uint64
 	// busy claims the segment for an exclusive whole-segment operation (evict or
@@ -371,8 +371,9 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 	s.writes.Add(1)
 	// unsynced tracks live dirty bytes: add this write if dirty, always drop the
 	// dirty bytes this write superseded (dead now, not evictable-pending), and add
-	// any warm fragments this write re-marked dirty for re-carve (#953-A). A synced
-	// (Hydrate) write adds nothing itself but can still supersede or re-dirty.
+	// any warm fragments this write re-marked dirty for re-carve. A synced
+	// (Hydrate) write adds nothing itself but can still supersede or
+	// re-dirty.
 	dirtyDelta := dirtyAdded - dirtyRemoved
 	if !synced {
 		dirtyDelta += int64(len(data))

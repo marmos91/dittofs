@@ -50,8 +50,8 @@ type PostgresMetadataStoreConfig struct {
 func (c *PostgresMetadataStoreConfig) ApplyDefaults() {
 	// Connection pool defaults (conservative sizing).
 	//
-	// #1176 assessment: under the metadata read workload the pool is not the
-	// bottleneck — at 8 concurrent workers MaxConns=10 lets the pool warm to
+	// Under the metadata read workload the pool is not the bottleneck: at
+	// 8 concurrent workers MaxConns=10 lets the pool warm to
 	// ~8 live connections and scales throughput ~3.8x over a single worker,
 	// with cold-acquire cost confined to the first burst (idle connections are
 	// retained for MaxConnIdleTime, default 30m). The per-op win came from

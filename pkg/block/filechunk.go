@@ -30,7 +30,7 @@ type FileChunkStore interface {
 	// (nil, nil) when absent. The "any" wording matters: legacy data
 	// may have multiple rows per hash; callers (the engine dedup
 	// short-circuit) treat the result as best-effort and proceed with
-	// any one row's chunk. Renamed from FindFileChunkByHash.
+	// any one row's chunk.
 	GetByHash(ctx context.Context, hash ContentHash) (*FileChunk, error)
 
 	// Put creates or replaces a FileChunk by ID.
@@ -60,16 +60,11 @@ type FileChunkStore interface {
 	// re-PUTs the chunk, never data loss.
 	//
 	// The conformance test storetest.testPut_TwoIDsSameHash
-	// pins this contract across all three backends. Renamed from
-	// PutFileChunk.
+	// pins this contract across all three backends.
 	Put(ctx context.Context, block *FileChunk) error
 
 	// Delete removes a FileChunk by ID. Returns ErrFileChunkNotFound
-	// if not found. Renamed from DeleteFileChunk.
-	//
-	// Collision check (2026-04-26): no backend struct has a
-	// pre-existing method named exactly `Delete()`; the rename is
-	// collision-free.
+	// if not found.
 	Delete(ctx context.Context, id string) error
 
 	// IncrementRefCount atomically bumps RefCount for the given

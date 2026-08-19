@@ -168,8 +168,7 @@ func (s *Store) claimColdestEvictable() (*segmentMeta, *shard) {
 				}
 				if s.pinned(seg) {
 					// Pinned by a live snapshot: its bytes are the only durable copy
-					// of an at-or-below-watermark record (local-only) — never evict
-					// (#1718).
+					// of an at-or-below-watermark record (local-only) — never evict.
 					continue
 				}
 				if la := seg.lastAccess.Load(); best == nil || la < bestAccess {
@@ -551,7 +550,7 @@ func (s *Store) gcShard(ctx context.Context, sh *shard, opts GCOptions) (reclaim
 // its lowest record Version is at or below pinVersion. Whole-segment granularity —
 // segments fill sequentially, so a non-empty segment's records span a contiguous
 // version range and minVersion alone decides. pinVersion 0 (no live snapshot) or a
-// still-empty segment (minVersion 0) pins nothing (#1718).
+// still-empty segment (minVersion 0) pins nothing.
 func (s *Store) pinned(seg *segmentMeta) bool {
 	pv := s.pinVersion.Load()
 	if pv == 0 {
@@ -606,7 +605,7 @@ func (s *Store) pickVictim(sh *shard, opts GCOptions, live map[uint64]int64) *se
 		if s.pinned(seg) {
 			// Pinned by a live snapshot: repack relocates bytes but a crash mid-move
 			// plus a rollback needs the pinned records intact at their original
-			// versions — keep the whole segment until the snapshot releases (#1718).
+			// versions — keep the whole segment until the snapshot releases.
 			continue
 		}
 		if seg.deadBytes.Load() <= 0 {

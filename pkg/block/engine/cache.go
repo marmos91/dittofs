@@ -9,8 +9,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
-// seqThreshold (CACHE-03) is the number of consecutive sequential reads
-// observed before the prefetcher fires. Set to 3 to suppress speculative
+// seqThreshold is the number of consecutive sequential reads observed
+// before the prefetcher fires. Set to 3 to suppress speculative
 // prefetch on accidental two-block runs in random-IO workloads (VM
 // rand-write was the regression).
 const seqThreshold = 3
@@ -24,7 +24,7 @@ const maxPrefetchDepth = 8
 const defaultPrefetchWorkers = 4
 
 // reqQueueSize is the bounded channel capacity backing the prefetch
-// worker pool (T-12-24 mitigation: non-blocking submit drops when full).
+// worker pool; submit is non-blocking and drops the request when full.
 const reqQueueSize = 64
 
 // cacheInterface is the narrow surface engine code depends on. The
@@ -43,34 +43,32 @@ type cacheInterface interface {
 var _ cacheInterface = (*Cache)(nil)
 var _ cacheInterface = nullCache{}
 
-// TRANSITIONAL-NEXT-MILESTONE: cold-cache prefetch (see #519 "Deferred
-// to v0.17+"). When cold-cache prefetch lands, the Cache will be
-// proactively warmed on share-open via an offline LRU snapshot, not
-// just on first-read. The current write-side OnChunkComplete wiring
-// (engine.go) already covers the warm-after-write case; cold-
-// cache covers the restart-then-read case.
+// The Cache is populated only on the write side, via the OnChunkComplete
+// wiring in engine.go. There is no read-through: loadByHash always misses,
+// because the journal local store is (payloadID, offset)-keyed and has no
+// content-addressed read to serve a hash lookup from. So nothing a read
+// pulls in ever lands here, and the restart-then-read path always starts
+// cold and stays cold until writes repopulate it.
 
-// Cache is the single-type, CAS-keyed in-memory cache (CACHE-01..05). It
-// folds the prefetch worker pool into one type.
+// Cache is the single-type, CAS-keyed in-memory cache. It folds the
+// prefetch worker pool into one type.
 //
-// On miss, bytes are loaded via local.Get(ctx, hash) —
-// engine.loadByHash. The Cache copies the returned []byte into its
-// LRU slot (buffer ownership). No mmap/page-cache fast path exists
-// production workloads are warm-cache and the per-miss alloc is
-// uncontended.
+// On miss the Cache calls its loadFn (engine.loadByHash), which returns
+// ErrChunkNotFound unconditionally, so a miss stays a miss. Were a
+// hash-keyed local read to exist, the Cache would copy the returned []byte
+// into its LRU slot rather than retain it.
 //
 // Thread safety: read path takes RLock for hits, promotes LRU under
 // WLock; mutations are WLock-only. The trackerMu is a separate lock so
 // OnRead's hot path (per-payload sequential detection) doesn't contend
 // with cache hits/puts.
 //
-// Per-share isolation (CLAUDE.md rule 4): the Cache lives inside
-// *engine.Store which is per-share by construction. Cross-share
-// cache sharing is impossible without going through the Store
-// boundary, so T-12-25 is "accept" by design.
+// Per-share isolation: the Cache lives inside *engine.Store, which is
+// per-share by construction. Cross-share cache sharing is impossible
+// without going through the Store boundary.
 //
-// CACHE-02 cross-file dedup: two payloads referencing the same
-// ContentHash share one cache entry. Eviction is hash-scoped (LRU)
+// Cross-file dedup: two payloads referencing the same ContentHash
+// share one cache entry. Eviction is hash-scoped (LRU);
 // InvalidateFile is surgical (drops only the explicitly-listed hashes
 // for a file, preserving any shared entries).
 type Cache struct {
@@ -172,7 +170,7 @@ func newCacheNoWorkers(maxBytes int64) *Cache {
 //     do anything. nil loadFn means OnRead can run but workers will
 //     drop requests (no-loader path).
 //   - The bounded reqCh has capacity reqQueueSize (64); submit is
-//     non-blocking and silently drops on full queue (T-12-24).
+//     non-blocking and silently drops on full queue.
 func NewCache(maxBytes int64, workers int, loadFn loadByHashFn) *Cache {
 	if maxBytes <= 0 {
 		return nil
@@ -282,10 +280,10 @@ func (c *Cache) evictLocked() {
 // InvalidateFile drops only the listed hashes from the cache and
 // resets the per-payload sequential tracker (so the next read for
 // this file rebuilds the prefetch state from scratch). Hashes NOT
-// listed remain — including hashes shared by other files (CACHE-02
+// listed remain — including hashes shared by other files (cross-file
 // dedup is preserved).
 //
-// CACHE-05 surgical invalidation: callers pass the set of hashes to drop —
+// Invalidation is surgical: callers pass the set of hashes to drop —
 // typically a computed old/new ChunkRef diff, but delete paths may pass a
 // file's full hash list (or nil). Drop semantics preserve duplicate-hash
 // multiplicity expectations (callers may pass the same hash multiple times;
@@ -311,8 +309,8 @@ func (c *Cache) InvalidateFile(payloadID string, removedHashes []block.ContentHa
 	c.trackerMu.Unlock()
 }
 
-// OnRead is the sole prefetch hint API (CACHE-04). The engine calls
-// this after a successful ReadAt with the ChunkRef hashes that
+// OnRead is the sole prefetch hint API. The engine calls this after a
+// successful ReadAt with the ChunkRef hashes that
 // satisfied the read; the cache uses the per-payloadID sequential
 // tracker to decide whether to fire prefetch on the upcoming hashes.
 //
@@ -388,7 +386,7 @@ func (c *Cache) OnRead(payloadID string, hashes []block.ContentHash, fileSize ui
 }
 
 // submitPrefetch enqueues a prefetch request, dropping silently when
-// the bounded queue is full (T-12-24).
+// the bounded queue is full.
 func (c *Cache) submitPrefetch(h block.ContentHash) {
 	if c == nil || c.closed.Load() || c.reqCh == nil {
 		return

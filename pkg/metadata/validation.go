@@ -382,13 +382,11 @@ func ApplyCreateDefaults(attr *FileAttr, ctx *AuthContext, linkTarget string) {
 //   - nil if the operation is allowed
 //   - ErrAccessDenied if the sticky bit restriction blocks the operation
 func CheckStickyBitRestriction(ctx *AuthContext, dirAttr *FileAttr, fileAttr *FileAttr) error {
-	// Get the effective UID of the caller
 	callerUID := ^uint32(0) // Default to max (invalid)
 	if ctx.Identity != nil && ctx.Identity.UID != nil {
 		callerUID = *ctx.Identity.UID
 	}
 
-	// Debug: Log sticky bit check details
 	logger.Debug("CheckStickyBitRestriction",
 		"dir_mode", fmt.Sprintf("%04o", dirAttr.Mode),
 		"dir_uid", dirAttr.UID,
@@ -396,7 +394,6 @@ func CheckStickyBitRestriction(ctx *AuthContext, dirAttr *FileAttr, fileAttr *Fi
 		"caller_uid", callerUID,
 		"has_sticky", dirAttr.Mode&ModeSticky != 0)
 
-	// Check if the directory has the sticky bit set
 	if dirAttr.Mode&ModeSticky == 0 {
 		// No sticky bit, no restriction
 		return nil
@@ -408,19 +405,16 @@ func CheckStickyBitRestriction(ctx *AuthContext, dirAttr *FileAttr, fileAttr *Fi
 		return nil
 	}
 
-	// Check if the caller owns the file being deleted/renamed
 	if fileAttr.UID == callerUID {
 		logger.Debug("CheckStickyBitRestriction: caller owns file")
 		return nil
 	}
 
-	// Check if the caller owns the sticky directory
 	if dirAttr.UID == callerUID {
 		logger.Debug("CheckStickyBitRestriction: caller owns directory")
 		return nil
 	}
 
-	// Sticky bit restriction applies - deny the operation
 	logger.Debug("CheckStickyBitRestriction: DENIED",
 		"reason", "sticky bit set, caller not owner of file or directory")
 	return &StoreError{

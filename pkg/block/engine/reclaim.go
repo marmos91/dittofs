@@ -1,6 +1,6 @@
-// Package engine — orphan-storage reclaim (#1493/#1525 reconcile, PR5b+PR5c), the
-// *deleting* stages after the read-only reporter (reconcile.go). Both operate on a
-// record's live-locator status, never its (possibly stale) LiveChunkCount:
+// Package engine — orphan-storage reclaim, the *deleting* stages after the
+// read-only reporter (reconcile.go). Both operate on a record's
+// live-locator status, never its (possibly stale) LiveChunkCount:
 //
 //   - class 1 (ReclaimRecords, zero-ref): record with no live locator and
 //     LiveChunkCount == 0 — a crash between DecrLiveChunkCount and
@@ -8,7 +8,7 @@
 //   - class 2 (ReclaimRecords, leaked): record with no live locator but
 //     LiveChunkCount > 0 — DefaultCommitBlock's last-wins DeleteSynced→MarkSynced
 //     moved the hash onto a new block without decrementing this one, leaving its
-//     count stuck > 0 forever, invisible to the hash-driven sweep (#1525).
+//     count stuck > 0 forever, invisible to the hash-driven sweep.
 //   - class 3 (ReclaimOrphanObjects): a remote blocks/<id> object with no backing
 //     record, older than the grace window — PutBlock succeeded but the commit
 //     never landed.
@@ -59,7 +59,7 @@ type ReclaimReport struct {
 	// freed (Bytes, from each record's Length). On a dry run it tallies what WOULD
 	// be deleted.
 	Reclaimed ReconcileClass `json:"reclaimed"`
-	// LeakedReclaimed tallies class-2 leaked block records deleted (#1525): no
+	// LeakedReclaimed tallies class-2 leaked block records deleted: no
 	// live locator but a stale LiveChunkCount > 0.
 	LeakedReclaimed ReconcileClass `json:"leaked_reclaimed"`
 	// OrphanObjectsReclaimed tallies class-3 record-less remote objects deleted.
@@ -97,7 +97,7 @@ func (r *ReclaimReport) Merge(other ReclaimReport) {
 // ReclaimRecords deletes class-1 and class-2 orphan records across the given
 // per-share views that share one remote store: block records with no live locator,
 // split by their (possibly stale) LiveChunkCount into zero-ref (== 0, class 1) and
-// leaked (> 0, class 2 / #1525). For each it frees the remote block object
+// leaked (> 0, class 2). For each it frees the remote block object
 // (idempotent — the object may already be gone if a crash landed after DeleteBlock)
 // then deletes the record, matching the GC reclaimer's DeleteBlock→DeleteBlockRecord
 // order so a crash between them leaves a record-less orphan object (class 3, swept
@@ -161,7 +161,7 @@ func ReclaimRecords(
 		//
 		// Single scan: EnumerateSynced yields each marker's locator alongside its
 		// hash (same row), so no GetLocator round trip per hash — the O(N) serial
-		// cost on the sqlite MaxOpenConns(1) pool (#1554). Folding the locator in
+		// cost on the sqlite MaxOpenConns(1) pool. Folding the locator in
 		// also removes the nested-query deadlock class structurally.
 		if err := v.EnumerateSynced(ctx, func(_ block.ContentHash, loc block.ChunkLocator, _ time.Time) error {
 			if loc.BlockID != "" {

@@ -252,8 +252,6 @@ func (h *Handler) Read(
 	readEnd := min(req.Offset+uint64(count), file.Size)
 	actualLength := uint32(readEnd - req.Offset)
 
-	// All reads go through BlockStore.ReadAt which reads from block store.
-
 	logger.DebugCtx(ctx.Context, "READ: reading from BlockStore", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", actualLength, "payload_id", file.PayloadID)
 	readResult, readErr := common.ReadFromBlockStore(ctx.Context, blockStore, file.PayloadID, req.Offset, actualLength)
 	if readErr != nil {

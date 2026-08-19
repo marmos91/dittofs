@@ -185,7 +185,7 @@ func (s *Service) OpenMetadataStoreAtPath(
 		}
 		// Temp/snapshot/probe stores inherit the process-wide cache default
 		// (SetGlobalBadgerCacheDefaults) and RAM-relative auto-sizing via
-		// buildBadgerOptions, so they are not subject to the #1245 Bug D
+		// buildBadgerOptions, so they are not subject to under-sized-cache
 		// thrashing. Per-store cache overrides (block_cache_mb/index_cache_mb)
 		// are intentionally NOT threaded here — these are short-lived stores
 		// where a bespoke cache size has no practical value.
@@ -232,8 +232,8 @@ func (s *Service) OpenMetadataStoreAtPath(
 // PostgresRestoreOrphan represents one leftover restore-temp schema
 // discovered by ListPostgresRestoreOrphans. Name is the schema name as it
 // appears in information_schema.schemata; CreatedAt is derived from the
-// ULID suffix embedded in the schema name (Phase-5 temp schemas use the
-// form `<origSchema>_restore_<ulid>`).
+// ULID suffix embedded in the schema name (temp schemas use the form
+// `<origSchema>_restore_<ulid>`).
 type PostgresRestoreOrphan struct {
 	Name      string
 	CreatedAt time.Time

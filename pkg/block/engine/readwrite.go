@@ -207,8 +207,7 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 		// Reap each dropped tail block's OWN row (by exact ID
 		// "{payloadID}/{offset}") so its hash leaves EnumerateFileChunks once
 		// no row anywhere references it and the GC sweep can reclaim the remote
-		// chunk (otherwise truncated tail chunks leak on the remote forever —
-		// #832).
+		// chunk (otherwise truncated tail chunks leak on the remote forever).
 		//
 		// By-ID, not by-hash: each {payloadID}/offset row is independent and
 		// unique per offset. Dropped blocks are strictly past newSize, so their
@@ -245,7 +244,7 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 
 	// Remote sweep is best-effort: GC will reconcile stragglers, so a
 	// failure here does NOT roll back the coordinator decrements (matches
-	// engine.Delete semantics post-).
+	// engine.Delete semantics).
 	if err := bs.syncer.Truncate(ctx, payloadID, newSize); err != nil {
 		return kept, err
 	}
@@ -371,7 +370,7 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Ch
 	// delete) unlinks a file without carrying its block list, passing nil.
 	// Historically nil short-circuited the coordinator, so refcounts were
 	// never decremented: the FileChunk rows survived, the hashes stayed in
-	// the GC live set, and the chunks leaked on BOTH tiers (#1433). When no
+	// the GC live set, and the chunks leaked on BOTH tiers. When no
 	// blocks are supplied, enumerate the payload's own FileChunk rows so the
 	// reap below operates on the file's real manifest.
 	if len(blocks) == 0 {
@@ -438,7 +437,7 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Ch
 // ChunkRefs so the Delete reap path can decrement refcounts. It is the bridge
 // for callers that unlink a file without carrying its manifest (NFS REMOVE /
 // SMB delete pass nil): without it those deletes never decrement refcounts and
-// their chunks leak on both tiers (#1433).
+// their chunks leak on both tiers.
 //
 // Returns nil when no FileChunkStore is wired or enumeration fails — Delete
 // still proceeds to the remote sweep, and the full GC reconcile reclaims any
@@ -477,8 +476,8 @@ func (bs *Store) payloadChunkRefs(ctx context.Context, payloadID string) []block
 //     This is the load-bearing step for read correctness: the cold-read path
 //     resolves a payload's bytes via ListFileChunks(dstPayloadID) (the per-file
 //     FileChunk rows), NOT via FileAttr.Blocks. Without dst rows a read of the
-//     clone hits the sparse-block branch and zero-fills — silent corruption
-//     (#1384). Because every row carries the source hash and the chunks are
+//     clone hits the sparse-block branch and zero-fills — silent
+//     corruption. Because every row carries the source hash and the chunks are
 //     content-addressed, the dst rows resolve to the SAME shared CAS chunks and
 //     the clone reads back byte-identical to the source.
 //  2. Bumps each unique source-hash RefCount via the coordinator. This is now
@@ -490,11 +489,10 @@ func (bs *Store) payloadChunkRefs(ctx context.Context, payloadID string) []block
 // per-file rows and the FileAttr.Blocks manifest reference the same hashes and
 // offsets.
 //
-// Empty srcBlocks => nil-safe legacy path: copies nothing (legacy
-// CopyPayload data-copy semantics are removed in; the legacy
-// adapter call sites that need data copies should drive ReadAt+WriteAt
-// directly during the dual-read window). Production callers always
-// supply a snapshot of the source file's FileAttr.Blocks.
+// Empty srcBlocks => nil-safe path: copies nothing. CopyPayload no longer
+// copies data at all; adapter call sites that need a data copy drive
+// ReadAt+WriteAt directly. Production callers always supply a snapshot of
+// the source file's FileAttr.Blocks.
 //
 // Failure semantics: a genuine IncrementRefCount backend fault is surfaced
 // immediately without further increments (the caller's metadata txn rolls back).
@@ -542,7 +540,7 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 			// So a missing-row increment is a no-op to be skipped, mirroring how
 			// DecrementRefCount already tolerates the same miss. Without this,
 			// NFSv4.2 CLONE and SMB server-side-copy fail with EREMOTEIO on any
-			// rolled-up source (#1384). A genuine backend fault still aborts.
+			// rolled-up source. A genuine backend fault still aborts.
 			if errors.Is(err, block.ErrFileChunkNotFound) {
 				continue
 			}
@@ -552,8 +550,8 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 
 	// Create the destination's per-file FileChunk rows. The cold-read path
 	// resolves bytes via ListFileChunks(dstPayloadID), not FileAttr.Blocks, so
-	// without these rows reads of the clone zero-fill (silent corruption,
-	// #1384). One row per source block keyed by dstPayloadID + the SAME offset,
+	// without these rows reads of the clone zero-fill (silent corruption).
+	// One row per source block keyed by dstPayloadID + the SAME offset,
 	// hash and DataSize, in BlockStatePending — mirroring the rollup
 	// ObjectIDPersister (engine.go) so the dst rows resolve to the shared CAS
 	// chunks (content-addressed by hash). Skip zero-hash blocks (sparse holes
@@ -591,7 +589,7 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 		// Refuse to produce an unreadable clone: if there are blocks to
 		// materialize but no way to persist the dst rows, fail loudly rather
 		// than copy only the manifest (whose blocks the cold-read path can't
-		// resolve without rows → zero-fill, #1384).
+		// resolve without rows → zero-fill).
 		if putRow == nil {
 			return nil, fmt.Errorf("CopyPayload: no transaction or file-block store to persist dst rows for %s", dstPayloadID)
 		}

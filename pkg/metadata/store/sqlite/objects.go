@@ -290,10 +290,9 @@ func (s *SQLiteMetadataStore) AddRef(ctx context.Context, hash block.ContentHash
 }
 
 // GetByHash looks up a finalized block by its content hash.
-// Returns nil without error if not found. Renamed from
-// FindFileChunkByHash. Dedup matches only Remote (state=2) blocks —
-// Pending or Syncing rows have not been confirmed on the remote and
-// are unsafe dedup targets.
+// Returns nil without error if not found. Dedup matches only Remote
+// (state=2) blocks — Pending or Syncing rows have not been confirmed on
+// the remote and are unsafe dedup targets.
 func (s *SQLiteMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileChunk, error) {
 	return getByHashTx(ctx, s.conn(), hash)
 }

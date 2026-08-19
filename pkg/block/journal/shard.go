@@ -58,7 +58,7 @@ type shard struct {
 	// every commit that enqueued before the leader started. Segment rotation is
 	// itself a durability point (sealInPlace fsyncs the sealed segment), so a
 	// commit whose bytes moved to a now-sealed segment is durable regardless of
-	// which fd the leader synced. See Store.Commit (#1736).
+	// which fd the leader synced. See Store.Commit.
 	commitMu   sync.Mutex
 	commitCond *sync.Cond
 	reqSeq     uint64 // commits enqueued so far (monotonic)
@@ -71,7 +71,7 @@ type shard struct {
 	// fsync can report success for pages the kernel already dropped, so a false
 	// "success" would be silent data loss; that is the direction we must never take.
 	// The cost is a rare, benign spurious error to a waiter a later success actually
-	// covered (safe direction). See groupCommit (#1736).
+	// covered (safe direction). See groupCommit.
 	errSeq  uint64
 	syncErr error
 	// segSync fsyncs a segment's backing file. Per-shard indirection so durability

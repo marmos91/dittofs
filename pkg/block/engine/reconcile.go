@@ -1,8 +1,8 @@
-// Package engine — read-only orphan-storage reporter (#1493/#1525 reconcile,
-// PR5a). Reconcile enumerates and classifies orphaned block storage WITHOUT
-// mutating anything: no DeleteBlock, no DecrLiveChunkCount, no marker changes.
-// It is the report-only first stage of the reconcile series; an operator
-// reviews the report before the later delete stages (PR5b/5c) act.
+// Package engine — read-only orphan-storage reporter. Reconcile enumerates
+// and classifies orphaned block storage WITHOUT mutating anything: no
+// DeleteBlock, no DecrLiveChunkCount, no marker changes. It is the
+// report-only first stage; an operator reviews the report before the later
+// delete stages (reclaim.go) act.
 package engine
 
 import (
@@ -83,7 +83,7 @@ type ReconcileReport struct {
 	// LeakedBlocks: block records absent from the live locator set with
 	// LiveChunkCount > 0 — DefaultCommitBlock's last-wins DeleteSynced→MarkSynced
 	// moved a hash onto a new block without decrementing this one, and the
-	// hash-driven sweep never revisits it (class 2 / #1525).
+	// hash-driven sweep never revisits it (class 2).
 	LeakedBlocks ReconcileClass `json:"leaked_blocks"`
 	// OrphanRemoteObjects: blocks/<id> objects with no backing block record,
 	// older than the grace window — PutBlock succeeded but the commit failed
@@ -164,7 +164,7 @@ func Reconcile(
 		//
 		// Single scan: EnumerateSynced yields each marker's locator alongside its
 		// hash (same row), so no GetLocator round trip per hash — the O(N) serial
-		// cost on the sqlite MaxOpenConns(1) pool (#1554). Folding the locator in
+		// cost on the sqlite MaxOpenConns(1) pool. Folding the locator in
 		// also removes the nested-query deadlock class structurally.
 		refSet := make(map[string]struct{})
 		if err := v.EnumerateSynced(ctx, func(_ block.ContentHash, loc block.ChunkLocator, _ time.Time) error {

@@ -11,21 +11,17 @@ import (
 
 // createConnectionPool creates a new PostgreSQL connection pool with the given configuration
 func createConnectionPool(ctx context.Context, cfg *PostgresMetadataStoreConfig, logger *slog.Logger) (*pgxpool.Pool, error) {
-	// Apply defaults before validation
 	cfg.ApplyDefaults()
 
-	// Validate configuration
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	// Build pgxpool config
 	poolConfig, err := pgxpool.ParseConfig(cfg.ConnectionString())
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse connection string: %w", err)
 	}
 
-	// Apply connection pool settings
 	poolConfig.MaxConns = cfg.MaxConns
 	poolConfig.MinConns = cfg.MinConns
 	poolConfig.MaxConnLifetime = cfg.MaxConnLifetime
@@ -49,11 +45,6 @@ func createConnectionPool(ctx context.Context, cfg *PostgresMetadataStoreConfig,
 		poolConfig.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
 	}
 
-	// Configure logging (optional, can be adjusted)
-	// pgxpool uses its own logging, but we can configure it to use our logger
-	// For now, we'll keep it simple and let pgx use default logging
-
-	// Create the connection pool
 	logger.Info("Creating PostgreSQL connection pool",
 		"host", cfg.Host,
 		"port", cfg.Port,

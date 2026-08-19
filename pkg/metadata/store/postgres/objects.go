@@ -112,7 +112,7 @@ func (s *PostgresMetadataStore) Put(ctx context.Context, block *metadata.FileChu
 	return nil
 }
 
-// Delete removes a file chunk by its ID. Renamed from DeleteFileChunk in
+// Delete removes a file chunk by its ID.
 func (s *PostgresMetadataStore) Delete(ctx context.Context, id string) error {
 	result, err := s.exec(ctx, `DELETE FROM file_blocks WHERE id = $1`, id)
 	if err != nil {
@@ -247,10 +247,9 @@ func (s *PostgresMetadataStore) AddRef(ctx context.Context, hash block.ContentHa
 }
 
 // GetByHash looks up a finalized block by its content hash.
-// Returns nil without error if not found. Renamed from
-// FindFileChunkByHash. Dedup matches only Remote (state=2) blocks —
-// Pending or Syncing rows have not been confirmed on the remote and
-// are unsafe dedup targets.
+// Returns nil without error if not found. Dedup matches only Remote
+// (state=2) blocks — Pending or Syncing rows have not been confirmed on
+// the remote and are unsafe dedup targets.
 func (s *PostgresMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileChunk, error) {
 	query := `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE hash = $1 AND state = 2 /* Remote */`

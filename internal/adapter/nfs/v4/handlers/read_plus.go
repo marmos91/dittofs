@@ -44,9 +44,11 @@ var errNoRegistry = errors.New("no registry configured")
 // data segments and NFS4_CONTENT_HOLE runs. Bytes-on-wire for a sparse file are
 // less than its logical size because hole runs carry only (offset, length).
 //
-// DittoFS derives the segmentation from the file's content-addressed block list
-// (block.Segments). The always-correct fallback — a dense file or a file with
-// no tracked holes — yields a single data segment, matching plain READ.
+// DittoFS derives the segmentation from the block-store engine's multi-tier
+// DataExtents view, falling back to the file's content-addressed block list
+// (block.Segments) when the engine cannot be resolved. Either way, a dense
+// file or a file with no tracked holes yields a single data segment, matching
+// plain READ.
 func (h *Handler) handleReadPlus(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
 		return readPlusErr(status)

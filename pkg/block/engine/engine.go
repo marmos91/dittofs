@@ -95,10 +95,8 @@ type Store struct {
 	coordinator MetadataCoordinator
 
 	// syncedHashStore persists per-CAS-hash local→remote mirror state.
-	// Held alongside the coordinator so the engine constructor can
-	// thread it into both the Syncer (via SetSyncedHashStore) and the
-	// FSStore (via the ObjectIDPersister callback target's sibling
-	// SetSyncedHashStore on the local store). May be nil in tests.
+	// Held alongside the coordinator so the engine constructor can thread
+	// it into the Syncer (via SetSyncedHashStore). May be nil in tests.
 	syncedHashStore metadata.SyncedHashStore
 
 	// cache is the CAS-keyed cache (CACHE-01..05). The block-coord
@@ -285,26 +283,14 @@ func (bs *Store) Start(ctx context.Context) error {
 	return nil
 }
 
-// loadByHash is the loadByHashFn the Cache's prefetch workers call to
-// pull a block by ContentHash. It performs a single content-addressed
-// local read; local.Get is the only primitive (no mmap fast-path, no
-// legacy FileChunk → GetBlockData fallback).
-//
-// Buffer ownership: local.Get returns a freshly allocated []byte; the
-// Cache copies those bytes into its LRU slot on miss. The net
-// allocation count matches the legacy mmap-then-copy semantics — the
-// alloc just moves earlier in the pipeline.
-//
-// Remote fallback is intentionally NOT wired here — prefetch is
-// best-effort and shouldn't block on a remote round-trip; if the
-// block isn't local, the next on-path read will pull it via the
-// syncer.
+// loadByHash is the loadByHashFn the Cache's prefetch workers call to pull a
+// block by ContentHash. It is a permanent no-op miss: the journal local store
+// is (payloadID,offset)-keyed, not hash-keyed, so there is no local
+// content-addressed read to prefetch through. Cold reads hydrate covering
+// chunks from the remote on demand (read_internal.go). ponytail: that leaves
+// the CAS read cache hint-only. Remote fallback is deliberately not wired here —
+// prefetch is best-effort and must not block on a remote round-trip.
 func (bs *Store) loadByHash(_ context.Context, _ block.ContentHash) ([]byte, error) {
-	// The journal local store is (payloadID,offset)-keyed, not hash-keyed, so
-	// there is no local content-addressed read to prefetch through. Prefetch by
-	// hash is therefore a no-op miss; cold reads hydrate covering chunks from
-	// the remote on demand (read_internal.go). ponytail: the CAS read cache is
-	// now hint-only.
 	return nil, block.ErrChunkNotFound
 }
 

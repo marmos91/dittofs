@@ -90,8 +90,7 @@ func (s *BadgerMetadataStore) GetFileChunk(ctx context.Context, id string) (*met
 	return &block, nil
 }
 
-// Put stores or updates a file chunk. Renamed from PutFileChunk to
-// match the narrowed interface.
+// Put stores or updates a file chunk.
 func (s *BadgerMetadataStore) Put(ctx context.Context, block *metadata.FileChunk) error {
 	return s.db.Update(func(txn *badger.Txn) error {
 		key := []byte(fileChunkPrefix + block.ID)
@@ -121,7 +120,7 @@ func (s *BadgerMetadataStore) Put(ctx context.Context, block *metadata.FileChunk
 	})
 }
 
-// Delete removes a file chunk by its ID. Renamed from DeleteFileChunk in
+// Delete removes a file chunk by its ID.
 func (s *BadgerMetadataStore) Delete(ctx context.Context, id string) error {
 	return s.db.Update(func(txn *badger.Txn) error {
 		key := []byte(fileChunkPrefix + id)
@@ -352,7 +351,7 @@ func (s *BadgerMetadataStore) AddRef(ctx context.Context, hash blockpkg.ContentH
 }
 
 // GetByHash looks up a finalized block by its content hash.
-// Returns nil without error if not found. Renamed from FindFileChunkByHash
+// Returns nil without error if not found.
 func (s *BadgerMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileChunk, error) {
 	var block metadata.FileChunk
 	var found bool
@@ -711,9 +710,7 @@ func (s *BadgerMetadataStore) EnumeratePayloads(ctx context.Context, fn func(pay
 
 // EnumerateFileChunks streams every FileChunk's ContentHash through fn using
 // a Badger prefix iterator over fb:. The iterator yields one row per block
-// (no allocation of a full slice in application memory)..
-// lifted from FileChunkStore to MetadataStore
-// implementation unchanged.
+// (no allocation of a full slice in application memory).
 func (s *BadgerMetadataStore) EnumerateFileChunks(ctx context.Context, fn func(blockpkg.ContentHash) error) error {
 	return s.db.View(func(txn *badger.Txn) error {
 		return enumerateFileChunksTxn(ctx, txn, fn)
@@ -933,13 +930,11 @@ func parseBlockIdx(id string) int {
 // Ensure badgerTransaction implements FileChunkStore
 var _ blockpkg.FileChunkStore = (*badgerTransaction)(nil)
 
-// (review iteration 1): FileChunkStore methods on
-// badgerTransaction MUST run against the txn's *badger.Txn so a
-// rollback (returning an error from WithTransaction's fn) discards the
-// RefCount mutation. Previously every method called `tx.store.X(...)`
-// which opened its own db.Update — defeating rollback for any caller
-// that bumped RefCount inside WithTransaction then encountered a
-// downstream PutFile failure (silent leak).
+// FileChunkStore methods on badgerTransaction MUST run against the txn's
+// *badger.Txn so a rollback (returning an error from WithTransaction's fn)
+// discards the RefCount mutation. Calling tx.store.X(...) instead would open
+// its own db.Update and defeat rollback for any caller that bumps RefCount
+// inside WithTransaction and then hits a downstream PutFile failure.
 
 func (tx *badgerTransaction) GetFileChunk(ctx context.Context, id string) (*metadata.FileChunk, error) {
 	if err := ctx.Err(); err != nil {
