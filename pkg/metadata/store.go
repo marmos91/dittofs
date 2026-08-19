@@ -383,7 +383,7 @@ type FilesystemMeta struct {
 //   - Shares: Share lifecycle and handle management
 //   - ServerConfig: Server configuration, capabilities, and health
 //   - Transactor: Transaction support for atomic operations
-//   - FileChunkStore: Content-addressed block management
+//   - block.EngineFileChunkStore: Content-addressed block management
 //
 // Note: File locking (SMB/NLM) is handled separately by LockManager at the
 // service level, not by individual stores. Locks are ephemeral (in-memory)
@@ -398,13 +398,13 @@ type FilesystemMeta struct {
 // Thread Safety:
 // Implementations must be safe for concurrent use by multiple goroutines.
 type Store interface {
-	Files            // File CRUD operations (non-transactional calls)
-	Shares           // Share lifecycle and handle management
-	ServerConfig     // Server configuration and capabilities
-	Transactor       // Transaction support for atomic operations
-	FileChunkStore   // Content-addressed block management
-	SyncedHashStore  // Per-hash remote-mirror state
-	BlockRecordStore // Log-blob block record lifecycle
+	Files                      // File CRUD operations (non-transactional calls)
+	Shares                     // Share lifecycle and handle management
+	ServerConfig               // Server configuration and capabilities
+	Transactor                 // Transaction support for atomic operations
+	block.EngineFileChunkStore // Content-addressed block management, plus the engine-internal by-ID lookups
+	SyncedHashStore            // Per-hash remote-mirror state
+	BlockRecordStore           // Log-blob block record lifecycle
 
 	// EnumerateFileChunks streams every FileChunk's ContentHash through fn
 	// in implementation-defined order. Returns the first non-nil error
@@ -439,31 +439,6 @@ type Store interface {
 	//
 	// Conformance scenarios live in pkg/metadata/storetest/objectid_*.go.
 	FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.ChunkRef, error)
-
-	// GetFileChunk retrieves a FileChunk by its ID. Engine-internal
-	// surface narrowed the public
-	// FileChunkStore to 6 methods, but the read-path resolver
-	// (engine.fetch.resolveFileChunk) and the recovery scan
-	// (local/fs/recovery.go) still need a by-ID lookup until 14
-	// reroutes reads through FileAttr.Blocks. See block.EngineFileChunkStore.
-	GetFileChunk(ctx context.Context, id string) (*block.FileChunk, error)
-
-	// ListFileChunks returns every FileChunk whose ID begins with
-	// "{payloadID}/", sorted by parsed numeric block index. Returns an
-	// empty (non-nil) slice when no blocks match. Engine-internal
-	// surface: used by syncer GetFileSize/Exists, BlockStore stats fan-
-	// out, and local/fs eviction. Same 14 deprecation timeline
-	// as GetFileChunk above.
-	ListFileChunks(ctx context.Context, payloadID string) ([]*block.FileChunk, error)
-
-	// EnumeratePayloads streams every distinct payloadID that has at least one
-	// FileChunk row through fn (deduped, order-independent). Unlike the local
-	// block store's ListFiles, this enumerates the authoritative metadata, so
-	// it still yields payloads whose append log was discarded after rollup.
-	// Used by `share warm` and block-store stats to enumerate the full payload
-	// set rather than only locally-present payloads. See
-	// block.EngineFileChunkStore.
-	EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error
 
 	// EnumerateLivePayloadIDs streams every distinct PayloadID referenced by a
 	// live inode through fn (deduped, order-independent). "Live" means nlink>0:

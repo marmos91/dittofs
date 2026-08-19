@@ -16,7 +16,7 @@ const HashSize = block.HashSize
 type ContentHash = block.ContentHash
 
 // ParseContentHash parses a hex-encoded hash string.
-var ParseContentHash = block.ParseContentHash
+func ParseContentHash(s string) (ContentHash, error) { return block.ParseContentHash(s) }
 
 // ============================================================================
 // ObjectID Type for FileAttr

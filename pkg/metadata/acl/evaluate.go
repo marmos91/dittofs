@@ -36,8 +36,9 @@ func HasTakeOwnershipPrivilege(requesterSID string, groupSIDs []string) bool {
 	return false
 }
 
-// IsAdminSID reports whether the SID is BUILTIN\Administrators or a
-// local/domain Administrator (RID 500) account.
+// IsAdminSID reports whether sid names an administrator account: either the
+// BUILTIN\Administrators group (S-1-5-32-544) or a local/domain Administrator
+// account (S-1-5-21-<3 sub-authorities>-500).
 func IsAdminSID(sid string) bool {
 	if sid == "" {
 		return false

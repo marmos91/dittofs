@@ -9,6 +9,7 @@ package errors
 import (
 	goerrors "errors"
 	"fmt"
+	"slices"
 )
 
 // ErrorCode represents the type of error that occurred.
@@ -341,82 +342,60 @@ func NewConnectionLimitError(adapterType string, limit int) *StoreError {
 // Error Type Checking Helpers
 // ============================================================================
 
+// hasCode reports whether err is, or wraps, a StoreError carrying one of the
+// given codes.
+func hasCode(err error, codes ...ErrorCode) bool {
+	var storeErr *StoreError
+	if !goerrors.As(err, &storeErr) {
+		return false
+	}
+	return slices.Contains(codes, storeErr.Code)
+}
+
 // IsNotFoundError returns true if the error is a NotFound error.
 // Unwraps via errors.As so wrapped StoreErrors (fmt.Errorf("...: %w", storeErr))
 // still classify correctly.
 func IsNotFoundError(err error) bool {
-	var storeErr *StoreError
-	if goerrors.As(err, &storeErr) {
-		return storeErr.Code == ErrNotFound || storeErr.Code == ErrLockNotFound
-	}
-	return false
+	return hasCode(err, ErrNotFound, ErrLockNotFound)
 }
 
 // IsLockConflictError returns true if the error is a lock conflict.
 func IsLockConflictError(err error) bool {
-	var storeErr *StoreError
-	if goerrors.As(err, &storeErr) {
-		return storeErr.Code == ErrLocked || storeErr.Code == ErrLockConflict
-	}
-	return false
+	return hasCode(err, ErrLocked, ErrLockConflict)
 }
 
 // IsDeadlockError returns true if the error indicates a deadlock.
 func IsDeadlockError(err error) bool {
-	var storeErr *StoreError
-	if goerrors.As(err, &storeErr) {
-		return storeErr.Code == ErrDeadlock
-	}
-	return false
+	return hasCode(err, ErrDeadlock)
 }
 
 // IsGracePeriodError returns true if the error is due to grace period.
 func IsGracePeriodError(err error) bool {
-	var storeErr *StoreError
-	if goerrors.As(err, &storeErr) {
-		return storeErr.Code == ErrGracePeriod
-	}
-	return false
+	return hasCode(err, ErrGracePeriod)
 }
 
 // IsLockLimitError returns true if the error is due to lock limits.
 func IsLockLimitError(err error) bool {
-	var storeErr *StoreError
-	if goerrors.As(err, &storeErr) {
-		return storeErr.Code == ErrLockLimitExceeded
-	}
-	return false
+	return hasCode(err, ErrLockLimitExceeded)
 }
 
 // IsConflictError returns true if the error is a Conflict error
 // Unwraps via errors.As so wrapped StoreErrors classify
 // correctly.
 func IsConflictError(err error) bool {
-	var storeErr *StoreError
-	if goerrors.As(err, &storeErr) {
-		return storeErr.Code == ErrConflict
-	}
-	return false
+	return hasCode(err, ErrConflict)
 }
 
 // IsInvalidHandleError returns true if the error is a StoreError with
 // ErrInvalidHandle code. Unwraps via errors.As so wrapped StoreErrors
 // classify correctly.
 func IsInvalidHandleError(err error) bool {
-	var storeErr *StoreError
-	if goerrors.As(err, &storeErr) {
-		return storeErr.Code == ErrInvalidHandle
-	}
-	return false
+	return hasCode(err, ErrInvalidHandle)
 }
 
 // IsStaleHandleError returns true if the error is a StoreError with
 // ErrStaleHandle code. Unwraps via errors.As so wrapped StoreErrors
 // classify correctly.
 func IsStaleHandleError(err error) bool {
-	var storeErr *StoreError
-	if goerrors.As(err, &storeErr) {
-		return storeErr.Code == ErrStaleHandle
-	}
-	return false
+	return hasCode(err, ErrStaleHandle)
 }
