@@ -83,7 +83,7 @@ func (bs *Store) healCorruptWarmRead(ctx context.Context, payloadID string, data
 }
 
 // ensureAndReadFromLocal hydrates every remote-resident chunk covering the
-// window into the local journal, then re-reads. EnsureAvailableAndRead resolves
+// window into the local journal, then re-reads. EnsureAvailable resolves
 // the covering FileChunk rows — refusing with ErrManifestInconsistent when an
 // uncovered offset sits on a payload holding an unplaceable row — does one
 // BLAKE3-verified ranged read per chunk, and Hydrates the plaintext at the
@@ -100,7 +100,7 @@ func (bs *Store) healCorruptWarmRead(ctx context.Context, payloadID string, data
 // never reaches here (readAtInternal returns early), and would report cold=false
 // regardless, so the guard has nothing to fail open on.
 func (bs *Store) ensureAndReadFromLocal(ctx context.Context, payloadID string, dest []byte, offset uint64) error {
-	if _, err := bs.syncer.EnsureAvailableAndRead(ctx, payloadID, offset, uint32(len(dest)), dest); err != nil {
+	if err := bs.syncer.EnsureAvailable(ctx, payloadID, offset, uint32(len(dest))); err != nil {
 		return fmt.Errorf("manifest reconcile for %s at offset %d failed: %w", payloadID, offset, err)
 	}
 	_, st, err := bs.local.ReadAt(ctx, payloadID, int64(offset), dest)

@@ -167,7 +167,6 @@ func newPerfTestEngine(tb testing.TB, readBufferBytes int64, prefetchWorkers int
 func BenchmarkRandRead_Phase12(b *testing.B) {
 	fixture := setupPerfFixture(b)
 	defer fixture.Close()
-	blocks := fixture.AllChunkRefs()
 	dest := make([]byte, phase12ReadSize)
 	rng := rand.New(rand.NewSource(phase12RandSeed)) //nolint:gosec // bench
 	ctx := context.Background()
@@ -179,7 +178,7 @@ func BenchmarkRandRead_Phase12(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		offset := uint64(rng.Intn(maxOffset))
-		if _, err := fixture.Store.ReadAt(ctx, fixture.PayloadID, blocks, dest, offset); err != nil {
+		if _, err := fixture.Store.ReadAt(ctx, fixture.PayloadID, dest, offset); err != nil {
 			b.Fatalf("ReadAt: %v", err)
 		}
 	}
@@ -212,7 +211,6 @@ func BenchmarkRandRead_Phase12(b *testing.B) {
 func BenchmarkPerfGate_Phase12RandReadRegression(b *testing.B) {
 	fixture := setupPerfFixture(b)
 	defer fixture.Close()
-	blocks := fixture.AllChunkRefs()
 	dest := make([]byte, phase12ReadSize)
 	rng := rand.New(rand.NewSource(phase12RandSeed)) //nolint:gosec // bench
 	ctx := context.Background()
@@ -224,7 +222,7 @@ func BenchmarkPerfGate_Phase12RandReadRegression(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		offset := uint64(rng.Intn(maxOffset))
-		if _, err := fixture.Store.ReadAt(ctx, fixture.PayloadID, blocks, dest, offset); err != nil {
+		if _, err := fixture.Store.ReadAt(ctx, fixture.PayloadID, dest, offset); err != nil {
 			b.Fatalf("ReadAt: %v", err)
 		}
 	}

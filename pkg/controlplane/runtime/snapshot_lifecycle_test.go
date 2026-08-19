@@ -192,7 +192,7 @@ func TestSnapshotLifecycleVsGC(t *testing.T) {
 			t.Fatalf("UpdateSnapshotState->ready: %v", err)
 		}
 
-		stats, err := fx.rt.RunBlockGC(ctx, "", false)
+		stats, err := fx.rt.RunBlockGC(ctx, false)
 		if err != nil {
 			t.Fatalf("RunBlockGC: %v", err)
 		}
@@ -232,7 +232,7 @@ func TestSnapshotLifecycleVsGC(t *testing.T) {
 			t.Fatalf("RemoveAll snapshot dir: %v", err)
 		}
 
-		stats, err := fx.rt.RunBlockGC(ctx, "", false)
+		stats, err := fx.rt.RunBlockGC(ctx, false)
 		if err != nil {
 			t.Fatalf("RunBlockGC: %v", err)
 		}

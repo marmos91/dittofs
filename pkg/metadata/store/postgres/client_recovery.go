@@ -143,34 +143,24 @@ func (s *postgresRecoveryStore) RecordReclaimComplete(ctx context.Context, clien
 // Ensure PostgresMetadataStore implements ClientRecoveryStore.
 var _ lock.ClientRecoveryStore = (*PostgresMetadataStore)(nil)
 
-// getRecoveryStore returns the recovery store, initializing if needed.
-func (s *PostgresMetadataStore) getRecoveryStore() *postgresRecoveryStore {
-	s.recoveryStoreMu.Lock()
-	defer s.recoveryStoreMu.Unlock()
-	if s.recoveryStore == nil {
-		s.recoveryStore = newPostgresRecoveryStore(s)
-	}
-	return s.recoveryStore
-}
-
 // PutClientRecovery stores or replaces a client recovery record.
 func (s *PostgresMetadataStore) PutClientRecovery(ctx context.Context, rec *lock.V4ClientRecoveryRecord) error {
-	return s.getRecoveryStore().PutClientRecovery(ctx, rec)
+	return s.recoveryStore.PutClientRecovery(ctx, rec)
 }
 
 // DeleteClientRecovery removes a client recovery record.
 func (s *PostgresMetadataStore) DeleteClientRecovery(ctx context.Context, clientIDString string) error {
-	return s.getRecoveryStore().DeleteClientRecovery(ctx, clientIDString)
+	return s.recoveryStore.DeleteClientRecovery(ctx, clientIDString)
 }
 
 // ListClientRecovery returns all stored client recovery records.
 func (s *PostgresMetadataStore) ListClientRecovery(ctx context.Context) ([]*lock.V4ClientRecoveryRecord, error) {
-	return s.getRecoveryStore().ListClientRecovery(ctx)
+	return s.recoveryStore.ListClientRecovery(ctx)
 }
 
 // RecordReclaimComplete marks a client's recovery record reclaim-complete.
 func (s *PostgresMetadataStore) RecordReclaimComplete(ctx context.Context, clientIDString string) error {
-	return s.getRecoveryStore().RecordReclaimComplete(ctx, clientIDString)
+	return s.recoveryStore.RecordReclaimComplete(ctx, clientIDString)
 }
 
 // ClientRecoveryStore returns this store as a ClientRecoveryStore.

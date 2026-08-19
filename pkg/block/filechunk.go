@@ -168,15 +168,11 @@ type EngineFileChunkStore interface {
 
 // Reader defines read operations on the block store.
 //
-// read operations thread a caller-supplied
-// []ChunkRef snapshot of the file's FileAttr.Blocks. Empty/nil blocks
-// triggers the dual-read shim — engine routes through
-// the legacy {payloadID}/block-{N} resolver. Non-empty blocks routes
-// through the CAS path: findBlocksForRange + cache.OnRead.
+// Reads resolve the covering chunks from the store's own manifest, so no
+// caller-supplied []ChunkRef snapshot is threaded through the read path.
 type Reader interface {
 	// ReadAt reads data from storage at the given offset into dest.
-	// Empty blocks => dual-read shim (path).
-	ReadAt(ctx context.Context, payloadID string, blocks []ChunkRef, dest []byte, offset uint64) (int, error)
+	ReadAt(ctx context.Context, payloadID string, dest []byte, offset uint64) (int, error)
 
 	// GetSize returns the stored size of a payload.
 	GetSize(ctx context.Context, payloadID string) (uint64, error)

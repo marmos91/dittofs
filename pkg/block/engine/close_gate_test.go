@@ -69,7 +69,7 @@ func TestStore_CloseDrainsInFlightReadAt(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			buf := make([]byte, 10)
-			_, readErr = bs.ReadAt(ctx, payloadID, nil, buf, 0)
+			_, readErr = bs.ReadAt(ctx, payloadID, buf, 0)
 		}()
 		go func() {
 			defer wg.Done()
@@ -133,7 +133,7 @@ func TestStore_OpAfterCloseReturnsErrStoreClosed(t *testing.T) {
 	})
 	t.Run("ReadAt", func(t *testing.T) {
 		buf := make([]byte, 4)
-		if _, err := bs.ReadAt(ctx, "p", nil, buf, 0); !errors.Is(err, ErrStoreClosed) {
+		if _, err := bs.ReadAt(ctx, "p", buf, 0); !errors.Is(err, ErrStoreClosed) {
 			t.Fatalf("want ErrStoreClosed, got %v", err)
 		}
 	})

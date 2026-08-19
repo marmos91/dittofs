@@ -20,39 +20,23 @@ import (
 func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
-		return &types.CompoundResult{
-			Status: status,
-			OpCode: types.OP_COMMIT,
-			Data:   encodeStatusOnly(status),
-		}
+		return commitErr(status)
 	}
 
 	// Pseudo-fs is read-only
 	if pseudofs.IsPseudoFSHandle(ctx.CurrentFH) {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_ROFS,
-			OpCode: types.OP_COMMIT,
-			Data:   encodeStatusOnly(types.NFS4ERR_ROFS),
-		}
+		return commitErr(types.NFS4ERR_ROFS)
 	}
 
 	// Decode COMMIT4args
 	offset, err := xdr.DecodeUint64(reader)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
-			OpCode: types.OP_COMMIT,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-		}
+		return commitErr(types.NFS4ERR_BADXDR)
 	}
 
 	count, err := xdr.DecodeUint32(reader)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
-			OpCode: types.OP_COMMIT,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-		}
+		return commitErr(types.NFS4ERR_BADXDR)
 	}
 
 	logger.Debug("NFSv4 COMMIT",
@@ -65,21 +49,13 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 	if err != nil {
 		logger.Debug("NFSv4 COMMIT auth context failed", "error", err, "client", ctx.ClientAddr)
 		st := nfs4StatusForAuthError(err)
-		return &types.CompoundResult{
-			Status: st,
-			OpCode: types.OP_COMMIT,
-			Data:   encodeStatusOnly(st),
-		}
+		return commitErr(st)
 	}
 
 	// Get metadata service to look up PayloadID
 	metaSvc, err := getMetadataServiceForCtx(h)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
-			OpCode: types.OP_COMMIT,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
-		}
+		return commitErr(types.NFS4ERR_SERVERFAULT)
 	}
 
 	fileHandle := metadata.FileHandle(ctx.CurrentFH)
@@ -87,11 +63,7 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 	file, err := metaSvc.GetFileForRead(authCtx.Context, fileHandle)
 	if err != nil {
 		status := common.MapToNFS4(err)
-		return &types.CompoundResult{
-			Status: status,
-			OpCode: types.OP_COMMIT,
-			Data:   encodeStatusOnly(status),
-		}
+		return commitErr(status)
 	}
 
 	// Enforce write permission before forcing anything to stable storage.
@@ -103,11 +75,7 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 	if err := metaSvc.CheckWritePermissionFile(authCtx, fileHandle, file); err != nil {
 		status := common.MapToNFS4(err)
 		logger.Debug("NFSv4 COMMIT denied", "status", status, "error", err, "client", ctx.ClientAddr)
-		return &types.CompoundResult{
-			Status: status,
-			OpCode: types.OP_COMMIT,
-			Data:   encodeStatusOnly(status),
-		}
+		return commitErr(status)
 	}
 
 	// If no content, just return success
@@ -120,20 +88,12 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 	// (previously lived inside the local getBlockStoreForHandle).
 	if h.Registry == nil {
 		logger.Debug("NFSv4 COMMIT no registry configured", "client", ctx.ClientAddr)
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
-			OpCode: types.OP_COMMIT,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
-		}
+		return commitErr(types.NFS4ERR_SERVERFAULT)
 	}
 	// Get per-share block store and flush
 	blockStore, err := common.ResolveForWrite(ctx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH))
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
-			OpCode: types.OP_COMMIT,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
-		}
+		return commitErr(types.NFS4ERR_SERVERFAULT)
 	}
 
 	// Routed through common.CommitBlockStore so any future []ChunkRef
@@ -144,11 +104,7 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 			"error", flushErr,
 			"payloadID", file.PayloadID,
 			"client", ctx.ClientAddr)
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_IO,
-			OpCode: types.OP_COMMIT,
-			Data:   encodeStatusOnly(types.NFS4ERR_IO),
-		}
+		return commitErr(types.NFS4ERR_IO)
 	}
 
 	// Flush pending metadata writes (deferred commit optimization)
@@ -161,7 +117,7 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 		logger.Error("NFSv4 COMMIT metadata flush failed",
 			"error", metaErr,
 			"client", ctx.ClientAddr)
-		return encodeCommit4resError(types.NFS4ERR_SERVERFAULT)
+		return commitErr(types.NFS4ERR_SERVERFAULT)
 	} else if flushed {
 		logger.Debug("NFSv4 COMMIT flushed pending metadata",
 			"client", ctx.ClientAddr)
@@ -174,14 +130,12 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 	return encodeCommit4resok()
 }
 
-// encodeCommit4resError encodes a failed COMMIT4 response.
-func encodeCommit4resError(status uint32) *types.CompoundResult {
-	var buf bytes.Buffer
-	_ = xdr.WriteUint32(&buf, status)
+// commitErr builds a COMMIT error result (status only).
+func commitErr(status uint32) *types.CompoundResult {
 	return &types.CompoundResult{
 		Status: status,
 		OpCode: types.OP_COMMIT,
-		Data:   buf.Bytes(),
+		Data:   encodeStatusOnly(status),
 	}
 }
 

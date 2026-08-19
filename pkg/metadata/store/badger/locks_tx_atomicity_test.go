@@ -41,7 +41,6 @@ func txLockStore(t *testing.T, tx metadata.Transaction) lock.LockStore {
 func TestTxDeleteLocksByClient_RolledBackWithOuterTx(t *testing.T) {
 	ctx := context.Background()
 	store := newLockTestStore(t)
-	store.initLockStore()
 
 	if err := store.lockStore.PutLock(ctx, &lock.PersistedLock{
 		ID: "lk1", FileID: "f1", OwnerID: "o1", ClientID: "c1",
@@ -81,7 +80,6 @@ func TestTxDeleteLocksByClient_RolledBackWithOuterTx(t *testing.T) {
 func TestTxIncrementServerEpoch_RolledBackWithOuterTx(t *testing.T) {
 	ctx := context.Background()
 	store := newLockTestStore(t)
-	store.initLockStore()
 
 	before, err := store.lockStore.GetServerEpoch(ctx)
 	if err != nil {
@@ -113,7 +111,6 @@ func TestTxIncrementServerEpoch_RolledBackWithOuterTx(t *testing.T) {
 func TestTxIncrementServerEpoch_CommitsOnce(t *testing.T) {
 	ctx := context.Background()
 	store := newLockTestStore(t)
-	store.initLockStore()
 
 	before, err := store.lockStore.GetServerEpoch(ctx)
 	if err != nil {

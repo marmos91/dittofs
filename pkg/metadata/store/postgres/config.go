@@ -33,9 +33,8 @@ type PostgresMetadataStoreConfig struct {
 	// DisablePreparedStatements turns off pgx's per-connection prepared-statement
 	// cache, which a pooler in transaction-pooling mode cannot serve. Default
 	// false: statements are prepared and cached.
-	DisablePreparedStatements bool          `mapstructure:"disable_prepared_statements"`
-	AutoMigrate               bool          `mapstructure:"auto_migrate"`    // Default: false (manual control)
-	StatsCacheTTL             time.Duration `mapstructure:"stats_cache_ttl"` // Default: 5s
+	DisablePreparedStatements bool `mapstructure:"disable_prepared_statements"`
+	AutoMigrate               bool `mapstructure:"auto_migrate"` // Default: false (manual control)
 
 	// RelaxedDurability defers commit-time WAL flush for pure-namespace metadata
 	// writes via SET LOCAL synchronous_commit=off, honoring the same
@@ -80,11 +79,6 @@ func (c *PostgresMetadataStoreConfig) ApplyDefaults() {
 	}
 	if c.QueryTimeout == 0 {
 		c.QueryTimeout = 30 * time.Second
-	}
-
-	// Feature defaults
-	if c.StatsCacheTTL == 0 {
-		c.StatsCacheTTL = 5 * time.Second
 	}
 
 	// SSL mode default

@@ -29,9 +29,9 @@ func hydrateFixture(t *testing.T, share, name string) (*engine.Store, *fs.FSStor
 	bs := newEngineWithRemote(t, ms, remotememory.New())
 	root := createShare(t, ms, share)
 	pid, _ := createRealFile(t, ms, share, name, root)
-	local, ok := bs.LocalForTest().(*fs.FSStore)
+	local, ok := bs.Local().(*fs.FSStore)
 	if !ok {
-		t.Fatalf("local tier is %T, not the journal-backed store the eviction path needs", bs.LocalForTest())
+		t.Fatalf("local tier is %T, not the journal-backed store the eviction path needs", bs.Local())
 	}
 	return bs, local, ms, pid
 }
@@ -75,10 +75,10 @@ func evictAll(t *testing.T, local *fs.FSStore) {
 	}
 }
 
-func readAt(t *testing.T, bs *engine.Store, pid string, refs []block.ChunkRef, off uint64, n int) []byte {
+func readAt(t *testing.T, bs *engine.Store, pid string, off uint64, n int) []byte {
 	t.Helper()
 	buf := make([]byte, n)
-	if _, err := bs.ReadAt(context.Background(), pid, refs, buf, off); err != nil {
+	if _, err := bs.ReadAt(context.Background(), pid, buf, off); err != nil {
 		t.Fatalf("ReadAt at %d: %v", off, err)
 	}
 	return buf
@@ -121,8 +121,7 @@ func TestColdReadAfterTruncate_KeepsRemovedTailZeroed(t *testing.T) {
 	}
 	newSize := last.Offset + uint64(last.Size)/2
 
-	kept, err := bs.Truncate(ctx, pid, refs, newSize)
-	if err != nil {
+	if _, err := bs.Truncate(ctx, pid, refs, newSize); err != nil {
 		t.Fatalf("Truncate: %v", err)
 	}
 	for _, r := range manifestRefs(t, ms, pid) {
@@ -135,7 +134,7 @@ func TestColdReadAfterTruncate_KeepsRemovedTailZeroed(t *testing.T) {
 
 	// Cold read of the surviving prefix: resolves the straddling row, fetches
 	// the whole chunk from the remote, and hydrates.
-	got := readAt(t, bs, pid, kept, newSize-4096, 4096)
+	got := readAt(t, bs, pid, newSize-4096, 4096)
 	if !bytes.Equal(got, orig[newSize-4096:newSize]) {
 		t.Fatal("surviving prefix did not read back after the cold read")
 	}
@@ -146,10 +145,8 @@ func TestColdReadAfterTruncate_KeepsRemovedTailZeroed(t *testing.T) {
 	if _, err := bs.WriteAt(ctx, pid, nil, tailData, newSize+holeLen); err != nil {
 		t.Fatalf("re-extend WriteAt: %v", err)
 	}
-	refs = manifestRefs(t, ms, pid)
-
-	assertZeros(t, readAt(t, bs, pid, refs, newSize, holeLen), "re-extended hole")
-	if !bytes.Equal(readAt(t, bs, pid, refs, newSize+holeLen, 4096), tailData) {
+	assertZeros(t, readAt(t, bs, pid, newSize, holeLen), "re-extended hole")
+	if !bytes.Equal(readAt(t, bs, pid, newSize+holeLen, 4096), tailData) {
 		t.Fatal("re-extending write did not read back")
 	}
 }
@@ -180,7 +177,6 @@ func TestColdReadAfterPunchHole_KeepsHoleZeroed(t *testing.T) {
 	// The zeros land through the local write path, so they must be carved and
 	// uploaded before anything can be evicted.
 	carve(t, bs, ctx, pid)
-	refs = manifestRefs(t, ms, pid)
 
 	// Structural counterpart to the read assertions: the re-carved zeros
 	// supersede the punched rows, so nothing in the manifest still covers the
@@ -190,12 +186,12 @@ func TestColdReadAfterPunchHole_KeepsHoleZeroed(t *testing.T) {
 
 	evictAll(t, local)
 
-	assertZeros(t, readAt(t, bs, pid, refs, holeOff, holeLen), "punched range")
+	assertZeros(t, readAt(t, bs, pid, holeOff, holeLen), "punched range")
 	// The bytes on either side of the hole are untouched and must still read.
-	if !bytes.Equal(readAt(t, bs, pid, refs, holeOff-4096, 4096), orig[holeOff-4096:holeOff]) {
+	if !bytes.Equal(readAt(t, bs, pid, holeOff-4096, 4096), orig[holeOff-4096:holeOff]) {
 		t.Fatal("bytes before the hole did not survive")
 	}
-	if !bytes.Equal(readAt(t, bs, pid, refs, holeOff+holeLen, 4096), orig[holeOff+holeLen:holeOff+holeLen+4096]) {
+	if !bytes.Equal(readAt(t, bs, pid, holeOff+holeLen, 4096), orig[holeOff+holeLen:holeOff+holeLen+4096]) {
 		t.Fatal("bytes after the hole did not survive")
 	}
 }
@@ -206,7 +202,7 @@ func TestColdReadAfterPunchHole_KeepsHoleZeroed(t *testing.T) {
 // untouched range in front of it has to keep reading as zeros.
 func TestColdReadSparseFile_HydratesAtHighOffset(t *testing.T) {
 	ctx := context.Background()
-	bs, local, ms, pid := hydrateFixture(t, "sparse", "sparse.bin")
+	bs, local, _, pid := hydrateFixture(t, "sparse", "sparse.bin")
 
 	const dataOff = 2 << 20
 	data := make([]byte, 256<<10)
@@ -216,13 +212,12 @@ func TestColdReadSparseFile_HydratesAtHighOffset(t *testing.T) {
 	}
 	carve(t, bs, ctx, pid)
 
-	refs := manifestRefs(t, ms, pid)
 	evictAll(t, local)
 
-	if got := readAt(t, bs, pid, refs, dataOff, len(data)); !bytes.Equal(got, data) {
+	if got := readAt(t, bs, pid, dataOff, len(data)); !bytes.Equal(got, data) {
 		t.Fatal("high-offset data did not hydrate back")
 	}
-	assertZeros(t, readAt(t, bs, pid, refs, 0, 4096), "leading hole")
-	assertZeros(t, readAt(t, bs, pid, refs, dataOff-4096, 4096), "hole in front of the data")
-	assertZeros(t, readAt(t, bs, pid, refs, dataOff+uint64(len(data)), 4096), "hole past the data")
+	assertZeros(t, readAt(t, bs, pid, 0, 4096), "leading hole")
+	assertZeros(t, readAt(t, bs, pid, dataOff-4096, 4096), "hole in front of the data")
+	assertZeros(t, readAt(t, bs, pid, dataOff+uint64(len(data)), 4096), "hole past the data")
 }

@@ -87,19 +87,12 @@ type SQLiteMetadataStore struct {
 	// thereafter. Immutable for the life of the instance.
 	storeID string
 
-	// Lazily-initialized sub-stores for lock / client / durable-handle /
-	// NFSv4-recovery persistence. Each wraps the shared *sql.DB executor.
-	lockStore   *sqliteLockStore
-	lockStoreMu sync.Mutex
-
+	// Sub-stores for lock / client / durable-handle / NFSv4-recovery
+	// persistence. Each wraps the shared *sql.DB executor.
+	lockStore     *sqliteLockStore
 	clientStore   *sqliteClientStore
-	clientStoreMu sync.Mutex
-
-	durableStore   *sqliteDurableStore
-	durableStoreMu sync.Mutex
-
-	recoveryStore   *sqliteRecoveryStore
-	recoveryStoreMu sync.Mutex
+	durableStore  *sqliteDurableStore
+	recoveryStore *sqliteRecoveryStore
 }
 
 // NewSQLiteMetadataStore creates a new SQLite-backed metadata store.
@@ -166,6 +159,12 @@ func NewSQLiteMetadataStore(
 		cancel:       cancel,
 		quota:        quota.NewCache(),
 	}
+	// The substores derive only from db, which is never reassigned, so bind
+	// them once here.
+	store.lockStore = newSQLiteLockStore(store.conn())
+	store.clientStore = newSQLiteClientStore(store.conn())
+	store.durableStore = newSQLiteDurableStore(store.conn())
+	store.recoveryStore = newSQLiteRecoveryStore(store.conn())
 
 	if err := store.initUsedBytesCounter(ctx); err != nil {
 		_ = db.Close()

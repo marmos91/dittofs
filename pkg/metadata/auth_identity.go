@@ -3,8 +3,9 @@ package metadata
 import (
 	"context"
 	"net"
-	"regexp"
 	"slices"
+
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
 // AuthContext contains authentication information for access control checks.
@@ -230,13 +231,6 @@ type IdentityMapping struct {
 	AnonymousSID *string
 }
 
-// Pre-compiled regular expression for Administrator SID validation.
-var (
-	// domainAdminSIDPattern matches domain/local administrator accounts.
-	// Format: S-1-5-21-<domain identifier (3 parts)>-500
-	domainAdminSIDPattern = regexp.MustCompile(`^S-1-5-21-\d+-\d+-\d+-500$`)
-)
-
 // ApplyIdentityMapping applies identity transformation rules.
 //
 // Implements identity mapping (squashing) rules for NFS shares:
@@ -323,16 +317,7 @@ func ApplyIdentityMapping(identity *Identity, mapping *IdentityMapping) *Identit
 //   - Domain/Local Administrator: S-1-5-21-<3 sub-authorities>-500
 //   - Built-in Administrators group: S-1-5-32-544
 func IsAdministratorSID(sid string) bool {
-	if sid == "" {
-		return false
-	}
-
-	// S-1-5-32-544: BUILTIN\Administrators group
-	if sid == "S-1-5-32-544" {
-		return true
-	}
-
-	return domainAdminSIDPattern.MatchString(sid)
+	return acl.IsAdminSID(sid)
 }
 
 // MatchesIPPattern checks if an IP address matches a pattern (CIDR or exact IP).

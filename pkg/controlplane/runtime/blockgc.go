@@ -40,19 +40,13 @@ func gcResult(total *engine.GCStats) string {
 // Without this, two shares sharing one remote would each delete the
 // other's CAS objects.
 //
-// Arguments:
-//   - sharePrefix: HISTORICAL — preserved in the signature for callers
-//     that still pass it, but engine.Options.SharePrefix was removed
-//     because the mark-sweep design has a global live set and per-share
-//     scoping no longer makes sense. A non-empty value is logged at WARN
-//     so operators see that the flag is no longer honored, then ignored.
-//   - dryRun: if true, report orphans without deleting.
+// dryRun reports orphans without deleting.
 //
 // Returns the summed *engine.GCStats across all per-remote invocations and any
 // fatal error.
-func (r *Runtime) RunBlockGC(ctx context.Context, sharePrefix string, dryRun bool) (*engine.GCStats, error) {
+func (r *Runtime) RunBlockGC(ctx context.Context, dryRun bool) (*engine.GCStats, error) {
 	// Index-based remote sweep (synced − live), no S3 LIST.
-	return r.runBlockGCSweep(ctx, sharePrefix, dryRun, nil)
+	return r.runBlockGCSweep(ctx, dryRun, nil)
 }
 
 // applyGCProgress wires an optional progress sink into engine.Options so a
@@ -77,11 +71,7 @@ func applyGCProgress(opts *engine.Options, progress func(engine.GCStats)) {
 // Markers are cleared on reclaim, preserving the synced ⊆ remote invariant
 // (#1433). Orphan block objects the index cannot see (a PutBlock-then-commit
 // crash gap) are the #1525 reconcile sweep's job (PR5).
-func (r *Runtime) runBlockGCSweep(ctx context.Context, sharePrefix string, dryRun bool, progress func(engine.GCStats)) (*engine.GCStats, error) {
-	if sharePrefix != "" {
-		logger.Warn("RunBlockGC: sharePrefix is no longer honored — mark-sweep uses a global live set across every cas/XX prefix",
-			"ignored_sharePrefix", sharePrefix)
-	}
+func (r *Runtime) runBlockGCSweep(ctx context.Context, dryRun bool, progress func(engine.GCStats)) (*engine.GCStats, error) {
 	// Enumerate distinct underlying remote stores. Dedup is by configID (not
 	// by the per-share nonClosingRemote wrapper pointer), so two shares that
 	// reference the same remote-store config produce one GC invocation.
@@ -234,7 +224,7 @@ func (r *Runtime) runLocalGC(ctx context.Context, shareFilter string, dryRun boo
 			"gracePeriod", opts.GracePeriod,
 		)
 
-		rec := &singleShareReconciler{rt: r, shareName: entry.ShareName}
+		rec := &perRemoteReconciler{rt: r, shares: []string{entry.ShareName}}
 		stats := collectGarbageLocalFn(ctx, entry.Store, rec, opts)
 		s := accumulateGCStats(total, stats, true)
 		logger.Info("local GC: complete",
@@ -246,21 +236,6 @@ func (r *Runtime) runLocalGC(ctx context.Context, shareFilter string, dryRun boo
 			"errors", s.ErrorCount,
 		)
 	}
-}
-
-// singleShareReconciler scopes the GC mark phase to exactly one share, for the
-// per-share local sweep. Implements engine.MultiShareReconciler.
-type singleShareReconciler struct {
-	rt        *Runtime
-	shareName string
-}
-
-// SharesForGC implements engine.MultiShareReconciler.
-func (s *singleShareReconciler) SharesForGC() []string { return []string{s.shareName} }
-
-// GetMetadataStoreForShare implements engine.MultiShareReconciler.
-func (s *singleShareReconciler) GetMetadataStoreForShare(shareName string) (metadata.Store, error) {
-	return s.rt.GetMetadataStoreForShare(shareName)
 }
 
 // perRemoteReconciler scopes the GC mark phase to the shares pointing at
@@ -437,9 +412,6 @@ func accumulateGCStats(total, stats *engine.GCStats, includeDryRunMeta bool) eng
 	total.BytesFreed += s.BytesFreed
 	total.ErrorCount += s.ErrorCount
 	total.StrandedRowsReaped += s.StrandedRowsReaped
-	// SharesScanned / BlocksScanned are deprecated REST wire fields that
-	// are never populated by the mark-sweep engine — accumulation would
-	// always be zero, so it is skipped here. See engine.GCStats godoc.
 	total.OrphanFiles += s.OrphanFiles
 	total.OrphanBlocks += s.OrphanBlocks
 	total.BytesReclaimed += s.BytesReclaimed

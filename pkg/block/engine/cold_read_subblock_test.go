@@ -17,7 +17,7 @@ import (
 // chunks. After DrainLocalSynced evicts the local tier, the whole file is read
 // back in 1 MiB windows (SMB's max-read shape).
 //
-// Before the fix, EnsureAvailableAndRead iterated 8 MiB block indices and
+// Before the fix, EnsureAvailable iterated 8 MiB block indices and
 // resolved only the chunk covering blockIdx*BlockSize, so every read window
 // past a block's first chunk was never fetched — served as zeros/stale bytes
 // (and only the block-aligned chunks were staged locally). SMB exercises this
@@ -63,7 +63,7 @@ func TestColdReadIntegrity_SubBlockChunks(t *testing.T) {
 			buf[j] = 0xAA // poison so an unfilled window fails instead of hiding in zeros
 		}
 		off := uint64(i) * oneMiB
-		n, err := bs.ReadAt(ctx, pid, nil, buf, off)
+		n, err := bs.ReadAt(ctx, pid, buf, off)
 		if err != nil {
 			t.Fatalf("ReadAt off=%d: %v", off, err)
 		}

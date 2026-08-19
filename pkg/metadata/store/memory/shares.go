@@ -18,7 +18,7 @@ func (store *MemoryMetadataStore) GenerateHandle(ctx context.Context, shareName 
 	}
 
 	// Memory store uses UUID-based handles, path is for compatibility
-	return store.generateFileHandle(shareName, path), nil
+	return store.generateFileHandle(shareName), nil
 }
 
 // GetRootHandle returns the root handle for a share.
@@ -100,7 +100,7 @@ func (store *MemoryMetadataStore) CreateShare(ctx context.Context, share *metada
 	}
 
 	// Generate root handle
-	rootHandle := store.generateFileHandle(share.Name, "/")
+	rootHandle := store.generateFileHandle(share.Name)
 
 	store.shares[share.Name] = &shareData{
 		Share:      *share,
@@ -215,7 +215,7 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	if sd, ok := store.shares[shareName]; ok && len(sd.RootHandle) > 0 {
 		rootHandle = sd.RootHandle
 	} else {
-		rootHandle = store.generateFileHandle(shareName, "/")
+		rootHandle = store.generateFileHandle(shareName)
 	}
 	key := handleToKey(rootHandle)
 

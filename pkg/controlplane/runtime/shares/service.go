@@ -383,7 +383,6 @@ type SyncerDefaults struct {
 type sharedRemote struct {
 	store    remote.RemoteStore
 	refCount int
-	configID string
 }
 
 // nonClosingRemote wraps a remote.RemoteStore and makes Close() a no-op.
@@ -1569,7 +1568,6 @@ func (s *Service) acquireRemoteStore(ctx context.Context, ref string, provider B
 	s.remoteStores[configID] = &sharedRemote{
 		store:    newStore,
 		refCount: 1,
-		configID: configID,
 	}
 	s.mu.Unlock()
 
@@ -2438,7 +2436,7 @@ func (s *Service) XattrStreamReader() metadata.StreamContentReader {
 			return nil, err
 		}
 		buf := make([]byte, int(attr.Size))
-		n, rerr := bs.ReadAt(ctx, string(attr.PayloadID), nil, buf, 0)
+		n, rerr := bs.ReadAt(ctx, string(attr.PayloadID), buf, 0)
 		if rerr != nil && rerr != io.EOF && rerr != io.ErrUnexpectedEOF {
 			return nil, rerr
 		}
@@ -2590,7 +2588,6 @@ func (s *Service) SetShareRemoteForTest(shareName string, rs remote.RemoteStore)
 		s.remoteStores[cid] = &sharedRemote{
 			store:    rs,
 			refCount: 1,
-			configID: cid,
 		}
 	}
 	share.remoteConfigID = cid

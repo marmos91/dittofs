@@ -22,48 +22,28 @@ import (
 func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
-		return &types.CompoundResult{
-			Status: status,
-			OpCode: types.OP_READ,
-			Data:   encodeStatusOnly(status),
-		}
+		return readErr(status)
 	}
 
 	// Pseudo-fs only has directories
 	if pseudofs.IsPseudoFSHandle(ctx.CurrentFH) {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_ISDIR,
-			OpCode: types.OP_READ,
-			Data:   encodeStatusOnly(types.NFS4ERR_ISDIR),
-		}
+		return readErr(types.NFS4ERR_ISDIR)
 	}
 
 	// Decode READ4args
 	stateid, err := types.DecodeStateid4(reader)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
-			OpCode: types.OP_READ,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-		}
+		return readErr(types.NFS4ERR_BADXDR)
 	}
 
 	offset, err := xdr.DecodeUint64(reader)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
-			OpCode: types.OP_READ,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-		}
+		return readErr(types.NFS4ERR_BADXDR)
 	}
 
 	count, err := xdr.DecodeUint32(reader)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
-			OpCode: types.OP_READ,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-		}
+		return readErr(types.NFS4ERR_BADXDR)
 	}
 
 	// Validate stateid via StateManager.
@@ -78,11 +58,7 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 			"error", stateErr,
 			"nfs_status", nfsStatus,
 			"client", ctx.ClientAddr)
-		return &types.CompoundResult{
-			Status: nfsStatus,
-			OpCode: types.OP_READ,
-			Data:   encodeStatusOnly(nfsStatus),
-		}
+		return readErr(nfsStatus)
 	}
 
 	// Enforce the open's share-access mode: a regular open stateid must have
@@ -93,11 +69,7 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 		logger.Debug("NFSv4 READ rejected: write-only open",
 			"share_access", openState.ShareAccess,
 			"client", ctx.ClientAddr)
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_OPENMODE,
-			OpCode: types.OP_READ,
-			Data:   encodeStatusOnly(types.NFS4ERR_OPENMODE),
-		}
+		return readErr(types.NFS4ERR_OPENMODE)
 	}
 
 	logger.Debug("NFSv4 READ",
@@ -112,21 +84,13 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 	if err != nil {
 		logger.Debug("NFSv4 READ auth context failed", "error", err, "client", ctx.ClientAddr)
 		st := nfs4StatusForAuthError(err)
-		return &types.CompoundResult{
-			Status: st,
-			OpCode: types.OP_READ,
-			Data:   encodeStatusOnly(st),
-		}
+		return readErr(st)
 	}
 
 	// Get services
 	metaSvc, err := getMetadataServiceForCtx(h)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
-			OpCode: types.OP_READ,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
-		}
+		return readErr(types.NFS4ERR_SERVERFAULT)
 	}
 
 	// Get file attributes
@@ -135,21 +99,13 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 	file, err := metaSvc.GetFileForRead(authCtx.Context, fileHandle)
 	if err != nil {
 		status := common.MapToNFS4(err)
-		return &types.CompoundResult{
-			Status: status,
-			OpCode: types.OP_READ,
-			Data:   encodeStatusOnly(status),
-		}
+		return readErr(status)
 	}
 
 	// Verify it's a regular file
 	if file.Type != metadata.FileTypeRegular {
 		status := readTypeError(file.Type)
-		return &types.CompoundResult{
-			Status: status,
-			OpCode: types.OP_READ,
-			Data:   encodeStatusOnly(status),
-		}
+		return readErr(status)
 	}
 
 	// Empty file or no content
@@ -174,19 +130,11 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 	// avoids leaking an NFSv4 concern into common.ResolveForRead.
 	if h.Registry == nil {
 		logger.Debug("NFSv4 READ no registry configured", "client", ctx.ClientAddr)
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
-			OpCode: types.OP_READ,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
-		}
+		return readErr(types.NFS4ERR_SERVERFAULT)
 	}
 	blockStore, err := common.ResolveForRead(ctx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH))
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
-			OpCode: types.OP_READ,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
-		}
+		return readErr(types.NFS4ERR_SERVERFAULT)
 	}
 
 	// NOTE: NFSv4 READ now allocates via internal/adapter/pool (through
@@ -196,11 +144,7 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 	readResult, err := common.ReadFromBlockStore(ctx.Context, blockStore, file.PayloadID, offset, uint32(actualLen))
 	if err != nil {
 		logger.Debug("NFSv4 READ payload error", "error", err, "client", ctx.ClientAddr)
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_IO,
-			OpCode: types.OP_READ,
-			Data:   encodeStatusOnly(types.NFS4ERR_IO),
-		}
+		return readErr(types.NFS4ERR_IO)
 	}
 	// Release the pooled buffer after the compound result has been encoded.
 	// encodeRead4resok copies readResult.Data into a fresh bytes.Buffer before
@@ -260,5 +204,14 @@ func encodeRead4resok(eof bool, data []byte) *types.CompoundResult {
 		Status: types.NFS4_OK,
 		OpCode: types.OP_READ,
 		Data:   buf.Bytes(),
+	}
+}
+
+// readErr builds a READ error result (status only).
+func readErr(status uint32) *types.CompoundResult {
+	return &types.CompoundResult{
+		Status: status,
+		OpCode: types.OP_READ,
+		Data:   encodeStatusOnly(status),
 	}
 }

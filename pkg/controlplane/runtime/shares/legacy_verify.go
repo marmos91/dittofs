@@ -91,7 +91,7 @@ var errColdVerifyUnavailable = errors.New("cold verification unavailable")
 func verifyColdSeed(ctx context.Context, bs *engine.Store, report coldSeedReport) error {
 	for _, s := range report.samples {
 		buf := make([]byte, s.length)
-		n, err := bs.ReadAt(ctx, s.payloadID, nil, buf, uint64(s.offset))
+		n, err := bs.ReadAt(ctx, s.payloadID, buf, uint64(s.offset))
 		if err != nil {
 			return fmt.Errorf("%w: read back %s at %d: %w", errColdVerifyUnavailable, s.payloadID, s.offset, err)
 		}

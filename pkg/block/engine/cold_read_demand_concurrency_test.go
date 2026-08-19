@@ -12,7 +12,7 @@ import (
 // TestColdRead_DemandFetchIsConcurrent pins the cold-read fix: a single read
 // spanning many not-local blocks must fetch them from the remote CONCURRENTLY,
 // not one blocking S3 GET per block. Before the fix the demand loop in
-// EnsureAvailableAndRead was serial, which pinned cold-read throughput at
+// EnsureAvailable was serial, which pinned cold-read throughput at
 // blockSize/latency (one GET per round-trip — the ~159 MB/s wall).
 //
 // The assertion is STRUCTURAL, not wall-clock timing: the latency-injecting
@@ -44,9 +44,8 @@ func TestColdRead_DemandFetchIsConcurrent(t *testing.T) {
 	m := newFetchSyncer(loc, rs, fbs, mds)
 	m.config.PrefetchBlocks = 0 // isolate the demand loop from the prefetch pump
 
-	dest := make([]byte, nBlocks*BlockSize)
-	if _, err := m.EnsureAvailableAndRead(ctx, "p", 0, uint32(len(dest)), dest); err != nil {
-		t.Fatalf("EnsureAvailableAndRead: %v", err)
+	if err := m.EnsureAvailable(ctx, "p", 0, uint32(nBlocks*BlockSize)); err != nil {
+		t.Fatalf("EnsureAvailable: %v", err)
 	}
 
 	if got := rs.gets.Load(); got != nBlocks {

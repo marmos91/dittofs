@@ -577,7 +577,7 @@ func TestPurgeBlockStorePayload_PreservesHardLinkedContent(t *testing.T) {
 
 	// The surviving "b" link must still read the full pattern.
 	dst := make([]byte, 4096)
-	n, err := bs.ReadAt(ctx, string(file.PayloadID), nil, dst, 0)
+	n, err := bs.ReadAt(ctx, string(file.PayloadID), dst, 0)
 	if err != nil {
 		t.Fatalf("ReadAt surviving link: %v", err)
 	}

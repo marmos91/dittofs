@@ -65,7 +65,7 @@ func (s *PostgresMetadataStore) GetFileChunk(ctx context.Context, id string) (*m
 // content hash, regardless of block state. The content hash is derived
 // at rollup time (long before the block reaches the remote) and is the
 // key the engine's CAS read path uses to resolve a chunk. Gating the
-// write on IsFinalized() left every Pending row with a NULL hash; reads
+// write on IsRemote() left every Pending row with a NULL hash; reads
 // then survived only while the bytes stayed in the local append log or
 // RAM cache, and broke the moment local state went cold (restart +
 // cache eviction, or a snapshot restore's ResetLocalState). The memory

@@ -37,7 +37,7 @@ func TestWriteAt_SparseDest_ReadsLeadingGapAsZeros(t *testing.T) {
 	// The Samba test reads exactly [0, 4096) — entirely inside the hole —
 	// and asserts all-zeros with STATUS_OK.
 	hole := make([]byte, 4096)
-	n, err := bs.ReadAt(ctx, payloadID, nil, hole, 0)
+	n, err := bs.ReadAt(ctx, payloadID, hole, 0)
 	if err != nil {
 		t.Fatalf("ReadAt [0,4096): %v", err)
 	}
@@ -52,7 +52,7 @@ func TestWriteAt_SparseDest_ReadsLeadingGapAsZeros(t *testing.T) {
 
 	// And the copied region [4096, 8192) must equal the written pattern.
 	copied := make([]byte, 4096)
-	if _, err := bs.ReadAt(ctx, payloadID, nil, copied, 4096); err != nil {
+	if _, err := bs.ReadAt(ctx, payloadID, copied, 4096); err != nil {
 		t.Fatalf("ReadAt [4096,8192): %v", err)
 	}
 	if !bytes.Equal(copied, pattern) {

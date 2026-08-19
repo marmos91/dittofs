@@ -130,20 +130,16 @@ type BadgerMetadataStore struct {
 	}
 
 	// lockStore provides lock persistence
-	lockStore   *badgerLockStore
-	lockStoreMu sync.Mutex
+	lockStore *badgerLockStore
 
 	// clientStore provides NSM client registration persistence
-	clientStore   *badgerClientStore
-	clientStoreMu sync.Mutex
+	clientStore *badgerClientStore
 
 	// durableStore provides SMB3 durable handle persistence
-	durableStore   *badgerDurableStore
-	durableStoreMu sync.Mutex
+	durableStore *badgerDurableStore
 
 	// recoveryStore provides NFSv4 client-recovery persistence
-	recoveryStore   *badgerRecoveryStore
-	recoveryStoreMu sync.Mutex
+	recoveryStore *badgerRecoveryStore
 
 	// usedBytes tracks the total logical bytes used by regular files.
 	// Updated atomically on every size-changing operation (create, update, truncate, delete).
@@ -388,6 +384,12 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		syncStop:          make(chan struct{}),
 		quota:             quota.NewCache(),
 	}
+	// The substores derive only from db, which is never reassigned, so bind
+	// them once here.
+	store.lockStore = newBadgerLockStore(db)
+	store.clientStore = newBadgerClientStore(db)
+	store.durableStore = newBadgerDurableStore(db)
+	store.recoveryStore = newBadgerRecoveryStore(db)
 
 	// Initialize stats cache with a 5-second TTL for responsive updates
 	// This prevents expensive database scans on every FSSTAT request while

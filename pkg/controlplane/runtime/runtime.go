@@ -29,7 +29,7 @@ import (
 )
 
 // DefaultShutdownTimeout is the default timeout for graceful shutdown.
-const DefaultShutdownTimeout = 30 * time.Second
+const DefaultShutdownTimeout = lifecycle.DefaultShutdownTimeout
 
 // Type aliases re-exported for backward compatibility.
 type (
@@ -1233,12 +1233,6 @@ func (r *Runtime) GetAdapterProvider(key string) any {
 	defer r.adapterProvidersMu.RUnlock()
 	return r.adapterProviders[key]
 }
-
-// SetNFSClientProvider is deprecated; use SetAdapterProvider("nfs", p).
-func (r *Runtime) SetNFSClientProvider(p any) { r.SetAdapterProvider("nfs", p) }
-
-// NFSClientProvider is deprecated; use GetAdapterProvider("nfs").
-func (r *Runtime) NFSClientProvider() any { return r.GetAdapterProvider("nfs") }
 
 // snapInFlight tracks the per-share orchestration goroutines launched
 // by Runtime.CreateSnapshot. See pkg/controlplane/runtime/snapshot.go

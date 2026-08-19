@@ -93,7 +93,7 @@ func (s *SQLiteMetadataStore) WalkBlockRecords(ctx context.Context, fn func(bloc
 	}
 	defer rows.Close()
 	for rows.Next() {
-		rec, _, err := scanBlockRecordRow(rows)
+		rec, _, err := scanBlockRecord(rows)
 		if err != nil {
 			return fmt.Errorf("sqlite block_records walk scan: %w", err)
 		}
@@ -195,7 +195,7 @@ func (tx *sqliteTransaction) WalkBlockRecords(ctx context.Context, fn func(block
 	}
 	defer rows.Close()
 	for rows.Next() {
-		rec, _, err := scanBlockRecordRow(rows)
+		rec, _, err := scanBlockRecord(rows)
 		if err != nil {
 			return fmt.Errorf("sqlite tx block_records walk scan: %w", err)
 		}
@@ -256,34 +256,6 @@ func scanBlockRecord(row scanRow) (block.BlockRecord, bool, error) {
 	}
 	if len(hashRaw) != len(block.ContentHash{}) {
 		return block.BlockRecord{}, false, fmt.Errorf("sqlite scanBlockRecord: malformed block_hash length %d", len(hashRaw))
-	}
-	var h block.ContentHash
-	copy(h[:], hashRaw)
-	return block.BlockRecord{
-		BlockID:        blockID,
-		BlockHash:      h,
-		Length:         length,
-		LiveChunkCount: liveCount,
-		SyncState:      block.BlockState(syncState),
-	}, true, nil
-}
-
-// scanBlockRecordRow scans a streaming Rows cursor (from WalkBlockRecords).
-// The caller drives rows.Next(); this only scans the current row.
-// found is always true here since we are iterating an existing row set.
-func scanBlockRecordRow(rows scanRows) (block.BlockRecord, bool, error) {
-	var (
-		blockID   string
-		hashRaw   []byte
-		length    int64
-		liveCount uint32
-		syncState int
-	)
-	if err := rows.Scan(&blockID, &hashRaw, &length, &liveCount, &syncState); err != nil {
-		return block.BlockRecord{}, false, err
-	}
-	if len(hashRaw) != len(block.ContentHash{}) {
-		return block.BlockRecord{}, false, fmt.Errorf("sqlite scanBlockRecordRow: malformed block_hash length %d", len(hashRaw))
 	}
 	var h block.ContentHash
 	copy(h[:], hashRaw)

@@ -39,17 +39,6 @@ func (c *testCoordinator) IncrementRefCount(ctx context.Context, hash block.Cont
 	return c.store.IncrementRefCount(ctx, fb.ID)
 }
 
-func (c *testCoordinator) DecrementRefCount(ctx context.Context, hash block.ContentHash) (uint32, error) {
-	fb, err := c.store.GetByHash(ctx, hash)
-	if err != nil {
-		return 0, err
-	}
-	if fb == nil {
-		return 0, nil
-	}
-	return c.store.DecrementRefCount(ctx, fb.ID)
-}
-
 func (c *testCoordinator) DecrementRefCountAndReap(ctx context.Context, payloadID string, offset uint64) (uint32, error) {
 	// By EXACT ID — mirrors the production coordinator (no hash resolution).
 	id := fmt.Sprintf("%s/%d", payloadID, offset)

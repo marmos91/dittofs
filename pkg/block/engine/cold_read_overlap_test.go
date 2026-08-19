@@ -10,7 +10,7 @@ import (
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
 
-// TestEnsureAvailableAndRead_StraddlerDoesNotShadowLaterRow pins what a cold
+// TestEnsureAvailable_StraddlerDoesNotShadowLaterRow pins what a cold
 // read does with two manifest rows that overlap.
 //
 // Coverage resolves an overlap to the greatest start, so from a later row's
@@ -35,7 +35,7 @@ import (
 //
 // Both store shapes are exercised because they resolve coverage and succession
 // by different means — an offset index versus a manifest walk.
-func TestEnsureAvailableAndRead_StraddlerDoesNotShadowLaterRow(t *testing.T) {
+func TestEnsureAvailable_StraddlerDoesNotShadowLaterRow(t *testing.T) {
 	const oneMiB = 1024 * 1024
 
 	for _, shape := range []struct {
@@ -76,9 +76,8 @@ func TestEnsureAvailableAndRead_StraddlerDoesNotShadowLaterRow(t *testing.T) {
 				if laterEnd > end {
 					end = laterEnd
 				}
-				dest := make([]byte, end-straddlerOff)
-				if _, err := m.EnsureAvailableAndRead(ctx, payloadID, straddlerOff, uint32(len(dest)), dest); err != nil {
-					t.Fatalf("EnsureAvailableAndRead: %v", err)
+				if err := m.EnsureAvailable(ctx, payloadID, straddlerOff, uint32(end-straddlerOff)); err != nil {
+					t.Fatalf("EnsureAvailable: %v", err)
 				}
 
 				// The straddler's bytes are expected everywhere it is still the

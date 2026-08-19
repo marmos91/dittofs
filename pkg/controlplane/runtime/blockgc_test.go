@@ -156,7 +156,7 @@ func TestRunBlockGC_DedupesSharedRemoteStores(t *testing.T) {
 		"/share-b": sharedRS, // same pointer
 	})
 
-	if _, err := rt.RunBlockGC(context.Background(), "", false); err != nil {
+	if _, err := rt.RunBlockGC(context.Background(), false); err != nil {
 		t.Fatalf("RunBlockGC: %v", err)
 	}
 	if len(*captured) != 1 {
@@ -165,10 +165,7 @@ func TestRunBlockGC_DedupesSharedRemoteStores(t *testing.T) {
 }
 
 // TestRunBlockGC_DryRunPropagates asserts dryRun flows into the Options
-// struct passed to CollectGarbage. engine.Options.SharePrefix was
-// removed because the mark-sweep design has a global live set; the
-// historical sharePrefix argument on RunBlockGC is preserved for
-// caller compatibility but ignored.
+// struct passed to CollectGarbage.
 func TestRunBlockGC_DryRunPropagates(t *testing.T) {
 	captured := installCollectGarbageSpy(t)
 
@@ -177,7 +174,7 @@ func TestRunBlockGC_DryRunPropagates(t *testing.T) {
 		"/share-a": rs,
 	})
 
-	if _, err := rt.RunBlockGC(context.Background(), "/prefix", true); err != nil {
+	if _, err := rt.RunBlockGC(context.Background(), true); err != nil {
 		t.Fatalf("RunBlockGC: %v", err)
 	}
 	if len(*captured) != 1 {
@@ -195,7 +192,7 @@ func TestRunBlockGC_NoRemoteShares(t *testing.T) {
 
 	rt := newRuntimeForGC(t, nil)
 
-	stats, err := rt.RunBlockGC(context.Background(), "", false)
+	stats, err := rt.RunBlockGC(context.Background(), false)
 	if err != nil {
 		t.Fatalf("RunBlockGC: %v", err)
 	}
@@ -256,7 +253,7 @@ func TestRunBlockGC_LegacyCASPurgeWaitsForEveryShare(t *testing.T) {
 	if err := mds.MarkSynced(ctx, standalone, block.ChunkLocator{}); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
-	if _, err := rt.RunBlockGC(ctx, "", false); err != nil {
+	if _, err := rt.RunBlockGC(ctx, false); err != nil {
 		t.Fatalf("RunBlockGC: %v", err)
 	}
 	if rs.deleted != 0 {
@@ -272,7 +269,7 @@ func TestRunBlockGC_LegacyCASPurgeWaitsForEveryShare(t *testing.T) {
 	if err := mds.MarkSynced(ctx, standalone, block.ChunkLocator{BlockID: "blk-1"}); err != nil {
 		t.Fatalf("MarkSynced (migrated): %v", err)
 	}
-	if _, err := rt.RunBlockGC(ctx, "", false); err != nil {
+	if _, err := rt.RunBlockGC(ctx, false); err != nil {
 		t.Fatalf("RunBlockGC (post-migration): %v", err)
 	}
 	if rs.deleted != len(rs.objects) {

@@ -93,40 +93,6 @@ func (c *metadataCoordinator) IncrementRefCount(ctx context.Context, hash block.
 	return nil
 }
 
-// DecrementRefCount looks up the FileChunk by hash and decrements its
-// RefCount, returning the new count. ErrFileChunkNotFound on a hash
-// that has no row is tolerated (returns count=0, nil) — a Truncate or
-// Delete on a hash that has already been swept by GC is not a caller
-// error.
-//
-// When the caller has bound an active metadata.Transaction into ctx
-// via metadata.WithTx, both GetByHash and DecrementRefCount route
-// through that tx. Truncate and Delete from the engine path do NOT
-// currently bind a tx (no wrapping WithTransaction), so those callers
-// route through the public store — Truncate/Delete are non-atomic at
-// the cross-store level by design and the refcount audit reconciles
-// drift.
-func (c *metadataCoordinator) DecrementRefCount(ctx context.Context, hash block.ContentHash) (uint32, error) {
-	store := c.resolveStore(ctx)
-	fb, err := store.GetByHash(ctx, hash)
-	if err != nil {
-		return 0, fmt.Errorf("coordinator: GetByHash(%s): %w", hash.String(), err)
-	}
-	if fb == nil {
-		// Already swept / never existed — caller's metadata is stale but
-		// the requested decrement effectively succeeded (count is zero).
-		return 0, nil
-	}
-	count, err := store.DecrementRefCount(ctx, fb.ID)
-	if err != nil {
-		if errors.Is(err, metadata.ErrFileChunkNotFound) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("coordinator: DecrementRefCount(%s): %w", fb.ID, err)
-	}
-	return count, nil
-}
-
 // DecrementRefCountAndReap decrements the FileChunk row identified by the EXACT
 // ID "{payloadID}/{offset}" and reaps it (row + hash index entry) atomically
 // when the new count reaches 0. The hash then leaves EnumerateFileChunks once no

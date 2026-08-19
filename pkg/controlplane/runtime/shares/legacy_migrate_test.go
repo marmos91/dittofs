@@ -116,7 +116,7 @@ func readAllLegacyFiles(t *testing.T, bs *engine.Store, when string) {
 	ctx := context.Background()
 	for id, want := range legacyShareFiles {
 		got := make([]byte, len(want))
-		n, err := bs.ReadAt(ctx, id, nil, got, 0)
+		n, err := bs.ReadAt(ctx, id, got, 0)
 		if err != nil {
 			t.Fatalf("ReadAt %s %s: %v", id, when, err)
 		}

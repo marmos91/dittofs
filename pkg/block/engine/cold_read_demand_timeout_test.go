@@ -49,7 +49,7 @@ var (
 // TestNewSyncer_DefaultsDemandFetchTimeout guards against the bound being dead
 // in production: a config that leaves DemandFetchTimeout unset (every path that
 // does not thread the field, e.g. pkg/config) must still get the default, or
-// EnsureAvailableAndRead would run unbounded and the hang would return.
+// EnsureAvailable would run unbounded and the hang would return.
 func TestNewSyncer_DefaultsDemandFetchTimeout(t *testing.T) {
 	fbs := newStubFileChunkStore()
 	m := NewSyncer(memorylocal.New(), remotememory.New(), fbs, SyncerConfig{})
@@ -62,7 +62,7 @@ func TestNewSyncer_DefaultsDemandFetchTimeout(t *testing.T) {
 // TestColdRead_DemandFetchFailsFastWhenRemoteStalls pins the fix for the
 // client-visible hang: a demand cold read must not block indefinitely on a
 // stalled remote just because the caller's context carries no sub-deadline.
-// EnsureAvailableAndRead bounds its own hydration to DemandFetchTimeout and
+// EnsureAvailable bounds its own hydration to DemandFetchTimeout and
 // surfaces ErrRemoteUnavailable when that budget is exceeded, so the protocol
 // layer returns a fast error instead of the mount wedging. Before the fix the
 // demand fan-out ran on the caller's unbounded context, so with a background
@@ -82,10 +82,9 @@ func TestColdRead_DemandFetchFailsFastWhenRemoteStalls(t *testing.T) {
 	m.config.PrefetchBlocks = 0                          // isolate the demand loop
 	m.config.DemandFetchTimeout = 200 * time.Millisecond // short fail-fast budget under test
 
-	dest := make([]byte, 4096)
 	done := make(chan error, 1)
 	go func() {
-		_, err := m.EnsureAvailableAndRead(ctx, "p", 0, uint32(len(dest)), dest)
+		err := m.EnsureAvailable(ctx, "p", 0, 4096)
 		done <- err
 	}()
 

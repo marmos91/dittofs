@@ -181,7 +181,7 @@ func materializeLocalClone(
 		if want > copyChunk {
 			want = copyChunk
 		}
-		n, rerr := blockStore.ReadAt(ctx, string(srcFile.PayloadID), nil, buf[:want], off)
+		n, rerr := blockStore.ReadAt(ctx, string(srcFile.PayloadID), buf[:want], off)
 		if n > 0 {
 			if _, werr := blockStore.WriteAt(ctx, string(dstPayloadID), nil, buf[:n], off); werr != nil {
 				return fmt.Errorf("materialize clone: write dst payload: %w", werr)

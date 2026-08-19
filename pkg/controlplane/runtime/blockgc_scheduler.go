@@ -45,7 +45,7 @@ func (r *Runtime) StartScheduledGC(ctx context.Context, interval time.Duration) 
 // Errors are logged, never fatal — the scheduler keeps running.
 func (r *Runtime) runScheduledGCOnce(ctx context.Context) {
 	start := time.Now()
-	stats, err := r.RunBlockGC(ctx, "", false)
+	stats, err := r.RunBlockGC(ctx, false)
 	if err != nil {
 		logger.Error("auto-GC: run failed", "err", err)
 		return

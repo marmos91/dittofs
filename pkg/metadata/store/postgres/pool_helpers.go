@@ -37,6 +37,26 @@ const poolConnectionAcquireTimeout = 10 * time.Second
 // query body can run on either.
 type rowQuerier func(ctx context.Context, sql string, args ...any) pgx.Row
 
+// acquireConn checks out a pooled connection under the shared acquire timeout.
+// The timeout bounds ONLY the checkout: the returned connection is used with the
+// caller's own context so a lazily-read result set is not cancelled the moment
+// this function returns. A checkout that times out while the caller's context is
+// still live is reported as pool exhaustion; anything else is mapped as a normal
+// query error against op/sql. The caller owns releasing the connection.
+func (s *PostgresMetadataStore) acquireConn(ctx context.Context, op, sql string) (*pgxpool.Conn, error) {
+	acquireCtx, cancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
+	defer cancel()
+
+	conn, err := s.pool.Acquire(acquireCtx)
+	if err != nil {
+		if acquireCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			return nil, fmt.Errorf("connection acquire timeout after %v: pool may be exhausted", poolConnectionAcquireTimeout)
+		}
+		return nil, mapPgError(err, op, sql)
+	}
+	return conn, nil
+}
+
 // queryRow executes a query that returns at most one row with connection acquire timeout.
 // This prevents indefinite blocking when the pool is exhausted.
 func (s *PostgresMetadataStore) queryRow(ctx context.Context, sql string, args ...any) pgx.Row {
@@ -45,24 +65,13 @@ func (s *PostgresMetadataStore) queryRow(ctx context.Context, sql string, args .
 		return &errorRow{err: ctx.Err()}
 	}
 
-	// The acquire timeout bounds ONLY the connection acquisition — it must not
-	// outlive this function via the returned Row. pgx.QueryRow is lazy: the row
-	// data is read from the wire inside the caller's Scan(), bound to whatever
-	// context was passed to QueryRow. If we passed acquireCtx (cancelled by the
-	// defer below the instant this function returns) the caller's Scan would run
-	// against an already-cancelled context and intermittently fail with
-	// "context canceled" depending on whether the row had buffered yet. So scope
-	// acquireCtx to Acquire only, then run the query on the parent ctx — the same
-	// pattern as query()/exec() — and release the connection after Scan.
-	acquireCtx, cancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
-	defer cancel()
-
-	conn, err := s.pool.Acquire(acquireCtx)
+	// pgx.QueryRow is lazy: the row is read off the wire inside the caller's
+	// Scan(), bound to the context passed here. Run it on the parent ctx (not the
+	// acquire context, which is cancelled the instant acquireConn returns) and
+	// release the connection after Scan.
+	conn, err := s.acquireConn(ctx, "queryRow", sql)
 	if err != nil {
-		if acquireCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-			return &errorRow{err: fmt.Errorf("connection acquire timeout after %v: pool may be exhausted", poolConnectionAcquireTimeout)}
-		}
-		return &errorRow{err: mapPgError(err, "queryRow", sql)}
+		return &errorRow{err: err}
 	}
 
 	return &poolRow{row: conn.QueryRow(ctx, sql, args...), conn: conn}
@@ -77,18 +86,9 @@ func (s *PostgresMetadataStore) query(ctx context.Context, sql string, args ...a
 		return nil, err
 	}
 
-	// Apply connection acquire timeout
-	acquireCtx, cancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
-	defer cancel()
-
-	// Acquire connection from pool
-	conn, err := s.pool.Acquire(acquireCtx)
+	conn, err := s.acquireConn(ctx, "query", sql)
 	if err != nil {
-		if acquireCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-			// Acquire timed out, not the parent context
-			return nil, fmt.Errorf("connection acquire timeout after %v: pool may be exhausted", poolConnectionAcquireTimeout)
-		}
-		return nil, mapPgError(err, "query", sql)
+		return nil, err
 	}
 
 	// Execute query
@@ -111,18 +111,9 @@ func (s *PostgresMetadataStore) exec(ctx context.Context, sql string, args ...an
 		return pgconn.CommandTag{}, err
 	}
 
-	// Apply connection acquire timeout
-	acquireCtx, cancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
-	defer cancel()
-
-	// Acquire connection from pool
-	conn, err := s.pool.Acquire(acquireCtx)
+	conn, err := s.acquireConn(ctx, "exec", sql)
 	if err != nil {
-		if acquireCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-			// Acquire timed out, not the parent context
-			return pgconn.CommandTag{}, fmt.Errorf("connection acquire timeout after %v: pool may be exhausted", poolConnectionAcquireTimeout)
-		}
-		return pgconn.CommandTag{}, mapPgError(err, "exec", sql)
+		return pgconn.CommandTag{}, err
 	}
 	defer conn.Release()
 

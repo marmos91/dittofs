@@ -24,19 +24,12 @@ type SQLiteMetadataStoreConfig struct {
 	// AutoMigrate runs embedded migrations on open when true. Default: false
 	// (the factory enables it explicitly, matching the Postgres backend).
 	AutoMigrate bool `mapstructure:"auto_migrate"`
-
-	// StatsCacheTTL is retained for parity with the Postgres config surface.
-	// Default: 5s.
-	StatsCacheTTL time.Duration `mapstructure:"stats_cache_ttl"`
 }
 
 // ApplyDefaults sets default values for unspecified configuration fields.
 func (c *SQLiteMetadataStoreConfig) ApplyDefaults() {
 	if c.BusyTimeout == 0 {
 		c.BusyTimeout = 5 * time.Second
-	}
-	if c.StatsCacheTTL == 0 {
-		c.StatsCacheTTL = 5 * time.Second
 	}
 }
 

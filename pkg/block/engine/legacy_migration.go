@@ -99,7 +99,7 @@ func (m *Syncer) migrateLegacyCASRemote(ctx context.Context) error {
 	// The legacy accessor lives on the raw (unwrapped) remote stack — the same
 	// object SetRemoteBlockStore received — because the nonClosingRemote
 	// wrapper deliberately proxies only the RemoteStore surface.
-	legacy, hasLegacy := rbs.(remote.LegacyCASStore)
+	legacy, _ := rbs.(remote.LegacyCASStore)
 
 	// Phase R — collect every synced hash whose locator is still standalone.
 	// Hashes are collected first (32 B each; bounded by the synced set) so no
@@ -131,7 +131,7 @@ func (m *Syncer) migrateLegacyCASRemote(ctx context.Context) error {
 		logger.Warn("cas→blocks migration: re-packing standalone chunks — "+
 			"one-way, the previous release cannot read the result; snapshot the remote bucket before upgrading",
 			"chunks_total", len(standalone))
-		if err := m.repackStandaloneChunks(ctx, legacy, hasLegacy, sealer, committer, standalone); err != nil {
+		if err := m.repackStandaloneChunks(ctx, legacy, sealer, committer, standalone); err != nil {
 			return err
 		}
 		logger.Info("cas→blocks migration complete; the legacy cas/ objects stay until block GC reclaims them",
@@ -152,7 +152,6 @@ type migrationChunk struct {
 func (m *Syncer) repackStandaloneChunks(
 	ctx context.Context,
 	legacy remote.LegacyCASStore,
-	hasLegacy bool,
 	sealer remote.ChunkSealer,
 	committer blockCommitter,
 	standalone []block.ContentHash,
@@ -196,7 +195,7 @@ func (m *Syncer) repackStandaloneChunks(
 				"chunks_done", i, "chunks_total", len(standalone), "chunks_repacked", repacked,
 				"elapsed", time.Since(started).Round(time.Second))
 		}
-		data, err := m.migrationChunkBytes(ctx, legacy, hasLegacy, h)
+		data, err := m.migrationChunkBytes(ctx, legacy, h)
 		if err != nil {
 			if errors.Is(err, block.ErrChunkNotFound) {
 				// Pre-existing data loss: the marker points at an object that no
@@ -241,14 +240,13 @@ func (m *Syncer) repackStandaloneChunks(
 func (m *Syncer) migrationChunkBytes(
 	ctx context.Context,
 	legacy remote.LegacyCASStore,
-	hasLegacy bool,
 	h block.ContentHash,
 ) ([]byte, error) {
 	// The journal local tier is (payloadID,offset)-keyed, not hash-keyed, so
 	// there is no local-first read here: the migration reads standalone chunks
 	// straight from the legacy remote. Pre-flip local per-chunk files no longer
 	// exist under the journal store.
-	if !hasLegacy {
+	if legacy == nil {
 		return nil, fmt.Errorf("chunk %s: %w", h, block.ErrChunkNotFound)
 	}
 	return legacy.ReadLegacyChunkVerified(ctx, h)

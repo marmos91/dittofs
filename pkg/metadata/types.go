@@ -39,11 +39,7 @@ type FileHandle []byte
 // Format: "<shareName>:<uuid>"
 // Example: "/export:550e8400-e29b-41d4-a716-446655440000"
 func EncodeFileHandle(file *File) (FileHandle, error) {
-	encoded := file.ShareName + ":" + file.ID.String()
-	if len(encoded) > 64 {
-		return nil, fmt.Errorf("file handle too long: %d bytes (max 64)", len(encoded))
-	}
-	return FileHandle([]byte(encoded)), nil
+	return EncodeShareHandle(file.ShareName, file.ID)
 }
 
 // EncodeShareHandle encodes a share name and UUID into a FileHandle.

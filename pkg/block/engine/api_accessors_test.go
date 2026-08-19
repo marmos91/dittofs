@@ -39,7 +39,7 @@ func TestStore_GetSize_Exists(t *testing.T) {
 
 // TestStore_Accessors covers the cheap public accessor surface that the
 // runtime and snapshot layers depend on: HasRemoteStore, RemoteStore,
-// LocalForTest, ListFiles, and LocalStats.
+// Local, ListFiles, and LocalStats.
 func TestStore_Accessors(t *testing.T) {
 	bs := newTestEngine(t, 64*1024*1024, 0)
 	ctx := context.Background()
@@ -50,8 +50,8 @@ func TestStore_Accessors(t *testing.T) {
 	if bs.RemoteStore() != nil {
 		t.Error("RemoteStore: want nil for local-only engine")
 	}
-	if bs.LocalForTest() == nil {
-		t.Error("LocalForTest: want non-nil local store")
+	if bs.Local() == nil {
+		t.Error("Local: want non-nil local store")
 	}
 
 	const payloadID = "share/listed-file"

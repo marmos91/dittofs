@@ -147,7 +147,7 @@ func TestBlockGC_SerializesPerRemote(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if _, err := rt.RunBlockGC(context.Background(), "", false); err != nil {
+		if _, err := rt.RunBlockGC(context.Background(), false); err != nil {
 			t.Errorf("RunBlockGC: %v", err)
 		}
 	}()
