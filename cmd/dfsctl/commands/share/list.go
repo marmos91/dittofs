@@ -46,6 +46,10 @@ type shareRow struct {
 	DefaultPermission string `json:"default_permission"`
 	Retention         string `json:"retention"`
 	Enabled           bool   `json:"enabled"`
+	// Status is the server-reported health of the share. It is what
+	// distinguishes a share that is being served from one the server started
+	// but refused to serve; the reason is shown by 'share show'.
+	Status string `json:"status"`
 }
 
 // ShareList is a list of shares for table rendering.
@@ -53,7 +57,7 @@ type ShareList []shareRow
 
 // Headers implements TableRenderer.
 func (sl ShareList) Headers() []string {
-	return []string{"NAME", "METADATA STORE", "LOCAL STORE", "REMOTE STORE", "QUOTA", "USED", "DEFAULT PERMISSION", "RETENTION", "ENABLED"}
+	return []string{"NAME", "METADATA STORE", "LOCAL STORE", "REMOTE STORE", "QUOTA", "USED", "DEFAULT PERMISSION", "RETENTION", "ENABLED", "STATUS"}
 }
 
 // Rows implements TableRenderer.
@@ -64,7 +68,11 @@ func (sl ShareList) Rows() [][]string {
 		if s.Enabled {
 			enabled = "yes"
 		}
-		rows = append(rows, []string{s.Name, s.MetadataStore, s.LocalBlockStore, s.RemoteBlockStore, s.Quota, s.Used, s.DefaultPermission, s.Retention, enabled})
+		status := s.Status
+		if status == "" {
+			status = "-"
+		}
+		rows = append(rows, []string{s.Name, s.MetadataStore, s.LocalBlockStore, s.RemoteBlockStore, s.Quota, s.Used, s.DefaultPermission, s.Retention, enabled, status})
 	}
 	return rows
 }
@@ -149,6 +157,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			DefaultPermission: s.DefaultPermission,
 			Retention:         retention,
 			Enabled:           s.Enabled,
+			Status:            string(s.Status.Status),
 		})
 	}
 

@@ -93,6 +93,16 @@ func (sd ShareDetail) Rows() [][]string {
 		{"Retention", retPolicy},
 	}
 
+	// Status, and the reason behind it when the server has one. A share the
+	// server refused to serve is otherwise indistinguishable here from a
+	// healthy one.
+	if s.Status.Status != "" {
+		rows = append(rows, []string{"Status", string(s.Status.Status)})
+		if s.Status.Message != "" {
+			rows = append(rows, []string{"Status Detail", s.Status.Message})
+		}
+	}
+
 	// Only show Retention TTL when a TTL is set
 	if s.RetentionTTL != "" {
 		rows = append(rows, []string{"Retention TTL", s.RetentionTTL})

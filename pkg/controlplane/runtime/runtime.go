@@ -108,6 +108,16 @@ type Runtime struct {
 	mountTracker   *MountTracker
 	clientRegistry *ClientRegistry
 
+	// skippedShares maps a share name to the reason it is not being served.
+	// A share that exists in the control-plane store but whose runtime setup
+	// failed is absent from sharesSvc entirely, so a status probe would find
+	// nothing and report "share not found" as StatusUnknown — indistinguishable
+	// from a share the runtime simply has not reached yet. Recording the reason
+	// here lets HealthcheckShare report StatusUnhealthy with the cause instead.
+	// Entries are added when a share is skipped and cleared once the same name
+	// is successfully added or removed. Guarded by mu.
+	skippedShares map[string]string
+
 	// metrics is the Prometheus metrics handle, set at startup. It is the
 	// carrier for inline adapter instruments (RED, connection, auth counters):
 	// adapters reach it via Runtime so no per-adapter plumbing is needed. May
@@ -447,6 +457,36 @@ func (r *Runtime) LocalStoreDir(shareName string) (string, error) {
 //     follow-up phase can sharpen this once the store registry can
 //     report "configured but not currently loaded" vs "never
 //     registered".
+//
+// MarkShareSkipped records that a share exists in the control-plane store but
+// is not being served, along with the reason. The reason is surfaced verbatim
+// by HealthcheckShare, so it should read as an operator-facing explanation.
+func (r *Runtime) MarkShareSkipped(name, reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.skippedShares == nil {
+		r.skippedShares = make(map[string]string)
+	}
+	r.skippedShares[name] = reason
+}
+
+// ShareSkipReason returns the reason the named share is not being served, and
+// whether such a reason was recorded.
+func (r *Runtime) ShareSkipReason(name string) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	reason, ok := r.skippedShares[name]
+	return reason, ok
+}
+
+// clearShareSkipped drops any recorded skip reason for a share, so a name that
+// is successfully added or removed stops reporting a stale boot-time failure.
+func (r *Runtime) clearShareSkipped(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.skippedShares, name)
+}
+
 func (r *Runtime) HealthcheckShare(ctx context.Context, shareName string) health.Report {
 	// Capture start so every early-return path populates LatencyMs,
 	// matching what Share.Healthcheck does. A flat zero on
@@ -474,6 +514,13 @@ func (r *Runtime) HealthcheckShare(ctx context.Context, shareName string) health
 
 	share, err := r.sharesSvc.GetShare(shareName)
 	if err != nil {
+		// A share the runtime deliberately refused to serve is absent from the
+		// registry exactly like one that was never configured. Report the
+		// recorded reason as unhealthy so the refusal is visible, rather than
+		// letting it read as an indeterminate probe.
+		if reason, skipped := r.ShareSkipReason(shareName); skipped {
+			return earlyReturn(health.StatusUnhealthy, "share not served: "+reason)
+		}
 		return earlyReturn(health.StatusUnknown, "share not found: "+err.Error())
 	}
 
@@ -507,6 +554,8 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	if err := r.sharesSvc.AddShare(ctx, config, r.storesSvc, r.metadataService, r.store, localDefaults, syncDefaults); err != nil {
 		return err
 	}
+	// The share is serving now, so any earlier refusal no longer describes it.
+	r.clearShareSkipped(config.Name)
 	// Wire quota into the metadata service (0 = unlimited).
 	// Always set explicitly to ensure consistency after restarts when a
 	// quota was removed (set to 0) via the API.
@@ -597,6 +646,9 @@ func (r *Runtime) RemoveShare(name string) error {
 	// service-map growth #897/#907 fixed, and it has to run even when the
 	// block-store Close or snapshot-dir wipe failed. Aggregate instead.
 	rmErr := r.sharesSvc.RemoveShare(name)
+	// The share is gone, so a recorded refusal would outlive its subject and
+	// resurface if a new share reused the name.
+	r.clearShareSkipped(name)
 	// Deregister the share's per-share store / lock manager / unified view /
 	// notifier / quota from the metadata service, mirroring the AddShare
 	// registration above. Without this the service maps grow unbounded across
