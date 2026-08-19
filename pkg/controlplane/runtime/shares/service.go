@@ -2904,6 +2904,11 @@ func deriveLocalStoreDir(localCfg interface {
 	return filepath.Join(expanded, "shares", sanitizeShareName(shareName))
 }
 
+// minDirtyExpire is the shortest dirty-age commit interval a share may
+// configure. Anything below it is a misconfiguration rather than a tuning
+// choice: the loop would issue barriers faster than a disk retires them.
+const minDirtyExpire = time.Second
+
 // CreateLocalStoreFromConfig creates a local store instance from a block store config.
 func CreateLocalStoreFromConfig(
 	ctx context.Context,
@@ -2983,6 +2988,28 @@ func CreateLocalStoreFromConfig(
 			}
 		} else {
 			logger.Warn("block store config has max_log_bytes but it is invalid or non-positive; ignoring", "value", v)
+		}
+	}
+	// dirty_expire_seconds caps how long an acknowledged write may stay in the
+	// page cache before the journal fsyncs it on its own, in the spirit of
+	// Linux writeback's dirty_expire_centisecs. Absent => the journal default
+	// (30s). A negative value disables the loop, so the only durability points
+	// are the client's own fsync (NFS COMMIT, SMB FLUSH/CLOSE) and segment
+	// rotation — the historical behaviour, in which a writer that never fsyncs
+	// has no bound at all on what a crash loses.
+	if v, ok := config["dirty_expire_seconds"]; ok {
+		n, isNum := v.(float64)
+		switch {
+		case !isNum || math.IsNaN(n) || math.Abs(n) > float64(math.MaxInt64/int64(time.Second)):
+			logger.Warn("block store config has dirty_expire_seconds but it is invalid; ignoring", "value", v)
+		case n > 0 && time.Duration(n*float64(time.Second)) < minDirtyExpire:
+			// A sub-second interval would put a disk barrier on the store far
+			// more often than it can retire one; a typo must not do that.
+			logger.Warn("block store config dirty_expire_seconds is below the floor; clamping",
+				"value", n, "floor", minDirtyExpire)
+			fsOpts.DirtyExpiry = minDirtyExpire
+		default:
+			fsOpts.DirtyExpiry = time.Duration(n * float64(time.Second))
 		}
 	}
 	// chunk_size sets the FastCDC Min for this share's carve chunker (#1569) —
