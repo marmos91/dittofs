@@ -107,6 +107,20 @@ func (sh *shard) markSynced(v uint64) {
 	}
 }
 
+// dirty reports whether the shard holds appended records that no completed
+// fsync has covered. A shard whose fsync has already failed is never reported
+// dirty: syncFailed freezes syncedVersion for good, so retrying would fsync on
+// every pass without the watermark ever advancing.
+func (sh *shard) dirty() bool {
+	if sh.syncFailed.Load() {
+		return false
+	}
+	sh.mu.Lock()
+	last := sh.lastVersion
+	sh.mu.Unlock()
+	return last > sh.syncedVersion.Load()
+}
+
 // segment returns the segment with the given ID, active or sealed, or nil.
 // Caller must hold sh.mu.
 func (sh *shard) segment(id uint64) *segmentMeta {
