@@ -160,7 +160,14 @@ CFG
 start_server || fail "server never became ready"
 dctl login --server "http://127.0.0.1:$API" --username admin --password "$PW" >/dev/null || fail "login"
 dctl store metadata add --name meta --type badger --db-path "$DATA/meta" >/dev/null || fail "metadata store"
-dctl store block local add --name blk --type fs --path "$DATA/blocks" >/dev/null || fail "block store"
+# DIRTY_EXPIRE_SECONDS overrides the share's dirty-age fsync ceiling, so a run
+# can bound the non-durable window well inside its own write window. Unset
+# leaves the shipped default in place.
+LOCAL_CFG="{\"path\": \"$DATA/blocks\"}"
+if [ -n "${DIRTY_EXPIRE_SECONDS:-}" ]; then
+    LOCAL_CFG="{\"path\": \"$DATA/blocks\", \"dirty_expire_seconds\": $DIRTY_EXPIRE_SECONDS}"
+fi
+dctl store block local add --name blk --type fs --config "$LOCAL_CFG" >/dev/null || fail "block store"
 dctl share create --name /crash --metadata meta --local blk --default-permission read-write >/dev/null || fail "share create"
 dctl adapter enable smb --port $SMBP >/dev/null || fail "smb adapter"
 
