@@ -39,4 +39,5 @@ Examples:
 func init() {
 	Cmd.AddCommand(metadata.Cmd)
 	Cmd.AddCommand(block.Cmd)
+	Cmd.AddCommand(checkCmd)
 }
