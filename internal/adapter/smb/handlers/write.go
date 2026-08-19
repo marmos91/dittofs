@@ -599,14 +599,12 @@ func (h *Handler) handlePipeWrite(ctx *SMBHandlerContext, req *WriteRequest, ope
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
 
-	// Get pipe state
 	pipe := h.PipeManager.GetPipe(req.FileID)
 	if pipe == nil {
 		logger.Debug("WRITE: pipe not found", "fileID", lazyFileID(req.FileID))
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
 	}
 
-	// Process RPC data
 	err := pipe.ProcessWrite(req.Data)
 	if err != nil {
 		logger.Warn("WRITE: pipe write failed", "error", err)

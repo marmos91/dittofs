@@ -531,7 +531,6 @@ func (h *Handler) handleSymlinkRead(
 	// underlying source of the returned bytes.
 	recordReadProgress(openFile, req.Offset, uint64(len(data)))
 
-	// Build response
 	return &ReadResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
 		DataOffset:      0x50, // Standard offset
@@ -557,7 +556,6 @@ func (h *Handler) handlePipeRead(ctx *SMBHandlerContext, req *ReadRequest, openF
 		"pipeName", openFile.PipeName,
 		"requestedLength", req.Length)
 
-	// Get pipe state
 	pipe := h.PipeManager.GetPipe(req.FileID)
 	if pipe == nil {
 		logger.Debug("READ: pipe not found", "fileID", lazyFileID(req.FileID))
