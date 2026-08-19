@@ -194,7 +194,6 @@ func (w *SettingsWatcher) poll(ctx context.Context) {
 // pollNFSSettings checks the DB for NFS adapter settings changes.
 // If the version has changed, swaps the cached settings atomically.
 func (w *SettingsWatcher) pollNFSSettings(ctx context.Context) error {
-	// Get NFS adapter from store
 	adapter, err := w.store.GetAdapter(ctx, "nfs")
 	if err != nil {
 		if errors.Is(err, models.ErrAdapterNotFound) {
@@ -265,7 +264,6 @@ func (w *SettingsWatcher) RefreshNFSSettings(ctx context.Context) error {
 // pollSMBSettings checks the DB for SMB adapter settings changes.
 // If the version has changed, swaps the cached settings atomically.
 func (w *SettingsWatcher) pollSMBSettings(ctx context.Context) error {
-	// Get SMB adapter from store
 	adapter, err := w.store.GetAdapter(ctx, "smb")
 	if err != nil {
 		if errors.Is(err, models.ErrAdapterNotFound) {

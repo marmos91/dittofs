@@ -164,9 +164,9 @@ func (c *dnsCache) cleanExpiredLocked(now time.Time) {
 //  5. Match client IP against each member (IP, CIDR, or hostname)
 //  6. Return false if no member matches
 //
-// Per Pitfall 3 (DNS blocking): hostname matching uses cached reverse DNS with
-// 5-minute positive TTL and 1-minute negative TTL. Falls back to IP matching
-// if DNS lookup fails (does not block).
+// Hostname matching uses cached reverse DNS with a 5-minute positive TTL and
+// a 1-minute negative TTL, and falls back to IP matching if the lookup fails,
+// so a slow resolver never blocks the access decision.
 func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, clientIP net.IP) (bool, error) {
 	// 1. Get the share's netgroup association from runtime state.
 	//
@@ -189,7 +189,6 @@ func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, cli
 		return false, err
 	}
 
-	// 2. If share has no netgroup -> allow all
 	if netgroupName == "" {
 		return true, nil
 	}
@@ -280,7 +279,6 @@ func (r *Runtime) evaluateNetgroupAccess(ctx context.Context, shareName, netgrou
 		return false, nil
 	}
 
-	// Initialize DNS cache lazily
 	ensureDNSCache()
 
 	// Match client IP against each member

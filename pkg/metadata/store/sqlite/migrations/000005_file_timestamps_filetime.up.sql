@@ -1,6 +1,7 @@
 -- Convert the files timestamp columns from unix-nanoseconds to Windows FILETIME
--- (100ns ticks since 1601), matching the encoding.go switch (timeToNanos /
--- nanosToTime). Zero stays zero (the unset/zero-time sentinel); a nonzero
+-- (100ns ticks since 1601), matching the codec in
+-- pkg/metadata/store/internal/sqlcodec (TimeToFiletime / FiletimeToTime).
+-- Zero stays zero (the unset/zero-time sentinel); a nonzero
 -- unix-nanosecond value n becomes n/100 + 116444736000000000. On a fresh
 -- database these tables are empty so this is a no-op; on an existing database it
 -- rewrites the persisted values so they decode correctly under the new codec.
