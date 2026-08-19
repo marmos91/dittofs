@@ -10,7 +10,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
-// fakeCoordinator records every IncrementRefCount/DecrementRefCount/
+// fakeCoordinator records every IncrementRefCount/DecrementRefCountAndReap/
 // PersistFileChunks/FindByObjectID call so engine tests can assert what
 // the engine invoked (and with what arguments) without coupling to the
 // real metadata-store wiring.
@@ -18,7 +18,6 @@ type fakeCoordinator struct {
 	mu sync.Mutex
 
 	incHashes    []block.ContentHash
-	decHashes    []block.ContentHash
 	reapIDs      []string
 	persistCalls []persistRecord
 
@@ -107,21 +106,10 @@ func (f *fakeCoordinator) IncrementRefCount(_ context.Context, hash block.Conten
 
 // errInducedDecrement is a sentinel returned by failOnNthDecrement so
 // tests can assert errors.Is on the rollback path.
-var errInducedDecrement = errors.New("fakeCoordinator: induced DecrementRefCount failure")
-
-func (f *fakeCoordinator) DecrementRefCount(_ context.Context, hash block.ContentHash) (uint32, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.decCallCount++
-	if f.failOnNthDecrement > 0 && f.decCallCount == f.failOnNthDecrement {
-		return 0, errInducedDecrement
-	}
-	f.decHashes = append(f.decHashes, hash)
-	return 0, nil
-}
+var errInducedDecrement = errors.New("fakeCoordinator: induced decrement failure")
 
 // DecrementRefCountAndReap records reap-path invocations (engine Delete /
-// Truncate reclaim) separately from plain DecrementRefCount (dedup / rollback
+// Truncate reclaim) separately from the increment path (dedup / rollback
 // bookkeeping) so tests can assert which path the engine took. The reap path is
 // keyed by EXACT ID "{payloadID}/{offset}" (never by hash), so the recorded
 // reapIDs reflect the unambiguous per-file row identity. Honours the same
@@ -217,7 +205,7 @@ func TestMetadataCoordinator_NilTolerated(t *testing.T) {
 // TestMetadataCoordinator_AcceptsFakeCoordinator asserts that a *Store
 // can be constructed with a non-nil coordinator and that the field is
 // stored verbatim. Full integration assertions (the engine actually
-// invoking IncrementRefCount/DecrementRefCount/PersistFileChunks during
+// invoking IncrementRefCount/DecrementRefCountAndReap/PersistFileChunks during
 // CopyPayload/Delete/Truncate/syncer-post-Flush) live in Task 2 tests.
 func TestMetadataCoordinator_AcceptsFakeCoordinator(t *testing.T) {
 	fc := &fakeCoordinator{}
@@ -238,12 +226,11 @@ func TestMetadataCoordinator_FakeImpl_RecordsCalls(t *testing.T) {
 	ctx := context.Background()
 
 	h1 := block.ContentHash{0xAA}
-	h2 := block.ContentHash{0xBB}
 
 	if err := fc.IncrementRefCount(ctx, h1); err != nil {
 		t.Fatalf("Increment: %v", err)
 	}
-	if _, err := fc.DecrementRefCount(ctx, h2); err != nil {
+	if _, err := fc.DecrementRefCountAndReap(ctx, "pid", 0); err != nil {
 		t.Fatalf("Decrement: %v", err)
 	}
 	if err := fc.PersistFileChunks(ctx, "pid", []block.ChunkRef{{Hash: h1, Offset: 0, Size: 1}}, block.ObjectID{}); err != nil {
@@ -253,8 +240,8 @@ func TestMetadataCoordinator_FakeImpl_RecordsCalls(t *testing.T) {
 	if len(fc.incHashes) != 1 || fc.incHashes[0] != h1 {
 		t.Errorf("incHashes=%v, want [h1]", fc.incHashes)
 	}
-	if len(fc.decHashes) != 1 || fc.decHashes[0] != h2 {
-		t.Errorf("decHashes=%v, want [h2]", fc.decHashes)
+	if len(fc.reapIDs) != 1 || fc.reapIDs[0] != "pid/0" {
+		t.Errorf("reapIDs=%v, want [pid/0]", fc.reapIDs)
 	}
 	if len(fc.persistCalls) != 1 || fc.persistCalls[0].payloadID != "pid" {
 		t.Errorf("persistCalls=%v, want one call with pid", fc.persistCalls)

@@ -10,9 +10,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ReadAt reads data from storage at the given offset into dest.
-// a non-nil/non-empty []ChunkRef carries the CAS hashes covering the
-// requested range (zero-filling sparse holes).
+// ReadAt reads data from storage at the given offset into dest, zero-filling
+// sparse holes.
 //
 // After a successful read the engine drives the offset-based readahead window
 // (Syncer.scheduleReadahead) so a sequential reader keeps the local read-serving
