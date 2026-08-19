@@ -15,9 +15,10 @@ package metadata
 // of types without a cycle, while the aliases here keep the API reachable from
 // the package that owns it.
 //
-// These are aliases, not distinct types, so a lock built through either
-// spelling satisfies both. Removing or renaming a name here breaks every
-// caller of the metadata package.
+// These are aliases, not distinct types: each name here and the name it
+// points at denote one and the same type, so a value can be passed to a
+// function expecting either spelling without conversion. Removing or
+// renaming a name here breaks every caller of the metadata package.
 // ============================================================================
 
 import (

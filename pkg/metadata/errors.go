@@ -18,14 +18,15 @@ import (
 // The implementations live in pkg/metadata/errors and pkg/metadata/lock
 // because neither of those packages may import metadata: metadata imports
 // both, so the dependency only runs one way. That lets the store backends and
-// the lock manager raise and inspect the same errors without a cycle — all
-// four backends import pkg/metadata/errors directly — while the aliases here
+// the lock manager raise and inspect the same errors without a cycle — the
+// store backends import pkg/metadata/errors directly — while the aliases here
 // keep the API reachable from the package that owns it.
 //
-// These are aliases, not wrappers, so a value built through either spelling is
-// the identical type and compares equal. Removing or renaming a name here
-// breaks every caller of the metadata package; it is not the cleanup of an
-// unused shim.
+// These are aliases, not wrappers: each name here and the name it points at
+// denote one and the same type, so a value can be passed to anything
+// expecting either spelling without conversion. Removing or renaming a name
+// here breaks every caller of the metadata package; it is not the cleanup of
+// an unused shim.
 
 // StoreError is re-exported from the errors package.
 type StoreError = errors.StoreError
