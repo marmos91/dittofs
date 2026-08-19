@@ -122,7 +122,7 @@ func AuditRefcounts(ctx context.Context, share string, store metadata.Store, loc
 	if err != nil {
 		return nil, fmt.Errorf("audit-refcounts: get root handle for %q: %w", share, err)
 	}
-	if err := walkAuditShareFiles(ctx, store, rootHandle, func(f *metadata.File) error {
+	if err := walkAuditShareFiles(ctx, store, rootHandle, "", func(_ string, f *metadata.File) error {
 		result.TotalFiles++
 		backed, dangling, err := auditFileManifest(ctx, store, f)
 		if err != nil {
@@ -203,11 +203,17 @@ func auditFileManifest(ctx context.Context, store metadata.Store, f *metadata.Fi
 }
 
 // walkAuditShareFiles recursively walks the share rooted at dirHandle
-// invoking fn for every regular file. Pagination is via the existing
-// ListChildren cursor; depth is unbounded but bounded by the share's
-// directory tree depth. Pure-traversal — no mutation, safe for concurrent
-// reads against the live metadata store.
-func walkAuditShareFiles(ctx context.Context, store metadata.Store, dirHandle metadata.FileHandle, fn func(*metadata.File) error) error {
+// invoking fn for every regular file, with the file's slash-separated path
+// below dir. Pagination is via the existing ListChildren cursor; depth is
+// unbounded but bounded by the share's directory tree depth. Pure-traversal —
+// no mutation, safe for concurrent reads against the live metadata store.
+func walkAuditShareFiles(
+	ctx context.Context,
+	store metadata.Store,
+	dirHandle metadata.FileHandle,
+	dir string,
+	fn func(path string, f *metadata.File) error,
+) error {
 	cursor := ""
 	for {
 		entries, next, err := store.ListChildren(ctx, dirHandle, cursor, 0)
@@ -226,13 +232,14 @@ func walkAuditShareFiles(ctx context.Context, store metadata.Store, dirHandle me
 			if err != nil {
 				return fmt.Errorf("get file %q: %w", e.Name, err)
 			}
+			path := dir + "/" + e.Name
 			switch child.Type {
 			case metadata.FileTypeDirectory:
-				if err := walkAuditShareFiles(ctx, store, e.Handle, fn); err != nil {
+				if err := walkAuditShareFiles(ctx, store, e.Handle, path, fn); err != nil {
 					return err
 				}
 			case metadata.FileTypeRegular:
-				if err := fn(child); err != nil {
+				if err := fn(path, child); err != nil {
 					return err
 				}
 			}
