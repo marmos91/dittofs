@@ -36,9 +36,9 @@ func TestShareList_Row_RendersEnabledYes(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	last := rows[0][len(rows[0])-1]
-	if last != "yes" {
-		t.Errorf("last column = %q, want \"yes\"", last)
+	got := rows[0][columnIndex(t, sl.Headers(), "ENABLED")]
+	if got != "yes" {
+		t.Errorf("ENABLED column = %q, want \"yes\"", got)
 	}
 }
 
@@ -49,9 +49,9 @@ func TestShareList_Row_RendersEnabledDash(t *testing.T) {
 		{Name: "/archive", Enabled: false},
 	}
 	rows := sl.Rows()
-	last := rows[0][len(rows[0])-1]
-	if last != "-" {
-		t.Errorf("last column = %q, want \"-\"", last)
+	got := rows[0][columnIndex(t, sl.Headers(), "ENABLED")]
+	if got != "-" {
+		t.Errorf("ENABLED column = %q, want \"-\"", got)
 	}
 }
 
@@ -89,5 +89,36 @@ func TestShareList_JSON_IncludesEnabledField(t *testing.T) {
 	got := string(b)
 	if !strings.Contains(got, `"enabled":true`) {
 		t.Errorf("json output missing \"enabled\":true, got %s", got)
+	}
+}
+
+// columnIndex returns the position of the named column, so assertions survive
+// new columns being appended to the table.
+func columnIndex(t *testing.T, headers []string, name string) int {
+	t.Helper()
+	for i, h := range headers {
+		if h == name {
+			return i
+		}
+	}
+	t.Fatalf("column %q missing from headers: %v", name, headers)
+	return -1
+}
+
+// A share the server refused to serve must be visible in the table, and a
+// share whose status the server did not report must not render an empty cell.
+func TestShareList_Row_RendersStatus(t *testing.T) {
+	sl := ShareList{
+		{Name: "/refused", Enabled: true, Status: "unhealthy"},
+		{Name: "/nostatus", Enabled: true},
+	}
+	rows := sl.Rows()
+	idx := columnIndex(t, sl.Headers(), "STATUS")
+
+	if got := rows[0][idx]; got != "unhealthy" {
+		t.Errorf("STATUS column = %q, want \"unhealthy\"", got)
+	}
+	if got := rows[1][idx]; got != "-" {
+		t.Errorf("absent status rendered as %q, want \"-\"", got)
 	}
 }

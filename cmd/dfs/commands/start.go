@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -261,9 +263,17 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// A skipped share only shrinks the share count, which reads as normal to
+	// anyone who does not already know how many shares to expect. Name them
+	// here, where an operator is looking at the moment it happens.
+	skipped := rt.SkippedShares()
 	logger.Info("Runtime initialized",
 		"metadata_stores", rt.CountMetadataStores(),
-		"shares", rt.CountShares())
+		"shares", rt.CountShares(),
+		"shares_not_served", len(skipped))
+	for _, name := range slices.Sorted(maps.Keys(skipped)) {
+		logger.Warn("Share is NOT being served", "share", name, "reason", skipped[name])
+	}
 	logger.Info("Per-share BlockStores created during share loading")
 
 	// One-time stranded-row reconcile migration (#1433): reaps file_blocks

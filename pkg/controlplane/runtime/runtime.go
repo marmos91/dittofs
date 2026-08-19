@@ -470,6 +470,21 @@ func (r *Runtime) MarkShareSkipped(name, reason string) {
 	r.skippedShares[name] = reason
 }
 
+// SkippedShares returns a copy of the recorded skip reasons, keyed by share
+// name. Empty when every configured share is being served.
+func (r *Runtime) SkippedShares() map[string]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.skippedShares) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(r.skippedShares))
+	for name, reason := range r.skippedShares {
+		out[name] = reason
+	}
+	return out
+}
+
 // ShareSkipReason returns the reason the named share is not being served, and
 // whether such a reason was recorded.
 func (r *Runtime) ShareSkipReason(name string) (string, bool) {
