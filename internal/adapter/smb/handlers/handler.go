@@ -454,10 +454,10 @@ type OpenFile struct {
 	// at acls.c:440).
 	//
 	// Per-op gates are INTENTIONALLY frozen to this snapshot, not re-evaluated
-	// through the central FileAccessChecker on each request:
+	// through the central metadata permission core on each request:
 	//
 	//   - The single access check happens once, at CREATE, through the central
-	//     metadata.FileAccessChecker (CheckFileAccess / CheckFileAccessWithParent).
+	//     metadata.Service (CheckFileAccess / CheckFileAccessWithParent).
 	//     Subsequent READ / WRITE / DELETE / SET_INFO / IOCTL (sparse, copychunk,
 	//     fsctl) handlers gate against this frozen GrantedAccess rather than
 	//     re-running the checker. This is the MS-SMB2 / MS-FSA handle model

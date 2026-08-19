@@ -19,7 +19,7 @@ import (
 // check that ignored ACLs, DENY ACEs, and SID-based grants, so the same file
 // produced a different answer on NFSv4 than on NFSv3/SMB. This suite pins the
 // fix: every protocol "lane" below drives the SAME central
-// metadata.FileAccessChecker entry point its production adapter uses, and the
+// metadata.Service entry point its production adapter uses, and the
 // suite asserts every lane agrees with every other lane and with the expected
 // decision — including DENY ACEs and SID-only grants (the bug class).
 //

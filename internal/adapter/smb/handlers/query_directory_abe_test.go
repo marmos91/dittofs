@@ -13,11 +13,11 @@ import (
 
 func uint32Ptr(v uint32) *uint32 { return &v }
 
-// abeChecker returns a metadata.FileAccessChecker for the access-based
+// abeChecker returns the metadata permission core used by the access-based
 // enumeration filter under test. CheckAttrReadAccess evaluates purely from the
 // passed FileAttr + AuthContext and touches no store, so a bare service
 // instance is sufficient.
-func abeChecker() metadata.FileAccessChecker { return metadata.New() }
+func abeChecker() *metadata.Service { return metadata.New() }
 
 // authForUID builds an AuthContext for the given UID with a single primary GID.
 // Context is wired to context.Background() so future hydrators that dereference
