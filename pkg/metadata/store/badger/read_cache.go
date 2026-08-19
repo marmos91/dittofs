@@ -91,8 +91,8 @@ func (c *fileReadCache) invalidate(key string) {
 
 // invalidateAll drops every entry, for callers that replace the whole backing
 // store rather than a single file record (Reset, RestoreSnapshot). Same
-// ordering rule as invalidate: bump gen first so an in-flight populate against
-// the pre-wipe generation cannot re-insert after the clear.
+// ordering rule as invalidate: bump gen before clearing, so an in-flight
+// populate against the pre-wipe generation cannot re-insert after the clear.
 func (c *fileReadCache) invalidateAll() {
 	c.gen.Add(1)
 	c.m.Clear()

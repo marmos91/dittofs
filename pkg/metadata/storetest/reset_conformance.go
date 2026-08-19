@@ -9,19 +9,21 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// fileForReadStore and createCacheStore mirror the optional fast-path
-// interfaces the metadata service probes for. A backend that implements them
-// answers from its own derived caches, which is exactly the state this suite
-// has to see torn down by Reset and RestoreSnapshot; a backend that does not
-// falls back to the plain Store methods below.
-type fileForReadStore interface {
-	GetFileForRead(ctx context.Context, handle metadata.FileHandle) (*metadata.File, error)
-}
+// fileForReadStore and createCacheStore are the read-side subset of the
+// optional fast-path interfaces the metadata service probes for. A backend that
+// implements them answers from its own derived caches, which is exactly the
+// state this suite has to see torn down by Reset and RestoreSnapshot; a backend
+// that does not falls back to the plain Store methods below.
+type (
+	fileForReadStore interface {
+		GetFileForRead(ctx context.Context, handle metadata.FileHandle) (*metadata.File, error)
+	}
 
-type createCacheStore interface {
-	GetFileForCreate(ctx context.Context, handle metadata.FileHandle) (*metadata.File, error)
-	GetChildForCreate(ctx context.Context, dirHandle metadata.FileHandle, name string) (metadata.FileHandle, error)
-}
+	createCacheStore interface {
+		GetFileForCreate(ctx context.Context, handle metadata.FileHandle) (*metadata.File, error)
+		GetChildForCreate(ctx context.Context, dirHandle metadata.FileHandle, name string) (metadata.FileHandle, error)
+	}
+)
 
 // readFile loads handle through the backend's read fast path when it has one,
 // so any file-read cache behind it is both warmed and consulted.

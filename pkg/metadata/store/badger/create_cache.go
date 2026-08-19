@@ -107,9 +107,8 @@ func (c *direntCache) invalidate(key string) {
 
 // invalidateAll drops every entry, positive and negative, for callers that
 // replace the whole backing store rather than a single directory entry (Reset,
-// RestoreSnapshot). Same ordering rule as invalidate: bump gen first so an
-// in-flight populate against the pre-wipe generation cannot re-insert after
-// the clear.
+// RestoreSnapshot). Order matters: bump gen BEFORE clearing (see
+// fileReadCache.invalidateAll).
 func (c *direntCache) invalidateAll() {
 	c.gen.Add(1)
 	c.m.Clear()
