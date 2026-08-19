@@ -12,6 +12,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'test/integration/**'
+      - 'test/kmip/**'
       - '.github/workflows/integration-tests.yml'
 
 concurrency:
@@ -77,6 +78,15 @@ jobs:
             sleep 2
           done
 
+      # PyKMIP for the KMIP key-provider interop tests. Without it the
+      # gated tests in pkg/block/encryption/keyprovider skip and the only
+      # KMIP coverage is our own canned TTLV answering our own client.
+      # The script generates certificates, provisions one key per state
+      # the provider reacts to, and exports the DITTOFS_TEST_KMIP_* vars
+      # those tests read.
+      - name: Start PyKMIP
+        run: ./test/kmip/start-pykmip.sh "${{ runner.temp }}/kmip-certs" "$GITHUB_ENV"
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -106,6 +116,10 @@ jobs:
           # Tests RPC client against system rpcbind
           # Skips automatically if rpcbind unavailable or NFS already registered
           go test -tags=portmap_system -v -timeout=2m ./test/integration/portmap/...
+
+      - name: Dump PyKMIP logs on failure
+        if: failure()
+        run: docker logs dittofs-pykmip || true
 
       - name: Upload test logs on failure
         if: failure()
