@@ -343,13 +343,17 @@ jobs:
           }
           Write-Host "TCP 445 freed for DittoFS: $freed (false => hosted-runner kernel listener; net use cannot reach DittoFS without a reboot)"
           (Get-NetTCPConnection -LocalPort 445 -State Listen -ErrorAction SilentlyContinue) | Format-Table -AutoSize
+          # The net use assertions below are gated on this: the redirector can
+          # only reach DittoFS when DittoFS owns 445. Asserting anyway turns an
+          # unmeetable precondition into a permanent job failure.
+          "SMB445_FREE=$($freed.ToString().ToLowerInvariant())" >> $env:GITHUB_ENV
           # sc.exe returns nonzero when a service is already stopped, which pwsh
           # would otherwise propagate as a step failure. This step is
           # best-effort — clear the residual exit code so the job proceeds to
           # the bootstrap (which binds DittoFS to 445 if it is now free).
           $global:LASTEXITCODE = 0
 
-      - name: Start packet capture (pktmon, #879 diagnosis)
+      - name: "Start packet capture (pktmon, #879 diagnosis)"
         shell: pwsh
         run: |
           # Capture the loopback SMB handshake at the byte level so any
@@ -396,6 +400,11 @@ jobs:
           (Get-NetTCPConnection -LocalPort 445 -State Listen -ErrorAction SilentlyContinue) | Format-Table -AutoSize
 
       - name: Test net use operations
+        id: netuse
+        # Skipped when the kernel SMB listener kept 445: `net use` would reach
+        # the in-box Windows SMB server, not DittoFS. On a runner where 445 is
+        # claimable this runs and a genuine regression still fails the job.
+        if: env.SMB445_FREE == 'true'
         shell: pwsh
         run: |
           # Mount SMB share
@@ -465,7 +474,7 @@ jobs:
           Write-Host "===== dfs-stderr.log ====="
           Get-Content dfs-stderr.log -ErrorAction SilentlyContinue | Select-Object -Last 40
 
-      - name: Upload #879 diagnosis artifacts
+      - name: "Upload #879 diagnosis artifacts"
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -493,22 +502,39 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          @"
-          ## SMB Client Compatibility: Windows
-
-          | Test | Status |
-          |------|--------|
-          | net use mount | :white_check_mark: |
-          | File create/read | :white_check_mark: |
-          | Directory create | :white_check_mark: |
-          | Directory listing | :white_check_mark: |
-          | Delete | :white_check_mark: |
-          "@ >> $env:GITHUB_STEP_SUMMARY
+          # Report what actually happened. A fixed all-green table would claim
+          # passes for a run whose assertions never executed, or failed.
+          $outcome = '${{ steps.netuse.outcome }}'
+          $mark = if ($outcome -eq 'success') { ':white_check_mark:' } else { ':x:' }
+          $summary = @('## SMB Client Compatibility: Windows', '')
+          if ($outcome -eq 'skipped') {
+            $reason = 'TCP 445 stayed owned by the hosted-runner kernel SMB listener (srvnet.sys, PID 4). The Windows redirector always connects to TCP 445 and UNC syntax has no port field, so net use cannot reach DittoFS on any other port. Freeing 445 needs srvnet.sys unloaded, which a hosted runner cannot do without a reboot. Diagnostics were still captured and uploaded.'
+            Write-Host "::notice title=Windows net use tests skipped::$reason"
+            $summary += ":warning: **net use tests skipped** - $reason"
+            $summary += ''
+            $summary += 'Run this job on a self-hosted or VM runner where 445 can be claimed to exercise the Windows redirector against DittoFS.'
+          } else {
+            $summary += @(
+              '| Test | Status |'
+              '|------|--------|'
+              "| net use mount | $mark |"
+              "| File create/read | $mark |"
+              "| Directory create | $mark |"
+              "| Directory listing | $mark |"
+              "| Delete | $mark |"
+            )
+          }
+          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
       - name: Cleanup
         if: always()
         shell: pwsh
         run: |
           net use Z: /delete /yes 2>$null
-          $pid = $env:DFS_PID
-          if ($pid) { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue }
+          # $pid is a read-only automatic variable; assigning to it throws and
+          # leaves the server process running.
+          $dfsPid = $env:DFS_PID
+          if ($dfsPid) { Stop-Process -Id $dfsPid -Force -ErrorAction SilentlyContinue }
+          # net use exits nonzero when Z: was never mapped; pwsh would otherwise
+          # propagate that as a cleanup failure.
+          $global:LASTEXITCODE = 0
