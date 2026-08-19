@@ -158,7 +158,10 @@ and say what you could not rule out.`,
     { label: `refute:${i}`, phase: 'Refute', schema: VERDICT })
 ))).filter(Boolean)
 
-const kills = votes.filter(v => v.refuted)
+// A refutation only kills the claim if it produced a concrete
+// counterexample; a bare `refuted: true` is a doubt to chase, not a kill.
+const kills  = votes.filter(v => v.refuted && (v.counterexample || '').trim())
+const doubts = votes.filter(v => v.refuted && !(v.counterexample || '').trim())
 
 phase('Alternatives')
 const alt = await agent(`Repo: DittoFS at ${args.worktree}.
@@ -172,7 +175,7 @@ observation would distinguish it from the claimed cause. Return the strongest
 two, or state plainly that none are plausible.`,
   { phase: 'Alternatives' })
 
-return { survives: kills.length === 0, kills, votes, alternatives: alt }
+return { survives: kills.length === 0, kills, doubts, votes, alternatives: alt }
 ```
 
 Invoke it with `args: { claim, evidence, symptom, worktree }`.
@@ -341,7 +344,7 @@ gh pr merge <PR> --squash --delete-branch
 gh issue close <N> --comment "Fixed in #<PR>."     # manual — see step 8
 
 # Refresh the graph in the MAIN checkout, on the merged code — not in the worktree
-cd "$(git rev-parse --show-toplevel)"
+cd "$(git worktree list --porcelain | head -1 | cut -d' ' -f2)"   # the main checkout
 git checkout develop && git pull
 graphify update .                                   # AST-only, no API cost
 
