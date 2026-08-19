@@ -309,19 +309,33 @@ func TestCheckManifests_UnplaceableRow(t *testing.T) {
 		[]seedRow{{"block-0", 4096, 1}, {"4096", 4096, 2}},
 		[]seedRef{{0, 4096, 1}, {4096, 4096, 2}})
 
-	res, err := CheckManifests(ctx, share, store, false)
+	// Only the placeable row's hash is known to the synced-hash store, so
+	// the unplaceable row must still be put to it: where its bytes belong is
+	// unknown, but whether the remote holds them is still answerable.
+	if err := store.MarkSynced(ctx, seedHash(2), block.ChunkLocator{}); err != nil {
+		t.Fatalf("MarkSynced: %v", err)
+	}
+
+	res, err := CheckManifests(ctx, share, store, true)
 	if err != nil {
 		t.Fatalf("CheckManifests: %v", err)
 	}
 	if res.UnplaceableRows != 1 {
 		t.Fatalf("UnplaceableRows = %d, want 1", res.UnplaceableRows)
 	}
+	if res.UnknownHashRows != 1 {
+		t.Fatalf("UnknownHashRows = %d, want 1 (the unplaceable row's hash)", res.UnknownHashRows)
+	}
 	f := findingFor(t, res, payloadID)
 	if f == nil {
 		t.Fatal("no finding for the payload holding an unplaceable row")
 	}
-	if want := payloadID + "/block-0"; len(f.UnplaceableRows) != 1 || f.UnplaceableRows[0] != want {
+	want := payloadID + "/block-0"
+	if len(f.UnplaceableRows) != 1 || f.UnplaceableRows[0] != want {
 		t.Fatalf("UnplaceableRows = %v, want [%s]", f.UnplaceableRows, want)
+	}
+	if len(f.UnknownHashRows) != 1 || f.UnknownHashRows[0] != want {
+		t.Fatalf("UnknownHashRows = %v, want [%s]", f.UnknownHashRows, want)
 	}
 	// The unplaceable row contributes no coverage, so the range it should
 	// have held is also reported as claimed-but-uncovered.

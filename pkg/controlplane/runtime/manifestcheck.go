@@ -43,12 +43,12 @@ func (r *Runtime) CheckManifests(ctx context.Context, shareName string) (*engine
 	}
 	logger.Info("store check: complete",
 		"share", shareName,
-		"filesScanned", res.FilesScanned,
-		"damagedPayloads", res.DamagedPayloads,
-		"claimedUncoveredBytes", res.ClaimedUncoveredBytes,
-		"unplaceableRows", res.UnplaceableRows,
-		"unknownHashRows", res.UnknownHashRows,
-		"durationMs", res.DurationMS,
+		"files_scanned", res.FilesScanned,
+		"damaged_payloads", res.DamagedPayloads,
+		"claimed_uncovered_bytes", res.ClaimedUncoveredBytes,
+		"unplaceable_rows", res.UnplaceableRows,
+		"unknown_hash_rows", res.UnknownHashRows,
+		"duration_ms", res.DurationMS,
 	)
 	return res, nil
 }

@@ -190,7 +190,7 @@ func TestCheckCmd_UnclaimedHoleIsNotDamage(t *testing.T) {
 	if !strings.Contains(out, "--include-holes") {
 		t.Errorf("output must point at --include-holes when holes were suppressed; got %q", out)
 	}
-	if !strings.Contains(out, "not checked (share has no remote store)") {
+	if !strings.Contains(out, "not checked (no remote store resolved") {
 		t.Errorf("a skipped synced-hash check must say so rather than print 0; got %q", out)
 	}
 

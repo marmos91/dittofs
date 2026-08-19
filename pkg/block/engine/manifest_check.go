@@ -245,16 +245,18 @@ func checkFileManifest(
 		if row == nil {
 			continue
 		}
-		off, ok := block.ParseChunkOffset(row.ID)
-		if !ok {
+		off, placeable := block.ParseChunkOffset(row.ID)
+		if !placeable {
 			res.UnplaceableRows++
 			finding.Damaged, found = true, true
 			appendCapped(&finding.UnplaceableRows, row.ID, &finding.Truncated)
-			continue
 		}
 		if row.Hash.IsZero() {
-			continue
+			continue // pending row: no committed bytes and no hash to look up
 		}
+		// The hash is put to the synced-hash store even for a row that
+		// cannot be placed. Where its bytes belong is unknown, but whether
+		// the remote holds them is still answerable and still worth saying.
 		if checkSynced {
 			synced, serr := store.IsSynced(ctx, row.Hash)
 			if serr != nil {
@@ -265,6 +267,9 @@ func checkFileManifest(
 				finding.Damaged, found = true, true
 				appendCapped(&finding.UnknownHashRows, row.ID, &finding.Truncated)
 			}
+		}
+		if !placeable {
+			continue // sits at no offset, so it can cover nothing
 		}
 		if e, ok := clipRange(off, uint64(row.DataSize), f.Size); ok {
 			covered = append(covered, e)

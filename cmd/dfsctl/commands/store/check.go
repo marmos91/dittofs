@@ -131,7 +131,7 @@ func printCheckTables(results []*engine.ManifestCheckResult) error {
 		}
 		unknown := fmt.Sprintf("%d", r.UnknownHashRows)
 		if !r.SyncedHashesChecked {
-			unknown = "not checked (share has no remote store)"
+			unknown = "not checked (no remote store resolved for this share)"
 		}
 		pairs := [][2]string{
 			{"Share", r.Share},
