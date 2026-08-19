@@ -116,8 +116,8 @@ func (s *BadgerMetadataStore) GetFileChunkAtOffset(...)
 ```
 
 They are a **debt ledger, not TODOs**: each one records a decision that was correct at the
-time along with the evidence that would overturn it. There are 19 of them, mostly in
-`pkg/block/engine`, `pkg/block/journal` and `pkg/metadata/store`.
+time along with the evidence that would overturn it. They appear throughout the codebase,
+mostly in `pkg/block/engine`, `pkg/block/journal` and `pkg/metadata/store`.
 
 This is the one sanctioned exception to the "no external references" rule above — the
 prefix is what makes the set harvestable as a group. Keep the marker when editing nearby
