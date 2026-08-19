@@ -2,17 +2,16 @@
 //
 // RemoteStore is the interface every remote backend (and decorator) exposes to
 // the engine and control plane. Its production surface is entirely block-keyed:
-// packed block objects stored under the "blocks/" prefix (#1414 object packing),
-// read and written through RemoteBlockStore + ChunkReader + ChunkSealer, plus
+// packed block objects stored under the "blocks/" prefix, read and written
+// through RemoteBlockStore + ChunkReader + ChunkSealer, plus
 // Close/HealthCheck/Healthcheck for backend lifecycle and health. Objects are
 // keyed by an opaque blockID string; the on-wire key is
 // block.FormatBlockKey(blockID).
 //
-// RemoteStore also embeds LegacyCASStore, the migration-only accessor for the
-// pre-blocks standalone-CAS layout (see legacy_cas.go). No hash-keyed CAS
-// read/write/enumerate operation is exposed on this production surface — those
-// live behind LegacyCASStore and are used solely by the one-shot cas→blocks
-// startup migration.
+// No hash-keyed CAS read/write/enumerate operation is exposed here. The
+// pre-blocks standalone-CAS layout is reachable only by type-asserting a store
+// to LegacyCASStore (see legacy_cas.go), which the one-shot cas→blocks startup
+// migration does.
 package remote
 
 import (
@@ -26,8 +25,8 @@ import (
 
 // ErrChunkReadUnsupported is returned by a decorator's ReadChunk when the
 // wrapped store does not implement ChunkReader, so a block read cannot be
-// composed through the transform stack. It cannot occur on the live PR3a path
-// (which never produces block locators); it guards the capability boundary.
+// composed through the transform stack. It guards the capability boundary for
+// callers that hold a store only as RemoteBlockStore.
 var ErrChunkReadUnsupported = errors.New("remote: wrapped store does not support block reads")
 
 // RemoteStore is the production remote block storage interface. Implemented by
@@ -41,12 +40,12 @@ var ErrChunkReadUnsupported = errors.New("remote: wrapped store does not support
 // ChunkReader.ReadChunk / ChunkSealer.SealChunk for the per-chunk transform, and
 // Close / HealthCheck / Healthcheck for lifecycle and health. No hash-keyed CAS
 // operation is exposed here — the legacy standalone-CAS layout is reachable only
-// through the embedded LegacyCASStore, used solely by the cas→blocks migration.
+// by type-asserting a store to LegacyCASStore, which only the cas→blocks
+// migration does.
 type RemoteStore interface {
 	RemoteBlockStore
 	ChunkReader
 	ChunkSealer
-	LegacyCASStore
 
 	// Close releases resources held by the store.
 	Close() error
@@ -64,7 +63,7 @@ type RemoteStore interface {
 }
 
 // RemoteBlockStore is the block-keyed (non-CAS) remote store contract for
-// objects stored under the "blocks/" prefix (#1414 object packing). Implemented
+// objects stored under the "blocks/" prefix. Implemented
 // by pkg/block/remote/s3.Store and pkg/block/remote/memory.Store.
 //
 // Objects are keyed by an opaque blockID string; the on-disk/on-wire key shape
@@ -110,14 +109,11 @@ type RemoteBlockStore interface {
 	WalkBlocks(ctx context.Context, fn func(blockID string, meta block.Meta) error) error
 }
 
-// ChunkReader is an OPTIONAL RemoteStore capability for reading a chunk that
-// lives inside a block object (#1414 object packing). It is deliberately kept OFF
-// the RemoteStore contract — only the locator read path needs it, so the many
-// RemoteStore test fakes need not implement it (mirroring how EnumerateSynced is
-// kept off metadata.SyncedHashStore). The engine type-asserts m.remoteStore to
-// this interface when a block.ChunkLocator resolves to a block (BlockID != "");
-// the s3 + memory backends and the encryption/compression decorators implement
-// it.
+// ChunkReader reads a chunk that lives inside a block object. It is a mandatory
+// member of RemoteStore; the s3 + memory backends and the encryption/compression
+// decorators implement it. Callers that hold only the narrower RemoteBlockStore
+// type-assert to it when a block.ChunkLocator resolves to a block (BlockID != "")
+// and return ErrChunkReadUnsupported when the assertion fails.
 //
 // ReadChunk reads the chunk whose stored wire bytes occupy
 // [offset, offset+length) within block object blocks/<blockID> (see
@@ -132,8 +128,8 @@ type ChunkReader interface {
 	ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error)
 }
 
-// ChunkSealer is the write-side counterpart to ChunkReader (#1414 object
-// packing). The block carver calls SealChunk on the (possibly decorated) remote
+// ChunkSealer is the write-side counterpart to ChunkReader, and likewise a
+// mandatory member of RemoteStore. The block carver calls SealChunk on the (possibly decorated) remote
 // store to transform one chunk's raw plaintext bytes into the wire bytes that
 // land inside a packed block object — applying exactly the same per-chunk
 // compression/encryption transforms the standalone CAS Put path applies, in the
