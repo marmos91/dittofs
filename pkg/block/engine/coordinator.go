@@ -102,7 +102,7 @@ type MetadataCoordinator interface {
 	// rollup-completion callback reads this to merge a partial rollup
 	// pass into the already-committed block list before calling
 	// PersistFileChunks, so a multi-pass rollup keeps FileAttr.Blocks
-	// complete instead of replacing it with only the latest pass (#789).
+	// complete instead of replacing it with only the latest pass.
 	//
 	// Reads the manifest source (file_block_refs on Postgres, encoded
 	// FileAttr.Blocks on Badger/Memory) — NOT the per-file FileChunk
@@ -111,8 +111,8 @@ type MetadataCoordinator interface {
 
 	// FindByObjectID looks up a previously-quiesced file in the
 	// metadata store by Merkle-root ObjectID. Returns (nil, nil) on
-	// miss. Used by the file-level dedup short-circuit
-	// . Per-metadata-store scope, not per-share.
+	// miss. Used by the file-level dedup short-circuit.
+	// Per-metadata-store scope, not per-share.
 	//
 	// Implementations short-circuit on zero-valued ObjectID and return
 	// (nil, nil) without touching the metadata store.

@@ -92,8 +92,8 @@ func (s BlockState) String() string {
 // MarshalJSON encodes a ContentHash as the canonical CAS scheme string
 // "blake3:{hex}" (mirrors CASKey()). Round-trips with UnmarshalJSON.
 //
-// Added in to drive ChunkRef JSON serialization.
-// Without this, encoding/json would default to base64 for the [32]byte
+// It exists to drive ChunkRef JSON serialization: without it,
+// encoding/json would use its default encoding for the [32]byte
 // array — readable diffs in Postgres/Badger payloads would be impossible.
 func (h ContentHash) MarshalJSON() ([]byte, error) {
 	out := make([]byte, 0, 1+len("blake3:")+HashSize*2+1)
@@ -104,10 +104,10 @@ func (h ContentHash) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON accepts the canonical "blake3:{hex}" form, the bare
-// "{hex}" form, and the pre-Phase-12 default base64 form (encoding/json's
-// default for [32]byte arrays without a custom MarshalJSON). The base64
-// fallback preserves backward compatibility for FileChunk rows persisted
-// by Badger before this MarshalJSON existed.
+// "{hex}" form, and two legacy encodings written before this type had a
+// custom MarshalJSON: a JSON number array and a base64 string. Those
+// fallbacks keep FileChunk rows persisted by earlier Badger builds
+// readable.
 func (h *ContentHash) UnmarshalJSON(data []byte) error {
 	// v0.14.x and earlier had no custom MarshalJSON — encoding/json
 	// serialized [32]byte as a JSON number array: [0,0,...,0]. Accept
@@ -146,15 +146,13 @@ func (h *ContentHash) UnmarshalJSON(data []byte) error {
 // ChunkRef is a single content-addressed reference to a chunk of a
 // file's payload. The list FileAttr.Blocks []ChunkRef is sorted by
 // Offset and covers the file end-to-end (gaps within Size are sparse
-// holes, zero-filled on read per).
+// holes, zero-filled on read).
 //
 // Hash is the BLAKE3 content hash identifying the chunk.
 // Offset is the byte offset within the file (uint64 to support files
 // >4 GiB; VM workload requirement).
 // Size is the chunk length in bytes (FastCDC min 1 MiB, max 16 MiB
 // uint32 chosen to match FileChunk.DataSize column type).
-//
-// See, decisions.
 type ChunkRef struct {
 	Hash   ContentHash `json:"hash"`
 	Offset uint64      `json:"offset"`

@@ -64,10 +64,9 @@ const BlockSize = block.BlockSize
 // granularity is therefore PER-SHARE in practice — each share owns its
 // own gc-state directory under <localStore>/gc-state/, so concurrent
 // runs against DIFFERENT shares acquire DIFFERENT locks and proceed in
-// parallel; only same-share GC calls serialize. For the Phase-11
-// single-server deployment this is sufficient; cross-process safety
-// (multi-server) requires an OS-level flock and is left as a TODO for
-// the multi-process phase.
+// parallel; only same-share GC calls serialize. That is sufficient for a
+// single-server deployment; cross-process safety (multi-server) would
+// require an OS-level flock and is not implemented.
 //
 // Entries are reference-counted and deleted from the map when their
 // refcount drops to zero, so the map shrinks back to size 0 whenever no
@@ -146,8 +145,8 @@ type GCStats struct {
 	DryRunCandidates []string
 
 	// StrandedRowsReaped counts file_blocks rows reaped by the reconcile pass
-	// (rows whose owning inode was already gone — the pre-fix leak). Zero for a
-	// plain GC run; only the reconcile sets it (#1433).
+	// (rows whose owning inode was already gone — the leak this pass closes).
+	// Zero for a plain GC run; only the reconcile sets it.
 	StrandedRowsReaped int64 `json:"stranded_rows_reaped,omitempty"`
 
 	// IsLocalTier is true when these stats come from a local-store pass
@@ -223,7 +222,7 @@ type Options struct {
 	// every hash it deletes, keeping the index a strict subset of remote
 	// contents: a hash swept off the remote is no longer synced and must be
 	// re-uploaded if it reappears in the live set; without this, ListUnsynced
-	// skips it forever and a later snapshot's durability verify fails (#1433).
+	// skips it forever and a later snapshot's durability verify fails.
 	// Set ONLY for remote-tier sweeps — local eviction does not change remote
 	// synced state, so local sweeps leave it nil.
 	//
@@ -231,7 +230,7 @@ type Options struct {
 	// (synced − live) from this index — the remote is never LISTed (see
 	// sweepFromSyncedIndex). A remote sweep without an index is skipped
 	// fail-closed. Orphan packed blocks the index cannot see (a PutBlock-
-	// then-commit crash gap) are the #1525 reconcile's job (PR5).
+	// then-commit crash gap) are the reconcile pass's job.
 	SyncedHashIndex SyncedHashIndex
 
 	// MarkProgress, when non-nil, is invoked during the mark phase with the
@@ -239,12 +238,12 @@ type Options struct {
 	// gcMarkProgressInterval hashes within a share. It gives long-running mark
 	// phases (millions of hashes on snapshot-heavy deployments) a liveness
 	// signal so an async caller can surface progress instead of a silent stall
-	// (#1433). Invoked synchronously from the (sequential) mark loop, so it must
+	// signal. Invoked synchronously from the (sequential) mark loop, so it must
 	// not block; implementations just record the latest count.
 	MarkProgress func(hashesMarked int64)
 
-	// BlockReclaimer reclaims block-resident chunks (#1414 object packing)
-	// during the remote sweep. Post-#1493 every synced hash lives inside a
+	// BlockReclaimer reclaims block-resident chunks (object packing)
+	// during the remote sweep. Every synced hash lives inside a
 	// blocks/<id> object, so this is the ONLY remote reclaim path: the sweep
 	// decrements the enclosing block and frees the block object + record when
 	// its last live chunk is gone. It is reached only after the sweep has
@@ -275,7 +274,7 @@ type SyncedHashIndex interface {
 	// remote locator, and first-mirror timestamp. The locator is read from the
 	// same marker row, so callers that need it resolve every hash in a single
 	// scan instead of a GetLocator round trip per hash — the O(N)-serial cost on
-	// the sqlite MaxOpenConns(1) pool behind the slow cold-start (#1554). A
+	// the sqlite MaxOpenConns(1) pool behind the slow cold-start. A
 	// standalone (pre-flip) marker yields the zero ChunkLocator. A zero syncedAt
 	// means the backend has no recorded time (legacy marker) — the sweep treats
 	// it as fail-closed.
@@ -329,11 +328,11 @@ type HoldProvider interface {
 // metadata stores + block-keyed remote. Both must be wired for the sweep to
 // reclaim anything; a missing index/reclaimer is recorded fail-closed.
 //
-// reconciler MUST satisfy MultiShareReconciler when more than one share
-// points at the remote. A reconciler that satisfies only the legacy
-// MetadataReconciler is treated as "no shares" — the live set is empty
-// and every synced hash is a sweep candidate. Callers in production
-// (Runtime.RunBlockGC) supply a MultiShareReconciler.
+// reconciler MUST satisfy MultiShareReconciler: the share list to
+// enumerate comes from SharesForGC. A reconciler that satisfies only
+// MetadataReconciler yields no shares, and the mark phase then aborts the
+// run fail-closed rather than sweeping against an empty live set. Callers
+// in production (Runtime.RunBlockGC) supply a MultiShareReconciler.
 func CollectGarbage(
 	ctx context.Context,
 	reconciler MetadataReconciler,
@@ -346,7 +345,7 @@ func CollectGarbage(
 // store. Local stores are isolated per share (architecture invariant #4), so
 // the caller scopes the reconciler and snapshot holds to that single share.
 // The grace period protects freshly-written chunks whose FileChunk rows have
-// not yet committed (#1433).
+// not yet committed.
 func CollectGarbageLocal(
 	ctx context.Context,
 	localStore block.Store,
@@ -528,8 +527,7 @@ func collectGarbage(
 // EnumerateFileChunks to populate the live set. The first error from any
 // store aborts the entire mark phase (fail-closed).
 //
-// an empty share list is treated as a HARD ERROR. With no
-// shares to enumerate, the engine cannot prove what is live and therefore
+// An empty share list is a HARD ERROR. With no shares to enumerate, the engine cannot prove what is live and therefore
 // MUST NOT sweep — orphan-not-deleted is always preferred over
 // live-data-deleted. Callers that genuinely have no shares must
 // short-circuit at a higher level (Runtime.RunBlockGC already does so
@@ -619,7 +617,7 @@ func sharesForReconciler(r MetadataReconciler) []string {
 
 // sweepable is the minimal store surface the local walk sweep needs: enumerate
 // the chunk namespace and delete one object by hash. The per-share local
-// block.Store satisfies it (#1433).
+// block.Store satisfies it.
 //
 // Walk MUST invoke its callback sequentially: sweepByWalk mutates unsynchronized
 // per-run counters (scanned/swept/bytes) from inside the callback. The local

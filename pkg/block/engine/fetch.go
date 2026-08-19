@@ -205,8 +205,8 @@ func clampSpan(span hydrateSpan, chunkStart, n uint64) (lo, hi uint64) {
 }
 
 // dispatchRemoteFetch routes a per-block S3 GET through the CAS verified-
-// read path. Post-Phase-17 there is no legacy fallback: any FileChunk
-// surfacing here with a zero Hash is migration drift and the boot guard
+// read path. There is no legacy fallback: any FileChunk surfacing here
+// with a zero Hash is migration drift and the boot guard
 // (cmd/dfs/start) should have refused to start. If a stray row
 // reaches this code path at runtime, refuse the read instead of returning
 // silent zeros.
@@ -231,7 +231,7 @@ func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *block.FileChunk) (
 
 	key, data, err := m.resolveAndReadChunk(ctx, fb)
 	if err != nil && errors.Is(err, block.ErrChunkNotFound) {
-		// Stale-locator window (#1487 compaction, and the cas→blocks migration /
+		// Stale-locator window (compaction, the cas→blocks migration, and the
 		// refcount reclaim paths): a concurrent maintenance pass relocated this
 		// chunk into a fresh block and deleted the old one AFTER we resolved its
 		// locator, so the GET 404s against bytes that moved. Re-resolve ONCE — a
@@ -413,7 +413,7 @@ func (m *Syncer) fetchResolvedBlock(ctx context.Context, fb *block.FileChunk, sp
 		return nil, nil
 	}
 
-	// dispatchRemoteFetch carries the stale-locator re-resolve retry (#1487), so
+	// dispatchRemoteFetch carries the stale-locator re-resolve retry, so
 	// a chunk relocated by compaction/migration reads through before we ever get
 	// here; a surviving ErrChunkNotFound is genuine live-data-loss.
 	storeKey, data, err := m.dispatchRemoteFetch(ctx, fb)
@@ -426,8 +426,8 @@ func (m *Syncer) fetchResolvedBlock(ctx context.Context, fb *block.FileChunk, sp
 			// should make this impossible). Returning silent zeros
 			// here would corrupt the caller's read with no log trace.
 			// Surface ErrChunkNotFound so the caller sees the data
-			// loss explicitly. Post-Phase-17 the legacy zero-hash
-			// branch is gone, so the !IsZero guard is implicit —
+			// loss explicitly. There is no legacy zero-hash branch,
+			// so the !IsZero guard is implicit —
 			// any successful dispatchRemoteFetch return implies a
 			// CAS row.
 			logger.Error("CAS object missing for live FileChunk — possible GC race or live-data-loss",
@@ -624,8 +624,8 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 			// fail-closed on the CAS path. See
 			// fetchBlock for the rationale — a non-zero-hash row that
 			// resolves to a missing CAS object is a live-data-loss
-			// signal that must NOT silently return zeros. Post-Phase-17
-			// every reachable row is CAS-shaped.
+			// signal that must NOT silently return zeros. Every
+			// reachable row is CAS-shaped.
 			logger.Error("CAS object missing for live FileChunk — possible GC race or live-data-loss",
 				"block_id", fb.ID, "store_key", storeKey, "hash", fb.Hash.String())
 			wrapped := fmt.Errorf("CAS object missing for live row %s (key %s): %w",

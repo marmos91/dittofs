@@ -1,4 +1,4 @@
-// Package engine — GC compaction of partially-dead blocks (#1487).
+// Package engine — GC compaction of partially-dead blocks.
 //
 // Delete-only block GC (gc_block.go) frees a block object only once its LAST
 // live chunk dies. A block that keeps a few live chunks but has accumulated
@@ -137,7 +137,7 @@ func CompactBlocks(
 		// Live bytes per block: sum the WireLength of every live synced locator.
 		// Single scan: EnumerateSynced yields each marker's locator alongside its
 		// hash (same row), so no GetLocator round trip per hash — the O(N) serial
-		// cost on the sqlite MaxOpenConns(1) pool (#1554). Folding the locator in
+		// cost on the sqlite MaxOpenConns(1) pool. Folding the locator in
 		// also removes the nested-query deadlock class structurally.
 		liveBytes := make(map[string]int64)
 		if err := v.EnumerateSynced(ctx, func(_ block.ContentHash, loc block.ChunkLocator, _ time.Time) error {

@@ -144,20 +144,4 @@
 // the goal is for `grep -rn 'TRANSITIONAL-' ./pkg/block` to
 // enumerate every deferral surface in one pass and for new contributors
 // to recognize the convention without consulting a roadmap.
-//
-// audit: at the close of the write-path RAM-optimization
-// phase, every TRANSITIONAL-NEXT-MILESTONE marker in pkg/block/
-// points at #519 ("Deferred to v0.17+") — the five v0.17 anchor sites
-// are pinned hot-tail RAM + zstd compression (chunkstore.go), O_DIRECT
-// (appendwrite.go), tmpfs spill (appendlog.go), and cold-cache prefetch
-// (engine/cache.go). All five carry the generic NEXT-MILESTONE marker
-// (the inline `see #519` reference documents the v0.17+ target without
-// burning a TRANSITIONAL-V0.17 tag into the grep namespace until the
-// v0.17 planning pass commits to a concrete deletion plan).
-//
-// also closed the `claim_batch_size`
-// deprecation cycle (the SyncerConfig field was set/defaulted but
-// never read by the syncer claim path). That cycle did not use a
-// TRANSITIONAL- marker — it relied on an inline godoc note — and the
-// field plus its defaults/validate paths are gone as of this phase.
 package block

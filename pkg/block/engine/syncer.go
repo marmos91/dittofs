@@ -35,9 +35,8 @@ type Syncer struct {
 	local       local.LocalStore
 	remoteStore remote.RemoteStore
 	// hasRemote mirrors "remoteStore != nil" as an atomic so hot-path gating
-	// (carveActive recompute, read from addPendingHash under pendingMu) can
-	// read it without taking m.mu — avoiding both a data race with
-	// SetRemoteStore and a pendingMu→m.mu lock-ordering edge.
+	// (the carveActive recompute and the readahead scheduler) can read it
+	// without taking m.mu, avoiding a data race with SetRemoteStore.
 	hasRemote atomic.Bool
 	// fileChunkStore is the per-file chunk manifest, and the syncer needs the
 	// wide EngineFileChunkStore surface rather than a narrower one because it
@@ -105,11 +104,11 @@ type Syncer struct {
 	// reached remote (committed inside a packed block) and of failed carve
 	// upload attempts. They source the truthful CompletedSyncs / FailedSyncs
 	// fields in block stats; the legacy SyncQueue has no production upload
-	// callers, so its counters always read zero (#1266).
+	// callers, so its counters always read zero.
 	completedSyncs atomic.Int64
 	failedSyncs    atomic.Int64
 
-	// uploadLimiter bounds concurrent block PUTs in carveFlush (#1407 / #1432).
+	// uploadLimiter bounds concurrent block PUTs in carveFlush.
 	// When ParallelUploads is pinned (> 0) its limit is fixed at that value.
 	// When unset (adaptive mode) the uploadController resizes it every control
 	// interval to track the goodput knee. Lazily created by ensureUploadLimiter
@@ -126,7 +125,7 @@ type Syncer struct {
 	uploadedBytesWindow atomic.Int64
 	uploadErrWindow     atomic.Int64
 
-	// --- block carve path (#1414 object packing) ---
+	// --- block carve path (object packing) ---
 
 	// remoteBlockStore is the block-keyed remote (PutBlock) the carver uploads
 	// packed blocks to. nil disables carve. Wired via SetRemoteBlockStore;
@@ -189,7 +188,7 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileChunk
 		config.ClaimTimeout = 10 * time.Minute
 	}
 
-	// Upload concurrency (#1407 / #1432): a pinned ParallelUploads > 0 fixes the
+	// Upload concurrency: a pinned ParallelUploads > 0 fixes the
 	// window; otherwise (the default) the carver auto-tunes between the adaptive
 	// floor and ceiling. The limiter starts at the floor in adaptive mode and at
 	// the pinned value otherwise; the control goroutine (adaptive only, launched
@@ -379,7 +378,7 @@ func (m *Syncer) canProcess(ctx context.Context) bool {
 //   - Finalized=true, err=nil: durable on the configured remote.
 //   - Finalized=false, err=nil: SOFT condition (no remote configured,
 //     remote unhealthy, or the carve substrate is not wired). Callers
-//     MUST NOT tight-loop retry (#670): surface the soft-fail to the
+//     MUST NOT tight-loop retry: surface the soft-fail to the
 //     protocol adapter and let the client drive the next attempt on its
 //     own schedule.
 //   - err != nil: hard failure, do not retry until addressed.
@@ -728,7 +727,7 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 	}()
 
 	// Adaptive mode (ParallelUploads unset): launch the goodput controller that
-	// resizes the upload window to saturate the uplink (#1407). Pinned
+	// resizes the upload window to saturate the uplink. Pinned
 	// --parallel-uploads leaves uploadController nil and keeps the fixed window;
 	// publish it once so the gauge reflects it instead of reading 0.
 	if m.uploadController != nil {
@@ -742,7 +741,7 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 	}
 }
 
-// runUploadController is the adaptive upload-concurrency control loop (#1407).
+// runUploadController is the adaptive upload-concurrency control loop.
 // Every interval it turns the bytes/error accumulated by carveAndCommitBlock
 // into a goodput sample, feeds the goodputController, and applies the returned
 // window to the shared uploadLimiter. Runs only in adaptive mode (controller

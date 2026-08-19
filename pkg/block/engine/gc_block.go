@@ -1,4 +1,4 @@
-// Package engine — block-aware GC reclaim (#1414 object packing, PR3).
+// Package engine — block-aware GC reclaim for packed-block objects.
 //
 // A chunk lives inside a packed blocks/<blockID> object. Its bytes are shared
 // with the other chunks in the same block, so the block object can be
@@ -28,7 +28,7 @@ type BlockReclaimer interface {
 	// handled=true (with the remote bytes freed, if any) when the hash
 	// resolved to a block locator and the block bookkeeping was applied.
 	// handled=false means this reclaimer has no block locator for the hash —
-	// post-#1493 the caller treats that as metadata drift and keeps the
+	// the caller treats that as metadata drift and keeps the
 	// marker (fail-closed); it never issues a per-hash remote delete.
 	// Idempotent: a hash whose block was already freed by a sibling chunk in
 	// the same sweep returns handled=true with zero bytes.
@@ -73,7 +73,7 @@ type BlockGCReclaimer struct {
 // chunk's local-index entry WITHOUT decrementing (pkg/block/local/fs/eviction.go
 // dropBlobIndexEntries), so under the old local-index token an evicted-then-
 // orphaned chunk looked "already reclaimed", its decrement was skipped, and its
-// block leaked forever (#1637). The marker is untouched by eviction.
+// block leaked forever. The marker is untouched by eviction.
 //
 // The marker is cleared at one of two points, keyed off whether this is the
 // block's LAST live chunk (its record count is about to floor to 0):

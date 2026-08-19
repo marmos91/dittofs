@@ -26,7 +26,7 @@ import (
 // succeeds and the remote mirror stays fully asynchronous and observable via
 // the unsynced-bytes metric. Even when strict enforcement IS enabled, the
 // common production case (fs local store) returns nil on the fast
-// local-durable path before this is ever reached. See #1274.
+// local-durable path before this is ever reached.
 var ErrNotDurableYet = errors.New("block: data not yet durable (local store is volatile and durable remote not reached)")
 
 // WriteToBlockStore is the structural twin of ReadFromBlockStore. It is a
@@ -72,8 +72,8 @@ func WriteToBlockStore(
 // keeping protocol-handler code unchanged.
 //
 // A hard flush error (I/O fault, remote.Put rejection, metadata error) is
-// ALWAYS surfaced unchanged (the #1267 fix) — engine.Flush returning a non-nil
-// error propagates regardless of policy.
+// ALWAYS surfaced unchanged — engine.Flush returning a non-nil error
+// propagates regardless of policy.
 //
 // Beyond that, durability acknowledgement is governed by the per-share policy
 // flag RequireDurableCommit (config["require_durable_commit"], default false):
@@ -113,7 +113,7 @@ func CommitBlockStore(
 		return err
 	}
 
-	// Observability (#1245): record the per-store durability decision at the
+	// Observability: record the per-store durability decision at the
 	// ack point. engine.Flush returning nil only means the flush pump did not
 	// fault; in the DEFAULT (async) policy Finalized may still be false while
 	// the remote mirror catches up, and localDurable=true (fs local store)

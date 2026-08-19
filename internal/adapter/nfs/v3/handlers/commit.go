@@ -68,9 +68,8 @@ type CommitResponse struct {
 	// and not write it to stable storage. The client can use the COMMIT operation
 	// to force the server to write the data to stable storage."
 	//
-	// In this implementation:
-	//   - Value of 0 indicates no server reboot tracking
-	//   - A production implementation should track server start time or boot ID
+	// It carries the server boot time (serverBootTime), so it stays constant
+	// for the lifetime of a server process and changes only across a restart.
 	WriteVerifier uint64
 }
 
