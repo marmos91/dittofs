@@ -18,10 +18,10 @@ import (
 // differently. The original NFSv4 ACCESS handler reimplemented a Unix-mode-only
 // check that ignored ACLs, DENY ACEs, and SID-based grants, so the same file
 // produced a different answer on NFSv4 than on NFSv3/SMB. This suite pins the
-// fix: every protocol "lane" below drives the SAME central
-// metadata.Service entry point its production adapter uses, and the
-// suite asserts every lane agrees with every other lane and with the expected
-// decision — including DENY ACEs and SID-only grants (the bug class).
+// fix: every protocol "lane" below drives the SAME central metadata.Service
+// entry point that its production adapter uses, and the suite asserts every
+// lane agrees with every other lane and with the expected decision — including
+// DENY ACEs and SID-only grants (the bug class).
 //
 // Run it from each backend's conformance test (memory / badger / postgres) so
 // the matrix is (memory|badger|postgres) x (NFSv3|NFSv4.0|NFSv4.1|SMB).
