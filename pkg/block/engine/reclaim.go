@@ -1,6 +1,6 @@
 // Package engine — orphan-storage reclaim, the *deleting* stages after the
-// read-only reporter (reconcile.go). Both operate on a
-// record's live-locator status, never its (possibly stale) LiveChunkCount:
+// read-only reporter (reconcile.go). Both operate on a record's
+// live-locator status, never its (possibly stale) LiveChunkCount:
 //
 //   - class 1 (ReclaimRecords, zero-ref): record with no live locator and
 //     LiveChunkCount == 0 — a crash between DecrLiveChunkCount and

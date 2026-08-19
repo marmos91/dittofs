@@ -108,8 +108,8 @@ type Syncer struct {
 	completedSyncs atomic.Int64
 	failedSyncs    atomic.Int64
 
-	// uploadLimiter bounds concurrent block PUTs in carveFlush.
-	// When ParallelUploads is pinned (> 0) its limit is fixed at that value.
+	// uploadLimiter bounds concurrent block PUTs in carveFlush. When
+	// ParallelUploads is pinned (> 0) its limit is fixed at that value.
 	// When unset (adaptive mode) the uploadController resizes it every control
 	// interval to track the goodput knee. Lazily created by ensureUploadLimiter
 	// so directly-built test fixtures still get bounded concurrency.
@@ -188,8 +188,8 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileChunk
 		config.ClaimTimeout = 10 * time.Minute
 	}
 
-	// Upload concurrency: a pinned ParallelUploads > 0 fixes the
-	// window; otherwise (the default) the carver auto-tunes between the adaptive
+	// Upload concurrency: a pinned ParallelUploads > 0 fixes the window;
+	// otherwise (the default) the carver auto-tunes between the adaptive
 	// floor and ceiling. The limiter starts at the floor in adaptive mode and at
 	// the pinned value otherwise; the control goroutine (adaptive only, launched
 	// in Start) resizes it at runtime.
@@ -378,9 +378,9 @@ func (m *Syncer) canProcess(ctx context.Context) bool {
 //   - Finalized=true, err=nil: durable on the configured remote.
 //   - Finalized=false, err=nil: SOFT condition (no remote configured,
 //     remote unhealthy, or the carve substrate is not wired). Callers
-//     MUST NOT tight-loop retry: surface the soft-fail to the
-//     protocol adapter and let the client drive the next attempt on its
-//     own schedule.
+//     MUST NOT tight-loop retry: surface the soft-fail to the protocol
+//     adapter and let the client drive the next attempt on its own
+//     schedule.
 //   - err != nil: hard failure, do not retry until addressed.
 //
 // The carve drain serializes on carveMu against the background carve

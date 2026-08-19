@@ -248,9 +248,8 @@ func (s *PostgresMetadataStore) AddRef(ctx context.Context, hash block.ContentHa
 
 // GetByHash looks up a finalized block by its content hash.
 // Returns nil without error if not found. Dedup matches only Remote
-// (state=2) blocks —
-// Pending or Syncing rows have not been confirmed on the remote and
-// are unsafe dedup targets.
+// (state=2) blocks — Pending or Syncing rows have not been confirmed on
+// the remote and are unsafe dedup targets.
 func (s *PostgresMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileChunk, error) {
 	query := `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE hash = $1 AND state = 2 /* Remote */`

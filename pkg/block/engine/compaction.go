@@ -137,8 +137,8 @@ func CompactBlocks(
 		// Live bytes per block: sum the WireLength of every live synced locator.
 		// Single scan: EnumerateSynced yields each marker's locator alongside its
 		// hash (same row), so no GetLocator round trip per hash — the O(N) serial
-		// cost on the sqlite MaxOpenConns(1) pool. Folding the locator in
-		// also removes the nested-query deadlock class structurally.
+		// cost on the sqlite MaxOpenConns(1) pool. Folding the locator in also
+		// removes the nested-query deadlock class structurally.
 		liveBytes := make(map[string]int64)
 		if err := v.EnumerateSynced(ctx, func(_ block.ContentHash, loc block.ChunkLocator, _ time.Time) error {
 			if loc.BlockID != "" {

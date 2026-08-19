@@ -97,8 +97,8 @@ type BlockSink interface {
 // supersededReaper is an optional BlockSink capability. After a carve run has
 // committed every row it produced, journal calls ReapSupersededManifest so the
 // sink can delete the manifest rows the run superseded — keeping the per-file
-// FileChunk manifest a gap-free, overlap-free tiling of [0,size) after a partial
-// overwrite. runStart/runEnd bound the re-carved (dirty) range; newOffsets
+// FileChunk manifest a gap-free, overlap-free tiling of [0,size) after a
+// partial overwrite. runStart/runEnd bound the re-carved (dirty) range; newOffsets
 // are the chunk offsets this run wrote (so the reap keeps them and deletes only
 // stale straddlers/interior rows). Sinks without a metadata store (test fakes)
 // simply don't implement it and the reap is skipped.

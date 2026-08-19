@@ -13,8 +13,8 @@ type txContextKey struct{}
 //
 // It is wired by common.CopyPayload (and any other caller that needs to
 // bind engine-level RefCount mutations to its WithTransaction-owned tx).
-// The per-share
-// metadataCoordinator (pkg/controlplane/runtime/shares/coordinator.go)
+// The per-share metadataCoordinator
+// (pkg/controlplane/runtime/shares/coordinator.go)
 // reads this on every IncrementRefCount / DecrementRefCount call so the
 // underlying SQL/Badger UPDATE shares the caller's txn — without it
 // every increment commits on a fresh pool connection and survives the

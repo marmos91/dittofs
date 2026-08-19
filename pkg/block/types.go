@@ -93,7 +93,7 @@ func (s BlockState) String() string {
 // "blake3:{hex}" (mirrors CASKey()). Round-trips with UnmarshalJSON.
 //
 // It exists to drive ChunkRef JSON serialization: without it,
-// encoding/json would use its default encoding for the [32]byte
+// encoding/json would serialize the [32]byte array as a JSON number
 // array — readable diffs in Postgres/Badger payloads would be impossible.
 func (h ContentHash) MarshalJSON() ([]byte, error) {
 	out := make([]byte, 0, 1+len("blake3:")+HashSize*2+1)

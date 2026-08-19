@@ -206,8 +206,8 @@ func clampSpan(span hydrateSpan, chunkStart, n uint64) (lo, hi uint64) {
 
 // dispatchRemoteFetch routes a per-block S3 GET through the CAS verified-
 // read path. There is no legacy fallback: any FileChunk surfacing here
-// with a zero Hash is migration drift and the boot guard
-// (cmd/dfs/start) should have refused to start. If a stray row
+// with a zero Hash is migration drift and the boot guard (cmd/dfs/start)
+// should have refused to start. If a stray row
 // reaches this code path at runtime, refuse the read instead of returning
 // silent zeros.
 //
@@ -426,10 +426,9 @@ func (m *Syncer) fetchResolvedBlock(ctx context.Context, fb *block.FileChunk, sp
 			// should make this impossible). Returning silent zeros
 			// here would corrupt the caller's read with no log trace.
 			// Surface ErrChunkNotFound so the caller sees the data
-			// loss explicitly. There is no legacy zero-hash branch,
-			// so the !IsZero guard is implicit —
-			// any successful dispatchRemoteFetch return implies a
-			// CAS row.
+			// loss explicitly. There is no legacy zero-hash branch, so
+			// the !IsZero guard is implicit — any successful
+			// dispatchRemoteFetch return implies a CAS row.
 			logger.Error("CAS object missing for live FileChunk — possible GC race or live-data-loss",
 				"block_id", fb.ID, "store_key", storeKey, "hash", fb.Hash.String())
 			return nil, fmt.Errorf("CAS object missing for live row %s (key %s): %w",

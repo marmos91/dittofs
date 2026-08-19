@@ -372,7 +372,8 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 	// unsynced tracks live dirty bytes: add this write if dirty, always drop the
 	// dirty bytes this write superseded (dead now, not evictable-pending), and add
 	// any warm fragments this write re-marked dirty for re-carve. A synced
-	// (Hydrate) write adds nothing itself but can still supersede or re-dirty.
+	// (Hydrate) write adds nothing itself but can still supersede or
+	// re-dirty.
 	dirtyDelta := dirtyAdded - dirtyRemoved
 	if !synced {
 		dirtyDelta += int64(len(data))

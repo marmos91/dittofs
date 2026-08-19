@@ -145,8 +145,8 @@ type GCStats struct {
 	DryRunCandidates []string
 
 	// StrandedRowsReaped counts file_blocks rows reaped by the reconcile pass
-	// (rows whose owning inode was already gone — the leak this pass closes).
-	// Zero for a plain GC run; only the reconcile sets it.
+	// (rows whose owning inode was already gone — the leak this pass
+	// closes). Zero for a plain GC run; only the reconcile sets it.
 	StrandedRowsReaped int64 `json:"stranded_rows_reaped,omitempty"`
 
 	// IsLocalTier is true when these stats come from a local-store pass
@@ -237,14 +237,13 @@ type Options struct {
 	// running count of hashes marked so far — at each share boundary and every
 	// gcMarkProgressInterval hashes within a share. It gives long-running mark
 	// phases (millions of hashes on snapshot-heavy deployments) a liveness
-	// signal so an async caller can surface progress instead of a silent stall
-	// signal. Invoked synchronously from the (sequential) mark loop, so it must
+	// signal so an async caller can surface progress instead of a silent
+	// stall. Invoked synchronously from the (sequential) mark loop, so it must
 	// not block; implementations just record the latest count.
 	MarkProgress func(hashesMarked int64)
 
-	// BlockReclaimer reclaims block-resident chunks (object packing)
-	// during the remote sweep. Every synced hash lives inside a
-	// blocks/<id> object, so this is the ONLY remote reclaim path: the sweep
+	// BlockReclaimer reclaims block-resident chunks (object packing) during
+	// the remote sweep. Every synced hash lives inside a blocks/<id> object, so this is the ONLY remote reclaim path: the sweep
 	// decrements the enclosing block and frees the block object + record when
 	// its last live chunk is gone. It is reached only after the sweep has
 	// proven the hash globally dead (past grace, absent from the live set),
@@ -527,9 +526,10 @@ func collectGarbage(
 // EnumerateFileChunks to populate the live set. The first error from any
 // store aborts the entire mark phase (fail-closed).
 //
-// An empty share list is a HARD ERROR. With no shares to enumerate, the engine cannot prove what is live and therefore
-// MUST NOT sweep — orphan-not-deleted is always preferred over
-// live-data-deleted. Callers that genuinely have no shares must
+// An empty share list is a HARD ERROR. With no shares to enumerate, the
+// engine cannot prove what is live and therefore MUST NOT sweep —
+// orphan-not-deleted is always preferred over live-data-deleted.
+// Callers that genuinely have no shares must
 // short-circuit at a higher level (Runtime.RunBlockGC already does so
 // when DistinctRemoteStores returns an empty slice).
 func markPhase(ctx context.Context, reconciler MetadataReconciler, gcs *GCState, stats *GCStats, hold HoldProvider, remoteEndpointID string, shares []string, markProgress func(int64)) error {

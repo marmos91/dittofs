@@ -287,8 +287,8 @@ func (s *SQLiteMetadataStore) ListChildren(ctx context.Context, dirHandle metada
 		// hydrate ObjectID for directory entries.
 		// NULL/empty -> zero (sentinel).
 		//
-		// The shape DOES NOT match GetFile in this backend. GetFile populates FileAttr.Blocks via
-		// loadFileChunkRefs; ListChildren intentionally does NOT (per-row
+		// The shape DOES NOT match GetFile in this backend. GetFile populates
+		// FileAttr.Blocks via loadFileChunkRefs; ListChildren intentionally does NOT (per-row
 		// ChunkRef hydration would be a quadratic cost on directory
 		// listings). Memory and Badger backends include Blocks on
 		// DirEntry.Attr because their underlying serialisation already

@@ -9,8 +9,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
-// seqThreshold is the number of consecutive sequential reads
-// observed before the prefetcher fires. Set to 3 to suppress speculative
+// seqThreshold is the number of consecutive sequential reads observed
+// before the prefetcher fires. Set to 3 to suppress speculative
 // prefetch on accidental two-block runs in random-IO workloads (VM
 // rand-write was the regression).
 const seqThreshold = 3
@@ -48,8 +48,8 @@ var _ cacheInterface = nullCache{}
 // proactive warm on share-open, so the restart-then-read path always
 // starts cold.
 
-// Cache is the single-type, CAS-keyed in-memory cache. It
-// folds the prefetch worker pool into one type.
+// Cache is the single-type, CAS-keyed in-memory cache. It folds the
+// prefetch worker pool into one type.
 //
 // On miss, bytes are loaded via local.Get(ctx, hash) —
 // engine.loadByHash. The Cache copies the returned []byte into its
@@ -66,8 +66,8 @@ var _ cacheInterface = nullCache{}
 // per-share by construction. Cross-share cache sharing is impossible
 // without going through the Store boundary.
 //
-// Cross-file dedup: two payloads referencing the same
-// ContentHash share one cache entry. Eviction is hash-scoped (LRU)
+// Cross-file dedup: two payloads referencing the same ContentHash
+// share one cache entry. Eviction is hash-scoped (LRU)
 // InvalidateFile is surgical (drops only the explicitly-listed hashes
 // for a file, preserving any shared entries).
 type Cache struct {
@@ -308,8 +308,8 @@ func (c *Cache) InvalidateFile(payloadID string, removedHashes []block.ContentHa
 	c.trackerMu.Unlock()
 }
 
-// OnRead is the sole prefetch hint API. The engine calls
-// this after a successful ReadAt with the ChunkRef hashes that
+// OnRead is the sole prefetch hint API. The engine calls this after a
+// successful ReadAt with the ChunkRef hashes that
 // satisfied the read; the cache uses the per-payloadID sequential
 // tracker to decide whether to fire prefetch on the upcoming hashes.
 //

@@ -71,7 +71,7 @@ type Config struct {
 	// window (window x CarveBlockSize), so keep it modest. Zero falls back to the
 	// default via withDefaults.
 	CarveUploadConcurrency int
-	// ChunkParams sets the per-share FastCDC sizing carve feeds the chunker
+	// ChunkParams sets the per-share FastCDC sizing carve feeds the chunker.
 	// The zero value (or any params that fail Validate) degrades to
 	// chunker.DefaultParams — the historical 1M/4M/16M profile — so a
 	// misconfiguration is never a hard error, matching the fs store.

@@ -476,8 +476,8 @@ func (bs *Store) payloadChunkRefs(ctx context.Context, payloadID string) []block
 //     This is the load-bearing step for read correctness: the cold-read path
 //     resolves a payload's bytes via ListFileChunks(dstPayloadID) (the per-file
 //     FileChunk rows), NOT via FileAttr.Blocks. Without dst rows a read of the
-//     clone hits the sparse-block branch and zero-fills — silent corruption
-//     silently. Because every row carries the source hash and the chunks are
+//     clone hits the sparse-block branch and zero-fills — silent
+//     corruption. Because every row carries the source hash and the chunks are
 //     content-addressed, the dst rows resolve to the SAME shared CAS chunks and
 //     the clone reads back byte-identical to the source.
 //  2. Bumps each unique source-hash RefCount via the coordinator. This is now
