@@ -1,9 +1,13 @@
 package shares
 
 import (
+	"context"
 	"math"
 	"testing"
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // The dirty_expire_seconds knob decides how long an acknowledged write may stay
@@ -37,5 +41,51 @@ func TestDirtyExpiryFromConfig(t *testing.T) {
 				t.Fatalf("dirtyExpiryFromConfig = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// The parse is only half the knob: the value has to survive the trip through
+// FSStoreOptions into the journal's config, and nothing observable would change
+// if that assignment were dropped. This drives the whole path from the config
+// map an operator edits down to the fsync, using only exported API: a write
+// that never asks for durability must reach the durable watermark on its own
+// once the configured interval elapses.
+func TestDirtyExpiryFromConfig_ReachesTheJournal(t *testing.T) {
+	ctx := context.Background()
+	cfg := &fakeBlockStoreConfig{cfg: map[string]any{
+		"path":                 t.TempDir(),
+		"dirty_expire_seconds": float64(1),
+	}}
+	mds := metamem.NewMemoryMetadataStoreWithDefaults()
+	t.Cleanup(func() { _ = mds.Close() })
+
+	store, err := CreateLocalStoreFromConfig(ctx, "fs", cfg, "dirty-expire", nil, mds, false)
+	if err != nil {
+		t.Fatalf("CreateLocalStoreFromConfig: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	fsStore := store.(*fs.FSStore)
+
+	const payloadID = "unfsynced"
+	payload := []byte("never committed by the client")
+	if err := fsStore.WriteAt(ctx, payloadID, 0, payload); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	if n, _ := fsStore.DurableExtent(ctx, payloadID); n != 0 {
+		t.Fatalf("durable extent = %d before any commit, want 0", n)
+	}
+
+	// No Commit call anywhere: only the configured dirty-age loop can move this.
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		n, _ := fsStore.DurableExtent(ctx, payloadID)
+		if n >= int64(len(payload)) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("durable extent stuck at %d after the dirty-age interval; "+
+				"dirty_expire_seconds did not reach the journal", n)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
