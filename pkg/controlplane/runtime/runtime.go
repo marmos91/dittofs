@@ -439,25 +439,6 @@ func (r *Runtime) LocalStoreDir(shareName string) (string, error) {
 	return r.sharesSvc.LocalStoreDir(shareName)
 }
 
-// HealthcheckShare returns the named share's overall health, computed
-// as the worst-of its block store engine and metadata store. The
-// runtime owns both registries, so this is the natural place to wire
-// the lookup before delegating to [Share.Healthcheck].
-//
-// Lookup-failure semantics:
-//
-//   - "share not found" → [health.StatusUnknown]. The runtime can't
-//     say anything definitive about a share it doesn't know about.
-//   - "metadata store not loaded" → [health.StatusUnknown] as well.
-//     The store may have been registered earlier but evicted, or
-//     never registered (a startup misconfiguration). Without
-//     a way to distinguish those cases — the registry doesn't expose
-//     the difference — the conservative answer is StatusUnknown:
-//     the probe is indeterminate, not the share itself broken. A
-//     follow-up phase can sharpen this once the store registry can
-//     report "configured but not currently loaded" vs "never
-//     registered".
-//
 // MarkShareSkipped records that a share exists in the control-plane store but
 // is not being served, along with the reason. The reason is surfaced verbatim
 // by HealthcheckShare, so it should read as an operator-facing explanation.
@@ -502,6 +483,29 @@ func (r *Runtime) clearShareSkipped(name string) {
 	delete(r.skippedShares, name)
 }
 
+// HealthcheckShare returns the named share's overall health, computed
+// as the worst-of its block store engine and metadata store. The
+// runtime owns both registries, so this is the natural place to wire
+// the lookup before delegating to [Share.Healthcheck].
+//
+// Lookup-failure semantics:
+//
+//   - "share not found", with a recorded skip reason →
+//     [health.StatusUnhealthy]. The runtime refused to serve this
+//     share and knows why, so the refusal is reported rather than
+//     hidden behind an indeterminate probe.
+//   - "share not found", with no skip reason → [health.StatusUnknown].
+//     The runtime can't say anything definitive about a share it
+//     doesn't know about.
+//   - "metadata store not loaded" → [health.StatusUnknown] as well.
+//     The store may have been registered earlier but evicted, or
+//     never registered (a startup misconfiguration). Without
+//     a way to distinguish those cases — the registry doesn't expose
+//     the difference — the conservative answer is StatusUnknown:
+//     the probe is indeterminate, not the share itself broken. A
+//     follow-up phase can sharpen this once the store registry can
+//     report "configured but not currently loaded" vs "never
+//     registered".
 func (r *Runtime) HealthcheckShare(ctx context.Context, shareName string) health.Report {
 	// Capture start so every early-return path populates LatencyMs,
 	// matching what Share.Healthcheck does. A flat zero on
