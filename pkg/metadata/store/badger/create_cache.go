@@ -105,6 +105,17 @@ func (c *direntCache) invalidate(key string) {
 	}
 }
 
+// invalidateAll drops every entry, positive and negative, for callers that
+// replace the whole backing store rather than a single directory entry (Reset,
+// RestoreSnapshot). Same ordering rule as invalidate: bump gen first so an
+// in-flight populate against the pre-wipe generation cannot re-insert after
+// the clear.
+func (c *direntCache) invalidateAll() {
+	c.gen.Add(1)
+	c.m.Clear()
+	c.n.Store(0)
+}
+
 // pruneToHalf best-effort trims the map back toward half the cap on overflow.
 func (c *direntCache) pruneToHalf() {
 	if !c.prune.CompareAndSwap(false, true) {

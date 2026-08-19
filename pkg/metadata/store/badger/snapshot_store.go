@@ -188,10 +188,14 @@ func (s *BadgerMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 		return metadata.ErrRestoreDestinationNotEmpty
 	}
 
-	// The restored records replace whatever the share read cache was built
-	// from, and the failure path drops everything again — either way an
-	// entry that outlives this call is a wrong permission decision.
-	defer s.shareCache.InvalidateAll()
+	// The restored records replace whatever the derived caches were built
+	// from, and the failure path drops everything again — either way an entry
+	// that outlives this call answers for state that is gone. The restore
+	// streams through a WriteBatch rather than a badgerTransaction, so none of
+	// the per-key invalidation an ordinary mutation performs runs here. A
+	// restore also reuses the same share name and the same file UUIDs, so warm
+	// keys would keep matching.
+	defer s.invalidateDerivedCaches()
 
 	// Read envelope header.
 	engineTag, payloadReader, acc, err := backup.ReadHeader(r)
