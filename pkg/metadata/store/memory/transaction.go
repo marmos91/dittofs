@@ -239,16 +239,7 @@ func (tx *memoryTransaction) GetFile(ctx context.Context, handle metadata.FileHa
 		return nil, err
 	}
 
-	key := handleToKey(handle)
-	fileData, exists := tx.store.files[key]
-	if !exists {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "file not found",
-		}
-	}
-
-	return tx.store.buildFileWithNlink(handle, fileData)
+	return tx.store.getFileLocked(handle)
 }
 
 func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) error {
@@ -408,24 +399,7 @@ func (tx *memoryTransaction) GetChild(ctx context.Context, dirHandle metadata.Fi
 		return nil, err
 	}
 
-	dirKey := handleToKey(dirHandle)
-	childrenMap, exists := tx.store.children[dirKey]
-	if !exists {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "child not found",
-		}
-	}
-
-	childHandle, exists := childrenMap[name]
-	if !exists {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "child not found",
-		}
-	}
-
-	return childHandle, nil
+	return tx.store.getChildLocked(dirHandle, name)
 }
 
 func (tx *memoryTransaction) SetChild(ctx context.Context, dirHandle metadata.FileHandle, name string, childHandle metadata.FileHandle) error {
@@ -474,55 +448,7 @@ func (tx *memoryTransaction) ListChildren(ctx context.Context, dirHandle metadat
 		return nil, "", err
 	}
 
-	dirKey := handleToKey(dirHandle)
-	childrenMap, exists := tx.store.children[dirKey]
-	if !exists {
-		// Empty directory
-		return []metadata.DirEntry{}, "", nil
-	}
-
-	// Get sorted entries
-	sortedNames := sortedChildNames(childrenMap)
-
-	// Find start position based on cursor.
-	startIdx := childPageStart(sortedNames, cursor)
-
-	if limit <= 0 {
-		limit = 1000 // Default limit
-	}
-
-	// Collect entries
-	var entries []metadata.DirEntry
-	for i := startIdx; i < len(sortedNames) && len(entries) < limit; i++ {
-		name := sortedNames[i]
-		childHandle := childrenMap[name]
-
-		entry := metadata.DirEntry{
-			ID:     metadata.HandleToINode(childHandle),
-			Name:   name,
-			Handle: childHandle,
-		}
-
-		// Try to get attributes (deep-copy reference-bearing fields).
-		childKey := handleToKey(childHandle)
-		if fileData, exists := tx.store.files[childKey]; exists {
-			attr := *fileData.Attr
-			attr.Blocks = cloneBlocks(fileData.Attr.Blocks)
-			attr.ACL = cloneACL(fileData.Attr.ACL)
-			attr.EAs = cloneEAs(fileData.Attr.EAs)
-			entry.Attr = &attr
-		}
-
-		entries = append(entries, entry)
-	}
-
-	// Determine next cursor
-	nextCursor := ""
-	if startIdx+len(entries) < len(sortedNames) {
-		nextCursor = entries[len(entries)-1].Name
-	}
-
-	return entries, nextCursor, nil
+	return tx.store.listChildrenLocked(dirHandle, cursor, limit)
 }
 
 func (tx *memoryTransaction) GetParent(ctx context.Context, handle metadata.FileHandle) (metadata.FileHandle, error) {
@@ -530,16 +456,7 @@ func (tx *memoryTransaction) GetParent(ctx context.Context, handle metadata.File
 		return nil, err
 	}
 
-	key := handleToKey(handle)
-	parentHandle, exists := tx.store.parents[key]
-	if !exists {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "parent not found",
-		}
-	}
-
-	return parentHandle, nil
+	return tx.store.getParentLocked(handle)
 }
 
 func (tx *memoryTransaction) SetParent(ctx context.Context, handle metadata.FileHandle, parentHandle metadata.FileHandle) error {
@@ -557,13 +474,7 @@ func (tx *memoryTransaction) GetLinkCount(ctx context.Context, handle metadata.F
 		return 0, err
 	}
 
-	key := handleToKey(handle)
-	count, exists := tx.store.linkCounts[key]
-	if !exists {
-		return 0, nil
-	}
-
-	return count, nil
+	return tx.store.getLinkCountLocked(handle), nil
 }
 
 func (tx *memoryTransaction) SetLinkCount(ctx context.Context, handle metadata.FileHandle, count uint32) error {

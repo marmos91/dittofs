@@ -129,6 +129,12 @@ func (store *MemoryMetadataStore) GetFile(ctx context.Context, handle metadata.F
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
+	return store.getFileLocked(handle)
+}
+
+// getFileLocked is the shared body of GetFile and the transaction-level
+// GetFile. Must be called with store.mu held (read or write).
+func (store *MemoryMetadataStore) getFileLocked(handle metadata.FileHandle) (*metadata.File, error) {
 	key := handleToKey(handle)
 	fileData, exists := store.files[key]
 	if !exists {
@@ -168,6 +174,12 @@ func (store *MemoryMetadataStore) GetChild(ctx context.Context, dirHandle metada
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
+	return store.getChildLocked(dirHandle, name)
+}
+
+// getChildLocked is the shared body of GetChild and the transaction-level
+// GetChild. Must be called with store.mu held (read or write).
+func (store *MemoryMetadataStore) getChildLocked(dirHandle metadata.FileHandle, name string) (metadata.FileHandle, error) {
 	dirKey := handleToKey(dirHandle)
 	childrenMap, exists := store.children[dirKey]
 	if !exists {
@@ -214,6 +226,12 @@ func (store *MemoryMetadataStore) GetParent(ctx context.Context, handle metadata
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
+	return store.getParentLocked(handle)
+}
+
+// getParentLocked is the shared body of GetParent and the transaction-level
+// GetParent. Must be called with store.mu held (read or write).
+func (store *MemoryMetadataStore) getParentLocked(handle metadata.FileHandle) (metadata.FileHandle, error) {
 	key := handleToKey(handle)
 	parentHandle, exists := store.parents[key]
 	if !exists {
@@ -244,13 +262,14 @@ func (store *MemoryMetadataStore) GetLinkCount(ctx context.Context, handle metad
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
-	key := handleToKey(handle)
-	count, exists := store.linkCounts[key]
-	if !exists {
-		return 0, nil
-	}
+	return store.getLinkCountLocked(handle), nil
+}
 
-	return count, nil
+// getLinkCountLocked is the shared body of GetLinkCount and the
+// transaction-level GetLinkCount. Must be called with store.mu held.
+// A handle with no recorded count reports zero.
+func (store *MemoryMetadataStore) getLinkCountLocked(handle metadata.FileHandle) uint32 {
+	return store.linkCounts[handleToKey(handle)]
 }
 
 // SetLinkCount sets the hard link count for a file.
@@ -271,6 +290,12 @@ func (store *MemoryMetadataStore) ListChildren(ctx context.Context, dirHandle me
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
+	return store.listChildrenLocked(dirHandle, cursor, limit)
+}
+
+// listChildrenLocked is the shared body of ListChildren and the
+// transaction-level ListChildren. Must be called with store.mu held.
+func (store *MemoryMetadataStore) listChildrenLocked(dirHandle metadata.FileHandle, cursor string, limit int) ([]metadata.DirEntry, string, error) {
 	dirKey := handleToKey(dirHandle)
 	childrenMap, exists := store.children[dirKey]
 	if !exists {

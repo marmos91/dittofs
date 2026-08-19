@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"sync"
 
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -18,11 +17,9 @@ import (
 //   - Ephemeral deployments where client registration persistence is not required
 //
 // Thread Safety:
-// All operations are protected by a read-write mutex, making the store
-// safe for concurrent access from multiple goroutines.
+// It carries no lock of its own: every field is read and written by
+// MemoryMetadataStore under the store-wide mutex.
 type memoryClientStore struct {
-	mu sync.RWMutex
-
 	// registrations maps client ID to PersistedClientRegistration
 	registrations map[string]*lock.PersistedClientRegistration
 }
@@ -40,9 +37,6 @@ func (s *memoryClientStore) PutClientRegistration(ctx context.Context, reg *lock
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	// Clone the registration to prevent external modifications
 	s.registrations[reg.ClientID] = cloneClientRegistration(reg)
 	return nil
@@ -53,9 +47,6 @@ func (s *memoryClientStore) GetClientRegistration(ctx context.Context, clientID 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	reg, exists := s.registrations[clientID]
 	if !exists {
@@ -72,9 +63,6 @@ func (s *memoryClientStore) DeleteClientRegistration(ctx context.Context, client
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	delete(s.registrations, clientID)
 	return nil
 }
@@ -84,9 +72,6 @@ func (s *memoryClientStore) ListClientRegistrations(ctx context.Context) ([]*loc
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	result := make([]*lock.PersistedClientRegistration, 0, len(s.registrations))
 	for _, reg := range s.registrations {
@@ -101,9 +86,6 @@ func (s *memoryClientStore) DeleteAllClientRegistrations(ctx context.Context) (i
 		return 0, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	count := len(s.registrations)
 	s.registrations = make(map[string]*lock.PersistedClientRegistration)
 	return count, nil
@@ -114,9 +96,6 @@ func (s *memoryClientStore) DeleteClientRegistrationsByMonName(ctx context.Conte
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	count := 0
 	for id, reg := range s.registrations {
