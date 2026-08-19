@@ -1341,3 +1341,176 @@ func (lm *Manager) IsTraditionalOplockForKey(leaseKey [16]byte) bool {
 	_, lock, _ := lm.findLeaseByKey(leaseKey)
 	return lock != nil && lock.Lease != nil && lock.Lease.IsTraditionalOplock
 }
+
+// ============================================================================
+// Lease Operations (implementations in leases.go and reclaim.go)
+// ============================================================================
+
+// RequestLease requests a new or upgraded lease on a file or directory.
+func (lm *Manager) RequestLease(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
+	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
+	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
+	return lm.requestLeaseImpl(ctx, leaseRequest{
+		fileHandle:            fileHandle,
+		leaseKey:              leaseKey,
+		parentLeaseKey:        parentLeaseKey,
+		ownerID:               ownerID,
+		clientID:              clientID,
+		shareName:             shareName,
+		state:                 requestedState,
+		isDirectory:           isDirectory,
+		isTraditionalOplock:   false,
+		suppressConflictBreak: false,
+	})
+}
+
+// RequestLeaseAsOplock is the traditional-oplock variant of RequestLease.
+// The SMB adapter calls this when a CREATE arrives with a non-Lease
+// OplockLevel (LEVEL_II / Exclusive / Batch); the new record is tagged
+// `IsTraditionalOplock=true` so subsequent grants observe the cross-tier
+// rules described in `bestGrantableState`. All other parameters and
+// semantics match `RequestLease`.
+//
+// Reference: MS-SMB2 §3.3.5.9 / Samba `source3/smbd/open.c::grant_fsp_oplock_type`.
+func (lm *Manager) RequestLeaseAsOplock(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
+	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
+	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
+	return lm.requestLeaseImpl(ctx, leaseRequest{
+		fileHandle:            fileHandle,
+		leaseKey:              leaseKey,
+		parentLeaseKey:        parentLeaseKey,
+		ownerID:               ownerID,
+		clientID:              clientID,
+		shareName:             shareName,
+		state:                 requestedState,
+		isDirectory:           isDirectory,
+		isTraditionalOplock:   true,
+		suppressConflictBreak: false,
+	})
+}
+
+// RequestLeaseStatOpen is the stat-open variant of RequestLease. The SMB
+// adapter calls this when a CREATE's DesiredAccess is stat-open-only
+// (FILE_READ_ATTRIBUTES / FILE_WRITE_ATTRIBUTES / READ_CONTROL / SYNCHRONIZE) and
+// the disposition is non-destructive. The grant proceeds normally except that
+// a cross-key conflict with an existing holder MUST NOT dispatch a break: a
+// stat-opener caches attributes alongside existing holders without forcing
+// them to drop their caches. It instead receives the best state it can coexist
+// with (`bestGrantableState`).
+//
+// Reference: MS-SMB2 §3.3.5.9.8 / Samba `is_lease_stat_open`
+// (source3/smbd/open.c). Closes the timing-dependent spurious break that
+// smb2.lease.statopen4 CHECK_NO_BREAK observes (#751).
+func (lm *Manager) RequestLeaseStatOpen(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
+	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
+	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
+	return lm.requestLeaseImpl(ctx, leaseRequest{
+		fileHandle:            fileHandle,
+		leaseKey:              leaseKey,
+		parentLeaseKey:        parentLeaseKey,
+		ownerID:               ownerID,
+		clientID:              clientID,
+		shareName:             shareName,
+		state:                 requestedState,
+		isDirectory:           isDirectory,
+		isTraditionalOplock:   false,
+		suppressConflictBreak: true,
+	})
+}
+
+// AcknowledgeLeaseBreak processes a client's lease break acknowledgment.
+func (lm *Manager) AcknowledgeLeaseBreak(ctx context.Context, leaseKey [16]byte,
+	acknowledgedState uint32, epoch uint16) error {
+	return lm.acknowledgeLeaseBreakImpl(ctx, leaseKey, acknowledgedState, epoch)
+}
+
+// ReleaseLease releases all lease state for the given lease key.
+func (lm *Manager) ReleaseLease(ctx context.Context, leaseKey [16]byte) error {
+	return lm.releaseLeaseImpl(ctx, leaseKey)
+}
+
+// ReclaimLease reclaims a lease during grace period. clientID must match the
+// lease owner recorded on the persisted record (lease-stealing guard); pass ""
+// to skip the owner check. This is the LockManager-interface entrypoint used by
+// SMB, which has no RPCSEC_GSS principal to verify.
+func (lm *Manager) ReclaimLease(ctx context.Context, leaseKey [16]byte,
+	requestedState uint32, isDirectory bool, clientID string) (*UnifiedLock, error) {
+	return lm.reclaimLeaseImpl(ctx, leaseKey, requestedState, isDirectory, clientID, "")
+}
+
+// ReclaimLeaseWithPrincipal is the NFSv4 reclaim path that additionally
+// verifies the incoming RPCSEC_GSS / AUTH_SYS principal matches the one
+// recorded in the V4ClientRecoveryRecord for clientID. The principal check
+// runs only when a ClientRecoveryStore is wired (SetClientRecoveryStore) and
+// incomingPrincipal is non-empty; an empty principal skips the check. Returns
+// a lock-not-found error when the clientID or principal does not match.
+func (lm *Manager) ReclaimLeaseWithPrincipal(ctx context.Context, leaseKey [16]byte,
+	requestedState uint32, isDirectory bool, clientID string, incomingPrincipal string) (*UnifiedLock, error) {
+	return lm.reclaimLeaseImpl(ctx, leaseKey, requestedState, isDirectory, clientID, incomingPrincipal)
+}
+
+// ReleaseLeaseForHandle removes lease records matching leaseKey from a
+// single handleKey bucket only. See releaseLeaseForHandleImpl for details.
+func (lm *Manager) ReleaseLeaseForHandle(ctx context.Context, handleKey string, leaseKey [16]byte) error {
+	return lm.releaseLeaseForHandleImpl(ctx, handleKey, leaseKey)
+}
+
+// GetLeaseState returns the current state and epoch for a lease key.
+func (lm *Manager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
+	return lm.getLeaseStateImpl(ctx, leaseKey)
+}
+
+// SetLeaseEpoch sets the epoch on an existing lease identified by leaseKey.
+// Per MS-SMB2 3.3.5.9: For V2 leases, the server should track the client's
+// epoch from the RqLs create context. SetLeaseEpoch is called after RequestLease
+// to initialize the epoch to the client's requested value.
+// Returns false if no lease was found with the given key.
+func (lm *Manager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) bool {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	// Update every lease record matching leaseKey, not just the first found.
+	// Stale records from prior tests (same LEASE1 constant across smbtorture
+	// tests) or from multiple opens by different clients can coexist in
+	// lm.unifiedLocks under different handleKey buckets. findLeaseByKey's
+	// map-iteration order is non-deterministic, so scoping to the first
+	// match can miss the lease that RequestLease just granted — leaving it
+	// at Epoch=1 (createAndGrantLease default) while the response to the
+	// client carries the higher requested epoch. Subsequent break
+	// notifications then dispatch with Epoch=2 instead of requestedEpoch+2,
+	// regressing smbtorture V2 tests (break_twice, breaking*, v2_breaking3).
+	// Two passes so all matching records converge to the SAME epoch. A
+	// per-record `if epoch >= lock.Lease.Epoch` guard lets sibling records that
+	// start at different epochs diverge (e.g. one at 5 stays 5 while another at
+	// 1 moves to 4), and GetLeaseState / break dispatch then read whichever
+	// map-order surfaces first — a non-deterministic NewEpoch in break
+	// notifications (the break_twice / v2_breaking3 regression class). Compute
+	// the max of the requested epoch and every matching record's current epoch,
+	// then assign that single max to all of them so the lease has one epoch.
+	//
+	// Probes only the buckets leaseKeyIndex names for leaseKey; the ones it
+	// omits hold no record for the key and could never have matched.
+	target := epoch
+	var matches []*UnifiedLock
+	for handleKey := range lm.leaseKeyIndex[leaseKey] {
+		for _, lock := range lm.unifiedLocks[handleKey] {
+			if lock.Lease == nil || lock.Lease.LeaseKey != leaseKey {
+				continue
+			}
+			if lock.Lease.Epoch > target {
+				target = lock.Lease.Epoch
+			}
+			matches = append(matches, lock)
+		}
+	}
+	for _, lock := range matches {
+		lock.Lease.Epoch = target
+		// Persist the new epoch like every other lease state-change path.
+		// Without this, RestoreLocks rebuilds the lease at the stale grant-time
+		// epoch after a restart and a later break dispatches a NewEpoch below
+		// the client's last-seen value, violating MS-SMB2 §2.2.14.2.11 /
+		// §3.3.4.7 epoch monotonicity.
+		lm.persistUnifiedLockLocked(lock)
+	}
+	return len(matches) > 0
+}
