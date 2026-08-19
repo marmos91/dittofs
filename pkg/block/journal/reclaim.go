@@ -104,6 +104,17 @@ func (s *Store) evict(ctx context.Context, targetBytes int64, allowActiveSeal bo
 	}
 }
 
+// sealableActive reports whether act can be force-sealed: it holds at least one
+// record, every record is synced (remote-durable), no other pass has claimed it,
+// and no live snapshot pins its bytes. records raises monotonically and
+// syncedRecords only rises toward it, so the fully-synced check is stable while
+// the caller holds the shard lock.
+func (s *Store) sealableActive(act *segmentMeta) bool {
+	return act != nil && act.records.Load() > 0 &&
+		act.syncedRecords.Load() == act.records.Load() &&
+		!act.busy.Load() && !s.pinned(act)
+}
+
 // sealSyncedActives force-seals each shard's active segment when it holds only
 // synced (remote-durable) records, moving it into the sealed set so eviction can
 // reclaim it. It never seals an empty active (nothing to gain, and a spin would
@@ -121,13 +132,7 @@ func (s *Store) sealSyncedActives(ctx context.Context) (bool, error) {
 			return sealedAny, err
 		}
 		sh.mu.Lock()
-		act := sh.active
-		// records is frozen while sh.mu is held (appends need it), and carve only
-		// ever raises syncedRecords toward records, so the fully-synced check is
-		// stable across the seal.
-		if act != nil && act.records.Load() > 0 &&
-			act.syncedRecords.Load() == act.records.Load() &&
-			!act.busy.Load() && !s.pinned(act) {
+		if s.sealableActive(sh.active) {
 			err := s.sealSegment(sh)
 			sh.mu.Unlock()
 			if err != nil {
@@ -407,11 +412,8 @@ func (s *Store) reclaimEmptied(sh *shard) error {
 		}
 	}
 	// Seal a fully-dead, fully-synced active segment so the retire below can drop
-	// it. records raises monotonically and syncedRecords only rises toward it, so
-	// the fully-synced check is stable under the shard lock.
-	if act := sh.active; act != nil && act.records.Load() > 0 &&
-		act.syncedRecords.Load() == act.records.Load() &&
-		!act.busy.Load() && !s.pinned(act) {
+	// it.
+	if act := sh.active; s.sealableActive(act) {
 		if _, live := liveSegs[act.id]; !live {
 			if err := s.sealSegment(sh); err != nil {
 				sh.mu.Unlock()

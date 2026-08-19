@@ -145,8 +145,6 @@ func TestColdReadAfterTruncate_KeepsRemovedTailZeroed(t *testing.T) {
 	if _, err := bs.WriteAt(ctx, pid, nil, tailData, newSize+holeLen); err != nil {
 		t.Fatalf("re-extend WriteAt: %v", err)
 	}
-	refs = manifestRefs(t, ms, pid)
-
 	assertZeros(t, readAt(t, bs, pid, newSize, holeLen), "re-extended hole")
 	if !bytes.Equal(readAt(t, bs, pid, newSize+holeLen, 4096), tailData) {
 		t.Fatal("re-extending write did not read back")
@@ -179,7 +177,6 @@ func TestColdReadAfterPunchHole_KeepsHoleZeroed(t *testing.T) {
 	// The zeros land through the local write path, so they must be carved and
 	// uploaded before anything can be evicted.
 	carve(t, bs, ctx, pid)
-	refs = manifestRefs(t, ms, pid)
 
 	// Structural counterpart to the read assertions: the re-carved zeros
 	// supersede the punched rows, so nothing in the manifest still covers the
