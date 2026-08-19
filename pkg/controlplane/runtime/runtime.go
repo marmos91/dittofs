@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -107,6 +108,16 @@ type Runtime struct {
 	identitySvc    *identity.Service
 	mountTracker   *MountTracker
 	clientRegistry *ClientRegistry
+
+	// skippedShares maps a share name to the reason it is not being served.
+	// A share that exists in the control-plane store but whose runtime setup
+	// failed is absent from sharesSvc entirely, so a status probe would find
+	// nothing and report "share not found" as StatusUnknown — indistinguishable
+	// from a share the runtime simply has not reached yet. Recording the reason
+	// here lets HealthcheckShare report StatusUnhealthy with the cause instead.
+	// Entries are added when a share is skipped and cleared once the same name
+	// is successfully added or removed. Guarded by mu.
+	skippedShares map[string]string
 
 	// metrics is the Prometheus metrics handle, set at startup. It is the
 	// carrier for inline adapter instruments (RED, connection, auth counters):
@@ -429,6 +440,43 @@ func (r *Runtime) LocalStoreDir(shareName string) (string, error) {
 	return r.sharesSvc.LocalStoreDir(shareName)
 }
 
+// markShareSkipped records that a share exists in the control-plane store but
+// is not being served, along with the reason. The reason is surfaced verbatim
+// by HealthcheckShare, so it should read as an operator-facing explanation.
+func (r *Runtime) markShareSkipped(name, reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.skippedShares == nil {
+		r.skippedShares = make(map[string]string)
+	}
+	r.skippedShares[name] = reason
+}
+
+// SkippedShares returns a copy of the recorded skip reasons, keyed by share
+// name. Empty when every configured share is being served.
+func (r *Runtime) SkippedShares() map[string]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return maps.Clone(r.skippedShares)
+}
+
+// shareSkipReason returns the reason the named share is not being served, and
+// whether such a reason was recorded.
+func (r *Runtime) shareSkipReason(name string) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	reason, ok := r.skippedShares[name]
+	return reason, ok
+}
+
+// clearShareSkipped drops any recorded skip reason for a share, so a name that
+// is successfully added or removed stops reporting a stale boot-time failure.
+func (r *Runtime) clearShareSkipped(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.skippedShares, name)
+}
+
 // HealthcheckShare returns the named share's overall health, computed
 // as the worst-of its block store engine and metadata store. The
 // runtime owns both registries, so this is the natural place to wire
@@ -436,8 +484,13 @@ func (r *Runtime) LocalStoreDir(shareName string) (string, error) {
 //
 // Lookup-failure semantics:
 //
-//   - "share not found" → [health.StatusUnknown]. The runtime can't
-//     say anything definitive about a share it doesn't know about.
+//   - "share not found", with a recorded skip reason →
+//     [health.StatusUnhealthy]. The runtime refused to serve this
+//     share and knows why, so the refusal is reported rather than
+//     hidden behind an indeterminate probe.
+//   - "share not found", with no skip reason → [health.StatusUnknown].
+//     The runtime can't say anything definitive about a share it
+//     doesn't know about.
 //   - "metadata store not loaded" → [health.StatusUnknown] as well.
 //     The store may have been registered earlier but evicted, or
 //     never registered (a startup misconfiguration). Without
@@ -474,6 +527,13 @@ func (r *Runtime) HealthcheckShare(ctx context.Context, shareName string) health
 
 	share, err := r.sharesSvc.GetShare(shareName)
 	if err != nil {
+		// A share the runtime deliberately refused to serve is absent from the
+		// registry exactly like one that was never configured. Report the
+		// recorded reason as unhealthy so the refusal is visible, rather than
+		// letting it read as an indeterminate probe.
+		if reason, skipped := r.shareSkipReason(shareName); skipped {
+			return earlyReturn(health.StatusUnhealthy, "share not served: "+reason)
+		}
 		return earlyReturn(health.StatusUnknown, "share not found: "+err.Error())
 	}
 
@@ -507,6 +567,8 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	if err := r.sharesSvc.AddShare(ctx, config, r.storesSvc, r.metadataService, r.store, localDefaults, syncDefaults); err != nil {
 		return err
 	}
+	// The share is serving now, so any earlier refusal no longer describes it.
+	r.clearShareSkipped(config.Name)
 	// Wire quota into the metadata service (0 = unlimited).
 	// Always set explicitly to ensure consistency after restarts when a
 	// quota was removed (set to 0) via the API.
@@ -597,6 +659,9 @@ func (r *Runtime) RemoveShare(name string) error {
 	// service-map growth #897/#907 fixed, and it has to run even when the
 	// block-store Close or snapshot-dir wipe failed. Aggregate instead.
 	rmErr := r.sharesSvc.RemoveShare(name)
+	// The share is gone, so a recorded refusal would outlive its subject and
+	// resurface if a new share reused the name.
+	r.clearShareSkipped(name)
 	// Deregister the share's per-share store / lock manager / unified view /
 	// notifier / quota from the metadata service, mirroring the AddShare
 	// registration above. Without this the service maps grow unbounded across

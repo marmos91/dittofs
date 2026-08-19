@@ -7,6 +7,7 @@ import (
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/spf13/cobra"
 )
 
@@ -46,6 +47,11 @@ type shareRow struct {
 	DefaultPermission string `json:"default_permission"`
 	Retention         string `json:"retention"`
 	Enabled           bool   `json:"enabled"`
+	// Status is the server-reported health of the share. It is what
+	// distinguishes a share that is being served from one the server started
+	// but refused to serve; the reason is shown by 'share show'. Omitted when
+	// the server sent none, rather than reported as an empty status.
+	Status string `json:"status,omitempty"`
 }
 
 // ShareList is a list of shares for table rendering.
@@ -53,7 +59,7 @@ type ShareList []shareRow
 
 // Headers implements TableRenderer.
 func (sl ShareList) Headers() []string {
-	return []string{"NAME", "METADATA STORE", "LOCAL STORE", "REMOTE STORE", "QUOTA", "USED", "DEFAULT PERMISSION", "RETENTION", "ENABLED"}
+	return []string{"NAME", "METADATA STORE", "LOCAL STORE", "REMOTE STORE", "QUOTA", "USED", "DEFAULT PERMISSION", "RETENTION", "ENABLED", "STATUS"}
 }
 
 // Rows implements TableRenderer.
@@ -64,7 +70,11 @@ func (sl ShareList) Rows() [][]string {
 		if s.Enabled {
 			enabled = "yes"
 		}
-		rows = append(rows, []string{s.Name, s.MetadataStore, s.LocalBlockStore, s.RemoteBlockStore, s.Quota, s.Used, s.DefaultPermission, s.Retention, enabled})
+		status := "-"
+		if s.Status != "" {
+			status = s.Status
+		}
+		rows = append(rows, []string{s.Name, s.MetadataStore, s.LocalBlockStore, s.RemoteBlockStore, s.Quota, s.Used, s.DefaultPermission, s.Retention, enabled, status})
 	}
 	return rows
 }
@@ -149,8 +159,18 @@ func runList(cmd *cobra.Command, args []string) error {
 			DefaultPermission: s.DefaultPermission,
 			Retention:         retention,
 			Enabled:           s.Enabled,
+			Status:            shareStatusString(s.Status),
 		})
 	}
 
 	return cmdutil.PrintOutput(os.Stdout, rows, len(rows) == 0, "No shares found.", rows)
+}
+
+// shareStatusString renders the server's status, or empty when the server sent
+// none, so an absent status is never shown as a status of "".
+func shareStatusString(r *health.Report) string {
+	if r == nil {
+		return ""
+	}
+	return string(r.Status)
 }
