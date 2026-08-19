@@ -8,7 +8,9 @@ import (
 	"io"
 	"net"
 	"runtime/debug"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	nfs_internal "github.com/marmos91/dittofs/internal/adapter/nfs"
@@ -57,6 +59,11 @@ type NFSConnection struct {
 	// nil unless the connection is bound for back-channel.
 	pendingCBReplies *state.PendingCBReplies
 
+	// nfsVersion holds the NFS version string last published to the client
+	// registry for this connection. Read and written from the concurrent
+	// dispatch goroutines, so it is atomic.
+	nfsVersion atomic.Value // string
+
 	// tlsUpgraded records whether this connection has completed an RFC 9289
 	// STARTTLS upgrade. Once true, c.conn is a *tls.Conn and all traffic is
 	// encrypted. Only touched from the single Serve read loop (the upgrade is
@@ -99,14 +106,16 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 	clientAddr := c.conn.RemoteAddr().String()
 	logger.Debug("New connection", "address", clientAddr)
 
-	// Register with the client registry for operational visibility.
+	// Register with the client registry for operational visibility. The NFS
+	// version is left unset: nothing has been read off the wire yet, and this
+	// connection can carry v3 and v4 calls alike. noteNFSVersion fills it in
+	// from the dispatched calls.
 	c.clientID = fmt.Sprintf("nfs-%d", c.connectionID)
 	if rt := c.server.Registry; rt != nil {
 		rt.Clients().Register(&clients.ClientRecord{
 			ClientID: c.clientID,
 			Protocol: "nfs",
 			Address:  clientAddr,
-			NFS:      &clients.NfsDetails{Version: "3"},
 		})
 	}
 
@@ -263,6 +272,32 @@ func (c *NFSConnection) dispatchRequest(ctx context.Context, clientAddr string, 
 				"error", err)
 		}
 	}(call, rawMessage)
+}
+
+// noteNFSVersion publishes the NFS version seen on this connection to the
+// client registry. The version is not known when the connection is accepted, so
+// the dispatch path reports it: the program version gives "3" or "4", and the
+// COMPOUND minorversion refines "4" to "4.0"/"4.1"/"4.2" once decoded.
+//
+// Nothing is published while the version on record already says as much or
+// more: an unchanged version, or the bare major that every RPC header carries
+// arriving after a COMPOUND refined it to "4.1". Matching on version+"." rather
+// than on the bare prefix keeps "4.1" from reading as a refinement of "4.10".
+// A steady-state connection therefore stops taking the registry write lock
+// after its first calls.
+func (c *NFSConnection) noteNFSVersion(version string) {
+	cur, _ := c.nfsVersion.Load().(string)
+	if cur == version || strings.HasPrefix(cur, version+".") {
+		return
+	}
+	if rt := c.server.Registry; rt != nil && c.clientID != "" {
+		// ponytail: last writer wins. Two dispatch goroutines can both pass the
+		// check above, so a v4.1 connection can briefly report "4" until its
+		// next COMPOUND corrects it. Needs a compare-and-swap plus ordered
+		// stores only if this field ever gates behaviour instead of reporting.
+		c.nfsVersion.Store(version)
+		rt.Clients().SetNFSVersion(c.clientID, version)
+	}
 }
 
 // resetIdleTimeout resets the connection deadline if an idle timeout is configured.

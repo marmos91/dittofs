@@ -173,11 +173,15 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 
 	switch call.Program {
 	case rpc.ProgramNFS:
-		// Route based on NFS version: v3 and v4 are both supported
+		// Route based on NFS version: v3 and v4 are both supported. The RPC
+		// program version is the first point at which the client's NFS version
+		// is known, so it is reported to the client registry here.
 		switch call.Version {
 		case rpc.NFSVersion3:
+			c.noteNFSVersion("3")
 			replyData, err = c.handleNFSProcedure(ctx, call, procedureData, clientAddr)
 		case rpc.NFSVersion4:
+			c.noteNFSVersion("4")
 			replyData, err = c.handleNFSv4Procedure(ctx, call, procedureData, clientAddr)
 		default:
 			return c.handleUnsupportedVersion(call, rpc.NFSVersion3, rpc.NFSVersion4, "NFS", clientAddr)

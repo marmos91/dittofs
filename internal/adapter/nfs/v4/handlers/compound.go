@@ -352,6 +352,7 @@ func (h *Handler) ProcessCompound(compCtx *types.CompoundContext, data []byte) (
 			"client", compCtx.ClientAddr)
 		return encodeCompoundResponse(types.NFS4ERR_MINOR_VERS_MISMATCH, tag, nil)
 	}
+	compCtx.MinorVersion, compCtx.MinorVersionAccepted = minorVersion, true
 
 	switch minorVersion {
 	case types.NFS4_MINOR_VERSION_0:

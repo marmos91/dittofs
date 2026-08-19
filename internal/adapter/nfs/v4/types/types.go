@@ -135,6 +135,22 @@ type CompoundContext struct {
 	// slot request fingerprint to detect false retries (RFC 8881
 	// Section 2.10.6.1.3 -- a slot+seqid reused for a different request).
 	RequestDigest []byte
+
+	// MinorVersion is the minorversion field decoded from the COMPOUND
+	// arguments (0 for NFSv4.0, 1 for NFSv4.1, 2 for NFSv4.2). ProcessCompound
+	// sets it only once the value has passed the accepted-range check, so it
+	// never holds a dialect the server refused to serve.
+	//
+	// Zero is both "NFSv4.0" and "not set yet", so read it only when
+	// MinorVersionAccepted is true.
+	MinorVersion uint32
+
+	// MinorVersionAccepted reports whether MinorVersion holds a minorversion
+	// the server accepted. False when ProcessCompound has not run, when it
+	// failed before the range check, or when it answered
+	// NFS4ERR_MINOR_VERS_MISMATCH -- that last case returns a well-formed reply
+	// and a nil error, so the error alone cannot be used to tell them apart.
+	MinorVersionAccepted bool
 }
 
 // Principal returns a best-effort string identity of the authenticated caller,
