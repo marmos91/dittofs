@@ -78,13 +78,28 @@ func newKMIPProvider(ctx context.Context, cfg Config) (*kmipProvider, error) {
 	}
 	// A KMIP key is identified by the uid the operator configured, so a
 	// retired uid is its own master key id with nothing to look up.
-	//
-	// A retired key is decrypt-only, so states that would disqualify the
-	// current key do not disqualify it: blocks already written under it
-	// still have to be readable. Only a key whose material the HSM has
-	// destroyed is unusable, and a compromised one is loaded with a loud
-	// warning because it is the input to a re-wrap decision.
-	retired, err := loadRetiredKeys(cfg.KeyUID, cfg.RetiredKeyUIDs, func(uid string) (string, []byte, error) {
+	retired, err := loadRetiredKeys(cfg.KeyUID, cfg.RetiredKeyUIDs, kmipRetiredKeyLoader(ctx, cfg, tlsCfg, timeout))
+	if err != nil {
+		zeroKey(key)
+		return nil, err
+	}
+	return &kmipProvider{aesGCMKEK: aesGCMKEK{
+		masterKey:   key,
+		masterKeyID: cfg.KeyUID,
+		retired:     retired,
+	}}, nil
+}
+
+// kmipRetiredKeyLoader resolves one retired uid into its key material.
+//
+// A retired key is decrypt-only, so states that disqualify the current key
+// do not disqualify it: blocks already written under it still have to be
+// readable. Only a key whose material the HSM has destroyed is unusable,
+// and it says so in those terms rather than surfacing as a generic fetch
+// failure. A compromised one is loaded with a loud warning, because it is
+// the input to a re-wrap decision.
+func kmipRetiredKeyLoader(ctx context.Context, cfg Config, tlsCfg *tls.Config, timeout time.Duration) retiredKeyLoader {
+	return func(uid string) (string, []byte, error) {
 		state, err := fetchKMIPKeyState(ctx, cfg.Endpoint, tlsCfg, uid, timeout)
 		if err != nil {
 			return uid, nil, err
@@ -99,16 +114,7 @@ func newKMIPProvider(ctx context.Context, cfg Config) (*kmipProvider, error) {
 		}
 		k, err := fetchKMIPKey(ctx, cfg, tlsCfg, uid, timeout)
 		return uid, k, err
-	})
-	if err != nil {
-		zeroKey(key)
-		return nil, err
 	}
-	return &kmipProvider{aesGCMKEK: aesGCMKEK{
-		masterKey:   key,
-		masterKeyID: cfg.KeyUID,
-		retired:     retired,
-	}}, nil
 }
 
 // fetchKMIPKey retrieves one symmetric key from the HSM and enforces the

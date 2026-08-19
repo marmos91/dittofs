@@ -1,19 +1,20 @@
-"""Provisions the symmetric keys the KMIP interop tests run against.
+"""Provisions the keys the KMIP interop tests run against.
 
-Creates two AES-256 keys, activates both, and prints their unique
-identifiers as `current=<uid>` / `retired=<uid>` lines. Extra keys in the
-states the provider has to react to (deactivated, compromised, destroyed)
-are created on request via the state names passed on the command line and
-printed as `<state>=<uid>`.
+Creates one AES-256 key per state the provider has to react to and prints
+the resulting unique identifiers as `NAME=uid` lines, ready to be fed
+straight into the environment the Go tests read.
+
+Destroyed is deliberately absent: PyKMIP's Destroy removes the object from
+its database outright, so a subsequent GetAttributes reports Item Not
+Found rather than State Destroyed. That state is only reachable against
+the in-process fake server.
 """
-
-import sys
 
 from kmip.pie.client import ProxyKmipClient
 from kmip import enums
 
 
-def make_key(client, name):
+def make_key(client, name, activate=True):
     uid = client.create(
         enums.CryptographicAlgorithm.AES,
         256,
@@ -23,30 +24,32 @@ def make_key(client, name):
             enums.CryptographicUsageMask.DECRYPT,
         ],
     )
-    client.activate(uid)
+    if activate:
+        client.activate(uid)
     return uid
 
 
 def main():
     with ProxyKmipClient(config_file="/work/pykmip.conf") as client:
-        print("current=%s" % make_key(client, "dittofs-current"))
-        print("retired=%s" % make_key(client, "dittofs-retired"))
-        for state in sys.argv[1:]:
-            uid = make_key(client, "dittofs-%s" % state)
-            if state == "deactivated":
-                client.revoke(
-                    enums.RevocationReasonCode.CESSATION_OF_OPERATION, uid
-                )
-            elif state == "compromised":
-                client.revoke(enums.RevocationReasonCode.KEY_COMPROMISE, uid)
-            elif state == "destroyed":
-                client.revoke(
-                    enums.RevocationReasonCode.CESSATION_OF_OPERATION, uid
-                )
-                client.destroy(uid)
-            elif state == "preactive":
-                pass  # created without the activate above; handled below
-            print("%s=%s" % (state, uid))
+        current = make_key(client, "dittofs-current")
+        retired = make_key(client, "dittofs-retired")
+
+        deactivated = make_key(client, "dittofs-deactivated")
+        client.revoke(enums.RevocationReasonCode.CESSATION_OF_OPERATION, deactivated)
+
+        compromised = make_key(client, "dittofs-compromised")
+        client.revoke(enums.RevocationReasonCode.KEY_COMPROMISE, compromised)
+
+        preactive = make_key(client, "dittofs-preactive", activate=False)
+
+    for name, uid in (
+        ("KEY_UID", current),
+        ("RETIRED_KEY_UID", retired),
+        ("DEACTIVATED_KEY_UID", deactivated),
+        ("COMPROMISED_KEY_UID", compromised),
+        ("PREACTIVE_KEY_UID", preactive),
+    ):
+        print("DITTOFS_TEST_KMIP_%s=%s" % (name, uid))
 
 
 if __name__ == "__main__":

@@ -5,7 +5,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
+
+	"github.com/gemalto/kmip-go/kmip14"
 )
 
 // requireKMIPEnv gates KMIP integration tests behind DITTOFS_TEST_KMIP=1
@@ -53,6 +56,107 @@ func TestKMIP_WrapUnwrapRoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(got, blockKey) {
 		t.Fatalf("Unwrap returned %x, want %x", got, blockKey)
+	}
+}
+
+// kmipStateUID returns the uid of a key the live server holds in a
+// particular state, or skips when the harness did not provision one. The
+// states come from test/kmip/provision.py.
+func kmipStateUID(t *testing.T, envVar string) string {
+	t.Helper()
+	uid := os.Getenv(envVar)
+	if uid == "" {
+		t.Skipf("%s required", envVar)
+	}
+	return uid
+}
+
+// TestKMIP_RetiredUIDStillUnwrapsLive is the rotation property against a
+// real server: a block wrapped under one uid still unwraps after the
+// current uid has moved on and the first is listed as retired.
+func TestKMIP_RetiredUIDStillUnwrapsLive(t *testing.T) {
+	cfg := requireKMIPEnv(t)
+	newUID := kmipStateUID(t, "DITTOFS_TEST_KMIP_RETIRED_KEY_UID")
+
+	before, err := newKMIPProvider(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("newKMIPProvider(pre-rotation): %v", err)
+	}
+	blockKey := bytes.Repeat([]byte{0x44}, 32)
+	wrapped, oldID, err := before.Wrap(context.Background(), blockKey)
+	if err != nil {
+		t.Fatalf("Wrap: %v", err)
+	}
+	_ = before.Close()
+
+	rotated := cfg
+	rotated.KeyUID = newUID
+	rotated.RetiredKeyUIDs = []string{cfg.KeyUID}
+	after, err := newKMIPProvider(context.Background(), rotated)
+	if err != nil {
+		t.Fatalf("newKMIPProvider(rotated): %v", err)
+	}
+	t.Cleanup(func() { _ = after.Close() })
+
+	if after.CurrentMasterKeyID() != newUID {
+		t.Fatalf("current master key id = %q, want %q", after.CurrentMasterKeyID(), newUID)
+	}
+	got, err := after.Unwrap(context.Background(), wrapped, oldID)
+	if err != nil {
+		t.Fatalf("Unwrap of pre-rotation block: %v", err)
+	}
+	if !bytes.Equal(got, blockKey) {
+		t.Fatalf("Unwrap returned %x, want %x", got, blockKey)
+	}
+}
+
+// TestKMIP_CurrentKeyStateRefusedLive pins the refusal against a real
+// server: a current key the HSM has moved out of Active keeps the
+// encrypted remote from coming up, and the error names both the state and
+// the uid so an operator can act on it.
+func TestKMIP_CurrentKeyStateRefusedLive(t *testing.T) {
+	base := requireKMIPEnv(t)
+	for _, tc := range []struct {
+		envVar string
+		state  kmip14.State
+	}{
+		{"DITTOFS_TEST_KMIP_DEACTIVATED_KEY_UID", kmip14.StateDeactivated},
+		{"DITTOFS_TEST_KMIP_COMPROMISED_KEY_UID", kmip14.StateCompromised},
+		{"DITTOFS_TEST_KMIP_PREACTIVE_KEY_UID", kmip14.StatePreActive},
+	} {
+		t.Run(tc.state.String(), func(t *testing.T) {
+			cfg := base
+			cfg.KeyUID = kmipStateUID(t, tc.envVar)
+			p, err := newKMIPProvider(context.Background(), cfg)
+			if err == nil {
+				_ = p.Close()
+				t.Fatalf("newKMIPProvider accepted a %s current key", tc.state)
+			}
+			if !errors.Is(err, ErrKeyStateUnusable) {
+				t.Fatalf("error = %v, want ErrKeyStateUnusable", err)
+			}
+			if !strings.Contains(err.Error(), tc.state.String()) || !strings.Contains(err.Error(), cfg.KeyUID) {
+				t.Fatalf("error %q should name both the state %q and the uid %q", err, tc.state, cfg.KeyUID)
+			}
+		})
+	}
+}
+
+// TestKMIP_RetiredCompromisedKeyLoadsLive covers the other half of the
+// state policy: a retired key the HSM marks Compromised is still loaded,
+// because the blocks written under it have to stay readable.
+func TestKMIP_RetiredCompromisedKeyLoadsLive(t *testing.T) {
+	cfg := requireKMIPEnv(t)
+	compromised := kmipStateUID(t, "DITTOFS_TEST_KMIP_COMPROMISED_KEY_UID")
+	cfg.RetiredKeyUIDs = []string{compromised}
+
+	p, err := newKMIPProvider(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("newKMIPProvider with a compromised retired uid: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	if _, ok := p.retired[compromised]; !ok {
+		t.Fatalf("retired set does not hold %q; a compromised retired key must stay readable", compromised)
 	}
 }
 

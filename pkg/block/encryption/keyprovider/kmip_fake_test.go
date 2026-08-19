@@ -215,6 +215,8 @@ func (s *fakeKMIPServer) serve(t *testing.T, conn net.Conn) {
 		if !ok {
 			state = kmip14.StateActive
 		}
+		// State zero is not a KMIP state; the table uses it to ask for a
+		// GetAttributes reply that carries no State attribute at all.
 		_, _ = conn.Write(kmipStateResponse(t, payload.UniqueIdentifier, state))
 		return
 	}
@@ -236,6 +238,10 @@ func (s *fakeKMIPServer) serve(t *testing.T, conn net.Conn) {
 // State enumeration for a uid.
 func kmipStateResponse(t *testing.T, keyUID string, state kmip14.State) ttlv.TTLV {
 	t.Helper()
+	payload := kmipGetAttributesResponsePayload{UniqueIdentifier: keyUID}
+	if state != 0 {
+		payload.Attribute = []kmip.Attribute{kmip.NewAttributeFromTag(kmip14.TagState, 0, state)}
+	}
 	resp := kmip.ResponseMessage{
 		ResponseHeader: kmip.ResponseHeader{
 			ProtocolVersion: kmip.ProtocolVersion{ProtocolVersionMajor: 1, ProtocolVersionMinor: 4},
@@ -243,12 +249,9 @@ func kmipStateResponse(t *testing.T, keyUID string, state kmip14.State) ttlv.TTL
 			BatchCount:      1,
 		},
 		BatchItem: []kmip.ResponseBatchItem{{
-			Operation:    kmip14.OperationGetAttributes,
-			ResultStatus: kmip14.ResultStatusSuccess,
-			ResponsePayload: kmipGetAttributesResponsePayload{
-				UniqueIdentifier: keyUID,
-				Attribute:        []kmip.Attribute{kmip.NewAttributeFromTag(kmip14.TagState, 0, state)},
-			},
+			Operation:       kmip14.OperationGetAttributes,
+			ResultStatus:    kmip14.ResultStatusSuccess,
+			ResponsePayload: payload,
 		}},
 	}
 	raw, err := ttlv.Marshal(resp)
@@ -602,4 +605,99 @@ func TestReadKMIPMessage(t *testing.T) {
 			t.Errorf("frame length = %d, want %d", len(out), len(full))
 		}
 	})
+}
+
+// kmipStateEnv builds a KMIP config plus a fake server whose uid → State
+// table the caller controls, for the states a PyKMIP server cannot be put
+// into.
+func kmipStateEnv(t *testing.T, states map[string]kmip14.State, gets ...ttlv.TTLV) Config {
+	t.Helper()
+	dir := t.TempDir()
+	srvCert, srvKey, srvPEM := genSelfSigned(t, dir, "server")
+	cliCert, cliKey, _ := genSelfSigned(t, dir, "client")
+	caPath := filepath.Join(dir, "ca.pem")
+	if err := os.WriteFile(caPath, srvPEM, 0o600); err != nil {
+		t.Fatalf("write ca: %v", err)
+	}
+	srv := startFakeKMIPStates(t, serverTLSConfig(t, srvCert, srvKey), states, gets...)
+	return Config{
+		Kind:       KindKMIP,
+		Endpoint:   srv.addr(),
+		ClientCert: cliCert,
+		ClientKey:  cliKey,
+		ServerCA:   caPath,
+		TimeoutMS:  5000,
+	}
+}
+
+// TestKMIP_CurrentKeyDestroyedRefused covers the one current-key state a
+// PyKMIP server cannot be put into: its Destroy deletes the object
+// outright, so only the fake can report State Destroyed.
+func TestKMIP_CurrentKeyDestroyedRefused(t *testing.T) {
+	material := bytes.Repeat([]byte{0xE5}, 32)
+	for _, state := range []kmip14.State{kmip14.StateDestroyed, kmip14.StateDestroyedCompromised} {
+		t.Run(state.String(), func(t *testing.T) {
+			cfg := kmipStateEnv(t, map[string]kmip14.State{"uid-1": state},
+				kmipSuccessResponse(t, "uid-1", material))
+			cfg.KeyUID = "uid-1"
+			p, err := newKMIPProvider(context.Background(), cfg)
+			if err == nil {
+				_ = p.Close()
+				t.Fatalf("newKMIPProvider accepted a %s current key", state)
+			}
+			if !errors.Is(err, ErrKeyStateUnusable) {
+				t.Fatalf("error = %v, want ErrKeyStateUnusable", err)
+			}
+		})
+	}
+}
+
+// TestKMIP_RetiredDestroyedKeyDegrades pins the retired-key half: a
+// destroyed uid costs access to the blocks under it rather than the whole
+// provider, and says so in terms of the state.
+func TestKMIP_RetiredDestroyedKeyDegrades(t *testing.T) {
+	material := bytes.Repeat([]byte{0xE6}, 32)
+	cfg := kmipStateEnv(t, map[string]kmip14.State{"uid-old": kmip14.StateDestroyed},
+		kmipSuccessResponse(t, "uid-new", material))
+	cfg.KeyUID = "uid-new"
+	cfg.RetiredKeyUIDs = []string{"uid-old"}
+
+	tlsCfg, err := buildKMIPTLSConfig(cfg)
+	if err != nil {
+		t.Fatalf("buildKMIPTLSConfig: %v", err)
+	}
+	_, _, err = kmipRetiredKeyLoader(context.Background(), cfg, tlsCfg, 5*time.Second)("uid-old")
+	if !errors.Is(err, ErrKeyStateUnusable) {
+		t.Fatalf("retired loader error = %v, want ErrKeyStateUnusable", err)
+	}
+	if !strings.Contains(err.Error(), kmip14.StateDestroyed.String()) {
+		t.Fatalf("error %q should name the Destroyed state", err)
+	}
+
+	p, err := newKMIPProvider(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("newKMIPProvider with a destroyed retired uid: %v, want success", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	if len(p.retired) != 0 {
+		t.Fatalf("retired set holds %d keys, want 0", len(p.retired))
+	}
+}
+
+// TestKMIP_MissingStateAttribute pins the fail-closed rule: a server that
+// answers GetAttributes without a State leaves the provider unable to tell
+// whether the key is usable, and an unknown state is not treated as Active.
+func TestKMIP_MissingStateAttribute(t *testing.T) {
+	material := bytes.Repeat([]byte{0xE7}, 32)
+	cfg := kmipStateEnv(t, map[string]kmip14.State{"uid-1": 0},
+		kmipSuccessResponse(t, "uid-1", material))
+	cfg.KeyUID = "uid-1"
+	p, err := newKMIPProvider(context.Background(), cfg)
+	if err == nil {
+		_ = p.Close()
+		t.Fatal("newKMIPProvider accepted a key whose state could not be read")
+	}
+	if !strings.Contains(err.Error(), "no State attribute") {
+		t.Fatalf("error %q should say the State attribute was missing", err)
+	}
 }
