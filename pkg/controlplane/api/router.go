@@ -552,7 +552,7 @@ func newNfsClientHandler(rt *runtime.Runtime) *handlers.NfsClientHandler {
 	if rt == nil {
 		return nil
 	}
-	return handlers.NewNfsClientHandlerFromProvider(rt.NFSClientProvider())
+	return handlers.NewNfsClientHandlerFromProvider(rt.GetAdapterProvider("nfs"))
 }
 
 // newGraceHandler returns a GraceHandler if an NFS adapter with state management is configured.
@@ -560,7 +560,7 @@ func newGraceHandler(rt *runtime.Runtime) *handlers.GraceHandler {
 	if rt == nil {
 		return nil
 	}
-	return handlers.NewGraceHandlerFromProvider(rt.NFSClientProvider())
+	return handlers.NewGraceHandlerFromProvider(rt.GetAdapterProvider("nfs"))
 }
 
 // isHealthPath returns true if the request path is a healthcheck endpoint.

@@ -106,7 +106,7 @@ func (h *HealthHandler) Readiness(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Include grace period info if NFS adapter is configured
-	if graceHandler := NewGraceHandlerFromProvider(h.registry.NFSClientProvider()); graceHandler != nil {
+	if graceHandler := NewGraceHandlerFromProvider(h.registry.GetAdapterProvider("nfs")); graceHandler != nil {
 		info := graceHandler.sm.GraceStatus()
 		data["grace_period"] = map[string]any{
 			"active":            info.Active,

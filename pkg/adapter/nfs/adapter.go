@@ -575,7 +575,7 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	s.v4Handler.KerberosEnabled = s.kerberosConfig != nil
 
 	// Expose StateManager to REST API via runtime (for /clients endpoint and /health server info)
-	rt.SetNFSClientProvider(v4StateManager)
+	rt.SetAdapterProvider("nfs", v4StateManager)
 
 	// Designate a server-global durable client-recovery store (area-4 H8): the
 	// first share's metadata store implementing lock.ClientRecoveryStore,

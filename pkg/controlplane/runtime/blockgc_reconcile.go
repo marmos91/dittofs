@@ -68,7 +68,7 @@ func (r *Runtime) runBlockGCReconcile(ctx context.Context, dryRun bool, progress
 	// tier sweeps from the synced-hash index; orphan block objects the index
 	// cannot see (a PutBlock-then-commit crash gap) are the #1525 reconcile
 	// sweep's job (PR5).
-	sweep, err := r.runBlockGCSweep(ctx, "", dryRun, progress)
+	sweep, err := r.runBlockGCSweep(ctx, dryRun, progress)
 	// Record reaped rows regardless of the sweep result: the rows are already
 	// deleted from the metadata store, so the counter must reflect that even if
 	// the downstream sweep (e.g. S3 unreachable) then fails. Skip on dry-run —
