@@ -1,4 +1,5 @@
-// Package shares provides typed errors for share lifecycle operations.
+// Typed errors for share lifecycle operations.
+
 package shares
 
 import (

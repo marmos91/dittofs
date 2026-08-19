@@ -272,17 +272,7 @@ func (r *Runtime) snapshotHoldForRemote(shareNames []string) engine.HoldProvider
 // block any concurrent HeldHashes that has the corresponding RLock,
 // regardless of which provider instance constructed each.
 func (r *Runtime) snapshotDeleteLock(shareName string) *sync.RWMutex {
-	r.snapDeleteLocksMu.Lock()
-	defer r.snapDeleteLocksMu.Unlock()
-	if r.snapDeleteLocks == nil {
-		r.snapDeleteLocks = make(map[string]*sync.RWMutex)
-	}
-	lock, ok := r.snapDeleteLocks[shareName]
-	if !ok {
-		lock = &sync.RWMutex{}
-		r.snapDeleteLocks[shareName] = lock
-	}
-	return lock
+	return r.snapDeleteLocks.get(shareName)
 }
 
 // restoreLock returns the shared per-share mutex that serializes
@@ -292,15 +282,5 @@ func (r *Runtime) snapshotDeleteLock(shareName string) *sync.RWMutex {
 // restore fails fast with models.ErrRestoreInProgress rather than
 // interleaving the destructive metadata Reset + dump replay.
 func (r *Runtime) restoreLock(shareName string) *sync.Mutex {
-	r.restoreLocksMu.Lock()
-	defer r.restoreLocksMu.Unlock()
-	if r.restoreLocks == nil {
-		r.restoreLocks = make(map[string]*sync.Mutex)
-	}
-	lock, ok := r.restoreLocks[shareName]
-	if !ok {
-		lock = &sync.Mutex{}
-		r.restoreLocks[shareName] = lock
-	}
-	return lock
+	return r.restoreLocks.get(shareName)
 }

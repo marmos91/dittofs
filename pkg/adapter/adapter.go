@@ -135,11 +135,6 @@ type Adapter interface {
 	Healthcheck(ctx context.Context) health.Report
 }
 
-// OplockBreakerProviderKey is the Runtime adapter provider key for the OplockBreaker.
-// Used with Runtime.SetAdapterProvider / GetAdapterProvider to register and retrieve
-// the cross-protocol oplock breaker without import cycles between protocol packages.
-const OplockBreakerProviderKey = "oplock_breaker"
-
 // SMBOpenFilesProviderKey is the Runtime adapter provider key under which the
 // SMB handler registers itself as an open-file enumerator for the block-GC
 // open-handle hold (#1448). The NFSv4 state manager needs no dedicated key:

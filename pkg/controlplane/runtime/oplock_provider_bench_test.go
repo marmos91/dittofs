@@ -10,12 +10,12 @@ func TestOplockBreakerProviderStoreSafety(t *testing.T) {
 	if got := r.OplockBreakerProvider(); got != nil {
 		t.Fatalf("unregistered = %v, want nil", got)
 	}
-	r.SetAdapterProvider(oplockBreakerProviderKey, nil) // nil interface
+	r.SetAdapterProvider(OplockBreakerProviderKey, nil) // nil interface
 	if got := r.OplockBreakerProvider(); got != nil {
 		t.Fatalf("after nil register = %v, want nil", got)
 	}
-	r.SetAdapterProvider(oplockBreakerProviderKey, struct{ a int }{1})
-	r.SetAdapterProvider(oplockBreakerProviderKey, "different-type") // type changes
+	r.SetAdapterProvider(OplockBreakerProviderKey, struct{ a int }{1})
+	r.SetAdapterProvider(OplockBreakerProviderKey, "different-type") // type changes
 	if got := r.OplockBreakerProvider(); got != "different-type" {
 		t.Fatalf("after re-register = %v, want different-type", got)
 	}
@@ -30,7 +30,7 @@ func BenchmarkOplockBreakerLookup(b *testing.B) {
 	newRT := func(register bool) *Runtime {
 		r := &Runtime{adapterProviders: make(map[string]any)}
 		if register {
-			r.SetAdapterProvider(oplockBreakerProviderKey, struct{}{})
+			r.SetAdapterProvider(OplockBreakerProviderKey, struct{}{})
 		}
 		return r
 	}
@@ -39,7 +39,7 @@ func BenchmarkOplockBreakerLookup(b *testing.B) {
 		r := newRT(false)
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_ = r.GetAdapterProvider(oplockBreakerProviderKey)
+				_ = r.GetAdapterProvider(OplockBreakerProviderKey)
 			}
 		})
 	})
@@ -55,7 +55,7 @@ func BenchmarkOplockBreakerLookup(b *testing.B) {
 		r := newRT(true)
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_ = r.GetAdapterProvider(oplockBreakerProviderKey)
+				_ = r.GetAdapterProvider(OplockBreakerProviderKey)
 			}
 		})
 	})

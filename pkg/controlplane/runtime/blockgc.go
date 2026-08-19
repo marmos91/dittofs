@@ -814,17 +814,7 @@ func (r *Runtime) purgeLegacyCASForEntry(ctx context.Context, entry shares.Remot
 // chunk (which would free a block a live sibling still needs). Distinct
 // remotes get distinct locks and sweep in parallel.
 func (r *Runtime) remoteGCLock(configID string) *sync.Mutex {
-	r.remoteGCLocksMu.Lock()
-	defer r.remoteGCLocksMu.Unlock()
-	if r.remoteGCLocks == nil {
-		r.remoteGCLocks = make(map[string]*sync.Mutex)
-	}
-	lock, ok := r.remoteGCLocks[configID]
-	if !ok {
-		lock = &sync.Mutex{}
-		r.remoteGCLocks[configID] = lock
-	}
-	return lock
+	return r.remoteGCLocks.get(configID)
 }
 
 // blockReclaimerForEntry builds the per-remote union BlockReclaimer for a GC
