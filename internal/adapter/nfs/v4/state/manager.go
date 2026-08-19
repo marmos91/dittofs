@@ -725,6 +725,43 @@ func (sm *StateManager) RemoveClient(clientID uint64) {
 		"client_id_str", record.ClientIDString)
 }
 
+// removeClientOpenStateLocked drops every open-owner belonging to clientID
+// together with its open states, its lock states, and the locks those hold in
+// the unified lock manager.
+//
+// It scans sm.openOwners by ClientID rather than walking a per-client owner
+// list: V41ClientRecord carries no such list, and the v4.0 ClientRecord one
+// goes stale because freeStateidLocked removes owners from sm.openOwners
+// without removing them there.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) removeClientOpenStateLocked(clientID uint64) {
+	for key, owner := range sm.openOwners {
+		if owner.ClientID != clientID {
+			continue
+		}
+		for _, openState := range owner.OpenStates {
+			for _, lockState := range openState.LockStates {
+				delete(sm.lockStateByOther, lockState.Stateid.Other)
+				sm.removeOwnerLocksLocked(lockState)
+				if lockState.LockOwner != nil {
+					delete(sm.lockOwners, lockState.LockOwner.Key())
+				}
+			}
+			delete(sm.openStateByOther, openState.Stateid.Other)
+			sm.removeOpenStateFromFileLocked(openState)
+		}
+		delete(sm.openOwners, key)
+	}
+
+	// Drop any retained closed-stateid -> owner replay entries for this client.
+	for other, owner := range sm.closedOwnerByOther {
+		if owner.ClientID == clientID {
+			delete(sm.closedOwnerByOther, other)
+		}
+	}
+}
+
 // onLeaseExpired is the callback invoked when a client's lease timer fires.
 // It cleans up all state for the expired client: open states, open owners,
 // and the client record itself.
@@ -751,36 +788,7 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 	// when no recovery store is wired.
 	sm.deleteClientRecoveryLocked(record.ClientIDString)
 
-	// Remove all open states AND lock states for all owners
-	for _, owner := range record.OpenOwners {
-		for _, openState := range owner.OpenStates {
-			// Clean up lock states associated with this open
-			for _, lockState := range openState.LockStates {
-				// Remove from lockStateByOther map
-				delete(sm.lockStateByOther, lockState.Stateid.Other)
-
-				// Remove actual locks from unified lock manager
-				sm.removeOwnerLocksLocked(lockState)
-
-				// Remove lock-owner from lockOwners map
-				if lockState.LockOwner != nil {
-					delete(sm.lockOwners, lockState.LockOwner.Key())
-				}
-			}
-
-			delete(sm.openStateByOther, openState.Stateid.Other)
-			sm.removeOpenStateFromFileLocked(openState)
-		}
-		// Remove the owner from the openOwners map
-		delete(sm.openOwners, owner.Key())
-	}
-
-	// Drop any retained closed-stateid -> owner replay entries for this client.
-	for other, owner := range sm.closedOwnerByOther {
-		if owner.ClientID == clientID {
-			delete(sm.closedOwnerByOther, other)
-		}
-	}
+	sm.removeClientOpenStateLocked(clientID)
 
 	// Clean up delegations for the expired client
 	for other, deleg := range sm.delegByOther {
