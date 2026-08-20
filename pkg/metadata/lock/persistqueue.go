@@ -33,10 +33,10 @@ import "sync"
 // share. An op only ever waits on a strictly earlier ticket, and "earlier" is
 // the total order lm.mu already imposed, so the wait-for graph cannot cycle.
 
-// persistLaneCount is the number of independent store-ordering lanes. Files hash to
-// a lane; the count bounds how many store round-trips can be in flight for one
-// share, and 16 is well past the point where the lock store rather than the
-// manager is the limit.
+// ponytail: fixed 16 lanes, hashed by file. The count bounds how many store
+// round-trips can be in flight for one share; make it configurable, or scale it
+// off GOMAXPROCS, only if a profile shows lane collisions rather than the lock
+// store itself as the limit.
 const persistLaneCount = 16
 
 // persistLane is a ticket lock. Tickets are handed out under lm.mu (next) and
@@ -142,31 +142,4 @@ func (lm *Manager) unlock() {
 	for _, op := range ops {
 		op.exec()
 	}
-}
-
-// drainPersistLaneLocked empties fileKey's lane so the caller can make a store
-// call for that file inline and still have it land in mutex order. It runs this
-// critical section's own queued calls first (they may sit on the same lane, and
-// nothing else will run them while lm.mu is held), then waits for every ticket
-// issued on the lane to retire. Caller must hold lm.mu.
-//
-// It exists for the one path that must call the store inline because it returns
-// the store's error to its caller. Everything else should queue.
-//
-// Draining terminates: new tickets are only issued under lm.mu, which this
-// caller holds, and the goroutines retiring the outstanding ones do not need
-// lm.mu to make progress.
-func (lm *Manager) drainPersistLaneLocked(fileKey string) {
-	ops := lm.pendingPersist
-	lm.pendingPersist = nil
-	for _, op := range ops {
-		op.exec()
-	}
-
-	lane := lm.laneFor(fileKey)
-	lane.mu.Lock()
-	for lane.done != lane.next {
-		lane.cond.Wait()
-	}
-	lane.mu.Unlock()
 }

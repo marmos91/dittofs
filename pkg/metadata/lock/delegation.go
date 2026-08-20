@@ -285,7 +285,7 @@ func (lm *Manager) revokeTimedOutLease(handleKey string, leaseKey [16]byte) {
 // removeMatchingLocksAndSignal removes every UnifiedLock on handleKey for which
 // match returns true, then wakes any WaitForBreakCompletion / parked-CREATE
 // waiters. When deletePersisted is true, each removed lock's persisted record is
-// deleted (best-effort) under lm.mu. Returns true if at least one lock matched.
+// deleted (best-effort). Returns true if at least one lock matched.
 //
 // Shared by RevokeDelegation and revokeTimedOutLease: same mutex discipline,
 // same post-unlock signalBreakWait so parked CREATEs unblock immediately rather

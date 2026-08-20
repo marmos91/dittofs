@@ -1245,12 +1245,25 @@ func (lm *Manager) releaseLeaseImpl(ctx context.Context, leaseKey [16]byte) erro
 // record for a concurrent open on file B; otherwise stale records accumulate
 // on the surviving file and break ACK lookup / break-to matching.
 func (lm *Manager) releaseLeaseForHandleImpl(ctx context.Context, handleKey string, leaseKey [16]byte) error {
+	// The deletes are queued on the file's persist lane like every other
+	// mutation, and they run before releaseLeaseRecords returns, so their
+	// errors are complete by the time they are read here.
+	var deleteErrs []error
+	lm.releaseLeaseRecords(ctx, handleKey, leaseKey, &deleteErrs)
+
+	if len(deleteErrs) > 0 {
+		return fmt.Errorf("release lease for handle %q: %w", handleKey, errors.Join(deleteErrs...))
+	}
+	return nil
+}
+
+func (lm *Manager) releaseLeaseRecords(ctx context.Context, handleKey string, leaseKey [16]byte, deleteErrs *[]error) {
 	lm.mu.Lock()
 	defer lm.unlock()
 
 	locks := lm.unifiedLocks[handleKey]
 	if len(locks) == 0 {
-		return nil
+		return
 	}
 
 	// hadBreaking records whether any lease we remove here was in the Breaking
@@ -1278,15 +1291,7 @@ func (lm *Manager) releaseLeaseForHandleImpl(ctx context.Context, handleKey stri
 	// smb2.kernel-oplocks.kernel_oplocks7: that test explicitly accepts BOTH the
 	// re-open-first (EXCLUSIVE) and parked-create-first (NONE) orderings.
 	var remaining []*UnifiedLock
-	var deleteErrs []error
 	hadBreaking := false
-
-	// The deletes below run inline rather than through the persist queue,
-	// because their error is reported to the caller. Empty this file's lane
-	// first so they still land after everything lm.mu ordered ahead of them.
-	if lm.lockStore != nil {
-		lm.drainPersistLaneLocked(handleKey)
-	}
 
 	for _, lock := range locks {
 		if lock.Lease != nil && lock.Lease.LeaseKey == leaseKey {
@@ -1294,19 +1299,23 @@ func (lm *Manager) releaseLeaseForHandleImpl(ctx context.Context, handleKey stri
 				hadBreaking = true
 			}
 			if lm.lockStore != nil {
-				if err := lm.lockStore.DeleteLock(ctx, lock.ID); err != nil && !storeerrors.IsNotFoundError(err) {
-					// In-memory removal proceeds regardless: the persisted
-					// record will be reaped by the next client-disconnect or
-					// file-deletion sweep. Surface the error so observability
-					// catches a misbehaving store rather than the lease leak
-					// going silent (round-3 follow-up).
-					logger.Error("ReleaseLeaseForHandle: persistent DeleteLock failed",
-						"handleKey", handleKey,
-						"lockID", lock.ID,
-						"leaseKey", fmt.Sprintf("%x", leaseKey),
-						"error", err)
-					deleteErrs = append(deleteErrs, err)
-				}
+				store := lm.lockStore
+				lockID := lock.ID
+				lm.enqueuePersistLocked(handleKey, func() {
+					if err := store.DeleteLock(ctx, lockID); err != nil && !storeerrors.IsNotFoundError(err) {
+						// In-memory removal proceeds regardless: the persisted
+						// record will be reaped by the next client-disconnect or
+						// file-deletion sweep. Surface the error so observability
+						// catches a misbehaving store rather than the lease leak
+						// going silent.
+						logger.Error("ReleaseLeaseForHandle: persistent DeleteLock failed",
+							"handleKey", handleKey,
+							"lockID", lockID,
+							"leaseKey", fmt.Sprintf("%x", leaseKey),
+							"error", err)
+						*deleteErrs = append(*deleteErrs, err)
+					}
+				})
 			}
 			continue
 		}
@@ -1323,11 +1332,6 @@ func (lm *Manager) releaseLeaseForHandleImpl(ctx context.Context, handleKey stri
 	if hadBreaking {
 		lm.signalBreakWaitLocked(handleKey)
 	}
-
-	if len(deleteErrs) > 0 {
-		return fmt.Errorf("release lease for handle %q: %w", handleKey, errors.Join(deleteErrs...))
-	}
-	return nil
 }
 
 // GetLeaseState returns the current state and epoch for a lease key.

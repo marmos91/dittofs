@@ -482,9 +482,9 @@ func (lm *Manager) RemoveClientLocks(clientID string) {
 // or other NLM clients. The trailing ":" in the caller-supplied prefix prevents
 // "nlm:client1:" from matching "nlm:client10:".
 //
-// The persisted bulk-delete runs synchronously under lm.mu for the same
-// ordering reason as RemoveClientLocks. Calling with a prefix that matches no
-// locks is safe and returns 0.
+// Each matched record is deleted individually on its own file's persist lane,
+// for the same ordering reason as RemoveClientLocks. Calling with a prefix that
+// matches no locks is safe and returns 0.
 //
 // Unlike RemoveClientLocks, this intentionally keeps the full unifiedLocks
 // scan: the predicate is a prefix match on Owner.OwnerID, and there is no

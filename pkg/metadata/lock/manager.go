@@ -807,10 +807,12 @@ func (lm *Manager) notifyByteRangeReleased(handleKey string) {
 //
 // Returns nil on success, or ErrLocked if a conflict exists.
 //
-// Persistence is synchronous under lm.mu: the in-memory mutation and the
-// PutLock run while the mutex is held so the store sees mutations in the same
-// order the mutex serializes them. Two concurrent ops on the same persistID can
-// no longer reach the store out of order (the reorder/resurrection bug class).
+// Persistence is synchronous with respect to the caller: the in-memory
+// mutation happens under lm.mu, the PutLock is queued on the file's persist
+// lane and runs once lm.mu is released, and this call does not return until it
+// has run. Per file the store still sees mutations in the order the mutex
+// serialized them, so two concurrent ops on the same persistID cannot reach the
+// store out of order (the reorder/resurrection bug class).
 func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 	lm.mu.Lock()
 	defer lm.unlock()
@@ -1172,9 +1174,9 @@ func (lm *Manager) assignPersistIDLocked(fl *FileLock) {
 }
 
 // withPersistTimeout returns a context bounded by persistTimeout so a hung
-// backend can never wedge the lock manager: the store call runs synchronously
-// under lm.mu (mutex order == store order), but the timeout caps how long it
-// can block the critical section.
+// backend can never wedge the lock manager: the store call holds its file's
+// persist lane and blocks the operation that queued it, and the timeout caps
+// how long either can last.
 func withPersistTimeout() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), persistTimeout)
 }
@@ -1221,7 +1223,7 @@ func (lm *Manager) deleteFileLockLocked(handleKey string, fl *FileLock) {
 	lm.deletePersistedLocked(handleKey, fl.persistID)
 }
 
-// persistUnifiedLockLocked synchronously persists a unified lock. No-op if
+// persistUnifiedLockLocked queues a unified lock for persistence. No-op if
 // persistence is disabled. Caller must hold lm.mu.
 //
 // The share name is stamped from lm.shareName rather than trusting the
@@ -1253,8 +1255,8 @@ func (lm *Manager) persistUnifiedLockLocked(ul *UnifiedLock) {
 	lm.putLockLocked(pl)
 }
 
-// deleteUnifiedLockLocked synchronously removes a persisted unified lock. No-op
-// if persistence is disabled. Caller must hold lm.mu.
+// deleteUnifiedLockLocked queues removal of a persisted unified lock. No-op if
+// persistence is disabled. Caller must hold lm.mu.
 func (lm *Manager) deleteUnifiedLockLocked(ul *UnifiedLock) {
 	if lm.lockStore == nil {
 		return
