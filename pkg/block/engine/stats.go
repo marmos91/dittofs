@@ -187,6 +187,10 @@ func (bs *Store) populateBlockCounts(stats *BlockStoreStats) {
 		return
 	}
 
+	// ponytail: a detached 5s-bounded context, because the Stats/GetStats/
+	// GetStatsLite/LocalStats chain that reaches here is ctx-free all the way up
+	// to local.LocalStore.Stats. Thread a real ctx down only when that interface
+	// grows one for another reason.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

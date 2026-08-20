@@ -669,7 +669,10 @@ func (r *Runtime) RemoveShare(name string) error {
 	r.metadataService.RemoveStoreForShare(name)
 	// Purge durable default-user grace timers for the gone share so the
 	// user_grace side table cannot accumulate orphan rows across add/remove
-	// churn. Best-effort, off the critical path.
+	// churn. Best-effort, off the critical path, and deliberately detached from
+	// any caller context: the share is already torn down by this point, so an
+	// aborted purge leaks rows with nothing left to retry it. A caller-bound
+	// context would let an API client's disconnect cause that leak.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	r.PurgeDefaultUserGrace(ctx, name)

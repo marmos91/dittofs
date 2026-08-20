@@ -29,6 +29,12 @@ type fetchResult struct {
 	mu   gosync.Mutex  // Protects err during write
 }
 
+// ponytail: one struct and one m.mu span fetch-dedup, readahead, health and
+// carve wiring, because every one of those fields is read on the lock-ordering
+// path whose failure mode is silent zeros. Splitting the carve wiring into its
+// own collaborator with its own lock buys legibility and costs a second lock
+// order to get right; do it only once a hardware rig can prove the split
+// preserves the fetch/carve/close ordering.
 // Syncer handles async local-to-remote transfers with eager block carving,
 // parallel download, prefetch, in-flight dedup, and content-addressed dedup.
 type Syncer struct {

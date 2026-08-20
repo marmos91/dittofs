@@ -192,8 +192,11 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			// Record the SSI abort so tests can assert a workload stayed
 			// conflict-free (a shared hot key is the only thing that bumps this).
 			s.txnConflicts.Add(1)
-			// Exponential backoff with jitter before retry
-			// Base: 1-5ms, grows exponentially up to ~50ms
+			// Linear backoff: (2*attempt + 1) ms, so attempt 0 sleeps 1ms and
+			// the last of the default 20 attempts sleeps 39ms, ~400ms total.
+			// The "jitter" term is a deterministic function of attempt, not a
+			// random one — concurrent losers of the same conflict back off on
+			// the same schedule.
 			baseDelay := time.Duration(1+attempt) * time.Millisecond
 			jitter := time.Duration(attempt) * time.Millisecond
 			time.Sleep(baseDelay + jitter)
