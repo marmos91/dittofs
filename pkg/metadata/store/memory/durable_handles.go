@@ -3,7 +3,6 @@ package memory
 import (
 	"bytes"
 	"context"
-	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -13,12 +12,11 @@ import (
 // Secondary lookups use linear scans, acceptable since durable handle counts
 // are typically low (hundreds at most).
 //
-// Unlike the other memory sub-stores, this one owns its lock: getDurableStore
-// takes the store-wide mutex only long enough to publish the pointer and
-// releases it before the method below runs, so mu here is the sole guard on
-// handles.
+// It carries no lock of its own: every method is reached through a
+// MemoryMetadataStore wrapper that holds the store-wide mutex for the whole
+// call, so handles is guarded by that one lock — the same lock a snapshot
+// holds while it encodes the map.
 type memoryDurableStore struct {
-	mu      sync.RWMutex
 	handles map[string]*lock.PersistedDurableHandle
 }
 
@@ -33,9 +31,6 @@ func (s *memoryDurableStore) PutDurableHandle(ctx context.Context, handle *lock.
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	s.handles[handle.ID] = cloneDurableHandle(handle)
 	return nil
 }
@@ -44,9 +39,6 @@ func (s *memoryDurableStore) GetDurableHandle(ctx context.Context, id string) (*
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	handle, exists := s.handles[id]
 	if !exists {
@@ -65,9 +57,6 @@ func (s *memoryDurableStore) GetDurableHandleByFileID(ctx context.Context, fileI
 	if fileID == ([16]byte{}) {
 		return nil, nil
 	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	handle := s.lowestHandleForFileID(fileID)
 	if handle == nil {
@@ -100,9 +89,6 @@ func (s *memoryDurableStore) GetDurableHandleByCreateGuid(ctx context.Context, c
 		return nil, nil
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	for _, handle := range s.handles {
 		if handle.CreateGuid == createGuid {
 			return cloneDurableHandle(handle), nil
@@ -116,9 +102,6 @@ func (s *memoryDurableStore) ConsumeDurableHandle(ctx context.Context, id string
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	handle, exists := s.handles[id]
 	if !exists {
@@ -138,9 +121,6 @@ func (s *memoryDurableStore) GetDurableHandlesByAppInstanceId(ctx context.Contex
 		return nil, nil
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	var result []*lock.PersistedDurableHandle
 	for _, handle := range s.handles {
 		if handle.AppInstanceId == appInstanceId {
@@ -155,9 +135,6 @@ func (s *memoryDurableStore) GetDurableHandlesByFileHandle(ctx context.Context, 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var result []*lock.PersistedDurableHandle
 	for _, handle := range s.handles {
@@ -174,9 +151,6 @@ func (s *memoryDurableStore) DeleteDurableHandle(ctx context.Context, id string)
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	delete(s.handles, id)
 	return nil
 }
@@ -185,9 +159,6 @@ func (s *memoryDurableStore) ListDurableHandles(ctx context.Context) ([]*lock.Pe
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	result := make([]*lock.PersistedDurableHandle, 0, len(s.handles))
 	for _, handle := range s.handles {
@@ -201,9 +172,6 @@ func (s *memoryDurableStore) ListDurableHandlesByShare(ctx context.Context, shar
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var result []*lock.PersistedDurableHandle
 	for _, handle := range s.handles {
@@ -219,9 +187,6 @@ func (s *memoryDurableStore) DeleteExpiredDurableHandles(ctx context.Context, no
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	count := 0
 	for id, handle := range s.handles {
@@ -284,58 +249,153 @@ func cloneDurableHandle(h *lock.PersistedDurableHandle) *lock.PersistedDurableHa
 
 var _ lock.DurableHandleStore = (*MemoryMetadataStore)(nil)
 
-// getDurableStore returns the durable store, creating it on first access.
-func (s *MemoryMetadataStore) getDurableStore() *memoryDurableStore {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// initDurableStore ensures the durable handle store is initialized.
+// Must be called with the store's write lock held.
+func (s *MemoryMetadataStore) initDurableStore() {
 	if s.durableStore == nil {
 		s.durableStore = newMemoryDurableStore()
 	}
-	return s.durableStore
 }
 
+// PutDurableHandle stores or replaces a durable handle.
 func (s *MemoryMetadataStore) PutDurableHandle(ctx context.Context, handle *lock.PersistedDurableHandle) error {
-	return s.getDurableStore().PutDurableHandle(ctx, handle)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.initDurableStore()
+	return s.durableStore.PutDurableHandle(ctx, handle)
 }
 
+// GetDurableHandle retrieves a durable handle by ID.
 func (s *MemoryMetadataStore) GetDurableHandle(ctx context.Context, id string) (*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().GetDurableHandle(ctx, id)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.durableStore == nil {
+		return nil, nil
+	}
+	return s.durableStore.GetDurableHandle(ctx, id)
 }
 
+// GetDurableHandleByFileID retrieves the lowest-ID handle held on a file.
 func (s *MemoryMetadataStore) GetDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().GetDurableHandleByFileID(ctx, fileID)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.durableStore == nil {
+		return nil, nil
+	}
+	return s.durableStore.GetDurableHandleByFileID(ctx, fileID)
 }
 
+// GetDurableHandleByCreateGuid retrieves a V2 durable handle by its create GUID.
 func (s *MemoryMetadataStore) GetDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().GetDurableHandleByCreateGuid(ctx, createGuid)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.durableStore == nil {
+		return nil, nil
+	}
+	return s.durableStore.GetDurableHandleByCreateGuid(ctx, createGuid)
 }
 
+// ConsumeDurableHandle retrieves and removes a durable handle by ID.
 func (s *MemoryMetadataStore) ConsumeDurableHandle(ctx context.Context, id string) (*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().ConsumeDurableHandle(ctx, id)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.durableStore == nil {
+		return nil, nil
+	}
+	return s.durableStore.ConsumeDurableHandle(ctx, id)
 }
 
+// GetDurableHandlesByAppInstanceId returns every handle for an app instance.
 func (s *MemoryMetadataStore) GetDurableHandlesByAppInstanceId(ctx context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().GetDurableHandlesByAppInstanceId(ctx, appInstanceId)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.durableStore == nil {
+		return nil, nil
+	}
+	return s.durableStore.GetDurableHandlesByAppInstanceId(ctx, appInstanceId)
 }
 
+// GetDurableHandlesByFileHandle returns every handle on a metadata file handle.
 func (s *MemoryMetadataStore) GetDurableHandlesByFileHandle(ctx context.Context, fileHandle []byte) ([]*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().GetDurableHandlesByFileHandle(ctx, fileHandle)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.durableStore == nil {
+		return nil, nil
+	}
+	return s.durableStore.GetDurableHandlesByFileHandle(ctx, fileHandle)
 }
 
+// DeleteDurableHandle removes a durable handle by ID.
 func (s *MemoryMetadataStore) DeleteDurableHandle(ctx context.Context, id string) error {
-	return s.getDurableStore().DeleteDurableHandle(ctx, id)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.durableStore == nil {
+		return nil
+	}
+	return s.durableStore.DeleteDurableHandle(ctx, id)
 }
 
+// ListDurableHandles returns every stored durable handle.
 func (s *MemoryMetadataStore) ListDurableHandles(ctx context.Context) ([]*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().ListDurableHandles(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.durableStore == nil {
+		return []*lock.PersistedDurableHandle{}, nil
+	}
+	return s.durableStore.ListDurableHandles(ctx)
 }
 
+// ListDurableHandlesByShare returns every durable handle on a share.
 func (s *MemoryMetadataStore) ListDurableHandlesByShare(ctx context.Context, shareName string) ([]*lock.PersistedDurableHandle, error) {
-	return s.getDurableStore().ListDurableHandlesByShare(ctx, shareName)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.durableStore == nil {
+		return nil, nil
+	}
+	return s.durableStore.ListDurableHandlesByShare(ctx, shareName)
 }
 
+// DeleteExpiredDurableHandles drops every handle whose timeout has elapsed.
 func (s *MemoryMetadataStore) DeleteExpiredDurableHandles(ctx context.Context, now time.Time) (int, error) {
-	return s.getDurableStore().DeleteExpiredDurableHandles(ctx, now)
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.durableStore == nil {
+		return 0, nil
+	}
+	return s.durableStore.DeleteExpiredDurableHandles(ctx, now)
 }
 
 // DurableHandleStore returns this store as a DurableHandleStore.
