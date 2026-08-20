@@ -173,6 +173,9 @@ func (s *BadgerMetadataStore) PutBlockRecord(ctx context.Context, rec block.Bloc
 	if err != nil {
 		return fmt.Errorf("badger PutBlockRecord encode: %w", err)
 	}
+	// A blind Set registers no read, so Badger's SSI has nothing to abort on and
+	// this needs no conflict retry — unlike DecrLiveChunkCount below, whose
+	// read-modify-write on the same key does.
 	if err := s.db.Update(func(txn *badgerdb.Txn) error {
 		return txn.Set(keyBlockRecord(rec.BlockID), data)
 	}); err != nil {
@@ -214,6 +217,7 @@ func (s *BadgerMetadataStore) DeleteBlockRecord(ctx context.Context, blockID str
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Blind delete: no read, so no SSI conflict to retry.
 	err := s.db.Update(func(txn *badgerdb.Txn) error {
 		err := txn.Delete(keyBlockRecord(blockID))
 		if errors.Is(err, badgerdb.ErrKeyNotFound) {
@@ -280,7 +284,7 @@ func (s *BadgerMetadataStore) DecrLiveChunkCount(ctx context.Context, blockID st
 	err := s.updateWithConflictRetry(ctx, func(txn *badgerdb.Txn) error {
 		item, err := txn.Get(keyBlockRecord(blockID))
 		if errors.Is(err, badgerdb.ErrKeyNotFound) {
-			return fmt.Errorf("badger DecrLiveChunkCount: block %q not found", blockID)
+			return fmt.Errorf("block %q not found", blockID)
 		}
 		if err != nil {
 			return err
