@@ -133,7 +133,7 @@ func (lm *Manager) enqueuePersistBarrierLocked(run func()) {
 func (lm *Manager) unlock() {
 	ops := lm.pendingPersist
 	lm.pendingPersist = nil
-	lm.unlock()
+	lm.mu.Unlock()
 
 	for _, op := range ops {
 		op.exec()
