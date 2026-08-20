@@ -106,6 +106,18 @@ type supersededReaper interface {
 	ReapSupersededManifest(ctx context.Context, id FileID, runStart, runEnd int64, newOffsets map[int64]struct{}) error
 }
 
+// manifestRowEnder is an optional BlockSink capability: it reports how far the
+// manifest coverage straddling an offset reaches. A run that stops inside a row
+// leaves that row half superseded — the run-end reap deletes it, because its
+// start lies in the run, and the part past the run keeps no cover at all, since
+// a row claims a prefix of its chunk and so cannot be made to start mid-chunk.
+// Carving through to the reported offset is what keeps that range covered. Sinks
+// without a metadata store (test fakes) don't implement it and a run is carved
+// exactly as snapshotted.
+type manifestRowEnder interface {
+	ManifestRowEndAfter(ctx context.Context, id FileID, off int64) (int64, error)
+}
+
 // errCarveNotWired is returned by Carve when the dedup/sink collaborators have
 // not been injected via SetCarveTargets.
 var errCarveNotWired = errors.New("journal: carve targets not wired (SetCarveTargets)")
@@ -249,6 +261,11 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 // packs novel chunks into blocks (flushed at CarveBlockSize and at the run's end),
 // and flips the run's records to synced as the durable frontier advances.
 func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interval, res *CarveResult) error {
+	run, err := s.extendRunToRowEnd(ctx, sh, id, run)
+	if err != nil {
+		return err
+	}
+
 	c := chunker.NewChunkerWithParams(s.cfg.ChunkParams)
 	rr := &runReader{s: s, sh: sh, id: id, ivs: run}
 
@@ -440,6 +457,98 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 	if r, ok := s.sink.(supersededReaper); ok {
 		if err := r.ReapSupersededManifest(ctx, id, run[0].fileOff, run[len(run)-1].end(), newOffsets); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// extendRunToRowEnd grows the run forward to the end of the manifest coverage its
+// end lands inside, so the fresh tiling covers every row the run-end reap is
+// about to delete. The added bytes are already durable; they are re-chunked only
+// to re-tile the range they share with a superseded row, which is the same price
+// a partial overwrite of a warm interval already pays.
+//
+// The extension is skipped whole unless every byte of it is live, contiguous and
+// warm. An evicted range holds no local bytes to re-chunk, and half an extension
+// still ends inside the row.
+//
+// ponytail: a row reaching past a later dirty run is left alone, so that run
+// still ends mid-row; covering it means merging the two runs, which is worth
+// building only if that shape shows up in practice.
+func (s *Store) extendRunToRowEnd(ctx context.Context, sh *shard, id FileID, run []interval) ([]interval, error) {
+	ender, ok := s.sink.(manifestRowEnder)
+	if !ok {
+		return run, nil
+	}
+	runEnd := run[len(run)-1].end()
+	if !warmAt(sh, id, runEnd) {
+		return run, nil // nothing warm past the run: no extension is possible
+	}
+	rowEnd, err := ender.ManifestRowEndAfter(ctx, id, runEnd)
+	if err != nil {
+		return nil, err
+	}
+	if rowEnd <= runEnd {
+		return run, nil
+	}
+	tail := warmTail(sh, id, runEnd, rowEnd)
+	if len(tail) == 0 {
+		return run, nil
+	}
+	// A fresh slice: run aliases the carve snapshot, whose next entries belong to
+	// the following run.
+	out := make([]interval, 0, len(run)+len(tail))
+	out = append(out, run...)
+	return append(out, tail...), nil
+}
+
+// warmAt reports whether a warm live interval (durable locally, not evicted, not
+// dirty) starts exactly at off. A run with nothing warm past its end cannot be
+// extended whatever the manifest says, so this keeps the manifest lookup off the
+// common path: a carve of freshly appended bytes ends at the file's end, where
+// nothing lives at all.
+func warmAt(sh *shard, id FileID, off int64) bool {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	fi := sh.index[id]
+	if fi == nil {
+		return false
+	}
+	for k := range fi.ivs {
+		if fi.ivs[k].fileOff == off {
+			return fi.ivs[k].synced && !fi.ivs[k].cold
+		}
+	}
+	return false
+}
+
+// warmTail returns the live intervals covering [from, to), clipped to that range,
+// when every one of them is present, contiguous and warm (durable locally, not
+// evicted, not still dirty). Anything else yields nil: a hole or an evicted range
+// has no local bytes to re-chunk, and a dirty range belongs to a later run that
+// would then carve it twice.
+func warmTail(sh *shard, id FileID, from, to int64) []interval {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	fi := sh.index[id]
+	if fi == nil {
+		return nil
+	}
+	var out []interval
+	cur := from
+	for k := range fi.ivs {
+		iv := fi.ivs[k]
+		if iv.end() <= cur {
+			continue
+		}
+		if iv.fileOff > cur || iv.cold || !iv.synced {
+			return nil
+		}
+		stop := min(iv.end(), to)
+		out = append(out, iv.clamp(cur, stop))
+		cur = stop
+		if cur >= to {
+			return out
 		}
 	}
 	return nil

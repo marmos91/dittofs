@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -296,6 +297,60 @@ func DefaultCommitBlock(
 		// per carve run (ReapSupersededManifest), not per batch — see below.
 		return ProjectCommittedChunks(ctx, tx, payloadIDFromChunks(fileChunks), fileChunks)
 	})
+}
+
+// ManifestRowEndAfter reports how far the manifest coverage straddling off
+// reaches: the greatest end among the rows that start strictly before off and
+// extend past it, or off when none does. Rows starting in the range that opens up
+// are folded in too, so the answer is a point past which no straddling row is
+// left — with overlapping rows (a truncate-narrow plus a re-carve leaves some) a
+// single pass would stop one row short.
+//
+// A carve run asks this about its own end. A run that stops inside a row leaves
+// that row half superseded: the run-end reap deletes it, because its start lies
+// in the run, and the part past the run keeps no cover at all — a row claims a
+// prefix of its chunk, so no row can be made to start mid-chunk. Carving through
+// to this offset is what keeps that range covered.
+//
+// A payload with no rows yet (the first carve of a file) is not an error: there
+// is nothing to straddle, so the run stands as snapshotted.
+//
+// ponytail: O(n log n) over the whole manifest per carve run, on top of the reap's
+// own scan; a straddle index would pay off only once profiling at real chunk
+// counts says these two scans matter.
+func ManifestRowEndAfter(ctx context.Context, tx Transaction, payloadID string, off int64) (int64, error) {
+	if payloadID == "" {
+		return off, nil
+	}
+	rows, err := tx.ListFileChunks(ctx, payloadID)
+	if err != nil {
+		if errors.Is(err, block.ErrFileChunkNotFound) {
+			return off, nil
+		}
+		return 0, fmt.Errorf("manifest row end after %d for %s: %w", off, payloadID, err)
+	}
+	spans := make([][2]int64, 0, len(rows))
+	for _, r := range rows {
+		if r == nil {
+			continue
+		}
+		rowOff, ok := block.ParseChunkOffset(r.ID)
+		if !ok {
+			continue
+		}
+		spans = append(spans, [2]int64{int64(rowOff), int64(rowOff) + int64(r.DataSize)})
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i][0] < spans[j][0] })
+	end := off
+	for _, sp := range spans {
+		if sp[0] >= end {
+			break // rows are sorted by start: nothing later can straddle end either
+		}
+		if sp[1] > end {
+			end = sp[1]
+		}
+	}
+	return end, nil
 }
 
 // ReapSupersededManifest deletes the manifest rows a carve run supersedes and
