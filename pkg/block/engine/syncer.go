@@ -511,13 +511,13 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 	// the trailing ID component is the chunk's absolute byte
 	// Offset (FastCDC), not a synthetic blockIdx — do NOT multiply by
 	// BlockSize.
-	prefix := payloadID + "/"
 	for i := len(blocks) - 1; i >= 0; i-- {
 		fb := blocks[i]
 		if fb == nil || fb.Hash.IsZero() {
 			continue
 		}
-		if len(fb.ID) <= len(prefix) || fb.ID[:len(prefix)] != prefix {
+		chunkOffset, ok := block.ChunkOffsetFor(fb.ID, payloadID)
+		if !ok {
 			continue
 		}
 		synced, err := hashStore.IsSynced(ctx, fb.Hash)
@@ -525,10 +525,6 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 			return 0, fmt.Errorf("is synced %s: %w", fb.Hash, err)
 		}
 		if !synced {
-			continue
-		}
-		chunkOffset, ok := block.ParseChunkOffset(fb.ID)
-		if !ok {
 			continue
 		}
 		return chunkOffset + uint64(fb.DataSize), nil
