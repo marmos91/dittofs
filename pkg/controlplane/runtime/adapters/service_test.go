@@ -553,8 +553,16 @@ func TestStartAdapter_ReportsBindFailure(t *testing.T) {
 			if err == nil {
 				t.Fatal("EnableAdapter reported success for an adapter that never bound its port")
 			}
-			if !strings.Contains(err.Error(), "address already in use") {
-				t.Fatalf("error does not name the bind failure: %v", err)
+			// Assert on the parts every platform words the same way. The
+			// operating systems disagree on the wording of the errno itself
+			// ("address already in use" against "Only one usage of each socket
+			// address..."), but the caller needs the same two facts either way:
+			// that a bind is what failed, and which port refused it.
+			if !strings.Contains(err.Error(), "bind:") {
+				t.Errorf("error does not identify a bind failure: %v", err)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("%d", port)) {
+				t.Errorf("error does not name the port that refused: %v", err)
 			}
 
 			if svc.IsAdapterRunning(adapterType) {
