@@ -131,12 +131,21 @@ surfaced while fixing.
 | LOW structure debt outside the store and lock packages | #1994 | **Open, largely ruled.** 19 items resolved: 1 drift found and fixed (#2040), 1 untested contract pinned (#2041), 1 refuted outright, 3 premises corrected, 6 pairs deferred to #1828, the rest WONTFIX with `ponytail:` markers (#2042). |
 | Store-family duplication (pool vs transaction CRUD, generation-guarded caches, config reconciliation) | #1828 | Open by design. Seven MED and several LOW findings are not fixable as isolated patches. |
 | `PunchHole` cold read does not read back as zeros | #1956 | Open. Found by the mutation soak the audit fixes prompted, not by the audit. Residual carve-seam shadowing is split to #1974. |
-| `ReapSupersededManifest` deletes a row reaching past the run end | #2038 | Open. Mirror image of #1992, verified pre-existing. Leaves a genuine gap whose cold read fails `chunk not found` — not a silent zero, which is the better of the two failures. |
-| `TestBackpressureTerminalWhenNoSyncer` wall-clock flake | #2047 | Open pending #2048. Test-only; the product bounded correctly. |
+| `TestSQLite_ConcurrentWritesBackpressureNoEIO` retry-budget flake | #1777 | **Reopened.** Recurred on the Windows runner and once locally under contention; both load-induced, both on branches that touch no metadata store. Two clean runs are not a rate measurement, so neither investigation could bound it. Its wall-clock retry budget has the same defect #2048 just fixed in the journal package. |
 
 **The audit's own findings are therefore closed.** #1828 is open by design, #1956/#1974 came from
-the soak rather than the audit, and #2038/#2047 were found while fixing. Only #2029 and #1994 carry
-audit debt, both with every remaining item individually ruled rather than merely swept.
+the soak rather than the audit, and #2038/#2047 were both found *and closed* while fixing (#2049,
+#2048). Only #2029 and #1994 carry audit debt, both with every remaining item individually ruled
+rather than merely swept. #1777 is a pre-existing flake this wave re-surfaced, not audit debt.
+
+The two carve-seam defects turned out to be one mechanism failing at opposite ends.
+`remarkFragmentsDirty` re-dirties the warm survivors of a partially-overwritten interval so the
+next run swallows the old row whole — but it keys on *journal interval* boundaries, which are not
+manifest row boundaries. A punch whose **start** lands on such a boundary inside a row leaves a
+straddler the reap cannot reach (#1992, fixed by narrowing its claim); a write whose **end** lands
+on one leaves a row the run stops inside (#2038, fixed by extending the run through it). The two
+fixes compose: extend when the bytes are live, contiguous and warm, tolerate the overlap when they
+are not.
 
 Both journal findings in #1994 that carried only a recommendation are ruled. `segment.go:279`
 is **WONTFIX**: `sh.lastVersion` is a scalar watermark that `groupCommit` and `DurableExtent` read
