@@ -125,6 +125,19 @@ func (s *Store) sealableActive(act *segmentMeta) bool {
 // It returns whether it sealed any segment and surfaces a seal failure (fsync or
 // next-segment creation) rather than masking it as a no-op, and stops early if
 // ctx is cancelled. Caller holds no lock.
+//
+// ponytail: the shard lock is held across the seal's four fsyncs (two in
+// sealInPlace, two more creating the replacement segment), stalling that one
+// shard's appends, reads and commits for their duration. Eviction and repack
+// snapshot-then-unlock instead, but only because their victim is sealed —
+// immutable, unreachable by any appender — and their busy claim merely excludes
+// each other; the append path never consults that claim, so it does not transfer
+// to an active segment. Unlocking here would let a record land between the data
+// fsync and the sealed bit, which is the ordering the seal exists to guarantee.
+// Excluding appends some other way is the upgrade path, worth it only if a drain
+// stall shows up in a profile — this runs once per operator-triggered drain, one
+// shard at a time, and the same seal already runs under the same lock on every
+// segment rotation in the write path.
 func (s *Store) sealSyncedActives(ctx context.Context) (bool, error) {
 	sealedAny := false
 	for _, sh := range s.shards {
