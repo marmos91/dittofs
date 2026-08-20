@@ -78,6 +78,13 @@ type adapterEntry struct {
 	cancelled bool
 }
 
+// serving reports whether the entry describes an adapter that confirmed its
+// listener and has not since been abandoned. A cancelled entry has not: it
+// holds the type so nothing else claims it, but either a start gave up waiting
+// for the bind or a teardown gave up waiting for the exit, so nothing about it
+// is known to be listening. Caller must hold mu.
+func (e *adapterEntry) serving() bool { return !e.cancelled }
+
 // Service manages protocol adapter lifecycle.
 type Service struct {
 	mu      sync.RWMutex
@@ -342,11 +349,34 @@ func (s *Service) awaitListener(adapterType string, entry *adapterEntry) error {
 	case <-time.After(s.startTimeout):
 		// The adapter is still running and may yet bind, so the entry stays to
 		// keep holding the type, marked the same way a timed-out stop marks it.
+		// Its context is cancelled, so it will exit; reap it then, or the type
+		// stays claimed by an adapter no caller can reach — a failed start rolls
+		// the store row back, and a later stop looks that row up before it would
+		// ever reach this entry.
 		entry.cancel()
 		s.mu.Lock()
 		entry.cancelled = true
 		s.mu.Unlock()
+		go s.reapWhenServed(adapterType, entry)
 		return fmt.Errorf("adapter %s listener not ready after %s", adapterType, s.startTimeout)
+	}
+}
+
+// reapWhenServed drops the entry once its serve goroutine has returned, freeing
+// the type for a later start. It is the cleanup for an entry that was abandoned
+// mid-flight: the context is already cancelled, so the wait ends as soon as the
+// adapter unwinds. The entry is dropped only while the map still holds it, so a
+// teardown that got there first cannot have its replacement removed. An adapter
+// that never returns keeps its entry, which is the honest answer — it may still
+// hold the socket.
+func (s *Service) reapWhenServed(adapterType string, entry *adapterEntry) {
+	<-entry.served
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.entries[adapterType] == entry {
+		delete(s.entries, adapterType)
+		logger.Info("Abandoned adapter released its socket", "type", adapterType)
 	}
 }
 
@@ -392,6 +422,7 @@ func (s *Service) stopAdapter(adapterType string) error {
 		entry.stopping = false
 		entry.cancelled = true
 		s.mu.Unlock()
+		go s.reapWhenServed(adapterType, entry)
 		logger.Warn("Adapter stop timed out", "type", adapterType)
 		return fmt.Errorf("adapter %s stop timed out", adapterType)
 	}
@@ -444,27 +475,29 @@ func (s *Service) LoadAdaptersFromStore(ctx context.Context) error {
 	return nil
 }
 
+// ListRunningAdapters names the adapters that are serving. It answers the same
+// question as [Service.IsAdapterRunning] and must agree with it — readiness
+// reports this list, so an abandoned entry counted here would advertise a
+// listener that may not exist.
 func (s *Service) ListRunningAdapters() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	types := make([]string, 0, len(s.entries))
-	for t := range s.entries {
-		types = append(types, t)
+	for t, e := range s.entries {
+		if e.serving() {
+			types = append(types, t)
+		}
 	}
 	return types
 }
 
-// IsAdapterRunning reports whether an adapter of the given type is serving. A
-// cancelled entry is not: it holds the type so nothing else claims it, but its
-// adapter never confirmed the listener — either a start gave up waiting for the
-// bind, or a teardown gave up waiting for the exit. Reporting those as running
-// would advertise a listener that may not exist.
+// IsAdapterRunning reports whether an adapter of the given type is serving.
 func (s *Service) IsAdapterRunning(adapterType string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	e, exists := s.entries[adapterType]
-	return exists && !e.cancelled
+	return exists && e.serving()
 }
 
 // GetAdapter returns the running adapter for the given type, or nil if
