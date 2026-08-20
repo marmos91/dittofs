@@ -188,3 +188,18 @@ func TestManifestCheckHandler_RuntimeError(t *testing.T) {
 		t.Errorf("response body leaks the underlying error path: %q", w.Body.String())
 	}
 }
+
+// TestManifestCheckHandler_OversizedBody asserts the endpoint caps the body it
+// reads. The switches it carries are two booleans, so anything approaching the
+// limit is a caller the handler should refuse rather than read.
+func TestManifestCheckHandler_OversizedBody(t *testing.T) {
+	fake := &fakeManifestCheckRuntime{res: &engine.ManifestCheckResult{}}
+	body := `{"plan_repairs":true,"pad":"` + strings.Repeat("x", 2<<20) + `"}`
+	w := runManifestCheckBody(fake, "myshare", body)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d (body=%q)", w.Code, w.Body.String())
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("runtime was called for an oversized body: %+v", fake.calls)
+	}
+}

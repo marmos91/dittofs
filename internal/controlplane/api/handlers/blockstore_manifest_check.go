@@ -76,8 +76,19 @@ func (h *BlockStoreManifestCheckHandler) RunManifestCheck(w http.ResponseWriter,
 		return
 	}
 
+	// Decoded here rather than through decodeJSONBody because an absent body
+	// is not an error on this endpoint: it is what a caller asking for a plain
+	// read-only scan sends. The size cap is the same one every other body gets.
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	var req BlockStoreManifestCheckRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			WriteProblem(w, http.StatusRequestEntityTooLarge,
+				"Request Entity Too Large",
+				"request body exceeds the 1 MiB limit")
+			return
+		}
 		BadRequest(w, "invalid request body")
 		return
 	}
