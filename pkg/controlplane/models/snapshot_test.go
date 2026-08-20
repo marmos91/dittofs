@@ -1,6 +1,8 @@
 package models
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,5 +113,61 @@ func TestSnapshot_FieldSet(t *testing.T) {
 		if !strings.Contains(src, needle) {
 			t.Errorf("snapshot.go missing required field %q", name)
 		}
+	}
+}
+
+// TestSnapshotFailureError covers rebuilding a caller-facing error from a
+// terminal row: a recorded kind restores the sentinel identity, and a row
+// without one (written before the kind was persisted, or classified from a
+// cause matching no sentinel) still yields a non-nil error so a failed
+// snapshot can never read as a success.
+func TestSnapshotFailureError(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		row  Snapshot
+		want error // nil = any non-nil error, matching no sentinel
+	}{
+		{"verify", Snapshot{Error: "boom", FailureKind: FailureKindVerify}, ErrSnapshotVerifyFailed},
+		{"backup", Snapshot{Error: "boom", FailureKind: FailureKindBackup}, ErrSnapshotBackupFailed},
+		{"drain timeout", Snapshot{Error: "boom", FailureKind: FailureKindDrainTimeout}, ErrSnapshotDrainTimeout},
+		{"kind not recorded", Snapshot{Error: "boom"}, nil},
+		{"unknown kind", Snapshot{Error: "boom", FailureKind: "martian"}, nil},
+		{"no message either", Snapshot{}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := SnapshotFailureError(&tc.row)
+			if got == nil {
+				t.Fatal("SnapshotFailureError = nil, want non-nil for a failed row")
+			}
+			if tc.want != nil && !errors.Is(got, tc.want) {
+				t.Fatalf("SnapshotFailureError = %v, want errors.Is(%v)", got, tc.want)
+			}
+			if tc.want == nil && SnapshotFailureKind(got) != "" {
+				t.Fatalf("SnapshotFailureError = %v, want no sentinel", got)
+			}
+		})
+	}
+}
+
+// TestSnapshotFailureKind pins that the kind persisted by the orchestration
+// round-trips back to the sentinel the caller matches on.
+func TestSnapshotFailureKind(t *testing.T) {
+	t.Parallel()
+
+	for _, sentinel := range []error{ErrSnapshotVerifyFailed, ErrSnapshotBackupFailed, ErrSnapshotDrainTimeout} {
+		cause := fmt.Errorf("snapshot create abc: step failed: %w: %v", sentinel, errors.New("cause"))
+		row := Snapshot{Error: cause.Error(), FailureKind: SnapshotFailureKind(cause)}
+		if !errors.Is(SnapshotFailureError(&row), sentinel) {
+			t.Fatalf("round-trip lost sentinel %v (kind %q)", sentinel, row.FailureKind)
+		}
+	}
+	if got := SnapshotFailureKind(errors.New("unclassified")); got != "" {
+		t.Fatalf("SnapshotFailureKind(unclassified) = %q, want \"\"", got)
+	}
+	if got := SnapshotFailureKind(nil); got != "" {
+		t.Fatalf("SnapshotFailureKind(nil) = %q, want \"\"", got)
 	}
 }
