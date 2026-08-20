@@ -441,3 +441,40 @@ func TestPurgeLegacyCAS_ConfiguredShareNotRegistered(t *testing.T) {
 		t.Fatalf("purged %d cas objects, want %d", rs.deleted, len(rs.objects))
 	}
 }
+
+// TestRunBlockGC_PropagatesRemoteTierErrorDetail asserts the server-wide sweep
+// carries a remote sweep's FirstErrors and dry-run candidates into the
+// aggregate it returns, not just the ErrorCount. FirstErrors is the only cause
+// detail dfsctl renders for a failed GC run, so dropping it leaves an operator
+// with a bare "errors: N".
+func TestRunBlockGC_PropagatesRemoteTierErrorDetail(t *testing.T) {
+	orig := collectGarbageFn
+	collectGarbageFn = func(_ context.Context, _ engine.MetadataReconciler, _ *engine.Options) *engine.GCStats {
+		return &engine.GCStats{
+			ErrorCount:       2,
+			FirstErrors:      []string{"s3: connection refused", "s3: access denied"},
+			DryRun:           true,
+			DryRunCandidates: []string{"blocks/abc"},
+		}
+	}
+	t.Cleanup(func() { collectGarbageFn = orig })
+
+	rt := newRuntimeForGC(t, map[string]remote.RemoteStore{"/share-a": &fakeRemoteStore{name: "s3"}})
+
+	stats, err := rt.RunBlockGC(context.Background(), true)
+	if err != nil {
+		t.Fatalf("RunBlockGC: %v", err)
+	}
+	if stats.ErrorCount != 2 {
+		t.Errorf("ErrorCount = %d, want 2", stats.ErrorCount)
+	}
+	if len(stats.FirstErrors) != 2 {
+		t.Fatalf("FirstErrors = %v, want the remote sweep's 2 entries", stats.FirstErrors)
+	}
+	if !stats.DryRun {
+		t.Error("DryRun not propagated from the remote sweep")
+	}
+	if len(stats.DryRunCandidates) != 1 {
+		t.Errorf("DryRunCandidates = %v, want 1 entry", stats.DryRunCandidates)
+	}
+}

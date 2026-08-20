@@ -137,7 +137,7 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, dryRun bool, progress fun
 			rec := &perRemoteReconciler{rt: r, shares: entry.Shares}
 
 			stats := collectGarbageFn(ctx, rec, opts)
-			s := accumulateGCStats(total, stats, false)
+			s := accumulateGCStats(total, stats)
 			logger.Info("RunBlockGC: complete",
 				"configID", entry.ConfigID,
 				"hashesMarked", s.HashesMarked,
@@ -226,7 +226,7 @@ func (r *Runtime) runLocalGC(ctx context.Context, shareFilter string, dryRun boo
 
 		rec := &perRemoteReconciler{rt: r, shares: []string{entry.ShareName}}
 		stats := collectGarbageLocalFn(ctx, entry.Store, rec, opts)
-		s := accumulateGCStats(total, stats, true)
+		s := accumulateGCStats(total, stats)
 		logger.Info("local GC: complete",
 			"tier", "local",
 			"share", entry.ShareName,
@@ -341,7 +341,7 @@ func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bo
 
 			rec := &perRemoteReconciler{rt: r, shares: entry.Shares}
 			stats := collectGarbageFn(ctx, rec, opts)
-			s := accumulateGCStats(total, stats, true)
+			s := accumulateGCStats(total, stats)
 			logger.Info("RunBlockGCForShare: complete",
 				"share", name,
 				"configID", entry.ConfigID,
@@ -399,9 +399,12 @@ var collectGarbageFn = engine.CollectGarbage
 // accumulateGCStats folds a per-remote stats result into total and returns
 // the per-remote snapshot for logging. Returns a zero value when stats is
 // nil — CollectGarbage always returns non-nil but the defensive copy keeps
-// callers panic-free if that ever changes. When includeDryRunMeta is true,
-// also propagates DryRun, DryRunCandidates, and FirstErrors.
-func accumulateGCStats(total, stats *engine.GCStats, includeDryRunMeta bool) engine.GCStats {
+// callers panic-free if that ever changes.
+//
+// DryRun, DryRunCandidates and FirstErrors propagate like every other field.
+// FirstErrors in particular is the only cause detail an operator gets for a
+// failed sweep — ErrorCount alone renders as a count with no explanation.
+func accumulateGCStats(total, stats *engine.GCStats) engine.GCStats {
 	if stats == nil {
 		return engine.GCStats{}
 	}
@@ -416,13 +419,11 @@ func accumulateGCStats(total, stats *engine.GCStats, includeDryRunMeta bool) eng
 	total.OrphanBlocks += s.OrphanBlocks
 	total.BytesReclaimed += s.BytesReclaimed
 	total.Errors += s.Errors
-	if includeDryRunMeta {
-		if s.DryRun {
-			total.DryRun = true
-		}
-		total.DryRunCandidates = append(total.DryRunCandidates, s.DryRunCandidates...)
-		total.FirstErrors = append(total.FirstErrors, s.FirstErrors...)
+	if s.DryRun {
+		total.DryRun = true
 	}
+	total.DryRunCandidates = append(total.DryRunCandidates, s.DryRunCandidates...)
+	total.FirstErrors = append(total.FirstErrors, s.FirstErrors...)
 	return s
 }
 
