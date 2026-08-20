@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -124,6 +125,51 @@ func runBlockRecordOps(t *testing.T, store metadata.Store) {
 		_, err := store.DecrLiveChunkCount(ctx, "does-not-exist", 1)
 		if err == nil {
 			t.Fatal("DecrLiveChunkCount(missing) expected error, got nil")
+		}
+	})
+
+	// Concurrent decrements of one block record must every one of them land.
+	// DecrLiveChunkCount is a read-modify-write on a single key, so a backend
+	// with optimistic concurrency control aborts all but one of a concurrent
+	// batch; the store has to retry internally, because the GC caller that
+	// drives this has no retry of its own and would silently lose decrements.
+	t.Run("ConcurrentDecrLiveChunkCount", func(t *testing.T) {
+		const writers = 8
+		seed := block.BlockRecord{
+			BlockID:        "blk-concurrent-decr",
+			BlockHash:      block.ContentHash{9, 9, 9},
+			Length:         4096,
+			LiveChunkCount: writers,
+			SyncState:      block.BlockStatePending,
+		}
+		if err := store.PutBlockRecord(ctx, seed); err != nil {
+			t.Fatalf("PutBlockRecord(seed) error = %v", err)
+		}
+
+		errs := make(chan error, writers)
+		var wg sync.WaitGroup
+		for range writers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, err := store.DecrLiveChunkCount(ctx, seed.BlockID, 1)
+				errs <- err
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Errorf("concurrent DecrLiveChunkCount() error = %v", err)
+			}
+		}
+
+		got, found, err := store.GetBlockRecord(ctx, seed.BlockID)
+		if err != nil || !found {
+			t.Fatalf("GetBlockRecord() after concurrent decrements: found = %v, err = %v", found, err)
+		}
+		if got.LiveChunkCount != 0 {
+			t.Errorf("LiveChunkCount = %d after %d concurrent decrements of 1, want 0 (a lost decrement means a retry was skipped)", got.LiveChunkCount, writers)
 		}
 	})
 }
