@@ -100,3 +100,42 @@ func TestReapSupersededManifest_LeavesDisjointRowsAlone(t *testing.T) {
 
 	require.Equal(t, [][2]int64{{0, 2000}, {2000, 3000}}, tiling(t, tx, pid))
 }
+
+// TestManifestRowEndAfter covers the offset a carve run has to reach so the reap
+// never deletes a row whose tail the run leaves uncovered.
+func TestManifestRowEndAfter(t *testing.T) {
+	const pid = "share/p"
+	ctx := context.Background()
+
+	t.Run("no rows", func(t *testing.T) {
+		end, err := ManifestRowEndAfter(ctx, newManifestTx(pid), pid, 2000)
+		require.NoError(t, err)
+		require.Equal(t, int64(2000), end)
+	})
+
+	t.Run("row boundary", func(t *testing.T) {
+		tx := newManifestTx(pid)
+		seedRows(t, tx, pid, [][2]uint64{{0, 2000}, {2000, 1000}})
+		end, err := ManifestRowEndAfter(ctx, tx, pid, 2000)
+		require.NoError(t, err)
+		require.Equal(t, int64(2000), end, "a row starting at the offset does not straddle it")
+	})
+
+	t.Run("straddler", func(t *testing.T) {
+		tx := newManifestTx(pid)
+		seedRows(t, tx, pid, [][2]uint64{{0, 1000}, {1000, 2000}, {3000, 1000}})
+		end, err := ManifestRowEndAfter(ctx, tx, pid, 2500)
+		require.NoError(t, err)
+		require.Equal(t, int64(3000), end)
+	})
+
+	t.Run("overlapping chain", func(t *testing.T) {
+		// The row at 2800 starts past the probe but inside the straddler, so a
+		// single pass would stop at 3000 and still leave 2800..4000 half covered.
+		tx := newManifestTx(pid)
+		seedRows(t, tx, pid, [][2]uint64{{0, 1000}, {1000, 2000}, {2800, 1200}, {4000, 500}})
+		end, err := ManifestRowEndAfter(ctx, tx, pid, 2500)
+		require.NoError(t, err)
+		require.Equal(t, int64(4000), end)
+	})
+}

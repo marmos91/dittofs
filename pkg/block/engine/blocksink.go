@@ -160,6 +160,35 @@ func (s localBlockSink) ReapSupersededManifest(ctx context.Context, id journal.F
 	})
 }
 
+// ManifestRowEndAfter answers journal's run-extension query: how far the manifest
+// coverage straddling off reaches, so a carve run does not stop inside a row it
+// is about to supersede. A nil committer (the clone fixture) has no manifest, so
+// the run stands as snapshotted.
+func (s localBlockSink) ManifestRowEndAfter(ctx context.Context, id journal.FileID, off int64) (int64, error) {
+	if s.committer == nil {
+		return off, nil
+	}
+	return manifestRowEndAfter(ctx, s.committer, string(id), off)
+}
+
+// ManifestRowEndAfter answers journal's run-extension query for the
+// remote-backed sink.
+func (s engineBlockSink) ManifestRowEndAfter(ctx context.Context, id journal.FileID, off int64) (int64, error) {
+	return manifestRowEndAfter(ctx, s.committer, string(id), off)
+}
+
+// manifestRowEndAfter runs the straddle lookup in a transaction, so it reads the
+// same manifest the reap will mutate.
+func manifestRowEndAfter(ctx context.Context, c blockCommitter, payloadID string, off int64) (int64, error) {
+	end := off
+	err := c.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		var err error
+		end, err = metadata.ManifestRowEndAfter(ctx, tx, payloadID, off)
+		return err
+	})
+	return end, err
+}
+
 // ReapSupersededManifest implements journal's optional run-end reap for the
 // remote-backed sink: delete the manifest rows the carve run superseded, atomic
 // with a re-projection of File.Blocks (#953).

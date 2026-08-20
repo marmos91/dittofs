@@ -72,3 +72,61 @@ func TestColdReadAtCarveSeam_PunchedRangeStaysZero(t *testing.T) {
 		}
 	}
 }
+
+// TestColdReadAtCarveSeam_RunEndInsideRowStaysCovered is the mirror of the test
+// above: instead of a run that STARTS inside an older row, one that ENDS inside
+// it. The reap deletes that row — its start lies in the run — and the part past
+// the run end has no other cover, because a row claims a prefix of its chunk and
+// so cannot start mid-chunk. Carve has to reach the row's end for the manifest
+// to keep tiling, and the whole file has to read back byte-for-byte from the
+// remote tier afterwards.
+//
+// The shape is reached by a second punch whose END lands on the journal interval
+// boundary the first punch left inside a manifest row: nothing partially overlaps
+// a warm interval there, so the run stops exactly at the boundary, mid-row.
+func TestColdReadAtCarveSeam_RunEndInsideRowStaysCovered(t *testing.T) {
+	ctx := context.Background()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	bs := newEngineWithRemote(t, ms, remotememory.New())
+	root := createShare(t, ms, "runend")
+	pid, _ := createRealFile(t, ms, "runend", "r.bin", root)
+
+	rng := rand.New(rand.NewSource(0x50AC + 22)) //nolint:gosec // deterministic fixture
+	seed := make([]byte, 6*1024*1024)
+	rng.Read(seed)
+	if _, err := bs.WriteAt(ctx, pid, nil, seed, 0); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	carve(t, bs, ctx, pid)
+
+	const firstOff, firstLen = 2092552, 2 << 20 // ends at 4189704
+	if _, err := bs.PunchHole(ctx, pid, manifestRefs(t, ms, pid), firstOff, firstLen); err != nil {
+		t.Fatalf("first punch: %v", err)
+	}
+	carve(t, bs, ctx, pid)
+
+	const secondOff = 1_000_000
+	if _, err := bs.PunchHole(ctx, pid, manifestRefs(t, ms, pid), secondOff, firstOff+firstLen-secondOff); err != nil {
+		t.Fatalf("second punch: %v", err)
+	}
+	carve(t, bs, ctx, pid)
+
+	assertManifestTiles(t, ms, pid, int64(len(seed)), "after-second-carve")
+
+	if _, err := bs.DrainLocalSynced(ctx); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	want := append([]byte{}, seed...)
+	for i := secondOff; i < firstOff+firstLen; i++ {
+		want[i] = 0
+	}
+	got := make([]byte, len(seed))
+	if _, err := bs.ReadAt(ctx, pid, got, 0); err != nil {
+		t.Fatalf("cold read: %v", err)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("cold read differs at offset %d: got %#x, want %#x", i, got[i], want[i])
+		}
+	}
+}
