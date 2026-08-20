@@ -79,7 +79,7 @@ func (r *Runtime) runBlockGCReconcile(ctx context.Context, dryRun bool, progress
 	if err != nil {
 		return total, err
 	}
-	accumulateGCStats(total, sweep, true)
+	accumulateGCStats(total, sweep)
 	logger.Info("RunBlockGCReconcile: complete",
 		"dryRun", dryRun,
 		"strandedRowsReaped", total.StrandedRowsReaped,
