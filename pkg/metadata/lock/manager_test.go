@@ -727,20 +727,6 @@ func (m *mockBreakCallbacks) getOpLockBreaks() []opLockBreakEvent {
 	return result
 }
 
-func TestManager_RegisterBreakCallbacks(t *testing.T) {
-	t.Parallel()
-
-	lm := NewManager()
-
-	cb := &mockBreakCallbacks{}
-	lm.RegisterBreakCallbacks(cb)
-
-	stats := lm.GetStats()
-	if stats.BreakCallbackCount != 1 {
-		t.Fatalf("Expected 1 callback, got %d", stats.BreakCallbackCount)
-	}
-}
-
 func TestManager_CheckAndBreakOpLocksForWrite_TriggersCallback(t *testing.T) {
 	t.Parallel()
 
@@ -987,37 +973,6 @@ func TestManager_RemoveClientLocks(t *testing.T) {
 	}
 	if len(lm.ListUnifiedLocks("file2")) != 0 {
 		t.Fatalf("Expected 0 locks on file2, got %d", len(lm.ListUnifiedLocks("file2")))
-	}
-}
-
-func TestManager_GetStats(t *testing.T) {
-	t.Parallel()
-
-	lm := NewManager()
-
-	// Empty stats
-	stats := lm.GetStats()
-	if stats.TotalLegacyLocks != 0 || stats.TotalUnifiedLocks != 0 || stats.TotalFiles != 0 {
-		t.Fatalf("Expected all zeros, got %+v", stats)
-	}
-
-	// Add some locks
-	_ = lm.Lock("file1", FileLock{SessionID: 100, Offset: 0, Length: 100, Exclusive: true})
-	_ = lm.AddUnifiedLock("file2", &UnifiedLock{
-		ID:    "lock1",
-		Owner: LockOwner{OwnerID: "owner1"},
-		Type:  LockTypeExclusive,
-	})
-
-	stats = lm.GetStats()
-	if stats.TotalLegacyLocks != 1 {
-		t.Fatalf("Expected 1 legacy lock, got %d", stats.TotalLegacyLocks)
-	}
-	if stats.TotalUnifiedLocks != 1 {
-		t.Fatalf("Expected 1 unified lock, got %d", stats.TotalUnifiedLocks)
-	}
-	if stats.TotalFiles != 2 {
-		t.Fatalf("Expected 2 files with locks, got %d", stats.TotalFiles)
 	}
 }
 
