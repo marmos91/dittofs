@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,10 +19,16 @@ type fakeManifestCheckRuntime struct {
 	res   *engine.ManifestCheckResult
 	err   error
 	calls []string
+	opts  []engine.ManifestCheckOptions
 }
 
-func (f *fakeManifestCheckRuntime) CheckManifests(_ context.Context, shareName string) (*engine.ManifestCheckResult, error) {
+func (f *fakeManifestCheckRuntime) CheckManifests(
+	_ context.Context,
+	shareName string,
+	opts engine.ManifestCheckOptions,
+) (*engine.ManifestCheckResult, error) {
 	f.calls = append(f.calls, shareName)
+	f.opts = append(f.opts, opts)
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -33,6 +40,70 @@ func runManifestCheck(rt ManifestCheckRuntime, share string) *httptest.ResponseR
 	w := httptest.NewRecorder()
 	NewBlockStoreManifestCheckHandler(rt).RunManifestCheck(w, req)
 	return w
+}
+
+// runManifestCheckBody posts an explicit request body.
+func runManifestCheckBody(rt ManifestCheckRuntime, share, body string) *httptest.ResponseRecorder {
+	req := newAuditRequest(http.MethodPost, "/api/v1/shares/"+share+"/audit/manifest", share)
+	req.Body = io.NopCloser(strings.NewReader(body))
+	w := httptest.NewRecorder()
+	NewBlockStoreManifestCheckHandler(rt).RunManifestCheck(w, req)
+	return w
+}
+
+// TestManifestCheckHandler_RepairOptions pins the two properties the repair
+// switches have to hold at the boundary: a caller that sends no body — every
+// caller written before repairs existed — gets a read-only scan, and asking to
+// apply also asks to plan, so a repair is never applied unreported.
+func TestManifestCheckHandler_RepairOptions(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want engine.ManifestCheckOptions
+	}{
+		{name: "no body", body: "", want: engine.ManifestCheckOptions{}},
+		{name: "empty object", body: "{}", want: engine.ManifestCheckOptions{}},
+		{
+			name: "plan only",
+			body: `{"plan_repairs":true}`,
+			want: engine.ManifestCheckOptions{PlanRepairs: true},
+		},
+		{
+			name: "apply implies plan",
+			body: `{"apply_repairs":true}`,
+			want: engine.ManifestCheckOptions{PlanRepairs: true, ApplyRepairs: true},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeManifestCheckRuntime{res: &engine.ManifestCheckResult{Share: "/myshare"}}
+			var w *httptest.ResponseRecorder
+			if tc.body == "" {
+				w = runManifestCheck(fake, "myshare")
+			} else {
+				w = runManifestCheckBody(fake, "myshare", tc.body)
+			}
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d (body=%q)", w.Code, w.Body.String())
+			}
+			if len(fake.opts) != 1 || fake.opts[0] != tc.want {
+				t.Fatalf("options = %+v, want %+v", fake.opts, tc.want)
+			}
+		})
+	}
+}
+
+// TestManifestCheckHandler_BadBody asserts a malformed body is refused rather
+// than silently read as a read-only scan.
+func TestManifestCheckHandler_BadBody(t *testing.T) {
+	fake := &fakeManifestCheckRuntime{res: &engine.ManifestCheckResult{}}
+	w := runManifestCheckBody(fake, "myshare", "{not json")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d (body=%q)", w.Code, w.Body.String())
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("runtime was called for a malformed body: %+v", fake.calls)
+	}
 }
 
 // TestManifestCheckHandler_Success asserts the handler normalizes the share

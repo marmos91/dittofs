@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/internal/cli/output"
+	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 )
 
@@ -16,6 +17,13 @@ import (
 // table. They are always counted in the summary; they are off by default in
 // the detail because a sparse file legitimately has them.
 var checkIncludeHoles bool
+
+// checkRepair turns the scan into a repair run, and checkRepairYes skips the
+// confirmation. Without --yes the run is a dry run that ends at the prompt.
+var (
+	checkRepair    bool
+	checkRepairYes bool
+)
 
 var checkCmd = &cobra.Command{
 	Use:   "check [share]",
@@ -45,6 +53,25 @@ manifest, so it is counted separately and never fails the command. Pass
 The unknown-hash check is skipped on a share with no remote store: nothing is
 ever marked synced there, so every row would be reported.
 
+--repair adds a second half: for every finding, work out whether the store
+holds enough evidence to put the manifest back, list what that would take, and
+apply it once you confirm. Nothing is written before the prompt, so --repair on
+its own is a dry run; --yes answers the prompt for scripted use. Only two kinds
+of finding are repairable, and both restore a row the file already claims:
+
+  * a row with no parseable offset whose hash and length match exactly one
+    range the file claims and no row covers — the row is moved to that offset,
+    keeping everything else about it
+  * a range the file claims that no row covers, whose hash the synced-hash
+    store resolves — a row is written for it, and the remote already holds the
+    bytes it names
+
+A repair only ever adds coverage the file already asked for. It never drops a
+row, never widens or narrows a claim, and never marks a hash synced. Findings
+it cannot pair with that evidence — a row matching no claim, a claim whose hash
+nothing resolves, a hash the synced-hash store does not know — are reported and
+left alone: those need the bytes re-synced, not the metadata rewritten.
+
 With no argument every share is scanned. The command exits non-zero when
 damage is found, so it can be scripted (` + "`dfsctl store check || alert`" + `).
 
@@ -52,7 +79,9 @@ Examples:
   dfsctl store check
   dfsctl store check myshare
   dfsctl store check myshare --include-holes
-  dfsctl store check myshare -o json`,
+  dfsctl store check myshare -o json
+  dfsctl store check myshare --repair
+  dfsctl store check myshare --repair --yes`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runStoreCheck,
 }
@@ -60,6 +89,10 @@ Examples:
 func init() {
 	checkCmd.Flags().BoolVar(&checkIncludeHoles, "include-holes", false,
 		"list uncovered ranges that no file claims (legitimate for sparse files)")
+	checkCmd.Flags().BoolVar(&checkRepair, "repair", false,
+		"list the findings the store can put back, and apply them once confirmed")
+	checkCmd.Flags().BoolVar(&checkRepairYes, "yes", false,
+		"Skip confirmation prompt")
 }
 
 func runStoreCheck(_ *cobra.Command, args []string) error {
@@ -82,32 +115,49 @@ func runStoreCheck(_ *cobra.Command, args []string) error {
 		}
 	}
 
-	results := make([]*engine.ManifestCheckResult, 0, len(shareNames))
-	for _, name := range shareNames {
-		res, err := client.BlockStoreCheckManifests(name)
-		if err != nil {
-			return fmt.Errorf("failed to check share %q: %w", name, err)
-		}
-		if res == nil || res.Result == nil {
-			return fmt.Errorf("store check for share %q returned no result", name)
-		}
-		results = append(results, res.Result)
-	}
-
 	format, err := cmdutil.GetOutputFormatParsed()
 	if err != nil {
 		return err
 	}
-	switch format {
-	case output.FormatJSON:
-		err = output.PrintJSON(os.Stdout, results)
-	case output.FormatYAML:
-		err = output.PrintYAML(os.Stdout, results)
-	default:
-		err = printCheckTables(results)
+
+	// With --yes there is nothing to confirm, so the first pass is already
+	// the repair pass. Without it the first pass only plans, and the prompt
+	// decides whether a second one writes.
+	opts := apiclient.BlockStoreManifestCheckOptions{
+		PlanRepairs:  checkRepair,
+		ApplyRepairs: checkRepair && checkRepairYes,
 	}
+	results, err := scanShares(client, shareNames, opts)
 	if err != nil {
 		return err
+	}
+	if err := printCheckResults(results, format); err != nil {
+		return err
+	}
+
+	if checkRepair {
+		applied := opts.ApplyRepairs
+		if applied {
+			if format == output.FormatTable {
+				printRepairOutcome(results)
+			}
+		} else if applied, err = confirmAndRepair(client, shareNames, format, results); err != nil {
+			return err
+		}
+		if applied {
+			// Re-scan read-only so the verdict below describes the store as
+			// it stands now, not as the repair pass found it.
+			if results, err = scanShares(client, shareNames, apiclient.BlockStoreManifestCheckOptions{}); err != nil {
+				return err
+			}
+			if format == output.FormatTable {
+				fmt.Println()
+				fmt.Println("Store as it stands after the repair:")
+			}
+			if err := printCheckResults(results, format); err != nil {
+				return err
+			}
+		}
 	}
 
 	var damaged int
@@ -120,6 +170,82 @@ func runStoreCheck(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("manifest damage found on %d of %d share(s)", damaged, len(results))
 	}
 	return nil
+}
+
+// scanShares runs one scan per share with the same options.
+func scanShares(
+	client *apiclient.Client,
+	shareNames []string,
+	opts apiclient.BlockStoreManifestCheckOptions,
+) ([]*engine.ManifestCheckResult, error) {
+	results := make([]*engine.ManifestCheckResult, 0, len(shareNames))
+	for _, name := range shareNames {
+		res, err := client.BlockStoreCheckManifests(name, opts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check share %q: %w", name, err)
+		}
+		if res == nil || res.Result == nil {
+			return nil, fmt.Errorf("store check for share %q returned no result", name)
+		}
+		results = append(results, res.Result)
+	}
+	return results, nil
+}
+
+func printCheckResults(results []*engine.ManifestCheckResult, format output.Format) error {
+	switch format {
+	case output.FormatJSON:
+		return output.PrintJSON(os.Stdout, results)
+	case output.FormatYAML:
+		return output.PrintYAML(os.Stdout, results)
+	default:
+		return printCheckTables(results)
+	}
+}
+
+// confirmAndRepair prompts for the plan the dry run just printed and, on a
+// yes, runs the scan again with the writes enabled. Reports whether it wrote.
+func confirmAndRepair(
+	client *apiclient.Client,
+	shareNames []string,
+	format output.Format,
+	planned []*engine.ManifestCheckResult,
+) (bool, error) {
+	var total uint64
+	for _, r := range planned {
+		total += r.RepairsPlanned
+	}
+	if total == 0 {
+		fmt.Println()
+		fmt.Println("Nothing to repair: no finding carries the evidence needed to put a row back.")
+		return false, nil
+	}
+
+	if format != output.FormatTable {
+		// The prompt would land in the middle of the machine-readable
+		// document the caller just received.
+		return false, fmt.Errorf("nothing written: %d repair(s) planned, re-run with --yes to apply them", total)
+	}
+
+	prompt := fmt.Sprintf("Apply %d manifest repair(s)? This writes to the metadata store.", total)
+	ok, err := cmdutil.ConfirmDestructive(prompt, false)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		fmt.Println("Aborted. Nothing was written.")
+		return false, nil
+	}
+
+	applied, err := scanShares(client, shareNames, apiclient.BlockStoreManifestCheckOptions{
+		PlanRepairs:  true,
+		ApplyRepairs: true,
+	})
+	if err != nil {
+		return false, err
+	}
+	printRepairOutcome(applied)
+	return true, nil
 }
 
 // printCheckTables renders a summary per share followed by the per-payload
@@ -149,10 +275,16 @@ func printCheckTables(results []*engine.ManifestCheckResult) error {
 			{"Unplaceable rows", fmt.Sprintf("%d", r.UnplaceableRows)},
 			{"Rows with unknown hash", unknown},
 		}
+		if r.RepairsPlanned > 0 {
+			pairs = append(pairs, [2]string{"Repairs", repairSummary(r)})
+		}
 		if err := output.SimpleTable(os.Stdout, pairs); err != nil {
 			return err
 		}
 		if err := printCheckDetail(r); err != nil {
+			return err
+		}
+		if err := printRepairPlan(r); err != nil {
 			return err
 		}
 	}
@@ -228,4 +360,86 @@ func checkFindingNotes(f *engine.PayloadFinding) []string {
 		notes = append(notes, "damaged; detail truncated")
 	}
 	return notes
+}
+
+// printRepairPlan lists the writes a repair run would make for one share, so
+// the operator sees every row before answering the prompt.
+func printRepairPlan(r *engine.ManifestCheckResult) error {
+	if len(r.Repairs) == 0 || r.RepairsApplied+r.RepairsSkipped > 0 {
+		// Nothing planned, or the run already wrote — printRepairOutcome
+		// reports what a run that wrote actually did.
+		return nil
+	}
+	table := output.NewTableData("PATH", "ACTION", "RANGE", "ROW")
+	for i := range r.Repairs {
+		a := &r.Repairs[i]
+		table.AddRow(a.Path, repairActionLabel(a.Kind),
+			fmt.Sprintf("[%d,%d)", a.Offset, a.Offset+uint64(a.Size)),
+			repairRowNote(a))
+	}
+	fmt.Println()
+	if err := output.PrintTable(os.Stdout, table); err != nil {
+		return err
+	}
+	if r.RepairsTruncated {
+		fmt.Println()
+		fmt.Println("Repair plan truncated; re-run after applying these to see the rest.")
+	}
+	return nil
+}
+
+// repairSummary renders one share's repair counters, reading as a plan before
+// the writes and as an outcome after them.
+func repairSummary(r *engine.ManifestCheckResult) string {
+	if r.RepairsApplied+r.RepairsSkipped == 0 {
+		return fmt.Sprintf("%d planned", r.RepairsPlanned)
+	}
+	return fmt.Sprintf("%d planned, %d applied, %d skipped",
+		r.RepairsPlanned, r.RepairsApplied, r.RepairsSkipped)
+}
+
+// repairActionLabel names a repair kind in the words the help text uses.
+func repairActionLabel(k engine.RepairKind) string {
+	switch k {
+	case engine.RepairReplaceRow:
+		return "move row to offset"
+	case engine.RepairRecreateRow:
+		return "write row for claim"
+	default:
+		return string(k)
+	}
+}
+
+// repairRowNote renders the manifest keys one action touches.
+func repairRowNote(a *engine.RepairAction) string {
+	if a.FromRowID != "" {
+		return a.FromRowID + " -> " + a.ToRowID
+	}
+	return a.ToRowID
+}
+
+// printRepairOutcome reports what a repair pass wrote, naming every action it
+// declined so a skipped repair is never mistaken for a done one.
+func printRepairOutcome(results []*engine.ManifestCheckResult) {
+	var applied, skipped uint64
+	for _, r := range results {
+		applied += r.RepairsApplied
+		skipped += r.RepairsSkipped
+	}
+	fmt.Println()
+	fmt.Printf("Applied %d repair(s), skipped %d.\n", applied, skipped)
+	if skipped == 0 {
+		return
+	}
+	fmt.Println("A skipped repair is one whose evidence changed between the scan and the write;")
+	fmt.Println("the store moved under it and nothing was forced. Re-run to pick it up again.")
+	for _, r := range results {
+		for i := range r.Repairs {
+			a := &r.Repairs[i]
+			if a.Applied || a.SkipReason == "" {
+				continue
+			}
+			fmt.Printf("  %s [%d,%d): %s\n", a.Path, a.Offset, a.Offset+uint64(a.Size), a.SkipReason)
+		}
+	}
 }
