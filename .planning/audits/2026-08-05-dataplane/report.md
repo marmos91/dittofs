@@ -124,7 +124,7 @@ escalated MED, and the four that were only half closed at the last refresh (#196
 plus #1909's device-loss verification). What remains is the debt the audit deliberately did *not*
 escalate, and three things that surfaced while fixing.
 
-| | Tracking | State |
+| Finding | Tracking | State |
 |---|---|---|
 | God-functions and duplicated algorithms | #1967 | Closes when #2030 merges. Six PRs landed; #2030 is the last `EvaluateContext` copy, which #2014 could not touch while #2020 held the same file. |
 | Two structure findings #1967's body never listed | #2029 | Open. `pkg/metadata/service.go` god object and the share-wide `lm.mu`. Split out so closing #1967 does not drop them. |

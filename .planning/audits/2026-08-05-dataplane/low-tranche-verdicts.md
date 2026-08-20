@@ -53,8 +53,8 @@ and against current `origin/develop`:
 
 ## Discrepancy: #1999's body overstates its sqlite scanner work
 
-#1999's description says it collapsed "one scanner per row shape client
-registrations (9 columns) durable handles (32 columns)". Its diff contains
+#1999's description says it collapsed "one scanner per row shape for client
+registrations (9 columns) and durable handles (32 columns)". Its diff contains
 `sqlite/durable_handles.go` and `memory/clients.go` — not `sqlite/clients.go`.
 On `origin/develop` the 9-column Scan block, including the `privBytes` copy, is
 still written out verbatim in both `GetClientRegistration` (`clients.go:81`) and
