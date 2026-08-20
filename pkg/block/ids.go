@@ -21,3 +21,24 @@ func ParseChunkOffset(id string) (uint64, bool) {
 	}
 	return v, true
 }
+
+// ChunkOffsetFor extracts the chunk offset from a FileChunk ID that belongs to
+// payloadID, i.e. an ID of the exact form "<payloadID>/<chunkOffset>".
+//
+// It is stricter than ParseChunkOffset, which splits on the last slash and so
+// cannot tell a chunk of payloadID from a chunk of a payload nested beneath it.
+// PayloadIDs are built from share name and file path and therefore contain
+// slashes, so "<payloadID>/<more>/<chunkOffset>" is the ID of a different
+// file's chunk; it returns (0, false) here, as does any ID that is not
+// prefixed by payloadID or whose trailing component is not a decimal offset.
+func ChunkOffsetFor(id, payloadID string) (uint64, bool) {
+	rest, ok := strings.CutPrefix(id, payloadID+"/")
+	if !ok || strings.IndexByte(rest, '/') >= 0 {
+		return 0, false
+	}
+	v, err := strconv.ParseUint(rest, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
