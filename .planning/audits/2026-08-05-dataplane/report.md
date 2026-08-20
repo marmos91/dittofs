@@ -1375,10 +1375,12 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] pkg/metadata/errors.go + lock_exports.go are wholesale back-compat re-export shims, doubling the package's public API surface
 - **Where:** `pkg/metadata/errors.go:1` · `structure`
+> STATUS: WONTFIX in #2025 — see the errors.go:1 `bloat` entry below; the files are the package's public API by design, not a deprecated shim, and the doc comments now say so.
 - **Fix:** Grep-replace the ~60 call sites to import github.com/marmos91/dittofs/pkg/metadata/errors and .../lock directly, then delete errors.go's re-export section and lock_exports.go entirely. If genuinely still needed for an external consumer, that consumer should be named in the deprecation comment instead of 'backward compatibility' generically.
 
 ### [LOW] Deprecated aliases in lock_exports.go are mutable package-level function vars, not wrapper funcs
 - **Where:** `pkg/metadata/lock_exports.go:121` · `structure`
+> STATUS: OPEN — #2025 kept the shim deliberately (see the errors.go:1 entry above), so the var-vs-func point survives its premise: metadata.NewLockManager and the seven sibling aliases are still reassignable package-level vars.
 - **Fix:** If the shim is kept at all (prefer deleting it), convert each `var X = pkg.X` to a thin `func X(...) ... { return pkg.X(...) }`.
 
 ### [LOW] GetQuotaUsage failure silently disables quota enforcement, zero logging
@@ -1388,6 +1390,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] errors.go: entire file is a dead-weight deprecated re-export shim over pkg/metadata/errors and pkg/metadata/lock
 - **Where:** `pkg/metadata/errors.go:1` · `bloat`
+> STATUS: WONTFIX in #2025 — reframed rather than removed. errors.go and lock_exports.go are documented as pkg/metadata's public lock and error surface, not a back-compat shim: the implementations must live in pkg/metadata/lock and pkg/metadata/errors because those packages cannot import metadata, and the aliases keep the API reachable from the package that owns it.
 - **Fix:** Do the mechanical rename: update the ~25 call sites to import pkg/metadata/errors (and pkg/metadata/lock where needed) directly and call errors.NewXXXError/lock.NewXXXError, then delete pkg/metadata/errors.go outright.
 
 ### [LOW] CheckStickyBitRestriction has line-by-line narration comments restating the following statement
@@ -1647,6 +1650,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] Three near-identical lazy sub-stores double-lock with a dead inner mutex; a fourth uses the opposite (correct) discipline
 - **Where:** `pkg/metadata/store/memory/locks.go:24` · `structure`
+> STATUS: FIXED in #2018 — memoryLockStore's duplicate ten-method lock.LockStore set and its shadow mutex are deleted, as are the inner mutexes on memoryClientStore/memoryRecoveryStore. memoryDurableStore keeps its own lock and is documented as the deliberate exception: getDurableStore releases the store-wide mutex before the method runs, so that lock is the sole guard there. NOTE for anyone re-reading this finding: only the sub-store's copy was dead. MemoryMetadataStore's own ten lock methods (locks.go:118-252) are the live lock.LockStore implementation — pinned by the var _ assertion at locks.go:104, embedded in metadata.Transaction (store.go:263), and reached in production from pkg/metadata/service.go:387, which type-asserts the live store to lock.LockStore and wires it into the lock manager. Deleting those is a compile error and would silently disable lock persistence on the memory backend.
 - **Fix:** Pick one discipline: drop the redundant inner sync.RWMutex from memoryClientStore/memoryRecoveryStore (never reached without s.mu held) and delete memoryLockStore's uncalled method set + mutex, keeping the store-wide lock as sole guard, mirroring the *Locked helper pattern.
 
 ### [LOW] derivePathLocked does O(fanout) child-name scan per ancestor level on every GetFile call
@@ -1898,6 +1902,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] Service mixes generic registry, engine factory, and Postgres-specific schema admin — SRP violation
 - **Where:** `pkg/controlplane/runtime/stores/service.go:23` · `structure`
+> STATUS: FIXED in #2019 — SwapMetadataStore, OpenMetadataStoreAtPath, ListPostgresRestoreOrphans, DropPostgresSchema, openPostgresAtSchema, sqliteRestoreCapabilities and the PostgresRestoreOrphan type are gone (292 of 379 lines), along with all of pkg/metadata/store/postgres/schema_ops.go. The doc comments naming a restore orchestrator and a startup orphan sweep went with them. Service is now the pure named-store registry its package doc claims, and service_test.go covers the surviving surface.
 - **Fix:** Delete rather than split: OpenMetadataStoreAtPath (:162), ListPostgresRestoreOrphans (:265), DropPostgresSchema (:318), openPostgresAtSchema (:348) and sqliteRestoreCapabilities (:361) have no non-test callers — removing them leaves Service as the pure registry its doc comment claims. Only relocate if a restore command is still planned.
 
 ### [LOW] ReadRequest.Flags decoded but never consulted — UNBUFFERED semantics documented, never wired
