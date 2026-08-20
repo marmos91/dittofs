@@ -15,6 +15,12 @@ import (
 // TestWriteSnapshot_ConcurrentDurableHandles checks that the store-wide read
 // lock WriteSnapshot holds also excludes durable-handle mutators, so encoding
 // the handle map never observes a concurrent write.
+//
+// The regression it guards is a data race, so it only reports reliably under
+// -race, which is how unit-tests.yml and windows-build.yml run the suite.
+// Without that flag a regression surfaces only when the runtime happens to
+// catch the concurrent map access, so a plain `go test` pass proves nothing
+// here.
 func TestWriteSnapshot_ConcurrentDurableHandles(t *testing.T) {
 	store := memory.NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
