@@ -1246,7 +1246,7 @@ func TestSetLeaseEpoch_UpdatesAllMatchingRecords(t *testing.T) {
 		{Owner: LockOwner{OwnerID: "oB"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 1}},
 	}
 	lm.reindexHandleLocked("/share:fileB", nil)
-	lm.mu.Unlock()
+	lm.unlock()
 
 	if !lm.SetLeaseEpoch(leaseKey, 7) {
 		t.Fatalf("SetLeaseEpoch returned false, expected true when records exist")
@@ -1295,7 +1295,7 @@ func TestSetLeaseEpoch_ConvergesDivergentRecords(t *testing.T) {
 		{Owner: LockOwner{OwnerID: "oB"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 1}},
 	}
 	lm.reindexHandleLocked("/share:fileB", nil)
-	lm.mu.Unlock()
+	lm.unlock()
 
 	// Request a lower epoch (4) than the highest existing record (5). All
 	// records must converge to 5 (the max), not split into 5 and 4.
@@ -1328,7 +1328,7 @@ func TestSetLeaseEpoch_Persists(t *testing.T) {
 		{ID: "lease-1", Owner: LockOwner{OwnerID: "oA"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 1}},
 	}
 	lm.reindexHandleLocked("/share:fileA", nil)
-	lm.mu.Unlock()
+	lm.unlock()
 
 	if !lm.SetLeaseEpoch(leaseKey, 9) {
 		t.Fatalf("SetLeaseEpoch returned false, expected true")

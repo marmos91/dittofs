@@ -148,7 +148,7 @@ func TestBreakLeasesForByteRangeLock_TightensInFlightBreakToNone(t *testing.T) {
 
 	// Verify BreakingToRequired tightened to None.
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 	_, ul, _ := lm.findLeaseByKey(leaseOther)
 	require.NotNil(t, ul)
 	assert.Equal(t, uint32(0), ul.Lease.BreakingToRequired,

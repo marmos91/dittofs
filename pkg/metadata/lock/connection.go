@@ -395,13 +395,14 @@ func (ct *ConnectionTracker) Close() {
 
 // RemoveAllLocks removes all locks (legacy, unified, and delegations) for a file.
 //
-// The persisted bulk-delete runs synchronously under lm.mu (handleKey is the
-// FileID used when persisting): keeping it ordered with single-record PutLock/
-// DeleteLock prevents a concurrent acquire on the same file from racing this
-// delete to the store and leaving an orphaned record behind (R3-1 class).
+// The persisted bulk-delete goes on handleKey's persist lane (handleKey is the
+// FileID used when persisting): keeping it ordered with the single-record
+// PutLock/DeleteLock for the same file prevents a concurrent acquire from
+// racing this delete to the store and leaving an orphaned record behind
+// (R3-1 class).
 func (lm *Manager) RemoveAllLocks(handleKey string) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 	delete(lm.locks, handleKey)
 	old := lm.unifiedLocks[handleKey]
 	delete(lm.unifiedLocks, handleKey)
@@ -409,24 +410,27 @@ func (lm *Manager) RemoveAllLocks(handleKey string) {
 	delete(lm.breakWaitChans, handleKey)
 
 	if lm.lockStore != nil {
-		ctx, cancel := withPersistTimeout()
-		defer cancel()
-		if _, err := lm.lockStore.DeleteLocksByFile(ctx, handleKey); err != nil {
-			logger.Error("RemoveAllLocks: failed to delete persisted locks", "handleKey", handleKey, "error", err)
-		}
+		store := lm.lockStore
+		lm.enqueuePersistLocked(handleKey, func() {
+			ctx, cancel := withPersistTimeout()
+			defer cancel()
+			if _, err := store.DeleteLocksByFile(ctx, handleKey); err != nil {
+				logger.Error("RemoveAllLocks: failed to delete persisted locks", "handleKey", handleKey, "error", err)
+			}
+		})
 	}
 }
 
 // RemoveClientLocks removes all unified locks held by a specific client. The
-// persisted bulk-delete runs synchronously under lm.mu for the same ordering
-// reason as RemoveAllLocks.
+// persisted bulk-delete spans files, so it goes on every persist lane and acts
+// as a barrier, for the same ordering reason as RemoveAllLocks.
 //
 // clientHandleIndex (clientID -> set of handleKeys, see indexes.go) bounds the
 // work to the buckets the client actually appears in instead of scanning every
 // entry in unifiedLocks under the global mutex.
 func (lm *Manager) RemoveClientLocks(clientID string) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	// Snapshot the affected handleKeys before mutating: reindexHandleLocked
 	// updates clientHandleIndex underneath us, so iterating the map directly
@@ -453,11 +457,17 @@ func (lm *Manager) RemoveClientLocks(clientID string) {
 	}
 
 	if lm.lockStore != nil {
-		ctx, cancel := withPersistTimeout()
-		defer cancel()
-		if _, err := lm.lockStore.DeleteLocksByClient(ctx, clientID); err != nil {
-			logger.Error("RemoveClientLocks: failed to delete persisted locks", "clientID", clientID, "error", err)
-		}
+		store := lm.lockStore
+		// A client-wide delete spans files, so it takes every lane: nothing
+		// this critical section ordered before it may land after it, and
+		// nothing after it may land before.
+		lm.enqueuePersistBarrierLocked(func() {
+			ctx, cancel := withPersistTimeout()
+			defer cancel()
+			if _, err := store.DeleteLocksByClient(ctx, clientID); err != nil {
+				logger.Error("RemoveClientLocks: failed to delete persisted locks", "clientID", clientID, "error", err)
+			}
+		})
 	}
 }
 
@@ -472,9 +482,9 @@ func (lm *Manager) RemoveClientLocks(clientID string) {
 // or other NLM clients. The trailing ":" in the caller-supplied prefix prevents
 // "nlm:client1:" from matching "nlm:client10:".
 //
-// The persisted bulk-delete runs synchronously under lm.mu for the same
-// ordering reason as RemoveClientLocks. Calling with a prefix that matches no
-// locks is safe and returns 0.
+// Each matched record is deleted individually on its own file's persist lane,
+// for the same ordering reason as RemoveClientLocks. Calling with a prefix that
+// matches no locks is safe and returns 0.
 //
 // Unlike RemoveClientLocks, this intentionally keeps the full unifiedLocks
 // scan: the predicate is a prefix match on Owner.OwnerID, and there is no
@@ -486,7 +496,7 @@ func (lm *Manager) RemoveClientLocks(clientID string) {
 // leaseKeyIndex consistent for the records this removes.
 func (lm *Manager) ReleaseByOwnerPrefix(prefix string) int {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	released := 0
 	for handleKey, locks := range lm.unifiedLocks {

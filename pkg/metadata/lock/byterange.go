@@ -260,7 +260,7 @@ func mergeTwoLocks(a, b *UnifiedLock) *UnifiedLock {
 // invariant is enforced by TestUpgradeLock_WholeLockOnly.
 func (lm *Manager) UpgradeLock(handleKey string, owner LockOwner, offset, length uint64) (*UnifiedLock, error) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	unifiedLocks := lm.getUnifiedLocksLocked(handleKey)
 
@@ -309,9 +309,9 @@ func (lm *Manager) UpgradeLock(handleKey string, owner LockOwner, offset, length
 	// Step 3: Atomically upgrade the lock
 	unifiedLocks[ownLockIndex].Type = LockTypeExclusive
 
-	// Persist the upgraded type under lm.mu so the change survives a restart.
-	// Without this the in-memory lock reverted to shared on restart and a
-	// reader could be wrongly granted against an intended-exclusive lock (R3-3).
+	// Persist the upgraded type so the change survives a restart. Without this
+	// the in-memory lock reverted to shared on restart and a reader could be
+	// wrongly granted against an intended-exclusive lock (R3-3).
 	lm.persistUnifiedLockLocked(unifiedLocks[ownLockIndex])
 
 	return unifiedLocks[ownLockIndex].Clone(), nil
@@ -328,7 +328,7 @@ func (lm *Manager) getUnifiedLocksLocked(handleKey string) []*UnifiedLock {
 // conflict cases: access modes, oplock-oplock, oplock-byterange, byterange-byterange.
 func (lm *Manager) AddUnifiedLock(handleKey string, lock *UnifiedLock) error {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	existing := lm.unifiedLocks[handleKey]
 
@@ -412,7 +412,7 @@ func (lm *Manager) TestUnifiedLock(handleKey string, want *UnifiedLock) *Unified
 // RemoveUnifiedLock removes a unified lock using POSIX splitting semantics.
 func (lm *Manager) RemoveUnifiedLock(handleKey string, owner LockOwner, offset, length uint64) error {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	existing := lm.unifiedLocks[handleKey]
 	if len(existing) == 0 {
@@ -437,8 +437,9 @@ func (lm *Manager) RemoveUnifiedLock(handleKey string, owner LockOwner, offset, 
 		}
 
 		// Overlaps - split the lock. Delete the original record, then persist
-		// each fragment (each carries a fresh UUID from SplitLock). Done under
-		// lm.mu so the store sees delete-then-puts in mutation order.
+		// each fragment (each carries a fresh UUID from SplitLock). All land on
+		// the same persist lane, so the store sees delete-then-puts in mutation
+		// order.
 		found = true
 		lm.deleteUnifiedLockLocked(lock)
 		splitResult := SplitLock(lock, offset, length)
@@ -489,7 +490,7 @@ func (lm *Manager) RemoveFileUnifiedLocks(handleKey string) {
 	delete(lm.unifiedLocks, handleKey)
 	lm.reindexHandleLocked(handleKey, old)
 	delete(lm.breakWaitChans, handleKey)
-	lm.mu.Unlock()
+	lm.unlock()
 }
 
 // GetUnifiedLock retrieves a specific unified lock by owner and range.

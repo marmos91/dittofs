@@ -720,22 +720,31 @@ type Manager struct {
 	// drain, mirroring the NLM-side onUnlock callback. May be nil. Fired
 	// outside lm.mu so the subscriber can call back into the Manager.
 	onByteRangeRelease func(handleKey string)
+
+	// persistLanes orders lock-store writes per file, and pendingPersist holds
+	// the writes the current critical section has queued but not yet run. See
+	// persistqueue.go: mutations take a lane ticket under lm.mu and make their
+	// store call after lm.mu is released, so per file the store still observes
+	// them in mutex order while different files' round-trips overlap.
+	persistLanes   [persistLaneCount]persistLane
+	pendingPersist []persistOp
 }
 
 // DefaultDelegationRecallTimeout is the default delegation recall timeout.
 // NFS uses a longer timeout than SMB leases (90s vs 35s).
 const DefaultDelegationRecallTimeout = 90 * time.Second
 
-// persistTimeout bounds every synchronous lock-store call made under lm.mu.
-// Persistence runs inline (mutex order == store order, see putLockLocked) so a
-// hung backend would otherwise wedge the lock manager indefinitely; the timeout
-// turns that into a bounded best-effort failure that logs and proceeds.
+// persistTimeout bounds every lock-store call the manager makes. The call runs
+// before the operation that queued it returns, and it holds its file's persist
+// lane while it runs, so a hung backend would otherwise wedge that file (and
+// its caller) indefinitely; the timeout turns that into a bounded best-effort
+// failure that logs and proceeds.
 const persistTimeout = 3 * time.Second
 
 // newBaseManager creates a Manager with all common fields initialized.
 // Callers customize the returned Manager before use.
 func newBaseManager(recentlyBrokenTTL time.Duration) *Manager {
-	return &Manager{
+	m := &Manager{
 		locks:                   make(map[string][]FileLock),
 		unifiedLocks:            make(map[string][]*UnifiedLock),
 		leaseKeyIndex:           make(map[[16]byte]map[string]int),
@@ -744,6 +753,10 @@ func newBaseManager(recentlyBrokenTTL time.Duration) *Manager {
 		breakWaitChans:          make(map[string]chan struct{}),
 		delegationRecallTimeout: DefaultDelegationRecallTimeout,
 	}
+	for i := range m.persistLanes {
+		m.persistLanes[i].cond = sync.NewCond(&m.persistLanes[i].mu)
+	}
+	return m
 }
 
 // NewManager creates a new lock manager.
@@ -771,7 +784,7 @@ func NewManagerWithGracePeriod(gracePeriod *GracePeriodManager) *Manager {
 func (lm *Manager) SetByteRangeReleaseCallback(fn func(handleKey string)) {
 	lm.mu.Lock()
 	lm.onByteRangeRelease = fn
-	lm.mu.Unlock()
+	lm.unlock()
 }
 
 // notifyByteRangeReleased fires the release callback (if registered) for
@@ -794,13 +807,15 @@ func (lm *Manager) notifyByteRangeReleased(handleKey string) {
 //
 // Returns nil on success, or ErrLocked if a conflict exists.
 //
-// Persistence is synchronous under lm.mu: the in-memory mutation and the
-// PutLock run while the mutex is held so the store sees mutations in the same
-// order the mutex serializes them. Two concurrent ops on the same persistID can
-// no longer reach the store out of order (the reorder/resurrection bug class).
+// Persistence is synchronous with respect to the caller: the in-memory
+// mutation happens under lm.mu, the PutLock is queued on the file's persist
+// lane and runs once lm.mu is released, and this call does not return until it
+// has run. Per file the store still sees mutations in the order the mutex
+// serialized them, so two concurrent ops on the same persistID cannot reach the
+// store out of order (the reorder/resurrection bug class).
 func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	existing := lm.locks[handleKey]
 
@@ -872,7 +887,7 @@ func (lm *Manager) Unlock(handleKey string, openID string, sessionID uint64, off
 
 func (lm *Manager) doUnlock(handleKey string, openID string, sessionID uint64, offset, length uint64) (bool, error) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	existing := lm.locks[handleKey]
 	if len(existing) == 0 {
@@ -887,7 +902,7 @@ func (lm *Manager) doUnlock(handleKey string, openID string, sessionID uint64, o
 		if lockOwnerID(&existing[i]) == owner &&
 			existing[i].Offset == offset &&
 			existing[i].Length == length {
-			lm.deleteFileLockLocked(&existing[i])
+			lm.deleteFileLockLocked(handleKey, &existing[i])
 			// Remove this lock
 			lm.locks[handleKey] = append(existing[:i], existing[i+1:]...)
 
@@ -919,7 +934,7 @@ func (lm *Manager) UnlockAllForOpen(handleKey string, openID string) int {
 
 func (lm *Manager) doUnlockAllForOpen(handleKey string, openID string) int {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	existing := lm.locks[handleKey]
 	if len(existing) == 0 {
@@ -931,7 +946,7 @@ func (lm *Manager) doUnlockAllForOpen(handleKey string, openID string) int {
 	removed := 0
 	for i := range existing {
 		if existing[i].OpenID == openID {
-			lm.deleteFileLockLocked(&existing[i])
+			lm.deleteFileLockLocked(handleKey, &existing[i])
 			removed++
 		} else {
 			remaining = append(remaining, existing[i])
@@ -962,7 +977,7 @@ func (lm *Manager) UnlockAllForSession(handleKey string, sessionID uint64) int {
 
 func (lm *Manager) doUnlockAllForSession(handleKey string, sessionID uint64) int {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	existing := lm.locks[handleKey]
 	if len(existing) == 0 {
@@ -974,7 +989,7 @@ func (lm *Manager) doUnlockAllForSession(handleKey string, sessionID uint64) int
 	removed := 0
 	for i := range existing {
 		if existing[i].SessionID == sessionID {
-			lm.deleteFileLockLocked(&existing[i])
+			lm.deleteFileLockLocked(handleKey, &existing[i])
 			removed++
 		} else {
 			remaining = append(remaining, existing[i])
@@ -1084,14 +1099,14 @@ func (lm *Manager) ListLocks(handleKey string) []FileLock {
 // Called when a file is deleted to clean up any stale lock entries.
 func (lm *Manager) RemoveFileLocks(handleKey string) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 	delete(lm.locks, handleKey)
 }
 
 // SetDelegationRecallTimeout sets the delegation recall timeout (thread-safe).
 func (lm *Manager) SetDelegationRecallTimeout(d time.Duration) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 	lm.delegationRecallTimeout = d
 }
 
@@ -1105,14 +1120,14 @@ func (lm *Manager) DelegationRecallTimeout() time.Duration {
 // SetHandleChecker sets the handle checker used for lease reclaim validation.
 func (lm *Manager) SetHandleChecker(hc HandleChecker) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 	lm.handleChecker = hc
 }
 
 // SetLockStore sets the persistent lock store for lease persistence.
 func (lm *Manager) SetLockStore(store LockStore) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 	lm.lockStore = store
 }
 
@@ -1121,14 +1136,14 @@ func (lm *Manager) SetLockStore(store LockStore) {
 // NFSv4 principal check is skipped (SMB-only deployments).
 func (lm *Manager) SetClientRecoveryStore(store ClientRecoveryStore) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 	lm.clientRecoveryStore = store
 }
 
 // SetEpoch records the current server epoch stamped on persisted locks.
 func (lm *Manager) SetEpoch(epoch uint64) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 	lm.epoch = epoch
 }
 
@@ -1137,7 +1152,7 @@ func (lm *Manager) SetEpoch(epoch uint64) {
 // per-share ListLocks query at startup.
 func (lm *Manager) SetShareName(shareName string) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 	lm.shareName = shareName
 }
 
@@ -1159,9 +1174,9 @@ func (lm *Manager) assignPersistIDLocked(fl *FileLock) {
 }
 
 // withPersistTimeout returns a context bounded by persistTimeout so a hung
-// backend can never wedge the lock manager: the store call runs synchronously
-// under lm.mu (mutex order == store order), but the timeout caps how long it
-// can block the critical section.
+// backend can never wedge the lock manager: the store call holds its file's
+// persist lane and blocks the operation that queued it, and the timeout caps
+// how long either can last.
 func withPersistTimeout() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), persistTimeout)
 }
@@ -1189,7 +1204,7 @@ func (lm *Manager) fileLockToPersisted(handleKey string, fl *FileLock) *Persiste
 	}
 }
 
-// persistFileLockLocked synchronously persists a byte-range lock. No-op if
+// persistFileLockLocked queues a byte-range lock for persistence. No-op if
 // persistence is disabled. Caller must hold lm.mu.
 func (lm *Manager) persistFileLockLocked(handleKey string, fl *FileLock) {
 	if lm.lockStore == nil {
@@ -1198,17 +1213,17 @@ func (lm *Manager) persistFileLockLocked(handleKey string, fl *FileLock) {
 	lm.putLockLocked(lm.fileLockToPersisted(handleKey, fl))
 }
 
-// deleteFileLockLocked synchronously removes a persisted byte-range lock. No-op
-// if persistence is disabled or the lock was never persisted. Caller must hold
+// deleteFileLockLocked queues removal of a persisted byte-range lock. No-op if
+// persistence is disabled or the lock was never persisted. Caller must hold
 // lm.mu.
-func (lm *Manager) deleteFileLockLocked(fl *FileLock) {
+func (lm *Manager) deleteFileLockLocked(handleKey string, fl *FileLock) {
 	if lm.lockStore == nil || fl.persistID == "" {
 		return
 	}
-	lm.deletePersistedLocked(fl.persistID)
+	lm.deletePersistedLocked(handleKey, fl.persistID)
 }
 
-// persistUnifiedLockLocked synchronously persists a unified lock. No-op if
+// persistUnifiedLockLocked queues a unified lock for persistence. No-op if
 // persistence is disabled. Caller must hold lm.mu.
 //
 // The share name is stamped from lm.shareName rather than trusting the
@@ -1221,6 +1236,15 @@ func (lm *Manager) deleteFileLockLocked(fl *FileLock) {
 // override is skipped when lm.shareName is empty so a directly-constructed
 // manager preserves a producer-set Owner.ShareName.
 func (lm *Manager) persistUnifiedLockLocked(ul *UnifiedLock) {
+	// For a lease record Type is a projection of LeaseState, not an independent
+	// field: re-derive it here so a mutation that changes LeaseState without
+	// touching Type cannot write out a record whose Type contradicts the lease
+	// it carries. Byte-range and delegation records own their Type outright and
+	// are left alone.
+	if ul.Lease != nil {
+		ul.Type = lockTypeForLeaseState(ul.Lease.LeaseState)
+	}
+
 	if lm.lockStore == nil {
 		return
 	}
@@ -1231,19 +1255,21 @@ func (lm *Manager) persistUnifiedLockLocked(ul *UnifiedLock) {
 	lm.putLockLocked(pl)
 }
 
-// deleteUnifiedLockLocked synchronously removes a persisted unified lock. No-op
-// if persistence is disabled. Caller must hold lm.mu.
+// deleteUnifiedLockLocked queues removal of a persisted unified lock. No-op if
+// persistence is disabled. Caller must hold lm.mu.
 func (lm *Manager) deleteUnifiedLockLocked(ul *UnifiedLock) {
 	if lm.lockStore == nil {
 		return
 	}
-	lm.deletePersistedLocked(ul.ID)
+	lm.deletePersistedLocked(string(ul.FileHandle), ul.ID)
 }
 
-// putLockLocked persists one record synchronously under lm.mu, bounded by
-// persistTimeout. Caller must hold lm.mu and must have already applied the
-// in-memory mutation, so the store observes mutations in mutex order — this is
-// what eliminates the reorder/resurrection bug class (R3-1).
+// putLockLocked queues one record for persistence on its file's lane, bounded
+// by persistTimeout when it runs. Caller must hold lm.mu and must have already
+// applied the in-memory mutation, so the store observes mutations in mutex
+// order — this is what eliminates the reorder/resurrection bug class (R3-1).
+// The call itself is made after lm.mu is released and before the acquiring
+// operation returns to its client (see persistqueue.go).
 //
 // Persistence is BEST-EFFORT. The in-memory lock map is authoritative for the
 // running server, so a failed PutLock must NOT fail the lock op — the client is
@@ -1253,33 +1279,41 @@ func (lm *Manager) deleteUnifiedLockLocked(ul *UnifiedLock) {
 // could be granted. The operator MUST treat these ERROR logs as a durability
 // alarm. Errors are logged with file/owner context so they are observable.
 func (lm *Manager) putLockLocked(pl *PersistedLock) {
-	ctx, cancel := withPersistTimeout()
-	defer cancel()
-	if err := lm.lockStore.PutLock(ctx, pl); err != nil {
-		logger.Error("lock persistence failed: lock held in memory but NOT durable across restart",
-			"lockID", pl.ID,
-			"share", pl.ShareName,
-			"fileID", pl.FileID,
-			"ownerID", pl.OwnerID,
-			"error", err)
-	}
+	store := lm.lockStore
+	lm.enqueuePersistLocked(pl.FileID, func() {
+		ctx, cancel := withPersistTimeout()
+		defer cancel()
+		if err := store.PutLock(ctx, pl); err != nil {
+			logger.Error("lock persistence failed: lock held in memory but NOT durable across restart",
+				"lockID", pl.ID,
+				"share", pl.ShareName,
+				"fileID", pl.FileID,
+				"ownerID", pl.OwnerID,
+				"error", err)
+		}
+	})
 }
 
-// deletePersistedLocked removes one record by ID synchronously under lm.mu,
-// bounded by persistTimeout. Caller must hold lm.mu and must have already
-// applied the in-memory removal (mutex order == store order).
+// deletePersistedLocked queues removal of one record by ID on fileKey's lane,
+// bounded by persistTimeout when it runs. Caller must hold lm.mu and must have
+// already applied the in-memory removal (mutex order == store order). fileKey
+// must be the same key the record was persisted under, so the delete stays
+// ordered behind its own put.
 //
 // Best-effort with the same contract as putLockLocked: a failed DeleteLock
 // means a released lock may resurrect on restart until the next successful
 // overwrite/cleanup. ErrLockNotFound is ignored — the record is already gone.
-func (lm *Manager) deletePersistedLocked(id string) {
-	ctx, cancel := withPersistTimeout()
-	defer cancel()
-	if err := lm.lockStore.DeleteLock(ctx, id); err != nil && !isLockNotFound(err) {
-		logger.Error("lock-delete persistence failed: released lock may resurrect on restart",
-			"lockID", id,
-			"error", err)
-	}
+func (lm *Manager) deletePersistedLocked(fileKey, id string) {
+	store := lm.lockStore
+	lm.enqueuePersistLocked(fileKey, func() {
+		ctx, cancel := withPersistTimeout()
+		defer cancel()
+		if err := store.DeleteLock(ctx, id); err != nil && !isLockNotFound(err) {
+			logger.Error("lock-delete persistence failed: released lock may resurrect on restart",
+				"lockID", id,
+				"error", err)
+		}
+	})
 }
 
 // RestoreLocks loads previously-persisted locks back into the in-memory lock
@@ -1291,7 +1325,7 @@ func (lm *Manager) deletePersistedLocked(id string) {
 // locks are by definition conflict-free with each other.
 func (lm *Manager) RestoreLocks(persisted []*PersistedLock) error {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	for _, pl := range persisted {
 		// pl.FileID is the handle key used when persisting (see persist helpers).

@@ -164,7 +164,7 @@ func DelegationConflictsWithLease(deleg *Delegation, lease *OpLock) bool {
 // was recently broken.
 func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) error {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	// Check anti-storm cache inside the lock to be atomic with lease conflict check.
 	if lm.recentlyBroken != nil && lm.recentlyBroken.IsRecentlyBroken(handleKey) {
@@ -285,7 +285,7 @@ func (lm *Manager) revokeTimedOutLease(handleKey string, leaseKey [16]byte) {
 // removeMatchingLocksAndSignal removes every UnifiedLock on handleKey for which
 // match returns true, then wakes any WaitForBreakCompletion / parked-CREATE
 // waiters. When deletePersisted is true, each removed lock's persisted record is
-// deleted (best-effort) under lm.mu. Returns true if at least one lock matched.
+// deleted (best-effort). Returns true if at least one lock matched.
 //
 // Shared by RevokeDelegation and revokeTimedOutLease: same mutex discipline,
 // same post-unlock signalBreakWait so parked CREATEs unblock immediately rather
@@ -306,7 +306,7 @@ func (lm *Manager) removeMatchingLocksAndSignal(handleKey string, deletePersiste
 		remaining = append(remaining, l)
 	}
 	if !found {
-		lm.mu.Unlock()
+		lm.unlock()
 		return false
 	}
 	if len(remaining) == 0 {
@@ -315,7 +315,7 @@ func (lm *Manager) removeMatchingLocksAndSignal(handleKey string, deletePersiste
 		lm.unifiedLocks[handleKey] = remaining
 	}
 	lm.reindexHandleLocked(handleKey, old)
-	lm.mu.Unlock()
+	lm.unlock()
 
 	lm.signalBreakWait(handleKey)
 	return true
@@ -341,7 +341,7 @@ func (lm *Manager) ReturnDelegation(handleKey string, delegationID string) error
 		lm.unifiedLocks[handleKey] = remaining
 	}
 	lm.reindexHandleLocked(handleKey, locks)
-	lm.mu.Unlock()
+	lm.unlock()
 
 	lm.signalBreakWait(handleKey)
 	return nil
@@ -440,7 +440,7 @@ func (lm *Manager) breakDelegations(
 			toBreak = append(toBreak, lock.Clone())
 		}
 	}
-	lm.mu.Unlock()
+	lm.unlock()
 
 	if len(toBreak) > 0 && lm.recentlyBroken != nil {
 		lm.recentlyBroken.Mark(handleKey)
