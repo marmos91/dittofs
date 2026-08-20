@@ -136,6 +136,25 @@ type ManifestCheckResult struct {
 	// SyncedHashesChecked is false.
 	UnknownHashRows uint64 `json:"unknown_hash_rows"`
 
+	// RepairsPlanned is the number of manifest writes the scan found
+	// evidence for. Zero unless repairs were asked for.
+	RepairsPlanned uint64 `json:"repairs_planned,omitempty"`
+
+	// RepairsApplied is the number of those writes that landed, and
+	// RepairsSkipped the number whose evidence had moved by the time the
+	// write transaction ran. Both are zero on a scan that only planned.
+	RepairsApplied uint64 `json:"repairs_applied,omitempty"`
+	RepairsSkipped uint64 `json:"repairs_skipped,omitempty"`
+
+	// Repairs is the per-action detail, capped at maxManifestCheckFindings
+	// entries. The cap bounds a report, not the work: a scan stops planning
+	// once it is full, so a store past the cap is repaired by running the
+	// command again rather than in one pass.
+	Repairs []RepairAction `json:"repairs,omitempty"`
+
+	// RepairsTruncated reports that the plan stopped at the cap.
+	RepairsTruncated bool `json:"repairs_truncated,omitempty"`
+
 	// Findings is the per-payload detail, capped at
 	// maxManifestCheckFindings entries.
 	Findings []PayloadFinding `json:"findings,omitempty"`
@@ -149,6 +168,24 @@ type ManifestCheckResult struct {
 // that no file claims do not count — see ByteRange.Claimed.
 func (r *ManifestCheckResult) Damaged() bool {
 	return r.ClaimedUncoveredRanges > 0 || r.UnplaceableRows > 0 || r.UnknownHashRows > 0
+}
+
+// ManifestCheckOptions selects which of the scan's checks run and whether it
+// is allowed to write.
+type ManifestCheckOptions struct {
+	// CheckSynced runs the unknown-hash check, which needs a share whose
+	// hashes are marked synced at all — see CheckManifests.
+	CheckSynced bool
+
+	// PlanRepairs works out which findings the scan has enough evidence to
+	// repair and reports them, writing nothing. It is what an operator sees
+	// before deciding.
+	PlanRepairs bool
+
+	// ApplyRepairs writes the planned repairs, one transaction per payload,
+	// re-establishing each precondition inside that transaction. It implies
+	// PlanRepairs.
+	ApplyRepairs bool
 }
 
 // CheckManifests walks every regular file in a share and compares the byte
@@ -173,9 +210,15 @@ func (r *ManifestCheckResult) Damaged() bool {
 // no claim from the file's own block list, and the report keeps claimed and
 // unclaimed spans apart for that reason.
 //
-// checkSynced gates the third check. A share with no remote store never marks
-// a hash synced, so running it there would report every row in the share.
-func CheckManifests(ctx context.Context, share string, store metadata.Store, checkSynced bool) (*ManifestCheckResult, error) {
+// opts.CheckSynced gates the third check. A share with no remote store never
+// marks a hash synced, so running it there would report every row in the share.
+//
+// opts.PlanRepairs and opts.ApplyRepairs turn the scan from a read into a
+// write. Planning stays read-only and costs the same walk; applying writes only
+// the rows the plan found evidence for, one transaction per payload. With
+// neither set the scan touches nothing, which is what every existing caller
+// gets.
+func CheckManifests(ctx context.Context, share string, store metadata.Store, opts ManifestCheckOptions) (*ManifestCheckResult, error) {
 	if store == nil {
 		return nil, errors.New("store check: metadata store is nil")
 	}
@@ -186,7 +229,7 @@ func CheckManifests(ctx context.Context, share string, store metadata.Store, che
 	result := &ManifestCheckResult{
 		Share:               share,
 		StartedAt:           time.Now().UTC(),
-		SyncedHashesChecked: checkSynced,
+		SyncedHashesChecked: opts.CheckSynced,
 	}
 
 	rootHandle, err := store.GetRootHandle(ctx, share)
@@ -195,7 +238,7 @@ func CheckManifests(ctx context.Context, share string, store metadata.Store, che
 	}
 	if err := walkAuditShareFiles(ctx, store, rootHandle, "", func(path string, f *metadata.File) error {
 		result.FilesScanned++
-		return checkFileManifest(ctx, store, path, f, checkSynced, result)
+		return checkFileManifest(ctx, store, path, f, opts, result)
 	}); err != nil {
 		return nil, fmt.Errorf("store check: walk share %q: %w", share, err)
 	}
@@ -231,7 +274,7 @@ func checkFileManifest(
 	store metadata.Store,
 	path string,
 	f *metadata.File,
-	checkSynced bool,
+	opts ManifestCheckOptions,
 	res *ManifestCheckResult,
 ) error {
 	payloadID := string(f.PayloadID)
@@ -246,16 +289,20 @@ func checkFileManifest(
 
 	finding := &PayloadFinding{Path: path, PayloadID: payloadID, Size: f.Size}
 	covered := make([][2]uint64, 0, len(rows))
+	rowIDs := make(map[string]struct{}, len(rows))
+	var unplaceable []*block.FileChunk
 	var found bool
 
 	for _, row := range rows {
 		if row == nil {
 			continue
 		}
+		rowIDs[row.ID] = struct{}{}
 		off, placeable := block.ParseChunkOffset(row.ID)
 		if !placeable {
 			res.UnplaceableRows++
 			finding.Damaged, found = true, true
+			unplaceable = append(unplaceable, row)
 			appendCapped(&finding.UnplaceableRows, row.ID, &finding.Truncated)
 		}
 		if row.Hash.IsZero() {
@@ -264,7 +311,7 @@ func checkFileManifest(
 		// The hash is put to the synced-hash store even for a row that
 		// cannot be placed. Where its bytes belong is unknown, but whether
 		// the remote holds them is still answerable and still worth saying.
-		if checkSynced {
+		if opts.CheckSynced {
 			synced, serr := store.IsSynced(ctx, row.Hash)
 			if serr != nil {
 				return fmt.Errorf("is synced %s: %w", row.Hash, serr)
@@ -291,7 +338,8 @@ func checkFileManifest(
 	}
 
 	claimed = coalesceExtents(claimed)
-	for _, hole := range uncoveredRanges(coalesceExtents(covered), f.Size) {
+	coveredExtents := coalesceExtents(covered)
+	for _, hole := range uncoveredRanges(coveredExtents, f.Size) {
 		for _, piece := range splitByClaim(hole, claimed) {
 			found = true
 			res.UncoveredRanges++
@@ -305,11 +353,62 @@ func checkFileManifest(
 		}
 	}
 
+	if opts.PlanRepairs || opts.ApplyRepairs {
+		repaired, rerr := repairPayload(ctx, store, path, payloadID, f, rowIDs, unplaceable, coveredExtents, opts, res)
+		if rerr != nil {
+			return rerr
+		}
+		found = found || repaired
+	}
+
 	if !found {
 		return nil
 	}
 	res.record(finding)
 	return nil
+}
+
+// repairPayload plans, optionally applies, and records one payload's repairs.
+// It reports whether anything was proposed, so a payload whose only story is a
+// repair still shows up in the per-payload detail.
+func repairPayload(
+	ctx context.Context,
+	store metadata.Store,
+	path, payloadID string,
+	f *metadata.File,
+	rowIDs map[string]struct{},
+	unplaceable []*block.FileChunk,
+	covered [][2]uint64,
+	opts ManifestCheckOptions,
+	res *ManifestCheckResult,
+) (bool, error) {
+	if uint64(len(res.Repairs)) >= maxManifestCheckFindings {
+		res.RepairsTruncated = true
+		return false, nil
+	}
+	actions, err := planPayloadRepairs(ctx, store, path, payloadID, f, rowIDs, unplaceable, covered, opts.CheckSynced)
+	if err != nil {
+		return false, err
+	}
+	if len(actions) == 0 {
+		return false, nil
+	}
+	res.RepairsPlanned += uint64(len(actions))
+
+	if opts.ApplyRepairs {
+		if err := applyPayloadRepairs(ctx, store, f, actions); err != nil {
+			return false, fmt.Errorf("repair payload %q: %w", payloadID, err)
+		}
+		for i := range actions {
+			if actions[i].Applied {
+				res.RepairsApplied++
+			} else {
+				res.RepairsSkipped++
+			}
+		}
+	}
+	res.Repairs = append(res.Repairs, actions...)
+	return true, nil
 }
 
 // appendCapped appends to a per-payload detail list until it reaches
