@@ -3,7 +3,6 @@ package memory
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -499,24 +498,16 @@ func (s *MemoryMetadataStore) listFileChunksLocked(_ context.Context, payloadID 
 	if s.fileChunkData == nil {
 		return []*metadata.FileChunk{}, nil
 	}
-	result := make([]*metadata.FileChunk, 0, len(s.fileChunkData.blocks))
+	// Prefix scan, the map-backed counterpart of the SQL backends' LIKE
+	// prefilter; block.ChunksForPayload decides membership and order.
+	var candidates []*metadata.FileChunk
 	for id, fc := range s.fileChunkData.blocks {
-		if _, ok := block.ChunkSuffixFor(id, payloadID); !ok {
-			continue
+		if strings.HasPrefix(id, payloadID+"/") {
+			c := *fc
+			candidates = append(candidates, &c)
 		}
-		b := *fc
-		result = append(result, &b)
 	}
-
-	// Order by chunk offset. A row of this payload carrying no placeable
-	// offset is damaged, not foreign: it stays in the result and sorts as 0.
-	sort.SliceStable(result, func(i, j int) bool {
-		a, _ := block.ChunkOffsetFor(result[i].ID, payloadID)
-		b, _ := block.ChunkOffsetFor(result[j].ID, payloadID)
-		return a < b
-	})
-
-	return result, nil
+	return block.ChunksForPayload(candidates, payloadID), nil
 }
 
 // InjectRefCountLeak is a test-only capability hook implementing the

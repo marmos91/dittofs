@@ -2186,17 +2186,14 @@ func testListFileChunksForeignRows(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("ListFileChunks(share/dir) error: %v", err)
 	}
-	// The unplaceable row has no offset to sort on and sorts as 0.
-	want := []string{"share/dir/block-0", "share/dir/0", "share/dir/4096"}
 	gotIDs := make([]string, len(got))
 	for i, b := range got {
 		gotIDs[i] = b.ID
 	}
-	sortedWant := slices.Clone(want)
-	slices.Sort(sortedWant)
-	sortedGot := slices.Clone(gotIDs)
-	slices.Sort(sortedGot)
-	if !slices.Equal(sortedGot, sortedWant) {
+	// The unplaceable row also sorts as offset 0, so its position relative to
+	// "share/dir/0" is not pinned; compare the rows as a set, order below.
+	want := []string{"share/dir/0", "share/dir/4096", "share/dir/block-0"}
+	if !slices.Equal(slices.Sorted(slices.Values(gotIDs)), want) {
 		t.Errorf("ListFileChunks(share/dir) = %v, want exactly %v", gotIDs, want)
 	}
 	// Placeable rows must still come back in ascending offset order.
