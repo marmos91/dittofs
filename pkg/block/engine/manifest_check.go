@@ -395,6 +395,15 @@ func repairPayload(
 	}
 	res.RepairsPlanned += uint64(len(actions))
 
+	// Trim to what the report can still carry, so the actions a run writes and
+	// the actions it lists are always the same set — an applied repair the
+	// operator cannot see is worse than one deferred to the next run. The
+	// planned counter above stays exact past the trim.
+	if room := maxManifestCheckFindings - len(res.Repairs); len(actions) > room {
+		actions = actions[:room]
+		res.RepairsTruncated = true
+	}
+
 	if opts.ApplyRepairs {
 		if err := applyPayloadRepairs(ctx, store, f, actions); err != nil {
 			return false, fmt.Errorf("repair payload %q: %w", payloadID, err)

@@ -218,16 +218,19 @@ func confirmAndRepair(
 	for _, r := range planned {
 		total += r.RepairsPlanned
 	}
+	if format != output.FormatTable {
+		// Neither a prompt nor a note may land in the middle of the
+		// machine-readable document the caller just received.
+		if total == 0 {
+			return false, nil
+		}
+		return false, fmt.Errorf("nothing written: %d repair(s) planned, re-run with --yes to apply them", total)
+	}
+
 	if total == 0 {
 		fmt.Println()
 		fmt.Println("Nothing to repair: no finding carries the evidence needed to put a row back.")
 		return false, nil
-	}
-
-	if format != output.FormatTable {
-		// The prompt would land in the middle of the machine-readable
-		// document the caller just received.
-		return false, fmt.Errorf("nothing written: %d repair(s) planned, re-run with --yes to apply them", total)
 	}
 
 	prompt := fmt.Sprintf("Apply %d manifest repair(s)? This writes to the metadata store.", total)

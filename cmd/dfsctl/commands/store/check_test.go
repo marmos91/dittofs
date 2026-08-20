@@ -458,6 +458,33 @@ func TestCheckCmd_RepairRefusesToPromptIntoMachineOutput(t *testing.T) {
 	}
 }
 
+// TestCheckCmd_RepairKeepsMachineOutputClean asserts that with a
+// machine-readable format nothing human-readable is printed after the
+// document, including the note for a run with nothing to repair.
+func TestCheckCmd_RepairKeepsMachineOutputClean(t *testing.T) {
+	s := newCheckServer(t)
+	s.results["myshare"] = damagedResult()
+	withCheckTestServer(t, s.URL)
+	cmdutil.Flags.Output = "json"
+	checkRepair = true
+
+	var runErr error
+	out := captureStdoutCheck(t, func() {
+		runErr = runStoreCheck(checkCmd, []string{"myshare"})
+	})
+
+	if runErr == nil {
+		t.Fatal("unrepaired damage must still exit non-zero")
+	}
+	if strings.Contains(out, "Nothing to repair") {
+		t.Errorf("human text landed in the JSON document: %q", out)
+	}
+	var decoded []*engine.ManifestCheckResult
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("stdout is not a JSON document: %v (got %q)", err, out)
+	}
+}
+
 // TestCheckCmd_RepairWithNothingToRepair asserts damage the command cannot
 // prove repairable stops before the prompt and still exits non-zero.
 func TestCheckCmd_RepairWithNothingToRepair(t *testing.T) {

@@ -524,3 +524,41 @@ func TestRepairDoesNotOverwriteItsOwnWrite(t *testing.T) {
 		})
 	}
 }
+
+// TestRepairPlanHonoursTheReportCap pins that a run never writes more repairs
+// than it lists. An applied repair the operator cannot see in the report is
+// worse than one deferred to the next run, so the cap trims both together.
+func TestRepairPlanHonoursTheReportCap(t *testing.T) {
+	ctx := t.Context()
+	share := "/repair"
+	store, root := newCheckStore(t, "memory", share)
+
+	// One payload whose claims outnumber the report cap on their own.
+	const claims = maxManifestCheckFindings + 5
+	refs := make([]seedRef, 0, claims)
+	for i := range claims {
+		refs = append(refs, seedRef{off: uint64(i) * 4096, size: 4096, hash: byte(1 + i%200)})
+	}
+	seedCheckFile(t, store, share, root, "wide", uint64(claims)*4096, nil, refs)
+	for h := 1; h <= 200; h++ {
+		if err := store.MarkSynced(ctx, seedHash(byte(h)), block.ChunkLocator{}); err != nil {
+			t.Fatalf("MarkSynced: %v", err)
+		}
+	}
+
+	res := runRepair(t, store, share, ManifestCheckOptions{
+		CheckSynced: true, PlanRepairs: true, ApplyRepairs: true,
+	})
+	if len(res.Repairs) > maxManifestCheckFindings {
+		t.Fatalf("report carries %d repairs, over the cap of %d", len(res.Repairs), maxManifestCheckFindings)
+	}
+	if !res.RepairsTruncated {
+		t.Fatal("plan was trimmed without saying so")
+	}
+	if res.RepairsPlanned != claims {
+		t.Fatalf("RepairsPlanned = %d, want the exact %d found", res.RepairsPlanned, claims)
+	}
+	if got := res.RepairsApplied + res.RepairsSkipped; got != uint64(len(res.Repairs)) {
+		t.Fatalf("wrote %d repairs but listed %d", got, len(res.Repairs))
+	}
+}
