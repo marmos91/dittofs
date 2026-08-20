@@ -10,7 +10,7 @@ import (
 // no store is wired (and thus no override can be read).
 func TestDiscoveryName_DefaultWithoutStore(t *testing.T) {
 	rt := &Runtime{}
-	if got, want := rt.DiscoveryName(), hostinfo.DefaultDiscoveryName(); got != want {
+	if got, want := rt.DiscoveryName(t.Context()), hostinfo.DefaultDiscoveryName(); got != want {
 		t.Fatalf("DiscoveryName without store = %q, want default %q", got, want)
 	}
 }

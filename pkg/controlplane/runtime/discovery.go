@@ -17,9 +17,9 @@ const DiscoveryNameKey = "discovery.name"
 // ("DittoFS-<hostname>") when unset. It is a single server identity; each
 // adapter formats it for its own protocol (WS-Discovery folds it to a
 // NetBIOS-legal computer name via hostinfo.NetBIOSSafe, mDNS uses it verbatim).
-func (r *Runtime) DiscoveryName() string {
+func (r *Runtime) DiscoveryName(ctx context.Context) string {
 	if r.store != nil {
-		if v, err := r.store.GetSetting(context.Background(), DiscoveryNameKey); err == nil {
+		if v, err := r.store.GetSetting(ctx, DiscoveryNameKey); err == nil {
 			if v = strings.TrimSpace(v); v != "" {
 				return v
 			}
