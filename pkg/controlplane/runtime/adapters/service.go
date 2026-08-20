@@ -37,10 +37,9 @@ type ProtocolAdapter interface {
 	Port() int
 	Healthcheck(ctx context.Context) health.Report
 
-	// ListenerReady is closed once Serve has bound the listening socket. It
-	// stays open when the bind fails, which is what lets a start distinguish
-	// "serving" from "about to fail" instead of reporting success for a
-	// listener that never came up.
+	// ListenerReady is closed once Serve has bound the listening socket, and
+	// stays open when the bind fails. Racing it against Serve returning is what
+	// lets a start report the outcome of the bind rather than the intent.
 	ListenerReady() <-chan struct{}
 }
 
@@ -308,38 +307,33 @@ func (s *Service) startAdapter(cfg *models.AdapterConfig) error {
 // occupied port, an unavailable address, insufficient privilege — becomes
 // observable; returning before it makes every start report the intent to serve
 // rather than the outcome.
-//
-// A serve goroutine that returned has released the socket, so its entry is
-// dropped and the type freed for a retry. A start that merely timed out has
-// not: the adapter is still running and may yet bind, so the entry stays to
-// keep holding the type, marked the same way a timed-out stop marks it.
 func (s *Service) awaitListener(adapterType string, entry *adapterEntry) error {
-	var err error
-
 	select {
-	case serveErr := <-entry.errCh:
-		err = serveErr
-		if err == nil {
-			err = fmt.Errorf("adapter %s stopped before its listener was ready", adapterType)
-		}
-		entry.cancel()
-		s.mu.Lock()
-		delete(s.entries, adapterType)
-		s.mu.Unlock()
-
 	case <-entry.adapter.ListenerReady():
 		logger.Info("Adapter started", "type", adapterType, "port", entry.adapter.Port())
 		return nil
 
+	case err := <-entry.errCh:
+		// The serve goroutine returned, so it has released the socket: drop the
+		// entry and free the type for a retry.
+		entry.cancel()
+		s.mu.Lock()
+		delete(s.entries, adapterType)
+		s.mu.Unlock()
+		if err == nil {
+			return fmt.Errorf("adapter %s stopped before its listener was ready", adapterType)
+		}
+		return err
+
 	case <-time.After(s.startTimeout):
-		err = fmt.Errorf("adapter %s listener not ready after %s", adapterType, s.startTimeout)
+		// The adapter is still running and may yet bind, so the entry stays to
+		// keep holding the type, marked the same way a timed-out stop marks it.
 		entry.cancel()
 		s.mu.Lock()
 		entry.cancelled = true
 		s.mu.Unlock()
+		return fmt.Errorf("adapter %s listener not ready after %s", adapterType, s.startTimeout)
 	}
-
-	return err
 }
 
 // stopAdapter tears down the running adapter of the given type. Its entry stays

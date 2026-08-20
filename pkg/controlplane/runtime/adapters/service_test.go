@@ -498,14 +498,15 @@ func newSquattedPortAdapter(protocol string, port int) *squattedPortAdapter {
 	return &squattedPortAdapter{protocol: protocol, port: port, ready: make(chan struct{})}
 }
 
-func (a *squattedPortAdapter) Serve(context.Context) error {
+func (a *squattedPortAdapter) Serve(ctx context.Context) error {
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", a.port))
 	if err != nil {
 		return err
 	}
-	close(a.ready)
 	defer func() { _ = ln.Close() }()
-	return nil
+	close(a.ready)
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func (a *squattedPortAdapter) Stop(context.Context) error                { return nil }
@@ -571,27 +572,22 @@ func TestStartAdapter_ReportsBindFailure(t *testing.T) {
 	}
 }
 
-// wedgedAdapter never binds and never returns from Serve, standing in for setup
-// that hangs before the listener is created.
+// wedgedAdapter never binds, standing in for setup that hangs before the
+// listener is created. Serve returns only once the start gives up and cancels
+// it, so the adapter is still running for the whole of the wait.
 type wedgedAdapter struct {
 	protocol string
 	port     int
-	release  chan struct{}
 	ready    chan struct{}
 }
 
 func newWedgedAdapter(protocol string, port int) *wedgedAdapter {
-	return &wedgedAdapter{
-		protocol: protocol,
-		port:     port,
-		release:  make(chan struct{}),
-		ready:    make(chan struct{}),
-	}
+	return &wedgedAdapter{protocol: protocol, port: port, ready: make(chan struct{})}
 }
 
-func (a *wedgedAdapter) Serve(context.Context) error {
-	<-a.release
-	return nil
+func (a *wedgedAdapter) Serve(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func (a *wedgedAdapter) Stop(context.Context) error                { return nil }
@@ -608,9 +604,8 @@ func TestStartAdapter_TimesOutWhenListenerNeverBinds(t *testing.T) {
 	svc := New(newFakeAdapterStore(), time.Second)
 	svc.startTimeout = 50 * time.Millisecond
 
-	wedged := newWedgedAdapter("nfs", 12049)
 	svc.SetAdapterFactory(func(cfg *models.AdapterConfig) (ProtocolAdapter, error) {
-		return wedged, nil
+		return newWedgedAdapter(cfg.Type, cfg.Port), nil
 	})
 
 	err := svc.CreateAdapter(context.Background(), &models.AdapterConfig{
@@ -622,8 +617,6 @@ func TestStartAdapter_TimesOutWhenListenerNeverBinds(t *testing.T) {
 	if !strings.Contains(err.Error(), "listener not ready") {
 		t.Fatalf("error does not name the wait: %v", err)
 	}
-
-	close(wedged.release)
 }
 
 // TestLoadAdaptersFromStore_SkipsUnbindableAdapter proves a boot survives a

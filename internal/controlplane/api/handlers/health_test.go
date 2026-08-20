@@ -50,10 +50,9 @@ func (m *mockAdapter) ListenerReady() <-chan struct{} {
 	return m.ready
 }
 
-// Healthcheck satisfies the [adapters.ProtocolAdapter] interface (the
-// new method added in phase U-C). The mock has no real lifecycle
-// state, so it always reports healthy with the current timestamp;
-// tests that need richer behaviour should use a dedicated fake.
+// Healthcheck satisfies the [adapters.ProtocolAdapter] interface. The mock has
+// no real lifecycle state, so it always reports healthy with the current
+// timestamp; tests that need richer behaviour should use a dedicated fake.
 func (m *mockAdapter) Healthcheck(_ context.Context) health.Report {
 	return health.Report{
 		Status:    health.StatusHealthy,

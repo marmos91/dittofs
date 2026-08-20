@@ -98,9 +98,8 @@ func (h *AdapterHandler) Create(w http.ResponseWriter, r *http.Request) {
 			Conflict(w, "Adapter already exists")
 			return
 		}
-		// Carry the cause: the common failure is a listener that could not
-		// bind, and the port or address that refused it is the whole of what
-		// the operator needs to fix it.
+		// Carry the cause: the usual failure is a listener that could not bind,
+		// and the port that refused it is what the operator needs to fix it.
 		InternalServerError(w, fmt.Sprintf("Failed to create adapter: %v", err))
 		return
 	}

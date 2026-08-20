@@ -511,10 +511,9 @@ func (b *BaseAdapter) GetListenerAddr() string {
 	return b.listener.Addr().String()
 }
 
-// ListenerReady returns a channel that is closed once the adapter has bound
-// its listening socket. It stays open when the bind fails, so a caller that
-// races it against the result of Serve learns whether the socket actually
-// came up instead of assuming it did.
+// ListenerReady returns a channel closed once the adapter has bound its
+// listening socket. It stays open when the bind fails, so a caller racing it
+// against the result of Serve learns whether the socket came up.
 func (b *BaseAdapter) ListenerReady() <-chan struct{} {
 	return b.listenerReady
 }
