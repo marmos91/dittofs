@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -500,31 +499,23 @@ func (s *MemoryMetadataStore) listFileChunksLocked(_ context.Context, payloadID 
 	if s.fileChunkData == nil {
 		return []*metadata.FileChunk{}, nil
 	}
-	prefix := payloadID + "/"
-	type indexedBlock struct {
-		block *metadata.FileChunk
-		idx   int
-	}
-	var candidates []indexedBlock
-	for id, block := range s.fileChunkData.blocks {
-		if strings.HasPrefix(id, prefix) {
-			suffix := id[len(prefix):]
-			blockIdx, err := strconv.Atoi(suffix)
-			if err != nil {
-				continue // Skip entries with non-numeric suffix
-			}
-			b := *block
-			candidates = append(candidates, indexedBlock{block: &b, idx: blockIdx})
+	result := make([]*metadata.FileChunk, 0, len(s.fileChunkData.blocks))
+	for id, fc := range s.fileChunkData.blocks {
+		if _, ok := block.ChunkSuffixFor(id, payloadID); !ok {
+			continue
 		}
+		b := *fc
+		result = append(result, &b)
 	}
-	// Sort by block index ascending
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].idx < candidates[j].idx
+
+	// Order by chunk offset. A row of this payload carrying no placeable
+	// offset is damaged, not foreign: it stays in the result and sorts as 0.
+	sort.SliceStable(result, func(i, j int) bool {
+		a, _ := block.ChunkOffsetFor(result[i].ID, payloadID)
+		b, _ := block.ChunkOffsetFor(result[j].ID, payloadID)
+		return a < b
 	})
-	result := make([]*metadata.FileChunk, len(candidates))
-	for i, c := range candidates {
-		result[i] = c.block
-	}
+
 	return result, nil
 }
 

@@ -273,14 +273,18 @@ func (s *PostgresMetadataStore) GetByHash(ctx context.Context, hash metadata.Con
 // since payloadIDs are built from a share name and a file path and so contain
 // slashes. Consumers read a row's trailing component as its offset, so an
 // unfiltered foreign row is credited to this file at that offset.
+//
+// A row of this payload whose trailing component is not a decimal offset is
+// kept: it is this file's row and it is damaged, and dropping it would hide
+// the damage from the callers whose job is to report it. It sorts as offset 0.
 func pgChunksForPayload(rows []*metadata.FileChunk, payloadID string) []*metadata.FileChunk {
 	out := make([]*metadata.FileChunk, 0, len(rows))
 	for _, r := range rows {
-		if _, ok := block.ChunkOffsetFor(r.ID, payloadID); ok {
+		if _, ok := block.ChunkSuffixFor(r.ID, payloadID); ok {
 			out = append(out, r)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
+	sort.SliceStable(out, func(i, j int) bool {
 		a, _ := block.ChunkOffsetFor(out[i].ID, payloadID)
 		b, _ := block.ChunkOffsetFor(out[j].ID, payloadID)
 		return a < b

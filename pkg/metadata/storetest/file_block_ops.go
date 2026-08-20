@@ -2138,6 +2138,11 @@ func livePayloadContains(t *testing.T, store metadata.Store, payloadID string) b
 // The same over-match reaches backends that translate the prefix into a SQL
 // LIKE pattern, where "_" matches any single character and "%" matches any
 // sequence, so a payloadID containing either slurps in unrelated siblings.
+//
+// The predicate is the component boundary, not the component being numeric.
+// A backend that additionally requires a decimal suffix under-returns instead:
+// it drops this payload's own damaged rows, making the damage class that
+// manifest scans report structurally invisible on that backend.
 func testListFileChunksForeignRows(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
@@ -2155,6 +2160,10 @@ func testListFileChunksForeignRows(t *testing.T, factory StoreFactory) {
 	rows := []*block.FileChunk{
 		mk("share/dir/0", 100),
 		mk("share/dir/4096", 200),
+		// Belongs to share/dir but carries no placeable offset. This is the
+		// damaged-row class that manifest scans exist to report, so it must
+		// be returned, not filtered out as if it were foreign.
+		mk("share/dir/block-0", 250),
 
 		// Nested payload: a file inside a directory of the same name.
 		mk("share/dir/nested/0", 300),
@@ -2177,13 +2186,28 @@ func testListFileChunksForeignRows(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("ListFileChunks(share/dir) error: %v", err)
 	}
-	want := []string{"share/dir/0", "share/dir/4096"}
+	// The unplaceable row has no offset to sort on and sorts as 0.
+	want := []string{"share/dir/block-0", "share/dir/0", "share/dir/4096"}
 	gotIDs := make([]string, len(got))
 	for i, b := range got {
 		gotIDs[i] = b.ID
 	}
-	if !slices.Equal(gotIDs, want) {
-		t.Errorf("ListFileChunks(share/dir) = %v, want %v", gotIDs, want)
+	sortedWant := slices.Clone(want)
+	slices.Sort(sortedWant)
+	sortedGot := slices.Clone(gotIDs)
+	slices.Sort(sortedGot)
+	if !slices.Equal(sortedGot, sortedWant) {
+		t.Errorf("ListFileChunks(share/dir) = %v, want exactly %v", gotIDs, want)
+	}
+	// Placeable rows must still come back in ascending offset order.
+	var offsets []uint64
+	for _, b := range got {
+		if off, ok := block.ChunkOffsetFor(b.ID, "share/dir"); ok {
+			offsets = append(offsets, off)
+		}
+	}
+	if !slices.IsSorted(offsets) {
+		t.Errorf("ListFileChunks(share/dir) offsets %v not ascending", offsets)
 	}
 
 	// The nested payload must still be listable in its own right.
