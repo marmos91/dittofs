@@ -119,22 +119,26 @@ Also opened from this work: #1909 (crash-ordering silent zeros, still open),
 
 ## What is still open before this audit can be called closed
 
-Everything escalated out of the audit as its own issue is closed: all 8 HIGH (#1900), every
-escalated MED, and the four that were only half closed at the last refresh (#1961, #1962, #1974,
-plus #1909's device-loss verification). What remains is the debt the audit deliberately did *not*
-escalate, and three things that surfaced while fixing.
+Every finding the audit escalated as its own issue is now closed: all 8 HIGH (#1900), every
+escalated MED, the four that were only half closed at an earlier refresh (#1961, #1962, #1974, plus
+#1909's device-loss verification), and the structure wave (#1967, #2023, #1866, #2013, #2024,
+#2006, #2012, #1992). What remains is debt the audit deliberately did *not* escalate, plus what
+surfaced while fixing.
 
 | Finding | Tracking | State |
 |---|---|---|
-| God-functions and duplicated algorithms | #1967 | Closes when #2030 merges. Six PRs landed; #2030 is the last `EvaluateContext` copy, which #2014 could not touch while #2020 held the same file. |
-| Two structure findings #1967's body never listed | #2029 | Open. `pkg/metadata/service.go` god object and the share-wide `lm.mu`. Split out so closing #1967 does not drop them. |
-| LOW structure debt outside the store and lock packages | #1994 | Open, roughly 20 items. Four closed today (#2018 x2, #2019, #2020); `errors.go`/`lock_exports.go` reframed rather than fixed by #2025. |
+| Two structure findings #1967's body never listed | #2029 | **Open, half fixed.** The share-wide `lm.mu` half is fixed in #2043: the `lockStore` round-trip moved out from under the mutex onto 16 hashed lanes, ~430 → ~3400 lock ops/s share-wide, scaling with cores instead of flat. Two things stay open — the `pkg/metadata/service.go` god object, which the measurement does not justify refactoring (128 receivers, ~20 touching `s.mu`, hot path bypassing via a lock-free `storeCache`, one genuine read at 77.1 ns against a 44.6 ns `sync.Map` control), and striping `lm.mu` itself, whose case is now *weaker* than when written: its purpose was overlapping different files' store round-trips, and they already overlap on lanes. A profile should decide it, not the finding. |
+| LOW structure debt outside the store and lock packages | #1994 | **Open, largely ruled.** 19 items resolved: 1 drift found and fixed (#2040), 1 untested contract pinned (#2041), 1 refuted outright, 3 premises corrected, 6 pairs deferred to #1828, the rest WONTFIX with `ponytail:` markers (#2042). |
 | Store-family duplication (pool vs transaction CRUD, generation-guarded caches, config reconciliation) | #1828 | Open by design. Seven MED and several LOW findings are not fixable as isolated patches. |
-| `PunchHole` cold read does not read back as zeros | #1956 | Open. Found by the mutation soak the audit fixes prompted, not by the audit. |
-| Memory store durable-handle map guarded by two locks | #2023 | Open. Surfaced by #2018 while removing the *dead* shadow mutexes next to it. |
-| `WaitForSnapshot` drops the orchestration error | #1866 | Open. Needs the failure kind persisted on the row, which currently stores only a message string. |
+| `PunchHole` cold read does not read back as zeros | #1956 | Open. Found by the mutation soak the audit fixes prompted, not by the audit. Residual carve-seam shadowing is split to #1974. |
+| `ReapSupersededManifest` deletes a row reaching past the run end | #2038 | Open. Mirror image of #1992, verified pre-existing. Leaves a genuine gap whose cold read fails `chunk not found` — not a silent zero, which is the better of the two failures. |
+| `TestBackpressureTerminalWhenNoSyncer` wall-clock flake | #2047 | Open pending #2048. Test-only; the product bounded correctly. |
 
-Both journal findings in #1994 that carried only a recommendation are now ruled. `segment.go:279`
+**The audit's own findings are therefore closed.** #1828 is open by design, #1956/#1974 came from
+the soak rather than the audit, and #2038/#2047 were found while fixing. Only #2029 and #1994 carry
+audit debt, both with every remaining item individually ruled rather than merely swept.
+
+Both journal findings in #1994 that carried only a recommendation are ruled. `segment.go:279`
 is **WONTFIX**: `sh.lastVersion` is a scalar watermark that `groupCommit` and `DurableExtent` read
 as a durability ceiling, and it is sound only while record completion order equals Version order —
 which is what the lock buys. Releasing it acks a version as durable while its bytes are still in
@@ -153,6 +157,14 @@ finding ever carried a `Verified:` paragraph, so a sweep closing one is a claim 
 instead, and both copies are still written out verbatim on develop. Marking that FIXED on the
 strength of the PR description would have hidden it. Treat a swept LOW as swept, not as proven.
 
+**What the validate-first pass changed.** Six of the issues worked in the closing wave had premises
+that were wrong or incomplete, and in three cases implementing the issue as written would have made
+things worse: #2013 proposed making the memory backend match SQL, but SQL over-returns and the
+change would have imported a cross-file data bleed into GC; #1992 predicted the carve run had to be
+extended back, when narrowing the straddler's claim was smaller and safer; #2047's stated mechanism
+(64 blocked attempts x 50ms) was refuted outright — the loop breaks on the first rejection, so one
+attempt pays the budget, and the fix the issue suggested would have set a *tighter* bound than the
+one it replaced. Validating before fixing is what caught all three.
 ---
 
 # Audit Report — DittoFS
