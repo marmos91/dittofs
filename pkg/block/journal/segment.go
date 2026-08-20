@@ -254,6 +254,17 @@ func (s *Store) sealSegment(sh *shard) error {
 // It assigns a fresh Version, writes header+FileID, payload and payload CRC as
 // separate positioned writes (so a large payload is never copied), then indexes
 // the payload's location. It never fsyncs.
+//
+// ponytail: the shard lock is held across those three writes, so records complete
+// in Version order and the scalar sh.lastVersion is a sound fsync ceiling for
+// groupCommit and DurableExtent. Writing unlocked would break that in either
+// arrangement — stamp the version before the writes and a commit can fsync past
+// bytes that have not been issued yet; stamp it after and a faster later record
+// raises the ceiling over an earlier one still in flight — and both ack a version
+// as durable while its bytes are only reserved, which is a hole of zeros after a
+// crash. Dropping the lock therefore needs the watermark replaced by an in-flight
+// version set (ceiling = lowest in-flight Version minus one) first; build that
+// only if append contention on a shard actually shows up in a profile.
 func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data []byte, synced bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
