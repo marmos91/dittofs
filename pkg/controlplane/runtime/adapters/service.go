@@ -339,7 +339,6 @@ func (s *Service) awaitListener(adapterType string, entry *adapterEntry) error {
 		s.mu.Unlock()
 	}
 
-	logger.Error("Adapter failed to start", "type", adapterType, "error", err)
 	return err
 }
 

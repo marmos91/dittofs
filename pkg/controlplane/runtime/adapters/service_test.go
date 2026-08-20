@@ -3,7 +3,9 @@ package adapters
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -468,4 +470,145 @@ func TestEnableAdapter_RollsBackEnabledOnStartFailure(t *testing.T) {
 	if stored.Enabled {
 		t.Fatal("persisted config still claims the adapter is enabled after a failed start")
 	}
+}
+
+// squattedPortAdapter fails to bind because something else already holds its
+// port, the same way a real adapter fails when the kernel SMB listener or
+// another process owns the port an operator asked for.
+type squattedPortAdapter struct {
+	protocol string
+	port     int
+	ready    chan struct{}
+}
+
+func newSquattedPortAdapter(protocol string, port int) *squattedPortAdapter {
+	return &squattedPortAdapter{protocol: protocol, port: port, ready: make(chan struct{})}
+}
+
+func (a *squattedPortAdapter) Serve(context.Context) error {
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", a.port))
+	if err != nil {
+		return err
+	}
+	close(a.ready)
+	defer func() { _ = ln.Close() }()
+	return nil
+}
+
+func (a *squattedPortAdapter) Stop(context.Context) error                { return nil }
+func (a *squattedPortAdapter) Protocol() string                          { return a.protocol }
+func (a *squattedPortAdapter) Port() int                                 { return a.port }
+func (a *squattedPortAdapter) Healthcheck(context.Context) health.Report { return health.Report{} }
+func (a *squattedPortAdapter) ListenerReady() <-chan struct{}            { return a.ready }
+
+// squatPort binds a loopback port and keeps it for the test, returning the
+// port number nothing else can claim while the test runs.
+func squatPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("squat listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// TestStartAdapter_ReportsBindFailure proves a start reports the outcome of the
+// bind rather than the intent to serve. Binding happens inside Serve, which
+// runs in its own goroutine, so a start that returns early hands back success
+// for a listener that never came up — the caller then advertises an adapter
+// that is not serving, and clients reaching the port find whatever else owns
+// it. The seam is shared by every adapter type, so both are checked.
+func TestStartAdapter_ReportsBindFailure(t *testing.T) {
+	for _, adapterType := range []string{"smb", "nfs"} {
+		t.Run(adapterType, func(t *testing.T) {
+			port := squatPort(t)
+
+			st := newFakeAdapterStore()
+			svc := New(st, time.Second)
+			svc.SetAdapterFactory(func(cfg *models.AdapterConfig) (ProtocolAdapter, error) {
+				return newSquattedPortAdapter(cfg.Type, cfg.Port), nil
+			})
+
+			cfg := &models.AdapterConfig{Type: adapterType, Port: port, Enabled: false}
+			if _, err := st.CreateAdapter(context.Background(), cfg); err != nil {
+				t.Fatalf("seed adapter: %v", err)
+			}
+
+			err := svc.EnableAdapter(context.Background(), adapterType)
+			if err == nil {
+				t.Fatal("EnableAdapter reported success for an adapter that never bound its port")
+			}
+			if !strings.Contains(err.Error(), "address already in use") {
+				t.Fatalf("error does not name the bind failure: %v", err)
+			}
+
+			if svc.IsAdapterRunning(adapterType) {
+				t.Error("adapter left registered as running after a failed bind")
+			}
+
+			stored, err := st.GetAdapter(context.Background(), adapterType)
+			if err != nil {
+				t.Fatalf("GetAdapter: %v", err)
+			}
+			if stored.Enabled {
+				t.Error("store still advertises the adapter as enabled after a failed bind")
+			}
+		})
+	}
+}
+
+// wedgedAdapter never binds and never returns from Serve, standing in for setup
+// that hangs before the listener is created.
+type wedgedAdapter struct {
+	protocol string
+	port     int
+	release  chan struct{}
+	ready    chan struct{}
+}
+
+func newWedgedAdapter(protocol string, port int) *wedgedAdapter {
+	return &wedgedAdapter{
+		protocol: protocol,
+		port:     port,
+		release:  make(chan struct{}),
+		ready:    make(chan struct{}),
+	}
+}
+
+func (a *wedgedAdapter) Serve(context.Context) error {
+	<-a.release
+	return nil
+}
+
+func (a *wedgedAdapter) Stop(context.Context) error                { return nil }
+func (a *wedgedAdapter) Protocol() string                          { return a.protocol }
+func (a *wedgedAdapter) Port() int                                 { return a.port }
+func (a *wedgedAdapter) Healthcheck(context.Context) health.Report { return health.Report{} }
+func (a *wedgedAdapter) ListenerReady() <-chan struct{}            { return a.ready }
+
+// TestStartAdapter_TimesOutWhenListenerNeverBinds proves the wait is bounded:
+// an adapter that wedges before binding fails the start instead of blocking the
+// caller forever. Its entry stays behind because the adapter is still alive and
+// may yet claim the socket.
+func TestStartAdapter_TimesOutWhenListenerNeverBinds(t *testing.T) {
+	svc := New(newFakeAdapterStore(), time.Second)
+	svc.startTimeout = 50 * time.Millisecond
+
+	wedged := newWedgedAdapter("nfs", 12049)
+	svc.SetAdapterFactory(func(cfg *models.AdapterConfig) (ProtocolAdapter, error) {
+		return wedged, nil
+	})
+
+	err := svc.CreateAdapter(context.Background(), &models.AdapterConfig{
+		Type: "nfs", Port: 12049, Enabled: true,
+	})
+	if err == nil {
+		t.Fatal("CreateAdapter reported success for an adapter that never bound")
+	}
+	if !strings.Contains(err.Error(), "listener not ready") {
+		t.Fatalf("error does not name the wait: %v", err)
+	}
+
+	close(wedged.release)
 }
