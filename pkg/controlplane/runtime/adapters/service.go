@@ -315,10 +315,15 @@ func (s *Service) awaitListener(adapterType string, entry *adapterEntry) error {
 
 	case err := <-entry.errCh:
 		// The serve goroutine returned, so it has released the socket: drop the
-		// entry and free the type for a retry.
+		// entry and free the type for a retry. Drop it only while the map still
+		// holds this entry — a teardown that overtook this start has already
+		// removed it, and whatever registered the type afterwards belongs to a
+		// later start that is still serving.
 		entry.cancel()
 		s.mu.Lock()
-		delete(s.entries, adapterType)
+		if s.entries[adapterType] == entry {
+			delete(s.entries, adapterType)
+		}
 		s.mu.Unlock()
 		if err == nil {
 			return fmt.Errorf("adapter %s stopped before its listener was ready", adapterType)
