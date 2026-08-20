@@ -1,9 +1,24 @@
 package metadata
 
 // ============================================================================
-// Re-exported lock types from lock package for backward compatibility
+// Public lock surface of package metadata
+// ============================================================================
 //
-// DEPRECATED: Import directly from github.com/marmos91/dittofs/pkg/metadata/lock
+// The names below are package metadata's lock API. The NFS and SMB adapters,
+// the control-plane runtime and the metadata store backends refer to lock
+// state as metadata.FileLock, metadata.PersistedLock, metadata.LockQuery and
+// the rest.
+//
+// The implementations live in pkg/metadata/lock because that package may not
+// import metadata — metadata imports it, so the dependency only runs one way.
+// That lets the lock manager and the backends that persist locks share one set
+// of types without a cycle, while the aliases here keep the API reachable from
+// the package that owns it.
+//
+// These are aliases, not distinct types: each name here and the name it
+// points at denote one and the same type, so a value can be passed to a
+// function expecting either spelling without conversion. Removing or
+// renaming a name here breaks every caller of the metadata package.
 // ============================================================================
 
 import (
@@ -15,10 +30,9 @@ import (
 // ============================================================================
 
 // LockType is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type LockType = lock.LockType
 
-// Lock type constants re-exported for backward compatibility.
+// The lock-type constants callers compare LockType against.
 const (
 	// LockTypeShared is re-exported from the lock package.
 	LockTypeShared = lock.LockTypeShared
@@ -27,10 +41,9 @@ const (
 )
 
 // AccessMode is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type AccessMode = lock.AccessMode
 
-// Share reservation constants re-exported for backward compatibility.
+// The share-reservation constants callers compare AccessMode against.
 const (
 	// AccessModeNone is re-exported from the lock package.
 	AccessModeNone = lock.AccessModeNone
@@ -43,15 +56,12 @@ const (
 )
 
 // LockOwner is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type LockOwner = lock.LockOwner
 
 // UnifiedLock is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type UnifiedLock = lock.UnifiedLock
 
 // FileLock is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type FileLock = lock.FileLock
 
 // ============================================================================
@@ -59,11 +69,9 @@ type FileLock = lock.FileLock
 // ============================================================================
 
 // LockManager is re-exported from the lock package as Manager.
-// Deprecated: Import Manager from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type LockManager = lock.Manager
 
 // NewLockManager creates a new lock manager.
-// Deprecated: Use lock.NewManager() directly.
 func NewLockManager() *LockManager {
 	return lock.NewManager()
 }
@@ -73,27 +81,22 @@ func NewLockManager() *LockManager {
 // ============================================================================
 
 // LockConfig is re-exported from the lock package as Config.
-// Deprecated: Import Config from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type LockConfig = lock.Config
 
 // DefaultLockConfig returns default lock configuration.
-// Deprecated: Use lock.DefaultConfig() directly.
 func DefaultLockConfig() LockConfig {
 	return lock.DefaultConfig()
 }
 
 // LockLimits is re-exported from the lock package as Limits.
-// Deprecated: Import Limits from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type LockLimits = lock.Limits
 
 // NewLockLimits creates a new limits tracker.
-// Deprecated: Use lock.NewLimits() directly.
 func NewLockLimits() *LockLimits {
 	return lock.NewLimits()
 }
 
 // LockStats is re-exported from the lock package as Stats.
-// Deprecated: Import Stats from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type LockStats = lock.Stats
 
 // ============================================================================
@@ -101,10 +104,9 @@ type LockStats = lock.Stats
 // ============================================================================
 
 // GraceState is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type GraceState = lock.GraceState
 
-// Grace state constants re-exported for backward compatibility.
+// The grace states callers compare GraceState against.
 const (
 	// GraceStateNormal is re-exported from the lock package.
 	GraceStateNormal = lock.GraceStateNormal
@@ -113,11 +115,9 @@ const (
 )
 
 // GracePeriodManager is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type GracePeriodManager = lock.GracePeriodManager
 
 // LockOperation is re-exported from the lock package as Operation.
-// Deprecated: Import Operation from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type LockOperation = lock.Operation
 
 // ============================================================================
@@ -125,15 +125,12 @@ type LockOperation = lock.Operation
 // ============================================================================
 
 // ConnectionTracker is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type ConnectionTracker = lock.ConnectionTracker
 
 // ConnectionTrackerConfig is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type ConnectionTrackerConfig = lock.ConnectionTrackerConfig
 
 // ClientRegistration is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type ClientRegistration = lock.ClientRegistration
 
 // ============================================================================
@@ -141,7 +138,6 @@ type ClientRegistration = lock.ClientRegistration
 // ============================================================================
 
 // WaitForGraph is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type WaitForGraph = lock.WaitForGraph
 
 // ============================================================================
@@ -149,15 +145,12 @@ type WaitForGraph = lock.WaitForGraph
 // ============================================================================
 
 // LockStore is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type LockStore = lock.LockStore
 
 // PersistedLock is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type PersistedLock = lock.PersistedLock
 
 // LockQuery is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type LockQuery = lock.LockQuery
 
 // ============================================================================
@@ -165,17 +158,13 @@ type LockQuery = lock.LockQuery
 // ============================================================================
 
 // OpLock is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type OpLock = lock.OpLock
 
 // OpLockBreakScanner is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type OpLockBreakScanner = lock.OpLockBreakScanner
 
 // OpLockBreakCallback is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type OpLockBreakCallback = lock.OpLockBreakCallback
 
 // NLMHolderInfo is re-exported from the lock package.
-// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type NLMHolderInfo = lock.NLMHolderInfo
