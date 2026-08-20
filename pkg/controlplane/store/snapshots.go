@@ -132,15 +132,17 @@ func (s *GORMStore) UpdateSnapshotState(ctx context.Context, shareName, id, stat
 }
 
 // MarkSnapshotFailed flips a snapshot to state='failed' and persists errMsg
-// onto the row's Error column in a single UPDATE, so show/list surface the
-// failure reason instead of "(no error message)". Unlike UpdateSnapshotState
-// it does not gate on the prior state: the orchestration goroutine calls this
-// from any pipeline step (still 'creating', or a retry that already flipped
-// back to 'creating'), and the recovery scan must be able to record a reason
-// regardless. errMsg is truncated to fit the column.
+// and failureKind onto the row's Error and FailureKind columns in a single
+// UPDATE, so show/list surface the failure reason instead of "(no error
+// message)" and a later waiter can rebuild the typed error from the row.
+// Unlike UpdateSnapshotState it does not gate on the prior state: the
+// orchestration goroutine calls this from any pipeline step (still
+// 'creating', or a retry that already flipped back to 'creating'), and the
+// recovery scan must be able to record a reason regardless. errMsg is
+// truncated to fit the column.
 //
 // Returns models.ErrSnapshotNotFound if no row matches (shareName, id).
-func (s *GORMStore) MarkSnapshotFailed(ctx context.Context, shareName, id, errMsg string) error {
+func (s *GORMStore) MarkSnapshotFailed(ctx context.Context, shareName, id, errMsg, failureKind string) error {
 	const maxErrLen = 1024
 	if len(errMsg) > maxErrLen {
 		errMsg = errMsg[:maxErrLen]
@@ -149,9 +151,10 @@ func (s *GORMStore) MarkSnapshotFailed(ctx context.Context, shareName, id, errMs
 	res := db.Model(&models.Snapshot{}).
 		Where("share_name = ? AND id = ?", shareName, id).
 		Updates(map[string]any{
-			"state":      models.StateFailed,
-			"error":      errMsg,
-			"updated_at": time.Now(),
+			"state":        models.StateFailed,
+			"error":        errMsg,
+			"failure_kind": failureKind,
+			"updated_at":   time.Now(),
 		})
 	if res.Error != nil {
 		return res.Error

@@ -586,12 +586,15 @@ type SnapshotStore interface {
 	UpdateSnapshotState(ctx context.Context, shareName, id, state string) error
 
 	// MarkSnapshotFailed flips a snapshot to state='failed' and persists
-	// errMsg onto its Error column in a single UPDATE so show/list can
-	// surface the failure reason. Not gated on prior state (the
-	// orchestration goroutine may call it from any pipeline step). errMsg
-	// is truncated to fit the column. Returns models.ErrSnapshotNotFound
-	// if no row matches (shareName, id).
-	MarkSnapshotFailed(ctx context.Context, shareName, id, errMsg string) error
+	// errMsg plus failureKind onto its Error and FailureKind columns in a
+	// single UPDATE, so show/list can surface the failure reason and a
+	// caller waiting after the orchestration goroutine has exited can
+	// rebuild the typed error. Not gated on prior state (the orchestration
+	// goroutine may call it from any pipeline step). errMsg is truncated to
+	// fit the column; failureKind may be "" when the cause matches no known
+	// sentinel. Returns models.ErrSnapshotNotFound if no row matches
+	// (shareName, id).
+	MarkSnapshotFailed(ctx context.Context, shareName, id, errMsg, failureKind string) error
 
 	// UpdateSnapshotDurable flips the RemoteDurable bit on the snapshot
 	// row matching (shareName, id). Called by the orchestration goroutine

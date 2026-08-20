@@ -250,8 +250,10 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 //     callers can errors.Is against the typed sentinels (e.g.
 //     models.ErrSnapshotVerifyFailed).
 //   - Already-complete snapshot (chan drained or removed from registry):
-//     no chan present → falls through to GetSnapshot immediately with
-//     nil orchestration error. The row state carries the outcome.
+//     no chan is present, so the row is the only outcome available. A
+//     state=failed row is rebuilt into the same wrapped sentinel via
+//     models.SnapshotFailureError, so the caller sees the failure whether
+//     or not it won the race against the goroutine's teardown.
 //   - ctx cancel during wait: returns nil, ctx.Err() without consulting
 //     GetSnapshot.
 //   - Unknown snapshot id: GetSnapshot returns
@@ -259,12 +261,10 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 //
 // Concurrency: the per-snap chan is buffered with cap 1 and closed after
 // the single send (see runSnapshotOrchestration's deferred cleanup), so
-// reads after the close yield the zero-value snapResult{} — the first
-// reader observes the orchestration error and subsequent readers see the
-// row state (which already reflects failure as state=failed). This
-// single-broadcast behavior is acceptable for the current single-caller
-// pattern; a multi-subscriber event-stream upgrade (sync.Cond) is a
-// possible future enhancement.
+// reads after the close yield the zero-value snapResult{}. That drained
+// read and a missing registry entry are the same case, and both recover
+// the error from the row instead of reporting success — the outcome does
+// not depend on which of the caller and the goroutine ran first.
 func (r *Runtime) WaitForSnapshot(ctx context.Context, shareName, snapID string) (*models.Snapshot, error) {
 	if r == nil || r.store == nil {
 		return nil, errors.New("runtime: nil store")
@@ -293,8 +293,8 @@ func (r *Runtime) WaitForSnapshot(ctx context.Context, shareName, snapID string)
 		case res := <-doneCh:
 			// nil err on success or the wrapped sentinel on failure.
 			// Closed-then-drained chans yield the zero-value
-			// snapResult{} → orchErr stays nil and the row state is the
-			// authoritative outcome for late subscribers.
+			// snapResult{}, leaving orchErr nil; the row check below
+			// recovers the failure for those late subscribers.
 			orchErr = res.err
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -306,6 +306,14 @@ func (r *Runtime) WaitForSnapshot(ctx context.Context, shareName, snapID string)
 		// ErrSnapshotNotFound propagates as-is (errors.Is works through
 		// the underlying wrap).
 		return nil, gerr
+	}
+	if orchErr == nil && snap.State == models.StateFailed {
+		// The goroutine's error was never observed: it finished and tore
+		// down its chan before this call looked, another waiter drained
+		// the single-send chan, or the orchestration ran in an earlier
+		// process. The row is authoritative, so rebuild the error from it
+		// rather than returning a failed snapshot with nil error.
+		orchErr = models.SnapshotFailureError(snap)
 	}
 	return snap, orchErr
 }
@@ -787,8 +795,10 @@ func drainSentinel(err error) error {
 }
 
 // failSnap flips the snapshot row to state='failed' and persists cause's
-// message onto the row's Error column so show/list surface the reason
-// instead of "(no error message)". Best-effort: if the row update itself
+// message and sentinel kind onto the row's Error and FailureKind columns, so
+// show/list surface the reason instead of "(no error message)" and a caller
+// that waits after the orchestration goroutine has exited can rebuild the
+// same typed error from the row. Best-effort: if the row update itself
 // fails (e.g., DB unavailable), we log but do not double-fail the
 // orchestration error — the wrapped sentinel posted to doneCh is still the
 // authoritative signal for callers, and the startup-recovery scan will
@@ -802,7 +812,8 @@ func (r *Runtime) failSnap(shareName, snapID string, cause error) {
 	if cause != nil {
 		msg = cause.Error()
 	}
-	if err := r.store.MarkSnapshotFailed(context.Background(), shareName, snapID, msg); err != nil {
+	kind := models.SnapshotFailureKind(cause)
+	if err := r.store.MarkSnapshotFailed(context.Background(), shareName, snapID, msg, kind); err != nil {
 		logger.Error("snapshot create: failed to flip state=failed (will reconcile on next restart)",
 			"snapshot_id", snapID,
 			"share", shareName,
@@ -982,7 +993,8 @@ func (r *Runtime) recoverOrphanedSnapshots(ctx context.Context) error {
 				continue
 			}
 			if uerr := r.store.MarkSnapshotFailed(ctx, shareName, snap.ID,
-				"abandoned: server restarted while snapshot was still creating"); uerr != nil {
+				"abandoned: server restarted while snapshot was still creating",
+				models.FailureKindBackup); uerr != nil {
 				logger.Error("snapshot recovery: flip to failed",
 					"snapshot_id", snap.ID,
 					"share", shareName,
