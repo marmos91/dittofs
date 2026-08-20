@@ -1749,6 +1749,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Drop these ad-hoc debug logs, or gate behind `if tx.store.logger.Enabled(ctx, slog.LevelDebug)` so the String()/boxing cost is paid only when Debug is on.
 
 ### [LOW] sqliteTransaction Files/Shares/ServerConfig impls split into one 1344-line transaction.go, unlike every other domain
+> STATUS: WONTFIX, premise corrected -- the size complaint is soft and the stated inconsistency points the wrong way. sqlite `transaction.go` is 1380 lines against postgres 1427 and badger 1627, so it is the house pattern for this layer, not an outlier. The real asymmetry is internal and narrower than the finding states: `block_record_store.go` co-locates its 4 `sqliteTransaction` methods with the store-level ones, while the other 28 tx methods live together in `transaction.go`. Moving those 4 out (or the 28 in) is a pure file shuffle with no dependency untangled, and it would collide with #1828, which folds sqlite and postgres into one `sql` implementation and re-lays out these files anyway.
 - **Where:** `pkg/metadata/store/sqlite/transaction.go:185` · `structure`
 - **Fix:** Split transaction.go by domain next to its store-level sibling: file/dir tx methods into files.go, share/root-dir into shares.go, server-config/caps into a small config file; keep only WithTransaction + the sqliteTransaction struct in transaction.go.
 
