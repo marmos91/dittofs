@@ -76,10 +76,14 @@ func (op persistOp) exec() {
 	for i, lane := range op.lanes {
 		lane.acquire(op.seqs[i])
 	}
+	// Retire on the way out even if the store panics: a ticket that is never
+	// retired wedges its lane, and every later write to those files with it.
+	defer func() {
+		for _, lane := range op.lanes {
+			lane.release()
+		}
+	}()
 	op.run()
-	for _, lane := range op.lanes {
-		lane.release()
-	}
 }
 
 // laneFor maps a file key to its lane. FNV-1a over the key, inlined to avoid
