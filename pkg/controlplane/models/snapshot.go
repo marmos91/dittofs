@@ -2,7 +2,6 @@ package models
 
 import (
 	"errors"
-	"fmt"
 	"path/filepath"
 	"time"
 )
@@ -80,9 +79,22 @@ func SnapshotFailureKind(cause error) string {
 	return ""
 }
 
+// snapshotFailure is a rebuilt failure: it prints the message persisted on the
+// row and unwraps to the sentinel the row's kind names. The persisted message
+// is the original error's own Error() output, which already contains the
+// sentinel's text, so printing it verbatim rather than re-wrapping keeps the
+// rebuilt error's string identical to the one an in-memory waiter sees.
+type snapshotFailure struct {
+	msg      string
+	sentinel error
+}
+
+func (e *snapshotFailure) Error() string { return e.msg }
+func (e *snapshotFailure) Unwrap() error { return e.sentinel }
+
 // SnapshotFailureError rebuilds a caller-facing error from a terminal
 // state='failed' row. It carries the persisted message and, when the row
-// records a known failure kind, wraps the matching sentinel so errors.Is
+// records a known failure kind, unwraps to the matching sentinel so errors.Is
 // classifies it exactly as the in-memory error would have. Rows with an empty
 // or unrecognised kind yield a plain error — non-nil either way, so a failed
 // snapshot is never mistaken for a successful one.
@@ -93,7 +105,7 @@ func SnapshotFailureError(s *Snapshot) error {
 	}
 	for _, m := range snapshotFailureSentinels {
 		if m.kind == s.FailureKind {
-			return fmt.Errorf("%s: %w", msg, m.sentinel)
+			return &snapshotFailure{msg: msg, sentinel: m.sentinel}
 		}
 	}
 	return errors.New(msg)

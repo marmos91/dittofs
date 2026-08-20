@@ -171,3 +171,23 @@ func TestSnapshotFailureKind(t *testing.T) {
 		t.Fatalf("SnapshotFailureKind(nil) = %q, want \"\"", got)
 	}
 }
+
+// TestSnapshotFailureError_MessageMatchesInMemory pins the rebuilt error's
+// string to the in-memory one. The row's message is the original error's own
+// Error() output, so it already ends in the sentinel's text; re-wrapping it
+// around the sentinel would print that text twice and make the message depend
+// on whether the waiter observed the orchestration error or rebuilt it.
+func TestSnapshotFailureError_MessageMatchesInMemory(t *testing.T) {
+	t.Parallel()
+
+	inMemory := fmt.Errorf("manifest hash mismatch: %w", ErrSnapshotVerifyFailed)
+	row := Snapshot{Error: inMemory.Error(), FailureKind: SnapshotFailureKind(inMemory)}
+
+	rebuilt := SnapshotFailureError(&row)
+	if rebuilt.Error() != inMemory.Error() {
+		t.Fatalf("rebuilt = %q, want %q", rebuilt.Error(), inMemory.Error())
+	}
+	if !errors.Is(rebuilt, ErrSnapshotVerifyFailed) {
+		t.Fatalf("rebuilt = %v, want errors.Is(ErrSnapshotVerifyFailed)", rebuilt)
+	}
+}
