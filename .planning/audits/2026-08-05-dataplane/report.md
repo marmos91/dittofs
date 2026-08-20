@@ -1243,6 +1243,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Delete line 610-612 (`_ = srcPayloadID` and its comment) — unused function parameters compile fine in Go without a blank assignment; the param itself stays for interface signature symmetry with dstPayloadID.
 
 ### [LOW] Stats/GetStats/GetStatsLite/LocalStats drop context propagation, manufacturing context.Background() for DB reads
+> STATUS: WONTFIX, premise partly corrected -- there is exactly ONE `context.Background()` in the file (`stats.go:190`), not the several implied, and it is already bounded by a 5s timeout. Threading a real ctx means adding one to `local.LocalStore.Stats()` and every backend implementing it, i.e. churning the same interface the finding two entries down says not to churn. Marked with a `ponytail:` at the call site.
 - **Where:** `pkg/block/engine/stats.go:74` · `structure`
 - **Fix:** Thread ctx through GetStats(ctx)/GetStatsLite(ctx)/Stats(ctx)/LocalStats(ctx) from the callers (they already have one), replacing both context.Background() call sites.
 
@@ -1261,6 +1262,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Delete lines 702-706 (interval computation + `_ = interval`) from startPeriodicUploader; carveDispatcher already owns and defaults its own interval independently.
 
 ### [LOW] Syncer is a god object bundling fetch-dedup, readahead, health, adaptive upload control, carve wiring and queue ownership
+> STATUS: WONTFIX -- every field named here is read on the fetch/carve/close lock-ordering path, whose failure mode is silent zeros. Giving carve wiring its own lock introduces a second lock order for legibility only. Marked with a `ponytail:` at the struct; revisit when a hardware rig can prove a split preserves the ordering.
 - **Where:** `pkg/block/engine/syncer.go:34` · `structure`
 - **Fix:** Extract carve wiring (remoteBlockStore/chunkSealer/blockCommitter/carveActive/carveTargetsWired/wireCarveTargets) into its own collaborator with its own lock so it stops sharing m.mu with health/close.
 
@@ -1289,6 +1291,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Extend the CRC coverage to include the FileID bytes: either widen headerCRCCovers-style checksum to cover Magic..Version+FileID (recomputed on every append, which is cheap since FileID is short) and updated at the same one-byte Flags-flip site as today (Flags stays excluded, everything else including FileID included), or fold the FileID into the existing payload CRC computation (crc(fileID) combined with crc(payload), e.g. running the crc32 update sequentially over fileID then payload) so readRecordAt's validation catches a corrupted FileID the same way it catches a corrupted payload.
 
 ### [LOW] appendTombstone / appendTruncateMarker are near-duplicate ~45-line methods
+> STATUS: DIFFED, no drift. WONTFIX. `segment.go:410` vs `:465` diff to: the signature, the fail-injection seam name, the record-writer call, the idx `FileOffset`/`Flags` fields, and comment text. Everything load-bearing matches -- both take `sh.mu` right after `shardFor`, unlock explicitly on each error path and once before `sh.groupCommit()` (neither uses `defer`, neither leaks the lock), and both run rollover -> `sh.active` -> `nextVersion` -> write record -> `noteMinVersion` -> `idxFD.Write` -> unlock -> groupCommit in that order. Truncate's extra `FileOffset` is required, not drift. Worth recording because it is NOT the #1909 class: NEITHER marker path stamps `sh.lastVersion`, so `groupCommit`'s ceiling never covers a marker's version. That errs conservative -- the fsync physically covers the bytes and the watermark merely under-claims, so `DurableExtent` and `shard.dirty()` can only under-report durability, never over-report. Collapsing two 45-line methods whose every line sits on that path is not worth the risk.
 - **Where:** `pkg/block/journal/segment.go:383` · `bloat`
 - **Fix:** Collapse to one Store.appendMarker(ctx, id FileID, flags uint8, fileOffset uint64, testFail FileID) (uint64, error) that does the shared work and calls a single writeMarkerRecord(seg, id, version, flags, fileOffset) (recordHeader already has both fields). appendTombstone becomes appendMarker(ctx, id, flagTombstone, 0, testFailTombstone) and appendTruncateMarker becomes appendMarker(ctx, id, flagTruncate, uint64(newSize), testFailTruncate); one testFailMarker var (keyed by id) can replace the two separate globals.
 
@@ -1331,10 +1334,12 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Drop "(#1718)"; the preceding clause already states the behaviour.
 
 ### [LOW] FSStore embeds *journal.Store, leaking its full public API and bypassing the payloadID shim/legacy-migration gate for unshadowed methods
+> STATUS: WONTFIX -- converting the embed to a named field means hand-writing pass-throughs for every method the tree already calls through it (SeedCold, JournalVersion, SetPinVersion, PinVersion, RestoreToVersion, SetVerifyReads, FileCount, SetEvictionEnabled, SetCarveTargets, UnsyncedBytes, Close), reached from snapshot.go, shares/service.go and the local.LocalStore interface. ~16 forwarders to gate a hazard the audit itself found unreachable. Marked with a `ponytail:` at the struct.
 - **Where:** `pkg/block/local/fs/fs.go:56` · `structure`
 - **Fix:** Change `*journal.Store` to an unexported named field (`js *journal.Store`) and add explicit pass-through methods for what FSStore genuinely exposes (Close, Evict, SetEvictionEnabled, SetCarveTargets, Carve, UnsyncedBytes), forcing a conscious shim/no-shim decision whenever journal.Store grows a method.
 
 ### [LOW] LocalStore is a 20-method god interface mixing 4 unrelated concerns
+> STATUS: WONTFIX -- already sectioned by comment, and every production consumer holds the whole store, so splitting adds named unions without narrowing one dependency. Marked with a `ponytail:` at the interface.
 - **Where:** `pkg/block/local/local.go:33` · `structure`
 - **Fix:** Split into composable interfaces at point of use (DataPlane, Carver, Evictor, Lifecycle) and have LocalStore = a type alias/union only where a consumer genuinely needs all of them (engine.Store). Callers that need one capability type-assert narrowly, following the pattern already used correctly at pkg/block/engine/flush.go:114-164 for the journal-only capabilities.
 
@@ -1560,6 +1565,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Delete these five restatement comments; keep the ones that explain non-obvious invariants (nlink, idempotent upsert, etc.).
 
 ### [LOW] GetBlockRecord/WalkBlockRecords duplicated tx-level vs store-level
+> STATUS: DIFFED, no drift -- DEFERRED to #1828. Both copies were extracted and compared line by line before any collapse was considered. postgres `block_record_store.go`: GetBlockRecord `:46` vs `:115` and WalkBlockRecords `:68` vs `:132` are character-identical apart from the `tx.tx.QueryRow`/`s.queryRow` dispatcher -- same `ctx.Err()` guard, same 5-column SELECT, same error prefix in both (no divergent "tx" variant), and both delegate the row loop to the shared `iterBlockRecordRows`. Put/Delete/DecrLiveChunkCount are not duplicates at all: the store forms delegate through `WithTransaction`. Deferred to #1828 with the rest of the pool/tx seam.
 - **Where:** `pkg/metadata/store/postgres/block_record_store.go:46` · `bloat`
 - **Fix:** Factor the query string + scanBlockRecord/iterBlockRecordRows call into one function parameterized over the minimal query interface, called from both receivers.
 
@@ -1602,6 +1608,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Resolve operator config once in cmd/dfs/commands/start.go and pass it through BadgerMetadataStoreConfig / the runtime/stores/service.go store-open path; drops the mutex, the getter, and the test reset boilerplate.
 
 ### [LOW] block_record_store.go: tx-level and store-level methods duplicate the same txn body instead of sharing a free function
+> STATUS: DIFFED, no drift. badger `block_record_store.go`: Put `:50`/`:168`, Get `:58`/`:184`, Delete `:77`/`:213`, Walk `:88`/`:230`, Decr `:130`/`:275`. Key building, encode/decode, not-found handling, the floor-at-zero arithmetic and the walk order are identical in every pair. The asymmetries are structural, not drift, and uniform across all five: tx-level methods take `_ context.Context` (a tx cannot honour cancellation mid-transaction) while store-level ones add a `ctx.Err()` preflight, and store `DecrLiveChunkCount` wraps in `updateWithConflictRetry` where the tx form cannot, being already inside a txn. FIXED in passing: store `DecrLiveChunkCount` double-prefixed its not-found message (the closure and the outer wrap both prepended `badger DecrLiveChunkCount: `). The retry contract this pair depends on is now pinned by a `ConcurrentDecrLiveChunkCount` case in `pkg/metadata/storetest/block_record_ops.go` -- it loses 2 of 8 decrements if the retry is removed.
 - **Where:** `pkg/metadata/store/badger/block_record_store.go:130` · `structure`
 - **Fix:** Extract getBlockRecordTxn(txn *badgerdb.Txn, blockID string), deleteBlockRecordTxn(txn, blockID), walkBlockRecordsTxn(txn, fn), decrLiveChunkCountTxn(txn, blockID, delta) — mirror the synced_hash_store.go shape — and have both the badgerTransaction and BadgerMetadataStore methods call them.
 
@@ -1616,6 +1623,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Add a deleteDurableHandleTx variant taking the already-decoded *lock.PersistedDurableHandle (straight to deleteIndicesTx + txn.Delete); keep the id-only form as a thin wrapper. Use it from consumeByIndexTx and keep the handle (not just the id) in the DeleteExpiredDurableHandles View pass.
 
 ### [LOW] durable_handles.go: secondary-index add/remove hand-duplicated per index type across put and delete
+> STATUS: DIFFED, no drift. WONTFIX. `putDurableHandleTx:112-154` vs `deleteIndicesTx:156-209` cover the SAME five index families with the SAME three guards -- FileID and Share unconditional (both through the shared `fileIDIndexKey`/`shareIndexPrefix` helpers, so those two cannot drift at all), CreateGuid and AppInstanceId gated on `!= zeroGUID`, FileHandle gated on `len(MetadataHandle) > 0`. No index is added without a removal counterpart, so there is no stale-entry leak. The remove side's one extra block is the legacy unsuffixed `dh:fid:` cleanup at `:165-181`, deliberate migration handling with an owner check. Recording one latent hazard found while diffing, present identically on both sides and therefore NOT drift: the CreateGuid key is the only one with no `:{id}` suffix, and delete removes it with no owner check, unlike the legacy FileID key directly above it. Two live handles sharing a CreateGuid (client-supplied on SMB2 CREATE; the spec says unique, a buggy client can repeat it) would let deleting A orphan B's lookup -- a failed durable reconnect, not corruption. The owner-check at `:171-179` is the fix template if anyone touches it.
 - **Where:** `pkg/metadata/store/badger/durable_handles.go:88` · `structure`
 - **Fix:** Extract a single indexKeys(handle) [][]byte builder applying the same guards (CreateGuid != zeroGUID, AppInstanceId != zeroGUID, len(MetadataHandle) > 0) once; have putDurableHandleTx Set and deleteIndicesTx Delete over the same generated list.
 
@@ -1624,6 +1632,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Move lines 3-8 (the SetMaxTransactionRetriesForTest doc block) down to sit directly above `func SetMaxTransactionRetriesForTest(n int) func()` at line 27, leaving only the InlineSyncCountForTest doc block (lines 9-13) above its function.
 
 ### [LOW] Retry-with-backoff on ErrConflict duplicated verbatim between two independent implementations
+> STATUS: DIFFED, no drift. WONTFIX on the collapse. `objects.go:156` `updateWithConflictRetry` vs `transaction.go:110` `withTransaction`: max attempts (one shared `maxTransactionRetries` atomic), the backoff expression, the between-attempt `ctx.Err()` re-check, the `== ErrConflict` sentinel test and the `txnConflicts` counter are character-identical. Neither handles `ErrTxnTooBig`. Two apparent divergences were chased down and both are false alarms: (a) the exhaustion return differs in SHAPE -- `withTransaction` guards with `goerrors.Is(lastErr, ErrConflict)` before mapping, `updateWithConflictRetry` maps unguarded -- but `lastErr` can only be nil when the loop never runs (`maxTransactionRetries <= 0`, test-only), and `mapBadgerError(nil, ...)` returns nil, so BOTH return nil in the only reachable case; (b) `updateWithConflictRetry` never calls `syncIfRelaxed()`, which looks like a durability gap until you read `store.go:168-174`, where relaxed mode is DEFINED as deferring namespace-op fsyncs to the background syncer while `WithTransaction` -- the data-paired path -- syncs explicitly. Share/refcount/block-record writes are namespace ops. Documented policy, not drift. FIXED in passing: `transaction.go` claimed "Exponential backoff with jitter... grows exponentially up to ~50ms"; the schedule is linear `(2*attempt+1)ms` and the jitter term is a deterministic function of `attempt`, with no randomness at all. Comment corrected in both copies.
 - **Where:** `pkg/metadata/store/badger/objects.go:157` · `structure`
 - **Fix:** Extract one retryOnConflict(ctx, body func() error) error helper owning the loop, ctx check, backoff, s.txnConflicts increment and final error wrapping; have both withTransaction and updateWithConflictRetry call it.
 
@@ -1646,6 +1655,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Add `if err := ctx.Err(); err != nil { return err }` at the top of the for-loop body in withTransaction, same as updateWithConflictRetry already does.
 
 ### [LOW] EncodeFileHandle duplicates EncodeShareHandle's entire body
+> STATUS: REFUTED -- there is no duplicated body. `types.go:41` is a one-line delegation: `return EncodeShareHandle(file.ShareName, file.ID)`. Byte-identical output by construction, no magic/version byte in either. A symbol-name similarity false positive.
 - **Where:** `pkg/metadata/types.go:41` · `bloat`
 - **Fix:** func EncodeFileHandle(file *File) (FileHandle, error) { return EncodeShareHandle(file.ShareName, file.ID) }
 
@@ -1693,10 +1703,12 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Add `acquireConn(ctx) (*pgxpool.Conn, error)` next to query/exec/queryRow/beginTx in pool_helpers.go; call it from reset.go and both snapshot_store.go sites.
 
 ### [LOW] GetFile's 20+ column SQL literal duplicated between pool-path and tx-path instead of a shared const
+> STATUS: DIFFED, no drift -- DEFERRED to #1828. Both copies were extracted and compared line by line before any collapse was considered. postgres `transaction.go:206` vs `files.go:29`, and the sqlite twin `transaction.go:151` vs `files.go:28`: after normalizing the receiver and the `?N`/`$N` dialect, the only hunks are the func signature and a debug-log block the tx copy carries and the pool copy does not. Same 24 columns in the same order; both interpolate the SAME package-level `inodePathExpr` and `blockRefsAggExpr` constants, so the subqueries cannot drift; both delegate every scan target to `sqlcodec.FileRowToFileWithNlinkAndBlocks(row, true)`, so there is no per-copy scan list to drop a column from. Same `ctx.Err()` guard, same handle decode, same error mapping. sqlite and postgres also agree with each other. The duplication is query TEXT whose risky half was already factored out; collapsing it by hand now would churn the exact files #1828 rewrites into a single `sql` implementation over a Dialect.
 - **Where:** `pkg/metadata/store/postgres/transaction.go:210` · `structure`
 - **Fix:** Extract the GetFile SELECT to a package-level const (getFileQuery) the way locks.go does for selectByID, and reuse it from PostgresMetadataStore.GetFile and postgresTransaction.GetFile; same for the other pool/tx pairs in files.go/transaction.go.
 
 ### [LOW] GetClientRegistration and ListClientRegistrations duplicate the same 9-field Scan block instead of sharing a scan helper
+> STATUS: DIFFED, no drift -- DEFERRED to #1828. Both copies were extracted and compared line by line before any collapse was considered. sqlite `clients.go` Get vs the List loop body, and the postgres twin: identical field order, identical `len(privBytes) == 16` guard, identical no-rows handling (`sql.ErrNoRows` / `pgx.ErrNoRows` -> `nil, nil`). No drift. The sibling finding on `scanDurableHandleRows` in the same package was already collapsed onto `scanDurableHandleFields`, so the pattern to imitate exists; deferred to #1828 rather than applied piecemeal to one of four backends.
 - **Where:** `pkg/metadata/store/sqlite/clients.go:70` · `structure`
 - **Fix:** Extract `scanRegistration(row scanRow) (*lock.PersistedClientRegistration, error)` (mirroring scanDurableHandle) and call it from both Get and the List loop.
 
@@ -1723,6 +1735,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Cap per-cell text/blob length before allocating (fixed constant), and/or CRC-verify the payload stream before parsing rows.
 
 ### [LOW] block_record_store.go duplicates full SQL bodies between pool and tx paths instead of sharing via execer, unlike sibling synced_hash_store.go
+> STATUS: DIFFED, no drift -- DEFERRED to #1828. Both copies were extracted and compared line by line before any collapse was considered. sqlite `block_record_store.go`: Put `:36`/`:138`, Get `:57`/`:159`, Delete `:72`/`:174`, Walk `:85`/`:187`. Each pair diffs to exactly one hunk (the signature) after normalizing the receiver, the exec/query dispatcher, and the `"sqlite tx "` vs `"sqlite "` error prefix. Put binds all five args including `rec.Length` in both; both Walk copies share `scanBlockRecord`. One cross-dialect asymmetry, not a drift: both sqlite Walk copies discard the `found` bool (`:98`, `:198`) where postgres's shared iterator skips on `!ok`. Harmless -- `scanBlockRecord` only reports `found=false` on `sql.ErrNoRows`, unreachable inside a `rows.Next()` loop -- and identical between the two sqlite copies. Deferred to #1828.
 - **Where:** `pkg/metadata/store/sqlite/block_record_store.go:36` · `structure`
 - **Fix:** Factor blockRecordPut(ctx, execer, rec)/blockRecordGet/blockRecordDelete/blockRecordWalk helpers (mirroring syncedMark et al.) and have both the store-level and tx-level methods call them, same as objects.go already does for decrementAndReapTx/scanFileChunk.
 
@@ -1807,6 +1820,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Drop the sharePrefix parameter from RunBlockGC and runBlockGCSweep, delete the WARN-and-ignore block, and delete the now-pointless blockgc_test.go case that exercises it.
 
 ### [LOW] singleShareReconciler duplicates perRemoteReconciler for the single-share case
+> STATUS: PREMISE CORRECTED, and a real DRIFT found behind it -- FIXED. No `singleShareReconciler` type exists; `perRemoteReconciler` (`blockgc.go:243`) is constructed at three sites and is not duplicated. The genuinely duplicated bodies are `runBlockGCSweep:74` (server-wide) and `runBlockGCForShare:276` (share-scoped). Diffing those two surfaced one divergence that was NOT intentional: the server-wide sweep folded its remote-tier result with `accumulateGCStats(total, stats, false)` while the share-scoped twin passed `true` -- and so did the local-tier fold inside the SAME function, so one function mixed both conventions. The flag gated `DryRun`, `DryRunCandidates` and `FirstErrors`. `FirstErrors` is not dry-run metadata: it is the curated, class-diversified error sample (`engine/gc.go:737-780`) that is the ONLY cause detail `dfsctl store block gc` and `gc status` render. So on every server-wide run -- the GC scheduler and `dfsctl store block gc --reconcile` -- remote-tier GC failures reported as a bare `errors: N` with the causes discarded one level down, while `ErrorCount` still incremented. `blockgc_reconcile.go:82` folded the sweep result with `true`, clearly expecting the detail to be there. Fixed by propagating unconditionally and DELETING the `includeDryRunMeta` parameter, which now had one value at every call site -- the dead flexibility is what let the two copies disagree. Pinned by `TestRunBlockGC_PropagatesRemoteTierErrorDetail`.
 - **Where:** `pkg/controlplane/runtime/blockgc.go:247` · `bloat`
 - **Fix:** Delete singleShareReconciler; replace the line-231 use with perRemoteReconciler{rt: r, shares: []string{entry.ShareName}}.
 
@@ -1826,6 +1840,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Add batch store.ListSnapshotsForShares(ctx, shareNames) (or ListAllSnapshots) and bucket in memory; same batching for the quota-usage loop.
 
 ### [LOW] Package-level mutable global DNS cache instead of a Runtime-scoped field
+> STATUS: WONTFIX -- the fix would re-introduce exactly the NFS-specific state that the comment two lines above records as deliberately moved off `Runtime`. Netgroup matching is host-keyed and Runtime-independent, so process-wide sharing is harmless. Marked with a `ponytail:`.
 - **Where:** `pkg/controlplane/runtime/netgroups.go:24` · `structure`
 - **Fix:** Scope the cache to a small netgroup-checking helper struct owned per-Runtime (lazily built with sync.Once as a Runtime field, not a package var), or inject it via New().
 
@@ -1834,6 +1849,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Move snapInFlight/snapDeleteLocks/restoreLocks/remoteGCLocks into a small snapshot-ops sub-service; move ldapConfig/netlogonCredential/identity callbacks into identity.Service, matching the existing sub-service composition already used for adapters/stores/shares.
 
 ### [LOW] RemoveShare has no ctx parameter, fabricates one internally with a hardcoded timeout
+> STATUS: WONTFIX -- the detached context is load-bearing, not an oversight. It covers only the best-effort `user_grace` orphan-row purge that runs AFTER the share is already torn down; binding it to an API request context would let a client disconnect abort the purge and leak the rows it exists to prevent, with nothing left to retry it. Rationale now recorded in the source comment.
 - **Where:** `pkg/controlplane/runtime/runtime.go:567` · `structure`
 - **Fix:** Add ctx context.Context as RemoveShare's first parameter, propagate it to sharesSvc.RemoveShare / PurgeDefaultUserGrace instead of constructing a fresh background context with a hardcoded timeout.
 
@@ -1874,6 +1890,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Replace the 4 call sites with SetAdapterProvider("nfs", ...)/GetAdapterProvider("nfs") and delete SetNFSClientProvider/NFSClientProvider.
 
 ### [LOW] pollNFSSettings and pollSMBSettings duplicate the entire poll/version-check/swap/notify sequence
+> STATUS: DIFFED, no drift. WONTFIX. `settings_watcher.go:196` vs `:266`: with the protocol token normalised away the bodies differ only in the `logger.Info` field list, one comment and a blank line. Both do `errors.Is(err, models.ErrAdapterNotFound) -> return nil`, both read the cached version under RLock and compare with `!=` (not `>`), both swap under a separate Lock, both gate the log AND the callback fan-out on `currentVersion > 0`, and both copy the callback slice under RLock before invoking outside the lock. They also share the same benign version-read/swap TOCTOU and the same first-successful-poll-does-not-notify behaviour -- equally, so no drift. Two ~35-line bodies whose only real difference is the protocol they name; a generic collapse would need the settings type parameterised for a ~30-line saving.
 - **Where:** `pkg/controlplane/runtime/settings_watcher.go:196` · `bloat`
 - **Fix:** Factor the common shape into a generic helper parameterized by adapter name, a getter closure, and a log/notify closure (e.g. `func pollAdapterSettings[T any](ctx, adapterName string, load func() (T, int, error), onChanged func(T))`), leaving each poll* wrapper to supply only its type-specific bits.
 
@@ -1891,6 +1908,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 - **Fix:** Use a struct{Protocol, ClientAddr, ShareName string} as the map key directly, or length-prefix the components.
 
 ### [LOW] dnsResolver interface — one-impl abstraction kept only for a test fake
+> STATUS: WONTFIX -- the suggested replacement (package-level `lookupAddrFn`/`lookupHostFn` vars the tests overwrite) swaps a typed 2-method seam for mutable global state shared across parallel tests. Net loss. Marked with a `ponytail:` at the interface.
 - **Where:** `pkg/controlplane/runtime/netgroups.go:48` · `bloat`
 - **Fix:** Drop the interface; have matchHostname/forwardConfirms take *dnsCache directly, or swap to package-level func vars (lookupAddrFn/lookupHostFn) that tests override — smaller than a 2-method interface + fake struct.
 

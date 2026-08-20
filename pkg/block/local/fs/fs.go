@@ -54,6 +54,13 @@ type FSStoreOptions struct {
 	MigrateLegacyLocalOnly bool
 }
 
+// ponytail: the embed leaks journal.Store's whole exported surface, so a method
+// added there arrives on FSStore without a payloadID shim decision. Converting
+// to a named field means hand-writing pass-throughs for everything the tree
+// already calls through the embed -- SeedCold, JournalVersion, SetPinVersion,
+// PinVersion, RestoreToVersion, SetVerifyReads, FileCount, SetEvictionEnabled,
+// SetCarveTargets, UnsyncedBytes, Close -- to gate a hazard no caller reaches
+// today. Convert when a leaked method first needs shimming.
 // FSStore is the journal-backed local store. It embeds *journal.Store and
 // shadows the FileID-typed data methods with payloadID(string) wrappers so it
 // satisfies local.LocalStore.

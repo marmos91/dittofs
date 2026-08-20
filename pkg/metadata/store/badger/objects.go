@@ -169,6 +169,7 @@ func (s *BadgerMetadataStore) updateWithConflictRetry(ctx context.Context, fn fu
 			// so a workload's conflict rate is visible no matter which retry
 			// loop it went through.
 			s.txnConflicts.Add(1)
+			// Same linear schedule as WithTransaction: (2*attempt + 1) ms.
 			baseDelay := time.Duration(1+attempt) * time.Millisecond
 			jitter := time.Duration(attempt) * time.Millisecond
 			time.Sleep(baseDelay + jitter)

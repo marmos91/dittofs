@@ -21,6 +21,10 @@ const (
 
 // Package-level DNS cache for netgroup hostname matching.
 // This was moved from Runtime struct fields to avoid NFS-specific state in the generic runtime.
+// ponytail: package-scoped rather than per-Runtime, so a second Runtime in one
+// process shares the cache. Netgroup matching is host-keyed and Runtime-
+// independent, so sharing is harmless; move it back onto Runtime only if a
+// Runtime ever needs its own resolver view.
 var (
 	pkgDNSCache     *dnsCache
 	pkgDNSCacheOnce sync.Once
@@ -45,6 +49,11 @@ type dnsCacheEntry struct {
 // dnsResolver abstracts the DNS lookups used by netgroup hostname matching so
 // the matcher can be unit-tested without real network calls. *dnsCache is the
 // production implementation.
+//
+// ponytail: two methods kept as an interface purely for the test fake. The
+// alternative -- package-level lookupAddrFn/lookupHostFn vars the tests
+// overwrite -- trades a typed seam for mutable global state shared across
+// parallel tests, which is worse. Drop the interface only if the fake goes.
 type dnsResolver interface {
 	lookupAddr(ip string) ([]string, error)       // PTR lookup (reverse)
 	lookupHost(hostname string) ([]string, error) // A/AAAA lookup (forward)

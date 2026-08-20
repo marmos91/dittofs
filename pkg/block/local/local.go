@@ -28,6 +28,10 @@ type Stats struct {
 // manifest rows inside the sink's commit transaction). Cold reads resolve
 // through the block-hash → locator + FileChunk rows and Hydrate the fetched
 // bytes back into the local tier.
+// ponytail: one wide interface rather than composable slices, sectioned by the
+// comments below. Every production consumer holds the whole store, so splitting
+// it would add named unions without narrowing a single dependency; split when a
+// consumer genuinely needs only one section.
 type LocalStore interface {
 	// --- Data plane (payloadID + offset keyed) ---
 
