@@ -146,16 +146,22 @@ func runBlockRecordOps(t *testing.T, store metadata.Store) {
 			t.Fatalf("PutBlockRecord(seed) error = %v", err)
 		}
 
+		// The barrier makes the workers race rather than serialize: without it
+		// they can complete one at a time on a low-parallelism runner and never
+		// produce the contention this case exists to pin.
 		errs := make(chan error, writers)
+		start := make(chan struct{})
 		var wg sync.WaitGroup
 		for range writers {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				<-start
 				_, err := store.DecrLiveChunkCount(ctx, seed.BlockID, 1)
 				errs <- err
 			}()
 		}
+		close(start)
 		wg.Wait()
 		close(errs)
 		for err := range errs {
