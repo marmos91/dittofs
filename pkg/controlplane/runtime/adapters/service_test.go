@@ -104,6 +104,7 @@ func (a *fakeListenerAdapter) Stop(context.Context) error {
 func (a *fakeListenerAdapter) Protocol() string                          { return a.protocol }
 func (a *fakeListenerAdapter) Port() int                                 { return a.port }
 func (a *fakeListenerAdapter) Healthcheck(context.Context) health.Report { return health.Report{} }
+func (a *fakeListenerAdapter) ListenerReady() <-chan struct{}            { return a.ready }
 
 func (a *fakeListenerAdapter) listener() net.Listener {
 	a.mu.Lock()
@@ -286,6 +287,7 @@ type slowStopAdapter struct {
 	stopOnce   sync.Once
 	stopCalled chan struct{}
 	release    chan struct{}
+	ready      chan struct{}
 }
 
 func newSlowStopAdapter(protocol string, port int) *slowStopAdapter {
@@ -294,10 +296,12 @@ func newSlowStopAdapter(protocol string, port int) *slowStopAdapter {
 		port:       port,
 		stopCalled: make(chan struct{}),
 		release:    make(chan struct{}),
+		ready:      make(chan struct{}),
 	}
 }
 
 func (a *slowStopAdapter) Serve(ctx context.Context) error {
+	close(a.ready)
 	<-ctx.Done()
 	<-a.release
 	return ctx.Err()
@@ -311,6 +315,7 @@ func (a *slowStopAdapter) Stop(context.Context) error {
 func (a *slowStopAdapter) Protocol() string                          { return a.protocol }
 func (a *slowStopAdapter) Port() int                                 { return a.port }
 func (a *slowStopAdapter) Healthcheck(context.Context) health.Report { return health.Report{} }
+func (a *slowStopAdapter) ListenerReady() <-chan struct{}            { return a.ready }
 
 // TestStopAdapter_HoldsEntryUntilAdapterConfirmsStopped proves the registry
 // keeps describing an adapter that is still alive: a start of the same type

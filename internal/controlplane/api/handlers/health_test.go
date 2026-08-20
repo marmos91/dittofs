@@ -19,9 +19,15 @@ import (
 type mockAdapter struct {
 	protocol string
 	port     int
+	ready    chan struct{}
+}
+
+func newMockAdapter(protocol string, port int) *mockAdapter {
+	return &mockAdapter{protocol: protocol, port: port, ready: make(chan struct{})}
 }
 
 func (m *mockAdapter) Serve(ctx context.Context) error {
+	close(m.ready)
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -36,6 +42,12 @@ func (m *mockAdapter) Protocol() string {
 
 func (m *mockAdapter) Port() int {
 	return m.port
+}
+
+// ListenerReady reports the mock as bound as soon as Serve runs: it has no
+// real socket, so there is nothing to wait for beyond the goroutine starting.
+func (m *mockAdapter) ListenerReady() <-chan struct{} {
+	return m.ready
 }
 
 // Healthcheck satisfies the [adapters.ProtocolAdapter] interface (the
@@ -298,7 +310,7 @@ func TestReadiness_WithSharesAndAdapters_ReturnsOK(t *testing.T) {
 	}
 
 	// Add a mock adapter
-	adapter := &mockAdapter{protocol: "test", port: 12345}
+	adapter := newMockAdapter("test", 12345)
 	if err := reg.AddAdapter(adapter); err != nil {
 		t.Fatalf("Failed to add adapter: %v", err)
 	}
