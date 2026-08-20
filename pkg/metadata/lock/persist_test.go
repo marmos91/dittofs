@@ -868,3 +868,42 @@ func TestRestoreLocks_ByteRangeEnforcedAfterRestart(t *testing.T) {
 	ioConflict := fresh.CheckForIO(handleKey, "open-2", 8, 50, 20, true)
 	require.NotNil(t, ioConflict, "restored byte-range lock must be enforced by CheckForIO")
 }
+
+// TestRequestLease_UpgradePersistsDerivedLockType verifies that a same-key
+// R -> RW lease upgrade writes out a record whose LockType tracks the upgraded
+// lease state. The upgrade arm changes LeaseState and the epoch only, so the
+// derivation has to happen on the way to the store; without it the record says
+// "shared" while the lease it carries holds the Write bit.
+func TestRequestLease_UpgradePersistsDerivedLockType(t *testing.T) {
+	ctx := context.Background()
+	store := newMockLockStore()
+
+	mgr := NewManager()
+	mgr.SetLockStore(store)
+	mgr.SetShareName("share-a")
+
+	fh := FileHandle("file-1")
+	leaseKey := [16]byte{1}
+
+	granted, _, err := mgr.RequestLease(ctx, fh, leaseKey, [16]byte{},
+		"owner-1", "client-1", "share-a", LeaseStateRead, false)
+	require.NoError(t, err)
+	require.Equal(t, LeaseStateRead, granted)
+
+	granted, _, err = mgr.RequestLease(ctx, fh, leaseKey, [16]byte{},
+		"owner-1", "client-1", "share-a", LeaseStateRead|LeaseStateWrite, false)
+	require.NoError(t, err)
+	require.Equal(t, LeaseStateRead|LeaseStateWrite, granted)
+
+	persisted, err := store.ListLocks(ctx, LockQuery{ShareName: "share-a"})
+	require.NoError(t, err)
+	require.Len(t, persisted, 1)
+	require.Equal(t, LeaseStateRead|LeaseStateWrite, persisted[0].LeaseState)
+	require.Equal(t, int(LockTypeExclusive), persisted[0].LockType,
+		"upgraded lease must persist an exclusive lock type")
+
+	// A record already on disk with a stale type comes back consistent.
+	stale := persisted[0]
+	stale.LockType = int(LockTypeShared)
+	require.Equal(t, LockTypeExclusive, FromPersistedLock(stale).Type)
+}

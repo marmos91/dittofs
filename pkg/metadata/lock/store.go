@@ -468,6 +468,12 @@ func FromPersistedLock(pl *PersistedLock) *UnifiedLock {
 			el.Lease.BreakToState &^= LeaseStateWrite
 			el.Lease.BreakingToRequired &^= LeaseStateWrite
 		}
+
+		// Type is a projection of LeaseState for a lease record. Derive it from
+		// the (possibly clamped) restored state rather than trusting the stored
+		// column, so a record written by a binary that left Type behind on a
+		// lease upgrade comes back consistent.
+		el.Type = lockTypeForLeaseState(el.Lease.LeaseState)
 	}
 
 	// Restore delegation fields if this is a delegation (DelegationID present)

@@ -1221,6 +1221,15 @@ func (lm *Manager) deleteFileLockLocked(fl *FileLock) {
 // override is skipped when lm.shareName is empty so a directly-constructed
 // manager preserves a producer-set Owner.ShareName.
 func (lm *Manager) persistUnifiedLockLocked(ul *UnifiedLock) {
+	// For a lease record Type is a projection of LeaseState, not an independent
+	// field: re-derive it here so a mutation that changes LeaseState without
+	// touching Type cannot write out a record whose Type contradicts the lease
+	// it carries. Byte-range and delegation records own their Type outright and
+	// are left alone.
+	if ul.Lease != nil {
+		ul.Type = lockTypeForLeaseState(ul.Lease.LeaseState)
+	}
+
 	if lm.lockStore == nil {
 		return
 	}
