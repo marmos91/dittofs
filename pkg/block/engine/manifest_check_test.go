@@ -297,13 +297,22 @@ func TestCheckManifests_LocalOnlySkipsSyncedCheck(t *testing.T) {
 // chunk offset — the row class that read paths refuse with
 // ErrManifestInconsistent and that cold seeding cannot place at all.
 //
-// Only the SQL backends can host this case: memory's ListFileChunks drops a
-// non-numeric ID suffix before returning, so the row is invisible to any
-// caller there and the range surfaces as an uncovered span instead.
+// It runs on every backend the check harness can build: the row belongs to the payload and is merely
+// damaged, so ListFileChunks must hand it to the scan rather than filter it
+// out. A backend that dropped it would make this damage class invisible to
+// the scan, which is the whole thing the scan exists to report.
 func TestCheckManifests_UnplaceableRow(t *testing.T) {
+	for _, backend := range []string{"memory", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			checkManifestsUnplaceableRow(t, backend)
+		})
+	}
+}
+
+func checkManifestsUnplaceableRow(t *testing.T, backend string) {
 	ctx := t.Context()
 	const share = "unplaceable"
-	store, root := newCheckStore(t, "sqlite", share)
+	store, root := newCheckStore(t, backend, share)
 
 	payloadID := seedCheckFile(t, store, share, root, "f", 8192,
 		[]seedRow{{"block-0", 4096, 1}, {"4096", 4096, 2}},
