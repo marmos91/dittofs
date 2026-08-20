@@ -118,19 +118,26 @@ func (g *Group) Start(s Service) error {
 // settings-apply that runs before Serve is a no-op — the initial start is done
 // by Serve itself.
 func (g *Group) Ready() bool {
+	return g.baseContext() != nil
+}
+
+// baseContext returns the stored base context, or nil before SetBaseContext.
+func (g *Group) baseContext() context.Context {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.baseCtx != nil
+	return g.baseCtx
 }
 
 // Reconcile starts or stops the named service so its running state matches want,
 // letting a live settings change toggle it. It is a no-op until Ready (before
 // Serve has seeded the base context), so the initial start — performed by Serve
-// itself — is never raced. build is invoked only when a start is needed. Returns
-// the Start error, if any; a stop error is swallowed (StopAll/StopOne already
-// debug-log it).
-func (g *Group) Reconcile(name string, want bool, build func() Service) error {
-	if !g.Ready() {
+// itself — is never raced. build is invoked only when a start is needed, and
+// receives the base context so a builder that reads control-plane state does not
+// have to invent one. Returns the Start error, if any; a stop error is swallowed
+// (StopAll/StopOne already debug-log it).
+func (g *Group) Reconcile(name string, want bool, build func(context.Context) Service) error {
+	baseCtx := g.baseContext()
+	if baseCtx == nil {
 		return nil
 	}
 	switch running := g.IsRunning(name); {
@@ -139,7 +146,7 @@ func (g *Group) Reconcile(name string, want bool, build func() Service) error {
 		// accept-loop apply and the settings-watcher poll); the loser gets
 		// ErrAlreadyRunning, which is benign here — the single-instance invariant
 		// still holds — so it is not surfaced as a start failure.
-		if err := g.Start(build()); err != nil && !errors.Is(err, ErrAlreadyRunning) {
+		if err := g.Start(build(baseCtx)); err != nil && !errors.Is(err, ErrAlreadyRunning) {
 			return err
 		}
 	case !want && running:

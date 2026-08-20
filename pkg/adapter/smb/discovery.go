@@ -60,9 +60,9 @@ func (s *Adapter) wsDiscoveryEnabled() bool {
 // control plane (the `discovery.name` setting, defaulting to
 // "DittoFS-<hostname>"). mDNS uses it verbatim; WS-Discovery folds it to a
 // NetBIOS-legal computer name (see newWSDSidecar).
-func (s *Adapter) discoveryName() string {
+func (s *Adapter) discoveryName(ctx context.Context) string {
 	if s.Registry != nil {
-		if n := s.Registry.DiscoveryName(); n != "" {
+		if n := s.Registry.DiscoveryName(ctx); n != "" {
 			return n
 		}
 	}
@@ -72,8 +72,8 @@ func (s *Adapter) discoveryName() string {
 // newMDNSSidecar builds the SMB mDNS advertiser: an _smb._tcp instance on the
 // adapter's real port, plus a _device-info._tcp record whose model= TXT makes
 // Finder show a server icon rather than a generic one.
-func (s *Adapter) newMDNSSidecar() auxsvc.Service {
-	name := s.discoveryName()
+func (s *Adapter) newMDNSSidecar(ctx context.Context) auxsvc.Service {
+	name := s.discoveryName(ctx)
 	port := uint16(s.Port())
 	return mdns.NewSidecar([]mdns.ServiceRecord{
 		{Instance: name, Service: "_smb._tcp", Port: port},
@@ -85,7 +85,7 @@ func (s *Adapter) newMDNSSidecar() auxsvc.Service {
 // name under its NetBIOS domain (or WORKGROUP when standalone). A fresh
 // AppSequence InstanceId (process start time) makes Windows treat a restart as a
 // new instance.
-func (s *Adapter) newWSDSidecar() auxsvc.Service {
+func (s *Adapter) newWSDSidecar(ctx context.Context) auxsvc.Service {
 	workgroup := ""
 	if s.handler != nil {
 		workgroup = s.handler.NetBIOSDomain
@@ -96,7 +96,7 @@ func (s *Adapter) newWSDSidecar() auxsvc.Service {
 	// WS-Discovery renders the value as a Windows computer name, so fold it to a
 	// NetBIOS-legal form (the raw instance name may contain characters or a
 	// length Explorer rejects). mDNS keeps the raw name.
-	name := hostinfo.NetBIOSSafe(s.discoveryName())
+	name := hostinfo.NetBIOSSafe(s.discoveryName(ctx))
 	// Distinct, strictly-increasing InstanceId per responder build (see the
 	// wsdInstanceID field) so a live toggle never rewinds the AppSequence.
 	return wsd.NewResponder(name, workgroup, isDomain, s.wsdInstanceID.Add(1))

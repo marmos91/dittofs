@@ -56,9 +56,9 @@ func (s *NFSAdapter) startEnabledAuxServices(ctx context.Context) {
 // discoveryName is the instance-wide name to advertise, resolved from the
 // control plane (the `discovery.name` setting, defaulting to
 // "DittoFS-<hostname>"). NFS advertises only over mDNS, which uses it verbatim.
-func (s *NFSAdapter) discoveryName() string {
+func (s *NFSAdapter) discoveryName(ctx context.Context) string {
 	if s.Registry != nil {
-		if n := s.Registry.DiscoveryName(); n != "" {
+		if n := s.Registry.DiscoveryName(ctx); n != "" {
 			return n
 		}
 	}
@@ -84,9 +84,9 @@ func (s *NFSAdapter) mdnsEnabled() bool {
 // advertiser starts and is not rebuilt when shares change, so renaming/removing
 // that export leaves a stale path hint until the adapter or advertiser restarts;
 // re-advertising on share changes is a follow-up.
-func (s *NFSAdapter) newMDNSSidecar() auxsvc.Service {
+func (s *NFSAdapter) newMDNSSidecar(ctx context.Context) auxsvc.Service {
 	rec := mdns.ServiceRecord{
-		Instance: s.discoveryName(),
+		Instance: s.discoveryName(ctx),
 		Service:  "_nfs._tcp",
 		Port:     uint16(s.Port()),
 	}
@@ -146,7 +146,7 @@ func (s *NFSAdapter) reconcileSysreg() {
 	go func() {
 		defer s.sysregReconciling.Store(false)
 		err := s.sidecars.Reconcile(sysregSidecarName, want,
-			func() auxsvc.Service { return sysregSidecar{s} })
+			func(context.Context) auxsvc.Service { return sysregSidecar{s} })
 		if err != nil {
 			logger.Debug("System rpcbind registration sidecar failed to start", "error", err)
 		}

@@ -196,13 +196,13 @@ func TestGroup_ReconcileStartsAndStops(t *testing.T) {
 	g.SetBaseContext(context.Background())
 	svc := &fakeService{name: "mdns"}
 
-	if err := g.Reconcile("mdns", true, func() Service { return svc }); err != nil {
+	if err := g.Reconcile("mdns", true, func(context.Context) Service { return svc }); err != nil {
 		t.Fatalf("Reconcile(start): %v", err)
 	}
 	if !g.IsRunning("mdns") {
 		t.Fatal("Reconcile(want=true) should have started the service")
 	}
-	if err := g.Reconcile("mdns", false, func() Service { return svc }); err != nil {
+	if err := g.Reconcile("mdns", false, func(context.Context) Service { return svc }); err != nil {
 		t.Fatalf("Reconcile(stop): %v", err)
 	}
 	if g.IsRunning("mdns") {
@@ -210,10 +210,29 @@ func TestGroup_ReconcileStartsAndStops(t *testing.T) {
 	}
 }
 
+func TestGroup_ReconcilePassesBaseContextToBuilder(t *testing.T) {
+	type key struct{}
+	base := context.WithValue(context.Background(), key{}, "seeded")
+
+	g := NewGroup()
+	g.SetBaseContext(base)
+
+	var got context.Context
+	if err := g.Reconcile("mdns", true, func(ctx context.Context) Service {
+		got = ctx
+		return &fakeService{name: "mdns"}
+	}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if got == nil || got.Value(key{}) != "seeded" {
+		t.Fatal("Reconcile must hand the builder the base context, not a fresh one")
+	}
+}
+
 func TestGroup_ReconcileNoOpBeforeReady(t *testing.T) {
 	g := NewGroup() // no SetBaseContext
 	built := false
-	if err := g.Reconcile("mdns", true, func() Service { built = true; return &fakeService{name: "mdns"} }); err != nil {
+	if err := g.Reconcile("mdns", true, func(context.Context) Service { built = true; return &fakeService{name: "mdns"} }); err != nil {
 		t.Fatalf("Reconcile before Ready should be a no-op, got %v", err)
 	}
 	if built || g.IsRunning("mdns") {
@@ -235,7 +254,7 @@ func TestGroup_StopAllClearsBaseContextSoLateReconcileNoOps(t *testing.T) {
 	// A live reconcile racing shutdown must not start a service the now-stopped
 	// group would never tear down.
 	built := false
-	if err := g.Reconcile("b", true, func() Service { built = true; return &fakeService{name: "b"} }); err != nil {
+	if err := g.Reconcile("b", true, func(context.Context) Service { built = true; return &fakeService{name: "b"} }); err != nil {
 		t.Fatalf("post-StopAll Reconcile: %v", err)
 	}
 	if built || g.IsRunning("b") {
