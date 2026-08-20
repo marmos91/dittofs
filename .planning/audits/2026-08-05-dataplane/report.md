@@ -5,7 +5,7 @@
 The audit itself was run against the tree recorded below (`origin/develop @ 7eeec0da`) and has
 not been rerun. What follows is a status layer over those findings: each one that has since been
 actioned carries a `> STATUS:` line (`FIXED`, `TRACKED`, `PARTIAL`, or `REFUTED`). Those markers
-were last re-verified on 2026-08-18 against develop `29928f16`. All 8 HIGH findings shipped; see
+were last re-verified on 2026-08-20 against develop `b4ff70af`. All 8 HIGH findings shipped; see
 closed umbrella #1900.
 
 | Finding | Issue | Outcome |
@@ -61,8 +61,19 @@ did not exist), #1953 (overlapping manifest rows).
   and the duplicated config-reconciliation body across `badger`/`postgres`/`sqlite`; #1828 subsumes
   all of them. The other eight — `recover()` in `pkg/block/journal/recovery.go`, the lock-manager
   and lease god-functions, `runtime/shares/service.go`, and the triplicated ACL evaluation context
-  — are tracked as #1967. None has a behavioural defect attached; each is a refactor whose value is
-  drift resistance, not a fix.
+  — were tracked as #1967: #2015 (`recover()` → 54 lines over named phases), #2016 (the two lease
+  god-functions → 120 and 86 lines), #2017 (`manager.go` split by the concerns its own section
+  comments named), #2022 (`shares/service.go` 3300 → 581 lines) and #2014 (`walkDACL` as the single
+  DACL walk, and two of the three `EvaluateContext` builders collapsed). #2014 deliberately left
+  `buildAttrEvalContext` alone because #2020 was rewriting the same file; #2030 closes that residue
+  and with it #1967. None had a behavioural defect attached; each was a refactor whose value is
+  drift resistance, not a fix, and none of the six PRs changed behaviour.
+
+  Two findings carried `DEFERRED to #1967` markers that #1967's own body never listed — the
+  `pkg/metadata/service.go` god object and the share-wide `lm.mu` that serializes every lock op.
+  Closing #1967 would have dropped them silently, so they moved to #2029 rather than riding along.
+  #2017 declined the `Manager` *type* split for the same reason #2029 exists: re-homing that state
+  is a lock-ownership redesign, not a file move.
 - **17 are correctness or cost findings**, now batched into four PRs by area (metadata write path,
   lock-manager index use, per-op round-trips, adapters and dead state). The headline entries:
 
@@ -80,7 +91,12 @@ to have been closed already by unrelated work (#1906, #1932, #1939) and had gone
 this refresh, and at least one MED premise was outright false. They break down as 64 `structure`,
 60 `comments`, 42 `bloat`, 21 `perf`, 11 `gaps`, 10 `bugs`, 10 `slop`, 2 `security` — so roughly
 two thirds are comment, dead-code and refactor entries, and the 44 `bugs`/`security`/`gaps`/`perf`
-ones are where the value is. The first three of those tranches are being swept now.
+ones are where the value is. Those tranches have since been swept — #1996 (`comments` + `slop`),
+#1997 (the Dockerfile `EXPOSE` drift split out of it), #1999 (`structure`, TRIVIAL grade), #2000
+(`bloat`), #1971 (`bugs` + `security`), #1975 (`gaps`) and #1978 (`perf`) — and every LOW finding
+now carries a marker. The verdict behind each marker, including the ones that turned out *not* to
+be closed by the sweep that should have covered them, is in `low-tranche-verdicts.md` next to this
+file. The structure debt the sweeps could not absorb is tracked as #1994, which is still open.
 
 Also opened from this work: #1909 (crash-ordering silent zeros, still open),
 #1910 (smbtorture grading non-determinism, fixed in #1919).
@@ -99,6 +115,35 @@ Also opened from this work: #1909 (crash-ordering silent zeros, still open),
 **On the review gates:** Copilot's findings ran 4 real / 2 refuted across this work, and the sub-agent reviewer missed every real one. The two real findings on #1933 shared a shape worth naming — *a sentinel value silently disabling a guard* (`DataSize == 0` skipping the clamp; a 32-bit `int()` wrap doing the same). Both would have failed open, which is the same failure direction as the silent-zeros family the audit exists to close. Copilot is not redundant with the reviewer sub-agent and must be checked immediately before merge, not once when the PR opens — it re-reviews each new commit.
 
 **Severity calibration note:** the carve/repack CRC-bypass findings (#1912) were graded MED here but are arguably HIGH — they do not corrupt data, they promote already-corrupt data to trusted, defeating downstream checksums.
+
+
+## What is still open before this audit can be called closed
+
+Everything escalated out of the audit as its own issue is closed: all 8 HIGH (#1900), every
+escalated MED, and the four that were only half closed at the last refresh (#1961, #1962, #1974,
+plus #1909's device-loss verification). What remains is the debt the audit deliberately did *not*
+escalate, and three things that surfaced while fixing.
+
+| Finding | Tracking | State |
+|---|---|---|
+| God-functions and duplicated algorithms | #1967 | Closes when #2030 merges. Six PRs landed; #2030 is the last `EvaluateContext` copy, which #2014 could not touch while #2020 held the same file. |
+| Two structure findings #1967's body never listed | #2029 | Open. `pkg/metadata/service.go` god object and the share-wide `lm.mu`. Split out so closing #1967 does not drop them. |
+| LOW structure debt outside the store and lock packages | #1994 | Open, roughly 20 items. Four closed today (#2018 x2, #2019, #2020); `errors.go`/`lock_exports.go` reframed rather than fixed by #2025. |
+| Store-family duplication (pool vs transaction CRUD, generation-guarded caches, config reconciliation) | #1828 | Open by design. Seven MED and several LOW findings are not fixable as isolated patches. |
+| `PunchHole` cold read does not read back as zeros | #1956 | Open. Found by the mutation soak the audit fixes prompted, not by the audit. |
+| Memory store durable-handle map guarded by two locks | #2023 | Open. Surfaced by #2018 while removing the *dead* shadow mutexes next to it. |
+| `WaitForSnapshot` drops the orchestration error | #1866 | Open. Needs the failure kind persisted on the row, which currently stores only a message string. |
+
+Two journal findings in #1994 still carry only a recommendation and no decision: `segment.go`
+releasing `sh.mu` across writes (recommended WONTFIX) and `reclaim.go`'s `sealSyncedActives`
+holding it across three fsyncs (judged latency, not correctness). Neither has been ruled on.
+
+**One caveat on the LOW tranches.** They were swept, not verified. Unlike HIGH and MED, no LOW
+finding ever carried a `Verified:` paragraph, so a sweep closing one is a claim about a claim.
+`low-tranche-verdicts.md` records where that mattered: #1999's body described collapsing sqlite's
+9-column client scanner, but its diff touched `sqlite/durable_handles.go` and `memory/clients.go`
+instead, and both copies are still written out verbatim on develop. Marking that FIXED on the
+strength of the PR description would have hidden it. Treat a swept LOW as swept, not as proven.
 
 ---
 
@@ -442,7 +487,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] recover() is a ~375-line god-function mixing 8+ unrelated concerns
 
 - **Where:** `pkg/block/journal/recovery.go:60` · `structure` · area: block-journal-replay-gc
-> STATUS: DEFERRED to #1967 — confirmed structural debt with no behavioural defect; tracked as a refactor, not batched as a fix.
+> STATUS: FIXED #2015 — `recover()` is now a 54-line orchestrator over named phase helpers.
 - **Verified:** Confirmed: func boundaries show recover() spans 60-436 (next func idxMissing at 437) = ~375 lines; single body threads actives/sealedByShard/indexByShard/emptyPool/orphans/tombstones/truncations/unsynced/missingIdx locals across segment scan, torn-tail truncate, idx rebuild, cold-log replay+compaction, counter reconcile, orphan sweep. Only helpers are idxMissing/rebuildIdx/sweepOrphans/fileSize. Reachable from Store open (non-test). Genuine maintainability/testability issue on the replay-correctness path.
 - **Fix:** Extract named Store methods per phase, e.g. scanAndClassifySegments, replayRecords(indexByShard) tombstones/truncations, applyColdLog(indexByShard), reconcileByteCounters(indexByShard, sealedByShard, actives), assignActiveSegments(actives, emptyPool). Keep recover() as the orchestrator that calls them in order.
 
@@ -519,14 +564,14 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Evaluate() and EvaluateGranted() duplicate the entire DACL-walk algorithm
 
 - **Where:** `pkg/metadata/acl/evaluate.go:170` · `structure` · area: metadata-acl-errors-backup · *re-confirmed*
-> STATUS: DEFERRED to #1967 — confirmed structural debt with no behavioural defect; tracked as a refactor, not batched as a fix.
+> STATUS: FIXED #2014 — `walkDACL` is the single walk; `Evaluate` and `EvaluateGranted` are thin wrappers over it.
 - **Verified:** CONFIRMED line-by-line: owner-rights pre-scan (195-212 vs 302-319), ACE accumulation switch with identical `ace.AccessMask &^ (allowedBits|deniedBits)` first-match-wins (217-250 vs 324-351), and owner-implicit tail incl. RequesterHasTakeOwnership (263-268 vs 353-358) are byte-equivalent; only the early-term mask and return type differ. Both reachable from non-test code: Evaluate at auth_permissions.go:493/722/1067 and file_access_checker.go:83; EvaluateGranted at auth_permissions.go:959/998/1107. MED stands — duplicated security-critical access-check algorithm with no mechanism keeping the copies in sync.
 - **Fix:** Extract a private walkDACL(a *ACL, evalCtx *EvaluateContext, mask uint32) (allowed, denied uint32) that runs the owner-rights pre-scan + ACE loop + owner-implicit tail once. Evaluate becomes allowed,_ := walkDACL(...); return allowed&requestedMask == requestedMask; EvaluateGranted becomes allowed,_ := walkDACL(...); return allowed & probeMask.
 
 ### [MED] acl.EvaluateContext construction duplicated 3x (inline + 2 near-identical builders)
 
 - **Where:** `pkg/metadata/auth_permissions.go:441` · `bloat` · area: metadata-auth
-> STATUS: DEFERRED to #1967 — confirmed structural debt with no behavioural defect; tracked as a refactor, not batched as a fix.
+> STATUS: PARTIAL #2014 — the inline construction and `buildFileAccessEvalContext` now both route through one `buildEvalContext`. The third copy, `buildAttrEvalContext` in `file_access_checker.go`, was left in place because that file was being rewritten concurrently by #2020; #2030 collapses it now that #2020 has merged.
 - **Verified:** CONFIRMED 3x copy. Identical ~25-line block (anonymous AnonymousFileOwnerUID sentinel branch, then UID/GIDs/GID/Who switch/SID/GroupSIDs/RequesterHasTakeOwnership) at auth_permissions.go:415-467 (inline in evaluateACLPermissions), auth_permissions.go:1159-1198 (buildFileAccessEvalContext), file_access_checker.go:95-134 (buildAttrEvalContext). Only differences: owner source (file.UID/GID vs attr.UID/GID) and the root-bypass that sits before construction in evaluateACLPermissions. Both comment headers self-admit the mirroring. All three on prod paths (NFS CheckPermissions, SMB CheckFileAccess, SMB ABE). Fix: one buildEvalContext(ownerUID, ownerGID uint32, authCtx) and have all three call it; evaluateACLPermissions keeps only its root/ReadOnly branch.
 - **Fix:** Extract one helper, e.g. buildEvalContext(identity *Identity, ownerUID, ownerGID uint32) *acl.EvaluateContext, and call it from evaluateACLPermissions, buildFileAccessEvalContext, and buildAttrEvalContext (the latter two just pass file.UID/file.GID or attr.UID/attr.GID).
 
@@ -554,7 +599,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] ACL EvaluateContext construction triplicated (self-described as 'mirrors X' three times) instead of one shared builder
 
 - **Where:** `pkg/metadata/auth_permissions.go:1159` · `structure` · area: metadata-auth-permissions
-> STATUS: DEFERRED to #1967 — confirmed structural debt with no behavioural defect; tracked as a refactor, not batched as a fix.
+> STATUS: PARTIAL #2014 — same collapse as the sibling finding at `auth_permissions.go:441`: two of the three self-described “mirrors” are one builder, and #2030 folds in the third.
 - **Verified:** CONFIRMED three copies, near-identical incl. comments: inline in evaluateACLPermissions (auth_permissions.go:~416-466, incl. the AnonymousFileOwnerUID sentinel branch), buildFileAccessEvalContext (:1159-1198, doc literally says 'mirrors evaluateACLPermissions'), buildAttrEvalContext (file_access_checker.go:95-134, doc says 'mirrors buildFileAccessEvalContext'). File embeds FileAttr (file_types.go: `FileAttr` embedded), so buildFileAccessEvalContext(file,ctx) == buildAttrEvalContext(&file.FileAttr,ctx) with zero behavior change; buildFileAccessEvalContext has 4 prod call sites (auth_permissions.go:715/958/1066/1100). Security-relevant drift risk is genuine (#540 sentinel had to be replicated). MED not HIGH: no current divergence between the copies.
 - **Fix:** Delete buildFileAccessEvalContext and the inline block in evaluateACLPermissions; make buildAttrEvalContext(attr *FileAttr, authCtx *AuthContext) the single builder and call it everywhere via &file.FileAttr.
 
@@ -636,7 +681,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Service struct is a god object mixing store routing, NLM locking, quota policy, dir-notification wiring, and hot-path write coordination
 
 - **Where:** `pkg/metadata/service.go:40` · `structure` · area: metadata-file-io-write
-> STATUS: DEFERRED to #1967 — 128 Service receivers with quota state, lock managers, unified views, removeGen and dir-notifiers all sharing s.mu. Splitting it is a lock-ownership redesign that must preserve the removeGen register/remove TOCTOU and the NFSv4 grace-coordinator lockstep.
+> STATUS: DEFERRED to #2029 — 128 Service receivers with quota state, lock managers, unified views, removeGen and dir-notifiers all sharing s.mu. Splitting it is a lock-ownership redesign that must preserve the removeGen register/remove TOCTOU and the NFSv4 grace-coordinator lockstep. Out of #1967's scope (it never listed this file) and still open at 1583 lines.
 - **Verified:** CONFIRMED from source: Service (service.go:40+) carries stores/storeCache/lockManagers/unifiedViews/dirChangeNotifiers/pendingWrites/dirTimes/writebackShares/deferredCommit + parentLinkShards + createNameShards + cookies + quotas + identityQuotas + quotaGracePersist + removeGen + graceDuration + graceCoordinator + byteRangeReleaseHook; 126 `func (s *Service)` receivers across pkg/metadata. Orthogonal concerns (quota policy, lock-manager lifecycle, dir-change notify) share the struct that also holds write hot-path state — materially inflates blast radius. Contrasts with runtime's own sub-service split per CLAUDE.md.
 - **Fix:** Extract QuotaManager (quota get/set/enforce methods + identity quota state) and a LockManagerRegistry (lockManagers/unifiedViews/grace-period wiring) into their own types that Service composes, mirroring runtime's sub-service split. Leaves Service holding store routing + pendingWrites/dirTimes (the actual write-path state).
 
@@ -649,7 +694,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Single share-wide mutex serializes ALL lock ops on synchronous per-op store I/O
 
 - **Where:** `pkg/metadata/lock/manager.go:702` · `perf` · area: metadata-lock-core-manager
-> STATUS: DEFERRED to #1967 — striping lm.mu per handleKey is not bounded: the same mutex guards the manager-global leaseKeyIndex and clientHandleIndex that every per-handle mutation writes, plus epoch, breakCallbacks, recentlyBroken, breakWaitChans, gracePeriod and ~12 genuinely cross-bucket traversals. Re-homing that state IS the adjacent god-object refactor.
+> STATUS: DEFERRED to #2029 — striping lm.mu per handleKey is not bounded: the same mutex guards the manager-global leaseKeyIndex and clientHandleIndex that every per-handle mutation writes, plus epoch, breakCallbacks, recentlyBroken, breakWaitChans, gracePeriod and ~12 genuinely cross-bucket traversals. Re-homing that state IS the adjacent god-object refactor, which #2017 explicitly declined.
 - **Verified:** CONFIRMED: Manager has one sync.RWMutex for the whole share (L702); putLockLocked/deletePersistedLocked (L1276, L1296) make a synchronous lockStore round-trip bounded by persistTimeout=3s (L754) and their doc comments require the caller to hold lm.mu. So one file's store latency blocks every other file's lock/lease op in the share. REACHABLE: every NFS NLM lock and SMB lease grant/release. Severity MED not HIGH: the serialization is a deliberate ordering fix (comment cites the reorder/resurrection bug class it eliminates), persistence is best-effort with a 3s cap, and lock ops are far lower-rate than read/write — but under lease-heavy SMB workloads the share-wide queueing is a genuine throughput ceiling.
 - **Fix:** Shard the critical section per handleKey (striped mutex) so lock ops on different files don't queue behind each other's store RTT. Do NOT simply move the persist outside mu — putLockLocked's contract (manager.go:1265-1276) is that mutex order == store order; any fix must preserve per-handle ordering (e.g. per-handle serialized queue).
 
@@ -663,7 +708,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Manager is a god object spanning 8+ unrelated responsibilities
 
 - **Where:** `pkg/metadata/lock/manager.go:701` · `structure` · area: metadata-lock-core-manager
-> STATUS: DEFERRED to #1967 — confirmed structural debt with no behavioural defect; tracked as a refactor, not batched as a fix.
+> STATUS: PARTIAL #2017 — manager.go was split into byterange.go, break.go, connection.go, grace.go and delegation.go along the concerns its own section comments already named. The `Manager` *type* still carries every responsibility behind one mutex; #2017 declined the type split deliberately, and that residue is tracked as #2029.
 - **Verified:** CONFIRMED. type Manager at manager.go:701 holds, under ONE lm.mu: locks (legacy byte-range), unifiedLocks, breakCallbacks, leaseKeyIndex/clientHandleIndex, gracePeriod, handleChecker, lockStore, clientRecoveryStore, epoch, recentlyBroken, breakWaitChans, delegationRecallTimeout, onByteRangeRelease. 121 *Manager methods across the package; manager.go alone is 131 KB and the concerns are split by filename only (leases.go 54 K, oplock.go, delegation.go, grace.go, reclaim.go, directory.go) with the single type reassembled across them. Production type (implements LockManager, one per share). Seed's method count (~95) understated; MED stands — no wrong behavior, but genuine cross-concern serialization and review burden.
 - **Fix:** Extract cohesive sub-components with narrow ownership (ByteRangeLockTable, LeaseBreaker, DelegationTable, GracePeriodController), each with its own mutex, composed inside Manager which becomes a thin facade delegating to them.
 
@@ -677,14 +722,14 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] requestLeaseImplWithMode: 440-line god function, mixes 8+ concerns
 
 - **Where:** `pkg/metadata/lock/leases.go:259` · `structure` · area: metadata-lock-lease-oplock
-> STATUS: DEFERRED to #1967 — confirmed structural debt with no behavioural defect; tracked as a refactor, not batched as a fix.
+> STATUS: FIXED #2016 — `requestLeaseImplWithMode` is now `requestLeaseImpl` at 120 lines over named helpers.
 - **Verified:** Confirmed: func at leases.go:259, next func at 723 => ~464 lines; signature carries 11 params incl 3 trailing bools (isDirectory, isTraditionalOplock, suppressConflictBreak). Reachable via lease request path (SMB create/lease). Pure structure/maintainability though — no wrong behavior demonstrated, so HIGH is overstated; MED given the area's break-ordering bug history (#1701/#1806).
 - **Fix:** Extract named steps: normalizeRequest, checkCrossFileUniqueness, checkDelegationConflict, handleSameKeyLease, resolveCrossKeyConflict, grant. Replace trailing bools with a small LeaseRequest struct.
 
 ### [MED] acknowledgeLeaseBreakImpl: 200-line function mixing ack validation, tombstone/timeout classification, progressive multi-stage dispatch
 
 - **Where:** `pkg/metadata/lock/leases.go:902` · `structure` · area: metadata-lock-lease-oplock
-> STATUS: DEFERRED to #1967 — confirmed structural debt with no behavioural defect; tracked as a refactor, not batched as a fix.
+> STATUS: FIXED #2016 — `acknowledgeLeaseBreakImpl` is down to 86 lines; ack validation, classification and progressive dispatch are separate.
 - **Verified:** CONFIRMED: func starts at 902 and closes at 1099 (~198 lines) under a single lm.mu held by defer, covering not-found, !Breaking late-ACK/BrokenViaTimeout tombstone classification, epoch validation, subset check, ack-to-None cleanup, and progressive-stage recompute with unlock/relock via closure. Reachable via the exported AcknowledgeLeaseBreak on the SMB lease-break path. MED stands: this is the exact seam that produced the #1701 double-break bug, so the density has demonstrated correctness cost — though it is still a refactor, not a live defect.
 - **Fix:** Split into: classifyLateAck(lock) (handles not-breaking cases), applyAckToNone(lock), applyProgressiveAck(lock, acknowledgedState) — each independently testable.
 
@@ -929,7 +974,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 ### [MED] Service is a god object — 49 methods / ~3300 LOC mixing unrelated responsibilities
 
 - **Where:** `pkg/controlplane/runtime/shares/service.go:471` · `structure` · area: runtime-shares-lifecycle
-> STATUS: DEFERRED to #1967 — confirmed structural debt with no behavioural defect; tracked as a refactor, not batched as a fix.
+> STATUS: FIXED #2022 — `shares/service.go` is 581 lines; the rest moved to blockstore_config.go, blockstore_ops.go, lifecycle.go and share_config.go.
 - **Verified:** Confirmed and if anything understated: file is 3310 lines, 54 `func (s *Service)` methods. Struct at :471 carries registry+reservations+remoteStores map+two callback registries+metricsRec etc. remoteStores ref-counting (acquireRemoteStore :1449, releaseRemoteStore :1597, plus rebind paths :1372-1433, :2446-2546) is a self-contained sub-concern still inline. Precedent for the extraction exists in-package (warm.go/warmRegistry). Reachable — this is the live share service.
 - **Fix:** Extract remote-store ref-counting into its own type (mirroring warmRegistry: e.g. `remoteStorePool` with its own mutex, `acquire`/`release`), and extract the per-field config setters (UpdateShare, SetShareSquash, SetShareTrashConfig, SetShareNetgroup, kerberos setters) into a separate share-config file/type. Service keeps registry CRUD + composition of these sub-components.
 
