@@ -293,7 +293,7 @@ func pgChunksForPayload(rows []*metadata.FileChunk, payloadID string) []*metadat
 }
 
 // ListFileChunks returns all blocks belonging to a file, ordered by block index.
-// Uses LIKE query on block ID prefix, then sorts in Go for correct numeric ordering.
+// The LIKE query is a prefilter; pgChunksForPayload decides membership and order.
 // Not on the narrowed FileChunkStore interface;
 // kept as a backend method for engine-internal callers.
 func (s *PostgresMetadataStore) ListFileChunks(ctx context.Context, payloadID string) ([]*metadata.FileChunk, error) {
