@@ -23,6 +23,9 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
+    # Without a cap this job inherits the six-hour default, so a hang holds a
+    # required check for the rest of the day instead of failing and retrying.
+    timeout-minutes: 45
 
     strategy:
       matrix:
@@ -106,6 +109,12 @@ jobs:
         run: go test -tags=integration -v -timeout=20m -p 1 ./...
 
       - name: Install and start rpcbind
+        env:
+          # apt and needrestart both prompt on a tty-less runner if left to
+          # their defaults, and a prompt here blocks with no output until the
+          # job's wall clock runs out.
+          DEBIAN_FRONTEND: noninteractive
+          NEEDRESTART_MODE: a
         run: |
           sudo apt-get update
           sudo apt-get install -y rpcbind
