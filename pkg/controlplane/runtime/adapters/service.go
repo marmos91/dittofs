@@ -55,7 +55,16 @@ type adapterEntry struct {
 	adapter ProtocolAdapter
 	config  *models.AdapterConfig
 	cancel  context.CancelFunc
-	errCh   chan error
+
+	// served is closed once the serve goroutine has returned, with serveErr
+	// holding its result. A start and a teardown can both be waiting on the
+	// same adapter to exit, so this is a broadcast rather than a single
+	// delivered value: a value sent once would wake only whichever of them
+	// happened to receive it, leaving the other to sit out its own timeout and
+	// then report that instead of the real outcome. serveErr is written before
+	// the close and read only after it.
+	served   chan struct{}
+	serveErr error
 
 	// stopping marks a teardown in progress: the entry is still in the map,
 	// but the adapter is on its way out. Guarded by Service.mu.
@@ -313,7 +322,7 @@ func (s *Service) awaitListener(adapterType string, entry *adapterEntry) error {
 		logger.Info("Adapter started", "type", adapterType, "port", entry.adapter.Port())
 		return nil
 
-	case err := <-entry.errCh:
+	case <-entry.served:
 		// The serve goroutine returned, so it has released the socket: drop the
 		// entry and free the type for a retry. Drop it only while the map still
 		// holds this entry — a teardown that overtook this start has already
@@ -325,10 +334,10 @@ func (s *Service) awaitListener(adapterType string, entry *adapterEntry) error {
 			delete(s.entries, adapterType)
 		}
 		s.mu.Unlock()
-		if err == nil {
+		if entry.serveErr == nil {
 			return fmt.Errorf("adapter %s stopped before its listener was ready", adapterType)
 		}
-		return err
+		return entry.serveErr
 
 	case <-time.After(s.startTimeout):
 		// The adapter is still running and may yet bind, so the entry stays to
@@ -372,7 +381,7 @@ func (s *Service) stopAdapter(adapterType string) error {
 
 	entry.cancel()
 	select {
-	case <-entry.errCh:
+	case <-entry.served:
 		s.mu.Lock()
 		delete(s.entries, adapterType)
 		s.mu.Unlock()
@@ -446,11 +455,16 @@ func (s *Service) ListRunningAdapters() []string {
 	return types
 }
 
+// IsAdapterRunning reports whether an adapter of the given type is serving. A
+// cancelled entry is not: it holds the type so nothing else claims it, but its
+// adapter never confirmed the listener — either a start gave up waiting for the
+// bind, or a teardown gave up waiting for the exit. Reporting those as running
+// would advertise a listener that may not exist.
 func (s *Service) IsAdapterRunning(adapterType string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	_, exists := s.entries[adapterType]
-	return exists
+	e, exists := s.entries[adapterType]
+	return exists && !e.cancelled
 }
 
 // GetAdapter returns the running adapter for the given type, or nil if
@@ -535,7 +549,14 @@ func (s *Service) registerAndRunAdapterLocked(adp ProtocolAdapter, cfg *models.A
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
+
+	entry := &adapterEntry{
+		adapter: adp,
+		config:  cfg,
+		cancel:  cancel,
+		served:  make(chan struct{}),
+	}
+	s.entries[cfg.Type] = entry
 
 	go func() {
 		logger.Info("Starting adapter", "protocol", adp.Protocol(), "port", adp.Port())
@@ -543,16 +564,9 @@ func (s *Service) registerAndRunAdapterLocked(adp ProtocolAdapter, cfg *models.A
 		if err != nil && !errors.Is(err, context.Canceled) && ctx.Err() == nil {
 			logger.Error("Adapter failed", "protocol", adp.Protocol(), "error", err)
 		}
-		errCh <- err
+		entry.serveErr = err
+		close(entry.served)
 	}()
-
-	entry := &adapterEntry{
-		adapter: adp,
-		config:  cfg,
-		cancel:  cancel,
-		errCh:   errCh,
-	}
-	s.entries[cfg.Type] = entry
 
 	return entry
 }

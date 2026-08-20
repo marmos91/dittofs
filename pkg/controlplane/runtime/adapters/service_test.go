@@ -617,6 +617,13 @@ func TestStartAdapter_TimesOutWhenListenerNeverBinds(t *testing.T) {
 	if !strings.Contains(err.Error(), "listener not ready") {
 		t.Fatalf("error does not name the wait: %v", err)
 	}
+
+	// The entry stays behind to hold the type, but nothing about it confirmed a
+	// listener, so it must not be advertised as running — that is the same
+	// false success in a different coat.
+	if svc.IsAdapterRunning("nfs") {
+		t.Error("adapter reported as running after its start timed out waiting for the bind")
+	}
 }
 
 // TestLoadAdaptersFromStore_SkipsUnbindableAdapter proves a boot survives a
