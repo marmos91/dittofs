@@ -262,10 +262,26 @@ type BlockStoreManifestCheckResult struct {
 //
 // No block is fetched and no remote object is touched, so the call costs a
 // metadata walk regardless of how much data the share holds.
-func (c *Client) BlockStoreCheckManifests(shareName string) (*BlockStoreManifestCheckResult, error) {
+//
+// opts asks the server to also work out which of those findings it has the
+// evidence to repair, and to write them. The zero value keeps the scan
+// read-only.
+func (c *Client) BlockStoreCheckManifests(shareName string, opts BlockStoreManifestCheckOptions) (*BlockStoreManifestCheckResult, error) {
 	return createResource[BlockStoreManifestCheckResult](
 		c,
 		fmt.Sprintf("/api/v1/shares/%s/audit/manifest", url.PathEscape(normalizeShareNameForAPI(shareName))),
-		struct{}{},
+		opts,
 	)
+}
+
+// BlockStoreManifestCheckOptions is the request body for
+// POST /api/v1/shares/{name}/audit/manifest. Mirrors the server-side
+// handlers.BlockStoreManifestCheckRequest shape.
+type BlockStoreManifestCheckOptions struct {
+	// PlanRepairs reports which findings the server has evidence to repair,
+	// writing nothing.
+	PlanRepairs bool `json:"plan_repairs,omitempty"`
+
+	// ApplyRepairs writes those repairs. It implies PlanRepairs.
+	ApplyRepairs bool `json:"apply_repairs,omitempty"`
 }

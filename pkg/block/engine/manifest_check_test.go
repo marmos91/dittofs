@@ -207,7 +207,7 @@ func TestCheckManifests_HolesAndUnknownHashes(t *testing.T) {
 				}
 			}
 
-			res, err := CheckManifests(ctx, share, store, true)
+			res, err := CheckManifests(ctx, share, store, ManifestCheckOptions{CheckSynced: true})
 			if err != nil {
 				t.Fatalf("CheckManifests: %v", err)
 			}
@@ -277,7 +277,7 @@ func TestCheckManifests_LocalOnlySkipsSyncedCheck(t *testing.T) {
 	seedCheckFile(t, store, share, root, "f", 4096,
 		[]seedRow{{"0", 4096, 1}}, []seedRef{{0, 4096, 1}})
 
-	res, err := CheckManifests(ctx, share, store, false)
+	res, err := CheckManifests(ctx, share, store, ManifestCheckOptions{})
 	if err != nil {
 		t.Fatalf("CheckManifests: %v", err)
 	}
@@ -326,7 +326,7 @@ func checkManifestsUnplaceableRow(t *testing.T, backend string) {
 		t.Fatalf("MarkSynced: %v", err)
 	}
 
-	res, err := CheckManifests(ctx, share, store, true)
+	res, err := CheckManifests(ctx, share, store, ManifestCheckOptions{CheckSynced: true})
 	if err != nil {
 		t.Fatalf("CheckManifests: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestCheckManifests_PendingRowHoldsNoBytes(t *testing.T) {
 	payloadID := seedCheckFile(t, store, share, root, "f", 4096,
 		[]seedRow{{"0", 4096, 0}}, nil)
 
-	res, err := CheckManifests(ctx, share, store, true)
+	res, err := CheckManifests(ctx, share, store, ManifestCheckOptions{CheckSynced: true})
 	if err != nil {
 		t.Fatalf("CheckManifests: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestCheckManifests_CapDoesNotHideDamage(t *testing.T) {
 	refs = append(refs, seedRef{damagedOff, 4096, 2})
 	payloadID := seedCheckFile(t, store, share, root, "f", damagedOff+4096, rows, refs)
 
-	res, err := CheckManifests(ctx, share, store, false)
+	res, err := CheckManifests(ctx, share, store, ManifestCheckOptions{})
 	if err != nil {
 		t.Fatalf("CheckManifests: %v", err)
 	}

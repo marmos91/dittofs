@@ -22,17 +22,17 @@ import (
 // resolved is treated as local-only — the conservative direction, since it
 // suppresses a check rather than inventing findings.
 //
+// opts carries the repair switches through unchanged. With neither set the
+// call writes nothing, which is what a plain check does.
+//
 // Returns ErrShareNotFound (wrapped) when the share is unknown.
-func (r *Runtime) CheckManifests(ctx context.Context, shareName string) (*engine.ManifestCheckResult, error) {
+func (r *Runtime) CheckManifests(ctx context.Context, shareName string, opts engine.ManifestCheckOptions) (*engine.ManifestCheckResult, error) {
 	mds, err := r.GetMetadataStoreForShare(shareName)
 	if err != nil {
 		return nil, err
 	}
 
-	var (
-		checkSynced bool
-		skipped     string
-	)
+	var skipped string
 	bs, bsErr := r.sharesSvc.GetBlockStoreForShare(shareName)
 	switch {
 	case bsErr != nil || bs == nil:
@@ -42,10 +42,10 @@ func (r *Runtime) CheckManifests(ctx context.Context, shareName string) (*engine
 	case !bs.HasRemoteStore():
 		skipped = "share has no remote store"
 	default:
-		checkSynced = true
+		opts.CheckSynced = true
 	}
 
-	res, err := engine.CheckManifests(ctx, shareName, mds, checkSynced)
+	res, err := engine.CheckManifests(ctx, shareName, mds, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -57,6 +57,9 @@ func (r *Runtime) CheckManifests(ctx context.Context, shareName string) (*engine
 		"claimed_uncovered_bytes", res.ClaimedUncoveredBytes,
 		"unplaceable_rows", res.UnplaceableRows,
 		"unknown_hash_rows", res.UnknownHashRows,
+		"repairs_planned", res.RepairsPlanned,
+		"repairs_applied", res.RepairsApplied,
+		"repairs_skipped", res.RepairsSkipped,
 		"duration_ms", res.DurationMS,
 	)
 	return res, nil

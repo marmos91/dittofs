@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -16,9 +18,9 @@ import (
 // BlockStoreManifestCheckHandler, defined here so the handler can be unit
 // tested against a fake rather than a whole *runtime.Runtime.
 type ManifestCheckRuntime interface {
-	// CheckManifests runs the metadata-only manifest-coverage scan for the
-	// named share.
-	CheckManifests(ctx context.Context, shareName string) (*engine.ManifestCheckResult, error)
+	// CheckManifests runs the manifest-coverage scan for the named share,
+	// planning and applying repairs as opts asks.
+	CheckManifests(ctx context.Context, shareName string, opts engine.ManifestCheckOptions) (*engine.ManifestCheckResult, error)
 }
 
 // BlockStoreManifestCheckHandler exposes the on-demand manifest-coverage scan.
@@ -37,6 +39,18 @@ func NewBlockStoreManifestCheckHandler(rt ManifestCheckRuntime) *BlockStoreManif
 // output. Returned by POST /api/v1/shares/{name}/audit/manifest.
 type BlockStoreManifestCheckResponse struct {
 	Result *engine.ManifestCheckResult `json:"result"`
+}
+
+// BlockStoreManifestCheckRequest is the optional body of
+// POST /api/v1/shares/{name}/audit/manifest. An absent or empty body keeps the
+// scan read-only, so a caller written before repairs existed cannot start one.
+type BlockStoreManifestCheckRequest struct {
+	// PlanRepairs reports which findings the scan has evidence to repair,
+	// writing nothing.
+	PlanRepairs bool `json:"plan_repairs,omitempty"`
+
+	// ApplyRepairs writes those repairs. It implies PlanRepairs.
+	ApplyRepairs bool `json:"apply_repairs,omitempty"`
 }
 
 // RunManifestCheck handles POST /api/v1/shares/{name}/audit/manifest.
@@ -62,7 +76,27 @@ func (h *BlockStoreManifestCheckHandler) RunManifestCheck(w http.ResponseWriter,
 		return
 	}
 
-	res, err := h.runtime.CheckManifests(r.Context(), name)
+	// Decoded here rather than through decodeJSONBody because an absent body
+	// is not an error on this endpoint: it is what a caller asking for a plain
+	// read-only scan sends. The size cap is the same one every other body gets.
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	var req BlockStoreManifestCheckRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			WriteProblem(w, http.StatusRequestEntityTooLarge,
+				"Request Entity Too Large",
+				"request body exceeds the 1 MiB limit")
+			return
+		}
+		BadRequest(w, "invalid request body")
+		return
+	}
+
+	res, err := h.runtime.CheckManifests(r.Context(), name, engine.ManifestCheckOptions{
+		PlanRepairs:  req.PlanRepairs || req.ApplyRepairs,
+		ApplyRepairs: req.ApplyRepairs,
+	})
 	if err != nil {
 		if errors.Is(err, shares.ErrShareNotFound) {
 			NotFound(w, "share not found: "+name)
@@ -82,6 +116,9 @@ func (h *BlockStoreManifestCheckHandler) RunManifestCheck(w http.ResponseWriter,
 		"claimed_uncovered_bytes", res.ClaimedUncoveredBytes,
 		"unplaceable_rows", res.UnplaceableRows,
 		"unknown_hash_rows", res.UnknownHashRows,
+		"repairs_planned", res.RepairsPlanned,
+		"repairs_applied", res.RepairsApplied,
+		"repairs_skipped", res.RepairsSkipped,
 		"duration_ms", res.DurationMS,
 	)
 

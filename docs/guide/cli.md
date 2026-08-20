@@ -6443,6 +6443,27 @@ manifest, so it is counted separately and never fails the command. Pass
 The unknown-hash check is skipped on a share with no remote store: nothing is
 ever marked synced there, so every row would be reported.
 
+--repair adds a second half: for every finding, work out whether the store
+holds enough evidence to put the manifest back, list what that would take, and
+apply it once you confirm. Nothing is written before the prompt, so --repair on
+its own is a dry run; --yes answers the prompt for scripted use. Only two kinds
+of finding are repairable, and both restore a row the file already claims:
+
+```
+* a row with no parseable offset whose hash and length match exactly one
+  range the file claims and no row covers — the row is moved to that offset,
+  keeping everything else about it
+* a range the file claims that no row covers, whose hash the synced-hash
+  store resolves — a row is written for it, and the remote already holds the
+  bytes it names
+```
+
+A repair only ever adds coverage the file already asked for. It never drops a
+row, never widens or narrows a claim, and never marks a hash synced. Findings
+it cannot pair with that evidence — a row matching no claim, a claim whose hash
+nothing resolves, a hash the synced-hash store does not know — are reported and
+left alone: those need the bytes re-synced, not the metadata rewritten.
+
 With no argument every share is scanned. The command exits non-zero when
 damage is found, so it can be scripted (`dfsctl store check || alert`).
 
@@ -6457,12 +6478,16 @@ dfsctl store check
 dfsctl store check myshare
 dfsctl store check myshare --include-holes
 dfsctl store check myshare -o json
+dfsctl store check myshare --repair
+dfsctl store check myshare --repair --yes
 ```
 
 Flags:
 
 ```
       --include-holes   list uncovered ranges that no file claims (legitimate for sparse files)
+      --repair          list the findings the store can put back, and apply them once confirmed
+      --yes             Skip confirmation prompt
 ```
 
 Global flags:
