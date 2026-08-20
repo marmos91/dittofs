@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -265,6 +264,30 @@ func (s *PostgresMetadataStore) GetByHash(ctx context.Context, hash metadata.Con
 	return block, nil
 }
 
+// pgChunksForPayload keeps the rows that actually belong to payloadID and orders
+// them by chunk offset.
+//
+// The LIKE prefilter is a coarse index scan, not the membership test. It
+// over-matches two ways: SQL LIKE reads "_" and "%" inside the payloadID as
+// wildcards, and a plain prefix also spans payloads nested beneath this one,
+// since payloadIDs are built from a share name and a file path and so contain
+// slashes. Consumers read a row's trailing component as its offset, so an
+// unfiltered foreign row is credited to this file at that offset.
+func pgChunksForPayload(rows []*metadata.FileChunk, payloadID string) []*metadata.FileChunk {
+	out := make([]*metadata.FileChunk, 0, len(rows))
+	for _, r := range rows {
+		if _, ok := block.ChunkOffsetFor(r.ID, payloadID); ok {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, _ := block.ChunkOffsetFor(out[i].ID, payloadID)
+		b, _ := block.ChunkOffsetFor(out[j].ID, payloadID)
+		return a < b
+	})
+	return out
+}
+
 // ListFileChunks returns all blocks belonging to a file, ordered by block index.
 // Uses LIKE query on block ID prefix, then sorts in Go for correct numeric ordering.
 // Not on the narrowed FileChunkStore interface;
@@ -283,15 +306,7 @@ func (s *PostgresMetadataStore) ListFileChunks(ctx context.Context, payloadID st
 	if err != nil {
 		return nil, err
 	}
-	// SQL ORDER BY id ASC gives lexicographic order which is wrong for multi-digit
-	// block indices (e.g., "10" < "2"). Sort by parsed numeric index.
-	sort.Slice(result, func(i, j int) bool {
-		return pgParseBlockIdx(result[i].ID) < pgParseBlockIdx(result[j].ID)
-	})
-	if result == nil {
-		return []*metadata.FileChunk{}, nil
-	}
-	return result, nil
+	return pgChunksForPayload(result, payloadID), nil
 }
 
 // enumerateHashesQuery is the GC mark live-set query. It UNIONs the CAS index
@@ -439,16 +454,6 @@ func (s *PostgresMetadataStore) EnumerateFileChunks(ctx context.Context, fn func
 		return fmt.Errorf("enumerate file chunks: rows: %w", err)
 	}
 	return nil
-}
-
-// pgParseBlockIdx returns the numeric suffix of a block ID ("{payloadID}/{n}"), used as a sort key; 0 if absent.
-func pgParseBlockIdx(id string) int {
-	if idx := strings.LastIndex(id, "/"); idx >= 0 {
-		if v, err := strconv.Atoi(id[idx+1:]); err == nil {
-			return v
-		}
-	}
-	return 0
 }
 
 // ============================================================================
@@ -685,15 +690,7 @@ func (tx *postgresTransaction) ListFileChunks(ctx context.Context, payloadID str
 	if err != nil {
 		return nil, err
 	}
-	// Lexicographic SQL order mis-sorts multi-digit indices ("10" < "2");
-	// sort by parsed numeric index, matching the store-level method.
-	sort.Slice(result, func(i, j int) bool {
-		return pgParseBlockIdx(result[i].ID) < pgParseBlockIdx(result[j].ID)
-	})
-	if result == nil {
-		return []*metadata.FileChunk{}, nil
-	}
-	return result, nil
+	return pgChunksForPayload(result, payloadID), nil
 }
 
 func (tx *postgresTransaction) EnumerateFileChunks(ctx context.Context, fn func(block.ContentHash) error) error {
