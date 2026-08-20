@@ -118,9 +118,9 @@ type BaseAdapter struct {
 	// Uses sync.Map for concurrent-safe access optimized for high churn scenarios.
 	ActiveConnections sync.Map
 
-	// ListenerReady is closed when the listener is ready to accept connections.
-	// Used by tests to synchronize with server startup.
-	ListenerReady chan struct{}
+	// listenerReady is closed once the listener is bound and ready to accept
+	// connections. Read it through [BaseAdapter.ListenerReady].
+	listenerReady chan struct{}
 
 	// started flips to true once ServeWithFactory has bound the listener
 	// successfully. Used by [BaseAdapter.Healthcheck] to distinguish a
@@ -158,7 +158,7 @@ func NewBaseAdapter(config BaseConfig, protocol string) *BaseAdapter {
 		connSemaphore:  connSemaphore,
 		ShutdownCtx:    shutdownCtx,
 		CancelRequests: cancelRequests,
-		ListenerReady:  make(chan struct{}),
+		listenerReady:  make(chan struct{}),
 	}
 }
 
@@ -208,8 +208,8 @@ func (b *BaseAdapter) ServeWithFactory(
 	// Store listener with mutex protection and signal readiness.
 	//
 	// Ordering invariant: started must be flipped BEFORE closing
-	// ListenerReady. Tests (and the API layer's /status routes) treat
-	// "ListenerReady has fired" as proof that the listener is bound,
+	// listenerReady. Tests (and the API layer's /status routes) treat
+	// "listenerReady has fired" as proof that the listener is bound,
 	// so any concurrent Healthcheck observing a ready listener must
 	// also see started=true. Inverting these two lines would create a
 	// window where a probe sees a ready listener but reports
@@ -218,7 +218,7 @@ func (b *BaseAdapter) ServeWithFactory(
 	b.listener = listener
 	b.listenerMu.Unlock()
 	b.started.Store(true)
-	close(b.ListenerReady)
+	close(b.listenerReady)
 
 	logger.Info(b.protocolName+" server listening", "port", b.Config.Port)
 
@@ -500,7 +500,7 @@ func (b *BaseAdapter) Stop(ctx context.Context) error {
 // GetListenerAddr returns the address the server is listening on.
 // Blocks until the listener is ready, making it safe for tests.
 func (b *BaseAdapter) GetListenerAddr() string {
-	<-b.ListenerReady
+	<-b.listenerReady
 
 	b.listenerMu.RLock()
 	defer b.listenerMu.RUnlock()
@@ -509,6 +509,14 @@ func (b *BaseAdapter) GetListenerAddr() string {
 		return ""
 	}
 	return b.listener.Addr().String()
+}
+
+// ListenerReady returns a channel that is closed once the adapter has bound
+// its listening socket. It stays open when the bind fails, so a caller that
+// races it against the result of Serve learns whether the socket actually
+// came up instead of assuming it did.
+func (b *BaseAdapter) ListenerReady() <-chan struct{} {
+	return b.listenerReady
 }
 
 // Port returns the configured TCP port.
