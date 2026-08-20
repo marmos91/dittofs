@@ -158,9 +158,6 @@ func planPayloadRepairs(
 		}
 		out = append(out, action)
 	}
-	if len(out) == 0 {
-		return nil, nil
-	}
 	return out, nil
 }
 
@@ -243,31 +240,8 @@ func applyPayloadRepairs(ctx context.Context, store metadata.Store, f *metadata.
 			return fmt.Errorf("re-list chunks for payload %q: %w", payloadID, err)
 		}
 
-		byID := make(map[string]*block.FileChunk, len(rows))
-		covered := make([][2]uint64, 0, len(rows))
-		for _, row := range rows {
-			if row == nil {
-				continue
-			}
-			byID[row.ID] = row
-			off, placeable := block.ParseChunkOffset(row.ID)
-			if !placeable || row.Hash.IsZero() {
-				continue
-			}
-			if e, ok := clipRange(off, uint64(row.DataSize), cur.Size); ok {
-				covered = append(covered, e)
-			}
-		}
-		covered = coalesceExtents(covered)
-
-		claimed := make(map[refKey]map[uint64]struct{}, len(cur.Blocks))
-		for _, ref := range cur.Blocks {
-			k := refKey{ref.Hash, ref.Size}
-			if claimed[k] == nil {
-				claimed[k] = make(map[uint64]struct{}, 1)
-			}
-			claimed[k][ref.Offset] = struct{}{}
-		}
+		byID, covered := indexChunkRows(rows, cur.Size)
+		claimed := claimedOffsets(cur)
 
 		now := time.Now().UTC()
 		for i := range actions {
@@ -302,6 +276,43 @@ func applyPayloadRepairs(ctx context.Context, store metadata.Store, f *metadata.
 		}
 		return nil
 	})
+}
+
+// indexChunkRows indexes a payload's manifest rows by ID and returns the
+// coalesced extents the placeable rows with committed bytes cover — the view
+// an action is re-checked against.
+func indexChunkRows(rows []*block.FileChunk, size uint64) (map[string]*block.FileChunk, [][2]uint64) {
+	byID := make(map[string]*block.FileChunk, len(rows))
+	covered := make([][2]uint64, 0, len(rows))
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		byID[row.ID] = row
+		off, placeable := block.ParseChunkOffset(row.ID)
+		if !placeable || row.Hash.IsZero() {
+			continue
+		}
+		if e, ok := clipRange(off, uint64(row.DataSize), size); ok {
+			covered = append(covered, e)
+		}
+	}
+	return byID, coalesceExtents(covered)
+}
+
+// claimedOffsets indexes a file's own block list as the set of offsets it
+// claims for each hash and length, so one action's claim can be looked up
+// without walking the list again.
+func claimedOffsets(f *metadata.File) map[refKey]map[uint64]struct{} {
+	claimed := make(map[refKey]map[uint64]struct{}, len(f.Blocks))
+	for _, ref := range f.Blocks {
+		k := refKey{ref.Hash, ref.Size}
+		if claimed[k] == nil {
+			claimed[k] = make(map[uint64]struct{}, 1)
+		}
+		claimed[k][ref.Offset] = struct{}{}
+	}
+	return claimed
 }
 
 // repairRow re-checks one action against the transaction's view and returns

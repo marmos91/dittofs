@@ -141,8 +141,11 @@ func runStoreCheck(_ *cobra.Command, args []string) error {
 			if format == output.FormatTable {
 				printRepairOutcome(results)
 			}
-		} else if applied, err = confirmAndRepair(client, shareNames, format, results); err != nil {
-			return err
+		} else {
+			applied, err = confirmAndRepair(client, shareNames, format, results)
+			if err != nil {
+				return err
+			}
 		}
 		if applied {
 			// Re-scan read-only so the verdict below describes the store as
@@ -295,18 +298,18 @@ func printCheckTables(results []*engine.ManifestCheckResult) error {
 // findings joined into a single cell so a wide store still reads as a table.
 func printCheckDetail(r *engine.ManifestCheckResult) error {
 	table := output.NewTableData("PATH", "SIZE", "FINDINGS")
-	var listed int
+	var listed bool
 	for i := range r.Findings {
 		f := &r.Findings[i]
 		notes := checkFindingNotes(f)
 		if len(notes) == 0 {
 			continue
 		}
-		listed++
+		listed = true
 		table.AddRow(f.Path, fmt.Sprintf("%d", f.Size), strings.Join(notes, "; "))
 	}
 
-	if listed == 0 {
+	if !listed {
 		if r.UncoveredRanges > r.ClaimedUncoveredRanges && !checkIncludeHoles {
 			fmt.Println()
 			fmt.Println("No damage found. Uncovered ranges no file claims were not listed; pass --include-holes to see them.")
@@ -365,7 +368,7 @@ func checkFindingNotes(f *engine.PayloadFinding) []string {
 // printRepairPlan lists the writes a repair run would make for one share, so
 // the operator sees every row before answering the prompt.
 func printRepairPlan(r *engine.ManifestCheckResult) error {
-	if len(r.Repairs) == 0 || r.RepairsApplied+r.RepairsSkipped > 0 {
+	if len(r.Repairs) == 0 || repairRunWrote(r) {
 		// Nothing planned, or the run already wrote — printRepairOutcome
 		// reports what a run that wrote actually did.
 		return nil
@@ -391,11 +394,18 @@ func printRepairPlan(r *engine.ManifestCheckResult) error {
 // repairSummary renders one share's repair counters, reading as a plan before
 // the writes and as an outcome after them.
 func repairSummary(r *engine.ManifestCheckResult) string {
-	if r.RepairsApplied+r.RepairsSkipped == 0 {
+	if !repairRunWrote(r) {
 		return fmt.Sprintf("%d planned", r.RepairsPlanned)
 	}
 	return fmt.Sprintf("%d planned, %d applied, %d skipped",
 		r.RepairsPlanned, r.RepairsApplied, r.RepairsSkipped)
+}
+
+// repairRunWrote reports whether this result came from a pass that wrote,
+// as opposed to one that only planned. Every action of a pass that wrote is
+// either applied or skipped, so the two counters are zero only before it ran.
+func repairRunWrote(r *engine.ManifestCheckResult) bool {
+	return r.RepairsApplied+r.RepairsSkipped > 0
 }
 
 // repairActionLabel names a repair kind in the words the help text uses.

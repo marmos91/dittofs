@@ -382,7 +382,7 @@ func repairPayload(
 	opts ManifestCheckOptions,
 	res *ManifestCheckResult,
 ) (bool, error) {
-	if uint64(len(res.Repairs)) >= maxManifestCheckFindings {
+	if len(res.Repairs) >= maxManifestCheckFindings {
 		res.RepairsTruncated = true
 		return false, nil
 	}
