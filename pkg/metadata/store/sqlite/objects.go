@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -298,7 +296,8 @@ func (s *SQLiteMetadataStore) GetByHash(ctx context.Context, hash metadata.Conte
 }
 
 // ListFileChunks returns all blocks belonging to a file, ordered by block index.
-// Uses LIKE query on block ID prefix, then sorts in Go for correct numeric ordering.
+// The LIKE query is a prefilter; block.ChunksForPayload decides membership
+// and order.
 // Not on the narrowed FileChunkStore interface;
 // kept as a backend method for engine-internal callers.
 func (s *SQLiteMetadataStore) ListFileChunks(ctx context.Context, payloadID string) ([]*metadata.FileChunk, error) {
@@ -315,15 +314,7 @@ func (s *SQLiteMetadataStore) ListFileChunks(ctx context.Context, payloadID stri
 	if err != nil {
 		return nil, err
 	}
-	// SQL ORDER BY id ASC gives lexicographic order which is wrong for multi-digit
-	// block indices (e.g., "10" < "2"). Sort by parsed numeric index.
-	sort.Slice(result, func(i, j int) bool {
-		return parseBlockIdx(result[i].ID) < parseBlockIdx(result[j].ID)
-	})
-	if result == nil {
-		return []*metadata.FileChunk{}, nil
-	}
-	return result, nil
+	return block.ChunksForPayload(result, payloadID), nil
 }
 
 // enumerateHashesQuery is the GC mark live-set query. It UNIONs the CAS index
@@ -475,16 +466,6 @@ func (s *SQLiteMetadataStore) EnumerateFileChunks(ctx context.Context, fn func(b
 	return nil
 }
 
-// parseBlockIdx returns the numeric suffix of a block ID ("{payloadID}/{n}"), used as a sort key; 0 if absent.
-func parseBlockIdx(id string) int {
-	if idx := strings.LastIndex(id, "/"); idx >= 0 {
-		if v, err := strconv.Atoi(id[idx+1:]); err == nil {
-			return v
-		}
-	}
-	return 0
-}
-
 // ============================================================================
 // Scan Helpers
 // ============================================================================
@@ -609,15 +590,7 @@ func (tx *sqliteTransaction) ListFileChunks(ctx context.Context, payloadID strin
 	if err != nil {
 		return nil, err
 	}
-	// Lexicographic SQL order mis-sorts multi-digit indices ("10" < "2");
-	// sort by parsed numeric index, matching the store-level method.
-	sort.Slice(result, func(i, j int) bool {
-		return parseBlockIdx(result[i].ID) < parseBlockIdx(result[j].ID)
-	})
-	if result == nil {
-		return []*metadata.FileChunk{}, nil
-	}
-	return result, nil
+	return block.ChunksForPayload(result, payloadID), nil
 }
 
 func (tx *sqliteTransaction) EnumerateFileChunks(ctx context.Context, fn func(block.ContentHash) error) error {

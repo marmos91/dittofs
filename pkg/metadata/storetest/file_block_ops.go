@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -54,6 +55,10 @@ func runFileChunkOpsTests(t *testing.T, factory StoreFactory) {
 
 	t.Run("ListFileChunks_EmptyStore", func(t *testing.T) {
 		testListFileChunksEmptyStore(t, factory)
+	})
+
+	t.Run("ListFileChunks_ForeignRows", func(t *testing.T) {
+		testListFileChunksForeignRows(t, factory)
 	})
 
 	// GetFileChunkAtOffset is the read-path fast path: it resolves the single
@@ -2118,4 +2123,108 @@ func livePayloadContains(t *testing.T, store metadata.Store, payloadID string) b
 		t.Fatalf("EnumerateLivePayloadIDs: %v", err)
 	}
 	return found
+}
+
+// testListFileChunksForeignRows pins the exact membership predicate of
+// ListFileChunks: a row belongs to payloadID when its ID is payloadID plus
+// exactly one more path component. Whether that component parses as a decimal
+// offset decides only whether the row is placeable, never whether it belongs.
+//
+// PayloadIDs are built from a share name and a file path, so they contain
+// slashes and one payloadID can be a path-prefix of another. A backend that
+// answers with a plain string-prefix match returns the nested payload's rows
+// too, and every consumer then reads the trailing component as an offset —
+// crediting another file's chunk to this file at that offset.
+//
+// The same over-match reaches backends that translate the prefix into a SQL
+// LIKE pattern, where "_" matches any single character and "%" matches any
+// sequence, so a payloadID containing either slurps in unrelated siblings.
+//
+// The predicate is the component boundary, not the component being numeric.
+// A backend that additionally requires a decimal suffix under-returns instead:
+// it drops this payload's own damaged rows, making the damage class that
+// manifest scans report structurally invisible on that backend.
+func testListFileChunksForeignRows(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	mk := func(id string, size uint32) *block.FileChunk {
+		return &block.FileChunk{
+			ID: id, State: block.BlockStatePending, DataSize: size,
+			RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now(),
+		}
+	}
+
+	// "share/dir" owns two chunks. Every other row below is a chunk of some
+	// other file that a loose prefix or LIKE match would wrongly attribute
+	// to it.
+	rows := []*block.FileChunk{
+		mk("share/dir/0", 100),
+		mk("share/dir/4096", 200),
+		// Belongs to share/dir but carries no placeable offset. This is the
+		// damaged-row class that manifest scans exist to report, so it must
+		// be returned, not filtered out as if it were foreign.
+		mk("share/dir/block-0", 250),
+
+		// Nested payload: a file inside a directory of the same name.
+		mk("share/dir/nested/0", 300),
+		// Nested payload whose own name is numeric, so the joined ID reads
+		// like a plausible offset chain.
+		mk("share/dir/7/0", 400),
+
+		// Sibling reachable only through a LIKE "_" wildcard.
+		mk("share/dxr/0", 500),
+		// Sibling reachable only through a LIKE "%" wildcard.
+		mk("share/dir-other/0", 600),
+	}
+	for _, b := range rows {
+		if err := store.Put(ctx, b); err != nil {
+			t.Fatalf("Put(%s) failed: %v", b.ID, err)
+		}
+	}
+
+	got, err := asLegacy(t, store).ListFileChunks(ctx, "share/dir")
+	if err != nil {
+		t.Fatalf("ListFileChunks(share/dir) error: %v", err)
+	}
+	gotIDs := make([]string, len(got))
+	for i, b := range got {
+		gotIDs[i] = b.ID
+	}
+	// The unplaceable row also sorts as offset 0, so its position relative to
+	// "share/dir/0" is not pinned; compare the rows as a set, order below.
+	want := []string{"share/dir/0", "share/dir/4096", "share/dir/block-0"}
+	if !slices.Equal(slices.Sorted(slices.Values(gotIDs)), want) {
+		t.Errorf("ListFileChunks(share/dir) = %v, want exactly %v", gotIDs, want)
+	}
+	// Placeable rows must still come back in ascending offset order.
+	var offsets []uint64
+	for _, b := range got {
+		if off, ok := block.ChunkOffsetFor(b.ID, "share/dir"); ok {
+			offsets = append(offsets, off)
+		}
+	}
+	if !slices.IsSorted(offsets) {
+		t.Errorf("ListFileChunks(share/dir) offsets %v not ascending", offsets)
+	}
+
+	// The nested payload must still be listable in its own right.
+	nested, err := asLegacy(t, store).ListFileChunks(ctx, "share/dir/nested")
+	if err != nil {
+		t.Fatalf("ListFileChunks(share/dir/nested) error: %v", err)
+	}
+	if len(nested) != 1 || nested[0].ID != "share/dir/nested/0" {
+		t.Errorf("ListFileChunks(share/dir/nested) = %v, want [share/dir/nested/0]", nested)
+	}
+
+	// A payloadID carrying LIKE metacharacters matches only itself.
+	for _, pid := range []string{"share/d_r", "share/d%"} {
+		res, lerr := asLegacy(t, store).ListFileChunks(ctx, pid)
+		if lerr != nil {
+			t.Fatalf("ListFileChunks(%s) error: %v", pid, lerr)
+		}
+		if len(res) != 0 {
+			t.Errorf("ListFileChunks(%s) returned %d rows, want 0", pid, len(res))
+		}
+	}
 }

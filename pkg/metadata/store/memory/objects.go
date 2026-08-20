@@ -3,8 +3,6 @@ package memory
 import (
 	"context"
 	"fmt"
-	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -500,32 +498,16 @@ func (s *MemoryMetadataStore) listFileChunksLocked(_ context.Context, payloadID 
 	if s.fileChunkData == nil {
 		return []*metadata.FileChunk{}, nil
 	}
-	prefix := payloadID + "/"
-	type indexedBlock struct {
-		block *metadata.FileChunk
-		idx   int
-	}
-	var candidates []indexedBlock
-	for id, block := range s.fileChunkData.blocks {
-		if strings.HasPrefix(id, prefix) {
-			suffix := id[len(prefix):]
-			blockIdx, err := strconv.Atoi(suffix)
-			if err != nil {
-				continue // Skip entries with non-numeric suffix
-			}
-			b := *block
-			candidates = append(candidates, indexedBlock{block: &b, idx: blockIdx})
+	// Prefix scan, the map-backed counterpart of the SQL backends' LIKE
+	// prefilter; block.ChunksForPayload decides membership and order.
+	var candidates []*metadata.FileChunk
+	for id, fc := range s.fileChunkData.blocks {
+		if strings.HasPrefix(id, payloadID+"/") {
+			c := *fc
+			candidates = append(candidates, &c)
 		}
 	}
-	// Sort by block index ascending
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].idx < candidates[j].idx
-	})
-	result := make([]*metadata.FileChunk, len(candidates))
-	for i, c := range candidates {
-		result[i] = c.block
-	}
-	return result, nil
+	return block.ChunksForPayload(candidates, payloadID), nil
 }
 
 // InjectRefCountLeak is a test-only capability hook implementing the

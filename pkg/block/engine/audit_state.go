@@ -33,8 +33,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"time"
 
 	// justification: AuditRefcounts is the cross-file metadata-walk
@@ -43,6 +41,7 @@ import (
 	// directory tree (GetRootHandle, GetFile, ListChildren) and to read
 	// the backing FileChunk rows (ListFileChunks). Lifting these helpers
 	// into pkg/block would create a circular import.
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -174,16 +173,14 @@ func auditFileManifest(ctx context.Context, store metadata.Store, f *metadata.Fi
 	// FileChunk ID after "{payloadID}/") to the row's content hash. A row
 	// with a zero hash does not back a manifest ref — treat it as absent.
 	byOffset := make(map[uint64]metadata.ContentHash, len(rows))
-	prefix := payloadID + "/"
 	for _, row := range rows {
 		if row == nil || row.Hash.IsZero() {
 			continue
 		}
-		suffix := strings.TrimPrefix(row.ID, prefix)
-		off, convErr := strconv.ParseUint(suffix, 10, 64)
-		if convErr != nil {
-			// Non-numeric suffix: not an offset-keyed CAS row. Skip it
-			// rather than crediting it to an offset.
+		off, ok := block.ChunkOffsetFor(row.ID, payloadID)
+		if !ok {
+			// Not an offset-keyed CAS row of this payload. Skip it rather
+			// than crediting it to an offset.
 			continue
 		}
 		byOffset[off] = row.Hash
