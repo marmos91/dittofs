@@ -61,7 +61,7 @@ func TestBaseAdapter_Stop_ClosesListener(t *testing.T) {
 	b.listener = ln
 	b.listenerMu.Unlock()
 	b.started.Store(true)
-	close(b.ListenerReady)
+	close(b.listenerReady)
 
 	// Sanity: the listener accepts before Stop.
 	c, err := net.DialTimeout("tcp", addr, time.Second)

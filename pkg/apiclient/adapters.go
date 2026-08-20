@@ -7,9 +7,12 @@ import (
 
 // Adapter represents a protocol adapter configuration.
 type Adapter struct {
-	Type      string          `json:"type"`
-	Port      int             `json:"port"`
-	Enabled   bool            `json:"enabled"`
+	Type    string `json:"type"`
+	Port    int    `json:"port"`
+	Enabled bool   `json:"enabled"`
+	// Running reports whether the adapter's listener is actually bound, which
+	// can differ from Enabled when a start failed to claim its port.
+	Running   bool            `json:"running"`
 	Config    json.RawMessage `json:"config,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 }

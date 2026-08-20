@@ -16,6 +16,12 @@ import (
 // DefaultShutdownTimeout is the default timeout for graceful adapter shutdown.
 const DefaultShutdownTimeout = 30 * time.Second
 
+// defaultStartTimeout bounds how long a start waits for the adapter to bind.
+// Binding is a syscall, so the wait is normally sub-millisecond; the bound
+// exists only so setup that runs before the bind and wedges cannot hang the
+// caller forever.
+const defaultStartTimeout = 15 * time.Second
+
 // ProtocolAdapter is the interface for protocol adapters (NFS, SMB).
 //
 // It mirrors a strict subset of [adapter.Adapter]: the methods this
@@ -30,6 +36,11 @@ type ProtocolAdapter interface {
 	Protocol() string
 	Port() int
 	Healthcheck(ctx context.Context) health.Report
+
+	// ListenerReady is closed once Serve has bound the listening socket, and
+	// stays open when the bind fails. Racing it against Serve returning is what
+	// lets a start report the outcome of the bind rather than the intent.
+	ListenerReady() <-chan struct{}
 }
 
 // RuntimeSetter is implemented by adapters that need runtime access.
@@ -44,7 +55,16 @@ type adapterEntry struct {
 	adapter ProtocolAdapter
 	config  *models.AdapterConfig
 	cancel  context.CancelFunc
-	errCh   chan error
+
+	// served is closed once the serve goroutine has returned, with serveErr
+	// holding its result. A start and a teardown can both be waiting on the
+	// same adapter to exit, so this is a broadcast rather than a single
+	// delivered value: a value sent once would wake only whichever of them
+	// happened to receive it, leaving the other to sit out its own timeout and
+	// then report that instead of the real outcome. serveErr is written before
+	// the close and read only after it.
+	served   chan struct{}
+	serveErr error
 
 	// stopping marks a teardown in progress: the entry is still in the map,
 	// but the adapter is on its way out. Guarded by Service.mu.
@@ -58,6 +78,13 @@ type adapterEntry struct {
 	cancelled bool
 }
 
+// serving reports whether the entry describes an adapter that confirmed its
+// listener and has not since been abandoned. A cancelled entry has not: it
+// holds the type so nothing else claims it, but either a start gave up waiting
+// for the bind or a teardown gave up waiting for the exit, so nothing about it
+// is known to be listening. Caller must hold mu.
+func (e *adapterEntry) serving() bool { return !e.cancelled }
+
 // Service manages protocol adapter lifecycle.
 type Service struct {
 	mu      sync.RWMutex
@@ -66,6 +93,7 @@ type Service struct {
 
 	store           store.AdapterStore
 	shutdownTimeout time.Duration
+	startTimeout    time.Duration
 	runtime         any // injected into adapters implementing RuntimeSetter
 }
 
@@ -78,6 +106,7 @@ func New(adapterStore store.AdapterStore, shutdownTimeout time.Duration) *Servic
 		entries:         make(map[string]*adapterEntry),
 		store:           adapterStore,
 		shutdownTimeout: shutdownTimeout,
+		startTimeout:    defaultStartTimeout,
 	}
 }
 
@@ -259,25 +288,96 @@ func (s *Service) DisableAdapter(ctx context.Context, adapterType string) error 
 	return nil
 }
 
+// startAdapter creates the adapter, runs it, and returns only once its
+// listener is bound. The entry is registered before the wait so a competing
+// start of the same type is refused while this one is still binding, and it is
+// dropped again if the bind fails.
 func (s *Service) startAdapter(cfg *models.AdapterConfig) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if err := s.typeClaimedLocked(cfg.Type); err != nil {
+		s.mu.Unlock()
 		return err
 	}
 
 	if s.factory == nil {
+		s.mu.Unlock()
 		return fmt.Errorf("adapter factory not set")
 	}
 
 	adp, err := s.factory(cfg)
 	if err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("failed to create adapter: %w", err)
 	}
 
-	s.registerAndRunAdapterLocked(adp, cfg)
-	return nil
+	entry := s.registerAndRunAdapterLocked(adp, cfg)
+	s.mu.Unlock()
+
+	return s.awaitListener(cfg.Type, entry)
+}
+
+// awaitListener blocks until the adapter has bound its listening socket, its
+// serve goroutine has returned, or the start deadline passes. Binding happens
+// inside Serve, so this is the only point at which a bind failure — an
+// occupied port, an unavailable address, insufficient privilege — becomes
+// observable; returning before it makes every start report the intent to serve
+// rather than the outcome.
+func (s *Service) awaitListener(adapterType string, entry *adapterEntry) error {
+	select {
+	case <-entry.adapter.ListenerReady():
+		logger.Info("Adapter started", "type", adapterType, "port", entry.adapter.Port())
+		return nil
+
+	case <-entry.served:
+		// The serve goroutine returned, so it has released the socket: drop the
+		// entry and free the type for a retry. Drop it only while the map still
+		// holds this entry — a teardown that overtook this start has already
+		// removed it, and whatever registered the type afterwards belongs to a
+		// later start that is still serving.
+		entry.cancel()
+		s.mu.Lock()
+		if s.entries[adapterType] == entry {
+			delete(s.entries, adapterType)
+		}
+		s.mu.Unlock()
+		if entry.serveErr == nil {
+			return fmt.Errorf("adapter %s stopped before its listener was ready", adapterType)
+		}
+		return entry.serveErr
+
+	case <-time.After(s.startTimeout):
+		// The adapter is still running and may yet bind, so the entry stays to
+		// keep holding the type, marked the same way a timed-out stop marks it.
+		// Its context is cancelled, so it will exit; reap it then, or the type
+		// stays claimed by an adapter no caller can reach — a failed start rolls
+		// the store row back, and a later stop looks that row up before it would
+		// ever reach this entry.
+		entry.cancel()
+		s.mu.Lock()
+		entry.cancelled = true
+		s.mu.Unlock()
+		go s.reapWhenServed(adapterType, entry)
+		return fmt.Errorf("adapter %s listener not ready after %s", adapterType, s.startTimeout)
+	}
+}
+
+// reapWhenServed drops the entry once its serve goroutine has returned, freeing
+// the type for a later start. It is the cleanup for an entry that was abandoned
+// mid-flight: the context is already cancelled, so the wait ends as soon as the
+// adapter unwinds. The entry is dropped only while the map still holds it, so a
+// teardown that got there first cannot have its replacement removed. An adapter
+// that never returns keeps its entry, which is the honest answer — it may still
+// hold the socket.
+func (s *Service) reapWhenServed(adapterType string, entry *adapterEntry) {
+	<-entry.served
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.entries[adapterType] == entry {
+		delete(s.entries, adapterType)
+		logger.Info("Abandoned adapter released its socket", "type", adapterType)
+	}
 }
 
 // stopAdapter tears down the running adapter of the given type. Its entry stays
@@ -311,7 +411,7 @@ func (s *Service) stopAdapter(adapterType string) error {
 
 	entry.cancel()
 	select {
-	case <-entry.errCh:
+	case <-entry.served:
 		s.mu.Lock()
 		delete(s.entries, adapterType)
 		s.mu.Unlock()
@@ -322,6 +422,7 @@ func (s *Service) stopAdapter(adapterType string) error {
 		entry.stopping = false
 		entry.cancelled = true
 		s.mu.Unlock()
+		go s.reapWhenServed(adapterType, entry)
 		logger.Warn("Adapter stop timed out", "type", adapterType)
 		return fmt.Errorf("adapter %s stop timed out", adapterType)
 	}
@@ -345,6 +446,14 @@ func (s *Service) StopAllAdapters() error {
 }
 
 // LoadAdaptersFromStore loads enabled adapters from store and starts them.
+//
+// An adapter that cannot start is logged and skipped rather than failing the
+// load. A persisted port can become unusable between one boot and the next —
+// another process claimed it, or the host lost the address — and taking the
+// whole server down with it would also take down the control-plane API, which
+// is the only way left to correct the port without console access. The adapter
+// stays enabled in the store: that is the requested state, retried on the next
+// start or when the operator re-enables it.
 func (s *Service) LoadAdaptersFromStore(ctx context.Context) error {
 	adapters, err := s.store.ListAdapters(ctx)
 	if err != nil {
@@ -358,29 +467,37 @@ func (s *Service) LoadAdaptersFromStore(ctx context.Context) error {
 		}
 
 		if err := s.startAdapter(cfg); err != nil {
-			return fmt.Errorf("failed to start adapter %s: %w", cfg.Type, err)
+			logger.Error("Adapter failed to start; continuing without it",
+				"type", cfg.Type, "port", cfg.Port, "error", err)
 		}
 	}
 
 	return nil
 }
 
+// ListRunningAdapters names the adapters that are serving. It answers the same
+// question as [Service.IsAdapterRunning] and must agree with it — readiness
+// reports this list, so an abandoned entry counted here would advertise a
+// listener that may not exist.
 func (s *Service) ListRunningAdapters() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	types := make([]string, 0, len(s.entries))
-	for t := range s.entries {
-		types = append(types, t)
+	for t, e := range s.entries {
+		if e.serving() {
+			types = append(types, t)
+		}
 	}
 	return types
 }
 
+// IsAdapterRunning reports whether an adapter of the given type is serving.
 func (s *Service) IsAdapterRunning(adapterType string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	_, exists := s.entries[adapterType]
-	return exists
+	e, exists := s.entries[adapterType]
+	return exists && e.serving()
 }
 
 // GetAdapter returns the running adapter for the given type, or nil if
@@ -403,15 +520,17 @@ func (s *Service) AddAdapter(adapter ProtocolAdapter) error {
 	adapterType := adapter.Protocol()
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if err := s.typeClaimedLocked(adapterType); err != nil {
+		s.mu.Unlock()
 		return err
 	}
 
 	cfg := &models.AdapterConfig{Type: adapterType, Port: adapter.Port(), Enabled: true}
-	s.registerAndRunAdapterLocked(adapter, cfg)
-	return nil
+	entry := s.registerAndRunAdapterLocked(adapter, cfg)
+	s.mu.Unlock()
+
+	return s.awaitListener(adapterType, entry)
 }
 
 // clientDisconnecter allows force-closing a specific client connection.
@@ -454,14 +573,23 @@ func (s *Service) typeClaimedLocked(adapterType string) error {
 	}
 }
 
-// registerAndRunAdapterLocked starts the adapter in a goroutine. Caller must hold mu.
-func (s *Service) registerAndRunAdapterLocked(adp ProtocolAdapter, cfg *models.AdapterConfig) {
+// registerAndRunAdapterLocked runs the adapter in a goroutine and returns its
+// entry. The adapter has not bound its listener yet at this point; callers wait
+// for that with [Service.awaitListener]. Caller must hold mu.
+func (s *Service) registerAndRunAdapterLocked(adp ProtocolAdapter, cfg *models.AdapterConfig) *adapterEntry {
 	if setter, ok := adp.(RuntimeSetter); ok && s.runtime != nil {
 		setter.SetRuntime(s.runtime)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
+
+	entry := &adapterEntry{
+		adapter: adp,
+		config:  cfg,
+		cancel:  cancel,
+		served:  make(chan struct{}),
+	}
+	s.entries[cfg.Type] = entry
 
 	go func() {
 		logger.Info("Starting adapter", "protocol", adp.Protocol(), "port", adp.Port())
@@ -469,15 +597,9 @@ func (s *Service) registerAndRunAdapterLocked(adp ProtocolAdapter, cfg *models.A
 		if err != nil && !errors.Is(err, context.Canceled) && ctx.Err() == nil {
 			logger.Error("Adapter failed", "protocol", adp.Protocol(), "error", err)
 		}
-		errCh <- err
+		entry.serveErr = err
+		close(entry.served)
 	}()
 
-	s.entries[cfg.Type] = &adapterEntry{
-		adapter: adp,
-		config:  cfg,
-		cancel:  cancel,
-		errCh:   errCh,
-	}
-
-	logger.Info("Adapter started", "type", cfg.Type, "port", cfg.Port)
+	return entry
 }

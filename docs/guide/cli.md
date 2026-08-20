@@ -950,7 +950,7 @@ List protocol adapters
 
 List all protocol adapters configured on the DittoFS server.
 
-Each row shows the adapter type (nfs or smb), the port it listens on, and whether it is currently enabled. Use this command to quickly confirm which protocols are active before connecting clients.
+Each row shows the adapter type (nfs or smb), the port it listens on, whether it is enabled, and whether its listener is actually running. RUNNING is the one to check before connecting clients: an adapter can be enabled yet not running when its port could not be claimed.
 
 ```
 dfsctl adapter list

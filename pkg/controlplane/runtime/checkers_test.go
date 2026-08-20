@@ -66,21 +66,29 @@ type fakeAdapter struct {
 	calls    int64
 	status   health.Status
 	stopped  chan struct{}
+	ready    chan struct{}
 }
 
 func newFakeAdapter(protocol string, status health.Status) *fakeAdapter {
-	return &fakeAdapter{protocol: protocol, status: status, stopped: make(chan struct{})}
+	return &fakeAdapter{
+		protocol: protocol,
+		status:   status,
+		stopped:  make(chan struct{}),
+		ready:    make(chan struct{}),
+	}
 }
 
 func (a *fakeAdapter) Serve(ctx context.Context) error {
+	close(a.ready)
 	<-ctx.Done()
 	close(a.stopped)
 	return ctx.Err()
 }
 
-func (a *fakeAdapter) Stop(_ context.Context) error { return nil }
-func (a *fakeAdapter) Protocol() string             { return a.protocol }
-func (a *fakeAdapter) Port() int                    { return 0 }
+func (a *fakeAdapter) Stop(_ context.Context) error   { return nil }
+func (a *fakeAdapter) ListenerReady() <-chan struct{} { return a.ready }
+func (a *fakeAdapter) Protocol() string               { return a.protocol }
+func (a *fakeAdapter) Port() int                      { return 0 }
 func (a *fakeAdapter) Healthcheck(_ context.Context) health.Report {
 	atomic.AddInt64(&a.calls, 1)
 	return health.Report{Status: a.status, CheckedAt: time.Now().UTC()}
@@ -240,23 +248,30 @@ type mutableFakeAdapter struct {
 	calls    int64
 	status   atomic.Value // health.Status
 	stopped  chan struct{}
+	ready    chan struct{}
 }
 
 func newMutableFakeAdapter(protocol string, initial health.Status) *mutableFakeAdapter {
-	a := &mutableFakeAdapter{protocol: protocol, stopped: make(chan struct{})}
+	a := &mutableFakeAdapter{
+		protocol: protocol,
+		stopped:  make(chan struct{}),
+		ready:    make(chan struct{}),
+	}
 	a.status.Store(initial)
 	return a
 }
 
 func (a *mutableFakeAdapter) Serve(ctx context.Context) error {
+	close(a.ready)
 	<-ctx.Done()
 	close(a.stopped)
 	return ctx.Err()
 }
 
-func (a *mutableFakeAdapter) Stop(_ context.Context) error { return nil }
-func (a *mutableFakeAdapter) Protocol() string             { return a.protocol }
-func (a *mutableFakeAdapter) Port() int                    { return 0 }
+func (a *mutableFakeAdapter) Stop(_ context.Context) error   { return nil }
+func (a *mutableFakeAdapter) ListenerReady() <-chan struct{} { return a.ready }
+func (a *mutableFakeAdapter) Protocol() string               { return a.protocol }
+func (a *mutableFakeAdapter) Port() int                      { return 0 }
 func (a *mutableFakeAdapter) Healthcheck(_ context.Context) health.Report {
 	atomic.AddInt64(&a.calls, 1)
 	return health.Report{Status: a.status.Load().(health.Status), CheckedAt: time.Now().UTC()}

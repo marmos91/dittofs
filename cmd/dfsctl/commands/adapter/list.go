@@ -14,7 +14,7 @@ var listCmd = &cobra.Command{
 	Short: "List protocol adapters",
 	Long: `List all protocol adapters configured on the DittoFS server.
 
-Each row shows the adapter type (nfs or smb), the port it listens on, and whether it is currently enabled. Use this command to quickly confirm which protocols are active before connecting clients.
+Each row shows the adapter type (nfs or smb), the port it listens on, whether it is enabled, and whether its listener is actually running. RUNNING is the one to check before connecting clients: an adapter can be enabled yet not running when its port could not be claimed.
 
 Examples:
   # List adapters as a table
@@ -30,14 +30,19 @@ type AdapterList []apiclient.Adapter
 
 // Headers implements TableRenderer.
 func (al AdapterList) Headers() []string {
-	return []string{"TYPE", "PORT", "ENABLED"}
+	return []string{"TYPE", "PORT", "ENABLED", "RUNNING"}
 }
 
 // Rows implements TableRenderer.
 func (al AdapterList) Rows() [][]string {
 	rows := make([][]string, 0, len(al))
 	for _, a := range al {
-		rows = append(rows, []string{a.Type, fmt.Sprintf("%d", a.Port), cmdutil.BoolToYesNo(a.Enabled)})
+		rows = append(rows, []string{
+			a.Type,
+			fmt.Sprintf("%d", a.Port),
+			cmdutil.BoolToYesNo(a.Enabled),
+			cmdutil.BoolToYesNo(a.Running),
+		})
 	}
 	return rows
 }
