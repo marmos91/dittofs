@@ -2,12 +2,12 @@ package metadata
 
 import "github.com/marmos91/dittofs/pkg/metadata/acl"
 
-// FileAccessChecker is the single protocol-agnostic entry point every protocol
-// adapter (NFSv3 / NFSv4.0 / NFSv4.1 / SMB2 / SMB3) funnels permission
-// decisions through. Consolidating the checks behind one interface keeps the
-// "handlers do protocol only" invariant: adapters translate their wire access
-// bits to and from the canonical vocabularies below and never evaluate ACLs,
-// DENY ACEs, or SID-based grants themselves.
+// Service's permission-check methods are the single protocol-agnostic entry
+// point every protocol adapter (NFSv3 / NFSv4.0 / NFSv4.1 / SMB2 / SMB3)
+// funnels permission decisions through. Consolidating the checks in one place keeps the "handlers do
+// protocol only" invariant: adapters translate their wire access bits to and
+// from the canonical vocabularies below and never evaluate ACLs, DENY ACEs, or
+// SID-based grants themselves.
 //
 // Two request vocabularies are supported because the two protocol families
 // arrive with different access-bit models, but both resolve to the same
@@ -25,34 +25,6 @@ import "github.com/marmos91/dittofs/pkg/metadata/acl"
 // enumeration, where only a directory entry's FileAttr (not a full File with a
 // handle) is in scope. It centralizes the ACL+POSIX read evaluation the SMB
 // query_directory handler previously inlined via a direct acl.Evaluate call.
-//
-// *Service is the production implementation; the interface exists so the
-// permission core has one named contract and so the cross-protocol conformance
-// matrix can assert every protocol's translation lands on identical decisions.
-type FileAccessChecker interface {
-	// CheckPermissions evaluates a generic-flag request against a file handle
-	// and returns the granted subset (NFS path).
-	CheckPermissions(ctx *AuthContext, handle FileHandle, requested Permission) (Permission, error)
-
-	// CheckFileAccess evaluates an MS-DTYP DesiredAccess mask against a file's
-	// stored DACL and returns the granted mask (SMB CREATE path). Returns
-	// ErrAccessDenied as a *StoreError when a non-MAXIMUM_ALLOWED bit is denied.
-	CheckFileAccess(file *File, authCtx *AuthContext, desiredAccess uint32) (uint32, error)
-
-	// CheckFileAccessWithParent extends CheckFileAccess with the MS-FSA
-	// delete-via-parent override (FILE_DELETE_CHILD on the parent grants DELETE
-	// on the child even when the child's own DACL denies it).
-	CheckFileAccessWithParent(file *File, parent *File, authCtx *AuthContext, desiredAccess uint32) (uint32, error)
-
-	// CheckAttrReadAccess reports whether the requester may read the entry
-	// described by attr. Used by SMB access-based enumeration. requestedMask is
-	// the set of MS-DTYP / NFSv4 read rights the caller requires (these bit
-	// positions are shared between the two models per RFC 7530 §6.2.1).
-	CheckAttrReadAccess(attr *FileAttr, authCtx *AuthContext, requestedMask uint32) bool
-}
-
-// Static assertion that *Service satisfies the consolidated checker contract.
-var _ FileAccessChecker = (*Service)(nil)
 
 // CheckAttrReadAccess reports whether authCtx may read the entry described by
 // attr, evaluating its ACL when present and falling back to POSIX mode bits

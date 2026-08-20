@@ -1145,7 +1145,7 @@ const abeReadMask = acl.ACE4_READ_DATA |
 // filterByAccess returns the subset of entries the requester may read,
 // implementing MS-SRVS SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM semantics.
 // The per-entry read decision is delegated to the central permission checker
-// (metadata.FileAccessChecker.CheckAttrReadAccess), so ABE visibility honors
+// (metadata.Service.CheckAttrReadAccess), so ABE visibility honors
 // the same ACL / DENY-ACE / SID evaluation — over one EvaluateContext — that
 // CREATE-time access checks use. The handler does protocol only: it picks the
 // entries and the read mask; the metadata layer owns the decision.
@@ -1155,7 +1155,16 @@ const abeReadMask = acl.ACE4_READ_DATA |
 //     still returns nil the entry is hidden (fail-closed).
 //   - If hydrate is nil the entry is hidden directly. Returning true here
 //     would leak entries that ABE is supposed to suppress.
-func filterByAccess(checker metadata.FileAccessChecker, entries []metadata.DirEntry, authCtx *metadata.AuthContext, hydrate attrHydrator) []metadata.DirEntry {
+//
+// attrReadChecker is the slice of the metadata permission core that
+// access-based enumeration needs: the attr-only read probe. *metadata.Service
+// is the production implementation; declaring the contract here keeps the
+// dependency pointed at what this handler actually calls.
+type attrReadChecker interface {
+	CheckAttrReadAccess(attr *metadata.FileAttr, authCtx *metadata.AuthContext, requestedMask uint32) bool
+}
+
+func filterByAccess(checker attrReadChecker, entries []metadata.DirEntry, authCtx *metadata.AuthContext, hydrate attrHydrator) []metadata.DirEntry {
 	if len(entries) == 0 {
 		return entries
 	}
@@ -1182,7 +1191,7 @@ func filterByAccess(checker metadata.FileAccessChecker, entries []metadata.DirEn
 // access-based enumeration. See filterByAccess for the policy contract. The
 // actual read evaluation (ACL when present, POSIX mode-bit fallback, root and
 // anonymous handling) lives in the central checker.
-func canEnumerateEntry(checker metadata.FileAccessChecker, entry *metadata.DirEntry, authCtx *metadata.AuthContext, hydrate attrHydrator) bool {
+func canEnumerateEntry(checker attrReadChecker, entry *metadata.DirEntry, authCtx *metadata.AuthContext, hydrate attrHydrator) bool {
 	attr := entry.Attr
 	if attr == nil {
 		// Attr is documented optional on DirEntry (pkg/metadata/validation.go).
