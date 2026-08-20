@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -97,7 +98,10 @@ func (h *AdapterHandler) Create(w http.ResponseWriter, r *http.Request) {
 			Conflict(w, "Adapter already exists")
 			return
 		}
-		InternalServerError(w, "Failed to create adapter")
+		// Carry the cause: the common failure is a listener that could not
+		// bind, and the port or address that refused it is the whole of what
+		// the operator needs to fix it.
+		InternalServerError(w, fmt.Sprintf("Failed to create adapter: %v", err))
 		return
 	}
 
@@ -273,7 +277,7 @@ func (h *AdapterHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	// UpdateAdapter updates store AND restarts the adapter
 	if err := h.runtime.UpdateAdapter(r.Context(), adapter); err != nil {
-		InternalServerError(w, "Failed to update adapter")
+		InternalServerError(w, fmt.Sprintf("Failed to update adapter: %v", err))
 		return
 	}
 
