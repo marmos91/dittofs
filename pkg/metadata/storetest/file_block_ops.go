@@ -2126,8 +2126,9 @@ func livePayloadContains(t *testing.T, store metadata.Store, payloadID string) b
 }
 
 // testListFileChunksForeignRows pins the exact membership predicate of
-// ListFileChunks: a row belongs to payloadID only when its ID has the form
-// "{payloadID}/{decimal offset}".
+// ListFileChunks: a row belongs to payloadID when its ID is payloadID plus
+// exactly one more path component. Whether that component parses as a decimal
+// offset decides only whether the row is placeable, never whether it belongs.
 //
 // PayloadIDs are built from a share name and a file path, so they contain
 // slashes and one payloadID can be a path-prefix of another. A backend that

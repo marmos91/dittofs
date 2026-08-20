@@ -34,8 +34,13 @@ func ParseChunkOffset(id string) (uint64, bool) {
 // file path and so contain slashes, so "<payloadID>/<more>/<offset>" names a
 // chunk of a payload nested beneath this one and does not belong here.
 func chunkSuffixFor(id, payloadID string) (string, bool) {
-	rest, ok := strings.CutPrefix(id, payloadID+"/")
-	if !ok || rest == "" || strings.IndexByte(rest, '/') >= 0 {
+	// Compared in place rather than against payloadID+"/": this runs per row
+	// and per sort comparison, and building the prefix would allocate on each.
+	if len(id) <= len(payloadID)+1 || id[:len(payloadID)] != payloadID || id[len(payloadID)] != '/' {
+		return "", false
+	}
+	rest := id[len(payloadID)+1:]
+	if strings.IndexByte(rest, '/') >= 0 {
 		return "", false
 	}
 	return rest, true
@@ -76,16 +81,27 @@ func ChunkOffsetFor(id, payloadID string) (uint64, bool) {
 // kept: it is this file's row and it is damaged, and dropping it would hide
 // the damage from the callers whose job is to report it. It sorts as offset 0.
 func ChunksForPayload(rows []*FileChunk, payloadID string) []*FileChunk {
-	out := make([]*FileChunk, 0, len(rows))
-	for _, r := range rows {
-		if _, ok := chunkSuffixFor(r.ID, payloadID); ok {
-			out = append(out, r)
-		}
+	// Offsets are parsed once and sorted alongside their row rather than
+	// re-parsed inside the comparator, which would repeat the work O(n log n)
+	// times. A row of this payload with no placeable offset keys as 0.
+	type keyed struct {
+		row *FileChunk
+		off uint64
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		a, _ := ChunkOffsetFor(out[i].ID, payloadID)
-		b, _ := ChunkOffsetFor(out[j].ID, payloadID)
-		return a < b
-	})
+	keys := make([]keyed, 0, len(rows))
+	for _, r := range rows {
+		suffix, ok := chunkSuffixFor(r.ID, payloadID)
+		if !ok {
+			continue
+		}
+		off, _ := strconv.ParseUint(suffix, 10, 64)
+		keys = append(keys, keyed{row: r, off: off})
+	}
+	sort.SliceStable(keys, func(i, j int) bool { return keys[i].off < keys[j].off })
+
+	out := make([]*FileChunk, len(keys))
+	for i, k := range keys {
+		out[i] = k.row
+	}
 	return out
 }
