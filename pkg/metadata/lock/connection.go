@@ -395,10 +395,11 @@ func (ct *ConnectionTracker) Close() {
 
 // RemoveAllLocks removes all locks (legacy, unified, and delegations) for a file.
 //
-// The persisted bulk-delete runs synchronously under lm.mu (handleKey is the
-// FileID used when persisting): keeping it ordered with single-record PutLock/
-// DeleteLock prevents a concurrent acquire on the same file from racing this
-// delete to the store and leaving an orphaned record behind (R3-1 class).
+// The persisted bulk-delete goes on handleKey's persist lane (handleKey is the
+// FileID used when persisting): keeping it ordered with the single-record
+// PutLock/DeleteLock for the same file prevents a concurrent acquire from
+// racing this delete to the store and leaving an orphaned record behind
+// (R3-1 class).
 func (lm *Manager) RemoveAllLocks(handleKey string) {
 	lm.mu.Lock()
 	defer lm.unlock()
@@ -421,8 +422,8 @@ func (lm *Manager) RemoveAllLocks(handleKey string) {
 }
 
 // RemoveClientLocks removes all unified locks held by a specific client. The
-// persisted bulk-delete runs synchronously under lm.mu for the same ordering
-// reason as RemoveAllLocks.
+// persisted bulk-delete spans files, so it goes on every persist lane and acts
+// as a barrier, for the same ordering reason as RemoveAllLocks.
 //
 // clientHandleIndex (clientID -> set of handleKeys, see indexes.go) bounds the
 // work to the buckets the client actually appears in instead of scanning every

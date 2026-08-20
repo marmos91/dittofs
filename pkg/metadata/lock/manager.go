@@ -734,10 +734,11 @@ type Manager struct {
 // NFS uses a longer timeout than SMB leases (90s vs 35s).
 const DefaultDelegationRecallTimeout = 90 * time.Second
 
-// persistTimeout bounds every synchronous lock-store call made under lm.mu.
-// Persistence runs inline (mutex order == store order, see putLockLocked) so a
-// hung backend would otherwise wedge the lock manager indefinitely; the timeout
-// turns that into a bounded best-effort failure that logs and proceeds.
+// persistTimeout bounds every lock-store call the manager makes. The call runs
+// before the operation that queued it returns, and it holds its file's persist
+// lane while it runs, so a hung backend would otherwise wedge that file (and
+// its caller) indefinitely; the timeout turns that into a bounded best-effort
+// failure that logs and proceeds.
 const persistTimeout = 3 * time.Second
 
 // newBaseManager creates a Manager with all common fields initialized.
