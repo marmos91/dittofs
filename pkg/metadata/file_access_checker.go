@@ -61,49 +61,16 @@ func (s *Service) CheckAttrReadAccess(attr *FileAttr, authCtx *AuthContext, requ
 }
 
 // buildAttrEvalContext constructs an acl.EvaluateContext from a FileAttr +
-// AuthContext pair. It mirrors buildFileAccessEvalContext but takes the bare
-// FileAttr (no enclosing File / handle), which is all an access-based
-// enumeration decision has in scope.
+// AuthContext pair, taking the file owner from the attr rather than an
+// enclosing File row: a bare FileAttr is all an access-based enumeration
+// decision has in scope. The construction itself is buildEvalContext's, so the
+// enumeration path cannot drift from the NFS and SMB permission paths.
 func buildAttrEvalContext(attr *FileAttr, authCtx *AuthContext) *acl.EvaluateContext {
-	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
-		// Anonymous: force FileOwnerUID to the AnonymousFileOwnerUID sentinel so
-		// the requester's zero-valued UID cannot collapse onto a root-owned
-		// entry's owner and pick up OWNER@ ACEs plus the MS-DTYP §2.5.3.2
-		// owner-implicit grant. Anonymous confines the DACL walk to EVERYONE@.
-		return &acl.EvaluateContext{
-			Anonymous:    true,
-			FileOwnerUID: acl.AnonymousFileOwnerUID,
-			FileOwnerGID: attr.GID,
-		}
+	var identity *Identity
+	if authCtx != nil {
+		identity = authCtx.Identity
 	}
-
-	identity := authCtx.Identity
-	evalCtx := &acl.EvaluateContext{
-		UID:          *identity.UID,
-		GIDs:         identity.GIDs,
-		FileOwnerUID: attr.UID,
-		FileOwnerGID: attr.GID,
-	}
-	if identity.GID != nil {
-		evalCtx.GID = *identity.GID
-	}
-
-	switch {
-	case identity.Username != "" && identity.Domain != "":
-		evalCtx.Who = identity.Username + "@" + identity.Domain
-	case identity.Username != "":
-		evalCtx.Who = identity.Username
-	}
-
-	if identity.SID != nil {
-		evalCtx.SID = *identity.SID
-	}
-	evalCtx.GroupSIDs = identity.GroupSIDs
-	// MS-DTYP §2.5.3.2: owner-implicit WRITE_OWNER requires
-	// SeTakeOwnershipPrivilege (admins only). See acl.Evaluate.
-	evalCtx.RequesterHasTakeOwnership = acl.HasTakeOwnershipPrivilege(evalCtx.SID, evalCtx.GroupSIDs)
-
-	return evalCtx
+	return buildEvalContext(attr.UID, attr.GID, identity)
 }
 
 // attrPosixCanRead implements the read-bit selection used when an entry has no

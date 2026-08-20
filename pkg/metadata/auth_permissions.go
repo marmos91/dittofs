@@ -1131,10 +1131,8 @@ func buildFileAccessEvalContext(file *File, authCtx *AuthContext) *acl.EvaluateC
 
 // buildEvalContext builds the acl.EvaluateContext for a requester against a
 // file owned by ownerUID/ownerGID. It is the shared construction behind
-// evaluateACLPermissions and buildFileAccessEvalContext, so the NFS and SMB
-// permission paths cannot drift apart. buildAttrEvalContext
-// (file_access_checker.go) still carries its own copy for the access-based
-// enumeration path.
+// evaluateACLPermissions, buildFileAccessEvalContext and buildAttrEvalContext,
+// so the NFS, SMB and access-based enumeration paths cannot drift apart.
 //
 // A nil identity (or one with no UID) is anonymous: FileOwnerUID is forced to
 // the acl.AnonymousFileOwnerUID sentinel so the requester's zero-valued UID
