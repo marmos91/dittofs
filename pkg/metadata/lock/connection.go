@@ -514,35 +514,3 @@ func (lm *Manager) ReleaseByOwnerPrefix(prefix string) int {
 
 	return released
 }
-
-// GetStats returns current lock manager statistics.
-func (lm *Manager) GetStats() ManagerStats {
-	lm.mu.RLock()
-	defer lm.mu.RUnlock()
-
-	totalLegacy := 0
-	for _, locks := range lm.locks {
-		totalLegacy += len(locks)
-	}
-
-	totalUnified := 0
-	for _, locks := range lm.unifiedLocks {
-		totalUnified += len(locks)
-	}
-
-	fileSet := make(map[string]struct{})
-	for key := range lm.locks {
-		fileSet[key] = struct{}{}
-	}
-	for key := range lm.unifiedLocks {
-		fileSet[key] = struct{}{}
-	}
-
-	return ManagerStats{
-		TotalLegacyLocks:   totalLegacy,
-		TotalUnifiedLocks:  totalUnified,
-		TotalFiles:         len(fileSet),
-		BreakCallbackCount: len(lm.breakCallbacks),
-		GracePeriodActive:  lm.gracePeriod != nil && lm.gracePeriod.GetState() == GraceStateActive,
-	}
-}

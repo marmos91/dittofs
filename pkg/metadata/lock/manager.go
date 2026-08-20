@@ -302,27 +302,6 @@ type LockManager interface {
 
 	// RemoveClientLocks removes all locks held by a specific client.
 	RemoveClientLocks(clientID string)
-
-	// GetStats returns current lock manager statistics.
-	GetStats() ManagerStats
-}
-
-// ManagerStats contains statistics about the lock manager state.
-type ManagerStats struct {
-	// TotalLegacyLocks is the total number of legacy byte-range locks.
-	TotalLegacyLocks int
-
-	// TotalUnifiedLocks is the total number of unified locks.
-	TotalUnifiedLocks int
-
-	// TotalFiles is the number of files with any locks.
-	TotalFiles int
-
-	// BreakCallbackCount is the number of registered break callbacks.
-	BreakCallbackCount int
-
-	// GracePeriodActive indicates if grace period is active.
-	GracePeriodActive bool
 }
 
 // HandleChecker checks if a file handle still exists in the metadata store.
