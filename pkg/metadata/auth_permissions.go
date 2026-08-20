@@ -407,21 +407,9 @@ func evaluateACLPermissions(
 	shareOpts *ShareOptions,
 	requested Permission,
 ) Permission {
-	// Handle anonymous/no identity
+	// Anonymous/no identity: no root bypass applies, so evaluate straight away.
 	if identity == nil || identity.UID == nil {
-		// Anonymous: suppress OWNER@ matching and the MS-DTYP §2.5.3.2
-		// owner-implicit RC|WRITE_DAC pass by forcing FileOwnerUID to
-		// the AnonymousFileOwnerUID sentinel — without it the requester's
-		// zero-valued UID would collapse onto a root-owned file's owner.
-		// Anonymous additionally confines matching to EVERYONE@, so the
-		// zero-valued UID/GID cannot pick up GROUP@ on a root-group-owned
-		// file or an explicit "0@localdomain" ACE.
-		evalCtx := &acl.EvaluateContext{
-			Anonymous:    true,
-			FileOwnerUID: acl.AnonymousFileOwnerUID,
-			FileOwnerGID: file.GID,
-		}
-		return evaluateWithACL(file.ACL, evalCtx, requested, shareOpts)
+		return evaluateWithACL(file.ACL, buildEvalContext(file.UID, file.GID, identity), requested, shareOpts)
 	}
 
 	uid := *identity.UID
@@ -434,32 +422,7 @@ func evaluateACLPermissions(
 		return requested
 	}
 
-	// Build evaluation context
-	evalCtx := &acl.EvaluateContext{
-		UID:          uid,
-		GIDs:         identity.GIDs,
-		FileOwnerUID: file.UID,
-		FileOwnerGID: file.GID,
-	}
-	if identity.GID != nil {
-		evalCtx.GID = *identity.GID
-	}
-
-	// Set Who to "username@domain" if available for named principal matching
-	switch {
-	case identity.Username != "" && identity.Domain != "":
-		evalCtx.Who = identity.Username + "@" + identity.Domain
-	case identity.Username != "":
-		evalCtx.Who = identity.Username
-	}
-
-	if identity.SID != nil {
-		evalCtx.SID = *identity.SID
-	}
-	evalCtx.GroupSIDs = identity.GroupSIDs
-	// MS-DTYP §2.5.3.2: owner-implicit WRITE_OWNER requires
-	// SeTakeOwnershipPrivilege (admins only). See acl.Evaluate.
-	evalCtx.RequesterHasTakeOwnership = acl.HasTakeOwnershipPrivilege(evalCtx.SID, evalCtx.GroupSIDs)
+	evalCtx := buildEvalContext(file.UID, file.GID, identity)
 
 	return evaluateWithACL(file.ACL, evalCtx, requested, shareOpts)
 }
@@ -1156,35 +1119,49 @@ func (s *Service) ComputeMaximalAccess(file *File, authCtx *AuthContext) uint32 
 	return access
 }
 
-// buildFileAccessEvalContext mirrors evaluateACLPermissions's EvaluateContext
-// construction so per-bit ACL evaluation in CheckFileAccess produces the same
-// allow/deny decisions a downstream read/write permission check would later
-// produce against the same file. Kept private to the metadata package.
+// buildFileAccessEvalContext builds the EvaluateContext used for per-bit ACL
+// evaluation in CheckFileAccess, taking the file owner from the File row.
 func buildFileAccessEvalContext(file *File, authCtx *AuthContext) *acl.EvaluateContext {
-	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
-		// FileOwnerUID is forced to the AnonymousFileOwnerUID sentinel so
-		// the anonymous requester's zero-valued UID cannot collapse onto a
-		// root-owned file's owner and pick up OWNER@ ACEs plus the
-		// MS-DTYP §2.5.3.2 owner-implicit RC|WRITE_DAC grant. Anonymous
-		// confines the DACL walk to EVERYONE@.
+	var identity *Identity
+	if authCtx != nil {
+		identity = authCtx.Identity
+	}
+	return buildEvalContext(file.UID, file.GID, identity)
+}
+
+// buildEvalContext builds the acl.EvaluateContext for a requester against a
+// file owned by ownerUID/ownerGID. It is the shared construction behind
+// evaluateACLPermissions and buildFileAccessEvalContext, so the NFS and SMB
+// permission paths cannot drift apart. buildAttrEvalContext
+// (file_access_checker.go) still carries its own copy for the access-based
+// enumeration path.
+//
+// A nil identity (or one with no UID) is anonymous: FileOwnerUID is forced to
+// the acl.AnonymousFileOwnerUID sentinel so the requester's zero-valued UID
+// cannot collapse onto a root-owned file's owner and pick up OWNER@ ACEs plus
+// the MS-DTYP §2.5.3.2 owner-implicit RC|WRITE_DAC grant, and Anonymous
+// confines matching to EVERYONE@ so a zero-valued UID/GID cannot pick up
+// GROUP@ on a root-group-owned file or an explicit "0@localdomain" ACE.
+func buildEvalContext(ownerUID, ownerGID uint32, identity *Identity) *acl.EvaluateContext {
+	if identity == nil || identity.UID == nil {
 		return &acl.EvaluateContext{
 			Anonymous:    true,
 			FileOwnerUID: acl.AnonymousFileOwnerUID,
-			FileOwnerGID: file.GID,
+			FileOwnerGID: ownerGID,
 		}
 	}
 
-	identity := authCtx.Identity
 	evalCtx := &acl.EvaluateContext{
 		UID:          *identity.UID,
 		GIDs:         identity.GIDs,
-		FileOwnerUID: file.UID,
-		FileOwnerGID: file.GID,
+		FileOwnerUID: ownerUID,
+		FileOwnerGID: ownerGID,
 	}
 	if identity.GID != nil {
 		evalCtx.GID = *identity.GID
 	}
 
+	// Who is "username@domain" when both are available, for named principal matching.
 	switch {
 	case identity.Username != "" && identity.Domain != "":
 		evalCtx.Who = identity.Username + "@" + identity.Domain
