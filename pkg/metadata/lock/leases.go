@@ -353,7 +353,7 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, req leaseRequest) (gran
 	// the original handleKey still count as bindings here (handle-bound
 	// lifetime, PR #452).
 	if lm.hasLeaseKeyOnOtherFile(req.leaseKey, req.handleKey, req.clientID) {
-		lm.mu.Unlock()
+		lm.unlock()
 		logger.Debug("RequestLease: lease key already bound to another file for this client",
 			"leaseKey", fmt.Sprintf("%x", req.leaseKey),
 			"fileHandle", req.handleKey,
@@ -365,7 +365,7 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, req leaseRequest) (gran
 	locks := lm.unifiedLocks[req.handleKey]
 
 	if deleg := conflictingDelegation(locks, req.state); deleg != nil {
-		lm.mu.Unlock()
+		lm.unlock()
 		logger.Debug("RequestLease: delegation conflict, denying lease",
 			"fileHandle", req.handleKey,
 			"delegationType", deleg.DelegType.String(),
@@ -375,7 +375,7 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, req leaseRequest) (gran
 	}
 
 	if handled, state, ep, serr := lm.resolveSameKeyLeaseLocked(req, locks); handled {
-		lm.mu.Unlock()
+		lm.unlock()
 		return state, ep, serr
 	}
 
@@ -389,7 +389,7 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, req leaseRequest) (gran
 	// states: strip Write, then strip Handle, then Read only, then None.
 	grantState := bestGrantableState(locks, req.leaseKey, req.state, req.isDirectory, req.isTraditionalOplock)
 	if grantState == LeaseStateNone {
-		lm.mu.Unlock()
+		lm.unlock()
 		logger.Debug("RequestLease: no compatible state after conflict resolution",
 			"fileHandle", req.handleKey,
 			"requestedState", LeaseStateToString(req.state))
@@ -397,7 +397,7 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, req leaseRequest) (gran
 	}
 
 	granted, grantedEpoch := lm.createAndGrantLease(ctx, req, grantState)
-	lm.mu.Unlock()
+	lm.unlock()
 
 	logger.Debug("RequestLease: granted lease",
 		"fileHandle", req.handleKey,
@@ -427,7 +427,7 @@ func (lm *Manager) probeLeaseState(req leaseRequest) (uint32, uint16, error) {
 		currentState := lock.Lease.LeaseState
 		epoch := lock.Lease.Epoch
 		breaking := lock.Lease.Breaking
-		lm.mu.Unlock()
+		lm.unlock()
 		if breaking {
 			logger.Debug("RequestLease: None-probe on breaking same-key lease, surfacing break-in-progress",
 				"fileHandle", req.handleKey,
@@ -437,7 +437,7 @@ func (lm *Manager) probeLeaseState(req leaseRequest) (uint32, uint16, error) {
 		}
 		return currentState, epoch, nil
 	}
-	lm.mu.Unlock()
+	lm.unlock()
 	return LeaseStateNone, 0, nil
 }
 
@@ -723,7 +723,7 @@ func (lm *Manager) breakConflictingLeasesLocked(req leaseRequest, locks []*Unifi
 		// SMBBreakHandler.OnOpLockBreak which calls SendLeaseBreak inline).
 		// Per MS-SMB2 3.3.4.7 the notification ordering requirement is
 		// therefore satisfied without further synchronization.
-		lm.mu.Unlock()
+		lm.unlock()
 		lm.dispatchOpLockBreak(req.handleKey, lockSnapshot, breakTo)
 
 		// Do NOT wait for the LEASE_BREAK_ACK before returning to the
@@ -948,7 +948,7 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(_ context.Context, leaseKey [16]byt
 	acknowledgedState uint32, epoch uint16) error {
 
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	handleKey, lock, _ := lm.findLeaseByKey(leaseKey)
 	if lock == nil {
@@ -1138,11 +1138,11 @@ func (lm *Manager) dispatchNextBreakStageLocked(handleKey string, leaseKey [16]b
 
 	// Release lm.mu before dispatching to avoid deadlock with the SMB transport
 	// callback (mirrors breakOpLocks pattern). The deferred re-Lock keeps the
-	// caller's `defer lm.mu.Unlock()` correct even if dispatchOpLockBreak panics
+	// caller's `defer lm.unlock()` correct even if dispatchOpLockBreak panics
 	// — without it the unwind would run through an unlocked mutex and the outer
 	// defer would double-unlock.
 	func() {
-		lm.mu.Unlock()
+		lm.unlock()
 		defer lm.mu.Lock()
 		lm.dispatchOpLockBreak(handleKey, snapshot, nextTarget)
 	}()
@@ -1202,7 +1202,7 @@ func (lm *Manager) clearBreakingSiblingsLocked(leaseKey [16]byte, primary *Unifi
 // ReleaseLease releases all lease state for the given lease key.
 func (lm *Manager) releaseLeaseImpl(ctx context.Context, leaseKey [16]byte) error {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	// Find and remove all locks with matching lease key. The same lease key
 	// constant can be bound on multiple files (distinct handleKey buckets), and
@@ -1246,7 +1246,7 @@ func (lm *Manager) releaseLeaseImpl(ctx context.Context, leaseKey [16]byte) erro
 // on the surviving file and break ACK lookup / break-to matching.
 func (lm *Manager) releaseLeaseForHandleImpl(ctx context.Context, handleKey string, leaseKey [16]byte) error {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	locks := lm.unifiedLocks[handleKey]
 	if len(locks) == 0 {
@@ -1280,6 +1280,14 @@ func (lm *Manager) releaseLeaseForHandleImpl(ctx context.Context, handleKey stri
 	var remaining []*UnifiedLock
 	var deleteErrs []error
 	hadBreaking := false
+
+	// The deletes below run inline rather than through the persist queue,
+	// because their error is reported to the caller. Empty this file's lane
+	// first so they still land after everything lm.mu ordered ahead of them.
+	if lm.lockStore != nil {
+		lm.drainPersistLaneLocked(handleKey)
+	}
+
 	for _, lock := range locks {
 		if lock.Lease != nil && lock.Lease.LeaseKey == leaseKey {
 			if lock.Lease.Breaking {
@@ -1467,7 +1475,7 @@ func (lm *Manager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (state 
 // Returns false if no lease was found with the given key.
 func (lm *Manager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) bool {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	// Update every lease record matching leaseKey, not just the first found.
 	// Stale records from prior tests (same LEASE1 constant across smbtorture

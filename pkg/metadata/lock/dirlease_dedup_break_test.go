@@ -47,7 +47,7 @@ func twoSameKeyDirLeases(t *testing.T, lm *Manager, handleKey string, key [16]by
 	// AcknowledgeLeaseBreak) can resolve these directly-injected records, as it
 	// would for records added through the normal grant path.
 	lm.reindexHandleLocked(handleKey, nil)
-	lm.mu.Unlock()
+	lm.unlock()
 
 	return mu, breaksByKey, records
 }
@@ -63,7 +63,7 @@ func assertBothSiblingsBreaking(t *testing.T, lm *Manager, records []*UnifiedLoc
 	t.Helper()
 
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	first := records[0].Lease
 	for i, rec := range records {
@@ -179,7 +179,7 @@ func oneDirLease(t *testing.T, lm *Manager, handleKey, ownerClient string, key [
 		Lease: &OpLock{LeaseKey: key, LeaseState: LeaseStateRead | LeaseStateHandle, Epoch: 1, IsDirectory: true},
 	}}
 	lm.reindexHandleLocked(handleKey, nil)
-	lm.mu.Unlock()
+	lm.unlock()
 	return mu, breaks
 }
 
@@ -264,7 +264,7 @@ func TestOnDirChange_SerializesMultipleDirLeaseBreaks(t *testing.T) {
 			Lease: &OpLock{LeaseKey: key2, LeaseState: LeaseStateRead | LeaseStateHandle, Epoch: 1, IsDirectory: true}},
 	}
 	lm.reindexHandleLocked(handleKey, nil)
-	lm.mu.Unlock()
+	lm.unlock()
 
 	// A change with no parent key breaks both dir leases.
 	lm.OnDirChange(FileHandle(handleKey), DirChangeRemoveEntry, "smb:other", [16]byte{}, false)
@@ -328,18 +328,18 @@ func TestAcknowledgeLeaseBreak_ClearsMirroredSiblings(t *testing.T) {
 	lm.mu.Lock()
 	for i, rec := range records {
 		if rec.Lease.Breaking {
-			lm.mu.Unlock()
+			lm.unlock()
 			t.Fatalf("record %d (%s): Breaking=true after a single acknowledge; the "+
 				"mirrored sibling was never cleared (WaitForBreakCompletion stalls until "+
 				"the force-complete timeout)", i, rec.Owner.OwnerID)
 		}
 		if rec.Lease.LeaseState != LeaseStateNone {
-			lm.mu.Unlock()
+			lm.unlock()
 			t.Fatalf("record %d (%s): LeaseState=%#x after ack-to-None; want None",
 				i, rec.Owner.OwnerID, rec.Lease.LeaseState)
 		}
 	}
-	lm.mu.Unlock()
+	lm.unlock()
 
 	// With no record left Breaking, WaitForBreakCompletion returns at once rather
 	// than blocking until the timeout.

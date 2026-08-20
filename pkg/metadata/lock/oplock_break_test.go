@@ -576,7 +576,7 @@ func TestOpLockBreakScanner_RevokeUnblocksWaitForBreakCompletion(t *testing.T) {
 	// Insert directly into in-memory map to bypass conflict-check path.
 	lm.mu.Lock()
 	lm.unifiedLocks["file-wait"] = append(lm.unifiedLocks["file-wait"], breakingLock)
-	lm.mu.Unlock()
+	lm.unlock()
 
 	// Persist it so the scanner can find it.
 	pl := ToPersistedLock(breakingLock, 1)

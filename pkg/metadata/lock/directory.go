@@ -250,7 +250,7 @@ func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType
 	for i := range delegsToBreak {
 		delegsToBreak[i] = delegsToBreak[i].Clone()
 	}
-	lm.mu.Unlock()
+	lm.unlock()
 
 	totalBreaks := len(leasesToBreak) + len(delegsToBreak)
 	if totalBreaks == 0 {
@@ -302,7 +302,7 @@ func (lm *Manager) dispatchNextDeferredDirBreakLocked(handleKey string) {
 	}
 	snapshot := next.Clone()
 	func() {
-		lm.mu.Unlock()
+		lm.unlock()
 		defer lm.mu.Lock()
 		lm.dispatchOpLockBreak(handleKey, snapshot, LeaseStateNone)
 	}()

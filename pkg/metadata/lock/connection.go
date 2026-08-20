@@ -401,7 +401,7 @@ func (ct *ConnectionTracker) Close() {
 // delete to the store and leaving an orphaned record behind (R3-1 class).
 func (lm *Manager) RemoveAllLocks(handleKey string) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 	delete(lm.locks, handleKey)
 	old := lm.unifiedLocks[handleKey]
 	delete(lm.unifiedLocks, handleKey)
@@ -409,11 +409,14 @@ func (lm *Manager) RemoveAllLocks(handleKey string) {
 	delete(lm.breakWaitChans, handleKey)
 
 	if lm.lockStore != nil {
-		ctx, cancel := withPersistTimeout()
-		defer cancel()
-		if _, err := lm.lockStore.DeleteLocksByFile(ctx, handleKey); err != nil {
-			logger.Error("RemoveAllLocks: failed to delete persisted locks", "handleKey", handleKey, "error", err)
-		}
+		store := lm.lockStore
+		lm.enqueuePersistLocked(handleKey, func() {
+			ctx, cancel := withPersistTimeout()
+			defer cancel()
+			if _, err := store.DeleteLocksByFile(ctx, handleKey); err != nil {
+				logger.Error("RemoveAllLocks: failed to delete persisted locks", "handleKey", handleKey, "error", err)
+			}
+		})
 	}
 }
 
@@ -426,7 +429,7 @@ func (lm *Manager) RemoveAllLocks(handleKey string) {
 // entry in unifiedLocks under the global mutex.
 func (lm *Manager) RemoveClientLocks(clientID string) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	// Snapshot the affected handleKeys before mutating: reindexHandleLocked
 	// updates clientHandleIndex underneath us, so iterating the map directly
@@ -453,11 +456,17 @@ func (lm *Manager) RemoveClientLocks(clientID string) {
 	}
 
 	if lm.lockStore != nil {
-		ctx, cancel := withPersistTimeout()
-		defer cancel()
-		if _, err := lm.lockStore.DeleteLocksByClient(ctx, clientID); err != nil {
-			logger.Error("RemoveClientLocks: failed to delete persisted locks", "clientID", clientID, "error", err)
-		}
+		store := lm.lockStore
+		// A client-wide delete spans files, so it takes every lane: nothing
+		// this critical section ordered before it may land after it, and
+		// nothing after it may land before.
+		lm.enqueuePersistBarrierLocked(func() {
+			ctx, cancel := withPersistTimeout()
+			defer cancel()
+			if _, err := store.DeleteLocksByClient(ctx, clientID); err != nil {
+				logger.Error("RemoveClientLocks: failed to delete persisted locks", "clientID", clientID, "error", err)
+			}
+		})
 	}
 }
 
@@ -486,7 +495,7 @@ func (lm *Manager) RemoveClientLocks(clientID string) {
 // leaseKeyIndex consistent for the records this removes.
 func (lm *Manager) ReleaseByOwnerPrefix(prefix string) int {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	released := 0
 	for handleKey, locks := range lm.unifiedLocks {

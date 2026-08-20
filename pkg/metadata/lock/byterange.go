@@ -260,7 +260,7 @@ func mergeTwoLocks(a, b *UnifiedLock) *UnifiedLock {
 // invariant is enforced by TestUpgradeLock_WholeLockOnly.
 func (lm *Manager) UpgradeLock(handleKey string, owner LockOwner, offset, length uint64) (*UnifiedLock, error) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	unifiedLocks := lm.getUnifiedLocksLocked(handleKey)
 
@@ -328,7 +328,7 @@ func (lm *Manager) getUnifiedLocksLocked(handleKey string) []*UnifiedLock {
 // conflict cases: access modes, oplock-oplock, oplock-byterange, byterange-byterange.
 func (lm *Manager) AddUnifiedLock(handleKey string, lock *UnifiedLock) error {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	existing := lm.unifiedLocks[handleKey]
 
@@ -412,7 +412,7 @@ func (lm *Manager) TestUnifiedLock(handleKey string, want *UnifiedLock) *Unified
 // RemoveUnifiedLock removes a unified lock using POSIX splitting semantics.
 func (lm *Manager) RemoveUnifiedLock(handleKey string, owner LockOwner, offset, length uint64) error {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	existing := lm.unifiedLocks[handleKey]
 	if len(existing) == 0 {
@@ -489,7 +489,7 @@ func (lm *Manager) RemoveFileUnifiedLocks(handleKey string) {
 	delete(lm.unifiedLocks, handleKey)
 	lm.reindexHandleLocked(handleKey, old)
 	delete(lm.breakWaitChans, handleKey)
-	lm.mu.Unlock()
+	lm.unlock()
 }
 
 // GetUnifiedLock retrieves a specific unified lock by owner and range.

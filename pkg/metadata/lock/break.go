@@ -156,7 +156,7 @@ func (lm *Manager) WaitForBreakCompletionExceptKey(ctx context.Context, handleKe
 			}
 		}
 		if !hasOther {
-			lm.mu.Unlock()
+			lm.unlock()
 			return nil
 		}
 
@@ -165,7 +165,7 @@ func (lm *Manager) WaitForBreakCompletionExceptKey(ctx context.Context, handleKe
 			ch = make(chan struct{})
 			lm.breakWaitChans[handleKey] = ch
 		}
-		lm.mu.Unlock()
+		lm.unlock()
 
 		select {
 		case <-ctx.Done():
@@ -205,7 +205,7 @@ func (lm *Manager) WaitForByteRangeLeaseBreak(ctx context.Context, handleKey str
 			}
 		}
 		if !hasBreakingLease {
-			lm.mu.Unlock()
+			lm.unlock()
 			return nil
 		}
 
@@ -214,7 +214,7 @@ func (lm *Manager) WaitForByteRangeLeaseBreak(ctx context.Context, handleKey str
 			ch = make(chan struct{})
 			lm.breakWaitChans[handleKey] = ch
 		}
-		lm.mu.Unlock()
+		lm.unlock()
 
 		select {
 		case <-ctx.Done():
@@ -450,7 +450,7 @@ func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string)
 		}
 
 		if !hasBreaking {
-			lm.mu.Unlock()
+			lm.unlock()
 			return nil
 		}
 
@@ -461,7 +461,7 @@ func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string)
 			ch = make(chan struct{})
 			lm.breakWaitChans[handleKey] = ch
 		}
-		lm.mu.Unlock()
+		lm.unlock()
 
 		select {
 		case <-ctx.Done():
@@ -521,7 +521,7 @@ func (lm *Manager) WaitForShareConflictClear(ctx context.Context, handleKey stri
 		// final recheck yields SHARING_VIOLATION promptly instead of stalling
 		// until the deadline (smbtorture dhv2-pending1n-vs-violation-lease-ack-sane).
 		if !lm.hasBreakingLeaseLocked(handleKey) {
-			lm.mu.Unlock()
+			lm.unlock()
 			return nil
 		}
 		ch, ok := lm.breakWaitChans[handleKey]
@@ -529,7 +529,7 @@ func (lm *Manager) WaitForShareConflictClear(ctx context.Context, handleKey stri
 			ch = make(chan struct{})
 			lm.breakWaitChans[handleKey] = ch
 		}
-		lm.mu.Unlock()
+		lm.unlock()
 
 		// Re-check after subscribing so a signal racing between the predicate
 		// evaluation above and channel registration is not missed.
@@ -584,7 +584,7 @@ func (lm *Manager) forceCompleteBreaks(handleKey string) {
 // spurious break notifications on subsequent IO.
 func (lm *Manager) forceCompleteBreaksExceptKey(handleKey string, exceptKey [16]byte) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	modified := false
 	for _, l := range lm.unifiedLocks[handleKey] {
@@ -629,7 +629,7 @@ func (lm *Manager) forceCompleteBreaksExceptKey(handleKey string, exceptKey [16]
 func (lm *Manager) signalBreakWait(handleKey string) {
 	lm.mu.Lock()
 	lm.signalBreakWaitLocked(handleKey)
-	lm.mu.Unlock()
+	lm.unlock()
 }
 
 // SignalParkedCreates is the LockManager-interface entry point for
@@ -797,7 +797,7 @@ func (lm *Manager) breakOpLocks(
 		canonicalByKey[lock.Lease.LeaseKey] = lock.Lease
 		toBreak = append(toBreak, breakEntry{lock: snapshot, breakToState: targetState})
 	}
-	lm.mu.Unlock()
+	lm.unlock()
 
 	for _, entry := range toBreak {
 		lm.dispatchOpLockBreak(handleKey, entry.lock, entry.breakToState)
@@ -905,6 +905,6 @@ func (lm *Manager) mirrorBreakStageLocked(sibling *UnifiedLock, canonical *OpLoc
 // Callbacks are invoked in registration order during break operations.
 func (lm *Manager) RegisterBreakCallbacks(callbacks BreakCallbacks) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 	lm.breakCallbacks = append(lm.breakCallbacks, callbacks)
 }

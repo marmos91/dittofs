@@ -151,7 +151,7 @@ func TestWaitForByteRangeLeaseBreak_IgnoresBreakingDelegation(t *testing.T) {
 
 	// The delegation is left untouched — only DELEGRETURN may clear it.
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 	require.Len(t, lm.unifiedLocks[fileID], 1)
 	assert.True(t, lm.unifiedLocks[fileID][0].Delegation.Breaking,
 		"the wait must not force-complete or remove the delegation")
@@ -184,7 +184,7 @@ func TestWaitForByteRangeLeaseBreak_CancelDoesNotForceBreak(t *testing.T) {
 	// The lease must NOT have been force-downgraded: it is still Breaking with
 	// its Write bit intact, awaiting the holder's own ACK.
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 	_, ul, _ := lm.findLeaseByKey(smbLease)
 	require.NotNil(t, ul)
 	assert.True(t, ul.Lease.Breaking, "cancellation must not resolve the break")

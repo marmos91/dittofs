@@ -156,14 +156,14 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 				existing.Lease.LeaseState = requestedState
 				existing.Type = lockTypeForLeaseState(requestedState)
 				existing.Reclaim = true
-				lm.mu.Unlock()
+				lm.unlock()
 				logger.Debug("ReclaimLease: lease already in memory, updated",
 					"leaseKey", fmt.Sprintf("%x", leaseKey))
 				return existing.Clone(), nil
 			}
 			lm.unifiedLocks[handleKey] = append(lm.unifiedLocks[handleKey], lock)
 			lm.indexAddLockLocked(handleKey, lock)
-			lm.mu.Unlock()
+			lm.unlock()
 
 			logger.Debug("ReclaimLease: lease reclaimed",
 				"leaseKey", fmt.Sprintf("%x", leaseKey),
@@ -178,7 +178,7 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 
 	// No lockStore: try to find in memory (for testing without persistence)
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	defer lm.unlock()
 
 	_, existingLock, _ := lm.findLeaseByKey(leaseKey)
 	if existingLock != nil {
