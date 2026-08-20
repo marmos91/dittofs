@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,6 +55,18 @@ func (f *fakeAdapterStore) GetAdapter(_ context.Context, t string) (*models.Adap
 	}
 	cp := *a
 	return &cp, nil
+}
+
+func (f *fakeAdapterStore) ListAdapters(_ context.Context) ([]*models.AdapterConfig, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]*models.AdapterConfig, 0, len(f.byType))
+	for _, a := range f.byType {
+		cp := *a
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Type < out[j].Type })
+	return out, nil
 }
 
 func (f *fakeAdapterStore) DeleteAdapter(_ context.Context, t string) error {
@@ -611,4 +624,39 @@ func TestStartAdapter_TimesOutWhenListenerNeverBinds(t *testing.T) {
 	}
 
 	close(wedged.release)
+}
+
+// TestLoadAdaptersFromStore_SkipsUnbindableAdapter proves a boot survives a
+// persisted port that can no longer be claimed: the failing adapter is skipped
+// and the rest still start, so the control-plane API stays reachable and the
+// port can be corrected without console access.
+func TestLoadAdaptersFromStore_SkipsUnbindableAdapter(t *testing.T) {
+	port := squatPort(t)
+
+	st := newFakeAdapterStore()
+	ctx := context.Background()
+	if _, err := st.CreateAdapter(ctx, &models.AdapterConfig{Type: "smb", Port: port, Enabled: true}); err != nil {
+		t.Fatalf("seed smb: %v", err)
+	}
+	if _, err := st.CreateAdapter(ctx, &models.AdapterConfig{Type: "nfs", Port: 12049, Enabled: true}); err != nil {
+		t.Fatalf("seed nfs: %v", err)
+	}
+
+	svc := New(st, time.Second)
+	svc.SetAdapterFactory(func(cfg *models.AdapterConfig) (ProtocolAdapter, error) {
+		if cfg.Type == "smb" {
+			return newSquattedPortAdapter(cfg.Type, cfg.Port), nil
+		}
+		return newFakeListenerAdapter(cfg.Type, cfg.Port), nil
+	})
+
+	if err := svc.LoadAdaptersFromStore(ctx); err != nil {
+		t.Fatalf("a single unbindable adapter failed the whole load: %v", err)
+	}
+	if svc.IsAdapterRunning("smb") {
+		t.Error("unbindable adapter registered as running")
+	}
+	if !svc.IsAdapterRunning("nfs") {
+		t.Error("bindable adapter was not started")
+	}
 }

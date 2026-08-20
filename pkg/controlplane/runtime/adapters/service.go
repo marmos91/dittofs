@@ -407,6 +407,14 @@ func (s *Service) StopAllAdapters() error {
 }
 
 // LoadAdaptersFromStore loads enabled adapters from store and starts them.
+//
+// An adapter that cannot start is logged and skipped rather than failing the
+// load. A persisted port can become unusable between one boot and the next —
+// another process claimed it, or the host lost the address — and taking the
+// whole server down with it would also take down the control-plane API, which
+// is the only way left to correct the port without console access. The adapter
+// stays enabled in the store: that is the requested state, retried on the next
+// start or when the operator re-enables it.
 func (s *Service) LoadAdaptersFromStore(ctx context.Context) error {
 	adapters, err := s.store.ListAdapters(ctx)
 	if err != nil {
@@ -420,7 +428,8 @@ func (s *Service) LoadAdaptersFromStore(ctx context.Context) error {
 		}
 
 		if err := s.startAdapter(cfg); err != nil {
-			return fmt.Errorf("failed to start adapter %s: %w", cfg.Type, err)
+			logger.Error("Adapter failed to start; continuing without it",
+				"type", cfg.Type, "port", cfg.Port, "error", err)
 		}
 	}
 
