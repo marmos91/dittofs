@@ -23,6 +23,9 @@ func runFileOpsTests(t *testing.T, factory StoreFactory) {
 		testHardLinkMoveOneNameAcrossDirectoriesPreservesOther(t, factory)
 	})
 	t.Run("HardLinkListChildrenShowsNlinkGT1", func(t *testing.T) { testHardLinkListChildrenShowsNlinkGT1(t, factory) })
+	t.Run("HardLinkTxListChildrenShowsNlinkGT1", func(t *testing.T) {
+		testHardLinkTxListChildrenShowsNlinkGT1(t, factory)
+	})
 	t.Run("HardLinkGetParentIsValid", func(t *testing.T) { testHardLinkGetParentIsValid(t, factory) })
 	t.Run("DerivedPathReflectsParentRename", func(t *testing.T) { testDerivedPathReflectsParentRename(t, factory) })
 	t.Run("SetFileAttributes", func(t *testing.T) { testSetFileAttributes(t, factory) })
@@ -706,6 +709,58 @@ func testHardLinkListChildrenShowsNlinkGT1(t *testing.T, factory StoreFactory) {
 	// Both names point at the inode, so it must appear twice in the listing.
 	if seen != 2 {
 		t.Errorf("hard-linked inode appeared %d times in listing, want 2", seen)
+	}
+}
+
+// testHardLinkTxListChildrenShowsNlinkGT1 is testHardLinkListChildrenShowsNlinkGT1
+// against the transaction-level ListChildren. The two surfaces are separate
+// implementations in every backend, so the store-level assertion does not cover
+// this one: a transaction listing that skips the link-count reconciliation
+// reports the raw stored Nlink and silently loses the multi-link signal.
+func testHardLinkTxListChildrenShowsNlinkGT1(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	rootHandle := createTestShare(t, store, "/test")
+	ctx := t.Context()
+
+	handle := createTestFile(t, store, "/test", rootHandle, "A", 0644)
+	if err := store.SetChild(ctx, rootHandle, "B", handle); err != nil {
+		t.Fatalf("SetChild(B) failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 2); err != nil {
+		t.Fatalf("SetLinkCount(2) failed: %v", err)
+	}
+
+	var entries []metadata.DirEntry
+	if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		var err error
+		entries, _, err = tx.ListChildren(ctx, rootHandle, "", 0)
+		return err
+	}); err != nil {
+		t.Fatalf("WithTransaction(ListChildren) failed: %v", err)
+	}
+
+	var seen int
+	for _, e := range entries {
+		if string(e.Handle) != string(handle) {
+			continue
+		}
+		seen++
+		var nlink uint32
+		if e.Attr != nil {
+			nlink = e.Attr.Nlink
+		} else {
+			f, err := store.GetFile(ctx, e.Handle)
+			if err != nil {
+				t.Fatalf("GetFile(%q) failed: %v", e.Name, err)
+			}
+			nlink = f.Nlink
+		}
+		if nlink < 2 {
+			t.Errorf("tx entry %q nlink = %d, want >= 2 for a hard-linked inode", e.Name, nlink)
+		}
+	}
+	if seen != 2 {
+		t.Errorf("hard-linked inode appeared %d times in tx listing, want 2", seen)
 	}
 }
 

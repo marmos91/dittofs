@@ -1023,10 +1023,12 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] CompoundResult error-literal repeated ~9x per file instead of using sibling's helper pattern
 - **Where:** `internal/adapter/nfs/v4/handlers/read.go:24` · `structure`
+> STATUS: FIXED in #2000 — readErr (read.go:204), writeErr (write.go:231) and commitErr (commit.go:128) now mirror readPlusErr; no inline CompoundResult status literal remains in the three handlers.
 - **Fix:** Add `readErr(status)`, `writeErr(status)`, `commitErr(status)` (or one generic `opErr(op, status uint32) *types.CompoundResult`) per handler mirroring readPlusErr; replace all inline literals.
 
 ### [LOW] nil-Registry guard + block-store resolve boilerplate duplicated across all 4 handlers
 - **Where:** `internal/adapter/nfs/v4/handlers/read.go:174` · `structure`
+> STATUS: FIXED in #1999 — h.resolveBlockStore (helpers.go:250) is the single resolve path; read.go:128 and the sibling handlers call it.
 - **Fix:** Add one `h.resolveBlockStore(ctx, fh, forWrite bool)` helper in this package that read/write/commit call (read_plus keeps its error-return shape). Do NOT push into common.ResolveFor* — the in-code comment deliberately keeps the NFSv4 concern out of common.
 
 ### [LOW] READ_PLUS response buffer not pre-sized, unlike sibling READ handler
@@ -1431,6 +1433,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] FileAccessChecker: single-implementation capability interface declared in the producer package
 - **Where:** `pkg/metadata/file_access_checker.go:32` · `structure` · *re-confirmed*
+> STATUS: FIXED in #2020 — the interface and its `var _` assertion are gone; `rg FileAccessChecker` over the tree is empty, so there was no test fake keeping it alive either.
 - **Fix:** Delete the FileAccessChecker interface and the var _ assertion; have filterByAccess/canEnumerateEntry in query_directory.go take *metadata.Service directly, or declare a small local interface in the smb/handlers package (consumer-side) if a test double is genuinely needed there.
 
 ### [LOW] CreateRootDirectory's UID/GID reconciliation on an existing root writes the file record without invalidating readCache/parentCache
@@ -1595,6 +1598,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] Package-level mutable global cache-size config instead of threading through store config
 - **Where:** `pkg/metadata/store/badger/cache.go:69` · `structure`
+> STATUS: WONTFIX — claim is accurate but the suggested fix is a net loss. The store-open path is the package-level runtime.CreateMetadataStoreFromConfig (init.go:55), whose second caller is the HTTP handler internal/controlplane/api/handlers/metadata_stores.go:87 — a runtime-added store, with no access to cfg.Metadata.Badger. Threading the operator defaults there means either a new parameter on an exported bootstrap function that the API handler cannot fill, or parking the two values on Runtime — the same re-introduce-state-on-Runtime move rejected for the netgroups.go finding. The global is written once in start.go before any store opens and read at open time, which is exactly what a process-wide operator default needs; the mutex and getter are the price.
 - **Fix:** Resolve operator config once in cmd/dfs/commands/start.go and pass it through BadgerMetadataStoreConfig / the runtime/stores/service.go store-open path; drops the mutex, the getter, and the test reset boilerplate.
 
 ### [LOW] block_record_store.go: tx-level and store-level methods duplicate the same txn body instead of sharing a free function
@@ -1656,6 +1660,8 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] Store-level read CRUD methods duplicate transaction-level methods body-for-body instead of sharing a *Locked helper
 - **Where:** `pkg/metadata/store/memory/files.go:123` · `structure`
+> STATUS: FIXED in #2018 — getFileLocked / getChildLocked / getParentLocked / getLinkCountLocked / listChildrenLocked now hold the single body; the store methods take RLock and the transaction methods (transaction.go:242/402/451/459/477) call the same helpers.
+> DRIFT (found on re-check, closed silently by that collapse): the pair was NOT byte-identical. Diffing the two copies at 47449ef3^ shows GetFile/GetChild/GetParent/GetLinkCount differing only in receiver and lock acquisition, but the transaction-level ListChildren omitted the link-count reconciliation the store-level copy performed (`if nlink, ok := store.linkCounts[childKey]` / dir→2 / file→1), so a listing taken inside a transaction reported the raw stored Nlink and lost the multi-link signal. #2018 collapsed onto the store-level copy, which is the correct one, so the drift is gone — but nothing pinned it: the existing conformance case HardLinkListChildrenShowsNlinkGT1 only drives the store-level surface, and the tx surface had no production caller (only storetest/ea_ops.go), which is why it went unnoticed. Added HardLinkTxListChildrenShowsNlinkGT1 to pkg/metadata/storetest so a future re-split cannot regress it; verified it fails when the reconciliation is removed, and passes on memory/badger/sqlite as shipped.
 - **Fix:** Factor each duplicated pair into a *Locked helper (getFileLocked, getChildLocked, getParentLocked, ...) called from both the store method (under RLock) and the tx method (lock already held), matching the FileChunkStore *Locked precedent in objects.go.
 
 ### [LOW] Three near-identical lazy sub-stores double-lock with a dead inner mutex; a fourth uses the opposite (correct) discipline
@@ -1760,6 +1766,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] read.go re-implements CompoundResult error boilerplate 14x instead of package-convention xxxErr helper
 - **Where:** `internal/adapter/nfs/v4/handlers/read.go:24` · `bloat`
+> STATUS: FIXED in #2000 — same change as the `structure` duplicate of this finding above.
 - **Fix:** Add `func readErr(status uint32) *types.CompoundResult { return &types.CompoundResult{Status: status, OpCode: types.OP_READ, Data: encodeStatusOnly(status)} }` and replace all 14 inline literals with `return readErr(...)`.
 
 ### [LOW] Package doc contradicts actual segmentation logic — describes fallback path as the primary one
@@ -1810,6 +1817,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] DiscoveryName takes no ctx and calls context.Background() for its store I/O
 - **Where:** `pkg/controlplane/runtime/discovery.go:20` · `structure`
+> STATUS: FIXED — DiscoveryName(ctx) threads the caller's context into GetSetting. The call sites had no context to pass, so auxsvc.Group.Reconcile now hands its already-stored base context (the adapter's Serve context) to the sidecar builder, and the NFS/SMB discoveryName helpers take it from there.
 - **Fix:** Add a ctx context.Context parameter to DiscoveryName and thread it through to GetSetting; update the (presumably few) call sites.
 
 ### [LOW] MetricsSnapshot N+1 DB query: ListSnapshots called per-share every scrape
@@ -1853,6 +1861,7 @@ Every finding passed three gates: confirmed from source, reachable from a non-te
 
 ### [LOW] Long parameter list / positional dependency injection across three methods
 - **Where:** `pkg/controlplane/runtime/lifecycle/service.go:232` · `structure`
+> STATUS: FIXED in #2021 — Serve now takes a named lifecycle.Deps struct (service.go:229-256) carrying the six shutdown collaborators.
 - **Fix:** Collect the six shutdown collaborators into a single `Deps`/`Config` struct passed once to `New()` or `Serve()`, e.g. `type Deps struct { Settings SettingsInitializer; Adapters AdapterLoader; ... }`. Removes positional-arg fragility and makes future additions additive instead of signature-breaking.
 
 ### [LOW] First-boot machine-SID persist failure is silently swallowed, breaking the documented restart-stability invariant
