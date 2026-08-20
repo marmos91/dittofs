@@ -423,40 +423,35 @@ func TestBackpressureWaitsForSyncer(t *testing.T) {
 // TestBackpressureTerminalWhenNoSyncer is the BUG 2 negative case: with no syncer
 // draining, the unsynced bytes pinning the cap never fall, so the write path must
 // still fail with ErrLocalStoreFull within a bounded budget rather than hang.
+//
+// Only the rejected write is timed, and against EvictMaxWait rather than a
+// constant: the writes that fill the cap are fsync-bound and cost whatever the
+// disk costs, while the rejected one appends nothing and finds nothing to evict,
+// so all it does is poll out the eviction budget. The multiple is slack for timer
+// granularity and scheduling, not room for disk latency.
 func TestBackpressureTerminalWhenNoSyncer(t *testing.T) {
 	const maxWait = 50 * time.Millisecond
+	const limit = 20 * maxWait
 	s, _ := evictStore(t, Config{MaxLocalBytes: 2 << 20, EvictMaxWait: maxWait})
 	ctx := context.Background()
 
 	buf := bytes.Repeat([]byte{0xCD}, chunk256)
 	var off int64
-	var gotFull bool
-	var blocked time.Duration
 	for i := 0; i < 64; i++ {
 		attempt := time.Now()
 		err := s.WriteAt(ctx, "f", off, buf)
 		if errors.Is(err, ErrLocalStoreFull) {
-			gotFull = true
-			blocked = time.Since(attempt)
-			break
+			if blocked := time.Since(attempt); blocked > limit {
+				t.Fatalf("backpressure must terminate on its own budget, not hang: blocked %v with EvictMaxWait %v (limit %v)", blocked, maxWait, limit)
+			}
+			return
 		}
 		if err != nil {
 			t.Fatalf("WriteAt: %v", err)
 		}
 		off += chunk256
 	}
-	if !gotFull {
-		t.Fatalf("expected ErrLocalStoreFull with no syncer to drain the cap")
-	}
-	// Bound only the rejected write, and off EvictMaxWait rather than a constant.
-	// The writes that fill the cap are fsync-bound and cost whatever the disk
-	// costs; the rejected one appends nothing and finds nothing to evict, so all
-	// it does is poll out the eviction budget. Its duration therefore tracks
-	// EvictMaxWait, and the multiple is slack for timer granularity and
-	// scheduling on a loaded machine, not room for disk latency.
-	if limit := 20 * maxWait; blocked > limit {
-		t.Fatalf("backpressure must terminate on its own budget, not hang: blocked %v with EvictMaxWait %v (limit %v)", blocked, maxWait, limit)
-	}
+	t.Fatalf("expected ErrLocalStoreFull with no syncer to drain the cap")
 }
 
 func TestConcurrentWriteEvictRace(t *testing.T) {
