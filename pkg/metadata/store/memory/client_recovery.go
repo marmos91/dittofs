@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"sync"
 
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -15,11 +14,10 @@ import (
 // storage. Records are server-global, keyed by ClientIDString.
 //
 // Thread Safety:
-// All operations are protected by a read-write mutex. Returned records are
-// deep copies so callers can never alias or mutate the stored record.
+// It carries no lock of its own: every field is read and written by
+// MemoryMetadataStore under the store-wide mutex. Returned records are deep
+// copies so callers can never alias or mutate the stored record.
 type memoryRecoveryStore struct {
-	mu sync.RWMutex
-
 	// records maps ClientIDString to its recovery record.
 	records map[string]*lock.V4ClientRecoveryRecord
 }
@@ -48,9 +46,6 @@ func (s *memoryRecoveryStore) PutClientRecovery(ctx context.Context, rec *lock.V
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	// Store a clone so a later mutation of the caller's record does not
 	// leak into the store.
 	s.records[rec.ClientIDString] = cloneRecoveryRecord(rec)
@@ -63,9 +58,6 @@ func (s *memoryRecoveryStore) DeleteClientRecovery(ctx context.Context, clientID
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	delete(s.records, clientIDString)
 	return nil
 }
@@ -75,9 +67,6 @@ func (s *memoryRecoveryStore) ListClientRecovery(ctx context.Context) ([]*lock.V
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	result := make([]*lock.V4ClientRecoveryRecord, 0, len(s.records))
 	for _, rec := range s.records {
@@ -91,9 +80,6 @@ func (s *memoryRecoveryStore) RecordReclaimComplete(ctx context.Context, clientI
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if rec, ok := s.records[clientIDString]; ok {
 		rec.ReclaimComplete = true

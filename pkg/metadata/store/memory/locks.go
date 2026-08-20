@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"sync"
 
 	"github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -12,18 +11,13 @@ import (
 // Memory LockStore Implementation
 // ============================================================================
 
-// memoryLockStore implements lock.LockStore using in-memory storage.
+// memoryLockStore holds the in-memory lock state backing
+// MemoryMetadataStore's lock.LockStore implementation.
 //
-// This implementation is suitable for:
-//   - Testing and development environments
-//   - Ephemeral deployments where lock persistence is not required
-//
-// Thread Safety:
-// All operations are protected by a read-write mutex, making the store
-// safe for concurrent access from multiple goroutines.
+// It carries no lock of its own: every field is read and written by
+// MemoryMetadataStore under the store-wide mutex, held for the whole
+// operation, so a second mutex here would guard nothing.
 type memoryLockStore struct {
-	mu sync.RWMutex
-
 	// locks maps lock ID to PersistedLock
 	locks map[string]*lock.PersistedLock
 
@@ -45,173 +39,6 @@ func newMemoryLockStore() *memoryLockStore {
 		locks:       make(map[string]*lock.PersistedLock),
 		serverEpoch: 0,
 	}
-}
-
-// PutLock persists a lock. Overwrites if lock with same ID exists.
-func (s *memoryLockStore) PutLock(ctx context.Context, lk *lock.PersistedLock) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Clone the lock to prevent external modifications
-	s.locks[lk.ID] = cloneLock(lk)
-	return nil
-}
-
-// GetLock retrieves a lock by ID.
-func (s *memoryLockStore) GetLock(ctx context.Context, lockID string) (*lock.PersistedLock, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	lock, exists := s.locks[lockID]
-	if !exists {
-		return nil, &errors.StoreError{
-			Code:    errors.ErrLockNotFound,
-			Message: "lock not found",
-			Path:    lockID,
-		}
-	}
-
-	// Return a clone to prevent external modifications
-	return cloneLock(lock), nil
-}
-
-// DeleteLock removes a lock by ID.
-func (s *memoryLockStore) DeleteLock(ctx context.Context, lockID string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, exists := s.locks[lockID]; !exists {
-		return &errors.StoreError{
-			Code:    errors.ErrLockNotFound,
-			Message: "lock not found",
-			Path:    lockID,
-		}
-	}
-
-	delete(s.locks, lockID)
-	return nil
-}
-
-// ListLocks returns locks matching the query.
-func (s *memoryLockStore) ListLocks(ctx context.Context, query lock.LockQuery) ([]*lock.PersistedLock, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var result []*lock.PersistedLock
-
-	for _, lk := range s.locks {
-		if query.MatchesLock(lk) {
-			result = append(result, cloneLock(lk))
-		}
-	}
-
-	return result, nil
-}
-
-// DeleteLocksByClient removes all locks for a client.
-func (s *memoryLockStore) DeleteLocksByClient(ctx context.Context, clientID string) (int, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	count := 0
-	for id, lk := range s.locks {
-		if lk.ClientID == clientID {
-			delete(s.locks, id)
-			count++
-		}
-	}
-
-	return count, nil
-}
-
-// DeleteLocksByFile removes all locks for a file.
-func (s *memoryLockStore) DeleteLocksByFile(ctx context.Context, fileID string) (int, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	count := 0
-	for id, lk := range s.locks {
-		if lk.FileID == fileID {
-			delete(s.locks, id)
-			count++
-		}
-	}
-
-	return count, nil
-}
-
-// GetServerEpoch returns current server epoch.
-func (s *memoryLockStore) GetServerEpoch(ctx context.Context) (uint64, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	return s.serverEpoch, nil
-}
-
-// IncrementServerEpoch increments and returns new epoch.
-func (s *memoryLockStore) IncrementServerEpoch(ctx context.Context) (uint64, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.serverEpoch++
-	return s.serverEpoch, nil
-}
-
-// GetCleanShutdown reports whether the previous run shut down gracefully.
-func (s *memoryLockStore) GetCleanShutdown(ctx context.Context) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	return s.cleanShutdown, nil
-}
-
-// SetCleanShutdown records the clean-shutdown marker.
-func (s *memoryLockStore) SetCleanShutdown(ctx context.Context, clean bool) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.cleanShutdown = clean
-	return nil
 }
 
 // ============================================================================

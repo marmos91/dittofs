@@ -12,6 +12,11 @@ import (
 // memoryDurableStore implements lock.DurableHandleStore using in-memory storage.
 // Secondary lookups use linear scans, acceptable since durable handle counts
 // are typically low (hundreds at most).
+//
+// Unlike the other memory sub-stores, this one owns its lock: getDurableStore
+// takes the store-wide mutex only long enough to publish the pointer and
+// releases it before the method below runs, so mu here is the sole guard on
+// handles.
 type memoryDurableStore struct {
 	mu      sync.RWMutex
 	handles map[string]*lock.PersistedDurableHandle
