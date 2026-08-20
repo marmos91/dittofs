@@ -315,6 +315,18 @@ func DefaultCommitBlock(
 // remainder falls outside it and is never reaped — no gap. newOffsets excludes
 // this run's own rows so they survive.
 //
+// A row that STARTS before runStart and reaches into the run is not in that set —
+// deleting it would strip [rowStart, runStart) of its only cover — so it is
+// narrowed to the prefix it still owns instead: DataSize becomes runStart-rowStart
+// and the run's fresh rows take over from there. The chunk keeps every byte on the
+// remote and is still hash-verified over all of them; the row just stops claiming
+// the part the run re-chunked, which is the same shape a truncate's narrow leaves
+// behind. A straddler that ALSO ends past runEnd stays whole: no row can start
+// mid-chunk, so its tail past the run has no other cover and narrowing it would
+// trade the overlap for a gap. Coverage lookups resolve that overlap to the
+// greatest covering start, so the fresh rows win inside the run and the straddler
+// serves only its unre-carved tail.
+//
 // ponytail: this fixes read-coherence — the corruption. Decrementing the reaped
 // chunk's CAS refcount to reclaim its remote space is a separate, tracked
 // follow-up (#1715): under-counting only leaks space, it never drops live data.
@@ -334,7 +346,20 @@ func ReapSupersededManifest(ctx context.Context, tx Transaction, payloadID strin
 		if !ok {
 			continue
 		}
-		if int64(off) < runStart || int64(off) >= runEnd {
+		rowStart := int64(off)
+		rowEnd := rowStart + int64(r.DataSize)
+		if rowStart < runStart {
+			if rowEnd <= runStart || rowEnd > runEnd {
+				continue // no overlap with the run, or narrowing would open a tail gap
+			}
+			narrowed := *r
+			narrowed.DataSize = uint32(runStart - rowStart)
+			if err := tx.Put(ctx, &narrowed); err != nil {
+				return fmt.Errorf("reap superseded: narrow %s: %w", r.ID, err)
+			}
+			continue
+		}
+		if rowStart >= runEnd {
 			continue // outside the re-carved run — untouched (incl. cold remainders)
 		}
 		if _, isNew := newOffsets[int64(off)]; isNew {

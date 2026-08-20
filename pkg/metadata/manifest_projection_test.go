@@ -43,6 +43,17 @@ func (t *manifestTx) Put(_ context.Context, fc *block.FileChunk) error {
 
 func (t *manifestTx) deleteRow(id string) { delete(t.rows, id) }
 
+// Delete follows the FileChunkStore contract: a missing ID is an error, not a
+// silent no-op, so a reap that deletes a row twice or deletes one it never
+// listed shows up here instead of passing.
+func (t *manifestTx) Delete(_ context.Context, id string) error {
+	if _, ok := t.rows[id]; !ok {
+		return block.ErrFileChunkNotFound
+	}
+	t.deleteRow(id)
+	return nil
+}
+
 func (t *manifestTx) ListFileChunks(_ context.Context, payloadID string) ([]*block.FileChunk, error) {
 	ids := make([]string, 0, len(t.rows))
 	for id := range t.rows {

@@ -47,6 +47,11 @@ func TestColdReadAtCarveSeam_PunchedRangeStaysZero(t *testing.T) {
 	}
 	carve(t, bs, ctx, pid)
 
+	// The run-end reap narrows the row the second run's tiling starts inside, so
+	// the manifest is a clean tiling again rather than an overlap the read path
+	// has to defend against.
+	assertManifestTiles(t, ms, pid, int64(len(seed)), "after-second-carve")
+
 	// Evict the local copy so the read has to come back from the remote store
 	// through the manifest.
 	if _, err := bs.DrainLocalSynced(ctx); err != nil {
