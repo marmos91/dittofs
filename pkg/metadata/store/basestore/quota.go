@@ -118,11 +118,22 @@ func (c *QuotaCache) DropShare(share string) {
 // contributes one user-scope entry and one group-scope entry for the same
 // bytes, so counting both would double the share total.
 func (c *QuotaCache) Apply(delta map[QuotaKey]metadata.UsageStat) {
+	// Per-share movements are summed across the share's owners before being
+	// applied, so the result does not depend on map iteration order: applying
+	// them one owner at a time lets the clamp below fire on an intermediate
+	// value when two owners in one share move in opposite directions.
+	perShare := make(map[string]metadata.UsageStat)
 	for k, d := range delta {
 		applyStat(c.byIdentity, k, d)
 		if k.Scope == metadata.QuotaScopeUser {
-			applyStat(c.byShare, k.Share, d)
+			cur := perShare[k.Share]
+			cur.Bytes += d.Bytes
+			cur.Files += d.Files
+			perShare[k.Share] = cur
 		}
+	}
+	for share, d := range perShare {
+		applyStat(c.byShare, share, d)
 	}
 }
 

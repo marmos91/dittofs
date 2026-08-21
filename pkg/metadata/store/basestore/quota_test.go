@@ -69,3 +69,28 @@ func TestApplyDeletesAtZero(t *testing.T) {
 		t.Fatalf("usage clamped negative = %+v", got)
 	}
 }
+
+// TestApplyPerShareIsOrderIndependent pins that a share's total is summed
+// across its owners before the clamp runs. Applying owner-by-owner would let a
+// negative intermediate clamp to zero and lose the co-owner's bytes, and map
+// iteration order decides whether that happens.
+func TestApplyPerShareIsOrderIndependent(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		c := NewQuotaCache()
+		var seed QuotaDelta
+		seed.Add("/s", 7, 3, 100, 1)
+		c.Apply(seed.Map())
+
+		// uid 7 drops more than the share holds while uid 8 adds: the share
+		// total must land on 100 - 150 + 100 = 50, whichever owner is folded
+		// in first.
+		var d QuotaDelta
+		d.Add("/s", 7, 3, -150, -1)
+		d.Add("/s", 8, 3, 100, 1)
+		c.Apply(d.Map())
+
+		if got := c.Share("/s").Bytes; got != 50 {
+			t.Fatalf("share total = %d, want 50 (iteration %d)", got, i)
+		}
+	}
+}
