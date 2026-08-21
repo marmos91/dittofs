@@ -216,6 +216,8 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 	if freedBytes > 0 {
 		s.usedBytes.Add(-freedBytes)
 	}
+	// The deleted share's bucket must not outlive it in the per-share cache.
+	s.invalidateShareUsedCache()
 	s.applyQuotaDelta(quotaFreed)
 	return nil
 }

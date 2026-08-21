@@ -10,10 +10,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// shareUsedCacheTTL bounds how stale a per-share usage answer may be. It
-// matches the filesystem-statistics cache TTL: both serve reporting surfaces
-// where a few seconds of lag is invisible, and both exist to keep a repeated
-// caller from re-scanning the file records.
+// shareUsedCacheTTL bounds how long a per-share usage answer is reused. Every
+// committed transaction that moves the byte counter already drops the cache,
+// so this is a backstop against a bucket surviving a change that bypassed that
+// path, not the primary freshness mechanism. It matches the
+// filesystem-statistics cache TTL.
 const shareUsedCacheTTL = 5 * time.Second
 
 // GetUsedBytesForShare returns the logical bytes held by one share's regular
@@ -25,11 +26,11 @@ const shareUsedCacheTTL = 5 * time.Second
 // share index, so the per-share split is derived by scanning them.
 //
 // ponytail: O(n) scan over the file records, shared by all shares (one scan
-// fills every bucket) and cached for shareUsedCacheTTL. The store-wide counter
-// is maintained by a transaction delta pipeline that carries no share
-// dimension, so a per-share counter means threading the share name through
-// every mutation site. Do that only if this scan shows up in a profile — it is
-// reached from reporting surfaces, not from the I/O path.
+// fills every bucket) and cached until the next committed size change. The
+// store-wide counter is maintained by a transaction delta pipeline that
+// carries no share dimension, so a per-share counter means threading the share
+// name through every mutation site. Do that only if this scan shows up in a
+// profile — it is reached from reporting surfaces, not from the I/O path.
 func (s *BadgerMetadataStore) GetUsedBytesForShare(ctx context.Context, shareName string) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err

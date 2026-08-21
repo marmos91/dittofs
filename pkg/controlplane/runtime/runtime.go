@@ -786,11 +786,22 @@ func (r *Runtime) UpdateShareQuota(shareName string, quotaBytes int64) {
 
 // GetShareUsage returns the logical used bytes and physical disk bytes for a share.
 // Returns (0, 0) if the share is not found or has no store.
-func (r *Runtime) GetShareUsage(shareName string) (usedBytes int64, physicalBytes int64) {
-	// Get logical used bytes from the metadata store's atomic counter.
+//
+// The logical figure is scoped to this share alone. It cannot come from the
+// metadata store's store-wide counter: several shares may name the same
+// metadata store config and are then served by one store instance, whose
+// counter is their combined total.
+//
+// The physical figure is the block store's on-disk size, which is per block
+// store rather than per share — shares that name the same local store report
+// the same number, and dedup, compression and tiering all move it away from
+// the logical one. Only the logical figure is share-specific.
+func (r *Runtime) GetShareUsage(ctx context.Context, shareName string) (usedBytes int64, physicalBytes int64) {
 	metaStore, err := r.metadataService.GetStoreForShare(shareName)
 	if err == nil {
-		usedBytes = metaStore.GetUsedBytes()
+		if used, usedErr := metaStore.GetUsedBytesForShare(ctx, shareName); usedErr == nil {
+			usedBytes = used
+		}
 	}
 
 	// Get physical bytes from the block store.

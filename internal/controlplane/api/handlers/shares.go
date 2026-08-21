@@ -1623,7 +1623,7 @@ func shareToResponse(s *models.Share) ShareResponse {
 func (h *ShareHandler) shareToResponseWithUsage(ctx context.Context, s *models.Share) ShareResponse {
 	resp := shareToResponse(s)
 	if h.runtime != nil {
-		usedBytes, physicalBytes := h.runtime.GetShareUsage(s.Name)
+		usedBytes, physicalBytes := h.runtime.GetShareUsage(ctx, s.Name)
 		resp.UsedBytes = usedBytes
 		resp.PhysicalBytes = physicalBytes
 		if s.QuotaBytes > 0 {

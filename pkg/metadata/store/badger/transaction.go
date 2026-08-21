@@ -144,8 +144,11 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 
 		if err == nil {
 			// Apply the accumulated usedBytes delta exactly once, after commit.
+			// The delta carries no share dimension, so the per-share totals are
+			// dropped rather than adjusted: the next reader rescans.
 			if pendingDelta != 0 {
 				s.usedBytes.Add(pendingDelta)
+				s.invalidateShareUsedCache()
 			}
 			// Apply per-identity usage deltas once, after commit.
 			s.applyQuotaDelta(quotaDelta)
