@@ -122,20 +122,26 @@ func TestEnsureAdminUser(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	pw, err := cp.EnsureAdminUser(ctx, true, "")
+	pw, created, err := cp.EnsureAdminUser(ctx, true, "")
 	if err != nil {
 		t.Fatalf("EnsureAdminUser: %v", err)
 	}
 	if pw == "" {
 		t.Error("expected a generated password on first creation")
 	}
+	if !created {
+		t.Error("expected created=true on first creation")
+	}
 	// Idempotent: second call returns empty password (user already exists).
-	pw2, err := cp.EnsureAdminUser(ctx, true, "")
+	pw2, created2, err := cp.EnsureAdminUser(ctx, true, "")
 	if err != nil {
 		t.Fatalf("EnsureAdminUser (2nd): %v", err)
 	}
 	if pw2 != "" {
 		t.Errorf("second EnsureAdminUser returned password %q, want empty", pw2)
+	}
+	if created2 {
+		t.Error("expected created=false when the admin already exists")
 	}
 }
 

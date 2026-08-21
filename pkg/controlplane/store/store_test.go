@@ -1347,12 +1347,15 @@ func TestEnsureAdminUser(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("creates admin if not exists", func(t *testing.T) {
-		password, err := store.EnsureAdminUser(ctx, true, "")
+		password, created, err := store.EnsureAdminUser(ctx, true, "")
 		if err != nil {
 			t.Fatalf("failed to ensure admin user: %v", err)
 		}
 		if password == "" {
 			t.Error("expected non-empty initial password")
+		}
+		if !created {
+			t.Error("expected created=true when the admin is bootstrapped")
 		}
 
 		// Verify admin exists
@@ -1370,12 +1373,15 @@ func TestEnsureAdminUser(t *testing.T) {
 	})
 
 	t.Run("second call returns empty password", func(t *testing.T) {
-		password, err := store.EnsureAdminUser(ctx, true, "")
+		password, created, err := store.EnsureAdminUser(ctx, true, "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if password != "" {
 			t.Error("expected empty password on second call")
+		}
+		if created {
+			t.Error("expected created=false when the admin already exists")
 		}
 	})
 
@@ -1406,12 +1412,15 @@ func TestEnsureAdminUser_ConfiguredHash(t *testing.T) {
 		store := createTestStore(t)
 		defer store.Close()
 
-		password, err := store.EnsureAdminUser(ctx, true, hash)
+		password, created, err := store.EnsureAdminUser(ctx, true, hash)
 		if err != nil {
 			t.Fatalf("EnsureAdminUser: %v", err)
 		}
 		if password != "" {
 			t.Errorf("expected empty initial password when hash is configured, got %q", password)
+		}
+		if !created {
+			t.Error("expected created=true when the admin is bootstrapped from a configured hash")
 		}
 
 		user, err := store.GetUser(ctx, "admin")
@@ -1433,7 +1442,7 @@ func TestEnsureAdminUser_ConfiguredHash(t *testing.T) {
 
 		// A plaintext/garbage value (a common mistake — putting the password
 		// itself in password_hash) must fail fast, not bootstrap a broken admin.
-		if _, err := store.EnsureAdminUser(ctx, true, "not-a-bcrypt-hash"); err == nil {
+		if _, _, err := store.EnsureAdminUser(ctx, true, "not-a-bcrypt-hash"); err == nil {
 			t.Fatal("expected EnsureAdminUser to reject a non-bcrypt admin.password_hash")
 		}
 	})
@@ -1450,7 +1459,7 @@ func TestEnsureAdminUser_OptOutForcedChange(t *testing.T) {
 	defer store.Close()
 	ctx := context.Background()
 
-	password, err := store.EnsureAdminUser(ctx, false, "")
+	password, _, err := store.EnsureAdminUser(ctx, false, "")
 	if err != nil {
 		t.Fatalf("failed to ensure admin user: %v", err)
 	}
@@ -1513,7 +1522,7 @@ func TestEnsureDefaultGroups(t *testing.T) {
 
 	t.Run("adds admin user to admins group", func(t *testing.T) {
 		// Create admin user first
-		_, err := store.EnsureAdminUser(ctx, true, "")
+		_, _, err := store.EnsureAdminUser(ctx, true, "")
 		if err != nil {
 			t.Fatalf("failed to ensure admin user: %v", err)
 		}

@@ -229,14 +229,14 @@ func (s *GORMStore) ValidateCredentials(ctx context.Context, username, password 
 	return user, nil
 }
 
-func (s *GORMStore) EnsureAdminUser(ctx context.Context, requireInitialPasswordChange bool, configuredPasswordHash string) (string, error) {
+func (s *GORMStore) EnsureAdminUser(ctx context.Context, requireInitialPasswordChange bool, configuredPasswordHash string) (string, bool, error) {
 	// Check if admin exists
 	_, err := s.GetUser(ctx, models.AdminUsername)
 	if err == nil {
-		return "", nil // Admin already exists
+		return "", false, nil // Admin already exists
 	}
 	if !errors.Is(err, models.ErrUserNotFound) {
-		return "", err // Unexpected error
+		return "", false, err // Unexpected error
 	}
 
 	// Check if password was explicitly set via environment variable
@@ -253,7 +253,7 @@ func (s *GORMStore) EnsureAdminUser(ctx context.Context, requireInitialPasswordC
 		// admin login fail later with an opaque error. bcrypt.Cost parses the
 		// hash structure and version ($2a$/$2b$/$2y$ are all accepted).
 		if _, err := bcrypt.Cost([]byte(configuredPasswordHash)); err != nil {
-			return "", fmt.Errorf("admin.password_hash is not a valid bcrypt hash (%w); "+
+			return "", false, fmt.Errorf("admin.password_hash is not a valid bcrypt hash (%w); "+
 				"expected a $2a$/$2b$/$2y$ hash, e.g. from `dfsctl` or `htpasswd -bnBC 10 \"\" <pw>`", err)
 		}
 		// No NT hash is derivable from a bcrypt hash (SMB admin needs the
@@ -262,21 +262,21 @@ func (s *GORMStore) EnsureAdminUser(ctx context.Context, requireInitialPasswordC
 		admin := models.DefaultAdminUser(configuredPasswordHash, "")
 		admin.MustChangePassword = false
 		if _, err := s.CreateUser(ctx, admin); err != nil {
-			return "", fmt.Errorf("failed to create admin user: %w", err)
+			return "", false, fmt.Errorf("failed to create admin user: %w", err)
 		}
-		return "", nil
+		return "", true, nil
 	}
 
 	// Generate or get password from environment
 	password, err := models.GetOrGenerateAdminPassword()
 	if err != nil {
-		return "", fmt.Errorf("failed to generate password: %w", err)
+		return "", false, fmt.Errorf("failed to generate password: %w", err)
 	}
 
 	// Hash password with NT hash for SMB support
 	passwordHash, ntHash, err := models.HashPasswordWithNT(password)
 	if err != nil {
-		return "", fmt.Errorf("failed to hash password: %w", err)
+		return "", false, fmt.Errorf("failed to hash password: %w", err)
 	}
 
 	// Create admin user
@@ -290,10 +290,16 @@ func (s *GORMStore) EnsureAdminUser(ctx context.Context, requireInitialPasswordC
 	}
 
 	if _, err := s.CreateUser(ctx, admin); err != nil {
-		return "", fmt.Errorf("failed to create admin user: %w", err)
+		return "", false, fmt.Errorf("failed to create admin user: %w", err)
 	}
 
-	return password, nil
+	// A password the operator supplied out of band is not a generated one: it
+	// is already known to them and needs none of the unrecoverable-credential
+	// handling the caller applies to the generated case.
+	if passwordFromEnv {
+		return "", true, nil
+	}
+	return password, true, nil
 }
 
 func (s *GORMStore) IsAdminInitialized(ctx context.Context) (bool, error) {

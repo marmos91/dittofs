@@ -79,8 +79,11 @@ type Server struct {
 func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store, timeouts Timeouts) (*Server, error) {
 	config.ApplyDefaults()
 
-	// Fail fast on internally inconsistent TLS settings (cert without key, etc.).
-	if err := config.Validate(); err != nil {
+	// Fail fast on internally inconsistent TLS settings (cert without key, etc.)
+	// and on a missing or too-short JWT signing secret. `dfs start` runs the
+	// same check before it opens the control-plane database, so in the daemon
+	// this is a backstop rather than the first line of defence.
+	if err := config.ValidateStartup(); err != nil {
 		return nil, err
 	}
 
@@ -106,11 +109,8 @@ func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store, timeo
 			"host", config.Host)
 	}
 
-	// Get JWT secret from config (prefers env var)
+	// Get JWT secret from config (prefers env var). Length already checked above.
 	jwtSecret := config.GetJWTSecret()
-	if len(jwtSecret) < 32 {
-		return nil, fmt.Errorf("JWT secret must be at least 32 characters; set via %s env var or config", EnvControlPlaneSecret)
-	}
 
 	// Create JWT service internally
 	jwtConfig := auth.JWTConfig{

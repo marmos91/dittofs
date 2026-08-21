@@ -19,6 +19,9 @@ const redactedSecret = "********"
 // EnvControlPlaneSecret is the name of the environment variable for the control plane's JWT authentication signing secret.
 const EnvControlPlaneSecret = "DITTOFS_CONTROLPLANE_SECRET"
 
+// MinJWTSecretLength is the shortest JWT signing secret the API server accepts.
+const MinJWTSecretLength = 32
+
 // APIConfig configures the REST API HTTP server.
 //
 // The API server provides health check endpoints, authentication endpoints,
@@ -175,6 +178,27 @@ func (t TLSConfig) Enabled() bool {
 func (c *APIConfig) Validate() error {
 	if err := c.TLS.shared().Validate(); err != nil {
 		return fmt.Errorf("controlplane.tls.%w", err)
+	}
+	return nil
+}
+
+// ValidateStartup checks everything that makes the API server unbuildable:
+// the TLS settings Validate covers, plus a usable JWT signing secret.
+//
+// The JWT secret is deliberately not part of Validate. Validate runs on every
+// config load, including the read-only commands (`dfs logs`, `dfs config
+// show`) that have no use for a signing secret and must keep working without
+// one. Only the daemon needs it, and the daemon calls this before it opens the
+// control-plane database: a boot that cannot succeed must not leave durable
+// state behind, least of all a bootstrapped admin whose generated password was
+// emitted only by the run that then aborted.
+func (c *APIConfig) ValidateStartup() error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	if len(c.GetJWTSecret()) < MinJWTSecretLength {
+		return fmt.Errorf("JWT secret must be at least %d characters; set via %s env var or config",
+			MinJWTSecretLength, EnvControlPlaneSecret)
 	}
 	return nil
 }
