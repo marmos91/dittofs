@@ -29,11 +29,12 @@ func (s QuotaScope) String() string {
 
 // UsageStat is the per-identity accounting pair tracked by every metadata
 // backend: total logical bytes and file (inode) count for regular files owned
-// by a single uid or gid. Mirrors the store-wide GetUsedBytes counter but keyed
-// by owner identity so per-user/per-group quotas can be enforced and reported.
+// by a single uid or gid within one share. Mirrors GetUsedBytesForShare but
+// keyed by owner identity so per-user/per-group quotas can be enforced and
+// reported.
 //
-// Only regular files contribute (directories, symlinks, devices do not), matching
-// the store-wide usedBytes semantics. Files is the inode count used for the
+// Only regular files contribute (directories, symlinks, devices do not),
+// matching the per-share usage semantics. Files is the inode count used for the
 // inode-quota dimension.
 type UsageStat struct {
 	// Bytes is the sum of logical sizes of regular files owned by the identity.
