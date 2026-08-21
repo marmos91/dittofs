@@ -147,6 +147,11 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			if pendingDelta != 0 {
 				s.usedBytes.Add(pendingDelta)
 			}
+			// Drop the per-share totals unconditionally. The delta carries no
+			// share dimension, so they cannot be adjusted — and a net-zero
+			// delta does not mean they are unchanged: sizes that cancel across
+			// two shares move both while leaving the store-wide sum alone.
+			s.invalidateShareUsedCache()
 			// Apply per-identity usage deltas once, after commit.
 			s.applyQuotaDelta(quotaDelta)
 			// Apply the staged filesystem-capabilities update once, after commit,

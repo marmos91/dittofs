@@ -25,6 +25,7 @@ func runStoreSurfaceTests(t *testing.T, factory StoreFactory) {
 	t.Run("DeleteShareViaTransaction", func(t *testing.T) { testDeleteShareViaTransaction(t, factory) })
 	t.Run("DuplicateCreateShare", func(t *testing.T) { testDuplicateCreateShare(t, factory) })
 	t.Run("GetUsedBytes", func(t *testing.T) { testGetUsedBytes(t, factory) })
+	t.Run("GetUsedBytesForShare", func(t *testing.T) { testGetUsedBytesForShare(t, factory) })
 	t.Run("GetQuotaUsage", func(t *testing.T) { testGetQuotaUsage(t, factory) })
 	t.Run("GetQuotaUsageChown", func(t *testing.T) { testGetQuotaUsageChown(t, factory) })
 	t.Run("GetFileByPayloadID", func(t *testing.T) { testGetFileByPayloadID(t, factory) })
@@ -326,6 +327,71 @@ func testGetUsedBytes(t *testing.T, factory StoreFactory) {
 	}
 	if got := store.GetUsedBytes(); got != 0 {
 		t.Fatalf("GetUsedBytes() = %d, want 0 after deleting the only file", got)
+	}
+}
+
+// testGetUsedBytesForShare pins the per-share split of logical usage. Several
+// shares can be served by one store instance (they name the same metadata
+// store config), and the store-wide GetUsedBytes counter then reports their
+// combined total for every one of them. GetUsedBytesForShare must attribute
+// each share only its own bytes.
+func testGetUsedBytesForShare(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const shareA = "/usage-a"
+	const shareB = "/usage-b"
+	rootA := createTestShare(t, store, shareA)
+	rootB := createTestShare(t, store, shareB)
+
+	assertShareUsed := func(what, shareName string, want int64) {
+		t.Helper()
+		got, err := store.GetUsedBytesForShare(ctx, shareName)
+		if err != nil {
+			t.Fatalf("GetUsedBytesForShare(%q) failed after %s: %v", shareName, what, err)
+		}
+		if got != want {
+			t.Fatalf("GetUsedBytesForShare(%q) = %d, want %d after %s", shareName, got, want, what)
+		}
+	}
+
+	assertShareUsed("share creation", shareA, 0)
+	assertShareUsed("share creation", shareB, 0)
+
+	fileA := createTestFile(t, store, shareA, rootA, "a.bin", 0o644)
+	setFileSize(t, store, fileA, 3000)
+	fileB := createTestFile(t, store, shareB, rootB, "b.bin", 0o644)
+	setFileSize(t, store, fileB, 5000)
+
+	// The store-wide counter is the combined total: that is what made the two
+	// shares indistinguishable when usage was reported from it.
+	if got := store.GetUsedBytes(); got != 8000 {
+		t.Fatalf("GetUsedBytes() = %d, want 8000 (both shares) — test fixture is wrong", got)
+	}
+	assertShareUsed("writes to both shares", shareA, 3000)
+	assertShareUsed("writes to both shares", shareB, 5000)
+
+	// Directories carry no logical bytes, matching GetUsedBytes semantics.
+	createTestDir(t, store, shareA, rootA, "subdir")
+	assertShareUsed("creating a directory", shareA, 3000)
+
+	// A change in one share must not move the other.
+	setFileSize(t, store, fileA, 250)
+	assertShareUsed("truncating a.bin", shareA, 250)
+	assertShareUsed("truncating a.bin", shareB, 5000)
+
+	if err := store.DeleteChild(ctx, rootA, "a.bin"); err != nil {
+		t.Fatalf("DeleteChild() failed: %v", err)
+	}
+	if err := store.DeleteFile(ctx, fileA); err != nil {
+		t.Fatalf("DeleteFile() failed: %v", err)
+	}
+	assertShareUsed("deleting a.bin", shareA, 0)
+	assertShareUsed("deleting a.bin", shareB, 5000)
+
+	// An unknown share reports no usage rather than an error.
+	if got, err := store.GetUsedBytesForShare(ctx, "/no-such-share"); err != nil || got != 0 {
+		t.Fatalf("GetUsedBytesForShare(unknown) = (%d, %v), want (0, nil)", got, err)
 	}
 }
 

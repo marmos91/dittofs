@@ -129,6 +129,18 @@ type BadgerMetadataStore struct {
 		mu        sync.RWMutex
 	}
 
+	// shareUsedCache caches the per-share logical byte totals produced by one
+	// scan of the file records (see GetUsedBytesForShare). A nil byShare means
+	// "not computed"; entries older than shareUsedCacheTTL are rescanned.
+	shareUsedCache struct {
+		byShare   map[string]int64
+		timestamp time.Time
+		// gen is bumped by every invalidation. A scan that started before an
+		// invalidation must not publish its (possibly superseded) result.
+		gen uint64
+		mu  sync.Mutex
+	}
+
 	// lockStore provides lock persistence
 	lockStore *badgerLockStore
 
