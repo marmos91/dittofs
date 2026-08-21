@@ -87,36 +87,6 @@ type Service struct {
 	// A zero time clears the timer. Registered via SetQuotaGracePersister.
 	quotaGracePersist QuotaGracePersister
 
-	// removeGen counts RemoveStoreForShare calls per share. RegisterStoreForShare
-	// snapshots a share's counter before recovering its lock manager outside s.mu
-	// and re-checks it at publish: any removal of that share during recovery bumps
-	// its counter, so the register declines to publish. This closes the
-	// register/remove TOCTOU the store-pointer re-check alone cannot: a removal
-	// that completes mid-flight and is followed by a same-pointer re-register
-	// leaves the entry looking "still ours", which would otherwise resurrect a
-	// lock manager + notifier for a removed share.
-	removeGen map[string]uint64
-
-	// graceDuration is the lock-manager grace period applied to shares whose
-	// stores carry persisted locks at registration. Zero means use the default.
-	graceDuration time.Duration
-
-	// graceCoordinator, if set, is invoked when a share's lock-manager grace
-	// period starts and ends. It lets the NFS adapter drive the SEPARATE NFSv4
-	// StateManager grace machine in lockstep with the lock-manager grace machine
-	// so both enter and exit together. Registered via SetGraceCoordinator.
-	graceCoordinator GraceCoordinator
-
-	// byteRangeReleaseHook, if set, is stamped onto every per-share lock manager
-	// at creation so a byte-range UNLOCK on ANY protocol re-drives blocked
-	// waiters on the OTHER protocol. The NFS adapter wires this to its
-	// processNLMWaiters drain: an NLM F_SETLKW waiter blocked on an SMB lock is
-	// woken when the SMB holder unlocks (NLM uses a server-driven GRANTED
-	// callback, not poll-retry). Registered via SetByteRangeReleaseHook before
-	// RegisterStoreForShare to affect a given share. The hook receives the
-	// handle key (string-encoded FileHandle).
-	byteRangeReleaseHook func(handleKey string)
-
 	// trashPolicy, if set, supplies the per-share recycle-bin policy consulted
 	// on delete. Nil (the default) disables trash entirely: deletes destroy
 	// content as before. Installed via SetTrashPolicy.
