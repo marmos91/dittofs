@@ -428,16 +428,33 @@ func (s *Store) WriteAt(ctx context.Context, id FileID, offset int64, data []byt
 // append primitive as WriteAt, but the record is born clean (already durable
 // remotely) so it is immediately evictable.
 //
-// notAfter is the WriteVersion the caller observed before it resolved which
-// remote bytes to fetch. The write-back is dropped when any live interval
-// overlapping the range was recorded after that, because those bytes postdate
-// the fetch: a fetch stalled in the remote read while a write, truncate or
-// punch lands would otherwise append at a fresh version and win, putting the
-// pre-mutation bytes back over durable newer ones. Dropping costs at most a
-// re-fetch on the next read — the fetched bytes still serve this one. A zero
-// notAfter disables the gate, for a caller that holds no such observation.
+// It fills rather than overwrites: only the parts of the range no live interval
+// holds, plus the parts a cold interval holds, are written. A read window
+// resolves every manifest row covering it once any byte of it is cold, so a
+// fetch routinely offers bytes for ranges the journal already holds — and those
+// are the newer copy, since the remote holds what a carve uploaded and the
+// journal holds that plus everything written since. Writing them back would put
+// a client's just-written data underneath the content it replaced.
+//
+// notAfter bounds the cold case in time. It is the WriteVersion the caller
+// sampled before it resolved which remote bytes to fetch; a cold range recorded
+// after that was superseded and evicted while the fetch was running, so those
+// bytes are stale too. Zero applies no bound.
+//
+// Dropping is always safe: the write-back is a cache fill, never a read's
+// answer. The fetched bytes still serve the read that triggered them, and the
+// cost of dropping is at most a re-fetch next time.
 func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byte, notAfter uint64) error {
-	return s.appendRecord(ctx, id, offset, data, true, notAfter)
+	sh := s.shardFor(id)
+	sh.mu.Lock()
+	ranges := sh.index[id].hydratable(offset, int64(len(data)), notAfter)
+	sh.mu.Unlock()
+	for _, r := range ranges {
+		if err := s.appendRecord(ctx, id, r[0], data[r[0]-offset:r[1]-offset], true, notAfter); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // WriteVersion reports the store's current global LSN. Sampled before a caller

@@ -126,3 +126,41 @@ func TestHydrateDoesNotResurrectOverMutation(t *testing.T) {
 		}
 	}
 }
+
+// TestColdWindowFetchDoesNotOverwritePunchedBytes pins that a cold read whose
+// window also spans freshly punched bytes does not put the pre-punch content
+// back over them. The window resolves every covering row, including the row the
+// punch superseded, so its write-back has to leave the punched range alone.
+func TestColdWindowFetchDoesNotOverwritePunchedBytes(t *testing.T) {
+	ctx := context.Background()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	bs := newEngineWithRemote(t, ms, remotememory.New())
+
+	rootHandle := createShare(t, ms, "coldwindow")
+	pid, _ := createRealFile(t, ms, "coldwindow", "f.bin", rootHandle)
+
+	const fileSize = 6 * 1024 * 1024
+	const punchLen = 1024 * 1024
+	orig := bytes.Repeat([]byte{0xCD}, fileSize)
+	if _, err := bs.WriteAt(ctx, pid, nil, orig, 0); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	carve(t, bs, ctx, pid)
+	if _, err := bs.DrainLocalSynced(ctx); err != nil {
+		t.Fatalf("DrainLocalSynced: %v", err)
+	}
+
+	// The punched bytes are live and local; everything past them is cold, so the
+	// read below has to fetch and still must not disturb them.
+	if _, err := bs.PunchHole(ctx, pid, manifestRefs(t, ms, pid), 0, punchLen); err != nil {
+		t.Fatalf("PunchHole: %v", err)
+	}
+
+	got := make([]byte, fileSize)
+	if _, err := bs.ReadAt(ctx, pid, got, 0); err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	if n := punchLen - bytes.Count(got[:punchLen], []byte{0}); n != 0 {
+		t.Fatalf("punched range resurrected: %d nonzero of %d (first byte %#x)", n, punchLen, got[0])
+	}
+}

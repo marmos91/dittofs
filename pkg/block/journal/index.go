@@ -498,20 +498,57 @@ func (e idxEntry) encode() []byte {
 	return buf
 }
 
-// recordedSince reports whether any live interval overlapping [off, off+n) was
-// recorded after mark. It answers "did this range change while I was away" for
-// a hydrate that sampled the store's WriteVersion before deciding what to
-// fetch; a nil index (unknown file) has nothing newer.
-func (fi *fileIndex) recordedSince(off, n int64, mark uint64) bool {
-	if fi == nil || n <= 0 {
-		return false
+// hydratable returns the sub-ranges of [off, off+n) that a hydrate may fill:
+// those no live interval holds, and those a cold interval holds that was
+// recorded no later than mark. Ranges are ascending, disjoint and coalesced,
+// and are offsets in the file, not in the caller's buffer.
+//
+// Live warm or dirty bytes are never overwritten. They are the newer copy by
+// construction — the remote holds what a carve uploaded, the journal holds that
+// plus anything written since — so a fetch that resolved the manifest rows
+// covering them is offering the older content back.
+//
+// mark bounds the cold case in time: a cold range recorded after the caller
+// sampled it postdates the fetch, so those bytes were superseded and evicted
+// while it was running. A mark of 0 bounds nothing.
+func (fi *fileIndex) hydratable(off, n int64, mark uint64) [][2]int64 {
+	if n <= 0 {
+		return nil
 	}
 	end := off + n
-	k := sort.Search(len(fi.ivs), func(i int) bool { return fi.ivs[i].end() > off })
-	for ; k < len(fi.ivs) && fi.ivs[k].fileOff < end; k++ {
-		if fi.ivs[k].version > mark {
-			return true
-		}
+	if fi == nil {
+		return [][2]int64{{off, end}}
 	}
-	return false
+	var out [][2]int64
+	add := func(lo, hi int64) {
+		if lo >= hi {
+			return
+		}
+		if k := len(out) - 1; k >= 0 && out[k][1] == lo {
+			out[k][1] = hi
+			return
+		}
+		out = append(out, [2]int64{lo, hi})
+	}
+	cur := off
+	k := sort.Search(len(fi.ivs), func(i int) bool { return fi.ivs[i].end() > off })
+	for ; k < len(fi.ivs) && fi.ivs[k].fileOff < end && cur < end; k++ {
+		iv := fi.ivs[k]
+		if iv.fileOff > cur {
+			add(cur, min(iv.fileOff, end)) // no interval holds this: a hole
+			cur = min(iv.fileOff, end)
+		}
+		stop := min(iv.end(), end)
+		if iv.cold && (mark == 0 || iv.version <= mark) {
+			add(cur, stop)
+		}
+		cur = max(cur, stop)
+	}
+	add(cur, end)
+	return out
+}
+
+// coversWhole reports whether ranges is exactly the single span [off, off+n).
+func coversWhole(ranges [][2]int64, off, n int64) bool {
+	return len(ranges) == 1 && ranges[0][0] == off && ranges[0][1] == off+n
 }
