@@ -202,22 +202,9 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
-	// Reuse the share's pre-assigned RootHandle if the share already exists.
-	// CreateShare generates a root handle up front so that GetRootHandle can
-	// succeed immediately after share creation; this root directory MUST be
-	// keyed under that same handle so the file tree and the share's root
-	// pointer stay consistent. Without this reuse, CreateShare and
-	// CreateRootDirectory produce two distinct UUIDs, and GetRootHandle ends
-	// up pointing to an empty subtree while the real tree lives under the
-	// handle this function returned.
-	var rootHandle metadata.FileHandle
-	if sd, ok := store.shares[shareName]; ok && len(sd.RootHandle) > 0 {
-		rootHandle = sd.RootHandle
-	} else {
-		var err error
-		if rootHandle, err = metadata.GenerateNewHandle(shareName); err != nil {
-			return nil, err
-		}
+	rootHandle, err := store.rootHandleLocked(shareName)
+	if err != nil {
+		return nil, err
 	}
 	key := handleToKey(rootHandle)
 

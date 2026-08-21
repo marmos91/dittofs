@@ -584,6 +584,26 @@ func (store *MemoryMetadataStore) childNameLocked(
 	return best
 }
 
+// rootHandleLocked returns the handle a share's root directory must be keyed
+// under: the share's pre-assigned RootHandle when one exists, otherwise a
+// fresh one.
+//
+// CreateShare generates a root handle up front so that GetRootHandle can
+// succeed immediately after share creation; the root directory MUST reuse it
+// so the file tree and the share's root pointer stay consistent. Without the
+// reuse, CreateShare and CreateRootDirectory produce two distinct UUIDs and
+// GetRootHandle ends up pointing at an empty subtree while the real tree lives
+// elsewhere. Minting fails for a share name too long to encode a handle; share
+// creation rejects such names up front.
+//
+// Thread Safety: Must be called with the write lock held.
+func (store *MemoryMetadataStore) rootHandleLocked(shareName string) (metadata.FileHandle, error) {
+	if sd, ok := store.shares[shareName]; ok && len(sd.RootHandle) > 0 {
+		return sd.RootHandle, nil
+	}
+	return metadata.GenerateNewHandle(shareName)
+}
+
 // sortedChildNames returns the child names of a directory in sorted order.
 //
 // Thread Safety: Must be called with at least a read lock held.

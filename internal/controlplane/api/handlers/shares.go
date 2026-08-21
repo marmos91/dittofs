@@ -291,14 +291,14 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Normalize share name to always have leading slash
 	req.Name = normalizeShareName(req.Name)
 
-	// Validate the normalized name against the file-handle format before the
-	// share is persisted. AddShare below rejects the same names, but its error
-	// is only warned on — the row would already be in the store, so the share
-	// would come back on every restart and never load.
+	// Checked here as well as in AddShare below: this handler persists the share
+	// row first and only warns on an AddShare failure, so without this guard a
+	// name that can never mint a handle is stored and answered with 201.
 	if err := metadata.ValidateShareName(req.Name); err != nil {
 		BadRequest(w, err.Error())
 		return
 	}
+
 	if req.MetadataStoreID == "" {
 		BadRequest(w, "Metadata store ID is required")
 		return

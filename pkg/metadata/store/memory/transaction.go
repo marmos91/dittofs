@@ -705,16 +705,9 @@ func (tx *memoryTransaction) CreateRootDirectory(ctx context.Context, shareName 
 		}
 	}
 
-	// Reuse the share's pre-assigned RootHandle if present (see the store-level
-	// CreateRootDirectory), otherwise generate a fresh one.
-	var rootHandle metadata.FileHandle
-	if sd, ok := tx.store.shares[shareName]; ok && len(sd.RootHandle) > 0 {
-		rootHandle = sd.RootHandle
-	} else {
-		var err error
-		if rootHandle, err = metadata.GenerateNewHandle(shareName); err != nil {
-			return nil, err
-		}
+	rootHandle, err := tx.store.rootHandleLocked(shareName)
+	if err != nil {
+		return nil, err
 	}
 	key := handleToKey(rootHandle)
 

@@ -24,10 +24,8 @@ func (s *Service) AddShare(
 	localStoreDefaults *LocalStoreDefaults,
 	syncerDefaults *SyncerDefaults,
 ) error {
-	// Reject names that cannot produce a usable file handle (empty, ':'-bearing,
-	// or too long for the handle budget) before any state is created. A share
-	// that fails this check can never serve a file, so accepting it only defers
-	// the failure to the first handle mint.
+	// A share whose name cannot encode a file handle can never serve a file, so
+	// reject it before any state is created rather than at the first handle mint.
 	if err := metadata.ValidateShareName(config.Name); err != nil {
 		return err
 	}
