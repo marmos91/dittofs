@@ -10,8 +10,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// shareRegistry holds every piece of per-share state that RegisterStoreForShare
-// publishes and RemoveStoreForShare retires: the metadata store and its
+// shareRegistry holds every piece of per-share state that register
+// publishes and remove retires: the metadata store and its
 // lock-free read mirror, the ephemeral lock manager, the cross-protocol unified
 // lock view, the directory-change notifier, the byte quota, and the writeback
 // tier flag — plus the grace wiring stamped onto each manager at creation.
@@ -95,7 +95,7 @@ func (r *shareRegistry) dirChangeNotifier(shareName string) (lock.DirChangeNotif
 
 // setGracePeriod sets the grace period applied to per-share lock managers
 // that recover persisted locks at registration. A non-positive duration falls
-// back to DefaultLockGracePeriod. Must be called before RegisterStoreForShare
+// back to DefaultLockGracePeriod. Must be called before register
 // to affect a given share.
 func (r *shareRegistry) setGracePeriod(d time.Duration) {
 	r.mu.Lock()
@@ -117,7 +117,7 @@ func (r *shareRegistry) setGraceCoordinator(c GraceCoordinator) {
 // setByteRangeReleaseHook registers a protocol-agnostic notification that every
 // per-share lock manager fires after a byte-range UNLOCK, so a release on one
 // protocol re-drives blocked waiters on another (e.g. an SMB UNLOCK waking an
-// NLM F_SETLKW waiter). Must be called before RegisterStoreForShare to affect a
+// NLM F_SETLKW waiter). Must be called before register to affect a
 // given share. The hook receives the string-encoded FileHandle (handle key).
 func (r *shareRegistry) setByteRangeReleaseHook(fn func(handleKey string)) {
 	r.mu.Lock()
@@ -129,7 +129,7 @@ func (r *shareRegistry) setByteRangeReleaseHook(fn func(handleKey string)) {
 // (#1757). When enabled, FlushPendingWriteForFile downgrades an otherwise
 // durable per-op flush (FILE_SYNC WRITE, SMB CLOSE/FLUSH) to the relaxed
 // deferred-fsync path, moving the metadata db.Sync off the request hot path.
-// Default (not set) is durable. Set at AddShare; cleared by RemoveStoreForShare.
+// Default (not set) is durable. Set at AddShare; cleared by remove.
 func (r *shareRegistry) setWriteback(shareName string, writeback bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -179,7 +179,7 @@ func (r *shareRegistry) register(shareName string, store Store) error {
 		return nil
 	}
 	// Snapshot this share's removal generation under the same lock. A
-	// RemoveStoreForShare for this share that lands while we recover (outside
+	// remove for this share that lands while we recover (outside
 	// r.mu) bumps it; the publish re-check below aborts when it advanced.
 	startGen := r.removeGen[shareName]
 	// Snapshot grace config under the same lock (read once; both fields are set
@@ -195,7 +195,7 @@ func (r *shareRegistry) register(shareName string, store Store) error {
 	// Build and fully recover the lock manager on a local var BEFORE publishing
 	// it into r.lockManagers. Recovery (epoch bump + ListLocks + replay) issues
 	// backend IO, so it runs outside r.mu — but it must complete before the
-	// manager is observable: a concurrent GetLockManagerForShare that saw an
+	// manager is observable: a concurrent lock-manager lookup that saw an
 	// empty, unrecovered manager could grant a lock conflicting with a
 	// not-yet-restored one. Publishing only after recovery closes that window.
 	//
@@ -242,14 +242,14 @@ func (r *shareRegistry) register(shareName string, store Store) error {
 	//
 	//  1. Another caller raced us to register this same share. First publisher
 	//     wins; drop our manager.
-	//  2. A concurrent RemoveStoreForShare deleted this share while we recovered
+	//  2. A concurrent remove deleted this share while we recovered
 	//     outside the lock (TOCTOU). If we published our lock manager + notifier
 	//     now, we would RESURRECT entries for a removed share — the store map
 	//     stays deleted but lockManagers/dirChangeNotifiers come back, leaving
 	//     stale routing and a lock manager that is never torn down (leak).
 	//
 	// We detect a removal-mid-flight via the removal generation snapshotted in
-	// the first lock block. RemoveStoreForShare bumps r.removeGen[shareName]; if
+	// the first lock block. remove bumps r.removeGen[shareName]; if
 	// it advanced while we recovered outside the lock, the share was removed and
 	// we must abort the publish rather than resurrect it.
 	_, lmExists := r.lockManagers[shareName]
@@ -274,7 +274,7 @@ func (r *shareRegistry) register(shareName string, store Store) error {
 		//   (redundant) start signal was a no-op at the coordinator because v4
 		//   grace was already active (first-in-wins policy).
 		//
-		//   removedMidFlight (a concurrent RemoveStoreForShare deleted this share
+		//   removedMidFlight (a concurrent remove deleted this share
 		//   while we recovered outside the lock): Remove ran BEFORE we published,
 		//   so it never saw our lock manager and never fired OnLockGraceEnd for
 		//   the OnLockGraceStart we signalled. If we entered grace, the
@@ -301,19 +301,19 @@ func (r *shareRegistry) register(shareName string, store Store) error {
 	return nil
 }
 
-// remove deregisters a share from the MetadataService, deleting
-// its entry from every per-share map populated by RegisterStoreForShare and the
+// remove deregisters a share, deleting
+// its entry from every per-share map populated by register and the
 // AddShare path (stores, lockManagers, unifiedViews, dirChangeNotifiers,
 // quotas). Without this, those maps grow unbounded across AddShare/RemoveShare
 // churn and leave stale routing: a removed-share handle would still resolve to a
 // live store, and re-adding a same-name share would silently reuse the stale
-// lock manager (RegisterStoreForShare early-returns when one already exists).
+// lock manager (register early-returns when one already exists).
 //
 // Before dropping the lock manager its grace timer is aborted so the orphaned
 // timer never fires onGraceEnd against a now-removed share. Idempotent: removing
 // a share that was never registered (or already removed) is a no-op.
 //
-// This is the symmetric counterpart of RegisterStoreForShare and must be called
+// This is the symmetric counterpart of register and must be called
 // from the control-plane RemoveShare path after the share's stores are torn
 // down.
 //
@@ -355,7 +355,7 @@ func (r *shareRegistry) remove(shareName string) {
 	delete(r.quotas, shareName)
 	delete(r.writebackShares, shareName)
 
-	// Bump this share's removal generation so any RegisterStoreForShare recovering
+	// Bump this share's removal generation so any register recovering
 	// it outside r.mu declines to publish: the register snapshots removeGen before
 	// recovery and re-checks it at publish (register/remove TOCTOU guard).
 	r.removeGen[shareName]++
@@ -365,7 +365,7 @@ func (r *shareRegistry) remove(shareName string) {
 // persisted by a previous run back into the lock manager. Errors are logged
 // and swallowed so a recovery failure never blocks share registration.
 //
-// Epoch double-bump on a lost-publish race (R3-5): RegisterStoreForShare runs
+// Epoch double-bump on a lost-publish race (R3-5): register runs
 // this on a local manager before publishing under r.mu, and the loser of a
 // concurrent registration drops its manager. The loser still incremented the
 // store epoch here, so two concurrent registrations of the same share advance
@@ -467,7 +467,7 @@ func initLockManagerFromStore(lm *LockManager, ls lock.LockStore, shareName stri
 // grace ends.
 //
 // The coordinator is read LIVE from the service when the window ends, not
-// captured at construction: the NFS adapter installs it (SetGraceCoordinator)
+// captured at construction: the NFS adapter installs it (setGraceCoordinator)
 // during SetRuntime, which runs AFTER shares register at startup. A manager
 // built before the adapter exists must still notify the coordinator once it is
 // installed, or the v4 grace machine would never be ended in lockstep.
@@ -505,7 +505,7 @@ func (r *shareRegistry) newGraceAwareLockManager(duration time.Duration) *LockMa
 // storeForShare returns the metadata store for a specific share. Every
 // metadata op resolves through here, so the common case is served from the
 // lock-free storeCache without touching r.mu. The cache is written under r.mu
-// alongside r.stores, so a miss after RemoveStoreForShare falls through to the
+// alongside r.stores, so a miss after remove falls through to the
 // locked map and yields the stale-handle error below — never a stale store.
 func (r *shareRegistry) storeForShare(shareName string) (Store, error) {
 	if v, ok := r.storeCache.Load(shareName); ok {
