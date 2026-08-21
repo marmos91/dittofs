@@ -125,8 +125,8 @@ func (r *shareRegistry) setByteRangeReleaseHook(fn func(handleKey string)) {
 	r.byteRangeReleaseHook = fn
 }
 
-// setWriteback opts a share into (or out of) the metadata writeback tier
-// (#1757). When enabled, FlushPendingWriteForFile downgrades an otherwise
+// setWriteback opts a share into (or out of) the metadata writeback tier.
+// When enabled, FlushPendingWriteForFile downgrades an otherwise
 // durable per-op flush (FILE_SYNC WRITE, SMB CLOSE/FLUSH) to the relaxed
 // deferred-fsync path, moving the metadata db.Sync off the request hot path.
 // Default (not set) is durable. Set at AddShare; cleared by remove.
@@ -365,7 +365,7 @@ func (r *shareRegistry) remove(shareName string) {
 // persisted by a previous run back into the lock manager. Errors are logged
 // and swallowed so a recovery failure never blocks share registration.
 //
-// Epoch double-bump on a lost-publish race (R3-5): register runs
+// Epoch double-bump on a lost-publish race: register runs
 // this on a local manager before publishing under r.mu, and the loser of a
 // concurrent registration drops its manager. The loser still incremented the
 // store epoch here, so two concurrent registrations of the same share advance
@@ -379,7 +379,7 @@ func (r *shareRegistry) remove(shareName string) {
 // (the grace period's expected-reclaim roster) and a boolean reporting whether
 // grace should be entered for this share.
 //
-// Grace-entry decision (area-4 H7): grace is entered when the previous run MAY
+// Grace-entry decision: grace is entered when the previous run MAY
 // have orphaned client state — i.e. the prior shutdown was NOT verified-clean
 // (unclean marker: kill -9 / crash / power-loss, or a fresh store whose marker
 // defaults to false) OR persisted locks were recovered. This replaces the old
