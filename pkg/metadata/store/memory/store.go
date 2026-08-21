@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -106,9 +105,11 @@ type ShareSession struct {
 //
 // Handle Generation:
 //
-// generateFileHandle encodes a fresh UUID against the share name, so a
-// handle is independent of the name a file is reachable under and survives
-// renames. The badger backend mints handles the same way.
+// Handles encode a fresh UUID against the share name, so a handle is
+// independent of the name a file is reachable under and survives renames.
+// The badger backend mints handles the same way. A share name too long to
+// fit the handle budget is reported as an error, never a panic; share
+// creation rejects such names up front.
 //
 // Consistency Guarantees:
 //
@@ -583,16 +584,24 @@ func (store *MemoryMetadataStore) childNameLocked(
 	return best
 }
 
-// generateFileHandle returns a fresh UUID-based handle for a file in the
-// named share, in the standard "shareName:uuid" format. It panics on the
-// only failure GenerateNewHandle can report — a share name long enough to
-// push the encoded handle past 64 bytes — which share creation rejects.
-func (store *MemoryMetadataStore) generateFileHandle(shareName string) metadata.FileHandle {
-	handle, err := metadata.GenerateNewHandle(shareName)
-	if err != nil {
-		panic(fmt.Sprintf("failed to encode file handle: %v", err))
+// rootHandleLocked returns the handle a share's root directory must be keyed
+// under: the share's pre-assigned RootHandle when one exists, otherwise a
+// fresh one.
+//
+// CreateShare generates a root handle up front so that GetRootHandle can
+// succeed immediately after share creation; the root directory MUST reuse it
+// so the file tree and the share's root pointer stay consistent. Without the
+// reuse, CreateShare and CreateRootDirectory produce two distinct UUIDs and
+// GetRootHandle ends up pointing at an empty subtree while the real tree lives
+// elsewhere. Minting fails for a share name too long to encode a handle; share
+// creation rejects such names up front.
+//
+// Thread Safety: Must be called with the write lock held.
+func (store *MemoryMetadataStore) rootHandleLocked(shareName string) (metadata.FileHandle, error) {
+	if sd, ok := store.shares[shareName]; ok && len(sd.RootHandle) > 0 {
+		return sd.RootHandle, nil
 	}
-	return handle
+	return metadata.GenerateNewHandle(shareName)
 }
 
 // sortedChildNames returns the child names of a directory in sorted order.

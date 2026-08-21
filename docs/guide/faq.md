@@ -626,6 +626,18 @@ These limitations are fundamental constraints of the NFSv3 protocol. Many are re
 
 NFS servers have no way to know if any client is executing a file, so ETXTBSY cannot be enforced. This affects all NFS implementations. In practice, most package managers remove-then-replace rather than overwrite executables.
 
+#### Share Name Length
+
+| Status | Reason |
+|--------|--------|
+| Max 27 bytes | RFC 1813 caps a file handle at 64 bytes |
+
+A file handle is `"<share-name>:<uuid>"`. The canonical UUID is 36 bytes and the
+separator is 1, leaving 27 bytes for the share name — and the leading `/` counts,
+so `/media-archive-2026` is 19. Longer names are rejected at share creation; a
+share that got one before the check existed is skipped at startup with a warning
+rather than loaded, since it could never mint a handle for a single file.
+
 #### Timestamps (Y2106 Limitation)
 
 | Status | Reason |

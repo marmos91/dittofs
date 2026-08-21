@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -25,16 +24,10 @@ func (s *Service) AddShare(
 	localStoreDefaults *LocalStoreDefaults,
 	syncerDefaults *SyncerDefaults,
 ) error {
-	if config.Name == "" {
-		return errors.New("cannot add share with empty name")
-	}
-	// File handles are encoded as "<shareName>:<uuid>" and decoded by
-	// splitting on the FIRST ':'. A share name containing ':' yields handles
-	// whose UUID component fails to parse, silently bricking every file in the
-	// share. Reject it up front with an ErrInvalidArgument StoreError.
-	if strings.Contains(config.Name, ":") {
-		return metadata.NewInvalidArgumentError(
-			fmt.Sprintf("share name %q must not contain ':'", config.Name))
+	// A share whose name cannot encode a file handle can never serve a file, so
+	// reject it before any state is created rather than at the first handle mint.
+	if err := metadata.ValidateShareName(config.Name); err != nil {
+		return err
 	}
 
 	if config.LocalBlockStoreID != "" && blockStoreProvider == nil {

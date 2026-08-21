@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 // ============================================================================
@@ -13,12 +14,7 @@ import (
 
 // GenerateHandle creates a new unique file handle for a path in a share.
 func (store *MemoryMetadataStore) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// Memory store uses UUID-based handles, path is for compatibility
-	return store.generateFileHandle(shareName), nil
+	return basestore.GenerateHandle(ctx, shareName)
 }
 
 // GetRootHandle returns the root handle for a share.
@@ -100,7 +96,10 @@ func (store *MemoryMetadataStore) CreateShare(ctx context.Context, share *metada
 	}
 
 	// Generate root handle
-	rootHandle := store.generateFileHandle(share.Name)
+	rootHandle, err := metadata.GenerateNewHandle(share.Name)
+	if err != nil {
+		return err
+	}
 
 	store.shares[share.Name] = &shareData{
 		Share:      *share,
@@ -203,19 +202,9 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
-	// Reuse the share's pre-assigned RootHandle if the share already exists.
-	// CreateShare generates a root handle up front so that GetRootHandle can
-	// succeed immediately after share creation; this root directory MUST be
-	// keyed under that same handle so the file tree and the share's root
-	// pointer stay consistent. Without this reuse, CreateShare and
-	// CreateRootDirectory produce two distinct UUIDs, and GetRootHandle ends
-	// up pointing to an empty subtree while the real tree lives under the
-	// handle this function returned.
-	var rootHandle metadata.FileHandle
-	if sd, ok := store.shares[shareName]; ok && len(sd.RootHandle) > 0 {
-		rootHandle = sd.RootHandle
-	} else {
-		rootHandle = store.generateFileHandle(shareName)
+	rootHandle, err := store.rootHandleLocked(shareName)
+	if err != nil {
+		return nil, err
 	}
 	key := handleToKey(rootHandle)
 

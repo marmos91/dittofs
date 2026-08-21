@@ -2,6 +2,7 @@ package memory_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -84,4 +85,24 @@ func TestSeededShareRegistration(t *testing.T) {
 			t.Fatal("expected ErrAlreadyExists creating a non-seeded share twice")
 		}
 	})
+}
+
+// TestGenerateHandle_OverLongShareName pins that the memory backend reports an
+// unencodable share name as an error, the way badger/sqlite/postgres do,
+// instead of panicking and taking the server down.
+func TestGenerateHandle_OverLongShareName(t *testing.T) {
+	store := memory.NewMemoryMetadataStoreWithDefaults()
+	t.Cleanup(func() { _ = store.Close() })
+
+	name := "/" + strings.Repeat("a", metadata.MaxShareNameLen)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("GenerateHandle panicked on over-long share name: %v", r)
+		}
+	}()
+
+	if _, err := store.GenerateHandle(context.Background(), name, "/f"); err == nil {
+		t.Fatal("GenerateHandle with over-long share name: want error, got nil")
+	}
 }
