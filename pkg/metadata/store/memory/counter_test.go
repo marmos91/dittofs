@@ -10,6 +10,16 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
+// usedBytes reads the logical usage of the single share these tests create.
+func usedBytes(t *testing.T, store *memory.MemoryMetadataStore) int64 {
+	t.Helper()
+	got, err := store.GetUsedBytesForShare(context.Background(), "/test")
+	if err != nil {
+		t.Fatalf("GetUsedBytesForShare(/test) failed: %v", err)
+	}
+	return got
+}
+
 func newTestStore(t *testing.T) *memory.MemoryMetadataStore {
 	t.Helper()
 	store := memory.NewMemoryMetadataStoreWithDefaults()
@@ -83,7 +93,7 @@ func TestCounter_InitialZero(t *testing.T) {
 	t.Parallel()
 	store := memory.NewMemoryMetadataStoreWithDefaults()
 
-	if got := store.GetUsedBytes(); got != 0 {
+	if got := usedBytes(t, store); got != 0 {
 		t.Fatalf("expected usedBytes == 0, got %d", got)
 	}
 }
@@ -94,7 +104,7 @@ func TestCounter_CreateFile(t *testing.T) {
 	store := newTestStore(t)
 	createFile(t, store, "file1.txt", 1000)
 
-	if got := store.GetUsedBytes(); got != 1000 {
+	if got := usedBytes(t, store); got != 1000 {
 		t.Fatalf("expected usedBytes == 1000 after creating 1000-byte file, got %d", got)
 	}
 }
@@ -138,7 +148,7 @@ func TestCounter_RolledBackTxDoesNotDrift(t *testing.T) {
 		t.Fatalf("WithTransaction returned %v, want injected error", err)
 	}
 
-	if got := store.GetUsedBytes(); got != 0 {
+	if got := usedBytes(t, store); got != 0 {
 		t.Fatalf("usedBytes drifted on rolled-back tx: got %d, want 0", got)
 	}
 
@@ -158,7 +168,7 @@ func TestCounter_UpdateFileSize(t *testing.T) {
 	store := newTestStore(t)
 	handle := createFile(t, store, "file1.txt", 1000)
 
-	if got := store.GetUsedBytes(); got != 1000 {
+	if got := usedBytes(t, store); got != 1000 {
 		t.Fatalf("expected usedBytes == 1000 after create, got %d", got)
 	}
 
@@ -188,7 +198,7 @@ func TestCounter_UpdateFileSize(t *testing.T) {
 		t.Fatalf("update failed: %v", err)
 	}
 
-	if got := store.GetUsedBytes(); got != 5000 {
+	if got := usedBytes(t, store); got != 5000 {
 		t.Fatalf("expected usedBytes == 5000 after update to 5000, got %d", got)
 	}
 }
@@ -225,7 +235,7 @@ func TestCounter_Truncate(t *testing.T) {
 		t.Fatalf("truncate failed: %v", err)
 	}
 
-	if got := store.GetUsedBytes(); got != 500 {
+	if got := usedBytes(t, store); got != 500 {
 		t.Fatalf("expected usedBytes == 500 after truncate, got %d", got)
 	}
 }
@@ -251,7 +261,7 @@ func TestCounter_RemoveFile(t *testing.T) {
 		t.Fatalf("remove failed: %v", err)
 	}
 
-	if got := store.GetUsedBytes(); got != 0 {
+	if got := usedBytes(t, store); got != 0 {
 		t.Fatalf("expected usedBytes == 0 after remove, got %d", got)
 	}
 }
@@ -298,7 +308,7 @@ func TestCounter_DirectoryIgnored(t *testing.T) {
 		t.Fatalf("mkdir failed: %v", err)
 	}
 
-	if got := store.GetUsedBytes(); got != 0 {
+	if got := usedBytes(t, store); got != 0 {
 		t.Fatalf("expected usedBytes == 0 after creating directory, got %d", got)
 	}
 }
@@ -317,9 +327,9 @@ func TestCounter_StatisticsMatch(t *testing.T) {
 		t.Fatalf("GetFilesystemStatistics failed: %v", err)
 	}
 
-	counterVal := store.GetUsedBytes()
+	counterVal := usedBytes(t, store)
 	if stats.UsedBytes != uint64(counterVal) {
-		t.Fatalf("GetFilesystemStatistics.UsedBytes=%d does not match GetUsedBytes()=%d",
+		t.Fatalf("GetFilesystemStatistics.UsedBytes=%d does not match GetUsedBytesForShare()=%d",
 			stats.UsedBytes, counterVal)
 	}
 }

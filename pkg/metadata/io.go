@@ -132,14 +132,24 @@ func (s *Service) PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint
 	// Truncate (shrink) and zero-byte writes are always allowed.
 	quotaBytes := s.GetQuotaForShare(shareName)
 	if quotaBytes > 0 && newSize > file.Size {
-		currentUsed := store.GetUsedBytes()
-		// Safe unsigned subtraction first (we know newSize > file.Size from guard),
-		// then cast to int64. This avoids overflow when either value exceeds MaxInt64.
-		delta := int64(newSize - file.Size)
-		if currentUsed+delta > quotaBytes {
-			return nil, &StoreError{
-				Code:    ErrNoSpace,
-				Message: "share quota exceeded",
+		// The share's own usage, not the store's. One store instance backs every
+		// share naming the same metadata store config, so a store-wide total
+		// would charge this share for a co-located share's bytes.
+		currentUsed, usageErr := store.GetUsedBytesForShare(ctx.Context, shareName)
+		if usageErr != nil {
+			// A usage lookup failure must not wedge writes; the ceiling below is
+			// a soft quota, not a correctness boundary.
+			logger.Error("quota: share usage lookup failed, allowing write",
+				"share", shareName, "error", usageErr)
+		} else {
+			// Safe unsigned subtraction first (we know newSize > file.Size from guard),
+			// then cast to int64. This avoids overflow when either value exceeds MaxInt64.
+			delta := int64(newSize - file.Size)
+			if currentUsed+delta > quotaBytes {
+				return nil, &StoreError{
+					Code:    ErrNoSpace,
+					Message: "share quota exceeded",
+				}
 			}
 		}
 	}

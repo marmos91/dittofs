@@ -117,30 +117,6 @@ type BadgerMetadataStore struct {
 	// share-record write; a stale entry is a wrong permission decision.
 	shareCache sharecache.Cache
 
-	// statsCache caches filesystem statistics to avoid expensive database scans.
-	// Filesystem statistics require scanning all file entries, which can be slow.
-	// This cache stores the result with a timestamp and TTL to serve repeated
-	// FSSTAT requests efficiently (macOS Finder calls FSSTAT very frequently).
-	statsCache struct {
-		stats     metadata.FilesystemStatistics
-		hasStats  bool
-		timestamp time.Time
-		ttl       time.Duration
-		mu        sync.RWMutex
-	}
-
-	// shareUsedCache caches the per-share logical byte totals produced by one
-	// scan of the file records (see GetUsedBytesForShare). A nil byShare means
-	// "not computed"; entries older than shareUsedCacheTTL are rescanned.
-	shareUsedCache struct {
-		byShare   map[string]int64
-		timestamp time.Time
-		// gen is bumped by every invalidation. A scan that started before an
-		// invalidation must not publish its (possibly superseded) result.
-		gen uint64
-		mu  sync.Mutex
-	}
-
 	// lockStore provides lock persistence
 	lockStore *badgerLockStore
 
@@ -152,11 +128,6 @@ type BadgerMetadataStore struct {
 
 	// recoveryStore provides NFSv4 client-recovery persistence
 	recoveryStore *badgerRecoveryStore
-
-	// usedBytes tracks the total logical bytes used by regular files.
-	// Updated atomically on every size-changing operation (create, update, truncate, delete).
-	// Initialized from a full file scan on startup.
-	usedBytes atomic.Int64
 
 	// quota tracks per-identity usage (bytes + file count) for regular files,
 	// keyed by owner uid / gid. In-memory cache mirroring usedBytes, seeded from
@@ -403,11 +374,6 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 	store.durableStore = newBadgerDurableStore(db)
 	store.recoveryStore = newBadgerRecoveryStore(db)
 
-	// Initialize stats cache with a 5-second TTL for responsive updates
-	// This prevents expensive database scans on every FSSTAT request while
-	// still keeping stats reasonably fresh
-	store.statsCache.ttl = 5 * time.Second
-
 	// Initialize singleton keys if they don't exist
 	if err := store.initializeSingletons(ctx); err != nil {
 		_ = db.Close()
@@ -637,30 +603,34 @@ func ensureStoreID(db *badger.DB) (string, error) {
 	return fresh, nil
 }
 
-// GetUsedBytes returns the current total logical bytes used by regular files.
-// This is an O(1) atomic read, safe for concurrent access without locks.
-func (s *BadgerMetadataStore) GetUsedBytes() int64 {
-	return s.usedBytes.Load()
+// GetUsedBytesForShare returns the logical bytes held by one share's regular
+// files. O(1) read of the per-share bucket seeded by initUsedBytesCounter and
+// maintained by the transaction delta pipeline.
+func (s *BadgerMetadataStore) GetUsedBytesForShare(ctx context.Context, shareName string) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
+	return s.quota.Share(shareName).Bytes, nil
 }
 
-// initUsedBytesCounter scans all file entries once at startup to initialize the
-// store-wide atomic counter and the per-identity usage cache (userUsage /
-// groupUsage). Both are reconstructed from the durable file rows, so a store
-// opened from an existing dump (with no separately persisted counters) is always
-// seeded correctly — back-compatible by construction.
+// initUsedBytesCounter scans all file entries once at startup to seed the usage
+// cache (per share, and per owner identity within a share). It is reconstructed
+// from the durable file rows, so a store opened from an existing dump (with no
+// separately persisted counters) is always seeded correctly — back-compatible
+// by construction.
 // A non-nil indexBatch also stages a pl: index entry per file, so a store that
 // still needs indexing by payload pays one scan at open rather than two — the
 // decode is the expensive part and this is the only place already doing it.
 func (s *BadgerMetadataStore) initUsedBytesCounter(indexBatch *badger.WriteBatch) error {
-	var totalUsed int64
-	userUsage := make(map[uint32]*metadata.UsageStat)
-	groupUsage := make(map[uint32]*metadata.UsageStat)
+	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
 
-	addUsage := func(m map[uint32]*metadata.UsageStat, id uint32, bytes int64) {
-		u := m[id]
+	addUsage := func(k basestore.QuotaKey, bytes int64) {
+		u := byIdentity[k]
 		if u == nil {
 			u = &metadata.UsageStat{}
-			m[id] = u
+			byIdentity[k] = u
 		}
 		u.Bytes += bytes
 		u.Files++
@@ -682,9 +652,8 @@ func (s *BadgerMetadataStore) initUsedBytesCounter(indexBatch *badger.WriteBatch
 					return nil // Skip corrupted entries
 				}
 				if file.Type == metadata.FileTypeRegular {
-					totalUsed += int64(file.Size)
-					addUsage(userUsage, file.UID, int64(file.Size))
-					addUsage(groupUsage, file.GID, int64(file.Size))
+					addUsage(basestore.QuotaKey{Share: file.ShareName, Scope: metadata.QuotaScopeUser, ID: file.UID}, int64(file.Size))
+					addUsage(basestore.QuotaKey{Share: file.ShareName, Scope: metadata.QuotaScopeGroup, ID: file.GID}, int64(file.Size))
 				}
 				return indexFileByPayload(indexBatch, file)
 			})
@@ -698,19 +667,18 @@ func (s *BadgerMetadataStore) initUsedBytesCounter(indexBatch *badger.WriteBatch
 		return err
 	}
 
-	s.usedBytes.Store(totalUsed)
 	s.quotaMu.Lock()
-	s.quota.Seed(userUsage, groupUsage)
+	s.quota.Seed(byIdentity, nil)
 	s.quotaMu.Unlock()
 	return nil
 }
 
-// GetQuotaUsage returns per-identity usage for the given scope and id.
-// O(1) cache read under quotaMu. A missing key returns a zero UsageStat.
-func (s *BadgerMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
+// GetQuotaUsage returns per-identity usage within one share. O(1) cache read
+// under quotaMu. A missing key returns a zero UsageStat.
+func (s *BadgerMetadataStore) GetQuotaUsage(shareName string, scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
 	s.quotaMu.Lock()
 	defer s.quotaMu.Unlock()
-	return s.quota.Get(scope, id), nil
+	return s.quota.Get(shareName, scope, id), nil
 }
 
 // NewBadgerMetadataStoreWithDefaults creates a new BadgerDB metadata store with sensible defaults.

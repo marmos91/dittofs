@@ -31,22 +31,20 @@ import (
 
 // sqliteTransaction wraps a SQLite transaction for the Transaction interface.
 //
-// pendingDelta accumulates the usedBytes change made by mutations inside the
-// closure. It is applied to the store's atomic counter exactly once after a
-// successful Commit (see WithTransaction). WithTransaction retries the closure
-// on a busy/locked condition; accumulating per-attempt and applying post-commit
-// prevents the counter from double-counting across retries.
+// Mutations accumulate their usage side effects on the transaction rather than
+// applying them inline, and WithTransaction applies them exactly once after a
+// successful Commit. WithTransaction retries the closure on a busy/locked condition;
+// accumulating per-attempt and applying post-commit prevents double-counting
+// across retries.
 //
 // tx is the pgx-shaped executor (QueryRow/Query/Exec with (ctx, sql, args...))
 // over the underlying *sql.Tx, so the ported query bodies use it unchanged.
 type sqliteTransaction struct {
-	store        *SQLiteMetadataStore
-	tx           execer
-	pendingDelta int64
-	// quota accumulates per-identity usage changes (bytes + file count) keyed by
-	// (scope, id). Applied to the store's quota cache exactly once after a
-	// successful commit, identical to pendingDelta (so a serialization/deadlock
-	// retry never double-counts).
+	store *SQLiteMetadataStore
+	tx    execer
+	// quota accumulates usage changes (bytes + file count) keyed by share and
+	// owner identity. Applied to the store's quota cache exactly once after a
+	// successful commit, so a serialization/deadlock retry never double-counts.
 	quota basestore.QuotaDelta
 	// sharesDirty records that this transaction wrote a share record, so the
 	// store's ShareOptions cache is dropped after the commit. A stale entry is
@@ -127,11 +125,7 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 		if ptx.sharesDirty {
 			s.shareCache.InvalidateAll()
 		}
-		// Apply the accumulated usedBytes delta exactly once, after commit.
-		if ptx.pendingDelta != 0 {
-			s.usedBytes.Add(ptx.pendingDelta)
-		}
-		// Apply per-identity usage deltas once, after commit.
+		// Apply the accumulated usage deltas exactly once, after commit.
 		s.applyQuotaDelta(ptx.quota.Map())
 		return nil // Success
 	}
@@ -361,7 +355,6 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 		if oldSizeVal.Valid {
 			oldSize = uint64(oldSizeVal.Int64)
 		}
-		tx.pendingDelta += int64(file.Size) - int64(oldSize)
 
 		// Per-identity usage. The previous row may not have been a regular file
 		// (type change), in which case it contributed nothing before.
@@ -370,13 +363,13 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 		oldGID := uint32(oldGIDVal.Int64)
 		switch {
 		case !oldWasRegular:
-			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		case oldUID == file.UID && oldGID == file.GID:
-			tx.quota.Add(file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
 		default:
 			// Chown: move bytes + inode from old owner to new owner.
-			tx.quota.Add(oldUID, oldGID, -int64(oldSize), -1)
-			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.ShareName, oldUID, oldGID, -int64(oldSize), -1)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		}
 	}
 
@@ -406,12 +399,9 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 			return mapDBError(err, "UpdateAttrs", "")
 		}
 
-		// Track new regular file size.
+		// Charge the new regular file to its share and owner.
 		if file.Type == metadata.FileTypeRegular {
-			if file.Size > 0 {
-				tx.pendingDelta += int64(file.Size)
-			}
-			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		}
 
 		// Debug logging for new file inserts, gated so the id formatting is
@@ -494,10 +484,7 @@ func (tx *sqliteTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 
 	// Subtract size from the pending delta + per-identity usage for regular files.
 	if metadata.FileType(fileType) == metadata.FileTypeRegular {
-		if fileSize > 0 {
-			tx.pendingDelta -= fileSize
-		}
-		tx.quota.Add(uint32(fileUID), uint32(fileGID), -fileSize, -1)
+		tx.quota.Add(shareName, uint32(fileUID), uint32(fileGID), -fileSize, -1)
 	}
 
 	return nil
@@ -986,20 +973,6 @@ func (tx *sqliteTransaction) DeleteShare(ctx context.Context, shareName string) 
 	}
 	tx.sharesDirty = true
 
-	// Sum the regular-file bytes about to be removed so the usedBytes
-	// counter stays accurate without a full recompute. A failed Scan must not
-	// be swallowed: silently proceeding with freedBytes=0 would delete the
-	// files but never decrement the counter, drifting statfs for the process
-	// lifetime.
-	var freedBytes int64
-	if err := tx.tx.QueryRow(ctx,
-		`SELECT COALESCE(SUM(size), 0) FROM inodes
-		 WHERE share_name = ?1 AND file_type = ?2 AND size > 0`,
-		shareName, int(metadata.FileTypeRegular),
-	).Scan(&freedBytes); err != nil {
-		return mapDBError(err, "DeleteShare", shareName)
-	}
-
 	// Capture per-identity usage about to be removed (uid + gid) so the
 	// in-memory usage cache stays accurate. Aggregated before the rows are
 	// deleted; applied to the tx quota delta (post-commit) below.
@@ -1033,13 +1006,6 @@ func (tx *sqliteTransaction) DeleteShare(ctx context.Context, shareName string) 
 		return mapDBError(err, "DeleteShare", shareName)
 	}
 
-	// Accumulate the decrement on the tx and apply it once after a successful
-	// commit so a serialization/deadlock retry never double-counts. The
-	// counter is statfs-only, not quota-enforcing.
-	if freedBytes > 0 {
-		tx.pendingDelta -= freedBytes
-	}
-
 	return nil
 }
 
@@ -1063,7 +1029,7 @@ func (tx *sqliteTransaction) collectShareQuotaFreed(ctx context.Context, shareNa
 		if err := rows.Scan(&id, &bytes, &files); err != nil {
 			return mapDBError(err, "DeleteShare", shareName)
 		}
-		tx.quota.AddKeyed(basestore.QuotaKey{Scope: scope, ID: uint32(id)}, metadata.UsageStat{Bytes: -bytes, Files: -files})
+		tx.quota.AddKeyed(basestore.QuotaKey{Share: shareName, Scope: scope, ID: uint32(id)}, metadata.UsageStat{Bytes: -bytes, Files: -files})
 	}
 	if err := rows.Err(); err != nil {
 		return mapDBError(err, "DeleteShare", shareName)

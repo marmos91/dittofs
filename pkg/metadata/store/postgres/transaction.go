@@ -33,19 +33,17 @@ import (
 
 // postgresTransaction wraps a PostgreSQL transaction for the Transaction interface.
 //
-// pendingDelta accumulates the usedBytes change made by mutations inside the
-// closure. It is applied to the store's atomic counter exactly once after a
-// successful Commit (see WithTransaction). WithTransaction retries the closure
-// on 40P01/40001; accumulating per-attempt and applying post-commit prevents
-// the counter from double-counting across retries.
+// Mutations accumulate their usage side effects on the transaction rather than
+// applying them inline, and WithTransaction applies them exactly once after a
+// successful Commit. WithTransaction retries the closure on a 40P01/40001 serialization failure;
+// accumulating per-attempt and applying post-commit prevents double-counting
+// across retries.
 type postgresTransaction struct {
-	store        *PostgresMetadataStore
-	tx           pgx.Tx
-	pendingDelta int64
-	// quota accumulates per-identity usage changes (bytes + file count) keyed by
-	// (scope, id). Applied to the store's quota cache exactly once after a
-	// successful commit, identical to pendingDelta (so a serialization/deadlock
-	// retry never double-counts).
+	store *PostgresMetadataStore
+	tx    pgx.Tx
+	// quota accumulates usage changes (bytes + file count) keyed by share and
+	// owner identity. Applied to the store's quota cache exactly once after a
+	// successful commit, so a serialization/deadlock retry never double-counts.
 	quota basestore.QuotaDelta
 	// sharesDirty records that this transaction wrote a share record, so the
 	// store's ShareOptions cache is dropped after the commit. A stale entry is
@@ -182,11 +180,7 @@ func (s *PostgresMetadataStore) withTransaction(ctx context.Context, fn func(tx 
 		if ptx.sharesDirty {
 			s.shareCache.InvalidateAll()
 		}
-		// Apply the accumulated usedBytes delta exactly once, after commit.
-		if ptx.pendingDelta != 0 {
-			s.usedBytes.Add(ptx.pendingDelta)
-		}
-		// Apply per-identity usage deltas once, after commit.
+		// Apply the accumulated usage deltas exactly once, after commit.
 		s.applyQuotaDelta(ptx.quota.Map())
 		return nil // Success
 	}
@@ -418,7 +412,6 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 		if oldSizeVal.Valid {
 			oldSize = uint64(oldSizeVal.Int64)
 		}
-		tx.pendingDelta += int64(file.Size) - int64(oldSize)
 
 		// Per-identity usage. The previous row may not have been a regular file
 		// (type change), in which case it contributed nothing before.
@@ -427,13 +420,13 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 		oldGID := uint32(oldGIDVal.Int64)
 		switch {
 		case !oldWasRegular:
-			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		case oldUID == file.UID && oldGID == file.GID:
-			tx.quota.Add(file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
 		default:
 			// Chown: move bytes + inode from old owner to new owner.
-			tx.quota.Add(oldUID, oldGID, -int64(oldSize), -1)
-			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.ShareName, oldUID, oldGID, -int64(oldSize), -1)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		}
 	}
 
@@ -463,12 +456,9 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 			return mapPgError(err, "UpdateAttrs", "")
 		}
 
-		// Track new regular file size.
+		// Charge the new regular file to its share and owner.
 		if file.Type == metadata.FileTypeRegular {
-			if file.Size > 0 {
-				tx.pendingDelta += int64(file.Size)
-			}
-			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		}
 
 		// Debug logging for new file inserts, gated so the id formatting and
@@ -551,10 +541,7 @@ func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.F
 
 	// Subtract size from the pending delta + per-identity usage for regular files.
 	if metadata.FileType(fileType) == metadata.FileTypeRegular {
-		if fileSize > 0 {
-			tx.pendingDelta -= fileSize
-		}
-		tx.quota.Add(uint32(fileUID), uint32(fileGID), -fileSize, -1)
+		tx.quota.Add(shareName, uint32(fileUID), uint32(fileGID), -fileSize, -1)
 	}
 
 	return nil
@@ -1091,13 +1078,6 @@ func (tx *postgresTransaction) DeleteShare(ctx context.Context, shareName string
 		return mapPgError(err, "DeleteShare", shareName)
 	}
 
-	// Accumulate the decrement on the tx and apply it once after a successful
-	// commit so a serialization/deadlock retry never double-counts. The
-	// counter is statfs-only, not quota-enforcing.
-	if freedBytes > 0 {
-		tx.pendingDelta -= freedBytes
-	}
-
 	return nil
 }
 
@@ -1121,7 +1101,7 @@ func (tx *postgresTransaction) collectShareQuotaFreed(ctx context.Context, share
 		if err := rows.Scan(&id, &bytes, &files); err != nil {
 			return mapPgError(err, "DeleteShare", shareName)
 		}
-		tx.quota.AddKeyed(basestore.QuotaKey{Scope: scope, ID: uint32(id)}, metadata.UsageStat{Bytes: -bytes, Files: -files})
+		tx.quota.AddKeyed(basestore.QuotaKey{Share: shareName, Scope: scope, ID: uint32(id)}, metadata.UsageStat{Bytes: -bytes, Files: -files})
 	}
 	if err := rows.Err(); err != nil {
 		return mapPgError(err, "DeleteShare", shareName)

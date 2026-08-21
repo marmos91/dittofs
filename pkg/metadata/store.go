@@ -498,18 +498,14 @@ type Store interface {
 	// Usage Tracking
 	// ========================================================================
 
-	// GetUsedBytes returns the current total logical bytes used by regular files.
-	// This is an O(1) read from an atomic counter.
-	//
-	// The counter is store-wide. A store instance is shared by every share that
-	// names the same metadata store config, so this is NOT a per-share figure —
-	// use GetUsedBytesForShare when reporting usage for one share.
-	GetUsedBytes() int64
-
 	// GetUsedBytesForShare returns the logical bytes used by regular files that
 	// belong to one share: the sum of their sizes, as recorded in metadata.
-	// Directories, symlinks and other non-regular entries contribute nothing,
-	// matching GetUsedBytes semantics.
+	// Directories, symlinks and other non-regular entries contribute nothing.
+	//
+	// Usage is always per-share and never store-wide. A single store instance
+	// backs every share that names the same metadata store config, so a
+	// store-wide total would fold co-located shares into each other's quota
+	// checks and usage reports.
 	//
 	// This is a metadata figure, not an on-disk one. It is unaffected by block
 	// deduplication, compression, and by whether the share's blocks currently
@@ -518,22 +514,24 @@ type Store interface {
 	// An unknown share name returns 0 and a nil error — a share with no files
 	// and a share that does not exist are indistinguishable by usage alone.
 	//
-	// Unlike GetUsedBytes this is not guaranteed O(1): backends that keep only a
-	// store-wide counter compute the per-share figure on demand.
+	// It is O(1): backends maintain per-share counters updated transactionally
+	// alongside the size delta and seeded at startup. It is reached from the
+	// write path (the share-quota gate), so it must not scan.
 	GetUsedBytesForShare(ctx context.Context, shareName string) (int64, error)
 
-	// GetQuotaUsage returns the per-identity usage (bytes + file count) for the
-	// given scope (user/group) and identity id (uid or gid). Regular files only,
-	// charged to the file owner (FileAttr.UID / FileAttr.GID). This mirrors
-	// GetUsedBytes but keyed by owner identity so per-user/per-group quotas can
-	// be enforced and reported. An identity with no owned regular files returns a
-	// zero UsageStat and a nil error.
+	// GetQuotaUsage returns the per-identity usage (bytes + file count) within
+	// one share for the given scope (user/group) and identity id (uid or gid).
+	// Regular files only, charged to the file owner (FileAttr.UID /
+	// FileAttr.GID). This mirrors GetUsedBytesForShare but keyed by owner
+	// identity so per-user/per-group quotas can be enforced and reported. An
+	// identity with no owned regular files in the share returns a zero UsageStat
+	// and a nil error.
 	//
-	// Like GetUsedBytes, this is intended to be O(1): backends maintain keyed
-	// counters updated transactionally alongside the size delta, seeded at
-	// startup from an aggregate scan (badger/postgres) or naturally accumulated
-	// (memory).
-	GetQuotaUsage(scope QuotaScope, id uint32) (UsageStat, error)
+	// Like GetUsedBytesForShare it is O(1) and on the write path: backends
+	// maintain keyed counters updated transactionally alongside the size delta,
+	// seeded at startup from an aggregate scan (badger/postgres) or naturally
+	// accumulated (memory).
+	GetQuotaUsage(shareName string, scope QuotaScope, id uint32) (UsageStat, error)
 
 	// ========================================================================
 	// Store Lifecycle (not transactional)

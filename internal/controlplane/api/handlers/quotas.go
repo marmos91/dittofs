@@ -47,8 +47,9 @@ type UpsertQuotaRequest struct {
 }
 
 // QuotaResponse is the response body for quota endpoints. Byte ceilings are
-// rendered human-readable; live usage (used_bytes / used_files) is read from the
-// metadata store backing the share.
+// rendered human-readable; live usage (used_bytes / used_files) is the identity's
+// usage within this share, read from the metadata store backing it — never the
+// total across the other shares that store also serves.
 type QuotaResponse struct {
 	ShareName  string  `json:"share_name"`
 	Scope      string  `json:"scope"`

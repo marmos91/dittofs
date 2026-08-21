@@ -112,27 +112,36 @@ func TestPostgres_ListShares_CompleteList(t *testing.T) {
 
 // TestPostgres_PutFile_UsedBytesAccurate proves the old-size scan is honoured:
 // a shrink must subtract the prior size. If the old-size scan error were
-// silently swallowed and oldSize stayed 0, the delta would over-credit
-// usedBytes.
+// silently swallowed and oldSize stayed 0, the delta would over-credit the
+// share's usage.
 func TestPostgres_PutFile_UsedBytesAccurate(t *testing.T) {
 	store := newTestStore(t)
 
 	rootHandle := createShareRoot(t, store, "/used-bytes-pg")
 	fh := putSizedFile(t, store, "/used-bytes-pg", "/used-bytes-pg", rootHandle, "data.bin", 0)
 
-	base := store.GetUsedBytes()
+	shareUsed := func(what string) int64 {
+		t.Helper()
+		got, err := store.GetUsedBytesForShare(t.Context(), "/used-bytes-pg")
+		if err != nil {
+			t.Fatalf("GetUsedBytesForShare after %s: %v", what, err)
+		}
+		return got
+	}
+
+	base := shareUsed("setup")
 
 	// Grow to 1000.
 	setFileSize(t, store, fh, 1000)
-	if got := store.GetUsedBytes(); got != base+1000 {
-		t.Fatalf("after grow: GetUsedBytes() = %d, want %d", got, base+1000)
+	if got := shareUsed("resize"); got != base+1000 {
+		t.Fatalf("after grow: GetUsedBytesForShare() = %d, want %d", got, base+1000)
 	}
 
 	// Shrink to 400. With the old-size scan honoured the delta is 400-1000=-600,
 	// leaving usedBytes at base+400. A silenced scan error would yield base+1400.
 	setFileSize(t, store, fh, 400)
-	if got := store.GetUsedBytes(); got != base+400 {
-		t.Fatalf("after shrink: GetUsedBytes() = %d, want %d (delta bug would give %d)",
+	if got := shareUsed("resize"); got != base+400 {
+		t.Fatalf("after shrink: GetUsedBytesForShare() = %d, want %d (delta bug would give %d)",
 			got, base+400, base+1400)
 	}
 }

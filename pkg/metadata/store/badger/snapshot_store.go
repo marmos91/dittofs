@@ -312,11 +312,12 @@ func (s *BadgerMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 		return fmt.Errorf("%w: %v", metadata.ErrRestoreCorrupt, err)
 	}
 
-	// The DB has been fully repopulated, but the in-memory usedBytes counter
-	// still holds the pre-restore value. Recompute it from the restored rows so
-	// GetUsedBytes / GetFilesystemStatistics report correctly without a restart.
+	// The DB has been fully repopulated, but the in-memory usage cache still
+	// holds the pre-restore buckets. Reseed it from the restored rows so
+	// GetUsedBytesForShare / GetQuotaUsage / GetFilesystemStatistics report
+	// correctly without a restart.
 	if err := s.initUsedBytesAndPayloadIndex(); err != nil {
-		return fmt.Errorf("restore: reinitialize used-bytes counter: %w", err)
+		return fmt.Errorf("restore: reseed the usage cache: %w", err)
 	}
 
 	return nil

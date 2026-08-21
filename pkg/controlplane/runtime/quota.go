@@ -164,7 +164,7 @@ func (r *Runtime) GetIdentityQuotaUsage(shareName, scope string, identityID *uin
 	if err != nil {
 		return 0, 0
 	}
-	usage, err := store.GetQuotaUsage(mScope, id)
+	usage, err := store.GetQuotaUsage(shareName, mScope, id)
 	if err != nil {
 		return 0, 0
 	}

@@ -7,8 +7,9 @@
 // on Badger's SSI conflicts inside its own loop. Those budgets must never be
 // shared.
 //
-// Quota accounting: each backend keeps a QuotaCache of per-user/per-group byte
-// and file counts (for statfs and quota enforcement) and accumulates changes
+// Quota accounting: each backend keeps a QuotaCache of per-share and
+// per-share-per-user/group byte and file counts (for statfs and quota
+// enforcement) and accumulates changes
 // made inside a transaction in a QuotaDelta, folding the delta into the cache
 // exactly once after the transaction commits so a conflict-retry never
 // double-counts.
@@ -20,78 +21,140 @@ package basestore
 import "github.com/marmos91/dittofs/pkg/metadata"
 
 // QuotaKey identifies a per-identity usage bucket: an owner id within a scope
-// (user or group).
+// (user or group), within one share. The share dimension is load-bearing: a
+// single store instance backs every share that names the same metadata store
+// config, so an unqualified (scope, id) bucket would fold co-located shares'
+// bytes into each other's quota checks.
 type QuotaKey struct {
+	Share string
 	Scope metadata.QuotaScope
 	ID    uint32
 }
 
-// QuotaCache holds per-identity usage split into user and group scopes. It does no
-// locking; callers hold their own mutex across Get/Apply/Seed/Reset.
+// QuotaCache holds usage split two ways: per (share, scope, identity) for
+// per-user/per-group quotas, and per share for the share-wide quota gate and
+// statfs. It does no locking; callers hold their own mutex across
+// Get/Share/Apply/Seed/Reset.
 type QuotaCache struct {
-	user  map[uint32]*metadata.UsageStat
-	group map[uint32]*metadata.UsageStat
+	byIdentity map[QuotaKey]*metadata.UsageStat
+	byShare    map[string]*metadata.UsageStat
 }
 
 // NewQuotaCache returns an empty, ready-to-use QuotaCache.
 func NewQuotaCache() *QuotaCache {
 	return &QuotaCache{
-		user:  make(map[uint32]*metadata.UsageStat),
-		group: make(map[uint32]*metadata.UsageStat),
+		byIdentity: make(map[QuotaKey]*metadata.UsageStat),
+		byShare:    make(map[string]*metadata.UsageStat),
 	}
 }
 
 // Reset empties the cache.
 func (c *QuotaCache) Reset() {
-	c.user = make(map[uint32]*metadata.UsageStat)
-	c.group = make(map[uint32]*metadata.UsageStat)
+	c.byIdentity = make(map[QuotaKey]*metadata.UsageStat)
+	c.byShare = make(map[string]*metadata.UsageStat)
 }
 
-// Seed replaces the cache contents with per-identity usage pre-aggregated from
-// durable rows at startup. The maps are adopted as-is.
-func (c *QuotaCache) Seed(user, group map[uint32]*metadata.UsageStat) {
-	c.user = user
-	c.group = group
-}
-
-// Get returns the usage for one identity. A missing key returns a zero
-// UsageStat.
-func (c *QuotaCache) Get(scope metadata.QuotaScope, id uint32) metadata.UsageStat {
-	m := c.user
-	if scope == metadata.QuotaScopeGroup {
-		m = c.group
+// Seed replaces the cache contents with usage pre-aggregated from durable rows
+// at startup. byShare may be nil, in which case it is derived from the
+// user-scope entries of byIdentity — every regular file has exactly one owner
+// uid, so those buckets already partition the share's bytes and inodes.
+func (c *QuotaCache) Seed(byIdentity map[QuotaKey]*metadata.UsageStat, byShare map[string]*metadata.UsageStat) {
+	if byIdentity == nil {
+		byIdentity = make(map[QuotaKey]*metadata.UsageStat)
 	}
-	if u, ok := m[id]; ok {
+	if byShare == nil {
+		byShare = make(map[string]*metadata.UsageStat)
+		for k, u := range byIdentity {
+			if k.Scope != metadata.QuotaScopeUser {
+				continue
+			}
+			cur := byShare[k.Share]
+			if cur == nil {
+				cur = &metadata.UsageStat{}
+				byShare[k.Share] = cur
+			}
+			cur.Bytes += u.Bytes
+			cur.Files += u.Files
+		}
+	}
+	c.byIdentity = byIdentity
+	c.byShare = byShare
+}
+
+// Get returns the usage for one identity within one share. A missing key
+// returns a zero UsageStat.
+func (c *QuotaCache) Get(share string, scope metadata.QuotaScope, id uint32) metadata.UsageStat {
+	if u, ok := c.byIdentity[QuotaKey{Share: share, Scope: scope, ID: id}]; ok {
 		return *u
 	}
 	return metadata.UsageStat{}
 }
 
-// Apply folds a per-identity usage delta into the cache. Buckets that drop to
-// zero or below are removed; a negative accumulation is clamped to zero so a
-// quota enforcer never reads a too-permissive total.
+// Share returns the total usage of one share's regular files. A share with no
+// files (or an unknown one) returns a zero UsageStat.
+func (c *QuotaCache) Share(share string) metadata.UsageStat {
+	if u, ok := c.byShare[share]; ok {
+		return *u
+	}
+	return metadata.UsageStat{}
+}
+
+// DropShare forgets every bucket belonging to a share. Called when the share is
+// deleted, so its usage cannot outlive it.
+func (c *QuotaCache) DropShare(share string) {
+	for k := range c.byIdentity {
+		if k.Share == share {
+			delete(c.byIdentity, k)
+		}
+	}
+	delete(c.byShare, share)
+}
+
+// Apply folds a usage delta into the cache. Buckets that drop to zero or below
+// are removed; a negative accumulation is clamped to zero so a quota enforcer
+// never reads a too-permissive total.
+//
+// The per-share totals are moved by the user-scope entries only: a file
+// contributes one user-scope entry and one group-scope entry for the same
+// bytes, so counting both would double the share total.
 func (c *QuotaCache) Apply(delta map[QuotaKey]metadata.UsageStat) {
+	// Per-share movements are summed across the share's owners before being
+	// applied, so the result does not depend on map iteration order: applying
+	// them one owner at a time lets the clamp below fire on an intermediate
+	// value when two owners in one share move in opposite directions.
+	perShare := make(map[string]metadata.UsageStat)
 	for k, d := range delta {
-		m := c.user
-		if k.Scope == metadata.QuotaScopeGroup {
-			m = c.group
+		applyStat(c.byIdentity, k, d)
+		if k.Scope == metadata.QuotaScopeUser {
+			cur := perShare[k.Share]
+			cur.Bytes += d.Bytes
+			cur.Files += d.Files
+			perShare[k.Share] = cur
 		}
-		cur := m[k.ID]
-		if cur == nil {
-			cur = &metadata.UsageStat{}
-			m[k.ID] = cur
-		}
-		cur.Bytes += d.Bytes
-		cur.Files += d.Files
-		if cur.Bytes < 0 {
-			cur.Bytes = 0
-		}
-		if cur.Files < 0 {
-			cur.Files = 0
-		}
-		if cur.Bytes == 0 && cur.Files == 0 {
-			delete(m, k.ID)
-		}
+	}
+	for share, d := range perShare {
+		applyStat(c.byShare, share, d)
+	}
+}
+
+// applyStat folds one delta into a keyed usage map, clamping to zero and
+// removing emptied buckets.
+func applyStat[K comparable](m map[K]*metadata.UsageStat, key K, d metadata.UsageStat) {
+	cur := m[key]
+	if cur == nil {
+		cur = &metadata.UsageStat{}
+		m[key] = cur
+	}
+	cur.Bytes += d.Bytes
+	cur.Files += d.Files
+	if cur.Bytes < 0 {
+		cur.Bytes = 0
+	}
+	if cur.Files < 0 {
+		cur.Files = 0
+	}
+	if cur.Bytes == 0 && cur.Files == 0 {
+		delete(m, key)
 	}
 }
 
@@ -102,24 +165,27 @@ type QuotaDelta struct {
 	m map[QuotaKey]metadata.UsageStat
 }
 
-// Add records a usage change for a file's owner identity across both the user
-// and group scopes. bytes is the size delta; files is the inode delta (+1 on
-// create, -1 on delete, 0 for an in-place resize). A no-op change is dropped.
-func (d *QuotaDelta) Add(uid, gid uint32, bytes, files int64) {
+// Add records a usage change for a file's owner identity within its share,
+// across both the user and group scopes. bytes is the size delta; files is the
+// inode delta (+1 on create, -1 on delete, 0 for an in-place resize). A no-op
+// change is dropped.
+func (d *QuotaDelta) Add(share string, uid, gid uint32, bytes, files int64) {
 	if bytes == 0 && files == 0 {
 		return
 	}
 	if d.m == nil {
 		d.m = make(map[QuotaKey]metadata.UsageStat)
 	}
-	u := d.m[QuotaKey{metadata.QuotaScopeUser, uid}]
+	uk := QuotaKey{Share: share, Scope: metadata.QuotaScopeUser, ID: uid}
+	u := d.m[uk]
 	u.Bytes += bytes
 	u.Files += files
-	d.m[QuotaKey{metadata.QuotaScopeUser, uid}] = u
-	g := d.m[QuotaKey{metadata.QuotaScopeGroup, gid}]
+	d.m[uk] = u
+	gk := QuotaKey{Share: share, Scope: metadata.QuotaScopeGroup, ID: gid}
+	g := d.m[gk]
 	g.Bytes += bytes
 	g.Files += files
-	d.m[QuotaKey{metadata.QuotaScopeGroup, gid}] = g
+	d.m[gk] = g
 }
 
 // AddKeyed merges a single pre-keyed usage change (used when folding the

@@ -15,6 +15,10 @@ import (
 // with no pl: entry — the shape of every row written before that index existed.
 // The handle is closed before returning so the store can open the same
 // directory.
+// legacyShare is the share the seeded legacy rows belong to; the usage cache is
+// keyed by share, so the assertions read that share's bucket.
+const legacyShare = "/legacy"
+
 func seedLegacyFiles(t *testing.T, dir string, payloads ...metadata.PayloadID) []*metadata.File {
 	t.Helper()
 
@@ -31,7 +35,8 @@ func seedLegacyFiles(t *testing.T, dir string, payloads ...metadata.PayloadID) [
 	files := make([]*metadata.File, 0, len(payloads))
 	for _, p := range payloads {
 		f := &metadata.File{
-			ID: uuid.New(),
+			ID:        uuid.New(),
+			ShareName: legacyShare,
 			FileAttr: metadata.FileAttr{
 				Type:      metadata.FileTypeRegular,
 				PayloadID: p,
@@ -146,8 +151,8 @@ func TestOpen_SkipsRowsWithoutPayload(t *testing.T) {
 	}
 }
 
-// The usedBytes counter shares the scan the indexing rides on, so it must still
-// be seeded correctly when that indexing runs.
+// The usage cache shares the scan the indexing rides on, so it must still be
+// seeded correctly when that indexing runs.
 func TestOpen_UsedBytesStillSeededWhileIndexing(t *testing.T) {
 	dir := t.TempDir()
 	files := seedLegacyFiles(t, dir, "payload-a", "payload-b")
@@ -159,7 +164,11 @@ func TestOpen_UsedBytesStillSeededWhileIndexing(t *testing.T) {
 	for _, f := range files {
 		want += int64(f.Size)
 	}
-	if got := store.usedBytes.Load(); got != want {
-		t.Fatalf("usedBytes = %d, want %d", got, want)
+	got, err := store.GetUsedBytesForShare(t.Context(), legacyShare)
+	if err != nil {
+		t.Fatalf("GetUsedBytesForShare(%q): %v", legacyShare, err)
+	}
+	if got != want {
+		t.Fatalf("GetUsedBytesForShare(%q) = %d, want %d", legacyShare, got, want)
 	}
 }

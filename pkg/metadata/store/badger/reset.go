@@ -27,7 +27,6 @@ func (s *BadgerMetadataStore) Reset(ctx context.Context) error {
 		return fmt.Errorf("badger reset: drop all: %w", err)
 	}
 	s.invalidateDerivedCaches()
-	s.usedBytes.Store(0)
 	s.quotaMu.Lock()
 	s.quota.Reset()
 	s.quotaMu.Unlock()
@@ -39,17 +38,9 @@ func (s *BadgerMetadataStore) Reset(ctx context.Context) error {
 // RestoreSnapshot). Ordinary mutations invalidate per key from withTransaction;
 // a wholesale replacement has no key list to work from, and the restore path
 // never goes through a badgerTransaction at all.
-//
-// The filesystem-statistics cache is dropped here too. Its own TTL bounds the
-// staleness rather than leaving it forever, but a wipe invalidates it on the
-// spot and FSSTAT should not report counts for files that are gone.
 func (s *BadgerMetadataStore) invalidateDerivedCaches() {
 	s.shareCache.InvalidateAll()
 	s.readCache.invalidateAll()
 	s.parentCache.invalidateAll()
 	s.direntCache.invalidateAll()
-	s.statsCache.mu.Lock()
-	s.statsCache.hasStats = false
-	s.statsCache.mu.Unlock()
-	s.invalidateShareUsedCache()
 }

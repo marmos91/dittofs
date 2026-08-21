@@ -81,7 +81,7 @@ func RunSnapshotConformanceSuite(t *testing.T, factory SnapshotableStoreFactory)
 // testSnapshot_UsageCountersAfterRestore pins both usage mirrors: after
 // Restore the store-wide usedBytes counter AND the per-identity quota cache
 // MUST reflect the restored regular files, not the destination's pre-restore
-// values. GetUsedBytes feeds the quota guard in metadata/io.go and
+// values. GetUsedBytesForShare feeds the quota guard in metadata/io.go and
 // GetQuotaUsage feeds per-user/per-group enforcement; a stale 0 (the value a
 // freshly-opened store holds on an empty DB) silently disables enforcement
 // until the process restarts.
@@ -90,11 +90,11 @@ func testSnapshot_UsageCountersAfterRestore(t *testing.T, factory SnapshotableSt
 	srcB := asSnapshotable(t, srcStore)
 	ctx := t.Context()
 
-	populateTestData(t, srcStore, "ub")
+	shareName, _ := populateTestData(t, srcStore, "ub")
 	const wantBytes = populateTestDataUsedBytes
 
-	if got := srcStore.GetUsedBytes(); got != wantBytes {
-		t.Fatalf("source GetUsedBytes() = %d, want %d (fixture sanity)", got, wantBytes)
+	if got, err := srcStore.GetUsedBytesForShare(ctx, shareName); err != nil || got != wantBytes {
+		t.Fatalf("source GetUsedBytesForShare(%q) = (%d, %v), want (%d, nil) (fixture sanity)", shareName, got, err, wantBytes)
 	}
 
 	var buf bytes.Buffer
@@ -109,18 +109,18 @@ func testSnapshot_UsageCountersAfterRestore(t *testing.T, factory SnapshotableSt
 		t.Fatalf("Restore: %v", err)
 	}
 
-	if got := dstStore.GetUsedBytes(); got != wantBytes {
-		t.Errorf("restored GetUsedBytes() = %d, want %d — restore did not recompute the store-wide counter", got, wantBytes)
+	if got, err := dstStore.GetUsedBytesForShare(ctx, shareName); err != nil || got != wantBytes {
+		t.Errorf("restored GetUsedBytesForShare(%q) = (%d, %v), want (%d, nil) — restore did not recompute the per-share counter", shareName, got, err, wantBytes)
 	}
 
 	for _, scope := range []metadata.QuotaScope{metadata.QuotaScopeUser, metadata.QuotaScopeGroup} {
-		got, err := dstStore.GetQuotaUsage(scope, 1000)
+		got, err := dstStore.GetQuotaUsage(shareName, scope, 1000)
 		if err != nil {
-			t.Fatalf("GetQuotaUsage(%v, 1000): %v", scope, err)
+			t.Fatalf("GetQuotaUsage(%q, %v, 1000): %v", shareName, scope, err)
 		}
 		if got.Bytes != wantBytes || got.Files != 2 {
-			t.Errorf("restored GetQuotaUsage(%v, 1000) = %+v, want {Bytes:%d Files:2} — restore did not reseed the quota cache",
-				scope, got, wantBytes)
+			t.Errorf("restored GetQuotaUsage(%q, %v, 1000) = %+v, want {Bytes:%d Files:2} — restore did not reseed the quota cache",
+				shareName, scope, got, wantBytes)
 		}
 	}
 }

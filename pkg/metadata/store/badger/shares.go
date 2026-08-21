@@ -187,7 +187,6 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 		return err
 	}
 
-	var freedBytes int64
 	var quotaFreed map[basestore.QuotaKey]metadata.UsageStat
 	err := s.updateWithConflictRetry(ctx, func(txn *badgerdb.Txn) error {
 		_, err := txn.Get(keyShare(shareName))
@@ -195,11 +194,10 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 			return mapBadgerError(err, "share", shareName)
 		}
 
-		freed, quota, err := s.deleteShareFiles(txn, shareName)
+		quota, err := s.deleteShareFiles(txn, shareName)
 		if err != nil {
 			return err
 		}
-		freedBytes = freed
 		quotaFreed = quota
 
 		return txn.Delete(keyShare(shareName))
@@ -209,12 +207,7 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 	}
 	// Drop any cached options for the removed share, after a successful commit.
 	s.shareCache.Invalidate(shareName)
-	// Apply the usedBytes decrement once, after a successful commit.
-	if freedBytes > 0 {
-		s.usedBytes.Add(-freedBytes)
-	}
-	// The deleted share's bucket must not outlive it in the per-share cache.
-	s.invalidateShareUsedCache()
+	// Apply the usage decrement once, after a successful commit.
 	s.applyQuotaDelta(quotaFreed)
 	return nil
 }
@@ -232,21 +225,20 @@ func (s *BadgerMetadataStore) applyQuotaDelta(delta map[basestore.QuotaKey]metad
 }
 
 // deleteShareFiles removes every file inode and its dependent keys (parent,
-// link-count, child-map, objectID index) for a share, decrementing usedBytes
-// for regular files. Shared by the pool-path (BadgerMetadataStore.DeleteShare)
+// link-count, child-map, objectID index) for a share. Shared by the pool-path
+// (BadgerMetadataStore.DeleteShare)
 // and the transaction-path (badgerTransaction.DeleteShare) so both honor the
 // store.go:161 contract ("removes a share and all its metadata") identically;
 // dropping only the share key would orphan every file/parent/linkcount/child/
 // objectID entry. Files are collected first, then mutated, so keys are never
 // deleted out from under the active iterator.
 //
-// deleteShareFiles returns the total regular-file bytes it removed (freedBytes)
-// rather than mutating usedBytes inline. The caller applies the decrement once
-// after a successful commit — the tx-path accumulates it into the transaction's
-// pendingDelta and the pool-path applies it only once updateWithConflictRetry
-// returns nil — so a conflict retry that re-runs the enclosing Update never
-// double-counts. The counter is statfs-only, not quota-enforcing.
-func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName string) (freedBytes int64, quotaFreed map[basestore.QuotaKey]metadata.UsageStat, err error) {
+// deleteShareFiles returns the usage it freed rather than mutating the usage
+// cache inline. The caller applies the decrement once after a successful commit
+// — the tx-path accumulates it into the transaction's delta and the pool-path
+// applies it only once updateWithConflictRetry returns nil — so a conflict retry
+// that re-runs the enclosing Update never double-counts.
+func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName string) (quotaFreed map[basestore.QuotaKey]metadata.UsageStat, err error) {
 	type doomed struct {
 		id        uuid.UUID
 		objectID  metadata.ContentHash
@@ -268,7 +260,7 @@ func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName stri
 		val, vErr := item.ValueCopy(nil)
 		if vErr != nil {
 			it.Close()
-			return 0, nil, fmt.Errorf("badger DeleteShare: copy file value: %w", vErr)
+			return nil, fmt.Errorf("badger DeleteShare: copy file value: %w", vErr)
 		}
 		file, decErr := decodeFile(val)
 		if decErr != nil {
@@ -295,25 +287,22 @@ func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName stri
 	quotaFreed = make(map[basestore.QuotaKey]metadata.UsageStat)
 	for _, v := range victims {
 		if delErr := deleteFileKeys(txn, v.id, v.objectID, v.payloadID); delErr != nil {
-			return 0, nil, delErr
+			return nil, delErr
 		}
 		// Directories own c:<uuid>:<name> child entries; prefix-scan and
 		// delete them so no dangling mapping survives the share.
 		if v.isDir {
 			if delErr := deleteChildEntries(txn, v.id); delErr != nil {
-				return 0, nil, delErr
+				return nil, delErr
 			}
 		}
 		if v.isReg {
-			if v.size > 0 {
-				freedBytes += int64(v.size)
-			}
-			uk := basestore.QuotaKey{Scope: metadata.QuotaScopeUser, ID: v.uid}
+			uk := basestore.QuotaKey{Share: shareName, Scope: metadata.QuotaScopeUser, ID: v.uid}
 			us := quotaFreed[uk]
 			us.Bytes -= int64(v.size)
 			us.Files--
 			quotaFreed[uk] = us
-			gk := basestore.QuotaKey{Scope: metadata.QuotaScopeGroup, ID: v.gid}
+			gk := basestore.QuotaKey{Share: shareName, Scope: metadata.QuotaScopeGroup, ID: v.gid}
 			gs := quotaFreed[gk]
 			gs.Bytes -= int64(v.size)
 			gs.Files--
@@ -321,13 +310,13 @@ func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName stri
 		}
 	}
 
-	return freedBytes, quotaFreed, nil
+	return quotaFreed, nil
 }
 
 // deleteFileKeys removes the primary file row plus its parent, link-count, and
 // (when present) ObjectID and PayloadID secondary-index keys. Shared by
 // DeleteFile and DeleteShare so the per-file teardown lives in one place.
-// Missing keys are tolerated; the caller owns child-entry and usedBytes cleanup.
+// Missing keys are tolerated; the caller owns child-entry and usage cleanup.
 func deleteFileKeys(txn *badgerdb.Txn, id uuid.UUID, objectID metadata.ContentHash, payloadID metadata.PayloadID) error {
 	keys := [][]byte{
 		keyFile(id),

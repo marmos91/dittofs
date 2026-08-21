@@ -704,7 +704,7 @@ func (s *Service) applyIdentityQuotaOverlay(shareName string, store Store, stats
 	uid := *identity.UID
 
 	if iq, ok := s.identityQuotas.resolveUser(shareName, uid); ok {
-		if usage, err := store.GetQuotaUsage(QuotaScopeUser, uid); err == nil {
+		if usage, err := store.GetQuotaUsage(shareName, QuotaScopeUser, uid); err == nil {
 			if iq.LimitBytes > 0 {
 				applyByteQuotaOverlay(stats, uint64(iq.LimitBytes), uint64(max64(usage.Bytes, 0)))
 			}
@@ -716,7 +716,7 @@ func (s *Service) applyIdentityQuotaOverlay(shareName string, store Store, stats
 	if identity.GID != nil {
 		gid := *identity.GID
 		if iq, ok := s.identityQuotas.get(shareName, QuotaScopeGroup, gid); ok {
-			if usage, err := store.GetQuotaUsage(QuotaScopeGroup, gid); err == nil {
+			if usage, err := store.GetQuotaUsage(shareName, QuotaScopeGroup, gid); err == nil {
 				if iq.LimitBytes > 0 {
 					applyByteQuotaOverlay(stats, uint64(iq.LimitBytes), uint64(max64(usage.Bytes, 0)))
 				}

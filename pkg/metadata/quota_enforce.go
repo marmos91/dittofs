@@ -52,7 +52,7 @@ func (s *Service) checkIdentityQuotas(shareName string, store Store, uid, gid ui
 // quota against the live usage for (scope, usageID). usageID is the identity the
 // usage counter is keyed by (the real uid/gid — NOT the default-user sentinel).
 func (s *Service) enforceOne(shareName string, store Store, scope QuotaScope, usageID uint32, iq IdentityQuota, byteDelta, fileDelta int64) error {
-	usage, err := store.GetQuotaUsage(scope, usageID)
+	usage, err := store.GetQuotaUsage(shareName, scope, usageID)
 	if err != nil {
 		// Usage lookup failure must not wedge writes; treat as no-quota. Log it
 		// so a persistently broken usage counter is visible instead of silently

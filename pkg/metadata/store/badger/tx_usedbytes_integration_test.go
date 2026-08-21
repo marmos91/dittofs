@@ -85,21 +85,25 @@ func TestBadger_UsedBytes_RetryNoDoubleCount(t *testing.T) {
 	}
 	wg.Wait()
 
-	// The counter must equal the final stored file size, with no double-count
-	// from any conflict retry.
+	// The share's usage must equal the final stored file size, with no
+	// double-count from any conflict retry.
 	final, err := store.GetFile(ctx, handle)
 	if err != nil {
 		t.Fatalf("GetFile: %v", err)
 	}
-	if got := store.GetUsedBytes(); got != int64(final.Size) {
-		t.Fatalf("usedBytes=%d but final file size=%d (conflict-retry double-count)", got, final.Size)
+	got, err := store.GetUsedBytesForShare(ctx, shareName)
+	if err != nil {
+		t.Fatalf("GetUsedBytesForShare(%q): %v", shareName, err)
+	}
+	if got != int64(final.Size) {
+		t.Fatalf("share usage=%d but final file size=%d (conflict-retry double-count)", got, final.Size)
 	}
 }
 
-// TestBadger_Restore_ReinitsUsedBytes verifies that Restore reinitializes the
-// in-memory usedBytes counter from the restored file rows. Before the fix,
-// GetUsedBytes returned a stale value after Restore until server restart
-// because initUsedBytesCounter was only called at store-open time.
+// TestBadger_Restore_ReinitsUsedBytes verifies that Restore reseeds the
+// in-memory usage cache from the restored file rows. Before the fix, usage
+// stayed stale after Restore until server restart because the seeding scan was
+// only run at store-open time.
 func TestBadger_Restore_ReinitsUsedBytes(t *testing.T) {
 	ctx := context.Background()
 
@@ -161,7 +165,7 @@ func TestBadger_Restore_ReinitsUsedBytes(t *testing.T) {
 	}
 	defer dst.Close()
 
-	if got := dst.GetUsedBytes(); got != 0 {
+	if got, err := dst.GetUsedBytesForShare(ctx, shareName); err != nil || got != 0 {
 		t.Fatalf("pre-Restore GetUsedBytes = %d, want 0", got)
 	}
 
@@ -172,7 +176,7 @@ func TestBadger_Restore_ReinitsUsedBytes(t *testing.T) {
 
 	// The counter must reflect the restored file's size immediately, without a
 	// server restart (i.e. without re-opening the store).
-	if got := dst.GetUsedBytes(); got != int64(wantSize) {
+	if got, err := dst.GetUsedBytesForShare(ctx, shareName); err != nil || got != int64(wantSize) {
 		t.Fatalf("post-Restore GetUsedBytes = %d, want %d (usedBytes counter not reinitialized after Restore)", got, wantSize)
 	}
 }
@@ -261,13 +265,20 @@ func TestBadger_GetFilesystemStatistics_IgnoresNonRegular(t *testing.T) {
 			"directory size %d must not be counted", stats.UsedBytes, regularSize, dirSize)
 	}
 
-	// fileCount still counts every inode (root dir + regular file = 2).
-	if stats.UsedFiles != 2 {
-		t.Fatalf("tx GetFilesystemStatistics.UsedFiles = %d, want 2", stats.UsedFiles)
+	// UsedFiles counts the share's regular files, so the root directory does
+	// not contribute: one regular file = 1.
+	if stats.UsedFiles != 1 {
+		t.Fatalf("tx GetFilesystemStatistics.UsedFiles = %d, want 1 (regular only); "+
+			"the share root directory must not be counted", stats.UsedFiles)
 	}
 
-	// Consistency cross-check: the atomic counter (GetUsedBytes) must agree.
-	if got := store.GetUsedBytes(); got != int64(regularSize) {
-		t.Fatalf("GetUsedBytes = %d, want %d", got, regularSize)
+	// Consistency cross-check: the per-share usage counter must agree with what
+	// the in-transaction scan reported.
+	got, err := store.GetUsedBytesForShare(ctx, shareName)
+	if err != nil {
+		t.Fatalf("GetUsedBytesForShare(%q): %v", shareName, err)
+	}
+	if got != int64(regularSize) {
+		t.Fatalf("GetUsedBytesForShare = %d, want %d", got, regularSize)
 	}
 }
