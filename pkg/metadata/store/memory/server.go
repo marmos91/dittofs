@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 // ============================================================================
@@ -127,19 +128,8 @@ func (store *MemoryMetadataStore) GetFilesystemStatistics(ctx context.Context, h
 		}
 	}
 
-	stats := store.computeStatistics(shareNameOf(handle))
+	stats := store.computeStatistics(basestore.ShareOfHandle(handle))
 	return &stats, nil
-}
-
-// shareNameOf decodes the share a handle belongs to. An undecodable handle
-// yields the empty share, whose usage buckets are empty — the same answer a
-// share with no files gives.
-func shareNameOf(handle metadata.FileHandle) string {
-	shareName, _, err := metadata.DecodeFileHandle(handle)
-	if err != nil {
-		return ""
-	}
-	return shareName
 }
 
 // computeStatistics calculates current filesystem statistics for one share.

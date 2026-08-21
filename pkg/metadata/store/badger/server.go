@@ -7,6 +7,7 @@ import (
 	badgerdb "github.com/dgraph-io/badger/v4"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 // ============================================================================
@@ -157,15 +158,8 @@ func (s *BadgerMetadataStore) GetFilesystemStatistics(ctx context.Context, handl
 		return nil, err
 	}
 
-	shareName, _, err := metadata.DecodeFileHandle(handle)
-	if err != nil {
-		// An undecodable handle names no share; its usage buckets are empty,
-		// the same answer a share with no files gives.
-		shareName = ""
-	}
-
 	s.quotaMu.Lock()
-	usage := s.quota.Share(shareName)
+	usage := s.quota.Share(basestore.ShareOfHandle(handle))
 	s.quotaMu.Unlock()
 
 	usedSize := uint64(max(usage.Bytes, 0))

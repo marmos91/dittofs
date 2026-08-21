@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 // statfsQuery builds the aggregate query (and its args) for
@@ -18,10 +19,7 @@ import (
 // Both the pool and transaction implementations share this so the scoping rule
 // lives in exactly one place.
 func statfsQuery(handle metadata.FileHandle) (sql string, args []any) {
-	shareName, _, decodeErr := metadata.DecodeFileHandle(handle)
-	if decodeErr != nil {
-		shareName = ""
-	}
+	shareName := basestore.ShareOfHandle(handle)
 	if shareName != "" {
 		return `SELECT COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE share_name = ?1 AND file_type = ?2`,
 			[]any{shareName, int(metadata.FileTypeRegular)}

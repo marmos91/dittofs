@@ -18,3 +18,18 @@ func GenerateHandle(ctx context.Context, shareName string) (metadata.FileHandle,
 	}
 	return metadata.GenerateNewHandle(shareName)
 }
+
+// ShareOfHandle returns the share a handle belongs to, or the empty string when
+// the handle does not decode.
+//
+// Usage and statistics are per-share, so every backend needs the handle's share
+// to answer statfs. An undecodable handle is not an error there: it names no
+// share, and a share with no files and a share that does not exist report the
+// same empty usage anyway.
+func ShareOfHandle(handle metadata.FileHandle) string {
+	shareName, _, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return ""
+	}
+	return shareName
+}

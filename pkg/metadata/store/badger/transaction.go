@@ -1404,10 +1404,7 @@ func (tx *badgerTransaction) GetFilesystemStatistics(ctx context.Context, handle
 		return nil, err
 	}
 
-	shareName, _, decErr := metadata.DecodeFileHandle(handle)
-	if decErr != nil {
-		shareName = ""
-	}
+	shareName := basestore.ShareOfHandle(handle)
 
 	// Read through the open transaction rather than the post-commit usage
 	// cache, so a statfs issued inside a transaction sees that transaction's
