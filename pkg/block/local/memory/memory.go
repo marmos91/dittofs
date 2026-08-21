@@ -322,7 +322,10 @@ func (s *MemoryStore) Durable() bool { return s.durable.Load() }
 // SetDurable overrides the durability report.
 func (s *MemoryStore) SetDurable(v bool) { s.durable.Store(v) }
 
-// WriteVersion reports a monotonic marker of the store's write history. The
-// memory store keeps no such history, so it reports zero, which reads as "no
-// observation" and leaves Hydrate's gate disabled.
+// WriteVersion reports zero: this store keeps no write history, so Hydrate's
+// gate stays disabled.
 func (s *MemoryStore) WriteVersion() uint64 { return 0 }
+
+// Invalidate is a no-op: the memory store has no durable tier to demote and no
+// remote copy to fall back to, so there is nothing a read could fetch instead.
+func (s *MemoryStore) Invalidate(_ context.Context, _ string, _, _ int64) error { return nil }

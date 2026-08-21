@@ -499,18 +499,13 @@ func (e idxEntry) encode() []byte {
 }
 
 // hydratable returns the sub-ranges of [off, off+n) that a hydrate may fill:
-// those no live interval holds, and those a cold interval holds that was
-// recorded no later than mark. Ranges are ascending, disjoint and coalesced,
-// and are offsets in the file, not in the caller's buffer.
+// those no live interval holds, plus those a cold interval holds that was
+// recorded no later than mark (0 bounds nothing). Ranges are ascending, disjoint
+// and coalesced, and are offsets in the file, not in the caller's buffer.
 //
-// Live warm or dirty bytes are never overwritten. They are the newer copy by
-// construction — the remote holds what a carve uploaded, the journal holds that
-// plus anything written since — so a fetch that resolved the manifest rows
-// covering them is offering the older content back.
-//
-// mark bounds the cold case in time: a cold range recorded after the caller
-// sampled it postdates the fetch, so those bytes were superseded and evicted
-// while it was running. A mark of 0 bounds nothing.
+// Live warm or dirty bytes are never included — they are the newer copy — and
+// neither is a cold interval recorded after mark, which postdates the fetch.
+// See Store.Hydrate.
 func (fi *fileIndex) hydratable(off, n int64, mark uint64) [][2]int64 {
 	if n <= 0 {
 		return nil

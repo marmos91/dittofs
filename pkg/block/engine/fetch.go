@@ -53,11 +53,10 @@ type coveringChunk struct {
 // row's head, and the local tier keeps whichever landed last rather than
 // whichever row coverage prefers. A zero To means the row's whole extent.
 //
-// At is the local store's WriteVersion as it stood before the manifest rows
-// were resolved. It bounds the write-back in time as well as in space: the
-// local tier drops it when the range changed since, so a fetch stalled in the
-// remote read while a write, truncate or punch lands cannot put the
-// pre-mutation bytes back over the newer ones. Zero leaves that gate off.
+// At is the local store's WriteVersion as it stood before the manifest rows were
+// resolved. The local tier drops the write-back where the range changed since,
+// so a fetch stalled in the remote read while a write, truncate or punch lands
+// cannot put the pre-mutation bytes back. Zero leaves that gate off.
 type hydrateSpan struct {
 	From uint64
 	To   uint64

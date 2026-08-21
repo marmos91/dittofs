@@ -59,6 +59,12 @@ type LocalStore interface {
 	// sampled before resolving a fetch to bound what it may write back.
 	WriteVersion() uint64
 
+	// Invalidate demotes the durable bytes covering [offset, offset+length) to
+	// remote-only, so a read of the range fetches rather than serving them. A
+	// caller that has proven the local copy unusable calls it before re-fetching,
+	// since Hydrate fills and will not write over a range the store still claims.
+	Invalidate(ctx context.Context, payloadID string, offset, length int64) error
+
 	// Commit fsyncs the file's buffered writes so they become durable. NFS
 	// COMMIT / SMB Flush land here. Backends without a durable substrate (the
 	// in-memory store) implement it as a no-op returning nil.

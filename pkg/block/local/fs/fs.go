@@ -216,6 +216,10 @@ func (s *FSStore) Hydrate(ctx context.Context, payloadID string, offset int64, d
 	return s.Store.Hydrate(ctx, journal.FileID(payloadID), offset, data, notAfter)
 }
 
+func (s *FSStore) Invalidate(ctx context.Context, payloadID string, offset, length int64) error {
+	return s.Store.Invalidate(ctx, journal.FileID(payloadID), offset, length)
+}
+
 func (s *FSStore) Commit(ctx context.Context, payloadID string) error {
 	return s.Store.Commit(ctx, journal.FileID(payloadID))
 }
