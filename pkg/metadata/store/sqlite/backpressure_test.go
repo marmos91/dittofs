@@ -15,10 +15,10 @@ import (
 )
 
 const (
-	// pre1769Ceiling is the total wait of the fixed 3-attempt (10/20/30ms) retry
-	// loop this test guards against: a transaction that blocks longer than this
-	// is one that loop would have given up on and returned EIO for.
-	pre1769Ceiling = 60 * time.Millisecond
+	// fixedAttemptCeiling is the total wait of the fixed 3-attempt (10/20/30ms)
+	// retry loop this test guards against: a transaction that blocks longer than
+	// this is one that loop would have given up on and returned EIO for.
+	fixedAttemptCeiling = 60 * time.Millisecond
 
 	// callLimit bounds a single transaction against the budget the transaction
 	// itself retries within, not against elapsed test time. WithTransaction
@@ -138,7 +138,7 @@ func TestSQLite_ConcurrentWritesBackpressureNoEIO(t *testing.T) {
 						t.Errorf("WithTransaction blocked %v, past the %v budget it retries within (limit %v)", blocked, txretry.Budget, callLimit)
 						return
 					}
-					if blocked > pre1769Ceiling {
+					if blocked > fixedAttemptCeiling {
 						backpressured.Add(1)
 					}
 				}
@@ -161,8 +161,9 @@ func TestSQLite_ConcurrentWritesBackpressureNoEIO(t *testing.T) {
 	// Without this the assertion above could pass vacuously: if the writers ever
 	// stopped colliding, every transaction would succeed on its first attempt and
 	// a store that never retries at all would look identical to one that does.
-	if n := backpressured.Load(); n == 0 {
-		t.Fatalf("no transaction blocked longer than %v, so the writers never contended and the retry path was never exercised", pre1769Ceiling)
+	n := backpressured.Load()
+	if n == 0 {
+		t.Fatalf("no transaction blocked longer than %v, so the writers never contended and the retry path was never exercised", fixedAttemptCeiling)
 	}
-	t.Logf("%d/%d transactions blocked past %v and still succeeded", backpressured.Load(), stores*writersPerStore*iters, pre1769Ceiling)
+	t.Logf("%d/%d transactions blocked past %v and still succeeded", n, stores*writersPerStore*iters, fixedAttemptCeiling)
 }
