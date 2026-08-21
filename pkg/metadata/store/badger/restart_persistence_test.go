@@ -127,7 +127,7 @@ func mkFile(t *testing.T, store metadata.Store, shareName string, dirHandle meta
 	file.ID = id
 	mutate(&file.FileAttr)
 
-	require.NoError(t, store.PutFile(ctx, file))
+	require.NoError(t, store.UpdateAttrs(ctx, file))
 	require.NoError(t, store.SetParent(ctx, handle, dirHandle))
 	require.NoError(t, store.SetChild(ctx, dirHandle, name, handle))
 	return handle

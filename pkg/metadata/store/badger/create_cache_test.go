@@ -50,7 +50,7 @@ func putDir(t *testing.T, s *BadgerMetadataStore, share string, parent metadata.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutFile(ctx, &metadata.File{
+	if err := s.UpdateAttrs(ctx, &metadata.File{
 		ID: id, ShareName: share,
 		FileAttr: metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755},
 	}); err != nil {
@@ -77,7 +77,7 @@ func TestWarmFileReadCache_HitAndPathless(t *testing.T) {
 	f.ShareName = "/s"
 	f.Path = "/dir/created.txt"
 	f.Mode = 0o644
-	if err := s.PutFile(ctx, f); err != nil { // persist so a real read would succeed
+	if err := s.UpdateAttrs(ctx, f); err != nil { // persist so a real read would succeed
 		t.Fatal(err)
 	}
 	handle, err := metadata.EncodeShareHandle("/s", f.ID)
@@ -189,7 +189,7 @@ func TestGetFileForCreate_PathFreshAfterRename(t *testing.T) {
 		t.Fatalf("initial parent read: path=%q err=%v", got.Path, err)
 	}
 
-	// Rename /dirA -> /dirB exactly as Move does: repoint the edges AND PutFile
+	// Rename /dirA -> /dirB exactly as Move does: repoint the edges AND UpdateAttrs
 	// the moved directory (its ctime changes), which drives the cache invalidation.
 	if err := s.DeleteChild(ctx, root, "dirA"); err != nil {
 		t.Fatal(err)
@@ -201,7 +201,7 @@ func TestGetFileForCreate_PathFreshAfterRename(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutFile(ctx, moved); err != nil { // ctime bump -> dirtyFiles -> invalidate
+	if err := s.UpdateAttrs(ctx, moved); err != nil { // ctime bump -> dirtyFiles -> invalidate
 		t.Fatal(err)
 	}
 

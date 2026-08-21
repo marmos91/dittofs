@@ -1085,7 +1085,7 @@ func (s *Service) flushDirTimes(ctx context.Context, dirHandle FileHandle) {
 		if !applyDirTimes(&dir.FileAttr, mtime, ctime, atime) {
 			return nil
 		}
-		return tx.PutFile(ctx, dir)
+		return tx.UpdateAttrs(ctx, dir)
 	})
 	if err != nil {
 		return // leave pending in place; a later bump/flush will retry

@@ -70,8 +70,8 @@ func TestReset_PopulatedStore(t *testing.T) {
 				Mode: 0o644,
 			},
 		}
-		if err := store.PutFile(ctx, f); err != nil {
-			t.Fatalf("PutFile %s: %v", name, err)
+		if err := store.UpdateAttrs(ctx, f); err != nil {
+			t.Fatalf("UpdateAttrs %s: %v", name, err)
 		}
 		if err := store.SetParent(ctx, handle, rootHandle); err != nil {
 			t.Fatalf("SetParent %s: %v", name, err)

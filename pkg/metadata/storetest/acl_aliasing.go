@@ -8,7 +8,7 @@ import (
 )
 
 // runACLAliasingTests asserts that backends deep-copy FileAttr.ACL on both the
-// store-from-caller (PutFile) and return-to-caller (GetFile) paths, so neither
+// store-from-caller (UpdateAttrs) and return-to-caller (GetFile) paths, so neither
 // side can corrupt the other's view by mutating an ACE in place.
 //
 // This pins the cross-backend parity gap the area-6 audit found: the memory
@@ -23,7 +23,7 @@ func runACLAliasingTests(t *testing.T, factory StoreFactory) {
 
 // putFileWithACL creates a regular file carrying the supplied ACL and returns
 // its handle. The caller retains ownership of acl (it is set on the File passed
-// to PutFile) so tests can mutate it afterwards to probe for aliasing.
+// to UpdateAttrs) so tests can mutate it afterwards to probe for aliasing.
 func putFileWithACL(t *testing.T, store metadata.Store, handle metadata.FileHandle, a *acl.ACL) {
 	t.Helper()
 
@@ -33,8 +33,8 @@ func putFileWithACL(t *testing.T, store metadata.Store, handle metadata.FileHand
 		t.Fatalf("GetFile: %v", err)
 	}
 	file.ACL = a
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile with ACL: %v", err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs with ACL: %v", err)
 	}
 }
 
@@ -51,7 +51,7 @@ func newTestACL() *acl.ACL {
 	}
 }
 
-// testPutDoesNotAliasCallerACL: PutFile a file with a non-empty ACL, then mutate
+// testPutDoesNotAliasCallerACL: UpdateAttrs a file with a non-empty ACL, then mutate
 // the caller's ACE slice in place; re-GetFile must return the ORIGINAL ACL.
 // If the store aliased the caller's slice, the in-place edit would leak into
 // the stored row.
@@ -73,7 +73,7 @@ func testPutDoesNotAliasCallerACL(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile: %v", err)
 	}
 	if got.ACL == nil {
-		t.Fatalf("stored ACL is nil after PutFile")
+		t.Fatalf("stored ACL is nil after UpdateAttrs")
 	}
 	if len(got.ACL.ACEs) != 1 {
 		t.Fatalf("expected 1 stored ACE, got %d", len(got.ACL.ACEs))

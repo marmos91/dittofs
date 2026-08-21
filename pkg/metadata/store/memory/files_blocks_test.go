@@ -59,7 +59,7 @@ func putFileForBlocksTest(
 			Blocks:       blocks,
 		},
 	}
-	require.NoError(t, store.PutFile(ctx, file))
+	require.NoError(t, store.UpdateAttrs(ctx, file))
 	require.NoError(t, store.SetParent(ctx, handle, rootHandle))
 	require.NoError(t, store.SetChild(ctx, rootHandle, name, handle))
 	return handle, file
@@ -77,7 +77,7 @@ func makeBlock(seed byte, idx int) block.ChunkRef {
 	}
 }
 
-// TestMemoryStore_PutFile_BlocksDeepCopy verifies that PutFile deep-copies
+// TestMemoryStore_PutFile_BlocksDeepCopy verifies that UpdateAttrs deep-copies
 // the caller's []ChunkRef so a subsequent caller-side mutation cannot
 // observably mutate the stored view (T-12-09 mitigation).
 func TestMemoryStore_PutFile_BlocksDeepCopy(t *testing.T) {
@@ -91,7 +91,7 @@ func TestMemoryStore_PutFile_BlocksDeepCopy(t *testing.T) {
 	}
 	handle, _ := putFileForBlocksTest(t, store, "/put-deep", "put.bin", original)
 
-	// Mutate the caller-side slice AFTER PutFile returned.
+	// Mutate the caller-side slice AFTER UpdateAttrs returned.
 	mutated := original
 	mutated[0].Hash[0] = 0xFF
 	mutated[1].Offset = 999
@@ -103,11 +103,11 @@ func TestMemoryStore_PutFile_BlocksDeepCopy(t *testing.T) {
 	require.Len(t, got.Blocks, 3)
 
 	assert.Equal(t, byte(0xAA), got.Blocks[0].Hash[0],
-		"PutFile must deep-copy: caller-side hash mutation leaked into stored state")
+		"UpdateAttrs must deep-copy: caller-side hash mutation leaked into stored state")
 	assert.Equal(t, uint64(4*1024*1024), got.Blocks[1].Offset,
-		"PutFile must deep-copy: caller-side offset mutation leaked into stored state")
+		"UpdateAttrs must deep-copy: caller-side offset mutation leaked into stored state")
 	assert.Equal(t, uint32(4*1024*1024), got.Blocks[2].Size,
-		"PutFile must deep-copy: caller-side size mutation leaked into stored state")
+		"UpdateAttrs must deep-copy: caller-side size mutation leaked into stored state")
 }
 
 // TestMemoryStore_GetFile_BlocksDeepCopy verifies that GetFile returns a

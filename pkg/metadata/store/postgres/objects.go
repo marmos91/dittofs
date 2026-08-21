@@ -488,7 +488,7 @@ var _ block.FileChunkStore = (*postgresTransaction)(nil)
 // public store's connection-pool helpers. Previously every method just
 // called `tx.store.X(...)` which routed through the pool — defeating
 // rollback for any caller that bumped RefCount inside WithTransaction
-// then encountered a downstream PutFile failure (silent
+// then encountered a downstream UpdateAttrs failure (silent
 // leak). All proxies below are now tx-bound; non-mutating
 // helpers keep the pool path because no caller mutates state through them.
 

@@ -53,7 +53,7 @@ func (s *Service) PunchHole(ctx *AuthContext, handle FileHandle, offset, length 
 
 	// Commit any pending write metadata first so file.Blocks/Size reflect the
 	// latest state before we mutate the block list. Durable: this flush precedes a
-	// strict manifest-mutating PutFile, and DEALLOCATE/ALLOCATE are rare (not the
+	// strict manifest-mutating UpdateAttrs, and DEALLOCATE/ALLOCATE are rare (not the
 	// hot WRITE path), so keep the metadata fsync inline.
 	if _, err := s.FlushPendingWriteForFile(ctx, handle, true); err != nil {
 		return nil, err
@@ -84,7 +84,6 @@ func (s *Service) PunchHole(ctx *AuthContext, handle FileHandle, offset, length 
 	newBlocks := block.PunchHole(file.Blocks, offset, length)
 	file.Blocks = newBlocks
 	// PunchHole rewrote the manifest — persist the new file_block_refs list.
-	file.BlocksDirty = true
 	if !file.ObjectID.IsZero() {
 		if len(newBlocks) == 0 {
 			file.ObjectID = block.ObjectID{}
@@ -97,7 +96,7 @@ func (s *Service) PunchHole(ctx *AuthContext, handle FileHandle, offset, length 
 	file.Mtime = now
 	file.Ctime = now
 
-	if err := store.PutFile(ctx.Context, file); err != nil {
+	if err := store.SetManifest(ctx.Context, file); err != nil {
 		return nil, err
 	}
 
@@ -127,7 +126,7 @@ func (s *Service) Allocate(ctx *AuthContext, handle FileHandle, offset, length u
 		return nil, err
 	}
 
-	// Durable flush (see PunchHole): precedes a strict PutFile, rare op.
+	// Durable flush (see PunchHole): precedes a strict UpdateAttrs, rare op.
 	if _, err := s.FlushPendingWriteForFile(ctx, handle, true); err != nil {
 		return nil, err
 	}
@@ -161,7 +160,7 @@ func (s *Service) Allocate(ctx *AuthContext, handle FileHandle, offset, length u
 	file.Mtime = now
 	file.Ctime = now
 
-	if err := store.PutFile(ctx.Context, file); err != nil {
+	if err := store.UpdateAttrs(ctx.Context, file); err != nil {
 		return nil, err
 	}
 

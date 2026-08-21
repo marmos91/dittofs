@@ -57,8 +57,8 @@ type SQLiteMetadataStore struct {
 	// query on startup.
 	usedBytes atomic.Int64
 
-	// manifestWrites counts how many times PutFile actually persisted the
-	// file_block_refs manifest (i.e. ran past the BlocksDirty gate). Test-only
+	// manifestWrites counts how many times a write actually persisted the
+	// file_block_refs manifest (i.e. came in through SetManifest). Test-only
 	// observability: it lets the conformance suite prove an attr-only write
 	// performed ZERO manifest writes (row-count alone cannot — a DELETE+INSERT
 	// of the same M rows leaves the same count). Never read in production.
@@ -66,7 +66,7 @@ type SQLiteMetadataStore struct {
 
 	// manifestRowsScanned counts the stored file_block_refs rows the manifest
 	// diff has had to read since open. Test-only observability: it is what
-	// BlocksDirtyOffsets bounds, so a test can prove a scoped commit reads the
+	// ManifestDirtyOffsets bounds, so a test can prove a scoped commit reads the
 	// changed offsets rather than the whole file. Never read in production.
 	manifestRowsScanned atomic.Int64
 

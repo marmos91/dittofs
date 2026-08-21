@@ -13,7 +13,7 @@ import (
 // value type (Hash is a [32]byte array, Offset and Size are scalars), so a
 // flat element-wise copy is sufficient — there are no shared pointer fields.
 //
-// Used by PutFile/GetFile in the Memory backend to prevent slice aliasing
+// Used by UpdateAttrs/GetFile in the Memory backend to prevent slice aliasing
 // between the caller's view and the stored view (T-12-09).
 //
 // Returns nil if the input is nil or empty so the round-trip preserves
@@ -28,7 +28,7 @@ func cloneBlocks(in []block.ChunkRef) []block.ChunkRef {
 // Who), so an element-wise slice copy fully detaches the clone — no nested
 // pointers remain.
 //
-// Used by PutFile/GetFile/ListChildren in the Memory backend to prevent ACL
+// Used by UpdateAttrs/GetFile/ListChildren in the Memory backend to prevent ACL
 // aliasing between the caller's view and the stored view. Without this, an
 // in-place edit of an ACE by either side silently corrupts the other (the
 // Badger backend round-trips through JSON and never aliases, so this restores
@@ -147,11 +147,19 @@ func (store *MemoryMetadataStore) getFileLocked(handle metadata.FileHandle) (*me
 	return store.buildFileWithNlink(handle, fileData)
 }
 
-// PutFile stores or updates file metadata.
+// UpdateAttrs stores or updates file metadata.
 // Creates the entry if it doesn't exist.
-func (store *MemoryMetadataStore) PutFile(ctx context.Context, file *metadata.File) error {
+func (store *MemoryMetadataStore) UpdateAttrs(ctx context.Context, file *metadata.File) error {
 	return store.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return tx.PutFile(ctx, file)
+		return tx.UpdateAttrs(ctx, file)
+	})
+}
+
+// SetManifest stores or updates file metadata and rewrites the stored block
+// manifest from file.Blocks.
+func (store *MemoryMetadataStore) SetManifest(ctx context.Context, file *metadata.File) error {
+	return store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return tx.SetManifest(ctx, file)
 	})
 }
 

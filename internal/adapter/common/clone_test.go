@@ -89,7 +89,7 @@ func TestCloneWholeFile_SelfCloneNoOp(t *testing.T) {
 }
 
 // TestCloneWholeFile_RollsBackOnIncrementError pins the atomicity contract: a
-// mid-loop IncrementRefCount failure rolls back the destination PutFile and all
+// mid-loop IncrementRefCount failure rolls back the destination UpdateAttrs and all
 // RefCount bumps, and skips the POST-txn cache invalidation.
 func TestCloneWholeFile_RollsBackOnIncrementError(t *testing.T) {
 	ctx := context.Background()

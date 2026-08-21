@@ -317,7 +317,7 @@ func TestEmptyThreadsBlocksToFreeBlocks(t *testing.T) {
 		{Offset: 0, Size: 4096},
 		{Offset: 4096, Size: 4096},
 	}
-	require.NoError(t, store.PutFile(tt.ctx.Context, file))
+	require.NoError(t, store.UpdateAttrs(tt.ctx.Context, file))
 
 	// Recycle it, then empty the bin.
 	_, _, err = tt.deps.svc.RemoveFile(tt.ctx, tt.deps.rootHandle, "withblocks.txt")

@@ -18,7 +18,7 @@ import (
 // we use a separate table (not JSONB on files) to avoid TOAST write
 // amplification on the VM-primary workload.
 //
-// All helpers operate against a pgx.Tx so that PutFile's ChunkRef replace
+// All helpers operate against a pgx.Tx so that UpdateAttrs's ChunkRef replace
 // happens atomically with the files row UPDATE.
 //
 // Schema lives in migrations/000012_file_block_refs.up.sql.
@@ -247,7 +247,7 @@ func upsertChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, refs []bl
 	return nil
 }
 
-// PutFileChunkRefsCallCount returns how many times PutFile actually wrote
+// PutFileChunkRefsCallCount returns how many times UpdateAttrs actually wrote
 // file_block_refs rows — the delta upserted or deleted at least one row —
 // since store open. Test-only — proves attr-only writes and no-op
 // re-projections of an unchanged manifest perform ZERO manifest writes.
@@ -256,7 +256,7 @@ func (s *SQLiteMetadataStore) PutFileChunkRefsCallCount() int64 {
 }
 
 // PutFileChunkRefsManifestRowsScanned returns how many stored file_block_refs
-// rows PutFile's manifest diff has read since store open. Test-only — proves a
+// rows UpdateAttrs's manifest diff has read since store open. Test-only — proves a
 // scoped commit's read cost tracks the changed offsets, not the file's total
 // chunk count.
 func (s *SQLiteMetadataStore) PutFileChunkRefsManifestRowsScanned() int64 {

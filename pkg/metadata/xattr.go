@@ -222,7 +222,7 @@ func ResolveSetXattr(ctx context.Context, files Files, handle FileHandle, name s
 		return err
 	}
 	file.ApplyEAMutations([]EAMutation{{Name: name, Value: value}})
-	return files.PutFile(ctx, file)
+	return files.UpdateAttrs(ctx, file)
 }
 
 // ResolveRemoveXattr removes an xattr from the inline backing. Removing a name
@@ -240,7 +240,7 @@ func ResolveRemoveXattr(ctx context.Context, files Files, handle FileHandle, nam
 		return &StoreError{Code: metaerrors.ErrNotFound, Message: "xattr not found"}
 	}
 	file.ApplyEAMutations([]EAMutation{{Name: name, Delete: true}})
-	return files.PutFile(ctx, file)
+	return files.UpdateAttrs(ctx, file)
 }
 
 // ResolveListXattr returns every xattr name on the file, merged from both

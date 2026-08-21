@@ -43,9 +43,9 @@ func benchSeed(b *testing.B, store metadata.Store, n int) (string, []metadata.Fi
 		if err != nil {
 			b.Fatalf("DecodeFileHandle: %v", err)
 		}
-		if err := store.PutFile(ctx, &metadata.File{ShareName: share, Path: fp, ID: id,
+		if err := store.UpdateAttrs(ctx, &metadata.File{ShareName: share, Path: fp, ID: id,
 			FileAttr: metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644, UID: 1000, GID: 1000}}); err != nil {
-			b.Fatalf("PutFile seed: %v", err)
+			b.Fatalf("UpdateAttrs seed: %v", err)
 		}
 		if err := store.SetParent(ctx, h, rootHandle); err != nil {
 			b.Fatalf("SetParent: %v", err)
@@ -62,7 +62,7 @@ func benchSeed(b *testing.B, store metadata.Store, n int) (string, []metadata.Fi
 // against a scattered file set, in the two shapes the runtime can take:
 //
 //	getfile_putfile — the fallback: GetFile (row + aggregate block-refs read)
-//	                  then PutFile (full-row UPDATE), two statements per op
+//	                  then UpdateAttrs (full-row UPDATE), two statements per op
 //	applydatawrite  — the DataWriteApplier fast path: one CTE statement that
 //	                  reads the old size/owner and updates size/mtime/ctime in
 //	                  a single round-trip
@@ -111,7 +111,7 @@ func BenchmarkPostgresWritePath(b *testing.B) {
 			f.Size = 4096
 			f.Mtime = time.Now()
 			f.Ctime = f.Mtime
-			return tx.PutFile(ctx, f)
+			return tx.UpdateAttrs(ctx, f)
 		})
 	})
 

@@ -51,7 +51,7 @@ func TestApplyDataWrite_Sound(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, id, _ := metadata.DecodeFileHandle(h)
-		if err := store.PutFile(ctx, &metadata.File{ShareName: share, Path: "/s/" + name, ID: id,
+		if err := store.UpdateAttrs(ctx, &metadata.File{ShareName: share, Path: "/s/" + name, ID: id,
 			FileAttr: metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: mode, UID: 1000, GID: 1000, Size: size}}); err != nil {
 			t.Fatal(err)
 		}

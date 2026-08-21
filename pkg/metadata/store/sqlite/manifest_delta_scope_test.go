@@ -68,20 +68,19 @@ func scopedCommitRowsScanned(t *testing.T, chunks int) int64 {
 
 	// Seed the manifest in one unscoped write — the state a large file reaches
 	// before the commit under test.
-	if err := store.PutFile(ctx, &metadata.File{
+	if err := store.SetManifest(ctx, &metadata.File{
 		ShareName: share,
 		Path:      "/f",
 		ID:        id,
 		FileAttr: metadata.FileAttr{
-			Type:        metadata.FileTypeRegular,
-			Mode:        0o644,
-			Size:        uint64(chunks) * chunkSize,
-			PayloadID:   metadata.PayloadID(payloadID),
-			Blocks:      refs,
-			BlocksDirty: true,
+			Type:      metadata.FileTypeRegular,
+			Mode:      0o644,
+			Size:      uint64(chunks) * chunkSize,
+			PayloadID: metadata.PayloadID(payloadID),
+			Blocks:    refs,
 		},
 	}); err != nil {
-		t.Fatalf("PutFile (seed %d chunks): %v", chunks, err)
+		t.Fatalf("SetManifest (seed %d chunks): %v", chunks, err)
 	}
 
 	// Commit a single replacement chunk in the middle of the file, the way a

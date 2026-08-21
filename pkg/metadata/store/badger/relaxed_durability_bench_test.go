@@ -14,7 +14,7 @@ import (
 
 // BenchmarkNamespaceCommit measures serial single-thread namespace-commit
 // throughput — the create/remove/rename hot path (#1573 Wall 1). Both sub-benchmarks
-// run the SAME code a create runs (WithTransactionRelaxed committing a PutFile);
+// run the SAME code a create runs (WithTransactionRelaxed committing a UpdateAttrs);
 // only the store's durability config differs, so the delta is purely the
 // per-commit fsync the strict store still pays and the relaxed store defers.
 //
@@ -52,7 +52,7 @@ func BenchmarkNamespaceCommit(b *testing.B) {
 				// Same call the create path uses: relaxed in relaxed mode,
 				// fsync-per-commit in strict mode (SyncWrites=true).
 				if err := store.WithTransactionRelaxed(ctx, func(tx metadata.Transaction) error {
-					return tx.PutFile(ctx, f)
+					return tx.UpdateAttrs(ctx, f)
 				}); err != nil {
 					b.Fatal(err)
 				}

@@ -64,8 +64,8 @@ func createStreamChild(t *testing.T, store metadata.Store, shareName string, par
 	}
 	file.Size = size
 	file.PayloadID = metadata.PayloadID(metadata.BuildPayloadID(shareName, file.Path))
-	if err := store.PutFile(t.Context(), file); err != nil {
-		t.Fatalf("PutFile(stream child): %v", err)
+	if err := store.UpdateAttrs(t.Context(), file); err != nil {
+		t.Fatalf("UpdateAttrs(stream child): %v", err)
 	}
 	return handle
 }

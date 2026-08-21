@@ -56,8 +56,8 @@ func TestBadger_UsedBytes_RetryNoDoubleCount(t *testing.T) {
 			},
 		}
 	}
-	if err := store.PutFile(ctx, mkFile(0)); err != nil {
-		t.Fatalf("initial PutFile: %v", err)
+	if err := store.UpdateAttrs(ctx, mkFile(0)); err != nil {
+		t.Fatalf("initial UpdateAttrs: %v", err)
 	}
 	rootHandle, err := metadata.EncodeShareHandle(shareName, rootFile.ID)
 	if err != nil {
@@ -79,7 +79,7 @@ func TestBadger_UsedBytes_RetryNoDoubleCount(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < itersPerWorker; i++ {
 				size := base*1000 + uint64(i)*7
-				_ = store.PutFile(ctx, mkFile(size))
+				_ = store.UpdateAttrs(ctx, mkFile(size))
 			}
 		}(uint64(w + 1))
 	}
@@ -134,14 +134,14 @@ func TestBadger_Restore_ReinitsUsedBytes(t *testing.T) {
 		t.Fatalf("DecodeFileHandle: %v", err)
 	}
 	now := time.Now()
-	if err := src.PutFile(ctx, &metadata.File{
+	if err := src.UpdateAttrs(ctx, &metadata.File{
 		ID: fileID, ShareName: shareName, Path: "/data.bin",
 		FileAttr: metadata.FileAttr{
 			Type: metadata.FileTypeRegular, Mode: 0o644, Size: wantSize,
 			Atime: now, Mtime: now, Ctime: now,
 		},
 	}); err != nil {
-		t.Fatalf("PutFile: %v", err)
+		t.Fatalf("UpdateAttrs: %v", err)
 	}
 	if err := src.SetChild(ctx, rootHandle, "data.bin", fileHandle); err != nil {
 		t.Fatalf("SetChild: %v", err)
@@ -217,14 +217,14 @@ func TestBadger_GetFilesystemStatistics_IgnoresNonRegular(t *testing.T) {
 		t.Fatalf("DecodeFileHandle: %v", err)
 	}
 	now := time.Now()
-	if err := store.PutFile(ctx, &metadata.File{
+	if err := store.UpdateAttrs(ctx, &metadata.File{
 		ID: fileID, ShareName: shareName, Path: "/f.bin",
 		FileAttr: metadata.FileAttr{
 			Type: metadata.FileTypeRegular, Mode: 0o644, Size: regularSize,
 			Atime: now, Mtime: now, Ctime: now,
 		},
 	}); err != nil {
-		t.Fatalf("PutFile: %v", err)
+		t.Fatalf("UpdateAttrs: %v", err)
 	}
 	if err := store.SetChild(ctx, rootHandle, "f.bin", fileHandle); err != nil {
 		t.Fatalf("SetChild: %v", err)

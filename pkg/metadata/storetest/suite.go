@@ -78,7 +78,7 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	})
 
 	// ACLAliasing asserts both directions of FileAttr.ACL deep-copy
-	// discipline: PutFile must not alias the caller's ACE slice, and
+	// discipline: UpdateAttrs must not alias the caller's ACE slice, and
 	// GetFile must not hand back the store's backing slice. Pins the
 	// cross-backend parity gap the area-6 audit found in the memory backend.
 	t.Run("ACLAliasing", func(t *testing.T) {
@@ -86,7 +86,7 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	})
 
 	// EAOps covers FileAttr.EAs (SMB extended attributes, MS-FSCC §2.4.15):
-	// PutFile/GetFile round-trip, zero-length values, deletion, case-
+	// UpdateAttrs/GetFile round-trip, zero-length values, deletion, case-
 	// insensitive name resolution with set-case preservation, deep-copy
 	// (aliasing) discipline, and persistence across unrelated writes. Pins
 	// cross-backend parity the same way ACLAliasing does for ACLs.
@@ -111,7 +111,7 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	})
 
 	// ChunkRefOps conformance for FileAttr.Blocks []ChunkRef
-	// round-trip across PutFile/GetFile, replace semantics, and the
+	// round-trip across UpdateAttrs/GetFile, replace semantics, and the
 	// Postgres-only FK-cascade behavior. Memory and Badger skip the
 	// cascade scenario via FileChunkRefsAccessor type-assertion
 	// failure.
@@ -271,8 +271,8 @@ func createTestFile(t *testing.T, store metadata.Store, shareName string, dirHan
 	file.ID = id
 
 	// Put file
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile() failed: %v", err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs() failed: %v", err)
 	}
 
 	// Set parent
@@ -328,8 +328,8 @@ func createTestDir(t *testing.T, store metadata.Store, shareName string, parentH
 	dir.ID = id
 
 	// Put directory
-	if err := store.PutFile(ctx, dir); err != nil {
-		t.Fatalf("PutFile() failed: %v", err)
+	if err := store.UpdateAttrs(ctx, dir); err != nil {
+		t.Fatalf("UpdateAttrs() failed: %v", err)
 	}
 
 	// Set parent

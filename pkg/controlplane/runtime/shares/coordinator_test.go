@@ -118,7 +118,7 @@ func TestMetadataCoordinator_FallsBackToPublicStoreWithoutTx(t *testing.T) {
 // TestMetadataCoordinator_RollsBackOnDownstreamPutFileFailure pins the
 // CR-01 atomicity contract end-to-end: when the caller binds an active
 // metadata.Transaction into ctx via metadata.WithTx and a downstream
-// PutFile fails AFTER successful IncrementRefCount calls, the wrapping
+// UpdateAttrs fails AFTER successful IncrementRefCount calls, the wrapping
 // WithTransaction MUST roll back EVERY refcount mutation.
 //
 // Memory backend prior to CR-01 was technically correct (single mutex
@@ -158,7 +158,7 @@ func TestMetadataCoordinator_RollsBackOnDownstreamPutFileFailure(t *testing.T) {
 
 	// Simulate the exact wiring common.CopyPayload uses: open a real
 	// txn, bump refcount on every hash through the coordinator (via
-	// WithTx-bound ctx), then trigger a synthetic PutFile failure.
+	// WithTx-bound ctx), then trigger a synthetic UpdateAttrs failure.
 	// WithTransaction MUST roll back; refcounts MUST be unchanged.
 	injected := errors.New("synthetic put failure")
 	err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
@@ -168,7 +168,7 @@ func TestMetadataCoordinator_RollsBackOnDownstreamPutFileFailure(t *testing.T) {
 				return err
 			}
 		}
-		// Synthetic downstream failure (would be tx.PutFile in production).
+		// Synthetic downstream failure (would be tx.UpdateAttrs in production).
 		return injected
 	})
 	if !errors.Is(err, injected) {

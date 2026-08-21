@@ -190,14 +190,14 @@ func (s *Service) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name st
 		// Update timestamps
 		now := time.Now()
 		target.Ctime = now
-		if err := tx.PutFile(ctx.Context, target); err != nil {
+		if err := tx.UpdateAttrs(ctx.Context, target); err != nil {
 			return err
 		}
 
 		dir.Mtime = now
 		dir.Ctime = now
 		wcc.After = CopyFileAttr(&dir.FileAttr)
-		return tx.PutFile(ctx.Context, dir)
+		return tx.UpdateAttrs(ctx.Context, dir)
 	})
 	unlockCreateName()
 	if err != nil {
@@ -453,7 +453,7 @@ func (s *Service) createEntry(
 		newFile.NewInode = true
 
 		// Store the entry
-		if err := tx.PutFile(ctx.Context, newFile); err != nil {
+		if err := tx.UpdateAttrs(ctx.Context, newFile); err != nil {
 			return err
 		}
 

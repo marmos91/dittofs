@@ -242,7 +242,14 @@ func (tx *memoryTransaction) GetFile(ctx context.Context, handle metadata.FileHa
 	return tx.store.getFileLocked(handle)
 }
 
-func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) error {
+// SetManifest is UpdateAttrs on this backend: the block list rides the stored
+// FileAttr, so there is no separate manifest to rewrite.
+func (tx *memoryTransaction) SetManifest(ctx context.Context, file *metadata.File) error {
+	return tx.UpdateAttrs(ctx, file)
+}
+
+// UpdateAttrs stores or updates file metadata, block list included.
+func (tx *memoryTransaction) UpdateAttrs(ctx context.Context, file *metadata.File) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -308,7 +315,7 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	// first and then returned ErrConflict on the race check, the file row would
 	// still hold the old ObjectID but the index would no longer map it — a
 	// subsequent FindByObjectID(oldObjectID) would return nil even though the
-	// file persists with that ObjectID. Reorder so a failed PutFile leaves
+	// file persists with that ObjectID. Reorder so a failed UpdateAttrs leaves
 	// every map untouched.
 	//
 	// Step 1: race detection (first-committer-wins). If someone
@@ -317,7 +324,7 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	if !attrCopy.ObjectID.IsZero() {
 		if otherKey, claimed := tx.store.objectIndex[attrCopy.ObjectID]; claimed && otherKey != key {
 			return mderrors.NewConflictError(
-				"memory PutFile",
+				"memory UpdateAttrs",
 				fmt.Sprintf("object_id already mapped to file key %s", otherKey),
 			)
 		}

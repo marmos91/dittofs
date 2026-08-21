@@ -239,7 +239,7 @@ const (
 	fOrigPath   = 23 // string
 	fDeletedBy  = 24 // string
 	// Path (File.Path) is intentionally NOT encoded: it is derived from parent
-	// edges on read (#1166). BlocksDirty is transient (json:"-"), also not stored.
+	// edges on read (#1166). ManifestDirtyOffsets is transient, also not stored.
 )
 
 func putField(dst []byte, id uint64, val []byte) []byte {

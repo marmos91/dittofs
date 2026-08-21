@@ -13,7 +13,7 @@ import (
 
 // newApplierFixture builds a Service over a sqlite store. sqlite implements
 // DataWriteApplier, so the deferred pending-write flush takes the narrow
-// single-statement path rather than the GetFile+PutFile fallback. The memory
+// single-statement path rather than the GetFile+UpdateAttrs fallback. The memory
 // store used by the other service tests does not implement it, so this is the
 // only place the fast path is exercised end to end through the Service.
 func newApplierFixture(t *testing.T) (*metadata.Service, metadata.Store, metadata.FileHandle, string) {
@@ -47,7 +47,7 @@ func newApplierFixture(t *testing.T) (*metadata.Service, metadata.Store, metadat
 // TestDeferredFlushAppliesNarrowWrite covers the default write path: deferred
 // commits are on by default, so a WRITE buffers into the pending-write tracker
 // and only the flush touches the store. It asserts the flush persists what the
-// GetFile+PutFile fallback would have persisted — size grown, times stamped,
+// GetFile+UpdateAttrs fallback would have persisted — size grown, times stamped,
 // and no shrink when a later write lands at a lower offset.
 func TestDeferredFlushAppliesNarrowWrite(t *testing.T) {
 	svc, store, rootHandle, _ := newApplierFixture(t)

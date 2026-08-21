@@ -109,8 +109,8 @@ func createShareAndFile(t *testing.T, store metadata.Store, shareName, fileName 
 			GID:  1000,
 		},
 	}
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile: %v", err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs: %v", err)
 	}
 	if err := store.SetParent(ctx, handle, rootHandle); err != nil {
 		t.Fatalf("SetParent: %v", err)
@@ -124,7 +124,7 @@ func createShareAndFile(t *testing.T, store metadata.Store, shareName, fileName 
 	return handle
 }
 
-// TestPostgres_FileChunkRefs_BlocksRoundTrip asserts that PutFile with a
+// TestPostgres_FileChunkRefs_BlocksRoundTrip asserts that UpdateAttrs with a
 // non-empty Blocks list, followed by GetFile, returns identical Blocks
 // (sorted by Offset, byte-equal Hash, equal Offset, equal Size).
 func TestPostgres_FileChunkRefs_BlocksRoundTrip(t *testing.T) {
@@ -144,9 +144,8 @@ func TestPostgres_FileChunkRefs_BlocksRoundTrip(t *testing.T) {
 		t.Fatalf("GetFile (initial): %v", err)
 	}
 	file.FileAttr.Blocks = want
-	file.BlocksDirty = true // manifest write — gate persists file_block_refs
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile with Blocks: %v", err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs with Blocks: %v", err)
 	}
 
 	got, err := store.GetFile(ctx, handle)
@@ -170,7 +169,7 @@ func TestPostgres_FileChunkRefs_BlocksRoundTrip(t *testing.T) {
 	}
 }
 
-// TestPostgres_FileChunkRefs_ReplaceFully asserts that a second PutFile
+// TestPostgres_FileChunkRefs_ReplaceFully asserts that a second UpdateAttrs
 // with a different Blocks list fully replaces the first (no leftover rows).
 func TestPostgres_FileChunkRefs_ReplaceFully(t *testing.T) {
 	store := newTestStore(t)
@@ -188,9 +187,8 @@ func TestPostgres_FileChunkRefs_ReplaceFully(t *testing.T) {
 		t.Fatalf("GetFile (1): %v", err)
 	}
 	file.FileAttr.Blocks = first
-	file.BlocksDirty = true // manifest write — gate persists file_block_refs
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile (first): %v", err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs (first): %v", err)
 	}
 
 	// Second write with a different (and shorter) list.
@@ -203,9 +201,8 @@ func TestPostgres_FileChunkRefs_ReplaceFully(t *testing.T) {
 		t.Fatalf("GetFile (2): %v", err)
 	}
 	file.FileAttr.Blocks = second
-	file.BlocksDirty = true // manifest write — gate persists file_block_refs
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile (second): %v", err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs (second): %v", err)
 	}
 
 	got, err := store.GetFile(ctx, handle)
@@ -242,9 +239,8 @@ func TestPostgres_FileChunkRefs_CascadeDelete(t *testing.T) {
 		t.Fatalf("GetFile: %v", err)
 	}
 	file.FileAttr.Blocks = blocks
-	file.BlocksDirty = true // manifest write — gate persists file_block_refs
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile: %v", err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs: %v", err)
 	}
 
 	// Capture file ID for direct SQL count.
@@ -294,7 +290,7 @@ func mustParentHandle(t *testing.T, store metadata.Store, handle metadata.FileHa
 }
 
 // TestPostgres_FileChunkRefs_ConcurrentPutFile asserts that two concurrent
-// PutFile calls on the same file_id do not produce duplicate or interleaved
+// UpdateAttrs calls on the same file_id do not produce duplicate or interleaved
 // rows. The PK (file_id, offset) means duplicates would error; the test
 // asserts no error AND a final state matching one of the two writers.
 func TestPostgres_FileChunkRefs_ConcurrentPutFile(t *testing.T) {
@@ -325,15 +321,14 @@ func TestPostgres_FileChunkRefs_ConcurrentPutFile(t *testing.T) {
 				return
 			}
 			file.FileAttr.Blocks = blocks
-			file.BlocksDirty = true // manifest write — gate persists file_block_refs
-			errs[idx] = store.PutFile(ctx, file)
+			errs[idx] = store.SetManifest(ctx, file)
 		}(i, blocks)
 	}
 	wg.Wait()
 
 	for i, err := range errs {
 		if err != nil {
-			t.Fatalf("PutFile goroutine %d: %v", i, err)
+			t.Fatalf("UpdateAttrs goroutine %d: %v", i, err)
 		}
 	}
 
@@ -391,9 +386,8 @@ func TestPostgres_Restore_ReconcilesNullHashFileChunks(t *testing.T) {
 	file.Blocks = []block.ChunkRef{
 		{Hash: want, Offset: 0, Size: 4 << 20},
 	}
-	file.BlocksDirty = true // manifest write — gate persists file_block_refs
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile with Blocks: %v", err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs with Blocks: %v", err)
 	}
 
 	// The file_blocks read-index row ID is "{content_id}/{offset}".

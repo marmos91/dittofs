@@ -37,7 +37,7 @@ func TestStoreError_Unwrap_IsRetryable(t *testing.T) {
 
 // TestStoreError_Unwrap_DeadlockRetryable mirrors the above for deadlocks.
 func TestStoreError_Unwrap_DeadlockRetryable(t *testing.T) {
-	se := mapPgError(&pgconn.PgError{Code: "40P01"}, "PutFile", "")
+	se := mapPgError(&pgconn.PgError{Code: "40P01"}, "UpdateAttrs", "")
 	if !isRetryableError(se) {
 		t.Fatalf("isRetryableError(mapped 40P01) = false, want true (err=%v)", se)
 	}

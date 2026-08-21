@@ -32,7 +32,7 @@ func TestNarrowUpdateAffectsRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutFile(ctx, &metadata.File{ShareName: share, Path: "/hot/f", ID: id,
+	if err := store.UpdateAttrs(ctx, &metadata.File{ShareName: share, Path: "/hot/f", ID: id,
 		FileAttr: metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644, UID: 1000, GID: 1000}}); err != nil {
 		t.Fatal(err)
 	}

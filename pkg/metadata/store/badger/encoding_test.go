@@ -154,8 +154,8 @@ func TestBadgerEncodeFile_NilBlocksOmitted(t *testing.T) {
 
 // TestEncodeDecodeFile_AllFields exercises every persisted FileAttr field
 // (including ACL, EAs, ObjectID, DeletedAt, unicode names, empty/nil maps and a
-// zero-length EA value) through encode -> binary decode. Path and BlocksDirty
-// are intentionally not persisted.
+// zero-length EA value) through encode -> binary decode. Path and the transient
+// request-scoped fields are intentionally not persisted.
 func TestEncodeDecodeFile_AllFields(t *testing.T) {
 	var oid block.ContentHash
 	for i := range oid {

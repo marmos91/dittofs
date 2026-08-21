@@ -85,7 +85,7 @@ type MetadataCoordinator interface {
 	// PersistFileChunks updates FileAttr.Blocks AND FileAttr.ObjectID
 	// for a given file in a single metadata txn. It is invoked by the
 	// runtime coordinator wrapper (which resolves payloadID → fileHandle
-	// and runs PutFile in one txn) after a Flush persists a file's chunk
+	// and runs UpdateAttrs in one txn) after a Flush persists a file's chunk
 	// manifest — the engine itself no longer drives it from a local-store
 	// chunk-lifecycle hook, of which none remain.
 	//

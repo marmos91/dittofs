@@ -66,11 +66,19 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 	return file, nil
 }
 
-// PutFile stores or updates file metadata.
+// UpdateAttrs stores or updates file metadata.
 // Creates the entry if it doesn't exist.
-func (s *PostgresMetadataStore) PutFile(ctx context.Context, file *metadata.File) error {
+func (s *PostgresMetadataStore) UpdateAttrs(ctx context.Context, file *metadata.File) error {
 	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return tx.PutFile(ctx, file)
+		return tx.UpdateAttrs(ctx, file)
+	})
+}
+
+// SetManifest stores or updates file metadata and rewrites the stored block
+// manifest from file.Blocks.
+func (s *PostgresMetadataStore) SetManifest(ctx context.Context, file *metadata.File) error {
+	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return tx.SetManifest(ctx, file)
 	})
 }
 

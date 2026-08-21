@@ -53,8 +53,8 @@ func testDeleteSharePurgesCounters(t *testing.T, factory StoreFactory) {
 	for i := range file.ObjectID {
 		file.ObjectID[i] = byte(i + 1)
 	}
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile with ObjectID: %v", err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs with ObjectID: %v", err)
 	}
 
 	if got := store.GetUsedBytes(); got != 8192 {
@@ -81,8 +81,8 @@ func testDeleteSharePurgesCounters(t *testing.T, factory StoreFactory) {
 	for i := range file2.ObjectID {
 		file2.ObjectID[i] = byte(i + 1) // same ObjectID as before
 	}
-	if err := store.PutFile(ctx, file2); err != nil {
-		t.Fatalf("PutFile same ObjectID after DeleteShare: got ErrConflict or unexpected error: %v — objectIndex was not purged by DeleteShare", err)
+	if err := store.UpdateAttrs(ctx, file2); err != nil {
+		t.Fatalf("UpdateAttrs same ObjectID after DeleteShare: got ErrConflict or unexpected error: %v — objectIndex was not purged by DeleteShare", err)
 	}
 }
 
@@ -149,7 +149,7 @@ func namesOf(entries []metadata.DirEntry) []string {
 }
 
 // setFileSize reads a file, sets its logical Size, and writes it back. Used to
-// drive the per-backend usedBytes counter (it tracks size deltas on PutFile).
+// drive the per-backend usedBytes counter (it tracks size deltas on UpdateAttrs).
 func setFileSize(t *testing.T, store metadata.Store, handle metadata.FileHandle, size uint64) {
 	t.Helper()
 	ctx := t.Context()
@@ -159,8 +159,8 @@ func setFileSize(t *testing.T, store metadata.Store, handle metadata.FileHandle,
 		t.Fatalf("GetFile() failed: %v", err)
 	}
 	file.Size = size
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile() failed: %v", err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs() failed: %v", err)
 	}
 }
 
@@ -357,8 +357,8 @@ func createTestFileOwned(t *testing.T, store metadata.Store, shareName string, d
 			Size: size,
 		},
 	}
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile() failed: %v", err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs() failed: %v", err)
 	}
 	if err := store.SetParent(ctx, handle, dirHandle); err != nil {
 		t.Fatalf("SetParent() failed: %v", err)
@@ -442,7 +442,7 @@ func testGetQuotaUsage(t *testing.T, factory StoreFactory) {
 }
 
 // testGetQuotaUsageChown verifies that changing a regular file's UID/GID via
-// PutFile moves its bytes+count from the old identity to the new — the
+// UpdateAttrs moves its bytes+count from the old identity to the new — the
 // easy-to-miss accounting event called out by #1151.
 func testGetQuotaUsageChown(t *testing.T, factory StoreFactory) {
 	store := factory(t)
@@ -464,8 +464,8 @@ func testGetQuotaUsageChown(t *testing.T, factory StoreFactory) {
 	}
 	file.UID = 1001
 	file.GID = 2001
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile() chown failed: %v", err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs() chown failed: %v", err)
 	}
 	wantUsage(t, store, metadata.QuotaScopeUser, 1000, 0, 0)
 	wantUsage(t, store, metadata.QuotaScopeGroup, 2000, 0, 0)
@@ -478,8 +478,8 @@ func testGetQuotaUsageChown(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile() failed: %v", err)
 	}
 	file.GID = 2002
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile() gid-only chown failed: %v", err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs() gid-only chown failed: %v", err)
 	}
 	wantUsage(t, store, metadata.QuotaScopeUser, 1001, 400, 1)
 	wantUsage(t, store, metadata.QuotaScopeGroup, 2001, 0, 0)
@@ -507,9 +507,8 @@ func testGetFileByPayloadID(t *testing.T, factory StoreFactory) {
 		{Hash: hashOfSeed("pid-b0"), Offset: 0, Size: 4096},
 		{Hash: hashOfSeed("pid-b1"), Offset: 4096, Size: 2048},
 	}
-	file.BlocksDirty = true
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile() with PayloadID failed: %v", err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs() with PayloadID failed: %v", err)
 	}
 
 	got, err := store.GetFileByPayloadID(ctx, payloadID)

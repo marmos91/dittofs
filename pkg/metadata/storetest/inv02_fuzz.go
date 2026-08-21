@@ -297,20 +297,19 @@ func fuzzCreateFile(ctx context.Context, store metadata.Store, shareName string,
 		ShareName: shareName,
 		Path:      "/" + name,
 		FileAttr: metadata.FileAttr{
-			Type:        metadata.FileTypeRegular,
-			Mode:        0o644,
-			UID:         1000,
-			GID:         1000,
-			Mtime:       now,
-			Ctime:       now,
-			Atime:       now,
-			Blocks:      refs,
-			BlocksDirty: true,
-			PayloadID:   metadata.PayloadID(payloadID),
+			Type:      metadata.FileTypeRegular,
+			Mode:      0o644,
+			UID:       1000,
+			GID:       1000,
+			Mtime:     now,
+			Ctime:     now,
+			Atime:     now,
+			Blocks:    refs,
+			PayloadID: metadata.PayloadID(payloadID),
 		},
 	}
-	if err := store.PutFile(ctx, file); err != nil {
-		return fmt.Errorf("PutFile: %w", err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		return fmt.Errorf("UpdateAttrs: %w", err)
 	}
 	if err := store.SetParent(ctx, handle, rootHandle); err != nil {
 		return fmt.Errorf("SetParent: %w", err)
@@ -410,20 +409,19 @@ func fuzzCopyFile(ctx context.Context, store metadata.Store, shareName string, r
 		ShareName: shareName,
 		Path:      "/" + name,
 		FileAttr: metadata.FileAttr{
-			Type:        metadata.FileTypeRegular,
-			Mode:        0o644,
-			UID:         1000,
-			GID:         1000,
-			Mtime:       now,
-			Ctime:       now,
-			Atime:       now,
-			Blocks:      srcBlocks,
-			BlocksDirty: true,
-			PayloadID:   metadata.PayloadID(src.payloadID),
+			Type:      metadata.FileTypeRegular,
+			Mode:      0o644,
+			UID:       1000,
+			GID:       1000,
+			Mtime:     now,
+			Ctime:     now,
+			Atime:     now,
+			Blocks:    srcBlocks,
+			PayloadID: metadata.PayloadID(src.payloadID),
 		},
 	}
-	if err := store.PutFile(ctx, dst); err != nil {
-		return fmt.Errorf("PutFile copy: %w", err)
+	if err := store.SetManifest(ctx, dst); err != nil {
+		return fmt.Errorf("UpdateAttrs copy: %w", err)
 	}
 	if err := store.SetParent(ctx, handle, rootHandle); err != nil {
 		return fmt.Errorf("SetParent copy: %w", err)
@@ -444,7 +442,7 @@ func fuzzCopyFile(ctx context.Context, store metadata.Store, shareName string, r
 }
 
 // fuzzMutateObjectID picks a random file owned by this worker, recomputes
-// its ObjectID from the current Blocks slice, and PutFile-s the result so
+// its ObjectID from the current Blocks slice, and UpdateAttrs-s the result so
 // the secondary index gets refreshed. Mirrors the engine's post-Flush
 // coordinator hook at the storetest level — independent of any
 // engine wiring, but exercising the SAME index discipline.
@@ -474,20 +472,20 @@ func fuzzMutateObjectID(ctx context.Context, store metadata.Store, rng *rand.Ran
 	}
 
 	f.ObjectID = block.ComputeObjectID(f.Blocks)
-	if err := store.PutFile(ctx, f); err != nil {
+	if err := store.UpdateAttrs(ctx, f); err != nil {
 		// first-committer-wins: another worker may have claimed
 		// the same ObjectID (improbable for distinct seed-derived
 		// hashes, but legal). Treat as non-fatal.
 		if isConcurrentQuiesceConflict(err) {
 			return nil
 		}
-		return fmt.Errorf("PutFile: %w", err)
+		return fmt.Errorf("UpdateAttrs: %w", err)
 	}
 	return nil
 }
 
 // isConcurrentQuiesceConflict returns true for the per-backend conflict
-// signals surfaced by first-committer-wins on PutFile. Mirrors the
+// signals surfaced by first-committer-wins on UpdateAttrs. Mirrors the
 // concurrentRaceErrIsConflict helper in objectid_roundtrip.go.
 func isConcurrentQuiesceConflict(err error) bool {
 	if err == nil {

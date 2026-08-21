@@ -24,7 +24,7 @@ func makeSparseFile(t *testing.T, fx *testFixture, name string, size uint64, blo
 	stored.Size = size
 	stored.Blocks = blocks
 	stored.PayloadID = metadata.PayloadID("payload-" + name)
-	require.NoError(t, fx.store.PutFile(fx.rootContext().Context, stored))
+	require.NoError(t, fx.store.UpdateAttrs(fx.rootContext().Context, stored))
 	return handle
 }
 

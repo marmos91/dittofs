@@ -278,8 +278,8 @@ func NewAlreadyExistsError(path string) *StoreError {
 }
 
 // NewConflictError creates a Conflict error.
-// op is the calling operation name (e.g., "memory PutFile",
-// "badger PutFile"); message is the specific reason (e.g.,
+// op is the calling operation name (e.g., "memory UpdateAttrs",
+// "badger UpdateAttrs"); message is the specific reason (e.g.,
 // "object_id already mapped to file <other-id>").
 func NewConflictError(op, message string) *StoreError {
 	return &StoreError{

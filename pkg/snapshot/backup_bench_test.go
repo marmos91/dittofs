@@ -208,7 +208,7 @@ type SeedOpts struct {
 // opts.BlocksPerFile ChunkRefs. Returns the store, the number of unique
 // block hashes seeded, and a cleanup func.
 //
-// Files are attached directly under the share root via PutFile + SetParent
+// Files are attached directly under the share root via UpdateAttrs + SetParent
 // + SetChild — the same surface the metadata conformance suite uses — so
 // the seed exercises the real Backup hash-extraction path (File.Blocks on
 // the f: prefix) without routing through CreateFile permission checks.
@@ -318,7 +318,7 @@ func seed(ctx context.Context, store metadata.Store, opts SeedOpts) (int, error)
 			},
 		}
 		f.ID = id
-		if err := store.PutFile(ctx, f); err != nil {
+		if err := store.UpdateAttrs(ctx, f); err != nil {
 			return 0, fmt.Errorf("snapshots bench: put file: %w", err)
 		}
 		if err := store.SetParent(ctx, handle, rootHandle); err != nil {

@@ -78,7 +78,7 @@ func (c *fileReadCache) store(key string, file *metadata.File, genAtRead uint64)
 // rejected the instant gen moves; deleting first would leave a window in which
 // that reader's store() (still seeing the old gen) re-inserts the stale entry
 // after the delete. The get() path is intentionally ungated by gen: a read that
-// is ordered-after this write (the writer's PutFile returns only once invalidate
+// is ordered-after this write (the writer's UpdateAttrs returns only once invalidate
 // finishes, within withTransaction) always sees the delete and misses; a read
 // merely concurrent with the still-uncommitted write has no ordering guarantee,
 // so serving either value is correct.

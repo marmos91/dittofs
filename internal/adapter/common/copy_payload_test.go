@@ -110,12 +110,12 @@ func putTestFile(t *testing.T, ms metadata.Store, path string, payloadID metadat
 		},
 	}
 
-	if err := ms.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile(%s) failed: %v", path, err)
+	if err := ms.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs(%s) failed: %v", path, err)
 	}
 
 	// Memory store derives the handle via EncodeShareHandle(ShareName, ID).
-	// The same encoding is used in tx.PutFile, so a re-encoded handle here
+	// The same encoding is used in tx.UpdateAttrs, so a re-encoded handle here
 	// matches the key the file was stored under.
 	handle, err := metadata.EncodeShareHandle(file.ShareName, file.ID)
 	if err != nil {
@@ -128,7 +128,7 @@ func putTestFile(t *testing.T, ms metadata.Store, path string, payloadID metadat
 // asserts:
 //   - dst's FileAttr.Blocks matches src's ChunkRefs
 //   - each unique hash got exactly one IncrementRefCount call
-//   - PutFile(dst) was invoked through the metadataStore (visible via
+//   - UpdateAttrs(dst) was invoked through the metadataStore (visible via
 //     a GetFile call after the helper returns)
 //   - cache.InvalidateFile fired POST-txn with payloadID = dstPayloadID
 func TestCopyPayload_AtomicSuccess(t *testing.T) {
@@ -198,7 +198,7 @@ func TestCopyPayload_AtomicSuccess(t *testing.T) {
 }
 
 // TestCopyPayload_RollsBackOnIncrementError pins the rollback contract:
-// mid-loop IncrementRefCount failure rolls back ALL writes (no PutFile(dst),
+// mid-loop IncrementRefCount failure rolls back ALL writes (no UpdateAttrs(dst),
 // no partial dstFileAttr persisted, no InvalidateFile call).
 func TestCopyPayload_RollsBackOnIncrementError(t *testing.T) {
 	ctx := context.Background()
@@ -324,15 +324,15 @@ func TestCopyPayload_CtimeUpdated(t *testing.T) {
 	// Seed dst with a known old Ctime so we can detect it did not change.
 	oldTime := time.Now().Add(-1 * time.Hour)
 	dstHandle := putTestFile(t, ms, "/ctime-dst.bin", "ctime-dst-pid", nil, 0)
-	// Overwrite Ctime to a known-old value via a direct PutFile before the copy.
+	// Overwrite Ctime to a known-old value via a direct UpdateAttrs before the copy.
 	dstFilePre, err := ms.GetFile(ctx, dstHandle)
 	if err != nil {
 		t.Fatalf("GetFile(dst) pre-copy: %v", err)
 	}
 	dstFilePre.Ctime = oldTime
 	dstFilePre.Mtime = oldTime
-	if err := ms.PutFile(ctx, dstFilePre); err != nil {
-		t.Fatalf("PutFile(dst) seed old Ctime: %v", err)
+	if err := ms.UpdateAttrs(ctx, dstFilePre); err != nil {
+		t.Fatalf("UpdateAttrs(dst) seed old Ctime: %v", err)
 	}
 
 	preCopy := time.Now()

@@ -18,29 +18,28 @@ import (
 func TestCopyFileAttr_CopiesEveryField(t *testing.T) {
 	deletedAt := time.Unix(1700000000, 0).UTC()
 	src := &FileAttr{
-		Type:               FileTypeRegular,
-		Mode:               0o644,
-		UID:                1000,
-		GID:                1000,
-		Nlink:              3,
-		Size:               4096,
-		Atime:              time.Unix(1, 0).UTC(),
-		Mtime:              time.Unix(2, 0).UTC(),
-		Ctime:              time.Unix(3, 0).UTC(),
-		CreationTime:       time.Unix(4, 0).UTC(),
-		PayloadID:          "payload-1",
-		LinkTarget:         "/target",
-		Rdev:               42,
-		Hidden:             true,
-		EAs:                map[string][]byte{"user.k": []byte("v")},
-		IdempotencyToken:   99,
-		Blocks:             []block.ChunkRef{{Offset: 0}},
-		BlocksDirty:        true,
-		BlocksDirtyOffsets: []uint64{0, 8192},
-		NewInode:           true,
-		DeletedAt:          &deletedAt,
-		OriginalPath:       "/was/here",
-		DeletedBy:          "someone",
+		Type:                 FileTypeRegular,
+		Mode:                 0o644,
+		UID:                  1000,
+		GID:                  1000,
+		Nlink:                3,
+		Size:                 4096,
+		Atime:                time.Unix(1, 0).UTC(),
+		Mtime:                time.Unix(2, 0).UTC(),
+		Ctime:                time.Unix(3, 0).UTC(),
+		CreationTime:         time.Unix(4, 0).UTC(),
+		PayloadID:            "payload-1",
+		LinkTarget:           "/target",
+		Rdev:                 42,
+		Hidden:               true,
+		EAs:                  map[string][]byte{"user.k": []byte("v")},
+		IdempotencyToken:     99,
+		Blocks:               []block.ChunkRef{{Offset: 0}},
+		ManifestDirtyOffsets: []uint64{0, 8192},
+		NewInode:             true,
+		DeletedAt:            &deletedAt,
+		OriginalPath:         "/was/here",
+		DeletedBy:            "someone",
 		ACL: &acl.ACL{
 			ACEs:          []acl.ACE{{}},
 			Protected:     true,
@@ -65,11 +64,11 @@ func TestCopyFileAttr_CopiesEveryField(t *testing.T) {
 func TestCopyFileAttr_IsDeep(t *testing.T) {
 	deletedAt := time.Unix(1700000000, 0).UTC()
 	src := &FileAttr{
-		EAs:                map[string][]byte{"user.k": []byte("v")},
-		Blocks:             []block.ChunkRef{{Offset: 0}},
-		BlocksDirtyOffsets: []uint64{1},
-		DeletedAt:          &deletedAt,
-		ACL:                &acl.ACL{ACEs: []acl.ACE{{}}, NullDACL: true},
+		EAs:                  map[string][]byte{"user.k": []byte("v")},
+		Blocks:               []block.ChunkRef{{Offset: 0}},
+		ManifestDirtyOffsets: []uint64{1},
+		DeletedAt:            &deletedAt,
+		ACL:                  &acl.ACL{ACEs: []acl.ACE{{}}, NullDACL: true},
 	}
 
 	got := CopyFileAttr(src)
@@ -77,7 +76,7 @@ func TestCopyFileAttr_IsDeep(t *testing.T) {
 	got.EAs["user.k"][0] = 'X'
 	got.EAs["added"] = []byte("new")
 	got.Blocks[0].Offset = 777
-	got.BlocksDirtyOffsets[0] = 777
+	got.ManifestDirtyOffsets[0] = 777
 	*got.DeletedAt = time.Unix(0, 0).UTC()
 	got.ACL.NullDACL = false
 	got.ACL.ACEs = append(got.ACL.ACEs, acl.ACE{})
@@ -85,7 +84,7 @@ func TestCopyFileAttr_IsDeep(t *testing.T) {
 	require.Equal(t, byte('v'), src.EAs["user.k"][0])
 	require.NotContains(t, src.EAs, "added")
 	require.Equal(t, uint64(0), src.Blocks[0].Offset)
-	require.Equal(t, uint64(1), src.BlocksDirtyOffsets[0])
+	require.Equal(t, uint64(1), src.ManifestDirtyOffsets[0])
 	require.Equal(t, deletedAt, *src.DeletedAt)
 	require.True(t, src.ACL.NullDACL, "mutating the copy must not clear the source's null-DACL flag")
 	require.Len(t, src.ACL.ACEs, 1)

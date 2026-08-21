@@ -58,7 +58,7 @@ func backends() []backend {
 }
 
 // BenchmarkWriteCompare drives the identical data-write metadata op — the RMW a
-// 4k WRITE triggers: GetFile (SELECT) then PutFile (row UPDATE) in one txn —
+// 4k WRITE triggers: GetFile (SELECT) then UpdateAttrs (row UPDATE) in one txn —
 // against each backend, scattered over a populated file set, and reports IOPS.
 // Run one backend at a time with its own profile to compare flamegraphs:
 //
@@ -99,8 +99,8 @@ func BenchmarkWriteCompare(b *testing.B) {
 					ShareName: share, Path: fp, ID: id,
 					FileAttr: metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644, UID: 1000, GID: 1000},
 				}
-				if err := store.PutFile(ctx, f); err != nil {
-					b.Fatalf("PutFile seed: %v", err)
+				if err := store.UpdateAttrs(ctx, f); err != nil {
+					b.Fatalf("UpdateAttrs seed: %v", err)
 				}
 				if err := store.SetParent(ctx, h, rootHandle); err != nil {
 					b.Fatalf("SetParent: %v", err)
@@ -123,7 +123,7 @@ func BenchmarkWriteCompare(b *testing.B) {
 							return err
 						}
 						f.Mtime = time.Now()
-						return tx.PutFile(ctx, f)
+						return tx.UpdateAttrs(ctx, f)
 					}); err != nil {
 						b.Fatalf("write txn: %v", err)
 					}

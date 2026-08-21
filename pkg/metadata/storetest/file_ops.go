@@ -37,7 +37,7 @@ func runFileOpsTests(t *testing.T, factory StoreFactory) {
 }
 
 // testTimestampPrecision verifies file timestamps round-trip with full
-// nanosecond (sub-microsecond) fidelity through PutFile/GetFile on every
+// nanosecond (sub-microsecond) fidelity through UpdateAttrs/GetFile on every
 // backend. SMB FILETIME carries 100ns granularity; a backend that truncates to
 // microseconds (the postgres TIMESTAMPTZ default) returns a different FILETIME
 // on QUERY than was set, failing WPTS BVT_SMB2Basic_QueryAndSet_FileInfo
@@ -67,8 +67,8 @@ func testTimestampPrecision(t *testing.T, factory StoreFactory) {
 	file.Ctime = ctime
 	file.CreationTime = creation
 
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile() failed: %v", err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs() failed: %v", err)
 	}
 
 	got, err := store.GetFile(ctx, handle)
@@ -89,7 +89,7 @@ func testTimestampPrecision(t *testing.T, factory StoreFactory) {
 }
 
 // testHighModeBits verifies a file mode carrying high bits above the POSIX
-// permission range round-trips through PutFile/GetFile on every backend. The
+// permission range round-trips through UpdateAttrs/GetFile on every backend. The
 // SMB adapter stores DOS attributes (e.g. modeDOSExplicit = 0x10000) in high
 // mode bits; a backend that range-checks mode to <= 0o7777 rejects a SET_INFO
 // FILE_BASIC_INFORMATION with attributes as STATUS_INVALID_PARAMETER, failing
@@ -109,8 +109,8 @@ func testHighModeBits(t *testing.T, factory StoreFactory) {
 	// SMBModeFromAttrs produces for a SET_INFO with FileAttributes.
 	const highMode = uint32(0x10000 | 0o644)
 	file.Mode = highMode
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile() with high mode bits 0x%X failed: %v", highMode, err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs() with high mode bits 0x%X failed: %v", highMode, err)
 	}
 
 	got, err := store.GetFile(ctx, handle)
@@ -427,8 +427,8 @@ func testContentIdStableAcrossRename(t *testing.T, factory StoreFactory) {
 	}
 	const payloadID = metadata.PayloadID("test/blob-content-id")
 	file.PayloadID = payloadID
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile() with PayloadID failed: %v", err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs() with PayloadID failed: %v", err)
 	}
 
 	// Rename across directories: drop the old edge, add a new one under root.
@@ -497,8 +497,8 @@ func testHardLinkUnlinkFirstNameKeepsInode(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile() failed: %v", err)
 	}
 	file.Size = 4096
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile() failed: %v", err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs() failed: %v", err)
 	}
 
 	// Unlink A: drop its edge and decrement nlink to 1.
@@ -818,8 +818,8 @@ func testSetFileAttributes(t *testing.T, factory StoreFactory) {
 	file.UID = 2000
 	file.Size = 1024
 
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile() with updated attrs failed: %v", err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs() with updated attrs failed: %v", err)
 	}
 
 	// Verify changes

@@ -1915,8 +1915,8 @@ func testEnumerateLivePayloadIDs(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile: %v", err)
 	}
 	f.PayloadID = metadata.PayloadID(livePID)
-	if err := store.PutFile(ctx, f); err != nil {
-		t.Fatalf("PutFile (set payload): %v", err)
+	if err := store.UpdateAttrs(ctx, f); err != nil {
+		t.Fatalf("UpdateAttrs (set payload): %v", err)
 	}
 	seedStrandedBlocks(t, ctx, store, livePID, 2)
 
@@ -1994,10 +1994,9 @@ func testEnumerateFileChunks_UnlinkedFileExcludesManifest(t *testing.T, factory 
 		t.Fatalf("GetFile: %v", err)
 	}
 	f.Blocks = []block.ChunkRef{{Hash: want, Offset: 0, Size: 4 << 20}}
-	f.BlocksDirty = true
 	f.Size = 4 << 20
-	if err := store.PutFile(ctx, f); err != nil {
-		t.Fatalf("PutFile (linked): %v", err)
+	if err := store.SetManifest(ctx, f); err != nil {
+		t.Fatalf("UpdateAttrs (linked): %v", err)
 	}
 	if !enumerateContains(t, store, want) {
 		t.Fatalf("baseline: hash %s absent from live set while nlink>0", want)
@@ -2007,7 +2006,7 @@ func testEnumerateFileChunks_UnlinkedFileExcludesManifest(t *testing.T, factory 
 	// link). The embedded File.Nlink is not the authoritative link count (#1166):
 	// SetLinkCount is the only API that updates the source of truth (SQL
 	// inodes.nlink, badger l: key, memory linkCounts), so it is the faithful
-	// simulation — mutating File.Nlink + PutFile would not move it.
+	// simulation — mutating File.Nlink + UpdateAttrs would not move it.
 	if err := store.DeleteChild(ctx, root, "dead.bin"); err != nil {
 		t.Fatalf("DeleteChild: %v", err)
 	}
@@ -2036,10 +2035,9 @@ func testEnumerateFileChunks_HardLinkSurvivesOneRemoval(t *testing.T, factory St
 		t.Fatalf("GetFile: %v", err)
 	}
 	f.Blocks = []block.ChunkRef{{Hash: want, Offset: 0, Size: 4 << 20}}
-	f.BlocksDirty = true
 	f.Size = 4 << 20
-	if err := store.PutFile(ctx, f); err != nil {
-		t.Fatalf("PutFile: %v", err)
+	if err := store.SetManifest(ctx, f); err != nil {
+		t.Fatalf("UpdateAttrs: %v", err)
 	}
 	// Two hard links.
 	if err := store.SetLinkCount(ctx, h, 2); err != nil {
@@ -2075,8 +2073,8 @@ func testEnumerateLivePayloadIDs_ExcludesNlinkZero(t *testing.T, factory StoreFa
 		t.Fatalf("GetFile: %v", err)
 	}
 	f.PayloadID = payloadID
-	if err := store.PutFile(ctx, f); err != nil {
-		t.Fatalf("PutFile (linked): %v", err)
+	if err := store.UpdateAttrs(ctx, f); err != nil {
+		t.Fatalf("UpdateAttrs (linked): %v", err)
 	}
 	if !livePayloadContains(t, store, payloadID) {
 		t.Fatalf("baseline: payload %s absent from live payloads while nlink>0", payloadID)

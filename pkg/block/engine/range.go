@@ -21,7 +21,7 @@ import (
 //
 // Caller invariant (caller-snapshot-wins): blocks MUST be sorted
 // by Offset. The metadata-store conformance suite verifies
-// that PutFile/GetFile preserve sort order.
+// that UpdateAttrs/GetFile preserve sort order.
 func findBlocksForRange(blocks []block.ChunkRef, offset, size uint64) (start, end int) {
 	if len(blocks) == 0 || size == 0 {
 		return 0, 0

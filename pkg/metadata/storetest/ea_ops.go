@@ -7,7 +7,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// runEAOpsTests asserts cross-backend parity for FileAttr.EAs: PutFile/GetFile
+// runEAOpsTests asserts cross-backend parity for FileAttr.EAs: UpdateAttrs/GetFile
 // round-trip of an EA map, case-insensitive name resolution with set-case
 // preservation, zero-length values, deletion, persistence across reads, and
 // deep-copy (aliasing) discipline on both the store-from-caller and
@@ -80,8 +80,8 @@ func putFileWithEAs(t *testing.T, store metadata.Store, handle metadata.FileHand
 		t.Fatalf("GetFile: %v", err)
 	}
 	file.EAs = eas
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile with EAs: %v", err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs with EAs: %v", err)
 	}
 }
 
@@ -258,8 +258,8 @@ func testEAPersistsAcrossReads(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile: %v", err)
 	}
 	file.Size = 4096
-	if err := store.PutFile(t.Context(), file); err != nil {
-		t.Fatalf("PutFile: %v", err)
+	if err := store.UpdateAttrs(t.Context(), file); err != nil {
+		t.Fatalf("UpdateAttrs: %v", err)
 	}
 
 	got := getEAs(t, store, handle)

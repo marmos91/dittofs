@@ -135,10 +135,18 @@ func (tx *badgerTransaction) putManifest(id uuid.UUID, blocks []block.ChunkRef) 
 	return tx.txn.Set(keyFileManifest(id), data)
 }
 
-// PutFile stores or updates file metadata.
-func (s *BadgerMetadataStore) PutFile(ctx context.Context, file *metadata.File) error {
+// UpdateAttrs stores or updates file metadata.
+func (s *BadgerMetadataStore) UpdateAttrs(ctx context.Context, file *metadata.File) error {
 	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return tx.PutFile(ctx, file)
+		return tx.UpdateAttrs(ctx, file)
+	})
+}
+
+// SetManifest stores or updates file metadata and rewrites the stored block
+// manifest from file.Blocks.
+func (s *BadgerMetadataStore) SetManifest(ctx context.Context, file *metadata.File) error {
+	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return tx.SetManifest(ctx, file)
 	})
 }
 

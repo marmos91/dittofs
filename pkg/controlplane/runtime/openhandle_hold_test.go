@@ -60,7 +60,7 @@ func openHoldPutFile(t *testing.T, store metadata.Store, shareName, path string,
 	require.NoError(t, err)
 	_, id, err := metadata.DecodeFileHandle(h)
 	require.NoError(t, err)
-	require.NoError(t, store.PutFile(ctx, &metadata.File{
+	require.NoError(t, store.UpdateAttrs(ctx, &metadata.File{
 		ID:        id,
 		ShareName: shareName,
 		Path:      path,

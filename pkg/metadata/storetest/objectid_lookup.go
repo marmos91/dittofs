@@ -34,7 +34,7 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 		t.Fatalf("fixture broken: distinct block fixtures produced equal ObjectID %s", oidA.String())
 	}
 
-	// PutFile A + B with their respective ObjectIDs.
+	// UpdateAttrs A + B with their respective ObjectIDs.
 	for _, pair := range []struct {
 		handle metadata.FileHandle
 		blocks []block.ChunkRef
@@ -49,10 +49,9 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 			t.Fatalf("GetFile %s: %v", pair.label, err)
 		}
 		f.Blocks = pair.blocks
-		f.BlocksDirty = true
 		f.ObjectID = pair.oid
-		if err := store.PutFile(ctx, f); err != nil {
-			t.Fatalf("PutFile %s: %v", pair.label, err)
+		if err := store.SetManifest(ctx, f); err != nil {
+			t.Fatalf("UpdateAttrs %s: %v", pair.label, err)
 		}
 	}
 
@@ -100,7 +99,7 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 //
 // The factory contract creates a fresh store per call (suite.go), so we
 // cannot literally close+reopen the same backing path here; the
-// recompute-after-PutFile-GetFile cycle is the closest equivalent that
+// recompute-after-UpdateAttrs-GetFile cycle is the closest equivalent that
 // runs uniformly across all three backends. Conformance harnesses that
 // specifically exercise close+reopen live in the per-backend integration
 // tests.
@@ -123,10 +122,9 @@ func testObjectID_RestartStability(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile (pre-put): %v", err)
 	}
 	file.Blocks = blocks
-	file.BlocksDirty = true
 	file.ObjectID = wantOID
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile: %v", err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs: %v", err)
 	}
 
 	got, err := store.GetFile(ctx, fileHandle)
@@ -143,7 +141,7 @@ func testObjectID_RestartStability(t *testing.T, factory StoreFactory) {
 			recomputed.String(), wantOID.String())
 	}
 
-	// FindByObjectID resolves the same Blocks that PutFile stored.
+	// FindByObjectID resolves the same Blocks that UpdateAttrs stored.
 	refs, err := store.FindByObjectID(ctx, wantOID)
 	if err != nil {
 		t.Fatalf("FindByObjectID: %v", err)
@@ -159,7 +157,7 @@ func testObjectID_RestartStability(t *testing.T, factory StoreFactory) {
 }
 
 // testObjectID_ConcurrentQuiesceRace asserts first-committer-wins
-// semantics: two PutFile calls racing to claim the SAME ObjectID for
+// semantics: two UpdateAttrs calls racing to claim the SAME ObjectID for
 // DIFFERENT files settle so exactly one survives in the secondary index.
 //
 // Detection is per-backend (Memory/Badger surface ErrConflict; Postgres
@@ -184,7 +182,7 @@ func testObjectID_ConcurrentQuiesceRace(t *testing.T, factory StoreFactory) {
 	})
 
 	// Pre-load each file with its current state from the store and stage
-	// the contested ObjectID. Use distinct Blocks so each file's PutFile
+	// the contested ObjectID. Use distinct Blocks so each file's UpdateAttrs
 	// updates a unique row but both attempt to claim `contested`.
 	loadAndStage := func(handle metadata.FileHandle, seed string) *metadata.File {
 		f, err := store.GetFile(ctx, handle)
@@ -194,7 +192,6 @@ func testObjectID_ConcurrentQuiesceRace(t *testing.T, factory StoreFactory) {
 		f.Blocks = []block.ChunkRef{
 			{Hash: hashOfSeed(seed), Offset: 0, Size: 4096},
 		}
-		f.BlocksDirty = true
 		f.ObjectID = contested
 		return f
 	}
@@ -274,7 +271,7 @@ func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
 		t.Fatalf("fixture broken: distinct block fixtures produced equal ObjectID %s", oidA.String())
 	}
 
-	// PutFile each share's file with its respective ObjectID.
+	// UpdateAttrs each share's file with its respective ObjectID.
 	for _, pair := range []struct {
 		handle metadata.FileHandle
 		blocks []block.ChunkRef
@@ -289,10 +286,9 @@ func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
 			t.Fatalf("GetFile %s: %v", pair.label, err)
 		}
 		f.Blocks = pair.blocks
-		f.BlocksDirty = true
 		f.ObjectID = pair.oid
-		if err := store.PutFile(ctx, f); err != nil {
-			t.Fatalf("PutFile %s: %v", pair.label, err)
+		if err := store.SetManifest(ctx, f); err != nil {
+			t.Fatalf("UpdateAttrs %s: %v", pair.label, err)
 		}
 	}
 

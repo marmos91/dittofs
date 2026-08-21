@@ -25,7 +25,7 @@ import (
 // Everything is atomic in one metadata transaction:
 //   - engine.CopyPayload's per-hash IncrementRefCount UPDATEs are bound to the
 //     txn (via metadata.WithTx) so they commit/roll back together with the
-//     destination PutFile. On any error nothing is committed — no partial
+//     destination UpdateAttrs. On any error nothing is committed — no partial
 //     dstFileAttr, no leaked RefCount bumps.
 //   - cache.InvalidateFile (if cache != nil) runs POST-txn, after the commit.
 //
@@ -74,7 +74,7 @@ func CloneWholeFile(
 	err := metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		// Bind the active txn into the context so the per-share coordinator's
 		// RefCount UPDATEs (driven by engine.CopyPayload) join the same txn as
-		// the destination PutFile and commit/roll back together.
+		// the destination UpdateAttrs and commit/roll back together.
 		txCtx := metadata.WithTx(ctx, tx)
 
 		// Re-read the source INSIDE the txn, AFTER the drain, so the copy uses the
@@ -107,11 +107,10 @@ func CloneWholeFile(
 		}
 		dstFile.Blocks = newBlocks
 		// Wholesale manifest replacement on the destination — persist refs.
-		dstFile.BlocksDirty = true
 		dstFile.Size = srcFile.Size
 		dstFile.Mtime = time.Now()
 		dstFile.Ctime = dstFile.Mtime // content change is also a metadata change
-		if err := tx.PutFile(ctx, dstFile); err != nil {
+		if err := tx.SetManifest(ctx, dstFile); err != nil {
 			return fmt.Errorf("persist dst file: %w", err)
 		}
 		return nil
@@ -221,7 +220,7 @@ func materializeLocalClone(
 		dstFile.Size = srcFile.Size
 		dstFile.Mtime = time.Now()
 		dstFile.Ctime = dstFile.Mtime // content change is also a metadata change
-		if err := tx.PutFile(ctx, dstFile); err != nil {
+		if err := tx.UpdateAttrs(ctx, dstFile); err != nil {
 			return fmt.Errorf("persist dst file: %w", err)
 		}
 		return nil

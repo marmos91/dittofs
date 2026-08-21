@@ -101,7 +101,7 @@ func TestSQLite_ConcurrentWritesBackpressureNoEIO(t *testing.T) {
 							return err
 						}
 						f.Mtime = time.Now()
-						return tx.PutFile(ctx, f)
+						return tx.UpdateAttrs(ctx, f)
 					})
 					if err != nil {
 						errCh <- err

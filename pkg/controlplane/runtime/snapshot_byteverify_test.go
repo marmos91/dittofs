@@ -279,8 +279,8 @@ func (f *byteVerifyFixture) createEmptyFile(ctx context.Context, name string) me
 			PayloadID: payloadID,
 		},
 	}
-	if err := f.meta.PutFile(ctx, file); err != nil {
-		f.t.Fatalf("PutFile %q: %v", name, err)
+	if err := f.meta.UpdateAttrs(ctx, file); err != nil {
+		f.t.Fatalf("UpdateAttrs %q: %v", name, err)
 	}
 	if err := f.meta.SetParent(ctx, handle, root); err != nil {
 		f.t.Fatalf("SetParent %q: %v", name, err)

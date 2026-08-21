@@ -82,8 +82,8 @@ func testDirectoryPermissionAttributes(t *testing.T, factory StoreFactory) {
 	}
 	dir.ID = id
 
-	if err := store.PutFile(ctx, dir); err != nil {
-		t.Fatalf("PutFile() failed: %v", err)
+	if err := store.UpdateAttrs(ctx, dir); err != nil {
+		t.Fatalf("UpdateAttrs() failed: %v", err)
 	}
 	if err := store.SetParent(ctx, handle, rootHandle); err != nil {
 		t.Fatalf("SetParent() failed: %v", err)

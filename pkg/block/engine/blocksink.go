@@ -26,7 +26,7 @@ const _ = uint(-(numCarveCommitStripes & (numCarveCommitStripes - 1)))
 
 // carveCommitLocks serializes a payloadID's metadata commit so the within-file
 // carve dispatcher's concurrent CommitBlock calls do not read-modify-write the
-// same File row at once. Each commit re-projects File.Blocks (a PutFile), so two
+// same File row at once. Each commit re-projects File.Blocks (a UpdateAttrs), so two
 // overlapping commits for one file abort under badger's SSI as a transaction
 // conflict; enough contention exhausts the retry budget and surfaces to the
 // carver (the SMB/NFS client sees EDEADLK). The block upload runs OUTSIDE this

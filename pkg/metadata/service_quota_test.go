@@ -95,7 +95,7 @@ func (f *quotaFixture) createFileWithSize(name string, size uint64) metadata.Fil
 			storedFile.Size = size
 			storedFile.Mtime = time.Now()
 			storedFile.Ctime = time.Now()
-			return tx.PutFile(storeCtx, storedFile)
+			return tx.UpdateAttrs(storeCtx, storedFile)
 		})
 		require.NoError(f.t, err)
 	}

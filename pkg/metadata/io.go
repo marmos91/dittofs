@@ -250,7 +250,7 @@ func (s *Service) deferredCommitWrite(ctx *AuthContext, intent *WriteOperation) 
 				}
 				file.Mode &= ^uint32(0o6000)
 				file.Ctime = intent.NewMtime
-				return tx.PutFile(ctx.Context, file)
+				return tx.UpdateAttrs(ctx.Context, file)
 			})
 			if txErr != nil {
 				logger.Error("deferredCommitWrite: SUID clearing transaction failed",
@@ -315,7 +315,7 @@ func (s *Service) immediateCommitWrite(ctx *AuthContext, intent *WriteOperation)
 	var resultFile *File
 	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
 		// Fast path: a single narrow UPDATE (grow size, stamp times, clear suid)
-		// instead of GetFile (aggregate block-refs read) + PutFile (full-row
+		// instead of GetFile (aggregate block-refs read) + UpdateAttrs (full-row
 		// rewrite), for backends that implement it. Post-op attrs are synthesized
 		// from the pre-write attrs plus the authoritative final size — the same
 		// no-read-back trick the deferred-commit path uses.
@@ -359,7 +359,7 @@ func (s *Service) immediateCommitWrite(ctx *AuthContext, intent *WriteOperation)
 		if clearSUID {
 			file.Mode &= ^uint32(0o6000)
 		}
-		if err := tx.PutFile(ctx.Context, file); err != nil {
+		if err := tx.UpdateAttrs(ctx.Context, file); err != nil {
 			return err
 		}
 		resultFile = file
@@ -512,7 +512,7 @@ func (s *Service) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *
 			file.Mode &= ^uint32(0o6000)
 		}
 
-		return tx.PutFile(ctx.Context, file)
+		return tx.UpdateAttrs(ctx.Context, file)
 	}
 
 	if durable {
