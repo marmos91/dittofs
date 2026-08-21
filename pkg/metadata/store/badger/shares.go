@@ -19,10 +19,7 @@ import (
 
 // GenerateHandle creates a new unique file handle for a path in a share.
 func (s *BadgerMetadataStore) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return metadata.GenerateNewHandle(shareName)
+	return basestore.GenerateHandle(ctx, shareName)
 }
 
 // ============================================================================

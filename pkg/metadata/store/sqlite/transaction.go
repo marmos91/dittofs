@@ -874,12 +874,7 @@ func (tx *sqliteTransaction) PutFilesystemMeta(ctx context.Context, shareName st
 }
 
 func (tx *sqliteTransaction) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// Handles are UUID-based; the path is stored in the File struct.
-	return metadata.GenerateNewHandle(shareName)
+	return basestore.GenerateHandle(ctx, shareName)
 }
 
 // ============================================================================

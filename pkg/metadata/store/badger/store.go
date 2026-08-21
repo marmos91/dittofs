@@ -736,33 +736,8 @@ func NewBadgerMetadataStoreWithDefaultsAndCaches(ctx context.Context, dbPath str
 // and limits) for the given path, with cache sizes left at 0 (auto-sized).
 func defaultStoreConfig(dbPath string) BadgerMetadataStoreConfig {
 	return BadgerMetadataStoreConfig{
-		DBPath: dbPath,
-		Capabilities: metadata.FilesystemCapabilities{
-			// Transfer Sizes
-			MaxReadSize:        1048576, // 1MB
-			PreferredReadSize:  1048576, // 1MB — matches Linux knfsd default; reduces NFS round-trips per block
-			MaxWriteSize:       1048576, // 1MB
-			PreferredWriteSize: 1048576, // 1MB
-
-			// Limits
-			MaxFileSize:      9223372036854775807, // 2^63-1 (practically unlimited)
-			MaxFilenameLen:   255,                 // Standard Unix limit
-			MaxPathLen:       4096,                // Standard Unix limit
-			MaxHardLinkCount: 32767,               // Similar to ext4
-
-			// Features
-			SupportsHardLinks:     true,  // We track link counts
-			SupportsSymlinks:      true,  // We store symlink targets
-			CaseSensitive:         true,  // Keys are case-sensitive
-			CasePreserving:        true,  // We store exact filenames
-			ChownRestricted:       false, // Allow chown
-			SupportsACLs:          false, // No ACL support yet
-			SupportsExtendedAttrs: true,  // EAs persist in the FileAttr JSON blob
-			TruncatesLongNames:    true,  // Reject with error
-
-			// Time Resolution
-			TimestampResolution: 1, // 1 nanosecond (Go time.Time precision)
-		},
+		DBPath:          dbPath,
+		Capabilities:    basestore.DefaultCapabilities(),
 		MaxStorageBytes: 0, // Unlimited (reported as available disk space)
 		MaxFiles:        0, // Unlimited (reported as 1 million)
 	}

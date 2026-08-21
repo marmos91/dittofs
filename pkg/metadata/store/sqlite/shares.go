@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 )
@@ -20,12 +21,7 @@ import (
 
 // GenerateHandle creates a new unique file handle for a path in a share.
 func (s *SQLiteMetadataStore) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// Handles are UUID-based; the path is stored in the File struct.
-	return metadata.GenerateNewHandle(shareName)
+	return basestore.GenerateHandle(ctx, shareName)
 }
 
 // GetRootHandle returns the root handle for a share.

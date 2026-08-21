@@ -957,11 +957,7 @@ func (tx *badgerTransaction) PutFilesystemMeta(ctx context.Context, shareName st
 }
 
 func (tx *badgerTransaction) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	return metadata.GenerateNewHandle(shareName)
+	return basestore.GenerateHandle(ctx, shareName)
 }
 
 // ============================================================================

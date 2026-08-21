@@ -932,12 +932,7 @@ func (tx *postgresTransaction) PutFilesystemMeta(ctx context.Context, shareName 
 }
 
 func (tx *postgresTransaction) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// PostgreSQL uses UUID-based handles, path is stored in File struct
-	return metadata.GenerateNewHandle(shareName)
+	return basestore.GenerateHandle(ctx, shareName)
 }
 
 // ============================================================================
