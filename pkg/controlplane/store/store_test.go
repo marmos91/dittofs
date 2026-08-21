@@ -1476,6 +1476,38 @@ func TestEnsureAdminUser_OptOutForcedChange(t *testing.T) {
 	}
 }
 
+// TestEnsureAdminUser_SuppliedPasswordIsNotReportedAsGenerated pins the
+// distinction the caller acts on: an admin bootstrapped from
+// DITTOFS_ADMIN_INITIAL_PASSWORD was created, but its password was not
+// generated, so no unrecoverable-credential warning is owed.
+//
+// Before the fix EnsureAdminUser returned the operator's own password exactly
+// as it returned a generated one, and `dfs start` told operators who had
+// supplied a working password that a generated one had been created for them
+// and that recovering it meant deleting the control-plane database.
+func TestEnsureAdminUser_SuppliedPasswordIsNotReportedAsGenerated(t *testing.T) {
+	const supplied = "operator-chosen-password"
+	t.Setenv(models.EnvAdminInitialPassword, supplied)
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	generated, created, err := store.EnsureAdminUser(ctx, true, "")
+	if err != nil {
+		t.Fatalf("EnsureAdminUser: %v", err)
+	}
+	if !created {
+		t.Error("expected created=true when the admin is bootstrapped")
+	}
+	if generated != "" {
+		t.Errorf("supplied password reported as generated (%q); the caller warns about an unrecoverable credential on a non-empty value", generated)
+	}
+	// The supplied password must be the one that actually works.
+	if _, err := store.ValidateCredentials(ctx, models.AdminUsername, supplied); err != nil {
+		t.Errorf("supplied admin password should authenticate: %v", err)
+	}
+}
+
 func TestEnsureDefaultGroups(t *testing.T) {
 	store := createTestStore(t)
 	defer store.Close()

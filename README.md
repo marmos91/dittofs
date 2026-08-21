@@ -152,9 +152,10 @@ mode (the default `./dfs start`), and under Docker/systemd where stdout is a pip
 than a terminal, the generated password is **not written to the log and cannot be
 recovered**. Because the `admin` user is created on that first start, setting
 `DITTOFS_ADMIN_INITIAL_PASSWORD` and simply restarting will **not** change it — that variable
-is only read while bootstrapping a *new* admin. To recover, remove the admin user (reset the
-control-plane database), then start again with the password pre-set. So: **set it before the
-very first start.**
+is only read while bootstrapping a *new* admin. To recover, delete the `admin` row from the
+`users` table of the control-plane database and start again with the password pre-set; the next
+start re-runs the bootstrap. Do not delete the database itself — it also holds your shares,
+stores, mounts and other users. So: **set it before the very first start.**
 
 ### Serve an NFS share in under a minute
 

@@ -62,9 +62,10 @@ In background mode (the default `dfs start`), and under Docker/systemd (where st
 pipe, not a terminal), the generated password is **never written anywhere and cannot be
 recovered** — the log only notes that one was created. And because the `admin` user now
 exists, setting `DITTOFS_ADMIN_INITIAL_PASSWORD` and restarting will **not** change it (that
-variable is only read while bootstrapping a *new* admin). To recover you must remove the admin
-user (reset the control-plane database) and start again with the password pre-set — so set it
-before the very first start.
+variable is only read while bootstrapping a *new* admin). To recover, delete the `admin` row
+from the `users` table of the control-plane database and start again with the password pre-set;
+the next start re-runs the bootstrap. Do not delete the database itself — it also holds your
+shares, stores, mounts and other users. Simpler: set the password before the very first start.
 
 By default the server listens on these ports:
 
