@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -30,6 +31,14 @@ func mapPgError(err error, operation, path string) error {
 			Message: fmt.Sprintf("%s: not found", operation),
 			Path:    path,
 		}
+	}
+
+	// A caller that went away is not a store failure: reported as one, the
+	// request loses the cancellation the adapters already know how to drop.
+	// Only pgx's own context error is unambiguous evidence of that — see the
+	// 57014 case for why the server's report of a killed statement is not.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
 	}
 
 	// Handle PostgreSQL-specific errors
@@ -148,7 +157,12 @@ func mapPgErrorCode(pgErr *pgconn.PgError, operation, path string) error {
 			Path:    path,
 		}
 
-	// 57014: query_canceled
+	// 57014: query_canceled. Deliberately NOT reported as a cancellation: the
+	// server raises it for its own statement_timeout too, which fires while the
+	// caller's context is still live and its client still waiting. The context
+	// check in mapPgError already covers a caller that really did go away, and
+	// the adapters drop the reply entirely for a cancelled request — so claiming
+	// cancellation here would leave a waiting client with no reply at all.
 	case "57014":
 		return &metadata.StoreError{
 			Code:    metadata.ErrIOError,

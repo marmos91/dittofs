@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -37,9 +38,24 @@ func mapDBError(err error, operation, path string) error {
 		}
 	}
 
+	// A cancelled caller is not an I/O fault: falling through to ErrIOError
+	// hands an NFS client NFS3ERR_IO for a request the client itself abandoned.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+
 	msg := strings.ToLower(err.Error())
 
 	switch {
+	// database/sql aborts an in-flight statement through sqlite3_interrupt and
+	// the driver reports SQLITE_INTERRUPT, which carries no context error to
+	// match on. Nothing else here interrupts a statement and the engine has no
+	// server-side timeout of its own, so this only ever means the caller's
+	// context ended. Callers that must tell a deadline from an explicit cancel
+	// read their own ctx.Err().
+	case strings.Contains(msg, "interrupted"):
+		return context.Canceled
+
 	// UNIQUE / PRIMARY KEY constraint violation.
 	case strings.Contains(msg, "unique constraint") ||
 		strings.Contains(msg, "primary key constraint") ||

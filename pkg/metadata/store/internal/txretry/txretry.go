@@ -23,11 +23,11 @@ import (
 )
 
 const (
-	// budget bounds how long a caller backpressures on a transient conflict
+	// Budget bounds how long a caller backpressures on a transient conflict
 	// before giving up and returning the mapped error. Kept in line with the
 	// sqlite busy_timeout (config default 5s) so a genuinely stuck conflict
 	// still eventually surfaces — after a real budget, not 60ms.
-	budget = 5 * time.Second
+	Budget = 5 * time.Second
 	// baseBackoff / maxBackoff bound the jittered exponential backoff between
 	// attempts.
 	baseBackoff = 5 * time.Millisecond
@@ -38,7 +38,7 @@ const (
 // tightened to an earlier ctx deadline when the caller set one, so a caller's
 // own timeout is always honored ahead of the retry budget.
 func Deadline(ctx context.Context) time.Time {
-	deadline := time.Now().Add(budget)
+	deadline := time.Now().Add(Budget)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}

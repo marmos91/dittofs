@@ -47,7 +47,7 @@ func TestDeadline_TightensToEarlierCtxDeadline(t *testing.T) {
 func TestDeadline_DefaultsToBudget(t *testing.T) {
 	// No ctx deadline: now+budget, within a small slack.
 	got := Deadline(context.Background())
-	want := time.Now().Add(budget)
+	want := time.Now().Add(Budget)
 	if diff := got.Sub(want); diff > 100*time.Millisecond || diff < -100*time.Millisecond {
 		t.Fatalf("Deadline %v not ~now+budget %v", got, want)
 	}
