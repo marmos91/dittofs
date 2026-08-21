@@ -785,7 +785,12 @@ func (r *Runtime) UpdateShareQuota(shareName string, quotaBytes int64) {
 }
 
 // GetShareUsage returns the logical used bytes and physical disk bytes for a share.
-// Returns (0, 0) if the share is not found or has no store.
+//
+// Best-effort: either figure is reported as 0 when it cannot be obtained — an
+// unknown share, a share with no block store, or a failed lookup. Usage feeds a
+// reporting surface, so an unavailable number degrades to zero rather than
+// failing the whole share listing. A 0 therefore means "empty or unknown", and
+// is not a signal to act on.
 //
 // The logical figure is scoped to this share alone. It cannot come from the
 // metadata store's store-wide counter: several shares may name the same

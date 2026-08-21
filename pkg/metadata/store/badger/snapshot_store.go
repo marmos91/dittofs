@@ -318,9 +318,6 @@ func (s *BadgerMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	if err := s.initUsedBytesAndPayloadIndex(); err != nil {
 		return fmt.Errorf("restore: reinitialize used-bytes counter: %w", err)
 	}
-	// Per-share totals are cached from a scan of the pre-restore rows and would
-	// otherwise survive until the TTL expires.
-	s.invalidateShareUsedCache()
 
 	return nil
 }

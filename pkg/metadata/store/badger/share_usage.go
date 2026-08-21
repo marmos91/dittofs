@@ -36,21 +36,34 @@ func (s *BadgerMetadataStore) GetUsedBytesForShare(ctx context.Context, shareNam
 		return 0, err
 	}
 
-	// The lock is held across the scan so a burst of callers costs one scan
-	// rather than one each.
 	s.shareUsedCache.mu.Lock()
-	defer s.shareUsedCache.mu.Unlock()
+	cached := s.shareUsedCache.byShare
+	fresh := time.Since(s.shareUsedCache.timestamp) < shareUsedCacheTTL
+	gen := s.shareUsedCache.gen
+	s.shareUsedCache.mu.Unlock()
 
-	if s.shareUsedCache.byShare != nil && time.Since(s.shareUsedCache.timestamp) < shareUsedCacheTTL {
-		return s.shareUsedCache.byShare[shareName], nil
+	// A published map is never mutated in place, only replaced, so reading it
+	// outside the lock is safe.
+	if cached != nil && fresh {
+		return cached[shareName], nil
 	}
 
+	// Scanned with the lock released: a committing transaction invalidates this
+	// cache post-commit, and must never queue behind a scan of every record.
+	// Concurrent misses may each scan; that is cheaper than stalling writes.
 	byShare, err := s.scanUsedBytesByShare(ctx)
 	if err != nil {
 		return 0, err
 	}
-	s.shareUsedCache.byShare = byShare
-	s.shareUsedCache.timestamp = time.Now()
+
+	s.shareUsedCache.mu.Lock()
+	// Publish only if nothing invalidated the cache while the scan ran — those
+	// results may already describe a superseded state.
+	if s.shareUsedCache.gen == gen {
+		s.shareUsedCache.byShare = byShare
+		s.shareUsedCache.timestamp = time.Now()
+	}
+	s.shareUsedCache.mu.Unlock()
 
 	return byShare[shareName], nil
 }
@@ -101,12 +114,14 @@ func (s *BadgerMetadataStore) scanUsedBytesByShare(ctx context.Context) (map[str
 	return byShare, nil
 }
 
-// invalidateShareUsedCache drops the cached per-share totals so the next
-// caller rescans. Used where the file records change wholesale (reset,
-// snapshot restore) rather than through the normal mutation path, which the
-// TTL already covers.
+// invalidateShareUsedCache drops the cached per-share totals so the next caller
+// rescans, and bumps the generation so a scan already in flight discards its
+// result instead of publishing a superseded one. Called wherever the file
+// records change: post-commit in withTransaction, on DeleteShare, on Reset, and
+// after a snapshot restore.
 func (s *BadgerMetadataStore) invalidateShareUsedCache() {
 	s.shareUsedCache.mu.Lock()
 	s.shareUsedCache.byShare = nil
+	s.shareUsedCache.gen++
 	s.shareUsedCache.mu.Unlock()
 }

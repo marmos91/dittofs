@@ -135,7 +135,10 @@ type BadgerMetadataStore struct {
 	shareUsedCache struct {
 		byShare   map[string]int64
 		timestamp time.Time
-		mu        sync.Mutex
+		// gen is bumped by every invalidation. A scan that started before an
+		// invalidation must not publish its (possibly superseded) result.
+		gen uint64
+		mu  sync.Mutex
 	}
 
 	// lockStore provides lock persistence
