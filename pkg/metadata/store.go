@@ -482,7 +482,27 @@ type Store interface {
 
 	// GetUsedBytes returns the current total logical bytes used by regular files.
 	// This is an O(1) read from an atomic counter.
+	//
+	// The counter is store-wide. A store instance is shared by every share that
+	// names the same metadata store config, so this is NOT a per-share figure —
+	// use GetUsedBytesForShare when reporting usage for one share.
 	GetUsedBytes() int64
+
+	// GetUsedBytesForShare returns the logical bytes used by regular files that
+	// belong to one share: the sum of their sizes, as recorded in metadata.
+	// Directories, symlinks and other non-regular entries contribute nothing,
+	// matching GetUsedBytes semantics.
+	//
+	// This is a metadata figure, not an on-disk one. It is unaffected by block
+	// deduplication, compression, and by whether the share's blocks currently
+	// live in the local tier or only in the remote one.
+	//
+	// An unknown share name returns 0 and a nil error — a share with no files
+	// and a share that does not exist are indistinguishable by usage alone.
+	//
+	// Unlike GetUsedBytes this is not guaranteed O(1): backends that keep only a
+	// store-wide counter compute the per-share figure on demand.
+	GetUsedBytesForShare(ctx context.Context, shareName string) (int64, error)
 
 	// GetQuotaUsage returns the per-identity usage (bytes + file count) for the
 	// given scope (user/group) and identity id (uid or gid). Regular files only,

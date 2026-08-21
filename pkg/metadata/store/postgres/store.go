@@ -189,6 +189,18 @@ func (s *PostgresMetadataStore) GetUsedBytes() int64 {
 	return s.usedBytes.Load()
 }
 
+// GetUsedBytesForShare sums the sizes of one share's regular files. The
+// store-wide atomic counter covers every share held by this store, so a scoped
+// aggregate is used instead — the same one GetFilesystemStatistics runs, over
+// the idx_inodes_share_name index.
+func (s *PostgresMetadataStore) GetUsedBytesForShare(ctx context.Context, shareName string) (int64, error) {
+	var used int64
+	if err := s.queryRow(ctx, shareUsedBytesQuery, shareName, int(metadata.FileTypeRegular)).Scan(&used); err != nil {
+		return 0, mapPgError(err, "GetUsedBytesForShare", shareName)
+	}
+	return used, nil
+}
+
 // initUsedBytesCounter initializes the store-wide atomic counter from a SQL SUM
 // query and seeds the per-identity usage cache from GROUP BY aggregates. Both
 // are reconstructed from the inodes table (the source

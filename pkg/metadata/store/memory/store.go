@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -401,6 +402,31 @@ func NewMemoryMetadataStoreWithDefaults() *MemoryMetadataStore {
 // This is an O(1) atomic read, safe for concurrent access without locks.
 func (store *MemoryMetadataStore) GetUsedBytes() int64 {
 	return store.usedBytes.Load()
+}
+
+// GetUsedBytesForShare sums the sizes of the share's regular files. The
+// store-wide usedBytes counter covers every share held by this store, so it
+// cannot answer a per-share query.
+//
+// ponytail: O(n) walk of the files map under the read lock. The memory backend
+// is a development and test store whose whole state is already an in-process
+// map; a per-share counter is only worth adding if this store ever holds a
+// working set large enough for the walk to matter.
+func (store *MemoryMetadataStore) GetUsedBytesForShare(ctx context.Context, shareName string) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+
+	var total int64
+	for _, fd := range store.files {
+		if fd.ShareName == shareName && fd.Attr.Type == metadata.FileTypeRegular {
+			total += int64(fd.Attr.Size)
+		}
+	}
+	return total, nil
 }
 
 // GetQuotaUsage returns per-identity usage for the given scope and id.
