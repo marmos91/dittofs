@@ -42,8 +42,11 @@ dfsctl quota remove /export --scope user --id 1000
   server restart.
 - **Most-specific wins.** A user is limited by its own quota if set, else its group's,
   else the default-user fallback.
-- **Usage is by owner.** Bytes and inode counts are keyed by file owner UID/GID and
-  rebuilt from file rows on startup. A `chown` moves a file's usage between identities.
+- **Usage is by owner, within one share.** Bytes and inode counts are keyed by share and
+  by file owner UID/GID, and rebuilt from file rows on startup. A `chown` moves a file's
+  usage between identities. Shares that name the same metadata store are served by one
+  store instance, but their usage is still counted separately: one share's bytes never
+  count against another share's quota, and `df` on a share reports only that share.
 - **Best-effort.** Under heavy concurrent writes an identity may briefly exceed a limit
   before usage catches up — normal for a userspace NFS/SMB server.
 
