@@ -49,8 +49,10 @@ func mapDBError(err error, operation, path string) error {
 	switch {
 	// database/sql aborts an in-flight statement through sqlite3_interrupt and
 	// the driver reports SQLITE_INTERRUPT, which carries no context error to
-	// match on. Callers that must tell a deadline from an explicit cancel read
-	// their own ctx.Err().
+	// match on. Nothing else here interrupts a statement and the engine has no
+	// server-side timeout of its own, so this only ever means the caller's
+	// context ended. Callers that must tell a deadline from an explicit cancel
+	// read their own ctx.Err().
 	case strings.Contains(msg, "interrupted"):
 		return context.Canceled
 

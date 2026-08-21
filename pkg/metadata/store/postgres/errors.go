@@ -33,9 +33,10 @@ func mapPgError(err error, operation, path string) error {
 		}
 	}
 
-	// A cancelled caller is not an I/O fault: falling through to ErrIOError
-	// hands an NFS client NFS3ERR_IO for a request the client itself abandoned.
-	// pgx surfaces the context error; the server reports 57014 (see below).
+	// A caller that went away is not a store failure: reported as one, the
+	// request loses the cancellation the adapters already know how to drop.
+	// Only pgx's own context error is unambiguous evidence of that — see the
+	// 57014 case for why the server's report of a killed statement is not.
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
@@ -156,10 +157,18 @@ func mapPgErrorCode(pgErr *pgconn.PgError, operation, path string) error {
 			Path:    path,
 		}
 
-	// 57014: query_canceled — the server's report of a statement it aborted
-	// after the caller's context ended. Not an I/O fault.
+	// 57014: query_canceled. Deliberately NOT reported as a cancellation: the
+	// server raises it for its own statement_timeout too, which fires while the
+	// caller's context is still live and its client still waiting. The context
+	// check in mapPgError already covers a caller that really did go away, and
+	// the adapters drop the reply entirely for a cancelled request — so claiming
+	// cancellation here would leave a waiting client with no reply at all.
 	case "57014":
-		return context.Canceled
+		return &metadata.StoreError{
+			Code:    metadata.ErrIOError,
+			Message: fmt.Sprintf("%s: operation canceled", operation),
+			Path:    path,
+		}
 
 	// 08000-08006: connection errors
 	case "08000", "08003", "08006":
