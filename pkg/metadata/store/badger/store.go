@@ -117,7 +117,6 @@ type BadgerMetadataStore struct {
 	// share-record write; a stale entry is a wrong permission decision.
 	shareCache sharecache.Cache
 
-
 	// lockStore provides lock persistence
 	lockStore *badgerLockStore
 

@@ -70,11 +70,12 @@ func TestCreateFile_ConcurrentSameName_NoOrphan(t *testing.T) {
 	require.Equal(t, int64(1), okCount, "exactly one concurrent create must win")
 	require.Equal(t, int64(concurrency-1), existsCount, "all losers must get AlreadyExists")
 
-	// Orphan check: UsedFiles counts every inode. root + the single "collide"
-	// child = 2. A double-create would leave an extra orphaned inode (3+).
+	// Orphan check: UsedFiles counts the share's regular files, so the single
+	// "collide" child = 1 (the root directory does not count). A double-create
+	// would leave an extra orphaned inode (2+).
 	stats, err := store.GetFilesystemStatistics(ctx, rootHandle)
 	require.NoError(t, err)
-	require.Equal(t, uint64(2), stats.UsedFiles,
+	require.Equal(t, uint64(1), stats.UsedFiles,
 		"orphaned inode detected: a concurrent create double-committed under one name")
 
 	// The surviving name resolves to a single, live regular-file inode.
