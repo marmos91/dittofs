@@ -5,11 +5,28 @@ import (
 	"errors"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/txretry"
 	"github.com/marmos91/dittofs/pkg/metadata/store/sqlite"
+)
+
+const (
+	// pre1769Ceiling is the total wait of the fixed 3-attempt (10/20/30ms) retry
+	// loop this test guards against: a transaction that blocks longer than this
+	// is one that loop would have given up on and returned EIO for.
+	pre1769Ceiling = 60 * time.Millisecond
+
+	// callLimit bounds a single transaction against the budget the transaction
+	// itself retries within, not against elapsed test time. WithTransaction
+	// retries a transient conflict until that budget elapses and then returns, so
+	// no call can legitimately run far past it however slow the machine is; the
+	// multiple is slack for scheduling and one final attempt, not room for a slow
+	// disk.
+	callLimit = 4 * txretry.Budget
 )
 
 // TestSQLite_ConcurrentWritesBackpressureNoEIO is the #1769 regression guard.
@@ -27,10 +44,15 @@ import (
 // directory row across all of them with a tiny busy_timeout. All mutations
 // must succeed.
 func TestSQLite_ConcurrentWritesBackpressureNoEIO(t *testing.T) {
-	// Bound the whole test: if the retry loop ever fails to terminate, fail
-	// with a clear deadline error instead of hanging until `go test -timeout`.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// No test-wide deadline. How long this workload takes is a property of the
+	// machine — the same binary spans an order of magnitude between a quiet host
+	// and a loaded CI runner — while the behaviour under test belongs entirely to
+	// the store. A ctx deadline would put the machine back in charge of the
+	// verdict twice over: WithTransaction tightens its retry budget to an earlier
+	// ctx deadline, so the budget shrinks to nothing as the run approaches it, and
+	// the deadline aborts whatever statement is in flight when it fires. Each
+	// transaction is bounded below by the store's own retry budget instead.
+	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "backpressure.db")
 
 	newStore := func(autoMigrate bool) metadata.Store {
@@ -78,6 +100,9 @@ func TestSQLite_ConcurrentWritesBackpressureNoEIO(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
+	// Transactions that blocked past the ceiling of the retry loop this test
+	// guards against, i.e. ones that loop would have turned into EIO.
+	var backpressured atomic.Int64
 	errCh := make(chan error, stores*writersPerStore*iters)
 	start := make(chan struct{})
 
@@ -93,6 +118,7 @@ func TestSQLite_ConcurrentWritesBackpressureNoEIO(t *testing.T) {
 				}
 				<-start // release all writers together to maximize contention
 				for i := 0; i < iters; i++ {
+					began := time.Now()
 					err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
 						// Read + rewrite the SAME parent-directory inode: a genuine
 						// hot-row write conflict across all connections.
@@ -103,9 +129,17 @@ func TestSQLite_ConcurrentWritesBackpressureNoEIO(t *testing.T) {
 						f.Mtime = time.Now()
 						return tx.UpdateAttrs(ctx, f)
 					})
+					blocked := time.Since(began)
 					if err != nil {
 						errCh <- err
 						return
+					}
+					if blocked > callLimit {
+						t.Errorf("WithTransaction blocked %v, past the %v budget it retries within (limit %v)", blocked, txretry.Budget, callLimit)
+						return
+					}
+					if blocked > pre1769Ceiling {
+						backpressured.Add(1)
 					}
 				}
 			}(store)
@@ -123,4 +157,12 @@ func TestSQLite_ConcurrentWritesBackpressureNoEIO(t *testing.T) {
 		}
 		t.Fatalf("unexpected error under contention: %v", err)
 	}
+
+	// Without this the assertion above could pass vacuously: if the writers ever
+	// stopped colliding, every transaction would succeed on its first attempt and
+	// a store that never retries at all would look identical to one that does.
+	if n := backpressured.Load(); n == 0 {
+		t.Fatalf("no transaction blocked longer than %v, so the writers never contended and the retry path was never exercised", pre1769Ceiling)
+	}
+	t.Logf("%d/%d transactions blocked past %v and still succeeded", backpressured.Load(), stores*writersPerStore*iters, pre1769Ceiling)
 }

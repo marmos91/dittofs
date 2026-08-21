@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -30,6 +31,14 @@ func mapPgError(err error, operation, path string) error {
 			Message: fmt.Sprintf("%s: not found", operation),
 			Path:    path,
 		}
+	}
+
+	// Caller's context cancelled or expired. pgx surfaces the context error, and
+	// the server may instead report the statement it aborted as 57014
+	// (query_canceled). Neither is an I/O fault: falling through to ErrIOError
+	// hands an NFS client NFS3ERR_IO for a request the client itself abandoned.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
 	}
 
 	// Handle PostgreSQL-specific errors
@@ -148,13 +157,12 @@ func mapPgErrorCode(pgErr *pgconn.PgError, operation, path string) error {
 			Path:    path,
 		}
 
-	// 57014: query_canceled
+	// 57014: query_canceled — the server's report of a statement it aborted,
+	// which is how a cancelled caller context usually comes back. Not an I/O
+	// fault, so it must not become ErrIOError; see the context check in
+	// mapPgError.
 	case "57014":
-		return &metadata.StoreError{
-			Code:    metadata.ErrIOError,
-			Message: fmt.Sprintf("%s: operation canceled", operation),
-			Path:    path,
-		}
+		return context.Canceled
 
 	// 08000-08006: connection errors
 	case "08000", "08003", "08006":
