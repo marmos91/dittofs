@@ -165,8 +165,8 @@ func ResetThenRestoreConformance(t *testing.T, factory SnapshotableStoreFactory)
 	// Reset must clear the per-identity quota cache too, not just the
 	// share/file maps: a stale cache keeps enforcing limits against data
 	// that no longer exists.
-	if u, err := store.GetQuotaUsage(metadata.QuotaScopeUser, 1000); err != nil || u.Bytes != 0 || u.Files != 0 {
-		t.Fatalf("post-Reset GetQuotaUsage(user, 1000) = %+v, err=%v, want zero", u, err)
+	if u, err := store.GetQuotaUsage(shareName, metadata.QuotaScopeUser, 1000); err != nil || u.Bytes != 0 || u.Files != 0 {
+		t.Fatalf("post-Reset GetQuotaUsage(share, user, 1000) = %+v, err=%v, want zero", u, err)
 	}
 
 	// 3. Empty assertion: ListShares returns zero entries post-Reset.
@@ -196,8 +196,8 @@ func ResetThenRestoreConformance(t *testing.T, factory SnapshotableStoreFactory)
 	// Restore must reseed the quota cache from the restored files, not leave
 	// it at the post-Reset zero state.
 	const wantBytes = populateTestDataUsedBytes
-	if u, err := store.GetQuotaUsage(metadata.QuotaScopeUser, 1000); err != nil || u.Bytes != wantBytes || u.Files != 2 {
-		t.Fatalf("post-Restore GetQuotaUsage(user, 1000) = %+v, err=%v, want {Bytes:%d Files:2}", u, err, wantBytes)
+	if u, err := store.GetQuotaUsage(shareName, metadata.QuotaScopeUser, 1000); err != nil || u.Bytes != wantBytes || u.Files != 2 {
+		t.Fatalf("post-Restore GetQuotaUsage(share, user, 1000) = %+v, err=%v, want {Bytes:%d Files:2}", u, err, wantBytes)
 	}
 
 	// 5. Verify shares + representative file survived round-trip.
