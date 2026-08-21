@@ -189,16 +189,6 @@ type Store struct {
 
 	nextSeg atomic.Uint64 // global segment-ID allocator
 	version atomic.Uint64 // global monotonic LSN
-	// lastTruncVer is the LSN as it stood when the most recent truncate began.
-	// A hydrate whose bound is at or below it is dropped: truncate clips
-	// intervals away rather than recording one, so a range it emptied leaves
-	// nothing behind for hydratable to weigh the stale write-back against.
-	//
-	// ponytail: one watermark for the whole store, so a truncate of any file
-	// briefly refuses in-flight hydrates of every other file. A refused hydrate
-	// costs a re-fetch, and the read path retries, so the price is bounded;
-	// make it per-file if truncate ever runs often enough to matter.
-	lastTruncVer atomic.Uint64
 	// pinVersion is the highest snapshot watermark still held by a live snapshot
 	// (0 = none). A segment whose minVersion is at or below it is kept off the
 	// eviction/GC path so a local-only snapshot's bytes — the only durable copy —
@@ -454,12 +444,12 @@ func (s *Store) WriteAt(ctx context.Context, id FileID, offset int64, data []byt
 // Dropping is always safe: the write-back is a cache fill, never a read's
 // answer, and costs at most a re-fetch.
 func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byte, notAfter uint64) error {
-	if s.staleAfterTruncate(notAfter) {
-		return nil
-	}
 	sh := s.shardFor(id)
 	sh.mu.Lock()
-	ranges := sh.index[id].hydratable(offset, int64(len(data)), notAfter)
+	var ranges [][2]int64
+	if !staleAfterTruncate(sh, id, notAfter) {
+		ranges = sh.index[id].hydratable(offset, int64(len(data)), notAfter)
+	}
 	sh.mu.Unlock()
 	for _, r := range ranges {
 		if err := s.appendRecord(ctx, id, r[0], data[r[0]-offset:r[1]-offset], true, notAfter); err != nil {
@@ -474,10 +464,11 @@ func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byt
 // (see Hydrate).
 func (s *Store) WriteVersion() uint64 { return s.version.Load() }
 
-// staleAfterTruncate reports whether a bound predates the most recent truncate,
-// which is the one mutation that leaves no interval behind to compare against.
-func (s *Store) staleAfterTruncate(notAfter uint64) bool {
-	return notAfter > 0 && notAfter <= s.lastTruncVer.Load()
+// staleAfterTruncate reports whether a hydrate's bound predates the file's most
+// recent truncate, which is the one mutation that leaves no interval behind to
+// compare against. Callers hold sh.mu.
+func staleAfterTruncate(sh *shard, id FileID, notAfter uint64) bool {
+	return notAfter > 0 && notAfter <= sh.truncVer[id]
 }
 
 // SeedCold registers a byte range as remote-durable-but-not-local: a read of it
@@ -713,6 +704,8 @@ func (s *Store) Delete(ctx context.Context, id FileID) error {
 			fi.ivs = kept
 		}
 	}
+	// The file is gone, so its truncate bound has nothing left to guard.
+	delete(sh.truncVer, id)
 	sh.mu.Unlock()
 	if dirty != 0 {
 		s.unsynced.Add(-dirty)
@@ -870,14 +863,15 @@ func (s *Store) Truncate(ctx context.Context, id FileID, newSize int64) error {
 			}
 		}
 	}
+	if past {
+		// Published before the marker is stamped, so a hydrate that samples its
+		// bound after this point is never mistaken for one that predates the clip.
+		sh.truncVer[id] = s.version.Load()
+	}
 	sh.mu.Unlock()
 	if !past {
 		return nil
 	}
-
-	// Published before the marker is stamped, so a hydrate that samples its
-	// bound after this point is never mistaken for one that predates the clip.
-	s.lastTruncVer.Store(s.version.Load())
 
 	// Durability first: the marker must be on disk before the index is clipped.
 	truncVer, err := s.appendTruncateMarker(ctx, id, newSize)

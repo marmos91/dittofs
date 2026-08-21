@@ -312,7 +312,7 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 	// and the fetched bytes are the wrong ones.
 	if synced {
 		n := int64(len(data))
-		if s.staleAfterTruncate(notAfter) || !coversWhole(sh.index[id].hydratable(offset, n, notAfter), offset, n) {
+		if staleAfterTruncate(sh, id, notAfter) || !coversWhole(sh.index[id].hydratable(offset, n, notAfter), offset, n) {
 			return nil
 		}
 	}
