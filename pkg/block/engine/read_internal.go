@@ -99,17 +99,31 @@ func (bs *Store) healCorruptWarmRead(ctx context.Context, payloadID string, data
 // cold, so a genuinely sparse file still reads as zeros; a zero-length window
 // never reaches here (readAtInternal returns early), and would report cold=false
 // regardless, so the guard has nothing to fail open on.
+//
+// One retry sits before that refusal. A fetch that overlapped a write, truncate
+// or punch has its write-back dropped, because those bytes predate the mutation
+// (see hydrateSpan); when the mutated range was then carved and evicted it
+// reports cold again, and failing there would turn a read racing a write into
+// an I/O error. The retry resolves against the post-mutation manifest and
+// samples a fresh bound, so it fetches the bytes that now cover the window.
+// Bounded at one — a window that is still cold after a fetch that raced nothing
+// is the real "could not bring it back" case this refuses.
 func (bs *Store) ensureAndReadFromLocal(ctx context.Context, payloadID string, dest []byte, offset uint64) error {
-	if err := bs.syncer.EnsureAvailable(ctx, payloadID, offset, uint32(len(dest))); err != nil {
-		return fmt.Errorf("manifest reconcile for %s at offset %d failed: %w", payloadID, offset, err)
-	}
-	_, st, err := bs.local.ReadAt(ctx, payloadID, int64(offset), dest)
-	if err != nil {
-		return fmt.Errorf("read after hydrate failed: %w", err)
-	}
-	if st.Cold {
-		return fmt.Errorf("window for %s at offset %d (%d bytes) is still cold after hydrate: %w",
-			payloadID, offset, len(dest), block.ErrChunkNotFound)
+	for attempt := range 2 {
+		if err := bs.syncer.EnsureAvailable(ctx, payloadID, offset, uint32(len(dest))); err != nil {
+			return fmt.Errorf("manifest reconcile for %s at offset %d failed: %w", payloadID, offset, err)
+		}
+		_, st, err := bs.local.ReadAt(ctx, payloadID, int64(offset), dest)
+		if err != nil {
+			return fmt.Errorf("read after hydrate failed: %w", err)
+		}
+		if !st.Cold {
+			return nil
+		}
+		if attempt == 1 {
+			return fmt.Errorf("window for %s at offset %d (%d bytes) is still cold after hydrate: %w",
+				payloadID, offset, len(dest), block.ErrChunkNotFound)
+		}
 	}
 	return nil
 }
