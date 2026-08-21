@@ -33,10 +33,9 @@ func mapPgError(err error, operation, path string) error {
 		}
 	}
 
-	// Caller's context cancelled or expired. pgx surfaces the context error, and
-	// the server may instead report the statement it aborted as 57014
-	// (query_canceled). Neither is an I/O fault: falling through to ErrIOError
+	// A cancelled caller is not an I/O fault: falling through to ErrIOError
 	// hands an NFS client NFS3ERR_IO for a request the client itself abandoned.
+	// pgx surfaces the context error; the server reports 57014 (see below).
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
@@ -157,10 +156,8 @@ func mapPgErrorCode(pgErr *pgconn.PgError, operation, path string) error {
 			Path:    path,
 		}
 
-	// 57014: query_canceled — the server's report of a statement it aborted,
-	// which is how a cancelled caller context usually comes back. Not an I/O
-	// fault, so it must not become ErrIOError; see the context check in
-	// mapPgError.
+	// 57014: query_canceled — the server's report of a statement it aborted
+	// after the caller's context ended. Not an I/O fault.
 	case "57014":
 		return context.Canceled
 

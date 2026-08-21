@@ -26,9 +26,7 @@ const (
 	// Budget bounds how long a caller backpressures on a transient conflict
 	// before giving up and returning the mapped error. Kept in line with the
 	// sqlite busy_timeout (config default 5s) so a genuinely stuck conflict
-	// still eventually surfaces — after a real budget, not 60ms. Exported so a
-	// test can bound a transaction against the limit the transaction itself
-	// obeys, rather than against a constant that a slow machine invalidates.
+	// still eventually surfaces — after a real budget, not 60ms.
 	Budget = 5 * time.Second
 	// baseBackoff / maxBackoff bound the jittered exponential backoff between
 	// attempts.

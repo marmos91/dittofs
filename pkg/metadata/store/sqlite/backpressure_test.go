@@ -20,12 +20,10 @@ const (
 	// this is one that loop would have given up on and returned EIO for.
 	fixedAttemptCeiling = 60 * time.Millisecond
 
-	// callLimit bounds a single transaction against the budget the transaction
-	// itself retries within, not against elapsed test time. WithTransaction
-	// retries a transient conflict until that budget elapses and then returns, so
-	// no call can legitimately run far past it however slow the machine is; the
-	// multiple is slack for scheduling and one final attempt, not room for a slow
-	// disk.
+	// callLimit bounds a single transaction against the budget it retries
+	// within, not against elapsed test time: WithTransaction returns once that
+	// budget elapses, so no call can legitimately run far past it however slow
+	// the machine is. The multiple is slack for scheduling and one final attempt.
 	callLimit = 4 * txretry.Budget
 )
 
@@ -44,14 +42,11 @@ const (
 // directory row across all of them with a tiny busy_timeout. All mutations
 // must succeed.
 func TestSQLite_ConcurrentWritesBackpressureNoEIO(t *testing.T) {
-	// No test-wide deadline. How long this workload takes is a property of the
-	// machine — the same binary spans an order of magnitude between a quiet host
-	// and a loaded CI runner — while the behaviour under test belongs entirely to
-	// the store. A ctx deadline would put the machine back in charge of the
-	// verdict twice over: WithTransaction tightens its retry budget to an earlier
-	// ctx deadline, so the budget shrinks to nothing as the run approaches it, and
-	// the deadline aborts whatever statement is in flight when it fires. Each
-	// transaction is bounded below by the store's own retry budget instead.
+	// No test-wide deadline: each transaction is bounded by the store's own
+	// retry budget instead. A ctx deadline would decide the verdict itself —
+	// WithTransaction tightens its retry budget to an earlier ctx deadline, so
+	// the budget shrinks to nothing as the run approaches it, and the deadline
+	// aborts whatever statement is in flight when it fires.
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "backpressure.db")
 
@@ -100,8 +95,6 @@ func TestSQLite_ConcurrentWritesBackpressureNoEIO(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	// Transactions that blocked past the ceiling of the retry loop this test
-	// guards against, i.e. ones that loop would have turned into EIO.
 	var backpressured atomic.Int64
 	errCh := make(chan error, stores*writersPerStore*iters)
 	start := make(chan struct{})

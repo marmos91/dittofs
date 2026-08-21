@@ -38,17 +38,19 @@ func mapDBError(err error, operation, path string) error {
 		}
 	}
 
+	// A cancelled caller is not an I/O fault: falling through to ErrIOError
+	// hands an NFS client NFS3ERR_IO for a request the client itself abandoned.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+
 	msg := strings.ToLower(err.Error())
 
 	switch {
-	// Caller's context cancelled or expired. database/sql aborts the in-flight
-	// statement through sqlite3_interrupt, and the driver reports that as
-	// SQLITE_INTERRUPT rather than as the context's error, so both shapes arrive
-	// here. Neither is an I/O fault: falling through to ErrIOError hands an NFS
-	// client NFS3ERR_IO for a request the client itself abandoned. Callers that
-	// need to tell a deadline from an explicit cancel read their own ctx.Err().
-	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
-		return err
+	// database/sql aborts an in-flight statement through sqlite3_interrupt and
+	// the driver reports SQLITE_INTERRUPT, which carries no context error to
+	// match on. Callers that must tell a deadline from an explicit cancel read
+	// their own ctx.Err().
 	case strings.Contains(msg, "interrupted"):
 		return context.Canceled
 
