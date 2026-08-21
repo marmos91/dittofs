@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -282,13 +283,22 @@ func (c *APIConfig) GetJWTSecret() string {
 	envSecret := os.Getenv(EnvControlPlaneSecret)
 	if envSecret != "" {
 		if c.JWT.Secret != "" && c.JWT.Secret != envSecret {
-			logger.Warn("JWT secret from environment variable overrides config file value",
-				"env_var", EnvControlPlaneSecret)
+			jwtOverrideWarnOnce.Do(func() {
+				logger.Warn("JWT secret from environment variable overrides config file value",
+					"env_var", EnvControlPlaneSecret)
+			})
 		}
 		return envSecret
 	}
 	return c.JWT.Secret
 }
+
+// jwtOverrideWarnOnce holds the env-overrides-config notice to one line per
+// process. GetJWTSecret is a plain accessor called several times on a single
+// startup path (the daemon preflight, NewServer's backstop check, and building
+// the JWT service), and repeating the same warning for one boot only makes it
+// look like several things went wrong.
+var jwtOverrideWarnOnce sync.Once
 
 // HasJWTSecret returns whether a JWT secret is configured.
 func (c *APIConfig) HasJWTSecret() bool {

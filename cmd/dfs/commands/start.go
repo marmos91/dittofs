@@ -138,9 +138,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// Ensure admin user exists. On first run the password is taken from
-	// admin.password_hash (config), DITTOFS_ADMIN_INITIAL_PASSWORD (env,
-	// plaintext, also enables SMB admin), or a generated random password — in
-	// that precedence. Whether the first-login password change is forced is
+	// DITTOFS_ADMIN_INITIAL_PASSWORD (env, plaintext, also enables SMB admin),
+	// admin.password_hash (config), or a generated random password — in that
+	// precedence. Whether the first-login password change is forced is
 	// operator-configurable (controlplane.require_initial_password_change,
 	// default true) and is skipped when the operator supplied the password.
 	generatedPassword, adminCreated, err := cpStore.EnsureAdminUser(ctx, cfg.ControlPlane.RequiresInitialPasswordChange(), cfg.Admin.PasswordHash)
