@@ -34,18 +34,16 @@ type UpsertQuotaRequest struct {
 	GraceSeconds int64  `json:"grace_seconds,omitempty"`
 }
 
-// quotaPath builds the REST path for a quota. The default-user scope has no id
-// segment; user/group encode the uid/gid in the path.
+// quotaPath builds the REST path for a quota. Scopes whose identity is
+// implicit (default-user) carry no id segment; user/group encode the uid/gid in
+// the path.
 func quotaPath(share, scope string, id *uint32) string {
-	base := fmt.Sprintf("/api/v1/shares/%s/quotas", url.PathEscape(normalizeShareNameForAPI(share)))
-	if scope == "default-user" {
-		return base + "/default-user"
+	base := fmt.Sprintf("/api/v1/shares/%s/quotas/%s",
+		url.PathEscape(normalizeShareNameForAPI(share)), url.PathEscape(scope))
+	if id == nil {
+		return base
 	}
-	idSeg := ""
-	if id != nil {
-		idSeg = fmt.Sprintf("%d", *id)
-	}
-	return fmt.Sprintf("%s/%s/%s", base, url.PathEscape(scope), idSeg)
+	return fmt.Sprintf("%s/%d", base, *id)
 }
 
 // ListQuotas returns all quotas for a share.

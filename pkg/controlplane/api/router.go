@@ -269,12 +269,13 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				// Per-identity (user/group/default-user) quota CRUD.
 				// RequireAdmin is inherited from the parent /shares group.
 				// default-user has no {id} segment (its identity is implicit);
-				// user/group carry the uid/gid in {id}.
+				// user/group carry the uid/gid in {id}. Both shapes bind
+				// {scope} so the handler reads the scope it was routed for.
 				quotaHandler := handlers.NewQuotaHandler(cpStore, rt)
 				r.Get("/{name}/quotas", quotaHandler.List)
-				r.Get("/{name}/quotas/default-user", quotaHandler.Get)
-				r.Put("/{name}/quotas/default-user", quotaHandler.Set)
-				r.Delete("/{name}/quotas/default-user", quotaHandler.Remove)
+				r.Get("/{name}/quotas/{scope}", quotaHandler.Get)
+				r.Put("/{name}/quotas/{scope}", quotaHandler.Set)
+				r.Delete("/{name}/quotas/{scope}", quotaHandler.Remove)
 				r.Get("/{name}/quotas/{scope}/{id}", quotaHandler.Get)
 				r.Put("/{name}/quotas/{scope}/{id}", quotaHandler.Set)
 				r.Delete("/{name}/quotas/{scope}/{id}", quotaHandler.Remove)
