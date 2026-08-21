@@ -120,6 +120,17 @@ func runStart(cmd *cobra.Command, args []string) error {
 	logger.Info("Log level", "level", cfg.Logging.Level, "format", cfg.Logging.Format)
 	logger.Info("Configuration loaded", "source", getConfigSource(GetConfigFile()))
 
+	// Validate the control-plane API configuration before anything durable is
+	// written. api.NewServer rejects a missing or too-short JWT signing secret,
+	// but it is built hundreds of lines below, long after the first-boot
+	// bootstrap has already created the admin user. Failing there left a
+	// control-plane database on disk holding an admin whose generated password
+	// was printed only by the run that aborted, so every later start refused
+	// the operator's credentials.
+	if err := cfg.ControlPlane.ValidateStartup(); err != nil {
+		return fmt.Errorf("invalid control plane configuration: %w", err)
+	}
+
 	// Initialize control plane store for user management
 	cpStore, err := store.New(&cfg.Database)
 	if err != nil {
@@ -127,18 +138,23 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// Ensure admin user exists. On first run the password is taken from
-	// admin.password_hash (config), DITTOFS_ADMIN_INITIAL_PASSWORD (env,
-	// plaintext, also enables SMB admin), or a generated random password — in
-	// that precedence. Whether the first-login password change is forced is
+	// DITTOFS_ADMIN_INITIAL_PASSWORD (env, plaintext, also enables SMB admin),
+	// admin.password_hash (config), or a generated random password — in that
+	// precedence. Whether the first-login password change is forced is
 	// operator-configurable (controlplane.require_initial_password_change,
 	// default true) and is skipped when the operator supplied the password.
-	adminPassword, err := cpStore.EnsureAdminUser(ctx, cfg.ControlPlane.RequiresInitialPasswordChange(), cfg.Admin.PasswordHash)
+	generatedPassword, adminCreated, err := cpStore.EnsureAdminUser(ctx, cfg.ControlPlane.RequiresInitialPasswordChange(), cfg.Admin.PasswordHash)
 	if err != nil {
 		return fmt.Errorf("failed to ensure admin user: %w", err)
 	}
-	if adminPassword != "" {
-		logger.Info("Admin user created", "username", "admin")
-		emitAdminPassword(adminPassword)
+	if adminCreated {
+		logger.Info("Admin user created", "username", models.AdminUsername)
+	}
+	// Non-empty only when the password was randomly generated: an operator who
+	// supplied one already knows it, and telling them it was generated would
+	// point them at a recovery procedure they do not need.
+	if generatedPassword != "" {
+		emitAdminPassword(generatedPassword)
 	}
 
 	// Ensure default groups exist (admins, operators, users) and add admin to admins group
@@ -878,7 +894,10 @@ func handleLoadSharesError(err error, stderr *os.File) bool {
 	return false
 }
 
-// emitAdminPassword surfaces a freshly-generated first-run admin password.
+// emitAdminPassword surfaces a freshly-generated first-run admin password. It
+// is called only when the password was actually generated, never when the
+// operator supplied one via DITTOFS_ADMIN_INITIAL_PASSWORD or
+// admin.password_hash.
 //
 // It prints the plaintext password ONLY when stdout is an interactive terminal
 // (an operator watching a foreground `dfs start`). In daemon mode the child's
@@ -896,12 +915,16 @@ func emitAdminPassword(password string) {
 		return
 	}
 	// Daemon / non-interactive: never write the secret to the log.
-	logger.Warn("Admin user created with a generated password, which is NOT recoverable in " +
-		"background mode (stdout is not a terminal, so the password is not written to the log). " +
-		"The admin user now exists, so restarting with DITTOFS_ADMIN_INITIAL_PASSWORD or " +
-		"admin.password_hash set will NOT change it. To obtain a known credential, remove the " +
-		"admin user (reset the control-plane database) and re-bootstrap with one of those set, " +
-		"or bootstrap with 'dfs start --foreground' in a terminal to have it printed once.")
+	logger.Warn("Admin user created with a randomly generated password, which is NOT " +
+		"recoverable in background mode (stdout is not a terminal, so the password is not " +
+		"written to the log). The admin user now exists, so restarting with " +
+		"DITTOFS_ADMIN_INITIAL_PASSWORD or admin.password_hash set will NOT change it. " +
+		"To bootstrap a known credential, set one of those before the first start of a new " +
+		"instance, or start with 'dfs start --foreground' in a terminal to have the generated " +
+		"password printed once. On an instance that is already bootstrapped, delete only the " +
+		"'admin' user row from the control-plane database and restart, which re-runs the " +
+		"bootstrap; do not delete the database itself, which also holds the share, store, " +
+		"mount and user configuration.")
 }
 
 // formatMismatchDirective renders the multi-line operator directive printed

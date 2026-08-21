@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/controlplane/api"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 )
@@ -241,5 +244,64 @@ func TestEmitAdminPassword_NonTerminalSuppressesSecret(t *testing.T) {
 
 	if strings.Contains(out, secret) {
 		t.Errorf("non-terminal (daemon log): password leaked to stdout: %q", out)
+	}
+}
+
+// TestStart_InvalidJWTSecretLeavesNoAdmin pins the ordering of the first-boot
+// sequence: a control-plane configuration the API server will reject must abort
+// the start before anything durable is written.
+//
+// Before the fix, `dfs start` bootstrapped the admin user (with a randomly
+// generated, unrecoverable password) hundreds of lines before the JWT secret
+// was validated. The aborted start left a control-plane database on disk
+// holding an admin whose password had only ever been printed by the run that
+// failed, so every later start refused the operator's credentials and the only
+// recovery was deleting the database.
+func TestStart_InvalidJWTSecretLeavesNoAdmin(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Contain every default path the daemon would otherwise resolve under the
+	// developer's real home directory.
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmp, "state"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmp, "data"))
+	// A secret in the ambient environment would defeat the whole test.
+	t.Setenv(api.EnvControlPlaneSecret, "")
+	t.Setenv(models.EnvAdminInitialPassword, "")
+
+	dbPath := filepath.Join(tmp, "controlplane.db")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	cfgBody := fmt.Sprintf(`database:
+  type: sqlite
+  sqlite:
+    path: %s
+controlplane:
+  host: 127.0.0.1
+  port: 0
+  jwt:
+    secret: "too-short"
+`, dbPath)
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	origCfgFile, origForeground := cfgFile, foreground
+	t.Cleanup(func() { cfgFile, foreground = origCfgFile, origForeground })
+	cfgFile = cfgPath
+	foreground = true
+
+	err := runStart(startCmd, nil)
+	if err == nil {
+		t.Fatal("expected start to fail on a too-short JWT secret")
+	}
+	if !strings.Contains(err.Error(), "JWT secret") {
+		t.Fatalf("expected a JWT secret error, got: %v", err)
+	}
+
+	// The control-plane database must not exist: no store was opened, so no
+	// admin user, groups or adapters were bootstrapped.
+	if _, statErr := os.Stat(dbPath); !os.IsNotExist(statErr) {
+		t.Fatalf("failed start left a control-plane database at %s (stat err: %v)", dbPath, statErr)
 	}
 }

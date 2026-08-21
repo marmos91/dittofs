@@ -522,10 +522,14 @@ type SettingsStore interface {
 // exists. They are separated from UserStore because they have different
 // access patterns (startup-only vs request-time).
 type AdminStore interface {
-	// EnsureAdminUser ensures an admin user exists.
-	// If no admin user exists, creates one with a generated password.
-	// Returns the initial password if a new admin was created, empty string otherwise.
+	// EnsureAdminUser ensures an admin user exists, creating one on first boot.
 	// This should be called during server startup.
+	//
+	// created reports whether this call created the admin, whichever source the
+	// password came from. generatedPassword is non-empty only when the password
+	// was randomly generated, i.e. neither DITTOFS_ADMIN_INITIAL_PASSWORD nor
+	// configuredPasswordHash supplied one — that is the only case where the
+	// credential is unrecoverable and has to be surfaced to the operator.
 	//
 	// requireInitialPasswordChange controls whether a newly created admin is
 	// flagged to change its password on first login. When false (or when the
@@ -535,8 +539,8 @@ type AdminStore interface {
 	// configuredPasswordHash, when non-empty and no plaintext env override is
 	// set, is used as the admin's bcrypt password hash directly (a known
 	// control-plane credential with no generated password). It must be a valid
-	// $2a$/$2b$ bcrypt hash. Returns an empty initialPassword in that case.
-	EnsureAdminUser(ctx context.Context, requireInitialPasswordChange bool, configuredPasswordHash string) (initialPassword string, err error)
+	// $2a$/$2b$ bcrypt hash.
+	EnsureAdminUser(ctx context.Context, requireInitialPasswordChange bool, configuredPasswordHash string) (generatedPassword string, created bool, err error)
 
 	// IsAdminInitialized returns whether the admin user has been initialized.
 	IsAdminInitialized(ctx context.Context) (bool, error)

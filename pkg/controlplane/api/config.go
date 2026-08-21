@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -18,6 +19,9 @@ const redactedSecret = "********"
 
 // EnvControlPlaneSecret is the name of the environment variable for the control plane's JWT authentication signing secret.
 const EnvControlPlaneSecret = "DITTOFS_CONTROLPLANE_SECRET"
+
+// MinJWTSecretLength is the shortest JWT signing secret the API server accepts.
+const MinJWTSecretLength = 32
 
 // APIConfig configures the REST API HTTP server.
 //
@@ -179,6 +183,27 @@ func (c *APIConfig) Validate() error {
 	return nil
 }
 
+// ValidateStartup checks everything that makes the API server unbuildable:
+// the TLS settings Validate covers, plus a usable JWT signing secret.
+//
+// The JWT secret is deliberately not part of Validate. Validate runs on every
+// config load, including the read-only commands (`dfs logs`, `dfs config
+// show`) that have no use for a signing secret and must keep working without
+// one. Only the daemon needs it, and the daemon calls this before it opens the
+// control-plane database: a boot that cannot succeed must not leave durable
+// state behind, least of all a bootstrapped admin whose generated password was
+// emitted only by the run that then aborted.
+func (c *APIConfig) ValidateStartup() error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	if len(c.GetJWTSecret()) < MinJWTSecretLength {
+		return fmt.Errorf("JWT secret must be at least %d characters; set via %s env var or config",
+			MinJWTSecretLength, EnvControlPlaneSecret)
+	}
+	return nil
+}
+
 // MarshalYAML redacts the JWT signing secret when the config is serialized
 // for display. Only the secret is masked; an empty secret stays empty so
 // "no secret configured" is distinguishable from a redacted one.
@@ -258,13 +283,22 @@ func (c *APIConfig) GetJWTSecret() string {
 	envSecret := os.Getenv(EnvControlPlaneSecret)
 	if envSecret != "" {
 		if c.JWT.Secret != "" && c.JWT.Secret != envSecret {
-			logger.Warn("JWT secret from environment variable overrides config file value",
-				"env_var", EnvControlPlaneSecret)
+			jwtOverrideWarnOnce.Do(func() {
+				logger.Warn("JWT secret from environment variable overrides config file value",
+					"env_var", EnvControlPlaneSecret)
+			})
 		}
 		return envSecret
 	}
 	return c.JWT.Secret
 }
+
+// jwtOverrideWarnOnce holds the env-overrides-config notice to one line per
+// process. GetJWTSecret is a plain accessor called several times on a single
+// startup path (the daemon preflight, NewServer's backstop check, and building
+// the JWT service), and repeating the same warning for one boot only makes it
+// look like several things went wrong.
+var jwtOverrideWarnOnce sync.Once
 
 // HasJWTSecret returns whether a JWT secret is configured.
 func (c *APIConfig) HasJWTSecret() bool {
