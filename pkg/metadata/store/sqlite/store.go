@@ -19,7 +19,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
 )
 
@@ -74,7 +74,7 @@ type SQLiteMetadataStore struct {
 	// keyed by owner uid / gid. Seeded from a GROUP BY query on startup and
 	// updated from each committed transaction's deltas. Guarded by quotaMu.
 	quotaMu sync.Mutex
-	quota   *quota.Cache
+	quota   *basestore.QuotaCache
 
 	// shareCache caches decoded ShareOptions so the permission funnel every
 	// read/write/create/setattr traverses does not re-run the options SELECT
@@ -157,7 +157,7 @@ func NewSQLiteMetadataStore(
 		logger:       log,
 		ctx:          storeCtx,
 		cancel:       cancel,
-		quota:        quota.NewCache(),
+		quota:        basestore.NewQuotaCache(),
 	}
 	// The substores derive only from db, which is never reassigned, so bind
 	// them once here.
@@ -252,7 +252,7 @@ func (s *SQLiteMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32
 
 // applyQuotaDelta folds a per-identity usage delta into the in-memory usage
 // cache. Called post-commit (matching usedBytes).
-func (s *SQLiteMetadataStore) applyQuotaDelta(delta map[quota.Key]metadata.UsageStat) {
+func (s *SQLiteMetadataStore) applyQuotaDelta(delta map[basestore.QuotaKey]metadata.UsageStat) {
 	if len(delta) == 0 {
 		return
 	}

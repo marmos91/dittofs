@@ -13,7 +13,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 // shareData holds the internal representation of a share configuration.
@@ -214,7 +214,7 @@ type MemoryMetadataStore struct {
 	// transaction's pending per-identity deltas exactly once on successful
 	// commit, identical to the usedBytes discipline.
 	quotaMu sync.Mutex
-	quota   *quota.Cache
+	quota   *basestore.QuotaCache
 
 	// storeID is the engine-persistent identifier for this store instance.
 	// Assigned on construction with a fresh ULID and immutable for the life
@@ -326,7 +326,7 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		// ObjectID -> handle-key secondary index.
 		objectIndex: make(map[block.ContentHash]string),
 		// per-identity quota usage counters.
-		quota: quota.NewCache(),
+		quota: basestore.NewQuotaCache(),
 		// Block packing record store.
 		blockRecords: make(map[string]*block.BlockRecord),
 	}

@@ -15,7 +15,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
 )
 
@@ -153,7 +153,7 @@ type BadgerMetadataStore struct {
 	// transaction's pending per-identity deltas exactly once on successful
 	// commit. Guarded by quotaMu.
 	quotaMu sync.Mutex
-	quota   *quota.Cache
+	quota   *basestore.QuotaCache
 
 	// storeID is the engine-persistent identifier for this store instance,
 	// backed by the cfg:store_id key in BadgerDB. Created on first open of
@@ -382,7 +382,7 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		storeID:           sid,
 		relaxedDurability: config.RelaxedDurability,
 		syncStop:          make(chan struct{}),
-		quota:             quota.NewCache(),
+		quota:             basestore.NewQuotaCache(),
 	}
 	// The substores derive only from db, which is never reassigned, so bind
 	// them once here.

@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 // ============================================================================
@@ -31,7 +31,7 @@ type memoryTransaction struct {
 	// quota accumulates per-identity usage changes (bytes + file count) keyed by
 	// (scope, id). Applied to the store's quota cache exactly once after a
 	// successful commit, identical to pendingDelta.
-	quota quota.Delta
+	quota basestore.QuotaDelta
 	// syncedOps buffers SyncedHashStore mutations made inside the closure.
 	// The synced maps live under their own mutex (syncedMu), NOT store.mu, so
 	// they cannot participate in the snapshot/restore rollback: instead the

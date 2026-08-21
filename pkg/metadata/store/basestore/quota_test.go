@@ -1,4 +1,4 @@
-package quota
+package basestore
 
 import (
 	"testing"
@@ -7,11 +7,11 @@ import (
 )
 
 // TestDeltaApplyAndGet exercises the accumulate → apply → read round-trip that
-// every store shares: a Delta records owner changes across user and group
-// scopes, the Cache folds them, and Get reports the result.
+// every store shares: a QuotaDelta records owner changes across user and group
+// scopes, the QuotaCache folds them, and Get reports the result.
 func TestDeltaApplyAndGet(t *testing.T) {
-	c := NewCache()
-	var d Delta
+	c := NewQuotaCache()
+	var d QuotaDelta
 
 	// Create a 1000-byte file owned by uid 7 / gid 3.
 	d.Add(7, 3, 1000, 1)
@@ -33,14 +33,14 @@ func TestDeltaApplyAndGet(t *testing.T) {
 // logic: removing the file empties the bucket, and an over-decrement never
 // leaves a negative total.
 func TestApplyDeletesAtZero(t *testing.T) {
-	c := NewCache()
+	c := NewQuotaCache()
 
-	var create Delta
+	var create QuotaDelta
 	create.Add(7, 3, 1000, 1)
 	c.Apply(create.Map())
 
 	// Delete the file: bucket reaches zero and is removed.
-	var del Delta
+	var del QuotaDelta
 	del.Add(7, 3, -1000, -1)
 	c.Apply(del.Map())
 
@@ -50,7 +50,7 @@ func TestApplyDeletesAtZero(t *testing.T) {
 
 	// Over-decrement (accounting drift) clamps to zero rather than going
 	// negative.
-	c.Apply(map[Key]metadata.UsageStat{
+	c.Apply(map[QuotaKey]metadata.UsageStat{
 		{metadata.QuotaScopeUser, 7}: {Bytes: -500, Files: -1},
 	})
 	if got := c.Get(metadata.QuotaScopeUser, 7); got.Bytes < 0 || got.Files < 0 {
