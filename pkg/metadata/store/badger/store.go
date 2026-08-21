@@ -374,10 +374,6 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 	store.durableStore = newBadgerDurableStore(db)
 	store.recoveryStore = newBadgerRecoveryStore(db)
 
-	// Initialize stats cache with a 5-second TTL for responsive updates
-	// This prevents expensive database scans on every FSSTAT request while
-	// still keeping stats reasonably fresh
-
 	// Initialize singleton keys if they don't exist
 	if err := store.initializeSingletons(ctx); err != nil {
 		_ = db.Close()
