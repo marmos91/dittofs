@@ -607,7 +607,10 @@ func (tx *memoryTransaction) CreateShare(ctx context.Context, share *metadata.Sh
 		return nil
 	}
 
-	rootHandle := tx.store.generateFileHandle(share.Name)
+	rootHandle, err := tx.store.generateFileHandle(share.Name)
+	if err != nil {
+		return err
+	}
 	tx.store.shares[share.Name] = &shareData{
 		Share:      *share,
 		RootHandle: rootHandle,
@@ -708,7 +711,10 @@ func (tx *memoryTransaction) CreateRootDirectory(ctx context.Context, shareName 
 	if sd, ok := tx.store.shares[shareName]; ok && len(sd.RootHandle) > 0 {
 		rootHandle = sd.RootHandle
 	} else {
-		rootHandle = tx.store.generateFileHandle(shareName)
+		var err error
+		if rootHandle, err = tx.store.generateFileHandle(shareName); err != nil {
+			return nil, err
+		}
 	}
 	key := handleToKey(rootHandle)
 

@@ -124,6 +124,32 @@ const (
 	MaxPathLen = 4096
 )
 
+// ValidateShareName validates a share name against the file-handle format.
+//
+// Handles are encoded as "<shareName>:<uuid>" and decoded by splitting on the
+// FIRST ':', within a MaxFileHandleSize-byte budget. Both properties are
+// share-name constraints, and neither is recoverable once a share exists: a
+// name containing ':' yields handles whose UUID component fails to parse, and
+// a name longer than MaxShareNameLen yields no handle at all, so every file
+// operation on the share fails at handle mint. Validate at every seam that
+// creates a share, before any state is persisted.
+func ValidateShareName(name string) error {
+	if name == "" {
+		return NewInvalidArgumentError("share name must not be empty")
+	}
+	if strings.Contains(name, ":") {
+		return NewInvalidArgumentError(
+			fmt.Sprintf("share name %q must not contain ':'", name))
+	}
+	if len(name) > MaxShareNameLen {
+		return NewInvalidArgumentError(fmt.Sprintf(
+			"share name %q is %d bytes, exceeding the %d-byte maximum "+
+				"(a %d-byte file handle holds \"<share>:<uuid>\")",
+			name, len(name), MaxShareNameLen, MaxFileHandleSize))
+	}
+	return nil
+}
+
 // ValidateName validates a filename for creation/move operations.
 //
 // Returns ErrInvalidArgument if name is empty, ".", "..", or contains a path

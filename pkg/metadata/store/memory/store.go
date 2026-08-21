@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -584,15 +583,12 @@ func (store *MemoryMetadataStore) childNameLocked(
 }
 
 // generateFileHandle returns a fresh UUID-based handle for a file in the
-// named share, in the standard "shareName:uuid" format. It panics on the
-// only failure GenerateNewHandle can report — a share name long enough to
-// push the encoded handle past 64 bytes — which share creation rejects.
-func (store *MemoryMetadataStore) generateFileHandle(shareName string) metadata.FileHandle {
-	handle, err := metadata.GenerateNewHandle(shareName)
-	if err != nil {
-		panic(fmt.Sprintf("failed to encode file handle: %v", err))
-	}
-	return handle
+// named share, in the standard "shareName:uuid" format. It reports the only
+// failure GenerateNewHandle can produce — a share name long enough to push
+// the encoded handle past metadata.MaxFileHandleSize — as an error, matching
+// the badger, sqlite and postgres backends.
+func (store *MemoryMetadataStore) generateFileHandle(shareName string) (metadata.FileHandle, error) {
+	return metadata.GenerateNewHandle(shareName)
 }
 
 // sortedChildNames returns the child names of a directory in sorted order.

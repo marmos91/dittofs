@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 // ============================================================================
@@ -13,12 +14,7 @@ import (
 
 // GenerateHandle creates a new unique file handle for a path in a share.
 func (store *MemoryMetadataStore) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// Memory store uses UUID-based handles, path is for compatibility
-	return store.generateFileHandle(shareName), nil
+	return basestore.GenerateHandle(ctx, shareName)
 }
 
 // GetRootHandle returns the root handle for a share.
@@ -100,7 +96,10 @@ func (store *MemoryMetadataStore) CreateShare(ctx context.Context, share *metada
 	}
 
 	// Generate root handle
-	rootHandle := store.generateFileHandle(share.Name)
+	rootHandle, err := store.generateFileHandle(share.Name)
+	if err != nil {
+		return err
+	}
 
 	store.shares[share.Name] = &shareData{
 		Share:      *share,
@@ -215,7 +214,10 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	if sd, ok := store.shares[shareName]; ok && len(sd.RootHandle) > 0 {
 		rootHandle = sd.RootHandle
 	} else {
-		rootHandle = store.generateFileHandle(shareName)
+		var err error
+		if rootHandle, err = store.generateFileHandle(shareName); err != nil {
+			return nil, err
+		}
 	}
 	key := handleToKey(rootHandle)
 
