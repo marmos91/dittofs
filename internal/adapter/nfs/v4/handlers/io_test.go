@@ -322,20 +322,13 @@ func encodeCommitArgs(offset uint64, count uint32) []byte {
 	return buf.Bytes()
 }
 
-// testClientID returns the ID of a confirmed v4.0 client on sm, registering it
-// on first use and returning the same ID for the same name afterwards.
+// testClientID registers a confirmed v4.0 client on sm and returns its ID.
 //
 // OPEN rejects a clientid that never completed SETCLIENTID /
 // SETCLIENTID_CONFIRM, so tests that drive OPEN must present an established
 // client rather than an arbitrary number. Distinct names give distinct clients.
 func testClientID(t *testing.T, sm *state.StateManager, name string) uint64 {
 	t.Helper()
-
-	for _, record := range sm.ListV40Clients() {
-		if record.ClientIDString == name {
-			return record.ClientID
-		}
-	}
 
 	result, err := sm.SetClientID(name, [8]byte{1, 2, 3, 4, 5, 6, 7, 8}, state.CallbackInfo{
 		Program: 0x40000000,
@@ -632,8 +625,12 @@ func TestOpen_UnknownClientID_ReturnsStaleClientID(t *testing.T) {
 	ctx := newRealFSContext(0, 0)
 	setCurrentFH(ctx, fx.rootHandle)
 
+	// share_deny WRITE so the retry below also proves no share reservation was
+	// taken on the ghost's behalf: state under a clientid with no client record
+	// has no lease, so nothing would ever reap it and its reservation would
+	// block every legitimate writer for the life of the server.
 	args := encodeOpenArgs(
-		1, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE,
+		1, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_WRITE,
 		0xDEADBEEFCAFEF00D, []byte("ghost-owner"),
 		types.OPEN4_CREATE, types.UNCHECKED4, types.CLAIM_NULL, "ghost.txt",
 	)
@@ -642,6 +639,26 @@ func TestOpen_UnknownClientID_ReturnsStaleClientID(t *testing.T) {
 	if result.Status != types.NFS4ERR_STALE_CLIENTID {
 		t.Errorf("OPEN with an unregistered clientid status = %d, want NFS4ERR_STALE_CLIENTID (%d)",
 			result.Status, types.NFS4ERR_STALE_CLIENTID)
+	}
+
+	// The rejection must come before the create. A client that is told its
+	// OPEN failed re-establishes its clientid and retries the same
+	// open(O_CREAT|O_EXCL); if the first attempt left the file behind, that
+	// retry fails EEXIST on a file the client was told it never created.
+	authCtx := newTestAuthCtx(0, 0)
+	if _, lookupErr := fx.metaSvc.Lookup(authCtx, fx.rootHandle, "ghost.txt"); lookupErr == nil {
+		t.Fatalf("ghost.txt exists: a rejected OPEN4_CREATE left the file behind")
+	}
+
+	retryArgs := encodeOpenArgs(
+		1, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE,
+		testClientID(t, fx.handler.StateManager, "recovered-client"), []byte("ghost-owner"),
+		types.OPEN4_CREATE, types.GUARDED4, types.CLAIM_NULL, "ghost.txt",
+	)
+	retryCtx := newRealFSContext(0, 0)
+	setCurrentFH(retryCtx, fx.rootHandle)
+	if retry := fx.handler.handleOpen(retryCtx, bytes.NewReader(retryArgs)); retry.Status != types.NFS4_OK {
+		t.Fatalf("GUARDED4 retry after recovery status = %d, want NFS4_OK", retry.Status)
 	}
 }
 

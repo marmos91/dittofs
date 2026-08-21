@@ -1,14 +1,12 @@
 package state
 
 import (
-	"context"
 	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================
@@ -560,7 +558,7 @@ func expectStatus(t *testing.T, err error, want uint32) {
 	}
 }
 
-func TestOpenFile_UnknownClientID_Rejected(t *testing.T) {
+func TestValidateAndRenewClient_UnknownClientID_Rejected(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	defer sm.Shutdown()
 
@@ -568,14 +566,12 @@ func TestOpenFile_UnknownClientID_Rejected(t *testing.T) {
 	// SETCLIENTID_CONFIRM, no lease.
 	const unknown uint64 = 0xDEADBEEFCAFEF00D
 
-	_, err := sm.OpenFile(unknown, []byte("nobody"), 1, []byte("fh-unknown"),
-		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
-	if !errors.Is(err, ErrStaleClientID) {
-		t.Fatalf("OpenFile with an unknown clientid = %v, want ErrStaleClientID", err)
+	if err := sm.ValidateAndRenewClient(unknown); !errors.Is(err, ErrStaleClientID) {
+		t.Fatalf("admitting an unknown clientid = %v, want ErrStaleClientID", err)
 	}
 }
 
-func TestOpenFile_UnconfirmedClientID_Rejected(t *testing.T) {
+func TestValidateAndRenewClient_UnconfirmedClientID_Rejected(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	defer sm.Shutdown()
 
@@ -587,55 +583,38 @@ func TestOpenFile_UnconfirmedClientID_Rejected(t *testing.T) {
 		t.Fatalf("SetClientID: %v", err)
 	}
 
-	_, err = sm.OpenFile(res.ClientID, []byte("premature"), 1, []byte("fh-unconfirmed"),
-		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
-	if !errors.Is(err, ErrStaleClientID) {
-		t.Fatalf("OpenFile before SETCLIENTID_CONFIRM = %v, want ErrStaleClientID", err)
+	if err := sm.ValidateAndRenewClient(res.ClientID); !errors.Is(err, ErrStaleClientID) {
+		t.Fatalf("admitting a clientid before SETCLIENTID_CONFIRM = %v, want ErrStaleClientID", err)
 	}
 }
 
-// A client whose lease lapsed must be told its state was freed, so it
-// re-establishes instead of running on state the server no longer has. RENEW
-// has always reported this; OPEN must report it too.
-func TestOpenFile_ExpiredClientID_RejectedLikeRenew(t *testing.T) {
-	sm := NewStateManager(50 * time.Millisecond)
+// A v4.0 client stops sending RENEW once it holds no open state, so a stretch
+// of stateid-free work — LOOKUP, GETATTR, SETATTR, CREATE, REMOVE — leaves the
+// lease untouched until the next OPEN. OPEN must therefore renew it, the way
+// RFC 7530 Section 9.6.2 counts any operation carrying a valid clientid as
+// proof of liveness; otherwise a busy mount is reaped as an idle one and every
+// create after the lease duration fails.
+func TestValidateAndRenewClient_KeepsBusyClientAlive(t *testing.T) {
+	const lease = 200 * time.Millisecond
+	sm := NewStateManager(lease)
 	defer sm.Shutdown()
 
-	res, err := sm.SetClientID("expiring-client", [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
-		CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "10.0.0.1.8.1"}, "10.0.0.1:1234")
-	if err != nil {
-		t.Fatalf("SetClientID: %v", err)
-	}
-	clientID := res.ClientID
-	if err := sm.ConfirmClientID(clientID, res.ConfirmVerifier); err != nil {
-		t.Fatalf("ConfirmClientID: %v", err)
+	clientID := registerTestClientWithName(t, sm, "busy-client")
+
+	// Three admissions spread over more than one lease duration, with no RENEW
+	// and no stateid op in between. Each renews, so the last lands on a client
+	// established well over a lease ago and still live.
+	for i := range 3 {
+		time.Sleep(lease * 2 / 3)
+		if err := sm.ValidateAndRenewClient(clientID); err != nil {
+			t.Fatalf("ValidateAndRenewClient %d: %v", i+1, err)
+		}
 	}
 
-	openResult, err := sm.OpenFile(clientID, []byte("owner1"), 1, []byte("fh-before-expiry"),
-		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
-	if err != nil {
-		t.Fatalf("OpenFile before expiry: %v", err)
-	}
-	if _, err := sm.ConfirmOpen(&openResult.Stateid, 2); err != nil {
-		t.Fatalf("ConfirmOpen: %v", err)
-	}
-
-	// Let the lease lapse: onLeaseExpired drops the client record and its state.
-	time.Sleep(250 * time.Millisecond)
-	if sm.GetClient(clientID) != nil {
-		t.Fatal("precondition: client record should be gone after expiry")
-	}
-
-	if err := sm.RenewLease(clientID); !errors.Is(err, ErrStaleClientID) {
-		t.Errorf("RenewLease after expiry = %v, want ErrStaleClientID", err)
-	}
-
-	// The record is gone, so the ID is genuinely unrecognized. Both errors
-	// send the client through the same recovery, and OPEN must give it one.
-	_, err = sm.OpenFile(clientID, []byte("owner-after-expiry"), 1, []byte("fh-after-expiry"),
-		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
-	if !errors.Is(err, ErrStaleClientID) {
-		t.Fatalf("OpenFile after expiry = %v, want ErrStaleClientID", err)
+	if record := sm.GetClient(clientID); record == nil {
+		t.Fatal("client record was reaped despite a steady stream of OPENs")
+	} else if record.Lease.IsExpired() {
+		t.Fatal("lease expired despite a steady stream of OPENs")
 	}
 }
 
@@ -643,7 +622,7 @@ func TestOpenFile_ExpiredClientID_RejectedLikeRenew(t *testing.T) {
 // lease until the session reaper sweeps it. While it is still there, OPEN names
 // what happened to the client's state (RFC 7530 Section 9.6.3.2) rather than
 // reporting the ID as never-seen.
-func TestOpenFile_V41LapsedLeaseBeforeReaping_ReturnsExpired(t *testing.T) {
+func TestValidateAndRenewClient_V41LapsedLeaseBeforeReaping_ReturnsExpired(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	defer sm.Shutdown()
 
@@ -658,142 +637,19 @@ func TestOpenFile_V41LapsedLeaseBeforeReaping_ReturnsExpired(t *testing.T) {
 	lease.LastRenew = time.Now().Add(-2 * lease.Duration)
 	lease.mu.Unlock()
 
-	_, err := sm.OpenFile(clientID, []byte("v41-owner"), 0, []byte("fh-lapsed"),
-		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
-	expectStatus(t, err, types.NFS4ERR_EXPIRED)
+	expectStatus(t, sm.ValidateAndRenewClient(clientID), types.NFS4ERR_EXPIRED)
 }
 
 // v4.1 clients are registered by EXCHANGE_ID / CREATE_SESSION and live in a
 // separate table; validation must accept them.
-func TestOpenFile_V41Client_Accepted(t *testing.T) {
+func TestValidateAndRenewClient_V41Client_Accepted(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	defer sm.Shutdown()
 
 	clientID := registerTestV41Client(t, sm)
 
-	// seqid 0 is the v4.1 convention: the slot table provides replay protection.
-	if _, err := sm.OpenFile(clientID, []byte("v41-owner"), 0, []byte("fh-v41"),
-		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); err != nil {
-		t.Fatalf("OpenFile for a v4.1 session client: %v", err)
-	}
-}
-
-// A rejected OPEN must leave nothing behind. State created under a clientid
-// with no client record has no lease, so no expiry timer would ever exist for
-// it: neither the v4.0 cleanup path (which walks ClientRecord.OpenOwners) nor
-// the v4.1 session reaper (which walks the v4.1 client table) can reach it, and
-// its share reservation would block legitimate clients indefinitely.
-func TestOpenFile_UnknownClientID_CreatesNoState(t *testing.T) {
-	sm := NewStateManager(50 * time.Millisecond)
-	defer sm.Shutdown()
-
-	const unknown uint64 = 0xDEADBEEFCAFEF00D
-	fh := []byte("fh-contended")
-
-	_, err := sm.OpenFile(unknown, []byte("ghost"), 1, fh,
-		types.OPEN4_SHARE_ACCESS_BOTH,
-		types.OPEN4_SHARE_DENY_WRITE, // would deny every other writer
-		types.CLAIM_NULL)
-	if !errors.Is(err, ErrStaleClientID) {
-		t.Fatalf("OpenFile with an unknown clientid = %v, want ErrStaleClientID", err)
-	}
-
-	sm.mu.RLock()
-	owners := len(sm.openOwners)
-	opens := len(sm.openStateByOther)
-	indexed := len(sm.openStateByFile[string(fh)])
-	sm.mu.RUnlock()
-	if owners != 0 || opens != 0 || indexed != 0 {
-		t.Fatalf("rejected OPEN left state behind: %d open-owners, %d open states, %d indexed on the file",
-			owners, opens, indexed)
-	}
-
-	// A properly registered client can still open the file: no share
-	// reservation was taken on its behalf.
-	clientID := registerTestClient(t, sm)
-	if _, err := sm.OpenFile(clientID, []byte("legit-owner"), 1, fh,
-		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); err != nil {
-		t.Fatalf("OpenFile by a registered client: %v", err)
-	}
-}
-
-// Freeing byte-range locks when a lease lapses is correct (RFC 7530 Section
-// 9.6.3). What must go with it is telling the holder: its next operation has to
-// fail with NFS4ERR_EXPIRED, or it keeps believing it holds ranges that the
-// server has already granted to someone else. Two writers convinced they hold
-// the same exclusive range is exactly the coordination failure that byte-range
-// locking exists to prevent.
-func TestExpiredLease_HolderIsToldItsLocksWereFreed(t *testing.T) {
-	sm := NewStateManager(50 * time.Millisecond)
-	sm.SetLockManager(lock.NewManager())
-	defer sm.Shutdown()
-
-	ctx := context.Background()
-	fh := []byte("fh-lock-after-expiry")
-	callback := CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "10.0.0.1.8.1"}
-	verifier := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
-
-	// The holder takes an exclusive WRITE lock on [0,100).
-	holder, err := sm.SetClientID("holder", verifier, callback, "10.0.0.1:1234")
-	if err != nil {
-		t.Fatalf("SetClientID(holder): %v", err)
-	}
-	if err := sm.ConfirmClientID(holder.ClientID, holder.ConfirmVerifier); err != nil {
-		t.Fatalf("ConfirmClientID(holder): %v", err)
-	}
-
-	holderOpen, err := sm.OpenFile(holder.ClientID, []byte("holder-owner"), 1, fh,
-		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
-	if err != nil {
-		t.Fatalf("OpenFile(holder): %v", err)
-	}
-	if _, err := sm.ConfirmOpen(&holderOpen.Stateid, 2); err != nil {
-		t.Fatalf("ConfirmOpen(holder): %v", err)
-	}
-	if _, err := sm.LockNew(ctx, holder.ClientID, []byte("holder-lockowner"), 1,
-		&holderOpen.Stateid, 3, fh, types.WRITE_LT, 0, 100, false); err != nil {
-		t.Fatalf("LockNew(holder): %v", err)
-	}
-
-	// While the holder is live, a conflicting lock is denied. This is the
-	// precondition that makes the assertion below meaningful.
-	rival, err := sm.SetClientID("rival", verifier, callback, "10.0.0.2:1234")
-	if err != nil {
-		t.Fatalf("SetClientID(rival): %v", err)
-	}
-	if err := sm.ConfirmClientID(rival.ClientID, rival.ConfirmVerifier); err != nil {
-		t.Fatalf("ConfirmClientID(rival): %v", err)
-	}
-	rivalOpen, err := sm.OpenFile(rival.ClientID, []byte("rival-owner"), 1, fh,
-		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
-	if err != nil {
-		t.Fatalf("OpenFile(rival): %v", err)
-	}
-	if _, err := sm.ConfirmOpen(&rivalOpen.Stateid, 2); err != nil {
-		t.Fatalf("ConfirmOpen(rival): %v", err)
-	}
-	contested, err := sm.LockNew(ctx, rival.ClientID, []byte("rival-lockowner"), 1,
-		&rivalOpen.Stateid, 3, fh, types.WRITE_LT, 0, 100, false)
-	if err != nil {
-		t.Fatalf("LockNew(rival, holder live): %v", err)
-	}
-	if contested.Denied == nil {
-		t.Fatal("precondition: conflicting lock was granted while the holder was live")
-	}
-
-	// Both leases lapse; the holder's locks are freed with its client record.
-	time.Sleep(250 * time.Millisecond)
-	if sm.GetClient(holder.ClientID) != nil {
-		t.Fatal("precondition: holder's client record should be gone after expiry")
-	}
-
-	// The holder's next OPEN must tell it so, rather than succeeding and
-	// leaving it believing it still holds [0,100). The error sends it back
-	// through SETCLIENTID / SETCLIENTID_CONFIRM (RFC 7530 Section 9.6.3.2).
-	_, err = sm.OpenFile(holder.ClientID, []byte("holder-owner-2"), 1, fh,
-		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
-	if !errors.Is(err, ErrStaleClientID) {
-		t.Fatalf("holder's OPEN after expiry = %v, want ErrStaleClientID", err)
+	if err := sm.ValidateAndRenewClient(clientID); err != nil {
+		t.Fatalf("admitting a v4.1 session client: %v", err)
 	}
 }
 

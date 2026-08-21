@@ -201,7 +201,7 @@ func TestValidateStateid_Success(t *testing.T) {
 
 	// Create an open state via OpenFile
 	fileHandle := []byte("test-handle-123")
-	result, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1, fileHandle, 1, 0, 0)
+	result, err := sm.OpenFile(0, []byte("owner1"), 1, fileHandle, 1, 0, 0)
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestValidateStateid_OldSeqid(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
 	fileHandle := []byte("test-handle-123")
-	result, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1, fileHandle, 1, 0, 0)
+	result, err := sm.OpenFile(0, []byte("owner1"), 1, fileHandle, 1, 0, 0)
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestValidateStateid_FutureSeqid(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
 	fileHandle := []byte("test-handle-123")
-	result, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1, fileHandle, 1, 0, 0)
+	result, err := sm.OpenFile(0, []byte("owner1"), 1, fileHandle, 1, 0, 0)
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestValidateStateid_FilehandleMismatch(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
 	fileHandle := []byte("test-handle-123")
-	result, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1, fileHandle, 1, 0, 0)
+	result, err := sm.OpenFile(0, []byte("owner1"), 1, fileHandle, 1, 0, 0)
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
 	}
@@ -417,7 +417,7 @@ func TestValidateStateid_Seqid0_AcceptedAsAny(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
 	fileHandle := []byte("test-handle-seqid0")
-	result, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1, fileHandle, 1, 0, 0)
+	result, err := sm.OpenFile(0, []byte("owner1"), 1, fileHandle, 1, 0, 0)
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
 	}
@@ -489,7 +489,7 @@ func TestIsSpecialStateid_NotSpecial(t *testing.T) {
 func TestOpenFile_NewOwner(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
-	result, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1,
+	result, err := sm.OpenFile(0, []byte("owner1"), 1,
 		[]byte("file-handle-1"),
 		types.OPEN4_SHARE_ACCESS_READ,
 		types.OPEN4_SHARE_DENY_NONE,
@@ -512,7 +512,7 @@ func TestOpenFile_ConfirmedOwer_SecondOpen(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
 	// First OPEN
-	result1, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1,
+	result1, err := sm.OpenFile(0, []byte("owner1"), 1,
 		[]byte("file-handle-1"),
 		types.OPEN4_SHARE_ACCESS_READ,
 		types.OPEN4_SHARE_DENY_NONE,
@@ -529,7 +529,7 @@ func TestOpenFile_ConfirmedOwer_SecondOpen(t *testing.T) {
 	}
 
 	// Second OPEN (different file) with same confirmed owner
-	result2, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 3,
+	result2, err := sm.OpenFile(0, []byte("owner1"), 3,
 		[]byte("file-handle-2"),
 		types.OPEN4_SHARE_ACCESS_BOTH,
 		types.OPEN4_SHARE_DENY_NONE,
@@ -551,7 +551,7 @@ func TestOpenFile_SameFile_ShareAccumulation(t *testing.T) {
 	fh := []byte("file-handle-1")
 
 	// First OPEN with READ access
-	result1, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1,
+	result1, err := sm.OpenFile(0, []byte("owner1"), 1,
 		fh,
 		types.OPEN4_SHARE_ACCESS_READ,
 		types.OPEN4_SHARE_DENY_NONE,
@@ -568,7 +568,7 @@ func TestOpenFile_SameFile_ShareAccumulation(t *testing.T) {
 	}
 
 	// Second OPEN on same file with WRITE access
-	result2, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 3,
+	result2, err := sm.OpenFile(0, []byte("owner1"), 3,
 		fh,
 		types.OPEN4_SHARE_ACCESS_WRITE,
 		types.OPEN4_SHARE_DENY_NONE,
@@ -594,10 +594,8 @@ func TestOpenFile_SameFile_ShareAccumulation(t *testing.T) {
 func TestOpenFile_SeqidReplay(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
-	clientID := registerTestClient(t, sm)
-
 	// First OPEN with seqid=1
-	_, err := sm.OpenFile(clientID, []byte("owner1"), 1,
+	_, err := sm.OpenFile(0, []byte("owner1"), 1,
 		[]byte("file-handle-1"),
 		types.OPEN4_SHARE_ACCESS_READ,
 		types.OPEN4_SHARE_DENY_NONE,
@@ -608,10 +606,10 @@ func TestOpenFile_SeqidReplay(t *testing.T) {
 	}
 
 	// Cache a result
-	sm.CacheOpenOwnerResult(clientID, []byte("owner1"), types.NFS4_OK, []byte("cached-data"))
+	sm.CacheOpenOwnerResult(0, []byte("owner1"), types.NFS4_OK, []byte("cached-data"))
 
 	// Replay with same seqid=1
-	replay, err := sm.OpenFile(clientID, []byte("owner1"), 1,
+	replay, err := sm.OpenFile(0, []byte("owner1"), 1,
 		[]byte("file-handle-1"),
 		types.OPEN4_SHARE_ACCESS_READ,
 		types.OPEN4_SHARE_DENY_NONE,
@@ -631,10 +629,8 @@ func TestOpenFile_SeqidReplay(t *testing.T) {
 func TestOpenFile_BadSeqid(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
-	clientID := registerTestClient(t, sm)
-
 	// First OPEN with seqid=1
-	_, err := sm.OpenFile(clientID, []byte("owner1"), 1,
+	_, err := sm.OpenFile(0, []byte("owner1"), 1,
 		[]byte("file-handle-1"),
 		types.OPEN4_SHARE_ACCESS_READ,
 		types.OPEN4_SHARE_DENY_NONE,
@@ -645,7 +641,7 @@ func TestOpenFile_BadSeqid(t *testing.T) {
 	}
 
 	// Use bad seqid (3 instead of expected 2)
-	_, err = sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 3,
+	_, err = sm.OpenFile(0, []byte("owner1"), 3,
 		[]byte("file-handle-1"),
 		types.OPEN4_SHARE_ACCESS_READ,
 		types.OPEN4_SHARE_DENY_NONE,
@@ -666,7 +662,7 @@ func TestOpenFile_BadSeqid(t *testing.T) {
 func TestConfirmOpen_Success(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
-	result, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1,
+	result, err := sm.OpenFile(0, []byte("owner1"), 1,
 		[]byte("fh"), 1, 0, 0)
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
@@ -696,7 +692,7 @@ func TestConfirmOpen_BadStateid(t *testing.T) {
 func TestConfirmOpen_BadSeqid(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
-	result, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1,
+	result, err := sm.OpenFile(0, []byte("owner1"), 1,
 		[]byte("fh"), 1, 0, 0)
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
@@ -717,7 +713,7 @@ func TestCloseFile_Success(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
 	// Open a file
-	result, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1,
+	result, err := sm.OpenFile(0, []byte("owner1"), 1,
 		[]byte("fh"), 1, 0, 0)
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
@@ -769,7 +765,7 @@ func TestCloseFile_CleansUpOwner(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
 	// Open a file
-	result, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1,
+	result, err := sm.OpenFile(0, []byte("owner1"), 1,
 		[]byte("fh"), 1, 0, 0)
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
@@ -843,7 +839,7 @@ func TestDowngradeOpen_Success(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
 	// Open with BOTH access
-	result, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1,
+	result, err := sm.OpenFile(0, []byte("owner1"), 1,
 		[]byte("fh"),
 		types.OPEN4_SHARE_ACCESS_BOTH,
 		types.OPEN4_SHARE_DENY_NONE,
@@ -885,7 +881,7 @@ func TestDowngradeOpen_CannotAddBits(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
 	// Open with READ only
-	result, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1,
+	result, err := sm.OpenFile(0, []byte("owner1"), 1,
 		[]byte("fh"),
 		types.OPEN4_SHARE_ACCESS_READ,
 		types.OPEN4_SHARE_DENY_NONE,
@@ -923,7 +919,7 @@ func TestDowngradeOpen_ZeroAccess(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
 	// Open with READ access
-	result, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1,
+	result, err := sm.OpenFile(0, []byte("owner1"), 1,
 		[]byte("fh"),
 		types.OPEN4_SHARE_ACCESS_READ,
 		types.OPEN4_SHARE_DENY_NONE,
@@ -1064,7 +1060,7 @@ func TestFullLifecycle_OpenConfirmClose(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
 	// OPEN (seqid=1)
-	openResult, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1,
+	openResult, err := sm.OpenFile(0, []byte("owner1"), 1,
 		[]byte("file-handle-test"),
 		types.OPEN4_SHARE_ACCESS_BOTH,
 		types.OPEN4_SHARE_DENY_NONE,
@@ -1126,8 +1122,7 @@ func TestFreeStateid(t *testing.T) {
 
 		// Create open state
 		fh := []byte("fh-free-lock")
-		clientID := registerTestClient(t, sm)
-		openResult, err := sm.OpenFile(clientID, []byte("owner1"), 1, fh,
+		openResult, err := sm.OpenFile(0, []byte("owner1"), 1, fh,
 			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
 		if err != nil {
 			t.Fatalf("OpenFile: %v", err)
@@ -1142,7 +1137,7 @@ func TestFreeStateid(t *testing.T) {
 
 		// Create lock state
 		lockResult, err := sm.LockNew(context.Background(),
-			clientID, []byte("lock-owner1"), 1,
+			0, []byte("lock-owner1"), 1,
 			confirmedStateid, 3,
 			fh, types.WRITE_LT, 0, 100, false,
 		)
@@ -1151,7 +1146,7 @@ func TestFreeStateid(t *testing.T) {
 		}
 
 		// Free the lock stateid
-		err = sm.FreeStateid(clientID, &lockResult.Stateid)
+		err = sm.FreeStateid(0, &lockResult.Stateid)
 		if err != nil {
 			t.Fatalf("FreeStateid lock: %v", err)
 		}
@@ -1176,7 +1171,7 @@ func TestFreeStateid(t *testing.T) {
 		fh1 := []byte("fh-shared-owner-file1")
 		fh2 := []byte("fh-shared-owner-file2")
 		lockOwnerData := []byte("shared-lock-owner")
-		clientID := registerTestClient(t, sm)
+		clientID := uint64(0)
 
 		open1, err := sm.OpenFile(clientID, []byte("open-owner"), 1, fh1,
 			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
@@ -1300,8 +1295,7 @@ func TestFreeStateid(t *testing.T) {
 		defer sm.Shutdown()
 
 		fh := []byte("fh-free-open")
-		clientID := registerTestClient(t, sm)
-		openResult, err := sm.OpenFile(clientID, []byte("owner1"), 1, fh,
+		openResult, err := sm.OpenFile(0, []byte("owner1"), 1, fh,
 			types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
 		if err != nil {
 			t.Fatalf("OpenFile: %v", err)
@@ -1314,7 +1308,7 @@ func TestFreeStateid(t *testing.T) {
 		}
 
 		// Free the open stateid (no locks held)
-		err = sm.FreeStateid(clientID, &openResult.Stateid)
+		err = sm.FreeStateid(0, &openResult.Stateid)
 		if err != nil {
 			t.Fatalf("FreeStateid open: %v", err)
 		}
@@ -1332,8 +1326,7 @@ func TestFreeStateid(t *testing.T) {
 		defer sm.Shutdown()
 
 		fh := []byte("fh-free-open-locked")
-		clientID := registerTestClient(t, sm)
-		openResult, err := sm.OpenFile(clientID, []byte("owner1"), 1, fh,
+		openResult, err := sm.OpenFile(0, []byte("owner1"), 1, fh,
 			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
 		if err != nil {
 			t.Fatalf("OpenFile: %v", err)
@@ -1347,7 +1340,7 @@ func TestFreeStateid(t *testing.T) {
 
 		// Create a lock
 		_, err = sm.LockNew(context.Background(),
-			clientID, []byte("lock-owner1"), 1,
+			0, []byte("lock-owner1"), 1,
 			confirmedStateid, 3,
 			fh, types.WRITE_LT, 0, 100, false,
 		)
@@ -1356,7 +1349,7 @@ func TestFreeStateid(t *testing.T) {
 		}
 
 		// Try to free open stateid -- should fail with NFS4ERR_LOCKS_HELD
-		err = sm.FreeStateid(clientID, &openResult.Stateid)
+		err = sm.FreeStateid(0, &openResult.Stateid)
 		if err == nil {
 			t.Fatal("Expected NFS4ERR_LOCKS_HELD error")
 		}
@@ -1507,7 +1500,7 @@ func TestTestStateids(t *testing.T) {
 
 		// Create several stateids
 		fh1 := []byte("fh-test-valid-1")
-		result1, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1, fh1,
+		result1, err := sm.OpenFile(0, []byte("owner1"), 1, fh1,
 			types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
 		if err != nil {
 			t.Fatalf("OpenFile 1: %v", err)
@@ -1535,7 +1528,7 @@ func TestTestStateids(t *testing.T) {
 
 		// Create a valid open state
 		fh := []byte("fh-test-mixed")
-		openResult, err := sm.OpenFile(registerTestClient(t, sm), []byte("owner1"), 1, fh,
+		openResult, err := sm.OpenFile(0, []byte("owner1"), 1, fh,
 			types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
 		if err != nil {
 			t.Fatalf("OpenFile: %v", err)

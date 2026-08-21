@@ -105,6 +105,17 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 		return openError(types.NFS4ERR_BADXDR)
 	}
 
+	// Admit the clientid before the operation touches the filesystem: rejecting
+	// after the create leaves a file the client was told it had not created,
+	// and its retry then fails EEXIST on it.
+	if clientErr := h.StateManager.ValidateAndRenewClient(clientID); clientErr != nil {
+		logger.Debug("NFSv4 OPEN rejected: invalid client id",
+			"client_id", clientID,
+			"error", clientErr,
+			"client", ctx.ClientAddr)
+		return openError(mapStateError(clientErr))
+	}
+
 	// 5. openflag4: opentype (uint32)
 	openType, err := xdr.DecodeUint32(reader)
 	if err != nil {

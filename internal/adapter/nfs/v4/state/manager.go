@@ -692,18 +692,22 @@ func (sm *StateManager) GetClient(clientID uint64) *ClientRecord {
 	return sm.clientsByID[clientID]
 }
 
-// validateClientLocked checks that clientID names a confirmed client whose
-// lease is still live. It gates operations carrying a clientid rather than a
-// stateid, where that clientid is the request's only identity. A client exists
-// only once SETCLIENTID is followed by SETCLIENTID_CONFIRM (v4.1: EXCHANGE_ID
-// then CREATE_SESSION), so anything short of that is NFS4ERR_STALE_CLIENTID
-// (RFC 7530 Sections 9.1.1 and 13.1.10.2). A confirmed client whose lease
-// lapsed in the window before onLeaseExpired reaps its record gets
-// NFS4ERR_EXPIRED instead (Section 9.6.3.2); both send the client through the
-// same recovery, so the distinction only names what happened.
+// ValidateAndRenewClient admits clientID for an operation and renews its lease
+// in one critical section. Unknown or unconfirmed gives ErrStaleClientID (RFC
+// 7530 Sections 9.1.1 and 13.1.10.2); a lapsed lease not yet reaped gives
+// ErrExpired (Section 9.6.3.2).
 //
-// Caller must hold sm.mu (read or write).
-func (sm *StateManager) validateClientLocked(clientID uint64) error {
+// Renewal is what Section 9.6.2 grants any operation carrying a valid clientid.
+// Without it a v4.0 client that stops sending RENEW once it holds no open state
+// has an active mount mistaken for an idle one.
+//
+// Callers admit before doing any work: OPEN creates or truncates its target
+// before it establishes state, so a clientid rejected afterwards strands a file
+// the client was told it had not created.
+func (sm *StateManager) ValidateAndRenewClient(clientID uint64) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
 	var confirmed bool
 	var lease *LeaseState
 	switch record, v41 := sm.clientsByID[clientID], sm.v41ClientsByID[clientID]; {
@@ -718,8 +722,11 @@ func (sm *StateManager) validateClientLocked(clientID uint64) error {
 	if !confirmed {
 		return ErrStaleClientID
 	}
-	if lease != nil && lease.IsExpired() {
-		return ErrExpired
+	if lease != nil {
+		if lease.IsExpired() {
+			return ErrExpired
+		}
+		lease.Renew()
 	}
 	return nil
 }
@@ -1146,11 +1153,6 @@ func (sm *StateManager) OpenFile(
 
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-
-	if err := sm.validateClientLocked(clientID); err != nil {
-		logger.Debug("OpenFile: invalid client id", "client_id", clientID, "error", err)
-		return nil, err
-	}
 
 	// Look up or create the open-owner
 	ownerKey := makeOwnerKey(clientID, ownerData)

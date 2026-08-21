@@ -51,7 +51,7 @@ func TestValidateStateid_LockStateid_RoutedToLockMap(t *testing.T) {
 	defer sm.Shutdown()
 
 	fh := []byte("fh-lock-stateid-io")
-	lockStateid := newLockedFile(t, sm, registerTestClient(t, sm), fh)
+	lockStateid := newLockedFile(t, sm, 0, fh)
 
 	// A lock stateid presented to WRITE must validate and return the parent
 	// open state (carrying the share-access bits the caller enforces).
@@ -81,7 +81,7 @@ func TestValidateStateid_LockStateid_Seqid0(t *testing.T) {
 	defer sm.Shutdown()
 
 	fh := []byte("fh-lock-stateid-seqid0")
-	lockStateid := newLockedFile(t, sm, registerTestClient(t, sm), fh)
+	lockStateid := newLockedFile(t, sm, 0, fh)
 	lockStateid.Seqid = 0
 
 	if _, err := sm.ValidateStateid(&lockStateid, fh, StateidOpRead); err != nil {
@@ -99,8 +99,8 @@ func TestFreeStateid_CrossClientLock(t *testing.T) {
 	sm.SetLockManager(lm)
 	defer sm.Shutdown()
 
-	victimClientID := registerTestClientWithName(t, sm, "victim")
-	attackerClientID := registerTestClientWithName(t, sm, "attacker")
+	const victimClientID = uint64(1)
+	const attackerClientID = uint64(2)
 
 	fh := []byte("fh-cross-client-lock")
 	lockStateid := newLockedFile(t, sm, victimClientID, fh)
@@ -138,8 +138,8 @@ func TestFreeStateid_CrossClientOpen(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	defer sm.Shutdown()
 
-	victimClientID := registerTestClientWithName(t, sm, "victim")
-	attackerClientID := registerTestClientWithName(t, sm, "attacker")
+	const victimClientID = uint64(1)
+	const attackerClientID = uint64(2)
 
 	fh := []byte("fh-cross-client-open")
 	openResult, err := sm.OpenFile(victimClientID, []byte("owner1"), 1, fh,
@@ -210,7 +210,7 @@ func TestLockExisting_V41Seqid0(t *testing.T) {
 	defer sm.Shutdown()
 
 	fh := []byte("fh-lockexisting-seqid0")
-	lockStateid := newLockedFile(t, sm, registerTestClient(t, sm), fh)
+	lockStateid := newLockedFile(t, sm, 0, fh)
 
 	// v4.1 client: stateid seqid=0, owner seqid=0 (slot table provides replay
 	// protection). Extend the lock with a second byte range via LockExisting.
@@ -236,7 +236,7 @@ func TestUnlockFile_V41Seqid0(t *testing.T) {
 	defer sm.Shutdown()
 
 	fh := []byte("fh-locku-seqid0")
-	lockStateid := newLockedFile(t, sm, registerTestClient(t, sm), fh)
+	lockStateid := newLockedFile(t, sm, 0, fh)
 
 	// Advance lockState.Stateid.Seqid to >=2 via a successful LockExisting so
 	// the LOCKU below is unambiguously after a seqid increment.
