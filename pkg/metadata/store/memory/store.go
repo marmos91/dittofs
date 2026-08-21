@@ -105,9 +105,11 @@ type ShareSession struct {
 //
 // Handle Generation:
 //
-// generateFileHandle encodes a fresh UUID against the share name, so a
-// handle is independent of the name a file is reachable under and survives
-// renames. The badger backend mints handles the same way.
+// Handles encode a fresh UUID against the share name, so a handle is
+// independent of the name a file is reachable under and survives renames.
+// The badger backend mints handles the same way. A share name too long to
+// fit the handle budget is reported as an error, never a panic; share
+// creation rejects such names up front.
 //
 // Consistency Guarantees:
 //
@@ -580,15 +582,6 @@ func (store *MemoryMetadataStore) childNameLocked(
 		}
 	}
 	return best
-}
-
-// generateFileHandle returns a fresh UUID-based handle for a file in the
-// named share, in the standard "shareName:uuid" format. It reports the only
-// failure GenerateNewHandle can produce — a share name long enough to push
-// the encoded handle past metadata.MaxFileHandleSize — as an error, matching
-// the badger, sqlite and postgres backends.
-func (store *MemoryMetadataStore) generateFileHandle(shareName string) (metadata.FileHandle, error) {
-	return metadata.GenerateNewHandle(shareName)
 }
 
 // sortedChildNames returns the child names of a directory in sorted order.

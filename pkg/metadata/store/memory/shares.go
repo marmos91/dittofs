@@ -96,7 +96,7 @@ func (store *MemoryMetadataStore) CreateShare(ctx context.Context, share *metada
 	}
 
 	// Generate root handle
-	rootHandle, err := store.generateFileHandle(share.Name)
+	rootHandle, err := metadata.GenerateNewHandle(share.Name)
 	if err != nil {
 		return err
 	}
@@ -215,7 +215,7 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 		rootHandle = sd.RootHandle
 	} else {
 		var err error
-		if rootHandle, err = store.generateFileHandle(shareName); err != nil {
+		if rootHandle, err = metadata.GenerateNewHandle(shareName); err != nil {
 			return nil, err
 		}
 	}

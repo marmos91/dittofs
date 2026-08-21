@@ -607,7 +607,7 @@ func (tx *memoryTransaction) CreateShare(ctx context.Context, share *metadata.Sh
 		return nil
 	}
 
-	rootHandle, err := tx.store.generateFileHandle(share.Name)
+	rootHandle, err := metadata.GenerateNewHandle(share.Name)
 	if err != nil {
 		return err
 	}
@@ -712,7 +712,7 @@ func (tx *memoryTransaction) CreateRootDirectory(ctx context.Context, shareName 
 		rootHandle = sd.RootHandle
 	} else {
 		var err error
-		if rootHandle, err = tx.store.generateFileHandle(shareName); err != nil {
+		if rootHandle, err = metadata.GenerateNewHandle(shareName); err != nil {
 			return nil, err
 		}
 	}

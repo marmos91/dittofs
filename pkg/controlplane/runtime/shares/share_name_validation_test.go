@@ -3,6 +3,7 @@ package shares
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -130,8 +131,11 @@ func TestAddShare_RejectsOverLongName(t *testing.T) {
 			t.Fatalf("AddShare with over-long name: want ErrInvalidArgument StoreError, got %v", err)
 		}
 		// The message must tell the operator both the limit and the overage.
-		if !strings.Contains(err.Error(), "28") || !strings.Contains(err.Error(), "27") {
-			t.Fatalf("error must state the offending length and the limit, got %q", err.Error())
+		wantLen := strconv.Itoa(len(tooLong))
+		wantMax := strconv.Itoa(metadata.MaxShareNameLen)
+		if !strings.Contains(err.Error(), wantLen) || !strings.Contains(err.Error(), wantMax) {
+			t.Fatalf("error must state the offending length (%s) and the limit (%s), got %q",
+				wantLen, wantMax, err.Error())
 		}
 		if _, gerr := svc.GetShare(tooLong); gerr == nil {
 			t.Fatal("over-long share was registered despite rejection")
