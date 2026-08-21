@@ -77,12 +77,17 @@ func isValidQuotaScope(scope string) bool {
 }
 
 // parseIdentityID resolves the {id} route param into the *uint32 identity used
-// by the store. For the default-user scope identityID is always nil (and any id
-// segment is ignored). For user/group scopes an id is required and must parse as
-// a uint32. Returns ok=false (after writing a problem response) on invalid
-// input.
+// by the store. The default-user scope has one implicit identity, so it takes a
+// nil identityID and rejects an id segment rather than discarding it — a
+// discarded id would silently retarget the write at the share-wide fallback.
+// For user/group scopes an id is required and must parse as a uint32. Returns
+// ok=false (after writing a problem response) on invalid input.
 func parseIdentityID(w http.ResponseWriter, scope, idParam string) (identityID *uint32, ok bool) {
 	if scope == models.QuotaScopeDefaultUser {
+		if idParam != "" {
+			BadRequest(w, "scope "+scope+" takes no identity id")
+			return nil, false
+		}
 		return nil, true
 	}
 	if idParam == "" {

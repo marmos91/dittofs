@@ -23,10 +23,11 @@ func doQuota(t *testing.T, router http.Handler, token, method, path, body string
 	return rec
 }
 
-// TestQuotaRoutesBindScope exercises set -> get -> list -> remove for every
-// supported scope. The default-user scope has no {id} path segment, so its
-// route must still bind {scope}: a route that hard-codes the literal leaves
-// chi.URLParam(r, "scope") empty and the handler rejects its own scope.
+// TestQuotaRoutesBindScope sets and reads back a quota for every supported
+// scope, then checks all three appear in the listing and can be removed. The
+// default-user scope has no {id} path segment, so its route must still bind
+// {scope}: a route that hard-codes the literal leaves chi.URLParam(r, "scope")
+// empty and the handler rejects its own scope.
 func TestQuotaRoutesBindScope(t *testing.T) {
 	router, jwtService, _ := newTestRouter(t, false)
 	token := tokenFor(t, jwtService, models.RoleAdmin)
@@ -103,6 +104,7 @@ func TestQuotaRouteRejectsBadTarget(t *testing.T) {
 	}{
 		{"missing id", "/api/v1/shares/tiered/quotas/user", "identity id is required"},
 		{"unknown scope", "/api/v1/shares/tiered/quotas/wheel/7", "Invalid scope: wheel"},
+		{"id on default-user", "/api/v1/shares/tiered/quotas/default-user/5", "takes no identity id"},
 	}
 
 	for _, tc := range cases {
