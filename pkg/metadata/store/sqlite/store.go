@@ -52,11 +52,6 @@ type SQLiteMetadataStore struct {
 	// cancel cancels the store context.
 	cancel context.CancelFunc
 
-	// usedBytes tracks the total logical bytes used by regular files. Updated
-	// atomically on every size-changing operation. Initialized from a SQL SUM
-	// query on startup.
-	usedBytes atomic.Int64
-
 	// manifestWrites counts how many times a write actually persisted the
 	// file_block_refs manifest (i.e. came in through SetManifest). Test-only
 	// observability: it lets the conformance suite prove an attr-only write
@@ -199,17 +194,10 @@ func (s *SQLiteMetadataStore) GetUsedBytesForShare(ctx context.Context, shareNam
 	return s.quota.Share(shareName).Bytes, nil
 }
 
-// initUsedBytesCounter initializes the store-wide atomic counter from a SQL SUM
-// query and seeds the per-identity usage cache from GROUP BY aggregates. Both
-// are reconstructed from the inodes table (the source of truth).
+// initUsedBytesCounter seeds the usage cache — per share, and per owner
+// identity within a share — from GROUP BY aggregates over the inodes table (the
+// source of truth).
 func (s *SQLiteMetadataStore) initUsedBytesCounter(ctx context.Context) error {
-	query := `SELECT COALESCE(SUM(size), 0) FROM inodes WHERE file_type = ?`
-	var totalUsed int64
-	if err := s.db.QueryRowContext(ctx, query, int(metadata.FileTypeRegular)).Scan(&totalUsed); err != nil {
-		return fmt.Errorf("failed to query used bytes: %w", err)
-	}
-	s.usedBytes.Store(totalUsed)
-
 	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
 	if err := s.seedUsageByColumn(ctx, "uid", metadata.QuotaScopeUser, byIdentity); err != nil {
 		return err

@@ -62,11 +62,6 @@ type PostgresMetadataStore struct {
 	// recoveryStore holds NFSv4 client-recovery persistence.
 	recoveryStore *postgresRecoveryStore
 
-	// usedBytes tracks the total logical bytes used by regular files.
-	// Updated atomically on every size-changing operation (create, update, truncate, delete).
-	// Initialized from a SQL SUM query on startup.
-	usedBytes atomic.Int64
-
 	// quota tracks per-identity usage (bytes + file count) for regular files,
 	// keyed by owner uid / gid. In-memory cache mirroring usedBytes, seeded from
 	// a SQL GROUP BY query on startup (the files table is the source of truth, so
@@ -204,14 +199,6 @@ func (s *PostgresMetadataStore) GetUsedBytesForShare(ctx context.Context, shareN
 // correctly. The inodes(uid) / inodes(gid) indexes (migration 000033) keep the
 // GROUP BY scans cheap.
 func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error {
-	query := `SELECT COALESCE(SUM(size), 0) FROM inodes WHERE file_type = $1`
-	var totalUsed int64
-	err := s.pool.QueryRow(ctx, query, int(metadata.FileTypeRegular)).Scan(&totalUsed)
-	if err != nil {
-		return fmt.Errorf("failed to query used bytes: %w", err)
-	}
-	s.usedBytes.Store(totalUsed)
-
 	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
 	if err := s.seedUsageByColumn(ctx, "uid", metadata.QuotaScopeUser, byIdentity); err != nil {
 		return err

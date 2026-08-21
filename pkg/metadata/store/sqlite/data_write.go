@@ -63,7 +63,6 @@ func (tx *sqliteTransaction) ApplyDataWrite(
 	}
 
 	if delta := finalSize - oldSize; delta != 0 {
-		tx.pendingDelta += delta
 		tx.quota.Add(shareName, oldUID, oldGID, delta, 0)
 	}
 	return uint64(finalSize), nil

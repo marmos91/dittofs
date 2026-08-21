@@ -129,11 +129,6 @@ type BadgerMetadataStore struct {
 	// recoveryStore provides NFSv4 client-recovery persistence
 	recoveryStore *badgerRecoveryStore
 
-	// usedBytes tracks the total logical bytes used by regular files.
-	// Updated atomically on every size-changing operation (create, update, truncate, delete).
-	// Initialized from a full file scan on startup.
-	usedBytes atomic.Int64
-
 	// quota tracks per-identity usage (bytes + file count) for regular files,
 	// keyed by owner uid / gid. In-memory cache mirroring usedBytes, seeded from
 	// a full file scan on startup (so it is always reconstructed from the durable
@@ -624,16 +619,15 @@ func (s *BadgerMetadataStore) GetUsedBytesForShare(ctx context.Context, shareNam
 	return s.quota.Share(shareName).Bytes, nil
 }
 
-// initUsedBytesCounter scans all file entries once at startup to initialize the
-// store-wide atomic counter and the usage cache (per share, and per owner
-// identity within a share). Both are reconstructed from the durable file rows,
-// so a store opened from an existing dump (with no separately persisted
-// counters) is always seeded correctly — back-compatible by construction.
+// initUsedBytesCounter scans all file entries once at startup to seed the usage
+// cache (per share, and per owner identity within a share). It is reconstructed
+// from the durable file rows, so a store opened from an existing dump (with no
+// separately persisted counters) is always seeded correctly — back-compatible
+// by construction.
 // A non-nil indexBatch also stages a pl: index entry per file, so a store that
 // still needs indexing by payload pays one scan at open rather than two — the
 // decode is the expensive part and this is the only place already doing it.
 func (s *BadgerMetadataStore) initUsedBytesCounter(indexBatch *badger.WriteBatch) error {
-	var totalUsed int64
 	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
 
 	addUsage := func(k basestore.QuotaKey, bytes int64) {
@@ -662,7 +656,6 @@ func (s *BadgerMetadataStore) initUsedBytesCounter(indexBatch *badger.WriteBatch
 					return nil // Skip corrupted entries
 				}
 				if file.Type == metadata.FileTypeRegular {
-					totalUsed += int64(file.Size)
 					addUsage(basestore.QuotaKey{Share: file.ShareName, Scope: metadata.QuotaScopeUser, ID: file.UID}, int64(file.Size))
 					addUsage(basestore.QuotaKey{Share: file.ShareName, Scope: metadata.QuotaScopeGroup, ID: file.GID}, int64(file.Size))
 				}
@@ -678,7 +671,6 @@ func (s *BadgerMetadataStore) initUsedBytesCounter(indexBatch *badger.WriteBatch
 		return err
 	}
 
-	s.usedBytes.Store(totalUsed)
 	s.quotaMu.Lock()
 	s.quota.Seed(byIdentity, nil)
 	s.quotaMu.Unlock()

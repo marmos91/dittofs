@@ -22,30 +22,27 @@ import (
 
 // badgerTransaction wraps a BadgerDB transaction for the Base interface.
 //
-// pendingDelta accumulates the usedBytes change made by mutations inside the
-// closure. It is applied to the store's atomic counter exactly once after a
-// successful commit (see WithTransaction). BadgerDB retries the closure on
-// ErrConflict; accumulating per-attempt and applying post-commit prevents the
-// counter from double-counting across retries.
+// Mutations accumulate their side effects on the transaction rather than
+// applying them inline, and WithTransaction applies them exactly once after a
+// successful commit. BadgerDB retries the closure on ErrConflict; accumulating
+// per-attempt and applying post-commit prevents double-counting across retries.
 type badgerTransaction struct {
-	store        *BadgerMetadataStore
-	txn          *badgerdb.Txn
-	pendingDelta int64
+	store *BadgerMetadataStore
+	txn   *badgerdb.Txn
 	// dirtyFiles collects fileID keys whose stored File blob or link count this
 	// transaction mutated. Captured per attempt and, after a successful commit,
 	// used to invalidate the read cache (see withTransaction). Reset per attempt
-	// like pendingDelta so a conflict-retry cannot leak a phantom invalidation.
+	// per attempt so a conflict-retry cannot leak a phantom invalidation.
 	dirtyFiles []string
-	// quota accumulates per-identity usage changes (bytes + file count) keyed by
-	// (scope, id). Captured per attempt and applied to the store's quota cache
-	// exactly once after a successful commit, identical to pendingDelta (so a
-	// conflict-retry cannot double-count).
+	// quota accumulates usage changes (bytes + file count) keyed by share and
+	// owner identity. Captured per attempt and applied to the store's quota
+	// cache exactly once after a successful commit, so a conflict-retry cannot
+	// double-count.
 	quota basestore.QuotaDelta
 	// dirtyShares collects share names whose stored share record this
 	// transaction mutated. Captured per attempt and, after a successful commit,
 	// used to invalidate the share read cache (see withTransaction). Reset per
-	// attempt like pendingDelta so a conflict-retry cannot leak a phantom
-	// invalidation. A stale entry is a wrong permission decision.
+	// attempt so a conflict-retry cannot leak a phantom invalidation. A stale entry is a wrong permission decision.
 	dirtyShares []string
 	// dirtyDirents collects (parentID,name) dirent-cache keys whose forward
 	// c:<parent>:<name> edge this transaction wrote (SetChild) or deleted
@@ -119,10 +116,9 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		// pendingDelta is captured outside db.Update so it is read after a
+		// The deltas are captured outside db.Update so they are read after a
 		// successful commit and reset per attempt (a retried attempt starts
-		// from zero, so a conflict-retry cannot double-count usedBytes).
-		var pendingDelta int64
+		// from zero, so a conflict-retry cannot double-count usage).
 		var quotaDelta map[basestore.QuotaKey]metadata.UsageStat
 		var dirtyFiles []string
 		var dirtyShares []string
@@ -133,7 +129,6 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			if fnErr := fn(tx); fnErr != nil {
 				return fnErr
 			}
-			pendingDelta = tx.pendingDelta
 			quotaDelta = tx.quota.Map()
 			dirtyFiles = tx.dirtyFiles
 			dirtyShares = tx.dirtyShares
@@ -143,11 +138,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 		})
 
 		if err == nil {
-			// Apply the accumulated usedBytes delta exactly once, after commit.
-			if pendingDelta != 0 {
-				s.usedBytes.Add(pendingDelta)
-			}
-			// Apply per-identity usage deltas once, after commit.
+			// Apply the accumulated usage deltas exactly once, after commit.
 			s.applyQuotaDelta(quotaDelta)
 			// Apply the staged filesystem-capabilities update once, after commit,
 			// so a persist that never committed can't leave the in-memory copy
@@ -406,8 +397,6 @@ func (tx *badgerTransaction) putFile(ctx context.Context, file *metadata.File, w
 	// Track size delta for regular files. Accumulated on the tx and applied
 	// once after a successful commit so a conflict-retry never double-counts.
 	if file.Type == metadata.FileTypeRegular {
-		tx.pendingDelta += int64(file.Size) - int64(oldSize)
-
 		switch {
 		case !hadOldRegular:
 			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
@@ -537,9 +526,6 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		file, decErr := decodeFile(val)
 		if decErr == nil {
 			if file.Type == metadata.FileTypeRegular {
-				if file.Size > 0 {
-					tx.pendingDelta -= int64(file.Size)
-				}
 				tx.quota.Add(file.ShareName, file.UID, file.GID, -int64(file.Size), -1)
 			}
 			existingObjectID = file.ObjectID
@@ -1124,13 +1110,12 @@ func (tx *badgerTransaction) DeleteShare(ctx context.Context, shareName string) 
 	// Tear down all file metadata on the active txn, identical to the pool
 	// path — deleting only the share key would orphan every file/parent/
 	// linkcount/child/objectID entry (store.go:161 contract).
-	freed, quotaFreed, err := tx.store.deleteShareFiles(tx.txn, shareName)
+	quotaFreed, err := tx.store.deleteShareFiles(tx.txn, shareName)
 	if err != nil {
 		return err
 	}
-	// Accumulate into the tx pending delta; applied once after a successful
-	// commit so a conflict-retry never double-counts.
-	tx.pendingDelta -= freed
+	// Accumulate into the tx delta; applied once after a successful commit so a
+	// conflict-retry never double-counts.
 	for k, d := range quotaFreed {
 		tx.quota.AddKeyed(k, d)
 	}

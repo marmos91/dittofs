@@ -19,18 +19,12 @@ import (
 // memoryTransaction wraps the store for transactional operations.
 // Since the memory store uses a global mutex, the transaction
 // holds the lock for the duration of all operations.
-//
-// pendingDelta accumulates the usedBytes change made by mutations inside
-// the closure. It is applied to the store's atomic counter exactly once
-// after a successful commit (see WithTransaction), so a rolled-back
-// closure never touches the counter and a retried closure cannot
-// double-count.
 type memoryTransaction struct {
-	store        *MemoryMetadataStore
-	pendingDelta int64
-	// quota accumulates per-identity usage changes (bytes + file count) keyed by
-	// (scope, id). Applied to the store's quota cache exactly once after a
-	// successful commit, identical to pendingDelta.
+	store *MemoryMetadataStore
+	// quota accumulates usage changes (bytes + file count) keyed by share and
+	// owner identity. Applied to the store's quota cache exactly once after a
+	// successful commit, so a rolled-back closure never touches it and a
+	// retried closure cannot double-count.
 	quota basestore.QuotaDelta
 	// syncedOps buffers SyncedHashStore mutations made inside the closure.
 	// The synced maps live under their own mutex (syncedMu), NOT store.mu, so
@@ -188,11 +182,7 @@ func (store *MemoryMetadataStore) WithTransaction(ctx context.Context, fn func(t
 		return err
 	}
 
-	// Commit succeeded — apply the accumulated usedBytes delta once.
-	if tx.pendingDelta != 0 {
-		store.usedBytes.Add(tx.pendingDelta)
-	}
-	// Apply per-identity usage deltas once, under quotaMu.
+	// Commit succeeded — apply the accumulated usage deltas once, under quotaMu.
 	if d := tx.quota.Map(); len(d) > 0 {
 		store.quotaMu.Lock()
 		store.quota.Apply(d)
@@ -284,10 +274,6 @@ func (tx *memoryTransaction) UpdateAttrs(ctx context.Context, file *metadata.Fil
 			oldGID = existing.Attr.GID
 			hadOldRegular = true
 		}
-		// Accumulate into the tx-scoped pending delta; applied once after a
-		// successful commit so a rollback/retry never drifts the counter.
-		tx.pendingDelta += int64(file.Size) - int64(oldSize)
-
 		switch {
 		case !hadOldRegular:
 			// New regular file (create or type change to regular): charge full
@@ -374,12 +360,8 @@ func (tx *memoryTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		}
 	}
 
-	// Subtract size from the pending delta for regular files and remove the
-	// inode + bytes from the owner's per-identity usage.
+	// Remove the inode + bytes from the owner's per-share, per-identity usage.
 	if existing.Attr.Type == metadata.FileTypeRegular {
-		if existing.Attr.Size > 0 {
-			tx.pendingDelta -= int64(existing.Attr.Size)
-		}
 		tx.quota.Add(existing.ShareName, existing.Attr.UID, existing.Attr.GID, -int64(existing.Attr.Size), -1)
 	}
 
@@ -653,12 +635,9 @@ func (tx *memoryTransaction) DeleteShare(ctx context.Context, shareName string) 
 	// Remove all files belonging to this share
 	for key, fd := range tx.store.files {
 		if fd.ShareName == shareName {
-			// Subtract size from the pending delta for regular files and remove
-			// the inode + bytes from the owner's per-identity usage.
+			// Remove the inode + bytes from the owner's per-share,
+			// per-identity usage.
 			if fd.Attr.Type == metadata.FileTypeRegular {
-				if fd.Attr.Size > 0 {
-					tx.pendingDelta -= int64(fd.Attr.Size)
-				}
 				tx.quota.Add(fd.ShareName, fd.Attr.UID, fd.Attr.GID, -int64(fd.Attr.Size), -1)
 			}
 			// drop ObjectID secondary entry too.

@@ -5,7 +5,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -202,11 +201,6 @@ type MemoryMetadataStore struct {
 	// recoveryStore holds NFSv4 client-recovery records for reboot/grace
 	// recovery. Initialized lazily on first use.
 	recoveryStore *memoryRecoveryStore
-
-	// usedBytes tracks the total logical bytes used by regular files.
-	// Updated atomically on every size-changing operation (create, update, truncate, delete).
-	// Only regular files count toward usage; directories, symlinks, etc. do not.
-	usedBytes atomic.Int64
 
 	// quota tracks per-identity usage (bytes + file count) for regular files,
 	// keyed by owner uid / gid. Mirror of usedBytes but keyed by owner identity
