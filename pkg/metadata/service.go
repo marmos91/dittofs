@@ -2,7 +2,6 @@ package metadata
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,16 +37,16 @@ const DefaultLockGracePeriod = 90 * time.Second
 //	// Low-level operations (direct store access)
 //	file, err := metaSvc.GetFile(ctx, handle)
 type Service struct {
-	mu                 sync.RWMutex
-	stores             map[string]Store                  // shareName -> store
-	storeCache         sync.Map                          // shareName -> Store; lock-free mirror of stores, read on every metadata op
-	lockManagers       map[string]*LockManager           // shareName -> lock manager (ephemeral, per-share)
-	unifiedViews       map[string]*UnifiedLockView       // shareName -> unified lock view (cross-protocol)
-	dirChangeNotifiers map[string]lock.DirChangeNotifier // shareName -> notifier for directory changes
-	pendingWrites      *PendingWritesTracker             // deferred metadata commits for performance
-	dirTimes           *DirTimesTracker                  // coalesced directory mtime/ctime/atime bumps (#1573)
-	writebackShares    map[string]bool                   // shareName -> writeback tier (#1757): relax FILE_SYNC metadata flush
-	deferredCommit     atomic.Bool                       // if true, use deferred commits (default: true); read lock-free on the write hot path
+	// registry holds all per-share state (stores, lock managers, unified views,
+	// dir-change notifiers, quotas, writeback flags) behind its own mutex. See
+	// shareRegistry for why those fields share one lock.
+	registry shareRegistry
+
+	mu sync.RWMutex
+
+	pendingWrites  *PendingWritesTracker // deferred metadata commits for performance
+	dirTimes       *DirTimesTracker      // coalesced directory mtime/ctime/atime bumps (#1573)
+	deferredCommit atomic.Bool           // if true, use deferred commits (default: true); read lock-free on the write hot path
 	// durableExtent answers how far a payload's bytes are on stable storage in
 	// its share's block store. Installed by the control plane, which owns both
 	// tiers; nil wherever there is no block store to ask.
@@ -76,8 +75,7 @@ type Service struct {
 	// window uniformly. See lockCreateName.
 	createNameShards [parentLinkShardCount]sync.Mutex
 
-	cookies *CookieManager   // NFS/SMB cookie to store token translation
-	quotas  map[string]int64 // shareName -> quota in bytes (0 = unlimited)
+	cookies *CookieManager // NFS/SMB cookie to store token translation
 
 	// identityQuotas holds hot-updatable per-user / per-group quota limits,
 	// loaded from the control-plane DB and consulted on the write/create hot
@@ -153,17 +151,11 @@ type GraceCoordinator interface {
 // By default, deferred commits are enabled for better write performance.
 func New() *Service {
 	s := &Service{
-		stores:             make(map[string]Store),
-		lockManagers:       make(map[string]*LockManager),
-		unifiedViews:       make(map[string]*UnifiedLockView),
-		dirChangeNotifiers: make(map[string]lock.DirChangeNotifier),
-		pendingWrites:      NewPendingWritesTracker(),
-		dirTimes:           NewDirTimesTracker(),
-		cookies:            NewCookieManager(),
-		quotas:             make(map[string]int64),
-		identityQuotas:     newQuotaLimits(),
-		removeGen:          make(map[string]uint64),
-		writebackShares:    make(map[string]bool),
+		registry:       newShareRegistry(),
+		pendingWrites:  NewPendingWritesTracker(),
+		dirTimes:       NewDirTimesTracker(),
+		cookies:        NewCookieManager(),
+		identityQuotas: newQuotaLimits(),
 	}
 	s.deferredCommit.Store(true) // Enable deferred commits by default
 	return s
@@ -247,63 +239,9 @@ func (s *Service) SetDeferredCommit(enabled bool) {
 	s.deferredCommit.Store(enabled)
 }
 
-// SetLockGracePeriod sets the grace period applied to per-share lock managers
-// that recover persisted locks at registration. A non-positive duration falls
-// back to DefaultLockGracePeriod. Must be called before RegisterStoreForShare
-// to affect a given share.
-func (s *Service) SetLockGracePeriod(d time.Duration) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.graceDuration = d
-}
-
-// SetGraceCoordinator registers the coordinator that couples lock-manager grace
-// with the NFSv4 StateManager grace machine. It may be installed after shares
-// register (the NFS adapter does so during SetRuntime): the grace-end callback
-// reads the coordinator live, and the adapter catches up the start side for
-// shares already in grace, so registration order does not matter.
-func (s *Service) SetGraceCoordinator(c GraceCoordinator) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.graceCoordinator = c
-}
-
-// SetByteRangeReleaseHook registers a protocol-agnostic notification that every
-// per-share lock manager fires after a byte-range UNLOCK, so a release on one
-// protocol re-drives blocked waiters on another (e.g. an SMB UNLOCK waking an
-// NLM F_SETLKW waiter). Must be called before RegisterStoreForShare to affect a
-// given share. The hook receives the string-encoded FileHandle (handle key).
-func (s *Service) SetByteRangeReleaseHook(fn func(handleKey string)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.byteRangeReleaseHook = fn
-}
-
 // SetTrashPolicy installs the per-share recycle-bin policy. A nil policy
 // (the default) disables trash: deletes destroy content as before.
 func (s *Service) SetTrashPolicy(p TrashPolicy) { s.trashPolicy = p }
-
-// SetShareWriteback opts a share into (or out of) the metadata writeback tier
-// (#1757). When enabled, FlushPendingWriteForFile downgrades an otherwise
-// durable per-op flush (FILE_SYNC WRITE, SMB CLOSE/FLUSH) to the relaxed
-// deferred-fsync path, moving the metadata db.Sync off the request hot path.
-// Default (not set) is durable. Set at AddShare; cleared by RemoveStoreForShare.
-func (s *Service) SetShareWriteback(shareName string, writeback bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if writeback {
-		s.writebackShares[shareName] = true
-	} else {
-		delete(s.writebackShares, shareName)
-	}
-}
-
-// shareWriteback reports whether a share is in the writeback tier.
-func (s *Service) shareWriteback(shareName string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.writebackShares[shareName]
-}
 
 // DurableExtentFunc reports how far a payload's bytes are on stable storage in
 // the share's block store: bytes below the returned offset survive an unclean
@@ -326,387 +264,6 @@ func (s *Service) durableExtentFor(shareName string, payloadID PayloadID) (int64
 		return (*fn)(shareName, payloadID)
 	}
 	return 0, false
-}
-
-// RegisterStoreForShare associates a metadata store with a share.
-// Each share must have exactly one store. Calling this again for the same
-// share will replace the previous store.
-//
-// This also creates a LockManager for the share if one doesn't exist.
-// Lock managers are ephemeral and not replaced when re-registering a store.
-//
-// The LockManager is automatically registered as the DirChangeNotifier for the
-// share, enabling unified directory change notifications across protocols.
-func (s *Service) RegisterStoreForShare(shareName string, store Store) error {
-	if store == nil {
-		return fmt.Errorf("cannot register nil store for share %q", shareName)
-	}
-	if shareName == "" {
-		return fmt.Errorf("cannot register store for empty share name")
-	}
-
-	s.mu.Lock()
-	// Do NOT publish the store yet (in the new-share path) — it is published
-	// atomically with the lock manager below so the share is never observable
-	// in a partially-ready state (store visible, lock manager absent).
-	_, exists := s.lockManagers[shareName]
-	if exists {
-		// Share already has a lock manager; replace only the store reference.
-		// This is atomic and visible under the lock we already hold. The lock
-		// manager is ephemeral and intentionally not replaced.
-		s.stores[shareName] = store
-		s.storeCache.Store(shareName, store)
-		s.mu.Unlock()
-		return nil
-	}
-	// Snapshot this share's removal generation under the same lock. A
-	// RemoveStoreForShare for this share that lands while we recover (outside
-	// s.mu) bumps it; the publish re-check below aborts when it advanced.
-	startGen := s.removeGen[shareName]
-	// Snapshot grace config under the same lock (read once; both fields are set
-	// before any RegisterStoreForShare call per their doc contract).
-	graceDuration := s.graceDuration
-	graceCoordinator := s.graceCoordinator
-	byteRangeReleaseHook := s.byteRangeReleaseHook
-	s.mu.Unlock()
-	if graceDuration <= 0 {
-		graceDuration = DefaultLockGracePeriod
-	}
-
-	// Build and fully recover the lock manager on a local var BEFORE publishing
-	// it into s.lockManagers. Recovery (epoch bump + ListLocks + replay) issues
-	// backend IO, so it runs outside s.mu — but it must complete before the
-	// manager is observable: a concurrent GetLockManagerForShare that saw an
-	// empty, unrecovered manager could grant a lock conflicting with a
-	// not-yet-restored one. Publishing only after recovery closes that window.
-	//
-	// Grace is built on this same local manager before publishing: a manager
-	// must never be observable in a window where it has restored conflicting
-	// locks but not yet entered grace (it would admit a stealing new lock).
-	var lm *LockManager
-	if ls, ok := store.(lock.LockStore); ok {
-		lm = s.newGraceAwareLockManager(graceDuration)
-		lm.SetLockStore(ls)
-		lm.SetShareName(shareName)
-		expectedClients, enterGrace := initLockManagerFromStore(lm, ls, shareName)
-		// Enter grace whenever the prior run MAY have left orphaned client state:
-		// either the previous shutdown was not verified-clean (kill -9 / crash /
-		// power-loss → unclean marker) OR persisted locks were recovered. A
-		// genuinely fresh / cleanly-drained store with no locks skips grace and
-		// starts in normal operation (the fast path). expectedClients may be
-		// empty on an unclean restart with no recovered locks — that is correct:
-		// grace still arms its hard timer backstop and lifts after graceDuration,
-		// never wedging new-state creation.
-		if enterGrace {
-			lm.EnterGracePeriod(expectedClients)
-			if graceCoordinator != nil {
-				graceCoordinator.OnLockGraceStart(expectedClients)
-			}
-		}
-	} else {
-		lm = NewLockManager()
-	}
-
-	// Stamp the cross-protocol byte-range release notification so an UNLOCK on
-	// this share wakes blocked waiters on another protocol (e.g. NLM F_SETLKW
-	// blocked on an SMB lock). Set before publishing so no UNLOCK can race past
-	// the manager becoming observable without the hook.
-	if byteRangeReleaseHook != nil {
-		lm.SetByteRangeReleaseCallback(byteRangeReleaseHook)
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Re-check under the SAME s.mu acquisition that performs the publish, so the
-	// decision-to-publish and the publish itself are atomic. Two distinct races
-	// can land between our initial store-publish and this point:
-	//
-	//  1. Another caller raced us to register this same share. First publisher
-	//     wins; drop our manager.
-	//  2. A concurrent RemoveStoreForShare deleted this share while we recovered
-	//     outside the lock (TOCTOU). If we published our lock manager + notifier
-	//     now, we would RESURRECT entries for a removed share — the store map
-	//     stays deleted but lockManagers/dirChangeNotifiers come back, leaving
-	//     stale routing and a lock manager that is never torn down (leak).
-	//
-	// We detect a removal-mid-flight via the removal generation snapshotted in
-	// the first lock block. RemoveStoreForShare bumps s.removeGen[shareName]; if
-	// it advanced while we recovered outside the lock, the share was removed and
-	// we must abort the publish rather than resurrect it.
-	_, lmExists := s.lockManagers[shareName]
-	// The generation delta is the authoritative removed-mid-flight signal. (The
-	// store is not yet in s.stores — it is published below alongside the lock
-	// manager — so there is no store pointer to compare here.)
-	removedMidFlight := !lmExists && s.removeGen[shareName] != startGen
-	if lmExists || removedMidFlight {
-		// Our manager may have armed a grace timer above. It was never
-		// published, so abort that timer without firing onGraceEnd — letting it
-		// run would sweep a surviving manager's locks from the shared store and
-		// prematurely end the NFSv4 grace machine. We hold s.mu here, and
-		// AbortGracePeriod (Close) does not block, so this is deadlock-free.
-		//
-		// Grace-coordinator balance is asymmetric between the two abort cases:
-		//
-		//   lmExists (lost a concurrent register for the SAME share): the WINNER
-		//   published its manager and, if it entered grace, signalled
-		//   OnLockGraceStart. The global NFSv4 grace machine is now coupled to
-		//   the WINNER. We must NOT signal OnLockGraceEnd here — doing so would
-		//   prematurely end the surviving manager's grace window. Our own
-		//   (redundant) start signal was a no-op at the coordinator because v4
-		//   grace was already active (first-in-wins policy).
-		//
-		//   removedMidFlight (a concurrent RemoveStoreForShare deleted this share
-		//   while we recovered outside the lock): Remove ran BEFORE we published,
-		//   so it never saw our lock manager and never fired OnLockGraceEnd for
-		//   the OnLockGraceStart we signalled. If we entered grace, the
-		//   coordinator is now wedged in grace for a share that no longer exists;
-		//   we must balance it with exactly one OnLockGraceEnd.
-		if removedMidFlight && lm.IsInGracePeriod() && graceCoordinator != nil {
-			graceCoordinator.OnLockGraceEnd()
-		}
-		lm.AbortGracePeriod()
-		return nil
-	}
-	// Publish store, lock manager, and dir-change notifier atomically under this
-	// single s.mu acquisition so the share is never observable in a
-	// partially-ready state (store visible, lock manager absent). A
-	// lockManagerForHandle / storeForHandle that arrives during recovery sees
-	// neither and consistently reports the share as not-yet-ready.
-	s.stores[shareName] = store
-	s.storeCache.Store(shareName, store)
-	s.lockManagers[shareName] = lm
-	// Wire LockManager as DirChangeNotifier: mutations on this share will
-	// dispatch directory lease breaks via the lock manager.
-	s.dirChangeNotifiers[shareName] = lm
-
-	return nil
-}
-
-// RemoveStoreForShare deregisters a share from the MetadataService, deleting
-// its entry from every per-share map populated by RegisterStoreForShare and the
-// AddShare path (stores, lockManagers, unifiedViews, dirChangeNotifiers,
-// quotas). Without this, those maps grow unbounded across AddShare/RemoveShare
-// churn and leave stale routing: a removed-share handle would still resolve to a
-// live store, and re-adding a same-name share would silently reuse the stale
-// lock manager (RegisterStoreForShare early-returns when one already exists).
-//
-// Before dropping the lock manager its grace timer is aborted so the orphaned
-// timer never fires onGraceEnd against a now-removed share. Idempotent: removing
-// a share that was never registered (or already removed) is a no-op.
-//
-// This is the symmetric counterpart of RegisterStoreForShare and must be called
-// from the control-plane RemoveShare path after the share's stores are torn
-// down.
-//
-// Thread safety: Safe to call concurrently.
-func (s *Service) RemoveStoreForShare(shareName string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if lm, ok := s.lockManagers[shareName]; ok && lm != nil {
-		// If the manager is still in grace, it had signalled OnLockGraceStart to
-		// the grace coordinator at registration. AbortGracePeriod (below) stops
-		// the timer WITHOUT firing onGraceEnd, which is exactly what suppresses
-		// the coordinator's balancing OnLockGraceEnd. Left unbalanced, the
-		// coordinator (NFSv4 StateManager) would stay wedged in grace
-		// indefinitely after this share is removed. Fire the balancing end here,
-		// mirroring how the normal timer/early-exit path ends grace.
-		//
-		// Capturing IsInGracePeriod before AbortGracePeriod is required: Abort
-		// transitions the state to Normal, after which IsInGracePeriod would read
-		// false. The coordinator is read under the s.mu we already hold, and
-		// OnLockGraceEnd must not block (interface contract), so this is
-		// deadlock-free. Exactly-once: if grace had already lifted naturally the
-		// onGraceEnd closure already fired OnLockGraceEnd and IsInGracePeriod is
-		// false here, so we do not double-fire.
-		if lm.IsInGracePeriod() && s.graceCoordinator != nil {
-			s.graceCoordinator.OnLockGraceEnd()
-		}
-		// Abort the grace timer (if armed) so it never fires onGraceEnd against
-		// a removed share. AbortGracePeriod stops the timer synchronously and
-		// does not block, so holding s.mu across it is safe.
-		lm.AbortGracePeriod()
-	}
-
-	delete(s.stores, shareName)
-	s.storeCache.Delete(shareName)
-	delete(s.lockManagers, shareName)
-	delete(s.unifiedViews, shareName)
-	delete(s.dirChangeNotifiers, shareName)
-	delete(s.quotas, shareName)
-	delete(s.writebackShares, shareName)
-
-	// Bump this share's removal generation so any RegisterStoreForShare recovering
-	// it outside s.mu declines to publish: the register snapshots removeGen before
-	// recovery and re-checks it at publish (register/remove TOCTOU guard).
-	s.removeGen[shareName]++
-}
-
-// initLockManagerFromStore stamps a fresh server epoch and replays any locks
-// persisted by a previous run back into the lock manager. Errors are logged
-// and swallowed so a recovery failure never blocks share registration.
-//
-// Epoch double-bump on a lost-publish race (R3-5): RegisterStoreForShare runs
-// this on a local manager before publishing under s.mu, and the loser of a
-// concurrent registration drops its manager. The loser still incremented the
-// store epoch here, so two concurrent registrations of the same share advance
-// the persisted epoch by 2 instead of 1. This is harmless: the epoch is only a
-// monotonic split-brain/stale-lock marker, the surviving manager uses whatever
-// epoch it observed, and every lock it restores predates that epoch regardless
-// of the gap. Moving IncrementServerEpoch under s.mu would serialize backend IO
-// inside the service lock for no correctness gain, so the increment stays here.
-//
-// It returns the unique set of client IDs recovered from the persisted locks
-// (the grace period's expected-reclaim roster) and a boolean reporting whether
-// grace should be entered for this share.
-//
-// Grace-entry decision (area-4 H7): grace is entered when the previous run MAY
-// have orphaned client state — i.e. the prior shutdown was NOT verified-clean
-// (unclean marker: kill -9 / crash / power-loss, or a fresh store whose marker
-// defaults to false) OR persisted locks were recovered. This replaces the old
-// "enter grace only if persisted locks exist" predicate, which silently skipped
-// grace after a crash that left no recoverable byte-range lock (e.g. a client
-// holding only NFSv4 opens, or a best-effort persist that never landed),
-// letting a conflicting new lock be granted before the prior owner reclaimed.
-//
-// The clean-shutdown marker is read first to make the decision, then
-// immediately set FALSE for the running session: if this process is killed
-// without a graceful Close() (which is the only writer of true), the NEXT boot
-// reads false and conservatively enters grace. The flag is set false as early
-// as possible — before any traffic can be served — so the crash window in which
-// a kill would be misread as clean is effectively zero.
-func initLockManagerFromStore(lm *LockManager, ls lock.LockStore, shareName string) (clients []string, enterGrace bool) {
-	ctx := context.Background()
-
-	// Read the clean-shutdown marker, then immediately clear it for this run.
-	// A read error is treated as unclean (fail-safe): we would rather impose a
-	// grace window than risk granting a stealing lock.
-	clean, err := ls.GetCleanShutdown(ctx)
-	if err != nil {
-		logger.Error("lock recovery: failed to read clean-shutdown marker (treating as unclean)",
-			"share", shareName, "error", err)
-		clean = false
-	}
-	unclean := !clean
-	if err := ls.SetCleanShutdown(ctx, false); err != nil {
-		// Could not arm the unclean marker for this session. Logged but not
-		// fatal: durability of the marker is best-effort, mirroring the lock
-		// persistence contract.
-		logger.Error("lock recovery: failed to clear clean-shutdown marker",
-			"share", shareName, "error", err)
-	}
-
-	epoch, err := ls.IncrementServerEpoch(ctx)
-	if err != nil {
-		logger.Error("lock recovery: failed to increment server epoch", "share", shareName, "error", err)
-	} else {
-		lm.SetEpoch(epoch)
-	}
-
-	persisted, err := ls.ListLocks(ctx, lock.LockQuery{ShareName: shareName})
-	if err != nil {
-		logger.Error("lock recovery: failed to list persisted locks", "share", shareName, "error", err)
-		// We could not enumerate locks; if the prior shutdown was unclean still
-		// enter grace (empty roster, timer backstop) rather than risk a steal.
-		return nil, unclean
-	}
-	if len(persisted) > 0 {
-		if err := lm.RestoreLocks(persisted); err != nil {
-			logger.Error("lock recovery: failed to restore persisted locks", "share", shareName, "error", err)
-			return nil, unclean
-		}
-	}
-
-	// Collect the unique client IDs that held locks before the restart; these
-	// are the clients the grace period waits on for reclaim.
-	seen := make(map[string]struct{}, len(persisted))
-	for _, pl := range persisted {
-		if pl.ClientID == "" {
-			continue
-		}
-		if _, dup := seen[pl.ClientID]; dup {
-			continue
-		}
-		seen[pl.ClientID] = struct{}{}
-		clients = append(clients, pl.ClientID)
-	}
-
-	enterGrace = unclean || len(persisted) > 0
-	logger.Info("lock recovery: completed",
-		"share", shareName, "restored_locks", len(persisted), "epoch", epoch,
-		"clients", len(clients), "prior_shutdown_clean", clean, "enter_grace", enterGrace)
-	return clients, enterGrace
-}
-
-// newGraceAwareLockManager builds a lock manager whose grace period sweeps any
-// locks left unreclaimed when the grace window ends and notifies the grace
-// coordinator so the NFSv4 StateManager grace machine exits in lockstep.
-//
-// The onGraceEnd callback is best-effort: a client that did not reclaim within
-// the window has its stale persisted+in-memory locks dropped (RemoveClientLocks),
-// matching the X/Open NLMv4 contract that unreclaimed state is forfeited once
-// grace ends.
-//
-// The coordinator is read LIVE from the service when the window ends, not
-// captured at construction: the NFS adapter installs it (SetGraceCoordinator)
-// during SetRuntime, which runs AFTER shares register at startup. A manager
-// built before the adapter exists must still notify the coordinator once it is
-// installed, or the v4 grace machine would never be ended in lockstep.
-func (s *Service) newGraceAwareLockManager(duration time.Duration) *LockManager {
-	// lm and gpm are captured by the onGraceEnd closure below. The closure only
-	// runs after EnterGracePeriod arms the timer, by which point both are set.
-	var lm *LockManager
-
-	gpm := lock.NewGracePeriodManager(duration, func() {
-		if lm != nil {
-			reclaimed := make(map[string]struct{})
-			for _, c := range lm.GetReclaimedClients() {
-				reclaimed[c] = struct{}{}
-			}
-			for _, c := range lm.GetExpectedClients() {
-				if _, ok := reclaimed[c]; ok {
-					continue
-				}
-				logger.Info("grace period: sweeping unreclaimed locks", "client", c)
-				lm.RemoveClientLocks(c)
-			}
-		}
-		s.mu.RLock()
-		coordinator := s.graceCoordinator
-		s.mu.RUnlock()
-		if coordinator != nil {
-			coordinator.OnLockGraceEnd()
-		}
-	})
-
-	lm = lock.NewManagerWithGracePeriod(gpm)
-	return lm
-}
-
-// GetStoreForShare returns the metadata store for a specific share. Every
-// metadata op resolves through here, so the common case is served from the
-// lock-free storeCache without touching s.mu. The cache is written under s.mu
-// alongside s.stores, so a miss after RemoveStoreForShare falls through to the
-// locked map and yields the stale-handle error below — never a stale store.
-func (s *Service) GetStoreForShare(shareName string) (Store, error) {
-	if v, ok := s.storeCache.Load(shareName); ok {
-		if store, ok := v.(Store); ok {
-			return store, nil
-		}
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if store, ok := s.stores[shareName]; ok {
-		return store, nil
-	}
-
-	// The handle decoded but names a share that no longer exists (e.g. held
-	// across a RemoveShare). Return a stale-handle StoreError so protocol
-	// mappers translate to NFS *STALE / SMB STATUS_FILE_CLOSED instead of a
-	// generic server fault.
-	return nil, NewStaleHandleError(shareName)
 }
 
 // storeForHandle returns the appropriate store for a file handle.
@@ -742,23 +299,6 @@ func (s *Service) lockManagerForHandle(handle FileHandle) (*LockManager, error) 
 		return nil, err
 	}
 	return s.lockManagerForShare(shareName)
-}
-
-// lockManagerForShare returns the lock manager for an already-decoded share
-// name. Splitting this out of lockManagerForHandle lets callers that have
-// already decoded the handle (see storeAndLockManagerForHandle) avoid a second
-// UUID parse.
-func (s *Service) lockManagerForShare(shareName string) (*LockManager, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if lm, ok := s.lockManagers[shareName]; ok {
-		return lm, nil
-	}
-
-	// Decoded handle names a share with no lock manager (removed share):
-	// stale-handle StoreError so callers map to *STALE.
-	return nil, NewStaleHandleError(shareName)
 }
 
 // storeAndLockManagerForHandle resolves both the metadata store and the lock
@@ -797,56 +337,6 @@ func (s *Service) storeAndLockManagerForHandle(handle FileHandle) (Store, *LockM
 // Thread safety: Safe to call concurrently.
 func (s *Service) GetLockManagerForHandle(handle FileHandle) (*LockManager, error) {
 	return s.lockManagerForHandle(handle)
-}
-
-// GetLockManagerForShare returns the lock manager for a specific share.
-//
-// This is used by the NFS adapter to process NLM blocking lock waiters.
-// Returns nil if no lock manager exists for the share.
-//
-// Thread safety: Safe to call concurrently.
-func (s *Service) GetLockManagerForShare(shareName string) *LockManager {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if lm, ok := s.lockManagers[shareName]; ok {
-		return lm
-	}
-	return nil
-}
-
-// GetUnifiedLockView returns the UnifiedLockView for a specific share.
-//
-// UnifiedLockView provides cross-protocol lock visibility, allowing any protocol
-// handler to query all locks (NLM byte-range and SMB leases) on a file.
-//
-// Returns nil if no UnifiedLockView exists for the share. This can happen if:
-//   - The share has not been registered
-//   - No LockStore has been set for the share
-//
-// Thread safety: Safe to call concurrently.
-func (s *Service) GetUnifiedLockView(shareName string) *UnifiedLockView {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if view, ok := s.unifiedViews[shareName]; ok {
-		return view
-	}
-	return nil
-}
-
-// SetUnifiedLockView sets the UnifiedLockView for a specific share.
-//
-// This is called when a LockStore becomes available for a share (e.g., when
-// a store that implements LockStore is registered). Protocol handlers should
-// NOT call this directly - it's for internal use by the registration process.
-//
-// Thread safety: Safe to call concurrently.
-func (s *Service) SetUnifiedLockView(shareName string, view *UnifiedLockView) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.unifiedViews[shareName] = view
 }
 
 // GetFile retrieves file metadata by handle.
@@ -1155,20 +645,6 @@ func (s *Service) GenerateHandle(ctx context.Context, shareName, path string) (F
 		return nil, err
 	}
 	return store.GenerateHandle(ctx, shareName, path)
-}
-
-// SetQuotaForShare sets the byte quota for a share. 0 means unlimited.
-func (s *Service) SetQuotaForShare(shareName string, quotaBytes int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.quotas[shareName] = quotaBytes
-}
-
-// GetQuotaForShare returns the byte quota for a share. 0 means unlimited.
-func (s *Service) GetQuotaForShare(shareName string) int64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.quotas[shareName]
 }
 
 // GetFilesystemStatistics returns filesystem statistics.
@@ -1523,20 +999,6 @@ func (s *Service) GetShareOptions(ctx context.Context, shareName string) (*Share
 	return store.GetShareOptions(ctx, shareName)
 }
 
-// SetDirChangeNotifier registers a DirChangeNotifier for a share.
-//
-// When directory mutations occur on this share (create, remove, rename),
-// the notifier will be called to dispatch directory lease breaks.
-// Typically the LockManager is used as the notifier since it implements
-// lock.DirChangeNotifier.
-//
-// Thread safety: Safe to call concurrently.
-func (s *Service) SetDirChangeNotifier(shareName string, n lock.DirChangeNotifier) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.dirChangeNotifiers[shareName] = n
-}
-
 // notifyDirChange dispatches a directory change notification for a share.
 //
 // This is fire-and-forget: notifications do NOT affect the success/failure
@@ -1547,9 +1009,7 @@ func (s *Service) SetDirChangeNotifier(shareName string, n lock.DirChangeNotifie
 // (falling back to ClientAddr) to identify the originating client so their
 // own leases aren't broken.
 func (s *Service) notifyDirChange(shareName string, parentHandle FileHandle, changeType lock.DirChangeType, ctx *AuthContext) {
-	s.mu.RLock()
-	notifier, ok := s.dirChangeNotifiers[shareName]
-	s.mu.RUnlock()
+	notifier, ok := s.registry.dirChangeNotifier(shareName)
 
 	if !ok || notifier == nil {
 		return
@@ -1580,4 +1040,86 @@ func (s *Service) notifyDirChange(shareName string, parentHandle FileHandle, cha
 		}
 	}()
 	notifier.OnDirChange(lock.FileHandle(parentHandle), changeType, originClient, excludeParentKey, hasExcludeKey)
+}
+
+// --- per-share registry forwarders -------------------------------------------
+// These keep the public Service surface unchanged while the state and the
+// invariants that govern it live on shareRegistry.
+
+// SetLockGracePeriod sets the grace period applied to per-share lock managers
+// that recover persisted locks at registration. A non-positive duration falls
+// back to DefaultLockGracePeriod. Must be called before RegisterStoreForShare
+// to affect a given share.
+func (s *Service) SetLockGracePeriod(d time.Duration) { s.registry.setGracePeriod(d) }
+
+// SetGraceCoordinator registers the coordinator that couples lock-manager grace
+// with the NFSv4 StateManager grace machine.
+func (s *Service) SetGraceCoordinator(c GraceCoordinator) { s.registry.setGraceCoordinator(c) }
+
+// SetByteRangeReleaseHook installs the cross-protocol byte-range release
+// notification stamped onto every per-share lock manager at creation.
+func (s *Service) SetByteRangeReleaseHook(fn func(handleKey string)) {
+	s.registry.setByteRangeReleaseHook(fn)
+}
+
+// SetShareWriteback marks a share as writeback-tiered.
+func (s *Service) SetShareWriteback(shareName string, writeback bool) {
+	s.registry.setWriteback(shareName, writeback)
+}
+
+// shareWriteback reports whether a share is writeback-tiered.
+func (s *Service) shareWriteback(shareName string) bool { return s.registry.writeback(shareName) }
+
+// RegisterStoreForShare registers a metadata store for a share, recovering and
+// publishing its lock manager atomically. See shareRegistry.register.
+func (s *Service) RegisterStoreForShare(shareName string, store Store) error {
+	return s.registry.register(shareName, store)
+}
+
+// RemoveStoreForShare deregisters a share and every per-share entry it owns.
+// See shareRegistry.remove.
+func (s *Service) RemoveStoreForShare(shareName string) { s.registry.remove(shareName) }
+
+// GetStoreForShare returns the metadata store for a specific share.
+func (s *Service) GetStoreForShare(shareName string) (Store, error) {
+	return s.registry.storeForShare(shareName)
+}
+
+// GetLockManagerForShare returns the lock manager for a specific share, or nil
+// if the share has none.
+//
+// Thread safety: Safe to call concurrently.
+func (s *Service) GetLockManagerForShare(shareName string) *LockManager {
+	return s.registry.lockManagerOrNil(shareName)
+}
+
+// GetUnifiedLockView returns the UnifiedLockView for a specific share.
+func (s *Service) GetUnifiedLockView(shareName string) *UnifiedLockView {
+	return s.registry.unifiedView(shareName)
+}
+
+// SetUnifiedLockView installs the UnifiedLockView for a specific share.
+func (s *Service) SetUnifiedLockView(shareName string, view *UnifiedLockView) {
+	s.registry.setUnifiedView(shareName, view)
+}
+
+// SetQuotaForShare sets the byte quota for a share (0 = unlimited).
+func (s *Service) SetQuotaForShare(shareName string, quotaBytes int64) {
+	s.registry.setQuota(shareName, quotaBytes)
+}
+
+// GetQuotaForShare returns the byte quota for a share (0 = unlimited).
+func (s *Service) GetQuotaForShare(shareName string) int64 { return s.registry.quota(shareName) }
+
+// SetDirChangeNotifier registers the directory-change notifier for a share.
+//
+// Thread safety: Safe to call concurrently.
+func (s *Service) SetDirChangeNotifier(shareName string, n lock.DirChangeNotifier) {
+	s.registry.setDirChangeNotifier(shareName, n)
+}
+
+// lockManagerForShare returns the lock manager for an already-decoded share
+// name, or a stale-handle error when the share has none.
+func (s *Service) lockManagerForShare(shareName string) (*LockManager, error) {
+	return s.registry.lockManagerForShare(shareName)
 }

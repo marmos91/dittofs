@@ -45,7 +45,7 @@ func (s *removeThenRepublishStore) ListLocks(context.Context, lock.LockQuery) ([
 		// pointer re-check still sees "our" store. Only the generation bump reveals
 		// that a removal happened.
 		s.svc.mu.Lock()
-		s.svc.stores[s.shareName] = s
+		s.svc.registry.stores[s.shareName] = s
 		s.svc.mu.Unlock()
 	}
 	return nil, nil
@@ -90,7 +90,7 @@ func TestRegisterStoreForShare_RemovalGenerationBlocksResurrection(t *testing.T)
 			"when the store pointer is re-published before the publish re-check")
 
 	svc.mu.RLock()
-	_, hasNotifier := svc.dirChangeNotifiers[shareName]
+	_, hasNotifier := svc.registry.dirChangeNotifiers[shareName]
 	svc.mu.RUnlock()
 	require.False(t, hasNotifier,
 		"a share removed mid-flight must NOT have its dirChangeNotifier resurrected")
