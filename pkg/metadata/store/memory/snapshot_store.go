@@ -409,16 +409,16 @@ func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	// Re-initialize transient state.
 	s.sessions = make(map[string]*ShareSession)
 
-	// Recompute both usage mirrors from the restored regular files: the
-	// store-wide byte total and the per-owner buckets the quota cache serves.
-	// A cache left at its pre-restore contents reports usage for files that
-	// no longer exist.
+	// Recompute the usage mirrors from the restored regular files: the
+	// store-wide byte total and the per-share / per-owner buckets the quota
+	// cache serves. A cache left at its pre-restore contents reports usage for
+	// files that no longer exist.
 	var totalBytes int64
 	var usage basestore.QuotaDelta
 	for _, fd := range s.files {
 		if fd.Attr != nil && fd.Attr.Type == metadata.FileTypeRegular {
 			totalBytes += int64(fd.Attr.Size)
-			usage.Add(fd.Attr.UID, fd.Attr.GID, int64(fd.Attr.Size), 1)
+			usage.Add(fd.ShareName, fd.Attr.UID, fd.Attr.GID, int64(fd.Attr.Size), 1)
 		}
 	}
 	s.usedBytes.Store(totalBytes)

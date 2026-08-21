@@ -29,8 +29,3 @@ func statfsQuery(handle metadata.FileHandle) (sql string, args []any) {
 	return `SELECT COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE file_type = $1`,
 		[]any{int(metadata.FileTypeRegular)}
 }
-
-// shareUsedBytesQuery is the per-share logical-bytes aggregate behind
-// GetUsedBytesForShare. It mirrors statfsQuery's share-scoped branch — regular
-// files only — so the two report the same number for the same share.
-const shareUsedBytesQuery = `SELECT COALESCE(SUM(size), 0) FROM inodes WHERE share_name = $1 AND file_type = $2`

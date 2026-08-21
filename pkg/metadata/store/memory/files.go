@@ -377,7 +377,7 @@ func (store *MemoryMetadataStore) GetFilesystemMeta(ctx context.Context, shareNa
 	// For memory store, return capabilities and computed statistics
 	return &metadata.FilesystemMeta{
 		Capabilities: store.capabilities,
-		Statistics:   store.computeStatistics(),
+		Statistics:   store.computeStatistics(shareName),
 	}, nil
 }
 

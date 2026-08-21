@@ -127,16 +127,37 @@ func (store *MemoryMetadataStore) GetFilesystemStatistics(ctx context.Context, h
 		}
 	}
 
-	stats := store.computeStatistics()
+	stats := store.computeStatistics(shareNameOf(handle))
 	return &stats, nil
 }
 
-// computeStatistics calculates current filesystem statistics.
+// shareNameOf decodes the share a handle belongs to. An undecodable handle
+// yields the empty share, whose usage buckets are empty — the same answer a
+// share with no files gives.
+func shareNameOf(handle metadata.FileHandle) string {
+	shareName, _, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return ""
+	}
+	return shareName
+}
+
+// computeStatistics calculates current filesystem statistics for one share.
+// The store instance is shared by every share naming the same config, so the
+// usage figures are scoped to shareName; the capacity ceilings are store-wide.
+//
+// Only regular files contribute, matching the SQL backends' scoped aggregate:
+// directories carry no logical bytes and the share root would otherwise inflate
+// UsedFiles.
+//
 // Must be called with at least a read lock held.
-func (store *MemoryMetadataStore) computeStatistics() metadata.FilesystemStatistics {
-	// Read usage from atomic counter (O(1), no scan needed).
-	totalSize := uint64(store.usedBytes.Load())
-	fileCount := uint64(len(store.files))
+func (store *MemoryMetadataStore) computeStatistics(shareName string) metadata.FilesystemStatistics {
+	// O(1) read of the per-share bucket, no scan needed.
+	store.quotaMu.Lock()
+	usage := store.quota.Share(shareName)
+	store.quotaMu.Unlock()
+	totalSize := uint64(max(usage.Bytes, 0))
+	fileCount := uint64(max(usage.Files, 0))
 
 	// Report storage limits or defaults
 	totalBytes := store.maxStorageBytes

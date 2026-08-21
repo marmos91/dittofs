@@ -374,43 +374,24 @@ func NewMemoryMetadataStoreWithDefaults() *MemoryMetadataStore {
 	})
 }
 
-// GetUsedBytes returns the current total logical bytes used by regular files.
-// This is an O(1) atomic read, safe for concurrent access without locks.
-func (store *MemoryMetadataStore) GetUsedBytes() int64 {
-	return store.usedBytes.Load()
-}
-
-// GetUsedBytesForShare sums the sizes of the share's regular files. The
-// store-wide usedBytes counter covers every share held by this store, so it
-// cannot answer a per-share query.
-//
-// ponytail: O(n) walk of the files map under the read lock. The memory backend
-// is a development and test store whose whole state is already an in-process
-// map; a per-share counter is only worth adding if this store ever holds a
-// working set large enough for the walk to matter.
+// GetUsedBytesForShare returns the logical bytes held by one share's regular
+// files. O(1) read of the per-share bucket maintained by the transaction delta
+// pipeline.
 func (store *MemoryMetadataStore) GetUsedBytesForShare(ctx context.Context, shareName string) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-
-	store.mu.RLock()
-	defer store.mu.RUnlock()
-
-	var total int64
-	for _, fd := range store.files {
-		if fd.ShareName == shareName && fd.Attr.Type == metadata.FileTypeRegular {
-			total += int64(fd.Attr.Size)
-		}
-	}
-	return total, nil
-}
-
-// GetQuotaUsage returns per-identity usage for the given scope and id.
-// O(1) map read under quotaMu. A missing key returns a zero UsageStat.
-func (store *MemoryMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
 	store.quotaMu.Lock()
 	defer store.quotaMu.Unlock()
-	return store.quota.Get(scope, id), nil
+	return store.quota.Share(shareName).Bytes, nil
+}
+
+// GetQuotaUsage returns per-identity usage within one share. O(1) map read
+// under quotaMu. A missing key returns a zero UsageStat.
+func (store *MemoryMetadataStore) GetQuotaUsage(shareName string, scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
+	store.quotaMu.Lock()
+	defer store.quotaMu.Unlock()
+	return store.quota.Get(shareName, scope, id), nil
 }
 
 // GetStoreID returns the engine-persistent store identifier. Assigned on

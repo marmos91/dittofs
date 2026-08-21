@@ -213,8 +213,6 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 	if freedBytes > 0 {
 		s.usedBytes.Add(-freedBytes)
 	}
-	// The deleted share's bucket must not outlive it in the per-share cache.
-	s.invalidateShareUsedCache()
 	s.applyQuotaDelta(quotaFreed)
 	return nil
 }
@@ -308,12 +306,12 @@ func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName stri
 			if v.size > 0 {
 				freedBytes += int64(v.size)
 			}
-			uk := basestore.QuotaKey{Scope: metadata.QuotaScopeUser, ID: v.uid}
+			uk := basestore.QuotaKey{Share: shareName, Scope: metadata.QuotaScopeUser, ID: v.uid}
 			us := quotaFreed[uk]
 			us.Bytes -= int64(v.size)
 			us.Files--
 			quotaFreed[uk] = us
-			gk := basestore.QuotaKey{Scope: metadata.QuotaScopeGroup, ID: v.gid}
+			gk := basestore.QuotaKey{Share: shareName, Scope: metadata.QuotaScopeGroup, ID: v.gid}
 			gs := quotaFreed[gk]
 			gs.Bytes -= int64(v.size)
 			gs.Files--

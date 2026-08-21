@@ -3,7 +3,6 @@ package badger
 import (
 	"context"
 	"fmt"
-	"time"
 
 	badgerdb "github.com/dgraph-io/badger/v4"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -143,100 +142,66 @@ func (s *BadgerMetadataStore) storeCapabilities(capabilities metadata.Filesystem
 // Filesystem Statistics
 // ============================================================================
 
-// GetFilesystemStatistics returns dynamic filesystem statistics.
-// UsedBytes is read from the atomic counter (O(1), no scan).
-// File count still uses the stats cache for efficiency.
+// GetFilesystemStatistics returns dynamic filesystem statistics for the share
+// the handle belongs to.
+//
+// The store instance is shared by every share naming the same metadata store
+// config, so usage is scoped to that share; the capacity ceilings
+// (maxStorageBytes / maxFiles) are store-wide configuration.
+//
+// Both figures are O(1) reads of the per-share usage bucket. Only regular files
+// contribute, matching the SQL backends' scoped aggregate: directories carry no
+// logical bytes and the share root would otherwise inflate UsedFiles.
 func (s *BadgerMetadataStore) GetFilesystemStatistics(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemStatistics, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	// Read usage from atomic counter (O(1), always fresh).
-	usedSize := uint64(s.usedBytes.Load())
-
-	// For file count, check cache first.
-	s.statsCache.mu.RLock()
-	if s.statsCache.hasStats && time.Since(s.statsCache.timestamp) < s.statsCache.ttl {
-		cached := s.statsCache.stats
-		s.statsCache.mu.RUnlock()
-		// Update UsedBytes from atomic counter (cache may be stale for bytes).
-		cached.UsedBytes = usedSize
-		if cached.TotalBytes > usedSize {
-			cached.AvailableBytes = cached.TotalBytes - usedSize
-		} else {
-			cached.AvailableBytes = 0
-		}
-		return &cached, nil
-	}
-	s.statsCache.mu.RUnlock()
-
-	// Cache miss - count files only (usage comes from atomic counter).
-	var fileCount uint64
-
-	err := s.db.View(func(txn *badgerdb.Txn) error {
-		opts := badgerdb.DefaultIteratorOptions
-		opts.Prefix = []byte(prefixFile)
-		opts.PrefetchValues = false // Only counting, don't need values.
-
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		for it.Rewind(); it.Valid(); it.Next() {
-			if fileCount%100 == 0 {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-			}
-			fileCount++
-		}
-
-		return nil
-	})
-
+	shareName, _, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
-		return nil, fmt.Errorf("failed to calculate filesystem statistics: %w", err)
+		// An undecodable handle names no share; its usage buckets are empty,
+		// the same answer a share with no files gives.
+		shareName = ""
 	}
 
-	var stats metadata.FilesystemStatistics
-	stats.UsedFiles = fileCount
-	stats.UsedBytes = usedSize
+	s.quotaMu.Lock()
+	usage := s.quota.Share(shareName)
+	s.quotaMu.Unlock()
 
-	if s.maxStorageBytes > 0 {
-		stats.TotalBytes = s.maxStorageBytes
-		if usedSize < s.maxStorageBytes {
-			stats.AvailableBytes = s.maxStorageBytes - usedSize
-		} else {
-			stats.AvailableBytes = 0
-		}
-	} else {
-		const reportedSize = 1 << 50 // 1 PiB (unlimited sentinel)
-		stats.TotalBytes = reportedSize
-		if reportedSize > usedSize {
-			stats.AvailableBytes = reportedSize - usedSize
-		}
-	}
+	usedSize := uint64(max(usage.Bytes, 0))
+	fileCount := uint64(max(usage.Files, 0))
 
-	if s.maxFiles > 0 {
-		stats.TotalFiles = s.maxFiles
-		if fileCount < s.maxFiles {
-			stats.AvailableFiles = s.maxFiles - fileCount
-		} else {
-			stats.AvailableFiles = 0
-		}
-	} else {
-		const reportedFiles = 1000000
-		stats.TotalFiles = reportedFiles
-		if reportedFiles > fileCount {
-			stats.AvailableFiles = reportedFiles - fileCount
-		}
-	}
-
-	// Update cache.
-	s.statsCache.mu.Lock()
-	s.statsCache.stats = stats
-	s.statsCache.hasStats = true
-	s.statsCache.timestamp = time.Now()
-	s.statsCache.mu.Unlock()
-
+	stats := buildShareStatistics(usedSize, fileCount, s.maxStorageBytes, s.maxFiles)
 	return &stats, nil
+}
+
+// buildShareStatistics assembles the reported statistics from a share's usage
+// and the store-wide capacity ceilings, substituting "effectively unlimited"
+// sentinels for an unconfigured ceiling. Shared by the pool and transaction
+// paths so both report the same shape.
+func buildShareStatistics(usedSize, fileCount, maxStorageBytes, maxFiles uint64) metadata.FilesystemStatistics {
+	const (
+		reportedSize  = uint64(1) << 50 // 1 PiB (unlimited sentinel)
+		reportedFiles = uint64(1000000)
+	)
+	if maxStorageBytes == 0 {
+		maxStorageBytes = reportedSize
+	}
+	if maxFiles == 0 {
+		maxFiles = reportedFiles
+	}
+
+	stats := metadata.FilesystemStatistics{
+		UsedBytes:  usedSize,
+		UsedFiles:  fileCount,
+		TotalBytes: maxStorageBytes,
+		TotalFiles: maxFiles,
+	}
+	if maxStorageBytes > usedSize {
+		stats.AvailableBytes = maxStorageBytes - usedSize
+	}
+	if maxFiles > fileCount {
+		stats.AvailableFiles = maxFiles - fileCount
+	}
+	return stats
 }

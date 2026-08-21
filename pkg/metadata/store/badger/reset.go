@@ -48,8 +48,4 @@ func (s *BadgerMetadataStore) invalidateDerivedCaches() {
 	s.readCache.invalidateAll()
 	s.parentCache.invalidateAll()
 	s.direntCache.invalidateAll()
-	s.statsCache.mu.Lock()
-	s.statsCache.hasStats = false
-	s.statsCache.mu.Unlock()
-	s.invalidateShareUsedCache()
 }

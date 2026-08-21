@@ -75,7 +75,7 @@ func (tx *postgresTransaction) ApplyDataWrite(
 	finalSize := *newSz
 	if delta := finalSize - oldSize; delta != 0 {
 		tx.pendingDelta += delta
-		tx.quota.Add(uint32(oldUID), uint32(oldGID), delta, 0)
+		tx.quota.Add(shareName, uint32(oldUID), uint32(oldGID), delta, 0)
 	}
 	return uint64(finalSize), nil
 }

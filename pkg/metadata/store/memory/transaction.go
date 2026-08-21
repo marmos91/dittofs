@@ -292,15 +292,15 @@ func (tx *memoryTransaction) UpdateAttrs(ctx context.Context, file *metadata.Fil
 		case !hadOldRegular:
 			// New regular file (create or type change to regular): charge full
 			// size + 1 inode to the new owner.
-			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		case oldUID == file.UID && oldGID == file.GID:
 			// Same owner: only the byte delta moves.
-			tx.quota.Add(file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
 		default:
 			// Chown: remove old size + inode from the previous owner, add new
 			// size + inode to the new owner.
-			tx.quota.Add(oldUID, oldGID, -int64(oldSize), -1)
-			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.ShareName, oldUID, oldGID, -int64(oldSize), -1)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		}
 	}
 
@@ -380,7 +380,7 @@ func (tx *memoryTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		if existing.Attr.Size > 0 {
 			tx.pendingDelta -= int64(existing.Attr.Size)
 		}
-		tx.quota.Add(existing.Attr.UID, existing.Attr.GID, -int64(existing.Attr.Size), -1)
+		tx.quota.Add(existing.ShareName, existing.Attr.UID, existing.Attr.GID, -int64(existing.Attr.Size), -1)
 	}
 
 	// drop ObjectID secondary entry. The "only if mapped
@@ -502,7 +502,7 @@ func (tx *memoryTransaction) GetFilesystemMeta(ctx context.Context, shareName st
 	// For memory store, return capabilities and computed statistics
 	return &metadata.FilesystemMeta{
 		Capabilities: tx.store.capabilities,
-		Statistics:   tx.store.computeStatistics(),
+		Statistics:   tx.store.computeStatistics(shareName),
 	}, nil
 }
 
@@ -659,7 +659,7 @@ func (tx *memoryTransaction) DeleteShare(ctx context.Context, shareName string) 
 				if fd.Attr.Size > 0 {
 					tx.pendingDelta -= int64(fd.Attr.Size)
 				}
-				tx.quota.Add(fd.Attr.UID, fd.Attr.GID, -int64(fd.Attr.Size), -1)
+				tx.quota.Add(fd.ShareName, fd.Attr.UID, fd.Attr.GID, -int64(fd.Attr.Size), -1)
 			}
 			// drop ObjectID secondary entry too.
 			if fd.Attr != nil && !fd.Attr.ObjectID.IsZero() {
@@ -825,6 +825,6 @@ func (tx *memoryTransaction) GetFilesystemStatistics(ctx context.Context, handle
 		return nil, err
 	}
 
-	stats := tx.store.computeStatistics()
+	stats := tx.store.computeStatistics(shareNameOf(handle))
 	return &stats, nil
 }

@@ -427,13 +427,13 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 		oldGID := uint32(oldGIDVal.Int64)
 		switch {
 		case !oldWasRegular:
-			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		case oldUID == file.UID && oldGID == file.GID:
-			tx.quota.Add(file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
 		default:
 			// Chown: move bytes + inode from old owner to new owner.
-			tx.quota.Add(oldUID, oldGID, -int64(oldSize), -1)
-			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.ShareName, oldUID, oldGID, -int64(oldSize), -1)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		}
 	}
 
@@ -468,7 +468,7 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 			if file.Size > 0 {
 				tx.pendingDelta += int64(file.Size)
 			}
-			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		}
 
 		// Debug logging for new file inserts, gated so the id formatting and
@@ -554,7 +554,7 @@ func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.F
 		if fileSize > 0 {
 			tx.pendingDelta -= fileSize
 		}
-		tx.quota.Add(uint32(fileUID), uint32(fileGID), -fileSize, -1)
+		tx.quota.Add(shareName, uint32(fileUID), uint32(fileGID), -fileSize, -1)
 	}
 
 	return nil
@@ -1121,7 +1121,7 @@ func (tx *postgresTransaction) collectShareQuotaFreed(ctx context.Context, share
 		if err := rows.Scan(&id, &bytes, &files); err != nil {
 			return mapPgError(err, "DeleteShare", shareName)
 		}
-		tx.quota.AddKeyed(basestore.QuotaKey{Scope: scope, ID: uint32(id)}, metadata.UsageStat{Bytes: -bytes, Files: -files})
+		tx.quota.AddKeyed(basestore.QuotaKey{Share: shareName, Scope: scope, ID: uint32(id)}, metadata.UsageStat{Bytes: -bytes, Files: -files})
 	}
 	if err := rows.Err(); err != nil {
 		return mapPgError(err, "DeleteShare", shareName)

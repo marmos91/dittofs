@@ -185,21 +185,18 @@ func NewSQLiteMetadataStore(
 	return store, nil
 }
 
-// GetUsedBytes returns the current total logical bytes used by regular files.
-func (s *SQLiteMetadataStore) GetUsedBytes() int64 {
-	return s.usedBytes.Load()
-}
-
-// GetUsedBytesForShare sums the sizes of one share's regular files. The
-// store-wide atomic counter covers every share held by this store, so a scoped
-// aggregate is used instead — the same one GetFilesystemStatistics runs, over
-// the share_name index.
+// GetUsedBytesForShare returns the logical bytes held by one share's regular
+// files. O(1) read of the per-share bucket seeded by initUsedBytesCounter and
+// maintained by the transaction delta pipeline — the same discipline that keeps
+// the per-identity buckets fresh. It sits on the write path (the share-quota
+// gate), so it must not issue a query per call.
 func (s *SQLiteMetadataStore) GetUsedBytesForShare(ctx context.Context, shareName string) (int64, error) {
-	var used int64
-	if err := s.queryRow(ctx, shareUsedBytesQuery, shareName, int(metadata.FileTypeRegular)).Scan(&used); err != nil {
-		return 0, mapDBError(err, "GetUsedBytesForShare", shareName)
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
-	return used, nil
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
+	return s.quota.Share(shareName).Bytes, nil
 }
 
 // initUsedBytesCounter initializes the store-wide atomic counter from a SQL SUM
@@ -213,53 +210,54 @@ func (s *SQLiteMetadataStore) initUsedBytesCounter(ctx context.Context) error {
 	}
 	s.usedBytes.Store(totalUsed)
 
-	userUsage, err := s.seedUsageByColumn(ctx, "uid")
-	if err != nil {
+	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
+	if err := s.seedUsageByColumn(ctx, "uid", metadata.QuotaScopeUser, byIdentity); err != nil {
 		return err
 	}
-	groupUsage, err := s.seedUsageByColumn(ctx, "gid")
-	if err != nil {
+	if err := s.seedUsageByColumn(ctx, "gid", metadata.QuotaScopeGroup, byIdentity); err != nil {
 		return err
 	}
 	s.quotaMu.Lock()
-	s.quota.Seed(userUsage, groupUsage)
+	s.quota.Seed(byIdentity, nil)
 	s.quotaMu.Unlock()
 	return nil
 }
 
-// seedUsageByColumn aggregates per-identity usage (bytes + count) for regular
-// files grouped by the given owner column ("uid" or "gid"). The column name is
-// a fixed internal constant, never user input.
-func (s *SQLiteMetadataStore) seedUsageByColumn(ctx context.Context, col string) (map[uint32]*metadata.UsageStat, error) {
+// seedUsageByColumn aggregates usage (bytes + count) for regular files grouped
+// by share and by the given owner column ("uid" or "gid"), accumulating into
+// out under the matching scope. The column name is a fixed internal constant,
+// never user input.
+func (s *SQLiteMetadataStore) seedUsageByColumn(ctx context.Context, col string, scope metadata.QuotaScope, out map[basestore.QuotaKey]*metadata.UsageStat) error {
 	query := fmt.Sprintf(
-		`SELECT %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE file_type = ? GROUP BY %s`,
+		`SELECT share_name, %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE file_type = ?1 GROUP BY share_name, %s`,
 		col, col,
 	)
 	rows, err := s.db.QueryContext(ctx, query, int(metadata.FileTypeRegular))
 	if err != nil {
-		return nil, fmt.Errorf("failed to seed %s usage: %w", col, err)
+		return fmt.Errorf("failed to seed %s usage: %w", col, err)
 	}
 	defer func() { _ = rows.Close() }()
-	out := make(map[uint32]*metadata.UsageStat)
 	for rows.Next() {
+		var share string
 		var id int64
 		var bytes, files int64
-		if err := rows.Scan(&id, &bytes, &files); err != nil {
-			return nil, fmt.Errorf("failed to scan %s usage: %w", col, err)
+		if err := rows.Scan(&share, &id, &bytes, &files); err != nil {
+			return fmt.Errorf("failed to scan %s usage: %w", col, err)
 		}
-		out[uint32(id)] = &metadata.UsageStat{Bytes: bytes, Files: files}
+		out[basestore.QuotaKey{Share: share, Scope: scope, ID: uint32(id)}] = &metadata.UsageStat{Bytes: bytes, Files: files}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed iterating %s usage: %w", col, err)
+		return fmt.Errorf("failed iterating %s usage: %w", col, err)
 	}
-	return out, nil
+	return nil
 }
 
-// GetQuotaUsage returns per-identity usage for the given scope and id.
-func (s *SQLiteMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
+// GetQuotaUsage returns per-identity usage within one share. O(1) cache read
+// under quotaMu. A missing key returns a zero UsageStat.
+func (s *SQLiteMetadataStore) GetQuotaUsage(shareName string, scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
 	s.quotaMu.Lock()
 	defer s.quotaMu.Unlock()
-	return s.quota.Get(scope, id), nil
+	return s.quota.Get(shareName, scope, id), nil
 }
 
 // applyQuotaDelta folds a per-identity usage delta into the in-memory usage

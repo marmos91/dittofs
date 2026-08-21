@@ -147,11 +147,6 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			if pendingDelta != 0 {
 				s.usedBytes.Add(pendingDelta)
 			}
-			// Drop the per-share totals unconditionally. The delta carries no
-			// share dimension, so they cannot be adjusted — and a net-zero
-			// delta does not mean they are unchanged: sizes that cancel across
-			// two shares move both while leaving the store-wide sum alone.
-			s.invalidateShareUsedCache()
 			// Apply per-identity usage deltas once, after commit.
 			s.applyQuotaDelta(quotaDelta)
 			// Apply the staged filesystem-capabilities update once, after commit,
@@ -415,13 +410,13 @@ func (tx *badgerTransaction) putFile(ctx context.Context, file *metadata.File, w
 
 		switch {
 		case !hadOldRegular:
-			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		case oldUID == file.UID && oldGID == file.GID:
-			tx.quota.Add(file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
 		default:
 			// Chown: move bytes + inode from old owner to new owner.
-			tx.quota.Add(oldUID, oldGID, -int64(oldSize), -1)
-			tx.quota.Add(file.UID, file.GID, int64(file.Size), 1)
+			tx.quota.Add(file.ShareName, oldUID, oldGID, -int64(oldSize), -1)
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		}
 	}
 
@@ -545,7 +540,7 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 				if file.Size > 0 {
 					tx.pendingDelta -= int64(file.Size)
 				}
-				tx.quota.Add(file.UID, file.GID, -int64(file.Size), -1)
+				tx.quota.Add(file.ShareName, file.UID, file.GID, -int64(file.Size), -1)
 			}
 			existingObjectID = file.ObjectID
 			existingPayloadID = file.PayloadID
@@ -1424,7 +1419,14 @@ func (tx *badgerTransaction) GetFilesystemStatistics(ctx context.Context, handle
 		return nil, err
 	}
 
-	// Compute stats by iterating files
+	shareName, _, decErr := metadata.DecodeFileHandle(handle)
+	if decErr != nil {
+		shareName = ""
+	}
+
+	// Read through the open transaction rather than the post-commit usage
+	// cache, so a statfs issued inside a transaction sees that transaction's
+	// own uncommitted writes.
 	var fileCount uint64
 	var usedSize uint64
 
@@ -1435,12 +1437,14 @@ func (tx *badgerTransaction) GetFilesystemStatistics(ctx context.Context, handle
 	it := tx.txn.NewIterator(opts)
 	defer it.Close()
 
+	scanned := 0
 	for it.Rewind(); it.Valid(); it.Next() {
-		if fileCount%100 == 0 {
+		if scanned%100 == 0 {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
 		}
+		scanned++
 
 		item := it.Item()
 		err := item.Value(func(val []byte) error {
@@ -1448,10 +1452,16 @@ func (tx *badgerTransaction) GetFilesystemStatistics(ctx context.Context, handle
 			if decErr != nil {
 				return decErr
 			}
-			fileCount++
-			// Mirror initUsedBytesCounter / GetUsedBytes: only regular files
-			// contribute to used bytes. fileCount still counts every inode.
+			// Only the handle's own share contributes: one store instance backs
+			// every share that names the same metadata store config.
+			if file.ShareName != shareName {
+				return nil
+			}
+			// Only regular files contribute, matching the per-share usage
+			// buckets the pool path reports: directories carry no logical bytes
+			// and the share root would otherwise inflate UsedFiles.
 			if file.Type == metadata.FileTypeRegular {
+				fileCount++
 				usedSize += file.Size
 			}
 			return nil
@@ -1461,33 +1471,7 @@ func (tx *badgerTransaction) GetFilesystemStatistics(ctx context.Context, handle
 		}
 	}
 
-	stats := metadata.FilesystemStatistics{
-		UsedFiles: fileCount,
-		UsedBytes: usedSize,
-	}
-
-	if tx.store.maxStorageBytes > 0 {
-		stats.TotalBytes = tx.store.maxStorageBytes
-		if usedSize < tx.store.maxStorageBytes {
-			stats.AvailableBytes = tx.store.maxStorageBytes - usedSize
-		}
-	} else {
-		const reportedSize = 1024 * 1024 * 1024 * 1024 // 1TB
-		stats.TotalBytes = reportedSize
-		stats.AvailableBytes = reportedSize - usedSize
-	}
-
-	if tx.store.maxFiles > 0 {
-		stats.TotalFiles = tx.store.maxFiles
-		if fileCount < tx.store.maxFiles {
-			stats.AvailableFiles = tx.store.maxFiles - fileCount
-		}
-	} else {
-		const reportedFiles = 1000000
-		stats.TotalFiles = reportedFiles
-		stats.AvailableFiles = reportedFiles - fileCount
-	}
-
+	stats := buildShareStatistics(usedSize, fileCount, tx.store.maxStorageBytes, tx.store.maxFiles)
 	return &stats, nil
 }
 
