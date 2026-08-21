@@ -96,7 +96,7 @@ func seedRepackable(t *testing.T, s *Store) []byte {
 	rand.New(rand.NewSource(1)).Read(keep)
 	rand.New(rand.NewSource(2)).Read(gone)
 
-	if err := s.Hydrate(ctx, "keep", 0, keep); err != nil { // synced=true
+	if err := s.Hydrate(ctx, "keep", 0, keep, 0); err != nil { // synced=true
 		t.Fatal(err)
 	}
 	if err := s.WriteAt(ctx, "gone", 0, gone); err != nil { // synced=false

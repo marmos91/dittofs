@@ -421,15 +421,29 @@ func (s *Store) commitDirtyShards() {
 // WriteAt buffers a dirty client write. It never fsyncs; durability is a
 // separate Commit.
 func (s *Store) WriteAt(ctx context.Context, id FileID, offset int64, data []byte) error {
-	return s.appendRecord(ctx, id, offset, data, false)
+	return s.appendRecord(ctx, id, offset, data, false, 0)
 }
 
 // Hydrate writes bytes fetched from the remote store during a cold read. Same
 // append primitive as WriteAt, but the record is born clean (already durable
 // remotely) so it is immediately evictable.
-func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byte) error {
-	return s.appendRecord(ctx, id, offset, data, true)
+//
+// notAfter is the WriteVersion the caller observed before it resolved which
+// remote bytes to fetch. The write-back is dropped when any live interval
+// overlapping the range was recorded after that, because those bytes postdate
+// the fetch: a fetch stalled in the remote read while a write, truncate or
+// punch lands would otherwise append at a fresh version and win, putting the
+// pre-mutation bytes back over durable newer ones. Dropping costs at most a
+// re-fetch on the next read — the fetched bytes still serve this one. A zero
+// notAfter disables the gate, for a caller that holds no such observation.
+func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byte, notAfter uint64) error {
+	return s.appendRecord(ctx, id, offset, data, true, notAfter)
 }
+
+// WriteVersion reports the store's current global LSN. Sampled before a caller
+// resolves what to fetch, it bounds what that fetch is allowed to write back
+// (see Hydrate).
+func (s *Store) WriteVersion() uint64 { return s.version.Load() }
 
 // SeedCold registers a byte range as remote-durable-but-not-local: a read of it
 // reports cold so the engine hydrates it from the remote store instead of

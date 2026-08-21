@@ -82,7 +82,12 @@ func (s *MemoryStore) WriteAt(_ context.Context, payloadID string, offset int64,
 }
 
 // Hydrate writes remote-fetched bytes; born clean, so no unsynced charge.
-func (s *MemoryStore) Hydrate(_ context.Context, payloadID string, offset int64, data []byte) error {
+//
+// ponytail: notAfter is accepted and ignored — the flat per-file buffer records
+// no per-range version to compare it against, and this store never evicts, so
+// the cold read that carries a meaningful mark does not arise here. Give the
+// buffer an interval index if a memory-local share ever needs the gate.
+func (s *MemoryStore) Hydrate(_ context.Context, payloadID string, offset int64, data []byte, _ uint64) error {
 	if offset < 0 {
 		return block.ErrInvalidOffset
 	}
@@ -316,3 +321,8 @@ func (s *MemoryStore) Durable() bool { return s.durable.Load() }
 
 // SetDurable overrides the durability report.
 func (s *MemoryStore) SetDurable(v bool) { s.durable.Store(v) }
+
+// WriteVersion reports a monotonic marker of the store's write history. The
+// memory store keeps no such history, so it reports zero, which reads as "no
+// observation" and leaves Hydrate's gate disabled.
+func (s *MemoryStore) WriteVersion() uint64 { return 0 }

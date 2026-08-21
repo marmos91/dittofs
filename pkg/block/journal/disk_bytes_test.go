@@ -59,7 +59,7 @@ func TestDiskBytesSeededOverCapConvergesDown(t *testing.T) {
 	// reopen without a carve pass.
 	buf := bytes.Repeat([]byte{0xCD}, chunk256)
 	for i := range 24 {
-		if err := first.Hydrate(ctx, "f", int64(i)*chunk256, buf); err != nil {
+		if err := first.Hydrate(ctx, "f", int64(i)*chunk256, buf, 0); err != nil {
 			t.Fatalf("Hydrate: %v", err)
 		}
 	}
@@ -87,7 +87,7 @@ func TestDiskBytesSeededOverCapConvergesDown(t *testing.T) {
 
 	// The write-path gate now sees the real footprint and reclaims down to the
 	// cap instead of concluding there is headroom.
-	if err := s.Hydrate(ctx, "f", 64<<20, buf); err != nil {
+	if err := s.Hydrate(ctx, "f", 64<<20, buf, 0); err != nil {
 		t.Fatalf("write over seeded cap: %v", err)
 	}
 	// Eviction is whole-segment and admission does not reserve, so the cap is a

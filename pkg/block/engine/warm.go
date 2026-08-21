@@ -89,6 +89,9 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		if err := ctx.Err(); err != nil {
 			return WarmResult{}, err
 		}
+		// Sampled before this payload's rows are read, so a warm fetch cannot
+		// write back over bytes written while it was running (see hydrateSpan).
+		at := m.local.WriteVersion()
 		rows, err := m.listFileChunksSnapshot(ctx, payloadID)
 		if err != nil {
 			return WarmResult{}, fmt.Errorf("warm: list blocks for %s: %w", payloadID, err)
@@ -122,7 +125,7 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 			// it is left for the demand read to fetch — one row here means one
 			// range, and filling the gap with the older bytes is the outcome
 			// this clamp exists to prevent.
-			span := hydrateSpan{From: absOff, To: absOff + uint64(fb.DataSize)}
+			span := hydrateSpan{From: absOff, To: absOff + uint64(fb.DataSize), At: at}
 			if i := sort.Search(len(starts), func(i int) bool { return starts[i] > absOff }); i < len(starts) && starts[i] < span.To {
 				span.To = starts[i]
 			}

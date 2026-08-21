@@ -265,7 +265,7 @@ func (s *Store) sealSegment(sh *shard) error {
 // crash. Dropping the lock therefore needs the watermark replaced by an in-flight
 // version set (ceiling = lowest in-flight Version minus one) first; build that
 // only if append contention on a shard actually shows up in a profile.
-func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data []byte, synced bool) error {
+func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data []byte, synced bool, notAfter uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -300,6 +300,12 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 	sh := s.shardFor(id)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
+
+	// The gate is tested under the same lock that stamps the version, so a
+	// mutation cannot slip between the test and the append and still lose.
+	if notAfter > 0 && sh.index[id].recordedSince(offset, int64(len(data)), notAfter) {
+		return nil
+	}
 
 	if sh.active.tail.Load()+recLen > s.cfg.SegmentSize {
 		if err := s.sealSegment(sh); err != nil {

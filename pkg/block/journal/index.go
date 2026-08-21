@@ -497,3 +497,21 @@ func (e idxEntry) encode() []byte {
 	buf[36] = e.Flags
 	return buf
 }
+
+// recordedSince reports whether any live interval overlapping [off, off+n) was
+// recorded after mark. It answers "did this range change while I was away" for
+// a hydrate that sampled the store's WriteVersion before deciding what to
+// fetch; a nil index (unknown file) has nothing newer.
+func (fi *fileIndex) recordedSince(off, n int64, mark uint64) bool {
+	if fi == nil || n <= 0 {
+		return false
+	}
+	end := off + n
+	k := sort.Search(len(fi.ivs), func(i int) bool { return fi.ivs[i].end() > off })
+	for ; k < len(fi.ivs) && fi.ivs[k].fileOff < end; k++ {
+		if fi.ivs[k].version > mark {
+			return true
+		}
+	}
+	return false
+}

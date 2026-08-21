@@ -51,7 +51,7 @@ func fillUntilSealed(t *testing.T, s *Store, id FileID, synced bool, wantSealed 
 		}
 		var err error
 		if synced {
-			err = s.Hydrate(ctx, id, off, buf)
+			err = s.Hydrate(ctx, id, off, buf, 0)
 		} else {
 			err = s.WriteAt(ctx, id, off, buf)
 		}
@@ -215,7 +215,7 @@ func TestEvictedRangeReadsCold(t *testing.T) {
 	ctx := context.Background()
 
 	target := bytes.Repeat([]byte{0x5A}, chunk256)
-	if err := s.Hydrate(ctx, "f", 0, target); err != nil {
+	if err := s.Hydrate(ctx, "f", 0, target, 0); err != nil {
 		t.Fatalf("Hydrate target: %v", err)
 	}
 	fillUntilSealed(t, s, "f", true, 2) // seal the segment holding the target
@@ -287,7 +287,7 @@ func TestEnsureSpaceEvictsSyncedUnderPressure(t *testing.T) {
 	buf := bytes.Repeat([]byte{0x11}, chunk256)
 	var off int64
 	for i := 0; i < 40; i++ { // ~10 MiB through a 2 MiB cap
-		if err := s.Hydrate(ctx, "f", off, buf); err != nil {
+		if err := s.Hydrate(ctx, "f", off, buf, 0); err != nil {
 			t.Fatalf("Hydrate under pressure: %v", err)
 		}
 		off += chunk256
@@ -308,10 +308,10 @@ func TestEvictForceSealsSyncedActive(t *testing.T) {
 	// Two synced 256 KiB records (512 KiB total) stay in the active segment: well
 	// under the 1 MiB roll threshold, so nothing seals on its own.
 	buf := bytes.Repeat([]byte{0x3C}, chunk256)
-	if err := s.Hydrate(ctx, "f", 0, buf); err != nil {
+	if err := s.Hydrate(ctx, "f", 0, buf, 0); err != nil {
 		t.Fatalf("Hydrate: %v", err)
 	}
-	if err := s.Hydrate(ctx, "f", chunk256, buf); err != nil {
+	if err := s.Hydrate(ctx, "f", chunk256, buf, 0); err != nil {
 		t.Fatalf("Hydrate: %v", err)
 	}
 	if segs := sealedSegs(s.shardFor("f")); len(segs) != 0 {
@@ -468,7 +468,7 @@ func TestConcurrentWriteEvictRace(t *testing.T) {
 			defer wg.Done()
 			var off int64
 			for i := 0; i < 16; i++ {
-				if err := s.Hydrate(ctx, id, off, buf); err != nil {
+				if err := s.Hydrate(ctx, id, off, buf, 0); err != nil {
 					t.Errorf("Hydrate: %v", err)
 					return
 				}
