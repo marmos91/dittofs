@@ -110,16 +110,16 @@ func TestRemoveFile_ConcurrentCreateHardLink(t *testing.T) {
 // Move atomicity (full rollback on a mid-rename failure)
 // ============================================================================
 
-// errPutFileInjected is returned by the fault-injecting tx when PutFile is
+// errPutFileInjected is returned by the fault-injecting tx when UpdateAttrs is
 // called for the targeted file ID.
-var errPutFileInjected = errors.New("injected PutFile failure")
+var errPutFileInjected = errors.New("injected UpdateAttrs failure")
 
 // errLinkCountInjected is returned by the fault-injecting tx when GetLinkCount
 // is called for the targeted file ID.
 var errLinkCountInjected = errors.New("injected GetLinkCount failure")
 
 // faultyStore wraps a MetadataStore and, inside WithTransaction, injects
-// targeted failures into tx.PutFile, tx.GetLinkCount and tx.GetChild — each
+// targeted failures into tx.UpdateAttrs, tx.GetLinkCount and tx.GetChild — each
 // keyed by its own field, so a test arms only the one it needs. Everything
 // else delegates to the real store, so the operation under test runs normally
 // up to the injected failure. The faults key on the inode ID rather than
@@ -127,7 +127,7 @@ var errLinkCountInjected = errors.New("injected GetLinkCount failure")
 // discriminator at call time.
 type faultyStore struct {
 	metadata.Store
-	failID uuid.UUID // file ID whose PutFile should fail
+	failID uuid.UUID // file ID whose UpdateAttrs should fail
 	// failLinkCountID is the file ID whose in-transaction GetLinkCount fails.
 	failLinkCountID uuid.UUID
 	// getChild, when set, intercepts in-transaction GetChild lookups by name.
@@ -156,11 +156,11 @@ type faultyTx struct {
 	getChild        func(name string) (metadata.FileHandle, error, bool)
 }
 
-func (t *faultyTx) PutFile(ctx context.Context, file *metadata.File) error {
+func (t *faultyTx) UpdateAttrs(ctx context.Context, file *metadata.File) error {
 	if file.ID == t.failID {
 		return errPutFileInjected
 	}
-	return t.Transaction.PutFile(ctx, file)
+	return t.Transaction.UpdateAttrs(ctx, file)
 }
 
 func (t *faultyTx) GetLinkCount(ctx context.Context, handle metadata.FileHandle) (uint32, error) {
@@ -210,7 +210,7 @@ func newFaultyFixture(t *testing.T) *faultyFixture {
 }
 
 // TestMove_RollsBackOnPutFileFailure asserts the rename is atomic: when the
-// PutFile(srcFile) ctime write fails mid-transaction, the whole Move rolls
+// UpdateAttrs(srcFile) ctime write fails mid-transaction, the whole Move rolls
 // back — the source stays at its original name and the destination name is not
 // created. Previously Move discarded these errors with `_ =` and committed a
 // partial rename (entry relinked but the inode write lost).
@@ -231,14 +231,14 @@ func TestMove_RollsBackOnPutFileFailure(t *testing.T) {
 	_, srcID, err := metadata.DecodeFileHandle(srcHandle)
 	require.NoError(t, err)
 
-	// Arm the fault on the moved inode's ctime PutFile. It is keyed on the
+	// Arm the fault on the moved inode's ctime UpdateAttrs. It is keyed on the
 	// inode ID (stable across the rename) rather than File.Path, which Move no
 	// longer mutates/persists (#1166).
 	fx.faulty.failID = srcID
 
 	// The move must fail with the injected error.
 	_, err = fx.svc.Move(fx.ctx, fx.root, "myfile.txt", destHandle, "moved.txt")
-	require.ErrorIs(t, err, errPutFileInjected, "Move must surface the injected PutFile failure, not swallow it")
+	require.ErrorIs(t, err, errPutFileInjected, "Move must surface the injected UpdateAttrs failure, not swallow it")
 
 	// Full rollback: source still at its original name/path...
 	stillThere, err := fx.store.GetChild(ctx, fx.root, "myfile.txt")

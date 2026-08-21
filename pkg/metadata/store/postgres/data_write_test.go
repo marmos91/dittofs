@@ -50,7 +50,7 @@ func uniqueShare(prefix string) string {
 
 // TestApplyDataWrite_Sound_Postgres is the Postgres twin of the sqlite
 // soundness test: it drives the DataWriteApplier fast path through a real
-// transaction and asserts the row ends in the state the GetFile+PutFile
+// transaction and asserts the row ends in the state the GetFile+UpdateAttrs
 // fallback would have produced.
 func TestApplyDataWrite_Sound_Postgres(t *testing.T) {
 	if os.Getenv("DITTOFS_TEST_POSTGRES_DSN") == "" {
@@ -93,7 +93,7 @@ func TestApplyDataWrite_Sound_Postgres(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.PutFile(ctx, &metadata.File{ShareName: share, Path: fp, ID: id,
+		if err := store.UpdateAttrs(ctx, &metadata.File{ShareName: share, Path: fp, ID: id,
 			FileAttr: metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: mode, UID: 1000, GID: 1000, Size: size}}); err != nil {
 			t.Fatal(err)
 		}

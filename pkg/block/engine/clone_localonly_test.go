@@ -99,8 +99,8 @@ func TestCloneWholeFile_LocalOnly_MaterializesContent(t *testing.T) {
 		t.Fatalf("GetFile src: %v", err)
 	}
 	srcFile.Size = size
-	if err := ms.PutFile(ctx, srcFile); err != nil {
-		t.Fatalf("PutFile src size: %v", err)
+	if err := ms.UpdateAttrs(ctx, srcFile); err != nil {
+		t.Fatalf("UpdateAttrs src size: %v", err)
 	}
 
 	// CLONE over a local-only share.

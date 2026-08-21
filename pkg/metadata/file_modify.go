@@ -320,6 +320,9 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 
 	now := time.Now()
 	modified := false
+	// Set when a size-down truncate prunes the block list, so the commit
+	// below rewrites the stored manifest instead of only the attrs.
+	blocksPruned := false
 
 	// Apply requested changes
 	if attrs.Mode != nil {
@@ -442,9 +445,9 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// without inline decrements.
 		if *attrs.Size < file.Size && len(file.Blocks) > 0 {
 			file.Blocks = block.PruneChunkRefsToSize(file.Blocks, *attrs.Size)
-			// The manifest actually changed (tail pruned) — the SQL backends
-			// must persist the shortened file_block_refs list.
-			file.BlocksDirty = true
+			// The manifest actually changed (tail pruned), so the write below
+			// must persist the shortened block list, not just the attrs.
+			blocksPruned = true
 			// Keep ObjectID (the Merkle root over Blocks) consistent with the
 			// trimmed list, or zero it when no blocks remain so the file reads
 			// as "never quiesced" instead of carrying a stale dedup pointer.
@@ -543,7 +546,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// EOF returns stale-tail / silent-truncation bytes (#588). Persist it
 		// through a fully-durable transaction so relaxed-durability mode still
 		// fsyncs it. Pure-attribute changes (mode/owner/times/xattr/ACL) are not
-		// data-paired, so they take the relaxed path — note store.PutFile would
+		// data-paired, so they take the relaxed path — note store.UpdateAttrs would
 		// force an inline fsync (it wraps the durable WithTransaction), so it is
 		// deliberately bypassed here in favor of withRelaxedTransaction to
 		// actually defer the write (#1573 Wall 1).
@@ -556,7 +559,10 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			mu := s.pendingWrites.GetFlushLock(handle)
 			mu.Lock()
 			err := store.WithTransaction(ctx.Context, func(tx Transaction) error {
-				return tx.PutFile(ctx.Context, file)
+				if blocksPruned {
+					return tx.SetManifest(ctx.Context, file)
+				}
+				return tx.UpdateAttrs(ctx.Context, file)
 			})
 			if err == nil {
 				// Discard, don't flush: a buffered MaxSize would resurrect the
@@ -569,7 +575,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 			}
 		} else {
 			if err := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
-				return tx.PutFile(ctx.Context, file)
+				return tx.UpdateAttrs(ctx.Context, file)
 			}); err != nil {
 				return nil, err
 			}
@@ -878,7 +884,7 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 				}
 				// Update ctime on the file being unlinked (affects remaining hard links)
 				dstFile.Ctime = now
-				if err := tx.PutFile(ctx.Context, dstFile); err != nil {
+				if err := tx.UpdateAttrs(ctx.Context, dstFile); err != nil {
 					return err
 				}
 			}
@@ -940,10 +946,10 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		// parent_child_map / parent edges (#1166), so a rename just moves the
 		// edge and the new path is reconstructed fresh on the next GetFile.
 		// This is what makes hard links correct: renaming one name can never
-		// stale another name's path. PutFile is tx-critical: a failed ctime
+		// stale another name's path. UpdateAttrs is tx-critical: a failed ctime
 		// write must roll the whole rename back.
 		srcFile.Ctime = now
-		if err := tx.PutFile(ctx.Context, srcFile); err != nil {
+		if err := tx.UpdateAttrs(ctx.Context, srcFile); err != nil {
 			return err
 		}
 
@@ -1008,5 +1014,5 @@ func (s *Service) MarkFileAsOrphaned(ctx *AuthContext, handle FileHandle) error 
 	now := time.Now()
 	file.Nlink = 0
 	file.Ctime = now
-	return store.PutFile(ctx.Context, file)
+	return store.UpdateAttrs(ctx.Context, file)
 }

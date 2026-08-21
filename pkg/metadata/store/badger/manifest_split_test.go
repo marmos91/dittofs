@@ -37,7 +37,7 @@ func readManifest(t *testing.T, s *BadgerMetadataStore, id uuid.UUID) (version u
 }
 
 // mkChunkedFile creates a regular file carrying nChunks 1 MiB blocks and returns
-// its handle. The manifest is marked dirty so PutFile persists it to fm:.
+// its handle. The manifest is marked dirty so UpdateAttrs persists it to fm:.
 func mkChunkedFile(t *testing.T, store *BadgerMetadataStore, share string, dir metadata.FileHandle, name, path string, nChunks int) metadata.FileHandle {
 	t.Helper()
 	ctx := context.Background()
@@ -58,14 +58,13 @@ func mkChunkedFile(t *testing.T, store *BadgerMetadataStore, share string, dir m
 		Path:      path,
 		FileAttr: metadata.FileAttr{
 			Type: metadata.FileTypeRegular, Mode: 0o600, UID: 1000, GID: 1000,
-			Size:        uint64(nChunks) << 20,
-			PayloadID:   metadata.PayloadID(path),
-			Blocks:      blocks,
-			BlocksDirty: true,
+			Size:      uint64(nChunks) << 20,
+			PayloadID: metadata.PayloadID(path),
+			Blocks:    blocks,
 		},
 	}
 	file.ID = id
-	require.NoError(t, store.PutFile(ctx, file))
+	require.NoError(t, store.SetManifest(ctx, file))
 	require.NoError(t, store.SetParent(ctx, handle, dir))
 	require.NoError(t, store.SetChild(ctx, dir, name, handle))
 	return handle
@@ -95,9 +94,9 @@ func TestManifestSplit_AttrOnlyWriteLeavesManifestUntouched(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, blocks0, got.Blocks, "manifest must round-trip through the split")
 
-	// chmod: attr-only mutation, BlocksDirty stays false.
+	// chmod: attr-only mutation, so it goes through UpdateAttrs.
 	got.Mode = 0o644
-	require.NoError(t, store.PutFile(ctx, got))
+	require.NoError(t, store.UpdateAttrs(ctx, got))
 
 	v1, blocks1, ok := readManifest(t, store, id)
 	require.True(t, ok)
@@ -108,7 +107,7 @@ func TestManifestSplit_AttrOnlyWriteLeavesManifestUntouched(t *testing.T) {
 	got2, err := store.GetFile(ctx, handle)
 	require.NoError(t, err)
 	got2.Mtime = got2.Mtime.Add(1)
-	require.NoError(t, store.PutFile(ctx, got2))
+	require.NoError(t, store.UpdateAttrs(ctx, got2))
 
 	v2, _, ok := readManifest(t, store, id)
 	require.True(t, ok)
@@ -134,7 +133,7 @@ func TestManifestSplit_GetByPayloadIDReturnsManifest(t *testing.T) {
 }
 
 // TestManifestSplit_CarveWritesManifest confirms the gate still persists a
-// genuinely changed manifest (a re-carve marks BlocksDirty).
+// genuinely changed manifest (a re-carve calls SetManifest).
 func TestManifestSplit_CarveWritesManifest(t *testing.T) {
 	ctx := context.Background()
 	store, err := NewBadgerMetadataStoreWithDefaults(ctx, t.TempDir())
@@ -155,8 +154,7 @@ func TestManifestSplit_CarveWritesManifest(t *testing.T) {
 	h[0] = 0xEE
 	got.Blocks = append(got.Blocks, block.ChunkRef{Hash: h, Offset: 8 << 20, Size: 1 << 20})
 	got.Size = 9 << 20
-	got.BlocksDirty = true
-	require.NoError(t, store.PutFile(ctx, got))
+	require.NoError(t, store.SetManifest(ctx, got))
 
 	v1, blocks1, ok := readManifest(t, store, id)
 	require.True(t, ok)
@@ -186,8 +184,7 @@ func TestManifestSplit_TruncatePrunes(t *testing.T) {
 	require.NoError(t, err)
 	got.Blocks = block.PruneChunkRefsToSize(got.Blocks, 4<<20)
 	got.Size = 4 << 20
-	got.BlocksDirty = true
-	require.NoError(t, store.PutFile(ctx, got))
+	require.NoError(t, store.SetManifest(ctx, got))
 
 	_, blocks, ok := readManifest(t, store, id)
 	require.True(t, ok)
@@ -198,8 +195,7 @@ func TestManifestSplit_TruncatePrunes(t *testing.T) {
 	require.NoError(t, err)
 	got.Blocks = block.PruneChunkRefsToSize(got.Blocks, 0)
 	got.Size = 0
-	got.BlocksDirty = true
-	require.NoError(t, store.PutFile(ctx, got))
+	require.NoError(t, store.SetManifest(ctx, got))
 
 	_, _, ok = readManifest(t, store, id)
 	require.False(t, ok, "truncate-to-zero must delete the fm: key")

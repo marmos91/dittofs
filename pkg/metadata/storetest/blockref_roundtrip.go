@@ -32,7 +32,7 @@ type FileChunkRefsAccessor interface {
 // automatically runs them against Memory, Badger, and Postgres.
 //
 // Every metadata backend MUST round-trip FileAttr.Blocks across
-// PutFile/GetFile (including replace and nil semantics). Postgres
+// UpdateAttrs/GetFile (including replace and nil semantics). Postgres
 // additionally exercises the FK ON DELETE CASCADE behavior.
 func runChunkRefOpsTests(t *testing.T, factory StoreFactory) {
 	t.Helper()
@@ -59,7 +59,7 @@ func runChunkRefOpsTests(t *testing.T, factory StoreFactory) {
 }
 
 // testChunkRef_MultiPassMerge guards the store-layer contract that a file's
-// complete block list survives successive PutFile calls — both an append
+// complete block list survives successive UpdateAttrs calls — both an append
 // (A then A+B) and an in-place overlay of an existing offset (A'). GetFile
 // and WriteSnapshot must return the full, correct set after each pass; no earlier
 // offset may be dropped.
@@ -68,7 +68,7 @@ func runChunkRefOpsTests(t *testing.T, factory StoreFactory) {
 // across several passes. A regression that persisted only the latest pass's
 // refs (REPLACE-by-partial-list) instead of the complete merged list would
 // silently drop earlier offsets — exactly the data-loss class this asserts
-// against. The contract is: whatever complete list the caller hands PutFile,
+// against. The contract is: whatever complete list the caller hands UpdateAttrs,
 // GetFile/WriteSnapshot return it intact and ordered by offset.
 func testChunkRef_MultiPassMerge(t *testing.T, factory StoreFactory) {
 	store := factory(t)
@@ -124,9 +124,8 @@ func putBlocks(t *testing.T, store metadata.Store, fileHandle metadata.FileHandl
 		t.Fatalf("GetFile (pre-put): %v", err)
 	}
 	file.Blocks = blocks
-	file.BlocksDirty = true
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile (%d blocks): %v", len(blocks), err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs (%d blocks): %v", len(blocks), err)
 	}
 }
 
@@ -183,7 +182,7 @@ func assertSnapshotContains(t *testing.T, store metadata.Store, want []block.Chu
 }
 
 // testChunkRef_RoundTripBasic asserts that a file with three sorted-by-offset
-// ChunkRefs survives a PutFile/GetFile round-trip with deep equality on every
+// ChunkRefs survives a UpdateAttrs/GetFile round-trip with deep equality on every
 // field of every ChunkRef. Catches encoding drift between backends.
 func testChunkRef_RoundTripBasic(t *testing.T, factory StoreFactory) {
 	store := factory(t)
@@ -203,9 +202,8 @@ func testChunkRef_RoundTripBasic(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile (pre-put): %v", err)
 	}
 	file.Blocks = blocks
-	file.BlocksDirty = true
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile: %v", err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs: %v", err)
 	}
 
 	got, err := store.GetFile(ctx, fileHandle)
@@ -250,12 +248,11 @@ func testChunkRef_NilBlocks(t *testing.T, factory StoreFactory) {
 		t.Errorf("Blocks len: got %d, want 0 (nil-Blocks file)", len(got.Blocks))
 	}
 
-	// Now explicitly set Blocks to nil and PutFile; round-trip should
+	// Now explicitly set Blocks to nil and UpdateAttrs; round-trip should
 	// remain empty.
 	got.Blocks = nil
-	got.BlocksDirty = true // drop to nil must run the manifest DELETE
-	if err := store.PutFile(ctx, got); err != nil {
-		t.Fatalf("PutFile (nil Blocks): %v", err)
+	if err := store.SetManifest(ctx, got); err != nil {
+		t.Fatalf("UpdateAttrs (nil Blocks): %v", err)
 	}
 
 	got2, err := store.GetFile(ctx, fileHandle)
@@ -263,12 +260,12 @@ func testChunkRef_NilBlocks(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile (post-nil-put): %v", err)
 	}
 	if len(got2.Blocks) != 0 {
-		t.Errorf("Blocks len after nil PutFile: got %d, want 0", len(got2.Blocks))
+		t.Errorf("Blocks len after nil UpdateAttrs: got %d, want 0", len(got2.Blocks))
 	}
 }
 
-// testChunkRef_ReplaceBlocks asserts that PutFile fully replaces the
-// previous ChunkRefs list — no leftover rows from prior PutFile calls.
+// testChunkRef_ReplaceBlocks asserts that UpdateAttrs fully replaces the
+// previous ChunkRefs list — no leftover rows from prior UpdateAttrs calls.
 // The Postgres backend implements this via DELETE+INSERT in the same tx;
 // Memory and Badger replace the slice trivially (single-blob encoding).
 func testChunkRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
@@ -278,7 +275,7 @@ func testChunkRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 	rootHandle := createTestShare(t, store, "blockref-replace")
 	fileHandle := createTestFile(t, store, "blockref-replace", rootHandle, "replace.bin", 0o644)
 
-	// Initial PutFile with 5 blocks.
+	// Initial UpdateAttrs with 5 blocks.
 	five := []block.ChunkRef{
 		{Hash: hashOfSeed("rep-0"), Offset: 0, Size: 1 << 20},
 		{Hash: hashOfSeed("rep-1"), Offset: 1 << 20, Size: 1 << 20},
@@ -291,9 +288,8 @@ func testChunkRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile (pre 5): %v", err)
 	}
 	file.Blocks = five
-	file.BlocksDirty = true
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile (5 blocks): %v", err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs (5 blocks): %v", err)
 	}
 
 	got5, err := store.GetFile(ctx, fileHandle)
@@ -305,16 +301,15 @@ func testChunkRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 	}
 
 	// Replace with 2 different blocks at different offsets. After the
-	// second PutFile the GetFile must return exactly the new 2 — no
+	// second UpdateAttrs the GetFile must return exactly the new 2 — no
 	// leftover rows from the prior list.
 	two := []block.ChunkRef{
 		{Hash: hashOfSeed("rep-X"), Offset: 0, Size: 2 << 20},
 		{Hash: hashOfSeed("rep-Y"), Offset: 2 << 20, Size: 2 << 20},
 	}
 	got5.Blocks = two
-	got5.BlocksDirty = true
-	if err := store.PutFile(ctx, got5); err != nil {
-		t.Fatalf("PutFile (2 blocks replace): %v", err)
+	if err := store.SetManifest(ctx, got5); err != nil {
+		t.Fatalf("UpdateAttrs (2 blocks replace): %v", err)
 	}
 
 	got2, err := store.GetFile(ctx, fileHandle)
@@ -360,9 +355,8 @@ func testChunkRef_CascadeDeleteOnFileDelete(t *testing.T, factory StoreFactory) 
 		t.Fatalf("GetFile: %v", err)
 	}
 	file.Blocks = blocks
-	file.BlocksDirty = true
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile: %v", err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs: %v", err)
 	}
 
 	// Capture the underlying file ID from the handle for direct row counting.

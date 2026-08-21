@@ -102,8 +102,8 @@ func seedAuditTestStore(t *testing.T) (store *metadatamemory.MemoryMetadataStore
 				Blocks:    refs,
 			},
 		}
-		if err := store.PutFile(ctx, file); err != nil {
-			t.Fatalf("PutFile: %v", err)
+		if err := store.UpdateAttrs(ctx, file); err != nil {
+			t.Fatalf("UpdateAttrs: %v", err)
 		}
 		if err := store.SetParent(ctx, handle, rootHandle); err != nil {
 			t.Fatalf("SetParent: %v", err)

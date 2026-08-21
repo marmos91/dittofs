@@ -130,8 +130,8 @@ func testListDirectoryHydratesACL(t *testing.T, factory StoreFactory) {
 			},
 		},
 	}
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile with ACL: %v", err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs with ACL: %v", err)
 	}
 
 	entries, _, err := store.ListChildren(ctx, rootHandle, "", 100)
@@ -342,8 +342,8 @@ func testLinkCountAgreesWithGetFile(t *testing.T, factory StoreFactory) {
 				},
 			}
 			entry.ID = id
-			if err := store.PutFile(ctx, entry); err != nil {
-				t.Fatalf("PutFile() failed: %v", err)
+			if err := store.UpdateAttrs(ctx, entry); err != nil {
+				t.Fatalf("UpdateAttrs() failed: %v", err)
 			}
 			// Both namespace edges, so the only thing left unset is the link
 			// count. Backends that derive File.Path from parent edges otherwise

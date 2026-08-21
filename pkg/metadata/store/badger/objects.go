@@ -935,7 +935,7 @@ var _ blockpkg.FileChunkStore = (*badgerTransaction)(nil)
 // *badger.Txn so a rollback (returning an error from WithTransaction's fn)
 // discards the RefCount mutation. Calling tx.store.X(...) instead would open
 // its own db.Update and defeat rollback for any caller that bumps RefCount
-// inside WithTransaction and then hits a downstream PutFile failure.
+// inside WithTransaction and then hits a downstream UpdateAttrs failure.
 
 func (tx *badgerTransaction) GetFileChunk(ctx context.Context, id string) (*metadata.FileChunk, error) {
 	if err := ctx.Err(); err != nil {

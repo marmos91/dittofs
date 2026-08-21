@@ -19,8 +19,8 @@ import (
 //   - Inside the txn, engine.CopyPayload invokes
 //     coordinator.IncrementRefCount for each unique src hash; the
 //     coordinator's RefCount UPDATEs share the same txn, so they
-//     commit/roll back atomically with PutFile(dst).
-//   - On any error (Increment failure, PutFile failure, ctx cancel), the
+//     commit/roll back atomically with UpdateAttrs(dst).
+//   - On any error (Increment failure, UpdateAttrs failure, ctx cancel), the
 //     txn rolls back ALL writes — no partial dstFileAttr, no partial
 //     RefCount bumps committed.
 //   - cache.InvalidateFile runs ONLY on success, AFTER the commit.
@@ -36,7 +36,7 @@ import (
 // its RefCount UPDATEs to whatever txn is currently active for the
 // caller's context — see pkg/block/engine/coordinator.go for the
 // contract. The metadata.Transaction passed to fn here is the canonical
-// place where dst's PutFile lands; engine increments piggyback on the
+// place where dst's UpdateAttrs lands; engine increments piggyback on the
 // same txn through the coordinator's per-impl mechanism.
 func CopyPayload(
 	ctx context.Context,
@@ -67,7 +67,7 @@ func CopyPayload(
 		// metadataCoordinator's IncrementRefCount / DecrementRefCount
 		// calls route through it instead of the connection pool. Without
 		// this, every successful Increment commits on its own connection
-		// and survives a downstream PutFile rollback — silent leak.
+		// and survives a downstream UpdateAttrs rollback — silent leak.
 		// See pkg/metadata/tx_context.go for the carrier API.
 		txCtx := metadata.WithTx(ctx, tx)
 
@@ -85,11 +85,10 @@ func CopyPayload(
 		}
 		dstFile.Blocks = newBlocks
 		// Wholesale manifest replacement on the destination — persist refs.
-		dstFile.BlocksDirty = true
 		dstFile.Size = srcFile.Size
 		dstFile.Mtime = time.Now()
 		dstFile.Ctime = dstFile.Mtime // content change is also a metadata change
-		if err := tx.PutFile(ctx, dstFile); err != nil {
+		if err := tx.SetManifest(ctx, dstFile); err != nil {
 			return fmt.Errorf("persist dst file attr: %w", err)
 		}
 		return nil

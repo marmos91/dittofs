@@ -207,7 +207,7 @@ func (fx *ioTestFixture) createDirectory(t *testing.T, parentHandle metadata.Fil
 	}
 
 	ctx := context.Background()
-	if err := fx.store.PutFile(ctx, file); err != nil {
+	if err := fx.store.UpdateAttrs(ctx, file); err != nil {
 		t.Fatalf("put dir: %v", err)
 	}
 	if err := fx.store.SetChild(ctx, parentHandle, name, fileHandle); err != nil {

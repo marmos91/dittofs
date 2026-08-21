@@ -26,6 +26,9 @@ type manifestTx struct {
 	rows    map[string]*block.FileChunk
 	file    *File
 	records map[string]struct{}
+	// wroteManifest records whether the last file write went through
+	// SetManifest (manifest rewritten) or UpdateAttrs (attrs only).
+	wroteManifest bool
 }
 
 func newManifestTx(payloadID string) *manifestTx {
@@ -78,8 +81,15 @@ func (t *manifestTx) GetFileByPayloadID(_ context.Context, pid PayloadID) (*File
 	return copyFileRow(t.file), nil
 }
 
-func (t *manifestTx) PutFile(_ context.Context, f *File) error {
+func (t *manifestTx) UpdateAttrs(_ context.Context, f *File) error {
 	t.file = copyFileRow(f)
+	t.wroteManifest = false
+	return nil
+}
+
+func (t *manifestTx) SetManifest(_ context.Context, f *File) error {
+	t.file = copyFileRow(f)
+	t.wroteManifest = true
 	return nil
 }
 
@@ -180,7 +190,7 @@ func TestCommitBlockProjectionMatchesFullReprojection(t *testing.T) {
 
 		want := tx.fullProjection(t, payloadID)
 		require.Equal(t, want, tx.file.Blocks, "projection after batch %d", batchNo)
-		require.True(t, tx.file.BlocksDirty, "batch %d must mark the block list dirty", batchNo)
+		require.True(t, tx.wroteManifest, "batch %d must persist the block list via SetManifest", batchNo)
 
 		// Re-committing the same block object is a no-op, projection included.
 		require.NoError(t, DefaultCommitBlock(ctx, tx, rec, nil, rows))

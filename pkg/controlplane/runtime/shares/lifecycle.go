@@ -189,7 +189,7 @@ func (s *Service) durableExtent(shareName string, payloadID metadata.PayloadID) 
 //
 // bs.Local.ListFiles/FileSize are served from the journal's in-memory index
 // (populated by recover() at open), so the common no-mismatch case is cheap: a
-// point read of metadata per file, and a strict PutFile only on an actual gap.
+// point read of metadata per file, and a strict UpdateAttrs only on an actual gap.
 func reconcileMetadataSizeFromJournal(ctx context.Context, metadataStore metadata.Store, bs *engine.Store) error {
 	if bs == nil {
 		return nil
@@ -232,7 +232,7 @@ func reconcileMetadataSizeFromJournal(ctx context.Context, metadataStore metadat
 				return nil // another writer already caught up; never shrink
 			}
 			cur.Size = uint64(journalSize)
-			return tx.PutFile(ctx, cur)
+			return tx.UpdateAttrs(ctx, cur)
 		}); err != nil {
 			return fmt.Errorf("reconcile size for payload %s: %w", id, err)
 		}

@@ -48,7 +48,7 @@ func TestReapStrandedRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeFileHandle: %v", err)
 	}
-	if err := store.PutFile(ctx, &metadata.File{
+	if err := store.UpdateAttrs(ctx, &metadata.File{
 		ID:        id,
 		ShareName: "share",
 		Path:      "/live.bin",
@@ -58,7 +58,7 @@ func TestReapStrandedRows(t *testing.T) {
 			PayloadID: metadata.PayloadID(livePID),
 		},
 	}); err != nil {
-		t.Fatalf("PutFile: %v", err)
+		t.Fatalf("UpdateAttrs: %v", err)
 	}
 
 	seedReconcileFB(t, ctx, store, livePID, 2, old)        // live, must survive

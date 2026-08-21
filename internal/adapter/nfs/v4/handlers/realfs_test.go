@@ -80,7 +80,7 @@ func newRealFSTestFixture(t *testing.T, shareName string) *realFSTestFixture {
 			Ctime: time.Now(),
 		},
 	}
-	if err := store.PutFile(context.Background(), rootFile); err != nil {
+	if err := store.UpdateAttrs(context.Background(), rootFile); err != nil {
 		t.Fatalf("put root file: %v", err)
 	}
 	if err := store.SetLinkCount(context.Background(), rootHandle, 2); err != nil {
@@ -137,7 +137,7 @@ func (f *realFSTestFixture) createTestFile(t *testing.T, parentHandle metadata.F
 	}
 
 	ctx := context.Background()
-	if err := f.store.PutFile(ctx, file); err != nil {
+	if err := f.store.UpdateAttrs(ctx, file); err != nil {
 		t.Fatalf("put file: %v", err)
 	}
 	if err := f.store.SetChild(ctx, parentHandle, name, fileHandle); err != nil {

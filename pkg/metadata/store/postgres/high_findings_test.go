@@ -52,8 +52,8 @@ func putSizedFile(t *testing.T, store metadata.Store, shareName, rootName string
 			Size: size,
 		},
 	}
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile: %v", err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs: %v", err)
 	}
 	if err := store.SetParent(ctx, handle, rootHandle); err != nil {
 		t.Fatalf("SetParent: %v", err)
@@ -67,7 +67,7 @@ func putSizedFile(t *testing.T, store metadata.Store, shareName, rootName string
 	return handle
 }
 
-// setFileSize updates the size of an existing file (GetFile -> mutate -> PutFile).
+// setFileSize updates the size of an existing file (GetFile -> mutate -> UpdateAttrs).
 func setFileSize(t *testing.T, store metadata.Store, handle metadata.FileHandle, size uint64) {
 	t.Helper()
 	ctx := t.Context()
@@ -76,8 +76,8 @@ func setFileSize(t *testing.T, store metadata.Store, handle metadata.FileHandle,
 		t.Fatalf("GetFile: %v", err)
 	}
 	f.FileAttr.Size = size
-	if err := store.PutFile(ctx, f); err != nil {
-		t.Fatalf("PutFile (resize): %v", err)
+	if err := store.UpdateAttrs(ctx, f); err != nil {
+		t.Fatalf("UpdateAttrs (resize): %v", err)
 	}
 }
 
@@ -229,7 +229,7 @@ func TestPostgres_WithTransaction_RetriesOnSerializationFailure(t *testing.T) {
 			}
 			close(ready) // let the racing tx proceed
 			f.FileAttr.Size = 1000
-			return tx.PutFile(ctx, f)
+			return tx.UpdateAttrs(ctx, f)
 		})
 	}()
 
@@ -240,7 +240,7 @@ func TestPostgres_WithTransaction_RetriesOnSerializationFailure(t *testing.T) {
 			return err
 		}
 		f.FileAttr.Size = 2000
-		return tx.PutFile(ctx, f)
+		return tx.UpdateAttrs(ctx, f)
 	}); err != nil {
 		t.Fatalf("racing tx failed (retry not transparent?): %v", err)
 	}

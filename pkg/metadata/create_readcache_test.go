@@ -18,7 +18,7 @@ import (
 // still hits the real badger txn and joins Badger's SSI conflict read-set. So N
 // concurrent creates of the SAME (parent,name) must resolve to exactly ONE
 // winner, the rest AlreadyExists, and — critically — NO orphaned inode (a
-// double-create would PutFile a second inode whose dirent lost, inflating the
+// double-create would UpdateAttrs a second inode whose dirent lost, inflating the
 // file count).
 //
 // If the dirent cache ever served the in-txn recheck, both racers would see

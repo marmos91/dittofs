@@ -13,7 +13,7 @@ import (
 
 // ApplyDataWrite implements metadata.DataWriteApplier: the hot-path metadata
 // update for a data WRITE, done as a single statement instead of GetFile
-// (aggregate block-refs read) + PutFile (20-column rewrite). Postgres RETURNING
+// (aggregate block-refs read) + UpdateAttrs (20-column rewrite). Postgres RETURNING
 // can reference the pre-update CTE, so the read of the old size/owner and the
 // in-place update collapse into one round-trip.
 //
@@ -21,7 +21,7 @@ import (
 // shrinks the file — mtime/ctime are stamped to now, and setuid/setgid clear
 // when clearSUID is set. Only regular files are affected. The usedBytes and
 // per-identity quota deltas are accumulated on the tx and applied once after a
-// successful commit, exactly like PutFile.
+// successful commit, exactly like UpdateAttrs.
 func (tx *postgresTransaction) ApplyDataWrite(
 	ctx context.Context, handle metadata.FileHandle, newSize uint64, now time.Time, clearSUID bool,
 ) (uint64, error) {

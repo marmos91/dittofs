@@ -381,7 +381,7 @@ func TestTruncate_EmptyBlocksLegacyPath(t *testing.T) {
 
 // TestWriteAt_ReturnsCurrentBlocks asserts the contract: until
 // wires the FastCDC re-chunking, WriteAt returns
-// currentBlocks unchanged so the caller's PutFile sees a stable list.
+// currentBlocks unchanged so the caller's SetManifest sees a stable list.
 func TestWriteAt_ReturnsCurrentBlocks(t *testing.T) {
 	bs := newTestEngine(t, 0, 0)
 	ctx := context.Background()

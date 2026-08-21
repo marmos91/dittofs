@@ -83,8 +83,8 @@ func TestReconcileINV02_DuplicateHashRowsVisible(t *testing.T) {
 			PayloadID: metadata.PayloadID(payloadID),
 		},
 	}
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile: %v", err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs: %v", err)
 	}
 	if err := store.SetParent(ctx, handle, rootHandle); err != nil {
 		t.Fatalf("SetParent: %v", err)

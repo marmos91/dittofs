@@ -366,7 +366,19 @@ func (tx *badgerTransaction) childNameByScan(parentID, child uuid.UUID) string {
 	return tx.anyOtherChildName(parentID, child, "")
 }
 
-func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) error {
+// UpdateAttrs persists the file's attributes and leaves the stored fm:<uuid>
+// manifest untouched.
+func (tx *badgerTransaction) UpdateAttrs(ctx context.Context, file *metadata.File) error {
+	return tx.putFile(ctx, file, false)
+}
+
+// SetManifest persists the file's attributes and rewrites the stored
+// fm:<uuid> manifest from file.Blocks.
+func (tx *badgerTransaction) SetManifest(ctx context.Context, file *metadata.File) error {
+	return tx.putFile(ctx, file, true)
+}
+
+func (tx *badgerTransaction) putFile(ctx context.Context, file *metadata.File, writeManifest bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -423,14 +435,13 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	}
 	tx.dirtyFiles = append(tx.dirtyFiles, file.ID.String())
 
-	// Persist the chunk manifest to fm:<uuid> only when it changed. BlocksDirty
-	// is set by the sites that mutate the manifest (carve/truncate/punch); an
-	// attr-only write leaves it false and skips the rewrite — the write-
-	// amplification fix. When the flag is unset but the file carries blocks with
-	// no manifest key yet, the manifest is still written: this covers a fresh
-	// create and migrates a legacy f: blob off its embedded manifest (the new f:
-	// encoding no longer carries it) without rewriting an already-materialized one.
-	writeManifest := file.BlocksDirty
+	// Persist the chunk manifest to fm:<uuid> only when it changed: the sites
+	// that mutate it (carve/truncate/punch) come through SetManifest, while an
+	// attr-only UpdateAttrs skips the rewrite. When the caller asked for an
+	// attr-only write but the file carries blocks with no manifest key yet, the
+	// manifest is still written: this covers a fresh create and migrates a
+	// legacy f: blob off its embedded manifest (the new f: encoding no longer
+	// carries it) without rewriting an already-materialized one.
 	if !writeManifest && len(file.Blocks) > 0 {
 		if _, err := tx.txn.Get(keyFileManifest(file.ID)); goerrors.Is(err, badgerdb.ErrKeyNotFound) {
 			writeManifest = true
@@ -450,7 +461,7 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	// Step 1: drop stale secondary entry if the ObjectID changed.
 	if !oldObjectID.IsZero() && oldObjectID != file.ObjectID {
 		if err := tx.txn.Delete(keyObjectID(oldObjectID)); err != nil && !goerrors.Is(err, badgerdb.ErrKeyNotFound) {
-			return fmt.Errorf("badger PutFile: delete stale obj index: %w", err)
+			return fmt.Errorf("badger UpdateAttrs: delete stale obj index: %w", err)
 		}
 	}
 
@@ -463,20 +474,20 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 				var existingID uuid.UUID
 				if uerr := existingID.UnmarshalBinary(raw); uerr == nil && existingID != file.ID {
 					return mderrors.NewConflictError(
-						"badger PutFile",
+						"badger UpdateAttrs",
 						fmt.Sprintf("object_id already mapped to file %s", existingID),
 					)
 				}
 			}
 		} else if !goerrors.Is(gerr, badgerdb.ErrKeyNotFound) {
-			return fmt.Errorf("badger PutFile: probe obj index: %w", gerr)
+			return fmt.Errorf("badger UpdateAttrs: probe obj index: %w", gerr)
 		}
 		idBin, merr := file.ID.MarshalBinary()
 		if merr != nil {
-			return fmt.Errorf("badger PutFile: marshal file ID: %w", merr)
+			return fmt.Errorf("badger UpdateAttrs: marshal file ID: %w", merr)
 		}
 		if err := tx.txn.Set(keyObjectID(file.ObjectID), idBin); err != nil {
-			return fmt.Errorf("badger PutFile: set obj index: %w", err)
+			return fmt.Errorf("badger UpdateAttrs: set obj index: %w", err)
 		}
 	}
 
@@ -486,16 +497,16 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	// changed, then point the (possibly new) PayloadID at this file.
 	if oldPayloadID != "" && oldPayloadID != file.PayloadID {
 		if err := tx.txn.Delete(keyPayloadID(oldPayloadID)); err != nil && !goerrors.Is(err, badgerdb.ErrKeyNotFound) {
-			return fmt.Errorf("badger PutFile: delete stale payload index: %w", err)
+			return fmt.Errorf("badger UpdateAttrs: delete stale payload index: %w", err)
 		}
 	}
 	if file.PayloadID != "" {
 		idBin, merr := file.ID.MarshalBinary()
 		if merr != nil {
-			return fmt.Errorf("badger PutFile: marshal file ID: %w", merr)
+			return fmt.Errorf("badger UpdateAttrs: marshal file ID: %w", merr)
 		}
 		if err := tx.txn.Set(keyPayloadID(file.PayloadID), idBin); err != nil {
-			return fmt.Errorf("badger PutFile: set payload index: %w", err)
+			return fmt.Errorf("badger UpdateAttrs: set payload index: %w", err)
 		}
 	}
 

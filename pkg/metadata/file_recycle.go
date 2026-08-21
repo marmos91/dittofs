@@ -175,7 +175,7 @@ func (s *Service) stampRecycled(ctx *AuthContext, handle FileHandle, deletedAt t
 	file.DeletedAt = &at
 	file.OriginalPath = origRel
 	file.DeletedBy = deletedBy
-	return store.PutFile(ctx.Context, file)
+	return store.UpdateAttrs(ctx.Context, file)
 }
 
 // clearRecycleStamp reverts the three trash fields on a node, used to roll back
@@ -192,7 +192,7 @@ func (s *Service) clearRecycleStamp(ctx *AuthContext, handle FileHandle) error {
 	file.DeletedAt = nil
 	file.OriginalPath = ""
 	file.DeletedBy = ""
-	return store.PutFile(ctx.Context, file)
+	return store.UpdateAttrs(ctx.Context, file)
 }
 
 // maxBinNameAttempts bounds the collision-resolution loop in freeBinName. A

@@ -45,8 +45,8 @@ func seedFiles(b *testing.B, store metadata.Store, share string, n int) []string
 		}
 		f := &metadata.File{ShareName: share, Path: fp, ID: id,
 			FileAttr: metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644, UID: 1000, GID: 1000}}
-		if err := store.PutFile(ctx, f); err != nil {
-			b.Fatalf("PutFile seed: %v", err)
+		if err := store.UpdateAttrs(ctx, f); err != nil {
+			b.Fatalf("UpdateAttrs seed: %v", err)
 		}
 		if err := store.SetParent(ctx, h, rootHandle); err != nil {
 			b.Fatalf("SetParent: %v", err)
@@ -84,9 +84,9 @@ func seedHandles(b *testing.B, store metadata.Store, share string, n int) []meta
 		if err != nil {
 			b.Fatalf("DecodeFileHandle: %v", err)
 		}
-		if err := store.PutFile(ctx, &metadata.File{ShareName: share, Path: fp, ID: id,
+		if err := store.UpdateAttrs(ctx, &metadata.File{ShareName: share, Path: fp, ID: id,
 			FileAttr: metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644, UID: 1000, GID: 1000}}); err != nil {
-			b.Fatalf("PutFile seed: %v", err)
+			b.Fatalf("UpdateAttrs seed: %v", err)
 		}
 		if err := store.SetParent(ctx, h, rootHandle); err != nil {
 			b.Fatalf("SetParent: %v", err)
@@ -100,7 +100,7 @@ func seedHandles(b *testing.B, store metadata.Store, share string, n int) []meta
 }
 
 // BenchmarkNarrowWrite isolates the two SQL write-path levers against the same
-// populated table the GetFile+PutFile path runs at ~5k IOPS:
+// populated table the GetFile+UpdateAttrs path runs at ~5k IOPS:
 //
 //	raw      — narrow single UPDATE, re-parsed each op (isolates: drop SELECT +
 //	           20-col rewrite + explicit txn, but keep per-op SQL compilation)

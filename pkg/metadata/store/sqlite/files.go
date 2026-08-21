@@ -65,11 +65,19 @@ func (s *SQLiteMetadataStore) GetFile(ctx context.Context, handle metadata.FileH
 	return file, nil
 }
 
-// PutFile stores or updates file metadata.
+// UpdateAttrs stores or updates file metadata.
 // Creates the entry if it doesn't exist.
-func (s *SQLiteMetadataStore) PutFile(ctx context.Context, file *metadata.File) error {
+func (s *SQLiteMetadataStore) UpdateAttrs(ctx context.Context, file *metadata.File) error {
 	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return tx.PutFile(ctx, file)
+		return tx.UpdateAttrs(ctx, file)
+	})
+}
+
+// SetManifest stores or updates file metadata and rewrites the stored block
+// manifest from file.Blocks.
+func (s *SQLiteMetadataStore) SetManifest(ctx context.Context, file *metadata.File) error {
+	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return tx.SetManifest(ctx, file)
 	})
 }
 

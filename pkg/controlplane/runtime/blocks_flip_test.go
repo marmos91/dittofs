@@ -49,8 +49,8 @@ func createFileForPayload(t *testing.T, ctx context.Context, meta metadata.Store
 			PayloadID: payloadID,
 		},
 	}
-	if err := meta.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile %q: %v", name, err)
+	if err := meta.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs %q: %v", name, err)
 	}
 	if err := meta.SetParent(ctx, handle, root); err != nil {
 		t.Fatalf("SetParent %q: %v", name, err)

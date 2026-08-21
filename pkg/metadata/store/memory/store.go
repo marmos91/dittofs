@@ -249,7 +249,7 @@ type MemoryMetadataStore struct {
 	// lookup. Populated only for non-zero ObjectIDs
 	// (post-quiesce); zero entries skipped.
 	//
-	// Maintained inside PutFile/DeleteFile under the same store-level lock
+	// Maintained inside UpdateAttrs/DeleteFile under the same store-level lock
 	// (mu) that guards `files`, mirroring the fileChunkData.hashIndex
 	// discipline (objects.go).
 	//

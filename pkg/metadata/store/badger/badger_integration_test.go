@@ -176,7 +176,7 @@ func TestBadgerMetadataStore_CRUD(t *testing.T) {
 		t.Fatalf("Failed to encode root file handle: %v", err)
 	}
 
-	t.Run("PutFile", func(t *testing.T) {
+	t.Run("UpdateAttrs", func(t *testing.T) {
 		handle, err := store.GenerateHandle(ctx, shareName, "/testfile.txt")
 		if err != nil {
 			t.Fatalf("Failed to generate handle: %v", err)
@@ -199,7 +199,7 @@ func TestBadgerMetadataStore_CRUD(t *testing.T) {
 			},
 		}
 
-		err = store.PutFile(ctx, file)
+		err = store.UpdateAttrs(ctx, file)
 		if err != nil {
 			t.Fatalf("Failed to put file: %v", err)
 		}
@@ -239,7 +239,7 @@ func TestBadgerMetadataStore_CRUD(t *testing.T) {
 			},
 		}
 
-		err = store.PutFile(ctx, childFile)
+		err = store.UpdateAttrs(ctx, childFile)
 		if err != nil {
 			t.Fatalf("Failed to put child file: %v", err)
 		}

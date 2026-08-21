@@ -133,19 +133,18 @@ func seedCheckFile(
 		ID:        fileID,
 		ShareName: share,
 		FileAttr: metadata.FileAttr{
-			Type:        metadata.FileTypeRegular,
-			Mode:        0o644,
-			Size:        size,
-			Mtime:       now,
-			Ctime:       now,
-			Atime:       now,
-			PayloadID:   metadata.PayloadID(payloadID),
-			Blocks:      blocks,
-			BlocksDirty: true,
+			Type:      metadata.FileTypeRegular,
+			Mode:      0o644,
+			Size:      size,
+			Mtime:     now,
+			Ctime:     now,
+			Atime:     now,
+			PayloadID: metadata.PayloadID(payloadID),
+			Blocks:    blocks,
 		},
 	}
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile(%s): %v", name, err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs(%s): %v", name, err)
 	}
 	if err := store.SetParent(ctx, handle, root); err != nil {
 		t.Fatalf("SetParent(%s): %v", name, err)

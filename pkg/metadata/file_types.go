@@ -103,22 +103,10 @@ type FileAttr struct {
 	// Memory: typed slice held directly.
 	Blocks []block.ChunkRef `json:"blocks,omitempty"`
 
-	// BlocksDirty is a transient, request-scoped signal that this PutFile
-	// legitimately mutated the block manifest (Blocks was assigned/pruned),
-	// so the SQL backends must persist file_block_refs. It is NOT persisted:
-	// json:"-" keeps it out of the Badger f: blob, and Postgres/SQLite write
-	// explicit column lists so a struct field never reaches a row. It
-	// defaults to false, so attr-only writes (chmod/utimes/close/rename/
-	// xattr/…) skip the DELETE+INSERT manifest rewrite entirely on the SQL
-	// backends — the write-amplification fix (#1715 #8). Only the sites that
-	// actually change Blocks set it true; Memory/Badger ignore it and always
-	// hold Blocks inline.
-	BlocksDirty bool `json:"-"`
-
-	// BlocksDirtyOffsets narrows BlocksDirty to the offsets that can possibly
-	// differ from what the SQL backends already store, so their manifest diff
-	// costs the changed range rather than the whole file. Transient and
-	// request-scoped like BlocksDirty, and never persisted.
+	// ManifestDirtyOffsets narrows a SetManifest write to the offsets that can
+	// possibly differ from what the SQL backends already store, so their
+	// manifest diff costs the changed range rather than the whole file.
+	// Transient, request-scoped and never persisted; UpdateAttrs ignores it.
 	//
 	// nil means "unknown": the backend must diff the entire stored manifest.
 	// Non-nil (empty included) is a promise that every offset outside the set
@@ -126,7 +114,7 @@ type FileAttr struct {
 	// upsert and delete only within the set. Only a caller that folded a known
 	// row set into an already-coherent Blocks projection can make that promise;
 	// a caller that re-derived Blocks from scratch must leave this nil.
-	BlocksDirtyOffsets []uint64 `json:"-"`
+	ManifestDirtyOffsets []uint64 `json:"-"`
 
 	// NewInode marks a File the caller has just constructed and knows has no
 	// row yet, so a store that would otherwise probe for one can insert
@@ -197,7 +185,7 @@ func CopyFileAttr(attr *FileAttr) *FileAttr {
 	}
 
 	c.Blocks = slices.Clone(attr.Blocks)
-	c.BlocksDirtyOffsets = slices.Clone(attr.BlocksDirtyOffsets)
+	c.ManifestDirtyOffsets = slices.Clone(attr.ManifestDirtyOffsets)
 
 	if attr.DeletedAt != nil {
 		deletedAt := *attr.DeletedAt

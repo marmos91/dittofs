@@ -152,7 +152,7 @@ func TestBadgerStore_DerivePathReverseIndex(t *testing.T) {
 		if dir {
 			typ = metadata.FileTypeDirectory
 		}
-		require.NoError(t, store.PutFile(ctx, &metadata.File{
+		require.NoError(t, store.UpdateAttrs(ctx, &metadata.File{
 			ID: id, ShareName: shareName,
 			FileAttr: metadata.FileAttr{
 				Type: typ, Mode: 0o644,
@@ -262,7 +262,7 @@ func TestBadgerStore_PutGetFile_BlocksRoundTrip(t *testing.T) {
 			Blocks:       want,
 		},
 	}
-	require.NoError(t, store.PutFile(ctx, file))
+	require.NoError(t, store.UpdateAttrs(ctx, file))
 	require.NoError(t, store.SetParent(ctx, handle, rootHandle))
 	require.NoError(t, store.SetChild(ctx, rootHandle, "blocks.bin", handle))
 
@@ -292,7 +292,7 @@ func TestBadgerStore_PutGetFile_BlocksRoundTrip(t *testing.T) {
 			// Blocks left nil.
 		},
 	}
-	require.NoError(t, store.PutFile(ctx, nilFile))
+	require.NoError(t, store.UpdateAttrs(ctx, nilFile))
 	gotNil, err := store.GetFile(ctx, nilHandle)
 	require.NoError(t, err)
 	assert.Nil(t, gotNil.Blocks)

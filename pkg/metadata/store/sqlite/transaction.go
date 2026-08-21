@@ -196,7 +196,19 @@ func (tx *sqliteTransaction) GetFile(ctx context.Context, handle metadata.FileHa
 	return file, nil
 }
 
-func (tx *sqliteTransaction) PutFile(ctx context.Context, file *metadata.File) error {
+// UpdateAttrs persists the file's attributes and leaves the stored
+// file_block_refs manifest untouched.
+func (tx *sqliteTransaction) UpdateAttrs(ctx context.Context, file *metadata.File) error {
+	return tx.putFile(ctx, file, false)
+}
+
+// SetManifest persists the file's attributes and rewrites the stored
+// file_block_refs manifest from file.Blocks.
+func (tx *sqliteTransaction) SetManifest(ctx context.Context, file *metadata.File) error {
+	return tx.putFile(ctx, file, true)
+}
+
+func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, writeManifest bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -271,7 +283,7 @@ func (tx *sqliteTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		var marshalErr error
 		aclJSON, marshalErr = json.Marshal(file.ACL)
 		if marshalErr != nil {
-			return mapDBError(marshalErr, "PutFile", "marshal ACL")
+			return mapDBError(marshalErr, "UpdateAttrs", "marshal ACL")
 		}
 	}
 
@@ -282,7 +294,7 @@ func (tx *sqliteTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		var marshalErr error
 		easJSON, marshalErr = json.Marshal(file.EAs)
 		if marshalErr != nil {
-			return mapDBError(marshalErr, "PutFile", "marshal EAs")
+			return mapDBError(marshalErr, "UpdateAttrs", "marshal EAs")
 		}
 	}
 
@@ -332,12 +344,12 @@ func (tx *sqliteTransaction) PutFile(ctx context.Context, file *metadata.File) e
 				deletedAtArg, file.OriginalPath, file.DeletedBy,
 				file.ID, file.ShareName,
 			); err != nil {
-				return mapDBError(err, "PutFile", "")
+				return mapDBError(err, "UpdateAttrs", "")
 			}
 		case errors.Is(scanErr, sql.ErrNoRows):
 			updated = false
 		default:
-			return mapDBError(scanErr, "PutFile", "")
+			return mapDBError(scanErr, "UpdateAttrs", "")
 		}
 	}
 
@@ -391,7 +403,7 @@ func (tx *sqliteTransaction) PutFile(ctx context.Context, file *metadata.File) e
 			file.Hidden, aclJSON, easJSON, objectIDArg,
 			deletedAtArg, file.OriginalPath, file.DeletedBy,
 		); err != nil {
-			return mapDBError(err, "PutFile", "")
+			return mapDBError(err, "UpdateAttrs", "")
 		}
 
 		// Track new regular file size.
@@ -405,7 +417,7 @@ func (tx *sqliteTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		// Debug logging for new file inserts, gated so the id formatting is
 		// skipped when Debug is off.
 		if tx.store.logger.Enabled(ctx, slog.LevelDebug) {
-			tx.store.logger.Debug("PutFile inserted",
+			tx.store.logger.Debug("UpdateAttrs inserted",
 				"id", file.ID.String(),
 				"share", file.ShareName,
 				"path", file.Path,
@@ -414,23 +426,22 @@ func (tx *sqliteTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		}
 	}
 
-	// persist FileAttr.Blocks into file_block_refs — but ONLY when the caller
-	// signalled the manifest legitimately changed (BlocksDirty). Attr-only
-	// writes (chmod/utimes/close/rename/xattr/…) leave BlocksDirty false, so
-	// they skip the DELETE+INSERT entirely instead of rewriting the whole
-	// chunk list on every write (#1715 #8 write-amplification fix). Only
-	// regular files carry ChunkRef payloads; empty/nil Blocks under a dirty
-	// flag performs a DELETE-only pass so no stale rows survive a drop.
-	if file.Type == metadata.FileTypeRegular && file.BlocksDirty {
+	// persist FileAttr.Blocks into file_block_refs — but ONLY on the
+	// SetManifest path. Attr-only writes (chmod/utimes/close/rename/xattr/…)
+	// come through UpdateAttrs and skip the DELETE+INSERT entirely instead of
+	// rewriting the whole chunk list on every write. Only regular files carry
+	// ChunkRef payloads; empty/nil Blocks on a SetManifest performs a
+	// DELETE-only pass so no stale rows survive a drop.
+	if file.Type == metadata.FileTypeRegular && writeManifest {
 		// Apply only the rows that actually changed. An in-place overwrite that
 		// reuses the same chunk boundaries frequently projects an identical
 		// manifest, so putFileChunkRefs writes nothing and reports wrote=false.
 		// Freshly-inserted rows (!updated) have no prior refs, so every ref is
 		// a plain insert. The counter tracks manifests that truly changed.
-		wrote, scanned, err := putFileChunkRefs(ctx, tx.tx, file.ID, file.Blocks, updated, file.BlocksDirtyOffsets)
+		wrote, scanned, err := putFileChunkRefs(ctx, tx.tx, file.ID, file.Blocks, updated, file.ManifestDirtyOffsets)
 		tx.store.manifestRowsScanned.Add(int64(scanned))
 		if err != nil {
-			return mapDBError(err, "PutFile", "blocks")
+			return mapDBError(err, "SetManifest", "blocks")
 		}
 		if wrote {
 			tx.store.manifestWrites.Add(1)

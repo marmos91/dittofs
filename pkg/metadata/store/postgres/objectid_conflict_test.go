@@ -108,8 +108,8 @@ func conflictTestFile(t *testing.T, store *postgres.PostgresMetadataStore, share
 			PayloadID: metadata.PayloadID(strings.TrimPrefix(shareName, "/") + "/" + name),
 		},
 	}
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile %q: %v", name, err)
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs %q: %v", name, err)
 	}
 	if err := store.SetLinkCount(ctx, handle, 1); err != nil {
 		t.Fatalf("SetLinkCount %q: %v", name, err)
@@ -144,8 +144,8 @@ func TestPostgresPutFile_ObjectIDConflictMapsToErrConflict(t *testing.T) {
 	}
 	fA.ObjectID = contested
 	fA.Blocks = []block.ChunkRef{{Hash: block.ContentHash{1, 2, 3, 4}, Offset: 0, Size: 4096}}
-	if err := store.PutFile(ctx, fA); err != nil {
-		t.Fatalf("PutFile A (first claimant): %v", err)
+	if err := store.UpdateAttrs(ctx, fA); err != nil {
+		t.Fatalf("UpdateAttrs A (first claimant): %v", err)
 	}
 
 	// Second claimant must lose with ErrConflict (NOT ErrAlreadyExists).
@@ -155,9 +155,9 @@ func TestPostgresPutFile_ObjectIDConflictMapsToErrConflict(t *testing.T) {
 	}
 	fB.ObjectID = contested
 	fB.Blocks = []block.ChunkRef{{Hash: block.ContentHash{1, 2, 3, 4}, Offset: 0, Size: 4096}}
-	err = store.PutFile(ctx, fB)
+	err = store.UpdateAttrs(ctx, fB)
 	if err == nil {
-		t.Fatal("PutFile B should have failed with object_id conflict")
+		t.Fatal("UpdateAttrs B should have failed with object_id conflict")
 	}
 	if !mderrors.IsConflictError(err) {
 		t.Fatalf("object_id conflict must map to ErrConflict, got %v", err)
@@ -174,7 +174,7 @@ func TestPostgresPutFile_ObjectIDConflictMapsToErrConflict(t *testing.T) {
 // active rows sharing a path_hash — pjdfstest rename/23, #1160). Namespace
 // uniqueness — no two entries with the same name in a directory — is enforced
 // by parent_child_map UNIQUE(parent_id, child_name), NOT files.path_hash, so a
-// raw PutFile of a DIFFERENT id at the SAME (share, path) with nlink>0 must now
+// raw UpdateAttrs of a DIFFERENT id at the SAME (share, path) with nlink>0 must now
 // succeed instead of failing with ErrAlreadyExists. This guards against the
 // index being reintroduced (which would re-break hard-link rename on postgres).
 func TestPostgresPutFile_DuplicatePathAllowed(t *testing.T) {
@@ -197,7 +197,7 @@ func TestPostgresPutFile_DuplicatePathAllowed(t *testing.T) {
 			Mode: 0o644,
 		},
 	}
-	if perr := store.PutFile(ctx, dupFile); perr != nil {
-		t.Fatalf("duplicate-path PutFile should now succeed (path_hash uniqueness dropped in #1165), got %v", perr)
+	if perr := store.UpdateAttrs(ctx, dupFile); perr != nil {
+		t.Fatalf("duplicate-path UpdateAttrs should now succeed (path_hash uniqueness dropped in #1165), got %v", perr)
 	}
 }

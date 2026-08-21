@@ -76,7 +76,7 @@ func (c *metadataCoordinator) resolveStore(ctx context.Context) block.FileChunkS
 // When the caller has bound an active metadata.Transaction into ctx
 // via metadata.WithTx, both GetByHash and IncrementRefCount route
 // through that tx — keeping the per-row UPDATE inside the caller's
-// txn so a downstream PutFile failure rolls back BOTH the file attrs
+// txn so a downstream UpdateAttrs failure rolls back BOTH the file attrs
 // AND every increment.
 func (c *metadataCoordinator) IncrementRefCount(ctx context.Context, hash block.ContentHash) error {
 	store := c.resolveStore(ctx)
@@ -169,7 +169,7 @@ func (c *metadataCoordinator) ReprojectBlocks(ctx context.Context, payloadID str
 // FileAttr.ObjectID for the file identified by payloadID in a single
 // metadata transaction. The runtime wrapper resolves
 // payloadID → fileHandle → file via tx.GetFileByPayloadID and persists
-// the updated FileAttr via tx.PutFile.
+// the updated FileAttr via tx.SetManifest.
 //
 // This is the post-Flush seam — the syncer invokes this after every
 // successful Flush so the canonical FileAttr.Blocks list reflects every
@@ -178,7 +178,7 @@ func (c *metadataCoordinator) ReprojectBlocks(ctx context.Context, payloadID str
 // The syncer computes the BLAKE3 Merkle-root ObjectID over `blocks`
 // (via block.ComputeObjectID) and threads it through this hook so
 // the metadata write atomically updates both Blocks AND ObjectID in the
-// same PutFile transaction.
+// same SetManifest transaction.
 //
 // Conflict mapping: a Postgres unique-violation on files_object_id_idx
 // (first-committer-wins) — or the equivalent mderrors.ErrConflict from
@@ -198,10 +198,9 @@ func (c *metadataCoordinator) PersistFileChunks(ctx context.Context, payloadID s
 		// FileAttr is embedded on metadata.File (not a pointer).
 		file.Blocks = blocks
 		// Post-Flush manifest write — must persist file_block_refs.
-		file.BlocksDirty = true
 		// Same-txn write of Blocks AND ObjectID.
 		file.ObjectID = objectID
-		if err := tx.PutFile(ctx, file); err != nil {
+		if err := tx.SetManifest(ctx, file); err != nil {
 			return mapObjectIDConflict(err)
 		}
 		return nil

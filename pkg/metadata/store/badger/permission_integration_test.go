@@ -207,7 +207,7 @@ func TestBadgerStore_FileWithDifferentOwners(t *testing.T) {
 				},
 			}
 
-			err = store.PutFile(ctx, file)
+			err = store.UpdateAttrs(ctx, file)
 			if err != nil {
 				t.Fatalf("Failed to put file: %v", err)
 			}

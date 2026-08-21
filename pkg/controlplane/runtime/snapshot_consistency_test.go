@@ -396,7 +396,7 @@ func (f *realBackupFixture) tryPutMultiChunkFile(ctx context.Context, name strin
 		},
 	}
 	file.ID = id
-	if err := f.mem.PutFile(ctx, file); err != nil {
+	if err := f.mem.UpdateAttrs(ctx, file); err != nil {
 		return fmt.Errorf("put file: %w", err)
 	}
 	if isNew {

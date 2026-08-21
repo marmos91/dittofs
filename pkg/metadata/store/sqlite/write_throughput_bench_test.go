@@ -18,7 +18,7 @@ import (
 // a 4k random write: ONE SQLiteMetadataStore (MaxOpenConns(1)) driven by many
 // concurrent protocol writers. Each op is the metadata cost the runtime pays
 // per data write — a read-modify-write of the inode row: GetFile (SELECT) then
-// PutFile (full-row UPDATE), inside one WithTransaction (BeginTx + Commit, a WAL
+// UpdateAttrs (full-row UPDATE), inside one WithTransaction (BeginTx + Commit, a WAL
 // frame, no fsync under WAL+synchronous=NORMAL).
 //
 // With a single connection the concurrent writers do not collide at the SQLite
@@ -53,7 +53,7 @@ func BenchmarkWriteThroughput(b *testing.B) {
 					return err
 				}
 				f.Mtime = time.Now()
-				return tx.PutFile(ctx, f)
+				return tx.UpdateAttrs(ctx, f)
 			}); err != nil {
 				b.Fatalf("write txn: %v", err)
 			}
@@ -101,7 +101,7 @@ func BenchmarkWriteThroughputBatched(b *testing.B) {
 							return err
 						}
 						f.Mtime = time.Now()
-						if err := tx.PutFile(ctx, f); err != nil {
+						if err := tx.UpdateAttrs(ctx, f); err != nil {
 							return err
 						}
 					}
@@ -165,8 +165,8 @@ func BenchmarkWriteThroughputScattered(b *testing.B) {
 			ShareName: share, Path: fullPath, ID: id,
 			FileAttr: metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644, UID: 1000, GID: 1000},
 		}
-		if err := store.PutFile(ctx, f); err != nil {
-			b.Fatalf("PutFile seed: %v", err)
+		if err := store.UpdateAttrs(ctx, f); err != nil {
+			b.Fatalf("UpdateAttrs seed: %v", err)
 		}
 		if err := store.SetParent(ctx, h, rootHandle); err != nil {
 			b.Fatalf("SetParent: %v", err)
@@ -189,7 +189,7 @@ func BenchmarkWriteThroughputScattered(b *testing.B) {
 					return err
 				}
 				f.Mtime = time.Now()
-				return tx.PutFile(ctx, f)
+				return tx.UpdateAttrs(ctx, f)
 			}); err != nil {
 				b.Fatalf("write txn: %v", err)
 			}

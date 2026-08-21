@@ -43,7 +43,7 @@ func mkPayloadFile(t *testing.T, store *BadgerMetadataStore, shareName string, d
 		},
 	}
 	file.ID = id
-	require.NoError(t, store.PutFile(ctx, file))
+	require.NoError(t, store.UpdateAttrs(ctx, file))
 	require.NoError(t, store.SetParent(ctx, handle, dir))
 	require.NoError(t, store.SetChild(ctx, dir, name, handle))
 	return handle
@@ -78,7 +78,7 @@ func payloadIndexValue(t *testing.T, s *BadgerMetadataStore, pid metadata.Payloa
 }
 
 // TestPayloadIndex_PointLookupAndTeardown covers the #1435 secondary index: it
-// is written on PutFile, resolves GetFileByPayloadID, still works via the legacy
+// is written on UpdateAttrs, resolves GetFileByPayloadID, still works via the legacy
 // scan fallback when the entry is absent, and is torn down on DeleteFile.
 func TestPayloadIndex_PointLookupAndTeardown(t *testing.T) {
 	ctx := context.Background()
@@ -96,7 +96,7 @@ func TestPayloadIndex_PointLookupAndTeardown(t *testing.T) {
 
 	// Index written and points at the file.
 	idxID, ok := payloadIndexValue(t, store, pid)
-	require.True(t, ok, "pl: index entry must exist after PutFile")
+	require.True(t, ok, "pl: index entry must exist after UpdateAttrs")
 	require.Equal(t, fileID, idxID)
 
 	// Lookup resolves (via the index fast path).
@@ -145,7 +145,7 @@ func TestPayloadIndex_MovesOnPayloadIDChange(t *testing.T) {
 	require.NoError(t, err)
 	newPID := metadata.PayloadID(shareName + "/" + uuid.NewString())
 	file.PayloadID = newPID
-	require.NoError(t, store.PutFile(ctx, file))
+	require.NoError(t, store.UpdateAttrs(ctx, file))
 
 	// Old entry gone, new entry points at the same file.
 	if _, ok := payloadIndexValue(t, store, oldPID); ok {

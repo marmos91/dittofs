@@ -14,7 +14,7 @@ import (
 //
 // CreateFile cannot set Size: ApplyCreateDefaults zeroes it for regular files
 // (no data-plane write runs in these unit tests). So we stamp Size directly
-// through the store's GetFile/PutFile — the same direct-store technique the
+// through the store's GetFile/UpdateAttrs — the same direct-store technique the
 // service uses in clearStamp for fields SetFileAttributes does not expose. The
 // recycle move preserves the attr, so Entry.Size is non-zero and the max-size
 // eviction test can assert on it deterministically.
@@ -30,7 +30,7 @@ func (tt *trashTest) recycleSized(name string, size uint64) {
 	file, err := store.GetFile(tt.ctx.Context, handle)
 	require.NoError(tt.t, err)
 	file.Size = size
-	require.NoError(tt.t, store.PutFile(tt.ctx.Context, file))
+	require.NoError(tt.t, store.UpdateAttrs(tt.ctx.Context, file))
 
 	_, _, err = tt.deps.svc.RemoveFile(tt.ctx, tt.deps.rootHandle, name)
 	require.NoError(tt.t, err)

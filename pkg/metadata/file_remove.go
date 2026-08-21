@@ -191,7 +191,7 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 
 			// Update file's ctime
 			file.Ctime = now
-			if err := tx.PutFile(ctx.Context, file); err != nil {
+			if err := tx.UpdateAttrs(ctx.Context, file); err != nil {
 				return err
 			}
 		} else {
@@ -208,7 +208,7 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 			// Update file's ctime and nlink
 			file.Ctime = now
 			file.Nlink = 0
-			if err := tx.PutFile(ctx.Context, file); err != nil {
+			if err := tx.UpdateAttrs(ctx.Context, file); err != nil {
 				return err
 			}
 		}

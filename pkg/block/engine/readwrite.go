@@ -114,7 +114,7 @@ func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []
 // when currentBlocks is non-empty, blocks strictly past newSize
 // are dropped and the coordinator decrements RefCount for each dropped
 // hash. The new []ChunkRef list is returned for the caller to persist
-// via PutFile. When currentBlocks is empty the legacy path runs and
+// via SetManifest. When currentBlocks is empty the legacy path runs and
 // the returned slice is empty (dual-read shim semantics).
 // narrowChunkRow shrinks a manifest row to the surviving prefix of its chunk so
 // coverage lookups stop resolving it for bytes the file no longer holds and a
@@ -177,7 +177,7 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 	//
 	// CAS-path ChunkRef pruning + coordinator DecrementRefCount per
 	// dropped hash. Empty input (legacy/dual-read path) skips the
-	// coordinator and returns nil so the caller's PutFile keeps
+	// coordinator and returns nil so the caller's UpdateAttrs keeps
 	// FileAttr.Blocks untouched.
 	var kept []block.ChunkRef
 	if len(currentBlocks) > 0 {
@@ -563,7 +563,7 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	// store mutex for the life of fn; the store-level fileChunkStore.Put would
 	// re-acquire that same (non-reentrant) mutex and self-deadlock. The
 	// tx-bound Put writes under the already-held lock and commits/rolls back
-	// atomically with the caller's dst FileAttr.Blocks PutFile — so the per-file
+	// atomically with the caller's dst FileAttr.Blocks UpdateAttrs — so the per-file
 	// rows and the FileAttr.Blocks manifest stay consistent. With no bound txn
 	// (e.g. unit tests wiring the engine directly) fall back to the store-level
 	// Put, matching the rollup ObjectIDPersister which runs outside any txn.

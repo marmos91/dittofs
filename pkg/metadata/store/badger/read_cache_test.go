@@ -23,7 +23,7 @@ func putFileForTest(t testing.TB, s *BadgerMetadataStore, share, path string, mo
 	f.ShareName = share
 	f.Path = path
 	f.Mode = mode
-	if err := s.PutFile(ctx, f); err != nil {
+	if err := s.UpdateAttrs(ctx, f); err != nil {
 		t.Fatal(err)
 	}
 	return handle
@@ -49,11 +49,11 @@ func TestReadCache_NoStaleReadAfterMutation(t *testing.T) {
 		t.Fatalf("first read: mode=%o, want 644", got.Mode)
 	}
 
-	// Mutate via PutFile — must invalidate the cache.
+	// Mutate via UpdateAttrs — must invalidate the cache.
 	_, id, _ := metadata.DecodeFileHandle(handle)
 	f := bigFile(4)
 	f.ID, f.ShareName, f.Path, f.Mode = id, "/s", "/f", 0o600
-	if err := s.PutFile(ctx, f); err != nil {
+	if err := s.UpdateAttrs(ctx, f); err != nil {
 		t.Fatal(err)
 	}
 

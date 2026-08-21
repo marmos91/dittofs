@@ -39,7 +39,7 @@ func putFileWithACL(t *testing.T, store *MemoryMetadataStore, shareName, name st
 			ACL: a,
 		},
 	}
-	require.NoError(t, store.PutFile(ctx, file))
+	require.NoError(t, store.UpdateAttrs(ctx, file))
 	require.NoError(t, store.SetParent(ctx, handle, rootHandle))
 	require.NoError(t, store.SetChild(ctx, rootHandle, name, handle))
 	return handle, file
@@ -71,7 +71,7 @@ func TestMemoryStore_SACL_RoundTrip(t *testing.T) {
 }
 
 // TestMemoryStore_SACL_DeepCopy verifies cloneACL deep-copies the SACL slice so
-// a caller-side mutation after PutFile does not leak into stored state.
+// a caller-side mutation after UpdateAttrs does not leak into stored state.
 func TestMemoryStore_SACL_DeepCopy(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
@@ -81,7 +81,7 @@ func TestMemoryStore_SACL_DeepCopy(t *testing.T) {
 	}
 	handle, file := putFileWithACL(t, store, "share-sacl-copy", "f", in)
 
-	// Mutate the caller-side SACL after PutFile returned.
+	// Mutate the caller-side SACL after UpdateAttrs returned.
 	file.ACL.SACL[0].AccessMask = acl.ACE4_READ_DATA
 
 	got, err := store.GetFile(ctx, handle)
@@ -89,5 +89,5 @@ func TestMemoryStore_SACL_DeepCopy(t *testing.T) {
 	require.NotNil(t, got.ACL)
 	require.Len(t, got.ACL.SACL, 1)
 	require.Equal(t, uint32(acl.ACE4_WRITE_DATA), got.ACL.SACL[0].AccessMask,
-		"PutFile must deep-copy SACL: caller-side mutation leaked into stored state")
+		"UpdateAttrs must deep-copy SACL: caller-side mutation leaked into stored state")
 }

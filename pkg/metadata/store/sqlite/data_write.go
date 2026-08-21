@@ -12,13 +12,13 @@ import (
 
 // ApplyDataWrite implements metadata.DataWriteApplier: the hot-path metadata
 // update for a data WRITE, done as a narrow SELECT-then-UPDATE instead of the
-// GetFile (aggregate block-refs read) + PutFile (20-column rewrite) pair.
+// GetFile (aggregate block-refs read) + UpdateAttrs (20-column rewrite) pair.
 //
 // It grows size to max(old, new) — so an out-of-order write at a lower offset
 // never shrinks the file — stamps mtime/ctime to now, and clears setuid/setgid
 // when clearSUID is set. Only regular files are affected; the usedBytes and
 // per-identity quota deltas are accumulated on the tx and applied once after a
-// successful commit, exactly like PutFile, so a retry never double-counts.
+// successful commit, exactly like UpdateAttrs, so a retry never double-counts.
 func (tx *sqliteTransaction) ApplyDataWrite(
 	ctx context.Context, handle metadata.FileHandle, newSize uint64, now time.Time, clearSUID bool,
 ) (uint64, error) {

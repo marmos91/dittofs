@@ -521,7 +521,7 @@ var _ block.FileChunkStore = (*sqliteTransaction)(nil)
 // never the store's pool helpers: a pool connection cannot see the
 // transaction's uncommitted writes and would survive its rollback, so a caller
 // that bumped RefCount inside WithTransaction and then hit a downstream
-// PutFile failure would leak the bump.
+// UpdateAttrs failure would leak the bump.
 
 func (tx *sqliteTransaction) GetFileChunk(ctx context.Context, id string) (*metadata.FileChunk, error) {
 	return getFileChunkTx(ctx, tx.tx, id)

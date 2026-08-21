@@ -51,7 +51,7 @@ func runObjectIDOpsTests(t *testing.T, factory StoreFactory) {
 }
 
 // testObjectID_RoundTripBasic asserts that a non-zero ObjectID computed over
-// three sorted-by-offset ChunkRefs survives a PutFile/GetFile round-trip
+// three sorted-by-offset ChunkRefs survives a UpdateAttrs/GetFile round-trip
 // with byte-equal payload. Catches encoding drift between backends.
 func testObjectID_RoundTripBasic(t *testing.T, factory StoreFactory) {
 	store := factory(t)
@@ -75,10 +75,9 @@ func testObjectID_RoundTripBasic(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile (pre-put): %v", err)
 	}
 	file.Blocks = blocks
-	file.BlocksDirty = true
 	file.ObjectID = wantOID
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile: %v", err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs: %v", err)
 	}
 
 	got, err := store.GetFile(ctx, fileHandle)
@@ -92,7 +91,7 @@ func testObjectID_RoundTripBasic(t *testing.T, factory StoreFactory) {
 }
 
 // testObjectID_ZeroSentinel asserts that the all-zero ObjectID sentinel is
-// accepted on PutFile and read back as zero, and that FindByObjectID with
+// accepted on UpdateAttrs and read back as zero, and that FindByObjectID with
 // a zero argument short-circuits to (nil, nil) without backend access
 // (partial/skip-zero discipline).
 func testObjectID_ZeroSentinel(t *testing.T, factory StoreFactory) {
@@ -113,19 +112,18 @@ func testObjectID_ZeroSentinel(t *testing.T, factory StoreFactory) {
 			got.ObjectID.String())
 	}
 
-	// Explicit PutFile with the zero sentinel.
+	// Explicit UpdateAttrs with the zero sentinel.
 	got.Blocks = nil
-	got.BlocksDirty = true // zero-case: persist the emptied manifest
 	got.ObjectID = block.ObjectID{}
-	if err := store.PutFile(ctx, got); err != nil {
-		t.Fatalf("PutFile (zero ObjectID): %v", err)
+	if err := store.SetManifest(ctx, got); err != nil {
+		t.Fatalf("UpdateAttrs (zero ObjectID): %v", err)
 	}
 	got2, err := store.GetFile(ctx, fileHandle)
 	if err != nil {
 		t.Fatalf("GetFile (post-zero-put): %v", err)
 	}
 	if !got2.ObjectID.IsZero() {
-		t.Errorf("ObjectID after zero PutFile: got %s, want zero",
+		t.Errorf("ObjectID after zero UpdateAttrs: got %s, want zero",
 			got2.ObjectID.String())
 	}
 
@@ -161,10 +159,9 @@ func testObjectID_MutationLifecycle(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile: %v", err)
 	}
 	file.Blocks = blocks
-	file.BlocksDirty = true
 	file.ObjectID = wantOID
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile (quiesced): %v", err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs (quiesced): %v", err)
 	}
 
 	// Pre-mutation: index lookup hits.
@@ -183,8 +180,8 @@ func testObjectID_MutationLifecycle(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile (pre-mutate): %v", err)
 	}
 	mutated.ObjectID = block.ObjectID{}
-	if err := store.PutFile(ctx, mutated); err != nil {
-		t.Fatalf("PutFile (mutation): %v", err)
+	if err := store.UpdateAttrs(ctx, mutated); err != nil {
+		t.Fatalf("UpdateAttrs (mutation): %v", err)
 	}
 
 	// Post-mutation: index lookup MUST miss.
@@ -209,7 +206,7 @@ func testObjectID_MutationLifecycle(t *testing.T, factory StoreFactory) {
 
 // testObjectID_SortStability asserts ComputeObjectID determinism (two
 // independent calls over the same sorted ChunkRef list yield byte-equal
-// ObjectIDs) and survives a PutFile/GetFile/recompute cycle.
+// ObjectIDs) and survives a UpdateAttrs/GetFile/recompute cycle.
 func testObjectID_SortStability(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
@@ -240,10 +237,9 @@ func testObjectID_SortStability(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile: %v", err)
 	}
 	file.Blocks = blocks
-	file.BlocksDirty = true
 	file.ObjectID = a
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile: %v", err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs: %v", err)
 	}
 
 	got, err := store.GetFile(ctx, fileHandle)
@@ -280,7 +276,7 @@ func concurrentRaceErrIsConflict(err error) bool {
 	return false
 }
 
-// raceWorkerResult captures one goroutine's PutFile outcome for the
+// raceWorkerResult captures one goroutine's UpdateAttrs outcome for the
 // ConcurrentQuiesceRace scenario. Used by both objectid_roundtrip.go and
 // objectid_lookup.go via the shared runner below.
 type raceWorkerResult struct {
@@ -288,7 +284,7 @@ type raceWorkerResult struct {
 	err error
 }
 
-// runConcurrentQuiesceRace launches two goroutines that each PutFile a
+// runConcurrentQuiesceRace launches two goroutines that each SetManifest a
 // distinct file but with the same target ObjectID. Returns both worker
 // outcomes once both goroutines complete. The barrier (`start`) ensures
 // they race rather than serialize.
@@ -305,7 +301,7 @@ func runConcurrentQuiesceRace(
 		go func(idx int) {
 			defer wg.Done()
 			<-start
-			results[idx].err = store.PutFile(ctx, files[idx])
+			results[idx].err = store.SetManifest(ctx, files[idx])
 		}(i)
 	}
 	close(start)

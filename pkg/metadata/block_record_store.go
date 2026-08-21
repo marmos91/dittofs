@@ -168,13 +168,12 @@ func putProjection(ctx context.Context, tx Transaction, file *File, refs []block
 	// A projection from the manifest IS a manifest write — persist it. This
 	// funnels carve/rollup commit (DefaultCommitBlock), the reap+re-carve
 	// (ReapSupersededManifest), and coordinator.ReprojectBlocks.
-	file.BlocksDirty = true
-	file.BlocksDirtyOffsets = changed
-	err := tx.PutFile(ctx, file)
+	file.ManifestDirtyOffsets = changed
+	err := tx.SetManifest(ctx, file)
 	// The scope describes this write only — clearing it stops a caller that
 	// reuses the struct for a wider manifest mutation from inheriting a promise
 	// that no longer holds.
-	file.BlocksDirtyOffsets = nil
+	file.ManifestDirtyOffsets = nil
 	return err
 }
 

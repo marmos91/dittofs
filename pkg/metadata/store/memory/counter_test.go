@@ -67,7 +67,7 @@ func createFile(t *testing.T, store *memory.MemoryMetadataStore, name string, si
 				Ctime: now,
 			},
 		}
-		if err := tx.PutFile(ctx, file); err != nil {
+		if err := tx.UpdateAttrs(ctx, file); err != nil {
 			return err
 		}
 		return tx.SetChild(ctx, rootHandle, name, h)
@@ -120,7 +120,7 @@ func TestCounter_RolledBackTxDoesNotDrift(t *testing.T) {
 			return err
 		}
 		now := time.Now()
-		if err := tx.PutFile(ctx, &metadata.File{
+		if err := tx.UpdateAttrs(ctx, &metadata.File{
 			ID:        id,
 			ShareName: "/test",
 			Path:      "/ghost.txt",
@@ -152,7 +152,7 @@ func TestCounter_RolledBackTxDoesNotDrift(t *testing.T) {
 	}
 }
 
-// TestCounter_UpdateFileSize verifies usedBytes adjusts on size change (PutFile update).
+// TestCounter_UpdateFileSize verifies usedBytes adjusts on size change (UpdateAttrs update).
 func TestCounter_UpdateFileSize(t *testing.T) {
 	t.Parallel()
 	store := newTestStore(t)
@@ -170,7 +170,7 @@ func TestCounter_UpdateFileSize(t *testing.T) {
 			return err
 		}
 		now := time.Now()
-		return tx.PutFile(ctx, &metadata.File{
+		return tx.UpdateAttrs(ctx, &metadata.File{
 			ID:        id,
 			ShareName: "/test",
 			Path:      "/file1.txt",
@@ -193,7 +193,7 @@ func TestCounter_UpdateFileSize(t *testing.T) {
 	}
 }
 
-// TestCounter_Truncate verifies usedBytes decreases when file is truncated (PutFile with smaller size).
+// TestCounter_Truncate verifies usedBytes decreases when file is truncated (UpdateAttrs with smaller size).
 func TestCounter_Truncate(t *testing.T) {
 	t.Parallel()
 	store := newTestStore(t)
@@ -207,7 +207,7 @@ func TestCounter_Truncate(t *testing.T) {
 			return err
 		}
 		now := time.Now()
-		return tx.PutFile(ctx, &metadata.File{
+		return tx.UpdateAttrs(ctx, &metadata.File{
 			ID:        id,
 			ShareName: "/test",
 			Path:      "/file1.txt",
@@ -289,7 +289,7 @@ func TestCounter_DirectoryIgnored(t *testing.T) {
 				Ctime: now,
 			},
 		}
-		if err := tx.PutFile(ctx, dir); err != nil {
+		if err := tx.UpdateAttrs(ctx, dir); err != nil {
 			return err
 		}
 		return tx.SetChild(ctx, rootHandle, "subdir", h)

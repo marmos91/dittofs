@@ -24,8 +24,8 @@ func runTruncateChunkRefTests(t *testing.T, factory StoreFactory) {
 }
 
 // manifestWriteCounter is an optional, test-only capability the SQL backends
-// implement to expose how many times PutFile actually persisted the
-// file_block_refs manifest (i.e. ran past the BlocksDirty gate). It is what
+// implement to expose how many times UpdateAttrs actually persisted the
+// file_block_refs manifest (i.e. came in through SetManifest). It is what
 // lets ChmodDoesNotRewriteRefs prove ZERO manifest writes — a row-count check
 // alone cannot, because a DELETE+INSERT of the same M rows leaves the same
 // count. Memory/Badger do not implement it (they hold Blocks inline and have
@@ -64,9 +64,8 @@ func testChunkRef_ChmodDoesNotRewriteRefs(t *testing.T, factory StoreFactory) {
 		file.Blocks[i] = block.ChunkRef{Hash: h, Offset: uint64(i) * mib, Size: uint32(mib)}
 	}
 	file.ObjectID = block.ComputeObjectID(file.Blocks)
-	file.BlocksDirty = true // seeding the manifest IS a manifest write
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile() seeding %d blocks failed: %v", nBlocks, err)
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs() seeding %d blocks failed: %v", nBlocks, err)
 	}
 
 	// Baseline the manifest-write counter AFTER seeding, so we measure only
@@ -175,10 +174,9 @@ func testTruncateDownPrunesChunkRefs(t *testing.T, factory StoreFactory) {
 	// truncate must keep it consistent with the trimmed list, not leave it stale.
 	file.ObjectID = block.ComputeObjectID(file.Blocks)
 	// Seeding the manifest is a manifest-changing write — the SQL backends
-	// gate file_block_refs persistence on BlocksDirty.
-	file.BlocksDirty = true
-	if err := store.PutFile(ctx, file); err != nil {
-		t.Fatalf("PutFile() with 4 MiB block list failed: %v", err)
+	// gate file_block_refs persistence on the SetManifest entry point.
+	if err := store.SetManifest(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs() with 4 MiB block list failed: %v", err)
 	}
 
 	// Truncate down to 1 MiB through the service's SetFileAttributes path.

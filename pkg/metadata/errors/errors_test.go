@@ -98,7 +98,7 @@ func TestFactoryFunctions(t *testing.T) {
 		{"StaleHandle", NewStaleHandleError("myshare"), ErrStaleHandle, "", `no store configured for share "myshare"`},
 		{"NotEmpty", NewNotEmptyError("/x"), ErrNotEmpty, "/x", "directory not empty"},
 		{"AlreadyExists", NewAlreadyExistsError("/x"), ErrAlreadyExists, "/x", "already exists"},
-		{"Conflict", NewConflictError("memory PutFile", "dup"), ErrConflict, "", "memory PutFile: dup"},
+		{"Conflict", NewConflictError("memory UpdateAttrs", "dup"), ErrConflict, "", "memory UpdateAttrs: dup"},
 		{"InvalidArgument", NewInvalidArgumentError("nope"), ErrInvalidArgument, "", "nope"},
 		{"AccessDenied", NewAccessDeniedError("no read bit"), ErrAccessDenied, "", "no read bit"},
 		{"QuotaExceeded", NewQuotaExceededError("/x"), ErrQuotaExceeded, "/x", "disk quota exceeded"},
@@ -199,7 +199,7 @@ func TestClassifiersNonStoreError(t *testing.T) {
 
 // errors.As must be able to extract a *StoreError from the concrete type.
 func TestErrorsAsExtraction(t *testing.T) {
-	orig := NewConflictError("badger PutFile", "object_id already mapped")
+	orig := NewConflictError("badger UpdateAttrs", "object_id already mapped")
 	var got *StoreError
 	if !goerrors.As(orig, &got) {
 		t.Fatal("errors.As failed to extract *StoreError")

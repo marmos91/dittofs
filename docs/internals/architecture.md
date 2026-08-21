@@ -1371,7 +1371,7 @@ Production call chain (per-write, on quiesce):
             └─ persistFileChunksAfterFlush
                 └─ ComputeObjectID(blocks)
                 └─ coordinator.PersistFileChunks(blocks, objectID)
-                    └─ runtime coordinator: WithTransaction(GetFileByPayloadID + PutFile)
+                    └─ runtime coordinator: WithTransaction(GetFileByPayloadID + SetManifest)
                         // FileAttr.Blocks AND FileAttr.ObjectID
                         // written in one metadata txn
 ```

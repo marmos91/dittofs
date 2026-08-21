@@ -34,10 +34,28 @@ type Files interface {
 	// NO permission checking - caller is responsible.
 	GetFile(ctx context.Context, handle FileHandle) (*File, error)
 
-	// PutFile stores or updates file metadata.
+	// UpdateAttrs stores or updates file metadata, leaving whatever block
+	// manifest the store already holds for the file untouched.
 	// Creates the file if it doesn't exist, updates if it does.
 	// NO validation - caller is responsible for data integrity.
-	PutFile(ctx context.Context, file *File) error
+	//
+	// This is the attr-only write behind chmod/utimes/close/rename/xattr and
+	// every other mutation that does not change file.Blocks. Skipping the
+	// manifest rewrite is what keeps those writes cheap on the SQL backends,
+	// where the manifest lives in a separate file_block_refs table.
+	UpdateAttrs(ctx context.Context, file *File) error
+
+	// SetManifest stores or updates file metadata AND replaces the stored
+	// block manifest with file.Blocks. Only callers that actually mutated the
+	// block list may use it: carve/rollup commit, truncate, punch-hole,
+	// clone, copy-payload and manifest reprojection.
+	//
+	// Where the manifest is stored separately from the attrs — the SQL
+	// backends' file_block_refs table, badger's fm:<uuid> key — this is the
+	// only method that rewrites it, scoped by File.ManifestDirtyOffsets when
+	// that is non-nil. The memory backend keeps the block list inline on the
+	// stored FileAttr and so treats it exactly as UpdateAttrs.
+	SetManifest(ctx context.Context, file *File) error
 
 	// DeleteFile removes file metadata by handle.
 	// Returns ErrNotFound if handle doesn't exist.
@@ -314,7 +332,7 @@ type Transaction interface {
 //
 //	    // Modify file...
 //
-//	    return tx.PutFile(ctx, file)  // Success = commit, error = rollback
+//	    return tx.UpdateAttrs(ctx, file)  // Success = commit, error = rollback
 //	})
 type Transactor interface {
 	// WithTransaction executes fn within a transaction.

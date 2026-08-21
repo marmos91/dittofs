@@ -351,7 +351,7 @@ func clearStamp(ctx *metadata.AuthContext, svc *metadata.Service, shareName stri
 	file.DeletedAt = nil
 	file.OriginalPath = ""
 	file.DeletedBy = ""
-	return store.PutFile(ctx.Context, file)
+	return store.UpdateAttrs(ctx.Context, file)
 }
 
 // Empty permanently removes every recycled root from the share's bin, freeing
