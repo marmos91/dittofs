@@ -77,9 +77,19 @@ func TestQuotaRoutesBindScope(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET quotas = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
 	}
+	var listed []struct {
+		Scope string `json:"scope"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode listing: %v (body=%q)", err, rec.Body.String())
+	}
+	seen := make(map[string]bool, len(listed))
+	for _, q := range listed {
+		seen[q.Scope] = true
+	}
 	for _, tc := range cases {
-		if !strings.Contains(rec.Body.String(), `"scope":"`+tc.scope+`"`) {
-			t.Errorf("listing missing scope %q: %s", tc.scope, rec.Body.String())
+		if !seen[tc.scope] {
+			t.Errorf("listing missing scope %q, got %v", tc.scope, seen)
 		}
 	}
 
