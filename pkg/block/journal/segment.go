@@ -309,7 +309,8 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 	// short of the whole range is dropped rather than trimmed — the caller
 	// already split on the same predicate, so a short answer means the range
 	// changed underneath and the fetched bytes are the wrong ones.
-	if synced && !coversWhole(sh.index[id].hydratable(offset, int64(len(data)), notAfter), offset, int64(len(data))) {
+	if synced && (s.staleAfterTruncate(notAfter) ||
+		!coversWhole(sh.index[id].hydratable(offset, int64(len(data)), notAfter), offset, int64(len(data)))) {
 		return nil
 	}
 

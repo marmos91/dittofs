@@ -114,3 +114,29 @@ func TestHydrateFillsWithoutOverwriting(t *testing.T) {
 		}
 	})
 }
+
+// TestHydrateAfterTruncateIsDropped pins the one mutation that leaves no
+// interval behind: a truncate empties the range instead of recording over it,
+// so a hydrate whose bound predates the truncate is refused outright.
+func TestHydrateAfterTruncateIsDropped(t *testing.T) {
+	ctx := context.Background()
+	s, _ := evictStore(t, Config{})
+	data := bytes.Repeat([]byte{0xAB}, 4096)
+	if err := s.WriteAt(ctx, "f", 0, data); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	mark := s.WriteVersion() // a fetch resolves the pre-truncate manifest here
+	if err := s.Truncate(ctx, "f", 0); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+	if err := s.Hydrate(ctx, "f", 0, data, mark); err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+	got := make([]byte, len(data))
+	if _, _, err := s.ReadAt(ctx, "f", 0, got); err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	if !bytes.Equal(got, make([]byte, len(data))) {
+		t.Fatal("hydrate resurrected bytes a truncate removed")
+	}
+}
