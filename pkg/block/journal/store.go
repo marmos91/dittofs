@@ -421,14 +421,54 @@ func (s *Store) commitDirtyShards() {
 // WriteAt buffers a dirty client write. It never fsyncs; durability is a
 // separate Commit.
 func (s *Store) WriteAt(ctx context.Context, id FileID, offset int64, data []byte) error {
-	return s.appendRecord(ctx, id, offset, data, false)
+	return s.appendRecord(ctx, id, offset, data, false, 0)
 }
 
 // Hydrate writes bytes fetched from the remote store during a cold read. Same
 // append primitive as WriteAt, but the record is born clean (already durable
 // remotely) so it is immediately evictable.
-func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byte) error {
-	return s.appendRecord(ctx, id, offset, data, true)
+//
+// It fills rather than overwrites: only the parts of the range no live interval
+// holds, plus the parts a cold interval holds no later than notAfter, are
+// written. A read window resolves every manifest row covering it once any byte
+// of it is cold, so a fetch routinely offers bytes the journal already holds —
+// and the journal's are the newer copy, since the remote holds what a carve
+// uploaded and the journal holds that plus everything written since. Writing
+// them back would put a client's just-written data underneath the content it
+// replaced.
+//
+// notAfter is the WriteVersion the caller sampled before it resolved which
+// remote bytes to fetch; a cold range recorded after it was superseded and
+// evicted while the fetch ran, so it is stale too. Zero applies no bound.
+//
+// Dropping is always safe: the write-back is a cache fill, never a read's
+// answer, and costs at most a re-fetch.
+func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byte, notAfter uint64) error {
+	sh := s.shardFor(id)
+	sh.mu.Lock()
+	var ranges [][2]int64
+	if !staleAfterTruncate(sh, id, notAfter) {
+		ranges = sh.index[id].hydratable(offset, int64(len(data)), notAfter)
+	}
+	sh.mu.Unlock()
+	for _, r := range ranges {
+		if err := s.appendRecord(ctx, id, r[0], data[r[0]-offset:r[1]-offset], true, notAfter); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// WriteVersion reports the store's current global LSN. Sampled before a caller
+// resolves what to fetch, it bounds what that fetch is allowed to write back
+// (see Hydrate).
+func (s *Store) WriteVersion() uint64 { return s.version.Load() }
+
+// staleAfterTruncate reports whether a hydrate's bound predates the file's most
+// recent truncate, which is the one mutation that leaves no interval behind to
+// compare against. Callers hold sh.mu.
+func staleAfterTruncate(sh *shard, id FileID, notAfter uint64) bool {
+	return notAfter > 0 && notAfter <= sh.truncVer[id]
 }
 
 // SeedCold registers a byte range as remote-durable-but-not-local: a read of it
@@ -664,6 +704,8 @@ func (s *Store) Delete(ctx context.Context, id FileID) error {
 			fi.ivs = kept
 		}
 	}
+	// The file is gone, so its truncate bound has nothing left to guard.
+	delete(sh.truncVer, id)
 	sh.mu.Unlock()
 	if dirty != 0 {
 		s.unsynced.Add(-dirty)
@@ -820,6 +862,11 @@ func (s *Store) Truncate(ctx context.Context, id FileID, newSize int64) error {
 				break
 			}
 		}
+	}
+	if past {
+		// Published before the marker is stamped, so a hydrate that samples its
+		// bound after this point is never mistaken for one that predates the clip.
+		sh.truncVer[id] = s.version.Load()
 	}
 	sh.mu.Unlock()
 	if !past {
@@ -1074,6 +1121,44 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 		if err := s.Delete(ctx, id); err != nil {
 			return fmt.Errorf("journal: restore: tombstone post-V file %q: %w", id, err)
 		}
+	}
+	return nil
+}
+
+// Invalidate marks the live synced intervals overlapping [off, off+length) cold:
+// their local bytes are unusable, but the range is still durable remotely, so a
+// read of it fetches instead of serving what is there. A whole interval is
+// demoted even when the range covers only part of it, because the record it
+// points into is the unit that failed.
+//
+// A dirty interval is left alone. Nothing has uploaded it, so there is no copy
+// to fetch back, and demoting it would turn unwritten-back data into zeros; a
+// read of it fails closed instead.
+//
+// This is what lets a hydrate stay a fill rather than an overwrite: a caller
+// that has proven the local bytes bad demotes them first, and the re-fetch then
+// lands in a range the journal no longer claims to hold.
+func (s *Store) Invalidate(_ context.Context, id FileID, off, length int64) error {
+	if s.closed.Load() {
+		return errClosed
+	}
+	if length <= 0 {
+		return nil
+	}
+	end := off + length
+	sh := s.shardFor(id)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	fi := sh.index[id]
+	if fi == nil {
+		return nil
+	}
+	for k := range fi.ivs {
+		iv := &fi.ivs[k]
+		if iv.end() <= off || iv.fileOff >= end || iv.cold || !iv.synced {
+			continue
+		}
+		iv.cold = true
 	}
 	return nil
 }

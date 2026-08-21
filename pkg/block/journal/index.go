@@ -497,3 +497,53 @@ func (e idxEntry) encode() []byte {
 	buf[36] = e.Flags
 	return buf
 }
+
+// hydratable returns the sub-ranges of [off, off+n) that a hydrate may fill:
+// those no live interval holds, plus those a cold interval holds that was
+// recorded no later than mark (0 bounds nothing). Ranges are ascending, disjoint
+// and coalesced, and are offsets in the file, not in the caller's buffer.
+//
+// Live warm or dirty bytes are never included — they are the newer copy — and
+// neither is a cold interval recorded after mark, which postdates the fetch.
+// See Store.Hydrate.
+func (fi *fileIndex) hydratable(off, n int64, mark uint64) [][2]int64 {
+	if n <= 0 {
+		return nil
+	}
+	end := off + n
+	if fi == nil {
+		return [][2]int64{{off, end}}
+	}
+	var out [][2]int64
+	add := func(lo, hi int64) {
+		if lo >= hi {
+			return
+		}
+		if k := len(out) - 1; k >= 0 && out[k][1] == lo {
+			out[k][1] = hi
+			return
+		}
+		out = append(out, [2]int64{lo, hi})
+	}
+	cur := off
+	k := sort.Search(len(fi.ivs), func(i int) bool { return fi.ivs[i].end() > off })
+	for ; k < len(fi.ivs) && fi.ivs[k].fileOff < end && cur < end; k++ {
+		iv := fi.ivs[k]
+		if iv.fileOff > cur {
+			add(cur, min(iv.fileOff, end)) // no interval holds this: a hole
+			cur = min(iv.fileOff, end)
+		}
+		stop := min(iv.end(), end)
+		if iv.cold && (mark == 0 || iv.version <= mark) {
+			add(cur, stop)
+		}
+		cur = max(cur, stop)
+	}
+	add(cur, end)
+	return out
+}
+
+// coversWhole reports whether ranges is exactly the single span [off, off+n).
+func coversWhole(ranges [][2]int64, off, n int64) bool {
+	return len(ranges) == 1 && ranges[0][0] == off && ranges[0][1] == off+n
+}

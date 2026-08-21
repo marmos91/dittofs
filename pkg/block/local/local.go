@@ -48,7 +48,22 @@ type LocalStore interface {
 	// Hydrate writes bytes fetched from the remote store during a cold read.
 	// Same append primitive as WriteAt, but the record is born clean (already
 	// durable remotely) so it is immediately evictable.
-	Hydrate(ctx context.Context, payloadID string, offset int64, data []byte) error
+	//
+	// notAfter is the WriteVersion sampled before the caller resolved which
+	// remote bytes to fetch. The write-back is dropped when the range changed
+	// since, so a fetch stalled across a write, truncate or punch cannot put
+	// the pre-mutation bytes back. Zero disables the gate.
+	Hydrate(ctx context.Context, payloadID string, offset int64, data []byte, notAfter uint64) error
+
+	// WriteVersion reports a monotonic marker of the store's write history,
+	// sampled before resolving a fetch to bound what it may write back.
+	WriteVersion() uint64
+
+	// Invalidate demotes the durable bytes covering [offset, offset+length) to
+	// remote-only, so a read of the range fetches rather than serving them. A
+	// caller that has proven the local copy unusable calls it before re-fetching,
+	// since Hydrate fills and will not write over a range the store still claims.
+	Invalidate(ctx context.Context, payloadID string, offset, length int64) error
 
 	// Commit fsyncs the file's buffered writes so they become durable. NFS
 	// COMMIT / SMB Flush land here. Backends without a durable substrate (the

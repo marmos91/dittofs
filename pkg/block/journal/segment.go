@@ -265,7 +265,10 @@ func (s *Store) sealSegment(sh *shard) error {
 // crash. Dropping the lock therefore needs the watermark replaced by an in-flight
 // version set (ceiling = lowest in-flight Version minus one) first; build that
 // only if append contention on a shard actually shows up in a profile.
-func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data []byte, synced bool) error {
+//
+// synced marks a hydrate, whose range is gated below; notAfter is its caller's
+// sampled WriteVersion, or 0 for no bound. See Store.Hydrate.
+func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data []byte, synced bool, notAfter uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -300,6 +303,19 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 	sh := s.shardFor(id)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
+
+	// A hydrate fills; it never overwrites. The range is re-tested here, under
+	// the same lock that stamps the version, so a write landing between the
+	// caller's split and this append cannot end up beneath older bytes. Anything
+	// short of the whole range is dropped rather than trimmed — the caller split
+	// on the same predicate, so a short answer means the range changed underneath
+	// and the fetched bytes are the wrong ones.
+	if synced {
+		n := int64(len(data))
+		if staleAfterTruncate(sh, id, notAfter) || !coversWhole(sh.index[id].hydratable(offset, n, notAfter), offset, n) {
+			return nil
+		}
+	}
 
 	if sh.active.tail.Load()+recLen > s.cfg.SegmentSize {
 		if err := s.sealSegment(sh); err != nil {

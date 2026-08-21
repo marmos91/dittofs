@@ -46,7 +46,7 @@ func newFailingPutLocal() *failingPutLocal {
 // for the test to close `release` (with a safety timeout so a buggy test does
 // not wedge the suite), then returns the sentinel error. The cold-fetch path
 // persists via journal Hydrate (payloadID+offset), not the old hash-keyed Put.
-func (f *failingPutLocal) Hydrate(_ context.Context, _ string, _ int64, _ []byte) error {
+func (f *failingPutLocal) Hydrate(_ context.Context, _ string, _ int64, _ []byte, _ uint64) error {
 	f.puts.Add(1)
 	f.once.Do(func() { close(f.entered) })
 	select {

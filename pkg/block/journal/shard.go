@@ -32,6 +32,12 @@ type shard struct {
 	active *segmentMeta
 	sealed map[uint64]*segmentMeta
 	index  map[FileID]*fileIndex
+	// truncVer is, per file, the store LSN as it stood when that file's most
+	// recent truncate began. A hydrate whose caller sampled its bound at or
+	// below it is refused: truncate clips intervals away rather than recording
+	// one, so a range it emptied leaves nothing for hydratable to weigh a stale
+	// write-back against. Entries die with the file's index on delete.
+	truncVer map[FileID]uint64
 	// lastVersion is the highest record Version appended to this shard, stamped
 	// under mu once the record's write() returned. syncedVersion is the highest
 	// Version a completed fsync has covered — records above it exist only in the
@@ -83,10 +89,11 @@ type shard struct {
 
 func newShard(active *segmentMeta) *shard {
 	sh := &shard{
-		active:  active,
-		sealed:  make(map[uint64]*segmentMeta),
-		index:   make(map[FileID]*fileIndex),
-		segSync: func(seg *segmentMeta) error { return seg.fd.Sync() },
+		active:   active,
+		sealed:   make(map[uint64]*segmentMeta),
+		index:    make(map[FileID]*fileIndex),
+		truncVer: make(map[FileID]uint64),
+		segSync:  func(seg *segmentMeta) error { return seg.fd.Sync() },
 	}
 	sh.commitCond = sync.NewCond(&sh.commitMu)
 	return sh

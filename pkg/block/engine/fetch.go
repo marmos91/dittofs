@@ -52,9 +52,15 @@ type coveringChunk struct {
 // start; hydrating its full extent would put the older bytes over the newer
 // row's head, and the local tier keeps whichever landed last rather than
 // whichever row coverage prefers. A zero To means the row's whole extent.
+//
+// At is the local store's WriteVersion as it stood before the manifest rows were
+// resolved. The local tier drops the write-back where the range changed since,
+// so a fetch stalled in the remote read while a write, truncate or punch lands
+// cannot put the pre-mutation bytes back. Zero leaves that gate off.
 type hydrateSpan struct {
 	From uint64
 	To   uint64
+	At   uint64
 }
 
 // collectCoveringChunks returns every manifest row covering [start, end), in
@@ -92,6 +98,9 @@ func (m *Syncer) collectCoveringChunks(ctx context.Context, payloadID string, st
 	// index every lookup falls back to a full per-payload manifest scan, and the
 	// resolver's snapshot turns K of those into one.
 	res := newChunkWindowResolver(m.fileChunkStore, payloadID)
+	// Sampled before the first row is read: every span this walk produces may
+	// only write back over bytes that already existed when it started looking.
+	at := m.local.WriteVersion()
 	if fb, absOff, err := res.coveringRow(ctx, start); err == nil && fb != nil && absOff < start {
 		start = absOff
 	}
@@ -118,7 +127,7 @@ func (m *Syncer) collectCoveringChunks(ctx context.Context, payloadID string, st
 		out = append(out, coveringChunk{
 			blockIdx: absOff / uint64(BlockSize),
 			fb:       fb,
-			span:     hydrateSpan{From: cur, To: claimEnd},
+			span:     hydrateSpan{From: cur, To: claimEnd, At: at},
 		})
 		cur = claimEnd
 	}
@@ -183,7 +192,7 @@ func (m *Syncer) hydrateChunk(ctx context.Context, fb *block.FileChunk, data []b
 		}
 		off, data = off+lo, data[lo:hi]
 	}
-	return m.local.Hydrate(ctx, fb.ID[:i], int64(off), data)
+	return m.local.Hydrate(ctx, fb.ID[:i], int64(off), data, span.At)
 }
 
 // clampSpan converts an absolute hydrate span into offsets within a chunk's
