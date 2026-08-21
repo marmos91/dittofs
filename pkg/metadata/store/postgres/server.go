@@ -6,7 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlstat"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 // ============================================================================
@@ -94,5 +94,5 @@ func (s *PostgresMetadataStore) GetFilesystemStatistics(ctx context.Context, han
 	if err := s.queryRow(ctx, sql, args...).Scan(&bytesUsed, &filesUsed); err != nil {
 		return nil, mapPgError(err, "GetFilesystemStatistics", "")
 	}
-	return sqlstat.Build(bytesUsed, filesUsed), nil
+	return basestore.BuildStatistics(bytesUsed, filesUsed), nil
 }

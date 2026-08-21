@@ -1,11 +1,11 @@
-package sqlstat
+package basestore
 
 import "testing"
 
 // TestBuild verifies the shared assembler computes used / available from the
 // scanned aggregate and reports the unlimited ceilings.
-func TestBuild(t *testing.T) {
-	stats := Build(4096, 3)
+func TestBuildStatistics(t *testing.T) {
+	stats := BuildStatistics(4096, 3)
 
 	if stats.UsedBytes != 4096 {
 		t.Errorf("UsedBytes = %d, want 4096", stats.UsedBytes)
@@ -30,7 +30,7 @@ func TestBuild(t *testing.T) {
 // TestBuild_ZeroUsage covers the empty-share case: zero usage yields the full
 // ceiling as available.
 func TestBuild_ZeroUsage(t *testing.T) {
-	stats := Build(0, 0)
+	stats := BuildStatistics(0, 0)
 	if stats.AvailableBytes != TotalBytes {
 		t.Errorf("AvailableBytes = %d, want full ceiling %d", stats.AvailableBytes, TotalBytes)
 	}

@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 // ============================================================================
@@ -31,7 +31,7 @@ type memoryTransaction struct {
 	// quota accumulates per-identity usage changes (bytes + file count) keyed by
 	// (scope, id). Applied to the store's quota cache exactly once after a
 	// successful commit, identical to pendingDelta.
-	quota quota.Delta
+	quota basestore.QuotaDelta
 	// syncedOps buffers SyncedHashStore mutations made inside the closure.
 	// The synced maps live under their own mutex (syncedMu), NOT store.mu, so
 	// they cannot participate in the snapshot/restore rollback: instead the
@@ -510,11 +510,7 @@ func (tx *memoryTransaction) PutFilesystemMeta(ctx context.Context, shareName st
 }
 
 func (tx *memoryTransaction) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	return metadata.GenerateNewHandle(shareName)
+	return basestore.GenerateHandle(ctx, shareName)
 }
 
 func (tx *memoryTransaction) GetFileByPayloadID(ctx context.Context, payloadID metadata.PayloadID) (*metadata.File, error) {

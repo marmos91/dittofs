@@ -14,7 +14,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/backup"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 const (
@@ -414,7 +414,7 @@ func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	// A cache left at its pre-restore contents reports usage for files that
 	// no longer exist.
 	var totalBytes int64
-	var usage quota.Delta
+	var usage basestore.QuotaDelta
 	for _, fd := range s.files {
 		if fd.Attr != nil && fd.Attr.Type == metadata.FileTypeRegular {
 			totalBytes += int64(fd.Attr.Size)

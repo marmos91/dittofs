@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
 )
 
@@ -19,10 +19,7 @@ import (
 
 // GenerateHandle creates a new unique file handle for a path in a share.
 func (s *BadgerMetadataStore) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return metadata.GenerateNewHandle(shareName)
+	return basestore.GenerateHandle(ctx, shareName)
 }
 
 // ============================================================================
@@ -191,7 +188,7 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 	}
 
 	var freedBytes int64
-	var quotaFreed map[quota.Key]metadata.UsageStat
+	var quotaFreed map[basestore.QuotaKey]metadata.UsageStat
 	err := s.updateWithConflictRetry(ctx, func(txn *badgerdb.Txn) error {
 		_, err := txn.Get(keyShare(shareName))
 		if err != nil {
@@ -223,7 +220,7 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 // applyQuotaDelta folds a per-identity usage delta into the in-memory usage
 // cache. Called post-commit (matching usedBytes). Buckets that drop to zero or
 // below are removed.
-func (s *BadgerMetadataStore) applyQuotaDelta(delta map[quota.Key]metadata.UsageStat) {
+func (s *BadgerMetadataStore) applyQuotaDelta(delta map[basestore.QuotaKey]metadata.UsageStat) {
 	if len(delta) == 0 {
 		return
 	}
@@ -247,7 +244,7 @@ func (s *BadgerMetadataStore) applyQuotaDelta(delta map[quota.Key]metadata.Usage
 // pendingDelta and the pool-path applies it only once updateWithConflictRetry
 // returns nil — so a conflict retry that re-runs the enclosing Update never
 // double-counts. The counter is statfs-only, not quota-enforcing.
-func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName string) (freedBytes int64, quotaFreed map[quota.Key]metadata.UsageStat, err error) {
+func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName string) (freedBytes int64, quotaFreed map[basestore.QuotaKey]metadata.UsageStat, err error) {
 	type doomed struct {
 		id        uuid.UUID
 		objectID  metadata.ContentHash
@@ -293,7 +290,7 @@ func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName stri
 	}
 	it.Close()
 
-	quotaFreed = make(map[quota.Key]metadata.UsageStat)
+	quotaFreed = make(map[basestore.QuotaKey]metadata.UsageStat)
 	for _, v := range victims {
 		if delErr := deleteFileKeys(txn, v.id, v.objectID, v.payloadID); delErr != nil {
 			return 0, nil, delErr
@@ -309,12 +306,12 @@ func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName stri
 			if v.size > 0 {
 				freedBytes += int64(v.size)
 			}
-			uk := quota.Key{Scope: metadata.QuotaScopeUser, ID: v.uid}
+			uk := basestore.QuotaKey{Scope: metadata.QuotaScopeUser, ID: v.uid}
 			us := quotaFreed[uk]
 			us.Bytes -= int64(v.size)
 			us.Files--
 			quotaFreed[uk] = us
-			gk := quota.Key{Scope: metadata.QuotaScopeGroup, ID: v.gid}
+			gk := basestore.QuotaKey{Scope: metadata.QuotaScopeGroup, ID: v.gid}
 			gs := quotaFreed[gk]
 			gs.Bytes -= int64(v.size)
 			gs.Files--

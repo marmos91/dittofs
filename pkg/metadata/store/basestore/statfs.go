@@ -1,8 +1,9 @@
-// Package sqlstat holds the statfs assembly shared by the SQL metadata store
+// statfs.go holds the statfs assembly shared by the SQL metadata store
 // backends. Each backend runs its own aggregate query (the placeholder syntax
 // differs between drivers) and hands the scanned used-bytes / used-files counts
 // here to build the reported FilesystemStatistics.
-package sqlstat
+
+package basestore
 
 import "github.com/marmos91/dittofs/pkg/metadata"
 
@@ -13,10 +14,10 @@ const (
 	TotalFiles uint64 = 1 << 32 // 4 billion files
 )
 
-// Build assembles a FilesystemStatistics from the scanned aggregate counts,
+// BuildStatistics assembles a FilesystemStatistics from the scanned aggregate counts,
 // clamping available space to zero if usage somehow exceeds the (effectively
 // unlimited) ceilings.
-func Build(bytesUsed, filesUsed int64) *metadata.FilesystemStatistics {
+func BuildStatistics(bytesUsed, filesUsed int64) *metadata.FilesystemStatistics {
 	used := uint64(bytesUsed)
 	usedFiles := uint64(filesUsed)
 

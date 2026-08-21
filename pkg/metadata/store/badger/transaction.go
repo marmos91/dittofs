@@ -13,7 +13,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 // ============================================================================
@@ -40,7 +40,7 @@ type badgerTransaction struct {
 	// (scope, id). Captured per attempt and applied to the store's quota cache
 	// exactly once after a successful commit, identical to pendingDelta (so a
 	// conflict-retry cannot double-count).
-	quota quota.Delta
+	quota basestore.QuotaDelta
 	// dirtyShares collects share names whose stored share record this
 	// transaction mutated. Captured per attempt and, after a successful commit,
 	// used to invalidate the share read cache (see withTransaction). Reset per
@@ -123,7 +123,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 		// successful commit and reset per attempt (a retried attempt starts
 		// from zero, so a conflict-retry cannot double-count usedBytes).
 		var pendingDelta int64
-		var quotaDelta map[quota.Key]metadata.UsageStat
+		var quotaDelta map[basestore.QuotaKey]metadata.UsageStat
 		var dirtyFiles []string
 		var dirtyShares []string
 		var dirtyDirents []string
@@ -957,11 +957,7 @@ func (tx *badgerTransaction) PutFilesystemMeta(ctx context.Context, shareName st
 }
 
 func (tx *badgerTransaction) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	return metadata.GenerateNewHandle(shareName)
+	return basestore.GenerateHandle(ctx, shareName)
 }
 
 // ============================================================================

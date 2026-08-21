@@ -13,7 +13,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 // shareData holds the internal representation of a share configuration.
@@ -214,7 +214,7 @@ type MemoryMetadataStore struct {
 	// transaction's pending per-identity deltas exactly once on successful
 	// commit, identical to the usedBytes discipline.
 	quotaMu sync.Mutex
-	quota   *quota.Cache
+	quota   *basestore.QuotaCache
 
 	// storeID is the engine-persistent identifier for this store instance.
 	// Assigned on construction with a fresh ULID and immutable for the life
@@ -326,7 +326,7 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		// ObjectID -> handle-key secondary index.
 		objectIndex: make(map[block.ContentHash]string),
 		// per-identity quota usage counters.
-		quota: quota.NewCache(),
+		quota: basestore.NewQuotaCache(),
 		// Block packing record store.
 		blockRecords: make(map[string]*block.BlockRecord),
 	}
@@ -366,32 +366,7 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 //   - *MemoryMetadataStore: A new store instance with default configuration
 func NewMemoryMetadataStoreWithDefaults() *MemoryMetadataStore {
 	return NewMemoryMetadataStore(MemoryMetadataStoreConfig{
-		Capabilities: metadata.FilesystemCapabilities{
-			// Transfer Sizes
-			MaxReadSize:        1048576, // 1MB
-			PreferredReadSize:  1048576, // 1MB — matches Linux knfsd default; reduces NFS round-trips per block
-			MaxWriteSize:       1048576, // 1MB
-			PreferredWriteSize: 1048576, // 1MB
-
-			// Limits
-			MaxFileSize:      9223372036854775807, // 2^63-1 (practically unlimited)
-			MaxFilenameLen:   255,                 // Standard Unix limit
-			MaxPathLen:       4096,                // Standard Unix limit
-			MaxHardLinkCount: 32767,               // Similar to ext4
-
-			// Features
-			SupportsHardLinks:     true, // We track link counts
-			SupportsSymlinks:      true, // We store symlink targets
-			CaseSensitive:         true, // Go map keys are case-sensitive
-			CasePreserving:        true, // We store exact filenames
-			ChownRestricted:       false,
-			SupportsACLs:          false,
-			SupportsExtendedAttrs: true, // EAs persist on FileAttr.EAs (set/query via SMB FileFullEaInformation)
-			TruncatesLongNames:    true, // Reject with error, don't truncate
-
-			// Time Resolution
-			TimestampResolution: 1, // 1 nanosecond (Go time.Time precision)
-		},
+		Capabilities:    basestore.DefaultCapabilities(),
 		MaxStorageBytes: 0, // Unlimited (reported as 1TB)
 		MaxFiles:        0, // Unlimited (reported as 1 million)
 	})

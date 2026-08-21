@@ -13,9 +13,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlstat"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/txretry"
 )
 
@@ -48,7 +47,7 @@ type sqliteTransaction struct {
 	// (scope, id). Applied to the store's quota cache exactly once after a
 	// successful commit, identical to pendingDelta (so a serialization/deadlock
 	// retry never double-counts).
-	quota quota.Delta
+	quota basestore.QuotaDelta
 	// sharesDirty records that this transaction wrote a share record, so the
 	// store's ShareOptions cache is dropped after the commit. A stale entry is
 	// a wrong permission decision, and shares are few enough that clearing the
@@ -875,12 +874,7 @@ func (tx *sqliteTransaction) PutFilesystemMeta(ctx context.Context, shareName st
 }
 
 func (tx *sqliteTransaction) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// Handles are UUID-based; the path is stored in the File struct.
-	return metadata.GenerateNewHandle(shareName)
+	return basestore.GenerateHandle(ctx, shareName)
 }
 
 // ============================================================================
@@ -1058,7 +1052,7 @@ func (tx *sqliteTransaction) collectShareQuotaFreed(ctx context.Context, shareNa
 		if err := rows.Scan(&id, &bytes, &files); err != nil {
 			return mapDBError(err, "DeleteShare", shareName)
 		}
-		tx.quota.AddKeyed(quota.Key{Scope: scope, ID: uint32(id)}, metadata.UsageStat{Bytes: -bytes, Files: -files})
+		tx.quota.AddKeyed(basestore.QuotaKey{Scope: scope, ID: uint32(id)}, metadata.UsageStat{Bytes: -bytes, Files: -files})
 	}
 	if err := rows.Err(); err != nil {
 		return mapDBError(err, "DeleteShare", shareName)
@@ -1337,7 +1331,7 @@ func (tx *sqliteTransaction) GetFilesystemStatistics(ctx context.Context, handle
 		return nil, mapDBError(err, "GetFilesystemStatistics", "")
 	}
 
-	return sqlstat.Build(bytesUsed, filesUsed), nil
+	return basestore.BuildStatistics(bytesUsed, filesUsed), nil
 }
 
 // ============================================================================

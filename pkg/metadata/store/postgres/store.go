@@ -13,7 +13,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
 )
 
@@ -73,7 +73,7 @@ type PostgresMetadataStore struct {
 	// it is always reconstructed correctly). Updated from a transaction's pending
 	// per-identity deltas exactly once on successful commit. Guarded by quotaMu.
 	quotaMu sync.Mutex
-	quota   *quota.Cache
+	quota   *basestore.QuotaCache
 
 	// shareCache caches decoded ShareOptions so the permission funnel every
 	// read/write/create/setattr traverses does not re-run the options SELECT
@@ -145,7 +145,7 @@ func NewPostgresMetadataStore(
 		logger:       log,
 		ctx:          storeCtx,
 		cancel:       cancel,
-		quota:        quota.NewCache(),
+		quota:        basestore.NewQuotaCache(),
 	}
 	// The substores derive only from pool, which is never reassigned, so bind
 	// them once here.
@@ -257,7 +257,7 @@ func (s *PostgresMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint
 // applyQuotaDelta folds a per-identity usage delta into the in-memory usage
 // cache. Called post-commit (matching usedBytes). Buckets that drop to zero or
 // below are removed.
-func (s *PostgresMetadataStore) applyQuotaDelta(delta map[quota.Key]metadata.UsageStat) {
+func (s *PostgresMetadataStore) applyQuotaDelta(delta map[basestore.QuotaKey]metadata.UsageStat) {
 	if len(delta) == 0 {
 		return
 	}
