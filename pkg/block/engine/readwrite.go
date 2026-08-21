@@ -114,7 +114,7 @@ func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []
 // when currentBlocks is non-empty, blocks strictly past newSize
 // are dropped and the coordinator decrements RefCount for each dropped
 // hash. The new []ChunkRef list is returned for the caller to persist
-// via UpdateAttrs. When currentBlocks is empty the legacy path runs and
+// via SetManifest. When currentBlocks is empty the legacy path runs and
 // the returned slice is empty (dual-read shim semantics).
 // narrowChunkRow shrinks a manifest row to the surviving prefix of its chunk so
 // coverage lookups stop resolving it for bytes the file no longer holds and a

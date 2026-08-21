@@ -59,7 +59,7 @@ func newBadgerCommitter(t *testing.T) (*metadatabadger.BadgerMetadataStore, meta
 // TestLocalBlockSink_ConcurrentSameFileCommit_NoSSIConflict reproduces the carve
 // SSI wall: the within-file carve dispatcher (CarveUploadConcurrency) fires
 // several CommitBlock calls for one file concurrently, and each re-projects
-// File.Blocks (UpdateAttrs) on the SAME File row. Under badger's SSI that read-write
+// File.Blocks (SetManifest) on the SAME File row. Under badger's SSI that read-write
 // on a shared row aborts as ErrConflict; enough contention exhausts the retry
 // budget and surfaces the conflict to the carver (the client sees EDEADLK).
 //

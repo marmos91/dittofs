@@ -19,7 +19,7 @@ import (
 // coordinator.go) — that package may not be imported here per the
 // strict-grep boundary. It drives PersistFileChunks the exact way the
 // production wrapper does: resolve payloadID -> existing file row via
-// GetFileByPayloadID, mutate Blocks + ObjectID, UpdateAttrs under the existing
+// GetFileByPayloadID, mutate Blocks + ObjectID, SetManifest under the existing
 // id, all in one metadata transaction, wrapping a backend object_id
 // uniqueness conflict into engine.ErrObjectIDConflict.
 type testCoordinator struct {
@@ -63,7 +63,7 @@ func (c *testCoordinator) PersistFileChunks(ctx context.Context, payloadID strin
 		}
 		file.Blocks = blocks
 		file.ObjectID = objectID
-		if perr := tx.UpdateAttrs(ctx, file); perr != nil {
+		if perr := tx.SetManifest(ctx, file); perr != nil {
 			return mapObjectIDConflict(perr)
 		}
 		return nil

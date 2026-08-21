@@ -50,9 +50,11 @@ type Files interface {
 	// block list may use it: carve/rollup commit, truncate, punch-hole,
 	// clone, copy-payload and manifest reprojection.
 	//
-	// Backends that keep the block list inline in the file record (badger,
-	// memory) treat it as UpdateAttrs; the SQL backends rewrite
-	// file_block_refs, scoped by File.ManifestDirtyOffsets when it is non-nil.
+	// Where the manifest is stored separately from the attrs — the SQL
+	// backends' file_block_refs table, badger's fm:<uuid> key — this is the
+	// only method that rewrites it, scoped by File.ManifestDirtyOffsets when
+	// that is non-nil. The memory backend keeps the block list inline on the
+	// stored FileAttr and so treats it exactly as UpdateAttrs.
 	SetManifest(ctx context.Context, file *File) error
 
 	// DeleteFile removes file metadata by handle.

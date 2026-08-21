@@ -180,14 +180,14 @@ type Reader interface {
 //
 // write operations thread a caller-supplied
 // []ChunkRef snapshot of the file's FileAttr.Blocks. WriteAt returns the
-// new []ChunkRef (caller persists via UpdateAttrs in the same metadata txn).
+// new []ChunkRef (caller persists via SetManifest in the same metadata txn).
 // Truncate / Delete invoke the MetadataCoordinator to decrement RefCount
 // for hashes the operation drops; CopyPayload becomes O(1) — increments
 // RefCount per unique source hash, no data copy.
 type Writer interface {
 	// WriteAt writes data to storage at the given offset and returns
 	// the file's new ChunkRef list (sorted, sparse-hole-preserving).
-	// Caller persists via UpdateAttrs in the same metadata txn.
+	// Caller persists via SetManifest in the same metadata txn.
 	WriteAt(ctx context.Context, payloadID string, currentBlocks []ChunkRef, data []byte, offset uint64) ([]ChunkRef, error)
 
 	// Truncate changes the size of a payload. Returns the new ChunkRef
