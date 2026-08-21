@@ -731,7 +731,7 @@ func (sm *StateManager) RemoveClient(clientID uint64) {
 //
 // It scans sm.openOwners by ClientID rather than walking a per-client owner
 // list: V41ClientRecord carries no such list, and the v4.0 ClientRecord one
-// goes stale because freeStateidLocked removes owners from sm.openOwners
+// goes stale because freeOpenStateidLocked removes owners from sm.openOwners
 // without removing them there.
 //
 // Caller must hold sm.mu.
