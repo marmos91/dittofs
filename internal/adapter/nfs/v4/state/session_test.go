@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================
@@ -1053,13 +1054,30 @@ func TestReaper_ExpiredLeaseReleasesOpenState(t *testing.T) {
 		t.Fatalf("CreateSession error: %v", err)
 	}
 
+	lm := lock.NewManager()
+	sm.SetLockManagerResolver(func(_ []byte) lock.LockManager { return lm })
+
 	fh := []byte("fh-shared")
-	if _, err := sm.OpenFile(clientID, []byte("owner-a"), 1, fh,
+	open, err := sm.OpenFile(clientID, []byte("owner-a"), 1, fh,
 		types.OPEN4_SHARE_ACCESS_BOTH,
 		types.OPEN4_SHARE_DENY_WRITE,
 		types.CLAIM_NULL,
-	); err != nil {
+	)
+	if err != nil {
 		t.Fatalf("OpenFile error: %v", err)
+	}
+
+	// A byte-range lock on top of the open: seqid 0 is the v4.1 bypass, the
+	// slot table provides the replay protection the seqids give v4.0.
+	if _, err := sm.LockNew(context.Background(),
+		clientID, []byte("lock-owner-a"), 0,
+		&open.Stateid, 0,
+		fh, types.WRITE_LT, 0, 100, false,
+	); err != nil {
+		t.Fatalf("LockNew error: %v", err)
+	}
+	if got := len(lm.ListUnifiedLocks(string(fh))); got != 1 {
+		t.Fatalf("unified locks before reap = %d, want 1", got)
 	}
 
 	// Let the lease lapse, then run the sweep the reaper goroutine runs.
@@ -1070,6 +1088,8 @@ func TestReaper_ExpiredLeaseReleasesOpenState(t *testing.T) {
 	_, clientLives := sm.v41ClientsByID[clientID]
 	owners := len(sm.openOwners)
 	opens := len(sm.openStateByOther)
+	lockOwners := len(sm.lockOwners)
+	lockStates := len(sm.lockStateByOther)
 	sm.mu.RUnlock()
 
 	if clientLives {
@@ -1080,6 +1100,17 @@ func TestReaper_ExpiredLeaseReleasesOpenState(t *testing.T) {
 	}
 	if opens != 0 {
 		t.Errorf("openStateByOther = %d, want 0: purged client's open states leaked", opens)
+	}
+	if lockOwners != 0 {
+		t.Errorf("lockOwners = %d, want 0: purged client's lock-owners leaked", lockOwners)
+	}
+	if lockStates != 0 {
+		t.Errorf("lockStateByOther = %d, want 0: purged client's lock states leaked", lockStates)
+	}
+	// The byte range must be free for the next client -- and for SMB, which
+	// shares this manager.
+	if got := len(lm.ListUnifiedLocks(string(fh))); got != 0 {
+		t.Errorf("unified locks after reap = %d, want 0: reaped client's locks still held", got)
 	}
 
 	// The reservation must die with the client: another client opening the same
