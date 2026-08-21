@@ -15,13 +15,8 @@ import (
 // recorder.
 func doQuota(t *testing.T, router http.Handler, token, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	var r *http.Request
-	if body == "" {
-		r = httptest.NewRequest(method, path, nil)
-	} else {
-		r = httptest.NewRequest(method, path, strings.NewReader(body))
-		r.Header.Set("Content-Type", "application/json")
-	}
+	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, r)
@@ -37,13 +32,13 @@ func TestQuotaRoutesBindScope(t *testing.T) {
 	token := tokenFor(t, jwtService, models.RoleAdmin)
 
 	cases := []struct {
-		scope string
-		path  string
-		id    string
+		scope  string
+		path   string
+		wantID string
 	}{
 		{models.QuotaScopeUser, "/api/v1/shares/tiered/quotas/user/1000", "1000"},
 		{models.QuotaScopeGroup, "/api/v1/shares/tiered/quotas/group/2000", "2000"},
-		{models.QuotaScopeDefaultUser, "/api/v1/shares/tiered/quotas/default-user", ""},
+		{models.QuotaScopeDefaultUser, "/api/v1/shares/tiered/quotas/default-user", "none"},
 	}
 
 	for _, tc := range cases {
@@ -55,7 +50,6 @@ func TestQuotaRoutesBindScope(t *testing.T) {
 			var got struct {
 				Scope      string  `json:"scope"`
 				IdentityID *uint32 `json:"identity_id"`
-				LimitBytes string  `json:"limit_bytes"`
 			}
 			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 				t.Fatalf("decode PUT response: %v", err)
@@ -63,12 +57,12 @@ func TestQuotaRoutesBindScope(t *testing.T) {
 			if got.Scope != tc.scope {
 				t.Errorf("scope = %q, want %q", got.Scope, tc.scope)
 			}
-			if tc.id == "" {
-				if got.IdentityID != nil {
-					t.Errorf("identity_id = %d, want nil for %s", *got.IdentityID, tc.scope)
-				}
-			} else if got.IdentityID == nil || fmt.Sprint(*got.IdentityID) != tc.id {
-				t.Errorf("identity_id = %v, want %s", got.IdentityID, tc.id)
+			gotID := "none"
+			if got.IdentityID != nil {
+				gotID = fmt.Sprint(*got.IdentityID)
+			}
+			if gotID != tc.wantID {
+				t.Errorf("identity_id = %s, want %s", gotID, tc.wantID)
 			}
 
 			if rec := doQuota(t, router, token, http.MethodGet, tc.path, ""); rec.Code != http.StatusOK {
@@ -95,31 +89,31 @@ func TestQuotaRoutesBindScope(t *testing.T) {
 	}
 }
 
-// TestQuotaScopedRouteRequiresID verifies that omitting the {id} segment on a
-// user/group quota reports the missing id rather than the scope.
-func TestQuotaScopedRouteRequiresID(t *testing.T) {
+// TestQuotaRouteRejectsBadTarget covers the two ways a {scope}[/{id}] path can
+// be wrong: a user/group quota missing its id must complain about the id, and
+// an unrecognised scope must be rejected with the offending value echoed.
+func TestQuotaRouteRejectsBadTarget(t *testing.T) {
 	router, jwtService, _ := newTestRouter(t, false)
 	token := tokenFor(t, jwtService, models.RoleAdmin)
 
-	rec := doQuota(t, router, token, http.MethodPut, "/api/v1/shares/tiered/quotas/user", `{"limit_bytes":"1GiB"}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("PUT without id = %d, want 400 (body=%q)", rec.Code, rec.Body.String())
+	cases := []struct {
+		name     string
+		path     string
+		wantBody string
+	}{
+		{"missing id", "/api/v1/shares/tiered/quotas/user", "identity id is required"},
+		{"unknown scope", "/api/v1/shares/tiered/quotas/wheel/7", "Invalid scope: wheel"},
 	}
-	if !strings.Contains(rec.Body.String(), "identity id is required") {
-		t.Errorf("body = %q, want an identity-id complaint", rec.Body.String())
-	}
-}
 
-// TestQuotaUnknownScopeRejected keeps the scope enum enforced.
-func TestQuotaUnknownScopeRejected(t *testing.T) {
-	router, jwtService, _ := newTestRouter(t, false)
-	token := tokenFor(t, jwtService, models.RoleAdmin)
-
-	rec := doQuota(t, router, token, http.MethodPut, "/api/v1/shares/tiered/quotas/wheel/7", `{"limit_bytes":"1GiB"}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("PUT unknown scope = %d, want 400 (body=%q)", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "Invalid scope: wheel") {
-		t.Errorf("body = %q, want the offending scope echoed", rec.Body.String())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := doQuota(t, router, token, http.MethodPut, tc.path, `{"limit_bytes":"1GiB"}`)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("PUT %s = %d, want 400 (body=%q)", tc.path, rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tc.wantBody) {
+				t.Errorf("body = %q, want it to mention %q", rec.Body.String(), tc.wantBody)
+			}
+		})
 	}
 }
