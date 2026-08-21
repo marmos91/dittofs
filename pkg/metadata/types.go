@@ -308,7 +308,11 @@ type FilesystemStatistics struct {
 	// TotalFiles is the total number of file slots (inodes) in the filesystem
 	TotalFiles uint64
 
-	// UsedFiles is the number of file slots currently in use
+	// UsedFiles is the number of file slots currently in use: the share's
+	// REGULAR files only. Directories, symlinks and other non-regular entries
+	// do not count, so a share holding no regular files reports 0 even though
+	// its root directory exists. This matches UsedBytes, which likewise counts
+	// only regular files, and keeps the share root from inflating the figure.
 	UsedFiles uint64
 
 	// AvailableFiles is the number of file slots available to the user

@@ -614,6 +614,35 @@ func testFilesystemMetaStatsCaps(t *testing.T, factory StoreFactory) {
 		t.Error("GetFilesystemStatistics() TotalBytes = 0, want a non-zero total")
 	}
 
+	// UsedFiles counts regular files only. The share exists and its root
+	// directory does too, so a backend that counted every inode would report a
+	// non-zero figure here. Asserting the rule rather than a fixture count is
+	// what stops a backend diverging again: directories carry no logical bytes,
+	// and the share root must not inflate the inode count.
+	if stats.UsedFiles != 0 {
+		t.Errorf("GetFilesystemStatistics() UsedFiles = %d on a share with no regular files, want 0 — "+
+			"directories (including the share root) must not count", stats.UsedFiles)
+	}
+	if stats.UsedBytes != 0 {
+		t.Errorf("GetFilesystemStatistics() UsedBytes = %d on a share with no regular files, want 0", stats.UsedBytes)
+	}
+
+	// One regular file moves both figures by exactly that file.
+	fileHandle := createTestFile(t, store, shareName, rootHandle, "counted.bin", 0o644)
+	setFileSize(t, store, fileHandle, 1234)
+	createTestDir(t, store, shareName, rootHandle, "not-counted")
+
+	stats, err = store.GetFilesystemStatistics(ctx, rootHandle)
+	if err != nil {
+		t.Fatalf("GetFilesystemStatistics() after writes failed: %v", err)
+	}
+	if stats.UsedFiles != 1 {
+		t.Errorf("GetFilesystemStatistics() UsedFiles = %d after one regular file plus a directory, want 1", stats.UsedFiles)
+	}
+	if stats.UsedBytes != 1234 {
+		t.Errorf("GetFilesystemStatistics() UsedBytes = %d, want 1234", stats.UsedBytes)
+	}
+
 	// SetFilesystemCapabilities must be observable through
 	// GetFilesystemCapabilities (resolved against the root handle).
 	caps, err := store.GetFilesystemCapabilities(ctx, rootHandle)
