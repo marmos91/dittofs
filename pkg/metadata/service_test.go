@@ -205,6 +205,20 @@ func TestMetadataService_HandleRouting_TypedErrors(t *testing.T) {
 	})
 }
 
+// TestMetadataService_FSStat_RejectsUndecodableHandle pins the protocol-visible
+// answer: FSSTAT decodes the handle and fails before a store is selected, so an
+// undecodable handle reads back as BADHANDLE rather than as some share's usage.
+func TestMetadataService_FSStat_RejectsUndecodableHandle(t *testing.T) {
+	t.Parallel()
+
+	fx := newTestFixture(t)
+
+	_, err := fx.service.GetFilesystemStatisticsForIdentity(context.Background(), metadata.FileHandle("garbage-no-colon"), nil)
+
+	require.Error(t, err)
+	assert.True(t, metadata.IsInvalidHandleError(err), "want ErrInvalidHandle, got %v", err)
+}
+
 // ============================================================================
 // CreateFile Tests
 // ============================================================================

@@ -804,6 +804,11 @@ func (tx *memoryTransaction) GetFilesystemStatistics(ctx context.Context, handle
 		return nil, err
 	}
 
-	stats := tx.store.computeStatistics(basestore.ShareOfHandle(handle))
+	shareName, _, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return nil, err
+	}
+
+	stats := tx.store.computeStatistics(shareName)
 	return &stats, nil
 }
