@@ -153,8 +153,7 @@ func (s *BadgerMetadataStore) storeCapabilities(capabilities metadata.Filesystem
 // contribute, matching the SQL backends' scoped aggregate: directories carry no
 // logical bytes and the share root would otherwise inflate UsedFiles.
 //
-// A handle that does not decode names no share and is rejected, matching the
-// other backends.
+// A handle that does not decode names no share and is rejected.
 func (s *BadgerMetadataStore) GetFilesystemStatistics(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemStatistics, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

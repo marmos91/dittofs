@@ -1356,9 +1356,6 @@ func (tx *postgresTransaction) GetFilesystemStatistics(ctx context.Context, hand
 		return nil, err
 	}
 
-	// Scope the aggregate to the share encoded in the handle (statfsQuery).
-	// Without the WHERE predicate every share reports the store-wide total, so
-	// a handle that does not decode names no share and is rejected.
 	shareName, _, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return nil, err
