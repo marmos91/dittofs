@@ -86,10 +86,13 @@ func (s *PostgresMetadataStore) SetFilesystemCapabilities(capabilities metadata.
 // GetFilesystemStatistics returns filesystem statistics scoped to the share
 // encoded in the handle. The store-wide atomic usedBytes counter cannot answer
 // a per-share query, so a scoped SQL aggregate (statfsQuery) is used instead.
-// An undecodable handle falls back to the store-wide totals (single-share
-// compatible).
+// A handle that does not decode names no share and is rejected.
 func (s *PostgresMetadataStore) GetFilesystemStatistics(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemStatistics, error) {
-	sql, args := statfsQuery(handle)
+	shareName, _, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return nil, err
+	}
+	sql, args := statfsQuery(shareName)
 	var bytesUsed, filesUsed int64
 	if err := s.queryRow(ctx, sql, args...).Scan(&bytesUsed, &filesUsed); err != nil {
 		return nil, mapPgError(err, "GetFilesystemStatistics", "")

@@ -643,6 +643,17 @@ func testFilesystemMetaStatsCaps(t *testing.T, factory StoreFactory) {
 		t.Errorf("GetFilesystemStatistics() UsedBytes = %d, want 1234", stats.UsedBytes)
 	}
 
+	// A handle that does not decode names no share, so it has no usage to
+	// report. Backends must reject it rather than substituting a reading of
+	// their own — zero, or the store-wide aggregate across every share the
+	// store holds. The store instance is shared by every share naming the same
+	// config, so a store-wide fallback would report another share's bytes.
+	if _, err := store.GetFilesystemStatistics(ctx, metadata.FileHandle("not-a-handle")); err == nil {
+		t.Error("GetFilesystemStatistics() on an undecodable handle returned no error, want ErrInvalidHandle")
+	} else if !metadata.IsInvalidHandleError(err) {
+		t.Errorf("GetFilesystemStatistics() on an undecodable handle error = %v, want ErrInvalidHandle", err)
+	}
+
 	// SetFilesystemCapabilities must be observable through
 	// GetFilesystemCapabilities (resolved against the root handle).
 	caps, err := store.GetFilesystemCapabilities(ctx, rootHandle)

@@ -7,7 +7,6 @@ import (
 	badgerdb "github.com/dgraph-io/badger/v4"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 // ============================================================================
@@ -153,13 +152,21 @@ func (s *BadgerMetadataStore) storeCapabilities(capabilities metadata.Filesystem
 // Both figures are O(1) reads of the per-share usage bucket. Only regular files
 // contribute, matching the SQL backends' scoped aggregate: directories carry no
 // logical bytes and the share root would otherwise inflate UsedFiles.
+//
+// A handle that does not decode names no share and is rejected, matching the
+// other backends.
 func (s *BadgerMetadataStore) GetFilesystemStatistics(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemStatistics, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
+	shareName, _, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return nil, err
+	}
+
 	s.quotaMu.Lock()
-	usage := s.quota.Share(basestore.ShareOfHandle(handle))
+	usage := s.quota.Share(shareName)
 	s.quotaMu.Unlock()
 
 	usedSize := uint64(max(usage.Bytes, 0))

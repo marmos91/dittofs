@@ -1299,10 +1299,13 @@ func (tx *sqliteTransaction) GetFilesystemStatistics(ctx context.Context, handle
 	}
 
 	// Scope the aggregate to the share encoded in the handle (statfsQuery).
-	// Without the WHERE predicate every share reports the store-wide total. An
-	// invalid handle falls back to the store-wide aggregate (single-share
-	// compatible).
-	sql, args := statfsQuery(handle)
+	// Without the WHERE predicate every share reports the store-wide total, so
+	// a handle that does not decode names no share and is rejected.
+	shareName, _, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return nil, err
+	}
+	sql, args := statfsQuery(shareName)
 	var bytesUsed, filesUsed int64
 	if err := tx.tx.QueryRow(ctx, sql, args...).Scan(&bytesUsed, &filesUsed); err != nil {
 		return nil, mapDBError(err, "GetFilesystemStatistics", "")

@@ -205,6 +205,22 @@ func TestMetadataService_HandleRouting_TypedErrors(t *testing.T) {
 	})
 }
 
+// TestMetadataService_FSStat_RejectsUndecodableHandle pins the guarantee the
+// backends rely on: FSSTAT decodes the handle and fails before a store is ever
+// selected, so no backend's GetFilesystemStatistics can be reached with a
+// handle that does not decode. Backends reject one too, but only this check
+// keeps the protocol-visible answer BADHANDLE rather than some share's usage.
+func TestMetadataService_FSStat_RejectsUndecodableHandle(t *testing.T) {
+	t.Parallel()
+
+	fx := newTestFixture(t)
+
+	_, err := fx.service.GetFilesystemStatisticsForIdentity(context.Background(), metadata.FileHandle("garbage-no-colon"), nil)
+
+	require.Error(t, err)
+	assert.True(t, metadata.IsInvalidHandleError(err), "want ErrInvalidHandle, got %v", err)
+}
+
 // ============================================================================
 // CreateFile Tests
 // ============================================================================

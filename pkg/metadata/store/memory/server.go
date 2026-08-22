@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 // ============================================================================
@@ -108,12 +107,9 @@ func (store *MemoryMetadataStore) GetFilesystemStatistics(ctx context.Context, h
 		return nil, err
 	}
 
-	// Validate handle
-	if len(handle) == 0 {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidHandle,
-			Message: "file handle cannot be empty",
-		}
+	shareName, _, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return nil, err
 	}
 
 	store.mu.RLock()
@@ -128,7 +124,7 @@ func (store *MemoryMetadataStore) GetFilesystemStatistics(ctx context.Context, h
 		}
 	}
 
-	stats := store.computeStatistics(basestore.ShareOfHandle(handle))
+	stats := store.computeStatistics(shareName)
 	return &stats, nil
 }
 
