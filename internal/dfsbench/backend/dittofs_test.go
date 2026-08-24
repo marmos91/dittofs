@@ -255,3 +255,33 @@ func TestDittofsResidentFilesReportsAPartialScan(t *testing.T) {
 		t.Errorf("got %q, want the partial scan flagged", got)
 	}
 }
+
+// A drain residue is judged by the segments it can pin, not by its size: the
+// pathological shape is a handful of MiB scattered one straggler per segment,
+// which frees nothing while looking negligible in bytes.
+func TestDittofsDrainResidueOK(t *testing.T) {
+	const gib = int64(1) << 30
+	tests := []struct {
+		name          string
+		unsynced      int64
+		localResident int64
+		want          bool
+	}{
+		{"fully synced", 0, 8 * gib, true},
+		{"one straggler pins one segment out of a large tier", 1 << 20, 8 * gib, true},
+		// <0.1% of a multi-GiB file by bytes, but spread thinly it pins ~32
+		// segments (8 GiB) and the barrier's 80%-drop check then fails.
+		{"small residue spread across many segments", 32 << 20, 8 * gib, false},
+		{"same residue against a tier big enough to absorb the pin", 32 << 20, 128 * gib, true},
+		{"whole tier pinnable", 4 << 20, gib, false},
+		{"under the barrier floor the drop is never verified", 32 << 20, 32 << 20, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := dittofsDrainResidueOK(tc.unsynced, tc.localResident); got != tc.want {
+				t.Errorf("dittofsDrainResidueOK(%d, %d) = %v, want %v",
+					tc.unsynced, tc.localResident, got, tc.want)
+			}
+		})
+	}
+}
