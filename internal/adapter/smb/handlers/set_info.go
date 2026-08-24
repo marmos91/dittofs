@@ -2335,14 +2335,10 @@ func (h *Handler) handleFileLinkInformation(
 	// force-complete the lease on timeout and the replay would hit
 	// STATUS_UNSUCCESSFUL.
 	if h.LeaseManager != nil {
-		dstParentLock := lock.FileHandle(dstDir)
-		excludeParentKey := openFile.ParentLeaseKey
-		hasExcludeKey := openFile.HasParentLeaseKey
-		shareName := openFile.ShareName
-		dstDbg := newPath
-		logger.Debug("SET_INFO: hardlink dst-parent dir lease break-to-None recorded", "dst", dstDbg)
+		logger.Debug("SET_INFO: hardlink dst-parent dir lease break-to-None recorded", "dst", newPath)
 		dispatch := h.LeaseManager.PrepareParentDirLeaseBreakOnContentChange(
-			dstParentLock, shareName, "", excludeParentKey, hasExcludeKey)
+			lock.FileHandle(dstDir), openFile.ShareName, "",
+			openFile.ParentLeaseKey, openFile.HasParentLeaseKey)
 		// Defer until after the SET_INFO response is on the wire so the
 		// client's lease handler runs in the next tevent cycle with
 		// lease_skip_ack=true (see breakParentDirLeasesForContentChangeOn

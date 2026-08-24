@@ -101,9 +101,8 @@ func (lm *Manager) BreakLeasesForByteRangeLock(handleKey string, excludeOwner *L
 // computed via ComputeLeaseBreakTo(state, reason); a lease is broken only
 // when the computed target differs from its current state.
 func (lm *Manager) BreakLeasesOnOpenConflict(handleKey string, excludeOwner *LockOwner, reason BreakReason) error {
-	return lm.breakOpLocks(handleKey, excludeOwner, breakSentinelForReason(reason), reason, func(lease *OpLock) bool {
-		return ComputeLeaseBreakTo(lease.LeaseState, reason) != lease.LeaseState
-	})
+	lm.PrepareBreakLeasesOnOpenConflict(handleKey, excludeOwner, reason)()
+	return nil
 }
 
 // PrepareBreakLeasesOnOpenConflict records the same breaks as
@@ -659,19 +658,8 @@ func (lm *Manager) signalBreakWaitLocked(handleKey string) {
 	}
 }
 
-// breakOpLocks marks matching oplocks as breaking and dispatches break
-// notifications. Releases mutex before dispatching to avoid deadlock.
-//
-// breakToState is the target state for the break. Pass BreakToStripWrite
-// to compute the per-lease break-to state by stripping the Write bit from
-// each lease's current state (preserving Read and Handle).
-//
-// Concurrent-break behavior: when a lease is already Breaking, the new
-// target is AND-merged into BreakingToRequired (cumulative final target)
-// without dispatching a new notification or advancing the epoch. This
-// mirrors Samba `process_oplock_break_message` lines 956-965; the next
-// progressive stage is dispatched from acknowledgeLeaseBreakImpl after the
-// in-flight ACK arrives.
+// breakOpLocks marks matching oplocks as breaking and dispatches their break
+// notifications immediately. See markOpLockBreaks for the marking rules.
 func (lm *Manager) breakOpLocks(
 	handleKey string,
 	excludeOwner *LockOwner,
@@ -686,7 +674,19 @@ func (lm *Manager) breakOpLocks(
 // markOpLockBreaks records the break on every matching lease under handleKey
 // and returns the function that puts the still-unsent notifications on the
 // wire. The victim set is decided here, under lm.mu, so a lease granted after
-// this returns is never caught by a change that predates it.
+// this returns is never caught by a change that predates it. The mutex is
+// released before the returned function dispatches, to avoid deadlock.
+//
+// breakToState is the target state for the break. Pass BreakToStripWrite
+// to compute the per-lease break-to state by stripping the Write bit from
+// each lease's current state (preserving Read and Handle).
+//
+// Concurrent-break behavior: when a lease is already Breaking, the new
+// target is AND-merged into BreakingToRequired (cumulative final target)
+// without dispatching a new notification or advancing the epoch. This
+// mirrors Samba `process_oplock_break_message` lines 956-965; the next
+// progressive stage is dispatched from acknowledgeLeaseBreakImpl after the
+// in-flight ACK arrives.
 func (lm *Manager) markOpLockBreaks(
 	handleKey string,
 	excludeOwner *LockOwner,
