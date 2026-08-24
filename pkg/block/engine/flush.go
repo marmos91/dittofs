@@ -118,9 +118,18 @@ type ColdSeed struct {
 // of a manifest seed's wall clock on a share with many small files. Every entry
 // is held in memory until that write, so callers bound their own batches.
 //
+// The batch is one lifecycle-gated op, so a Close waits out the append in flight
+// and the seeds after it fail fast rather than reopening the cold log behind a
+// torn-down store. Seeding in batches rather than one call for a whole manifest
+// is what keeps that wait short.
+//
 // No-op when the local store has no remote-hydration support (e.g. the in-memory
 // test store), which the caller only hits on non-remote paths anyway.
 func (bs *Store) SeedColdBatch(ctx context.Context, seeds []ColdSeed) error {
+	if err := bs.enter(); err != nil {
+		return err
+	}
+	defer bs.closeMu.RUnlock()
 	type coldSeeder interface {
 		SeedColdBatch(ctx context.Context, seeds []journal.ColdSeed) error
 	}

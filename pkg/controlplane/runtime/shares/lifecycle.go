@@ -544,7 +544,7 @@ func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metad
 			return nil
 		}
 		if err := bs.SeedColdBatch(ctx, batch); err != nil {
-			return fmt.Errorf("seed cold %s (+%d more): %w", batch[0].PayloadID, len(batch)-1, err)
+			return fmt.Errorf("seed cold %d payloads from %s: %w", len(batch), batch[0].PayloadID, err)
 		}
 		batch, buffered = batch[:0], 0
 		return nil
