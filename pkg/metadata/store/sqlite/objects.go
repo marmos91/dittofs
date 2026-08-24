@@ -295,17 +295,24 @@ func (s *SQLiteMetadataStore) GetByHash(ctx context.Context, hash metadata.Conte
 	return getByHashTx(ctx, s.conn(), hash)
 }
 
+// listFileChunksQuery takes the bounds of block.PayloadPrefixRange and is a
+// prefilter; block.ChunksForPayload decides membership and order.
+//
+// The range is compared and ordered in byte collation, not the database
+// default: the bounds only bracket the prefix under byte ordering, and a
+// byte-ordered id column lets the primary-key index seek the range instead of
+// filtering the whole table.
+const listFileChunksQuery = `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
+	FROM file_blocks
+	WHERE id >= ?1 COLLATE BINARY AND id < ?2 COLLATE BINARY
+	ORDER BY id COLLATE BINARY ASC`
+
 // ListFileChunks returns all blocks belonging to a file, ordered by block index.
-// The LIKE query is a prefilter; block.ChunksForPayload decides membership
-// and order.
 // Not on the narrowed FileChunkStore interface;
 // kept as a backend method for engine-internal callers.
 func (s *SQLiteMetadataStore) ListFileChunks(ctx context.Context, payloadID string) ([]*metadata.FileChunk, error) {
-	query := `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
-		FROM file_blocks
-		WHERE id LIKE ?1
-		ORDER BY id ASC`
-	rows, err := s.query(ctx, query, payloadID+"/%")
+	lo, hi := block.PayloadPrefixRange(payloadID)
+	rows, err := s.query(ctx, listFileChunksQuery, lo, hi)
 	if err != nil {
 		return nil, fmt.Errorf("list file chunks: %w", err)
 	}
@@ -577,11 +584,8 @@ func (tx *sqliteTransaction) GetByHash(ctx context.Context, hash metadata.Conten
 // store-level methods).
 
 func (tx *sqliteTransaction) ListFileChunks(ctx context.Context, payloadID string) ([]*metadata.FileChunk, error) {
-	query := `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
-		FROM file_blocks
-		WHERE id LIKE ?1
-		ORDER BY id ASC`
-	rows, err := tx.tx.Query(ctx, query, payloadID+"/%")
+	lo, hi := block.PayloadPrefixRange(payloadID)
+	rows, err := tx.tx.Query(ctx, listFileChunksQuery, lo, hi)
 	if err != nil {
 		return nil, fmt.Errorf("list file chunks: %w", err)
 	}

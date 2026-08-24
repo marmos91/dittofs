@@ -65,6 +65,26 @@ func ChunkOffsetFor(id, payloadID string) (uint64, bool) {
 	return v, true
 }
 
+// PayloadPrefixRange returns the half-open ID range [lo, hi) holding every
+// FileChunk row of payloadID, for backends that locate a file's chunks by
+// seeking an ordered index of row IDs.
+//
+// Row IDs are "<payloadID>/<chunkOffset>", so the range runs from the
+// separator to the byte after it: '/' is 0x2F, '0' is 0x30, and nothing sorts
+// between them, so [payloadID+"/", payloadID+"0") is exactly the set of IDs
+// carrying the prefix.
+//
+// That equality holds only when the range is compared in BYTE order, so
+// callers must pin a byte-ordered comparison rather than take the database
+// default: a linguistic collation may treat punctuation as ignorable and sort
+// a row out of the range.
+//
+// The range locates rows, it does not decide membership: it still spans
+// payloads nested beneath this one, and ChunksForPayload settles what belongs.
+func PayloadPrefixRange(payloadID string) (lo, hi string) {
+	return payloadID + "/", payloadID + "0"
+}
+
 // ChunksForPayload keeps the rows that belong to payloadID and orders them by
 // chunk offset. The returned slice is never nil.
 //

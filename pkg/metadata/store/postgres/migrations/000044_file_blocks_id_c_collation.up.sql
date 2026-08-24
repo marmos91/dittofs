@@ -1,0 +1,19 @@
+-- Give file_blocks.id byte ordering so the primary-key btree can answer the
+-- per-payload prefix range scan in ListFileChunks.
+--
+-- FileChunk row IDs have the form {payloadID}/{chunkOffset}, and locating one
+-- file's chunks is a scan of the half-open range [payloadID || '/',
+-- payloadID || '0') — '/' is 0x2F and '0' is 0x30, so that range is exactly
+-- the set of IDs carrying the payloadID prefix.
+--
+-- "Exactly" only holds under byte ordering. On a linguistic collation such as
+-- en_US.utf8, punctuation is ignorable at the primary comparison level, so
+-- 'p/1048576' sorts AFTER 'p0' and falls outside the range. The queries therefore pin COLLATE "C" on the
+-- comparison itself and stay correct whether or not this migration has run;
+-- what this migration adds is an index whose stored order MATCHES that
+-- comparison, which is what lets the planner seek instead of scanning every
+-- row and discarding the ones that miss.
+--
+-- Rewrites the table and rebuilds its indexes. No new index is created, so
+-- there is no added per-insert cost on the chunk write path.
+ALTER TABLE file_blocks ALTER COLUMN id TYPE VARCHAR(255) COLLATE "C";
