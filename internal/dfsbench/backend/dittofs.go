@@ -1,9 +1,11 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -96,6 +98,11 @@ const (
 // cache (/blocks). It lives on the isolated data volume when one is mounted,
 // else the legacy root-disk path.
 var dittofsDataDir = benchPath("/var/lib/bench-dittofs", "dittofs")
+
+// dittofsServerLog is where dittofsSetup redirects the benched server's stdout
+// and stderr. The cold barrier reads back the window it wrote while running, so
+// a barrier failure carries the server's own account of it.
+const dittofsServerLog = "/var/log/bench-dittofs.log"
 
 // dittofsMetaKind selects the metadata-store engine. The block store (fs local
 // cache + S3 remote) is identical across all three, so a badger/sqlite/postgres
@@ -333,7 +340,7 @@ func dittofsSetup(ctx context.Context, env BackendEnv, kind dittofsMetaKind, dur
 	// regardless of the binary's default, so log volume is uniform across A/B runs
 	// (belt-and-suspenders alongside #1738 demoting per-op logs to Debug).
 	start := fmt.Sprintf("DITTOFS_LOGGING_LEVEL=WARN DITTOFS_CONTROLPLANE_SECRET=%s DITTOFS_ADMIN_INITIAL_PASSWORD=%s "+
-		"dfs start >/var/log/bench-dittofs.log 2>&1 &", dittofsSecret, dittofsAdminPass)
+		"dfs start >"+dittofsServerLog+" 2>&1 &", dittofsSecret, dittofsAdminPass)
 	if err := exec.Sh(ctx, "sh", "-c", start); err != nil {
 		return err
 	}
@@ -458,14 +465,6 @@ func dittofsMount(ctx context.Context, proto Protocol) (string, error) {
 	return "", err
 }
 
-// dittofsEvict drops locally-cached blocks so the next read is cold-from-S3.
-// #1595's DrainLocalSynced is what makes `store block evict` actually force it.
-//
-// Drain queued uploads FIRST: `store block evict` (DrainLocalSynced) only drops
-// blocks already synced to S3. A block whose upload is still in flight is left
-// on local disk, so the "cold" read serves it from cache — the pass reads warm,
-// S3MB stays 0, and cold≈warm. Draining first makes every block synced and
-// therefore evictable, so the next read genuinely comes from S3.
 // dittofsColdBarrierFloorBytes is the resident-bytes threshold below which the
 // cold-barrier verification stops caring about an exact drop ratio — small
 // datasets and metadata slack shouldn't fail the check.
@@ -481,17 +480,28 @@ type dittofsBlockTotals struct {
 }
 
 func dittofsBlockStats(ctx context.Context) (dittofsBlockTotals, error) {
+	_, totals, err := dittofsBlockStatsRaw(ctx)
+	return totals, err
+}
+
+// dittofsBlockStatsRaw returns the parsed totals alongside the untouched JSON
+// the server produced. dittofsBlockTotals keeps three fields; the response also
+// carries eviction_suspended, remote_healthy, failed_syncs, outage_duration_secs
+// and the per-state block counts — the fields that say WHY an evict declined to
+// drop anything. The cold barrier keeps the raw bytes so a failure can print
+// them instead of the three numbers that only restate the symptom.
+func dittofsBlockStatsRaw(ctx context.Context) ([]byte, dittofsBlockTotals, error) {
 	out, err := exec.Out(ctx, "dfsctl", "store", "block", "stats", "-o", "json")
 	if err != nil {
-		return dittofsBlockTotals{}, fmt.Errorf("dfsctl store block stats: %w", err)
+		return nil, dittofsBlockTotals{}, fmt.Errorf("dfsctl store block stats: %w", err)
 	}
 	var resp struct {
 		Totals dittofsBlockTotals `json:"totals"`
 	}
 	if err := json.Unmarshal(out, &resp); err != nil {
-		return dittofsBlockTotals{}, fmt.Errorf("parse block stats json: %w\n%s", err, out)
+		return out, dittofsBlockTotals{}, fmt.Errorf("parse block stats json: %w\n%s", err, out)
 	}
-	return resp.Totals, nil
+	return out, resp.Totals, nil
 }
 
 // dittofsSettleTimeout bounds how long the warm-read settle waits for the block
@@ -645,25 +655,147 @@ func dittofsReportDrainProgress(ctx context.Context, round int) func() {
 	}
 }
 
+// dittofsBarrierLogTailBytes caps how much server log a failed cold barrier
+// reproduces. The barrier can run for minutes across many drain rounds, so it
+// keeps the most recent output — the window around the failure — rather than the
+// first bytes after the barrier started.
+const dittofsBarrierLogTailBytes = 256 << 10
+
+// dittofsBarrierDiag collects what a cold-barrier failure needs and what the
+// bare "local disk only fell X→Y" error throws away: the full block-store stats
+// JSON at each step, what the evict itself reported freeing, and the server log
+// written while the barrier ran. Fields left empty mark steps the barrier never
+// reached, which is itself part of the answer.
+type dittofsBarrierDiag struct {
+	logOffset int64  // server-log size when the barrier started
+	entry     []byte // stats before the drain — the "before" the ratio is measured against
+	postDrain []byte // stats after the drain loop, i.e. immediately before the evict
+	evictOut  []byte // `store block evict -o json`: files evicted, bytes freed
+	postEvict []byte // stats after the evict — the "after" of the ratio
+}
+
+// dump prints the collected evidence to the run log, which is pulled back off
+// the bench VM with the results. cause is the failure being explained.
+func (d *dittofsBarrierDiag) dump(cause error) {
+	_, _ = fmt.Fprintf(exec.CmdOut, "cold barrier diagnostics — %v\n", cause)
+	for _, step := range []struct {
+		label string
+		raw   []byte
+	}{
+		{"block stats at barrier entry", d.entry},
+		{"block stats after drain (pre-evict)", d.postDrain},
+		{"evict result", d.evictOut},
+		{"block stats after evict", d.postEvict},
+	} {
+		raw := bytes.TrimSpace(step.raw)
+		if len(raw) == 0 {
+			_, _ = fmt.Fprintf(exec.CmdOut, "  %s: not reached\n", step.label)
+			continue
+		}
+		_, _ = fmt.Fprintf(exec.CmdOut, "  %s: %s\n", step.label, raw)
+	}
+	_, _ = fmt.Fprintf(exec.CmdOut, "  server log (%s) since barrier entry:\n%s\n",
+		dittofsServerLog, dittofsLogSince(dittofsServerLog, d.logOffset))
+}
+
+// dittofsLogSize reports the current size of path, or 0 when it cannot be
+// stat'd. A wrong offset only widens the window the failure dump prints, so this
+// never fails the barrier.
+func dittofsLogSize(path string) int64 {
+	st, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return st.Size()
+}
+
+// dittofsLogSince returns the bytes of path written after offset off, keeping at
+// most dittofsBarrierLogTailBytes of the most recent output. It returns a
+// parenthesised note rather than an error for every failure: this runs only to
+// explain a barrier that already failed, and must never become a second failure.
+func dittofsLogSince(path string, off int64) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Sprintf("(unreadable: %v)", err)
+	}
+	defer func() { _ = f.Close() }()
+	st, err := f.Stat()
+	if err != nil {
+		return fmt.Sprintf("(unreadable: %v)", err)
+	}
+	if st.Size() <= off {
+		return "(the server logged nothing while the barrier ran)"
+	}
+	start := off
+	if tail := st.Size() - dittofsBarrierLogTailBytes; tail > start {
+		start = tail
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return fmt.Sprintf("(unreadable: %v)", err)
+	}
+	b, err := io.ReadAll(f)
+	if len(b) == 0 && err != nil {
+		return fmt.Sprintf("(unreadable: %v)", err)
+	}
+	return string(b)
+}
+
+// dittofsEvict drops locally-cached blocks so the next read is cold-from-S3, and
+// on any failure prints the evidence needed to explain it. The barrier has fired
+// once in the field with nothing recorded beyond the two byte counts in its own
+// error message, which say the local tier did not empty but not why.
 func dittofsEvict(ctx context.Context) error {
+	diag := dittofsBarrierDiag{logOffset: dittofsLogSize(dittofsServerLog)}
+	err := dittofsColdBarrier(ctx, &diag)
+	if err != nil {
+		diag.dump(err)
+	}
+	return err
+}
+
+// dittofsColdBarrier drains, evicts and then verifies that the local tier
+// actually emptied.
+//
+// The drain comes FIRST: `store block evict` drops only blocks already synced to
+// S3. A block whose upload is still in flight is left on local disk, so the
+// "cold" read serves it from cache — the pass reads warm, S3MB stays 0, and
+// cold≈warm. Draining first makes every block synced and therefore evictable, so
+// the next read genuinely comes from S3.
+//
+// diag accumulates the evidence for the failure dump as each step completes.
+func dittofsColdBarrier(ctx context.Context, diag *dittofsBarrierDiag) error {
 	// Cold-read barrier. Force the whole warm-written file durable on S3, evict the
 	// local tier, then VERIFY it actually emptied — otherwise the cold pass reads
 	// locally-resident bytes and silently measures a warm read (the confound the
 	// DiskWr/NetRx meter exposed: cold pulled only ~15-33 MB/s from S3 while the
 	// data sat on the block volume).
-	before, err := dittofsBlockStats(ctx)
+	raw, before, err := dittofsBlockStatsRaw(ctx)
+	diag.entry = raw
 	if err != nil {
 		return err
 	}
 	if err := dittofsDrainUntilSynced(ctx); err != nil {
 		return err
 	}
+	// Sample again between the drain and the evict. This is the sample that
+	// separates "the drain left bytes the evict was right to refuse" from "the
+	// evict declined bytes the drain had already made durable" — the two
+	// explanations the post-hoc pair of byte counts cannot tell apart.
+	diag.postDrain, _, err = dittofsBlockStatsRaw(ctx)
+	if err != nil {
+		return err
+	}
 	// Evict local blocks + read buffer. DrainLocalSynced drops only synced blocks;
-	// now that everything is synced it can drop the whole file.
-	if err := exec.Sh(ctx, "dfsctl", "store", "block", "evict"); err != nil {
+	// now that everything is synced it can drop the whole file. Take the JSON
+	// result rather than the success line: bytes_freed is the direct answer to
+	// whether the evict declined to drop anything or dropped bytes that came back.
+	evictOut, err := exec.Out(ctx, "dfsctl", "store", "block", "evict", "-o", "json")
+	diag.evictOut = evictOut
+	if err != nil {
 		return fmt.Errorf("dfsctl store block evict: %w", err)
 	}
-	after, err := dittofsBlockStats(ctx)
+	raw, after, err := dittofsBlockStatsRaw(ctx)
+	diag.postEvict = raw
 	if err != nil {
 		return err
 	}
