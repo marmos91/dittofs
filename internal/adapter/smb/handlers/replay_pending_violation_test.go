@@ -1,9 +1,14 @@
 package handlers
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // These tests pin the replay-decision state machine for the #749
@@ -185,5 +190,120 @@ func TestReplayPendingViolation_CrossSessionIsolation(t *testing.T) {
 	const otherSession = uint64(99)
 	if resp, handled := h.resolveCreateReplay(newReplayCtx(otherSession, true), req); handled {
 		t.Fatalf("foreign-session replay must not see another session's reservation, got %s", resp.GetStatus())
+	}
+}
+
+// TestParkedCreate_ReplayReservationClearedBeforeFinalResponse pins the
+// ORDERING the state-machine tests above cannot see: the CreateGuid
+// reservation must already be gone at the instant the parked CREATE's
+// terminal status is handed to the wire.
+//
+// The park resolves, the server writes STATUS_SHARING_VIOLATION for the
+// original CREATE, and the client — which learns the CREATE is finished from
+// exactly that response — puts its replay on the connection straight away. If
+// the reservation outlives the send by even a scheduling quantum, the server
+// dispatches that replay against a reservation for a CREATE that has already
+// resolved and answers STATUS_FILE_NOT_AVAILABLE where the terminal
+// STATUS_SHARING_VIOLATION is required (smbtorture
+// smb2.replay.dhv2-pending1n-vs-violation-lease-ack-sane, replay.c io23).
+//
+// The wait resolves immediately here (no lock manager → the share-conflict
+// wait returns at once, as it does when the holder ACKs its break and keeps
+// its open), so the whole test is deterministic: it asserts what the callback
+// observes, not how fast anything runs.
+func TestParkedCreate_ReplayReservationClearedBeforeFinalResponse(t *testing.T) {
+	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
+	tree := &TreeConnection{TreeID: smbCtx.TreeID, SessionID: smbCtx.SessionID, ShareName: smbCtx.ShareName}
+	h.StoreTree(tree)
+	// A nil lock manager makes WaitForShareConflictClear return immediately,
+	// standing in for the holder's break having drained with its open intact.
+	h.LeaseManager = lease.NewLeaseManager(&staticLockResolver{}, nil)
+
+	const fileName = "parked.dat"
+	existingFile, _, err := rt.GetMetadataService().CreateFile(rootAuth, rootHandle, fileName,
+		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o777})
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	metaHandle, err := metadata.EncodeFileHandle(existingFile)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle: %v", err)
+	}
+
+	// The holder: reading the file while denying every share mode, so the
+	// parked CREATE below still loses the share-mode contest on recheck.
+	h.StoreOpenFile((&OpenFile{
+		FileID:         [16]byte{0xAA},
+		SessionID:      violationSessionID + 1,
+		ShareName:      smbCtx.ShareName,
+		DesiredAccess:  0x00000001, // FILE_READ_DATA
+		ShareAccess:    0,          // deny read/write/delete
+		MetadataHandle: metaHandle,
+	}).WithName(OpenName{Path: fileName, FileName: fileName}))
+
+	guid := [16]byte{0x21, 0x9}
+	req := dh2qCreateReq(guid, nil)
+	req.FileName = fileName
+	req.DesiredAccess = 0x00000001
+	req.ShareAccess = 0
+	req.CreateDisposition = types.FileOpen
+
+	draft := &createDraft{
+		req:            req,
+		tree:           tree,
+		authCtx:        rootAuth,
+		filename:       fileName,
+		baseName:       fileName,
+		parentHandle:   rootHandle,
+		existingFile:   existingFile,
+		existingHandle: metaHandle,
+		fileExists:     true,
+		createAction:   types.FileOpened,
+	}
+
+	// Create() reserves the guid before dispatching the break; the parked
+	// resume goroutine owns the matching release.
+	h.CreateReplayCache.Reserve(smbCtx.SessionID, guid)
+
+	type finalResponse struct {
+		status         types.Status
+		reservedAtSend bool
+	}
+	sent := make(chan finalResponse, 1)
+
+	parkCtx := &SMBHandlerContext{
+		Context:         context.Background(),
+		SessionID:       smbCtx.SessionID,
+		TreeID:          smbCtx.TreeID,
+		ShareName:       smbCtx.ShareName,
+		MessageID:       5,
+		TryReserveAsync: func() bool { return true },
+		ReleaseAsync:    func() {},
+		AsyncCreateCompleteCallback: func(_, _, _ uint64, status types.Status, _ []byte) error {
+			sent <- finalResponse{status, h.CreateReplayCache.IsReserved(smbCtx.SessionID, guid)}
+			return nil
+		},
+	}
+
+	asyncId := h.parkCreateOnLeaseBreak(parkCtx, draft, lock.FileHandle(metaHandle),
+		[16]byte{}, 2*time.Second, true)
+	if asyncId == 0 {
+		t.Fatal("parkCreateOnLeaseBreak refused to park")
+	}
+	if !h.PendingCreateRegistry.MarkStarted(asyncId) {
+		t.Fatal("MarkStarted: pending CREATE not registered")
+	}
+
+	select {
+	case got := <-sent:
+		if got.status != types.StatusSharingViolation {
+			t.Fatalf("parked CREATE final status = %s, want SHARING_VIOLATION", got.status)
+		}
+		if got.reservedAtSend {
+			t.Fatal("CreateGuid still reserved when the parked CREATE's final response was sent: " +
+				"a replay racing that response resolves to FILE_NOT_AVAILABLE instead of the terminal status")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("parked CREATE never delivered a final response")
 	}
 }
