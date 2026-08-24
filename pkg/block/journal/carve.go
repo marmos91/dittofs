@@ -272,10 +272,6 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 	for i, run := range runs {
 		rs[i] = &runState{ivs: run}
 	}
-	if err := s.resolveRunExtents(ctx, sh, id, rs); err != nil {
-		return err
-	}
-
 	res2, err := s.packRuns(ctx, sh, id, rs)
 	res.BlocksWritten += res2.BlocksWritten
 	res.BytesCarved += res2.BytesCarved
@@ -332,8 +328,8 @@ func splitRuns(snap []interval) [][]interval {
 
 // packRuns streams every dirty run of one file through FastCDC in file-offset
 // order, dedups each chunk, packs the novel ones into blocks, and flips records
-// to synced as the durable frontier advances. Each run has already been widened
-// to its manifest row end by resolveRunExtents.
+// to synced as the durable frontier advances. Each run is widened to its
+// manifest row end as the packer reaches it.
 //
 // Chunks stay inside a run — a fresh chunker and reader per run means no chunk
 // spans the hole between two of them — but blocks do not: a block is flushed
@@ -422,6 +418,26 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 	// goroutine or buffer leaks; disp.wait folds it together with any commit error.
 	var packErr error
 	for ri := range rs {
+		// Widen this run to its manifest row end here, immediately before packing
+		// it, rather than widening every run of the file up front. Each lookup is
+		// a whole-manifest read, so resolving them all first buys nothing durable
+		// until the last one returns: on a scattered dirty set that prologue runs
+		// for as long as the file has runs, and the unsynced counter does not move
+		// for any of it. Resolving one run at a time keeps a block committing and
+		// flipping every CarveBlockSize, so the counter falls throughout the pass.
+		// A run only ever grows at its tail, so the next run's start — the limit
+		// this one may not cross — is still the snapshotted one.
+		limit := int64(math.MaxInt64)
+		if ri+1 < len(rs) {
+			limit = rs[ri+1].start()
+		}
+		ivs, err := s.extendRunToRowEnd(ctx, sh, id, rs[ri].ivs, limit)
+		if err != nil {
+			packErr = err
+			break
+		}
+		rs[ri].ivs = ivs
+
 		// A fresh chunker and reader per run, and an empty accumulator, so a chunk
 		// never spans the hole between two runs. The block being packed carries
 		// over: that is what lets one block span them.
@@ -559,16 +575,13 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 // still ends inside the row.
 //
 // A row reaching past limit, the offset the next run starts at, is refused
-// outright. Every run's extents are resolved before any run carves or flips a
-// record synced, so the interval at limit is still dirty from the original
-// snapshot and warmTail's own bail on a non-warm interval already stops the
-// extension there — this refusal is redundant today. It stays as insurance
-// against a future change that reintroduces a flip during extent resolution,
-// which would make a sibling's already-flipped head indistinguishable from
-// pre-existing warm data and let warmTail wave it through. It has to be a
-// refusal rather than a truncation to limit: the run-end reap deletes whole
-// rows that start inside the run, so tiling only part of a row still drops
-// its tail.
+// outright. Runs are widened one at a time as the packer reaches them, so an
+// earlier run of the same pass may already have flipped its records synced —
+// which makes its head indistinguishable here from pre-existing warm data that
+// warmTail would wave through. Refusing on the offset keeps the later run's
+// range for the later run. It has to be a refusal rather than a truncation to
+// limit: the run-end reap deletes whole rows that start inside the run, so
+// tiling only part of a row still drops its tail.
 //
 // ponytail: a row reaching past a later dirty run is left alone, so that run
 // still ends mid-row; covering it means merging the two runs, which is worth
