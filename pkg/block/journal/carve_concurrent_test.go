@@ -177,57 +177,27 @@ func TestCarveSharedRecordAcrossRuns(t *testing.T) {
 	}
 }
 
-// syncedAt reports whether the live interval covering off is warm in memory.
-func syncedAt(s *Store, id FileID, off int64) bool {
-	sh := s.shardFor(id)
-	sh.mu.Lock()
-	defer sh.mu.Unlock()
-	fi := sh.index[id]
-	if fi == nil {
-		return false
-	}
-	for k := range fi.ivs {
-		if fi.ivs[k].fileOff <= off && off < fi.ivs[k].end() {
-			return fi.ivs[k].synced && !fi.ivs[k].cold
-		}
-	}
-	return false
-}
-
 // extendingSink is a fakeSink that also answers the manifest-row lookup and
-// records every run-end reap range. The lookup for gateOff blocks until the
-// interval at waitFor has been flipped synced, which pins the ordering the
-// clamp exists for: the first run asks how far its row reaches only after the
-// second run has already marked its own intervals warm in memory.
+// records every run-end reap range. The lookup for gateOff returns a row end
+// that reaches past the next run's start, exercising the refusal that keeps a
+// run's extension from reaching into a range another run owns.
 type extendingSink struct {
 	*fakeSink
 	mu      sync.Mutex
 	reaps   [][2]int64
-	store   *Store
 	gateOff int64
-	waitFor int64
 	rowEnd  int64
 	gated   int
-	timeout error
 }
 
-func (e *extendingSink) ManifestRowEndAfter(_ context.Context, id FileID, off int64) (int64, error) {
+func (e *extendingSink) ManifestRowEndAfter(_ context.Context, _ FileID, off int64) (int64, error) {
 	if off != e.gateOff {
 		return 0, nil
 	}
 	e.mu.Lock()
 	e.gated++
 	e.mu.Unlock()
-	for i := 0; i < 5000; i++ {
-		if syncedAt(e.store, id, e.waitFor) {
-			return e.rowEnd, nil
-		}
-		time.Sleep(time.Millisecond)
-	}
-	e.mu.Lock()
-	e.timeout = errors.New("timed out waiting for the sibling run to flip")
-	e.mu.Unlock()
-	return 0, nil
+	return e.rowEnd, nil
 }
 
 func (e *extendingSink) ReapSupersededManifest(_ context.Context, _ FileID, runStart, runEnd int64, _ map[int64]struct{}) error {
@@ -237,25 +207,25 @@ func (e *extendingSink) ReapSupersededManifest(_ context.Context, _ FileID, runS
 	return nil
 }
 
-// TestCarveRunDoesNotExtendPastNextRun pins that a run's manifest-row extension
-// stops at the next run's start.
+// TestCarveRunDoesNotExtendPastNextRun pins the end-to-end property: no run's
+// reap range ever reaches into a range another run owns. The run-end reap
+// deletes every manifest row starting inside its range that it did not itself
+// write, so a reap range crossing into the next run would drop rows that run
+// still owns, leaving an uncovered range that cold-reads as zeros with no error
+// anywhere.
 //
-// warmTail cannot tell a sibling run's already-flipped intervals from
-// pre-existing warm data — flipUpTo sets interval.synced in memory as a run's
-// watermark advances — so once runs carve concurrently a run can be offered an
-// extension that reaches straight through a range a sibling is carving. That
-// matters because the run-end reap deletes every manifest row starting inside
-// its range that it did not itself write, so an over-extended run drops the
-// rows the sibling just committed, leaving an uncovered range that cold-reads
-// as zeros with no error anywhere.
+// It does not, on its own, pin the extension refusal in extendRunToRowEnd —
+// warmTail's own all-or-nothing bail on a non-warm interval produces the same
+// reap ranges whether or not that refusal exists, since nothing flips a record
+// synced while extents are being resolved. See TestWarmTailStopsAtNonWarmInterval
+// for the invariant that actually protects a future change reintroducing a flip
+// mid-resolution.
 func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 	const rec = 8 << 10
 	s, dd, base, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarveUploadConcurrency: 4})
 	sink := &extendingSink{
 		fakeSink: base,
-		store:    s,
 		gateOff:  rec,     // the first run ends here
-		waitFor:  2 * rec, // the second run starts here
 		rowEnd:   4 * rec, // a row reaching past the second run
 	}
 	s.SetCarveTargets(dd, sink)
@@ -294,12 +264,8 @@ func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 
 	sink.mu.Lock()
 	reaps := append([][2]int64{}, sink.reaps...)
-	timedOut := sink.timeout
 	gated := sink.gated
 	sink.mu.Unlock()
-	if timedOut != nil {
-		t.Fatalf("ordering not reached, test proves nothing: %v", timedOut)
-	}
 	// extendRunToRowEnd short-circuits on warmAt before the sink is consulted, and
 	// the gate is keyed on an exact offset, so drift in either could leave the
 	// ordering unexercised while every assertion below still passes.

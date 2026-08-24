@@ -146,3 +146,33 @@ func TestCarveRunDoesNotExtendIntoDirtyRange(t *testing.T) {
 		}
 	}
 }
+
+// TestWarmTailStopsAtNonWarmInterval pins warmTail's all-or-nothing bail: a scan
+// that meets a dirty or cold interval before reaching the requested end returns
+// nil, never a partial tail. That is what makes extendRunToRowEnd's own limit
+// refusal redundant today — the interval at a later run's start is exactly this
+// kind of non-warm interval for as long as nothing flips it mid-resolution — and
+// what would silently stop protecting a run from over-extending if warmTail ever
+// degraded to returning what it had scanned so far instead of bailing outright.
+func TestWarmTailStopsAtNonWarmInterval(t *testing.T) {
+	const span = 8 << 10
+	for _, tc := range []struct {
+		name   string
+		second interval
+	}{
+		{"dirty", interval{fileOff: span, length: span, synced: false}},
+		{"cold", interval{fileOff: span, length: span, synced: true, cold: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sh := &shard{index: map[FileID]*fileIndex{
+				"f": {ivs: []interval{
+					{fileOff: 0, length: span, synced: true},
+					tc.second,
+				}},
+			}}
+			if tail := warmTail(sh, "f", 0, 2*span); tail != nil {
+				t.Fatalf("got %v, want nil: scan crossed a non-warm interval without bailing", tail)
+			}
+		})
+	}
+}
