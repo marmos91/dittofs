@@ -751,7 +751,7 @@ func dittofsResidentFiles(dir string) string {
 			unreadable++
 			return nil //nolint:nilerr // ditto
 		}
-		files = append(files, entry{strings.TrimPrefix(path, dir+"/"), info.Size()})
+		files = append(files, entry{strings.TrimPrefix(path, dir+string(os.PathSeparator)), info.Size()})
 		total += info.Size()
 		return nil
 	})

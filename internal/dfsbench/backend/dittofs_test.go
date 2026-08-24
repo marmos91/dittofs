@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -20,6 +21,21 @@ func captureCmdOut(t *testing.T) *bytes.Buffer {
 	exec.CmdOut = &buf
 	t.Cleanup(func() { exec.CmdOut = prev })
 	return &buf
+}
+
+// writeStubDfsctl puts a fake dfsctl at the front of PATH for the test. The
+// stub is a POSIX shell script, and the harness only ever runs on the Linux
+// bench VM, so the tests that drive the barrier through it are Linux-only.
+func writeStubDfsctl(t *testing.T, script string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the stub dfsctl is a POSIX shell script; the harness runs on the bench VM")
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "dfsctl"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // writeLog writes n bytes of filler followed by tail and returns the path.
@@ -136,19 +152,13 @@ func TestDittofsBarrierDiagDumpMarksUnreachedSteps(t *testing.T) {
 // reported, and that a missing server log degrades to a note rather than a
 // second failure.
 func TestDittofsEvictDumpsDiagnosticsOnFailure(t *testing.T) {
-	bin := t.TempDir()
-	stub := filepath.Join(bin, "dfsctl")
-	script := `#!/bin/sh
+	writeStubDfsctl(t, `#!/bin/sh
 case "$*" in
   *"block stats"*) echo '{"totals":{"local_disk_used":5717934080,"unsynced_bytes":0,"pending_uploads":0,"eviction_suspended":true,"failed_syncs":7}}' ;;
   *"block evict"*) echo '{"local_files_evicted":0,"bytes_freed":0}' ;;
 esac
 exit 0
-`
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+`)
 	buf := captureCmdOut(t)
 
 	err := dittofsEvict(context.Background())
@@ -194,18 +204,13 @@ func TestDittofsCaptureDistinguishesFailureFromUnattempted(t *testing.T) {
 }
 
 func TestDittofsEvictMarksAFailedCaptureAsFailed(t *testing.T) {
-	bin := t.TempDir()
-	script := `#!/bin/sh
+	writeStubDfsctl(t, `#!/bin/sh
 case "$*" in
   *"block stats"*) echo '{"totals":{"local_disk_used":5717934080,"unsynced_bytes":0}}' ;;
   *"block evict"*) echo 'boom' >&2; exit 1 ;;
 esac
 exit 0
-`
-	if err := os.WriteFile(filepath.Join(bin, "dfsctl"), []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+`)
 	buf := captureCmdOut(t)
 
 	if err := dittofsEvict(context.Background()); err == nil {
@@ -222,6 +227,12 @@ exit 0
 }
 
 func TestDittofsResidentFilesReportsAPartialScan(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mode 000 does not deny directory reads on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root reads the directory regardless of its mode")
+	}
 	dir := t.TempDir()
 	sub := filepath.Join(dir, "locked")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
@@ -240,9 +251,6 @@ func TestDittofsResidentFilesReportsAPartialScan(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
 
-	if os.Geteuid() == 0 {
-		t.Skip("root reads the directory regardless of its mode")
-	}
 	if got := dittofsResidentFiles(dir); !strings.Contains(got, "unreadable") {
 		t.Errorf("got %q, want the partial scan flagged", got)
 	}
