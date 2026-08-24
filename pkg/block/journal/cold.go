@@ -115,9 +115,17 @@ func decodeColdEntry(buf []byte) (coldEntry, int, error) {
 }
 
 // appendCold durably records entries so a restart still knows the ranges are
-// remote-resident rather than holes. It fsyncs before returning: the caller
-// (eviction) is about to unlink the only local copy of those bytes, and a lost
-// entry means silent zeros, not a slow read.
+// remote-resident rather than holes.
+//
+// It fsyncs before returning because of the eviction caller: that caller is about
+// to unlink the only local copy of these bytes, and a lost entry means silent
+// zeros rather than a slow read. The seed caller is idempotent — an interrupted
+// seed leaves no ColdSeeded marker and repeats — so its appends may be batched.
+// Batching both loses the eviction caller's only durable record of a copy it is
+// about to unlink.
+//
+// Entries are already a batch: a caller that may batch does so by accumulating
+// entries and calling this once, never by relaxing what this does with them.
 func (s *Store) appendCold(entries []coldEntry) error {
 	if len(entries) == 0 {
 		return nil

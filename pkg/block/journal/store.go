@@ -532,6 +532,10 @@ func (s *Store) SeedCold(_ context.Context, id FileID, extents [][2]int64) error
 	if len(entries) == 0 {
 		return nil
 	}
+	// Unlike eviction's append, this one may be batched across files: no local
+	// copy is being unlinked, and an interrupted seed leaves no ColdSeeded marker
+	// so it simply repeats. That batching belongs on this side of the call, by
+	// accumulating entries before it — never inside appendCold.
 	if err := s.appendCold(entries); err != nil {
 		return err
 	}
