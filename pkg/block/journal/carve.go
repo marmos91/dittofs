@@ -248,7 +248,10 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 		for end < len(snap) && snap[end].fileOff == snap[end-1].end() {
 			end++
 		}
-		if err := s.carveRun(ctx, sh, id, snap[start:end], res); err != nil {
+		r, err := s.carveRun(ctx, sh, id, snap[start:end])
+		res.BlocksWritten += r.BlocksWritten
+		res.BytesCarved += r.BytesCarved
+		if err != nil {
 			return err
 		}
 		start = end
@@ -260,10 +263,11 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 // carveRun streams one contiguous dirty run through FastCDC, dedups each chunk,
 // packs novel chunks into blocks (flushed at CarveBlockSize and at the run's end),
 // and flips the run's records to synced as the durable frontier advances.
-func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interval, res *CarveResult) error {
+func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interval) (CarveResult, error) {
+	var res CarveResult
 	run, err := s.extendRunToRowEnd(ctx, sh, id, run)
 	if err != nil {
-		return err
+		return res, err
 	}
 
 	c := chunker.NewChunkerWithParams(s.cfg.ChunkParams)
@@ -278,7 +282,7 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 	// disp overlaps successive blocks' CommitBlock (upload + commit) while packing
 	// stays sequential. It owns the bounded worker pool, the per-block buffers and
 	// the ordered flip chain; flush hands it a completed block or a bare watermark.
-	disp := newCarveDispatcher(ctx, s, sh, id, run, res, &flipIdx)
+	disp := newCarveDispatcher(ctx, s, sh, id, run, &res, &flipIdx)
 
 	// Each packed block gets its OWN buffer (cap one block plus one overhang chunk)
 	// so its bytes stay live while its CommitBlock runs concurrently with the next
@@ -437,16 +441,16 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 		// uploads. disp.wait returns the commit error in watermark order.
 		disp.discard(arenap, arena)
 		if err := disp.wait(); err != nil {
-			return err
+			return res, err
 		}
-		return packErr
+		return res, packErr
 	}
 
 	// Tail: commit any remainder and flip through the end of the run (records
 	// covered only by already-durable chunks flip here too, via the bare watermark).
 	flush(run[len(run)-1].end())
 	if err := disp.wait(); err != nil {
-		return err
+		return res, err
 	}
 	// With every row this run produced now committed, reap the manifest rows
 	// the run superseded (stale straddlers / interior chunks the fresh tiling
@@ -456,10 +460,10 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 	// metadata store (test fakes) skip it.
 	if r, ok := s.sink.(supersededReaper); ok {
 		if err := r.ReapSupersededManifest(ctx, id, run[0].fileOff, run[len(run)-1].end(), newOffsets); err != nil {
-			return err
+			return res, err
 		}
 	}
-	return nil
+	return res, nil
 }
 
 // extendRunToRowEnd grows the run forward to the end of the manifest coverage its
