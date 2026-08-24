@@ -72,6 +72,19 @@ type ShareSnapshot struct {
 	// emitted rather than suppressed so an alert on scan age fires for a
 	// share that has never been verified.
 	Integrity IntegrityScanSnapshot
+
+	// Offline reports whether the share could serve reads with its remote
+	// unreachable.
+	Offline OfflineSnapshot
+}
+
+// OfflineSnapshot is one share's offline read readiness: how much of its data
+// the local tier no longer holds, and whether that figure is knowable at all.
+type OfflineSnapshot struct {
+	Safe             bool
+	Known            bool
+	RemoteOnlyBytes  int64
+	RemoteOnlyRanges int64
 }
 
 // IntegrityScanSnapshot is one share's structural manifest scan result: how

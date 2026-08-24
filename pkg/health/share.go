@@ -16,6 +16,40 @@ type ShareStatus struct {
 	// Integrity is the outcome of the most recent structural manifest
 	// scan for this share. Nil when no scan has run yet.
 	Integrity *IntegrityStatus `json:"integrity,omitempty"`
+
+	// Offline reports whether the share could keep serving reads with its
+	// remote store unreachable. Nil when the share has no block store.
+	Offline *OfflineStatus `json:"offline,omitempty"`
+}
+
+// OfflineStatus answers "would this share keep serving if the remote were
+// unreachable", and by how much it falls short.
+//
+// It deliberately does not affect the share's health status. A share that is
+// not offline-safe is not unwell — most shares are not, by design, because a
+// remote-backed local tier evicts what it has mirrored. Whether that matters
+// is the operator's call, so this reports the number and leaves the verdict
+// alone.
+type OfflineStatus struct {
+	// Safe is true when every byte the share holds can be served without the
+	// remote. False when some cannot, or when residency is indeterminate.
+	Safe bool `json:"safe"`
+
+	// RemoteOnlyBytes is how much data the local tier no longer holds and
+	// would have to fetch from the remote to serve, across RemoteOnlyRanges
+	// separate ranges. Both are zero on a safe share.
+	//
+	// The figure is bytes, not blocks: the local tier tracks byte ranges,
+	// which split and merge independently of manifest chunk rows, so a block
+	// count would need a metadata walk to produce and would not be any more
+	// accurate an answer to "how much would break offline".
+	RemoteOnlyBytes  int64 `json:"remote_only_bytes"`
+	RemoteOnlyRanges int64 `json:"remote_only_ranges"`
+
+	// Unknown names why residency could not be determined, empty when it
+	// could. A share reporting this is not safe and not known to be unsafe;
+	// the counts above are meaningless for it.
+	Unknown string `json:"unknown,omitempty"`
 }
 
 // IntegrityStatus summarises one structural manifest scan: what it looked

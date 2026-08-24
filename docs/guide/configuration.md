@@ -642,6 +642,62 @@ Findings surface in three places:
 Run `dfsctl store check <share>` for the per-file detail behind a finding,
 and `--repair` to act on it.
 
+#### Offline read safety
+
+A remote-backed share's local tier is a cache: once a range is mirrored to the
+remote it becomes evictable, and an evicted range is served by fetching it
+back. Reads of such a range fail while the remote is unreachable. Whether a
+box would keep serving through an outage therefore depends on how much of its
+data is currently remote-only, and that number moves with every eviction and
+every warm.
+
+The server reports it per share:
+
+- `dfsctl share show <name>` prints `Offline Safe: yes`, or
+  `no (12.4 GiB remote-only across 431 ranges)`.
+- Prometheus: `dittofs_offline_safe{share}` (1/0),
+  `dittofs_offline_remote_only_bytes{share}` and
+  `dittofs_offline_remote_only_ranges{share}`.
+
+Zero remote-only bytes is a provably offline-safe share. To get there, warm
+the share and stop it evicting again:
+
+```bash
+dfsctl share warm /archive
+dfsctl share edit /archive --retention pin
+```
+
+The measurement never guesses. Three cases report **unknown** rather than a
+number, because a zero would read as "provably safe" for exactly the shares
+whose data is most likely to be remote-only:
+
+- the share's local tier does not track residency (the in-memory backend),
+- the local tier has not been seeded from the manifest yet — it holds no
+  record of ranges that live only on the remote, so they would count as
+  absent rather than remote-only,
+- the block store is closed,
+- the residency scan did not finish inside the request's deadline.
+
+An unknown share reports `dittofs_offline_safe = 0` but publishes no byte
+counts, so a dashboard cannot mistake it for a clean fully-local share.
+
+A share with **no remote at all** is normally safe by construction — nothing
+evicts it, so everything it holds is local. The exception is a share whose
+remote was unbound after it had already evicted: the evicted ranges stay
+recorded in the local tier and are replayed from its cold log on the next
+open, but there is no longer anything to fetch them from, so they never
+serve. Those shares report a non-zero remote-only figure rather than being
+waved through as local-only.
+
+The figure is **bytes, not blocks**. The local tier tracks byte ranges, which
+split and merge independently of manifest chunk rows; a block count would
+need a metadata walk to produce and would not answer "how much would break
+offline" any more precisely.
+
+Note this is read availability only. Offline **writes** already work — writes
+are stored locally and drain when the remote returns.
+
+
 The schedule restarts from zero on server start, so a box restarted more
 often than `auto_interval` never completes a scan. Lower the interval on a
 host that reboots frequently.
@@ -2262,6 +2318,8 @@ spec:
 | ⭐ `dittofs_integrity_last_scan_timestamp_seconds{share}` | Unix time the structural manifest scan last completed. 0 means it has never run since process start **or** its last attempt failed. |
 | ⭐ `dittofs_integrity_last_scan_failed{share}` | `1` when the most recent structural manifest scan failed, `0` when it completed or has never run. Pairs with the timestamp above to tell "never scanned" from "scans are erroring". |
 | `dittofs_integrity_last_scan_duration_seconds{share}` / `dittofs_integrity_files_scanned{share}` | Cost and reach of the last structural manifest scan. |
+| ⭐ `dittofs_offline_safe{share}` | `1` when every byte the share holds can be served with the remote unreachable, else `0`. A share whose residency cannot be determined reports `0` and publishes no byte counts. |
+| `dittofs_offline_remote_only_bytes{share}` / `dittofs_offline_remote_only_ranges{share}` | Data the local tier no longer holds and would have to fetch from the remote to serve, and how many ranges it spans. |
 
 ### Example alert expressions
 

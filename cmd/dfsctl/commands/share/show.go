@@ -103,6 +103,7 @@ func (sd ShareDetail) Rows() [][]string {
 			rows = append(rows, []string{"Status Detail", s.Status.Message})
 		}
 		rows = append(rows, integrityRows(s.Status.Integrity)...)
+		rows = append(rows, offlineRows(s.Status.Offline)...)
 	}
 
 	// Only show Retention TTL when a TTL is set
@@ -226,4 +227,21 @@ func integrityRows(in *health.IntegrityStatus) [][]string {
 			in.ClaimedUncoveredRanges, in.UnplaceableRows, in.UnknownHashRows)})
 	}
 	return rows
+}
+
+// offlineRows renders whether the share would keep serving reads with its
+// remote unreachable. A share whose residency the server could not determine
+// says so rather than claiming either answer.
+func offlineRows(o *health.OfflineStatus) [][]string {
+	if o == nil {
+		return nil
+	}
+	if o.Unknown != "" {
+		return [][]string{{"Offline Safe", "unknown (" + o.Unknown + ")"}}
+	}
+	if o.Safe {
+		return [][]string{{"Offline Safe", "yes"}}
+	}
+	return [][]string{{"Offline Safe", fmt.Sprintf("no (%s remote-only across %d ranges)",
+		bytesize.ByteSize(o.RemoteOnlyBytes), o.RemoteOnlyRanges)}}
 }

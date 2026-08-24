@@ -151,7 +151,9 @@ func (r *Runtime) ShareIntegrity(share string) *health.IntegrityStatus {
 // A worse status from a subsystem probe always wins; the scan can only
 // downgrade a healthy share, never upgrade an unhealthy one.
 func (r *Runtime) ShareStatus(ctx context.Context, share string) health.ShareStatus {
-	return withIntegrity(r.ShareChecker(share).Healthcheck(ctx), r.ShareIntegrity(share))
+	out := withIntegrity(r.ShareChecker(share).Healthcheck(ctx), r.ShareIntegrity(share))
+	out.Offline = r.ShareOffline(ctx, share)
+	return out
 }
 
 // withIntegrity joins a subsystem health report to a recorded scan outcome,
