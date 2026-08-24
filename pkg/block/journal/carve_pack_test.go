@@ -3,7 +3,6 @@ package journal
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -160,14 +159,13 @@ func TestCarvePackFlipPlanWatermarks(t *testing.T) {
 	}
 }
 
-// TestCarvePackSpanningBlockFailureReapsOnlyCommittedPrefix pins the failure
+// TestCarvePackSpanningBlockFailureLeavesEarlierRunUnreaped pins the failure
 // shape that only exists now that blocks span runs: a block carrying the tail of
-// run 0 and the head of run 1 fails, so run 0 never completes. Run 0's committed
-// prefix is still reaped — those records flipped clean and no later pass revisits
-// them — but the reap must stop at that prefix. Past it the run's fresh tiling is
-// missing the range the failed block held, so a reap reaching there would delete
-// rows nothing replaced. Run 1 flipped nothing at all and must not be reaped.
-func TestCarvePackSpanningBlockFailureReapsOnlyCommittedPrefix(t *testing.T) {
+// run 0 and the head of run 1 fails, so run 0 never completes and must NOT be
+// reaped — even though an earlier block committed part of it. Reaping it would
+// delete the rows its committed prefix superseded while the run's own fresh
+// tiling is still missing the range the failed block held.
+func TestCarvePackSpanningBlockFailureLeavesEarlierRunUnreaped(t *testing.T) {
 	const (
 		run0Recs = 12        // [0, 48Ki): more than one 32 KiB block
 		run1Off  = 128 << 10 // a hole keeps it a separate run
@@ -204,21 +202,10 @@ func TestCarvePackSpanningBlockFailureReapsOnlyCommittedPrefix(t *testing.T) {
 	if !spanned {
 		t.Fatal("no block carried chunks from both runs: the geometry does not build the shape under test")
 	}
-	// Everything the sink actually stored is run 0's committed prefix: the block
-	// that failed stored nothing. Its end is therefore the furthest point covered
-	// by fresh rows, and the reap may not reach past it.
-	_, committedEnd := carvedRange(base)
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
-	if len(sink.reaps) != 1 {
-		t.Fatalf("reaps=%v, want exactly run 0's committed prefix", sink.reaps)
-	}
-	if sink.reaps[0][0] != 0 {
-		t.Fatalf("reap start=%d want 0", sink.reaps[0][0])
-	}
-	end := sink.reaps[0][1]
-	if end == 0 || end > committedEnd {
-		t.Fatalf("reap end=%d, want a non-empty prefix within the committed coverage ending at %d", end, committedEnd)
+	if len(sink.reaps) != 0 {
+		t.Fatalf("reaps=%v, want none: neither run completed, so neither may be reaped", sink.reaps)
 	}
 }
 
@@ -336,97 +323,5 @@ func BenchmarkCarveScatteredPass(b *testing.B) {
 		if _, err := s.Carve(ctx, CarveOptions{Force: true}); err != nil {
 			b.Fatalf("Carve: %v", err)
 		}
-	}
-}
-
-// abortSink is a fakeSink that also reaps and answers the manifest row-end
-// query. straddle is how far past a queried offset the reporting row reaches:
-// 0 means the offset is a row boundary, anything positive means a row straddles
-// it.
-type abortSink struct {
-	*fakeSink
-	straddle int64
-	mu       sync.Mutex
-	reaps    [][2]int64
-}
-
-func (a *abortSink) ManifestRowEndAfter(_ context.Context, _ FileID, off int64) (int64, error) {
-	return off + a.straddle, nil
-}
-
-func (a *abortSink) ReapSupersededManifest(_ context.Context, _ FileID, runStart, runEnd int64, _ map[int64]struct{}) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.reaps = append(a.reaps, [2]int64{runStart, runEnd})
-	return nil
-}
-
-// carveWithAbortSink wires a sink that records reaps and reports a row reaching
-// straddle bytes past any queried offset.
-func carveWithAbortSink(t *testing.T, straddle int64) (*Store, *abortSink) {
-	t.Helper()
-	s, dd, base, _ := carveStore(t, Config{
-		CarveBlockSize:         64 << 10,
-		CarveUploadConcurrency: 1,
-		ChunkParams:            chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
-	})
-	sink := &abortSink{fakeSink: base, straddle: straddle}
-	s.SetCarveTargets(dd, sink)
-	return s, sink
-}
-
-// TestCarveAbortedRunReapsCommittedPrefix pins that a run which aborts partway
-// still reaps the rows its flipped prefix superseded. Those records are clean,
-// so no later pass revisits them; a skipped reap leaves the superseded rows
-// alive forever, and greatest-start overlap resolution then serves the stale
-// row's bytes on a cold read.
-func TestCarveAbortedRunReapsCommittedPrefix(t *testing.T) {
-	const runSize = 512 << 10
-	s, sink := carveWithAbortSink(t, 0)
-	writeAdjacent(t, s, "f", runSize/(4<<10), 4<<10)
-	ctx := context.Background()
-	// Let the first block commit, then fail every one after it, so the single run
-	// flips a prefix and aborts.
-	sink.okCommits = 1
-	sink.failErr = errors.New("abort after the first block")
-
-	if _, err := s.Carve(ctx, CarveOptions{Force: true}); err == nil {
-		t.Fatal("Carve: want the abort to surface, got nil")
-	}
-	sink.mu.Lock()
-	defer sink.mu.Unlock()
-	if len(sink.reaps) != 1 {
-		t.Fatalf("reaps=%v want 1: the committed prefix was not reaped", sink.reaps)
-	}
-	if sink.reaps[0][0] != 0 {
-		t.Fatalf("reap start=%d want 0", sink.reaps[0][0])
-	}
-	if end := sink.reaps[0][1]; end == 0 || end >= runSize {
-		t.Fatalf("reap end=%d want a strict prefix of %d", end, runSize)
-	}
-}
-
-// TestCarveAbortedRunSkipsReapAcrossStraddlingRow pins the guard that keeps the
-// prefix reap from reintroducing a hole. The reap deletes a row whole once its
-// start lies in the range, and an aborted run's watermark is a record boundary,
-// not a manifest row boundary: reaping across a row that reaches past it would
-// strip warm durable bytes of their only cover, and a cold read of that range
-// then zero-fills. A stale overlap left standing still resolves to real bytes,
-// so the reap is skipped instead.
-func TestCarveAbortedRunSkipsReapAcrossStraddlingRow(t *testing.T) {
-	const runSize = 512 << 10
-	s, sink := carveWithAbortSink(t, 4<<10)
-	writeAdjacent(t, s, "f", runSize/(4<<10), 4<<10)
-	ctx := context.Background()
-	sink.okCommits = 1
-	sink.failErr = errors.New("abort after the first block")
-
-	if _, err := s.Carve(ctx, CarveOptions{Force: true}); err == nil {
-		t.Fatal("Carve: want the abort to surface, got nil")
-	}
-	sink.mu.Lock()
-	defer sink.mu.Unlock()
-	if len(sink.reaps) != 0 {
-		t.Fatalf("reaps=%v want none: a row straddles the watermark, so reaping opens a gap", sink.reaps)
 	}
 }
