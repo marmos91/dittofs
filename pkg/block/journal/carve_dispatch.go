@@ -8,7 +8,7 @@ import (
 
 // carveDispatcher overlaps the CommitBlock (upload + commit) of one file's
 // successive packed blocks while preserving the crash-safety ordering. Packing
-// stays sequential in carveRun; the dispatcher only parallelizes the commits and
+// stays sequential in packRuns; the dispatcher only parallelizes the commits and
 // then applies each block's synced flip in submission order.
 //
 // Two invariants make this safe to run concurrently:
@@ -23,18 +23,26 @@ import (
 //     proceed=false and skips its flip (its already-uploaded block becomes a
 //     GC-reclaimable orphan, matching the PutBlock-first semantics).
 //
+// One chain covers the whole file, not one per dirty run, so a block that fails
+// while packing run i also stops every run after it from flipping — even the
+// ones whose own commits succeeded. Those commits did write manifest rows, so
+// the rows they superseded stay alive alongside the fresh ones until the next
+// pass. That is self-correcting rather than lost: the records were never
+// flipped, so they stay unsynced, which keeps them local and unevictable, reads
+// keep being served from the journal, and the next carve re-carves the same
+// ranges and reaps them.
+//
 // Concurrency and peak RAM are bounded by sem: a block holds a slot (and its own
 // buffer) from the moment it starts packing until its flip completes, so at most
 // cap(sem) blocks — and thus CommitBlocks — are in flight, and peak carve RAM is
 // cap(sem) x (CarveBlockSize + one overhang chunk).
 type carveDispatcher struct {
-	ctx     context.Context
-	s       *Store
-	sh      *shard
-	id      FileID
-	run     []interval
-	res     *CarveResult
-	flipIdx *int // advanced only by the flipping worker, one at a time via the chain
+	ctx context.Context
+	s   *Store
+	sh  *shard
+	id  FileID
+	rs  []*runState // every dirty run of the file, in file-offset order
+	res *CarveResult
 
 	sem  chan struct{} // bounds in-flight blocks (buffers + concurrent commits)
 	prev chan bool     // completion of the last-submitted block; feeds the next worker
@@ -45,20 +53,19 @@ type carveDispatcher struct {
 	abort    atomic.Bool
 }
 
-func newCarveDispatcher(ctx context.Context, s *Store, sh *shard, id FileID, run []interval, res *CarveResult, flipIdx *int, sem chan struct{}) *carveDispatcher {
+func newCarveDispatcher(ctx context.Context, s *Store, sh *shard, id FileID, rs []*runState, res *CarveResult, sem chan struct{}) *carveDispatcher {
 	// A pre-satisfied predecessor so the first block flips as soon as it commits.
 	prev := make(chan bool, 1)
 	prev <- true
 	return &carveDispatcher{
-		ctx:     ctx,
-		s:       s,
-		sh:      sh,
-		id:      id,
-		run:     run,
-		res:     res,
-		flipIdx: flipIdx,
-		sem:     sem,
-		prev:    prev,
+		ctx:  ctx,
+		s:    s,
+		sh:   sh,
+		id:   id,
+		rs:   rs,
+		res:  res,
+		sem:  sem,
+		prev: prev,
 	}
 }
 
@@ -85,8 +92,9 @@ func (d *carveDispatcher) acquire(arenaCap int) (*[]byte, error) {
 // which submits a bare watermark advance (records covered only by already-durable
 // chunks flip there) — that carries no buffer and holds no slot. arena is the
 // block's final backing slice (it may have grown past the pooled buffer while
-// packing), stored back into the pool on completion.
-func (d *carveDispatcher) submit(chunks []CarveChunk, arenap *[]byte, arena []byte, watermark int64) {
+// packing), stored back into the pool on completion. plan names the runs the
+// block covers and how far into the last of them it reached.
+func (d *carveDispatcher) submit(chunks []CarveChunk, arenap *[]byte, arena []byte, plan flipPlan) {
 	// A batch of only deduped chunks holds no arena and so has claimed no slot in
 	// acquire; take one here so its commit is throttled like any other. Giving up
 	// on a cancelled context is safe: the commit below fails on the same context.
@@ -102,10 +110,10 @@ func (d *carveDispatcher) submit(chunks []CarveChunk, arenap *[]byte, arena []by
 	prev := d.prev
 	d.prev = mine
 	d.wg.Add(1)
-	go d.commitAndFlip(chunks, arenap, arena, watermark, prev, mine, slot)
+	go d.commitAndFlip(chunks, arenap, arena, plan, prev, mine, slot)
 }
 
-func (d *carveDispatcher) commitAndFlip(chunks []CarveChunk, arenap *[]byte, arena []byte, watermark int64, prev, mine chan bool, slot bool) {
+func (d *carveDispatcher) commitAndFlip(chunks []CarveChunk, arenap *[]byte, arena []byte, plan flipPlan, prev, mine chan bool, slot bool) {
 	defer d.wg.Done()
 	if slot {
 		// Release the slot only after CommitBlock has consumed the Data slices
@@ -136,12 +144,27 @@ func (d *carveDispatcher) commitAndFlip(chunks []CarveChunk, arenap *[]byte, are
 	ok := proceed && commitErr == nil
 	switch {
 	case ok:
-		if err := d.s.flipUpTo(d.sh, d.id, d.run, d.flipIdx, watermark); err != nil {
-			d.setErr(err)
-			ok = false
-		} else if arenap != nil {
-			// An arena is claimed only by a chunk carrying bytes: a batch of purely
-			// deduped chunks writes manifest rows but no block.
+		// One block covers runs plan.first..plan.last: every run but the last is
+		// covered through to its own end, the last only to the offset actually
+		// packed. Each run flips through its own interval slice and its own
+		// flipIdx, which is flipUpTo's existing per-run contract.
+		for i := plan.first; i <= plan.last; i++ {
+			wm := d.rs[i].end()
+			if i == plan.last {
+				wm = plan.lastOff
+			}
+			// This block's rows are committed, so the run's manifest is durable
+			// through wm whether or not the flip below then succeeds.
+			d.rs[i].committedTo = wm
+			if err := d.s.flipUpTo(d.sh, d.id, d.rs[i].ivs, &d.rs[i].flipIdx, wm); err != nil {
+				d.setErr(err)
+				ok = false
+				break
+			}
+		}
+		// An arena is claimed only by a chunk carrying bytes: a batch of purely
+		// deduped chunks writes manifest rows but no block.
+		if ok && arenap != nil {
 			d.res.BlocksWritten++
 		}
 	case proceed && commitErr != nil:

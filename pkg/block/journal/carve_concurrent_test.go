@@ -3,6 +3,7 @@ package journal
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -177,85 +178,73 @@ func TestCarveSharedRecordAcrossRuns(t *testing.T) {
 	}
 }
 
-// syncedAt reports whether the live interval covering off is warm in memory.
-func syncedAt(s *Store, id FileID, off int64) bool {
-	sh := s.shardFor(id)
-	sh.mu.Lock()
-	defer sh.mu.Unlock()
-	fi := sh.index[id]
-	if fi == nil {
-		return false
-	}
-	for k := range fi.ivs {
-		if fi.ivs[k].fileOff <= off && off < fi.ivs[k].end() {
-			return fi.ivs[k].synced && !fi.ivs[k].cold
-		}
-	}
-	return false
-}
-
 // extendingSink is a fakeSink that also answers the manifest-row lookup and
-// records every run-end reap range. The lookup for gateOff blocks until the
-// interval at waitFor has been flipped synced, which pins the ordering the
-// clamp exists for: the first run asks how far its row reaches only after the
-// second run has already marked its own intervals warm in memory.
+// records every run-end reap range. The lookup for gateOff returns a row end
+// that reaches past the next run's start, exercising the refusal that keeps a
+// run's extension from reaching into a range another run owns.
 type extendingSink struct {
 	*fakeSink
 	mu      sync.Mutex
 	reaps   [][2]int64
-	store   *Store
 	gateOff int64
-	waitFor int64
 	rowEnd  int64
 	gated   int
-	timeout error
+	// failFirstReap, when set, is returned by the first reap only, so a test can
+	// see whether one run's reap failure suppresses the runs after it.
+	failFirstReap error
+	// straddleEverywhere answers every lookup with a row reaching one byte past
+	// the offset asked about, so no reap span ever ends on a row boundary.
+	straddleEverywhere bool
 }
 
-func (e *extendingSink) ManifestRowEndAfter(_ context.Context, id FileID, off int64) (int64, error) {
+func (e *extendingSink) ManifestRowEndAfter(_ context.Context, _ FileID, off int64) (int64, error) {
+	if e.straddleEverywhere {
+		return off + 1, nil
+	}
 	if off != e.gateOff {
-		return 0, nil
+		return off, nil // the contract's "no row straddles off", not a constant
 	}
 	e.mu.Lock()
 	e.gated++
 	e.mu.Unlock()
-	for i := 0; i < 5000; i++ {
-		if syncedAt(e.store, id, e.waitFor) {
-			return e.rowEnd, nil
-		}
-		time.Sleep(time.Millisecond)
-	}
-	e.mu.Lock()
-	e.timeout = errors.New("timed out waiting for the sibling run to flip")
-	e.mu.Unlock()
-	return 0, nil
+	return e.rowEnd, nil
 }
 
 func (e *extendingSink) ReapSupersededManifest(_ context.Context, _ FileID, runStart, runEnd int64, _ map[int64]struct{}) error {
 	e.mu.Lock()
 	e.reaps = append(e.reaps, [2]int64{runStart, runEnd})
+	first := len(e.reaps) == 1
 	e.mu.Unlock()
+	if first {
+		return e.failFirstReap
+	}
 	return nil
 }
 
-// TestCarveRunDoesNotExtendPastNextRun pins that a run's manifest-row extension
-// stops at the next run's start.
+// TestCarveRunDoesNotExtendPastNextRun pins the end-to-end property: no run's
+// reap range ever reaches into a range another run owns, and a run that could
+// not be widened to a row boundary is not reaped at all. The run-end reap
+// deletes every manifest row starting inside its range that it did not itself
+// write, whole and regardless of how far past the range it reaches, so both a
+// reap range crossing into the next run and a reap ending inside a row would
+// drop cover nothing replaces, leaving an uncovered range that cold-reads as
+// zeros with no error anywhere.
 //
-// warmTail cannot tell a sibling run's already-flipped intervals from
-// pre-existing warm data — flipUpTo sets interval.synced in memory as a run's
-// watermark advances — so once runs carve concurrently a run can be offered an
-// extension that reaches straight through a range a sibling is carving. That
-// matters because the run-end reap deletes every manifest row starting inside
-// its range that it did not itself write, so an over-extended run drops the
-// rows the sibling just committed, leaving an uncovered range that cold-reads
-// as zeros with no error anywhere.
+// It does not, on its own, pin the extension refusal in extendRunToRowEnd —
+// warmTail's own all-or-nothing bail on a non-warm interval produces the same
+// reap ranges whether or not that refusal exists, since the packer widens runs
+// in ascending file-offset order on one goroutine and so never flips anything
+// inside the window a later widening inspects. TestWarmTailStopsAtNonWarmInterval
+// pins that warmTail invariant, which is what makes the refusal redundant
+// today; the refusal itself is deliberately left unpinned by any test, since
+// it only matters again if a future change carves runs of one file
+// concurrently.
 func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 	const rec = 8 << 10
 	s, dd, base, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarveUploadConcurrency: 4})
 	sink := &extendingSink{
 		fakeSink: base,
-		store:    s,
 		gateOff:  rec,     // the first run ends here
-		waitFor:  2 * rec, // the second run starts here
 		rowEnd:   4 * rec, // a row reaching past the second run
 	}
 	s.SetCarveTargets(dd, sink)
@@ -294,20 +283,20 @@ func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 
 	sink.mu.Lock()
 	reaps := append([][2]int64{}, sink.reaps...)
-	timedOut := sink.timeout
 	gated := sink.gated
 	sink.mu.Unlock()
-	if timedOut != nil {
-		t.Fatalf("ordering not reached, test proves nothing: %v", timedOut)
-	}
 	// extendRunToRowEnd short-circuits on warmAt before the sink is consulted, and
 	// the gate is keyed on an exact offset, so drift in either could leave the
-	// ordering unexercised while every assertion below still passes.
+	// refusal branch unreached while every assertion below still passes.
 	if gated == 0 {
-		t.Fatalf("the gated lookup was never reached, so the ordering was never exercised and this test proves nothing")
+		t.Fatalf("the gated lookup was never reached, so the extension path this test drives was never exercised and the assertions below prove nothing")
 	}
-	if len(reaps) != len(dirty) {
-		t.Fatalf("got %d reap ranges, want %d: %v", len(reaps), len(dirty), reaps)
+	// The first run ends at the gated offset, inside a row reaching to 4*rec, and
+	// the refusal above left it there: its reap is refused rather than allowed to
+	// delete that row and strand the stretch past the run. The second run ends on
+	// a boundary and is reaped as usual.
+	if want := [][2]int64{{2 * rec, 3 * rec}}; !reflect.DeepEqual(reaps, want) {
+		t.Fatalf("reaps=%v, want %v: only the run whose end is a row boundary", reaps, want)
 	}
 	// No run's reap range may reach into a range another run is carving.
 	for _, r := range reaps {
@@ -319,25 +308,30 @@ func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 	}
 }
 
-// TestCarveRunsCommitConcurrently pins the run-level concurrency itself: on a
-// file of several dirty runs, commits from different runs overlap, and the
-// file-scoped semaphore caps how many overlap at once. Asserting the drained
-// result alone does not cover this — a serial carveFile produces byte-identical
-// output — so this is what fails if runs are ever serialised again.
+// TestCarveBlocksCommitConcurrently pins the block-level concurrency itself: a
+// file's successive packed blocks commit at the same time, and the file-scoped
+// semaphore caps how many overlap. Asserting the drained result alone does not
+// cover this — a fully serial carve produces byte-identical output — so this is
+// what fails if the commits are ever serialised again.
 //
-// The geometry gives each run several blocks (small chunks, small
-// CarveBlockSize) so the two bounds diverge: the errgroup limit alone would
-// allow window runs x several blocks each in flight, while the one file-scoped
-// semaphore allows window blocks in total. With one block per run the cap
-// assertion could not fail, because the errgroup limit would bound it anyway.
+// The geometry gives the file many blocks (small chunks, small CarveBlockSize)
+// spread over several dirty runs, so the packer crosses run boundaries mid-block
+// while the window still bounds what is in flight. That crossing is asserted
+// rather than assumed: a block whose chunks fall in two runs is what a per-run
+// flush could never produce, so the assertion is what keeps a later ChunkParams
+// or CarveBlockSize change from silently stopping the multi-run path while the
+// test stays green.
 //
-// The commit hook blocks until more than window commits are in flight rather
-// than sleeping a fixed time, so a carve that breaches the cap releases
-// immediately and is caught; a correct one never breaches it and pays the
-// timeout once, which the gaveUp flag keeps to a single wait for the pass. That
-// wait is also what holds the in-flight set open long enough to see how many
-// distinct runs are committing at the same time.
-func TestCarveRunsCommitConcurrently(t *testing.T) {
+// The commit hook holds each commit in two stages rather than sleeping a fixed
+// time. First until a second commit is in flight, which is what makes the
+// overlap observed rather than raced for: a lower bound on concurrency is only
+// as reliable as the scheduler otherwise, and this test exists precisely to
+// catch a carve that lost it. Then until more than window commits are in flight,
+// so a carve that breaches the cap releases immediately and is caught while a
+// correct one pays that timeout once, which the gaveUp flag keeps to a single
+// wait for the pass. Both waits are bounded, so a carve that genuinely
+// serialised its commits fails the assertion below instead of hanging.
+func TestCarveBlocksCommitConcurrently(t *testing.T) {
 	const (
 		runs    = 8
 		runSize = 32 << 10
@@ -358,23 +352,31 @@ func TestCarveRunsCommitConcurrently(t *testing.T) {
 		gaveUp   bool
 		exceeded = make(chan struct{})
 		once     sync.Once
-		// Blocks in flight per run, keyed by run index, so the floor counts runs
-		// overlapping rather than one run's own blocks overlapping — a serial
-		// carveFile still reaches window in-flight blocks from a single run.
-		inFlight = map[int64]int{}
-		maxRuns  int
+		// overlapped closes as soon as two commits are in flight at once, and on
+		// the first hold that times out waiting for that, which releases the pass
+		// so the assertion reports the lost overlap.
+		overlapped  = make(chan struct{})
+		onceOverlap sync.Once
+		spanning    int // blocks whose chunks fall in more than one run
 	)
 	sink.onCommit = func(chunks []CarveChunk) {
-		run := chunks[0].FileOffset / gap
+		span := false
+		for _, c := range chunks {
+			if c.FileOffset/gap != chunks[0].FileOffset/gap {
+				span = true
+			}
+		}
 		mu.Lock()
+		if span {
+			spanning++
+		}
 		cur++
 		commits++
-		inFlight[run]++
 		if cur > max {
 			max = cur
 		}
-		if len(inFlight) > maxRuns {
-			maxRuns = len(inFlight)
+		if cur >= 2 {
+			onceOverlap.Do(func() { close(overlapped) })
 		}
 		if cur > window {
 			once.Do(func() { close(exceeded) })
@@ -382,6 +384,14 @@ func TestCarveRunsCommitConcurrently(t *testing.T) {
 		skip := gaveUp
 		mu.Unlock()
 
+		// Stage one: wait for a second commit to be in flight.
+		select {
+		case <-overlapped:
+		case <-time.After(5 * time.Second):
+			onceOverlap.Do(func() { close(overlapped) })
+		}
+
+		// Stage two: hold the in-flight set open so a breached cap is seen.
 		if !skip {
 			select {
 			case <-exceeded:
@@ -395,9 +405,6 @@ func TestCarveRunsCommitConcurrently(t *testing.T) {
 		}
 		mu.Lock()
 		cur--
-		if inFlight[run]--; inFlight[run] == 0 {
-			delete(inFlight, run)
-		}
 		mu.Unlock()
 	}
 
@@ -415,21 +422,24 @@ func TestCarveRunsCommitConcurrently(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	// More blocks than runs is what makes the cap assertion able to fail at all.
-	if commits <= runs {
-		t.Fatalf("%d commits for %d runs: runs are not multi-block, so the cap assertion cannot fail", commits, runs)
+	// More blocks than the window is what makes the cap assertion able to fail.
+	if commits <= window {
+		t.Fatalf("%d commits for a window of %d: too few blocks for the cap assertion to fail", commits, window)
 	}
-	if maxRuns < 2 {
-		t.Fatalf("max runs committing at once = %d, want > 1: the runs did not overlap", maxRuns)
+	if spanning == 0 {
+		t.Fatalf("no block carried chunks from more than one run: blocks are still cut at run boundaries")
+	}
+	if max < 2 {
+		t.Fatalf("max blocks committing at once = %d, want > 1: no second commit joined the first within the hold, so the commits did not overlap", max)
 	}
 	if max > window {
 		t.Fatalf("max concurrent commits = %d, want <= CarveUploadConcurrency (%d): the file-scoped bound on in-flight blocks was breached", max, window)
 	}
 }
 
-// reapCtxSink fails the run covering failFrom, but only once the other run has
-// committed, so the surviving run is always past its commits — and therefore has
-// its records flipped synced — when the sibling's failure cancels the carve.
+// reapCtxSink fails the block covering failFrom, but only once the earlier block
+// has committed, so the surviving run is always past its commits — and therefore
+// has its records flipped synced — by the time the failure lands.
 type reapCtxSink struct {
 	*fakeSink
 	failFrom  int64
@@ -438,10 +448,9 @@ type reapCtxSink struct {
 	onceC     sync.Once
 	onceF     sync.Once
 
-	mu        sync.Mutex
-	reaps     int
-	cancelled bool
-	stalled   bool
+	mu      sync.Mutex
+	reaps   int
+	stalled bool
 }
 
 func (r *reapCtxSink) CommitBlock(ctx context.Context, chunks []CarveChunk) error {
@@ -464,7 +473,9 @@ func (r *reapCtxSink) CommitBlock(ctx context.Context, chunks []CarveChunk) erro
 	return err
 }
 
-func (r *reapCtxSink) ReapSupersededManifest(ctx context.Context, _ FileID, _, _ int64, _ map[int64]struct{}) error {
+func (r *reapCtxSink) ReapSupersededManifest(_ context.Context, _ FileID, _, _ int64, _ map[int64]struct{}) error {
+	// Only count a reap that runs after the failure has landed: that is the one
+	// a completed run would lose if the failure suppressed it.
 	select {
 	case <-r.failed:
 	case <-time.After(5 * time.Second):
@@ -473,36 +484,32 @@ func (r *reapCtxSink) ReapSupersededManifest(ctx context.Context, _ FileID, _, _
 		r.mu.Unlock()
 		return nil
 	}
-	// The sibling has failed. A reap bounded by the carve's own context is
-	// cancelled from here on; one bounded by the caller's context is not.
-	select {
-	case <-ctx.Done():
-		r.mu.Lock()
-		r.cancelled = true
-		r.mu.Unlock()
-		return ctx.Err()
-	case <-time.After(500 * time.Millisecond):
-	}
 	r.mu.Lock()
 	r.reaps++
 	r.mu.Unlock()
 	return nil
 }
 
-// TestCarveReapSurvivesSiblingFailure pins that a run which finished its commits
-// still reaps the manifest rows it superseded when another run fails.
+// TestCarveReapSurvivesSiblingFailure pins that a run whose records all committed
+// and flipped still reaps the manifest rows it superseded when a later block of
+// the same carve fails.
 //
-// The reap is the last step of a run, after every one of its records is
-// committed and flipped synced. Nothing retries it and a later pass will not
-// revisit those records, so a reap skipped here leaves superseded rows alive
-// forever — and overlap resolution is greatest-start, so a stale row starting
-// later than a fresh one wins and serves old bytes on a cold read.
+// The reap runs after every one of the run's records is committed and flipped
+// synced. Nothing retries it and a later pass will not revisit those records, so
+// a reap skipped here leaves superseded rows alive forever — and overlap
+// resolution is greatest-start, so a stale row starting later than a fresh one
+// wins and serves old bytes on a cold read.
+//
+// CarveBlockSize is set to exactly one run so each run flushes as its own block:
+// the packer cuts blocks at that size, not at run boundaries, so a larger one
+// would coalesce both runs into a single block, the seeded failure would never
+// fire, and the test would prove nothing.
 func TestCarveReapSurvivesSiblingFailure(t *testing.T) {
 	const (
 		runSize  = 4 << 10
 		failFrom = 64 << 10
 	)
-	s, dd, base, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarveUploadConcurrency: 4})
+	s, dd, base, _ := carveStore(t, Config{CarveBlockSize: runSize, CarveUploadConcurrency: 4})
 	sink := &reapCtxSink{
 		fakeSink:  base,
 		failFrom:  failFrom,
@@ -525,9 +532,6 @@ func TestCarveReapSurvivesSiblingFailure(t *testing.T) {
 	defer sink.mu.Unlock()
 	if sink.stalled {
 		t.Fatal("the runs did not interleave as set up, so this test proves nothing")
-	}
-	if sink.cancelled {
-		t.Fatal("the surviving run's reap was cancelled by the sibling's failure, stranding its superseded rows")
 	}
 	if sink.reaps != 1 {
 		t.Fatalf("reaps=%d, want 1 from the surviving run", sink.reaps)

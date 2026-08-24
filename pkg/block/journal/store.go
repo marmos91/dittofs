@@ -64,21 +64,15 @@ type Config struct {
 	// itself fails.
 	MaxLocalBytes int64
 	EvictMaxWait  time.Duration // write-path backpressure budget before ErrLocalStoreFull
-	// CarveUploadConcurrency bounds how many of one file's packed blocks may be
-	// committed (uploaded + committed) at once across that file's whole carve
-	// pass — every dirty run it carves shares the one window, not one window
-	// per run. Packing stays sequential; only the block commits overlap, so a
-	// single large file's carve is no longer one PutBlock at a time. Peak carve
-	// RAM per file is window x (CarveBlockSize + one overhang chunk) for the
-	// block arenas, plus one chunker scratch buffer of chunker.MaxChunkSize for
-	// each run carving concurrently — the window bounds the arenas, not the
-	// scratch buffers — so keep it modest.
+	// CarveUploadConcurrency bounds how many of one file's packed blocks are
+	// committed (uploaded + committed) at once. Packing itself is sequential
+	// across the whole file, one block at a time, and so are the manifest row-end
+	// lookups that widen each run; only the commits overlap, so a single large
+	// file's carve is not one PutBlock at a time.
+	// Peak carve RAM per file is window x (CarveBlockSize + one overhang chunk)
+	// for the block arenas, plus the single chunker scratch buffer of
+	// chunker.MaxChunkSize the pass holds — so keep it modest.
 	// Zero falls back to the default via withDefaults.
-	//
-	// ponytail: with runs concurrent, a file at the limit can leave each run
-	// holding a single slot, so the intra-run block overlap degrades under
-	// multi-run contention; split into a separate CarveRunConcurrency only if
-	// profiling shows the two dimensions need to diverge.
 	CarveUploadConcurrency int
 	// DirtyExpiry bounds how long an appended record may sit unfsynced. A
 	// background loop commits every shard still holding uncovered records once

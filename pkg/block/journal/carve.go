@@ -8,15 +8,21 @@ import (
 	"math"
 	"sync"
 
-	"golang.org/x/sync/errgroup"
 	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
 // carveScratchPool recycles the chunker accumulator buffer (cap one max chunk)
-// across carve runs. Its contents are always overwritten before use and it never
-// escapes carveRun, so recycling it is a pure allocation win — no per-op scratch.
+// across carve passes. Its contents are always overwritten before use and it
+// never escapes packRuns, so recycling it is a pure allocation win — no per-op
+// scratch.
+//
+// ponytail: the buffer is sized from the package-wide chunker.MaxChunkSize
+// rather than the share's ChunkParams.Max, so a share chunking small still
+// reserves 16 MiB for it — and the block arena adds the same overhang term on
+// top; size both from ChunkParams.Max if that headroom ever shows up in a
+// memory profile.
 var carveScratchPool = sync.Pool{New: func() any {
 	b := make([]byte, 0, chunker.MaxChunkSize)
 	return &b
@@ -41,11 +47,13 @@ var carveArenaPool = sync.Pool{New: func() any {
 //     run without blocking appends.
 //  2. Stream the dirty bytes through FastCDC -> BLAKE3 -> per-share dedup; novel
 //     chunks accumulate into a block-sized batch.
-//  3. At CarveBlockSize (or the end of a contiguous run) hand the novel chunks to
-//     the sink, which seals, frames, uploads and atomically commits them. Successive
-//     blocks of one file commit concurrently through a bounded worker pool
-//     (CarveUploadConcurrency) so a single large file's carve is not one PutBlock
-//     at a time; packing itself stays sequential.
+//  3. At CarveBlockSize hand the novel chunks to the sink, which seals, frames,
+//     uploads and atomically commits them. A block is not cut at a run boundary,
+//     only at that size and once at the end of the file, so a scattered dirty set
+//     drains as few full-size objects rather than one tiny object per run.
+//     Successive blocks of one file commit concurrently through a bounded worker
+//     pool (CarveUploadConcurrency) so a single large file's carve is not one
+//     PutBlock at a time; packing itself stays sequential.
 //  4. Only after a block's commit returns — and after every earlier block flipped —
 //     flip each carved record's synced flag in place with a one-byte pwrite (the
 //     header CRC excludes Flags, so no rewrite). The dispatcher applies the flips in
@@ -95,26 +103,32 @@ type BlockSink interface {
 	CommitBlock(ctx context.Context, chunks []CarveChunk) error
 }
 
-// supersededReaper is an optional BlockSink capability. After a carve run has
-// committed every row it produced, journal calls ReapSupersededManifest so the
-// sink can delete the manifest rows the run superseded — keeping the per-file
-// FileChunk manifest a gap-free, overlap-free tiling of [0,size) after a
-// partial overwrite. runStart/runEnd bound the re-carved (dirty) range; newOffsets
-// are the chunk offsets this run wrote (so the reap keeps them and deletes only
-// stale straddlers/interior rows). Sinks without a metadata store (test fakes)
-// simply don't implement it and the reap is skipped.
+// supersededReaper is an optional BlockSink capability. Once a carve run has
+// committed rows, journal calls ReapSupersededManifest so the sink can delete
+// the manifest rows they superseded — keeping the per-file FileChunk manifest a
+// gap-free, overlap-free tiling of [0,size) after a partial overwrite.
+// runStart/runEnd bound the committed part of the re-carved (dirty) range;
+// newOffsets are the chunk offsets this run wrote (so the reap keeps them and
+// deletes only stale straddlers/interior rows). Sinks without a metadata store
+// (test fakes) simply don't implement it and the reap is skipped. A sink that
+// implements it is expected to implement manifestRowEnder too: the reap is
+// guarded on that lookup, and both are answered out of the same metadata store.
 type supersededReaper interface {
 	ReapSupersededManifest(ctx context.Context, id FileID, runStart, runEnd int64, newOffsets map[int64]struct{}) error
 }
 
 // manifestRowEnder is an optional BlockSink capability: it reports how far the
-// manifest coverage straddling an offset reaches. A run that stops inside a row
-// leaves that row half superseded — the run-end reap deletes it, because its
-// start lies in the run, and the part past the run keeps no cover at all, since
-// a row claims a prefix of its chunk and so cannot be made to start mid-chunk.
-// Carving through to the reported offset is what keeps that range covered. Sinks
-// without a metadata store (test fakes) don't implement it and a run is carved
-// exactly as snapshotted.
+// manifest coverage straddling an offset reaches. Carve asks it twice: to widen
+// a run to a row boundary before packing it, and to refuse a reap that would end
+// inside a row (see reapEndsOnRowBoundary, which carries the argument). Sinks
+// without a metadata store (test fakes) don't implement it: a run is carved
+// exactly as snapshotted and the reap runs unguarded.
+//
+// The answer is the greatest end among rows starting strictly before off and
+// reaching past it, or off itself when none does — never a value below off. A
+// fake that answers with a constant, or with zero, is not answering this
+// question, and a caller that gates on the result will behave differently
+// against it than against a metadata store.
 type manifestRowEnder interface {
 	ManifestRowEndAfter(ctx context.Context, id FileID, off int64) (int64, error)
 }
@@ -227,7 +241,8 @@ func (s *Store) carveCandidates(sh *shard, opts CarveOptions, now, maxAge int64)
 }
 
 // carveFile snapshots one file's live dirty intervals, splits them into maximal
-// contiguous runs (a hole resets FastCDC), and carves each run.
+// contiguous runs (a hole resets FastCDC), packs them all through one packer,
+// and reaps the rows each run's committed prefix superseded.
 func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveResult) error {
 	sh.mu.Lock()
 	fi := sh.index[id]
@@ -245,59 +260,104 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 	}
 
 	// Runs cover disjoint ranges (extendRunToRowEnd stops at any non-warm
-	// interval), so no live interval, packing state or result is shared: each run
-	// keeps its own dispatcher, flipIdx and CarveResult.
+	// interval), so no live interval is shared between them.
 	//
 	// Two runs can still reference one physical record, because an overwrite
 	// splits a record into fragments that a later carve can leave on either side
-	// of a warm gap. That stays safe because flipUpTo marks a fragment synced,
-	// checks whether the record has any dirty fragment left, and flips the
-	// on-disk bit all under sh.mu, so whichever run finishes last is the one that
-	// observes zero remaining and flips.
-	//
-	// One semaphore for the whole file: it bounds in-flight block arenas across
-	// all of this file's runs, not just the one currently carving, so that term
-	// stays cap(sem) x (CarveBlockSize + one overhang chunk) regardless of how
-	// many runs a file has. It does not bound the chunker scratch buffer, which
-	// each run holds for its whole lifetime, so peak carve RAM per file is that
-	// arena term plus (concurrent runs) x chunker.MaxChunkSize.
-	//
-	// ponytail: the scratch term is sized from the package-wide max chunk rather
-	// than the share's ChunkParams.Max, so a share chunking small still reserves
-	// 16 MiB per concurrent run; size the pooled buffer from ChunkParams.Max if
-	// that headroom ever shows up in a memory profile.
-	sem := make(chan struct{}, s.cfg.CarveUploadConcurrency)
-	g, gctx := errgroup.WithContext(ctx)
-	// ponytail: one knob bounds both goroutines and the per-run
-	// ManifestRowEndAfter transactions; give runs their own limit only if
-	// profiling shows upload and metadata fan-out need to diverge.
-	g.SetLimit(s.cfg.CarveUploadConcurrency)
-
+	// of a warm gap — and since one block spans runs, those two fragments can now
+	// also flip from the same block, not only from different ones. That stays
+	// safe because flipUpTo marks a fragment synced, checks whether the record
+	// has any dirty fragment left, and flips the on-disk bit all under sh.mu:
+	// the earlier call sees the sibling fragment still dirty and leaves the bit
+	// alone, so whichever flip lands last is the one that observes zero remaining
+	// and flips. Within one block the per-run flips run back to back on the
+	// block's own worker, and across blocks the prev/mine chain serialises them,
+	// so exactly one call ever observes the last dirty fragment.
 	runs := splitRuns(snap)
-	results := make([]CarveResult, len(runs))
+	rs := make([]*runState, len(runs))
 	for i, run := range runs {
-		// Bound each run by the next run's start, known here because every run is
-		// materialised before any is dispatched.
-		limit := int64(math.MaxInt64)
-		if i+1 < len(runs) {
-			limit = runs[i+1][0].fileOff
-		}
-		g.Go(func() error {
-			r, err := s.carveRun(gctx, ctx, sh, id, run, limit, sem)
-			results[i] = r
-			return err
-		})
+		rs[i] = &runState{ivs: run, committedTo: run[0].fileOff}
 	}
-	err := g.Wait()
-	for _, r := range results {
-		res.BlocksWritten += r.BlocksWritten
-		res.BytesCarved += r.BytesCarved
+	res2, err := s.packRuns(ctx, sh, id, rs)
+	res.BlocksWritten += res2.BlocksWritten
+	res.BytesCarved += res2.BytesCarved
+
+	// Reap what each run superseded, over the span its rows actually reached:
+	// with those rows committed, the ones they replaced (stale straddlers,
+	// interior chunks the fresh tiling covers) are safe to delete.
+	//
+	// The span is the run's committed frontier, not its end, so a run the pass
+	// abandoned half way is reaped over the part it did commit. That part has
+	// already flipped its records synced, so no later pass re-carves them and no
+	// later pass reaps for them either: skipping it here means it never happens,
+	// and the stale rows outlive the fresh ones forever. Overlap resolution is
+	// greatest-start, so a stale row starting later than a fresh one then wins
+	// and serves old bytes on a cold read.
+	//
+	// For the same reason this runs even when packing failed, and one run's reap
+	// failing does not suppress the others: each run's committed prefix is its
+	// own last chance.
+	//
+	// Serial, not concurrent: carveCommitLocks stripes on the payload ID, so every
+	// reap for one file contends on the same mutex anyway.
+	//
+	// ponytail: a caller cancelling between the flip and the reap still strands
+	// those rows, since nothing retries a reap and the records are no longer
+	// dirty; persist a pending-reap intent, or defer the flip until the reap
+	// lands, if that window ever shows up in the field.
+	if r, ok := s.sink.(supersededReaper); ok {
+		for _, st := range rs {
+			if st.committedTo <= st.start() {
+				continue
+			}
+			onBoundary, rerr := s.reapEndsOnRowBoundary(ctx, id, st.committedTo)
+			if rerr == nil && onBoundary {
+				rerr = r.ReapSupersededManifest(ctx, id, st.start(), st.committedTo, st.newOffsets)
+			}
+			if rerr != nil && err == nil {
+				err = rerr
+			}
+		}
 	}
 	if err != nil {
 		return err
 	}
 	s.maybeResetDirtyClock(sh, id)
 	return nil
+}
+
+// reapEndsOnRowBoundary reports whether a reap ending at end can delete the rows
+// it covers without stranding any of their bytes.
+//
+// ReapSupersededManifest classifies a row by its start alone: one starting
+// inside the reaped span is deleted whole however far past end it reaches. The
+// stretch from end to that row's end then keeps no cover at all — the next dirty
+// run tiles from its own start, the reap's narrowing branch only ever protects a
+// row starting before the span, and a row claims a prefix of its chunk so none
+// can be made to start mid-chunk and take the stretch over. Nothing revisits it,
+// and once the local bytes are evicted a read of it zero-fills.
+//
+// end is safe exactly when no row starts before it and reaches past it, which is
+// what ManifestRowEndAfter answers. Refusing the whole reap when one does is
+// deliberately blunt: it leaves every stale row of that run alive, so the range
+// keeps overlapping cover and a read there can resolve to the stale row and
+// serve old bytes. That is the recoverable failure of the two — every byte is
+// still addressable and the manifest can be repaired — where a stranded stretch
+// is not.
+//
+// ponytail: a whole-manifest read per reaped run, on top of the reap's own scan
+// of the same rows; fold the check into the reap transaction if a carve profile
+// ever shows the second scan.
+func (s *Store) reapEndsOnRowBoundary(ctx context.Context, id FileID, end int64) (bool, error) {
+	ender, ok := s.sink.(manifestRowEnder)
+	if !ok {
+		return true, nil // only a test fake reaps without the lookup; leave it unguarded
+	}
+	rowEnd, err := ender.ManifestRowEndAfter(ctx, id, end)
+	if err != nil {
+		return false, err
+	}
+	return rowEnd <= end, nil
 }
 
 // splitRuns groups an offset-ordered snapshot into maximal contiguous runs; a
@@ -315,41 +375,30 @@ func splitRuns(snap []interval) [][]interval {
 	return runs
 }
 
-// carveRun streams one contiguous dirty run through FastCDC, dedups each chunk,
-// packs novel chunks into blocks (flushed at CarveBlockSize and at the run's end),
-// and flips the run's records to synced as the durable frontier advances.
-// limit is the file offset the next run starts at (MaxInt64 for the last run):
-// the run may not extend past it.
-// ctx bounds the carve work and is cancelled as soon as any sibling run fails,
-// which stops uploads that would be thrown away. reapCtx is the caller's own
-// context and bounds only the end-of-run reap: by the time the reap runs this
-// run's records are committed and already flipped synced, so a sibling's failure
-// must not strand the cleanup of rows nothing will revisit.
+// packRuns streams every dirty run of one file through FastCDC in file-offset
+// order, dedups each chunk, packs the novel ones into blocks, and flips records
+// to synced as the durable frontier advances. Each run is widened to its
+// manifest row end as the packer reaches it.
 //
-// ponytail: a caller cancelling between the flip and the reap still strands
-// those rows, since nothing retries a reap and the records are no longer dirty;
-// persist a pending-reap intent, or defer the flip until the reap lands, if that
-// window ever shows up in the field.
-func (s *Store) carveRun(ctx, reapCtx context.Context, sh *shard, id FileID, run []interval, limit int64, sem chan struct{}) (CarveResult, error) {
+// Chunks stay inside a run — a fresh chunker and reader per run means no chunk
+// spans the hole between two of them — but blocks do not: a block is flushed
+// only when it reaches CarveBlockSize, and once at the end of the file. That is
+// what keeps a scattered dirty set from emitting one tiny remote object per run;
+// the objects a randomly-written file drains are sized by CarveBlockSize, not by
+// how far apart its writes landed.
+func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runState) (CarveResult, error) {
 	var res CarveResult
-	run, err := s.extendRunToRowEnd(ctx, sh, id, run, limit)
-	if err != nil {
-		return res, err
-	}
 
-	c := chunker.NewChunkerWithParams(s.cfg.ChunkParams)
-	rr := &runReader{s: s, sh: sh, id: id, ivs: run}
-
-	fileOff := run[0].fileOff
-	flipIdx := 0
-	// Offsets of every chunk this run tiles (novel or deduped), so the run-end
-	// reap keeps this run's own rows and deletes only superseded ones.
-	newOffsets := make(map[int64]struct{})
+	// One semaphore for the whole file: it bounds the in-flight block arenas
+	// across every run, so that term stays cap(sem) x (CarveBlockSize + one
+	// overhang chunk) however many runs the file has. The chunker scratch buffer
+	// is a single pooled buffer for the whole pass, not one per run.
+	sem := make(chan struct{}, s.cfg.CarveUploadConcurrency)
 
 	// disp overlaps successive blocks' CommitBlock (upload + commit) while packing
 	// stays sequential. It owns the bounded worker pool, the per-block buffers and
 	// the ordered flip chain; flush hands it a completed block or a bare watermark.
-	disp := newCarveDispatcher(ctx, s, sh, id, run, &res, &flipIdx, sem)
+	disp := newCarveDispatcher(ctx, s, sh, id, rs, &res, sem)
 
 	// Each packed block gets its OWN buffer (cap one block plus one overhang chunk)
 	// so its bytes stay live while its CommitBlock runs concurrently with the next
@@ -388,18 +437,24 @@ func (s *Store) carveRun(ctx, reapCtx context.Context, sh *shard, id FileID, run
 		return nil
 	}
 
-	// flush hands the packed block (if any) and the watermark to the dispatcher,
+	// blockFirstRun is the index of the run the block being packed started in;
+	// every run from there to the one being packed contributes to it, which is
+	// what the flush's flipPlan names.
+	blockFirstRun := 0
+
+	// flush hands the packed block (if any) and its flip plan to the dispatcher,
 	// which commits then flips in submission order. Packing continues immediately;
 	// the commit and flip happen on the pool. Ownership of the buffer moves to the
 	// dispatcher, so the local arena state resets to "no block".
-	flush := func(watermark int64) {
-		disp.submit(pending, arenap, arena, watermark)
+	flush := func(plan flipPlan) {
+		disp.submit(pending, arenap, arena, plan)
 		pending, arenap, arena, arenaOff, batchBytes = nil, nil, nil, 0, 0
 	}
 
 	// buf accumulates bytes for the chunker; it never exceeds one max chunk, so
-	// RAM stays at FastCDC-chunk scale even for a multi-GiB run. It is recycled
-	// across runs and read into directly (no separate read buffer).
+	// RAM stays at FastCDC-chunk scale even for a multi-GiB file. One buffer
+	// serves every run of the pass and is read into directly (no separate read
+	// buffer); it is recycled across passes through the pool.
 	bufp := carveScratchPool.Get().(*[]byte)
 	buf := (*bufp)[:0]
 	defer func() {
@@ -411,98 +466,139 @@ func (s *Store) carveRun(ctx, reapCtx context.Context, sh *shard, id FileID, run
 	// packing but the already-dispatched blocks still drain via disp.wait so no
 	// goroutine or buffer leaks; disp.wait folds it together with any commit error.
 	var packErr error
-	eof := false
-	for {
-		if err := ctx.Err(); err != nil {
-			packErr = err
-			break
+	for ri := range rs {
+		// Widen this run to its manifest row end here, immediately before packing
+		// it, rather than widening every run of the file up front. Each lookup is
+		// a whole-manifest read, so resolving them all first buys nothing durable
+		// until the last one returns: on a scattered dirty set that prologue runs
+		// for as long as the file has runs, and the unsynced counter does not move
+		// for any of it. Resolving one run at a time keeps a block committing and
+		// flipping every CarveBlockSize, so the counter falls throughout the pass.
+		// A run only ever grows at its tail, so the next run's start — the limit
+		// this one may not cross — is still the snapshotted one.
+		//
+		// ponytail: serial, one whole-manifest read per run on the packing
+		// critical path, so a file with many dirty runs pays that read once per
+		// run before its bytes move; answer the straddle query from a single
+		// per-pass listing (or a point lookup at the offset) if that read ever
+		// dominates a carve profile.
+		limit := int64(math.MaxInt64)
+		if ri+1 < len(rs) {
+			limit = rs[ri+1].start()
 		}
-		// A commit already failed: stop packing so the watermark can't advance past
-		// the failed block. In-flight commits drain in disp.wait.
-		if disp.aborted() {
-			break
-		}
-		for !eof && len(buf) < chunker.MaxChunkSize {
-			n, err := rr.Read(buf[len(buf):cap(buf)])
-			if n > 0 {
-				buf = buf[:len(buf)+n]
-			}
-			if errors.Is(err, io.EOF) {
-				eof = true
-				break
-			}
-			if err != nil {
-				packErr = err
-				break
-			}
-		}
-		if packErr != nil {
-			break
-		}
-		if len(buf) == 0 {
-			break
-		}
-		boundary, _ := c.Next(buf, eof)
-		if boundary == 0 {
-			if !eof {
-				continue // below MinChunkSize and more is coming: read more
-			}
-			boundary = len(buf)
-		}
-
-		h := ChunkHash(blake3.Sum256(buf[:boundary]))
-		// Dedup consults the committed synced-hash oracle. A block being committed
-		// concurrently has NOT yet marked its hashes durable, so this never observes
-		// a sibling block's uncommitted hash as durable — at worst a duplicate chunk
-		// is re-packed, which the content-addressed commit collapses to a no-op.
-		durable, err := s.deduper.IsChunkDurable(ctx, h)
+		ivs, err := s.extendRunToRowEnd(ctx, sh, id, rs[ri].ivs, limit)
 		if err != nil {
 			packErr = err
 			break
 		}
-		// A deduped chunk has nothing to upload but still needs its manifest row:
-		// the run-end reap deletes every row in the run span the run did not write,
-		// so dropping it here leaves the range on a stale straddler or on nothing.
-		cc := CarveChunk{Hash: h, FileID: id, FileOffset: fileOff, Size: boundary}
-		if !durable {
-			if err := ensureArena(); err != nil {
+		rs[ri].ivs = ivs
+
+		// A fresh chunker and reader per run, and an empty accumulator, so a chunk
+		// never spans the hole between two runs. The block being packed carries
+		// over: that is what lets one block span them.
+		c := chunker.NewChunkerWithParams(s.cfg.ChunkParams)
+		rr := &runReader{s: s, sh: sh, id: id, ivs: rs[ri].ivs}
+		fileOff := rs[ri].start()
+		rs[ri].newOffsets = make(map[int64]struct{})
+		buf = buf[:0]
+		eof := false
+
+		for {
+			if err := ctx.Err(); err != nil {
 				packErr = err
 				break
 			}
-			// Bound proof: this block's bytes < CarveBlockSize before this append
-			// (else the prior iteration flushed and started a fresh arena), and
-			// boundary <= MaxChunkSize, so arenaOff+boundary <= CarveBlockSize-1+
-			// MaxChunkSize <= cap. The grow is a fail-loud belt: if that invariant
-			// ever breaks (e.g. a config change), realloc rather than slice out of
-			// bounds. Already-pending Data slices keep pointing at the old backing
-			// (still live), so no copy is needed — the new chunk lands in the larger
-			// arena and the grown slice ships to the dispatcher.
-			if arenaOff+boundary > cap(arena) {
-				arena = make([]byte, arenaOff+boundary)
+			// A commit already failed: stop packing so the watermark can't advance past
+			// the failed block. In-flight commits drain in disp.wait.
+			if disp.aborted() {
+				break
 			}
-			data := arena[arenaOff : arenaOff+boundary : arenaOff+boundary]
-			copy(data, buf[:boundary])
-			arenaOff += boundary
-			cc.Data = data
-			res.BytesCarved += int64(boundary)
-		}
-		pending = append(pending, cc)
-		batchBytes += int64(boundary)
-		newOffsets[fileOff] = struct{}{}
-		fileOff += int64(boundary)
-		buf = append(buf[:0], buf[boundary:]...)
+			for !eof && len(buf) < chunker.MaxChunkSize {
+				n, err := rr.Read(buf[len(buf):cap(buf)])
+				if n > 0 {
+					buf = buf[:len(buf)+n]
+				}
+				if errors.Is(err, io.EOF) {
+					eof = true
+					break
+				}
+				if err != nil {
+					packErr = err
+					break
+				}
+			}
+			if packErr != nil {
+				break
+			}
+			if len(buf) == 0 {
+				break
+			}
+			boundary, _ := c.Next(buf, eof)
+			if boundary == 0 {
+				if !eof {
+					continue // below MinChunkSize and more is coming: read more
+				}
+				boundary = len(buf)
+			}
 
-		if batchBytes >= s.cfg.CarveBlockSize {
-			flush(fileOff)
+			h := ChunkHash(blake3.Sum256(buf[:boundary]))
+			// Dedup consults the committed synced-hash oracle. A block being committed
+			// concurrently has NOT yet marked its hashes durable, so this never observes
+			// a sibling block's uncommitted hash as durable — at worst a duplicate chunk
+			// is re-packed, which the content-addressed commit collapses to a no-op.
+			durable, err := s.deduper.IsChunkDurable(ctx, h)
+			if err != nil {
+				packErr = err
+				break
+			}
+			// A deduped chunk has nothing to upload but still needs its manifest row:
+			// the reap deletes every row in the run span the run did not write, so
+			// dropping it here leaves the range on a stale straddler or on nothing.
+			cc := CarveChunk{Hash: h, FileID: id, FileOffset: fileOff, Size: boundary}
+			if !durable {
+				if err := ensureArena(); err != nil {
+					packErr = err
+					break
+				}
+				// Bound proof: this block's bytes < CarveBlockSize before this append
+				// (else the prior iteration flushed and started a fresh arena), and
+				// boundary <= MaxChunkSize, so arenaOff+boundary <= CarveBlockSize-1+
+				// MaxChunkSize <= cap. The grow is a fail-loud belt: if that invariant
+				// ever breaks (e.g. a config change), realloc rather than slice out of
+				// bounds. Already-pending Data slices keep pointing at the old backing
+				// (still live), so no copy is needed — the new chunk lands in the larger
+				// arena and the grown slice ships to the dispatcher.
+				if arenaOff+boundary > cap(arena) {
+					arena = make([]byte, arenaOff+boundary)
+				}
+				data := arena[arenaOff : arenaOff+boundary : arenaOff+boundary]
+				copy(data, buf[:boundary])
+				arenaOff += boundary
+				cc.Data = data
+				res.BytesCarved += int64(boundary)
+			}
+			pending = append(pending, cc)
+			batchBytes += int64(boundary)
+			rs[ri].newOffsets[fileOff] = struct{}{}
+			fileOff += int64(boundary)
+			buf = append(buf[:0], buf[boundary:]...)
+
+			if batchBytes >= s.cfg.CarveBlockSize {
+				flush(flipPlan{first: blockFirstRun, last: ri, lastOff: fileOff})
+				blockFirstRun = ri
+			}
+			if eof && len(buf) == 0 {
+				break
+			}
 		}
-		if eof && len(buf) == 0 {
+		if packErr != nil || disp.aborted() {
 			break
 		}
 	}
 
 	if packErr != nil || disp.aborted() {
 		// A read/dedup error (packErr) or an in-flight commit failure (aborted)
-		// ends the run. Abandon the half-packed block (return its slot/buffer) and
+		// ends the pass. Abandon the half-packed block (return its slot/buffer) and
 		// drain the blocks already in flight, but submit nothing more: advancing
 		// the watermark or committing the tail past a failure only adds orphan
 		// uploads. disp.wait returns the commit error in watermark order.
@@ -513,22 +609,12 @@ func (s *Store) carveRun(ctx, reapCtx context.Context, sh *shard, id FileID, run
 		return res, packErr
 	}
 
-	// Tail: commit any remainder and flip through the end of the run (records
+	// Tail: commit any remainder and flip through the end of the last run (records
 	// covered only by already-durable chunks flip here too, via the bare watermark).
-	flush(run[len(run)-1].end())
+	last := len(rs) - 1
+	flush(flipPlan{first: blockFirstRun, last: last, lastOff: rs[last].end()})
 	if err := disp.wait(); err != nil {
 		return res, err
-	}
-	// With every row this run produced now committed, reap the manifest rows
-	// the run superseded (stale straddlers / interior chunks the fresh tiling
-	// replaced). One pass at run end is correct across a multi-batch run — no single
-	// batch span contains a seam-spanning straddler, and reaping the run span per
-	// batch would delete a sibling batch's fresh rows. Optional: sinks without a
-	// metadata store (test fakes) skip it.
-	if r, ok := s.sink.(supersededReaper); ok {
-		if err := r.ReapSupersededManifest(reapCtx, id, run[0].fileOff, run[len(run)-1].end(), newOffsets); err != nil {
-			return res, err
-		}
 	}
 	return res, nil
 }
@@ -543,14 +629,24 @@ func (s *Store) carveRun(ctx, reapCtx context.Context, sh *shard, id FileID, run
 // warm. An evicted range holds no local bytes to re-chunk, and half an extension
 // still ends inside the row.
 //
+// Skipping is not free, and every bail below shares the cost: the run then still
+// ends inside a row, so reapEndsOnRowBoundary refuses its reap and every row the
+// run superseded stays alive next to the fresh ones. Extending is what earns the
+// reap; the guard is only what keeps the alternative from being a stranded
+// stretch of file with no manifest cover at all.
+//
 // A row reaching past limit, the offset the next run starts at, is refused
-// outright. Runs carve concurrently and flipUpTo marks intervals synced in
-// memory as a run's watermark advances, so a sibling run's already-flipped head
-// is indistinguishable here from pre-existing warm data and warmTail alone would
-// wave such a row through. Refusing on the offset reproduces what a serial carve
-// decides, where that range is still visibly dirty. It has to be a refusal
-// rather than a truncation to limit: the run-end reap deletes whole rows that
-// start inside the run, so tiling only part of a row still drops its tail.
+// outright. It is redundant today: runs are packed in ascending file-offset
+// order on one goroutine and nothing flips ahead of the packer, so every
+// interval this pass has already flipped lies below the window warmAt and
+// warmTail inspect, the interval at limit is still the next run's own dirty
+// head, and warmTail's bail on it already stops the extension there. It stays
+// because that redundancy is a property of the packer being sequential — runs
+// were carved concurrently before and would be again — and under any such
+// ordering a sibling's already-flipped head is indistinguishable here from
+// pre-existing warm data. It has to be a refusal rather than a truncation to
+// limit: the run-end reap deletes whole rows that start inside the run, so
+// tiling only part of a row still drops its tail.
 //
 // ponytail: a row reaching past a later dirty run is left alone, so that run
 // still ends mid-row; covering it means merging the two runs, which is worth
@@ -569,9 +665,8 @@ func (s *Store) extendRunToRowEnd(ctx context.Context, sh *shard, id FileID, run
 		return nil, err
 	}
 	if rowEnd > limit {
-		// The row reaches past a later run: leave this one as snapshotted rather
-		// than half extended, which is what a serial carve does when it finds that
-		// range still dirty.
+		// See the doc comment above: redundant while the packer is sequential
+		// and forward, kept for any ordering that carves runs concurrently.
 		return run, nil
 	}
 	if rowEnd <= runEnd {

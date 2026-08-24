@@ -25,7 +25,7 @@ func TestConfigChunkParamsDefaulting(t *testing.T) {
 	}
 }
 
-// directChunkCount runs the chunker over data exactly as carveRun does (whole
+// directChunkCount runs the chunker over data exactly as packRuns does (whole
 // buffer, final) so the test can assert carve honored the configured params.
 func directChunkCount(data []byte, p chunker.Params) int {
 	c := chunker.NewChunkerWithParams(p)
@@ -44,7 +44,7 @@ func directChunkCount(data []byte, p chunker.Params) int {
 
 func TestCarveHonorsChunkParams(t *testing.T) {
 	ctx := context.Background()
-	data := randBytes(3<<20, 42) // < MaxChunkSize so carveRun feeds it in one pass
+	data := randBytes(3<<20, 42) // < MaxChunkSize so packRuns feeds it in one pass
 
 	small := chunker.Params{Min: 128 << 10, Avg: 512 << 10, Max: 1 << 20}
 	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 64 << 20, ChunkParams: small})

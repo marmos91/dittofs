@@ -16,10 +16,35 @@ func TestParams_Validate(t *testing.T) {
 		{"below-floor", Params{Min: 1 << 10, Avg: 4 << 10, Max: 8 << 10}, false},
 		{"unordered", Params{Min: 256 << 10, Avg: 128 << 10, Max: 512 << 10}, false},
 		{"max-below-avg", Params{Min: 64 << 10, Avg: 256 << 10, Max: 128 << 10}, false},
+		{"max-at-ceiling", Params{Min: 64 << 10, Avg: 256 << 10, Max: MaxChunkSize}, true},
+		{"max-above-ceiling", Params{Min: 64 << 10, Avg: 256 << 10, Max: MaxChunkSize + 1}, false},
+		{"min-above-ceiling", Params{Min: 20 << 20, Avg: 80 << 20, Max: 160 << 20}, false},
 	}
 	for _, c := range cases {
 		if got := c.p.Validate() == nil; got != c.ok {
 			t.Errorf("%s: Validate ok=%v, want %v", c.name, got, c.ok)
+		}
+	}
+}
+
+// TestValidParamsAlwaysEmitOnAFullBuffer pins what the Max ceiling buys the
+// carve loop: for any accepted sizing, a non-final buffer holding MaxChunkSize
+// bytes yields a boundary. A zero there means "read more", and a caller whose
+// buffer is already MaxChunkSize has nothing left to read, so it spins.
+func TestValidParamsAlwaysEmitOnAFullBuffer(t *testing.T) {
+	// All-zero bytes drive the gear hash to a fixed point, so no content-defined
+	// breakpoint ever fires: only the Max cut-off can end the chunk.
+	buf := make([]byte, MaxChunkSize)
+	for _, p := range []Params{
+		DefaultParams(),
+		{Min: 4 << 10, Avg: 16 << 10, Max: 32 << 10},
+		{Min: 4 << 20, Avg: 8 << 20, Max: MaxChunkSize},
+	} {
+		if err := p.Validate(); err != nil {
+			t.Fatalf("%+v: fixture must be valid: %v", p, err)
+		}
+		if b, _ := NewChunkerWithParams(p).Next(buf, false); b == 0 {
+			t.Errorf("%+v: Next asked for more than a full buffer can hold", p)
 		}
 	}
 }

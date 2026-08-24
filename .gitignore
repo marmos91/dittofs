@@ -108,3 +108,7 @@ graphify-out/
 results/
 bench/results/
 infra/infra
+bench.yaml
+
+# One-off rig evidence (see .planning/perf/ for the analysis)
+rig-*/
