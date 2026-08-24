@@ -47,7 +47,15 @@ func DefaultParams() Params {
 }
 
 // Validate rejects nonsensical sizing. Min must be ≥ 4 KiB (below a filesystem
-// page there is no point) and the ordering Min ≤ Avg ≤ Max must hold.
+// page there is no point), the ordering Min ≤ Avg ≤ Max must hold, and Max may
+// not exceed MaxChunkSize.
+//
+// That ceiling is what keeps Next's "accumulate more" answer answerable. Next
+// returns 0 whenever it has neither reached Min nor found a breakpoint before
+// Max, and its callers respond by reading more bytes into a buffer they size at
+// MaxChunkSize. With Max above that the buffer tops out below the window Next is
+// still scanning for, so Next keeps asking for bytes the caller can no longer
+// supply and the read loop spins without ever emitting a chunk.
 func (p Params) Validate() error {
 	const minFloor = 4 * 1024
 	if p.Min < minFloor {
@@ -55,6 +63,9 @@ func (p Params) Validate() error {
 	}
 	if p.Avg < p.Min || p.Max < p.Avg {
 		return fmt.Errorf("chunker: require Min(%d) ≤ Avg(%d) ≤ Max(%d)", p.Min, p.Avg, p.Max)
+	}
+	if p.Max > MaxChunkSize {
+		return fmt.Errorf("chunker: Max %d above ceiling %d", p.Max, MaxChunkSize)
 	}
 	return nil
 }

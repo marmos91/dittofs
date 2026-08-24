@@ -55,14 +55,22 @@ func TestCarveInterleavesRowEndLookupsWithCommits(t *testing.T) {
 		cell      = 4 << 10
 		runs      = 100 // every fourth cell is overwritten
 		blockSize = 64 << 10
-		// One block's worth of runs, doubled for slack: the first commit must
-		// land within roughly the prologue one block genuinely needs, not merely
-		// somewhere before the last lookup.
-		maxPrologue = 2 * (blockSize / cell)
+		// Each run contributes one cell, so a block fills after this many of them.
+		runsPerBlock = blockSize / cell
+		// Packing a block's first novel chunk claims an arena, and an arena is
+		// released only after that block's CommitBlock has returned. With one
+		// arena in flight the packer therefore cannot start a second block's
+		// bytes until the first block has committed, which caps the lookups it
+		// can do beforehand at one block's runs plus the run it stalls in — a
+		// bound the arena semaphore enforces, not one the scheduler happens to
+		// produce. Raising the concurrency multiplies the bound by it and makes
+		// the assertion a race against the commit goroutine.
+		uploadConcurrency = 1
+		maxPrologue       = uploadConcurrency*runsPerBlock + 1
 	)
 	s, dd, fs, _ := carveStore(t, Config{
 		CarveBlockSize:         blockSize,
-		CarveUploadConcurrency: 4,
+		CarveUploadConcurrency: uploadConcurrency,
 		ChunkParams:            chunker.Params{Min: 1 << 10, Avg: 2 << 10, Max: 8 << 10},
 	})
 	ctx := context.Background()

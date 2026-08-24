@@ -586,6 +586,17 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 // warm. An evicted range holds no local bytes to re-chunk, and half an extension
 // still ends inside the row.
 //
+// Skipping is not free, and every bail below shares the cost: the run then still
+// ends inside a row, and the run-end reap deletes a row whole once its start
+// lies in the run, so a row that both starts inside the run and reaches past it
+// leaves the stretch from the run end to the row end with no manifest cover at
+// all. Nothing re-tiles that stretch — the next dirty run's tiling starts at its
+// own start, and narrowing only ever protects a row that begins before the run —
+// so a read of it zero-fills once the local bytes are evicted. The shape needs a
+// run that crosses a row boundary and then stops inside the next row, which is
+// why the far more common run living inside a single row is unaffected: its
+// straddler starts before it and the reap leaves that one alone.
+//
 // A row reaching past limit, the offset the next run starts at, is refused
 // outright. It is redundant today: runs are packed in ascending file-offset
 // order on one goroutine and nothing flips ahead of the packer, so every
