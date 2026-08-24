@@ -1,4 +1,16 @@
-# Carve drain convergence — implementation plan (#2070, closes #1872)
+# Carve drain convergence — implementation plan (#2070) — **SHIPPED, SUPERSEDED**
+
+> **Status:** complete. All five tasks landed as PR #2071 (`f6038a64`) and PR #2072 (`4f2fe25b`);
+> #2070 is closed. Kept as the historical record — **do not execute it again.**
+>
+> Its Task 5 rig measurement refuted this plan's own closing hypothesis: the drain is round-trip
+> bound, but request concurrency cannot close it, because PUT latency is flat regardless of object
+> size. **#1872 stays open** and the "Gate: block packing across runs" section at the foot of this
+> file is what opened.
+>
+> Successor: `.planning/perf/2026-08-24-1872-carve-block-packing-PLAN.md`. It supersedes that gate
+> section, and it rules against the two candidates parked there (#1875's diff and cross-gap
+> coalescing) in favour of a single sequential packer whose blocks span runs.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended)
 > or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
