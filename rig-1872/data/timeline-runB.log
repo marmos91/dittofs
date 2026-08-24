@@ -1,0 +1,11 @@
+2026-08-24T17:56:53Z | tier dittofs-s3-writeback-nfs3: local-ack (badger, metadata flush relaxed) + async S3 writeback unsynced=2783969280
+2026-08-24T17:57:15Z | tier dittofs-s3-writeback-nfs3: local-ack (badger, metadata flush relaxed) + async S3 writeback unsynced=1955594240
+2026-08-24T17:57:37Z | tier dittofs-s3-writeback-nfs3: local-ack (badger, metadata flush relaxed) + async S3 writeback unsynced=756023296
+2026-08-24T17:57:58Z | tier dittofs-s3-writeback-nfs3: local-ack (badger, metadata flush relaxed) + async S3 writeback unsynced=25165824
+2026-08-24T17:58:19Z | run: dittofs-s3-writeback-nfs3__rand-write-4k__large__nfs3__warm unsynced=676450304
+2026-08-24T17:58:41Z | run: dittofs-s3-writeback-nfs3__rand-write-4k__large__nfs3__warm unsynced=1087430656
+2026-08-24T17:59:05Z | run: dittofs-s3-writeback-nfs3__rand-write-4k__large__nfs3__warm unsynced=1095045120
+2026-08-24T17:59:28Z | run: dittofs-s3-writeback-nfs3__rand-write-4k__large__nfs3__warm unsynced=1088098304
+2026-08-24T17:59:49Z | drain round 0: unsynced=1035MiB pending_uploads=0 unsynced=1080696832
+2026-08-24T18:00:10Z | drain round 0: unsynced=1025MiB pending_uploads=0 unsynced=1073860608
+2026-08-24T18:00:32Z | drain round 0: unsynced=1025MiB pending_uploads=0 unsynced=1068240896
