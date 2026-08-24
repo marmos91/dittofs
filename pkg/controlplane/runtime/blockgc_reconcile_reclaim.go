@@ -94,9 +94,12 @@ func (r *Runtime) ReconcileReclaim(ctx context.Context, dryRun bool) (*engine.Re
 				}
 				liveLogical += used
 			} else {
-				logger.Warn("ReconcileReclaim: share usage lookup failed — space amplification not reported",
+				// The share is left out of both totals, so the ratio stays
+				// coherent over the shares that did report. The block walk
+				// succeeded, so metaBlockIDs is still complete and the
+				// class-3 sweep stays safe to act on.
+				logger.Warn("ReconcileReclaim: share usage lookup failed — share left out of the space amplification estimate",
 					"share", shareName, "err", usedErr)
-				allEnumerated = false
 			}
 			// DeleteBlockRecord is the extra method the reclaimer needs beyond the
 			// read-only view; a backend lacking it still contributes to the union
