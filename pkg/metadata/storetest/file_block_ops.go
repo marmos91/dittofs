@@ -2174,6 +2174,15 @@ func testListFileChunksForeignRows(t *testing.T, factory StoreFactory) {
 		mk("share/dxr/0", 500),
 		// Sibling reachable only through a LIKE "%" wildcard.
 		mk("share/dir-other/0", 600),
+
+		// Siblings straddling the '/' separator in byte order. A backend that
+		// seeks a range rather than matching a prefix bounds it by the bytes
+		// either side of '/' (0x2F), so these two names sit hard against that
+		// bound: '.' is 0x2E and '0' is 0x30. "share/dir0" is also a payloadID
+		// that "share/dir" is a strict prefix of, which is what an inclusive
+		// upper bound would wrongly swallow.
+		mk("share/dir./0", 700),
+		mk("share/dir0/0", 800),
 	}
 	for _, b := range rows {
 		if err := store.Put(ctx, b); err != nil {
@@ -2204,6 +2213,19 @@ func testListFileChunksForeignRows(t *testing.T, factory StoreFactory) {
 	}
 	if !slices.IsSorted(offsets) {
 		t.Errorf("ListFileChunks(share/dir) offsets %v not ascending", offsets)
+	}
+
+	// Each boundary sibling must still be listable in its own right, and a
+	// multi-digit offset must survive: it is the row a range compared in a
+	// collation that ignores punctuation sorts past the upper bound and drops.
+	for _, pid := range []string{"share/dir.", "share/dir0"} {
+		res, lerr := asLegacy(t, store).ListFileChunks(ctx, pid)
+		if lerr != nil {
+			t.Fatalf("ListFileChunks(%s) error: %v", pid, lerr)
+		}
+		if len(res) != 1 || res[0].ID != pid+"/0" {
+			t.Errorf("ListFileChunks(%s) = %v, want [%s/0]", pid, res, pid)
+		}
 	}
 
 	// The nested payload must still be listable in its own right.
