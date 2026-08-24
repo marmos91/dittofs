@@ -470,6 +470,12 @@ func dittofsMount(ctx context.Context, proto Protocol) (string, error) {
 // datasets and metadata slack shouldn't fail the check.
 const dittofsColdBarrierFloorBytes = 64 << 20 // 64 MiB
 
+// dittofsColdBarrierBudgetBytes is the most local disk that may still be resident
+// after the evict for the pass that follows to count as cold: the ≥80% drop the
+// barrier verifies. The drain ahead of it has to leave a residue this same budget
+// can absorb, so both derive the number here rather than each spelling it out.
+func dittofsColdBarrierBudgetBytes(residentBytes int64) int64 { return residentBytes / 5 }
+
 // dittofsBlockTotals is the subset of `dfsctl store block stats -o json` the
 // cold barrier needs: how much is resident locally, and how much is not yet
 // durable on the remote (so DrainLocalSynced can't drop it).
@@ -572,7 +578,7 @@ const dittofsEvictSegmentBytes int64 = 256 << 20
 // segment of its own. Unsynced bytes are spread over an unknown number of
 // records, and only that count decides how many segments they pin, so the drain
 // has to assume the finest spread it can plausibly see — the carver's minimum
-// chunk.
+// chunk (chunker.MinChunkSize).
 //
 // ponytail: an estimate standing in for a count the store already tracks; report
 // unsynced records (or pinned segments) from `dfsctl store block stats` and the
@@ -581,22 +587,16 @@ const dittofsDrainStragglerBytes int64 = 1 << 20
 
 // dittofsDrainResidueOK reports whether a drain residue is small enough to leave
 // behind. Its size alone does not answer that: eviction frees segments, not
-// bytes, so what a residue costs is the segments it pins. 32 MiB sitting in one
-// segment pins 256 MiB; the same 32 MiB spread one straggler at a time pins 32
-// segments — 8 GiB — and the barrier that follows then fails on bytes the drain
-// deliberately left behind. A residue is harmless only when even the worst
-// spread still leaves the local tier able to shed the ≥80% the cold barrier goes
-// on to demand. Below the barrier's own floor that drop is never verified, so no
-// residue there can invalidate a measurement that was never going to be checked.
+// bytes, so what a residue costs is the segments it pins, and a residue is
+// harmless only when even the worst spread — every straggler alone in its own
+// segment — still fits the budget the cold barrier allows to survive. Below the
+// barrier's own floor that drop is never verified, so no residue there can
+// invalidate a measurement that was never going to be checked.
 func dittofsDrainResidueOK(unsyncedBytes, localResidentBytes int64) bool {
 	if unsyncedBytes <= 0 || localResidentBytes <= dittofsColdBarrierFloorBytes {
 		return true
 	}
-	pinned := dittofsWorstCasePinnedBytes(unsyncedBytes)
-	if pinned > localResidentBytes {
-		pinned = localResidentBytes
-	}
-	return pinned <= localResidentBytes/5
+	return dittofsWorstCasePinnedBytes(unsyncedBytes) <= dittofsColdBarrierBudgetBytes(localResidentBytes)
 }
 
 // dittofsWorstCasePinnedBytes is the local disk an unsynced residue can hold down
@@ -610,14 +610,12 @@ func dittofsWorstCasePinnedBytes(unsyncedBytes int64) int64 {
 }
 
 // dittofsDrainResidueErr reports a residue the drain could not get below,
-// spelling out the segment arithmetic that makes it fatal — the number is
-// otherwise unreadable, since the residue is small and what fails is the local
-// disk it pins.
+// spelling out the segment arithmetic that makes it fatal.
 func dittofsDrainResidueErr(st dittofsBlockTotals, rounds int) error {
 	pinned := dittofsWorstCasePinnedBytes(st.UnsyncedBytes)
 	return fmt.Errorf("drain-uploads left %dMiB unsynced after %d rounds (local=%dMiB pending_uploads=%d) — eviction frees whole %dMiB segments and skips any holding an unsynced record, so that residue can pin up to %dMiB locally, against the %dMiB the cold barrier lets survive",
 		st.UnsyncedBytes>>20, rounds, st.LocalDiskUsed>>20, st.PendingUploads,
-		dittofsEvictSegmentBytes>>20, pinned>>20, (st.LocalDiskUsed/5)>>20)
+		dittofsEvictSegmentBytes>>20, pinned>>20, dittofsColdBarrierBudgetBytes(st.LocalDiskUsed)>>20)
 }
 
 // dittofsDrainUntilSynced loops `dfsctl system drain-uploads` until the residue
@@ -656,7 +654,7 @@ func dittofsDrainUntilSynced(ctx context.Context) error {
 			if stable++; stable >= 2 {
 				return nil
 			}
-		case st.UnsyncedBytes == prevUnsynced:
+		case prevUnsynced >= 0 && st.UnsyncedBytes >= prevUnsynced:
 			stable = 0
 			if flat++; flat >= maxFlatRounds {
 				return dittofsDrainResidueErr(st, i+1)
@@ -952,7 +950,7 @@ func dittofsColdBarrier(ctx context.Context, diag *dittofsBarrierDiag) error {
 			before.LocalDiskUsed>>20, after.LocalDiskUsed>>20, dittofsColdBarrierFloorBytes>>20)
 		return nil
 	}
-	if after.LocalDiskUsed > before.LocalDiskUsed/5 {
+	if after.LocalDiskUsed > dittofsColdBarrierBudgetBytes(before.LocalDiskUsed) {
 		return fmt.Errorf("cold barrier failed: local disk only fell %dMiB→%dMiB (want ≥80%% drop); the cold pass would measure locally-served reads, not S3",
 			before.LocalDiskUsed>>20, after.LocalDiskUsed>>20)
 	}
