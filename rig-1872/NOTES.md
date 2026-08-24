@@ -79,3 +79,15 @@ surviving sibling `d9f39027-…` was itself created the same morning at 07:35,
 35 minutes after the one that vanished. Kapsule recycling it is the explanation
 that fits; flagging it anyway rather than staying quiet about a named VM
 changing state on my watch.
+
+## Teardown
+
+`dfsbench teardown` ran after asserting `.bench-vm.json`'s `server_id` was
+neither coder VM and was `d8a08b01-…`, and after re-reading the live instance's
+name. Verified afterwards, not assumed:
+
+```
+scw instance server get d8a08b01-…  -> Cannot find resource 'instance_server'
+scw block volume get 0829be48-…     -> Cannot find resource 'volume'
+scw instance server get d9f39027-…  -> scw-coder-coder-primary-… running
+```

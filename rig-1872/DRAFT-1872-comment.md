@@ -15,23 +15,31 @@ Object size on the wire is read from an S3 listing of the `blocks/` prefix:
 
 | | develop `47a2d1fb` | packed `5b43a9ae` |
 | --- | --- | --- |
-| objects | B_OBJ | 52 |
-| bytes | B_BYTES | 200.5 MiB |
-| median size | B_MED | **4,226,761 B** |
-| min size | B_MIN | **2,496,751 B** |
-| max size | B_MAX | 4,235,140 B |
+| objects | 20,391 | **52** |
+| bytes | 123.0 MiB | 200.5 MiB |
+| median size | 4,168 B | **4,226,761 B** |
+| min size | 4,168 B | **2,496,751 B** |
+| max size | 53,321 B | 4,235,140 B |
+| objects per MiB written | 165.8 | **0.259** |
 
-The pre-fix quantisation this issue names — 4168 / 6216 / 8264 B — is gone. The
-smallest object the branch produced on this path is 2.50 MB.
+The pre-fix quantisation this issue names — 4168 / 6216 / 8264 B — reproduced
+exactly on develop: 13,861 objects at 4,168 B and 4,114 at 8,264 B, the whole
+distribution 4096n + 72, largest 53,321 B. On the branch the smallest object on
+that path is 2.50 MB. **640x fewer PUTs per byte; the median object is 1014x
+larger.**
+
+Those are exact byte counts from the object store, not a rig-derived rate, so
+unlike everything below they carry no rig-noise caveat.
 
 ## Drain, and the cold barrier
 
 Neither side's cold barrier passed.
 
 * **develop** entered the barrier with **1035 MiB** unsynced (the original
-  report: 935 MiB) and drained at 3–10 MiB per 30 s — the same slow shape as the
+  report: 935 MiB) and drained 1035 → 924 MiB over 30 samples (3–10 MiB per 30 s) — the same slow shape as the
   49 → 34 → 45 → 22 → 2 → 2 MiB series in the original run. At that rate the
-  backlog needs about an hour; the barrier allows fifteen minutes.
+  backlog needs about four hours; the barrier allows fifteen minutes. It
+  failed with 924 MiB still unsynced — the original report's figure was 935 MiB.
 * **the branch** entered with **115 MiB** and then made *no* progress at all:
   30 consecutive 30-second samples reporting a byte-identical
   `unsynced_bytes`, with `pending_uploads: 0` and `blocks_dirty: 0`. Nine
@@ -44,7 +52,7 @@ Warm-cell numbers, for completeness — and one of them needs care:
 | --- | --- | --- |
 | `rand-write-4k` IOPS | 4291 | 892 |
 | bytes written in the 60 s cell | 1046 MiB | 219 MiB |
-| bytes durable on S3 during that cell | ~12 MiB | **200.5 MiB** |
+| bytes durable on S3 across the whole 18 min (cell + drain) | 123.0 MiB | 200.5 MiB in the 60 s cell alone |
 | latency p99 | 123 ms | 2.26 s |
 | `seq-read` warm MB/s | 2705 | 2711 |
 

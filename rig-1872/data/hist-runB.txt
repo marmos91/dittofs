@@ -1,0 +1,48 @@
+=== RUN B (develop 47a2d1fb): rand-write-4k + drain, LastModified >= 2026-08-24T17:58:15Z ===
+objects: 20391   bytes: 129006323 (123.0 MiB)
+mean: 6,327 B   median: 4,168 B
+min: 4,168 B   max: 53,321 B
+
+power-of-two buckets:
+  <=     8K     13861   68.0%
+  <=    16K      5511   27.0%
+  <=    32K       985    4.8%
+  <=    64K        34    0.2%
+
+top exact sizes:
+       4,168 B  x13861
+       8,264 B  x4114
+      12,360 B  x1397
+      16,457 B  x578
+      20,553 B  x246
+      24,649 B  x115
+      28,745 B  x46
+      32,841 B  x16
+      36,937 B  x12
+      45,129 B  x4
+
+=== RUN B: layout (sequential) phase [17:56:15, 17:58:15) ===
+objects: 1579   bytes: 4297235360 (4098.2 MiB)
+mean: 2,721,492 B   median: 4,261,160 B
+min: 4,168 B   max: 4,627,404 B
+
+power-of-two buckets:
+  <=     8K       471   29.8%
+  <=    16K        13    0.8%
+  <=   256K         2    0.1%
+  <=     1M         8    0.5%
+  <=     2M        92    5.8%
+  <=     4M        57    3.6%
+  <=     8M       936   59.3%
+
+top exact sizes:
+       4,168 B  x471
+   1,048,649 B  x86
+   2,097,260 B  x39
+   3,145,871 B  x12
+   4,194,482 B  x11
+       8,264 B  x9
+      12,360 B  x4
+   4,263,722 B  x4
+   4,261,160 B  x3
+   4,233,834 B  x3
