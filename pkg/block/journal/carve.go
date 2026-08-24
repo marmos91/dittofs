@@ -276,16 +276,17 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 	res.BlocksWritten += res2.BlocksWritten
 	res.BytesCarved += res2.BytesCarved
 
-	// Reap each run that fully flipped: with every row it produced committed, the
-	// rows it superseded (stale straddlers, interior chunks the fresh tiling
-	// replaced) are safe to delete. A run that did not complete is skipped — its
-	// records stay dirty and a later pass re-carves and re-reaps them.
+	// Reap each run over the range it actually flipped: with every row it produced
+	// there committed, the rows that range superseded (stale straddlers, interior
+	// chunks the fresh tiling replaced) are safe to delete.
 	//
-	// This runs even when packing failed, because a run that did complete has
-	// already flipped its records synced: no later pass revisits them, so a reap
-	// skipped here never happens at all and its superseded rows outlive the
-	// fresh ones forever. One run's reap failing does not suppress the others
-	// for the same reason — each complete run is its own last chance.
+	// This runs even when packing failed, because a range that flipped is clean:
+	// no later pass revisits those records, so a reap skipped here never happens
+	// at all and its superseded rows outlive the fresh ones forever — and with
+	// overlap resolved to the greatest covering start, a stale row starting later
+	// than a fresh one then serves old bytes on a cold read. One run's reap
+	// failing does not suppress the others for the same reason: each flipped
+	// range is its own last chance.
 	//
 	// Serial, not concurrent: carveCommitLocks stripes on the payload ID, so every
 	// reap for one file contends on the same mutex anyway.
@@ -295,11 +296,40 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 	// dirty; persist a pending-reap intent, or defer the flip until the reap
 	// lands, if that window ever shows up in the field.
 	if r, ok := s.sink.(supersededReaper); ok {
+		ender, _ := s.sink.(manifestRowEnder)
 		for _, st := range rs {
+			runEnd := st.end()
 			if !st.complete() {
-				continue
+				// The run aborted partway, so only its flipped prefix may be reaped.
+				// That prefix ends at a record boundary, which — unlike the end of a
+				// completed run, widened to one by extendRunToRowEnd — need not be a
+				// manifest row boundary, and the reap deletes a row whole once its
+				// start lies in the range. Deleting a row that reaches past the
+				// watermark would strip warm durable bytes of their only cover and
+				// leave a range that cold-reads as zeros, so reap only when no row
+				// straddles the watermark: a surviving stale overlap still resolves
+				// to real bytes and a later write re-carves it, while a hole does not
+				// heal.
+				if st.flipIdx == 0 || ender == nil {
+					continue
+				}
+				wm := st.ivs[st.flipIdx-1].end()
+				rowEnd, rerr := ender.ManifestRowEndAfter(ctx, id, wm)
+				if rerr != nil {
+					if err == nil {
+						err = rerr
+					}
+					continue
+				}
+				if rowEnd > wm {
+					continue
+				}
+				runEnd = wm
 			}
-			if rerr := r.ReapSupersededManifest(ctx, id, st.start(), st.end(), st.newOffsets); rerr != nil && err == nil {
+			// newOffsets may name offsets packed into the discarded half-block that
+			// never committed. Those only make the reap keep a row it could have
+			// deleted; they can never make it delete a live one.
+			if rerr := r.ReapSupersededManifest(ctx, id, st.start(), runEnd, st.newOffsets); rerr != nil && err == nil {
 				err = rerr
 			}
 		}
