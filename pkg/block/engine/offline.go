@@ -54,14 +54,22 @@ func (bs *Store) OfflineReadiness() OfflineReadiness {
 	if bs.closed {
 		return OfflineReadiness{Reason: "block store is closed"}
 	}
+	return offlineReadinessOf(bs.local, bs.HasRemoteStore())
+}
 
+// offlineReadinessOf holds the gating rules, separated from the store lookup so
+// they can be exercised directly. Each of them refuses to answer rather than
+// answering zero, because a zero here reads as "provably offline safe" and
+// would say that about exactly the shares whose data is most likely to be
+// remote-only.
+func offlineReadinessOf(localTier any, hasRemote bool) OfflineReadiness {
 	// A share with no remote has nothing to be cut off from: every byte it
 	// holds is local by construction.
-	if !bs.HasRemoteStore() {
+	if !hasRemote {
 		return OfflineReadiness{Known: true}
 	}
 
-	reporter, ok := bs.local.(coldRangeReporter)
+	reporter, ok := localTier.(coldRangeReporter)
 	if !ok {
 		return OfflineReadiness{Reason: "local tier does not track remote-only ranges"}
 	}
