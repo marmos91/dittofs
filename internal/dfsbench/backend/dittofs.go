@@ -580,9 +580,14 @@ const dittofsEvictSegmentBytes int64 = 256 << 20
 // has to assume the finest spread it can plausibly see — the carver's minimum
 // chunk (chunker.MinChunkSize).
 //
-// ponytail: an estimate standing in for a count the store already tracks; report
-// unsynced records (or pinned segments) from `dfsctl store block stats` and the
-// estimate collapses into reading that field.
+// ponytail: an estimate standing in for a count the store already tracks, and a
+// deliberately pessimistic one — several stragglers sharing a segment (one file's
+// un-carved tail) are counted as if each held a segment of its own, so a residue
+// can be refused that eviction would in fact have freed. That direction is the
+// cheap one to be wrong in: a refused drain is loud, while a tolerated pin is a
+// warm number labelled cold. Report unsynced records (or pinned segments) from
+// `dfsctl store block stats` and both the estimate and its pessimism collapse
+// into reading that field.
 const dittofsDrainStragglerBytes int64 = 1 << 20
 
 // dittofsDrainResidueOK reports whether a drain residue is small enough to leave
