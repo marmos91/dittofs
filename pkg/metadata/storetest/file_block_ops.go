@@ -2158,6 +2158,8 @@ func testListFileChunksForeignRows(t *testing.T, factory StoreFactory) {
 	// to it.
 	rows := []*block.FileChunk{
 		mk("share/dir/0", 100),
+		// Multi-digit offset: the row a backend seeking a range in a collation
+		// that ignores punctuation sorts past the upper bound and drops.
 		mk("share/dir/4096", 200),
 		// Belongs to share/dir but carries no placeable offset. This is the
 		// damaged-row class that manifest scans exist to report, so it must
@@ -2215,9 +2217,8 @@ func testListFileChunksForeignRows(t *testing.T, factory StoreFactory) {
 		t.Errorf("ListFileChunks(share/dir) offsets %v not ascending", offsets)
 	}
 
-	// Each boundary sibling must still be listable in its own right, and a
-	// multi-digit offset must survive: it is the row a range compared in a
-	// collation that ignores punctuation sorts past the upper bound and drops.
+	// Each boundary sibling must still be listable in its own right, and must
+	// return only its own row.
 	for _, pid := range []string{"share/dir.", "share/dir0"} {
 		res, lerr := asLegacy(t, store).ListFileChunks(ctx, pid)
 		if lerr != nil {

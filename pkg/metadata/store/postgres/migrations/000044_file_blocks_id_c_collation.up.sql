@@ -7,9 +7,8 @@
 -- the set of IDs carrying the payloadID prefix.
 --
 -- "Exactly" only holds under byte ordering. On a linguistic collation such as
--- en_US.utf8 — the default of the stock postgres image — punctuation is
--- ignorable at the primary comparison level, so 'p/1048576' sorts AFTER 'p0'
--- and falls outside the range. The queries therefore pin COLLATE "C" on the
+-- en_US.utf8, punctuation is ignorable at the primary comparison level, so
+-- 'p/1048576' sorts AFTER 'p0' and falls outside the range. The queries therefore pin COLLATE "C" on the
 -- comparison itself and stay correct whether or not this migration has run;
 -- what this migration adds is an index whose stored order MATCHES that
 -- comparison, which is what lets the planner seek instead of scanning every

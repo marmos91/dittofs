@@ -263,23 +263,24 @@ func (s *PostgresMetadataStore) GetByHash(ctx context.Context, hash metadata.Con
 	return block, nil
 }
 
-// ListFileChunks returns all blocks belonging to a file, ordered by block index.
-// The ID range is a prefilter; block.ChunksForPayload decides membership
-// and order.
+// listFileChunksQuery takes the bounds of block.PayloadPrefixRange and is a
+// prefilter; block.ChunksForPayload decides membership and order.
 //
 // The range is compared and ordered in byte collation, not the database
-// default: block.PayloadPrefixRange's bounds only bracket the prefix under
-// byte ordering, and a byte-ordered id column lets the primary-key index seek
-// the range instead of filtering the whole table.
+// default: the bounds only bracket the prefix under byte ordering, and a
+// byte-ordered id column lets the primary-key index seek the range instead of
+// filtering the whole table.
+const listFileChunksQuery = `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
+	FROM file_blocks
+	WHERE id >= $1 COLLATE "C" AND id < $2 COLLATE "C"
+	ORDER BY id COLLATE "C" ASC`
+
+// ListFileChunks returns all blocks belonging to a file, ordered by block index.
 // Not on the narrowed FileChunkStore interface;
 // kept as a backend method for engine-internal callers.
 func (s *PostgresMetadataStore) ListFileChunks(ctx context.Context, payloadID string) ([]*metadata.FileChunk, error) {
-	query := `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
-		FROM file_blocks
-		WHERE id >= $1 COLLATE "C" AND id < $2 COLLATE "C"
-		ORDER BY id COLLATE "C" ASC`
 	lo, hi := block.PayloadPrefixRange(payloadID)
-	rows, err := s.query(ctx, query, lo, hi)
+	rows, err := s.query(ctx, listFileChunksQuery, lo, hi)
 	if err != nil {
 		return nil, fmt.Errorf("list file chunks: %w", err)
 	}
@@ -659,12 +660,8 @@ func (tx *postgresTransaction) GetByHash(ctx context.Context, hash metadata.Cont
 // (read-after-write violation; the SQL is otherwise identical to the
 // store-level methods).
 func (tx *postgresTransaction) ListFileChunks(ctx context.Context, payloadID string) ([]*metadata.FileChunk, error) {
-	query := `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
-		FROM file_blocks
-		WHERE id >= $1 COLLATE "C" AND id < $2 COLLATE "C"
-		ORDER BY id COLLATE "C" ASC`
 	lo, hi := block.PayloadPrefixRange(payloadID)
-	rows, err := tx.tx.Query(ctx, query, lo, hi)
+	rows, err := tx.tx.Query(ctx, listFileChunksQuery, lo, hi)
 	if err != nil {
 		return nil, fmt.Errorf("list file chunks: %w", err)
 	}

@@ -74,11 +74,10 @@ func ChunkOffsetFor(id, payloadID string) (uint64, bool) {
 // between them, so [payloadID+"/", payloadID+"0") is exactly the set of IDs
 // carrying the prefix.
 //
-// That equality holds only when the range is compared in BYTE order. A
-// linguistic collation may treat punctuation as ignorable, which sorts
-// "<payloadID>/1" after "<payloadID>0" and drops the row out of the range;
+// That equality holds only when the range is compared in BYTE order, so
 // callers must pin a byte-ordered comparison rather than take the database
-// default.
+// default: a linguistic collation may treat punctuation as ignorable and sort
+// a row out of the range.
 //
 // The range locates rows, it does not decide membership: it still spans
 // payloads nested beneath this one, and ChunksForPayload settles what belongs.
