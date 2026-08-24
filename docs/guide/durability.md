@@ -78,22 +78,31 @@ absent these are honored unchanged:
 it** (size, mtime, the block manifest). It does not govern **namespace**
 operations — `create`, `unlink`, `rename`, `mkdir`, `rmdir`, and attribute-only
 `setattr`. Those are controlled separately, by the metadata store's
-`relaxed_durability` setting, which is **enabled by default**:
+`relaxed_durability` setting, which is **enabled by default** on the `badger` and
+`postgres` stores. It is a per-store config key, set when the store is created or
+edited:
 
-```yaml
-metadata:
-  config:
-    relaxed_durability: true    # default
+```bash
+dfsctl store metadata add --name badger-main --type badger \
+  --config '{"path":"/var/lib/dittofs/metadata","relaxed_durability":false}'
 ```
 
-When enabled, a namespace commit does not `fsync` inline. A background syncer
-makes it durable within 100 ms, so at most the last ~100 ms of namespace work is
-at risk. Set `relaxed_durability: false` to restore a synchronous `fsync` on
-every namespace commit, at roughly a third of the create throughput.
+When enabled, a namespace commit does not `fsync` inline. How long it stays at
+risk depends on the backend:
+
+| store | mechanism | window |
+|---|---|---|
+| `badger` | commit skips `fsync`; a background syncer calls `DB.Sync()` on an interval | ~100 ms |
+| `postgres` | `SET LOCAL synchronous_commit = off` on the transaction | set by the server's own `wal_writer_delay` (PostgreSQL default 200 ms) |
+
+Setting `relaxed_durability: false` restores a synchronous flush on every
+namespace commit, at roughly a third of the create throughput.
 
 ### What can actually lose that window
 
-The distinction that matters operationally is **how** the server died:
+The distinction that matters operationally is **how** the server died. The
+numbers below were measured on `badger`; the mechanism (an acknowledged write
+already sitting in the kernel page cache) applies to any backend:
 
 | Failure | Namespace ops at risk |
 |---|---|
