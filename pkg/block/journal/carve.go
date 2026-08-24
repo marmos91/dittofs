@@ -8,6 +8,7 @@ import (
 	"math"
 	"sync"
 
+	"golang.org/x/sync/errgroup"
 	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/pkg/block/chunker"
@@ -243,27 +244,55 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 		return nil
 	}
 
+	// Runs are disjoint by construction (extendRunToRowEnd stops at any non-warm
+	// interval), so they share no intervals, no records to pack and no result.
+	// Each keeps its own dispatcher and flipIdx: the flip chain stays per-run.
+	//
 	// One semaphore for the whole file: it bounds in-flight blocks across all of
 	// this file's runs, not just the one currently carving, so peak carve RAM
 	// stays cap(sem) x (CarveBlockSize + one overhang chunk) regardless of how
 	// many runs a file has.
 	sem := make(chan struct{}, s.cfg.CarveUploadConcurrency)
+	g, gctx := errgroup.WithContext(ctx)
+	// ponytail: one knob bounds both goroutines and the per-run
+	// ManifestRowEndAfter transactions; give runs their own limit only if
+	// profiling shows upload and metadata fan-out need to diverge.
+	g.SetLimit(s.cfg.CarveUploadConcurrency)
 
+	runs := splitRuns(snap)
+	results := make([]CarveResult, len(runs))
+	for i, run := range runs {
+		g.Go(func() error {
+			r, err := s.carveRun(gctx, sh, id, run, sem)
+			results[i] = r
+			return err
+		})
+	}
+	err := g.Wait()
+	for _, r := range results {
+		res.BlocksWritten += r.BlocksWritten
+		res.BytesCarved += r.BytesCarved
+	}
+	if err != nil {
+		return err
+	}
+	s.maybeResetDirtyClock(sh, id)
+	return nil
+}
+
+// splitRuns groups an offset-ordered snapshot into maximal contiguous runs; a
+// hole between two intervals starts a new run.
+func splitRuns(snap []interval) [][]interval {
+	var runs [][]interval
 	for start := 0; start < len(snap); {
 		end := start + 1
 		for end < len(snap) && snap[end].fileOff == snap[end-1].end() {
 			end++
 		}
-		r, err := s.carveRun(ctx, sh, id, snap[start:end], sem)
-		res.BlocksWritten += r.BlocksWritten
-		res.BytesCarved += r.BytesCarved
-		if err != nil {
-			return err
-		}
+		runs = append(runs, snap[start:end])
 		start = end
 	}
-	s.maybeResetDirtyClock(sh, id)
-	return nil
+	return runs
 }
 
 // carveRun streams one contiguous dirty run through FastCDC, dedups each chunk,
