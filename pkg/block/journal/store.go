@@ -524,6 +524,17 @@ type ColdSeed struct {
 //
 // Callers bound their own batches: every entry is held in memory until the
 // append, so a whole manifest at once trades the fsyncs for a proportional heap.
+//
+// ponytail: an entry's version is taken while planning and the shard lock is
+// dropped for the append, so a Delete landing in that gap sweeps the index at a
+// version above the pending entry and the insert below recreates the range it
+// buried. The gap is not new — a single-file seed has it too — but a batch holds
+// it open for the whole batch rather than one fsync. Both callers seed a share
+// that is not serving yet (share add) or one whose local tier was just reset
+// (snapshot restore), so nothing deletes through it today. Closing it means
+// either holding shard locks across the fsync, which is worse, or a per-file
+// delete watermark to revalidate against; build the watermark if a seed ever
+// runs against a live share.
 func (s *Store) SeedColdBatch(_ context.Context, seeds []ColdSeed) error {
 	if s.closed.Load() {
 		return errClosed
