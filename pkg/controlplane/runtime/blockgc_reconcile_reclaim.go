@@ -32,6 +32,9 @@ import (
 func (r *Runtime) ReconcileReclaim(ctx context.Context, dryRun bool) (*engine.ReclaimReport, error) {
 	grace := r.reconcileGracePeriod()
 	total := &engine.ReclaimReport{}
+	// remoteBytes/liveLogical accumulate across every remote-backed share
+	// visited this sweep, for the space-amplification log below.
+	var remoteBytes, liveLogical int64
 	for _, entry := range r.sharesSvc.DistinctRemoteStores() {
 		if err := ctx.Err(); err != nil {
 			return total, err
@@ -53,6 +56,9 @@ func (r *Runtime) ReconcileReclaim(ctx context.Context, dryRun bool) (*engine.Re
 				allEnumerated = false
 				continue
 			}
+			if used, usedErr := mds.GetUsedBytesForShare(ctx, shareName); usedErr == nil {
+				liveLogical += used
+			}
 			rv, ok := mds.(engine.ReconcileMetaView)
 			if !ok {
 				logger.Warn("ReconcileReclaim: metadata store does not support reconcile — class-3 sweep disabled for this remote",
@@ -61,6 +67,13 @@ func (r *Runtime) ReconcileReclaim(ctx context.Context, dryRun bool) (*engine.Re
 				continue
 			}
 			if err := rv.WalkBlockRecords(ctx, func(rec block.BlockRecord) error {
+				// metaBlockIDs is deduplicated across the shares on this
+				// remote, so count each block's length only the first time
+				// its ID is seen — a block shared by two shares' metadata
+				// stores must not inflate remote-bytes twice.
+				if _, seen := metaBlockIDs[rec.BlockID]; !seen {
+					remoteBytes += rec.Length
+				}
 				metaBlockIDs[rec.BlockID] = struct{}{}
 				return nil
 			}); err != nil {
@@ -122,5 +135,19 @@ func (r *Runtime) ReconcileReclaim(ctx context.Context, dryRun bool) (*engine.Re
 		"errors", total.Errors,
 		"dryRun", total.DryRun,
 	)
+
+	// ponytail: scattered carve packs ~1000 chunks into one block, and a
+	// block is reclaimed only when its last member chunk dies — under random
+	// overwrite that's effectively never, so remote space tracks bytes
+	// written rather than bytes live. This ratio is the trigger to upgrade
+	// to a low-liveness repack (block-level sync state) if it stays above
+	// ~2.0 in the field.
+	if liveLogical > 0 {
+		logger.Info("block gc sweep: remote space amplification",
+			"remote_bytes", remoteBytes,
+			"live_logical_bytes", liveLogical,
+			"ratio", float64(remoteBytes)/float64(liveLogical))
+	}
+
 	return total, nil
 }
