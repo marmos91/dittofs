@@ -10,6 +10,18 @@ import (
 // dirlease subtests (source4/torture/smb2/lease.c).
 var dlease1Key = [16]byte{0x01, 0, 0, 0, 0, 0, 0, 0, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 
+// leaseBreakingState reports whether a lease with the given key exists and
+// whether it is mid-break. findLeaseByKey requires lm.mu, so take it here.
+func leaseBreakingState(lm *Manager, leaseKey [16]byte) (found, breaking bool) {
+	lm.mu.Lock()
+	defer lm.unlock()
+	_, rec, _ := lm.findLeaseByKey(leaseKey)
+	if rec == nil || rec.Lease == nil {
+		return false, false
+	}
+	return true, rec.Lease.Breaking
+}
+
 // TestPrepareBreakLeasesOnOpenConflictIgnoresLaterGrant pins the rule that a
 // content change breaks the leases that existed when it happened, not the ones
 // present when its notification is finally sent.
@@ -53,7 +65,7 @@ func TestPrepareBreakLeasesOnOpenConflictIgnoresLaterGrant(t *testing.T) {
 		t.Fatalf("deferred notification broke %d lease(s) (%x); a lease granted after the "+
 			"change must not be broken by it", len(broken), broken)
 	}
-	if _, rec, _ := lm.findLeaseByKey(dlease1Key); rec != nil && rec.Lease.Breaking {
+	if found, breaking := leaseBreakingState(lm, dlease1Key); found && breaking {
 		t.Fatal("lease granted after the change was marked Breaking by it")
 	}
 }
@@ -83,7 +95,7 @@ func TestPrepareBreakLeasesOnOpenConflictBreaksExistingLease(t *testing.T) {
 
 	send := lm.PrepareBreakLeasesOnOpenConflict(handleKey, &LockOwner{}, BreakReasonDestructive)
 
-	if _, rec, _ := lm.findLeaseByKey(dlease1Key); rec == nil || !rec.Lease.Breaking {
+	if found, breaking := leaseBreakingState(lm, dlease1Key); !found || !breaking {
 		t.Fatal("lease held at change time must be marked Breaking when the change is recorded")
 	}
 	mu.Lock()
