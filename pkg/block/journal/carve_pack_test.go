@@ -3,6 +3,7 @@ package journal
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -159,13 +160,37 @@ func TestCarvePackFlipPlanWatermarks(t *testing.T) {
 	}
 }
 
-// TestCarvePackSpanningBlockFailureLeavesEarlierRunUnreaped pins the failure
+// TestCarvePackSpanningBlockFailureReapsTheCommittedPrefix pins the failure
 // shape that only exists now that blocks span runs: a block carrying the tail of
-// run 0 and the head of run 1 fails, so run 0 never completes and must NOT be
-// reaped — even though an earlier block committed part of it. Reaping it would
-// delete the rows its committed prefix superseded while the run's own fresh
-// tiling is still missing the range the failed block held.
-func TestCarvePackSpanningBlockFailureLeavesEarlierRunUnreaped(t *testing.T) {
+// run 0 and the head of run 1 fails, so run 0 never completes — yet an earlier
+// block did commit its prefix, and those records are already flipped synced. No
+// later pass re-carves them, so no later pass reaps for them either: the rows
+// their fresh tiling superseded have to be reaped here or they outlive it
+// forever, and overlap resolution is greatest-start, so a stale row starting
+// later than a fresh one then wins and serves old bytes on a cold read.
+//
+// The reap stops at the frontier those rows actually reach. The range the failed
+// block held is still dirty, still covered by its stale rows, and re-carved by
+// the next pass — reaping into it would delete that cover with no fresh tiling
+// to replace it.
+//
+// The straddled subtest pins that the frontier goes through the same boundary
+// guard as a whole run's end: a row starting inside the prefix and reaching past
+// the frontier would be deleted whole by that reap, so the reap is refused
+// rather than allowed to strand the stretch past it.
+func TestCarvePackSpanningBlockFailureReapsTheCommittedPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		straddle bool
+	}{
+		{"boundary", false},
+		{"straddled", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) { spanningBlockFailureReap(t, tc.straddle) })
+	}
+}
+
+func spanningBlockFailureReap(t *testing.T, straddle bool) {
 	const (
 		run0Recs = 12        // [0, 48Ki): more than one 32 KiB block
 		run1Off  = 128 << 10 // a hole keeps it a separate run
@@ -177,7 +202,7 @@ func TestCarvePackSpanningBlockFailureLeavesEarlierRunUnreaped(t *testing.T) {
 		CarveUploadConcurrency: 1,
 		ChunkParams:            chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
 	})
-	sink := &extendingSink{fakeSink: base}
+	sink := &extendingSink{fakeSink: base, straddleEverywhere: straddle}
 	s.SetCarveTargets(dd, sink)
 
 	var spanned bool
@@ -202,10 +227,27 @@ func TestCarvePackSpanningBlockFailureLeavesEarlierRunUnreaped(t *testing.T) {
 	if !spanned {
 		t.Fatal("no block carried chunks from both runs: the geometry does not build the shape under test")
 	}
+	// The frontier the surviving block committed, read off the rows it wrote.
+	var frontier int64
+	base.mu.Lock()
+	for off, data := range base.chunks {
+		if end := off + int64(len(data)); off < run1Off && end > frontier {
+			frontier = end
+		}
+	}
+	base.mu.Unlock()
+	if frontier == 0 || frontier >= run0Recs*(4<<10) {
+		t.Fatalf("committed frontier %d: the first block must commit a proper prefix of run 0", frontier)
+	}
+
+	want := [][2]int64{{0, frontier}}
+	if straddle {
+		want = nil
+	}
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
-	if len(sink.reaps) != 0 {
-		t.Fatalf("reaps=%v, want none: neither run completed, so neither may be reaped", sink.reaps)
+	if !reflect.DeepEqual(sink.reaps, want) {
+		t.Fatalf("reaps=%v, want %v: run 0's committed prefix, and nothing of the range the failed block held", sink.reaps, want)
 	}
 }
 

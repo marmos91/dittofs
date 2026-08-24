@@ -153,6 +153,9 @@ func (d *carveDispatcher) commitAndFlip(chunks []CarveChunk, arenap *[]byte, are
 			if i == plan.last {
 				wm = plan.lastOff
 			}
+			// This block's rows are committed, so the run's manifest is durable
+			// through wm whether or not the flip below then succeeds.
+			d.rs[i].committedTo = wm
 			if err := d.s.flipUpTo(d.sh, d.id, d.rs[i].ivs, &d.rs[i].flipIdx, wm); err != nil {
 				d.setErr(err)
 				ok = false
