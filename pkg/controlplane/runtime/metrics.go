@@ -111,9 +111,15 @@ func quotaPrincipalLabel(id uint32) string {
 // surface. A share never scanned in this process, or whose last scan failed,
 // reports zeros: a zero last-scan timestamp is what an alert on scan age is
 // meant to fire on, and a failed scan produced no counts worth publishing.
+// The failed case is flagged rather than left to look like the never-scanned
+// one, so a scanner erroring every tick does not read as one that was never
+// switched on.
 func integritySnapshot(s *health.IntegrityStatus) metrics.IntegrityScanSnapshot {
-	if s == nil || s.Error != "" {
+	if s == nil {
 		return metrics.IntegrityScanSnapshot{}
+	}
+	if s.Error != "" {
+		return metrics.IntegrityScanSnapshot{LastScanFailed: true}
 	}
 	return metrics.IntegrityScanSnapshot{
 		LastScanUnix:           s.LastRunAt.Unix(),

@@ -42,6 +42,7 @@ type runtimeCollector struct {
 
 	// Per-share structural integrity scan.
 	integrityLastScan     *prometheus.Desc
+	integrityScanFailed   *prometheus.Desc
 	integrityScanDuration *prometheus.Desc
 	integrityFilesScanned *prometheus.Desc
 	integrityFindings     *prometheus.Desc
@@ -87,7 +88,8 @@ func newRuntimeCollector(p Provider) *runtimeCollector {
 		snapshotsActive:  d(fqdn("snapshot", "active"), "Number of ready (held) snapshots.", share),
 		snapshotLastTime: d(fqdn("snapshot", "last_success_timestamp_seconds"), "Unix time of the most recent ready snapshot (0 = none).", share),
 
-		integrityLastScan:     d(fqdn("integrity", "last_scan_timestamp_seconds"), "Unix time the structural manifest scan last completed for this share (0 = never scanned since process start).", share),
+		integrityLastScan:     d(fqdn("integrity", "last_scan_timestamp_seconds"), "Unix time the structural manifest scan last completed for this share. 0 means it has either never run since process start or its last attempt failed; dittofs_integrity_last_scan_failed tells those apart.", share),
+		integrityScanFailed:   d(fqdn("integrity", "last_scan_failed"), "Whether the most recent structural manifest scan for this share failed (1) or completed (0). 0 on a share never scanned.", share),
 		integrityScanDuration: d(fqdn("integrity", "last_scan_duration_seconds"), "Wall-clock duration of the last structural manifest scan.", share),
 		integrityFilesScanned: d(fqdn("integrity", "files_scanned"), "Regular files walked by the last structural manifest scan.", share),
 		integrityFindings:     d(fqdn("integrity", "findings"), "Findings from the last structural manifest scan, by kind: payloads_with_findings, damaged_payloads, claimed_uncovered_ranges, unplaceable_rows, unknown_hash_rows.", finding),
@@ -116,7 +118,7 @@ func (c *runtimeCollector) allDescs() []*prometheus.Desc {
 		c.remoteUp, c.remoteOutage, c.remoteReadsBlocked,
 		c.logicalBytes, c.storeFiles,
 		c.snapshotsActive, c.snapshotLastTime,
-		c.integrityLastScan, c.integrityScanDuration, c.integrityFilesScanned, c.integrityFindings,
+		c.integrityLastScan, c.integrityScanFailed, c.integrityScanDuration, c.integrityFilesScanned, c.integrityFindings,
 		c.quotaUsedBytes, c.quotaLimitBytes, c.quotaUsedInodes, c.quotaLimitInodes,
 		c.clientsActive,
 	}
@@ -148,6 +150,7 @@ func (c *runtimeCollector) Collect(ch chan<- prometheus.Metric) {
 
 		in := s.Integrity
 		gauge(c.integrityLastScan, float64(in.LastScanUnix), s.Name)
+		gauge(c.integrityScanFailed, boolToFloat(in.LastScanFailed), s.Name)
 		gauge(c.integrityScanDuration, in.DurationSeconds, s.Name)
 		gauge(c.integrityFilesScanned, float64(in.FilesScanned), s.Name)
 		gauge(c.integrityFindings, float64(in.PayloadsWithFindings), s.Name, "payloads_with_findings")

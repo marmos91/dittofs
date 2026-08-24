@@ -623,13 +623,20 @@ Findings surface in three places:
   what was found. A share with damaged payloads reads as `degraded` even
   when every subsystem probe is healthy.
 - Prometheus: `dittofs_integrity_last_scan_timestamp_seconds`,
+  `dittofs_integrity_last_scan_failed`,
   `dittofs_integrity_last_scan_duration_seconds`,
   `dittofs_integrity_files_scanned`, and
   `dittofs_integrity_findings{kind="..."}` broken out by
   `payloads_with_findings`, `damaged_payloads`,
   `claimed_uncovered_ranges`, `unplaceable_rows` and `unknown_hash_rows`.
-  A share never scanned reports a last-scan timestamp of 0, so an alert on
-  scan age fires for it.
+
+  The last-scan timestamp is 0 both for a share never scanned and for one
+  whose last scan failed — a failed scan completes nothing, so it has no
+  time to report. `dittofs_integrity_last_scan_failed` is what separates
+  them: `0` with a zero timestamp means the scan has not run yet, `1` means
+  it is running and erroring. Without that second series a scanner failing
+  on every tick would look exactly like one that was never switched on, and
+  stay that way indefinitely.
 - The server log, at `WARN`, for any share with damaged payloads.
 
 Run `dfsctl store check <share>` for the per-file detail behind a finding,
@@ -2252,7 +2259,8 @@ spec:
 | `dittofs_snapshot_duration_seconds{op}` | Snapshot operation latency histogram, by `op` (create/delete/restore). |
 | ⭐ `dittofs_snapshot_last_success_timestamp_seconds{share}` | Unix time of the last successful snapshot create (backup-freshness signal). |
 | ⭐ `dittofs_integrity_findings{share,kind}` | Findings from the last structural manifest scan, by `kind`: `payloads_with_findings`, `damaged_payloads`, `claimed_uncovered_ranges`, `unplaceable_rows`, `unknown_hash_rows`. |
-| ⭐ `dittofs_integrity_last_scan_timestamp_seconds{share}` | Unix time the structural manifest scan last completed (0 = never scanned since process start). |
+| ⭐ `dittofs_integrity_last_scan_timestamp_seconds{share}` | Unix time the structural manifest scan last completed. 0 means it has never run since process start **or** its last attempt failed. |
+| ⭐ `dittofs_integrity_last_scan_failed{share}` | `1` when the most recent structural manifest scan failed, `0` when it completed or has never run. Pairs with the timestamp above to tell "never scanned" from "scans are erroring". |
 | `dittofs_integrity_last_scan_duration_seconds{share}` / `dittofs_integrity_files_scanned{share}` | Cost and reach of the last structural manifest scan. |
 
 ### Example alert expressions
@@ -2293,6 +2301,16 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "DittoFS share {{ $labels.share }} has not been integrity-scanned in >48h"
+
+      # The scan is running but failing. Without this the share looks
+      # identical to one whose scanner was never enabled: both report a
+      # last-scan timestamp of 0, forever.
+      - alert: DittoFSIntegrityScanFailing
+        expr: dittofs_integrity_last_scan_failed == 1
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "DittoFS integrity scan for {{ $labels.share }} is failing; the share is not being verified"
 
       # Remote block store unreachable.
       - alert: DittoFSRemoteDown

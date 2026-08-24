@@ -75,7 +75,15 @@ type ShareSnapshot struct {
 // IntegrityScanSnapshot is one share's structural manifest scan result: how
 // much was walked, when, and what was found, split by defect kind.
 type IntegrityScanSnapshot struct {
-	LastScanUnix         int64 // 0 = never scanned in this process
+	// LastScanUnix is when the last scan completed. It is 0 both for a share
+	// never scanned in this process and for one whose last scan failed, since
+	// a failed scan completed nothing — LastScanFailed is what tells those
+	// two apart. Without it a scanner erroring on every tick would be
+	// indistinguishable from a scanner that was never switched on, which is
+	// the silent-failure shape this scan exists to remove, not reproduce.
+	LastScanUnix   int64
+	LastScanFailed bool
+
 	DurationSeconds      float64
 	FilesScanned         int64
 	PayloadsWithFindings int64

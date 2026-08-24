@@ -88,3 +88,41 @@ func TestWithIntegrity_DowngradeRule(t *testing.T) {
 		})
 	}
 }
+
+// TestIntegritySnapshot_FailedScanIsNotNeverScanned pins the distinction the
+// metrics surface has to keep: a scan that fails publishes no counts and no
+// completion time, exactly like a share never scanned, so the failure has to
+// be flagged separately or a permanently-erroring scanner reads as a disabled
+// one forever.
+func TestIntegritySnapshot_FailedScanIsNotNeverScanned(t *testing.T) {
+	never := integritySnapshot(nil)
+	if never.LastScanUnix != 0 || never.LastScanFailed {
+		t.Errorf("never scanned = %+v, want zero timestamp and failed=false", never)
+	}
+
+	failed := integritySnapshot(&health.IntegrityStatus{
+		LastRunAt: time.Now().UTC(),
+		Error:     "metadata store unavailable",
+	})
+	if !failed.LastScanFailed {
+		t.Error("a failed scan did not set LastScanFailed")
+	}
+	if failed.LastScanUnix != 0 {
+		t.Errorf("LastScanUnix = %d after a failed scan, want 0 (nothing completed)", failed.LastScanUnix)
+	}
+	if failed.FilesScanned != 0 || failed.DamagedPayloads != 0 {
+		t.Errorf("failed scan published counts: %+v", failed)
+	}
+
+	ok := integritySnapshot(&health.IntegrityStatus{
+		LastRunAt:       time.Unix(1700000000, 0).UTC(),
+		FilesScanned:    42,
+		DamagedPayloads: 1,
+	})
+	if ok.LastScanFailed {
+		t.Error("a completed scan was flagged as failed")
+	}
+	if ok.LastScanUnix != 1700000000 || ok.FilesScanned != 42 || ok.DamagedPayloads != 1 {
+		t.Errorf("completed scan = %+v, want the recorded values", ok)
+	}
+}
