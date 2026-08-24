@@ -252,10 +252,15 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 	//
 	// Two runs can still reference one physical record, because an overwrite
 	// splits a record into fragments that a later carve can leave on either side
-	// of a warm gap. That stays safe because flipUpTo marks a fragment synced,
-	// checks whether the record has any dirty fragment left, and flips the
-	// on-disk bit all under sh.mu, so whichever run's flip lands last is the one
-	// that observes zero remaining and flips.
+	// of a warm gap — and since one block spans runs, those two fragments can now
+	// also flip from the same block, not only from different ones. That stays
+	// safe because flipUpTo marks a fragment synced, checks whether the record
+	// has any dirty fragment left, and flips the on-disk bit all under sh.mu:
+	// the earlier call sees the sibling fragment still dirty and leaves the bit
+	// alone, so whichever flip lands last is the one that observes zero remaining
+	// and flips. Within one block the per-run flips run back to back on the
+	// block's own worker, and across blocks the prev/mine chain serialises them,
+	// so exactly one call ever observes the last dirty fragment.
 	runs := splitRuns(snap)
 	rs := make([]*runState, len(runs))
 	for i, run := range runs {
