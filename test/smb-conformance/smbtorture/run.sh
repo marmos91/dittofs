@@ -643,21 +643,17 @@ else
         else
             log_info "  Running: ${suite}"
         fi
-        # Durable-handle and replay suites drive many durable open/
-        # disconnect/reconnect cycles, and the replay-vs-pending-break arms
-        # each spend ~6s parked on a lease break the test deliberately acks
-        # late. That alone overruns the default per-suite budget on every
-        # profile — the memory profile reports "smb2.replay (gave up after
-        # 120s)" and leaves the tail of the suite ungraded, which is how a
-        # real defect in those arms stayed intermittent instead of being
-        # reported every run. badger-fs is slower still (each cycle
-        # persists/consumes a durable handle with a synchronous,
-        # non-coalescing fsync, on top of the emulated CI runner's inflated
-        # per-fsync latency). Give these suites the same head room on every
-        # profile; every other suite keeps 120s.
-        suite_timeout=120
+        # Durable-handle and replay suites drive many durable open/disconnect/
+        # reconnect cycles, and the replay-vs-pending-break arms each spend ~6s
+        # parked on a lease break the test deliberately acks late. At 120s even
+        # the memory profile reports "smb2.replay (gave up after 120s)" and
+        # leaves the tail of the suite ungraded; badger-fs is slower still,
+        # since each cycle persists/consumes a durable handle with a
+        # synchronous, non-coalescing fsync. Give those suites more head room
+        # on every profile; every other suite keeps 120s.
         case "$suite" in
             smb2.replay|smb2.durable-*) suite_timeout=300 ;;
+            *) suite_timeout=120 ;;
         esac
         run_smbtorture "$suite" "$suite_timeout" "$prefix" "${share:-}" || record_rc $?
     done
