@@ -47,6 +47,11 @@ type runtimeCollector struct {
 	integrityFilesScanned *prometheus.Desc
 	integrityFindings     *prometheus.Desc
 
+	// Per-share offline read readiness.
+	offlineSafe         *prometheus.Desc
+	offlineRemoteBytes  *prometheus.Desc
+	offlineRemoteRanges *prometheus.Desc
+
 	// Per-principal quotas.
 	quotaUsedBytes   *prometheus.Desc
 	quotaLimitBytes  *prometheus.Desc
@@ -94,6 +99,10 @@ func newRuntimeCollector(p Provider) *runtimeCollector {
 		integrityFilesScanned: d(fqdn("integrity", "files_scanned"), "Regular files walked by the last structural manifest scan.", share),
 		integrityFindings:     d(fqdn("integrity", "findings"), "Findings from the last structural manifest scan, by kind: payloads_with_findings, damaged_payloads, claimed_uncovered_ranges, unplaceable_rows, unknown_hash_rows.", finding),
 
+		offlineSafe:         d(fqdn("offline", "safe"), "Whether every byte the share holds can be served with the remote unreachable (1) or not (0). A share whose residency cannot be determined reports 0.", share),
+		offlineRemoteBytes:  d(fqdn("offline", "remote_only_bytes"), "Bytes the local tier no longer holds and would have to fetch from the remote to serve.", share),
+		offlineRemoteRanges: d(fqdn("offline", "remote_only_ranges"), "Number of separate ranges those remote-only bytes span.", share),
+
 		quotaUsedBytes:   d(fqdn("quota", "used_bytes"), "Bytes used by a quota principal.", quota),
 		quotaLimitBytes:  d(fqdn("quota", "limit_bytes"), "Hard byte limit for a quota principal (0 = unlimited).", quota),
 		quotaUsedInodes:  d(fqdn("quota", "used_inodes"), "Inodes used by a quota principal.", quota),
@@ -119,6 +128,7 @@ func (c *runtimeCollector) allDescs() []*prometheus.Desc {
 		c.logicalBytes, c.storeFiles,
 		c.snapshotsActive, c.snapshotLastTime,
 		c.integrityLastScan, c.integrityScanFailed, c.integrityScanDuration, c.integrityFilesScanned, c.integrityFindings,
+		c.offlineSafe, c.offlineRemoteBytes, c.offlineRemoteRanges,
 		c.quotaUsedBytes, c.quotaLimitBytes, c.quotaUsedInodes, c.quotaLimitInodes,
 		c.clientsActive,
 	}
@@ -158,6 +168,15 @@ func (c *runtimeCollector) Collect(ch chan<- prometheus.Metric) {
 		gauge(c.integrityFindings, float64(in.ClaimedUncoveredRanges), s.Name, "claimed_uncovered_ranges")
 		gauge(c.integrityFindings, float64(in.UnplaceableRows), s.Name, "unplaceable_rows")
 		gauge(c.integrityFindings, float64(in.UnknownHashRows), s.Name, "unknown_hash_rows")
+
+		// A share whose residency cannot be determined emits the safety gauge
+		// as 0 but no byte counts: publishing zeros there would read as a
+		// clean, fully-local share.
+		gauge(c.offlineSafe, boolToFloat(s.Offline.Safe), s.Name)
+		if s.Offline.Known {
+			gauge(c.offlineRemoteBytes, float64(s.Offline.RemoteOnlyBytes), s.Name)
+			gauge(c.offlineRemoteRanges, float64(s.Offline.RemoteOnlyRanges), s.Name)
+		}
 
 		// Sync/remote series only make sense for shares with a remote backend.
 		if s.HasRemote {

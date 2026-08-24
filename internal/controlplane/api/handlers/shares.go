@@ -1644,20 +1644,22 @@ func (h *ShareHandler) shareToResponseWithUsage(ctx context.Context, s *models.S
 		}
 		resp.Status = h.shareStatus(ctx, s.Name)
 	} else {
-		resp.Status = unknownRuntimeReport()
+		resp.Status = unknownRuntimeStatus()
 	}
 	return resp
 }
 
-// unknownRuntimeReport builds a [health.StatusUnknown] status used
+// unknownRuntimeStatus builds a [health.StatusUnknown] status used
 // when a handler is wired without a runtime. Kept in one place so
 // shares.go's nil-guard branches stay consistent.
-func unknownRuntimeReport() health.ShareStatus {
-	return health.ShareStatus{Report: health.Report{
-		Status:    health.StatusUnknown,
-		Message:   "runtime not initialized",
-		CheckedAt: time.Now().UTC(),
-	}}
+func unknownRuntimeStatus() health.ShareStatus {
+	return health.ShareStatus{
+		Report: health.Report{
+			Status:    health.StatusUnknown,
+			Message:   "runtime not initialized",
+			CheckedAt: time.Now().UTC(),
+		},
+	}
 }
 
 // shareStatus returns a [health.ShareStatus] for the named share via the
@@ -1693,7 +1695,7 @@ func (h *ShareHandler) Status(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.runtime == nil {
-		WriteJSONOK(w, unknownRuntimeReport())
+		WriteJSONOK(w, unknownRuntimeStatus())
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)

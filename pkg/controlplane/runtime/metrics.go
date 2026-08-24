@@ -47,6 +47,7 @@ func (r *Runtime) MetricsSnapshot(ctx context.Context) metrics.Snapshot {
 			SnapshotsHeld:       held,
 			LastSnapshotUnix:    lastUnix,
 			Integrity:           integritySnapshot(r.ShareIntegrity(ps.ShareName)),
+			Offline:             offlineSnapshot(r.ShareOffline(ps.ShareName)),
 		})
 	}
 
@@ -130,5 +131,20 @@ func integritySnapshot(s *health.IntegrityStatus) metrics.IntegrityScanSnapshot 
 		ClaimedUncoveredRanges: int64(s.ClaimedUncoveredRanges),
 		UnplaceableRows:        int64(s.UnplaceableRows),
 		UnknownHashRows:        int64(s.UnknownHashRows),
+	}
+}
+
+// offlineSnapshot renders a share's offline read readiness for the metrics
+// surface. A share with no block store to ask reports unknown rather than
+// safe.
+func offlineSnapshot(o *health.OfflineStatus) metrics.OfflineSnapshot {
+	if o == nil {
+		return metrics.OfflineSnapshot{}
+	}
+	return metrics.OfflineSnapshot{
+		Safe:             o.Safe,
+		Known:            o.Unknown == "",
+		RemoteOnlyBytes:  o.RemoteOnlyBytes,
+		RemoteOnlyRanges: o.RemoteOnlyRanges,
 	}
 }
