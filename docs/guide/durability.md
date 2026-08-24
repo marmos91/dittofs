@@ -43,7 +43,7 @@ dfsctl store block local edit <share> --config '{"durability": "remote"}'
 
 | `durability` | Ack after | Survives | ~ops/s (create nj=8) |
 |---|---|---|--:|
-| `local` *(default)* | local journal + metadata `fsync` | process/node crash | ~900 |
+| `local` *(default)* | local journal + metadata `fsync` | process/node crash † | ~900 |
 | `writeback` | local write, metadata `fsync` deferred ~100 ms | crash, ≤ 100 ms metadata loss | ~1680 |
 | `remote` | data durable in S3 | node/disk loss | slow (by design) |
 
@@ -71,6 +71,48 @@ absent these are honored unchanged:
   `durability: remote`); see
   [Configuration → require_durable_commit](configuration.md#require_durable_commit)
   for the full semantics.
+
+## Namespace durability (`relaxed_durability`)
+
+† The `durability` enum above governs **file data and the metadata paired with
+it** (size, mtime, the block manifest). It does not govern **namespace**
+operations — `create`, `unlink`, `rename`, `mkdir`, `rmdir`, and attribute-only
+`setattr`. Those are controlled separately, by the metadata store's
+`relaxed_durability` setting, which is **enabled by default**:
+
+```yaml
+metadata:
+  config:
+    relaxed_durability: true    # default
+```
+
+When enabled, a namespace commit does not `fsync` inline. A background syncer
+makes it durable within 100 ms, so at most the last ~100 ms of namespace work is
+at risk. Set `relaxed_durability: false` to restore a synchronous `fsync` on
+every namespace commit, at roughly a third of the create throughput.
+
+### What can actually lose that window
+
+The distinction that matters operationally is **how** the server died:
+
+| Failure | Namespace ops at risk |
+|---|---|
+| `SIGKILL`, OOM-kill, `dfs` panic, `systemctl kill` | **none** |
+| Power loss, kernel panic, hypervisor reset, disk yank | last ~100 ms |
+
+Killing the process does not lose acknowledged work at any setting. The write-ahead
+log is memory-mapped, so an acknowledged namespace op is already in the kernel's
+page cache, and the page cache outlives the process — the kernel still flushes it.
+Only an event that takes the kernel down with it can lose the un-`fsync`'d tail.
+
+This is bounded loss, never corruption or inconsistency. Data-paired writes stay
+synchronous regardless of this setting, and on restart
+`reconcileMetadataSizeFromJournal` repairs each file's size from the journal's
+durable high-water mark. A lost namespace op leaves a file that was never created,
+not a file that is half-created.
+
+Operators who need every acknowledged `create` to survive power loss — and can
+accept the throughput cost — should set `relaxed_durability: false`.
 
 ## The dirty-age ceiling (`dirty_expire_seconds`)
 
