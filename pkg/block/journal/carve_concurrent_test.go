@@ -205,6 +205,7 @@ type extendingSink struct {
 	gateOff int64
 	waitFor int64
 	rowEnd  int64
+	gated   int
 	timeout error
 }
 
@@ -212,6 +213,9 @@ func (e *extendingSink) ManifestRowEndAfter(_ context.Context, id FileID, off in
 	if off != e.gateOff {
 		return 0, nil
 	}
+	e.mu.Lock()
+	e.gated++
+	e.mu.Unlock()
 	for i := 0; i < 5000; i++ {
 		if syncedAt(e.store, id, e.waitFor) {
 			return e.rowEnd, nil
@@ -289,9 +293,16 @@ func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 	sink.mu.Lock()
 	reaps := append([][2]int64{}, sink.reaps...)
 	timedOut := sink.timeout
+	gated := sink.gated
 	sink.mu.Unlock()
 	if timedOut != nil {
 		t.Fatalf("ordering not reached, test proves nothing: %v", timedOut)
+	}
+	// extendRunToRowEnd short-circuits on warmAt before the sink is consulted, and
+	// the gate is keyed on an exact offset, so drift in either could leave the
+	// ordering unexercised while every assertion below still passes.
+	if gated == 0 {
+		t.Fatalf("the gated lookup was never reached, so the ordering was never exercised and this test proves nothing")
 	}
 	if len(reaps) != len(dirty) {
 		t.Fatalf("got %d reap ranges, want %d: %v", len(reaps), len(dirty), reaps)
