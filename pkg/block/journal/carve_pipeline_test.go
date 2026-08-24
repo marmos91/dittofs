@@ -51,12 +51,17 @@ func (p *pipelineSink) snapshot() []string {
 // wedged drain rather than a slow one.
 func TestCarveInterleavesRowEndLookupsWithCommits(t *testing.T) {
 	const (
-		cells = 400
-		cell  = 4 << 10
-		runs  = 100 // every fourth cell is overwritten
+		cells     = 400
+		cell      = 4 << 10
+		runs      = 100 // every fourth cell is overwritten
+		blockSize = 64 << 10
+		// One block's worth of runs, doubled for slack: the first commit must
+		// land within roughly the prologue one block genuinely needs, not merely
+		// somewhere before the last lookup.
+		maxPrologue = 2 * (blockSize / cell)
 	)
 	s, dd, fs, _ := carveStore(t, Config{
-		CarveBlockSize:         64 << 10,
+		CarveBlockSize:         blockSize,
 		CarveUploadConcurrency: 4,
 		ChunkParams:            chunker.Params{Min: 1 << 10, Avg: 2 << 10, Max: 8 << 10},
 	})
@@ -89,29 +94,27 @@ func TestCarveInterleavesRowEndLookupsWithCommits(t *testing.T) {
 	}
 
 	ev := ps.snapshot()
-	firstCommit, lastRowEnd := -1, -1
-	for i, e := range ev {
-		if e == "commit" && firstCommit < 0 {
-			firstCommit = i
-		}
-		if e == "rowend" {
-			lastRowEnd = i
-		}
-	}
-	if lastRowEnd < 0 {
-		t.Fatalf("no row-end lookup happened: fixture does not exercise the path")
-	}
-	if firstCommit < 0 {
-		t.Fatalf("no block committed")
-	}
-	if firstCommit > lastRowEnd {
-		rowEnds := 0
-		for _, e := range ev[:firstCommit] {
-			if e == "rowend" {
-				rowEnds++
+	prologue, total, committed := 0, 0, false
+	for _, e := range ev {
+		switch e {
+		case "commit":
+			committed = true
+		case "rowend":
+			total++
+			if !committed {
+				prologue++
 			}
 		}
-		t.Fatalf("carve resolved every run's extent before committing anything: "+
-			"%d row-end lookups before the first commit (of %d runs)", rowEnds, runs)
+	}
+	if total == 0 {
+		t.Fatalf("no row-end lookup happened: fixture does not exercise the path")
+	}
+	if !committed {
+		t.Fatalf("no block committed")
+	}
+	if prologue > maxPrologue {
+		t.Fatalf("carve front-loaded run-extent resolution: %d row-end lookups "+
+			"before the first commit (of %d runs), want at most %d",
+			prologue, runs, maxPrologue)
 	}
 }

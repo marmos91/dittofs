@@ -427,6 +427,12 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 		// flipping every CarveBlockSize, so the counter falls throughout the pass.
 		// A run only ever grows at its tail, so the next run's start — the limit
 		// this one may not cross — is still the snapshotted one.
+		//
+		// ponytail: serial, one whole-manifest read per run on the packing
+		// critical path, so a file with many dirty runs pays that read once per
+		// run before its bytes move; answer the straddle query from a single
+		// per-pass listing (or a point lookup at the offset) if that read ever
+		// dominates a carve profile.
 		limit := int64(math.MaxInt64)
 		if ri+1 < len(rs) {
 			limit = rs[ri+1].start()
@@ -575,11 +581,15 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 // still ends inside the row.
 //
 // A row reaching past limit, the offset the next run starts at, is refused
-// outright. Runs are widened one at a time as the packer reaches them, so an
-// earlier run of the same pass may already have flipped its records synced —
-// which makes its head indistinguishable here from pre-existing warm data that
-// warmTail would wave through. Refusing on the offset keeps the later run's
-// range for the later run. It has to be a refusal rather than a truncation to
+// outright. It is redundant today: runs are packed in ascending file-offset
+// order on one goroutine and nothing flips ahead of the packer, so every
+// interval this pass has already flipped lies below the window warmAt and
+// warmTail inspect, the interval at limit is still the next run's own dirty
+// head, and warmTail's bail on it already stops the extension there. It stays
+// because that redundancy is a property of the packer being sequential — runs
+// were carved concurrently before and would be again — and under any such
+// ordering a sibling's already-flipped head is indistinguishable here from
+// pre-existing warm data. It has to be a refusal rather than a truncation to
 // limit: the run-end reap deletes whole rows that start inside the run, so
 // tiling only part of a row still drops its tail.
 //
@@ -600,8 +610,8 @@ func (s *Store) extendRunToRowEnd(ctx context.Context, sh *shard, id FileID, run
 		return nil, err
 	}
 	if rowEnd > limit {
-		// See the doc comment above: redundant with warmTail today, kept as
-		// insurance against a future flip during extent resolution.
+		// See the doc comment above: redundant while the packer is sequential
+		// and forward, kept for any ordering that carves runs concurrently.
 		return run, nil
 	}
 	if rowEnd <= runEnd {

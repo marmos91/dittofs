@@ -151,7 +151,8 @@ func TestCarveRunDoesNotExtendIntoDirtyRange(t *testing.T) {
 // that meets a dirty or cold interval before reaching the requested end returns
 // nil, never a partial tail. That is what makes extendRunToRowEnd's own limit
 // refusal redundant today — the interval at a later run's start is exactly this
-// kind of non-warm interval for as long as nothing flips it mid-resolution — and
+// kind of non-warm interval for as long as the packer stays sequential and
+// forward, so nothing flips it ahead of the widening — and
 // what would silently stop protecting a run from over-extending if warmTail ever
 // degraded to returning what it had scanned so far instead of bailing outright.
 func TestWarmTailStopsAtNonWarmInterval(t *testing.T) {

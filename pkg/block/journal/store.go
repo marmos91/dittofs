@@ -64,11 +64,11 @@ type Config struct {
 	// itself fails.
 	MaxLocalBytes int64
 	EvictMaxWait  time.Duration // write-path backpressure budget before ErrLocalStoreFull
-	// CarveUploadConcurrency bounds two fan-outs of one file's carve pass: the
-	// ManifestRowEndAfter lookups that resolve every dirty run's extents, and
-	// the packed blocks committed (uploaded + committed) at once. Packing itself
-	// is sequential across the whole file, one block at a time; only the commits
-	// overlap, so a single large file's carve is not one PutBlock at a time.
+	// CarveUploadConcurrency bounds how many of one file's packed blocks are
+	// committed (uploaded + committed) at once. Packing itself is sequential
+	// across the whole file, one block at a time, and so are the manifest row-end
+	// lookups that widen each run; only the commits overlap, so a single large
+	// file's carve is not one PutBlock at a time.
 	// Peak carve RAM per file is window x (CarveBlockSize + one overhang chunk)
 	// for the block arenas, plus the single chunker scratch buffer of
 	// chunker.MaxChunkSize the pass holds — so keep it modest.

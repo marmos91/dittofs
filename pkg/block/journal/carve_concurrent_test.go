@@ -223,12 +223,13 @@ func (e *extendingSink) ReapSupersededManifest(_ context.Context, _ FileID, runS
 //
 // It does not, on its own, pin the extension refusal in extendRunToRowEnd —
 // warmTail's own all-or-nothing bail on a non-warm interval produces the same
-// reap ranges whether or not that refusal exists, since nothing flips a record
-// synced while extents are being resolved. TestWarmTailStopsAtNonWarmInterval
+// reap ranges whether or not that refusal exists, since the packer widens runs
+// in ascending file-offset order on one goroutine and so never flips anything
+// inside the window a later widening inspects. TestWarmTailStopsAtNonWarmInterval
 // pins that warmTail invariant, which is what makes the refusal redundant
 // today; the refusal itself is deliberately left unpinned by any test, since
-// it is unreachable under the current barrier and only matters again if a
-// future change reintroduces a flip during extent resolution.
+// it only matters again if a future change carves runs of one file
+// concurrently.
 func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 	const rec = 8 << 10
 	s, dd, base, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarveUploadConcurrency: 4})
