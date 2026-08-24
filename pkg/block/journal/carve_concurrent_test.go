@@ -322,12 +322,15 @@ func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 // or CarveBlockSize change from silently stopping the multi-run path while the
 // test stays green.
 //
-// The commit hook blocks until more than window commits are in flight rather
-// than sleeping a fixed time, so a carve that breaches the cap releases
-// immediately and is caught; a correct one never breaches it and pays the
-// timeout once, which the gaveUp flag keeps to a single wait for the pass. That
-// wait is also what holds the in-flight set open long enough to observe the
-// overlap.
+// The commit hook holds each commit in two stages rather than sleeping a fixed
+// time. First until a second commit is in flight, which is what makes the
+// overlap observed rather than raced for: a lower bound on concurrency is only
+// as reliable as the scheduler otherwise, and this test exists precisely to
+// catch a carve that lost it. Then until more than window commits are in flight,
+// so a carve that breaches the cap releases immediately and is caught while a
+// correct one pays that timeout once, which the gaveUp flag keeps to a single
+// wait for the pass. Both waits are bounded, so a carve that genuinely
+// serialised its commits fails the assertion below instead of hanging.
 func TestCarveBlocksCommitConcurrently(t *testing.T) {
 	const (
 		runs    = 8
@@ -349,7 +352,12 @@ func TestCarveBlocksCommitConcurrently(t *testing.T) {
 		gaveUp   bool
 		exceeded = make(chan struct{})
 		once     sync.Once
-		spanning int // blocks whose chunks fall in more than one run
+		// overlapped closes as soon as two commits are in flight at once, and on
+		// the first hold that times out waiting for that, which releases the pass
+		// so the assertion reports the lost overlap.
+		overlapped  = make(chan struct{})
+		onceOverlap sync.Once
+		spanning    int // blocks whose chunks fall in more than one run
 	)
 	sink.onCommit = func(chunks []CarveChunk) {
 		span := false
@@ -367,12 +375,23 @@ func TestCarveBlocksCommitConcurrently(t *testing.T) {
 		if cur > max {
 			max = cur
 		}
+		if cur >= 2 {
+			onceOverlap.Do(func() { close(overlapped) })
+		}
 		if cur > window {
 			once.Do(func() { close(exceeded) })
 		}
 		skip := gaveUp
 		mu.Unlock()
 
+		// Stage one: wait for a second commit to be in flight.
+		select {
+		case <-overlapped:
+		case <-time.After(5 * time.Second):
+			onceOverlap.Do(func() { close(overlapped) })
+		}
+
+		// Stage two: hold the in-flight set open so a breached cap is seen.
 		if !skip {
 			select {
 			case <-exceeded:
@@ -411,7 +430,7 @@ func TestCarveBlocksCommitConcurrently(t *testing.T) {
 		t.Fatalf("no block carried chunks from more than one run: blocks are still cut at run boundaries")
 	}
 	if max < 2 {
-		t.Fatalf("max blocks committing at once = %d, want > 1: the commits did not overlap", max)
+		t.Fatalf("max blocks committing at once = %d, want > 1: no second commit joined the first within the hold, so the commits did not overlap", max)
 	}
 	if max > window {
 		t.Fatalf("max concurrent commits = %d, want <= CarveUploadConcurrency (%d): the file-scoped bound on in-flight blocks was breached", max, window)
