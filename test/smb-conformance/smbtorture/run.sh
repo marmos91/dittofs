@@ -351,6 +351,15 @@ if $KERBEROS; then
         "--option=client min protocol=SMB2_02"
         "--option=client max protocol=SMB3"
         "--option=torture:smbd=false"
+        # smb2.maxfid opens handles until the server refuses, defaulting to
+        # 65520 — a number smbtorture picked to stay under socket_wrapper's
+        # socket limit, not because the behaviour needs that many. Unbounded
+        # it cannot finish in any per-suite budget we would want to grant, so
+        # it is deliberately capped: 2000 concurrent handles across 2
+        # subdirectories still exercises the many-open path far past any real
+        # client, at a thirtieth of the work. A passing smb2.maxfid therefore
+        # means "2000 handles are fine", NOT "the server's ceiling was found".
+        "--option=torture:maxopenfiles=2000"
         # Reserved server-side ACL xattr name surfaced to smbtorture
         # smb2.ea.acl_xattr. The server rejects EA writes targeting this name
         # with STATUS_ACCESS_DENIED (set_info.go::reservedACLXattrName).
@@ -366,6 +375,15 @@ else
         "--option=client min protocol=SMB2_02"
         "--option=client max protocol=SMB3"
         "--option=torture:smbd=false"
+        # smb2.maxfid opens handles until the server refuses, defaulting to
+        # 65520 — a number smbtorture picked to stay under socket_wrapper's
+        # socket limit, not because the behaviour needs that many. Unbounded
+        # it cannot finish in any per-suite budget we would want to grant, so
+        # it is deliberately capped: 2000 concurrent handles across 2
+        # subdirectories still exercises the many-open path far past any real
+        # client, at a thirtieth of the work. A passing smb2.maxfid therefore
+        # means "2000 handles are fine", NOT "the server's ceiling was found".
+        "--option=torture:maxopenfiles=2000"
         # Reserved server-side ACL xattr name surfaced to smbtorture
         # smb2.ea.acl_xattr. The server rejects EA writes targeting this name
         # with STATUS_ACCESS_DENIED (set_info.go::reservedACLXattrName).
@@ -651,8 +669,20 @@ else
         # since each cycle persists/consumes a durable handle with a
         # synchronous, non-coalescing fsync. Give those suites more head room
         # on every profile; every other suite keeps 120s.
+        #
+        # smb2.lease, smb2.multichannel and smb2.oplock also overrun 120s, on
+        # every profile — the cut is not a storage-speed effect. smb2.oplock is
+        # the clearest: batch22b deliberately waits out an oplock break timeout
+        # (smbtorture's own `oplocktimeout`, default 35s) with the holder's
+        # transport blocked so no ack can arrive, and it does not start until
+        # ~88s into the suite. 120s cannot fit it.
+        #
+        # smb2.notify is deliberately NOT raised. It hangs on a cancelled
+        # CHANGE_NOTIFY that never receives a final response, so a bigger budget
+        # only burns more of it while leaving the same tail ungraded.
         case "$suite" in
             smb2.replay|smb2.durable-*) suite_timeout=300 ;;
+            smb2.lease|smb2.multichannel|smb2.oplock) suite_timeout=600 ;;
             *) suite_timeout=120 ;;
         esac
         run_smbtorture "$suite" "$suite_timeout" "$prefix" "${share:-}" || record_rc $?
