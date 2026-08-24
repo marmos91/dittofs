@@ -31,3 +31,23 @@ PutBlock writes one whole block with a single PutObject under
 `blocks/<blockID>`, so listing that prefix IS the PUT-size distribution.
 s3snap.sh captures Size + LastModified; hist.py windows by LastModified so each
 run's objects are separable.
+
+## Bucket hygiene (a caveat, stated plainly)
+
+`blocks/` was NOT emptied before the runs. Three attempts to wipe ~250k stale
+objects (the previous #2070 probe's 4 KiB objects, plus July runs) were
+abandoned: `aws s3 rm --recursive` deletes at ~3k/min against this endpoint
+(~80 min), and a batched `delete-objects` fan-out reported success while
+deleting nothing.
+
+This does not contaminate the result. Object size is read from the S3 listing's
+`Size`, and every object carries `LastModified`, so each run's objects are
+selected by a time window and the stale set is excluded exactly. The windows:
+
+  aborted first attempt (packed binaries)  17:30:05Z – 17:30:36Z  — discarded
+  Run A  packed  (5b43a9ae)                started 2026-08-24T17:37:28Z
+  Run B  develop (47a2d1fb)                started (see below)
+
+The first attempt was aborted because a bucket-wipe pass was still running when
+it began uploading, so some of its blocks were deleted underneath it. Nothing
+from that window is used.
