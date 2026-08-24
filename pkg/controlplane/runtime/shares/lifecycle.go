@@ -537,6 +537,11 @@ func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metad
 	// bound is on extents rather than payloads because that is what the buffer
 	// actually holds: a share of huge files would otherwise buffer the whole
 	// manifest before it hit any payload count worth flushing at.
+	//
+	// It bounds what the buffering adds, not the peak: a payload whose own extents
+	// exceed the bound goes in whole and flushes on the next check. Splitting one
+	// would buy nothing — ListFileChunks has already materialized that payload's
+	// rows in full before this sees them, so the slice is live either way.
 	batch := make([]engine.ColdSeed, 0, 256)
 	buffered := 0
 	flush := func() error {
