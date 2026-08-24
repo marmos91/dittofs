@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/cli/output"
 	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/spf13/cobra"
 )
 
@@ -101,6 +102,7 @@ func (sd ShareDetail) Rows() [][]string {
 		if s.Status.Message != "" {
 			rows = append(rows, []string{"Status Detail", s.Status.Message})
 		}
+		rows = append(rows, integrityRows(s.Status.Integrity)...)
 	}
 
 	// Only show Retention TTL when a TTL is set
@@ -194,4 +196,34 @@ func shareOwnerString(uid, gid *uint32) string {
 		group = *gid
 	}
 	return fmt.Sprintf("%d:%d", *uid, group)
+}
+
+// integrityRows renders the last structural manifest scan for the detail
+// table. A share the server has not scanned yet says so rather than showing
+// a row of zeros, which would read as a clean bill of health the server has
+// not actually given.
+func integrityRows(in *health.IntegrityStatus) [][]string {
+	if in == nil {
+		return [][]string{{"Integrity Scan", "not yet run"}}
+	}
+	if in.Error != "" {
+		return [][]string{
+			{"Integrity Scan", "failed " + in.LastRunAt.Local().Format("2006-01-02 15:04:05")},
+			{"Integrity Error", in.Error},
+		}
+	}
+	rows := [][]string{
+		{"Integrity Scan", fmt.Sprintf("%s (%d files, %dms)",
+			in.LastRunAt.Local().Format("2006-01-02 15:04:05"), in.FilesScanned, in.DurationMS)},
+		{"Integrity Findings", fmt.Sprintf("%d payloads (%d damaged)",
+			in.PayloadsWithFindings, in.DamagedPayloads)},
+	}
+	// The per-kind breakdown is noise on a clean share; show it only when
+	// there is something to break down.
+	if in.PayloadsWithFindings > 0 {
+		rows = append(rows, []string{"Integrity Detail", fmt.Sprintf(
+			"%d claimed-uncovered ranges, %d unplaceable rows, %d unknown hashes",
+			in.ClaimedUncoveredRanges, in.UnplaceableRows, in.UnknownHashRows)})
+	}
+	return rows
 }

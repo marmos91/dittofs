@@ -175,7 +175,7 @@ func runList(cmd *cobra.Command, args []string) error {
 
 // shareStatusString renders the server's status, or empty when the server sent
 // none, so an absent status is never shown as a status of "".
-func shareStatusString(r *health.Report) string {
+func shareStatusString(r *health.ShareStatus) string {
 	if r == nil {
 		return ""
 	}

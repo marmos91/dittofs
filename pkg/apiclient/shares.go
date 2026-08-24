@@ -84,7 +84,7 @@ type Share struct {
 	// Omitted when empty: a server that sends no status must not be rendered
 	// as one reporting a zero-value report, which would carry an empty Status
 	// and a year-zero CheckedAt that no server ever produced.
-	Status *health.Report `json:"status,omitempty"`
+	Status *health.ShareStatus `json:"status,omitempty"`
 }
 
 // CreateShareRequest is the request to create a share.

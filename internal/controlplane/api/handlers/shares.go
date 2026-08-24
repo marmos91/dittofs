@@ -264,10 +264,11 @@ type ShareResponse struct {
 	UpdatedAt            time.Time `json:"updated_at"`
 
 	// Status is the worst-of health report derived from the share's
-	// metadata store and block store engine. Non-omitempty so
-	// clients can render "unknown" explicitly when the runtime has
-	// not loaded the share yet.
-	Status health.Report `json:"status"`
+	// metadata store and block store engine, plus the structural
+	// counters recorded alongside it. Non-omitempty so clients can
+	// render "unknown" explicitly when the runtime has not loaded the
+	// share yet.
+	Status health.ShareStatus `json:"status"`
 
 	// Warnings carries non-fatal operator-facing messages about the request
 	// that just completed — e.g. a block-store binding change that only takes
@@ -1648,18 +1649,18 @@ func (h *ShareHandler) shareToResponseWithUsage(ctx context.Context, s *models.S
 	return resp
 }
 
-// unknownRuntimeReport builds a [health.StatusUnknown] report used
+// unknownRuntimeReport builds a [health.StatusUnknown] status used
 // when a handler is wired without a runtime. Kept in one place so
 // shares.go's nil-guard branches stay consistent.
-func unknownRuntimeReport() health.Report {
-	return health.Report{
+func unknownRuntimeReport() health.ShareStatus {
+	return health.ShareStatus{Report: health.Report{
 		Status:    health.StatusUnknown,
 		Message:   "runtime not initialized",
 		CheckedAt: time.Now().UTC(),
-	}
+	}}
 }
 
-// shareStatus returns a [health.Report] for the named share via the
+// shareStatus returns a [health.ShareStatus] for the named share via the
 // runtime's cached checker layer. Callers MUST ensure h.runtime is
 // non-nil; this helper intentionally does not guard so the panic
 // surface stays visible in tests. Analogous to the statusFor helpers
@@ -1668,12 +1669,12 @@ func unknownRuntimeReport() health.Report {
 // /status handlers wrap once at the handler level, and list handlers
 // wrap once before the populate loop so all entities share a single
 // 5s budget instead of compounding to N*5s worst case.
-func (h *ShareHandler) shareStatus(ctx context.Context, name string) health.Report {
-	return h.runtime.ShareChecker(name).Healthcheck(ctx)
+func (h *ShareHandler) shareStatus(ctx context.Context, name string) health.ShareStatus {
+	return h.runtime.ShareStatus(ctx, name)
 }
 
 // Status handles GET /api/v1/shares/{name}/status. Returns 404 when
-// the share config does not exist and 200 with a [health.Report]
+// the share config does not exist and 200 with a [health.ShareStatus]
 // JSON body otherwise.
 func (h *ShareHandler) Status(w http.ResponseWriter, r *http.Request) {
 	name := normalizeShareName(chi.URLParam(r, "name"))
