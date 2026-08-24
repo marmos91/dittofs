@@ -5,7 +5,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/chunker"
+	badgerstore "github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
 
 // TestCarvePackReachesBlockSizeOnScatteredRuns pins the defect this plan fixes:
@@ -272,5 +274,54 @@ func TestCarvePackSeamRunFailureLeavesSuffixDirty(t *testing.T) {
 	}
 	if s.UnsyncedBytes() == int64(runSize) {
 		t.Fatal("post-carve unsynced=runSize: the committed prefix must have flipped")
+	}
+}
+
+// badgerDeduper answers IsChunkDurable from a real BadgerMetadataStore's
+// IsSynced, the same lookup production wiring uses (pkg/block/engine's
+// engineDeduper). Unlike fakeDeduper's mutex-guarded map, each call opens an
+// actual Badger read transaction — the per-call cost BenchmarkCarveScatteredPass
+// exists to measure. Never marked synced by this benchmark, so every lookup is
+// a miss, which matches carve encountering novel scattered writes.
+type badgerDeduper struct {
+	store *badgerstore.BadgerMetadataStore
+}
+
+func (d badgerDeduper) IsChunkDurable(ctx context.Context, h ChunkHash) (bool, error) {
+	return d.store.IsSynced(ctx, block.ContentHash(h))
+}
+
+// BenchmarkCarveScatteredPass measures a full scattered carve pass against a
+// real dedup oracle, so the cost of serialising IsChunkDurable through one
+// packer goroutine is visible rather than elided by a map-backed fake.
+func BenchmarkCarveScatteredPass(b *testing.B) {
+	const (
+		runs    = 5000
+		runSize = 4 << 10
+		gap     = 16 << 10
+	)
+	ctx := context.Background()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		s, _, sink, _ := carveStore(b, Config{
+			CarveBlockSize:         4 << 20,
+			CarveUploadConcurrency: 8,
+			ChunkParams:            chunker.Params{Min: 1 << 10, Avg: 2 << 10, Max: 8 << 10},
+		})
+		md, err := badgerstore.NewBadgerMetadataStoreWithDefaults(ctx, b.TempDir())
+		if err != nil {
+			b.Fatalf("open badger metadata store: %v", err)
+		}
+		b.Cleanup(func() { _ = md.Close() })
+		s.SetCarveTargets(badgerDeduper{md}, sink)
+		for r := 0; r < runs; r++ {
+			if err := s.WriteAt(ctx, "f", int64(r)*gap, randBytes(runSize, int64(r))); err != nil {
+				b.Fatalf("WriteAt %d: %v", r, err)
+			}
+		}
+		b.StartTimer()
+		if _, err := s.Carve(ctx, CarveOptions{Force: true}); err != nil {
+			b.Fatalf("Carve: %v", err)
+		}
 	}
 }

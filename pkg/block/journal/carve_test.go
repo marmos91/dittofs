@@ -136,7 +136,8 @@ func (s *fakeSink) blockCount() int {
 }
 
 // carveStore opens a store with the fakes wired and a controllable clock.
-func carveStore(t *testing.T, cfg Config) (*Store, *fakeDeduper, *fakeSink, *fakeClock) {
+// testing.TB (rather than *testing.T) lets a benchmark call it directly.
+func carveStore(t testing.TB, cfg Config) (*Store, *fakeDeduper, *fakeSink, *fakeClock) {
 	t.Helper()
 	clk := newFakeClock()
 	s, err := Open(t.TempDir(), cfg, newFakeRemote(), clk)
