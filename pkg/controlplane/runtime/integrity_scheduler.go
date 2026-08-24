@@ -152,7 +152,7 @@ func (r *Runtime) ShareIntegrity(share string) *health.IntegrityStatus {
 // downgrade a healthy share, never upgrade an unhealthy one.
 func (r *Runtime) ShareStatus(ctx context.Context, share string) health.ShareStatus {
 	out := withIntegrity(r.ShareChecker(share).Healthcheck(ctx), r.ShareIntegrity(share))
-	out.Offline = r.ShareOffline(share)
+	out.Offline = r.ShareOffline(ctx, share)
 	return out
 }
 

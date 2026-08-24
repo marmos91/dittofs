@@ -15,7 +15,7 @@ func TestColdExtents_CountsEvictedRangesOnly(t *testing.T) {
 
 	fillUntilSealed(t, s, "f", true, 2)
 
-	if bytes, extents := s.ColdExtents(); bytes != 0 || extents != 0 {
+	if bytes, extents, err := s.ColdExtents(ctx); err != nil || bytes != 0 || extents != 0 {
 		t.Fatalf("before eviction: ColdExtents() = (%d, %d), want (0, 0) — nothing has been evicted", bytes, extents)
 	}
 
@@ -27,7 +27,10 @@ func TestColdExtents_CountsEvictedRangesOnly(t *testing.T) {
 		t.Fatalf("Evict evicted %d segments, want 1", res.SegmentsEvicted)
 	}
 
-	bytes, extents := s.ColdExtents()
+	bytes, extents, err := s.ColdExtents(ctx)
+	if err != nil {
+		t.Fatalf("ColdExtents: %v", err)
+	}
 	if bytes <= 0 || extents <= 0 {
 		t.Fatalf("after eviction: ColdExtents() = (%d, %d), want both positive", bytes, extents)
 	}
@@ -49,7 +52,7 @@ func TestColdExtents_HydrateClearsIt(t *testing.T) {
 	if _, err := s.Evict(ctx, 0); err != nil {
 		t.Fatalf("Evict: %v", err)
 	}
-	coldBefore, extentsBefore := s.ColdExtents()
+	coldBefore, extentsBefore, _ := s.ColdExtents(ctx)
 	if coldBefore == 0 {
 		t.Fatal("eviction produced no cold bytes; the rest of this test proves nothing")
 	}
@@ -62,7 +65,7 @@ func TestColdExtents_HydrateClearsIt(t *testing.T) {
 		}
 	}
 
-	if bytes, extents := s.ColdExtents(); bytes != 0 || extents != 0 {
+	if bytes, extents, _ := s.ColdExtents(ctx); bytes != 0 || extents != 0 {
 		t.Fatalf("after re-hydrating everything: ColdExtents() = (%d, %d) (was %d, %d), want (0, 0)",
 			bytes, extents, coldBefore, extentsBefore)
 	}
@@ -83,4 +86,24 @@ func coldIntervals(s *Store) []interval {
 		sh.mu.Unlock()
 	}
 	return out
+}
+
+// TestColdExtents_HonoursContext asserts a walk with a cancelled context gives
+// up instead of running a status request or a metrics scrape past its deadline.
+func TestColdExtents_HonoursContext(t *testing.T) {
+	s, _ := evictStore(t, Config{})
+	fillUntilSealed(t, s, "f", true, 2)
+	if _, err := s.Evict(context.Background(), 0); err != nil {
+		t.Fatalf("Evict: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	bytes, extents, err := s.ColdExtents(ctx)
+	if err == nil {
+		t.Fatal("ColdExtents ignored a cancelled context")
+	}
+	if bytes != 0 || extents != 0 {
+		t.Errorf("cancelled walk returned partial counts (%d, %d), want zeros", bytes, extents)
+	}
 }

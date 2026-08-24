@@ -1,6 +1,10 @@
 package engine
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+)
 
 // fakeColdReporter stands in for the local tier's residency surface so the
 // gating rules can be checked without building a journal.
@@ -8,10 +12,16 @@ type fakeColdReporter struct {
 	seeded  bool
 	bytes   int64
 	extents int64
+	err     error
 }
 
-func (f *fakeColdReporter) ColdExtents() (int64, int64) { return f.bytes, f.extents }
-func (f *fakeColdReporter) ColdSeeded() bool            { return f.seeded }
+func (f *fakeColdReporter) ColdExtents(ctx context.Context) (int64, int64, error) {
+	if f.err != nil {
+		return 0, 0, f.err
+	}
+	return f.bytes, f.extents, ctx.Err()
+}
+func (f *fakeColdReporter) ColdSeeded() bool { return f.seeded }
 
 // TestOfflineReadiness_Safe pins the two ways a readiness answer can be wrong
 // in the dangerous direction: reporting zero remote-only bytes for a share
@@ -63,7 +73,7 @@ func TestOfflineReadinessOf_Gating(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := offlineReadinessOf(tc.localTier, tc.hasRemote)
+			got := offlineReadinessOf(context.Background(), tc.localTier, tc.hasRemote)
 			if got.Known != tc.wantKnown {
 				t.Errorf("Known = %v, want %v (reason %q)", got.Known, tc.wantKnown, got.Reason)
 			}
@@ -80,5 +90,35 @@ func TestOfflineReadinessOf_Gating(t *testing.T) {
 				t.Errorf("reported safe with %d remote-only bytes", got.RemoteOnlyBytes)
 			}
 		})
+	}
+}
+
+// TestOfflineReadinessOf_CancelledScanIsUnknown asserts a walk that ran out of
+// time reports unknown rather than the partial total it had reached. A status
+// request and a metrics scrape both carry a deadline, and a truncated count
+// would read as a share holding less remote-only data than it does.
+func TestOfflineReadinessOf_CancelledScanIsUnknown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got := offlineReadinessOf(ctx, &fakeColdReporter{seeded: true, bytes: 4096, extents: 2}, true)
+	if got.Known {
+		t.Error("a cancelled scan reported a known answer")
+	}
+	if got.Safe() {
+		t.Error("a cancelled scan reported the share offline-safe")
+	}
+	if got.RemoteOnlyBytes != 0 {
+		t.Errorf("RemoteOnlyBytes = %d after cancellation, want 0 (no partial totals)", got.RemoteOnlyBytes)
+	}
+	if got.Reason == "" {
+		t.Error("refused to answer without saying why")
+	}
+
+	// A scan that fails for its own reasons is the same kind of non-answer.
+	failed := offlineReadinessOf(context.Background(),
+		&fakeColdReporter{seeded: true, err: errors.New("store is closed")}, true)
+	if failed.Known || failed.Safe() {
+		t.Errorf("a failed scan reported known=%v safe=%v", failed.Known, failed.Safe())
 	}
 }

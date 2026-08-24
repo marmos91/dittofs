@@ -47,7 +47,7 @@ func (r *Runtime) MetricsSnapshot(ctx context.Context) metrics.Snapshot {
 			SnapshotsHeld:       held,
 			LastSnapshotUnix:    lastUnix,
 			Integrity:           integritySnapshot(r.ShareIntegrity(ps.ShareName)),
-			Offline:             offlineSnapshot(r.ShareOffline(ps.ShareName)),
+			Offline:             offlineSnapshot(r.ShareOffline(ctx, ps.ShareName)),
 		})
 	}
 

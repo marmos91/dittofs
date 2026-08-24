@@ -1,5 +1,7 @@
 package engine
 
+import "context"
+
 // OfflineReadiness reports whether a share could keep serving reads with its
 // remote store unreachable, and by how much it falls short.
 //
@@ -36,7 +38,7 @@ func (o OfflineReadiness) Safe() bool { return o.Known && o.RemoteOnlyBytes == 0
 // asserting for it here keeps that from becoming another method every fake has
 // to implement.
 type coldRangeReporter interface {
-	ColdExtents() (bytes int64, extents int64)
+	ColdExtents(ctx context.Context) (bytes int64, extents int64, err error)
 	ColdSeeded() bool
 }
 
@@ -48,13 +50,13 @@ type coldRangeReporter interface {
 // insert, split, clamp, evict, hydrate and repack, and a counter that drifts
 // on any one of those reports a share offline-safe when it is not. Take the
 // scan until a metrics scrape actually shows up in a latency profile.
-func (bs *Store) OfflineReadiness() OfflineReadiness {
+func (bs *Store) OfflineReadiness(ctx context.Context) OfflineReadiness {
 	bs.closeMu.RLock()
 	defer bs.closeMu.RUnlock()
 	if bs.closed {
 		return OfflineReadiness{Reason: "block store is closed"}
 	}
-	return offlineReadinessOf(bs.local, bs.HasRemoteStore())
+	return offlineReadinessOf(ctx, bs.local, bs.HasRemoteStore())
 }
 
 // offlineReadinessOf holds the gating rules, separated from the store lookup so
@@ -62,7 +64,7 @@ func (bs *Store) OfflineReadiness() OfflineReadiness {
 // answering zero, because a zero here reads as "provably offline safe" and
 // would say that about exactly the shares whose data is most likely to be
 // remote-only.
-func offlineReadinessOf(localTier any, hasRemote bool) OfflineReadiness {
+func offlineReadinessOf(ctx context.Context, localTier any, hasRemote bool) OfflineReadiness {
 	reporter, ok := localTier.(coldRangeReporter)
 	if !ok {
 		// A tier that cannot report residency and has no remote also has
@@ -91,6 +93,9 @@ func offlineReadinessOf(localTier any, hasRemote bool) OfflineReadiness {
 	// exists, so there is nothing to fetch them from and they never serve. A
 	// non-zero count is the honest report; treating "no remote" as "all local"
 	// would call that share provably offline-safe.
-	bytes, ranges := reporter.ColdExtents()
+	bytes, ranges, err := reporter.ColdExtents(ctx)
+	if err != nil {
+		return OfflineReadiness{Reason: "residency scan did not finish: " + err.Error()}
+	}
 	return OfflineReadiness{RemoteOnlyBytes: bytes, RemoteOnlyRanges: ranges, Known: true}
 }

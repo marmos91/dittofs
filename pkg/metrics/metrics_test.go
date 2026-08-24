@@ -158,3 +158,49 @@ func TestWithAuth(t *testing.T) {
 		t.Fatalf("good-token: want 200, got %d", rec.Code)
 	}
 }
+
+// A share whose residency could not be determined must still report a safety
+// gauge, but must NOT publish byte counts: zeros there are indistinguishable
+// from a clean, fully-local share, which is the one wrong answer this signal
+// cannot afford to give.
+func TestRuntimeCollector_UnknownOfflineShareOmitsByteGauges(t *testing.T) {
+	m := newTestMetrics(t, Snapshot{Shares: []ShareSnapshot{{
+		Name: "unknowable", HasRemote: true,
+		Offline: OfflineSnapshot{Safe: false, Known: false},
+	}}})
+	if got := testutil.CollectAndCount(m.Registry(), "dittofs_offline_remote_only_bytes"); got != 0 {
+		t.Errorf("unknown share published remote_only_bytes (%d series), want none", got)
+	}
+	if got := testutil.CollectAndCount(m.Registry(), "dittofs_offline_remote_only_ranges"); got != 0 {
+		t.Errorf("unknown share published remote_only_ranges (%d series), want none", got)
+	}
+	if got := testutil.CollectAndCount(m.Registry(), "dittofs_offline_safe"); got != 1 {
+		t.Fatalf("expected one offline_safe series, got %d", got)
+	}
+	if err := testutil.CollectAndCompare(m.Registry(), strings.NewReader(`
+# HELP dittofs_offline_safe Whether every byte the share holds can be served with the remote unreachable (1) or not (0). A share whose residency cannot be determined reports 0.
+# TYPE dittofs_offline_safe gauge
+dittofs_offline_safe{share="unknowable"} 0
+`), "dittofs_offline_safe"); err != nil {
+		t.Fatalf("unexpected offline_safe value: %v", err)
+	}
+}
+
+// A share whose residency IS known publishes both byte gauges alongside the
+// safety verdict, so an operator can see how far from safe it is.
+func TestRuntimeCollector_KnownOfflineShareEmitsByteGauges(t *testing.T) {
+	m := newTestMetrics(t, Snapshot{Shares: []ShareSnapshot{{
+		Name: "known", HasRemote: true,
+		Offline: OfflineSnapshot{Safe: false, Known: true, RemoteOnlyBytes: 4096, RemoteOnlyRanges: 2},
+	}}})
+	if err := testutil.CollectAndCompare(m.Registry(), strings.NewReader(`
+# HELP dittofs_offline_remote_only_bytes Bytes the local tier no longer holds and would have to fetch from the remote to serve.
+# TYPE dittofs_offline_remote_only_bytes gauge
+dittofs_offline_remote_only_bytes{share="known"} 4096
+# HELP dittofs_offline_remote_only_ranges Number of separate ranges those remote-only bytes span.
+# TYPE dittofs_offline_remote_only_ranges gauge
+dittofs_offline_remote_only_ranges{share="known"} 2
+`), "dittofs_offline_remote_only_bytes", "dittofs_offline_remote_only_ranges"); err != nil {
+		t.Fatalf("unexpected byte gauges: %v", err)
+	}
+}

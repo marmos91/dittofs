@@ -1,5 +1,7 @@
 package journal
 
+import "context"
+
 // ColdExtents reports the ranges this store knows about whose bytes are
 // durable on the remote store but no longer resident locally. Reading one
 // requires the remote, so a store with no cold extent can serve every byte it
@@ -16,14 +18,25 @@ package journal
 // offline" directly and costs an in-memory scan.
 //
 // The scan holds each shard's lock only for that shard's slice of the index,
-// so it never blocks the whole store at once. It is O(live intervals), which
-// is why callers should treat it as a periodic gauge rather than something to
-// call per request.
-func (s *Store) ColdExtents() (bytes int64, extents int64) {
+// so it never blocks the whole store at once, and it gives up between shards
+// when ctx is done — a status request or a metrics scrape carries a deadline,
+// and a large share must not be able to run one past it. A cancelled walk
+// reports no counts rather than a partial total, which would read as a share
+// with less remote-only data than it has.
+//
+// It is O(live intervals), so callers should treat it as a periodic gauge
+// rather than something to call per request.
+func (s *Store) ColdExtents(ctx context.Context) (bytes int64, extents int64, err error) {
 	if s.closed.Load() {
-		return 0, 0
+		return 0, 0, errClosed
 	}
 	for _, sh := range s.shards {
+		// Checked between shards rather than inside the inner loop: a caller
+		// with a deadline gets out after at most one shard's slice of the
+		// index, and the check never lands while a shard lock is held.
+		if err := ctx.Err(); err != nil {
+			return 0, 0, err
+		}
 		sh.mu.Lock()
 		for _, fi := range sh.index {
 			for _, iv := range fi.ivs {
@@ -36,5 +49,5 @@ func (s *Store) ColdExtents() (bytes int64, extents int64) {
 		}
 		sh.mu.Unlock()
 	}
-	return bytes, extents
+	return bytes, extents, nil
 }

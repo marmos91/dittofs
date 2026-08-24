@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"context"
+
 	"github.com/marmos91/dittofs/pkg/health"
 )
 
@@ -12,12 +14,12 @@ import (
 // answer changes with every eviction and every warm, and an operator running
 // `dfsctl share warm` wants to watch the number fall, not learn about it
 // tomorrow.
-func (r *Runtime) ShareOffline(share string) *health.OfflineStatus {
+func (r *Runtime) ShareOffline(ctx context.Context, share string) *health.OfflineStatus {
 	bs, err := r.sharesSvc.GetBlockStoreForShare(share)
 	if err != nil || bs == nil {
 		return nil
 	}
-	rd := bs.OfflineReadiness()
+	rd := bs.OfflineReadiness(ctx)
 	return &health.OfflineStatus{
 		Safe:             rd.Safe(),
 		RemoteOnlyBytes:  rd.RemoteOnlyBytes,

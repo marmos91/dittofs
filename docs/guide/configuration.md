@@ -675,7 +675,8 @@ whose data is most likely to be remote-only:
 - the local tier has not been seeded from the manifest yet — it holds no
   record of ranges that live only on the remote, so they would count as
   absent rather than remote-only,
-- the block store is closed.
+- the block store is closed,
+- the residency scan did not finish inside the request's deadline.
 
 An unknown share reports `dittofs_offline_safe = 0` but publishes no byte
 counts, so a dashboard cannot mistake it for a clean fully-local share.
