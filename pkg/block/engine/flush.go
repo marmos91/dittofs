@@ -101,24 +101,38 @@ func (bs *Store) DrainRollups(ctx context.Context) error {
 	return err
 }
 
-// SeedCold marks payloadID's extents — each an {offset, length} pair — as
-// remote-durable-but-not-local so a subsequent read faults them in from the
-// remote store rather than zero-filling. Callers pass a whole file's extents at
-// once: the local tier persists the markers, and one durable write per file beats
-// one per extent when a caller is seeding an entire manifest. Snapshot restore
-// and the pre-journal upgrade both use it (remote-backed shares only) to arm cold
-// reads over a local tier that holds none of the bytes. No-op when the local store
-// has no remote-hydration support (e.g. the in-memory test store), which the
-// caller only hits on non-remote paths anyway.
-func (bs *Store) SeedCold(ctx context.Context, payloadID string, extents [][2]int64) error {
+// ColdSeed is one payload's worth of work for SeedColdBatch: the payload ID and
+// the {offset, length} extents of it to mark cold.
+type ColdSeed struct {
+	PayloadID string
+	Extents   [][2]int64
+}
+
+// SeedColdBatch marks the seeds' extents as remote-durable-but-not-local so a
+// subsequent read faults them in from the remote store rather than zero-filling.
+// Snapshot restore and the pre-journal upgrade both use it (remote-backed shares
+// only) to arm cold reads over a local tier that holds none of the bytes.
+//
+// Callers pass many payloads at once because the local tier makes the markers
+// durable once per call, not once per payload — an fsync per file is nearly all
+// of a manifest seed's wall clock on a share with many small files. Every entry
+// is held in memory until that write, so callers bound their own batches.
+//
+// No-op when the local store has no remote-hydration support (e.g. the in-memory
+// test store), which the caller only hits on non-remote paths anyway.
+func (bs *Store) SeedColdBatch(ctx context.Context, seeds []ColdSeed) error {
 	type coldSeeder interface {
-		SeedCold(ctx context.Context, id journal.FileID, extents [][2]int64) error
+		SeedColdBatch(ctx context.Context, seeds []journal.ColdSeed) error
 	}
 	cs, ok := bs.local.(coldSeeder)
 	if !ok {
 		return nil
 	}
-	return cs.SeedCold(ctx, journal.FileID(payloadID), extents)
+	js := make([]journal.ColdSeed, 0, len(seeds))
+	for _, sd := range seeds {
+		js = append(js, journal.ColdSeed{ID: journal.FileID(sd.PayloadID), Extents: sd.Extents})
+	}
+	return cs.SeedColdBatch(ctx, js)
 }
 
 // RestoreToVersion rewinds the local journal to a snapshot's version watermark

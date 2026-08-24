@@ -517,9 +517,9 @@ func (s *Service) StopRollups(ctx context.Context) {
 // copy of the data — after a snapshot restore wiped the local tier, or after a
 // pre-journal upgrade archived the legacy local layout aside. Remote-backed
 // shares only (the caller gates on that); the cold fetch it arms is
-// BLAKE3-verified. One ListFileChunks and one SeedCold per payload — O(chunks),
-// acceptable for a rare control-plane / startup path, and seeding a whole file at
-// once keeps the local tier's durable write to one per file.
+// BLAKE3-verified. One ListFileChunks per payload — O(chunks), acceptable for a
+// rare control-plane / startup path — and the seeds themselves are batched, so
+// the local tier's durable write costs one per batch rather than one per file.
 //
 // The report it returns is what the seed observed on the way through: how much
 // it covered, how much of it the manifest does not yet call remote, and a few
@@ -533,6 +533,22 @@ func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metad
 	started := time.Now()
 	lastLog := started
 	logger.Info("seeding cold intervals from the metadata manifest")
+	// Extents are buffered across payloads and flushed as one durable write. The
+	// bound is on extents rather than payloads because that is what the buffer
+	// actually holds: a share of huge files would otherwise buffer the whole
+	// manifest before it hit any payload count worth flushing at.
+	batch := make([]engine.ColdSeed, 0, 256)
+	buffered := 0
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if err := bs.SeedColdBatch(ctx, batch); err != nil {
+			return fmt.Errorf("seed cold %s (+%d more): %w", batch[0].PayloadID, len(batch)-1, err)
+		}
+		batch, buffered = batch[:0], 0
+		return nil
+	}
 	err := metaStore.EnumeratePayloads(ctx, func(payloadID string) error {
 		rows, err := metaStore.ListFileChunks(ctx, payloadID)
 		if err != nil {
@@ -581,8 +597,14 @@ func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metad
 				})
 			}
 		}
-		if err := bs.SeedCold(ctx, payloadID, extents); err != nil {
-			return fmt.Errorf("seed cold %s: %w", payloadID, err)
+		if len(extents) > 0 {
+			batch = append(batch, engine.ColdSeed{PayloadID: payloadID, Extents: extents})
+			buffered += len(extents)
+		}
+		if buffered >= coldSeedBatchExtents {
+			if err := flush(); err != nil {
+				return err
+			}
 		}
 		report.payloads++
 		if time.Since(lastLog) >= migrationProgressInterval {
@@ -593,5 +615,8 @@ func SeedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metad
 		}
 		return nil
 	})
-	return report, err
+	if err != nil {
+		return report, err
+	}
+	return report, flush()
 }
