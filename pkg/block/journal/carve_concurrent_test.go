@@ -316,3 +316,186 @@ func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 		}
 	}
 }
+
+// TestCarveRunsCommitConcurrently pins the run-level concurrency itself: on a
+// file of several dirty runs, commits from different runs overlap, and the
+// file-wide semaphore caps how many overlap at once. Asserting the drained
+// result alone does not cover this — a serial carveFile produces byte-identical
+// output — so this is what fails if runs are ever serialised again.
+//
+// The commit hook blocks until a second commit joins it rather than sleeping a
+// fixed time, so a concurrent implementation releases immediately and only a
+// serial one pays the timeout, once.
+func TestCarveRunsCommitConcurrently(t *testing.T) {
+	const (
+		runs    = 8
+		runSize = 4 << 10
+		gap     = 8 << 10 // a hole between runs keeps them separate
+		window  = 4
+	)
+	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarveUploadConcurrency: window})
+	ctx := context.Background()
+
+	var (
+		mu         sync.Mutex
+		cur, max   int
+		gaveUp     bool
+		overlapped = make(chan struct{})
+		once       sync.Once
+	)
+	sink.onCommit = func(_ []CarveChunk) {
+		mu.Lock()
+		cur++
+		if cur > max {
+			max = cur
+		}
+		if cur >= 2 {
+			once.Do(func() { close(overlapped) })
+		}
+		skip := gaveUp
+		mu.Unlock()
+
+		if !skip {
+			select {
+			case <-overlapped:
+			case <-time.After(2 * time.Second):
+				// Nothing joined: the carve is serial. Stop waiting so the rest of
+				// the pass does not pay the timeout too.
+				mu.Lock()
+				gaveUp = true
+				mu.Unlock()
+			}
+		}
+		mu.Lock()
+		cur--
+		mu.Unlock()
+	}
+
+	for i := 0; i < runs; i++ {
+		if err := s.WriteAt(ctx, "f", int64(i)*gap, randBytes(runSize, int64(i))); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	if _, err := s.Carve(ctx, CarveOptions{Force: true}); err != nil {
+		t.Fatalf("Carve: %v", err)
+	}
+	if s.UnsyncedBytes() != 0 {
+		t.Fatalf("post-carve unsynced=%d want 0", s.UnsyncedBytes())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if max < 2 {
+		t.Fatalf("max concurrent commits across runs = %d, want > 1: the runs did not overlap", max)
+	}
+	if max > window {
+		t.Fatalf("max concurrent commits across runs = %d, want <= CarveUploadConcurrency (%d)", max, window)
+	}
+}
+
+// reapCtxSink fails the run covering failFrom, but only once the other run has
+// committed, so the surviving run is always past its commits — and therefore has
+// its records flipped synced — when the sibling's failure cancels the carve.
+type reapCtxSink struct {
+	*fakeSink
+	failFrom  int64
+	committed chan struct{}
+	failed    chan struct{}
+	onceC     sync.Once
+	onceF     sync.Once
+
+	mu        sync.Mutex
+	reaps     int
+	cancelled bool
+	stalled   bool
+}
+
+func (r *reapCtxSink) CommitBlock(ctx context.Context, chunks []CarveChunk) error {
+	if len(chunks) > 0 && chunks[0].FileOffset >= r.failFrom {
+		select {
+		case <-r.committed:
+		case <-time.After(5 * time.Second):
+			r.mu.Lock()
+			r.stalled = true
+			r.mu.Unlock()
+			return errors.New("the surviving run never committed")
+		}
+		r.onceF.Do(func() { close(r.failed) })
+		return errors.New("boom")
+	}
+	err := r.fakeSink.CommitBlock(ctx, chunks)
+	if err == nil {
+		r.onceC.Do(func() { close(r.committed) })
+	}
+	return err
+}
+
+func (r *reapCtxSink) ReapSupersededManifest(ctx context.Context, _ FileID, _, _ int64, _ map[int64]struct{}) error {
+	select {
+	case <-r.failed:
+	case <-time.After(5 * time.Second):
+		r.mu.Lock()
+		r.stalled = true
+		r.mu.Unlock()
+		return nil
+	}
+	// The sibling has failed. A reap bounded by the carve's own context is
+	// cancelled from here on; one bounded by the caller's context is not.
+	select {
+	case <-ctx.Done():
+		r.mu.Lock()
+		r.cancelled = true
+		r.mu.Unlock()
+		return ctx.Err()
+	case <-time.After(500 * time.Millisecond):
+	}
+	r.mu.Lock()
+	r.reaps++
+	r.mu.Unlock()
+	return nil
+}
+
+// TestCarveReapSurvivesSiblingFailure pins that a run which finished its commits
+// still reaps the manifest rows it superseded when another run fails.
+//
+// The reap is the last step of a run, after every one of its records is
+// committed and flipped synced. Nothing retries it and a later pass will not
+// revisit those records, so a reap skipped here leaves superseded rows alive
+// forever — and overlap resolution is greatest-start, so a stale row starting
+// later than a fresh one wins and serves old bytes on a cold read.
+func TestCarveReapSurvivesSiblingFailure(t *testing.T) {
+	const (
+		runSize  = 4 << 10
+		failFrom = 64 << 10
+	)
+	s, dd, base, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarveUploadConcurrency: 4})
+	sink := &reapCtxSink{
+		fakeSink:  base,
+		failFrom:  failFrom,
+		committed: make(chan struct{}),
+		failed:    make(chan struct{}),
+	}
+	s.SetCarveTargets(dd, sink)
+	ctx := context.Background()
+
+	for _, off := range []int64{0, failFrom} {
+		if err := s.WriteAt(ctx, "f", off, randBytes(runSize, off)); err != nil {
+			t.Fatalf("write %d: %v", off, err)
+		}
+	}
+	if _, err := s.Carve(ctx, CarveOptions{Force: true}); err == nil {
+		t.Fatal("Carve succeeded, want the seeded commit failure")
+	}
+
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if sink.stalled {
+		t.Fatal("the runs did not interleave as set up, so this test proves nothing")
+	}
+	if sink.cancelled {
+		t.Fatal("the surviving run's reap was cancelled by the sibling's failure, stranding its superseded rows")
+	}
+	if sink.reaps != 1 {
+		t.Fatalf("reaps=%d, want 1 from the surviving run", sink.reaps)
+	}
+}

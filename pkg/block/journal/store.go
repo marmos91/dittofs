@@ -69,7 +69,10 @@ type Config struct {
 	// pass — every dirty run it carves shares the one window, not one window
 	// per run. Packing stays sequential; only the block commits overlap, so a
 	// single large file's carve is no longer one PutBlock at a time. Peak carve
-	// RAM scales with this window (window x CarveBlockSize), so keep it modest.
+	// RAM per file is window x (CarveBlockSize + one overhang chunk) for the
+	// block arenas, plus one chunker scratch buffer of chunker.MaxChunkSize for
+	// each run carving concurrently — the window bounds the arenas, not the
+	// scratch buffers — so keep it modest.
 	// Zero falls back to the default via withDefaults.
 	//
 	// ponytail: with runs concurrent, a file at the limit can leave each run

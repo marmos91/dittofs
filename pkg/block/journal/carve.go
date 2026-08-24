@@ -244,9 +244,16 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 		return nil
 	}
 
-	// Runs are disjoint by construction (extendRunToRowEnd stops at any non-warm
-	// interval), so they share no intervals, no records to pack and no result.
-	// Each keeps its own dispatcher and flipIdx: the flip chain stays per-run.
+	// Runs cover disjoint ranges (extendRunToRowEnd stops at any non-warm
+	// interval), so no live interval, packing state or result is shared: each run
+	// keeps its own dispatcher, flipIdx and CarveResult.
+	//
+	// Two runs can still reference one physical record, because an overwrite
+	// splits a record into fragments that a later carve can leave on either side
+	// of a warm gap. That stays safe because flipUpTo marks a fragment synced,
+	// checks whether the record has any dirty fragment left, and flips the
+	// on-disk bit all under sh.mu, so whichever run finishes last is the one that
+	// observes zero remaining and flips.
 	//
 	// One semaphore for the whole file: it bounds in-flight block arenas across
 	// all of this file's runs, not just the one currently carving, so that term
@@ -276,7 +283,7 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 			limit = runs[i+1][0].fileOff
 		}
 		g.Go(func() error {
-			r, err := s.carveRun(gctx, sh, id, run, limit, sem)
+			r, err := s.carveRun(gctx, ctx, sh, id, run, limit, sem)
 			results[i] = r
 			return err
 		})
@@ -313,7 +320,17 @@ func splitRuns(snap []interval) [][]interval {
 // and flips the run's records to synced as the durable frontier advances.
 // limit is the file offset the next run starts at (MaxInt64 for the last run):
 // the run may not extend past it.
-func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interval, limit int64, sem chan struct{}) (CarveResult, error) {
+// ctx bounds the carve work and is cancelled as soon as any sibling run fails,
+// which stops uploads that would be thrown away. reapCtx is the caller's own
+// context and bounds only the end-of-run reap: by the time the reap runs this
+// run's records are committed and already flipped synced, so a sibling's failure
+// must not strand the cleanup of rows nothing will revisit.
+//
+// ponytail: a caller cancelling between the flip and the reap still strands
+// those rows, since nothing retries a reap and the records are no longer dirty;
+// persist a pending-reap intent, or defer the flip until the reap lands, if that
+// window ever shows up in the field.
+func (s *Store) carveRun(ctx, reapCtx context.Context, sh *shard, id FileID, run []interval, limit int64, sem chan struct{}) (CarveResult, error) {
 	var res CarveResult
 	run, err := s.extendRunToRowEnd(ctx, sh, id, run, limit)
 	if err != nil {
@@ -509,7 +526,7 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 	// batch would delete a sibling batch's fresh rows. Optional: sinks without a
 	// metadata store (test fakes) skip it.
 	if r, ok := s.sink.(supersededReaper); ok {
-		if err := r.ReapSupersededManifest(ctx, id, run[0].fileOff, run[len(run)-1].end(), newOffsets); err != nil {
+		if err := r.ReapSupersededManifest(reapCtx, id, run[0].fileOff, run[len(run)-1].end(), newOffsets); err != nil {
 			return res, err
 		}
 	}
