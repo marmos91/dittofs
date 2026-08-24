@@ -2124,7 +2124,6 @@ func (h *Handler) breakParentDirLeasesForContentChangeOn(ctx *SMBHandlerContext,
 	logger.Debug("SET_INFO: parent directory lease break-to-None recorded", "path", path, "parent", parentDbg)
 	dispatch := h.LeaseManager.PrepareParentDirLeaseBreakOnContentChange(
 		parentLockHandle, shareName, "", excludeParentKey, hasExcludeKey)
-	dispatch = func(send func()) func() { return func() { time.Sleep(80 * time.Millisecond); send() } }(dispatch) // TEMP REPRO WIDENER
 
 	// Defer dispatch until after the triggering request's response is on the
 	// wire when an SMB ctx is available. Mirrors Samba `send_break_to_none`
