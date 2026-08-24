@@ -1,0 +1,22 @@
+2026-08-24T17:39:34Z | run: dittofs-s3-writeback-nfs3__rand-write-4k__large__nfs3__warm unsynced=189091840
+2026-08-24T17:39:51Z | run: dittofs-s3-writeback-nfs3__rand-write-4k__large__nfs3__warm unsynced=217432064
+2026-08-24T17:40:08Z | run: dittofs-s3-writeback-nfs3__rand-write-4k__large__nfs3__warm unsynced=227819520
+2026-08-24T17:40:29Z | run: dittofs-s3-writeback-nfs3__rand-write-4k__large__nfs3__warm unsynced=121626624
+2026-08-24T17:40:46Z | run: dittofs-s3-writeback-nfs3__rand-write-4k__large__nfs3__warm unsynced=121626624
+2026-08-24T17:41:02Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
+2026-08-24T17:41:19Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
+2026-08-24T17:41:36Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
+2026-08-24T17:41:54Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
+2026-08-24T17:42:10Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
+2026-08-24T17:42:27Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
+2026-08-24T17:42:43Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
+2026-08-24T17:43:00Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
+2026-08-24T17:43:18Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
+2026-08-24T17:43:35Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
+2026-08-24T17:43:51Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
+2026-08-24T17:44:08Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
+2026-08-24T17:44:24Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
+2026-08-24T17:44:41Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
+2026-08-24T17:44:58Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
+2026-08-24T17:45:15Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
+2026-08-24T17:45:31Z | drain round 0: unsynced=115MiB pending_uploads=0 unsynced=121626624
