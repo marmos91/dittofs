@@ -302,13 +302,17 @@ func ProcessSingleRequest(
 	// Track session lifecycle for connection cleanup
 	TrackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status, result.IsBinding, connInfo.SessionTracker)
 
-	// Send response and run after-hooks with the response bytes. If the
-	// write fails, return early — any registered PostSend hook is
-	// intentionally dropped because the connection is likely dead and the
-	// hook would just log spurious SendMessage errors on a torn-down
-	// session. (Same contract as the compound dispatch path.)
-	if err := SendResponseWithHooks(reqHeader, handlerCtx, result, connInfo); err != nil {
-		return err
+	// Send the response and run the after-hooks with the response bytes. A
+	// PostSend hook still runs when the write fails: the hook is deferred only
+	// to order its delivery after this response, and a response that never
+	// reached the wire imposes no such ordering. Dropping it would strand
+	// whatever the handler already committed to before replying — a recorded
+	// lease break whose notification never reaches its (possibly unrelated,
+	// still-live) holder. (Same contract as the compound dispatch path.)
+	sendErr := SendResponseWithHooks(reqHeader, handlerCtx, result, connInfo)
+	if sendErr != nil {
+		runPostSend(handlerCtx)
+		return sendErr
 	}
 
 	// Release any parked-CREATE resume goroutine now that the interim
@@ -335,9 +339,7 @@ func ProcessSingleRequest(
 	// now, with writeMu released, so the hook's own SendMessage re-acquires
 	// the lock cleanly and the cleanup notification is unambiguously ordered
 	// after the CLOSE response.
-	if handlerCtx != nil && handlerCtx.PostSend != nil {
-		handlerCtx.PostSend()
-	}
+	runPostSend(handlerCtx)
 
 	// NOTE: We intentionally do NOT delete the session here. The session is
 	// kept alive with LoggedOff=true so that in-flight request goroutines
@@ -1441,4 +1443,11 @@ var errorBody = []byte{9, 0, 0, 0, 0, 0, 0, 0, 0}
 // must only read or copy the returned bytes, never mutate them in place.
 func MakeErrorBody() []byte {
 	return errorBody
+}
+
+// runPostSend invokes ctx's deferred post-send hook, if it registered one.
+func runPostSend(ctx *handlers.SMBHandlerContext) {
+	if ctx != nil && ctx.PostSend != nil {
+		ctx.PostSend()
+	}
 }

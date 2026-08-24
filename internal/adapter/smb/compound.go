@@ -284,14 +284,15 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	state.releaseStartedGates(connInfo.Handler.PendingCreateRegistry)
 
 	// Per MS-SMB2 3.3.4.1: run deferred post-send hooks (e.g.
-	// STATUS_NOTIFY_CLEANUP after CLOSE) only after the compound response
-	// has been written. Skip them if the compound write failed — the
-	// connection is likely dead and the hooks would just log spurious
-	// SendMessage errors on a torn-down session.
-	if sendErr == nil {
-		for _, hook := range state.postSendHooks {
-			hook()
-		}
+	// STATUS_NOTIFY_CLEANUP after CLOSE) after the compound response has been
+	// written. They run even when the write failed: a hook is deferred only to
+	// order its delivery after this response, and a response that never reached
+	// the wire imposes no such ordering. Dropping it would strand whatever a
+	// handler already committed to before replying — a recorded lease break
+	// whose notification never reaches its (possibly unrelated, still-live)
+	// holder.
+	for _, hook := range state.postSendHooks {
+		hook()
 	}
 }
 
@@ -1120,9 +1121,7 @@ func completeCompoundAfterAsyncCreate(
 	// into this completion frame, only after it is on the wire.
 	state.releaseStartedGates(connInfo.Handler.PendingCreateRegistry)
 
-	if sendErr == nil {
-		for _, hook := range state.postSendHooks {
-			hook()
-		}
+	for _, hook := range state.postSendHooks {
+		hook()
 	}
 }
