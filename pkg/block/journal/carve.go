@@ -274,16 +274,18 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 	g.SetLimit(s.cfg.CarveUploadConcurrency)
 
 	runs := splitRuns(snap)
-	results := make([]CarveResult, len(runs))
+	rs := make([]*runState, len(runs))
 	for i, run := range runs {
-		// Bound each run by the next run's start, known here because every run is
-		// materialised before any is dispatched.
-		limit := int64(math.MaxInt64)
-		if i+1 < len(runs) {
-			limit = runs[i+1][0].fileOff
-		}
+		rs[i] = &runState{ivs: run, newOffsets: map[int64]struct{}{}}
+	}
+	if err := s.resolveRunExtents(ctx, sh, id, rs); err != nil {
+		return err
+	}
+
+	results := make([]CarveResult, len(runs))
+	for i := range rs {
 		g.Go(func() error {
-			r, err := s.carveRun(gctx, ctx, sh, id, run, limit, sem)
+			r, err := s.carveRun(gctx, ctx, sh, id, rs[i].ivs, sem)
 			results[i] = r
 			return err
 		})
@@ -317,9 +319,8 @@ func splitRuns(snap []interval) [][]interval {
 
 // carveRun streams one contiguous dirty run through FastCDC, dedups each chunk,
 // packs novel chunks into blocks (flushed at CarveBlockSize and at the run's end),
-// and flips the run's records to synced as the durable frontier advances.
-// limit is the file offset the next run starts at (MaxInt64 for the last run):
-// the run may not extend past it.
+// and flips the run's records to synced as the durable frontier advances. run has
+// already been widened to its manifest row end by resolveRunExtents.
 // ctx bounds the carve work and is cancelled as soon as any sibling run fails,
 // which stops uploads that would be thrown away. reapCtx is the caller's own
 // context and bounds only the end-of-run reap: by the time the reap runs this
@@ -330,13 +331,8 @@ func splitRuns(snap []interval) [][]interval {
 // those rows, since nothing retries a reap and the records are no longer dirty;
 // persist a pending-reap intent, or defer the flip until the reap lands, if that
 // window ever shows up in the field.
-func (s *Store) carveRun(ctx, reapCtx context.Context, sh *shard, id FileID, run []interval, limit int64, sem chan struct{}) (CarveResult, error) {
+func (s *Store) carveRun(ctx, reapCtx context.Context, sh *shard, id FileID, run []interval, sem chan struct{}) (CarveResult, error) {
 	var res CarveResult
-	run, err := s.extendRunToRowEnd(ctx, sh, id, run, limit)
-	if err != nil {
-		return res, err
-	}
-
 	c := chunker.NewChunkerWithParams(s.cfg.ChunkParams)
 	rr := &runReader{s: s, sh: sh, id: id, ivs: run}
 
@@ -569,7 +565,12 @@ func (s *Store) extendRunToRowEnd(ctx context.Context, sh *shard, id FileID, run
 		return nil, err
 	}
 	if rowEnd > limit {
-		// The row reaches past a later run: leave this one as snapshotted rather
+		// warmTail already refuses any tail that would cross a non-warm interval,
+		// and the interval at limit is still dirty from the original snapshot for
+		// as long as extent resolution finishes before any run flips a record — so
+		// this check changes nothing while that holds. It stays so that a future
+		// change reintroducing a flip during extent resolution cannot silently
+		// extend a run past the next one; the run is left as snapshotted rather
 		// than half extended, which is what a serial carve does when it finds that
 		// range still dirty.
 		return run, nil
