@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/dfsbench/exec"
+	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
 // benchDataMount is the isolated data volume `dfsbench setup --data-volume-gb`
@@ -578,7 +579,7 @@ const dittofsEvictSegmentBytes int64 = 256 << 20
 // segment of its own. Unsynced bytes are spread over an unknown number of
 // records, and only that count decides how many segments they pin, so the drain
 // has to assume the finest spread it can plausibly see — the carver's minimum
-// chunk (chunker.MinChunkSize).
+// chunk.
 //
 // ponytail: an estimate standing in for a count the store already tracks, and a
 // deliberately pessimistic one — several stragglers sharing a segment (one file's
@@ -588,7 +589,7 @@ const dittofsEvictSegmentBytes int64 = 256 << 20
 // warm number labelled cold. Report unsynced records (or pinned segments) from
 // `dfsctl store block stats` and both the estimate and its pessimism collapse
 // into reading that field.
-const dittofsDrainStragglerBytes int64 = 1 << 20
+const dittofsDrainStragglerBytes int64 = chunker.MinChunkSize
 
 // dittofsDrainResidueOK reports whether a drain residue is small enough to leave
 // behind. Its size alone does not answer that: eviction frees segments, not
@@ -633,12 +634,16 @@ func dittofsDrainResidueErr(st dittofsBlockTotals, rounds int) error {
 // next batch of CAS chunks for the following drain to upload.
 func dittofsDrainUntilSynced(ctx context.Context) error {
 	const maxRounds = 60
-	// Rounds an intolerable residue may sit unchanged before the loop gives up.
-	// Each round costs a full drain-uploads timeout, so riding out every round on
-	// a residue that is not moving turns a failed barrier into a many-hour one.
-	const maxFlatRounds = 3
-	stable, flat := 0, 0
-	prevUnsynced := int64(-1)
+	// Consecutive rounds an intolerable residue may fail to reach a new low before
+	// the loop gives up. Each round costs a full drain-uploads timeout, so riding
+	// out every round on a residue that is going nowhere turns a failed barrier
+	// into a many-hour one. Progress is measured against the lowest residue seen
+	// rather than against the previous round, so neither a byte of jitter nor a
+	// transient rise while the store digests reads as a stall — only a run of
+	// rounds that all fail to beat the best does.
+	const maxStalledRounds = 3
+	stalled, stable := 0, 0
+	bestUnsynced := int64(-1)
 	for i := 0; i < maxRounds; i++ {
 		// Bound each drain explicitly (issue #1668): a cold-evict drain of a large
 		// working set can exceed the client's 6m default, and the failure surfaces
@@ -655,19 +660,21 @@ func dittofsDrainUntilSynced(ctx context.Context) error {
 		}
 		switch {
 		case dittofsDrainResidueOK(st.UnsyncedBytes, st.LocalDiskUsed):
-			flat = 0
+			stalled = 0
 			if stable++; stable >= 2 {
 				return nil
 			}
-		case prevUnsynced >= 0 && st.UnsyncedBytes >= prevUnsynced:
+		case bestUnsynced >= 0 && st.UnsyncedBytes >= bestUnsynced:
 			stable = 0
-			if flat++; flat >= maxFlatRounds {
+			if stalled++; stalled >= maxStalledRounds {
 				return dittofsDrainResidueErr(st, i+1)
 			}
 		default:
-			stable, flat = 0, 0
+			stable, stalled = 0, 0
 		}
-		prevUnsynced = st.UnsyncedBytes
+		if bestUnsynced < 0 || st.UnsyncedBytes < bestUnsynced {
+			bestUnsynced = st.UnsyncedBytes
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
