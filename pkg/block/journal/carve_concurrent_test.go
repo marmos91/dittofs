@@ -188,6 +188,9 @@ type extendingSink struct {
 	gateOff int64
 	rowEnd  int64
 	gated   int
+	// failFirstReap, when set, is returned by the first reap only, so a test can
+	// see whether one run's reap failure suppresses the runs after it.
+	failFirstReap error
 }
 
 func (e *extendingSink) ManifestRowEndAfter(_ context.Context, _ FileID, off int64) (int64, error) {
@@ -203,7 +206,11 @@ func (e *extendingSink) ManifestRowEndAfter(_ context.Context, _ FileID, off int
 func (e *extendingSink) ReapSupersededManifest(_ context.Context, _ FileID, runStart, runEnd int64, _ map[int64]struct{}) error {
 	e.mu.Lock()
 	e.reaps = append(e.reaps, [2]int64{runStart, runEnd})
+	first := len(e.reaps) == 1
 	e.mu.Unlock()
+	if first {
+		return e.failFirstReap
+	}
 	return nil
 }
 
@@ -295,7 +302,11 @@ func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 //
 // The geometry gives the file many blocks (small chunks, small CarveBlockSize)
 // spread over several dirty runs, so the packer crosses run boundaries mid-block
-// while the window still bounds what is in flight.
+// while the window still bounds what is in flight. That crossing is asserted
+// rather than assumed: a block whose chunks fall in two runs is what a per-run
+// flush could never produce, so the assertion is what keeps a later ChunkParams
+// or CarveBlockSize change from silently stopping the multi-run path while the
+// test stays green.
 //
 // The commit hook blocks until more than window commits are in flight rather
 // than sleeping a fixed time, so a carve that breaches the cap releases
@@ -324,9 +335,19 @@ func TestCarveBlocksCommitConcurrently(t *testing.T) {
 		gaveUp   bool
 		exceeded = make(chan struct{})
 		once     sync.Once
+		spanning int // blocks whose chunks fall in more than one run
 	)
-	sink.onCommit = func(_ []CarveChunk) {
+	sink.onCommit = func(chunks []CarveChunk) {
+		span := false
+		for _, c := range chunks {
+			if c.FileOffset/gap != chunks[0].FileOffset/gap {
+				span = true
+			}
+		}
 		mu.Lock()
+		if span {
+			spanning++
+		}
 		cur++
 		commits++
 		if cur > max {
@@ -371,6 +392,9 @@ func TestCarveBlocksCommitConcurrently(t *testing.T) {
 	// More blocks than the window is what makes the cap assertion able to fail.
 	if commits <= window {
 		t.Fatalf("%d commits for a window of %d: too few blocks for the cap assertion to fail", commits, window)
+	}
+	if spanning == 0 {
+		t.Fatalf("no block carried chunks from more than one run: blocks are still cut at run boundaries")
 	}
 	if max < 2 {
 		t.Fatalf("max blocks committing at once = %d, want > 1: the commits did not overlap", max)

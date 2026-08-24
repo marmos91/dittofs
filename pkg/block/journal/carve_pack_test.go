@@ -89,32 +89,155 @@ func TestCarvePackSpansRunsFlipsEveryContributingRun(t *testing.T) {
 	}
 }
 
-// TestCarvePackFlipPlanArithmetic pins the per-run watermark derivation on
-// hand-built runState arrays, with no store and no sink: runs before the last
-// flip to their own end, the last flips only to the offset actually packed.
-func TestCarvePackFlipPlanArithmetic(t *testing.T) {
-	mk := func(off, length int64) *runState {
-		return &runState{ivs: []interval{{fileOff: off, length: length}}}
+// writeRunAt lays down a run of n adjacent 4 KiB writes starting at off. A run
+// needs many intervals because flipUpTo advances at interval granularity: one
+// large write would be a single interval that no mid-run watermark can flip.
+func writeRunAt(t *testing.T, s *Store, off int64, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		if err := s.WriteAt(context.Background(), "f", off+int64(i)*(4<<10), randBytes(4<<10, off+int64(i))); err != nil {
+			t.Fatalf("WriteAt %d: %v", off+int64(i)*(4<<10), err)
+		}
 	}
-	rs := []*runState{mk(0, 4096), mk(8192, 4096), mk(16384, 4096)}
-	plan := flipPlan{first: 0, last: 2, lastOff: 18000}
+}
 
-	var got []int64
-	for i := plan.first; i <= plan.last; i++ {
-		wm := rs[i].end()
-		if i == plan.last {
-			wm = plan.lastOff
-		}
-		got = append(got, wm)
+// TestCarvePackFlipPlanWatermarks pins the per-run watermark derivation through
+// the real carve path: a block that covers all of run 0 and only a prefix of
+// run 1 must flip run 0 to its own end and run 1 only as far as it actually
+// packed. The block after it fails, so nothing else can flip and the two
+// watermarks are readable straight off the on-disk synced bits.
+//
+// This is what fails if commitAndFlip stops distinguishing plan.last: flipping
+// every run to its own end would mark run 1's uncommitted tail synced, which is
+// the silent-zeros class — a record recovery replays as durable whose bytes
+// never reached the remote.
+func TestCarvePackFlipPlanWatermarks(t *testing.T) {
+	const (
+		run0Recs = 4         // [0, 16Ki)
+		run1Off  = 128 << 10 // a hole keeps it a separate run
+		run1Recs = 16        // [128Ki, 192Ki)
+		run1End  = run1Off + run1Recs*(4<<10)
+	)
+	s, _, sink, _ := carveStore(t, Config{
+		CarveBlockSize:         32 << 10,
+		CarveUploadConcurrency: 1,
+		ChunkParams:            chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
+	})
+	writeRunAt(t, s, 0, run0Recs)
+	writeRunAt(t, s, run1Off, run1Recs)
+
+	// Let the first block commit and fail every one after it, so the first block
+	// is the only one that ever flips.
+	sink.okCommits = 1
+	sink.failErr = errors.New("second block fails")
+
+	if _, err := s.Carve(context.Background(), CarveOptions{Force: true}); err == nil {
+		t.Fatal("Carve: want the seeded failure to surface, got nil")
 	}
-	want := []int64{4096, 12288, 18000}
-	if len(got) != len(want) {
-		t.Fatalf("watermarks=%v want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("watermark[%d]=%d want %d", i, got[i], want[i])
+
+	// Run 0 is not the plan's last run, so it flips to its own end: every record.
+	for i := 0; i < run0Recs; i++ {
+		off := int64(i) * (4 << 10)
+		if f := recRawFlags(t, s, "f", off); f&flagSynced == 0 {
+			t.Fatalf("run 0 record at %d not flipped: the block did not cover the run to its end (flags=%#x)", off, f)
 		}
+	}
+	// The block reached into run 1, so its head flipped. Without this the test
+	// would pass on a packer that still cut blocks at run boundaries.
+	if f := recRawFlags(t, s, "f", run1Off); f&flagSynced == 0 {
+		t.Fatalf("run 1 head at %d not flipped: the block never spanned the run boundary (flags=%#x)", run1Off, f)
+	}
+	// Run 1 is the plan's last run, so it flips only to lastOff — its tail, which
+	// only the failed block carried, must still be dirty.
+	if f := recRawFlags(t, s, "f", run1End-(4<<10)); f&flagSynced != 0 {
+		t.Fatalf("run 1 tail flipped synced though its block never committed: flags=%#x", f)
+	}
+	if s.UnsyncedBytes() == 0 {
+		t.Fatal("post-carve unsynced=0: run 1's uncommitted tail must stay dirty")
+	}
+}
+
+// TestCarvePackSpanningBlockFailureLeavesEarlierRunUnreaped pins the failure
+// shape that only exists now that blocks span runs: a block carrying the tail of
+// run 0 and the head of run 1 fails, so run 0 never completes and must NOT be
+// reaped — even though an earlier block committed part of it. Reaping it would
+// delete the rows its committed prefix superseded while the run's own fresh
+// tiling is still missing the range the failed block held.
+func TestCarvePackSpanningBlockFailureLeavesEarlierRunUnreaped(t *testing.T) {
+	const (
+		run0Recs = 12        // [0, 48Ki): more than one 32 KiB block
+		run1Off  = 128 << 10 // a hole keeps it a separate run
+		run1Recs = 4         // [128Ki, 144Ki)
+		gap      = run1Off
+	)
+	s, dd, base, _ := carveStore(t, Config{
+		CarveBlockSize:         32 << 10,
+		CarveUploadConcurrency: 1,
+		ChunkParams:            chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
+	})
+	sink := &extendingSink{fakeSink: base}
+	s.SetCarveTargets(dd, sink)
+
+	var spanned bool
+	base.onCommit = func(chunks []CarveChunk) {
+		for _, c := range chunks {
+			if c.FileOffset/gap != chunks[0].FileOffset/gap {
+				spanned = true
+			}
+		}
+	}
+	writeRunAt(t, s, 0, run0Recs)
+	writeRunAt(t, s, run1Off, run1Recs)
+
+	// The first block (run 0's prefix) commits; the one that spans the boundary
+	// fails.
+	base.okCommits = 1
+	base.failErr = errors.New("spanning block fails")
+
+	if _, err := s.Carve(context.Background(), CarveOptions{Force: true}); err == nil {
+		t.Fatal("Carve: want the seeded failure to surface, got nil")
+	}
+	if !spanned {
+		t.Fatal("no block carried chunks from both runs: the geometry does not build the shape under test")
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.reaps) != 0 {
+		t.Fatalf("reaps=%v, want none: neither run completed, so neither may be reaped", sink.reaps)
+	}
+}
+
+// TestCarvePackReapFailureDoesNotSuppressLaterRuns pins that one run's reap
+// failing still leaves every later complete run reaped. Those runs have already
+// flipped synced, so no later pass revisits them: a reap skipped here never
+// happens at all. The first error still surfaces.
+func TestCarvePackReapFailureDoesNotSuppressLaterRuns(t *testing.T) {
+	const (
+		runSize = 4 << 10
+		gap     = 64 << 10
+		runs    = 3
+	)
+	s, dd, base, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarveUploadConcurrency: 4})
+	boom := errors.New("reap failed")
+	sink := &extendingSink{fakeSink: base, failFirstReap: boom}
+	s.SetCarveTargets(dd, sink)
+
+	ctx := context.Background()
+	for i := 0; i < runs; i++ {
+		if err := s.WriteAt(ctx, "f", int64(i)*gap, randBytes(runSize, int64(i))); err != nil {
+			t.Fatalf("WriteAt %d: %v", i, err)
+		}
+	}
+	if _, err := s.Carve(ctx, CarveOptions{Force: true}); !errors.Is(err, boom) {
+		t.Fatalf("Carve returned %v, want the reap failure", err)
+	}
+	if s.UnsyncedBytes() != 0 {
+		t.Fatalf("post-carve unsynced=%d want 0: every run committed", s.UnsyncedBytes())
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.reaps) != runs {
+		t.Fatalf("reaps=%d want %d: a failed reap suppressed the runs after it", len(sink.reaps), runs)
 	}
 }
 
