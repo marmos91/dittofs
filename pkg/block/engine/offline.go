@@ -63,23 +63,34 @@ func (bs *Store) OfflineReadiness() OfflineReadiness {
 // would say that about exactly the shares whose data is most likely to be
 // remote-only.
 func offlineReadinessOf(localTier any, hasRemote bool) OfflineReadiness {
-	// A share with no remote has nothing to be cut off from: every byte it
-	// holds is local by construction.
-	if !hasRemote {
-		return OfflineReadiness{Known: true}
-	}
-
 	reporter, ok := localTier.(coldRangeReporter)
 	if !ok {
+		// A tier that cannot report residency and has no remote also has
+		// nothing to evict to, so everything it holds is local. With a remote
+		// it could hold evicted ranges it cannot tell us about.
+		if !hasRemote {
+			return OfflineReadiness{Known: true}
+		}
 		return OfflineReadiness{Reason: "local tier does not track remote-only ranges"}
 	}
+
 	// An unseeded tier holds no interval for ranges that live only on the
-	// remote, so its index would report them as absent rather than cold and
-	// the count would come back zero on the worst case it exists to catch.
-	if !reporter.ColdSeeded() {
+	// remote, so its index would report them as absent rather than cold and the
+	// count would come back zero on the worst case this exists to catch.
+	// Seeding only ever runs for a remote-backed share, so an unseeded tier is
+	// a blind spot only when there is a remote it might not have caught up with.
+	if hasRemote && !reporter.ColdSeeded() {
 		return OfflineReadiness{Reason: "local tier has not been seeded from the manifest"}
 	}
 
+	// Ask the tier even with no remote configured. A share can hold cold ranges
+	// and have no remote at once — unbinding a remote from a share that had
+	// already evicted leaves the cold intervals in place, and the journal
+	// replays them from its cold log on the next open. Those ranges are worse
+	// than unsafe: reads reconcile on the cold flag whether or not a remote
+	// exists, so there is nothing to fetch them from and they never serve. A
+	// non-zero count is the honest report; treating "no remote" as "all local"
+	// would call that share provably offline-safe.
 	bytes, ranges := reporter.ColdExtents()
 	return OfflineReadiness{RemoteOnlyBytes: bytes, RemoteOnlyRanges: ranges, Known: true}
 }

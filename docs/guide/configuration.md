@@ -680,6 +680,14 @@ whose data is most likely to be remote-only:
 An unknown share reports `dittofs_offline_safe = 0` but publishes no byte
 counts, so a dashboard cannot mistake it for a clean fully-local share.
 
+A share with **no remote at all** is normally safe by construction — nothing
+evicts it, so everything it holds is local. The exception is a share whose
+remote was unbound after it had already evicted: the evicted ranges stay
+recorded in the local tier and are replayed from its cold log on the next
+open, but there is no longer anything to fetch them from, so they never
+serve. Those shares report a non-zero remote-only figure rather than being
+waved through as local-only.
+
 The figure is **bytes, not blocks**. The local tier tracks byte ranges, which
 split and merge independently of manifest chunk rows; a block count would
 need a metadata walk to produce and would not answer "how much would break

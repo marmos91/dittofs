@@ -48,11 +48,18 @@ func TestOfflineReadinessOf_Gating(t *testing.T) {
 		wantKnown bool
 		wantBytes int64
 	}{
-		{"no remote is local by construction", &fakeColdReporter{}, false, true, 0},
+		{"no remote, tier confirms nothing evicted", &fakeColdReporter{}, false, true, 0},
 		{"tier that cannot report residency", struct{}{}, true, false, 0},
+		{"no remote and no residency tracking", struct{}{}, false, true, 0},
 		{"unseeded tier cannot see remote-only ranges", &fakeColdReporter{seeded: false, bytes: 0}, true, false, 0},
 		{"seeded and fully local", &fakeColdReporter{seeded: true}, true, true, 0},
 		{"seeded with evicted ranges", &fakeColdReporter{seeded: true, bytes: 4096, extents: 2}, true, true, 4096},
+		// Unbinding a remote from a share that had already evicted leaves the
+		// cold intervals behind, and the journal replays them from its cold log
+		// on the next open. Reads reconcile on the cold flag whether or not a
+		// remote exists, so those ranges never serve — reporting this share
+		// safe would be the worst answer the measurement can give.
+		{"no remote but cold ranges remain", &fakeColdReporter{seeded: false, bytes: 8192, extents: 3}, false, true, 8192},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -68,6 +75,9 @@ func TestOfflineReadinessOf_Gating(t *testing.T) {
 			}
 			if got.Known && got.Reason != "" {
 				t.Errorf("answered but still gave a reason: %q", got.Reason)
+			}
+			if got.Safe() && got.RemoteOnlyBytes != 0 {
+				t.Errorf("reported safe with %d remote-only bytes", got.RemoteOnlyBytes)
 			}
 		})
 	}
