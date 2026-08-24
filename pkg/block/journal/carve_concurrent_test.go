@@ -217,9 +217,11 @@ func (e *extendingSink) ReapSupersededManifest(_ context.Context, _ FileID, runS
 // It does not, on its own, pin the extension refusal in extendRunToRowEnd —
 // warmTail's own all-or-nothing bail on a non-warm interval produces the same
 // reap ranges whether or not that refusal exists, since nothing flips a record
-// synced while extents are being resolved. See TestWarmTailStopsAtNonWarmInterval
-// for the invariant that actually protects a future change reintroducing a flip
-// mid-resolution.
+// synced while extents are being resolved. TestWarmTailStopsAtNonWarmInterval
+// pins that warmTail invariant, which is what makes the refusal redundant
+// today; the refusal itself is deliberately left unpinned by any test, since
+// it is unreachable under the current barrier and only matters again if a
+// future change reintroduces a flip during extent resolution.
 func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 	const rec = 8 << 10
 	s, dd, base, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarveUploadConcurrency: 4})
@@ -268,9 +270,9 @@ func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 	sink.mu.Unlock()
 	// extendRunToRowEnd short-circuits on warmAt before the sink is consulted, and
 	// the gate is keyed on an exact offset, so drift in either could leave the
-	// ordering unexercised while every assertion below still passes.
+	// refusal branch unreached while every assertion below still passes.
 	if gated == 0 {
-		t.Fatalf("the gated lookup was never reached, so the ordering was never exercised and this test proves nothing")
+		t.Fatalf("the gated lookup was never reached, so the refusal branch was never exercised and this test proves nothing")
 	}
 	if len(reaps) != len(dirty) {
 		t.Fatalf("got %d reap ranges, want %d: %v", len(reaps), len(dirty), reaps)

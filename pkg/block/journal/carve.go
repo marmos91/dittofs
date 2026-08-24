@@ -268,15 +268,16 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 	// that headroom ever shows up in a memory profile.
 	sem := make(chan struct{}, s.cfg.CarveUploadConcurrency)
 	g, gctx := errgroup.WithContext(ctx)
-	// ponytail: one knob bounds both goroutines and the per-run
-	// ManifestRowEndAfter transactions; give runs their own limit only if
-	// profiling shows upload and metadata fan-out need to diverge.
+	// ponytail: reuses the same CarveUploadConcurrency knob that bounds
+	// resolveRunExtents's own ManifestRowEndAfter fan-out below; give the two
+	// phases separate limits only if profiling shows upload and metadata
+	// fan-out need to diverge.
 	g.SetLimit(s.cfg.CarveUploadConcurrency)
 
 	runs := splitRuns(snap)
 	rs := make([]*runState, len(runs))
 	for i, run := range runs {
-		rs[i] = &runState{ivs: run, newOffsets: map[int64]struct{}{}}
+		rs[i] = &runState{ivs: run}
 	}
 	if err := s.resolveRunExtents(ctx, sh, id, rs); err != nil {
 		return err
@@ -540,13 +541,16 @@ func (s *Store) carveRun(ctx, reapCtx context.Context, sh *shard, id FileID, run
 // still ends inside the row.
 //
 // A row reaching past limit, the offset the next run starts at, is refused
-// outright. Runs carve concurrently and flipUpTo marks intervals synced in
-// memory as a run's watermark advances, so a sibling run's already-flipped head
-// is indistinguishable here from pre-existing warm data and warmTail alone would
-// wave such a row through. Refusing on the offset reproduces what a serial carve
-// decides, where that range is still visibly dirty. It has to be a refusal
-// rather than a truncation to limit: the run-end reap deletes whole rows that
-// start inside the run, so tiling only part of a row still drops its tail.
+// outright. Every run's extents are resolved before any run carves or flips a
+// record synced, so the interval at limit is still dirty from the original
+// snapshot and warmTail's own bail on a non-warm interval already stops the
+// extension there — this refusal is redundant today. It stays as insurance
+// against a future change that reintroduces a flip during extent resolution,
+// which would make a sibling's already-flipped head indistinguishable from
+// pre-existing warm data and let warmTail wave it through. It has to be a
+// refusal rather than a truncation to limit: the run-end reap deletes whole
+// rows that start inside the run, so tiling only part of a row still drops
+// its tail.
 //
 // ponytail: a row reaching past a later dirty run is left alone, so that run
 // still ends mid-row; covering it means merging the two runs, which is worth
@@ -565,14 +569,8 @@ func (s *Store) extendRunToRowEnd(ctx context.Context, sh *shard, id FileID, run
 		return nil, err
 	}
 	if rowEnd > limit {
-		// warmTail already refuses any tail that would cross a non-warm interval,
-		// and the interval at limit is still dirty from the original snapshot for
-		// as long as extent resolution finishes before any run flips a record — so
-		// this check changes nothing while that holds. It stays so that a future
-		// change reintroducing a flip during extent resolution cannot silently
-		// extend a run past the next one; the run is left as snapshotted rather
-		// than half extended, which is what a serial carve does when it finds that
-		// range still dirty.
+		// See the doc comment above: redundant with warmTail today, kept as
+		// insurance against a future flip during extent resolution.
 		return run, nil
 	}
 	if rowEnd <= runEnd {
