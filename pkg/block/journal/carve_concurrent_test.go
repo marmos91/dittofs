@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
 // TestCarveScatteredRunsConvergeConcurrently pins that a scattered dirty set still
@@ -319,48 +321,73 @@ func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 
 // TestCarveRunsCommitConcurrently pins the run-level concurrency itself: on a
 // file of several dirty runs, commits from different runs overlap, and the
-// file-wide semaphore caps how many overlap at once. Asserting the drained
+// file-scoped semaphore caps how many overlap at once. Asserting the drained
 // result alone does not cover this — a serial carveFile produces byte-identical
 // output — so this is what fails if runs are ever serialised again.
 //
-// The commit hook blocks until a second commit joins it rather than sleeping a
-// fixed time, so a concurrent implementation releases immediately and only a
-// serial one pays the timeout, once.
+// The geometry gives each run several blocks (small chunks, small
+// CarveBlockSize) so the two bounds diverge: the errgroup limit alone would
+// allow window runs x several blocks each in flight, while the one file-scoped
+// semaphore allows window blocks in total. With one block per run the cap
+// assertion could not fail, because the errgroup limit would bound it anyway.
+//
+// The commit hook blocks until more than window commits are in flight rather
+// than sleeping a fixed time, so a carve that breaches the cap releases
+// immediately and is caught; a correct one never breaches it and pays the
+// timeout once, which the gaveUp flag keeps to a single wait for the pass. That
+// wait is also what holds the in-flight set open long enough to see how many
+// distinct runs are committing at the same time.
 func TestCarveRunsCommitConcurrently(t *testing.T) {
 	const (
 		runs    = 8
-		runSize = 4 << 10
-		gap     = 8 << 10 // a hole between runs keeps them separate
+		runSize = 32 << 10
+		gap     = 64 << 10 // a hole between runs keeps them separate
 		window  = 4
 	)
-	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarveUploadConcurrency: window})
+	s, _, sink, _ := carveStore(t, Config{
+		CarveBlockSize:         8 << 10,
+		CarveUploadConcurrency: window,
+		ChunkParams:            chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
+	})
 	ctx := context.Background()
 
 	var (
-		mu         sync.Mutex
-		cur, max   int
-		gaveUp     bool
-		overlapped = make(chan struct{})
-		once       sync.Once
+		mu       sync.Mutex
+		cur, max int
+		commits  int
+		gaveUp   bool
+		exceeded = make(chan struct{})
+		once     sync.Once
+		// Blocks in flight per run, keyed by run index, so the floor counts runs
+		// overlapping rather than one run's own blocks overlapping — a serial
+		// carveFile still reaches window in-flight blocks from a single run.
+		inFlight = map[int64]int{}
+		maxRuns  int
 	)
-	sink.onCommit = func(_ []CarveChunk) {
+	sink.onCommit = func(chunks []CarveChunk) {
+		run := chunks[0].FileOffset / gap
 		mu.Lock()
 		cur++
+		commits++
+		inFlight[run]++
 		if cur > max {
 			max = cur
 		}
-		if cur >= 2 {
-			once.Do(func() { close(overlapped) })
+		if len(inFlight) > maxRuns {
+			maxRuns = len(inFlight)
+		}
+		if cur > window {
+			once.Do(func() { close(exceeded) })
 		}
 		skip := gaveUp
 		mu.Unlock()
 
 		if !skip {
 			select {
-			case <-overlapped:
-			case <-time.After(2 * time.Second):
-				// Nothing joined: the carve is serial. Stop waiting so the rest of
-				// the pass does not pay the timeout too.
+			case <-exceeded:
+			case <-time.After(time.Second):
+				// The cap held. Stop waiting so the rest of the pass does not pay
+				// the timeout too.
 				mu.Lock()
 				gaveUp = true
 				mu.Unlock()
@@ -368,6 +395,9 @@ func TestCarveRunsCommitConcurrently(t *testing.T) {
 		}
 		mu.Lock()
 		cur--
+		if inFlight[run]--; inFlight[run] == 0 {
+			delete(inFlight, run)
+		}
 		mu.Unlock()
 	}
 
@@ -385,11 +415,15 @@ func TestCarveRunsCommitConcurrently(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if max < 2 {
-		t.Fatalf("max concurrent commits across runs = %d, want > 1: the runs did not overlap", max)
+	// More blocks than runs is what makes the cap assertion able to fail at all.
+	if commits <= runs {
+		t.Fatalf("%d commits for %d runs: runs are not multi-block, so the cap assertion cannot fail", commits, runs)
+	}
+	if maxRuns < 2 {
+		t.Fatalf("max runs committing at once = %d, want > 1: the runs did not overlap", maxRuns)
 	}
 	if max > window {
-		t.Fatalf("max concurrent commits across runs = %d, want <= CarveUploadConcurrency (%d)", max, window)
+		t.Fatalf("max concurrent commits = %d, want <= CarveUploadConcurrency (%d): the file-scoped bound on in-flight blocks was breached", max, window)
 	}
 }
 
