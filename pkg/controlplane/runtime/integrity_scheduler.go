@@ -69,7 +69,23 @@ func (r *Runtime) runIntegrityScanOnce(ctx context.Context) {
 	}
 }
 
-// scanShareIntegrity runs one read-only manifest scan and records the result.
+// recordShareIntegrity stores a completed scan's outcome as the share's current
+// integrity status. Called by every scan, scheduled or operator-run.
+func (r *Runtime) recordShareIntegrity(share string, res *engine.ManifestCheckResult) {
+	r.setShareIntegrity(share, &health.IntegrityStatus{
+		LastRunAt:              res.CompletedAt,
+		DurationMS:             res.DurationMS,
+		FilesScanned:           res.FilesScanned,
+		PayloadsWithFindings:   res.PayloadsWithFindings,
+		DamagedPayloads:        res.DamagedPayloads,
+		ClaimedUncoveredRanges: res.ClaimedUncoveredRanges,
+		UnplaceableRows:        res.UnplaceableRows,
+		UnknownHashRows:        res.UnknownHashRows,
+	})
+}
+
+// scanShareIntegrity runs one read-only manifest scan. CheckManifests records
+// the outcome; this adds the failure case and the operator-facing warning.
 func (r *Runtime) scanShareIntegrity(ctx context.Context, share string) {
 	res, err := r.CheckManifests(ctx, share, engine.ManifestCheckOptions{})
 	if err != nil {
@@ -91,17 +107,6 @@ func (r *Runtime) scanShareIntegrity(ctx context.Context, share string) {
 		})
 		return
 	}
-
-	r.setShareIntegrity(share, &health.IntegrityStatus{
-		LastRunAt:              res.CompletedAt,
-		DurationMS:             res.DurationMS,
-		FilesScanned:           res.FilesScanned,
-		PayloadsWithFindings:   res.PayloadsWithFindings,
-		DamagedPayloads:        res.DamagedPayloads,
-		ClaimedUncoveredRanges: res.ClaimedUncoveredRanges,
-		UnplaceableRows:        res.UnplaceableRows,
-		UnknownHashRows:        res.UnknownHashRows,
-	})
 
 	if res.DamagedPayloads > 0 {
 		logger.Warn("integrity scan: share has damaged payloads",
