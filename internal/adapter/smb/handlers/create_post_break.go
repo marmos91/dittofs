@@ -1567,13 +1567,29 @@ func (h *Handler) parkCreateOnLeaseBreak(
 	// parked path) per CREATE attempt. A zero CreateGuid is a no-op in Release.
 	replayGuid := dh2qCreateGuid(d.req)
 
+	// The reservation must be gone BEFORE the parked CREATE's terminal status
+	// reaches the wire. A client that reads that status may put its replay on
+	// the connection immediately, and the server can dispatch it while the
+	// resume goroutine is still unwinding; with the reservation still held,
+	// resolveCreateReplay answers STATUS_FILE_NOT_AVAILABLE for a CREATE that
+	// has already resolved — the replay must instead observe the terminal
+	// outcome (cached open on success, a re-evaluated share-mode contest that
+	// yields the same STATUS_SHARING_VIOLATION on failure). So every path that
+	// sends a final response releases first; the deferred call below is the
+	// backstop for the exits that send nothing (CANCEL / teardown preemption).
+	//
+	// Releasing any earlier would be wrong: while the CREATE is still resolving
+	// a replay has no outcome to observe and must keep failing fast rather than
+	// starting a second, concurrent CREATE for the same CreateGuid.
+	releaseReplayReservation := func() {
+		if h.CreateReplayCache != nil {
+			h.CreateReplayCache.Release(ctx.SessionID, replayGuid)
+		}
+	}
+
 	go func() {
 		defer cancel()
-		defer func() {
-			if h.CreateReplayCache != nil {
-				h.CreateReplayCache.Release(ctx.SessionID, replayGuid)
-			}
-		}()
+		defer releaseReplayReservation()
 
 		if shareConflictWait {
 			// Deferred-open resume: wait for the live share-mode conflict to
@@ -1628,6 +1644,7 @@ func (h *Handler) parkCreateOnLeaseBreak(
 				"messageID", messageID,
 				"asyncId", asyncId,
 				"treeID", ctx.TreeID)
+			releaseReplayReservation()
 			if err := pending.Callback(pending.SessionID, messageID, asyncId, types.StatusNetworkNameDeleted, nil); err != nil {
 				logger.Debug("CREATE async: failed to send tree-deleted response", "error", err)
 			}
@@ -1646,6 +1663,8 @@ func (h *Handler) parkCreateOnLeaseBreak(
 				body = encoded
 			}
 		}
+
+		releaseReplayReservation()
 
 		if err := pending.Callback(pending.SessionID, messageID, asyncId, status, body); err != nil {
 			logger.Warn("CREATE async: failed to send final response",
