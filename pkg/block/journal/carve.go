@@ -17,6 +17,12 @@ import (
 // across carve passes. Its contents are always overwritten before use and it
 // never escapes packRuns, so recycling it is a pure allocation win — no per-op
 // scratch.
+//
+// ponytail: the buffer is sized from the package-wide chunker.MaxChunkSize
+// rather than the share's ChunkParams.Max, so a share chunking small still
+// reserves 16 MiB for it — and the block arena adds the same overhang term on
+// top; size both from ChunkParams.Max if that headroom ever shows up in a
+// memory profile.
 var carveScratchPool = sync.Pool{New: func() any {
 	b := make([]byte, 0, chunker.MaxChunkSize)
 	return &b
@@ -282,7 +288,8 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 	// This runs even when packing failed, because a run that did complete has
 	// already flipped its records synced: no later pass revisits them, so a reap
 	// skipped here never happens at all and its superseded rows outlive the
-	// fresh ones forever.
+	// fresh ones forever. One run's reap failing does not suppress the others
+	// for the same reason — each complete run is its own last chance.
 	//
 	// Serial, not concurrent: carveCommitLocks stripes on the payload ID, so every
 	// reap for one file contends on the same mutex anyway.
@@ -296,11 +303,8 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 			if !st.complete() {
 				continue
 			}
-			if rerr := r.ReapSupersededManifest(ctx, id, st.start(), st.end(), st.newOffsets); rerr != nil {
-				if err == nil {
-					err = rerr
-				}
-				break
+			if rerr := r.ReapSupersededManifest(ctx, id, st.start(), st.end(), st.newOffsets); rerr != nil && err == nil {
+				err = rerr
 			}
 		}
 	}

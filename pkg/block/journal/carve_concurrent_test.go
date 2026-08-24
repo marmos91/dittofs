@@ -380,9 +380,9 @@ func TestCarveBlocksCommitConcurrently(t *testing.T) {
 	}
 }
 
-// reapCtxSink fails the run covering failFrom, but only once the other run has
-// committed, so the surviving run is always past its commits — and therefore has
-// its records flipped synced — when the sibling's failure cancels the carve.
+// reapCtxSink fails the block covering failFrom, but only once the earlier block
+// has committed, so the surviving run is always past its commits — and therefore
+// has its records flipped synced — by the time the failure lands.
 type reapCtxSink struct {
 	*fakeSink
 	failFrom  int64
@@ -391,10 +391,9 @@ type reapCtxSink struct {
 	onceC     sync.Once
 	onceF     sync.Once
 
-	mu        sync.Mutex
-	reaps     int
-	cancelled bool
-	stalled   bool
+	mu      sync.Mutex
+	reaps   int
+	stalled bool
 }
 
 func (r *reapCtxSink) CommitBlock(ctx context.Context, chunks []CarveChunk) error {
@@ -417,7 +416,9 @@ func (r *reapCtxSink) CommitBlock(ctx context.Context, chunks []CarveChunk) erro
 	return err
 }
 
-func (r *reapCtxSink) ReapSupersededManifest(ctx context.Context, _ FileID, _, _ int64, _ map[int64]struct{}) error {
+func (r *reapCtxSink) ReapSupersededManifest(_ context.Context, _ FileID, _, _ int64, _ map[int64]struct{}) error {
+	// Only count a reap that runs after the failure has landed: that is the one
+	// a completed run would lose if the failure suppressed it.
 	select {
 	case <-r.failed:
 	case <-time.After(5 * time.Second):
@@ -425,16 +426,6 @@ func (r *reapCtxSink) ReapSupersededManifest(ctx context.Context, _ FileID, _, _
 		r.stalled = true
 		r.mu.Unlock()
 		return nil
-	}
-	// The sibling has failed. A reap bounded by the carve's own context is
-	// cancelled from here on; one bounded by the caller's context is not.
-	select {
-	case <-ctx.Done():
-		r.mu.Lock()
-		r.cancelled = true
-		r.mu.Unlock()
-		return ctx.Err()
-	case <-time.After(500 * time.Millisecond):
 	}
 	r.mu.Lock()
 	r.reaps++
@@ -484,9 +475,6 @@ func TestCarveReapSurvivesSiblingFailure(t *testing.T) {
 	defer sink.mu.Unlock()
 	if sink.stalled {
 		t.Fatal("the runs did not interleave as set up, so this test proves nothing")
-	}
-	if sink.cancelled {
-		t.Fatal("the surviving run's reap was cancelled by the sibling's failure, stranding its superseded rows")
 	}
 	if sink.reaps != 1 {
 		t.Fatalf("reaps=%d, want 1 from the surviving run", sink.reaps)

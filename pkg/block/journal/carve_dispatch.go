@@ -23,6 +23,15 @@ import (
 //     proceed=false and skips its flip (its already-uploaded block becomes a
 //     GC-reclaimable orphan, matching the PutBlock-first semantics).
 //
+// One chain covers the whole file, not one per dirty run, so a block that fails
+// while packing run i also stops every run after it from flipping — even the
+// ones whose own commits succeeded. Those commits did write manifest rows, so
+// the rows they superseded stay alive alongside the fresh ones until the next
+// pass. That is self-correcting rather than lost: the records were never
+// flipped, so they stay unsynced, which keeps them local and unevictable, reads
+// keep being served from the journal, and the next carve re-carves the same
+// ranges and reaps them.
+//
 // Concurrency and peak RAM are bounded by sem: a block holds a slot (and its own
 // buffer) from the moment it starts packing until its flip completes, so at most
 // cap(sem) blocks — and thus CommitBlocks — are in flight, and peak carve RAM is
@@ -139,7 +148,6 @@ func (d *carveDispatcher) commitAndFlip(chunks []CarveChunk, arenap *[]byte, are
 		// covered through to its own end, the last only to the offset actually
 		// packed. Each run flips through its own interval slice and its own
 		// flipIdx, which is flipUpTo's existing per-run contract.
-		flipped := false
 		for i := plan.first; i <= plan.last; i++ {
 			wm := d.rs[i].end()
 			if i == plan.last {
@@ -150,11 +158,10 @@ func (d *carveDispatcher) commitAndFlip(chunks []CarveChunk, arenap *[]byte, are
 				ok = false
 				break
 			}
-			flipped = true
 		}
 		// An arena is claimed only by a chunk carrying bytes: a batch of purely
 		// deduped chunks writes manifest rows but no block.
-		if ok && flipped && arenap != nil {
+		if ok && arenap != nil {
 			d.res.BlocksWritten++
 		}
 	case proceed && commitErr != nil:
