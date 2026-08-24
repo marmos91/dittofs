@@ -15,11 +15,13 @@ import (
 )
 
 // fakeDrainRuntime is a minimal drainRuntime test double. drainFn overrides
-// DrainAllUploads; uploadProgressFn overrides UploadProgress. The zero value
-// drains instantly with no error and reports no progress.
+// DrainAllUploads; uploadProgressFn overrides UploadProgress; unsyncedBytesFn
+// overrides UnsyncedBytes. The zero value drains instantly with no error,
+// reports no progress, and reports a non-empty backlog.
 type fakeDrainRuntime struct {
 	drainFn          func(ctx context.Context) error
 	uploadProgressFn func() int64
+	unsyncedBytesFn  func() int64
 }
 
 func (f *fakeDrainRuntime) DrainAllUploads(ctx context.Context) error {
@@ -34,6 +36,15 @@ func (f *fakeDrainRuntime) UploadProgress() int64 {
 		return f.uploadProgressFn()
 	}
 	return 0
+}
+
+func (f *fakeDrainRuntime) UnsyncedBytes() int64 {
+	if f.unsyncedBytesFn != nil {
+		return f.unsyncedBytesFn()
+	}
+	// Default to a backlog so the zero value keeps the watchdog armed: tests
+	// that assert a stall trips do not have to opt in.
+	return 1
 }
 
 // newSystemRouterWithGlobalTimeout mirrors the production router's short global
@@ -173,6 +184,60 @@ func TestSystemHandler_DrainUploads_StallReturns504(t *testing.T) {
 	}
 	if rr.Code != http.StatusGatewayTimeout {
 		t.Fatalf("status = %d, want 504 for a stalled drain: body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestSystemHandler_DrainUploads_NoBacklogIsNotAStall covers the tail of a
+// drain: the upload counter goes flat as soon as the last block lands, but the
+// drain runs on past that — the carve pass it waits behind still has manifest rows to
+// reap, and none of that concludes an upload attempt. Judging that window by
+// the counter alone cancels a live drain and reports the remote as stalled. So
+// once nothing is left unsynced the watchdog must keep waiting, and the drain
+// must be allowed to return its own 200.
+func TestSystemHandler_DrainUploads_NoBacklogIsNotAStall(t *testing.T) {
+	release := make(chan struct{})
+	var cancelled atomic.Bool
+	fake := &fakeDrainRuntime{
+		// Nothing left to upload: no attempt can conclude, so the counter is
+		// flat by definition rather than because the remote wedged.
+		unsyncedBytesFn: func() int64 { return 0 },
+		drainFn: func(ctx context.Context) error {
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				cancelled.Store(true)
+				return ctx.Err()
+			}
+		},
+	}
+	h := &SystemHandler{runtime: fake, drainStallTimeout: 20 * time.Millisecond}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/system/drain-uploads", nil)
+	rr := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		h.DrainUploads(rr, req)
+		close(done)
+	}()
+
+	// Outlast several stall windows before letting the drain finish.
+	time.Sleep(150 * time.Millisecond)
+	if cancelled.Load() {
+		t.Fatal("watchdog cancelled a drain with nothing left unsynced")
+	}
+	close(release)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("drain did not return")
+	}
+	if cancelled.Load() {
+		t.Fatal("watchdog cancelled a drain with nothing left unsynced")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", rr.Code, rr.Body.String())
 	}
 }
 

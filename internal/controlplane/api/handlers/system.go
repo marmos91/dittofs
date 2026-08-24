@@ -31,6 +31,10 @@ type drainRuntime interface {
 	// UploadProgress returns a monotonic count of concluded mirror attempts.
 	// Used purely as a liveness signal by the idle watchdog.
 	UploadProgress() int64
+	// UnsyncedBytes returns the bytes still awaiting a remote. Zero means no
+	// upload attempt can conclude, so a flat UploadProgress says nothing about
+	// whether the drain is alive.
+	UnsyncedBytes() int64
 }
 
 // SystemHandler handles system-level endpoints.
@@ -79,11 +83,17 @@ func NewSystemHandler(rt *runtime.Runtime, drainStallTimeout time.Duration) *Sys
 //     only on a genuine stall. CAS chunks are at most a few MiB, so even on a
 //     slow link a single chunk finishes well inside any sane idle window.
 //
-// What a trip actually means is narrower than "the remote is wedged": the
-// watchdog observes only that no upload attempt concluded during the window. A
-// stuck carve, a stuck remote, and a drain that never had anything to do are
-// indistinguishable from here, so the 504 reports the observation and how much
-// landed before it, and leaves the diagnosis to the reader.
+//     The counter alone cannot carry that judgement, because it moves only when
+//     an upload attempt concludes, and a drain also spends time in phases that
+//     conclude none. So the trip is gated on there still being something
+//     unsynced: with nothing left, the flat counter is the expected reading
+//     rather than evidence of a stall, and the drain is left to return.
+//
+// What a trip actually means is still narrower than "the remote is wedged": the
+// watchdog observes that no upload attempt concluded during the window while
+// bytes were still waiting for one. A stuck carve and a stuck remote read the
+// same from here, so the 504 reports the observation and how much landed before
+// it, and leaves the diagnosis to the reader.
 //
 // A genuine client disconnect (request context Canceled, as opposed to the
 // deadline-exceeded fired by middleware.Timeout) still aborts the drain.
@@ -180,10 +190,25 @@ func (h *SystemHandler) runWithIdleWatchdog(ctx context.Context, cancel context.
 				continue
 			}
 			idleFor += interval
-			if idleFor >= h.drainStallTimeout {
-				cancel()
-				return <-drainDone, true // wait for the drain to unwind on ctx cancel
+			if idleFor < h.drainStallTimeout {
+				continue
 			}
+			// A flat attempt count only means the remote has stalled while there
+			// is still something to upload. With nothing unsynced left there is
+			// no attempt left to conclude, so the counter is flat by definition
+			// and the drain is finishing work the counter cannot see — the carve
+			// pass it serializes behind still has manifest rows to reap, and a
+			// local-only store never moves the counter at all. Cancelling here
+			// aborts a live drain and reports it as a stalled remote. Keep
+			// waiting instead; the caller's own request deadline still bounds it.
+			if h.runtime.UnsyncedBytes() == 0 {
+				logger.Warn("Drain uploads: no upload concluded for the idle window, but nothing is left unsynced; still waiting for the drain to return",
+					"idle_window", h.drainStallTimeout)
+				idleFor = 0
+				continue
+			}
+			cancel()
+			return <-drainDone, true // wait for the drain to unwind on ctx cancel
 		}
 	}
 }
