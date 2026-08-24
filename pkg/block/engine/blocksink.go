@@ -155,6 +155,10 @@ func (s localBlockSink) ReapSupersededManifest(ctx context.Context, id journal.F
 	if s.committer == nil {
 		return nil
 	}
+	if mu := s.commitLocks.forKey(string(id)); mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
 	return s.committer.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return metadata.ReapSupersededManifest(ctx, tx, string(id), runStart, runEnd, newOffsets)
 	})
@@ -193,6 +197,10 @@ func manifestRowEndAfter(ctx context.Context, c blockCommitter, payloadID string
 // remote-backed sink: delete the manifest rows the carve run superseded, atomic
 // with a re-projection of File.Blocks (#953).
 func (s engineBlockSink) ReapSupersededManifest(ctx context.Context, id journal.FileID, runStart, runEnd int64, newOffsets map[int64]struct{}) error {
+	if mu := s.commitLocks.forKey(string(id)); mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
 	return s.committer.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return metadata.ReapSupersededManifest(ctx, tx, string(id), runStart, runEnd, newOffsets)
 	})
