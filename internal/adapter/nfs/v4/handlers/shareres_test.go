@@ -34,7 +34,7 @@ func openFileAndGetStateid(t *testing.T, fx *ioTestFixture, owner string, shareA
 		1,
 		shareAccess,
 		types.OPEN4_SHARE_DENY_NONE,
-		0x1111,
+		testClientID(t, fx.handler.StateManager, "shareres-client"),
 		[]byte(owner),
 		types.OPEN4_CREATE,
 		types.UNCHECKED4,
@@ -322,7 +322,7 @@ func TestOpen_ShareDenyWrite_BlocksSecondWriterAcrossOwners(t *testing.T) {
 	// Owner A creates+opens "shared.txt" WRITE with DENY_WRITE.
 	argsA := encodeOpenArgs(
 		1, types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_WRITE,
-		0x4444, []byte("ownerA"),
+		testClientID(t, fx.handler.StateManager, "shareres-client-a"), []byte("ownerA"),
 		types.OPEN4_CREATE, types.UNCHECKED4, types.CLAIM_NULL, "shared.txt",
 	)
 	resA := fx.handler.handleOpen(ctx, bytes.NewReader(argsA))
@@ -334,7 +334,7 @@ func TestOpen_ShareDenyWrite_BlocksSecondWriterAcrossOwners(t *testing.T) {
 	setCurrentFH(ctx, fx.rootHandle)
 	argsB := encodeOpenArgs(
 		1, types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_NONE,
-		0x5555, []byte("ownerB"),
+		testClientID(t, fx.handler.StateManager, "shareres-client-b"), []byte("ownerB"),
 		types.OPEN4_NOCREATE, 0, types.CLAIM_NULL, "shared.txt",
 	)
 	resB := fx.handler.handleOpen(ctx, bytes.NewReader(argsB))

@@ -21,10 +21,10 @@ import (
 //
 // A CLAIM_FH open of an existing, accessible file must succeed with NFS4_OK.
 func TestOpen_ClaimFH_ReopenExistingFile(t *testing.T) {
-	const clientID = uint64(0x0BADF00D)
 	owner := []byte("claim-fh-owner")
 
 	fx := newRealFSTestFixture(t, "/export")
+	clientID := testClientID(t, fx.handler.StateManager, "claim-fh-client")
 
 	// Create the file and grab its filehandle, as if the client had just
 	// created it and still held the handle.
@@ -61,10 +61,10 @@ func TestOpen_ClaimFH_ReopenExistingFile(t *testing.T) {
 // only meaningful for CLAIM_NULL (RFC 8881), so a create claim must not be
 // silently downgraded to a plain open.
 func TestOpen_ClaimFH_CreateRejected(t *testing.T) {
-	const clientID = uint64(0x0BADF00D)
 	owner := []byte("claim-fh-create-owner")
 
 	fx := newRealFSTestFixture(t, "/export")
+	clientID := testClientID(t, fx.handler.StateManager, "claim-fh-client")
 	fileHandle := fx.createTestFile(t, fx.rootHandle, "reopen.txt",
 		metadata.FileTypeRegular, 0o644, 1000, 1000)
 

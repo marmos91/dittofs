@@ -1,9 +1,12 @@
 package state
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
 // ============================================================================
@@ -526,6 +529,177 @@ func TestRemoveClient(t *testing.T) {
 
 	// Double remove should not panic
 	sm.RemoveClient(result.ClientID)
+}
+
+// ============================================================================
+// OPEN Client ID Validation Tests
+// ============================================================================
+
+// OPEN is a locking request, so the clientid it carries must name a client that
+// completed its registration handshake and still holds a lease (RFC 7530
+// Sections 9.1.1, 13.1.10.2 and 9.6.3.2). These tests cover each way that can
+// fail, plus the consequences of accepting one: state under a clientid with no
+// lease is never reaped, and its share reservation would block clients that did
+// register.
+
+// expectStatus asserts that err carries the given NFS4ERR_* status.
+func expectStatus(t *testing.T, err error, want uint32) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatalf("expected error with status %d, got nil", want)
+	}
+	var stateErr *NFS4StateError
+	if !errors.As(err, &stateErr) {
+		t.Fatalf("expected *NFS4StateError, got %T: %v", err, err)
+	}
+	if stateErr.Status != want {
+		t.Fatalf("status = %d, want %d", stateErr.Status, want)
+	}
+}
+
+func TestValidateAndRenewClient_UnknownClientID_Rejected(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	defer sm.Shutdown()
+
+	// A clientid the server has never issued: no SETCLIENTID, no
+	// SETCLIENTID_CONFIRM, no lease.
+	const unknown uint64 = 0xDEADBEEFCAFEF00D
+
+	if err := sm.ValidateAndRenewClient(unknown); !errors.Is(err, ErrStaleClientID) {
+		t.Fatalf("admitting an unknown clientid = %v, want ErrStaleClientID", err)
+	}
+}
+
+func TestValidateAndRenewClient_UnconfirmedClientID_Rejected(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	defer sm.Shutdown()
+
+	// SETCLIENTID only: the identity is not established until
+	// SETCLIENTID_CONFIRM (RFC 7530 Section 9.1.1).
+	res, err := sm.SetClientID("unconfirmed-client", [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
+		CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "10.0.0.1.8.1"}, "10.0.0.1:1234")
+	if err != nil {
+		t.Fatalf("SetClientID: %v", err)
+	}
+
+	if err := sm.ValidateAndRenewClient(res.ClientID); !errors.Is(err, ErrStaleClientID) {
+		t.Fatalf("admitting a clientid before SETCLIENTID_CONFIRM = %v, want ErrStaleClientID", err)
+	}
+}
+
+// A v4.0 client stops sending RENEW once it holds no open state, so a stretch
+// of stateid-free work — LOOKUP, GETATTR, SETATTR, CREATE, REMOVE — leaves the
+// lease untouched until the next OPEN. OPEN must therefore renew it, the way
+// RFC 7530 Section 9.6.2 counts any operation carrying a valid clientid as
+// proof of liveness; otherwise a busy mount is reaped as an idle one and every
+// create after the lease duration fails.
+func TestValidateAndRenewClient_KeepsBusyClientAlive(t *testing.T) {
+	const lease = 200 * time.Millisecond
+	sm := NewStateManager(lease)
+	defer sm.Shutdown()
+
+	clientID := registerTestClientWithName(t, sm, "busy-client")
+
+	// Three admissions spread over more than one lease duration, with no RENEW
+	// and no stateid op in between. Each renews, so the last lands on a client
+	// established well over a lease ago and still live.
+	for i := range 3 {
+		time.Sleep(lease * 2 / 3)
+		if err := sm.ValidateAndRenewClient(clientID); err != nil {
+			t.Fatalf("ValidateAndRenewClient %d: %v", i+1, err)
+		}
+	}
+
+	if record := sm.GetClient(clientID); record == nil {
+		t.Fatal("client record was reaped despite a steady stream of OPENs")
+	} else if record.Lease.IsExpired() {
+		t.Fatal("lease expired despite a steady stream of OPENs")
+	}
+}
+
+// A v4.1 lease has no expiry callback: the record stays on file with a stale
+// lease until the session reaper sweeps it. While it is still there, OPEN names
+// what happened to the client's state (RFC 7530 Section 9.6.3.2) rather than
+// reporting the ID as never-seen.
+func TestValidateAndRenewClient_V41LapsedLeaseBeforeReaping_ReturnsExpired(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	defer sm.Shutdown()
+
+	clientID := registerTestV41Client(t, sm)
+
+	// Age the lease past its duration without running the reaper, which is the
+	// state a v4.1 client is in for up to one reaper interval.
+	sm.mu.RLock()
+	lease := sm.v41ClientsByID[clientID].Lease
+	sm.mu.RUnlock()
+	lease.mu.Lock()
+	lease.LastRenew = time.Now().Add(-2 * lease.Duration)
+	lease.mu.Unlock()
+
+	expectStatus(t, sm.ValidateAndRenewClient(clientID), types.NFS4ERR_EXPIRED)
+}
+
+// v4.1 clients are registered by EXCHANGE_ID / CREATE_SESSION and live in a
+// separate table; validation must accept them.
+func TestValidateAndRenewClient_V41Client_Accepted(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	defer sm.Shutdown()
+
+	clientID := registerTestV41Client(t, sm)
+
+	if err := sm.ValidateAndRenewClient(clientID); err != nil {
+		t.Fatalf("admitting a v4.1 session client: %v", err)
+	}
+}
+
+// Admission renews the lease the same way RENEW and SEQUENCE do, which means
+// stamping LastRenewal — a v4.0 and a v4.1 client must come out of it in the
+// same state as if they had renewed explicitly.
+func TestValidateAndRenewClient_StampsLastRenewal(t *testing.T) {
+	tests := []struct {
+		name        string
+		register    func(*testing.T, *StateManager) uint64
+		lastRenewal func(*StateManager, uint64) time.Time
+	}{
+		{
+			name: "v4.0",
+			register: func(t *testing.T, sm *StateManager) uint64 {
+				return registerTestClientWithName(t, sm, "renewed-client")
+			},
+			lastRenewal: func(sm *StateManager, clientID uint64) time.Time {
+				return sm.GetClient(clientID).LastRenewal
+			},
+		},
+		{
+			name:     "v4.1",
+			register: registerTestV41Client,
+			lastRenewal: func(sm *StateManager, clientID uint64) time.Time {
+				sm.mu.RLock()
+				defer sm.mu.RUnlock()
+				return sm.v41ClientsByID[clientID].LastRenewal
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sm := NewStateManager(90 * time.Second)
+			defer sm.Shutdown()
+
+			clientID := tt.register(t, sm)
+			confirmed := tt.lastRenewal(sm, clientID)
+			time.Sleep(time.Millisecond)
+
+			if err := sm.ValidateAndRenewClient(clientID); err != nil {
+				t.Fatalf("ValidateAndRenewClient: %v", err)
+			}
+
+			if renewed := tt.lastRenewal(sm, clientID); !renewed.After(confirmed) {
+				t.Errorf("LastRenewal = %v, want later than the %v stamped at confirm time", renewed, confirmed)
+			}
+		})
+	}
 }
 
 // ============================================================================

@@ -64,8 +64,10 @@ func TestOpen_ClaimNull_CreateNew_DelegationConflict_NoOrphan(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 
 	// Client A holds a WRITE delegation on an existing file under the same parent.
+	// Only client B has to be established: it is the one whose clientid the OPEN
+	// carries, and an unestablished one is rejected before the conflict check.
 	const clientA = uint64(0xAAAA)
-	const clientB = uint64(0xBBBB)
+	clientB := testClientID(t, fx.handler.StateManager, "deleg-conflict-create")
 	existing := fx.createRegularFile(t, fx.rootHandle, "existing.txt", 0o644, 0, 0)
 	if d := fx.handler.StateManager.GrantDelegation(clientA, []byte(existing), types.OPEN_DELEGATE_WRITE); d == nil {
 		t.Fatalf("GrantDelegation returned nil")
@@ -120,7 +122,7 @@ func TestOpen_ClaimNull_OpenExisting_DelegationConflict_ReturnsDelay(t *testing.
 	fx := newIOTestFixture(t, "/export")
 
 	const clientA = uint64(0xAAAA)
-	const clientB = uint64(0xBBBB)
+	clientB := testClientID(t, fx.handler.StateManager, "deleg-conflict-nocreate")
 	fileHandle := fx.createRegularFile(t, fx.rootHandle, "existing.txt", 0o644, 0, 0)
 	if d := fx.handler.StateManager.GrantDelegation(clientA, []byte(fileHandle), types.OPEN_DELEGATE_WRITE); d == nil {
 		t.Fatalf("GrantDelegation returned nil")
@@ -160,7 +162,7 @@ func TestOpen_ClaimNull_CreateUnchecked_ExistingFile_DelegationConflict_ReturnsD
 	fx := newIOTestFixture(t, "/export")
 
 	const clientA = uint64(0xAAAA)
-	const clientB = uint64(0xBBBB)
+	clientB := testClientID(t, fx.handler.StateManager, "deleg-conflict-unchecked")
 
 	// Client A holds a WRITE delegation on the existing file itself. Note that
 	// NO delegation is registered against the parent directory handle, so the
@@ -210,7 +212,7 @@ func TestOpen_ClaimNull_CreateNew_NoDelegationConflict_Succeeds(t *testing.T) {
 		1,
 		types.OPEN4_SHARE_ACCESS_BOTH,
 		types.OPEN4_SHARE_DENY_NONE,
-		0xCCCC,
+		testClientID(t, fx.handler.StateManager, "deleg-noconflict"),
 		[]byte("owner-c"),
 		types.OPEN4_CREATE,
 		types.UNCHECKED4,
@@ -240,7 +242,7 @@ func TestOpen_ClaimNull_CreateNew_NoDelegationConflict_Succeeds(t *testing.T) {
 func TestOpenClaimDelegateCur_V41_AutoConfirm(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 
-	const clientA = uint64(0xA11CE)
+	clientA := testClientID(t, fx.handler.StateManager, "deleg-cur-v41")
 	fileHandle := fx.createRegularFile(t, fx.rootHandle, "deleg.txt", 0o644, 0, 0)
 	deleg := fx.handler.StateManager.GrantDelegation(clientA, []byte(fileHandle), types.OPEN_DELEGATE_WRITE)
 	if deleg == nil {
@@ -307,7 +309,7 @@ func TestOpenClaimDelegateCur_V41_AutoConfirm(t *testing.T) {
 func TestOpenClaimDelegateCur_V40_ConfirmFlagPreserved(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 
-	const clientA = uint64(0xB0B)
+	clientA := testClientID(t, fx.handler.StateManager, "deleg-cur-v40")
 	fileHandle := fx.createRegularFile(t, fx.rootHandle, "deleg40.txt", 0o644, 0, 0)
 	deleg := fx.handler.StateManager.GrantDelegation(clientA, []byte(fileHandle), types.OPEN_DELEGATE_WRITE)
 	if deleg == nil {
@@ -353,7 +355,7 @@ func TestOpenClaimDelegateCur_V40_ConfirmFlagPreserved(t *testing.T) {
 func TestOpenClaimDelegateCur_DuringGrace_Succeeds(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 
-	const clientA = uint64(0xC0FFEE)
+	clientA := testClientID(t, fx.handler.StateManager, "deleg-cur-grace")
 	fileHandle := fx.createRegularFile(t, fx.rootHandle, "grace.txt", 0o644, 0, 0)
 	deleg := fx.handler.StateManager.GrantDelegation(clientA, []byte(fileHandle), types.OPEN_DELEGATE_WRITE)
 	if deleg == nil {
@@ -396,7 +398,7 @@ func TestOpenClaimDelegateCur_ForeignDelegation_Rejected(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 
 	const ownerClient = uint64(0xA11CE)
-	const attackerClient = uint64(0xBADBAD)
+	attackerClient := testClientID(t, fx.handler.StateManager, "deleg-cur-attacker")
 	fileHandle := fx.createRegularFile(t, fx.rootHandle, "foreign.txt", 0o644, 0, 0)
 	deleg := fx.handler.StateManager.GrantDelegation(ownerClient, []byte(fileHandle), types.OPEN_DELEGATE_WRITE)
 	if deleg == nil {
@@ -434,7 +436,7 @@ func TestOpenClaimDelegateCur_ForeignDelegation_Rejected(t *testing.T) {
 func TestOpenClaimDelegateCur_EnforcesFilePermissions(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 
-	const clientA = uint64(0xD00D)
+	clientA := testClientID(t, fx.handler.StateManager, "deleg-cur-noperm")
 	// File owned by uid 1000, mode 0600 (rw for owner only).
 	fileHandle := fx.createRegularFile(t, fx.rootHandle, "secret.txt", 0o600, 1000, 1000)
 	deleg := fx.handler.StateManager.GrantDelegation(clientA, []byte(fileHandle), types.OPEN_DELEGATE_WRITE)

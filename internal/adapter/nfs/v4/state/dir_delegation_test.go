@@ -544,6 +544,7 @@ func registerTestV41Client(t *testing.T, sm *StateManager) uint64 {
 	record := &V41ClientRecord{
 		ClientID:   clientID,
 		OwnerID:    []byte("test-v41-client-dir-deleg"),
+		Confirmed:  true,
 		ClientAddr: "127.0.0.1",
 		CreatedAt:  time.Now(),
 		Lease:      NewLeaseState(clientID, 90*time.Second, nil),

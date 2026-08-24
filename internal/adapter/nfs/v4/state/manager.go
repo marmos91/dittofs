@@ -692,6 +692,51 @@ func (sm *StateManager) GetClient(clientID uint64) *ClientRecord {
 	return sm.clientsByID[clientID]
 }
 
+// renewConfirmedClient admits a confirmed client whose lease is still live and
+// stamps the renewal. Shared by RENEW and by the implicit renewal every
+// operation carrying a valid clientid gets, so the two admission paths cannot
+// disagree about what a renewal updates.
+//
+// Caller must hold sm.mu.
+func renewConfirmedClient(confirmed bool, lease *LeaseState, lastRenewal *time.Time) error {
+	if !confirmed {
+		return ErrStaleClientID
+	}
+	if lease != nil {
+		if lease.IsExpired() {
+			return ErrExpired
+		}
+		lease.Renew()
+	}
+	*lastRenewal = time.Now()
+	return nil
+}
+
+// ValidateAndRenewClient admits clientID for an operation and renews its lease
+// in one critical section. Unknown or unconfirmed gives ErrStaleClientID (RFC
+// 7530 Sections 9.1.1 and 13.1.10.2); a lapsed lease not yet reaped gives
+// ErrExpired (Section 9.6.3.2).
+//
+// Renewal is what Section 9.6.2 grants any operation carrying a valid clientid.
+// Without it a v4.0 client that stops sending RENEW once it holds no open state
+// has an active mount mistaken for an idle one.
+//
+// Callers admit before doing any work: OPEN creates or truncates its target
+// before it establishes state, so a clientid rejected afterwards strands a file
+// the client was told it had not created.
+func (sm *StateManager) ValidateAndRenewClient(clientID uint64) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if record := sm.clientsByID[clientID]; record != nil {
+		return renewConfirmedClient(record.Confirmed, record.Lease, &record.LastRenewal)
+	}
+	if v41 := sm.v41ClientsByID[clientID]; v41 != nil {
+		return renewConfirmedClient(v41.Confirmed, v41.Lease, &v41.LastRenewal)
+	}
+	return ErrStaleClientID
+}
+
 // RemoveClient removes a client record and all associated state.
 // Used by lease expiry to clean up expired clients.
 func (sm *StateManager) RemoveClient(clientID uint64) {
@@ -1165,7 +1210,7 @@ func (sm *StateManager) OpenFile(
 		copy(owner.OwnerData, ownerData)
 		sm.openOwners[ownerKey] = owner
 
-		// Register with client record if available
+		// Nil for v4.1 clients, torn down by purgeV41Client instead.
 		if clientRecord != nil {
 			clientRecord.OpenOwners[string(ownerData)] = owner
 		}
@@ -1779,25 +1824,15 @@ func (sm *StateManager) RenewLease(clientID uint64) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	// v4.0 only: RENEW does not exist in v4.1, where SEQUENCE renews the lease.
 	record, exists := sm.clientsByID[clientID]
 	if !exists {
 		return ErrStaleClientID
 	}
 
-	if !record.Confirmed {
-		return ErrStaleClientID
+	if err := renewConfirmedClient(record.Confirmed, record.Lease, &record.LastRenewal); err != nil {
+		return err
 	}
-
-	// Check if lease has expired
-	if record.Lease != nil && record.Lease.IsExpired() {
-		return ErrExpired
-	}
-
-	// Renew the lease timer
-	if record.Lease != nil {
-		record.Lease.Renew()
-	}
-	record.LastRenewal = time.Now()
 
 	logger.Debug("RenewLease: lease renewed",
 		"client_id", clientID,
