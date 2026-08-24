@@ -489,11 +489,10 @@ func TestConcurrentWriteEvictRace(t *testing.T) {
 	wg.Wait()
 }
 
-// TestInvalidatedRangeSurvivesEviction pins the durability of a demotion.
-// Invalidate is the one path that marks an interval cold while its record is
-// still live in a segment on disk, and every reclaim path treats a cold interval
-// as owning nothing there — so without a durable marker the reclaim unlinks the
-// only copy and the range comes back from a restart as a hole that reads zeros.
+// TestInvalidatedRangeSurvivesEviction pins the durability of a demotion: the
+// segment still holding the demoted range is evicted, so only a cold-log marker
+// can carry it across the restart. Without one the range comes back a hole that
+// reads zeros.
 func TestInvalidatedRangeSurvivesEviction(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}

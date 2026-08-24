@@ -1183,14 +1183,13 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 // that has proven the local bytes bad demotes them first, and the re-fetch then
 // lands in a range the journal no longer claims to hold.
 //
-// The markers are persisted to the cold log FIRST, for the same reason eviction
-// persists them first: this is the one path that marks an interval cold while
-// its record is still live in a segment on disk, and every path that reclaims a
-// segment — eviction, the emptied-segment sweep, GC repack — treats a cold
-// interval as owning nothing there. Without a durable marker the reclaim unlinks
-// the only copy and a restart finds neither a record nor a marker, so the range
-// comes back a hole and reads zeros. Persisting first can at worst leave a
-// marker for bytes that are still local, which costs a needless remote fetch.
+// The markers are persisted to the cold log before the flip. This is the one
+// path that marks an interval cold while its record is still live in a segment,
+// and every path that reclaims a segment — eviction, the emptied-segment sweep,
+// GC repack — treats a cold interval as owning nothing there, so without a
+// durable marker the reclaim unlinks the only copy and a restart finds the range
+// a hole that reads zeros. Persisting first can at worst leave a marker for
+// bytes that are still local, which costs a needless remote fetch.
 //
 // A failed append leaves the interval warm and returns the error, so the caller's
 // read fails closed rather than proceeding on a demotion the store cannot keep.
@@ -1213,12 +1212,16 @@ func (s *Store) Invalidate(_ context.Context, id FileID, off, length int64) erro
 	if fi == nil {
 		return nil
 	}
-	var entries []coldEntry
+	var (
+		entries []coldEntry
+		hits    []int
+	)
 	for k := range fi.ivs {
 		iv := &fi.ivs[k]
 		if iv.end() <= off || iv.fileOff >= end || iv.cold || !iv.synced {
 			continue
 		}
+		hits = append(hits, k)
 		entries = append(entries, coldEntry{
 			id:      id,
 			fileOff: iv.fileOff,
@@ -1232,12 +1235,8 @@ func (s *Store) Invalidate(_ context.Context, id FileID, off, length int64) erro
 	if err := s.appendCold(entries); err != nil {
 		return err
 	}
-	for k := range fi.ivs {
-		iv := &fi.ivs[k]
-		if iv.end() <= off || iv.fileOff >= end || iv.cold || !iv.synced {
-			continue
-		}
-		iv.cold = true
+	for _, k := range hits {
+		fi.ivs[k].cold = true
 	}
 	return nil
 }

@@ -166,10 +166,13 @@ mount_smb || fail "cifs mount"
 cat > "$WORK/records.py" <<'PY'
 import hashlib, os, sys
 
-def body(i, record):
+def marker(i):
     head = ("REC%08d" % i).encode()
-    b = head + hashlib.sha256(head).digest()
-    return b + b"\xa5" * (record - len(b))
+    return head + hashlib.sha256(head).digest()
+
+def body(i, record):
+    m = marker(i)
+    return m + b"\xa5" * (record - len(m))
 
 if sys.argv[1] == "write":
     path, record, count = sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
@@ -177,48 +180,29 @@ if sys.argv[1] == "write":
         for i in range(count):
             f.write(body(i, record))
         os.fsync(f.fileno())
-elif sys.argv[1] == "verify":
-    path, record, count = sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
-    data = open(path, "rb").read()
-    zeros = garbage = short = 0
-    for i in range(count):
-        got = data[i * record:(i + 1) * record]
-        if len(got) < record:
-            short += 1
-        elif got == body(i, record):
-            pass
-        elif got == b"\x00" * len(got):
-            zeros += 1
-        else:
-            garbage += 1
-    print("bytes=%d want=%d zeros=%d garbage=%d short=%d"
-          % (len(data), record * count, zeros, garbage, short))
-    print("VERDICT=%s" % ("PASS" if (zeros or garbage or short) == 0 else "FAIL"))
 elif sys.argv[1] == "corrupt":
-    # Flip a byte inside the target record's payload as it sits in a segment.
-    # The record's body CRC covers the payload, so the next warm read of it
-    # fails verification with the interval already live in the index — which is
-    # the only way to reach the demotion this rig tests.
-    segdir, record = sys.argv[2], int(sys.argv[3])
-    marker = ("REC%08d" % int(sys.argv[4])).encode() + \
-             hashlib.sha256(("REC%08d" % int(sys.argv[4])).encode()).digest()
+    # Flip a byte of the target record's filler as it sits in a segment. The
+    # record's body CRC covers the payload, so the next warm read of it fails
+    # verification with the interval already live in the index — which is the
+    # only way to reach the demotion this rig tests.
+    segdir, m = sys.argv[2], marker(int(sys.argv[3]))
     segs = []
     for root, _, names in os.walk(segdir):
         segs += [os.path.join(root, n) for n in names if n.endswith(".seg")]
     for p in sorted(segs):
         with open(p, "r+b") as f:
             blob = f.read()
-            at = blob.find(marker)
+            at = blob.find(m)
             if at < 0:
                 continue
-            spot = at + 64
+            spot = at + len(m)
             f.seek(spot)
             f.write(bytes([blob[spot] ^ 0xFF]))
             f.flush()
             os.fsync(f.fileno())
         print("corrupted %s at %d" % (p, spot))
         sys.exit(0)
-    sys.exit("marker for record %s not found in any segment" % sys.argv[4])
+    sys.exit("marker for record %s not found in any segment" % sys.argv[3])
 PY
 
 python3 "$WORK/records.py" write "$WORK/smb/cold.bin" "$RECORD" "$RECORDS" || fail "write"
@@ -242,7 +226,7 @@ start_server || fail "server did not come back"
 mount_smb || fail "cifs remount"
 
 # --- corrupt one record in place, with the server running -------------------
-python3 "$WORK/records.py" corrupt "$DATA/blocks" "$RECORD" "$TARGET_REC" \
+python3 "$WORK/records.py" corrupt "$DATA/blocks" "$TARGET_REC" \
   || fail "could not corrupt the target record"
 
 # --- take the remote away, so the heal's re-fetch fails ---------------------
