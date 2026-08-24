@@ -254,6 +254,13 @@ log "evicted"
 # journal directory with no remote, and it is what separates the two states:
 # a range that kept its marker reads cold and FAILS CLOSED, while a range that
 # lost it reads as a hole and is zero-filled with no error at any layer.
+# Bring the remote back up first. It only had to be down at the heal, and the
+# detach drains uploads through it — against a stopped remote that drain times
+# out, the rebind fails, and the read failures below would then be as easily
+# blamed on a broken rebind as on a lost marker. With it up the detach is clean,
+# and the probes fail only because the share has no remote tier at all.
+start_minio || fail "minio did not come back before the detach"
+
 TOKEN=$(python3 -c "
 import json
 d = json.load(open('$WORK/cfg/dfsctl/config.json'))
