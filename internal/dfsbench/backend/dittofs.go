@@ -662,15 +662,29 @@ const dittofsBarrierLogTailBytes = 256 << 10
 
 // dittofsBarrierDiag collects what the bare "local disk only fell X→Y" error
 // throws away: the full block-store stats JSON at each step, what the evict
-// reported freeing, and the server log written while the barrier ran. Fields
-// left empty mark steps the barrier never reached, which is itself part of the
-// answer.
+// reported freeing, and the server log written while the barrier ran. A step
+// left empty is one the barrier never reached, which is itself part of the
+// answer — a step that was reached but whose capture failed carries the note
+// dittofsCapture built for it, so the two never read alike.
 type dittofsBarrierDiag struct {
 	logOffset int64  // server-log size when the barrier started
-	entry     []byte // stats before the drain — the "before" the ratio is measured against
-	postDrain []byte // stats after the drain loop, i.e. immediately before the evict
-	evictOut  []byte // `store block evict -o json`: files evicted, bytes freed
-	postEvict []byte // stats after the evict — the "after" of the ratio
+	entry     string // stats before the drain — the "before" the ratio is measured against
+	postDrain string // stats after the drain loop, i.e. immediately before the evict
+	evictOut  string // `store block evict -o json`: files evicted, bytes freed
+	postEvict string // stats after the evict — the "after" of the ratio
+}
+
+// dittofsCapture renders one captured command output for the dump: the output
+// itself, or a note naming the error when the capture failed. An empty string is
+// reserved for a step the barrier never reached.
+func dittofsCapture(out []byte, err error) string {
+	if err != nil {
+		return fmt.Sprintf("(capture failed: %v)", err)
+	}
+	if s := strings.TrimSpace(string(out)); s != "" {
+		return s
+	}
+	return "(command produced no output)"
 }
 
 // dump prints the collected evidence to the run log, which is pulled back off
@@ -679,19 +693,18 @@ func (d *dittofsBarrierDiag) dump(cause error) {
 	_, _ = fmt.Fprintf(exec.CmdOut, "cold barrier diagnostics — %v\n", cause)
 	for _, step := range []struct {
 		label string
-		raw   []byte
+		text  string
 	}{
 		{"block stats at barrier entry", d.entry},
 		{"block stats after drain (pre-evict)", d.postDrain},
 		{"evict result", d.evictOut},
 		{"block stats after evict", d.postEvict},
 	} {
-		raw := strings.TrimSpace(string(step.raw))
-		if raw == "" {
-			_, _ = fmt.Fprintf(exec.CmdOut, "  %s: not reached\n", step.label)
-			continue
+		text := step.text
+		if text == "" {
+			text = "not reached"
 		}
-		_, _ = fmt.Fprintf(exec.CmdOut, "  %s: %s\n", step.label, raw)
+		_, _ = fmt.Fprintf(exec.CmdOut, "  %s: %s\n", step.label, text)
 	}
 	_, _ = fmt.Fprintf(exec.CmdOut, "  surviving local tier: %s\n", dittofsResidentFiles(dittofsDataDir+"/blocks"))
 	_, _ = fmt.Fprintf(exec.CmdOut, "  server log (%s) since barrier entry:\n%s\n",
@@ -721,13 +734,21 @@ func dittofsResidentFiles(dir string) string {
 	}
 	var files []entry
 	var total int64
-	// The callback swallows every error, so the walk itself cannot fail.
+	unreadable := 0
+	// The callback swallows every error so one bad subtree costs a line of the
+	// sample rather than the whole dump, but it counts them: a partial scan that
+	// printed as a complete one would misdescribe the tier the barrier left behind.
 	_ = filepath.WalkDir(dir, func(path string, e os.DirEntry, err error) error {
-		if err != nil || e.IsDir() {
-			return nil //nolint:nilerr // an unreadable subtree costs one line of the sample, not the dump
+		if err != nil {
+			unreadable++
+			return nil //nolint:nilerr // counted above and reported below, not silently dropped
+		}
+		if e.IsDir() {
+			return nil
 		}
 		info, err := e.Info()
 		if err != nil {
+			unreadable++
 			return nil //nolint:nilerr // ditto
 		}
 		files = append(files, entry{strings.TrimPrefix(path, dir+"/"), info.Size()})
@@ -735,6 +756,9 @@ func dittofsResidentFiles(dir string) string {
 		return nil
 	})
 	if len(files) == 0 {
+		if unreadable > 0 {
+			return fmt.Sprintf("(unreadable: %d entries under %s could not be scanned)", unreadable, dir)
+		}
 		return fmt.Sprintf("%s is empty", dir)
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].size > files[j].size })
@@ -745,6 +769,9 @@ func dittofsResidentFiles(dir string) string {
 	}
 	if len(files) > dittofsResidentSampleFiles {
 		fmt.Fprintf(&b, " (+%d more)", len(files)-dittofsResidentSampleFiles)
+	}
+	if unreadable > 0 {
+		fmt.Fprintf(&b, "; %d entries unreadable, so the totals are a floor", unreadable)
 	}
 	return b.String()
 }
@@ -781,7 +808,9 @@ func dittofsLogSince(path string, off int64) string {
 	if _, err := f.Seek(start, io.SeekStart); err != nil {
 		return fmt.Sprintf("(unreadable: %v)", err)
 	}
-	b, err := io.ReadAll(f)
+	// Cap the read itself, not just the seek: the file can grow between the Stat
+	// above and this read, and a busy server would otherwise flood the run log.
+	b, err := io.ReadAll(io.LimitReader(f, dittofsBarrierLogTailBytes))
 	if len(b) == 0 && err != nil {
 		return fmt.Sprintf("(unreadable: %v)", err)
 	}
@@ -817,7 +846,7 @@ func dittofsColdBarrier(ctx context.Context, diag *dittofsBarrierDiag) error {
 	// DiskWr/NetRx meter exposed: cold pulled only ~15-33 MB/s from S3 while the
 	// data sat on the block volume).
 	raw, before, err := dittofsBlockStatsRaw(ctx)
-	diag.entry = raw
+	diag.entry = dittofsCapture(raw, err)
 	if err != nil {
 		return err
 	}
@@ -827,7 +856,8 @@ func dittofsColdBarrier(ctx context.Context, diag *dittofsBarrierDiag) error {
 	// Sample between the drain and the evict: this separates "the drain left bytes
 	// the evict was right to refuse" from "the evict declined bytes the drain had
 	// already made durable" — which the before/after pair alone cannot tell apart.
-	diag.postDrain, _, err = dittofsBlockStatsRaw(ctx)
+	raw, _, err = dittofsBlockStatsRaw(ctx)
+	diag.postDrain = dittofsCapture(raw, err)
 	if err != nil {
 		return err
 	}
@@ -836,12 +866,12 @@ func dittofsColdBarrier(ctx context.Context, diag *dittofsBarrierDiag) error {
 	// result rather than the success line: bytes_freed says directly whether the
 	// evict declined to drop anything or dropped bytes that came back.
 	evictOut, err := exec.Out(ctx, "dfsctl", "store", "block", "evict", "-o", "json")
-	diag.evictOut = evictOut
+	diag.evictOut = dittofsCapture(evictOut, err)
 	if err != nil {
 		return fmt.Errorf("dfsctl store block evict: %w", err)
 	}
 	raw, after, err := dittofsBlockStatsRaw(ctx)
-	diag.postEvict = raw
+	diag.postEvict = dittofsCapture(raw, err)
 	if err != nil {
 		return err
 	}

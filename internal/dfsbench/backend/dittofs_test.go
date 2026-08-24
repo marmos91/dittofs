@@ -112,7 +112,7 @@ func TestDittofsBarrierDiagDumpMarksUnreachedSteps(t *testing.T) {
 
 	// A barrier that failed inside the drain reaches only the entry sample; the
 	// dump must say which evidence is missing rather than print empty sections.
-	d := dittofsBarrierDiag{entry: []byte(`{"totals":{"local_disk_used":1}}`)}
+	d := dittofsBarrierDiag{entry: `{"totals":{"local_disk_used":1}}`}
 	d.dump(errors.New("drain-uploads never fell below the floor"))
 
 	out := buf.String()
@@ -175,5 +175,75 @@ exit 0
 	// to the step it labels.
 	if strings.Contains(out, "not reached") {
 		t.Errorf("a step the barrier reached captured nothing:\n%s", out)
+	}
+}
+
+func TestDittofsCaptureDistinguishesFailureFromUnattempted(t *testing.T) {
+	// An empty string is the dump's marker for a step the barrier never reached,
+	// so a step that WAS attempted must never render as one — the two lead to
+	// opposite conclusions about where the barrier stopped.
+	if got := dittofsCapture(nil, errors.New("exit 1")); !strings.Contains(got, "capture failed: exit 1") {
+		t.Errorf("got %q, want a capture-failed note", got)
+	}
+	if got := dittofsCapture(nil, nil); got == "" {
+		t.Error("a successful command with empty output must not render as unattempted")
+	}
+	if got := dittofsCapture([]byte("  {}\n"), nil); got != "{}" {
+		t.Errorf("got %q, want the trimmed output", got)
+	}
+}
+
+func TestDittofsEvictMarksAFailedCaptureAsFailed(t *testing.T) {
+	bin := t.TempDir()
+	script := `#!/bin/sh
+case "$*" in
+  *"block stats"*) echo '{"totals":{"local_disk_used":5717934080,"unsynced_bytes":0}}' ;;
+  *"block evict"*) echo 'boom' >&2; exit 1 ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(bin, "dfsctl"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	buf := captureCmdOut(t)
+
+	if err := dittofsEvict(context.Background()); err == nil {
+		t.Fatal("want an error when the evict command fails")
+	}
+	out := buf.String()
+	if !strings.Contains(out, "evict result: (capture failed:") {
+		t.Errorf("a failed evict must be reported as failed, not unattempted:\n%s", out)
+	}
+	// The steps after the failure genuinely were not reached, and must still say so.
+	if !strings.Contains(out, "block stats after evict: not reached") {
+		t.Errorf("dump lost the not-reached marker:\n%s", out)
+	}
+}
+
+func TestDittofsResidentFilesReportsAPartialScan(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "locked")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "a.seg"), make([]byte, 1<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.seg"), make([]byte, 2<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// An unreadable subtree must not shrink the sample silently — the count would
+	// then describe a tier that is emptier than the real one.
+	if err := os.Chmod(sub, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
+
+	if os.Geteuid() == 0 {
+		t.Skip("root reads the directory regardless of its mode")
+	}
+	if got := dittofsResidentFiles(dir); !strings.Contains(got, "unreadable") {
+		t.Errorf("got %q, want the partial scan flagged", got)
 	}
 }
