@@ -473,3 +473,80 @@ func (s *BadgerMetadataStore) PutFilesystemMeta(ctx context.Context, shareName s
 		return tx.PutFilesystemMeta(ctx, shareName, meta)
 	})
 }
+
+// FileSizeByPayloadID returns just the persisted logical size of the file
+// carrying payloadID. found is false when no file row claims the payload.
+//
+// GetFileByPayloadID answers the same question but also loads the link count,
+// the chunk manifest and the derived path, the last of which walks the parent
+// chain with two point reads per component. Share start reconciles one size per
+// locally-resident file, so on a large store that discarded enrichment is the
+// whole cost.
+//
+// A payload with no pl: index entry reports not-found rather than falling back
+// to the keyspace scan GetFileByPayloadID uses for rows written before that
+// index existed: the open-time backfill indexes every such row before any
+// caller runs, so a miss here means no row holds the payload (an orphan journal
+// entry). An index entry that no longer resolves to a row claiming the payload
+// does fall back, and does so through GetFileByPayloadID itself, so the answer
+// stays identical.
+func (s *BadgerMetadataStore) FileSizeByPayloadID(ctx context.Context, payloadID metadata.PayloadID) (uint64, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, false, err
+	}
+	if payloadID == "" {
+		return 0, false, nil
+	}
+
+	var size uint64
+	var found, stale bool
+	err := s.db.View(func(txn *badgerdb.Txn) error {
+		item, err := txn.Get(keyPayloadID(payloadID))
+		if errors.Is(err, badgerdb.ErrKeyNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var fileID uuid.UUID
+		if err := item.Value(func(val []byte) error { return fileID.UnmarshalBinary(val) }); err != nil {
+			stale = true
+			return nil
+		}
+		row, err := txn.Get(keyFile(fileID))
+		if errors.Is(err, badgerdb.ErrKeyNotFound) {
+			stale = true
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return row.Value(func(val []byte) error {
+			file, err := decodeFile(val)
+			if err != nil || file.PayloadID != payloadID {
+				stale = true
+				return nil
+			}
+			size, found = file.Size, true
+			return nil
+		})
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	if !stale {
+		return size, found, nil
+	}
+
+	file, err := s.GetFileByPayloadID(ctx, payloadID)
+	if err != nil {
+		if metadata.IsNotFoundError(err) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	if file == nil {
+		return 0, false, nil
+	}
+	return file.Size, true, nil
+}

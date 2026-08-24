@@ -623,6 +623,14 @@ func (s *BadgerMetadataStore) GetUsedBytesForShare(ctx context.Context, shareNam
 // A non-nil indexBatch also stages a pl: index entry per file, so a store that
 // still needs indexing by payload pays one scan at open rather than two — the
 // decode is the expensive part and this is the only place already doing it.
+//
+// ponytail: one serial decode pass over every file row, so a ten-million-file
+// store spends seconds here before the first share opens
+// (BenchmarkInitUsedBytesCounter reports the per-file cost). Persisting the
+// buckets would remove the pass entirely but has to answer for their
+// consistency after a crash, and badger's Stream would parallelize the decode
+// at the cost of merging partial sums; do either only once this pass, and not
+// the per-share work around it, is what a start is waiting on.
 func (s *BadgerMetadataStore) initUsedBytesCounter(indexBatch *badger.WriteBatch) error {
 	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
 
