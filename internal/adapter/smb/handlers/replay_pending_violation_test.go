@@ -343,3 +343,44 @@ func TestParkedCreate_ReplayReservationClearedOnSessionCancel(t *testing.T) {
 	h.cancelAsyncOpsForSession(sessionID)
 	awaitFinalResponse(t, sent, types.StatusCancelled)
 }
+
+// TestParkedCreate_StaleBackstopCannotClearANewerReservation pins why the
+// release hook is capped at once per entry rather than merely "idempotent".
+//
+// The reservation is keyed by CreateGuid alone, so releasing it is not a
+// self-cancelling operation — it clears whatever reservation currently stands
+// under that key, no matter which CREATE put it there. The resume goroutine's
+// deferred backstop deliberately overlaps the explicit release on the paths
+// that send a response, so it fires again after the terminal status is already
+// on the wire. STATUS_SHARING_VIOLATION is exactly the status a client retries
+// with the same CreateGuid; if that retry parks and re-reserves first, an
+// uncapped backstop would delete the NEW CREATE's reservation, and a replay
+// would stop failing fast and could start a second concurrent CREATE.
+func TestParkedCreate_StaleBackstopCannotClearANewerReservation(t *testing.T) {
+	cache := NewCreateReplayCache()
+	const sessionID = uint64(7)
+	guid := [16]byte{0x2a, 0x1}
+
+	// A parked CREATE holding the reservation, wired as parkCreateOnLeaseBreak
+	// wires one.
+	parked := &PendingCreate{replayReleaser: func() { cache.Release(sessionID, guid) }}
+	cache.Reserve(sessionID, guid)
+
+	// It resolves and delivers its terminal status, releasing first.
+	parked.releaseReplay()
+	if cache.IsReserved(sessionID, guid) {
+		t.Fatal("release did not clear the parked CREATE's own reservation")
+	}
+
+	// The client retries the failed CREATE with the SAME CreateGuid; it parks
+	// again and takes a fresh reservation.
+	cache.Reserve(sessionID, guid)
+
+	// The finished entry's deferred backstop now fires.
+	parked.releaseReplay()
+
+	if !cache.IsReserved(sessionID, guid) {
+		t.Fatal("a finished CREATE's backstop cleared a newer CREATE's reservation for the same " +
+			"CreateGuid: a replay would stop failing fast and could start a second concurrent CREATE")
+	}
+}
