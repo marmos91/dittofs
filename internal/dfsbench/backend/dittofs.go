@@ -561,25 +561,81 @@ func dittofsWaitSettled(ctx context.Context) error {
 	}
 }
 
-// dittofsDrainDriftFloorBytes is the residual unsynced size the drain loop
-// tolerates as "done". A freshly-written file's final bytes sit in the append log
-// until the next rollup boundary, so a few chunks stay un-carved/un-synced
-// indefinitely without another write — requiring EXACTLY 0 loops forever. A few
-// MiB out of a multi-GiB file is <0.1% and does not meaningfully warm the cold
-// pass (the post-evict ≥80%-drop check is the real cold gate).
-const dittofsDrainDriftFloorBytes = 32 << 20 // 32 MiB
+// dittofsEvictSegmentBytes is the granularity at which eviction actually frees
+// local disk. The journal reclaims whole segments and refuses any segment still
+// holding an unsynced record, so one straggler keeps its entire segment resident.
+// pkg/block/local/fs leaves Config.SegmentSize unset, so the bench share runs on
+// the journal's own default.
+const dittofsEvictSegmentBytes int64 = 256 << 20
 
-// dittofsDrainUntilSynced loops `dfsctl system drain-uploads` until the store's
-// unsynced bytes fall to the drift floor, stable across two polls. A single drain
-// is not enough: rollup is async and carveFlush is snapshot-at-claim, so one pass
-// misses chunks that roll up mid-drain — leaving them locally resident and
-// un-evictable, so the "cold" pass silently reads them from local disk (the
-// confound that made several cold-read A/Bs meaningless). The short settle between
-// rounds lets the async rollup produce the next batch of CAS chunks for the
-// following drain to upload.
+// dittofsDrainStragglerBytes is the smallest residue assumed able to pin a
+// segment of its own. Unsynced bytes are spread over an unknown number of
+// records, and only that count decides how many segments they pin, so the drain
+// has to assume the finest spread it can plausibly see — the carver's minimum
+// chunk.
+//
+// ponytail: an estimate standing in for a count the store already tracks; report
+// unsynced records (or pinned segments) from `dfsctl store block stats` and the
+// estimate collapses into reading that field.
+const dittofsDrainStragglerBytes int64 = 1 << 20
+
+// dittofsDrainResidueOK reports whether a drain residue is small enough to leave
+// behind. Its size alone does not answer that: eviction frees segments, not
+// bytes, so what a residue costs is the segments it pins. 32 MiB sitting in one
+// segment pins 256 MiB; the same 32 MiB spread one straggler at a time pins 32
+// segments — 8 GiB — and the barrier that follows then fails on bytes the drain
+// deliberately left behind. A residue is harmless only when even the worst
+// spread still leaves the local tier able to shed the ≥80% the cold barrier goes
+// on to demand. Below the barrier's own floor that drop is never verified, so no
+// residue there can invalidate a measurement that was never going to be checked.
+func dittofsDrainResidueOK(unsyncedBytes, localResidentBytes int64) bool {
+	if unsyncedBytes <= 0 || localResidentBytes <= dittofsColdBarrierFloorBytes {
+		return true
+	}
+	pinned := dittofsWorstCasePinnedBytes(unsyncedBytes)
+	if pinned > localResidentBytes {
+		pinned = localResidentBytes
+	}
+	return pinned <= localResidentBytes/5
+}
+
+// dittofsWorstCasePinnedBytes is the local disk an unsynced residue can hold down
+// when every straggler in it sits alone in its own segment.
+func dittofsWorstCasePinnedBytes(unsyncedBytes int64) int64 {
+	if unsyncedBytes <= 0 {
+		return 0
+	}
+	segments := (unsyncedBytes + dittofsDrainStragglerBytes - 1) / dittofsDrainStragglerBytes
+	return segments * dittofsEvictSegmentBytes
+}
+
+// dittofsDrainResidueErr reports a residue the drain could not get below,
+// spelling out the segment arithmetic that makes it fatal — the number is
+// otherwise unreadable, since the residue is small and what fails is the local
+// disk it pins.
+func dittofsDrainResidueErr(st dittofsBlockTotals, rounds int) error {
+	pinned := dittofsWorstCasePinnedBytes(st.UnsyncedBytes)
+	return fmt.Errorf("drain-uploads left %dMiB unsynced after %d rounds (local=%dMiB pending_uploads=%d) — eviction frees whole %dMiB segments and skips any holding an unsynced record, so that residue can pin up to %dMiB locally, against the %dMiB the cold barrier lets survive",
+		st.UnsyncedBytes>>20, rounds, st.LocalDiskUsed>>20, st.PendingUploads,
+		dittofsEvictSegmentBytes>>20, pinned>>20, (st.LocalDiskUsed/5)>>20)
+}
+
+// dittofsDrainUntilSynced loops `dfsctl system drain-uploads` until the residue
+// left unsynced can no longer pin enough segments to warm the cold pass, stable
+// across two polls. A single drain is not enough: rollup is async and carveFlush
+// is snapshot-at-claim, so one pass misses chunks that roll up mid-drain —
+// leaving them locally resident and un-evictable, so the "cold" pass silently
+// reads them from local disk (the confound that made several cold-read A/Bs
+// meaningless). The short settle between rounds lets the async rollup produce the
+// next batch of CAS chunks for the following drain to upload.
 func dittofsDrainUntilSynced(ctx context.Context) error {
 	const maxRounds = 60
-	stable := 0
+	// Rounds an intolerable residue may sit unchanged before the loop gives up.
+	// Each round costs a full drain-uploads timeout, so riding out every round on
+	// a residue that is not moving turns a failed barrier into a many-hour one.
+	const maxFlatRounds = 3
+	stable, flat := 0, 0
+	prevUnsynced := int64(-1)
 	for i := 0; i < maxRounds; i++ {
 		// Bound each drain explicitly (issue #1668): a cold-evict drain of a large
 		// working set can exceed the client's 6m default, and the failure surfaces
@@ -594,13 +650,21 @@ func dittofsDrainUntilSynced(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if st.UnsyncedBytes <= dittofsDrainDriftFloorBytes {
+		switch {
+		case dittofsDrainResidueOK(st.UnsyncedBytes, st.LocalDiskUsed):
+			flat = 0
 			if stable++; stable >= 2 {
 				return nil
 			}
-		} else {
+		case st.UnsyncedBytes == prevUnsynced:
 			stable = 0
+			if flat++; flat >= maxFlatRounds {
+				return dittofsDrainResidueErr(st, i+1)
+			}
+		default:
+			stable, flat = 0, 0
 		}
+		prevUnsynced = st.UnsyncedBytes
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -608,8 +672,7 @@ func dittofsDrainUntilSynced(ctx context.Context) error {
 		}
 	}
 	st, _ := dittofsBlockStats(ctx)
-	return fmt.Errorf("drain-uploads never fell below %dMiB unsynced after %d rounds (unsynced=%dMiB pending_uploads=%d) — cannot force a cold read",
-		dittofsDrainDriftFloorBytes>>20, maxRounds, st.UnsyncedBytes>>20, st.PendingUploads)
+	return dittofsDrainResidueErr(st, maxRounds)
 }
 
 // dittofsReportDrainProgress samples the store's unsynced size every
