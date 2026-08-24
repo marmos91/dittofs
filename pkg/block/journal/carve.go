@@ -243,12 +243,18 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 		return nil
 	}
 
+	// One semaphore for the whole file: it bounds in-flight blocks across all of
+	// this file's runs, not just the one currently carving, so peak carve RAM
+	// stays cap(sem) x (CarveBlockSize + one overhang chunk) regardless of how
+	// many runs a file has.
+	sem := make(chan struct{}, s.cfg.CarveUploadConcurrency)
+
 	for start := 0; start < len(snap); {
 		end := start + 1
 		for end < len(snap) && snap[end].fileOff == snap[end-1].end() {
 			end++
 		}
-		r, err := s.carveRun(ctx, sh, id, snap[start:end])
+		r, err := s.carveRun(ctx, sh, id, snap[start:end], sem)
 		res.BlocksWritten += r.BlocksWritten
 		res.BytesCarved += r.BytesCarved
 		if err != nil {
@@ -263,7 +269,7 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 // carveRun streams one contiguous dirty run through FastCDC, dedups each chunk,
 // packs novel chunks into blocks (flushed at CarveBlockSize and at the run's end),
 // and flips the run's records to synced as the durable frontier advances.
-func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interval) (CarveResult, error) {
+func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interval, sem chan struct{}) (CarveResult, error) {
 	var res CarveResult
 	run, err := s.extendRunToRowEnd(ctx, sh, id, run)
 	if err != nil {
@@ -282,7 +288,7 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 	// disp overlaps successive blocks' CommitBlock (upload + commit) while packing
 	// stays sequential. It owns the bounded worker pool, the per-block buffers and
 	// the ordered flip chain; flush hands it a completed block or a bare watermark.
-	disp := newCarveDispatcher(ctx, s, sh, id, run, &res, &flipIdx)
+	disp := newCarveDispatcher(ctx, s, sh, id, run, &res, &flipIdx, sem)
 
 	// Each packed block gets its OWN buffer (cap one block plus one overhang chunk)
 	// so its bytes stay live while its CommitBlock runs concurrently with the next
