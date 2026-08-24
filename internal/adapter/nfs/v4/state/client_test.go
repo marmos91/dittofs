@@ -653,6 +653,55 @@ func TestValidateAndRenewClient_V41Client_Accepted(t *testing.T) {
 	}
 }
 
+// Admission renews the lease the same way RENEW and SEQUENCE do, which means
+// stamping LastRenewal — a v4.0 and a v4.1 client must come out of it in the
+// same state as if they had renewed explicitly.
+func TestValidateAndRenewClient_StampsLastRenewal(t *testing.T) {
+	tests := []struct {
+		name        string
+		register    func(*testing.T, *StateManager) uint64
+		lastRenewal func(*StateManager, uint64) time.Time
+	}{
+		{
+			name: "v4.0",
+			register: func(t *testing.T, sm *StateManager) uint64 {
+				return registerTestClientWithName(t, sm, "renewed-client")
+			},
+			lastRenewal: func(sm *StateManager, clientID uint64) time.Time {
+				return sm.GetClient(clientID).LastRenewal
+			},
+		},
+		{
+			name:     "v4.1",
+			register: registerTestV41Client,
+			lastRenewal: func(sm *StateManager, clientID uint64) time.Time {
+				sm.mu.RLock()
+				defer sm.mu.RUnlock()
+				return sm.v41ClientsByID[clientID].LastRenewal
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sm := NewStateManager(90 * time.Second)
+			defer sm.Shutdown()
+
+			clientID := tt.register(t, sm)
+			confirmed := tt.lastRenewal(sm, clientID)
+			time.Sleep(time.Millisecond)
+
+			if err := sm.ValidateAndRenewClient(clientID); err != nil {
+				t.Fatalf("ValidateAndRenewClient: %v", err)
+			}
+
+			if renewed := tt.lastRenewal(sm, clientID); !renewed.After(confirmed) {
+				t.Errorf("LastRenewal = %v, want later than the %v stamped at confirm time", renewed, confirmed)
+			}
+		})
+	}
+}
+
 // ============================================================================
 // NewStateManager Tests
 // ============================================================================
