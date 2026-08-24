@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -694,8 +695,62 @@ func (d *dittofsBarrierDiag) dump(cause error) {
 		}
 		_, _ = fmt.Fprintf(exec.CmdOut, "  %s: %s\n", step.label, raw)
 	}
+	_, _ = fmt.Fprintf(exec.CmdOut, "  surviving local tier: %s\n", dittofsResidentFiles(dittofsDataDir+"/blocks"))
 	_, _ = fmt.Fprintf(exec.CmdOut, "  server log (%s) since barrier entry:\n%s\n",
 		dittofsServerLog, dittofsLogSince(dittofsServerLog, d.logOffset))
+}
+
+// dittofsResidentSampleFiles is how many of the largest surviving files the
+// failure dump names.
+const dittofsResidentSampleFiles = 20
+
+// dittofsResidentFiles summarises what is still on the local tier under dir: the
+// file count, their total size, and the largest few by name and size. The block
+// stats JSON reports only an aggregate byte count, which cannot distinguish a
+// remainder made of whole journal segments (eviction's unit is a segment, so one
+// unsynced record keeps its entire segment resident) from one spread thinly
+// across many files. The shape of the surviving set is what tells those apart.
+// Best-effort: it explains a barrier that already failed and never adds a second
+// failure, so every error becomes a parenthesised note.
+func dittofsResidentFiles(dir string) string {
+	type entry struct {
+		name string
+		size int64
+	}
+	var files []entry
+	var total int64
+	err := filepath.WalkDir(dir, func(path string, e os.DirEntry, err error) error {
+		if err != nil || e.IsDir() {
+			return nil //nolint:nilerr // an unreadable subtree costs one line of the sample, not the dump
+		}
+		info, err := e.Info()
+		if err != nil {
+			return nil //nolint:nilerr // ditto
+		}
+		rel, relErr := filepath.Rel(dir, path)
+		if relErr != nil {
+			rel = path
+		}
+		files = append(files, entry{rel, info.Size()})
+		total += info.Size()
+		return nil
+	})
+	if err != nil {
+		return fmt.Sprintf("(unreadable: %v)", err)
+	}
+	if len(files) == 0 {
+		return fmt.Sprintf("%s is empty", dir)
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].size > files[j].size })
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d files, %dMiB total; largest:", len(files), total>>20)
+	for _, f := range files[:min(len(files), dittofsResidentSampleFiles)] {
+		fmt.Fprintf(&b, " %s=%dMiB", f.name, f.size>>20)
+	}
+	if len(files) > dittofsResidentSampleFiles {
+		fmt.Fprintf(&b, " (+%d more)", len(files)-dittofsResidentSampleFiles)
+	}
+	return b.String()
 }
 
 // dittofsLogSize reports the current size of path, or 0 when it cannot be

@@ -64,6 +64,35 @@ func TestDittofsLogSizeMissingFileIsZero(t *testing.T) {
 	}
 }
 
+func TestDittofsResidentFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "share"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, size := range map[string]int{
+		"share/000001.seg": 3 << 20,
+		"share/000002.seg": 1 << 20,
+		"small":            0,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), make([]byte, size), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := dittofsResidentFiles(dir)
+	// Largest first, so the shape of the surviving set is legible at a glance.
+	if !strings.Contains(got, "3 files, 4MiB total") {
+		t.Errorf("missing totals: %s", got)
+	}
+	if i, j := strings.Index(got, "000001.seg"), strings.Index(got, "000002.seg"); i < 0 || j < 0 || i > j {
+		t.Errorf("files not ordered largest-first: %s", got)
+	}
+
+	if got := dittofsResidentFiles(filepath.Join(dir, "absent")); !strings.Contains(got, "empty") {
+		t.Errorf("got %q, want an empty-dir note", got)
+	}
+}
+
 func TestDittofsBarrierDiagDumpMarksUnreachedSteps(t *testing.T) {
 	var buf bytes.Buffer
 	prev := exec.CmdOut
