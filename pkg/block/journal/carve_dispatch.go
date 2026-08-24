@@ -45,7 +45,7 @@ type carveDispatcher struct {
 	abort    atomic.Bool
 }
 
-func newCarveDispatcher(ctx context.Context, s *Store, sh *shard, id FileID, run []interval, res *CarveResult, flipIdx *int) *carveDispatcher {
+func newCarveDispatcher(ctx context.Context, s *Store, sh *shard, id FileID, run []interval, res *CarveResult, flipIdx *int, sem chan struct{}) *carveDispatcher {
 	// A pre-satisfied predecessor so the first block flips as soon as it commits.
 	prev := make(chan bool, 1)
 	prev <- true
@@ -57,7 +57,7 @@ func newCarveDispatcher(ctx context.Context, s *Store, sh *shard, id FileID, run
 		run:     run,
 		res:     res,
 		flipIdx: flipIdx,
-		sem:     make(chan struct{}, s.cfg.CarveUploadConcurrency),
+		sem:     sem,
 		prev:    prev,
 	}
 }

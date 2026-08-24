@@ -100,6 +100,14 @@ func (s *fakeSink) CommitBlock(_ context.Context, chunks []CarveChunk) error {
 	return nil
 }
 
+// chunkAt returns the plaintext committed at a file offset, or nil if nothing
+// was committed there.
+func (s *fakeSink) chunkAt(off int64) []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.chunks[off]
+}
+
 // carved reassembles every committed chunk in file-offset order.
 func (s *fakeSink) carved() []byte {
 	s.mu.Lock()
