@@ -2121,14 +2121,10 @@ func (h *Handler) breakParentDirLeasesForContentChangeOn(ctx *SMBHandlerContext,
 	parentDbg := fmt.Sprintf("%x", parentHandle)
 	shareName := openFile.ShareName
 
-	dispatch := func() {
-		if breakErr := h.LeaseManager.BreakParentDirLeasesOnContentChangeAsync(
-			parentLockHandle, shareName, "",
-			excludeParentKey, hasExcludeKey,
-		); breakErr != nil {
-			logger.Debug("SET_INFO: parent directory lease break-to-None failed", "path", path, "parent", parentDbg, "error", breakErr)
-		}
-	}
+	logger.Debug("SET_INFO: parent directory lease break-to-None recorded", "path", path, "parent", parentDbg)
+	dispatch := h.LeaseManager.PrepareParentDirLeaseBreakOnContentChange(
+		parentLockHandle, shareName, "", excludeParentKey, hasExcludeKey)
+	dispatch = func(send func()) func() { return func() { time.Sleep(80 * time.Millisecond); send() } }(dispatch) // TEMP REPRO WIDENER
 
 	// Defer dispatch until after the triggering request's response is on the
 	// wire when an SMB ctx is available. Mirrors Samba `send_break_to_none`
@@ -2345,15 +2341,9 @@ func (h *Handler) handleFileLinkInformation(
 		hasExcludeKey := openFile.HasParentLeaseKey
 		shareName := openFile.ShareName
 		dstDbg := newPath
-		dispatch := func() {
-			if breakErr := h.LeaseManager.BreakParentDirLeasesOnContentChangeAsync(
-				dstParentLock, shareName,
-				"", excludeParentKey, hasExcludeKey,
-			); breakErr != nil {
-				logger.Debug("SET_INFO: hardlink dst-parent dir lease break-to-None failed",
-					"dst", dstDbg, "error", breakErr)
-			}
-		}
+		logger.Debug("SET_INFO: hardlink dst-parent dir lease break-to-None recorded", "dst", dstDbg)
+		dispatch := h.LeaseManager.PrepareParentDirLeaseBreakOnContentChange(
+			dstParentLock, shareName, "", excludeParentKey, hasExcludeKey)
 		// Defer until after the SET_INFO response is on the wire so the
 		// client's lease handler runs in the next tevent cycle with
 		// lease_skip_ack=true (see breakParentDirLeasesForContentChangeOn

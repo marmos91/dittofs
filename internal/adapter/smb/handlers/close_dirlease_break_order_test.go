@@ -102,15 +102,13 @@ func TestClose_DirLeaseRelease_AfterOpenFileRemoval(t *testing.T) {
 	// signal branch (gated on lock.Lease.Breaking) is inert. Use the async
 	// (no-ACK, no-wait) dispatch so the lease lands in Breaking=true without
 	// blocking the test on a holder ack that never arrives.
-	if err := h.LeaseManager.BreakParentDirLeasesOnContentChangeAsync(
+	h.LeaseManager.PrepareParentDirLeaseBreakOnContentChange(
 		lock.FileHandle(dirMetaHandle),
 		shareName,
 		"",
 		[16]byte{},
 		false,
-	); err != nil {
-		t.Fatalf("BreakParentDirLeasesOnContentChangeAsync: %v", err)
-	}
+	)()
 
 	// Register the holder's OpenFile (the conflicting dst-parent dir handle).
 	openFile := (&OpenFile{

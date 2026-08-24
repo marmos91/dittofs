@@ -704,9 +704,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		// EDEADLK. The break notification is still sent (same
 		// BreakLeasesOnOpenConflict dispatch); the holder acks on its own
 		// schedule. Mirrors Samba contend_dirleases → send_break_to_none.
-		if breakErr := h.LeaseManager.BreakParentDirLeasesOnContentChangeAsync(parentLockHandle, tree.ShareName, "", excludeParentKey, hasExcludeKey); breakErr != nil {
-			logger.Debug("CREATE: parent directory lease break failed", "error", breakErr)
-		}
+		h.LeaseManager.PrepareParentDirLeaseBreakOnContentChange(parentLockHandle, tree.ShareName, "", excludeParentKey, hasExcludeKey)()
 	}
 
 	// Step 7: Perform create/open.
