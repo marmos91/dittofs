@@ -280,7 +280,7 @@ func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 	// the gate is keyed on an exact offset, so drift in either could leave the
 	// refusal branch unreached while every assertion below still passes.
 	if gated == 0 {
-		t.Fatalf("the gated lookup was never reached, so the refusal branch was never exercised and this test proves nothing")
+		t.Fatalf("the gated lookup was never reached, so the extension path this test drives was never exercised and the assertions below prove nothing")
 	}
 	if len(reaps) != len(dirty) {
 		t.Fatalf("got %d reap ranges, want %d: %v", len(reaps), len(dirty), reaps)

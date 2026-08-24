@@ -123,6 +123,12 @@ type supersededReaper interface {
 // Carving through to the reported offset is what keeps that range covered. Sinks
 // without a metadata store (test fakes) don't implement it and a run is carved
 // exactly as snapshotted.
+//
+// The answer is the greatest end among rows starting strictly before off and
+// reaching past it, or off itself when none does — never a value below off. A
+// fake that answers with a constant, or with zero, is not answering this
+// question, and a caller that gates on the result will behave differently
+// against it than against a metadata store.
 type manifestRowEnder interface {
 	ManifestRowEndAfter(ctx context.Context, id FileID, off int64) (int64, error)
 }

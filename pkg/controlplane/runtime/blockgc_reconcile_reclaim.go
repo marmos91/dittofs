@@ -70,7 +70,11 @@ func (r *Runtime) ReconcileReclaim(ctx context.Context, dryRun bool) (*engine.Re
 			// Buffered per share so a walk that fails partway (line below)
 			// discards this share's bytes instead of leaving remoteBytes
 			// holding a partial sum while liveLogical already counts the
-			// share in full — the two totals must only ever grow together.
+			// share in full — a share contributes to both totals or to
+			// neither. The two still measure different things: remoteBytes
+			// counts each block once across all shares, while liveLogical
+			// sums per-share usage, so shares referencing a shared block
+			// each count its logical bytes. The ratio is an estimate.
 			shareBlocks := make(map[string]int64)
 			walkErr := rv.WalkBlockRecords(ctx, func(rec block.BlockRecord) error {
 				metaBlockIDs[rec.BlockID] = struct{}{}
@@ -89,6 +93,10 @@ func (r *Runtime) ReconcileReclaim(ctx context.Context, dryRun bool) (*engine.Re
 					}
 				}
 				liveLogical += used
+			} else {
+				logger.Warn("ReconcileReclaim: share usage lookup failed — space amplification not reported",
+					"share", shareName, "err", usedErr)
+				allEnumerated = false
 			}
 			// DeleteBlockRecord is the extra method the reclaimer needs beyond the
 			// read-only view; a backend lacking it still contributes to the union
