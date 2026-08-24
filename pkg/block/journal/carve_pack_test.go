@@ -179,15 +179,8 @@ func TestCarvePackFlipPlanWatermarks(t *testing.T) {
 // the frontier would be deleted whole by that reap, so the reap is refused
 // rather than allowed to strand the stretch past it.
 func TestCarvePackSpanningBlockFailureReapsTheCommittedPrefix(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		straddle bool
-	}{
-		{"boundary", false},
-		{"straddled", true},
-	} {
-		t.Run(tc.name, func(t *testing.T) { spanningBlockFailureReap(t, tc.straddle) })
-	}
+	t.Run("boundary", func(t *testing.T) { spanningBlockFailureReap(t, false) })
+	t.Run("straddled", func(t *testing.T) { spanningBlockFailureReap(t, true) })
 }
 
 func spanningBlockFailureReap(t *testing.T, straddle bool) {

@@ -103,28 +103,26 @@ type BlockSink interface {
 	CommitBlock(ctx context.Context, chunks []CarveChunk) error
 }
 
-// supersededReaper is an optional BlockSink capability. After a carve run has
-// committed every row it produced, journal calls ReapSupersededManifest so the
-// sink can delete the manifest rows the run superseded — keeping the per-file
-// FileChunk manifest a gap-free, overlap-free tiling of [0,size) after a
-// partial overwrite. runStart/runEnd bound the re-carved (dirty) range; newOffsets
-// are the chunk offsets this run wrote (so the reap keeps them and deletes only
-// stale straddlers/interior rows). Sinks without a metadata store (test fakes)
-// simply don't implement it and the reap is skipped. A sink that implements it
-// is expected to implement manifestRowEnder too: the reap is guarded on that
-// lookup, and both are answered out of the same metadata store.
+// supersededReaper is an optional BlockSink capability. Once a carve run has
+// committed rows, journal calls ReapSupersededManifest so the sink can delete
+// the manifest rows they superseded — keeping the per-file FileChunk manifest a
+// gap-free, overlap-free tiling of [0,size) after a partial overwrite.
+// runStart/runEnd bound the committed part of the re-carved (dirty) range;
+// newOffsets are the chunk offsets this run wrote (so the reap keeps them and
+// deletes only stale straddlers/interior rows). Sinks without a metadata store
+// (test fakes) simply don't implement it and the reap is skipped. A sink that
+// implements it is expected to implement manifestRowEnder too: the reap is
+// guarded on that lookup, and both are answered out of the same metadata store.
 type supersededReaper interface {
 	ReapSupersededManifest(ctx context.Context, id FileID, runStart, runEnd int64, newOffsets map[int64]struct{}) error
 }
 
 // manifestRowEnder is an optional BlockSink capability: it reports how far the
-// manifest coverage straddling an offset reaches. A run that stops inside a row
-// leaves that row half superseded — the run-end reap deletes it, because its
-// start lies in the run, and the part past the run keeps no cover at all, since
-// a row claims a prefix of its chunk and so cannot be made to start mid-chunk.
-// Carving through to the reported offset is what keeps that range covered. Sinks
-// without a metadata store (test fakes) don't implement it and a run is carved
-// exactly as snapshotted.
+// manifest coverage straddling an offset reaches. Carve asks it twice: to widen
+// a run to a row boundary before packing it, and to refuse a reap that would end
+// inside a row (see reapEndsOnRowBoundary, which carries the argument). Sinks
+// without a metadata store (test fakes) don't implement it: a run is carved
+// exactly as snapshotted and the reap runs unguarded.
 //
 // The answer is the greatest end among rows starting strictly before off and
 // reaching past it, or off itself when none does — never a value below off. A
@@ -244,7 +242,7 @@ func (s *Store) carveCandidates(sh *shard, opts CarveOptions, now, maxAge int64)
 
 // carveFile snapshots one file's live dirty intervals, splits them into maximal
 // contiguous runs (a hole resets FastCDC), packs them all through one packer,
-// and reaps the rows each fully flipped run superseded.
+// and reaps the rows each run's committed prefix superseded.
 func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveResult) error {
 	sh.mu.Lock()
 	fi := sh.index[id]
@@ -312,17 +310,11 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 			if st.committedTo <= st.start() {
 				continue
 			}
-			ok, oerr := s.reapEndsOnRowBoundary(ctx, id, st.committedTo)
-			if oerr != nil {
-				if err == nil {
-					err = oerr
-				}
-				continue
+			onBoundary, rerr := s.reapEndsOnRowBoundary(ctx, id, st.committedTo)
+			if rerr == nil && onBoundary {
+				rerr = r.ReapSupersededManifest(ctx, id, st.start(), st.committedTo, st.newOffsets)
 			}
-			if !ok {
-				continue
-			}
-			if rerr := r.ReapSupersededManifest(ctx, id, st.start(), st.committedTo, st.newOffsets); rerr != nil && err == nil {
+			if rerr != nil && err == nil {
 				err = rerr
 			}
 		}
@@ -353,17 +345,13 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 // still addressable and the manifest can be repaired — where a stranded stretch
 // is not.
 //
-// A sink that reaps but cannot answer the lookup is a test fake; both
-// capabilities are backed by the same metadata store, so the reap stands as it
-// did before the guard.
-//
 // ponytail: a whole-manifest read per reaped run, on top of the reap's own scan
 // of the same rows; fold the check into the reap transaction if a carve profile
 // ever shows the second scan.
 func (s *Store) reapEndsOnRowBoundary(ctx context.Context, id FileID, end int64) (bool, error) {
 	ender, ok := s.sink.(manifestRowEnder)
 	if !ok {
-		return true, nil
+		return true, nil // only a test fake reaps without the lookup; leave it unguarded
 	}
 	rowEnd, err := ender.ManifestRowEndAfter(ctx, id, end)
 	if err != nil {

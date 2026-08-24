@@ -14,14 +14,13 @@ type runState struct {
 	// it superseded. Written only by the single packer goroutine.
 	newOffsets map[int64]struct{}
 	// committedTo is how far into the run the manifest rows are durable: the
-	// watermark of the last block that committed and flipped, which is a chunk
+	// watermark of the last block whose CommitBlock returned, which is a chunk
 	// boundary and so a boundary of the run's own fresh rows. It starts at the
 	// run's start (nothing committed) and, like flipIdx, is written only by the
 	// flipping worker, one at a time via the dispatcher's prev/mine chain.
 	//
-	// A run the pass abandoned half way still has one, and it is what the reap
-	// spans: the records below it are already flipped synced, so no later pass
-	// re-carves them and no later pass would reap the rows they superseded.
+	// It is what the reap spans, so a run the pass abandoned half way is still
+	// reaped over the part it did commit.
 	committedTo int64
 }
 
