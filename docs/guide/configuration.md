@@ -176,10 +176,12 @@ controlplane:
   read_timeout: 10s          # Max time to read request
   write_timeout: 10s         # Max time to write response
   idle_timeout: 60s          # Max idle time for keep-alive
-  drain_stall_timeout: 5m    # Abort POST /system/drain-uploads only if no
-                             # upload completes within this window (inactivity
-                             # timeout, NOT a total cap — a large flush may run
-                             # for as long as it keeps making progress)
+  drain_stall_timeout: 5m    # Abort POST /api/v1/system/drain-uploads only if
+                             # no upload completes within this window WHILE
+                             # bytes are still unsynced (inactivity timeout,
+                             # NOT a total cap — a large flush may run for as
+                             # long as it keeps making progress, and a drain
+                             # with nothing left to upload is never aborted)
 
   # Force the bootstrap "admin" user to set a new password on first login.
   # Default true (secure by default). Set to false for automated/test
@@ -225,7 +227,7 @@ controlplane:
 | `read_timeout` | `10s` | Maximum duration to read request |
 | `write_timeout` | `10s` | Maximum duration to write response |
 | `idle_timeout` | `60s` | Maximum idle time for keep-alive |
-| `drain_stall_timeout` | `5m` | Inactivity bound for `POST /system/drain-uploads`. The drain has **no total time cap** — a multi-GiB flush runs as long as it keeps making progress — and is aborted (504) only if no upload completes within this window (the remote stalled). Mirrors rclone's `--timeout` |
+| `drain_stall_timeout` | `5m` | Inactivity bound for `POST /api/v1/system/drain-uploads`. The drain has **no total time cap** — a multi-GiB flush runs as long as it keeps making progress — and is aborted (504) only if no upload completes within this window while bytes are still unsynced (the remote stalled). A drain with nothing left to upload is never aborted: no attempt can conclude, so a flat counter says nothing about liveness. Mirrors rclone's `--timeout` |
 | `require_initial_password_change` | `true` | Force the bootstrap `admin` user to change its password on first login. Set to `false` to opt out (automated/test deployments). Also skipped when `DITTOFS_ADMIN_INITIAL_PASSWORD` is set |
 | `pprof` | `false` | Expose Go `/debug/pprof/*` profiling endpoints |
 | `pprof_mutex_rate` | `100` (when `pprof: true`; else `0`) | Mutex contention sampling, 1 per N events. Applied only when `pprof: true`; unset/`0` then falls back to `100`. Without it `/debug/pprof/mutex` is header-only. Disable profiling via `pprof: false`, not by zeroing this |

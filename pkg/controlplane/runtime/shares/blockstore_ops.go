@@ -188,6 +188,28 @@ func (s *Service) UploadProgress() int64 {
 	return total
 }
 
+// UnsyncedBytes returns the local bytes not yet mirrored to a remote, summed
+// across every share's block store.
+//
+// The drain-uploads watchdog reads it to tell a stalled drain from one whose
+// uploads are simply finished: with nothing unsynced left, no upload attempt
+// CAN conclude, so a flat UploadProgress is the expected reading rather than
+// evidence the remote has wedged. Uses the lite stats — the per-block-state
+// walk the full snapshot performs is a whole-manifest scan, far too expensive
+// for a supervisor.
+func (s *Service) UnsyncedBytes() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var total int64
+	for _, share := range s.registry {
+		if share.BlockStore != nil {
+			total += share.BlockStore.GetStatsLite().UnsyncedBytes
+		}
+	}
+	return total
+}
+
 // ShareBlockStoreStats holds block store statistics for a single share.
 type ShareBlockStoreStats struct {
 	ShareName string                 `json:"share_name"`

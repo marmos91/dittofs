@@ -1094,6 +1094,13 @@ func (r *Runtime) UploadProgress() int64 {
 	return r.sharesSvc.UploadProgress()
 }
 
+// UnsyncedBytes returns the local bytes not yet mirrored to a remote across all
+// per-share BlockStores. The drain-uploads handler reads it to distinguish a
+// drain with nothing left to upload from one whose remote has stalled.
+func (r *Runtime) UnsyncedBytes() int64 {
+	return r.sharesSvc.UnsyncedBytes()
+}
+
 // GetBlockStoreStats returns block store statistics, optionally filtered by share name.
 func (r *Runtime) GetBlockStoreStats(shareName string) (*shares.BlockStoreStatsResponse, error) {
 	return r.sharesSvc.GetBlockStoreStats(shareName)

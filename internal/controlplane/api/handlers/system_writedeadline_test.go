@@ -29,6 +29,10 @@ func (s *slowDrainRuntime) DrainAllUploads(ctx context.Context) error {
 
 func (s *slowDrainRuntime) UploadProgress() int64 { return s.progress.Load() }
 
+// A backlog the whole time: this test is about the write deadline, not the
+// idle watchdog, so the drain must stay under the watchdog's arm.
+func (s *slowDrainRuntime) UnsyncedBytes() int64 { return 1 }
+
 // TestDrainUploads_SurvivesServerWriteTimeout guards the cold-read benchmark
 // blocker: a drain legitimately runs longer than http.Server.WriteTimeout, so
 // the handler must clear this connection's write deadline. Without the clear the
