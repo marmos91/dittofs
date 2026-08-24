@@ -2,11 +2,13 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/health"
 )
 
@@ -74,6 +76,12 @@ func (r *Runtime) scanShareIntegrity(ctx context.Context, share string) {
 		// Context cancellation is shutdown, not a finding: recording it
 		// would leave every share reporting a failed scan across a restart.
 		if ctx.Err() != nil {
+			return
+		}
+		// The share list is sampled once per tick, so a share removed since
+		// then fails here. Recording that would put an entry back for a name
+		// the removal just cleared, and describe a share that is gone.
+		if errors.Is(err, shares.ErrShareNotFound) {
 			return
 		}
 		logger.Error("integrity scan: share scan failed", logger.KeyShare, share, "error", err)
