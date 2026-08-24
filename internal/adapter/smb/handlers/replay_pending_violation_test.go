@@ -1,9 +1,14 @@
 package handlers
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // These tests pin the replay-decision state machine for the #749
@@ -185,5 +190,197 @@ func TestReplayPendingViolation_CrossSessionIsolation(t *testing.T) {
 	const otherSession = uint64(99)
 	if resp, handled := h.resolveCreateReplay(newReplayCtx(otherSession, true), req); handled {
 		t.Fatalf("foreign-session replay must not see another session's reservation, got %s", resp.GetStatus())
+	}
+}
+
+// TestParkedCreate_ReplayReservationClearedBeforeFinalResponse pins the
+// ORDERING the state-machine tests above cannot see: the CreateGuid
+// reservation must already be gone at the instant the parked CREATE's
+// terminal status is handed to the wire.
+//
+// The park resolves, the server writes STATUS_SHARING_VIOLATION for the
+// original CREATE, and the client — which learns the CREATE is finished from
+// exactly that response — puts its replay on the connection straight away. If
+// the reservation outlives the send by even a scheduling quantum, the server
+// dispatches that replay against a reservation for a CREATE that has already
+// resolved and answers STATUS_FILE_NOT_AVAILABLE where the terminal
+// STATUS_SHARING_VIOLATION is required (smbtorture
+// smb2.replay.dhv2-pending1n-vs-violation-lease-ack-sane, replay.c io23).
+//
+// The wait resolves immediately here (no lock manager → the share-conflict
+// wait returns at once, as it does when the holder ACKs its break and keeps
+// its open), so the whole test is deterministic: it asserts what the callback
+// observes, not how fast anything runs.
+// parkedFinalResponse records what a parked CREATE's completion callback saw:
+// the status being sent, and whether the DH2Q replay reservation was still held
+// at that instant. The second field is the invariant under test.
+type parkedFinalResponse struct {
+	status         types.Status
+	reservedAtSend bool
+}
+
+// parkedViolationCreate stands up a CREATE parked behind a share-mode conflict
+// it can never win, and returns the handler, the reserved CreateGuid, the async
+// id of the parked entry, and a channel that reports what the final-response
+// callback saw. The share-conflict wait resolves immediately (no lock manager),
+// standing in for the holder having ACKed its break while keeping its open.
+func parkedViolationCreate(t *testing.T) (*Handler, uint64, uint64, <-chan parkedFinalResponse) {
+	t.Helper()
+	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
+	tree := &TreeConnection{TreeID: smbCtx.TreeID, SessionID: smbCtx.SessionID, ShareName: smbCtx.ShareName}
+	h.StoreTree(tree)
+	// A nil lock manager makes WaitForShareConflictClear return immediately,
+	// standing in for the holder's break having drained with its open intact.
+	h.LeaseManager = lease.NewLeaseManager(&staticLockResolver{}, nil)
+
+	const fileName = "parked.dat"
+	existingFile, _, err := rt.GetMetadataService().CreateFile(rootAuth, rootHandle, fileName,
+		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o777})
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	metaHandle, err := metadata.EncodeFileHandle(existingFile)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle: %v", err)
+	}
+
+	// The holder: reading the file while denying every share mode, so the
+	// parked CREATE below still loses the share-mode contest on recheck.
+	h.StoreOpenFile((&OpenFile{
+		FileID:         [16]byte{0xAA},
+		SessionID:      violationSessionID + 1,
+		ShareName:      smbCtx.ShareName,
+		DesiredAccess:  0x00000001, // FILE_READ_DATA
+		ShareAccess:    0,          // deny read/write/delete
+		MetadataHandle: metaHandle,
+	}).WithName(OpenName{Path: fileName, FileName: fileName}))
+
+	guid := [16]byte{0x21, 0x9}
+	req := dh2qCreateReq(guid, nil)
+	req.FileName = fileName
+	req.DesiredAccess = 0x00000001
+	req.ShareAccess = 0
+	req.CreateDisposition = types.FileOpen
+
+	draft := &createDraft{
+		req:            req,
+		tree:           tree,
+		authCtx:        rootAuth,
+		filename:       fileName,
+		baseName:       fileName,
+		parentHandle:   rootHandle,
+		existingFile:   existingFile,
+		existingHandle: metaHandle,
+		fileExists:     true,
+		createAction:   types.FileOpened,
+	}
+
+	// Create() reserves the guid before dispatching the break; the parked
+	// resume goroutine owns the matching release.
+	h.CreateReplayCache.Reserve(smbCtx.SessionID, guid)
+
+	sent := make(chan parkedFinalResponse, 1)
+
+	parkCtx := &SMBHandlerContext{
+		Context:         context.Background(),
+		SessionID:       smbCtx.SessionID,
+		TreeID:          smbCtx.TreeID,
+		ShareName:       smbCtx.ShareName,
+		MessageID:       5,
+		TryReserveAsync: func() bool { return true },
+		ReleaseAsync:    func() {},
+		AsyncCreateCompleteCallback: func(_, _, _ uint64, status types.Status, _ []byte) error {
+			sent <- parkedFinalResponse{status, h.CreateReplayCache.IsReserved(smbCtx.SessionID, guid)}
+			return nil
+		},
+	}
+
+	asyncId := h.parkCreateOnLeaseBreak(parkCtx, draft, lock.FileHandle(metaHandle),
+		[16]byte{}, 2*time.Second, true)
+	if asyncId == 0 {
+		t.Fatal("parkCreateOnLeaseBreak refused to park")
+	}
+	return h, smbCtx.SessionID, asyncId, sent
+}
+
+// awaitFinalResponse fails the test unless the parked CREATE delivered a final
+// response whose status matches want AND the replay reservation was already
+// cleared at the instant that response was handed to the wire.
+func awaitFinalResponse(t *testing.T, sent <-chan parkedFinalResponse, want types.Status) {
+	t.Helper()
+	select {
+	case got := <-sent:
+		if got.status != want {
+			t.Fatalf("parked CREATE final status = %s, want %s", got.status, want)
+		}
+		if got.reservedAtSend {
+			t.Fatal("CreateGuid still reserved when the parked CREATE's final response was sent: " +
+				"a replay racing that response resolves to FILE_NOT_AVAILABLE instead of the terminal status")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("parked CREATE never delivered a final response")
+	}
+}
+
+// TestParkedCreate_ReplayReservationClearedBeforeFinalResponse covers the
+// resume goroutine's own delivery: the park resolves, the CREATE loses the
+// share-mode contest, and STATUS_SHARING_VIOLATION goes out.
+func TestParkedCreate_ReplayReservationClearedBeforeFinalResponse(t *testing.T) {
+	h, _, asyncId, sent := parkedViolationCreate(t)
+	if !h.PendingCreateRegistry.MarkStarted(asyncId) {
+		t.Fatal("MarkStarted: pending CREATE not registered")
+	}
+	awaitFinalResponse(t, sent, types.StatusSharingViolation)
+}
+
+// TestParkedCreate_ReplayReservationClearedOnSessionCancel covers the other
+// delivery path: session teardown preempts the parked CREATE and sends
+// STATUS_CANCELLED itself. That response is just as terminal, so it carries the
+// same ordering obligation — the resume goroutine's deferred release is a
+// backstop, not the thing that orders this send.
+func TestParkedCreate_ReplayReservationClearedOnSessionCancel(t *testing.T) {
+	h, sessionID, _, sent := parkedViolationCreate(t)
+	h.cancelAsyncOpsForSession(sessionID)
+	awaitFinalResponse(t, sent, types.StatusCancelled)
+}
+
+// TestParkedCreate_StaleBackstopCannotClearANewerReservation pins why the
+// release hook is capped at once per entry rather than merely "idempotent".
+//
+// The reservation is keyed by CreateGuid alone, so releasing it is not a
+// self-cancelling operation — it clears whatever reservation currently stands
+// under that key, no matter which CREATE put it there. The resume goroutine's
+// deferred backstop deliberately overlaps the explicit release on the paths
+// that send a response, so it fires again after the terminal status is already
+// on the wire. STATUS_SHARING_VIOLATION is exactly the status a client retries
+// with the same CreateGuid; if that retry parks and re-reserves first, an
+// uncapped backstop would delete the NEW CREATE's reservation, and a replay
+// would stop failing fast and could start a second concurrent CREATE.
+func TestParkedCreate_StaleBackstopCannotClearANewerReservation(t *testing.T) {
+	cache := NewCreateReplayCache()
+	const sessionID = uint64(7)
+	guid := [16]byte{0x2a, 0x1}
+
+	// A parked CREATE holding the reservation, wired as parkCreateOnLeaseBreak
+	// wires one.
+	parked := &PendingCreate{replayReleaser: func() { cache.Release(sessionID, guid) }}
+	cache.Reserve(sessionID, guid)
+
+	// It resolves and delivers its terminal status, releasing first.
+	parked.releaseReplay()
+	if cache.IsReserved(sessionID, guid) {
+		t.Fatal("release did not clear the parked CREATE's own reservation")
+	}
+
+	// The client retries the failed CREATE with the SAME CreateGuid; it parks
+	// again and takes a fresh reservation.
+	cache.Reserve(sessionID, guid)
+
+	// The finished entry's deferred backstop now fires.
+	parked.releaseReplay()
+
+	if !cache.IsReserved(sessionID, guid) {
+		t.Fatal("a finished CREATE's backstop cleared a newer CREATE's reservation for the same " +
+			"CreateGuid: a replay would stop failing fast and could start a second concurrent CREATE")
 	}
 }

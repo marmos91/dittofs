@@ -1896,6 +1896,7 @@ func (h *Handler) cancelAsyncOpsForSession(sessionID uint64) {
 		for _, parked := range h.PendingCreateRegistry.UnregisterAllForSession(sessionID) {
 			if parked.Callback != nil {
 				go func(p *PendingCreate) {
+					p.releaseReplay()
 					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusCancelled, nil); err != nil {
 						logger.Debug("session cleanup: failed to cancel pending CREATE",
 							"asyncId", p.AsyncId, "messageID", p.MessageID, "error", err)

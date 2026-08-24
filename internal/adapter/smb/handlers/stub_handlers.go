@@ -397,6 +397,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 				"messageID", parked.MessageID)
 			if parked.Callback != nil {
 				go func(p *PendingCreate) {
+					p.releaseReplay()
 					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusCancelled, nil); err != nil {
 						logger.Warn("CANCEL: failed to send STATUS_CANCELLED for CREATE",
 							"messageID", p.MessageID,

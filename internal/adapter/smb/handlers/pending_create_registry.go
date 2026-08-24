@@ -35,6 +35,33 @@ type PendingCreate struct {
 	// StatusCancelled + nil body). Releases the async slot as part of its work.
 	Callback AsyncCreateCompleteCallback
 
+	// releaseReplay clears the DH2Q CreateGuid reservation this CREATE holds
+	// while it is parked. Every path that delivers the CREATE's final response
+	// MUST invoke it immediately BEFORE sending: a client learns the CREATE is
+	// finished from exactly that response and may put its replay on the
+	// connection at once, so a reservation that outlives the send makes
+	// resolveCreateReplay answer STATUS_FILE_NOT_AVAILABLE for a CREATE that has
+	// already reached a terminal status. Invoking it any earlier would be wrong
+	// — while the CREATE is still resolving a replay has no outcome to observe
+	// and must keep failing fast rather than starting a second, concurrent
+	// CREATE for the same CreateGuid.
+	//
+	// parkCreateOnLeaseBreak wires this on every parked CREATE, so it is non-nil
+	// there whether or not the request carried a CreateGuid — a CREATE without
+	// one releases the zero guid, which Release ignores. It is nil only on
+	// entries built outside that path, which is why releaseReplay tolerates nil.
+	//
+	// Always go through releaseReplay: it runs the hook AT MOST ONCE per parked
+	// CREATE. That cap is load-bearing, not hygiene: the reservation is
+	// keyed by CreateGuid alone, not by CREATE instance, so releasing is not
+	// idempotent in any useful sense. A terminal STATUS_SHARING_VIOLATION is
+	// exactly what a client retries with the SAME CreateGuid, and if that retry
+	// parks and re-reserves the key first, a second release from this
+	// already-finished entry would clear the NEW CREATE's reservation and let a
+	// replay start a second concurrent CREATE for that guid.
+	replayReleaser func()
+	replayOnce     sync.Once
+
 	// started is closed by MarkStarted once the dispatch layer has finalized
 	// the Callback assignment for this entry. The resume goroutine MUST wait
 	// on it before invoking Callback. Without this gate, a fast localhost
@@ -66,6 +93,20 @@ const (
 const (
 	createBucketSession = iota
 )
+
+// releaseReplay clears this parked CREATE's replay reservation. Safe on an
+// entry that carries no hook, and safe to call from several delivery paths —
+// the resume goroutine's deferred backstop deliberately overlaps the explicit
+// release on the paths that send a response, so the hook runs at most once per
+// entry. See PendingCreate.replayReleaser for why once-per-entry (rather than
+// merely "delete is idempotent") is what keeps a finished CREATE from clearing
+// a newer CREATE's reservation for the same CreateGuid.
+func (p *PendingCreate) releaseReplay() {
+	if p.replayReleaser == nil {
+		return
+	}
+	p.replayOnce.Do(p.replayReleaser)
+}
 
 // MaxPendingCreates caps concurrent parked CREATEs per server to protect the
 // process from runaway clients. Picked to match MaxPendingWatches.
