@@ -717,6 +717,11 @@ func dittofsResidentFiles(dir string) string {
 		name string
 		size int64
 	}
+	if _, err := os.Stat(dir); err != nil {
+		// Distinguish "the tier emptied" from "the directory is not there" — the
+		// dump is read by someone deciding whether the evict worked.
+		return fmt.Sprintf("(unreadable: %v)", err)
+	}
 	var files []entry
 	var total int64
 	err := filepath.WalkDir(dir, func(path string, e os.DirEntry, err error) error {
