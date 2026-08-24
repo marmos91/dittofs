@@ -1182,6 +1182,18 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 // This is what lets a hydrate stay a fill rather than an overwrite: a caller
 // that has proven the local bytes bad demotes them first, and the re-fetch then
 // lands in a range the journal no longer claims to hold.
+//
+// The markers are persisted to the cold log FIRST, for the same reason eviction
+// persists them first: this is the one path that marks an interval cold while
+// its record is still live in a segment on disk, and every path that reclaims a
+// segment — eviction, the emptied-segment sweep, GC repack — treats a cold
+// interval as owning nothing there. Without a durable marker the reclaim unlinks
+// the only copy and a restart finds neither a record nor a marker, so the range
+// comes back a hole and reads zeros. Persisting first can at worst leave a
+// marker for bytes that are still local, which costs a needless remote fetch.
+//
+// A failed append leaves the interval warm and returns the error, so the caller's
+// read fails closed rather than proceeding on a demotion the store cannot keep.
 func (s *Store) Invalidate(_ context.Context, id FileID, off, length int64) error {
 	if s.closed.Load() {
 		return errClosed
@@ -1191,11 +1203,34 @@ func (s *Store) Invalidate(_ context.Context, id FileID, off, length int64) erro
 	}
 	end := off + length
 	sh := s.shardFor(id)
+	// ponytail: the cold-log fsync runs under the shard lock, so it stalls the
+	// shard for its duration. This path only fires on a record that failed its
+	// checksum, so the contention is bounded by how often the local tier rots;
+	// split it into scan/append/flip like evictSegment if that stops being rare.
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	fi := sh.index[id]
 	if fi == nil {
 		return nil
+	}
+	var entries []coldEntry
+	for k := range fi.ivs {
+		iv := &fi.ivs[k]
+		if iv.end() <= off || iv.fileOff >= end || iv.cold || !iv.synced {
+			continue
+		}
+		entries = append(entries, coldEntry{
+			id:      id,
+			fileOff: iv.fileOff,
+			length:  iv.length,
+			version: iv.version,
+		})
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	if err := s.appendCold(entries); err != nil {
+		return err
 	}
 	for k := range fi.ivs {
 		iv := &fi.ivs[k]
