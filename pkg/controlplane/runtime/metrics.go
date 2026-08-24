@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metrics"
 )
@@ -45,6 +46,7 @@ func (r *Runtime) MetricsSnapshot(ctx context.Context) metrics.Snapshot {
 			FileCount:           int64(st.FileCount),
 			SnapshotsHeld:       held,
 			LastSnapshotUnix:    lastUnix,
+			Integrity:           integritySnapshot(r.ShareIntegrity(ps.ShareName)),
 		})
 	}
 
@@ -103,4 +105,24 @@ func quotaPrincipalLabel(id uint32) string {
 		return "default"
 	}
 	return strconv.FormatUint(uint64(id), 10)
+}
+
+// integritySnapshot renders a recorded manifest-scan outcome for the metrics
+// surface. A share never scanned in this process, or whose last scan failed,
+// reports zeros: a zero last-scan timestamp is what an alert on scan age is
+// meant to fire on, and a failed scan produced no counts worth publishing.
+func integritySnapshot(s *health.IntegrityStatus) metrics.IntegrityScanSnapshot {
+	if s == nil || s.Error != "" {
+		return metrics.IntegrityScanSnapshot{}
+	}
+	return metrics.IntegrityScanSnapshot{
+		LastScanUnix:           s.LastRunAt.Unix(),
+		DurationSeconds:        float64(s.DurationMS) / 1000,
+		FilesScanned:           int64(s.FilesScanned),
+		PayloadsWithFindings:   int64(s.PayloadsWithFindings),
+		DamagedPayloads:        int64(s.DamagedPayloads),
+		ClaimedUncoveredRanges: int64(s.ClaimedUncoveredRanges),
+		UnplaceableRows:        int64(s.UnplaceableRows),
+		UnknownHashRows:        int64(s.UnknownHashRows),
+	}
 }

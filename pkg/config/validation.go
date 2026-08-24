@@ -43,6 +43,9 @@ func Validate(cfg *Config) error {
 		return err
 	}
 
+	if err := cfg.Integrity.Validate(); err != nil {
+		return err
+	}
 	if err := cfg.Snapshot.Validate(); err != nil {
 		return err
 	}

@@ -119,6 +119,13 @@ type Runtime struct {
 	// is successfully added or removed. Guarded by mu.
 	skippedShares map[string]string
 
+	// shareIntegrity maps a share name to the outcome of the most recent
+	// structural manifest scan for it. Empty until the scheduled scan has
+	// run, and process-local: a restart clears it, which reads honestly as
+	// "not verified since this process started" rather than as a stale
+	// clean bill of health. Guarded by mu.
+	shareIntegrity map[string]*health.IntegrityStatus
+
 	// metrics is the Prometheus metrics handle, set at startup. It is the
 	// carrier for inline adapter instruments (RED, connection, auth counters):
 	// adapters reach it via Runtime so no per-adapter plumbing is needed. May

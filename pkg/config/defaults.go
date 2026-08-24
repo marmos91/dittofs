@@ -24,6 +24,7 @@ func ApplyDefaults(cfg *Config) {
 	applyAdminDefaults(&cfg.Admin)
 	applyKerberosDefaults(&cfg.Kerberos)
 	cfg.GC.ApplyDefaults()
+	cfg.Integrity.ApplyDefaults()
 	cfg.Snapshot.ApplyDefaults()
 	cfg.Blockstore.ApplyDefaults()
 	cfg.Metadata.ApplyDefaults()

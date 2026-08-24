@@ -80,6 +80,11 @@ type Config struct {
 	// These knobs apply globally to every block-store GC invocation.
 	GC GCConfig `mapstructure:"gc" yaml:"gc"`
 
+	// Integrity configures the background structural manifest scan, which
+	// periodically verifies that every share's manifest still agrees with
+	// its files' own block lists.
+	Integrity IntegrityConfig `mapstructure:"integrity" yaml:"integrity"`
+
 	// Snapshot configures the snapshot create orchestration. Knobs apply
 	// to every Runtime.CreateSnapshot invocation.
 	Snapshot SnapshotConfig `mapstructure:"snapshot" yaml:"snapshot"`
@@ -217,6 +222,61 @@ func (c *GCConfig) Validate() error {
 	}
 	if c.CompactionLiveRatio < 0 || c.CompactionLiveRatio > 1 {
 		return fmt.Errorf("gc.compaction_live_ratio must be in [0, 1] (got %v); 0 disables compaction", c.CompactionLiveRatio)
+	}
+	return nil
+}
+
+// IntegrityConfig configures the background structural manifest scan.
+// The scan walks each share's metadata and compares the byte ranges its
+// manifest rows cover against every file's recorded size, reporting spans
+// a file claims to hold but no row covers, rows carrying no placeable
+// chunk offset, and rows whose hash was never confirmed mirrored.
+//
+// It is metadata-only: no block is fetched and no remote object is
+// touched, so its cost is a metadata walk regardless of how much data a
+// share holds. The same scan is runnable on demand via `dfsctl store check`.
+type IntegrityConfig struct {
+	// AutoEnabled turns on the background scan. Defaults to true. Set
+	// false to require an operator to run `dfsctl store check` by hand.
+	AutoEnabled *bool `mapstructure:"auto_enabled" yaml:"auto_enabled"`
+
+	// AutoInterval is the period between scans. Defaults to 24h. Values
+	// in (0, 5m) are rejected at config load. Ignored when AutoEnabled is
+	// false.
+	AutoInterval time.Duration `mapstructure:"auto_interval" yaml:"auto_interval"`
+}
+
+// ApplyDefaults fills any zero-valued field with the defaults.
+func (c *IntegrityConfig) ApplyDefaults() {
+	if c.AutoEnabled == nil {
+		on := true
+		c.AutoEnabled = &on
+	}
+	// Only fill the unset (zero) case. A negative value is a user mistake
+	// and must survive to Validate rather than be rewritten silently.
+	if c.AutoInterval == 0 {
+		c.AutoInterval = 24 * time.Hour
+	}
+}
+
+// AutoScanEnabled reports whether the background scan is on (default true
+// when unset).
+func (c *IntegrityConfig) AutoScanEnabled() bool {
+	return c.AutoEnabled == nil || *c.AutoEnabled
+}
+
+// Validate returns an error if the IntegrityConfig has invalid values.
+//
+// The floor is 5m rather than GC's 1m because a scan is a full metadata
+// walk of every share: on a store of any size a sub-5m cadence leaves the
+// scan running continuously, which is a scheduling mistake rather than an
+// aggressive setting.
+func (c *IntegrityConfig) Validate() error {
+	if c.AutoInterval < 0 {
+		return fmt.Errorf("integrity.auto_interval must be >= 0 (got %v)", c.AutoInterval)
+	}
+	if c.AutoInterval > 0 && c.AutoInterval < 5*time.Minute {
+		return fmt.Errorf("integrity.auto_interval must be >= 5m; the scan is a full metadata walk per share (got %v); set 0 to use the 24h default", c.AutoInterval)
 	}
 	return nil
 }
