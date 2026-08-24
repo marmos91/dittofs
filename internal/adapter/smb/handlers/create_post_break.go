@@ -701,12 +701,10 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		// waiting here would block the CREATE reply on an ACK the creating client
 		// can only send over the same credit-limited connection — under sustained
 		// fio create load the SMB credit window collapses and Linux cifs.ko returns
-		// EDEADLK. The break notification is still sent (same
-		// BreakLeasesOnOpenConflict dispatch); the holder acks on its own
-		// schedule. Mirrors Samba contend_dirleases → send_break_to_none.
-		if breakErr := h.LeaseManager.BreakParentDirLeasesOnContentChangeAsync(parentLockHandle, tree.ShareName, "", excludeParentKey, hasExcludeKey); breakErr != nil {
-			logger.Debug("CREATE: parent directory lease break failed", "error", breakErr)
-		}
+		// EDEADLK. The break notification is still sent (the returned dispatch
+		// runs inline here); the holder acks on its own schedule. Mirrors Samba
+		// contend_dirleases → send_break_to_none.
+		h.LeaseManager.PrepareParentDirLeaseBreakOnContentChange(parentLockHandle, tree.ShareName, "", excludeParentKey, hasExcludeKey)()
 	}
 
 	// Step 7: Perform create/open.

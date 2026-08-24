@@ -2121,14 +2121,9 @@ func (h *Handler) breakParentDirLeasesForContentChangeOn(ctx *SMBHandlerContext,
 	parentDbg := fmt.Sprintf("%x", parentHandle)
 	shareName := openFile.ShareName
 
-	dispatch := func() {
-		if breakErr := h.LeaseManager.BreakParentDirLeasesOnContentChangeAsync(
-			parentLockHandle, shareName, "",
-			excludeParentKey, hasExcludeKey,
-		); breakErr != nil {
-			logger.Debug("SET_INFO: parent directory lease break-to-None failed", "path", path, "parent", parentDbg, "error", breakErr)
-		}
-	}
+	logger.Debug("SET_INFO: parent directory lease break-to-None recorded", "path", path, "parent", parentDbg)
+	dispatch := h.LeaseManager.PrepareParentDirLeaseBreakOnContentChange(
+		parentLockHandle, shareName, "", excludeParentKey, hasExcludeKey)
 
 	// Defer dispatch until after the triggering request's response is on the
 	// wire when an SMB ctx is available. Mirrors Samba `send_break_to_none`
@@ -2340,20 +2335,10 @@ func (h *Handler) handleFileLinkInformation(
 	// force-complete the lease on timeout and the replay would hit
 	// STATUS_UNSUCCESSFUL.
 	if h.LeaseManager != nil {
-		dstParentLock := lock.FileHandle(dstDir)
-		excludeParentKey := openFile.ParentLeaseKey
-		hasExcludeKey := openFile.HasParentLeaseKey
-		shareName := openFile.ShareName
-		dstDbg := newPath
-		dispatch := func() {
-			if breakErr := h.LeaseManager.BreakParentDirLeasesOnContentChangeAsync(
-				dstParentLock, shareName,
-				"", excludeParentKey, hasExcludeKey,
-			); breakErr != nil {
-				logger.Debug("SET_INFO: hardlink dst-parent dir lease break-to-None failed",
-					"dst", dstDbg, "error", breakErr)
-			}
-		}
+		logger.Debug("SET_INFO: hardlink dst-parent dir lease break-to-None recorded", "dst", newPath)
+		dispatch := h.LeaseManager.PrepareParentDirLeaseBreakOnContentChange(
+			lock.FileHandle(dstDir), openFile.ShareName, "",
+			openFile.ParentLeaseKey, openFile.HasParentLeaseKey)
 		// Defer until after the SET_INFO response is on the wire so the
 		// client's lease handler runs in the next tevent cycle with
 		// lease_skip_ack=true (see breakParentDirLeasesForContentChangeOn

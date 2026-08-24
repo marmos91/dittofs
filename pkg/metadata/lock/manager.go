@@ -223,6 +223,12 @@ type LockManager interface {
 	// Per-lease target state is computed via ComputeLeaseBreakTo(state, reason).
 	BreakLeasesOnOpenConflict(handleKey string, excludeOwner *LockOwner, reason BreakReason) error
 
+	// PrepareBreakLeasesOnOpenConflict records the same breaks but returns the
+	// function that sends their notifications, so a caller can order the wire
+	// notification after its own response without letting a lease granted in
+	// between be broken by a change that predates it.
+	PrepareBreakLeasesOnOpenConflict(handleKey string, excludeOwner *LockOwner, reason BreakReason) func()
+
 	// BreakReadLeasesForParentDir breaks Read leases on a parent directory
 	// when directory content changes (CREATE, RENAME, DELETE on close).
 	// Per MS-FSA 2.1.5.14: changes to directory listing invalidate Read

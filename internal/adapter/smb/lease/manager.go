@@ -1139,8 +1139,8 @@ func (lm *LeaseManager) BreakParentDirLeasesOnDestructiveCreate(
 	return lockMgr.WaitForBreakCompletion(waitCtx, handleKey)
 }
 
-// BreakParentDirLeasesOnContentChangeAsync dispatches the same single
-// break-to-None notification per holder as BreakParentDirLeasesOnDestructiveCreate
+// PrepareParentDirLeaseBreakOnContentChange records the same single
+// break-to-None per holder as BreakParentDirLeasesOnDestructiveCreate
 // but WITHOUT waiting for the LEASE_BREAK_ACK. Used by content-change paths
 // (SET_INFO rename / hardlink / disposition, CLOSE-on-delete, WRITE-mark)
 // where the triggering request must complete on its own transport: waiting for
@@ -1156,19 +1156,30 @@ func (lm *LeaseManager) BreakParentDirLeasesOnDestructiveCreate(
 // unlink_different_set_and_close, unlink_*_initial_and_close} which all set
 // lease_skip_ack=true before the triggering op and replay the captured ACK
 // after the response returns.
-func (lm *LeaseManager) BreakParentDirLeasesOnContentChangeAsync(
+//
+// The break is RECORDED on the leases that exist when this is called and the
+// returned function only puts the notifications on the wire. Callers that
+// defer that function past their own response therefore break exactly the
+// leases the change contended with: a dir lease granted in the meantime is
+// not caught by a change that predates it. Evaluating the holder set at
+// dispatch time instead let a write-close's deferred break revoke a dir lease
+// granted by the very next CREATE, which the client counted as a second
+// LEASE_BREAK for one change.
+//
+// The returned function is always non-nil and is a no-op when nothing broke.
+func (lm *LeaseManager) PrepareParentDirLeaseBreakOnContentChange(
 	parentHandle lock.FileHandle,
 	shareName string,
 	excludeClientID string,
 	excludeParentLeaseKey [16]byte,
 	hasExcludeKey bool,
-) error {
+) func() {
 	lockMgr, handleKey, excludeOwner := lm.resolveParentBreakArgs(
 		parentHandle, shareName, excludeClientID, excludeParentLeaseKey, hasExcludeKey)
 	if lockMgr == nil {
-		return nil
+		return func() {}
 	}
-	return lockMgr.BreakLeasesOnOpenConflict(handleKey, excludeOwner, lock.BreakReasonDestructive)
+	return lockMgr.PrepareBreakLeasesOnOpenConflict(handleKey, excludeOwner, lock.BreakReasonDestructive)
 }
 
 // BreakParentReadLeasesOnModify breaks Read leases on a parent directory
