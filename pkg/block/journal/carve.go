@@ -388,13 +388,15 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 		return nil
 	}
 
-	// flush hands the packed block (if any) and the watermark to the dispatcher,
+	// blockFirstRun is the index of the run the block being packed started in;
+	// every run from there to the one being packed contributes to it, which is
+	// what the flush's flipPlan names.
+	blockFirstRun := 0
+
+	// flush hands the packed block (if any) and its flip plan to the dispatcher,
 	// which commits then flips in submission order. Packing continues immediately;
 	// the commit and flip happen on the pool. Ownership of the buffer moves to the
 	// dispatcher, so the local arena state resets to "no block".
-	// blockFirstRun is the index of the run the block being packed started in;
-	// every run from there to the current one contributes to it.
-	blockFirstRun := 0
 	flush := func(plan flipPlan) {
 		disp.submit(pending, arenap, arena, plan)
 		pending, arenap, arena, arenaOff, batchBytes = nil, nil, nil, 0, 0
@@ -521,7 +523,7 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 
 	if packErr != nil || disp.aborted() {
 		// A read/dedup error (packErr) or an in-flight commit failure (aborted)
-		// ends the run. Abandon the half-packed block (return its slot/buffer) and
+		// ends the pass. Abandon the half-packed block (return its slot/buffer) and
 		// drain the blocks already in flight, but submit nothing more: advancing
 		// the watermark or committing the tail past a failure only adds orphan
 		// uploads. disp.wait returns the commit error in watermark order.
