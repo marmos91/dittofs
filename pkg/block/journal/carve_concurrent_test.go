@@ -287,25 +287,23 @@ func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 	}
 }
 
-// TestCarveRunsCommitConcurrently pins the run-level concurrency itself: on a
-// file of several dirty runs, commits from different runs overlap, and the
-// file-scoped semaphore caps how many overlap at once. Asserting the drained
-// result alone does not cover this — a serial carveFile produces byte-identical
-// output — so this is what fails if runs are ever serialised again.
+// TestCarveBlocksCommitConcurrently pins the block-level concurrency itself: a
+// file's successive packed blocks commit at the same time, and the file-scoped
+// semaphore caps how many overlap. Asserting the drained result alone does not
+// cover this — a fully serial carve produces byte-identical output — so this is
+// what fails if the commits are ever serialised again.
 //
-// The geometry gives each run several blocks (small chunks, small
-// CarveBlockSize) so the two bounds diverge: the errgroup limit alone would
-// allow window runs x several blocks each in flight, while the one file-scoped
-// semaphore allows window blocks in total. With one block per run the cap
-// assertion could not fail, because the errgroup limit would bound it anyway.
+// The geometry gives the file many blocks (small chunks, small CarveBlockSize)
+// spread over several dirty runs, so the packer crosses run boundaries mid-block
+// while the window still bounds what is in flight.
 //
 // The commit hook blocks until more than window commits are in flight rather
 // than sleeping a fixed time, so a carve that breaches the cap releases
 // immediately and is caught; a correct one never breaches it and pays the
 // timeout once, which the gaveUp flag keeps to a single wait for the pass. That
-// wait is also what holds the in-flight set open long enough to see how many
-// distinct runs are committing at the same time.
-func TestCarveRunsCommitConcurrently(t *testing.T) {
+// wait is also what holds the in-flight set open long enough to observe the
+// overlap.
+func TestCarveBlocksCommitConcurrently(t *testing.T) {
 	const (
 		runs    = 8
 		runSize = 32 << 10
@@ -326,23 +324,13 @@ func TestCarveRunsCommitConcurrently(t *testing.T) {
 		gaveUp   bool
 		exceeded = make(chan struct{})
 		once     sync.Once
-		// Blocks in flight per run, keyed by run index, so the floor counts runs
-		// overlapping rather than one run's own blocks overlapping — a serial
-		// carveFile still reaches window in-flight blocks from a single run.
-		inFlight = map[int64]int{}
-		maxRuns  int
 	)
-	sink.onCommit = func(chunks []CarveChunk) {
-		run := chunks[0].FileOffset / gap
+	sink.onCommit = func(_ []CarveChunk) {
 		mu.Lock()
 		cur++
 		commits++
-		inFlight[run]++
 		if cur > max {
 			max = cur
-		}
-		if len(inFlight) > maxRuns {
-			maxRuns = len(inFlight)
 		}
 		if cur > window {
 			once.Do(func() { close(exceeded) })
@@ -363,9 +351,6 @@ func TestCarveRunsCommitConcurrently(t *testing.T) {
 		}
 		mu.Lock()
 		cur--
-		if inFlight[run]--; inFlight[run] == 0 {
-			delete(inFlight, run)
-		}
 		mu.Unlock()
 	}
 
@@ -383,12 +368,12 @@ func TestCarveRunsCommitConcurrently(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	// More blocks than runs is what makes the cap assertion able to fail at all.
-	if commits <= runs {
-		t.Fatalf("%d commits for %d runs: runs are not multi-block, so the cap assertion cannot fail", commits, runs)
+	// More blocks than the window is what makes the cap assertion able to fail.
+	if commits <= window {
+		t.Fatalf("%d commits for a window of %d: too few blocks for the cap assertion to fail", commits, window)
 	}
-	if maxRuns < 2 {
-		t.Fatalf("max runs committing at once = %d, want > 1: the runs did not overlap", maxRuns)
+	if max < 2 {
+		t.Fatalf("max blocks committing at once = %d, want > 1: the commits did not overlap", max)
 	}
 	if max > window {
 		t.Fatalf("max concurrent commits = %d, want <= CarveUploadConcurrency (%d): the file-scoped bound on in-flight blocks was breached", max, window)
@@ -457,20 +442,26 @@ func (r *reapCtxSink) ReapSupersededManifest(ctx context.Context, _ FileID, _, _
 	return nil
 }
 
-// TestCarveReapSurvivesSiblingFailure pins that a run which finished its commits
-// still reaps the manifest rows it superseded when another run fails.
+// TestCarveReapSurvivesSiblingFailure pins that a run whose records all committed
+// and flipped still reaps the manifest rows it superseded when a later block of
+// the same carve fails.
 //
-// The reap is the last step of a run, after every one of its records is
-// committed and flipped synced. Nothing retries it and a later pass will not
-// revisit those records, so a reap skipped here leaves superseded rows alive
-// forever — and overlap resolution is greatest-start, so a stale row starting
-// later than a fresh one wins and serves old bytes on a cold read.
+// The reap runs after every one of the run's records is committed and flipped
+// synced. Nothing retries it and a later pass will not revisit those records, so
+// a reap skipped here leaves superseded rows alive forever — and overlap
+// resolution is greatest-start, so a stale row starting later than a fresh one
+// wins and serves old bytes on a cold read.
+//
+// CarveBlockSize is set to exactly one run so each run flushes as its own block:
+// the packer cuts blocks at that size, not at run boundaries, so a larger one
+// would coalesce both runs into a single block, the seeded failure would never
+// fire, and the test would prove nothing.
 func TestCarveReapSurvivesSiblingFailure(t *testing.T) {
 	const (
 		runSize  = 4 << 10
 		failFrom = 64 << 10
 	)
-	s, dd, base, _ := carveStore(t, Config{CarveBlockSize: 4 << 20, CarveUploadConcurrency: 4})
+	s, dd, base, _ := carveStore(t, Config{CarveBlockSize: runSize, CarveUploadConcurrency: 4})
 	sink := &reapCtxSink{
 		fakeSink:  base,
 		failFrom:  failFrom,
