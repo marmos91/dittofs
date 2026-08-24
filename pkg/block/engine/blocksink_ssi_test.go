@@ -99,3 +99,48 @@ func TestLocalBlockSink_ConcurrentSameFileCommit_NoSSIConflict(t *testing.T) {
 	require.Zero(t, store.TransactionConflictsForTest(),
 		"concurrent same-file carve commits must not serialize on the File row (SSI conflict)")
 }
+
+// TestLocalBlockSink_ConcurrentReapAndCommit_NoSSIConflict reproduces the same
+// File-row hazard as above, but between a run's own commits and a sibling
+// run's end-of-run reap: ReapSupersededManifest ends in a read-modify-write of
+// the same File.Blocks row that CommitBlock projects onto, so the two must
+// serialize on that row rather than race it.
+func TestLocalBlockSink_ConcurrentReapAndCommit_NoSSIConflict(t *testing.T) {
+	ctx := context.Background()
+	store, pid := newBadgerCommitter(t)
+	sink := localBlockSink{committer: store, commitLocks: &carveCommitLocks{}}
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if i%2 == 0 {
+				data := []byte{byte(i), byte(i >> 8), 0xab, 0xcd}
+				errs[i] = sink.CommitBlock(ctx, []journal.CarveChunk{{
+					FileID:     journal.FileID(pid),
+					FileOffset: int64(i) * 4096,
+					Hash:       journal.ChunkHash(blake3.Sum256(data)),
+					Data:       data,
+				}})
+				return
+			}
+			// A disjoint span from every commit above, so a correct
+			// implementation serializes only the shared File-row write.
+			off := int64(i) * 4096
+			errs[i] = sink.ReapSupersededManifest(ctx, journal.FileID(pid), off, off+4096, nil)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoErrorf(t, err, "concurrent carve metadata write %d surfaced an error", i)
+	}
+	require.Zero(t, store.TransactionConflictsForTest(),
+		"a reap racing a sibling run's commit must not conflict on the File row")
+}
