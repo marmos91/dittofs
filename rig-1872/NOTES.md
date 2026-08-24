@@ -51,3 +51,31 @@ selected by a time window and the stale set is excluded exactly. The windows:
 The first attempt was aborted because a bucket-wipe pass was still running when
 it began uploading, so some of its blocks were deleted underneath it. Nothing
 from that window is used.
+
+## Coder-VM status — one disappeared, and it was not me
+
+At session start `scw instance server list zone=fr-par-1` showed both named
+coder VMs running:
+
+```
+"id":"fb430ccc-8c94-4892-ad60-9b689f0b4732",
+"name":"scw-coder-coder-primary-c7fa0a9b284e43fe97ea0f",
+"tags":["kapsule=b9c08ebb-…","pool=324460e1-…","pool-name=coder-primary",
+        "runtime=containerd","managed=true","node=c7fa0a9b-…"],
+"creation_date":"2026-08-24T07:00:51.085841Z"
+```
+
+Later in the session `scw instance server get fb430ccc-…` returns "Cannot find
+resource", and it is absent from every zone (fr-par-1/2/3, nl-ams-1/2,
+pl-waw-1/2/3). `d9f39027-…` is still running.
+
+I did not touch it. The only mutating Scaleway call made in this session is the
+`dfsbench setup` that created `d8a08b01-…` plus its data volume; every other
+call was `instance server list` / `get` / `iam ssh-key list`. `dfsbench
+teardown` had not been run at that point, and `.bench-vm.json` has only ever
+named `d8a08b01-…`. The VM is a **Kapsule-managed node-pool member**
+(`managed=true`, `pool-name=coder-primary`), and the pool visibly churns — its
+surviving sibling `d9f39027-…` was itself created the same morning at 07:35,
+35 minutes after the one that vanished. Kapsule recycling it is the explanation
+that fits; flagging it anyway rather than staying quiet about a named VM
+changing state on my watch.
