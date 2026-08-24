@@ -1527,6 +1527,16 @@ func (h *Handler) parkCreateOnLeaseBreak(
 	// auto-downgrades other-key leases and lets the CREATE proceed.
 	waitCtx, cancel := context.WithTimeout(context.Background(), breakWaitTimeout)
 
+	// The DH2Q CreateGuid was already Reserved by the caller (Create, before the
+	// breakAndMaybeParkCreate dispatch) so a replayed CREATE fails fast with
+	// STATUS_FILE_NOT_AVAILABLE instead of blocking on the same break (smbtorture
+	// replay-dhv2-pending* / *-vs-{oplock,lease}). Since this CREATE is parking
+	// async, ownership of the matching Release transfers to the entry below: the
+	// caller returns STATUS_PENDING immediately and does NOT release. This keeps
+	// exactly one Reserve (in Create) and one Release per CREATE attempt. A zero
+	// CreateGuid is a no-op in Release.
+	replayGuid := dh2qCreateGuid(d.req)
+
 	pending := &PendingCreate{
 		ConnID:    ctx.ConnID,
 		SessionID: ctx.SessionID,
@@ -1534,6 +1544,15 @@ func (h *Handler) parkCreateOnLeaseBreak(
 		AsyncId:   asyncId,
 		Cancel:    cancel,
 		Callback:  ctx.AsyncCreateCompleteCallback,
+		// releaseReplay is invoked by every path that delivers this CREATE's
+		// final response, immediately before the response goes out — the resume
+		// goroutine below, and the CANCEL / session-teardown paths that preempt
+		// it. See PendingCreate.releaseReplay for why the ordering matters.
+		replayReleaser: func() {
+			if h.CreateReplayCache != nil {
+				h.CreateReplayCache.Release(ctx.SessionID, replayGuid)
+			}
+		},
 		// started is closed by the dispatcher (response.go single-cmd path
 		// or compound.go after ReplaceCallback) once the Callback has been
 		// finalized. The resume goroutine waits on it before invoking
@@ -1557,39 +1576,11 @@ func (h *Handler) parkCreateOnLeaseBreak(
 	shareName := d.tree.ShareName
 	messageID := ctx.MessageID
 
-	// The DH2Q CreateGuid was already Reserved by the caller (Create, before the
-	// breakAndMaybeParkCreate dispatch) so a replayed CREATE fails fast with
-	// STATUS_FILE_NOT_AVAILABLE instead of blocking on the same break (smbtorture
-	// replay-dhv2-pending* / *-vs-{oplock,lease}). Since this CREATE is parking
-	// async, ownership of the matching Release transfers to the resume goroutine
-	// below: the caller returns STATUS_PENDING immediately and does NOT release.
-	// This keeps exactly one Reserve (in Create) and one Release (here for the
-	// parked path) per CREATE attempt. A zero CreateGuid is a no-op in Release.
-	replayGuid := dh2qCreateGuid(d.req)
-
-	// The reservation must be gone BEFORE the parked CREATE's terminal status
-	// reaches the wire. A client that reads that status may put its replay on
-	// the connection immediately, and the server can dispatch it while the
-	// resume goroutine is still unwinding; with the reservation still held,
-	// resolveCreateReplay answers STATUS_FILE_NOT_AVAILABLE for a CREATE that
-	// has already resolved — the replay must instead observe the terminal
-	// outcome (cached open on success, a re-evaluated share-mode contest that
-	// yields the same STATUS_SHARING_VIOLATION on failure). So every path that
-	// sends a final response releases first; the deferred call below is the
-	// backstop for the exits that send nothing (CANCEL / teardown preemption).
-	//
-	// Releasing any earlier would be wrong: while the CREATE is still resolving
-	// a replay has no outcome to observe and must keep failing fast rather than
-	// starting a second, concurrent CREATE for the same CreateGuid.
-	releaseReplayReservation := func() {
-		if h.CreateReplayCache != nil {
-			h.CreateReplayCache.Release(ctx.SessionID, replayGuid)
-		}
-	}
-
 	go func() {
 		defer cancel()
-		defer releaseReplayReservation()
+		// Backstop for the exits that deliver no response of their own — the
+		// entry was preempted, and whoever preempted it released already.
+		defer pending.releaseReplay()
 
 		if shareConflictWait {
 			// Deferred-open resume: wait for the live share-mode conflict to
@@ -1644,7 +1635,7 @@ func (h *Handler) parkCreateOnLeaseBreak(
 				"messageID", messageID,
 				"asyncId", asyncId,
 				"treeID", ctx.TreeID)
-			releaseReplayReservation()
+			pending.releaseReplay()
 			if err := pending.Callback(pending.SessionID, messageID, asyncId, types.StatusNetworkNameDeleted, nil); err != nil {
 				logger.Debug("CREATE async: failed to send tree-deleted response", "error", err)
 			}
@@ -1664,7 +1655,7 @@ func (h *Handler) parkCreateOnLeaseBreak(
 			}
 		}
 
-		releaseReplayReservation()
+		pending.releaseReplay()
 
 		if err := pending.Callback(pending.SessionID, messageID, asyncId, status, body); err != nil {
 			logger.Warn("CREATE async: failed to send final response",

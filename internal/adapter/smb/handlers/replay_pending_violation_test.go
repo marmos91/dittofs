@@ -211,7 +211,21 @@ func TestReplayPendingViolation_CrossSessionIsolation(t *testing.T) {
 // wait returns at once, as it does when the holder ACKs its break and keeps
 // its open), so the whole test is deterministic: it asserts what the callback
 // observes, not how fast anything runs.
-func TestParkedCreate_ReplayReservationClearedBeforeFinalResponse(t *testing.T) {
+// parkedFinalResponse records what a parked CREATE's completion callback saw:
+// the status being sent, and whether the DH2Q replay reservation was still held
+// at that instant. The second field is the invariant under test.
+type parkedFinalResponse struct {
+	status         types.Status
+	reservedAtSend bool
+}
+
+// parkedViolationCreate stands up a CREATE parked behind a share-mode conflict
+// it can never win, and returns the handler, the reserved CreateGuid, the async
+// id of the parked entry, and a channel that reports what the final-response
+// callback saw. The share-conflict wait resolves immediately (no lock manager),
+// standing in for the holder having ACKed its break while keeping its open.
+func parkedViolationCreate(t *testing.T) (*Handler, uint64, uint64, <-chan parkedFinalResponse) {
+	t.Helper()
 	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
 	tree := &TreeConnection{TreeID: smbCtx.TreeID, SessionID: smbCtx.SessionID, ShareName: smbCtx.ShareName}
 	h.StoreTree(tree)
@@ -265,11 +279,7 @@ func TestParkedCreate_ReplayReservationClearedBeforeFinalResponse(t *testing.T) 
 	// resume goroutine owns the matching release.
 	h.CreateReplayCache.Reserve(smbCtx.SessionID, guid)
 
-	type finalResponse struct {
-		status         types.Status
-		reservedAtSend bool
-	}
-	sent := make(chan finalResponse, 1)
+	sent := make(chan parkedFinalResponse, 1)
 
 	parkCtx := &SMBHandlerContext{
 		Context:         context.Background(),
@@ -280,7 +290,7 @@ func TestParkedCreate_ReplayReservationClearedBeforeFinalResponse(t *testing.T) 
 		TryReserveAsync: func() bool { return true },
 		ReleaseAsync:    func() {},
 		AsyncCreateCompleteCallback: func(_, _, _ uint64, status types.Status, _ []byte) error {
-			sent <- finalResponse{status, h.CreateReplayCache.IsReserved(smbCtx.SessionID, guid)}
+			sent <- parkedFinalResponse{status, h.CreateReplayCache.IsReserved(smbCtx.SessionID, guid)}
 			return nil
 		},
 	}
@@ -290,14 +300,18 @@ func TestParkedCreate_ReplayReservationClearedBeforeFinalResponse(t *testing.T) 
 	if asyncId == 0 {
 		t.Fatal("parkCreateOnLeaseBreak refused to park")
 	}
-	if !h.PendingCreateRegistry.MarkStarted(asyncId) {
-		t.Fatal("MarkStarted: pending CREATE not registered")
-	}
+	return h, smbCtx.SessionID, asyncId, sent
+}
 
+// awaitFinalResponse fails the test unless the parked CREATE delivered a final
+// response whose status matches want AND the replay reservation was already
+// cleared at the instant that response was handed to the wire.
+func awaitFinalResponse(t *testing.T, sent <-chan parkedFinalResponse, want types.Status) {
+	t.Helper()
 	select {
 	case got := <-sent:
-		if got.status != types.StatusSharingViolation {
-			t.Fatalf("parked CREATE final status = %s, want SHARING_VIOLATION", got.status)
+		if got.status != want {
+			t.Fatalf("parked CREATE final status = %s, want %s", got.status, want)
 		}
 		if got.reservedAtSend {
 			t.Fatal("CreateGuid still reserved when the parked CREATE's final response was sent: " +
@@ -306,4 +320,26 @@ func TestParkedCreate_ReplayReservationClearedBeforeFinalResponse(t *testing.T) 
 	case <-time.After(10 * time.Second):
 		t.Fatal("parked CREATE never delivered a final response")
 	}
+}
+
+// TestParkedCreate_ReplayReservationClearedBeforeFinalResponse covers the
+// resume goroutine's own delivery: the park resolves, the CREATE loses the
+// share-mode contest, and STATUS_SHARING_VIOLATION goes out.
+func TestParkedCreate_ReplayReservationClearedBeforeFinalResponse(t *testing.T) {
+	h, _, asyncId, sent := parkedViolationCreate(t)
+	if !h.PendingCreateRegistry.MarkStarted(asyncId) {
+		t.Fatal("MarkStarted: pending CREATE not registered")
+	}
+	awaitFinalResponse(t, sent, types.StatusSharingViolation)
+}
+
+// TestParkedCreate_ReplayReservationClearedOnSessionCancel covers the other
+// delivery path: session teardown preempts the parked CREATE and sends
+// STATUS_CANCELLED itself. That response is just as terminal, so it carries the
+// same ordering obligation — the resume goroutine's deferred release is a
+// backstop, not the thing that orders this send.
+func TestParkedCreate_ReplayReservationClearedOnSessionCancel(t *testing.T) {
+	h, sessionID, _, sent := parkedViolationCreate(t)
+	h.cancelAsyncOpsForSession(sessionID)
+	awaitFinalResponse(t, sent, types.StatusCancelled)
 }

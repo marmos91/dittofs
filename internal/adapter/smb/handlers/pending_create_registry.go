@@ -35,6 +35,19 @@ type PendingCreate struct {
 	// StatusCancelled + nil body). Releases the async slot as part of its work.
 	Callback AsyncCreateCompleteCallback
 
+	// releaseReplay clears the DH2Q CreateGuid reservation this CREATE holds
+	// while it is parked. Every path that delivers the CREATE's final response
+	// MUST invoke it immediately BEFORE sending: a client learns the CREATE is
+	// finished from exactly that response and may put its replay on the
+	// connection at once, so a reservation that outlives the send makes
+	// resolveCreateReplay answer STATUS_FILE_NOT_AVAILABLE for a CREATE that has
+	// already reached a terminal status. Invoking it any earlier would be wrong
+	// — while the CREATE is still resolving a replay has no outcome to observe
+	// and must keep failing fast rather than starting a second, concurrent
+	// CREATE for the same CreateGuid. Idempotent, and nil for CREATEs that
+	// carry no CreateGuid. Call it through releaseReplay, which tolerates nil.
+	replayReleaser func()
+
 	// started is closed by MarkStarted once the dispatch layer has finalized
 	// the Callback assignment for this entry. The resume goroutine MUST wait
 	// on it before invoking Callback. Without this gate, a fast localhost
@@ -66,6 +79,14 @@ const (
 const (
 	createBucketSession = iota
 )
+
+// releaseReplay clears the parked CREATE's replay reservation, if it has one.
+// Safe on an entry that carries no hook.
+func (p *PendingCreate) releaseReplay() {
+	if p.replayReleaser != nil {
+		p.replayReleaser()
+	}
+}
 
 // MaxPendingCreates caps concurrent parked CREATEs per server to protect the
 // process from runaway clients. Picked to match MaxPendingWatches.
