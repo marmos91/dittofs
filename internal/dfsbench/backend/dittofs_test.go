@@ -12,6 +12,16 @@ import (
 	"github.com/marmos91/dittofs/internal/dfsbench/exec"
 )
 
+// captureCmdOut redirects command output into a buffer for the test's duration.
+func captureCmdOut(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := exec.CmdOut
+	exec.CmdOut = &buf
+	t.Cleanup(func() { exec.CmdOut = prev })
+	return &buf
+}
+
 // writeLog writes n bytes of filler followed by tail and returns the path.
 func writeLog(t *testing.T, filler int, tail string) string {
 	t.Helper()
@@ -98,10 +108,7 @@ func TestDittofsResidentFiles(t *testing.T) {
 }
 
 func TestDittofsBarrierDiagDumpMarksUnreachedSteps(t *testing.T) {
-	var buf bytes.Buffer
-	prev := exec.CmdOut
-	exec.CmdOut = &buf
-	defer func() { exec.CmdOut = prev }()
+	buf := captureCmdOut(t)
 
 	// A barrier that failed inside the drain reaches only the entry sample; the
 	// dump must say which evidence is missing rather than print empty sections.
@@ -142,11 +149,7 @@ exit 0
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	var buf bytes.Buffer
-	prev := exec.CmdOut
-	exec.CmdOut = &buf
-	defer func() { exec.CmdOut = prev }()
+	buf := captureCmdOut(t)
 
 	err := dittofsEvict(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "cold barrier failed") {
