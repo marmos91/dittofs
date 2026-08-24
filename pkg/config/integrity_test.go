@@ -46,3 +46,30 @@ func TestIntegrityConfig_Validate(t *testing.T) {
 		})
 	}
 }
+
+// TestLoad_IntegrityAutoEnv_RoundTrip proves the *bool and Duration scan knobs
+// decode from env through Load, the way the auto-GC pair does.
+func TestLoad_IntegrityAutoEnv_RoundTrip(t *testing.T) {
+	content := `
+database:
+  type: sqlite
+controlplane:
+  jwt:
+    secret: "test-secret-key-for-testing-minimum-32-chars"
+`
+	path := writeConfigFile(t, content)
+
+	t.Setenv("DITTOFS_INTEGRITY_AUTO_ENABLED", "false")
+	t.Setenv("DITTOFS_INTEGRITY_AUTO_INTERVAL", "6h")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Integrity.AutoScanEnabled() {
+		t.Errorf("integrity.auto_enabled: env override dropped, got true want false")
+	}
+	if cfg.Integrity.AutoInterval != 6*time.Hour {
+		t.Errorf("integrity.auto_interval: env override dropped, got %v want 6h", cfg.Integrity.AutoInterval)
+	}
+}

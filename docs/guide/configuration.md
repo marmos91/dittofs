@@ -592,6 +592,57 @@ See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep
 for the full mark-sweep design and [CLI.md](cli.md) for the on-demand
 `dfsctl store block gc` command.
 
+#### Background integrity scan
+
+A share's manifest can end up disagreeing with its own files' block lists:
+a file claims bytes in a range that no manifest row covers. At read time
+that is indistinguishable from a legitimate sparse hole — absent rows are
+how sparse files are represented — so the read returns zeros and reports
+success. Nothing on the data path can report it. The background scan is
+what finds it.
+
+```yaml
+integrity:
+  auto_enabled: true          # Run the structural manifest scan
+                              # automatically. Default true. Set false to
+                              # require manual `dfsctl store check`.
+  auto_interval: 24h          # Period between scans. Default 24h. Values
+                              # in (0, 5m) are REJECTED — a scan is a full
+                              # metadata walk of every share. Ignored when
+                              # auto_enabled is false.
+```
+
+The scan is **metadata-only**: it fetches no block and touches no remote
+object, so it costs a metadata walk regardless of how much data a share
+holds and generates **no S3 egress**. It writes nothing — it neither plans
+nor applies repairs. Shares are scanned one at a time.
+
+Findings surface in three places:
+
+- `dfsctl share show <name>` reports when the share was last scanned and
+  what was found. A share with damaged payloads reads as `degraded` even
+  when every subsystem probe is healthy.
+- Prometheus: `dittofs_integrity_last_scan_timestamp_seconds`,
+  `dittofs_integrity_last_scan_duration_seconds`,
+  `dittofs_integrity_files_scanned`, and
+  `dittofs_integrity_findings{kind="..."}` broken out by
+  `payloads_with_findings`, `damaged_payloads`,
+  `claimed_uncovered_ranges`, `unplaceable_rows` and `unknown_hash_rows`.
+  A share never scanned reports a last-scan timestamp of 0, so an alert on
+  scan age fires for it.
+- The server log, at `WARN`, for any share with damaged payloads.
+
+Run `dfsctl store check <share>` for the per-file detail behind a finding,
+and `--repair` to act on it.
+
+The schedule restarts from zero on server start, so a box restarted more
+often than `auto_interval` never completes a scan. Lower the interval on a
+host that reboots frequently.
+
+Env-var mapping:
+`DITTOFS_INTEGRITY_AUTO_ENABLED`,
+`DITTOFS_INTEGRITY_AUTO_INTERVAL`.
+
 #### Local cache size limit & write backpressure
 
 When a share has a **remote** block store configured (S3 or filesystem
