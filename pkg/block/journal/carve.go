@@ -248,10 +248,17 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 	// interval), so they share no intervals, no records to pack and no result.
 	// Each keeps its own dispatcher and flipIdx: the flip chain stays per-run.
 	//
-	// One semaphore for the whole file: it bounds in-flight blocks across all of
-	// this file's runs, not just the one currently carving, so peak carve RAM
+	// One semaphore for the whole file: it bounds in-flight block arenas across
+	// all of this file's runs, not just the one currently carving, so that term
 	// stays cap(sem) x (CarveBlockSize + one overhang chunk) regardless of how
-	// many runs a file has.
+	// many runs a file has. It does not bound the chunker scratch buffer, which
+	// each run holds for its whole lifetime, so peak carve RAM per file is that
+	// arena term plus (concurrent runs) x chunker.MaxChunkSize.
+	//
+	// ponytail: the scratch term is sized from the package-wide max chunk rather
+	// than the share's ChunkParams.Max, so a share chunking small still reserves
+	// 16 MiB per concurrent run; size the pooled buffer from ChunkParams.Max if
+	// that headroom ever shows up in a memory profile.
 	sem := make(chan struct{}, s.cfg.CarveUploadConcurrency)
 	g, gctx := errgroup.WithContext(ctx)
 	// ponytail: one knob bounds both goroutines and the per-run
@@ -262,8 +269,14 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 	runs := splitRuns(snap)
 	results := make([]CarveResult, len(runs))
 	for i, run := range runs {
+		// Bound each run by the next run's start, known here because every run is
+		// materialised before any is dispatched.
+		limit := int64(math.MaxInt64)
+		if i+1 < len(runs) {
+			limit = runs[i+1][0].fileOff
+		}
 		g.Go(func() error {
-			r, err := s.carveRun(gctx, sh, id, run, sem)
+			r, err := s.carveRun(gctx, sh, id, run, limit, sem)
 			results[i] = r
 			return err
 		})
@@ -298,9 +311,11 @@ func splitRuns(snap []interval) [][]interval {
 // carveRun streams one contiguous dirty run through FastCDC, dedups each chunk,
 // packs novel chunks into blocks (flushed at CarveBlockSize and at the run's end),
 // and flips the run's records to synced as the durable frontier advances.
-func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interval, sem chan struct{}) (CarveResult, error) {
+// limit is the file offset the next run starts at (MaxInt64 for the last run):
+// the run may not extend past it.
+func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interval, limit int64, sem chan struct{}) (CarveResult, error) {
 	var res CarveResult
-	run, err := s.extendRunToRowEnd(ctx, sh, id, run)
+	run, err := s.extendRunToRowEnd(ctx, sh, id, run, limit)
 	if err != nil {
 		return res, err
 	}
@@ -511,10 +526,19 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 // warm. An evicted range holds no local bytes to re-chunk, and half an extension
 // still ends inside the row.
 //
+// A row reaching past limit, the offset the next run starts at, is refused
+// outright. Runs carve concurrently and flipUpTo marks intervals synced in
+// memory as a run's watermark advances, so a sibling run's already-flipped head
+// is indistinguishable here from pre-existing warm data and warmTail alone would
+// wave such a row through. Refusing on the offset reproduces what a serial carve
+// decides, where that range is still visibly dirty. It has to be a refusal
+// rather than a truncation to limit: the run-end reap deletes whole rows that
+// start inside the run, so tiling only part of a row still drops its tail.
+//
 // ponytail: a row reaching past a later dirty run is left alone, so that run
 // still ends mid-row; covering it means merging the two runs, which is worth
 // building only if that shape shows up in practice.
-func (s *Store) extendRunToRowEnd(ctx context.Context, sh *shard, id FileID, run []interval) ([]interval, error) {
+func (s *Store) extendRunToRowEnd(ctx context.Context, sh *shard, id FileID, run []interval, limit int64) ([]interval, error) {
 	ender, ok := s.sink.(manifestRowEnder)
 	if !ok {
 		return run, nil
@@ -526,6 +550,12 @@ func (s *Store) extendRunToRowEnd(ctx context.Context, sh *shard, id FileID, run
 	rowEnd, err := ender.ManifestRowEndAfter(ctx, id, runEnd)
 	if err != nil {
 		return nil, err
+	}
+	if rowEnd > limit {
+		// The row reaches past a later run: leave this one as snapshotted rather
+		// than half extended, which is what a serial carve does when it finds that
+		// range still dirty.
+		return run, nil
 	}
 	if rowEnd <= runEnd {
 		return run, nil
