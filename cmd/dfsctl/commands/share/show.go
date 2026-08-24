@@ -206,15 +206,15 @@ func integrityRows(in *health.IntegrityStatus) [][]string {
 	if in == nil {
 		return [][]string{{"Integrity Scan", "not yet run"}}
 	}
+	at := in.LastRunAt.Local().Format("2006-01-02 15:04:05")
 	if in.Error != "" {
 		return [][]string{
-			{"Integrity Scan", "failed " + in.LastRunAt.Local().Format("2006-01-02 15:04:05")},
+			{"Integrity Scan", "failed " + at},
 			{"Integrity Error", in.Error},
 		}
 	}
 	rows := [][]string{
-		{"Integrity Scan", fmt.Sprintf("%s (%d files, %dms)",
-			in.LastRunAt.Local().Format("2006-01-02 15:04:05"), in.FilesScanned, in.DurationMS)},
+		{"Integrity Scan", fmt.Sprintf("%s (%d files, %dms)", at, in.FilesScanned, in.DurationMS)},
 		{"Integrity Findings", fmt.Sprintf("%d payloads (%d damaged)",
 			in.PayloadsWithFindings, in.DamagedPayloads)},
 	}

@@ -17,17 +17,16 @@ import (
 //
 // Each tick scans the shares one at a time and synchronously, so runs never
 // overlap and the walk never competes with itself for the metadata store. A
-// long run simply delays the next tick. The scan writes nothing — it plans
-// no repairs and applies none — so a tick skipped by shutdown or an error
-// costs only freshness, and the next tick catches up.
+// long run simply delays the next tick. The scan writes nothing, so a tick
+// skipped by shutdown or an error costs only freshness; the next tick
+// catches up.
 //
-// ponytail: a ticker, so the schedule restarts from zero on every server
-// start and a box restarted more often than the interval never scans. The
-// fix is to persist the last-run time per share and scan at startup when it
-// is older than the interval; do that once operators actually report boxes
-// that never complete a scan, because scanning at every boot puts a full
-// metadata walk on the startup path, which is the cost this scheduler exists
-// to keep off it.
+// ponytail: a plain ticker, so the schedule restarts from zero on every
+// server start and a box restarted more often than the interval never
+// completes a scan. Upgrade to a persisted per-share last-run time, scanning
+// at startup when it is older than the interval, once operators report such
+// boxes — it puts a full metadata walk on the startup path, which is the
+// cost this scheduler exists to keep off it.
 func (r *Runtime) StartScheduledIntegrityScan(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = 24 * time.Hour
@@ -85,7 +84,7 @@ func (r *Runtime) scanShareIntegrity(ctx context.Context, share string) {
 		return
 	}
 
-	status := &health.IntegrityStatus{
+	r.setShareIntegrity(share, &health.IntegrityStatus{
 		LastRunAt:              res.CompletedAt,
 		DurationMS:             res.DurationMS,
 		FilesScanned:           res.FilesScanned,
@@ -94,8 +93,7 @@ func (r *Runtime) scanShareIntegrity(ctx context.Context, share string) {
 		ClaimedUncoveredRanges: res.ClaimedUncoveredRanges,
 		UnplaceableRows:        res.UnplaceableRows,
 		UnknownHashRows:        res.UnknownHashRows,
-	}
-	r.setShareIntegrity(share, status)
+	})
 
 	if res.DamagedPayloads > 0 {
 		logger.Warn("integrity scan: share has damaged payloads",
@@ -120,12 +118,12 @@ func (r *Runtime) setShareIntegrity(share string, status *health.IntegrityStatus
 
 // ShareIntegrity returns the named share's most recent scan outcome, or nil
 // when no scan has run for it in this process. The returned value is a copy,
-// safe to hand to a caller that outlives the next scan.
+// so a caller never holds a pointer into state the next scan replaces.
 func (r *Runtime) ShareIntegrity(share string) *health.IntegrityStatus {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	status, ok := r.shareIntegrity[share]
-	if !ok || status == nil {
+	status := r.shareIntegrity[share]
+	if status == nil {
 		return nil
 	}
 	cp := *status
@@ -133,12 +131,9 @@ func (r *Runtime) ShareIntegrity(share string) *health.IntegrityStatus {
 }
 
 // ShareStatus returns the named share's health report together with the
-// structural counters recorded alongside it. It is what a client asking
-// "is this share alright" should be given: a share whose manifest scan
-// found damaged payloads is reported degraded even though every subsystem
-// probe comes back healthy, because that damage is invisible to the probes
-// — an uncovered range a file still claims reads back as zeros and reports
-// success.
+// structural counters recorded alongside it. A share whose manifest scan
+// found damaged payloads reads as degraded even when every subsystem probe
+// comes back healthy, because that damage is invisible to the probes.
 //
 // A worse status from a subsystem probe always wins; the scan can only
 // downgrade a healthy share, never upgrade an unhealthy one.

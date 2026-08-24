@@ -2251,6 +2251,9 @@ spec:
 | ⭐ `dittofs_snapshot_operations_total{op,result}` | Snapshot operations by `op` (create/delete/restore) and `result` (ok/error). |
 | `dittofs_snapshot_duration_seconds{op}` | Snapshot operation latency histogram, by `op` (create/delete/restore). |
 | ⭐ `dittofs_snapshot_last_success_timestamp_seconds{share}` | Unix time of the last successful snapshot create (backup-freshness signal). |
+| ⭐ `dittofs_integrity_findings{share,kind}` | Findings from the last structural manifest scan, by `kind`: `payloads_with_findings`, `damaged_payloads`, `claimed_uncovered_ranges`, `unplaceable_rows`, `unknown_hash_rows`. |
+| ⭐ `dittofs_integrity_last_scan_timestamp_seconds{share}` | Unix time the structural manifest scan last completed (0 = never scanned since process start). |
+| `dittofs_integrity_last_scan_duration_seconds{share}` / `dittofs_integrity_files_scanned{share}` | Cost and reach of the last structural manifest scan. |
 
 ### Example alert expressions
 
@@ -2270,6 +2273,26 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "DittoFS has had no successful snapshot create in >24h"
+
+      # A share holding manifest damage. The read path cannot report this
+      # class: an uncovered range a file still claims reads back as a sparse
+      # hole, so reads return zeros and succeed. Only the scan sees it.
+      - alert: DittoFSManifestDamage
+        expr: dittofs_integrity_findings{kind="damaged_payloads"} > 0
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: "DittoFS share {{ $labels.share }} has damaged payloads; run dfsctl store check"
+
+      # The integrity scan has not completed in 48h. A last-scan value of 0
+      # means never scanned since process start, which this expression catches
+      # because time() - 0 is far past the threshold.
+      - alert: DittoFSIntegrityScanStale
+        expr: (time() - dittofs_integrity_last_scan_timestamp_seconds) > 172800
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "DittoFS share {{ $labels.share }} has not been integrity-scanned in >48h"
 
       # Remote block store unreachable.
       - alert: DittoFSRemoteDown

@@ -8,9 +8,8 @@ import "time"
 // every existing consumer of the report fields is unaffected.
 //
 // Counters live here rather than in [Report.Message] because they are
-// numbers an operator charts and alerts on, and because a share can have
-// several independent things worth reporting at once — prose collapses
-// them into one string that nothing can parse back apart.
+// numbers an operator charts and alerts on, and a share can have several
+// worth reporting at once.
 type ShareStatus struct {
 	Report
 
@@ -28,8 +27,8 @@ type ShareStatus struct {
 // list: a claimed-but-uncovered span, a row carrying no placeable chunk
 // offset, or a row whose hash the synced-hash store does not know. The
 // first of those is invisible at read time — an absent row is how sparse
-// holes are represented, so the read path returns zeros and reports
-// success — which is why the scan exists.
+// holes are represented, so the read returns zeros and reports success —
+// which is why the scan exists.
 type IntegrityStatus struct {
 	// LastRunAt is when the scan completed (UTC).
 	LastRunAt time.Time `json:"last_run_at"`

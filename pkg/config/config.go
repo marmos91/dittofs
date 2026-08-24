@@ -226,15 +226,10 @@ func (c *GCConfig) Validate() error {
 	return nil
 }
 
-// IntegrityConfig configures the background structural manifest scan.
-// The scan walks each share's metadata and compares the byte ranges its
-// manifest rows cover against every file's recorded size, reporting spans
-// a file claims to hold but no row covers, rows carrying no placeable
-// chunk offset, and rows whose hash was never confirmed mirrored.
-//
-// It is metadata-only: no block is fetched and no remote object is
-// touched, so its cost is a metadata walk regardless of how much data a
-// share holds. The same scan is runnable on demand via `dfsctl store check`.
+// IntegrityConfig configures the background structural manifest scan, which
+// compares the byte ranges each share's manifest rows cover against its
+// files' recorded sizes. Knobs cover only the schedule. The scan is
+// metadata-only and is also runnable on demand (`dfsctl store check`).
 type IntegrityConfig struct {
 	// AutoEnabled turns on the background scan. Defaults to true. Set
 	// false to require an operator to run `dfsctl store check` by hand.
@@ -252,8 +247,8 @@ func (c *IntegrityConfig) ApplyDefaults() {
 		on := true
 		c.AutoEnabled = &on
 	}
-	// Only fill the unset (zero) case. A negative value is a user mistake
-	// and must survive to Validate rather than be rewritten silently.
+	// Only fill the unset (zero) case. A negative value is a user mistake and
+	// must survive to Validate, not be silently rewritten to the default.
 	if c.AutoInterval == 0 {
 		c.AutoInterval = 24 * time.Hour
 	}
@@ -267,10 +262,9 @@ func (c *IntegrityConfig) AutoScanEnabled() bool {
 
 // Validate returns an error if the IntegrityConfig has invalid values.
 //
-// The floor is 5m rather than GC's 1m because a scan is a full metadata
-// walk of every share: on a store of any size a sub-5m cadence leaves the
-// scan running continuously, which is a scheduling mistake rather than an
-// aggressive setting.
+// AutoInterval's floor is 5m rather than GC's 1m: a scan is a full metadata
+// walk of every share, so on a store of any size a sub-5m cadence leaves it
+// running continuously.
 func (c *IntegrityConfig) Validate() error {
 	if c.AutoInterval < 0 {
 		return fmt.Errorf("integrity.auto_interval must be >= 0 (got %v)", c.AutoInterval)

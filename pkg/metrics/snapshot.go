@@ -67,8 +67,8 @@ type ShareSnapshot struct {
 
 	// Integrity is the last structural manifest scan's outcome, zero-valued
 	// when no scan has run for this share in this process. A zero
-	// LastScanUnix is emitted rather than suppressed so an alert on scan
-	// age fires for a share that has never been verified.
+	// LastScanUnix is emitted rather than suppressed so an alert on scan age
+	// fires for a share that has never been verified.
 	Integrity IntegrityScanSnapshot
 }
 

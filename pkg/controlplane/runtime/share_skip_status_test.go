@@ -52,7 +52,7 @@ func TestHealthcheckShare_SkipReasonClearedOnAddAndRemove(t *testing.T) {
 		t.Fatal("expected the skip reason to be recorded")
 	}
 
-	rt.clearShareSkipped("/s")
+	rt.clearShareState("/s")
 	if _, skipped := rt.shareSkipReason("/s"); skipped {
 		t.Error("expected the skip reason to be cleared")
 	}
@@ -69,7 +69,7 @@ func TestShareSkipReason_IsPerShare(t *testing.T) {
 	rt := newRuntimeForSkipStatus()
 
 	rt.markShareSkipped("/a", "reason a")
-	rt.clearShareSkipped("/b")
+	rt.clearShareState("/b")
 
 	if reason, skipped := rt.shareSkipReason("/a"); !skipped || reason != "reason a" {
 		t.Errorf("shareSkipReason(/a) = (%q, %v), want (\"reason a\", true)", reason, skipped)
