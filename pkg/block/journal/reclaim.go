@@ -258,6 +258,8 @@ func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (freed int64, err erro
 		backed[e.id] = struct{}{}
 	}
 
+	// This append's fsync is load-bearing and must stay per call: the bytes it
+	// describes are unlinked below, so the log is about to be their only record.
 	if err = s.appendCold(entries); err != nil {
 		// Without a durable marker the range would come back from a restart as a
 		// hole, so keep the segment (and its bytes) instead of evicting blind.

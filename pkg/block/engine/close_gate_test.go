@@ -182,6 +182,11 @@ func TestStore_OpAfterCloseReturnsErrStoreClosed(t *testing.T) {
 			t.Fatalf("want ErrStoreClosed, got %v", err)
 		}
 	})
+	t.Run("SeedColdBatch", func(t *testing.T) {
+		if err := bs.SeedColdBatch(ctx, []ColdSeed{{PayloadID: "p", Extents: [][2]int64{{0, 4096}}}}); !errors.Is(err, ErrStoreClosed) {
+			t.Errorf("SeedColdBatch after Close = %v, want ErrStoreClosed; a seed that slips past Close reopens the cold log behind a torn-down store", err)
+		}
+	})
 	t.Run("EvictLocal", func(t *testing.T) {
 		if err := bs.EvictLocal(ctx, "p"); !errors.Is(err, ErrStoreClosed) {
 			t.Fatalf("want ErrStoreClosed, got %v", err)

@@ -40,6 +40,12 @@ const coldVerifySamples = 8
 // nothing extra, short enough that a large one never looks wedged.
 const migrationProgressInterval = 5 * time.Second
 
+// coldSeedBatchExtents is how many extents SeedColdFromManifest buffers before
+// making them durable. Each flush is one fsync, so a bigger batch is strictly
+// faster and strictly more heap; 64Ki extents is a few MiB of entries and takes
+// the measured 56k-chunk manifest in a single write.
+const coldSeedBatchExtents = 64 << 10
+
 // coldSample is one manifest extent the migration will read back and hash.
 type coldSample struct {
 	payloadID string

@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -309,5 +310,119 @@ func TestColdSeededMarkerSurvivesReopen(t *testing.T) {
 	defer func() { _ = s2.Close() }()
 	if !s2.ColdSeeded() {
 		t.Error("the marker did not survive a reopen, so every start rescans the manifest")
+	}
+}
+
+// TestEvictAppendsColdEntriesBeforeReturning pins the half of appendCold's
+// contract that cannot be relaxed. Eviction unlinks the only local copy of the
+// bytes it just described, so its entries have to be on disk by the time Evict
+// returns; a restart that finds them missing reads those ranges as holes and
+// serves zeros. The seed path is allowed to batch its appends because it takes
+// nothing away, and this test is what fails if that batching is ever extended to
+// eviction as a symmetry cleanup.
+//
+// It reads the log back from the filesystem rather than from the store's index,
+// so a deferred or buffered append fails it. It cannot observe the fsync itself:
+// a write without Sync still reads back out of page cache, so no in-process test
+// can tell the two apart — losing the Sync alone is caught by the device-loss
+// rig, not here.
+func TestEvictAppendsColdEntriesBeforeReturning(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
+
+	s, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// Hydrated records are born synced, so the whole shard qualifies for eviction.
+	fillUntilSealed(t, s, "f", true, 2)
+	res, err := s.Evict(ctx, 1<<30)
+	if err != nil {
+		t.Fatalf("Evict: %v", err)
+	}
+	if res.SegmentsEvicted == 0 {
+		t.Fatal("Evict freed nothing, so the durability this test is about was never exercised")
+	}
+
+	// Deliberately no Close and no Sync from the test: whatever is on disk here,
+	// the eviction put there before it returned.
+	entries, err := loadCold(dir)
+	if err != nil {
+		t.Fatalf("loadCold: %v", err)
+	}
+	var covered int64
+	for _, e := range entries {
+		if e.id == "f" {
+			covered += e.length
+		}
+	}
+	if covered == 0 {
+		t.Fatalf("Evict unlinked %d bytes of the only local copy but left no cold entry on disk (%d entries): "+
+			"a restart takes those ranges for holes and serves zeros instead of fetching them", res.BytesFreed, len(entries))
+	}
+}
+
+// TestSeedColdBatchIsDurableAndMatchesPerFileSeeding is the seed side of the same
+// contract. Batching is allowed to make the append rarer; it is not allowed to
+// make it optional, and it must not change what lands. The batch is compared
+// against the same files seeded one at a time: a fresh store hands out versions
+// in the same order either way, so the two logs are byte-for-byte identical.
+func TestSeedColdBatchIsDurableAndMatchesPerFileSeeding(t *testing.T) {
+	ctx := context.Background()
+	seeds := []ColdSeed{
+		{ID: "a", Extents: [][2]int64{{0, 4096}, {4096, 4096}}},
+		{ID: "b", Extents: [][2]int64{{0, 8192}}},
+		{ID: "c", Extents: [][2]int64{{4096, 4096}}},
+	}
+	cfg := Config{ShardCount: 4, SegmentSize: minSegmentSize}
+
+	batchDir := t.TempDir()
+	batched, err := Open(batchDir, cfg, newFakeRemote(), newFakeClock())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = batched.Close() }()
+	if err := batched.SeedColdBatch(ctx, seeds); err != nil {
+		t.Fatalf("SeedColdBatch: %v", err)
+	}
+
+	// Again no Close: a batch that only becomes durable on shutdown is the bug.
+	got, err := loadCold(batchDir)
+	if err != nil {
+		t.Fatalf("loadCold after batch: %v", err)
+	}
+	for _, sd := range seeds {
+		found := false
+		for _, e := range got {
+			if e.id == sd.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("SeedColdBatch returned with no on-disk entry for %q; a restart reads its ranges as holes", sd.ID)
+		}
+	}
+
+	oneDir := t.TempDir()
+	oneAtATime, err := Open(oneDir, cfg, newFakeRemote(), newFakeClock())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = oneAtATime.Close() }()
+	for _, sd := range seeds {
+		if err := oneAtATime.SeedCold(ctx, sd.ID, sd.Extents); err != nil {
+			t.Fatalf("SeedCold %q: %v", sd.ID, err)
+		}
+	}
+	want, err := loadCold(oneDir)
+	if err != nil {
+		t.Fatalf("loadCold after per-file seeding: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("batched seed recorded %v, seeding the same files one at a time recorded %v", got, want)
 	}
 }
