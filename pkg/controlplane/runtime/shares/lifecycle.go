@@ -176,10 +176,8 @@ func (s *Service) durableExtent(shareName string, payloadID metadata.PayloadID) 
 }
 
 // payloadSizer is the narrow read the size reconcile needs: one file's persisted
-// size, addressed by payload. A store that resolves it directly skips the link
-// count, chunk manifest and derived path GetFileByPayloadID also loads and the
-// reconcile then throws away — per locally-resident file, which is what makes
-// share start on a large store expensive.
+// size, addressed by payload, without the link count, chunk manifest and derived
+// path GetFileByPayloadID also loads and the reconcile then throws away.
 type payloadSizer interface {
 	FileSizeByPayloadID(ctx context.Context, payloadID metadata.PayloadID) (uint64, bool, error)
 }
@@ -209,28 +207,24 @@ func payloadSizeLookup(metadataStore metadata.Store) func(context.Context, metad
 // durable high-water mark, and the mark to grow it to.
 type staleSize struct {
 	id          string
-	journalSize int64
+	journalSize uint64
 }
 
 // findStaleSizes reports which of the journal's files have a persisted metadata
-// size below their journal high-water mark. It is read-only and order-free, so
-// it splits the file list across workers: one share start compares every
-// locally-resident file, and on a store holding millions of them that
-// comparison is the whole cost of making the share visible.
+// size below their journal high-water mark. The comparison is read-only and
+// order-free, so workers take contiguous slices of the list rather than one
+// goroutine per file: share start compares every locally-resident file, and on a
+// store holding millions of them that is what the share's visibility waits on.
 //
 // A real store error (I/O, corruption) aborts the scan rather than being
 // swallowed — skipping a file would leave its metadata.Size stale and truncate
 // reads. A file the metadata store does not know is an orphan journal entry and
 // is simply skipped.
 func findStaleSizes(ctx context.Context, metadataStore metadata.Store, localStore local.LocalStore, files []string) ([]staleSize, error) {
-	// The comparisons are point reads against a metadata store that is open but
-	// not yet serving any share, so the only ceiling worth respecting is the
-	// machine's. Workers take contiguous slices rather than one goroutine per
-	// file, which would be millions of spawns to do a handful of reads each.
-	workers := min(runtime.NumCPU(), 8)
-	if len(files) < workers {
-		workers = max(len(files), 1)
+	if len(files) == 0 {
+		return nil, nil
 	}
+	workers := min(len(files), runtime.NumCPU(), 8)
 	chunk := (len(files) + workers - 1) / workers
 
 	sizeOf := payloadSizeLookup(metadataStore)
@@ -252,13 +246,12 @@ func findStaleSizes(ctx context.Context, metadataStore metadata.Store, localStor
 				if err != nil {
 					return fmt.Errorf("reconcile size: lookup payload %s: %w", id, err)
 				}
-				// max-only, overflow-safe: size is uint64, journalSize a
-				// non-negative offset; compare in uint64 so a huge size can never
-				// cast negative and shrink.
+				// Grow only, and compare in uint64: a size past the journal mark
+				// must never cast negative and shrink the file.
 				if !known || size >= uint64(journalSize) {
 					continue
 				}
-				found = append(found, staleSize{id: id, journalSize: journalSize})
+				found = append(found, staleSize{id: id, journalSize: uint64(journalSize)})
 			}
 			if len(found) == 0 {
 				return nil
@@ -296,8 +289,7 @@ func reconcileMetadataSizeFromJournal(ctx context.Context, metadataStore metadat
 	if localStore == nil {
 		return nil
 	}
-	files := localStore.ListFiles(ctx)
-	stale, err := findStaleSizes(ctx, metadataStore, localStore, files)
+	stale, err := findStaleSizes(ctx, metadataStore, localStore, localStore.ListFiles(ctx))
 	if err != nil {
 		return err
 	}
@@ -309,10 +301,10 @@ func reconcileMetadataSizeFromJournal(ctx context.Context, metadataStore metadat
 			if err != nil {
 				return err
 			}
-			if cur == nil || m.journalSize < 0 || cur.Size >= uint64(m.journalSize) {
+			if cur == nil || cur.Size >= m.journalSize {
 				return nil // another writer already caught up; never shrink
 			}
-			cur.Size = uint64(m.journalSize)
+			cur.Size = m.journalSize
 			return tx.UpdateAttrs(ctx, cur)
 		}); err != nil {
 			return fmt.Errorf("reconcile size for payload %s: %w", m.id, err)

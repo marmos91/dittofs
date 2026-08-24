@@ -52,19 +52,6 @@ func mkNestedFile(t testing.TB, store *BadgerMetadataStore, shareName string, ro
 	require.NoError(t, store.SetChild(ctx, dir, name, h))
 }
 
-// mkSizeShare mirrors mkPayloadShare but accepts testing.TB so the benchmark
-// can build the same fixture as the test.
-func mkSizeShare(t testing.TB, store *BadgerMetadataStore, shareName string) metadata.FileHandle {
-	t.Helper()
-	ctx := context.Background()
-	require.NoError(t, store.CreateShare(ctx, &metadata.Share{Name: shareName}))
-	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755})
-	require.NoError(t, err)
-	h, err := metadata.EncodeFileHandle(rootFile)
-	require.NoError(t, err)
-	return h
-}
-
 func newSizeTestStore(t testing.TB) *BadgerMetadataStore {
 	t.Helper()
 	store, err := NewBadgerMetadataStoreWithDefaults(context.Background(), t.TempDir())
@@ -80,7 +67,7 @@ func newSizeTestStore(t testing.TB) *BadgerMetadataStore {
 func TestFileSizeByPayloadIDMatchesGetFileByPayloadID(t *testing.T) {
 	ctx := context.Background()
 	store := newSizeTestStore(t)
-	root := mkSizeShare(t, store, "sizes")
+	root := mkPayloadShare(t, store, "sizes")
 
 	mkNestedFile(t, store, "sizes", root, 4, 0, "payload-live", 4096)
 
@@ -131,7 +118,7 @@ func BenchmarkSizeByPayloadID(b *testing.B) {
 	const files = 2000
 	ctx := context.Background()
 	store := newSizeTestStore(b)
-	root := mkSizeShare(b, store, "bench")
+	root := mkPayloadShare(b, store, "bench")
 
 	ids := make([]metadata.PayloadID, files)
 	for i := range ids {

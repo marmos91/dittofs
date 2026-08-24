@@ -475,23 +475,22 @@ func (s *BadgerMetadataStore) PutFilesystemMeta(ctx context.Context, shareName s
 }
 
 // FileSizeByPayloadID returns just the persisted logical size of the file
-// carrying payloadID, without the enrichment GetFileByPayloadID performs.
-// found is false when no file row claims the payload.
+// carrying payloadID. found is false when no file row claims the payload.
 //
-// GetFileByPayloadID resolves the row and then loads the link count, the chunk
-// manifest and the derived path — the last of which walks the parent chain,
-// two point reads per component. A caller that only compares sizes pays all of
-// that per file; share start reconciles one size per locally-resident file, so
-// on a large store the discarded enrichment is the whole cost.
+// GetFileByPayloadID answers the same question but also loads the link count,
+// the chunk manifest and the derived path, the last of which walks the parent
+// chain with two point reads per component. Share start reconciles one size per
+// locally-resident file, so on a large store that discarded enrichment is the
+// whole cost.
 //
 // A payload with no pl: index entry reports not-found rather than falling back
 // to the keyspace scan GetFileByPayloadID uses for rows written before that
-// index existed: the open-time scan indexes every such row before any caller
-// runs, so a miss here means no row holds the payload (an orphan journal
-// entry). Only a stale entry — one resolving to a row that no longer claims
-// the payload — takes the slower path, and it does so through
-// GetFileByPayloadID so the answer stays identical.
-func (s *BadgerMetadataStore) FileSizeByPayloadID(ctx context.Context, payloadID metadata.PayloadID) (size uint64, found bool, err error) {
+// index existed: the open-time backfill indexes every such row before any
+// caller runs, so a miss here means no row holds the payload (an orphan journal
+// entry). An index entry that no longer resolves to a row claiming the payload
+// does fall back, and does so through GetFileByPayloadID itself, so the answer
+// stays identical.
+func (s *BadgerMetadataStore) FileSizeByPayloadID(ctx context.Context, payloadID metadata.PayloadID) (uint64, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, false, err
 	}
@@ -499,8 +498,9 @@ func (s *BadgerMetadataStore) FileSizeByPayloadID(ctx context.Context, payloadID
 		return 0, false, nil
 	}
 
-	var stale bool
-	err = s.db.View(func(txn *badgerdb.Txn) error {
+	var size uint64
+	var found, stale bool
+	err := s.db.View(func(txn *badgerdb.Txn) error {
 		item, err := txn.Get(keyPayloadID(payloadID))
 		if errors.Is(err, badgerdb.ErrKeyNotFound) {
 			return nil
@@ -508,12 +508,8 @@ func (s *BadgerMetadataStore) FileSizeByPayloadID(ctx context.Context, payloadID
 		if err != nil {
 			return err
 		}
-		raw, err := item.ValueCopy(nil)
-		if err != nil {
-			return err
-		}
 		var fileID uuid.UUID
-		if err := fileID.UnmarshalBinary(raw); err != nil {
+		if err := item.Value(func(val []byte) error { return fileID.UnmarshalBinary(val) }); err != nil {
 			stale = true
 			return nil
 		}
@@ -527,11 +523,7 @@ func (s *BadgerMetadataStore) FileSizeByPayloadID(ctx context.Context, payloadID
 		}
 		return row.Value(func(val []byte) error {
 			file, err := decodeFile(val)
-			if err != nil {
-				stale = true
-				return nil
-			}
-			if file.PayloadID != payloadID {
+			if err != nil || file.PayloadID != payloadID {
 				stale = true
 				return nil
 			}

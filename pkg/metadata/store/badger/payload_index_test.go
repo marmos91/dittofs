@@ -11,7 +11,7 @@ import (
 )
 
 // mkPayloadShare creates a share and returns its root handle.
-func mkPayloadShare(t *testing.T, store *BadgerMetadataStore, shareName string) metadata.FileHandle {
+func mkPayloadShare(t testing.TB, store *BadgerMetadataStore, shareName string) metadata.FileHandle {
 	t.Helper()
 	ctx := context.Background()
 	require.NoError(t, store.CreateShare(ctx, &metadata.Share{Name: shareName}))

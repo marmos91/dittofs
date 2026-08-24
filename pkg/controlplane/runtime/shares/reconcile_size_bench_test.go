@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/block/local/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	badgerstore "github.com/marmos91/dittofs/pkg/metadata/store/badger"
@@ -93,7 +94,7 @@ func TestFindStaleSizesReportsOnlyLaggingFiles(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, stale, 1)
 	require.Equal(t, ids[2], stale[0].id)
-	require.Equal(t, int64(32), stale[0].journalSize)
+	require.Equal(t, uint64(32), stale[0].journalSize)
 }
 
 // enrichedOnly hides the store's size-only lookup so the scan falls back to the
@@ -102,10 +103,10 @@ type enrichedOnly struct{ metadata.Store }
 
 // scanSerialEnriched reproduces the share-start scan as it ran before this
 // change: one enriched metadata load per locally-resident file, in file order.
-func scanSerialEnriched(ctx context.Context, store metadata.Store, local localSizer, files []string) (int, error) {
+func scanSerialEnriched(ctx context.Context, store metadata.Store, localStore local.LocalStore, files []string) (int, error) {
 	n := 0
 	for _, id := range files {
-		journalSize, ok := local.FileSize(ctx, id)
+		journalSize, ok := localStore.FileSize(ctx, id)
 		if !ok {
 			continue
 		}
@@ -122,10 +123,6 @@ func scanSerialEnriched(ctx context.Context, store metadata.Store, local localSi
 		n++
 	}
 	return n, nil
-}
-
-type localSizer interface {
-	FileSize(ctx context.Context, payloadID string) (int64, bool)
 }
 
 // BenchmarkShareStartSizeScan measures the share-start size scan on a store
