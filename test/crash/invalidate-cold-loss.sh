@@ -243,7 +243,14 @@ else
 fi
 
 # --- evict, retiring the segment that holds the only copy -------------------
-dctl store block evict --share /cold --local-only 2>&1 | tail -3
+# The verdict rests on this actually retiring the segment, so its exit status is
+# checked rather than piped away: an eviction that quietly failed would leave the
+# record on disk and the rig would then grade a run in which nothing was lost.
+if ! dctl store block evict --share /cold --local-only >"$WORK/evict.out" 2>&1; then
+  cat "$WORK/evict.out"
+  fail "evict"
+fi
+tail -3 "$WORK/evict.out"
 log "evicted"
 
 # --- detach the remote tier from the share ----------------------------------
