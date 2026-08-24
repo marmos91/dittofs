@@ -170,3 +170,32 @@ func BenchmarkShareStartSizeScan(b *testing.B) {
 		})
 	}
 }
+
+// TestFindStaleSizesCoversEveryChunk pins that each worker scans its own slice
+// of the file list. The scan hands every worker a batch cut from the same
+// backing array, so a batch shared between them would leave whole stretches of
+// the list unscanned — and an unscanned file whose size needed growing is a
+// read that truncates acknowledged bytes. Growing one file in every chunk,
+// including the first, fails loudly if that ever happens.
+func TestFindStaleSizesCoversEveryChunk(t *testing.T) {
+	const files = 64
+	ctx := context.Background()
+	store, local, ids := buildReconcileFixture(t, files)
+
+	// ids is in creation order, so growing every fourth file spreads the
+	// expected hits across the list however it ends up chunked.
+	want := map[string]uint64{}
+	for i := 0; i < files; i += 4 {
+		require.NoError(t, local.WriteAt(ctx, ids[i], 8, make([]byte, 8)))
+		want[ids[i]] = 16
+	}
+
+	stale, err := findStaleSizes(ctx, store, local, ids)
+	require.NoError(t, err)
+
+	got := map[string]uint64{}
+	for _, s := range stale {
+		got[s.id] = s.journalSize
+	}
+	require.Equal(t, want, got)
+}
