@@ -143,15 +143,20 @@ func (r *Runtime) ShareIntegrity(share string) *health.IntegrityStatus {
 // A worse status from a subsystem probe always wins; the scan can only
 // downgrade a healthy share, never upgrade an unhealthy one.
 func (r *Runtime) ShareStatus(ctx context.Context, share string) health.ShareStatus {
-	out := health.ShareStatus{
-		Report:    r.ShareChecker(share).Healthcheck(ctx),
-		Integrity: r.ShareIntegrity(share),
+	return withIntegrity(r.ShareChecker(share).Healthcheck(ctx), r.ShareIntegrity(share))
+}
+
+// withIntegrity joins a subsystem health report to a recorded scan outcome,
+// downgrading a healthy share to degraded when the scan found damage. Pure
+// function — no I/O — so the downgrade rule can be tested on its own.
+func withIntegrity(rep health.Report, in *health.IntegrityStatus) health.ShareStatus {
+	out := health.ShareStatus{Report: rep, Integrity: in}
+	if in == nil || in.DamagedPayloads == 0 || rep.Status != health.StatusHealthy {
+		return out
 	}
-	if out.Integrity != nil && out.Integrity.DamagedPayloads > 0 && out.Status == health.StatusHealthy {
-		out.Status = health.StatusDegraded
-		out.Message = fmt.Sprintf(
-			"integrity: %d damaged payloads of %d with findings; run `dfsctl store check` for detail",
-			out.Integrity.DamagedPayloads, out.Integrity.PayloadsWithFindings)
-	}
+	out.Status = health.StatusDegraded
+	out.Message = fmt.Sprintf(
+		"integrity: %d damaged payloads of %d with findings; run `dfsctl store check` for detail",
+		in.DamagedPayloads, in.PayloadsWithFindings)
 	return out
 }
