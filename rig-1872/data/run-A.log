@@ -1,0 +1,119 @@
+tier dittofs-s3-writeback-nfs3: local-ack (badger, metadata flush relaxed) + async S3 writeback
+settled: waited 98909ms for block-store sync to go idle (unsynced=0MiB, flat 4s)
+run: dittofs-s3-writeback-nfs3__seq-read__large__nfs3__warm
+run: dittofs-s3-writeback-nfs3__rand-write-4k__large__nfs3__warm
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+drain round 0: unsynced=115MiB pending_uploads=0
+cold barrier diagnostics — dfsctl system drain-uploads: dfsctl [system drain-uploads --timeout 15m]: exit status 1
+Error: failed to drain uploads: request failed: Post "http://127.0.0.1:8080/api/v1/system/drain-uploads": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+
+  block stats at barrier entry: {
+  "totals": {
+    "file_count": 7,
+    "blocks_dirty": 0,
+    "blocks_local": 0,
+    "blocks_remote": 10805,
+    "blocks_total": 10805,
+    "blocks_cached": 0,
+    "local_disk_used": 4529244618,
+    "local_disk_max": 34359738368,
+    "local_mem_used": 0,
+    "local_mem_max": 0,
+    "append_log_limit_bytes": 8412231680,
+    "read_buffer_entries": 0,
+    "read_buffer_used": 0,
+    "read_buffer_max": 4206115840,
+    "has_remote": true,
+    "pending_syncs": 0,
+    "pending_uploads": 0,
+    "completed_syncs": 988,
+    "failed_syncs": 9,
+    "unsynced_bytes": 225566720,
+    "remote_healthy": false,
+    "eviction_suspended": false,
+    "outage_duration_seconds": 0,
+    "offline_reads_blocked": 0,
+    "local_durable": false,
+    "remote_durable": false
+  },
+  "per_share": [
+    {
+      "share_name": "/bench",
+      "stats": {
+        "file_count": 7,
+        "blocks_dirty": 0,
+        "blocks_local": 0,
+        "blocks_remote": 10805,
+        "blocks_total": 10805,
+        "blocks_cached": 0,
+        "local_disk_used": 4529244618,
+        "local_disk_max": 34359738368,
+        "local_mem_used": 0,
+        "local_mem_max": 0,
+        "append_log_limit_bytes": 8412231680,
+        "read_buffer_entries": 0,
+        "read_buffer_used": 0,
+        "read_buffer_max": 4206115840,
+        "has_remote": true,
+        "pending_syncs": 0,
+        "pending_uploads": 0,
+        "completed_syncs": 988,
+        "failed_syncs": 9,
+        "unsynced_bytes": 225566720,
+        "remote_healthy": true,
+        "eviction_suspended": false,
+        "outage_duration_seconds": 0,
+        "offline_reads_blocked": 0,
+        "local_durable": true,
+        "remote_durable": true
+      }
+    }
+  ]
+}
+  block stats after drain (pre-evict): not reached
+  evict result: not reached
+  block stats after evict: not reached
+  surviving local tier: 66 files, 4321MiB total; largest: shares/bench/journal/0000000000000020.seg=255MiB shares/bench/journal/0000000000000009.seg=255MiB shares/bench/journal/0000000000000016.seg=255MiB shares/bench/journal/0000000000000017.seg=255MiB shares/bench/journal/0000000000000018.seg=255MiB shares/bench/journal/0000000000000025.seg=255MiB shares/bench/journal/0000000000000019.seg=255MiB shares/bench/journal/0000000000000024.seg=255MiB shares/bench/journal/0000000000000014.seg=255MiB shares/bench/journal/0000000000000027.seg=255MiB shares/bench/journal/0000000000000021.seg=255MiB shares/bench/journal/0000000000000022.seg=255MiB shares/bench/journal/0000000000000000.seg=255MiB shares/bench/journal/0000000000000010.seg=255MiB shares/bench/journal/0000000000000026.seg=255MiB shares/bench/journal/0000000000000023.seg=255MiB shares/bench/journal/0000000000000002.seg=116MiB shares/bench/journal/0000000000000029.seg=58MiB shares/bench/journal/0000000000000005.seg=52MiB shares/bench/journal/0000000000000028.seg=4MiB (+46 more)
+  server log (/var/log/bench-dittofs.log) since barrier entry:
+(the server logged nothing while the barrier ran)
+FAIL dittofs-s3-writeback-nfs3: evict: dfsctl system drain-uploads: dfsctl [system drain-uploads --timeout 15m]: exit status 1
+Error: failed to drain uploads: request failed: Post "http://127.0.0.1:8080/api/v1/system/drain-uploads": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+
+
+| SYSTEM                    | ACCESS | WORKLOAD      | SIZE  | PROTO | PASS | IOPS | MB/s | p50µs  | p99µs   | S3MB | DiskWrMB/s | NetRxMB/s | CTXSW/s | CPU% | err |
+| ------------------------- | ------ | ------------- | ----- | ----- | ---- | ---- | ---- | ------ | ------- | ---- | ---------- | --------- | ------- | ---- | --- |
+| dittofs-s3-writeback-nfs3 | native | rand-write-4k | large | nfs3  | warm | 892  | —    | 8847   | 2264924 | 0    | 10         | 71        | 10868   | 89   | 0   |
+| dittofs-s3-writeback-nfs3 | native | seq-read      | large | nfs3  | warm | —    | 2711 | 1073   | 2966    | 0    | 0          | 155       | 59908   | 56   | 0   |
+
+1 backend(s) failed:
+  - dittofs-s3-writeback-nfs3: evict: dfsctl system drain-uploads: dfsctl [system drain-uploads --timeout 15m]: exit status 1
+Error: failed to drain uploads: request failed: Post "http://127.0.0.1:8080/api/v1/system/drain-uploads": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+
