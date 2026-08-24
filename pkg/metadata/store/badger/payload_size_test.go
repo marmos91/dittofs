@@ -157,3 +157,24 @@ func BenchmarkSizeByPayloadID(b *testing.B) {
 		}
 	})
 }
+
+// TestFileSizeByPayloadIDResolvesLegacyRows pins the assumption that lets the
+// fast path treat a pl: index miss as "no row holds this payload" instead of
+// scanning: the open-time backfill indexes rows written before that index
+// existed, so by the time any caller runs there is nothing left to scan for. If
+// that ever stopped holding, share start would skip a file whose size needed
+// growing and reads would truncate at the stale size.
+func TestFileSizeByPayloadIDResolvesLegacyRows(t *testing.T) {
+	dir := t.TempDir()
+	want := seedLegacyFiles(t, dir, "legacy-a", "legacy-b")
+
+	store := openStore(t, dir)
+	defer func() { _ = store.Close() }()
+
+	for _, f := range want {
+		size, found, err := store.FileSizeByPayloadID(context.Background(), f.PayloadID)
+		require.NoError(t, err)
+		require.True(t, found, "payload %q not resolved after open", f.PayloadID)
+		require.Equal(t, f.Size, size)
+	}
+}
