@@ -64,6 +64,38 @@ type ShareSnapshot struct {
 	// Snapshots.
 	SnapshotsHeld    int64
 	LastSnapshotUnix int64 // 0 = none held
+
+	// Integrity is the last structural manifest scan's outcome. Its counters
+	// are zero both when no scan has run for this share in this process and
+	// when the last one failed, since a failed scan produced nothing worth
+	// publishing; LastScanFailed separates those. A zero LastScanUnix is
+	// emitted rather than suppressed so an alert on scan age fires for a
+	// share that has never been verified.
+	Integrity IntegrityScanSnapshot
+}
+
+// IntegrityScanSnapshot is one share's structural manifest scan result: how
+// much was walked, when, and what was found, split by defect kind.
+type IntegrityScanSnapshot struct {
+	// LastScanUnix is when the last scan completed. It is 0 both for a share
+	// never scanned in this process and for one whose last scan failed, since
+	// a failed scan completed nothing — LastScanFailed is what tells those
+	// two apart. Without it a scanner erroring on every tick would be
+	// indistinguishable from a scanner that was never switched on, which is
+	// the silent-failure shape this scan exists to remove, not reproduce.
+	LastScanUnix   int64
+	LastScanFailed bool
+
+	DurationSeconds      float64
+	FilesScanned         int64
+	PayloadsWithFindings int64
+
+	// Findings by kind. DamagedPayloads is the per-payload verdict; the
+	// three below are the per-row/per-range evidence behind it.
+	DamagedPayloads        int64
+	ClaimedUncoveredRanges int64
+	UnplaceableRows        int64
+	UnknownHashRows        int64
 }
 
 // QuotaSnapshot is one configured quota principal's usage and limits. Limits of

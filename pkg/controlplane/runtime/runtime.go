@@ -119,6 +119,13 @@ type Runtime struct {
 	// is successfully added or removed. Guarded by mu.
 	skippedShares map[string]string
 
+	// shareIntegrity maps a share name to the outcome of the most recent
+	// structural manifest scan for it. Empty until the scheduled scan has
+	// run, and process-local: a restart clears it, which reads honestly as
+	// "not verified since this process started" rather than as a stale
+	// clean bill of health. Guarded by mu.
+	shareIntegrity map[string]*health.IntegrityStatus
+
 	// metrics is the Prometheus metrics handle, set at startup. It is the
 	// carrier for inline adapter instruments (RED, connection, auth counters):
 	// adapters reach it via Runtime so no per-adapter plumbing is needed. May
@@ -469,12 +476,16 @@ func (r *Runtime) shareSkipReason(name string) (string, bool) {
 	return reason, ok
 }
 
-// clearShareSkipped drops any recorded skip reason for a share, so a name that
-// is successfully added or removed stops reporting a stale boot-time failure.
-func (r *Runtime) clearShareSkipped(name string) {
+// clearShareState drops the per-name state the runtime records about a share
+// outside the share registry: the reason it was refused, and the outcome of the
+// last integrity scan over it. Called when a name is successfully added or
+// removed, so neither a stale boot-time failure nor a scan result describing a
+// share that no longer exists resurfaces under a reused name.
+func (r *Runtime) clearShareState(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.skippedShares, name)
+	delete(r.shareIntegrity, name)
 }
 
 // HealthcheckShare returns the named share's overall health, computed
@@ -568,7 +579,7 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 		return err
 	}
 	// The share is serving now, so any earlier refusal no longer describes it.
-	r.clearShareSkipped(config.Name)
+	r.clearShareState(config.Name)
 	// Wire quota into the metadata service (0 = unlimited).
 	// Always set explicitly to ensure consistency after restarts when a
 	// quota was removed (set to 0) via the API.
@@ -661,7 +672,7 @@ func (r *Runtime) RemoveShare(name string) error {
 	rmErr := r.sharesSvc.RemoveShare(name)
 	// The share is gone, so a recorded refusal would outlive its subject and
 	// resurface if a new share reused the name.
-	r.clearShareSkipped(name)
+	r.clearShareState(name)
 	// Deregister the share's per-share store / lock manager / unified view /
 	// notifier / quota from the metadata service, mirroring the AddShare
 	// registration above. Without this the service maps grow unbounded across

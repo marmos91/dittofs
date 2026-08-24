@@ -50,6 +50,11 @@ func (r *Runtime) CheckManifests(ctx context.Context, shareName string, opts eng
 		return nil, err
 	}
 	res.SyncedCheckSkipped = skipped
+	// Every scan of a share refreshes what its status reports, whoever asked
+	// for it. An operator who has just run a repair by hand would otherwise
+	// keep seeing the findings it fixed until the next scheduled tick, and
+	// read that as the repair having failed.
+	r.recordShareIntegrity(shareName, res)
 	logger.Info("store check: complete",
 		logger.KeyShare, shareName,
 		"files_scanned", res.FilesScanned,

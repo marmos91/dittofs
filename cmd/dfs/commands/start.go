@@ -310,6 +310,16 @@ func runStart(cmd *cobra.Command, args []string) error {
 		logger.Info("auto-GC disabled by config (gc.auto_enabled=false)")
 	}
 
+	// Background structural manifest scan: periodically checks that each
+	// share's manifest still covers what its files claim to hold — damage the
+	// read path cannot report, because an uncovered range reads back as a
+	// sparse hole. Enabled by default; bound to ctx so it stops on shutdown.
+	if cfg.Integrity.AutoScanEnabled() {
+		rt.StartScheduledIntegrityScan(ctx, cfg.Integrity.AutoInterval)
+	} else {
+		logger.Info("integrity scan disabled by config (integrity.auto_enabled=false)")
+	}
+
 	// Configure runtime
 	rt.SetShutdownTimeout(cfg.ShutdownTimeout)
 	// Seed an operator-pinned machine SID (if configured) BEFORE Serve so the

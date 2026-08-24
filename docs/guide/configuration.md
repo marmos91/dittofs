@@ -592,6 +592,64 @@ See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep
 for the full mark-sweep design and [CLI.md](cli.md) for the on-demand
 `dfsctl store block gc` command.
 
+#### Background integrity scan
+
+A share's manifest can end up disagreeing with its own files' block lists:
+a file claims bytes in a range that no manifest row covers. At read time
+that is indistinguishable from a legitimate sparse hole — absent rows are
+how sparse files are represented — so the read returns zeros and reports
+success. Nothing on the data path can report it. The background scan is
+what finds it.
+
+```yaml
+integrity:
+  auto_enabled: true          # Run the structural manifest scan
+                              # automatically. Default true. Set false to
+                              # require manual `dfsctl store check`.
+  auto_interval: 24h          # Period between scans. Default 24h. Values
+                              # in (0, 5m) are REJECTED — a scan is a full
+                              # metadata walk of every share. Ignored when
+                              # auto_enabled is false.
+```
+
+The scan is **metadata-only**: it fetches no block and touches no remote
+object, so it costs a metadata walk regardless of how much data a share
+holds and generates **no S3 egress**. It writes nothing — it neither plans
+nor applies repairs. Shares are scanned one at a time.
+
+Findings surface in three places:
+
+- `dfsctl share show <name>` reports when the share was last scanned and
+  what was found. A share with damaged payloads reads as `degraded` even
+  when every subsystem probe is healthy.
+- Prometheus: `dittofs_integrity_last_scan_timestamp_seconds`,
+  `dittofs_integrity_last_scan_failed`,
+  `dittofs_integrity_last_scan_duration_seconds`,
+  `dittofs_integrity_files_scanned`, and
+  `dittofs_integrity_findings{kind="..."}` broken out by
+  `payloads_with_findings`, `damaged_payloads`,
+  `claimed_uncovered_ranges`, `unplaceable_rows` and `unknown_hash_rows`.
+
+  The last-scan timestamp is 0 both for a share never scanned and for one
+  whose last scan failed — a failed scan completes nothing, so it has no
+  time to report. `dittofs_integrity_last_scan_failed` is what separates
+  them: `0` with a zero timestamp means the scan has not run yet, `1` means
+  it is running and erroring. Without that second series a scanner failing
+  on every tick would look exactly like one that was never switched on, and
+  stay that way indefinitely.
+- The server log, at `WARN`, for any share with damaged payloads.
+
+Run `dfsctl store check <share>` for the per-file detail behind a finding,
+and `--repair` to act on it.
+
+The schedule restarts from zero on server start, so a box restarted more
+often than `auto_interval` never completes a scan. Lower the interval on a
+host that reboots frequently.
+
+Env-var mapping:
+`DITTOFS_INTEGRITY_AUTO_ENABLED`,
+`DITTOFS_INTEGRITY_AUTO_INTERVAL`.
+
 #### Local cache size limit & write backpressure
 
 When a share has a **remote** block store configured (S3 or filesystem
@@ -2200,6 +2258,10 @@ spec:
 | ⭐ `dittofs_snapshot_operations_total{op,result}` | Snapshot operations by `op` (create/delete/restore) and `result` (ok/error). |
 | `dittofs_snapshot_duration_seconds{op}` | Snapshot operation latency histogram, by `op` (create/delete/restore). |
 | ⭐ `dittofs_snapshot_last_success_timestamp_seconds{share}` | Unix time of the last successful snapshot create (backup-freshness signal). |
+| ⭐ `dittofs_integrity_findings{share,kind}` | Findings from the last structural manifest scan, by `kind`: `payloads_with_findings`, `damaged_payloads`, `claimed_uncovered_ranges`, `unplaceable_rows`, `unknown_hash_rows`. |
+| ⭐ `dittofs_integrity_last_scan_timestamp_seconds{share}` | Unix time the structural manifest scan last completed. 0 means it has never run since process start **or** its last attempt failed. |
+| ⭐ `dittofs_integrity_last_scan_failed{share}` | `1` when the most recent structural manifest scan failed, `0` when it completed or has never run. Pairs with the timestamp above to tell "never scanned" from "scans are erroring". |
+| `dittofs_integrity_last_scan_duration_seconds{share}` / `dittofs_integrity_files_scanned{share}` | Cost and reach of the last structural manifest scan. |
 
 ### Example alert expressions
 
@@ -2219,6 +2281,36 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "DittoFS has had no successful snapshot create in >24h"
+
+      # A share holding manifest damage. The read path cannot report this
+      # class: an uncovered range a file still claims reads back as a sparse
+      # hole, so reads return zeros and succeed. Only the scan sees it.
+      - alert: DittoFSManifestDamage
+        expr: dittofs_integrity_findings{kind="damaged_payloads"} > 0
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: "DittoFS share {{ $labels.share }} has damaged payloads; run dfsctl store check"
+
+      # The integrity scan has not completed in 48h. A last-scan value of 0
+      # means never scanned since process start, which this expression catches
+      # because time() - 0 is far past the threshold.
+      - alert: DittoFSIntegrityScanStale
+        expr: (time() - dittofs_integrity_last_scan_timestamp_seconds) > 172800
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "DittoFS share {{ $labels.share }} has not been integrity-scanned in >48h"
+
+      # The scan is running but failing. Without this the share looks
+      # identical to one whose scanner was never enabled: both report a
+      # last-scan timestamp of 0, forever.
+      - alert: DittoFSIntegrityScanFailing
+        expr: dittofs_integrity_last_scan_failed == 1
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "DittoFS integrity scan for {{ $labels.share }} is failing; the share is not being verified"
 
       # Remote block store unreachable.
       - alert: DittoFSRemoteDown
