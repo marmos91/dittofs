@@ -43,7 +43,7 @@ dfsctl store block local edit <share> --config '{"durability": "remote"}'
 
 | `durability` | Ack after | Survives | ~ops/s (create nj=8) |
 |---|---|---|--:|
-| `local` *(default)* | local journal + metadata `fsync` | process/node crash | ~900 |
+| `local` *(default)* | local journal + metadata `fsync` | process/node crash † | ~900 |
 | `writeback` | local write, metadata `fsync` deferred ~100 ms | crash, ≤ 100 ms metadata loss | ~1680 |
 | `remote` | data durable in S3 | node/disk loss | slow (by design) |
 
@@ -71,6 +71,57 @@ absent these are honored unchanged:
   `durability: remote`); see
   [Configuration → require_durable_commit](configuration.md#require_durable_commit)
   for the full semantics.
+
+## Namespace durability (`relaxed_durability`)
+
+† The `durability` enum above governs **file data and the metadata paired with
+it** (size, mtime, the block manifest). It does not govern **namespace**
+operations — `create`, `unlink`, `rename`, `mkdir`, `rmdir`, and attribute-only
+`setattr`. Those are controlled separately, by the metadata store's
+`relaxed_durability` setting, which is **enabled by default** on the `badger` and
+`postgres` stores. It is a per-store config key, set when the store is created or
+edited:
+
+```bash
+dfsctl store metadata add --name badger-main --type badger \
+  --config '{"path":"/var/lib/dittofs/metadata","relaxed_durability":false}'
+```
+
+When enabled, a namespace commit does not `fsync` inline. How long it stays at
+risk depends on the backend:
+
+| store | mechanism | window |
+|---|---|---|
+| `badger` | commit skips `fsync`; a background syncer calls `DB.Sync()` on an interval | ~100 ms |
+| `postgres` | `SET LOCAL synchronous_commit = off` on the transaction | set by the server's own `wal_writer_delay` (PostgreSQL default 200 ms) |
+
+Setting `relaxed_durability: false` restores a synchronous flush on every
+namespace commit, at roughly a third of the create throughput.
+
+### What can actually lose that window
+
+The distinction that matters operationally is **how** the server died. The
+numbers below were measured on `badger`; the mechanism (an acknowledged write
+already sitting in the kernel page cache) applies to any backend:
+
+| Failure | Namespace ops at risk |
+|---|---|
+| `SIGKILL`, OOM-kill, `dfs` panic, `systemctl kill` | **none** |
+| Power loss, kernel panic, hypervisor reset, disk yank | last ~100 ms |
+
+Killing the process does not lose acknowledged work at any setting. The write-ahead
+log is memory-mapped, so an acknowledged namespace op is already in the kernel's
+page cache, and the page cache outlives the process — the kernel still flushes it.
+Only an event that takes the kernel down with it can lose the un-`fsync`'d tail.
+
+This is bounded loss, never corruption or inconsistency. Data-paired writes stay
+synchronous regardless of this setting, and on restart
+`reconcileMetadataSizeFromJournal` repairs each file's size from the journal's
+durable high-water mark. A lost namespace op leaves a file that was never created,
+not a file that is half-created.
+
+Operators who need every acknowledged `create` to survive power loss — and can
+accept the throughput cost — should set `relaxed_durability: false`.
 
 ## The dirty-age ceiling (`dirty_expire_seconds`)
 

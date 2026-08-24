@@ -976,6 +976,30 @@ These global sizes apply to every BadgerDB metadata store on the node. A single
 store can be overridden via its config-map keys when it is created (see below):
 `--config '{"path":"...","block_cache_mb":2048,"index_cache_mb":1024}'`.
 
+#### `relaxed_durability`
+
+Applies to the `badger` and `postgres` metadata stores. **Defaults to `true`.**
+
+Namespace operations (`create`, `unlink`, `rename`, `mkdir`, `rmdir`,
+attribute-only `setattr`) commit without an inline flush. On `badger` a
+background syncer makes them durable within ~100 ms; on `postgres` the
+transaction runs with `synchronous_commit = off`, so the window is whatever the
+server's `wal_writer_delay` allows (PostgreSQL default 200 ms). Writes paired
+with file data commit synchronously either way, so this is bounded loss, never
+corruption.
+
+```bash
+# Strict: fsync every namespace commit (roughly a third of the create throughput)
+./dfsctl store metadata add --name badger-strict --type badger \
+  --config '{"path":"/var/lib/dittofs/metadata","relaxed_durability":false}'
+```
+
+Only an event that takes the kernel down — power loss, kernel panic, hypervisor
+reset — can lose that window. Killing the `dfs` process (`SIGKILL`, OOM-kill,
+panic) loses nothing at either setting, because an acknowledged write is already
+in the kernel page cache. See
+[Durability → Namespace durability](durability.md#namespace-durability-relaxed_durability).
+
 #### Metadata Store Instances (CLI)
 
 Metadata stores are managed at runtime via `dfsctl` and persisted in the control plane database:
