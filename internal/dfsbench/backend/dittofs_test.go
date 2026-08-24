@@ -169,4 +169,11 @@ exit 0
 			t.Errorf("dump missing %q:\n%s", want, out)
 		}
 	}
+	// The label alone proves nothing: dump prints every label, and an unpopulated
+	// step prints the same label followed by "not reached". This barrier reached
+	// all four steps, so any "not reached" here means a capture was never wired
+	// to the step it labels.
+	if strings.Contains(out, "not reached") {
+		t.Errorf("a step the barrier reached captured nothing:\n%s", out)
+	}
 }
