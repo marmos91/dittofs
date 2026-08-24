@@ -91,3 +91,14 @@ scw instance server get d8a08b01-…  -> Cannot find resource 'instance_server'
 scw block volume get 0829be48-…     -> Cannot find resource 'volume'
 scw instance server get d9f39027-…  -> scw-coder-coder-primary-… running
 ```
+
+
+## Reading the evidence
+
+The `.tsv` and `.log` files under `data/` are gzipped. Decompress before
+rerunning the histogram script:
+
+```bash
+gunzip -k rig-1872/data/objects-run*.tsv.gz
+python3 rig-1872/hist.py rig-1872/data/objects-runC.tsv
+```
