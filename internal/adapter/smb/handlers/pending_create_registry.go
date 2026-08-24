@@ -46,9 +46,13 @@ type PendingCreate struct {
 	// and must keep failing fast rather than starting a second, concurrent
 	// CREATE for the same CreateGuid.
 	//
-	// Nil for CREATEs that carry no CreateGuid. Always call it through
-	// releaseReplay, which tolerates nil and runs the hook AT MOST ONCE per
-	// parked CREATE. That cap is load-bearing, not hygiene: the reservation is
+	// parkCreateOnLeaseBreak wires this on every parked CREATE, so it is non-nil
+	// there whether or not the request carried a CreateGuid — a CREATE without
+	// one releases the zero guid, which Release ignores. It is nil only on
+	// entries built outside that path, which is why releaseReplay tolerates nil.
+	//
+	// Always go through releaseReplay: it runs the hook AT MOST ONCE per parked
+	// CREATE. That cap is load-bearing, not hygiene: the reservation is
 	// keyed by CreateGuid alone, not by CREATE instance, so releasing is not
 	// idempotent in any useful sense. A terminal STATUS_SHARING_VIOLATION is
 	// exactly what a client retries with the SAME CreateGuid, and if that retry

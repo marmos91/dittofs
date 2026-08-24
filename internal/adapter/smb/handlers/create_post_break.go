@@ -1578,8 +1578,11 @@ func (h *Handler) parkCreateOnLeaseBreak(
 
 	go func() {
 		defer cancel()
-		// Backstop for the exits that deliver no response of their own — the
-		// entry was preempted, and whoever preempted it released already.
+		// Unconditional backstop, so the reservation is cleared on every exit of
+		// this goroutine — including the early return below, taken when a CANCEL
+		// or session teardown preempted the entry and delivers the response
+		// itself. The exits that DO send from here release explicitly first;
+		// releaseReplay's once-per-entry cap is what makes that overlap safe.
 		defer pending.releaseReplay()
 
 		if shareConflictWait {

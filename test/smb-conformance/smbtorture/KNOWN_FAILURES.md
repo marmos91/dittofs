@@ -349,8 +349,14 @@ written to the connection. The client learns the CREATE is finished from exactly
 that response and sends its replay immediately, and the server could dispatch it
 while the reservation still stood — answering `STATUS_FILE_NOT_AVAILABLE` for a
 CREATE that had already resolved. Every path that delivers a final response now
-releases first; the `defer` remains only as the backstop for the CANCEL/teardown
-exits that send nothing.
+releases first — the resume goroutine, the tree-gone exit, and the CANCEL /
+session-teardown paths, which send `STATUS_CANCELLED` themselves. The `defer`
+remains as an unconditional backstop covering the resume goroutine's own early
+return, taken when one of those preempted the entry so nothing is sent from
+there. Releasing is capped at once per parked CREATE, because the reservation is
+keyed by CreateGuid alone: `STATUS_SHARING_VIOLATION` is exactly what a client
+retries with the same guid, and an uncapped backstop from the finished entry
+would clear the retry's reservation.
 
 The `smb2.replay` and `smb2.durable-*` suites also now get the 300 s per-suite
 budget on **every** profile. The memory profile was reporting
