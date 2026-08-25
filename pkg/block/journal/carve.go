@@ -7,6 +7,7 @@ import (
 	"io"
 	"maps"
 	"math"
+	"sort"
 	"sync"
 
 	"lukechampine.com/blake3"
@@ -720,8 +721,14 @@ func anySyncedFrom(sh *shard, id FileID, off int64) bool {
 	if fi == nil {
 		return false
 	}
-	for k := range fi.ivs {
-		if fi.ivs[k].synced && fi.ivs[k].end() > off {
+	// Live intervals are held in ascending file order, so everything that could
+	// end past off starts at the first one that does — the same seek findRecord
+	// and hydratable take. Skipping the prefix below off is what keeps this off
+	// the append path's critical section, where off is EOF and the seek lands
+	// past the last interval.
+	k := sort.Search(len(fi.ivs), func(i int) bool { return fi.ivs[i].end() > off })
+	for ; k < len(fi.ivs); k++ {
+		if fi.ivs[k].synced {
 			return true
 		}
 	}
