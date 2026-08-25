@@ -3,7 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
-	stderrors "errors"
+	"errors"
 	"strings"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -317,17 +317,18 @@ func (h *Handler) removeElectedTarget(
 	var removedPayloadID metadata.PayloadID
 	if isDeleteTargetDir {
 		_, err = metaSvc.RemoveDirectory(authCtx, target.ParentHandle, target.FileName)
-		if isDirNotEmpty(err) {
+		var storeErr *metadata.StoreError
+		if errors.As(err, &storeErr) && storeErr.Code == metadata.ErrNotEmpty {
 			logger.Debug(caller+": delete-on-close left a non-empty directory in place",
 				"path", target.Name.Path,
 				"deleteTarget", target.FileName)
 			return true, false, nil
 		}
 	} else {
-		var removed *metadata.File
-		removed, _, err = metaSvc.RemoveFile(authCtx, target.ParentHandle, target.FileName)
-		if removed != nil {
-			removedPayloadID = removed.PayloadID
+		var removedFile *metadata.File
+		removedFile, _, err = metaSvc.RemoveFile(authCtx, target.ParentHandle, target.FileName)
+		if removedFile != nil {
+			removedPayloadID = removedFile.PayloadID
 		}
 	}
 	if err != nil {
@@ -364,11 +365,4 @@ func (h *Handler) removeElectedTarget(
 	h.restoreParentDirFrozenTimestamps(authCtx, target.ParentHandle)
 
 	return isDeleteTargetDir, true, nil
-}
-
-// isDirNotEmpty reports whether err is the metadata store's "directory not
-// empty" refusal.
-func isDirNotEmpty(err error) bool {
-	var se *metadata.StoreError
-	return stderrors.As(err, &se) && se.Code == metadata.ErrNotEmpty
 }

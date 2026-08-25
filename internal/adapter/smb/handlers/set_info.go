@@ -1324,11 +1324,12 @@ func (h *Handler) setFileInfoFromStore(
 			// refusal here never learns the removal did not happen.
 			//
 			// A directory that cannot be enumerated is not treated as
-			// non-empty: the disposition is allowed through and the close
-			// resolves it, which is what happened before the check existed.
+			// non-empty: the disposition is allowed through, leaving the close
+			// to resolve it.
 			if openFile.IsDirectory {
 				metaSvc := h.Registry.GetMetadataService()
-				// maxBytes only sizes the page; the check needs one entry.
+				// maxBytes is only a page-size hint, not an entry count — a
+				// single entry is all this check has to see.
 				page, dirErr := metaSvc.ReadDirectory(authCtx, openFile.MetadataHandle, 0, 1)
 				if dirErr == nil && len(page.Entries) > 0 {
 					logger.Debug("SET_INFO: delete disposition on non-empty directory",
