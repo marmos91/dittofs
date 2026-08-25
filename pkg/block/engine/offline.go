@@ -306,16 +306,18 @@ func placedRanges(rows []*block.FileChunk) ([][2]uint64, int64) {
 			continue
 		}
 		// A parsed offset is bounded to int64 and DataSize is 32 bits, so the
-		// sum cannot wrap, but it can sit past int64 — and the clamp below is
-		// handed to DataExtents as an int64.
-		rowEnd := off + uint64(row.DataSize)
+		// sum cannot wrap, but it can sit past int64 — and the index reports
+		// its side of the comparison over an int64 span, so it can never
+		// describe a byte out there. Clamping the row rather than only the
+		// span keeps that unreachable tail from reading as a missing range.
+		rowEnd := min(off+uint64(row.DataSize), math.MaxInt64)
+		if rowEnd <= off {
+			continue
+		}
 		placed = append(placed, [2]uint64{off, rowEnd})
 		if rowEnd > end {
 			end = rowEnd
 		}
-	}
-	if end > math.MaxInt64 {
-		end = math.MaxInt64
 	}
 	return coalesceExtents(placed), int64(end)
 }

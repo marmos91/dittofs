@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -273,6 +274,18 @@ func TestManifestShortfall(t *testing.T) {
 			name:      "an unplaceable row places nothing",
 			rows:      []*block.FileChunk{{ID: "p/not-an-offset", DataSize: 1024, Hash: block.ContentHash{1}}},
 			described: nil,
+		},
+		{
+			// A parsed offset is bounded to int64, so a row near the top of the
+			// range can name an end the index has no way to express: it reports
+			// its side over an int64 span. Counting that unreachable tail would
+			// be a shortfall invented by the arithmetic rather than found in the
+			// data — the one thing this check must never do.
+			name: "a row reaching past int64 is clamped, not counted",
+			rows: []*block.FileChunk{
+				chunkRow("p", math.MaxInt64-1024, 4096, true),
+			},
+			described: [][2]uint64{{math.MaxInt64 - 1024, math.MaxInt64}},
 		},
 	}
 	for _, tc := range tests {
