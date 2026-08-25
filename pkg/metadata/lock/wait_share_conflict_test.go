@@ -101,7 +101,7 @@ func TestWaitForShareConflictClear_ReturnsWhenBreakDrainsButConflictPersists(t *
 
 	// The holder's lease must NOT have been force-completed to None: the ACK
 	// already moved it to RW and the wait left it intact.
-	state, _, found := lm.GetLeaseState(ctx, holderKey)
+	state, _, found := lm.GetLeaseState(ctx, "file2", holderKey)
 	require.True(t, found, "holder lease must still exist (not tombstoned)")
 	assert.Equal(t, LeaseStateRead|LeaseStateWrite, state, "ACKed RW must survive — the wait must not force-complete it")
 }

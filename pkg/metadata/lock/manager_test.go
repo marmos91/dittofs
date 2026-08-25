@@ -1222,46 +1222,76 @@ func TestMergeLocks_DifferentOwners(t *testing.T) {
 	}
 }
 
-// TestSetLeaseEpoch_UpdatesAllMatchingRecords covers the broadened behavior
-// added with the #429 lease work: the same LeaseKey can appear under
-// different handleKey buckets (smbtorture reuses fixed LEASE1/LEASE2 macros),
-// and SetLeaseEpoch must update every record so subsequent break
-// notifications dispatch with the right NewEpoch regardless of which record
-// findLeaseByKey happens to return.
-func TestSetLeaseEpoch_UpdatesAllMatchingRecords(t *testing.T) {
+// TestSetLeaseEpoch_UpdatesEveryRecordOfTheLease asserts the epoch lands on
+// every record of the lease it names, not just the first found: reopens and
+// reclaims can leave more than one record for a key on one file, and missing
+// the one RequestLease just granted leaves it at the createAndGrantLease
+// default while the client's response carries the higher requested epoch.
+func TestSetLeaseEpoch_UpdatesEveryRecordOfTheLease(t *testing.T) {
 	t.Parallel()
 
 	lm := NewManager()
 	leaseKey := [16]byte{0xaa, 0xbb, 0xcc}
 
 	// Seeding unifiedLocks directly skips the mutation paths that maintain the
-	// reverse indexes, so reconcile each bucket the way those paths do —
-	// lease-key lookups resolve through leaseKeyIndex.
+	// reverse indexes, so reconcile the bucket the way those paths do.
 	lm.mu.Lock()
 	lm.unifiedLocks["/share:fileA"] = []*UnifiedLock{
 		{Owner: LockOwner{OwnerID: "oA"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 1}},
+		{Owner: LockOwner{OwnerID: "oA2"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 1}},
 	}
 	lm.reindexHandleLocked("/share:fileA", nil)
-	lm.unifiedLocks["/share:fileB"] = []*UnifiedLock{
-		{Owner: LockOwner{OwnerID: "oB"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 1}},
-	}
-	lm.reindexHandleLocked("/share:fileB", nil)
 	lm.unlock()
 
-	if !lm.SetLeaseEpoch(leaseKey, 7) {
+	if !lm.SetLeaseEpoch("/share:fileA", leaseKey, 7) {
 		t.Fatalf("SetLeaseEpoch returned false, expected true when records exist")
 	}
 
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	for _, handle := range []string{"/share:fileA", "/share:fileB"} {
-		locks := lm.unifiedLocks[handle]
-		if len(locks) != 1 {
-			t.Fatalf("%s: expected 1 record, got %d", handle, len(locks))
+	for i, l := range lm.unifiedLocks["/share:fileA"] {
+		if got := l.Lease.Epoch; got != 7 {
+			t.Errorf("record %d: Epoch = %d, want 7", i, got)
 		}
-		if got := locks[0].Lease.Epoch; got != 7 {
-			t.Errorf("%s: Epoch = %d, want 7", handle, got)
-		}
+	}
+}
+
+// TestSetLeaseEpoch_LeavesOtherFilesSameKeyAlone asserts the epoch stops at the
+// lease it was asked about. A 16-byte lease key is not an identity: the
+// cross-file uniqueness rule is scoped per (client, file), so another client
+// may hold the same value on another file of this share. Folding that client's
+// record into the convergence hands it a NewEpoch no grant of its own produced
+// — and per MS-SMB2 §3.2.5.19.2 a client acts on the SIZE of the jump, purging
+// its cache when the gap exceeds 1 and discarding the break's new lease state
+// outright when it exceeds 32767.
+func TestSetLeaseEpoch_LeavesOtherFilesSameKeyAlone(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	leaseKey := [16]byte{0x11, 0x22, 0x33}
+
+	lm.mu.Lock()
+	lm.unifiedLocks["/share:fileA"] = []*UnifiedLock{
+		{Owner: LockOwner{OwnerID: "oA", ClientID: "clientA"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 0x0101}},
+	}
+	lm.reindexHandleLocked("/share:fileA", nil)
+	lm.unifiedLocks["/share:fileB"] = []*UnifiedLock{
+		{Owner: LockOwner{OwnerID: "oB", ClientID: "clientB"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 0xF001}},
+	}
+	lm.reindexHandleLocked("/share:fileB", nil)
+	lm.unlock()
+
+	if !lm.SetLeaseEpoch("/share:fileB", leaseKey, 0xF001) {
+		t.Fatalf("SetLeaseEpoch returned false, expected true when records exist")
+	}
+
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	if got := lm.unifiedLocks["/share:fileA"][0].Lease.Epoch; got != 0x0101 {
+		t.Errorf("client A's lease on fileA: Epoch = 0x%x, want 0x0101 — client B's epoch was folded into another client's lease", got)
+	}
+	if got := lm.unifiedLocks["/share:fileB"][0].Lease.Epoch; got != 0xF001 {
+		t.Errorf("client B's lease on fileB: Epoch = 0x%x, want 0xF001", got)
 	}
 }
 
@@ -1269,17 +1299,17 @@ func TestSetLeaseEpoch_ReturnsFalseForUnknownKey(t *testing.T) {
 	t.Parallel()
 
 	lm := NewManager()
-	if lm.SetLeaseEpoch([16]byte{0xff, 0xee}, 5) {
+	if lm.SetLeaseEpoch("/share:fileA", [16]byte{0xff, 0xee}, 5) {
 		t.Fatalf("SetLeaseEpoch returned true for unknown key")
 	}
 }
 
-// TestSetLeaseEpoch_ConvergesDivergentRecords asserts that sibling records
-// sharing a lease key but starting at DIFFERENT epochs all converge to a
-// single epoch — the max of the requested epoch and every record's current
-// epoch. A per-record `if requested >= current` guard would leave the higher
-// record untouched while raising the lower one, so break dispatch could read a
-// non-deterministic NewEpoch depending on map-iteration order.
+// TestSetLeaseEpoch_ConvergesDivergentRecords asserts that sibling records of
+// ONE lease starting at DIFFERENT epochs all converge to a single epoch — the
+// max of the requested epoch and every record's current epoch. A per-record
+// `if requested >= current` guard would leave the higher record untouched while
+// raising the lower one, so a read of the lease, and the break dispatch that
+// follows it, could answer from whichever the slice surfaces first.
 func TestSetLeaseEpoch_ConvergesDivergentRecords(t *testing.T) {
 	t.Parallel()
 
@@ -1289,25 +1319,22 @@ func TestSetLeaseEpoch_ConvergesDivergentRecords(t *testing.T) {
 	lm.mu.Lock()
 	lm.unifiedLocks["/share:fileA"] = []*UnifiedLock{
 		{Owner: LockOwner{OwnerID: "oA"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 5}},
+		{Owner: LockOwner{OwnerID: "oA2"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 1}},
 	}
 	lm.reindexHandleLocked("/share:fileA", nil)
-	lm.unifiedLocks["/share:fileB"] = []*UnifiedLock{
-		{Owner: LockOwner{OwnerID: "oB"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 1}},
-	}
-	lm.reindexHandleLocked("/share:fileB", nil)
 	lm.unlock()
 
 	// Request a lower epoch (4) than the highest existing record (5). All
 	// records must converge to 5 (the max), not split into 5 and 4.
-	if !lm.SetLeaseEpoch(leaseKey, 4) {
+	if !lm.SetLeaseEpoch("/share:fileA", leaseKey, 4) {
 		t.Fatalf("SetLeaseEpoch returned false, expected true when records exist")
 	}
 
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	for _, handle := range []string{"/share:fileA", "/share:fileB"} {
-		if got := lm.unifiedLocks[handle][0].Lease.Epoch; got != 5 {
-			t.Errorf("%s: Epoch = %d, want 5 (all records converge to the max)", handle, got)
+	for i, l := range lm.unifiedLocks["/share:fileA"] {
+		if got := l.Lease.Epoch; got != 5 {
+			t.Errorf("record %d: Epoch = %d, want 5 (all records of one lease converge to the max)", i, got)
 		}
 	}
 }
@@ -1330,7 +1357,7 @@ func TestSetLeaseEpoch_Persists(t *testing.T) {
 	lm.reindexHandleLocked("/share:fileA", nil)
 	lm.unlock()
 
-	if !lm.SetLeaseEpoch(leaseKey, 9) {
+	if !lm.SetLeaseEpoch("/share:fileA", leaseKey, 9) {
 		t.Fatalf("SetLeaseEpoch returned false, expected true")
 	}
 

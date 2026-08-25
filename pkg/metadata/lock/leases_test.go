@@ -280,7 +280,7 @@ func TestRequestLeaseStatOpen_NoBreakOnCrossKeyConflict(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state)
 
-	_, holderEpoch, ok := mgr.GetLeaseState(ctx, key1)
+	_, holderEpoch, ok := mgr.GetLeaseState(ctx, "file1", key1)
 	require.True(t, ok)
 
 	// A stat-open requester asks for RH on the same file with a different key.
@@ -295,7 +295,7 @@ func TestRequestLeaseStatOpen_NoBreakOnCrossKeyConflict(t *testing.T) {
 		"stat-open requester must NOT break the existing holder (#751)")
 
 	// The holder is untouched: state and epoch unchanged, not Breaking.
-	holderState, postEpoch, ok := mgr.GetLeaseState(ctx, key1)
+	holderState, postEpoch, ok := mgr.GetLeaseState(ctx, "file1", key1)
 	require.True(t, ok)
 	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, holderState,
 		"holder lease state must be unchanged")
@@ -391,7 +391,7 @@ func TestRequestLease_CrossKeyConflictOnAlreadyBreakingLease(t *testing.T) {
 
 	// Snapshot the post-break epoch so we can prove the cross-key conflict
 	// branch does NOT bump it again.
-	_, breakingEpoch, ok := mgr.GetLeaseState(ctx, key1)
+	_, breakingEpoch, ok := mgr.GetLeaseState(ctx, "file1", key1)
 	require.True(t, ok)
 
 	// Client 2 now requests RWH on the same file with a different key. The
@@ -410,7 +410,7 @@ func TestRequestLease_CrossKeyConflictOnAlreadyBreakingLease(t *testing.T) {
 	assert.EqualValues(t, 1, breakCount.Load(),
 		"cross-key conflict on already-breaking lease must NOT redispatch break")
 
-	_, postEpoch, ok := mgr.GetLeaseState(ctx, key1)
+	_, postEpoch, ok := mgr.GetLeaseState(ctx, "file1", key1)
 	require.True(t, ok)
 	assert.Equal(t, breakingEpoch, postEpoch,
 		"cross-key conflict on already-breaking lease must NOT bump epoch")
@@ -466,7 +466,7 @@ func TestRequestLease_PostAckCrossKeyDoesNotRedispatch(t *testing.T) {
 	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, key2, LeaseStateRead|LeaseStateHandle, 0))
 
 	// Verify LEASE2 is now at RH, not Breaking.
-	curState, _, ok := mgr.GetLeaseState(ctx, key2)
+	curState, _, ok := mgr.GetLeaseState(ctx, "file1", key2)
 	require.True(t, ok)
 	require.Equal(t, LeaseStateRead|LeaseStateHandle, curState)
 
@@ -991,7 +991,7 @@ func TestAcknowledgeLeaseBreak_CompletesBreak(t *testing.T) {
 	// state-None record must surface ErrLeaseAckNotBreaking →
 	// STATUS_UNSUCCESSFUL per smbtorture breaking2/breaking5.
 	assert.Eventually(t, func() bool {
-		state, _, found := mgr.GetLeaseState(ctx, key1)
+		state, _, found := mgr.GetLeaseState(ctx, "file1", key1)
 		return found && state == LeaseStateNone
 	}, 3*time.Second, 10*time.Millisecond, "key1 lease should drop to LeaseState=None after ack")
 }
@@ -1027,7 +1027,7 @@ func TestAcknowledgeLeaseBreak_ToReadState(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify state was updated
-	state, _, found := mgr.GetLeaseState(ctx, key1)
+	state, _, found := mgr.GetLeaseState(ctx, "file1", key1)
 	assert.True(t, found)
 	assert.Equal(t, LeaseStateRead, state)
 }
@@ -1082,7 +1082,7 @@ func TestAcknowledgeLeaseBreak_AckToNone_KeepsRecordAtNone(t *testing.T) {
 	// Per MS-SMB2 3.3.5.22.2 + smbtorture breaking2/breaking5: the lease
 	// record persists at LeaseState=None until CLOSE so a duplicate ack
 	// can be distinguished from CLOSE-beat-ack.
-	state, _, found := mgr.GetLeaseState(ctx, key1)
+	state, _, found := mgr.GetLeaseState(ctx, "file1", key1)
 	assert.True(t, found, "lease record should persist after ack-to-None")
 	assert.Equal(t, LeaseStateNone, state, "lease state should be None")
 
@@ -1093,7 +1093,7 @@ func TestAcknowledgeLeaseBreak_AckToNone_KeepsRecordAtNone(t *testing.T) {
 	// CLOSE removes the record fully.
 	err = mgr.ReleaseLeaseForHandle(ctx, "file1", key1)
 	require.NoError(t, err)
-	_, _, found = mgr.GetLeaseState(ctx, key1)
+	_, _, found = mgr.GetLeaseState(ctx, "file1", key1)
 	assert.False(t, found, "lease should be gone after CLOSE")
 }
 
@@ -1136,7 +1136,7 @@ func TestAcknowledgeLeaseBreak_LateAckNonNoneAfterTimeout_Succeeds(t *testing.T)
 	// The parked CREATE's break-wait timer fires first (CI jitter): force-complete
 	// tombstones the lease to None and tags BrokenViaTimeout.
 	mgr.forceCompleteBreaks("file1")
-	state, _, found := mgr.GetLeaseState(ctx, key1)
+	state, _, found := mgr.GetLeaseState(ctx, "file1", key1)
 	require.True(t, found, "force-completed record persists at None")
 	require.Equal(t, LeaseStateNone, state, "force-complete revoked to None")
 
@@ -1146,7 +1146,7 @@ func TestAcknowledgeLeaseBreak_LateAckNonNoneAfterTimeout_Succeeds(t *testing.T)
 	require.NoError(t, err, "late non-None ACK after timeout force-complete must succeed (ack-sane)")
 
 	// The ACK must not resurrect bits: the forced None stands.
-	state, _, found = mgr.GetLeaseState(ctx, key1)
+	state, _, found = mgr.GetLeaseState(ctx, "file1", key1)
 	assert.True(t, found, "record still present after late ACK")
 	assert.Equal(t, LeaseStateNone, state, "late ACK must not resurrect lease bits")
 }
@@ -1178,7 +1178,7 @@ func TestAcknowledgeLeaseBreak_LateAckAfterLeaseConflictTimeout_Unsuccessful(t *
 	// Holder ignores the break; the parked CREATE's wait fires force-complete,
 	// which must preserve BreakReason on the tombstone.
 	mgr.forceCompleteBreaks("file1")
-	state, _, found := mgr.GetLeaseState(ctx, key1)
+	state, _, found := mgr.GetLeaseState(ctx, "file1", key1)
 	require.True(t, found, "force-completed record persists at None")
 	require.Equal(t, LeaseStateNone, state, "force-complete revoked to None")
 
@@ -1230,7 +1230,7 @@ func TestReleaseLease_RemovesLease(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify it exists
-	_, _, found := mgr.GetLeaseState(ctx, leaseKey)
+	_, _, found := mgr.GetLeaseState(ctx, "file1", leaseKey)
 	assert.True(t, found)
 
 	// Release
@@ -1238,7 +1238,7 @@ func TestReleaseLease_RemovesLease(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify it's gone
-	_, _, found = mgr.GetLeaseState(ctx, leaseKey)
+	_, _, found = mgr.GetLeaseState(ctx, "file1", leaseKey)
 	assert.False(t, found)
 }
 
@@ -1392,7 +1392,7 @@ func TestGetLeaseState_Found(t *testing.T) {
 	require.NoError(t, err)
 
 	// Get state
-	state, epoch, found := mgr.GetLeaseState(ctx, leaseKey)
+	state, epoch, found := mgr.GetLeaseState(ctx, "file1", leaseKey)
 	assert.True(t, found)
 	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state)
 	assert.Equal(t, uint16(1), epoch)
@@ -1405,7 +1405,7 @@ func TestGetLeaseState_NotFound(t *testing.T) {
 	ctx := context.Background()
 	leaseKey := [16]byte{99, 99, 99}
 
-	state, epoch, found := mgr.GetLeaseState(ctx, leaseKey)
+	state, epoch, found := mgr.GetLeaseState(ctx, "file1", leaseKey)
 	assert.False(t, found)
 	assert.Equal(t, uint32(0), state)
 	assert.Equal(t, uint16(0), epoch)
@@ -1987,7 +1987,7 @@ func TestProgressiveLeaseBreak_RWH_AndMerge_ToNone(t *testing.T) {
 	require.Len(t, got, 3, "stage 4: ACK RH→R triggers R→\"\" notification")
 	assert.Equal(t, LeaseStateNone, got[2], "stage 4: target = None")
 
-	state, _, found := mgr.GetLeaseState(ctx, key1)
+	state, _, found := mgr.GetLeaseState(ctx, handleKey, key1)
 	assert.True(t, found, "stage 4: record persists after R→None auto-downgrade")
 	assert.Equal(t, LeaseStateNone, state, "stage 4: state drained to None")
 }
@@ -2068,7 +2068,7 @@ func TestForceCompleteBreaks_DrainsToNone_AndMerged(t *testing.T) {
 	// LeaseState=None (handle-bound lifetime).
 	mgr.forceCompleteBreaks(handleKey)
 
-	state, _, found := mgr.GetLeaseState(ctx, key1)
+	state, _, found := mgr.GetLeaseState(ctx, handleKey, key1)
 	require.True(t, found, "force-complete keeps the record alive until CLOSE")
 	assert.Equal(t, LeaseStateNone, state,
 		"force-complete must revoke to None per Samba lease_timeout_handler")
@@ -2118,7 +2118,7 @@ func TestForceCompleteBreaks_DrainsToNone_SingleBreak(t *testing.T) {
 	// Client doesn't ACK; the wait times out → force-complete fires.
 	mgr.forceCompleteBreaks(handleKey)
 
-	state, _, found := mgr.GetLeaseState(ctx, key1)
+	state, _, found := mgr.GetLeaseState(ctx, handleKey, key1)
 	require.True(t, found, "force-complete keeps the record alive until CLOSE")
 	assert.Equal(t, LeaseStateNone, state,
 		"force-complete on timeout revokes to None per Samba lease_timeout_handler — "+

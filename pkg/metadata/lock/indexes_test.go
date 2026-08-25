@@ -119,7 +119,7 @@ func TestIndex_ReleaseLeaseForHandleKeepsOtherFileBinding(t *testing.T) {
 	require.NoError(t, mgr.ReleaseLeaseForHandle(ctx, "fileA", key))
 	assertIndexesConsistent(t, mgr)
 
-	_, _, found := mgr.GetLeaseState(ctx, key)
+	_, _, found := mgr.GetLeaseState(ctx, "fileB", key)
 	assert.True(t, found, "fileB lease record must survive fileA release")
 }
 
@@ -153,7 +153,7 @@ func TestIndex_ReleaseBoundBucketKeepsOtherFileResolvable(t *testing.T) {
 	assert.Equal(t, "fileA", hk, "fileA must still resolve after releasing fileB")
 	require.NotNil(t, lk, "fileA lease record must remain resolvable")
 
-	_, _, found := mgr.GetLeaseState(ctx, key)
+	_, _, found := mgr.GetLeaseState(ctx, "fileA", key)
 	assert.True(t, found, "fileA lease record must survive fileB release")
 }
 
@@ -175,9 +175,9 @@ func TestIndex_RemoveClientLocksTouchesOnlyClientBuckets(t *testing.T) {
 	assertIndexesConsistent(t, mgr)
 
 	// client1's leases gone, client2's intact.
-	_, _, f1 := mgr.GetLeaseState(ctx, [16]byte{1})
-	_, _, f2 := mgr.GetLeaseState(ctx, [16]byte{2})
-	_, _, f3 := mgr.GetLeaseState(ctx, [16]byte{3})
+	_, _, f1 := mgr.GetLeaseState(ctx, "f1", [16]byte{1})
+	_, _, f2 := mgr.GetLeaseState(ctx, "f2", [16]byte{2})
+	_, _, f3 := mgr.GetLeaseState(ctx, "f3", [16]byte{3})
 	assert.False(t, f1, "client1 f1 lease should be removed")
 	assert.False(t, f2, "client1 f2 lease should be removed")
 	assert.True(t, f3, "client2 f3 lease must remain")
@@ -292,12 +292,16 @@ func TestIndex_ReclaimAddsToIndex(t *testing.T) {
 // Index lookup vs full scan equivalence
 // ============================================================================
 
-// scanLeaseKeyMatches is the reference implementation SetLeaseEpoch used before
-// it consulted leaseKeyIndex: a full sweep of every handleKey bucket collecting
-// every record bound to leaseKey.
-func scanLeaseKeyMatches(lm *Manager, leaseKey [16]byte) map[string]bool {
+// scanLeaseKeyMatches is a reference implementation of the record selection
+// SetLeaseEpoch performs: a full sweep of every handleKey bucket, collecting the
+// records bound to leaseKey ON handleKey and no others. A record for the same
+// key on a different file belongs to a different lease.
+func scanLeaseKeyMatches(lm *Manager, handleKey string, leaseKey [16]byte) map[string]bool {
 	out := make(map[string]bool)
-	for _, locks := range lm.unifiedLocks {
+	for hk, locks := range lm.unifiedLocks {
+		if hk != handleKey {
+			continue
+		}
 		for _, l := range locks {
 			if l.Lease != nil && l.Lease.LeaseKey == leaseKey {
 				out[l.ID] = true
@@ -377,35 +381,53 @@ func buildMixedLockSet(t *testing.T, mgr *Manager) (keys [][16]byte, handleKeys 
 		[]string{"file1", "file2", "file3", "file4", "dir1", "absent"}
 }
 
-// TestSetLeaseEpoch_IndexMatchesFullScan proves the leaseKeyIndex-driven record
-// selection in SetLeaseEpoch reaches the same records a full unifiedLocks sweep
-// would, and converges every one of them.
-func TestSetLeaseEpoch_IndexMatchesFullScan(t *testing.T) {
+// TestSetLeaseEpoch_MatchesFullScan proves the record selection in
+// SetLeaseEpoch reaches the same records a full unifiedLocks sweep scoped to the
+// same file would, converges every one of them, and leaves records for the same
+// key on other files where they were. Runs over every (key, file) pair the
+// fixture can produce, including pairs that hold no lease.
+func TestSetLeaseEpoch_MatchesFullScan(t *testing.T) {
 	t.Parallel()
 	mgr := NewManager()
-	keys, _ := buildMixedLockSet(t, mgr)
+	keys, handleKeys := buildMixedLockSet(t, mgr)
 	assertIndexesConsistent(t, mgr)
 
+	const target = uint16(7)
 	for _, key := range keys {
-		mgr.mu.RLock()
-		want := scanLeaseKeyMatches(mgr, key)
-		mgr.mu.RUnlock()
-
-		// SetLeaseEpoch reports found iff the scan found records, and lifts
-		// every matching record to the same epoch.
-		ok := mgr.SetLeaseEpoch(key, 7)
-		assert.Equal(t, len(want) > 0, ok, "SetLeaseEpoch found-flag must match the scan for key %x", key)
-
-		mgr.mu.RLock()
-		for _, locks := range mgr.unifiedLocks {
-			for _, l := range locks {
-				if l.Lease != nil && l.Lease.LeaseKey == key {
-					assert.Equal(t, uint16(7), l.Lease.Epoch,
-						"every record for key %x must converge to the target epoch", key)
+		for _, handleKey := range handleKeys {
+			mgr.mu.RLock()
+			want := scanLeaseKeyMatches(mgr, handleKey, key)
+			// Snapshot every other record bound to this key so the assertion
+			// below can show none of them moved.
+			untouched := make(map[*UnifiedLock]uint16)
+			for hk, locks := range mgr.unifiedLocks {
+				for _, l := range locks {
+					if l.Lease != nil && l.Lease.LeaseKey == key && hk != handleKey {
+						untouched[l] = l.Lease.Epoch
+					}
 				}
 			}
+			mgr.mu.RUnlock()
+
+			// SetLeaseEpoch reports found iff the scoped scan found records,
+			// and lifts every one of them to the same epoch.
+			ok := mgr.SetLeaseEpoch(handleKey, key, target)
+			assert.Equal(t, len(want) > 0, ok,
+				"SetLeaseEpoch found-flag must match the scan for key %x on %s", key, handleKey)
+
+			mgr.mu.RLock()
+			for _, l := range mgr.unifiedLocks[handleKey] {
+				if l.Lease != nil && l.Lease.LeaseKey == key {
+					assert.GreaterOrEqual(t, l.Lease.Epoch, target,
+						"every record for key %x on %s must converge to at least the target epoch", key, handleKey)
+				}
+			}
+			for l, epoch := range untouched {
+				assert.Equal(t, epoch, l.Lease.Epoch,
+					"a record for key %x on another file is a different lease and must not move", key)
+			}
+			mgr.mu.RUnlock()
 		}
-		mgr.mu.RUnlock()
 	}
 }
 

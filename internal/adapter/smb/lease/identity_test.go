@@ -87,11 +87,11 @@ func TestGetLeaseState_OtherShareSameKeyAnswersItsOwn(t *testing.T) {
 		t.Fatalf("client B RequestLease: %v", err)
 	}
 
-	if state, _, found := lm.GetLeaseState(ctx, "share1", leaseKey); !found || state != testRH {
+	if state, _, found := lm.GetLeaseState(ctx, lock.FileHandle("file-A"), "share1", leaseKey); !found || state != testRH {
 		t.Errorf("GetLeaseState(share1) = 0x%x found=%v, want RH (0x%x) — answered from the other share's lease",
 			state, found, uint32(testRH))
 	}
-	if state, _, found := lm.GetLeaseState(ctx, "share2", leaseKey); !found || state != lock.LeaseStateRead {
+	if state, _, found := lm.GetLeaseState(ctx, lock.FileHandle("file-B"), "share2", leaseKey); !found || state != lock.LeaseStateRead {
 		t.Errorf("GetLeaseState(share2) = 0x%x found=%v, want R (0x%x)",
 			state, found, uint32(lock.LeaseStateRead))
 	}
@@ -140,7 +140,7 @@ func TestAcknowledgeLeaseBreak_ResolvesTheAckingClientsLease(t *testing.T) {
 	if mgr1.HasOtherBreakingLeases("file-A", [16]byte{}) {
 		t.Errorf("client A's lease is still breaking after its own ack — the ack was routed to another client's lease")
 	}
-	if state, _, _ := mgr2.GetLeaseState(ctx, leaseKey); state != lock.LeaseStateRead {
+	if state, _, _ := mgr2.GetLeaseState(ctx, "file-B", leaseKey); state != lock.LeaseStateRead {
 		t.Errorf("client B's lease state = 0x%x, want R (0x%x) — A's ack downgraded B's lease",
 			state, uint32(lock.LeaseStateRead))
 	}
