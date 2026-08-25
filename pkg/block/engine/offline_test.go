@@ -342,3 +342,123 @@ func (c *countingManifest) EnumeratePayloads(ctx context.Context, fn func(string
 	*c.walks++
 	return c.stubManifest.EnumeratePayloads(ctx, fn)
 }
+
+// vanishingManifest serves one set of rows to the first read of a payload and
+// another to every read after it, standing in for a delete or truncate that
+// lands between the walk's two looks at the same file.
+type vanishingManifest struct {
+	first, then []*block.FileChunk
+	reads       int
+}
+
+func (m *vanishingManifest) EnumeratePayloads(_ context.Context, fn func(string) error) error {
+	return fn("p")
+}
+
+func (m *vanishingManifest) ListFileChunks(context.Context, string) ([]*block.FileChunk, error) {
+	m.reads++
+	if m.reads == 1 {
+		return m.first, nil
+	}
+	return m.then, nil
+}
+
+// TestManifestShortfallConfirmsBeforeReporting pins the re-read. The index and
+// the manifest narrow in opposite orders and neither operation is atomic with
+// the other, so a walk that looked once would call a file being deleted a lost
+// range and hold that verdict for the life of the memo.
+//
+// The second case is the half that makes the first mean something: a manifest
+// that still places the bytes on the re-read is a real shortfall and must
+// survive the confirmation.
+func TestManifestShortfallConfirmsBeforeReporting(t *testing.T) {
+	wide := []*block.FileChunk{chunkRow("p", 0, 4096, true)}
+	// The index describes nothing, which is what a payload whose local entry
+	// has already been emptied looks like.
+	index := &stubIndex{described: map[string][][2]uint64{}, seeded: true}
+
+	tests := []struct {
+		name       string
+		manifest   *vanishingManifest
+		wantBytes  int64
+		wantRanges int64
+		wantReads  int
+	}{
+		{
+			name:      "rows reaped between the two reads",
+			manifest:  &vanishingManifest{first: wide},
+			wantReads: 2,
+		},
+		{
+			name:       "rows still place the bytes on the re-read",
+			manifest:   &vanishingManifest{first: wide, then: wide},
+			wantBytes:  4096,
+			wantRanges: 1,
+			wantReads:  2,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			bytes, ranges, err := manifestShortfall(context.Background(), index, tc.manifest)
+			if err != nil {
+				t.Fatalf("manifestShortfall: %v", err)
+			}
+			if bytes != tc.wantBytes || ranges != tc.wantRanges {
+				t.Errorf("shortfall = %d bytes in %d ranges, want %d in %d",
+					bytes, ranges, tc.wantBytes, tc.wantRanges)
+			}
+			if tc.manifest.reads != tc.wantReads {
+				t.Errorf("read the manifest %d times, want %d", tc.manifest.reads, tc.wantReads)
+			}
+		})
+	}
+
+	// A payload that never looked short is not re-read at all.
+	covered := &vanishingManifest{first: wide, then: wide}
+	full := &stubIndex{described: map[string][][2]uint64{"p": {{0, 4096}}}, seeded: true}
+	if _, _, err := manifestShortfall(context.Background(), full, covered); err != nil {
+		t.Fatalf("manifestShortfall: %v", err)
+	}
+	if covered.reads != 1 {
+		t.Errorf("read the manifest %d times for a fully described payload, want 1", covered.reads)
+	}
+}
+
+// TestIntersectExtents covers the arithmetic the confirmation narrows with.
+func TestIntersectExtents(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b [][2]uint64
+		want [][2]uint64
+	}{
+		{name: "one side empty", a: [][2]uint64{{0, 10}}},
+		{name: "identical", a: [][2]uint64{{0, 10}}, b: [][2]uint64{{0, 10}}, want: [][2]uint64{{0, 10}}},
+		{name: "partial overlap", a: [][2]uint64{{0, 10}}, b: [][2]uint64{{5, 20}}, want: [][2]uint64{{5, 10}}},
+		{name: "disjoint", a: [][2]uint64{{0, 5}}, b: [][2]uint64{{5, 10}}},
+		{
+			name: "one span against several",
+			a:    [][2]uint64{{0, 30}},
+			b:    [][2]uint64{{2, 4}, {10, 12}, {40, 50}},
+			want: [][2]uint64{{2, 4}, {10, 12}},
+		},
+		{
+			name: "several against several",
+			a:    [][2]uint64{{0, 10}, {20, 30}},
+			b:    [][2]uint64{{5, 25}},
+			want: [][2]uint64{{5, 10}, {20, 25}},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := intersectExtents(tc.a, tc.b)
+			if len(got) != len(tc.want) {
+				t.Fatalf("intersectExtents = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("intersectExtents = %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}

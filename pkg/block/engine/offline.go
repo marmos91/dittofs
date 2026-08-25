@@ -215,12 +215,73 @@ func manifestShortfall(ctx context.Context, index coldRangeReporter, chunks mani
 		if err != nil {
 			return 0, 0, err
 		}
-		for _, gap := range subtractExtents(placed, described) {
+		if len(subtractExtents(placed, described)) == 0 {
+			continue
+		}
+		confirmed, err := confirmShortfall(ctx, chunks, id, placed, described)
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, gap := range confirmed {
 			ranges++
 			bytes += int64(gap[1] - gap[0])
 		}
 	}
 	return bytes, ranges, nil
+}
+
+// confirmShortfall re-reads one payload's manifest and keeps only the gaps its
+// rows still place, so a file being deleted or truncated while the walk runs is
+// not reported as a loss.
+//
+// The two records narrow in opposite orders, and neither operation is atomic
+// with the other. Truncate reaps the manifest before it clips the index, so an
+// index already narrow means the manifest narrowed first and this second read
+// sees it. Delete empties the index first and reaps the rows a round-trip
+// later, so the first read can catch rows whose bytes are already gone; the
+// re-read is issued after that round-trip has had a chance to land.
+//
+// Intersecting rather than replacing is what keeps a concurrent write out of
+// the count: a row the re-read added is a range whose interval was created
+// before the row, so the index would have described it had the walk looked
+// again — reporting it would be an alarm about work in progress.
+//
+// ponytail: one extra manifest read per payload that looked short, and only
+// then. A file mid-delete whose reap has not landed by the re-read is still
+// counted; make the two records narrow in the same order if that ever shows up
+// as a recurring false alarm.
+func confirmShortfall(
+	ctx context.Context,
+	chunks manifestLister,
+	payloadID string,
+	placed, described [][2]uint64,
+) ([][2]uint64, error) {
+	rows, err := chunks.ListFileChunks(ctx, payloadID)
+	if err != nil {
+		return nil, err
+	}
+	stillPlaced, _ := placedRanges(rows)
+	return subtractExtents(intersectExtents(placed, stillPlaced), described), nil
+}
+
+// intersectExtents returns the ranges covered by both a and b. Both must be
+// sorted and non-overlapping; the result is too.
+func intersectExtents(a, b [][2]uint64) [][2]uint64 {
+	var out [][2]uint64
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		start := max(a[i][0], b[j][0])
+		end := min(a[i][1], b[j][1])
+		if start < end {
+			out = append(out, [2]uint64{start, end})
+		}
+		if a[i][1] < b[j][1] {
+			i++
+		} else {
+			j++
+		}
+	}
+	return out
 }
 
 // placedRanges returns one payload's manifest coverage in canonical form, plus
