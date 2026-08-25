@@ -1421,7 +1421,9 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	}
 	// Even when the file does not exist in the metadata store (already
 	// removed by the unlink), a deferred base-file delete may still be
-	// pending on an open stream handle. Check by path.
+	// pending on an open stream handle. Match those handles by the parent
+	// directory and the name within it, there being no metadata handle left
+	// to compare against.
 	if !fileExists {
 		if h.isFileOrBaseDeletePending(nil, parentHandle, baseName) {
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDeletePending}}, nil
