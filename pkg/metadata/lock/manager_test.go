@@ -1223,10 +1223,12 @@ func TestMergeLocks_DifferentOwners(t *testing.T) {
 }
 
 // TestSetLeaseEpoch_UpdatesEveryRecordOfTheLease asserts the epoch lands on
-// every record of the lease it names, not just the first found: reopens and
-// reclaims can leave more than one record for a key on one file, and missing
-// the one RequestLease just granted leaves it at the createAndGrantLease
-// default while the client's response carries the higher requested epoch.
+// every record of the lease it names, not just the first found. A grant cannot
+// add a second record for a key already on the file and neither can a reclaim;
+// RestoreLocks appends persisted rows without that guard, so more than one can
+// exist. Missing the one RequestLease just granted would leave it at the
+// createAndGrantLease default while the client's response carries the higher
+// requested epoch.
 func TestSetLeaseEpoch_UpdatesEveryRecordOfTheLease(t *testing.T) {
 	t.Parallel()
 

@@ -1380,7 +1380,15 @@ func (lm *Manager) HasLeaseOnHandle(handleKey string, leaseKey [16]byte) bool {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 
-	return len(lm.leaseRecordsOnHandleLocked(handleKey, leaseKey)) > 0
+	// Scans rather than reusing leaseRecordsOnHandleLocked: this answers a
+	// boolean on the CREATE path, and building a slice to do it costs an
+	// allocation per call that an early return does not.
+	for _, l := range lm.unifiedLocks[handleKey] {
+		if l.Lease != nil && l.Lease.LeaseKey == leaseKey {
+			return true
+		}
+	}
+	return false
 }
 
 func (lm *Manager) IsTraditionalOplockForKey(handleKey string, leaseKey [16]byte) bool {
