@@ -87,9 +87,10 @@ func TestOfflineReadinessOf_Gating(t *testing.T) {
 		// answer below would be a confident zero.
 		{"manifest places bytes the index has forgotten", &fakeColdReporter{seeded: true}, true,
 			func(context.Context, coldRangeReporter) (int64, int64, error) { return 4096, 1, nil }, false, 0},
+		// A share with no manifest reaches this the same way: the store's
+		// cross-check reports errNoManifest rather than a zero shortfall.
 		{"cross-check could not run", &fakeColdReporter{seeded: true}, true,
 			func(context.Context, coldRangeReporter) (int64, int64, error) { return 0, 0, errNoManifest }, false, 0},
-		{"no manifest to cross-check against", &fakeColdReporter{seeded: true}, true, nil, false, 0},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

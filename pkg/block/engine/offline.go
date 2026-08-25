@@ -95,12 +95,12 @@ func (bs *Store) OfflineReadiness(ctx context.Context) OfflineReadiness {
 	if bs.closed {
 		return OfflineReadiness{Reason: "block store is closed"}
 	}
-	return offlineReadinessOf(ctx, bs.local, bs.HasRemoteStore(), bs.manifestShortfall)
+	return offlineReadinessOf(ctx, bs.local, bs.HasRemoteStore(), bs.memoizedShortfall)
 }
 
-// manifestShortfall is the store's cross-check, memoized. See shortfallMemo for
+// memoizedShortfall is the store's cross-check, memoized. See shortfallMemo for
 // why the result is reused rather than recomputed on every call.
-func (bs *Store) manifestShortfall(ctx context.Context, index coldRangeReporter) (int64, int64, error) {
+func (bs *Store) memoizedShortfall(ctx context.Context, index coldRangeReporter) (int64, int64, error) {
 	if bs.fileChunkStore == nil {
 		return 0, 0, errNoManifest
 	}
@@ -148,12 +148,8 @@ func offlineReadinessOf(ctx context.Context, localTier any, hasRemote bool, shor
 
 	// That count is the index's account of itself, so it cannot see a range the
 	// index has forgotten: no interval means no contribution, which is exactly
-	// what an absent range looks like. The manifest is written by a different
-	// subsystem and outlives a lost interval, so it is the only thing here that
-	// can tell those two apart.
-	if shortfall == nil {
-		return OfflineReadiness{Reason: "manifest cross-check did not run: " + errNoManifest.Error()}
-	}
+	// what an absent range looks like. The manifest outlives a lost interval, so
+	// it is the only thing here that can tell those two apart.
 	missing, missingRanges, err := shortfall(ctx, reporter)
 	if err != nil {
 		return OfflineReadiness{Reason: "manifest cross-check did not run: " + err.Error()}
@@ -161,7 +157,7 @@ func offlineReadinessOf(ctx context.Context, localTier any, hasRemote bool, shor
 	if missing > 0 {
 		return OfflineReadiness{Reason: fmt.Sprintf(
 			"local index does not describe %d bytes in %d ranges the manifest places, "+
-				"so how much of this share is resident cannot be determined",
+				"so whether they are remote-only or lost cannot be determined",
 			missing, missingRanges)}
 	}
 	return OfflineReadiness{RemoteOnlyBytes: bytes, RemoteOnlyRanges: ranges, Known: true}
@@ -183,6 +179,13 @@ func offlineReadinessOf(ctx context.Context, localTier any, hasRemote bool, shor
 // and reporting them is CheckManifests' job. Everything else is unioned per
 // file and weighed against the ranges the index reports for the same file,
 // which include cold ones — a cold range is described, just not resident.
+//
+// A lost interval is not the only way to reach a shortfall. A server-side copy
+// writes the destination's manifest rows and no interval for them at all, so a
+// clone nobody has read back yet looks the same from here. That is not a false
+// alarm: those bytes need the remote too, and the index cannot say which of the
+// two it is looking at, which is why the answer is indeterminate rather than a
+// remote-only count.
 //
 // ponytail: one ListFileChunks per payload, the same walk warm and the
 // block-count stats take, which is why the caller memoizes the result rather
@@ -251,23 +254,25 @@ func placedRanges(rows []*block.FileChunk) ([][2]uint64, int64) {
 // subtractExtents returns the parts of a that no extent of b covers. Both must
 // be sorted and non-overlapping, as coalesceExtents and DataExtents return
 // them; the result is too.
+//
+// ponytail: rescans b from the front for every span of a. Both lists are one
+// file's coalesced coverage, so a is usually a single span; carry a cursor
+// across spans only if a profile ever shows this walk.
 func subtractExtents(a, b [][2]uint64) [][2]uint64 {
 	var out [][2]uint64
-	j := 0
 	for _, span := range a {
 		cur := span[0]
-		// a is sorted and cur never moves backwards, so extents of b already
-		// behind it stay behind it for every later span.
-		for j < len(b) && b[j][1] <= cur {
-			j++
-		}
-		for k := j; k < len(b) && b[k][0] < span[1] && cur < span[1]; k++ {
-			if b[k][0] > cur {
-				out = append(out, [2]uint64{cur, b[k][0]})
+		for _, cover := range b {
+			if cover[1] <= cur {
+				continue // already behind the part of span still uncovered
 			}
-			if b[k][1] > cur {
-				cur = b[k][1]
+			if cover[0] >= span[1] {
+				break // b is sorted, so nothing later reaches back into span
 			}
+			if cover[0] > cur {
+				out = append(out, [2]uint64{cur, cover[0]})
+			}
+			cur = cover[1]
 		}
 		if cur < span[1] {
 			out = append(out, [2]uint64{cur, span[1]})
@@ -302,7 +307,8 @@ type shortfallMemo struct {
 func (m *shortfallMemo) get(ctx context.Context, index coldRangeReporter, chunks manifestLister) (int64, int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.at.IsZero() && time.Since(m.at) < shortfallInterval {
+	// A zero at is older than any interval, so an empty memo falls through.
+	if time.Since(m.at) < shortfallInterval {
 		return m.bytes, m.ranges, nil
 	}
 	bytes, ranges, err := manifestShortfall(ctx, index, chunks)

@@ -6,8 +6,10 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	localfs "github.com/marmos91/dittofs/pkg/block/local/fs"
 	"github.com/marmos91/dittofs/pkg/block/remote"
@@ -224,8 +226,8 @@ func TestOfflineReadiness_LostIntervalIsNotSafe(t *testing.T) {
 					t.Errorf("the pre-cross-check answer was already unsafe (%d remote-only bytes), "+
 						"so this case proves nothing about the new check", coldBytes)
 				}
-				if got.Reason == "" {
-					t.Error("refused to answer without saying why")
+				if !strings.Contains(got.Reason, "manifest places") {
+					t.Errorf("refused for some other reason than the shortfall: %q", got.Reason)
 				}
 			case "evicted":
 				// A cold range is described, just not resident: the cross-check
@@ -237,4 +239,94 @@ func TestOfflineReadiness_LostIntervalIsNotSafe(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestOfflineReadiness_CloneIsIndeterminate pins the other way a share reaches
+// a shortfall, so nobody reads the refusal as proof of a lost interval.
+//
+// A server-side copy writes the destination's manifest rows and creates no
+// interval for them — the clone's bytes are the source's, already on the
+// remote, and the read path hydrates them on demand. From the index that is
+// indistinguishable from a range whose interval was lost, and the offline
+// answer is the same either way: those bytes need the remote, and the index
+// cannot say which case it is looking at.
+//
+// If the copy path ever seeds cold intervals for its destination rows, this
+// test is what says so: the share would then report a remote-only count
+// instead, and the refusal would be left meaning a genuine loss.
+func TestOfflineReadiness_CloneIsIndeterminate(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	mem := remotememory.New()
+	bs, local := openOfflineEngine(t, dir, ms, mem)
+
+	root := createShare(t, ms, "clone")
+	src, _ := createRealFile(t, ms, "clone", "src.bin", root)
+	dst, _ := createRealFile(t, ms, "clone", "dst.bin", root)
+
+	const size = 4 * 1024 * 1024
+	data := make([]byte, size)
+	rand.New(rand.NewSource(7)).Read(data) //nolint:gosec // deterministic fixture
+	if _, err := bs.WriteAt(ctx, src, nil, data, 0); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	carve(t, bs, ctx, src)
+	if err := local.MarkColdSeeded(); err != nil {
+		t.Fatalf("MarkColdSeeded: %v", err)
+	}
+
+	// The source alone is resident and accounted for.
+	if got := bs.OfflineReadiness(ctx); !got.Safe() {
+		t.Fatalf("before the clone: Safe() = false, want true (reason %q)", got.Reason)
+	}
+
+	srcRows, err := ms.ListFileChunks(ctx, src)
+	if err != nil {
+		t.Fatalf("ListFileChunks: %v", err)
+	}
+	var refs []block.ChunkRef
+	for _, r := range srcRows {
+		off, ok := block.ParseChunkOffset(r.ID)
+		if !ok || r.Hash.IsZero() {
+			continue
+		}
+		refs = append(refs, block.ChunkRef{Hash: r.Hash, Offset: off, Size: r.DataSize})
+	}
+	if len(refs) == 0 {
+		t.Fatal("the source carved no placeable rows, so the clone would copy nothing")
+	}
+	if _, err := bs.CopyPayload(ctx, src, dst, refs); err != nil {
+		t.Fatalf("CopyPayload: %v", err)
+	}
+
+	described, err := local.DataExtents(ctx, dst, size)
+	if err != nil {
+		t.Fatalf("DataExtents: %v", err)
+	}
+	if len(described) != 0 {
+		t.Fatalf("the copy created %d index extents for the destination; "+
+			"the shortfall this test describes no longer happens", len(described))
+	}
+
+	// The memo was filled by the safe answer above, so the store is reopened
+	// over the same journal — same seed marker, same index, empty memo — rather
+	// than replaced, which would refuse for want of a seed instead.
+	if err := bs.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	bs, local = openOfflineEngine(t, dir, ms, mem)
+	t.Cleanup(func() { _ = bs.Close() })
+	if !local.ColdSeeded() {
+		t.Fatal("the reopened tier lost its seed marker, so the refusal below would not be the shortfall")
+	}
+
+	got := bs.OfflineReadiness(ctx)
+	if got.Known || got.Safe() {
+		t.Errorf("a share holding an unhydrated clone reported known=%v safe=%v", got.Known, got.Safe())
+	}
+	if !strings.Contains(got.Reason, "manifest places") {
+		t.Errorf("refused for some other reason than the shortfall: %q", got.Reason)
+	}
+	t.Logf("reason: %s", got.Reason)
 }
