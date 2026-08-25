@@ -498,25 +498,34 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 // owning session walk past the first match. Add a by-key index if a profile
 // ever shows this scan.
 func (lm *LeaseManager) resolveAckBindingLocked(leaseKey [16]byte, sessionID uint64, connGUID [16]byte) (leaseClientKey, bool) {
-	var guidKey leaseClientKey
-	var guidFound bool
+	// A client holding one key in two shares makes the ack ambiguous —
+	// MS-SMB2 §3.3.5.9.8 binds a lease to (ClientGuid, LeaseKey) and does not
+	// contemplate it, and a single session can hold tree connects to both. Map
+	// iteration order is randomized, so both branches below take the lowest
+	// share name rather than the first hit: an ack that lands on an arbitrary
+	// one of two candidates leaves the other lease Breaking until it times out
+	// and downgrades a lease nobody acknowledged.
+	var sessionKey, guidKey leaseClientKey
+	var sessionFound, guidFound bool
 	for ck, b := range lm.bindings {
 		if ck.Key != leaseKey {
 			continue
 		}
 		if b.SessionID == sessionID {
-			return ck, true
+			if !sessionFound || ck.Share < sessionKey.Share {
+				sessionKey, sessionFound = ck, true
+			}
+			continue
 		}
 		if connGUID == ([16]byte{}) || !b.HasGUID || b.ClientGUID != connGUID {
 			continue
 		}
-		// A client holding one key in two shares makes the ack ambiguous —
-		// MS-SMB2 §3.3.5.9.8 binds a lease to (ClientGuid, LeaseKey) and does
-		// not contemplate it. Break the tie on share name so the choice is at
-		// least deterministic across runs.
 		if !guidFound || ck.Share < guidKey.Share {
 			guidKey, guidFound = ck, true
 		}
+	}
+	if sessionFound {
+		return sessionKey, true
 	}
 	return guidKey, guidFound
 }

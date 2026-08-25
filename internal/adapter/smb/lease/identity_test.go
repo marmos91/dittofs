@@ -209,3 +209,33 @@ func TestGetSessionForBreak_ZeroGUIDSameKeyRoutesToOwner(t *testing.T) {
 		t.Errorf("break for client B's lease routes to session %d (ok=%v), want 2", sid, ok)
 	}
 }
+
+// TestResolveAckBinding_SameSessionTwoSharesIsDeterministic pins the tie-break
+// for the case MS-SMB2 does not contemplate: one session holding tree connects
+// to two shares and presenting the same lease key value in both. Map iteration
+// order is randomized, so resolving to whichever candidate came out of the map
+// first would send an ack to an arbitrary one of the two — leaving the other
+// lease Breaking until it times out, and downgrading a lease nobody acked.
+func TestResolveAckBinding_SameSessionTwoSharesIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	lm := NewLeaseManager(nil, nil)
+	leaseKey := [16]byte{0xAB, 0xCD}
+	lm.bindings[leaseClientKey{ClientID: "smb:1", Share: "share-b", Key: leaseKey}] =
+		leaseBinding{SessionID: 1, HandleKey: "file-b"}
+	lm.bindings[leaseClientKey{ClientID: "smb:1", Share: "share-a", Key: leaseKey}] =
+		leaseBinding{SessionID: 1, HandleKey: "file-a"}
+
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	for i := 0; i < 200; i++ {
+		ck, found := lm.resolveAckBindingLocked(leaseKey, 1, [16]byte{})
+		if !found {
+			t.Fatalf("iteration %d: no binding resolved", i)
+		}
+		if ck.Share != "share-a" {
+			t.Fatalf("iteration %d: ack resolved to share %q, want the deterministic pick %q",
+				i, ck.Share, "share-a")
+		}
+	}
+}
