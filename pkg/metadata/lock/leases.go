@@ -128,10 +128,11 @@ func advanceEpoch(lease *OpLock) {
 // index is reconciled from the live slice on every mutation; if a bucket entry
 // is ever stale the in-bucket scan simply finds no match there and moves on.
 //
-// Because which holder comes back is unspecified, this must not decide a value
-// that goes out on the wire. Its callers are the LEASE_BREAK_ACK and reclaim
-// routing, which are handed only a lease key; the paths that read or write a
-// lease's state and epoch take the file as a parameter and resolve through
+// Because which holder comes back is unspecified, this must not decide anything
+// a client can observe. One caller remains: the no-lockStore reclaim branch,
+// which has no persisted record and so no file handle to scope to. Every path
+// that resolves a lease a client acts on — its state, its epoch, its break
+// acknowledgment, its reclaim — takes the file as a parameter and goes through
 // leaseRecordsOnHandleLocked instead.
 func (lm *Manager) findLeaseByKey(leaseKey [16]byte) (string, *UnifiedLock, int) {
 	buckets := lm.leaseKeyIndex[leaseKey]
@@ -1163,11 +1164,16 @@ func (lm *Manager) dispatchNextBreakStageLocked(handleKey string, leaseKey [16]b
 	// lease during the dispatch window. The `lock` pointer may now reference an
 	// orphaned UnifiedLock — read fields off the re-found record (or signal
 	// waiters and return when gone).
-	_, currentLock, _ := lm.findLeaseByKey(leaseKey)
-	if currentLock == nil {
+	//
+	// Scoped to this lease's own file: resolving by key alone would fall back to
+	// another client's lease under the same key value once this one is gone, and
+	// decide from ITS state whether this file's waiters may proceed.
+	current := lm.leaseRecordsOnHandleLocked(handleKey, leaseKey)
+	if len(current) == 0 {
 		lm.signalBreakWaitLocked(handleKey)
 		return
 	}
+	currentLock := current[0]
 
 	// Signal waiters only when the break has fully drained: either the inline
 	// fire-and-forget path already updated LeaseState to nextTarget (no further
