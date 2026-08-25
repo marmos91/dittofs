@@ -74,8 +74,9 @@ func TestRead_AtMaxReadSizeNotRejectedByClamp(t *testing.T) {
 }
 
 // TestWrite_ClampsLengthToMaxWriteSize verifies a WRITE whose payload exceeds
-// MaxWriteSize is rejected with STATUS_INVALID_PARAMETER — the symmetric
-// contract to the READ clamp (MS-SMB2 §3.3.5.12 ("Receiving an SMB2 READ Request")).
+// MaxWriteSize is rejected with STATUS_INVALID_PARAMETER, per MS-SMB2 §3.3.5.13
+// ("Receiving an SMB2 WRITE Request") — the symmetric contract to the READ
+// clamp above (§3.3.5.12).
 func TestWrite_ClampsLengthToMaxWriteSize(t *testing.T) {
 	h := NewHandler()
 	if h.MaxWriteSize == 0 {
