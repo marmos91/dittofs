@@ -247,3 +247,77 @@ func TestElectDeleteOnClose_LastEntrantWins(t *testing.T) {
 		t.Fatalf("closer behind two leaving handles: got %v, want docDecisionDelete", got)
 	}
 }
+
+// TestCloseFilesWithFilter_DurablePersistedSibling_StillUnlink covers the
+// third way a handle leaves the open-file table: the transport-drop path
+// persists a durable handle for later reconnect and drops it from the table
+// exactly as a full close does. A closer that scans while that handle is still
+// listed would defer the unlink to a struct nothing will ever read again, so
+// the persist path has to run the election first like every other departure.
+func TestCloseFilesWithFilter_DurablePersistedSibling_StillUnlink(t *testing.T) {
+	h, smbCtx, _, fileIDA := setupWriteTestShare(t, nil)
+	h.DurableStore = newMockDurableStore()
+
+	rootHandle, err := h.Registry.GetRootHandle(smbCtx.ShareName)
+	if err != nil {
+		t.Fatalf("GetRootHandle: %v", err)
+	}
+
+	// The durable handle carries no delete-on-close of its own, so it is
+	// eligible to be persisted rather than closed.
+	openA, ok := h.GetOpenFile(fileIDA)
+	if !ok {
+		t.Fatalf("seed open file missing")
+	}
+	openA.ShareAccess = 0x07
+	openA.IsDurable = true
+	openA.DurableTimeoutMs = 60000
+
+	// A second session holding the same file with FILE_DELETE_ON_CLOSE.
+	sessB := h.CreateSession("127.0.0.1:12347", false, "test-user", "")
+	uidB, gidB := uint32(0), uint32(0)
+	sessB.User = &models.User{Username: "test-user", UID: &uidB, Groups: []models.Group{{GID: &gidB}}}
+	const treeIDB uint32 = 3
+	h.StoreTree(&TreeConnection{
+		TreeID:     treeIDB,
+		SessionID:  sessB.SessionID,
+		ShareName:  smbCtx.ShareName,
+		Permission: models.PermissionReadWrite,
+	})
+	fileIDB := [16]byte{10}
+	cloneOpenFileForSecondHandle(h, openA, fileIDB, sessB.SessionID, treeIDB)
+
+	h.renameScanMu.Lock()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		h.CloseAllFilesForSession(smbCtx.Context, smbCtx.SessionID, true /* transport disconnect */)
+	}()
+
+	// Let the durable handle be persisted and park on renameScanMu before the
+	// CLOSE below scans for siblings.
+	time.Sleep(settleForDecision)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if _, closeErr := h.Close(&SMBHandlerContext{
+			Context:   smbCtx.Context,
+			SessionID: sessB.SessionID,
+			TreeID:    treeIDB,
+			ShareName: smbCtx.ShareName,
+		}, &CloseRequest{FileID: fileIDB}); closeErr != nil {
+			t.Errorf("Close: %v", closeErr)
+		}
+	}()
+
+	time.Sleep(settleForDecision)
+	h.renameScanMu.Unlock()
+	wg.Wait()
+
+	if fileStillExists(t, h, rootHandle, "data") {
+		t.Fatal("delete-on-close was lost: the closer deferred the unlink to a handle that had been persisted away")
+	}
+}
