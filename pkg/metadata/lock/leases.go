@@ -1347,6 +1347,23 @@ func (lm *Manager) getLeaseStateImpl(_ context.Context, leaseKey [16]byte) (stat
 	return lock.Lease.LeaseState, lock.Lease.Epoch, true
 }
 
+// HasLeaseOnHandle reports whether a lease record with this key already exists
+// on this file. The predicate matches the one resolveSameKeyLeaseLocked uses to
+// decide whether a request reuses an existing record or falls through to
+// createAndGrantLease, so a false answer means the next grant on this file with
+// this key creates a record.
+func (lm *Manager) HasLeaseOnHandle(handleKey string, leaseKey [16]byte) bool {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	for _, l := range lm.unifiedLocks[handleKey] {
+		if l.Lease != nil && l.Lease.LeaseKey == leaseKey {
+			return true
+		}
+	}
+	return false
+}
+
 func (lm *Manager) IsTraditionalOplockForKey(leaseKey [16]byte) bool {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()

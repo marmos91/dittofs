@@ -478,3 +478,48 @@ func TestProcessLeaseCreateContext_UnchangedStateDoesNotAdvanceEpoch(t *testing.
 		t.Errorf("upgrade response epoch = 0x%x, want 0x%x (exactly one advance)", resp3.Epoch, grantedEpoch+1)
 	}
 }
+
+// TestProcessLeaseCreateContext_OtherFileSameKeyStillSeeds pins the scope of
+// the first-grant test. Two clients may present the same 16-byte lease key
+// value on different files, so "does a lease with this key exist anywhere"
+// cannot decide whether this grant is a first grant: answering it from a
+// foreign client's lease would skip the seed and hand the requester an epoch
+// far below the one it asked for.
+func TestProcessLeaseCreateContext_OtherFileSameKeyStillSeeds(t *testing.T) {
+	t.Parallel()
+
+	mgr := lock.NewManager()
+	leaseMgr := lease.NewLeaseManager(&staticLockResolver{mgr: mgr}, nil)
+
+	ctx := context.Background()
+	const shareName = "share1"
+	leaseKey := [16]byte{0x5A, 0x5B, 0x5C}
+	const rh = lock.LeaseStateRead | lock.LeaseStateHandle
+	const firstEpoch uint16 = 0x4711
+	const secondEpoch uint16 = 0x0900
+
+	// Client A takes the key on one file.
+	respA, err := ProcessLeaseCreateContext(ctx, leaseMgr, encodeV2LeaseContext(leaseKey, rh, firstEpoch),
+		lock.FileHandle("file-A"), 1, [16]byte{}, "smb:1", shareName, false, false, false)
+	if err != nil {
+		t.Fatalf("client A CREATE returned error: %v", err)
+	}
+	if respA.Epoch != firstEpoch+1 {
+		t.Fatalf("client A response epoch = 0x%x, want 0x%x", respA.Epoch, firstEpoch+1)
+	}
+
+	// Client B presents the same key value on a different file. This is that
+	// client's first grant, so its epoch must seed.
+	respB, err := ProcessLeaseCreateContext(ctx, leaseMgr, encodeV2LeaseContext(leaseKey, rh, secondEpoch),
+		lock.FileHandle("file-B"), 2, [16]byte{}, "smb:2", shareName, false, false, false)
+	if err != nil {
+		t.Fatalf("client B CREATE returned error: %v", err)
+	}
+	if respB.LeaseState != rh {
+		t.Fatalf("client B granted state = 0x%x, want RH (0x%x)", respB.LeaseState, uint32(rh))
+	}
+	if respB.Epoch != secondEpoch+1 {
+		t.Errorf("client B response epoch = 0x%x, want 0x%x — a first grant on a different file must still seed from the client's epoch",
+			respB.Epoch, secondEpoch+1)
+	}
+}

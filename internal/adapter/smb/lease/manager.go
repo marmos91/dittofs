@@ -539,6 +539,24 @@ func (lm *LeaseManager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (s
 	return lockMgr.GetLeaseState(ctx, leaseKey)
 }
 
+// HasLeaseOnHandle reports whether a lease record with this key already exists
+// on this file in this share.
+//
+// It takes the share explicitly rather than resolving it from the leaseShare
+// map, because that map is keyed on the raw lease key alone: two clients may
+// legitimately present the same 16-byte value, and whichever granted last owns
+// the entry. That is harmless for the best-effort routing the map was built
+// for, and not harmless for a caller deciding a value that goes out on the
+// wire. Pairing an explicit share with the file handle keeps the answer about
+// the lease this request is actually asking for.
+func (lm *LeaseManager) HasLeaseOnHandle(fileHandle lock.FileHandle, shareName string, leaseKey [16]byte) bool {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return false
+	}
+	return lockMgr.HasLeaseOnHandle(string(fileHandle), leaseKey)
+}
+
 // GetSessionForLease returns the sessionID associated with a lease key.
 func (lm *LeaseManager) GetSessionForLease(leaseKey [16]byte) (sessionID uint64, found bool) {
 	lm.mu.RLock()

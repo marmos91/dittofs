@@ -409,8 +409,18 @@ func ProcessLeaseCreateContext(
 		requestLease = leaseMgr.RequestLeaseStatOpen
 	}
 	// Sampled before the grant, which is what creates the record: only the first
-	// grant for a lease key may seed the epoch from the client's value.
-	_, _, leaseExisted := leaseMgr.GetLeaseState(ctx, leaseReq.LeaseKey)
+	// grant for a lease key on this file may seed the epoch from the client's
+	// value. The predicate is deliberately the same one the grant path itself
+	// uses to choose between reusing a record and creating one, so the seed
+	// decision cannot disagree with what the grant actually did.
+	//
+	// ponytail: a sample taken outside the grant's lock. Two requests can only
+	// race this window by asking for the same lease key on the same file, which
+	// makes them the same client's lease carrying the same epoch, and
+	// SetLeaseEpoch keeps the larger of the two — so the outcome does not
+	// depend on the order. Fold the decision into the grant itself by threading
+	// the client's epoch down to createAndGrantLease if that ever stops holding.
+	leaseExisted := leaseMgr.HasLeaseOnHandle(fileHandle, shareName, leaseReq.LeaseKey)
 	grantedState, epoch, err := requestLease(
 		ctx,
 		fileHandle,
