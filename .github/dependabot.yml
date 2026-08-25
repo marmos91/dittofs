@@ -1,0 +1,48 @@
+# Dependabot raises the bump PRs for the alerts on the Security tab. Without
+# this file GitHub still reports vulnerabilities but never opens a PR for them,
+# so they accumulate until someone bumps by hand.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR per ecosystem-week instead of one per module: these travel
+      # together in go.sum anyway, and a single PR runs CI once.
+      go-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: chore(deps)
+
+  - package-ecosystem: gomod
+    directory: /k8s/dittofs-operator
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      operator-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: chore(deps)
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: chore(ci)
