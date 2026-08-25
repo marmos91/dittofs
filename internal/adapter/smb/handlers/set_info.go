@@ -2156,7 +2156,7 @@ func (h *Handler) breakParentDirLeasesForContentChangeOn(ctx *SMBHandlerContext,
 
 	parentLockHandle := lock.FileHandle(parentHandle)
 
-	// Apply parent-key suppression only (MS-SMB2 §3.3.4.20): if
+	// Apply parent-key suppression only (Samba `dirlease_should_break`): if
 	// the originating handle's CREATE carried an RqLs with ParentLeaseKey
 	// set, the matching parent dir lease MUST NOT be broken. No ClientID
 	// exclusion — same-client breaks fire when the key doesn't match.
@@ -2358,7 +2358,7 @@ func (h *Handler) handleFileLinkInformation(
 
 	// Thread the open file's ParentLeaseKey into the auth context so
 	// MetadataService.notifyDirChange forwards it to OnDirChange and the
-	// dir-lease parent-key suppression rule (MS-SMB2 §3.3.4.20) skips the
+	// dir-lease parent-key suppression rule (Samba `dirlease_should_break`) skips the
 	// matching parent dir lease (same-key holder does not get broken).
 	PropagateOpenFileParentLeaseKey(authCtx, openFile)
 

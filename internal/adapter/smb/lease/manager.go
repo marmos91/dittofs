@@ -1128,7 +1128,7 @@ func (lm *LeaseManager) BreakFileHandleLeasesOnDelete(
 //
 // excludeParentLeaseKey + hasExcludeKey carry the originating handle's
 // ParentLeaseKey (when set on its RqLs) so the dir-lease parent-key
-// suppression rule (MS-SMB2 §3.3.4.20) is applied in breakOpLocks.
+// suppression rule (Samba `dirlease_should_break`) is applied in breakOpLocks.
 func (lm *LeaseManager) resolveParentBreakArgs(
 	parentHandle lock.FileHandle,
 	shareName string,
@@ -1168,8 +1168,8 @@ func (lm *LeaseManager) resolveParentBreakArgs(
 // Required by WPTS BVT BVT_DirectoryLeasing_LeaseBreakOnMultiClients.
 //
 // excludeParentLeaseKey + hasExcludeKey carry the originating handle's RqLs
-// ParentLeaseKey for the dir-lease parent-key suppression rule (MS-SMB2
-// §3.3.4.20). Pass the zero key + false when there is no parent-key
+// ParentLeaseKey for the dir-lease parent-key suppression rule (Samba
+// `dirlease_should_break`). Pass the zero key + false when there is no parent-key
 // linkage to honor.
 func (lm *LeaseManager) BreakParentHandleLeasesOnCreate(
 	ctx context.Context,
@@ -1214,7 +1214,7 @@ func (lm *LeaseManager) BreakParentHandleLeasesOnCreate(
 // Waits for LEASE_BREAK_ACK with parentLeaseBreakWaitTimeout (same ack-wait
 // guarantee as BreakParentHandleLeasesOnCreate). excludeClientID +
 // excludeParentLeaseKey + hasExcludeKey carry the suppression rules from
-// MS-SMB2 §3.3.4.20 so a same-client or parent-key-linked dir
+// Samba `dirlease_should_break` so a same-client or parent-key-linked dir
 // lease is not broken.
 func (lm *LeaseManager) BreakParentDirLeasesOnDestructiveCreate(
 	ctx context.Context,

@@ -625,7 +625,7 @@ func TestBreakParentHandle_ExcludesTriggeringClient(t *testing.T) {
 // TestBreakParentHandleLeasesOnCreate_ParentKeyPlumbed asserts the new
 // (#470 C2) parent-key suppression args are forwarded into the LockOwner
 // passed to BreakLeasesOnOpenConflict. The dir-lease parent-key suppression
-// rule (MS-SMB2 §3.3.4.20) is enforced INSIDE the lock manager — this test
+// rule (Samba `dirlease_should_break`) is enforced INSIDE the lock manager — this test
 // pins that the LeaseManager does the plumbing, not the actual suppression.
 func TestBreakParentHandleLeasesOnCreate_ParentKeyPlumbed(t *testing.T) {
 	t.Parallel()
@@ -981,7 +981,7 @@ func TestBreakParentDirLeasesOnDestructiveCreate_SingleBreakWithDestructiveReaso
 // TestBreakParentDirLeasesOnDestructiveCreate_PlumbsParentKeySuppression pins
 // that the C2 parent-key-suppression args (excludeClientID + parent_key +
 // hasExcludeKey) are forwarded into the LockOwner used for the break call,
-// so the dir-lease parent-key rule (MS-SMB2 §3.3.4.20) keeps applying on the
+// so the dir-lease parent-key rule (Samba `dirlease_should_break`) keeps applying on the
 // destructive path.
 func TestBreakParentDirLeasesOnDestructiveCreate_PlumbsParentKeySuppression(t *testing.T) {
 	t.Parallel()

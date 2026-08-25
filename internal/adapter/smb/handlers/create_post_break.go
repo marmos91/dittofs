@@ -670,7 +670,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	// rearm (test_rearm_dirlease). Mirrors Samba's delay_for_oplock_fn
 	// running before the actual create.
 	//
-	// Parent-key suppression (MS-SMB2 §3.3.4.20 / Samba dirlease_should_break):
+	// Parent-key suppression (Samba `dirlease_should_break`):
 	// if this CREATE carried an RqLs with
 	// LEASE_FLAG_PARENT_LEASE_KEY_SET, extract the ParentLeaseKey from the
 	// incoming request so the matching dir-lease is NOT broken.
@@ -1316,8 +1316,8 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	h.CaptureOpenerIdentity(ctx, openFile)
 
 	// Record the RqLs parent-lease-key linkage so downstream operations on
-	// this handle (SET_INFO, WRITE, CLOSE-on-delete) can apply the MS-SMB2
-	// §3.3.4.20 / Samba `dirlease_should_break` parent-key suppression rule
+	// this handle (SET_INFO, WRITE, CLOSE-on-delete) can apply the Samba
+	// `dirlease_should_break` parent-key suppression rule
 	// against the parent directory's lease. Captured even when the file
 	// lease itself was denied (response leaseState=None) — the linkage
 	// applies regardless of the per-file grant outcome. Gated on HasParent
