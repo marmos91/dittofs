@@ -321,6 +321,7 @@ func ProcessSingleRequest(
 	// whatever the handler already committed to before replying — a recorded
 	// lease break whose notification never reaches its (possibly unrelated,
 	// still-live) holder. (Same contract as the compound dispatch path.)
+	//
 	// ECHO is exempt from the response order. A client sends it precisely to
 	// test whether a connection with work outstanding on it is still alive
 	// (MS-SMB2 §3.3.5.13), so queueing its reply behind that work is the one

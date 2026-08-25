@@ -199,16 +199,9 @@ type SMBHandlerContext struct {
 	ReleaseAsync func()
 
 	// ReleaseOrder gives up this request's place in the connection's response
-	// order, letting the responses behind it go out ahead of this one.
-	//
-	// A handler MUST call it before blocking on anything only a *later*
-	// request on the same connection can deliver — a lease break
-	// acknowledgement above all. The client cannot send that acknowledgement
-	// until it has seen the responses queued behind this request, so holding
-	// the place across such a wait leaves both sides waiting for each other.
-	//
-	// It is idempotent, and nil when the caller dispatched without a read
-	// loop. Use releaseOrderSlot rather than calling it directly.
+	// order, letting the responses behind it go out ahead of this one. It is
+	// idempotent, and nil when the caller dispatched without a read loop.
+	// Handlers call it through releaseResponseOrder.
 	ReleaseOrder func()
 
 	// RequestAsyncId is the AsyncId from the request header when FlagAsync is set.
@@ -296,18 +289,16 @@ func NewSMBHandlerContext(ctx context.Context, clientAddr string, sessionID uint
 
 // releaseResponseOrder gives up this request's place in the connection's
 // response order, so the responses queued behind it can go out while this
-// handler blocks.
+// handler blocks. Safe on a context dispatched without a read loop.
 //
 // Call it immediately before any wait that only a LATER request on the same
 // connection can satisfy — a lease break acknowledgement, or a holder's CLOSE
 // clearing a share-mode conflict. The client cannot send either until it has
 // received the responses sitting behind this request, so a handler that keeps
 // its place across such a wait and the client end up waiting on each other
-// until the wait's own timeout expires.
-//
-// Safe to call more than once, and on a context dispatched without a read
-// loop. The break notifications such a wait is waiting on have already been
-// written by the time it is reached, which is the ordering that mattered.
+// until the wait's own timeout expires. The break notifications such a wait is
+// waiting on have already been written by the time it is reached, which is the
+// ordering that mattered.
 func releaseResponseOrder(ctx *SMBHandlerContext) {
 	if ctx != nil && ctx.ReleaseOrder != nil {
 		ctx.ReleaseOrder()

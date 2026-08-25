@@ -346,20 +346,20 @@ func (c *Connection) Serve(ctx context.Context) {
 		copy(rawMessage, hdr.Encode())
 		copy(rawMessage[header.HeaderSize:], body)
 
+		// Claim this request's place in the connection's response order. The
+		// read loop is the only sequential point on the connection, so it is
+		// the only place arrival order can be recorded; the handler goroutines
+		// spawned below are scheduled in any order. A response waits for the
+		// responses ahead of it, which is what keeps a break notification an
+		// earlier request owes from being overtaken. See RequestOrder.
+		orderToken := ci.RequestOrder.Begin()
+		reqCtx := smb.WithOrderToken(ctx, orderToken)
+
 		// LOGOFF must be processed synchronously to guarantee the LoggedOff
 		// flag is set before the next request is read from the connection.
 		// Without this, a concurrent goroutine for the next request could
 		// race with the LOGOFF handler, causing the signing verifier to
 		// return STATUS_ACCESS_DENIED instead of STATUS_USER_SESSION_DELETED.
-		// Claim this request's place in the connection's response order. The
-		// read loop is the only sequential point on the connection, so it is
-		// the only place arrival order can be recorded; the handler goroutines
-		// spawned below are scheduled in any order. A response waits here for
-		// the responses ahead of it, which is what keeps a break notification
-		// an earlier request owes from being overtaken. See RequestOrder.
-		orderToken := ci.RequestOrder.Begin()
-		reqCtx := smb.WithOrderToken(ctx, orderToken)
-
 		if hdr.Command == types.CommandLogoff && len(remainingCompound) == 0 {
 			func() {
 				defer pool.Put(rawMessage)

@@ -3,18 +3,17 @@ package smb
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// DefaultOrderWaitTimeout bounds how long a response waits for the responses
+// defaultOrderWaitTimeout bounds how long a response waits for the responses
 // ahead of it. Nothing is expected to reach it: every handler wait that depends
 // on further client traffic releases its slot before blocking. It exists so a
 // handler that blocks unexpectedly delays one connection's responses instead of
 // stalling them forever, and it logs when it fires.
-const DefaultOrderWaitTimeout = 30 * time.Second
+const defaultOrderWaitTimeout = 30 * time.Second
 
 // RequestOrder restores, per connection, an ordering a single-threaded server
 // gets for free: a response never reaches the wire ahead of a lease or oplock
@@ -52,7 +51,7 @@ func NewRequestOrder() *RequestOrder {
 	return &RequestOrder{
 		released:    make(map[uint64]struct{}),
 		waiters:     make(map[uint64]chan struct{}),
-		waitTimeout: DefaultOrderWaitTimeout,
+		waitTimeout: defaultOrderWaitTimeout,
 	}
 }
 
@@ -60,9 +59,11 @@ func NewRequestOrder() *RequestOrder {
 // A nil token is inert, so paths with no ordering (tests, direct dispatch)
 // need no special casing.
 type OrderToken struct {
-	order    *RequestOrder
-	seq      uint64
-	released atomic.Bool
+	order *RequestOrder
+	seq   uint64
+	// released is guarded by order.mu, so Release stays exactly-once however
+	// many times it is called.
+	released bool
 }
 
 // Begin claims the next place in the order. Call it from the read loop, in
@@ -122,11 +123,16 @@ func (t *OrderToken) WaitTurn(ctx context.Context) {
 // out. It is idempotent: the read loop defers it for every request, and a
 // handler may call it earlier when it is about to block on client traffic.
 func (t *OrderToken) Release() {
-	if t == nil || !t.released.CompareAndSwap(false, true) {
+	if t == nil {
 		return
 	}
 	o := t.order
 	o.mu.Lock()
+	defer o.mu.Unlock()
+	if t.released {
+		return
+	}
+	t.released = true
 	o.released[t.seq] = struct{}{}
 	for {
 		if _, ok := o.released[o.low]; !ok {
@@ -142,7 +148,6 @@ func (t *OrderToken) Release() {
 		delete(o.waiters, o.low)
 		close(wake)
 	}
-	o.mu.Unlock()
 }
 
 // orderTokenKey types the context value below.
