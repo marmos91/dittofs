@@ -105,6 +105,15 @@ DittoFS's userspace virtual filesystem. They are listed in the
 [Permanently Unimplementable](#permanently-unimplementable-out-of-scope)
 appendix.
 
+One residual remains. `smb2.oplock` used to be cut short at 120s having graded
+28 of 42 tests, and `batch22b` was the test in flight when the axe fell — so its
+final elapsed value was never observed. With budget to finish, it fails by one
+second. Identical on both profiles.
+
+| Test Name | Category | Reason | Issue |
+|-----------|----------|--------|-------|
+| smb2.oplock.batch22b | Break timeout | The test blocks the holder's transport so no ack can arrive and requires the second open to complete within smbtorture's `oplocktimeout` (35s). DittoFS takes 36s: `oplock.c:2715` reports `te got 36 - should be between 0 and 35`. The wait itself is by design; overshooting the ceiling is not. Pre-existing, and unobservable while the suite was truncated. | [#2115](https://github.com/marmos91/dittofs/issues/2115) |
+
 ### Directory Leases (Partial Implementation)
 
 Directory leases (dirlease) are a separate feature from file leases.
@@ -199,8 +208,16 @@ outstanding known failures in this category.
 Lease V2 is implemented but many smbtorture lease tests still fail due to
 incomplete break notification delivery and multi-client coordination.
 
+The two rows below were not newly broken — they sit past the point where
+`smb2.lease` used to be cut short at 120s (it graded 25 of 45 tests), so they
+were being silently left ungraded rather than reported. Raising the budget made
+them visible; both fail identically on `memory` and `badger-fs`, so neither is a
+flake or a storage-backend artifact.
+
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
+| smb2.lease.v2_complex1 | Lease epoch | Break notification carries an over-incremented epoch: `lease.c:3792` wants `new_epoch 0x4715`, DittoFS sends `0x4716`. Pre-existing; surfaced when the suite was allowed to run past its old 120s cut. | [#2113](https://github.com/marmos91/dittofs/issues/2113) |
+| smb2.lease.rename_wait | Rename vs pending break | RENAME issued while a lease break is outstanding returns `NT_STATUS_INVALID_PARAMETER`; `lease.c:4160` requires `NT_STATUS_OK`. Pre-existing; same cause of invisibility. | [#2114](https://github.com/marmos91/dittofs/issues/2114) |
 
 ### Sessions (Remaining)
 
@@ -300,7 +317,6 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.timestamp_resolution.resolution1 | Timing-dependent (upstream-skipped) | Test source documents `~15ms` Windows timestamp resolution and warns of a `1/15` false-fail rate even on a low-latency reference SMB connection. Explicitly skipped by Samba's own selftest (`selftest/skip:69-70`: `^samba3.smb2.timestamp_resolution` / `^samba4.smb2.timestamp_resolution`) "preserved here for future SMB2 timestamps behaviour archaeologists". DittoFS classifies the same way upstream does. |
 | smb2.create.gentest | Generative impersonation matrix (upstream-skipped) | Brute-forces hundreds of `(create_disposition × create_options × ImpersonationLevel × attribute)` combinations expecting Windows-exact status codes. Explicitly listed in Samba's own selftest knownfail (`selftest/knownfail`: `^samba3.smb2.create.gentest`) — fails on Samba file-backed shares. The status-code surface mirrors Windows-internal IRP_MJ_CREATE behaviour, not MS-FSA. |
 | smb2.durable-open.delete_on_close2 | Durable DOC (upstream-skipped) | Reopens a durable handle that was opened with FILE_DELETE_ON_CLOSE, then asserts the post-reconnect delete-on-close + truncate-on-overwrite interaction matches Windows verbatim. Explicitly listed in Samba's own selftest knownfail (`selftest/knownfail`: `^samba3.smb2.durable-open.delete_on_close2`) — fails against Samba's own file-backed share, not just DittoFS. The disconnect path intentionally does NOT persist a durable handle carrying delete-on-close (the open is fully closed instead, so the stored content is not resurrected on reconnect); reproducing the exact Windows ordering of DOC-survives-reconnect has no MS-SMB2 spec mapping and is upstream-skipped. |
-| smb2.maxfid | smbtorture wall-clock budget | Test issues up to 65520 sequential synchronous CREATEs (Samba `source4/torture/smb2/maxfid.c:100`, controlled by `torture:maxopenfiles`). Total RTT-bound runtime exceeds the 60s per-test wall set by `run.sh` (STANDALONE_TESTS). DittoFS keeps CREATE succeeding throughout (no protocol-level handle-table cap), so the suite is killed mid-loop before reaching the cleanup phase. Raising the per-test wall to accommodate one stress test inflates full-suite runtime substantially without exercising a protocol gap. |
 | smb2.notify.mask-change | Samba notify-mask quirk | Asserts that, once a CHANGE_NOTIFY completion-filter mask has been armed on a directory handle, re-issuing CHANGE_NOTIFY with a different mask MUST observe the original mask only until the handle is closed (test source: `source4/torture/smb2/notify.c:771-772` — "Now try and change the mask to include other events. This should not work - once the mask is set on a directory h1 it seems to be fixed until the fnum is closed"). MS-SMB2 §3.3.5.19 does not specify mask-coalescing across separate CHANGE_NOTIFY requests on the same handle, and the test has a long-standing "never passed individually" history against DittoFS independent of test order. Surrounding scenarios (cross-tree dir/file rename plumbing, recursion-flag-mixed reqs on the same FID) are also Samba implementation conventions. |
 | smb2.dirlease.oplocks | smbtorture client crash | Bucket 11. smbtorture 4.22.6 **client** SIGSEGVs in this dirlease subtest and aborts the rest of the dirlease suite. `run.sh` runs `smb2.dirlease` per-subtest and skips `oplocks` (same workaround shape as `scan.scan`, #633). DittoFS is pure Go and not in the backtrace — not a server gap. |
 | smb2.replay.dhv2-pending1n-vs-violation-lease-close-windows | Windows replay ordering | Bucket 10. Windows-specific replayed-CREATE-vs-pending-break ordering; Samba's own source does not reproduce the `-windows` arm (fails on Samba too). The `-sane` arm (the conformant target) now passes (#749). |
@@ -332,6 +348,41 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 `KNOWN_FAILURES_KERBEROS.md` now carries a single row (`smb2.reauth5`, an upstream Samba selftest knownfail) after the #686 Kerberos sweep harvested the stale multi-channel rows. It is loaded only when smbtorture runs with `--use-kerberos`, which the non-Kerberos v1.0 CI job (`.github/workflows/smb-conformance.yml`, running `./run.sh` without `--kerberos`) does not pass, so it does not gate v1.0.
 
 ## Changelog
+
+### 2026-08-25 — per-suite budgets: 3 pre-existing failures surfaced out of the ungraded tails
+
+`smb2.lease`, `smb2.multichannel` and `smb2.oplock` were being cut short at 120s
+on every profile, and `smb2.maxfid` never graded its single test at all.
+Measured end to end with enough budget to finish, they take 182/186s, 132s and
+145s (memory/badger-fs); `maxfid` opens handles until the server refuses, and
+smbtorture defaults that to 65520, so it is now bounded to 2000 and completes in
+5s/15s. The three suites move to the same 300s tier `smb2.replay` already had.
+
+Letting them finish is what made the following visible. **None is a regression** —
+each sits past the old cut point, so it was being left ungraded (inconclusive,
+not failed) and the job still reported `0 new failures`. All three fail
+identically on `memory` and `badger-fs`, so none is a flake or backend artifact.
+Each is listed above against an owning issue:
+
+- `smb2.lease.v2_complex1` — over-incremented break epoch (#2113). `lease` graded 25 of 45 before.
+- `smb2.lease.rename_wait` — RENAME during a pending break returns INVALID_PARAMETER (#2114).
+- `smb2.oplock.batch22b` — break completes at 36s against a 35s ceiling (#2115). `oplock` graded 28 of 42 before.
+
+`smb2.maxfid` is **dropped** from the Permanently Unimplementable appendix: it
+now passes. That entry had already identified `torture:maxopenfiles` as the knob
+and correctly refused to raise the wall for one stress test — bounding the test
+is the step it stopped short of. Note the pass is a bounded one: 2000 handles,
+not the server's ceiling, as the comment in `run.sh` says.
+
+Two other rows (`smb2.charset.Testing`, `smb2.kernel-oplocks.kernel_oplocks4`)
+also report as now-passing, but they do so on unmodified `develop` as well, so
+they are pre-existing and left alone rather than swept up here.
+
+`smb2.notify` is deliberately left at 120s: it hangs on a cancelled CHANGE_NOTIFY
+that never receives a final response (#2109), which no budget fixes.
+`smb2.aio_delay` and `smb2.compound_find` are left cut short as well — still
+uncharacterised, and sizing a budget for an unknown is what established the
+ungraded tail to begin with.
 
 ### 2026-08-24 — `dhv2-pending1n-vs-violation-lease-ack-sane`: replay reservation outlived the parked CREATE's response
 
