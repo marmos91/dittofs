@@ -415,7 +415,7 @@ func ManifestRowEndAfter(ctx context.Context, tx Transaction, payloadID string, 
 // ponytail: over [rowStart, spanEnd) a cold read serves pre-carve bytes, and the
 // manifest records no order to tell the caller so; closing it means carve
 // hydrating the straddler's tail and re-chunking it, or refusing to commit a
-// tiling whose span cuts a row starting inside it (#2124).
+// tiling whose span cuts a row starting inside it (#2128).
 //
 // ponytail: this fixes read-coherence — the corruption. Decrementing the reaped
 // chunk's CAS refcount to reclaim its remote space is a separate, tracked
