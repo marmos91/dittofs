@@ -75,11 +75,10 @@ func TestColdReadAtCarveSeam_PunchedRangeStaysZero(t *testing.T) {
 
 // TestColdReadAtCarveSeam_RunEndInsideRowStaysCovered is the mirror of the test
 // above: instead of a run that STARTS inside an older row, one that ENDS inside
-// it. The reap deletes that row — its start lies in the run — and the part past
-// the run end has no other cover, because a row claims a prefix of its chunk and
-// so cannot start mid-chunk. Carve has to reach the row's end for the manifest
-// to keep tiling, and the whole file has to read back byte-for-byte from the
-// remote tier afterwards.
+// it. That row's start lies in the run, so it may not be spared whole, and the
+// part past the run end has no other cover, so it may not be deleted either —
+// it is narrowed off its head. Either way the manifest has to keep tiling and
+// the whole file has to read back byte-for-byte from the remote tier.
 //
 // The shape is reached by a second punch whose END lands on the journal interval
 // boundary the first punch left inside a manifest row: nothing partially overlaps

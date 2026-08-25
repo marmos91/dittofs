@@ -157,9 +157,10 @@ func (m *Syncer) listFileChunksSnapshot(ctx context.Context, payloadID string) (
 // "<payloadID>/<offset>" (split on the last '/'). A malformed ID is a hard
 // error — an inconsistent manifest, not a benign miss.
 //
-// Only the bytes the row claims are written (see FileChunk.DataSize). A remote
-// read returns the whole chunk, so on a row a shrink narrowed to its surviving
-// prefix, writing the rest would restore bytes past the file's new end, above
+// Only the bytes the row claims are written (see FileChunk.DataSize and
+// FileChunk.StartOffset). A remote read returns the whole chunk, so on a row a
+// narrow cut down to its surviving stretch, writing the rest would restore
+// bytes the row gave up — past the file's new end, above
 // the version of the marker that moved it, and a later re-extend would serve
 // them where a zero hole is due. A row claiming nothing therefore writes
 // nothing: the clamp fails closed, since a claim of zero reaching the local tier
@@ -170,12 +171,17 @@ func (m *Syncer) listFileChunksSnapshot(ctx context.Context, payloadID string) (
 // writes the whole claimed extent, which is what a caller holding a row but no
 // window wants.
 func (m *Syncer) hydrateChunk(ctx context.Context, fb *block.FileChunk, data []byte, span hydrateSpan) error {
-	if claimed := uint64(fb.DataSize); claimed < uint64(len(data)) {
-		data = data[:claimed]
-	}
-	if len(data) == 0 {
+	// The claim is [StartOffset, StartOffset+DataSize) of the chunk, and the
+	// row's ID names the file offset of its FIRST claimed byte, so the write-back
+	// stays aligned only if the head is trimmed off too. A claim the chunk cannot
+	// satisfy — one starting past the bytes the remote returned, or an empty one —
+	// places nothing rather than the wrong bytes.
+	start := uint64(fb.StartOffset)
+	end := min(start+uint64(fb.DataSize), uint64(len(data)))
+	if start >= end {
 		return nil
 	}
+	data = data[start:end]
 	i := strings.LastIndexByte(fb.ID, '/')
 	off, ok := block.ParseChunkOffset(fb.ID)
 	if i <= 0 || !ok {

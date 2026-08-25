@@ -45,7 +45,13 @@ const (
 	// file_blocks is in backupTables, so the dumped row shape changes one column.
 	// v9 drops the dead pending_writes table (migration 000042), lowering the
 	// backup table count by one.
-	postgresSchemaVersion = uint32(9)
+	// v10 adds the start_offset column to file_blocks AND file_block_refs
+	// (migration 000045); both are in backupTables, so two dumped row shapes gain
+	// a column. The COPY here names no column list, so a restore matches columns
+	// by position and an older stream would run out of values partway through the
+	// row rather than default the new column — the version gate is what turns
+	// that into a legible refusal.
+	postgresSchemaVersion = uint32(10)
 )
 
 // backupTables lists every metadata table in FK-safe dependency order

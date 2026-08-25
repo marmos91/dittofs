@@ -29,6 +29,13 @@ const sqliteEngineTag = "sqlite"
 // file_blocks IS in backupTables, so the dumped row shape changes one column.
 // v5 adds the block_records section, matching what the postgres backend has
 // always dumped; RestoreSnapshot rejects the older streams that lack it.
+//
+// Adding a column to a dumped table does not bump this, which is why the
+// start_offset column on file_blocks and file_block_refs did not. The stream
+// carries its own column names and restore inserts only the columns it names,
+// so a stream written before the column existed still restores and the column
+// takes its default — the direction a column DROP does not survive, which is
+// what v3 and v4 are.
 const sqliteSchemaVersion uint32 = 5
 
 // backupTables lists every table dumped by WriteSnapshot and reloaded by RestoreSnapshot, in a

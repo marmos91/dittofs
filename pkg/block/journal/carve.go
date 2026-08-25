@@ -600,11 +600,10 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 // warm. An evicted range holds no local bytes to re-chunk, and half an extension
 // still ends inside the row.
 //
-// Skipping is not free, and every bail below shares the cost: the run then still
-// ends inside a row, and the reap spares that row whole rather than strand the
-// stretch past the run — so the range keeps a stale cover overlapping the fresh
-// tiling instead of being tiled cleanly. Extending is what earns the clean
-// tiling.
+// Skipping costs a re-chunk, not correctness: the run then still ends inside a
+// row, and the reap narrows that row off its head so the fresh tiling owns every
+// offset the run covered. Extending buys a tiling whose rows line up with the
+// old boundaries instead of one that leaves a narrowed remnant behind.
 //
 // A row reaching past limit, the offset the next run starts at, is refused
 // outright. It is redundant today: runs are packed in ascending file-offset
@@ -616,9 +615,9 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 // were carved concurrently before and would be again — and under any such
 // ordering a sibling's already-flipped head is indistinguishable here from
 // pre-existing warm data. It has to be a refusal rather than a truncation to
-// limit: a run truncated there still ends inside the row, so the reap spares
-// that row whole and its stale cover outlives the fresh tiling anyway — the
-// truncated extension would re-chunk those bytes for nothing.
+// limit: a run truncated there still ends inside the row, so the reap narrows
+// the row off its head just as it would with no extension at all — the truncated
+// extension would re-chunk those bytes for nothing.
 //
 // ponytail: a row reaching past a later dirty run is left alone, so that run
 // still ends mid-row; covering it means merging the two runs, which is worth

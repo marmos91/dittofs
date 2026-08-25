@@ -393,7 +393,7 @@ func TestRepairSkipsWhenEvidenceMoved(t *testing.T) {
 
 			claimed := map[refKey]map[uint64]struct{}{}
 			for _, ref := range f.Blocks {
-				k := refKey{ref.Hash, ref.Size}
+				k := refKey{ref.Hash, ref.Size, ref.StartOffset}
 				if claimed[k] == nil {
 					claimed[k] = map[uint64]struct{}{}
 				}

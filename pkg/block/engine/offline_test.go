@@ -238,9 +238,9 @@ func TestManifestShortfall(t *testing.T) {
 		},
 		{
 			// A row reaching past a later row's whole span is a legitimate
-			// manifest shape, not damage: a row claims a prefix of its chunk, so
-			// nothing can be cut to start mid-chunk and re-cover the tail, and
-			// the straddler is what keeps those bytes readable. Coverage is the
+			// manifest shape, not damage: the straddler starts first, so the
+			// later row outranks it where they meet, and the straddler is what
+			// keeps the bytes on either side of that row readable. Coverage is the
 			// union of what rows claim, so the straddler's tail counts as placed
 			// and the byte the later row also covers is not counted twice.
 			name:      "a straddling row keeps its tail",

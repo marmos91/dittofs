@@ -153,10 +153,15 @@ func (h *ContentHash) UnmarshalJSON(data []byte) error {
 // >4 GiB; VM workload requirement).
 // Size is the chunk length in bytes (FastCDC min 1 MiB, max 16 MiB
 // uint32 chosen to match FileChunk.DataSize column type).
+// StartOffset is where inside the chunk the referenced bytes begin, mirroring
+// FileChunk.StartOffset; it must travel with the ref because the projection is
+// what a clone and a manifest repair rebuild rows from, and a ref that dropped
+// it would rebuild a row serving the chunk's head at Offset.
 type ChunkRef struct {
-	Hash   ContentHash `json:"hash"`
-	Offset uint64      `json:"offset"`
-	Size   uint32      `json:"size"`
+	Hash        ContentHash `json:"hash"`
+	Offset      uint64      `json:"offset"`
+	Size        uint32      `json:"size"`
+	StartOffset uint32      `json:"start_offset,omitempty"`
 }
 
 // MergeChunkRefsByOffset overlays incoming block refs onto existing ones,
@@ -244,10 +249,26 @@ type FileChunk struct {
 	// DataSize is how many of the chunk's bytes belong to this file at this
 	// row's offset — the row's claim, which is what coverage lookups and a
 	// cold-read hydrate honour. It is the chunk's full length except where a
-	// shrink narrowed the row to the prefix that survived: the chunk on the
+	// narrow cut the row down to the stretch that survived: the chunk on the
 	// remote still holds all of its bytes and is still hash-verified over all of
-	// them, the row just stops claiming the tail.
+	// them, the row just stops claiming what it gave up.
 	DataSize uint32
+
+	// StartOffset is where inside the chunk the claimed bytes begin, so the row
+	// covers file bytes [rowOffset, rowOffset+DataSize) with chunk bytes
+	// [StartOffset, StartOffset+DataSize). Zero for every row a carve writes and
+	// for every row narrowed only off its tail, which is why a row written before
+	// the field existed means exactly what it meant then: the claim starts at the
+	// chunk's first byte.
+	//
+	// A non-zero value comes from narrowing a row off its HEAD, which is what a
+	// carve span ending inside a row that also starts inside it needs: the span
+	// re-chunked that row's head and nothing else, so the row keeps only what
+	// lies past the span. The row's ID moves to the first byte it still claims,
+	// so every coverage and succession lookup goes on reading a row's start
+	// straight off its ID; only the paths that read the chunk's own bytes need
+	// this offset.
+	StartOffset uint32
 
 	// RefCount is the number of files referencing this chunk.
 	RefCount uint32

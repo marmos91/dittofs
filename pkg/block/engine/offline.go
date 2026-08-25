@@ -181,10 +181,10 @@ func offlineReadinessOf(ctx context.Context, localTier any, hasRemote bool, shor
 // file and weighed against the ranges the index reports for the same file,
 // which include cold ones — a cold range is described, just not resident.
 //
-// The union is what makes overlap a non-event, and rows do overlap: a row
-// claims a prefix of its chunk, so a row reaching past a later row's whole span
-// is kept rather than cut, and that straddler is what keeps its own tail
-// readable. Coverage here is the set of offsets some row places, which is the
+// The union is what makes overlap a non-event, and rows do overlap: a row that
+// starts before a later row's whole span is kept rather than cut, since the
+// later rows outrank it where they cover and nothing else covers what it holds
+// on either side of them. Coverage here is the set of offsets some row places, which is the
 // same set a read can resolve however it picks between covering rows, so two
 // rows over one byte merge into one span instead of counting twice.
 //
