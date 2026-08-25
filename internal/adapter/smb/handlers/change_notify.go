@@ -657,6 +657,14 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	// been dispatched but couldn't find us yet. Short-circuit instead of
 	// registering — the handler will emit STATUS_CANCELLED synchronously.
 	if r.consumeCancelTombstoneLocked(notify.ConnID, notify.MessageID) {
+		// Arm the handle even though no watch is registered. The client has
+		// expressed interest in this directory and will re-issue; events
+		// arriving in the gap must be buffered for that next request rather
+		// than dropped. A watch that registers and is then cancelled leaves
+		// the handle armed — unregisterLocked does not disarm — so a cancel
+		// that beats registration has to leave it armed too, or the same
+		// client sequence loses events depending only on which goroutine won.
+		r.armLocked(notify)
 		logger.Debug("NotifyRegistry: register short-circuited by pre-arrival CANCEL",
 			"connID", notify.ConnID,
 			"messageID", notify.MessageID,

@@ -2990,3 +2990,54 @@ func TestChangeNotify_HandleClosed_ReturnsEncodedCleanupBody(t *testing.T) {
 		t.Errorf("WatcherCount = %d, want 0", got)
 	}
 }
+
+// TestNotifyRegistry_PreArrivalCancel_StillArmsHandle covers the event-buffering
+// side of the pre-arrival cancel short-circuit.
+//
+// smbtorture's notify.tcon fires CHANGE_NOTIFY, cancels it, then issues a
+// second CHANGE_NOTIFY and makes a directory — and the server may process the
+// mkdir before that second request registers. The armed handle is what carries
+// the event across that gap. A watch that registers and is then cancelled
+// leaves the handle armed, so a cancel that beats registration must too;
+// otherwise the same client sequence loses the event depending only on which
+// goroutine won the race.
+func TestNotifyRegistry_PreArrivalCancel_StillArmsHandle(t *testing.T) {
+	r := newTestNotifyRegistry()
+	fileID := [16]byte{0xA7}
+
+	base := func(msgID, asyncID uint64) *PendingNotify {
+		return &PendingNotify{
+			FileID: fileID, SessionID: 1, ConnID: 1, MessageID: msgID,
+			AsyncId: asyncID, WatchPath: "/d", ShareName: "s",
+			CompletionFilter: FileNotifyChangeDirName, WatchTree: true,
+			MaxOutputLength: 1000,
+		}
+	}
+
+	// CANCEL beats the first CHANGE_NOTIFY to the registry.
+	if got := r.CancelByMessageID(1, 10); got != nil {
+		t.Fatalf("CancelByMessageID found a watch that was never registered: %+v", got)
+	}
+	if err := r.Register(base(10, 100)); !errors.Is(err, ErrAlreadyCancelled) {
+		t.Fatalf("Register = %v, want ErrAlreadyCancelled", err)
+	}
+
+	// An event now arrives with no live watcher. It must buffer on the handle.
+	r.NotifyChange("s", "/d", "subdir-name", FileActionAdded, FileNotifyChangeDirName)
+
+	// The client re-issues; the buffered event must be replayed to it.
+	var got []FileNotifyInformation
+	n := base(11, 101)
+	n.AsyncCallback = func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+		got = append(got, decodeFileNotifyInfos(resp.Buffer)...)
+		return nil
+	}
+	if err := r.Register(n); err != nil {
+		t.Fatalf("second Register: %v", err)
+	}
+	r.FlushAll()
+
+	if len(got) != 1 || got[0].FileName != "subdir-name" {
+		t.Fatalf("event fired between cancel and re-issue was dropped: %+v", got)
+	}
+}
