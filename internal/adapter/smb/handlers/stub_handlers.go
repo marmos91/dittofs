@@ -631,6 +631,34 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 
 	watchTree := req.Flags&SMB2WatchTree != 0
 
+	notify := &PendingNotify{
+		FileID:           req.FileID,
+		SessionID:        ctx.SessionID,
+		ConnID:           ctx.ConnID,
+		MessageID:        ctx.MessageID,
+		WatchPath:        watchPath,
+		ShareName:        openFile.ShareName,
+		TreeID:           ctx.TreeID,
+		CompletionFilter: effectiveFilter,
+		WatchTree:        watchTree,
+		MaxOutputLength:  effectiveMax,
+		GateInterim:      true,
+		AsyncCallback:    ctx.AsyncNotifyCallback,
+		OnOverflow: func(fileID [16]byte) {
+			if of, ok := h.GetOpenFile(fileID); ok {
+				of.NotifyOverflowed.Store(true)
+			}
+		},
+	}
+
+	// Refresh the armed handle from this request before anything reads it.
+	// When no watch is pending the armed entry — not the request — is what
+	// decides which events get buffered, and WatchTree is non-sticky, so a
+	// request that is answered synchronously would otherwise leave the
+	// previous request's recursion flag, path and buffer size in place. A
+	// stale non-recursive flag drops subdirectory events outright.
+	h.NotifyRegistry.Arm(notify)
+
 	// Events that arrived while no request was outstanding belong to this
 	// request. Answer it now and never go pending: no interim STATUS_PENDING,
 	// no async slot, no registered watch, and nothing for a following CANCEL
@@ -676,27 +704,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	}
 
 	asyncId := h.generateAsyncId()
-
-	notify := &PendingNotify{
-		FileID:           req.FileID,
-		SessionID:        ctx.SessionID,
-		ConnID:           ctx.ConnID,
-		MessageID:        ctx.MessageID,
-		AsyncId:          asyncId,
-		WatchPath:        watchPath,
-		ShareName:        openFile.ShareName,
-		TreeID:           ctx.TreeID,
-		CompletionFilter: effectiveFilter,
-		WatchTree:        watchTree,
-		MaxOutputLength:  effectiveMax,
-		GateInterim:      true,
-		AsyncCallback:    ctx.AsyncNotifyCallback,
-		OnOverflow: func(fileID [16]byte) {
-			if of, ok := h.GetOpenFile(fileID); ok {
-				of.NotifyOverflowed.Store(true)
-			}
-		},
-	}
+	notify.AsyncId = asyncId
 
 	// Per MS-SMB2 §3.3.5.2.5: enforce max_async_credits before going async.
 	if ctx.TryReserveAsync == nil || !ctx.TryReserveAsync() {

@@ -635,6 +635,17 @@ func (r *NotifyRegistry) armLocked(n *PendingNotify) {
 	}
 }
 
+// Arm records or refreshes the armed-handle entry for a request without
+// registering a watch. Register does this too; the synchronous-answer path
+// needs it separately, because when no watch is pending it is the armed entry
+// that decides which events are buffered and it must reflect the request that
+// is actually being served.
+func (r *NotifyRegistry) Arm(notify *PendingNotify) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.armLocked(notify)
+}
+
 // TakeBufferedEvents removes and returns the events buffered on fileID's armed
 // handle that this request would match, leaving any that it would not.
 // Returns nil when the handle is not armed or nothing matches.

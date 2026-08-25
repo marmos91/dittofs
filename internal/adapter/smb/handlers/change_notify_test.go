@@ -3465,3 +3465,46 @@ func TestTakeBufferedEvents_KeepsByteCountForRemainingEvents(t *testing.T) {
 		t.Fatal("BufferedBytes = 0 while an event is still buffered — the overflow latch has nothing to measure")
 	}
 }
+
+// TestChangeNotify_SyncAnswerRefreshesArmedRouting covers the armed handle's
+// routing fields when a request is answered synchronously.
+//
+// With no watch pending it is the armed entry, not the request, that decides
+// which events get buffered — and WatchTree is non-sticky. A request answered
+// from the buffer never reaches Register, so without an explicit refresh the
+// previous request's recursion flag stays in place. Stale non-recursive is the
+// damaging direction: subdirectory events are dropped outright and no later
+// recursive request can recover them.
+func TestChangeNotify_SyncAnswerRefreshesArmedRouting(t *testing.T) {
+	fileID := [16]byte{0x97}
+	h, r := notifyHandlerEnv(t, fileID)
+
+	// The handle was armed non-recursive by a previous request.
+	r.Arm(&PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, WatchPath: "/d", ShareName: "share1",
+		CompletionFilter: FileNotifyChangeFileName, WatchTree: false, MaxOutputLength: 1000,
+	})
+
+	// A top-level event so this request has something to be answered with.
+	r.NotifyChange("share1", "/d", "top.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	// A RECURSIVE request is answered synchronously from that event.
+	reserved := 0
+	res, err := h.ChangeNotify(notifyCtx(31, &reserved),
+		encodeChangeNotifyReq(SMB2WatchTree, 1000, fileID, FileNotifyChangeFileName))
+	if err != nil {
+		t.Fatalf("ChangeNotify: %v", err)
+	}
+	if res.Status != types.StatusSuccess {
+		t.Fatalf("status = %v, want STATUS_SUCCESS", res.Status)
+	}
+
+	// The handle must now be armed recursive, so a subdirectory event buffers.
+	r.NotifyChange("share1", "/d/sub", "deep.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	got := r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, true)
+	if len(got) != 1 || !strings.Contains(got[0].FileName, "deep.txt") {
+		t.Fatalf("subdirectory event after a recursive sync answer = %+v, want it buffered — "+
+			"the armed handle kept the previous request's non-recursive flag", got)
+	}
+}
