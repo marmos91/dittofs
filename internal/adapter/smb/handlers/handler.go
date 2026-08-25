@@ -1496,7 +1496,6 @@ func (h *Handler) closeFilesWithFilter(
 						other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
 						other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
 						other.mu.Unlock()
-						h.StoreOpenFile(other)
 					}
 					return true
 				})
