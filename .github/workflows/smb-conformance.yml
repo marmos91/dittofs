@@ -53,6 +53,9 @@ on:
           - sqlite
           - postgres
 
+permissions:
+  contents: read
+
 concurrency:
   group: smb-conformance-${{ github.ref }}
   cancel-in-progress: true

@@ -28,6 +28,9 @@ on:
     - cron: '0 4 * * *'  # Nightly 4 AM UTC
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ad-dc-${{ github.ref }}
   cancel-in-progress: true
