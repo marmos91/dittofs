@@ -60,6 +60,17 @@ func (t *manifestTx) Delete(_ context.Context, id string) error {
 	return nil
 }
 
+// GetFileChunk hands back a copy, as the real backends do, so a caller that
+// narrows what it reads cannot mutate the stored row in place.
+func (t *manifestTx) GetFileChunk(_ context.Context, id string) (*block.FileChunk, error) {
+	r, ok := t.rows[id]
+	if !ok {
+		return nil, block.ErrFileChunkNotFound
+	}
+	cp := *r
+	return &cp, nil
+}
+
 func (t *manifestTx) ListFileChunks(_ context.Context, payloadID string) ([]*block.FileChunk, error) {
 	t.lists++
 	ids := make([]string, 0, len(t.rows))
