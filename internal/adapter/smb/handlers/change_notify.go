@@ -309,6 +309,18 @@ type NotifyRegistry struct {
 // enough for any plausible per-request goroutine scheduling delay while still
 // expiring promptly if no Register ever happens.
 //
+// ponytail: the sweep that reclaims these is O(n) and runs on every
+// CancelByMessageID and Register. A client that polls by sending a
+// CHANGE_NOTIFY and cancelling it answers synchronously and never registers, so
+// every one of those cancels now writes a tombstone nothing will consume: the
+// map settles at roughly rate x TTL and the sweep cost goes quadratic in the
+// request rate. Measured fine for the bounded loops the conformance suite
+// drives (~5k notify/cancel pairs over 20s). What overturns it is a sustained
+// rate high enough that rate x TTL makes the per-call scan show up in a
+// profile — order thousands of pairs per second, held rather than bursty. At
+// that point amortize the sweep onto a ticker, or bucket entries by expiry so
+// reclaiming is O(1) instead of a full scan.
+//
 // ponytail: a fixed 5s wall-clock ceiling. A Register delayed past it consumes
 // nothing and registers a watch its cancel has already abandoned — straight
 // back into the hang the tombstone exists to prevent. Replace with a tombstone
@@ -621,6 +633,60 @@ func (r *NotifyRegistry) armLocked(n *PendingNotify) {
 		MaxOutputLength:  n.MaxOutputLength,
 		OnOverflow:       n.OnOverflow,
 	}
+}
+
+// Arm records or refreshes the armed-handle entry for a request without
+// registering a watch. Register does this too; the synchronous-answer path
+// needs it separately, because when no watch is pending it is the armed entry
+// that decides which events are buffered and it must reflect the request that
+// is actually being served.
+func (r *NotifyRegistry) Arm(notify *PendingNotify) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.armLocked(notify)
+}
+
+// TakeBufferedEvents removes and returns the events buffered on fileID's armed
+// handle that this request would match, leaving any that it would not.
+// Returns nil when the handle is not armed or nothing matches.
+//
+// This is what lets a CHANGE_NOTIFY be answered without ever going pending.
+// Samba does the same: source3/smbd/smb2_notify.c replies immediately with
+// NT_STATUS_OK when change_notify_fsp_has_changes(fsp), and only queues the
+// request when the buffer is empty. Events that already exist belong to the
+// request that asks for them, not to a watch it might have registered.
+//
+// The match is the same one Register replays under: the action must pass the
+// completion filter, and a non-recursive request skips entries below the
+// watched directory.
+func (r *NotifyRegistry) TakeBufferedEvents(fileID [16]byte, filter uint32, watchTree bool) []FileNotifyInformation {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	a, ok := r.armed[string(fileID[:])]
+	if !ok || len(a.BufferedEvents) == 0 {
+		return nil
+	}
+
+	var taken, kept []FileNotifyInformation
+	for _, ev := range a.BufferedEvents {
+		if !MatchesFilter(ev.Action, filter) || (!watchTree && strings.Contains(ev.FileName, "/")) {
+			kept = append(kept, ev)
+			continue
+		}
+		taken = append(taken, ev)
+	}
+	if len(taken) == 0 {
+		return nil
+	}
+
+	a.BufferedEvents = kept
+	// Recompute rather than zero: entries this request did not match are still
+	// buffered, and BufferedBytes is what the proactive overflow latch measures
+	// the backlog with. Zeroing it while events remain would under-count the
+	// backlog and stop that latch firing.
+	a.BufferedBytes = uint32(len(EncodeFileNotifyInformation(kept)))
+	return taken
 }
 
 // ClearBufferedEvents discards queued events on the armed handle for fileID.

@@ -94,13 +94,11 @@ Passing: basedir, close, handle-permissions, invalid-reauth, logoff, overflow,
 tcon, tdis, tdis1, tcp, file, dir, mask, session-reconnect, valid-req.
 
 Note: smbtorture reports three verdict kinds — `success:`, `failure:` and
-`error:`. `smb2.notify.tree` is an `error:`, so any tally built on
-success/failure alone will silently omit it.
+`error:`. A tally built on success/failure alone silently omits the third.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.notify.double | Multiple outstanding notifies | The test keeps two CHANGE_NOTIFY requests outstanding on one directory handle, each completing with one change. `NotifyRegistry` keys watches by FileID, so the second replaces the first; the replaced request is now completed with `STATUS_CANCELLED` instead of being dropped unanswered, so the test fails at `notify.c:1808` (`NT_STATUS_CANCELLED - should be NT_STATUS_OK`) rather than hanging the suite. Supporting several waiters per handle is the remaining work. | [#2129](https://github.com/marmos91/dittofs/issues/2129) |
-| smb2.notify.tree | Multi-depth event delivery | ~20 watchers at mixed depths with mixed `SMB2_WATCH_TREE` flags; every one that expects events receives zero (`expected 30 got 0`, …). Reported by smbtorture as `error:`, not `failure:`. Previously ungraded — the test hung on `develop` and never produced a verdict. Fails identically on both profiles. | [#2133](https://github.com/marmos91/dittofs/issues/2133) |
 | smb2.notify.rmdir1 | Deleted watched directory | A CHANGE_NOTIFY pending on a directory that is then deleted is never completed; `notify.c:2466` requires `NT_STATUS_DELETE_PENDING` and the client's transport gives up after 300s instead. | [#2132](https://github.com/marmos91/dittofs/issues/2132) |
 | smb2.notify.rmdir2 | Deleted watched directory | Same defect as `rmdir1`, re-issuing the notify first. | [#2132](https://github.com/marmos91/dittofs/issues/2132) |
 | smb2.notify.rmdir3 | Deleted watched directory | Same defect as `rmdir1`, across two tree connections. | [#2132](https://github.com/marmos91/dittofs/issues/2132) |

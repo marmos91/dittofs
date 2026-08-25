@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -3194,5 +3195,316 @@ func TestNotifyRegistry_CloseTombstonesEvenWhenAWatchWasFound(t *testing.T) {
 	}
 	if got := r.WatcherCount(); got != 0 {
 		t.Fatalf("WatcherCount = %d, want 0 — watch left live on a closed handle", got)
+	}
+}
+
+// notifyHandlerEnv builds a handler with one armed directory handle whose
+// buffered events are ready to be collected.
+func notifyHandlerEnv(t *testing.T, fileID [16]byte) (*Handler, *NotifyRegistry) {
+	t.Helper()
+	h := NewHandler()
+	h.NotifyRegistry = newTestNotifyRegistry()
+	h.MaxTransactSize = 1 << 20
+	h.StoreOpenFile((&OpenFile{
+		FileID: fileID, IsDirectory: true, ShareName: "share1", SessionID: 1, TreeID: 1,
+		DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
+	}).WithName(OpenName{Path: "/d"}))
+
+	// Arm the handle the way a first CHANGE_NOTIFY would, then take the watch
+	// away again so later events have nowhere live to go and must buffer.
+	mustRegister(t, h.NotifyRegistry, &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 1, AsyncId: 1,
+		WatchPath: "/d", ShareName: "share1", MaxOutputLength: 1000,
+		CompletionFilter: FileNotifyChangeFileName, WatchTree: true,
+	})
+	if got := h.NotifyRegistry.CancelByMessageID(1, 1); got == nil {
+		t.Fatal("setup: expected to remove the arming watch")
+	}
+	return h, h.NotifyRegistry
+}
+
+func notifyCtx(msgID uint64, reserved *int) *SMBHandlerContext {
+	return &SMBHandlerContext{
+		SessionID: 1, TreeID: 1, MessageID: msgID, ConnID: 1,
+		TryReserveAsync: func() bool { *reserved++; return true },
+		ReleaseAsync:    func() {},
+		AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
+			return nil
+		},
+	}
+}
+
+// TestChangeNotify_AnswersFromBufferedEventsWithoutGoingPending is the core of
+// the fix: a request that arrives when events are already buffered is answered
+// synchronously with STATUS_OK and never goes pending.
+//
+// A client that polls by sending a CHANGE_NOTIFY and cancelling it immediately
+// — which smb2.notify.tree does, counting num_changes from the reply — can only
+// ever see an event this way. smb2_notify_recv leaves num_changes untouched on
+// any non-OK status, so an interim PENDING followed by a cancel reports nothing.
+func TestChangeNotify_AnswersFromBufferedEventsWithoutGoingPending(t *testing.T) {
+	fileID := [16]byte{0x91}
+	h, r := notifyHandlerEnv(t, fileID)
+
+	r.NotifyChange("share1", "/d", "a.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	reserved := 0
+	res, err := h.ChangeNotify(notifyCtx(7, &reserved),
+		encodeChangeNotifyReq(SMB2WatchTree, 1000, fileID, FileNotifyChangeFileName))
+	if err != nil {
+		t.Fatalf("ChangeNotify: %v", err)
+	}
+	if res.Status != types.StatusSuccess {
+		t.Fatalf("status = %v, want STATUS_SUCCESS", res.Status)
+	}
+	if res.AsyncId != 0 {
+		t.Errorf("AsyncId = %d, want 0 — the request must not go pending", res.AsyncId)
+	}
+	if reserved != 0 {
+		t.Errorf("TryReserveAsync called %d times, want 0", reserved)
+	}
+	if got := r.WatcherCount(); got != 0 {
+		t.Errorf("WatcherCount = %d, want 0 — nothing should be registered", got)
+	}
+	changes := decodeFileNotifyInfos(res.Data[8:])
+	if len(changes) != 1 || changes[0].FileName != "a.txt" {
+		t.Fatalf("reply carried %+v, want one entry for a.txt", changes)
+	}
+}
+
+// TestChangeNotify_BufferedEventsBeatTheCancelTombstone pins the ordering the
+// fix depends on: buffered events are collected BEFORE the pre-arrival cancel
+// tombstone is consulted.
+//
+// The tombstone exists to stop a watch being armed that would wait forever. It
+// has no say over events that already exist — and because the client cancels
+// every request it sends, letting the tombstone win means it never sees one.
+func TestChangeNotify_BufferedEventsBeatTheCancelTombstone(t *testing.T) {
+	fileID := [16]byte{0x92}
+	h, r := notifyHandlerEnv(t, fileID)
+
+	r.NotifyChange("share1", "/d", "b.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	// The CANCEL for this MessageID lands before the CHANGE_NOTIFY is dispatched.
+	if got := r.CancelByMessageID(1, 9); got != nil {
+		t.Fatalf("setup: CancelByMessageID found a watch it should not have: %+v", got)
+	}
+
+	reserved := 0
+	res, err := h.ChangeNotify(notifyCtx(9, &reserved),
+		encodeChangeNotifyReq(SMB2WatchTree, 1000, fileID, FileNotifyChangeFileName))
+	if err != nil {
+		t.Fatalf("ChangeNotify: %v", err)
+	}
+	if res.Status != types.StatusSuccess {
+		t.Fatalf("status = %v, want STATUS_SUCCESS — the tombstone must not swallow existing events", res.Status)
+	}
+	changes := decodeFileNotifyInfos(res.Data[8:])
+	if len(changes) != 1 || changes[0].FileName != "b.txt" {
+		t.Fatalf("reply carried %+v, want one entry for b.txt", changes)
+	}
+}
+
+// TestChangeNotify_SyncAnswerThenCancelRespondsExactlyOnce is the mirror of the
+// invariant #2131 established. That PR made every watch the registry removes
+// get an answer; this one must not produce a second answer for the same
+// MessageID. A request answered synchronously was never queued, so the CANCEL
+// that follows it has nothing to complete.
+func TestChangeNotify_SyncAnswerThenCancelRespondsExactlyOnce(t *testing.T) {
+	fileID := [16]byte{0x93}
+	h, r := notifyHandlerEnv(t, fileID)
+
+	r.NotifyChange("share1", "/d", "c.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	var asyncResponses int
+	ctx := notifyCtx(11, new(int))
+	ctx.AsyncNotifyCallback = func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
+		asyncResponses++
+		return nil
+	}
+
+	res, err := h.ChangeNotify(ctx, encodeChangeNotifyReq(SMB2WatchTree, 1000, fileID, FileNotifyChangeFileName))
+	if err != nil {
+		t.Fatalf("ChangeNotify: %v", err)
+	}
+	if res.Status != types.StatusSuccess {
+		t.Fatalf("status = %v, want STATUS_SUCCESS", res.Status)
+	}
+
+	// The client's CANCEL arrives after the reply is already on the wire.
+	cancelRes, err := h.Cancel(&SMBHandlerContext{SessionID: 1, TreeID: 1, MessageID: 11, ConnID: 1},
+		[]byte{0x04, 0x00, 0x00, 0x00})
+	if err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if cancelRes != nil {
+		t.Errorf("Cancel produced a response (%v); CANCEL never answers", cancelRes.Status)
+	}
+	if asyncResponses != 0 {
+		t.Fatalf("%d async responses after a synchronous answer, want 0 — MessageID answered twice", asyncResponses)
+	}
+	if got := r.WatcherCount(); got != 0 {
+		t.Errorf("WatcherCount = %d, want 0", got)
+	}
+}
+
+// TestTakeBufferedEvents_LeavesNonMatchingEvents checks that collecting events
+// for one request does not consume events it would not have reported.
+func TestTakeBufferedEvents_LeavesNonMatchingEvents(t *testing.T) {
+	fileID := [16]byte{0x94}
+	_, r := notifyHandlerEnv(t, fileID)
+
+	r.NotifyChange("share1", "/d", "top.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.NotifyChange("share1", "/d/sub", "deep.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	// A non-recursive request takes only the top-level entry.
+	got := r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, false)
+	if len(got) != 1 || got[0].FileName != "top.txt" {
+		t.Fatalf("non-recursive take = %+v, want only top.txt", got)
+	}
+
+	// The subdirectory entry is still there for a recursive request.
+	got = r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, true)
+	if len(got) != 1 || !strings.Contains(got[0].FileName, "deep.txt") {
+		t.Fatalf("recursive take = %+v, want the subdirectory entry", got)
+	}
+	if got = r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, true); got != nil {
+		t.Fatalf("third take = %+v, want nil — events must be consumed once", got)
+	}
+}
+
+// TestChangeNotify_WatchPathIsNormalised covers a directory handle opened by a
+// path the client spelled with a traversal component.
+//
+// The handle stores the filename exactly as the client sent it, while events
+// are reported against resolved paths, so a handle opened as `zqy\..` would
+// never match an event on the parent it actually refers to. smbtorture's
+// smb2.notify.tree opens one that way and expects it to see the parent's
+// events.
+func TestChangeNotify_WatchPathIsNormalised(t *testing.T) {
+	h := NewHandler()
+	h.NotifyRegistry = newTestNotifyRegistry()
+	h.MaxTransactSize = 1 << 20
+
+	fileID := [16]byte{0x95}
+	h.StoreOpenFile((&OpenFile{
+		FileID: fileID, IsDirectory: true, ShareName: "share1", SessionID: 1, TreeID: 1,
+		DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
+	}).WithName(OpenName{Path: "/d/sub/.."}))
+
+	reserved := 0
+	res, err := h.ChangeNotify(notifyCtx(21, &reserved),
+		encodeChangeNotifyReq(SMB2WatchTree, 1000, fileID, FileNotifyChangeFileName))
+	if err != nil {
+		t.Fatalf("ChangeNotify: %v", err)
+	}
+	if res.Status != types.StatusPending {
+		t.Fatalf("status = %v, want STATUS_PENDING (nothing buffered yet)", res.Status)
+	}
+
+	// An event on the directory the handle actually refers to must reach it.
+	var got []FileNotifyInformation
+	r := h.NotifyRegistry
+	var watch *PendingNotify
+	r.RangeWatchers(func(n *PendingNotify) bool {
+		watch = n
+		return true
+	})
+	if watch == nil {
+		t.Fatal("no watch registered")
+	}
+	if watch.WatchPath != "/d" {
+		t.Fatalf("registered WatchPath = %q, want %q", watch.WatchPath, "/d")
+	}
+	watch.AsyncCallback = func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+		got = append(got, decodeFileNotifyInfos(resp.Buffer)...)
+		return nil
+	}
+	// The dispatcher's PostSend hook does not run in a unit test, so the
+	// interim-sent signal has to be delivered by hand or the final response
+	// stays deferred. Outside RangeWatchers: that holds the registry lock.
+	r.MarkInterimSent(watch)
+
+	r.NotifyChange("share1", "/d", "x.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
+
+	if len(got) != 1 || got[0].FileName != "x.txt" {
+		t.Fatalf("watch opened as /d/sub/.. saw %+v, want the event on /d", got)
+	}
+}
+
+// TestTakeBufferedEvents_KeepsByteCountForRemainingEvents checks the overflow
+// byte counter still measures what is actually buffered after a partial take.
+//
+// BufferedBytes is what the proactive overflow latch sizes the backlog with.
+// Zeroing it while non-matching entries remain would under-count them, and the
+// latch would stop firing for a backlog that is really still growing.
+func TestTakeBufferedEvents_KeepsByteCountForRemainingEvents(t *testing.T) {
+	fileID := [16]byte{0x96}
+	_, r := notifyHandlerEnv(t, fileID)
+
+	r.NotifyChange("share1", "/d", "top.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.NotifyChange("share1", "/d/sub", "deep.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	if got := r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, false); len(got) != 1 {
+		t.Fatalf("non-recursive take = %+v, want one entry", got)
+	}
+
+	var bytes uint32
+	var remaining int
+	r.mu.Lock()
+	if a, ok := r.armed[string(fileID[:])]; ok {
+		bytes, remaining = a.BufferedBytes, len(a.BufferedEvents)
+	}
+	r.mu.Unlock()
+
+	if remaining != 1 {
+		t.Fatalf("remaining buffered events = %d, want 1", remaining)
+	}
+	if bytes == 0 {
+		t.Fatal("BufferedBytes = 0 while an event is still buffered — the overflow latch has nothing to measure")
+	}
+}
+
+// TestChangeNotify_SyncAnswerRefreshesArmedRouting covers the armed handle's
+// routing fields when a request is answered synchronously.
+//
+// With no watch pending it is the armed entry, not the request, that decides
+// which events get buffered — and WatchTree is non-sticky. A request answered
+// from the buffer never reaches Register, so without an explicit refresh the
+// previous request's recursion flag stays in place. Stale non-recursive is the
+// damaging direction: subdirectory events are dropped outright and no later
+// recursive request can recover them.
+func TestChangeNotify_SyncAnswerRefreshesArmedRouting(t *testing.T) {
+	fileID := [16]byte{0x97}
+	h, r := notifyHandlerEnv(t, fileID)
+
+	// The handle was armed non-recursive by a previous request.
+	r.Arm(&PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, WatchPath: "/d", ShareName: "share1",
+		CompletionFilter: FileNotifyChangeFileName, WatchTree: false, MaxOutputLength: 1000,
+	})
+
+	// A top-level event so this request has something to be answered with.
+	r.NotifyChange("share1", "/d", "top.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	// A RECURSIVE request is answered synchronously from that event.
+	reserved := 0
+	res, err := h.ChangeNotify(notifyCtx(31, &reserved),
+		encodeChangeNotifyReq(SMB2WatchTree, 1000, fileID, FileNotifyChangeFileName))
+	if err != nil {
+		t.Fatalf("ChangeNotify: %v", err)
+	}
+	if res.Status != types.StatusSuccess {
+		t.Fatalf("status = %v, want STATUS_SUCCESS", res.Status)
+	}
+
+	// The handle must now be armed recursive, so a subdirectory event buffers.
+	r.NotifyChange("share1", "/d/sub", "deep.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	got := r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, true)
+	if len(got) != 1 || !strings.Contains(got[0].FileName, "deep.txt") {
+		t.Fatalf("subdirectory event after a recursive sync answer = %+v, want it buffered — "+
+			"the armed handle kept the previous request's non-recursive flag", got)
 	}
 }
