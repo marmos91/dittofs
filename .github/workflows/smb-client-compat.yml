@@ -394,13 +394,26 @@ jobs:
           .\dfsctl.exe share create --name /smbbasic --metadata mem-meta --local mem-payload
           .\dfsctl.exe user create --username test --password 'testpass123'
           .\dfsctl.exe share permission grant /smbbasic --user test --level read-write
-          # Bind DittoFS to 445 — the only port `net use` can reach (445 was
-          # freed above by stopping the in-box SMB server).
-          .\dfsctl.exe adapter enable smb --port 445
+          # Bind DittoFS to 445 — the only port `net use` can reach (445 is
+          # freed above by stopping the in-box SMB server). Gated on the same
+          # measurement that gates the assertions: when the kernel listener
+          # kept 445 the bind cannot succeed, and running it anyway fails the
+          # step and kills the job at bootstrap for the precondition the rest
+          # of this job is written to tolerate. When 445 IS free the bind must
+          # still fail loudly — a bind error there is a real regression.
+          if ($env:SMB445_FREE -eq 'true') {
+            .\dfsctl.exe adapter enable smb --port 445
+            if ($LASTEXITCODE -ne 0) {
+              throw "adapter enable smb --port 445 failed with exit code $LASTEXITCODE"
+            }
 
-          Start-Sleep -Seconds 3
-          Write-Host "DittoFS SMB listener:"
-          (Get-NetTCPConnection -LocalPort 445 -State Listen -ErrorAction SilentlyContinue) | Format-Table -AutoSize
+            Start-Sleep -Seconds 3
+            Write-Host "DittoFS SMB listener:"
+            (Get-NetTCPConnection -LocalPort 445 -State Listen -ErrorAction SilentlyContinue) | Format-Table -AutoSize
+          } else {
+            Write-Host "Skipping the SMB bind: TCP 445 is still owned by the runner's kernel listener (PID 4)."
+            Write-Host "The server stays up so the log and pktmon diagnostics below are still collected."
+          }
 
       - name: Test net use operations
         id: netuse
@@ -522,11 +535,18 @@ jobs:
             )
           } elseif ($env:SMB445_FREE -eq 'false') {
             # Only the measured-and-unmet precondition gets this explanation.
-            $reason = 'TCP 445 stayed owned by the hosted-runner kernel SMB listener (srvnet.sys, PID 4). The Windows redirector always connects to TCP 445 and UNC syntax has no port field, so net use cannot reach DittoFS on any other port. Freeing 445 needs srvnet.sys unloaded, which a hosted runner cannot do without a reboot. Diagnostics were still captured and uploaded.'
-            Write-Host "::notice title=Windows net use tests skipped::$reason"
-            $summary += ":warning: **net use tests skipped** - $reason"
+            # A green check on this job does not mean the redirector path was
+            # exercised, so say what went untested loudly enough that someone
+            # scanning the run sees it: an annotation on the run and a line
+            # here. The bind and the assertions were both skipped.
+            $headline = 'Windows `net use` path NOT tested: TCP 445 held by the runner''s kernel listener'
+            $reason = 'TCP 445 stayed owned by the hosted-runner kernel SMB listener (srvnet.sys, PID 4), so DittoFS was never bound to it. The Windows redirector always connects to TCP 445 and UNC syntax has no port field, so net use cannot reach DittoFS on any other port. Freeing 445 needs srvnet.sys unloaded, which a hosted runner cannot do without a reboot. Diagnostics were still captured and uploaded.'
+            Write-Host "::warning title=Windows net use path not tested::$headline. $reason"
+            $summary += ":warning: **$headline**"
             $summary += ''
-            $summary += 'Run this job on a self-hosted or VM runner where 445 can be claimed to exercise the Windows redirector against DittoFS.'
+            $summary += $reason
+            $summary += ''
+            $summary += 'Nothing was asserted about the Windows redirector in this run. Run this job on a self-hosted or VM runner where 445 can be claimed to exercise it against DittoFS.'
           } else {
             # netuse is also skipped when an earlier step failed or the job was
             # cancelled, which is not the 445 story.

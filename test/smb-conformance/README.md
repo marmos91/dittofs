@@ -319,6 +319,12 @@ Validates DittoFS SMB adapter against native OS SMB clients on three platforms.
 | macOS (latest) | mount_smbfs | `mount_smbfs //user:pass@localhost:12445/share /tmp/smbtest` |
 | Windows (latest) | net use | `net use Z: \\localhost\share /user:test test123` |
 
+The Windows cell is best-effort. `net use` can only reach TCP 445 (UNC syntax has no port
+field), so DittoFS has to take 445 from the runner's in-box SMB server. When that listener
+cannot be stopped, the job skips the bind and the assertions and says so with a warning
+annotation and a step-summary line — a green Windows job is not by itself proof that the
+redirector path was exercised. Linux and macOS use port 12445 and are unaffected.
+
 ### When It Runs
 
 - **Push to develop** (SMB paths changed)
