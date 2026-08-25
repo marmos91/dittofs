@@ -193,8 +193,8 @@ func (e *teardownLeakEnv) create(
 }
 
 // disconnect runs the persist + lease-release halves of CleanupSession for a
-// transport drop (steps 1+2). Calling CleanupSession directly would trip its
-// cleanupWg.Done without a matching Add (owned by the dispatch scheduler).
+// transport drop (steps 1+2). Calling CleanupSession directly would retire a
+// cleanup-barrier count without a matching Add (owned by the dispatch scheduler).
 func (e *teardownLeakEnv) disconnect(sessionID uint64) {
 	ctx := context.Background()
 	e.h.CloseAllFilesForSession(ctx, sessionID, true)

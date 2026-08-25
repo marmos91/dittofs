@@ -469,12 +469,16 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
 					// Guard the write: concurrent QUERY_INFO/WRITE goroutines on
 					// the same session may be reading these fields on `other`.
+					// The write lands on the pointer the handle table already
+					// holds, so no re-Store follows: re-Storing would resurrect
+					// a handle whose own CLOSE removed it between this Range and
+					// here, leaving a delete-pending entry nothing ever reaps and
+					// every later CREATE on the path answered DELETE_PENDING.
 					other.mu.Lock()
 					other.DeletePending = true
 					other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
 					other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
 					other.mu.Unlock()
-					h.StoreOpenFile(other)
 				}
 				return true
 			})
@@ -497,7 +501,6 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
 				other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
 				other.mu.Unlock()
-				h.StoreOpenFile(other)
 				return true
 			})
 			logger.Debug("CLOSE: base file DOC deferred to stream handles",
