@@ -296,7 +296,7 @@ func (r *LeaseResponseContext) Encode() []byte {
 // carries `ctx`, or the zero value when no CryptoState is wired (test
 // contexts and some legacy paths). The lease layer treats a zero GUID as
 // "ClientGUID-based break routing disabled for this lease" and falls back
-// to the per-lease sessionMap, so passing zero is always safe.
+// to the session that registered the lease, so passing zero is always safe.
 func connClientGUID(ctx *SMBHandlerContext) [16]byte {
 	if ctx == nil || ctx.ConnCryptoState == nil {
 		return [16]byte{}
@@ -331,8 +331,8 @@ func FindCreateContext(contexts []CreateContext, name string) *CreateContext {
 //     Used by LeaseManager to bind the lease at MS-SMB2 §3.3.5.9.8 granularity
 //     and route break notifications to the client's primary session
 //     (smbtorture v2_complex1). Tests that don't exercise multi-session
-//     routing pass a zero value, which falls back to per-lease sessionMap
-//     dispatch.
+//     routing pass a zero value, which falls back to dispatching on the
+//     session that registered the lease.
 //   - clientID: The connection tracker client ID
 //   - shareName: The share name
 //   - isDirectory: Whether the target is a directory
@@ -464,7 +464,7 @@ func ProcessLeaseCreateContext(
 	// v2_epoch2 (V2 grant + V1 reopen → V2 response with running epoch) and
 	// v2_epoch3 (V1 grant + V2 upgrade → V1 response throughout).
 	if err == nil && grantedState != lock.LeaseStateNone {
-		leaseMgr.MarkLeaseVersionIfUnset(leaseReq.LeaseKey, !requestIsV1)
+		leaseMgr.MarkLeaseVersionIfUnset(fileHandle, shareName, leaseReq.LeaseKey, !requestIsV1)
 	}
 
 	// Resolve the response version from the lease's recorded version. Fall
@@ -473,8 +473,8 @@ func ProcessLeaseCreateContext(
 	// ErrLeaseBreakInProgress (referencing a lease already marked at its
 	// original grant; the !IsLeaseVersionKnown branch is defensive).
 	responseIsV1 := requestIsV1
-	if leaseMgr.IsLeaseVersionKnown(leaseReq.LeaseKey) {
-		responseIsV1 = !leaseMgr.IsV2(leaseReq.LeaseKey)
+	if leaseMgr.IsLeaseVersionKnown(fileHandle, shareName, leaseReq.LeaseKey) {
+		responseIsV1 = !leaseMgr.IsV2(fileHandle, shareName, leaseReq.LeaseKey)
 	}
 
 	// Per MS-SMB2 3.3.5.9.8: the FIRST V2 grant for a lease key is a state
@@ -532,7 +532,7 @@ func ProcessLeaseCreateContext(
 			// starting point, one past what it asked for.
 			nextEpoch := leaseReq.Epoch + 1
 			if nextEpoch > epoch {
-				leaseMgr.SetLeaseEpoch(leaseReq.LeaseKey, nextEpoch)
+				leaseMgr.SetLeaseEpoch(shareName, leaseReq.LeaseKey, nextEpoch)
 				epoch = nextEpoch
 			}
 		}

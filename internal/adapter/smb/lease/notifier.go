@@ -65,9 +65,10 @@ func (h *SMBBreakHandler) OnOpLockBreak(handleKey string, ul *lock.UnifiedLock, 
 	// on the session that opened the lease. GetSessionForBreak resolves
 	// via the recorded ClientGUID → primary session map; legacy callers
 	// without a CryptoState (zero ClientGUID at grant time) fall through
-	// to the per-lease sessionMap, preserving prior single-session test
-	// behavior. Required by smbtorture smb2.lease.v2_complex1.
-	sessionID, found := h.leaseManager.GetSessionForBreak(ul.Lease.LeaseKey, ul.Owner.ClientID)
+	// to the session that registered the binding, preserving prior
+	// single-session test behavior. Required by smbtorture
+	// smb2.lease.v2_complex1.
+	sessionID, found := h.leaseManager.GetSessionForBreak(ul.Owner.ClientID, ul.Owner.ShareName, ul.Lease.LeaseKey)
 	if !found {
 		logger.Debug("SMBBreakHandler: no session for lease, skipping break notification",
 			"leaseKey", fmt.Sprintf("%x", ul.Lease.LeaseKey),
@@ -91,7 +92,7 @@ func (h *SMBBreakHandler) OnOpLockBreak(handleKey string, ul *lock.UnifiedLock, 
 	// granted from a V2 create context. Unknown keys default to V1 (safe:
 	// zero is always valid and avoids leaking stale epochs to V1 clients).
 	var newEpoch uint16
-	if h.leaseManager.IsV2(ul.Lease.LeaseKey) {
+	if h.leaseManager.IsV2(lock.FileHandle(handleKey), ul.Owner.ShareName, ul.Lease.LeaseKey) {
 		// LockManager already advanced the epoch when initiating the break.
 		newEpoch = ul.Lease.Epoch
 	}

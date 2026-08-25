@@ -1049,7 +1049,7 @@ Fix (signed):
 
 Confirmed via three new unit tests in `manager_test.go`:
 `TestGetSessionForBreak_RoutesByClientGUIDPrimary`,
-`TestGetSessionForBreak_FallsBackToSessionMap`,
+`TestGetSessionForBreak_FallsBackToBindingSession`,
 `TestReleaseSessionLeases_ReapsClientPrimary`.
 
 **#429 lease cluster:** `v2_complex1` now expected to PASS.

@@ -523,3 +523,50 @@ func TestProcessLeaseCreateContext_OtherFileSameKeyStillSeeds(t *testing.T) {
 			respB.Epoch, secondEpoch+1)
 	}
 }
+
+// TestProcessLeaseCreateContext_OtherClientSameKeyKeepsOwnVersion pins the
+// scope of the recorded lease version. The version decides the shape of the
+// RqLs response context on the wire: a V1 lease answers with the 32-byte
+// context that has no epoch field, a V2 lease with the 52-byte one that does.
+// Two clients may present the same 16-byte lease key value on different files,
+// so the version of one client's lease must not decide the response format of
+// the other's.
+func TestProcessLeaseCreateContext_OtherClientSameKeyKeepsOwnVersion(t *testing.T) {
+	t.Parallel()
+
+	mgr := lock.NewManager()
+	leaseMgr := lease.NewLeaseManager(&staticLockResolver{mgr: mgr}, nil)
+
+	ctx := context.Background()
+	const shareName = "share1"
+	leaseKey := [16]byte{0x7A, 0x7B, 0x7C}
+	const rh = lock.LeaseStateRead | lock.LeaseStateHandle
+	const clientEpoch uint16 = 0x0900
+
+	// Client A establishes the key with a V1 create context on one file.
+	v1 := make([]byte, LeaseV1ContextSize)
+	copy(v1[0:16], leaseKey[:])
+	binary.LittleEndian.PutUint32(v1[16:20], rh)
+	respA, err := ProcessLeaseCreateContext(ctx, leaseMgr, v1,
+		lock.FileHandle("file-A"), 1, [16]byte{0xA1}, "smb:1", shareName, false, false, false)
+	if err != nil {
+		t.Fatalf("client A CREATE returned error: %v", err)
+	}
+	if !respA.IsV1 {
+		t.Fatalf("client A response is V2, want V1")
+	}
+
+	// Client B presents the same key value on a different file, in a V2
+	// create context. It is a different lease and must be answered as V2.
+	respB, err := ProcessLeaseCreateContext(ctx, leaseMgr, encodeV2LeaseContext(leaseKey, rh, clientEpoch),
+		lock.FileHandle("file-B"), 2, [16]byte{0xB2}, "smb:2", shareName, false, false, false)
+	if err != nil {
+		t.Fatalf("client B CREATE returned error: %v", err)
+	}
+	if respB.IsV1 {
+		t.Errorf("client B response context is V1 (32 bytes, no epoch field), want V2 — another client's lease under the same key value decided this client's response format")
+	}
+	if respB.Epoch != clientEpoch+1 {
+		t.Errorf("client B response epoch = 0x%x, want 0x%x", respB.Epoch, clientEpoch+1)
+	}
+}

@@ -1370,7 +1370,7 @@ func (h *Handler) closeFilesWithFilter(
 			var leaseState uint32
 			var leaseEpoch uint16
 			if h.LeaseManager != nil && openFile.LeaseKey != ([16]byte{}) {
-				if state, epoch, found := h.LeaseManager.GetLeaseState(ctx, openFile.LeaseKey); found {
+				if state, epoch, found := h.LeaseManager.GetLeaseState(ctx, openFile.ShareName, openFile.LeaseKey); found {
 					leaseState = state
 					leaseEpoch = epoch
 				}

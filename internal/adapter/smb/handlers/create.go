@@ -947,7 +947,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 						// subsequent break notifications carry the correct
 						// NewEpoch rather than the re-registration's reset value.
 						if reportedLeaseEpoch != epoch {
-							h.LeaseManager.SetLeaseEpoch(restored.LeaseKey, reportedLeaseEpoch)
+							h.LeaseManager.SetLeaseEpoch(tree.ShareName, restored.LeaseKey, reportedLeaseEpoch)
 						}
 						// Build lease response context
 						if leaseCtx := FindCreateContext(req.CreateContexts, LeaseContextTagRequest); leaseCtx != nil {
@@ -981,12 +981,12 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 						// version recorded by the original grant; an absent
 						// mark (e.g. cleared by intervening release) is set to
 						// V2 here.
-						h.LeaseManager.MarkLeaseVersionIfUnset(restored.LeaseKey, true)
+						h.LeaseManager.MarkLeaseVersionIfUnset(lockFileHandle, tree.ShareName, restored.LeaseKey, true)
 						restored.OplockLevel = OplockLevelLease
 					}
 
 					// Update session mapping for break notification routing
-					h.LeaseManager.UpdateSessionForLease(restored.LeaseKey, ctx.SessionID)
+					h.LeaseManager.UpdateSessionForLease(clientID, tree.ShareName, restored.LeaseKey, ctx.SessionID)
 				} else if restored.OplockLevel != OplockLevelNone && restored.OplockLevel != OplockLevelLease {
 					// Traditional oplock: re-request via synthetic lease key
 					var requestedState uint32
@@ -1701,7 +1701,7 @@ func (h *Handler) refreshReplayLease(ctx *SMBHandlerContext, req *CreateRequest,
 	if h.LeaseManager == nil {
 		return types.StatusSuccess
 	}
-	state, epoch, found := h.LeaseManager.GetLeaseState(ctx.Context, open.LeaseKey)
+	state, epoch, found := h.LeaseManager.GetLeaseState(ctx.Context, open.ShareName, open.LeaseKey)
 	if !found {
 		return types.StatusSuccess
 	}
