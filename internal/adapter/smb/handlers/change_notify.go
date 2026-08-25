@@ -424,6 +424,32 @@ func (r *NotifyRegistry) QueueFinalAfterInterim(notify *PendingNotify, run func(
 // STATUS_PENDING.
 var ErrAlreadyCancelled = fmt.Errorf("change_notify already cancelled before register")
 
+// CancelByMessageID completes the SMB2_CANCEL lookup for a synchronous
+// (non-async-flagged) cancel. It removes the pending notify for
+// (connID, messageID) and returns it, or — when no notify has registered yet —
+// records a tombstone so the in-flight Register short-circuits, and returns
+// nil.
+//
+// Both outcomes are decided under a single acquisition of r.mu, and that is
+// the point. Performed as a lookup followed by a separate MarkPendingCancel,
+// a concurrent Register slips between the two: it sees no tombstone (not
+// written yet) and registers a watch the cancel has already given up on, so
+// nothing ever completes that MessageID and the client waits forever.
+func (r *NotifyRegistry) CancelByMessageID(connID, messageID uint64) *PendingNotify {
+	key := notifyMsgKey{ConnID: connID, MessageID: messageID}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if notify, ok := r.byMsgKey[key]; ok {
+		return r.unregisterLocked(notify)
+	}
+
+	r.cancelTombstones[key] = time.Now()
+	r.gcCancelTombstonesLocked()
+	return nil
+}
+
 // MarkPendingCancel records a tombstone for a CHANGE_NOTIFY that may not yet
 // have registered. Called by the SMB2_CANCEL handler when its lookup by
 // (ConnID, MessageID) finds nothing — the matching CHANGE_NOTIFY is likely

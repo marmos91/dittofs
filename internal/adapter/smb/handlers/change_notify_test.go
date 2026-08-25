@@ -2823,3 +2823,61 @@ func TestMarkInterimSent_AfterUnregister_StillDeliversFinal(t *testing.T) {
 		t.Fatalf("cancelled CHANGE_NOTIFY got no final response: %v", sent)
 	}
 }
+
+// TestNotifyRegistry_ConcurrentCancelRacesRegister drives the SMB2_CANCEL
+// lookup and the CHANGE_NOTIFY registration on the same (ConnID, MessageID)
+// from two goroutines with no imposed ordering — the interleaving a client
+// produces when it fires NOTIFY and CANCEL back to back and the server
+// dispatches each on its own goroutine.
+//
+// Exactly one of the two must win: either the cancel finds and removes the
+// watch, or the register short-circuits with ErrAlreadyCancelled. The state
+// this rules out is a cancel that found nothing while a live watch remains
+// registered, because then nothing will ever complete that MessageID and the
+// client blocks forever.
+//
+// The window is narrow, so the interleaving needs the race detector's
+// scheduling perturbation to be hit reliably: under `-race` this failed on
+// every run against a lookup and a tombstone-write taking the lock separately.
+func TestNotifyRegistry_ConcurrentCancelRacesRegister(t *testing.T) {
+	const iters = 2000
+	for i := 0; i < iters; i++ {
+		r := newTestNotifyRegistry()
+		connID := uint64(i)
+		messageID := uint64(i*2 + 1)
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var cancelled *PendingNotify
+		var regErr error
+
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			cancelled = r.CancelByMessageID(connID, messageID)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			regErr = r.Register(&PendingNotify{
+				FileID: [16]byte{byte(i), byte(i >> 8)}, ConnID: connID,
+				MessageID: messageID, AsyncId: uint64(i + 100000),
+				WatchPath: "/x", ShareName: "s",
+				CompletionFilter: FileNotifyChangeFileName,
+			})
+		}()
+		close(start)
+		wg.Wait()
+
+		if cancelled == nil && regErr == nil {
+			t.Fatalf("iter %d: cancel found nothing and register succeeded — "+
+				"watch left live on a cancelled MessageID (watchers=%d)",
+				i, r.WatcherCount())
+		}
+		if got := r.WatcherCount(); got != 0 {
+			t.Fatalf("iter %d: WatcherCount = %d, want 0 (cancelled=%v regErr=%v)",
+				i, got, cancelled != nil, regErr)
+		}
+	}
+}

@@ -246,11 +246,14 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	// Per [MS-SMB2] 3.3.5.16: If SMB2_FLAGS_ASYNC_COMMAND is set, look up by
 	// AsyncId; otherwise by MessageID.
 	if h.NotifyRegistry != nil {
+		// The by-MessageID lookup also tombstones on a miss, in one step:
+		// see NotifyRegistry.CancelByMessageID for why the two cannot be
+		// separate calls.
 		var cancelled *PendingNotify
 		if ctx.RequestAsyncId != 0 {
 			cancelled = h.NotifyRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)
 		} else {
-			cancelled = h.NotifyRegistry.UnregisterByMessageID(ctx.ConnID, ctx.MessageID)
+			cancelled = h.NotifyRegistry.CancelByMessageID(ctx.ConnID, ctx.MessageID)
 		}
 
 		if cancelled != nil {
@@ -293,13 +296,13 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 			// to register. Each request runs on its own goroutine, so a
 			// client that fires NOTIFY immediately followed by CANCEL (the
 			// "notify cancel" subtest in smb2.notify.dir does this) can
-			// reorder them on the server side. Drop a tombstone so the
-			// in-flight CHANGE_NOTIFY's Register returns ErrAlreadyCancelled
-			// and the handler answers STATUS_CANCELLED synchronously.
+			// reorder them on the server side. CancelByMessageID has already
+			// recorded the tombstone that makes the in-flight
+			// CHANGE_NOTIFY's Register return ErrAlreadyCancelled, so the
+			// handler answers STATUS_CANCELLED synchronously.
 			// AsyncId-flagged CANCEL cannot race this way (the client only
 			// learns AsyncId from the interim response, which is sent strictly
-			// after Register). See issue #623.
-			h.NotifyRegistry.MarkPendingCancel(ctx.ConnID, ctx.MessageID)
+			// after Register).
 			logger.Debug("CANCEL: no matching CHANGE_NOTIFY yet — tombstoned for race",
 				"connID", ctx.ConnID,
 				"messageID", ctx.MessageID)
