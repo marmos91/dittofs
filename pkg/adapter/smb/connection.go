@@ -534,14 +534,20 @@ func (c *Connection) cleanupSessions() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Guard the cleanup loop against panics. If CleanupSession panics,
-	// call Done() for remaining sessions so the barrier doesn't get stuck,
-	// then re-panic to preserve the original failure signal.
-	cleaned := 0
+	// Guard the cleanup loop against panics. If CleanupSession panics, retire
+	// the counts of the sessions it never reached so the barrier doesn't get
+	// stuck, then re-panic to preserve the original failure signal.
+	//
+	// retired counts sessions whose count is already gone, so it is bumped
+	// BEFORE the call, not after: CleanupSession retires its own count from a
+	// defer, which runs on the panicking unwind too. Counting only the
+	// completed ones would release the panicking session's count a second
+	// time and open the barrier while a session that was never touched still
+	// has open files in the handle table.
+	retired := 0
 	defer func() {
 		if r := recover(); r != nil {
-			remaining := len(dying) - cleaned
-			for i := 0; i < remaining; i++ {
+			for i := retired; i < len(dying); i++ {
 				c.server.handler.SignalCleanupDone()
 			}
 			panic(r)
@@ -549,8 +555,8 @@ func (c *Connection) cleanupSessions() {
 	}()
 
 	for _, sessionID := range dying {
+		retired++
 		c.server.handler.CleanupSession(ctx, sessionID, true /* transport disconnect */)
-		cleaned++
 	}
 
 	// State leak detection: log final state after all session cleanups

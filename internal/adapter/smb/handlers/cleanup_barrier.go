@@ -1,6 +1,10 @@
 package handlers
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/marmos91/dittofs/internal/logger"
+)
 
 // alreadyIdle is the channel a barrier with nothing outstanding hands out.
 var alreadyIdle = func() chan struct{} {
@@ -43,10 +47,16 @@ func (b *cleanupBarrier) Add(count int) {
 }
 
 // Done retires one in-progress cleanup, releasing waiters when it was the last.
+//
+// A Done with nothing outstanding is an accounting bug in the close path — it
+// would have opened the barrier early, which is the very thing the barrier
+// exists to prevent — so it is logged rather than swallowed. It is not applied:
+// going negative would close an already-closed channel on the next Done.
 func (b *cleanupBarrier) Done() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.n == 0 {
+		logger.Error("cleanup barrier: Done with no cleanup outstanding")
 		return
 	}
 	b.n--
