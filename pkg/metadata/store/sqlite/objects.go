@@ -100,11 +100,19 @@ func (s *SQLiteMetadataStore) DecrementRefCountAndReap(ctx context.Context, id s
 // the transaction path run them over their own executor, so the two surfaces
 // cannot drift apart.
 
+// fileChunkColumns is the file_blocks column list every chunk read and write
+// names, in the order scanFileChunk reads them. Naming it once is what keeps a
+// column added to one query from being missed by the others, or by the scan.
+const fileChunkColumns = `id, hash, data_size, start_offset, ref_count, last_access, created_at, state, last_sync_attempt_at`
+
+// insertFileChunk is the INSERT the row writers share; each appends its own
+// ON CONFLICT clause.
+const insertFileChunk = `INSERT INTO file_blocks (` + fileChunkColumns + `) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
+
 // getFileChunkTx reads one chunk row by ID, mapping a missing row to
 // ErrFileChunkNotFound.
 func getFileChunkTx(ctx context.Context, x execer, id string) (*metadata.FileChunk, error) {
-	row := x.QueryRow(ctx, `SELECT id, hash, data_size, start_offset, ref_count, last_access, created_at, state, last_sync_attempt_at
-		FROM file_blocks WHERE id = ?1`, id)
+	row := x.QueryRow(ctx, `SELECT `+fileChunkColumns+` FROM file_blocks WHERE id = ?1`, id)
 	chunk, err := scanFileChunk(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, metadata.ErrFileChunkNotFound
@@ -135,9 +143,7 @@ func putFileChunkTx(ctx context.Context, x execer, chunk *metadata.FileChunk) er
 		t := chunk.LastSyncAttemptAt
 		lastSyncAttemptAt = &t
 	}
-	_, err := x.Exec(ctx, `
-		INSERT INTO file_blocks (id, hash, data_size, start_offset, ref_count, last_access, created_at, state, last_sync_attempt_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+	_, err := x.Exec(ctx, insertFileChunk+`
 		ON CONFLICT (id) DO UPDATE SET
 			hash = COALESCE(EXCLUDED.hash, file_blocks.hash),
 			data_size = EXCLUDED.data_size,
@@ -212,8 +218,7 @@ func addRefTx(ctx context.Context, x execer, hash block.ContentHash) error {
 // getByHashTx resolves a Remote chunk by content hash, returning (nil, nil)
 // when none matches.
 func getByHashTx(ctx context.Context, x execer, hash metadata.ContentHash) (*metadata.FileChunk, error) {
-	row := x.QueryRow(ctx, `SELECT id, hash, data_size, start_offset, ref_count, last_access, created_at, state, last_sync_attempt_at
-		FROM file_blocks WHERE hash = ?1 AND state = 2 /* Remote */`, hash.String())
+	row := x.QueryRow(ctx, `SELECT `+fileChunkColumns+` FROM file_blocks WHERE hash = ?1 AND state = 2 /* Remote */`, hash.String())
 	chunk, err := scanFileChunk(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -303,7 +308,7 @@ func (s *SQLiteMetadataStore) GetByHash(ctx context.Context, hash metadata.Conte
 // default: the bounds only bracket the prefix under byte ordering, and a
 // byte-ordered id column lets the primary-key index seek the range instead of
 // filtering the whole table.
-const listFileChunksQuery = `SELECT id, hash, data_size, start_offset, ref_count, last_access, created_at, state, last_sync_attempt_at
+const listFileChunksQuery = `SELECT ` + fileChunkColumns + `
 	FROM file_blocks
 	WHERE id >= ?1 COLLATE BINARY AND id < ?2 COLLATE BINARY
 	ORDER BY id COLLATE BINARY ASC`
@@ -640,10 +645,7 @@ func (tx *sqliteTransaction) EnumerateFileChunks(ctx context.Context, fn func(bl
 // Put contract that always serializes a valid ContentHash.String().
 func (s *SQLiteMetadataStore) InjectCorruptHashRow(ctx context.Context, blockID string, badHash string) error {
 	now := time.Now()
-	_, err := s.exec(ctx, `
-		INSERT INTO file_blocks (id, hash, data_size, start_offset, ref_count, last_access, created_at, state, last_sync_attempt_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-		ON CONFLICT (id) DO UPDATE SET hash = EXCLUDED.hash`,
+	_, err := s.exec(ctx, insertFileChunk+` ON CONFLICT (id) DO UPDATE SET hash = EXCLUDED.hash`,
 		blockID, badHash, uint32(64), uint32(0), uint32(1), now, now, int(block.BlockStateRemote), nil,
 	)
 	if err != nil {

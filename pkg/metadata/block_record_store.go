@@ -354,6 +354,41 @@ func ManifestRowEndAfter(ctx context.Context, tx Transaction, payloadID string, 
 	return end, nil
 }
 
+// spanFreeStart returns the first byte of [rowStart, rowEnd) that no span
+// claims, or rowEnd when the spans cover the row outright. Spans are disjoint
+// and ascending, so the search finds the only span that can cover rowStart, and
+// from there only the next span can begin exactly where the previous one ended.
+func spanFreeStart(ordered [][2]int64, rowStart, rowEnd int64) int64 {
+	start := rowStart
+	i := sort.Search(len(ordered), func(j int) bool { return ordered[j][1] > start })
+	for ; i < len(ordered) && ordered[i][0] <= start; i++ {
+		start = ordered[i][1]
+		if start >= rowEnd {
+			return rowEnd
+		}
+	}
+	return start
+}
+
+// narrowOffHead returns a copy of r claiming only [head, rowEnd) of the file,
+// keyed at head and reading the chunk from that many bytes further in. The
+// caller establishes rowStart < head < rowEnd, so what survives is a non-empty
+// claim smaller than the one it replaces. It reports false when what the row
+// gives up pushes its in-chunk start past what the 32-bit field holds, which no
+// real chunk reaches — a chunk is bounded by the carver's maximum size — so
+// refusing there simply keeps the row as it stands rather than wrapping.
+func narrowOffHead(r *block.FileChunk, rowStart, head, rowEnd int64) (*block.FileChunk, bool) {
+	start := int64(r.StartOffset) + (head - rowStart)
+	if start > math.MaxUint32 {
+		return nil, false
+	}
+	narrowed := *r
+	narrowed.ID = fmt.Sprintf("%s/%d", chunkPayloadID(r.ID), head)
+	narrowed.StartOffset = uint32(start)
+	narrowed.DataSize = uint32(rowEnd - head)
+	return &narrowed, true
+}
+
 // ReapSupersededManifest deletes the manifest rows a carve pass supersedes and
 // re-projects File.Blocks, atomically. A partial overwrite re-chunks the dirty
 // range (plus its warm straddle remainders, re-marked dirty by the journal) into
@@ -414,41 +449,6 @@ func ManifestRowEndAfter(ctx context.Context, tx Transaction, payloadID string, 
 // ponytail: this fixes read-coherence — the corruption. Decrementing the reaped
 // chunk's CAS refcount to reclaim its remote space is a separate, tracked
 // follow-up (#1715): under-counting only leaks space, it never drops live data.
-// spanFreeStart returns the first byte of [rowStart, rowEnd) that no span
-// claims, or rowEnd when the spans cover the row outright. Spans are disjoint
-// and ascending, so it is enough to step over the span the row starts in and
-// over any span beginning exactly where that one ended.
-func spanFreeStart(ordered [][2]int64, rowStart, rowEnd int64) int64 {
-	start := rowStart
-	for start < rowEnd {
-		i := sort.Search(len(ordered), func(j int) bool { return ordered[j][1] > start })
-		if i == len(ordered) || ordered[i][0] > start {
-			return start
-		}
-		start = ordered[i][1]
-	}
-	return rowEnd
-}
-
-// narrowOffHead returns a copy of r claiming only [head, rowEnd) of the file,
-// keyed at head and reading the chunk from that many bytes further in. It
-// reports false when the giving-up does not fit the row's 32-bit fields, which
-// no real chunk reaches — a chunk is bounded by the carver's maximum size — so
-// refusing there simply keeps the row as it stands rather than wrapping.
-func narrowOffHead(r *block.FileChunk, rowStart, head, rowEnd int64) (*block.FileChunk, bool) {
-	gave := head - rowStart
-	start := int64(r.StartOffset) + gave
-	size := rowEnd - head
-	if gave <= 0 || start > math.MaxUint32 || size <= 0 || size > math.MaxUint32 {
-		return nil, false
-	}
-	narrowed := *r
-	narrowed.ID = fmt.Sprintf("%s/%d", chunkPayloadID(r.ID), head)
-	narrowed.StartOffset = uint32(start)
-	narrowed.DataSize = uint32(size)
-	return &narrowed, true
-}
-
 func ReapSupersededManifest(ctx context.Context, tx Transaction, payloadID string, spans [][2]int64, newOffsets map[int64]struct{}) error {
 	if payloadID == "" {
 		return nil
@@ -468,6 +468,8 @@ func ReapSupersededManifest(ctx context.Context, tx Transaction, payloadID strin
 	if err != nil {
 		return fmt.Errorf("reap superseded: list manifest for %s: %w", payloadID, err)
 	}
+	// The keys the manifest already holds, so a head narrow never moves a row
+	// onto one.
 	occupied := make(map[string]struct{}, len(rows))
 	for _, r := range rows {
 		if r != nil {
@@ -485,47 +487,50 @@ func ReapSupersededManifest(ctx context.Context, tx Transaction, payloadID strin
 		rowStart := int64(off)
 		rowEnd := rowStart + int64(r.DataSize)
 		head := spanFreeStart(ordered, rowStart, rowEnd)
-		if head > rowStart {
-			if _, isNew := newOffsets[rowStart]; isNew {
-				continue // a row this pass just wrote — keep it
+		if head == rowStart {
+			// The row starts where no span claims it, so what a span can take is
+			// its tail. The span that acts on it is the first one whose end the row
+			// does not reach past: an earlier span the row outreaches is one that
+			// would strand the stretch beyond if acted on, and a later span the row
+			// cannot reach, because acting here leaves it ending at or before this
+			// span's start. Spans ascend, so this is a binary search.
+			i := sort.Search(len(ordered), func(j int) bool { return ordered[j][1] >= rowEnd })
+			if i == len(ordered) || ordered[i][0] >= rowEnd || ordered[i][1] <= rowStart {
+				continue // no span acts on it: untouched (incl. cold remainders)
 			}
-			if head >= rowEnd {
-				if err := tx.Delete(ctx, r.ID); err != nil {
-					return fmt.Errorf("reap superseded: delete %s: %w", r.ID, err)
-				}
-				continue
+			narrowed := *r
+			narrowed.DataSize = uint32(ordered[i][0] - rowStart)
+			if err := tx.Put(ctx, &narrowed); err != nil {
+				return fmt.Errorf("reap superseded: narrow %s: %w", r.ID, err)
 			}
-			narrowed, ok := narrowOffHead(r, rowStart, head, rowEnd)
-			if !ok {
-				continue
-			}
-			if _, taken := occupied[narrowed.ID]; taken {
-				continue // see the head-narrow note above: spared rather than overwritten
-			}
-			if err := tx.Delete(ctx, r.ID); err != nil {
-				return fmt.Errorf("reap superseded: unkey %s: %w", r.ID, err)
-			}
-			if err := tx.Put(ctx, narrowed); err != nil {
-				return fmt.Errorf("reap superseded: narrow %s off its head: %w", r.ID, err)
-			}
-			occupied[narrowed.ID] = struct{}{}
 			continue
 		}
-		// The row starts where no span claims it, so what a span can take is its
-		// tail. The span that acts on it is the first one whose end the row does
-		// not reach past: an earlier span the row outreaches is one that would
-		// strand the stretch beyond if acted on, and a later span the row cannot
-		// reach, because acting here leaves it ending at or before this span's
-		// start. Spans ascend, so this is a binary search.
-		i := sort.Search(len(ordered), func(j int) bool { return ordered[j][1] >= rowEnd })
-		if i == len(ordered) || ordered[i][0] >= rowEnd || ordered[i][1] <= rowStart {
-			continue // no span acts on it: untouched (incl. cold remainders)
+		// The row starts inside a span, so what the span takes is its head.
+		if _, isNew := newOffsets[rowStart]; isNew {
+			continue // a row this pass just wrote — keep it
 		}
-		narrowed := *r
-		narrowed.DataSize = uint32(ordered[i][0] - rowStart)
-		if err := tx.Put(ctx, &narrowed); err != nil {
-			return fmt.Errorf("reap superseded: narrow %s: %w", r.ID, err)
+		if head >= rowEnd {
+			if err := tx.Delete(ctx, r.ID); err != nil {
+				return fmt.Errorf("reap superseded: delete %s: %w", r.ID, err)
+			}
+			continue
 		}
+		// It reaches past the span too, so it keeps only what lies past it,
+		// re-keyed at the first byte it still claims.
+		narrowed, ok := narrowOffHead(r, rowStart, head, rowEnd)
+		if !ok {
+			continue // the claim will not fit the row's fields: leave it as it stands
+		}
+		if _, taken := occupied[narrowed.ID]; taken {
+			continue // see the head-narrow note above: spared rather than overwritten
+		}
+		if err := tx.Delete(ctx, r.ID); err != nil {
+			return fmt.Errorf("reap superseded: unkey %s: %w", r.ID, err)
+		}
+		if err := tx.Put(ctx, narrowed); err != nil {
+			return fmt.Errorf("reap superseded: narrow %s off its head: %w", r.ID, err)
+		}
+		occupied[narrowed.ID] = struct{}{}
 	}
 	return ProjectManifestToBlocks(ctx, tx, payloadID)
 }

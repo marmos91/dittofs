@@ -172,22 +172,16 @@ func (m *Syncer) listFileChunksSnapshot(ctx context.Context, payloadID string) (
 // window wants.
 func (m *Syncer) hydrateChunk(ctx context.Context, fb *block.FileChunk, data []byte, span hydrateSpan) error {
 	// The claim is [StartOffset, StartOffset+DataSize) of the chunk, and the
-	// row's ID names the file offset of its FIRST claimed byte — so trimming the
-	// head here is what keeps the write-back aligned. A start past the bytes the
-	// remote returned describes a claim the chunk cannot satisfy; write nothing,
-	// the same way a zero claim does, rather than place the wrong bytes.
-	if start := uint64(fb.StartOffset); start > 0 {
-		if start >= uint64(len(data)) {
-			return nil
-		}
-		data = data[start:]
-	}
-	if claimed := uint64(fb.DataSize); claimed < uint64(len(data)) {
-		data = data[:claimed]
-	}
-	if len(data) == 0 {
+	// row's ID names the file offset of its FIRST claimed byte, so the write-back
+	// stays aligned only if the head is trimmed off too. A claim the chunk cannot
+	// satisfy — one starting past the bytes the remote returned, or an empty one —
+	// places nothing rather than the wrong bytes.
+	start := uint64(fb.StartOffset)
+	end := min(start+uint64(fb.DataSize), uint64(len(data)))
+	if start >= end {
 		return nil
 	}
+	data = data[start:end]
 	i := strings.LastIndexByte(fb.ID, '/')
 	off, ok := block.ParseChunkOffset(fb.ID)
 	if i <= 0 || !ok {

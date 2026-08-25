@@ -1210,9 +1210,6 @@ func testPut_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 
 // testPutGet_PendingHashRoundTrips pins the contract that a FileChunk's
 // content hash survives a Put/Get round-trip regardless of block state.
-// Both per-file read accessors (ListFileChunks and GetFileChunk) must
-// surface the hash for a Pending row, because the engine CAS read path
-// resolves chunks through that index, not just through finalized rows.
 // testPutGet_StartOffsetRoundTrips: a non-zero StartOffset survives Put and
 // comes back from every read path a resolver uses — the point lookup, the
 // per-payload list, and the indexed covering lookup where the backend has one.
@@ -1299,6 +1296,9 @@ func testPutGet_StartOffsetDefaultsToChunkStart(t *testing.T, factory StoreFacto
 	}
 }
 
+// Both per-file read accessors (ListFileChunks and GetFileChunk) must
+// surface the hash for a Pending row, because the engine CAS read path
+// resolves chunks through that index, not just through finalized rows.
 func testPutGet_PendingHashRoundTrips(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
