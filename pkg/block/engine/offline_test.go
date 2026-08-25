@@ -236,6 +236,31 @@ func TestManifestShortfall(t *testing.T) {
 			described: [][2]uint64{{0, 2048}},
 		},
 		{
+			// A row reaching past a later row's whole span is a legitimate
+			// manifest shape, not damage: a row claims a prefix of its chunk, so
+			// nothing can be cut to start mid-chunk and re-cover the tail, and
+			// the straddler is what keeps those bytes readable. Coverage is the
+			// union of what rows claim, so the straddler's tail counts as placed
+			// and the byte the later row also covers is not counted twice.
+			name:      "a straddling row keeps its tail",
+			rows:      []*block.FileChunk{chunkRow("p", 0, 3072, true), chunkRow("p", 1024, 1024, true)},
+			described: [][2]uint64{{0, 3072}},
+		},
+		{
+			name:       "a straddling row's tail is missed like any other range",
+			rows:       []*block.FileChunk{chunkRow("p", 0, 3072, true), chunkRow("p", 1024, 1024, true)},
+			described:  [][2]uint64{{0, 2048}},
+			wantBytes:  1024,
+			wantRanges: 1,
+		},
+		{
+			// Rows arrive in whatever order the backend returns them, and an
+			// out-of-order pair must union the same way a sorted one does.
+			name:      "rows out of offset order still union",
+			rows:      []*block.FileChunk{chunkRow("p", 2048, 1024, true), chunkRow("p", 0, 2048, true)},
+			described: [][2]uint64{{0, 3072}},
+		},
+		{
 			// A row with no committed bytes has nothing on the remote to place,
 			// so the index having no interval for it is not a loss.
 			name:      "a pending row places nothing",
