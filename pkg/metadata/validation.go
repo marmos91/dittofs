@@ -149,8 +149,9 @@ func ValidateShareName(name string) error {
 			name, len(name), MaxShareNameLen, MaxFileHandleSize))
 	case !namesShareDirectory(name):
 		return NewInvalidArgumentError(fmt.Sprintf(
-			`share name %q must name a directory inside the shares tree, `+
-				`not "", "." or ".."`, name))
+			`share name %q must name a directory inside the shares tree: `+
+				`with its leading slashes removed it is "", "." or "..", `+
+				`none of which is a directory of its own`, name))
 	}
 	return nil
 }
@@ -158,9 +159,9 @@ func ValidateShareName(name string) error {
 // namesShareDirectory reports whether name still names a directory that can sit
 // inside the per-share tree once the leading slashes callers prepend are gone.
 //
-// The per-share data directory is built as Join(base, "shares", <name>), and
-// the sanitizer that produces that last component escapes '/' but leaves '.'
-// untouched. So ".." reaches Join intact and resolves the share's directory to
+// The per-share data directory is built as Join(base, "shares", <sanitized>),
+// where the sanitizer that produces that last component escapes '/' but leaves
+// '.' untouched. So ".." reaches Join intact and resolves the share's directory to
 // base, outside the tree that keeps shares isolated from one another, while "."
 // and the empty string collapse onto the tree itself — a directory every such
 // share would then share. None of the three names a directory of its own.

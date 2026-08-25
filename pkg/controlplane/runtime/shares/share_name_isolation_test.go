@@ -36,7 +36,13 @@ func TestAcceptedShareNamesStayInsideSharesTree(t *testing.T) {
 	}
 
 	for _, name := range names {
-		t.Run(name, func(t *testing.T) {
+		// t.Run renders an empty name as "#00", which says nothing about which
+		// case it was; label it so a failure names the input.
+		label := name
+		if label == "" {
+			label = "<empty>"
+		}
+		t.Run(label, func(t *testing.T) {
 			t.Parallel()
 
 			if err := metadata.ValidateShareName(name); err != nil {
