@@ -1537,10 +1537,16 @@ func (lm *Manager) SetLeaseEpoch(handleKey string, leaseKey [16]byte, epoch uint
 	// The convergence stops at this file, because leaseRecordsOnHandleLocked
 	// resolves by (handleKey, leaseKey). Folding in a same-key lease on another
 	// file — another client's, per the identity rule described there — hands
-	// that client an epoch no grant of its own produced, and the gap is what it
-	// acts on: per MS-SMB2 §3.2.5.19.2 a NewEpoch more than 1 past the one it
-	// last saw forces a cache purge, and one more than 32767 past it makes the
-	// client discard the break's new lease state outright.
+	// that client an epoch no grant of its own produced, and the SIZE of that
+	// jump is what it acts on.
+	//
+	// The epoch is a wrapping sequence number, not a counter: MS-SMB2
+	// §3.2.5.7.5 compares it modulo 2^16, treating the server's value as newer
+	// only when it is at most 32767 ahead. Raising an epoch is therefore not
+	// inherently safe — past that half-space boundary the value reads as OLDER,
+	// and §3.2.5.19.2 step 7 then leaves the client on its old lease state while
+	// the server believes the lease broken. A gap above 1 also forces a cache
+	// purge.
 	records := lm.leaseRecordsOnHandleLocked(handleKey, leaseKey)
 	target := epoch
 	for _, lock := range records {
