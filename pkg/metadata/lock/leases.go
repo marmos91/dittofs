@@ -1374,20 +1374,13 @@ func (lm *Manager) getLeaseStateImpl(_ context.Context, handleKey string, leaseK
 }
 
 // HasLeaseOnHandle reports whether a lease record with this key already exists
-// on this file. The predicate matches the one resolveSameKeyLeaseLocked uses to
-// decide whether a request reuses an existing record or falls through to
-// createAndGrantLease, so a false answer means the next grant on this file with
-// this key creates a record.
+// on this file, so a false answer means the next grant on this file with this
+// key creates a record.
 func (lm *Manager) HasLeaseOnHandle(handleKey string, leaseKey [16]byte) bool {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 
-	for _, l := range lm.unifiedLocks[handleKey] {
-		if l.Lease != nil && l.Lease.LeaseKey == leaseKey {
-			return true
-		}
-	}
-	return false
+	return len(lm.leaseRecordsOnHandleLocked(handleKey, leaseKey)) > 0
 }
 
 func (lm *Manager) IsTraditionalOplockForKey(handleKey string, leaseKey [16]byte) bool {
@@ -1540,14 +1533,13 @@ func (lm *Manager) SetLeaseEpoch(handleKey string, leaseKey [16]byte, epoch uint
 	// record's current epoch, then assign that single max to all of them so the
 	// lease has one epoch.
 	//
-	// The convergence stops at this file. A lease key is not an identity: the
-	// cross-file uniqueness rule is per (client, file), so another client may
-	// hold the same 16-byte value on a different file of this share. Folding
-	// that client's records into the max hands it an epoch no grant of its own
-	// produced, and the gap is what a client acts on — per MS-SMB2 §3.2.5.19.2
-	// a NewEpoch more than 1 past the one it last saw forces a cache purge, and
-	// one more than 32767 past it makes the client discard the break's new
-	// lease state outright.
+	// The convergence stops at this file, because leaseRecordsOnHandleLocked
+	// resolves by (handleKey, leaseKey). Folding in a same-key lease on another
+	// file — another client's, per the identity rule described there — hands
+	// that client an epoch no grant of its own produced, and the gap is what it
+	// acts on: per MS-SMB2 §3.2.5.19.2 a NewEpoch more than 1 past the one it
+	// last saw forces a cache purge, and one more than 32767 past it makes the
+	// client discard the break's new lease state outright.
 	records := lm.leaseRecordsOnHandleLocked(handleKey, leaseKey)
 	target := epoch
 	for _, lock := range records {
