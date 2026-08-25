@@ -84,6 +84,9 @@ type recentlyBrokenCache struct {
 	mu      sync.RWMutex
 	entries map[string]time.Time
 	ttl     time.Duration
+	// nowFn reads the current time. Tests override it to step the clock across
+	// the TTL boundary instead of sleeping.
+	nowFn func() time.Time
 }
 
 // newRecentlyBrokenCache creates a new recently-broken cache with the given TTL.
@@ -91,6 +94,7 @@ func newRecentlyBrokenCache(ttl time.Duration) *recentlyBrokenCache {
 	return &recentlyBrokenCache{
 		entries: make(map[string]time.Time),
 		ttl:     ttl,
+		nowFn:   time.Now,
 	}
 }
 
@@ -104,7 +108,7 @@ func (c *recentlyBrokenCache) IsRecentlyBroken(handleKey string) bool {
 	if !ok {
 		return false
 	}
-	if time.Since(ts) > c.ttl {
+	if c.nowFn().Sub(ts) > c.ttl {
 		delete(c.entries, handleKey)
 		return false
 	}
@@ -116,7 +120,7 @@ func (c *recentlyBrokenCache) Mark(handleKey string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.entries[handleKey] = time.Now()
+	c.entries[handleKey] = c.nowFn()
 
 	// Lazy cleanup: remove expired entries when we add new ones
 	c.cleanupLocked()
@@ -124,7 +128,7 @@ func (c *recentlyBrokenCache) Mark(handleKey string) {
 
 // cleanupLocked removes expired entries. Must be called with mu held for write.
 func (c *recentlyBrokenCache) cleanupLocked() {
-	now := time.Now()
+	now := c.nowFn()
 	for key, ts := range c.entries {
 		if now.Sub(ts) > c.ttl {
 			delete(c.entries, key)
