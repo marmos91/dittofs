@@ -364,6 +364,15 @@ func TestCopyPayload_CtimeUpdated(t *testing.T) {
 // post-txn state via the same store.
 func newCopyTestEngineWithMS(t *testing.T, coord *fakeCoordinator, ms *metadatamemory.MemoryMetadataStore) *engine.Store {
 	t.Helper()
+	bs, _ := newCopyTestEngineWithLocal(t, coord, ms)
+	return bs
+}
+
+// newCopyTestEngineWithLocal is newCopyTestEngineWithMS with the journal-backed
+// local tier handed back too, for the assertions that are about what the index
+// describes rather than what the manifest holds.
+func newCopyTestEngineWithLocal(t *testing.T, coord *fakeCoordinator, ms *metadatamemory.MemoryMetadataStore) (*engine.Store, *fs.FSStore) {
+	t.Helper()
 
 	tmpDir := t.TempDir()
 	localStore, err := fs.NewWithOptions(tmpDir, 100*1024*1024, ms, fs.FSStoreOptions{})
@@ -402,7 +411,7 @@ func newCopyTestEngineWithMS(t *testing.T, coord *fakeCoordinator, ms *metadatam
 	}
 	t.Cleanup(func() { _ = bs.Close() })
 
-	return bs
+	return bs, localStore
 }
 
 // DecrementRefCountAndReapMany loops the single-offset form so this double

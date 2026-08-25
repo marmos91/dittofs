@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"bytes"
 	"context"
 	"io/fs"
 	"math/rand"
@@ -241,20 +242,21 @@ func TestOfflineReadiness_LostIntervalIsNotSafe(t *testing.T) {
 	}
 }
 
-// TestOfflineReadiness_CloneIsIndeterminate pins the other way a share reaches
-// a shortfall, so nobody reads the refusal as proof of a lost interval.
+// TestOfflineReadiness_CloneIsRemoteOnly puts the readiness answer in front of a
+// server-side copy, which is the other way a share reaches a manifest the index
+// cannot account for.
 //
-// A server-side copy writes the destination's manifest rows and creates no
-// interval for them — the clone's bytes are the source's, already on the
-// remote, and the read path hydrates them on demand. From the index that is
-// indistinguishable from a range whose interval was lost, and the offline
-// answer is the same either way: those bytes need the remote, and the index
-// cannot say which case it is looking at.
+// The copy moves no bytes: the destination inherits the source's chunk refs, so
+// its ranges land in the manifest and, until the copy seeds them, nowhere in the
+// index. From the index alone that is indistinguishable from a range whose
+// interval was lost, and the share can only answer indeterminate — the coarse
+// answer, on any remote-backed share holding a copy nobody has read back.
 //
-// If the copy path ever seeds cold intervals for its destination rows, this
-// test is what says so: the share would then report a remote-only count
-// instead, and the refusal would be left meaning a genuine loss.
-func TestOfflineReadiness_CloneIsIndeterminate(t *testing.T) {
+// The copy path seeds those ranges after its commit, so the share reports them
+// as the remote-only count they are and a shortfall is left meaning a genuine
+// loss. Both halves are asserted here: the unseeded destination is what the
+// clone used to leave behind, and the seeded one is what it leaves now.
+func TestOfflineReadiness_CloneIsRemoteOnly(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
@@ -296,37 +298,68 @@ func TestOfflineReadiness_CloneIsIndeterminate(t *testing.T) {
 	if len(refs) == 0 {
 		t.Fatal("the source carved no placeable rows, so the clone would copy nothing")
 	}
-	if _, err := bs.CopyPayload(ctx, src, dst, refs); err != nil {
+	copied, err := bs.CopyPayload(ctx, src, dst, refs)
+	if err != nil {
 		t.Fatalf("CopyPayload: %v", err)
 	}
 
+	// The copy alone describes nothing: it is a manifest operation, and the seed
+	// below is the separate post-commit step that gives the index its account.
 	described, err := local.DataExtents(ctx, dst, size)
 	if err != nil {
 		t.Fatalf("DataExtents: %v", err)
 	}
 	if len(described) != 0 {
-		t.Fatalf("the copy created %d index extents for the destination; "+
-			"the shortfall this test describes no longer happens", len(described))
+		t.Errorf("the copy created %d index extents on its own; the seed is supposed to be the step that does", len(described))
 	}
 
-	// The memo was filled by the safe answer above, so the store is reopened
-	// over the same journal — same seed marker, same index, empty memo — rather
-	// than replaced, which would refuse for want of a seed instead.
+	if err := bs.SeedColdRefs(ctx, dst, copied); err != nil {
+		t.Fatalf("SeedColdRefs: %v", err)
+	}
+	described, err = local.DataExtents(ctx, dst, size)
+	if err != nil {
+		t.Fatalf("DataExtents after the seed: %v", err)
+	}
+	var describedBytes uint64
+	for _, e := range described {
+		describedBytes += e[1] - e[0]
+	}
+	if describedBytes != size {
+		t.Fatalf("the index describes %d bytes of the destination after the seed, want %d", describedBytes, size)
+	}
+
+	// The memo was filled by the safe answer above, so the store is reopened over
+	// the same journal — same seed marker, same index, empty memo — rather than
+	// replaced, which would refuse for want of a seed instead. The reopen is also
+	// what proves the seed reached the cold log: an in-memory-only marker would
+	// come back a hole and refuse.
 	if err := bs.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	bs, local = openOfflineEngine(t, dir, ms, mem)
 	t.Cleanup(func() { _ = bs.Close() })
 	if !local.ColdSeeded() {
-		t.Fatal("the reopened tier lost its seed marker, so the refusal below would not be the shortfall")
+		t.Fatal("the reopened tier lost its seed marker, so the answer below would not be about the clone")
 	}
 
 	got := bs.OfflineReadiness(ctx)
-	if got.Known || got.Safe() {
-		t.Errorf("a share holding an unhydrated clone reported known=%v safe=%v", got.Known, got.Safe())
+	if !got.Known {
+		t.Fatalf("a share holding a seeded clone still cannot answer: %q", got.Reason)
 	}
-	if !strings.Contains(got.Reason, "manifest places") {
-		t.Errorf("refused for some other reason than the shortfall: %q", got.Reason)
+	if got.Safe() {
+		t.Error("a share whose clone needs the remote reported offline-safe")
 	}
-	t.Logf("reason: %s", got.Reason)
+	if got.RemoteOnlyBytes != size {
+		t.Errorf("RemoteOnlyBytes = %d, want %d — the clone's ranges are the only remote-only bytes here", got.RemoteOnlyBytes, size)
+	}
+
+	// The seeded ranges still serve: a cold range and a hole reconcile against
+	// the manifest the same way, so the copy reads back byte-identical.
+	back := make([]byte, size)
+	if _, err := bs.ReadAt(ctx, dst, back, 0); err != nil {
+		t.Fatalf("read the seeded clone back: %v", err)
+	}
+	if !bytes.Equal(back, data) {
+		t.Error("the seeded clone did not read back as the source's bytes")
+	}
 }

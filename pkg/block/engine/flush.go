@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"math"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/journal"
@@ -142,6 +143,66 @@ func (bs *Store) SeedColdBatch(ctx context.Context, seeds []ColdSeed) error {
 		js = append(js, journal.ColdSeed{ID: journal.FileID(sd.PayloadID), Extents: sd.Extents})
 	}
 	return cs.SeedColdBatch(ctx, js)
+}
+
+// SeedColdRefs gives the local tier an account of the ranges a payload's chunk
+// refs place, marking each one remote-durable-but-not-local. A server-side copy
+// hands the destination the source's refs without moving a byte, so the
+// destination's ranges exist in the manifest and nowhere in the index; this is
+// what puts them there, and it is the caller's post-commit step — seeding before
+// the manifest lands would describe rows a rolled-back copy never wrote.
+//
+// It changes no read: a hole on a remote-backed share already reconciles against
+// the manifest and hydrates exactly as a cold range does. What it changes is
+// everything that reasons about residency from the index — the remote-only byte
+// count an operator acts on, and OfflineReadiness, which can tell a copy nobody
+// has read back from a range whose interval was lost only once the copy has one.
+//
+// Only the parts of each ref the index does not already describe are seeded, so
+// a copy over a destination that still holds local bytes leaves those alone, and
+// a repeat call costs nothing. Refs with no hash place no bytes (a sparse hole
+// carries no chunk) and are skipped, as are empty ones.
+//
+// One file at a time, under its shard lock, because the destination is live —
+// see journal.Store.SeedCold.
+func (bs *Store) SeedColdRefs(ctx context.Context, payloadID string, refs []block.ChunkRef) error {
+	if err := bs.enter(); err != nil {
+		return err
+	}
+	defer bs.closeMu.RUnlock()
+	// Nothing to record on a share with no remote: a cold range there has
+	// nowhere to hydrate from and fails its reads closed, where the same range
+	// left as a hole reads as the zeros it is. Local-only copies materialize real
+	// bytes into the destination's own journal, which describes them already, so
+	// there is no work here rather than work being refused — the same shape as
+	// the no-remote-hydration case below.
+	if !bs.HasRemoteStore() {
+		return nil
+	}
+	type coldSeeder interface {
+		SeedCold(ctx context.Context, id journal.FileID, extents [][2]int64) error
+	}
+	cs, ok := bs.local.(coldSeeder)
+	if !ok {
+		return nil
+	}
+	extents := make([][2]int64, 0, len(refs))
+	for _, r := range refs {
+		if r.Size == 0 || r.Hash.IsZero() {
+			continue
+		}
+		// The index addresses its ranges in int64, so a ref out past that could
+		// only be described as a negative offset. Skipping it leaves the range a
+		// hole, which still reconciles against the manifest on read.
+		if r.Offset > math.MaxInt64-uint64(r.Size) {
+			continue
+		}
+		extents = append(extents, [2]int64{int64(r.Offset), int64(r.Size)})
+	}
+	if len(extents) == 0 {
+		return nil
+	}
+	return cs.SeedCold(ctx, journal.FileID(payloadID), extents)
 }
 
 // RestoreToVersion rewinds the local journal to a snapshot's version watermark

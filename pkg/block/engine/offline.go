@@ -188,12 +188,11 @@ func offlineReadinessOf(ctx context.Context, localTier any, hasRemote bool, shor
 // same set a read can resolve however it picks between covering rows, so two
 // rows over one byte merge into one span instead of counting twice.
 //
-// A lost interval is not the only way to reach a shortfall. A server-side copy
-// writes the destination's manifest rows and no interval for them at all, so a
-// clone nobody has read back yet looks the same from here. That is not a false
-// alarm: those bytes need the remote too, and the index cannot say which of the
-// two it is looking at, which is why the answer is indeterminate rather than a
-// remote-only count.
+// A server-side copy used to be the other way here: it writes the destination's
+// manifest rows and moves no bytes, so a copy nobody had read back looked from
+// here exactly like a range whose interval was lost. The copy now seeds those
+// ranges once its manifest is committed, so it reports as the remote-only count
+// it is and a shortfall is left meaning a genuine loss.
 //
 // ponytail: one ListFileChunks per payload, the same walk warm and the
 // block-count stats take, which is why the caller memoizes the result rather
