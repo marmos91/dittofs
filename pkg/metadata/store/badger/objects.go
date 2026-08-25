@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -457,6 +458,11 @@ func loadFileChunkAtIndexOffset(txn *badger.Txn, payloadID string, off uint64) (
 // as one. Such a suffix is a row ID's suffix verbatim, so the row sits at an
 // unknown offset and its caller must refuse rather than report a hole the reader
 // would zero-fill.
+//
+// A suffix above MaxInt64 counts as not parsing here, matching the ceiling
+// block.ParseChunkOffset applies to the row's own ID. Were it kept instead, this
+// scan would place a row the covering guard then refuses, and the offset would
+// be reported as a hole rather than as the unreadable row it is.
 func scanChunkIndexOffsets(txn *badger.Txn, payloadID string, keep func(cand, best uint64, have bool) bool) (bestOff uint64, found bool, unplaceable string) {
 	prefix := []byte(fileChunkFilePrefix + payloadID + ":")
 	opts := badger.DefaultIteratorOptions
@@ -468,7 +474,7 @@ func scanChunkIndexOffsets(txn *badger.Txn, payloadID string, keep func(cand, be
 	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
 		suffix := string(it.Item().Key()[len(prefix):])
 		cand, perr := strconv.ParseUint(suffix, 10, 64)
-		if perr != nil {
+		if perr != nil || cand > math.MaxInt64 {
 			if unplaceable == "" {
 				unplaceable = suffix
 			}
