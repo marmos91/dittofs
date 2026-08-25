@@ -297,9 +297,9 @@ type NotifyRegistry struct {
 	// Defaults to notifyFlushDelay (100µs) in production. Tests that drive
 	// delivery synchronously via FlushAll set this to a large value so the
 	// background time.AfterFunc timer never fires before FlushAll stops it —
-	// otherwise the two delivery paths race on slow/contended schedulers
-	// (the Windows CI runner in particular), letting a callback run on the
-	// timer goroutine with no happens-before edge to the test's assertion.
+	// otherwise the two delivery paths race on a slow or contended scheduler,
+	// letting a callback run on the timer goroutine with no happens-before
+	// edge to the test's assertion.
 	flushDelay time.Duration
 }
 
@@ -308,6 +308,13 @@ type NotifyRegistry struct {
 // notify that the server rejected synchronously). Five seconds is generous
 // enough for any plausible per-request goroutine scheduling delay while still
 // expiring promptly if no Register ever happens.
+//
+// ponytail: a fixed 5s wall-clock ceiling. A Register delayed past it consumes
+// nothing and registers a watch its cancel has already abandoned — straight
+// back into the hang the tombstone exists to prevent. Replace with a tombstone
+// keyed to the request's own lifetime (dropped when the dispatch goroutine for
+// that MessageID finishes, however long it took) if a loaded server is ever
+// seen to exceed it.
 const cancelTombstoneTTL = 5 * time.Second
 
 // armedHandle records the buffered-events accounting for a single open
@@ -497,6 +504,11 @@ func (r *NotifyRegistry) CloseByFileID(fileID [16]byte) *PendingNotify {
 		return r.unregisterLocked(notify)
 	}
 
+	// ponytail: written on every directory CLOSE that has no watch pending,
+	// which is far more common than a missed CANCEL, and reclaimed by an O(n)
+	// sweep on each call. Size is self-limiting to the closes within one TTL,
+	// so this is bounded rather than a leak; give the map its own expiry heap
+	// if a directory-close-heavy workload ever makes the sweep show up.
 	r.closeTombstones[key] = time.Now()
 	r.gcCloseTombstonesLocked()
 	return nil
