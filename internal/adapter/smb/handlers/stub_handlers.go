@@ -667,7 +667,18 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 				"path", watchPath,
 				"sessionID", ctx.SessionID,
 				"messageID", ctx.MessageID)
-			return NewErrorResult(types.StatusNotifyCleanup), nil
+			// STATUS_NOTIFY_CLEANUP is a success-severity status, so it
+			// carries a real CHANGE_NOTIFY body (zero changes) rather than
+			// the error body NewErrorResult would produce. A header with no
+			// body fails the client's parse and takes down every request in
+			// flight on the connection, not just this one.
+			respBytes, encErr := (&ChangeNotifyResponse{
+				SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
+			}).Encode()
+			if encErr != nil {
+				return NewErrorResult(types.StatusInternalError), nil
+			}
+			return NewResult(types.StatusNotifyCleanup, respBytes), nil
 		}
 		if errors.Is(err, ErrAlreadyCancelled) {
 			logger.Debug("CHANGE_NOTIFY: pre-arrival CANCEL — replying STATUS_CANCELLED",

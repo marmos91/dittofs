@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync"
@@ -2932,5 +2933,60 @@ func TestNotifyRegistry_ConcurrentCloseRacesRegister(t *testing.T) {
 			t.Fatalf("iter %d: WatcherCount = %d, want 0 (closed=%v regErr=%v)",
 				i, got, closed != nil, regErr)
 		}
+	}
+}
+
+// TestChangeNotify_HandleClosed_ReturnsEncodedCleanupBody pins the wire shape
+// of the synchronous STATUS_NOTIFY_CLEANUP reply.
+//
+// STATUS_NOTIFY_CLEANUP is success-severity, so the response carries a real
+// CHANGE_NOTIFY body with zero changes. Returning it with no body at all
+// leaves a bare SMB2 header on the wire, which fails the client's parse and
+// fails every request in flight on that connection — not just this one.
+func TestChangeNotify_HandleClosed_ReturnsEncodedCleanupBody(t *testing.T) {
+	h := NewHandler()
+	h.NotifyRegistry = NewNotifyRegistry()
+	h.MaxTransactSize = 1 << 20
+
+	fileID := [16]byte{0x43}
+	openFile := (&OpenFile{
+		FileID: fileID, IsDirectory: true, ShareName: "share1", SessionID: 1, TreeID: 1,
+		DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
+	}).WithName(OpenName{Path: "/dir"})
+	h.StoreOpenFile(openFile)
+
+	// CLOSE ran before this CHANGE_NOTIFY could register.
+	h.NotifyRegistry.CloseByFileID(fileID)
+
+	ctx := &SMBHandlerContext{
+		SessionID: 1, TreeID: 1, MessageID: 78, ConnID: 5,
+		TryReserveAsync: func() bool { return true },
+		ReleaseAsync:    func() {},
+		AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
+			return nil
+		},
+	}
+
+	res, err := h.ChangeNotify(ctx, encodeChangeNotifyReq(0, 1000, fileID, FileNotifyChangeFileName))
+	if err != nil {
+		t.Fatalf("ChangeNotify error: %v", err)
+	}
+	if res.Status != types.StatusNotifyCleanup {
+		t.Fatalf("status = %v, want STATUS_NOTIFY_CLEANUP", res.Status)
+	}
+	if len(res.Data) == 0 {
+		t.Fatal("STATUS_NOTIFY_CLEANUP returned with no body — bare header on the wire")
+	}
+	if got := binary.LittleEndian.Uint16(res.Data[0:2]); got != 9 {
+		t.Errorf("body StructureSize = %d, want 9", got)
+	}
+	if got := binary.LittleEndian.Uint32(res.Data[4:8]); got != 0 {
+		t.Errorf("OutputBufferLength = %d, want 0", got)
+	}
+	if res.AsyncId != 0 {
+		t.Errorf("AsyncId = %d on synchronous cleanup, want 0", res.AsyncId)
+	}
+	if got := h.NotifyRegistry.WatcherCount(); got != 0 {
+		t.Errorf("WatcherCount = %d, want 0", got)
 	}
 }
