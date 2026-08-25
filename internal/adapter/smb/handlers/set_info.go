@@ -950,7 +950,7 @@ func (h *Handler) setFileInfoFromStore(
 		// that a concurrent CLOSE is mid-removing is observed atomically — no
 		// spurious SHARING_VIOLATION.
 		h.renameScanMu.Lock()
-		conflict := h.checkParentDirRenameConflict(openFile.FileID, toDir)
+		conflict := h.checkParentDirRenameConflict(openFile, toDir)
 		h.renameScanMu.Unlock()
 		if conflict && !bytes.Equal(toDir, openFile.Name().ParentHandle) {
 			h.breakDstParentDirHandleLeasesForRename(authCtx, toDir, openFile)
@@ -962,7 +962,7 @@ func (h *Handler) setFileInfoFromStore(
 			// upgrades the lease and the second setinfo runs). Authoritative
 			// under the mutex.
 			h.renameScanMu.Lock()
-			conflict = h.checkParentDirRenameConflict(openFile.FileID, toDir)
+			conflict = h.checkParentDirRenameConflict(openFile, toDir)
 			h.renameScanMu.Unlock()
 		}
 		if conflict {
