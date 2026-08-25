@@ -532,7 +532,7 @@ func ProcessLeaseCreateContext(
 			// starting point, one past what it asked for.
 			nextEpoch := leaseReq.Epoch + 1
 			if nextEpoch > epoch {
-				leaseMgr.SetLeaseEpoch(shareName, leaseReq.LeaseKey, nextEpoch)
+				leaseMgr.SetLeaseEpoch(fileHandle, shareName, leaseReq.LeaseKey, nextEpoch)
 				epoch = nextEpoch
 			}
 		}

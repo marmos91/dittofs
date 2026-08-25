@@ -947,7 +947,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 						// subsequent break notifications carry the correct
 						// NewEpoch rather than the re-registration's reset value.
 						if reportedLeaseEpoch != epoch {
-							h.LeaseManager.SetLeaseEpoch(tree.ShareName, restored.LeaseKey, reportedLeaseEpoch)
+							h.LeaseManager.SetLeaseEpoch(lockFileHandle, tree.ShareName, restored.LeaseKey, reportedLeaseEpoch)
 						}
 						// Build lease response context
 						if leaseCtx := FindCreateContext(req.CreateContexts, LeaseContextTagRequest); leaseCtx != nil {
@@ -1703,7 +1703,7 @@ func (h *Handler) refreshReplayLease(ctx *SMBHandlerContext, req *CreateRequest,
 	if h.LeaseManager == nil {
 		return types.StatusSuccess
 	}
-	state, epoch, found := h.LeaseManager.GetLeaseState(ctx.Context, open.ShareName, open.LeaseKey)
+	state, epoch, found := h.LeaseManager.GetLeaseState(ctx.Context, lock.FileHandle(open.MetadataHandle), open.ShareName, open.LeaseKey)
 	if !found {
 		return types.StatusSuccess
 	}

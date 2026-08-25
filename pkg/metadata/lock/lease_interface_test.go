@@ -186,7 +186,7 @@ func TestLockManager_HasLeaseOperations(t *testing.T) {
 	_ = err
 
 	// GetLeaseState should exist
-	state, epoch, found := lm.GetLeaseState(ctx, leaseKey)
+	state, epoch, found := lm.GetLeaseState(ctx, "file1", leaseKey)
 	_ = state
 	_ = epoch
 	_ = found

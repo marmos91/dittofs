@@ -402,7 +402,7 @@ func TestProcessLeaseCreateContext_NoneProbeDoesNotAdvanceEpoch(t *testing.T) {
 	}
 
 	// Server-side tracking should also remain unchanged.
-	_, persistedEpoch, found := mgr.GetLeaseState(ctx, leaseKey)
+	_, persistedEpoch, found := mgr.GetLeaseState(ctx, string(fileHandle), leaseKey)
 	if !found {
 		t.Fatal("lease record disappeared after None-probe")
 	}
@@ -459,7 +459,7 @@ func TestProcessLeaseCreateContext_UnchangedStateDoesNotAdvanceEpoch(t *testing.
 		t.Errorf("re-open response epoch = 0x%x, want 0x%x — an unchanged lease state must not advance the epoch", resp2.Epoch, grantedEpoch)
 	}
 
-	_, persistedEpoch, found := mgr.GetLeaseState(ctx, leaseKey)
+	_, persistedEpoch, found := mgr.GetLeaseState(ctx, string(fileHandle), leaseKey)
 	if !found {
 		t.Fatal("lease record disappeared after re-open")
 	}

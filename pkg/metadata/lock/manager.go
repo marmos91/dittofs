@@ -145,27 +145,34 @@ type LockManager interface {
 	ReclaimLease(ctx context.Context, leaseKey [16]byte,
 		requestedState uint32, isDirectory bool, clientID string) (*UnifiedLock, error)
 
-	// GetLeaseState returns the current state and epoch for a lease key.
-	// found=false if no lease exists with that key.
-	GetLeaseState(ctx context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool)
+	// GetLeaseState returns the current state and epoch of the lease that
+	// leaseKey holds on handleKey. found=false if that file holds no lease
+	// under that key.
+	//
+	// The file is a parameter rather than resolved from the key because the
+	// key alone does not identify a lease: the cross-file uniqueness rule is
+	// scoped per (client, file), so another client may hold the same 16-byte
+	// value on a different file of this share. The state and epoch returned
+	// here go back out on the wire on a durable disconnect and on a replayed
+	// CREATE.
+	GetLeaseState(ctx context.Context, handleKey string, leaseKey [16]byte) (state uint32, epoch uint16, found bool)
 
-	// IsTraditionalOplockForKey returns true if the lease record for this key
-	// was granted via RequestLeaseAsOplock (traditional oplock, not SMB2.1+ lease).
-	IsTraditionalOplockForKey(leaseKey [16]byte) bool
+	// IsTraditionalOplockForKey returns true if the lease record this key holds
+	// on handleKey was granted via RequestLeaseAsOplock (traditional oplock,
+	// not SMB2.1+ lease).
+	IsTraditionalOplockForKey(handleKey string, leaseKey [16]byte) bool
 
 	// HasLeaseOnHandle reports whether a lease record with this key already
-	// exists on this file. Unlike GetLeaseState it does not search across
-	// files, so it cannot be answered by another client's lease that happens
-	// to reuse the same key value on a different file. It asks exactly what
-	// RequestLease asks when it decides whether to reuse a record or create
-	// one, which is what makes it usable as a "would this grant be the first
-	// for this key on this file" test.
+	// exists on this file. It asks exactly what RequestLease asks when it
+	// decides whether to reuse a record or create one, which is what makes it
+	// usable as a "would this grant be the first for this key on this file"
+	// test.
 	HasLeaseOnHandle(handleKey string, leaseKey [16]byte) bool
 
-	// SetLeaseEpoch sets the epoch on an existing lease identified by leaseKey.
-	// Per MS-SMB2 3.3.5.9: For V2 leases, the server tracks the client's epoch.
-	// Returns false if no lease was found with the given key.
-	SetLeaseEpoch(leaseKey [16]byte, epoch uint16) bool
+	// SetLeaseEpoch sets the epoch on the lease that leaseKey holds on
+	// handleKey. Per MS-SMB2 3.3.5.9: For V2 leases, the server tracks the
+	// client's epoch. Returns false if that file holds no lease under that key.
+	SetLeaseEpoch(handleKey string, leaseKey [16]byte, epoch uint16) bool
 
 	// ========================================================================
 	// Delegation Operations

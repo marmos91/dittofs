@@ -7,6 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -249,10 +250,11 @@ func grantRWHLease(t *testing.T, leaseMgr *lease.LeaseManager, leaseKey [16]byte
 		t.Fatalf("granted lease state 0x%x, want RWH (0x7)", resp.LeaseState)
 	}
 	return &OpenFile{
-		SessionID:   sessionID,
-		ShareName:   "share1",
-		OplockLevel: OplockLevelLease,
-		LeaseKey:    leaseKey,
+		SessionID:      sessionID,
+		ShareName:      "share1",
+		MetadataHandle: metadata.FileHandle(fh),
+		OplockLevel:    OplockLevelLease,
+		LeaseKey:       leaseKey,
 	}
 }
 

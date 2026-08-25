@@ -644,20 +644,21 @@ func (lm *LeaseManager) ReleaseSessionLeases(ctx context.Context, sessionID uint
 	return nil
 }
 
-// GetLeaseState returns the state and epoch of a lease key in one share.
+// GetLeaseState returns the state and epoch of the lease this key holds on one
+// file of one share.
 //
-// The share is a parameter rather than resolved from the key because the key
-// alone does not identify a lease: two clients may present the same 16-byte
-// value in different shares, and the wrong share's lock manager reports a
-// foreign lease's state and epoch — values that go straight back out on the
-// wire on a durable reconnect or a replayed CREATE.
-func (lm *LeaseManager) GetLeaseState(ctx context.Context, shareName string, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
+// The file and the share are parameters rather than resolved from the key
+// because the key alone does not identify a lease: two clients may present the
+// same 16-byte value on different files, or in different shares, and the wrong
+// record reports a foreign lease's state and epoch — values that go straight
+// back out on the wire on a durable reconnect or a replayed CREATE.
+func (lm *LeaseManager) GetLeaseState(ctx context.Context, fileHandle lock.FileHandle, shareName string, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
 		return lock.LeaseStateNone, 0, false
 	}
 
-	return lockMgr.GetLeaseState(ctx, leaseKey)
+	return lockMgr.GetLeaseState(ctx, string(fileHandle), leaseKey)
 }
 
 // HasLeaseOnHandle reports whether a lease record with this key already exists
@@ -840,8 +841,8 @@ func (lm *LeaseManager) BreakLeasesOnByteRangeLock(
 		eo := excludeOwner[0]
 		if eo.ExcludeLeaseKey != ([16]byte{}) {
 			ctx := context.Background()
-			state, _, found := lockMgr.GetLeaseState(ctx, eo.ExcludeLeaseKey)
-			isTraditional := lockMgr.IsTraditionalOplockForKey(eo.ExcludeLeaseKey)
+			state, _, found := lockMgr.GetLeaseState(ctx, handleKey, eo.ExcludeLeaseKey)
+			isTraditional := lockMgr.IsTraditionalOplockForKey(handleKey, eo.ExcludeLeaseKey)
 			if found && (!isTraditional || state&lock.LeaseStateWrite != 0) {
 				exclude = eo
 			}
@@ -1316,20 +1317,22 @@ func (lm *LeaseManager) BreakParentReadLeasesOnModify(
 	return lockMgr.WaitForBreakCompletion(waitCtx, handleKey)
 }
 
-// SetLeaseEpoch sets the epoch on an existing lease identified by leaseKey in
-// one share. Per MS-SMB2 3.3.5.9: for V2 leases, the server should track the
+// SetLeaseEpoch sets the epoch on the lease this key holds on one file of one
+// share. Per MS-SMB2 3.3.5.9: for V2 leases, the server should track the
 // client's epoch from the RqLs create context.
 //
-// The share is a parameter for the same reason it is one on GetLeaseState: the
-// key alone does not identify a lease, and the epoch written here is the
-// NewEpoch of the next break notification for whatever lease it lands on.
-func (lm *LeaseManager) SetLeaseEpoch(shareName string, leaseKey [16]byte, epoch uint16) {
+// The file and the share are parameters for the same reason they are on
+// GetLeaseState: the key alone does not identify a lease, and the epoch written
+// here is the NewEpoch of the next break notification for whatever lease it
+// lands on. Seeding this client's epoch onto another client's lease hands that
+// client a NewEpoch no grant of its own produced.
+func (lm *LeaseManager) SetLeaseEpoch(fileHandle lock.FileHandle, shareName string, leaseKey [16]byte, epoch uint16) {
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
 		return
 	}
 
-	lockMgr.SetLeaseEpoch(leaseKey, epoch)
+	lockMgr.SetLeaseEpoch(string(fileHandle), leaseKey, epoch)
 }
 
 // BreakReadLeasesOnWrite breaks Read (Level II) oplocks/leases held by other
@@ -1361,8 +1364,8 @@ func (lm *LeaseManager) BreakReadLeasesOnWrite(
 	var exclude *lock.LockOwner
 	if excludeLeaseKey != ([16]byte{}) {
 		ctx := context.Background()
-		state, _, found := lockMgr.GetLeaseState(ctx, excludeLeaseKey)
-		isTraditional := lockMgr.IsTraditionalOplockForKey(excludeLeaseKey)
+		state, _, found := lockMgr.GetLeaseState(ctx, handleKey, excludeLeaseKey)
+		isTraditional := lockMgr.IsTraditionalOplockForKey(handleKey, excludeLeaseKey)
 		// Leases: always exclude the writer's own key (nobreakself per MS-SMB2 §3.3.5.9).
 		// Traditional oplocks: exclude only when the writer has Write caching.
 		// A Level II oplock holder must self-break on write per Samba

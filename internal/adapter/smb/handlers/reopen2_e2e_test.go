@@ -382,7 +382,7 @@ func TestReopen2_V2Lease_RestoresRWH(t *testing.T) {
 		t.Fatal("initial open: missing DH2Q grant blob")
 	}
 	// Confirm the lease really sits at RWH in the LeaseManager before disconnect.
-	if state, _, found := e.h.LeaseManager.GetLeaseState(context.Background(), e.tree.ShareName, leaseKey); !found ||
+	if state, _, found := e.h.LeaseManager.GetLeaseState(context.Background(), lock.FileHandle(of.MetadataHandle), e.tree.ShareName, leaseKey); !found ||
 		state != uint32(lock.LeaseStateRead|lock.LeaseStateWrite|lock.LeaseStateHandle) {
 		t.Fatalf("initial open: LeaseManager state = 0x%x found=%v, want RWH", state, found)
 	}
