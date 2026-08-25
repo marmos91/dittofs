@@ -34,6 +34,27 @@ func seedRows(t *testing.T, tx *manifestTx, payloadID string, spans [][2]uint64)
 	}
 }
 
+// resolveAt returns the start offset of the row a read at off resolves to — the
+// greatest start among the rows covering off — or -1 when nothing covers it. That
+// is the rule the read path applies (findRowCoveringOffset), and a reap has to be
+// judged by what it makes a read serve rather than by the row list alone: a list
+// that tiles [0, size) can still hand back an older row's bytes wherever a
+// surviving row starts later than the fresh row over the same offsets.
+func resolveAt(t *testing.T, tx *manifestTx, payloadID string, off int64) int64 {
+	t.Helper()
+	rows, err := tx.ListFileChunks(context.Background(), payloadID)
+	require.NoError(t, err)
+	hit := int64(-1)
+	for _, r := range rows {
+		start, ok := block.ParseChunkOffset(r.ID)
+		require.True(t, ok)
+		if off >= int64(start) && off-int64(start) < int64(r.DataSize) && int64(start) > hit {
+			hit = int64(start)
+		}
+	}
+	return hit
+}
+
 // TestReapSupersededManifest_NarrowsStraddler pins the tiling invariant across a
 // carve run that starts in the middle of an existing row. The row starting before
 // the run cannot be deleted — it is the only cover for the bytes before the run —
@@ -53,7 +74,7 @@ func TestReapSupersededManifest_NarrowsStraddler(t *testing.T) {
 	seedRows(t, tx, pid, [][2]uint64{{2500, 1200}, {3700, 1300}})
 	newOffsets := map[int64]struct{}{2500: {}, 3700: {}}
 
-	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, 2500, 5000, newOffsets))
+	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, [][2]int64{{2500, 5000}}, newOffsets))
 
 	require.Equal(t, [][2]int64{
 		{0, 1000},
@@ -77,13 +98,68 @@ func TestReapSupersededManifest_KeepsStraddlerReachingPastRun(t *testing.T) {
 	seedRows(t, tx, pid, [][2]uint64{{2000, 1000}})
 	newOffsets := map[int64]struct{}{2000: {}}
 
-	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, 2000, 3000, newOffsets))
+	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, [][2]int64{{2000, 3000}}, newOffsets))
 
 	require.Equal(t, [][2]int64{
 		{0, 1000},
 		{1000, 6000}, // kept whole: its tail past 3000 has no other cover
 		{2000, 3000},
 	}, tiling(t, tx, pid))
+
+	// The straddler starts before the run, so the fresh row is the greater start
+	// at every offset inside it: the whole re-carved span reads back fresh bytes.
+	require.Equal(t, int64(2000), resolveAt(t, tx, pid, 2000))
+	require.Equal(t, int64(2000), resolveAt(t, tx, pid, 2999))
+	// Outside the run the straddler is the only cover, which is why it is kept.
+	require.Equal(t, int64(1000), resolveAt(t, tx, pid, 1999))
+	require.Equal(t, int64(1000), resolveAt(t, tx, pid, 3000))
+	require.Equal(t, int64(1000), resolveAt(t, tx, pid, 5999))
+	require.Equal(t, int64(-1), resolveAt(t, tx, pid, 6000))
+}
+
+// TestReapSupersededManifest_KeepsInteriorRowReachingPastRun pins both what the
+// reap does with a row that starts inside the run and ends past it, and what a
+// read then gets — which are not the same question. The row survives whole:
+// deleting it, which is what its start offset alone would say to do, strands
+// [runEnd, rowEnd) with no cover, and no row can be made to start mid-chunk to
+// take that stretch over, so those bytes would read back as zeros.
+//
+// Surviving is not the same as being right. Coverage resolves to the greatest
+// start, so over [rowStart, runEnd) the spared row outranks the fresh row that
+// also covers those offsets and serves what they held before the carve. The reap
+// has no better move — it cannot narrow a row off its own head — so the
+// assertions below record that stale window instead of claiming there is none.
+// Only carving through to rowEnd removes it.
+func TestReapSupersededManifest_KeepsInteriorRowReachingPastRun(t *testing.T) {
+	const pid = "share/p"
+	ctx := context.Background()
+	tx := newManifestTx(pid)
+
+	// The run [2000, 3000) stops inside the row at 2500, which reaches 6000.
+	seedRows(t, tx, pid, [][2]uint64{{0, 2000}, {2000, 500}, {2500, 3500}})
+	// Re-carved: one fresh row tiling the run.
+	seedRows(t, tx, pid, [][2]uint64{{2000, 1000}})
+	newOffsets := map[int64]struct{}{2000: {}}
+
+	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, [][2]int64{{2000, 3000}}, newOffsets))
+	require.Equal(t, [][2]int64{
+		{0, 2000},
+		{2000, 3000}, // the fresh row; the stale [2000, 2500) it replaced is gone
+		{2500, 6000}, // kept whole: its tail past 3000 has no other cover
+	}, tiling(t, tx, pid))
+
+	// Below the spared row's start the fresh row is the greatest start and wins.
+	require.Equal(t, int64(2000), resolveAt(t, tx, pid, 2000))
+	require.Equal(t, int64(2000), resolveAt(t, tx, pid, 2499))
+	// From that start to the run's end the spared row is the greatest start, so it
+	// wins over the fresh row: these offsets were re-carved, yet a read is served
+	// the pre-carve chunk. This is the stale window the reap cannot close.
+	require.Equal(t, int64(2500), resolveAt(t, tx, pid, 2500))
+	require.Equal(t, int64(2500), resolveAt(t, tx, pid, 2999))
+	// Past the run the spared row is the only cover, which is why it is kept.
+	require.Equal(t, int64(2500), resolveAt(t, tx, pid, 3000))
+	require.Equal(t, int64(2500), resolveAt(t, tx, pid, 5999))
+	require.Equal(t, int64(-1), resolveAt(t, tx, pid, 6000))
 }
 
 // TestReapSupersededManifest_LeavesDisjointRowsAlone keeps the reap from
@@ -96,9 +172,97 @@ func TestReapSupersededManifest_LeavesDisjointRowsAlone(t *testing.T) {
 	seedRows(t, tx, pid, [][2]uint64{{0, 2000}, {2000, 1000}})
 	newOffsets := map[int64]struct{}{2000: {}}
 
-	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, 2000, 3000, newOffsets))
+	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, [][2]int64{{2000, 3000}}, newOffsets))
 
 	require.Equal(t, [][2]int64{{0, 2000}, {2000, 3000}}, tiling(t, tx, pid))
+}
+
+// TestReapSupersededManifest_ManySpans reaps a whole carve pass in one call: the
+// spans are the committed prefixes of the pass's dirty runs, and the un-recarved
+// bytes in the holes between them keep every row they had.
+func TestReapSupersededManifest_ManySpans(t *testing.T) {
+	const pid = "share/p"
+	ctx := context.Background()
+	tx := newManifestTx(pid)
+
+	// Three 1000-byte rows per 2000-byte span, each span followed by a 1000-byte
+	// hole the pass never re-carved.
+	seedRows(t, tx, pid, [][2]uint64{
+		{0, 1000}, {1000, 1000}, {2000, 1000}, // span [0, 2000) + hole [2000, 3000)
+		{3000, 1000}, {4000, 1000}, {5000, 1000}, // span [3000, 5000) + hole
+		{6000, 1000}, {7000, 1000}, {8000, 1000}, // span [6000, 8000) + hole
+	})
+	// Each span re-tiled by one fresh row.
+	seedRows(t, tx, pid, [][2]uint64{{0, 2000}, {3000, 2000}, {6000, 2000}})
+	newOffsets := map[int64]struct{}{0: {}, 3000: {}, 6000: {}}
+	spans := [][2]int64{{0, 2000}, {3000, 5000}, {6000, 8000}}
+
+	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, spans, newOffsets))
+	require.Equal(t, [][2]int64{
+		{0, 2000},
+		{2000, 3000}, // hole: untouched
+		{3000, 5000},
+		{5000, 6000}, // hole: untouched
+		{6000, 8000},
+		{8000, 9000}, // hole: untouched
+	}, tiling(t, tx, pid))
+}
+
+// TestReapSupersededManifest_RowSpanningSeveralSpans pins which span acts on a
+// row long enough to cover more than one: the first whose end it does not reach
+// past. Acting on it at the earlier span would strand the stretch beyond that
+// span, so the row survives there and is narrowed at the later one instead —
+// exactly what reaping the spans one at a time in ascending order does.
+func TestReapSupersededManifest_RowSpanningSeveralSpans(t *testing.T) {
+	const pid = "share/p"
+	ctx := context.Background()
+	tx := newManifestTx(pid)
+
+	// One row [1000, 4500) covers span [2000, 3000), the hole after it, and part
+	// of span [4000, 5000).
+	seedRows(t, tx, pid, [][2]uint64{{0, 1000}, {1000, 3500}, {5000, 1000}})
+	seedRows(t, tx, pid, [][2]uint64{{2000, 1000}, {4000, 1000}})
+	newOffsets := map[int64]struct{}{2000: {}, 4000: {}}
+
+	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, [][2]int64{{2000, 3000}, {4000, 5000}}, newOffsets))
+	require.Equal(t, [][2]int64{
+		{0, 1000},
+		{1000, 4000}, // narrowed at the second span, not the first
+		{2000, 3000},
+		{4000, 5000},
+		{5000, 6000},
+	}, tiling(t, tx, pid))
+}
+
+// TestReapSupersededManifest_CostIsIndependentOfSpanCount pins what makes the
+// pass-end reap one call rather than one per run: it reads the manifest a fixed
+// number of times whatever the run count, so a file with tens of thousands of
+// dirty runs does not hold the journal's carve lock for a scan per run.
+func TestReapSupersededManifest_CostIsIndependentOfSpanCount(t *testing.T) {
+	const pid = "share/p"
+	ctx := context.Background()
+
+	reads := func(spanCount int) int {
+		tx := newManifestTx(pid)
+		var seed [][2]uint64
+		var spans [][2]int64
+		newOffsets := map[int64]struct{}{}
+		for i := 0; i < spanCount; i++ {
+			base := uint64(i) * 3000
+			seed = append(seed, [2]uint64{base, 1000}, [2]uint64{base + 1000, 1000}, [2]uint64{base + 2000, 1000})
+			spans = append(spans, [2]int64{int64(base), int64(base) + 2000})
+			newOffsets[int64(base)] = struct{}{}
+		}
+		seedRows(t, tx, pid, seed)
+		for _, sp := range spans {
+			seedRows(t, tx, pid, [][2]uint64{{uint64(sp[0]), 2000}})
+		}
+		tx.lists = 0
+		require.NoError(t, ReapSupersededManifest(ctx, tx, pid, spans, newOffsets))
+		return tx.lists
+	}
+
+	require.Equal(t, reads(1), reads(16), "manifest reads must not scale with the span count")
 }
 
 // TestManifestRowEndAfter covers the offset a carve run has to reach so the reap

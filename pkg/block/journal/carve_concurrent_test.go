@@ -185,15 +185,18 @@ func TestCarveSharedRecordAcrossRuns(t *testing.T) {
 type extendingSink struct {
 	*fakeSink
 	mu      sync.Mutex
-	reaps   [][2]int64
+	reaps   [][2]int64 // every span the sink was asked to reap, in call order
+	calls   int
 	gateOff int64
 	rowEnd  int64
 	gated   int
-	// failFirstReap, when set, is returned by the first reap only, so a test can
-	// see whether one run's reap failure suppresses the runs after it.
+	// failFirstReap, when set, is returned by the first reap call only, so a test
+	// can see a reap failure surface out of Carve.
 	failFirstReap error
 	// straddleEverywhere answers every lookup with a row reaching one byte past
 	// the offset asked about, so no reap span ever ends on a row boundary.
+	// Journal reaps over its span either way — sparing the straddling row is the
+	// metadata reap's job, not a reason to skip the whole reap.
 	straddleEverywhere bool
 }
 
@@ -210,10 +213,11 @@ func (e *extendingSink) ManifestRowEndAfter(_ context.Context, _ FileID, off int
 	return e.rowEnd, nil
 }
 
-func (e *extendingSink) ReapSupersededManifest(_ context.Context, _ FileID, runStart, runEnd int64, _ map[int64]struct{}) error {
+func (e *extendingSink) ReapSupersededManifest(_ context.Context, _ FileID, spans [][2]int64, _ map[int64]struct{}) error {
 	e.mu.Lock()
-	e.reaps = append(e.reaps, [2]int64{runStart, runEnd})
-	first := len(e.reaps) == 1
+	e.reaps = append(e.reaps, spans...)
+	e.calls++
+	first := e.calls == 1
 	e.mu.Unlock()
 	if first {
 		return e.failFirstReap
@@ -222,13 +226,12 @@ func (e *extendingSink) ReapSupersededManifest(_ context.Context, _ FileID, runS
 }
 
 // TestCarveRunDoesNotExtendPastNextRun pins the end-to-end property: no run's
-// reap range ever reaches into a range another run owns, and a run that could
-// not be widened to a row boundary is not reaped at all. The run-end reap
-// deletes every manifest row starting inside its range that it did not itself
-// write, whole and regardless of how far past the range it reaches, so both a
-// reap range crossing into the next run and a reap ending inside a row would
-// drop cover nothing replaces, leaving an uncovered range that cold-reads as
-// zeros with no error anywhere.
+// reap range ever reaches into a range another run owns, and every run that
+// committed rows is reaped over exactly the range those rows cover — including a
+// run that could not be widened to a row boundary. A reap range crossing into
+// the next run would delete cover that run has not replaced yet; a reap range
+// short of the rows it committed would leave the rows they superseded alive
+// forever, since nothing re-carves an already-flipped range.
 //
 // It does not, on its own, pin the extension refusal in extendRunToRowEnd —
 // warmTail's own all-or-nothing bail on a non-warm interval produces the same
@@ -292,11 +295,11 @@ func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 		t.Fatalf("the gated lookup was never reached, so the extension path this test drives was never exercised and the assertions below prove nothing")
 	}
 	// The first run ends at the gated offset, inside a row reaching to 4*rec, and
-	// the refusal above left it there: its reap is refused rather than allowed to
-	// delete that row and strand the stretch past the run. The second run ends on
-	// a boundary and is reaped as usual.
-	if want := [][2]int64{{2 * rec, 3 * rec}}; !reflect.DeepEqual(reaps, want) {
-		t.Fatalf("reaps=%v, want %v: only the run whose end is a row boundary", reaps, want)
+	// the refusal above left it there — it is still reaped over its own range,
+	// since the straddling row survives that reap whole and nothing is stranded.
+	// The second run ends on a boundary and is reaped as usual.
+	if want := [][2]int64{{0, rec}, {2 * rec, 3 * rec}}; !reflect.DeepEqual(reaps, want) {
+		t.Fatalf("reaps=%v, want %v: each run over exactly the range its rows cover", reaps, want)
 	}
 	// No run's reap range may reach into a range another run is carving.
 	for _, r := range reaps {
@@ -473,7 +476,7 @@ func (r *reapCtxSink) CommitBlock(ctx context.Context, chunks []CarveChunk) erro
 	return err
 }
 
-func (r *reapCtxSink) ReapSupersededManifest(_ context.Context, _ FileID, _, _ int64, _ map[int64]struct{}) error {
+func (r *reapCtxSink) ReapSupersededManifest(_ context.Context, _ FileID, spans [][2]int64, _ map[int64]struct{}) error {
 	// Only count a reap that runs after the failure has landed: that is the one
 	// a completed run would lose if the failure suppressed it.
 	select {
@@ -485,7 +488,7 @@ func (r *reapCtxSink) ReapSupersededManifest(_ context.Context, _ FileID, _, _ i
 		return nil
 	}
 	r.mu.Lock()
-	r.reaps++
+	r.reaps += len(spans)
 	r.mu.Unlock()
 	return nil
 }

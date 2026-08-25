@@ -228,7 +228,24 @@ func evictable(seg *segmentMeta) bool {
 // eviction serves. Retrying is safe because the failure leaves the index and the
 // segment untouched; at worst it left markers for bytes that are still local, which
 // the persist-first order already tolerates.
+//
+// carveMu is held for the same reason reclaimEmptied and the GC pass hold it, and
+// the segment-busy claim does not cover: a carve pass flips its records synced as
+// each block commits, but the manifest rows those fresh rows superseded are reaped
+// only once it has packed the whole file. A record that flipped in that window is
+// evictable while stale rows still overlap its range, and coverage resolves to the
+// greatest covering start — so cold-marking it there lets a stale row starting
+// later than a fresh one serve old bytes on the cold read. Holding carveMu also
+// keeps the segment's fd open under carve's unlocked preads, which readRecord
+// already documents as relying on it.
+//
+// ponytail: this waits out the shard's whole carve pass, uploads included, rather
+// than skipping the shard; make it a TryLock that moves on to the next shard's
+// coldest segment if a writer is ever seen stalling behind a live carve.
 func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (freed int64, err error) {
+	sh.carveMu.Lock()
+	defer sh.carveMu.Unlock()
+
 	defer func() {
 		if err != nil {
 			seg.busy.Store(false)

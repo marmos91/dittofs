@@ -147,15 +147,15 @@ func (s localBlockSink) CommitBlock(ctx context.Context, chunks []journal.CarveC
 	return commitManifestRows(ctx, s.committer, s.commitLocks, string(chunks[0].FileID), manifestRows(chunks))
 }
 
-// ReapSupersededManifest implements journal's optional run-end reap: once a carve
-// run's rows are all committed, delete the manifest rows the run superseded so the
-// per-file manifest tiles [0,size) with no stale straddler or gap (#953). A nil
+// ReapSupersededManifest implements journal's optional pass-end reap: once a
+// carve pass's rows are all committed, delete the manifest rows they superseded so
+// the per-file manifest tiles [0,size) with no stale straddler or gap (#953). A nil
 // committer (the clone fixture) has no manifest to reap.
-func (s localBlockSink) ReapSupersededManifest(ctx context.Context, id journal.FileID, runStart, runEnd int64, newOffsets map[int64]struct{}) error {
+func (s localBlockSink) ReapSupersededManifest(ctx context.Context, id journal.FileID, spans [][2]int64, newOffsets map[int64]struct{}) error {
 	if s.committer == nil {
 		return nil
 	}
-	return reapSupersededManifest(ctx, s.committer, s.commitLocks, string(id), runStart, runEnd, newOffsets)
+	return reapSupersededManifest(ctx, s.committer, s.commitLocks, string(id), spans, newOffsets)
 }
 
 // ManifestRowEndAfter answers journal's run-extension query: how far the manifest
@@ -187,24 +187,24 @@ func manifestRowEndAfter(ctx context.Context, c blockCommitter, payloadID string
 	return end, err
 }
 
-// reapSupersededManifest runs the run-end reap under the same per-file lock
+// reapSupersededManifest runs the pass-end reap under the same per-file lock
 // CommitBlock takes, since both end in a read-modify-write of the file's
 // File.Blocks row and would otherwise abort each other under badger's SSI.
-func reapSupersededManifest(ctx context.Context, c blockCommitter, locks *carveCommitLocks, payloadID string, runStart, runEnd int64, newOffsets map[int64]struct{}) error {
+func reapSupersededManifest(ctx context.Context, c blockCommitter, locks *carveCommitLocks, payloadID string, spans [][2]int64, newOffsets map[int64]struct{}) error {
 	if mu := locks.forKey(payloadID); mu != nil {
 		mu.Lock()
 		defer mu.Unlock()
 	}
 	return c.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return metadata.ReapSupersededManifest(ctx, tx, payloadID, runStart, runEnd, newOffsets)
+		return metadata.ReapSupersededManifest(ctx, tx, payloadID, spans, newOffsets)
 	})
 }
 
-// ReapSupersededManifest implements journal's optional run-end reap for the
-// remote-backed sink: delete the manifest rows the carve run superseded, atomic
+// ReapSupersededManifest implements journal's optional pass-end reap for the
+// remote-backed sink: delete the manifest rows the carve pass superseded, atomic
 // with a re-projection of File.Blocks (#953).
-func (s engineBlockSink) ReapSupersededManifest(ctx context.Context, id journal.FileID, runStart, runEnd int64, newOffsets map[int64]struct{}) error {
-	return reapSupersededManifest(ctx, s.committer, s.commitLocks, string(id), runStart, runEnd, newOffsets)
+func (s engineBlockSink) ReapSupersededManifest(ctx context.Context, id journal.FileID, spans [][2]int64, newOffsets map[int64]struct{}) error {
+	return reapSupersededManifest(ctx, s.committer, s.commitLocks, string(id), spans, newOffsets)
 }
 
 // engineBlockSink is journal's production BlockSink: it seals each carved chunk,
