@@ -424,6 +424,12 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 	// binding (MS-SMB2 §3.3.5.5.2) can key per-channel signing state.
 	handlerCtx.ConnID = connInfo.ConnID
 
+	// Let a handler that must wait on client traffic step out of the
+	// connection's response order first. See SMBHandlerContext.ReleaseOrder.
+	if t := OrderTokenFrom(ctx); t != nil {
+		handlerCtx.ReleaseOrder = t.Release
+	}
+
 	// Thread the connection's transport so completeSessionBind can attach
 	// it to the newly-registered Channel, enabling break notifications
 	// (MS-SMB2 §3.3.4.7) to fan out across bound secondary channels.
