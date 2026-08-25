@@ -642,13 +642,28 @@ const MaxPendingWatches = 4096
 var ErrTooManyWatches = fmt.Errorf("too many pending ChangeNotify watches (max %d)", MaxPendingWatches)
 
 // Register adds a pending notification request.
-// If a request with the same FileID already exists, it is replaced.
+// If a request with the same FileID already exists, it is replaced — and the
+// replaced request is completed with STATUS_CANCELLED rather than dropped, so
+// its MessageID always gets a response.
 // Returns ErrTooManyWatches if the global limit would be exceeded.
 // Returns ErrAlreadyCancelled when an SMB2_CANCEL for the same
-// (ConnID, MessageID) arrived before this Register call (issue #623); the
-// caller MUST respond with STATUS_CANCELLED synchronously instead of
-// emitting STATUS_PENDING.
+// (ConnID, MessageID) arrived before this Register call; the caller MUST
+// respond with STATUS_CANCELLED synchronously instead of emitting
+// STATUS_PENDING.
+// Returns ErrHandleClosed when the handle's close path already ran; the caller
+// MUST respond with STATUS_NOTIFY_CLEANUP synchronously.
 func (r *NotifyRegistry) Register(notify *PendingNotify) error {
+	// Superseded watches are completed after r.mu is released — sendFinalGated
+	// takes the lock itself. Deferred before the unlock so it runs after it.
+	var superseded []*PendingNotify
+	defer func() {
+		for _, old := range superseded {
+			r.sendFinalGated(old, &ChangeNotifyResponse{
+				SMBResponseBase: SMBResponseBase{Status: types.StatusCancelled},
+			}, "superseded by a later CHANGE_NOTIFY on the same handle")
+		}
+	}()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -687,7 +702,7 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	// If there's already a registration for this FileID, remove the old entry
 	// to keep data structures consistent.
 	if old, ok := r.byFileID[string(notify.FileID[:])]; ok {
-		r.unregisterLocked(old)
+		superseded = append(superseded, r.unregisterLocked(old))
 	} else if len(r.byFileID) >= MaxPendingWatches {
 		return ErrTooManyWatches
 	}
@@ -701,7 +716,7 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	msgKey := notifyMsgKey{ConnID: notify.ConnID, MessageID: notify.MessageID}
 	if oldByMsg, ok := r.byMsgKey[msgKey]; ok {
 		if string(oldByMsg.FileID[:]) != string(notify.FileID[:]) {
-			r.unregisterLocked(oldByMsg)
+			superseded = append(superseded, r.unregisterLocked(oldByMsg))
 		}
 	}
 

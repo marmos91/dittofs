@@ -3041,3 +3041,44 @@ func TestNotifyRegistry_PreArrivalCancel_StillArmsHandle(t *testing.T) {
 		t.Fatalf("event fired between cancel and re-issue was dropped: %+v", got)
 	}
 }
+
+// TestNotifyRegistry_SupersededWatchGetsFinalResponse covers the last place a
+// watch was removed without being completed.
+//
+// Register replaces any existing watch on the same handle. smbtorture's
+// notify.double issues two CHANGE_NOTIFY requests back to back on one handle,
+// so the first was evicted silently and its MessageID never got a response —
+// the same hang as a cancelled notify, reached by a different route. The
+// replaced request must be completed.
+func TestNotifyRegistry_SupersededWatchGetsFinalResponse(t *testing.T) {
+	r := newTestNotifyRegistry()
+	fileID := [16]byte{0xD0}
+
+	var gotStatus []types.Status
+	first := &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 10, AsyncId: 500,
+		WatchPath: "/d", ShareName: "s", MaxOutputLength: 1000,
+		CompletionFilter: FileNotifyChangeFileName,
+		AsyncCallback: func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+			gotStatus = append(gotStatus, resp.GetStatus())
+			return nil
+		},
+	}
+	mustRegister(t, r, first)
+
+	// A second CHANGE_NOTIFY on the same handle supersedes it.
+	second := *first
+	second.MessageID = 11
+	second.AsyncId = 501
+	mustRegister(t, r, &second)
+
+	if len(gotStatus) != 1 {
+		t.Fatalf("superseded watch got %d responses, want 1 — its MessageID is unanswered", len(gotStatus))
+	}
+	if gotStatus[0] != types.StatusCancelled {
+		t.Errorf("superseded watch status = 0x%08X, want STATUS_CANCELLED", uint32(gotStatus[0]))
+	}
+	if got := r.WatcherCount(); got != 1 {
+		t.Errorf("WatcherCount = %d, want 1 (only the newer watch)", got)
+	}
+}
