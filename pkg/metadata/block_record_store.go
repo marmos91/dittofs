@@ -289,100 +289,102 @@ func DefaultCommitBlock(
 }
 
 // CommitCarvedChunks writes a carve batch's fresh manifest rows and projects
-// them into File.Blocks, in the caller's txn, preserving whatever an incoming
-// row's key takes over.
+// them into File.Blocks, in the caller's txn.
 //
-// A row is keyed by the file offset of its first claimed byte, and Put is an
-// upsert, so a run that starts exactly on an existing row's offset REPLACES that
-// row rather than superseding it. Where the run's fresh rows stop short of how
-// far the replaced row reached, the stretch beyond loses its only cover: the row
-// that held it no longer exists, and the run-end reap lists a manifest that no
-// longer mentions it, so nothing downstream can put it back. clobberedTail
-// re-keys what the replaced row still owns to the first byte the fresh row does
-// not cover, reading the same chunk from that much further in.
-//
-// Rows are written in the order given, and a preserved tail is written before
-// the row that displaced it, so a later row of the same batch landing on the
-// tail's key sees the tail and preserves what is left of it in turn. A run of
-// any length therefore walks its remnant forward to the run's end, where the
-// reap treats it as a row starting outside the span and leaves it alone.
-//
-// A batch that names no payload (legacy callers passing no rows) writes nothing
-// to project onto and returns early, exactly as the projection alone did.
+// A row is keyed by the file offset of its first claimed byte and Put is an
+// upsert, so a fresh row landing on an offset an existing row already occupies
+// replaces it. Whatever that row still owned past the fresh one is kept by
+// PreserveClobberedRow, which runs before the batch and while the row is still
+// there; by the time a batch reaches here the replacement is the intended
+// outcome.
 func CommitCarvedChunks(ctx context.Context, tx Transaction, payloadID string, rows []*block.FileChunk) error {
-	var preserved []*block.FileChunk
 	for _, fc := range rows {
 		if fc == nil {
 			continue
-		}
-		tail, err := clobberedTail(ctx, tx, fc)
-		if err != nil {
-			return err
-		}
-		if tail != nil {
-			if err := tx.Put(ctx, tail); err != nil {
-				return fmt.Errorf("commit carved chunks: preserve %s: %w", tail.ID, err)
-			}
-			preserved = append(preserved, tail)
 		}
 		if err := tx.Put(ctx, fc); err != nil {
 			return fmt.Errorf("commit carved chunks: put %s: %w", fc.ID, err)
 		}
 	}
-	if len(preserved) == 0 {
-		return ProjectCommittedChunks(ctx, tx, payloadID, rows)
-	}
-	// A preserved tail is a manifest row like any other, so the projection has to
-	// carry it or File.Blocks stops describing the manifest. The full-slice bound
-	// keeps the append off the caller's backing array.
-	return ProjectCommittedChunks(ctx, tx, payloadID, append(rows[:len(rows):len(rows)], preserved...))
+	return ProjectCommittedChunks(ctx, tx, payloadID, rows)
 }
 
-// clobberedTail returns the row that must be written to keep covering what the
-// row at fresh's key still owns past fresh's own end, or nil when nothing does.
+// PreserveClobberedRow keeps what the manifest row keyed at runStart still owns
+// past runEnd, before a carve run's first fresh chunk takes that key over. It is
+// a no-op when no row sits at runStart, or when the row there does not reach
+// past runEnd — the ordinary carve, where a run appends or re-covers at least as
+// much as it replaces.
 //
-// nil covers every ordinary carve: an append writes a key no row holds, and a
-// re-carve that reaches at least as far as the row it replaces leaves nothing
-// behind. The row is read rather than derived from the File.Blocks projection
-// because what survives keeps the original's hash, state, refcount and
-// timestamps, and a projection carries none of those.
+// owed names the ranges past runEnd that are still backed by the remote, and the
+// preserved claim is confined to them. That confinement is the whole point: the
+// replaced row may equally have been spanning a punched hole, whose bytes must
+// read as zeros, and putting its pre-punch content back over that hole is its
+// own silent corruption. The manifest cannot tell the two apart, which is why
+// owed is computed from the journal's interval index and passed in.
 //
-// When another row already sits at the tail's key, it is left alone if it
-// already reaches at least as far — the tail would add no coverage and would
-// cost that row its own. Otherwise the tail is written over it, which never
-// covers less than leaving it. Both need two existing rows overlapping at
-// exactly this offset, so which content the overlap should serve is a question
-// the manifest could not answer before this either.
-func clobberedTail(ctx context.Context, tx Transaction, fresh *block.FileChunk) (*block.FileChunk, error) {
-	off, ok := block.ParseChunkOffset(fresh.ID)
-	if !ok {
-		return nil, nil // an unplaceable key takes over no range
+// One row is written per owed range, each reading the original chunk from
+// however far into it that range begins, so a claim broken up by holes comes
+// back as the pieces that survive rather than as one span across them.
+//
+// A range whose key another row already occupies is left to that row when it
+// reaches at least as far, since the preserved piece would add no coverage and
+// cost that row its own.
+func PreserveClobberedRow(ctx context.Context, tx Transaction, payloadID string, runStart, runEnd int64, owed [][2]int64) error {
+	if payloadID == "" || len(owed) == 0 {
+		return nil
 	}
-	old, err := tx.GetFileChunk(ctx, fresh.ID)
+	old, err := readChunkRow(ctx, tx, fmt.Sprintf("%s/%d", payloadID, runStart))
+	if err != nil || old == nil {
+		return err
+	}
+	rowStart, ok := block.ParseChunkOffset(old.ID)
+	if !ok {
+		return nil
+	}
+	rowEnd := int64(rowStart) + int64(old.DataSize)
+	if rowEnd <= runEnd {
+		return nil // the run re-covers everything this row claimed
+	}
+	var written []*block.FileChunk
+	for _, sp := range owed {
+		lo, hi := max(sp[0], runEnd), min(sp[1], rowEnd)
+		if lo >= hi {
+			continue
+		}
+		piece, ok := narrowOffHead(old, int64(rowStart), lo, hi)
+		if !ok {
+			continue // the claim will not fit the row's fields: leave it behind
+		}
+		occupant, err := readChunkRow(ctx, tx, piece.ID)
+		if err != nil {
+			return err
+		}
+		if occupant != nil && lo+int64(occupant.DataSize) >= hi {
+			continue
+		}
+		if err := tx.Put(ctx, piece); err != nil {
+			return fmt.Errorf("preserve clobbered row %s: put %s: %w", old.ID, piece.ID, err)
+		}
+		written = append(written, piece)
+	}
+	if len(written) == 0 {
+		return nil
+	}
+	return ProjectCommittedChunks(ctx, tx, payloadID, written)
+}
+
+// readChunkRow returns the row stored under id, or (nil, nil) when there is
+// none. Absence is the common answer on this path — a run usually starts where
+// no row does — so it is not an error.
+func readChunkRow(ctx context.Context, tx Transaction, id string) (*block.FileChunk, error) {
+	row, err := tx.GetFileChunk(ctx, id)
 	if err != nil {
 		if errors.Is(err, block.ErrFileChunkNotFound) || IsNotFoundError(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("commit carved chunks: read %s: %w", fresh.ID, err)
+		return nil, fmt.Errorf("read manifest row %s: %w", id, err)
 	}
-	if old == nil || old.DataSize <= fresh.DataSize {
-		return nil, nil
-	}
-	rowStart := int64(off)
-	rowEnd := rowStart + int64(old.DataSize)
-	head := rowStart + int64(fresh.DataSize)
-	tail, ok := narrowOffHead(old, rowStart, head, rowEnd)
-	if !ok {
-		return nil, nil // the claim will not fit the row's fields: leave it as it stands
-	}
-	occupant, err := tx.GetFileChunk(ctx, tail.ID)
-	switch {
-	case err != nil && !errors.Is(err, block.ErrFileChunkNotFound) && !IsNotFoundError(err):
-		return nil, fmt.Errorf("commit carved chunks: read %s: %w", tail.ID, err)
-	case err == nil && occupant != nil && head+int64(occupant.DataSize) >= rowEnd:
-		return nil, nil // already covered at least as far as the tail would reach
-	}
-	return tail, nil
+	return row, nil
 }
 
 // ManifestRowEndAfter reports how far the manifest coverage straddling off

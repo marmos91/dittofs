@@ -7,6 +7,7 @@ import (
 	"io"
 	"maps"
 	"math"
+	"sort"
 	"sync"
 
 	"lukechampine.com/blake3"
@@ -131,6 +132,33 @@ type supersededReaper interface {
 // against it than against a metadata store.
 type manifestRowEnder interface {
 	ManifestRowEndAfter(ctx context.Context, id FileID, off int64) (int64, error)
+}
+
+// clobberGuard is an optional BlockSink capability, and it exists because a
+// manifest row is keyed by the file offset of its first claimed byte while the
+// commit that writes a row is an upsert. A run starting exactly on an existing
+// row's offset therefore REPLACES that row rather than superseding it: the row
+// is gone before the run-end reap ever lists the manifest, and everything it
+// claimed past the run's end is left with no cover at all.
+//
+// Journal calls PreserveClobberedRow once per run, before the run is packed and
+// so while the row still exists, naming the run's final bounds and the ranges
+// past its end that are still OWED. The sink re-keys whatever the row about to
+// be replaced still owns, restricted to those ranges.
+//
+// owed is what makes this safe, and it is the reason the question is asked here
+// rather than at commit time: the manifest alone cannot tell a range that lost
+// its cover from a range that is SUPPOSED to have none. A punched hole must read
+// as zeros, and re-covering it with the replaced row's pre-punch content is its
+// own corruption — one that a straightforward "keep whatever was there" does
+// commit. Journal answers from the interval index, which distinguishes them:
+// owed carries only ranges durable on the remote (evicted or resident), and
+// excludes both holes and ranges still dirty for a later pass.
+//
+// Sinks without a metadata store (test fakes) don't implement it, and a run then
+// replaces a row exactly as it did before.
+type clobberGuard interface {
+	PreserveClobberedRow(ctx context.Context, id FileID, runStart, runEnd int64, owed [][2]int64) error
 }
 
 // errCarveNotWired is returned by Carve when the dedup/sink collaborators have
@@ -457,12 +485,27 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 		if ri+1 < len(rs) {
 			limit = rs[ri+1].start()
 		}
-		ivs, err := s.extendRunToRowEnd(ctx, sh, id, rs[ri].ivs, limit)
+		ivs, rowEnd, err := s.extendRunToRowEnd(ctx, sh, id, rs[ri].ivs, limit)
 		if err != nil {
 			packErr = err
 			break
 		}
 		rs[ri].ivs = ivs
+
+		// The run's first fresh chunk lands on the run's start offset, so if a
+		// manifest row is keyed there it is about to be replaced. Ask the sink to
+		// keep what that row still owns past where this run will stop — but only
+		// over ranges the interval index says are still owed, since the row may
+		// equally be spanning a hole it has no business re-covering.
+		if guard, ok := s.sink.(clobberGuard); ok {
+			runEnd := rs[ri].end()
+			if owed := syncedRanges(sh, id, runEnd, rowEnd); len(owed) > 0 {
+				if err := guard.PreserveClobberedRow(ctx, id, rs[ri].start(), runEnd, owed); err != nil {
+					packErr = err
+					break
+				}
+			}
+		}
 
 		// A fresh chunker and reader per run, and an empty accumulator, so a chunk
 		// never spans the hole between two runs. The block being packed carries
@@ -622,36 +665,82 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 // ponytail: a row reaching past a later dirty run is left alone, so that run
 // still ends mid-row; covering it means merging the two runs, which is worth
 // building only if that shape shows up in practice.
-func (s *Store) extendRunToRowEnd(ctx context.Context, sh *shard, id FileID, run []interval, limit int64) ([]interval, error) {
+// It also reports how far the manifest coverage straddling the run's end
+// reaches, so a caller that has to act on the rows the run stops inside does not
+// pay the straddle lookup a second time. That answer is the run's own end
+// whenever the lookup was not needed or the extension consumed the row.
+func (s *Store) extendRunToRowEnd(ctx context.Context, sh *shard, id FileID, run []interval, limit int64) ([]interval, int64, error) {
+	runEnd := run[len(run)-1].end()
 	ender, ok := s.sink.(manifestRowEnder)
 	if !ok {
-		return run, nil
-	}
-	runEnd := run[len(run)-1].end()
-	if !warmAt(sh, id, runEnd) {
-		return run, nil // nothing warm past the run: no extension is possible
+		return run, runEnd, nil
 	}
 	rowEnd, err := ender.ManifestRowEndAfter(ctx, id, runEnd)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	if rowEnd <= runEnd {
+		return run, runEnd, nil
+	}
+	if !warmAt(sh, id, runEnd) {
+		return run, rowEnd, nil // nothing warm past the run: no extension is possible
 	}
 	if rowEnd > limit {
 		// See the doc comment above: redundant while the packer is sequential
 		// and forward, kept for any ordering that carves runs concurrently.
-		return run, nil
-	}
-	if rowEnd <= runEnd {
-		return run, nil
+		return run, rowEnd, nil
 	}
 	tail := warmTail(sh, id, runEnd, rowEnd)
 	if len(tail) == 0 {
-		return run, nil
+		return run, rowEnd, nil
 	}
 	// A fresh slice: run aliases the carve snapshot, whose next entries belong to
 	// the following run.
 	out := make([]interval, 0, len(run)+len(tail))
 	out = append(out, run...)
-	return append(out, tail...), nil
+	return append(out, tail...), rowEnd, nil
+}
+
+// syncedRanges returns the sub-ranges of [from, to) that hold data durable on
+// the remote store — resident or evicted — merged and ascending.
+//
+// It is the discriminator the manifest cannot supply. A range with no interval
+// is a hole: nothing was ever written there, or a punch took it away, and it
+// must read as zeros. A range whose interval is still dirty is about to be
+// re-carved and is served from the local tier until it is. Neither is owed a
+// manifest row, and covering either one with a row that used to span it puts
+// back bytes the file no longer has.
+func syncedRanges(sh *shard, id FileID, from, to int64) [][2]int64 {
+	if from >= to {
+		return nil
+	}
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	fi := sh.index[id]
+	if fi == nil {
+		return nil
+	}
+	spans := make([][2]int64, 0, 4)
+	for k := range fi.ivs {
+		iv := fi.ivs[k]
+		if !iv.synced || iv.end() <= from || iv.fileOff >= to {
+			continue
+		}
+		spans = append(spans, [2]int64{max(iv.fileOff, from), min(iv.end(), to)})
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i][0] < spans[j][0] })
+	out := spans[:0]
+	for _, sp := range spans {
+		if n := len(out); n > 0 && sp[0] <= out[n-1][1] {
+			out[n-1][1] = max(out[n-1][1], sp[1])
+			continue
+		}
+		out = append(out, sp)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // warmAt reports whether a warm live interval (durable locally, not evicted, not

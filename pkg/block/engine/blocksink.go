@@ -142,6 +142,40 @@ func (s localBlockSink) CommitBlock(ctx context.Context, chunks []journal.CarveC
 	return commitManifestRows(ctx, s.committer, s.commitLocks, string(chunks[0].FileID), manifestRows(chunks))
 }
 
+// preserveClobberedRow implements journal's optional clobber guard: before a run
+// whose first fresh chunk lands on an existing row's key replaces that row, keep
+// whatever it still owns past the run's end, over the ranges journal reports as
+// still owed. A nil committer (the clone fixture) has no manifest to keep.
+func preserveClobberedRow(
+	ctx context.Context,
+	committer blockCommitter,
+	locks *carveCommitLocks,
+	payloadID string,
+	runStart, runEnd int64,
+	owed [][2]int64,
+) error {
+	if committer == nil {
+		return nil
+	}
+	// Same File-row serialization as the commit path: this writes manifest rows
+	// and re-projects File.Blocks, so it races the same way under SSI.
+	if mu := locks.forKey(payloadID); mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	return committer.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return metadata.PreserveClobberedRow(ctx, tx, payloadID, runStart, runEnd, owed)
+	})
+}
+
+func (s localBlockSink) PreserveClobberedRow(ctx context.Context, id journal.FileID, runStart, runEnd int64, owed [][2]int64) error {
+	return preserveClobberedRow(ctx, s.committer, s.commitLocks, string(id), runStart, runEnd, owed)
+}
+
+func (s engineBlockSink) PreserveClobberedRow(ctx context.Context, id journal.FileID, runStart, runEnd int64, owed [][2]int64) error {
+	return preserveClobberedRow(ctx, s.committer, s.commitLocks, string(id), runStart, runEnd, owed)
+}
+
 // ReapSupersededManifest implements journal's optional pass-end reap: once a
 // carve pass's rows are all committed, delete the manifest rows they superseded so
 // the per-file manifest tiles [0,size) with no stale straddler or gap (#953). A nil
