@@ -14,10 +14,10 @@ import (
 
 // fixedAttemptCount is the attempt count of the fixed 3-attempt (10/20/30ms)
 // retry loop this test guards against. The contending writer must still be
-// retrying after this many attempts — that is what backpressure means here, and
-// what the old loop could not do. The count is asserted rather than the elapsed
-// time it happens to take: how long those attempts occupy is a property of the
-// machine, the attempt count is a property of the loop.
+// retrying past it — that is what backpressure means here, and what the old loop
+// could not do. The count is asserted rather than the time those attempts happen
+// to take: the count is a property of the loop, the duration a property of the
+// machine.
 const fixedAttemptCount = 3
 
 // TestSQLite_ConcurrentWritesBackpressureNoEIO is the #1769 regression guard.
@@ -31,13 +31,11 @@ const fixedAttemptCount = 3
 // A single sqlite store pins MaxOpenConns(1), so writers through one store
 // already serialize at the Go pool and never collide. Real SQLITE_BUSY
 // contention needs multiple connections to the same file, so this test opens two
-// store handles against one on-disk database: one holds a write transaction open
-// on the shared root inode while the other tries to write the same row.
-//
-// The holder releases when the contender has made more attempts than the old
-// loop ever would — not after a wall-clock interval — so the verdict is a
-// property of the retry loop rather than a race against a budget on a machine of
-// unknown speed.
+// store handles against one on-disk database: the holder keeps a write
+// transaction open on the shared root inode while the contender writes the same
+// row. The holder releases once the contender has out-retried the old loop, so
+// the verdict rests on the retry loop's behaviour rather than on a wall-clock
+// budget measured on a machine of unknown speed.
 func TestSQLite_ConcurrentWritesBackpressureNoEIO(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "backpressure.db")
@@ -89,53 +87,52 @@ func TestSQLite_ConcurrentWritesBackpressureNoEIO(t *testing.T) {
 	}
 
 	var (
-		locked      = make(chan struct{}) // holder owns the write lock
-		release     = make(chan struct{}) // holder may commit
-		lockedOnce  sync.Once
-		releaseOnce sync.Once
-		attempts    int // contender goroutine only; read after wg.Wait
-		blocked     time.Duration
-		holderErr   error
-		contendErr  error
-		wg          sync.WaitGroup
+		locked    = make(chan struct{}) // holder owns the write lock
+		release   = make(chan struct{}) // holder may commit
+		done      = make(chan struct{}) // holder returned; holderErr readable
+		holderErr error
 	)
+	// Both callbacks re-run on every retry, and the holder retries too if its own
+	// commit collides, so each close happens at most once.
+	var lockedOnce, releaseOnce sync.Once
+	signalLocked := func() { lockedOnce.Do(func() { close(locked) }) }
 	doRelease := func() { releaseOnce.Do(func() { close(release) }) }
 
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer close(done)
 		holderErr = holder.WithTransaction(ctx, func(tx metadata.Transaction) error {
 			if err := touchRoot(tx); err != nil {
 				return err
 			}
-			lockedOnce.Do(func() { close(locked) })
+			signalLocked()
 			<-release
 			return nil
 		})
 	}()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		// However the contender ends — retried enough, or gave up — the holder
-		// must not be left blocked.
-		defer doRelease()
-		<-locked
-		began := time.Now()
-		contendErr = contender.WithTransaction(ctx, func(tx metadata.Transaction) error {
-			attempts++
-			// Past the old ceiling the loop has already proven it backpressures;
-			// free the lock so this run terminates on the retry loop's own
-			// behaviour rather than on a timer.
-			if attempts > fixedAttemptCount {
-				doRelease()
-			}
-			return touchRoot(tx)
-		})
-		blocked = time.Since(began)
-	}()
+	select {
+	case <-locked:
+	case <-done:
+		t.Fatalf("holder never took the write lock: %v", holderErr)
+	}
 
-	wg.Wait()
+	attempts := 0
+	began := time.Now()
+	contendErr := contender.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		attempts++
+		// Past the old ceiling the loop has already proven it backpressures; free
+		// the lock so this run terminates on the retry loop's own behaviour rather
+		// than on a timer.
+		if attempts > fixedAttemptCount {
+			doRelease()
+		}
+		return touchRoot(tx)
+	})
+	blocked := time.Since(began)
+	// However the contender ended — retried enough, or gave up — the holder must
+	// not be left blocked.
+	doRelease()
+	<-done
 
 	if holderErr != nil {
 		t.Fatalf("holder transaction failed: %v", holderErr)
