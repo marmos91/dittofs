@@ -269,17 +269,6 @@ func DefaultCommitBlock(
 		if err := tx.PutBlockRecord(ctx, rec); err != nil {
 			return err
 		}
-		// Per-file manifest rows: the block carver passes one FileChunk per chunk
-		// (ID={FileID}/{FileOffset}, Hash, DataSize, State=Pending); legacy callers
-		// pass nil and write no rows.
-		for _, fc := range fileChunks {
-			if fc == nil {
-				continue
-			}
-			if err := tx.Put(ctx, fc); err != nil {
-				return err
-			}
-		}
 		// Locator overwrite (last-wins), see the function comment. MarkSynced
 		// alone would be first-wins and leave a stale standalone locator in
 		// place; the batched write applies the overwrite for the whole commit
@@ -289,14 +278,111 @@ func DefaultCommitBlock(
 				return err
 			}
 		}
-		// Materialize File.Blocks from the manifest in this same txn so raw-row
-		// readers (snapshot, audit) stay coherent — merging only this batch's
-		// rows, since re-deriving from the whole manifest costs a full list and
-		// sort per committed block object. Skipped for legacy callers that pass
-		// no fileChunks (empty payloadID). Superseded-row reaping happens once
-		// per carve pass (ReapSupersededManifest), not per batch — see below.
-		return ProjectCommittedChunks(ctx, tx, payloadIDFromChunks(fileChunks), fileChunks)
+		// Per-file manifest rows: the block carver passes one FileChunk per chunk
+		// (ID={FileID}/{FileOffset}, Hash, DataSize, State=Pending); legacy callers
+		// pass nil and write no rows. CommitCarvedChunks also re-materializes
+		// File.Blocks in this same txn so raw-row readers (snapshot, audit) stay
+		// coherent. Superseded-row reaping happens once per carve pass
+		// (ReapSupersededManifest), not per batch — see below.
+		return CommitCarvedChunks(ctx, tx, payloadIDFromChunks(fileChunks), fileChunks)
 	})
+}
+
+// CommitCarvedChunks writes a carve batch's fresh manifest rows and projects
+// them into File.Blocks, in the caller's txn, preserving whatever an incoming
+// row's key takes over.
+//
+// A row is keyed by the file offset of its first claimed byte, and Put is an
+// upsert, so a run that starts exactly on an existing row's offset REPLACES that
+// row rather than superseding it. Where the run's fresh rows stop short of how
+// far the replaced row reached, the stretch beyond loses its only cover: the row
+// that held it no longer exists, and the run-end reap lists a manifest that no
+// longer mentions it, so nothing downstream can put it back. clobberedTail
+// re-keys what the replaced row still owns to the first byte the fresh row does
+// not cover, reading the same chunk from that much further in.
+//
+// Rows are written in the order given, and a preserved tail is written before
+// the row that displaced it, so a later row of the same batch landing on the
+// tail's key sees the tail and preserves what is left of it in turn. A run of
+// any length therefore walks its remnant forward to the run's end, where the
+// reap treats it as a row starting outside the span and leaves it alone.
+//
+// A batch that names no payload (legacy callers passing no rows) writes nothing
+// to project onto and returns early, exactly as the projection alone did.
+func CommitCarvedChunks(ctx context.Context, tx Transaction, payloadID string, rows []*block.FileChunk) error {
+	var preserved []*block.FileChunk
+	for _, fc := range rows {
+		if fc == nil {
+			continue
+		}
+		tail, err := clobberedTail(ctx, tx, fc)
+		if err != nil {
+			return err
+		}
+		if tail != nil {
+			if err := tx.Put(ctx, tail); err != nil {
+				return fmt.Errorf("commit carved chunks: preserve %s: %w", tail.ID, err)
+			}
+			preserved = append(preserved, tail)
+		}
+		if err := tx.Put(ctx, fc); err != nil {
+			return fmt.Errorf("commit carved chunks: put %s: %w", fc.ID, err)
+		}
+	}
+	if len(preserved) == 0 {
+		return ProjectCommittedChunks(ctx, tx, payloadID, rows)
+	}
+	// A preserved tail is a manifest row like any other, so the projection has to
+	// carry it or File.Blocks stops describing the manifest. The full-slice bound
+	// keeps the append off the caller's backing array.
+	return ProjectCommittedChunks(ctx, tx, payloadID, append(rows[:len(rows):len(rows)], preserved...))
+}
+
+// clobberedTail returns the row that must be written to keep covering what the
+// row at fresh's key still owns past fresh's own end, or nil when nothing does.
+//
+// nil covers every ordinary carve: an append writes a key no row holds, and a
+// re-carve that reaches at least as far as the row it replaces leaves nothing
+// behind. The row is read rather than derived from the File.Blocks projection
+// because what survives keeps the original's hash, state, refcount and
+// timestamps, and a projection carries none of those.
+//
+// When another row already sits at the tail's key, it is left alone if it
+// already reaches at least as far — the tail would add no coverage and would
+// cost that row its own. Otherwise the tail is written over it, which never
+// covers less than leaving it. Both need two existing rows overlapping at
+// exactly this offset, so which content the overlap should serve is a question
+// the manifest could not answer before this either.
+func clobberedTail(ctx context.Context, tx Transaction, fresh *block.FileChunk) (*block.FileChunk, error) {
+	off, ok := block.ParseChunkOffset(fresh.ID)
+	if !ok {
+		return nil, nil // an unplaceable key takes over no range
+	}
+	old, err := tx.GetFileChunk(ctx, fresh.ID)
+	if err != nil {
+		if errors.Is(err, block.ErrFileChunkNotFound) || IsNotFoundError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("commit carved chunks: read %s: %w", fresh.ID, err)
+	}
+	if old == nil || old.DataSize <= fresh.DataSize {
+		return nil, nil
+	}
+	rowStart := int64(off)
+	rowEnd := rowStart + int64(old.DataSize)
+	head := rowStart + int64(fresh.DataSize)
+	tail, ok := narrowOffHead(old, rowStart, head, rowEnd)
+	if !ok {
+		return nil, nil // the claim will not fit the row's fields: leave it as it stands
+	}
+	occupant, err := tx.GetFileChunk(ctx, tail.ID)
+	switch {
+	case err != nil && !errors.Is(err, block.ErrFileChunkNotFound) && !IsNotFoundError(err):
+		return nil, fmt.Errorf("commit carved chunks: read %s: %w", tail.ID, err)
+	case err == nil && occupant != nil && head+int64(occupant.DataSize) >= rowEnd:
+		return nil, nil // already covered at least as far as the tail would reach
+	}
+	return tail, nil
 }
 
 // ManifestRowEndAfter reports how far the manifest coverage straddling off

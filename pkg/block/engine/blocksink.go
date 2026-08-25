@@ -131,12 +131,7 @@ func commitManifestRows(ctx context.Context, committer blockCommitter, locks *ca
 		defer mu.Unlock()
 	}
 	return committer.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		for _, fc := range rows {
-			if err := tx.Put(ctx, fc); err != nil {
-				return fmt.Errorf("carve: put manifest row %s: %w", fc.ID, err)
-			}
-		}
-		return metadata.ProjectCommittedChunks(ctx, tx, payloadID, rows)
+		return metadata.CommitCarvedChunks(ctx, tx, payloadID, rows)
 	})
 }
 
