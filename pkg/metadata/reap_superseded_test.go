@@ -86,6 +86,30 @@ func TestReapSupersededManifest_KeepsStraddlerReachingPastRun(t *testing.T) {
 	}, tiling(t, tx, pid))
 }
 
+// TestReapSupersededManifest_KeepsInteriorRowReachingPastRun mirrors the head
+// case at the run's tail: a row that starts inside the run but ends past it must
+// survive whole. Deleting it — which is what its start offset alone would say to
+// do — strands [runEnd, rowEnd) with no cover, and no row can be made to start
+// mid-chunk to take that stretch over, so the bytes read back as zeros.
+func TestReapSupersededManifest_KeepsInteriorRowReachingPastRun(t *testing.T) {
+	const pid = "share/p"
+	ctx := context.Background()
+	tx := newManifestTx(pid)
+
+	// The run [2000, 3000) stops inside the row at 2500, which reaches 6000.
+	seedRows(t, tx, pid, [][2]uint64{{0, 2000}, {2000, 500}, {2500, 3500}})
+	// Re-carved: one fresh row tiling the run.
+	seedRows(t, tx, pid, [][2]uint64{{2000, 1000}})
+	newOffsets := map[int64]struct{}{2000: {}}
+
+	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, 2000, 3000, newOffsets))
+	require.Equal(t, [][2]int64{
+		{0, 2000},
+		{2000, 3000}, // the fresh row; the stale [2000, 2500) it replaced is gone
+		{2500, 6000}, // kept whole: its tail past 3000 has no other cover
+	}, tiling(t, tx, pid))
+}
+
 // TestReapSupersededManifest_LeavesDisjointRowsAlone keeps the reap from
 // touching a row that merely ends where the run begins.
 func TestReapSupersededManifest_LeavesDisjointRowsAlone(t *testing.T) {

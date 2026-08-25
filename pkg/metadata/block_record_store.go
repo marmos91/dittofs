@@ -359,8 +359,8 @@ func ManifestRowEndAfter(ctx context.Context, tx Transaction, payloadID string, 
 // no longer tiles [0,size) — a cold read then resolves a stale straddling row
 // (returns old bytes) or hits a gap (zero-fills). That is #953.
 //
-// Reaped set: every existing row for payloadID whose start offset lies in the
-// run's [runStart, runEnd) span and is NOT one of the offsets this run just wrote
+// Reaped set: every existing row for payloadID that lies wholly inside the run's
+// [runStart, runEnd) span and is NOT one of the offsets this run just wrote
 // (newOffsets). Running once at run end — after all of the run's batches have
 // committed their rows — is what makes it correct across a multi-batch run: a
 // straddler spanning a batch seam has no single batch span that contains it, and
@@ -375,11 +375,16 @@ func ManifestRowEndAfter(ctx context.Context, tx Transaction, payloadID string, 
 // and the run's fresh rows take over from there. The chunk keeps every byte on the
 // remote and is still hash-verified over all of them; the row just stops claiming
 // the part the run re-chunked, which is the same shape a truncate's narrow leaves
-// behind. A straddler that ALSO ends past runEnd stays whole: no row can start
-// mid-chunk, so its tail past the run has no other cover and narrowing it would
-// trade the overlap for a gap. Coverage lookups resolve that overlap to the
-// greatest covering start, so the fresh rows win inside the run and the straddler
-// serves only its unre-carved tail.
+// behind.
+//
+// A row that reaches past runEnd stays whole, whichever side it starts on: no row
+// can start mid-chunk, so its tail past the run has no other cover, and both
+// narrowing it (from the head) and deleting it (from inside the run) would trade
+// an overlap for a gap. Coverage lookups resolve that overlap to the greatest
+// covering start, so the fresh rows win inside the run and the surviving row
+// serves only its unre-carved tail. A run whose end sits on a row boundary — what
+// the journal's run extension arranges on the normal path — has no such row, so
+// this only spares anything where a run stops early.
 //
 // ponytail: this fixes read-coherence — the corruption. Decrementing the reaped
 // chunk's CAS refcount to reclaim its remote space is a separate, tracked
@@ -418,6 +423,9 @@ func ReapSupersededManifest(ctx context.Context, tx Transaction, payloadID strin
 		}
 		if _, isNew := newOffsets[int64(off)]; isNew {
 			continue // a row this run just wrote — keep it
+		}
+		if rowEnd > runEnd {
+			continue // reaches past the run: deleting it would strand [runEnd, rowEnd)
 		}
 		if err := tx.Delete(ctx, r.ID); err != nil {
 			return fmt.Errorf("reap superseded: delete %s: %w", r.ID, err)
