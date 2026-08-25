@@ -92,7 +92,12 @@ func (t *OrderToken) WaitTurn(ctx context.Context) {
 	o := t.order
 
 	o.mu.Lock()
-	if o.low >= t.seq {
+	// A token that already released has given up its place — a handler that
+	// stepped out to wait on a break acknowledgement reaches here afterwards,
+	// on its way to sending its own response. It must not queue for a place it
+	// no longer holds: the order has moved past it, so nothing will ever wake
+	// it and it would sit here until the wait timeout.
+	if t.released || o.low >= t.seq {
 		o.mu.Unlock()
 		return
 	}
@@ -143,7 +148,8 @@ func (t *OrderToken) Release() {
 	}
 	// Only the sequence that just became eligible needs waking: everything
 	// below it was already eligible, and everything above it is still waiting
-	// on this one.
+	// on this one. The loop above can step over several sequences at once, but
+	// only over ones already released, and a released token never waits.
 	if wake, ok := o.waiters[o.low]; ok {
 		delete(o.waiters, o.low)
 		close(wake)

@@ -259,3 +259,31 @@ func newRecordingConnPair(t *testing.T) (net.Conn, <-chan types.Command, func())
 	}
 	return serverConn, commands, cleanup
 }
+
+// The two-phase pattern the rename branch uses: a handler releases its place
+// to wait on a break acknowledgement, then reaches its own response and asks
+// for its turn a second time. It must not queue for a place it no longer
+// holds — the order has moved on without it, so nothing would ever wake it and
+// it would sit there until the wait timeout, on exactly the path this ordering
+// exists to protect.
+func TestRequestOrder_ReleasedTokenDoesNotQueueAgain(t *testing.T) {
+	o := NewRequestOrder()
+	o.waitTimeout = time.Hour // a stall here must hang the test, not pass it
+	first := o.Begin()
+	second := o.Begin()
+	_ = first // never releases: the order never reaches second's sequence
+
+	second.Release() // stepped out to wait for a break acknowledgement
+
+	returned := make(chan struct{})
+	go func() {
+		second.WaitTurn(context.Background()) // now sending its own response
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a released token queued for a place it had given up")
+	}
+}

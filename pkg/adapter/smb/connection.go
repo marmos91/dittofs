@@ -360,11 +360,20 @@ func (c *Connection) Serve(ctx context.Context) {
 		// Without this, a concurrent goroutine for the next request could
 		// race with the LOGOFF handler, causing the signing verifier to
 		// return STATUS_ACCESS_DENIED instead of STATUS_USER_SESSION_DELETED.
+		//
+		// It is dispatched WITHOUT its ordering token, so its response never
+		// waits for the responses ahead of it. Waiting happens on this
+		// goroutine, so it would stall the read loop rather than one request:
+		// the next wire message — possibly for a different, live session
+		// multiplexed over this connection — could not even be read until the
+		// earlier request answered. LOGOFF carries no file state, so nothing a
+		// break notification protects rides on it. The token is still released
+		// below, so the requests behind it are not held up.
 		if hdr.Command == types.CommandLogoff && len(remainingCompound) == 0 {
 			func() {
 				defer pool.Put(rawMessage)
 				defer orderToken.Release()
-				if err := smb.ProcessSingleRequest(reqCtx, hdr, body, rawMessage, ci, isEncrypted, nil); err != nil {
+				if err := smb.ProcessSingleRequest(ctx, hdr, body, rawMessage, ci, isEncrypted, nil); err != nil {
 					logger.Debug("Error processing LOGOFF request", "address", clientAddr, "messageID", hdr.MessageID, "error", err)
 				}
 			}()
