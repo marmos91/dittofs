@@ -153,6 +153,15 @@ type LockManager interface {
 	// was granted via RequestLeaseAsOplock (traditional oplock, not SMB2.1+ lease).
 	IsTraditionalOplockForKey(leaseKey [16]byte) bool
 
+	// HasLeaseOnHandle reports whether a lease record with this key already
+	// exists on this file. Unlike GetLeaseState it does not search across
+	// files, so it cannot be answered by another client's lease that happens
+	// to reuse the same key value on a different file. It asks exactly what
+	// RequestLease asks when it decides whether to reuse a record or create
+	// one, which is what makes it usable as a "would this grant be the first
+	// for this key on this file" test.
+	HasLeaseOnHandle(handleKey string, leaseKey [16]byte) bool
+
 	// SetLeaseEpoch sets the epoch on an existing lease identified by leaseKey.
 	// Per MS-SMB2 3.3.5.9: For V2 leases, the server tracks the client's epoch.
 	// Returns false if no lease was found with the given key.

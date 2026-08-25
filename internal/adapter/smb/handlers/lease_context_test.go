@@ -411,3 +411,115 @@ func TestProcessLeaseCreateContext_NoneProbeDoesNotAdvanceEpoch(t *testing.T) {
 			persistedEpoch, grantedEpoch)
 	}
 }
+
+// TestProcessLeaseCreateContext_UnchangedStateDoesNotAdvanceEpoch covers the
+// smbtorture v2_complex1 failure at lease.c:3792. A client that re-opens a file
+// under a lease key it already holds, asking for the state it already has,
+// echoes its last-seen epoch in the V2 create context. That request changes no
+// state, so both the response and the server's counter must stay where they
+// are; seeding from the client's epoch instead put the server one ahead, and
+// the next break notification then carried an epoch (0x4716) one past what the
+// client expected (0x4715).
+func TestProcessLeaseCreateContext_UnchangedStateDoesNotAdvanceEpoch(t *testing.T) {
+	t.Parallel()
+
+	mgr := lock.NewManager()
+	leaseMgr := lease.NewLeaseManager(&staticLockResolver{mgr: mgr}, nil)
+
+	ctx := context.Background()
+	const shareName = "share1"
+	leaseKey := [16]byte{0x11, 0x22, 0x33}
+	fileHandle := lock.FileHandle("file-handle-unchanged")
+	const sessionID = uint64(7)
+	const clientID = "smb:7"
+	const initialEpoch uint16 = 0x4711
+	const rh = lock.LeaseStateRead | lock.LeaseStateHandle
+
+	initial := encodeV2LeaseContext(leaseKey, rh, initialEpoch)
+	resp1, err := ProcessLeaseCreateContext(ctx, leaseMgr, initial, fileHandle, sessionID, [16]byte{}, clientID, shareName, false, false, false)
+	if err != nil {
+		t.Fatalf("first CREATE returned error: %v", err)
+	}
+	if resp1.Epoch != initialEpoch+1 {
+		t.Fatalf("first CREATE response epoch = 0x%x, want 0x%x (req+1)", resp1.Epoch, initialEpoch+1)
+	}
+	grantedEpoch := resp1.Epoch
+
+	// Re-open under the same key for the state already held, echoing the
+	// epoch the server just handed out.
+	reopen := encodeV2LeaseContext(leaseKey, rh, grantedEpoch)
+	resp2, err := ProcessLeaseCreateContext(ctx, leaseMgr, reopen, fileHandle, sessionID, [16]byte{}, clientID, shareName, false, false, false)
+	if err != nil {
+		t.Fatalf("re-open returned error: %v", err)
+	}
+	if resp2.LeaseState != rh {
+		t.Errorf("re-open granted state = 0x%x, want RH (0x%x)", resp2.LeaseState, uint32(rh))
+	}
+	if resp2.Epoch != grantedEpoch {
+		t.Errorf("re-open response epoch = 0x%x, want 0x%x — an unchanged lease state must not advance the epoch", resp2.Epoch, grantedEpoch)
+	}
+
+	_, persistedEpoch, found := mgr.GetLeaseState(ctx, leaseKey)
+	if !found {
+		t.Fatal("lease record disappeared after re-open")
+	}
+	if persistedEpoch != grantedEpoch {
+		t.Errorf("server-side epoch after re-open = 0x%x, want 0x%x (no advance)", persistedEpoch, grantedEpoch)
+	}
+
+	// A real upgrade still advances exactly once, from the server's counter —
+	// not from the epoch the client echoed.
+	upgrade := encodeV2LeaseContext(leaseKey, lock.LeaseStateRead|lock.LeaseStateWrite|lock.LeaseStateHandle, grantedEpoch)
+	resp3, err := ProcessLeaseCreateContext(ctx, leaseMgr, upgrade, fileHandle, sessionID, [16]byte{}, clientID, shareName, false, false, false)
+	if err != nil {
+		t.Fatalf("upgrade returned error: %v", err)
+	}
+	if resp3.Epoch != grantedEpoch+1 {
+		t.Errorf("upgrade response epoch = 0x%x, want 0x%x (exactly one advance)", resp3.Epoch, grantedEpoch+1)
+	}
+}
+
+// TestProcessLeaseCreateContext_OtherFileSameKeyStillSeeds pins the scope of
+// the first-grant test. Two clients may present the same 16-byte lease key
+// value on different files, so "does a lease with this key exist anywhere"
+// cannot decide whether this grant is a first grant: answering it from a
+// foreign client's lease would skip the seed and hand the requester an epoch
+// far below the one it asked for.
+func TestProcessLeaseCreateContext_OtherFileSameKeyStillSeeds(t *testing.T) {
+	t.Parallel()
+
+	mgr := lock.NewManager()
+	leaseMgr := lease.NewLeaseManager(&staticLockResolver{mgr: mgr}, nil)
+
+	ctx := context.Background()
+	const shareName = "share1"
+	leaseKey := [16]byte{0x5A, 0x5B, 0x5C}
+	const rh = lock.LeaseStateRead | lock.LeaseStateHandle
+	const firstEpoch uint16 = 0x4711
+	const secondEpoch uint16 = 0x0900
+
+	// Client A takes the key on one file.
+	respA, err := ProcessLeaseCreateContext(ctx, leaseMgr, encodeV2LeaseContext(leaseKey, rh, firstEpoch),
+		lock.FileHandle("file-A"), 1, [16]byte{}, "smb:1", shareName, false, false, false)
+	if err != nil {
+		t.Fatalf("client A CREATE returned error: %v", err)
+	}
+	if respA.Epoch != firstEpoch+1 {
+		t.Fatalf("client A response epoch = 0x%x, want 0x%x", respA.Epoch, firstEpoch+1)
+	}
+
+	// Client B presents the same key value on a different file. This is that
+	// client's first grant, so its epoch must seed.
+	respB, err := ProcessLeaseCreateContext(ctx, leaseMgr, encodeV2LeaseContext(leaseKey, rh, secondEpoch),
+		lock.FileHandle("file-B"), 2, [16]byte{}, "smb:2", shareName, false, false, false)
+	if err != nil {
+		t.Fatalf("client B CREATE returned error: %v", err)
+	}
+	if respB.LeaseState != rh {
+		t.Fatalf("client B granted state = 0x%x, want RH (0x%x)", respB.LeaseState, uint32(rh))
+	}
+	if respB.Epoch != secondEpoch+1 {
+		t.Errorf("client B response epoch = 0x%x, want 0x%x — a first grant on a different file must still seed from the client's epoch",
+			respB.Epoch, secondEpoch+1)
+	}
+}
