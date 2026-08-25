@@ -225,7 +225,7 @@ func TestRequestLease_CrossKeyConflict(t *testing.T) {
 			epoch := lock.Lease.Epoch
 			// Simulate client acknowledging break to R (strip W)
 			go func() {
-				_ = mgr.AcknowledgeLeaseBreak(ctx, key, breakToState, epoch)
+				_ = mgr.AcknowledgeLeaseBreak(ctx, handleKey, key, breakToState, epoch)
 			}()
 		},
 	})
@@ -463,7 +463,7 @@ func TestRequestLease_PostAckCrossKeyDoesNotRedispatch(t *testing.T) {
 	require.EqualValues(t, 1, breakCount.Load(), "pre-RqLs break must dispatch exactly once")
 
 	// Step 3: Client 2 ACKs RWH→RH.
-	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, key2, LeaseStateRead|LeaseStateHandle, 0))
+	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, "file1", key2, LeaseStateRead|LeaseStateHandle, 0))
 
 	// Verify LEASE2 is now at RH, not Breaking.
 	curState, _, ok := mgr.GetLeaseState(ctx, "file1", key2)
@@ -964,7 +964,7 @@ func TestAcknowledgeLeaseBreak_CompletesBreak(t *testing.T) {
 			epoch := lock.Lease.Epoch
 			// Acknowledge break to None (fully relinquish) asynchronously
 			go func() {
-				_ = mgr.AcknowledgeLeaseBreak(ctx, key, LeaseStateNone, epoch)
+				_ = mgr.AcknowledgeLeaseBreak(ctx, handleKey, key, LeaseStateNone, epoch)
 			}()
 		},
 	})
@@ -1023,7 +1023,7 @@ func TestAcknowledgeLeaseBreak_ToReadState(t *testing.T) {
 	mgr.mu.Unlock()
 
 	// Acknowledge to Read
-	err = mgr.AcknowledgeLeaseBreak(ctx, key1, LeaseStateRead, 0)
+	err = mgr.AcknowledgeLeaseBreak(ctx, "file1", key1, LeaseStateRead, 0)
 	require.NoError(t, err)
 
 	// Verify state was updated
@@ -1045,7 +1045,7 @@ func TestAcknowledgeLeaseBreak_NoActiveBreak(t *testing.T) {
 	require.NoError(t, err)
 
 	// Try to acknowledge a break that doesn't exist
-	err = mgr.AcknowledgeLeaseBreak(ctx, leaseKey, LeaseStateNone, 0)
+	err = mgr.AcknowledgeLeaseBreak(ctx, "file1", leaseKey, LeaseStateNone, 0)
 	assert.Error(t, err, "should error when no break in progress")
 }
 
@@ -1076,7 +1076,7 @@ func TestAcknowledgeLeaseBreak_AckToNone_KeepsRecordAtNone(t *testing.T) {
 	mgr.mu.Unlock()
 
 	// Acknowledge to None (fully release)
-	err = mgr.AcknowledgeLeaseBreak(ctx, key1, LeaseStateNone, 0)
+	err = mgr.AcknowledgeLeaseBreak(ctx, "file1", key1, LeaseStateNone, 0)
 	require.NoError(t, err)
 
 	// Per MS-SMB2 3.3.5.22.2 + smbtorture breaking2/breaking5: the lease
@@ -1087,7 +1087,7 @@ func TestAcknowledgeLeaseBreak_AckToNone_KeepsRecordAtNone(t *testing.T) {
 	assert.Equal(t, LeaseStateNone, state, "lease state should be None")
 
 	// Duplicate ack on the released record → ErrLeaseAckNotBreaking.
-	err = mgr.AcknowledgeLeaseBreak(ctx, key1, LeaseStateNone, 0)
+	err = mgr.AcknowledgeLeaseBreak(ctx, "file1", key1, LeaseStateNone, 0)
 	assert.ErrorIs(t, err, ErrLeaseAckNotBreaking, "duplicate ack must surface ErrLeaseAckNotBreaking")
 
 	// CLOSE removes the record fully.
@@ -1142,7 +1142,7 @@ func TestAcknowledgeLeaseBreak_LateAckNonNoneAfterTimeout_Succeeds(t *testing.T)
 
 	// Holder ACKs late with RW (its handle-strip break-to, a non-None state).
 	// Must succeed — the break the server already completed is benignly ack'd.
-	err = mgr.AcknowledgeLeaseBreak(ctx, key1, LeaseStateRead|LeaseStateWrite, 0)
+	err = mgr.AcknowledgeLeaseBreak(ctx, "file1", key1, LeaseStateRead|LeaseStateWrite, 0)
 	require.NoError(t, err, "late non-None ACK after timeout force-complete must succeed (ack-sane)")
 
 	// The ACK must not resurrect bits: the forced None stands.
@@ -1183,7 +1183,7 @@ func TestAcknowledgeLeaseBreak_LateAckAfterLeaseConflictTimeout_Unsuccessful(t *
 	require.Equal(t, LeaseStateNone, state, "force-complete revoked to None")
 
 	// The deadbeat holder's late ACK must fail with STATUS_UNSUCCESSFUL.
-	err = mgr.AcknowledgeLeaseBreak(ctx, key1, LeaseStateRead|LeaseStateHandle, 0)
+	err = mgr.AcknowledgeLeaseBreak(ctx, "file1", key1, LeaseStateRead|LeaseStateHandle, 0)
 	require.ErrorIs(t, err, ErrLeaseAckNotBreaking,
 		"late ACK after open-conflict force-complete must be UNSUCCESSFUL (smb2.lease.timeout)")
 }
@@ -1527,7 +1527,7 @@ func TestEpoch_BreakPlusAck_SingleIncrement(t *testing.T) {
 		"break initiation must advance epoch to grant + 1")
 
 	// ACK. Epoch must stay at 2: the state change was already counted.
-	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, key, LeaseStateRead|LeaseStateHandle, 2))
+	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, "file1", key, LeaseStateRead|LeaseStateHandle, 2))
 	assert.Equal(t, uint16(2), epochForLease(t, mgr, key),
 		"ACK must not advance epoch — would drift one past the client (#417)")
 }
@@ -1548,12 +1548,12 @@ func TestEpoch_TwoBreakCycles_TwoIncrements(t *testing.T) {
 
 	// Cycle 1: break RWH → RH, ACK.
 	setBreaking(t, mgr, key, LeaseStateRead|LeaseStateHandle)
-	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, key, LeaseStateRead|LeaseStateHandle, 2))
+	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, "file2", key, LeaseStateRead|LeaseStateHandle, 2))
 	require.Equal(t, uint16(2), epochForLease(t, mgr, key))
 
 	// Cycle 2: break RH → R, ACK. One more increment expected.
 	setBreaking(t, mgr, key, LeaseStateRead)
-	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, key, LeaseStateRead, 3))
+	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, "file2", key, LeaseStateRead, 3))
 	assert.Equal(t, uint16(3), epochForLease(t, mgr, key),
 		"two break/ack cycles must yield exactly two increments total")
 }
@@ -1961,7 +1961,7 @@ func TestProgressiveLeaseBreak_RWH_AndMerge_ToNone(t *testing.T) {
 
 	// Stage 3: client ACKs RWH→RH. Re-eval finds acked state has H bit ⇒
 	// next target = required(0) | R = R. Dispatch RH→R.
-	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx,
+	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, handleKey,
 		key1, LeaseStateRead|LeaseStateHandle, 0))
 
 	got = snapshotBreaks(breakMu, breaks)
@@ -1981,7 +1981,7 @@ func TestProgressiveLeaseBreak_RWH_AndMerge_ToNone(t *testing.T) {
 	// H ⇒ next target = required(0) = 0. Dispatch R→"" (fire-and-forget,
 	// inline downgrade). Record persists at LeaseState=None (handle-bound
 	// lifetime — only CLOSE removes it).
-	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, key1, LeaseStateRead, 0))
+	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, handleKey, key1, LeaseStateRead, 0))
 
 	got = snapshotBreaks(breakMu, breaks)
 	require.Len(t, got, 3, "stage 4: ACK RH→R triggers R→\"\" notification")
@@ -2018,7 +2018,7 @@ func TestProgressiveLeaseBreak_NoSpuriousAfterReachingRequired(t *testing.T) {
 
 	// Client ACKs to the offered state. No concurrent break has tightened
 	// BreakingToRequired ⇒ no second stage dispatched.
-	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx,
+	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, handleKey,
 		key1, LeaseStateRead|LeaseStateHandle, 0))
 
 	assert.Len(t, snapshotBreaks(breakMu, breaks), 1,

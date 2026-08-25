@@ -90,7 +90,7 @@ func TestWaitForShareConflictClear_ReturnsWhenBreakDrainsButConflictPersists(t *
 	// Holder ACKs the break to RW (Handle stripped), keeping its open. This
 	// clears Breaking; the wait must then exit on the no-breaking-lease branch.
 	time.Sleep(150 * time.Millisecond)
-	require.NoError(t, lm.AcknowledgeLeaseBreak(ctx, holderKey, LeaseStateRead|LeaseStateWrite, 0))
+	require.NoError(t, lm.AcknowledgeLeaseBreak(ctx, "file2", holderKey, LeaseStateRead|LeaseStateWrite, 0))
 
 	select {
 	case err := <-done:
@@ -137,6 +137,6 @@ func TestWaitForShareConflictClear_TimeoutDoesNotForceComplete(t *testing.T) {
 	// The lease must NOT be a timeout tombstone — it is still breaking, so a
 	// late ACK succeeds (contrast WaitForBreakCompletion, which would have
 	// force-revoked it to None and made the ACK fail STATUS_UNSUCCESSFUL).
-	require.NoError(t, lm.AcknowledgeLeaseBreak(ctx, holderKey, LeaseStateRead|LeaseStateWrite, 0),
+	require.NoError(t, lm.AcknowledgeLeaseBreak(ctx, "file3", holderKey, LeaseStateRead|LeaseStateWrite, 0),
 		"holder ACK after the deferred-open timeout must still succeed (lease not tombstoned)")
 }

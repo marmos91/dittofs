@@ -59,7 +59,7 @@ func TestByteRangeLock_WaitForBreakBeforeGrant_ACK(t *testing.T) {
 		// correctness does not depend on it (the wait re-checks state on entry),
 		// but it exercises the channel-signal path.
 		time.Sleep(10 * time.Millisecond)
-		_ = lm.AcknowledgeLeaseBreak(context.Background(), smbLease, LeaseStateNone, 0)
+		_ = lm.AcknowledgeLeaseBreak(context.Background(), fileID, smbLease, LeaseStateNone, 0)
 	}()
 
 	// The adapter fix: wait for the break to drain before retrying the insert.

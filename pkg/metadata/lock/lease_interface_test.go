@@ -174,7 +174,7 @@ func TestLockManager_HasLeaseOperations(t *testing.T) {
 	_ = err
 
 	// AcknowledgeLeaseBreak should exist
-	err = lm.AcknowledgeLeaseBreak(ctx, leaseKey, LeaseStateNone, 0)
+	err = lm.AcknowledgeLeaseBreak(ctx, "file1", leaseKey, LeaseStateNone, 0)
 	_ = err
 
 	// ReleaseLease should exist
