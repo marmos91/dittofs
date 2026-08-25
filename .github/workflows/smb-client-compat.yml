@@ -357,9 +357,15 @@ jobs:
           # well as the ones that ran out of budget; a give-up otherwise
           # records only the verdict. srvnet_state distinguishes a driver
           # still pending at the deadline from one that reached STOPPED.
+          # failed_polls is the loop counter at exit, which is the number of
+          # polls that still saw 445 held -- 0 when the first poll found it
+          # free, 15 when the budget ran out. It is deliberately not the number
+          # of polls performed: that is failed_polls+1 after an early break but
+          # only 15 after exhaustion, so it would not mean the same thing on
+          # both paths.
           $srvnetState = (sc.exe query srvnet 2>&1 | Select-String -Pattern 'STATE' | ForEach-Object { ($_.Line -replace '\s+', ' ').Trim() }) -join ' '
           if (-not $srvnetState) { $srvnetState = 'unknown' }
-          Write-Host "srvnet-stop-timing freed=$freed elapsed_ms=$([int]$stopWatch.Elapsed.TotalMilliseconds) poll_iters=$i srvnet_state='$srvnetState'"
+          Write-Host "srvnet-stop-timing freed=$freed elapsed_ms=$([int]$stopWatch.Elapsed.TotalMilliseconds) failed_polls=$i srvnet_state='$srvnetState'"
           (Get-NetTCPConnection -LocalPort 445 -State Listen -ErrorAction SilentlyContinue) | Format-Table -AutoSize
           # The net use assertions below are gated on this: the redirector can
           # only reach DittoFS when DittoFS owns 445. Asserting anyway turns an
