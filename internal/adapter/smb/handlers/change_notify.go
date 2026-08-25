@@ -623,6 +623,45 @@ func (r *NotifyRegistry) armLocked(n *PendingNotify) {
 	}
 }
 
+// TakeBufferedEvents removes and returns the events buffered on fileID's armed
+// handle that this request would match, leaving any that it would not.
+// Returns nil when the handle is not armed or nothing matches.
+//
+// This is what lets a CHANGE_NOTIFY be answered without ever going pending.
+// Samba does the same: source3/smbd/smb2_notify.c replies immediately with
+// NT_STATUS_OK when change_notify_fsp_has_changes(fsp), and only queues the
+// request when the buffer is empty. Events that already exist belong to the
+// request that asks for them, not to a watch it might have registered.
+//
+// The match is the same one Register replays under: the action must pass the
+// completion filter, and a non-recursive request skips entries below the
+// watched directory.
+func (r *NotifyRegistry) TakeBufferedEvents(fileID [16]byte, filter uint32, watchTree bool) []FileNotifyInformation {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	a, ok := r.armed[string(fileID[:])]
+	if !ok || len(a.BufferedEvents) == 0 {
+		return nil
+	}
+
+	var taken, kept []FileNotifyInformation
+	for _, ev := range a.BufferedEvents {
+		if !MatchesFilter(ev.Action, filter) || (!watchTree && strings.Contains(ev.FileName, "/")) {
+			kept = append(kept, ev)
+			continue
+		}
+		taken = append(taken, ev)
+	}
+	if len(taken) == 0 {
+		return nil
+	}
+
+	a.BufferedEvents = kept
+	a.BufferedBytes = 0
+	return taken
+}
+
 // ClearBufferedEvents discards queued events on the armed handle for fileID.
 // Called after CANCEL so the next Register doesn't replay stale events
 // (smb2.notify.mask).

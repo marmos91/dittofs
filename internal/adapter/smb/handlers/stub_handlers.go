@@ -621,6 +621,52 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		return NewResult(types.StatusNotifyEnumDir, respBytes), nil
 	}
 
+	watchTree := req.Flags&SMB2WatchTree != 0
+
+	// Events that arrived while no request was outstanding belong to this
+	// request. Answer it now and never go pending: no interim STATUS_PENDING,
+	// no async slot, no registered watch, and nothing for a following CANCEL
+	// to find.
+	//
+	// Samba does the same — source3/smbd/smb2_notify.c replies immediately
+	// with NT_STATUS_OK when change_notify_fsp_has_changes(fsp) and only
+	// queues the request otherwise. It is also the only way a client that
+	// polls by cancelling can ever see an event: smb2.notify.tree sends a
+	// CHANGE_NOTIFY, cancels it immediately, and counts num_changes from the
+	// reply, which smb2_notify_recv leaves untouched on any non-OK status.
+	//
+	// This runs before the cancel tombstone is consulted in Register. The
+	// tombstone's job is to stop a watch being armed that would wait forever;
+	// it has no say over events that already exist.
+	if changes := h.NotifyRegistry.TakeBufferedEvents(req.FileID, effectiveFilter, watchTree); len(changes) > 0 {
+		buffer := EncodeFileNotifyInformation(changes)
+		if uint32(len(buffer)) > effectiveMax {
+			// Too big for the advertised buffer: the client must re-enumerate,
+			// and the events are already consumed so they cannot replay.
+			openFile.NotifyOverflowed.Store(true)
+			h.NotifyRegistry.ResetArmedOverflow(req.FileID, effectiveMax)
+			respBytes, encErr := (&ChangeNotifyResponse{
+				SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
+			}).Encode()
+			if encErr != nil {
+				return NewErrorResult(types.StatusInternalError), nil
+			}
+			return NewResult(types.StatusNotifyEnumDir, respBytes), nil
+		}
+		respBytes, encErr := (&ChangeNotifyResponse{
+			OutputBufferLength: uint32(len(buffer)),
+			Buffer:             buffer,
+		}).Encode()
+		if encErr != nil {
+			return NewErrorResult(types.StatusInternalError), nil
+		}
+		logger.Debug("CHANGE_NOTIFY: answered from buffered events without going pending",
+			"path", watchPath,
+			"numChanges", len(changes),
+			"messageID", ctx.MessageID)
+		return NewResult(types.StatusSuccess, respBytes), nil
+	}
+
 	asyncId := h.generateAsyncId()
 
 	notify := &PendingNotify{
@@ -633,7 +679,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		ShareName:        openFile.ShareName,
 		TreeID:           ctx.TreeID,
 		CompletionFilter: effectiveFilter,
-		WatchTree:        req.Flags&SMB2WatchTree != 0,
+		WatchTree:        watchTree,
 		MaxOutputLength:  effectiveMax,
 		GateInterim:      true,
 		AsyncCallback:    ctx.AsyncNotifyCallback,
