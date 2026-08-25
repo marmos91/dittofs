@@ -45,7 +45,8 @@ import (
 //     does NOT break it (Samba is_stat_open) and does NOT purge.
 //
 //   - A WRITE from a live handle breaks Level-II (Read) leases on the same
-//     file to None per MS-SMB2 §3.3.5.16; any disconnected RH lease on the
+//     file to None per MS-SMB2 §3.3.5.13 ("Receiving an SMB2 WRITE Request");
+//     any disconnected RH lease on the
 //     file with a different lease-key is purged (it would break to None).
 //
 //   - A RENAME from a live handle breaks Handle leases on the same file to

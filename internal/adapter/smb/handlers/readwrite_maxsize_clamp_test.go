@@ -8,7 +8,8 @@ import (
 
 // TestRead_ClampsLengthToMaxReadSize verifies a READ whose Length exceeds the
 // MaxReadSize advertised in NEGOTIATE is rejected with STATUS_INVALID_PARAMETER
-// (MS-SMB2 3.3.5.13). Without the clamp the request would be bounded only by
+// (MS-SMB2 §3.3.5.12 ("Receiving an SMB2 READ Request")). Without the clamp the
+// request would be bounded only by
 // the 64 MB NetBIOS frame cap, letting one READ allocate 64x the advertised
 // ceiling. Mirrors the Windows/Samba reject of an over-max READ.
 func TestRead_ClampsLengthToMaxReadSize(t *testing.T) {
@@ -74,7 +75,7 @@ func TestRead_AtMaxReadSizeNotRejectedByClamp(t *testing.T) {
 
 // TestWrite_ClampsLengthToMaxWriteSize verifies a WRITE whose payload exceeds
 // MaxWriteSize is rejected with STATUS_INVALID_PARAMETER — the symmetric
-// contract to the READ clamp (MS-SMB2 3.3.5.13).
+// contract to the READ clamp (MS-SMB2 §3.3.5.12 ("Receiving an SMB2 READ Request")).
 func TestWrite_ClampsLengthToMaxWriteSize(t *testing.T) {
 	h := NewHandler()
 	if h.MaxWriteSize == 0 {

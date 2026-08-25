@@ -183,7 +183,8 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Step 2b: Validate read access
 	// ========================================================================
 	//
-	// Per MS-SMB2 3.3.5.15: the server MUST verify that the open was created
+	// Per MS-SMB2 §3.3.5.12 ("Receiving an SMB2 READ Request"): the server MUST
+	// verify that the open was created
 	// with read access. hasReadAccess treats FILE_READ_DATA, FILE_EXECUTE,
 	// GENERIC_READ, GENERIC_ALL, and MAXIMUM_ALLOWED as read access — Samba
 	// and Windows allow READ on an FILE_EXECUTE-only handle (execution
@@ -229,7 +230,8 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
 
-	// Per MS-SMB2 3.3.5.13: the server MUST fail a READ whose Length exceeds the
+	// Per MS-SMB2 §3.3.5.12 ("Receiving an SMB2 READ Request"): the server MUST fail
+	// a READ whose Length exceeds the
 	// MaxReadSize advertised in the NEGOTIATE response with
 	// STATUS_INVALID_PARAMETER. Without this clamp the request is bounded only by
 	// the 64 MB NetBIOS frame cap, letting one READ allocate up to 64× the

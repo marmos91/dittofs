@@ -196,7 +196,8 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Step 2b: Validate write access
 	// ========================================================================
 	//
-	// Per MS-SMB2 3.3.5.16: The server MUST verify that the open was created
+	// Per MS-SMB2 §3.3.5.13 ("Receiving an SMB2 WRITE Request"): the server MUST
+	// verify that the open was created
 	// with write access (FILE_WRITE_DATA or FILE_APPEND_DATA). If the open
 	// lacks write access, return STATUS_ACCESS_DENIED.
 	//
@@ -368,7 +369,8 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Step 8b: Break Level II (Read) oplocks from other clients
 	// ========================================================================
 	//
-	// Per MS-SMB2 3.3.5.16: If the write operation will change file data,
+	// Per MS-SMB2 §3.3.5.13 ("Receiving an SMB2 WRITE Request"): if the write
+	// operation will change file data,
 	// the server MUST break Read caching leases held by other clients to
 	// None. The writer's own lease is excluded via its LeaseKey.
 

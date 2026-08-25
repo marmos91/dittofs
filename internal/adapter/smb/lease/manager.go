@@ -1336,7 +1336,8 @@ func (lm *LeaseManager) SetLeaseEpoch(fileHandle lock.FileHandle, shareName stri
 }
 
 // BreakReadLeasesOnWrite breaks Read (Level II) oplocks/leases held by other
-// opens on a file when a WRITE is performed. Per MS-SMB2 3.3.5.16, writes must
+// opens on a file when a WRITE is performed. Per MS-SMB2
+// §3.3.5.13 ("Receiving an SMB2 WRITE Request"), writes must
 // break all Read caching on the file so that other clients see the updated data.
 //
 // For SMB2.1+ leases: the writer's own lease is excluded ONLY when it holds

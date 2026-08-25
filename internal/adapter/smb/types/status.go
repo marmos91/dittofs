@@ -208,7 +208,8 @@ const (
 
 	// StatusFileLockConflict indicates an I/O operation (READ/WRITE) conflicts
 	// with an existing byte-range lock held by another session.
-	// Per MS-SMB2 3.3.5.15 (Read) and 3.3.5.16 (Write).
+	// Per MS-SMB2 §3.3.5.12 ("Receiving an SMB2 READ Request") and
+	// §3.3.5.13 ("Receiving an SMB2 WRITE Request").
 	StatusFileLockConflict Status = 0xC0000054
 
 	// StatusLockNotGranted indicates a LOCK request could not be acquired

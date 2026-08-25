@@ -763,7 +763,8 @@ func buildResponseHeaderAndBody(reqHeader *header.SMB2Header, ctx *handlers.SMBH
 		respHeader.TreeID = ctx.TreeID
 	}
 
-	// Per [MS-SMB2] 3.3.5.15: When a handler returns STATUS_PENDING with an
+	// Per [MS-SMB2] 3.3.4.2 ("Sending an Interim Response for an Asynchronous
+	// Operation"): when a handler returns STATUS_PENDING with an
 	// AsyncId, the response is an interim async response. Set FlagAsync and
 	// populate AsyncId on the header.
 	if result.AsyncId != 0 {
@@ -792,7 +793,8 @@ func buildResponseHeaderAndBody(reqHeader *header.SMB2Header, ctx *handlers.SMBH
 		}
 	}
 
-	// Per [MS-SMB2] 3.3.5.15: STATUS_PENDING interim responses use the
+	// Per [MS-SMB2] 3.3.4.2 (interim async response): STATUS_PENDING
+	// interim responses use the
 	// error response body format (9 bytes) even though STATUS_PENDING is
 	// a success-class status code. Ensure a body is always present.
 	if result.Status == types.StatusPending && body == nil {
