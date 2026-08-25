@@ -675,6 +675,14 @@ func (s *Store) extendRunToRowEnd(ctx context.Context, sh *shard, id FileID, run
 	if !ok {
 		return run, runEnd, nil
 	}
+	// The manifest lookup is a whole-manifest read, so it is gated on the cheap
+	// in-memory answer first. With nothing durable past the run's end there is
+	// neither anything to extend over nor anything a replaced row could still be
+	// owed — which is every append, the case that would otherwise pay this read
+	// once per run for the life of the file.
+	if !anySyncedFrom(sh, id, runEnd) {
+		return run, runEnd, nil
+	}
 	rowEnd, err := ender.ManifestRowEndAfter(ctx, id, runEnd)
 	if err != nil {
 		return nil, 0, err
@@ -710,6 +718,25 @@ func (s *Store) extendRunToRowEnd(ctx context.Context, sh *shard, id FileID, run
 // re-carved and is served from the local tier until it is. Neither is owed a
 // manifest row, and covering either one with a row that used to span it puts
 // back bytes the file no longer has.
+// anySyncedFrom reports whether any range at or after off is durable on the
+// remote. It is the cheap gate on the whole straddle question: a run with
+// nothing synced past its end can neither be extended nor leave a replaced row
+// owed anything.
+func anySyncedFrom(sh *shard, id FileID, off int64) bool {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	fi := sh.index[id]
+	if fi == nil {
+		return false
+	}
+	for k := range fi.ivs {
+		if fi.ivs[k].synced && fi.ivs[k].end() > off {
+			return true
+		}
+	}
+	return false
+}
+
 func syncedRanges(sh *shard, id FileID, from, to int64) [][2]int64 {
 	if from >= to {
 		return nil
