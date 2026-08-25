@@ -387,14 +387,35 @@ func ManifestRowEndAfter(ctx context.Context, tx Transaction, payloadID string, 
 // the part the run re-chunked, which is the same shape a truncate's narrow leaves
 // behind.
 //
-// A row that reaches past its span's end stays whole, whichever side it starts on:
-// no row can start mid-chunk, so its tail past the span has no other cover, and
-// both narrowing it (from the head) and deleting it (from inside the span) would
-// trade an overlap for a gap. Coverage lookups resolve that overlap to the
-// greatest covering start, so the fresh rows win inside the span and the surviving
-// row serves only its unre-carved tail. A span ending on a row boundary — what the
-// journal's run extension arranges on the normal path — has no such row, so this
-// only spares anything where a run stopped early.
+// A row that reaches past its span's end stays whole, whichever side it starts
+// on: no row can start mid-chunk, so its tail past the span has no other cover,
+// and deleting it would trade an overlap for a gap. Where it starts decides what
+// that overlap then reads, and the two sides are not alike.
+//
+// Starting BEFORE the span is safe. Coverage resolves an overlap to the greatest
+// covering start, and every fresh row inside the span starts later than a row
+// that began before it, so the fresh rows win across the whole span and the
+// survivor serves only its un-recarved tail.
+//
+// Starting INSIDE the span is not. Over [rowStart, spanEnd) the spared row is
+// itself the greatest start, so it outranks the fresh row covering those bytes
+// and serves the content they held before the carve. Sparing it is the least bad
+// of three wrong answers, not a safe one: deleting it strands [spanEnd, rowEnd)
+// with no cover at all, and it cannot be narrowed off the overlap either, because
+// a row claims a prefix of its chunk and none can be made to start at spanEnd.
+//
+// Nothing here can do better, because the overlap is already decided by the time
+// the reap runs: the fresh rows are committed, and no row that claims a prefix
+// can cover [spanEnd, rowEnd) in the spared row's place. Only carving through to
+// rowEnd avoids it, which is what the journal's run extension arranges whenever
+// the bytes past the span are still warm; a span cuts a row starting inside it
+// only where that extension could not reach — the tail is cold, evicted, holed,
+// or already dirty for a later run.
+//
+// ponytail: over [rowStart, spanEnd) a cold read serves pre-carve bytes, and the
+// manifest records no order to tell the caller so; closing it means carve
+// hydrating the straddler's tail and re-chunking it, or refusing to commit a
+// tiling whose span cuts a row starting inside it (#2124).
 //
 // ponytail: this fixes read-coherence — the corruption. Decrementing the reaped
 // chunk's CAS refcount to reclaim its remote space is a separate, tracked
