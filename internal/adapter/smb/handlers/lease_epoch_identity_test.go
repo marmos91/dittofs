@@ -117,7 +117,7 @@ func TestLeaseBreakNewEpoch_OtherClientSameKeyDoesNotSeedIt(t *testing.T) {
 	if got := notifier.forSession(2); len(got) != 0 {
 		t.Errorf("client B received %d break notifications for a break on another client's file", len(got))
 	}
-	if _, epoch, found := leaseMgr.GetLeaseState(ctx, shareName, leaseKey); !found || epoch < respB.Epoch {
+	if _, epoch, found := leaseMgr.GetLeaseState(ctx, lock.FileHandle("file-B"), shareName, leaseKey); !found || epoch < respB.Epoch {
 		t.Errorf("client B lease epoch = 0x%x found=%v, want >= 0x%x", epoch, found, respB.Epoch)
 	}
 }

@@ -226,7 +226,7 @@ func TestSessionTeardown_ReleasesTraditionalOplockRegistry(t *testing.T) {
 	if e.mgr.HasActiveLeaseRecord(string(fh), [16]byte{}) {
 		t.Error("LEAK: lock-manager oplock record survived session teardown")
 	}
-	if _, _, found := e.mgr.GetLeaseState(context.Background(), of.LeaseKey); found {
+	if _, _, found := e.mgr.GetLeaseState(context.Background(), string(fh), of.LeaseKey); found {
 		t.Error("LEAK: oplock lease state survived session teardown")
 	}
 	if e.notifier.count() != 0 {
