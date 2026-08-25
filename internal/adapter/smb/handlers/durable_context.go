@@ -1101,7 +1101,7 @@ func buildPersistedDurableHandle(
 		DisconnectedAt:  time.Now(),
 		TimeoutMs:       openFile.DurableTimeoutMs,
 		ServerStartTime: serverStartTime,
-		DeletePending:   openFile.DeletePending,
+		DeletePending:   openFile.IsDeletePending(),
 		ParentHandle:    parentHandle,
 		FileName:        name.FileName,
 		IsDirectory:     openFile.IsDirectory,

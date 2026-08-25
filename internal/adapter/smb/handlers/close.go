@@ -306,7 +306,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// (1067-byte files with XSym\n header). On CLOSE, we convert these to
 	// real symlinks in the metadata store for NFS interoperability.
 
-	if !openFile.IsDirectory && payloadID != "" && !openFile.DeletePending && !openFile.InitialDeleteOnClose {
+	if !openFile.IsDirectory && payloadID != "" && !openFile.IsDeletePending() && !openFile.InitialDeleteOnClose {
 		// MFsymlink conversion promotes client-controlled file content to a real
 		// symlink, so it is opt-in per share (default disabled).
 		if tree, treeOK := h.GetTree(ctx.TreeID); treeOK && tree.AllowMFsymlink {

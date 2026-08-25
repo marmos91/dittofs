@@ -926,6 +926,16 @@ func (f *OpenFile) SetPayloadID(id metadata.PayloadID) {
 	f.PayloadID = id
 }
 
+// IsDeletePending returns the committed delete-on-close flag under the read
+// lock. SET_INFO and the CLOSE delete-on-close election write it under the
+// write lock, from goroutines other than the handle's own, so every read
+// outside those critical sections goes through here.
+func (f *OpenFile) IsDeletePending() bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.DeletePending
+}
+
 // IsMtimeFrozen returns the MtimeFrozen flag under the read lock.
 func (f *OpenFile) IsMtimeFrozen() bool {
 	f.mu.RLock()
@@ -2607,7 +2617,7 @@ func logRenameConflictHolder(gate string, renamer, holder *OpenFile) {
 		"holderShareAccess", fmt.Sprintf("0x%x", holder.ShareAccess),
 		"holderDesiredAccess", fmt.Sprintf("0x%x", holder.DesiredAccess),
 		"holderIsDurable", holder.IsDurable,
-		"holderDeletePending", holder.DeletePending)
+		"holderDeletePending", holder.IsDeletePending())
 }
 
 // checkParentDirRenameConflict applies the destination-parent share-mode rule

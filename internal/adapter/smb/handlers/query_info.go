@@ -685,7 +685,7 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		// field — smbtorture `smb2.setinfo` (setinfo.c:228) asserts that
 		// querying STANDARD / ALL_INFORMATION after setting delete disposition
 		// surfaces delete_pending = 1.
-		standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, openFile.DeletePending)
+		standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, openFile.IsDeletePending())
 		standardInfo.AllocationSize = effectiveAllocationSize(standardInfo.EndOfFile, openFile.RequestedAllocSize)
 		return EncodeFileStandardInfo(standardInfo), nil
 
@@ -915,7 +915,7 @@ func (h *Handler) buildFileAllInformationFromStore(authCtx *metadata.AuthContext
 	// One snapshot: this response carries both the path and the file name.
 	name := openFile.Name()
 	basicInfo := FileAttrToFileBasicInfoWithName(attr, basenameForHidden(openFile))
-	standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, openFile.DeletePending)
+	standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, openFile.IsDeletePending())
 	standardInfo.AllocationSize = effectiveAllocationSize(standardInfo.EndOfFile, openFile.RequestedAllocSize)
 	nameBytes := encodeUTF16LE(toSMBPath(name.Path))
 
