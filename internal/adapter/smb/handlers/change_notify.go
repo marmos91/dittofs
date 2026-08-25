@@ -314,9 +314,12 @@ type NotifyRegistry struct {
 // CHANGE_NOTIFY and cancelling it answers synchronously and never registers, so
 // every one of those cancels now writes a tombstone nothing will consume: the
 // map settles at roughly rate x TTL and the sweep cost goes quadratic in the
-// request rate. Fine for the bounded loops the conformance suite drives;
-// amortize the sweep onto a ticker, or bucket entries by expiry, if a sustained
-// high-rate poller ever turns up.
+// request rate. Measured fine for the bounded loops the conformance suite
+// drives (~5k notify/cancel pairs over 20s). What overturns it is a sustained
+// rate high enough that rate x TTL makes the per-call scan show up in a
+// profile — order thousands of pairs per second, held rather than bursty. At
+// that point amortize the sweep onto a ticker, or bucket entries by expiry so
+// reclaiming is O(1) instead of a full scan.
 //
 // ponytail: a fixed 5s wall-clock ceiling. A Register delayed past it consumes
 // nothing and registers a watch its cancel has already abandoned — straight
