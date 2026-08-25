@@ -151,7 +151,12 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 
 			lm.mu.Lock()
 			handleKey := string(lock.FileHandle)
-			if _, existing, _ := lm.findLeaseByKey(leaseKey); existing != nil {
+			// Scoped to this record's own file: resolving by key alone would
+			// find a lease another client holds under the same key value on
+			// another file, then mutate and return THAT record — leaving this
+			// client's own lease unrestored.
+			if existing := lm.leaseRecordsOnHandleLocked(handleKey, leaseKey); len(existing) > 0 {
+				existing := existing[0]
 				// Already reclaimed - update state and return existing
 				existing.Lease.LeaseState = requestedState
 				existing.Type = lockTypeForLeaseState(requestedState)

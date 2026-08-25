@@ -121,9 +121,15 @@ type LockManager interface {
 		parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
 		requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error)
 
-	// AcknowledgeLeaseBreak processes a client's lease break acknowledgment.
-	// acknowledgedState is the state the client accepts (must be <= breakToState).
-	AcknowledgeLeaseBreak(ctx context.Context, leaseKey [16]byte,
+	// AcknowledgeLeaseBreak processes a client's lease break acknowledgment on
+	// one file. acknowledgedState is the state the client accepts (must be <=
+	// breakToState).
+	//
+	// The file is a parameter because the wire gives only a lease key, which is
+	// not an identity: another client may hold the same value on another file
+	// of this share. The acknowledging connection supplies the rest, exactly as
+	// MS-SMB2 §3.3.5.22.2 step 1 requires.
+	AcknowledgeLeaseBreak(ctx context.Context, handleKey string, leaseKey [16]byte,
 		acknowledgedState uint32, epoch uint16) error
 
 	// ReleaseLease releases ALL lease state for the given lease key across

@@ -444,7 +444,7 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 	epoch uint16,
 ) error {
 	lm.mu.RLock()
-	ck, found := lm.resolveAckBindingLocked(leaseKey, sessionID, connGUID)
+	ck, binding, found := lm.resolveAckBindingLocked(leaseKey, sessionID, connGUID)
 	lm.mu.RUnlock()
 	if !found {
 		logger.Debug("AcknowledgeLeaseBreak: no lease bound to this client (CLOSE-beat-ack), treating as success",
@@ -461,7 +461,7 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 		return nil
 	}
 
-	err := lockMgr.AcknowledgeLeaseBreak(ctx, leaseKey, acknowledgedState, epoch)
+	err := lockMgr.AcknowledgeLeaseBreak(ctx, binding.HandleKey, leaseKey, acknowledgedState, epoch)
 	if err != nil {
 		if errors.Is(err, lock.ErrLeaseAckNotFound) {
 			logger.Debug("AcknowledgeLeaseBreak: lease record absent (CLOSE-beat-ack), treating as success",
@@ -497,7 +497,7 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 // per client — single digits in practice, and only acks that are not from the
 // owning session walk past the first match. Add a by-key index if a profile
 // ever shows this scan.
-func (lm *LeaseManager) resolveAckBindingLocked(leaseKey [16]byte, sessionID uint64, connGUID [16]byte) (leaseClientKey, bool) {
+func (lm *LeaseManager) resolveAckBindingLocked(leaseKey [16]byte, sessionID uint64, connGUID [16]byte) (leaseClientKey, leaseBinding, bool) {
 	// A client holding one key in two shares makes the ack ambiguous —
 	// MS-SMB2 §3.3.5.9.8 binds a lease to (ClientGuid, LeaseKey) and does not
 	// contemplate it, and a single session can hold tree connects to both. Map
@@ -506,6 +506,7 @@ func (lm *LeaseManager) resolveAckBindingLocked(leaseKey [16]byte, sessionID uin
 	// one of two candidates leaves the other lease Breaking until it times out
 	// and downgrades a lease nobody acknowledged.
 	var sessionKey, guidKey leaseClientKey
+	var sessionBinding, guidBinding leaseBinding
 	var sessionFound, guidFound bool
 	for ck, b := range lm.bindings {
 		if ck.Key != leaseKey {
@@ -513,7 +514,7 @@ func (lm *LeaseManager) resolveAckBindingLocked(leaseKey [16]byte, sessionID uin
 		}
 		if b.SessionID == sessionID {
 			if !sessionFound || ck.Share < sessionKey.Share {
-				sessionKey, sessionFound = ck, true
+				sessionKey, sessionBinding, sessionFound = ck, b, true
 			}
 			continue
 		}
@@ -521,13 +522,13 @@ func (lm *LeaseManager) resolveAckBindingLocked(leaseKey [16]byte, sessionID uin
 			continue
 		}
 		if !guidFound || ck.Share < guidKey.Share {
-			guidKey, guidFound = ck, true
+			guidKey, guidBinding, guidFound = ck, b, true
 		}
 	}
 	if sessionFound {
-		return sessionKey, true
+		return sessionKey, sessionBinding, true
 	}
-	return guidKey, guidFound
+	return guidKey, guidBinding, guidFound
 }
 
 // ReleaseLeaseForHandle releases lease records only under a specific handleKey
@@ -692,7 +693,7 @@ func (lm *LeaseManager) GetSessionForLease(clientID, shareName string, leaseKey 
 func (lm *LeaseManager) VerifyLeaseAckOwnership(leaseKey [16]byte, sessionID uint64, connGUID [16]byte) bool {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	_, found := lm.resolveAckBindingLocked(leaseKey, sessionID, connGUID)
+	_, _, found := lm.resolveAckBindingLocked(leaseKey, sessionID, connGUID)
 	return found
 }
 

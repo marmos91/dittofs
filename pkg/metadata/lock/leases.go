@@ -950,16 +950,23 @@ func lockTypeForLeaseState(state uint32) LockType {
 // The client must acknowledge with a state <= breakToState. If acknowledgedState
 // is LeaseStateNone, the lease is downgraded to None but the record is kept
 // alive until the holding handle CLOSEs (see ack-to-None block below).
-func (lm *Manager) acknowledgeLeaseBreakImpl(_ context.Context, leaseKey [16]byte,
-	acknowledgedState uint32, epoch uint16) error {
+func (lm *Manager) acknowledgeLeaseBreakImpl(_ context.Context, handleKey string,
+	leaseKey [16]byte, acknowledgedState uint32, epoch uint16) error {
 
 	lm.mu.Lock()
 	defer lm.unlock()
 
-	handleKey, lock, _ := lm.findLeaseByKey(leaseKey)
-	if lock == nil {
+	// The file comes from the caller rather than from the key. An ack is one
+	// client's statement about its own lease, and a lease key is not an
+	// identity: the cross-file uniqueness rule is per (client, file), so
+	// resolving by key alone can land the ack on a lease another client holds
+	// under the same value on another file — completing a break that client
+	// never acknowledged and overwriting its state.
+	records := lm.leaseRecordsOnHandleLocked(handleKey, leaseKey)
+	if len(records) == 0 {
 		return ErrLeaseAckNotFound
 	}
+	lock := records[0]
 
 	if !lock.Lease.Breaking {
 		return classifyLateAck(lock, leaseKey, acknowledgedState)
@@ -1000,7 +1007,7 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(_ context.Context, leaseKey [16]byt
 
 	// Persist updated state
 	lm.persistUnifiedLockLocked(lock)
-	lm.clearBreakingSiblingsLocked(leaseKey, lock)
+	lm.clearBreakingSiblingsLocked(handleKey, lock)
 
 	logger.Debug("AcknowledgeLeaseBreak: break acknowledged",
 		"leaseKey", fmt.Sprintf("%x", leaseKey),
@@ -1100,7 +1107,7 @@ func (lm *Manager) completeAckToNoneLocked(handleKey string, leaseKey [16]byte, 
 	lock.Type = lockTypeForLeaseState(LeaseStateNone)
 
 	lm.persistUnifiedLockLocked(lock)
-	lm.clearBreakingSiblingsLocked(leaseKey, lock)
+	lm.clearBreakingSiblingsLocked(handleKey, lock)
 
 	logger.Debug("AcknowledgeLeaseBreak: lease released to None (record kept until CLOSE)",
 		"leaseKey", fmt.Sprintf("%x", leaseKey))
@@ -1172,36 +1179,39 @@ func (lm *Manager) dispatchNextBreakStageLocked(handleKey string, leaseKey [16]b
 	}
 }
 
-// clearBreakingSiblingsLocked syncs every other lease record sharing leaseKey to
-// primary's post-acknowledge state. Opens sharing a lease key are one logical
-// lease: OnDirChange and breakOpLocks put such sibling records into Breaking=true
-// via mirrorBreakStageLocked without ever sending a wire notification (only one
-// break is dispatched for the shared key). A client's single acknowledge resolves
-// through findLeaseByKey to exactly one record, so without this sync the mirrored
-// siblings stay Breaking=true forever and any WaitForBreakCompletion on their
-// handleKey blocks until the force-complete timeout — a per-operation stall under
-// directory churn. Progressive multi-stage breaks (partial acks) are file-lease
-// only and never mirror across a shared key, so they are unaffected. Must hold lm.mu.
-func (lm *Manager) clearBreakingSiblingsLocked(leaseKey [16]byte, primary *UnifiedLock) {
-	for handleKey := range lm.leaseKeyIndex[leaseKey] {
-		cleared := false
-		for _, lock := range lm.unifiedLocks[handleKey] {
-			if lock == primary || lock.Lease == nil ||
-				lock.Lease.LeaseKey != leaseKey || !lock.Lease.Breaking {
-				continue
-			}
-			lock.Lease.LeaseState = primary.Lease.LeaseState
-			lock.Lease.Breaking = false
-			lock.Lease.BreakToState = 0
-			lock.Lease.BreakingToRequired = primary.Lease.BreakingToRequired
-			lock.Lease.BreakStarted = time.Time{}
-			lock.Type = lockTypeForLeaseState(primary.Lease.LeaseState)
-			lm.persistUnifiedLockLocked(lock)
-			cleared = true
+// clearBreakingSiblingsLocked syncs the other records of primary's lease to its
+// post-acknowledge state. Opens on one file sharing a lease key are one logical
+// lease: breakOpLocks puts such sibling records into Breaking=true via
+// mirrorBreakStageLocked without ever sending a wire notification (only one
+// break is dispatched for the shared key). A client's single acknowledge
+// resolves to one record, so without this sync the mirrored siblings stay
+// Breaking=true forever and any WaitForBreakCompletion on that handleKey blocks
+// until the force-complete timeout — a per-operation stall under directory
+// churn. Progressive multi-stage breaks (partial acks) are file-lease only and
+// never mirror across a shared key, so they are unaffected.
+//
+// The sweep stops at primary's own file. mirrorBreakStageLocked only ever runs
+// over one handleKey bucket, so every sibling it creates is on that file; and
+// the cross-file uniqueness rule means a key on another file belongs to another
+// client. Reaching those would clear a Breaking flag and overwrite a LeaseState
+// on a lease whose holder acknowledged nothing. Must hold lm.mu.
+func (lm *Manager) clearBreakingSiblingsLocked(handleKey string, primary *UnifiedLock) {
+	cleared := false
+	for _, lock := range lm.leaseRecordsOnHandleLocked(handleKey, primary.Lease.LeaseKey) {
+		if lock == primary || !lock.Lease.Breaking {
+			continue
 		}
-		if cleared {
-			lm.signalBreakWaitLocked(handleKey)
-		}
+		lock.Lease.LeaseState = primary.Lease.LeaseState
+		lock.Lease.Breaking = false
+		lock.Lease.BreakToState = 0
+		lock.Lease.BreakingToRequired = primary.Lease.BreakingToRequired
+		lock.Lease.BreakStarted = time.Time{}
+		lock.Type = lockTypeForLeaseState(primary.Lease.LeaseState)
+		lm.persistUnifiedLockLocked(lock)
+		cleared = true
+	}
+	if cleared {
+		lm.signalBreakWaitLocked(handleKey)
 	}
 }
 
@@ -1475,9 +1485,9 @@ func (lm *Manager) RequestLeaseStatOpen(ctx context.Context, fileHandle FileHand
 }
 
 // AcknowledgeLeaseBreak processes a client's lease break acknowledgment.
-func (lm *Manager) AcknowledgeLeaseBreak(ctx context.Context, leaseKey [16]byte,
-	acknowledgedState uint32, epoch uint16) error {
-	return lm.acknowledgeLeaseBreakImpl(ctx, leaseKey, acknowledgedState, epoch)
+func (lm *Manager) AcknowledgeLeaseBreak(ctx context.Context, handleKey string,
+	leaseKey [16]byte, acknowledgedState uint32, epoch uint16) error {
+	return lm.acknowledgeLeaseBreakImpl(ctx, handleKey, leaseKey, acknowledgedState, epoch)
 }
 
 // ReleaseLease releases all lease state for the given lease key.
