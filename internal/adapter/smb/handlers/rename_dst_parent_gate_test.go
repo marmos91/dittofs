@@ -11,17 +11,14 @@ package handlers
 import (
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 const (
-	shareRead   = uint32(0x01)
-	shareWrite  = uint32(0x02)
-	shareDelete = uint32(0x04)
-
 	secFileAll   = uint32(0x000001FF) // every file-specific right, no DELETE
-	deleteAccess = uint32(0x00010000)
-	readAttrs    = uint32(0x00000080)
+	deleteAccess = uint32(types.Delete)
+	readAttrs    = uint32(types.FileReadAttributes)
 )
 
 // storeDstParentHolder registers an open handle on dstParent and returns it.
@@ -40,12 +37,12 @@ func storeDstParentHolder(h *Handler, dstParent metadata.FileHandle, desired, sh
 }
 
 // storeRenamer registers the source-file handle that the rename runs on.
-func storeRenamer(h *Handler, dstParent metadata.FileHandle) *OpenFile {
+func storeRenamer(h *Handler) *OpenFile {
 	of := (&OpenFile{
 		FileID:         h.GenerateFileID(),
 		MetadataHandle: metadata.FileHandle{0x51, 0x52},
 		DesiredAccess:  secFileAll | deleteAccess,
-		ShareAccess:    shareRead | shareWrite | shareDelete,
+		ShareAccess:    smbShareRead | smbShareWrite | smbShareDelete,
 		ShareName:      "share",
 		SessionID:      7,
 		TreeID:         7,
@@ -70,7 +67,7 @@ func TestParentDirRenameConflict(t *testing.T) {
 			// the directory does not conflict with it.
 			name:          "write-sharing watcher does not block the rename",
 			holderDesired: secFileAll,
-			holderShare:   shareRead | shareWrite,
+			holderShare:   smbShareRead | smbShareWrite,
 			wantConflict:  false,
 		},
 		{
@@ -79,7 +76,7 @@ func TestParentDirRenameConflict(t *testing.T) {
 			// incompatible and must still be refused.
 			name:          "delete-access holder still blocks the rename",
 			holderDesired: deleteAccess,
-			holderShare:   shareRead | shareWrite | shareDelete,
+			holderShare:   smbShareRead | smbShareWrite | smbShareDelete,
 			wantConflict:  true,
 		},
 		{
@@ -87,7 +84,7 @@ func TestParentDirRenameConflict(t *testing.T) {
 			// directory, so a holder denying write sharing must be refused.
 			name:          "holder denying write sharing still blocks the rename",
 			holderDesired: secFileAll,
-			holderShare:   shareRead | shareDelete,
+			holderShare:   smbShareRead | smbShareDelete,
 			wantConflict:  true,
 		},
 		{
@@ -102,7 +99,7 @@ func TestParentDirRenameConflict(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			h := NewHandler()
-			renamer := storeRenamer(h, dstParent)
+			renamer := storeRenamer(h)
 			storeDstParentHolder(h, dstParent, tc.holderDesired, tc.holderShare)
 
 			if got := h.checkParentDirRenameConflict(renamer, dstParent); got != tc.wantConflict {
@@ -142,8 +139,8 @@ func TestParentDirRenameConflict_SameSessionHolderStillConflicts(t *testing.T) {
 	dstParent := metadata.FileHandle{0xDE, 0xAD, 0xBE, 0xEF}
 	h := NewHandler()
 
-	renamer := storeRenamer(h, dstParent)
-	holder := storeDstParentHolder(h, dstParent, deleteAccess, shareRead|shareWrite|shareDelete)
+	renamer := storeRenamer(h)
+	holder := storeDstParentHolder(h, dstParent, deleteAccess, smbShareRead|smbShareWrite|smbShareDelete)
 	holder.SessionID = renamer.SessionID
 	holder.TreeID = renamer.TreeID
 
