@@ -239,3 +239,45 @@ func TestResolveAckBinding_SameSessionTwoSharesIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// TestReleaseLeaseForHandle_DropsOnlyTheClosedHandlesBinding asserts that a
+// CLOSE takes the closing client's binding with it, and leaves alone a lease
+// another client holds under the same key value on a different file.
+//
+// A binding that outlives its own lease record still answers the ack ownership
+// gate, and the lock manager's own ack is by key: a client that has closed
+// could then acknowledge — and so downgrade — a break on the lease that
+// outlived it.
+func TestReleaseLeaseForHandle_DropsOnlyTheClosedHandlesBinding(t *testing.T) {
+	t.Parallel()
+
+	mgr := lock.NewManager()
+	lm := NewLeaseManager(&shareResolver{mgrs: map[string]lock.LockManager{"share1": mgr}}, nil)
+	ctx := context.Background()
+	leaseKey := [16]byte{0x33, 0x44}
+	guidA, guidB := [16]byte{0xA1}, [16]byte{0xB2}
+
+	if _, _, err := lm.RequestLease(ctx, lock.FileHandle("file-A"), leaseKey, [16]byte{},
+		1, guidA, "smb:lease:A", "smb:1", "share1", testRH, false); err != nil {
+		t.Fatalf("client A RequestLease: %v", err)
+	}
+	if _, _, err := lm.RequestLease(ctx, lock.FileHandle("file-B"), leaseKey, [16]byte{},
+		2, guidB, "smb:lease:B", "smb:2", "share1", testRH, false); err != nil {
+		t.Fatalf("client B RequestLease: %v", err)
+	}
+
+	// Client A closes its handle. Client B keeps its lease on the other file.
+	if err := lm.ReleaseLeaseForHandle(ctx, lock.FileHandle("file-A"), leaseKey, "share1"); err != nil {
+		t.Fatalf("ReleaseLeaseForHandle(file-A): %v", err)
+	}
+
+	if lm.VerifyLeaseAckOwnership(leaseKey, 1, guidA) {
+		t.Error("client A can still acknowledge a break after closing its only handle — its binding outlived its lease")
+	}
+	if !lm.VerifyLeaseAckOwnership(leaseKey, 2, guidB) {
+		t.Error("client B lost its ack ownership when client A closed a different file")
+	}
+	if sid, ok := lm.GetSessionForBreak("smb:2", "share1", leaseKey); !ok || sid != 2 {
+		t.Errorf("client B break routing after A's close = %d (ok=%v), want 2", sid, ok)
+	}
+}

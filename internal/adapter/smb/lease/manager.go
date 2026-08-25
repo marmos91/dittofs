@@ -546,27 +546,32 @@ func (lm *LeaseManager) ReleaseLeaseForHandle(ctx context.Context, fileHandle lo
 		return err
 	}
 
-	// The recorded version describes the record on THIS file, so it goes as
-	// soon as that record does — a surviving record under the same key on
-	// another file is a different lease with its own version.
-	if !lockMgr.HasLeaseOnHandle(handleKey, leaseKey) {
-		lm.mu.Lock()
-		delete(lm.versions, leaseRecordKey{Share: shareName, HandleKey: handleKey, Key: leaseKey})
-		lm.mu.Unlock()
+	// Both the recorded version and the bindings describe the record on THIS
+	// file, so they go as soon as that record does. A surviving record under
+	// the same key on another file belongs to a different lease that keeps its
+	// own version and its own break-dispatch routing.
+	//
+	// The check is handle-scoped rather than share-wide: asking whether ANY
+	// record for the key survives in the share keeps a binding alive whose
+	// own record is gone, and a stale binding still answers the ack ownership
+	// gate — letting a client that has closed acknowledge, and so downgrade,
+	// a break on the lease that outlived it.
+	//
+	// A holder that acked to None still has a record here (the lock manager
+	// keeps it at state=None until CLOSE), so a duplicate ack on the same key
+	// keeps resolving and keeps surfacing ErrLeaseAckNotBreaking.
+	if lockMgr.HasLeaseOnHandle(handleKey, leaseKey) {
+		return nil
 	}
 
-	// Only drop bindings if no lease records remain anywhere in this share
-	// for this key — otherwise a concurrent open on a different file would
-	// lose break-dispatch routing.
-	if _, _, found := lockMgr.GetLeaseState(ctx, leaseKey); !found {
-		lm.mu.Lock()
-		for ck := range lm.bindings {
-			if ck.Share == shareName && ck.Key == leaseKey {
-				delete(lm.bindings, ck)
-			}
+	lm.mu.Lock()
+	delete(lm.versions, leaseRecordKey{Share: shareName, HandleKey: handleKey, Key: leaseKey})
+	for ck, b := range lm.bindings {
+		if ck.Share == shareName && ck.Key == leaseKey && b.HandleKey == handleKey {
+			delete(lm.bindings, ck)
 		}
-		lm.mu.Unlock()
 	}
+	lm.mu.Unlock()
 	return nil
 }
 
