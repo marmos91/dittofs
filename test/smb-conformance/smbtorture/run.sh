@@ -359,6 +359,8 @@ if $KERBEROS; then
         # subdirectories still exercises the many-open path far past any real
         # client, at a thirtieth of the work. A passing smb2.maxfid therefore
         # means "2000 handles are fine", NOT "the server's ceiling was found".
+        # Bounded it finishes in 5s (memory) / 15s (badger-fs), so it needs no
+        # extra budget — it keeps the standard 60s standalone-test allowance.
         "--option=torture:maxopenfiles=2000"
         # Reserved server-side ACL xattr name surfaced to smbtorture
         # smb2.ea.acl_xattr. The server rejects EA writes targeting this name
@@ -383,6 +385,8 @@ else
         # subdirectories still exercises the many-open path far past any real
         # client, at a thirtieth of the work. A passing smb2.maxfid therefore
         # means "2000 handles are fine", NOT "the server's ceiling was found".
+        # Bounded it finishes in 5s (memory) / 15s (badger-fs), so it needs no
+        # extra budget — it keeps the standard 60s standalone-test allowance.
         "--option=torture:maxopenfiles=2000"
         # Reserved server-side ACL xattr name surfaced to smbtorture
         # smb2.ea.acl_xattr. The server rejects EA writes targeting this name
@@ -670,19 +674,27 @@ else
         # synchronous, non-coalescing fsync. Give those suites more head room
         # on every profile; every other suite keeps 120s.
         #
-        # smb2.lease, smb2.multichannel and smb2.oplock also overrun 120s, on
-        # every profile — the cut is not a storage-speed effect. smb2.oplock is
-        # the clearest: batch22b deliberately waits out an oplock break timeout
-        # (smbtorture's own `oplocktimeout`, default 35s) with the holder's
-        # transport blocked so no ack can arrive, and it does not start until
-        # ~88s into the suite. 120s cannot fit it.
+        # smb2.lease, smb2.multichannel and smb2.oplock overrun 120s the same
+        # way, on every profile — the cut is not a storage-speed effect.
+        # smb2.oplock is the clearest case: batch22b deliberately waits out an
+        # oplock break timeout (smbtorture's own `oplocktimeout`, default 35s)
+        # with the holder's transport blocked so no ack can arrive.
+        #
+        # Measured end-to-end, with enough budget to finish (memory/badger-fs):
+        # lease 182/186s, oplock 145/145s, multichannel 132/132s, replay 163s.
+        # 300s is ~1.6x the slowest of those, which is the headroom the runner's
+        # variance needs; the two profiles land within 4s of each other, so the
+        # figure is not backend-sensitive.
         #
         # smb2.notify is deliberately NOT raised. It hangs on a cancelled
         # CHANGE_NOTIFY that never receives a final response, so a bigger budget
         # only burns more of it while leaving the same tail ungraded.
+        # smb2.aio_delay and smb2.compound_find stay at 120s too: still
+        # uncharacterised, and sizing a budget for an unknown is how an ungraded
+        # tail gets established in the first place.
         case "$suite" in
-            smb2.replay|smb2.durable-*) suite_timeout=300 ;;
-            smb2.lease|smb2.multichannel|smb2.oplock) suite_timeout=600 ;;
+            smb2.replay|smb2.durable-*|smb2.lease|smb2.multichannel|smb2.oplock)
+                suite_timeout=300 ;;
             *) suite_timeout=120 ;;
         esac
         run_smbtorture "$suite" "$suite_timeout" "$prefix" "${share:-}" || record_rc $?
