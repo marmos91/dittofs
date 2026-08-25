@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"sync"
 
@@ -315,9 +316,7 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 				continue
 			}
 			spans = append(spans, [2]int64{st.start(), st.committedTo})
-			for off := range st.newOffsets {
-				newOffsets[off] = struct{}{}
-			}
+			maps.Copy(newOffsets, st.newOffsets)
 		}
 		if len(spans) > 0 {
 			if rerr := r.ReapSupersededManifest(ctx, id, spans, newOffsets); rerr != nil && err == nil {
@@ -617,8 +616,9 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 // were carved concurrently before and would be again — and under any such
 // ordering a sibling's already-flipped head is indistinguishable here from
 // pre-existing warm data. It has to be a refusal rather than a truncation to
-// limit: the run-end reap deletes whole rows that start inside the run, so
-// tiling only part of a row still drops its tail.
+// limit: a run truncated there still ends inside the row, so the reap spares
+// that row whole and its stale cover outlives the fresh tiling anyway — the
+// truncated extension would re-chunk those bytes for nothing.
 //
 // ponytail: a row reaching past a later dirty run is left alone, so that run
 // still ends mid-row; covering it means merging the two runs, which is worth

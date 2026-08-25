@@ -293,7 +293,7 @@ func DefaultCommitBlock(
 		// rows, since re-deriving from the whole manifest costs a full list and
 		// sort per committed block object. Skipped for legacy callers that pass
 		// no fileChunks (empty payloadID). Superseded-row reaping happens once
-		// per carve run (ReapSupersededManifest), not per batch — see below.
+		// per carve pass (ReapSupersededManifest), not per batch — see below.
 		return ProjectCommittedChunks(ctx, tx, payloadIDFromChunks(fileChunks), fileChunks)
 	})
 }
@@ -306,10 +306,11 @@ func DefaultCommitBlock(
 // single pass would stop one row short.
 //
 // A carve run asks this about its own end. A run that stops inside a row leaves
-// that row half superseded: the run-end reap deletes it, because its start lies
-// in the run, and the part past the run keeps no cover at all — a row claims a
-// prefix of its chunk, so no row can be made to start mid-chunk. Carving through
-// to this offset is what keeps that range covered.
+// that row half superseded, and the reap spares it whole rather than strand the
+// part past the run — a row claims a prefix of its chunk, so no row can be made
+// to start mid-chunk and cover that part instead. The stale row then overlaps
+// the fresh tiling for good. Carving through to this offset is what lets the
+// reap delete it.
 //
 // A payload with no rows yet (the first carve of a file) is not an error: there
 // is nothing to straddle, so the run stands as snapshotted.
@@ -427,9 +428,10 @@ func ReapSupersededManifest(ctx context.Context, tx Transaction, payloadID strin
 		}
 		rowStart := int64(off)
 		rowEnd := rowStart + int64(r.DataSize)
-		// The first span that could overlap the row: spans are disjoint and
-		// ascending, so at most this one does.
-		i := sort.Search(len(ordered), func(i int) bool { return ordered[i][1] > rowStart })
+		// The first span reaching past the row's start: spans are disjoint and
+		// ascending, so a row overlapping any span overlaps this one — and a row
+		// covering several reaches past its end, which the check below spares.
+		i := sort.Search(len(ordered), func(j int) bool { return ordered[j][1] > rowStart })
 		if i == len(ordered) || ordered[i][0] >= rowEnd {
 			continue // untouched by the pass (incl. cold remainders)
 		}
