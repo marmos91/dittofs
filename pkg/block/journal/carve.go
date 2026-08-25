@@ -103,16 +103,18 @@ type BlockSink interface {
 	CommitBlock(ctx context.Context, chunks []CarveChunk) error
 }
 
-// supersededReaper is an optional BlockSink capability. Once a carve run has
-// committed rows, journal calls ReapSupersededManifest so the sink can delete
-// the manifest rows they superseded — keeping the per-file FileChunk manifest a
-// gap-free, overlap-free tiling of [0,size) after a partial overwrite.
-// runStart/runEnd bound the committed part of the re-carved (dirty) range;
-// newOffsets are the chunk offsets this run wrote (so the reap keeps them and
-// deletes only stale straddlers/interior rows). Sinks without a metadata store
+// supersededReaper is an optional BlockSink capability. Once a carve pass has
+// committed a file's rows, journal calls ReapSupersededManifest so the sink can
+// delete the manifest rows they superseded — keeping the per-file FileChunk
+// manifest a gap-free, overlap-free tiling of [0,size) after a partial overwrite.
+// spans are the committed parts of the pass's re-carved (dirty) runs, disjoint
+// and ascending; newOffsets are the chunk offsets the pass wrote (so the reap
+// keeps them and deletes only stale straddlers/interior rows). One call per file
+// rather than one per run: the sink re-reads the whole manifest to answer it, and
+// that read happens under this shard's carve lock. Sinks without a metadata store
 // (test fakes) simply don't implement it and the reap is skipped.
 type supersededReaper interface {
-	ReapSupersededManifest(ctx context.Context, id FileID, runStart, runEnd int64, newOffsets map[int64]struct{}) error
+	ReapSupersededManifest(ctx context.Context, id FileID, spans [][2]int64, newOffsets map[int64]struct{}) error
 }
 
 // manifestRowEnder is an optional BlockSink capability: it reports how far the
@@ -291,23 +293,34 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 	// greatest-start, so a stale row starting later than a fresh one then wins
 	// and serves old bytes on a cold read.
 	//
-	// For the same reason this runs even when packing failed, and one run's reap
-	// failing does not suppress the others: each run's committed prefix is its
-	// own last chance.
+	// For the same reason this runs even when packing failed: every run that got
+	// anything committed is reaped for, including the ones after a run that
+	// failed mid-way.
 	//
-	// Serial, not concurrent: carveCommitLocks stripes on the payload ID, so every
-	// reap for one file contends on the same mutex anyway.
+	// All of the file's spans go in one call. The sink answers a reap by reading
+	// the file's whole manifest and re-projecting File.Blocks from it, so one call
+	// per run made both costs scale with the run count — a file with tens of
+	// thousands of dirty runs spent minutes of that under this shard's carve lock,
+	// after its records had already flipped synced and its uploads had drained.
 	//
 	// ponytail: a caller cancelling between the flip and the reap still strands
 	// those rows, since nothing retries a reap and the records are no longer
 	// dirty; persist a pending-reap intent, or defer the flip until the reap
 	// lands, if that window ever shows up in the field.
 	if r, ok := s.sink.(supersededReaper); ok {
+		spans := make([][2]int64, 0, len(rs))
+		newOffsets := make(map[int64]struct{})
 		for _, st := range rs {
 			if st.committedTo <= st.start() {
 				continue
 			}
-			if rerr := r.ReapSupersededManifest(ctx, id, st.start(), st.committedTo, st.newOffsets); rerr != nil && err == nil {
+			spans = append(spans, [2]int64{st.start(), st.committedTo})
+			for off := range st.newOffsets {
+				newOffsets[off] = struct{}{}
+			}
+		}
+		if len(spans) > 0 {
+			if rerr := r.ReapSupersededManifest(ctx, id, spans, newOffsets); rerr != nil && err == nil {
 				err = rerr
 			}
 		}

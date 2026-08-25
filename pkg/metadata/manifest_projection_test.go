@@ -29,6 +29,9 @@ type manifestTx struct {
 	// wroteManifest records whether the last file write went through
 	// SetManifest (manifest rewritten) or UpdateAttrs (attrs only).
 	wroteManifest bool
+	// lists counts ListFileChunks calls: the whole-manifest read is what a reap
+	// costs, so a caller can assert the cost does not scale with its input.
+	lists int
 }
 
 func newManifestTx(payloadID string) *manifestTx {
@@ -58,6 +61,7 @@ func (t *manifestTx) Delete(_ context.Context, id string) error {
 }
 
 func (t *manifestTx) ListFileChunks(_ context.Context, payloadID string) ([]*block.FileChunk, error) {
+	t.lists++
 	ids := make([]string, 0, len(t.rows))
 	for id := range t.rows {
 		if chunkPayloadID(id) == payloadID {

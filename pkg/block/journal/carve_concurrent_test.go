@@ -185,12 +185,13 @@ func TestCarveSharedRecordAcrossRuns(t *testing.T) {
 type extendingSink struct {
 	*fakeSink
 	mu      sync.Mutex
-	reaps   [][2]int64
+	reaps   [][2]int64 // every span the sink was asked to reap, in call order
+	calls   int
 	gateOff int64
 	rowEnd  int64
 	gated   int
-	// failFirstReap, when set, is returned by the first reap only, so a test can
-	// see whether one run's reap failure suppresses the runs after it.
+	// failFirstReap, when set, is returned by the first reap call only, so a test
+	// can see a reap failure surface out of Carve.
 	failFirstReap error
 	// straddleEverywhere answers every lookup with a row reaching one byte past
 	// the offset asked about, so no reap span ever ends on a row boundary.
@@ -212,10 +213,11 @@ func (e *extendingSink) ManifestRowEndAfter(_ context.Context, _ FileID, off int
 	return e.rowEnd, nil
 }
 
-func (e *extendingSink) ReapSupersededManifest(_ context.Context, _ FileID, runStart, runEnd int64, _ map[int64]struct{}) error {
+func (e *extendingSink) ReapSupersededManifest(_ context.Context, _ FileID, spans [][2]int64, _ map[int64]struct{}) error {
 	e.mu.Lock()
-	e.reaps = append(e.reaps, [2]int64{runStart, runEnd})
-	first := len(e.reaps) == 1
+	e.reaps = append(e.reaps, spans...)
+	e.calls++
+	first := e.calls == 1
 	e.mu.Unlock()
 	if first {
 		return e.failFirstReap
@@ -474,7 +476,7 @@ func (r *reapCtxSink) CommitBlock(ctx context.Context, chunks []CarveChunk) erro
 	return err
 }
 
-func (r *reapCtxSink) ReapSupersededManifest(_ context.Context, _ FileID, _, _ int64, _ map[int64]struct{}) error {
+func (r *reapCtxSink) ReapSupersededManifest(_ context.Context, _ FileID, spans [][2]int64, _ map[int64]struct{}) error {
 	// Only count a reap that runs after the failure has landed: that is the one
 	// a completed run would lose if the failure suppressed it.
 	select {
@@ -486,7 +488,7 @@ func (r *reapCtxSink) ReapSupersededManifest(_ context.Context, _ FileID, _, _ i
 		return nil
 	}
 	r.mu.Lock()
-	r.reaps++
+	r.reaps += len(spans)
 	r.mu.Unlock()
 	return nil
 }

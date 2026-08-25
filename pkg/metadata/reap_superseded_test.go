@@ -53,7 +53,7 @@ func TestReapSupersededManifest_NarrowsStraddler(t *testing.T) {
 	seedRows(t, tx, pid, [][2]uint64{{2500, 1200}, {3700, 1300}})
 	newOffsets := map[int64]struct{}{2500: {}, 3700: {}}
 
-	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, 2500, 5000, newOffsets))
+	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, [][2]int64{{2500, 5000}}, newOffsets))
 
 	require.Equal(t, [][2]int64{
 		{0, 1000},
@@ -77,7 +77,7 @@ func TestReapSupersededManifest_KeepsStraddlerReachingPastRun(t *testing.T) {
 	seedRows(t, tx, pid, [][2]uint64{{2000, 1000}})
 	newOffsets := map[int64]struct{}{2000: {}}
 
-	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, 2000, 3000, newOffsets))
+	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, [][2]int64{{2000, 3000}}, newOffsets))
 
 	require.Equal(t, [][2]int64{
 		{0, 1000},
@@ -102,7 +102,7 @@ func TestReapSupersededManifest_KeepsInteriorRowReachingPastRun(t *testing.T) {
 	seedRows(t, tx, pid, [][2]uint64{{2000, 1000}})
 	newOffsets := map[int64]struct{}{2000: {}}
 
-	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, 2000, 3000, newOffsets))
+	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, [][2]int64{{2000, 3000}}, newOffsets))
 	require.Equal(t, [][2]int64{
 		{0, 2000},
 		{2000, 3000}, // the fresh row; the stale [2000, 2500) it replaced is gone
@@ -120,9 +120,71 @@ func TestReapSupersededManifest_LeavesDisjointRowsAlone(t *testing.T) {
 	seedRows(t, tx, pid, [][2]uint64{{0, 2000}, {2000, 1000}})
 	newOffsets := map[int64]struct{}{2000: {}}
 
-	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, 2000, 3000, newOffsets))
+	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, [][2]int64{{2000, 3000}}, newOffsets))
 
 	require.Equal(t, [][2]int64{{0, 2000}, {2000, 3000}}, tiling(t, tx, pid))
+}
+
+// TestReapSupersededManifest_ManySpans reaps a whole carve pass in one call: the
+// spans are the committed prefixes of the pass's dirty runs, and the un-recarved
+// bytes in the holes between them keep every row they had.
+func TestReapSupersededManifest_ManySpans(t *testing.T) {
+	const pid = "share/p"
+	ctx := context.Background()
+	tx := newManifestTx(pid)
+
+	// Three 1000-byte rows per 2000-byte span, each span followed by a 1000-byte
+	// hole the pass never re-carved.
+	seedRows(t, tx, pid, [][2]uint64{
+		{0, 1000}, {1000, 1000}, {2000, 1000}, // span [0, 2000) + hole [2000, 3000)
+		{3000, 1000}, {4000, 1000}, {5000, 1000}, // span [3000, 5000) + hole
+		{6000, 1000}, {7000, 1000}, {8000, 1000}, // span [6000, 8000) + hole
+	})
+	// Each span re-tiled by one fresh row.
+	seedRows(t, tx, pid, [][2]uint64{{0, 2000}, {3000, 2000}, {6000, 2000}})
+	newOffsets := map[int64]struct{}{0: {}, 3000: {}, 6000: {}}
+	spans := [][2]int64{{0, 2000}, {3000, 5000}, {6000, 8000}}
+
+	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, spans, newOffsets))
+	require.Equal(t, [][2]int64{
+		{0, 2000},
+		{2000, 3000}, // hole: untouched
+		{3000, 5000},
+		{5000, 6000}, // hole: untouched
+		{6000, 8000},
+		{8000, 9000}, // hole: untouched
+	}, tiling(t, tx, pid))
+}
+
+// TestReapSupersededManifest_CostIsIndependentOfSpanCount pins what makes the
+// pass-end reap one call rather than one per run: it reads the manifest a fixed
+// number of times whatever the run count, so a file with tens of thousands of
+// dirty runs does not hold the journal's carve lock for a scan per run.
+func TestReapSupersededManifest_CostIsIndependentOfSpanCount(t *testing.T) {
+	const pid = "share/p"
+	ctx := context.Background()
+
+	reads := func(spanCount int) int {
+		tx := newManifestTx(pid)
+		var seed [][2]uint64
+		var spans [][2]int64
+		newOffsets := map[int64]struct{}{}
+		for i := 0; i < spanCount; i++ {
+			base := uint64(i) * 3000
+			seed = append(seed, [2]uint64{base, 1000}, [2]uint64{base + 1000, 1000}, [2]uint64{base + 2000, 1000})
+			spans = append(spans, [2]int64{int64(base), int64(base) + 2000})
+			newOffsets[int64(base)] = struct{}{}
+		}
+		seedRows(t, tx, pid, seed)
+		for _, sp := range spans {
+			seedRows(t, tx, pid, [][2]uint64{{uint64(sp[0]), 2000}})
+		}
+		tx.lists = 0
+		require.NoError(t, ReapSupersededManifest(ctx, tx, pid, spans, newOffsets))
+		return tx.lists
+	}
+
+	require.Equal(t, reads(1), reads(16), "manifest reads must not scale with the span count")
 }
 
 // TestManifestRowEndAfter covers the offset a carve run has to reach so the reap

@@ -352,47 +352,67 @@ func ManifestRowEndAfter(ctx context.Context, tx Transaction, payloadID string, 
 	return end, nil
 }
 
-// ReapSupersededManifest deletes the manifest rows a carve run supersedes and
+// ReapSupersededManifest deletes the manifest rows a carve pass supersedes and
 // re-projects File.Blocks, atomically. A partial overwrite re-chunks the dirty
 // range (plus its warm straddle remainders, re-marked dirty by the journal) into
 // fresh rows; the old rows those supersede must be reaped or the per-file manifest
 // no longer tiles [0,size) — a cold read then resolves a stale straddling row
 // (returns old bytes) or hits a gap (zero-fills). That is #953.
 //
-// Reaped set: every existing row for payloadID that lies wholly inside the run's
-// [runStart, runEnd) span and is NOT one of the offsets this run just wrote
-// (newOffsets). Running once at run end — after all of the run's batches have
-// committed their rows — is what makes it correct across a multi-batch run: a
-// straddler spanning a batch seam has no single batch span that contains it, and
-// reaping per batch by the run span would delete a sibling batch's fresh rows.
-// The run span covers only re-carved (dirty) bytes, so an un-recarved cold
-// remainder falls outside it and is never reaped — no gap. newOffsets excludes
-// this run's own rows so they survive.
+// spans are the committed prefixes of the pass's dirty runs, as [start, end)
+// pairs; they are disjoint, and the holes between them are un-recarved bytes no
+// span may touch. newOffsets holds the offsets of every chunk the pass wrote, so
+// its own fresh rows survive. Reaped set: every existing row that lies wholly
+// inside a span and is not one of those offsets.
 //
-// A row that STARTS before runStart and reaches into the run is not in that set —
-// deleting it would strip [rowStart, runStart) of its only cover — so it is
-// narrowed to the prefix it still owns instead: DataSize becomes runStart-rowStart
-// and the run's fresh rows take over from there. The chunk keeps every byte on the
+// One call per pass, not per run: each span's deletes are decided against the
+// same listing, and File.Blocks is re-projected once at the end. That is what
+// keeps the cost of a file with tens of thousands of dirty runs at one manifest
+// read rather than one per run, all of it under the journal's carve lock. It is
+// also equivalent to reaping the spans one at a time in ascending order, because
+// a row this loop deletes or narrows ends at or before the span it acted on and
+// so cannot reach the spans after it.
+//
+// Running after all of the pass's rows are committed is what makes it correct
+// across a multi-block run: a straddler spanning a block seam has no single
+// block span that contains it, and reaping per block by the run span would
+// delete a sibling block's fresh rows.
+//
+// A row that STARTS before its span and reaches into it is not in the reaped set —
+// deleting it would strip [rowStart, spanStart) of its only cover — so it is
+// narrowed to the prefix it still owns instead: DataSize becomes spanStart-rowStart
+// and the fresh rows take over from there. The chunk keeps every byte on the
 // remote and is still hash-verified over all of them; the row just stops claiming
 // the part the run re-chunked, which is the same shape a truncate's narrow leaves
 // behind.
 //
-// A row that reaches past runEnd stays whole, whichever side it starts on: no row
-// can start mid-chunk, so its tail past the run has no other cover, and both
-// narrowing it (from the head) and deleting it (from inside the run) would trade
-// an overlap for a gap. Coverage lookups resolve that overlap to the greatest
-// covering start, so the fresh rows win inside the run and the surviving row
-// serves only its unre-carved tail. A run whose end sits on a row boundary — what
-// the journal's run extension arranges on the normal path — has no such row, so
-// this only spares anything where a run stops early.
+// A row that reaches past its span's end stays whole, whichever side it starts on:
+// no row can start mid-chunk, so its tail past the span has no other cover, and
+// both narrowing it (from the head) and deleting it (from inside the span) would
+// trade an overlap for a gap. Coverage lookups resolve that overlap to the
+// greatest covering start, so the fresh rows win inside the span and the surviving
+// row serves only its unre-carved tail. A span ending on a row boundary — what the
+// journal's run extension arranges on the normal path — has no such row, so this
+// only spares anything where a run stopped early.
 //
 // ponytail: this fixes read-coherence — the corruption. Decrementing the reaped
 // chunk's CAS refcount to reclaim its remote space is a separate, tracked
 // follow-up (#1715): under-counting only leaks space, it never drops live data.
-func ReapSupersededManifest(ctx context.Context, tx Transaction, payloadID string, runStart, runEnd int64, newOffsets map[int64]struct{}) error {
-	if payloadID == "" || runEnd <= runStart {
+func ReapSupersededManifest(ctx context.Context, tx Transaction, payloadID string, spans [][2]int64, newOffsets map[int64]struct{}) error {
+	if payloadID == "" {
 		return nil
 	}
+	ordered := make([][2]int64, 0, len(spans))
+	for _, sp := range spans {
+		if sp[1] > sp[0] {
+			ordered = append(ordered, sp)
+		}
+	}
+	if len(ordered) == 0 {
+		return nil
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i][0] < ordered[j][0] })
+
 	rows, err := tx.ListFileChunks(ctx, payloadID)
 	if err != nil {
 		return fmt.Errorf("reap superseded: list manifest for %s: %w", payloadID, err)
@@ -407,25 +427,26 @@ func ReapSupersededManifest(ctx context.Context, tx Transaction, payloadID strin
 		}
 		rowStart := int64(off)
 		rowEnd := rowStart + int64(r.DataSize)
-		if rowStart < runStart {
-			if rowEnd <= runStart || rowEnd > runEnd {
-				continue // no overlap with the run, or narrowing would open a tail gap
-			}
+		// The first span that could overlap the row: spans are disjoint and
+		// ascending, so at most this one does.
+		i := sort.Search(len(ordered), func(i int) bool { return ordered[i][1] > rowStart })
+		if i == len(ordered) || ordered[i][0] >= rowEnd {
+			continue // untouched by the pass (incl. cold remainders)
+		}
+		spanStart, spanEnd := ordered[i][0], ordered[i][1]
+		if rowEnd > spanEnd {
+			continue // reaches past the span: acting on it would strand [spanEnd, rowEnd)
+		}
+		if rowStart < spanStart {
 			narrowed := *r
-			narrowed.DataSize = uint32(runStart - rowStart)
+			narrowed.DataSize = uint32(spanStart - rowStart)
 			if err := tx.Put(ctx, &narrowed); err != nil {
 				return fmt.Errorf("reap superseded: narrow %s: %w", r.ID, err)
 			}
 			continue
 		}
-		if rowStart >= runEnd {
-			continue // outside the re-carved run — untouched (incl. cold remainders)
-		}
-		if _, isNew := newOffsets[int64(off)]; isNew {
-			continue // a row this run just wrote — keep it
-		}
-		if rowEnd > runEnd {
-			continue // reaches past the run: deleting it would strand [runEnd, rowEnd)
+		if _, isNew := newOffsets[rowStart]; isNew {
+			continue // a row this pass just wrote — keep it
 		}
 		if err := tx.Delete(ctx, r.ID); err != nil {
 			return fmt.Errorf("reap superseded: delete %s: %w", r.ID, err)

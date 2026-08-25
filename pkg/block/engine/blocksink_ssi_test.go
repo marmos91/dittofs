@@ -132,7 +132,7 @@ func TestLocalBlockSink_ConcurrentReapAndCommit_NoSSIConflict(t *testing.T) {
 			// A disjoint span from every commit above, so a correct
 			// implementation serializes only the shared File-row write.
 			off := int64(i) * 4096
-			errs[i] = sink.ReapSupersededManifest(ctx, journal.FileID(pid), off, off+4096, nil)
+			errs[i] = sink.ReapSupersededManifest(ctx, journal.FileID(pid), [][2]int64{{off, off + 4096}}, nil)
 		}(i)
 	}
 	close(start)

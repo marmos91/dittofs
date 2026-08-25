@@ -240,11 +240,11 @@ func spanningBlockFailureReap(t *testing.T, straddle bool) {
 	}
 }
 
-// TestCarvePackReapFailureDoesNotSuppressLaterRuns pins that one run's reap
-// failing still leaves every later complete run reaped. Those runs have already
-// flipped synced, so no later pass revisits them: a reap skipped here never
-// happens at all. The first error still surfaces.
-func TestCarvePackReapFailureDoesNotSuppressLaterRuns(t *testing.T) {
+// TestCarvePackReapCarriesEveryCommittedRun pins that the pass-end reap is asked
+// about every run that committed rows, and that a reap failure surfaces out of
+// Carve. Those runs have already flipped synced, so no later pass revisits them:
+// a run left out of this reap is never reaped at all.
+func TestCarvePackReapCarriesEveryCommittedRun(t *testing.T) {
 	const (
 		runSize = 4 << 10
 		gap     = 64 << 10
@@ -270,7 +270,7 @@ func TestCarvePackReapFailureDoesNotSuppressLaterRuns(t *testing.T) {
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
 	if len(sink.reaps) != runs {
-		t.Fatalf("reaps=%d want %d: a failed reap suppressed the runs after it", len(sink.reaps), runs)
+		t.Fatalf("reaped spans=%d want %d: a committed run was left out of the reap", len(sink.reaps), runs)
 	}
 }
 
