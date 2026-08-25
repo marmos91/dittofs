@@ -246,9 +246,6 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	// Per [MS-SMB2] 3.3.5.16: If SMB2_FLAGS_ASYNC_COMMAND is set, look up by
 	// AsyncId; otherwise by MessageID.
 	if h.NotifyRegistry != nil {
-		// The by-MessageID lookup also tombstones on a miss, in one step:
-		// see NotifyRegistry.CancelByMessageID for why the two cannot be
-		// separate calls.
 		var cancelled *PendingNotify
 		if ctx.RequestAsyncId != 0 {
 			cancelled = h.NotifyRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)

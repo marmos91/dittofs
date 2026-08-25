@@ -431,10 +431,15 @@ var ErrAlreadyCancelled = fmt.Errorf("change_notify already cancelled before reg
 // nil.
 //
 // Both outcomes are decided under a single acquisition of r.mu, and that is
-// the point. Performed as a lookup followed by a separate MarkPendingCancel,
+// the point. Performed as a lookup followed by a separate tombstone write,
 // a concurrent Register slips between the two: it sees no tombstone (not
 // written yet) and registers a watch the cancel has already given up on, so
 // nothing ever completes that MessageID and the client waits forever.
+//
+// Tombstones expire after cancelTombstoneTTL so a stray CANCEL for a notify
+// the server already rejected synchronously (e.g. invalid filter) doesn't
+// cancel a future unrelated CHANGE_NOTIFY that happens to reuse the same
+// (ConnID, MessageID) much later.
 func (r *NotifyRegistry) CancelByMessageID(connID, messageID uint64) *PendingNotify {
 	key := notifyMsgKey{ConnID: connID, MessageID: messageID}
 
@@ -450,26 +455,8 @@ func (r *NotifyRegistry) CancelByMessageID(connID, messageID uint64) *PendingNot
 	return nil
 }
 
-// MarkPendingCancel records a tombstone for a CHANGE_NOTIFY that may not yet
-// have registered. Called by the SMB2_CANCEL handler when its lookup by
-// (ConnID, MessageID) finds nothing — the matching CHANGE_NOTIFY is likely
-// being processed concurrently on another goroutine. If that NOTIFY then
-// reaches Register, the tombstone causes it to return ErrAlreadyCancelled
-// instead of registering and waiting forever (issue #623).
-//
-// Tombstones expire after cancelTombstoneTTL so a stray CANCEL for a notify
-// that was already rejected synchronously (e.g. invalid filter) doesn't
-// cancel a future unrelated CHANGE_NOTIFY that happens to reuse the same
-// (ConnID, MessageID) much later.
-func (r *NotifyRegistry) MarkPendingCancel(connID, messageID uint64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.cancelTombstones[notifyMsgKey{ConnID: connID, MessageID: messageID}] = time.Now()
-	r.gcCancelTombstonesLocked()
-}
-
 // gcCancelTombstonesLocked evicts expired tombstones. Must be called with
-// r.mu held for write. Called opportunistically from MarkPendingCancel and
+// r.mu held for write. Called opportunistically from CancelByMessageID and
 // Register so we don't need a background ticker; tombstones are only created
 // in races and expire quickly even under high load.
 func (r *NotifyRegistry) gcCancelTombstonesLocked() {
@@ -680,23 +667,6 @@ func (r *NotifyRegistry) Unregister(fileID [16]byte) *PendingNotify {
 	defer r.mu.Unlock()
 
 	notify, ok := r.byFileID[string(fileID[:])]
-	if !ok {
-		return nil
-	}
-
-	return r.unregisterLocked(notify)
-}
-
-// UnregisterByMessageID removes a pending notification by (ConnID, MessageID).
-// Called by CANCEL when SMB2_FLAGS_ASYNC_COMMAND is not set on the cancel
-// request (spec requires the server to match the original request's
-// MessageID on its connection). Returns the removed PendingNotify, or nil
-// if not found.
-func (r *NotifyRegistry) UnregisterByMessageID(connID, messageID uint64) *PendingNotify {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	notify, ok := r.byMsgKey[notifyMsgKey{ConnID: connID, MessageID: messageID}]
 	if !ok {
 		return nil
 	}

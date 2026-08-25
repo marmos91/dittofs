@@ -119,11 +119,11 @@ func TestNotifyRegistry_Register_CrossConnectionMessageIDNoEvict(t *testing.T) {
 	}
 }
 
-// TestNotifyRegistry_UnregisterByMessageID_DisambiguatesByConnID verifies the
+// TestNotifyRegistry_CancelByMessageID_DisambiguatesByConnID verifies the
 // CANCEL-by-MessageID path scopes its lookup to the requesting connection,
 // so two pending notifies sharing a MessageID across two TCP connections
 // can each be cancelled independently.
-func TestNotifyRegistry_UnregisterByMessageID_DisambiguatesByConnID(t *testing.T) {
+func TestNotifyRegistry_CancelByMessageID_DisambiguatesByConnID(t *testing.T) {
 	r := newTestNotifyRegistry()
 
 	a := &PendingNotify{
@@ -149,17 +149,17 @@ func TestNotifyRegistry_UnregisterByMessageID_DisambiguatesByConnID(t *testing.T
 	mustRegister(t, r, a)
 	mustRegister(t, r, b)
 
-	got := r.UnregisterByMessageID(1, 521)
+	got := r.CancelByMessageID(1, 521)
 	if got == nil || got.AsyncId != 1 {
-		t.Fatalf("UnregisterByMessageID(connID=1) returned %+v, want A", got)
+		t.Fatalf("CancelByMessageID(connID=1) returned %+v, want A", got)
 	}
 	// B must still be there.
-	if got := r.UnregisterByMessageID(2, 521); got == nil || got.AsyncId != 2 {
-		t.Fatalf("UnregisterByMessageID(connID=2) returned %+v, want B", got)
+	if got := r.CancelByMessageID(2, 521); got == nil || got.AsyncId != 2 {
+		t.Fatalf("CancelByMessageID(connID=2) returned %+v, want B", got)
 	}
 }
 
-func TestNotifyRegistry_UnregisterByMessageID(t *testing.T) {
+func TestNotifyRegistry_CancelByMessageID(t *testing.T) {
 	r := newTestNotifyRegistry()
 
 	notify := &PendingNotify{
@@ -175,7 +175,7 @@ func TestNotifyRegistry_UnregisterByMessageID(t *testing.T) {
 	mustRegister(t, r, notify)
 
 	// Unregister by (ConnID, MessageID)
-	removed := r.UnregisterByMessageID(7, 42)
+	removed := r.CancelByMessageID(7, 42)
 	if removed == nil {
 		t.Fatal("expected non-nil removed notify")
 	}
@@ -184,7 +184,7 @@ func TestNotifyRegistry_UnregisterByMessageID(t *testing.T) {
 	}
 
 	// Should not find it again
-	removed = r.UnregisterByMessageID(7, 42)
+	removed = r.CancelByMessageID(7, 42)
 	if removed != nil {
 		t.Error("expected nil on second unregister")
 	}
@@ -2066,7 +2066,7 @@ func TestNotifyRegistry_PreArrivalCancel_TombstoneShortCircuitsRegister(t *testi
 
 	// CANCEL arrives first — no matching entry, so the handler drops a
 	// tombstone for the future Register to find.
-	r.MarkPendingCancel(connID, messageID)
+	r.CancelByMessageID(connID, messageID)
 
 	notify := &PendingNotify{
 		FileID:           [16]byte{0xAB},
@@ -2102,7 +2102,7 @@ func TestNotifyRegistry_PreArrivalCancel_TombstoneShortCircuitsRegister(t *testi
 // Without this guard, the tombstone would be a global blocker.
 func TestNotifyRegistry_CancelTombstoneNoCrossMessageIDLeak(t *testing.T) {
 	r := newTestNotifyRegistry()
-	r.MarkPendingCancel(1, 10)
+	r.CancelByMessageID(1, 10)
 
 	otherMsg := &PendingNotify{
 		FileID: [16]byte{0xFE}, ConnID: 1, MessageID: 11, AsyncId: 1,
@@ -2129,7 +2129,7 @@ func TestNotifyRegistry_CancelTombstoneNoCrossMessageIDLeak(t *testing.T) {
 // would couple the test to the internal layout.
 func TestNotifyRegistry_CancelTombstoneExpires(t *testing.T) {
 	r := newTestNotifyRegistry()
-	r.MarkPendingCancel(1, 99)
+	r.CancelByMessageID(1, 99)
 
 	// Manually age the tombstone by rewriting it past the TTL. Going through
 	// the map directly is the only way to simulate time passage without
@@ -2173,7 +2173,7 @@ func TestChangeNotify_PreArrivalCancel_HandlerReturnsCancelledSync(t *testing.T)
 	}
 
 	// CANCEL arrived ahead of us.
-	h.NotifyRegistry.MarkPendingCancel(ctx.ConnID, ctx.MessageID)
+	h.NotifyRegistry.CancelByMessageID(ctx.ConnID, ctx.MessageID)
 
 	body := encodeChangeNotifyReq(0, 1000, fileID, FileNotifyChangeFileName)
 	res, err := h.ChangeNotify(ctx, body)
@@ -2195,7 +2195,7 @@ func TestChangeNotify_PreArrivalCancel_HandlerReturnsCancelledSync(t *testing.T)
 }
 
 // TestNotifyRegistry_ConcurrentCancelBeforeRegister stresses the race that
-// caused #623. We spin up many goroutines that each fire MarkPendingCancel
+// caused #623. We spin up many goroutines that each fire CancelByMessageID
 // followed by Register on the same (ConnID, MessageID). Either outcome is
 // correct (tombstone consumed before Register, or Register raced past) but
 // no goroutine can land in a state where a watcher remains registered for a
@@ -2211,7 +2211,7 @@ func TestNotifyRegistry_ConcurrentCancelBeforeRegister(t *testing.T) {
 		done := make(chan struct{}, 2)
 		// Cancel first, then notify — guarantees ErrAlreadyCancelled.
 		go func() {
-			r.MarkPendingCancel(connID, messageID)
+			r.CancelByMessageID(connID, messageID)
 			done <- struct{}{}
 		}()
 		go func() {
@@ -2804,9 +2804,9 @@ func TestMarkInterimSent_AfterUnregister_StillDeliversFinal(t *testing.T) {
 	mustRegister(t, r, notify)
 
 	// CANCEL removes the watch...
-	cancelled := r.UnregisterByMessageID(notify.ConnID, notify.MessageID)
+	cancelled := r.CancelByMessageID(notify.ConnID, notify.MessageID)
 	if cancelled == nil {
-		t.Fatal("UnregisterByMessageID found no watch to cancel")
+		t.Fatal("CancelByMessageID found no watch to cancel")
 	}
 
 	// ...the dispatcher writes the interim STATUS_PENDING here, after the
