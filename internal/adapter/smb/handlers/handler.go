@@ -83,6 +83,17 @@ type Handler struct {
 	// under its own distinct FileID).
 	renameScanMu sync.Mutex
 
+	// docElectionMu serializes the delete-on-close last-handle election
+	// (electDeleteOnClose) across every closing handle: it makes each closer's
+	// "am I the last handle on this file?" scan atomic with its own departure
+	// from the set of handles that can still honour a delete-on-close
+	// (OpenFile.docLeaving). See doc_election.go.
+	//
+	// Lock order: leaf. The election takes only per-OpenFile locks under it and
+	// does no I/O, and no other lock is acquired while it is held — both close
+	// paths have released it well before they take renameScanMu.
+	docElectionMu sync.Mutex
+
 	// Named pipe management (for IPC$ RPC)
 	PipeManager *rpc.PipeManager
 
@@ -536,6 +547,17 @@ type OpenFile struct {
 	// DOC and then immediately open a SECOND handle to it (must succeed).
 	DeletePending        bool // committed shared DOC (visible to other opens)
 	InitialDeleteOnClose bool // per-handle initial DOC from CREATE FILE_DELETE_ON_CLOSE
+
+	// docLeaving marks a handle that has already run its delete-on-close
+	// election (electDeleteOnClose) and can therefore no longer honour a DOC
+	// propagated to it; the election's sibling scans skip such handles.
+	//
+	// Guarded by Handler.docElectionMu — NOT by OpenFile.mu — because it is
+	// only ever read as part of a scan that must be atomic with the writes to
+	// it. The handle stays in Handler.files while marked, so every other scan
+	// (CREATE delete-pending gate, share modes, oplocks, rename conflict) still
+	// sees it until its owner's own removal step.
+	docLeaving bool
 
 	// ShareAccess stores the sharing mode from the CREATE request.
 	// Used for share mode conflict checking during rename and other operations.
@@ -1462,61 +1484,22 @@ func (h *Handler) closeFilesWithFilter(
 		}
 
 		// Handle delete-on-close (FileDispositionInformation OR per-handle
-		// initial DOC from a CREATE FILE_DELETE_ON_CLOSE that was not
-		// promoted earlier — TDIS / LOGOFF / disconnect skip the explicit
-		// CLOSE handler, so the same close.go promotion applies here).
+		// initial DOC from a CREATE FILE_DELETE_ON_CLOSE that was not promoted
+		// earlier — TDIS / LOGOFF / disconnect skip the explicit CLOSE
+		// handler, so the same promotion applies here).
 		//
-		// Promote per-handle InitialDeleteOnClose to shared committed
-		// DeletePending only when no OTHER handle on the same metadata
-		// file remains open: otherwise the unlink in handleDeleteOnClose
-		// would fire before the last sibling closes, violating MS-FSA
-		// 2.1.5.4 (delete-on-close removes the file when the LAST handle
-		// closes, not on the per-handle initial flag). When siblings
-		// remain, propagate the DOC + DOC-setter parent key onto them so
-		// the eventual sibling close in close.go (or this same teardown
-		// for sibling opens in this iteration) fires the delete instead.
-		isInitialDocOnly := openFile.InitialDeleteOnClose && !openFile.DeletePending
-		if isInitialDocOnly && len(openFile.MetadataHandle) > 0 {
-			otherHandleExists := false
-			h.files.Range(func(_, value any) bool {
-				other := value.(*OpenFile)
-				if other.FileID == openFile.FileID {
-					return true
-				}
-				if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
-					otherHandleExists = true
-					return false
-				}
-				return true
-			})
-			if otherHandleExists {
-				// Propagate DOC to remaining handles so their eventual
-				// close triggers the delete. Matches the close.go path
-				// at "DOC propagated to other handles (not last)".
-				h.files.Range(func(_, value any) bool {
-					other := value.(*OpenFile)
-					if other.FileID == openFile.FileID {
-						return true
-					}
-					if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
-						// Guard the write: concurrent QUERY_INFO/WRITE goroutines
-						// on the same session may be reading these fields.
-						other.mu.Lock()
-						other.DeletePending = true
-						other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
-						other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
-						other.mu.Unlock()
-					}
-					return true
-				})
-				logger.Debug(caller+": initial DOC propagated to other handles (not last)",
-					"path", openFile.Name().Path)
-				isInitialDocOnly = false // delete handled by remaining sibling
+		// Shared with close.go step 8: this pass decides and the third pass
+		// below removes the handle, so the MS-FSA 2.1.5.4 last-handle decision
+		// has to be atomic with that handle's departure from the set of
+		// handles that can still honour the DOC. See doc_election.go.
+		//
+		// Durable handles persisted for reconnect returned above without
+		// reaching this point: they stay logically open, so they neither
+		// elect nor stop counting as survivors.
+		if decision, target := h.electDeleteOnClose(openFile); decision == docDecisionDelete {
+			if len(target.Name.ParentHandle) > 0 && target.Name.FileName != "" {
+				h.handleDeleteOnClose(ctx, sess, openFile, caller)
 			}
-		}
-		docName := openFile.Name()
-		if (openFile.DeletePending || isInitialDocOnly) && len(docName.ParentHandle) > 0 && docName.FileName != "" {
-			h.handleDeleteOnClose(ctx, sess, openFile, caller)
 		}
 
 		// Queue this handle's per-open lease/oplock record for release in the
