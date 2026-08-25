@@ -521,30 +521,6 @@ func (lm *LeaseManager) resolveAckBindingLocked(leaseKey [16]byte, sessionID uin
 	return guidKey, guidFound
 }
 
-// ReleaseLease releases every record for a lease key in one share and drops
-// the client's binding to it.
-func (lm *LeaseManager) ReleaseLease(ctx context.Context, clientID, shareName string, leaseKey [16]byte) error {
-	ck := leaseClientKey{ClientID: clientID, Share: shareName, Key: leaseKey}
-
-	lockMgr := lm.resolveLockManager(shareName)
-	if lockMgr == nil {
-		// Already released or no manager
-		lm.mu.Lock()
-		delete(lm.bindings, ck)
-		lm.mu.Unlock()
-		return nil
-	}
-
-	if err := lockMgr.ReleaseLease(ctx, leaseKey); err != nil {
-		return err
-	}
-
-	lm.mu.Lock()
-	delete(lm.bindings, ck)
-	lm.mu.Unlock()
-	return nil
-}
-
 // ReleaseLeaseForHandle releases lease records only under a specific handleKey
 // bucket. Used by CLOSE so that opens on OTHER files sharing the same
 // LeaseKey constant (typical in smbtorture, which reuses fixed LEASE1/LEASE2

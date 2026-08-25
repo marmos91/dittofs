@@ -1076,8 +1076,8 @@ func TestLeaseKeyRawMapRoundTrip(t *testing.T) {
 	}
 
 	// Release A; B must remain intact (no cross-key wipe).
-	if err := lm.ReleaseLease(ctx, "cA", "share1", keyA); err != nil {
-		t.Fatalf("ReleaseLease A: %v", err)
+	if err := lm.ReleaseLeaseForHandle(ctx, fhA, keyA, "share1"); err != nil {
+		t.Fatalf("ReleaseLeaseForHandle A: %v", err)
 	}
 	if _, ok := lm.GetSessionForLease("cA", "share1", keyA); ok {
 		t.Errorf("keyA session mapping should be gone after release")
