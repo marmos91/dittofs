@@ -156,6 +156,32 @@ func TestReapSupersededManifest_ManySpans(t *testing.T) {
 	}, tiling(t, tx, pid))
 }
 
+// TestReapSupersededManifest_RowSpanningSeveralSpans pins which span acts on a
+// row long enough to cover more than one: the first whose end it does not reach
+// past. Acting on it at the earlier span would strand the stretch beyond that
+// span, so the row survives there and is narrowed at the later one instead —
+// exactly what reaping the spans one at a time in ascending order does.
+func TestReapSupersededManifest_RowSpanningSeveralSpans(t *testing.T) {
+	const pid = "share/p"
+	ctx := context.Background()
+	tx := newManifestTx(pid)
+
+	// One row [1000, 4500) covers span [2000, 3000), the hole after it, and part
+	// of span [4000, 5000).
+	seedRows(t, tx, pid, [][2]uint64{{0, 1000}, {1000, 3500}, {5000, 1000}})
+	seedRows(t, tx, pid, [][2]uint64{{2000, 1000}, {4000, 1000}})
+	newOffsets := map[int64]struct{}{2000: {}, 4000: {}}
+
+	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, [][2]int64{{2000, 3000}, {4000, 5000}}, newOffsets))
+	require.Equal(t, [][2]int64{
+		{0, 1000},
+		{1000, 4000}, // narrowed at the second span, not the first
+		{2000, 3000},
+		{4000, 5000},
+		{5000, 6000},
+	}, tiling(t, tx, pid))
+}
+
 // TestReapSupersededManifest_CostIsIndependentOfSpanCount pins what makes the
 // pass-end reap one call rather than one per run: it reads the manifest a fixed
 // number of times whatever the run count, so a file with tens of thousands of

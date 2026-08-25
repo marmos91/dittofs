@@ -428,17 +428,17 @@ func ReapSupersededManifest(ctx context.Context, tx Transaction, payloadID strin
 		}
 		rowStart := int64(off)
 		rowEnd := rowStart + int64(r.DataSize)
-		// The first span reaching past the row's start: spans are disjoint and
-		// ascending, so a row overlapping any span overlaps this one — and a row
-		// covering several reaches past its end, which the check below spares.
-		i := sort.Search(len(ordered), func(j int) bool { return ordered[j][1] > rowStart })
-		if i == len(ordered) || ordered[i][0] >= rowEnd {
-			continue // untouched by the pass (incl. cold remainders)
+		// The span this row is acted on: the first one whose end the row does not
+		// reach past. An earlier span the row overlaps is one it outreaches, and
+		// outreaching a span is what spares the row — acting on it there would
+		// strand the stretch beyond, since no row can start mid-chunk to cover it.
+		// A later span the row cannot reach, because acting here leaves it ending
+		// at or before this span's start. Spans ascend, so this is a binary search.
+		i := sort.Search(len(ordered), func(j int) bool { return ordered[j][1] >= rowEnd })
+		if i == len(ordered) || ordered[i][0] >= rowEnd || ordered[i][1] <= rowStart {
+			continue // no span acts on it: untouched (incl. cold remainders)
 		}
-		spanStart, spanEnd := ordered[i][0], ordered[i][1]
-		if rowEnd > spanEnd {
-			continue // reaches past the span: acting on it would strand [spanEnd, rowEnd)
-		}
+		spanStart := ordered[i][0]
 		if rowStart < spanStart {
 			narrowed := *r
 			narrowed.DataSize = uint32(spanStart - rowStart)
