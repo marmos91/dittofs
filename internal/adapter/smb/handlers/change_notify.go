@@ -514,6 +514,16 @@ func (r *NotifyRegistry) CloseByFileID(fileID [16]byte) *PendingNotify {
 	return nil
 }
 
+// closeTombstoneCount reports how many close tombstones are outstanding.
+// Test-only: the tombstone map is an internal detail, but a caller that
+// records one per non-directory handle turns bulk teardown into an O(n)
+// sweep per handle, and that is only observable from here.
+func (r *NotifyRegistry) closeTombstoneCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.closeTombstones)
+}
+
 // gcCloseTombstonesLocked evicts expired close tombstones. Must be called
 // with r.mu held for write. Called opportunistically from CloseByFileID and
 // Register, mirroring the cancel tombstones.

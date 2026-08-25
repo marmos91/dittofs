@@ -3122,3 +3122,39 @@ func TestNotifyRegistry_SupersededWatchHandsBackBufferedEvents(t *testing.T) {
 		t.Fatalf("event held by the superseded watch was lost: %+v", secondGot)
 	}
 }
+
+// TestCloseFilesWithFilter_OnlyTombstonesDirectories checks that session
+// teardown does not record a close tombstone for handles that could never
+// have carried a watch.
+//
+// CHANGE_NOTIFY is refused on anything but a directory, so a file or pipe
+// handle has no watch to complete. Running the completion for one anyway
+// leaves a tombstone nothing will ever consume, and because the sweep that
+// reclaims them is O(n) per call, tearing down a session holding many file
+// handles would pay that sweep once per handle.
+func TestCloseFilesWithFilter_OnlyTombstonesDirectories(t *testing.T) {
+	e := setupTeardownLeakEnv(t)
+	e.h.NotifyRegistry = NewNotifyRegistry()
+
+	const sessionID = uint64(0x5E)
+	for i := 0; i < 64; i++ {
+		name := fmt.Sprintf("plain%d.txt", i)
+		fh, f := e.makeFile(t, name)
+		of := &OpenFile{
+			FileID:         [16]byte{byte(i), 0xF1},
+			IsDirectory:    false,
+			SessionID:      sessionID,
+			TreeID:         e.tree.TreeID,
+			ShareName:      e.tree.ShareName,
+			MetadataHandle: fh,
+		}
+		_ = f
+		e.h.StoreOpenFile(of.WithName(OpenName{Path: "/" + name}))
+	}
+
+	e.h.CloseAllFilesForSession(t.Context(), sessionID, true)
+
+	if got := e.h.NotifyRegistry.closeTombstoneCount(); got != 0 {
+		t.Fatalf("close tombstones after tearing down 64 file handles = %d, want 0", got)
+	}
+}
