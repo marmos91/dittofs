@@ -674,7 +674,15 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// This runs before the cancel tombstone is consulted in Register. The
 	// tombstone's job is to stop a watch being armed that would wait forever;
 	// it has no say over events that already exist.
-	if changes := h.NotifyRegistry.TakeBufferedEvents(req.FileID, effectiveFilter, watchTree); len(changes) > 0 {
+	// ...but only if this is the earliest CHANGE_NOTIFY still outstanding on
+	// the handle. A client that pipelines two notifies blocks on the first and
+	// does not generate the next event until it returns, so letting the second
+	// take the buffered events strands the first forever.
+	var changes []FileNotifyInformation
+	if !h.NotifyRegistry.HasEarlierInFlightNotify(req.FileID, ctx.MessageID) {
+		changes = h.NotifyRegistry.TakeBufferedEvents(req.FileID, effectiveFilter, watchTree)
+	}
+	if len(changes) > 0 {
 		buffer := EncodeFileNotifyInformation(changes)
 		if uint32(len(buffer)) > effectiveMax {
 			// Too big for the advertised buffer: the client must re-enumerate,

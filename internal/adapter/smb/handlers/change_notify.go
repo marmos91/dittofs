@@ -247,6 +247,19 @@ type NotifyRegistry struct {
 	byMsgKey  map[notifyMsgKey]*PendingNotify
 	byAsyncId map[uint64]*PendingNotify // asyncId -> pending request (for async CANCEL)
 
+	// inFlightNotify tracks CHANGE_NOTIFY requests that the connection's read
+	// loop has read off the wire but whose handlers have not finished, keyed
+	// by handle. The read loop is sequential, so a lower MessageID here was
+	// necessarily received first even when its goroutine has not run yet.
+	// That is what lets a later request tell it is later. See
+	// HasEarlierInFlightNotify.
+	//
+	// ponytail: linear scan of a slice. N is one client's CHANGE_NOTIFY
+	// pipelining depth on one handle — 1 or 2 in practice — so a map costs
+	// more than it saves. Swap for an ordered structure only if a client
+	// appears that pipelines notifies deeply enough to measure.
+	inFlightNotify map[string][]uint64
+
 	// armed tracks directory handles that have at some point issued a
 	// CHANGE_NOTIFY. Mirrors Samba `notify_buffer`: once a watcher has been
 	// "armed" on a handle, subsequent matching filesystem events MUST be
@@ -374,6 +387,7 @@ func NewNotifyRegistry() *NotifyRegistry {
 		byFileID:         make(map[string]*PendingNotify),
 		byMsgKey:         make(map[notifyMsgKey]*PendingNotify),
 		byAsyncId:        make(map[uint64]*PendingNotify),
+		inFlightNotify:   make(map[string][]uint64),
 		armed:            make(map[string]*armedHandle),
 		cancelTombstones: make(map[notifyMsgKey]time.Time),
 		closeTombstones:  make(map[string]time.Time),
@@ -1566,6 +1580,51 @@ func (r *NotifyRegistry) NotifyRmdir(shareName, parentPath, dirName string) {
 
 	// Second: notify parent watchers about the directory removal
 	r.NotifyChange(shareName, parentPath, dirName, FileActionRemoved, FileNotifyChangeDirName)
+}
+
+// MarkNotifyInFlight records that a CHANGE_NOTIFY for fileID has been read off
+// the wire, and returns the function that clears it when the handler is done.
+// Called from the connection read loop, before dispatch, for CHANGE_NOTIFY only
+// — every other command's path is untouched.
+func (r *NotifyRegistry) MarkNotifyInFlight(fileID [16]byte, messageID uint64) func() {
+	key := string(fileID[:])
+	r.mu.Lock()
+	r.inFlightNotify[key] = append(r.inFlightNotify[key], messageID)
+	r.mu.Unlock()
+
+	return func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		ids := r.inFlightNotify[key]
+		for i, id := range ids {
+			if id == messageID {
+				r.inFlightNotify[key] = append(ids[:i], ids[i+1:]...)
+				break
+			}
+		}
+		if len(r.inFlightNotify[key]) == 0 {
+			delete(r.inFlightNotify, key)
+		}
+	}
+}
+
+// HasEarlierInFlightNotify reports whether another CHANGE_NOTIFY on the same
+// handle was received before messageID and is still unanswered.
+//
+// A request that answers yes must not claim buffered events: they belong to the
+// earlier request, which is the one the client is blocked on. Handing them to
+// the later request leaves the earlier one waiting for an event the client will
+// never generate, because the client does not send it until the earlier request
+// returns.
+func (r *NotifyRegistry) HasEarlierInFlightNotify(fileID [16]byte, messageID uint64) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, id := range r.inFlightNotify[string(fileID[:])] {
+		if id < messageID {
+			return true
+		}
+	}
+	return false
 }
 
 // UnregisterAllForSession unregisters all pending watchers for a session AND
