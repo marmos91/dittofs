@@ -24,12 +24,12 @@ func encodeFileHandle(shareName string, idStr string) (metadata.FileHandle, erro
 // a SELECT whose inode row is aliased `f` (it references f.id) and decode the
 // result with sqlcodec.FileRowToFileWithNlinkAndBlocks(row, true).
 //
-// Each element is [offset, size, hash_hex]; hash is encode(...,'hex') so the
+// Each element is [offset, size, hash_hex, start_offset]; hash is encode(...,'hex') so the
 // BYTEA round-trips byte-for-byte. An inode with no refs yields SQL NULL, which
 // decodes to a nil slice (parity with loadFileChunkRefs on an empty set).
 const blockRefsAggExpr = `(
 	SELECT json_agg(
-		json_build_array(fbr."offset", fbr.size, encode(fbr.hash, 'hex'))
+		json_build_array(fbr."offset", fbr.size, encode(fbr.hash, 'hex'), fbr.start_offset)
 		ORDER BY fbr."offset" ASC
 	)
 	FROM file_block_refs fbr

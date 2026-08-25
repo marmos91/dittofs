@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -24,7 +25,7 @@ func ManifestToChunkRefs(rows []*block.FileChunk) []block.ChunkRef {
 		if !ok {
 			continue
 		}
-		refs = append(refs, block.ChunkRef{Hash: r.Hash, Offset: off, Size: r.DataSize})
+		refs = append(refs, block.ChunkRef{Hash: r.Hash, Offset: off, Size: r.DataSize, StartOffset: r.StartOffset})
 	}
 	sort.Slice(refs, func(i, j int) bool { return refs[i].Offset < refs[j].Offset })
 	if len(refs) == 0 {
@@ -54,7 +55,7 @@ func mergeCommittedRefs(refs []block.ChunkRef, payloadID string, rows []*block.F
 		if !ok || chunkPayloadID(r.ID) != payloadID {
 			continue
 		}
-		byOffset[off] = block.ChunkRef{Hash: r.Hash, Offset: off, Size: r.DataSize}
+		byOffset[off] = block.ChunkRef{Hash: r.Hash, Offset: off, Size: r.DataSize, StartOffset: r.StartOffset}
 	}
 	added := make([]block.ChunkRef, 0, len(byOffset))
 	changed := make([]uint64, 0, len(byOffset))
@@ -387,39 +388,67 @@ func ManifestRowEndAfter(ctx context.Context, tx Transaction, payloadID string, 
 // the part the run re-chunked, which is the same shape a truncate's narrow leaves
 // behind.
 //
-// A row that reaches past its span's end stays whole, whichever side it starts
-// on: no row can start mid-chunk, so its tail past the span has no other cover,
-// and deleting it would trade an overlap for a gap. Where it starts decides what
-// that overlap then reads, and the two sides are not alike.
+// A row that STARTS inside its span and reaches past the end is narrowed off its
+// HEAD instead: its ID moves to the span's end, StartOffset advances by what it
+// gave up, and DataSize shrinks to match, so it claims [spanEnd, rowEnd) and
+// nothing more. Sparing it whole would leave it the greatest covering start over
+// [rowStart, spanEnd) — it would outrank the fresh rows there and serve the
+// content those bytes held before the carve — and deleting it would strand
+// [spanEnd, rowEnd) with no cover at all. Narrowing off the head is neither: the
+// chunk on the remote keeps every byte and is still hash-verified over all of
+// them, exactly as it is when a row is narrowed off its tail.
 //
-// Starting BEFORE the span is safe. Coverage resolves an overlap to the greatest
-// covering start, and every fresh row inside the span starts later than a row
-// that began before it, so the fresh rows win across the whole span and the
-// survivor serves only its un-recarved tail.
+// A row that starts before its span and reaches past the end still stays whole,
+// and is safe there: coverage resolves an overlap to the greatest covering
+// start, and every fresh row inside the span starts later than a row that began
+// before it, so the fresh rows win across the whole span and the survivor serves
+// only its un-recarved remainder.
 //
-// Starting INSIDE the span is not. Over [rowStart, spanEnd) the spared row is
-// itself the greatest start, so it outranks the fresh row covering those bytes
-// and serves the content they held before the carve. Sparing it is the least bad
-// of three wrong answers, not a safe one: deleting it strands [spanEnd, rowEnd)
-// with no cover at all, and it cannot be narrowed off the overlap either, because
-// a row claims a prefix of its chunk and none can be made to start at spanEnd.
-//
-// Nothing here can do better, because the overlap is already decided by the time
-// the reap runs: the fresh rows are committed, and no row that claims a prefix
-// can cover [spanEnd, rowEnd) in the spared row's place. Only carving through to
-// rowEnd avoids it, which is what the journal's run extension arranges whenever
-// the bytes past the span are still warm; a span cuts a row starting inside it
-// only where that extension could not reach — the tail is cold, evicted, holed,
-// or already dirty for a later run.
-//
-// ponytail: over [rowStart, spanEnd) a cold read serves pre-carve bytes, and the
-// manifest records no order to tell the caller so; closing it means carve
-// hydrating the straddler's tail and re-chunking it, or refusing to commit a
-// tiling whose span cuts a row starting inside it (#2128).
+// A head narrow moves the row to a new manifest key, and a row already sitting
+// at that key would be overwritten — so the move is taken only when the key is
+// free. ponytail: an occupied key leaves the row spared whole and its stale
+// cover in place; reaching it needs two pre-existing rows overlapping at the
+// span's end, so a resolution rule for that collision is worth building only if
+// one is ever observed.
 //
 // ponytail: this fixes read-coherence — the corruption. Decrementing the reaped
 // chunk's CAS refcount to reclaim its remote space is a separate, tracked
 // follow-up (#1715): under-counting only leaks space, it never drops live data.
+// spanFreeStart returns the first byte of [rowStart, rowEnd) that no span
+// claims, or rowEnd when the spans cover the row outright. Spans are disjoint
+// and ascending, so it is enough to step over the span the row starts in and
+// over any span beginning exactly where that one ended.
+func spanFreeStart(ordered [][2]int64, rowStart, rowEnd int64) int64 {
+	start := rowStart
+	for start < rowEnd {
+		i := sort.Search(len(ordered), func(j int) bool { return ordered[j][1] > start })
+		if i == len(ordered) || ordered[i][0] > start {
+			return start
+		}
+		start = ordered[i][1]
+	}
+	return rowEnd
+}
+
+// narrowOffHead returns a copy of r claiming only [head, rowEnd) of the file,
+// keyed at head and reading the chunk from that many bytes further in. It
+// reports false when the giving-up does not fit the row's 32-bit fields, which
+// no real chunk reaches — a chunk is bounded by the carver's maximum size — so
+// refusing there simply keeps the row as it stands rather than wrapping.
+func narrowOffHead(r *block.FileChunk, rowStart, head, rowEnd int64) (*block.FileChunk, bool) {
+	gave := head - rowStart
+	start := int64(r.StartOffset) + gave
+	size := rowEnd - head
+	if gave <= 0 || start > math.MaxUint32 || size <= 0 || size > math.MaxUint32 {
+		return nil, false
+	}
+	narrowed := *r
+	narrowed.ID = fmt.Sprintf("%s/%d", chunkPayloadID(r.ID), head)
+	narrowed.StartOffset = uint32(start)
+	narrowed.DataSize = uint32(size)
+	return &narrowed, true
+}
+
 func ReapSupersededManifest(ctx context.Context, tx Transaction, payloadID string, spans [][2]int64, newOffsets map[int64]struct{}) error {
 	if payloadID == "" {
 		return nil
@@ -439,6 +468,12 @@ func ReapSupersededManifest(ctx context.Context, tx Transaction, payloadID strin
 	if err != nil {
 		return fmt.Errorf("reap superseded: list manifest for %s: %w", payloadID, err)
 	}
+	occupied := make(map[string]struct{}, len(rows))
+	for _, r := range rows {
+		if r != nil {
+			occupied[r.ID] = struct{}{}
+		}
+	}
 	for _, r := range rows {
 		if r == nil {
 			continue
@@ -449,30 +484,47 @@ func ReapSupersededManifest(ctx context.Context, tx Transaction, payloadID strin
 		}
 		rowStart := int64(off)
 		rowEnd := rowStart + int64(r.DataSize)
-		// The span this row is acted on: the first one whose end the row does not
-		// reach past. An earlier span the row overlaps is one it outreaches, and
-		// outreaching a span is what spares the row — acting on it there would
-		// strand the stretch beyond, since no row can start mid-chunk to cover it.
-		// A later span the row cannot reach, because acting here leaves it ending
-		// at or before this span's start. Spans ascend, so this is a binary search.
+		head := spanFreeStart(ordered, rowStart, rowEnd)
+		if head > rowStart {
+			if _, isNew := newOffsets[rowStart]; isNew {
+				continue // a row this pass just wrote — keep it
+			}
+			if head >= rowEnd {
+				if err := tx.Delete(ctx, r.ID); err != nil {
+					return fmt.Errorf("reap superseded: delete %s: %w", r.ID, err)
+				}
+				continue
+			}
+			narrowed, ok := narrowOffHead(r, rowStart, head, rowEnd)
+			if !ok {
+				continue
+			}
+			if _, taken := occupied[narrowed.ID]; taken {
+				continue // see the head-narrow note above: spared rather than overwritten
+			}
+			if err := tx.Delete(ctx, r.ID); err != nil {
+				return fmt.Errorf("reap superseded: unkey %s: %w", r.ID, err)
+			}
+			if err := tx.Put(ctx, narrowed); err != nil {
+				return fmt.Errorf("reap superseded: narrow %s off its head: %w", r.ID, err)
+			}
+			occupied[narrowed.ID] = struct{}{}
+			continue
+		}
+		// The row starts where no span claims it, so what a span can take is its
+		// tail. The span that acts on it is the first one whose end the row does
+		// not reach past: an earlier span the row outreaches is one that would
+		// strand the stretch beyond if acted on, and a later span the row cannot
+		// reach, because acting here leaves it ending at or before this span's
+		// start. Spans ascend, so this is a binary search.
 		i := sort.Search(len(ordered), func(j int) bool { return ordered[j][1] >= rowEnd })
 		if i == len(ordered) || ordered[i][0] >= rowEnd || ordered[i][1] <= rowStart {
 			continue // no span acts on it: untouched (incl. cold remainders)
 		}
-		spanStart := ordered[i][0]
-		if rowStart < spanStart {
-			narrowed := *r
-			narrowed.DataSize = uint32(spanStart - rowStart)
-			if err := tx.Put(ctx, &narrowed); err != nil {
-				return fmt.Errorf("reap superseded: narrow %s: %w", r.ID, err)
-			}
-			continue
-		}
-		if _, isNew := newOffsets[rowStart]; isNew {
-			continue // a row this pass just wrote — keep it
-		}
-		if err := tx.Delete(ctx, r.ID); err != nil {
-			return fmt.Errorf("reap superseded: delete %s: %w", r.ID, err)
+		narrowed := *r
+		narrowed.DataSize = uint32(ordered[i][0] - rowStart)
+		if err := tx.Put(ctx, &narrowed); err != nil {
+			return fmt.Errorf("reap superseded: narrow %s: %w", r.ID, err)
 		}
 	}
 	return ProjectManifestToBlocks(ctx, tx, payloadID)

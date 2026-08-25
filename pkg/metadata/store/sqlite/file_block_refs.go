@@ -68,12 +68,13 @@ func putFileChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, blocks [
 
 // storedChunkRef is a stored file_block_refs row minus its offset (the map key).
 type storedChunkRef struct {
-	size int32
-	hash []byte
+	size  int32
+	start int32
+	hash  []byte
 }
 
 // fileChunkRefsDelta diffs blocks against the rows currently stored for fileID
-// and returns the refs to UPSERT (new offset, or changed size/hash) and the
+// and returns the refs to UPSERT (new offset, or changed size/start/hash) and the
 // stored offsets to DELETE (absent from blocks). When hasPriorRefs is false the
 // stored set is known-empty, so the query is skipped and every ref is an
 // upsert. Offsets are unique under the (file_id, "offset") PK, so keying the
@@ -111,7 +112,7 @@ func fileChunkRefsDelta(ctx context.Context, tx execer, fileID uuid.UUID, blocks
 			}
 		}
 		incoming[off] = struct{}{}
-		if s, ok := stored[off]; ok && s.size == int32(b.Size) && bytes.Equal(s.hash, b.Hash[:]) {
+		if s, ok := stored[off]; ok && s.size == int32(b.Size) && s.start == int32(b.StartOffset) && bytes.Equal(s.hash, b.Hash[:]) {
 			continue // identical row already stored — no write
 		}
 		upserts = append(upserts, b)
@@ -130,7 +131,7 @@ func fileChunkRefsDelta(ctx context.Context, tx execer, fileID uuid.UUID, blocks
 // batches capped the same way as the write helpers so the bound-parameter count
 // stays under SQLite's default limit.
 func scanStoredChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, inScope map[int64]struct{}, out map[int64]storedChunkRef) error {
-	const selectRefs = `SELECT "offset", size, hash FROM file_block_refs WHERE file_id = ?`
+	const selectRefs = `SELECT "offset", size, start_offset, hash FROM file_block_refs WHERE file_id = ?`
 	if inScope == nil {
 		return scanChunkRefBatch(ctx, tx, fileID, selectRefs, []any{fileID}, out)
 	}
@@ -170,14 +171,14 @@ func scanChunkRefBatch(ctx context.Context, tx execer, fileID uuid.UUID, query s
 	defer rows.Close()
 	for rows.Next() {
 		var off int64
-		var sz int32
+		var sz, start int32
 		var raw []byte
-		if err := rows.Scan(&off, &sz, &raw); err != nil {
+		if err := rows.Scan(&off, &sz, &start, &raw); err != nil {
 			return fmt.Errorf("scan file_block_ref: %w", err)
 		}
 		h := make([]byte, len(raw))
 		copy(h, raw)
-		out[off] = storedChunkRef{size: sz, hash: h}
+		out[off] = storedChunkRef{size: sz, start: start, hash: h}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate file_block_refs: %w", err)
@@ -217,11 +218,11 @@ func deleteChunkRefOffsets(ctx context.Context, tx execer, fileID uuid.UUID, off
 
 // upsertChunkRefs inserts-or-updates the given refs for fileID with a multi-row
 // INSERT ... ON CONFLICT per batch instead of one Exec per ref. Batches are
-// capped so the bound-parameter count stays under SQLite's default limit; 4
-// columns per row → 200 rows = 800 params. Incoming offsets are unique under
+// capped so the bound-parameter count stays under SQLite's default limit; 5
+// columns per row → 200 rows = 1000 params. Incoming offsets are unique under
 // the (file_id, "offset") PK, so no batch upserts the same row twice.
 func upsertChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, refs []block.ChunkRef) error {
-	const colsPerRow = 4
+	const colsPerRow = 5
 	const rowsPerBatch = 200
 	for start := 0; start < len(refs); start += rowsPerBatch {
 		end := start + rowsPerBatch
@@ -230,16 +231,16 @@ func upsertChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, refs []bl
 		}
 		batch := refs[start:end]
 		var sb strings.Builder
-		sb.WriteString(`INSERT INTO file_block_refs (file_id, "offset", size, hash) VALUES `)
+		sb.WriteString(`INSERT INTO file_block_refs (file_id, "offset", size, start_offset, hash) VALUES `)
 		args := make([]any, 0, len(batch)*colsPerRow)
 		for i, b := range batch {
 			if i > 0 {
 				sb.WriteByte(',')
 			}
-			sb.WriteString("(?, ?, ?, ?)")
-			args = append(args, fileID, int64(b.Offset), int32(b.Size), b.Hash[:])
+			sb.WriteString("(?, ?, ?, ?, ?)")
+			args = append(args, fileID, int64(b.Offset), int32(b.Size), int32(b.StartOffset), b.Hash[:])
 		}
-		sb.WriteString(` ON CONFLICT (file_id, "offset") DO UPDATE SET size = excluded.size, hash = excluded.hash`)
+		sb.WriteString(` ON CONFLICT (file_id, "offset") DO UPDATE SET size = excluded.size, start_offset = excluded.start_offset, hash = excluded.hash`)
 		if _, err := tx.Exec(ctx, sb.String(), args...); err != nil {
 			return fmt.Errorf("upsert file_block_refs batch: %w", err)
 		}

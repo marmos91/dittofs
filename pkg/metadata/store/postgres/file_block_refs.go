@@ -67,9 +67,9 @@ func putFileChunkRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks [
 	}
 	for _, b := range upserts {
 		batch.Queue(
-			`INSERT INTO file_block_refs (file_id, "offset", size, hash) VALUES ($1, $2, $3, $4)
-			 ON CONFLICT (file_id, "offset") DO UPDATE SET size = excluded.size, hash = excluded.hash`,
-			fileID, int64(b.Offset), int32(b.Size), b.Hash[:],
+			`INSERT INTO file_block_refs (file_id, "offset", size, hash, start_offset) VALUES ($1, $2, $3, $4, $5)
+			 ON CONFLICT (file_id, "offset") DO UPDATE SET size = excluded.size, hash = excluded.hash, start_offset = excluded.start_offset`,
+			fileID, int64(b.Offset), int32(b.Size), b.Hash[:], int32(b.StartOffset),
 		)
 	}
 
@@ -89,8 +89,9 @@ func putFileChunkRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks [
 
 // storedChunkRef is a stored file_block_refs row minus its offset (the map key).
 type storedChunkRef struct {
-	size int32
-	hash []byte
+	size  int32
+	start int32
+	hash  []byte
 }
 
 // fileChunkRefsDelta diffs blocks against the rows currently stored for fileID
@@ -117,7 +118,7 @@ func fileChunkRefsDelta(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks
 
 	stored := make(map[int64]storedChunkRef)
 	if hasPriorRefs && (inScope == nil || len(inScope) > 0) {
-		query := `SELECT "offset", size, hash FROM file_block_refs WHERE file_id = $1`
+		query := `SELECT "offset", size, hash, start_offset FROM file_block_refs WHERE file_id = $1`
 		args := []any{fileID}
 		if inScope != nil {
 			query += ` AND "offset" = ANY($2)`
@@ -134,14 +135,14 @@ func fileChunkRefsDelta(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks
 		defer rows.Close()
 		for rows.Next() {
 			var off int64
-			var sz int32
+			var sz, start int32
 			var raw []byte
-			if err := rows.Scan(&off, &sz, &raw); err != nil {
+			if err := rows.Scan(&off, &sz, &raw, &start); err != nil {
 				return nil, nil, len(stored), fmt.Errorf("scan file_block_ref: %w", err)
 			}
 			h := make([]byte, len(raw))
 			copy(h, raw)
-			stored[off] = storedChunkRef{size: sz, hash: h}
+			stored[off] = storedChunkRef{size: sz, start: start, hash: h}
 		}
 		if err := rows.Err(); err != nil {
 			return nil, nil, len(stored), fmt.Errorf("iterate file_block_refs: %w", err)
@@ -158,7 +159,7 @@ func fileChunkRefsDelta(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks
 			}
 		}
 		incoming[off] = struct{}{}
-		if s, ok := stored[off]; ok && s.size == int32(b.Size) && bytes.Equal(s.hash, b.Hash[:]) {
+		if s, ok := stored[off]; ok && s.size == int32(b.Size) && s.start == int32(b.StartOffset) && bytes.Equal(s.hash, b.Hash[:]) {
 			continue // identical row already stored — no write
 		}
 		upserts = append(upserts, b)
@@ -209,7 +210,7 @@ func deleteFileChunkRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID) error
 // rows into its metadata read via blockRefsAggExpr (#1176).
 func (s *PostgresMetadataStore) loadFileChunkRefs(ctx context.Context, fileID uuid.UUID) ([]block.ChunkRef, error) {
 	rows, err := s.query(ctx,
-		`SELECT "offset", size, hash FROM file_block_refs WHERE file_id = $1 ORDER BY "offset" ASC`,
+		`SELECT "offset", size, hash, start_offset FROM file_block_refs WHERE file_id = $1 ORDER BY "offset" ASC`,
 		fileID,
 	)
 	if err != nil {
@@ -220,9 +221,9 @@ func (s *PostgresMetadataStore) loadFileChunkRefs(ctx context.Context, fileID uu
 	var out []block.ChunkRef
 	for rows.Next() {
 		var off int64
-		var sz int32
+		var sz, start int32
 		var raw []byte
-		if err := rows.Scan(&off, &sz, &raw); err != nil {
+		if err := rows.Scan(&off, &sz, &raw, &start); err != nil {
 			return nil, fmt.Errorf("scan file_block_ref: %w", err)
 		}
 		if len(raw) != block.HashSize {
@@ -235,6 +236,7 @@ func (s *PostgresMetadataStore) loadFileChunkRefs(ctx context.Context, fileID uu
 		copy(br.Hash[:], raw)
 		br.Offset = uint64(off)
 		br.Size = uint32(sz)
+		br.StartOffset = uint32(start)
 		out = append(out, br)
 	}
 	if err := rows.Err(); err != nil {

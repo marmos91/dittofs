@@ -250,8 +250,8 @@ func FileRowToFileWithNlinkAndBlocks(r Row, withBlocks bool) (*metadata.File, er
 // validation as loadFileChunkRefs (a malformed hash is surfaced as an error,
 // never coerced to a half-decoded ref).
 func decodeChunkRefsJSON(raw []byte) ([]block.ChunkRef, error) {
-	// Element shape: [offset(int64), size(int32), hash_hex(string)].
-	var rows [][3]json.RawMessage
+	// Element shape: [offset(int64), size(int32), hash_hex(string), start(int32)].
+	var rows [][4]json.RawMessage
 	if err := json.Unmarshal(raw, &rows); err != nil {
 		return nil, fmt.Errorf("decode folded block refs: %w", err)
 	}
@@ -264,6 +264,7 @@ func decodeChunkRefsJSON(raw []byte) ([]block.ChunkRef, error) {
 			off     int64
 			sz      int32
 			hashHex string
+			start   int32
 		)
 		if err := json.Unmarshal(r[0], &off); err != nil {
 			return nil, fmt.Errorf("decode folded block ref offset: %w", err)
@@ -273,6 +274,9 @@ func decodeChunkRefsJSON(raw []byte) ([]block.ChunkRef, error) {
 		}
 		if err := json.Unmarshal(r[2], &hashHex); err != nil {
 			return nil, fmt.Errorf("decode folded block ref hash: %w", err)
+		}
+		if err := json.Unmarshal(r[3], &start); err != nil {
+			return nil, fmt.Errorf("decode folded block ref start offset: %w", err)
 		}
 		rawHash, err := hex.DecodeString(hashHex)
 		if err != nil {
@@ -288,6 +292,7 @@ func decodeChunkRefsJSON(raw []byte) ([]block.ChunkRef, error) {
 		copy(br.Hash[:], rawHash)
 		br.Offset = uint64(off)
 		br.Size = uint32(sz)
+		br.StartOffset = uint32(start)
 		out = append(out, br)
 	}
 	return out, nil

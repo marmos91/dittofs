@@ -462,7 +462,7 @@ func (bs *Store) payloadChunkRefs(ctx context.Context, payloadID string) []block
 		if !ok {
 			continue
 		}
-		refs = append(refs, block.ChunkRef{Hash: r.Hash, Offset: off, Size: r.DataSize})
+		refs = append(refs, block.ChunkRef{Hash: r.Hash, Offset: off, Size: r.DataSize, StartOffset: r.StartOffset})
 	}
 	return refs
 }
@@ -594,10 +594,11 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 			return nil, fmt.Errorf("CopyPayload: no transaction or file-block store to persist dst rows for %s", dstPayloadID)
 		}
 		fb := &block.FileChunk{
-			ID:       fmt.Sprintf("%s/%d", dstPayloadID, b.Offset),
-			Hash:     b.Hash,
-			DataSize: b.Size,
-			State:    block.BlockStatePending,
+			ID:          fmt.Sprintf("%s/%d", dstPayloadID, b.Offset),
+			Hash:        b.Hash,
+			DataSize:    b.Size,
+			StartOffset: b.StartOffset,
+			State:       block.BlockStatePending,
 		}
 		if err := putRow(ctx, fb); err != nil {
 			return nil, fmt.Errorf("CopyPayload: FileChunk.Put(%s): %w", fb.ID, err)

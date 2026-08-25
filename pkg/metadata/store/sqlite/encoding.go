@@ -24,7 +24,7 @@ func encodeFileHandle(shareName string, idStr string) (metadata.FileHandle, erro
 // a SELECT whose inode row is aliased `f` (it references f.id) and decode the
 // result with sqlcodec.FileRowToFileWithNlinkAndBlocks(row, true).
 //
-// Each element is [offset, size, hash_hex]; hash is lower(hex(...)) so the
+// Each element is [offset, size, hash_hex, start_offset]; hash is lower(hex(...)) so the
 // BLOB round-trips byte-for-byte. An inode with no refs yields a JSON empty
 // array '[]', which decodes to a nil slice (parity with loadFileChunkRefs on an
 // empty set).
@@ -32,9 +32,9 @@ func encodeFileHandle(shareName string, idStr string) (metadata.FileHandle, erro
 // SQLite's json_group_array does not accept an inner ORDER BY, so the rows are
 // ordered by "offset" ASC in a derived subquery before aggregation.
 const blockRefsAggExpr = `(
-	SELECT json_group_array(json_array(fbr."offset", fbr.size, lower(hex(fbr.hash))))
+	SELECT json_group_array(json_array(fbr."offset", fbr.size, lower(hex(fbr.hash)), fbr.start_offset))
 	FROM (
-		SELECT "offset", size, hash
+		SELECT "offset", size, hash, start_offset
 		FROM file_block_refs
 		WHERE file_id = f.id
 		ORDER BY "offset" ASC

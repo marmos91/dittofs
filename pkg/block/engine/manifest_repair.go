@@ -44,6 +44,12 @@ type RepairAction struct {
 	Offset uint64 `json:"offset"`
 	Size   uint32 `json:"size"`
 
+	// StartOffset is where inside the chunk the claimed bytes begin, also taken
+	// from the block list. A repair that dropped it would rebuild a row serving
+	// the chunk's head at Offset, which for a head-narrowed claim is the wrong
+	// stretch of the right chunk — bytes that verify and are still wrong.
+	StartOffset uint32 `json:"start_offset,omitempty"`
+
 	// Hash is the content hash the row carries. The remote read path
 	// resolves and verifies a chunk by this hash alone, so a repair that
 	// named the wrong bytes would fail the read rather than serve them.
@@ -73,8 +79,9 @@ func chunkRowID(payloadID string, off uint64) string {
 // refKey groups a claim and a row by the two properties that have to match
 // for one to stand in for the other.
 type refKey struct {
-	hash block.ContentHash
-	size uint32
+	hash  block.ContentHash
+	size  uint32
+	start uint32
 }
 
 // planPayloadRepairs proposes the manifest writes that would make one payload
@@ -114,7 +121,7 @@ func planPayloadRepairs(
 			continue
 		}
 		candidates = append(candidates, ref)
-		perKey[refKey{ref.Hash, ref.Size}]++
+		perKey[refKey{ref.Hash, ref.Size, ref.StartOffset}]++
 	}
 	if len(candidates) == 0 {
 		return nil, nil
@@ -125,20 +132,21 @@ func planPayloadRepairs(
 		if r.Hash.IsZero() {
 			continue // pending row: no committed bytes to place anywhere
 		}
-		k := refKey{r.Hash, r.DataSize}
+		k := refKey{r.Hash, r.DataSize, r.StartOffset}
 		rowsByKey[k] = append(rowsByKey[k], r)
 	}
 
 	out := make([]RepairAction, 0, len(candidates))
 	for _, ref := range candidates {
-		k := refKey{ref.Hash, ref.Size}
+		k := refKey{ref.Hash, ref.Size, ref.StartOffset}
 		action := RepairAction{
-			Path:      path,
-			PayloadID: payloadID,
-			Offset:    ref.Offset,
-			Size:      ref.Size,
-			Hash:      ref.Hash.String(),
-			ToRowID:   chunkRowID(payloadID, ref.Offset),
+			Path:        path,
+			PayloadID:   payloadID,
+			Offset:      ref.Offset,
+			Size:        ref.Size,
+			StartOffset: ref.StartOffset,
+			Hash:        ref.Hash.String(),
+			ToRowID:     chunkRowID(payloadID, ref.Offset),
 		}
 		switch rows := rowsByKey[k]; {
 		case len(rows) == 1 && perKey[k] == 1:
@@ -306,7 +314,7 @@ func indexChunkRows(rows []*block.FileChunk, size uint64) (map[string]*block.Fil
 func claimedOffsets(f *metadata.File) map[refKey]map[uint64]struct{} {
 	claimed := make(map[refKey]map[uint64]struct{}, len(f.Blocks))
 	for _, ref := range f.Blocks {
-		k := refKey{ref.Hash, ref.Size}
+		k := refKey{ref.Hash, ref.Size, ref.StartOffset}
 		if claimed[k] == nil {
 			claimed[k] = make(map[uint64]struct{}, 1)
 		}
@@ -331,7 +339,7 @@ func repairRow(
 	if err != nil {
 		return nil, fmt.Errorf("parse planned hash %q: %w", a.Hash, err)
 	}
-	k := refKey{hash, a.Size}
+	k := refKey{hash, a.Size, a.StartOffset}
 
 	if _, ok := claimed[k][a.Offset]; !ok {
 		a.SkipReason = "the file no longer claims this range"
@@ -356,7 +364,7 @@ func repairRow(
 			a.SkipReason = "the unplaceable row is gone"
 			return nil, nil
 		}
-		if src.Hash != hash || src.DataSize != a.Size {
+		if src.Hash != hash || src.DataSize != a.Size || src.StartOffset != a.StartOffset {
 			a.SkipReason = "the unplaceable row no longer matches the claim"
 			return nil, nil
 		}
@@ -387,11 +395,12 @@ func repairRow(
 	// State and refcount are left where the carve path leaves them, which is
 	// where every other row in the store sits.
 	return &block.FileChunk{
-		ID:         a.ToRowID,
-		Hash:       hash,
-		DataSize:   a.Size,
-		State:      block.BlockStatePending,
-		CreatedAt:  now,
-		LastAccess: now,
+		ID:          a.ToRowID,
+		Hash:        hash,
+		DataSize:    a.Size,
+		StartOffset: a.StartOffset,
+		State:       block.BlockStatePending,
+		CreatedAt:   now,
+		LastAccess:  now,
 	}, nil
 }

@@ -170,6 +170,17 @@ func (m *Syncer) listFileChunksSnapshot(ctx context.Context, payloadID string) (
 // writes the whole claimed extent, which is what a caller holding a row but no
 // window wants.
 func (m *Syncer) hydrateChunk(ctx context.Context, fb *block.FileChunk, data []byte, span hydrateSpan) error {
+	// The claim is [StartOffset, StartOffset+DataSize) of the chunk, and the
+	// row's ID names the file offset of its FIRST claimed byte — so trimming the
+	// head here is what keeps the write-back aligned. A start past the bytes the
+	// remote returned describes a claim the chunk cannot satisfy; write nothing,
+	// the same way a zero claim does, rather than place the wrong bytes.
+	if start := uint64(fb.StartOffset); start > 0 {
+		if start >= uint64(len(data)) {
+			return nil
+		}
+		data = data[start:]
+	}
 	if claimed := uint64(fb.DataSize); claimed < uint64(len(data)) {
 		data = data[:claimed]
 	}

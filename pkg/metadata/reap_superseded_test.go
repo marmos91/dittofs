@@ -117,20 +117,19 @@ func TestReapSupersededManifest_KeepsStraddlerReachingPastRun(t *testing.T) {
 	require.Equal(t, int64(-1), resolveAt(t, tx, pid, 6000))
 }
 
-// TestReapSupersededManifest_KeepsInteriorRowReachingPastRun pins both what the
+// TestReapSupersededManifest_NarrowsInteriorRowOffItsHead pins both what the
 // reap does with a row that starts inside the run and ends past it, and what a
-// read then gets — which are not the same question. The row survives whole:
-// deleting it, which is what its start offset alone would say to do, strands
-// [runEnd, rowEnd) with no cover, and no row can be made to start mid-chunk to
-// take that stretch over, so those bytes would read back as zeros.
+// read then gets — which are not the same question. The row cannot be deleted,
+// which is what its start offset alone would say to do: that strands
+// [runEnd, rowEnd) with no cover. Nor can it be spared whole: coverage resolves
+// to the greatest start, so over [rowStart, runEnd) it would outrank the fresh
+// row covering the same offsets and serve what they held before the carve.
 //
-// Surviving is not the same as being right. Coverage resolves to the greatest
-// start, so over [rowStart, runEnd) the spared row outranks the fresh row that
-// also covers those offsets and serves what they held before the carve. The reap
-// has no better move — it cannot narrow a row off its own head — so the
-// assertions below record that stale window instead of claiming there is none.
-// Only carving through to rowEnd removes it.
-func TestReapSupersededManifest_KeepsInteriorRowReachingPastRun(t *testing.T) {
+// It is narrowed off its HEAD instead. The row moves to the run's end, keeps the
+// stretch only it covers, and gives up the offsets the run re-chunked, so every
+// byte of the run resolves to a fresh row and every byte past it still resolves
+// to the survivor.
+func TestReapSupersededManifest_NarrowsInteriorRowOffItsHead(t *testing.T) {
 	const pid = "share/p"
 	ctx := context.Background()
 	tx := newManifestTx(pid)
@@ -145,21 +144,52 @@ func TestReapSupersededManifest_KeepsInteriorRowReachingPastRun(t *testing.T) {
 	require.Equal(t, [][2]int64{
 		{0, 2000},
 		{2000, 3000}, // the fresh row; the stale [2000, 2500) it replaced is gone
-		{2500, 6000}, // kept whole: its tail past 3000 has no other cover
+		{3000, 6000}, // narrowed off its head: it claimed [2500, 6000)
 	}, tiling(t, tx, pid))
 
-	// Below the spared row's start the fresh row is the greatest start and wins.
+	// The narrowed row reads its chunk from 500 bytes in — what it gave up.
+	rows, err := tx.ListFileChunks(ctx, pid)
+	require.NoError(t, err)
+	for _, r := range rows {
+		if r.ID == pid+"/3000" {
+			require.Equal(t, uint32(500), r.StartOffset)
+		}
+	}
+
+	// The whole run resolves to the fresh row, including the offsets the old row
+	// used to shadow.
 	require.Equal(t, int64(2000), resolveAt(t, tx, pid, 2000))
 	require.Equal(t, int64(2000), resolveAt(t, tx, pid, 2499))
-	// From that start to the run's end the spared row is the greatest start, so it
-	// wins over the fresh row: these offsets were re-carved, yet a read is served
-	// the pre-carve chunk. This is the stale window the reap cannot close.
-	require.Equal(t, int64(2500), resolveAt(t, tx, pid, 2500))
-	require.Equal(t, int64(2500), resolveAt(t, tx, pid, 2999))
-	// Past the run the spared row is the only cover, which is why it is kept.
-	require.Equal(t, int64(2500), resolveAt(t, tx, pid, 3000))
-	require.Equal(t, int64(2500), resolveAt(t, tx, pid, 5999))
+	require.Equal(t, int64(2000), resolveAt(t, tx, pid, 2500))
+	require.Equal(t, int64(2000), resolveAt(t, tx, pid, 2999))
+	// Past the run the narrowed row is the only cover, and it still reaches 6000.
+	require.Equal(t, int64(3000), resolveAt(t, tx, pid, 3000))
+	require.Equal(t, int64(3000), resolveAt(t, tx, pid, 5999))
 	require.Equal(t, int64(-1), resolveAt(t, tx, pid, 6000))
+}
+
+// TestReapSupersededManifest_SparesInteriorRowWhenItsNewKeyIsTaken pins the one
+// case the head narrow declines: another row already sits at the run's end, so
+// moving this one there would overwrite it and strand whatever it covers past
+// the mover's own end. The row is spared whole instead, which leaves its stale
+// cover in place — the outcome every interior straddler used to get.
+func TestReapSupersededManifest_SparesInteriorRowWhenItsNewKeyIsTaken(t *testing.T) {
+	const pid = "share/p"
+	ctx := context.Background()
+	tx := newManifestTx(pid)
+
+	// Two overlapping pre-run rows: [2500, 6000) and [3000, 4000).
+	seedRows(t, tx, pid, [][2]uint64{{0, 2000}, {2000, 500}, {2500, 3500}, {3000, 1000}})
+	seedRows(t, tx, pid, [][2]uint64{{2000, 1000}})
+	newOffsets := map[int64]struct{}{2000: {}}
+
+	require.NoError(t, ReapSupersededManifest(ctx, tx, pid, [][2]int64{{2000, 3000}}, newOffsets))
+	require.Equal(t, [][2]int64{
+		{0, 2000},
+		{2000, 3000},
+		{2500, 6000}, // spared: 3000 is taken, so it cannot move there
+		{3000, 4000},
+	}, tiling(t, tx, pid))
 }
 
 // TestReapSupersededManifest_LeavesDisjointRowsAlone keeps the reap from
