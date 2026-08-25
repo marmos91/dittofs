@@ -250,6 +250,7 @@ func grantRWHLease(t *testing.T, leaseMgr *lease.LeaseManager, leaseKey [16]byte
 	}
 	return &OpenFile{
 		SessionID:   sessionID,
+		ShareName:   "share1",
 		OplockLevel: OplockLevelLease,
 		LeaseKey:    leaseKey,
 	}

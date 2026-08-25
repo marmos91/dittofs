@@ -97,17 +97,18 @@ func TestMarkLeaseVersionIfUnset_StickyV2(t *testing.T) {
 
 	lm := NewLeaseManager(nil, nil)
 	key := [16]byte{0xAA}
+	fh := lock.FileHandle("file-1")
 
-	lm.MarkLeaseVersionIfUnset(key, true) // first grant: V2
-	if !lm.IsV2(key) {
+	lm.MarkLeaseVersionIfUnset(fh, "share1", key, true) // first grant: V2
+	if !lm.IsV2(fh, "share1", key) {
 		t.Fatalf("expected IsV2=true after V2 first grant")
 	}
-	if !lm.IsLeaseVersionKnown(key) {
+	if !lm.IsLeaseVersionKnown(fh, "share1", key) {
 		t.Fatalf("expected version known after first grant")
 	}
 
-	lm.MarkLeaseVersionIfUnset(key, false) // V1 reopen — must NOT downgrade
-	if !lm.IsV2(key) {
+	lm.MarkLeaseVersionIfUnset(fh, "share1", key, false) // V1 reopen — must NOT downgrade
+	if !lm.IsV2(fh, "share1", key) {
 		t.Errorf("V1 reopen wrongly cleared V2 mark")
 	}
 }
@@ -119,17 +120,18 @@ func TestMarkLeaseVersionIfUnset_StickyV1(t *testing.T) {
 
 	lm := NewLeaseManager(nil, nil)
 	key := [16]byte{0xBB}
+	fh := lock.FileHandle("file-1")
 
-	lm.MarkLeaseVersionIfUnset(key, false) // first grant: V1
-	if lm.IsV2(key) {
+	lm.MarkLeaseVersionIfUnset(fh, "share1", key, false) // first grant: V1
+	if lm.IsV2(fh, "share1", key) {
 		t.Fatalf("V1 first grant wrongly set V2 mark")
 	}
-	if !lm.IsLeaseVersionKnown(key) {
+	if !lm.IsLeaseVersionKnown(fh, "share1", key) {
 		t.Fatalf("expected version known after first grant")
 	}
 
-	lm.MarkLeaseVersionIfUnset(key, true) // V2 upgrade — must NOT promote
-	if lm.IsV2(key) {
+	lm.MarkLeaseVersionIfUnset(fh, "share1", key, true) // V2 upgrade — must NOT promote
+	if lm.IsV2(fh, "share1", key) {
 		t.Errorf("V2 upgrade wrongly upgraded V1 lease to V2")
 	}
 }
@@ -183,10 +185,10 @@ func TestGetSessionForBreak_RoutesByClientGUIDPrimary(t *testing.T) {
 	// of the shared ClientGUID — not to whichever session opened the lease.
 	// LEASE2's per-lease sessionMap entry initially points at session2, so
 	// this assertion specifically pins the ClientGUID-aware override.
-	if sid, ok := lm.GetSessionForBreak(lease1, "client-1"); !ok || sid != session1 {
+	if sid, ok := lm.GetSessionForBreak("client-1", "share1", lease1); !ok || sid != session1 {
 		t.Errorf("LEASE1 break session = %d (ok=%v), want %d", sid, ok, session1)
 	}
-	if sid, ok := lm.GetSessionForBreak(lease2, "client-2"); !ok || sid != session1 {
+	if sid, ok := lm.GetSessionForBreak("client-2", "share1", lease2); !ok || sid != session1 {
 		t.Errorf("LEASE2 break session = %d (ok=%v), want %d (ClientGUID primary, NOT per-lease sessionMap session2=%d)",
 			sid, ok, session1, session2)
 	}
@@ -195,7 +197,7 @@ func TestGetSessionForBreak_RoutesByClientGUIDPrimary(t *testing.T) {
 	// (used by other paths that genuinely want the registering session;
 	// none currently fault on this distinction but the API contract is
 	// preserved for callers that do).
-	if sid, _ := lm.GetSessionForLease(lease2); sid != session2 {
+	if sid, _ := lm.GetSessionForLease("client-2", "share1", lease2); sid != session2 {
 		t.Errorf("GetSessionForLease(LEASE2) = %d, want %d (per-lease sessionMap unchanged)",
 			sid, session2)
 	}
@@ -223,7 +225,7 @@ func TestGetSessionForBreak_FallsBackToSessionMap(t *testing.T) {
 		t.Fatalf("RequestLease: %v", err)
 	}
 
-	if sid, ok := lm.GetSessionForBreak(leaseKey, "client-1"); !ok || sid != session1 {
+	if sid, ok := lm.GetSessionForBreak("client-1", "share1", leaseKey); !ok || sid != session1 {
 		t.Errorf("GetSessionForBreak(zero GUID) = %d (ok=%v), want %d (sessionMap fallback)",
 			sid, ok, session1)
 	}
@@ -396,10 +398,10 @@ func TestGetSessionForBreak_CrossClientSameLeaseKey_IsolatesByClientID(t *testin
 	}
 
 	// Each client's break must route to its own primary session.
-	if sid, ok := lm.GetSessionForBreak(leaseKey, "client-A"); !ok || sid != sessionA {
+	if sid, ok := lm.GetSessionForBreak("client-A", "share1", leaseKey); !ok || sid != sessionA {
 		t.Errorf("client A break = %d (ok=%v), want %d", sid, ok, sessionA)
 	}
-	if sid, ok := lm.GetSessionForBreak(leaseKey, "client-B"); !ok || sid != sessionB {
+	if sid, ok := lm.GetSessionForBreak("client-B", "share1", leaseKey); !ok || sid != sessionB {
 		t.Errorf("client B break = %d (ok=%v), want %d", sid, ok, sessionB)
 	}
 }
@@ -467,10 +469,11 @@ func TestMarkLeaseVersionIfUnset_UnknownByDefault(t *testing.T) {
 
 	lm := NewLeaseManager(nil, nil)
 	key := [16]byte{0xCC}
-	if lm.IsLeaseVersionKnown(key) {
+	fh := lock.FileHandle("file-1")
+	if lm.IsLeaseVersionKnown(fh, "share1", key) {
 		t.Errorf("fresh key should not be marked known")
 	}
-	if lm.IsV2(key) {
+	if lm.IsV2(fh, "share1", key) {
 		t.Errorf("fresh key should default to !IsV2")
 	}
 }
@@ -1028,6 +1031,8 @@ func TestLeaseKeyRawMapRoundTrip(t *testing.T) {
 
 	keyA := [16]byte{0x01, 0x02, 0x03}
 	keyB := [16]byte{0x01, 0x02, 0x04} // differs only in last byte
+	fhA := lock.FileHandle("fA")
+	fhB := lock.FileHandle("fB")
 	const sessA uint64 = 5
 	const sessB uint64 = 6
 
@@ -1035,25 +1040,25 @@ func TestLeaseKeyRawMapRoundTrip(t *testing.T) {
 		sessA, [16]byte{}, "oA", "cA", "share1", lock.LeaseStateRead, false); err != nil {
 		t.Fatalf("RequestLease A: %v", err)
 	}
-	lm.MarkLeaseVersionIfUnset(keyA, true)
+	lm.MarkLeaseVersionIfUnset(fhA, "share1", keyA, true)
 
 	if _, _, err := lm.RequestLease(ctx, lock.FileHandle("fB"), keyB, [16]byte{},
 		sessB, [16]byte{}, "oB", "cB", "share1", lock.LeaseStateRead, false); err != nil {
 		t.Fatalf("RequestLease B: %v", err)
 	}
-	lm.MarkLeaseVersionIfUnset(keyB, false)
+	lm.MarkLeaseVersionIfUnset(fhB, "share1", keyB, false)
 
 	// Distinct keys must not collide across any map.
-	if sid, ok := lm.GetSessionForLease(keyA); !ok || sid != sessA {
+	if sid, ok := lm.GetSessionForLease("cA", "share1", keyA); !ok || sid != sessA {
 		t.Errorf("session(keyA) = %d ok=%v, want %d", sid, ok, sessA)
 	}
-	if sid, ok := lm.GetSessionForLease(keyB); !ok || sid != sessB {
+	if sid, ok := lm.GetSessionForLease("cB", "share1", keyB); !ok || sid != sessB {
 		t.Errorf("session(keyB) = %d ok=%v, want %d", sid, ok, sessB)
 	}
-	if !lm.IsV2(keyA) {
+	if !lm.IsV2(fhA, "share1", keyA) {
 		t.Errorf("keyA should be V2")
 	}
-	if lm.IsV2(keyB) {
+	if lm.IsV2(fhB, "share1", keyB) {
 		t.Errorf("keyB should be V1")
 	}
 
@@ -1071,16 +1076,16 @@ func TestLeaseKeyRawMapRoundTrip(t *testing.T) {
 	}
 
 	// Release A; B must remain intact (no cross-key wipe).
-	if err := lm.ReleaseLease(ctx, keyA); err != nil {
+	if err := lm.ReleaseLease(ctx, "cA", "share1", keyA); err != nil {
 		t.Fatalf("ReleaseLease A: %v", err)
 	}
-	if _, ok := lm.GetSessionForLease(keyA); ok {
+	if _, ok := lm.GetSessionForLease("cA", "share1", keyA); ok {
 		t.Errorf("keyA session mapping should be gone after release")
 	}
-	if sid, ok := lm.GetSessionForLease(keyB); !ok || sid != sessB {
+	if sid, ok := lm.GetSessionForLease("cB", "share1", keyB); !ok || sid != sessB {
 		t.Errorf("keyB session mapping must survive A's release: %d ok=%v", sid, ok)
 	}
-	if !lm.IsLeaseVersionKnown(keyB) {
+	if !lm.IsLeaseVersionKnown(fhB, "share1", keyB) {
 		t.Errorf("keyB version mark must survive A's release")
 	}
 }
