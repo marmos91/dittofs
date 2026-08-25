@@ -56,3 +56,29 @@ func TestHasEarlierInFlightNotify_OutOfOrderMessageIDs(t *testing.T) {
 	}
 	done50()
 }
+
+// Releasing the earliest must promote the SECOND arrival, not the last one.
+// A swap-remove moves the tail element into slot 0, which would make the
+// newest request look like the oldest.
+func TestHasEarlierInFlightNotify_FirstReleasePromotesSecond(t *testing.T) {
+	r := NewNotifyRegistry()
+	fid := [16]byte{1}
+
+	doneA := r.MarkNotifyInFlight(fid, 10) // arrived 1st
+	doneB := r.MarkNotifyInFlight(fid, 20) // arrived 2nd
+	doneC := r.MarkNotifyInFlight(fid, 30) // arrived 3rd
+
+	doneA() // earliest is answered
+
+	if r.HasEarlierInFlightNotify(fid, 20) {
+		t.Error("20 arrived before 30, so it is now the earliest and must take the events")
+	}
+	if !r.HasEarlierInFlightNotify(fid, 30) {
+		t.Error("30 is the newest; 20 is still outstanding ahead of it")
+	}
+	doneB()
+	doneC()
+	if len(r.inFlightNotify) != 0 {
+		t.Errorf("tracking leaked: %v", r.inFlightNotify)
+	}
+}

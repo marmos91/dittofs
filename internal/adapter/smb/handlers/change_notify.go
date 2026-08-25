@@ -1598,6 +1598,10 @@ func (r *NotifyRegistry) MarkNotifyInFlight(fileID [16]byte, messageID uint64) f
 	return func() {
 		r.mu.Lock()
 		defer r.mu.Unlock()
+		// Order-preserving removal is REQUIRED: ids[0] is the earliest
+		// arrival, so a swap-remove (ids[i] = ids[len-1]) would silently
+		// reorder the tail and make HasEarlierInFlightNotify wrong for every
+		// later comparison. Shift, do not swap.
 		ids := r.inFlightNotify[key]
 		for i, id := range ids {
 			if id == messageID {
