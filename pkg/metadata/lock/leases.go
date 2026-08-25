@@ -1334,17 +1334,37 @@ func (lm *Manager) releaseLeaseRecords(ctx context.Context, handleKey string, le
 	}
 }
 
-// GetLeaseState returns the current state and epoch for a lease key.
-func (lm *Manager) getLeaseStateImpl(_ context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
+// leaseRecordsOnHandleLocked returns the records for leaseKey on handleKey.
+//
+// (handleKey, leaseKey) is the identity of a lease record within one share's
+// manager: it is what resolveSameKeyLeaseLocked matches a request against when
+// it decides to reuse a record rather than create one. The lease key alone is
+// not that identity — two clients may present the same 16-byte value on
+// different files of one share, which the cross-file uniqueness rule permits
+// because it is scoped per (client, file).
+//
+// Must be called with lm.mu held (read or write).
+func (lm *Manager) leaseRecordsOnHandleLocked(handleKey string, leaseKey [16]byte) []*UnifiedLock {
+	var out []*UnifiedLock
+	for _, l := range lm.unifiedLocks[handleKey] {
+		if l.Lease != nil && l.Lease.LeaseKey == leaseKey {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// GetLeaseState returns the current state and epoch of the lease on handleKey.
+func (lm *Manager) getLeaseStateImpl(_ context.Context, handleKey string, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 
-	_, lock, _ := lm.findLeaseByKey(leaseKey)
-	if lock == nil || lock.Lease == nil {
+	records := lm.leaseRecordsOnHandleLocked(handleKey, leaseKey)
+	if len(records) == 0 {
 		return 0, 0, false
 	}
 
-	return lock.Lease.LeaseState, lock.Lease.Epoch, true
+	return records[0].Lease.LeaseState, records[0].Lease.Epoch, true
 }
 
 // HasLeaseOnHandle reports whether a lease record with this key already exists
@@ -1364,11 +1384,11 @@ func (lm *Manager) HasLeaseOnHandle(handleKey string, leaseKey [16]byte) bool {
 	return false
 }
 
-func (lm *Manager) IsTraditionalOplockForKey(leaseKey [16]byte) bool {
+func (lm *Manager) IsTraditionalOplockForKey(handleKey string, leaseKey [16]byte) bool {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	_, lock, _ := lm.findLeaseByKey(leaseKey)
-	return lock != nil && lock.Lease != nil && lock.Lease.IsTraditionalOplock
+	records := lm.leaseRecordsOnHandleLocked(handleKey, leaseKey)
+	return len(records) > 0 && records[0].Lease.IsTraditionalOplock
 }
 
 // ============================================================================
@@ -1484,55 +1504,52 @@ func (lm *Manager) ReleaseLeaseForHandle(ctx context.Context, handleKey string, 
 	return lm.releaseLeaseForHandleImpl(ctx, handleKey, leaseKey)
 }
 
-// GetLeaseState returns the current state and epoch for a lease key.
-func (lm *Manager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
-	return lm.getLeaseStateImpl(ctx, leaseKey)
+// GetLeaseState returns the current state and epoch of the lease on handleKey.
+func (lm *Manager) GetLeaseState(ctx context.Context, handleKey string, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
+	return lm.getLeaseStateImpl(ctx, handleKey, leaseKey)
 }
 
-// SetLeaseEpoch sets the epoch on an existing lease identified by leaseKey.
+// SetLeaseEpoch sets the epoch on the lease (handleKey, leaseKey) holds.
 // Per MS-SMB2 3.3.5.9: For V2 leases, the server should track the client's
 // epoch from the RqLs create context. SetLeaseEpoch is called after RequestLease
 // to initialize the epoch to the client's requested value.
-// Returns false if no lease was found with the given key.
-func (lm *Manager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) bool {
+// Returns false if no lease was found on that file with the given key.
+func (lm *Manager) SetLeaseEpoch(handleKey string, leaseKey [16]byte, epoch uint16) bool {
 	lm.mu.Lock()
 	defer lm.unlock()
 
-	// Update every lease record matching leaseKey, not just the first found.
-	// Stale records from prior tests (same LEASE1 constant across smbtorture
-	// tests) or from multiple opens by different clients can coexist in
-	// lm.unifiedLocks under different handleKey buckets. findLeaseByKey's
-	// map-iteration order is non-deterministic, so scoping to the first
-	// match can miss the lease that RequestLease just granted — leaving it
-	// at Epoch=1 (createAndGrantLease default) while the response to the
-	// client carries the higher requested epoch. Subsequent break
-	// notifications then dispatch with Epoch=2 instead of requestedEpoch+2,
-	// regressing smbtorture V2 tests (break_twice, breaking*, v2_breaking3).
-	// Two passes so all matching records converge to the SAME epoch. A
-	// per-record `if epoch >= lock.Lease.Epoch` guard lets sibling records that
-	// start at different epochs diverge (e.g. one at 5 stays 5 while another at
-	// 1 moves to 4), and GetLeaseState / break dispatch then read whichever
-	// map-order surfaces first — a non-deterministic NewEpoch in break
-	// notifications (the break_twice / v2_breaking3 regression class). Compute
-	// the max of the requested epoch and every matching record's current epoch,
-	// then assign that single max to all of them so the lease has one epoch.
+	// Update every record of THIS lease, not just the first found. Reopens and
+	// reclaims can leave more than one record for a key on one file, so scoping
+	// to the first match can miss the one RequestLease just granted — leaving
+	// it at Epoch=1 (createAndGrantLease default) while the response to the
+	// client carries the higher requested epoch. Subsequent break notifications
+	// then dispatch with Epoch=2 instead of requestedEpoch+2, regressing
+	// smbtorture V2 tests (break_twice, breaking*, v2_breaking3).
 	//
-	// Probes only the buckets leaseKeyIndex names for leaseKey; the ones it
-	// omits hold no record for the key and could never have matched.
+	// Two passes so all of this lease's records converge to the SAME epoch. A
+	// per-record `if epoch >= lock.Lease.Epoch` guard lets siblings that start
+	// at different epochs diverge (e.g. one at 5 stays 5 while another at 1
+	// moves to 4), and a read of the lease then answers from whichever the
+	// slice surfaces first. Compute the max of the requested epoch and every
+	// record's current epoch, then assign that single max to all of them so the
+	// lease has one epoch.
+	//
+	// The convergence stops at this file. A lease key is not an identity: the
+	// cross-file uniqueness rule is per (client, file), so another client may
+	// hold the same 16-byte value on a different file of this share. Folding
+	// that client's records into the max hands it an epoch no grant of its own
+	// produced, and the gap is what a client acts on — per MS-SMB2 §3.2.5.19.2
+	// a NewEpoch more than 1 past the one it last saw forces a cache purge, and
+	// one more than 32767 past it makes the client discard the break's new
+	// lease state outright.
+	records := lm.leaseRecordsOnHandleLocked(handleKey, leaseKey)
 	target := epoch
-	var matches []*UnifiedLock
-	for handleKey := range lm.leaseKeyIndex[leaseKey] {
-		for _, lock := range lm.unifiedLocks[handleKey] {
-			if lock.Lease == nil || lock.Lease.LeaseKey != leaseKey {
-				continue
-			}
-			if lock.Lease.Epoch > target {
-				target = lock.Lease.Epoch
-			}
-			matches = append(matches, lock)
+	for _, lock := range records {
+		if lock.Lease.Epoch > target {
+			target = lock.Lease.Epoch
 		}
 	}
-	for _, lock := range matches {
+	for _, lock := range records {
 		lock.Lease.Epoch = target
 		// Persist the new epoch like every other lease state-change path.
 		// Without this, RestoreLocks rebuilds the lease at the stale grant-time
@@ -1541,5 +1558,5 @@ func (lm *Manager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) bool {
 		// §3.3.4.7 epoch monotonicity.
 		lm.persistUnifiedLockLocked(lock)
 	}
-	return len(matches) > 0
+	return len(records) > 0
 }
