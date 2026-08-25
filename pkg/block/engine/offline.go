@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -236,17 +237,17 @@ func placedRanges(rows []*block.FileChunk) ([][2]uint64, int64) {
 		if !ok {
 			continue
 		}
+		// A parsed offset is bounded to int64 and DataSize is 32 bits, so the
+		// sum cannot wrap, but it can sit past int64 — and the clamp below is
+		// handed to DataExtents as an int64.
 		rowEnd := off + uint64(row.DataSize)
-		if rowEnd <= off {
-			continue // an end that wrapped describes no range
-		}
 		placed = append(placed, [2]uint64{off, rowEnd})
 		if rowEnd > end {
 			end = rowEnd
 		}
 	}
-	if end > 1<<62 {
-		end = 1 << 62 // keep a corrupt row from overflowing the int64 clamp
+	if end > math.MaxInt64 {
+		end = math.MaxInt64
 	}
 	return coalesceExtents(placed), int64(end)
 }
