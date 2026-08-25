@@ -5,6 +5,16 @@ Last updated: 2026-06-02 (#749 — parked durable CREATE now finalizes the momen
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
 
+**Reading a single-`--filter` run:** the names below carry the sub-suite prefix
+(`smb2.durable-open.delete_on_close2`) that `run.sh` adds from its `SUITES`
+"suite:prefix" table. A `run.sh --filter smb2.<suite>` invocation runs the suite
+in one shot without that fixup, so smbtorture reports the bare test name
+(`smb2.delete_on_close2`), it matches nothing here, and a permanently-expected
+failure is graded **new**. Cross-check any "new failure" from a single-filter run
+against this file by test name before treating it as a regression. Single-filter
+mode also skips the per-test `reset_share`, and does not step over the tests the
+full run avoids for client-side crashes (`smb2.dirlease.oplocks`, `scan.scan`).
+
 ## Final Tally (#673 v1.0 conformance gate)
 
 Every remaining entry is justified and falls into exactly one bucket. No
