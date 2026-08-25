@@ -34,13 +34,15 @@ const DefaultOrderWaitTimeout = 30 * time.Second
 // Without that, the client would be waiting for a response the server is
 // holding behind the very request the client cannot send yet.
 type RequestOrder struct {
-	mu sync.Mutex
-	// wake is closed and replaced on every release, waking all waiters to
-	// re-check. Waiters are one per in-flight request on one connection.
-	wake     chan struct{}
+	mu       sync.Mutex
 	next     uint64
 	low      uint64 // every sequence below this has been released
 	released map[uint64]struct{}
+	// waiters holds one channel per response currently waiting for its turn.
+	// A release wakes only the sequence that just became eligible, which then
+	// wakes the next as it releases: a pipelining client costs one handoff per
+	// request rather than one per request per release.
+	waiters map[uint64]chan struct{}
 
 	waitTimeout time.Duration
 }
@@ -48,8 +50,8 @@ type RequestOrder struct {
 // NewRequestOrder creates the ordering state for one connection.
 func NewRequestOrder() *RequestOrder {
 	return &RequestOrder{
-		wake:        make(chan struct{}),
 		released:    make(map[uint64]struct{}),
+		waiters:     make(map[uint64]chan struct{}),
 		waitTimeout: DefaultOrderWaitTimeout,
 	}
 }
@@ -87,28 +89,32 @@ func (t *OrderToken) WaitTurn(ctx context.Context) {
 		return
 	}
 	o := t.order
+
+	o.mu.Lock()
+	if o.low >= t.seq {
+		o.mu.Unlock()
+		return
+	}
+	wake := make(chan struct{})
+	o.waiters[t.seq] = wake
+	o.mu.Unlock()
+
+	defer func() {
+		o.mu.Lock()
+		delete(o.waiters, t.seq)
+		o.mu.Unlock()
+	}()
+
 	deadline := time.NewTimer(o.waitTimeout)
 	defer deadline.Stop()
 
-	for {
-		o.mu.Lock()
-		if o.low >= t.seq {
-			o.mu.Unlock()
-			return
-		}
-		wake := o.wake
-		o.mu.Unlock()
-
-		select {
-		case <-wake:
-		case <-ctx.Done():
-			return
-		case <-deadline.C:
-			logger.Warn("SMB response ordering timed out; response may overtake an earlier request's break notification",
-				"sequence", t.seq,
-				"timeout", o.waitTimeout)
-			return
-		}
+	select {
+	case <-wake:
+	case <-ctx.Done():
+	case <-deadline.C:
+		logger.Warn("SMB response ordering timed out; response may overtake an earlier request's break notification",
+			"sequence", t.seq,
+			"timeout", o.waitTimeout)
 	}
 }
 
@@ -129,8 +135,13 @@ func (t *OrderToken) Release() {
 		delete(o.released, o.low)
 		o.low++
 	}
-	close(o.wake)
-	o.wake = make(chan struct{})
+	// Only the sequence that just became eligible needs waking: everything
+	// below it was already eligible, and everything above it is still waiting
+	// on this one.
+	if wake, ok := o.waiters[o.low]; ok {
+		delete(o.waiters, o.low)
+		close(wake)
+	}
 	o.mu.Unlock()
 }
 
