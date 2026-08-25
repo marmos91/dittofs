@@ -333,7 +333,7 @@ func PreserveClobberedRow(ctx context.Context, tx Transaction, payloadID string,
 	if payloadID == "" || len(owed) == 0 {
 		return nil
 	}
-	old, err := readChunkRow(ctx, tx, fmt.Sprintf("%s/%d", payloadID, runStart))
+	old, err := readChunkRow(ctx, tx, chunkRowKey(payloadID, runStart))
 	if err != nil || old == nil {
 		return err
 	}
@@ -348,16 +348,34 @@ func PreserveClobberedRow(ctx context.Context, tx Transaction, payloadID string,
 		if lo >= hi {
 			continue
 		}
-		piece, ok := narrowOffHead(old, runStart, lo, hi)
-		if !ok {
-			continue // the claim will not fit the row's fields: leave it behind
-		}
-		occupant, err := readChunkRow(ctx, tx, piece.ID)
+		// A row already keyed at lo keeps what it claims: it starts where this
+		// piece would, so coverage cannot choose between them, and overwriting it
+		// would swap the bytes a read there already resolves for this row's — a
+		// silent content change with nothing to justify it. Take over only what it
+		// leaves uncovered.
+		occupant, err := readChunkRow(ctx, tx, chunkRowKey(payloadID, lo))
 		if err != nil {
 			return err
 		}
-		if occupant != nil && lo+int64(occupant.DataSize) >= hi {
-			continue
+		if occupant != nil {
+			lo += int64(occupant.DataSize)
+			if lo >= hi {
+				continue
+			}
+			// ponytail: one step past the occupant, so a second row keyed exactly
+			// where the first ends leaves the rest of this range uncovered; walk the
+			// chain if a manifest is ever seen stacking rows that way.
+			next, err := readChunkRow(ctx, tx, chunkRowKey(payloadID, lo))
+			if err != nil {
+				return err
+			}
+			if next != nil {
+				continue
+			}
+		}
+		piece, ok := narrowOffHead(old, runStart, lo, hi)
+		if !ok {
+			continue // the claim will not fit the row's fields: leave it behind
 		}
 		if err := tx.Put(ctx, piece); err != nil {
 			return fmt.Errorf("preserve clobbered row %s: put %s: %w", old.ID, piece.ID, err)
@@ -368,6 +386,12 @@ func PreserveClobberedRow(ctx context.Context, tx Transaction, payloadID string,
 		return nil
 	}
 	return ProjectCommittedChunks(ctx, tx, payloadID, written)
+}
+
+// chunkRowKey renders the manifest key a chunk starting at off within payloadID
+// lives under.
+func chunkRowKey(payloadID string, off int64) string {
+	return fmt.Sprintf("%s/%d", payloadID, off)
 }
 
 // readChunkRow returns the row stored under id, or (nil, nil) when there is
