@@ -249,8 +249,10 @@ type NotifyRegistry struct {
 
 	// inFlightNotify tracks CHANGE_NOTIFY requests that the connection's read
 	// loop has read off the wire but whose handlers have not finished, keyed
-	// by handle. The read loop is sequential and appends here in arrival
-	// order, so element 0 is the earliest-received request still outstanding.
+	// by handle. Each connection's read loop is sequential, and under
+	// multichannel several of them append here under this registry's one
+	// mutex — so the slice records a real arrival order across connections,
+	// and element 0 is the earliest-received request still outstanding.
 	//
 	// Order is the slice's, NOT the MessageID's. SMB2 clients may consume
 	// MessageIDs out of order within the credit sequence window, so a numeric
