@@ -299,7 +299,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 
 // sendCompoundResponses sends all compound responses in a single NetBIOS frame.
 //
-// Per MS-SMB2 3.3.5.2.7 — Sending Compounded Responses:
+// Per MS-SMB2 3.3.4.1.3 ("Sending Compounded Responses"):
 //   - Each non-last response is padded to 8-byte alignment
 //   - NextCommand in the header points to the next command's offset
 //   - Per MS-SMB2 3.3.4.1.1: each command is signed individually over its own
@@ -630,7 +630,7 @@ func ParseCompoundCommand(data []byte) (*header.SMB2Header, []byte, []byte, erro
 
 // VerifyCompoundCommandSignature verifies the signature of a compound sub-command.
 //
-// Per MS-SMB2 3.3.5.2.7.2 — Handling Compounded Requests:
+// Per MS-SMB2 3.3.5.2.7.2 ("Handling Compounded Related Requests"):
 // Each command in a compound request is signed individually over its own bytes
 // (from its SMB2 header to NextCommand offset, or end for the last command).
 // The signature covers ONLY that command's bytes, not the entire compound.

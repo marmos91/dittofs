@@ -1001,7 +1001,7 @@ func sendMessageWithSigner(hdr *header.SMB2Header, body []byte, connInfo *ConnIn
 // SendMessage sends an SMB2 message with NetBIOS framing, optional encryption,
 // and optional signing.
 //
-// Per MS-SMB2 3.3.4.1.1 — Signing an Outgoing Message:
+// Per MS-SMB2 3.3.4.1.1 ("Signing the Message"):
 // If the session has Session.SigningRequired set and the message is not encrypted,
 // the server MUST sign the response using the session's signing key. Encrypted
 // sessions use AEAD for integrity instead of signing (MS-SMB2 3.3.4.1.3).
