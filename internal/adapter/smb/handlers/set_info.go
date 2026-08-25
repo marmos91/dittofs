@@ -918,16 +918,17 @@ func (h *Handler) setFileInfoFromStore(
 			}
 		}
 
-		// Per MS-FSA 2.1.5.14.11.3 / Samba smbd_smb2_setinfo_rename_dst_parent_check:
-		// rename takes an implicit open on the destination parent directory
-		// with DELETE+FILE_ADD_FILE and ShareAccess=0. Any existing open of
-		// that directory that lacks FILE_SHARE_DELETE or holds DELETE access
+		// Per MS-FSA 2.1.5.15.12 step 8.1: rename takes an implicit open on
+		// the destination parent directory with FILE_ADD_FILE|SYNCHRONIZE
+		// (FILE_ADD_SUBDIRECTORY for a directory source) and ShareAccess
+		// FILE_SHARE_READ|FILE_SHARE_WRITE. Any existing open of that
+		// directory that denies write sharing or already holds DELETE access
 		// conflicts. Stream renames don't traverse the directory layer and
 		// returned earlier above; we're past that branch here.
 		//
 		// Conflict-gated dst-parent dir-lease pre-break (smbtorture
 		// smb2.dirlease.rename_dst_parent, lease.c:7331): when an existing
-		// holder on dst-parent denies the implicit destructive open with
+		// holder on dst-parent denies the implicit open with
 		// SHARING_VIOLATION, the dst-parent's RH dir-lease holder must observe
 		// an RH→R strip-Handle break first; the break may give the holder a
 		// chance to close its conflicting handle. After the break drains we
@@ -950,7 +951,7 @@ func (h *Handler) setFileInfoFromStore(
 		// that a concurrent CLOSE is mid-removing is observed atomically — no
 		// spurious SHARING_VIOLATION.
 		h.renameScanMu.Lock()
-		conflict := h.checkParentDirRenameConflict(openFile.FileID, toDir)
+		conflict := h.checkParentDirRenameConflict(openFile, toDir)
 		h.renameScanMu.Unlock()
 		if conflict && !bytes.Equal(toDir, openFile.Name().ParentHandle) {
 			h.breakDstParentDirHandleLeasesForRename(authCtx, toDir, openFile)
@@ -962,7 +963,7 @@ func (h *Handler) setFileInfoFromStore(
 			// upgrades the lease and the second setinfo runs). Authoritative
 			// under the mutex.
 			h.renameScanMu.Lock()
-			conflict = h.checkParentDirRenameConflict(openFile.FileID, toDir)
+			conflict = h.checkParentDirRenameConflict(openFile, toDir)
 			h.renameScanMu.Unlock()
 		}
 		if conflict {
@@ -2177,12 +2178,11 @@ func (h *Handler) breakParentDirLeasesForContentChangeOn(ctx *SMBHandlerContext,
 
 // breakDstParentDirHandleLeasesForRename strips the Handle bit only (RH -> R)
 // on dst-parent dir leases held by holders that conflict with the rename's
-// implicit DELETE+FILE_ADD_FILE open. Called BEFORE the dst-parent share-mode
+// implicit FILE_ADD_FILE open. Called BEFORE the dst-parent share-mode
 // conflict check so the break notification is observed even when the conflict
-// surfaces STATUS_SHARING_VIOLATION (smbtorture smb2.dirlease.rename_dst_parent
-// stage 1, lease.c:7331). Read caching is preserved (RH -> R) — the rename
-// hasn't mutated directory contents yet, only the dst-parent's Handle caching
-// is invalidated by the implicit destructive open intent.
+// surfaces STATUS_SHARING_VIOLATION. Read caching is preserved (RH -> R) — the
+// rename hasn't mutated directory contents yet, only the dst-parent's Handle
+// caching is invalidated by the pending new name.
 //
 // Honors ParentLeaseKey suppression from C2 only — no ClientID exclusion,
 // same-client dir leases break when the key doesn't match.

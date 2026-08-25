@@ -2598,26 +2598,30 @@ func logRenameConflictHolder(gate string, renamer, holder *OpenFile) {
 		"holderDeletePending", holder.DeletePending)
 }
 
-// checkParentDirRenameConflict applies the destination-parent share-mode
-// rule from MS-FSA 2.1.5.14.11.3 / Samba smbd_smb2_setinfo_rename_dst_parent_check.
-// Rename takes an implicit DELETE-bearing access on the destination parent
-// without granting share-delete; only the DELETE vs FILE_SHARE_DELETE pair
-// matters for the conflict (the ADD_FILE bit doesn't interact with the
-// share-mode word, so we don't probe write/share-write). An existing
-// destination-parent open conflicts when it (a) lacks FILE_SHARE_DELETE —
-// denying the rename's DELETE access — or (b) already holds DELETE access —
-// incompatible with the rename's ShareAccess=0. The renamer's own handle
-// is excluded by FileID. Caller passes the destination parent handle (same
-// as source parent for same-directory rename). Returns true on conflict.
-func (h *Handler) checkParentDirRenameConflict(renamerFileID [16]byte, dstParent metadata.FileHandle) bool {
-	const fileShareDelete = uint32(0x04) // FILE_SHARE_DELETE
+// checkParentDirRenameConflict applies the destination-parent share-mode rule
+// from MS-FSA 2.1.5.15.12 step 8.1: the rename opens the destination directory
+// with DesiredAccess FILE_ADD_FILE|SYNCHRONIZE and ShareAccess
+// FILE_SHARE_READ|FILE_SHARE_WRITE. Linking a new name into a directory is
+// therefore a WRITE against that directory, not a delete of it, so an existing
+// open conflicts only when it denies write sharing, or already holds DELETE
+// access — which the rename's withheld share-delete is incompatible with. A
+// holder that merely lacks FILE_SHARE_DELETE does not conflict; nothing in the
+// rename asks to delete the destination parent.
+//
+// Only the renamer's own handle is excluded, by FileID. Another open on the
+// renamer's own session still counts, because the implicit open is a fresh
+// open evaluated against the whole open list.
+//
+// Caller passes the destination parent handle (same as source parent for a
+// same-directory rename). Returns true on conflict.
+func (h *Handler) checkParentDirRenameConflict(renamer *OpenFile, dstParent metadata.FileHandle) bool {
 	if len(dstParent) == 0 {
 		return false
 	}
 	var culprit *OpenFile
 	h.files.Range(func(_, value any) bool {
 		other := value.(*OpenFile)
-		if other.FileID == renamerFileID {
+		if other.FileID == renamer.FileID {
 			return true
 		}
 		if len(other.MetadataHandle) == 0 {
@@ -2630,22 +2634,19 @@ func (h *Handler) checkParentDirRenameConflict(renamerFileID [16]byte, dstParent
 		// READ_CONTROL only) impose no share-mode constraint per MS-SMB2
 		// §3.3.5.9.8 + Samba `is_lease_stat_open`. smbtorture rename.msword
 		// opens the parent dir stat-only with ShareAccess=0 and expects the
-		// rename to succeed; without this filter the lack of FILE_SHARE_DELETE
+		// rename to succeed; without this filter its lack of FILE_SHARE_WRITE
 		// would falsely trip the conflict.
 		if isStatOnlyOpen(other.DesiredAccess) {
 			return true
 		}
-		if other.ShareAccess&fileShareDelete == 0 || hasDeleteAccess(other.DesiredAccess) {
+		if other.ShareAccess&smbShareWrite == 0 || hasDeleteAccess(other.DesiredAccess) {
 			culprit = other
 			return false
 		}
 		return true
 	})
 	if culprit != nil {
-		// #1652: dump the dst-parent holder that tripped the gate. renamerFileID
-		// is only an ID here, so pass a minimal renamer view for the log.
-		logRenameConflictHolder("dst-parent share-mode gate",
-			&OpenFile{FileID: renamerFileID}, culprit)
+		logRenameConflictHolder("dst-parent share-mode gate", renamer, culprit)
 		return true
 	}
 	return false

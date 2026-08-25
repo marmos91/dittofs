@@ -104,7 +104,7 @@ func TestRenameScan_vs_Close_Serialized_NoRace(t *testing.T) {
 				observedTorn.Store(true)
 			}
 			_ = h.checkShareDeleteConflict(of)
-			_ = h.checkParentDirRenameConflict(of.FileID, of.MetadataHandle)
+			_ = h.checkParentDirRenameConflict(of, of.MetadataHandle)
 			_ = h.anyOpenChild(of.MetadataHandle)
 			if torn.Load() {
 				observedTorn.Store(true)
@@ -172,7 +172,7 @@ func TestRenameScan_vs_Close_NegativeControl(t *testing.T) {
 				observedTorn.Store(true)
 			}
 			_ = h.checkShareDeleteConflict(of)
-			_ = h.checkParentDirRenameConflict(of.FileID, of.MetadataHandle)
+			_ = h.checkParentDirRenameConflict(of, of.MetadataHandle)
 			_ = h.anyOpenChild(of.MetadataHandle)
 			if torn.Load() {
 				observedTorn.Store(true)
