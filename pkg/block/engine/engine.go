@@ -87,6 +87,10 @@ type Store struct {
 	// FileChunkStore surface).
 	fileChunkStore block.EngineFileChunkStore // optional: for block count stats
 
+	// offlineShortfall memoizes the manifest cross-check OfflineReadiness
+	// runs against the local tier's interval index.
+	offlineShortfall shortfallMemo
+
 	// coordinator handles all metadata-store operations the engine
 	// needs (RefCount mutations, ChunkRef-list persistence). May be nil
 	// in tests; production wiring (pkg/controlplane/runtime/shares/
