@@ -695,7 +695,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// see or mutate it.
 			if notify.AsyncCallback != nil {
 				n := notify
-				ctx.PostSend = func() {
+				AppendPostSend(ctx, func() {
 					cleanupResp := &ChangeNotifyResponse{
 						SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
 					}
@@ -711,7 +711,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 							"messageID", n.MessageID,
 							"asyncId", n.AsyncId)
 					})
-				}
+				})
 			}
 			logger.Debug("CLOSE: unregistered pending CHANGE_NOTIFY",
 				"path", closePath,

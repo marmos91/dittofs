@@ -710,13 +710,9 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// from MarkInterimSent on this goroutine after the dispatcher writes
 	// the PENDING interim — ensuring on-wire order PENDING → final.
 	notifyRef := notify
-	prevPostSend := ctx.PostSend
-	ctx.PostSend = func() {
-		if prevPostSend != nil {
-			prevPostSend()
-		}
+	AppendPostSend(ctx, func() {
 		h.NotifyRegistry.MarkInterimSent(notifyRef)
-	}
+	})
 
 	// Return STATUS_PENDING with AsyncId - the client will receive an
 	// interim response with SMB2_FLAGS_ASYNC_COMMAND set and this AsyncId.
