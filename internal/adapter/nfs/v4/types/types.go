@@ -125,6 +125,11 @@ type CompoundContext struct {
 	// making per-owner seqid redundant.
 	SkipOwnerSeqid bool
 
+	// SessionClientID is the client ID owning the session a v4.1 COMPOUND ran
+	// SEQUENCE on. Zero in v4.0 compounds and before SEQUENCE succeeds.
+	// EffectiveClientID reads it; see there for why it outranks the wire value.
+	SessionClientID uint64
+
 	// ConnectionID is the unique identifier for the TCP connection, assigned
 	// at accept() time and threaded through dispatch. Used by
 	// BIND_CONN_TO_SESSION and connection draining checks.
@@ -151,6 +156,23 @@ type CompoundContext struct {
 	// NFS4ERR_MINOR_VERS_MISMATCH -- that last case returns a well-formed reply
 	// and a nil error, so the error alone cannot be used to tell them apart.
 	MinorVersionAccepted bool
+}
+
+// EffectiveClientID returns the client ID an open-owner or lock-owner should be
+// keyed under, given the clientid decoded from the owner's wire representation.
+//
+// In v4.1 the session identifies the client, and the clientid field of
+// open_owner4 and lock_owner4 is ignored (RFC 8881 Sections 18.16.3 and
+// 18.10.3): a conforming client may send zero or a stale value there. Keying
+// owners by it would scatter one client's state across identities that no
+// client record covers and no lease reaps. The session's client is authoritative
+// whenever there is one; in v4.0 the wire value is the only identity a request
+// carries.
+func (c *CompoundContext) EffectiveClientID(wireClientID uint64) uint64 {
+	if c.SessionClientID != 0 {
+		return c.SessionClientID
+	}
+	return wireClientID
 }
 
 // Principal returns a string identity for the authenticated caller: "uid:N" for

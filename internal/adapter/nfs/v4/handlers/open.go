@@ -100,6 +100,7 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 	if err != nil {
 		return openError(types.NFS4ERR_BADXDR)
 	}
+	clientID = ctx.EffectiveClientID(clientID)
 	ownerData, err := xdr.DecodeOpaque(reader)
 	if err != nil {
 		return openError(types.NFS4ERR_BADXDR)

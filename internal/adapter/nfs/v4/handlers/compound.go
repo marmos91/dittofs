@@ -479,6 +479,9 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 
 	// SEQUENCE succeeded -- set v4.1 bypass for per-owner seqid
 	compCtx.SkipOwnerSeqid = true
+	if sess != nil {
+		compCtx.SessionClientID = sess.ClientID
+	}
 
 	// Ensure slot is released and response is cached via defer
 	var responseBytes []byte
