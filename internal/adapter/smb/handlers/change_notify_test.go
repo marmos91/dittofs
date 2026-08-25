@@ -3372,3 +3372,96 @@ func TestTakeBufferedEvents_LeavesNonMatchingEvents(t *testing.T) {
 		t.Fatalf("third take = %+v, want nil — events must be consumed once", got)
 	}
 }
+
+// TestChangeNotify_WatchPathIsNormalised covers a directory handle opened by a
+// path the client spelled with a traversal component.
+//
+// The handle stores the filename exactly as the client sent it, while events
+// are reported against resolved paths, so a handle opened as `zqy\..` would
+// never match an event on the parent it actually refers to. smbtorture's
+// smb2.notify.tree opens one that way and expects it to see the parent's
+// events.
+func TestChangeNotify_WatchPathIsNormalised(t *testing.T) {
+	h := NewHandler()
+	h.NotifyRegistry = newTestNotifyRegistry()
+	h.MaxTransactSize = 1 << 20
+
+	fileID := [16]byte{0x95}
+	h.StoreOpenFile((&OpenFile{
+		FileID: fileID, IsDirectory: true, ShareName: "share1", SessionID: 1, TreeID: 1,
+		DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
+	}).WithName(OpenName{Path: "/d/sub/.."}))
+
+	reserved := 0
+	res, err := h.ChangeNotify(notifyCtx(21, &reserved),
+		encodeChangeNotifyReq(SMB2WatchTree, 1000, fileID, FileNotifyChangeFileName))
+	if err != nil {
+		t.Fatalf("ChangeNotify: %v", err)
+	}
+	if res.Status != types.StatusPending {
+		t.Fatalf("status = %v, want STATUS_PENDING (nothing buffered yet)", res.Status)
+	}
+
+	// An event on the directory the handle actually refers to must reach it.
+	var got []FileNotifyInformation
+	r := h.NotifyRegistry
+	var watch *PendingNotify
+	r.RangeWatchers(func(n *PendingNotify) bool {
+		watch = n
+		return true
+	})
+	if watch == nil {
+		t.Fatal("no watch registered")
+	}
+	if watch.WatchPath != "/d" {
+		t.Fatalf("registered WatchPath = %q, want %q", watch.WatchPath, "/d")
+	}
+	watch.AsyncCallback = func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+		got = append(got, decodeFileNotifyInfos(resp.Buffer)...)
+		return nil
+	}
+	// The dispatcher's PostSend hook does not run in a unit test, so the
+	// interim-sent signal has to be delivered by hand or the final response
+	// stays deferred. Outside RangeWatchers: that holds the registry lock.
+	r.MarkInterimSent(watch)
+
+	r.NotifyChange("share1", "/d", "x.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
+
+	if len(got) != 1 || got[0].FileName != "x.txt" {
+		t.Fatalf("watch opened as /d/sub/.. saw %+v, want the event on /d", got)
+	}
+}
+
+// TestTakeBufferedEvents_KeepsByteCountForRemainingEvents checks the overflow
+// byte counter still measures what is actually buffered after a partial take.
+//
+// BufferedBytes is what the proactive overflow latch sizes the backlog with.
+// Zeroing it while non-matching entries remain would under-count them, and the
+// latch would stop firing for a backlog that is really still growing.
+func TestTakeBufferedEvents_KeepsByteCountForRemainingEvents(t *testing.T) {
+	fileID := [16]byte{0x96}
+	_, r := notifyHandlerEnv(t, fileID)
+
+	r.NotifyChange("share1", "/d", "top.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.NotifyChange("share1", "/d/sub", "deep.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	if got := r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, false); len(got) != 1 {
+		t.Fatalf("non-recursive take = %+v, want one entry", got)
+	}
+
+	var bytes uint32
+	var remaining int
+	r.mu.Lock()
+	if a, ok := r.armed[string(fileID[:])]; ok {
+		bytes, remaining = a.BufferedBytes, len(a.BufferedEvents)
+	}
+	r.mu.Unlock()
+
+	if remaining != 1 {
+		t.Fatalf("remaining buffered events = %d, want 1", remaining)
+	}
+	if bytes == 0 {
+		t.Fatal("BufferedBytes = 0 while an event is still buffered — the overflow latch has nothing to measure")
+	}
+}

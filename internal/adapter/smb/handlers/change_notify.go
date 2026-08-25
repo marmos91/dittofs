@@ -309,6 +309,15 @@ type NotifyRegistry struct {
 // enough for any plausible per-request goroutine scheduling delay while still
 // expiring promptly if no Register ever happens.
 //
+// ponytail: the sweep that reclaims these is O(n) and runs on every
+// CancelByMessageID and Register. A client that polls by sending a
+// CHANGE_NOTIFY and cancelling it answers synchronously and never registers, so
+// every one of those cancels now writes a tombstone nothing will consume: the
+// map settles at roughly rate x TTL and the sweep cost goes quadratic in the
+// request rate. Fine for the bounded loops the conformance suite drives;
+// amortize the sweep onto a ticker, or bucket entries by expiry, if a sustained
+// high-rate poller ever turns up.
+//
 // ponytail: a fixed 5s wall-clock ceiling. A Register delayed past it consumes
 // nothing and registers a watch its cancel has already abandoned — straight
 // back into the hang the tombstone exists to prevent. Replace with a tombstone
@@ -658,7 +667,11 @@ func (r *NotifyRegistry) TakeBufferedEvents(fileID [16]byte, filter uint32, watc
 	}
 
 	a.BufferedEvents = kept
-	a.BufferedBytes = 0
+	// Recompute rather than zero: entries this request did not match are still
+	// buffered, and BufferedBytes is what the proactive overflow latch measures
+	// the backlog with. Zeroing it while events remain would under-count the
+	// backlog and stop that latch firing.
+	a.BufferedBytes = uint32(len(EncodeFileNotifyInformation(kept)))
 	return taken
 }
 

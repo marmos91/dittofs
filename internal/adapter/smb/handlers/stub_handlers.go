@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"unicode/utf16"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
@@ -520,9 +521,16 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		return NewErrorResult(types.StatusInvalidHandle), nil
 	}
 
-	// Build the watch path (share-relative)
-	watchPath := openFile.Name().Path
-	if watchPath == "" {
+	// Build the watch path (share-relative).
+	//
+	// Normalised, because the handle stores the filename exactly as the client
+	// spelled it and events are reported against resolved paths. A directory
+	// opened as `zqy\..` would otherwise never match an event on its parent —
+	// smbtorture smb2.notify.tree opens one that way. Cleaning here keeps the
+	// normalisation notify-local: what CREATE stores is unchanged, so the
+	// share-mode comparisons that read the same field are untouched.
+	watchPath := path.Clean(openFile.Name().Path)
+	if watchPath == "" || watchPath == "." {
 		watchPath = "/"
 	}
 
