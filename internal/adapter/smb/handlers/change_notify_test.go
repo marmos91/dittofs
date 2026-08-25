@@ -1366,15 +1366,13 @@ func TestArmedBuffer_OverflowsAfterCancelWithNoLiveWatcher(t *testing.T) {
 		t.Errorf("expected OnOverflow with fileID %v, got %v", fileID, lastOverflowFileID)
 	}
 
-	// Disarm clears the armed slot — events fired after this must NOT
-	// re-trip overflow (the handle has been closed).
-	if !r.Disarm(fileID) {
-		t.Errorf("expected Disarm to report removal")
-	}
+	// Closing the handle clears the armed slot — events fired after this
+	// must NOT re-trip overflow.
+	r.CloseByFileID(fileID)
 	r.NotifyChange("share1", "/basedir_ovf", "post-close.txt", FileActionAdded, FileNotifyChangeFileName)
 	r.FlushAll()
 	if atomic.LoadInt32(&overflowFireCount) != 1 {
-		t.Errorf("expected no additional OnOverflow after Disarm, got count=%d", overflowFireCount)
+		t.Errorf("expected no additional OnOverflow after close, got count=%d", overflowFireCount)
 	}
 }
 
@@ -2878,6 +2876,61 @@ func TestNotifyRegistry_ConcurrentCancelRacesRegister(t *testing.T) {
 		if got := r.WatcherCount(); got != 0 {
 			t.Fatalf("iter %d: WatcherCount = %d, want 0 (cancelled=%v regErr=%v)",
 				i, got, cancelled != nil, regErr)
+		}
+	}
+}
+
+// TestNotifyRegistry_ConcurrentCloseRacesRegister is the CLOSE-side twin of
+// TestNotifyRegistry_ConcurrentCancelRacesRegister. CLOSE completes a pending
+// CHANGE_NOTIFY before it removes the handle from the open-file table, so a
+// CHANGE_NOTIFY dispatched concurrently passes its own handle lookup and can
+// reach Register after the close has already looked and found nothing.
+//
+// Exactly one of the two must win: either the close removes the watch and
+// answers STATUS_NOTIFY_CLEANUP, or the register short-circuits with
+// ErrHandleClosed. A close that found nothing while a live watch remains is
+// the hang: the handle is gone, no further event can arrive for it, and
+// nothing will ever complete that MessageID.
+//
+// As with the cancel twin, the window needs the race detector's scheduling
+// perturbation to be hit reliably.
+func TestNotifyRegistry_ConcurrentCloseRacesRegister(t *testing.T) {
+	const iters = 2000
+	for i := 0; i < iters; i++ {
+		r := newTestNotifyRegistry()
+		fileID := [16]byte{byte(i), byte(i >> 8), 0xC1}
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var closed *PendingNotify
+		var regErr error
+
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			closed = r.CloseByFileID(fileID)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			regErr = r.Register(&PendingNotify{
+				FileID: fileID, ConnID: uint64(i), MessageID: uint64(i*2 + 1),
+				AsyncId: uint64(i + 200000), WatchPath: "/x", ShareName: "s",
+				CompletionFilter: FileNotifyChangeFileName,
+			})
+		}()
+		close(start)
+		wg.Wait()
+
+		if closed == nil && regErr == nil {
+			t.Fatalf("iter %d: close found nothing and register succeeded — "+
+				"watch left live on a closed handle (watchers=%d)",
+				i, r.WatcherCount())
+		}
+		if got := r.WatcherCount(); got != 0 {
+			t.Fatalf("iter %d: WatcherCount = %d, want 0 (closed=%v regErr=%v)",
+				i, got, closed != nil, regErr)
 		}
 	}
 }

@@ -1541,8 +1541,7 @@ func (h *Handler) closeFilesWithFilter(
 	// argument as close.go's DrainHandleOps placement.
 	if h.NotifyRegistry != nil {
 		for _, fileID := range toDelete {
-			h.NotifyRegistry.Disarm(fileID)
-			if notify := h.NotifyRegistry.Unregister(fileID); notify != nil && notify.AsyncCallback != nil {
+			if notify := h.NotifyRegistry.CloseByFileID(fileID); notify != nil && notify.AsyncCallback != nil {
 				cleanupResp := &ChangeNotifyResponse{
 					SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
 				}

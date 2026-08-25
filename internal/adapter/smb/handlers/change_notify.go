@@ -285,6 +285,14 @@ type NotifyRegistry struct {
 	// callbacks after a re-arm on the same FileID. Always mutated under r.mu.
 	nextGeneration uint64
 
+	// closeTombstones records handles whose CHANGE_NOTIFY completion path has
+	// already run (CLOSE, or connection/session teardown) while no watch was
+	// registered on them yet. A CHANGE_NOTIFY dispatched concurrently can
+	// still be between its open-file lookup and its Register, and without the
+	// tombstone it would register a watch on a handle that is going away and
+	// then wait forever. Keyed by FileID, expiring on cancelTombstoneTTL.
+	closeTombstones map[string]time.Time
+
 	// flushDelay is the per-registry accumulation window for buffered events.
 	// Defaults to notifyFlushDelay (100µs) in production. Tests that drive
 	// delivery synchronously via FlushAll set this to a large value so the
@@ -349,6 +357,7 @@ func NewNotifyRegistry() *NotifyRegistry {
 		byAsyncId:        make(map[uint64]*PendingNotify),
 		armed:            make(map[string]*armedHandle),
 		cancelTombstones: make(map[notifyMsgKey]time.Time),
+		closeTombstones:  make(map[string]time.Time),
 		flushDelay:       notifyFlushDelay,
 	}
 }
@@ -455,6 +464,69 @@ func (r *NotifyRegistry) CancelByMessageID(connID, messageID uint64) *PendingNot
 	return nil
 }
 
+// ErrHandleClosed is returned from Register when the watched handle's
+// CHANGE_NOTIFY completion path already ran (CLOSE, or session/connection
+// teardown) before this Register could take the lock. The handler must
+// respond with STATUS_NOTIFY_CLEANUP synchronously instead of registering a
+// watch on a handle that is going away.
+var ErrHandleClosed = fmt.Errorf("change_notify handle closed before register")
+
+// CloseByFileID is the single completion path for a handle that is going
+// away. Under one acquisition of r.mu it disarms the handle's buffered-event
+// accounting, removes any watch registered on it (returned so the caller can
+// answer STATUS_NOTIFY_CLEANUP), and — when nothing is registered yet —
+// records a tombstone so an in-flight Register short-circuits with
+// ErrHandleClosed.
+//
+// Every handle-scoped completion path must route through here rather than
+// calling Disarm and then Unregister. Those are two acquisitions of the lock,
+// and a CHANGE_NOTIFY that has already passed its open-file lookup can
+// register between them: the close reports nothing to complete, the watch
+// stays live on a destroyed handle, and nothing ever answers that MessageID.
+// CLOSE is the visible case because it completes the notify before it removes
+// the handle from the open-file table, so the window is wide.
+func (r *NotifyRegistry) CloseByFileID(fileID [16]byte) *PendingNotify {
+	key := string(fileID[:])
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.armed, key)
+
+	if notify, ok := r.byFileID[key]; ok {
+		return r.unregisterLocked(notify)
+	}
+
+	r.closeTombstones[key] = time.Now()
+	r.gcCloseTombstonesLocked()
+	return nil
+}
+
+// gcCloseTombstonesLocked evicts expired close tombstones. Must be called
+// with r.mu held for write. Called opportunistically from CloseByFileID and
+// Register, mirroring the cancel tombstones.
+func (r *NotifyRegistry) gcCloseTombstonesLocked() {
+	now := time.Now()
+	for k, ts := range r.closeTombstones {
+		if now.Sub(ts) > cancelTombstoneTTL {
+			delete(r.closeTombstones, k)
+		}
+	}
+}
+
+// consumeCloseTombstoneLocked checks for and removes a tombstone for fileID.
+// Returns true if one was found and had not expired. Must be called with
+// r.mu held for write.
+func (r *NotifyRegistry) consumeCloseTombstoneLocked(fileID [16]byte) bool {
+	key := string(fileID[:])
+	ts, ok := r.closeTombstones[key]
+	if !ok {
+		return false
+	}
+	delete(r.closeTombstones, key)
+	return time.Since(ts) <= cancelTombstoneTTL
+}
+
 // gcCancelTombstonesLocked evicts expired tombstones. Must be called with
 // r.mu held for write. Called opportunistically from CancelByMessageID and
 // Register so we don't need a background ticker; tombstones are only created
@@ -534,21 +606,6 @@ func (r *NotifyRegistry) ClearBufferedEvents(fileID [16]byte) {
 	}
 }
 
-// Disarm tears down the buffered-event accounting for a directory handle.
-// Called from CLOSE and from session/tree teardown. After Disarm, no further
-// matching events will be counted against this handle until a new
-// CHANGE_NOTIFY re-arms it. Returns true if an entry was removed.
-func (r *NotifyRegistry) Disarm(fileID [16]byte) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	key := string(fileID[:])
-	if _, ok := r.armed[key]; !ok {
-		return false
-	}
-	delete(r.armed, key)
-	return true
-}
-
 // ResetArmedOverflow clears the buffered-byte counter and overflow flag for
 // a directory handle while keeping it armed. Called by the handler after
 // it has consumed the sticky overflow flag and responded with
@@ -595,6 +652,17 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 		return ErrAlreadyCancelled
 	}
 	r.gcCancelTombstonesLocked()
+
+	// Same check for a CLOSE (or teardown) that completed this handle's
+	// notify path before we could register.
+	if r.consumeCloseTombstoneLocked(notify.FileID) {
+		logger.Debug("NotifyRegistry: register short-circuited by handle close",
+			"connID", notify.ConnID,
+			"messageID", notify.MessageID,
+			"path", notify.WatchPath)
+		return ErrHandleClosed
+	}
+	r.gcCloseTombstonesLocked()
 
 	// If there's already a registration for this FileID, remove the old entry
 	// to keep data structures consistent.

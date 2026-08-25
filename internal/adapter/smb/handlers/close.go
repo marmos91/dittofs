@@ -672,12 +672,15 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// The watches are keyed by FileID, so closing the handle invalidates them.
 
 	if openFile.IsDirectory && h.NotifyRegistry != nil {
-		// Disarm buffered-event accounting first so any in-flight event
-		// after this point can't keep charging against a closed handle
-		// (the OnOverflow callback would race against DeleteOpenFile and
-		// touch a stale OpenFile struct).
-		h.NotifyRegistry.Disarm(req.FileID)
-		if notify := h.NotifyRegistry.Unregister(req.FileID); notify != nil {
+		// CloseByFileID disarms the buffered-event accounting and removes
+		// the watch under one lock. Disarming stops any in-flight event
+		// charging against a closed handle (the OnOverflow callback would
+		// race against DeleteOpenFile and touch a stale OpenFile struct);
+		// doing it in the same critical section as the removal is what
+		// stops a concurrent CHANGE_NOTIFY registering into the gap — the
+		// handle is not removed from the open-file table until step 10, so
+		// that notify's own lookup still succeeds.
+		if notify := h.NotifyRegistry.CloseByFileID(req.FileID); notify != nil {
 			// Per MS-SMB2 3.3.4.1 and 3.3.5.16.1: when the directory handle for
 			// a pending CHANGE_NOTIFY is closed, complete the request with
 			// STATUS_NOTIFY_CLEANUP. This response MUST be sent AFTER the CLOSE

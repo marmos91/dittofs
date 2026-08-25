@@ -658,6 +658,17 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		// (ConnID, MessageID) was dispatched before our Register could run.
 		// Answer STATUS_CANCELLED synchronously on this MessageID instead
 		// of emitting STATUS_PENDING and waiting forever.
+		// Per [MS-SMB2] 3.3.4.1: when the watched handle goes away the
+		// pending request completes with STATUS_NOTIFY_CLEANUP. The close
+		// path ran before we could register, so answer it synchronously
+		// rather than registering a watch nothing will ever complete.
+		if errors.Is(err, ErrHandleClosed) {
+			logger.Debug("CHANGE_NOTIFY: handle closed before register — replying STATUS_NOTIFY_CLEANUP",
+				"path", watchPath,
+				"sessionID", ctx.SessionID,
+				"messageID", ctx.MessageID)
+			return NewErrorResult(types.StatusNotifyCleanup), nil
+		}
 		if errors.Is(err, ErrAlreadyCancelled) {
 			logger.Debug("CHANGE_NOTIFY: pre-arrival CANCEL — replying STATUS_CANCELLED",
 				"path", watchPath,
