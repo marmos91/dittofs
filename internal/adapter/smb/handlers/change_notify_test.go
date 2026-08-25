@@ -2771,3 +2771,55 @@ func TestArmedBuffer_RenameDoesNotDoubleChargeAncestorWatcher(t *testing.T) {
 		t.Errorf("armed.BufferedBytes = %d; want %d (exactly 2 rename entries)", bufferedBytes, twoEntryCost)
 	}
 }
+
+// TestMarkInterimSent_AfterUnregister_StillDeliversFinal covers the ordering
+// that leaves a cancelled CHANGE_NOTIFY without a final response.
+//
+// Every path that completes a pending notify (CANCEL, CLOSE, session/tree
+// teardown, event delivery) removes it from the registry's maps first and
+// only then queues the final response through QueueFinalAfterInterim. If the
+// dispatcher writes the interim STATUS_PENDING inside that window, the
+// interim-sent signal must still reach the notify — otherwise the queued
+// final is deferred against a signal that has already passed and the client
+// waits forever on a MessageID that never gets a response.
+func TestMarkInterimSent_AfterUnregister_StillDeliversFinal(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	var sent []types.Status
+	notify := &PendingNotify{
+		FileID:           [16]byte{3},
+		SessionID:        42,
+		ConnID:           1,
+		MessageID:        7,
+		AsyncId:          5741,
+		WatchPath:        "/d",
+		ShareName:        "s",
+		CompletionFilter: FileNotifyChangeFileName,
+		GateInterim:      true,
+		AsyncCallback: func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+			sent = append(sent, resp.GetStatus())
+			return nil
+		},
+	}
+	mustRegister(t, r, notify)
+
+	// CANCEL removes the watch...
+	cancelled := r.UnregisterByMessageID(notify.ConnID, notify.MessageID)
+	if cancelled == nil {
+		t.Fatal("UnregisterByMessageID found no watch to cancel")
+	}
+
+	// ...the dispatcher writes the interim STATUS_PENDING here, after the
+	// watch is gone from the maps but before CANCEL queues its final...
+	r.MarkInterimSent(cancelled)
+
+	// ...and only now does CANCEL queue STATUS_CANCELLED.
+	r.QueueFinalAfterInterim(cancelled, func() {
+		_ = cancelled.AsyncCallback(cancelled.SessionID, cancelled.MessageID, cancelled.AsyncId,
+			&ChangeNotifyResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusCancelled}})
+	})
+
+	if len(sent) != 1 || sent[0] != types.StatusCancelled {
+		t.Fatalf("cancelled CHANGE_NOTIFY got no final response: %v", sent)
+	}
+}

@@ -280,16 +280,6 @@ type NotifyRegistry struct {
 	// interim response, which is sent strictly AFTER Register has run.
 	cancelTombstones map[notifyMsgKey]time.Time
 
-	// pendingInterim retains the PendingNotify for an in-flight CHANGE_NOTIFY
-	// whose interim STATUS_PENDING has not yet been written to the wire, even
-	// after it was unregistered (e.g. by a racing CANCEL). The CANCEL handler
-	// MUST defer its STATUS_CANCELLED response into PendingNotify.deferredFinal
-	// when interimSent is still false — otherwise the cancel response races
-	// ahead of the interim PENDING and the client drops the connection
-	// (smb2.notify.mask). MarkInterimSent fires the deferred response after
-	// writing interim and clears this map entry. Keyed by (ConnID, MessageID).
-	pendingInterim map[notifyMsgKey]*PendingNotify
-
 	// nextGeneration is incremented on every Register and stamped onto the
 	// registered PendingNotify.generation. Used to detect stale flush-timer
 	// callbacks after a re-arm on the same FileID. Always mutated under r.mu.
@@ -359,7 +349,6 @@ func NewNotifyRegistry() *NotifyRegistry {
 		byAsyncId:        make(map[uint64]*PendingNotify),
 		armed:            make(map[string]*armedHandle),
 		cancelTombstones: make(map[notifyMsgKey]time.Time),
-		pendingInterim:   make(map[notifyMsgKey]*PendingNotify),
 		flushDelay:       notifyFlushDelay,
 	}
 }
@@ -369,21 +358,18 @@ func NewNotifyRegistry() *NotifyRegistry {
 // (CANCELLED, NOTIFY_CLEANUP, OK) was queued before interim reached the wire,
 // it is delivered now — preserving the on-wire order PENDING → final that
 // clients require.
-func (r *NotifyRegistry) MarkInterimSent(connID, messageID uint64) {
+//
+// The notify is identified by pointer rather than by (ConnID, MessageID):
+// every path that completes a pending notify removes it from the registry's
+// maps before queueing its final response, so a key lookup misses whenever
+// the interim is written inside that window — leaving the queued final
+// deferred against a signal that has already passed, and the client waiting
+// on a MessageID that never gets a response.
+func (r *NotifyRegistry) MarkInterimSent(notify *PendingNotify) {
 	r.mu.Lock()
-	key := notifyMsgKey{ConnID: connID, MessageID: messageID}
-	notify := r.pendingInterim[key]
-	delete(r.pendingInterim, key)
-	var deferred func()
-	if notify != nil {
-		notify.interimSent = true
-		deferred = notify.deferredFinal
-		notify.deferredFinal = nil
-	} else if n, ok := r.byMsgKey[key]; ok {
-		// Still registered and live. Mark the flag so any future async
-		// final response delivery skips the deferral path.
-		n.interimSent = true
-	}
+	notify.interimSent = true
+	deferred := notify.deferredFinal
+	notify.deferredFinal = nil
 	r.mu.Unlock()
 
 	if deferred != nil {
@@ -413,8 +399,6 @@ func (r *NotifyRegistry) queueFinalAfterInterimLocked(notify *PendingNotify, run
 		}
 		run()
 	}
-	key := notifyMsgKey{ConnID: notify.ConnID, MessageID: notify.MessageID}
-	r.pendingInterim[key] = notify
 	return false
 }
 

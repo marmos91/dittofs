@@ -693,7 +693,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		if prevPostSend != nil {
 			prevPostSend()
 		}
-		h.NotifyRegistry.MarkInterimSent(notifyRef.ConnID, notifyRef.MessageID)
+		h.NotifyRegistry.MarkInterimSent(notifyRef)
 	}
 
 	// Return STATUS_PENDING with AsyncId - the client will receive an
