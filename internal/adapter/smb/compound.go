@@ -155,7 +155,8 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 
 	result, fileID, handlerCtx := ProcessRequestWithFileIDAndCallback(ctx, firstHeader, firstBody, firstRaw, connInfo, isEncrypted, asyncNotifyCallback)
 
-	// Per MS-SMB2 §3.3.4.4 and smbtorture compound_async.getinfo_middle:
+	// Per MS-SMB2 §3.3.4.2 ("Sending an Interim Response for an Asynchronous Operation")
+	// and smbtorture compound_async.getinfo_middle:
 	// When a compound command returns STATUS_PENDING with an AsyncId AND
 	// there are remaining commands, send the interim response standalone and
 	// defer the remaining compound commands to the async completion callback.
@@ -207,7 +208,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		// on the wire. The callback was swapped above (ReplaceCallback) so the
 		// goroutine picks up the continue-compound wrapper, and MarkStarted runs
 		// post-interim so the final compound response can never overtake the
-		// interim (MS-SMB2 §3.3.4.4 ordering; same class as the standalone path
+		// interim (MS-SMB2 §3.3.4.2 (interim async response) ordering; same class as the standalone path
 		// in response.go that smb2.bench.oplock1 trips). Skipping the release
 		// would deadlock the CREATE after the wait drains (smbtorture
 		// compound.compound-break IO_TIMEOUT race).
@@ -800,7 +801,7 @@ type compoundLoopState struct {
 	// AsyncIds of parked CREATEs whose interim STATUS_PENDING is buffered into
 	// responses (not yet on the wire). MarkStarted MUST fire only after the
 	// compound frame is written, so the resume goroutine's final response can
-	// never overtake the interim (MS-SMB2 §3.3.4.4; same ordering class as the
+	// never overtake the interim (MS-SMB2 §3.3.4.2 (interim async response); same ordering class as the
 	// standalone path that smb2.bench.oplock1 trips).
 	markStartedAsyncIDs []uint64
 }
@@ -1057,7 +1058,8 @@ func (s *compoundLoopState) processRemaining(
 // STATUS_PENDING. It builds a compound response containing the CREATE's final
 // result and all subsequent commands, then sends it as a single compound frame.
 //
-// Per MS-SMB2 §3.3.4.4: the CREATE's interim STATUS_PENDING was already sent
+// Per MS-SMB2 §3.3.4.2 ("Sending an Interim Response for an Asynchronous Operation"):
+// the CREATE's interim STATUS_PENDING was already sent
 // standalone by ProcessCompoundRequest. completeCompoundAfterAsyncCreate delivers
 // the remaining responses (the CREATE completion + GETINFO + CLOSE etc.) as a compound.
 //

@@ -523,7 +523,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			// inline retry on the dispatch goroutine.
 			//
 			// Async parking is unsafe in compound chains (NextCommand != 0,
-			// MS-SMB2 §3.3.4.4) and in multi-element requests. The first
+			// MS-SMB2 §3.3.4.2 (interim async response)) and in multi-element requests. The first
 			// guard is enforced by the !ctx.NextCommand check below; the
 			// second is implicit because §3.3.5.14 forbids multi-element
 			// requests with a blocking first element (rejected above), and

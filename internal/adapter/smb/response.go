@@ -325,7 +325,7 @@ func ProcessSingleRequest(
 	// the interim write, a fast break-drain (e.g. the holder closing rather
 	// than ACKing, as in smb2.bench.oplock1) could let the resume goroutine
 	// win the write lock and emit the final STATUS_SUCCESS before the interim
-	// STATUS_PENDING — a §3.3.4.4 ordering violation the client answers with a
+	// STATUS_PENDING — a §3.3.4.2 ordering violation the client answers with a
 	// TCP RST (NT_STATUS_CONNECTION_DISCONNECTED).
 	if reqHeader.Command == types.SMB2Create &&
 		result.Status == types.StatusPending && result.AsyncId != 0 &&
@@ -393,7 +393,8 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 
 	// Propagate the compound chain position: nonzero NextCommand means another
 	// subcommand follows this one, so async interim responses are unsafe here
-	// (MS-SMB2 §3.3.4.4). Zero means standalone or last-in-compound — async OK.
+	// (MS-SMB2 §3.3.4.2 (interim async response)). Zero means standalone or
+	// last-in-compound — async OK.
 	handlerCtx.NextCommand = reqHeader.NextCommand
 
 	// Replay protection (MS-SMB2 §2.2.1.2): surface the
@@ -1235,7 +1236,8 @@ func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, respons
 // an interim response at that position, and SendAsyncCompletionResponse delivers
 // the final result as a separate message with the matching AsyncId.
 //
-// Per MS-SMB2 3.3.4.4: The async completion response uses the async header
+// Per MS-SMB2 §3.3.4.2 ("Sending an Interim Response for an Asynchronous Operation"):
+// the async completion response uses the async header
 // format (FlagAsync set, AsyncId in header) and carries the handler's final
 // status and response body.
 //

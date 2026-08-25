@@ -439,7 +439,8 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 		breakWaitTimeout = lease.TraditionalOplockBreakWaitTimeout
 	}
 
-	// Per MS-SMB2 §3.3.4.4 and smbtorture compound_async.getinfo_middle:
+	// Per MS-SMB2 §3.3.4.2 ("Sending an Interim Response for an Asynchronous Operation")
+	// and smbtorture compound_async.getinfo_middle:
 	// When a compound CREATE needs to wait for a lease break, it MUST go async
 	// (STATUS_PENDING) even if it is not the last command in the compound.
 	// The compound processor handles non-last STATUS_PENDING by sending the

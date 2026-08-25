@@ -1387,7 +1387,8 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// that lease BEFORE the final share-mode check so holders can release
 	// cached handles. The post-break flow (recheck + create + response) runs
 	// in completeCreateAfterBreak so the same code path serves both the sync
-	// wait and the async park-on-break goroutine (MS-SMB2 §3.3.4.4/§3.3.4.7).
+	// wait and the async park-on-break goroutine (MS-SMB2 §3.3.4.2 (interim async response)
+	// and §3.3.4.7 "Object Store Indicates a Lease Break").
 
 	// Cross-stream share-mode check for new files (no lease break needed).
 	if !fileExists {
