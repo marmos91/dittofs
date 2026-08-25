@@ -1517,13 +1517,14 @@ func (lm *Manager) SetLeaseEpoch(handleKey string, leaseKey [16]byte, epoch uint
 	lm.mu.Lock()
 	defer lm.unlock()
 
-	// Update every record of THIS lease, not just the first found. Reopens and
-	// reclaims can leave more than one record for a key on one file, so scoping
-	// to the first match can miss the one RequestLease just granted — leaving
-	// it at Epoch=1 (createAndGrantLease default) while the response to the
-	// client carries the higher requested epoch. Subsequent break notifications
-	// then dispatch with Epoch=2 instead of requestedEpoch+2, regressing
-	// smbtorture V2 tests (break_twice, breaking*, v2_breaking3).
+	// Update every record of THIS lease, not just the first found. A grant
+	// cannot add a second record for a key already on the file
+	// (resolveSameKeyLeaseLocked reuses it) but RestoreLocks appends persisted
+	// rows without that guard, so more than one can exist here. Scoping to the
+	// first match would then risk missing the one RequestLease just granted,
+	// leaving it at Epoch=1 (createAndGrantLease default) while the response to
+	// the client carries the higher requested epoch, and the next break
+	// notification dispatching Epoch=2 instead of requestedEpoch+2.
 	//
 	// Two passes so all of this lease's records converge to the SAME epoch. A
 	// per-record `if epoch >= lock.Lease.Epoch` guard lets siblings that start
