@@ -1680,8 +1680,6 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 	if !docSetterKeysDiffer {
 		PropagateOpenFileParentLeaseKey(authCtx, openFile)
 	}
-	metaSvc := h.Registry.GetMetadataService()
-
 	if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
 		lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
 		// Exclude the closing session: its leases on this file are about to
@@ -1694,34 +1692,14 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 		}
 	}
 
-	// Remove what the election resolved, which for a stream handle carrying a
-	// base-file delete is the base file rather than the stream's own name.
-	var deleted bool
-	if openFile.IsDirectory {
-		if _, err := metaSvc.RemoveDirectory(authCtx, target.ParentHandle, target.FileName); err != nil {
-			logger.Debug(caller+": failed to delete directory", "path", name.Path, "error", err)
-		} else {
-			logger.Debug(caller+": directory deleted", "path", name.Path)
-			deleted = true
-		}
-	} else {
-		removed, _, err := metaSvc.RemoveFile(authCtx, target.ParentHandle, target.FileName)
-		if err != nil {
-			logger.Debug(caller+": failed to delete file", "path", name.Path, "error", err)
-		} else {
-			logger.Debug(caller+": file deleted", "path", name.Path)
-			deleted = true
-			// Purge content via RemoveFile's RETURNED PayloadID — empty when
-			// content must survive (surviving hard link / recycle to trash).
-			var removedPayloadID metadata.PayloadID
-			if removed != nil {
-				removedPayloadID = removed.PayloadID
-			}
-			h.purgeBlockStorePayload(ctx, openFile.MetadataHandle, removedPayloadID, name.Path, caller)
-		}
-	}
+	// Remove what the election resolved — for a stream handle carrying a
+	// base-file delete that is the base file, not the stream's own name —
+	// through the shared helper CLOSE also uses, so the cascade to stream
+	// siblings and the payload purge cannot drift between the two paths.
+	// See doc_election.go.
+	_, err := h.removeElectedTarget(ctx, authCtx, openFile, target, caller)
 
-	if deleted {
+	if err == nil {
 		// No SMBHandlerContext available on the TDIS/LOGOFF/disconnect
 		// teardown path — pass nil so the helper falls back to inline
 		// dispatch (those paths don't ship a triggering response on the

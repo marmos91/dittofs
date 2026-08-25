@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"strings"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -249,4 +250,101 @@ func (h *Handler) rangeLiveStreamsOfBase(selfFileID [16]byte, parentHandle metad
 		}
 		return fn(other)
 	})
+}
+
+// removeElectedTarget removes the directory entry a delete-on-close election
+// resolved, together with everything that must accompany a removed entry:
+// cascading the base file's ADS streams, purging its block-store payload, and
+// restoring the parent directory's frozen timestamps. It returns the removal
+// error so the caller can surface or log it.
+//
+// Both close paths go through it. They previously removed the entry themselves
+// and drifted: the teardown never cascaded, so once it started removing the
+// resolved target — a base file, for a stream handle carrying a base-file
+// delete — the base entry went and its `name:stream` siblings stayed behind as
+// orphans that the next enumeration of that name counted.
+//
+// Two things stay with the callers because they differ by close path rather
+// than by what was removed:
+//
+//   - Lease breaks. CLOSE relies on the removal's own dir-change notification
+//     to break the parent's leases and deliberately does not dispatch a second
+//     one; the teardown breaks the file's Handle leases before the unlink and
+//     the parent's afterwards, because no SET_INFO disposition preceded it.
+//   - The SMB CHANGE_NOTIFY event. CLOSE emits one; the teardown never has,
+//     and starting to emit one there is a change to the notify registry's
+//     traffic rather than to this removal.
+func (h *Handler) removeElectedTarget(
+	ctx context.Context,
+	authCtx *metadata.AuthContext,
+	openFile *OpenFile,
+	target docTarget,
+	caller string,
+) (removedIsDir bool, err error) {
+	metaSvc := h.Registry.GetMetadataService()
+
+	// For a deferred base-file delete (reached via a stream handle), resolve
+	// the actual target type — stream handles always have IsDirectory=false.
+	//
+	// Capture the delete target's metadata handle BEFORE removal so the
+	// block-store payload purge can be routed afterwards (the handle encodes
+	// share identity and stays valid). The PayloadID to purge comes from
+	// RemoveFile's RETURN value, which is empty when content must survive (a
+	// surviving hard link, or a recycle to trash) — purging the open handle's
+	// PayloadID instead would destroy still-referenced content.
+	isDeleteTargetDir := openFile.IsDirectory
+	deleteTargetHandle := openFile.MetadataHandle
+	if target.IsBaseFile {
+		if targetFile, _, lookupErr := metaSvc.LookupCaseInsensitive(authCtx, target.ParentHandle, target.FileName); lookupErr == nil && targetFile != nil {
+			isDeleteTargetDir = targetFile.Type == metadata.FileTypeDirectory
+			if encoded, encErr := metadata.EncodeFileHandle(targetFile); encErr == nil {
+				deleteTargetHandle = encoded
+			}
+		}
+	}
+
+	var removedPayloadID metadata.PayloadID
+	if isDeleteTargetDir {
+		_, err = metaSvc.RemoveDirectory(authCtx, target.ParentHandle, target.FileName)
+	} else {
+		var removed *metadata.File
+		removed, _, err = metaSvc.RemoveFile(authCtx, target.ParentHandle, target.FileName)
+		if removed != nil {
+			removedPayloadID = removed.PayloadID
+		}
+	}
+	if err != nil {
+		logger.Debug(caller+": failed to delete",
+			"path", target.Name.Path,
+			"deleteTarget", target.FileName,
+			"isDir", isDeleteTargetDir,
+			"error", err)
+		return isDeleteTargetDir, err
+	}
+
+	logger.Debug(caller+": deleted",
+		"path", target.Name.Path,
+		"deleteTarget", target.FileName,
+		"isDir", isDeleteTargetDir,
+		"isBaseFileDelete", target.IsBaseFile)
+
+	// Per MS-FSA 2.1.5.9.7 deleting a file deletes all its streams. The
+	// streams are sibling entries named `base:stream`, so removing the base
+	// entry alone leaves them behind.
+	if !isDeleteTargetDir && !strings.Contains(target.FileName, ":") {
+		cascadeOF := openFile
+		if target.IsBaseFile {
+			cascadeOF = (&OpenFile{}).WithName(OpenName{
+				Path:         target.Name.Path,
+				FileName:     target.FileName,
+				ParentHandle: target.ParentHandle,
+			})
+		}
+		h.cascadeDeleteADSStreams(authCtx, metaSvc, cascadeOF)
+	}
+
+	h.purgeBlockStorePayload(ctx, deleteTargetHandle, removedPayloadID, target.Name.Path, caller)
+	h.restoreParentDirFrozenTimestamps(authCtx, target.ParentHandle)
+
+	return isDeleteTargetDir, nil
 }

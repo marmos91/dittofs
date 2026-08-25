@@ -321,3 +321,71 @@ func TestCloseFilesWithFilter_DurablePersistedSibling_StillUnlink(t *testing.T) 
 		t.Fatal("delete-on-close was lost: the closer deferred the unlink to a handle that had been persisted away")
 	}
 }
+
+// TestCloseFilesWithFilter_BaseFileDeleteCascadesStreams covers the removal
+// side of the election: when the elected target is a base file reached through
+// a stream handle, the base file's stream siblings must go with it. They are
+// ordinary directory entries named `base:stream`, so removing the base entry
+// alone orphans them, and the next enumeration of that name counts them.
+func TestCloseFilesWithFilter_BaseFileDeleteCascadesStreams(t *testing.T) {
+	h, smbCtx, _, fileIDA := setupWriteTestShare(t, nil)
+
+	rootHandle, err := h.Registry.GetRootHandle(smbCtx.ShareName)
+	if err != nil {
+		t.Fatalf("GetRootHandle: %v", err)
+	}
+	uid, gid := uint32(0), uint32(0)
+	authCtx := &metadata.AuthContext{
+		Context:  smbCtx.Context,
+		Identity: &metadata.Identity{UID: &uid, GID: &gid},
+	}
+	metaSvc := h.Registry.GetMetadataService()
+
+	// Two ADS streams on "data", stored as sibling entries.
+	streamNames := []string{"data:one:$DATA", "data:two:$DATA"}
+	for _, sn := range streamNames {
+		if _, _, createErr := metaSvc.CreateFile(authCtx, rootHandle, sn, &metadata.FileAttr{
+			Type: metadata.FileTypeRegular, Mode: 0o644,
+		}); createErr != nil {
+			t.Fatalf("CreateFile(%s): %v", sn, createErr)
+		}
+	}
+
+	// The base handle is gone; the only open left is a stream handle carrying
+	// the deferred base-file delete, which is the state close.go's election
+	// leaves behind when a base-file DOC finds open streams.
+	h.DeleteOpenFile(fileIDA)
+
+	streamFile, _, err := metaSvc.LookupCaseInsensitive(authCtx, rootHandle, streamNames[0])
+	if err != nil {
+		t.Fatalf("lookup stream: %v", err)
+	}
+	streamHandle, err := metadata.EncodeFileHandle(streamFile)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle: %v", err)
+	}
+
+	streamOpen := (&OpenFile{
+		FileID:                     [16]byte{11},
+		TreeID:                     smbCtx.TreeID,
+		SessionID:                  smbCtx.SessionID,
+		ShareName:                  smbCtx.ShareName,
+		MetadataHandle:             streamHandle,
+		ShareAccess:                0x07,
+		BaseFileDeletePending:      true,
+		BaseFileDeleteParentHandle: rootHandle,
+		BaseFileDeleteFileName:     "data",
+	}).WithName(OpenName{Path: streamNames[0], FileName: streamNames[0], ParentHandle: rootHandle})
+	h.StoreOpenFile(streamOpen)
+
+	h.CloseAllFilesForSession(smbCtx.Context, smbCtx.SessionID, false /* explicit logoff */)
+
+	if fileStillExists(t, h, rootHandle, "data") {
+		t.Error("base file survived the deferred delete-on-close")
+	}
+	for _, sn := range streamNames {
+		if fileStillExists(t, h, rootHandle, sn) {
+			t.Errorf("stream %q was orphaned: removing the base entry must cascade to its stream siblings", sn)
+		}
+	}
+}

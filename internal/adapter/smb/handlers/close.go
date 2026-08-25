@@ -396,9 +396,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 		// The election snapshotted the name it decided on, so a rename landing
 		// since cannot make the scan and the unlink disagree about the entry.
 		docName := target.Name
-		deleteParentHandle := target.ParentHandle
 		deleteFileName := target.FileName
-		isBaseFileDelete := target.IsBaseFile
 
 		authCtx, err := BuildAuthContext(ctx)
 		if err != nil {
@@ -421,78 +419,21 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			}
 			// else: different keys — don't propagate, all dir leases break
 
-			metaSvc := h.Registry.GetMetadataService()
-			// For deferred base-file delete (via stream handle), check the
-			// actual target type — stream handles always have IsDirectory=false.
-			//
-			// Capture the delete target's metadata handle BEFORE removal so
-			// we can route its block-store payload purge afterwards (the
-			// handle encodes share identity and stays valid). The PayloadID
-			// to purge comes from RemoveFile's RETURN value, which is empty
-			// when content must survive (surviving hard link, or recycle to
-			// trash) — purging the open handle's PayloadID instead would
-			// destroy still-referenced content.
-			isDeleteTargetDir := openFile.IsDirectory
-			deleteTargetHandle := openFile.MetadataHandle
-			if isBaseFileDelete {
-				if targetFile, _, lookupErr := metaSvc.LookupCaseInsensitive(authCtx, deleteParentHandle, deleteFileName); lookupErr == nil && targetFile != nil {
-					isDeleteTargetDir = targetFile.Type == metadata.FileTypeDirectory
-					if encoded, encErr := metadata.EncodeFileHandle(targetFile); encErr == nil {
-						deleteTargetHandle = encoded
-					}
-				}
-			}
-			var deleteErr error
-			var removedPayloadID metadata.PayloadID
-			if isDeleteTargetDir {
-				_, deleteErr = metaSvc.RemoveDirectory(authCtx, deleteParentHandle, deleteFileName)
-			} else {
-				var removed *metadata.File
-				removed, _, deleteErr = metaSvc.RemoveFile(authCtx, deleteParentHandle, deleteFileName)
-				if removed != nil {
-					removedPayloadID = removed.PayloadID
-				}
-			}
+			// Remove the elected entry through the shared helper both close
+			// paths use, so the cascade to stream siblings and the payload
+			// purge cannot drift between them. See doc_election.go.
+			isDeleteTargetDir, deleteErr := h.removeElectedTarget(ctx.Context, authCtx, openFile, target, "CLOSE")
 
 			if deleteErr != nil {
-				// Surface the delete-on-close failure (#388) — but only when
-				// no durable-flush failure was already recorded in Step 6. A
+				// Surface the delete-on-close failure — but only when no
+				// durable-flush failure was already recorded in Step 6. A
 				// failed block-store flush is a data-loss signal and takes
 				// precedence: if both fail, the client must see the flush
-				// (data-integrity) status, not the delete error (#1267).
+				// (data-integrity) status, not the delete error.
 				if resp.Status == types.StatusSuccess {
 					resp.Status = common.MapToSMB(deleteErr)
 				}
-				logger.Debug("CLOSE: failed to delete",
-					"path", docName.Path,
-					"isDir", openFile.IsDirectory,
-					"deleteTarget", deleteFileName,
-					"status", resp.Status,
-					"error", deleteErr)
 			} else {
-				logger.Debug("CLOSE: deleted",
-					"path", docName.Path,
-					"deleteTarget", deleteFileName,
-					"isDir", openFile.IsDirectory,
-					"isBaseFileDelete", isBaseFileDelete)
-
-				if !openFile.IsDirectory && !strings.Contains(deleteFileName, ":") {
-					// For base file deletes, cascade ADS streams.
-					// Use a synthetic OpenFile with the base file's info.
-					cascadeOF := openFile
-					if isBaseFileDelete {
-						cascadeOF = (&OpenFile{}).WithName(OpenName{
-							Path:         docName.Path,
-							FileName:     deleteFileName,
-							ParentHandle: deleteParentHandle,
-						})
-					}
-					h.cascadeDeleteADSStreams(authCtx, metaSvc, cascadeOF)
-				}
-
-				h.purgeBlockStorePayload(ctx.Context, deleteTargetHandle, removedPayloadID, docName.Path, "CLOSE")
-				h.restoreParentDirFrozenTimestamps(authCtx, deleteParentHandle)
-
 				// Removing the entry already broke the parent directory's
 				// leases: RemoveFile / RemoveDirectory notify the dir-change
 				// listener, which breaks every parent dir lease (except the
@@ -506,8 +447,8 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 				if h.NotifyRegistry != nil {
 					parentPath := GetParentPath(docName.Path)
-					// Use the resolved delete-target type (base file's, not
-					// the stream open's) and the actual deleteFileName.
+					// Use the resolved delete-target type (the base file's, not
+					// the stream open's) and the actual removed name.
 					// NameChangeFilterFor routes ADS names via
 					// FILE_NOTIFY_CHANGE_STREAM_NAME automatically.
 					nameFilter := NameChangeFilterFor(deleteFileName, isDeleteTargetDir)
