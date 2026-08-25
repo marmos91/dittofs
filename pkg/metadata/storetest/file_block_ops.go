@@ -61,6 +61,21 @@ func runFileChunkOpsTests(t *testing.T, factory StoreFactory) {
 		testListFileChunksForeignRows(t, factory)
 	})
 
+	// StartOffset says where inside the chunk a row's claimed bytes begin. A
+	// backend that drops it serves a head-narrowed row the chunk's head, which
+	// verifies against the chunk hash and is still the wrong stretch of the file.
+	t.Run("PutGet_StartOffsetRoundTrips", func(t *testing.T) {
+		testPutGet_StartOffsetRoundTrips(t, factory)
+	})
+
+	// A row stored before StartOffset existed carries no value for it, and must
+	// keep meaning what it meant then: the claim starts at the chunk's first
+	// byte. Zero is that meaning, so a row put without the field reads back with
+	// it zero rather than absent or defaulted to something else.
+	t.Run("PutGet_StartOffsetDefaultsToChunkStart", func(t *testing.T) {
+		testPutGet_StartOffsetDefaultsToChunkStart(t, factory)
+	})
+
 	// GetFileChunkAtOffset is the read-path fast path: it resolves the single
 	// chunk covering a byte offset without enumerating the manifest. The
 	// covering guard (off < chunkOffset+DataSize) must return nil for a hole /
@@ -1198,6 +1213,92 @@ func testPut_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 // Both per-file read accessors (ListFileChunks and GetFileChunk) must
 // surface the hash for a Pending row, because the engine CAS read path
 // resolves chunks through that index, not just through finalized rows.
+// testPutGet_StartOffsetRoundTrips: a non-zero StartOffset survives Put and
+// comes back from every read path a resolver uses — the point lookup, the
+// per-payload list, and the indexed covering lookup where the backend has one.
+func testPutGet_StartOffsetRoundTrips(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const pid = "file-startoff"
+	fb := &block.FileChunk{
+		ID:          pid + "/3000",
+		Hash:        hashOfSeed("start-offset-roundtrip"),
+		State:       block.BlockStateRemote,
+		DataSize:    3000,
+		StartOffset: 500,
+		RefCount:    1,
+		LastAccess:  time.Now(),
+		CreatedAt:   time.Now(),
+	}
+	if err := store.Put(ctx, fb); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	legacy := asLegacy(t, store)
+	got, err := legacy.GetFileChunk(ctx, fb.ID)
+	if err != nil {
+		t.Fatalf("GetFileChunk failed: %v", err)
+	}
+	if got.StartOffset != 500 {
+		t.Errorf("GetFileChunk: StartOffset = %d, want 500", got.StartOffset)
+	}
+
+	rows, err := legacy.ListFileChunks(ctx, pid)
+	if err != nil {
+		t.Fatalf("ListFileChunks failed: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("ListFileChunks returned %d rows, want 1", len(rows))
+	}
+	if rows[0].StartOffset != 500 {
+		t.Errorf("ListFileChunks: StartOffset = %d, want 500", rows[0].StartOffset)
+	}
+
+	if idx, ok := store.(interface {
+		GetFileChunkAtOffset(context.Context, string, uint64) (*block.FileChunk, error)
+	}); ok {
+		covering, err := idx.GetFileChunkAtOffset(ctx, pid, 4000)
+		if err != nil {
+			t.Fatalf("GetFileChunkAtOffset failed: %v", err)
+		}
+		if covering == nil {
+			t.Fatalf("GetFileChunkAtOffset(4000) = nil, want the row covering [3000, 6000)")
+		}
+		if covering.StartOffset != 500 {
+			t.Errorf("GetFileChunkAtOffset: StartOffset = %d, want 500", covering.StartOffset)
+		}
+	}
+}
+
+// testPutGet_StartOffsetDefaultsToChunkStart: a row written with no StartOffset
+// reads back claiming the chunk from its first byte.
+func testPutGet_StartOffsetDefaultsToChunkStart(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	fb := &block.FileChunk{
+		ID:         "file-nostartoff/0",
+		Hash:       hashOfSeed("start-offset-default"),
+		State:      block.BlockStateRemote,
+		DataSize:   4096,
+		RefCount:   1,
+		LastAccess: time.Now(),
+		CreatedAt:  time.Now(),
+	}
+	if err := store.Put(ctx, fb); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+	got, err := asLegacy(t, store).GetFileChunk(ctx, fb.ID)
+	if err != nil {
+		t.Fatalf("GetFileChunk failed: %v", err)
+	}
+	if got.StartOffset != 0 {
+		t.Errorf("GetFileChunk: StartOffset = %d, want 0 — a row that names no "+
+			"in-chunk start claims the chunk from its first byte", got.StartOffset)
+	}
+}
+
 func testPutGet_PendingHashRoundTrips(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
