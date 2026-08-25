@@ -74,7 +74,7 @@ func TestLeaseBreakNewEpoch_OtherClientSameKeyDoesNotSeedIt(t *testing.T) {
 	leaseKey := [16]byte{0xDE, 0xAD, 0xBE, 0xEF}
 	const rh = lock.LeaseStateRead | lock.LeaseStateHandle
 	const epochA uint16 = 0x0100
-	const epochB uint16 = 0x7000
+	const epochB uint16 = 0xF000
 
 	respA, err := ProcessLeaseCreateContext(ctx, leaseMgr, encodeV2LeaseContext(leaseKey, rh, epochA),
 		lock.FileHandle("file-A"), 1, [16]byte{0xA1}, "smb:1", shareName, false, false, false)
@@ -85,8 +85,12 @@ func TestLeaseBreakNewEpoch_OtherClientSameKeyDoesNotSeedIt(t *testing.T) {
 		t.Fatalf("client A response epoch = 0x%x, want 0x%x", respA.Epoch, epochA+1)
 	}
 
-	// Client B's first grant on a different file seeds its own counter well
-	// above A's.
+	// Client B's first grant on a different file seeds its own counter far
+	// above A's — far enough that folding it into A's lease would push A's
+	// NewEpoch more than 32767 past the epoch A last saw. Per MS-SMB2
+	// §3.2.5.19.2 step 7 a client adopts a break's new lease state only when
+	// the epoch gap is at most 32767, so beyond that it keeps caching under a
+	// lease the server has already broken.
 	respB, err := ProcessLeaseCreateContext(ctx, leaseMgr, encodeV2LeaseContext(leaseKey, rh, epochB),
 		lock.FileHandle("file-B"), 2, [16]byte{0xB2}, "smb:2", shareName, false, false, false)
 	if err != nil {
