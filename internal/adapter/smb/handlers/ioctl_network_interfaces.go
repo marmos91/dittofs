@@ -74,10 +74,13 @@ func (h *Handler) handleQueryNetworkInterfaceInfo(ctx *SMBHandlerContext, body [
 	}
 
 	output := encodeNetworkInterfaceInfoList(entries)
-	// MS-SMB2 §3.3.4.20.13: if MaxOutputResponse is insufficient for the
-	// full reply, return STATUS_BUFFER_TOO_SMALL. smbtorture bug14788
-	// exercises max_output=1 against the sentinel FileID and asserts
-	// BUFFER_TOO_SMALL distinct from INVALID_PARAMETER.
+	// If MaxOutputResponse is insufficient for the full reply, return
+	// STATUS_BUFFER_TOO_SMALL. MS-SMB2 §3.3.5.15.11 ("Handling a Query Network
+	// Interface Request") does not specify this case, and §3.3.5.15 lists
+	// STATUS_BUFFER_TOO_SMALL only among the IOCTL status codes generally, so
+	// the binding reference is the harness: smbtorture bug14788 exercises
+	// max_output=1 against the sentinel FileID and asserts BUFFER_TOO_SMALL
+	// distinct from INVALID_PARAMETER.
 	if maxOutput := parseIoctlMaxOutputSize(body); maxOutput < uint32(len(output)) {
 		return NewErrorResult(types.StatusBufferTooSmall), nil
 	}
