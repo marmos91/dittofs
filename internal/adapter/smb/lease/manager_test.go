@@ -183,7 +183,7 @@ func TestGetSessionForBreak_RoutesByClientGUIDPrimary(t *testing.T) {
 
 	// Both leases must route their breaks to session1 — the FIRST session
 	// of the shared ClientGUID — not to whichever session opened the lease.
-	// LEASE2's per-lease sessionMap entry initially points at session2, so
+	// LEASE2's binding initially records session2, so
 	// this assertion specifically pins the ClientGUID-aware override.
 	if sid, ok := lm.GetSessionForBreak("client-1", "share1", lease1); !ok || sid != session1 {
 		t.Errorf("LEASE1 break session = %d (ok=%v), want %d", sid, ok, session1)
@@ -193,22 +193,22 @@ func TestGetSessionForBreak_RoutesByClientGUIDPrimary(t *testing.T) {
 			sid, ok, session1, session2)
 	}
 
-	// The legacy GetSessionForLease still returns the per-lease sessionMap
-	// (used by other paths that genuinely want the registering session;
+	// The legacy GetSessionForLease still returns the registering session
+	// (used by other paths that genuinely want it;
 	// none currently fault on this distinction but the API contract is
 	// preserved for callers that do).
 	if sid, _ := lm.GetSessionForLease("client-2", "share1", lease2); sid != session2 {
-		t.Errorf("GetSessionForLease(LEASE2) = %d, want %d (per-lease sessionMap unchanged)",
+		t.Errorf("GetSessionForLease(LEASE2) = %d, want %d (binding session unchanged)",
 			sid, session2)
 	}
 }
 
-// TestGetSessionForBreak_FallsBackToSessionMap covers the legacy /
+// TestGetSessionForBreak_FallsBackToBindingSession covers the legacy /
 // test-context path where ClientGUID is unknown (zero) — typical for unit
 // tests that don't wire a CryptoState. Break dispatch must continue to
-// route via the per-lease sessionMap so we don't regress any existing
-// single-session lease test.
-func TestGetSessionForBreak_FallsBackToSessionMap(t *testing.T) {
+// route via the session that registered the binding so we don't regress any
+// existing single-session lease test.
+func TestGetSessionForBreak_FallsBackToBindingSession(t *testing.T) {
 	t.Parallel()
 
 	mgr := lock.NewManager()
@@ -226,7 +226,7 @@ func TestGetSessionForBreak_FallsBackToSessionMap(t *testing.T) {
 	}
 
 	if sid, ok := lm.GetSessionForBreak("client-1", "share1", leaseKey); !ok || sid != session1 {
-		t.Errorf("GetSessionForBreak(zero GUID) = %d (ok=%v), want %d (sessionMap fallback)",
+		t.Errorf("GetSessionForBreak(zero GUID) = %d (ok=%v), want %d (binding-session fallback)",
 			sid, ok, session1)
 	}
 }
@@ -363,8 +363,8 @@ func TestReleaseSessionLeases_ReapsClientPrimary(t *testing.T) {
 // the per-client uniqueness of lease keys: lock.Manager scopes lease-key
 // reuse by Owner.ClientID (round-3 lease_match), so two distinct SMB
 // clients may each hold a record under the same numeric LeaseKey on
-// different files. The composite-keyed leaseClientGUID map must keep
-// their break-routing bindings isolated — client B's break must NOT route
+// different files. The composite-keyed bindings map must keep their
+// break-routing entries isolated — client B's break must NOT route
 // to client A's primary session even when their leaseKeys collide.
 func TestGetSessionForBreak_CrossClientSameLeaseKey_IsolatesByClientID(t *testing.T) {
 	t.Parallel()
@@ -411,7 +411,7 @@ func TestGetSessionForBreak_CrossClientSameLeaseKey_IsolatesByClientID(t *testin
 // primary session of a ClientGUID is released, the next-oldest surviving
 // session of the same ClientGUID must be elected as the new primary so
 // future breaks continue to route at the client level rather than falling
-// through to the per-lease sessionMap (last-write-wins).
+// through to each binding's own session.
 func TestReleaseSessionLeases_ReElectsPrimaryFromSurvivors(t *testing.T) {
 	t.Parallel()
 

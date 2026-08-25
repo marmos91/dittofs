@@ -61,11 +61,9 @@ const TraditionalOplockBreakWaitTimeout = 35 * time.Second
 // share's lock manager, one file, one lease key. The lock manager matches a
 // request against an existing record on exactly (handleKey, leaseKey) within
 // one share's manager, so a property of the record — its protocol version —
-// belongs to that triple and not to the lease key alone.
-//
-// Two distinct clients may present the same numeric lease key on different
-// files; keying a per-record property on the key alone lets whichever of them
-// wrote last decide the other's value.
+// belongs to that triple and not to the lease key alone: two distinct clients
+// may present the same numeric key on different files, and keying on the key
+// alone lets whichever wrote last decide the other's value.
 //
 // HandleKey and Key hold the raw handle string and the raw 16-byte key (not a
 // hex string): this is a map key on the lease hot path, so using them directly
@@ -162,21 +160,16 @@ type LeaseManager struct {
 	// established with. Per MS-SMB2 §2.2.23.2 the NewEpoch field of a break
 	// notification MUST be zero for V1 leases and carries the incremented
 	// lease epoch for V2 ones; the same distinction selects the 32-byte or
-	// 52-byte RqLs response context on CREATE. Sending a non-zero NewEpoch
-	// on a V1 break trips the client (#417 root cause for
-	// smb2.multichannel.leases.test1-3).
-	//
-	// Sticky version semantics: per smbtorture v2_epoch2 / v2_epoch3 the
-	// version is set on the FIRST grant for a record and does not change
-	// across reopens, even when a later request uses the other version's
-	// create-context format.
+	// 52-byte RqLs response context on CREATE. Sending a non-zero NewEpoch on
+	// a V1 break trips the client (smb2.multichannel.leases.test1-3).
 	//
 	// Keyed per record rather than per client because lock.Manager keeps ONE
 	// lease record per (handleKey, leaseKey) and hands it to every requester
 	// of that key on that file — including a second session of the same
 	// client. The version has to follow the record it describes, or a reopen
 	// on another session would answer in a different format than the break
-	// notification for the same record.
+	// notification for the same record. MarkLeaseVersionIfUnset documents the
+	// sticky-on-first-grant semantics.
 	versions map[leaseRecordKey]leaseVersion
 
 	// clientPrimarySession records the FIRST sessionID seen for each
@@ -221,8 +214,8 @@ func NewLeaseManager(resolver LockManagerResolver, notifier LeaseBreakNotifier) 
 //     (NEGOTIATE). Used to bind the lease to its client at MS-SMB2 §3.3.5.9.8
 //     granularity and to route break notifications to the client's primary
 //     session (Samba `client->connections` head). Zero is accepted (no
-//     ClientGUID-based routing for that lease — falls back to per-lease
-//     sessionMap), which keeps callers that don't have a CryptoState wired
+//     ClientGUID-based routing for that lease — falls back to the binding's
+//     own session), which keeps callers that don't have a CryptoState wired
 //     (older durable-reconnect paths, tests) working.
 //   - ownerID: The lock owner identifier
 //   - clientID: The connection tracker client ID
@@ -451,7 +444,7 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 	epoch uint16,
 ) error {
 	lm.mu.RLock()
-	ck, _, found := lm.resolveAckBindingLocked(leaseKey, sessionID, connGUID)
+	ck, found := lm.resolveAckBindingLocked(leaseKey, sessionID, connGUID)
 	lm.mu.RUnlock()
 	if !found {
 		logger.Debug("AcknowledgeLeaseBreak: no lease bound to this client (CLOSE-beat-ack), treating as success",
@@ -504,16 +497,15 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 // per client — single digits in practice, and only acks that are not from the
 // owning session walk past the first match. Add a by-key index if a profile
 // ever shows this scan.
-func (lm *LeaseManager) resolveAckBindingLocked(leaseKey [16]byte, sessionID uint64, connGUID [16]byte) (leaseClientKey, leaseBinding, bool) {
+func (lm *LeaseManager) resolveAckBindingLocked(leaseKey [16]byte, sessionID uint64, connGUID [16]byte) (leaseClientKey, bool) {
 	var guidKey leaseClientKey
-	var guidBinding leaseBinding
 	var guidFound bool
 	for ck, b := range lm.bindings {
 		if ck.Key != leaseKey {
 			continue
 		}
 		if b.SessionID == sessionID {
-			return ck, b, true
+			return ck, true
 		}
 		if connGUID == ([16]byte{}) || !b.HasGUID || b.ClientGUID != connGUID {
 			continue
@@ -523,10 +515,10 @@ func (lm *LeaseManager) resolveAckBindingLocked(leaseKey [16]byte, sessionID uin
 		// not contemplate it. Break the tie on share name so the choice is at
 		// least deterministic across runs.
 		if !guidFound || ck.Share < guidKey.Share {
-			guidKey, guidBinding, guidFound = ck, b, true
+			guidKey, guidFound = ck, true
 		}
 	}
-	return guidKey, guidBinding, guidFound
+	return guidKey, guidFound
 }
 
 // ReleaseLease releases every record for a lease key in one share and drops
@@ -664,12 +656,11 @@ func (lm *LeaseManager) ReleaseSessionLeases(ctx context.Context, sessionID uint
 
 // GetLeaseState returns the state and epoch of a lease key in one share.
 //
-// The share is a parameter rather than something this layer resolves from the
-// key, because the key alone does not identify a lease: two clients may
-// present the same 16-byte value on files in different shares, and answering
-// from the wrong share's lock manager reports a foreign lease's state and
-// epoch — values that go straight back out on the wire on a durable reconnect
-// or a replayed CREATE.
+// The share is a parameter rather than resolved from the key because the key
+// alone does not identify a lease: two clients may present the same 16-byte
+// value in different shares, and the wrong share's lock manager reports a
+// foreign lease's state and epoch — values that go straight back out on the
+// wire on a durable reconnect or a replayed CREATE.
 func (lm *LeaseManager) GetLeaseState(ctx context.Context, shareName string, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
@@ -699,30 +690,18 @@ func (lm *LeaseManager) GetSessionForLease(clientID, shareName string, leaseKey 
 }
 
 // VerifyLeaseAckOwnership reports whether a session presenting a
-// LEASE_BREAK_ACK for leaseKey is entitled to acknowledge it, per MS-SMB2
-// §3.3.5.22.2 step 1 ("the server MUST locate the lease ... whose LeaseKey
-// matches ... and whose ClientGuid matches the Connection.ClientGuid"). A
-// lease is bound to a (ClientGuid, LeaseKey) pair, so an ack is valid only
-// when it arrives from the owning client.
+// LEASE_BREAK_ACK for leaseKey is entitled to acknowledge it: a lease is bound
+// to a (ClientGuid, LeaseKey) pair, so an ack is valid only when it arrives
+// from the owning client. Returns false when the ack resolves to no binding,
+// so a stray ack for a key the sender never held cannot probe state.
 //
-// Authorization rule:
-//   - A lease bound to this key must exist.
-//   - The ack is authorized if the acking sessionID registered the binding
-//     (the common case), OR the ack's connection ClientGUID matches the
-//     binding's recorded GUID (multichannel / durable reconnect on a
-//     different session of the same client).
-//
-// Returns false when no such binding exists so a stray ack for a
-// non-existent lease key cannot be used to probe state. A zero connGUID never
-// matches a recorded non-zero GUID, so an attacker who cannot reproduce the
-// victim's ClientGUID is rejected.
-//
-// This resolves the same binding AcknowledgeLeaseBreak then acts on, so the
-// authorization and the action cannot disagree about which lease is meant.
+// This resolves the same binding AcknowledgeLeaseBreak then acts on (see
+// resolveAckBindingLocked for the matching rule), so the authorization and the
+// action cannot disagree about which lease is meant.
 func (lm *LeaseManager) VerifyLeaseAckOwnership(leaseKey [16]byte, sessionID uint64, connGUID [16]byte) bool {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	_, _, found := lm.resolveAckBindingLocked(leaseKey, sessionID, connGUID)
+	_, found := lm.resolveAckBindingLocked(leaseKey, sessionID, connGUID)
 	return found
 }
 
@@ -1434,9 +1413,8 @@ func (lm *LeaseManager) RangeLeases(fn func(leaseKey [16]byte, sessionID uint64,
 // grant: a V2-established lease keeps responding V2 even to V1 reopens, and
 // a V1-established lease keeps responding V1 even when a V2 upgrade comes in.
 //
-// Scoped to (share, file, key) because that is the identity of the record the
-// version describes. Keying it on the lease key alone lets a lease held by
-// another client under the same key value decide this lease's response format.
+// Scoped to (share, file, key) — the identity of the record the version
+// describes, see leaseRecordKey.
 //
 // Callers must invoke this after a successful RequestLease whenever the
 // grantedState is non-None, passing isV2 derived from the request's
