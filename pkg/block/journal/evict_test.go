@@ -488,3 +488,46 @@ func TestConcurrentWriteEvictRace(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// TestInvalidatedRangeSurvivesEviction pins the durability of a demotion: the
+// segment still holding the demoted range is evicted, so only a cold-log marker
+// can carry it across the restart. Without one the range comes back a hole that
+// reads zeros.
+func TestInvalidatedRangeSurvivesEviction(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
+	ctx := context.Background()
+
+	s, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s.Hydrate(ctx, "f", 0, bytes.Repeat([]byte{0x5A}, chunk256), 0); err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+	fillUntilSealed(t, s, "f", true, 2) // seal the segment holding the target
+
+	if err := s.Invalidate(ctx, "f", 0, chunk256); err != nil {
+		t.Fatalf("Invalidate: %v", err)
+	}
+	if _, err := s.Evict(ctx, 1<<30); err != nil {
+		t.Fatalf("Evict: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	s2, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = s2.Close() })
+
+	_, st, err := s2.ReadAt(ctx, "f", 0, make([]byte, chunk256))
+	if err != nil {
+		t.Fatalf("ReadAt after restart: %v", err)
+	}
+	if st.Hole || !st.Cold {
+		t.Fatalf("invalidated range must come back cold, not a hole: %+v", st)
+	}
+}
