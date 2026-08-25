@@ -3082,3 +3082,43 @@ func TestNotifyRegistry_SupersededWatchGetsFinalResponse(t *testing.T) {
 		t.Errorf("WatcherCount = %d, want 1 (only the newer watch)", got)
 	}
 }
+
+// TestNotifyRegistry_SupersededWatchHandsBackBufferedEvents checks that
+// completing the superseded watch does not also destroy the events it was
+// holding.
+//
+// unregisterLocked stops the replaced watch's flush timer, so anything it had
+// accumulated but not yet delivered dies with it — and the replacement, which
+// is the request the client is actually waiting on, would see nothing. That
+// trades one silent hang for another.
+func TestNotifyRegistry_SupersededWatchHandsBackBufferedEvents(t *testing.T) {
+	r := newTestNotifyRegistry()
+	fileID := [16]byte{0xD1}
+
+	mk := func(msgID, asyncID uint64, sink *[]FileNotifyInformation) *PendingNotify {
+		return &PendingNotify{
+			FileID: fileID, SessionID: 1, ConnID: 1, MessageID: msgID,
+			AsyncId: asyncID, WatchPath: "/d", ShareName: "s",
+			MaxOutputLength:  1000,
+			CompletionFilter: FileNotifyChangeFileName,
+			AsyncCallback: func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+				*sink = append(*sink, decodeFileNotifyInfos(resp.Buffer)...)
+				return nil
+			},
+		}
+	}
+
+	var firstGot, secondGot []FileNotifyInformation
+	mustRegister(t, r, mk(10, 500, &firstGot))
+
+	// An event lands on the first watch but has not been flushed yet.
+	r.NotifyChange("s", "/d", "a.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	// A second CHANGE_NOTIFY on the same handle supersedes it.
+	mustRegister(t, r, mk(11, 501, &secondGot))
+	r.FlushAll()
+
+	if len(secondGot) != 1 || secondGot[0].FileName != "a.txt" {
+		t.Fatalf("event held by the superseded watch was lost: %+v", secondGot)
+	}
+}

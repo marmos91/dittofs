@@ -702,7 +702,20 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	// If there's already a registration for this FileID, remove the old entry
 	// to keep data structures consistent.
 	if old, ok := r.byFileID[string(notify.FileID[:])]; ok {
-		superseded = append(superseded, r.unregisterLocked(old))
+		r.unregisterLocked(old)
+		// Hand back whatever the superseded watch had accumulated but not yet
+		// delivered. unregisterLocked stops its flush timer, so without this
+		// those events die with it and the replacement — which the client is
+		// waiting on — sees nothing, turning one silent hang into another.
+		// They go in front of any later arrivals to keep them in order; the
+		// replay block below picks them up once the new watch is armed.
+		if len(old.bufferedChanges) > 0 {
+			if a, isArmed := r.armed[string(notify.FileID[:])]; isArmed {
+				a.BufferedEvents = append(old.bufferedChanges, a.BufferedEvents...)
+			}
+			old.bufferedChanges = nil
+		}
+		superseded = append(superseded, old)
 	} else if len(r.byFileID) >= MaxPendingWatches {
 		return ErrTooManyWatches
 	}
