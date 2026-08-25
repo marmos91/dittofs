@@ -129,10 +129,10 @@ func advanceEpoch(lease *OpLock) {
 // is ever stale the in-bucket scan simply finds no match there and moves on.
 //
 // Because which holder comes back is unspecified, this must not decide a value
-// that goes out on the wire, and no longer does: the paths that read or write a
+// that goes out on the wire. Its callers are the LEASE_BREAK_ACK and reclaim
+// routing, which are handed only a lease key; the paths that read or write a
 // lease's state and epoch take the file as a parameter and resolve through
-// leaseRecordsOnHandleLocked. What remains here is the LEASE_BREAK_ACK and
-// reclaim routing, which are given only a lease key.
+// leaseRecordsOnHandleLocked instead.
 func (lm *Manager) findLeaseByKey(leaseKey [16]byte) (string, *UnifiedLock, int) {
 	buckets := lm.leaseKeyIndex[leaseKey]
 	if buckets == nil {
