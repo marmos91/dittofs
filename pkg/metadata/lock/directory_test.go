@@ -414,14 +414,23 @@ func TestRecentlyBrokenCache_IsRecentlyBroken(t *testing.T) {
 func TestRecentlyBrokenCache_Expiry(t *testing.T) {
 	t.Parallel()
 
-	// Use very short TTL for testing
-	cache := newRecentlyBrokenCache(10 * time.Millisecond)
+	// Drive the cache off a stepped clock rather than real elapsed time: the
+	// expiry transition is what matters, and asserting it against a wall-clock
+	// interval makes the verdict a function of scheduling and timer granularity.
+	const ttl = time.Second
+	now := time.Now()
+	cache := newRecentlyBrokenCache(ttl)
+	cache.nowFn = func() time.Time { return now }
 
 	cache.Mark("dir1")
 	assert.True(t, cache.IsRecentlyBroken("dir1"))
 
-	// Wait for expiry
-	time.Sleep(20 * time.Millisecond)
+	// Still inside the TTL.
+	now = now.Add(ttl)
+	assert.True(t, cache.IsRecentlyBroken("dir1"), "should survive up to the TTL")
+
+	// Past it.
+	now = now.Add(time.Nanosecond)
 	assert.False(t, cache.IsRecentlyBroken("dir1"), "should expire after TTL")
 }
 
