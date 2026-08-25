@@ -161,13 +161,26 @@ func TestProcessSingleRequest_BreakPrecedesLaterResponse(t *testing.T) {
 	rename := ci.RequestOrder.Begin() // message 1: read first, dispatched second
 	create := ci.RequestOrder.Begin() // message 2: read second, dispatched first
 
-	echoed := make(chan error, 1)
+	// Message 2 is a CREATE on a session this connection does not have, so it
+	// is answered from the dispatch gate — the point is which response reaches
+	// the wire first, not what it says. ECHO cannot stand in for it: ECHO is
+	// deliberately exempt from the order.
+	createHeader := &header.SMB2Header{
+		StructureSize: header.HeaderSize,
+		Command:       types.SMB2Create,
+		Credits:       1,
+		CreditCharge:  1,
+		MessageID:     2,
+		SessionID:     0x1234,
+	}
+
+	answered := make(chan error, 1)
 	go func() {
 		// Stands in for message 2's handler: it runs to completion long
 		// before message 1's has started.
-		echoed <- ProcessSingleRequest(
+		answered <- ProcessSingleRequest(
 			WithOrderToken(context.Background(), create),
-			echoHeader(2), echoBody(), nil, ci, false, nil,
+			createHeader, nil, nil, ci, false, nil,
 		)
 		create.Release()
 	}()
@@ -191,7 +204,7 @@ func TestProcessSingleRequest_BreakPrecedesLaterResponse(t *testing.T) {
 	}
 	rename.Release()
 
-	if err := <-echoed; err != nil {
+	if err := <-answered; err != nil {
 		t.Fatalf("ProcessSingleRequest returned %v", err)
 	}
 
@@ -204,7 +217,7 @@ func TestProcessSingleRequest_BreakPrecedesLaterResponse(t *testing.T) {
 			t.Fatalf("only %d frames reached the wire: %v", len(got), got)
 		}
 	}
-	if got[0] != types.SMB2OplockBreak || got[1] != types.SMB2Echo {
+	if got[0] != types.SMB2OplockBreak || got[1] != types.SMB2Create {
 		t.Fatalf("wire order was %v; the break must precede the later request's response", got)
 	}
 }

@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
+	"github.com/marmos91/dittofs/internal/adapter/smb/header"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
 
 // newBenchConnInfo mirrors newTestConnInfo without a *testing.T.
@@ -43,11 +45,11 @@ func benchConn(b *testing.B) (net.Conn, func()) {
 	}
 }
 
-// What ordering costs a pipelining client on the dispatch path, measured on
-// ECHO so the number is the ordering overhead rather than a handler's work.
-// Each iteration dispatches `depth` requests concurrently, as a client with
-// that many credits outstanding would.
-func BenchmarkPipelinedDispatch(b *testing.B) {
+// What ordering costs a client with `depth` requests outstanding, measured
+// against the bare response write it wraps. Handlers are omitted deliberately:
+// the difference between the two arms is the whole cost of ordering, and a
+// handler's own work would only dilute it.
+func BenchmarkOrderedResponseEmission(b *testing.B) {
 	for _, depth := range []int{1, 8, 32} {
 		for _, ordered := range []bool{false, true} {
 			name := "unordered"
@@ -62,6 +64,7 @@ func BenchmarkPipelinedDispatch(b *testing.B) {
 					ci.RequestOrder = NewRequestOrder()
 				}
 				ctx := context.Background()
+				body := MakeErrorBody()
 
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
@@ -72,13 +75,17 @@ func BenchmarkPipelinedDispatch(b *testing.B) {
 						go func(msgID uint64) {
 							defer wg.Done()
 							defer tok.Release()
-							_ = ProcessSingleRequest(WithOrderToken(ctx, tok),
-								echoHeader(msgID), echoBody(), nil, ci, false, nil)
+							tok.WaitTurn(ctx)
+							_ = SendMessage(&header.SMB2Header{
+								StructureSize: header.HeaderSize,
+								Command:       types.SMB2Echo,
+								MessageID:     msgID,
+							}, body, ci)
 						}(uint64(i*depth + j + 1))
 					}
 					wg.Wait()
 				}
-				b.ReportMetric(float64(depth), "requests/iter")
+				b.ReportMetric(float64(depth), "responses/iter")
 			})
 		}
 	}
