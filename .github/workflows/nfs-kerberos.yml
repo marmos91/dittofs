@@ -40,6 +40,9 @@ on:
     - cron: '0 4 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   nfs-kerberos:
     name: NFS sec=krb5 mount test
