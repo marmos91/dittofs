@@ -173,6 +173,7 @@ func (c *Connection) connInfo() *smb.ConnInfo {
 		Handler:        c.server.handler,
 		SessionManager: c.server.sessionManager,
 		WriteMu:        &c.writeMu,
+		RequestOrder:   smb.NewRequestOrder(),
 		WriteTimeout:   c.server.config.Timeouts.Write,
 		SessionTracker: c, // overwritten below
 		CryptoState:    c.CryptoState,
@@ -350,10 +351,20 @@ func (c *Connection) Serve(ctx context.Context) {
 		// Without this, a concurrent goroutine for the next request could
 		// race with the LOGOFF handler, causing the signing verifier to
 		// return STATUS_ACCESS_DENIED instead of STATUS_USER_SESSION_DELETED.
+		// Claim this request's place in the connection's response order. The
+		// read loop is the only sequential point on the connection, so it is
+		// the only place arrival order can be recorded; the handler goroutines
+		// spawned below are scheduled in any order. A response waits here for
+		// the responses ahead of it, which is what keeps a break notification
+		// an earlier request owes from being overtaken. See RequestOrder.
+		orderToken := ci.RequestOrder.Begin()
+		reqCtx := smb.WithOrderToken(ctx, orderToken)
+
 		if hdr.Command == types.CommandLogoff && len(remainingCompound) == 0 {
 			func() {
 				defer pool.Put(rawMessage)
-				if err := smb.ProcessSingleRequest(ctx, hdr, body, rawMessage, ci, isEncrypted, nil); err != nil {
+				defer orderToken.Release()
+				if err := smb.ProcessSingleRequest(reqCtx, hdr, body, rawMessage, ci, isEncrypted, nil); err != nil {
 					logger.Debug("Error processing LOGOFF request", "address", clientAddr, "messageID", hdr.MessageID, "error", err)
 				}
 			}()
@@ -395,20 +406,22 @@ func (c *Connection) Serve(ctx context.Context) {
 
 			go func(reqHeader *header.SMB2Header, reqBody, raw []byte, encrypted bool) {
 				defer pool.Put(raw)
+				defer orderToken.Release()
 				defer c.handleRequestPanic(clientAddr, reqHeader.MessageID)
 				asyncCallback := c.makeAsyncNotifyCallback(ci)
-				smb.ProcessCompoundRequest(ctx, reqHeader, reqBody, raw, compoundData, ci, encrypted, asyncCallback)
+				smb.ProcessCompoundRequest(reqCtx, reqHeader, reqBody, raw, compoundData, ci, encrypted, asyncCallback)
 			}(hdr, body, rawMessage, isEncrypted)
 		} else {
 			go func(reqHeader *header.SMB2Header, reqBody, raw []byte, encrypted bool, release func()) {
 				defer pool.Put(raw)
+				defer orderToken.Release()
 				if release != nil {
 					defer release()
 				}
 				defer c.handleRequestPanic(clientAddr, reqHeader.MessageID)
 
 				asyncCallback := c.makeAsyncNotifyCallback(ci)
-				if err := smb.ProcessSingleRequest(ctx, reqHeader, reqBody, raw, ci, encrypted, asyncCallback); err != nil {
+				if err := smb.ProcessSingleRequest(reqCtx, reqHeader, reqBody, raw, ci, encrypted, asyncCallback); err != nil {
 					logger.Debug("Error processing SMB request", "address", clientAddr, "messageID", reqHeader.MessageID, "error", err)
 				}
 			}(hdr, body, rawMessage, isEncrypted, releaseHandleOp)

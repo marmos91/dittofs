@@ -47,6 +47,12 @@ type compoundResponse struct {
 //   - isEncrypted: whether the compound request was received inside an SMB3 Transform Header
 //   - asyncNotifyCallback: optional callback for CHANGE_NOTIFY async responses (nil = no async)
 func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header, firstBody []byte, firstRaw []byte, compoundData []byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback handlers.AsyncResponseCallback) {
+	// This chain's place in the connection's response order — see RequestOrder
+	// and the single-request path in response.go. Every response below waits
+	// for the responses ahead of it, so a break notification an earlier
+	// request dispatched reaches the wire first.
+	orderToken := OrderTokenFrom(ctx)
+
 	// Per MS-SMB2 3.3.5.2.7.2: the first command in a compound MUST NOT have
 	// the SMB2_FLAGS_RELATED_OPERATIONS flag set. Fail the entire compound.
 	if firstHeader.IsRelated() {
@@ -74,6 +80,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 			erh, erb := buildErrorResponseHeaderAndBody(hdr, status, connInfo)
 			errResponses = append(errResponses, compoundResponse{respHeader: erh, body: erb})
 		}
+		orderToken.WaitTurn(ctx)
 		if err := sendCompoundResponses(errResponses, connInfo, isEncrypted); err != nil {
 			logger.Debug("Error sending compound error responses", "error", err)
 		}
@@ -93,6 +100,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 				"command", firstHeader.Command.String(),
 				"creditCharge", firstHeader.CreditCharge,
 				"error", err)
+			orderToken.WaitTurn(ctx)
 			failEntireCompound(firstHeader, compoundData, types.StatusInvalidParameter, connInfo, isEncrypted)
 			return
 		}
@@ -105,6 +113,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 				"messageID", firstHeader.MessageID,
 				"creditCharge", charge,
 				"exempt", exempt)
+			orderToken.WaitTurn(ctx)
 			failEntireCompound(firstHeader, compoundData, types.StatusInvalidParameter, connInfo, isEncrypted)
 			return
 		}
@@ -135,6 +144,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 					"command", hdr.Command.String(),
 					"messageID", hdr.MessageID,
 					"creditCharge", charge)
+				orderToken.WaitTurn(ctx)
 				failEntireCompound(firstHeader, compoundData, types.StatusInvalidParameter, connInfo, isEncrypted)
 				return
 			}
@@ -201,6 +211,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		interimHeader := header.NewResponseHeaderWithCredits(firstHeader, types.StatusPending, interimCredits)
 		interimHeader.Flags |= types.FlagAsync
 		interimHeader.AsyncId = result.AsyncId
+		orderToken.WaitTurn(ctx)
 		if err := SendMessage(interimHeader, MakeErrorBody(), connInfo); err != nil {
 			logger.Debug("Error sending compound async interim response", "error", err)
 		}
@@ -276,6 +287,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	state.processRemaining(ctx, compoundData, connInfo, isEncrypted, asyncNotifyCallback)
 
 	// Send all responses as a single compound response frame.
+	orderToken.WaitTurn(ctx)
 	sendErr := sendCompoundResponses(state.responses, connInfo, isEncrypted)
 	if sendErr != nil {
 		logger.Debug("Error sending compound responses", "error", sendErr)

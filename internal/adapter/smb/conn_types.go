@@ -62,6 +62,12 @@ type ConnInfo struct {
 	// WriteMu serializes writes to the connection.
 	WriteMu *LockedWriter
 
+	// RequestOrder keeps responses on this connection going out in the order
+	// the read loop received the requests, so a break notification an earlier
+	// request owes is never overtaken. Nil when a caller dispatches without a
+	// read loop (tests, direct dispatch): ordering is then a no-op.
+	RequestOrder *RequestOrder
+
 	// WriteTimeout for response writes.
 	WriteTimeout time.Duration
 
