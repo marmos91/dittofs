@@ -32,7 +32,10 @@ type ShareStatus struct {
 // alone.
 type OfflineStatus struct {
 	// Safe is true when every byte the share holds can be served without the
-	// remote. False when some cannot, or when residency is indeterminate.
+	// remote. False when some cannot, or when residency is indeterminate —
+	// which includes a local tier whose index cannot account for a range the
+	// share's manifest places, since a range the index has forgotten looks
+	// exactly like one that was never written.
 	Safe bool `json:"safe"`
 
 	// RemoteOnlyBytes is how much data the local tier no longer holds and
