@@ -932,7 +932,10 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		}
 	}
 
-	// Step 8a-bis: MS-SMB2 §3.3.4.18 disconnected-handle preservation/purge.
+	// Step 8a-bis: disconnected-handle preservation/purge. Preservation is
+	// MS-SMB2 §3.3.7.1 ("Handling Loss of a Connection"); the break that can
+	// knock a preserved handle below H is §3.3.4.7 ("Object Store Indicates a
+	// Lease Break").
 	//
 	// Evaluate any disconnected durable handles on this metadata handle
 	// against the new open's lease/share-mode and purge those that the new

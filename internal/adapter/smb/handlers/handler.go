@@ -849,7 +849,8 @@ func (f *OpenFile) OpenID() string {
 
 // openHasLocks reports whether any byte-range lock is currently recorded
 // against the given open under the lock manager. Source of truth for the
-// MS-SMB2 §3.3.4.18 durable persist gate at disconnect time — avoids the
+// MS-SMB2 §3.3.7.1 ("Handling Loss of a Connection") durable persist gate
+// at disconnect time — avoids the
 // TOCTOU race between an async-parked LOCK goroutine's HasByteRangeLocks
 // flag flip and the disconnect-time read (see lock_async.go::resumePendingLock,
 // MS-SMB2 §3.3.5.14 / smb2.durable-v2-open.lock-noW-lease).
@@ -1422,7 +1423,8 @@ func (h *Handler) closeFilesWithFilter(
 				}
 			}
 
-			// MS-SMB2 §3.3.4.18 persist gate: refuse to persist when the
+			// MS-SMB2 §3.3.7.1 ("Handling Loss of a Connection") persist gate:
+			// refuse to persist when the
 			// open holds a byte-range lock under a lease lacking W. The
 			// disconnected reconnect cannot reliably re-establish the lock
 			// because the BR-lock is bound to the open's OpenID and a

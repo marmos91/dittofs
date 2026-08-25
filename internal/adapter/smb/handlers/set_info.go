@@ -1063,7 +1063,8 @@ func (h *Handler) setFileInfoFromStore(
 				logger.Debug("SET_INFO: rename lease break dispatch failed", "error", err)
 			}
 
-			// MS-SMB2 §3.3.4.18 / §3.3.5.21: RENAME breaks Handle leases on
+			// MS-SMB2 §3.3.5.21 ("Receiving an SMB2 SET_INFO Request") and
+			// §3.3.4.7 ("Object Store Indicates a Lease Break"): RENAME breaks Handle leases on
 			// the renamed file (and on the overwrite target). Any
 			// disconnected durable handle with a different lease key loses
 			// H — the disconnected client cannot ack the break, so the
@@ -1379,7 +1380,8 @@ func (h *Handler) setFileInfoFromStore(
 			if breakErr := h.LeaseManager.BreakReadLeasesOnWrite(lockFileHandle, openFile.ShareName, openFile.LeaseKey); breakErr != nil {
 				logger.Debug("SET_INFO: oplock break on EOF set failed (non-fatal)", "path", openFile.Name().Path, "error", breakErr)
 			}
-			// MS-SMB2 §3.3.4.18: truncation is a data-modifying op that
+			// MS-SMB2 §3.3.4.7 ("Object Store Indicates a Lease Break"):
+			// truncation is a data-modifying op that
 			// breaks Level-II Read leases to NONE — purge any disconnected
 			// durable handle whose lease holds R-caching from a different key.
 			if h.DurableStore != nil {

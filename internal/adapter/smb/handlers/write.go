@@ -379,7 +379,8 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		}
 	}
 
-	// MS-SMB2 §3.3.4.18 / §3.3.5.16: a WRITE breaks Level-II (Read) leases
+	// MS-SMB2 §3.3.5.13 ("Receiving an SMB2 WRITE Request") and §3.3.4.7
+	// ("Object Store Indicates a Lease Break"): a WRITE breaks Level-II (Read) leases
 	// on the same file to NONE. Any disconnected durable handle with a
 	// lease holding R-caching on this file (and a different lease key from
 	// the writer's) loses H along with R and must be purged — the
