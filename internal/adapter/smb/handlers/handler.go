@@ -301,12 +301,12 @@ type Handler struct {
 	// Defaults to 60000 (60 seconds). Configurable via SMBAdapterSettings.
 	DurableTimeoutMs uint32
 
-	// cleanupWg tracks in-progress session cleanups. New SESSION_SETUP
-	// requests wait for this to reach zero before proceeding, ensuring
+	// cleanup counts in-progress session cleanups. New SESSION_SETUP
+	// requests wait for it to reach zero before proceeding, ensuring
 	// that stale state from a disconnected session (open files, leases,
 	// change-notify watchers) is fully removed before a new session's
 	// operations can observe the shared Handler maps.
-	cleanupWg sync.WaitGroup
+	cleanup cleanupBarrier
 
 	// resumeKeys maps opaque 24-byte resume keys to FileIDs for FSCTL_SRV_COPYCHUNK.
 	// Keys are issued via FSCTL_SRV_REQUEST_RESUME_KEY and revoked on file close.
@@ -1751,39 +1751,34 @@ func (h *Handler) DeleteAllTreesForSession(sessionID uint64) int {
 // The timeout prevents indefinite blocking when cleanup is slow (e.g., flushing
 // many open files), which would cause smbtorture connection timeouts.
 func (h *Handler) WaitForCleanup() {
-	done := make(chan struct{})
-	go func() {
-		h.cleanupWg.Wait()
-		close(done)
-	}()
 	select {
-	case <-done:
+	case <-h.cleanup.Idle():
 	case <-time.After(3 * time.Second):
 		logger.Warn("WaitForCleanup: timed out after 3s, proceeding with session setup")
 	}
 }
 
-// SignalPendingCleanup increments the cleanup WaitGroup by count.
-// This MUST be called before any async cleanup work begins, to ensure
-// that WaitForCleanup() in a new session's SESSION_SETUP will block
-// until the cleanup is done.
+// SignalPendingCleanup registers count in-progress cleanups on the barrier.
+// It MUST be called before any cleanup work begins — including draining the
+// dying connection's in-flight requests — so WaitForCleanup() in a new
+// session's SESSION_SETUP blocks until that cleanup is done.
 //
-// The race: When a connection drops, cleanup runs in the old connection's
-// goroutine. The accept loop can spawn a new connection goroutine before
-// the old goroutine enters CleanupSession. If Add(1) is inside
-// CleanupSession, there is a window where WaitForCleanup returns 0
-// (no pending cleanup) even though cleanup has not started yet.
-// By calling SignalPendingCleanup before the cleanup loop, the WaitGroup
-// is guaranteed to be non-zero when the new session checks it.
+// The race: when a connection drops, cleanup runs on the old connection's
+// goroutine. The accept loop can spawn a new connection goroutine before the
+// old one gets that far. Every step arming happens after is a window in which
+// WaitForCleanup sees an idle barrier while the old session's open files are
+// still in the handle table, and a CREATE on one of their paths can be refused
+// with STATUS_DELETE_PENDING or STATUS_SHARING_VIOLATION.
 func (h *Handler) SignalPendingCleanup(count int) {
-	h.cleanupWg.Add(count)
+	h.cleanup.Add(count)
 }
 
-// SignalCleanupDone decrements the cleanup WaitGroup by one.
-// Used by panic recovery in the cleanup loop to release remaining slots
-// when CleanupSession cannot be called (because it would call Done itself).
+// SignalCleanupDone retires one in-progress cleanup on the barrier. Used by
+// the connection close path and by panic recovery in the cleanup loop, to
+// release remaining slots when CleanupSession cannot be called (because it
+// would call Done itself).
 func (h *Handler) SignalCleanupDone() {
-	h.cleanupWg.Done()
+	h.cleanup.Done()
 }
 
 // ExpireSessionNotifies completes any pending CHANGE_NOTIFY requests for a
@@ -1930,9 +1925,9 @@ func (h *Handler) cancelAsyncOpsForSession(sessionID uint64) {
 //
 // IMPORTANT: The caller must call SignalPendingCleanup(1) before calling
 // CleanupSession to ensure the cleanup barrier is visible to new sessions.
-// The WaitGroup decrement (Done) happens via defer.
+// The matching Done happens via defer.
 func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64, isDisconnect bool) {
-	defer h.cleanupWg.Done()
+	defer h.cleanup.Done()
 
 	logger.Debug("CleanupSession: starting cleanup", "sessionID", sessionID, "isDisconnect", isDisconnect)
 

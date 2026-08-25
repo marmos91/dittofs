@@ -438,6 +438,22 @@ func (c *Connection) handleConnectionClose() {
 		logger.Error("Panic in SMB connection handler", "address", clientAddr, "error", r)
 	}
 
+	// Arm the cleanup barrier here, before anything else on the close path.
+	// A new connection's SESSION_SETUP waits on this barrier (WaitForCleanup)
+	// so it never observes handles belonging to a connection that is going
+	// away. cleanupSessions arms it too, but only once it is reached — which
+	// is after c.wg.Wait() has drained every in-flight request goroutine.
+	// A client that closes one socket and immediately opens another can be
+	// served inside that drain window, and then sees the dead connection's
+	// open files: a CREATE on a path whose leftover handle carries
+	// delete-on-close returns STATUS_DELETE_PENDING, and one whose leftover
+	// handle conflicts on share mode returns STATUS_SHARING_VIOLATION.
+	// Holding one count across the whole close path covers the drain too;
+	// the counts cleanupSessions adds for its own per-session teardown nest
+	// inside it.
+	c.server.handler.SignalPendingCleanup(1)
+	defer c.server.handler.SignalCleanupDone()
+
 	start := time.Now()
 	c.wg.Wait()
 	waitDur := time.Since(start)
