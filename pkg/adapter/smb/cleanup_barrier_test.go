@@ -53,7 +53,7 @@ func TestConnectionClose_BarrierCoversRequestDrain(t *testing.T) {
 	// barrier before doing so; if it only arms inside cleanupSessions, that
 	// never happens while the drain is held and this loop runs out.
 	armed := false
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		if !cleanupBarrierOpen(c, 50*time.Millisecond) {
 			armed = true
 			break

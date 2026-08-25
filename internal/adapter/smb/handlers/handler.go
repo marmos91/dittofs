@@ -1760,14 +1760,9 @@ func (h *Handler) WaitForCleanup() {
 // SignalPendingCleanup registers count in-progress cleanups on the barrier.
 // It MUST be called before any cleanup work begins — including draining the
 // dying connection's in-flight requests — so WaitForCleanup() in a new
-// session's SESSION_SETUP blocks until that cleanup is done.
-//
-// The race: when a connection drops, cleanup runs on the old connection's
-// goroutine. The accept loop can spawn a new connection goroutine before the
-// old one gets that far. Every step arming happens after is a window in which
-// WaitForCleanup sees an idle barrier while the old session's open files are
-// still in the handle table, and a CREATE on one of their paths can be refused
-// with STATUS_DELETE_PENDING or STATUS_SHARING_VIOLATION.
+// session's SESSION_SETUP blocks until that cleanup is done. Every step
+// arming happens after is a window in which WaitForCleanup sees an idle
+// barrier while the old session's open files are still in the handle table.
 func (h *Handler) SignalPendingCleanup(count int) {
 	h.cleanup.Add(count)
 }

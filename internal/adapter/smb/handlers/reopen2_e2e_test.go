@@ -166,7 +166,7 @@ func (e *reopen2Env) initialLeaseDurableOpen(
 // state via GetLeaseState and writes the durable handle) and the real lease
 // release (releaseSessionLeasesAndNotifies, which clears the LeaseManager). These
 // are exactly steps 1 and 2 of Handler.CleanupSession; calling CleanupSession
-// directly would trip its cleanupWg.Done without a matching Add (that bookkeeping
+// directly would retire a cleanup-barrier count without a matching Add (that bookkeeping
 // is owned by the dispatch-layer scheduler, not the cleanup work itself).
 func (e *reopen2Env) disconnect(sessionID uint64) {
 	ctx := context.Background()

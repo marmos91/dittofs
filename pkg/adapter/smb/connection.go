@@ -438,19 +438,17 @@ func (c *Connection) handleConnectionClose() {
 		logger.Error("Panic in SMB connection handler", "address", clientAddr, "error", r)
 	}
 
-	// Arm the cleanup barrier here, before anything else on the close path.
-	// A new connection's SESSION_SETUP waits on this barrier (WaitForCleanup)
-	// so it never observes handles belonging to a connection that is going
-	// away. cleanupSessions arms it too, but only once it is reached — which
-	// is after c.wg.Wait() has drained every in-flight request goroutine.
-	// A client that closes one socket and immediately opens another can be
-	// served inside that drain window, and then sees the dead connection's
-	// open files: a CREATE on a path whose leftover handle carries
-	// delete-on-close returns STATUS_DELETE_PENDING, and one whose leftover
-	// handle conflicts on share mode returns STATUS_SHARING_VIOLATION.
-	// Holding one count across the whole close path covers the drain too;
-	// the counts cleanupSessions adds for its own per-session teardown nest
-	// inside it.
+	// Arm the cleanup barrier before the drain below. A new connection's
+	// SESSION_SETUP waits on this barrier (WaitForCleanup) so it never
+	// observes handles belonging to a connection that is going away.
+	// cleanupSessions arms it too, but only once it is reached — after
+	// c.wg.Wait() has drained every in-flight request goroutine. A client
+	// that closes one socket and immediately opens another can be served
+	// inside that drain window and see the dead connection's open files: a
+	// CREATE on a path whose leftover handle carries delete-on-close is
+	// refused with STATUS_DELETE_PENDING, and one that conflicts on share
+	// mode with STATUS_SHARING_VIOLATION. This one count spans the whole
+	// close path; the per-session counts cleanupSessions adds nest inside it.
 	c.server.handler.SignalPendingCleanup(1)
 	defer c.server.handler.SignalCleanupDone()
 
@@ -526,19 +524,18 @@ func (c *Connection) cleanupSessions() {
 	// State leak detection: log state before cleanup starts
 	c.server.handler.LogStateSnapshot("Connection close: state before session cleanup", 0)
 
-	// Signal the cleanup barrier BEFORE starting any cleanup work.
-	// This ensures that WaitForCleanup() in a new connection's SESSION_SETUP
-	// will block even if the new goroutine reaches SESSION_SETUP before we
-	// enter CleanupSession. Without this pre-increment, there is a race window
-	// where cleanupWg is 0 (Add hasn't been called yet) and WaitForCleanup
-	// returns immediately, allowing the new session to access stale state.
+	// Count the sessions about to be torn down before any cleanup work starts:
+	// CleanupSession retires one count each, so WaitForCleanup() in a new
+	// connection's SESSION_SETUP keeps blocking until the last of them
+	// returns. These counts nest inside the one handleConnectionClose holds
+	// across the whole close path.
 	c.server.handler.SignalPendingCleanup(len(dying))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	// Guard the cleanup loop against panics. If CleanupSession panics,
-	// call Done() for remaining sessions so cleanupWg doesn't get stuck,
+	// call Done() for remaining sessions so the barrier doesn't get stuck,
 	// then re-panic to preserve the original failure signal.
 	cleaned := 0
 	defer func() {
