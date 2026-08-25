@@ -765,8 +765,12 @@ func (h *Handler) setFileInfoFromStore(
 			// Restore mtime/ctime after rename
 			restoreTimestamps()
 
-			// Clear delete-on-close after rename
+			// Clear delete-on-close after rename. Written under the handle
+			// lock: the delete-pending gates and the CLOSE delete-on-close
+			// election read this field under it.
+			openFile.mu.Lock()
 			openFile.DeletePending = false
+			openFile.mu.Unlock()
 
 			// Notify watchers
 			if h.NotifyRegistry != nil {
@@ -1181,8 +1185,11 @@ func (h *Handler) setFileInfoFromStore(
 		// Per MS-FSA 2.1.5.14.10: On successful completion of a rename,
 		// if the file was marked for delete-on-close, clear that disposition.
 		// This prevents the renamed file from being deleted when the handle closes.
-		if openFile.DeletePending {
-			openFile.DeletePending = false
+		openFile.mu.Lock()
+		clearedDOC := openFile.DeletePending
+		openFile.DeletePending = false
+		openFile.mu.Unlock()
+		if clearedDOC {
 			logger.Debug("SET_INFO: cleared delete-on-close after rename",
 				"oldPath", oldPath,
 				"newPath", newPath)
@@ -1273,7 +1280,9 @@ func (h *Handler) setFileInfoFromStore(
 
 		// Capture pre-state to suppress redundant break dispatches when the
 		// disposition is reaffirmed (deletePending stays true).
+		openFile.mu.RLock()
 		wasDeletePending := openFile.DeletePending
+		openFile.mu.RUnlock()
 
 		// Validate we have parent info for deletion
 		if delName := openFile.Name(); deletePending && len(delName.ParentHandle) == 0 {
@@ -1329,12 +1338,16 @@ func (h *Handler) setFileInfoFromStore(
 		}
 
 		// Mark file for deletion on close and record the DOC setter's
-		// parent key for unlink parent-key suppression.
+		// parent key for unlink parent-key suppression. Written under the
+		// handle lock: the delete-pending gates and the CLOSE delete-on-close
+		// election read these fields under it.
+		openFile.mu.Lock()
 		openFile.DeletePending = deletePending
 		if deletePending {
 			openFile.DeleteOnCloseParentKey = openFile.ParentLeaseKey
 			openFile.HasDeleteOnCloseParentKey = openFile.HasParentLeaseKey
 		}
+		openFile.mu.Unlock()
 		h.StoreOpenFile(openFile)
 
 		logger.Debug("SET_INFO: delete disposition set",

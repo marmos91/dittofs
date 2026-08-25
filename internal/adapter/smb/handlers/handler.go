@@ -83,6 +83,17 @@ type Handler struct {
 	// under its own distinct FileID).
 	renameScanMu sync.Mutex
 
+	// docElectionMu serializes the delete-on-close last-handle election
+	// (electDeleteOnClose) across every closing handle: it makes each closer's
+	// "am I the last handle on this file?" scan atomic with its own departure
+	// from the set of handles that can still honour a delete-on-close
+	// (OpenFile.docLeaving). See doc_election.go.
+	//
+	// Lock order: leaf. The election takes only per-OpenFile locks under it and
+	// does no I/O, and no other lock is acquired while it is held — both close
+	// paths have released it well before they take renameScanMu.
+	docElectionMu sync.Mutex
+
 	// Named pipe management (for IPC$ RPC)
 	PipeManager *rpc.PipeManager
 
@@ -537,6 +548,17 @@ type OpenFile struct {
 	DeletePending        bool // committed shared DOC (visible to other opens)
 	InitialDeleteOnClose bool // per-handle initial DOC from CREATE FILE_DELETE_ON_CLOSE
 
+	// docLeaving marks a handle that has already run its delete-on-close
+	// election (electDeleteOnClose) and can therefore no longer honour a DOC
+	// propagated to it; the election's sibling scans skip such handles.
+	//
+	// Guarded by Handler.docElectionMu — NOT by OpenFile.mu — because it is
+	// only ever read as part of a scan that must be atomic with the writes to
+	// it. The handle stays in Handler.files while marked, so every other scan
+	// (CREATE delete-pending gate, share modes, oplocks, rename conflict) still
+	// sees it until its owner's own removal step.
+	docLeaving bool
+
 	// ShareAccess stores the sharing mode from the CREATE request.
 	// Used for share mode conflict checking during rename and other operations.
 	// Bit mask: 0x01 (FILE_SHARE_READ), 0x02 (FILE_SHARE_WRITE), 0x04 (FILE_SHARE_DELETE)
@@ -902,6 +924,16 @@ func (f *OpenFile) SetPayloadID(id metadata.PayloadID) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.PayloadID = id
+}
+
+// IsDeletePending returns the committed delete-on-close flag under the read
+// lock. SET_INFO and the CLOSE delete-on-close election write it under the
+// write lock, from goroutines other than the handle's own, so every read
+// outside those critical sections goes through here.
+func (f *OpenFile) IsDeletePending() bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.DeletePending
 }
 
 // IsMtimeFrozen returns the MtimeFrozen flag under the read lock.
@@ -1339,6 +1371,18 @@ func (h *Handler) closeFilesWithFilter(
 			return true
 		}
 
+		// Delete-on-close decision. It runs here, ahead of everything that can
+		// make this handle leave the open-file table — the durable persist
+		// below removes it from h.files just as a full close does — because
+		// the decision and this handle's departure from the set of handles
+		// that can still honour a delete-on-close have to be one step. This
+		// pass decides and the third pass below removes; a concurrent closer
+		// scanning in between must not see a handle already written off, or
+		// it defers the unlink to one that will never perform it. Shared with
+		// close.go step 8; see doc_election.go. The unlink itself runs further
+		// down, after the lock release and the cache flush.
+		decision, docDelete := h.electDeleteOnClose(openFile)
+
 		// Durable handle persistence: when IsDurable is set AND this is a transport
 		// disconnect (not an explicit LOGOFF), persist the handle to the
 		// DurableHandleStore for later reconnection. On explicit LOGOFF the client
@@ -1353,8 +1397,10 @@ func (h *Handler) closeFilesWithFilter(
 		// file persists across the disconnect and a subsequent fresh CREATE sees
 		// the stale content instead of a freshly-created empty file. The matching
 		// delete_on_close2 test stays in KNOWN_FAILURES (same as Samba upstream).
-		hasDeleteOnClose := openFile.CreateOptions&types.FileDeleteOnClose != 0 ||
-			openFile.DeletePending
+		// A non-none decision is exactly "this handle carries a delete-on-close",
+		// read inside the election — so a DOC a concurrent closer propagated
+		// onto this handle a moment ago is honoured rather than persisted away.
+		hasDeleteOnClose := decision != docDecisionNone
 		if openFile.IsDurable && h.DurableStore != nil && isDisconnect && !hasDeleteOnClose {
 			username := ""
 			var sessionKeyHash [32]byte
@@ -1461,62 +1507,12 @@ func (h *Handler) closeFilesWithFilter(
 			h.flushFileCache(ctx, openFile)
 		}
 
-		// Handle delete-on-close (FileDispositionInformation OR per-handle
-		// initial DOC from a CREATE FILE_DELETE_ON_CLOSE that was not
-		// promoted earlier — TDIS / LOGOFF / disconnect skip the explicit
-		// CLOSE handler, so the same close.go promotion applies here).
-		//
-		// Promote per-handle InitialDeleteOnClose to shared committed
-		// DeletePending only when no OTHER handle on the same metadata
-		// file remains open: otherwise the unlink in handleDeleteOnClose
-		// would fire before the last sibling closes, violating MS-FSA
-		// 2.1.5.4 (delete-on-close removes the file when the LAST handle
-		// closes, not on the per-handle initial flag). When siblings
-		// remain, propagate the DOC + DOC-setter parent key onto them so
-		// the eventual sibling close in close.go (or this same teardown
-		// for sibling opens in this iteration) fires the delete instead.
-		isInitialDocOnly := openFile.InitialDeleteOnClose && !openFile.DeletePending
-		if isInitialDocOnly && len(openFile.MetadataHandle) > 0 {
-			otherHandleExists := false
-			h.files.Range(func(_, value any) bool {
-				other := value.(*OpenFile)
-				if other.FileID == openFile.FileID {
-					return true
-				}
-				if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
-					otherHandleExists = true
-					return false
-				}
-				return true
-			})
-			if otherHandleExists {
-				// Propagate DOC to remaining handles so their eventual
-				// close triggers the delete. Matches the close.go path
-				// at "DOC propagated to other handles (not last)".
-				h.files.Range(func(_, value any) bool {
-					other := value.(*OpenFile)
-					if other.FileID == openFile.FileID {
-						return true
-					}
-					if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
-						// Guard the write: concurrent QUERY_INFO/WRITE goroutines
-						// on the same session may be reading these fields.
-						other.mu.Lock()
-						other.DeletePending = true
-						other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
-						other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
-						other.mu.Unlock()
-					}
-					return true
-				})
-				logger.Debug(caller+": initial DOC propagated to other handles (not last)",
-					"path", openFile.Name().Path)
-				isInitialDocOnly = false // delete handled by remaining sibling
-			}
-		}
-		docName := openFile.Name()
-		if (openFile.DeletePending || isInitialDocOnly) && len(docName.ParentHandle) > 0 && docName.FileName != "" {
-			h.handleDeleteOnClose(ctx, sess, openFile, caller)
+		// Execute the delete-on-close decided above. TDIS / LOGOFF / disconnect
+		// skip the explicit CLOSE handler, so this is where the unlink happens
+		// for them. The target was snapshotted by the election, so a rename
+		// landing since cannot redirect it.
+		if decision == docDecisionDelete && len(docDelete.ParentHandle) > 0 && docDelete.FileName != "" {
+			h.handleDeleteOnClose(ctx, sess, openFile, docDelete, caller)
 		}
 
 		// Queue this handle's per-open lease/oplock record for release in the
@@ -1669,15 +1665,21 @@ func (h *Handler) purgeBlockStorePayload(ctx context.Context, handle metadata.Fi
 // different session/tree on the same transport. Waiting for an ACK here
 // would deadlock — the holder can only ack after the triggering request
 // returns.
-func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session, openFile *OpenFile, caller string) {
-	name := openFile.Name()
+func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session, openFile *OpenFile, target docTarget, caller string) {
+	name := target.Name
 	authCtx := h.buildCleanupAuthContext(ctx, sess)
 	// Thread the closing handle's RqLs ParentLeaseKey so notifyDirChange can
 	// apply the MS-SMB2 §3.3.4.20 / Samba `dirlease_should_break` parent-key
-	// suppression rule on the parent dir lease.
-	PropagateOpenFileParentLeaseKey(authCtx, openFile)
-	metaSvc := h.Registry.GetMetadataService()
-
+	// suppression rule on the parent dir lease. Suppression applies only when
+	// the closer's key matches the key whoever committed the delete-on-close
+	// recorded; when they differ every parent dir lease breaks. Same rule the
+	// explicit CLOSE path applies (close.go step 8).
+	docSetterKeysDiffer := target.HasDocSetterParentKey &&
+		openFile.HasParentLeaseKey &&
+		target.DocSetterParentKey != openFile.ParentLeaseKey
+	if !docSetterKeysDiffer {
+		PropagateOpenFileParentLeaseKey(authCtx, openFile)
+	}
 	if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
 		lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
 		// Exclude the closing session: its leases on this file are about to
@@ -1690,32 +1692,14 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 		}
 	}
 
-	var deleted bool
-	if openFile.IsDirectory {
-		if _, err := metaSvc.RemoveDirectory(authCtx, name.ParentHandle, name.FileName); err != nil {
-			logger.Debug(caller+": failed to delete directory", "path", name.Path, "error", err)
-		} else {
-			logger.Debug(caller+": directory deleted", "path", name.Path)
-			deleted = true
-		}
-	} else {
-		removed, _, err := metaSvc.RemoveFile(authCtx, name.ParentHandle, name.FileName)
-		if err != nil {
-			logger.Debug(caller+": failed to delete file", "path", name.Path, "error", err)
-		} else {
-			logger.Debug(caller+": file deleted", "path", name.Path)
-			deleted = true
-			// Purge content via RemoveFile's RETURNED PayloadID — empty when
-			// content must survive (surviving hard link / recycle to trash).
-			var removedPayloadID metadata.PayloadID
-			if removed != nil {
-				removedPayloadID = removed.PayloadID
-			}
-			h.purgeBlockStorePayload(ctx, openFile.MetadataHandle, removedPayloadID, name.Path, caller)
-		}
-	}
+	// Remove what the election resolved — for a stream handle carrying a
+	// base-file delete that is the base file, not the stream's own name —
+	// through the shared helper CLOSE also uses, so the cascade to stream
+	// siblings and the payload purge cannot drift between the two paths.
+	// See doc_election.go.
+	_, err := h.removeElectedTarget(ctx, authCtx, openFile, target, caller)
 
-	if deleted {
+	if err == nil {
 		// No SMBHandlerContext available on the TDIS/LOGOFF/disconnect
 		// teardown path — pass nil so the helper falls back to inline
 		// dispatch (those paths don't ship a triggering response on the
@@ -2611,7 +2595,7 @@ func logRenameConflictHolder(gate string, renamer, holder *OpenFile) {
 		"holderShareAccess", fmt.Sprintf("0x%x", holder.ShareAccess),
 		"holderDesiredAccess", fmt.Sprintf("0x%x", holder.DesiredAccess),
 		"holderIsDurable", holder.IsDurable,
-		"holderDeletePending", holder.DeletePending)
+		"holderDeletePending", holder.IsDeletePending())
 }
 
 // checkParentDirRenameConflict applies the destination-parent share-mode rule
