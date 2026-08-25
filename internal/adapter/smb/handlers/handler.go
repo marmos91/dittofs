@@ -1917,9 +1917,10 @@ func (h *Handler) cancelAsyncOpsForSession(sessionID uint64) {
 // When isDisconnect is true (transport drop), durable handles are preserved.
 // When false (explicit LOGOFF), all handles are fully closed.
 //
-// IMPORTANT: The caller must call SignalPendingCleanup(1) before calling
-// CleanupSession to ensure the cleanup barrier is visible to new sessions.
-// The matching Done happens via defer.
+// IMPORTANT: this consumes one cleanup-barrier count, retired from a defer so
+// it is released on a panicking unwind too. The caller must have armed that
+// count with SignalPendingCleanup before the call — one per session it is about
+// to clean up — so the barrier is visible to new sessions for the whole span.
 func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64, isDisconnect bool) {
 	defer h.cleanup.Done()
 
