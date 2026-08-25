@@ -691,6 +691,9 @@ func TestSession(t *testing.T) {
 // =============================================================================
 
 func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
+	// Every handle in these cases is a sibling in one directory.
+	adsParent := []byte{0xF0}
+
 	const (
 		fileReadData   = uint32(0x00000001)
 		fileWriteData  = uint32(0x00000002)
@@ -710,12 +713,13 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 			DesiredAccess:  fileReadData,
 			ShareAccess:    fileShareRead, // no FILE_SHARE_DELETE
 			MetadataHandle: []byte{0x01},
-		}).WithName(OpenName{Path: "file.txt:stream1"}))
+		}).WithName(OpenName{Path: "file.txt:stream1", FileName: "file.txt:stream1", ParentHandle: adsParent}))
 
 		conflict := h.checkShareModeConflict(
 			[]byte{0x02},
 			deleteAccess,
 			fileShareRead|fileShareWrite,
+			adsParent,
 			"file.txt",
 		)
 		if !conflict {
@@ -731,12 +735,13 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 			DesiredAccess:  fileReadData,
 			ShareAccess:    fileShareRead, // no write sharing
 			MetadataHandle: []byte{0x01},
-		}).WithName(OpenName{Path: "file.txt:stream1"}))
+		}).WithName(OpenName{Path: "file.txt:stream1", FileName: "file.txt:stream1", ParentHandle: adsParent}))
 
 		conflict := h.checkShareModeConflict(
 			[]byte{0x02},
 			fileWriteData,
 			fileShareRead|fileShareWrite,
+			adsParent,
 			"file.txt",
 		)
 		if conflict {
@@ -752,12 +757,13 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 			DesiredAccess:  fileReadData,
 			ShareAccess:    fileShareRead,
 			MetadataHandle: []byte{0x01},
-		}).WithName(OpenName{Path: "file.txt:stream1"}))
+		}).WithName(OpenName{Path: "file.txt:stream1", FileName: "file.txt:stream1", ParentHandle: adsParent}))
 
 		conflict := h.checkShareModeConflict(
 			[]byte{0x02},
 			fileWriteData,
 			fileShareRead|fileShareWrite,
+			adsParent,
 			"file.txt:stream2",
 		)
 		if conflict {
@@ -773,12 +779,13 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 			DesiredAccess:  fileReadData,
 			ShareAccess:    fileShareRead,
 			MetadataHandle: []byte{0x01},
-		}).WithName(OpenName{Path: "file.txt:stream1"}))
+		}).WithName(OpenName{Path: "file.txt:stream1", FileName: "file.txt:stream1", ParentHandle: adsParent}))
 
 		conflict := h.checkShareModeConflict(
 			[]byte{0x01},
 			fileWriteData,
 			fileShareRead|fileShareWrite,
+			adsParent,
 			"file.txt:stream1",
 		)
 		if !conflict {
@@ -794,12 +801,13 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 			DesiredAccess:  fileReadData | fileWriteData,
 			ShareAccess:    0,
 			MetadataHandle: []byte{0x01},
-		}).WithName(OpenName{Path: "file1.txt"}))
+		}).WithName(OpenName{Path: "file1.txt", FileName: "file1.txt", ParentHandle: adsParent}))
 
 		conflict := h.checkShareModeConflict(
 			[]byte{0x02},
 			fileReadData|fileWriteData,
 			0,
+			adsParent,
 			"file2.txt:stream",
 		)
 		if conflict {
@@ -816,12 +824,13 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 			DesiredAccess:  fileReadAttributes,
 			ShareAccess:    0,
 			MetadataHandle: []byte{0x01},
-		}).WithName(OpenName{Path: "file.txt"}))
+		}).WithName(OpenName{Path: "file.txt", FileName: "file.txt", ParentHandle: adsParent}))
 
 		conflict := h.checkShareModeConflict(
 			[]byte{0x01},
 			fileReadData|fileWriteData,
 			fileShareRead|fileShareWrite,
+			adsParent,
 			"file.txt",
 		)
 		if conflict {
@@ -837,8 +846,8 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 			DesiredAccess:  writeDac,
 			ShareAccess:    0,
 			MetadataHandle: []byte{0x01},
-		}).WithName(OpenName{Path: "file.txt"}))
-		if h.checkShareModeConflict([]byte{0x01}, fileReadData|fileWriteData, fileShareRead|fileShareWrite, "file.txt") {
+		}).WithName(OpenName{Path: "file.txt", FileName: "file.txt", ParentHandle: adsParent}))
+		if h.checkShareModeConflict([]byte{0x01}, fileReadData|fileWriteData, fileShareRead|fileShareWrite, adsParent, "file.txt") {
 			t.Error("Expected no conflict: WRITE_DAC-only existing open must not impose share-mode constraint")
 		}
 	})
@@ -851,12 +860,13 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 			DesiredAccess: fileReadData | fileWriteData,
 			ShareAccess:   0,
 			IsPipe:        true,
-		}).WithName(OpenName{Path: "srvsvc"}))
+		}).WithName(OpenName{Path: "srvsvc", FileName: "srvsvc", ParentHandle: adsParent}))
 
 		conflict := h.checkShareModeConflict(
 			[]byte{0x01},
 			fileReadData,
 			fileShareRead,
+			adsParent,
 			"srvsvc",
 		)
 		if conflict {
@@ -874,6 +884,9 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 // MAXIMUM_ALLOWED opener was treated as read-only and bypassed SHARE_WRITE /
 // SHARE_DELETE enforcement in both directions.
 func TestCheckShareModeConflict_MaximumAllowed(t *testing.T) {
+	// Every handle in these cases is a sibling in one directory.
+	adsParent := []byte{0xF0}
+
 	const (
 		fileReadData    = uint32(0x00000001)
 		fileWriteData   = uint32(0x00000002)
@@ -891,10 +904,10 @@ func TestCheckShareModeConflict_MaximumAllowed(t *testing.T) {
 			DesiredAccess:  maximumAllowed,
 			ShareAccess:    fileShareRead, // no FILE_SHARE_WRITE
 			MetadataHandle: []byte{0x01},
-		}).WithName(OpenName{Path: "file.txt"}))
+		}).WithName(OpenName{Path: "file.txt", FileName: "file.txt", ParentHandle: adsParent}))
 		// New writer with full sharing must conflict: the existing
 		// MAXIMUM_ALLOWED handle holds write and does not share it.
-		if !h.checkShareModeConflict([]byte{0x01}, fileWriteData, fileShareRead|fileShareWrite|fileShareDelete, "file.txt") {
+		if !h.checkShareModeConflict([]byte{0x01}, fileWriteData, fileShareRead|fileShareWrite|fileShareDelete, adsParent, "file.txt") {
 			t.Error("Expected conflict: existing MAXIMUM_ALLOWED holds write but does not share it")
 		}
 	})
@@ -907,8 +920,8 @@ func TestCheckShareModeConflict_MaximumAllowed(t *testing.T) {
 			DesiredAccess:  maximumAllowed,
 			ShareAccess:    fileShareRead | fileShareWrite, // no FILE_SHARE_DELETE
 			MetadataHandle: []byte{0x01},
-		}).WithName(OpenName{Path: "file.txt"}))
-		if !h.checkShareModeConflict([]byte{0x01}, deleteAccess, fileShareRead|fileShareWrite|fileShareDelete, "file.txt") {
+		}).WithName(OpenName{Path: "file.txt", FileName: "file.txt", ParentHandle: adsParent}))
+		if !h.checkShareModeConflict([]byte{0x01}, deleteAccess, fileShareRead|fileShareWrite|fileShareDelete, adsParent, "file.txt") {
 			t.Error("Expected conflict: existing MAXIMUM_ALLOWED holds delete but does not share it")
 		}
 	})
@@ -921,10 +934,10 @@ func TestCheckShareModeConflict_MaximumAllowed(t *testing.T) {
 			DesiredAccess:  fileReadData,
 			ShareAccess:    fileShareRead, // no FILE_SHARE_WRITE
 			MetadataHandle: []byte{0x01},
-		}).WithName(OpenName{Path: "file.txt"}))
+		}).WithName(OpenName{Path: "file.txt", FileName: "file.txt", ParentHandle: adsParent}))
 		// New MAXIMUM_ALLOWED opener implies write; the existing handle does
 		// not share write, so this must conflict.
-		if !h.checkShareModeConflict([]byte{0x01}, maximumAllowed, fileShareRead|fileShareWrite|fileShareDelete, "file.txt") {
+		if !h.checkShareModeConflict([]byte{0x01}, maximumAllowed, fileShareRead|fileShareWrite|fileShareDelete, adsParent, "file.txt") {
 			t.Error("Expected conflict: new MAXIMUM_ALLOWED implies write, existing handle does not share write")
 		}
 	})
@@ -936,8 +949,8 @@ func TestCheckShareModeConflict_MaximumAllowed(t *testing.T) {
 			DesiredAccess:  fileReadData,
 			ShareAccess:    fileShareRead | fileShareWrite, // no FILE_SHARE_DELETE
 			MetadataHandle: []byte{0x01},
-		}).WithName(OpenName{Path: "file.txt"}))
-		if !h.checkShareModeConflict([]byte{0x01}, maximumAllowed, fileShareRead|fileShareWrite|fileShareDelete, "file.txt") {
+		}).WithName(OpenName{Path: "file.txt", FileName: "file.txt", ParentHandle: adsParent}))
+		if !h.checkShareModeConflict([]byte{0x01}, maximumAllowed, fileShareRead|fileShareWrite|fileShareDelete, adsParent, "file.txt") {
 			t.Error("Expected conflict: new MAXIMUM_ALLOWED implies delete, existing handle does not share delete")
 		}
 	})
@@ -1025,26 +1038,25 @@ func TestOpenFile(t *testing.T) {
 }
 
 // =============================================================================
-// adsBasePath Tests
+// adsBaseName Tests
 // =============================================================================
 
-func TestAdsBasePath(t *testing.T) {
+func TestAdsBaseName(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
 		expected string
 	}{
-		{"StreamWithDir", "dir/file.txt:stream", "dir/file.txt"},
-		{"StreamWithoutDir", "file.txt:stream", "file.txt"},
+		{"Stream", "file.txt:stream", "file.txt"},
 		{"NotADS_PlainFile", "file.txt", ""},
 		{"NotADS_Empty", "", ""},
-		{"NotADS_DirAndFile", "dir/file.txt", ""},
+		{"LeadingColon_NotADS", ":stream", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := adsBasePath(tc.input)
+			got := adsBaseName(tc.input)
 			if got != tc.expected {
-				t.Errorf("adsBasePath(%q) = %q, want %q", tc.input, got, tc.expected)
+				t.Errorf("adsBaseName(%q) = %q, want %q", tc.input, got, tc.expected)
 			}
 		})
 	}

@@ -1391,7 +1391,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	// Cross-stream share-mode check for new files (no lease break needed).
 	if !fileExists {
-		if shareConflict := h.checkShareModeConflict(nil, req.DesiredAccess, req.ShareAccess, filename); shareConflict {
+		if shareConflict := h.checkShareModeConflict(nil, req.DesiredAccess, req.ShareAccess, parentHandle, baseName); shareConflict {
 			logger.Debug("CREATE: sharing violation on new file",
 				"path", filename,
 				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
@@ -1414,7 +1414,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// (smbtorture smb2.streams.delete).
 	if fileExists {
 		if existingHandle, encErr := metadata.EncodeFileHandle(existingFile); encErr == nil {
-			if h.isFileOrBaseDeletePending(existingHandle, filename) {
+			if h.isFileOrBaseDeletePending(existingHandle, parentHandle, baseName) {
 				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDeletePending}}, nil
 			}
 		}
@@ -1423,7 +1423,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// removed by the unlink), a deferred base-file delete may still be
 	// pending on an open stream handle. Check by path.
 	if !fileExists {
-		if h.isFileOrBaseDeletePending(nil, filename) {
+		if h.isFileOrBaseDeletePending(nil, parentHandle, baseName) {
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDeletePending}}, nil
 		}
 	}

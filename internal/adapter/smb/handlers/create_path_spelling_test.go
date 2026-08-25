@@ -186,7 +186,7 @@ func TestIsFileOrBaseDeletePending_SpellingIndependent(t *testing.T) {
 			stream.BaseFileDeletePending = true
 			h.StoreOpenFile(stream)
 
-			if !h.isFileOrBaseDeletePending(baseHandle, "f") {
+			if !h.isFileOrBaseDeletePending(baseHandle, parent, "f") {
 				t.Errorf("stored path %q: base open not refused, "+
 					"want DELETE_PENDING from the stream handle", storedPath)
 			}
@@ -207,7 +207,7 @@ func TestIsFileOrBaseDeletePending_SpellingIndependent(t *testing.T) {
 		stream.BaseFileDeletePending = true
 		h.StoreOpenFile(stream)
 
-		if h.isFileOrBaseDeletePending(baseHandle, "f") {
+		if h.isFileOrBaseDeletePending(baseHandle, parent, "f") {
 			t.Error("a stream in a different directory must not make this base delete-pending")
 		}
 	})

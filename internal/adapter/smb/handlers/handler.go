@@ -2311,8 +2311,16 @@ func (h *Handler) isFileDeletePending(fileHandle metadata.FileHandle) bool {
 //   - Opening a stream:   reject if any handle on the base file or sibling
 //     stream carries BaseFileDeletePending.
 //
-// filePath is the normalized path being opened (e.g., "file" or "file:Stream One").
-func (h *Handler) isFileOrBaseDeletePending(fileHandle metadata.FileHandle, filePath string) bool {
+// The open is identified by its resolved parent directory handle and its
+// parent-relative name (e.g. "file" or "file:Stream One"), not by its full
+// path. A base file and its streams are siblings in one directory, so that
+// pair relates them by identity; the full path cannot, because it reproduces
+// whatever spelling the client sent.
+func (h *Handler) isFileOrBaseDeletePending(
+	fileHandle metadata.FileHandle,
+	parentHandle metadata.FileHandle,
+	fileName string,
+) bool {
 	// Fast path: direct metadata-handle match against an existing handle
 	// whose own DeletePending is set. Covers the same-file re-open case
 	// (smbtorture smb2.oplock.doc, smb2.streams.delete).
@@ -2320,7 +2328,7 @@ func (h *Handler) isFileOrBaseDeletePending(fileHandle metadata.FileHandle, file
 		return true
 	}
 
-	openBase := adsBasePath(filePath) // non-empty if filePath is a stream
+	openBase := adsBaseName(fileName) // non-empty if fileName is a stream
 	pending := false
 	h.files.Range(func(_, value any) bool {
 		existing := value.(*OpenFile)
@@ -2335,19 +2343,22 @@ func (h *Handler) isFileOrBaseDeletePending(fileHandle metadata.FileHandle, file
 		if !bdp {
 			return true
 		}
-		existingPath := existing.Name().Path
-		existingBase := adsBasePath(existingPath)
+		existingName := existing.Name()
+		if !bytes.Equal(existingName.ParentHandle, parentHandle) {
+			return true
+		}
+		existingBase := adsBaseName(existingName.FileName)
 		if openBase == "" {
 			// Opening a base file: match against any stream of this base.
-			if strings.EqualFold(existingBase, filePath) {
+			if strings.EqualFold(existingBase, fileName) {
 				pending = true
 				return false
 			}
 		} else {
 			// Opening a stream: match against a sibling stream sharing the
-			// same base path, or against a base-file handle of that base.
+			// same base name, or against a base-file handle of that base.
 			if strings.EqualFold(existingBase, openBase) ||
-				strings.EqualFold(existingPath, openBase) {
+				strings.EqualFold(existingName.FileName, openBase) {
 				pending = true
 				return false
 			}
@@ -2365,7 +2376,14 @@ func (h *Handler) isFileOrBaseDeletePending(fileHandle metadata.FileHandle, file
 //   - Stream A vs Stream B (different streams, same base) → NOT checked
 //
 // Returns true if a conflict exists (CREATE should fail with STATUS_SHARING_VIOLATION).
-func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesiredAccess, newShareAccess uint32, filePath string) bool {
+// The open is identified by its resolved parent directory handle and its
+// parent-relative name, for the reason given on isFileOrBaseDeletePending.
+func (h *Handler) checkShareModeConflict(
+	fileHandle metadata.FileHandle,
+	newDesiredAccess, newShareAccess uint32,
+	parentHandle metadata.FileHandle,
+	fileName string,
+) bool {
 	const (
 		fileShareRead   = uint32(0x01)
 		fileShareWrite  = uint32(0x02)
@@ -2415,7 +2433,7 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 		return access&(deleteAccess|genericAll|maxAllowed) != 0
 	}
 
-	newBase := adsBasePath(filePath)
+	newBase := adsBaseName(fileName)
 
 	conflict := false
 	h.files.Range(func(key, value any) bool {
@@ -2433,13 +2451,18 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 		sameFile := bytes.Equal(existing.MetadataHandle, fileHandle)
 		crossStream := false
 		if !sameFile {
-			existingPath := existing.Name().Path
-			existingBase := adsBasePath(existingPath)
+			existingName := existing.Name()
+			// A base file and its streams live in one directory; a handle
+			// anywhere else cannot be related to this open.
+			if !bytes.Equal(existingName.ParentHandle, parentHandle) {
+				return true
+			}
+			existingBase := adsBaseName(existingName.FileName)
 			baseVsStream := false
 			if newBase == "" && existingBase != "" {
-				baseVsStream = strings.EqualFold(existingBase, filePath)
+				baseVsStream = strings.EqualFold(existingBase, fileName)
 			} else if newBase != "" && existingBase == "" {
-				baseVsStream = strings.EqualFold(newBase, existingPath)
+				baseVsStream = strings.EqualFold(newBase, existingName.FileName)
 			}
 			if !baseVsStream {
 				return true
@@ -2513,23 +2536,16 @@ func (h *Handler) lookupCaseInsensitive(
 	return metaSvc.LookupCaseInsensitive(authCtx, parentHandle, name)
 }
 
-// adsBasePath extracts the base file path from a potentially ADS-qualified path.
-// For "dir/file.txt:stream" returns "dir/file.txt".
-// For "dir/file.txt" (no stream) returns "" (not an ADS).
-func adsBasePath(filePath string) string {
-	lastSep := strings.LastIndex(filePath, "/")
-	var fileName string
-	if lastSep >= 0 {
-		fileName = filePath[lastSep+1:]
-	} else {
-		fileName = filePath
-	}
+// adsBaseName extracts the base file name from a potentially ADS-qualified
+// parent-relative name. For "file.txt:stream" it returns "file.txt"; for
+// "file.txt" (not a stream) it returns "".
+//
+// Stream names cannot contain a path separator (rejected at CREATE), so this
+// operates on a single name component, never a path.
+func adsBaseName(fileName string) string {
 	colonIdx := strings.Index(fileName, ":")
 	if colonIdx <= 0 {
 		return ""
-	}
-	if lastSep >= 0 {
-		return filePath[:lastSep+1] + fileName[:colonIdx]
 	}
 	return fileName[:colonIdx]
 }
