@@ -110,19 +110,16 @@ type BlockSink interface {
 // runStart/runEnd bound the committed part of the re-carved (dirty) range;
 // newOffsets are the chunk offsets this run wrote (so the reap keeps them and
 // deletes only stale straddlers/interior rows). Sinks without a metadata store
-// (test fakes) simply don't implement it and the reap is skipped. A sink that
-// implements it is expected to implement manifestRowEnder too: the reap is
-// guarded on that lookup, and both are answered out of the same metadata store.
+// (test fakes) simply don't implement it and the reap is skipped.
 type supersededReaper interface {
 	ReapSupersededManifest(ctx context.Context, id FileID, runStart, runEnd int64, newOffsets map[int64]struct{}) error
 }
 
 // manifestRowEnder is an optional BlockSink capability: it reports how far the
-// manifest coverage straddling an offset reaches. Carve asks it twice: to widen
-// a run to a row boundary before packing it, and to refuse a reap that would end
-// inside a row (see reapEndsOnRowBoundary, which carries the argument). Sinks
-// without a metadata store (test fakes) don't implement it: a run is carved
-// exactly as snapshotted and the reap runs unguarded.
+// manifest coverage straddling an offset reaches. Carve uses it to widen a run to
+// a row boundary before packing it, so the fresh tiling covers every row the
+// run-end reap deletes. Sinks without a metadata store (test fakes) don't
+// implement it: a run is carved exactly as snapshotted.
 //
 // The answer is the greatest end among rows starting strictly before off and
 // reaching past it, or off itself when none does — never a value below off. A
@@ -310,11 +307,7 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 			if st.committedTo <= st.start() {
 				continue
 			}
-			onBoundary, rerr := s.reapEndsOnRowBoundary(ctx, id, st.committedTo)
-			if rerr == nil && onBoundary {
-				rerr = r.ReapSupersededManifest(ctx, id, st.start(), st.committedTo, st.newOffsets)
-			}
-			if rerr != nil && err == nil {
+			if rerr := r.ReapSupersededManifest(ctx, id, st.start(), st.committedTo, st.newOffsets); rerr != nil && err == nil {
 				err = rerr
 			}
 		}
@@ -324,40 +317,6 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 	}
 	s.maybeResetDirtyClock(sh, id)
 	return nil
-}
-
-// reapEndsOnRowBoundary reports whether a reap ending at end can delete the rows
-// it covers without stranding any of their bytes.
-//
-// ReapSupersededManifest classifies a row by its start alone: one starting
-// inside the reaped span is deleted whole however far past end it reaches. The
-// stretch from end to that row's end then keeps no cover at all — the next dirty
-// run tiles from its own start, the reap's narrowing branch only ever protects a
-// row starting before the span, and a row claims a prefix of its chunk so none
-// can be made to start mid-chunk and take the stretch over. Nothing revisits it,
-// and once the local bytes are evicted a read of it zero-fills.
-//
-// end is safe exactly when no row starts before it and reaches past it, which is
-// what ManifestRowEndAfter answers. Refusing the whole reap when one does is
-// deliberately blunt: it leaves every stale row of that run alive, so the range
-// keeps overlapping cover and a read there can resolve to the stale row and
-// serve old bytes. That is the recoverable failure of the two — every byte is
-// still addressable and the manifest can be repaired — where a stranded stretch
-// is not.
-//
-// ponytail: a whole-manifest read per reaped run, on top of the reap's own scan
-// of the same rows; fold the check into the reap transaction if a carve profile
-// ever shows the second scan.
-func (s *Store) reapEndsOnRowBoundary(ctx context.Context, id FileID, end int64) (bool, error) {
-	ender, ok := s.sink.(manifestRowEnder)
-	if !ok {
-		return true, nil // only a test fake reaps without the lookup; leave it unguarded
-	}
-	rowEnd, err := ender.ManifestRowEndAfter(ctx, id, end)
-	if err != nil {
-		return false, err
-	}
-	return rowEnd <= end, nil
 }
 
 // splitRuns groups an offset-ordered snapshot into maximal contiguous runs; a
@@ -630,10 +589,10 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 // still ends inside the row.
 //
 // Skipping is not free, and every bail below shares the cost: the run then still
-// ends inside a row, so reapEndsOnRowBoundary refuses its reap and every row the
-// run superseded stays alive next to the fresh ones. Extending is what earns the
-// reap; the guard is only what keeps the alternative from being a stranded
-// stretch of file with no manifest cover at all.
+// ends inside a row, and the reap spares that row whole rather than strand the
+// stretch past the run — so the range keeps a stale cover overlapping the fresh
+// tiling instead of being tiled cleanly. Extending is what earns the clean
+// tiling.
 //
 // A row reaching past limit, the offset the next run starts at, is refused
 // outright. It is redundant today: runs are packed in ascending file-offset

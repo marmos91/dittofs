@@ -174,10 +174,9 @@ func TestCarvePackFlipPlanWatermarks(t *testing.T) {
 // the next pass — reaping into it would delete that cover with no fresh tiling
 // to replace it.
 //
-// The straddled subtest pins that the frontier goes through the same boundary
-// guard as a whole run's end: a row starting inside the prefix and reaching past
-// the frontier would be deleted whole by that reap, so the reap is refused
-// rather than allowed to strand the stretch past it.
+// The straddled subtest pins that a row reaching past the frontier does not
+// suppress the reap: it still runs over exactly the committed prefix, and
+// sparing that one row is the metadata reap's own job.
 func TestCarvePackSpanningBlockFailureReapsTheCommittedPrefix(t *testing.T) {
 	t.Run("boundary", func(t *testing.T) { spanningBlockFailureReap(t, false) })
 	t.Run("straddled", func(t *testing.T) { spanningBlockFailureReap(t, true) })
@@ -234,9 +233,6 @@ func spanningBlockFailureReap(t *testing.T, straddle bool) {
 	}
 
 	want := [][2]int64{{0, frontier}}
-	if straddle {
-		want = nil
-	}
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
 	if !reflect.DeepEqual(sink.reaps, want) {

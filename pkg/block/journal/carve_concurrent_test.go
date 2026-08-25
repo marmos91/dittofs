@@ -194,6 +194,8 @@ type extendingSink struct {
 	failFirstReap error
 	// straddleEverywhere answers every lookup with a row reaching one byte past
 	// the offset asked about, so no reap span ever ends on a row boundary.
+	// Journal reaps over its span either way — sparing the straddling row is the
+	// metadata reap's job, not a reason to skip the whole reap.
 	straddleEverywhere bool
 }
 
@@ -222,13 +224,12 @@ func (e *extendingSink) ReapSupersededManifest(_ context.Context, _ FileID, runS
 }
 
 // TestCarveRunDoesNotExtendPastNextRun pins the end-to-end property: no run's
-// reap range ever reaches into a range another run owns, and a run that could
-// not be widened to a row boundary is not reaped at all. The run-end reap
-// deletes every manifest row starting inside its range that it did not itself
-// write, whole and regardless of how far past the range it reaches, so both a
-// reap range crossing into the next run and a reap ending inside a row would
-// drop cover nothing replaces, leaving an uncovered range that cold-reads as
-// zeros with no error anywhere.
+// reap range ever reaches into a range another run owns, and every run that
+// committed rows is reaped over exactly the range those rows cover — including a
+// run that could not be widened to a row boundary. A reap range crossing into
+// the next run would delete cover that run has not replaced yet; a reap range
+// short of the rows it committed would leave the rows they superseded alive
+// forever, since nothing re-carves an already-flipped range.
 //
 // It does not, on its own, pin the extension refusal in extendRunToRowEnd —
 // warmTail's own all-or-nothing bail on a non-warm interval produces the same
@@ -292,11 +293,11 @@ func TestCarveRunDoesNotExtendPastNextRun(t *testing.T) {
 		t.Fatalf("the gated lookup was never reached, so the extension path this test drives was never exercised and the assertions below prove nothing")
 	}
 	// The first run ends at the gated offset, inside a row reaching to 4*rec, and
-	// the refusal above left it there: its reap is refused rather than allowed to
-	// delete that row and strand the stretch past the run. The second run ends on
-	// a boundary and is reaped as usual.
-	if want := [][2]int64{{2 * rec, 3 * rec}}; !reflect.DeepEqual(reaps, want) {
-		t.Fatalf("reaps=%v, want %v: only the run whose end is a row boundary", reaps, want)
+	// the refusal above left it there — it is still reaped over its own range,
+	// since the straddling row survives that reap whole and nothing is stranded.
+	// The second run ends on a boundary and is reaped as usual.
+	if want := [][2]int64{{0, rec}, {2 * rec, 3 * rec}}; !reflect.DeepEqual(reaps, want) {
+		t.Fatalf("reaps=%v, want %v: each run over exactly the range its rows cover", reaps, want)
 	}
 	// No run's reap range may reach into a range another run is carving.
 	for _, r := range reaps {
