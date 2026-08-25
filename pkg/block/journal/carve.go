@@ -7,7 +7,6 @@ import (
 	"io"
 	"maps"
 	"math"
-	"sort"
 	"sync"
 
 	"lukechampine.com/blake3"
@@ -639,6 +638,11 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 // to re-tile the range they share with a superseded row, which is the same price
 // a partial overwrite of a warm interval already pays.
 //
+// It also reports how far the manifest coverage straddling the run's end
+// reaches, so a caller that has to act on the rows the run stops inside does not
+// pay the straddle lookup a second time. That answer is the run's own end
+// whenever the lookup was not needed or the extension consumed the row.
+//
 // The extension is skipped whole unless every byte of it is live, contiguous and
 // warm. An evicted range holds no local bytes to re-chunk, and half an extension
 // still ends inside the row.
@@ -665,10 +669,6 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 // ponytail: a row reaching past a later dirty run is left alone, so that run
 // still ends mid-row; covering it means merging the two runs, which is worth
 // building only if that shape shows up in practice.
-// It also reports how far the manifest coverage straddling the run's end
-// reaches, so a caller that has to act on the rows the run stops inside does not
-// pay the straddle lookup a second time. That answer is the run's own end
-// whenever the lookup was not needed or the extension consumed the row.
 func (s *Store) extendRunToRowEnd(ctx context.Context, sh *shard, id FileID, run []interval, limit int64) ([]interval, int64, error) {
 	runEnd := run[len(run)-1].end()
 	ender, ok := s.sink.(manifestRowEnder)
@@ -709,15 +709,6 @@ func (s *Store) extendRunToRowEnd(ctx context.Context, sh *shard, id FileID, run
 	return append(out, tail...), rowEnd, nil
 }
 
-// syncedRanges returns the sub-ranges of [from, to) that hold data durable on
-// the remote store — resident or evicted — merged and ascending.
-//
-// It is the discriminator the manifest cannot supply. A range with no interval
-// is a hole: nothing was ever written there, or a punch took it away, and it
-// must read as zeros. A range whose interval is still dirty is about to be
-// re-carved and is served from the local tier until it is. Neither is owed a
-// manifest row, and covering either one with a row that used to span it puts
-// back bytes the file no longer has.
 // anySyncedFrom reports whether any range at or after off is durable on the
 // remote. It is the cheap gate on the whole straddle question: a run with
 // nothing synced past its end can neither be extended nor leave a replaced row
@@ -737,6 +728,17 @@ func anySyncedFrom(sh *shard, id FileID, off int64) bool {
 	return false
 }
 
+// syncedRanges returns the sub-ranges of [from, to) that hold data durable on
+// the remote store — resident or evicted — coalesced and ascending. Live
+// intervals are held in ascending file order, so one forward walk emits them
+// already ordered and only touching pieces need joining.
+//
+// It is the discriminator the manifest cannot supply. A range with no interval
+// is a hole: nothing was ever written there, or a punch took it away, and it
+// must read as zeros. A range whose interval is still dirty is about to be
+// re-carved and is served from the local tier until it is. Neither is owed a
+// manifest row, and covering either one with a row that used to span it puts
+// back bytes the file no longer has.
 func syncedRanges(sh *shard, id FileID, from, to int64) [][2]int64 {
 	if from >= to {
 		return nil
@@ -747,25 +749,18 @@ func syncedRanges(sh *shard, id FileID, from, to int64) [][2]int64 {
 	if fi == nil {
 		return nil
 	}
-	spans := make([][2]int64, 0, 4)
+	var out [][2]int64
 	for k := range fi.ivs {
 		iv := fi.ivs[k]
 		if !iv.synced || iv.end() <= from || iv.fileOff >= to {
 			continue
 		}
-		spans = append(spans, [2]int64{max(iv.fileOff, from), min(iv.end(), to)})
-	}
-	sort.Slice(spans, func(i, j int) bool { return spans[i][0] < spans[j][0] })
-	out := spans[:0]
-	for _, sp := range spans {
-		if n := len(out); n > 0 && sp[0] <= out[n-1][1] {
-			out[n-1][1] = max(out[n-1][1], sp[1])
+		lo, hi := max(iv.fileOff, from), min(iv.end(), to)
+		if n := len(out); n > 0 && lo <= out[n-1][1] {
+			out[n-1][1] = max(out[n-1][1], hi)
 			continue
 		}
-		out = append(out, sp)
-	}
-	if len(out) == 0 {
-		return nil
+		out = append(out, [2]int64{lo, hi})
 	}
 	return out
 }

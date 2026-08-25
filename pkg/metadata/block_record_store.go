@@ -337,11 +337,8 @@ func PreserveClobberedRow(ctx context.Context, tx Transaction, payloadID string,
 	if err != nil || old == nil {
 		return err
 	}
-	rowStart, ok := block.ParseChunkOffset(old.ID)
-	if !ok {
-		return nil
-	}
-	rowEnd := int64(rowStart) + int64(old.DataSize)
+	// The row was read by the key runStart builds, so runStart is its start.
+	rowEnd := runStart + int64(old.DataSize)
 	if rowEnd <= runEnd {
 		return nil // the run re-covers everything this row claimed
 	}
@@ -351,7 +348,7 @@ func PreserveClobberedRow(ctx context.Context, tx Transaction, payloadID string,
 		if lo >= hi {
 			continue
 		}
-		piece, ok := narrowOffHead(old, int64(rowStart), lo, hi)
+		piece, ok := narrowOffHead(old, runStart, lo, hi)
 		if !ok {
 			continue // the claim will not fit the row's fields: leave it behind
 		}
