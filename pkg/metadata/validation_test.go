@@ -610,3 +610,59 @@ func TestPointerHelpers(t *testing.T) {
 		assert.True(t, *ptr)
 	})
 }
+
+// ============================================================================
+// ValidateShareName Tests
+// ============================================================================
+
+func TestValidateShareName(t *testing.T) {
+	t.Parallel()
+
+	longName := strings.Repeat("a", MaxShareNameLen+1)
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{"plain name", "data", false},
+		{"leading slash", "/data", false},
+		{"dots inside the name", "/my.share.v2", false},
+		{"name ending in a dot", "/share.", false},
+		{"three dots", "/...", false},
+		{"embedded slash", "/a/b", false},
+
+		{"empty", "", true},
+		{"contains colon", "/da:ta", true},
+		{"too long", longName, true},
+
+		// A name whose path form is "", "." or ".." does not name a directory
+		// inside the per-share tree; see namesShareDirectory.
+		{"dot", ".", true},
+		{"dot with leading slash", "/.", true},
+		{"parent", "..", true},
+		{"parent with leading slash", "/..", true},
+		{"parent with repeated slashes", "//..", true},
+
+		// normalizeShareName turns an empty or all-slash request into "/",
+		// which names the shares tree itself rather than a share inside it.
+		{"root", "/", true},
+		{"repeated slashes only", "///", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := ValidateShareName(tt.input)
+			if tt.wantErr {
+				require.Error(t, err, "expected %q to be rejected", tt.input)
+				var se *StoreError
+				require.ErrorAs(t, err, &se)
+				assert.Equal(t, ErrInvalidArgument, se.Code)
+				return
+			}
+			assert.NoError(t, err, "expected %q to be accepted", tt.input)
+		})
+	}
+}

@@ -131,6 +131,10 @@ const (
 // recoverable once a share exists: a name containing ':' yields handles whose
 // UUID component fails to parse, and a name longer than MaxShareNameLen yields
 // no handle at all, so every file operation on the share fails at handle mint.
+//
+// It also rejects names that cannot address a directory of their own beneath
+// the per-share storage tree; see namesShareDirectory.
+//
 // Call this at every seam that creates a share, before any state is persisted.
 func ValidateShareName(name string) error {
 	switch {
@@ -143,8 +147,36 @@ func ValidateShareName(name string) error {
 			"share name %q is %d bytes, exceeding the %d-byte maximum "+
 				`(a %d-byte file handle holds "<share>:<uuid>")`,
 			name, len(name), MaxShareNameLen, MaxFileHandleSize))
+	case !namesShareDirectory(name):
+		return NewInvalidArgumentError(fmt.Sprintf(
+			`share name %q must name a directory inside the shares tree, `+
+				`not "", "." or ".."`, name))
 	}
 	return nil
+}
+
+// namesShareDirectory reports whether name still names a directory that can sit
+// inside the per-share tree once the leading slashes callers prepend are gone.
+//
+// The per-share data directory is built as Join(base, "shares", <name>), and
+// the sanitizer that produces that last component escapes '/' but leaves '.'
+// untouched. So ".." reaches Join intact and resolves the share's directory to
+// base, outside the tree that keeps shares isolated from one another, while "."
+// and the empty string collapse onto the tree itself — a directory every such
+// share would then share. None of the three names a directory of its own.
+//
+// Callers normalize a name to exactly one leading slash before validating, and
+// that normalization turns an empty request into "/", so the spellings that
+// arrive here are "/", "/." and "/..". The sanitizer strips only a single
+// leading slash, which leaves "//.." inert on its own, but TrimLeft folds every
+// spelling in: a share addressing the tree or its parent is meaningless however
+// it is written.
+func namesShareDirectory(name string) bool {
+	switch strings.TrimLeft(name, "/") {
+	case "", ".", "..":
+		return false
+	}
+	return true
 }
 
 // ValidateName validates a filename for creation/move operations.
