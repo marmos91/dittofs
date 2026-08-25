@@ -66,6 +66,11 @@ func putFileChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, blocks [
 	return true, scanned, nil
 }
 
+// maxBoundParams is the ceiling a multi-row statement's batch size is derived
+// from: SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999, and the margin leaves
+// room for a statement that binds a value outside its per-row group.
+const maxBoundParams = 900
+
 // storedChunkRef is a stored file_block_refs row minus its offset (the map key).
 type storedChunkRef struct {
 	size  int32
@@ -218,12 +223,15 @@ func deleteChunkRefOffsets(ctx context.Context, tx execer, fileID uuid.UUID, off
 
 // upsertChunkRefs inserts-or-updates the given refs for fileID with a multi-row
 // INSERT ... ON CONFLICT per batch instead of one Exec per ref. Batches are
-// capped so the bound-parameter count stays under SQLite's default limit; 5
-// columns per row → 200 rows = 1000 params. Incoming offsets are unique under
-// the (file_id, "offset") PK, so no batch upserts the same row twice.
+// capped so the bound-parameter count stays under SQLite's default limit of 999,
+// which is why the row count is DERIVED from the column count rather than fixed:
+// a column added to the statement shrinks the batch instead of pushing it over
+// the cap, where the whole Exec would fail with "too many SQL variables".
+// Incoming offsets are unique under the (file_id, "offset") PK, so no batch
+// upserts the same row twice.
 func upsertChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, refs []block.ChunkRef) error {
 	const colsPerRow = 5
-	const rowsPerBatch = 200
+	const rowsPerBatch = maxBoundParams / colsPerRow
 	for start := 0; start < len(refs); start += rowsPerBatch {
 		end := start + rowsPerBatch
 		if end > len(refs) {
