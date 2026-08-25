@@ -3158,3 +3158,41 @@ func TestCloseFilesWithFilter_OnlyTombstonesDirectories(t *testing.T) {
 		t.Fatalf("close tombstones after tearing down 64 file handles = %d, want 0", got)
 	}
 }
+
+// TestNotifyRegistry_CloseTombstonesEvenWhenAWatchWasFound covers the case
+// where the close path finds a watch to complete.
+//
+// Completing that one says nothing about a second CHANGE_NOTIFY already past
+// its open-file lookup and still on its way to Register. If the close only
+// tombstoned on a miss, that second request would register a watch on a handle
+// that no longer exists and wait forever — the handle is going away regardless
+// of what happened to be registered at the instant the close took the lock.
+func TestNotifyRegistry_CloseTombstonesEvenWhenAWatchWasFound(t *testing.T) {
+	r := newTestNotifyRegistry()
+	fileID := [16]byte{0xE5}
+
+	mustRegister(t, r, &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 10, AsyncId: 700,
+		WatchPath: "/d", ShareName: "s", MaxOutputLength: 1000,
+		CompletionFilter: FileNotifyChangeFileName,
+	})
+
+	// The close finds that first watch and completes it.
+	if got := r.CloseByFileID(fileID); got == nil {
+		t.Fatal("CloseByFileID did not return the registered watch")
+	}
+
+	// A second CHANGE_NOTIFY on the same handle, still in flight, now reaches
+	// Register. It must be refused rather than left pending on a dead handle.
+	err := r.Register(&PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 11, AsyncId: 701,
+		WatchPath: "/d", ShareName: "s", MaxOutputLength: 1000,
+		CompletionFilter: FileNotifyChangeFileName,
+	})
+	if !errors.Is(err, ErrHandleClosed) {
+		t.Fatalf("Register after close = %v, want ErrHandleClosed", err)
+	}
+	if got := r.WatcherCount(); got != 0 {
+		t.Fatalf("WatcherCount = %d, want 0 — watch left live on a closed handle", got)
+	}
+}

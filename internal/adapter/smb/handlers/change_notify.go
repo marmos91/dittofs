@@ -500,17 +500,23 @@ func (r *NotifyRegistry) CloseByFileID(fileID [16]byte) *PendingNotify {
 
 	delete(r.armed, key)
 
-	if notify, ok := r.byFileID[key]; ok {
-		return r.unregisterLocked(notify)
-	}
-
-	// ponytail: written on every directory CLOSE that has no watch pending,
-	// which is far more common than a missed CANCEL, and reclaimed by an O(n)
+	// Tombstone unconditionally, not only when no watch was registered. The
+	// handle is going away either way, and a second CHANGE_NOTIFY that has
+	// already passed its open-file lookup can still reach Register after this
+	// runs — completing the watch we happened to find here does nothing for
+	// that one, which would register on a handle that no longer exists and
+	// wait forever.
+	//
+	// ponytail: written on every directory CLOSE, and reclaimed by an O(n)
 	// sweep on each call. Size is self-limiting to the closes within one TTL,
 	// so this is bounded rather than a leak; give the map its own expiry heap
 	// if a directory-close-heavy workload ever makes the sweep show up.
 	r.closeTombstones[key] = time.Now()
 	r.gcCloseTombstonesLocked()
+
+	if notify, ok := r.byFileID[key]; ok {
+		return r.unregisterLocked(notify)
+	}
 	return nil
 }
 
