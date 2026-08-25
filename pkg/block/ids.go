@@ -1,6 +1,7 @@
 package block
 
 import (
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -10,14 +11,21 @@ import (
 // ID of the form "<payloadID>/<chunkOffset>" and returns
 // (chunkOffset, true) on success. Returns (0, false) for malformed IDs
 // (no slash, trailing slash, non-digit characters after the slash, or an
-// offset that does not fit in a uint64).
+// offset that does not fit in an int64).
+//
+// The int64 ceiling, rather than the uint64 one the parse itself permits, is
+// what callers need: every one of them converts the result to int64 to compare
+// it against a file offset or a run boundary, and a value above MaxInt64 would
+// arrive there negative and order before every real offset. Rejecting it here
+// keeps that conversion total for all callers instead of asking each to guard
+// its own.
 func ParseChunkOffset(id string) (uint64, bool) {
 	slash := strings.LastIndexByte(id, '/')
 	if slash < 0 || slash == len(id)-1 {
 		return 0, false
 	}
 	v, err := strconv.ParseUint(id[slash+1:], 10, 64)
-	if err != nil {
+	if err != nil || v > math.MaxInt64 {
 		return 0, false
 	}
 	return v, true
@@ -59,7 +67,7 @@ func ChunkOffsetFor(id, payloadID string) (uint64, bool) {
 		return 0, false
 	}
 	v, err := strconv.ParseUint(rest, 10, 64)
-	if err != nil {
+	if err != nil || v > math.MaxInt64 {
 		return 0, false
 	}
 	return v, true
