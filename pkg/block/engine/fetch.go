@@ -157,9 +157,10 @@ func (m *Syncer) listFileChunksSnapshot(ctx context.Context, payloadID string) (
 // "<payloadID>/<offset>" (split on the last '/'). A malformed ID is a hard
 // error — an inconsistent manifest, not a benign miss.
 //
-// Only the bytes the row claims are written (see FileChunk.DataSize). A remote
-// read returns the whole chunk, so on a row a shrink narrowed to its surviving
-// prefix, writing the rest would restore bytes past the file's new end, above
+// Only the bytes the row claims are written (see FileChunk.DataSize and
+// FileChunk.StartOffset). A remote read returns the whole chunk, so on a row a
+// narrow cut down to its surviving stretch, writing the rest would restore
+// bytes the row gave up — past the file's new end, above
 // the version of the marker that moved it, and a later re-extend would serve
 // them where a zero hole is due. A row claiming nothing therefore writes
 // nothing: the clamp fails closed, since a claim of zero reaching the local tier
