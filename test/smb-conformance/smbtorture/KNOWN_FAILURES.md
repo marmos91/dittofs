@@ -227,8 +227,7 @@ flake or a storage-backend artifact.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.lease.v2_complex1 | Lease epoch | Break notification carries an over-incremented epoch: `lease.c:3792` wants `new_epoch 0x4715`, DittoFS sends `0x4716`. Pre-existing; surfaced when the suite was allowed to run past its old 120s cut. | [#2113](https://github.com/marmos91/dittofs/issues/2113) |
-| smb2.lease.rename_wait | Rename vs pending break | RENAME issued while a lease break is outstanding returns `NT_STATUS_INVALID_PARAMETER`; `lease.c:4160` requires `NT_STATUS_OK`. Pre-existing; same cause of invisibility. | [#2114](https://github.com/marmos91/dittofs/issues/2114) |
+| smb2.lease.rename_wait | Rename vs pending break | **Intermittent — measured 3/5 failures on `cf184bae`**, so a single green run means very little here. RENAME issued while a lease break is outstanding returns `NT_STATUS_INVALID_PARAMETER`; `lease.c:4160` requires `NT_STATUS_OK`. A deterministic bug does not pass 2 in 5, so the rate itself is evidence for the ordering race in #2127. Pre-existing; same cause of invisibility. | [#2114](https://github.com/marmos91/dittofs/issues/2114) |
 
 ### Sessions (Remaining)
 
@@ -359,6 +358,44 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 `KNOWN_FAILURES_KERBEROS.md` now carries a single row (`smb2.reauth5`, an upstream Samba selftest knownfail) after the #686 Kerberos sweep harvested the stale multi-channel rows. It is loaded only when smbtorture runs with `--use-kerberos`, which the non-Kerberos v1.0 CI job (`.github/workflows/smb-conformance.yml`, running `./run.sh` without `--kerberos`) does not pass, so it does not gate v1.0.
 
 ## Changelog
+
+### 2026-08-25 — lease rows re-measured: `v2_complex1` removed, `rename_wait` corrected to intermittent
+
+Both rows were reported as now-passing by a CI summary. Each was re-measured
+directly, five runs per row, `--filter` per test on `memory`, graded on the
+verdict line only — single-filter mode drops the family prefix these patterns
+match on, so the harness's own known-failure accounting is unreliable here.
+
+| test | tree | result |
+| --- | --- | --- |
+| `smb2.lease.v2_complex1` | `cf184bae` | **5/5 pass** — row removed |
+| `smb2.lease.rename_wait` | `cf184bae` | **2/5 pass** — row kept, corrected to say intermittent |
+| `smb2.lease.rename_wait` | `865b92e2` | 0/5 pass (1/6 including an earlier run) |
+
+**`rename_wait` is not fixed and its row stays.** It was briefly attributed to
+#2124 on the strength of a single passing run on `865b92e2` — #2124's own merge
+commit, which contains #2124 and not #2131. That attribution was wrong: the
+test is intermittent, so one pass is one draw and not a measurement of what
+fixed it. Neither #2124 nor #2131 fixed it. #2114 stays open.
+
+The row now says so. "returns `NT_STATUS_INVALID_PARAMETER`" reads as
+deterministic, and the next person to run it once and see green draws the same
+wrong conclusion. A deterministic bug does not pass 2 in 5, so the rate is also
+evidence for the ordering race in #2127; posted there.
+
+The two rates (2/5 versus 1/6) are **not** distinguishable at these sample
+sizes against a ~40% baseline. That comparison is underpowered and no
+difference is claimed from it.
+
+Runs were provenance-checked per run: `CloseByFileID` is absent at `865b92e2`
+and present at `cf184bae`, so `strings /app/dfs | grep -c CloseByFileID` on the
+built image discriminates the two trees — **3** on every `cf184bae` run, **0**
+on every `865b92e2` run. The positive control was required first: `-ldflags`
+carries `-w -s`, which looks like it would strip the symbol and make the check
+blind, and a blind check returns 0 for the wrong reason on every tree. It does
+not — Go keeps function names in `pclntab` for tracebacks — but that had to be
+measured rather than reasoned about. A wrong kill is quieter than a wrong
+confirmation: nobody investigates a door that is already closed.
 
 ### 2026-08-25 — per-suite budgets: 3 pre-existing failures surfaced out of the ungraded tails
 
