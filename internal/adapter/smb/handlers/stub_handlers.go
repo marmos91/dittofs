@@ -679,7 +679,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// does not generate the next event until it returns, so letting the second
 	// take the buffered events strands the first forever.
 	var changes []FileNotifyInformation
-	if !h.NotifyRegistry.HasEarlierInFlightNotify(req.FileID, ctx.MessageID) {
+	if !h.NotifyRegistry.HasEarlierInFlightNotify(req.FileID, ctx.ConnID, ctx.MessageID) {
 		changes = h.NotifyRegistry.TakeBufferedEvents(req.FileID, effectiveFilter, watchTree)
 	}
 	if len(changes) > 0 {

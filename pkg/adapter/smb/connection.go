@@ -393,7 +393,7 @@ func (c *Connection) Serve(ctx context.Context) {
 				// CHANGE_NOTIFY pays for this; every other command's path is
 				// unchanged.
 				if hdr.Command == types.CommandChangeNotify {
-					releaseNotify := c.server.handler.NotifyRegistry.MarkNotifyInFlight(fid, hdr.MessageID)
+					releaseNotify := c.server.handler.NotifyRegistry.MarkNotifyInFlight(fid, ci.ConnID, hdr.MessageID)
 					releaseHandleOp = func(prev func()) func() {
 						return func() {
 							releaseNotify()
