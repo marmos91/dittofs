@@ -956,12 +956,11 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(_ context.Context, handleKey string
 	lm.mu.Lock()
 	defer lm.unlock()
 
-	// The file comes from the caller rather than from the key. An ack is one
-	// client's statement about its own lease, and a lease key is not an
-	// identity: the cross-file uniqueness rule is per (client, file), so
-	// resolving by key alone can land the ack on a lease another client holds
-	// under the same value on another file — completing a break that client
-	// never acknowledged and overwriting its state.
+	// An ack is one client's statement about its own lease, so it resolves on
+	// the file the acknowledging connection named. A key-only lookup could
+	// land it on a lease another client holds under the same key value on
+	// another file (see leaseRecordsOnHandleLocked), completing a break that
+	// client never acknowledged and overwriting its state.
 	records := lm.leaseRecordsOnHandleLocked(handleKey, leaseKey)
 	if len(records) == 0 {
 		return ErrLeaseAckNotFound
@@ -977,7 +976,7 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(_ context.Context, handleKey string
 	}
 
 	if acknowledgedState == LeaseStateNone {
-		lm.completeAckToNoneLocked(handleKey, leaseKey, lock)
+		lm.completeAckToNoneLocked(handleKey, lock)
 		return nil
 	}
 
@@ -1098,7 +1097,7 @@ func validateAck(lock *UnifiedLock, acknowledgedState uint32, epoch uint16) erro
 // STATUS_UNSUCCESSFUL, smbtorture breaking2/breaking5) from a CLOSE-beat-ack
 // race (record gone → ErrLeaseAckNotFound → silent success, WPTS
 // BVT_DirectoryLeasing_ReadWriteHandleCaching). Must hold lm.mu.
-func (lm *Manager) completeAckToNoneLocked(handleKey string, leaseKey [16]byte, lock *UnifiedLock) {
+func (lm *Manager) completeAckToNoneLocked(handleKey string, lock *UnifiedLock) {
 	lock.Lease.LeaseState = LeaseStateNone
 	lock.Lease.Breaking = false
 	lock.Lease.BreakToState = 0
@@ -1110,7 +1109,7 @@ func (lm *Manager) completeAckToNoneLocked(handleKey string, leaseKey [16]byte, 
 	lm.clearBreakingSiblingsLocked(handleKey, lock)
 
 	logger.Debug("AcknowledgeLeaseBreak: lease released to None (record kept until CLOSE)",
-		"leaseKey", fmt.Sprintf("%x", leaseKey))
+		"leaseKey", fmt.Sprintf("%x", lock.Lease.LeaseKey))
 	lm.signalBreakWaitLocked(handleKey)
 	// Deliver the next directory RH-lease break on this directory that was
 	// deferred behind this one, so multi-lease dir breaks serialize.
@@ -1181,20 +1180,20 @@ func (lm *Manager) dispatchNextBreakStageLocked(handleKey string, leaseKey [16]b
 
 // clearBreakingSiblingsLocked syncs the other records of primary's lease to its
 // post-acknowledge state. Opens on one file sharing a lease key are one logical
-// lease: breakOpLocks puts such sibling records into Breaking=true via
-// mirrorBreakStageLocked without ever sending a wire notification (only one
-// break is dispatched for the shared key). A client's single acknowledge
-// resolves to one record, so without this sync the mirrored siblings stay
-// Breaking=true forever and any WaitForBreakCompletion on that handleKey blocks
-// until the force-complete timeout — a per-operation stall under directory
-// churn. Progressive multi-stage breaks (partial acks) are file-lease only and
-// never mirror across a shared key, so they are unaffected.
+// lease: OnDirChange and breakOpLocks put such sibling records into
+// Breaking=true via mirrorBreakStageLocked without ever sending a wire
+// notification (only one break is dispatched for the shared key). A client's
+// single acknowledge resolves to one record, so without this sync the mirrored
+// siblings stay Breaking=true forever and any WaitForBreakCompletion on that
+// handleKey blocks until the force-complete timeout — a per-operation stall
+// under directory churn. Progressive multi-stage breaks (partial acks) are
+// file-lease only and never mirror across a shared key, so they are unaffected.
 //
-// The sweep stops at primary's own file. mirrorBreakStageLocked only ever runs
-// over one handleKey bucket, so every sibling it creates is on that file; and
-// the cross-file uniqueness rule means a key on another file belongs to another
-// client. Reaching those would clear a Breaking flag and overwrite a LeaseState
-// on a lease whose holder acknowledged nothing. Must hold lm.mu.
+// The sweep stops at primary's own file. Both mirroring paths iterate a single
+// handleKey bucket, so every sibling they create is on that file, and a record
+// holding the key on another file belongs to another client. Reaching those
+// would clear a Breaking flag and overwrite a LeaseState on a lease whose
+// holder acknowledged nothing. Must hold lm.mu.
 func (lm *Manager) clearBreakingSiblingsLocked(handleKey string, primary *UnifiedLock) {
 	cleared := false
 	for _, lock := range lm.leaseRecordsOnHandleLocked(handleKey, primary.Lease.LeaseKey) {

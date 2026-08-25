@@ -125,10 +125,9 @@ type LockManager interface {
 	// one file. acknowledgedState is the state the client accepts (must be <=
 	// breakToState).
 	//
-	// The file is a parameter because the wire gives only a lease key, which is
-	// not an identity: another client may hold the same value on another file
-	// of this share. The acknowledging connection supplies the rest, exactly as
-	// MS-SMB2 §3.3.5.22.2 step 1 requires.
+	// handleKey scopes the ack to the acknowledging client's own lease: the
+	// wire carries only a lease key, and another client may hold the same key
+	// value on another file of this share.
 	AcknowledgeLeaseBreak(ctx context.Context, handleKey string, leaseKey [16]byte,
 		acknowledgedState uint32, epoch uint16) error
 

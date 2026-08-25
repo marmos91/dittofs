@@ -506,7 +506,6 @@ func (lm *LeaseManager) resolveAckBindingLocked(leaseKey [16]byte, sessionID uin
 	// one of two candidates leaves the other lease Breaking until it times out
 	// and downgrades a lease nobody acknowledged.
 	var sessionKey, guidKey leaseClientKey
-	var sessionBinding, guidBinding leaseBinding
 	var sessionFound, guidFound bool
 	for ck, b := range lm.bindings {
 		if ck.Key != leaseKey {
@@ -514,7 +513,7 @@ func (lm *LeaseManager) resolveAckBindingLocked(leaseKey [16]byte, sessionID uin
 		}
 		if b.SessionID == sessionID {
 			if !sessionFound || ck.Share < sessionKey.Share {
-				sessionKey, sessionBinding, sessionFound = ck, b, true
+				sessionKey, sessionFound = ck, true
 			}
 			continue
 		}
@@ -522,13 +521,13 @@ func (lm *LeaseManager) resolveAckBindingLocked(leaseKey [16]byte, sessionID uin
 			continue
 		}
 		if !guidFound || ck.Share < guidKey.Share {
-			guidKey, guidBinding, guidFound = ck, b, true
+			guidKey, guidFound = ck, true
 		}
 	}
 	if sessionFound {
-		return sessionKey, sessionBinding, true
+		return sessionKey, lm.bindings[sessionKey], true
 	}
-	return guidKey, guidBinding, guidFound
+	return guidKey, lm.bindings[guidKey], guidFound
 }
 
 // ReleaseLeaseForHandle releases lease records only under a specific handleKey
