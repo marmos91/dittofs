@@ -57,20 +57,83 @@ const handleLeaseBreakWaitTimeout = 5 * time.Second
 // (timeout-disconnect, breaking3, etc.) rely on the shorter bound.
 const TraditionalOplockBreakWaitTimeout = 35 * time.Second
 
-// clientLeaseKey scopes lease-key bindings by (Owner.ClientID, lease key)
-// because lock.Manager allows two distinct clients to each hold a record
-// under the same numeric LeaseKey on different files (per round-3
-// `lease_match` scoping). Without this composite key, client B's lease
-// would overwrite client A's break-routing binding in `leaseClientGUID`,
-// or — sticky-on-first — route B's breaks to A's primary session.
+// leaseRecordKey identifies the lease RECORD the lock manager holds: one
+// share's lock manager, one file, one lease key. The lock manager matches a
+// request against an existing record on exactly (handleKey, leaseKey) within
+// one share's manager, so a property of the record — its protocol version —
+// belongs to that triple and not to the lease key alone.
 //
-// Key holds the raw 16-byte lease key (not a hex string): it is the map key
-// for every hot-path lease lookup, so using the array directly keeps those
-// paths allocation-free. Hex is computed only for logging.
-type clientLeaseKey struct {
+// Two distinct clients may present the same numeric lease key on different
+// files; keying a per-record property on the key alone lets whichever of them
+// wrote last decide the other's value.
+//
+// HandleKey and Key hold the raw handle string and the raw 16-byte key (not a
+// hex string): this is a map key on the lease hot path, so using them directly
+// keeps those paths allocation-free. Hex is computed only for logging.
+type leaseRecordKey struct {
+	Share     string
+	HandleKey string
+	Key       [16]byte
+}
+
+// leaseClientKey identifies one client's BINDING to a lease key: (client,
+// share, key). Per MS-SMB2 §3.3.5.9.8 a lease is bound to a
+// (ClientGUID, LeaseKey) pair, and lock.Manager enforces that binding by
+// refusing a key already held by the same Owner.ClientID on another file
+// within the share (`hasLeaseKeyOnOtherFile`, Samba `lease_match`). That rule
+// makes this triple resolve to at most one file at a time, so the binding can
+// carry the file it is on rather than key on it.
+//
+// The share is part of the identity because the uniqueness rule is enforced
+// per share — each share has its own lock manager — so one client can hold the
+// same key on files in two different shares.
+type leaseClientKey struct {
 	ClientID string
+	Share    string
 	Key      [16]byte
 }
+
+// leaseBinding is what a client's hold on a lease key resolves to: the file
+// the lease is on, the session that registered it, and the ClientGUID it is
+// bound to.
+type leaseBinding struct {
+	// HandleKey is the file the lease was granted on. Recorded rather than
+	// keyed on because (client, share, key) already determines it, and the
+	// LEASE_BREAK_ACK path is given only a lease key on the wire.
+	HandleKey string
+
+	// SessionID is the session that most recently registered this binding.
+	// Break notifications fall back to it when no ClientGUID was recorded.
+	SessionID uint64
+
+	// ClientGUID is the GUID recorded on the FIRST grant for this binding
+	// and is sticky: a same-(client, share, key) reopen does not change it.
+	// Per MS-SMB2 §3.3.5.9.8 break notifications are routed at the client
+	// level (Samba `smbXsrv_pending_break_submit` in
+	// source3/smbd/smb2_server.c picks the FIRST connection of
+	// `client->connections` regardless of which session holds the open).
+	//
+	// Required by smbtorture smb2.lease.v2_complex1 — two sessions of the
+	// same ClientGUID open with different lease keys, and breaks for either
+	// lease must arrive on the FIRST session's primary transport.
+	ClientGUID [16]byte
+
+	// HasGUID distinguishes "bound to the zero GUID" from "never bound".
+	// Callers without a CryptoState (older durable-reconnect paths, tests)
+	// pass a zero GUID and get no ClientGUID-based routing.
+	HasGUID bool
+}
+
+// leaseVersion is the create-context version a lease was established with.
+// The zero value means the version is not yet known, which the response
+// encoder distinguishes from V1 (a single bool cannot carry the third state).
+type leaseVersion uint8
+
+const (
+	leaseVersionUnknown leaseVersion = iota
+	leaseVersionV1
+	leaseVersionV2
+)
 
 // LockManagerResolver resolves the LockManager for a given share name.
 // This allows the LeaseManager to work across multiple shares without
@@ -87,46 +150,34 @@ type LockManagerResolver interface {
 //
 // Thread-safe: all mutable state is protected by mu.
 type LeaseManager struct {
-	resolver   LockManagerResolver
-	notifier   LeaseBreakNotifier
-	sessionMap map[[16]byte]uint64 // leaseKey -> sessionID
-	leaseShare map[[16]byte]string // leaseKey -> shareName (for resolution)
-	// leaseV2 records whether each lease was granted from an
-	// SMB2_CREATE_REQUEST_LEASE_V2 context. Per MS-SMB2 §2.2.23.2 the
-	// NewEpoch field of a break notification MUST be zero for V1 leases;
-	// for V2 leases it carries the incremented lease epoch. Sending a
-	// non-zero NewEpoch on a V1 break trips the client (#417 root cause
-	// for smb2.multichannel.leases.test1-3).
-	//
-	// Sticky version semantics: per smbtorture v2_epoch2 / v2_epoch3, the
-	// lease's protocol version is set on the FIRST grant for a given key
-	// and does not change across reopens — even when a subsequent request
-	// uses the other version's create-context format. To distinguish
-	// V1-established (mark exists, value false) from
-	// version-not-yet-known (mark absent), we track BOTH versions
-	// explicitly via parallel maps; a single bool can't carry the third
-	// state. leaseV1 is true iff first grant was V1.
-	leaseV2 map[[16]byte]bool // leaseKey -> true iff V2-established
-	leaseV1 map[[16]byte]bool // leaseKey -> true iff V1-established
+	resolver LockManagerResolver
+	notifier LeaseBreakNotifier
 
-	// leaseClientGUID records the ClientGUID that first granted each
-	// (clientID, leaseKey) pair. Per MS-SMB2 §3.3.5.9.8 a lease is bound to
-	// a (ClientGUID, LeaseKey) pair and break notifications are routed at
-	// the client level (Samba `smbXsrv_pending_break_submit` in
-	// source3/smbd/smb2_server.c picks the FIRST connection of
-	// `client->connections` regardless of which session holds the open).
-	// Sticky on FIRST grant: a same-(clientID,key) reopen does NOT change
-	// the recorded GUID.
+	// bindings records, per (client, share, lease key), which file the lease
+	// is on, which session registered it, and which ClientGUID it is bound
+	// to. Break routing, share resolution and session teardown all read it.
+	bindings map[leaseClientKey]leaseBinding
+
+	// versions records the create-context version each lease RECORD was
+	// established with. Per MS-SMB2 §2.2.23.2 the NewEpoch field of a break
+	// notification MUST be zero for V1 leases and carries the incremented
+	// lease epoch for V2 ones; the same distinction selects the 32-byte or
+	// 52-byte RqLs response context on CREATE. Sending a non-zero NewEpoch
+	// on a V1 break trips the client (#417 root cause for
+	// smb2.multichannel.leases.test1-3).
 	//
-	// Composite-keyed by (clientID, leaseKey) because lock.Manager scopes
-	// lease-key uniqueness per Owner.ClientID — two distinct clients may
-	// each hold a record under the same numeric LeaseKey on different
-	// files, and break routing must not collide between them.
+	// Sticky version semantics: per smbtorture v2_epoch2 / v2_epoch3 the
+	// version is set on the FIRST grant for a record and does not change
+	// across reopens, even when a later request uses the other version's
+	// create-context format.
 	//
-	// Required by smbtorture smb2.lease.v2_complex1 — two sessions of the
-	// same ClientGUID open with different lease keys, and breaks for either
-	// lease must arrive on the FIRST session's primary transport.
-	leaseClientGUID map[clientLeaseKey][16]byte
+	// Keyed per record rather than per client because lock.Manager keeps ONE
+	// lease record per (handleKey, leaseKey) and hands it to every requester
+	// of that key on that file — including a second session of the same
+	// client. The version has to follow the record it describes, or a reopen
+	// on another session would answer in a different format than the break
+	// notification for the same record.
+	versions map[leaseRecordKey]leaseVersion
 
 	// clientPrimarySession records the FIRST sessionID seen for each
 	// ClientGUID (first-write wins). When a lease must be broken, its
@@ -151,11 +202,8 @@ func NewLeaseManager(resolver LockManagerResolver, notifier LeaseBreakNotifier) 
 	return &LeaseManager{
 		resolver:             resolver,
 		notifier:             notifier,
-		sessionMap:           make(map[[16]byte]uint64),
-		leaseShare:           make(map[[16]byte]string),
-		leaseV2:              make(map[[16]byte]bool),
-		leaseV1:              make(map[[16]byte]bool),
-		leaseClientGUID:      make(map[clientLeaseKey][16]byte),
+		bindings:             make(map[leaseClientKey]leaseBinding),
+		versions:             make(map[leaseRecordKey]leaseVersion),
 		clientPrimarySession: make(map[[16]byte]uint64),
 	}
 }
@@ -273,29 +321,31 @@ func (lm *LeaseManager) requestLeaseInternal(
 		return lock.LeaseStateNone, 0, fmt.Errorf("no lock manager for share %q", shareName)
 	}
 
-	// Pre-register the session mapping BEFORE creating the lease in the
-	// LockManager. The LockManager's RequestLease may trigger cross-key
-	// conflict breaks, which dispatch through breakOpLocks → SMBBreakHandler.
-	// If the session mapping isn't set yet, the break notification can't be
-	// routed to the correct SMB client. Similarly, another goroutine's
-	// BreakHandleLeasesOnOpenAsync may fire between the LockManager grant
-	// and the session map update, causing a "no session" miss.
+	// Pre-register the binding BEFORE creating the lease in the LockManager.
+	// The LockManager's RequestLease may trigger cross-key conflict breaks,
+	// which dispatch through breakOpLocks → SMBBreakHandler. If the binding
+	// isn't set yet, the break notification can't be routed to the correct
+	// SMB client. Similarly, another goroutine's BreakHandleLeasesOnOpenAsync
+	// may fire between the LockManager grant and the binding update, causing
+	// a "no session" miss.
 	//
-	// Pre-registering is safe: if the grant fails or returns None, we
-	// remove the entry below.
+	// Pre-registering is safe: if the grant fails or returns None, the
+	// previous binding is put back below.
+	ck := leaseClientKey{ClientID: clientID, Share: shareName, Key: leaseKey}
 	lm.mu.Lock()
-	lm.sessionMap[leaseKey] = sessionID
-	lm.leaseShare[leaseKey] = shareName
-	// Bind the lease to a ClientGUID on FIRST grant (sticky). Cross-client
-	// key reuse is rejected upstream by lease_match (ErrLeaseKeyInUse), so
-	// the only paths that re-enter here on the same key are same-client
-	// reopens / upgrades — those must NOT rebind the GUID. Zero ClientGUID
+	prev, hadPrev := lm.bindings[ck]
+	binding := prev
+	binding.HandleKey = string(fileHandle)
+	binding.SessionID = sessionID
+	// Bind the lease to a ClientGUID on FIRST grant (sticky). The only paths
+	// that re-enter here on the same (client, share, key) are same-client
+	// reopens and upgrades — those must NOT rebind the GUID. Zero ClientGUID
 	// callers (legacy paths) leave the binding unset and fall back to the
-	// per-lease sessionMap for break dispatch.
+	// binding's session for break dispatch.
 	if clientGUID != ([16]byte{}) {
-		clk := clientLeaseKey{ClientID: clientID, Key: leaseKey}
-		if _, bound := lm.leaseClientGUID[clk]; !bound {
-			lm.leaseClientGUID[clk] = clientGUID
+		if !binding.HasGUID {
+			binding.ClientGUID = clientGUID
+			binding.HasGUID = true
 		}
 		// Register this session as the primary for the ClientGUID iff no
 		// session is currently registered (first-write wins). Mirrors the
@@ -308,7 +358,23 @@ func (lm *LeaseManager) requestLeaseInternal(
 			lm.clientPrimarySession[clientGUID] = sessionID
 		}
 	}
+	lm.bindings[ck] = binding
 	lm.mu.Unlock()
+
+	// restorePreRegistration undoes the pre-registration above when the grant
+	// produced no record. A rejected grant must not leave this client's
+	// binding pointing at the file it was refused — the client may still hold
+	// the key on the file it bound earlier, which is exactly why the grant
+	// was refused.
+	restorePreRegistration := func() {
+		lm.mu.Lock()
+		if hadPrev {
+			lm.bindings[ck] = prev
+		} else {
+			delete(lm.bindings, ck)
+		}
+		lm.mu.Unlock()
+	}
 
 	// Dispatch to the appropriate Manager method so the new record's
 	// IsTraditionalOplock tag and stat-open break-suppression are set
@@ -339,20 +405,22 @@ func (lm *LeaseManager) requestLeaseInternal(
 		)
 	}
 	if err != nil && !errors.Is(err, lock.ErrLeaseBreakInProgress) {
-		lm.removeLeaseMapping(leaseKey)
+		restorePreRegistration()
 		return 0, 0, err
 	}
 
-	// Remove pre-registered mapping only if the LockManager has no record
-	// for this key. grantedState == None can mean either:
+	// Undo the pre-registration only if the LockManager has no record for
+	// this key on this file. grantedState == None can mean either:
 	//   - rejected request (no record created) — must reap pre-registration
 	//   - successful None probe / existing released-to-None record — keep
-	//     the mapping so a later unsolicited or duplicate ack still resolves
+	//     the binding so a later unsolicited or duplicate ack still resolves
 	//     and surfaces ErrLeaseAckNotBreaking (smbtorture breaking5).
-	if grantedState == lock.LeaseStateNone {
-		if _, _, found := lockMgr.GetLeaseState(ctx, leaseKey); !found {
-			lm.removeLeaseMapping(leaseKey)
-		}
+	//
+	// The check is scoped to this file: a record under the same key on a
+	// DIFFERENT file belongs to another client's lease and says nothing about
+	// whether this grant created anything.
+	if grantedState == lock.LeaseStateNone && !lm.HasLeaseOnHandle(fileHandle, shareName, leaseKey) {
+		restorePreRegistration()
 	}
 
 	return grantedState, epoch, err
@@ -377,17 +445,26 @@ func (lm *LeaseManager) requestLeaseInternal(
 func (lm *LeaseManager) AcknowledgeLeaseBreak(
 	ctx context.Context,
 	leaseKey [16]byte,
+	sessionID uint64,
+	connGUID [16]byte,
 	acknowledgedState uint32,
 	epoch uint16,
 ) error {
 	lm.mu.RLock()
-	shareName := lm.leaseShare[leaseKey]
+	ck, _, found := lm.resolveAckBindingLocked(leaseKey, sessionID, connGUID)
 	lm.mu.RUnlock()
+	if !found {
+		logger.Debug("AcknowledgeLeaseBreak: no lease bound to this client (CLOSE-beat-ack), treating as success",
+			"leaseKey", fmt.Sprintf("%x", leaseKey),
+			"sessionID", sessionID)
+		return nil
+	}
 
-	lockMgr := lm.resolveLockManager(shareName)
+	lockMgr := lm.resolveLockManager(ck.Share)
 	if lockMgr == nil {
 		logger.Debug("AcknowledgeLeaseBreak: no lock manager for lease (CLOSE-beat-ack), treating as success",
-			"leaseKey", fmt.Sprintf("%x", leaseKey))
+			"leaseKey", fmt.Sprintf("%x", leaseKey),
+			"share", ck.Share)
 		return nil
 	}
 
@@ -396,63 +473,122 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 		if errors.Is(err, lock.ErrLeaseAckNotFound) {
 			logger.Debug("AcknowledgeLeaseBreak: lease record absent (CLOSE-beat-ack), treating as success",
 				"leaseKey", fmt.Sprintf("%x", leaseKey))
-			lm.removeLeaseMapping(leaseKey)
+			lm.mu.Lock()
+			delete(lm.bindings, ck)
+			lm.mu.Unlock()
 			return nil
 		}
 		return err
 	}
 
-	// Do NOT reap leaseShare on ack-to-None: the lock manager keeps the
+	// Do NOT reap the binding on ack-to-None: the lock manager keeps the
 	// record alive at state=None until CLOSE, so a duplicate ack on the same
 	// key must continue to find the lockMgr and surface
-	// ErrLeaseAckNotBreaking. ReleaseLeaseForHandle clears the mapping when
-	// no records remain (see GetLeaseState-found check there).
+	// ErrLeaseAckNotBreaking. ReleaseLeaseForHandle clears the binding when
+	// no records remain (see the GetLeaseState-found check there).
 	return nil
 }
 
-// ReleaseLease delegates to the shared LockManager and removes the session mapping.
-func (lm *LeaseManager) ReleaseLease(ctx context.Context, leaseKey [16]byte) error {
-	// Resolve the LockManager for this lease's share
-	lm.mu.RLock()
-	shareName := lm.leaseShare[leaseKey]
-	lm.mu.RUnlock()
+// resolveAckBindingLocked finds the lease binding a LEASE_BREAK_ACK refers to.
+// The wire gives only a lease key, so the acknowledging connection supplies
+// the rest of the identity, exactly as MS-SMB2 §3.3.5.22.2 step 1 requires
+// ("locate the lease ... whose LeaseKey matches ... and ClientGuid matches
+// Connection.ClientGuid").
+//
+// The owning session is preferred; a ClientGUID match covers multichannel and
+// durable reconnect on a different session of the same client. A zero connGUID
+// never matches a recorded GUID, so a stray ack cannot probe another client's
+// lease. Must hold lm.mu (read or write).
+//
+// ponytail: linear over the bindings map, which holds one entry per open lease
+// per client — single digits in practice, and only acks that are not from the
+// owning session walk past the first match. Add a by-key index if a profile
+// ever shows this scan.
+func (lm *LeaseManager) resolveAckBindingLocked(leaseKey [16]byte, sessionID uint64, connGUID [16]byte) (leaseClientKey, leaseBinding, bool) {
+	var guidKey leaseClientKey
+	var guidBinding leaseBinding
+	var guidFound bool
+	for ck, b := range lm.bindings {
+		if ck.Key != leaseKey {
+			continue
+		}
+		if b.SessionID == sessionID {
+			return ck, b, true
+		}
+		if connGUID == ([16]byte{}) || !b.HasGUID || b.ClientGUID != connGUID {
+			continue
+		}
+		// A client holding one key in two shares makes the ack ambiguous —
+		// MS-SMB2 §3.3.5.9.8 binds a lease to (ClientGuid, LeaseKey) and does
+		// not contemplate it. Break the tie on share name so the choice is at
+		// least deterministic across runs.
+		if !guidFound || ck.Share < guidKey.Share {
+			guidKey, guidBinding, guidFound = ck, b, true
+		}
+	}
+	return guidKey, guidBinding, guidFound
+}
+
+// ReleaseLease releases every record for a lease key in one share and drops
+// the client's binding to it.
+func (lm *LeaseManager) ReleaseLease(ctx context.Context, clientID, shareName string, leaseKey [16]byte) error {
+	ck := leaseClientKey{ClientID: clientID, Share: shareName, Key: leaseKey}
 
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
 		// Already released or no manager
-		lm.removeLeaseMapping(leaseKey)
+		lm.mu.Lock()
+		delete(lm.bindings, ck)
+		lm.mu.Unlock()
 		return nil
 	}
 
-	err := lockMgr.ReleaseLease(ctx, leaseKey)
-	if err != nil {
+	if err := lockMgr.ReleaseLease(ctx, leaseKey); err != nil {
 		return err
 	}
 
-	lm.removeLeaseMapping(leaseKey)
+	lm.mu.Lock()
+	delete(lm.bindings, ck)
+	lm.mu.Unlock()
 	return nil
 }
 
 // ReleaseLeaseForHandle releases lease records only under a specific handleKey
 // bucket. Used by CLOSE so that opens on OTHER files sharing the same
 // LeaseKey constant (typical in smbtorture, which reuses fixed LEASE1/LEASE2
-// macros across tests) retain their records. The session/share mappings are
-// only torn down when the last record for the key is gone.
+// macros across tests) retain their records. The bindings are only torn down
+// when the last record for the key is gone.
 func (lm *LeaseManager) ReleaseLeaseForHandle(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, shareName string) error {
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
 		return nil
 	}
 
-	if err := lockMgr.ReleaseLeaseForHandle(ctx, string(fileHandle), leaseKey); err != nil {
+	handleKey := string(fileHandle)
+	if err := lockMgr.ReleaseLeaseForHandle(ctx, handleKey, leaseKey); err != nil {
 		return err
 	}
 
-	// Only drop session/share mappings if no lease records remain anywhere for
-	// this key — otherwise a concurrent open on a different file would lose
-	// break-dispatch routing.
+	// The recorded version describes the record on THIS file, so it goes as
+	// soon as that record does — a surviving record under the same key on
+	// another file is a different lease with its own version.
+	if !lockMgr.HasLeaseOnHandle(handleKey, leaseKey) {
+		lm.mu.Lock()
+		delete(lm.versions, leaseRecordKey{Share: shareName, HandleKey: handleKey, Key: leaseKey})
+		lm.mu.Unlock()
+	}
+
+	// Only drop bindings if no lease records remain anywhere in this share
+	// for this key — otherwise a concurrent open on a different file would
+	// lose break-dispatch routing.
 	if _, _, found := lockMgr.GetLeaseState(ctx, leaseKey); !found {
-		lm.removeLeaseMapping(leaseKey)
+		lm.mu.Lock()
+		for ck := range lm.bindings {
+			if ck.Share == shareName && ck.Key == leaseKey {
+				delete(lm.bindings, ck)
+			}
+		}
+		lm.mu.Unlock()
 	}
 	return nil
 }
@@ -461,56 +597,57 @@ func (lm *LeaseManager) ReleaseLeaseForHandle(ctx context.Context, fileHandle lo
 // This is called during session cleanup (LOGOFF / connection close).
 func (lm *LeaseManager) ReleaseSessionLeases(ctx context.Context, sessionID uint64) error {
 	lm.mu.RLock()
-	// Collect all lease keys for this session
-	var keysToRelease [][16]byte
-	for key, sid := range lm.sessionMap {
-		if sid == sessionID {
-			keysToRelease = append(keysToRelease, key)
+	// Collect the bindings this session registered. Each carries the file its
+	// lease is on, so the release is scoped to that file: another client
+	// holding the same key value on a different file keeps its lease.
+	type sessionLease struct {
+		key     leaseClientKey
+		binding leaseBinding
+	}
+	var toRelease []sessionLease
+	for ck, b := range lm.bindings {
+		if b.SessionID == sessionID {
+			toRelease = append(toRelease, sessionLease{key: ck, binding: b})
 		}
 	}
 	lm.mu.RUnlock()
 
-	// Release each lease
-	for _, key := range keysToRelease {
-		if err := lm.ReleaseLease(ctx, key); err != nil {
+	for _, sl := range toRelease {
+		if err := lm.ReleaseLeaseForHandle(ctx, lock.FileHandle(sl.binding.HandleKey), sl.key.Key, sl.key.Share); err != nil {
 			logger.Warn("LeaseManager: failed to release session lease",
 				"sessionID", sessionID,
-				"leaseKey", fmt.Sprintf("%x", key),
+				"leaseKey", fmt.Sprintf("%x", sl.key.Key),
 				"error", err)
 			// Continue releasing other leases
 		}
+		lm.mu.Lock()
+		delete(lm.bindings, sl.key)
+		lm.mu.Unlock()
 	}
 
 	// Reap any clientPrimarySession entries that pointed at the gone
 	// session AND re-elect a successor where surviving leases of the same
 	// ClientGUID still exist. Without re-election, breaks for those leases
-	// would fall back to the per-lease sessionMap (last-write-wins),
-	// deviating from the "first live connection" semantics this map exists
-	// to enforce — Samba's `client->connections` always rehomes to the
-	// next-oldest connection of the client, not to whichever session most
-	// recently touched the lease. We approximate "oldest surviving
-	// session" by picking the smallest sessionID still associated with
-	// any (clientID, leaseKey) bound to that ClientGUID; sessionIDs are
-	// monotonically allocated, so smallest = earliest.
+	// would fall back to the binding's own session, deviating from the
+	// "first live connection" semantics this map exists to enforce — Samba's
+	// `client->connections` always rehomes to the next-oldest connection of
+	// the client, not to whichever session most recently touched the lease.
+	// We approximate "oldest surviving session" by picking the smallest
+	// sessionID still bound to that ClientGUID; sessionIDs are monotonically
+	// allocated, so smallest = earliest.
 	lm.mu.Lock()
 	for guid, sid := range lm.clientPrimarySession {
 		if sid != sessionID {
 			continue
 		}
-		// Election: scan leaseClientGUID for entries bound to this guid,
-		// look up their sessionMap entry, take min.
 		var minSID uint64
 		var found bool
-		for clk, boundGUID := range lm.leaseClientGUID {
-			if boundGUID != guid {
+		for _, b := range lm.bindings {
+			if !b.HasGUID || b.ClientGUID != guid || b.SessionID == sessionID {
 				continue
 			}
-			candidateSID, ok := lm.sessionMap[clk.Key]
-			if !ok || candidateSID == sessionID {
-				continue // skip the released session
-			}
-			if !found || candidateSID < minSID {
-				minSID = candidateSID
+			if !found || b.SessionID < minSID {
+				minSID = b.SessionID
 				found = true
 			}
 		}
@@ -525,12 +662,15 @@ func (lm *LeaseManager) ReleaseSessionLeases(ctx context.Context, sessionID uint
 	return nil
 }
 
-// GetLeaseState delegates to the shared LockManager.
-func (lm *LeaseManager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
-	lm.mu.RLock()
-	shareName := lm.leaseShare[leaseKey]
-	lm.mu.RUnlock()
-
+// GetLeaseState returns the state and epoch of a lease key in one share.
+//
+// The share is a parameter rather than something this layer resolves from the
+// key, because the key alone does not identify a lease: two clients may
+// present the same 16-byte value on files in different shares, and answering
+// from the wrong share's lock manager reports a foreign lease's state and
+// epoch — values that go straight back out on the wire on a durable reconnect
+// or a replayed CREATE.
+func (lm *LeaseManager) GetLeaseState(ctx context.Context, shareName string, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
 		return lock.LeaseStateNone, 0, false
@@ -541,14 +681,6 @@ func (lm *LeaseManager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (s
 
 // HasLeaseOnHandle reports whether a lease record with this key already exists
 // on this file in this share.
-//
-// It takes the share explicitly rather than resolving it from the leaseShare
-// map, because that map is keyed on the raw lease key alone: two clients may
-// legitimately present the same 16-byte value, and whichever granted last owns
-// the entry. That is harmless for the best-effort routing the map was built
-// for, and not harmless for a caller deciding a value that goes out on the
-// wire. Pairing an explicit share with the file handle keeps the answer about
-// the lease this request is actually asking for.
 func (lm *LeaseManager) HasLeaseOnHandle(fileHandle lock.FileHandle, shareName string, leaseKey [16]byte) bool {
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
@@ -557,12 +689,13 @@ func (lm *LeaseManager) HasLeaseOnHandle(fileHandle lock.FileHandle, shareName s
 	return lockMgr.HasLeaseOnHandle(string(fileHandle), leaseKey)
 }
 
-// GetSessionForLease returns the sessionID associated with a lease key.
-func (lm *LeaseManager) GetSessionForLease(leaseKey [16]byte) (sessionID uint64, found bool) {
+// GetSessionForLease returns the sessionID bound to a lease by one client in
+// one share.
+func (lm *LeaseManager) GetSessionForLease(clientID, shareName string, leaseKey [16]byte) (sessionID uint64, found bool) {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	sid, ok := lm.sessionMap[leaseKey]
-	return sid, ok
+	b, ok := lm.bindings[leaseClientKey{ClientID: clientID, Share: shareName, Key: leaseKey}]
+	return b.SessionID, ok
 }
 
 // VerifyLeaseAckOwnership reports whether a session presenting a
@@ -573,50 +706,24 @@ func (lm *LeaseManager) GetSessionForLease(leaseKey [16]byte) (sessionID uint64,
 // when it arrives from the owning client.
 //
 // Authorization rule:
-//   - The lease must exist (sessionMap is the authoritative leaseKey registry).
-//   - The ack is authorized if the acking sessionID is the lease's registering
-//     session (the common case), OR the ack's connection ClientGUID matches the
-//     lease's recorded (ClientGuid, LeaseKey) binding (multichannel / durable
-//     reconnect on a different session of the same client).
+//   - A lease bound to this key must exist.
+//   - The ack is authorized if the acking sessionID registered the binding
+//     (the common case), OR the ack's connection ClientGUID matches the
+//     binding's recorded GUID (multichannel / durable reconnect on a
+//     different session of the same client).
 //
-// Returns false when the lease is unknown so a stray ack for a non-existent
-// lease key cannot be used to probe state. A zero connGUID never matches a
-// recorded non-zero GUID, so an attacker who cannot reproduce the victim's
-// ClientGUID is rejected.
+// Returns false when no such binding exists so a stray ack for a
+// non-existent lease key cannot be used to probe state. A zero connGUID never
+// matches a recorded non-zero GUID, so an attacker who cannot reproduce the
+// victim's ClientGUID is rejected.
 //
-// Cost: O(1) for the legitimate-owner ack (the only ack a well-behaved client
-// sends) via the sessionMap fast path below. The ClientGUID scan runs only for
-// acks whose sessionID does NOT already own the lease — and is bounded by the
-// number of distinct clients holding this EXACT leaseKey (effectively 1 for
-// real clients, which use random 16-byte keys), not the total lease count.
+// This resolves the same binding AcknowledgeLeaseBreak then acts on, so the
+// authorization and the action cannot disagree about which lease is meant.
 func (lm *LeaseManager) VerifyLeaseAckOwnership(leaseKey [16]byte, sessionID uint64, connGUID [16]byte) bool {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-
-	// Lease must exist (sessionMap is the authoritative leaseKey registry).
-	sid, known := lm.sessionMap[leaseKey]
-	if !known {
-		return false
-	}
-
-	// Fast path: the registering session is acking its own lease. O(1).
-	if sid == sessionID {
-		return true
-	}
-
-	// Otherwise the ack may still be legitimate via the ClientGUID binding
-	// (multichannel / durable reconnect on a different session of the same
-	// client). Match the ack's connection GUID against the lease's recorded
-	// binding. A zero connGUID never matches a recorded non-zero GUID.
-	if connGUID != ([16]byte{}) {
-		for clk, guid := range lm.leaseClientGUID {
-			if clk.Key == leaseKey && guid == connGUID {
-				return true
-			}
-		}
-	}
-	// Neither the owning session nor a matching ClientGUID binding -> reject.
-	return false
+	_, _, found := lm.resolveAckBindingLocked(leaseKey, sessionID, connGUID)
+	return found
 }
 
 // GetSessionForBreak returns the sessionID that should receive a break
@@ -624,42 +731,50 @@ func (lm *LeaseManager) VerifyLeaseAckOwnership(leaseKey [16]byte, sessionID uin
 // `smbXsrv_pending_break_submit` (source3/smbd/smb2_server.c) the break is
 // delivered to the FIRST connection of `client->connections` — i.e. the
 // oldest live connection of the lease's ClientGUID — irrespective of which
-// session opened the file. When the lease has a recorded ClientGUID and a
+// session opened the file. When the binding has a recorded ClientGUID and a
 // primary session is registered for that GUID, this method returns that
-// session. Otherwise it falls back to the lease's per-record sessionMap
-// entry (legacy callers without ClientGUID; durable-reconnect tests that
-// don't thread a CryptoState).
+// session. Otherwise it falls back to the binding's own session (legacy
+// callers without a ClientGUID; durable-reconnect tests that don't thread a
+// CryptoState).
 //
 // Required by smbtorture smb2.lease.v2_complex1, which opens two sessions
 // of the same ClientGUID and asserts every lease break (including breaks
 // for leases held only by the second session) arrives on the first
 // session's transport.
-// `clientID` scopes the GUID lookup; pass `ul.Owner.ClientID` from the
-// breaking record so two clients holding the same numeric leaseKey on
-// different files don't cross-route their breaks. Empty clientID skips
-// the GUID-based path and falls back to the per-key sessionMap (legacy
-// callers without an Owner).
-func (lm *LeaseManager) GetSessionForBreak(leaseKey [16]byte, clientID string) (sessionID uint64, found bool) {
+//
+// clientID and shareName scope the lookup: pass `ul.Owner.ClientID` and
+// `ul.Owner.ShareName` from the breaking record so two clients holding the
+// same numeric leaseKey on different files don't cross-route their breaks,
+// and so the fallback session is the one that registered THIS lease rather
+// than whichever client registered the key value last.
+func (lm *LeaseManager) GetSessionForBreak(clientID, shareName string, leaseKey [16]byte) (sessionID uint64, found bool) {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	if clientID != "" {
-		if guid, ok := lm.leaseClientGUID[clientLeaseKey{ClientID: clientID, Key: leaseKey}]; ok {
-			if sid, ok := lm.clientPrimarySession[guid]; ok {
-				return sid, true
-			}
+	b, ok := lm.bindings[leaseClientKey{ClientID: clientID, Share: shareName, Key: leaseKey}]
+	if !ok {
+		return 0, false
+	}
+	if b.HasGUID {
+		if sid, ok := lm.clientPrimarySession[b.ClientGUID]; ok {
+			return sid, true
 		}
 	}
-	sid, ok := lm.sessionMap[leaseKey]
-	return sid, ok
+	return b.SessionID, true
 }
 
-// UpdateSessionForLease updates the session ID associated with a lease key.
-// Used during durable handle reconnect to associate the existing lease with
-// the new session for break notification routing.
-func (lm *LeaseManager) UpdateSessionForLease(leaseKey [16]byte, sessionID uint64) {
+// UpdateSessionForLease updates the session ID bound to a lease by one client
+// in one share. Used during durable handle reconnect to associate the existing
+// lease with the new session for break notification routing.
+func (lm *LeaseManager) UpdateSessionForLease(clientID, shareName string, leaseKey [16]byte, sessionID uint64) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
-	lm.sessionMap[leaseKey] = sessionID
+	ck := leaseClientKey{ClientID: clientID, Share: shareName, Key: leaseKey}
+	b, ok := lm.bindings[ck]
+	if !ok {
+		return
+	}
+	b.SessionID = sessionID
+	lm.bindings[ck] = b
 }
 
 // SetNotifier sets the lease break notifier for sending break notifications.
@@ -1232,14 +1347,14 @@ func (lm *LeaseManager) BreakParentReadLeasesOnModify(
 	return lockMgr.WaitForBreakCompletion(waitCtx, handleKey)
 }
 
-// SetLeaseEpoch sets the epoch on an existing lease identified by leaseKey.
-// Per MS-SMB2 3.3.5.9: For V2 leases, the server should track the client's
-// epoch from the RqLs create context.
-func (lm *LeaseManager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) {
-	lm.mu.RLock()
-	shareName := lm.leaseShare[leaseKey]
-	lm.mu.RUnlock()
-
+// SetLeaseEpoch sets the epoch on an existing lease identified by leaseKey in
+// one share. Per MS-SMB2 3.3.5.9: for V2 leases, the server should track the
+// client's epoch from the RqLs create context.
+//
+// The share is a parameter for the same reason it is one on GetLeaseState: the
+// key alone does not identify a lease, and the epoch written here is the
+// NewEpoch of the next break notification for whatever lease it lands on.
+func (lm *LeaseManager) SetLeaseEpoch(shareName string, leaseKey [16]byte, epoch uint16) {
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
 		return
@@ -1291,95 +1406,74 @@ func (lm *LeaseManager) BreakReadLeasesOnWrite(
 	return lockMgr.CheckAndBreakOpLocksForWrite(handleKey, exclude)
 }
 
-// LeaseCount returns the number of active leases tracked by this manager.
-// Used for state debugging instrumentation.
+// LeaseCount returns the number of active lease bindings tracked by this
+// manager. Used for state debugging instrumentation.
 func (lm *LeaseManager) LeaseCount() int {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	return len(lm.sessionMap)
+	return len(lm.bindings)
 }
 
-// RangeLeases iterates over all tracked leases, calling fn for each.
+// RangeLeases iterates over all tracked lease bindings, calling fn for each.
 // The callback receives (leaseKey, sessionID, shareName); callers that need a
 // hex string for logging format it themselves (fmt.Sprintf("%x", leaseKey)).
 // Return false to stop iteration. Used for state debugging instrumentation.
 func (lm *LeaseManager) RangeLeases(fn func(leaseKey [16]byte, sessionID uint64, shareName string) bool) {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	for key, sid := range lm.sessionMap {
-		shareName := lm.leaseShare[key]
-		if !fn(key, sid, shareName) {
+	for ck, b := range lm.bindings {
+		if !fn(ck.Key, b.SessionID, ck.Share) {
 			return
 		}
 	}
 }
 
-// removeLeaseMapping removes a lease key from the session and share maps.
-// Must be called without lm.mu held.
-//
-// clientPrimarySession is intentionally NOT cleared here: it is keyed by
-// ClientGUID, not by lease key, and other leases of the same client may
-// still need it for break routing. The map is reaped by ReleaseSessionLeases
-// when the corresponding session disappears.
-func (lm *LeaseManager) removeLeaseMapping(leaseKey [16]byte) {
-	lm.mu.Lock()
-	delete(lm.sessionMap, leaseKey)
-	delete(lm.leaseShare, leaseKey)
-	delete(lm.leaseV2, leaseKey)
-	delete(lm.leaseV1, leaseKey)
-	// leaseClientGUID is composite-keyed by (clientID, leaseKey). The caller
-	// of removeLeaseMapping is the cleanup path of RequestLease for a
-	// failed grant; for a bound entry, the matching clientID is whichever
-	// client first bound it. Sweep all entries with this leaseKey —
-	// safe because at most one (clientID, leaseKey) is ever bound here per
-	// client (round-3 same-client cross-file rejection).
-	for clk := range lm.leaseClientGUID {
-		if clk.Key == leaseKey {
-			delete(lm.leaseClientGUID, clk)
-		}
-	}
-	lm.mu.Unlock()
-}
-
-// MarkLeaseVersionIfUnset records the lease's protocol version on FIRST grant
-// for the given key. Subsequent calls on the same key are no-ops — per
+// MarkLeaseVersionIfUnset records the lease's protocol version on the FIRST
+// grant for a record. Subsequent calls for the same record are no-ops — per
 // smbtorture v2_epoch2 / v2_epoch3 the version is sticky from the originating
 // grant: a V2-established lease keeps responding V2 even to V1 reopens, and
 // a V1-established lease keeps responding V1 even when a V2 upgrade comes in.
 //
+// Scoped to (share, file, key) because that is the identity of the record the
+// version describes. Keying it on the lease key alone lets a lease held by
+// another client under the same key value decide this lease's response format.
+//
 // Callers must invoke this after a successful RequestLease whenever the
 // grantedState is non-None, passing isV2 derived from the request's
 // create-context size (V2 = 52 bytes, V1 = 32 bytes).
-func (lm *LeaseManager) MarkLeaseVersionIfUnset(leaseKey [16]byte, isV2 bool) {
+func (lm *LeaseManager) MarkLeaseVersionIfUnset(fileHandle lock.FileHandle, shareName string, leaseKey [16]byte, isV2 bool) {
+	rk := leaseRecordKey{Share: shareName, HandleKey: string(fileHandle), Key: leaseKey}
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
-	if lm.leaseV1[leaseKey] || lm.leaseV2[leaseKey] {
+	if lm.versions[rk] != leaseVersionUnknown {
 		return
 	}
 	if isV2 {
-		lm.leaseV2[leaseKey] = true
+		lm.versions[rk] = leaseVersionV2
 	} else {
-		lm.leaseV1[leaseKey] = true
+		lm.versions[rk] = leaseVersionV1
 	}
 }
 
 // IsV2 reports whether the lease was first granted from a V2 create context.
-// Returns false for V1-established leases AND for unknown keys (safe default:
-// treat as V1 and send NewEpoch = 0 rather than leak a non-zero epoch).
-func (lm *LeaseManager) IsV2(leaseKey [16]byte) bool {
+// Returns false for V1-established leases AND for unknown records (safe
+// default: treat as V1 and send NewEpoch = 0 rather than leak a non-zero
+// epoch).
+func (lm *LeaseManager) IsV2(fileHandle lock.FileHandle, shareName string, leaseKey [16]byte) bool {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	return lm.leaseV2[leaseKey]
+	return lm.versions[leaseRecordKey{Share: shareName, HandleKey: string(fileHandle), Key: leaseKey}] == leaseVersionV2
 }
 
-// IsLeaseVersionKnown reports whether the lease's version has been recorded
-// (i.e. a successful grant has occurred for this key and MarkLeaseVersionIfUnset
-// fired). Used by the response-encoding path to decide whether to use the
-// established version or fall back to the current request's format.
-func (lm *LeaseManager) IsLeaseVersionKnown(leaseKey [16]byte) bool {
+// IsLeaseVersionKnown reports whether the record's version has been recorded
+// (i.e. a successful grant has occurred for this key on this file and
+// MarkLeaseVersionIfUnset fired). Used by the response-encoding path to decide
+// whether to use the established version or fall back to the current request's
+// format.
+func (lm *LeaseManager) IsLeaseVersionKnown(fileHandle lock.FileHandle, shareName string, leaseKey [16]byte) bool {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	return lm.leaseV1[leaseKey] || lm.leaseV2[leaseKey]
+	return lm.versions[leaseRecordKey{Share: shareName, HandleKey: string(fileHandle), Key: leaseKey}] != leaseVersionUnknown
 }
 
 // resolveLockManager resolves the LockManager for a share name.

@@ -841,7 +841,7 @@ func (h *Handler) handleLeaseBreakAck(ctx *SMBHandlerContext, body []byte) (*Han
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
-	if err := h.LeaseManager.AcknowledgeLeaseBreak(ctx.Context, ack.LeaseKey, ack.LeaseState, 0); err != nil {
+	if err := h.LeaseManager.AcknowledgeLeaseBreak(ctx.Context, ack.LeaseKey, ctx.SessionID, connClientGUID(ctx), ack.LeaseState, 0); err != nil {
 		logger.Warn("LEASE_BREAK_ACK: acknowledgment failed",
 			"leaseKey", fmt.Sprintf("%x", ack.LeaseKey),
 			"error", err)
@@ -899,7 +899,7 @@ func (h *Handler) handleOplockBreakAck(ctx *SMBHandlerContext, body []byte) (*Ha
 	// Map acknowledged oplock level to lease state
 	newState := oplockLevelToLeaseState(ack.OplockLevel)
 
-	if err := h.LeaseManager.AcknowledgeLeaseBreak(ctx.Context, openFile.LeaseKey, newState, 0); err != nil {
+	if err := h.LeaseManager.AcknowledgeLeaseBreak(ctx.Context, openFile.LeaseKey, ctx.SessionID, connClientGUID(ctx), newState, 0); err != nil {
 		logger.Warn("OPLOCK_BREAK_ACK: acknowledgment failed",
 			"fileID", fmt.Sprintf("%x", ack.FileID),
 			"error", err)
