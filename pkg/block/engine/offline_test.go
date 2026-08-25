@@ -3,7 +3,10 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+
+	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // fakeColdReporter stands in for the local tier's residency surface so the
@@ -138,4 +141,203 @@ func TestOfflineReadinessOf_CancelledScanIsUnknown(t *testing.T) {
 	if failed.Known || failed.Safe() {
 		t.Errorf("a failed scan reported known=%v safe=%v", failed.Known, failed.Safe())
 	}
+}
+
+// stubIndex reports a canned set of described ranges per file, standing in for
+// the local tier's interval index.
+type stubIndex struct {
+	described map[string][][2]uint64
+	seeded    bool
+}
+
+func (s *stubIndex) ColdExtents(context.Context) (int64, int64, error) { return 0, 0, nil }
+func (s *stubIndex) ColdSeeded() bool                                  { return s.seeded }
+func (s *stubIndex) DataExtents(_ context.Context, id string, size int64) ([][2]uint64, error) {
+	var out [][2]uint64
+	for _, e := range s.described[id] {
+		if e[0] >= uint64(size) {
+			continue
+		}
+		if e[1] > uint64(size) {
+			e[1] = uint64(size)
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// chunkRow builds one manifest row placing [off, off+size). A non-zero hash is
+// what makes a row committed; zeroHash rows hold no bytes yet.
+func chunkRow(payloadID string, off uint64, size uint32, committed bool) *block.FileChunk {
+	row := &block.FileChunk{ID: fmt.Sprintf("%s/%d", payloadID, off), DataSize: size}
+	if committed {
+		row.Hash = block.ContentHash{1}
+	}
+	return row
+}
+
+// stubManifest is a fixed set of manifest rows per payload.
+type stubManifest map[string][]*block.FileChunk
+
+func (m stubManifest) EnumeratePayloads(_ context.Context, fn func(string) error) error {
+	for id := range m {
+		if err := fn(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m stubManifest) ListFileChunks(_ context.Context, id string) ([]*block.FileChunk, error) {
+	return m[id], nil
+}
+
+// TestManifestShortfall pins what the cross-check counts as a range the index
+// has forgotten. The dangerous direction is under-reporting — a shortfall read
+// as zero is what lets a lost range pass as offline-safe — but a check that
+// fires on a healthy share is just as useless, so both are asserted.
+func TestManifestShortfall(t *testing.T) {
+	tests := []struct {
+		name       string
+		rows       []*block.FileChunk
+		described  [][2]uint64
+		wantBytes  int64
+		wantRanges int64
+	}{
+		{
+			name:      "index describes everything the manifest places",
+			rows:      []*block.FileChunk{chunkRow("p", 0, 1024, true), chunkRow("p", 1024, 1024, true)},
+			described: [][2]uint64{{0, 2048}},
+		},
+		{
+			name:       "index describes nothing at all",
+			rows:       []*block.FileChunk{chunkRow("p", 0, 1024, true)},
+			wantBytes:  1024,
+			wantRanges: 1,
+		},
+		{
+			name:       "a hole in the middle of what the index describes",
+			rows:       []*block.FileChunk{chunkRow("p", 0, 3072, true)},
+			described:  [][2]uint64{{0, 1024}, {2048, 3072}},
+			wantBytes:  1024,
+			wantRanges: 1,
+		},
+		{
+			name:       "holes at both ends",
+			rows:       []*block.FileChunk{chunkRow("p", 0, 4096, true)},
+			described:  [][2]uint64{{1024, 3072}},
+			wantBytes:  2048,
+			wantRanges: 2,
+		},
+		{
+			name:      "overlapping rows are one span, not two claims",
+			rows:      []*block.FileChunk{chunkRow("p", 0, 2048, true), chunkRow("p", 1024, 1024, true)},
+			described: [][2]uint64{{0, 2048}},
+		},
+		{
+			// A row with no committed bytes has nothing on the remote to place,
+			// so the index having no interval for it is not a loss.
+			name:      "a pending row places nothing",
+			rows:      []*block.FileChunk{chunkRow("p", 0, 1024, false)},
+			described: nil,
+		},
+		{
+			// Where an unplaceable row's bytes belong is unknowable here, so it
+			// is CheckManifests' finding, not this one's.
+			name:      "an unplaceable row places nothing",
+			rows:      []*block.FileChunk{{ID: "p/not-an-offset", DataSize: 1024, Hash: block.ContentHash{1}}},
+			described: nil,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			index := &stubIndex{described: map[string][][2]uint64{"p": tc.described}, seeded: true}
+			bytes, ranges, err := manifestShortfall(context.Background(), index, stubManifest{"p": tc.rows})
+			if err != nil {
+				t.Fatalf("manifestShortfall: %v", err)
+			}
+			if bytes != tc.wantBytes || ranges != tc.wantRanges {
+				t.Errorf("shortfall = %d bytes in %d ranges, want %d in %d",
+					bytes, ranges, tc.wantBytes, tc.wantRanges)
+			}
+		})
+	}
+}
+
+// TestSubtractExtents covers the arithmetic the shortfall is measured with,
+// including the case that matters most: an empty b, where every byte of a is
+// missing rather than none of it.
+func TestSubtractExtents(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b [][2]uint64
+		want [][2]uint64
+	}{
+		{name: "nothing covers anything", a: [][2]uint64{{0, 10}}, want: [][2]uint64{{0, 10}}},
+		{name: "fully covered", a: [][2]uint64{{0, 10}}, b: [][2]uint64{{0, 10}}},
+		{name: "covered by a wider span", a: [][2]uint64{{2, 8}}, b: [][2]uint64{{0, 10}}},
+		{name: "gap in the middle", a: [][2]uint64{{0, 10}}, b: [][2]uint64{{0, 3}, {7, 10}}, want: [][2]uint64{{3, 7}}},
+		{name: "b entirely before a", a: [][2]uint64{{10, 20}}, b: [][2]uint64{{0, 5}}, want: [][2]uint64{{10, 20}}},
+		{name: "b entirely after a", a: [][2]uint64{{0, 5}}, b: [][2]uint64{{10, 20}}, want: [][2]uint64{{0, 5}}},
+		{
+			name: "several spans share one covering list",
+			a:    [][2]uint64{{0, 10}, {20, 30}},
+			b:    [][2]uint64{{5, 25}},
+			want: [][2]uint64{{0, 5}, {25, 30}},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := subtractExtents(tc.a, tc.b)
+			if len(got) != len(tc.want) {
+				t.Fatalf("subtractExtents = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("subtractExtents = %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestShortfallMemoReusesTheWalk asserts the metrics scrape path does not pay
+// for a manifest walk on every call, and that a walk which failed is not
+// remembered as a verdict.
+func TestShortfallMemoReusesTheWalk(t *testing.T) {
+	var walks int
+	manifest := &countingManifest{stubManifest{"p": {chunkRow("p", 0, 1024, true)}}, &walks}
+	index := &stubIndex{described: map[string][][2]uint64{"p": {{0, 1024}}}, seeded: true}
+
+	var memo shortfallMemo
+	for i := 0; i < 3; i++ {
+		if _, _, err := memo.get(context.Background(), index, manifest); err != nil {
+			t.Fatalf("get: %v", err)
+		}
+	}
+	if walks != 1 {
+		t.Errorf("walked the manifest %d times over 3 calls, want 1", walks)
+	}
+
+	// A cancelled walk is a non-answer, so the next caller must get its own
+	// attempt rather than inherit this one's failure.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var fresh shortfallMemo
+	if _, _, err := fresh.get(ctx, index, manifest); err == nil {
+		t.Fatal("a cancelled walk reported a verdict")
+	}
+	if !fresh.at.IsZero() {
+		t.Error("a failed walk was remembered as a verdict")
+	}
+}
+
+type countingManifest struct {
+	stubManifest
+	walks *int
+}
+
+func (c *countingManifest) EnumeratePayloads(ctx context.Context, fn func(string) error) error {
+	*c.walks++
+	return c.stubManifest.EnumeratePayloads(ctx, fn)
 }
