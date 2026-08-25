@@ -43,6 +43,13 @@ type docTarget struct {
 	// IsBaseFile is set when the entry above is the base file behind a stream
 	// handle rather than the closing handle's own name.
 	IsBaseFile bool
+
+	// DocSetterParentKey is the parent lease key recorded by whoever committed
+	// the delete-on-close, snapshotted under the handle lock. The unlink
+	// suppresses the parent dir lease only when it matches the closer's own
+	// parent key; when they differ every parent dir lease breaks.
+	DocSetterParentKey    [16]byte
+	HasDocSetterParentKey bool
 }
 
 // electDeleteOnClose runs the delete-on-close last-handle election for a
@@ -106,6 +113,8 @@ func (h *Handler) electDeleteOnClose(openFile *OpenFile) (docDecision, docTarget
 	baseFileDeletePending := openFile.BaseFileDeletePending
 	baseFileParentHandle := openFile.BaseFileDeleteParentHandle
 	baseFileName := openFile.BaseFileDeleteFileName
+	docSetterKey := openFile.DeleteOnCloseParentKey
+	hasDocSetterKey := openFile.HasDeleteOnCloseParentKey
 	openFile.mu.Unlock()
 
 	if !deletePending && !baseFileDeletePending {
@@ -140,8 +149,8 @@ func (h *Handler) electDeleteOnClose(openFile *OpenFile) (docDecision, docTarget
 			// reaps and every later CREATE on the path answered DELETE_PENDING.
 			other.mu.Lock()
 			other.DeletePending = true
-			other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
-			other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
+			other.DeleteOnCloseParentKey = docSetterKey
+			other.HasDeleteOnCloseParentKey = hasDocSetterKey
 			other.mu.Unlock()
 			return true
 		})
@@ -171,8 +180,8 @@ func (h *Handler) electDeleteOnClose(openFile *OpenFile) (docDecision, docTarget
 			other.BaseFileDeletePending = true
 			other.BaseFileDeleteParentHandle = docName.ParentHandle
 			other.BaseFileDeleteFileName = docName.FileName
-			other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
-			other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
+			other.DeleteOnCloseParentKey = docSetterKey
+			other.HasDeleteOnCloseParentKey = hasDocSetterKey
 			other.mu.Unlock()
 			return true
 		})
@@ -201,7 +210,13 @@ func (h *Handler) electDeleteOnClose(openFile *OpenFile) (docDecision, docTarget
 		}
 	}
 
-	target := docTarget{Name: docName, ParentHandle: docName.ParentHandle, FileName: docName.FileName}
+	target := docTarget{
+		Name:                  docName,
+		ParentHandle:          docName.ParentHandle,
+		FileName:              docName.FileName,
+		DocSetterParentKey:    docSetterKey,
+		HasDocSetterParentKey: hasDocSetterKey,
+	}
 	if baseFileDeletePending {
 		target.ParentHandle = baseFileParentHandle
 		target.FileName = baseFileName

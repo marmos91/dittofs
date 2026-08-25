@@ -1660,8 +1660,16 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 	authCtx := h.buildCleanupAuthContext(ctx, sess)
 	// Thread the closing handle's RqLs ParentLeaseKey so notifyDirChange can
 	// apply the MS-SMB2 §3.3.4.20 / Samba `dirlease_should_break` parent-key
-	// suppression rule on the parent dir lease.
-	PropagateOpenFileParentLeaseKey(authCtx, openFile)
+	// suppression rule on the parent dir lease. Suppression applies only when
+	// the closer's key matches the key whoever committed the delete-on-close
+	// recorded; when they differ every parent dir lease breaks. Same rule the
+	// explicit CLOSE path applies (close.go step 8).
+	docSetterKeysDiffer := target.HasDocSetterParentKey &&
+		openFile.HasParentLeaseKey &&
+		target.DocSetterParentKey != openFile.ParentLeaseKey
+	if !docSetterKeysDiffer {
+		PropagateOpenFileParentLeaseKey(authCtx, openFile)
+	}
 	metaSvc := h.Registry.GetMetadataService()
 
 	if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {

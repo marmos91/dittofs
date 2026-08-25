@@ -410,9 +410,11 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// parent key matches the DOC-setter's parent key, use the closer's
 			// key for suppression (test_unlink_same_*). When they differ, no
 			// suppression — ALL parent dir leases break (test_unlink_different_*).
-			docSetterKeysDiffer := openFile.HasDeleteOnCloseParentKey &&
+			// The DOC-setter's key comes from the election's snapshot, taken
+			// under the handle lock SET_INFO and the propagation write it under.
+			docSetterKeysDiffer := target.HasDocSetterParentKey &&
 				openFile.HasParentLeaseKey &&
-				openFile.DeleteOnCloseParentKey != openFile.ParentLeaseKey
+				target.DocSetterParentKey != openFile.ParentLeaseKey
 			if !docSetterKeysDiffer {
 				// Same key (or no DOC key tracking): use closer's parent key
 				PropagateOpenFileParentLeaseKey(authCtx, openFile)
