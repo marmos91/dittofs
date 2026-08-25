@@ -280,28 +280,26 @@ type NotifyRegistry struct {
 	// interim response, which is sent strictly AFTER Register has run.
 	cancelTombstones map[notifyMsgKey]time.Time
 
-	// pendingInterim retains the PendingNotify for an in-flight CHANGE_NOTIFY
-	// whose interim STATUS_PENDING has not yet been written to the wire, even
-	// after it was unregistered (e.g. by a racing CANCEL). The CANCEL handler
-	// MUST defer its STATUS_CANCELLED response into PendingNotify.deferredFinal
-	// when interimSent is still false — otherwise the cancel response races
-	// ahead of the interim PENDING and the client drops the connection
-	// (smb2.notify.mask). MarkInterimSent fires the deferred response after
-	// writing interim and clears this map entry. Keyed by (ConnID, MessageID).
-	pendingInterim map[notifyMsgKey]*PendingNotify
-
 	// nextGeneration is incremented on every Register and stamped onto the
 	// registered PendingNotify.generation. Used to detect stale flush-timer
 	// callbacks after a re-arm on the same FileID. Always mutated under r.mu.
 	nextGeneration uint64
 
+	// closeTombstones records handles whose CHANGE_NOTIFY completion path has
+	// already run (CLOSE, or connection/session teardown) while no watch was
+	// registered on them yet. A CHANGE_NOTIFY dispatched concurrently can
+	// still be between its open-file lookup and its Register, and without the
+	// tombstone it would register a watch on a handle that is going away and
+	// then wait forever. Keyed by FileID, expiring on cancelTombstoneTTL.
+	closeTombstones map[string]time.Time
+
 	// flushDelay is the per-registry accumulation window for buffered events.
 	// Defaults to notifyFlushDelay (100µs) in production. Tests that drive
 	// delivery synchronously via FlushAll set this to a large value so the
 	// background time.AfterFunc timer never fires before FlushAll stops it —
-	// otherwise the two delivery paths race on slow/contended schedulers
-	// (the Windows CI runner in particular), letting a callback run on the
-	// timer goroutine with no happens-before edge to the test's assertion.
+	// otherwise the two delivery paths race on a slow or contended scheduler,
+	// letting a callback run on the timer goroutine with no happens-before
+	// edge to the test's assertion.
 	flushDelay time.Duration
 }
 
@@ -310,6 +308,13 @@ type NotifyRegistry struct {
 // notify that the server rejected synchronously). Five seconds is generous
 // enough for any plausible per-request goroutine scheduling delay while still
 // expiring promptly if no Register ever happens.
+//
+// ponytail: a fixed 5s wall-clock ceiling. A Register delayed past it consumes
+// nothing and registers a watch its cancel has already abandoned — straight
+// back into the hang the tombstone exists to prevent. Replace with a tombstone
+// keyed to the request's own lifetime (dropped when the dispatch goroutine for
+// that MessageID finishes, however long it took) if a loaded server is ever
+// seen to exceed it.
 const cancelTombstoneTTL = 5 * time.Second
 
 // armedHandle records the buffered-events accounting for a single open
@@ -359,7 +364,7 @@ func NewNotifyRegistry() *NotifyRegistry {
 		byAsyncId:        make(map[uint64]*PendingNotify),
 		armed:            make(map[string]*armedHandle),
 		cancelTombstones: make(map[notifyMsgKey]time.Time),
-		pendingInterim:   make(map[notifyMsgKey]*PendingNotify),
+		closeTombstones:  make(map[string]time.Time),
 		flushDelay:       notifyFlushDelay,
 	}
 }
@@ -369,21 +374,18 @@ func NewNotifyRegistry() *NotifyRegistry {
 // (CANCELLED, NOTIFY_CLEANUP, OK) was queued before interim reached the wire,
 // it is delivered now — preserving the on-wire order PENDING → final that
 // clients require.
-func (r *NotifyRegistry) MarkInterimSent(connID, messageID uint64) {
+//
+// The notify is identified by pointer rather than by (ConnID, MessageID):
+// every path that completes a pending notify removes it from the registry's
+// maps before queueing its final response, so a key lookup misses whenever
+// the interim is written inside that window — leaving the queued final
+// deferred against a signal that has already passed, and the client waiting
+// on a MessageID that never gets a response.
+func (r *NotifyRegistry) MarkInterimSent(notify *PendingNotify) {
 	r.mu.Lock()
-	key := notifyMsgKey{ConnID: connID, MessageID: messageID}
-	notify := r.pendingInterim[key]
-	delete(r.pendingInterim, key)
-	var deferred func()
-	if notify != nil {
-		notify.interimSent = true
-		deferred = notify.deferredFinal
-		notify.deferredFinal = nil
-	} else if n, ok := r.byMsgKey[key]; ok {
-		// Still registered and live. Mark the flag so any future async
-		// final response delivery skips the deferral path.
-		n.interimSent = true
-	}
+	notify.interimSent = true
+	deferred := notify.deferredFinal
+	notify.deferredFinal = nil
 	r.mu.Unlock()
 
 	if deferred != nil {
@@ -413,8 +415,6 @@ func (r *NotifyRegistry) queueFinalAfterInterimLocked(notify *PendingNotify, run
 		}
 		run()
 	}
-	key := notifyMsgKey{ConnID: notify.ConnID, MessageID: notify.MessageID}
-	r.pendingInterim[key] = notify
 	return false
 }
 
@@ -440,26 +440,123 @@ func (r *NotifyRegistry) QueueFinalAfterInterim(notify *PendingNotify, run func(
 // STATUS_PENDING.
 var ErrAlreadyCancelled = fmt.Errorf("change_notify already cancelled before register")
 
-// MarkPendingCancel records a tombstone for a CHANGE_NOTIFY that may not yet
-// have registered. Called by the SMB2_CANCEL handler when its lookup by
-// (ConnID, MessageID) finds nothing — the matching CHANGE_NOTIFY is likely
-// being processed concurrently on another goroutine. If that NOTIFY then
-// reaches Register, the tombstone causes it to return ErrAlreadyCancelled
-// instead of registering and waiting forever (issue #623).
+// CancelByMessageID completes the SMB2_CANCEL lookup for a synchronous
+// (non-async-flagged) cancel. It removes the pending notify for
+// (connID, messageID) and returns it, or — when no notify has registered yet —
+// records a tombstone so the in-flight Register short-circuits, and returns
+// nil.
+//
+// Both outcomes are decided under a single acquisition of r.mu, and that is
+// the point. Performed as a lookup followed by a separate tombstone write,
+// a concurrent Register slips between the two: it sees no tombstone (not
+// written yet) and registers a watch the cancel has already given up on, so
+// nothing ever completes that MessageID and the client waits forever.
 //
 // Tombstones expire after cancelTombstoneTTL so a stray CANCEL for a notify
-// that was already rejected synchronously (e.g. invalid filter) doesn't
+// the server already rejected synchronously (e.g. invalid filter) doesn't
 // cancel a future unrelated CHANGE_NOTIFY that happens to reuse the same
 // (ConnID, MessageID) much later.
-func (r *NotifyRegistry) MarkPendingCancel(connID, messageID uint64) {
+func (r *NotifyRegistry) CancelByMessageID(connID, messageID uint64) *PendingNotify {
+	key := notifyMsgKey{ConnID: connID, MessageID: messageID}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.cancelTombstones[notifyMsgKey{ConnID: connID, MessageID: messageID}] = time.Now()
+
+	if notify, ok := r.byMsgKey[key]; ok {
+		return r.unregisterLocked(notify)
+	}
+
+	r.cancelTombstones[key] = time.Now()
 	r.gcCancelTombstonesLocked()
+	return nil
+}
+
+// ErrHandleClosed is returned from Register when the watched handle's
+// CHANGE_NOTIFY completion path already ran (CLOSE, or session/connection
+// teardown) before this Register could take the lock. The handler must
+// respond with STATUS_NOTIFY_CLEANUP synchronously instead of registering a
+// watch on a handle that is going away.
+var ErrHandleClosed = fmt.Errorf("change_notify handle closed before register")
+
+// CloseByFileID is the single completion path for a handle that is going
+// away. Under one acquisition of r.mu it disarms the handle's buffered-event
+// accounting, removes any watch registered on it (returned so the caller can
+// answer STATUS_NOTIFY_CLEANUP), and — when nothing is registered yet —
+// records a tombstone so an in-flight Register short-circuits with
+// ErrHandleClosed.
+//
+// Every handle-scoped completion path must route through here rather than
+// calling Disarm and then Unregister. Those are two acquisitions of the lock,
+// and a CHANGE_NOTIFY that has already passed its open-file lookup can
+// register between them: the close reports nothing to complete, the watch
+// stays live on a destroyed handle, and nothing ever answers that MessageID.
+// CLOSE is the visible case because it completes the notify before it removes
+// the handle from the open-file table, so the window is wide.
+func (r *NotifyRegistry) CloseByFileID(fileID [16]byte) *PendingNotify {
+	key := string(fileID[:])
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.armed, key)
+
+	// Tombstone unconditionally, not only when no watch was registered. The
+	// handle is going away either way, and a second CHANGE_NOTIFY that has
+	// already passed its open-file lookup can still reach Register after this
+	// runs — completing the watch we happened to find here does nothing for
+	// that one, which would register on a handle that no longer exists and
+	// wait forever.
+	//
+	// ponytail: written on every directory CLOSE, and reclaimed by an O(n)
+	// sweep on each call. Size is self-limiting to the closes within one TTL,
+	// so this is bounded rather than a leak; give the map its own expiry heap
+	// if a directory-close-heavy workload ever makes the sweep show up.
+	r.closeTombstones[key] = time.Now()
+	r.gcCloseTombstonesLocked()
+
+	if notify, ok := r.byFileID[key]; ok {
+		return r.unregisterLocked(notify)
+	}
+	return nil
+}
+
+// closeTombstoneCount reports how many close tombstones are outstanding.
+// Test-only: the tombstone map is an internal detail, but a caller that
+// records one per non-directory handle turns bulk teardown into an O(n)
+// sweep per handle, and that is only observable from here.
+func (r *NotifyRegistry) closeTombstoneCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.closeTombstones)
+}
+
+// gcCloseTombstonesLocked evicts expired close tombstones. Must be called
+// with r.mu held for write. Called opportunistically from CloseByFileID and
+// Register, mirroring the cancel tombstones.
+func (r *NotifyRegistry) gcCloseTombstonesLocked() {
+	now := time.Now()
+	for k, ts := range r.closeTombstones {
+		if now.Sub(ts) > cancelTombstoneTTL {
+			delete(r.closeTombstones, k)
+		}
+	}
+}
+
+// consumeCloseTombstoneLocked checks for and removes a tombstone for fileID.
+// Returns true if one was found and had not expired. Must be called with
+// r.mu held for write.
+func (r *NotifyRegistry) consumeCloseTombstoneLocked(fileID [16]byte) bool {
+	key := string(fileID[:])
+	ts, ok := r.closeTombstones[key]
+	if !ok {
+		return false
+	}
+	delete(r.closeTombstones, key)
+	return time.Since(ts) <= cancelTombstoneTTL
 }
 
 // gcCancelTombstonesLocked evicts expired tombstones. Must be called with
-// r.mu held for write. Called opportunistically from MarkPendingCancel and
+// r.mu held for write. Called opportunistically from CancelByMessageID and
 // Register so we don't need a background ticker; tombstones are only created
 // in races and expire quickly even under high load.
 func (r *NotifyRegistry) gcCancelTombstonesLocked() {
@@ -537,21 +634,6 @@ func (r *NotifyRegistry) ClearBufferedEvents(fileID [16]byte) {
 	}
 }
 
-// Disarm tears down the buffered-event accounting for a directory handle.
-// Called from CLOSE and from session/tree teardown. After Disarm, no further
-// matching events will be counted against this handle until a new
-// CHANGE_NOTIFY re-arms it. Returns true if an entry was removed.
-func (r *NotifyRegistry) Disarm(fileID [16]byte) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	key := string(fileID[:])
-	if _, ok := r.armed[key]; !ok {
-		return false
-	}
-	delete(r.armed, key)
-	return true
-}
-
 // ResetArmedOverflow clears the buffered-byte counter and overflow flag for
 // a directory handle while keeping it armed. Called by the handler after
 // it has consumed the sticky overflow flag and responded with
@@ -576,13 +658,28 @@ const MaxPendingWatches = 4096
 var ErrTooManyWatches = fmt.Errorf("too many pending ChangeNotify watches (max %d)", MaxPendingWatches)
 
 // Register adds a pending notification request.
-// If a request with the same FileID already exists, it is replaced.
+// If a request with the same FileID already exists, it is replaced — and the
+// replaced request is completed with STATUS_CANCELLED rather than dropped, so
+// its MessageID always gets a response.
 // Returns ErrTooManyWatches if the global limit would be exceeded.
 // Returns ErrAlreadyCancelled when an SMB2_CANCEL for the same
-// (ConnID, MessageID) arrived before this Register call (issue #623); the
-// caller MUST respond with STATUS_CANCELLED synchronously instead of
-// emitting STATUS_PENDING.
+// (ConnID, MessageID) arrived before this Register call; the caller MUST
+// respond with STATUS_CANCELLED synchronously instead of emitting
+// STATUS_PENDING.
+// Returns ErrHandleClosed when the handle's close path already ran; the caller
+// MUST respond with STATUS_NOTIFY_CLEANUP synchronously.
 func (r *NotifyRegistry) Register(notify *PendingNotify) error {
+	// Superseded watches are completed after r.mu is released — sendFinalGated
+	// takes the lock itself. Deferred before the unlock so it runs after it.
+	var superseded []*PendingNotify
+	defer func() {
+		for _, old := range superseded {
+			r.sendFinalGated(old, &ChangeNotifyResponse{
+				SMBResponseBase: SMBResponseBase{Status: types.StatusCancelled},
+			}, "superseded by a later CHANGE_NOTIFY on the same handle")
+		}
+	}()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -591,6 +688,14 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	// been dispatched but couldn't find us yet. Short-circuit instead of
 	// registering — the handler will emit STATUS_CANCELLED synchronously.
 	if r.consumeCancelTombstoneLocked(notify.ConnID, notify.MessageID) {
+		// Arm the handle even though no watch is registered. The client has
+		// expressed interest in this directory and will re-issue; events
+		// arriving in the gap must be buffered for that next request rather
+		// than dropped. A watch that registers and is then cancelled leaves
+		// the handle armed — unregisterLocked does not disarm — so a cancel
+		// that beats registration has to leave it armed too, or the same
+		// client sequence loses events depending only on which goroutine won.
+		r.armLocked(notify)
 		logger.Debug("NotifyRegistry: register short-circuited by pre-arrival CANCEL",
 			"connID", notify.ConnID,
 			"messageID", notify.MessageID,
@@ -599,10 +704,34 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	}
 	r.gcCancelTombstonesLocked()
 
+	// Same check for a CLOSE (or teardown) that completed this handle's
+	// notify path before we could register.
+	if r.consumeCloseTombstoneLocked(notify.FileID) {
+		logger.Debug("NotifyRegistry: register short-circuited by handle close",
+			"connID", notify.ConnID,
+			"messageID", notify.MessageID,
+			"path", notify.WatchPath)
+		return ErrHandleClosed
+	}
+	r.gcCloseTombstonesLocked()
+
 	// If there's already a registration for this FileID, remove the old entry
 	// to keep data structures consistent.
 	if old, ok := r.byFileID[string(notify.FileID[:])]; ok {
 		r.unregisterLocked(old)
+		// Hand back whatever the superseded watch had accumulated but not yet
+		// delivered. unregisterLocked stops its flush timer, so without this
+		// those events die with it and the replacement — which the client is
+		// waiting on — sees nothing, turning one silent hang into another.
+		// They go in front of any later arrivals to keep them in order; the
+		// replay block below picks them up once the new watch is armed.
+		if len(old.bufferedChanges) > 0 {
+			if a, isArmed := r.armed[string(notify.FileID[:])]; isArmed {
+				a.BufferedEvents = append(old.bufferedChanges, a.BufferedEvents...)
+			}
+			old.bufferedChanges = nil
+		}
+		superseded = append(superseded, old)
 	} else if len(r.byFileID) >= MaxPendingWatches {
 		return ErrTooManyWatches
 	}
@@ -616,7 +745,7 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	msgKey := notifyMsgKey{ConnID: notify.ConnID, MessageID: notify.MessageID}
 	if oldByMsg, ok := r.byMsgKey[msgKey]; ok {
 		if string(oldByMsg.FileID[:]) != string(notify.FileID[:]) {
-			r.unregisterLocked(oldByMsg)
+			superseded = append(superseded, r.unregisterLocked(oldByMsg))
 		}
 	}
 
@@ -670,23 +799,6 @@ func (r *NotifyRegistry) Unregister(fileID [16]byte) *PendingNotify {
 	defer r.mu.Unlock()
 
 	notify, ok := r.byFileID[string(fileID[:])]
-	if !ok {
-		return nil
-	}
-
-	return r.unregisterLocked(notify)
-}
-
-// UnregisterByMessageID removes a pending notification by (ConnID, MessageID).
-// Called by CANCEL when SMB2_FLAGS_ASYNC_COMMAND is not set on the cancel
-// request (spec requires the server to match the original request's
-// MessageID on its connection). Returns the removed PendingNotify, or nil
-// if not found.
-func (r *NotifyRegistry) UnregisterByMessageID(connID, messageID uint64) *PendingNotify {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	notify, ok := r.byMsgKey[notifyMsgKey{ConnID: connID, MessageID: messageID}]
 	if !ok {
 		return nil
 	}

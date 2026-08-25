@@ -1293,6 +1293,13 @@ func (h *Handler) closeFilesWithFilter(
 ) int {
 	var closed int
 	var toDelete [][16]byte
+	// Directory handles only. CHANGE_NOTIFY is rejected on anything else
+	// (stub_handlers.go returns STATUS_INVALID_PARAMETER for a non-directory),
+	// so a file or pipe handle can never carry a watch — and running the
+	// notify completion for one would record a close tombstone nothing will
+	// ever consume, making bulk teardown pay an O(n) tombstone sweep per
+	// handle.
+	var notifyDirs [][16]byte
 	// leaseReleases holds the opens whose per-handle lease/oplock record must be
 	// released AFTER the open-file table has been shrunk (second pass). Releasing
 	// in the first pass would let two opens of the SAME file with the SAME lease
@@ -1415,6 +1422,9 @@ func (h *Handler) closeFilesWithFilter(
 					// Do NOT release locks, flush caches, or execute delete-on-close
 					// The handle lives on in the DurableHandleStore
 					toDelete = append(toDelete, openFile.FileID)
+					if openFile.IsDirectory {
+						notifyDirs = append(notifyDirs, openFile.FileID)
+					}
 					closed++
 					return true
 				}
@@ -1521,6 +1531,9 @@ func (h *Handler) closeFilesWithFilter(
 		leaseReleases = append(leaseReleases, openFile)
 
 		toDelete = append(toDelete, openFile.FileID)
+		if openFile.IsDirectory {
+			notifyDirs = append(notifyDirs, openFile.FileID)
+		}
 		closed++
 		return true
 	})
@@ -1540,9 +1553,8 @@ func (h *Handler) closeFilesWithFilter(
 	// wait a concurrent CLOSE must satisfy, preserving the same deadlock-safety
 	// argument as close.go's DrainHandleOps placement.
 	if h.NotifyRegistry != nil {
-		for _, fileID := range toDelete {
-			h.NotifyRegistry.Disarm(fileID)
-			if notify := h.NotifyRegistry.Unregister(fileID); notify != nil && notify.AsyncCallback != nil {
+		for _, fileID := range notifyDirs {
+			if notify := h.NotifyRegistry.CloseByFileID(fileID); notify != nil && notify.AsyncCallback != nil {
 				cleanupResp := &ChangeNotifyResponse{
 					SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
 				}

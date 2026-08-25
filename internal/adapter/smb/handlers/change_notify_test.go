@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync"
@@ -119,11 +120,11 @@ func TestNotifyRegistry_Register_CrossConnectionMessageIDNoEvict(t *testing.T) {
 	}
 }
 
-// TestNotifyRegistry_UnregisterByMessageID_DisambiguatesByConnID verifies the
+// TestNotifyRegistry_CancelByMessageID_DisambiguatesByConnID verifies the
 // CANCEL-by-MessageID path scopes its lookup to the requesting connection,
 // so two pending notifies sharing a MessageID across two TCP connections
 // can each be cancelled independently.
-func TestNotifyRegistry_UnregisterByMessageID_DisambiguatesByConnID(t *testing.T) {
+func TestNotifyRegistry_CancelByMessageID_DisambiguatesByConnID(t *testing.T) {
 	r := newTestNotifyRegistry()
 
 	a := &PendingNotify{
@@ -149,17 +150,17 @@ func TestNotifyRegistry_UnregisterByMessageID_DisambiguatesByConnID(t *testing.T
 	mustRegister(t, r, a)
 	mustRegister(t, r, b)
 
-	got := r.UnregisterByMessageID(1, 521)
+	got := r.CancelByMessageID(1, 521)
 	if got == nil || got.AsyncId != 1 {
-		t.Fatalf("UnregisterByMessageID(connID=1) returned %+v, want A", got)
+		t.Fatalf("CancelByMessageID(connID=1) returned %+v, want A", got)
 	}
 	// B must still be there.
-	if got := r.UnregisterByMessageID(2, 521); got == nil || got.AsyncId != 2 {
-		t.Fatalf("UnregisterByMessageID(connID=2) returned %+v, want B", got)
+	if got := r.CancelByMessageID(2, 521); got == nil || got.AsyncId != 2 {
+		t.Fatalf("CancelByMessageID(connID=2) returned %+v, want B", got)
 	}
 }
 
-func TestNotifyRegistry_UnregisterByMessageID(t *testing.T) {
+func TestNotifyRegistry_CancelByMessageID(t *testing.T) {
 	r := newTestNotifyRegistry()
 
 	notify := &PendingNotify{
@@ -175,7 +176,7 @@ func TestNotifyRegistry_UnregisterByMessageID(t *testing.T) {
 	mustRegister(t, r, notify)
 
 	// Unregister by (ConnID, MessageID)
-	removed := r.UnregisterByMessageID(7, 42)
+	removed := r.CancelByMessageID(7, 42)
 	if removed == nil {
 		t.Fatal("expected non-nil removed notify")
 	}
@@ -184,7 +185,7 @@ func TestNotifyRegistry_UnregisterByMessageID(t *testing.T) {
 	}
 
 	// Should not find it again
-	removed = r.UnregisterByMessageID(7, 42)
+	removed = r.CancelByMessageID(7, 42)
 	if removed != nil {
 		t.Error("expected nil on second unregister")
 	}
@@ -1366,15 +1367,13 @@ func TestArmedBuffer_OverflowsAfterCancelWithNoLiveWatcher(t *testing.T) {
 		t.Errorf("expected OnOverflow with fileID %v, got %v", fileID, lastOverflowFileID)
 	}
 
-	// Disarm clears the armed slot — events fired after this must NOT
-	// re-trip overflow (the handle has been closed).
-	if !r.Disarm(fileID) {
-		t.Errorf("expected Disarm to report removal")
-	}
+	// Closing the handle clears the armed slot — events fired after this
+	// must NOT re-trip overflow.
+	r.CloseByFileID(fileID)
 	r.NotifyChange("share1", "/basedir_ovf", "post-close.txt", FileActionAdded, FileNotifyChangeFileName)
 	r.FlushAll()
 	if atomic.LoadInt32(&overflowFireCount) != 1 {
-		t.Errorf("expected no additional OnOverflow after Disarm, got count=%d", overflowFireCount)
+		t.Errorf("expected no additional OnOverflow after close, got count=%d", overflowFireCount)
 	}
 }
 
@@ -2066,7 +2065,7 @@ func TestNotifyRegistry_PreArrivalCancel_TombstoneShortCircuitsRegister(t *testi
 
 	// CANCEL arrives first — no matching entry, so the handler drops a
 	// tombstone for the future Register to find.
-	r.MarkPendingCancel(connID, messageID)
+	r.CancelByMessageID(connID, messageID)
 
 	notify := &PendingNotify{
 		FileID:           [16]byte{0xAB},
@@ -2102,7 +2101,7 @@ func TestNotifyRegistry_PreArrivalCancel_TombstoneShortCircuitsRegister(t *testi
 // Without this guard, the tombstone would be a global blocker.
 func TestNotifyRegistry_CancelTombstoneNoCrossMessageIDLeak(t *testing.T) {
 	r := newTestNotifyRegistry()
-	r.MarkPendingCancel(1, 10)
+	r.CancelByMessageID(1, 10)
 
 	otherMsg := &PendingNotify{
 		FileID: [16]byte{0xFE}, ConnID: 1, MessageID: 11, AsyncId: 1,
@@ -2129,7 +2128,7 @@ func TestNotifyRegistry_CancelTombstoneNoCrossMessageIDLeak(t *testing.T) {
 // would couple the test to the internal layout.
 func TestNotifyRegistry_CancelTombstoneExpires(t *testing.T) {
 	r := newTestNotifyRegistry()
-	r.MarkPendingCancel(1, 99)
+	r.CancelByMessageID(1, 99)
 
 	// Manually age the tombstone by rewriting it past the TTL. Going through
 	// the map directly is the only way to simulate time passage without
@@ -2173,7 +2172,7 @@ func TestChangeNotify_PreArrivalCancel_HandlerReturnsCancelledSync(t *testing.T)
 	}
 
 	// CANCEL arrived ahead of us.
-	h.NotifyRegistry.MarkPendingCancel(ctx.ConnID, ctx.MessageID)
+	h.NotifyRegistry.CancelByMessageID(ctx.ConnID, ctx.MessageID)
 
 	body := encodeChangeNotifyReq(0, 1000, fileID, FileNotifyChangeFileName)
 	res, err := h.ChangeNotify(ctx, body)
@@ -2195,7 +2194,7 @@ func TestChangeNotify_PreArrivalCancel_HandlerReturnsCancelledSync(t *testing.T)
 }
 
 // TestNotifyRegistry_ConcurrentCancelBeforeRegister stresses the race that
-// caused #623. We spin up many goroutines that each fire MarkPendingCancel
+// caused #623. We spin up many goroutines that each fire CancelByMessageID
 // followed by Register on the same (ConnID, MessageID). Either outcome is
 // correct (tombstone consumed before Register, or Register raced past) but
 // no goroutine can land in a state where a watcher remains registered for a
@@ -2211,7 +2210,7 @@ func TestNotifyRegistry_ConcurrentCancelBeforeRegister(t *testing.T) {
 		done := make(chan struct{}, 2)
 		// Cancel first, then notify — guarantees ErrAlreadyCancelled.
 		go func() {
-			r.MarkPendingCancel(connID, messageID)
+			r.CancelByMessageID(connID, messageID)
 			done <- struct{}{}
 		}()
 		go func() {
@@ -2769,5 +2768,431 @@ func TestArmedBuffer_RenameDoesNotDoubleChargeAncestorWatcher(t *testing.T) {
 
 	if bufferedBytes != twoEntryCost {
 		t.Errorf("armed.BufferedBytes = %d; want %d (exactly 2 rename entries)", bufferedBytes, twoEntryCost)
+	}
+}
+
+// TestMarkInterimSent_AfterUnregister_StillDeliversFinal covers the ordering
+// that leaves a cancelled CHANGE_NOTIFY without a final response.
+//
+// Every path that completes a pending notify (CANCEL, CLOSE, session/tree
+// teardown, event delivery) removes it from the registry's maps first and
+// only then queues the final response through QueueFinalAfterInterim. If the
+// dispatcher writes the interim STATUS_PENDING inside that window, the
+// interim-sent signal must still reach the notify — otherwise the queued
+// final is deferred against a signal that has already passed and the client
+// waits forever on a MessageID that never gets a response.
+func TestMarkInterimSent_AfterUnregister_StillDeliversFinal(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	var sent []types.Status
+	notify := &PendingNotify{
+		FileID:           [16]byte{3},
+		SessionID:        42,
+		ConnID:           1,
+		MessageID:        7,
+		AsyncId:          5741,
+		WatchPath:        "/d",
+		ShareName:        "s",
+		CompletionFilter: FileNotifyChangeFileName,
+		GateInterim:      true,
+		AsyncCallback: func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+			sent = append(sent, resp.GetStatus())
+			return nil
+		},
+	}
+	mustRegister(t, r, notify)
+
+	// CANCEL removes the watch...
+	cancelled := r.CancelByMessageID(notify.ConnID, notify.MessageID)
+	if cancelled == nil {
+		t.Fatal("CancelByMessageID found no watch to cancel")
+	}
+
+	// ...the dispatcher writes the interim STATUS_PENDING here, after the
+	// watch is gone from the maps but before CANCEL queues its final...
+	r.MarkInterimSent(cancelled)
+
+	// ...and only now does CANCEL queue STATUS_CANCELLED.
+	r.QueueFinalAfterInterim(cancelled, func() {
+		_ = cancelled.AsyncCallback(cancelled.SessionID, cancelled.MessageID, cancelled.AsyncId,
+			&ChangeNotifyResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusCancelled}})
+	})
+
+	if len(sent) != 1 || sent[0] != types.StatusCancelled {
+		t.Fatalf("cancelled CHANGE_NOTIFY got no final response: %v", sent)
+	}
+}
+
+// TestNotifyRegistry_ConcurrentCancelRacesRegister drives the SMB2_CANCEL
+// lookup and the CHANGE_NOTIFY registration on the same (ConnID, MessageID)
+// from two goroutines with no imposed ordering — the interleaving a client
+// produces when it fires NOTIFY and CANCEL back to back and the server
+// dispatches each on its own goroutine.
+//
+// Exactly one of the two must win: either the cancel finds and removes the
+// watch, or the register short-circuits with ErrAlreadyCancelled. The state
+// this rules out is a cancel that found nothing while a live watch remains
+// registered, because then nothing will ever complete that MessageID and the
+// client blocks forever.
+//
+// The window is narrow, so the interleaving needs the race detector's
+// scheduling perturbation to be hit reliably: under `-race` this failed on
+// every run against a lookup and a tombstone-write taking the lock separately.
+func TestNotifyRegistry_ConcurrentCancelRacesRegister(t *testing.T) {
+	const iters = 2000
+	for i := 0; i < iters; i++ {
+		r := newTestNotifyRegistry()
+		connID := uint64(i)
+		messageID := uint64(i*2 + 1)
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var cancelled *PendingNotify
+		var regErr error
+
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			cancelled = r.CancelByMessageID(connID, messageID)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			regErr = r.Register(&PendingNotify{
+				FileID: [16]byte{byte(i), byte(i >> 8)}, ConnID: connID,
+				MessageID: messageID, AsyncId: uint64(i + 100000),
+				WatchPath: "/x", ShareName: "s",
+				CompletionFilter: FileNotifyChangeFileName,
+			})
+		}()
+		close(start)
+		wg.Wait()
+
+		if cancelled == nil && regErr == nil {
+			t.Fatalf("iter %d: cancel found nothing and register succeeded — "+
+				"watch left live on a cancelled MessageID (watchers=%d)",
+				i, r.WatcherCount())
+		}
+		if got := r.WatcherCount(); got != 0 {
+			t.Fatalf("iter %d: WatcherCount = %d, want 0 (cancelled=%v regErr=%v)",
+				i, got, cancelled != nil, regErr)
+		}
+	}
+}
+
+// TestNotifyRegistry_ConcurrentCloseRacesRegister is the CLOSE-side twin of
+// TestNotifyRegistry_ConcurrentCancelRacesRegister. CLOSE completes a pending
+// CHANGE_NOTIFY before it removes the handle from the open-file table, so a
+// CHANGE_NOTIFY dispatched concurrently passes its own handle lookup and can
+// reach Register after the close has already looked and found nothing.
+//
+// Exactly one of the two must win: either the close removes the watch and
+// answers STATUS_NOTIFY_CLEANUP, or the register short-circuits with
+// ErrHandleClosed. A close that found nothing while a live watch remains is
+// the hang: the handle is gone, no further event can arrive for it, and
+// nothing will ever complete that MessageID.
+//
+// As with the cancel twin, the window needs the race detector's scheduling
+// perturbation to be hit reliably.
+func TestNotifyRegistry_ConcurrentCloseRacesRegister(t *testing.T) {
+	const iters = 2000
+	for i := 0; i < iters; i++ {
+		r := newTestNotifyRegistry()
+		fileID := [16]byte{byte(i), byte(i >> 8), 0xC1}
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var closed *PendingNotify
+		var regErr error
+
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			closed = r.CloseByFileID(fileID)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			regErr = r.Register(&PendingNotify{
+				FileID: fileID, ConnID: uint64(i), MessageID: uint64(i*2 + 1),
+				AsyncId: uint64(i + 200000), WatchPath: "/x", ShareName: "s",
+				CompletionFilter: FileNotifyChangeFileName,
+			})
+		}()
+		close(start)
+		wg.Wait()
+
+		if closed == nil && regErr == nil {
+			t.Fatalf("iter %d: close found nothing and register succeeded — "+
+				"watch left live on a closed handle (watchers=%d)",
+				i, r.WatcherCount())
+		}
+		if got := r.WatcherCount(); got != 0 {
+			t.Fatalf("iter %d: WatcherCount = %d, want 0 (closed=%v regErr=%v)",
+				i, got, closed != nil, regErr)
+		}
+	}
+}
+
+// TestChangeNotify_HandleClosed_ReturnsEncodedCleanupBody pins the wire shape
+// of the synchronous STATUS_NOTIFY_CLEANUP reply.
+//
+// STATUS_NOTIFY_CLEANUP is success-severity, so the response carries a real
+// CHANGE_NOTIFY body with zero changes. Returning it with no body at all
+// leaves a bare SMB2 header on the wire, which fails the client's parse and
+// fails every request in flight on that connection — not just this one.
+func TestChangeNotify_HandleClosed_ReturnsEncodedCleanupBody(t *testing.T) {
+	h := NewHandler()
+	h.NotifyRegistry = NewNotifyRegistry()
+	h.MaxTransactSize = 1 << 20
+
+	fileID := [16]byte{0x43}
+	openFile := (&OpenFile{
+		FileID: fileID, IsDirectory: true, ShareName: "share1", SessionID: 1, TreeID: 1,
+		DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
+	}).WithName(OpenName{Path: "/dir"})
+	h.StoreOpenFile(openFile)
+
+	// CLOSE ran before this CHANGE_NOTIFY could register.
+	h.NotifyRegistry.CloseByFileID(fileID)
+
+	ctx := &SMBHandlerContext{
+		SessionID: 1, TreeID: 1, MessageID: 78, ConnID: 5,
+		TryReserveAsync: func() bool { return true },
+		ReleaseAsync:    func() {},
+		AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
+			return nil
+		},
+	}
+
+	res, err := h.ChangeNotify(ctx, encodeChangeNotifyReq(0, 1000, fileID, FileNotifyChangeFileName))
+	if err != nil {
+		t.Fatalf("ChangeNotify error: %v", err)
+	}
+	if res.Status != types.StatusNotifyCleanup {
+		t.Fatalf("status = %v, want STATUS_NOTIFY_CLEANUP", res.Status)
+	}
+	if len(res.Data) == 0 {
+		t.Fatal("STATUS_NOTIFY_CLEANUP returned with no body — bare header on the wire")
+	}
+	if got := binary.LittleEndian.Uint16(res.Data[0:2]); got != 9 {
+		t.Errorf("body StructureSize = %d, want 9", got)
+	}
+	if got := binary.LittleEndian.Uint32(res.Data[4:8]); got != 0 {
+		t.Errorf("OutputBufferLength = %d, want 0", got)
+	}
+	if res.AsyncId != 0 {
+		t.Errorf("AsyncId = %d on synchronous cleanup, want 0", res.AsyncId)
+	}
+	if got := h.NotifyRegistry.WatcherCount(); got != 0 {
+		t.Errorf("WatcherCount = %d, want 0", got)
+	}
+}
+
+// TestNotifyRegistry_PreArrivalCancel_StillArmsHandle covers the event-buffering
+// side of the pre-arrival cancel short-circuit.
+//
+// smbtorture's notify.tcon fires CHANGE_NOTIFY, cancels it, then issues a
+// second CHANGE_NOTIFY and makes a directory — and the server may process the
+// mkdir before that second request registers. The armed handle is what carries
+// the event across that gap. A watch that registers and is then cancelled
+// leaves the handle armed, so a cancel that beats registration must too;
+// otherwise the same client sequence loses the event depending only on which
+// goroutine won the race.
+func TestNotifyRegistry_PreArrivalCancel_StillArmsHandle(t *testing.T) {
+	r := newTestNotifyRegistry()
+	fileID := [16]byte{0xA7}
+
+	base := func(msgID, asyncID uint64) *PendingNotify {
+		return &PendingNotify{
+			FileID: fileID, SessionID: 1, ConnID: 1, MessageID: msgID,
+			AsyncId: asyncID, WatchPath: "/d", ShareName: "s",
+			CompletionFilter: FileNotifyChangeDirName, WatchTree: true,
+			MaxOutputLength: 1000,
+		}
+	}
+
+	// CANCEL beats the first CHANGE_NOTIFY to the registry.
+	if got := r.CancelByMessageID(1, 10); got != nil {
+		t.Fatalf("CancelByMessageID found a watch that was never registered: %+v", got)
+	}
+	if err := r.Register(base(10, 100)); !errors.Is(err, ErrAlreadyCancelled) {
+		t.Fatalf("Register = %v, want ErrAlreadyCancelled", err)
+	}
+
+	// An event now arrives with no live watcher. It must buffer on the handle.
+	r.NotifyChange("s", "/d", "subdir-name", FileActionAdded, FileNotifyChangeDirName)
+
+	// The client re-issues; the buffered event must be replayed to it.
+	var got []FileNotifyInformation
+	n := base(11, 101)
+	n.AsyncCallback = func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+		got = append(got, decodeFileNotifyInfos(resp.Buffer)...)
+		return nil
+	}
+	if err := r.Register(n); err != nil {
+		t.Fatalf("second Register: %v", err)
+	}
+	r.FlushAll()
+
+	if len(got) != 1 || got[0].FileName != "subdir-name" {
+		t.Fatalf("event fired between cancel and re-issue was dropped: %+v", got)
+	}
+}
+
+// TestNotifyRegistry_SupersededWatchGetsFinalResponse covers the last place a
+// watch was removed without being completed.
+//
+// Register replaces any existing watch on the same handle. smbtorture's
+// notify.double issues two CHANGE_NOTIFY requests back to back on one handle,
+// so the first was evicted silently and its MessageID never got a response —
+// the same hang as a cancelled notify, reached by a different route. The
+// replaced request must be completed.
+func TestNotifyRegistry_SupersededWatchGetsFinalResponse(t *testing.T) {
+	r := newTestNotifyRegistry()
+	fileID := [16]byte{0xD0}
+
+	var gotStatus []types.Status
+	first := &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 10, AsyncId: 500,
+		WatchPath: "/d", ShareName: "s", MaxOutputLength: 1000,
+		CompletionFilter: FileNotifyChangeFileName,
+		AsyncCallback: func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+			gotStatus = append(gotStatus, resp.GetStatus())
+			return nil
+		},
+	}
+	mustRegister(t, r, first)
+
+	// A second CHANGE_NOTIFY on the same handle supersedes it.
+	second := *first
+	second.MessageID = 11
+	second.AsyncId = 501
+	mustRegister(t, r, &second)
+
+	if len(gotStatus) != 1 {
+		t.Fatalf("superseded watch got %d responses, want 1 — its MessageID is unanswered", len(gotStatus))
+	}
+	if gotStatus[0] != types.StatusCancelled {
+		t.Errorf("superseded watch status = 0x%08X, want STATUS_CANCELLED", uint32(gotStatus[0]))
+	}
+	if got := r.WatcherCount(); got != 1 {
+		t.Errorf("WatcherCount = %d, want 1 (only the newer watch)", got)
+	}
+}
+
+// TestNotifyRegistry_SupersededWatchHandsBackBufferedEvents checks that
+// completing the superseded watch does not also destroy the events it was
+// holding.
+//
+// unregisterLocked stops the replaced watch's flush timer, so anything it had
+// accumulated but not yet delivered dies with it — and the replacement, which
+// is the request the client is actually waiting on, would see nothing. That
+// trades one silent hang for another.
+func TestNotifyRegistry_SupersededWatchHandsBackBufferedEvents(t *testing.T) {
+	r := newTestNotifyRegistry()
+	fileID := [16]byte{0xD1}
+
+	mk := func(msgID, asyncID uint64, sink *[]FileNotifyInformation) *PendingNotify {
+		return &PendingNotify{
+			FileID: fileID, SessionID: 1, ConnID: 1, MessageID: msgID,
+			AsyncId: asyncID, WatchPath: "/d", ShareName: "s",
+			MaxOutputLength:  1000,
+			CompletionFilter: FileNotifyChangeFileName,
+			AsyncCallback: func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+				*sink = append(*sink, decodeFileNotifyInfos(resp.Buffer)...)
+				return nil
+			},
+		}
+	}
+
+	var firstGot, secondGot []FileNotifyInformation
+	mustRegister(t, r, mk(10, 500, &firstGot))
+
+	// An event lands on the first watch but has not been flushed yet.
+	r.NotifyChange("s", "/d", "a.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	// A second CHANGE_NOTIFY on the same handle supersedes it.
+	mustRegister(t, r, mk(11, 501, &secondGot))
+	r.FlushAll()
+
+	if len(secondGot) != 1 || secondGot[0].FileName != "a.txt" {
+		t.Fatalf("event held by the superseded watch was lost: %+v", secondGot)
+	}
+}
+
+// TestCloseFilesWithFilter_OnlyTombstonesDirectories checks that session
+// teardown does not record a close tombstone for handles that could never
+// have carried a watch.
+//
+// CHANGE_NOTIFY is refused on anything but a directory, so a file or pipe
+// handle has no watch to complete. Running the completion for one anyway
+// leaves a tombstone nothing will ever consume, and because the sweep that
+// reclaims them is O(n) per call, tearing down a session holding many file
+// handles would pay that sweep once per handle.
+func TestCloseFilesWithFilter_OnlyTombstonesDirectories(t *testing.T) {
+	e := setupTeardownLeakEnv(t)
+	e.h.NotifyRegistry = NewNotifyRegistry()
+
+	const sessionID = uint64(0x5E)
+	for i := 0; i < 64; i++ {
+		name := fmt.Sprintf("plain%d.txt", i)
+		fh, f := e.makeFile(t, name)
+		of := &OpenFile{
+			FileID:         [16]byte{byte(i), 0xF1},
+			IsDirectory:    false,
+			SessionID:      sessionID,
+			TreeID:         e.tree.TreeID,
+			ShareName:      e.tree.ShareName,
+			MetadataHandle: fh,
+		}
+		_ = f
+		e.h.StoreOpenFile(of.WithName(OpenName{Path: "/" + name}))
+	}
+
+	e.h.CloseAllFilesForSession(t.Context(), sessionID, true)
+
+	if got := e.h.NotifyRegistry.closeTombstoneCount(); got != 0 {
+		t.Fatalf("close tombstones after tearing down 64 file handles = %d, want 0", got)
+	}
+}
+
+// TestNotifyRegistry_CloseTombstonesEvenWhenAWatchWasFound covers the case
+// where the close path finds a watch to complete.
+//
+// Completing that one says nothing about a second CHANGE_NOTIFY already past
+// its open-file lookup and still on its way to Register. If the close only
+// tombstoned on a miss, that second request would register a watch on a handle
+// that no longer exists and wait forever — the handle is going away regardless
+// of what happened to be registered at the instant the close took the lock.
+func TestNotifyRegistry_CloseTombstonesEvenWhenAWatchWasFound(t *testing.T) {
+	r := newTestNotifyRegistry()
+	fileID := [16]byte{0xE5}
+
+	mustRegister(t, r, &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 10, AsyncId: 700,
+		WatchPath: "/d", ShareName: "s", MaxOutputLength: 1000,
+		CompletionFilter: FileNotifyChangeFileName,
+	})
+
+	// The close finds that first watch and completes it.
+	if got := r.CloseByFileID(fileID); got == nil {
+		t.Fatal("CloseByFileID did not return the registered watch")
+	}
+
+	// A second CHANGE_NOTIFY on the same handle, still in flight, now reaches
+	// Register. It must be refused rather than left pending on a dead handle.
+	err := r.Register(&PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 11, AsyncId: 701,
+		WatchPath: "/d", ShareName: "s", MaxOutputLength: 1000,
+		CompletionFilter: FileNotifyChangeFileName,
+	})
+	if !errors.Is(err, ErrHandleClosed) {
+		t.Fatalf("Register after close = %v, want ErrHandleClosed", err)
+	}
+	if got := r.WatcherCount(); got != 0 {
+		t.Fatalf("WatcherCount = %d, want 0 — watch left live on a closed handle", got)
 	}
 }

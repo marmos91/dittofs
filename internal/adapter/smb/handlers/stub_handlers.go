@@ -250,7 +250,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 		if ctx.RequestAsyncId != 0 {
 			cancelled = h.NotifyRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)
 		} else {
-			cancelled = h.NotifyRegistry.UnregisterByMessageID(ctx.ConnID, ctx.MessageID)
+			cancelled = h.NotifyRegistry.CancelByMessageID(ctx.ConnID, ctx.MessageID)
 		}
 
 		if cancelled != nil {
@@ -293,13 +293,13 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 			// to register. Each request runs on its own goroutine, so a
 			// client that fires NOTIFY immediately followed by CANCEL (the
 			// "notify cancel" subtest in smb2.notify.dir does this) can
-			// reorder them on the server side. Drop a tombstone so the
-			// in-flight CHANGE_NOTIFY's Register returns ErrAlreadyCancelled
-			// and the handler answers STATUS_CANCELLED synchronously.
+			// reorder them on the server side. CancelByMessageID has already
+			// recorded the tombstone that makes the in-flight
+			// CHANGE_NOTIFY's Register return ErrAlreadyCancelled, so the
+			// handler answers STATUS_CANCELLED synchronously.
 			// AsyncId-flagged CANCEL cannot race this way (the client only
 			// learns AsyncId from the interim response, which is sent strictly
-			// after Register). See issue #623.
-			h.NotifyRegistry.MarkPendingCancel(ctx.ConnID, ctx.MessageID)
+			// after Register).
 			logger.Debug("CANCEL: no matching CHANGE_NOTIFY yet — tombstoned for race",
 				"connID", ctx.ConnID,
 				"messageID", ctx.MessageID)
@@ -658,6 +658,28 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		// (ConnID, MessageID) was dispatched before our Register could run.
 		// Answer STATUS_CANCELLED synchronously on this MessageID instead
 		// of emitting STATUS_PENDING and waiting forever.
+		// Per [MS-SMB2] 3.3.4.1: when the watched handle goes away the
+		// pending request completes with STATUS_NOTIFY_CLEANUP. The close
+		// path ran before we could register, so answer it synchronously
+		// rather than registering a watch nothing will ever complete.
+		if errors.Is(err, ErrHandleClosed) {
+			logger.Debug("CHANGE_NOTIFY: handle closed before register — replying STATUS_NOTIFY_CLEANUP",
+				"path", watchPath,
+				"sessionID", ctx.SessionID,
+				"messageID", ctx.MessageID)
+			// STATUS_NOTIFY_CLEANUP is a success-severity status, so it
+			// carries a real CHANGE_NOTIFY body (zero changes) rather than
+			// the error body NewErrorResult would produce. A header with no
+			// body fails the client's parse and takes down every request in
+			// flight on the connection, not just this one.
+			respBytes, encErr := (&ChangeNotifyResponse{
+				SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
+			}).Encode()
+			if encErr != nil {
+				return NewErrorResult(types.StatusInternalError), nil
+			}
+			return NewResult(types.StatusNotifyCleanup, respBytes), nil
+		}
 		if errors.Is(err, ErrAlreadyCancelled) {
 			logger.Debug("CHANGE_NOTIFY: pre-arrival CANCEL — replying STATUS_CANCELLED",
 				"path", watchPath,
@@ -688,13 +710,9 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// from MarkInterimSent on this goroutine after the dispatcher writes
 	// the PENDING interim — ensuring on-wire order PENDING → final.
 	notifyRef := notify
-	prevPostSend := ctx.PostSend
-	ctx.PostSend = func() {
-		if prevPostSend != nil {
-			prevPostSend()
-		}
-		h.NotifyRegistry.MarkInterimSent(notifyRef.ConnID, notifyRef.MessageID)
-	}
+	AppendPostSend(ctx, func() {
+		h.NotifyRegistry.MarkInterimSent(notifyRef)
+	})
 
 	// Return STATUS_PENDING with AsyncId - the client will receive an
 	// interim response with SMB2_FLAGS_ASYNC_COMMAND set and this AsyncId.
