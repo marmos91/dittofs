@@ -408,6 +408,9 @@ func ProcessLeaseCreateContext(
 	if statOpen {
 		requestLease = leaseMgr.RequestLeaseStatOpen
 	}
+	// Sampled before the grant, which is what creates the record: only the first
+	// grant for a lease key may seed the epoch from the client's value.
+	_, _, leaseExisted := leaseMgr.GetLeaseState(ctx, leaseReq.LeaseKey)
 	grantedState, epoch, err := requestLease(
 		ctx,
 		fileHandle,
@@ -464,12 +467,12 @@ func ProcessLeaseCreateContext(
 		responseIsV1 = !leaseMgr.IsV2(leaseReq.LeaseKey)
 	}
 
-	// Per MS-SMB2 3.3.5.9.8: a V2 lease grant is a state change that MUST
-	// advance Epoch by 1 over the client's requested value — unconditionally,
-	// including a first-grant Epoch=0 (server must respond with Epoch=1).
-	// Seed server state to max(current, client+1) so re-opens with the same
-	// key pick up the client's evolving view while still advancing past any
-	// server-side increments the client hasn't seen yet (e.g. prior breaks).
+	// Per MS-SMB2 3.3.5.9.8: the FIRST V2 grant for a lease key is a state
+	// change that MUST advance Epoch by 1 over the client's requested value,
+	// including a first-grant Epoch=0 (server must respond with Epoch=1). That
+	// grant is also the only point at which the client's epoch seeds the
+	// server's counter; from then on the counter is the server's, and
+	// RequestLease advances it if and only if the grant changed state.
 	//
 	// Gate on err == nil: on ErrLeaseBreakInProgress the LockManager returns
 	// the breaking lease's current state/epoch read-only and explicitly must
@@ -504,14 +507,24 @@ func ProcessLeaseCreateContext(
 		switch {
 		case leaseReq.LeaseState == lock.LeaseStateNone:
 			// epoch already holds the lease's current value from RequestLease.
-		case grantedState != lock.LeaseStateNone:
+		case grantedState == lock.LeaseStateNone:
+			epoch = leaseReq.Epoch
+		case leaseExisted:
+			// The same drift reaches every other request that leaves the state
+			// untouched: a re-open asking for the state already held, or a
+			// non-superset request that returns the current state unchanged.
+			// The client echoes its last-seen epoch, so seeding from it here
+			// would hand back one more than the server holds, and the next
+			// break notification would carry an epoch the client never expects.
+			// epoch already holds the lease's current value from RequestLease.
+		default:
+			// First grant for this lease key: adopt the client's epoch as the
+			// starting point, one past what it asked for.
 			nextEpoch := leaseReq.Epoch + 1
 			if nextEpoch > epoch {
 				leaseMgr.SetLeaseEpoch(leaseReq.LeaseKey, nextEpoch)
 				epoch = nextEpoch
 			}
-		default:
-			epoch = leaseReq.Epoch
 		}
 	}
 
