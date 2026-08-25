@@ -1705,9 +1705,9 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 	// through the shared helper CLOSE also uses, so the cascade to stream
 	// siblings and the payload purge cannot drift between the two paths.
 	// See doc_election.go.
-	_, err := h.removeElectedTarget(ctx, authCtx, openFile, target, caller)
+	_, removed, err := h.removeElectedTarget(ctx, authCtx, openFile, target, caller)
 
-	if err == nil {
+	if err == nil && removed {
 		// No SMBHandlerContext available on the TDIS/LOGOFF/disconnect
 		// teardown path — pass nil so the helper falls back to inline
 		// dispatch (those paths don't ship a triggering response on the

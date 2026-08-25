@@ -1314,6 +1314,28 @@ func (h *Handler) setFileInfoFromStore(
 					}
 				}
 			}
+
+			// Per MS-FSA 2.1.5.15.3 step 3.2.1 (and 2.1.5.15.4 for the Ex
+			// class): marking a directory that still holds entries for
+			// deletion is refused with STATUS_DIRECTORY_NOT_EMPTY. This is
+			// the step that reports it — the close acting on the disposition
+			// leaves a non-empty directory in place and still succeeds
+			// (MS-FSA 2.1.5.5 phase 1), so a client that never sees the
+			// refusal here never learns the removal did not happen.
+			//
+			// A directory that cannot be enumerated is not treated as
+			// non-empty: the disposition is allowed through and the close
+			// resolves it, which is what happened before the check existed.
+			if openFile.IsDirectory {
+				metaSvc := h.Registry.GetMetadataService()
+				// maxBytes only sizes the page; the check needs one entry.
+				page, dirErr := metaSvc.ReadDirectory(authCtx, openFile.MetadataHandle, 0, 1)
+				if dirErr == nil && len(page.Entries) > 0 {
+					logger.Debug("SET_INFO: delete disposition on non-empty directory",
+						"path", openFile.Name().Path)
+					return setInfoStatus(types.StatusDirectoryNotEmpty), nil
+				}
+			}
 		}
 
 		// Per MS-FSA 2.1.5.14.3 / Samba source3/smbd/smb2_setinfo.c
