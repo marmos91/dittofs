@@ -495,3 +495,22 @@ func TestPruneChunkRefsToSize(t *testing.T) {
 		})
 	}
 }
+
+// TestFileChunkJSON_StartOffsetAbsentMeansChunkStart pins what a row stored by a
+// build that predates the in-chunk start offset means when a later build reads
+// it. The KV backends persist a FileChunk as JSON, so such a row simply carries
+// no key for the field, and the value it decodes to has to be the one that says
+// "this claim begins at the chunk's first byte".
+func TestFileChunkJSON_StartOffsetAbsentMeansChunkStart(t *testing.T) {
+	const stored = `{"ID":"share/file/4096","DataSize":4096,"RefCount":1,"state":2}`
+	var fc FileChunk
+	if err := json.Unmarshal([]byte(stored), &fc); err != nil {
+		t.Fatalf("unmarshal pre-change row: %v", err)
+	}
+	if fc.StartOffset != 0 {
+		t.Errorf("StartOffset = %d, want 0", fc.StartOffset)
+	}
+	if fc.DataSize != 4096 {
+		t.Errorf("DataSize = %d, want 4096", fc.DataSize)
+	}
+}
