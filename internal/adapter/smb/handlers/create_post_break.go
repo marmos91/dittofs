@@ -292,7 +292,7 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	case d.req.CreateOptions&types.FileDeleteOnClose != 0:
 		reason = lock.BreakReasonSharingViolation
 	default:
-		initialConflict = h.checkShareModeConflict(d.existingHandle, d.req.DesiredAccess, d.req.ShareAccess, d.filename)
+		initialConflict = h.checkShareModeConflict(d.existingHandle, d.req.DesiredAccess, d.req.ShareAccess, d.parentHandle, d.baseName)
 		conflictComputed = true
 		if initialConflict {
 			reason = lock.BreakReasonSharingViolation
@@ -477,7 +477,7 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 				return initialConflict
 			}
 			return d.existingHandle != nil &&
-				h.checkShareModeConflict(d.existingHandle, effectiveAccess, d.req.ShareAccess, d.filename)
+				h.checkShareModeConflict(d.existingHandle, effectiveAccess, d.req.ShareAccess, d.parentHandle, d.baseName)
 		}
 		if err := h.LeaseManager.WaitForShareConflictClear(waitCtx, lockFileHandle, shareName, conflictPresent); err != nil {
 			logger.Debug("CREATE: sync share-conflict wait completed", "error", err)
@@ -526,7 +526,7 @@ func (h *Handler) recheckExistingFileGates(d *createDraft, effectiveAccess uint3
 	// holder, returning STATUS_SHARING_VIOLATION. Covers
 	// smb2.acls.OVERWRITE_READ_ONLY_FILE sharing_tcases arm (#575).
 	if fileExists && d.existingHandle != nil {
-		if shareConflict := h.checkShareModeConflict(d.existingHandle, effectiveAccess, req.ShareAccess, filename); shareConflict {
+		if shareConflict := h.checkShareModeConflict(d.existingHandle, effectiveAccess, req.ShareAccess, d.parentHandle, d.baseName); shareConflict {
 			logger.Debug("CREATE: sharing violation",
 				"path", filename,
 				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
@@ -1595,7 +1595,7 @@ func (h *Handler) parkCreateOnLeaseBreak(
 			effectiveAccess := effectiveAccessForOpen(d.req.DesiredAccess, d.req.CreateDisposition)
 			conflictPresent := func() bool {
 				return d.existingHandle != nil &&
-					h.checkShareModeConflict(d.existingHandle, effectiveAccess, d.req.ShareAccess, d.filename)
+					h.checkShareModeConflict(d.existingHandle, effectiveAccess, d.req.ShareAccess, d.parentHandle, d.baseName)
 			}
 			if err := h.LeaseManager.WaitForShareConflictClear(waitCtx, lockFileHandle, shareName, conflictPresent); err != nil {
 				logger.Debug("CREATE async: share-conflict wait completed",
