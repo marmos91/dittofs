@@ -22,7 +22,10 @@ import (
 func TestAcceptedShareNamesStayInsideSharesTree(t *testing.T) {
 	t.Parallel()
 
-	const base = "/var/lib/dittofs"
+	// deriveLocalStoreDir requires an absolute base, and what counts as
+	// absolute is platform-specific, so take one from the test environment
+	// rather than hardcoding a POSIX path.
+	base := t.TempDir()
 	cfg := &fakeBlockStoreConfig{cfg: map[string]any{"path": base}}
 	sharesRoot := filepath.Join(base, "shares")
 
