@@ -85,10 +85,10 @@ func TestReapSupersededManifest_NarrowsStraddler(t *testing.T) {
 	}, tiling(t, tx, pid))
 }
 
-// TestReapSupersededManifest_KeepsStraddlerReachingPastRun covers the one
-// straddler that must survive whole: it also ends past the run, and no row can
-// start mid-chunk, so narrowing it would trade the overlap for a gap over
-// [runEnd, rowEnd) — bytes that would then read back as zeros.
+// TestReapSupersededManifest_KeepsStraddlerReachingPastRun covers the straddler
+// that must survive whole: it starts before the run AND ends past it, so its
+// bytes on either side have no other cover, and it is safe there because every
+// fresh row inside the run starts later and outranks it across the run.
 func TestReapSupersededManifest_KeepsStraddlerReachingPastRun(t *testing.T) {
 	const pid = "share/p"
 	ctx := context.Background()

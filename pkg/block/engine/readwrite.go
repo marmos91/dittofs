@@ -116,13 +116,14 @@ func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []
 // hash. The new []ChunkRef list is returned for the caller to persist
 // via SetManifest. When currentBlocks is empty the legacy path runs and
 // the returned slice is empty (dual-read shim semantics).
-// narrowChunkRow shrinks a manifest row to the surviving prefix of its chunk so
+// narrowChunkRow shrinks a manifest row to the surviving head of its claim so
 // coverage lookups stop resolving it for bytes the file no longer holds and a
-// hydrate writes back only that prefix. The remote chunk is untouched — its hash
-// still addresses the full bytes and the verified read still checks them all —
-// and RefCount is unchanged: the file still references the chunk, just less of
-// it. A row already at or below the surviving size, or already reaped, needs
-// nothing.
+// hydrate writes back only that much. Where in the chunk the claim begins is
+// left alone, so a row already narrowed off its head shrinks from the same place
+// a whole one does. The remote chunk is untouched — its hash still addresses the
+// full bytes and the verified read still checks them all — and RefCount is
+// unchanged: the file still references the chunk, just less of it. A row already
+// at or below the surviving size, or already reaped, needs nothing.
 func (bs *Store) narrowChunkRow(ctx context.Context, payloadID string, b block.ChunkRef) error {
 	if bs.fileChunkStore == nil {
 		return nil
