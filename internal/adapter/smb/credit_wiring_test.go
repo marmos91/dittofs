@@ -246,7 +246,8 @@ func TestSendMessageWithConnInfo_GrantExpansion(t *testing.T) {
 
 // TestCompound_CreditValidationAtCompoundLevel verifies that compound-level
 // credit validation only consumes from the sequence window for the first command.
-// Per MS-SMB2 3.2.4.1.4: the first command's CreditCharge covers the entire compound.
+// Per MS-SMB2 §3.3.5.2.5 ("Verifying the Credit Charge and the Payload Size"):
+// the first command's CreditCharge covers the entire compound.
 func TestCompound_CreditValidationAtCompoundLevel(t *testing.T) {
 	sw := session.NewCommandSequenceWindow(131070)
 	sw.Grant(255) // Grant enough credits

@@ -80,8 +80,9 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		return
 	}
 
-	// Per MS-SMB2 3.2.4.1.4: compound-level credit accounting.
-	// The first command's CreditCharge covers the entire compound.
+	// Per MS-SMB2 §3.3.5.2.5 ("Verifying the Credit Charge and the Payload Size"):
+	// compound-level credit accounting. The first command's CreditCharge
+	// covers the entire compound.
 	// CreditCharge size validation is skipped for exempt commands; sequence
 	// window Consume still runs for NEGOTIATE and first SESSION_SETUP but is
 	// skipped for CANCEL — see response.go for rationale (#378).
@@ -352,8 +353,9 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo, req
 		return SendMessage(hdr, responses[0].body, connInfo)
 	}
 
-	// Per MS-SMB2 3.2.4.1.4: middle compound responses grant 0 credits;
-	// only the last response grants credits to the client.
+	// Middle compound responses grant 0 credits; only the last response grants
+	// credits to the client. MS-SMB2 §3.3.4.1.3 permits per-response granting;
+	// this is the Windows/Samba convention.
 	applyCompoundCreditZeroing(responses, connInfo)
 
 	// Build compound payload: sign each command individually, then concatenate.
@@ -480,8 +482,9 @@ func failEntireCompound(firstHeader *header.SMB2Header, compoundData []byte, sta
 }
 
 // applyCompoundCreditZeroing applies compound-level credit accounting to responses.
-// Per MS-SMB2 3.2.4.1.4: middle compound responses grant 0 credits; only the last
-// response grants credits. For single-response compounds (len <= 1), no zeroing
+// Middle compound responses grant 0 credits; only the last response grants
+// credits (MS-SMB2 §3.3.4.1.3 "Sending Compounded Responses" permits either;
+// this follows Windows/Samba). For single-response compounds (len <= 1), no zeroing
 // is applied since they go through SendMessage which handles granting normally.
 //
 // Each sub-response was built via buildResponseHeaderAndBody, which already
@@ -495,8 +498,7 @@ func applyCompoundCreditZeroing(responses []compoundResponse, connInfo *ConnInfo
 		return
 	}
 	// Move each middle response's grant onto the last response rather than
-	// reclaiming it. Per MS-SMB2 3.2.4.1.4 only the last response in a compound
-	// advertises credits, but every sub-request debits one credit, so the client
+	// reclaiming it. Only the last response in a compound advertises credits, but every sub-request debits one credit, so the client
 	// must be credited for the WHOLE compound on the one response it reads
 	// credits from. Reclaiming the middle grants instead left the last response
 	// advertising only its own single grant, so a stat compound (CREATE +
@@ -836,7 +838,8 @@ func (s *compoundLoopState) processRemaining(
 ) {
 	for len(remaining) >= header.HeaderSize {
 		// Keep a reference to the current command's start for signature verification.
-		// Per MS-SMB2 3.2.4.1.4, each compound command is signed over its own bytes.
+		// Per MS-SMB2 §3.3.4.1.1 ("Signing the Message"), each compound command is
+		// signed over its own bytes.
 		currentCommandData := remaining
 
 		hdr, cmdBody, nextRemaining, err := ParseCompoundCommand(remaining)
