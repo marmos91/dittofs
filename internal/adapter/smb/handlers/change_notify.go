@@ -249,10 +249,13 @@ type NotifyRegistry struct {
 
 	// inFlightNotify tracks CHANGE_NOTIFY requests that the connection's read
 	// loop has read off the wire but whose handlers have not finished, keyed
-	// by handle. The read loop is sequential, so a lower MessageID here was
-	// necessarily received first even when its goroutine has not run yet.
-	// That is what lets a later request tell it is later. See
-	// HasEarlierInFlightNotify.
+	// by handle. The read loop is sequential and appends here in arrival
+	// order, so element 0 is the earliest-received request still outstanding.
+	//
+	// Order is the slice's, NOT the MessageID's. SMB2 clients may consume
+	// MessageIDs out of order within the credit sequence window, so a numeric
+	// comparison would call 100 "later" than 50 even when 100 arrived first.
+	// See HasEarlierInFlightNotify.
 	//
 	// ponytail: linear scan of a slice. N is one client's CHANGE_NOTIFY
 	// pipelining depth on one handle — 1 or 2 in practice — so a map costs
@@ -1609,22 +1612,22 @@ func (r *NotifyRegistry) MarkNotifyInFlight(fileID [16]byte, messageID uint64) f
 }
 
 // HasEarlierInFlightNotify reports whether another CHANGE_NOTIFY on the same
-// handle was received before messageID and is still unanswered.
+// handle arrived before messageID and is still unanswered.
 //
 // A request that answers yes must not claim buffered events: they belong to the
 // earlier request, which is the one the client is blocked on. Handing them to
 // the later request leaves the earlier one waiting for an event the client will
 // never generate, because the client does not send it until the earlier request
 // returns.
+//
+// "Earlier" means earlier on the wire, which is this slice's append order —
+// never a MessageID comparison. MessageIDs may be consumed out of order within
+// the credit sequence window, so 100 can arrive before 50.
 func (r *NotifyRegistry) HasEarlierInFlightNotify(fileID [16]byte, messageID uint64) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for _, id := range r.inFlightNotify[string(fileID[:])] {
-		if id < messageID {
-			return true
-		}
-	}
-	return false
+	ids := r.inFlightNotify[string(fileID[:])]
+	return len(ids) > 0 && ids[0] != messageID
 }
 
 // UnregisterAllForSession unregisters all pending watchers for a session AND

@@ -34,3 +34,25 @@ func TestHasEarlierInFlightNotify(t *testing.T) {
 		t.Errorf("tracking leaked: %v", r.inFlightNotify)
 	}
 }
+
+// MessageIDs may be consumed out of order within the credit sequence window,
+// so 100 can arrive before 50. Arrival order decides, not the number.
+func TestHasEarlierInFlightNotify_OutOfOrderMessageIDs(t *testing.T) {
+	r := NewNotifyRegistry()
+	fid := [16]byte{1}
+
+	done100 := r.MarkNotifyInFlight(fid, 100) // arrived first
+	done50 := r.MarkNotifyInFlight(fid, 50)   // arrived second, lower number
+
+	if r.HasEarlierInFlightNotify(fid, 100) {
+		t.Error("100 arrived first; it must take the events despite the higher number")
+	}
+	if !r.HasEarlierInFlightNotify(fid, 50) {
+		t.Error("50 arrived second; it must decline despite the lower number")
+	}
+	done100()
+	if r.HasEarlierInFlightNotify(fid, 50) {
+		t.Error("50 is now the earliest outstanding; it must take the events")
+	}
+	done50()
+}
