@@ -997,6 +997,35 @@ func (h *Handler) setFileInfoFromStore(
 		// the open and the post-wait recheck then proceeds to the rename.
 		isOverwrite := renameInfo.ReplaceIfExists
 		metaSvc := h.Registry.GetMetadataService()
+
+		// Dispatch the SOURCE file's break ahead of the destination lookup
+		// below. Every gate that can still reject this rename has already run,
+		// and the source break needs nothing the lookup produces.
+		//
+		// The ordering matters because the destination lookup is
+		// case-insensitive: on a miss it enumerates the whole destination
+		// directory. A client that pipelines a request behind the rename gets
+		// that request answered while the enumeration is still running, so the
+		// break notification the rename owes lands after a response the client
+		// has already acted on. smbtorture rename_wait does exactly that — it
+		// reads the break out of the following CREATE's I/O and acks it — and
+		// acks an all-zero lease key when the break has not arrived yet, which
+		// the server then rejects.
+		//
+		// The destination break stays below: it needs the resolved handle, and
+		// re-dispatching the source break there is suppressed as a duplicate.
+		if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
+			if err := h.LeaseManager.BreakLeasesOnRename(
+				lock.FileHandle(openFile.MetadataHandle),
+				"", // dst not resolved yet; broken below
+				openFile.ShareName,
+				openFile.LeaseKey,
+				false, // isOverwrite: dst handled below
+			); err != nil {
+				logger.Debug("SET_INFO: rename source lease break dispatch failed", "error", err)
+			}
+		}
+
 		var dstMetaHandle metadata.FileHandle
 		// dstMatchedName is the on-disk name of the destination entry when
 		// the case-insensitive lookup succeeds. Move's underlying GetChild is
