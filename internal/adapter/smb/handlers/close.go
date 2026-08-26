@@ -392,7 +392,8 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// inside electDeleteOnClose. Deciding here and removing the handle at step
 	// 10 let two concurrent closers each see the other, each defer, and the
 	// unlink be lost. See doc_election.go.
-	if decision, target := h.electDeleteOnClose(openFile); decision == docDecisionDelete {
+	decision, target := h.electDeleteOnClose(openFile)
+	if decision == docDecisionDelete {
 		// The election snapshotted the name it decided on, so a rename landing
 		// since cannot make the scan and the unlink disagree about the entry.
 		docName := target.Name
@@ -542,6 +543,20 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			logger.Debug("CLOSE: unregistered pending CHANGE_NOTIFY",
 				"path", closePath,
 				"messageID", notify.MessageID)
+		}
+
+		// Per [MS-FSA] 2.1.5.14.3, a directory marked for deletion completes
+		// every pending CHANGE_NOTIFY on it with STATUS_DELETE_PENDING. A
+		// handle carrying FILE_DELETE_ON_CLOSE from CREATE commits that mark
+		// in the election above rather than at CREATE, so this is the point
+		// where watchers on the OTHER handles of the directory learn about it
+		// — including when the election deferred the unlink to one of them.
+		//
+		// Runs after CloseByFileID deliberately: this handle's own watch is
+		// already answered with STATUS_NOTIFY_CLEANUP above, and that response
+		// is the one MS-SMB2 3.3.4.1 requires for a closing handle.
+		if decision != docDecisionNone {
+			h.NotifyRegistry.CompleteWatchersForDeletePending(openFile.ShareName, closePath)
 		}
 	}
 

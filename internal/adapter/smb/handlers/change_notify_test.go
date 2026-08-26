@@ -946,59 +946,55 @@ func TestIsValidCompletionFilter(t *testing.T) {
 	}
 }
 
-func TestNotifyRmdir_SendsCleanupToWatchersOnRemovedDir(t *testing.T) {
+func TestCompleteWatchersForDeletePending(t *testing.T) {
 	r := newTestNotifyRegistry()
 
-	var receivedStatus types.Status
-	mustRegister(t, r, &PendingNotify{
-		FileID:           [16]byte{1},
-		SessionID:        1,
-		MessageID:        10,
-		AsyncId:          100,
-		WatchPath:        "/parent/target",
-		ShareName:        "share1",
-		CompletionFilter: FileNotifyChangeFileName,
-		MaxOutputLength:  4096,
-		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
-			receivedStatus = response.GetStatus()
-			return nil
-		},
-	})
-
-	// Remove the directory being watched
-	r.NotifyRmdir("share1", "/parent", "target")
-	r.FlushAll()
-
-	if receivedStatus != types.StatusNotifyCleanup {
-		t.Errorf("expected STATUS_NOTIFY_CLEANUP (0x%08X), got 0x%08X",
-			uint32(types.StatusNotifyCleanup), uint32(receivedStatus))
+	statuses := map[uint64]types.Status{}
+	register := func(fileID byte, messageID uint64, share, watchPath string) {
+		mustRegister(t, r, &PendingNotify{
+			FileID:           [16]byte{fileID},
+			SessionID:        1,
+			MessageID:        messageID,
+			AsyncId:          messageID * 10,
+			WatchPath:        watchPath,
+			ShareName:        share,
+			CompletionFilter: FileNotifyChangeFileName | FileNotifyChangeDirName,
+			MaxOutputLength:  4096,
+			AsyncCallback: func(sessionID, mid, asyncId uint64, response *ChangeNotifyResponse) error {
+				statuses[mid] = response.GetStatus()
+				return nil
+			},
+		})
 	}
-}
 
-func TestNotifyRmdir_NotifiesParentWatcher(t *testing.T) {
-	r := newTestNotifyRegistry()
+	// Two handles watch the doomed directory; one watches its parent
+	// recursively, and one watches the same path on another share.
+	register(1, 10, "share1", "/parent/target")
+	register(2, 11, "share1", "/parent/target")
+	register(3, 12, "share1", "/parent")
+	register(4, 13, "share2", "/parent/target")
 
-	var parentNotified bool
-	mustRegister(t, r, &PendingNotify{
-		FileID:           [16]byte{1},
-		SessionID:        1,
-		MessageID:        10,
-		AsyncId:          100,
-		WatchPath:        "/parent",
-		ShareName:        "share1",
-		CompletionFilter: FileNotifyChangeDirName,
-		MaxOutputLength:  4096,
-		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
-			parentNotified = true
-			return nil
-		},
-	})
+	if got := r.CompleteWatchersForDeletePending("share1", "/parent/target"); got != 2 {
+		t.Fatalf("expected 2 watchers completed, got %d", got)
+	}
 
-	r.NotifyRmdir("share1", "/parent", "child")
-	r.FlushAll()
+	for _, mid := range []uint64{10, 11} {
+		if statuses[mid] != types.StatusDeletePending {
+			t.Errorf("messageID %d: expected STATUS_DELETE_PENDING (0x%08X), got 0x%08X",
+				mid, uint32(types.StatusDeletePending), uint32(statuses[mid]))
+		}
+	}
+	// The ancestor watcher's own directory still exists, and another share's
+	// identically-named directory is a different object entirely.
+	for _, mid := range []uint64{12, 13} {
+		if _, answered := statuses[mid]; answered {
+			t.Errorf("messageID %d must not be completed: its watched directory is not the one deleted", mid)
+		}
+	}
 
-	if !parentNotified {
-		t.Error("parent watcher should receive FileActionRemoved notification for rmdir")
+	// A second mark finds nothing left to answer.
+	if got := r.CompleteWatchersForDeletePending("share1", "/parent/target"); got != 0 {
+		t.Errorf("expected 0 on re-mark, got %d", got)
 	}
 }
 

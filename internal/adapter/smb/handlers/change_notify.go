@@ -1557,39 +1557,52 @@ func (r *NotifyRegistry) deliverChanges(notify *PendingNotify, changes []FileNot
 	r.sendFinalGated(notify, response, "deliverChanges")
 }
 
-// NotifyRmdir handles directory removal notification: send STATUS_NOTIFY_CLEANUP
-// to any watchers on the removed directory itself, and notify the parent watcher
-// with FileActionRemoved for the directory name.
+// CompleteWatchersForDeletePending completes every pending CHANGE_NOTIFY that
+// watches dirPath with STATUS_DELETE_PENDING and returns how many were
+// completed. Matching is by watch path and share, not by FileID: the handle
+// that marks a directory for deletion is usually not the handle that is
+// watching it.
 //
-// Per MS-SMB2 3.3.5.15: when a directory being watched is deleted, the pending
-// CHANGE_NOTIFY request must be completed with STATUS_NOTIFY_CLEANUP.
-func (r *NotifyRegistry) NotifyRmdir(shareName, parentPath, dirName string) {
-	dirPath := path.Join(parentPath, dirName)
+// Per [MS-FSA] 2.1.5.14.3, setting the delete disposition on a directory sweeps
+// every ChangeNotifyEntry whose OpenedDirectory.File is the same file, removes
+// it, and completes it with STATUS_DELETE_PENDING. The trigger is the mark, not
+// the unlink — the directory is still on disk until the last handle closes, and
+// nothing un-completes these requests if the disposition is cleared again.
+//
+// Watchers on ancestor directories are untouched even when recursive: their
+// subject still exists. They learn about the removal as a normal
+// FileActionRemoved event when the entry actually goes away.
+func (r *NotifyRegistry) CompleteWatchersForDeletePending(shareName, dirPath string) int {
+	dirPath = path.Clean(dirPath)
+	if dirPath == "" || dirPath == "." {
+		dirPath = "/"
+	}
 
-	// First: send STATUS_NOTIFY_CLEANUP to any watchers on the removed directory
 	r.mu.Lock()
-	var cleanupWatchers []*PendingNotify
+	var marked []*PendingNotify
 	for _, w := range r.pending[dirPath] {
 		if w.ShareName == shareName {
-			cleanupWatchers = append(cleanupWatchers, w)
+			marked = append(marked, w)
 		}
 	}
-	// Remove them from the registry while holding the lock
-	for _, w := range cleanupWatchers {
+	for _, w := range marked {
 		r.unregisterLocked(w)
 	}
 	r.mu.Unlock()
 
-	// Send STATUS_NOTIFY_CLEANUP to each removed watcher
-	for _, w := range cleanupWatchers {
-		cleanupResp := &ChangeNotifyResponse{
-			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
-		}
-		r.sendFinalGated(w, cleanupResp, "NotifyRmdir")
+	for _, w := range marked {
+		r.sendFinalGated(w, &ChangeNotifyResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusDeletePending},
+		}, "CompleteWatchersForDeletePending")
 	}
 
-	// Second: notify parent watchers about the directory removal
-	r.NotifyChange(shareName, parentPath, dirName, FileActionRemoved, FileNotifyChangeDirName)
+	if len(marked) > 0 {
+		logger.Debug("CHANGE_NOTIFY: directory marked for deletion — completing watchers",
+			"path", dirPath,
+			"share", shareName,
+			"count", len(marked))
+	}
+	return len(marked)
 }
 
 // MarkNotifyInFlight records that a CHANGE_NOTIFY for fileID has been read off
