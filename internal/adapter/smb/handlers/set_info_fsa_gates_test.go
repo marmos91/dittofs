@@ -83,18 +83,7 @@ func TestSetInfo_DispositionEx_OnCloseRequiresDeleteOnClose(t *testing.T) {
 
 	open := func(name string, opts types.CreateOptions) [16]byte {
 		t.Helper()
-		resp, err := h.Create(ctx, &CreateRequest{
-			FileName:          name,
-			DesiredAccess:     secRightsFileAll,
-			FileAttributes:    types.FileAttributeNormal,
-			ShareAccess:       0x07,
-			CreateDisposition: types.FileOpenIf,
-			CreateOptions:     types.FileNonDirectoryFile | opts,
-		})
-		if err != nil {
-			t.Fatalf("Create(%q): %v", name, err)
-		}
-		return resp.FileID
+		return dirTestCreate(t, h, ctx, name, types.FileOpenIf, types.FileNonDirectoryFile|opts)
 	}
 
 	onClose := types.FileDispositionDelete | types.FileDispositionOnClose
@@ -214,5 +203,86 @@ func TestSetInfo_SetAllocation_RequiresWriteData(t *testing.T) {
 	// Control: the same call on a writable handle is accepted.
 	if got := setAlloc(open("alloc-rw", secRightsFileAll)); got != types.StatusSuccess {
 		t.Errorf("SetAlloc on a writable handle = %v, want STATUS_SUCCESS", got)
+	}
+}
+
+// TestSetInfo_Rename_AllowedOnDeleteOnCloseHandle guards the failure mode the
+// rename gate above could plausibly introduce. Open.Link.IsDeleted is the
+// disposition set through SET_INFO, not the FILE_DELETE_ON_CLOSE create option:
+// that option is held per-handle as InitialDeleteOnClose and promoted to
+// DeletePending only during the CLOSE election, matching MS-FSA 2.1.5.5 phase 1.
+// Conflating the two would make every delete-on-close handle un-renameable.
+func TestSetInfo_Rename_AllowedOnDeleteOnCloseHandle(t *testing.T) {
+	h, ctx, _ := setupStreamsDisabledShare(t, false)
+
+	resp, err := h.Create(ctx, &CreateRequest{
+		FileName:          "doc-renamable",
+		DesiredAccess:     secRightsFileAll,
+		FileAttributes:    types.FileAttributeNormal,
+		ShareAccess:       0x07,
+		CreateDisposition: types.FileOpenIf,
+		CreateOptions:     types.FileNonDirectoryFile | types.FileDeleteOnClose,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if resp.Status != types.StatusSuccess {
+		t.Fatalf("Create = %v, want STATUS_SUCCESS", resp.Status)
+	}
+
+	setResp, err := h.SetInfo(ctx, &SetInfoRequest{
+		InfoType:      types.SMB2InfoTypeFile,
+		FileInfoClass: uint8(types.FileRenameInformation),
+		FileID:        resp.FileID,
+		Buffer:        encodeRenameInfo("doc-renamed"),
+	})
+	if err != nil {
+		t.Fatalf("SetInfo rename: %v", err)
+	}
+	if setResp.Status != types.StatusSuccess {
+		t.Errorf("rename of a delete-on-close handle = %v, want STATUS_SUCCESS", setResp.Status)
+	}
+}
+
+// TestSetInfo_Rename_RefusedOnSecondHandleWhenDeletePending covers the case the
+// single-handle form of this gate missed. Open.Link.IsDeleted is a property of
+// the link, so a disposition committed on one handle must block a rename issued
+// on any other open of the same file — and DeletePending is not copied onto
+// sibling handles until the CLOSE election runs.
+func TestSetInfo_Rename_RefusedOnSecondHandleWhenDeletePending(t *testing.T) {
+	h, ctx, _ := setupStreamsDisabledShare(t, false)
+
+	first := dirTestCreate(t, h, ctx, "shared", types.FileOpenIf, types.FileNonDirectoryFile)
+	second := dirTestCreate(t, h, ctx, "shared", types.FileOpen, types.FileNonDirectoryFile)
+	if first == second {
+		t.Fatal("expected two distinct opens on the same file")
+	}
+
+	dispResp, err := h.SetInfo(ctx, &SetInfoRequest{
+		InfoType:      types.SMB2InfoTypeFile,
+		FileInfoClass: uint8(types.FileDispositionInformation),
+		FileID:        first,
+		Buffer:        encodeDispositionInfo(true),
+	})
+	if err != nil {
+		t.Fatalf("SetInfo disposition on first handle: %v", err)
+	}
+	if dispResp.Status != types.StatusSuccess {
+		t.Fatalf("disposition = %v, want STATUS_SUCCESS", dispResp.Status)
+	}
+
+	// The rename arrives on the OTHER handle, which never set a disposition of
+	// its own and so still reports DeletePending == false.
+	renResp, err := h.SetInfo(ctx, &SetInfoRequest{
+		InfoType:      types.SMB2InfoTypeFile,
+		FileInfoClass: uint8(types.FileRenameInformation),
+		FileID:        second,
+		Buffer:        encodeRenameInfo("shared-moved"),
+	})
+	if err != nil {
+		t.Fatalf("SetInfo rename on second handle: %v", err)
+	}
+	if renResp.Status != types.StatusAccessDenied {
+		t.Errorf("rename on a sibling handle of a doomed link = %v, want STATUS_ACCESS_DENIED", renResp.Status)
 	}
 }

@@ -767,7 +767,12 @@ const (
 	CipherAES256GCM uint16 = 0x0004
 )
 
-// FILE_DISPOSITION_INFORMATION_EX Flags field [MS-FSCC] 2.4.12.
+// =============================================================================
+// File Disposition Flags
+// =============================================================================
+
+// FILE_DISPOSITION_INFORMATION_EX Flags field.
+// [MS-FSCC] Section 2.4.12
 const (
 	// FileDispositionDelete marks the link for deletion; when clear, no flag is
 	// set and the file MUST NOT be deleted.
