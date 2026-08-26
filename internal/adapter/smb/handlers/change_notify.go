@@ -1385,7 +1385,7 @@ func (r *NotifyRegistry) chargeArmedBuffer(
 }
 
 // encodedNotifyEntrySize returns the wire size of a single
-// FILE_NOTIFY_INFORMATION entry whose FileName is name (MS-FSCC §2.4.42):
+// FILE_NOTIFY_INFORMATION entry whose FileName is name (MS-FSCC §2.7.1 (FILE_NOTIFY_INFORMATION)):
 // 12-byte fixed header (NextEntryOffset | Action | FileNameLength) plus the
 // UTF-16LE filename bytes, aligned up to 4 bytes. Empty names are charged
 // the minNotifyEntryBytes floor to avoid undercounting a sentinel-encoded

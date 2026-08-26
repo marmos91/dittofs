@@ -319,7 +319,7 @@ func FileAttrToFileStandardInfo(attr *metadata.FileAttr, isDeletePending bool) *
 }
 
 // FileAttrToFileNetworkOpenInfoWithName converts metadata FileAttr to SMB
-// FILE_NETWORK_OPEN_INFORMATION [MS-FSCC] 2.4.27. Combines timestamps, allocation
+// FILE_NETWORK_OPEN_INFORMATION [MS-FSCC] 2.4.34 (FileNetworkOpenInformation). Combines timestamps, allocation
 // size, end of file, and attributes into a single structure. It applies
 // IsHiddenFile so dot-prefixed entries surface FILE_ATTRIBUTE_HIDDEN.
 func FileAttrToFileNetworkOpenInfoWithName(attr *metadata.FileAttr, name string) *FileNetworkOpenInfo {

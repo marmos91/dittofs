@@ -8,7 +8,7 @@ import (
 )
 
 // encodeFileLinkInfoWire serialises a FILE_LINK_INFORMATION blob in MS-FSCC
-// 2.4.21.2 wire format for use by tests:
+// 2.4.28.2 (FileLinkInformation for the SMB2 Protocol) wire format for use by tests:
 //
 //	+0   1B  ReplaceIfExists
 //	+1   7B  Reserved
@@ -33,7 +33,7 @@ func encodeFileLinkInfoWire(t *testing.T, replaceIfExists bool, rootDir [8]byte,
 }
 
 // TestDecodeFileLinkInfo_Basic round-trips the FILE_LINK_INFORMATION wire
-// format and pins MS-FSCC 2.4.21.2: ReplaceIfExists, RootDirectory, and
+// format and pins MS-FSCC 2.4.28.2 (FileLinkInformation for the SMB2 Protocol): ReplaceIfExists, RootDirectory, and
 // the UTF-16LE FileName field land in the decoded struct verbatim.
 func TestDecodeFileLinkInfo_Basic(t *testing.T) {
 	t.Parallel()

@@ -24,13 +24,13 @@ import (
 // no STATUS_NOT_SUPPORTED) match without touching the on-disk format.
 //
 // Spec references:
-//   - FSCTL_SET_SPARSE             MS-FSCC §2.3.50 / §2.3.51
-//   - FSCTL_QUERY_ALLOCATED_RANGES MS-FSCC §2.3.32 / §2.3.33
-//   - FSCTL_SET_ZERO_DATA          MS-FSCC §2.3.67 / §2.3.68
+//   - FSCTL_SET_SPARSE             MS-FSCC §2.3.83 / §2.3.84 (Request / Reply)
+//   - FSCTL_QUERY_ALLOCATED_RANGES MS-FSCC §2.3.51 / §2.3.52 (Request / Reply)
+//   - FSCTL_SET_ZERO_DATA          MS-FSCC §2.3.85 / §2.3.86 (Request / Reply)
 //
 // Samba reference: source3/smbd/smb2_ioctl_filesys.c
 
-// handleSetSparse handles FSCTL_SET_SPARSE [MS-FSCC] 2.3.50.
+// handleSetSparse handles FSCTL_SET_SPARSE [MS-FSCC] 2.3.83 (FSCTL_SET_SPARSE Request).
 //
 // Input is optional: empty → set sparse (Samba `vfswrap_fsctl` default); a
 // 1+-byte FILE_SET_SPARSE_BUFFER where SetSparse byte 0 == 0 clears the
@@ -83,7 +83,7 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 
-	// MS-FSCC §2.3.50: empty input defaults to SetSparse=TRUE. Any byte > 0
+	// MS-FSCC §2.3.83 (FSCTL_SET_SPARSE Request): empty input defaults to SetSparse=TRUE. Any byte > 0
 	// sets sparse, 0x00 clears. Inputs larger than 1 byte are accepted —
 	// only the first byte is inspected (Samba parity, sparse_set_oversize).
 	setSparse := true
@@ -246,7 +246,7 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 	return NewResult(status, resp), nil
 }
 
-// allocatedRange mirrors FILE_ALLOCATED_RANGE_BUFFER (MS-FSCC §2.3.32).
+// allocatedRange mirrors FILE_ALLOCATED_RANGE_BUFFER (MS-FSCC §2.3.52 (FSCTL_QUERY_ALLOCATED_RANGES Reply)).
 type allocatedRange struct {
 	Offset uint64
 	Length uint64
@@ -258,7 +258,7 @@ type allocatedRange struct {
 // reports the hole accurately. Within a cluster, presence of any non-zero
 // byte marks the whole cluster as allocated — matches the "FSCTL_QUERY_
 // ALLOCATED_RANGES returns extents, not byte-level holes" semantic in
-// MS-FSCC §2.3.32 and avoids fragmenting pattern data (whose individual
+// MS-FSCC §2.3.52 (FSCTL_QUERY_ALLOCATED_RANGES Reply) and avoids fragmenting pattern data (whose individual
 // bytes contain interior zeros) into hundreds of tiny ranges.
 const sparseClusterSize = uint64(4096)
 
@@ -357,7 +357,7 @@ const fileZeroDataBufSize = 16
 // preceding FSCTL pushed the file past the WRITE cap.
 const zeroDataMaxFileSize = uint64(0xFFFFFFF0000) // ~16 TiB, identical to WRITE handler
 
-// handleSetZeroData handles FSCTL_SET_ZERO_DATA [MS-FSCC] 2.3.67.
+// handleSetZeroData handles FSCTL_SET_ZERO_DATA [MS-FSCC] 2.3.85 (FSCTL_SET_ZERO_DATA Request).
 //
 // Writes zeros across the [FileOffset, BeyondFinalZero) byte window. We
 // honour the request by issuing zero-filled writes through the standard

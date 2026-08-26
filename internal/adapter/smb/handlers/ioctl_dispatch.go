@@ -230,7 +230,7 @@ func parseIoctlFileID(body []byte) ([16]byte, bool) {
 	return fileID, true
 }
 
-// handleIsPathnameValid handles FSCTL_IS_PATHNAME_VALID [MS-FSCC] 2.3.33.
+// handleIsPathnameValid handles FSCTL_IS_PATHNAME_VALID [MS-FSCC] 2.3.35 (FSCTL_IS_PATHNAME_VALID Request).
 // Returns STATUS_SUCCESS (all pathnames are considered valid).
 func (h *Handler) handleIsPathnameValid(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	logger.Debug("IOCTL FSCTL_IS_PATHNAME_VALID: returning success")

@@ -61,7 +61,7 @@ func TestServiceXattrRoundTrip(t *testing.T) {
 }
 
 // TestServiceXattrCaseInsensitive verifies the EA-name case-insensitivity
-// (MS-FSCC §2.4.15) shared with SMB carries over to the xattr accessors.
+// (NTFS semantics) shared with SMB carries over to the xattr accessors.
 func TestServiceXattrCaseInsensitive(t *testing.T) {
 	fx := newTestFixture(t)
 	ctx := fx.rootContext()

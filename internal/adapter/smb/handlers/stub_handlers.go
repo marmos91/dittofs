@@ -22,29 +22,29 @@ var allFFFileID = bytes.Repeat([]byte{0xFF}, 16)
 
 // Common IOCTL/FSCTL codes [MS-FSCC] 2.3
 const (
-	FsctlPipeTransceive         uint32 = 0x0011C017 // [MS-FSCC] 2.3.50 - Named pipe transact
+	FsctlPipeTransceive         uint32 = 0x0011C017 // [MS-FSCC] 2.3.47 (FSCTL_PIPE_TRANSCEIVE Request) - Named pipe transact
 	FsctlValidateNegotiateInfo  uint32 = 0x00140204 // [MS-SMB2] 2.2.31.4
 	FsctlQueryNetworkInterfInfo uint32 = 0x001401FC // [MS-SMB2] 2.2.32.5
 	FsctlSrvEnumerateSnapshots  uint32 = 0x00144064 // [MS-SMB2] 2.2.32.2
 	FsctlSrvRequestResumeKey    uint32 = 0x00140078 // [MS-SMB2] 2.2.32.3
 	FsctlSrvCopyChunk           uint32 = 0x001440F2 // [MS-SMB2] 2.2.32.1
 	FsctlSrvCopyChunkWrite      uint32 = 0x001480F2 // [MS-SMB2] 2.2.32.1
-	FsctlGetReparsePoint        uint32 = 0x000900A8 // [MS-FSCC] 2.3.30
-	FsctlSetReparsePoint        uint32 = 0x000900D4 // [MS-FSCC] 2.3.69 - Set reparse point (symlink create)
-	FsctlIsPathnameValid        uint32 = 0x0009002C // [MS-FSCC] 2.3.33 - Pathname validation
-	FsctlGetNtfsVolumeData      uint32 = 0x00090064 // [MS-FSCC] 2.3.29 - NTFS volume data
-	FsctlReadFileUsnData        uint32 = 0x000900EB // [MS-FSCC] 2.3.56 - Read file USN data
-	FsctlGetCompression         uint32 = 0x0009003C // [MS-FSCC] 2.3.9 - Get compression state
-	FsctlSetCompression         uint32 = 0x0009C040 // [MS-FSCC] 2.3.53 - Set compression state
-	FsctlGetIntegrityInfo       uint32 = 0x0009027C // [MS-FSCC] 2.3.25 - Get integrity information
-	FsctlSetIntegrityInfo       uint32 = 0x0009C280 // [MS-FSCC] 2.3.55 - Set integrity information (WPTS uses READ|WRITE access)
-	FsctlCreateOrGetObjectID    uint32 = 0x000900C0 // [MS-FSCC] 2.3.7 - Create or get object ID
-	FsctlGetObjectID            uint32 = 0x0009009C // [MS-FSCC] 2.3.28 - Get object ID
-	FsctlMarkHandle             uint32 = 0x000900FC // [MS-FSCC] 2.3.36 - Mark handle
-	FsctlQueryFileRegions       uint32 = 0x00090284 // [MS-FSCC] 2.3.51 - Query file regions
-	FsctlSetSparse              uint32 = 0x000900C4 // [MS-FSCC] 2.3.50 - Set sparse attribute
-	FsctlQueryAllocatedRanges   uint32 = 0x000940CF // [MS-FSCC] 2.3.32 - Query allocated byte ranges
-	FsctlSetZeroData            uint32 = 0x000980C8 // [MS-FSCC] 2.3.67 - Zero a byte range
+	FsctlGetReparsePoint        uint32 = 0x000900A8 // [MS-FSCC] 2.3.27 (FSCTL_GET_REPARSE_POINT Request)
+	FsctlSetReparsePoint        uint32 = 0x000900D4 // [MS-FSCC] 2.3.81 (FSCTL_SET_REPARSE_POINT Request) - Set reparse point (symlink create)
+	FsctlIsPathnameValid        uint32 = 0x0009002C // [MS-FSCC] 2.3.35 (FSCTL_IS_PATHNAME_VALID Request) - Pathname validation
+	FsctlGetNtfsVolumeData      uint32 = 0x00090064 // [MS-FSCC] 2.3.21 (FSCTL_GET_NTFS_VOLUME_DATA Request) - NTFS volume data
+	FsctlReadFileUsnData        uint32 = 0x000900EB // [MS-FSCC] 2.3.61 (FSCTL_READ_FILE_USN_DATA Request) - Read file USN data
+	FsctlGetCompression         uint32 = 0x0009003C // [MS-FSCC] 2.3.17 (FSCTL_GET_COMPRESSION Request) - Get compression state
+	FsctlSetCompression         uint32 = 0x0009C040 // [MS-FSCC] 2.3.67 (FSCTL_SET_COMPRESSION Request) - Set compression state
+	FsctlGetIntegrityInfo       uint32 = 0x0009027C // [MS-FSCC] 2.3.19 (FSCTL_GET_INTEGRITY_INFORMATION Request) - Get integrity information
+	FsctlSetIntegrityInfo       uint32 = 0x0009C280 // [MS-FSCC] 2.3.73 (FSCTL_SET_INTEGRITY_INFORMATION Request) - Set integrity information (WPTS uses READ|WRITE access)
+	FsctlCreateOrGetObjectID    uint32 = 0x000900C0 // [MS-FSCC] 2.3.1 (FSCTL_CREATE_OR_GET_OBJECT_ID Request) - Create or get object ID
+	FsctlGetObjectID            uint32 = 0x0009009C // [MS-FSCC] 2.3.25 (FSCTL_GET_OBJECT_ID Request) - Get object ID
+	FsctlMarkHandle             uint32 = 0x000900FC // [MS-FSCC] 2.3.39 (FSCTL_MARK_HANDLE Request) - Mark handle
+	FsctlQueryFileRegions       uint32 = 0x00090284 // [MS-FSCC] 2.3.55 (FSCTL_QUERY_FILE_REGIONS Request) - Query file regions
+	FsctlSetSparse              uint32 = 0x000900C4 // [MS-FSCC] 2.3.83 (FSCTL_SET_SPARSE Request) - Set sparse attribute
+	FsctlQueryAllocatedRanges   uint32 = 0x000940CF // [MS-FSCC] 2.3.51 (FSCTL_QUERY_ALLOCATED_RANGES Request) - Query allocated byte ranges
+	FsctlSetZeroData            uint32 = 0x000980C8 // [MS-FSCC] 2.3.85 (FSCTL_SET_ZERO_DATA Request) - Zero a byte range
 
 	// FSCTL_SMBTORTURE_* are Samba's private torture control codes (see
 	// libcli/smb/smb_constants.h in samba). They have no MS-FSCC analog; the
@@ -997,7 +997,7 @@ func (h *Handler) handleOplockBreakAck(ctx *SMBHandlerContext, body []byte) (*Ha
 	return NewResult(types.StatusSuccess, respBytes), nil
 }
 
-// handleGetNtfsVolumeData handles FSCTL_GET_NTFS_VOLUME_DATA [MS-FSCC] 2.3.29.
+// handleGetNtfsVolumeData handles FSCTL_GET_NTFS_VOLUME_DATA [MS-FSCC] 2.3.21 (FSCTL_GET_NTFS_VOLUME_DATA Request).
 // Returns an NTFS_VOLUME_DATA_BUFFER with VolumeSerialNumber matching the value
 // used in FILE_ID_INFORMATION (ntfsVolumeSerialNumber). TotalClusters and BytesPerSector
 // must match FileFsFullSizeInformation values because WPTS tests verify
@@ -1029,7 +1029,7 @@ func (h *Handler) handleGetNtfsVolumeData(ctx *SMBHandlerContext, body []byte) (
 		freeClusters = stats.AvailableBytes / clusterSize
 	}
 
-	// Build NTFS_VOLUME_DATA_BUFFER [MS-FSCC] 2.5.1 (96 bytes)
+	// Build NTFS_VOLUME_DATA_BUFFER [MS-FSCC] 2.3.22 (FSCTL_GET_NTFS_VOLUME_DATA Reply) (96 bytes)
 	const ntfsVolumeDataSize = 96
 	w := smbenc.NewWriter(ntfsVolumeDataSize)
 	w.WriteUint64(ntfsVolumeSerialNumber)                 // VolumeSerialNumber
@@ -1056,7 +1056,7 @@ func (h *Handler) handleGetNtfsVolumeData(ctx *SMBHandlerContext, body []byte) (
 	return NewResult(types.StatusSuccess, resp), nil
 }
 
-// handleReadFileUsnData handles FSCTL_READ_FILE_USN_DATA [MS-FSCC] 2.3.56.
+// handleReadFileUsnData handles FSCTL_READ_FILE_USN_DATA [MS-FSCC] 2.3.61 (FSCTL_READ_FILE_USN_DATA Request).
 // Returns a USN_RECORD for the file. Supports both V2 and V3 formats based on
 // the MaxMajorVersion in the READ_FILE_USN_DATA input buffer.
 // V3 is required by WPTS FSA tests for FileIdInformation validation because
@@ -1083,7 +1083,7 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 	}
 
 	// Parse READ_FILE_USN_DATA input to determine requested version.
-	// Input structure [MS-FSCC] 2.3.56:
+	// Input structure [MS-FSCC] 2.3.61 (FSCTL_READ_FILE_USN_DATA Request):
 	//   MinMajorVersion: WORD (2 bytes)
 	//   MaxMajorVersion: WORD (2 bytes)
 	// The input is in the IOCTL buffer portion (offset 56 from body start).
@@ -1174,7 +1174,7 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 }
 
 // handlePipeTransceive handles FSCTL_PIPE_TRANSCEIVE for RPC over named pipes
-// This is a combined write+read operation used by Windows/Linux clients for RPC [MS-FSCC] 2.3.50
+// This is a combined write+read operation used by Windows/Linux clients for RPC [MS-FSCC] 2.3.47 (FSCTL_PIPE_TRANSCEIVE Request)
 func (h *Handler) handlePipeTransceive(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	if len(body) < 56 {
 		logger.Debug("IOCTL PIPE_TRANSCEIVE: request too small", "len", len(body))

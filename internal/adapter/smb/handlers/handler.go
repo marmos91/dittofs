@@ -731,7 +731,7 @@ type OpenFile struct {
 	channelSeqSet bool
 
 	// PositionInfo is the FILE_POSITION_INFORMATION CurrentByteOffset
-	// (MS-FSCC 2.4.32). Servers track this per-handle so SET/GET via
+	// (MS-FSCC 2.4.40 (FilePositionInformation)). Servers track this per-handle so SET/GET via
 	// FilePositionInformation round-trips even though network filesystems
 	// do not use it for I/O dispatch. Preserved across durable handle
 	// disconnect/reconnect (smb2.durable-open.file-position).

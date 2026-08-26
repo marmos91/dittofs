@@ -10,7 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// handleGetCompression handles FSCTL_GET_COMPRESSION [MS-FSCC] 2.3.9.
+// handleGetCompression handles FSCTL_GET_COMPRESSION [MS-FSCC] 2.3.17 (FSCTL_GET_COMPRESSION Request).
 // Returns the compression format for the open file. DittoFS does not actually
 // compress data, but tracks the compression state persistently in metadata.
 // The compression format is derived from the modeDOSCompressed mode bit.
@@ -44,11 +44,11 @@ func (h *Handler) handleGetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	return NewResult(types.StatusSuccess, resp), nil
 }
 
-// handleSetCompression handles FSCTL_SET_COMPRESSION [MS-FSCC] 2.3.53.
+// handleSetCompression handles FSCTL_SET_COMPRESSION [MS-FSCC] 2.3.67 (FSCTL_SET_COMPRESSION Request).
 // Validates the compression format and persists the state to metadata.
 // DittoFS does not actually compress data but maintains protocol-correct state,
 // including FILE_ATTRIBUTE_COMPRESSED in file attributes.
-// Per MS-FSCC 2.3.53: valid values are 0 (NONE), 1 (DEFAULT), 2 (LZNT1).
+// Per MS-FSCC 2.3.67 (FSCTL_SET_COMPRESSION Request): valid values are 0 (NONE), 1 (DEFAULT), 2 (LZNT1).
 func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	fileID, ok := parseIoctlFileID(body)
 	if !ok {
@@ -85,7 +85,7 @@ func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	format := uint16(inputData[0]) | uint16(inputData[1])<<8
 	logger.Debug("IOCTL FSCTL_SET_COMPRESSION", "format", format)
 
-	// Per MS-FSCC 2.3.53: valid formats are 0 (NONE), 1 (DEFAULT), 2 (LZNT1).
+	// Per MS-FSCC 2.3.67 (FSCTL_SET_COMPRESSION Request): valid formats are 0 (NONE), 1 (DEFAULT), 2 (LZNT1).
 	// DEFAULT and LZNT1 both map to LZNT1 (the only compression algorithm NTFS supports).
 	var compressed bool
 	switch format {
@@ -125,7 +125,7 @@ func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	return NewResult(types.StatusSuccess, resp), nil
 }
 
-// handleGetIntegrityInfo handles FSCTL_GET_INTEGRITY_INFORMATION [MS-FSCC] 2.3.25.
+// handleGetIntegrityInfo handles FSCTL_GET_INTEGRITY_INFORMATION [MS-FSCC] 2.3.19 (FSCTL_GET_INTEGRITY_INFORMATION Request).
 // Per MS-FSA 2.1.5.9.15: if the object store does not implement this functionality,
 // the operation MUST be failed with STATUS_INVALID_DEVICE_REQUEST.
 func (h *Handler) handleGetIntegrityInfo(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
@@ -133,7 +133,7 @@ func (h *Handler) handleGetIntegrityInfo(ctx *SMBHandlerContext, body []byte) (*
 	return NewErrorResult(types.StatusInvalidDeviceRequest), nil
 }
 
-// handleSetIntegrityInfo handles FSCTL_SET_INTEGRITY_INFORMATION [MS-FSCC] 2.3.55.
+// handleSetIntegrityInfo handles FSCTL_SET_INTEGRITY_INFORMATION [MS-FSCC] 2.3.73 (FSCTL_SET_INTEGRITY_INFORMATION Request).
 // Per MS-FSA 2.1.5.9.29: if the object store does not implement this functionality,
 // the operation MUST be failed with STATUS_INVALID_DEVICE_REQUEST.
 func (h *Handler) handleSetIntegrityInfo(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
@@ -141,14 +141,14 @@ func (h *Handler) handleSetIntegrityInfo(ctx *SMBHandlerContext, body []byte) (*
 	return NewErrorResult(types.StatusInvalidDeviceRequest), nil
 }
 
-// handleGetObjectID handles FSCTL_GET_OBJECT_ID [MS-FSCC] 2.3.28.
+// handleGetObjectID handles FSCTL_GET_OBJECT_ID [MS-FSCC] 2.3.25 (FSCTL_GET_OBJECT_ID Request).
 // Returns a deterministic object ID derived from the file handle.
 // Per MS-FSA 2.1.5.9.17: return the object ID for the file.
 func (h *Handler) handleGetObjectID(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	return h.buildObjectIDResponse(FsctlGetObjectID, body)
 }
 
-// handleCreateOrGetObjectID handles FSCTL_CREATE_OR_GET_OBJECT_ID [MS-FSCC] 2.3.7.
+// handleCreateOrGetObjectID handles FSCTL_CREATE_OR_GET_OBJECT_ID [MS-FSCC] 2.3.1 (FSCTL_CREATE_OR_GET_OBJECT_ID Request).
 // Returns the same object ID as FSCTL_GET_OBJECT_ID (creates if not present).
 func (h *Handler) handleCreateOrGetObjectID(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	return h.buildObjectIDResponse(FsctlCreateOrGetObjectID, body)
@@ -189,7 +189,7 @@ func (h *Handler) buildObjectIDResponse(ctlCode uint32, body []byte) (*HandlerRe
 	return NewResult(types.StatusSuccess, resp), nil
 }
 
-// handleMarkHandle handles FSCTL_MARK_HANDLE [MS-FSCC] 2.3.36.
+// handleMarkHandle handles FSCTL_MARK_HANDLE [MS-FSCC] 2.3.39 (FSCTL_MARK_HANDLE Request).
 // Per MS-FSA 2.1.5.9.20: for directory streams, fail with STATUS_DIRECTORY_NOT_SUPPORTED.
 // For data streams, return STATUS_SUCCESS.
 func (h *Handler) handleMarkHandle(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
@@ -214,7 +214,7 @@ func (h *Handler) handleMarkHandle(ctx *SMBHandlerContext, body []byte) (*Handle
 	return NewResult(types.StatusSuccess, resp), nil
 }
 
-// handleQueryFileRegions handles FSCTL_QUERY_FILE_REGIONS [MS-FSCC] 2.3.51.
+// handleQueryFileRegions handles FSCTL_QUERY_FILE_REGIONS [MS-FSCC] 2.3.55 (FSCTL_QUERY_FILE_REGIONS Request).
 // Returns a single region covering the entire file (all data is allocated).
 func (h *Handler) handleQueryFileRegions(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	fileID, ok := parseIoctlFileID(body)
@@ -237,7 +237,7 @@ func (h *Handler) handleQueryFileRegions(ctx *SMBHandlerContext, body []byte) (*
 	}
 	size := getSMBSize(&file.FileAttr)
 
-	// FILE_REGION_OUTPUT [MS-FSCC] 2.3.51:
+	// FILE_REGION_OUTPUT [MS-FSCC] 2.3.56 (FSCTL_QUERY_FILE_REGIONS Reply):
 	// Flags(4) + TotalRegionEntryCount(4) + RegionEntryCount(4) + Reserved(4)
 	// + FILE_REGION_INFO[]: FileOffset(8) + Length(8) + Usage(4) + Reserved(4)
 	var w *smbenc.Writer

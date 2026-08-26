@@ -100,7 +100,7 @@ func queryEAs(t *testing.T, h *Handler, authCtx *metadata.AuthContext, open *Ope
 }
 
 // setEA issues a SET_INFO FileFullEaInformation with a single EA (zero-length
-// value deletes per MS-FSCC §2.4.15).
+// value deletes per MS-FSCC §2.4.16 ("FileFullEaInformation")).
 func setEA(t *testing.T, h *Handler, authCtx *metadata.AuthContext, open *OpenFile, name string, value []byte) types.Status {
 	t.Helper()
 	buf := encodeOneEAEntry(name, value)

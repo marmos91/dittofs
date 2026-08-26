@@ -71,7 +71,7 @@ func setInfoStatus(status types.Status) *SetInfoResponse {
 	return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: status}}
 }
 
-// FileRenameInfo represents FILE_RENAME_INFORMATION [MS-FSCC] 2.4.34.
+// FileRenameInfo represents FILE_RENAME_INFORMATION [MS-FSCC] 2.4.42 (FileRenameInformation).
 // Used to rename or move a file.
 type FileRenameInfo struct {
 	// ReplaceIfExists indicates whether to replace an existing file.
@@ -143,7 +143,7 @@ func (resp *SetInfoResponse) Encode() ([]byte, error) {
 	return w.Bytes(), w.Err()
 }
 
-// DecodeFileRenameInfo parses FILE_RENAME_INFORMATION [MS-FSCC] 2.4.34.
+// DecodeFileRenameInfo parses FILE_RENAME_INFORMATION [MS-FSCC] 2.4.42 (FileRenameInformation).
 // Returns an error if the buffer is less than 20 bytes.
 func DecodeFileRenameInfo(buffer []byte) (*FileRenameInfo, error) {
 	if len(buffer) < 20 {
@@ -173,7 +173,7 @@ func DecodeFileRenameInfo(buffer []byte) (*FileRenameInfo, error) {
 	return info, nil
 }
 
-// decodeEndOfFileInfo decodes FILE_END_OF_FILE_INFORMATION [MS-FSCC] 2.4.13.
+// decodeEndOfFileInfo decodes FILE_END_OF_FILE_INFORMATION [MS-FSCC] 2.4.14 (FileEndOfFileInformation).
 func decodeEndOfFileInfo(buffer []byte) (uint64, error) {
 	if len(buffer) < 8 {
 		return 0, fmt.Errorf("buffer too short for FILE_END_OF_FILE_INFORMATION")
@@ -675,7 +675,7 @@ func (h *Handler) setFileInfoFromStore(
 		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FileRenameInformation:
-		// FILE_RENAME_INFORMATION [MS-FSCC] 2.4.34
+		// FILE_RENAME_INFORMATION [MS-FSCC] 2.4.42.2 (FileRenameInformation for SMB2)
 		renameInfo, err := DecodeFileRenameInfo(buffer)
 		if err != nil {
 			logger.Debug("SET_INFO: failed to decode rename info", "error", err)
@@ -815,7 +815,7 @@ func (h *Handler) setFileInfoFromStore(
 
 		// Determine source and destination.
 		//
-		// Per MS-FSCC 2.4.34 / MS-SMB2 2.2.39:
+		// Per MS-FSCC 2.4.42.2 (FileRenameInformation for SMB2) / MS-SMB2 2.2.39:
 		// - If RootDirectory is zero, FileName is a full path from the share root.
 		//   Even a bare filename like "foo.txt" means "put file at share root/foo.txt".
 		// - If RootDirectory is non-zero, FileName is relative to that directory handle.
@@ -1197,7 +1197,7 @@ func (h *Handler) setFileInfoFromStore(
 		}
 
 		// Notify watchers about the rename using paired notification.
-		// Per MS-FSCC 2.4.42, rename notifications MUST contain both
+		// Per MS-FSCC 2.7.1 (FILE_NOTIFY_INFORMATION), rename notifications MUST contain both
 		// FILE_ACTION_RENAMED_OLD_NAME and FILE_ACTION_RENAMED_NEW_NAME
 		// in a single response. CHANGE_NOTIFY is one-shot, so sending
 		// them separately would cause the second to be silently dropped.
@@ -1259,7 +1259,7 @@ func (h *Handler) setFileInfoFromStore(
 
 	case types.FileDispositionInformation, types.FileDispositionInformationEx:
 		// FILE_DISPOSITION_INFORMATION [MS-FSCC] 2.4.11
-		// FILE_DISPOSITION_INFORMATION_EX [MS-FSCC] 2.4.11.2
+		// FILE_DISPOSITION_INFORMATION_EX [MS-FSCC] 2.4.12 (FileDispositionInformationEx)
 		// DeletePending (1 byte for class 13, 4 bytes flags for class 64)
 		if len(buffer) < 1 {
 			return setInfoStatus(types.StatusInvalidParameter), nil
@@ -1267,7 +1267,7 @@ func (h *Handler) setFileInfoFromStore(
 
 		var deletePending bool
 		if class == types.FileDispositionInformationEx {
-			// FileDispositionInformationEx uses a 4-byte Flags field per MS-FSCC 2.4.11.2
+			// FileDispositionInformationEx uses a 4-byte Flags field per MS-FSCC 2.4.12 (FileDispositionInformationEx)
 			if len(buffer) < 4 {
 				return setInfoStatus(types.StatusInfoLengthMismatch), nil
 			}
@@ -1381,7 +1381,7 @@ func (h *Handler) setFileInfoFromStore(
 		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FileEndOfFileInformation:
-		// FILE_END_OF_FILE_INFORMATION [MS-FSCC] 2.4.13
+		// FILE_END_OF_FILE_INFORMATION [MS-FSCC] 2.4.14 (FileEndOfFileInformation)
 		newSize, err := decodeEndOfFileInfo(buffer)
 		if err != nil {
 			return setInfoStatus(types.StatusInvalidParameter), nil
@@ -1488,7 +1488,7 @@ func (h *Handler) setFileInfoFromStore(
 		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FilePositionInformation:
-		// FILE_POSITION_INFORMATION [MS-FSCC] 2.4.32 (8 bytes)
+		// FILE_POSITION_INFORMATION [MS-FSCC] 2.4.40 (FilePositionInformation) (8 bytes)
 		// Per MS-FSA §2.1.5.15.10 ("FilePositionInformation"): If InputBufferSize is less than the size of
 		// FILE_POSITION_INFORMATION (8 bytes), return STATUS_INFO_LENGTH_MISMATCH.
 		if len(buffer) < 8 {
@@ -1572,7 +1572,7 @@ func (h *Handler) setFileInfoFromStore(
 		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FileModeInformation:
-		// FILE_MODE_INFORMATION [MS-FSCC] 2.4.24 (4 bytes). SET adjusts the
+		// FILE_MODE_INFORMATION [MS-FSCC] 2.4.31 (FileModeInformation) (4 bytes). SET adjusts the
 		// open's mode flags (FILE_WRITE_THROUGH, FILE_SEQUENTIAL_ONLY,
 		// FILE_NO_INTERMEDIATE_BUFFERING, FILE_SYNCHRONOUS_IO_*,
 		// FILE_DELETE_ON_CLOSE). DittoFS does not change I/O behaviour based on
@@ -1602,12 +1602,12 @@ func (h *Handler) setFileInfoFromStore(
 		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FileLinkInformation:
-		// FILE_LINK_INFORMATION [MS-FSCC] 2.4.21.2 — hard link creation.
+		// FILE_LINK_INFORMATION [MS-FSCC] 2.4.28 (FileLinkInformation) — hard link creation.
 		// Wire format mirrors FILE_RENAME_INFORMATION: ReplaceIfExists (1B),
 		// Reserved (7B), RootDirectory (8B), FileNameLength (4B), FileName (UTF-16LE).
 		return h.handleFileLinkInformation(ctx, authCtx, openFile, buffer)
 
-	case types.FileFullEaInformation: // [MS-FSCC] 2.4.15 - Extended attributes
+	case types.FileFullEaInformation: // [MS-FSCC] 2.4.16 (FileFullEaInformation) - Extended attributes
 		// Reject SET on the reserved ACL xattr name with ACCESS_DENIED so the
 		// server-stored security descriptor cannot be tampered with through the
 		// FILE_FULL_EA_INFORMATION channel. Mirrors Samba vfs_acl_xattr (which
@@ -1632,8 +1632,10 @@ func (h *Handler) setFileInfoFromStore(
 
 		// Persist the EA set/delete mutations through the metadata layer.
 		// A zero-length value deletes the named EA; a non-empty value upserts
-		// it (MS-FSCC §2.4.15). EA names are case-insensitive and the metadata
-		// layer resolves them so casing round-trips.
+		// it (MS-FSCC §2.4.16 ("FileFullEaInformation")). EA-name matching is
+		// case-insensitive per NTFS semantics — MS-FSCC defines the structure but
+		// states no matching rule — and the metadata layer resolves them so casing
+		// round-trips.
 		metaSvc := h.Registry.GetMetadataService()
 		setAttrs := &metadata.SetAttrs{EAMutations: eaMutationsFromEntries(entries)}
 		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
@@ -2236,7 +2238,7 @@ func (h *Handler) breakDstParentDirHandleLeasesForRename(authCtx *metadata.AuthC
 	}
 }
 
-// FileLinkInfo represents FILE_LINK_INFORMATION [MS-FSCC] 2.4.21.2.
+// FileLinkInfo represents FILE_LINK_INFORMATION [MS-FSCC] 2.4.28.2 (FileLinkInformation for the SMB2 Protocol).
 // The wire format mirrors FILE_RENAME_INFORMATION (same byte layout).
 type FileLinkInfo struct {
 	// ReplaceIfExists indicates whether to replace an existing file at the
@@ -2251,7 +2253,7 @@ type FileLinkInfo struct {
 	FileName string
 }
 
-// DecodeFileLinkInfo parses FILE_LINK_INFORMATION [MS-FSCC] 2.4.21.2.
+// DecodeFileLinkInfo parses FILE_LINK_INFORMATION [MS-FSCC] 2.4.28.2 (FileLinkInformation for the SMB2 Protocol).
 // Returns an error if the buffer is less than 20 bytes (fixed header) or the
 // declared FileNameLength would read past buffer end.
 func DecodeFileLinkInfo(buffer []byte) (*FileLinkInfo, error) {
@@ -2278,7 +2280,7 @@ func DecodeFileLinkInfo(buffer []byte) (*FileLinkInfo, error) {
 }
 
 // handleFileLinkInformation implements SET_INFO FileLinkInformation [MS-FSCC]
-// 2.4.21.2: create a new hard link to the open file in the requested
+// 2.4.28 (FileLinkInformation): create a new hard link to the open file in the requested
 // destination directory.
 //
 // Per MS-FSA 2.1.5.14.5: the operation creates a NEW directory entry in the
@@ -2436,7 +2438,7 @@ func (h *Handler) handleFileLinkInformation(
 }
 
 // ============================================================================
-// FILE_FULL_EA_INFORMATION decoding (MS-FSCC §2.4.15)
+// FILE_FULL_EA_INFORMATION decoding (MS-FSCC §2.4.16 ("FileFullEaInformation"))
 // ============================================================================
 
 // reservedACLXattrName is the xattr name DittoFS reserves for the server's
@@ -2449,8 +2451,8 @@ func (h *Handler) handleFileLinkInformation(
 // (smbtorture smb2.ea.acl_xattr).
 //
 // The name is matched case-insensitively because EA names are NTFS-style
-// case-insensitive on the wire even though MS-FSCC §2.4.15 reserves the right
-// to canonicalize the casing. Samba's vfs_acl_xattr uses a fixed lower-case
+// case-insensitive on the wire; MS-FSCC §2.4.16 ("FileFullEaInformation") defines the
+// structure but states no name-matching rule. Samba's vfs_acl_xattr uses a fixed lower-case
 // constant; smbtorture's torture_setting_string returns the literal it was
 // configured with. Match either casing.
 const reservedACLXattrName = "security.NTACL"

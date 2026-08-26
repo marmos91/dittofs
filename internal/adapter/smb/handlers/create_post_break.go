@@ -850,7 +850,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 
 	// Apply extended attributes from an SMB2_CREATE_EA_BUFFER ("ExtA") create
 	// context. MS-SMB2 §2.2.13.2.1: the client may attach a
-	// FILE_FULL_EA_INFORMATION chain (MS-FSCC §2.4.15) at CREATE so the file is
+	// FILE_FULL_EA_INFORMATION chain (MS-FSCC §2.4.16 ("FileFullEaInformation")) at CREATE so the file is
 	// born with EAs (smbtorture smb2.setinfo opens its test file this way, then
 	// asserts the pre-existing EAs survive a later SET_INFO). Only applied on a
 	// freshly created file; reopening an existing file does not re-seed EAs.

@@ -13,7 +13,7 @@ import (
 // deep-copy (aliasing) discipline on both the store-from-caller and
 // return-to-caller paths.
 //
-// EAs (SMB FILE_FULL_EA_INFORMATION, MS-FSCC §2.4.15) ride on FileAttr the
+// EAs (SMB FILE_FULL_EA_INFORMATION, MS-FSCC §2.4.16 ("FileFullEaInformation")) ride on FileAttr the
 // same way ACL does. The memory backend holds the map directly and must
 // deep-copy it; Badger/Postgres round-trip through JSON. This suite pins that
 // behaviour identically for every backend.

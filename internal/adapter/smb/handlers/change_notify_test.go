@@ -2424,7 +2424,7 @@ func TestNameChangeFilterFor(t *testing.T) {
 	}
 }
 
-// decodeFileNotifyInfos walks a FILE_NOTIFY_INFORMATION list (MS-FSCC §2.4.42).
+// decodeFileNotifyInfos walks a FILE_NOTIFY_INFORMATION list (MS-FSCC §2.7.1 (FILE_NOTIFY_INFORMATION)).
 // Test helper only — production decode happens client-side.
 func decodeFileNotifyInfos(buf []byte) []FileNotifyInformation {
 	var out []FileNotifyInformation
