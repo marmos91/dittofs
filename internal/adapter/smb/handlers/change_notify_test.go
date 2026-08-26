@@ -3672,3 +3672,95 @@ func TestChangeNotify_SyncAnswerRefreshesArmedRouting(t *testing.T) {
 			"the armed handle kept the previous request's non-recursive flag", got)
 	}
 }
+
+// TestChangeNotify_EmptyFilterInheritsTheArmedMask covers smb2.notify.rec's
+// re-issued request, which sets completion_filter = 0 and expects the server to
+// keep watching for what the handle was already armed with.
+//
+// [MS-FSA] 2.1.5.11 makes the filter a property of the directory's
+// ChangeNotifyEntry, constructed by the FIRST CHANGE_NOTIFY on the handle;
+// neither it nor MS-SMB2 3.3.5.19 validates the field, and Samba does not
+// either. Only a request that is the first on its handle and names no filter
+// has nothing to watch for.
+func TestChangeNotify_EmptyFilterInheritsTheArmedMask(t *testing.T) {
+	newDirHandle := func(h *Handler, id byte) [16]byte {
+		var fileID [16]byte
+		fileID[0] = id
+		h.StoreOpenFile((&OpenFile{
+			FileID:        fileID,
+			IsDirectory:   true,
+			ShareName:     "share1",
+			SessionID:     1,
+			TreeID:        1,
+			DesiredAccess: 0x00000001,
+			GrantedAccess: 0x00000001,
+		}).WithName(OpenName{Path: "/dir"}))
+		return fileID
+	}
+	makeCtx := func(msgID uint64) *SMBHandlerContext {
+		return &SMBHandlerContext{
+			SessionID: 1, TreeID: 1, MessageID: msgID, ConnID: 1,
+			TryReserveAsync:     func() bool { return true },
+			ReleaseAsync:        func() {},
+			AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error { return nil },
+		}
+	}
+
+	t.Run("armed handle", func(t *testing.T) {
+		h := NewHandler()
+		h.NotifyRegistry = NewNotifyRegistry()
+		h.MaxTransactSize = 1 << 20
+		fileID := newDirHandle(h, 0x91)
+
+		res, err := h.ChangeNotify(makeCtx(1), encodeChangeNotifyReq(0, 1000, fileID, FileNotifyChangeDirName))
+		if err != nil || res == nil || res.Status != types.StatusPending {
+			t.Fatalf("first CHANGE_NOTIFY: want STATUS_PENDING, got %+v (err=%v)", res, err)
+		}
+
+		res, err = h.ChangeNotify(makeCtx(2), encodeChangeNotifyReq(0, 1000, fileID, 0))
+		if err != nil {
+			t.Fatalf("re-issued CHANGE_NOTIFY error: %v", err)
+		}
+		if res == nil || res.Status != types.StatusPending {
+			t.Fatalf("re-issued CHANGE_NOTIFY with an empty filter: want STATUS_PENDING, got %+v", res)
+		}
+
+		// It must watch for the armed mask, not for nothing.
+		var seen bool
+		h.NotifyRegistry.RangeWatchers(func(p *PendingNotify) bool {
+			if p.MessageID == 2 {
+				seen = true
+				if p.CompletionFilter != FileNotifyChangeDirName {
+					t.Errorf("re-issued watch filter = 0x%08X, want the armed 0x%08X",
+						p.CompletionFilter, FileNotifyChangeDirName)
+				}
+			}
+			return true
+		})
+		if !seen {
+			t.Error("the re-issued request registered no watch")
+		}
+	})
+
+	t.Run("unarmed handle", func(t *testing.T) {
+		h := NewHandler()
+		h.NotifyRegistry = NewNotifyRegistry()
+		h.MaxTransactSize = 1 << 20
+		fileID := newDirHandle(h, 0x92)
+
+		res, err := h.ChangeNotify(makeCtx(1), encodeChangeNotifyReq(0, 1000, fileID, 0))
+		if err != nil {
+			t.Fatalf("CHANGE_NOTIFY error: %v", err)
+		}
+		if res == nil || res.Status != types.StatusInvalidParameter {
+			t.Fatalf("first CHANGE_NOTIFY with an empty filter: want STATUS_INVALID_PARAMETER, got %+v", res)
+		}
+
+		// The refusal must not have armed the handle with an empty mask: a
+		// later request naming a real filter has to work.
+		res, err = h.ChangeNotify(makeCtx(2), encodeChangeNotifyReq(0, 1000, fileID, FileNotifyChangeFileName))
+		if err != nil || res == nil || res.Status != types.StatusPending {
+			t.Fatalf("CHANGE_NOTIFY after a refused empty filter: want STATUS_PENDING, got %+v (err=%v)", res, err)
+		}
+	})
+}

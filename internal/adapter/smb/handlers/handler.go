@@ -990,7 +990,14 @@ func (f *OpenFile) NotifyMaxBufferSizeValue() (value uint32, set bool) {
 // CaptureNotifyCompletionFilter atomically records the CompletionFilter of
 // the first CHANGE_NOTIFY on this handle. Subsequent calls return the stored
 // value. Thread-safe; only the first caller wins.
+//
+// An empty filter is never captured. It carries no mask to make sticky, and
+// storing it would arm the handle with a filter that matches nothing for as
+// long as the handle lives — including for the later requests that do name one.
 func (f *OpenFile) CaptureNotifyCompletionFilter(filter uint32) (captured uint32, didCapture bool) {
+	if filter == 0 {
+		return uint32(f.NotifyCompletionFilter.Load()), false
+	}
 	packed := notifyMaxBufferSizeSetBit | uint64(filter)
 	if f.NotifyCompletionFilter.CompareAndSwap(0, packed) {
 		return filter, true

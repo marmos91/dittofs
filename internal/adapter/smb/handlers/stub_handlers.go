@@ -473,14 +473,6 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
-	// Per MS-SMB2 3.3.5.15: CompletionFilter must contain valid flags.
-	// Reject requests with no flags or invalid flags.
-	if !IsValidCompletionFilter(req.CompletionFilter) {
-		logger.Debug("CHANGE_NOTIFY: invalid CompletionFilter",
-			"filter", fmt.Sprintf("0x%08X", req.CompletionFilter))
-		return NewErrorResult(types.StatusInvalidParameter), nil
-	}
-
 	// Per MS-SMB2 3.3.5.15: If OutputBufferLength exceeds MaxTransactSize,
 	// the server MUST fail the request with STATUS_INVALID_PARAMETER.
 	if req.OutputBufferLength > h.MaxTransactSize {
@@ -578,15 +570,30 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		effectiveMax = stored
 	}
 
-	// Per Samba change_notify_create: the CompletionFilter is fixed by the
-	// FIRST CHANGE_NOTIFY on the handle. Subsequent requests use the stored
-	// filter regardless of what they request. The WatchTree (recursive)
-	// flag is NOT sticky — it comes fresh from each request. Captured before
-	// the buffer_size=0 fast-path so even a zero-buffer first request
-	// initializes the sticky filter state.
+	// Per [MS-FSA] 2.1.5.11 the completion filter belongs to the directory's
+	// ChangeNotifyEntry, not to the request: the entry is constructed by the
+	// first CHANGE_NOTIFY on the handle and later requests reuse it. Samba does
+	// the same in change_notify_create, which runs only while fsp->notify is
+	// nil. The WatchTree (recursive) flag is NOT sticky — it comes fresh from
+	// each request. Captured before the buffer_size=0 fast-path so even a
+	// zero-buffer first request initializes the sticky filter state.
 	effectiveFilter := req.CompletionFilter
 	if stored, didCapture := openFile.CaptureNotifyCompletionFilter(effectiveFilter); !didCapture {
 		effectiveFilter = stored
+	}
+
+	// An empty CompletionFilter is only an error when the handle has no mask to
+	// inherit. A re-issued request that leaves it empty is asking to keep
+	// watching for what the handle is already armed for — neither MS-SMB2
+	// 3.3.5.19 nor [MS-FSA] 2.1.5.11 validates the field, and Samba does not
+	// either; refusing it is a DittoFS check that has to look at the filter the
+	// request will actually run with. Reserved and unrecognised bits stay
+	// accepted: they simply never match an event, which is what
+	// smb2.notify.mask walking all 32 bit positions requires.
+	if !IsValidCompletionFilter(effectiveFilter) {
+		logger.Debug("CHANGE_NOTIFY: invalid CompletionFilter",
+			"filter", fmt.Sprintf("0x%08X", req.CompletionFilter))
+		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
 	// Per Samba: buffer_size=0 means no buffered event can be marshalled into
