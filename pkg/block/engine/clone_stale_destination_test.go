@@ -214,3 +214,39 @@ func setSize(t *testing.T, ctx context.Context, ms metadata.Store, payloadID str
 		t.Fatalf("UpdateAttrs(%s): %v", payloadID, err)
 	}
 }
+
+// TestCopy_SelfCopyKeepsItsOwnRows pins the one case where the destination's
+// surviving rows are not stale: a payload copied onto itself replaced nothing.
+// The blocks handed in are the caller's snapshot of the payload's projection,
+// not the authority on which of its rows are live, so a row missing from them
+// is a row the reap would delete out from under a live file.
+func TestCopy_SelfCopyKeepsItsOwnRows(t *testing.T) {
+	ctx := context.Background()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	mem := remotememory.New()
+	bs, _ := openOfflineEngine(t, t.TempDir(), ms, mem)
+	t.Cleanup(func() { _ = bs.Close() })
+
+	root := createShare(t, ms, "selfcopy")
+	self, _ := createRealFile(t, ms, "selfcopy", "self.bin", root)
+
+	const size = 4 * 1024 * 1024
+	data := make([]byte, size)
+	rand.New(rand.NewSource(21)).Read(data) //nolint:gosec // deterministic fixture
+	if _, err := bs.WriteAt(ctx, self, nil, data, 0); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	carve(t, bs, ctx, self)
+
+	rows := refsOf(t, ctx, ms, self)
+	// Hand in a snapshot that is missing the payload's last row, the shape a
+	// stale projection has.
+	if _, err := bs.CopyPayload(ctx, self, self, rows[:len(rows)-1]); err != nil {
+		t.Fatalf("CopyPayload self-copy: %v", err)
+	}
+
+	after := refsOf(t, ctx, ms, self)
+	if len(after) != len(rows) {
+		t.Errorf("the self-copy reaped %d of the payload's own rows", len(rows)-len(after))
+	}
+}

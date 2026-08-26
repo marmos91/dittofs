@@ -235,7 +235,16 @@ func (bs *Store) DiscardLocalContent(ctx context.Context, payloadID string) erro
 		return err
 	}
 	defer bs.closeMu.RUnlock()
-	return bs.local.Truncate(ctx, payloadID, 0)
+	if err := bs.local.Truncate(ctx, payloadID, 0); err != nil {
+		return err
+	}
+	// The read cache is keyed by content hash, so it cannot serve the dropped
+	// bytes for content that no longer addresses them. Its per-payload
+	// sequential tracker is keyed by payload, though, and would have prefetch
+	// chasing the hashes the payload held before — the same reset every other
+	// path that changes a payload's content underneath the tier does.
+	bs.loadCache().OnRead(payloadID, nil, 0)
+	return nil
 }
 
 // RestoreToVersion rewinds the local journal to a snapshot's version watermark

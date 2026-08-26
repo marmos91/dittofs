@@ -662,9 +662,19 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	// and mirrors Truncate in reaping by exact "{payloadID}/{offset}" identity.
 	// A row at an offset a new row takes over is left to that row's put, which
 	// rewrites it in place.
-	stale, err := bs.staleDestinationOffsets(ctx, tx, dstPayloadID, srcBlocks)
-	if err != nil {
-		return nil, fmt.Errorf("CopyPayload: list the destination's rows for %s: %w", dstPayloadID, err)
+	//
+	// A payload copied onto itself replaced nothing and every row it has is a row
+	// it still needs, so there is nothing to reap. Reaping there would work off
+	// srcBlocks as the authority on which of the payload's own rows are live,
+	// which it is not: it is the caller's snapshot of the projection, and a row
+	// missing from it is a row this would delete out from under a live file.
+	var stale []uint64
+	if srcPayloadID != dstPayloadID {
+		var err error
+		stale, err = bs.staleDestinationOffsets(ctx, tx, dstPayloadID, srcBlocks)
+		if err != nil {
+			return nil, fmt.Errorf("CopyPayload: list the destination's rows for %s: %w", dstPayloadID, err)
+		}
 	}
 	if len(stale) > 0 {
 		if err := bs.coordinator.DecrementRefCountAndReapMany(ctx, dstPayloadID, stale); err != nil {
