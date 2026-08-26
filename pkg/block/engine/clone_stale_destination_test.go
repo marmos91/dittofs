@@ -40,11 +40,18 @@ func refsOf(t *testing.T, ms metadata.Store, payloadID string) []block.ChunkRef 
 // is the same either way, and that is what these tests read.
 func serverSideCopy(t *testing.T, ctx context.Context, bs *engine.Store, ms metadata.Store, srcHandle, dstHandle metadata.FileHandle, srcPayloadID, dstPayloadID string) {
 	t.Helper()
+	serverSideCopyRefs(t, ctx, bs, ms, srcHandle, dstHandle, srcPayloadID, dstPayloadID, refsOf(t, ms, srcPayloadID))
+}
+
+// serverSideCopyRefs is serverSideCopy with the copied ChunkRef list supplied,
+// for the source whose list is legitimately empty.
+func serverSideCopyRefs(t *testing.T, ctx context.Context, bs *engine.Store, ms metadata.Store, srcHandle, dstHandle metadata.FileHandle, srcPayloadID, dstPayloadID string, refs []block.ChunkRef) {
+	t.Helper()
 	srcFile, err := ms.GetFile(ctx, srcHandle)
 	if err != nil {
 		t.Fatalf("GetFile(src): %v", err)
 	}
-	newBlocks, err := bs.CopyPayload(ctx, srcPayloadID, dstPayloadID, refsOf(t, ms, srcPayloadID))
+	newBlocks, err := bs.CopyPayload(ctx, srcPayloadID, dstPayloadID, refs)
 	if err != nil {
 		t.Fatalf("CopyPayload: %v", err)
 	}
@@ -244,4 +251,66 @@ func TestCopy_SelfCopyKeepsItsOwnRows(t *testing.T) {
 	if len(after) != len(rows) {
 		t.Errorf("the self-copy reaped %d of the payload's own rows", len(rows)-len(after))
 	}
+}
+
+// TestCopy_SparseSourceLeavesNothingOfTheDestination is the copy that places no
+// blocks at all. A source that was only ever sized — a file created and
+// truncated up, never written — carves no rows, so the destination inherits an
+// empty manifest and its whole content should read as the zeros the source has.
+//
+// The copy has no rows of its own to overwrite the destination's with, so the
+// destination's rows are the only thing a read can resolve through, and they
+// hold the content the copy replaced.
+func TestCopy_SparseSourceLeavesNothingOfTheDestination(t *testing.T) {
+	ctx := context.Background()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	mem := remotememory.New()
+	bs, _ := openOfflineEngine(t, t.TempDir(), ms, mem)
+	t.Cleanup(func() { _ = bs.Close() })
+
+	root := createShare(t, ms, "sparsesrc")
+	src, srcHandle := createRealFile(t, ms, "sparsesrc", "src.bin", root)
+	dst, dstHandle := createRealFile(t, ms, "sparsesrc", "dst.bin", root)
+
+	const size = 4 * 1024 * 1024
+	setSize(t, ctx, ms, src, size) // sized, never written: no rows to copy
+
+	dstData := make([]byte, size)
+	rand.New(rand.NewSource(31)).Read(dstData) //nolint:gosec // deterministic fixture
+	if _, err := bs.WriteAt(ctx, dst, nil, dstData, 0); err != nil {
+		t.Fatalf("WriteAt(dst): %v", err)
+	}
+	carve(t, bs, ctx, dst)
+	setSize(t, ctx, ms, dst, size)
+
+	if rows := refsOfSparse(t, ms, src); len(rows) != 0 {
+		t.Fatalf("the source carved %d rows, so it is not the sparse case", len(rows))
+	}
+	serverSideCopyRefs(t, ctx, bs, ms, srcHandle, dstHandle, src, dst, nil)
+
+	for _, off := range []uint64{0, 2 * 1024 * 1024} {
+		got := make([]byte, 64*1024)
+		if _, err := bs.ReadAt(ctx, dst, got, off); err != nil {
+			t.Fatalf("ReadAt(dst, %d): %v", off, err)
+		}
+		if bytes.Equal(got, dstData[off:off+uint64(len(got))]) {
+			t.Fatalf("the destination at offset %d served the content the copy replaced", off)
+		}
+		if !bytes.Equal(got, make([]byte, len(got))) {
+			t.Fatalf("the destination at offset %d did not read as the source's zeros", off)
+		}
+	}
+}
+
+// refsOfSparse is refsOf without its "carved something" assertion, for the
+// source that is supposed to have carved nothing.
+func refsOfSparse(t *testing.T, ms metadata.Store, payloadID string) []block.ChunkRef {
+	t.Helper()
+	var refs []block.ChunkRef
+	for _, r := range manifestRefs(t, ms, payloadID) {
+		if !r.Hash.IsZero() {
+			refs = append(refs, r)
+		}
+	}
+	return refs
 }

@@ -540,17 +540,21 @@ func (bs *Store) staleDestinationOffsets(ctx context.Context, tx metadata.Transa
 // per-file rows and the FileAttr.Blocks manifest reference the same hashes and
 // offsets.
 //
-// It creates no local-tier interval for those rows, and cannot: it runs inside
+// It touches no local-tier interval for those rows, and cannot: it runs inside
 // the caller's metadata txn, and intervals for rows a rolled-back copy never
-// wrote would make a read of the destination's sparse ranges fail closed. Giving
-// the local tier its account of the destination is the caller's step, after the
-// commit — SeedColdRefs over the returned list. Reads work either way; residency
-// accounting does not.
+// wrote would make a read of the destination's sparse ranges fail closed, while
+// dropping the ranges the destination still holds would destroy content the
+// rollback puts back. Both are the caller's step, after the commit —
+// DiscardLocalContent to take the destination's replaced ranges back to holes,
+// then SeedColdRefs over the returned list to account for the ones the copy
+// gave it.
 //
-// Empty srcBlocks => nil-safe path: copies nothing. CopyPayload no longer
-// copies data at all; adapter call sites that need a data copy drive
-// ReadAt+WriteAt directly. Production callers always supply a snapshot of
-// the source file's FileAttr.Blocks.
+// Empty srcBlocks => the destination places nothing afterwards, which is what
+// a fully sparse source gives it. That is not a no-op: the destination's own
+// rows are still reaped, or a read would go on resolving through them.
+// CopyPayload no longer copies data at all; adapter call sites that need a data
+// copy drive ReadAt+WriteAt directly. Production callers always supply a
+// snapshot of the source file's FileAttr.Blocks.
 //
 // Failure semantics: a genuine IncrementRefCount backend fault is surfaced
 // immediately without further increments (the caller's metadata txn rolls back).
@@ -568,11 +572,12 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 		return nil, err
 	}
 	defer bs.closeMu.RUnlock()
-	// Empty src => no work, nothing to coordinate.
-	if len(srcBlocks) == 0 {
-		return nil, nil
-	}
-	if bs.coordinator == nil {
+	// A source that places no blocks copies no content, but it still replaces
+	// the destination's: the copy hands it a file with nothing in it, so every
+	// row the destination holds is one the copy took away. The reap below runs
+	// for that source too, which is what a fully sparse one is, so there is no
+	// early return here for it.
+	if len(srcBlocks) > 0 && bs.coordinator == nil {
 		return nil, ErrMetadataCoordinatorNotWired
 	}
 
@@ -660,7 +665,7 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	// srcBlocks as the authority on which of the payload's own rows are live,
 	// which it is not: it is the caller's snapshot of the projection, and a row
 	// missing from it is a row this would delete out from under a live file.
-	if srcPayloadID != dstPayloadID {
+	if srcPayloadID != dstPayloadID && bs.coordinator != nil {
 		stale, err := bs.staleDestinationOffsets(ctx, tx, dstPayloadID, srcBlocks)
 		if err != nil {
 			return nil, fmt.Errorf("CopyPayload: list the destination's rows for %s: %w", dstPayloadID, err)
@@ -699,6 +704,8 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	// produces a fresh backing array independent of srcBlocks). The caller
 	// persists this as dst's FileAttr.Blocks in the same metadata txn, so the
 	// rows above and this manifest stay consistent (same hashes + offsets).
+	// An empty source lands here too and yields the nil list that says the
+	// destination now places nothing.
 	dst := append([]block.ChunkRef(nil), srcBlocks...)
 
 	return dst, nil
