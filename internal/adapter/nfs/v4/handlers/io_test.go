@@ -665,6 +665,82 @@ func TestOpen_UnknownClientID_ReturnsStaleClientID(t *testing.T) {
 	}
 }
 
+// openOther runs one OPEN of filename with the given wire clientid and returns
+// the "other" field of the stateid it produced. Two OPENs by the same
+// open-owner on the same file share one open state, so an unchanged "other"
+// across two calls means both were keyed under the same client.
+func openOther(t *testing.T, fx *ioTestFixture, ctx *types.CompoundContext, wireClientID uint64, filename string) [12]byte {
+	t.Helper()
+
+	setCurrentFH(ctx, fx.rootHandle)
+
+	args := encodeOpenArgs(
+		0,
+		types.OPEN4_SHARE_ACCESS_BOTH,
+		types.OPEN4_SHARE_DENY_NONE,
+		wireClientID,
+		[]byte("shared-owner"),
+		types.OPEN4_CREATE,
+		types.UNCHECKED4,
+		types.CLAIM_NULL,
+		filename,
+	)
+
+	result := fx.handler.handleOpen(ctx, bytes.NewReader(args))
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("OPEN status = %d, want NFS4_OK", result.Status)
+	}
+
+	reader := bytes.NewReader(result.Data)
+	if status, _ := xdr.DecodeUint32(reader); status != types.NFS4_OK {
+		t.Fatalf("encoded OPEN status = %d, want NFS4_OK", status)
+	}
+	stateid, err := types.DecodeStateid4(reader)
+	if err != nil {
+		t.Fatalf("decode stateid: %v", err)
+	}
+	return stateid.Other
+}
+
+// TestOpen_SessionClientIDOutranksWireClientID checks that a v4.1 OPEN keys its
+// open-owner by the session's client rather than by open_owner4.clientid, which
+// RFC 8881 Section 18.16.3 declares ignored for v4.1 and which a conforming
+// client may therefore send as zero or stale.
+func TestOpen_SessionClientIDOutranksWireClientID(t *testing.T) {
+	t.Run("v41_session_client_wins", func(t *testing.T) {
+		fx := newIOTestFixture(t, "/export")
+
+		ctx := newRealFSContext(0, 0)
+		ctx.SkipOwnerSeqid = true // as the v4.1 dispatch path sets after SEQUENCE
+		ctx.SessionClientID = testClientID(t, fx.handler.StateManager, "v41-session-client")
+
+		// Same owner, same file, two unrelated wire clientids: the zero a
+		// conforming client is free to send, and a stale non-zero one.
+		first := openOther(t, fx, ctx, 0, "v41.txt")
+		second := openOther(t, fx, ctx, 0xDEADBEEF, "v41.txt")
+
+		if first != second {
+			t.Errorf("stateid other changed between OPENs (%x -> %x): the wire "+
+				"clientid split one client's state across two open-owners",
+				first, second)
+		}
+	})
+
+	t.Run("v40_wire_client_still_used", func(t *testing.T) {
+		fx := newIOTestFixture(t, "/export")
+
+		ctx := newRealFSContext(0, 0)
+		ctx.SkipOwnerSeqid = true // keep seqid out of it; v4.0 leaves SessionClientID zero
+
+		first := openOther(t, fx, ctx, testClientID(t, fx.handler.StateManager, "v40-client-a"), "v40.txt")
+		second := openOther(t, fx, ctx, testClientID(t, fx.handler.StateManager, "v40-client-b"), "v40.txt")
+
+		if first == second {
+			t.Error("distinct v4.0 clientids collapsed onto one open-owner")
+		}
+	})
+}
+
 // ============================================================================
 // OPEN_CONFIRM Tests
 // ============================================================================

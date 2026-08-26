@@ -131,6 +131,7 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 				Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
 			}
 		}
+		lockOwnerClientID = ctx.EffectiveClientID(lockOwnerClientID)
 
 		lockOwnerData, decErr := xdr.DecodeOpaque(reader)
 		if decErr != nil {
@@ -312,6 +313,7 @@ func (h *Handler) handleLockT(ctx *types.CompoundContext, reader io.Reader) *typ
 			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
 		}
 	}
+	clientID = ctx.EffectiveClientID(clientID)
 
 	ownerData, err := xdr.DecodeOpaque(reader)
 	if err != nil {

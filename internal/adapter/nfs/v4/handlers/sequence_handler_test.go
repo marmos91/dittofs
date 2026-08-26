@@ -29,7 +29,15 @@ func encodeSequenceArgs(sessionID types.SessionId4, slotID, seqID, highestSlotID
 func createTestSession(t *testing.T) (*Handler, types.SessionId4) {
 	t.Helper()
 	h := newTestHandler()
-	clientID, seqID := registerExchangeID(t, h, "seq-test-client")
+	return h, createSessionOn(t, h, "seq-test-client")
+}
+
+// createSessionOn performs EXCHANGE_ID + CREATE_SESSION on an existing handler,
+// for tests whose handler is built around a real share rather than by
+// newTestHandler.
+func createSessionOn(t *testing.T, h *Handler, ownerID string) types.SessionId4 {
+	t.Helper()
+	clientID, seqID := registerExchangeID(t, h, ownerID)
 
 	ctx := newTestCompoundContext()
 	secParms := []types.CallbackSecParms4{{CbSecFlavor: 0}} // AUTH_NONE
@@ -59,7 +67,7 @@ func createTestSession(t *testing.T) (*Handler, types.SessionId4) {
 		t.Fatalf("CREATE_SESSION status = %d, want NFS4_OK", csRes.Status)
 	}
 
-	return h, csRes.SessionID
+	return csRes.SessionID
 }
 
 // decodeSequenceRes decodes SEQUENCE4res from a COMPOUND response that has

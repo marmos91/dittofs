@@ -13,6 +13,49 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
+// encodeNewLockOwnerArgs encodes LOCK4args for the new_lock_owner = true case,
+// where the lock-owner is established from an open stateid
+// (open_to_lock_owner4). The seqids are ignored under v4.1.
+func encodeNewLockOwnerArgs(
+	lockType uint32,
+	offset, length uint64,
+	openSeqid uint32,
+	openStateid *types.Stateid4,
+	lockSeqid uint32,
+	clientID uint64,
+	owner []byte,
+) []byte {
+	var buf bytes.Buffer
+
+	_ = xdr.WriteUint32(&buf, lockType)
+	_ = xdr.WriteUint32(&buf, 0) // reclaim = false
+	_ = xdr.WriteUint64(&buf, offset)
+	_ = xdr.WriteUint64(&buf, length)
+	_ = xdr.WriteUint32(&buf, 1) // new_lock_owner = true
+	// open_to_lock_owner4: open_seqid + open_stateid + lock_seqid + lock_owner4
+	_ = xdr.WriteUint32(&buf, openSeqid)
+	types.EncodeStateid4(&buf, openStateid)
+	_ = xdr.WriteUint32(&buf, lockSeqid)
+	_ = xdr.WriteUint64(&buf, clientID)
+	_ = xdr.WriteXDROpaque(&buf, owner)
+
+	return buf.Bytes()
+}
+
+// encodeLocktArgs encodes LOCKT4args.
+func encodeLocktArgs(lockType uint32, offset, length uint64, clientID uint64, owner []byte) []byte {
+	var buf bytes.Buffer
+
+	_ = xdr.WriteUint32(&buf, lockType)
+	_ = xdr.WriteUint64(&buf, offset)
+	_ = xdr.WriteUint64(&buf, length)
+	// lock_owner4: clientid + owner
+	_ = xdr.WriteUint64(&buf, clientID)
+	_ = xdr.WriteXDROpaque(&buf, owner)
+
+	return buf.Bytes()
+}
+
 // ============================================================================
 // LOCK Handler Tests
 // ============================================================================

@@ -12,6 +12,8 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // buildCompoundArgs encodes a COMPOUND4args structure for testing.
@@ -794,6 +796,147 @@ func TestCompound_V41_EmptyCompound(t *testing.T) {
 	if string(decoded.Tag) != "v41-empty" {
 		t.Errorf("tag = %q, want %q", string(decoded.Tag), "v41-empty")
 	}
+}
+
+// TestCompoundV41_SessionClientIDKeysOwners drives OPEN, LOCK and LOCKT through
+// real v4.1 COMPOUNDs whose open_owner4 and lock_owner4 carry a clientid the
+// server must ignore (RFC 8881 Sections 18.16.3 and 18.10.3), to cover the
+// dispatch step that puts the session's client on the compound context. The
+// handler-level tests set that field themselves, so nothing there would notice
+// if SEQUENCE stopped supplying it.
+//
+// The owner opaque is one string throughout, so all three operations name the
+// same open- and lock-owner as long as each is keyed by the session's client.
+// The LOCKT then reports the lock as free -- a lock never conflicts with its own
+// owner -- whereas an owner split across two client identities makes it a
+// conflict and answers NFS4ERR_DENIED.
+func TestCompoundV41_SessionClientIDKeysOwners(t *testing.T) {
+	const (
+		filename  = "v41-owner-keying.txt"
+		lockStart = 0
+		lockLen   = 128
+	)
+	owner := []byte("session-keyed-owner")
+
+	fx := newIOTestFixture(t, "/export")
+	// Byte-range conflicts are only detected when a lock manager is present;
+	// without one LOCKT reports every range as free and proves nothing.
+	fx.handler.StateManager.SetLockManager(lock.NewManager())
+	sessionID := createSessionOn(t, fx.handler, "v41-owner-keying-client")
+
+	// SEQUENCE + OPEN, with open_owner4.clientid = 0 -- the value a conforming
+	// v4.1 client is free to send.
+	openArgs := encodeOpenArgs(
+		0, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE,
+		0, owner,
+		types.OPEN4_CREATE, types.UNCHECKED4, types.CLAIM_NULL, filename,
+	)
+	resp := processV41Compound(t, fx.handler, "open", fx.rootHandle, []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: encodeSequenceArgs(sessionID, 0, 1, 0, false)},
+		{opCode: types.OP_OPEN, data: openArgs},
+	})
+	reader := skipToLastResult(t, resp, 2, types.OP_OPEN)
+	openStateid, err := types.DecodeStateid4(reader)
+	if err != nil {
+		t.Fatalf("decode OPEN stateid: %v", err)
+	}
+
+	file, err := fx.metaSvc.Lookup(newTestAuthCtx(0, 0), fx.rootHandle, filename)
+	if err != nil {
+		t.Fatalf("lookup %s: %v", filename, err)
+	}
+	fileHandle, err := metadata.EncodeFileHandle(file)
+	if err != nil {
+		t.Fatalf("encode handle: %v", err)
+	}
+
+	// SEQUENCE + LOCK, lock_owner4.clientid = 0 as well. Both seqids are zero
+	// because v4.1 ignores them.
+	lockArgs := encodeNewLockOwnerArgs(types.WRITE_LT, lockStart, lockLen, 0, openStateid, 0, 0, owner)
+
+	resp = processV41Compound(t, fx.handler, "lock", fileHandle, []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: encodeSequenceArgs(sessionID, 0, 2, 0, false)},
+		{opCode: types.OP_LOCK, data: lockArgs},
+	})
+	skipToLastResult(t, resp, 2, types.OP_LOCK)
+
+	// SEQUENCE + LOCKT for the same range and owner, this time with a stale
+	// non-zero clientid on the wire.
+	locktArgs := encodeLocktArgs(types.WRITE_LT, lockStart, lockLen, 0xDEADBEEF, owner)
+
+	resp = processV41Compound(t, fx.handler, "lockt", fileHandle, []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: encodeSequenceArgs(sessionID, 0, 3, 0, false)},
+		{opCode: types.OP_LOCKT, data: locktArgs},
+	})
+	skipToLastResult(t, resp, 2, types.OP_LOCKT)
+}
+
+// processV41Compound runs a v4.1 COMPOUND against currentFH and fails the test
+// unless the overall status is NFS4_OK, which for a SEQUENCE-led compound means
+// every operation in it succeeded. The filehandle is seeded rather than reached
+// by a PUTFH op because the fixture's share is registered disabled, which PUTFH
+// answers with NFS4ERR_STALE.
+func processV41Compound(t *testing.T, h *Handler, tag string, currentFH metadata.FileHandle, ops []compoundOp) []byte {
+	t.Helper()
+
+	ctx := newTestCompoundContext()
+	ctx.CurrentFH = make([]byte, len(currentFH))
+	copy(ctx.CurrentFH, currentFH)
+
+	resp, err := h.ProcessCompound(ctx, buildCompoundArgsWithOps([]byte(tag), 1, ops))
+	if err != nil {
+		t.Fatalf("%s COMPOUND error: %v", tag, err)
+	}
+	if status, _ := xdr.DecodeUint32(bytes.NewReader(resp)); status != types.NFS4_OK {
+		t.Fatalf("%s COMPOUND status = %d, want NFS4_OK", tag, status)
+	}
+	return resp
+}
+
+// skipToLastResult walks a COMPOUND response past its leading SEQUENCE and
+// PUTFH results and returns a reader positioned just after the last result's
+// status, ready for that operation's own reply body.
+func skipToLastResult(t *testing.T, resp []byte, numOps int, lastOp uint32) *bytes.Reader {
+	t.Helper()
+
+	reader := bytes.NewReader(resp)
+	_, _ = xdr.DecodeUint32(reader) // overall status
+	_, _ = xdr.DecodeOpaque(reader) // tag
+	numResults, _ := xdr.DecodeUint32(reader)
+	if int(numResults) != numOps {
+		t.Fatalf("numResults = %d, want %d", numResults, numOps)
+	}
+
+	for i := 0; i < numOps; i++ {
+		opCode, _ := xdr.DecodeUint32(reader)
+
+		if i == numOps-1 {
+			if opCode != lastOp {
+				t.Fatalf("last result op = %s, want %s", types.OpName(opCode), types.OpName(lastOp))
+			}
+			if status, _ := xdr.DecodeUint32(reader); status != types.NFS4_OK {
+				t.Fatalf("%s status = %d, want NFS4_OK", types.OpName(opCode), status)
+			}
+			return reader
+		}
+
+		// SEQUENCE carries a reply body after its status; every other leading
+		// operation here (PUTFH) is status-only.
+		if opCode == types.OP_SEQUENCE {
+			var seqRes types.SequenceRes
+			if err := seqRes.Decode(reader); err != nil {
+				t.Fatalf("decode SequenceRes: %v", err)
+			}
+			if seqRes.Status != types.NFS4_OK {
+				t.Fatalf("SEQUENCE status = %d, want NFS4_OK", seqRes.Status)
+			}
+			continue
+		}
+		if status, _ := xdr.DecodeUint32(reader); status != types.NFS4_OK {
+			t.Fatalf("%s status = %d, want NFS4_OK", types.OpName(opCode), status)
+		}
+	}
+	return reader
 }
 
 // ============================================================================
