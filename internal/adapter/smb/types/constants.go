@@ -766,3 +766,18 @@ const (
 	// CipherAES256GCM is AES-256 in GCM mode.
 	CipherAES256GCM uint16 = 0x0004
 )
+
+// FILE_DISPOSITION_INFORMATION_EX Flags field [MS-FSCC] 2.4.12.
+const (
+	// FileDispositionDelete marks the link for deletion; when clear, no flag is
+	// set and the file MUST NOT be deleted.
+	FileDispositionDelete uint32 = 0x00000001
+	// FileDispositionOnClose updates the FILE_DELETE_ON_CLOSE state. If set on a
+	// file that was not opened with FILE_DELETE_ON_CLOSE, the operation MUST
+	// return STATUS_NOT_SUPPORTED.
+	FileDispositionOnClose uint32 = 0x00000008
+	// FileDispositionIgnoreReadonlyAttribute permits deleting a file carrying
+	// READ_ONLY. Without it, deleting a read-only file MUST return
+	// STATUS_CANNOT_DELETE.
+	FileDispositionIgnoreReadonlyAttribute uint32 = 0x00000010
+)
