@@ -656,7 +656,10 @@ else
         "smb2.notify.rmdir2:notify"
         "smb2.notify.rmdir3:notify"
         "smb2.notify.rmdir4:notify"
-        "smb2.notify.security:notify"
+        # smb2.notify.security is deliberately absent: it exists in Samba
+        # master but not in the smbtorture 4.22.6 the container pins, which
+        # answers "Unknown torture operation". Add it when the pinned
+        # smbtorture moves past 4.22.6.
         "smb2.notify-inotify:notify-inotify"
         "smb2.oplock:oplock"
         "smb2.read:read"
