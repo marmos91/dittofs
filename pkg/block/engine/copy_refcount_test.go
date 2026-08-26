@@ -66,8 +66,10 @@ func copyFixture(t *testing.T) (*engine.Store, *metadatamemory.MemoryMetadataSto
 // something real.
 //
 // CopyPayload bumps RefCount once per unique source hash, and that bump is the
-// only RefCount increment the system has. It goes through the coordinator,
-// which resolves the hash with GetByHash — and every backend scopes GetByHash
+// only production call site that raises one — the stores also expose AddRef and
+// a store-level IncrementRefCount, but nothing in production calls AddRef and
+// the coordinator this goes through is the only caller of the other. The
+// coordinator resolves the hash with GetByHash — and every backend scopes GetByHash
 // to rows in the Remote state (memory checks IsRemote; sqlite and postgres both
 // spell it `state = 2`). Nothing in production ever puts a row in that state:
 // the carve path records its sync markers through SyncedHashStore and leaves

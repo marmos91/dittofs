@@ -586,14 +586,17 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	// the same file — file-level dedup) are bumped exactly
 	// once per CopyPayload call.
 	//
-	// ponytail: this is the only RefCount increment in the system and it
-	// currently reaches nothing. The coordinator resolves the hash with
-	// GetByHash, which every backend scopes to rows in the Remote state (memory
-	// checks IsRemote, sqlite and postgres both spell it `state = 2`), and no
+	// ponytail: this is the only production call site that raises a RefCount,
+	// and it currently reaches nothing. The stores expose two ways to raise one
+	// — AddRef and a store-level IncrementRefCount — but nothing in production
+	// calls AddRef, and the coordinator this loop goes through is the only
+	// caller of the other. That coordinator resolves the hash with GetByHash,
+	// which every backend scopes to rows in the Remote state (memory checks
+	// IsRemote, sqlite and postgres both spell it `state = 2`), and no
 	// production path ever puts a row in that state — the carve records its
 	// sync markers through SyncedHashStore and leaves FileChunk.State at
 	// Pending for the life of the payload. So every call here is the tolerated
-	// miss below, and the count never moves.
+	// miss below, and no count moves.
 	//
 	// That is a ceiling, not a design: the counting is once per call and the
 	// rest of the copy is idempotent, so the moment rows do transition to
