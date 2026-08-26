@@ -96,7 +96,13 @@ jobs:
           # option is off by default, for both modules alike.
           want="${RUNNER_TEMP}/operator-sources.txt"
           got="${RUNNER_TEMP}/operator-extracted.txt"
+          # A git pathspec matches across directory separators, so this
+          # reaches the whole module, not just its top level.
           git ls-files 'k8s/dittofs-operator/*.go' | grep -v '_test\.go$' | sort >"${want}"
+          if [ ! -s "${want}" ]; then
+            echo "::error::found no operator sources to check for; has the module moved?"
+            exit 1
+          fi
           unzip -Z1 "${archive}" | grep -oE 'k8s/dittofs-operator/.*\.go$' | sort -u >"${got}" || true
 
           found=$(comm -12 "${want}" "${got}" | wc -l)
