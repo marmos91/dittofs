@@ -585,6 +585,26 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	// hashes (a single CAS object referenced by multiple ChunkRefs in
 	// the same file — file-level dedup) are bumped exactly
 	// once per CopyPayload call.
+	//
+	// ponytail: this is the only RefCount increment in the system and it
+	// currently reaches nothing. The coordinator resolves the hash with
+	// GetByHash, which every backend scopes to rows in the Remote state (memory
+	// checks IsRemote, sqlite and postgres both spell it `state = 2`), and no
+	// production path ever puts a row in that state — the carve records its
+	// sync markers through SyncedHashStore and leaves FileChunk.State at
+	// Pending for the life of the payload. So every call here is the tolerated
+	// miss below, and the count never moves.
+	//
+	// That is a ceiling, not a design: the counting is once per call and the
+	// rest of the copy is idempotent, so the moment rows do transition to
+	// Remote, a copy repeated for any reason counts its source's hashes one
+	// higher with nothing to bring them back down, and a count that only rises
+	// blocks reclamation of chunks nothing references. Whoever opens that gate
+	// owes this loop a way to tell a repeat of the same copy from two files
+	// that happen to share a chunk — the destination's existing rows cannot say
+	// which it is looking at, and skipping the bump for a hash the destination
+	// already holds counts DOWN on the dedup case, which is the dangerous
+	// direction. Both states are pinned by the copy-refcount tests.
 	seen := make(map[block.ContentHash]struct{}, len(srcBlocks))
 	for _, b := range srcBlocks {
 		if _, ok := seen[b.Hash]; ok {
