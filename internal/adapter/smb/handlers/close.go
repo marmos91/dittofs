@@ -422,7 +422,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// Remove the elected entry through the shared helper both close
 			// paths use, so the cascade to stream siblings and the payload
 			// purge cannot drift between them. See doc_election.go.
-			isDeleteTargetDir, deleteErr := h.removeElectedTarget(ctx.Context, authCtx, openFile, target, "CLOSE")
+			isDeleteTargetDir, removed, deleteErr := h.removeElectedTarget(ctx.Context, authCtx, openFile, target, "CLOSE")
 
 			if deleteErr != nil {
 				// Surface the delete-on-close failure — but only when no
@@ -433,7 +433,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				if resp.Status == types.StatusSuccess {
 					resp.Status = common.MapToSMB(deleteErr)
 				}
-			} else {
+			} else if removed {
 				// Removing the entry already broke the parent directory's
 				// leases: RemoveFile / RemoveDirectory notify the dir-change
 				// listener, which breaks every parent dir lease (except the

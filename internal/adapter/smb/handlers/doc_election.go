@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -255,8 +256,18 @@ func (h *Handler) rangeLiveStreamsOfBase(selfFileID [16]byte, parentHandle metad
 // removeElectedTarget removes the directory entry a delete-on-close election
 // resolved, together with everything that must accompany a removed entry:
 // cascading the base file's ADS streams, purging its block-store payload, and
-// restoring the parent directory's frozen timestamps. It returns the removal
-// error so the caller can surface or log it.
+// restoring the parent directory's frozen timestamps. It reports whether the
+// entry was actually removed and returns the removal error so the caller can
+// surface or log it.
+//
+// A directory that still holds entries is not one of those errors. Per MS-FSA
+// 2.1.5.5 phase 1 a close carrying FILE_DELETE_ON_CLOSE marks the link deleted
+// only when the directory's entry list is empty; otherwise it leaves the
+// directory in place and the close still completes with STATUS_SUCCESS. The
+// refusal a client is meant to see comes from setting the delete disposition
+// (MS-FSA 2.1.5.15.3), not from the close. Such a close reports removed=false
+// with a nil error, so the caller neither fails the close nor announces a
+// removal that did not happen.
 //
 // Both close paths go through it. They previously removed the entry themselves
 // and drifted: the teardown never cascaded, so once it started removing the
@@ -280,7 +291,7 @@ func (h *Handler) removeElectedTarget(
 	openFile *OpenFile,
 	target docTarget,
 	caller string,
-) (removedIsDir bool, err error) {
+) (removedIsDir, removed bool, err error) {
 	metaSvc := h.Registry.GetMetadataService()
 
 	// For a deferred base-file delete (reached via a stream handle), resolve
@@ -306,11 +317,18 @@ func (h *Handler) removeElectedTarget(
 	var removedPayloadID metadata.PayloadID
 	if isDeleteTargetDir {
 		_, err = metaSvc.RemoveDirectory(authCtx, target.ParentHandle, target.FileName)
+		var storeErr *metadata.StoreError
+		if errors.As(err, &storeErr) && storeErr.Code == metadata.ErrNotEmpty {
+			logger.Debug(caller+": delete-on-close left a non-empty directory in place",
+				"path", target.Name.Path,
+				"deleteTarget", target.FileName)
+			return true, false, nil
+		}
 	} else {
-		var removed *metadata.File
-		removed, _, err = metaSvc.RemoveFile(authCtx, target.ParentHandle, target.FileName)
-		if removed != nil {
-			removedPayloadID = removed.PayloadID
+		var removedFile *metadata.File
+		removedFile, _, err = metaSvc.RemoveFile(authCtx, target.ParentHandle, target.FileName)
+		if removedFile != nil {
+			removedPayloadID = removedFile.PayloadID
 		}
 	}
 	if err != nil {
@@ -319,7 +337,7 @@ func (h *Handler) removeElectedTarget(
 			"deleteTarget", target.FileName,
 			"isDir", isDeleteTargetDir,
 			"error", err)
-		return isDeleteTargetDir, err
+		return isDeleteTargetDir, false, err
 	}
 
 	logger.Debug(caller+": deleted",
@@ -346,5 +364,5 @@ func (h *Handler) removeElectedTarget(
 	h.purgeBlockStorePayload(ctx, deleteTargetHandle, removedPayloadID, target.Name.Path, caller)
 	h.restoreParentDirFrozenTimestamps(authCtx, target.ParentHandle)
 
-	return isDeleteTargetDir, nil
+	return isDeleteTargetDir, true, nil
 }
