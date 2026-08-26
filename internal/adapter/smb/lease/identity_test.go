@@ -229,7 +229,7 @@ func TestResolveAckBinding_SameSessionTwoSharesIsDeterministic(t *testing.T) {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 	for i := 0; i < 200; i++ {
-		ck, found := lm.resolveAckBindingLocked(leaseKey, 1, [16]byte{})
+		ck, _, found := lm.resolveAckBindingLocked(leaseKey, 1, [16]byte{})
 		if !found {
 			t.Fatalf("iteration %d: no binding resolved", i)
 		}

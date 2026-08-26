@@ -282,7 +282,7 @@ func TestOnDirChange_SerializesMultipleDirLeaseBreaks(t *testing.T) {
 	}
 
 	// Acknowledging the first break delivers the deferred second break.
-	if err := lm.AcknowledgeLeaseBreak(context.Background(), first, LeaseStateNone, 0); err != nil {
+	if err := lm.AcknowledgeLeaseBreak(context.Background(), handleKey, first, LeaseStateNone, 0); err != nil {
 		t.Fatalf("AcknowledgeLeaseBreak: %v", err)
 	}
 
@@ -319,7 +319,7 @@ func TestAcknowledgeLeaseBreak_ClearsMirroredSiblings(t *testing.T) {
 	lm.OnDirChange(FileHandle(handleKey), DirChangeRemoveEntry, "smb:3", [16]byte{}, false)
 
 	// The client sends exactly ONE acknowledge for the shared lease key.
-	if err := lm.AcknowledgeLeaseBreak(context.Background(), dlease2Key, LeaseStateNone, 0); err != nil {
+	if err := lm.AcknowledgeLeaseBreak(context.Background(), handleKey, dlease2Key, LeaseStateNone, 0); err != nil {
 		t.Fatalf("AcknowledgeLeaseBreak: %v", err)
 	}
 

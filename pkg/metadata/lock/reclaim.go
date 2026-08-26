@@ -151,8 +151,14 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 
 			lm.mu.Lock()
 			handleKey := string(lock.FileHandle)
-			if _, existing, _ := lm.findLeaseByKey(leaseKey); existing != nil {
+			// Scoped to this record's own file: resolving by key alone would
+			// find a lease another client holds under the same key value on
+			// another file, then mutate and return THAT record — leaving this
+			// client's own lease unrestored.
+			records := lm.leaseRecordsOnHandleLocked(handleKey, leaseKey)
+			if len(records) > 0 {
 				// Already reclaimed - update state and return existing
+				existing := records[0]
 				existing.Lease.LeaseState = requestedState
 				existing.Type = lockTypeForLeaseState(requestedState)
 				existing.Reclaim = true
@@ -176,7 +182,10 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 		return nil, fmt.Errorf("no persisted lease found with key %x", leaseKey)
 	}
 
-	// No lockStore: try to find in memory (for testing without persistence)
+	// No lockStore: try to find in memory (for testing without persistence).
+	// This is the one lease lookup left resolving by key alone — with no
+	// persisted record there is no file handle to scope it to. Configure a
+	// lockStore for any path where two clients may share a key value.
 	lm.mu.Lock()
 	defer lm.unlock()
 
