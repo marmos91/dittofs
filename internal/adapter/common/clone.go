@@ -135,8 +135,11 @@ func CloneWholeFile(
 	// Order matters between these two. The discard takes the destination's
 	// replaced ranges back to holes; the seed then gives the local tier its
 	// account of the ranges the copy put there. Seeding first would find those
-	// ranges already described and skip them, leaving the tier holding the
-	// content the copy replaced.
+	// ranges still described by the content the copy replaced and skip them all,
+	// and the discard would then drop what little it had recorded — reads would
+	// still be right, resolving against the manifest, but the tier would end up
+	// describing none of the copy and nothing could report its remote-only
+	// bytes.
 	if err := discardStaleDestination(ctx, blockStore, dstPayloadID); err != nil {
 		return err
 	}
