@@ -21,7 +21,8 @@ jobs:
     name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     permissions:
-      # Uploading SARIF to the code-scanning API needs this; nothing else here writes.
+      # Uploading SARIF to the code-scanning API needs security-events; the
+      # rest is what init/analyze read to attribute results to a run.
       security-events: write
       contents: read
       actions: read
@@ -37,8 +38,8 @@ jobs:
 
       # Pin the toolchain rather than letting autobuild resolve one: a Go
       # version drift between here and the other workflows changes which
-      # sources CodeQL can resolve, and an unresolved package is silently
-      # analyzed as empty rather than reported as an error.
+      # packages resolve, and an unresolved package is analyzed as empty
+      # rather than reported as an error.
       - name: Set up Go
         if: matrix.language == 'go'
         uses: actions/setup-go@v5
@@ -47,21 +48,18 @@ jobs:
           cache: true
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
-          # The threat model the previous configuration ran under. It treats
-          # authenticated control-plane input as remote, which is what makes
-          # the share-name and snapshot-id paths visible to the path-injection
-          # query at all.
-          config: |
-            threat-models:
-              - remote
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
+        uses: github/codeql-action/autobuild@v4
 
+      # The category names each language's results in the code-scanning API.
+      # These match the ones the previous configuration used, which is what
+      # keeps existing alerts and their dismissals attached to the same
+      # analysis rather than being raised again as new alerts.
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"
