@@ -472,8 +472,10 @@ type OpenFile struct {
 	//     Subsequent READ / WRITE / DELETE / SET_INFO / IOCTL (sparse, copychunk,
 	//     fsctl) handlers gate against this frozen GrantedAccess rather than
 	//     re-running the checker. This is the MS-SMB2 / MS-FSA handle model
-	//     (MS-FSA §2.1.5.2/§2.1.5.3 operate on Open.GrantedAccess; §2.1.5.4
-	//     delete-on-close honors the authorization frozen at open), and it is
+	//     (MS-SMB2 §3.3.5.12/§3.3.5.13 gate READ and WRITE on Open.GrantedAccess
+	//     — MS-FSA's own read and write algorithms never consult it — and MS-FSA
+	//     §2.1.5.5 Phase 1 delete-on-close honors the authorization frozen at
+	//     open), and it is
 	//     deliberately spec-correct: an open's rights do NOT shrink or grow if
 	//     the DACL changes after the handle is granted. Re-evaluating per-op
 	//     would be a protocol bug, not a fix — a Windows client holding a valid
@@ -525,7 +527,7 @@ type OpenFile struct {
 	// Delete on close support (FileDispositionInformation).
 	//
 	// DeletePending tracks the SHARED, committed delete-on-close state per
-	// MS-FSA 2.1.5.1.2.1 and Samba `is_delete_on_close_set` (locking.tdb).
+	// MS-FSA 2.1.5.15.3 ("FileDispositionInformation") and Samba `is_delete_on_close_set` (locking.tdb).
 	// It is set ONLY by:
 	//   - SET_INFO FileDispositionInformation with DeleteFile=TRUE (an
 	//     explicit commit by an opener), or
@@ -655,7 +657,7 @@ type OpenFile struct {
 	HasDeleteOnCloseParentKey bool
 
 	// BaseFileDeletePending is set on a stream handle when the base file was
-	// unlinked while this stream was still open. Per MS-FSA 2.1.5.4, the
+	// unlinked while this stream was still open. Per MS-FSA 2.1.5.5 ("Server Requests Closing of an Open"), the
 	// actual base-file removal is deferred until all handles (including
 	// stream handles) are closed. When the last such handle closes, the
 	// CLOSE handler uses BaseFileDeleteParentHandle / BaseFileDeleteFileName
@@ -2362,7 +2364,7 @@ func (h *Handler) isFileOrBaseDeletePending(
 
 // checkShareModeConflict checks if opening a file with the given access and sharing
 // modes would conflict with any existing opens on the same file or related
-// streams. Per MS-FSA 2.1.5.1.2 + Samba semantics, share mode enforcement is:
+// streams. Per MS-FSA 2.1.5.1.2.2 ("Algorithm to Check Sharing Access to an Existing Stream or Directory") + Samba semantics, share mode enforcement is:
 //   - Same stream (same metadata handle) → always checked
 //   - Base file vs its stream (or vice versa) → checked
 //   - Stream A vs Stream B (different streams, same base) → NOT checked

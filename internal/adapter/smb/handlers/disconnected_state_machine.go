@@ -31,7 +31,7 @@ import (
 //     after timeout; we collapse the two steps).
 //
 //   - A new open with FILE_SHARE_NONE on a file with a disconnected handle
-//     purges the disconnected handle (share-mode conflict, MS-FSA 2.1.5.1.2).
+//     purges the disconnected handle (share-mode conflict, MS-FSA 2.1.5.1.2.2 ("Algorithm to Check Sharing Access to an Existing Stream or Directory")).
 //
 //   - A new data-access open whose access the disconnected handle's OWN deny
 //     mode excludes (e.g. D opened FILE_SHARE_NONE, new open wants read/write)
@@ -192,7 +192,7 @@ const (
 // Decision rules (see file-level comment for spec mapping):
 //
 //   - newShareAccess excludes all of {READ, WRITE, DELETE} (SHARE_NONE) →
-//     purge (MS-FSA 2.1.5.1.2 share-mode conflict on the NEW open's deny mode).
+//     purge (MS-FSA 2.1.5.1.2.2 ("Algorithm to Check Sharing Access to an Existing Stream or Directory") share-mode conflict on the NEW open's deny mode).
 //   - D was opened with a deny mode that excludes the new open's access
 //     (D.ShareAccess denies new.DesiredAccess) → purge. This is the V1
 //     durable_open.open2-lease case: D held an RH lease with FILE_SHARE_NONE,

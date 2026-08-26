@@ -962,7 +962,8 @@ const (
 // NameChangeFilterFor returns the appropriate FileNotifyChange* mask for a
 // file-name-change event on a target with the given baseName and directory
 // flag. ADS streams (name contains ':') route via FILE_NOTIFY_CHANGE_STREAM_NAME
-// per MS-FSCC §2.6 — applies to create / delete / rename of stream entries so
+// per MS-SMB2 §2.2.35 ("SMB2 CHANGE_NOTIFY Request"), which defines the
+// CompletionFilter bits — applies to create / delete / rename of stream entries so
 // stream-name watchers see them.
 func NameChangeFilterFor(baseName string, isDirectory bool) uint32 {
 	if strings.Contains(baseName, ":") {

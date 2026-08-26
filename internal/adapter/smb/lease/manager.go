@@ -1187,7 +1187,7 @@ func (lm *LeaseManager) BreakParentHandleLeasesOnCreate(
 	// Parent directory Handle-lease break on child create: strip Handle
 	// (not Write) so cached entries are invalidated. SharingViolation
 	// reason selects the Handle-strip mask in ComputeLeaseBreakTo;
-	// semantically this is MS-FSA 2.1.5.14 (child-set change invalidates
+	// semantically this is MS-FSA 2.1.5.1.1 ("Creation of a New File") (child-set change invalidates
 	// directory Handle caching), not a share-mode violation, but the
 	// break-to matrix collapses to the same strip-H outcome.
 	if err := lockMgr.BreakLeasesOnOpenConflict(handleKey, excludeOwner, lock.BreakReasonSharingViolation); err != nil {
@@ -1287,7 +1287,7 @@ func (lm *LeaseManager) PrepareParentDirLeaseBreakOnContentChange(
 
 // BreakParentReadLeasesOnModify breaks Read leases on a parent directory
 // when a child file's metadata is modified via SET_INFO, WRITE, or DELETE.
-// Per MS-FSA 2.1.5.14: changes to directory contents invalidate Read caching,
+// Per MS-FSA 2.1.4.12 ("Algorithm to Check for an Oplock Break"): changes to directory contents invalidate Read caching,
 // so clients holding R or RW leases on the directory must be notified.
 // Breaks to None (full revocation of Read caching).
 //

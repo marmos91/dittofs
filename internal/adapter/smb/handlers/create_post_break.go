@@ -99,7 +99,7 @@ func isDestructiveDisposition(d types.CreateDisposition) bool {
 //	    open_access_mask |= FILE_WRITE_DATA; /* This will cause oplock breaks. */
 //	}
 //
-// Per MS-FSA §2.1.5.1.2.1, OVERWRITE / OVERWRITE_IF / SUPERSEDE on an existing
+// Per MS-FSA §2.1.5.1.2 ("Open of an Existing File"), OVERWRITE / OVERWRITE_IF / SUPERSEDE on an existing
 // file inherently truncate it and so require FILE_WRITE_DATA regardless of
 // what the client put in DesiredAccess. Samba uses `open_access_mask` for
 // BOTH the DACL access-rights check (smbd_check_access_rights_fsp) AND the
@@ -608,7 +608,7 @@ func (h *Handler) recheckExistingFileGates(d *createDraft, effectiveAccess uint3
 				return 0, false, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusCannotDelete}}
 			}
 		}
-		// READONLY+DOC is forbidden per MS-FSA 2.1.5.1.2.1: the resulting file
+		// READONLY+DOC is forbidden per MS-FSA 2.1.5.1.1 ("Creation of a New File"): the resulting file
 		// would be marked DOC and READONLY simultaneously, but READONLY blocks
 		// the eventual unlink. Only fires when req.FileAttributes actually
 		// propagates to the resulting file — dispositions that create or
@@ -727,9 +727,10 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			// Concurrent-create race: another opener won between our
 			// pre-create lookup and the metadata-store transaction. For
 			// dispositions that accept an existing target (OPEN_IF,
-			// OVERWRITE_IF, SUPERSEDE), MS-FSA §2.1.5.1.1 requires falling
-			// back to the existing-file branch — not surfacing the race as
-			// OBJECT_NAME_COLLISION. Required by smbtorture
+			// OVERWRITE_IF, SUPERSEDE), fall back to the existing-file branch
+			// rather than surfacing the race as OBJECT_NAME_COLLISION. MS-FSA
+			// has no concurrency model and does not specify this; it is
+			// required by smbtorture
 			// smb2.create.mkdir-dup (two parallel OPEN_IF on the same
 			// directory name MUST yield 1 CREATED + 1 EXISTED). Strict-CREATE
 			// (FILE_CREATE / FILE_OVERWRITE) still surfaces the collision per
@@ -893,7 +894,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	// inherited DACL. The inherited DACL governs subsequent opens by other
 	// principals — it does not narrow the creator's handle. This matches
 	// Samba `source3/smbd/open.c::open_file_ntcreate`, which only runs the
-	// DACL check on existing-file paths, and MS-FSA §2.1.5.1.2 CreateFile
+	// DACL check on existing-file paths, and MS-FSA §2.1.5.1.1 ("Creation of a New File") CreateFile
 	// (the DesiredAccess check is gated by the parent DACL, not the new
 	// child's inherited DACL). Re-checking would surface the smbtorture
 	// failure in smb2.acls.INHERITANCE/INHERITFLAGS/SDFLAGSVSCHOWN, where

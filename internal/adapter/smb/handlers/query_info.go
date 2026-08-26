@@ -675,7 +675,8 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 			attr = baseAttr
 		}
 		// Use name-aware variant so dot-prefixed files surface HIDDEN per
-		// MS-FSCC §2.6 (matches QUERY_DIRECTORY which always sees the name).
+		// Samba's dot-prefix convention (MS-FSCC §2.6 defines FILE_ATTRIBUTE_HIDDEN
+		// but ties it to no filename rule; matches QUERY_DIRECTORY, which sees the name).
 		// Required by smb2.dosmode (source4/torture/smb2/dosmode.c).
 		basicInfo := FileAttrToFileBasicInfoWithName(attr, basenameForHidden(openFile))
 		return EncodeFileBasicInfo(basicInfo), nil

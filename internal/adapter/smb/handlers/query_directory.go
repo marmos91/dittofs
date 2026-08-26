@@ -579,7 +579,7 @@ doneLoop:
 	}
 	h.StoreOpenFile(openFile)
 
-	// Per MS-FSA 2.1.5.5: After a successful directory enumeration, update
+	// Per MS-FSA 2.1.5.6.3 ("Directory Information Queries"): After a successful directory enumeration, update
 	// LastAccessTime to the current system time, unless frozen via SET_INFO -1.
 	if !openFile.AtimeFrozen {
 		now := time.Now()

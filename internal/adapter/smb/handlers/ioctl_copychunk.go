@@ -559,7 +559,9 @@ func (h *Handler) executeCopyChunks(
 	// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): restore frozen timestamps after writes
 	h.restoreFrozenTimestamps(authCtx, dstOpen)
 
-	// Per MS-FSA 2.1.5.3: update LastAccessTime on source (read) and destination (write).
+	// Update LastAccessTime on the source per MS-FSA 2.1.4.20 ("Algorithm for
+	// Noting That a File Has Been Accessed") and the destination's modification
+	// time per 2.1.5.4 via 2.1.4.17.
 	// Hoist a single timestamp for consistency (matches write.go pattern).
 	now := time.Now()
 	// IsAtimeFrozen takes the per-OpenFile read lock; see #606.

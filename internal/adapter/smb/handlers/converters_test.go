@@ -208,7 +208,7 @@ func TestFileAttrToSMBAttributesWithName_HiddenByDotPrefix(t *testing.T) {
 }
 
 // TestSMBModeFromAttrs_OverwriteForcesArchive locks down the contract that
-// overwriteFile relies on: per MS-FSA 2.1.5.1.2.1, OVERWRITE/SUPERSEDE always
+// overwriteFile relies on: per MS-FSA 2.1.5.1.2 ("Open of an Existing File"), OVERWRITE/SUPERSEDE always
 // sets FILE_ATTRIBUTE_ARCHIVE on the post-overwrite metadata, so the mode
 // produced from the request attrs OR'd with ARCHIVE must round-trip to a
 // FileAttr whose SMB attrs include ARCHIVE — even when the client only sent

@@ -297,7 +297,8 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(types.StatusInfoLengthMismatch), nil
 		}
 
-		// Validate attribute constraints per MS-FSCC 2.4.7:
+		// Validate attribute constraints per MS-FSA 2.1.5.15.2 ("FileBasicInformation").
+		// MS-FSCC 2.4.7 defines the wire structure only:
 		// - FILE_ATTRIBUTE_DIRECTORY on a non-directory file -> INVALID_PARAMETER
 		// - FILE_ATTRIBUTE_TEMPORARY on a directory -> INVALID_PARAMETER
 		attrR := smbenc.NewReader(buffer[32:36])
@@ -316,13 +317,15 @@ func (h *Handler) setFileInfoFromStore(
 
 		metaSvc := h.Registry.GetMetadataService()
 
-		// Per MS-FSCC 2.6: Map FILE_ATTRIBUTE_READONLY to Unix mode.
+		// MS-FSCC 2.6 ("File Attributes") defines FILE_ATTRIBUTE_READONLY's meaning;
+		// mapping it onto a Unix mode bit is DittoFS's own storage rule.
 		// When FileAttributes != 0, the client is explicitly setting attributes.
 		// READONLY is stored in modeDOSReadonly (bit 0x100000); POSIX owner-write
 		// bits are preserved. calculatePermissions in pkg/metadata enforces the
 		// READONLY semantics for both NFS and SMB callers by clearing write when
 		// modeDOSExplicit + modeDOSReadonly are both set.
-		// Per MS-FSCC 2.4.7: FILE_ATTRIBUTE_COMPRESSED is NOT settable via
+		// Per MS-FSA 2.1.5.15.2 ("FileBasicInformation"), which lists the
+		// settable attributes: FILE_ATTRIBUTE_COMPRESSED is NOT settable via
 		// FileBasicInformation; it is controlled only via FSCTL_SET_COMPRESSION.
 		// Likewise, FILE_ATTRIBUTE_SPARSE_FILE is set only via FSCTL_SET_SPARSE.
 		// Preserve both FSCTL-managed bits so SET_INFO does not accidentally
@@ -338,7 +341,7 @@ func (h *Handler) setFileInfoFromStore(
 				mode |= curFile.Mode & (modeDOSCompressed | modeDOSSparse)
 			}
 			setAttrs.Mode = &mode
-			// Per MS-FSCC 2.6: propagate FILE_ATTRIBUTE_HIDDEN into the metadata
+			// Propagate FILE_ATTRIBUTE_HIDDEN (MS-FSCC 2.6 "File Attributes") into the metadata
 			// Hidden field so QUERY_INFO and QUERY_DIRECTORY round-trip correctly.
 			hiddenVal := fileAttrs&types.FileAttributeHidden != 0
 			setAttrs.Hidden = &hiddenVal
@@ -647,7 +650,7 @@ func (h *Handler) setFileInfoFromStore(
 
 		// Break parent directory leases on child metadata change (#470:
 		// smb2.dirlease.set{atime,btime,ctime,mtime,dos}). Per MS-FSA
-		// 2.1.5.14: any child SET_INFO that modifies file attributes or
+		// 2.1.5.15.2 ("FileBasicInformation"): any child SET_INFO that modifies file attributes or
 		// timestamps changes what READDIR returns, invalidating parent-dir
 		// Read + Handle caching. Parent-key suppression (C2) flows through
 		// the same breakParentDirLeasesForContentChange plumbing.
@@ -872,7 +875,7 @@ func (h *Handler) setFileInfoFromStore(
 		// Directory rename: break H-leases on every open child file (RH→R
 		// strip-H) and wait for each break to drain. After the wait, ANY
 		// remaining open child blocks the parent rename with STATUS_ACCESS_DENIED
-		// per MS-FSA §2.1.5.14 (smbtorture rename_dir_openfile: 8 sub-cases all
+		// per MS-FSA §2.1.5.15.12 ("FileRenameInformation") (smbtorture rename_dir_openfile: 8 sub-cases all
 		// hinge on whether every H-leased child closes-on-break or stays open
 		// after ACK). Children without an H-lease are no-op'd by
 		// ComputeLeaseBreakTo and stay open → the open-child recheck produces the
@@ -1480,7 +1483,7 @@ func (h *Handler) setFileInfoFromStore(
 		h.StoreOpenFile(openFile)
 
 		// Break parent directory leases on child EOF change (#470:
-		// smb2.dirlease.seteof). Per MS-FSA 2.1.5.14: size changes
+		// smb2.dirlease.seteof). Per MS-FSA 2.1.5.15.5 ("FileEndOfFileInformation"): size changes
 		// are visible in READDIR results, invalidating parent-dir
 		// Read + Handle caching. Parent-key suppression (C2) applies.
 		h.breakParentDirLeasesForContentChange(ctx, authCtx, openFile)
@@ -1877,7 +1880,7 @@ func (h *Handler) parseSDOptsForShare(shareName string) ParseSDOptions {
 // Parses the binary Security Descriptor from the client, extracts owner/group/ACL,
 // and applies the changes to the file via MetadataService.SetFileAttributes.
 //
-// Per MS-SMB2 §3.3.5.21.3 and MS-FSA §2.1.5.14, the access authorization for
+// Per MS-SMB2 §3.3.5.21.3 and MS-FSA §2.1.5.17 ("Server Requests Setting of Security Information"), the access authorization for
 // SET_INFO Security is performed against the OPEN'S granted access mask
 // (captured at CREATE time), NOT against the file's current DACL. The new
 // SD being installed is irrelevant to the authorization decision — installing
@@ -2101,7 +2104,7 @@ func mergeSecurityACL(parsed, current *acl.ACL, wantDACL, wantSACL bool) *acl.AC
 }
 
 // checkSetInfoSecurityAccess maps requested SECURITY_INFORMATION sections to
-// the access mask bits MS-SMB2 §3.3.5.21.3 / MS-FSA §2.1.5.14 require on the
+// the access mask bits MS-SMB2 §3.3.5.21.3 / MS-FSA §2.1.5.17 ("Server Requests Setting of Security Information") require on the
 // open's GrantedAccess, and verifies each requested section against the mask.
 //
 // Returns (StatusSuccess, true) when every requested section has the matching
@@ -2134,7 +2137,7 @@ func checkSetInfoSecurityAccess(grantedAccess, additionalInfo uint32) (types.Sta
 }
 
 // breakParentDirLeases breaks leases on the parent directory when a child
-// file's metadata or content changes (SET_INFO, WRITE, DELETE). Per MS-FSA 2.1.5.14:
+// file's metadata or content changes (SET_INFO, WRITE, DELETE). Per MS-FSA 2.1.4.12 ("Algorithm to Check for an Oplock Break"):
 //   - Handle caching is broken so clients revalidate cached directory handles
 //   - Read caching is broken so clients see updated directory listing metadata
 //     (timestamps, sizes, attributes visible in READDIR results)
@@ -2398,7 +2401,7 @@ func (h *Handler) handleFileLinkInformation(
 	}
 
 	// Break parent directory leases on the destination parent to None
-	// (MS-FSA 2.1.5.14: directory contents changed). Parent-key suppression
+	// (MS-FSA 2.1.5.15.7 ("FileLinkInformation"): directory contents changed). Parent-key suppression
 	// only — no ClientID exclusion per Samba dirlease_should_break. Single
 	// break-to-None matches Samba `contend_dirleases` / `do_dirlease_break_to_none`
 	// — required by smbtorture hardlink samedir-{wrong,no}-parent-leaskey

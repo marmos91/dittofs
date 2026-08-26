@@ -600,7 +600,8 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
 
-	// Per MS-SMB2 §2.2.13 + MS-FSCC §2.6, three CreateOptions bits are defined
+	// Per MS-SMB2 §2.2.13 ("SMB2 CREATE Request"), which is where CreateOptions
+	// is defined, three CreateOptions bits are defined
 	// in Samba but unimplemented in DittoFS and MUST return STATUS_NOT_SUPPORTED
 	// rather than silently succeed. Samba sets `not_supported_mask = 0x00102080`
 	// for these probes (smbtorture smb2.create.gentest):
@@ -751,8 +752,10 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameInvalid}}, nil
 	}
 
-	// Per MS-FSA 2.1.5.1, wildcard characters are invalid in path
-	// components. Note: wildcards ARE valid inside stream names (e.g.,
+	// Wildcard characters are invalid in path components: MS-FSA 2.1.5.1 Phase 1
+	// defers name validity to MS-FSCC 2.1.5 ("Pathname"), and MS-FSA 2.1.4.3
+	// ("Algorithm for Determining If a Character Is a Wildcard") names the five
+	// characters tested here. Note: wildcards ARE valid inside stream names (e.g.,
 	// "file:?Stream*" is legal), so this check applies only to the base
 	// file path (stream suffix already stripped above).
 	if strings.ContainsAny(filename, "*?<>\"") {
@@ -1175,8 +1178,10 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	// Pre-disposition parent-DACL gate: any non-pure-OPEN disposition mutates
 	// the parent directory's contents (creating, overwriting, or superseding a
-	// child). MS-FSA 2.1.5.1.1 + MS-SMB2 §3.3.5.9 require parent-create
-	// permission to be evaluated before failing on disposition collisions, so
+	// child). MS-FSA orders these the other way round — 2.1.5.1.2 fails
+	// FILE_CREATE with OBJECT_NAME_COLLISION before any parent-DACL check — so
+	// this follows Samba's open_file_ntcreate, which evaluates parent-create
+	// permission first so
 	// a deny ACE on the parent surfaces as ACCESS_DENIED rather than
 	// OBJECT_NAME_COLLISION / DELETE_PENDING. FILE_OPEN is the only pure-open
 	// disposition; everything else (CREATE, CREATE_IF, OVERWRITE,
@@ -1264,7 +1269,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// Step 6: Handle create disposition
 	// ========================================================================
 	//
-	// Per MS-FSA 2.1.5.1.1: Disposition check (e.g., FILE_CREATE failing with
+	// Per MS-FSA 2.1.5.1 Phase 7 ("Type of stream to open"): Disposition check (e.g., FILE_CREATE failing with
 	// OBJECT_NAME_COLLISION when the name exists) takes priority over type
 	// constraint checks (NOT_A_DIRECTORY / FILE_IS_A_DIRECTORY).
 	// For ADS, this also takes priority over base-file share mode checks:
@@ -1334,7 +1339,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
-	// Per MS-FSA 2.1.5.1.2.1: Overwrite/supersede attribute mismatch rules.
+	// Per MS-FSA 2.1.5.1.2 ("Open of an Existing File"): Overwrite/supersede attribute mismatch rules.
 	// READONLY on the existing file denies the overwrite entirely.
 	// HIDDEN and SYSTEM must be present in the request if set on the existing file.
 	if fileExists && existingFile.Type != metadata.FileTypeDirectory {
@@ -1346,7 +1351,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 					"action", createAction)
 				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 			}
-			// Per MS-FSA 2.1.5.1.2.2: Hidden and System flags must be preserved.
+			// Per MS-FSA 2.1.5.1.2 ("Open of an Existing File"): Hidden and System flags must be preserved.
 			if existingAttrs&types.FileAttributeHidden != 0 && req.FileAttributes&types.FileAttributeHidden == 0 {
 				logger.Debug("CREATE: attribute mismatch — existing hidden, request not hidden",
 					"path", filename)
@@ -1403,7 +1408,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	// Step 6c-pre: Check delete-pending state before oplock break dispatch.
 	//
-	// Per MS-FSA 2.1.5.1.2 and MS-SMB2 3.3.5.9: if an existing open on the
+	// Per MS-FSA 2.1.5.1 Phase 6 ("Location of file") and MS-SMB2 3.3.5.9: if an existing open on the
 	// file has set disposition delete-on-close, subsequent opens MUST fail
 	// with STATUS_DELETE_PENDING without triggering an oplock break. The
 	// check runs BEFORE breakAndMaybeParkCreate so the holder's oplock
@@ -2126,7 +2131,7 @@ func (h *Handler) overwriteFile(
 		Size: &zeroSize,
 	}
 
-	// Per MS-FSA 2.1.5.1.2.1: OVERWRITE/SUPERSEDE forces FILE_ATTRIBUTE_ARCHIVE
+	// Per MS-FSA 2.1.5.1.2 ("Open of an Existing File"): OVERWRITE/SUPERSEDE forces FILE_ATTRIBUTE_ARCHIVE
 	// on the post-overwrite metadata regardless of what the client sent — the
 	// data is "needs backup" again. Apply the requested attributes plus ARCHIVE,
 	// and preserve modeDOSCompressed (controlled only via FSCTL_SET_COMPRESSION).

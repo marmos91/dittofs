@@ -46,7 +46,7 @@ func (s *Service) Lookup(ctx *AuthContext, dirHandle FileHandle, name string) (*
 	//
 	// Skipped when the caller holds "Bypass traverse checking"
 	// (Windows SeChangeNotifyPrivilege, MS-DTYP §2.5.3.2 + MS-FSA
-	// §2.1.5.1.1). Every SMB session sets ctx.BypassTraverseChecking so
+	// §2.1.5.1 Phase 6 ("Location of file")). Every SMB session sets ctx.BypassTraverseChecking so
 	// that a parent directory whose DACL omits FILE_TRAVERSE does not
 	// block resolution of a child whose own DACL grants the request. NFS
 	// callers leave the flag false and continue to enforce POSIX execute

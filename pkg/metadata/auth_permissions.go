@@ -693,7 +693,7 @@ func (s *Service) CheckParentCreateAccessFile(ctx *AuthContext, parentHandle Fil
 //     already authorized upstream (e.g. SMB CREATE with
 //     FILE_DELETE_ON_CLOSE + desiredAccess=DELETE or SET_INFO
 //     FileDispositionInformation, both of which verify the caller's grant
-//     at open time). Per MS-FSA 2.1.5.4, DELETE_ON_CLOSE honors the handle's
+//     at open time). Per MS-FSA 2.1.5.5 ("Server Requests Closing of an Open"), DELETE_ON_CLOSE honors the handle's
 //     frozen authorization regardless of the current identity — critical for
 //     SMB reauth flows where the session's UID/GID may shift between open
 //     and close for the same Kerberos principal (issue #388). Read-only
@@ -925,11 +925,12 @@ func (s *Service) CheckFileAccessWithParentGeneric(file *File, parent *File, aut
 	evalCtx := buildFileAccessEvalContext(file, authCtx)
 	granted := acl.EvaluateGranted(file.ACL, evalCtx, explicit)
 
-	// MS-FSA §2.1.5.1.2.1 "Algorithm to Check Access to an Existing File":
-	// FILE_READ_ATTRIBUTES is always granted from the containing directory
-	// once traverse access to the file's path succeeds. The bit is unmasked
-	// from the file's DACL evaluation — even a DACL that explicitly omits
-	// READ_ATTRIBUTES still yields a successful open requesting it.
+	// MS-FSA §2.1.5.1.2.1 "Algorithm to Check Access to an Existing File"
+	// grants FILE_READ_ATTRIBUTES from the containing directory, conditional on
+	// AccessCheck(parent, FILE_LIST_DIRECTORY) returning TRUE. This grants it
+	// unconditionally once traverse access to the path succeeds, so the bit is
+	// unmasked from the file's DACL evaluation — even a DACL that explicitly
+	// omits READ_ATTRIBUTES still yields a successful open requesting it.
 	//
 	// Mirrors Samba source3/smbd/open.c::smbd_check_access_rights_fsp which
 	// sets `do_not_check_mask = FILE_READ_ATTRIBUTES` before invoking the

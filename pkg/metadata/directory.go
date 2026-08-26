@@ -267,7 +267,8 @@ func (s *Service) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, nam
 	}
 
 	// Coalesce the parent directory timestamp bump (Mtime/Ctime/Atime per
-	// MS-FSA 2.1.4.4) out of the transaction, same as create/unlink, so the
+	// POSIX rmdir(2); MS-FSA specifies no parent-time update on removal) out of
+	// the transaction, same as create/unlink, so the
 	// rmdir transaction touches only disjoint namespace keys and never the
 	// shared parent-inode key that made concurrent same-parent ops serialize
 	// (#1573/#1643). The read overlay (mergeDirTimes) makes the bump visible.

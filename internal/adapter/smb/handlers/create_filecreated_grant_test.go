@@ -20,7 +20,7 @@ import (
 // SEC_RIGHTS_FILE_ALL — not the narrowed subset that the inherited DACL
 // would imply.
 //
-// Per MS-FSA §2.1.5.1.2 CreateFile and Samba
+// Per MS-FSA §2.1.5.1.1 ("Creation of a New File") CreateFile and Samba
 // source3/smbd/open.c::open_file_ntcreate, when a new file is created the
 // server grants the creator the resolved DesiredAccess as-is. The parent
 // DACL gates the create operation (already enforced upstream via

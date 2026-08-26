@@ -511,7 +511,7 @@ func (s *Service) createEntry(
 		cc.WarmFileReadCache(newFile)
 	}
 
-	// Coalesce the parent directory timestamp bump. Per MS-FSA 2.1.4.4 a
+	// Coalesce the parent directory timestamp bump. Per MS-FSA 2.1.5.1.1 ("Creation of a New File") a
 	// directory modified by adding an entry updates Mtime, Ctime and Atime.
 	s.recordDirTimes(ctx.Context, parentHandle, now)
 	parent.Mtime = now

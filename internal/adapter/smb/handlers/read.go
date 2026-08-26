@@ -134,7 +134,7 @@ func (resp *ReadResponse) Encode() ([]byte, error) {
 // recordReadProgress advances Open.CurrentByteOffset (the PositionInfo
 // field) to offset + bytesReturned after a successful READ. Centralised so
 // every success path — regular file, zero-length read, symlink — updates
-// the same field consistently. Per MS-FSA 2.1.5.2 (Server Algorithm for
+// the same field consistently. Per MS-FSA 2.1.5.3 ("Server Requests a Read") (Server Algorithm for
 // Reading a File): on success CurrentByteOffset := ByteOffset + BytesRead.
 // The smb2.read.position torture test asserts the value via GetInfo
 // FilePositionInformation.
@@ -362,8 +362,9 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	if req.Length == 0 && req.MinimumCount == 0 {
 		logger.Debug("READ: zero-length read (success)", "path", path,
 			"offset", req.Offset, "size", fileSize)
-		// MS-FSA 2.1.5.2: even a zero-byte successful READ advances
-		// CurrentByteOffset to req.Offset (offset + 0 bytes returned).
+		// A zero-byte successful READ advances CurrentByteOffset to req.Offset.
+		// MS-FSA 2.1.5.3 returns on ByteCount == 0 before touching the offset, so
+		// this follows smbtorture smb2.read.eof rather than the spec.
 		recordReadProgress(openFile, req.Offset, 0)
 		return &ReadResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
@@ -422,7 +423,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		"actual", len(readResult.Data))
 
 	// ========================================================================
-	// Step 11b: Update CurrentByteOffset (MS-FSA 2.1.5.2 / smb2.read.position)
+	// Step 11b: Update CurrentByteOffset (MS-FSA 2.1.5.3 ("Server Requests a Read") / smb2.read.position)
 	// ========================================================================
 	//
 	// Per MS-FSA Server Algorithm for Reading a File: after a successful
@@ -438,7 +439,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Step 12: Update LastAccessTime (MS-FSA Algorithm for Noting File Accessed)
 	// ========================================================================
 
-	// Per MS-FSA 2.1.5.4, after a successful read the server updates
+	// Per MS-FSA 2.1.5.3 ("Server Requests a Read"), after a successful read the server updates
 	// LastAccessTime to the current system time, unless frozen via SET_INFO -1.
 	// IsAtimeFrozen takes openFile.mu (read) so we observe a consistent value
 	// against a concurrent SET_INFO freeze/thaw on the same handle (#606).
@@ -528,7 +529,7 @@ func (h *Handler) handleSymlinkRead(
 		"requested", req.Length,
 		"actual", len(data))
 
-	// MS-FSA 2.1.5.2: advance CurrentByteOffset on the symlink success path
+	// MS-FSA 2.1.5.3 ("Server Requests a Read"): advance CurrentByteOffset on the symlink success path
 	// too. smb2.read.position asserts PositionInfo regardless of the
 	// underlying source of the returned bytes.
 	recordReadProgress(openFile, req.Offset, uint64(len(data)))

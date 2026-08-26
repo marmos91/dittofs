@@ -12,7 +12,7 @@ import (
 // This handles:
 //   - Input validation
 //   - Permission checking via checkDeletePermission: ctx.HasDeleteAccess
-//     (Windows DELETE semantics — authorized upstream, MS-FSA 2.1.5.4) or
+//     (Windows DELETE semantics — authorized upstream, MS-FSA 2.1.5.5 ("Server Requests Closing of an Open")) or
 //     WRITE on parent (POSIX unlink(2))
 //   - Sticky bit enforcement
 //   - Hard link management (decrement or set nlink=0)
@@ -231,7 +231,8 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 	}
 
 	// Coalesce the parent directory timestamp bump (Mtime/Ctime/Atime per
-	// MS-FSA 2.1.4.4) out of the transaction, same as create (#1573).
+	// POSIX unlink(2)) out of the transaction, same as create (#1573). MS-FSA
+	// updates parent times on create (2.1.5.1.1) but specifies none on delete.
 	s.recordDirTimes(ctx.Context, parentHandle, now)
 	parent.Mtime = now
 	parent.Ctime = now

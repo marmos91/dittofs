@@ -1,6 +1,6 @@
 // Regression coverage for the last-handle delete-on-close election.
 //
-// Per MS-FSA 2.1.5.4 the unlink fires when the LAST handle on a file closes.
+// Per MS-FSA 2.1.5.5 ("Server Requests Closing of an Open") the unlink fires when the LAST handle on a file closes.
 // Both close paths — the explicit CLOSE handler and the LOGOFF /
 // tree-disconnect / transport-drop teardown — decide "am I the last handle?"
 // by scanning the open-file table for a sibling on the same MetadataHandle,

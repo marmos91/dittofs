@@ -23,7 +23,7 @@ import (
 // Before the fix, the Lookup on the restricted parent failed with
 // ErrAccessDenied (mapped to STATUS_ACCESS_DENIED) or the upstream walkPath
 // remapped it to STATUS_OBJECT_NAME_NOT_FOUND, neither of which matches the
-// MS-FSA §2.1.5.1.1 behavior.
+// MS-FSA §2.1.5.1 Phase 6 ("Location of file") behavior.
 func TestLookup_BypassTraverseChecking_GrantsAccess(t *testing.T) {
 	t.Parallel()
 	fx := newTestFixture(t)

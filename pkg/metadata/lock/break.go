@@ -117,7 +117,7 @@ func (lm *Manager) PrepareBreakLeasesOnOpenConflict(handleKey string, excludeOwn
 }
 
 // BreakReadLeasesForParentDir breaks Read leases on a parent directory when
-// a child file is modified (SET_INFO, WRITE, DELETE). Per MS-FSA 2.1.5.14:
+// a child file is modified (SET_INFO, WRITE, DELETE). Per MS-FSA 2.1.4.12 ("Algorithm to Check for an Oplock Break"):
 // changes to directory contents or child metadata invalidate Read caching,
 // so clients holding R or RW leases on the directory must be notified.
 //

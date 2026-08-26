@@ -149,7 +149,9 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 	}
 	path := openFile.Name().Path
 
-	// MS-FSA §2.1.5.10.4 / Samba `fsctl_qar`: requires FILE_READ_DATA.
+	// Samba `fsctl_qar` requires FILE_READ_DATA. MS-FSA 2.1.5.10.22 states no
+	// such gate; the requirement comes from the FSCTL access rules in MS-SMB2
+	// §3.3.5.15.
 	if openFile.GrantedAccess&uint32(types.FileReadData) == 0 {
 		logger.Debug("IOCTL FSCTL_QUERY_ALLOCATED_RANGES: handle lacks FILE_READ_DATA",
 			"path", path,
@@ -381,7 +383,7 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 		return NewErrorResult(types.StatusInvalidDeviceRequest), nil
 	}
 
-	// MS-FSA §2.1.5.10.35: SET_ZERO_DATA requires FILE_WRITE_DATA.
+	// MS-FSA §2.1.5.10.39 ("FSCTL_SET_ZERO_DATA"): SET_ZERO_DATA requires FILE_WRITE_DATA.
 	if openFile.GrantedAccess&uint32(types.FileWriteData) == 0 {
 		logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: handle lacks FILE_WRITE_DATA",
 			"path", path,

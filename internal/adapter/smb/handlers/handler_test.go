@@ -701,7 +701,7 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 		fileShareWrite = uint32(0x02)
 	)
 
-	// Per MS-FSA 2.1.5.1.2: share mode enforcement is per-stream.
+	// Per MS-FSA 2.1.5.1.2.2 ("Algorithm to Check Sharing Access to an Existing Stream or Directory"): share mode enforcement is per-stream.
 	// Opens on different streams of the same base file do NOT conflict.
 
 	t.Run("BaseFileVsStream_DeleteConflict", func(t *testing.T) {

@@ -1,6 +1,6 @@
 // Tests for SET_INFO Security access authorization against the open's
 // GrantedAccess (Samba `fsp->access_mask`). Per MS-SMB2 §3.3.5.21.3 and
-// MS-FSA §2.1.5.14 the SD-section→access-bit gate is:
+// MS-FSA §2.1.5.17 ("Server Requests Setting of Security Information") the SD-section→access-bit gate is:
 //
 //	SECINFO_DACL  → WRITE_DAC
 //	SECINFO_OWNER → WRITE_OWNER

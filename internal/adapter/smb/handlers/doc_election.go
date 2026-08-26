@@ -11,7 +11,7 @@ import (
 )
 
 // docDecision is the outcome of the delete-on-close last-handle election for
-// one closing handle (MS-FSA 2.1.5.4: the unlink happens when the LAST handle
+// one closing handle (MS-FSA 2.1.5.5 ("Server Requests Closing of an Open"): the unlink happens when the LAST handle
 // on the file closes).
 type docDecision int
 

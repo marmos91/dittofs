@@ -137,7 +137,7 @@ func (resp *CloseResponse) Encode() ([]byte, error) {
 // so a failed block-store (or pending-metadata) flush is mapped to a non-success
 // status rather than silently acknowledged — otherwise the client treats data
 // that never persisted as committed (#1267). Delete-on-close unlink failures are
-// likewise surfaced per MS-SMB2 3.3.5.10 / MS-FSA 2.1.5.4 (#388) — the client
+// likewise surfaced per MS-SMB2 3.3.5.10 / MS-FSA 2.1.5.5 ("Server Requests Closing of an Open") (#388) — the client
 // must know the file was not removed. The handle itself is always released
 // regardless of any flush/delete failure, to prevent resource leaks.
 func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseResponse, error) {

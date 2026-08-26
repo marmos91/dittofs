@@ -523,9 +523,10 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		h.updateBaseObjectTimestampsForADSWrite(authCtx, metaSvc, openFile, parentHandle, baseFileName)
 	}
 
-	// Per MS-FSA 2.1.5.3: After a successful write, update LastAccessTime
+	// Per MS-FSA 2.1.5.4 ("Server Requests a Write"): After a successful write, update LastAccessTime
 	// to the current system time, unless frozen via SET_INFO -1.
-	// Per MS-FSA 2.1.4.4: Parent directory's LastAccessTime is also updated.
+	// The parent directory's LastAccessTime is also updated. MS-FSA specifies no
+	// parent-directory timestamp update on write; this matches Windows.
 	// Both bumps coalesce per handle the way READ's does — see noteSmbAccess
 	// and noteSmbParentAccess.
 	now := time.Now()

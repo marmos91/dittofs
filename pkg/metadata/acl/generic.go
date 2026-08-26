@@ -91,7 +91,8 @@ const (
 // post-mapping ACCESS_MASK must contain only specific rights (MS-DTYP
 // §2.5.3). Bits unrelated to the generic set pass through unchanged.
 //
-// Per MS-DTYP §2.5.3 / MS-FSA §2.1.5.1.2.1, this expansion MUST be applied:
+// Per MS-DTYP §2.5.3 this expansion MUST be applied (MS-FSA states none of the
+// three call sites below):
 //   - at SET_INFO Security on each ACE AccessMask before persisting;
 //   - on SMB CREATE DesiredAccess before access-check evaluation;
 //   - on the probe set and result of any MaximalAccess computation.
