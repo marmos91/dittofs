@@ -224,18 +224,16 @@ outstanding known failures in this category.
 
 ### Leases (Fix Candidate)
 
-Lease V2 is implemented but many smbtorture lease tests still fail due to
-incomplete break notification delivery and multi-client coordination.
+Lease V2 is implemented; no outstanding known failures in this category.
 
-The two rows below were not newly broken — they sit past the point where
-`smb2.lease` used to be cut short at 120s (it graded 25 of 45 tests), so they
-were being silently left ungraded rather than reported. Raising the budget made
-them visible; both fail identically on `memory` and `badger-fs`, so neither is a
-flake or a storage-backend artifact.
+The last two rows here (`v2_complex1`, `rename_wait`) were never newly broken —
+they sat past the point where `smb2.lease` used to be cut short at 120s (it
+graded 25 of 45 tests), so they were being left ungraded rather than reported.
+Raising the budget made them visible, and both have since been re-measured and
+removed; see the changelog.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.lease.rename_wait | Rename vs pending break | **Intermittent — measured 3/5 failures on `cf184bae`**, so a single green run means very little here. RENAME issued while a lease break is outstanding returns `NT_STATUS_INVALID_PARAMETER`; `lease.c:4160` requires `NT_STATUS_OK`. A deterministic bug does not pass 2 in 5, so the rate itself is evidence for the ordering race in #2127. Pre-existing; same cause of invisibility. | [#2114](https://github.com/marmos91/dittofs/issues/2114) |
 
 ### Sessions (Remaining)
 
@@ -366,6 +364,41 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 `KNOWN_FAILURES_KERBEROS.md` now carries a single row (`smb2.reauth5`, an upstream Samba selftest knownfail) after the #686 Kerberos sweep harvested the stale multi-channel rows. It is loaded only when smbtorture runs with `--use-kerberos`, which the non-Kerberos v1.0 CI job (`.github/workflows/smb-conformance.yml`, running `./run.sh` without `--kerberos`) does not pass, so it does not gate v1.0.
 
 ## Changelog
+
+### 2026-08-26 — `rename_wait` removed: 10/10 pass, both filter conditions
+
+The row read "**Intermittent — measured 3/5 failures on `cf184bae`**". Re-measured
+on `41cab93ff`, which contains #2162 (per-connection response emission ordering):
+
+| condition | runs | result |
+| --- | --- | --- |
+| `--filter smb2.lease.rename_wait` — the condition the 3/5 was measured under | 5 | **5/5 pass** |
+| `--filter smb2.lease` — the whole family, 45 tests, share root carrying the suite's leftovers | 5 | **5/5 pass** |
+
+Graded on the verdict line only (`success: rename_wait`), as the 2026-08-25
+re-measurement was: single-filter mode drops the family prefix these patterns
+match on, so the harness's own known-failure accounting is not usable at this
+granularity. Provenance checked on the image the runs actually used —
+`strings /app/dfs` finds `releaseResponseOrder` and `RequestOrder`, both of which
+arrive with #2162 and are absent before it.
+
+**The claim is "not reproduced in 10 runs under the condition that previously
+produced 3/5", not "proven fixed".** A race that stops reproducing is not a race
+proven absent. The row goes because a known-failure list records observed
+failures and there is no longer one to record — not because the race has been
+shown to be gone. If it returns, it returns as a flake report with a fresh count,
+not as a reinstated deterministic row.
+
+The plausible mechanism is #2162, and the argument for it is structural rather
+than measured: `set_info.go`'s rename branch now releases its response-order
+token after the break notification is written and before it waits for the
+acknowledgement, so the CREATE the test pipelines behind the rename cannot be
+answered ahead of the break the rename owes. That is exactly what the test needs
+at `lease.c:4402`, where it copies the ack's lease key straight out of
+`lease_break_info` immediately after that first CREATE returns — an all-zero key
+there is what the ownership gate refused with `INVALID_PARAMETER`. No A/B against
+a tree without #2162 was run, so #2162 is not credited on evidence stronger than
+that.
 
 ### 2026-08-25 — lease rows re-measured: `v2_complex1` removed, `rename_wait` corrected to intermittent
 
