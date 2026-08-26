@@ -144,11 +144,11 @@ cd smbtorture
 
 ### Available Sub-Suites
 
-**Standalone tests** (run individually with 60s timeout each):
+**Standalone tests** (run individually, 300s budget each):
 
 `smb2.connect`, `smb2.setinfo`, `smb2.stream-inherit-perms`, `smb2.set-sparse-ioctl`, `smb2.zero-data-ioctl`, `smb2.ioctl-on-stream`, `smb2.dosmode`, `smb2.async_dosmode`, `smb2.maxfid`, `smb2.check-sharemode`, `smb2.openattr`, `smb2.winattr`, `smb2.winattr2`, `smb2.sdread`, `smb2.secleak`, `smb2.session-id`, `smb2.tcon`, `smb2.mkdir`
 
-**Full sub-suites** (120s each, except the few `run.sh` grants more; `smb2.aio_delay` and `smb2.bench` are deliberately not run — see the comments beside them in `run.sh`):
+**Full sub-suites** (300s budget each, except `smb2.notify` at 120s; `smb2.aio_delay` and `smb2.bench` are deliberately not run — see the comments beside them in `run.sh`):
 
 `smb2.acls`, `smb2.acls_non_canonical`, `smb2.change_notify_disabled`, `smb2.compound`, `smb2.create`, `smb2.credits`, `smb2.delete-on-close`, `smb2.dir`, `smb2.durable-open`, `smb2.durable-v2-open`, `smb2.getinfo`, `smb2.ioctl`, `smb2.kernel-oplocks`, `smb2.lease`, `smb2.lock`, `smb2.notify`, `smb2.oplock`, `smb2.read`, `smb2.rename`, `smb2.replay`, `smb2.scan`, `smb2.session`, `smb2.streams`, `smb2.timestamps`, `smb2.twrp`, `smb2.write`
 

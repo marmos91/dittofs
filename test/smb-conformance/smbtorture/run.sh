@@ -559,7 +559,13 @@ else
         # opens/leases) can't fail a previously-passing test. Refs #568.
         reset_share "$SMBTORTURE_DEFAULT_SHARE"
         log_info "  Running: ${test}"
-        run_smbtorture "$test" 60 || record_rc $?
+        # Same budget as the sub-suites, and for the same reason. The 60s these
+        # used to get was not slack: smb2.maxfid opens 2000 handles one at a
+        # time, which is 18s on badger-fs but 52s on postgres, and one postgres
+        # draw ran into the wall at 60s and lost the test entirely. Every other
+        # standalone finishes inside 20s, so the larger figure costs nothing
+        # unless something actually hangs.
+        run_smbtorture "$test" 300 || record_rc $?
     done
 
     # Sub-suites with prefix for test name fixup.
@@ -697,41 +703,27 @@ else
         else
             log_info "  Running: ${suite}"
         fi
-        # Durable-handle and replay suites drive many durable open/disconnect/
-        # reconnect cycles, and the replay-vs-pending-break arms each spend ~6s
-        # parked on a lease break the test deliberately acks late. At 120s even
-        # the memory profile reports "smb2.replay (gave up after 120s)" and
-        # leaves the tail of the suite ungraded; badger-fs is slower still,
-        # since each cycle persists/consumes a durable handle with a
-        # synchronous, non-coalescing fsync. Give those suites more head room
-        # on every profile; every other suite keeps 120s.
+        # One budget for every suite. It is there to bound a hang, not to
+        # grade speed: a suite that legitimately runs for three minutes is not
+        # a problem, a suite that never returns is. Per-suite numbers were
+        # tried and do not hold -- the same suite spans 22s on memory and 112s
+        # on sqlite, so any figure tight enough to be meaningful on one profile
+        # is a coin flip on another, and losing that flip silently drops every
+        # test past the cut point.
         #
-        # smb2.lease, smb2.multichannel and smb2.oplock overrun 120s the same
-        # way, on every profile — the cut is not a storage-speed effect.
-        # smb2.oplock is the clearest case: batch22b deliberately waits out an
-        # oplock break timeout (smbtorture's own `oplocktimeout`, default 35s)
-        # with the holder's transport blocked so no ack can arrive.
+        # Slowest legitimate suite measured across all five profiles is
+        # smb2.compound_find at 193s (sqlite); smb2.lease, smb2.replay,
+        # smb2.oplock and smb2.multichannel follow at 187/165/146/132s. 300s
+        # clears the slowest by ~1.6x, which is the margin the runner's own
+        # variance has been observed to need, and still caps a wedged suite at
+        # five minutes.
         #
-        # Measured end-to-end, with enough budget to finish (memory/badger-fs):
-        # lease 182/186s, oplock 145/145s, multichannel 132/132s, replay 163s.
-        # 300s is ~1.6x the slowest of those, which is the headroom the runner's
-        # variance needs; the two profiles land within 4s of each other, so the
-        # figure is not backend-sensitive.
-        #
-        # smb2.notify is deliberately NOT raised — see expected_truncation().
-        #
-        # smb2.compound_find is a volume case, the same shape as maxfid was:
-        # compound_find_close creates 5000 files one synchronous CREATE+CLOSE
-        # round trip at a time before the FIND it actually tests, and the count
-        # is hard-coded in the test, so there is no knob to bound it with. The
-        # memory profiles finish it in ~43s; every persistent metadata backend
-        # pays more per CREATE and overruns 120s. Probe value, to be replaced by
-        # the measurement it produces.
+        # smb2.notify is the one exception, in the other direction: it is a
+        # known hang (see expected_truncation), so letting it burn the full
+        # budget buys nothing but CI time.
         case "$suite" in
-            smb2.replay|smb2.durable-*|smb2.lease|smb2.multichannel|smb2.oplock)
-                suite_timeout=300 ;;
-            smb2.compound_find) suite_timeout=600 ;;
-            *) suite_timeout=120 ;;
+            smb2.notify) suite_timeout=120 ;;
+            *) suite_timeout=300 ;;
         esac
         run_smbtorture "$suite" "$suite_timeout" "$prefix" "${share:-}" || record_rc $?
     done
