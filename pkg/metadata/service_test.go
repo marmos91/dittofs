@@ -681,7 +681,7 @@ func TestMetadataService_RemoveFile_DeletePermission(t *testing.T) {
 	})
 
 	// Rule 1 (SMB-gated): HasDeleteAccess bypasses parent-WRITE check
-	// regardless of current caller identity (MS-FSA 2.1.5.5 ("Server Requests Closing of an Open") —
+	// regardless of current caller identity (MS-FSA 2.1.5.5 ("Server Requests Closing an Open") —
 	// authorization was frozen at CREATE, survives reauth identity drift).
 	t.Run("HasDeleteAccess bypasses parent-WRITE", func(t *testing.T) {
 		t.Parallel()

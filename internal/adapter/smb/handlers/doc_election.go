@@ -11,7 +11,7 @@ import (
 )
 
 // docDecision is the outcome of the delete-on-close last-handle election for
-// one closing handle (MS-FSA 2.1.5.5 ("Server Requests Closing of an Open"): the unlink happens when the LAST handle
+// one closing handle (MS-FSA 2.1.5.5 ("Server Requests Closing an Open"): the unlink happens when the LAST handle
 // on the file closes).
 type docDecision int
 
@@ -165,7 +165,7 @@ func (h *Handler) electDeleteOnClose(openFile *OpenFile) (docDecision, docTarget
 	}
 
 	// For base-file DOC on a non-stream handle, open stream handles (ADS) on
-	// the same base file also hold the deletion back. Per MS-FSA 2.1.5.5 ("Server Requests Closing of an Open") /
+	// the same base file also hold the deletion back. Per MS-FSA 2.1.5.5 ("Server Requests Closing an Open") /
 	// MS-SMB2 3.3.5.10 the removal is deferred until all handles — including
 	// stream handles — are closed. Marking them with BaseFileDeletePending
 	// makes the CLOSE of the last stream trigger the base file removal

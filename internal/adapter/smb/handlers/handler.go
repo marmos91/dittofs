@@ -657,7 +657,7 @@ type OpenFile struct {
 	HasDeleteOnCloseParentKey bool
 
 	// BaseFileDeletePending is set on a stream handle when the base file was
-	// unlinked while this stream was still open. Per MS-FSA 2.1.5.5 ("Server Requests Closing of an Open"), the
+	// unlinked while this stream was still open. Per MS-FSA 2.1.5.5 ("Server Requests Closing an Open"), the
 	// actual base-file removal is deferred until all handles (including
 	// stream handles) are closed. When the last such handle closes, the
 	// CLOSE handler uses BaseFileDeleteParentHandle / BaseFileDeleteFileName

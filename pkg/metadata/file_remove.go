@@ -12,7 +12,7 @@ import (
 // This handles:
 //   - Input validation
 //   - Permission checking via checkDeletePermission: ctx.HasDeleteAccess
-//     (Windows DELETE semantics — authorized upstream, MS-FSA 2.1.5.5 ("Server Requests Closing of an Open")) or
+//     (Windows DELETE semantics — authorized upstream, MS-FSA 2.1.5.5 ("Server Requests Closing an Open")) or
 //     WRITE on parent (POSIX unlink(2))
 //   - Sticky bit enforcement
 //   - Hard link management (decrement or set nlink=0)

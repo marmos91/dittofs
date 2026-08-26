@@ -693,7 +693,7 @@ func (s *Service) CheckParentCreateAccessFile(ctx *AuthContext, parentHandle Fil
 //     already authorized upstream (e.g. SMB CREATE with
 //     FILE_DELETE_ON_CLOSE + desiredAccess=DELETE or SET_INFO
 //     FileDispositionInformation, both of which verify the caller's grant
-//     at open time). Per MS-FSA 2.1.5.5 ("Server Requests Closing of an Open"), DELETE_ON_CLOSE honors the handle's
+//     at open time). Per MS-FSA 2.1.5.5 ("Server Requests Closing an Open"), DELETE_ON_CLOSE honors the handle's
 //     frozen authorization regardless of the current identity — critical for
 //     SMB reauth flows where the session's UID/GID may shift between open
 //     and close for the same Kerberos principal (issue #388). Read-only
