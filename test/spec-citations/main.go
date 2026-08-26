@@ -60,6 +60,14 @@ var (
 		regexp.MustCompile(`\bFSCTL_[A-Z0-9_]+\b`),
 	}
 	structureTitle = regexp.MustCompile(`^(File[A-Za-z0-9]*Information(?:Ex)?|FILE_[A-Z0-9_]+|FSCTL_[A-Z0-9_]+)\b`)
+	// Comments wrap at column 80, which regularly leaves the spec name at the
+	// end of one line and its section number at the start of the next.
+	// Section titles across all five specs use only these characters, so a
+	// quoted parenthetical carrying anything else is a quotation from the
+	// spec's prose rather than a claim about the section's title.
+	titleChars    = regexp.MustCompile(`^[A-Za-z0-9 _./,:()'&-]+$`)
+	danglingSpec  = regexp.MustCompile(`\[?MS-(?:FSCC|FSA|SMB2|DTYP|ERREF)]?\s*(?:[Ss]ection|§)?\s*$`)
+	commentMarker = regexp.MustCompile(`^\s*(?://+|\*|/\*)\s*`)
 )
 
 // structural reports whether a spec titles its sections after the structures
@@ -179,7 +187,7 @@ func checkLine(specs map[string]*specMap, line string) []finding {
 			add(spec, num, "[%s] %s does not exist", spec, num)
 			continue
 		}
-		if claimed := h[3]; claimed != "" && norm(claimed) != norm(title) {
+		if claimed := h[3]; titleChars.MatchString(claimed) && norm(claimed) != norm(title) {
 			add(spec, num, "[%s] %s is %q, not %q", spec, num, title, claimed)
 			continue
 		}
@@ -194,6 +202,16 @@ func checkLine(specs map[string]*specMap, line string) []finding {
 			spec, num, title, id, spec, strings.Join(defining, "/"))
 	}
 	return out
+}
+
+// logicalLine is line i with the next line appended when comment wrapping split
+// a citation between the two.
+func logicalLine(lines []string, i int) string {
+	line := lines[i]
+	if danglingSpec.MatchString(line) && i+1 < len(lines) {
+		line += " " + commentMarker.ReplaceAllString(lines[i+1], "")
+	}
+	return line
 }
 
 func loadKnownWrong() (map[string]bool, error) {
@@ -261,8 +279,9 @@ func main() {
 		if relErr != nil {
 			rel = path
 		}
-		for i, line := range strings.Split(string(raw), "\n") {
-			for _, f := range checkLine(specs, line) {
+		lines := strings.Split(string(raw), "\n")
+		for i := range lines {
+			for _, f := range checkLine(specs, logicalLine(lines, i)) {
 				f.file, f.line = rel, i+1
 				k := f.key()
 				if _, ok := known[k]; ok {

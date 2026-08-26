@@ -21,12 +21,17 @@ tree drifted back the moment someone wrote `[MS-FSCC] 2.4.x` from memory.
 1. **The cited section exists.** Absent from the map → fail.
 2. **A quoted parenthetical is the cited section's title.** `MS-FSA §2.1.5.15.2
    ("FileRenameInformation")` fails, because §2.1.5.15.2 is `FileBasicInformation`. Only
-   double-quoted parentheticals are read as titles, which is what keeps `(28 bytes)` and
-   `(Samba smb2srv_open_lookup_replay_cache)` out of it.
+   double-quoted parentheticals whose characters all appear in real section titles are read as
+   titles, which is what keeps `(28 bytes)`, `(Samba smb2srv_open_lookup_replay_cache)` and a
+   quotation of spec prose such as `("NewEpoch = Epoch + 1 ...")` out of it.
 3. **A named structure is defined by the section cited beside it.** If a line names exactly one
    of `File*Information`, `FILE_*_INFORMATION` or `FSCTL_*`, carries exactly one MS-FSCC/MS-FSA
    citation, and the spec defines that structure in a different section, that is decidable
    without reading a word of spec prose.
+
+Comments wrap at column 80, which regularly puts the spec name at the end of one line and the
+section number at the start of the next. A line ending in a bare spec name is joined with the
+one below before matching, so a wrapped citation is checked rather than skipped.
 
 Rule 3 stays quiet when the cited section's title is prose rather than a structure name:
 `// FileRenameInformation share-delete check per MS-FSA §2.1.5.1.2.1` attributes behaviour to
@@ -61,8 +66,11 @@ curl -L -o 'MS-FSCC.pdf' 'https://winprotocoldoc.z19.web.core.windows.net/MS-FSC
 ```
 
 The extractor derives the map twice — once from the table of contents, once from the body
-headings — and reports disagreements, orphaned parents, gaps in sibling runs, and any gap that
-the flattened body text shows is a real section. It exits non-zero on the last of those. Read
+headings — and reports disagreements and orphaned parents, then probes for numbers no pass
+produced: holes between extracted siblings, a few numbers past the highest sibling of every
+family (a section dropped at the *end* of a family leaves no hole), and a first child for every
+section that came out childless. A probe counts as a real miss only when some line of the
+document opens with it the way a heading does, and the script exits non-zero if any does. Read
 the output: **a map that silently drops a real section turns a correct citation into a false
 failure**, which is the failure mode that gets a check like this disabled.
 

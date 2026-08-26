@@ -25,6 +25,9 @@ TOC_LINE = re.compile(r"^\s*(\d+(?:\.\d+)+)\s+(.+?)[\s.]*\.{2,}\s*\d+\s*$")
 TOC_FULL = re.compile(r"^\s*(\d+(?:\.\d+)+)\s+(.{55,}?[A-Za-z])(\d{1,4})\s*$")
 NUMBERED = re.compile(r"^\s*(\d+(?:\.\d+)+)\s+\S")
 BODY_LINE = re.compile(r"^\s*(\d+(?:\.\d+)+)\s+([A-Z][^.]{2,90})\s*$")
+# How far past the highest extracted sibling to probe for a dropped tail.
+TAIL_PROBE = 3
+
 REVISION = re.compile(r"\[MS-[A-Z0-9]+\]\s*-\s*(v\d+)")
 
 
@@ -84,27 +87,38 @@ def main(pdf_path, spec, out_path):
     # Every parent of a known section must itself be known.
     orphans = sorted({parent(k) for k in merged if "." in parent(k)} - set(merged))
 
-    # A gap in a sibling run (".1 .2 .4") means .3 was dropped by the extraction.
+    # A number no pass produced. A hole between extracted siblings (".1 .2 .4")
+    # is the obvious case, but a section dropped at the *end* of a family leaves
+    # no hole, and a family whose only child was dropped leaves no family — so
+    # probe past the highest sibling of every family, and probe a first child
+    # for every section that came out childless.
     by_parent = {}
     for k in merged:
         by_parent.setdefault(parent(k), set()).add(int(k.rsplit(".", 1)[1]))
     gaps = [
         f"{p}.{i}"
         for p, kids in sorted(by_parent.items())
-        for i in range(1, max(kids) + 1)
+        for i in range(1, max(kids) + 1 + TAIL_PROBE)
         if i not in kids
     ]
+    gaps += [f"{k}.1" for k in sorted(merged) if k not in by_parent]
 
-    # A number the passes missed is only a real miss if the flattened body text
-    # mentions it as a heading somewhere.
-    flat = re.sub(r"\s+", " ", text)
-    really_missing = [n for n in orphans + gaps if re.search(rf"(?<![\d.]){re.escape(n)} [A-Z]", flat)]
+    # A candidate is only a real miss if some line opens with it the way a
+    # heading does — which is what keeps the probes above from inventing
+    # sections out of revision-history rows and mid-sentence numbers.
+    really_missing = sorted(
+        {
+            n
+            for n in orphans + gaps
+            if re.search(rf"^[ \t]*{re.escape(n)}([ \t]+[A-Z]|[ \t]*$)", text, re.M)
+        }
+    )
 
     print(f"{spec}: revision={revision} pages={len(pages)} toc={len(toc)} body={len(body)} merged={len(merged)}")
     print(f"  toc/body disagreements: {len(disagree)}", disagree[:5])
     print(f"  orphan parents: {len(orphans)}", orphans[:10])
-    print(f"  sibling-run gaps: {len(gaps)}", gaps[:10])
-    print(f"  gaps present in body text (REAL MISSES): {len(really_missing)}", really_missing[:20])
+    print(f"  missing-section candidates probed: {len(gaps)}")
+    print(f"  candidates the body text confirms (REAL MISSES): {len(really_missing)}", really_missing[:20])
 
     with open(out_path, "w") as fh:
         json.dump(

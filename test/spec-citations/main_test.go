@@ -75,6 +75,11 @@ func TestCheckLine(t *testing.T) {
 		line: `// Per MS-SMB2 §3.3.5.9 ("Receiving an SMB2 WRITE Request")`,
 		want: `3.3.5.9 is "Receiving an SMB2 CREATE Request"`,
 	}, {
+		// Comments quote spec prose in the same position a title goes; a
+		// title never carries arithmetic.
+		name: "quoted spec prose is not a title claim",
+		line: `// per MS-SMB2 §3.3.4.7 ("NewEpoch = Epoch + 1 ... Epoch = Epoch + 1")`,
+	}, {
 		name: "no citation at all",
 		line: `// FileStandardInformation is the class the client asked for`,
 	}} {
@@ -93,6 +98,29 @@ func TestCheckLine(t *testing.T) {
 				t.Fatalf("got %q, want it to contain %q", got[0].msg, tc.want)
 			}
 		})
+	}
+}
+
+// Comments wrap at column 80, and a citation split across the wrap was
+// invisible to a line-at-a-time scan.
+func TestLogicalLine(t *testing.T) {
+	specs, err := loadSpecs()
+	if err != nil {
+		t.Fatalf("loadSpecs: %v", err)
+	}
+	lines := []string{
+		"// handleQueryAllocatedRanges handles FSCTL_QUERY_ALLOCATED_RANGES [MS-FSCC]",
+		"// 2.3.32. The client supplies a (FileOffset, Length) window.",
+	}
+	if got := checkLine(specs, lines[0]); len(got) != 0 {
+		t.Fatalf("unjoined first line should carry no citation, got %q", got[0].msg)
+	}
+	got := checkLine(specs, logicalLine(lines, 0))
+	if len(got) != 1 || !strings.Contains(got[0].msg, "the line names FSCTL_QUERY_ALLOCATED_RANGES") {
+		t.Fatalf("want the wrapped citation flagged, got %v", got)
+	}
+	if got := logicalLine(lines, 1); got != lines[1] {
+		t.Errorf("a line that ends nothing must be returned unchanged, got %q", got)
 	}
 }
 
