@@ -771,11 +771,6 @@ func (h *Handler) setFileInfoFromStore(
 			oldFileName := oldName.FileName
 			oldParentPath := GetParentPath(oldName.Path)
 
-			// Save mtime/ctime before the rename. MS-FSA 2.1.5.15.12 requires
-			// LastChangeTime to be updated; preserving it matches NTFS, which
-			// defers the update to handle close.
-			restoreTimestamps := h.saveTimestamps(authCtx, openFile.MetadataHandle)
-
 			// Perform the rename
 			metaSvc := h.Registry.GetMetadataService()
 			_, err = metaSvc.Move(authCtx, toDir, oldFileName, toDir, toName)
@@ -787,8 +782,11 @@ func (h *Handler) setFileInfoFromStore(
 				return setInfoStatus(common.MapToSMB(err)), nil
 			}
 
-			// Restore mtime/ctime after rename
-			restoreTimestamps()
+			// Move updates LastChangeTime, which MS-FSA 2.1.5.15.12 requires and
+			// which the old blanket save/restore reverted. Product note <187>
+			// exempts only a ChangeTime the user set explicitly, so restore just
+			// the sentinel-frozen fields rather than every stamp.
+			h.restoreFrozenTimestamps(authCtx, openFile)
 
 			// Clear delete-on-close after rename. Written under the handle
 			// lock: the delete-pending gates and the CLOSE delete-on-close
@@ -1183,12 +1181,6 @@ func (h *Handler) setFileInfoFromStore(
 		oldParentPath := GetParentPath(oldPath)
 		srcParentHandle := oldName.ParentHandle
 
-		// Save mtime/ctime before the rename so we can restore them after.
-		// MS-FSA 2.1.5.15.12 never touches LastModificationTime but does require
-		// LastChangeTime to be updated; preserving both matches NTFS, which
-		// defers that update to handle close.
-		restoreTimestamps := h.saveTimestamps(authCtx, openFile.MetadataHandle)
-
 		// Pre-overwrite the case-mismatched destination: Move's destination
 		// probe is exact-case GetChild(toName), so a destination that exists
 		// under a different casing (e.g. on disk "Foo.txt", client said
@@ -1213,8 +1205,11 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(common.MapToSMB(err)), nil
 		}
 
-		// Restore mtime/ctime after rename
-		restoreTimestamps()
+		// Move updates LastChangeTime, which MS-FSA 2.1.5.15.12 requires and which
+		// the old blanket save/restore reverted. Product note <187> exempts only a
+		// ChangeTime the user set explicitly, so restore just the sentinel-frozen
+		// fields rather than every stamp.
+		h.restoreFrozenTimestamps(authCtx, openFile)
 
 		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Restore frozen timestamps on parent directories.
 		// Move updates both source and destination parent directory timestamps.
@@ -1767,28 +1762,6 @@ func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
 	}
 	if openFile.AtimeFrozen && openFile.FrozenAtime != nil {
 		file.Atime = *openFile.FrozenAtime
-	}
-}
-
-// saveTimestamps reads the current Mtime and Ctime of a file and returns a
-// restore function that writes them back. Used to preserve timestamps across
-// rename operations. MS-FSA 2.1.5.15.12 leaves LastModificationTime alone but
-// requires LastChangeTime to be updated; preserving both matches NTFS, which
-// defers that update to handle close.
-// Returns a no-op if the read fails.
-func (h *Handler) saveTimestamps(authCtx *metadata.AuthContext, handle metadata.FileHandle) func() {
-	metaSvc := h.Registry.GetMetadataService()
-	file, err := metaSvc.GetFile(authCtx.Context, handle)
-	if err != nil {
-		return func() {}
-	}
-	mtime := file.Mtime
-	ctime := file.Ctime
-	return func() {
-		_, _ = metaSvc.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{
-			Mtime: &mtime,
-			Ctime: &ctime,
-		})
 	}
 }
 
