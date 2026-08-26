@@ -439,7 +439,8 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 		breakWaitTimeout = lease.TraditionalOplockBreakWaitTimeout
 	}
 
-	// Per MS-SMB2 §3.3.4.4 and smbtorture compound_async.getinfo_middle:
+	// Per MS-SMB2 §3.3.4.2 ("Sending an Interim Response for an Asynchronous Operation")
+	// and smbtorture compound_async.getinfo_middle:
 	// When a compound CREATE needs to wait for a lease break, it MUST go async
 	// (STATUS_PENDING) even if it is not the last command in the compound.
 	// The compound processor handles non-last STATUS_PENDING by sending the
@@ -670,7 +671,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	// rearm (test_rearm_dirlease). Mirrors Samba's delay_for_oplock_fn
 	// running before the actual create.
 	//
-	// Parent-key suppression (MS-SMB2 §3.3.4.20 / Samba dirlease_should_break):
+	// Parent-key suppression (Samba `dirlease_should_break`):
 	// if this CREATE carried an RqLs with
 	// LEASE_FLAG_PARENT_LEASE_KEY_SET, extract the ParentLeaseKey from the
 	// incoming request so the matching dir-lease is NOT broken.
@@ -932,7 +933,10 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		}
 	}
 
-	// Step 8a-bis: MS-SMB2 §3.3.4.18 disconnected-handle preservation/purge.
+	// Step 8a-bis: disconnected-handle preservation/purge. Preservation is
+	// MS-SMB2 §3.3.7.1 ("Handling Loss of a Connection"); the break that can
+	// knock a preserved handle below H is §3.3.4.7 ("Object Store Indicates a
+	// Lease Break").
 	//
 	// Evaluate any disconnected durable handles on this metadata handle
 	// against the new open's lease/share-mode and purge those that the new
@@ -1313,8 +1317,8 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	h.CaptureOpenerIdentity(ctx, openFile)
 
 	// Record the RqLs parent-lease-key linkage so downstream operations on
-	// this handle (SET_INFO, WRITE, CLOSE-on-delete) can apply the MS-SMB2
-	// §3.3.4.20 / Samba `dirlease_should_break` parent-key suppression rule
+	// this handle (SET_INFO, WRITE, CLOSE-on-delete) can apply the Samba
+	// `dirlease_should_break` parent-key suppression rule
 	// against the parent directory's lease. Captured even when the file
 	// lease itself was denied (response leaseState=None) — the linkage
 	// applies regardless of the per-file grant outcome. Gated on HasParent

@@ -75,6 +75,6 @@
 //
 // # References
 //
-//   - [MS-SMB2] Section 3.3.1.2 - Per Session
-//   - [MS-SMB2] Section 3.3.1.1 - Global
+//   - [MS-SMB2] Section 3.3.1.8 - Per Session
+//   - [MS-SMB2] Section 3.3.1.5 - Global
 package session

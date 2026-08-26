@@ -1063,7 +1063,8 @@ func (h *Handler) setFileInfoFromStore(
 				logger.Debug("SET_INFO: rename lease break dispatch failed", "error", err)
 			}
 
-			// MS-SMB2 §3.3.4.18 / §3.3.5.21: RENAME breaks Handle leases on
+			// MS-SMB2 §3.3.5.21 ("Receiving an SMB2 SET_INFO Request") and
+			// §3.3.4.7 ("Object Store Indicates a Lease Break"): RENAME breaks Handle leases on
 			// the renamed file (and on the overwrite target). Any
 			// disconnected durable handle with a different lease key loses
 			// H — the disconnected client cannot ack the break, so the
@@ -1379,7 +1380,8 @@ func (h *Handler) setFileInfoFromStore(
 			if breakErr := h.LeaseManager.BreakReadLeasesOnWrite(lockFileHandle, openFile.ShareName, openFile.LeaseKey); breakErr != nil {
 				logger.Debug("SET_INFO: oplock break on EOF set failed (non-fatal)", "path", openFile.Name().Path, "error", breakErr)
 			}
-			// MS-SMB2 §3.3.4.18: truncation is a data-modifying op that
+			// MS-SMB2 §3.3.4.7 ("Object Store Indicates a Lease Break"):
+			// truncation is a data-modifying op that
 			// breaks Level-II Read leases to NONE — purge any disconnected
 			// durable handle whose lease holds R-caching from a different key.
 			if h.DurableStore != nil {
@@ -2154,7 +2156,7 @@ func (h *Handler) breakParentDirLeasesForContentChangeOn(ctx *SMBHandlerContext,
 
 	parentLockHandle := lock.FileHandle(parentHandle)
 
-	// Apply parent-key suppression only (MS-SMB2 §3.3.4.20): if
+	// Apply parent-key suppression only (Samba `dirlease_should_break`): if
 	// the originating handle's CREATE carried an RqLs with ParentLeaseKey
 	// set, the matching parent dir lease MUST NOT be broken. No ClientID
 	// exclusion — same-client breaks fire when the key doesn't match.
@@ -2356,7 +2358,7 @@ func (h *Handler) handleFileLinkInformation(
 
 	// Thread the open file's ParentLeaseKey into the auth context so
 	// MetadataService.notifyDirChange forwards it to OnDirChange and the
-	// dir-lease parent-key suppression rule (MS-SMB2 §3.3.4.20) skips the
+	// dir-lease parent-key suppression rule (Samba `dirlease_should_break`) skips the
 	// matching parent dir lease (same-key holder does not get broken).
 	PropagateOpenFileParentLeaseKey(authCtx, openFile)
 

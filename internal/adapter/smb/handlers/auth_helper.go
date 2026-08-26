@@ -423,7 +423,7 @@ func (h *Handler) buildOpenerAuthContext(ctx *SMBHandlerContext, openFile *OpenF
 // PropagateOpenFileParentLeaseKey copies the OpenFile's RqLs parent-lease-key
 // linkage (if any) onto an AuthContext. This is the hand-off that lets
 // MetadataService.notifyDirChange and the dir-lease parent-key suppression
-// rule (MS-SMB2 §3.3.4.20) skip the matching parent dir
+// rule (Samba `dirlease_should_break`) skip the matching parent dir
 // lease when the originating handle's CREATE carried
 // LEASE_FLAG_PARENT_LEASE_KEY_SET. Safe to call with a nil OpenFile (no-op).
 //

@@ -123,7 +123,8 @@ type SMBHandlerContext struct {
 	// NextCommand is the SMB2 header NextCommand offset for this request.
 	// Nonzero iff this request is NOT the last in a compound chain. Handlers
 	// that may emit an async interim response (STATUS_PENDING) consult this to
-	// avoid parking a non-last compound command — per MS-SMB2 §3.3.4.4 an async
+	// avoid parking a non-last compound command — per MS-SMB2
+	// §3.3.4.2 (interim async response) an async
 	// operation MUST be the last in a compound. Populated by prepareDispatch.
 	NextCommand uint32
 

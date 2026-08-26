@@ -1,8 +1,10 @@
 // Refs #573. Handler-level integration coverage for SMB2 QUERY_DIRECTORY
-// with the share's AccessBasedEnumeration toggle. Mirrors MS-SMB2 §3.3.5.18.1
-// ¶6 ("If TreeConnect.Share.AccessBasedEnumeration is TRUE, the server MUST
-// NOT include entries for which the user does not have FILE_READ_DATA /
-// FILE_LIST_DIRECTORY access") and the smb2.acls.ACCESSBASED smbtorture
+// with the share's AccessBasedEnumeration toggle. Mirrors MS-SMB2 §3.3.5.18
+// ("Receiving an SMB2 QUERY_DIRECTORY Request"): "If
+// TreeConnect.Share.DoAccessBasedDirectoryEnumeration is TRUE and the object
+// store supports security, the server MUST also exclude entries for which the
+// user represented by Session.SecurityContext is not granted GENERIC_READ and
+// FILE_LIST_DIRECTORY access". Also the smb2.acls.ACCESSBASED smbtorture
 // case at source4/torture/smb2/acls.c:2308.
 package handlers
 

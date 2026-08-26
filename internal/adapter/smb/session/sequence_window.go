@@ -179,9 +179,11 @@ func (w *CommandSequenceWindow) Size() uint64 {
 
 // Reclaim decreases the outstanding-credit counter without retracting any
 // message IDs from the window. Used by the compound response path: each
-// sub-response's Grant() extends the window individually, but MS-SMB2
-// 3.2.4.1.4 requires middle compound responses to advertise Credits=0
-// on the wire. After zeroing those headers, Reclaim rolls back the
+// sub-response's Grant() extends the window individually, but only the last
+// response in a compound advertises credits on the wire. MS-SMB2 §3.3.4.1.3
+// ("Sending Compounded Responses") permits either — "the server MAY grant
+// credits separately on each response in the compounded chain" — so this is
+// the Windows/Samba convention, not a spec MUST. After zeroing those headers, Reclaim rolls back the
 // `available` bookkeeping so the server's view of the client's
 // cur_credits matches what we actually told the client. The underlying
 // message IDs stay marked valid — if the client ever sent one (it won't,

@@ -465,7 +465,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// that modified the file (WRITE occurred) breaks parent-dir leases. The
 	// WRITE itself does NOT break — only the CLOSE triggers the break so
 	// directory caching is only invalidated once the mutation is committed.
-	// Parent-key suppression (MS-SMB2 §3.3.4.20) applies: if the
+	// Parent-key suppression (Samba `dirlease_should_break`) applies: if the
 	// closing handle carried a ParentLeaseKey matching the parent's dir lease,
 	// that lease is suppressed. Covers smb2.dirlease.v2_request: write without
 	// parent key -> close breaks dir lease; write with parent key -> close

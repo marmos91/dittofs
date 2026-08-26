@@ -405,7 +405,8 @@ func (h *Handler) executeCopyChunks(
 	srcPayloadID := string(srcFile.PayloadID)
 	srcSize := srcFile.Size
 
-	// Per MS-SMB2 3.3.5.16: Break Read caching leases held by other clients on
+	// Per MS-SMB2 §3.3.5.13 ("Receiving an SMB2 WRITE Request"): break Read caching
+	// leases held by other clients on
 	// the destination before writing, so they invalidate their cached data.
 	if h.LeaseManager != nil {
 		lockFileHandle := lock.FileHandle(dstOpen.MetadataHandle)

@@ -523,7 +523,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			// inline retry on the dispatch goroutine.
 			//
 			// Async parking is unsafe in compound chains (NextCommand != 0,
-			// MS-SMB2 §3.3.4.4) and in multi-element requests. The first
+			// MS-SMB2 §3.3.4.2 (interim async response)) and in multi-element requests. The first
 			// guard is enforced by the !ctx.NextCommand check below; the
 			// second is implicit because §3.3.5.14 forbids multi-element
 			// requests with a blocking first element (rejected above), and
@@ -579,7 +579,8 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	// Mark this open as having held at least one byte-range lock. The flag
 	// is consumed at disconnect by shouldPersistDurableOnDisconnect to refuse
 	// durable persistence for opens that hold BR-locks under a non-W lease
-	// (smbtorture smb2.durable-v2-open.lock-noW-lease, MS-SMB2 §3.3.4.18).
+	// (smbtorture smb2.durable-v2-open.lock-noW-lease,
+	// MS-SMB2 §3.3.7.1 "Handling Loss of a Connection").
 	// Strictly monotonic — UNLOCK does NOT clear it, mirroring Samba's
 	// pessimistic `vfs_default_durable_disconnect` semantics.
 	for _, le := range req.Locks {

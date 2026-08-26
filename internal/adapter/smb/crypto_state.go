@@ -37,7 +37,8 @@ type ConnectionCryptoState struct {
 
 	// SigningAlgorithmExplicit reports whether the client explicitly
 	// negotiated the signing algorithm via a SIGNING_CAPABILITIES negotiate
-	// context (MS-SMB2 §3.1.1.2). When false, SigningAlgorithmId carries the
+	// context (MS-SMB2 §2.2.3.1.7 ("SMB2_SIGNING_CAPABILITIES")). When false,
+	// SigningAlgorithmId carries the
 	// server-side default (AES-128-CMAC for 3.x), not a client selection.
 	// Used to disambiguate HMAC-SHA256 (wire value 0x0000) from a
 	// default-zero placeholder.

@@ -11,7 +11,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// TestDisconnectedConflictOnNewOpen exercises the MS-SMB2 §3.3.4.18 truth
+// TestDisconnectedConflictOnNewOpen exercises the MS-SMB2 §3.3.7.1
+// ("Handling Loss of a Connection") / §3.3.4.7 truth
 // table for FRESH (non-reconnect) CREATE opens against disconnected durable
 // handles, mirroring the matrix asserted by
 // smb2.durable-v2-open.{keep,purge}-disconnected-* in
@@ -478,7 +479,8 @@ func TestDurablePurgeMuSerializesPersistAndPurge(t *testing.T) {
 }
 
 // TestShouldPersistDurableOnDisconnect pins down the lock-noW-lease persist
-// gate (smb2.durable-v2-open.lock-noW-lease, MS-SMB2 §3.3.4.18).
+// gate (smb2.durable-v2-open.lock-noW-lease,
+// MS-SMB2 §3.3.7.1 "Handling Loss of a Connection").
 func TestShouldPersistDurableOnDisconnect(t *testing.T) {
 	rh := smbLeaseRead | smbLeaseHandle
 	rwh := smbLeaseRead | smbLeaseHandle | smbLeaseWrite

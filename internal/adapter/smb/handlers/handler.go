@@ -631,9 +631,15 @@ type OpenFile struct {
 
 	// ParentLeaseKey is the 128-bit parent directory lease key carried in the
 	// CREATE RqLs (V2) when the client set SMB2_LEASE_FLAG_PARENT_LEASE_KEY_SET.
-	// Used by the dir-lease parent-key suppression rule (MS-SMB2 §3.3.4.20):
-	// SET_INFO / WRITE / CLOSE-on-delete on this handle MUST NOT break the
-	// parent dir lease whose LeaseKey matches this value. The field is
+	// Established per MS-SMB2 §3.3.5.9.11 ("Handling the
+	// SMB2_CREATE_REQUEST_LEASE_V2 Create Context"). Used by the dir-lease
+	// parent-key suppression rule: SET_INFO / WRITE / CLOSE-on-delete on this
+	// handle MUST NOT break the parent dir lease whose LeaseKey matches this
+	// value. That suppression is not stated in any MS-SMB2 server section —
+	// §3.3.4.7 hands the break decision to the object store, and the only
+	// spec text naming ParentLeaseKey outside the wire structures is the
+	// client-side §3.2.4.3.8 — so Samba `dirlease_should_break` is the
+	// binding reference for the rule itself. The field is
 	// meaningful only when HasParentLeaseKey is true.
 	ParentLeaseKey    [16]byte
 	HasParentLeaseKey bool
@@ -849,7 +855,8 @@ func (f *OpenFile) OpenID() string {
 
 // openHasLocks reports whether any byte-range lock is currently recorded
 // against the given open under the lock manager. Source of truth for the
-// MS-SMB2 §3.3.4.18 durable persist gate at disconnect time — avoids the
+// MS-SMB2 §3.3.7.1 ("Handling Loss of a Connection") durable persist gate
+// at disconnect time — avoids the
 // TOCTOU race between an async-parked LOCK goroutine's HasByteRangeLocks
 // flag flip and the disconnect-time read (see lock_async.go::resumePendingLock,
 // MS-SMB2 §3.3.5.14 / smb2.durable-v2-open.lock-noW-lease).
@@ -1422,7 +1429,8 @@ func (h *Handler) closeFilesWithFilter(
 				}
 			}
 
-			// MS-SMB2 §3.3.4.18 persist gate: refuse to persist when the
+			// MS-SMB2 §3.3.7.1 ("Handling Loss of a Connection") persist gate:
+			// refuse to persist when the
 			// open holds a byte-range lock under a lease lacking W. The
 			// disconnected reconnect cannot reliably re-establish the lock
 			// because the BR-lock is bound to the open's OpenID and a
@@ -1669,7 +1677,7 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 	name := target.Name
 	authCtx := h.buildCleanupAuthContext(ctx, sess)
 	// Thread the closing handle's RqLs ParentLeaseKey so notifyDirChange can
-	// apply the MS-SMB2 §3.3.4.20 / Samba `dirlease_should_break` parent-key
+	// apply the Samba `dirlease_should_break` parent-key
 	// suppression rule on the parent dir lease. Suppression applies only when
 	// the closer's key matches the key whoever committed the delete-on-close
 	// recorded; when they differ every parent dir lease breaks. Same rule the

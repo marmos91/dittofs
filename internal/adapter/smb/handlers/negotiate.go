@@ -458,7 +458,8 @@ func (h *Handler) processNegotiateContexts(
 // defaultSigningAlgorithmPreference is the server's default signing algorithm
 // preference order, used when SigningAlgorithmPreference is not configured.
 // HMAC-SHA256 is included because clients MAY explicitly request it via the
-// 3.1.1 SIGNING_CAPABILITIES negotiate context (MS-SMB2 §3.1.1.2). When
+// 3.1.1 SIGNING_CAPABILITIES negotiate context
+// (MS-SMB2 §2.2.3.1.7 "SMB2_SIGNING_CAPABILITIES"). When
 // selected for 3.1.1 the signing key is the first 16 bytes of the
 // SP800-108-derived SigningKey and the verifier uses HMAC-SHA256.
 var defaultSigningAlgorithmPreference = []uint16{

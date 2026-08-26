@@ -80,8 +80,9 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		return
 	}
 
-	// Per MS-SMB2 3.2.4.1.4: compound-level credit accounting.
-	// The first command's CreditCharge covers the entire compound.
+	// Per MS-SMB2 §3.3.5.2.5 ("Verifying the Credit Charge and the Payload Size"):
+	// compound-level credit accounting. The first command's CreditCharge
+	// covers the entire compound.
 	// CreditCharge size validation is skipped for exempt commands; sequence
 	// window Consume still runs for NEGOTIATE and first SESSION_SETUP but is
 	// skipped for CANCEL — see response.go for rationale (#378).
@@ -155,7 +156,8 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 
 	result, fileID, handlerCtx := ProcessRequestWithFileIDAndCallback(ctx, firstHeader, firstBody, firstRaw, connInfo, isEncrypted, asyncNotifyCallback)
 
-	// Per MS-SMB2 §3.3.4.4 and smbtorture compound_async.getinfo_middle:
+	// Per MS-SMB2 §3.3.4.2 ("Sending an Interim Response for an Asynchronous Operation")
+	// and smbtorture compound_async.getinfo_middle:
 	// When a compound command returns STATUS_PENDING with an AsyncId AND
 	// there are remaining commands, send the interim response standalone and
 	// defer the remaining compound commands to the async completion callback.
@@ -207,7 +209,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		// on the wire. The callback was swapped above (ReplaceCallback) so the
 		// goroutine picks up the continue-compound wrapper, and MarkStarted runs
 		// post-interim so the final compound response can never overtake the
-		// interim (MS-SMB2 §3.3.4.4 ordering; same class as the standalone path
+		// interim (MS-SMB2 §3.3.4.2 (interim async response) ordering; same class as the standalone path
 		// in response.go that smb2.bench.oplock1 trips). Skipping the release
 		// would deadlock the CREATE after the wait drains (smbtorture
 		// compound.compound-break IO_TIMEOUT race).
@@ -298,7 +300,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 
 // sendCompoundResponses sends all compound responses in a single NetBIOS frame.
 //
-// Per MS-SMB2 3.3.5.2.7 — Sending Compounded Responses:
+// Per MS-SMB2 3.3.4.1.3 ("Sending Compounded Responses"):
 //   - Each non-last response is padded to 8-byte alignment
 //   - NextCommand in the header points to the next command's offset
 //   - Per MS-SMB2 3.3.4.1.1: each command is signed individually over its own
@@ -351,8 +353,9 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo, req
 		return SendMessage(hdr, responses[0].body, connInfo)
 	}
 
-	// Per MS-SMB2 3.2.4.1.4: middle compound responses grant 0 credits;
-	// only the last response grants credits to the client.
+	// Middle compound responses grant 0 credits; only the last response grants
+	// credits to the client. MS-SMB2 §3.3.4.1.3 permits per-response granting;
+	// this is the Windows/Samba convention.
 	applyCompoundCreditZeroing(responses, connInfo)
 
 	// Build compound payload: sign each command individually, then concatenate.
@@ -479,8 +482,9 @@ func failEntireCompound(firstHeader *header.SMB2Header, compoundData []byte, sta
 }
 
 // applyCompoundCreditZeroing applies compound-level credit accounting to responses.
-// Per MS-SMB2 3.2.4.1.4: middle compound responses grant 0 credits; only the last
-// response grants credits. For single-response compounds (len <= 1), no zeroing
+// Middle compound responses grant 0 credits; only the last response grants
+// credits (MS-SMB2 §3.3.4.1.3 "Sending Compounded Responses" permits either;
+// this follows Windows/Samba). For single-response compounds (len <= 1), no zeroing
 // is applied since they go through SendMessage which handles granting normally.
 //
 // Each sub-response was built via buildResponseHeaderAndBody, which already
@@ -494,8 +498,7 @@ func applyCompoundCreditZeroing(responses []compoundResponse, connInfo *ConnInfo
 		return
 	}
 	// Move each middle response's grant onto the last response rather than
-	// reclaiming it. Per MS-SMB2 3.2.4.1.4 only the last response in a compound
-	// advertises credits, but every sub-request debits one credit, so the client
+	// reclaiming it. Only the last response in a compound advertises credits, but every sub-request debits one credit, so the client
 	// must be credited for the WHOLE compound on the one response it reads
 	// credits from. Reclaiming the middle grants instead left the last response
 	// advertising only its own single grant, so a stat compound (CREATE +
@@ -629,7 +632,7 @@ func ParseCompoundCommand(data []byte) (*header.SMB2Header, []byte, []byte, erro
 
 // VerifyCompoundCommandSignature verifies the signature of a compound sub-command.
 //
-// Per MS-SMB2 3.3.5.2.7.2 — Handling Compounded Requests:
+// Per MS-SMB2 3.3.5.2.7.2 ("Handling Compounded Related Requests"):
 // Each command in a compound request is signed individually over its own bytes
 // (from its SMB2 header to NextCommand offset, or end for the last command).
 // The signature covers ONLY that command's bytes, not the entire compound.
@@ -800,7 +803,7 @@ type compoundLoopState struct {
 	// AsyncIds of parked CREATEs whose interim STATUS_PENDING is buffered into
 	// responses (not yet on the wire). MarkStarted MUST fire only after the
 	// compound frame is written, so the resume goroutine's final response can
-	// never overtake the interim (MS-SMB2 §3.3.4.4; same ordering class as the
+	// never overtake the interim (MS-SMB2 §3.3.4.2 (interim async response); same ordering class as the
 	// standalone path that smb2.bench.oplock1 trips).
 	markStartedAsyncIDs []uint64
 }
@@ -835,7 +838,8 @@ func (s *compoundLoopState) processRemaining(
 ) {
 	for len(remaining) >= header.HeaderSize {
 		// Keep a reference to the current command's start for signature verification.
-		// Per MS-SMB2 3.2.4.1.4, each compound command is signed over its own bytes.
+		// Per MS-SMB2 §3.3.4.1.1 ("Signing the Message"), each compound command is
+		// signed over its own bytes.
 		currentCommandData := remaining
 
 		hdr, cmdBody, nextRemaining, err := ParseCompoundCommand(remaining)
@@ -1057,7 +1061,8 @@ func (s *compoundLoopState) processRemaining(
 // STATUS_PENDING. It builds a compound response containing the CREATE's final
 // result and all subsequent commands, then sends it as a single compound frame.
 //
-// Per MS-SMB2 §3.3.4.4: the CREATE's interim STATUS_PENDING was already sent
+// Per MS-SMB2 §3.3.4.2 ("Sending an Interim Response for an Asynchronous Operation"):
+// the CREATE's interim STATUS_PENDING was already sent
 // standalone by ProcessCompoundRequest. completeCompoundAfterAsyncCreate delivers
 // the remaining responses (the CREATE completion + GETINFO + CLOSE etc.) as a compound.
 //

@@ -8,7 +8,8 @@ import (
 )
 
 // IsCreditExempt returns true for commands that bypass credit checks.
-// Per MS-SMB2 3.3.5.1 (NEGOTIATE) and 3.3.5.2.3 (CANCEL).
+// Per MS-SMB2 3.3.5.1 ("Accepting an Incoming Connection") and 3.3.5.2.3
+// ("Verifying the Sequence Number").
 // First SESSION_SETUP (SessionID=0) is also exempt because the client
 // starts with 0 credits per MS-SMB2 3.3.5.1.
 //

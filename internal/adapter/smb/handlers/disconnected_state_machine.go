@@ -9,14 +9,16 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// MS-SMB2 §3.3.4.18 — Disconnected durable handle preservation/purge state machine.
+// Disconnected durable handle preservation/purge state machine.
 //
 // When a client transport-disconnects, an open with IsDurable set is persisted
 // to the DurableHandleStore. While disconnected, operations from OTHER opens on
 // the same underlying file may conflict with the disconnected open's persisted
-// state. This file implements the preserve/purge decision per [MS-SMB2] §3.3.4.18
-// (Server Receives an Object Store Operation) and §3.3.5.9 (Receiving an SMB2
-// CREATE Request, Step 10 share-mode/lease conflict handling) — mirroring
+// state. This file implements the preserve/purge decision per [MS-SMB2] §3.3.7.1
+// ("Handling Loss of a Connection", which lists the conditions under which an
+// Open is preserved for reconnect), §3.3.4.7 ("Object Store Indicates a Lease
+// Break", which drives the purge) and §3.3.5.9 ("Receiving an SMB2 CREATE
+// Request", Step 10 share-mode/lease conflict handling) — mirroring
 // Samba's `delay_for_oplock_fn` + `share_mode_cleanup_disconnected` semantics
 // from source3/smbd/open.c and source3/smbd/scavenger.c.
 //
@@ -43,7 +45,8 @@ import (
 //     does NOT break it (Samba is_stat_open) and does NOT purge.
 //
 //   - A WRITE from a live handle breaks Level-II (Read) leases on the same
-//     file to None per MS-SMB2 §3.3.5.16; any disconnected RH lease on the
+//     file to None per MS-SMB2 §3.3.5.13 ("Receiving an SMB2 WRITE Request");
+//     any disconnected RH lease on the
 //     file with a different lease-key is purged (it would break to None).
 //
 //   - A RENAME from a live handle breaks Handle leases on the same file to
@@ -368,7 +371,7 @@ func (h *Handler) purgeDisconnectedConflicts(
 
 // purgeConflictingDisconnectedHandlesForOpen purges the disconnected handles on
 // the underlying file (keyed by metadata handle) that conflict with the new
-// open under §3.3.4.18.
+// open under MS-SMB2 §3.3.4.7 ("Object Store Indicates a Lease Break").
 func (h *Handler) purgeConflictingDisconnectedHandlesForOpen(
 	ctx context.Context,
 	metaHandle []byte,
@@ -451,7 +454,8 @@ func (h *Handler) purgeOneDisconnectedHandle(
 
 // shouldPersistDurableOnDisconnect returns false when an open MUST NOT be
 // persisted as a durable handle at transport-disconnect time, even if it
-// carries IsDurable. Per MS-SMB2 §3.3.4.18 and smb2.durable-v2-open.lock-noW-lease,
+// carries IsDurable. Per MS-SMB2 §3.3.7.1 ("Handling Loss of a Connection")
+// and smb2.durable-v2-open.lock-noW-lease,
 // an open holding a byte-range lock under a lease that lacks W (write caching)
 // cannot reliably resume: the BR-lock is bound to the open's OpenID and the
 // lease cannot promote to W on reconnect without breaking other holders.

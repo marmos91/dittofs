@@ -325,7 +325,7 @@ func ProcessSingleRequest(
 	// the interim write, a fast break-drain (e.g. the holder closing rather
 	// than ACKing, as in smb2.bench.oplock1) could let the resume goroutine
 	// win the write lock and emit the final STATUS_SUCCESS before the interim
-	// STATUS_PENDING — a §3.3.4.4 ordering violation the client answers with a
+	// STATUS_PENDING — a §3.3.4.2 ordering violation the client answers with a
 	// TCP RST (NT_STATUS_CONNECTION_DISCONNECTED).
 	if reqHeader.Command == types.SMB2Create &&
 		result.Status == types.StatusPending && result.AsyncId != 0 &&
@@ -393,7 +393,8 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 
 	// Propagate the compound chain position: nonzero NextCommand means another
 	// subcommand follows this one, so async interim responses are unsafe here
-	// (MS-SMB2 §3.3.4.4). Zero means standalone or last-in-compound — async OK.
+	// (MS-SMB2 §3.3.4.2 (interim async response)). Zero means standalone or
+	// last-in-compound — async OK.
 	handlerCtx.NextCommand = reqHeader.NextCommand
 
 	// Replay protection (MS-SMB2 §2.2.1.2): surface the
@@ -762,7 +763,8 @@ func buildResponseHeaderAndBody(reqHeader *header.SMB2Header, ctx *handlers.SMBH
 		respHeader.TreeID = ctx.TreeID
 	}
 
-	// Per [MS-SMB2] 3.3.5.15: When a handler returns STATUS_PENDING with an
+	// Per [MS-SMB2] 3.3.4.2 ("Sending an Interim Response for an Asynchronous
+	// Operation"): when a handler returns STATUS_PENDING with an
 	// AsyncId, the response is an interim async response. Set FlagAsync and
 	// populate AsyncId on the header.
 	if result.AsyncId != 0 {
@@ -791,7 +793,8 @@ func buildResponseHeaderAndBody(reqHeader *header.SMB2Header, ctx *handlers.SMBH
 		}
 	}
 
-	// Per [MS-SMB2] 3.3.5.15: STATUS_PENDING interim responses use the
+	// Per [MS-SMB2] 3.3.4.2 (interim async response): STATUS_PENDING
+	// interim responses use the
 	// error response body format (9 bytes) even though STATUS_PENDING is
 	// a success-class status code. Ensure a body is always present.
 	if result.Status == types.StatusPending && body == nil {
@@ -998,7 +1001,7 @@ func sendMessageWithSigner(hdr *header.SMB2Header, body []byte, connInfo *ConnIn
 // SendMessage sends an SMB2 message with NetBIOS framing, optional encryption,
 // and optional signing.
 //
-// Per MS-SMB2 3.3.4.1.1 — Signing an Outgoing Message:
+// Per MS-SMB2 3.3.4.1.1 ("Signing the Message"):
 // If the session has Session.SigningRequired set and the message is not encrypted,
 // the server MUST sign the response using the session's signing key. Encrypted
 // sessions use AEAD for integrity instead of signing (MS-SMB2 3.3.4.1.3).
@@ -1235,7 +1238,8 @@ func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, respons
 // an interim response at that position, and SendAsyncCompletionResponse delivers
 // the final result as a separate message with the matching AsyncId.
 //
-// Per MS-SMB2 3.3.4.4: The async completion response uses the async header
+// Per MS-SMB2 §3.3.4.2 ("Sending an Interim Response for an Asynchronous Operation"):
+// the async completion response uses the async header
 // format (FlagAsync set, AsyncId in header) and carries the handler's final
 // status and response body.
 //
