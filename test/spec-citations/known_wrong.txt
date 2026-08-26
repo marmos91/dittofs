@@ -1,0 +1,17 @@
+# Citations this check flags that have not been corrected yet.
+#
+# Correcting a citation means deciding what the code was supposed to do, and a
+# wrong citation and a wrong implementation look identical from inside a source
+# file — so entries land here and are resolved by someone who checks the spec,
+# not by editing the comment until the check goes quiet. Tracked in #2185.
+#
+# Format: <path>: <SPEC> <section>. Line numbers and message text are not part
+# of the key, so moving code or bumping a spec revision does not rot an entry.
+# An entry that stops matching fails the run.
+
+internal/adapter/smb/handlers/change_notify.go: MS-FSA 2.1.5.14.3
+internal/adapter/smb/handlers/close.go: MS-FSA 2.1.5.14.3
+internal/adapter/smb/handlers/close_notify_test.go: MS-FSA 2.1.5.14.3
+internal/adapter/smb/handlers/handler.go: MS-FSA 2.1.5.14.3
+internal/adapter/smb/handlers/set_info.go: MS-FSA 2.1.5.14.3
+internal/adapter/smb/handlers/close_doc_dir_not_empty_test.go: MS-FSCC 2.4.34
