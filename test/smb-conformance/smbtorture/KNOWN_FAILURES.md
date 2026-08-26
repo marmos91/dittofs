@@ -121,12 +121,18 @@ entry in the changelog.
 
 ### Oplocks
 
-All remaining oplock residuals have been resolved. The four
-`smb2.kernel-oplocks.*` tests require Linux kernel oplock integration via
-`F_SETLEASE` on the underlying fd — architecturally incompatible with
-DittoFS's userspace virtual filesystem. They are listed in the
+All remaining oplock residuals have been resolved. Three
+`smb2.kernel-oplocks.*` tests are listed in the
 [Permanently Unimplementable](#permanently-unimplementable-out-of-scope)
-appendix.
+appendix: `kernel_oplocks2` and `kernel_oplocks5` turn on kernel oplock
+integration via `F_SETLEASE` on the underlying fd, which is architecturally
+incompatible with DittoFS's userspace virtual filesystem, and `kernel_oplocks8`
+needs a host-filesystem `localdir` that a virtual FS cannot provide.
+
+`kernel_oplocks4` used to be counted here as a fourth. It was **reclassified
+out**, not fixed: the upstream test has no kernel-oplock gate at all, and the
+one place it inspects a break emits a warning rather than an assertion. See the
+2026-08-26 changelog entry.
 
 One residual remains. `smb2.oplock` used to be cut short at 120s having graded
 28 of 42 tests, and `batch22b` was the test in flight when the axe fell — so its
