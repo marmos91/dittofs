@@ -405,6 +405,52 @@ not — Go keeps function names in `pclntab` for tracebacks — but that had to 
 measured rather than reasoned about. A wrong kill is quieter than a wrong
 confirmation: nobody investigates a door that is already closed.
 
+### 2026-08-26 — a suite cut short now fails the job, and the budget is one number
+
+Until now a suite that ran out of budget was reported and then ignored by the
+verdict. That is the wrong default. A cut suite emits no result lines past the
+cut point, so its remaining tests are *missing*, not passing — and the job still
+printed `0 new failures`. `smb2.replay` sat truncated for three months with a
+real DH2Q defect in its tail (#2086/#1322) while every run reported clean.
+
+`run.sh` now records, alongside each truncation, the reason it is allowed to
+happen; `parse-results.sh` fails the job on any truncation that carries no
+reason. One suite is on that list: `smb2.notify`, which hangs on a cancelled
+CHANGE_NOTIFY that never receives a final response (#2109) — no budget fixes an
+unbounded client wait. Verified by emptying the sign-off on a throwaway branch
+and confirming the job goes red on exactly that suite (run 32937937648); before
+the change, the same truncation was green.
+
+**The per-suite budgets are gone.** They were sized per suite and did not survive
+contact with the other profiles: `smb2.dir` runs 22.8s on `memory` and 111.7s on
+`sqlite` against the same 120s wall, and `smb2.maxfid` — 18.2s on `badger-fs` —
+ran into its 60s wall on one `postgres` draw and lost its only test. Any figure
+tight enough to mean something on one backend is a coin flip on another. The
+budget exists to bound a hang, not to grade speed, so there is now one: **300s**
+for every suite and standalone test, with `smb2.notify` held at 120s because
+burning five minutes on a known hang buys nothing.
+
+Slowest legitimate suite measured across all five profiles is
+`smb2.compound_find` at 193s (sqlite), then `lease` 187s, `replay` 165s,
+`oplock` 146s, `multichannel` 132s. 300s clears the slowest by ~1.6x.
+
+`smb2.compound_find` was the last uncharacterised truncation and is **not** a
+defect: `compound_find_close` creates 5000 files one synchronous CREATE+CLOSE at
+a time before the FIND it actually tests, and the count is hard-coded in the
+test, so unlike `maxfid` there is no knob to bound it. Every persistent metadata
+backend overran 120s; with budget it passes on all of them (sqlite 182/193s,
+postgres 134/160s, memory 43s).
+
+`smb2.aio_delay` is **dropped** from the suite list. Its single test,
+`aio_cancel`, loops on `req->cancel.can_cancel` with no bound, and that flag is
+set in exactly one place in the smbtorture client — on receipt of an interim
+`NT_STATUS_PENDING`. Samba only ever runs this suite against a share carrying its
+`vfs_delay_inject` module, whose purpose is to make reads artificially slow so
+smbd defers them. DittoFS has no such module and the harness targets
+`/smbbasic`, so a 1-byte read completes immediately, no interim is sent, and the
+suite burned 120s per profile per run having graded 0 of 1. It is a Samba VFS
+harness, not a conformance case, and it can never produce a verdict here.
+
 ### 2026-08-25 — per-suite budgets: 3 pre-existing failures surfaced out of the ungraded tails
 
 `smb2.lease`, `smb2.multichannel` and `smb2.oplock` were being cut short at 120s
