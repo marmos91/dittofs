@@ -585,12 +585,13 @@ func (r *NotifyRegistry) CloseByFileID(fileID [16]byte) []*PendingNotify {
 	r.closeTombstones[key] = time.Now()
 	r.gcCloseTombstonesLocked()
 
-	closing := r.byFileID[key]
-	removed := make([]*PendingNotify, 0, len(closing))
-	for _, notify := range append([]*PendingNotify(nil), closing...) {
-		removed = append(removed, r.unregisterLocked(notify))
+	// Copied before the loop: unregisterLocked rewrites r.byFileID[key] as it
+	// removes each watch.
+	closing := append([]*PendingNotify(nil), r.byFileID[key]...)
+	for _, notify := range closing {
+		r.unregisterLocked(notify)
 	}
-	return removed
+	return closing
 }
 
 // closeTombstoneCount reports how many close tombstones are outstanding.
@@ -964,30 +965,31 @@ func (r *NotifyRegistry) unregisterLocked(notify *PendingNotify) *PendingNotify 
 	// Both lists can hold several waiters on one handle, so remove THIS one by
 	// identity. Matching on FileID would drop whichever waiter happened to be
 	// first, leaving the caller's notify registered and answering a request the
-	// client is still waiting on. The shift keeps arrival order, which is what
-	// decides who takes the next event.
-	r.byFileID[fileIDKey] = removePendingNotify(r.byFileID[fileIDKey], notify)
-	if len(r.byFileID[fileIDKey]) == 0 {
-		delete(r.byFileID, fileIDKey)
-	}
-	r.pending[notify.WatchPath] = removePendingNotify(r.pending[notify.WatchPath], notify)
-	if len(r.pending[notify.WatchPath]) == 0 {
-		delete(r.pending, notify.WatchPath)
-	}
+	// client is still waiting on.
+	removeWatcher(r.byFileID, fileIDKey, notify)
+	removeWatcher(r.pending, notify.WatchPath, notify)
 
 	return notify
 }
 
-// removePendingNotify drops one entry by identity, preserving the order of the
-// rest. A swap-remove would move the newest waiter into the oldest slot and
-// hand it the next event.
-func removePendingNotify(list []*PendingNotify, notify *PendingNotify) []*PendingNotify {
+// removeWatcher drops one waiter from m[key] by identity and deletes the key
+// once the last one goes. The shift keeps arrival order, which is what decides
+// who takes the next event: a swap-remove would move the newest waiter into the
+// oldest slot and hand it the change.
+func removeWatcher(m map[string][]*PendingNotify, key string, notify *PendingNotify) {
+	list := m[key]
 	for i, p := range list {
-		if p == notify {
-			return append(list[:i], list[i+1:]...)
+		if p != notify {
+			continue
 		}
+		list = append(list[:i], list[i+1:]...)
+		break
 	}
-	return list
+	if len(list) == 0 {
+		delete(m, key)
+		return
+	}
+	m[key] = list
 }
 
 // GetWatchersForPath returns all pending notifies for a path.
@@ -1566,8 +1568,13 @@ func (r *NotifyRegistry) bufferEventLocked(notify *PendingNotify, change FileNot
 		notify.firstEmission = emission
 		notify.firstEmissionLen = 0
 	}
+	// The run has to be a contiguous PREFIX, not every entry carrying the id.
+	// Two operations emitting concurrently interleave into one buffer, and an
+	// id match alone would count the A in [A B A] and ship B inside A's
+	// response — the merge this accounting exists to prevent.
+	contiguous := notify.firstEmissionLen == len(notify.bufferedChanges)
 	notify.bufferedChanges = append(notify.bufferedChanges, change)
-	if emission == notify.firstEmission {
+	if contiguous && emission == notify.firstEmission {
 		notify.firstEmissionLen++
 	}
 	if notify.flushTimer == nil {
@@ -1712,10 +1719,7 @@ func (r *NotifyRegistry) deliverChanges(notify *PendingNotify, changes []FileNot
 // subject still exists. They learn about the removal as a normal
 // FileActionRemoved event when the entry actually goes away.
 func (r *NotifyRegistry) CompleteWatchersForDeletePending(shareName, dirPath string) int {
-	dirPath = path.Clean(dirPath)
-	if dirPath == "" || dirPath == "." {
-		dirPath = "/"
-	}
+	dirPath = notifyWatchPath(dirPath)
 
 	r.mu.Lock()
 	var marked []*PendingNotify
@@ -2052,6 +2056,17 @@ func relativePathFromWatch(watchPath, parentPath, fileName string) string {
 		return relDir + "/" + fileName
 	}
 	return fileName
+}
+
+// notifyWatchPath normalises a directory path into the form the notify maps are
+// keyed by: cleaned, with the root spelled "/" rather than path.Clean's ".".
+// Registration and every lookup that has to find those watchers must agree on
+// it, so they all go through here.
+func notifyWatchPath(p string) string {
+	if cleaned := path.Clean(p); cleaned != "." {
+		return cleaned
+	}
+	return "/"
 }
 
 // GetParentPath returns the parent directory path from a full path.

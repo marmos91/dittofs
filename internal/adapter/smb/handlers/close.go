@@ -521,22 +521,21 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// unregistered, so capturing the pointer is safe — nothing else can
 			// see or mutate it.
 			if notify.AsyncCallback != nil {
-				n := notify
 				AppendPostSend(ctx, func() {
 					cleanupResp := &ChangeNotifyResponse{
 						SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
 					}
-					h.NotifyRegistry.QueueFinalAfterInterim(n, func() {
-						if err := n.AsyncCallback(n.SessionID, n.MessageID, n.AsyncId, cleanupResp); err != nil {
+					h.NotifyRegistry.QueueFinalAfterInterim(notify, func() {
+						if err := notify.AsyncCallback(notify.SessionID, notify.MessageID, notify.AsyncId, cleanupResp); err != nil {
 							logger.Warn("CLOSE: failed to send STATUS_NOTIFY_CLEANUP",
-								"messageID", n.MessageID,
+								"messageID", notify.MessageID,
 								"error", err)
 							return
 						}
 						logger.Debug("CLOSE: sent STATUS_NOTIFY_CLEANUP (post-close)",
 							"path", closePath,
-							"messageID", n.MessageID,
-							"asyncId", n.AsyncId)
+							"messageID", notify.MessageID,
+							"asyncId", notify.AsyncId)
 					})
 				})
 			}

@@ -3764,3 +3764,39 @@ func TestChangeNotify_EmptyFilterInheritsTheArmedMask(t *testing.T) {
 		}
 	})
 }
+
+// TestBufferEventLocked_InterleavedEmissionsDoNotMerge covers concurrent
+// emitters. NotifyChanges allocates its emission id under the lock and then
+// releases it between events, so another operation can land in the middle of a
+// batch: the buffer becomes [A B A]. Counting every entry whose id matches the
+// first would make the run 2 and ship B inside A's response, which is the merge
+// the accounting exists to prevent. Only a contiguous prefix counts.
+func TestBufferEventLocked_InterleavedEmissionsDoNotMerge(t *testing.T) {
+	r := newTestNotifyRegistry()
+	fileID := [16]byte{0xE0}
+
+	notify := &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 10, AsyncId: 100,
+		WatchPath: "/d", ShareName: "s", MaxOutputLength: 1000,
+		CompletionFilter: FileNotifyChangeFileName,
+	}
+	mustRegister(t, r, notify)
+
+	r.mu.Lock()
+	r.bufferEventLocked(notify, FileNotifyInformation{Action: FileActionAdded, FileName: "a1"}, 5)
+	r.bufferEventLocked(notify, FileNotifyInformation{Action: FileActionAdded, FileName: "b1"}, 6)
+	r.bufferEventLocked(notify, FileNotifyInformation{Action: FileActionAdded, FileName: "a2"}, 5)
+	got := r.drainFirstEmissionLocked(notify)
+	r.mu.Unlock()
+
+	checkRecords(t, "interleaved", got, []FileNotifyInformation{
+		{Action: FileActionAdded, FileName: "a1"},
+	})
+
+	// Everything after the run is kept, in order, for the next request.
+	rest := r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, false)
+	checkRecords(t, "deferred", rest, []FileNotifyInformation{
+		{Action: FileActionAdded, FileName: "b1"},
+		{Action: FileActionAdded, FileName: "a2"},
+	})
+}
