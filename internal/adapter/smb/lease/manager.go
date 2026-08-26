@@ -1101,7 +1101,16 @@ func (lm *LeaseManager) BreakLeasesOnRename(
 // transport. Waiting for the ACK here would deadlock the in-flight SMB
 // request; the holder acks on its own transport after we return.
 //
-// Required by smbtorture smb2.lease.initial_delete_tdis / logoff / disconnect.
+// Callers dispatch it only once the entry is actually gone: a delete-on-close
+// that meets a non-empty directory declines the removal, and Handle caching on
+// an entry that is still there stays valid.
+//
+// The teardown caller is NOT what makes smb2.lease.initial_delete_tdis /
+// logoff / disconnect pass, despite what this comment used to say. Their lease
+// holder keeps its handle open across the tdis, so the delete-on-close election
+// defers and the teardown never reaches this call; the RH -> R break those
+// tests observe comes from the second connection's CREATE, which selects
+// BreakReasonSharingViolation for FILE_DELETE_ON_CLOSE.
 func (lm *LeaseManager) BreakFileHandleLeasesOnDelete(
 	fileHandle lock.FileHandle,
 	shareName string,
