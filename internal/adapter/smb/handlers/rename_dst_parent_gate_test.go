@@ -1,6 +1,6 @@
 // Destination-parent share-mode gate for SET_INFO rename.
 //
-// MS-FSA 2.1.5.15.12 step 8.1 opens the destination directory with
+// MS-FSA 2.1.5.15.12 ("FileRenameInformation") opens the destination directory with
 // DesiredAccess FILE_ADD_FILE|SYNCHRONIZE and ShareAccess
 // FILE_SHARE_READ|FILE_SHARE_WRITE. The cases below pin both directions of
 // that pairing: a write-sharing holder must not block the rename, and a

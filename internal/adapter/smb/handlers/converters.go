@@ -289,7 +289,7 @@ func FileAttrToFileBasicInfoWithName(attr *metadata.FileAttr, name string) *File
 }
 
 // FileAttrToFileStandardInfo converts metadata FileAttr to SMB FILE_STANDARD_INFORMATION
-// [MS-FSCC] 2.4.41. Computes AllocationSize (cluster-aligned) and EndOfFile from the
+// [MS-FSCC] 2.4.47 (FileStandardInformation). Computes AllocationSize (cluster-aligned) and EndOfFile from the
 // file size, and reports link count, delete-pending, and directory flags. For symlinks,
 // the EndOfFile reflects the MFsymlink size (1067 bytes) rather than the target path length.
 func FileAttrToFileStandardInfo(attr *metadata.FileAttr, isDeletePending bool) *FileStandardInfo {

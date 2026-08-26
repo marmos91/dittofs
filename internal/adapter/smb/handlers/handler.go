@@ -2609,7 +2609,7 @@ func logRenameConflictHolder(gate string, renamer, holder *OpenFile) {
 }
 
 // checkParentDirRenameConflict applies the destination-parent share-mode rule
-// from MS-FSA 2.1.5.15.12 step 8.1: the rename opens the destination directory
+// from MS-FSA 2.1.5.15.12 ("FileRenameInformation"): the rename opens the destination directory
 // with DesiredAccess FILE_ADD_FILE|SYNCHRONIZE and ShareAccess
 // FILE_SHARE_READ|FILE_SHARE_WRITE. Linking a new name into a directory is
 // therefore a WRITE against that directory, not a delete of it, so an existing

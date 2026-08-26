@@ -116,7 +116,8 @@ type ChangeNotifyResponse struct {
 	Buffer             []byte // Serialized FileNotifyInformation array
 }
 
-// FileNotifyInformation represents a single change notification [MS-FSCC] 2.4.42.
+// FileNotifyInformation represents a single change notification
+// [MS-FSCC] 2.7.1 (FILE_NOTIFY_INFORMATION).
 type FileNotifyInformation struct {
 	Action   uint32
 	FileName string // Relative path within watched directory

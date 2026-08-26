@@ -925,7 +925,7 @@ func (h *Handler) setFileInfoFromStore(
 			}
 		}
 
-		// Per MS-FSA 2.1.5.15.12 step 8.1: rename takes an implicit open on
+		// Per MS-FSA 2.1.5.15.12 ("FileRenameInformation"): rename takes an implicit open on
 		// the destination parent directory with FILE_ADD_FILE|SYNCHRONIZE
 		// (FILE_ADD_SUBDIRECTORY for a directory source) and ShareAccess
 		// FILE_SHARE_READ|FILE_SHARE_WRITE. Any existing open of that
