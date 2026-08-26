@@ -1823,9 +1823,13 @@ func (sm *StateManager) GetOpenState(other [types.NFS4_OTHER_SIZE]byte) *OpenSta
 // RFC 7530 Section 16.28.5 names exactly two permitted callers: the principal
 // that established the client ID via SETCLIENTID_CONFIRM, and any principal
 // that currently has an OPEN file on the server under that client ID. A RENEW
-// from anyone else "MUST" be rejected with NFS4ERR_ACCESS -- without which any
-// caller that has seen a clientid on the wire can hold a lease, and the state
-// it anchors, open indefinitely.
+// from anyone else MUST be rejected with NFS4ERR_ACCESS.
+//
+// This does not put the lease out of a stranger's reach, and is not meant to.
+// Section 9.5 has DELEGPURGE, LOCK, LOCKT, OPEN and RELEASE_LOCKOWNER renew
+// every lease of the client whose clientid they carry, with no principal
+// restriction -- ValidateAndRenewClient does that on the OPEN path. The
+// restriction is scoped to the one operation whose only effect is the renewal.
 //
 // The second caller is what keeps a multi-user mount working: one client ID
 // covers every user on the client, and the RFC expects a lease held on behalf
