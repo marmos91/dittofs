@@ -613,6 +613,11 @@ type OpenFile struct {
 	// persisted at CLOSE.
 	SmbAtimeWrittenAt time.Time // when the last READ-driven atime reached the store
 	SmbPendingAtime   time.Time // newest access time not yet written to the store (zero ⇒ none)
+	// SmbPendingCtime is the LastChangeTime a rename on this handle owes the
+	// file, settled at CLOSE (zero ⇒ none). It is deliberately NOT surfaced by
+	// QUERY_INFO: while the handle is open the pre-rename ChangeTime is what
+	// the client must still see.
+	SmbPendingCtime time.Time
 
 	// SmbParentAtimeWrittenAt bounds the parent-directory LastAccessTime bump a
 	// WRITE performs, the way SmbAtimeWrittenAt bounds the file's. A suppressed

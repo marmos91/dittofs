@@ -290,6 +290,25 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				}
 			}
 
+			// Settle the LastChangeTime a rename on this handle owed the file.
+			// MS-FSA 2.1.5.15.12 requires the update; product note <187> defers it
+			// to close on NTFS and ReFS, and holding it until here is what lets a
+			// client reading through the still-open handle keep seeing the
+			// pre-rename value.
+			//
+			// No frozen check here. restoreFrozenTimestamps below owns freeze
+			// semantics for every field, and a second guard would duplicate that
+			// ownership while being impossible to observe failing: the deferred
+			// write flush above already sets Ctime unconditionally, so a
+			// sentinel-frozen ChangeTime does not survive this path with or without
+			// one. That is a pre-existing gap in the frozen restore, not something
+			// this write introduces.
+			if pending := takeSmbPendingCtime(openFile); !pending.IsZero() {
+				if _, ctimeErr := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Ctime: &pending}); ctimeErr != nil {
+					logger.Warn("CLOSE: deferred LastChangeTime flush failed", "path", closePath, "error", ctimeErr)
+				}
+			}
+
 			// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): After flushing pending writes (which may overwrite
 			// frozen timestamps), restore any timestamps that were frozen via SET_INFO -1.
 			// The deferred commit flush sets Mtime/Ctime to the WRITE time, but if the

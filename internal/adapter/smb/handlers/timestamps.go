@@ -84,6 +84,42 @@ func noteSmbParentAccess(openFile *OpenFile, t time.Time) bool {
 	return true
 }
 
+// noteSmbRenameChange records that a rename on this handle owes the file a
+// LastChangeTime of t. MS-FSA 2.1.5.15.12 requires the update, and product note
+// <187> says NTFS and ReFS defer it until the handle closes — so it is held here
+// rather than written now. smbtorture smb2.rename.simple_modtime renames through
+// a handle and then queries that same handle, and requires the ChangeTime it
+// reads to be unchanged.
+//
+// Latest rename wins: several renames on one handle owe only the last one.
+//
+// Takes openFile.mu (write).
+func noteSmbRenameChange(openFile *OpenFile, t time.Time) {
+	if openFile == nil {
+		return
+	}
+	openFile.mu.Lock()
+	defer openFile.mu.Unlock()
+	if t.After(openFile.SmbPendingCtime) {
+		openFile.SmbPendingCtime = t
+	}
+}
+
+// takeSmbPendingCtime removes and returns the change time a rename left owing on
+// the handle, or the zero time when there is none. Called at CLOSE.
+//
+// Takes openFile.mu (write).
+func takeSmbPendingCtime(openFile *OpenFile) time.Time {
+	if openFile == nil {
+		return time.Time{}
+	}
+	openFile.mu.Lock()
+	defer openFile.mu.Unlock()
+	pending := openFile.SmbPendingCtime
+	openFile.SmbPendingCtime = time.Time{}
+	return pending
+}
+
 // takeSmbPendingAtime removes and returns the access time held on the handle
 // since the last store write, or the zero time when there is none. Called at
 // CLOSE so a coalesced bump is not lost with the handle.

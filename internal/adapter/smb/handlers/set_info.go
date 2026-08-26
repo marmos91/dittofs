@@ -781,6 +781,20 @@ func (h *Handler) setFileInfoFromStore(
 			// Restore mtime/ctime after rename
 			restoreTimestamps()
 
+			// Move set LastChangeTime and restoreTimestamps has just put the
+			// pre-rename value back, which is what a client reading through this
+			// still-open handle must see. MS-FSA 2.1.5.15.12 still requires the
+			// update, so record it and let CLOSE settle it, matching the NTFS and
+			// ReFS deferral described in product note <187>.
+			noteSmbRenameChange(openFile, time.Now())
+
+			// Move set LastChangeTime and restoreTimestamps has just put the
+			// pre-rename value back, which is what a client reading through this
+			// still-open handle must see. MS-FSA 2.1.5.15.12 still requires the
+			// update, so record it and let CLOSE settle it, matching the NTFS and
+			// ReFS deferral described in product note <187>.
+			noteSmbRenameChange(openFile, time.Now())
+
 			// Clear delete-on-close after rename. Written under the handle
 			// lock: the delete-pending gates and the CLOSE delete-on-close
 			// election read this field under it.
