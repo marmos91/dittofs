@@ -116,7 +116,7 @@ assert_output "unfinished test named" "- smb2.notify.mask"
 assert_output "unfinished test is not a pass" "| Passed | 1 |"
 
 # -- A timeout must not hide a new failure the suite did produce. --
-printf 'smb2.notify\t120\n' > "${WORK}/timeouts.txt"
+printf 'smb2.notify\t120\tno budget helps\n' > "${WORK}/timeouts.txt"
 run_case "new failure inside a timed-out suite still fails" 1 <<'EOF'
 test: smb2.notify.dir
 failure: smb2.notify.dir [ regression ]
@@ -126,14 +126,47 @@ assert_output "timed-out suite reported" "- smb2.notify (gave up after 120s)"
 assert_output "new failure inside timed-out suite named" "- smb2.notify.dir"
 rm -f "${WORK}/timeouts.txt"
 
-# -- A timeout on its own is reported but leaves the job green. --
-printf 'smb2.notify\t120\n' > "${WORK}/timeouts.txt"
-run_case "timeout alone stays green" 0 <<'EOF'
+# -- A truncation someone signed off on is reported but stays green. --
+printf 'smb2.notify\t120\tno budget helps\n' > "${WORK}/timeouts.txt"
+run_case "signed-off timeout stays green" 0 <<'EOF'
 test: smb2.connect.connect1
 success: smb2.connect.connect1
 test: smb2.notify.mask
 EOF
 assert_output "timeout counted" "| Suites cut short | 1 |"
+assert_output "signed-off timeout not counted against" "| Cut short unexpectedly | 0 |"
+assert_output "sign-off reason shown" "expected: no budget helps"
+rm -f "${WORK}/timeouts.txt"
+
+# -- A truncation nobody signed off on reds the job on its own: the tests past
+# -- the cut point are missing, not passing. This is the whole point of the
+# -- third column, so it is pinned from both directions. --
+printf 'smb2.compound_find\t120\t\n' > "${WORK}/timeouts.txt"
+run_case "unexplained timeout fails the job" 1 <<'EOF'
+test: smb2.connect.connect1
+success: smb2.connect.connect1
+test: smb2.compound_find.compound_find_close
+EOF
+assert_output "unexplained timeout counted" "| Cut short unexpectedly | 1 |"
+assert_output "unexplained timeout named" "- smb2.compound_find (gave up after 120s)"
+assert_output "unexplained timeout explains itself" "cut short with no sign-off"
+rm -f "${WORK}/timeouts.txt"
+
+# -- A two-field row (no third column at all) is unexplained too, not a parse
+# -- error: the file gains a column, and an old row must not read as signed off. --
+printf 'smb2.compound_find\t120\n' > "${WORK}/timeouts.txt"
+run_case "two-field timeout row fails the job" 1 <<'EOF'
+test: smb2.connect.connect1
+success: smb2.connect.connect1
+EOF
+rm -f "${WORK}/timeouts.txt"
+
+# -- Failures and unexplained truncations both count toward the exit code. --
+printf 'smb2.compound_find\t120\t\n' > "${WORK}/timeouts.txt"
+run_case "failure plus unexplained timeout counts both" 2 <<'EOF'
+test: smb2.rename.rename1
+failure: smb2.rename.rename1 [ regression ]
+EOF
 rm -f "${WORK}/timeouts.txt"
 
 # -- A blacklisted test that passes is surfaced as a removal candidate. --

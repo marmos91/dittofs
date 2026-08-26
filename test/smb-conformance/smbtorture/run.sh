@@ -401,6 +401,23 @@ fi
 # whereas the default smb2.acls suite requires Windows-default canonicalization.
 SMBTORTURE_DEFAULT_SHARE="${SMBTORTURE_DEFAULT_SHARE:-smbbasic}"
 
+# expected_truncation SUITE
+# Prints why SUITE is allowed to be cut short by its budget, or nothing when it
+# is not. A suite that runs out of budget loses every test it had not reached,
+# and those tests report as neither passed nor failed — so by default that is a
+# job failure, the same as a new red test. This list is the only escape hatch,
+# and each entry needs a reason a bigger budget cannot address.
+expected_truncation() {
+    case "$1" in
+        smb2.notify)
+            # A cancelled CHANGE_NOTIFY never receives its final response, so
+            # the client blocks until the harness kills the suite. More budget
+            # only burns more of it and leaves the same tail ungraded. Tracked
+            # in #2109.
+            echo "cancelled CHANGE_NOTIFY never completed (#2109)" ;;
+    esac
+}
+
 # run_smbtorture FILTER [PER_TEST_TIMEOUT] [SUITE_PREFIX] [SHARE]
 # Runs smbtorture with the given filter, appending output to results file.
 # When SUITE_PREFIX is set, test/success/failure/error lines in the output
@@ -433,9 +450,11 @@ run_smbtorture() {
     #   124            -> the per-suite timeout fired: the harness gave up on this
     #                     filter. Whatever the suite had not reached yet produced
     #                     NO result lines at all, so those tests are ungraded —
-    #                     inconclusive, not passing. Recorded in timeouts.txt so
-    #                     parse-results.sh can report the lost coverage instead of
-    #                     letting it read as a clean run.
+    #                     inconclusive, not passing. Recorded in timeouts.txt
+    #                     along with the reason it is allowed to happen, if any,
+    #                     so parse-results.sh can red the job on lost coverage
+    #                     nobody signed off on instead of letting it read as a
+    #                     clean run.
     #   125            -> docker run/daemon error (image pull 502, OOM-killed
     #                     container, etc.) — a real infrastructure failure
     #   128+N (>=129)  -> the smbtorture CLIENT process was killed by signal N
@@ -449,8 +468,10 @@ run_smbtorture() {
     if [[ $rc -ge 129 ]]; then
         log_warn "smbtorture client crashed (exit code $rc, signal $((rc - 128))) for filter: $filter — client-side bug, not failing the job on this alone"
     elif [[ $rc -eq 124 ]]; then
+        local reason
+        reason="$(expected_truncation "$filter")"
         log_warn "smbtorture timed out after ${per_timeout}s on filter: $filter — tests it had not reached are UNGRADED (inconclusive)"
-        printf '%s\t%s\n' "$filter" "$per_timeout" >> "${RESULTS_DIR}/timeouts.txt"
+        printf '%s\t%s\t%s\n' "$filter" "$per_timeout" "$reason" >> "${RESULTS_DIR}/timeouts.txt"
     elif [[ $rc -ge 125 ]]; then
         log_warn "smbtorture infrastructure failure (exit code $rc) for filter: $filter"
     fi
@@ -496,8 +517,9 @@ reset_share() {
 #                     by signal) — those are upstream client bugs and must not
 #                     red the job; parse-results.sh grades the actual protocol
 #                     outcomes from whatever output was produced. A per-suite
-#                     timeout (124) is also left non-fatal, matching the prior
-#                     behaviour (partial output is still graded).
+#                     timeout (124) is not fatal here either — partial output is
+#                     still graded, and parse-results.sh is what fails the job
+#                     over a truncation that is not on the expected list.
 _smbtorture_exit=0
 _smbtorture_infra=0
 
@@ -696,9 +718,7 @@ else
         # variance needs; the two profiles land within 4s of each other, so the
         # figure is not backend-sensitive.
         #
-        # smb2.notify is deliberately NOT raised. It hangs on a cancelled
-        # CHANGE_NOTIFY that never receives a final response, so a bigger budget
-        # only burns more of it while leaving the same tail ungraded.
+        # smb2.notify is deliberately NOT raised — see expected_truncation().
         #
         # smb2.compound_find is a volume case, the same shape as maxfid was:
         # compound_find_close creates 5000 files one synchronous CREATE+CLOSE

@@ -8,8 +8,9 @@
 #   - SKIP:  Test was skipped (dim)
 #
 # Exit codes:
-#   0  All failures are known (or no failures)
-#   >0 Number of new unexpected failures
+#   0  All failures are known (or no failures) and no suite was cut short
+#      without a recorded reason
+#   >0 Number of new unexpected failures, plus suites cut short with no sign-off
 #   1  Missing output file or no results
 #
 # Usage:
@@ -354,11 +355,22 @@ NOW_PASSING_LIST=("${_now_passing[@]+"${_now_passing[@]}"}")
 
 # Suites the harness gave up on, recorded by run.sh as "filter<TAB>seconds".
 # Everything those suites had not reached is missing from the results above.
+#
+# The third field is the reason that truncation is expected, written by run.sh's
+# expected_truncation(). Empty means nobody signed off on it: the tests the
+# suite never reached are missing from the results, and a run that quietly loses
+# coverage must not report as clean, so it fails the job.
 declare -a TIMED_OUT_SUITES=()
+declare -a UNEXPECTED_TRUNCATIONS=()
 if [[ -n "$RESULTS_DIR" ]] && [[ -f "${RESULTS_DIR}/timeouts.txt" ]]; then
-    while IFS=$'\t' read -r to_filter to_secs; do
+    while IFS=$'\t' read -r to_filter to_secs to_reason; do
         [[ -z "$to_filter" ]] && continue
-        TIMED_OUT_SUITES+=("${to_filter} (gave up after ${to_secs:-?}s)")
+        if [[ -n "$to_reason" ]]; then
+            TIMED_OUT_SUITES+=("${to_filter} (gave up after ${to_secs:-?}s) — expected: ${to_reason}")
+        else
+            TIMED_OUT_SUITES+=("${to_filter} (gave up after ${to_secs:-?}s)")
+            UNEXPECTED_TRUNCATIONS+=("${to_filter} (gave up after ${to_secs:-?}s)")
+        fi
     done < "${RESULTS_DIR}/timeouts.txt"
 fi
 
@@ -597,9 +609,12 @@ report_body() {
     echo "| Skipped | ${SKIP_COUNT} |"
     echo "| Inconclusive | ${#INCOMPLETE_LIST[@]} |"
     echo "| Suites cut short | ${#TIMED_OUT_SUITES[@]} |"
+    echo "| Cut short unexpectedly | ${#UNEXPECTED_TRUNCATIONS[@]} |"
 
     report_list "New failures — not in KNOWN_FAILURES.md, these fail the job" \
         "${NEW_FAILURE_LIST[@]+"${NEW_FAILURE_LIST[@]}"}"
+    report_list "Suites cut short with no sign-off — lost coverage, these fail the job" \
+        "${UNEXPECTED_TRUNCATIONS[@]+"${UNEXPECTED_TRUNCATIONS[@]}"}"
     report_list "Suites cut short by timeout — everything they did not reach is ungraded" \
         "${TIMED_OUT_SUITES[@]+"${TIMED_OUT_SUITES[@]}"}"
     report_list "Tests with no verdict — killed mid-test, neither pass nor fail" \
@@ -619,18 +634,34 @@ echo ""
 # --------------------------------------------------------------------------
 # Verdict
 #
-# The job fails on exactly one thing: failures that are not on the
-# KNOWN_FAILURES.md blacklist. Timeouts and no-verdict tests are reported
-# above but do not move the verdict in either direction — a suite the harness
-# abandoned is evidence of nothing, and failing on it would trade one flake
-# for another.
+# The job fails on two things: failures that are not on the KNOWN_FAILURES.md
+# blacklist, and suites the harness gave up on without a recorded reason.
+#
+# The second is not a failed test — it is a missing one. Tests past the cut
+# point emit no result lines at all, so they are neither passed nor failed, and
+# a run that grades only what it reached would report clean while silently
+# shrinking its own coverage. A truncation that someone has signed off on
+# (run.sh's expected_truncation) is still reported, but does not move the
+# verdict; anything else does.
 # --------------------------------------------------------------------------
-if [[ "$NEW_FAILURES" -gt 0 ]]; then
-    echo -e "${RED}${BOLD}RESULT: ${NEW_FAILURES} new failure(s) detected!${NC}"
-    echo ""
-    echo "To add as known failures, append to KNOWN_FAILURES.md:"
-    echo "  | <test-name> | <category> | <reason> | - |"
-    echo ""
+BAD=$((NEW_FAILURES + ${#UNEXPECTED_TRUNCATIONS[@]}))
+
+if [[ "$BAD" -gt 0 ]]; then
+    if [[ "$NEW_FAILURES" -gt 0 ]]; then
+        echo -e "${RED}${BOLD}RESULT: ${NEW_FAILURES} new failure(s) detected!${NC}"
+        echo ""
+        echo "To add as known failures, append to KNOWN_FAILURES.md:"
+        echo "  | <test-name> | <category> | <reason> | - |"
+        echo ""
+    fi
+    if [[ ${#UNEXPECTED_TRUNCATIONS[@]} -gt 0 ]]; then
+        echo -e "${RED}${BOLD}RESULT: ${#UNEXPECTED_TRUNCATIONS[@]} suite(s) cut short with no sign-off!${NC}"
+        echo ""
+        echo "Those suites lost every test they had not reached. Either give them"
+        echo "enough budget to finish, or record why no budget can help them in"
+        echo "run.sh's expected_truncation()."
+        echo ""
+    fi
 else
     echo -e "${GREEN}${BOLD}RESULT: All failures are known. CI green.${NC}"
     if [[ ${#INCOMPLETE_LIST[@]} -gt 0 || ${#TIMED_OUT_SUITES[@]} -gt 0 ]]; then
@@ -639,5 +670,5 @@ else
     echo ""
 fi
 
-# Exit with count of new failures (0 = success)
-exit "$NEW_FAILURES"
+# Exit with the count of things that fail the job (0 = success)
+exit "$BAD"
