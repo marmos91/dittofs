@@ -295,10 +295,12 @@ func TestExchangeID_Case2_PrincipalMismatch(t *testing.T) {
 		t.Fatalf("idempotent EXCHANGE_ID by owning principal: %v", err)
 	}
 
-	// An idempotent call with no principal (e.g. AUTH_NONE) must not clear the
-	// stored principal — otherwise the hijack guard could be reset.
-	if _, err := sm.ExchangeID(ownerID, verifier, 0, nil, "10.0.0.1:12345"); err != nil {
-		t.Fatalf("idempotent EXCHANGE_ID with empty principal: %v", err)
+	// A call carrying no principal at all (AUTH_NONE) is a caller that has not
+	// shown it is alice, so it is refused like any other non-alice caller.
+	// EXCHANGE_ID carries no filehandle, so an export's sec= policy never sees
+	// it and cannot refuse it first.
+	if _, err := sm.ExchangeID(ownerID, verifier, 0, nil, "10.0.0.9:12345"); err != ErrClientIDInUse {
+		t.Errorf("EXCHANGE_ID with empty principal: got %v, want ErrClientIDInUse", err)
 	}
 	sm.mu.RLock()
 	rec = sm.v41ClientsByOwner[string(ownerID)]

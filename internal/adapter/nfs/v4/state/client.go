@@ -20,6 +20,34 @@ var ErrStaleClientID = errors.New("stale client ID")
 // Maps to NFS4ERR_CLID_INUSE (10017).
 var ErrClientIDInUse = errors.New("client ID in use")
 
+// ErrRenewAccess indicates a RENEW arrived under a principal that neither
+// established the client ID nor holds an open under it (RFC 7530 Section
+// 16.28.5). Maps to NFS4ERR_ACCESS (13).
+var ErrRenewAccess = errors.New("renew principal not permitted for this client ID")
+
+// principalHijacks reports whether a request carrying incoming may take over a
+// client record established by stored.
+//
+// RFC 7530 Section 19 requires the principal on SETCLIENTID and
+// SETCLIENTID_CONFIRM to be "checked against and matched with the previous use
+// of these operations", because those are the operations that release a
+// client's state; Section 9.1.1 states the rule as a MUST NOT on cancelling
+// leased state established by a different principal. RFC 8881 Section 18.35.4
+// case 9 is the same rule for EXCHANGE_ID.
+//
+// A request that carries no identity at all does not match a record that has
+// one. Admitting it would leave the guard reachable only by callers that
+// volunteer a credential: a client ID established under Kerberos would be
+// takeable by an AUTH_NONE caller, and neither SETCLIENTID nor
+// SETCLIENTID_CONFIRM carries a filehandle, so an export's sec= policy never
+// sees the request.
+//
+// A record with no stored principal stays open: it was established without an
+// identity, and there is nothing to check a later request against.
+func principalHijacks(stored, incoming string) bool {
+	return stored != "" && stored != incoming
+}
+
 // ============================================================================
 // Client Record
 // ============================================================================

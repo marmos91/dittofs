@@ -35,6 +35,8 @@ func MapStateError(err error) uint32 {
 		return types.NFS4ERR_STALE_CLIENTID
 	case errors.Is(err, state.ErrClientIDInUse):
 		return types.NFS4ERR_CLID_INUSE
+	case errors.Is(err, state.ErrRenewAccess):
+		return types.NFS4ERR_ACCESS
 	default:
 		return types.NFS4ERR_SERVERFAULT
 	}

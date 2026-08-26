@@ -327,14 +327,17 @@ func encodeCommitArgs(offset uint64, count uint32) []byte {
 // OPEN rejects a clientid that never completed SETCLIENTID /
 // SETCLIENTID_CONFIRM, so tests that drive OPEN must present an established
 // client rather than an arbitrary number. Distinct names give distinct clients.
-func testClientID(t *testing.T, sm *state.StateManager, name string) uint64 {
+//
+// The optional principal is the identity SETCLIENTID_CONFIRM is issued under;
+// omitting it registers a client whose record carries no principal.
+func testClientID(t *testing.T, sm *state.StateManager, name string, principal ...string) uint64 {
 	t.Helper()
 
 	result, err := sm.SetClientID(name, [8]byte{1, 2, 3, 4, 5, 6, 7, 8}, state.CallbackInfo{
 		Program: 0x40000000,
 		NetID:   "tcp",
 		Addr:    "127.0.0.1.8.1",
-	}, "127.0.0.1:1234")
+	}, "127.0.0.1:1234", principal...)
 	if err != nil {
 		t.Fatalf("SetClientID(%s): %v", name, err)
 	}

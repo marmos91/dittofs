@@ -153,10 +153,17 @@ type CompoundContext struct {
 	MinorVersionAccepted bool
 }
 
-// Principal returns a best-effort string identity of the authenticated caller,
-// used as a lease-stealing guard in durable client-recovery records. For
-// AUTH_UNIX it is "uid:N"; otherwise "" (the GSS principal is not threaded onto
-// the compound context today). It is informational, not an authorization input.
+// Principal returns a string identity for the authenticated caller: "uid:N" for
+// AUTH_UNIX and for RPCSEC_GSS, whose principal is resolved to a uid before it
+// reaches here, and "" for AUTH_NONE. The GSS principal itself is not threaded
+// onto the compound context, so two Kerberos principals mapping to one uid are
+// one identity here, and under AUTH_SYS the value is only what the client
+// claimed.
+//
+// It binds a client ID to the identity that established it: the SETCLIENTID and
+// EXCHANGE_ID takeover guards, and the RENEW check of RFC 7530 Section 16.28.5.
+// Those are lease and client-record decisions; per-file access is decided by the
+// AuthContext the operation carries, never by this.
 func (c *CompoundContext) Principal() string {
 	if c.UID != nil {
 		return fmt.Sprintf("uid:%d", *c.UID)
