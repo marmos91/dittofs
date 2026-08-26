@@ -1891,9 +1891,6 @@ func (sm *StateManager) RenewLease(clientID uint64, principal ...string) error {
 	// exactly where it was, or the rejection still hands the caller the effect
 	// it asked for.
 	if !renewPrincipalAllowed(record, firstOrEmpty(principal)) {
-		logger.Info("RenewLease: refusing RENEW from a principal that neither established the client ID nor holds an open",
-			"client_id", clientID,
-			"client_id_str", record.ClientIDString)
 		return ErrRenewAccess
 	}
 
