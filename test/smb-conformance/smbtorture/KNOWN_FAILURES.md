@@ -226,11 +226,12 @@ outstanding known failures in this category.
 
 Lease V2 is implemented; no outstanding known failures in this category.
 
-The last two rows here (`v2_complex1`, `rename_wait`) were never newly broken —
-they sat past the point where `smb2.lease` used to be cut short at 120s (it
-graded 25 of 45 tests), so they were being left ungraded rather than reported.
-Raising the budget made them visible, and both have since been re-measured and
-removed; see the changelog.
+The two rows this section used to carry, `v2_complex1` and `rename_wait`, were
+never newly broken: they sat past the point where `smb2.lease` used to be cut
+short at 120s (it graded 25 of 45 tests), so they were left ungraded rather than
+reported. Raising the budget made them visible, and each was then re-measured and
+removed — `v2_complex1` on 2026-08-25, `rename_wait` on 2026-08-26. Both
+measurements are in the changelog below.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
