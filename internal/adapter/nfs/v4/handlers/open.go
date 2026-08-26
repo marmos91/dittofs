@@ -473,6 +473,7 @@ func (h *Handler) handleOpenClaimNull(
 		[]byte(fileHandle),
 		shareAccess, shareDeny,
 		claimType,
+		ctx.Principal(),
 	)
 	if stateErr != nil {
 		return openError(mapStateError(stateErr))
@@ -573,6 +574,7 @@ func (h *Handler) handleOpenClaimFH(
 		[]byte(fileHandle),
 		shareAccess, shareDeny,
 		claimType,
+		ctx.Principal(),
 	)
 	if stateErr != nil {
 		return openError(mapStateError(stateErr))
@@ -651,6 +653,7 @@ func (h *Handler) handleOpenClaimPrevious(
 		fileHandle,
 		shareAccess, shareDeny,
 		claimType,
+		ctx.Principal(),
 	)
 	if stateErr != nil {
 		nfsStatus := mapStateError(stateErr)
@@ -911,6 +914,7 @@ func (h *Handler) handleOpenClaimDelegateCur(
 		[]byte(fileHandle),
 		shareAccess, shareDeny,
 		types.CLAIM_DELEGATE_CUR,
+		ctx.Principal(),
 	)
 	if stateErr != nil {
 		return openError(mapStateError(stateErr))

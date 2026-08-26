@@ -8,11 +8,11 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// handleRenew implements the RENEW operation (RFC 7530 Section 16.30).
+// handleRenew implements the RENEW operation (RFC 7530 Section 16.28).
 // Renews the lease associated with a client ID to prevent state expiration.
 // Delegates to StateManager.RenewLease for client validation and lease refresh.
 // Extends client lease timer; no file or directory state changes.
-// Errors: NFS4ERR_STALE_CLIENTID, NFS4ERR_EXPIRED, NFS4ERR_BADXDR.
+// Errors: NFS4ERR_STALE_CLIENTID, NFS4ERR_EXPIRED, NFS4ERR_ACCESS, NFS4ERR_BADXDR.
 func (h *Handler) handleRenew(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Read clientid (uint64)
 	clientID, err := xdr.DecodeUint64(reader)
@@ -25,7 +25,7 @@ func (h *Handler) handleRenew(ctx *types.CompoundContext, reader io.Reader) *typ
 	}
 
 	// Delegate to StateManager for validation and lease renewal
-	if err := h.StateManager.RenewLease(clientID); err != nil {
+	if err := h.StateManager.RenewLease(clientID, ctx.Principal()); err != nil {
 		nfsStatus := mapStateError(err)
 		logger.Info("NFSv4 RENEW failed",
 			"client_id", clientID,

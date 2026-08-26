@@ -155,6 +155,18 @@ type OpenOwner struct {
 	// OwnerData is the opaque owner identifier from the client.
 	OwnerData []byte
 
+	// Principal is the authenticated identity that opened under this owner, as
+	// CompoundContext.Principal() renders it, or empty when the OPEN carried no
+	// identity.
+	//
+	// It is not an admission check on OPEN: a client ID spans every principal
+	// on the client, and no operation that carries a filehandle binds to one
+	// (RFC 8881 Section 18.35.3 warns clients off enforcing on such operations
+	// for exactly that reason). It exists for RENEW, whose second permitted
+	// principal is "any principal that currently has an OPEN file on the
+	// server" (RFC 7530 Section 16.28.5).
+	Principal string
+
 	// ownerSeq carries this owner's seqid sequence and replay cache.
 	ownerSeq
 

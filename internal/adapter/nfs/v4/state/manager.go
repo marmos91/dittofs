@@ -432,11 +432,10 @@ func (sm *StateManager) createNewClient(clientIDStr string, verifier [8]byte, ca
 // unconfirmed record that will replace the confirmed one when confirmed.
 // Caller must hold sm.mu.
 func (sm *StateManager) reuseConfirmedClient(confirmed *ClientRecord, clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr, principal string) (*SetClientIDResult, error) {
-	// RFC 7530 Section 9.1.1: if the confirmed record was established by a
-	// principal and this request carries a different non-empty principal,
-	// reject with NFS4ERR_CLID_INUSE. Prevents a third party that knows the
-	// client ID string + verifier from hijacking the client's lease/state.
-	if confirmed.Principal != "" && principal != "" && confirmed.Principal != principal {
+	// Reject a re-SETCLIENTID by anyone but the principal that established the
+	// confirmed record: it would hijack the client's lease and state. See
+	// principalHijacks.
+	if principalHijacks(confirmed.Principal, principal) {
 		return nil, ErrClientIDInUse
 	}
 
@@ -488,11 +487,11 @@ func (sm *StateManager) reuseConfirmedClient(confirmed *ClientRecord, clientIDSt
 // the new one is confirmed in SETCLIENTID_CONFIRM.
 // Caller must hold sm.mu.
 func (sm *StateManager) handleClientReboot(clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr, principal string) (*SetClientIDResult, error) {
-	// RFC 7530 Section 9.1.1: a reboot (different verifier) from a different
-	// non-empty principal than the confirmed record is a hijack attempt, not a
-	// real reboot. Reject with NFS4ERR_CLID_INUSE.
+	// A reboot (different verifier) claimed by anyone but the principal that
+	// established the confirmed record is a hijack attempt, not a real reboot.
+	// See principalHijacks.
 	if confirmed := sm.clientsByName[clientIDStr]; confirmed != nil {
-		if confirmed.Principal != "" && principal != "" && confirmed.Principal != principal {
+		if principalHijacks(confirmed.Principal, principal) {
 			return nil, ErrClientIDInUse
 		}
 	}
@@ -1118,6 +1117,7 @@ func (sm *StateManager) OpenFile(
 	fileHandle []byte,
 	shareAccess, shareDeny uint32,
 	claimType uint32,
+	principal ...string,
 ) (result *OpenFileResult, err error) {
 	// Grace period checks (before acquiring sm.mu)
 	switch claimType {
@@ -1171,6 +1171,7 @@ func (sm *StateManager) OpenFile(
 	// Look up or create the open-owner
 	ownerKey := makeOwnerKey(clientID, ownerData)
 	owner, ownerExists := sm.openOwners[ownerKey]
+	princ := firstOrEmpty(principal)
 
 	if ownerExists {
 		// Existing owner: validate seqid
@@ -1201,6 +1202,13 @@ func (sm *StateManager) OpenFile(
 		owner = &OpenOwner{
 			ClientID:  clientID,
 			OwnerData: make([]byte, len(ownerData)),
+			// ponytail: recorded once, at the OPEN that creates the owner,
+			// rather than per open state as FreeBSD's ls_uid is. Every client
+			// that matters keys its open-owners by credential (Linux
+			// nfs4_get_state_owner takes the cred), so one principal per owner
+			// holds; track it per OpenState only if a client turns up that
+			// shares an owner across users.
+			Principal: princ,
 
 			Confirmed:    false,
 			OpenStates:   make([]*OpenState, 0),
@@ -1811,16 +1819,58 @@ func (sm *StateManager) GetOpenState(other [types.NFS4_OTHER_SIZE]byte) *OpenSta
 // Lease Operations (, Task 4)
 // ============================================================================
 
+// renewPrincipalAllowed reports whether principal may renew record's lease.
+//
+// RFC 7530 Section 16.28.5 names exactly two permitted callers: the principal
+// that established the client ID via SETCLIENTID_CONFIRM, and any principal
+// that currently has an OPEN file on the server under that client ID. A RENEW
+// from anyone else "MUST" be rejected with NFS4ERR_ACCESS -- without which any
+// caller that has seen a clientid on the wire can hold a lease, and the state
+// it anchors, open indefinitely.
+//
+// The second caller is what keeps a multi-user mount working: one client ID
+// covers every user on the client, and the RFC expects a lease held on behalf
+// of all of them to be renewable by any of them.
+//
+// Two callers are admitted that the RFC does not name:
+//
+//   - A record with no principal recorded. SETCLIENTID under AUTH_NONE stores
+//     no identity, and there is nothing to compare a later RENEW against.
+//   - uid 0. The Linux client sends SETCLIENTID_CONFIRM and RENEW under a
+//     machine credential, which for AUTH_SYS is uid 0; a client that instead
+//     established the ID as a user and renews as root would otherwise stall.
+//     RFC 7530 speaks of principals and says nothing about AUTH_SYS uids, and
+//     FreeBSD's server carries the same exemption for the same reason.
+//
+// Caller must hold sm.mu.
+func renewPrincipalAllowed(record *ClientRecord, principal string) bool {
+	if record.Principal == "" || principal == record.Principal || principal == rootPrincipal {
+		return true
+	}
+	for _, owner := range record.OpenOwners {
+		if owner.Principal == principal && len(owner.OpenStates) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // RenewLease implements the RENEW operation's state management.
 //
-// Per RFC 7530 Section 16.29:
+// Per RFC 7530 Section 16.28:
 //   - Validates the client ID exists and is confirmed
+//   - Validates the caller may renew this client's lease (Section 16.28.5)
 //   - Resets the lease timer and updates LastRenewal
 //   - Returns ErrStaleClientID if client is unknown or unconfirmed
 //   - Returns NFS4ERR_EXPIRED if the lease has already expired
+//   - Returns NFS4ERR_ACCESS if the caller is not one of the principals
+//     Section 16.28.5 permits
+//
+// The trailing principal is variadic so callers and tests that do not thread an
+// auth principal keep compiling; production passes ctx.Principal().
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) RenewLease(clientID uint64) error {
+func (sm *StateManager) RenewLease(clientID uint64, principal ...string) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -1828,6 +1878,16 @@ func (sm *StateManager) RenewLease(clientID uint64) error {
 	record, exists := sm.clientsByID[clientID]
 	if !exists {
 		return ErrStaleClientID
+	}
+
+	// Checked before the renewal below: a refused RENEW must leave the lease
+	// exactly where it was, or the rejection still hands the caller the effect
+	// it asked for.
+	if !renewPrincipalAllowed(record, firstOrEmpty(principal)) {
+		logger.Info("RenewLease: refusing RENEW from a principal that neither established the client ID nor holds an open",
+			"client_id", clientID,
+			"client_id_str", record.ClientIDString)
+		return ErrRenewAccess
 	}
 
 	if err := renewConfirmedClient(record.Confirmed, record.Lease, &record.LastRenewal); err != nil {
