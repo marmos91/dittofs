@@ -225,3 +225,66 @@ func TestSetInfo_BasicInfo_ExplicitSetThenSentinelUnfreeze(t *testing.T) {
 		t.Errorf("FrozenMtime not cleared after -2 unfreeze")
 	}
 }
+
+// TestSetInfo_BasicInfo_AttributeSetLeavesLastWriteTime covers the case the two
+// tests above do not: a handle that has never set a timestamp explicitly, so
+// nothing is frozen and the suppression guards do not apply. MS-FSA 2.1.5.15.2's
+// attribute branch updates LastChangeTime and never LastModificationTime, so an
+// attribute-only SET_INFO must leave Mtime where it was.
+func TestSetInfo_BasicInfo_AttributeSetLeavesLastWriteTime(t *testing.T) {
+	h, authCtx, fileHandle, open := setupBasicInfoTimestampTest(t)
+	metaSvc := h.Registry.GetMetadataService()
+
+	before, err := metaSvc.GetFile(authCtx.Context, fileHandle)
+	if err != nil {
+		t.Fatalf("GetFile before: %v", err)
+	}
+	wantMtime := before.Mtime
+	if open.MtimeFrozen {
+		t.Fatal("precondition: a fresh handle must not have Mtime frozen")
+	}
+
+	// Attribute-only set: every timestamp field zero ("do not change").
+	buf := encodeBasicInfo(0, 0, 0, 0, types.FileAttributeHidden)
+	resp, err := h.setFileInfoFromStore(nil, authCtx, open, types.FileBasicInformation, buf)
+	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
+		t.Fatalf("attribute-only setFileInfoFromStore: err=%v status=%v", err, resp)
+	}
+
+	after, err := metaSvc.GetFile(authCtx.Context, fileHandle)
+	if err != nil {
+		t.Fatalf("GetFile after: %v", err)
+	}
+	if !after.Mtime.Equal(wantMtime) {
+		t.Errorf("Mtime = %v after an attribute-only SET_INFO; want %v unchanged",
+			after.Mtime.UTC(), wantMtime.UTC())
+	}
+	// The attribute itself must still have landed, or the assertion above would
+	// pass simply because nothing happened.
+	if FileAttrToSMBAttributes(&after.FileAttr)&types.FileAttributeHidden == 0 {
+		t.Error("HIDDEN was not applied; the Mtime assertion above proves nothing")
+	}
+}
+
+// TestSetInfo_BasicInfo_ExplicitLastWriteTimeStillLands is the control for the
+// test above: removing the attribute-driven bump must not disturb an explicit
+// LastWriteTime set on an otherwise untouched handle.
+func TestSetInfo_BasicInfo_ExplicitLastWriteTimeStillLands(t *testing.T) {
+	h, authCtx, fileHandle, open := setupBasicInfoTimestampTest(t)
+	metaSvc := h.Registry.GetMetadataService()
+
+	wantWrite := time.Date(2032, 3, 4, 5, 6, 7, 0, time.UTC)
+	buf := encodeBasicInfo(0, 0, types.TimeToFiletime(wantWrite), 0, 0)
+	resp, err := h.setFileInfoFromStore(nil, authCtx, open, types.FileBasicInformation, buf)
+	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
+		t.Fatalf("explicit LastWriteTime setFileInfoFromStore: err=%v status=%v", err, resp)
+	}
+
+	file, err := metaSvc.GetFile(authCtx.Context, fileHandle)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	if !file.Mtime.Equal(wantWrite) {
+		t.Errorf("Mtime = %v after an explicit set; want %v", file.Mtime.UTC(), wantWrite.UTC())
+	}
+}
