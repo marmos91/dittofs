@@ -682,7 +682,7 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(types.StatusInvalidParameter), nil
 		}
 
-		// Per MS-FSA 2.1.5.14.10: Rename requires DELETE access on the source file.
+		// Per MS-FSA 2.1.5.15.12 ("FileRenameInformation"): Rename requires DELETE access on the source file.
 		// Gate consults Open.GrantedAccess (post-DACL intersection at CREATE), not
 		// the pre-DACL DesiredAccess — same fix class as #616 (ChangeNotify).
 		if !hasDeleteAccess(openFile.GrantedAccess) {
@@ -692,7 +692,7 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(types.StatusAccessDenied), nil
 		}
 
-		// Per MS-FSA 2.1.5.14.10: Before renaming, check that no other open
+		// Per MS-FSA 2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File"): Before renaming, check that no other open
 		// handle on the same file conflicts with the rename. Specifically,
 		// all other opens must have FILE_SHARE_DELETE (0x04) in ShareAccess.
 		// (Destination-parent share-mode probe runs further below, after toDir
@@ -748,7 +748,7 @@ func (h *Handler) setFileInfoFromStore(
 			oldFileName := oldName.FileName
 			oldParentPath := GetParentPath(oldName.Path)
 
-			// Per MS-FSA 2.1.5.14.10: Save mtime/ctime before rename
+			// Per MS-FSA 2.1.5.15.12 ("FileRenameInformation"): Save mtime/ctime before rename
 			restoreTimestamps := h.saveTimestamps(authCtx, openFile.MetadataHandle)
 
 			// Perform the rename
@@ -978,7 +978,7 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(types.StatusSharingViolation), nil
 		}
 
-		// Pre-rename lease break: per MS-FSA §2.1.5.14.10 + Samba
+		// Pre-rename lease break: per MS-FSA §2.1.5.15.12 ("FileRenameInformation") + Samba
 		// `source3/smbd/smb2_setinfo.c::smbd_smb2_rename`, dispatch breaks on
 		// any other-key lease holder of the source file (and, on overwrite,
 		// the destination too) before applying the rename. Sync wait (mirrors
@@ -997,7 +997,7 @@ func (h *Handler) setFileInfoFromStore(
 		// Destination handling: when ReplaceIfExists=true and the destination
 		// exists, dispatch the dst H-lease break (RWH→RW). Even after that
 		// break drains, ANY open handle on dst blocks the overwrite per
-		// MS-FSA §2.1.5.14.10 — surface STATUS_ACCESS_DENIED. The dst close
+		// MS-FSA §2.1.5.15.12 ("FileRenameInformation") — surface STATUS_ACCESS_DENIED. The dst close
 		// path (smbtorture v2_rename_target_overwrite stage 3) clears
 		// the open and the post-wait recheck then proceeds to the rename.
 		isOverwrite := renameInfo.ReplaceIfExists
@@ -1145,7 +1145,7 @@ func (h *Handler) setFileInfoFromStore(
 		oldParentPath := GetParentPath(oldPath)
 		srcParentHandle := oldName.ParentHandle
 
-		// Per MS-FSA 2.1.5.14.10: Save mtime/ctime before rename so we can
+		// Per MS-FSA 2.1.5.15.12 ("FileRenameInformation"): Save mtime/ctime before rename so we can
 		// restore them after. Rename should NOT update the file's timestamps.
 		restoreTimestamps := h.saveTimestamps(authCtx, openFile.MetadataHandle)
 
@@ -1183,8 +1183,9 @@ func (h *Handler) setFileInfoFromStore(
 			h.restoreParentDirFrozenTimestamps(authCtx, toDir)
 		}
 
-		// Per MS-FSA 2.1.5.14.10: On successful completion of a rename,
-		// if the file was marked for delete-on-close, clear that disposition.
+		// On successful completion of a rename, if the file was marked for
+		// delete-on-close, clear that disposition. MS-FSA states no such rule;
+		// 2.1.5.15.12 instead fails a rename whose Open.Link.IsDeleted is TRUE.
 		// This prevents the renamed file from being deleted when the handle closes.
 		openFile.mu.Lock()
 		clearedDOC := openFile.DeletePending
@@ -1241,7 +1242,7 @@ func (h *Handler) setFileInfoFromStore(
 		openFile.mu.Unlock()
 		h.StoreOpenFile(openFile)
 
-		// Per MS-FSA 2.1.5.14.10 (smbtorture smb2.dirlease.rename):
+		// Per MS-FSA 2.1.5.15.12 ("FileRenameInformation") (smbtorture smb2.dirlease.rename):
 		// rename changes directory contents on BOTH source and destination
 		// parents. Break Handle + Read dir leases on each (RH → ""), honoring
 		// the renamer's ParentLeaseKey suppression from C2. Skip the dst
@@ -1291,7 +1292,7 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(types.StatusAccessDenied), nil
 		}
 
-		// Per MS-FSA 2.1.5.14.3: Setting delete disposition requires DELETE access.
+		// Per MS-FSA 2.1.5.15.3 ("FileDispositionInformation"): Setting delete disposition requires DELETE access.
 		// Gate consults Open.GrantedAccess (post-DACL intersection at CREATE), not
 		// the pre-DACL DesiredAccess — same fix class as #616 (ChangeNotify).
 		if deletePending {
@@ -1339,7 +1340,7 @@ func (h *Handler) setFileInfoFromStore(
 			}
 		}
 
-		// Per MS-FSA 2.1.5.14.3 / Samba source3/smbd/smb2_setinfo.c
+		// Per MS-FSA 2.1.4.12 ("Algorithm to Check for an Oplock Break") / Samba source3/smbd/smb2_setinfo.c
 		// (smbd_smb2_setinfo_lease_break_fsp_check): when delete disposition
 		// is *being set* on a non-directory file, strip Handle caching from
 		// every other holder's lease (RH -> R, RWH -> RW). The file is on
@@ -1395,7 +1396,7 @@ func (h *Handler) setFileInfoFromStore(
 		authCtx.WriteAuthorizedByHandle = hasWriteAccess(openFile.GrantedAccess)
 
 		// Break Level II (Read) oplocks held by other clients.
-		// Per MS-SMB2 3.3.5.21.2 / MS-FSA 2.1.5.14.4: truncation is a
+		// Per MS-SMB2 3.3.5.21.2 / MS-FSA 2.1.5.15.5 ("FileEndOfFileInformation"): truncation is a
 		// data-modifying operation that invalidates read caches.
 		// Required by smbtorture smb2.oplock.batch11/batch12.
 		if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
@@ -1423,7 +1424,10 @@ func (h *Handler) setFileInfoFromStore(
 
 		metaSvc := h.Registry.GetMetadataService()
 
-		// Per MS-FSA 2.1.5.14.4: Check for conflicting byte-range locks.
+		// Check for conflicting byte-range locks. MS-FSA does not route a
+		// FileEndOfFileInformation set through the lock-conflict algorithm of
+		// 2.1.4.10; this reuses it to match Windows, which fails a truncate into
+		// a range another session holds locked.
 		// When truncating, the region from newSize to the current EOF must not
 		// have locks from other sessions. We check the entire range from newSize
 		// to max as a write operation (truncation is destructive).
@@ -1505,7 +1509,7 @@ func (h *Handler) setFileInfoFromStore(
 		// FILE_ALLOCATION_INFORMATION [MS-FSCC] 2.4.4.
 		//
 		// Allocation size is not persisted (DittoFS does not preallocate), but
-		// per MS-FSA 2.1.5.14.1 and Samba `smbd_smb2_setinfo_lease_break_fsp_check`
+		// per MS-FSA 2.1.5.15.1 ("FileAllocationInformation") and Samba `smbd_smb2_setinfo_lease_break_fsp_check`
 		// (source3/smbd/smb2_setinfo.c) setting allocation is a data-modifying
 		// operation: it must break Read (Level II) leases on the same file the
 		// same way SET_EOF does. Without this, a remote reader that cached the
@@ -1528,7 +1532,7 @@ func (h *Handler) setFileInfoFromStore(
 			requested := smbenc.NewReader(buffer[:8]).ReadUint64()
 			openFile.RequestedAllocSize = allocReservationFor(openFile.IsDirectory, requested)
 
-			// Per MS-FSA 2.1.5.14.1: when the requested AllocationSize is
+			// Per MS-FSA 2.1.5.15.1 ("FileAllocationInformation"): when the requested AllocationSize is
 			// smaller than the file's current EndOfFile, the EndOfFile is
 			// truncated down to the allocation size (allocation can never be
 			// less than the valid data length). smbtorture smb2.setinfo
@@ -1584,7 +1588,7 @@ func (h *Handler) setFileInfoFromStore(
 		}
 		modeMask := fileModeInformationModeMask
 		mode := types.CreateOptions(smbenc.NewReader(buffer[:4]).ReadUint32())
-		// Per MS-FSA 2.1.5.14.13: any bit set outside the valid FILE_MODE_*
+		// Per MS-FSA 2.1.5.15.8 ("FileModeInformation"): any bit set outside the valid FILE_MODE_*
 		// set is invalid and the server MUST return STATUS_INVALID_PARAMETER.
 		// smbtorture smb2.setinfo (setinfo.c:269) sets a reserved-bit value
 		// (e.g. FILE_DIRECTORY_FILE, 0x1) and asserts the rejection.
@@ -1684,7 +1688,7 @@ func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
 
 // saveTimestamps reads the current Mtime and Ctime of a file and returns a
 // restore function that writes them back. Used to preserve timestamps across
-// rename operations (per MS-FSA 2.1.5.14.10, rename should not change timestamps).
+// rename operations (per MS-FSA 2.1.5.15.12 ("FileRenameInformation"), rename should not change timestamps).
 // Returns a no-op if the read fails.
 func (h *Handler) saveTimestamps(authCtx *metadata.AuthContext, handle metadata.FileHandle) func() {
 	metaSvc := h.Registry.GetMetadataService()
@@ -2283,11 +2287,11 @@ func DecodeFileLinkInfo(buffer []byte) (*FileLinkInfo, error) {
 // 2.4.28 (FileLinkInformation): create a new hard link to the open file in the requested
 // destination directory.
 //
-// Per MS-FSA 2.1.5.14.5: the operation creates a NEW directory entry in the
+// Per MS-FSA 2.1.5.15.7 ("FileLinkInformation"): the operation creates a NEW directory entry in the
 // destination directory that references the same file ID as the open file.
 // Returns STATUS_OBJECT_NAME_COLLISION if the destination already exists and
 // ReplaceIfExists is FALSE; STATUS_FILE_IS_A_DIRECTORY if the open file is a
-// directory (hard-linking directories is forbidden, MS-FSA 2.1.5.14.5).
+// directory (hard-linking directories is forbidden, MS-FSA 2.1.5.15.7 ("FileLinkInformation")).
 //
 // Directory-lease coordination (smb2.dirlease.hardlink): a hardlink
 // is an add-entry in the destination parent. We thread the open file's RqLs
@@ -2312,7 +2316,7 @@ func (h *Handler) handleFileLinkInformation(
 		return setInfoStatus(types.StatusInvalidParameter), nil
 	}
 
-	// Hard-linking a directory is forbidden (MS-FSA 2.1.5.14.5).
+	// Hard-linking a directory is forbidden (MS-FSA 2.1.5.15.7 ("FileLinkInformation")).
 	if openFile.IsDirectory {
 		logger.Debug("SET_INFO: hardlink on directory rejected",
 			"path", openFile.Name().Path)

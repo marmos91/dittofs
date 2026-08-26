@@ -2543,7 +2543,7 @@ func adsBaseName(fileName string) string {
 }
 
 // checkShareDeleteConflict checks if any other open handle on the same file
-// lacks FILE_SHARE_DELETE in its ShareAccess. Per MS-FSA 2.1.5.14.10, a rename
+// lacks FILE_SHARE_DELETE in its ShareAccess. Per MS-FSA 2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File"), a rename
 // requires all other opens to permit delete sharing. Returns true if a conflict
 // exists (rename should be blocked with STATUS_SHARING_VIOLATION).
 func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
@@ -2702,7 +2702,7 @@ func (h *Handler) anyOpenChild(dirHandle metadata.FileHandle) bool {
 
 // hasOpenHandleOnFile reports whether any open file handle (other than the
 // renamer's own handle) currently references targetMeta. Used by the
-// SET_INFO FileRenameInformation handler to enforce MS-FSA §2.1.5.14.10
+// SET_INFO FileRenameInformation handler to enforce MS-FSA §2.1.5.15.12 ("FileRenameInformation")
 // "rename overwrite onto an open file" — once any H-lease on the destination
 // has been broken to RW, the destination's open handle still blocks the
 // overwrite and must surface as STATUS_ACCESS_DENIED.

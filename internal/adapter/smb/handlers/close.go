@@ -866,7 +866,7 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 // cascadeDeleteADSStreams removes all alternate data streams belonging to a
 // base file that was just deleted. ADS streams are stored as sibling entries
 // in the parent directory with names like "baseFile:streamName:$DATA".
-// Per MS-FSA 2.1.5.9.7, deleting a file deletes all its streams.
+// Per MS-FSA 2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File"), deleting a file deletes all its streams.
 func (h *Handler) cascadeDeleteADSStreams(authCtx *metadata.AuthContext, metaSvc *metadata.Service, openFile *OpenFile) {
 	name := openFile.Name()
 	prefix := name.FileName + ":"

@@ -554,7 +554,7 @@ func (h *Handler) recheckExistingFileGates(d *createDraft, effectiveAccess uint3
 	// the QUERY_INFO open-level access gate (MS-SMB2 §3.3.5.20.1).
 	if fileExists && existingFile != nil {
 		// Fetch parent so CheckFileAccessWithParent can apply the
-		// FILE_DELETE_CHILD override per MS-FSA §2.1.4.13 (Samba
+		// FILE_DELETE_CHILD override per MS-FSA §2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File") (Samba
 		// parent_override_delete). Best-effort: a parent-lookup failure
 		// falls back to file-only DACL evaluation (nil parent is safe).
 		var parentFile *metadata.File

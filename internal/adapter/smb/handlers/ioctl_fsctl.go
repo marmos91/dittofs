@@ -126,7 +126,7 @@ func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 }
 
 // handleGetIntegrityInfo handles FSCTL_GET_INTEGRITY_INFORMATION [MS-FSCC] 2.3.19 (FSCTL_GET_INTEGRITY_INFORMATION Request).
-// Per MS-FSA 2.1.5.9.15: if the object store does not implement this functionality,
+// Per MS-FSA 2.1.5.10.10 ("FSCTL_GET_INTEGRITY_INFORMATION"): if the object store does not implement this functionality,
 // the operation MUST be failed with STATUS_INVALID_DEVICE_REQUEST.
 func (h *Handler) handleGetIntegrityInfo(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	logger.Debug("IOCTL FSCTL_GET_INTEGRITY_INFORMATION: not supported (INVALID_DEVICE_REQUEST)")
@@ -134,7 +134,7 @@ func (h *Handler) handleGetIntegrityInfo(ctx *SMBHandlerContext, body []byte) (*
 }
 
 // handleSetIntegrityInfo handles FSCTL_SET_INTEGRITY_INFORMATION [MS-FSCC] 2.3.73 (FSCTL_SET_INTEGRITY_INFORMATION Request).
-// Per MS-FSA 2.1.5.9.29: if the object store does not implement this functionality,
+// Per MS-FSA 2.1.5.10.33 ("FSCTL_SET_INTEGRITY_INFORMATION"): if the object store does not implement this functionality,
 // the operation MUST be failed with STATUS_INVALID_DEVICE_REQUEST.
 func (h *Handler) handleSetIntegrityInfo(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	logger.Debug("IOCTL FSCTL_SET_INTEGRITY_INFORMATION: not supported (INVALID_DEVICE_REQUEST)")
@@ -143,7 +143,7 @@ func (h *Handler) handleSetIntegrityInfo(ctx *SMBHandlerContext, body []byte) (*
 
 // handleGetObjectID handles FSCTL_GET_OBJECT_ID [MS-FSCC] 2.3.25 (FSCTL_GET_OBJECT_ID Request).
 // Returns a deterministic object ID derived from the file handle.
-// Per MS-FSA 2.1.5.9.17: return the object ID for the file.
+// Per MS-FSA 2.1.5.10.13 ("FSCTL_GET_OBJECT_ID"): return the object ID for the file.
 func (h *Handler) handleGetObjectID(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	return h.buildObjectIDResponse(FsctlGetObjectID, body)
 }
@@ -190,7 +190,7 @@ func (h *Handler) buildObjectIDResponse(ctlCode uint32, body []byte) (*HandlerRe
 }
 
 // handleMarkHandle handles FSCTL_MARK_HANDLE [MS-FSCC] 2.3.39 (FSCTL_MARK_HANDLE Request).
-// Per MS-FSA 2.1.5.9.20: for directory streams, fail with STATUS_DIRECTORY_NOT_SUPPORTED.
+// Per MS-FSA 2.1.5.10.19 ("FSCTL_MARK_HANDLE"): for directory streams, fail with STATUS_DIRECTORY_NOT_SUPPORTED.
 // For data streams, return STATUS_SUCCESS.
 func (h *Handler) handleMarkHandle(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	fileID, ok := parseIoctlFileID(body)
@@ -205,7 +205,7 @@ func (h *Handler) handleMarkHandle(ctx *SMBHandlerContext, body []byte) (*Handle
 
 	logger.Debug("IOCTL FSCTL_MARK_HANDLE", "path", openFile.Name().Path, "isDir", openFile.IsDirectory)
 
-	// Per MS-FSA 2.1.5.9.20: if StreamType == DirectoryStream, fail
+	// Per MS-FSA 2.1.5.10.19 ("FSCTL_MARK_HANDLE"): if StreamType == DirectoryStream, fail
 	if openFile.IsDirectory {
 		return NewErrorResult(statusDirectoryNotSupported), nil
 	}

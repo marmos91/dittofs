@@ -1041,7 +1041,7 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpenAsync(
 
 // BreakLeasesOnRename dispatches lease break notifications on the source
 // (and optionally destination) file before a SET_INFO FileRenameInformation
-// applies to metadata. Per MS-FSA §2.1.5.14.10 and Samba
+// applies to metadata. Per MS-FSA §2.1.4.12 ("Algorithm to Check for an Oplock Break") and Samba
 // `source3/smbd/smb2_setinfo.c::smbd_smb2_rename`, rename participates in the
 // same break processing as CREATE: any concurrent open whose Handle caching
 // would be invalidated by the rename must be notified first.
@@ -1091,7 +1091,7 @@ func (lm *LeaseManager) BreakLeasesOnRename(
 }
 
 // BreakFileHandleLeasesOnDelete strips Handle caching from all leases on a
-// file that is about to be unlinked (RH → R, RWH → RW). Per MS-FSA 2.1.5.1.5
+// file that is about to be unlinked (RH → R, RWH → RW). Per MS-FSA 2.1.4.12 ("Algorithm to Check for an Oplock Break")
 // and Samba: deleting a file invalidates Handle caching for every other open
 // (the reopen path no longer exists), but Read and Write remain valid for as
 // long as the in-flight handles stay alive.

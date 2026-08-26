@@ -60,7 +60,7 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 	path := openFile.Name().Path
 
 	// FSCTL_SET_SPARSE is a file-only operation. Directories take
-	// STATUS_INVALID_PARAMETER per MS-FSA §2.1.5.9.36 and Windows behaviour.
+	// STATUS_INVALID_PARAMETER per MS-FSA §2.1.5.10.38 ("FSCTL_SET_SPARSE") and Windows behaviour.
 	if openFile.IsDirectory {
 		logger.Debug("IOCTL FSCTL_SET_SPARSE: rejected on directory",
 			"path", path)
@@ -131,7 +131,7 @@ const fileAllocatedRangeBufSize = 16
 // satisfies smb2.ioctl.sparse_punch which asserts that SET_ZERO_DATA on a
 // sparse file makes the punched range disappear from QAR.
 //
-// Output buffer handling (MS-FSA §2.1.5.10.4, Samba `fsctl_qar`):
+// Output buffer handling (MS-FSA §2.1.5.10.22 ("FSCTL_QUERY_ALLOCATED_RANGES"), Samba `fsctl_qar`):
 //   - MaxOutputResponse == 0 and at least one range to report:
 //     STATUS_BUFFER_TOO_SMALL (smb2.ioctl.sparse_qar_malformed).
 //   - MaxOutputResponse < total range bytes: truncate to whole entries that

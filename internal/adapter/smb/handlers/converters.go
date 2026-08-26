@@ -299,7 +299,7 @@ func FileAttrToFileStandardInfo(attr *metadata.FileAttr, isDeletePending bool) *
 	allocationSize := calculateAllocationSize(size)
 
 	// NumberOfLinks reflects the open's delete-on-close disposition. Per Windows
-	// / MS-FSA §2.1.5.11.6, once a handle marks the file for deletion the file is
+	// / MS-FSA §2.1.5.12.27 ("FileStandardInformation"), once a handle marks the file for deletion the file is
 	// on its way out and FILE_STANDARD_INFORMATION reports NumberOfLinks = 0;
 	// clearing the disposition restores it to the real link count (>= 1).
 	// smbtorture smb2.setinfo (setinfo.c:229) asserts nlink == 0 with

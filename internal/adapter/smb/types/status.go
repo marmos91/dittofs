@@ -223,7 +223,8 @@ const (
 
 	// StatusCannotDelete indicates the file cannot be deleted because
 	// it is read-only or otherwise protected.
-	// Per MS-FSA 2.1.5.1.2.1 and 2.1.5.14.3.
+	// Per MS-FSA 2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File")
+	// and 2.1.5.15.3 ("FileDispositionInformation").
 	StatusCannotDelete Status = 0xC0000121
 
 	// StatusInvalidLockRange indicates the lock range (offset+length) overflows
