@@ -334,6 +334,11 @@ jobs:
           sc.exe config LanmanServer start= disabled | Out-Null
           sc.exe config srv2 start= disabled | Out-Null
           sc.exe config srvnet start= disabled | Out-Null
+          # Timing only: the stopwatch and the log line below do not change
+          # whether or when the loop gives up. It starts here so the measured
+          # span matches what the log shows -- from the first stop request to
+          # the moment 445 is observed free, or to the give-up.
+          $stopWatch = [Diagnostics.Stopwatch]::StartNew()
           foreach ($svc in 'LanmanServer','srv2','srvnet') {
             sc.exe stop $svc 2>&1 | Out-String | Write-Host
           }
@@ -344,7 +349,23 @@ jobs:
             sc.exe stop srvnet 2>&1 | Out-Null
             Start-Sleep -Seconds 2
           }
+          $stopWatch.Stop()
           Write-Host "TCP 445 freed for DittoFS: $freed (false => hosted-runner kernel listener; net use cannot reach DittoFS without a reboot)"
+          # Emitted on every run, not only on give-ups. srvnet enters
+          # STOP_PENDING either way, so telling "slow to stop" apart from
+          # "never stops" needs the durations of the runs that freed 445 as
+          # well as the ones that ran out of budget; a give-up otherwise
+          # records only the verdict. srvnet_state distinguishes a driver
+          # still pending at the deadline from one that reached STOPPED.
+          # failed_polls is the loop counter at exit, which is the number of
+          # polls that still saw 445 held -- 0 when the first poll found it
+          # free, 15 when the budget ran out. It is deliberately not the number
+          # of polls performed: that is failed_polls+1 after an early break but
+          # only 15 after exhaustion, so it would not mean the same thing on
+          # both paths.
+          $srvnetState = (sc.exe query srvnet 2>&1 | Select-String -Pattern 'STATE' | ForEach-Object { ($_.Line -replace '\s+', ' ').Trim() }) -join ' '
+          if (-not $srvnetState) { $srvnetState = 'unknown' }
+          Write-Host "srvnet-stop-timing freed=$freed elapsed_ms=$([int]$stopWatch.Elapsed.TotalMilliseconds) failed_polls=$i srvnet_state='$srvnetState'"
           (Get-NetTCPConnection -LocalPort 445 -State Listen -ErrorAction SilentlyContinue) | Format-Table -AutoSize
           # The net use assertions below are gated on this: the redirector can
           # only reach DittoFS when DittoFS owns 445. Asserting anyway turns an
