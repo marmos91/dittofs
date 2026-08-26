@@ -385,6 +385,22 @@ func (c *Connection) Serve(ctx context.Context) {
 		if len(remainingCompound) == 0 && hdr.Command != types.CommandClose {
 			if fid, ok := smb.ExtractRequestFileID(hdr.Command, body); ok {
 				releaseHandleOp = c.server.handler.BeginHandleOp(fid)
+
+				// Record CHANGE_NOTIFY arrival order before dispatch. This loop
+				// is sequential, so a notify recorded here was demonstrably
+				// received before any later one — which the handler goroutines,
+				// scheduled in any order, cannot otherwise tell. Only
+				// CHANGE_NOTIFY pays for this; every other command's path is
+				// unchanged.
+				if hdr.Command == types.CommandChangeNotify {
+					releaseNotify := c.server.handler.NotifyRegistry.MarkNotifyInFlight(fid, ci.ConnID, hdr.MessageID)
+					releaseHandleOp = func(prev func()) func() {
+						return func() {
+							releaseNotify()
+							prev()
+						}
+					}(releaseHandleOp)
+				}
 			}
 		}
 

@@ -247,6 +247,29 @@ type NotifyRegistry struct {
 	byMsgKey  map[notifyMsgKey]*PendingNotify
 	byAsyncId map[uint64]*PendingNotify // asyncId -> pending request (for async CANCEL)
 
+	// inFlightNotify tracks CHANGE_NOTIFY requests that the connection's read
+	// loop has read off the wire but whose handlers have not finished, keyed
+	// by handle. Each connection's read loop is sequential, and under
+	// multichannel several of them append here under this registry's one
+	// mutex — so the slice records a real arrival order across connections,
+	// and element 0 is the earliest-received request still outstanding.
+	//
+	// Order is the slice's, NOT the MessageID's. SMB2 clients may consume
+	// MessageIDs out of order within the credit sequence window, so a numeric
+	// comparison would call 100 "later" than 50 even when 100 arrived first.
+	//
+	// Entries are (ConnID, MessageID) because MessageID is scoped per TCP
+	// connection. A FileID is valid on every channel of a session, so under
+	// SMB3 multichannel two notifies on one handle can arrive on different
+	// connections carrying the SAME MessageID — and a bare MessageID could
+	// not tell them apart. See HasEarlierInFlightNotify.
+	//
+	// ponytail: linear scan of a slice. N is one client's CHANGE_NOTIFY
+	// pipelining depth on one handle — 1 or 2 in practice — so a map costs
+	// more than it saves. Swap for an ordered structure only if a client
+	// appears that pipelines notifies deeply enough to measure.
+	inFlightNotify map[string][]notifyMsgKey
+
 	// armed tracks directory handles that have at some point issued a
 	// CHANGE_NOTIFY. Mirrors Samba `notify_buffer`: once a watcher has been
 	// "armed" on a handle, subsequent matching filesystem events MUST be
@@ -374,6 +397,7 @@ func NewNotifyRegistry() *NotifyRegistry {
 		byFileID:         make(map[string]*PendingNotify),
 		byMsgKey:         make(map[notifyMsgKey]*PendingNotify),
 		byAsyncId:        make(map[uint64]*PendingNotify),
+		inFlightNotify:   make(map[string][]notifyMsgKey),
 		armed:            make(map[string]*armedHandle),
 		cancelTombstones: make(map[notifyMsgKey]time.Time),
 		closeTombstones:  make(map[string]time.Time),
@@ -1566,6 +1590,56 @@ func (r *NotifyRegistry) NotifyRmdir(shareName, parentPath, dirName string) {
 
 	// Second: notify parent watchers about the directory removal
 	r.NotifyChange(shareName, parentPath, dirName, FileActionRemoved, FileNotifyChangeDirName)
+}
+
+// MarkNotifyInFlight records that a CHANGE_NOTIFY for fileID has been read off
+// the wire, and returns the function that clears it when the handler is done.
+// Called from the connection read loop, before dispatch, for CHANGE_NOTIFY only
+// — every other command's path is untouched.
+func (r *NotifyRegistry) MarkNotifyInFlight(fileID [16]byte, connID, messageID uint64) func() {
+	key := string(fileID[:])
+	mk := notifyMsgKey{ConnID: connID, MessageID: messageID}
+	r.mu.Lock()
+	r.inFlightNotify[key] = append(r.inFlightNotify[key], mk)
+	r.mu.Unlock()
+
+	return func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		// Order-preserving removal is REQUIRED: ids[0] is the earliest
+		// arrival, so a swap-remove (ids[i] = ids[len-1]) would silently
+		// reorder the tail and make HasEarlierInFlightNotify wrong for every
+		// later comparison. Shift, do not swap.
+		ids := r.inFlightNotify[key]
+		for i, id := range ids {
+			if id == mk {
+				r.inFlightNotify[key] = append(ids[:i], ids[i+1:]...)
+				break
+			}
+		}
+		if len(r.inFlightNotify[key]) == 0 {
+			delete(r.inFlightNotify, key)
+		}
+	}
+}
+
+// HasEarlierInFlightNotify reports whether another CHANGE_NOTIFY on the same
+// handle arrived before messageID and is still unanswered.
+//
+// A request that answers yes must not claim buffered events: they belong to the
+// earlier request, which is the one the client is blocked on. Handing them to
+// the later request leaves the earlier one waiting for an event the client will
+// never generate, because the client does not send it until the earlier request
+// returns.
+//
+// "Earlier" means earlier on the wire, which is this slice's append order —
+// never a MessageID comparison. MessageIDs may be consumed out of order within
+// the credit sequence window, so 100 can arrive before 50.
+func (r *NotifyRegistry) HasEarlierInFlightNotify(fileID [16]byte, connID, messageID uint64) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ids := r.inFlightNotify[string(fileID[:])]
+	return len(ids) > 0 && ids[0] != notifyMsgKey{ConnID: connID, MessageID: messageID}
 }
 
 // UnregisterAllForSession unregisters all pending watchers for a session AND
