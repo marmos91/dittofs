@@ -199,6 +199,19 @@ type PendingNotify struct {
 	// Protected by NotifyRegistry.mu.
 	bufferedChanges []FileNotifyInformation
 
+	// firstEmission identifies the operation that produced bufferedChanges[0],
+	// and firstEmissionLen counts how many leading entries came from it. One
+	// reply carries one operation's changes: a client that makes a single
+	// change requires a single record back, and the window that coalesces the
+	// several events one operation can emit (a create that overwrites fires
+	// REMOVED + ADDED + MODIFIED) would otherwise also swallow the next
+	// operation's whenever the two landed inside it — which is a race on how
+	// fast the client's next request arrives, not a property of the changes.
+	// Anything past the run stays buffered for the client's next request.
+	// Protected by NotifyRegistry.mu.
+	firstEmission    uint64
+	firstEmissionLen int
+
 	// flushTimer fires after notifyFlushDelay to deliver all buffered events.
 	// nil when no events are buffered. Protected by NotifyRegistry.mu.
 	flushTimer *time.Timer
@@ -237,9 +250,26 @@ type PendingNotify struct {
 // matching watchers and delivers async responses via AsyncCallback.
 // Thread-safe: all operations are protected by a read-write mutex.
 type NotifyRegistry struct {
-	mu       sync.RWMutex
-	pending  map[string][]*PendingNotify // path -> pending requests
-	byFileID map[string]*PendingNotify   // fileID string -> pending request
+	mu      sync.RWMutex
+	pending map[string][]*PendingNotify // path -> pending requests
+
+	// byFileID holds every outstanding CHANGE_NOTIFY on a directory handle,
+	// oldest first. A client may keep several outstanding on one handle —
+	// [MS-FSA] 2.1.5.11 gives a directory one ChangeNotifyEntry and lets any
+	// number of ChangeNotify operations wait on it, and Samba queues them on
+	// `fsp->notify->requests` — so this is a queue, not a slot. An event goes
+	// to the head only (see findWatchersLocked); the rest keep waiting, which
+	// is what makes two pipelined requests collect one change each.
+	//
+	// The key is the FileID alone, so a handle resolves on any channel of a
+	// multichannel session and entries from different connections share one
+	// list. Order is the slice's; removal must preserve it.
+	//
+	// ponytail: linear scan and shift on removal. The list is one client's
+	// CHANGE_NOTIFY pipelining depth on one handle — 1 or 2 in practice.
+	// Reach for an ordered map only if a client turns up that pipelines
+	// notifies deeply enough to measure.
+	byFileID map[string][]*PendingNotify
 	// byMsgKey is keyed by (ConnID, MessageID) because MessageID is scoped
 	// per TCP connection in SMB2. Keying by MessageID alone conflates
 	// independent pending notifies from different connections and silently
@@ -302,6 +332,11 @@ type NotifyRegistry struct {
 	// CANCEL cannot race because the client only learns AsyncId from the
 	// interim response, which is sent strictly AFTER Register has run.
 	cancelTombstones map[notifyMsgKey]time.Time
+
+	// nextEmission is incremented once per emitting operation, not once per
+	// event, and stamped onto every change that operation buffers. See
+	// PendingNotify.firstEmission.
+	nextEmission uint64
 
 	// nextGeneration is incremented on every Register and stamped onto the
 	// registered PendingNotify.generation. Used to detect stale flush-timer
@@ -394,7 +429,7 @@ type notifyMsgKey struct {
 func NewNotifyRegistry() *NotifyRegistry {
 	return &NotifyRegistry{
 		pending:          make(map[string][]*PendingNotify),
-		byFileID:         make(map[string]*PendingNotify),
+		byFileID:         make(map[string][]*PendingNotify),
 		byMsgKey:         make(map[notifyMsgKey]*PendingNotify),
 		byAsyncId:        make(map[uint64]*PendingNotify),
 		inFlightNotify:   make(map[string][]notifyMsgKey),
@@ -516,8 +551,8 @@ var ErrHandleClosed = fmt.Errorf("change_notify handle closed before register")
 
 // CloseByFileID is the single completion path for a handle that is going
 // away. Under one acquisition of r.mu it disarms the handle's buffered-event
-// accounting, removes any watch registered on it (returned so the caller can
-// answer STATUS_NOTIFY_CLEANUP), and — when nothing is registered yet —
+// accounting, removes every watch registered on it (returned so the caller can
+// answer STATUS_NOTIFY_CLEANUP to each), and — when nothing is registered yet —
 // records a tombstone so an in-flight Register short-circuits with
 // ErrHandleClosed.
 //
@@ -528,7 +563,7 @@ var ErrHandleClosed = fmt.Errorf("change_notify handle closed before register")
 // stays live on a destroyed handle, and nothing ever answers that MessageID.
 // CLOSE is the visible case because it completes the notify before it removes
 // the handle from the open-file table, so the window is wide.
-func (r *NotifyRegistry) CloseByFileID(fileID [16]byte) *PendingNotify {
+func (r *NotifyRegistry) CloseByFileID(fileID [16]byte) []*PendingNotify {
 	key := string(fileID[:])
 
 	r.mu.Lock()
@@ -550,10 +585,13 @@ func (r *NotifyRegistry) CloseByFileID(fileID [16]byte) *PendingNotify {
 	r.closeTombstones[key] = time.Now()
 	r.gcCloseTombstonesLocked()
 
-	if notify, ok := r.byFileID[key]; ok {
-		return r.unregisterLocked(notify)
+	// Copied before the loop: unregisterLocked rewrites r.byFileID[key] as it
+	// removes each watch.
+	closing := append([]*PendingNotify(nil), r.byFileID[key]...)
+	for _, notify := range closing {
+		r.unregisterLocked(notify)
 	}
-	return nil
+	return closing
 }
 
 // closeTombstoneCount reports how many close tombstones are outstanding.
@@ -739,18 +777,19 @@ func (r *NotifyRegistry) ResetArmedOverflow(fileID [16]byte, newMaxOutputLength 
 	}
 }
 
-// MaxPendingWatches is the maximum number of concurrent ChangeNotify watches
+// MaxPendingWatches is the maximum number of outstanding ChangeNotify requests
 // allowed globally. Prevents memory exhaustion from clients registering
-// unbounded watches without cancelling them.
+// unbounded watches without cancelling them. It bounds requests, not handles:
+// one handle may hold several.
 const MaxPendingWatches = 4096
 
 // ErrTooManyWatches is returned when the global watch limit is exceeded.
 var ErrTooManyWatches = fmt.Errorf("too many pending ChangeNotify watches (max %d)", MaxPendingWatches)
 
 // Register adds a pending notification request.
-// If a request with the same FileID already exists, it is replaced — and the
-// replaced request is completed with STATUS_CANCELLED rather than dropped, so
-// its MessageID always gets a response.
+// A request already outstanding on the same FileID is left alone and this one
+// queues behind it: a client may keep several CHANGE_NOTIFYs outstanding on a
+// directory handle, and each collects one batch of changes in arrival order.
 // Returns ErrTooManyWatches if the global limit would be exceeded.
 // Returns ErrAlreadyCancelled when an SMB2_CANCEL for the same
 // (ConnID, MessageID) arrived before this Register call; the caller MUST
@@ -766,13 +805,12 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 		for _, old := range superseded {
 			r.sendFinalGated(old, &ChangeNotifyResponse{
 				SMBResponseBase: SMBResponseBase{Status: types.StatusCancelled},
-			}, "superseded by a later CHANGE_NOTIFY on the same handle")
+			}, "MessageID reused by a later CHANGE_NOTIFY")
 		}
 	}()
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
 	// Check for a CANCEL that arrived before us. Tombstones are exact:
 	// a matching (ConnID, MessageID) means the client's CANCEL has already
 	// been dispatched but couldn't find us yet. Short-circuit instead of
@@ -805,38 +843,25 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	}
 	r.gcCloseTombstonesLocked()
 
-	// If there's already a registration for this FileID, remove the old entry
-	// to keep data structures consistent.
-	if old, ok := r.byFileID[string(notify.FileID[:])]; ok {
-		r.unregisterLocked(old)
-		// Hand back whatever the superseded watch had accumulated but not yet
-		// delivered. unregisterLocked stops its flush timer, so without this
-		// those events die with it and the replacement — which the client is
-		// waiting on — sees nothing, turning one silent hang into another.
-		// They go in front of any later arrivals to keep them in order; the
-		// replay block below picks them up once the new watch is armed.
-		if len(old.bufferedChanges) > 0 {
-			if a, isArmed := r.armed[string(notify.FileID[:])]; isArmed {
-				a.BufferedEvents = append(old.bufferedChanges, a.BufferedEvents...)
-			}
-			old.bufferedChanges = nil
-		}
-		superseded = append(superseded, old)
-	} else if len(r.byFileID) >= MaxPendingWatches {
+	// A watch already registered on this FileID is NOT replaced: the client is
+	// entitled to keep several CHANGE_NOTIFYs outstanding on one handle and
+	// this one queues behind it. The limit therefore counts waiters, not
+	// distinct handles — byMsgKey holds exactly one entry per registered
+	// request.
+	if len(r.byMsgKey) >= MaxPendingWatches {
 		return ErrTooManyWatches
 	}
 
-	// Clean up any existing entry from the same (ConnID, MessageID) slot
-	// with a different FileID. SMB2 MessageIDs are unique per connection,
-	// so a same-connection collision means the client reused a MessageID
-	// — a client bug we defensively recover from. Cross-connection
-	// duplicates MUST NOT fall into this branch: they represent distinct
-	// pending requests on independent TCP connections (issue #416).
+	// Clean up any existing entry in the same (ConnID, MessageID) slot. SMB2
+	// MessageIDs are unique per connection, so a collision means the client
+	// reused a MessageID — a client bug we defensively recover from, on the
+	// same handle or a different one. Leaving the old entry registered would
+	// strand it: the write below takes over its byMsgKey slot, so no CANCEL
+	// could ever find it again. Cross-connection duplicates cannot reach this
+	// branch — the key carries ConnID (issue #416).
 	msgKey := notifyMsgKey{ConnID: notify.ConnID, MessageID: notify.MessageID}
 	if oldByMsg, ok := r.byMsgKey[msgKey]; ok {
-		if string(oldByMsg.FileID[:]) != string(notify.FileID[:]) {
-			superseded = append(superseded, r.unregisterLocked(oldByMsg))
-		}
+		superseded = append(superseded, r.unregisterLocked(oldByMsg))
 	}
 
 	// Stamp a fresh generation so a stale flush timer from a prior watcher on
@@ -845,7 +870,8 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	r.nextGeneration++
 	notify.generation = r.nextGeneration
 
-	r.byFileID[string(notify.FileID[:])] = notify
+	fileIDKey := string(notify.FileID[:])
+	r.byFileID[fileIDKey] = append(r.byFileID[fileIDKey], notify)
 	r.byMsgKey[msgKey] = notify
 	r.byAsyncId[notify.AsyncId] = notify
 	r.pending[notify.WatchPath] = append(r.pending[notify.WatchPath], notify)
@@ -857,7 +883,20 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	// Replay events that arrived while no live watcher was pending
 	// (goroutine-per-request race). The flush timer delivers them after
 	// notifyFlushDelay; a racing CANCEL clears them before the timer fires.
-	if a, ok := r.armed[string(notify.FileID[:])]; ok && len(a.BufferedEvents) > 0 {
+	//
+	// Only the request that owns those events may take them: the earliest
+	// still outstanding on the handle. Replaying them into a later request
+	// strands the earlier one, which is the one the client is blocked on and
+	// the reason it has not produced another event yet — the same rule the
+	// handler's TakeBufferedEvents fast path follows before this point.
+	ownsBuffer := r.byFileID[fileIDKey][0] == notify &&
+		!r.hasEarlierInFlightLocked(notify.FileID, notify.ConnID, notify.MessageID)
+	if a, ok := r.armed[fileIDKey]; ok && ownsBuffer && len(a.BufferedEvents) > 0 {
+		// The whole backlog is one emission: a request that arrives with
+		// events already waiting takes all of them, exactly as the handler's
+		// synchronous TakeBufferedEvents path does.
+		r.nextEmission++
+		replayEmission := r.nextEmission
 		for _, ev := range a.BufferedEvents {
 			if !MatchesFilter(ev.Action, notify.CompletionFilter) {
 				continue
@@ -868,7 +907,7 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 			if !notify.WatchTree && strings.Contains(ev.FileName, "/") {
 				continue
 			}
-			r.bufferEventLocked(notify, ev)
+			r.bufferEventLocked(notify, ev, replayEmission)
 		}
 		a.BufferedEvents = nil
 	}
@@ -877,23 +916,23 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 		"path", notify.WatchPath,
 		"filter", fmt.Sprintf("0x%08X", notify.CompletionFilter),
 		"recursive", notify.WatchTree,
-		"totalWatches", len(r.byFileID))
+		"totalWatches", len(r.byMsgKey))
 
 	return nil
 }
 
-// Unregister removes a pending notification by FileID.
-// Called when the directory handle is closed or the request is cancelled.
+// Unregister removes the oldest pending notification on a FileID and returns
+// it, or nil when the handle has none outstanding.
 func (r *NotifyRegistry) Unregister(fileID [16]byte) *PendingNotify {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	notify, ok := r.byFileID[string(fileID[:])]
-	if !ok {
+	waiters := r.byFileID[string(fileID[:])]
+	if len(waiters) == 0 {
 		return nil
 	}
 
-	return r.unregisterLocked(notify)
+	return r.unregisterLocked(waiters[0])
 }
 
 // UnregisterByAsyncId removes a pending notification by AsyncId.
@@ -920,23 +959,37 @@ func (r *NotifyRegistry) unregisterLocked(notify *PendingNotify) *PendingNotify 
 	}
 
 	fileIDKey := string(notify.FileID[:])
-	delete(r.byFileID, fileIDKey)
 	delete(r.byMsgKey, notifyMsgKey{ConnID: notify.ConnID, MessageID: notify.MessageID})
 	delete(r.byAsyncId, notify.AsyncId)
 
-	// Remove from pending path list
-	pending := r.pending[notify.WatchPath]
-	for i, p := range pending {
-		if string(p.FileID[:]) == fileIDKey {
-			r.pending[notify.WatchPath] = append(pending[:i], pending[i+1:]...)
-			break
-		}
-	}
-	if len(r.pending[notify.WatchPath]) == 0 {
-		delete(r.pending, notify.WatchPath)
-	}
+	// Both lists can hold several waiters on one handle, so remove THIS one by
+	// identity. Matching on FileID would drop whichever waiter happened to be
+	// first, leaving the caller's notify registered and answering a request the
+	// client is still waiting on.
+	removeWatcher(r.byFileID, fileIDKey, notify)
+	removeWatcher(r.pending, notify.WatchPath, notify)
 
 	return notify
+}
+
+// removeWatcher drops one waiter from m[key] by identity and deletes the key
+// once the last one goes. The shift keeps arrival order, which is what decides
+// who takes the next event: a swap-remove would move the newest waiter into the
+// oldest slot and hand it the change.
+func removeWatcher(m map[string][]*PendingNotify, key string, notify *PendingNotify) {
+	list := m[key]
+	for i, p := range list {
+		if p != notify {
+			continue
+		}
+		list = append(list[:i], list[i+1:]...)
+		break
+	}
+	if len(list) == 0 {
+		delete(m, key)
+		return
+	}
+	m[key] = list
 }
 
 // GetWatchersForPath returns all pending notifies for a path.
@@ -1132,13 +1185,62 @@ func notifyStreamName(name string) string {
 // filter specifies which FILE_NOTIFY_CHANGE_* flags this event matches. Only
 // watchers whose CompletionFilter intersects filter are notified.
 func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, action uint32, filter uint32) {
+	r.NotifyChanges(shareName, parentPath, []NotifyEvent{
+		{FileName: fileName, Action: action, Filter: filter},
+	})
+}
+
+// NotifyEvent is one change within a batch emitted by a single operation.
+type NotifyEvent struct {
+	FileName string
+	Action   uint32
+	Filter   uint32
+}
+
+// NotifyChanges records every change one operation produced. Grouping matters:
+// a CREATE that overwrites an existing file fires REMOVED + ADDED + MODIFIED
+// and the client is entitled to see all three in one response, while the
+// MODIFIED a later WRITE fires belongs to the next response. Emitting the group
+// through separate NotifyChange calls would split the first and merge the
+// second whenever the timing happened to fall that way.
+func (r *NotifyRegistry) NotifyChanges(shareName, parentPath string, events []NotifyEvent) {
+	if len(events) == 0 {
+		return
+	}
+
+	// Every event of the batch is buffered under ONE acquisition of r.mu. Taking
+	// the lock per event would let a concurrent operation land between two of
+	// them, and the run this batch occupies in a watcher's buffer would no
+	// longer be contiguous — splitting the group across two responses, which is
+	// the failure this batching exists to prevent.
+	live := make([]map[[16]byte]struct{}, len(events))
 	r.mu.Lock()
+	r.nextEmission++
+	emission := r.nextEmission
+	for i, ev := range events {
+		live[i] = r.bufferChangeLocked(emission, shareName, parentPath, ev)
+	}
+	r.mu.Unlock()
+
+	// Byte accounting takes the lock itself and fires OnOverflow outside it, so
+	// it runs after the batch is buffered rather than inside the critical
+	// section.
+	for i, ev := range events {
+		r.chargeArmedBuffer(shareName, parentPath, ev.Filter, []string{ev.FileName}, live[i])
+	}
+}
+
+// bufferChangeLocked buffers one change against every live watcher and every
+// armed handle without one, and returns the handles a live watcher served so
+// the byte accounting can skip them. Must hold r.mu for write.
+func (r *NotifyRegistry) bufferChangeLocked(emission uint64, shareName, parentPath string, ev NotifyEvent) map[[16]byte]struct{} {
+	fileName, action, filter := ev.FileName, ev.Action, ev.Filter
 	watchers := r.findWatchersLocked(shareName, parentPath, filter)
 	liveFileIDs := make(map[[16]byte]struct{}, len(watchers))
 	for _, w := range watchers {
 		liveFileIDs[w.notify.FileID] = struct{}{}
 		relativePath := relativePathFromWatch(w.watchPath, parentPath, fileName)
-		r.bufferEventLocked(w.notify, FileNotifyInformation{Action: action, FileName: relativePath})
+		r.bufferEventLocked(w.notify, FileNotifyInformation{Action: action, FileName: relativePath}, emission)
 	}
 	// Buffer events on armed handles that have no live watcher so they
 	// can be replayed when the first event after re-register arrives.
@@ -1160,9 +1262,7 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 		relName := relativePathFromWatch(a.WatchPath, parentPath, fileName)
 		a.BufferedEvents = append(a.BufferedEvents, FileNotifyInformation{Action: action, FileName: relName})
 	}
-	r.mu.Unlock()
-
-	r.chargeArmedBuffer(shareName, parentPath, filter, []string{fileName}, liveFileIDs)
+	return liveFileIDs
 }
 
 // NotifyRename records a rename as a paired FILE_ACTION_RENAMED_OLD_NAME /
@@ -1170,6 +1270,11 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 // FILE_NOTIFY_CHANGE_* flags (typically FileName or DirName).
 func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, newParentPath, newFileName string, filter uint32) {
 	r.mu.Lock()
+
+	// The OLD_NAME/NEW_NAME pair is one operation and must reach the client in
+	// one response — MS-FSCC 2.4.42 pairs them.
+	r.nextEmission++
+	emission := r.nextEmission
 
 	oldWatchers := r.findWatchersLocked(shareName, oldParentPath, filter)
 
@@ -1194,8 +1299,8 @@ func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, new
 		liveFileIDs[w.notify.FileID] = struct{}{}
 		oldRelativePath := relativePathFromWatch(w.watchPath, oldParentPath, oldFileName)
 		newRelativePath := relativePathFromWatch(w.watchPath, newParentPath, newFileName)
-		r.bufferEventLocked(w.notify, FileNotifyInformation{Action: FileActionRenamedOldName, FileName: oldRelativePath})
-		r.bufferEventLocked(w.notify, FileNotifyInformation{Action: FileActionRenamedNewName, FileName: newRelativePath})
+		r.bufferEventLocked(w.notify, FileNotifyInformation{Action: FileActionRenamedOldName, FileName: oldRelativePath}, emission)
+		r.bufferEventLocked(w.notify, FileNotifyInformation{Action: FileActionRenamedNewName, FileName: newRelativePath}, emission)
 	}
 	// Buffer rename events on armed handles with no live watcher (mirrors
 	// the same pattern in NotifyChange).
@@ -1445,6 +1550,16 @@ func (r *NotifyRegistry) findWatchersLocked(shareName, parentPath string, filter
 			if w.CompletionFilter&filter == 0 {
 				continue
 			}
+			// One event, one waiter. When a handle has several CHANGE_NOTIFYs
+			// outstanding, only the oldest collects this change; the others
+			// stay pending for the changes after it. Samba does the same —
+			// notify_fsp replies to `fsp->notify->requests` (the list head)
+			// and removes just that request. Giving the event to all of them
+			// would answer requests the client has not read yet with the same
+			// change and lose every later one.
+			if waiters := r.byFileID[string(w.FileID[:])]; len(waiters) > 0 && waiters[0] != w {
+				continue
+			}
 			matches = append(matches, watcherMatch{notify: w, watchPath: currentPath})
 		}
 
@@ -1458,9 +1573,25 @@ func (r *NotifyRegistry) findWatchersLocked(shareName, parentPath string, filter
 }
 
 // bufferEventLocked appends a change to the watcher's buffer and starts the
-// flush timer on the first event. Must be called with r.mu held for write.
-func (r *NotifyRegistry) bufferEventLocked(notify *PendingNotify, change FileNotifyInformation) {
+// flush timer on the first event. emission names the operation that produced
+// the change; changes from one operation are delivered together and later
+// operations wait for the client's next request. Must be called with r.mu held
+// for write.
+func (r *NotifyRegistry) bufferEventLocked(notify *PendingNotify, change FileNotifyInformation, emission uint64) {
+	if len(notify.bufferedChanges) == 0 {
+		notify.firstEmission = emission
+		notify.firstEmissionLen = 0
+	}
+	// The run is a contiguous PREFIX, not every entry carrying the id. Every
+	// emitter buffers its whole batch under one hold of r.mu, so today nothing
+	// interleaves — but counting id matches anywhere would make that a property
+	// of caller discipline rather than of this accounting: for [A B A] it would
+	// count 2 and ship B inside A's response.
+	contiguous := notify.firstEmissionLen == len(notify.bufferedChanges)
 	notify.bufferedChanges = append(notify.bufferedChanges, change)
+	if contiguous && emission == notify.firstEmission {
+		notify.firstEmissionLen++
+	}
 	if notify.flushTimer == nil {
 		fileID := notify.FileID
 		gen := notify.generation
@@ -1475,21 +1606,51 @@ func (r *NotifyRegistry) bufferEventLocked(notify *PendingNotify, change FileNot
 // timer after notifyFlushDelay.
 func (r *NotifyRegistry) flushWatcher(fileID [16]byte, gen uint64) {
 	r.mu.Lock()
-	notify, ok := r.byFileID[string(fileID[:])]
-	if !ok || notify.generation != gen {
+	var notify *PendingNotify
+	for _, w := range r.byFileID[string(fileID[:])] {
+		if w.generation == gen {
+			notify = w
+			break
+		}
+	}
+	if notify == nil {
 		// Either the watcher was already unregistered, or a newer watcher
 		// re-armed this FileID after a stale timer fired. In both cases this
-		// callback is stale and must not drain or unregister the live watcher.
+		// callback is stale and must not drain or unregister a live watcher.
 		r.mu.Unlock()
 		return
 	}
-	changes := notify.bufferedChanges
-	notify.bufferedChanges = nil
+	changes := r.drainFirstEmissionLocked(notify)
 	notify.flushTimer = nil
 	r.unregisterLocked(notify)
 	r.mu.Unlock()
 
 	r.deliverChanges(notify, changes)
+}
+
+// drainFirstEmissionLocked takes the changes belonging to the operation that
+// opened the watcher's buffer and hands the rest back to the armed handle, in
+// front of anything buffered since, so the client's next CHANGE_NOTIFY picks
+// them up in order. Must hold r.mu for write.
+func (r *NotifyRegistry) drainFirstEmissionLocked(notify *PendingNotify) []FileNotifyInformation {
+	all := notify.bufferedChanges
+	n := notify.firstEmissionLen
+	notify.bufferedChanges = nil
+	notify.firstEmissionLen = 0
+	if len(all) == 0 {
+		return nil
+	}
+	if n <= 0 || n > len(all) {
+		n = len(all)
+	}
+	deferred := all[n:]
+	if len(deferred) > 0 {
+		if a, ok := r.armed[string(notify.FileID[:])]; ok {
+			a.BufferedEvents = append(append([]FileNotifyInformation(nil), deferred...), a.BufferedEvents...)
+			a.BufferedBytes = uint32(len(EncodeFileNotifyInformation(a.BufferedEvents)))
+		}
+	}
+	return all[:n]
 }
 
 // sendFinalGated invokes notify.AsyncCallback with the given response,
@@ -1557,39 +1718,49 @@ func (r *NotifyRegistry) deliverChanges(notify *PendingNotify, changes []FileNot
 	r.sendFinalGated(notify, response, "deliverChanges")
 }
 
-// NotifyRmdir handles directory removal notification: send STATUS_NOTIFY_CLEANUP
-// to any watchers on the removed directory itself, and notify the parent watcher
-// with FileActionRemoved for the directory name.
+// CompleteWatchersForDeletePending completes every pending CHANGE_NOTIFY that
+// watches dirPath with STATUS_DELETE_PENDING and returns how many were
+// completed. Matching is by watch path and share, not by FileID: the handle
+// that marks a directory for deletion is usually not the handle that is
+// watching it.
 //
-// Per MS-SMB2 3.3.5.15: when a directory being watched is deleted, the pending
-// CHANGE_NOTIFY request must be completed with STATUS_NOTIFY_CLEANUP.
-func (r *NotifyRegistry) NotifyRmdir(shareName, parentPath, dirName string) {
-	dirPath := path.Join(parentPath, dirName)
+// Per [MS-FSA] 2.1.5.14.3, setting the delete disposition on a directory sweeps
+// every ChangeNotifyEntry whose OpenedDirectory.File is the same file, removes
+// it, and completes it with STATUS_DELETE_PENDING. The trigger is the mark, not
+// the unlink — the directory is still on disk until the last handle closes, and
+// nothing un-completes these requests if the disposition is cleared again.
+//
+// Watchers on ancestor directories are untouched even when recursive: their
+// subject still exists. They learn about the removal as a normal
+// FileActionRemoved event when the entry actually goes away.
+func (r *NotifyRegistry) CompleteWatchersForDeletePending(shareName, dirPath string) int {
+	dirPath = notifyWatchPath(dirPath)
 
-	// First: send STATUS_NOTIFY_CLEANUP to any watchers on the removed directory
 	r.mu.Lock()
-	var cleanupWatchers []*PendingNotify
+	var marked []*PendingNotify
 	for _, w := range r.pending[dirPath] {
 		if w.ShareName == shareName {
-			cleanupWatchers = append(cleanupWatchers, w)
+			marked = append(marked, w)
 		}
 	}
-	// Remove them from the registry while holding the lock
-	for _, w := range cleanupWatchers {
+	for _, w := range marked {
 		r.unregisterLocked(w)
 	}
 	r.mu.Unlock()
 
-	// Send STATUS_NOTIFY_CLEANUP to each removed watcher
-	for _, w := range cleanupWatchers {
-		cleanupResp := &ChangeNotifyResponse{
-			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
-		}
-		r.sendFinalGated(w, cleanupResp, "NotifyRmdir")
+	for _, w := range marked {
+		r.sendFinalGated(w, &ChangeNotifyResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusDeletePending},
+		}, "CompleteWatchersForDeletePending")
 	}
 
-	// Second: notify parent watchers about the directory removal
-	r.NotifyChange(shareName, parentPath, dirName, FileActionRemoved, FileNotifyChangeDirName)
+	if len(marked) > 0 {
+		logger.Debug("CHANGE_NOTIFY: directory marked for deletion — completing watchers",
+			"path", dirPath,
+			"share", shareName,
+			"count", len(marked))
+	}
+	return len(marked)
 }
 
 // MarkNotifyInFlight records that a CHANGE_NOTIFY for fileID has been read off
@@ -1638,6 +1809,12 @@ func (r *NotifyRegistry) MarkNotifyInFlight(fileID [16]byte, connID, messageID u
 func (r *NotifyRegistry) HasEarlierInFlightNotify(fileID [16]byte, connID, messageID uint64) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return r.hasEarlierInFlightLocked(fileID, connID, messageID)
+}
+
+// hasEarlierInFlightLocked is HasEarlierInFlightNotify for callers that
+// already hold r.mu.
+func (r *NotifyRegistry) hasEarlierInFlightLocked(fileID [16]byte, connID, messageID uint64) bool {
 	ids := r.inFlightNotify[string(fileID[:])]
 	return len(ids) > 0 && ids[0] != notifyMsgKey{ConnID: connID, MessageID: messageID}
 }
@@ -1727,7 +1904,7 @@ func (r *NotifyRegistry) FlushAll() {
 	}
 	r.mu.Lock()
 	var snaps []snapshot
-	for _, notify := range r.byFileID {
+	for _, notify := range r.allWatchersLocked() {
 		if len(notify.bufferedChanges) == 0 {
 			continue
 		}
@@ -1737,9 +1914,8 @@ func (r *NotifyRegistry) FlushAll() {
 		}
 		snaps = append(snaps, snapshot{
 			notify:  notify,
-			changes: notify.bufferedChanges,
+			changes: r.drainFirstEmissionLocked(notify),
 		})
-		notify.bufferedChanges = nil
 		r.unregisterLocked(notify)
 	}
 	r.mu.Unlock()
@@ -1754,7 +1930,18 @@ func (r *NotifyRegistry) FlushAll() {
 func (r *NotifyRegistry) WatcherCount() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return len(r.byFileID)
+	return len(r.byMsgKey)
+}
+
+// allWatchersLocked returns a flat snapshot of every registered watcher. The
+// copy matters: callers iterate it while unregistering, which mutates the
+// per-handle lists underneath. Must hold r.mu.
+func (r *NotifyRegistry) allWatchersLocked() []*PendingNotify {
+	all := make([]*PendingNotify, 0, len(r.byMsgKey))
+	for _, waiters := range r.byFileID {
+		all = append(all, waiters...)
+	}
+	return all
 }
 
 // RangeWatchers iterates over all pending watchers, calling fn for each.
@@ -1762,9 +1949,11 @@ func (r *NotifyRegistry) WatcherCount() int {
 func (r *NotifyRegistry) RangeWatchers(fn func(n *PendingNotify) bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for _, n := range r.byFileID {
-		if !fn(n) {
-			return
+	for _, waiters := range r.byFileID {
+		for _, n := range waiters {
+			if !fn(n) {
+				return
+			}
 		}
 	}
 }
@@ -1882,6 +2071,17 @@ func relativePathFromWatch(watchPath, parentPath, fileName string) string {
 		return relDir + "/" + fileName
 	}
 	return fileName
+}
+
+// notifyWatchPath normalises a directory path into the form the notify maps are
+// keyed by: cleaned, with the root spelled "/" rather than path.Clean's ".".
+// Registration and every lookup that has to find those watchers must agree on
+// it, so they all go through here.
+func notifyWatchPath(p string) string {
+	if cleaned := path.Clean(p); cleaned != "." {
+		return cleaned
+	}
+	return "/"
 }
 
 // GetParentPath returns the parent directory path from a full path.

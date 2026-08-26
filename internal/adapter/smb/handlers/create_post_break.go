@@ -1378,10 +1378,14 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			nameFilter := NameChangeFilterFor(baseName, openFile.IsDirectory)
 			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, FileActionAdded, nameFilter)
 		case types.FileOverwritten, types.FileSuperseded:
+			// One operation, three records: the client must see them in one
+			// CHANGE_NOTIFY response, so they are emitted as one batch.
 			nameFilter := NameChangeFilterFor(baseName, openFile.IsDirectory)
-			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, FileActionRemoved, nameFilter)
-			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, FileActionAdded, nameFilter)
-			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, FileActionModified, FileNotifyChangeAttributes|FileNotifyChangeLastWrite|FileNotifyChangeSize)
+			h.NotifyRegistry.NotifyChanges(tree.ShareName, parentPath, []NotifyEvent{
+				{FileName: baseName, Action: FileActionRemoved, Filter: nameFilter},
+				{FileName: baseName, Action: FileActionAdded, Filter: nameFilter},
+				{FileName: baseName, Action: FileActionModified, Filter: FileNotifyChangeAttributes | FileNotifyChangeLastWrite | FileNotifyChangeSize},
+			})
 		}
 	}
 

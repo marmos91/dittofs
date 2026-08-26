@@ -157,3 +157,81 @@ func TestClose_NoPendingNotify_PostSendNil(t *testing.T) {
 		t.Error("ctx.PostSend should be nil when there is no pending CHANGE_NOTIFY")
 	}
 }
+
+// TestClose_DeleteOnClose_CompletesOtherHandlesNotify covers the smbtorture
+// smb2.notify.rmdir1-4 shape: one handle watches a directory while a second
+// handle on the SAME directory is closed carrying a delete-on-close. The
+// watcher's own handle is untouched, so nothing on the close path answers it
+// unless the delete mark itself does — [MS-FSA] 2.1.5.14.3 requires
+// STATUS_DELETE_PENDING.
+func TestClose_DeleteOnClose_CompletesOtherHandlesNotify(t *testing.T) {
+	h := NewHandler()
+	h.NotifyRegistry = NewNotifyRegistry()
+
+	metaHandle := []byte{0x11, 0x22, 0x33}
+	watcherID := [16]byte{0xa1}
+	deleterID := [16]byte{0xb2}
+
+	watcher := (&OpenFile{
+		FileID:         watcherID,
+		IsDirectory:    true,
+		ShareName:      "share",
+		MetadataHandle: metaHandle,
+		OplockLevel:    OplockLevelNone,
+	}).WithName(OpenName{Path: "/watched", FileName: "watched", ParentHandle: []byte{0x01}})
+	h.StoreOpenFile(watcher)
+
+	// The closing handle asked for FILE_DELETE_ON_CLOSE at CREATE, which
+	// DittoFS promotes to the shared delete-pending flag in the election.
+	deleter := (&OpenFile{
+		FileID:               deleterID,
+		IsDirectory:          true,
+		ShareName:            "share",
+		MetadataHandle:       metaHandle,
+		InitialDeleteOnClose: true,
+		OplockLevel:          OplockLevelNone,
+	}).WithName(OpenName{Path: "/watched", FileName: "watched", ParentHandle: []byte{0x01}})
+	h.StoreOpenFile(deleter)
+
+	var gotStatus atomic.Uint32
+	var fired atomic.Bool
+	if err := h.NotifyRegistry.Register(&PendingNotify{
+		FileID:           watcherID,
+		SessionID:        42,
+		MessageID:        6,
+		AsyncId:          14,
+		WatchPath:        "/watched",
+		ShareName:        "share",
+		CompletionFilter: FileNotifyChangeFileName | FileNotifyChangeDirName,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, resp *ChangeNotifyResponse) error {
+			fired.Store(true)
+			gotStatus.Store(uint32(resp.GetStatus()))
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	ctx := &SMBHandlerContext{Context: context.Background(), SessionID: 42, MessageID: 7}
+	resp, err := h.Close(ctx, &CloseRequest{FileID: deleterID})
+	if err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	if resp == nil || resp.GetStatus() != types.StatusSuccess {
+		t.Fatalf("Close: expected StatusSuccess, got %+v", resp)
+	}
+
+	if !fired.Load() {
+		t.Fatal("the watcher's CHANGE_NOTIFY was never answered: a client watching a " +
+			"directory another handle marked for deletion waits until its own transport " +
+			"gives up (MS-FSA 2.1.5.14.3)")
+	}
+	if got := types.Status(gotStatus.Load()); got != types.StatusDeletePending {
+		t.Errorf("expected STATUS_DELETE_PENDING (0x%08X), got 0x%08X",
+			uint32(types.StatusDeletePending), uint32(got))
+	}
+	if h.NotifyRegistry.WatcherCount() != 0 {
+		t.Errorf("watch survived the delete mark: %d", h.NotifyRegistry.WatcherCount())
+	}
+}

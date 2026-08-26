@@ -392,7 +392,8 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// inside electDeleteOnClose. Deciding here and removing the handle at step
 	// 10 let two concurrent closers each see the other, each defer, and the
 	// unlink be lost. See doc_election.go.
-	if decision, target := h.electDeleteOnClose(openFile); decision == docDecisionDelete {
+	decision, target := h.electDeleteOnClose(openFile)
+	if decision == docDecisionDelete {
 		// The election snapshotted the name it decided on, so a rename landing
 		// since cannot make the scan and the unlink disagree about the entry.
 		docName := target.Name
@@ -506,7 +507,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 		// stops a concurrent CHANGE_NOTIFY registering into the gap — the
 		// handle is not removed from the open-file table until step 10, so
 		// that notify's own lookup still succeeds.
-		if notify := h.NotifyRegistry.CloseByFileID(req.FileID); notify != nil {
+		for _, notify := range h.NotifyRegistry.CloseByFileID(req.FileID) {
 			// Per MS-SMB2 3.3.4.1 and 3.3.5.16.1: when the directory handle for
 			// a pending CHANGE_NOTIFY is closed, complete the request with
 			// STATUS_NOTIFY_CLEANUP. This response MUST be sent AFTER the CLOSE
@@ -520,28 +521,41 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// unregistered, so capturing the pointer is safe — nothing else can
 			// see or mutate it.
 			if notify.AsyncCallback != nil {
-				n := notify
 				AppendPostSend(ctx, func() {
 					cleanupResp := &ChangeNotifyResponse{
 						SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
 					}
-					h.NotifyRegistry.QueueFinalAfterInterim(n, func() {
-						if err := n.AsyncCallback(n.SessionID, n.MessageID, n.AsyncId, cleanupResp); err != nil {
+					h.NotifyRegistry.QueueFinalAfterInterim(notify, func() {
+						if err := notify.AsyncCallback(notify.SessionID, notify.MessageID, notify.AsyncId, cleanupResp); err != nil {
 							logger.Warn("CLOSE: failed to send STATUS_NOTIFY_CLEANUP",
-								"messageID", n.MessageID,
+								"messageID", notify.MessageID,
 								"error", err)
 							return
 						}
 						logger.Debug("CLOSE: sent STATUS_NOTIFY_CLEANUP (post-close)",
 							"path", closePath,
-							"messageID", n.MessageID,
-							"asyncId", n.AsyncId)
+							"messageID", notify.MessageID,
+							"asyncId", notify.AsyncId)
 					})
 				})
 			}
 			logger.Debug("CLOSE: unregistered pending CHANGE_NOTIFY",
 				"path", closePath,
 				"messageID", notify.MessageID)
+		}
+
+		// Per [MS-FSA] 2.1.5.14.3, a directory marked for deletion completes
+		// every pending CHANGE_NOTIFY on it with STATUS_DELETE_PENDING. A
+		// handle carrying FILE_DELETE_ON_CLOSE from CREATE commits that mark
+		// in the election above rather than at CREATE, so this is the point
+		// where watchers on the OTHER handles of the directory learn about it
+		// — including when the election deferred the unlink to one of them.
+		//
+		// Runs after CloseByFileID deliberately: this handle's own watch is
+		// already answered with STATUS_NOTIFY_CLEANUP above, and that response
+		// is the one MS-SMB2 3.3.4.1 requires for a closing handle.
+		if decision != docDecisionNone {
+			h.NotifyRegistry.CompleteWatchersForDeletePending(openFile.ShareName, closePath)
 		}
 	}
 

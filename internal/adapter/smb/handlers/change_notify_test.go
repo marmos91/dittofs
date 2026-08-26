@@ -222,46 +222,35 @@ func TestNotifyRegistry_UnregisterByAsyncId(t *testing.T) {
 	}
 }
 
-func TestNotifyRegistry_ReplaceExisting(t *testing.T) {
+// TestNotifyRegistry_SecondNotifyQueuesBehindFirst pins that a second
+// CHANGE_NOTIFY on a handle does NOT replace the first. A client may keep
+// several outstanding on one handle; the registry queues them.
+func TestNotifyRegistry_SecondNotifyQueuesBehindFirst(t *testing.T) {
 	r := newTestNotifyRegistry()
 
 	fileID := [16]byte{5}
-
-	// Register first notify
-	mustRegister(t, r, &PendingNotify{
-		FileID:           fileID,
-		SessionID:        1,
-		MessageID:        10,
-		AsyncId:          100,
-		WatchPath:        "/old",
-		ShareName:        "share1",
-		CompletionFilter: FileNotifyChangeFileName,
-	})
-
-	// Register replacement (same FileID, different path)
-	mustRegister(t, r, &PendingNotify{
-		FileID:           fileID,
-		SessionID:        1,
-		MessageID:        20,
-		AsyncId:          200,
-		WatchPath:        "/new",
-		ShareName:        "share1",
-		CompletionFilter: FileNotifyChangeFileName,
-	})
-
-	// Old path should be empty
-	watchers := r.GetWatchersForPath("/old")
-	if len(watchers) != 0 {
-		t.Errorf("expected 0 watchers on old path, got %d", len(watchers))
+	for _, mid := range []uint64{10, 20} {
+		mustRegister(t, r, &PendingNotify{
+			FileID:           fileID,
+			SessionID:        1,
+			ConnID:           1,
+			MessageID:        mid,
+			AsyncId:          mid * 10,
+			WatchPath:        "/dir",
+			ShareName:        "share1",
+			CompletionFilter: FileNotifyChangeFileName,
+		})
 	}
 
-	// New path should have the replacement
-	watchers = r.GetWatchersForPath("/new")
-	if len(watchers) != 1 {
-		t.Fatalf("expected 1 watcher on new path, got %d", len(watchers))
+	if got := r.WatcherCount(); got != 2 {
+		t.Fatalf("WatcherCount = %d, want 2: the second request must not evict the first", got)
 	}
-	if watchers[0].AsyncId != 200 {
-		t.Errorf("expected asyncId 200, got %d", watchers[0].AsyncId)
+	watchers := r.GetWatchersForPath("/dir")
+	if len(watchers) != 2 {
+		t.Fatalf("expected 2 watchers on /dir, got %d", len(watchers))
+	}
+	if watchers[0].MessageID != 10 || watchers[1].MessageID != 20 {
+		t.Errorf("watchers out of arrival order: %d, %d", watchers[0].MessageID, watchers[1].MessageID)
 	}
 }
 
@@ -946,59 +935,55 @@ func TestIsValidCompletionFilter(t *testing.T) {
 	}
 }
 
-func TestNotifyRmdir_SendsCleanupToWatchersOnRemovedDir(t *testing.T) {
+func TestCompleteWatchersForDeletePending(t *testing.T) {
 	r := newTestNotifyRegistry()
 
-	var receivedStatus types.Status
-	mustRegister(t, r, &PendingNotify{
-		FileID:           [16]byte{1},
-		SessionID:        1,
-		MessageID:        10,
-		AsyncId:          100,
-		WatchPath:        "/parent/target",
-		ShareName:        "share1",
-		CompletionFilter: FileNotifyChangeFileName,
-		MaxOutputLength:  4096,
-		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
-			receivedStatus = response.GetStatus()
-			return nil
-		},
-	})
-
-	// Remove the directory being watched
-	r.NotifyRmdir("share1", "/parent", "target")
-	r.FlushAll()
-
-	if receivedStatus != types.StatusNotifyCleanup {
-		t.Errorf("expected STATUS_NOTIFY_CLEANUP (0x%08X), got 0x%08X",
-			uint32(types.StatusNotifyCleanup), uint32(receivedStatus))
+	statuses := map[uint64]types.Status{}
+	register := func(fileID byte, messageID uint64, share, watchPath string) {
+		mustRegister(t, r, &PendingNotify{
+			FileID:           [16]byte{fileID},
+			SessionID:        1,
+			MessageID:        messageID,
+			AsyncId:          messageID * 10,
+			WatchPath:        watchPath,
+			ShareName:        share,
+			CompletionFilter: FileNotifyChangeFileName | FileNotifyChangeDirName,
+			MaxOutputLength:  4096,
+			AsyncCallback: func(sessionID, mid, asyncId uint64, response *ChangeNotifyResponse) error {
+				statuses[mid] = response.GetStatus()
+				return nil
+			},
+		})
 	}
-}
 
-func TestNotifyRmdir_NotifiesParentWatcher(t *testing.T) {
-	r := newTestNotifyRegistry()
+	// Two handles watch the doomed directory; one watches its parent
+	// recursively, and one watches the same path on another share.
+	register(1, 10, "share1", "/parent/target")
+	register(2, 11, "share1", "/parent/target")
+	register(3, 12, "share1", "/parent")
+	register(4, 13, "share2", "/parent/target")
 
-	var parentNotified bool
-	mustRegister(t, r, &PendingNotify{
-		FileID:           [16]byte{1},
-		SessionID:        1,
-		MessageID:        10,
-		AsyncId:          100,
-		WatchPath:        "/parent",
-		ShareName:        "share1",
-		CompletionFilter: FileNotifyChangeDirName,
-		MaxOutputLength:  4096,
-		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
-			parentNotified = true
-			return nil
-		},
-	})
+	if got := r.CompleteWatchersForDeletePending("share1", "/parent/target"); got != 2 {
+		t.Fatalf("expected 2 watchers completed, got %d", got)
+	}
 
-	r.NotifyRmdir("share1", "/parent", "child")
-	r.FlushAll()
+	for _, mid := range []uint64{10, 11} {
+		if statuses[mid] != types.StatusDeletePending {
+			t.Errorf("messageID %d: expected STATUS_DELETE_PENDING (0x%08X), got 0x%08X",
+				mid, uint32(types.StatusDeletePending), uint32(statuses[mid]))
+		}
+	}
+	// The ancestor watcher's own directory still exists, and another share's
+	// identically-named directory is a different object entirely.
+	for _, mid := range []uint64{12, 13} {
+		if _, answered := statuses[mid]; answered {
+			t.Errorf("messageID %d must not be completed: its watched directory is not the one deleted", mid)
+		}
+	}
 
-	if !parentNotified {
-		t.Error("parent watcher should receive FileActionRemoved notification for rmdir")
+	// A second mark finds nothing left to answer.
+	if got := r.CompleteWatchersForDeletePending("share1", "/parent/target"); got != 0 {
+		t.Errorf("expected 0 on re-mark, got %d", got)
 	}
 }
 
@@ -2519,23 +2504,16 @@ func TestExpireSessionNotifies_CompletesPendingNotify(t *testing.T) {
 	}
 }
 
-// TestNotifyChange_ValidReq_RemovedAddedModifiedSequence locks in the
-// smb2.notify.valid-req scenario (#750). A directory watcher armed with
-// FILE_NOTIFY_CHANGE_ALL must, when a pre-existing file is unlinked, re-created,
-// and written, observe exactly three buffered changes in order:
-// REMOVED, ADDED, MODIFIED — all naming the same file. The MODIFIED event is the
-// one a userspace VFS must synthesize from its WRITE handler (Samba gets it from
-// kernel inotify); without it the registered CHANGE_NOTIFY only ever sees two
-// changes and the test's CHECK_VAL(num_changes, 3) fails.
-func TestNotifyChange_ValidReq_RemovedAddedModifiedSequence(t *testing.T) {
-	r := newTestNotifyRegistry()
-
-	var got []FileNotifyInformation
+// armWatcher registers a root watcher with a catch-all filter and returns the
+// records it is answered with.
+func armWatcher(t *testing.T, r *NotifyRegistry, msgID uint64, got *[]FileNotifyInformation) {
+	t.Helper()
 	mustRegister(t, r, &PendingNotify{
 		FileID:           [16]byte{1},
 		SessionID:        1,
-		MessageID:        10,
-		AsyncId:          100,
+		ConnID:           1,
+		MessageID:        msgID,
+		AsyncId:          msgID * 10,
 		WatchPath:        "/",
 		ShareName:        "share1",
 		CompletionFilter: AllValidCompletionFilterFlags,
@@ -2544,35 +2522,125 @@ func TestNotifyChange_ValidReq_RemovedAddedModifiedSequence(t *testing.T) {
 			if resp.GetStatus() != types.StatusSuccess {
 				t.Errorf("expected STATUS_SUCCESS, got 0x%08X", uint32(resp.GetStatus()))
 			}
-			got = decodeFileNotifyInfos(resp.Buffer)
+			*got = append(*got, decodeFileNotifyInfos(resp.Buffer)...)
 			return nil
 		},
 	})
+}
 
-	// unlink(FNAME) -> create(FNAME) -> write(FNAME), as torture_setup_simple_file
-	// does when FNAME already exists. These three events accumulate in the
-	// flush window and are delivered as one response.
-	r.NotifyChange("share1", "/", "fname", FileActionRemoved, NameChangeFilterFor("fname", false))
+func checkRecords(t *testing.T, label string, got []FileNotifyInformation, want []FileNotifyInformation) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: expected %d changes, got %d: %+v", label, len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i].Action != want[i].Action || got[i].FileName != want[i].FileName {
+			t.Errorf("%s: change[%d] = {action=0x%X name=%q}, want {action=0x%X name=%q}",
+				label, i, got[i].Action, got[i].FileName, want[i].Action, want[i].FileName)
+		}
+	}
+}
+
+// TestNotifyChange_OneOperationPerResponse is the smb2.notify.valid-req
+// scenario: a watcher is armed, then the client creates a file and writes to
+// it, and the test requires ONE record back — the create's.
+//
+// The create and the write are separate client requests, so how many records
+// the response carries must not depend on how quickly the second arrives. The
+// accumulation window exists to hold together the several records ONE operation
+// emits; letting it also absorb the next operation's makes the reply's contents
+// a function of client timing, which is what made this fail intermittently.
+func TestNotifyChange_OneOperationPerResponse(t *testing.T) {
+	r := newTestNotifyRegistry()
+
+	var first []FileNotifyInformation
+	armWatcher(t, r, 10, &first)
+
+	// torture_setup_simple_file on a file that does not exist yet: the unlink
+	// is a no-op, the CREATE fires ADDED and the WRITE that follows it fires
+	// MODIFIED. Two client requests, so two responses — the extra record the
+	// test saw was a second distinct event, never the first one repeated.
 	r.NotifyChange("share1", "/", "fname", FileActionAdded, NameChangeFilterFor("fname", false))
-	// The WRITE-synthesized MODIFIED event (mirrors write.go).
 	r.NotifyChange("share1", "/", "fname", FileActionModified,
 		FileNotifyChangeSize|FileNotifyChangeLastWrite|FileNotifyChangeAttributes)
 	r.FlushAll()
 
-	want := []FileNotifyInformation{
+	checkRecords(t, "first response", first, []FileNotifyInformation{
+		{Action: FileActionAdded, FileName: "fname"},
+	})
+
+	// Nothing is lost: the client re-issues and collects the backlog, in order.
+	backlog := r.TakeBufferedEvents([16]byte{1}, AllValidCompletionFilterFlags, false)
+	checkRecords(t, "backlog", backlog, []FileNotifyInformation{
+		{Action: FileActionModified, FileName: "fname"},
+	})
+}
+
+// TestNotifyChange_OneOperationPerResponse_TimerPath drives the same case
+// through the production delivery path — the flush timer — rather than the
+// test-only FlushAll. Both events are emitted before the timer can fire, so
+// the window provably contains both and the split is what keeps them apart.
+func TestNotifyChange_OneOperationPerResponse_TimerPath(t *testing.T) {
+	r := NewNotifyRegistry()
+	r.flushDelay = 25 * time.Millisecond
+
+	delivered := make(chan []FileNotifyInformation, 4)
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		ConnID:           1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/",
+		ShareName:        "share1",
+		CompletionFilter: AllValidCompletionFilterFlags,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+			delivered <- decodeFileNotifyInfos(resp.Buffer)
+			return nil
+		},
+	})
+
+	r.NotifyChange("share1", "/", "fname", FileActionAdded, NameChangeFilterFor("fname", false))
+	r.NotifyChange("share1", "/", "fname", FileActionModified,
+		FileNotifyChangeSize|FileNotifyChangeLastWrite|FileNotifyChangeAttributes)
+
+	select {
+	case got := <-delivered:
+		checkRecords(t, "timer flush", got, []FileNotifyInformation{
+			{Action: FileActionAdded, FileName: "fname"},
+		})
+	case <-time.After(5 * time.Second):
+		t.Fatal("flush timer never delivered")
+	}
+}
+
+// TestNotifyChange_BatchedOperationStaysInOneResponse is the other half: a
+// CREATE that overwrites an existing file emits REMOVED + ADDED + MODIFIED and
+// the client is entitled to all three in one response, because they are one
+// operation.
+func TestNotifyChange_BatchedOperationStaysInOneResponse(t *testing.T) {
+	r := newTestNotifyRegistry()
+
+	var got []FileNotifyInformation
+	armWatcher(t, r, 10, &got)
+
+	nameFilter := NameChangeFilterFor("fname", false)
+	r.NotifyChanges("share1", "/", []NotifyEvent{
+		{FileName: "fname", Action: FileActionRemoved, Filter: nameFilter},
+		{FileName: "fname", Action: FileActionAdded, Filter: nameFilter},
+		{FileName: "fname", Action: FileActionModified,
+			Filter: FileNotifyChangeAttributes | FileNotifyChangeLastWrite | FileNotifyChangeSize},
+	})
+	// A later, separate operation must not join them.
+	r.NotifyChange("share1", "/", "other", FileActionAdded, NameChangeFilterFor("other", false))
+	r.FlushAll()
+
+	checkRecords(t, "overwrite response", got, []FileNotifyInformation{
 		{Action: FileActionRemoved, FileName: "fname"},
 		{Action: FileActionAdded, FileName: "fname"},
 		{Action: FileActionModified, FileName: "fname"},
-	}
-	if len(got) != len(want) {
-		t.Fatalf("expected %d changes, got %d: %+v", len(want), len(got), got)
-	}
-	for i := range want {
-		if got[i].Action != want[i].Action || got[i].FileName != want[i].FileName {
-			t.Errorf("change[%d] = {action=0x%X name=%q}, want {action=0x%X name=%q}",
-				i, got[i].Action, got[i].FileName, want[i].Action, want[i].FileName)
-		}
-	}
+	})
 }
 
 // TestNotifyChange_WriteModified_RespectsNarrowFilter verifies the WRITE-path
@@ -2653,7 +2721,7 @@ func TestFlushWatcher_StaleTimerAfterRearm_IsNoop(t *testing.T) {
 
 	// Buffer an event so flushTimer is set on wA.
 	r.mu.Lock()
-	r.bufferEventLocked(wA, FileNotifyInformation{Action: FileActionAdded, FileName: "x.txt"})
+	r.bufferEventLocked(wA, FileNotifyInformation{Action: FileActionAdded, FileName: "x.txt"}, 1)
 	r.mu.Unlock()
 
 	// Cancel wA — unregisterLocked stops its timer (Stop returns false if
@@ -2692,7 +2760,7 @@ func TestFlushWatcher_StaleTimerAfterRearm_IsNoop(t *testing.T) {
 
 	// Legitimate flush for wB must still work.
 	r.mu.Lock()
-	r.bufferEventLocked(wB, FileNotifyInformation{Action: FileActionAdded, FileName: "y.txt"})
+	r.bufferEventLocked(wB, FileNotifyInformation{Action: FileActionAdded, FileName: "y.txt"}, 1)
 	r.mu.Unlock()
 	r.flushWatcher(fileID, wB.generation)
 
@@ -2904,7 +2972,7 @@ func TestNotifyRegistry_ConcurrentCloseRacesRegister(t *testing.T) {
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
-		var closed *PendingNotify
+		var closed []*PendingNotify
 		var regErr error
 
 		wg.Add(2)
@@ -2925,7 +2993,7 @@ func TestNotifyRegistry_ConcurrentCloseRacesRegister(t *testing.T) {
 		close(start)
 		wg.Wait()
 
-		if closed == nil && regErr == nil {
+		if len(closed) == 0 && regErr == nil {
 			t.Fatalf("iter %d: close found nothing and register succeeded — "+
 				"watch left live on a closed handle (watchers=%d)",
 				i, r.WatcherCount())
@@ -3043,84 +3111,180 @@ func TestNotifyRegistry_PreArrivalCancel_StillArmsHandle(t *testing.T) {
 	}
 }
 
-// TestNotifyRegistry_SupersededWatchGetsFinalResponse covers the last place a
-// watch was removed without being completed.
-//
-// Register replaces any existing watch on the same handle. smbtorture's
-// notify.double issues two CHANGE_NOTIFY requests back to back on one handle,
-// so the first was evicted silently and its MessageID never got a response —
-// the same hang as a cancelled notify, reached by a different route. The
-// replaced request must be completed.
-func TestNotifyRegistry_SupersededWatchGetsFinalResponse(t *testing.T) {
-	r := newTestNotifyRegistry()
-	fileID := [16]byte{0xD0}
-
-	var gotStatus []types.Status
-	first := &PendingNotify{
-		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 10, AsyncId: 500,
-		WatchPath: "/d", ShareName: "s", MaxOutputLength: 1000,
-		CompletionFilter: FileNotifyChangeFileName,
-		AsyncCallback: func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
-			gotStatus = append(gotStatus, resp.GetStatus())
-			return nil
-		},
-	}
-	mustRegister(t, r, first)
-
-	// A second CHANGE_NOTIFY on the same handle supersedes it.
-	second := *first
-	second.MessageID = 11
-	second.AsyncId = 501
-	mustRegister(t, r, &second)
-
-	if len(gotStatus) != 1 {
-		t.Fatalf("superseded watch got %d responses, want 1 — its MessageID is unanswered", len(gotStatus))
-	}
-	if gotStatus[0] != types.StatusCancelled {
-		t.Errorf("superseded watch status = 0x%08X, want STATUS_CANCELLED", uint32(gotStatus[0]))
-	}
-	if got := r.WatcherCount(); got != 1 {
-		t.Errorf("WatcherCount = %d, want 1 (only the newer watch)", got)
-	}
-}
-
-// TestNotifyRegistry_SupersededWatchHandsBackBufferedEvents checks that
-// completing the superseded watch does not also destroy the events it was
-// holding.
-//
-// unregisterLocked stops the replaced watch's flush timer, so anything it had
-// accumulated but not yet delivered dies with it — and the replacement, which
-// is the request the client is actually waiting on, would see nothing. That
-// trades one silent hang for another.
-func TestNotifyRegistry_SupersededWatchHandsBackBufferedEvents(t *testing.T) {
-	r := newTestNotifyRegistry()
-	fileID := [16]byte{0xD1}
-
-	mk := func(msgID, asyncID uint64, sink *[]FileNotifyInformation) *PendingNotify {
-		return &PendingNotify{
-			FileID: fileID, SessionID: 1, ConnID: 1, MessageID: msgID,
-			AsyncId: asyncID, WatchPath: "/d", ShareName: "s",
+// notifyQueueFixture registers `count` CHANGE_NOTIFYs on one handle and
+// returns the events each one is answered with, indexed by MessageID (which is
+// 10, 20, 30... in registration order).
+func notifyQueueFixture(t *testing.T, r *NotifyRegistry, fileID [16]byte, count int) map[uint64]*[]FileNotifyInformation {
+	t.Helper()
+	sinks := map[uint64]*[]FileNotifyInformation{}
+	for i := 0; i < count; i++ {
+		mid := uint64(10 * (i + 1))
+		sink := &[]FileNotifyInformation{}
+		sinks[mid] = sink
+		mustRegister(t, r, &PendingNotify{
+			FileID: fileID, SessionID: 1, ConnID: 1, MessageID: mid,
+			AsyncId: mid + 500, WatchPath: "/d", ShareName: "s",
 			MaxOutputLength:  1000,
 			CompletionFilter: FileNotifyChangeFileName,
 			AsyncCallback: func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
 				*sink = append(*sink, decodeFileNotifyInfos(resp.Buffer)...)
 				return nil
 			},
+		})
+	}
+	return sinks
+}
+
+func namesOf(events []FileNotifyInformation) []string {
+	names := make([]string, 0, len(events))
+	for _, e := range events {
+		names = append(names, e.FileName)
+	}
+	return names
+}
+
+// TestNotifyRegistry_EventGoesToOldestWaiterOnly is the smb2.notify.double
+// shape: two CHANGE_NOTIFYs outstanding on one handle, one change each, in
+// order. Both must be live at once, and a change must not be copied to every
+// waiter — that answers a request the client has not read yet with a change it
+// will see twice, and the next change then has nobody left to go to.
+func TestNotifyRegistry_EventGoesToOldestWaiterOnly(t *testing.T) {
+	r := newTestNotifyRegistry()
+	fileID := [16]byte{0xD0}
+	sinks := notifyQueueFixture(t, r, fileID, 2)
+
+	r.NotifyChange("s", "/d", "first.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
+
+	if got := namesOf(*sinks[10]); len(got) != 1 || got[0] != "first.txt" {
+		t.Fatalf("oldest waiter got %v, want [first.txt]", got)
+	}
+	if got := namesOf(*sinks[20]); len(got) != 0 {
+		t.Fatalf("second waiter got %v, want nothing: the change belongs to the request ahead of it", got)
+	}
+
+	r.NotifyChange("s", "/d", "second.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
+
+	if got := namesOf(*sinks[20]); len(got) != 1 || got[0] != "second.txt" {
+		t.Fatalf("second waiter got %v after the first was answered, want [second.txt]", got)
+	}
+	if got := namesOf(*sinks[10]); len(got) != 1 {
+		t.Fatalf("oldest waiter answered twice: %v", got)
+	}
+	if got := r.WatcherCount(); got != 0 {
+		t.Errorf("WatcherCount = %d, want 0 after both were answered", got)
+	}
+}
+
+// TestNotifyRegistry_ReleasingOldestPromotesSecondNotLast pins the removal
+// order inside a handle's waiter list.
+//
+// A swap-remove (list[i] = list[len-1]) produces the same *set* as an
+// order-preserving removal and is indistinguishable when the middle element
+// goes. It is only visible when the HEAD goes: swap-remove moves the NEWEST
+// waiter into the oldest slot, so the next change is handed to the request the
+// client will read last.
+func TestNotifyRegistry_ReleasingOldestPromotesSecondNotLast(t *testing.T) {
+	r := newTestNotifyRegistry()
+	fileID := [16]byte{0xD2}
+	sinks := notifyQueueFixture(t, r, fileID, 3)
+
+	// Answer and remove the head.
+	r.NotifyChange("s", "/d", "first.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
+	if got := namesOf(*sinks[10]); len(got) != 1 {
+		t.Fatalf("head waiter got %v, want one change", got)
+	}
+
+	// The next change belongs to the SECOND request, not the third.
+	r.NotifyChange("s", "/d", "second.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
+
+	if got := namesOf(*sinks[20]); len(got) != 1 || got[0] != "second.txt" {
+		t.Fatalf("waiter 20 got %v, want [second.txt] — releasing the head must promote the "+
+			"next arrival, not the last one", got)
+	}
+	if got := namesOf(*sinks[30]); len(got) != 0 {
+		t.Fatalf("waiter 30 got %v, want nothing: waiter 20 is still ahead of it", got)
+	}
+}
+
+// TestNotifyRegistry_RegisterLeavesBufferedEventsToTheEarliestArrival is the
+// registry half of the earliest-outstanding rule the handler's
+// TakeBufferedEvents fast path already follows.
+//
+// Two CHANGE_NOTIFYs arrive on the wire in order 9, 10 and are dispatched in
+// the opposite order, so 10 reaches Register first. The events buffered on the
+// handle belong to 9 — the request the client is blocked on and the reason it
+// has not produced another event. Replaying them into 10 answers a request the
+// client reads second and strands the one it reads first.
+func TestNotifyRegistry_RegisterLeavesBufferedEventsToTheEarliestArrival(t *testing.T) {
+	r := newTestNotifyRegistry()
+	fileID := [16]byte{0xD1}
+
+	base := func(msgID uint64) *PendingNotify {
+		return &PendingNotify{
+			FileID: fileID, SessionID: 1, ConnID: 1, MessageID: msgID,
+			AsyncId: msgID + 500, WatchPath: "/d", ShareName: "s",
+			MaxOutputLength: 1000, CompletionFilter: FileNotifyChangeFileName,
 		}
 	}
 
-	var firstGot, secondGot []FileNotifyInformation
-	mustRegister(t, r, mk(10, 500, &firstGot))
-
-	// An event lands on the first watch but has not been flushed yet.
+	// The handle is armed and an event lands with no watch registered.
+	r.Arm(base(9))
 	r.NotifyChange("s", "/d", "a.txt", FileActionAdded, FileNotifyChangeFileName)
 
-	// A second CHANGE_NOTIFY on the same handle supersedes it.
-	mustRegister(t, r, mk(11, 501, &secondGot))
+	// Wire order 9 then 10; 10 is dispatched first and registers.
+	done9 := r.MarkNotifyInFlight(fileID, 1, 9)
+	done10 := r.MarkNotifyInFlight(fileID, 1, 10)
+	defer done9()
+	defer done10()
+
+	var late []FileNotifyInformation
+	n := base(10)
+	n.AsyncCallback = func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+		late = append(late, decodeFileNotifyInfos(resp.Buffer)...)
+		return nil
+	}
+	mustRegister(t, r, n)
 	r.FlushAll()
 
-	if len(secondGot) != 1 || secondGot[0].FileName != "a.txt" {
-		t.Fatalf("event held by the superseded watch was lost: %+v", secondGot)
+	if len(late) != 0 {
+		t.Fatalf("the later arrival took the buffered events: %v", namesOf(late))
+	}
+
+	// They are still there for messageID 9, which is what the client is
+	// waiting on.
+	got := r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, false)
+	if len(got) != 1 || got[0].FileName != "a.txt" {
+		t.Fatalf("earliest arrival found %v, want [a.txt]", namesOf(got))
+	}
+}
+
+// TestNotifyRegistry_CloseCompletesEveryOutstandingWatch: closing the handle
+// has to answer every request queued on it, not just the oldest. One left
+// behind is a MessageID nothing will ever respond to.
+func TestNotifyRegistry_CloseCompletesEveryOutstandingWatch(t *testing.T) {
+	r := newTestNotifyRegistry()
+	fileID := [16]byte{0xD3}
+	notifyQueueFixture(t, r, fileID, 3)
+
+	closed := r.CloseByFileID(fileID)
+	if len(closed) != 3 {
+		t.Fatalf("CloseByFileID returned %d watches, want 3", len(closed))
+	}
+	seen := map[uint64]bool{}
+	for _, n := range closed {
+		seen[n.MessageID] = true
+	}
+	for _, mid := range []uint64{10, 20, 30} {
+		if !seen[mid] {
+			t.Errorf("messageID %d was not completed by the close", mid)
+		}
+	}
+	if got := r.WatcherCount(); got != 0 {
+		t.Errorf("WatcherCount = %d, want 0", got)
 	}
 }
 
@@ -3507,4 +3671,132 @@ func TestChangeNotify_SyncAnswerRefreshesArmedRouting(t *testing.T) {
 		t.Fatalf("subdirectory event after a recursive sync answer = %+v, want it buffered — "+
 			"the armed handle kept the previous request's non-recursive flag", got)
 	}
+}
+
+// TestChangeNotify_EmptyFilterInheritsTheArmedMask covers smb2.notify.rec's
+// re-issued request, which sets completion_filter = 0 and expects the server to
+// keep watching for what the handle was already armed with.
+//
+// [MS-FSA] 2.1.5.11 makes the filter a property of the directory's
+// ChangeNotifyEntry, constructed by the FIRST CHANGE_NOTIFY on the handle;
+// neither it nor MS-SMB2 3.3.5.19 validates the field, and Samba does not
+// either. Only a request that is the first on its handle and names no filter
+// has nothing to watch for.
+func TestChangeNotify_EmptyFilterInheritsTheArmedMask(t *testing.T) {
+	newDirHandle := func(h *Handler, id byte) [16]byte {
+		var fileID [16]byte
+		fileID[0] = id
+		h.StoreOpenFile((&OpenFile{
+			FileID:        fileID,
+			IsDirectory:   true,
+			ShareName:     "share1",
+			SessionID:     1,
+			TreeID:        1,
+			DesiredAccess: 0x00000001,
+			GrantedAccess: 0x00000001,
+		}).WithName(OpenName{Path: "/dir"}))
+		return fileID
+	}
+	makeCtx := func(msgID uint64) *SMBHandlerContext {
+		return &SMBHandlerContext{
+			SessionID: 1, TreeID: 1, MessageID: msgID, ConnID: 1,
+			TryReserveAsync:     func() bool { return true },
+			ReleaseAsync:        func() {},
+			AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error { return nil },
+		}
+	}
+
+	t.Run("armed handle", func(t *testing.T) {
+		h := NewHandler()
+		h.NotifyRegistry = NewNotifyRegistry()
+		h.MaxTransactSize = 1 << 20
+		fileID := newDirHandle(h, 0x91)
+
+		res, err := h.ChangeNotify(makeCtx(1), encodeChangeNotifyReq(0, 1000, fileID, FileNotifyChangeDirName))
+		if err != nil || res == nil || res.Status != types.StatusPending {
+			t.Fatalf("first CHANGE_NOTIFY: want STATUS_PENDING, got %+v (err=%v)", res, err)
+		}
+
+		res, err = h.ChangeNotify(makeCtx(2), encodeChangeNotifyReq(0, 1000, fileID, 0))
+		if err != nil {
+			t.Fatalf("re-issued CHANGE_NOTIFY error: %v", err)
+		}
+		if res == nil || res.Status != types.StatusPending {
+			t.Fatalf("re-issued CHANGE_NOTIFY with an empty filter: want STATUS_PENDING, got %+v", res)
+		}
+
+		// It must watch for the armed mask, not for nothing.
+		var seen bool
+		h.NotifyRegistry.RangeWatchers(func(p *PendingNotify) bool {
+			if p.MessageID == 2 {
+				seen = true
+				if p.CompletionFilter != FileNotifyChangeDirName {
+					t.Errorf("re-issued watch filter = 0x%08X, want the armed 0x%08X",
+						p.CompletionFilter, FileNotifyChangeDirName)
+				}
+			}
+			return true
+		})
+		if !seen {
+			t.Error("the re-issued request registered no watch")
+		}
+	})
+
+	t.Run("unarmed handle", func(t *testing.T) {
+		h := NewHandler()
+		h.NotifyRegistry = NewNotifyRegistry()
+		h.MaxTransactSize = 1 << 20
+		fileID := newDirHandle(h, 0x92)
+
+		res, err := h.ChangeNotify(makeCtx(1), encodeChangeNotifyReq(0, 1000, fileID, 0))
+		if err != nil {
+			t.Fatalf("CHANGE_NOTIFY error: %v", err)
+		}
+		if res == nil || res.Status != types.StatusInvalidParameter {
+			t.Fatalf("first CHANGE_NOTIFY with an empty filter: want STATUS_INVALID_PARAMETER, got %+v", res)
+		}
+
+		// The refusal must not have armed the handle with an empty mask: a
+		// later request naming a real filter has to work.
+		res, err = h.ChangeNotify(makeCtx(2), encodeChangeNotifyReq(0, 1000, fileID, FileNotifyChangeFileName))
+		if err != nil || res == nil || res.Status != types.StatusPending {
+			t.Fatalf("CHANGE_NOTIFY after a refused empty filter: want STATUS_PENDING, got %+v (err=%v)", res, err)
+		}
+	})
+}
+
+// TestBufferEventLocked_InterleavedEmissionsDoNotMerge covers concurrent
+// emitters. NotifyChanges allocates its emission id under the lock and then
+// releases it between events, so another operation can land in the middle of a
+// batch: the buffer becomes [A B A]. Counting every entry whose id matches the
+// first would make the run 2 and ship B inside A's response, which is the merge
+// the accounting exists to prevent. Only a contiguous prefix counts.
+func TestBufferEventLocked_InterleavedEmissionsDoNotMerge(t *testing.T) {
+	r := newTestNotifyRegistry()
+	fileID := [16]byte{0xE0}
+
+	notify := &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 10, AsyncId: 100,
+		WatchPath: "/d", ShareName: "s", MaxOutputLength: 1000,
+		CompletionFilter: FileNotifyChangeFileName,
+	}
+	mustRegister(t, r, notify)
+
+	r.mu.Lock()
+	r.bufferEventLocked(notify, FileNotifyInformation{Action: FileActionAdded, FileName: "a1"}, 5)
+	r.bufferEventLocked(notify, FileNotifyInformation{Action: FileActionAdded, FileName: "b1"}, 6)
+	r.bufferEventLocked(notify, FileNotifyInformation{Action: FileActionAdded, FileName: "a2"}, 5)
+	got := r.drainFirstEmissionLocked(notify)
+	r.mu.Unlock()
+
+	checkRecords(t, "interleaved", got, []FileNotifyInformation{
+		{Action: FileActionAdded, FileName: "a1"},
+	})
+
+	// Everything after the run is kept, in order, for the next request.
+	rest := r.TakeBufferedEvents(fileID, FileNotifyChangeFileName, false)
+	checkRecords(t, "deferred", rest, []FileNotifyInformation{
+		{Action: FileActionAdded, FileName: "b1"},
+		{Action: FileActionAdded, FileName: "a2"},
+	})
 }

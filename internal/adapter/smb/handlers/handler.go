@@ -990,7 +990,14 @@ func (f *OpenFile) NotifyMaxBufferSizeValue() (value uint32, set bool) {
 // CaptureNotifyCompletionFilter atomically records the CompletionFilter of
 // the first CHANGE_NOTIFY on this handle. Subsequent calls return the stored
 // value. Thread-safe; only the first caller wins.
+//
+// An empty filter is never captured. It carries no mask to make sticky, and
+// storing it would arm the handle with a filter that matches nothing for as
+// long as the handle lives — including for the later requests that do name one.
 func (f *OpenFile) CaptureNotifyCompletionFilter(filter uint32) (captured uint32, didCapture bool) {
+	if filter == 0 {
+		return uint32(f.NotifyCompletionFilter.Load()), false
+	}
 	packed := notifyMaxBufferSizeSetBit | uint64(filter)
 	if f.NotifyCompletionFilter.CompareAndSwap(0, packed) {
 		return filter, true
@@ -1339,6 +1346,11 @@ func (h *Handler) closeFilesWithFilter(
 	// ever consume, making bulk teardown pay an O(n) tombstone sweep per
 	// handle.
 	var notifyDirs [][16]byte
+	// docDirs holds the (share, path) of every directory handle this teardown
+	// found carrying a delete-on-close. Marking a directory for deletion has to
+	// complete the CHANGE_NOTIFY watches on it, and those normally live on
+	// handles this teardown is not touching — see close.go step 9.
+	var docDirs [][2]string
 	// leaseReleases holds the opens whose per-handle lease/oplock record must be
 	// released AFTER the open-file table has been shrunk (second pass). Releasing
 	// in the first pass would let two opens of the SAME file with the SAME lease
@@ -1389,6 +1401,9 @@ func (h *Handler) closeFilesWithFilter(
 		// close.go step 8; see doc_election.go. The unlink itself runs further
 		// down, after the lock release and the cache flush.
 		decision, docDelete := h.electDeleteOnClose(openFile)
+		if decision != docDecisionNone && openFile.IsDirectory {
+			docDirs = append(docDirs, [2]string{openFile.ShareName, openFile.Name().Path})
+		}
 
 		// Durable handle persistence: when IsDurable is set AND this is a transport
 		// disconnect (not an explicit LOGOFF), persist the handle to the
@@ -1558,7 +1573,10 @@ func (h *Handler) closeFilesWithFilter(
 	// argument as close.go's DrainHandleOps placement.
 	if h.NotifyRegistry != nil {
 		for _, fileID := range notifyDirs {
-			if notify := h.NotifyRegistry.CloseByFileID(fileID); notify != nil && notify.AsyncCallback != nil {
+			for _, notify := range h.NotifyRegistry.CloseByFileID(fileID) {
+				if notify.AsyncCallback == nil {
+					continue
+				}
 				cleanupResp := &ChangeNotifyResponse{
 					SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
 				}
@@ -1575,6 +1593,15 @@ func (h *Handler) closeFilesWithFilter(
 					}
 				})
 			}
+		}
+
+		// Per [MS-FSA] 2.1.5.14.3: a directory marked for deletion completes
+		// every pending CHANGE_NOTIFY on it with STATUS_DELETE_PENDING. Runs
+		// after the loop above so a watch on a handle this teardown is closing
+		// still gets the STATUS_NOTIFY_CLEANUP its own close owes it; what is
+		// left are watches held by handles outside this teardown.
+		for _, d := range docDirs {
+			h.NotifyRegistry.CompleteWatchersForDeletePending(d[0], d[1])
 		}
 	}
 
