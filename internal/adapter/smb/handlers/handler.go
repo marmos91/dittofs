@@ -1687,15 +1687,16 @@ func (h *Handler) purgeBlockStorePayload(ctx context.Context, handle metadata.Fi
 // handleDeleteOnClose performs the delete operation for files marked with
 // delete-on-close during session/tree/connection teardown.
 //
-// Two lease breaks fire around the delete:
+// Two lease breaks fire after the removal, and only when it happened:
 //
-//  1. Before the unlink, strip Handle from other sessions' leases on the
-//     file being deleted (RH → R, RWH → RW). The file is going away, so
-//     Handle caching becomes stale. Required by
-//     smb2.lease.initial_delete_tdis / logoff / disconnect.
+//  1. Strip Handle from other sessions' leases on the file that was
+//     deleted (RH → R, RWH → RW). Handle caching is only stale once the
+//     entry is actually gone — a delete-on-close that meets a non-empty
+//     directory declines the removal (MS-FSA 2.1.5.5 phase 1 step 2.1.1)
+//     and leaves every other holder's caching valid.
 //
-//  2. After the unlink, break the parent directory's Handle and Read leases
-//     (content change). Matches the explicit CLOSE path at close.go:334.
+//  2. Break the parent directory's Handle and Read leases (content
+//     change). Matches the explicit CLOSE path at close.go:334.
 //
 // Both breaks are async: the triggering SMB request (TDIS / LOGOFF / CLOSE /
 // transport close) is on tree2/session2, while the lease holder is on a
@@ -1717,18 +1718,6 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 	if !docSetterKeysDiffer {
 		PropagateOpenFileParentLeaseKey(authCtx, openFile)
 	}
-	if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
-		lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
-		// Exclude the closing session: its leases on this file are about to
-		// be released anyway, and firing self-breaks creates spurious
-		// notifications that leak into later tests (observed regressing
-		// smb2.lease.v1_bug15148 to count=2).
-		excludeOwner := &lock.LockOwner{ClientID: fmt.Sprintf("smb:%d", openFile.SessionID)}
-		if breakErr := h.LeaseManager.BreakFileHandleLeasesOnDelete(lockFileHandle, openFile.ShareName, excludeOwner); breakErr != nil {
-			logger.Debug(caller+": file Handle lease break on delete failed", "path", name.Path, "error", breakErr)
-		}
-	}
-
 	// Remove what the election resolved — for a stream handle carrying a
 	// base-file delete that is the base file, not the stream's own name —
 	// through the shared helper CLOSE also uses, so the cascade to stream
@@ -1737,6 +1726,18 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 	_, removed, err := h.removeElectedTarget(ctx, authCtx, openFile, target, caller)
 
 	if err == nil && removed {
+		if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
+			lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
+			// Exclude the closing session: its leases on this file are about to
+			// be released anyway, and firing self-breaks creates spurious
+			// notifications that leak into later tests (observed regressing
+			// smb2.lease.v1_bug15148 to count=2).
+			excludeOwner := &lock.LockOwner{ClientID: fmt.Sprintf("smb:%d", openFile.SessionID)}
+			if breakErr := h.LeaseManager.BreakFileHandleLeasesOnDelete(lockFileHandle, openFile.ShareName, excludeOwner); breakErr != nil {
+				logger.Debug(caller+": file Handle lease break on delete failed", "path", name.Path, "error", breakErr)
+			}
+		}
+
 		// No SMBHandlerContext available on the TDIS/LOGOFF/disconnect
 		// teardown path — pass nil so the helper falls back to inline
 		// dispatch (those paths don't ship a triggering response on the
