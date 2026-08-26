@@ -365,7 +365,7 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 
 ## Changelog
 
-### 2026-08-26 — `rename_wait` removed: 10/10 pass, both filter conditions
+### 2026-08-26 — `rename_wait` removed: 12/12 pass across three conditions
 
 The row read "**Intermittent — measured 3/5 failures on `cf184bae`**". Re-measured
 on `41cab93ff`, which contains #2162 (per-connection response emission ordering):
@@ -374,6 +374,7 @@ on `41cab93ff`, which contains #2162 (per-connection response emission ordering)
 | --- | --- | --- |
 | `--filter smb2.lease.rename_wait` — the condition the 3/5 was measured under | 5 | **5/5 pass** |
 | `--filter smb2.lease` — the whole family, 45 tests, share root carrying the suite's leftovers | 5 | **5/5 pass** |
+| CI `smbtorture / memory` + `/ badger-fs` — unfiltered, 634 tests, no truncation | 2 | **2/2 pass** |
 
 Graded on the verdict line only (`success: rename_wait`), as the 2026-08-25
 re-measurement was: single-filter mode drops the family prefix these patterns
@@ -382,8 +383,8 @@ granularity. Provenance checked on the image the runs actually used —
 `strings /app/dfs` finds `releaseResponseOrder` and `RequestOrder`, both of which
 arrive with #2162 and are absent before it.
 
-**The claim is "not reproduced in 10 runs under the condition that previously
-produced 3/5", not "proven fixed".** A race that stops reproducing is not a race
+**The claim is "not reproduced in 12 runs, 5 of them under the exact condition
+that previously produced 3/5", not "proven fixed".** A race that stops reproducing is not a race
 proven absent. The row goes because a known-failure list records observed
 failures and there is no longer one to record — not because the race has been
 shown to be gone. If it returns, it returns as a flake report with a fresh count,
