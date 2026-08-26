@@ -16,4 +16,3 @@ internal/adapter/smb/handlers/handler.go: MS-FSA 2.1.5.14.3
 internal/adapter/smb/handlers/set_info.go: MS-FSA 2.1.5.14.3
 internal/adapter/smb/handlers/close_doc_dir_not_empty_test.go: MS-FSCC 2.4.34
 internal/adapter/smb/handlers/ioctl_sparse.go: MS-FSCC 2.3.32
-internal/adapter/smb/handlers/converters.go: MS-FSCC 2.4.99

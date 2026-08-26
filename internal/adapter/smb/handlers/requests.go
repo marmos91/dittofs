@@ -29,7 +29,7 @@ const (
 	// FileBasicInformation returns timestamps and attributes [MS-FSCC] 2.4.7.
 	FileBasicInformation uint8 = 4
 
-	// FileStandardInformation returns file size and link count [MS-FSCC] 2.4.41 (FileStandardInformation).
+	// FileStandardInformation returns file size and link count [MS-FSCC] 2.4.47 (FileStandardInformation).
 	FileStandardInformation uint8 = 5
 
 	// FileInternalInformation returns the file index [MS-FSCC] 2.4.27 (FileInternalInformation).
