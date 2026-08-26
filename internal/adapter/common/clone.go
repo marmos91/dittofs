@@ -295,6 +295,38 @@ func materializeLocalClone(
 		return fmt.Errorf("materialize clone: drain dst rollups: %w", err)
 	}
 
+	// The copy wrote only [0, srcSize). Whatever the destination held past that
+	// is still there: the write path supersedes by version, it does not clip, so
+	// a destination that was longer than the source keeps its tail. The size
+	// stamped below hides it from every read that clamps — until something grows
+	// the file again, and the destination serves bytes it is supposed to have
+	// lost where a grown region owes zeros. That is the size-down whose tail
+	// nothing reclaims, which ReclaimTruncatedBlocks exists to stop for every
+	// protocol that shrinks a file; this path shrinks one and never drove it.
+	//
+	// Truncate is what clips all of it: it narrows a row that straddles the new
+	// size, reaps by exact "{payloadID}/{offset}" identity any row starting past
+	// it, and clips the local tier's intervals. The narrow is the load-bearing
+	// half here, not the reap — the overwrite re-marks the surviving fragment
+	// dirty, so the carve above emits one row spanning the copied content and
+	// the tail rather than leaving a separate row for the tail to reap. A reap
+	// keyed on offsets the copy did not take over would find nothing to do.
+	//
+	// It runs after the carve, so it clips the manifest the carve just wrote,
+	// and before the size below, so nothing observes a size the content no
+	// longer matches. The returned list is dropped for the same reason
+	// ReclaimTruncatedBlocks drops it: Truncate reprojects File.Blocks from the
+	// rows that survived, and the transaction below re-reads them.
+	dstPre, err := metadataStore.GetFile(ctx, dstHandle)
+	if err != nil {
+		return fmt.Errorf("materialize clone: fetch dst file: %w", err)
+	}
+	if srcFile.Size < dstPre.Size {
+		if _, err := blockStore.Truncate(ctx, string(dstPayloadID), dstPre.Blocks, srcFile.Size); err != nil {
+			return fmt.Errorf("materialize clone: clip dst past the source's size: %w", err)
+		}
+	}
+
 	// Block-level WriteAt does not set File.Size / Mtime / Ctime — stamp them on
 	// the destination to match the source and record the content change. The
 	// carve above already populated File.Blocks, so re-read inside the txn and
