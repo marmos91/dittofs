@@ -550,7 +550,17 @@ else
     SUITES=(
         "smb2.acls:acls"
         "smb2.acls_non_canonical:acls_non_canonical:smbnoncanon"
-        "smb2.aio_delay:aio_delay"
+        # smb2.aio_delay is intentionally NOT run: its single test, aio_cancel,
+        # sends a 1-byte READ and then loops on `req->cancel.can_cancel` with no
+        # bound. That flag is set in exactly one place in the smbtorture client
+        # — on receipt of an interim NT_STATUS_PENDING — so the test cannot
+        # proceed at all unless the server defers the read. Samba only ever runs
+        # this suite against a share carrying its `vfs_delay_inject` module,
+        # whose whole purpose is to make reads artificially slow. DittoFS has no
+        # such module and the harness targets /smbbasic, so the read completes
+        # immediately, no interim is ever sent, and the suite burns its entire
+        # budget having graded 0 of 1. That is not a tight budget and not a
+        # server gap: the suite can never produce a verdict here.
         # smb2.bench is intentionally NOT run: it is a throughput benchmark
         # family (echo, oplock1, path-contention-shared, read, session-setup),
         # not a conformance suite. The tests measure round-trip timing and
@@ -689,12 +699,18 @@ else
         # smb2.notify is deliberately NOT raised. It hangs on a cancelled
         # CHANGE_NOTIFY that never receives a final response, so a bigger budget
         # only burns more of it while leaving the same tail ungraded.
-        # smb2.aio_delay and smb2.compound_find stay at 120s too: still
-        # uncharacterised, and sizing a budget for an unknown is how an ungraded
-        # tail gets established in the first place.
+        #
+        # smb2.compound_find is a volume case, the same shape as maxfid was:
+        # compound_find_close creates 5000 files one synchronous CREATE+CLOSE
+        # round trip at a time before the FIND it actually tests, and the count
+        # is hard-coded in the test, so there is no knob to bound it with. The
+        # memory profiles finish it in ~43s; every persistent metadata backend
+        # pays more per CREATE and overruns 120s. Probe value, to be replaced by
+        # the measurement it produces.
         case "$suite" in
             smb2.replay|smb2.durable-*|smb2.lease|smb2.multichannel|smb2.oplock)
                 suite_timeout=300 ;;
+            smb2.compound_find) suite_timeout=600 ;;
             *) suite_timeout=120 ;;
         esac
         run_smbtorture "$suite" "$suite_timeout" "$prefix" "${share:-}" || record_rc $?
