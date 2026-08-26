@@ -22,8 +22,8 @@ UNJUSTIFIED entries remain — the #673 acceptance criterion is met.
 
 - **Upstream Samba known-fail** (fails on the reference Samba server too; cited) — **2**: `charset.Testing`, `session.reauth5`
 - **Deferred past v1.0 with a tracking issue** (justified by deferral) — **0**: the last deferred rows (the 6 `dhv2-pending2*-sane` replay rows) flipped under #749 (parked-CREATE finalize-on-holder-release)
-- **Permanently Unimplementable / harness-only** (see [appendix](#permanently-unimplementable-out-of-scope)) — **46**
-- **Total (non-Kerberos): 48**
+- **Permanently Unimplementable / harness-only** (see [appendix](#permanently-unimplementable-out-of-scope)) — **44**
+- **Total (non-Kerberos): 46**
 
 (Rendered as a list, not a markdown table, so `parse-results.sh` — which ingests every line beginning with `|` — does not mistake these tally lines for known-failure rows.)
 
@@ -106,23 +106,33 @@ tcon, tdis, tdis1, tcp, file, dir, mask, session-reconnect, valid-req.
 Note: smbtorture reports three verdict kinds — `success:`, `failure:` and
 `error:`. A tally built on success/failure alone silently omits the third.
 
+The five rows this section used to carry alongside `rec` — `double` and
+`rmdir1`-`rmdir4` — were added on 2026-08-25 and their causes were fixed on
+2026-08-26, so the table outlived them by about a day. `rmdir1`-`rmdir4` are
+answered by the delete-disposition sweep #2175 added for #2132; `double` is
+decided by the arrival-order gate #2151 added for #2147, which is what stopped
+the buffered event going to whichever of two pipelined requests happened to be
+dispatched first. Both were re-measured before removal — see the 2026-08-26
+entry in the changelog.
+
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.notify.double | Multiple outstanding notifies | The test keeps two CHANGE_NOTIFY requests outstanding on one directory handle, each completing with one change. `NotifyRegistry` keys watches by FileID, so the second replaces the first; the replaced request is now completed with `STATUS_CANCELLED` instead of being dropped unanswered, so the test fails at `notify.c:1808` (`NT_STATUS_CANCELLED - should be NT_STATUS_OK`) rather than hanging the suite. Supporting several waiters per handle is the remaining work. | [#2129](https://github.com/marmos91/dittofs/issues/2129) |
-| smb2.notify.rmdir1 | Deleted watched directory | A CHANGE_NOTIFY pending on a directory that is then deleted is never completed; `notify.c:2466` requires `NT_STATUS_DELETE_PENDING` and the client's transport gives up after 300s instead. | [#2132](https://github.com/marmos91/dittofs/issues/2132) |
-| smb2.notify.rmdir2 | Deleted watched directory | Same defect as `rmdir1`, re-issuing the notify first. | [#2132](https://github.com/marmos91/dittofs/issues/2132) |
-| smb2.notify.rmdir3 | Deleted watched directory | Same defect as `rmdir1`, across two tree connections. | [#2132](https://github.com/marmos91/dittofs/issues/2132) |
-| smb2.notify.rmdir4 | Deleted watched directory | Same defect as `rmdir1`, two tree connections, re-issuing first. | [#2132](https://github.com/marmos91/dittofs/issues/2132) |
 | smb2.notify.rec | Buffered backlog delivered per operation, not whole | **Re-measured after the empty-filter refusal was fixed.** The test now fails further on, at `notify.c:644`: `wrong value for notify.smb2.out.num_changes 0x5 should be 0x9`. It previously failed at `notify.c:642` with `NT_STATUS_INVALID_PARAMETER`, because `smb2_notify_send` at `notify.c:627` arms a recursive CHANGE_NOTIFY with `completion_filter = 0` and DittoFS refused an empty filter outright; the filter armed by the earlier request on the same handle now applies ([MS-FSA] 2.1.5.11), so the request is accepted and the test advances. What remains is the count: the test expects all nine buffered changes in one reply and gets five. Samba also carries this test as a known failure (`^samba3.smb2.notify.rec` in `selftest/knownfail`), and fails it at the same assertion. | [#2164](https://github.com/marmos91/dittofs/issues/2164) |
 
 ### Oplocks
 
-All remaining oplock residuals have been resolved. The four
-`smb2.kernel-oplocks.*` tests require Linux kernel oplock integration via
-`F_SETLEASE` on the underlying fd — architecturally incompatible with
-DittoFS's userspace virtual filesystem. They are listed in the
+All remaining oplock residuals have been resolved. Three
+`smb2.kernel-oplocks.*` tests are listed in the
 [Permanently Unimplementable](#permanently-unimplementable-out-of-scope)
-appendix.
+appendix: `kernel_oplocks2` and `kernel_oplocks5` turn on kernel oplock
+integration via `F_SETLEASE` on the underlying fd, which is architecturally
+incompatible with DittoFS's userspace virtual filesystem, and `kernel_oplocks8`
+needs a host-filesystem `localdir` that a virtual FS cannot provide.
+
+`kernel_oplocks4` used to be counted here as a fourth. It was **reclassified
+out**, not fixed: the upstream test has no kernel-oplock gate at all, and the
+one place it inspects a break emits a warning rather than an assertion. See the
+2026-08-26 changelog entry.
 
 One residual remains. `smb2.oplock` used to be cut short at 120s having graded
 28 of 42 tests, and `batch22b` was the test in flight when the axe fell — so its
@@ -179,7 +189,7 @@ since basic charset support works.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.charset.Testing | Character set | Upstream-class: the partial-surrogate subcase fails in the smbtorture **client's** own `iconv` (UTF-16→UTF-8 of an unpaired surrogate returns `EILSEQ` client-side, same as against reference Samba). DittoFS round-trips valid UTF-16; the unpaired-surrogate case is not a server feature gap. Tracked under #740 for the wide-A collision sub-behaviour. | #740 |
+| smb2.charset.Testing | Character set | **Measured 15/15 failures on `0c590d546`** — not intermittent, and never observed passing. Upstream-class: the partial-surrogate subcase fails in the smbtorture **client's** own `iconv` (UTF-16→UTF-8 of an unpaired surrogate returns `EILSEQ` client-side, which Samba maps to `NT_STATUS_NO_MEMORY`; same against reference Samba). The verdict line is `failure: charset.Testing partial surrogate` at `charset.c:174`; the other three `Testing` subcases pass. DittoFS round-trips valid UTF-16; the unpaired-surrogate case is not a server feature gap. Tracked under #740 for the wide-A collision sub-behaviour. **This row is reported as "now passing" by `parse-results.sh` on every run** — its flake pre-filter reclassifies any block mentioning `NT_STATUS_NO_MEMORY` as a skip, which swallows this genuine failure. Do not act on that report; see [#2198](https://github.com/marmos91/dittofs/issues/2198). | #740 |
 
 ### Extended Attributes (ACL-Based)
 
@@ -319,7 +329,6 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.multichannel.oplocks.test3_specification | Multi-channel | Requires `FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT` + 32-channel coordination (Samba-internal) |
 | smb2.scan.scan | smbtorture client crash | Opcode-fuzzer that walks every SMB2 command id. At opcode 12 (SMB2_OPLOCK_BREAK) the smbtorture 4.22.6 **client** aborts inside its own signing code — `smb2_signing_calc_signature` asserts `opcode[12] msg_id == 0` and `smb_panic()`s (`libcli/smb/smb2_signing.c:576`). The backtrace is entirely client-side (`smb2_signing_sign_pdu` → `smb2cli_req_compound_submit`); DittoFS is pure Go, is not in the backtrace, and correctly returns `NT_STATUS_INVALID_PARAMETER` for the bogus opcodes it does receive. The crash surfaces as docker exit ≥129 and previously red'd the whole `smbtorture / memory` job (the recurring "exit 139 / smb2.scan" flake). Skipped by `run.sh` per-subtest split; the other three scan subtests (getinfo/setinfo/find) pass. Drop once the upstream client crash is fixed (or we move past smbtorture 4.22.6). |
 | smb2.kernel-oplocks.kernel_oplocks2 | Kernel oplocks | Requires Linux kernel `F_SETLEASE` on underlying fd — userspace VFS cannot |
-| smb2.kernel-oplocks.kernel_oplocks4 | Kernel oplocks | Requires Linux kernel `F_SETLEASE` on underlying fd — userspace VFS cannot |
 | smb2.kernel-oplocks.kernel_oplocks5 | Kernel oplocks | Kernel oplock vs lease downgrade semantics — DittoFS has no kernel oplock layer |
 | smb2.kernel-oplocks.kernel_oplocks8 | Kernel oplocks | smbtorture-side localdir check is host-FS-specific — not applicable to a virtual FS |
 | smb2.name-mangling.mangle | Name mangling | NTFS 8.3 short-name mangling — DOS/Win9x legacy, not in SMB2/3 protocol surface |
@@ -358,13 +367,136 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.replay.dhv2-pending3o-vs-lease-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-lease ordering; Samba does not reproduce the `-windows` arm. `-sane` counterpart now passes (#749). |
 | smb2.replay.replay6 | Windows replay handle allocation | Bucket 10. "Error Codes for DurableHandleReqV2 Replay": after replaying a DH2Q CreateGuid once (which correctly returns the original FileId), the test replays the *same* CreateGuid again and asserts the returned `handle.data[0]/[1]` DIFFER — i.e. the second replay must mint a distinct handle and break the original oplock. That is Windows-specific: Samba (and DittoFS, which models Samba here) resolve a replay by CreateGuid via one persistent replay-cache slot, so every replay returns the SAME open — the conformant behaviour the `dhv2-pending*-vs-*-sane` rows depend on (each replays a completed open twice and requires the same handle both times). The two invariants are mutually exclusive under one replay-cache rule; Samba fails replay6 too. No spec-conformant target for DittoFS. |
 
-**Total: 46 tests permanently out of scope** (25 prior + `dirlease.oplocks` + 20 replay `-windows` arms).
+**Total: 44 tests permanently out of scope** (23 prior + `dirlease.oplocks` + 20 replay `-windows` arms).
+The figure is the appendix table's actual row count. It had drifted: #2111 dropped
+`smb2.maxfid` from the table without decrementing it, leaving 45 rows described as 46.
 
 ### Kerberos
 
 `KNOWN_FAILURES_KERBEROS.md` now carries a single row (`smb2.reauth5`, an upstream Samba selftest knownfail) after the #686 Kerberos sweep harvested the stale multi-channel rows. It is loaded only when smbtorture runs with `--use-kerberos`, which the non-Kerberos v1.0 CI job (`.github/workflows/smb-conformance.yml`, running `./run.sh` without `--kerberos`) does not pass, so it does not gate v1.0.
 
 ## Changelog
+
+### 2026-08-26 — seven rows re-measured on 15 draws: six removed, `charset.Testing` kept and corrected
+
+A `smbtorture / memory` summary reported eight rows as now passing. One
+(`rename_wait`) was handled in #2187. The other seven were each a **single
+draw**, which is the evidence standard this file has been burned by twice — a PR
+merged on one green `notify.double` run caused #2147, and `rename_wait` itself
+sat at a measured 3/5, so a row that fails 3 in 5 looks "fixed" in two of five
+attempts to check it.
+
+Re-measured on `0c590d546`. **15 draws per row**: five full unfiltered local
+runs, plus the ten CI `smbtorture` jobs of runs 32970360496 and 32965370834
+(five metadata profiles each — `memory`, `memory-fs`, `badger-fs`, `sqlite`,
+`postgres`). Unfiltered throughout, deliberately: `--filter` on a single test
+leaves the share root empty, which is materially easier than the full-suite run
+these rows were observed under, and a green result under easier conditions is
+worth nothing here.
+
+| Row | Local | CI | Total | Verdict |
+| --- | --- | --- | --- | --- |
+| `charset.Testing partial surrogate` | 0/5 pass | 0/10 pass | **0/15** | **kept** |
+| `kernel-oplocks.kernel_oplocks4` | 5/5 pass | 10/10 pass | **15/15** | removed |
+| `notify.double` | 5/5 pass | 10/10 pass | **15/15** | removed |
+| `notify.rmdir1` | 5/5 pass | 10/10 pass | **15/15** | removed |
+| `notify.rmdir2` | 5/5 pass | 10/10 pass | **15/15** | removed |
+| `notify.rmdir3` | 5/5 pass | 10/10 pass | **15/15** | removed |
+| `notify.rmdir4` | 5/5 pass | 10/10 pass | **15/15** | removed |
+
+Graded on the artifact's `success:` / `failure:` / `error:` verdict lines, never
+on the job conclusion: while a row is present a failure grades as KNOWN and the
+job stays green either way. All three verdict kinds were counted, and a target
+with no verdict line at all was recorded as UNGRADED rather than as a pass — that
+distinction is load-bearing here, because the failure mode of these notify tests
+is a client hang, not a graded failure.
+
+#### `charset.Testing` was never passing — the harness was hiding its failure
+
+It fails in **all 15 draws**, deterministically, at `charset.c:174` with
+`NT_STATUS_NO_MEMORY`. It is nonetheless reported as "now passing" on every run,
+including runs in whose own artifact the failure line appears.
+
+`parse-results.sh`'s connection-flake pre-filter rewrites any failure block
+mentioning `NT_STATUS_NO_MEMORY` into a `skip:`. That pattern is meant to excuse
+a client-side connection-setup overrun on a loaded runner; charset's failure is a
+real assertion that merely carries the same status, because Samba maps the
+client's `iconv` `EILSEQ` on an unpaired surrogate to `NT_STATUS_NO_MEMORY`. The
+failure is dropped, the three sibling `Testing` subcases pass, and the row
+surfaces as a removal candidate. Filed as
+[#2198](https://github.com/marmos91/dittofs/issues/2198); not fixed here, so the
+row now says not to trust that report.
+
+Across the ten CI job logs checked, `NT_STATUS_NO_MEMORY` matched **only** this
+assertion — it excused no actual connection flake in any of them.
+
+#### `kernel_oplocks4` was in the wrong bucket, not newly fixed
+
+It was listed under Permanently Unimplementable bucket 2, "Requires Linux kernel
+`F_SETLEASE` on underlying fd — userspace VFS cannot". Reading the upstream test
+(`source4/torture/smb2/oplock.c:4694-4773`, Samba v4-22-stable) shows that
+justification does not describe this test:
+
+- It has **no** `torture_skip` and **no** `HAVE_KERNEL_OPLOCKS_LINUX` guard, and
+  it does not read `torture:localdir`. `kernel_oplocks8` is the only one of the
+  eight that gates on any of those.
+- Its five hard assertions are: create the file; create the ADS stream
+  `:foo`; open the base file and be granted `SMB2_OPLOCK_LEVEL_BATCH`; and
+  re-open the stream read-only. All are ordinary SMB2 surface. DittoFS gained
+  persistent named streams in #1285.
+- The thing the test's own comment says it verifies — that the stream open does
+  not break the batch oplock — is **not an assertion**. `break_info.count != 0`
+  only emits `torture_warning`, which does not fail the test.
+
+So it could not have needed kernel oplocks. It is also not passing on that
+loophole: the string `Stream open caused oplock break` appears in none of the
+draws, so DittoFS does hold the batch oplock across the stream open.
+
+Removed from the appendix on that basis, the same shape of correction as
+`smb2.maxfid` on 2026-08-25. `kernel_oplocks2`, `kernel_oplocks5` and
+`kernel_oplocks8` are **not** reclassified: 2 and 5 carry real `break_info.count`
+assertions and still fail, and 8 genuinely skips for want of `localdir`.
+
+The appendix total was corrected from 46 to the table's actual row count. It had
+already drifted before this change: #2111 dropped `smb2.maxfid` from the table
+without decrementing the figure, leaving 45 rows described as 46.
+
+#### The notify rows were stale in the ordinary way
+
+All five were added on 2026-08-25 in #2131 and their causes were fixed on
+2026-08-26, about eighteen hours later — the fix landed and the rows outlived it.
+
+`rmdir1`-`rmdir4`: #2132, fixed in #2175. `CompleteWatchersForDeletePending`
+sweeps every watcher on the directory's path and share when the delete
+disposition is committed, and answers each `STATUS_DELETE_PENDING`, which is what
+[MS-FSA] 2.1.5.14.3 requires. #2175's own CI already graded all four passing on
+two backends; they were never failing in CI so much as never *reached*, sitting
+past the point where `smb2.notify` was cut short at 120s.
+
+`notify.double`: the row's stated cause — a second CHANGE_NOTIFY on one handle
+evicting the first with `STATUS_CANCELLED` — no longer exists, since #2129's
+replacement path was removed in #2175. What actually decided this test was
+#2147, an intermittent *hang*: whichever of two pipelined requests the server
+dispatched first consumed the buffered event, and the client blocks on the first
+one it sent. #2151 gates the buffered event on wire-arrival order recorded by
+`MarkNotifyInFlight` off the connection read loop **before** dispatch, so the
+outcome no longer depends on which handler goroutine is scheduled first. That is
+a structural kill of the race, not merely 15 draws that did not hit it.
+
+**What is and is not claimed.** For the six removed rows: "not reproduced in 15
+draws, ten of them in CI across five metadata backends." Not "proven fixed". The
+rows go because a known-failure list records observed failures and there is no
+longer one to record.
+
+One residual window is known and is filed rather than papered over: nothing
+completes a CHANGE_NOTIFY that registers *after* the directory is marked, and
+`rmdir3`/`rmdir4` run their notify and their delete on two independent
+connections with no ordering between them ([#2199](https://github.com/marmos91/dittofs/issues/2199)).
+Keeping the rows would not have covered it — that window produces a hang, and a
+hang is graded as a truncation, which fails the job independently of the
+known-failure list (`BAD=$((NEW_FAILURES + ${#UNEXPECTED_TRUNCATIONS[@]}))`,
+`parse-results.sh:650`). A row suppresses a graded `failure:`; it does not
+suppress a truncation.
 
 ### 2026-08-26 — `rename_wait` removed: 12/12 pass across three conditions
 
