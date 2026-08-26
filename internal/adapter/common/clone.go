@@ -6,6 +6,8 @@ import (
 	"io"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -71,6 +73,7 @@ func CloneWholeFile(
 	}
 
 	selfClone := false
+	var copied []block.ChunkRef
 	err := metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		// Bind the active txn into the context so the per-share coordinator's
 		// RefCount UPDATEs (driven by engine.CopyPayload) join the same txn as
@@ -106,6 +109,7 @@ func CloneWholeFile(
 			return fmt.Errorf("engine copy payload: %w", err)
 		}
 		dstFile.Blocks = newBlocks
+		copied = newBlocks
 		// Wholesale manifest replacement on the destination — persist refs.
 		dstFile.Size = srcFile.Size
 		dstFile.Mtime = time.Now()
@@ -118,14 +122,49 @@ func CloneWholeFile(
 	if err != nil {
 		return err
 	}
+	// A self-clone left the destination exactly as it was: it inherited no
+	// ranges the local tier has to account for, and its cached entries still
+	// describe the content it holds. Everything below is about a destination
+	// whose content changed.
+	if selfClone {
+		return nil
+	}
+	seedClonedRanges(ctx, blockStore, dstPayloadID, copied)
 
 	// POST-txn: the destination content changed wholesale; drop its cache
 	// entries. Files that still reference the shared CAS hashes via dedup keep
 	// their entries warm (nil removedHashes => key off dstPayloadID only).
-	if cache != nil && !selfClone {
+	if cache != nil {
 		cache.InvalidateFile(dstPayloadID, nil)
 	}
 	return nil
+}
+
+// seedClonedRanges tells the destination's local tier which ranges the copy just
+// gave it. Both reflink helpers in this package call it. The copy moves no
+// bytes, so the destination's ranges land in the
+// manifest and nowhere in the index, and everything that reads residency off the
+// index — the remote-only byte count, the offline-readiness answer — cannot
+// account for them until this runs.
+//
+// It runs after the commit, never before: cold intervals over rows a rolled-back
+// copy never wrote would make a read of the destination's sparse ranges fail
+// closed where it should serve zeros.
+//
+// A failure is logged and the copy still succeeds. The copy is durable and its
+// reads are correct either way — a hole on a remote-backed share hydrates from
+// the manifest exactly as a cold range does — so the only casualty is the
+// accounting, and failing a committed copy to report it would be the worse
+// trade. The next seed of the same ranges picks them up.
+func seedClonedRanges(ctx context.Context, blockStore *engine.Store, dstPayloadID metadata.PayloadID, blocks []block.ChunkRef) {
+	if len(blocks) == 0 {
+		return
+	}
+	if err := blockStore.SeedColdRefs(ctx, string(dstPayloadID), blocks); err != nil {
+		logger.Warn("server-side copy: the destination's ranges are not recorded in the local tier; "+
+			"reads are unaffected, its remote-only bytes are not counted",
+			"payload", dstPayloadID, "error", err)
+	}
 }
 
 // materializeLocalClone is the local-only (no remote store) clone path: it

@@ -495,8 +495,82 @@ func staleAfterTruncate(sh *shard, id FileID, notAfter uint64) bool {
 // the remote, which a cold read cannot fetch back. Skipping covered ranges makes
 // the call idempotent and safe to repeat against a store that is only partly
 // missing its markers, at the cost of nothing on a store that has none.
-func (s *Store) SeedCold(ctx context.Context, id FileID, extents [][2]int64) error {
-	return s.SeedColdBatch(ctx, []ColdSeed{{ID: id, Extents: extents}})
+//
+// The whole call runs under the file's shard lock, so a Delete or Truncate of
+// the same file either lands entirely before the seed — and the seed then plans
+// against the index it left — or entirely after, where its version fences the
+// seeded intervals away like any other write. Neither can land in the middle and
+// have the insert undo it, which is what makes this the variant a live file can
+// be seeded through: a server-side copy seeds its destination while other
+// clients are free to unlink it.
+//
+// What the lock does not do is make the caller's extents current. They were
+// chosen before the call, so a truncate that lands first leaves the seed
+// describing a range the file no longer has — a hole is a hole whether it was
+// never written or just clipped away. That range is past the size every reader
+// clamps to, so it serves nothing and only ever inflates the count of bytes the
+// tier calls remote-only. Erring toward "more remote-only than there is" is the
+// safe direction for every caller of that count.
+//
+// ponytail: the cold-log fsync runs under the shard lock, so it stalls that
+// shard for its duration — the same trade Invalidate takes, and for the same
+// reason: one fsync per server-side copy is too rare to show. Take
+// SeedColdBatch's plan/append/insert split instead if a workload ever seeds live
+// files often enough to matter, and pay for the delete watermark it needs.
+func (s *Store) SeedCold(_ context.Context, id FileID, extents [][2]int64) error {
+	if s.closed.Load() {
+		return errClosed
+	}
+	sh := s.shardFor(id)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	entries := s.planColdSeed(sh, id, extents)
+	if len(entries) == 0 {
+		return nil
+	}
+	if err := s.appendCold(entries); err != nil {
+		return err
+	}
+	fi := sh.indexFor(id)
+	for _, e := range entries {
+		fi.insert(interval{
+			fileOff: e.fileOff,
+			length:  e.length,
+			version: e.version,
+			synced:  true,
+			cold:    true,
+		})
+	}
+	return nil
+}
+
+// planColdSeed turns one file's extents into the cold entries that would cover
+// the parts of them the index does not describe yet. The caller holds the file's
+// shard lock, and the entries carry the versions taken under it.
+func (s *Store) planColdSeed(sh *shard, id FileID, extents [][2]int64) []coldEntry {
+	var entries []coldEntry
+	fi := sh.index[id]
+	for _, e := range extents {
+		if e[1] <= 0 {
+			continue
+		}
+		if fi == nil { // unknown file: the whole extent is a hole
+			entries = append(entries, coldEntry{id: id, fileOff: e[0], length: e[1], version: s.nextVersion()})
+			continue
+		}
+		for _, p := range fi.plan(e[0], e[1]) {
+			if !p.hole {
+				continue
+			}
+			entries = append(entries, coldEntry{
+				id:      id,
+				fileOff: e[0] + p.dstStart,
+				length:  p.dstEnd - p.dstStart,
+				version: s.nextVersion(),
+			})
+		}
+	}
+	return entries
 }
 
 // ColdSeed is one file's worth of work for SeedColdBatch: the file's ID and the
@@ -526,9 +600,10 @@ type ColdSeed struct {
 // it open for the whole batch rather than one fsync. Both callers seed a share
 // that is not serving yet (share add) or one whose local tier was just reset
 // (snapshot restore), so nothing deletes through it today. Closing it means
-// either holding shard locks across the fsync, which is worse, or a per-file
-// delete watermark to revalidate against; build the watermark if a seed ever
-// runs against a live share.
+// either holding shard locks across the fsync or a per-file delete watermark to
+// revalidate against; build the watermark if a batch ever runs against a live
+// share. A caller seeding one live file takes SeedCold instead, which holds the
+// lock across its own fsync and has no gap to close.
 func (s *Store) SeedColdBatch(_ context.Context, seeds []ColdSeed) error {
 	if s.closed.Load() {
 		return errClosed
@@ -537,27 +612,7 @@ func (s *Store) SeedColdBatch(_ context.Context, seeds []ColdSeed) error {
 	for _, sd := range seeds {
 		sh := s.shardFor(sd.ID)
 		sh.mu.Lock()
-		fi := sh.index[sd.ID]
-		for _, e := range sd.Extents {
-			if e[1] <= 0 {
-				continue
-			}
-			if fi == nil { // unknown file: the whole extent is a hole
-				entries = append(entries, coldEntry{id: sd.ID, fileOff: e[0], length: e[1], version: s.nextVersion()})
-				continue
-			}
-			for _, p := range fi.plan(e[0], e[1]) {
-				if !p.hole {
-					continue
-				}
-				entries = append(entries, coldEntry{
-					id:      sd.ID,
-					fileOff: e[0] + p.dstStart,
-					length:  p.dstEnd - p.dstStart,
-					version: s.nextVersion(),
-				})
-			}
-		}
+		entries = append(entries, s.planColdSeed(sh, sd.ID, sd.Extents)...)
 		sh.mu.Unlock()
 	}
 	if len(entries) == 0 {

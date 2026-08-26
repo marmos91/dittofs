@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -62,6 +63,7 @@ func CopyPayload(
 		return fmt.Errorf("CopyPayload: fetch src file attr: %w", err)
 	}
 
+	var copied []block.ChunkRef
 	err = metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		// Bind the active txn into the context so the per-share
 		// metadataCoordinator's IncrementRefCount / DecrementRefCount
@@ -84,6 +86,7 @@ func CopyPayload(
 			return fmt.Errorf("fetch dst file attr: %w", err)
 		}
 		dstFile.Blocks = newBlocks
+		copied = newBlocks
 		// Wholesale manifest replacement on the destination — persist refs.
 		dstFile.Size = srcFile.Size
 		dstFile.Mtime = time.Now()
@@ -96,6 +99,7 @@ func CopyPayload(
 	if err != nil {
 		return err
 	}
+	seedClonedRanges(ctx, blockStore, dstPayloadID, copied)
 
 	// POST-txn: conservative invalidation for dst — its content changed
 	// wholesale. Pass nil removedHashes so the cache drops everything

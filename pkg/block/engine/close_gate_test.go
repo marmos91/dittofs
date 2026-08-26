@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"testing"
+
+	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // TestStore_CloseDrainsInFlightWriteAt is the area-7 H-A reproducer: a client
@@ -185,6 +187,12 @@ func TestStore_OpAfterCloseReturnsErrStoreClosed(t *testing.T) {
 	t.Run("SeedColdBatch", func(t *testing.T) {
 		if err := bs.SeedColdBatch(ctx, []ColdSeed{{PayloadID: "p", Extents: [][2]int64{{0, 4096}}}}); !errors.Is(err, ErrStoreClosed) {
 			t.Errorf("SeedColdBatch after Close = %v, want ErrStoreClosed; a seed that slips past Close reopens the cold log behind a torn-down store", err)
+		}
+	})
+	t.Run("SeedColdRefs", func(t *testing.T) {
+		refs := []block.ChunkRef{{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096}}
+		if err := bs.SeedColdRefs(ctx, "p", refs); !errors.Is(err, ErrStoreClosed) {
+			t.Errorf("SeedColdRefs after Close = %v, want ErrStoreClosed; a copy's seed that slips past Close reopens the cold log behind a torn-down store", err)
 		}
 	})
 	t.Run("EvictLocal", func(t *testing.T) {

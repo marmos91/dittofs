@@ -124,3 +124,73 @@ func TestCloneWholeFile_RollsBackOnIncrementError(t *testing.T) {
 		t.Errorf("InvalidateFile fired %d times after rollback, want 0", len(cache.calls))
 	}
 }
+
+// TestCloneWholeFile_SeedsDestinationRanges pins the wiring the residency
+// accounting depends on: the reflink moves no bytes, so the destination's ranges
+// land in the manifest and would land nowhere in the local tier's index without
+// the post-commit seed. Everything that reports remote-only bytes reads that
+// index, so an unseeded destination is invisible to all of it.
+func TestCloneWholeFile_SeedsDestinationRanges(t *testing.T) {
+	ctx := context.Background()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	bs, local := newCopyTestEngineWithLocal(t, &fakeCoordinator{}, ms)
+
+	srcBlocks := []block.ChunkRef{
+		{Hash: block.ContentHash{0x11}, Offset: 0, Size: 4096},
+		{Hash: block.ContentHash{0x22}, Offset: 4096, Size: 4096},
+		{Hash: block.ContentHash{0x33}, Offset: 8192, Size: 2048},
+	}
+	const srcSize = 4096 + 4096 + 2048
+	srcHandle := putTestFile(t, ms, "/seed-src.bin", "seed-src-pid", srcBlocks, srcSize)
+	dstHandle := putTestFile(t, ms, "/seed-dst.bin", "seed-dst-pid", nil, 0)
+
+	// Nothing describes the destination before the clone.
+	before, err := local.DataExtents(ctx, "seed-dst-pid", srcSize)
+	if err != nil {
+		t.Fatalf("DataExtents before the clone: %v", err)
+	}
+	if len(before) != 0 {
+		t.Fatalf("the destination already had %d index extents before the clone", len(before))
+	}
+
+	if err := CloneWholeFile(ctx, bs, ms, nil, srcHandle, dstHandle, "seed-dst-pid"); err != nil {
+		t.Fatalf("CloneWholeFile: %v", err)
+	}
+
+	described, err := local.DataExtents(ctx, "seed-dst-pid", srcSize)
+	if err != nil {
+		t.Fatalf("DataExtents after the clone: %v", err)
+	}
+	var describedBytes uint64
+	for _, e := range described {
+		describedBytes += e[1] - e[0]
+	}
+	if describedBytes != srcSize {
+		t.Errorf("the index describes %d bytes of the clone's destination, want %d (extents %v)",
+			describedBytes, srcSize, described)
+	}
+}
+
+// TestCloneWholeFile_SelfCloneSeedsNothing keeps the self-clone no-op whole: the
+// destination is the source, its ranges are already accounted for, and seeding
+// them would describe the source's own bytes as remote-only.
+func TestCloneWholeFile_SelfCloneSeedsNothing(t *testing.T) {
+	ctx := context.Background()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	bs, local := newCopyTestEngineWithLocal(t, &fakeCoordinator{}, ms)
+
+	srcBlocks := []block.ChunkRef{{Hash: block.ContentHash{0x44}, Offset: 0, Size: 4096}}
+	selfHandle := putTestFile(t, ms, "/seed-self.bin", "seed-self-pid", srcBlocks, 4096)
+
+	if err := CloneWholeFile(ctx, bs, ms, nil, selfHandle, selfHandle, "seed-self-pid"); err != nil {
+		t.Fatalf("CloneWholeFile self-clone: %v", err)
+	}
+
+	described, err := local.DataExtents(ctx, "seed-self-pid", 4096)
+	if err != nil {
+		t.Fatalf("DataExtents: %v", err)
+	}
+	if len(described) != 0 {
+		t.Errorf("the self-clone seeded %v; it copied nothing and must describe nothing", described)
+	}
+}

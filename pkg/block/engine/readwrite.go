@@ -490,6 +490,13 @@ func (bs *Store) payloadChunkRefs(ctx context.Context, payloadID string) []block
 // per-file rows and the FileAttr.Blocks manifest reference the same hashes and
 // offsets.
 //
+// It creates no local-tier interval for those rows, and cannot: it runs inside
+// the caller's metadata txn, and intervals for rows a rolled-back copy never
+// wrote would make a read of the destination's sparse ranges fail closed. Giving
+// the local tier its account of the destination is the caller's step, after the
+// commit — SeedColdRefs over the returned list. Reads work either way; residency
+// accounting does not.
+//
 // Empty srcBlocks => nil-safe path: copies nothing. CopyPayload no longer
 // copies data at all; adapter call sites that need a data copy drive
 // ReadAt+WriteAt directly. Production callers always supply a snapshot of
