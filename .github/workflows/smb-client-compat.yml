@@ -343,6 +343,14 @@ jobs:
             sc.exe stop $svc 2>&1 | Out-String | Write-Host
           }
           $freed = $false
+          # 15 x 2s is deliberate and measured, not a guess anyone should raise.
+          # A runner that can release 445 does it in about 11s, comfortably
+          # inside this window. A runner that cannot is not merely slow: watched
+          # for a further 62s past the give-up, across three runs, 445 stayed
+          # held and srvnet stayed in STOP_PENDING without advancing a single
+          # state -- three times this budget bought nothing. The wait is not the
+          # variable in either population, so a longer one would only make the
+          # skip path slower to reach.
           for ($i = 0; $i -lt 15; $i++) {
             if (-not (Get-NetTCPConnection -LocalPort 445 -State Listen -ErrorAction SilentlyContinue)) { $freed = $true; break }
             sc.exe stop srv2 2>&1 | Out-Null
