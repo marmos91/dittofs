@@ -92,6 +92,12 @@ func ProcessSingleRequest(
 	default:
 	}
 
+	// This request's place in the connection's response order. Every response
+	// below waits for the responses ahead of it, so a break notification an
+	// earlier request dispatched is on the wire first. Nil (inert) when the
+	// caller dispatched without a read loop. See RequestOrder.
+	orderToken := OrderTokenFrom(ctx)
+
 	// RED metrics: one sample per handled request via a single deferred emit.
 	// metricOp defaults to the request's command name and is refined to the
 	// dispatch-table name once the command resolves; metricErr is flipped on
@@ -139,6 +145,7 @@ func ProcessSingleRequest(
 				"creditCharge", reqHeader.CreditCharge,
 				"error", err)
 			metricErr = true
+			orderToken.WaitTurn(ctx)
 			return SendErrorResponse(reqHeader, types.StatusInvalidParameter, connInfo)
 		}
 	}
@@ -151,6 +158,7 @@ func ProcessSingleRequest(
 				"creditCharge", charge,
 				"exempt", exempt)
 			metricErr = true
+			orderToken.WaitTurn(ctx)
 			return SendErrorResponse(reqHeader, types.StatusInvalidParameter, connInfo)
 		}
 	}
@@ -167,6 +175,7 @@ func ProcessSingleRequest(
 		// cancels the pending op and returns nil (no response), per MS-SMB2
 		// §3.3.5.16.
 		metricErr = true
+		orderToken.WaitTurn(ctx)
 		return sendDispatchError(reqHeader, errStatus, connInfo, isEncrypted)
 	}
 
@@ -188,6 +197,7 @@ func ProcessSingleRequest(
 	// Per MS-SMB2 3.3.5.2.1: enforce encryption requirements.
 	if errStatus := checkEncryptionRequired(reqHeader, connInfo, isEncrypted); errStatus != 0 {
 		metricErr = true
+		orderToken.WaitTurn(ctx)
 		return sendDispatchError(reqHeader, errStatus, connInfo, isEncrypted)
 	}
 
@@ -199,6 +209,7 @@ func ProcessSingleRequest(
 			"command", reqHeader.Command.String(),
 			"messageID", reqHeader.MessageID)
 		metricErr = true
+		orderToken.WaitTurn(ctx)
 		return sendDispatchError(reqHeader, errStatus, connInfo, isEncrypted)
 	}
 
@@ -264,6 +275,7 @@ func ProcessSingleRequest(
 	if err != nil {
 		logger.Debug("Handler error", "command", cmd.Name, "error", err)
 		metricErr = true
+		orderToken.WaitTurn(ctx)
 		return SendErrorResponse(reqHeader, types.StatusInternalError, connInfo)
 	}
 
@@ -309,6 +321,15 @@ func ProcessSingleRequest(
 	// whatever the handler already committed to before replying — a recorded
 	// lease break whose notification never reaches its (possibly unrelated,
 	// still-live) holder. (Same contract as the compound dispatch path.)
+	//
+	// ECHO is exempt from the response order. A client sends it precisely to
+	// test whether a connection with work outstanding on it is still alive
+	// (MS-SMB2 §3.3.5.13), so queueing its reply behind that work is the one
+	// case where ordering would answer the question wrongly. It carries no
+	// file state, so nothing a break notification protects rides on it.
+	if reqHeader.Command != types.SMB2Echo {
+		orderToken.WaitTurn(ctx)
+	}
 	sendErr := SendResponseWithHooks(reqHeader, handlerCtx, result, connInfo)
 	if sendErr != nil {
 		runPostSend(handlerCtx)
@@ -410,6 +431,12 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 	// Thread the stable per-connection ID so SMB2 multi-channel session
 	// binding (MS-SMB2 §3.3.5.5.2) can key per-channel signing state.
 	handlerCtx.ConnID = connInfo.ConnID
+
+	// Let a handler that must wait on client traffic step out of the
+	// connection's response order first. See SMBHandlerContext.ReleaseOrder.
+	if t := OrderTokenFrom(ctx); t != nil {
+		handlerCtx.ReleaseOrder = t.Release
+	}
 
 	// Thread the connection's transport so completeSessionBind can attach
 	// it to the newly-registered Channel, enabling break notifications

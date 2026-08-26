@@ -391,6 +391,9 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 		}
 		// Park failed (no slots / registry full): fall through to sync
 		// wait, then let completeCreateAfterBreak re-evaluate share mode.
+		// The wait ends on an ACK or CLOSE the client has not sent yet, so
+		// step out of the response order before blocking on it.
+		releaseResponseOrder(ctx)
 		waitCtx, cancelWait := context.WithTimeout(d.authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
 		defer cancelWait()
 		if err := h.LeaseManager.WaitForOtherKeyBreaks(waitCtx, lockFileHandle, shareName, waitExceptKey); err != nil {
@@ -461,6 +464,10 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	// force-completed (otherwise its ACK would fail STATUS_UNSUCCESSFUL). The
 	// non-violation case keeps WaitForOtherKeyBreaks, whose timeout
 	// auto-downgrades other-key leases for a deterministic post-break recheck.
+	//
+	// Both waits below end only on an ACK or a CLOSE the client has not sent
+	// yet, so step out of the response order before blocking on them.
+	releaseResponseOrder(ctx)
 	waitCtx, cancelWait := context.WithTimeout(d.authCtx.Context, breakWaitTimeout)
 	defer cancelWait()
 	if shareConflictWait {

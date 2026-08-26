@@ -900,6 +900,12 @@ func (h *Handler) setFileInfoFromStore(
 						"child", string(child), "error", err)
 				}
 			}
+			// Each wait below ends on an ACK or CLOSE from a lease holder
+			// that may be this very connection, and the client cannot send
+			// either until the responses queued behind this rename reach it.
+			// Step out of the response order first; the break notifications
+			// these waits are waiting on have already been written.
+			releaseResponseOrder(ctx)
 			for _, child := range children {
 				waitCtx, cancelChild := context.WithTimeout(authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
 				if err := h.LeaseManager.WaitForOtherKeyBreaks(
@@ -1095,6 +1101,13 @@ func (h *Handler) setFileInfoFromStore(
 					}
 				}
 			}
+			// The source break was dispatched above; this waits for the
+			// holder to acknowledge it, and the holder may be this very
+			// connection — smbtorture lease.rename_wait holds both leases on
+			// one connection and reads the break out of the CREATE it
+			// pipelined behind this rename. Step out of the response order so
+			// that CREATE can be answered and the ACK can arrive.
+			releaseResponseOrder(ctx)
 			waitCtx, cancelWait := context.WithTimeout(authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
 			if waitErr := h.LeaseManager.WaitForOtherKeyBreaks(
 				waitCtx, srcMetaHandle, openFile.ShareName, openFile.LeaseKey,
