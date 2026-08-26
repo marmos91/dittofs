@@ -1408,9 +1408,11 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	// Step 6c-pre: Check delete-pending state before oplock break dispatch.
 	//
-	// Per MS-FSA 2.1.5.1 Phase 6 ("Location of file") and MS-SMB2 3.3.5.9: if an existing open on the
-	// file has set disposition delete-on-close, subsequent opens MUST fail
-	// with STATUS_DELETE_PENDING without triggering an oplock break. The
+	// If an existing open on the file has set disposition delete-on-close,
+	// subsequent opens MUST fail with STATUS_DELETE_PENDING without triggering an
+	// oplock break. MS-FSA 2.1.5.1 Phase 6 ("Location of file") states this for
+	// intermediate path components; for the final component it follows
+	// MS-SMB2 3.3.5.9 and Samba. The
 	// check runs BEFORE breakAndMaybeParkCreate so the holder's oplock
 	// remains intact. Required by smbtorture smb2.oplock.doc.
 	//

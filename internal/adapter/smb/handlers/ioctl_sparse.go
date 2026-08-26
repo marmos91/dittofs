@@ -383,7 +383,9 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 		return NewErrorResult(types.StatusInvalidDeviceRequest), nil
 	}
 
-	// MS-FSA §2.1.5.10.39 ("FSCTL_SET_ZERO_DATA"): SET_ZERO_DATA requires FILE_WRITE_DATA.
+	// SET_ZERO_DATA requires FILE_WRITE_DATA. MS-FSA 2.1.5.10.39
+	// ("FSCTL_SET_ZERO_DATA") states no such gate; the requirement comes from the
+	// FSCTL access rules in MS-SMB2 §3.3.5.15.
 	if openFile.GrantedAccess&uint32(types.FileWriteData) == 0 {
 		logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: handle lacks FILE_WRITE_DATA",
 			"path", path,

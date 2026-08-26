@@ -2545,8 +2545,9 @@ func adsBaseName(fileName string) string {
 }
 
 // checkShareDeleteConflict checks if any other open handle on the same file
-// lacks FILE_SHARE_DELETE in its ShareAccess. Per MS-FSA 2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File"), a rename
-// requires all other opens to permit delete sharing. Returns true if a conflict
+// lacks FILE_SHARE_DELETE in its ShareAccess. MS-FSA 2.1.5.15.12
+// ("FileRenameInformation") states no share-mode check; requiring all other
+// opens to permit delete sharing follows Samba `can_rename`. Returns true if a conflict
 // exists (rename should be blocked with STATUS_SHARING_VIOLATION).
 func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 	const fileShareDelete = uint32(0x04) // FILE_SHARE_DELETE

@@ -176,7 +176,8 @@ func TestQueryAllocatedRanges_NegativeOffset(t *testing.T) {
 }
 
 // TestSetZeroData_AccessDenied verifies the write-access gate. Read-only
-// handles must not be able to punch holes / zero data (MS-FSA §2.1.5.10.39 ("FSCTL_SET_ZERO_DATA")).
+// handles must not be able to punch holes / zero data. The gate comes from the
+// FSCTL access rules in MS-SMB2 §3.3.5.15, not from MS-FSA 2.1.5.10.39.
 func TestSetZeroData_AccessDenied(t *testing.T) {
 	h := NewHandler()
 	var fileID [16]byte

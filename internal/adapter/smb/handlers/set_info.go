@@ -695,9 +695,10 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(types.StatusAccessDenied), nil
 		}
 
-		// Per MS-FSA 2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File"): Before renaming, check that no other open
-		// handle on the same file conflicts with the rename. Specifically,
-		// all other opens must have FILE_SHARE_DELETE (0x04) in ShareAccess.
+		// Before renaming, check that no other open handle on the same file
+		// conflicts with the rename: all other opens must have FILE_SHARE_DELETE
+		// (0x04) in ShareAccess. MS-FSA 2.1.5.15.12 ("FileRenameInformation")
+		// specifies no share-mode check; this follows Samba `can_rename`.
 		// (Destination-parent share-mode probe runs further below, after toDir
 		// is resolved and the stream-rename early return has been ruled out.)
 		//
@@ -751,7 +752,9 @@ func (h *Handler) setFileInfoFromStore(
 			oldFileName := oldName.FileName
 			oldParentPath := GetParentPath(oldName.Path)
 
-			// Per MS-FSA 2.1.5.15.12 ("FileRenameInformation"): Save mtime/ctime before rename
+			// Save mtime/ctime before the rename. MS-FSA 2.1.5.15.12 requires
+			// LastChangeTime to be updated; preserving it matches NTFS, which
+			// defers the update to handle close.
 			restoreTimestamps := h.saveTimestamps(authCtx, openFile.MetadataHandle)
 
 			// Perform the rename
@@ -1148,8 +1151,10 @@ func (h *Handler) setFileInfoFromStore(
 		oldParentPath := GetParentPath(oldPath)
 		srcParentHandle := oldName.ParentHandle
 
-		// Per MS-FSA 2.1.5.15.12 ("FileRenameInformation"): Save mtime/ctime before rename so we can
-		// restore them after. Rename should NOT update the file's timestamps.
+		// Save mtime/ctime before the rename so we can restore them after.
+		// MS-FSA 2.1.5.15.12 never touches LastModificationTime but does require
+		// LastChangeTime to be updated; preserving both matches NTFS, which
+		// defers that update to handle close.
 		restoreTimestamps := h.saveTimestamps(authCtx, openFile.MetadataHandle)
 
 		// Pre-overwrite the case-mismatched destination: Move's destination
@@ -1691,7 +1696,9 @@ func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
 
 // saveTimestamps reads the current Mtime and Ctime of a file and returns a
 // restore function that writes them back. Used to preserve timestamps across
-// rename operations (per MS-FSA 2.1.5.15.12 ("FileRenameInformation"), rename should not change timestamps).
+// rename operations. MS-FSA 2.1.5.15.12 leaves LastModificationTime alone but
+// requires LastChangeTime to be updated; preserving both matches NTFS, which
+// defers that update to handle close.
 // Returns a no-op if the read fails.
 func (h *Handler) saveTimestamps(authCtx *metadata.AuthContext, handle metadata.FileHandle) func() {
 	metaSvc := h.Registry.GetMetadataService()

@@ -1187,9 +1187,11 @@ func (lm *LeaseManager) BreakParentHandleLeasesOnCreate(
 	// Parent directory Handle-lease break on child create: strip Handle
 	// (not Write) so cached entries are invalidated. SharingViolation
 	// reason selects the Handle-strip mask in ComputeLeaseBreakTo;
-	// semantically this is MS-FSA 2.1.5.1.1 ("Creation of a New File") (child-set change invalidates
-	// directory Handle caching), not a share-mode violation, but the
-	// break-to matrix collapses to the same strip-H outcome.
+	// semantically this is a child-set change invalidating directory Handle
+	// caching, not a share-mode violation, but the break-to matrix collapses to
+	// the same strip-H outcome. MS-FSA 2.1.4.12 breaks a PARENT_OBJECT oplock to
+	// (READ_CACHING|WRITE_CACHING) and so does not strip Handle; the strip
+	// follows the MS-SMB2 directory-lease behaviour Samba implements.
 	if err := lockMgr.BreakLeasesOnOpenConflict(handleKey, excludeOwner, lock.BreakReasonSharingViolation); err != nil {
 		return err
 	}

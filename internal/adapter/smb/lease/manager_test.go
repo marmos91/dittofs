@@ -86,8 +86,10 @@ func (r *fakeResolver) GetLockManagerForShare(_ string) lock.LockManager {
 // BreakLeasesOnOpenConflict and BEFORE returning. Per MS-SMB2 3.3.4.7, the
 // server must wait for LEASE_BREAK_ACK before completing the triggering CREATE.
 // The parent-dir break uses BreakReasonSharingViolation to select the
-// Handle-strip mask (MS-FSA 2.1.5.1.1 ("Creation of a New File"): child-set change invalidates directory
-// Handle cache).
+// Handle-strip mask: a child-set change invalidates the directory Handle
+// cache. MS-FSA 2.1.4.12 breaks a PARENT_OBJECT oplock to
+// (READ_CACHING|WRITE_CACHING) and does not strip Handle; the strip follows
+// the MS-SMB2 directory-lease behaviour Samba implements.
 // TestMarkLeaseVersionIfUnset_StickyV2: a lease first marked V2 stays V2
 // even when MarkLeaseVersionIfUnset is later called with isV2=false. Per
 // smbtorture v2_epoch2 the V2 lease keeps producing V2 responses for V1
