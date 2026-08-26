@@ -1207,18 +1207,34 @@ func (r *NotifyRegistry) NotifyChanges(shareName, parentPath string, events []No
 	if len(events) == 0 {
 		return
 	}
+
+	// Every event of the batch is buffered under ONE acquisition of r.mu. Taking
+	// the lock per event would let a concurrent operation land between two of
+	// them, and the run this batch occupies in a watcher's buffer would no
+	// longer be contiguous — splitting the group across two responses, which is
+	// the failure this batching exists to prevent.
+	live := make([]map[[16]byte]struct{}, len(events))
 	r.mu.Lock()
 	r.nextEmission++
 	emission := r.nextEmission
+	for i, ev := range events {
+		live[i] = r.bufferChangeLocked(emission, shareName, parentPath, ev)
+	}
 	r.mu.Unlock()
 
-	for _, ev := range events {
-		r.notifyChangeEmission(emission, shareName, parentPath, ev.FileName, ev.Action, ev.Filter)
+	// Byte accounting takes the lock itself and fires OnOverflow outside it, so
+	// it runs after the batch is buffered rather than inside the critical
+	// section.
+	for i, ev := range events {
+		r.chargeArmedBuffer(shareName, parentPath, ev.Filter, []string{ev.FileName}, live[i])
 	}
 }
 
-func (r *NotifyRegistry) notifyChangeEmission(emission uint64, shareName, parentPath, fileName string, action uint32, filter uint32) {
-	r.mu.Lock()
+// bufferChangeLocked buffers one change against every live watcher and every
+// armed handle without one, and returns the handles a live watcher served so
+// the byte accounting can skip them. Must hold r.mu for write.
+func (r *NotifyRegistry) bufferChangeLocked(emission uint64, shareName, parentPath string, ev NotifyEvent) map[[16]byte]struct{} {
+	fileName, action, filter := ev.FileName, ev.Action, ev.Filter
 	watchers := r.findWatchersLocked(shareName, parentPath, filter)
 	liveFileIDs := make(map[[16]byte]struct{}, len(watchers))
 	for _, w := range watchers {
@@ -1246,9 +1262,7 @@ func (r *NotifyRegistry) notifyChangeEmission(emission uint64, shareName, parent
 		relName := relativePathFromWatch(a.WatchPath, parentPath, fileName)
 		a.BufferedEvents = append(a.BufferedEvents, FileNotifyInformation{Action: action, FileName: relName})
 	}
-	r.mu.Unlock()
-
-	r.chargeArmedBuffer(shareName, parentPath, filter, []string{fileName}, liveFileIDs)
+	return liveFileIDs
 }
 
 // NotifyRename records a rename as a paired FILE_ACTION_RENAMED_OLD_NAME /
@@ -1568,10 +1582,11 @@ func (r *NotifyRegistry) bufferEventLocked(notify *PendingNotify, change FileNot
 		notify.firstEmission = emission
 		notify.firstEmissionLen = 0
 	}
-	// The run has to be a contiguous PREFIX, not every entry carrying the id.
-	// Two operations emitting concurrently interleave into one buffer, and an
-	// id match alone would count the A in [A B A] and ship B inside A's
-	// response — the merge this accounting exists to prevent.
+	// The run is a contiguous PREFIX, not every entry carrying the id. Every
+	// emitter buffers its whole batch under one hold of r.mu, so today nothing
+	// interleaves — but counting id matches anywhere would make that a property
+	// of caller discipline rather than of this accounting: for [A B A] it would
+	// count 2 and ship B inside A's response.
 	contiguous := notify.firstEmissionLen == len(notify.bufferedChanges)
 	notify.bufferedChanges = append(notify.bufferedChanges, change)
 	if contiguous && emission == notify.firstEmission {
