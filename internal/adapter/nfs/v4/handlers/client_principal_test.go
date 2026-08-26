@@ -9,26 +9,8 @@ import (
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 )
 
-// principalClientID registers a confirmed v4.0 client whose record carries
-// principal, the identity SETCLIENTID_CONFIRM was issued under.
-func principalClientID(t *testing.T, sm *state.StateManager, name, principal, addr string) uint64 {
-	t.Helper()
-
-	result, err := sm.SetClientID(name, [8]byte{1, 2, 3, 4, 5, 6, 7, 8}, state.CallbackInfo{
-		Program: 0x40000000,
-		NetID:   "tcp",
-		Addr:    "127.0.0.1.8.1",
-	}, addr, principal)
-	if err != nil {
-		t.Fatalf("SetClientID(%s): %v", name, err)
-	}
-	if err := sm.ConfirmClientID(result.ClientID, result.ConfirmVerifier); err != nil {
-		t.Fatalf("ConfirmClientID(%s): %v", name, err)
-	}
-	return result.ClientID
-}
-
-func openResult(fx *ioTestFixture, ctx *types.CompoundContext,
+// doOpen drives one OPEN through the handler and returns its raw result.
+func doOpen(fx *ioTestFixture, ctx *types.CompoundContext,
 	seqid uint32, clientID uint64, owner []byte, filename string, openType, shareAccess uint32,
 ) *types.CompoundResult {
 	args := encodeOpenArgs(seqid, shareAccess, types.OPEN4_SHARE_DENY_NONE,
@@ -43,7 +25,7 @@ func openStateid(t *testing.T, fx *ioTestFixture, ctx *types.CompoundContext,
 ) types.Stateid4 {
 	t.Helper()
 
-	result := openResult(fx, ctx, seqid, clientID, owner, filename, openType, shareAccess)
+	result := doOpen(fx, ctx, seqid, clientID, owner, filename, openType, shareAccess)
 	if result.Status != types.NFS4_OK {
 		t.Fatalf("OPEN status = %d, want NFS4_OK", result.Status)
 	}
@@ -80,7 +62,7 @@ func TestOpen_ClientIDSpansPrincipals(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 	sm := fx.handler.StateManager
 
-	clientID := principalClientID(t, sm, "shared-client", "uid:1000", "10.0.0.1:1000")
+	clientID := testClientID(t, sm, "shared-client", "uid:1000")
 	owner := []byte("open-owner-1000")
 
 	// uid 1000 establishes the client ID and opens a file it owns.
@@ -92,13 +74,15 @@ func TestOpen_ClientIDSpansPrincipals(t *testing.T) {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
 
+	// A second user of the same client, under its own credential.
 	other := newRealFSContext(1001, 1001)
-	other.ClientAddr = "10.0.0.9:9999"
 	setCurrentFH(other, fx.rootHandle)
 
 	// The permission check is load-bearing: uid 1001 cannot write the file, and
 	// naming uid 1000's client ID and owner does not get it write access.
-	if status := openResult(fx, other, 3, clientID, owner, "victim.txt",
+	// checkOpenAccess refuses before the state layer sees the request, so seqid
+	// 3 is still unused when the read OPEN below presents it.
+	if status := doOpen(fx, other, 3, clientID, owner, "victim.txt",
 		types.OPEN4_NOCREATE, types.OPEN4_SHARE_ACCESS_BOTH).Status; status != types.NFS4ERR_ACCESS {
 		t.Errorf("OPEN for write by a uid without write permission: status = %d, want NFS4ERR_ACCESS", status)
 	}
@@ -119,7 +103,7 @@ func TestOpen_ClientIDSpansPrincipals(t *testing.T) {
 func TestRenew_PrincipalBinding(t *testing.T) {
 	t.Run("establishing principal is allowed", func(t *testing.T) {
 		fx := newIOTestFixture(t, "/export")
-		clientID := principalClientID(t, fx.handler.StateManager, "c", "uid:1000", "10.0.0.1:1000")
+		clientID := testClientID(t, fx.handler.StateManager, "c", "uid:1000")
 
 		if status := renewStatus(fx, newRealFSContext(1000, 1000), clientID); status != types.NFS4_OK {
 			t.Errorf("RENEW by the establishing principal: status = %d, want NFS4_OK", status)
@@ -128,7 +112,7 @@ func TestRenew_PrincipalBinding(t *testing.T) {
 
 	t.Run("stranger is refused", func(t *testing.T) {
 		fx := newIOTestFixture(t, "/export")
-		clientID := principalClientID(t, fx.handler.StateManager, "c", "uid:1000", "10.0.0.1:1000")
+		clientID := testClientID(t, fx.handler.StateManager, "c", "uid:1000")
 
 		if status := renewStatus(fx, newRealFSContext(1001, 1001), clientID); status != types.NFS4ERR_ACCESS {
 			t.Errorf("RENEW by a stranger: status = %d, want NFS4ERR_ACCESS", status)
@@ -139,7 +123,7 @@ func TestRenew_PrincipalBinding(t *testing.T) {
 		fx := newIOTestFixture(t, "/export")
 		sm := fx.handler.StateManager
 		// The client ID is established by uid 2000, which never opens anything.
-		clientID := principalClientID(t, sm, "c", "uid:2000", "10.0.0.1:1000")
+		clientID := testClientID(t, sm, "c", "uid:2000")
 
 		// uid 1000 is a second user of the same client, with its own owner.
 		// This is the multi-user mount the second algorithm exists for.
@@ -158,7 +142,7 @@ func TestRenew_PrincipalBinding(t *testing.T) {
 
 	t.Run("root is allowed", func(t *testing.T) {
 		fx := newIOTestFixture(t, "/export")
-		clientID := principalClientID(t, fx.handler.StateManager, "c", "uid:1000", "10.0.0.1:1000")
+		clientID := testClientID(t, fx.handler.StateManager, "c", "uid:1000")
 
 		if status := renewStatus(fx, newRealFSContext(0, 0), clientID); status != types.NFS4_OK {
 			t.Errorf("RENEW under the AUTH_SYS machine credential: status = %d, want NFS4_OK", status)
@@ -177,7 +161,7 @@ func TestRenew_PrincipalBinding(t *testing.T) {
 	t.Run("refused renew does not extend the lease", func(t *testing.T) {
 		fx := newIOTestFixture(t, "/export")
 		sm := fx.handler.StateManager
-		clientID := principalClientID(t, sm, "c", "uid:1000", "10.0.0.1:1000")
+		clientID := testClientID(t, sm, "c", "uid:1000")
 
 		before := sm.GetClient(clientID).LastRenewal
 		if status := renewStatus(fx, newRealFSContext(1001, 1001), clientID); status != types.NFS4ERR_ACCESS {
@@ -199,7 +183,7 @@ func TestSetClientID_IdentitylessCallerCannotTakeOver(t *testing.T) {
 	sm := fx.handler.StateManager
 
 	const name = "victim-client"
-	principalClientID(t, sm, name, "uid:1000", "10.0.0.1:1000")
+	testClientID(t, sm, name, "uid:1000")
 
 	cb := state.CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "127.0.0.1.8.1"}
 

@@ -1171,7 +1171,6 @@ func (sm *StateManager) OpenFile(
 	// Look up or create the open-owner
 	ownerKey := makeOwnerKey(clientID, ownerData)
 	owner, ownerExists := sm.openOwners[ownerKey]
-	princ := firstOrEmpty(principal)
 
 	if ownerExists {
 		// Existing owner: validate seqid
@@ -1208,7 +1207,7 @@ func (sm *StateManager) OpenFile(
 			// nfs4_get_state_owner takes the cred), so one principal per owner
 			// holds; track it per OpenState only if a client turns up that
 			// shares an owner across users.
-			Principal: princ,
+			Principal: firstOrEmpty(principal),
 
 			Confirmed:    false,
 			OpenStates:   make([]*OpenState, 0),
