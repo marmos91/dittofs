@@ -24,12 +24,15 @@ import (
 // either file produces new CAS blocks under a new hash, leaving the other side
 // untouched.
 //
-// Everything is atomic in one metadata transaction:
+// The manifest side is atomic in one metadata transaction:
 //   - engine.CopyPayload's per-hash IncrementRefCount UPDATEs are bound to the
 //     txn (via metadata.WithTx) so they commit/roll back together with the
-//     destination UpdateAttrs. On any error nothing is committed — no partial
-//     dstFileAttr, no leaked RefCount bumps.
-//   - cache.InvalidateFile (if cache != nil) runs POST-txn, after the commit.
+//     destination UpdateAttrs. An error from inside the txn commits nothing —
+//     no partial dstFileAttr, no leaked RefCount bumps.
+//   - discardStaleDestination and cache.InvalidateFile run POST-txn, after the
+//     commit. An error out of the discard is therefore an error on a copy whose
+//     manifest is already durable — see its own comment for why it is still
+//     reported rather than swallowed.
 //
 // CLONE copies the source's CAS block manifest (FileAttr.Blocks). A freshly
 // written source whose bytes are still in the append log / in-memory buffer has
@@ -165,10 +168,16 @@ func CloneWholeFile(
 // dropped them could not get them back. What is left is the window between the
 // two, where a read still serves the replaced content.
 //
-// A failure fails the copy, which has already committed. The alternative is
-// reporting success on a destination whose every read serves the content the
-// copy replaced, and a caller that retries a copy it was told failed re-runs an
-// operation that lands on the same manifest and gets another chance at this.
+// A failure fails the copy, which has already committed — the one place in
+// these helpers where an error does not mean nothing landed. Reporting it is
+// still the better trade: the alternative is reporting success on a destination
+// whose every read serves the content the copy replaced, which is the defect
+// this exists to close. It is not free, though. A caller that retries a copy it
+// was told failed re-runs a copy whose manifest work is idempotent but whose
+// per-hash RefCount bumps are not, so each retry leaves the source's hashes
+// counted one higher than they are referenced. That errs toward keeping a
+// chunk nothing references rather than reclaiming one something does, which is
+// the direction the reclaim paths already prefer.
 func discardStaleDestination(ctx context.Context, blockStore *engine.Store, dstPayloadID metadata.PayloadID) error {
 	if err := blockStore.DiscardLocalContent(ctx, string(dstPayloadID)); err != nil {
 		return fmt.Errorf("discard the copy destination's replaced local ranges: %w", err)
