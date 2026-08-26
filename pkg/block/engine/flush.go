@@ -205,6 +205,48 @@ func (bs *Store) SeedColdRefs(ctx context.Context, payloadID string, refs []bloc
 	return cs.SeedCold(ctx, journal.FileID(payloadID), extents)
 }
 
+// DiscardLocalContent drops the local tier's whole account of a payload, so a
+// read of it resolves against the manifest instead of against bytes the tier
+// still holds.
+//
+// It is the local half of replacing a payload's content wholesale. A
+// server-side copy rewrites the destination's manifest and moves no byte, and
+// every range the destination still holds locally then describes content the
+// copy replaced. A covered warm range reports neither hole nor cold, so the
+// read never reaches the new manifest: the destination serves its pre-copy
+// content indefinitely, with nothing logged.
+//
+// What it leaves behind is holes, which is the state a range with no local copy
+// is supposed to be in and the state a fresh destination is already in: a hole
+// the manifest covers hydrates from the remote, and one it does not reads as
+// the zeros a sparse range is. Marking the span cold instead would fail the
+// sparse case closed, because an absent range and a stale one are not the same
+// state and only the manifest can tell them apart.
+//
+// The local tier makes the clip durable before it takes effect and fences it by
+// version, so a write that raced past it survives and a crash cannot resurrect
+// what it dropped.
+//
+// The caller owns the ordering: this runs after the copy's metadata transaction
+// commits, never before. Until that commit lands, the bytes it drops are the
+// destination's real content, and a rolled-back copy could not get them back.
+func (bs *Store) DiscardLocalContent(ctx context.Context, payloadID string) error {
+	if err := bs.enter(); err != nil {
+		return err
+	}
+	defer bs.closeMu.RUnlock()
+	if err := bs.local.Truncate(ctx, payloadID, 0); err != nil {
+		return err
+	}
+	// The read cache is keyed by content hash, so it cannot serve the dropped
+	// bytes for content that no longer addresses them. Its per-payload
+	// sequential tracker is keyed by payload, though, and would have prefetch
+	// chasing the hashes the payload held before — the same reset every other
+	// path that changes a payload's content underneath the tier does.
+	bs.loadCache().OnRead(payloadID, nil, 0)
+	return nil
+}
+
 // RestoreToVersion rewinds the local journal to a snapshot's version watermark
 // and re-materializes that point-in-time view durably at the log head. It is the
 // local-only snapshot-restore primitive the runtime calls instead of

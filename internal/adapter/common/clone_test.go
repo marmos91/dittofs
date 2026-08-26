@@ -1,6 +1,7 @@
 package common
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -192,5 +193,106 @@ func TestCloneWholeFile_SelfCloneSeedsNothing(t *testing.T) {
 	}
 	if len(described) != 0 {
 		t.Errorf("the self-clone seeded %v; it copied nothing and must describe nothing", described)
+	}
+}
+
+// TestCloneWholeFile_DropsTheDestinationsStaleLocalRanges pins the post-commit
+// step the destination's correctness depends on.
+//
+// The reflink replaces the destination's content wholesale and moves no byte,
+// so every local range the destination still holds describes content it no
+// longer has. Those ranges are what the read path resolves first — a covered
+// warm range reports neither hole nor cold, so the read never reaches the new
+// manifest — and without this step the destination serves its pre-clone content
+// indefinitely, with nothing logged.
+//
+// The assertion is on the bytes, not on the index, because the index alone
+// cannot say which of the two it is describing: the clone's own seed puts the
+// copied ranges back into it as cold ones, so a destination that dropped
+// nothing and one that dropped everything both come back described. What tells
+// them apart is what a read serves.
+//
+// The source's hashes are fabricated and reach no remote, so a destination that
+// correctly stopped answering from its own bytes has nowhere to hydrate from
+// and refuses. That refusal is the pass. The bystander is the control: another
+// payload holding local ranges of its own, which the clone has nothing to do
+// with and which must still read back as its own bytes — without it, a fixture
+// broken enough to fail every read would look like a pass.
+func TestCloneWholeFile_DropsTheDestinationsStaleLocalRanges(t *testing.T) {
+	ctx := context.Background()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	bs, _ := newCopyTestEngineWithLocal(t, &fakeCoordinator{}, ms)
+
+	srcBlocks := []block.ChunkRef{
+		{Hash: block.ContentHash{0x11}, Offset: 0, Size: 4096},
+		{Hash: block.ContentHash{0x22}, Offset: 4096, Size: 4096},
+	}
+	const size = 8192
+	srcHandle := putTestFile(t, ms, "/stale-src.bin", "stale-src-pid", srcBlocks, size)
+	dstHandle := putTestFile(t, ms, "/stale-dst.bin", "stale-dst-pid", nil, size)
+	putTestFile(t, ms, "/stale-bystander.bin", "stale-bystander-pid", nil, size)
+
+	replaced := bytes.Repeat([]byte{0xAB}, size)
+	bystanderData := bytes.Repeat([]byte{0xCD}, size)
+	if _, err := bs.WriteAt(ctx, "stale-dst-pid", nil, replaced, 0); err != nil {
+		t.Fatalf("WriteAt(dst): %v", err)
+	}
+	if _, err := bs.WriteAt(ctx, "stale-bystander-pid", nil, bystanderData, 0); err != nil {
+		t.Fatalf("WriteAt(bystander): %v", err)
+	}
+	// The destination answers from its own bytes before the clone, or the
+	// assertion below would hold for a payload that never had any.
+	before := make([]byte, size)
+	if _, err := bs.ReadAt(ctx, "stale-dst-pid", before, 0); err != nil {
+		t.Fatalf("ReadAt(dst) before the clone: %v", err)
+	}
+	if !bytes.Equal(before, replaced) {
+		t.Fatalf("the destination did not hold its own bytes before the clone")
+	}
+
+	if err := CloneWholeFile(ctx, bs, ms, nil, srcHandle, dstHandle, "stale-dst-pid"); err != nil {
+		t.Fatalf("CloneWholeFile: %v", err)
+	}
+
+	got := make([]byte, size)
+	if _, err := bs.ReadAt(ctx, "stale-dst-pid", got, 0); err == nil && bytes.Equal(got, replaced) {
+		t.Error("the destination still serves the content the clone replaced")
+	}
+
+	bystanderBack := make([]byte, size)
+	if _, err := bs.ReadAt(ctx, "stale-bystander-pid", bystanderBack, 0); err != nil {
+		t.Fatalf("ReadAt(bystander) after the clone: %v", err)
+	}
+	if !bytes.Equal(bystanderBack, bystanderData) {
+		t.Error("the clone disturbed a payload it had nothing to do with")
+	}
+}
+
+// TestCloneWholeFile_SelfCloneKeepsItsLocalRanges keeps the self-clone no-op
+// whole. The destination is the source: it holds exactly the content its
+// manifest describes, and dropping its local ranges would throw away bytes
+// nothing replaced.
+func TestCloneWholeFile_SelfCloneKeepsItsLocalRanges(t *testing.T) {
+	ctx := context.Background()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	bs, local := newCopyTestEngineWithLocal(t, &fakeCoordinator{}, ms)
+
+	const size = 4096
+	selfHandle := putTestFile(t, ms, "/self.bin", "self-pid",
+		[]block.ChunkRef{{Hash: block.ContentHash{0x44}, Offset: 0, Size: size}}, size)
+	if _, err := bs.WriteAt(ctx, "self-pid", nil, bytes.Repeat([]byte{0xCD}, size), 0); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+
+	if err := CloneWholeFile(ctx, bs, ms, nil, selfHandle, selfHandle, "self-pid"); err != nil {
+		t.Fatalf("CloneWholeFile self-clone: %v", err)
+	}
+
+	described, err := local.DataExtents(ctx, "self-pid", size)
+	if err != nil {
+		t.Fatalf("DataExtents: %v", err)
+	}
+	if len(described) == 0 {
+		t.Error("the self-clone dropped the payload's own local ranges; it replaced nothing")
 	}
 }

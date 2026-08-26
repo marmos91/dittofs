@@ -468,6 +468,56 @@ func (bs *Store) payloadChunkRefs(ctx context.Context, payloadID string) []block
 	return refs
 }
 
+// staleDestinationOffsets returns the offsets of a copy destination's existing
+// manifest rows that the copy's own rows do not take over. Those rows outlive a
+// wholesale manifest replacement — SetManifest rewrites the Blocks projection,
+// which is a different structure from the per-chunk rows a read resolves
+// through — so they have to be reaped by name.
+//
+// It reads through the caller's transaction when there is one, so it sees the
+// destination as the copy is about to leave it and does not re-enter a backend
+// lock the transaction already holds. A row whose ID carries no offset cannot be
+// named for a reap and is left alone.
+func (bs *Store) staleDestinationOffsets(ctx context.Context, tx metadata.Transaction, dstPayloadID string, srcBlocks []block.ChunkRef) ([]uint64, error) {
+	var (
+		rows []*block.FileChunk
+		err  error
+	)
+	switch {
+	case tx != nil:
+		rows, err = tx.ListFileChunks(ctx, dstPayloadID)
+	case bs.fileChunkStore != nil:
+		rows, err = bs.fileChunkStore.ListFileChunks(ctx, dstPayloadID)
+	default:
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	taken := make(map[uint64]struct{}, len(srcBlocks))
+	for _, b := range srcBlocks {
+		if b.Hash.IsZero() {
+			continue
+		}
+		taken[b.Offset] = struct{}{}
+	}
+	stale := make([]block.ChunkRef, 0, len(rows))
+	for _, r := range rows {
+		if r == nil {
+			continue
+		}
+		off, ok := block.ParseChunkOffset(r.ID)
+		if !ok {
+			continue
+		}
+		if _, keeping := taken[off]; keeping {
+			continue
+		}
+		stale = append(stale, block.ChunkRef{Offset: off})
+	}
+	return distinctOffsets(stale), nil
+}
+
 // CopyPayload duplicates a file's content by referencing the source's
 // content-addressed blocks — no data movement, O(blocks) metadata puts.
 // It does two things for the destination:
@@ -490,17 +540,21 @@ func (bs *Store) payloadChunkRefs(ctx context.Context, payloadID string) []block
 // per-file rows and the FileAttr.Blocks manifest reference the same hashes and
 // offsets.
 //
-// It creates no local-tier interval for those rows, and cannot: it runs inside
+// It touches no local-tier interval for those rows, and cannot: it runs inside
 // the caller's metadata txn, and intervals for rows a rolled-back copy never
-// wrote would make a read of the destination's sparse ranges fail closed. Giving
-// the local tier its account of the destination is the caller's step, after the
-// commit — SeedColdRefs over the returned list. Reads work either way; residency
-// accounting does not.
+// wrote would make a read of the destination's sparse ranges fail closed, while
+// dropping the ranges the destination still holds would destroy content the
+// rollback puts back. Both are the caller's step, after the commit —
+// DiscardLocalContent to take the destination's replaced ranges back to holes,
+// then SeedColdRefs over the returned list to account for the ones the copy
+// gave it.
 //
-// Empty srcBlocks => nil-safe path: copies nothing. CopyPayload no longer
-// copies data at all; adapter call sites that need a data copy drive
-// ReadAt+WriteAt directly. Production callers always supply a snapshot of
-// the source file's FileAttr.Blocks.
+// Empty srcBlocks => the destination places nothing afterwards, which is what
+// a fully sparse source gives it. That is not a no-op: the destination's own
+// rows are still reaped, or a read would go on resolving through them.
+// CopyPayload no longer copies data at all; adapter call sites that need a data
+// copy drive ReadAt+WriteAt directly. Production callers always supply a
+// snapshot of the source file's FileAttr.Blocks.
 //
 // Failure semantics: a genuine IncrementRefCount backend fault is surfaced
 // immediately without further increments (the caller's metadata txn rolls back).
@@ -518,11 +572,12 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 		return nil, err
 	}
 	defer bs.closeMu.RUnlock()
-	// Empty src => no work, nothing to coordinate.
-	if len(srcBlocks) == 0 {
-		return nil, nil
-	}
-	if bs.coordinator == nil {
+	// A source that places no blocks copies no content, but it still replaces
+	// the destination's: the copy hands it a file with nothing in it, so every
+	// row the destination holds is one the copy took away. The reap below runs
+	// for that source too, which is what a fully sparse one is, so there is no
+	// early return here for it.
+	if len(srcBlocks) > 0 && bs.coordinator == nil {
 		return nil, ErrMetadataCoordinatorNotWired
 	}
 
@@ -590,6 +645,38 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	case bs.fileChunkStore != nil:
 		putRow = bs.fileChunkStore.Put
 	}
+
+	// Reap the destination's own rows the copy does not replace in place. They
+	// are the ones the read path resolves through, and this copy gives the
+	// destination the source's content wholesale, so a row still claiming the
+	// bytes it always claimed serves the content the copy replaced. The two
+	// files chunk their own content, so their offsets rarely line up and the
+	// rows that survive interleave with the copied ones: a read walks a mosaic
+	// of both files, picking whichever row starts latest over each offset.
+	//
+	// Reaping runs in the caller's transaction, ahead of the rows below, so a
+	// rolled-back copy leaves the destination's manifest exactly as it found it,
+	// and mirrors Truncate in reaping by exact "{payloadID}/{offset}" identity.
+	// A row at an offset a new row takes over is left to that row's put, which
+	// rewrites it in place.
+	//
+	// A payload copied onto itself replaced nothing and every row it has is a row
+	// it still needs, so there is nothing to reap. Reaping there would work off
+	// srcBlocks as the authority on which of the payload's own rows are live,
+	// which it is not: it is the caller's snapshot of the projection, and a row
+	// missing from it is a row this would delete out from under a live file.
+	if srcPayloadID != dstPayloadID && bs.coordinator != nil {
+		stale, err := bs.staleDestinationOffsets(ctx, tx, dstPayloadID, srcBlocks)
+		if err != nil {
+			return nil, fmt.Errorf("CopyPayload: list the destination's rows for %s: %w", dstPayloadID, err)
+		}
+		if len(stale) > 0 {
+			if err := bs.coordinator.DecrementRefCountAndReapMany(ctx, dstPayloadID, stale); err != nil {
+				return nil, fmt.Errorf("CopyPayload: reap the destination's replaced rows for %s: %w", dstPayloadID, err)
+			}
+		}
+	}
+
 	for _, b := range srcBlocks {
 		if b.Hash.IsZero() {
 			continue
@@ -617,6 +704,8 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	// produces a fresh backing array independent of srcBlocks). The caller
 	// persists this as dst's FileAttr.Blocks in the same metadata txn, so the
 	// rows above and this manifest stay consistent (same hashes + offsets).
+	// An empty source lands here too and yields the nil list that says the
+	// destination now places nothing.
 	dst := append([]block.ChunkRef(nil), srcBlocks...)
 
 	return dst, nil

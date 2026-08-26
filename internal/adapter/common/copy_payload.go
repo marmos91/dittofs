@@ -21,10 +21,11 @@ import (
 //     coordinator.IncrementRefCount for each unique src hash; the
 //     coordinator's RefCount UPDATEs share the same txn, so they
 //     commit/roll back atomically with UpdateAttrs(dst).
-//   - On any error (Increment failure, UpdateAttrs failure, ctx cancel), the
-//     txn rolls back ALL writes — no partial dstFileAttr, no partial
-//     RefCount bumps committed.
-//   - cache.InvalidateFile runs ONLY on success, AFTER the commit.
+//   - On any error from inside the txn (Increment failure, UpdateAttrs failure,
+//     ctx cancel), the txn rolls back ALL writes — no partial dstFileAttr, no
+//     partial RefCount bumps committed.
+//   - discardStaleDestination and cache.InvalidateFile run AFTER the commit, so
+//     an error out of the discard is an error on a copy that already landed.
 //
 // Wiring status: the helper is NOT yet routed from NFS/SMB CREATE-file
 // copy paths — those continue using their existing flows. File-level
@@ -98,6 +99,18 @@ func CopyPayload(
 	})
 	if err != nil {
 		return err
+	}
+	// A copy of a payload onto itself replaced nothing, so the destination still
+	// holds the content its manifest describes and there is nothing stale to
+	// drop. Every other destination loses its replaced ranges before the seed
+	// below accounts for the ones the copy gave it: the seed skips a range the
+	// tier already describes, so seeding first would skip the whole copy and the
+	// discard would then drop what it had recorded, leaving the tier describing
+	// none of it.
+	if srcPayloadID != dstPayloadID {
+		if err := discardStaleDestination(ctx, blockStore, dstPayloadID); err != nil {
+			return err
+		}
 	}
 	seedClonedRanges(ctx, blockStore, dstPayloadID, copied)
 

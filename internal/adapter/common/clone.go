@@ -24,12 +24,15 @@ import (
 // either file produces new CAS blocks under a new hash, leaving the other side
 // untouched.
 //
-// Everything is atomic in one metadata transaction:
+// The manifest side is atomic in one metadata transaction:
 //   - engine.CopyPayload's per-hash IncrementRefCount UPDATEs are bound to the
 //     txn (via metadata.WithTx) so they commit/roll back together with the
-//     destination UpdateAttrs. On any error nothing is committed — no partial
-//     dstFileAttr, no leaked RefCount bumps.
-//   - cache.InvalidateFile (if cache != nil) runs POST-txn, after the commit.
+//     destination UpdateAttrs. An error from inside the txn commits nothing —
+//     no partial dstFileAttr, no leaked RefCount bumps.
+//   - discardStaleDestination and cache.InvalidateFile run POST-txn, after the
+//     commit. An error out of the discard is therefore an error on a copy whose
+//     manifest is already durable — see its own comment for why it is still
+//     reported rather than swallowed.
 //
 // CLONE copies the source's CAS block manifest (FileAttr.Blocks). A freshly
 // written source whose bytes are still in the append log / in-memory buffer has
@@ -122,12 +125,23 @@ func CloneWholeFile(
 	if err != nil {
 		return err
 	}
-	// A self-clone left the destination exactly as it was: it inherited no
-	// ranges the local tier has to account for, and its cached entries still
-	// describe the content it holds. Everything below is about a destination
-	// whose content changed.
+	// A self-clone left the destination exactly as it was: it holds the content
+	// its manifest describes, it inherited no ranges the local tier has to
+	// account for, and its cached entries still describe what it holds.
+	// Everything below is about a destination whose content changed.
 	if selfClone {
 		return nil
+	}
+	// Order matters between these two. The discard takes the destination's
+	// replaced ranges back to holes; the seed then gives the local tier its
+	// account of the ranges the copy put there. Seeding first would find those
+	// ranges still described by the content the copy replaced and skip them all,
+	// and the discard would then drop what little it had recorded — reads would
+	// still be right, resolving against the manifest, but the tier would end up
+	// describing none of the copy and nothing could report its remote-only
+	// bytes.
+	if err := discardStaleDestination(ctx, blockStore, dstPayloadID); err != nil {
+		return err
 	}
 	seedClonedRanges(ctx, blockStore, dstPayloadID, copied)
 
@@ -136,6 +150,40 @@ func CloneWholeFile(
 	// their entries warm (nil removedHashes => key off dstPayloadID only).
 	if cache != nil {
 		cache.InvalidateFile(dstPayloadID, nil)
+	}
+	return nil
+}
+
+// discardStaleDestination drops the local tier's account of a copy's
+// destination. Both reflink helpers in this package call it, post-commit, on
+// every destination whose content the copy replaced.
+//
+// The copy rewrites the destination's manifest wholesale and moves no byte, so
+// every range the destination still holds locally describes content it no
+// longer has. Those ranges are what the read path resolves first — a covered
+// warm range reports neither hole nor cold, so the read never reaches the new
+// manifest — and the destination serves its pre-copy content indefinitely with
+// nothing logged. Dropping them puts the copied span back in the state a fresh
+// destination is already in, where the manifest is what answers.
+//
+// It runs after the commit, never before: until the commit lands those bytes
+// are the destination's real content, and a rolled-back copy that had already
+// dropped them could not get them back. What is left is the window between the
+// two, where a read still serves the replaced content.
+//
+// A failure fails the copy, which has already committed — the one place in
+// these helpers where an error does not mean nothing landed. Reporting it is
+// still the better trade: the alternative is reporting success on a destination
+// whose every read serves the content the copy replaced, which is the defect
+// this exists to close. It is not free, though. A caller that retries a copy it
+// was told failed re-runs a copy whose manifest work is idempotent but whose
+// per-hash RefCount bumps are not, so each retry leaves the source's hashes
+// counted one higher than they are referenced. That errs toward keeping a
+// chunk nothing references rather than reclaiming one something does, which is
+// the direction the reclaim paths already prefer.
+func discardStaleDestination(ctx context.Context, blockStore *engine.Store, dstPayloadID metadata.PayloadID) error {
+	if err := blockStore.DiscardLocalContent(ctx, string(dstPayloadID)); err != nil {
+		return fmt.Errorf("discard the copy destination's replaced local ranges: %w", err)
 	}
 	return nil
 }
