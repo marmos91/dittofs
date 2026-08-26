@@ -1,6 +1,7 @@
 package common
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -192,5 +193,95 @@ func TestCloneWholeFile_SelfCloneSeedsNothing(t *testing.T) {
 	}
 	if len(described) != 0 {
 		t.Errorf("the self-clone seeded %v; it copied nothing and must describe nothing", described)
+	}
+}
+
+// TestCloneWholeFile_DropsTheDestinationsStaleLocalRanges pins the post-commit
+// step the destination's correctness depends on.
+//
+// The reflink replaces the destination's content wholesale and moves no byte,
+// so every local range the destination still holds describes content it no
+// longer has. Those ranges are what the read path resolves first — a covered
+// warm range reports neither hole nor cold, so the read never reaches the new
+// manifest — and without this step the destination serves its pre-clone content
+// indefinitely, with nothing logged.
+//
+// The bystander is the control: another payload holding local ranges of its
+// own, which the clone has nothing to do with and must leave described.
+func TestCloneWholeFile_DropsTheDestinationsStaleLocalRanges(t *testing.T) {
+	ctx := context.Background()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	bs, local := newCopyTestEngineWithLocal(t, &fakeCoordinator{}, ms)
+
+	srcBlocks := []block.ChunkRef{
+		{Hash: block.ContentHash{0x11}, Offset: 0, Size: 4096},
+		{Hash: block.ContentHash{0x22}, Offset: 4096, Size: 4096},
+	}
+	const size = 8192
+	srcHandle := putTestFile(t, ms, "/stale-src.bin", "stale-src-pid", srcBlocks, size)
+	dstHandle := putTestFile(t, ms, "/stale-dst.bin", "stale-dst-pid", nil, size)
+	putTestFile(t, ms, "/stale-bystander.bin", "stale-bystander-pid", nil, size)
+
+	// The destination and the bystander each hold their own bytes locally.
+	for _, pid := range []string{"stale-dst-pid", "stale-bystander-pid"} {
+		if _, err := bs.WriteAt(ctx, pid, nil, bytes.Repeat([]byte{0xAB}, size), 0); err != nil {
+			t.Fatalf("WriteAt(%s): %v", pid, err)
+		}
+		extents, err := local.DataExtents(ctx, pid, size)
+		if err != nil {
+			t.Fatalf("DataExtents(%s): %v", pid, err)
+		}
+		if len(extents) == 0 {
+			t.Fatalf("%s describes nothing before the clone, so the drop below would prove nothing", pid)
+		}
+	}
+
+	if err := CloneWholeFile(ctx, bs, ms, nil, srcHandle, dstHandle, "stale-dst-pid"); err != nil {
+		t.Fatalf("CloneWholeFile: %v", err)
+	}
+
+	described, err := local.DataExtents(ctx, "stale-dst-pid", size)
+	if err != nil {
+		t.Fatalf("DataExtents(dst) after the clone: %v", err)
+	}
+	if len(described) != 0 {
+		t.Errorf("the destination still describes %v locally; those ranges hold the content the clone replaced", described)
+	}
+
+	bystander, err := local.DataExtents(ctx, "stale-bystander-pid", size)
+	if err != nil {
+		t.Fatalf("DataExtents(bystander): %v", err)
+	}
+	if len(bystander) == 0 {
+		t.Error("the clone dropped a payload it had nothing to do with")
+	}
+}
+
+// TestCloneWholeFile_SelfCloneKeepsItsLocalRanges keeps the self-clone no-op
+// whole. The destination is the source: it holds exactly the content its
+// manifest describes, and dropping its local ranges would throw away bytes
+// nothing replaced.
+func TestCloneWholeFile_SelfCloneKeepsItsLocalRanges(t *testing.T) {
+	ctx := context.Background()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	bs, local := newCopyTestEngineWithLocal(t, &fakeCoordinator{}, ms)
+
+	const size = 4096
+	selfHandle := putTestFile(t, ms, "/self.bin", "self-pid",
+		[]block.ChunkRef{{Hash: block.ContentHash{0x44}, Offset: 0, Size: size}}, size)
+	if _, err := bs.WriteAt(ctx, "self-pid", nil, bytes.Repeat([]byte{0xCD}, size), 0); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+
+	if err := CloneWholeFile(ctx, bs, ms, nil, selfHandle, selfHandle, "self-pid"); err != nil {
+		t.Fatalf("CloneWholeFile self-clone: %v", err)
+	}
+
+	described, err := local.DataExtents(ctx, "self-pid", size)
+	if err != nil {
+		t.Fatalf("DataExtents: %v", err)
+	}
+	if len(described) == 0 {
+		t.Error("the self-clone dropped the payload's own local ranges; it replaced nothing")
 	}
 }

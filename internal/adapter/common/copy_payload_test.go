@@ -1,6 +1,7 @@
 package common
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -423,4 +424,33 @@ func (f *fakeCoordinator) DecrementRefCountAndReapMany(ctx context.Context, payl
 		}
 	}
 	return nil
+}
+
+// TestCopyPayload_SelfCopyKeepsItsLocalRanges pins the guard that keeps a copy
+// of a payload onto itself from dropping the payload's own local ranges. The
+// copy replaced nothing, so those ranges still hold exactly the content the
+// manifest describes, and dropping them would throw away bytes for no reason.
+func TestCopyPayload_SelfCopyKeepsItsLocalRanges(t *testing.T) {
+	ctx := context.Background()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	bs, local := newCopyTestEngineWithLocal(t, &fakeCoordinator{}, ms)
+
+	const size = 4096
+	handle := putTestFile(t, ms, "/self-copy.bin", "self-copy-pid",
+		[]block.ChunkRef{{Hash: block.ContentHash{0x55}, Offset: 0, Size: size}}, size)
+	if _, err := bs.WriteAt(ctx, "self-copy-pid", nil, bytes.Repeat([]byte{0xEF}, size), 0); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+
+	if err := CopyPayload(ctx, bs, ms, nil, handle, handle, "self-copy-pid", "self-copy-pid"); err != nil {
+		t.Fatalf("CopyPayload self-copy: %v", err)
+	}
+
+	described, err := local.DataExtents(ctx, "self-copy-pid", size)
+	if err != nil {
+		t.Fatalf("DataExtents: %v", err)
+	}
+	if len(described) == 0 {
+		t.Error("the self-copy dropped the payload's own local ranges; it replaced nothing")
+	}
 }
