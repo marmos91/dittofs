@@ -280,8 +280,9 @@ func (h *Handler) rangeLiveStreamsOfBase(selfFileID [16]byte, parentHandle metad
 //
 //   - Lease breaks. CLOSE relies on the removal's own dir-change notification
 //     to break the parent's leases and deliberately does not dispatch a second
-//     one; the teardown breaks the file's Handle leases before the unlink and
-//     the parent's afterwards, because no SET_INFO disposition preceded it.
+//     one; the teardown dispatches both — the file's Handle leases and the
+//     parent's — once this call reports the entry actually gone, because no
+//     SET_INFO disposition preceded it.
 //   - The SMB CHANGE_NOTIFY event. CLOSE emits one; the teardown never has,
 //     and starting to emit one there is a change to the notify registry's
 //     traffic rather than to this removal.
