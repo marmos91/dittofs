@@ -401,6 +401,23 @@ fi
 # whereas the default smb2.acls suite requires Windows-default canonicalization.
 SMBTORTURE_DEFAULT_SHARE="${SMBTORTURE_DEFAULT_SHARE:-smbbasic}"
 
+# expected_truncation SUITE
+# Prints why SUITE is allowed to be cut short by its budget, or nothing when it
+# is not. A suite that runs out of budget loses every test it had not reached,
+# and those tests report as neither passed nor failed — so by default that is a
+# job failure, the same as a new red test. This list is the only escape hatch,
+# and each entry needs a reason a bigger budget cannot address.
+expected_truncation() {
+    case "$1" in
+        smb2.notify)
+            # A cancelled CHANGE_NOTIFY never receives its final response, so
+            # the client blocks until the harness kills the suite. More budget
+            # only burns more of it and leaves the same tail ungraded. Tracked
+            # in #2109.
+            echo "cancelled CHANGE_NOTIFY never completed (#2109)" ;;
+    esac
+}
+
 # run_smbtorture FILTER [PER_TEST_TIMEOUT] [SUITE_PREFIX] [SHARE]
 # Runs smbtorture with the given filter, appending output to results file.
 # When SUITE_PREFIX is set, test/success/failure/error lines in the output
@@ -433,9 +450,11 @@ run_smbtorture() {
     #   124            -> the per-suite timeout fired: the harness gave up on this
     #                     filter. Whatever the suite had not reached yet produced
     #                     NO result lines at all, so those tests are ungraded —
-    #                     inconclusive, not passing. Recorded in timeouts.txt so
-    #                     parse-results.sh can report the lost coverage instead of
-    #                     letting it read as a clean run.
+    #                     inconclusive, not passing. Recorded in timeouts.txt
+    #                     along with the reason it is allowed to happen, if any,
+    #                     so parse-results.sh can red the job on lost coverage
+    #                     nobody signed off on instead of letting it read as a
+    #                     clean run.
     #   125            -> docker run/daemon error (image pull 502, OOM-killed
     #                     container, etc.) — a real infrastructure failure
     #   128+N (>=129)  -> the smbtorture CLIENT process was killed by signal N
@@ -450,7 +469,8 @@ run_smbtorture() {
         log_warn "smbtorture client crashed (exit code $rc, signal $((rc - 128))) for filter: $filter — client-side bug, not failing the job on this alone"
     elif [[ $rc -eq 124 ]]; then
         log_warn "smbtorture timed out after ${per_timeout}s on filter: $filter — tests it had not reached are UNGRADED (inconclusive)"
-        printf '%s\t%s\n' "$filter" "$per_timeout" >> "${RESULTS_DIR}/timeouts.txt"
+        printf '%s\t%s\t%s\n' "$filter" "$per_timeout" "$(expected_truncation "$filter")" \
+            >> "${RESULTS_DIR}/timeouts.txt"
     elif [[ $rc -ge 125 ]]; then
         log_warn "smbtorture infrastructure failure (exit code $rc) for filter: $filter"
     fi
@@ -496,8 +516,9 @@ reset_share() {
 #                     by signal) — those are upstream client bugs and must not
 #                     red the job; parse-results.sh grades the actual protocol
 #                     outcomes from whatever output was produced. A per-suite
-#                     timeout (124) is also left non-fatal, matching the prior
-#                     behaviour (partial output is still graded).
+#                     timeout (124) is not fatal here either — partial output is
+#                     still graded, and parse-results.sh is what fails the job
+#                     over a truncation that is not on the expected list.
 _smbtorture_exit=0
 _smbtorture_infra=0
 
@@ -537,7 +558,13 @@ else
         # opens/leases) can't fail a previously-passing test. Refs #568.
         reset_share "$SMBTORTURE_DEFAULT_SHARE"
         log_info "  Running: ${test}"
-        run_smbtorture "$test" 60 || record_rc $?
+        # Same budget as the sub-suites, and for the same reason. The 60s these
+        # used to get was not slack: smb2.maxfid opens 2000 handles one at a
+        # time, which is 18s on badger-fs but 52s on postgres, and one postgres
+        # draw ran into the wall at 60s and lost the test entirely. Every other
+        # standalone finishes inside 20s, so the larger figure costs nothing
+        # unless something actually hangs.
+        run_smbtorture "$test" 300 || record_rc $?
     done
 
     # Sub-suites with prefix for test name fixup.
@@ -550,7 +577,17 @@ else
     SUITES=(
         "smb2.acls:acls"
         "smb2.acls_non_canonical:acls_non_canonical:smbnoncanon"
-        "smb2.aio_delay:aio_delay"
+        # smb2.aio_delay is intentionally NOT run: its single test, aio_cancel,
+        # sends a 1-byte READ and then loops on `req->cancel.can_cancel` with no
+        # bound. That flag is set in exactly one place in the smbtorture client
+        # — on receipt of an interim NT_STATUS_PENDING — so the test cannot
+        # proceed at all unless the server defers the read. Samba only ever runs
+        # this suite against a share carrying its `vfs_delay_inject` module,
+        # whose whole purpose is to make reads artificially slow. DittoFS has no
+        # such module and the harness targets /smbbasic, so the read completes
+        # immediately, no interim is ever sent, and the suite burns its entire
+        # budget having graded 0 of 1. That is not a tight budget and not a
+        # server gap: the suite can never produce a verdict here.
         # smb2.bench is intentionally NOT run: it is a throughput benchmark
         # family (echo, oplock1, path-contention-shared, read, session-setup),
         # not a conformance suite. The tests measure round-trip timing and
@@ -709,37 +746,27 @@ else
         else
             log_info "  Running: ${suite}"
         fi
-        # Durable-handle and replay suites drive many durable open/disconnect/
-        # reconnect cycles, and the replay-vs-pending-break arms each spend ~6s
-        # parked on a lease break the test deliberately acks late. At 120s even
-        # the memory profile reports "smb2.replay (gave up after 120s)" and
-        # leaves the tail of the suite ungraded; badger-fs is slower still,
-        # since each cycle persists/consumes a durable handle with a
-        # synchronous, non-coalescing fsync. Give those suites more head room
-        # on every profile; every other suite keeps 120s.
+        # One budget for every suite. It is there to bound a hang, not to
+        # grade speed: a suite that legitimately runs for three minutes is not
+        # a problem, a suite that never returns is. Per-suite numbers were
+        # tried and do not hold -- the same suite spans 22s on memory and 112s
+        # on sqlite, so any figure tight enough to be meaningful on one profile
+        # is a coin flip on another, and losing that flip silently drops every
+        # test past the cut point.
         #
-        # smb2.lease, smb2.multichannel and smb2.oplock overrun 120s the same
-        # way, on every profile — the cut is not a storage-speed effect.
-        # smb2.oplock is the clearest case: batch22b deliberately waits out an
-        # oplock break timeout (smbtorture's own `oplocktimeout`, default 35s)
-        # with the holder's transport blocked so no ack can arrive.
+        # Slowest legitimate suite measured across all five profiles is
+        # smb2.compound_find at 193s (sqlite); smb2.lease, smb2.replay,
+        # smb2.oplock and smb2.multichannel follow at 187/165/146/132s. 300s
+        # clears the slowest by ~1.6x, which is the margin the runner's own
+        # variance has been observed to need, and still caps a wedged suite at
+        # five minutes.
         #
-        # Measured end-to-end, with enough budget to finish (memory/badger-fs):
-        # lease 182/186s, oplock 145/145s, multichannel 132/132s, replay 163s.
-        # 300s is ~1.6x the slowest of those, which is the headroom the runner's
-        # variance needs; the two profiles land within 4s of each other, so the
-        # figure is not backend-sensitive.
-        #
-        # smb2.notify is deliberately NOT raised. It hangs on a cancelled
-        # CHANGE_NOTIFY that never receives a final response, so a bigger budget
-        # only burns more of it while leaving the same tail ungraded.
-        # smb2.aio_delay and smb2.compound_find stay at 120s too: still
-        # uncharacterised, and sizing a budget for an unknown is how an ungraded
-        # tail gets established in the first place.
+        # smb2.notify is the one exception, in the other direction: it is a
+        # known hang (see expected_truncation), so letting it burn the full
+        # budget buys nothing but CI time.
         case "$suite" in
-            smb2.replay|smb2.durable-*|smb2.lease|smb2.multichannel|smb2.oplock)
-                suite_timeout=300 ;;
-            *) suite_timeout=120 ;;
+            smb2.notify) suite_timeout=120 ;;
+            *) suite_timeout=300 ;;
         esac
         run_smbtorture "$suite" "$suite_timeout" "$prefix" "${share:-}" || record_rc $?
     done
