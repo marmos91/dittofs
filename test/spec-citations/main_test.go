@@ -1,0 +1,121 @@
+package main
+
+import (
+	"strings"
+	"testing"
+)
+
+// Every case runs against the vendored maps, so a case also pins the map entry
+// it names. The "want no finding" half matters most: those are the shapes that
+// would make this check noisy enough to be turned off.
+func TestCheckLine(t *testing.T) {
+	specs, err := loadSpecs()
+	if err != nil {
+		t.Fatalf("loadSpecs: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		line string
+		want string // substring of the expected message; "" means no finding
+	}{{
+		name: "section absent from the spec",
+		line: `// Per [MS-FSA] 2.1.5.14.3, a directory marked for deletion completes notifies`,
+		want: "2.1.5.14.3 does not exist",
+	}, {
+		name: "quoted title disagrees with the cited section",
+		line: `// Per MS-FSA §2.1.5.15.2 ("FileRenameInformation"): timestamps`,
+		want: `2.1.5.15.2 is "FileBasicInformation", not "FileRenameInformation"`,
+	}, {
+		name: "quoted title agrees",
+		line: `// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): timestamps`,
+	}, {
+		name: "named structure is defined by a different section",
+		line: `FileStandardInformation FileInfoClass = 5 // [MS-FSCC] 2.4.41`,
+		want: `2.4.41 is "FileQuotaInformation", but the line names FileStandardInformation, which is MS-FSCC 2.4.47`,
+	}, {
+		name: "named structure matches the cited section",
+		line: `FileStandardInformation FileInfoClass = 5 // [MS-FSCC] 2.4.47`,
+	}, {
+		name: "underscore spelling of the same structure",
+		line: `// FILE_FULL_EA_INFORMATION chain (MS-FSCC §2.4.16)`,
+	}, {
+		name: "Ex-suffixed class is a structure in its own right",
+		line: `// FileDispositionInformationEx per [MS-FSCC] 2.4.11`,
+		want: `2.4.11 is "FileDispositionInformation", but the line names FileDispositionInformationEx, which is MS-FSCC 2.4.12`,
+	}, {
+		// The FSCTL sections come in Request/Reply pairs, and citing either
+		// one from a line naming the FSCTL is correct.
+		name: "FSCTL reply section satisfies a line naming the FSCTL",
+		line: `// FSCTL_QUERY_ALLOCATED_RANGES reply buffer, MS-FSCC §2.3.52`,
+	}, {
+		name: "FSCTL cited at an unrelated structure",
+		line: `// FSCTL_SET_ZERO_DATA request buffer, MS-FSCC §2.3.25`,
+		want: "but the line names FSCTL_SET_ZERO_DATA",
+	}, {
+		// Citing an algorithm section from a line that names a structure is
+		// how behaviour gets attributed; the structure name is not a claim
+		// about which section number belongs there.
+		name: "prose-titled section is not second-guessed",
+		line: `// FileRenameInformation share-delete check per MS-FSA §2.1.5.1.2.1`,
+	}, {
+		name: "two structures named on one line stay ambiguous",
+		line: `// converts FileStandardInformation into FileNetworkOpenInformation, MS-FSCC §2.4.41`,
+	}, {
+		name: "two structural citations on one line stay ambiguous",
+		line: `// FileStandardInformation, MS-FSCC §2.4.41 and MS-FSA §2.1.5.15.2`,
+	}, {
+		name: "family reference carries no structure claim",
+		line: `// Validate FileAttributes per MS-FSCC §2.6 and MS-SMB2 §2.2.13`,
+	}, {
+		name: "byte-size parenthetical is not a title",
+		line: `// FileEaInformation (MS-FSCC §2.4.13) (4 bytes): total EA size`,
+	}, {
+		name: "MS-SMB2 prose title is checked when quoted",
+		line: `// Per MS-SMB2 §3.3.5.9 ("Receiving an SMB2 WRITE Request")`,
+		want: `3.3.5.9 is "Receiving an SMB2 CREATE Request"`,
+	}, {
+		name: "no citation at all",
+		line: `// FileStandardInformation is the class the client asked for`,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := checkLine(specs, tc.line)
+			if tc.want == "" {
+				if len(got) != 0 {
+					t.Fatalf("want no finding, got %q", got[0].msg)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("want 1 finding containing %q, got %d: %v", tc.want, len(got), got)
+			}
+			if !strings.Contains(got[0].msg, tc.want) {
+				t.Fatalf("got %q, want it to contain %q", got[0].msg, tc.want)
+			}
+		})
+	}
+}
+
+// The maps are the only thing standing between a correct citation and a false
+// failure, so a map that lost entries has to be loud.
+func TestSectionMapsArePopulated(t *testing.T) {
+	specs, err := loadSpecs()
+	if err != nil {
+		t.Fatalf("loadSpecs: %v", err)
+	}
+	minimum := map[string]int{
+		"MS-FSCC": 250, "MS-FSA": 210, "MS-SMB2": 500, "MS-DTYP": 185, "MS-ERREF": 15,
+	}
+	for spec, want := range minimum {
+		m := specs[spec]
+		if m == nil {
+			t.Fatalf("%s: no section map", spec)
+		}
+		if len(m.Sections) < want {
+			t.Errorf("%s: %d sections, want at least %d", spec, len(m.Sections), want)
+		}
+		if m.Revision == "" || m.Revision == "unknown" {
+			t.Errorf("%s: revision is %q", spec, m.Revision)
+		}
+	}
+}
