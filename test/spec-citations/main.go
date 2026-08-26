@@ -275,10 +275,13 @@ func main() {
 			return err
 		}
 		scanned++
+		// known_wrong.txt spells its paths with forward slashes, so the key
+		// has to be separator-independent.
 		rel, relErr := filepath.Rel(*root, path)
 		if relErr != nil {
 			rel = path
 		}
+		rel = filepath.ToSlash(rel)
 		lines := strings.Split(string(raw), "\n")
 		for i := range lines {
 			for _, f := range checkLine(specs, logicalLine(lines, i)) {
