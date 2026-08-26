@@ -225,7 +225,7 @@ func (s *sqliteDurableStore) PutDurableHandle(ctx context.Context, handle *lock.
 		handle.FileName,
 		handle.IsDirectory,
 		// PositionInfo is a file offset (FILE_POSITION_INFORMATION.CurrentByteOffset,
-		// MS-FSCC 2.4.32) stored as BIGINT (signed int64). File offsets fit in
+		// MS-FSCC 2.4.40 (FilePositionInformation)) stored as BIGINT (signed int64). File offsets fit in
 		// int64 in practice; reinterpret the bit pattern to preserve any high-bit
 		// value. The scan path mirrors this with uint64(int64) on read.
 		int64(handle.PositionInfo),

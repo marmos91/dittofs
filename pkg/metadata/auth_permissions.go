@@ -693,7 +693,7 @@ func (s *Service) CheckParentCreateAccessFile(ctx *AuthContext, parentHandle Fil
 //     already authorized upstream (e.g. SMB CREATE with
 //     FILE_DELETE_ON_CLOSE + desiredAccess=DELETE or SET_INFO
 //     FileDispositionInformation, both of which verify the caller's grant
-//     at open time). Per MS-FSA 2.1.5.4, DELETE_ON_CLOSE honors the handle's
+//     at open time). Per MS-FSA 2.1.5.5 ("Server Requests Closing an Open"), DELETE_ON_CLOSE honors the handle's
 //     frozen authorization regardless of the current identity — critical for
 //     SMB reauth flows where the session's UID/GID may shift between open
 //     and close for the same Kerberos principal (issue #388). Read-only
@@ -821,7 +821,7 @@ func (s *Service) CheckFileAccess(file *File, authCtx *AuthContext, desiredAcces
 }
 
 // CheckFileAccessWithParent extends CheckFileAccess with the standard
-// Windows "delete via parent" override per MS-FSA §2.1.4.13 / §2.1.5.1.2.4:
+// Windows "delete via parent" override per MS-FSA §2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File"):
 // when the file's own DACL denies DELETE but the parent directory grants
 // FILE_DELETE_CHILD (ACE4_DELETE_CHILD, 0x40) to the caller, DELETE is
 // granted on the open. This mirrors Samba's parent_override_delete() in
@@ -925,11 +925,12 @@ func (s *Service) CheckFileAccessWithParentGeneric(file *File, parent *File, aut
 	evalCtx := buildFileAccessEvalContext(file, authCtx)
 	granted := acl.EvaluateGranted(file.ACL, evalCtx, explicit)
 
-	// MS-FSA §2.1.4.13 "Algorithm to Check Access to an Existing File":
-	// FILE_READ_ATTRIBUTES is always granted from the containing directory
-	// once traverse access to the file's path succeeds. The bit is unmasked
-	// from the file's DACL evaluation — even a DACL that explicitly omits
-	// READ_ATTRIBUTES still yields a successful open requesting it.
+	// MS-FSA §2.1.5.1.2.1 "Algorithm to Check Access to an Existing File"
+	// grants FILE_READ_ATTRIBUTES from the containing directory, conditional on
+	// AccessCheck(parent, FILE_LIST_DIRECTORY) returning TRUE. This grants it
+	// unconditionally once traverse access to the path succeeds, so the bit is
+	// unmasked from the file's DACL evaluation — even a DACL that explicitly
+	// omits READ_ATTRIBUTES still yields a successful open requesting it.
 	//
 	// Mirrors Samba source3/smbd/open.c::smbd_check_access_rights_fsp which
 	// sets `do_not_check_mask = FILE_READ_ATTRIBUTES` before invoking the
@@ -941,7 +942,7 @@ func (s *Service) CheckFileAccessWithParentGeneric(file *File, parent *File, aut
 
 	// Parent override for DELETE: when the file's own DACL denied DELETE but
 	// the parent directory grants FILE_DELETE_CHILD to the caller, grant
-	// DELETE here (MS-FSA §2.1.4.13 / Samba parent_override_delete). The
+	// DELETE here (MS-FSA §2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File") / Samba parent_override_delete). The
 	// override fires only when DELETE was actually requested and not yet
 	// granted, and only when a parent file is in scope. This is the same
 	// Windows semantics that lets administrators delete files with no DELETE
@@ -970,7 +971,7 @@ func (s *Service) CheckFileAccessWithParentGeneric(file *File, parent *File, aut
 		if parent != nil && parentGrantsDeleteChild(parent, authCtx) {
 			effective |= acl.ACE4_DELETE
 		}
-		// MS-FSA §2.1.4.13: FILE_READ_ATTRIBUTES is always granted from the
+		// MS-FSA §2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File"): FILE_READ_ATTRIBUTES is always granted from the
 		// containing directory (see explicit-branch comment above). Surface it
 		// in the MaxAccess set so MxAc replies and MAXIMUM_ALLOWED opens carry
 		// the bit. Refs #559.
@@ -1015,7 +1016,7 @@ func (s *Service) CheckFileAccessWithParentGeneric(file *File, parent *File, aut
 
 // parentGrantsDeleteChild decides whether a parent directory grants
 // FILE_DELETE_CHILD (ACE4_DELETE_CHILD) to the requester for the purposes
-// of the MS-FSA §2.1.4.13 delete-via-parent override. Null DACL on the
+// of the MS-FSA §2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File") delete-via-parent override. Null DACL on the
 // parent grants everything (MS-DTYP §2.5.3). Root and nil-identity callers
 // also bypass — consistent with the rest of CheckFileAccessWithParent.
 func parentGrantsDeleteChild(parent *File, authCtx *AuthContext) bool {

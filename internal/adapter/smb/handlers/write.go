@@ -496,7 +496,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		}
 	}
 
-	// Per MS-FSA 2.1.5.14.2: If timestamps are frozen via SET_INFO with -1,
+	// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): If timestamps are frozen via SET_INFO with -1,
 	// CommitWrite unconditionally updated Mtime/Ctime. Restore frozen values.
 	h.restoreFrozenTimestamps(authCtx, openFile)
 
@@ -523,9 +523,10 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		h.updateBaseObjectTimestampsForADSWrite(authCtx, metaSvc, openFile, parentHandle, baseFileName)
 	}
 
-	// Per MS-FSA 2.1.5.3: After a successful write, update LastAccessTime
+	// Per MS-FSA 2.1.5.4 ("Server Requests a Write"): After a successful write, update LastAccessTime
 	// to the current system time, unless frozen via SET_INFO -1.
-	// Per MS-FSA 2.1.4.4: Parent directory's LastAccessTime is also updated.
+	// The parent directory's LastAccessTime is also updated. MS-FSA specifies no
+	// parent-directory timestamp update on write; this matches Windows.
 	// Both bumps coalesce per handle the way READ's does — see noteSmbAccess
 	// and noteSmbParentAccess.
 	now := time.Now()
@@ -535,7 +536,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 	if len(parentHandle) > 0 && noteSmbParentAccess(openFile, now) {
 		_, _ = metaSvc.SetFileAttributes(authCtx, parentHandle, &metadata.SetAttrs{Atime: &now})
-		// Per MS-FSA 2.1.5.14.2: Restore frozen timestamps on the parent directory
+		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Restore frozen timestamps on the parent directory
 		// if any open handle has them frozen. The SetFileAttributes call above
 		// unconditionally updates atime; if a handle has atime frozen, restore it.
 		// Skipped along with a coalesced-away bump: nothing was written to restore.

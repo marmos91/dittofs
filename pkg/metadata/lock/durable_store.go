@@ -151,7 +151,7 @@ type PersistedDurableHandle struct {
 	IsDirectory   bool   // Whether the file is a directory
 
 	// PositionInfo is the FILE_POSITION_INFORMATION CurrentByteOffset
-	// (MS-FSCC 2.4.32) captured at disconnect. Restored to the OpenFile
+	// (MS-FSCC 2.4.40 (FilePositionInformation)) captured at disconnect. Restored to the OpenFile
 	// on reconnect so SET/GET FilePositionInformation round-trips across
 	// the disconnect (smb2.durable-open.file-position).
 	PositionInfo uint64

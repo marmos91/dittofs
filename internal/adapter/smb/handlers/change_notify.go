@@ -116,7 +116,8 @@ type ChangeNotifyResponse struct {
 	Buffer             []byte // Serialized FileNotifyInformation array
 }
 
-// FileNotifyInformation represents a single change notification [MS-FSCC] 2.4.42.
+// FileNotifyInformation represents a single change notification
+// [MS-FSCC] 2.7.1 (FILE_NOTIFY_INFORMATION).
 type FileNotifyInformation struct {
 	Action   uint32
 	FileName string // Relative path within watched directory
@@ -1015,7 +1016,8 @@ const (
 // NameChangeFilterFor returns the appropriate FileNotifyChange* mask for a
 // file-name-change event on a target with the given baseName and directory
 // flag. ADS streams (name contains ':') route via FILE_NOTIFY_CHANGE_STREAM_NAME
-// per MS-FSCC §2.6 — applies to create / delete / rename of stream entries so
+// per MS-SMB2 §2.2.35 ("SMB2 CHANGE_NOTIFY Request"), which defines the
+// CompletionFilter bits — applies to create / delete / rename of stream entries so
 // stream-name watchers see them.
 func NameChangeFilterFor(baseName string, isDirectory bool) uint32 {
 	if strings.Contains(baseName, ":") {
@@ -1490,7 +1492,7 @@ func (r *NotifyRegistry) chargeArmedBuffer(
 }
 
 // encodedNotifyEntrySize returns the wire size of a single
-// FILE_NOTIFY_INFORMATION entry whose FileName is name (MS-FSCC §2.4.42):
+// FILE_NOTIFY_INFORMATION entry whose FileName is name (MS-FSCC §2.7.1 (FILE_NOTIFY_INFORMATION)):
 // 12-byte fixed header (NextEntryOffset | Action | FileNameLength) plus the
 // UTF-16LE filename bytes, aligned up to 4 bytes. Empty names are charged
 // the minNotifyEntryBytes floor to avoid undercounting a sentinel-encoded

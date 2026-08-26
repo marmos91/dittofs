@@ -76,8 +76,8 @@ type FileAttr struct {
 	ACL *acl.ACL `json:"acl,omitempty"`
 
 	// EAs holds the file's extended attributes (SMB FILE_FULL_EA_INFORMATION,
-	// MS-FSCC §2.4.15). Keys are EA names stored in the casing supplied by the
-	// client; per MS-FSCC EA names are case-insensitive, so callers MUST resolve
+	// MS-FSCC §2.4.16 ("FileFullEaInformation")). Keys are EA names stored in the casing supplied by the
+	// client; EA names are case-insensitive per NTFS semantics, so callers MUST resolve
 	// names case-insensitively (helpers on this type do so). Values are raw
 	// bytes (may be empty but non-nil to distinguish a zero-length EA from an
 	// absent one). nil means no EAs are set.
@@ -230,7 +230,8 @@ type SetAttrs struct {
 
 // EAMutation is a single extended-attribute upsert or delete, applied via
 // SetAttrs.EAMutations. Name is matched case-insensitively against existing
-// EA names (MS-FSCC §2.4.15); a set with a new name records that name's casing.
+// EA names, case-insensitively per NTFS semantics (MS-FSCC §2.4.16 ("FileFullEaInformation")
+// defines the structure only); a set with a new name records that name's casing.
 type EAMutation struct {
 	// Name is the EA name (canonical NT form, no domain prefix).
 	Name string
@@ -241,7 +242,7 @@ type EAMutation struct {
 }
 
 // LookupEA returns the value of the named extended attribute and whether it is
-// present, resolving the name case-insensitively per MS-FSCC §2.4.15.
+// present, resolving the name case-insensitively per NTFS semantics.
 func (a *FileAttr) LookupEA(name string) ([]byte, bool) {
 	key, found := a.findEAKey(name)
 	if !found {

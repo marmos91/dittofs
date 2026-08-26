@@ -455,7 +455,7 @@ func TestCreate_MaxAllowedPlusExplicitDeniedBit_ReturnsAccessDenied(t *testing.T
 // STATUS_ACCESS_DENIED because OVERWRITE implicitly requires FILE_WRITE_DATA
 // to truncate the existing file, which the DACL does not grant.
 //
-// Per MS-FSA §2.1.5.1.2.1 and Samba open_file_ntcreate
+// Per MS-FSA §2.1.5.1.2 ("Open of an Existing File") and Samba open_file_ntcreate
 // (`open_access_mask |= FILE_WRITE_DATA` when O_TRUNC).
 func TestCreate_OverwriteRestrictedFile_ReturnsAccessDenied(t *testing.T) {
 	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
@@ -491,7 +491,7 @@ func TestCreate_OverwriteRestrictedFile_ReturnsAccessDenied(t *testing.T) {
 // smb2.acls.OVERWRITE_READ_ONLY_FILE (issue #565) — SUPERSEDE arm at
 // source4/torture/smb2/acls.c:3104. Mirrors the OVERWRITE test above but with
 // FILE_SUPERSEDE disposition: SUPERSEDE replaces the existing file content,
-// which inherently requires FILE_WRITE_DATA per MS-FSA §2.1.5.1.2.1 and must
+// which inherently requires FILE_WRITE_DATA per MS-FSA §2.1.5.1.2 ("Open of an Existing File") and must
 // be denied when the DACL grants only READ_DATA.
 func TestCreate_SupersedeRestrictedFile_ReturnsAccessDenied(t *testing.T) {
 	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)

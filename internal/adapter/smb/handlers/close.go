@@ -137,7 +137,7 @@ func (resp *CloseResponse) Encode() ([]byte, error) {
 // so a failed block-store (or pending-metadata) flush is mapped to a non-success
 // status rather than silently acknowledged — otherwise the client treats data
 // that never persisted as committed (#1267). Delete-on-close unlink failures are
-// likewise surfaced per MS-SMB2 3.3.5.10 / MS-FSA 2.1.5.4 (#388) — the client
+// likewise surfaced per MS-SMB2 3.3.5.10 / MS-FSA 2.1.5.5 ("Server Requests Closing an Open") (#388) — the client
 // must know the file was not removed. The handle itself is always released
 // regardless of any flush/delete failure, to prevent resource leaks.
 func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseResponse, error) {
@@ -290,7 +290,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				}
 			}
 
-			// Per MS-FSA 2.1.5.14.2: After flushing pending writes (which may overwrite
+			// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): After flushing pending writes (which may overwrite
 			// frozen timestamps), restore any timestamps that were frozen via SET_INFO -1.
 			// The deferred commit flush sets Mtime/Ctime to the WRITE time, but if the
 			// handle has frozen timestamps, those must be preserved.
@@ -880,7 +880,7 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 // cascadeDeleteADSStreams removes all alternate data streams belonging to a
 // base file that was just deleted. ADS streams are stored as sibling entries
 // in the parent directory with names like "baseFile:streamName:$DATA".
-// Per MS-FSA 2.1.5.9.7, deleting a file deletes all its streams.
+// Per MS-FSA 2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File"), deleting a file deletes all its streams.
 func (h *Handler) cascadeDeleteADSStreams(authCtx *metadata.AuthContext, metaSvc *metadata.Service, openFile *OpenFile) {
 	name := openFile.Name()
 	prefix := name.FileName + ":"

@@ -100,7 +100,7 @@ func TestRead_SymlinkRead_LeavesReleaseDataNil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Position semantics — MS-FSA 2.1.5.2: every successful READ advances
+// Position semantics — MS-FSA 2.1.5.3 ("Server Requests a Read"): every successful READ advances
 // Open.CurrentByteOffset to req.Offset + bytesReturned. The smb2.read.position
 // torture test reads that value back via GetInfo FilePositionInformation.
 // recordReadProgress() centralises the update so every success path —

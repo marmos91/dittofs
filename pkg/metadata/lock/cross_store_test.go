@@ -6,7 +6,7 @@ import "testing"
 // via Manager.Lock) and NLM/NFSv4 byte-range locks (lm.unifiedLocks, via
 // Manager.AddUnifiedLock) live in two separate maps. Each acquisition / IO path
 // must cross-check the other map so a lock taken via one protocol blocks a
-// conflicting lock or write via the other (MS-FSA §2.1.5).
+// conflicting lock or write via the other (MS-FSA §2.1.4.10 ("Algorithm for Determining If a Range Access Conflicts with Byte-Range Locks")).
 
 const xHandle = "share-a:file-1"
 

@@ -84,7 +84,7 @@ type FileBasicInfo struct {
 	FileAttributes types.FileAttributes
 }
 
-// FileStandardInfo represents FILE_STANDARD_INFORMATION [MS-FSCC] 2.4.41 (24 bytes).
+// FileStandardInfo represents FILE_STANDARD_INFORMATION [MS-FSCC] 2.4.47 (FileStandardInformation) (24 bytes).
 // Used by QUERY_INFO to return file size, link count, and deletion status.
 type FileStandardInfo struct {
 	AllocationSize uint64
@@ -94,7 +94,7 @@ type FileStandardInfo struct {
 	Directory      bool
 }
 
-// FileNetworkOpenInfo represents FILE_NETWORK_OPEN_INFORMATION [MS-FSCC] 2.4.27 (56 bytes).
+// FileNetworkOpenInfo represents FILE_NETWORK_OPEN_INFORMATION [MS-FSCC] 2.4.34 (FileNetworkOpenInformation) (56 bytes).
 // Optimized for network access, combining timestamps, sizes, and attributes.
 type FileNetworkOpenInfo struct {
 	CreationTime   time.Time
@@ -185,7 +185,7 @@ func DecodeFileBasicInfo(buf []byte) (*FileBasicInfo, error) {
 	}, nil
 }
 
-// EncodeFileStandardInfo builds FILE_STANDARD_INFORMATION [MS-FSCC] 2.4.41.
+// EncodeFileStandardInfo builds FILE_STANDARD_INFORMATION [MS-FSCC] 2.4.47 (FileStandardInformation).
 func EncodeFileStandardInfo(info *FileStandardInfo) []byte {
 	w := smbenc.NewWriter(24)
 	w.WriteUint64(info.AllocationSize)
@@ -204,7 +204,7 @@ func EncodeFileStandardInfo(info *FileStandardInfo) []byte {
 	return w.Bytes()
 }
 
-// EncodeFileNetworkOpenInfo builds FILE_NETWORK_OPEN_INFORMATION [MS-FSCC] 2.4.27.
+// EncodeFileNetworkOpenInfo builds FILE_NETWORK_OPEN_INFORMATION [MS-FSCC] 2.4.34 (FileNetworkOpenInformation).
 func EncodeFileNetworkOpenInfo(info *FileNetworkOpenInfo) []byte {
 	w := smbenc.NewWriter(56)
 	w.WriteUint64(types.TimeToFiletime(info.CreationTime))
@@ -300,7 +300,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	// below still wins.
 	applySmbPendingAtime(openFile, file)
 
-	// Per MS-FSA 2.1.5.14.2: Apply frozen timestamp overrides.
+	// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Apply frozen timestamp overrides.
 	// When SET_INFO(-1) freezes a timestamp, subsequent operations (WRITE,
 	// child CREATE/DELETE for directories, truncate) may update the store
 	// or pending state. Override the returned values with frozen values so
@@ -675,7 +675,8 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 			attr = baseAttr
 		}
 		// Use name-aware variant so dot-prefixed files surface HIDDEN per
-		// MS-FSCC §2.6 (matches QUERY_DIRECTORY which always sees the name).
+		// Samba's dot-prefix convention (MS-FSCC §2.6 defines FILE_ATTRIBUTE_HIDDEN
+		// but ties it to no filename rule; matches QUERY_DIRECTORY, which sees the name).
 		// Required by smb2.dosmode (source4/torture/smb2/dosmode.c).
 		basicInfo := FileAttrToFileBasicInfoWithName(attr, basenameForHidden(openFile))
 		return EncodeFileBasicInfo(basicInfo), nil
@@ -690,14 +691,14 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		return EncodeFileStandardInfo(standardInfo), nil
 
 	case types.FileInternalInformation:
-		// FILE_INTERNAL_INFORMATION [MS-FSCC] 2.4.20 (8 bytes)
+		// FILE_INTERNAL_INFORMATION [MS-FSCC] 2.4.27 (FileInternalInformation) (8 bytes)
 		fileID := h.baseFileUUID(authCtx, name.ParentHandle, name.FileName, file.ID)
 		w := smbenc.NewWriter(8)
 		w.WriteUint64(binary.LittleEndian.Uint64(fileID[:8]))
 		return w.Bytes(), nil
 
 	case types.FileEaInformation:
-		// FILE_EA_INFORMATION [MS-FSCC] 2.4.12 (4 bytes): total size of the
+		// FILE_EA_INFORMATION [MS-FSCC] 2.4.13 (FileEaInformation) (4 bytes): total size of the
 		// file's extended attributes on the wire. ADS share the base file's
 		// EAs.
 		eaSrc := &file.FileAttr
@@ -720,7 +721,7 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		return w.Bytes(), nil
 
 	case types.FileStreamInformation:
-		// FileStreamInformation [MS-FSCC] 2.4.44
+		// FileStreamInformation [MS-FSCC] 2.4.49 (FileStreamInformation)
 		// Must enumerate ALL streams: the default unnamed data stream (::$DATA)
 		// plus any Alternate Data Streams (ADS) stored as siblings in the parent dir.
 		return h.buildFileStreamInformation(authCtx, file, openFile)
@@ -747,14 +748,14 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		return EncodeFileNetworkOpenInfo(networkInfo), nil
 
 	case types.FilePositionInformation:
-		// FILE_POSITION_INFORMATION [MS-FSCC] 2.4.32 (8 bytes)
+		// FILE_POSITION_INFORMATION [MS-FSCC] 2.4.40 (FilePositionInformation) (8 bytes)
 		// Round-trip the per-handle CurrentByteOffset (see set_info.go).
 		w := smbenc.NewWriter(8)
 		w.WriteUint64(openFile.PositionInfo)
 		return w.Bytes(), nil
 
 	case types.FileModeInformation:
-		// FILE_MODE_INFORMATION [MS-FSCC] 2.4.24 (4 bytes). Mode is the open's
+		// FILE_MODE_INFORMATION [MS-FSCC] 2.4.31 (FileModeInformation) (4 bytes). Mode is the open's
 		// settable mode flags, seeded from CreateOptions at CREATE and updated
 		// by SET_INFO FileModeInformation.
 		w := smbenc.NewWriter(4)
@@ -766,7 +767,7 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		return make([]byte, 4), nil // AlignmentRequirement = 0 (byte-aligned)
 
 	case types.FileNameInformation:
-		// FILE_NAME_INFORMATION [MS-FSCC] 2.4.26 (4 bytes + variable)
+		// FILE_NAME_INFORMATION [MS-FSCC] 2.4.32 (FileNameInformation) (4 bytes + variable)
 		nameBytes := encodeUTF16LE(toSMBPath(name.Path))
 		w := smbenc.NewWriter(4 + len(nameBytes))
 		w.WriteUint32(uint32(len(nameBytes))) // FileNameLength
@@ -787,7 +788,7 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		return w.Bytes(), nil
 
 	case types.FileNormalizedNameInformation:
-		// FILE_NORMALIZED_NAME_INFORMATION [MS-FSCC] 2.4.28 (4 bytes + variable)
+		// FILE_NORMALIZED_NAME_INFORMATION [MS-FSCC] 2.4.35 (FileNormalizedNameInformation) (4 bytes + variable)
 		//
 		// Returns the canonical name relative to the share root. Per
 		// smbtorture `smb2.getinfo.normalized`, the response must reflect
@@ -819,7 +820,7 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		return w.Bytes(), nil
 
 	case types.FileIdInformation:
-		// FILE_ID_INFORMATION [MS-FSCC] 2.4.46 (24 bytes)
+		// FILE_ID_INFORMATION [MS-FSCC] 2.4.26 (FileIdInformation) (24 bytes)
 		// VolumeSerialNumber (8 bytes) + FileId (16 bytes)
 		// ADS handles report the base file's UUID so a client comparing this
 		// against FileInternalInformation on the same handle gets a consistent
@@ -867,7 +868,7 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 
 	case types.FileFullEaInformation:
 		// Enumerate the file's persisted extended attributes as a
-		// FILE_FULL_EA_INFORMATION chain (MS-FSCC §2.4.15). Per NTFS, ADS
+		// FILE_FULL_EA_INFORMATION chain (MS-FSCC §2.4.16 ("FileFullEaInformation")). Per NTFS, ADS
 		// share the base file's EAs, so resolve to the base attr when this
 		// open targets a stream.
 		eaSrc := &file.FileAttr
@@ -951,7 +952,7 @@ func (h *Handler) buildFileAllInformationFromStore(authCtx *metadata.AuthContext
 	return info
 }
 
-// buildFileStreamInformation builds FILE_STREAM_INFORMATION [MS-FSCC] 2.4.44.
+// buildFileStreamInformation builds FILE_STREAM_INFORMATION [MS-FSCC] 2.4.49 (FileStreamInformation).
 //
 // Enumerates all streams on a file: the default data stream (::$DATA) plus
 // any Alternate Data Streams (ADS). ADS are stored as children of the parent
@@ -982,7 +983,7 @@ func (h *Handler) buildFileStreamInformation(authCtx *metadata.AuthContext, file
 
 	var streams []streamEntry
 
-	// Per MS-FSCC 2.4.44 / NTFS semantics: directories do NOT have a default
+	// Per MS-FSCC 2.4.49 (FileStreamInformation) / NTFS semantics: directories do NOT have a default
 	// unnamed data stream (::$DATA). Only regular files include the default
 	// stream entry. Directories only enumerate their named alternate data streams.
 	//
@@ -1188,7 +1189,7 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 		// ExtendedInfo is left as zeros (not required)
 		return info, nil
 
-	case 11: // FileFsSectorSizeInformation [MS-FSCC] 2.5.8
+	case 11: // FileFsSectorSizeInformation [MS-FSCC] 2.5.7 (FileFsSectorSizeInformation)
 		// 28 bytes structure (matching Samba's implementation)
 		bps := uint32(512) // bytes per sector
 		w := smbenc.NewWriter(28)
@@ -1283,7 +1284,7 @@ func fsInfoClassMinSize(class types.FileInfoClass) uint32 {
 		return 32
 	case 8: // FileFsObjectIdInformation [MS-FSCC §2.5.6] (64 bytes)
 		return 64
-	case 11: // FileFsSectorSizeInformation [MS-FSCC §2.5.8] (28 bytes)
+	case 11: // FileFsSectorSizeInformation [MS-FSCC §2.5.7 (FileFsSectorSizeInformation)] (28 bytes)
 		return 28
 	default:
 		return 0 // Variable-length or unknown
@@ -1355,7 +1356,7 @@ func fileInfoClassRequiredAccess(class types.FileInfoClass) (uint32, bool) {
 }
 
 // fileModeInformationModeMask is the set of CreateOptions bits surfaced as the
-// FILE_MODE_INFORMATION Mode field (MS-FSCC §2.4.24): FILE_WRITE_THROUGH,
+// FILE_MODE_INFORMATION Mode field (MS-FSCC §2.4.31 (FileModeInformation)): FILE_WRITE_THROUGH,
 // FILE_SEQUENTIAL_ONLY, FILE_NO_INTERMEDIATE_BUFFERING, FILE_SYNCHRONOUS_IO_*,
 // and FILE_DELETE_ON_CLOSE.
 const fileModeInformationModeMask = types.FileWriteThrough | types.FileSequentialOnly |

@@ -396,7 +396,7 @@ func TestCheckFileAccess_DenyErrorIsStoreError(t *testing.T) {
 // TestCheckFileAccessWithParent_DeleteOverrideViaParentDeleteChild covers
 // issue #547: when a file's own DACL denies DELETE but the parent directory
 // grants FILE_DELETE_CHILD to the caller, DELETE on the open must be
-// granted (MS-FSA §2.1.4.13, mirrors Samba parent_override_delete in
+// granted (MS-FSA §2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File"), mirrors Samba parent_override_delete in
 // source3/smbd/open.c).
 //
 // Without this override, smbtorture's smb2_deltree algorithm cannot recover
@@ -641,7 +641,7 @@ func TestCheckFileAccessWithParent_NoOverrideWhenParentLacksDeleteChild(t *testi
 }
 
 // TestCheckFileAccess_ReadAttributesAlwaysGrantedFromParent covers MS-FSA
-// §2.1.4.13 "Algorithm to Check Access to an Existing File": FILE_READ_ATTRIBUTES
+// §2.1.5.1.2.1 "Algorithm to Check Access to an Existing File": FILE_READ_ATTRIBUTES
 // is unconditionally granted from the containing directory once traverse access
 // to the path succeeds. Even a DACL that explicitly omits READ_ATTRIBUTES must
 // not block an open that asks for it.

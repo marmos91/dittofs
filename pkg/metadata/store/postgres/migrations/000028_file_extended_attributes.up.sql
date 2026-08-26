@@ -1,5 +1,5 @@
 -- Persist extended attributes (EAs) on files (SMB FILE_FULL_EA_INFORMATION,
--- MS-FSCC §2.4.15).
+-- MS-FSCC §2.4.16 ("FileFullEaInformation")).
 --
 -- An SMB client may attach named extended attributes to a file via SET_INFO
 -- FileFullEaInformation or an SMB2_CREATE_EA_BUFFER create context, and read

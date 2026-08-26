@@ -9,7 +9,7 @@ import (
 )
 
 // ============================================================================
-// FILE_FULL_EA_INFORMATION wire codec (MS-FSCC §2.4.15)
+// FILE_FULL_EA_INFORMATION wire codec (MS-FSCC §2.4.16 ("FileFullEaInformation"))
 // ============================================================================
 //
 // A FILE_FULL_EA_INFORMATION chain encodes a file's extended attributes as a
@@ -54,7 +54,7 @@ func decodeFullEaEntries(buffer []byte) ([]eaEntry, error) {
 		valueLen := int(uint16(buffer[offset+6]) | uint16(buffer[offset+7])<<8)
 		nameStart := offset + 8
 		nameEnd := nameStart + nameLen
-		// +1 for the trailing NUL byte mandated by MS-FSCC §2.4.15.
+		// +1 for the trailing NUL byte mandated by MS-FSCC §2.4.16 ("FileFullEaInformation").
 		if nameEnd+1 > len(buffer) {
 			return nil, fmt.Errorf("FILE_FULL_EA_INFORMATION: name at offset %d truncated", offset)
 		}
@@ -84,7 +84,7 @@ func decodeFullEaEntries(buffer []byte) ([]eaEntry, error) {
 }
 
 // eaMutationsFromEntries converts decoded SET_INFO EA entries into store
-// EAMutations. Per MS-FSCC §2.4.15 and Samba (smbd ea set): an entry with a
+// EAMutations. Per MS-FSCC §2.4.16 ("FileFullEaInformation") and Samba (smbd ea set): an entry with a
 // zero-length value DELETES the named EA; a non-empty value upserts it. The
 // reserved ACL-xattr name is filtered by the caller before this runs.
 func eaMutationsFromEntries(entries []eaEntry) []metadata.EAMutation {
@@ -100,7 +100,7 @@ func eaMutationsFromEntries(entries []eaEntry) []metadata.EAMutation {
 }
 
 // encodeFullEaInformation serialises a file's extended attributes into a
-// FILE_FULL_EA_INFORMATION chain (MS-FSCC §2.4.15). EAs are emitted in a
+// FILE_FULL_EA_INFORMATION chain (MS-FSCC §2.4.16 ("FileFullEaInformation")). EAs are emitted in a
 // stable, case-insensitive name order so the wire output is deterministic.
 // The reserved ACL-xattr slot (security.NTACL) is never enumerated — it is
 // the server's private NT-ACL store, mirroring Samba's vfs_acl_xattr.
@@ -114,7 +114,7 @@ func encodeFullEaInformation(eas map[string][]byte) []byte {
 			continue
 		}
 		// EaNameLength is a uint8 and EaValueLength a uint16 on the wire
-		// (MS-FSCC §2.4.15). Skip any entry that cannot be represented rather
+		// (MS-FSCC §2.4.16 ("FileFullEaInformation")). Skip any entry that cannot be represented rather
 		// than emit a length field that wraps and corrupts the chain. EAs
 		// arriving via SMB are already bounded by these field widths; this only
 		// guards values written through a non-SMB metadata path. Filtering here
@@ -169,7 +169,7 @@ func encodeFullEaInformation(eas map[string][]byte) []byte {
 }
 
 // fullEaInformationSize returns the number of bytes the EA chain for these EAs
-// occupies on the wire (MS-FSCC §2.4.15), used to populate the EaSize field of
+// occupies on the wire (MS-FSCC §2.4.16 ("FileFullEaInformation")), used to populate the EaSize field of
 // FILE_ALL_INFORMATION / FILE_EA_INFORMATION. Matches encodeFullEaInformation's
 // layout exactly (including inter-entry 4-byte padding).
 func fullEaInformationSize(eas map[string][]byte) uint32 {

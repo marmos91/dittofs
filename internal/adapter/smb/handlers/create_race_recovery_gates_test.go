@@ -355,7 +355,7 @@ func TestCreate_RaceRecovery_OpenIfNonRootInheritedACLSucceeds(t *testing.T) {
 		},
 		// Mirror real SMB sessions, which set this so a parent DACL lacking
 		// FILE_TRAVERSE does not block resolution of a child the requester may
-		// open (MS-FSA §2.1.5.1.1; handler.go sets it on every SMB AuthContext).
+		// open (MS-FSA §2.1.5.1 Phase 6 ("Location of file"); handler.go sets it on every SMB AuthContext).
 		BypassTraverseChecking: true,
 	}
 

@@ -611,8 +611,10 @@ func TestMetadataService_RemoveDirectory(t *testing.T) {
 // Delete permission model tests (issue #388)
 // ============================================================================
 //
-// These verify that RemoveFile/RemoveDirectory honor MS-FSA 2.1.5.1.2.1 delete
-// semantics: the caller must hold WRITE on parent OR own the target. Without the
+// These verify RemoveFile/RemoveDirectory delete semantics: the caller must
+// hold WRITE on the parent OR own the target. That disjunction is POSIX, not
+// MS-FSA, which gates delete on Open.GrantedAccess.DELETE (2.1.5.15.3) with a
+// parent FILE_DELETE_CHILD override (2.1.5.1.2.1). Without the
 // owner-path rule, SMB DELETE_ON_CLOSE loops forever when the file's creator
 // asks the server to clean up its own temp file with DELETE-only access.
 
@@ -679,7 +681,7 @@ func TestMetadataService_RemoveFile_DeletePermission(t *testing.T) {
 	})
 
 	// Rule 1 (SMB-gated): HasDeleteAccess bypasses parent-WRITE check
-	// regardless of current caller identity (MS-FSA 2.1.5.4 —
+	// regardless of current caller identity (MS-FSA 2.1.5.5 ("Server Requests Closing an Open") —
 	// authorization was frozen at CREATE, survives reauth identity drift).
 	t.Run("HasDeleteAccess bypasses parent-WRITE", func(t *testing.T) {
 		t.Parallel()

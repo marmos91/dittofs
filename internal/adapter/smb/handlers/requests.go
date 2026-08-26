@@ -29,31 +29,31 @@ const (
 	// FileBasicInformation returns timestamps and attributes [MS-FSCC] 2.4.7.
 	FileBasicInformation uint8 = 4
 
-	// FileStandardInformation returns file size and link count [MS-FSCC] 2.4.41.
+	// FileStandardInformation returns file size and link count [MS-FSCC] 2.4.47 (FileStandardInformation).
 	FileStandardInformation uint8 = 5
 
-	// FileInternalInformation returns the file index [MS-FSCC] 2.4.20.
+	// FileInternalInformation returns the file index [MS-FSCC] 2.4.27 (FileInternalInformation).
 	FileInternalInformation uint8 = 6
 
-	// FileEaInformation returns extended attributes size [MS-FSCC] 2.4.12.
+	// FileEaInformation returns extended attributes size [MS-FSCC] 2.4.13 (FileEaInformation).
 	FileEaInformation uint8 = 7
 
 	// FileAccessInformation returns access flags [MS-FSCC] 2.4.1.
 	FileAccessInformation uint8 = 8
 
-	// FileNameInformation returns the file name [MS-FSCC] 2.4.24.
+	// FileNameInformation returns the file name [MS-FSCC] 2.4.32 (FileNameInformation).
 	FileNameInformation uint8 = 9
 
-	// FileRenameInformation is used to rename files [MS-FSCC] 2.4.34.
+	// FileRenameInformation is used to rename files [MS-FSCC] 2.4.42 (FileRenameInformation).
 	FileRenameInformation uint8 = 10
 
 	// FileDispositionInformation is used to delete files [MS-FSCC] 2.4.11.
 	FileDispositionInformation uint8 = 13
 
-	// FilePositionInformation returns current position [MS-FSCC] 2.4.32.
+	// FilePositionInformation returns current position [MS-FSCC] 2.4.40 (FilePositionInformation).
 	FilePositionInformation uint8 = 14
 
-	// FileModeInformation returns file mode [MS-FSCC] 2.4.24.
+	// FileModeInformation returns file mode [MS-FSCC] 2.4.31 (FileModeInformation).
 	FileModeInformation uint8 = 16
 
 	// FileAlignmentInformation returns alignment requirement [MS-FSCC] 2.4.3.
@@ -65,19 +65,19 @@ const (
 	// FileAllocationInformation is used to set allocation size [MS-FSCC] 2.4.4.
 	FileAllocationInformation uint8 = 19
 
-	// FileEndOfFileInformation is used to set file size [MS-FSCC] 2.4.13.
+	// FileEndOfFileInformation is used to set file size [MS-FSCC] 2.4.14 (FileEndOfFileInformation).
 	FileEndOfFileInformation uint8 = 20
 
 	// FileAttributeTagInformation returns reparse point info [MS-FSCC] 2.4.6.
 	FileAttributeTagInformation uint8 = 35
 
-	// FileNetworkOpenInformation returns network open info [MS-FSCC] 2.4.27.
+	// FileNetworkOpenInformation returns network open info [MS-FSCC] 2.4.34 (FileNetworkOpenInformation).
 	FileNetworkOpenInformation uint8 = 34
 
-	// FileIdBothDirectoryInformation for directory listings [MS-FSCC] 2.4.17.
+	// FileIdBothDirectoryInformation for directory listings [MS-FSCC] 2.4.22 (FileIdBothDirectoryInformation).
 	FileIdBothDirectoryInformation uint8 = 37
 
-	// FileIdFullDirectoryInformation for directory listings [MS-FSCC] 2.4.18.
+	// FileIdFullDirectoryInformation for directory listings [MS-FSCC] 2.4.24 (FileIdFullDirectoryInformation).
 	FileIdFullDirectoryInformation uint8 = 38
 )
 

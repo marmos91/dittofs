@@ -121,7 +121,7 @@ func TestCreate_NameIdentityIsSpellingIndependent(t *testing.T) {
 
 // TestCheckShareModeConflict_SpellingIndependent holds a stream open that
 // refuses delete sharing, then opens the base file for DELETE under two
-// spellings. Per MS-FSA 2.1.5.1.2 the base-vs-stream pair is delete-share
+// spellings. Per MS-FSA 2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File") the base-vs-stream pair is delete-share
 // checked, so both opens must be refused with STATUS_SHARING_VIOLATION.
 //
 // The two spellings differ only in text and name the same object, so a

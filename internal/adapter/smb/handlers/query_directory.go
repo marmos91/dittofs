@@ -579,7 +579,7 @@ doneLoop:
 	}
 	h.StoreOpenFile(openFile)
 
-	// Per MS-FSA 2.1.5.5: After a successful directory enumeration, update
+	// Per MS-FSA 2.1.5.6.3 ("Directory Information Queries"): After a successful directory enumeration, update
 	// LastAccessTime to the current system time, unless frozen via SET_INFO -1.
 	if !openFile.AtimeFrozen {
 		now := time.Now()
@@ -939,9 +939,10 @@ func filterDirEntries(entries []metadata.DirEntry, pattern string) []metadata.Di
 
 // matchSMBPattern matches a filename against an SMB/DOS search pattern.
 //
-// Per MS-FSCC 2.1.4.4, SMB uses DOS-style wildcards including:
+// Per MS-FSA §2.1.4.4 ("Algorithm for Determining if a FileName Is in an Expression"),
+// SMB uses DOS-style wildcards including:
 //   - * matches zero or more characters
-//   - ? matches exactly one character (including dot and end-of-name)
+//   - ? matches a single character
 //   - < (DOS_STAR) matches zero or more characters until the last dot
 //   - > (DOS_QM) matches any single character, or a dot, or end-of-name
 //   - " (DOS_DOT) matches a period or end-of-name
@@ -951,7 +952,8 @@ func matchSMBPattern(name, pattern string) bool {
 	return matchDOSWildcard(strings.ToLower(name), strings.ToLower(pattern))
 }
 
-// matchDOSWildcard implements MS-FSCC 2.1.4.4 pattern matching with DOS wildcards.
+// matchDOSWildcard implements the MS-FSA §2.1.4.4 ("Algorithm for Determining if a FileName Is in an Expression")
+// pattern matching with DOS wildcards.
 func matchDOSWildcard(name, pattern string) bool {
 	ni := 0 // name index
 	pi := 0 // pattern index
@@ -989,8 +991,9 @@ func matchDOSWildcard(name, pattern string) bool {
 		case '<':
 			// DOS_STAR: matches zero or more characters until encountering and
 			// matching the final "." in the name. If no dot exists, behaves like '*'.
-			// Per MS-FSCC 2.1.4.4, this effectively matches the "base name" portion
-			// of a filename before the extension.
+			// Per MS-FSA §2.1.4.4 ("Algorithm for Determining if a FileName Is in an Expression"),
+			// this effectively matches the "base name" portion of a filename before
+			// the extension.
 			pi++
 			lastDot := strings.LastIndex(name[ni:], ".")
 			if lastDot == -1 {
@@ -1008,8 +1011,9 @@ func matchDOSWildcard(name, pattern string) bool {
 				return false
 			}
 			// DOS_STAR matches zero or more characters until the last dot, inclusive.
-			// Per MS-FSCC 2.1.4.4: "If the pattern is * (DOS_STAR), consume through
-			// the last dot." We iterate up to dotAbsPos+1 to try the match at each
+			// Per MS-FSA §2.1.4.4 ("Algorithm for Determining if a FileName Is in an Expression"):
+			// DOS_STAR "matches zero or more characters until encountering and
+			// matching the final . in the name". We iterate up to dotAbsPos+1 to try the match at each
 			// position from ni through one past the dot (the char after the dot),
 			// which allows the remaining pattern to match the extension.
 			dotAbsPos := ni + lastDot

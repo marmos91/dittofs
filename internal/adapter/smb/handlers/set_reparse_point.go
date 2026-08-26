@@ -11,7 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// handleSetReparsePoint handles FSCTL_SET_REPARSE_POINT [MS-FSCC] 2.3.69 — the
+// handleSetReparsePoint handles FSCTL_SET_REPARSE_POINT [MS-FSCC] 2.3.81 (FSCTL_SET_REPARSE_POINT Request) — the
 // write half of reparse-point support (the read half is handleGetReparsePoint).
 //
 // macOS (mount_smbfs) and Windows create symbolic links over SMB by: CREATE an
@@ -46,7 +46,7 @@ func (h *Handler) handleSetReparsePoint(ctx *SMBHandlerContext, body []byte) (*H
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
-	// REPARSE_DATA_BUFFER header [MS-FSCC] 2.1.2.1: ReparseTag(4),
+	// REPARSE_DATA_BUFFER header [MS-FSCC] 2.1.2.2 (REPARSE_DATA_BUFFER): ReparseTag(4),
 	// ReparseDataLength(2), Reserved(2), then the tag-specific DataBuffer.
 	r := smbenc.NewReader(input)
 	reparseTag := r.ReadUint32()

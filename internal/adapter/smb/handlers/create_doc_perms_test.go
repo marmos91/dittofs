@@ -10,7 +10,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// Handler-level regression coverage for the MS-FSA §2.1.5.18 delete-on-close
+// Handler-level regression coverage for the MS-FSA §2.1.5.1.1 ("Creation of a New File") delete-on-close
 // permission semantics exercised by smbtorture
 // smb2.delete-on-close-perms.{CREATE,CREATE_IF,OVERWRITE_IF,READONLY}.
 //
@@ -118,7 +118,7 @@ func makeDocDraft(
 }
 
 // TestCreate_DeleteOnClose_ReadOnlyFile_ReturnsCannotDelete locks down the
-// MS-FSA §2.1.5.18 gate exercised by smb2.delete-on-close-perms.READONLY
+// MS-FSA §2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File") gate exercised by smb2.delete-on-close-perms.READONLY
 // step 6: OPEN-ing an existing file with FILE_ATTRIBUTE_READONLY and the
 // FILE_DELETE_ON_CLOSE create option MUST return STATUS_CANNOT_DELETE,
 // regardless of whether the caller holds DELETE on the file's DACL.
@@ -152,7 +152,7 @@ func TestCreate_DeleteOnClose_ReadOnlyFile_ReturnsCannotDelete(t *testing.T) {
 
 	// OPEN existing READONLY file with DELETE_ON_CLOSE. DesiredAccess carries
 	// SEC_STD_DELETE | SEC_RIGHTS_FILE_READ so hasDeleteAccess is satisfied —
-	// the MS-FSA §2.1.5.18 readonly veto must still fire.
+	// the MS-FSA §2.1.5.1.2.1 ("Algorithm to Check Access to an Existing File") readonly veto must still fire.
 	const desiredAccess uint32 = 0x00130089 // SEC_RIGHTS_FILE_READ | SEC_STD_DELETE
 	draft := makeDocDraft(t, tree, rootAuth, rootHandle, readonlyFile,
 		"ro.txt", types.FileOpen, types.FileOpened, desiredAccess, 0)
@@ -167,7 +167,7 @@ func TestCreate_DeleteOnClose_ReadOnlyFile_ReturnsCannotDelete(t *testing.T) {
 // TestCreate_DeleteOnClose_NewFileWithReadOnlyAttr_ReturnsCannotDelete covers
 // smb2.delete-on-close-perms.READONLY step 1: a CREATE that asks to mark a
 // new file READONLY *and* DELETE_ON_CLOSE simultaneously is an immediate
-// MS-FSA §2.1.5.18 contradiction. completeCreateAfterBreak must reject the
+// MS-FSA §2.1.5.1.1 ("Creation of a New File") contradiction. completeCreateAfterBreak must reject the
 // open with STATUS_CANNOT_DELETE before the file is materialized in the
 // metadata store.
 func TestCreate_DeleteOnClose_NewFileWithReadOnlyAttr_ReturnsCannotDelete(t *testing.T) {
@@ -188,7 +188,7 @@ func TestCreate_DeleteOnClose_NewFileWithReadOnlyAttr_ReturnsCannotDelete(t *tes
 }
 
 // TestCreate_DeleteOnClose_WithoutDeleteAccess_ReturnsAccessDenied locks down
-// the MS-FSA §2.1.5.18 gate that the DOC option requires DELETE in
+// the MS-FSA §2.1.5.1 Phase 1 ("Parameter Validation") gate that the DOC option requires DELETE in
 // DesiredAccess (Samba: smbd_set_initial_delete_on_close). This is the
 // "hasDeleteAccess" leg of step 6d and is the first guard the DOC-perms
 // suite relies on for new-file scenarios.

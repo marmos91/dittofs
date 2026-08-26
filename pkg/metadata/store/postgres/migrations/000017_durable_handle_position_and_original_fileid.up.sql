@@ -4,7 +4,7 @@
 -- the memory backend already round-trips and badger picks up via JSON:
 --
 --   * PositionInfo  — FILE_POSITION_INFORMATION CurrentByteOffset
---                     (MS-FSCC 2.4.32) captured at disconnect. Restoring this
+--                     (MS-FSCC 2.4.40 (FilePositionInformation)) captured at disconnect. Restoring this
 --                     on reconnect makes SET/GET FilePositionInformation
 --                     survive the disconnect (smb2.durable-open.file-position).
 --

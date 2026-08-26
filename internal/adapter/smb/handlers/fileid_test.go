@@ -18,7 +18,7 @@ import (
 // observe it on a single file:
 //
 //  1. QFid create context response (DiskFileId, first 8 bytes)
-//  2. FileInternalInformation [MS-FSCC §2.4.20]
+//  2. FileInternalInformation [MS-FSCC §2.4.27 (FileInternalInformation)]
 //  3. FileAllInformation embedded InternalInformation field [MS-FSCC §2.4.2]
 //  4. FileIdBothDirectoryInformation FileId field via QUERY_DIRECTORY
 //
@@ -223,7 +223,7 @@ func TestFileID_UniqueAcrossSiblings(t *testing.T) {
 // readFirstNamedEntryFileID drives QueryDirectory with FileIdBothDirectoryInformation
 // and an exact-name pattern, returning the FileId field of the matched entry.
 // The wire format for FILE_ID_BOTH_DIR_INFORMATION places FileId at offset 96
-// within each entry [MS-FSCC §2.4.18].
+// within each entry [MS-FSCC §2.4.22 (FileIdBothDirectoryInformation)].
 func readFirstNamedEntryFileID(
 	t *testing.T,
 	h *Handler,

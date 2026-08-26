@@ -45,7 +45,7 @@ func (lm *Manager) CheckAndBreakCachingForRead(handleKey string, excludeOwner *L
 
 // CheckAndBreakLeasesForSMBOpen breaks conflicting leases for an SMB CREATE.
 //
-// Per MS-SMB2 3.3.5.9 / MS-FSA 2.1.5.17.1: When a new SMB open arrives,
+// Per MS-SMB2 3.3.5.9 / MS-FSA 2.1.4.12 ("Algorithm to Check for an Oplock Break"): When a new SMB open arrives,
 // existing leases that hold Write caching must be broken. Unlike cross-protocol
 // breaks (CheckAndBreakCachingForWrite), the break strips only the Write bit,
 // preserving Read and Handle caching. This allows clients to continue read
@@ -117,7 +117,7 @@ func (lm *Manager) PrepareBreakLeasesOnOpenConflict(handleKey string, excludeOwn
 }
 
 // BreakReadLeasesForParentDir breaks Read leases on a parent directory when
-// a child file is modified (SET_INFO, WRITE, DELETE). Per MS-FSA 2.1.5.14:
+// a child file is modified (SET_INFO, WRITE, DELETE). Per MS-FSA 2.1.4.12 ("Algorithm to Check for an Oplock Break"):
 // changes to directory contents or child metadata invalidate Read caching,
 // so clients holding R or RW leases on the directory must be notified.
 //

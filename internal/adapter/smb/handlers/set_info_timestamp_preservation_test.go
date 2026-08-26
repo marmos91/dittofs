@@ -5,7 +5,7 @@
 // BasicInfo call (block 1), then issues a second BasicInfo call that mutates
 // only FileAttributes while sending zero timestamps (block 2, "a zero time
 // means don't change"), and asserts the explicit values from block 1 survive
-// unbumped. Per MS-FSA 2.1.5.14.2 an explicit (non-zero, non-sentinel)
+// unbumped. Per MS-FSA §2.1.5.15.2 ("FileBasicInformation") an explicit (non-zero, non-sentinel)
 // timestamp set suppresses the automatic update of that field on subsequent
 // operations. Without that suppression the attribute-change path auto-bumps
 // LastWriteTime (set_info.go) and ChangeTime (metadata file_modify.go),

@@ -66,12 +66,12 @@ const (
 	modeDOSSparse = uint32(0x200000)
 
 	// filetimeFreeze is the FILETIME sentinel value -1 (0xFFFFFFFFFFFFFFFF).
-	// Per MS-FSA 2.1.5.14.2: The object store MUST NOT change this attribute
+	// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): The object store MUST NOT change this attribute
 	// for this or subsequent operations on this handle.
 	filetimeFreeze = uint64(0xFFFFFFFFFFFFFFFF)
 
 	// filetimeUnfreeze is the FILETIME sentinel value -2 (0xFFFFFFFFFFFFFFFE).
-	// Per MS-FSA 2.1.5.14.2: Re-enable auto-update for subsequent operations.
+	// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Re-enable auto-update for subsequent operations.
 	filetimeUnfreeze = uint64(0xFFFFFFFFFFFFFFFE)
 )
 
@@ -289,7 +289,7 @@ func FileAttrToFileBasicInfoWithName(attr *metadata.FileAttr, name string) *File
 }
 
 // FileAttrToFileStandardInfo converts metadata FileAttr to SMB FILE_STANDARD_INFORMATION
-// [MS-FSCC] 2.4.41. Computes AllocationSize (cluster-aligned) and EndOfFile from the
+// [MS-FSCC] 2.4.47 (FileStandardInformation). Computes AllocationSize (cluster-aligned) and EndOfFile from the
 // file size, and reports link count, delete-pending, and directory flags. For symlinks,
 // the EndOfFile reflects the MFsymlink size (1067 bytes) rather than the target path length.
 func FileAttrToFileStandardInfo(attr *metadata.FileAttr, isDeletePending bool) *FileStandardInfo {
@@ -299,7 +299,7 @@ func FileAttrToFileStandardInfo(attr *metadata.FileAttr, isDeletePending bool) *
 	allocationSize := calculateAllocationSize(size)
 
 	// NumberOfLinks reflects the open's delete-on-close disposition. Per Windows
-	// / MS-FSA §2.1.5.11.6, once a handle marks the file for deletion the file is
+	// / MS-FSA §2.1.5.12.27 ("FileStandardInformation"), once a handle marks the file for deletion the file is
 	// on its way out and FILE_STANDARD_INFORMATION reports NumberOfLinks = 0;
 	// clearing the disposition restores it to the real link count (>= 1).
 	// smbtorture smb2.setinfo (setinfo.c:229) asserts nlink == 0 with
@@ -319,7 +319,7 @@ func FileAttrToFileStandardInfo(attr *metadata.FileAttr, isDeletePending bool) *
 }
 
 // FileAttrToFileNetworkOpenInfoWithName converts metadata FileAttr to SMB
-// FILE_NETWORK_OPEN_INFORMATION [MS-FSCC] 2.4.27. Combines timestamps, allocation
+// FILE_NETWORK_OPEN_INFORMATION [MS-FSCC] 2.4.34 (FileNetworkOpenInformation). Combines timestamps, allocation
 // size, end of file, and attributes into a single structure. It applies
 // IsHiddenFile so dot-prefixed entries surface FILE_ATTRIBUTE_HIDDEN.
 func FileAttrToFileNetworkOpenInfoWithName(attr *metadata.FileAttr, name string) *FileNetworkOpenInfo {
@@ -373,7 +373,7 @@ func DirEntryToDirectoryEntry(entry *metadata.DirEntry, fileIndex uint64) *Direc
 
 // DecodeBasicInfoToSetAttrs decodes FILE_BASIC_INFORMATION from a raw buffer
 // directly into SetAttrs, properly handling all FILETIME sentinel values per
-// [MS-FSCC] 2.4.7 and [MS-FSA] 2.1.5.14.2:
+// [MS-FSCC] 2.4.7 and [MS-FSA] §2.1.5.15.2 ("FileBasicInformation"):
 //   - 0: don't change this timestamp
 //   - 0xFFFFFFFFFFFFFFFF (-1): don't change this timestamp; disable auto-update
 //   - 0xFFFFFFFFFFFFFFFE (-2): don't change this timestamp; enable auto-update
@@ -404,7 +404,7 @@ func DecodeBasicInfoToSetAttrs(buffer []byte) *metadata.SetAttrs {
 }
 
 // processFiletimeForSet interprets a FILETIME value for SET_INFO operations.
-// Per [MS-FSA] 2.1.5.14.2:
+// Per [MS-FSA] §2.1.5.15.2 ("FileBasicInformation"):
 //   - 0: don't change (server MUST NOT change this attribute)
 //   - -1: don't change; disable auto-update for subsequent operations
 //   - -2: don't change; re-enable auto-update for subsequent operations

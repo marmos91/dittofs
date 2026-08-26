@@ -252,7 +252,7 @@ type LockManager interface {
 
 	// BreakReadLeasesForParentDir breaks Read leases on a parent directory
 	// when directory content changes (CREATE, RENAME, DELETE on close).
-	// Per MS-FSA 2.1.5.14: changes to directory listing invalidate Read
+	// Per MS-FSA 2.1.4.12 ("Algorithm to Check for an Oplock Break"): changes to directory listing invalidate Read
 	// caching, so clients holding R or RW leases must be notified.
 	// Breaks to None (full revocation of Read caching).
 	BreakReadLeasesForParentDir(handleKey string, excludeOwner *LockOwner) error
@@ -624,7 +624,7 @@ func conflictFrom(fl *FileLock) *LockConflict {
 // byte-range locks in lm.unifiedLocks (Manager.AddUnifiedLock). The helpers
 // below let each acquisition/IO path cross-check the OTHER map so a lock taken
 // via one protocol blocks a conflicting lock or write via the other
-// (MS-FSA §2.1.5 cross-protocol byte-range conflict). Without this an NFS lock
+// (MS-FSA §2.1.4.10 ("Algorithm for Determining If a Range Access Conflicts with Byte-Range Locks") cross-protocol byte-range conflict). Without this an NFS lock
 // and an SMB lock on the same overlapping range could both be granted.
 
 // fileLockConflictsWithUnified reports whether an SMB byte-range FileLock and a

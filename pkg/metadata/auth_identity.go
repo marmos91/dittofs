@@ -84,7 +84,7 @@ type AuthContext struct {
 
 	// HasDeleteAccess signals that the protocol handler already verified
 	// Windows-style DELETE access on the target of an unlink. Per MS-FSA
-	// 2.1.5.1.2.1, DELETE access on the file itself is sufficient to unlink,
+	// 2.1.5.15.3 ("FileDispositionInformation"), DELETE access on the file itself is sufficient to unlink,
 	// without POSIX WRITE on the parent. The metadata layer uses this flag to
 	// unlock the owner-of-target delete rule that would otherwise diverge from
 	// POSIX unlink(2) for NFS clients.
@@ -96,7 +96,7 @@ type AuthContext struct {
 
 	// BypassTraverseChecking signals that the caller holds the Windows
 	// SeChangeNotifyPrivilege ("Bypass traverse checking"). Per MS-DTYP
-	// §2.5.3.2 and MS-FSA §2.1.5.1.1, holders of this privilege are exempt
+	// §2.5.3.2 and MS-FSA §2.1.5.1 Phase 6 ("Location of file"), holders of this privilege are exempt
 	// from the per-directory FILE_TRAVERSE (FILE_EXECUTE) check during path
 	// resolution: a deny on an intermediate directory's DACL does not prevent
 	// resolving a child whose own DACL grants the requested access.

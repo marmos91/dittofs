@@ -1,7 +1,8 @@
 // Handler-level coverage for SET_INFO BasicInformation preservation of the
 // FSCTL-managed modeDOSSparse bit on a non-stream (base) handle.
 //
-// Per MS-FSCC 2.4.7, FILE_ATTRIBUTE_SPARSE_FILE is not settable via
+// Per MS-FSA 2.1.5.15.2 ("FileBasicInformation"), whose ValidSetAttributes
+// list omits it, FILE_ATTRIBUTE_SPARSE_FILE is not settable via
 // FileBasicInformation — it is controlled exclusively via FSCTL_SET_SPARSE.
 // A SET_INFO that updates DOS attributes (HIDDEN, READONLY, ...) must
 // therefore preserve any existing modeDOSSparse bit rather than clearing it.
