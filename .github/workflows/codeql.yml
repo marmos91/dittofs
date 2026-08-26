@@ -51,6 +51,9 @@ jobs:
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
+          # Pinned so the coverage check below reads a path this file
+          # controls rather than the action's internal default.
+          db-location: ${{ runner.temp }}/codeql-db
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v4
@@ -63,3 +66,51 @@ jobs:
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"
+
+      # The repository holds two Go modules and no go.work. The autobuilder
+      # discovers every go.mod under the checkout and runs the extractor once
+      # per module, so the operator lands in this same database — but nothing
+      # announces it when that stops being true. A package that is never
+      # discovered is absent from the database rather than reported as an
+      # error, so an analysis narrowed to the root module still finishes green
+      # and still shows zero operator findings.
+      #
+      # Compare the operator's source files against the database's source
+      # archive, so a narrowing fails the job instead of passing as silence.
+      # The archive is written when the analysis finalizes the database, so
+      # this has to run after it. Only the operator is checked: the root module
+      # carries files behind windows, darwin and e2e build tags that are
+      # correctly absent from a linux database.
+      - name: Verify the operator module reached the database
+        if: matrix.language == 'go'
+        run: |
+          set -euo pipefail
+
+          archive=$(find "${RUNNER_TEMP}/codeql-db" -name src.zip -print -quit)
+          if [ -z "${archive}" ]; then
+            echo "::error::no CodeQL source archive under ${RUNNER_TEMP}/codeql-db"
+            exit 1
+          fi
+
+          # Test files are out of scope: the Go extractor's extract_tests
+          # option is off by default, for both modules alike.
+          want="${RUNNER_TEMP}/operator-sources.txt"
+          got="${RUNNER_TEMP}/operator-extracted.txt"
+          # A git pathspec matches across directory separators, so this
+          # reaches the whole module, not just its top level.
+          git ls-files 'k8s/dittofs-operator/*.go' | grep -v '_test\.go$' | sort >"${want}"
+          if [ ! -s "${want}" ]; then
+            echo "::error::found no operator sources to check for; has the module moved?"
+            exit 1
+          fi
+          unzip -Z1 "${archive}" | grep -oE 'k8s/dittofs-operator/.*\.go$' | sort -u >"${got}" || true
+
+          found=$(comm -12 "${want}" "${got}" | wc -l)
+          echo "operator source files in the CodeQL database: ${found} of $(wc -l <"${want}")"
+
+          missing=$(comm -23 "${want}" "${got}")
+          if [ -n "${missing}" ]; then
+            echo "::error::CodeQL did not analyse these operator files:"
+            printf '%s\n' "${missing}"
+            exit 1
+          fi
