@@ -37,8 +37,7 @@ def main(pdf_path, spec, out_path):
     text = "\n\f\n".join(pages)
     lines = text.split("\n")
 
-    revisions = set(REVISION.findall(text))
-    revision = sorted(revisions)[-1] if revisions else "unknown"
+    revision = max(REVISION.findall(text), default="unknown")
 
     toc, body = {}, {}
     i = 0
@@ -49,8 +48,6 @@ def main(pdf_path, spec, out_path):
             toc.setdefault(m.group(1), m.group(2).strip())
             i += 1
             continue
-        # A title that fills the line leaves no room for leaders, so the page
-        # number is glued to its last word.
         m = TOC_FULL.match(line)
         if m:
             toc.setdefault(m.group(1), m.group(2).strip())
@@ -73,9 +70,7 @@ def main(pdf_path, spec, out_path):
         if m:
             body.setdefault(m.group(1), m.group(2).strip())
 
-    merged = dict(toc)
-    for k, v in body.items():
-        merged.setdefault(k, v)
+    merged = {**body, **toc}  # the TOC pass wins where both found a title
 
     def norm(s):
         return re.sub(r"[^a-z0-9]", "", s.lower())
@@ -87,20 +82,18 @@ def main(pdf_path, spec, out_path):
     ]
 
     # Every parent of a known section must itself be known.
-    orphans = sorted(
-        {parent(k) for k in merged if "." in parent(k)} - set(merged)
-    )
+    orphans = sorted({parent(k) for k in merged if "." in parent(k)} - set(merged))
 
     # A gap in a sibling run (".1 .2 .4") means .3 was dropped by the extraction.
     by_parent = {}
     for k in merged:
-        by_parent.setdefault(parent(k), []).append(int(k.rsplit(".", 1)[1]))
-    gaps = []
-    for p, kids in sorted(by_parent.items()):
-        have = set(kids)
-        for i in range(1, max(have) + 1):
-            if i not in have:
-                gaps.append(f"{p}.{i}")
+        by_parent.setdefault(parent(k), set()).add(int(k.rsplit(".", 1)[1]))
+    gaps = [
+        f"{p}.{i}"
+        for p, kids in sorted(by_parent.items())
+        for i in range(1, max(kids) + 1)
+        if i not in kids
+    ]
 
     # A number the passes missed is only a real miss if the flattened body text
     # mentions it as a heading somewhere.
@@ -118,7 +111,6 @@ def main(pdf_path, spec, out_path):
             {"spec": spec, "revision": revision, "sections": dict(sorted(merged.items()))},
             fh,
             indent=1,
-            sort_keys=False,
         )
         fh.write("\n")
     return 1 if really_missing else 0

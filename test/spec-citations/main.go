@@ -32,7 +32,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -60,8 +60,11 @@ var (
 		regexp.MustCompile(`\bFSCTL_[A-Z0-9_]+\b`),
 	}
 	structureTitle = regexp.MustCompile(`^(File[A-Za-z0-9]*Information(?:Ex)?|FILE_[A-Z0-9_]+|FSCTL_[A-Z0-9_]+)\b`)
-	spaces         = regexp.MustCompile(`\s+`)
 )
+
+// structural reports whether a spec titles its sections after the structures
+// they define, which is what makes rule 3 decidable.
+func structural(spec string) bool { return spec == "MS-FSCC" || spec == "MS-FSA" }
 
 // norm lowercases and drops everything but letters, digits and single spaces,
 // so that FILE_FULL_EA_INFORMATION and FileFullEaInformation compare equal
@@ -77,7 +80,7 @@ func norm(s string) string {
 			b.WriteRune(' ')
 		}
 	}
-	return strings.TrimSpace(spaces.ReplaceAllString(b.String(), " "))
+	return strings.Join(strings.Fields(b.String()), " ")
 }
 
 func loadSpecs() (map[string]*specMap, error) {
@@ -106,8 +109,8 @@ func loadSpecs() (map[string]*specMap, error) {
 			key := norm(structureTitle.FindString(title))
 			m.byStructure[key] = append(m.byStructure[key], num)
 		}
-		for k := range m.byStructure {
-			sort.Strings(m.byStructure[k])
+		for _, nums := range m.byStructure {
+			slices.Sort(nums)
 		}
 		specs[m.Spec] = &m
 	}
@@ -115,20 +118,19 @@ func loadSpecs() (map[string]*specMap, error) {
 }
 
 // namedStructure returns the single structure identifier a line names, or "".
+// Spellings of one structure (FILE_EA_INFORMATION, FileEaInformation) count as
+// one; two distinct structures leave the line ambiguous.
 func namedStructure(line string) string {
-	seen := map[string]string{}
+	found, key := "", ""
 	for _, re := range identifiers {
 		for _, id := range re.FindAllString(line, -1) {
-			seen[norm(id)] = id
+			if found != "" && norm(id) != key {
+				return ""
+			}
+			found, key = id, norm(id)
 		}
 	}
-	if len(seen) != 1 {
-		return ""
-	}
-	for _, id := range seen {
-		return id
-	}
-	return ""
+	return found
 }
 
 type finding struct {
@@ -151,14 +153,14 @@ func checkLine(specs map[string]*specMap, line string) []finding {
 	}
 	// Binding an identifier to a citation is only unambiguous when the line
 	// carries a single structure-titled citation.
-	structural := 0
+	n := 0
 	for _, h := range hits {
-		if h[1] == "MS-FSCC" || h[1] == "MS-FSA" {
-			structural++
+		if structural(h[1]) {
+			n++
 		}
 	}
 	id := ""
-	if structural == 1 {
+	if n == 1 {
 		id = namedStructure(line)
 	}
 
@@ -181,21 +183,11 @@ func checkLine(specs map[string]*specMap, line string) []finding {
 			add(spec, num, "[%s] %s is %q, not %q", spec, num, title, claimed)
 			continue
 		}
-		if id == "" || (spec != "MS-FSCC" && spec != "MS-FSA") {
+		if id == "" || !structural(spec) {
 			continue
 		}
 		defining := m.byStructure[norm(id)]
-		if len(defining) == 0 || !structureTitle.MatchString(title) {
-			continue
-		}
-		cited := false
-		for _, d := range defining {
-			if d == num {
-				cited = true
-				break
-			}
-		}
-		if cited {
+		if len(defining) == 0 || !structureTitle.MatchString(title) || slices.Contains(defining, num) {
 			continue
 		}
 		add(spec, num, "[%s] %s is %q, but the line names %s, which is %s %s",
@@ -227,20 +219,23 @@ var skipDirs = map[string]bool{
 	"spec-citations": true,
 }
 
+// exitOnErr reports a setup or walk failure as exit 2, distinct from the exit 1
+// that means the check ran and found problems.
+func exitOnErr(err error) {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "spec-citations:", err)
+		os.Exit(2)
+	}
+}
+
 func main() {
 	root := flag.String("root", ".", "directory tree to scan")
 	flag.Parse()
 
 	specs, err := loadSpecs()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "spec-citations:", err)
-		os.Exit(2)
-	}
+	exitOnErr(err)
 	known, err := loadKnownWrong()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "spec-citations:", err)
-		os.Exit(2)
-	}
+	exitOnErr(err)
 
 	var findings []finding
 	scanned := 0
@@ -269,8 +264,9 @@ func main() {
 		for i, line := range strings.Split(string(raw), "\n") {
 			for _, f := range checkLine(specs, line) {
 				f.file, f.line = rel, i+1
-				if _, ok := known[f.key()]; ok {
-					known[f.key()] = true
+				k := f.key()
+				if _, ok := known[k]; ok {
+					known[k] = true
 					continue
 				}
 				findings = append(findings, f)
@@ -278,10 +274,7 @@ func main() {
 		}
 		return nil
 	})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "spec-citations:", err)
-		os.Exit(2)
-	}
+	exitOnErr(err)
 
 	for _, f := range findings {
 		fmt.Printf("%s:%d: %s (%s %s)\n", f.file, f.line, f.msg, f.spec, specs[f.spec].Revision)
@@ -292,7 +285,7 @@ func main() {
 			stale = append(stale, k)
 		}
 	}
-	sort.Strings(stale)
+	slices.Sort(stale)
 	for _, k := range stale {
 		fmt.Printf("known_wrong.txt: %q no longer matches any citation; delete the entry\n", k)
 	}
