@@ -507,7 +507,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 		// stops a concurrent CHANGE_NOTIFY registering into the gap — the
 		// handle is not removed from the open-file table until step 10, so
 		// that notify's own lookup still succeeds.
-		if notify := h.NotifyRegistry.CloseByFileID(req.FileID); notify != nil {
+		for _, notify := range h.NotifyRegistry.CloseByFileID(req.FileID) {
 			// Per MS-SMB2 3.3.4.1 and 3.3.5.16.1: when the directory handle for
 			// a pending CHANGE_NOTIFY is closed, complete the request with
 			// STATUS_NOTIFY_CLEANUP. This response MUST be sent AFTER the CLOSE
