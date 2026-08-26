@@ -43,6 +43,7 @@ go.work.sum
 /dfs
 /dfsctl
 /dfsbench
+/spec-citations
 /gendocs
 /main
 

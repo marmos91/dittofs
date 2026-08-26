@@ -122,7 +122,14 @@ make vet          # or: go vet ./...
 
 # Run linters (if golangci-lint is installed)
 make lint         # or: golangci-lint run
+
+# Check MS-FSCC / MS-FSA / MS-SMB2 citations in comments against the spec
+# section maps vendored under test/spec-citations/
+go run ./test/spec-citations
 ```
+
+See `test/spec-citations/README.md` for what that check does and does not decide, and for how
+the section maps are refreshed when a spec revision is bumped.
 
 ## Testing
 
@@ -504,7 +511,7 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 
 | Workflow | Trigger | Purpose | Duration |
 |----------|---------|---------|----------|
-| `lint.yml` | PR, push | Go lint + vet | ~2 min |
+| `lint.yml` | PR, push | Go lint + vet + spec citations | ~2 min |
 | `unit-tests.yml` | PR, push | Unit tests with race detection | ~3 min |
 | `windows-build.yml` | PR, push | Windows build + unit tests | ~5 min |
 | `integration-tests.yml` | push, weekly | Integration tests (S3, BadgerDB) | ~10 min |
