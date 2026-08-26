@@ -140,12 +140,27 @@ func TestRenew_PrincipalBinding(t *testing.T) {
 		}
 	})
 
-	t.Run("root is allowed", func(t *testing.T) {
+	t.Run("machine credential that established the ID is allowed", func(t *testing.T) {
+		fx := newIOTestFixture(t, "/export")
+		// What a Linux client does: SETCLIENTID_CONFIRM and RENEW both under
+		// the machine credential, which for AUTH_SYS is uid 0.
+		clientID := testClientID(t, fx.handler.StateManager, "c", "uid:0")
+
+		if status := renewStatus(fx, newRealFSContext(0, 0), clientID); status != types.NFS4_OK {
+			t.Errorf("RENEW under the establishing machine credential: status = %d, want NFS4_OK", status)
+		}
+	})
+
+	t.Run("root is refused against another principal's record", func(t *testing.T) {
 		fx := newIOTestFixture(t, "/export")
 		clientID := testClientID(t, fx.handler.StateManager, "c", "uid:1000")
 
-		if status := renewStatus(fx, newRealFSContext(0, 0), clientID); status != types.NFS4_OK {
-			t.Errorf("RENEW under the AUTH_SYS machine credential: status = %d, want NFS4_OK", status)
+		// Principal() cannot tell a verified machine credential from an
+		// AUTH_SYS caller that simply wrote uid 0 into its credential, and
+		// RENEW carries no filehandle for an export's sec= policy to judge, so
+		// uid 0 gets no standing it has not earned on this record.
+		if status := renewStatus(fx, newRealFSContext(0, 0), clientID); status != types.NFS4ERR_ACCESS {
+			t.Errorf("RENEW as uid 0 against a uid:1000 record: status = %d, want NFS4ERR_ACCESS", status)
 		}
 	})
 

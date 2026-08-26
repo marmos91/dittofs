@@ -1835,19 +1835,23 @@ func (sm *StateManager) GetOpenState(other [types.NFS4_OTHER_SIZE]byte) *OpenSta
 // covers every user on the client, and the RFC expects a lease held on behalf
 // of all of them to be renewable by any of them.
 //
-// Two callers are admitted that the RFC does not name:
+// One caller is admitted that the RFC does not name: a record with no
+// principal recorded. SETCLIENTID under AUTH_NONE stores no identity, and there
+// is nothing to compare a later RENEW against.
 //
-//   - A record with no principal recorded. SETCLIENTID under AUTH_NONE stores
-//     no identity, and there is nothing to compare a later RENEW against.
-//   - uid 0. The Linux client sends SETCLIENTID_CONFIRM and RENEW under a
-//     machine credential, which for AUTH_SYS is uid 0; a client that instead
-//     established the ID as a user and renews as root would otherwise stall.
-//     RFC 7530 speaks of principals and says nothing about AUTH_SYS uids, and
-//     FreeBSD's server carries the same exemption for the same reason.
+// Root gets no exemption. It would have to be an exemption for the string
+// "uid:0" rather than for a verified machine credential, because Principal()
+// renders a GSS-resolved uid and a client-asserted AUTH_SYS uid identically and
+// RENEW carries no filehandle for an export's sec= policy to judge -- so it
+// would hand any AUTH_SYS peer claiming uid 0 the lease of a client established
+// under Kerberos. Nothing needs it: the Linux client renews under the same
+// machine credential it established the client ID with, so the equality above
+// already matches, and a client that falls back to a state owner's credential
+// is covered by the open-holder scan below.
 //
 // Caller must hold sm.mu.
 func renewPrincipalAllowed(record *ClientRecord, principal string) bool {
-	if record.Principal == "" || principal == record.Principal || principal == rootPrincipal {
+	if record.Principal == "" || principal == record.Principal {
 		return true
 	}
 	for _, owner := range record.OpenOwners {

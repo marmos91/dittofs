@@ -25,10 +25,6 @@ var ErrClientIDInUse = errors.New("client ID in use")
 // 16.28.5). Maps to NFS4ERR_ACCESS (13).
 var ErrRenewAccess = errors.New("renew principal not permitted for this client ID")
 
-// rootPrincipal is Principal()'s rendering of AUTH_SYS uid 0, the credential
-// the Linux client uses for client-ID and lease maintenance.
-const rootPrincipal = "uid:0"
-
 // principalHijacks reports whether a request carrying incoming may take over a
 // client record established by stored.
 //
