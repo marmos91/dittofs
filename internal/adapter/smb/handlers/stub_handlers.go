@@ -29,7 +29,7 @@ const (
 	FsctlSrvCopyChunk           uint32 = 0x001440F2 // [MS-SMB2] 2.2.32.1
 	FsctlSrvCopyChunkWrite      uint32 = 0x001480F2 // [MS-SMB2] 2.2.32.1
 	FsctlGetReparsePoint        uint32 = 0x000900A8 // [MS-FSCC] 2.3.27 (FSCTL_GET_REPARSE_POINT Request)
-	FsctlSetReparsePoint        uint32 = 0x000900D4 // [MS-FSCC] 2.3.81 (FSCTL_SET_REPARSE_POINT Request) - Set reparse point (symlink create)
+	FsctlSetReparsePoint        uint32 = 0x000900A4 // [MS-FSCC] 2.3.81 (FSCTL_SET_REPARSE_POINT Request) - Set reparse point (symlink create)
 	FsctlIsPathnameValid        uint32 = 0x0009002C // [MS-FSCC] 2.3.35 (FSCTL_IS_PATHNAME_VALID Request) - Pathname validation
 	FsctlGetNtfsVolumeData      uint32 = 0x00090064 // [MS-FSCC] 2.3.21 (FSCTL_GET_NTFS_VOLUME_DATA Request) - NTFS volume data
 	FsctlReadFileUsnData        uint32 = 0x000900EB // [MS-FSCC] 2.3.61 (FSCTL_READ_FILE_USN_DATA Request) - Read file USN data
