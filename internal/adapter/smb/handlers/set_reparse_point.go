@@ -261,8 +261,10 @@ func (h *Handler) convertOpenFileToNativeSymlink(ctx *SMBHandlerContext, openFil
 	// directory views (Finder/Explorer) refresh without a full re-enumeration.
 	if h.NotifyRegistry != nil {
 		parentPath := GetParentPath(name.Path)
-		h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, fileName, FileActionRemoved, FileNotifyChangeFileName)
-		h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, fileName, FileActionAdded, FileNotifyChangeFileName)
+		h.NotifyRegistry.NotifyChanges(openFile.ShareName, parentPath, []NotifyEvent{
+			{FileName: fileName, Action: FileActionRemoved, Filter: FileNotifyChangeFileName},
+			{FileName: fileName, Action: FileActionAdded, Filter: FileNotifyChangeFileName},
+		})
 	}
 
 	return nil

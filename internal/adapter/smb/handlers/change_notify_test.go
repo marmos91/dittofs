@@ -2504,23 +2504,16 @@ func TestExpireSessionNotifies_CompletesPendingNotify(t *testing.T) {
 	}
 }
 
-// TestNotifyChange_ValidReq_RemovedAddedModifiedSequence locks in the
-// smb2.notify.valid-req scenario (#750). A directory watcher armed with
-// FILE_NOTIFY_CHANGE_ALL must, when a pre-existing file is unlinked, re-created,
-// and written, observe exactly three buffered changes in order:
-// REMOVED, ADDED, MODIFIED — all naming the same file. The MODIFIED event is the
-// one a userspace VFS must synthesize from its WRITE handler (Samba gets it from
-// kernel inotify); without it the registered CHANGE_NOTIFY only ever sees two
-// changes and the test's CHECK_VAL(num_changes, 3) fails.
-func TestNotifyChange_ValidReq_RemovedAddedModifiedSequence(t *testing.T) {
-	r := newTestNotifyRegistry()
-
-	var got []FileNotifyInformation
+// armWatcher registers a root watcher with a catch-all filter and returns the
+// records it is answered with.
+func armWatcher(t *testing.T, r *NotifyRegistry, msgID uint64, got *[]FileNotifyInformation) {
+	t.Helper()
 	mustRegister(t, r, &PendingNotify{
 		FileID:           [16]byte{1},
 		SessionID:        1,
-		MessageID:        10,
-		AsyncId:          100,
+		ConnID:           1,
+		MessageID:        msgID,
+		AsyncId:          msgID * 10,
 		WatchPath:        "/",
 		ShareName:        "share1",
 		CompletionFilter: AllValidCompletionFilterFlags,
@@ -2529,35 +2522,125 @@ func TestNotifyChange_ValidReq_RemovedAddedModifiedSequence(t *testing.T) {
 			if resp.GetStatus() != types.StatusSuccess {
 				t.Errorf("expected STATUS_SUCCESS, got 0x%08X", uint32(resp.GetStatus()))
 			}
-			got = decodeFileNotifyInfos(resp.Buffer)
+			*got = append(*got, decodeFileNotifyInfos(resp.Buffer)...)
 			return nil
 		},
 	})
+}
 
-	// unlink(FNAME) -> create(FNAME) -> write(FNAME), as torture_setup_simple_file
-	// does when FNAME already exists. These three events accumulate in the
-	// flush window and are delivered as one response.
-	r.NotifyChange("share1", "/", "fname", FileActionRemoved, NameChangeFilterFor("fname", false))
+func checkRecords(t *testing.T, label string, got []FileNotifyInformation, want []FileNotifyInformation) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: expected %d changes, got %d: %+v", label, len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i].Action != want[i].Action || got[i].FileName != want[i].FileName {
+			t.Errorf("%s: change[%d] = {action=0x%X name=%q}, want {action=0x%X name=%q}",
+				label, i, got[i].Action, got[i].FileName, want[i].Action, want[i].FileName)
+		}
+	}
+}
+
+// TestNotifyChange_OneOperationPerResponse is the smb2.notify.valid-req
+// scenario: a watcher is armed, then the client creates a file and writes to
+// it, and the test requires ONE record back — the create's.
+//
+// The create and the write are separate client requests, so how many records
+// the response carries must not depend on how quickly the second arrives. The
+// accumulation window exists to hold together the several records ONE operation
+// emits; letting it also absorb the next operation's makes the reply's contents
+// a function of client timing, which is what made this fail intermittently.
+func TestNotifyChange_OneOperationPerResponse(t *testing.T) {
+	r := newTestNotifyRegistry()
+
+	var first []FileNotifyInformation
+	armWatcher(t, r, 10, &first)
+
+	// torture_setup_simple_file on a file that does not exist yet: the unlink
+	// is a no-op, the CREATE fires ADDED and the WRITE that follows it fires
+	// MODIFIED. Two client requests, so two responses — the extra record the
+	// test saw was a second distinct event, never the first one repeated.
 	r.NotifyChange("share1", "/", "fname", FileActionAdded, NameChangeFilterFor("fname", false))
-	// The WRITE-synthesized MODIFIED event (mirrors write.go).
 	r.NotifyChange("share1", "/", "fname", FileActionModified,
 		FileNotifyChangeSize|FileNotifyChangeLastWrite|FileNotifyChangeAttributes)
 	r.FlushAll()
 
-	want := []FileNotifyInformation{
+	checkRecords(t, "first response", first, []FileNotifyInformation{
+		{Action: FileActionAdded, FileName: "fname"},
+	})
+
+	// Nothing is lost: the client re-issues and collects the backlog, in order.
+	backlog := r.TakeBufferedEvents([16]byte{1}, AllValidCompletionFilterFlags, false)
+	checkRecords(t, "backlog", backlog, []FileNotifyInformation{
+		{Action: FileActionModified, FileName: "fname"},
+	})
+}
+
+// TestNotifyChange_OneOperationPerResponse_TimerPath drives the same case
+// through the production delivery path — the flush timer — rather than the
+// test-only FlushAll. Both events are emitted before the timer can fire, so
+// the window provably contains both and the split is what keeps them apart.
+func TestNotifyChange_OneOperationPerResponse_TimerPath(t *testing.T) {
+	r := NewNotifyRegistry()
+	r.flushDelay = 25 * time.Millisecond
+
+	delivered := make(chan []FileNotifyInformation, 4)
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		ConnID:           1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/",
+		ShareName:        "share1",
+		CompletionFilter: AllValidCompletionFilterFlags,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+			delivered <- decodeFileNotifyInfos(resp.Buffer)
+			return nil
+		},
+	})
+
+	r.NotifyChange("share1", "/", "fname", FileActionAdded, NameChangeFilterFor("fname", false))
+	r.NotifyChange("share1", "/", "fname", FileActionModified,
+		FileNotifyChangeSize|FileNotifyChangeLastWrite|FileNotifyChangeAttributes)
+
+	select {
+	case got := <-delivered:
+		checkRecords(t, "timer flush", got, []FileNotifyInformation{
+			{Action: FileActionAdded, FileName: "fname"},
+		})
+	case <-time.After(5 * time.Second):
+		t.Fatal("flush timer never delivered")
+	}
+}
+
+// TestNotifyChange_BatchedOperationStaysInOneResponse is the other half: a
+// CREATE that overwrites an existing file emits REMOVED + ADDED + MODIFIED and
+// the client is entitled to all three in one response, because they are one
+// operation.
+func TestNotifyChange_BatchedOperationStaysInOneResponse(t *testing.T) {
+	r := newTestNotifyRegistry()
+
+	var got []FileNotifyInformation
+	armWatcher(t, r, 10, &got)
+
+	nameFilter := NameChangeFilterFor("fname", false)
+	r.NotifyChanges("share1", "/", []NotifyEvent{
+		{FileName: "fname", Action: FileActionRemoved, Filter: nameFilter},
+		{FileName: "fname", Action: FileActionAdded, Filter: nameFilter},
+		{FileName: "fname", Action: FileActionModified,
+			Filter: FileNotifyChangeAttributes | FileNotifyChangeLastWrite | FileNotifyChangeSize},
+	})
+	// A later, separate operation must not join them.
+	r.NotifyChange("share1", "/", "other", FileActionAdded, NameChangeFilterFor("other", false))
+	r.FlushAll()
+
+	checkRecords(t, "overwrite response", got, []FileNotifyInformation{
 		{Action: FileActionRemoved, FileName: "fname"},
 		{Action: FileActionAdded, FileName: "fname"},
 		{Action: FileActionModified, FileName: "fname"},
-	}
-	if len(got) != len(want) {
-		t.Fatalf("expected %d changes, got %d: %+v", len(want), len(got), got)
-	}
-	for i := range want {
-		if got[i].Action != want[i].Action || got[i].FileName != want[i].FileName {
-			t.Errorf("change[%d] = {action=0x%X name=%q}, want {action=0x%X name=%q}",
-				i, got[i].Action, got[i].FileName, want[i].Action, want[i].FileName)
-		}
-	}
+	})
 }
 
 // TestNotifyChange_WriteModified_RespectsNarrowFilter verifies the WRITE-path
@@ -2638,7 +2721,7 @@ func TestFlushWatcher_StaleTimerAfterRearm_IsNoop(t *testing.T) {
 
 	// Buffer an event so flushTimer is set on wA.
 	r.mu.Lock()
-	r.bufferEventLocked(wA, FileNotifyInformation{Action: FileActionAdded, FileName: "x.txt"})
+	r.bufferEventLocked(wA, FileNotifyInformation{Action: FileActionAdded, FileName: "x.txt"}, 1)
 	r.mu.Unlock()
 
 	// Cancel wA — unregisterLocked stops its timer (Stop returns false if
@@ -2677,7 +2760,7 @@ func TestFlushWatcher_StaleTimerAfterRearm_IsNoop(t *testing.T) {
 
 	// Legitimate flush for wB must still work.
 	r.mu.Lock()
-	r.bufferEventLocked(wB, FileNotifyInformation{Action: FileActionAdded, FileName: "y.txt"})
+	r.bufferEventLocked(wB, FileNotifyInformation{Action: FileActionAdded, FileName: "y.txt"}, 1)
 	r.mu.Unlock()
 	r.flushWatcher(fileID, wB.generation)
 
