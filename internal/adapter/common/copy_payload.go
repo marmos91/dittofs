@@ -99,6 +99,17 @@ func CopyPayload(
 	if err != nil {
 		return err
 	}
+	// A copy of a payload onto itself replaced nothing, so the destination still
+	// holds the content its manifest describes and there is nothing stale to
+	// drop. Every other destination loses its replaced ranges before the seed
+	// below accounts for the ones the copy gave it — the seed skips a range the
+	// tier already describes, so seeding first would leave the replaced content
+	// in place.
+	if srcPayloadID != dstPayloadID {
+		if err := discardStaleDestination(ctx, blockStore, dstPayloadID); err != nil {
+			return err
+		}
+	}
 	seedClonedRanges(ctx, blockStore, dstPayloadID, copied)
 
 	// POST-txn: conservative invalidation for dst — its content changed

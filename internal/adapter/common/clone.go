@@ -122,12 +122,20 @@ func CloneWholeFile(
 	if err != nil {
 		return err
 	}
-	// A self-clone left the destination exactly as it was: it inherited no
-	// ranges the local tier has to account for, and its cached entries still
-	// describe the content it holds. Everything below is about a destination
-	// whose content changed.
+	// A self-clone left the destination exactly as it was: it holds the content
+	// its manifest describes, it inherited no ranges the local tier has to
+	// account for, and its cached entries still describe what it holds.
+	// Everything below is about a destination whose content changed.
 	if selfClone {
 		return nil
+	}
+	// Order matters between these two. The discard takes the destination's
+	// replaced ranges back to holes; the seed then gives the local tier its
+	// account of the ranges the copy put there. Seeding first would find those
+	// ranges already described and skip them, leaving the tier holding the
+	// content the copy replaced.
+	if err := discardStaleDestination(ctx, blockStore, dstPayloadID); err != nil {
+		return err
 	}
 	seedClonedRanges(ctx, blockStore, dstPayloadID, copied)
 
@@ -136,6 +144,34 @@ func CloneWholeFile(
 	// their entries warm (nil removedHashes => key off dstPayloadID only).
 	if cache != nil {
 		cache.InvalidateFile(dstPayloadID, nil)
+	}
+	return nil
+}
+
+// discardStaleDestination drops the local tier's account of a copy's
+// destination. Both reflink helpers in this package call it, post-commit, on
+// every destination whose content the copy replaced.
+//
+// The copy rewrites the destination's manifest wholesale and moves no byte, so
+// every range the destination still holds locally describes content it no
+// longer has. Those ranges are what the read path resolves first — a covered
+// warm range reports neither hole nor cold, so the read never reaches the new
+// manifest — and the destination serves its pre-copy content indefinitely with
+// nothing logged. Dropping them puts the copied span back in the state a fresh
+// destination is already in, where the manifest is what answers.
+//
+// It runs after the commit, never before: until the commit lands those bytes
+// are the destination's real content, and a rolled-back copy that had already
+// dropped them could not get them back. What is left is the window between the
+// two, where a read still serves the replaced content.
+//
+// A failure fails the copy, which has already committed. The alternative is
+// reporting success on a destination whose every read serves the content the
+// copy replaced, and a caller that retries a copy it was told failed re-runs an
+// operation that lands on the same manifest and gets another chance at this.
+func discardStaleDestination(ctx context.Context, blockStore *engine.Store, dstPayloadID metadata.PayloadID) error {
+	if err := blockStore.DiscardLocalContent(ctx, string(dstPayloadID)); err != nil {
+		return fmt.Errorf("discard the copy destination's replaced local ranges: %w", err)
 	}
 	return nil
 }
