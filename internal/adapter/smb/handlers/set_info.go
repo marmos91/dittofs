@@ -344,7 +344,7 @@ func (h *Handler) setFileInfoFromStore(
 			setAttrs.Hidden = &hiddenVal
 		}
 
-		// Per MS-FSA 2.1.5.14.2: Handle timestamp freeze/unfreeze sentinels.
+		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Handle timestamp freeze/unfreeze sentinels.
 		// filetimeFreeze (-1): Freeze timestamp -- suppress auto-updates on subsequent operations.
 		// filetimeUnfreeze (-2): Unfreeze timestamp -- re-enable auto-updates.
 		// We capture the current timestamp value BEFORE applying changes so the frozen
@@ -364,7 +364,7 @@ func (h *Handler) setFileInfoFromStore(
 			"mtimeFT", fmt.Sprintf("0x%016X", mtimeFT),
 			"ctimeFT", fmt.Sprintf("0x%016X", ctimeFT))
 
-		// Per MS-FSA 2.1.5.14.2: All four timestamp fields support freeze/unfreeze.
+		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): All four timestamp fields support freeze/unfreeze.
 		// CreationTime freeze suppresses explicit changes from subsequent SET_INFO
 		// calls on this handle (the frozen value is returned instead).
 		hasFreezeOrUnfreeze := isFiletimeSentinel(creationFT) ||
@@ -372,7 +372,7 @@ func (h *Handler) setFileInfoFromStore(
 			isFiletimeSentinel(mtimeFT) ||
 			isFiletimeSentinel(ctimeFT)
 
-		// Per MS-FSA 2.1.5.14.2: Sentinel values (-1, -2) mean the object store
+		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Sentinel values (-1, -2) mean the object store
 		// MUST NOT change the timestamp for THIS or subsequent operations on this
 		// handle. Pre-read the file to capture current timestamps, then pin
 		// sentinel timestamps to their current value in setAttrs to suppress
@@ -441,7 +441,7 @@ func (h *Handler) setFileInfoFromStore(
 			}
 		}
 
-		// Per MS-FSA 2.1.5.14.2: When a timestamp is frozen from a prior
+		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): When a timestamp is frozen from a prior
 		// SET_INFO call (no sentinel in this call, field==0), pin to the
 		// frozen value to prevent the metadata service from auto-updating it.
 		if creationFT == 0 && openFile.BtimeFrozen && openFile.FrozenBtime != nil {
@@ -469,7 +469,7 @@ func (h *Handler) setFileInfoFromStore(
 			setAttrs.Ctime = &preFile.Ctime
 		}
 
-		// Per MS-FSA 2.1.5.14.2: When FileAttributes change, the object store
+		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): When FileAttributes change, the object store
 		// SHOULD also update LastWriteTime. The metadata layer only auto-updates
 		// Ctime (POSIX semantics), so we handle Mtime auto-update here.
 		// Skip if: Mtime is being explicitly set, has a sentinel, or is frozen.
@@ -598,7 +598,7 @@ func (h *Handler) setFileInfoFromStore(
 			h.StoreOpenFile(openFile)
 		}
 
-		// Per MS-FSA 2.1.5.14.2: an explicit (non-zero, non-sentinel) timestamp
+		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): an explicit (non-zero, non-sentinel) timestamp
 		// set suppresses the automatic update of that field until the next
 		// explicit handle operation that would update it. smbtorture
 		// `smb2.setinfo` sets all four timestamps in one BasicInfo call, then a
@@ -1176,7 +1176,7 @@ func (h *Handler) setFileInfoFromStore(
 		// Restore mtime/ctime after rename
 		restoreTimestamps()
 
-		// Per MS-FSA 2.1.5.14.2: Restore frozen timestamps on parent directories.
+		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Restore frozen timestamps on parent directories.
 		// Move updates both source and destination parent directory timestamps.
 		h.restoreParentDirFrozenTimestamps(authCtx, srcParentHandle)
 		if !bytes.Equal(toDir, srcParentHandle) {
@@ -1489,7 +1489,7 @@ func (h *Handler) setFileInfoFromStore(
 
 	case types.FilePositionInformation:
 		// FILE_POSITION_INFORMATION [MS-FSCC] 2.4.32 (8 bytes)
-		// Per MS-FSA 2.1.5.14.23: If InputBufferSize is less than the size of
+		// Per MS-FSA §2.1.5.15.10 ("FilePositionInformation"): If InputBufferSize is less than the size of
 		// FILE_POSITION_INFORMATION (8 bytes), return STATUS_INFO_LENGTH_MISMATCH.
 		if len(buffer) < 8 {
 			return setInfoStatus(types.StatusInfoLengthMismatch), nil
@@ -1765,7 +1765,7 @@ func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFil
 // after child operations (create, delete, write) that unconditionally update parent
 // directory timestamps in the metadata layer.
 //
-// Per MS-FSA 2.1.5.14.2: When a timestamp is frozen via SET_INFO with -1 sentinel,
+// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): When a timestamp is frozen via SET_INFO with -1 sentinel,
 // the timestamp MUST NOT be auto-updated by subsequent operations. The metadata layer
 // (createEntry, removeFile, etc.) always updates parent directory timestamps. This
 // method iterates open handles to find directory handles matching the given parent

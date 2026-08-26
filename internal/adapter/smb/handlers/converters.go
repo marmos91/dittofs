@@ -66,12 +66,12 @@ const (
 	modeDOSSparse = uint32(0x200000)
 
 	// filetimeFreeze is the FILETIME sentinel value -1 (0xFFFFFFFFFFFFFFFF).
-	// Per MS-FSA 2.1.5.14.2: The object store MUST NOT change this attribute
+	// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): The object store MUST NOT change this attribute
 	// for this or subsequent operations on this handle.
 	filetimeFreeze = uint64(0xFFFFFFFFFFFFFFFF)
 
 	// filetimeUnfreeze is the FILETIME sentinel value -2 (0xFFFFFFFFFFFFFFFE).
-	// Per MS-FSA 2.1.5.14.2: Re-enable auto-update for subsequent operations.
+	// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Re-enable auto-update for subsequent operations.
 	filetimeUnfreeze = uint64(0xFFFFFFFFFFFFFFFE)
 )
 
@@ -373,7 +373,7 @@ func DirEntryToDirectoryEntry(entry *metadata.DirEntry, fileIndex uint64) *Direc
 
 // DecodeBasicInfoToSetAttrs decodes FILE_BASIC_INFORMATION from a raw buffer
 // directly into SetAttrs, properly handling all FILETIME sentinel values per
-// [MS-FSCC] 2.4.7 and [MS-FSA] 2.1.5.14.2:
+// [MS-FSCC] 2.4.7 and [MS-FSA] §2.1.5.15.2 ("FileBasicInformation"):
 //   - 0: don't change this timestamp
 //   - 0xFFFFFFFFFFFFFFFF (-1): don't change this timestamp; disable auto-update
 //   - 0xFFFFFFFFFFFFFFFE (-2): don't change this timestamp; enable auto-update
@@ -404,7 +404,7 @@ func DecodeBasicInfoToSetAttrs(buffer []byte) *metadata.SetAttrs {
 }
 
 // processFiletimeForSet interprets a FILETIME value for SET_INFO operations.
-// Per [MS-FSA] 2.1.5.14.2:
+// Per [MS-FSA] §2.1.5.15.2 ("FileBasicInformation"):
 //   - 0: don't change (server MUST NOT change this attribute)
 //   - -1: don't change; disable auto-update for subsequent operations
 //   - -2: don't change; re-enable auto-update for subsequent operations

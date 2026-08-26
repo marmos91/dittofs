@@ -300,7 +300,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	// below still wins.
 	applySmbPendingAtime(openFile, file)
 
-	// Per MS-FSA 2.1.5.14.2: Apply frozen timestamp overrides.
+	// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Apply frozen timestamp overrides.
 	// When SET_INFO(-1) freezes a timestamp, subsequent operations (WRITE,
 	// child CREATE/DELETE for directories, truncate) may update the store
 	// or pending state. Override the returned values with frozen values so

@@ -556,7 +556,7 @@ func (h *Handler) executeCopyChunks(
 	// This ensures close.go flushes block store data correctly.
 	dstOpen.SetPayloadID(lastWritePayloadID)
 
-	// Per MS-FSA 2.1.5.14.2: restore frozen timestamps after writes
+	// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): restore frozen timestamps after writes
 	h.restoreFrozenTimestamps(authCtx, dstOpen)
 
 	// Per MS-FSA 2.1.5.3: update LastAccessTime on source (read) and destination (write).

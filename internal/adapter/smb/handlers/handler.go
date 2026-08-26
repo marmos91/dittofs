@@ -579,7 +579,7 @@ type OpenFile struct {
 	// (smb2.create.dir-alloc-size). Per-handle, in-memory, lost on close.
 	RequestedAllocSize uint64
 
-	// Timestamp freeze/unfreeze state per MS-FSA 2.1.5.14.2.
+	// Timestamp freeze/unfreeze state per MS-FSA §2.1.5.15.2 ("FileBasicInformation").
 	// When a client sends SET_INFO with FILETIME -1, the corresponding timestamp
 	// is "frozen" and MUST NOT be auto-updated by subsequent operations (WRITE, etc.).
 	// When a client sends SET_INFO with FILETIME -2, the freeze is lifted.

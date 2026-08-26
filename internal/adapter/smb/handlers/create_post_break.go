@@ -911,7 +911,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		grantedAccess = resolveAccessFlags(req.DesiredAccess)
 	}
 
-	// Step 7a: Restore frozen timestamps on parent directory (MS-FSA 2.1.5.14.2).
+	// Step 7a: Restore frozen timestamps on parent directory (MS-FSA §2.1.5.15.2 ("FileBasicInformation")).
 	if createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded {
 		h.restoreParentDirFrozenTimestamps(authCtx, parentHandle)
 	}

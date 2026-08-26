@@ -853,7 +853,7 @@ func TestDirFreezeTimestamps_ChildCreate_SingleField(t *testing.T) {
 //  2. The client freezes ChangeTime on the ADS handle via SET_INFO -1.
 //  3. The client writes data to the ADS.
 //
-// Per MS-FSA 2.1.5.14.2 the freeze sentinel applies to the underlying object,
+// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation") the freeze sentinel applies to the underlying object,
 // so the base's ChangeTime must not be bumped by the ADS write. The metadata
 // layer auto-bumps Ctime when SetFileAttributes is called with any modified
 // attribute and attrs.Ctime == nil; updateBaseObjectTimestampsForADSWrite

@@ -290,7 +290,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				}
 			}
 
-			// Per MS-FSA 2.1.5.14.2: After flushing pending writes (which may overwrite
+			// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): After flushing pending writes (which may overwrite
 			// frozen timestamps), restore any timestamps that were frozen via SET_INFO -1.
 			// The deferred commit flush sets Mtime/Ctime to the WRITE time, but if the
 			// handle has frozen timestamps, those must be preserved.

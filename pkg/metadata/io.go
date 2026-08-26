@@ -550,7 +550,7 @@ func (s *Service) GetPendingSize(handle FileHandle) (uint64, bool) {
 }
 
 // UpdatePendingMtime updates the LastMtime in pending write state for a file handle.
-// Used by SMB frozen timestamp support (MS-FSA 2.1.5.14.2): when SET_INFO(-1) freezes
+// Used by SMB frozen timestamp support (MS-FSA §2.1.5.15.2 ("FileBasicInformation")): when SET_INFO(-1) freezes
 // Mtime, the pending state's LastMtime must reflect the frozen value so that GetFile()
 // merge returns frozen timestamps correctly.
 func (s *Service) UpdatePendingMtime(handle FileHandle, mtime time.Time) bool {
