@@ -353,11 +353,13 @@ for name in "${NOW_PASSING_LIST[@]+"${NOW_PASSING_LIST[@]}"}"; do
 done
 NOW_PASSING_LIST=("${_now_passing[@]+"${_now_passing[@]}"}")
 
-# Suites the harness gave up on, recorded by run.sh as "filter<TAB>seconds".
-# Everything those suites had not reached is missing from the results above.
+# Suites the harness gave up on, recorded by run.sh as
+# "filter<TAB>seconds<TAB>reason". Everything those suites had not reached is
+# missing from the results above.
 #
-# The third field is the reason that truncation is expected, written by run.sh's
-# expected_truncation(). Empty means nobody signed off on it: the tests the
+# The reason is written by run.sh's expected_truncation() and says why no budget
+# would help. Empty — including a two-field row from before the column existed —
+# means nobody signed off on it: the tests the
 # suite never reached are missing from the results, and a run that quietly loses
 # coverage must not report as clean, so it fails the job.
 declare -a TIMED_OUT_SUITES=()
