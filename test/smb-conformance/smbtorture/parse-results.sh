@@ -365,11 +365,12 @@ declare -a UNEXPECTED_TRUNCATIONS=()
 if [[ -n "$RESULTS_DIR" ]] && [[ -f "${RESULTS_DIR}/timeouts.txt" ]]; then
     while IFS=$'\t' read -r to_filter to_secs to_reason; do
         [[ -z "$to_filter" ]] && continue
+        cut_short="${to_filter} (gave up after ${to_secs:-?}s)"
         if [[ -n "$to_reason" ]]; then
-            TIMED_OUT_SUITES+=("${to_filter} (gave up after ${to_secs:-?}s) — expected: ${to_reason}")
+            TIMED_OUT_SUITES+=("${cut_short} — expected: ${to_reason}")
         else
-            TIMED_OUT_SUITES+=("${to_filter} (gave up after ${to_secs:-?}s)")
-            UNEXPECTED_TRUNCATIONS+=("${to_filter} (gave up after ${to_secs:-?}s)")
+            TIMED_OUT_SUITES+=("$cut_short")
+            UNEXPECTED_TRUNCATIONS+=("$cut_short")
         fi
     done < "${RESULTS_DIR}/timeouts.txt"
 fi

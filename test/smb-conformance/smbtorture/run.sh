@@ -468,10 +468,9 @@ run_smbtorture() {
     if [[ $rc -ge 129 ]]; then
         log_warn "smbtorture client crashed (exit code $rc, signal $((rc - 128))) for filter: $filter — client-side bug, not failing the job on this alone"
     elif [[ $rc -eq 124 ]]; then
-        local reason
-        reason="$(expected_truncation "$filter")"
         log_warn "smbtorture timed out after ${per_timeout}s on filter: $filter — tests it had not reached are UNGRADED (inconclusive)"
-        printf '%s\t%s\t%s\n' "$filter" "$per_timeout" "$reason" >> "${RESULTS_DIR}/timeouts.txt"
+        printf '%s\t%s\t%s\n' "$filter" "$per_timeout" "$(expected_truncation "$filter")" \
+            >> "${RESULTS_DIR}/timeouts.txt"
     elif [[ $rc -ge 125 ]]; then
         log_warn "smbtorture infrastructure failure (exit code $rc) for filter: $filter"
     fi
