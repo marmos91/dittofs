@@ -494,9 +494,6 @@ func (bs *Store) staleDestinationOffsets(ctx context.Context, tx metadata.Transa
 	if err != nil {
 		return nil, err
 	}
-	if len(rows) == 0 {
-		return nil, nil
-	}
 	taken := make(map[uint64]struct{}, len(srcBlocks))
 	for _, b := range srcBlocks {
 		if b.Hash.IsZero() {
@@ -504,8 +501,7 @@ func (bs *Store) staleDestinationOffsets(ctx context.Context, tx metadata.Transa
 		}
 		taken[b.Offset] = struct{}{}
 	}
-	var stale []uint64
-	seen := make(map[uint64]struct{}, len(rows))
+	stale := make([]block.ChunkRef, 0, len(rows))
 	for _, r := range rows {
 		if r == nil {
 			continue
@@ -517,13 +513,9 @@ func (bs *Store) staleDestinationOffsets(ctx context.Context, tx metadata.Transa
 		if _, keeping := taken[off]; keeping {
 			continue
 		}
-		if _, done := seen[off]; done {
-			continue
-		}
-		seen[off] = struct{}{}
-		stale = append(stale, off)
+		stale = append(stale, block.ChunkRef{Offset: off})
 	}
-	return stale, nil
+	return distinctOffsets(stale), nil
 }
 
 // CopyPayload duplicates a file's content by referencing the source's
@@ -668,17 +660,15 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	// srcBlocks as the authority on which of the payload's own rows are live,
 	// which it is not: it is the caller's snapshot of the projection, and a row
 	// missing from it is a row this would delete out from under a live file.
-	var stale []uint64
 	if srcPayloadID != dstPayloadID {
-		var err error
-		stale, err = bs.staleDestinationOffsets(ctx, tx, dstPayloadID, srcBlocks)
+		stale, err := bs.staleDestinationOffsets(ctx, tx, dstPayloadID, srcBlocks)
 		if err != nil {
 			return nil, fmt.Errorf("CopyPayload: list the destination's rows for %s: %w", dstPayloadID, err)
 		}
-	}
-	if len(stale) > 0 {
-		if err := bs.coordinator.DecrementRefCountAndReapMany(ctx, dstPayloadID, stale); err != nil {
-			return nil, fmt.Errorf("CopyPayload: reap the destination's replaced rows for %s: %w", dstPayloadID, err)
+		if len(stale) > 0 {
+			if err := bs.coordinator.DecrementRefCountAndReapMany(ctx, dstPayloadID, stale); err != nil {
+				return nil, fmt.Errorf("CopyPayload: reap the destination's replaced rows for %s: %w", dstPayloadID, err)
+			}
 		}
 	}
 

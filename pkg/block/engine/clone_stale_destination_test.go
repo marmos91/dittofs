@@ -13,22 +13,17 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// refsOf turns a payload's carved rows into the ChunkRef list a server-side
-// copy hands its destination, which is what the adapter passes from the
-// source's FileAttr.Blocks.
-func refsOf(t *testing.T, ctx context.Context, ms metadata.Store, payloadID string) []block.ChunkRef {
+// refsOf is manifestRefs without the rows a copy cannot hand on: a zero-hash
+// row carries no chunk, so it is not part of the ChunkRef list the adapter
+// passes from the source's FileAttr.Blocks.
+func refsOf(t *testing.T, ms metadata.Store, payloadID string) []block.ChunkRef {
 	t.Helper()
-	rows, err := ms.ListFileChunks(ctx, payloadID)
-	if err != nil {
-		t.Fatalf("ListFileChunks(%s): %v", payloadID, err)
-	}
 	var refs []block.ChunkRef
-	for _, r := range rows {
-		off, ok := block.ParseChunkOffset(r.ID)
-		if !ok || r.Hash.IsZero() {
+	for _, r := range manifestRefs(t, ms, payloadID) {
+		if r.Hash.IsZero() {
 			continue
 		}
-		refs = append(refs, block.ChunkRef{Hash: r.Hash, Offset: off, Size: r.DataSize})
+		refs = append(refs, r)
 	}
 	if len(refs) == 0 {
 		t.Fatalf("%s carved no placeable rows, so the copy would copy nothing", payloadID)
@@ -49,7 +44,7 @@ func serverSideCopy(t *testing.T, ctx context.Context, bs *engine.Store, ms meta
 	if err != nil {
 		t.Fatalf("GetFile(src): %v", err)
 	}
-	newBlocks, err := bs.CopyPayload(ctx, srcPayloadID, dstPayloadID, refsOf(t, ctx, ms, srcPayloadID))
+	newBlocks, err := bs.CopyPayload(ctx, srcPayloadID, dstPayloadID, refsOf(t, ms, srcPayloadID))
 	if err != nil {
 		t.Fatalf("CopyPayload: %v", err)
 	}
@@ -238,14 +233,14 @@ func TestCopy_SelfCopyKeepsItsOwnRows(t *testing.T) {
 	}
 	carve(t, bs, ctx, self)
 
-	rows := refsOf(t, ctx, ms, self)
+	rows := refsOf(t, ms, self)
 	// Hand in a snapshot that is missing the payload's last row, the shape a
 	// stale projection has.
 	if _, err := bs.CopyPayload(ctx, self, self, rows[:len(rows)-1]); err != nil {
 		t.Fatalf("CopyPayload self-copy: %v", err)
 	}
 
-	after := refsOf(t, ctx, ms, self)
+	after := refsOf(t, ms, self)
 	if len(after) != len(rows) {
 		t.Errorf("the self-copy reaped %d of the payload's own rows", len(rows)-len(after))
 	}
