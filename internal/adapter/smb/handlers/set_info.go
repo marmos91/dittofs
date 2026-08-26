@@ -472,15 +472,6 @@ func (h *Handler) setFileInfoFromStore(
 			setAttrs.Ctime = &preFile.Ctime
 		}
 
-		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): When FileAttributes change, the object store
-		// SHOULD also update LastWriteTime. The metadata layer only auto-updates
-		// Ctime (POSIX semantics), so we handle Mtime auto-update here.
-		// Skip if: Mtime is being explicitly set, has a sentinel, or is frozen.
-		if fileAttrs != 0 && setAttrs.Mtime == nil && mtimeFT == 0 && !openFile.MtimeFrozen {
-			now := time.Now()
-			setAttrs.Mtime = &now
-		}
-
 		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			openFile.mu.Unlock() // release before returning; refs #606.
 			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Name().Path, "error", err)
