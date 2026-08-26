@@ -206,12 +206,22 @@ func TestCloneWholeFile_SelfCloneSeedsNothing(t *testing.T) {
 // manifest — and without this step the destination serves its pre-clone content
 // indefinitely, with nothing logged.
 //
-// The bystander is the control: another payload holding local ranges of its
-// own, which the clone has nothing to do with and must leave described.
+// The assertion is on the bytes, not on the index, because the index alone
+// cannot say which of the two it is describing: the clone's own seed puts the
+// copied ranges back into it as cold ones, so a destination that dropped
+// nothing and one that dropped everything both come back described. What tells
+// them apart is what a read serves.
+//
+// The source's hashes are fabricated and reach no remote, so a destination that
+// correctly stopped answering from its own bytes has nowhere to hydrate from
+// and refuses. That refusal is the pass. The bystander is the control: another
+// payload holding local ranges of its own, which the clone has nothing to do
+// with and which must still read back as its own bytes — without it, a fixture
+// broken enough to fail every read would look like a pass.
 func TestCloneWholeFile_DropsTheDestinationsStaleLocalRanges(t *testing.T) {
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bs, local := newCopyTestEngineWithLocal(t, &fakeCoordinator{}, ms)
+	bs, _ := newCopyTestEngineWithLocal(t, &fakeCoordinator{}, ms)
 
 	srcBlocks := []block.ChunkRef{
 		{Hash: block.ContentHash{0x11}, Offset: 0, Size: 4096},
@@ -222,38 +232,39 @@ func TestCloneWholeFile_DropsTheDestinationsStaleLocalRanges(t *testing.T) {
 	dstHandle := putTestFile(t, ms, "/stale-dst.bin", "stale-dst-pid", nil, size)
 	putTestFile(t, ms, "/stale-bystander.bin", "stale-bystander-pid", nil, size)
 
-	// The destination and the bystander each hold their own bytes locally.
-	for _, pid := range []string{"stale-dst-pid", "stale-bystander-pid"} {
-		if _, err := bs.WriteAt(ctx, pid, nil, bytes.Repeat([]byte{0xAB}, size), 0); err != nil {
-			t.Fatalf("WriteAt(%s): %v", pid, err)
-		}
-		extents, err := local.DataExtents(ctx, pid, size)
-		if err != nil {
-			t.Fatalf("DataExtents(%s): %v", pid, err)
-		}
-		if len(extents) == 0 {
-			t.Fatalf("%s describes nothing before the clone, so the drop below would prove nothing", pid)
-		}
+	replaced := bytes.Repeat([]byte{0xAB}, size)
+	bystanderData := bytes.Repeat([]byte{0xCD}, size)
+	if _, err := bs.WriteAt(ctx, "stale-dst-pid", nil, replaced, 0); err != nil {
+		t.Fatalf("WriteAt(dst): %v", err)
+	}
+	if _, err := bs.WriteAt(ctx, "stale-bystander-pid", nil, bystanderData, 0); err != nil {
+		t.Fatalf("WriteAt(bystander): %v", err)
+	}
+	// The destination answers from its own bytes before the clone, or the
+	// assertion below would hold for a payload that never had any.
+	before := make([]byte, size)
+	if _, err := bs.ReadAt(ctx, "stale-dst-pid", before, 0); err != nil {
+		t.Fatalf("ReadAt(dst) before the clone: %v", err)
+	}
+	if !bytes.Equal(before, replaced) {
+		t.Fatalf("the destination did not hold its own bytes before the clone")
 	}
 
 	if err := CloneWholeFile(ctx, bs, ms, nil, srcHandle, dstHandle, "stale-dst-pid"); err != nil {
 		t.Fatalf("CloneWholeFile: %v", err)
 	}
 
-	described, err := local.DataExtents(ctx, "stale-dst-pid", size)
-	if err != nil {
-		t.Fatalf("DataExtents(dst) after the clone: %v", err)
-	}
-	if len(described) != 0 {
-		t.Errorf("the destination still describes %v locally; those ranges hold the content the clone replaced", described)
+	got := make([]byte, size)
+	if _, err := bs.ReadAt(ctx, "stale-dst-pid", got, 0); err == nil && bytes.Equal(got, replaced) {
+		t.Error("the destination still serves the content the clone replaced")
 	}
 
-	bystander, err := local.DataExtents(ctx, "stale-bystander-pid", size)
-	if err != nil {
-		t.Fatalf("DataExtents(bystander): %v", err)
+	bystanderBack := make([]byte, size)
+	if _, err := bs.ReadAt(ctx, "stale-bystander-pid", bystanderBack, 0); err != nil {
+		t.Fatalf("ReadAt(bystander) after the clone: %v", err)
 	}
-	if len(bystander) == 0 {
-		t.Error("the clone dropped a payload it had nothing to do with")
+	if !bytes.Equal(bystanderBack, bystanderData) {
+		t.Error("the clone disturbed a payload it had nothing to do with")
 	}
 }
 
