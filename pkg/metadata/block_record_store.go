@@ -269,17 +269,6 @@ func DefaultCommitBlock(
 		if err := tx.PutBlockRecord(ctx, rec); err != nil {
 			return err
 		}
-		// Per-file manifest rows: the block carver passes one FileChunk per chunk
-		// (ID={FileID}/{FileOffset}, Hash, DataSize, State=Pending); legacy callers
-		// pass nil and write no rows.
-		for _, fc := range fileChunks {
-			if fc == nil {
-				continue
-			}
-			if err := tx.Put(ctx, fc); err != nil {
-				return err
-			}
-		}
 		// Locator overwrite (last-wins), see the function comment. MarkSynced
 		// alone would be first-wins and leave a stale standalone locator in
 		// place; the batched write applies the overwrite for the whole commit
@@ -289,14 +278,134 @@ func DefaultCommitBlock(
 				return err
 			}
 		}
-		// Materialize File.Blocks from the manifest in this same txn so raw-row
-		// readers (snapshot, audit) stay coherent — merging only this batch's
-		// rows, since re-deriving from the whole manifest costs a full list and
-		// sort per committed block object. Skipped for legacy callers that pass
-		// no fileChunks (empty payloadID). Superseded-row reaping happens once
-		// per carve pass (ReapSupersededManifest), not per batch — see below.
-		return ProjectCommittedChunks(ctx, tx, payloadIDFromChunks(fileChunks), fileChunks)
+		// Per-file manifest rows: the block carver passes one FileChunk per chunk
+		// (ID={FileID}/{FileOffset}, Hash, DataSize, State=Pending); legacy callers
+		// pass nil and write no rows. CommitCarvedChunks also re-materializes
+		// File.Blocks in this same txn so raw-row readers (snapshot, audit) stay
+		// coherent. Superseded-row reaping happens once per carve pass
+		// (ReapSupersededManifest), not per batch — see below.
+		return CommitCarvedChunks(ctx, tx, payloadIDFromChunks(fileChunks), fileChunks)
 	})
+}
+
+// CommitCarvedChunks writes a carve batch's fresh manifest rows and projects
+// them into File.Blocks, in the caller's txn.
+//
+// A row is keyed by the file offset of its first claimed byte and Put is an
+// upsert, so a fresh row landing on an offset an existing row already occupies
+// replaces it. Whatever that row still owned past the fresh one is kept by
+// PreserveClobberedRow, which runs before the batch and while the row is still
+// there; by the time a batch reaches here the replacement is the intended
+// outcome.
+func CommitCarvedChunks(ctx context.Context, tx Transaction, payloadID string, rows []*block.FileChunk) error {
+	for _, fc := range rows {
+		if fc == nil {
+			continue
+		}
+		if err := tx.Put(ctx, fc); err != nil {
+			return fmt.Errorf("commit carved chunks: put %s: %w", fc.ID, err)
+		}
+	}
+	return ProjectCommittedChunks(ctx, tx, payloadID, rows)
+}
+
+// PreserveClobberedRow keeps what the manifest row keyed at runStart still owns
+// past runEnd, before a carve run's first fresh chunk takes that key over. It is
+// a no-op when no row sits at runStart, or when the row there does not reach
+// past runEnd — the ordinary carve, where a run appends or re-covers at least as
+// much as it replaces.
+//
+// owed names the ranges past runEnd that are still backed by the remote, and the
+// preserved claim is confined to them. That confinement is the whole point: the
+// replaced row may equally have been spanning a punched hole, whose bytes must
+// read as zeros, and putting its pre-punch content back over that hole is its
+// own silent corruption. The manifest cannot tell the two apart, which is why
+// owed is computed from the journal's interval index and passed in.
+//
+// One row is written per owed range, each reading the original chunk from
+// however far into it that range begins, so a claim broken up by holes comes
+// back as the pieces that survive rather than as one span across them.
+//
+// A range whose key another row already occupies is left to that row when it
+// reaches at least as far, since the preserved piece would add no coverage and
+// cost that row its own.
+func PreserveClobberedRow(ctx context.Context, tx Transaction, payloadID string, runStart, runEnd int64, owed [][2]int64) error {
+	if payloadID == "" || len(owed) == 0 {
+		return nil
+	}
+	old, err := readChunkRow(ctx, tx, chunkRowKey(payloadID, runStart))
+	if err != nil || old == nil {
+		return err
+	}
+	// The row was read by the key runStart builds, so runStart is its start.
+	rowEnd := runStart + int64(old.DataSize)
+	if rowEnd <= runEnd {
+		return nil // the run re-covers everything this row claimed
+	}
+	var written []*block.FileChunk
+	for _, sp := range owed {
+		lo, hi := max(sp[0], runEnd), min(sp[1], rowEnd)
+		if lo >= hi {
+			continue
+		}
+		// A row already keyed at lo keeps what it claims: it starts where this
+		// piece would, so coverage cannot choose between them, and overwriting it
+		// would swap the bytes a read there already resolves for this row's — a
+		// silent content change with nothing to justify it. Take over only what it
+		// leaves uncovered.
+		occupant, err := readChunkRow(ctx, tx, chunkRowKey(payloadID, lo))
+		if err != nil {
+			return err
+		}
+		if occupant != nil {
+			lo += int64(occupant.DataSize)
+			if lo >= hi {
+				continue
+			}
+			// ponytail: one step past the occupant, so a second row keyed exactly
+			// where the first ends leaves the rest of this range uncovered; walk the
+			// chain if a manifest is ever seen stacking rows that way.
+			next, err := readChunkRow(ctx, tx, chunkRowKey(payloadID, lo))
+			if err != nil {
+				return err
+			}
+			if next != nil {
+				continue
+			}
+		}
+		piece, ok := narrowOffHead(old, runStart, lo, hi)
+		if !ok {
+			continue // the claim will not fit the row's fields: leave it behind
+		}
+		if err := tx.Put(ctx, piece); err != nil {
+			return fmt.Errorf("preserve clobbered row %s: put %s: %w", old.ID, piece.ID, err)
+		}
+		written = append(written, piece)
+	}
+	if len(written) == 0 {
+		return nil
+	}
+	return ProjectCommittedChunks(ctx, tx, payloadID, written)
+}
+
+// chunkRowKey renders the manifest key a chunk starting at off within payloadID
+// lives under.
+func chunkRowKey(payloadID string, off int64) string {
+	return fmt.Sprintf("%s/%d", payloadID, off)
+}
+
+// readChunkRow returns the row stored under id, or (nil, nil) when there is
+// none. Absence is the common answer on this path — a run usually starts where
+// no row does — so it is not an error.
+func readChunkRow(ctx context.Context, tx Transaction, id string) (*block.FileChunk, error) {
+	row, err := tx.GetFileChunk(ctx, id)
+	if err != nil {
+		if errors.Is(err, block.ErrFileChunkNotFound) || IsNotFoundError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read manifest row %s: %w", id, err)
+	}
+	return row, nil
 }
 
 // ManifestRowEndAfter reports how far the manifest coverage straddling off

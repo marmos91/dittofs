@@ -288,6 +288,14 @@ type Transaction interface {
 	// backend transactions already implement it.
 	ListFileChunks(ctx context.Context, payloadID string) ([]*block.FileChunk, error)
 
+	// GetFileChunk returns the FileChunk row stored under id, read-your-writes
+	// within the tx, or ErrFileChunkNotFound when there is none. Needed so a
+	// carve commit can see what a fresh row's key is about to take over before
+	// the upsert removes it — the whole row, not a projection of it, because what
+	// survives the takeover keeps the original's hash, state and refcount. All
+	// four backend transactions already implement it.
+	GetFileChunk(ctx context.Context, id string) (*block.FileChunk, error)
+
 	// PutSyncedLocators records the synced marker and remote locator of every
 	// chunk, overwriting whatever marker each hash already carries. It is the
 	// batched form of DeleteSynced-then-MarkSynced per chunk and produces the
