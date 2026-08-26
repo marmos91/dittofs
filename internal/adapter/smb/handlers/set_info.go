@@ -695,6 +695,25 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(types.StatusAccessDenied), nil
 		}
 
+		// Per MS-FSA 2.1.5.15.12 ("FileRenameInformation"): if Open.Link.IsDeleted
+		// is TRUE, the operation MUST be failed with STATUS_ACCESS_DENIED.
+		//
+		// IsDeleted belongs to the link, not to the handle asking, so this is the
+		// cross-handle scan the CREATE gate already uses rather than this open's
+		// own flag: a disposition committed on one handle is not copied onto its
+		// siblings until the CLOSE election runs, so reading only openFile would
+		// let a second handle rename a link already marked for deletion.
+		//
+		// The analogue is the disposition set through SET_INFO, not the
+		// FILE_DELETE_ON_CLOSE create option: that is held per-handle as
+		// InitialDeleteOnClose, is deliberately invisible to this scan, and is
+		// promoted only at CLOSE, matching 2.1.5.5 phase 1.
+		if h.isFileDeletePending(openFile.MetadataHandle) {
+			logger.Debug("SET_INFO: rename of a link already marked for deletion",
+				"path", openFile.Name().Path)
+			return setInfoStatus(types.StatusAccessDenied), nil
+		}
+
 		// Before renaming, check that no other open handle on the same file
 		// conflicts with the rename: all other opens must have FILE_SHARE_DELETE
 		// (0x04) in ShareAccess. MS-FSA 2.1.5.15.12 ("FileRenameInformation")
@@ -1287,7 +1306,9 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(types.StatusInvalidParameter), nil
 		}
 
-		var deletePending bool
+		// ignoreReadonly stays false for the 1-byte FileDispositionInformation:
+		// it carries no flags and so can never waive the read-only refusal below.
+		var deletePending, ignoreReadonly bool
 		if class == types.FileDispositionInformationEx {
 			// FileDispositionInformationEx uses a 4-byte Flags field per MS-FSCC 2.4.12 (FileDispositionInformationEx)
 			if len(buffer) < 4 {
@@ -1295,8 +1316,26 @@ func (h *Handler) setFileInfoFromStore(
 			}
 			dispR := smbenc.NewReader(buffer)
 			flags := dispR.ReadUint32()
-			// Bit 0 (FILE_DISPOSITION_DELETE) = delete on close
-			deletePending = (flags & 0x01) != 0
+
+			// Per MS-FSCC 2.4.12: "if set and the file is not opened with
+			// FILE_DELETE_ON_CLOSE, STATUS_NOT_SUPPORTED MUST be returned". That
+			// refusal is the whole of what this flag does here — the disposition it
+			// would otherwise select rides on the DELETE bit read below, so no
+			// separate delete-on-close state is written. The create option is held
+			// per-handle as InitialDeleteOnClose.
+			if flags&types.FileDispositionOnClose != 0 && !openFile.InitialDeleteOnClose {
+				logger.Debug("SET_INFO: FILE_DISPOSITION_ON_CLOSE on a handle not opened delete-on-close",
+					"path", openFile.Name().Path)
+				return setInfoStatus(types.StatusNotSupported), nil
+			}
+
+			deletePending = flags&types.FileDispositionDelete != 0
+			ignoreReadonly = flags&types.FileDispositionIgnoreReadonlyAttribute != 0
+
+			// FILE_DISPOSITION_POSIX_SEMANTICS is accepted and not acted on: the
+			// link is removed from the namespace at close either way, and keeping
+			// the data streams readable through other handles after the unlink is
+			// not implemented.
 		} else {
 			deletePending = buffer[0] != 0
 		}
@@ -1324,8 +1363,10 @@ func (h *Handler) setFileInfoFromStore(
 				return setInfoStatus(types.StatusAccessDenied), nil
 			}
 
-			// Read-only files cannot be marked for deletion
-			if !openFile.IsDirectory {
+			// Per MS-FSCC 2.4.12 FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE
+			// "allows files with the READ_ONLY attribute to be deleted anyway";
+			// without it the refusal below is a MUST.
+			if !openFile.IsDirectory && !ignoreReadonly {
 				metaSvc := h.Registry.GetMetadataService()
 				file, fileErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
 				if fileErr == nil {
@@ -1538,6 +1579,19 @@ func (h *Handler) setFileInfoFromStore(
 	case types.FileAllocationInformation:
 		// FILE_ALLOCATION_INFORMATION [MS-FSCC] 2.4.4.
 		//
+		// Per MS-FSA 2.1.5.15.1 ("FileAllocationInformation"): if Open.GrantedAccess
+		// does not contain FILE_WRITE_DATA, the operation MUST be failed with
+		// STATUS_ACCESS_DENIED. This class is exempt from the FILE_WRITE_ATTRIBUTES
+		// gate above precisely because it carries this check, and the gate runs
+		// before the lease break so a handle that may not write cannot invalidate
+		// another client's cached read state.
+		if !hasAccessRight(openFile.GrantedAccess, uint32(types.FileWriteData)) {
+			logger.Debug("SET_INFO: allocation set without FILE_WRITE_DATA",
+				"path", openFile.Name().Path,
+				"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess))
+			return setInfoStatus(types.StatusAccessDenied), nil
+		}
+
 		// Allocation size is not persisted (DittoFS does not preallocate), but
 		// per MS-FSA 2.1.5.15.1 ("FileAllocationInformation") and Samba `smbd_smb2_setinfo_lease_break_fsp_check`
 		// (source3/smbd/smb2_setinfo.c) setting allocation is a data-modifying
