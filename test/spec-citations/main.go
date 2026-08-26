@@ -50,7 +50,7 @@ type specMap struct {
 }
 
 var (
-	citation = regexp.MustCompile(`\[?(MS-(?:FSCC|FSA|SMB2|DTYP|ERREF))]?\s*(?:[Ss]ection\s*|§\s*)?(\d+(?:\.\d+)+)\s*(\("[^"]*"\))?`)
+	citation = regexp.MustCompile(`\[?(MS-(?:FSCC|FSA|SMB2|DTYP|ERREF))]?\s*(?:[Ss]ection\s*|§\s*)?(\d+(?:\.\d+)+)\s*(?:\("([^"]*)"\))?`)
 	// Structure identifiers a comment can name. MS-FSCC and MS-FSA title
 	// their per-structure sections with exactly these names, which is what
 	// makes the comparison decidable.
@@ -167,7 +167,7 @@ func checkLine(specs map[string]*specMap, line string) []finding {
 		out = append(out, finding{spec: spec, num: num, msg: fmt.Sprintf(format, args...)})
 	}
 	for _, h := range hits {
-		spec, num, paren := h[1], h[2], h[3]
+		spec, num := h[1], h[2]
 		m := specs[spec]
 		if m == nil {
 			continue
@@ -177,12 +177,9 @@ func checkLine(specs map[string]*specMap, line string) []finding {
 			add(spec, num, "[%s] %s does not exist", spec, num)
 			continue
 		}
-		if paren != "" {
-			claimed := strings.Trim(paren, `("")`)
-			if norm(claimed) != norm(title) {
-				add(spec, num, "[%s] %s is %q, not %q", spec, num, title, claimed)
-				continue
-			}
+		if claimed := h[3]; claimed != "" && norm(claimed) != norm(title) {
+			add(spec, num, "[%s] %s is %q, not %q", spec, num, title, claimed)
+			continue
 		}
 		if id == "" || (spec != "MS-FSCC" && spec != "MS-FSA") {
 			continue
@@ -226,6 +223,8 @@ func loadKnownWrong() (map[string]bool, error) {
 var skipDirs = map[string]bool{
 	".git": true, "vendor": true, "node_modules": true,
 	"graphify-out": true, ".planning": true,
+	// This check's own fixtures cite the wrong sections on purpose.
+	"spec-citations": true,
 }
 
 func main() {
