@@ -673,19 +673,22 @@ func TestAccess_RealFS_RootGetsAll(t *testing.T) {
 	supported, _ := xdr.DecodeUint32(reader)
 	access, _ := xdr.DecodeUint32(reader)
 
-	if supported != allBits {
-		t.Errorf("supported = 0x%x, want 0x%x", supported, allBits)
+	// Only the bits that are MEANINGFUL for the object type are reportable, and
+	// the target is a regular file on a minorversion-0 context. ACCESS4_LOOKUP
+	// is a directory-search right (RFC 7530 Section 16.1.4), ACCESS4_DELETE on a
+	// non-directory is decided by the parent directory rather than the file, so
+	// the server cannot check it from this handle (Section 16.1.5), and the RFC
+	// 8276 extended-attribute bits are not defined below minorversion 2.
+	wantSupported := uint32(ACCESS4_READ | ACCESS4_MODIFY | ACCESS4_EXTEND | ACCESS4_EXECUTE)
+
+	if supported != wantSupported {
+		t.Errorf("supported = 0x%x, want 0x%x", supported, wantSupported)
 	}
 
-	// Root gets every bit that is MEANINGFUL for the object type. ACCESS4_LOOKUP
-	// (0x02) is a directory-search right; on a regular file it has no canonical
-	// permission mapping (RFC 7530 §6 / RFC 1813 §3.3.4) and is correctly NOT
-	// granted. This matches the NFSv3 ACCESS handler, which uses the identical
-	// nfsAccessToPermissions / permissionsToNFSAccess translation — the whole
-	// point of routing NFSv4 ACCESS through the central checker.
-	wantRoot := allBits &^ uint32(ACCESS4_LOOKUP)
-	if access != wantRoot {
-		t.Errorf("access = 0x%x, want 0x%x (root gets all meaningful bits; LOOKUP is directory-only)", access, wantRoot)
+	// Root gets everything the server was willing to claim it can check; a bit
+	// left out of supported must never come back granted.
+	if access != wantSupported {
+		t.Errorf("access = 0x%x, want 0x%x (root gets every reportable bit)", access, wantSupported)
 	}
 }
 

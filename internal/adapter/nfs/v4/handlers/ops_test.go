@@ -1023,11 +1023,19 @@ func TestAccess_PseudoFS(t *testing.T) {
 	supported := binary.BigEndian.Uint32(decoded.Results[1].ExtraData[0:4])
 	access := binary.BigEndian.Uint32(decoded.Results[1].ExtraData[4:8])
 
-	if supported != allBits {
-		t.Errorf("supported = 0x%x, want 0x%x", supported, allBits)
+	// The pseudo-fs root is a directory reached over a minorversion-0 COMPOUND,
+	// so the reply drops the three bits it cannot answer for: ACCESS4_EXECUTE
+	// has no meaning for a directory (RFC 7530 Section 16.1.4) and the RFC 8276
+	// extended-attribute bits are not defined below minorversion 2.
+	wantSupported := uint32(ACCESS4_READ | ACCESS4_LOOKUP | ACCESS4_MODIFY |
+		ACCESS4_EXTEND | ACCESS4_DELETE)
+
+	if supported != wantSupported {
+		t.Errorf("supported = 0x%x, want 0x%x", supported, wantSupported)
 	}
-	if access != allBits {
-		t.Errorf("access = 0x%x, want 0x%x", access, allBits)
+	// Pseudo-fs grants everything it reports as checkable.
+	if access != wantSupported {
+		t.Errorf("access = 0x%x, want 0x%x", access, wantSupported)
 	}
 }
 
