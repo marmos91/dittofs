@@ -293,28 +293,37 @@ func (s *Service) DisableAdapter(ctx context.Context, adapterType string) error 
 // start of the same type is refused while this one is still binding, and it is
 // dropped again if the bind fails.
 func (s *Service) startAdapter(cfg *models.AdapterConfig) error {
+	entry, err := s.claimAndRunAdapter(cfg)
+	if err != nil {
+		return err
+	}
+	return s.awaitListener(cfg.Type, entry)
+}
+
+// claimAndRunAdapter builds the adapter and registers its entry, holding mu for
+// the whole build so a competing start of the same type is refused while this
+// one is still constructing. The unlock is deferred rather than written out on
+// each exit: the factory constructs adapters from operator-supplied config and
+// a constructor that panics on it would otherwise leave mu held for the life of
+// the process, blocking every later adapter call including the read-only ones.
+func (s *Service) claimAndRunAdapter(cfg *models.AdapterConfig) (*adapterEntry, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if err := s.typeClaimedLocked(cfg.Type); err != nil {
-		s.mu.Unlock()
-		return err
+		return nil, err
 	}
 
 	if s.factory == nil {
-		s.mu.Unlock()
-		return fmt.Errorf("adapter factory not set")
+		return nil, fmt.Errorf("adapter factory not set")
 	}
 
 	adp, err := s.factory(cfg)
 	if err != nil {
-		s.mu.Unlock()
-		return fmt.Errorf("failed to create adapter: %w", err)
+		return nil, fmt.Errorf("failed to create adapter: %w", err)
 	}
 
-	entry := s.registerAndRunAdapterLocked(adp, cfg)
-	s.mu.Unlock()
-
-	return s.awaitListener(cfg.Type, entry)
+	return s.registerAndRunAdapterLocked(adp, cfg), nil
 }
 
 // awaitListener blocks until the adapter has bound its listening socket, its

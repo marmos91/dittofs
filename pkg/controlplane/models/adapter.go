@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -39,6 +40,23 @@ func DefaultPort(adapterType string) int {
 	default:
 		return 0
 	}
+}
+
+// Validate reports whether the configuration describes an adapter the server
+// can actually build. It is the guard at the API boundary: the adapter
+// constructors treat an out-of-range port as a programmer error and panic on
+// it, and the type decides which constructor runs at all, so both have to be
+// refused before a row is persisted or a start is attempted.
+func (a *AdapterConfig) Validate() error {
+	// Only the types with a known default port have a constructor in the
+	// adapter factory, so a type without one has no adapter to build.
+	if DefaultPort(a.Type) == 0 {
+		return fmt.Errorf("unsupported adapter type %q: must be one of nfs, smb", a.Type)
+	}
+	if a.Port < 0 || a.Port > 65535 {
+		return fmt.Errorf("invalid port %d: must be 0-65535", a.Port)
+	}
+	return nil
 }
 
 // TableName returns the table name for AdapterConfig.

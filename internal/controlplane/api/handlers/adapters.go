@@ -92,6 +92,11 @@ func (h *AdapterHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if err := adapter.Validate(); err != nil {
+		BadRequest(w, err.Error())
+		return
+	}
+
 	// CreateAdapter saves to store AND starts the adapter
 	if err := h.runtime.CreateAdapter(r.Context(), adapter); err != nil {
 		if errors.Is(err, models.ErrDuplicateAdapter) {
@@ -272,6 +277,11 @@ func (h *AdapterHandler) Update(w http.ResponseWriter, r *http.Request) {
 			BadRequest(w, "Invalid config format")
 			return
 		}
+	}
+
+	if err := adapter.Validate(); err != nil {
+		BadRequest(w, err.Error())
+		return
 	}
 
 	// UpdateAdapter updates store AND restarts the adapter

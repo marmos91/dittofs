@@ -48,7 +48,10 @@ func runEnable(cmd *cobra.Command, args []string) error {
 	updateReq := &apiclient.UpdateAdapterRequest{
 		Enabled: &enabled,
 	}
-	if enablePort > 0 {
+	// Forward the port whenever the flag was given, not only when it is
+	// positive: a port the server will refuse has to reach the server to be
+	// refused, and 0 is the request to go back to the type's default.
+	if cmd.Flags().Changed("port") {
 		updateReq.Port = &enablePort
 	}
 
