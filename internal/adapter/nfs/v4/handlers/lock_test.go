@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -1193,4 +1194,102 @@ func TestFullLockLifecycle(t *testing.T) {
 		t.Fatalf("Step 9: CLOSE failed: status=%d", closeResult.Status)
 	}
 	t.Logf("Step 9: CLOSE OK -- full lifecycle complete")
+}
+
+// ============================================================================
+// Byte-Range Validation
+// ============================================================================
+
+func TestLockRangeValid(t *testing.T) {
+	tests := []struct {
+		name   string
+		offset uint64
+		length uint64
+		want   bool
+	}{
+		{"ordinary range", 25, 75, true},
+		{"zero length", 25, 0, false},
+		{"zero length at zero offset", 0, 0, false},
+		{"all-ones length locks through EOF", 100, math.MaxUint64, true},
+		{"all-ones length from the highest offset", math.MaxUint64, math.MaxUint64, true},
+		{"sum lands exactly on the maximum", 1, math.MaxUint64 - 1, true},
+		{"sum passes the maximum by one", 2, math.MaxUint64 - 1, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := lockRangeValid(tt.offset, tt.length); got != tt.want {
+				t.Errorf("lockRangeValid(%d, %d) = %v, want %v",
+					tt.offset, tt.length, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHandleLock_InvalidRange drives the two ranges RFC 7530 Section 16.10.4
+// rejects through all three ops that carry one. Each reaches the range check
+// before it consults lock state, so an unlocked file and an unused stateid are
+// enough to reach the check and no lock state is created by any of these calls.
+func TestHandleLock_InvalidRange(t *testing.T) {
+	const overflowLength = uint64(0xfffffffffffffffe) // what pynfs puts on the wire
+
+	ranges := []struct {
+		name   string
+		offset uint64
+		length uint64
+	}{
+		{"zero length", 25, 0},
+		{"offset plus length overflows", 100, overflowLength},
+	}
+
+	for _, r := range ranges {
+		t.Run(r.name, func(t *testing.T) {
+			pfs := pseudofs.New()
+			pfs.Rebuild([]string{"/export"})
+
+			lm := lock.NewManager()
+			sm := state.NewStateManager(90 * time.Second)
+			sm.SetLockManager(lm)
+			h := NewHandler(nil, pfs, sm)
+
+			clientID, openStateid, _ := setupHandlerLockClient(t, h)
+
+			fileHandle := []byte("/export:lock-range-file")
+			newCtx := func() *types.CompoundContext {
+				ctx := &types.CompoundContext{
+					Context:    context.Background(),
+					ClientAddr: "127.0.0.1:9999",
+					CurrentFH:  make([]byte, len(fileHandle)),
+				}
+				copy(ctx.CurrentFH, fileHandle)
+				return ctx
+			}
+
+			lockArgs := encodeNewLockOwnerArgs(
+				types.WRITE_LT, r.offset, r.length,
+				1, openStateid, 0, clientID, []byte("range-owner"),
+			)
+			if got := h.handleLock(newCtx(), bytes.NewReader(lockArgs)); got.Status != types.NFS4ERR_INVAL {
+				t.Errorf("LOCK status = %d, want NFS4ERR_INVAL (%d)", got.Status, types.NFS4ERR_INVAL)
+			}
+
+			locktArgs := encodeLocktArgs(
+				types.WRITE_LT, r.offset, r.length, clientID, []byte("range-owner"),
+			)
+			if got := h.handleLockT(newCtx(), bytes.NewReader(locktArgs)); got.Status != types.NFS4ERR_INVAL {
+				t.Errorf("LOCKT status = %d, want NFS4ERR_INVAL (%d)", got.Status, types.NFS4ERR_INVAL)
+			}
+
+			// LOCKU4args: locktype, seqid, lock_stateid, offset, length.
+			var lockuArgs bytes.Buffer
+			_ = xdr.WriteUint32(&lockuArgs, types.WRITE_LT)
+			_ = xdr.WriteUint32(&lockuArgs, 1)
+			types.EncodeStateid4(&lockuArgs, openStateid)
+			_ = xdr.WriteUint64(&lockuArgs, r.offset)
+			_ = xdr.WriteUint64(&lockuArgs, r.length)
+			if got := h.handleLockU(newCtx(), bytes.NewReader(lockuArgs.Bytes())); got.Status != types.NFS4ERR_INVAL {
+				t.Errorf("LOCKU status = %d, want NFS4ERR_INVAL (%d)", got.Status, types.NFS4ERR_INVAL)
+			}
+		})
+	}
 }

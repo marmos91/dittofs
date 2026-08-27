@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"io"
+	"math"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
@@ -10,6 +11,22 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
 )
+
+// lockRangeValid reports whether offset and length describe a byte range the
+// server will act on. RFC 7530 Section 16.10.4 rejects a length of zero, and
+// rejects a length that is not all-ones whose sum with the offset exceeds the
+// maximum 64-bit unsigned value. A length with every bit set means "from offset
+// through end-of-file" however long the file grows, so it is exempt from that
+// sum. Sections 16.11.4 and 16.12.4 apply the same two rules to LOCKT and LOCKU.
+func lockRangeValid(offset, length uint64) bool {
+	if length == 0 {
+		return false
+	}
+	if length == math.MaxUint64 {
+		return true
+	}
+	return offset <= math.MaxUint64-length
+}
 
 // handleLock implements the LOCK operation (RFC 7530 Section 16.10).
 // Acquires a byte-range lock on a file via new or existing lock-owner path.
@@ -70,6 +87,18 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_LOCK,
 			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+		}
+	}
+
+	if !lockRangeValid(offset, length) {
+		logger.Debug("NFSv4 LOCK invalid range",
+			"offset", offset,
+			"length", length,
+			"client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_INVAL,
+			OpCode: types.OP_LOCK,
+			Data:   encodeStatusOnly(types.NFS4ERR_INVAL),
 		}
 	}
 
@@ -304,6 +333,18 @@ func (h *Handler) handleLockT(ctx *types.CompoundContext, reader io.Reader) *typ
 		}
 	}
 
+	if !lockRangeValid(offset, length) {
+		logger.Debug("NFSv4 LOCKT invalid range",
+			"offset", offset,
+			"length", length,
+			"client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_INVAL,
+			OpCode: types.OP_LOCKT,
+			Data:   encodeStatusOnly(types.NFS4ERR_INVAL),
+		}
+	}
+
 	// lock_owner4: clientid + owner opaque
 	clientID, err := xdr.DecodeUint64(reader)
 	if err != nil {
@@ -438,6 +479,18 @@ func (h *Handler) handleLockU(ctx *types.CompoundContext, reader io.Reader) *typ
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_LOCKU,
 			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+		}
+	}
+
+	if !lockRangeValid(offset, length) {
+		logger.Debug("NFSv4 LOCKU invalid range",
+			"offset", offset,
+			"length", length,
+			"client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_INVAL,
+			OpCode: types.OP_LOCKU,
+			Data:   encodeStatusOnly(types.NFS4ERR_INVAL),
 		}
 	}
 
