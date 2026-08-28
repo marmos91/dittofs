@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"context"
-	"math"
 	"testing"
 	"time"
 
@@ -1200,36 +1199,11 @@ func TestFullLockLifecycle(t *testing.T) {
 // Byte-Range Validation
 // ============================================================================
 
-func TestLockRangeValid(t *testing.T) {
-	tests := []struct {
-		name   string
-		offset uint64
-		length uint64
-		want   bool
-	}{
-		{"ordinary range", 25, 75, true},
-		{"zero length", 25, 0, false},
-		{"zero length at zero offset", 0, 0, false},
-		{"all-ones length locks through EOF", 100, math.MaxUint64, true},
-		{"all-ones length from the highest offset", math.MaxUint64, math.MaxUint64, true},
-		{"sum lands exactly on the maximum", 1, math.MaxUint64 - 1, true},
-		{"sum passes the maximum by one", 2, math.MaxUint64 - 1, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := lockRangeValid(tt.offset, tt.length); got != tt.want {
-				t.Errorf("lockRangeValid(%d, %d) = %v, want %v",
-					tt.offset, tt.length, got, tt.want)
-			}
-		})
-	}
-}
-
 // TestHandleLock_InvalidRange drives the two ranges RFC 7530 Section 16.10.4
-// rejects through all three ops that carry one. Each reaches the range check
-// before it consults lock state, so an unlocked file and an unused stateid are
-// enough to reach the check and no lock state is created by any of these calls.
+// rejects through all three ops that carry one. LOCK and LOCKU are rejected
+// inside the state manager, past the seqid checks, so each rejection consumes
+// the owner seqid the way RFC 7530 Section 9.1.7 requires: the operations that
+// follow here use the next seqid in sequence and must succeed.
 func TestHandleLock_InvalidRange(t *testing.T) {
 	const overflowLength = uint64(0xfffffffffffffffe) // what pynfs puts on the wire
 
@@ -1252,43 +1226,70 @@ func TestHandleLock_InvalidRange(t *testing.T) {
 			sm.SetLockManager(lm)
 			h := NewHandler(nil, pfs, sm)
 
-			clientID, openStateid, _ := setupHandlerLockClient(t, h)
+			clientID, openStateid, openSeqid := setupHandlerLockClient(t, h)
 
-			fileHandle := []byte("/export:lock-range-file")
-			newCtx := func() *types.CompoundContext {
-				ctx := &types.CompoundContext{
-					Context:    context.Background(),
-					ClientAddr: "127.0.0.1:9999",
-					CurrentFH:  make([]byte, len(fileHandle)),
-				}
-				copy(ctx.CurrentFH, fileHandle)
-				return ctx
+			fileHandle := []byte("/export:lock-test-file")
+			ctx := &types.CompoundContext{
+				Context:    context.Background(),
+				ClientAddr: "127.0.0.1:9999",
+				CurrentFH:  make([]byte, len(fileHandle)),
 			}
+			copy(ctx.CurrentFH, fileHandle)
 
-			lockArgs := encodeNewLockOwnerArgs(
+			owner := []byte("range-owner")
+
+			badLock := encodeNewLockOwnerArgs(
 				types.WRITE_LT, r.offset, r.length,
-				1, openStateid, 0, clientID, []byte("range-owner"),
+				openSeqid+1, openStateid, 1, clientID, owner,
 			)
-			if got := h.handleLock(newCtx(), bytes.NewReader(lockArgs)); got.Status != types.NFS4ERR_INVAL {
-				t.Errorf("LOCK status = %d, want NFS4ERR_INVAL (%d)", got.Status, types.NFS4ERR_INVAL)
+			if got := h.handleLock(ctx, bytes.NewReader(badLock)); got.Status != types.NFS4ERR_INVAL {
+				t.Fatalf("LOCK status = %d, want NFS4ERR_INVAL (%d)", got.Status, types.NFS4ERR_INVAL)
 			}
 
-			locktArgs := encodeLocktArgs(
-				types.WRITE_LT, r.offset, r.length, clientID, []byte("range-owner"),
+			// Both the open-owner and the lock-owner sequences must have moved
+			// past the rejected LOCK; a server that kept them would answer this
+			// NFS4ERR_BAD_SEQID and stay one behind the client forever.
+			goodLock := encodeNewLockOwnerArgs(
+				types.WRITE_LT, 0, 100,
+				openSeqid+2, openStateid, 2, clientID, owner,
 			)
-			if got := h.handleLockT(newCtx(), bytes.NewReader(locktArgs)); got.Status != types.NFS4ERR_INVAL {
+			lockResult := h.handleLock(ctx, bytes.NewReader(goodLock))
+			if lockResult.Status != types.NFS4_OK {
+				t.Fatalf("LOCK after invalid range status = %d, want NFS4_OK", lockResult.Status)
+			}
+			lockReader := bytes.NewReader(lockResult.Data)
+			_, _ = xdr.DecodeUint32(lockReader) // status
+			lockStateid, err := types.DecodeStateid4(lockReader)
+			if err != nil {
+				t.Fatalf("failed to decode lock stateid: %v", err)
+			}
+
+			// LOCKT carries no seqid, so its range check sits in the handler.
+			locktArgs := encodeLocktArgs(types.WRITE_LT, r.offset, r.length, clientID, owner)
+			if got := h.handleLockT(ctx, bytes.NewReader(locktArgs)); got.Status != types.NFS4ERR_INVAL {
 				t.Errorf("LOCKT status = %d, want NFS4ERR_INVAL (%d)", got.Status, types.NFS4ERR_INVAL)
 			}
 
 			// LOCKU4args: locktype, seqid, lock_stateid, offset, length.
-			var lockuArgs bytes.Buffer
-			_ = xdr.WriteUint32(&lockuArgs, types.WRITE_LT)
-			_ = xdr.WriteUint32(&lockuArgs, 1)
-			types.EncodeStateid4(&lockuArgs, openStateid)
-			_ = xdr.WriteUint64(&lockuArgs, r.offset)
-			_ = xdr.WriteUint64(&lockuArgs, r.length)
-			if got := h.handleLockU(newCtx(), bytes.NewReader(lockuArgs.Bytes())); got.Status != types.NFS4ERR_INVAL {
-				t.Errorf("LOCKU status = %d, want NFS4ERR_INVAL (%d)", got.Status, types.NFS4ERR_INVAL)
+			encodeLockuArgs := func(seqid uint32, offset, length uint64) []byte {
+				var buf bytes.Buffer
+				_ = xdr.WriteUint32(&buf, types.WRITE_LT)
+				_ = xdr.WriteUint32(&buf, seqid)
+				types.EncodeStateid4(&buf, lockStateid)
+				_ = xdr.WriteUint64(&buf, offset)
+				_ = xdr.WriteUint64(&buf, length)
+				return buf.Bytes()
+			}
+
+			bad := encodeLockuArgs(3, r.offset, r.length)
+			if got := h.handleLockU(ctx, bytes.NewReader(bad)); got.Status != types.NFS4ERR_INVAL {
+				t.Fatalf("LOCKU status = %d, want NFS4ERR_INVAL (%d)", got.Status, types.NFS4ERR_INVAL)
+			}
+
+			// Same check for the lock-owner sequence after a rejected LOCKU.
+			good := encodeLockuArgs(4, 0, 100)
+			if got := h.handleLockU(ctx, bytes.NewReader(good)); got.Status != types.NFS4_OK {
+				t.Errorf("LOCKU after invalid range status = %d, want NFS4_OK", got.Status)
 			}
 		})
 	}

@@ -2107,9 +2107,12 @@ func (sm *StateManager) LockNew(
 	// this point is a seqid verdict, and those are exempt anyway.
 	defer func() { lockOwner.consumeSeqidOnError(lockSeqid, err) }()
 
-	// 6. Validate open mode for lock type. This runs after both seqid checks so
-	// a bad seqid, which must leave the sequence untouched, outranks
-	// NFS4ERR_OPENMODE, which consumes it.
+	// 6. Validate the byte range and the open mode for the lock type. Both run
+	// after the seqid checks so a bad seqid, which must leave the sequence
+	// untouched, outranks NFS4ERR_INVAL and NFS4ERR_OPENMODE, which consume it.
+	if err := validateLockRange(offset, length); err != nil {
+		return nil, err
+	}
 	if err := validateOpenModeForLock(openState, lockType); err != nil {
 		return nil, err
 	}
@@ -2245,12 +2248,15 @@ func (sm *StateManager) LockExisting(
 		}
 	}
 
-	// 4. Validate open mode for lock type
+	// 4. Validate the byte range and the open mode for the lock type
+	if err := validateLockRange(offset, length); err != nil {
+		return nil, err
+	}
 	if err := validateOpenModeForLock(lockState.OpenState, lockType); err != nil {
 		return nil, err
 	}
 
-	// 4. Acquire the lock
+	// 5. Acquire the lock
 	denied, err := sm.acquireLock(ctx, lockState, lockType, offset, length, reclaim)
 	if err != nil {
 		return nil, err
@@ -2265,7 +2271,7 @@ func (sm *StateManager) LockExisting(
 		}, nil
 	}
 
-	// 5. Success: update state
+	// 6. Success: update state
 	lockState.Stateid.Seqid = nextSeqID(lockState.Stateid.Seqid)
 	lockOwner.LastSeqID = lockSeqid
 
@@ -2398,6 +2404,10 @@ func (sm *StateManager) TestLock(
 	clientID uint64, ownerData []byte,
 	fileHandle []byte, lockType uint32, offset, length uint64,
 ) (*LOCK4denied, error) {
+	if err := validateLockRange(offset, length); err != nil {
+		return nil, err
+	}
+
 	lm := sm.lockManagerFor(fileHandle)
 	if lm == nil {
 		// No lock manager = no locks possible = no conflicts
@@ -2543,7 +2553,12 @@ func (sm *StateManager) UnlockFile(
 		}
 	}
 
-	// 4. Release the lock via unified lock manager
+	// 4. Validate the byte range
+	if err := validateLockRange(offset, length); err != nil {
+		return nil, err
+	}
+
+	// 5. Release the lock via unified lock manager
 	if lm := sm.lockManagerFor(lockState.FileHandle); lm != nil {
 		owner := lock.LockOwner{
 			OwnerID:   lockOwner.LockManagerOwnerID(),
@@ -2566,7 +2581,7 @@ func (sm *StateManager) UnlockFile(
 		}
 	}
 
-	// 5. Success: increment lock stateid seqid
+	// 6. Success: increment lock stateid seqid
 	lockState.Stateid.Seqid = nextSeqID(lockState.Stateid.Seqid)
 	lockOwner.LastSeqID = seqid
 
