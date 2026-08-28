@@ -66,7 +66,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	req := &apiclient.UpdateAdapterRequest{}
 	hasUpdate := false
 
-	if editPort > 0 {
+	if cmd.Flags().Changed("port") {
 		req.Port = &editPort
 		hasUpdate = true
 	}

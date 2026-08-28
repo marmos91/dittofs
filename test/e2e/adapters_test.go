@@ -292,25 +292,15 @@ func testInvalidConfigRejection(t *testing.T, runner *helpers.CLIRunner) {
 
 	// Test 1: Invalid port number (port > 65535)
 	_, err := runner.EnableAdapter("nfs", helpers.WithAdapterPort(70000))
-	assert.Error(t, err, "Should reject port > 65535")
-	if err != nil {
-		t.Log("✓ Port > 65535 correctly rejected")
-	}
+	requireValidationRejection(t, runner, err, "must be 0-65535", "port > 65535")
 
 	// Test 2: Invalid port number (negative port)
-	// Note: CLI may not pass negative ports, but let's test the server validation
 	_, err = runner.EnableAdapter("nfs", helpers.WithAdapterPort(-1))
-	assert.Error(t, err, "Should reject negative port")
-	if err != nil {
-		t.Log("✓ Negative port correctly rejected")
-	}
+	requireValidationRejection(t, runner, err, "must be 0-65535", "negative port")
 
 	// Test 3: Unknown adapter type
 	_, err = runner.EnableAdapter("unknownprotocol")
-	assert.Error(t, err, "Should reject unknown adapter type")
-	if err != nil {
-		t.Log("✓ Unknown adapter type correctly rejected")
-	}
+	requireValidationRejection(t, runner, err, "unsupported adapter type", "unknown adapter type")
 
 	// Verify no invalid adapters were created
 	adapters, err := runner.ListAdapters()
@@ -320,4 +310,33 @@ func testInvalidConfigRejection(t *testing.T, runner *helpers.CLIRunner) {
 	}
 
 	t.Log("ADP-08: Invalid config rejection passed")
+}
+
+// requireValidationRejection fails the test unless err is the server refusing
+// the request on its merits, and unless the server is still answering
+// afterwards.
+//
+// A bare assert.Error is satisfied by the apiclient's 30 second HTTP timeout, so
+// a control plane that has stopped responding reads as a validation rejection
+// and the case passes for the wrong reason. Pinning the rejection to the
+// server's own message, naming the timeout as a disqualifier, and requiring a
+// following call to succeed are what make the assertion fail on a dead server.
+// The timeout check is not load-bearing on its own — a timeout error cannot
+// carry the validation message either — but it is what reports the real cause
+// instead of a bare "string did not contain", and it survives someone later
+// loosening the message match.
+func requireValidationRejection(t *testing.T, runner *helpers.CLIRunner, err error, wantMessage, what string) {
+	t.Helper()
+
+	require.Error(t, err, "Should reject %s", what)
+	require.NotContains(t, err.Error(), "context deadline exceeded",
+		"%s must be refused by validation, not by an unresponsive server: %v", what, err)
+	require.Contains(t, err.Error(), wantMessage,
+		"rejection of %s should carry the server's validation message", what)
+
+	_, listErr := runner.ListAdapters()
+	require.NoError(t, listErr,
+		"control plane must still answer after rejecting %s", what)
+
+	t.Logf("✓ %s correctly rejected", what)
 }

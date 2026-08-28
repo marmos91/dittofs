@@ -668,3 +668,87 @@ func TestLoadAdaptersFromStore_SkipsUnbindableAdapter(t *testing.T) {
 		t.Error("bindable adapter was not started")
 	}
 }
+
+// requireLockFree fails the test unless the service lock is free: a leak is what
+// wedged every adapter route, the read-only ones included.
+func requireLockFree(t *testing.T, svc *Service) {
+	t.Helper()
+
+	done := make(chan struct{})
+	go func() { defer close(done); _ = svc.ListRunningAdapters() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("adapters service lock was not released")
+	}
+}
+
+// TestStartAdapter_RefusesUnbuildableConfigBeforeFactory pins the guard that
+// keeps operator-supplied config away from the adapter constructors, which treat
+// a port they cannot bind as a programmer error and panic on it. A panic raised
+// under the service lock leaks it, and the boot-time load has no recover above
+// it at all, so the config has to be refused before the factory ever sees it.
+func TestStartAdapter_RefusesUnbuildableConfigBeforeFactory(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  *models.AdapterConfig
+	}{
+		{"port above range", &models.AdapterConfig{Type: "nfs", Port: 70000, Enabled: true}},
+		{"negative port", &models.AdapterConfig{Type: "nfs", Port: -1, Enabled: true}},
+		{"unsupported type", &models.AdapterConfig{Type: "gopher", Port: 7070, Enabled: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeAdapterStore()
+			ctx := context.Background()
+			if _, err := st.CreateAdapter(ctx, tc.cfg); err != nil {
+				t.Fatalf("seed adapter: %v", err)
+			}
+
+			svc := New(st, time.Second)
+			called := false
+			svc.SetAdapterFactory(func(cfg *models.AdapterConfig) (ProtocolAdapter, error) {
+				called = true
+				return newFakeListenerAdapter(cfg.Type, cfg.Port), nil
+			})
+
+			// The boot-time load is the caller with no recover above it, so it is
+			// the one that must survive the bad row.
+			if err := svc.LoadAdaptersFromStore(ctx); err != nil {
+				t.Fatalf("load failed on an unbuildable adapter: %v", err)
+			}
+			if called {
+				t.Error("factory was handed a config the server cannot build")
+			}
+			if svc.IsAdapterRunning(tc.cfg.Type) {
+				t.Error("unbuildable adapter registered as running")
+			}
+
+			requireLockFree(t, svc)
+		})
+	}
+}
+
+// TestStartAdapter_ReleasesLockWhenFactoryPanics pins the lock discipline that
+// keeps one bad start from taking the whole service down with it. A factory can
+// panic for reasons the config guard does not cover, and the panic unwinds
+// through the start while the service lock is held: released on the way out the
+// caller sees the panic and nothing else breaks, held on the way out every later
+// adapter call blocks forever, read-only ones included.
+func TestStartAdapter_ReleasesLockWhenFactoryPanics(t *testing.T) {
+	svc := New(newFakeAdapterStore(), time.Second)
+	svc.SetAdapterFactory(func(*models.AdapterConfig) (ProtocolAdapter, error) {
+		panic("constructor rejected the config")
+	})
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("factory panic did not reach the caller")
+			}
+		}()
+		_ = svc.CreateAdapter(context.Background(),
+			&models.AdapterConfig{Type: "nfs", Port: 12049, Enabled: true})
+	}()
+
+	requireLockFree(t, svc)
+}
