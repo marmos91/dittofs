@@ -177,7 +177,7 @@ func TestClientRecovery_NilStore(t *testing.T) {
 		t.Fatal("HasClientRecoveryStore should be false with no store wired")
 	}
 	// Boot-load with no store is a no-op returning 0.
-	if n := sm.LoadClientRecovery(context.Background()); n != 0 {
+	if n := sm.LoadClientRecovery(context.Background(), true); n != 0 {
 		t.Fatalf("LoadClientRecovery with nil store = %d, want 0", n)
 	}
 }
@@ -222,7 +222,7 @@ func TestClientRecovery_BootLoadSeedsRoster(t *testing.T) {
 	sm := NewStateManager(5*time.Second, 5*time.Second)
 	sm.SetClientRecoveryStore(spy, 1)
 
-	n := sm.LoadClientRecovery(context.Background())
+	n := sm.LoadClientRecovery(context.Background(), true)
 	if n != 2 {
 		t.Fatalf("LoadClientRecovery seeded %d clients, want 2 (reclaim-complete excluded)", n)
 	}
@@ -247,7 +247,7 @@ func TestClientRecovery_BootLoadEmptySkipsGrace(t *testing.T) {
 	sm := NewStateManager(5*time.Second, 5*time.Second)
 	sm.SetClientRecoveryStore(spy, 1)
 
-	if n := sm.LoadClientRecovery(context.Background()); n != 0 {
+	if n := sm.LoadClientRecovery(context.Background(), true); n != 0 {
 		t.Fatalf("empty store should seed 0, got %d", n)
 	}
 	if sm.IsInGrace() {
@@ -262,11 +262,43 @@ func TestClientRecovery_BootLoadAllCompleteSkipsGrace(t *testing.T) {
 	sm := NewStateManager(5*time.Second, 5*time.Second)
 	sm.SetClientRecoveryStore(spy, 1)
 
-	if n := sm.LoadClientRecovery(context.Background()); n != 0 {
+	if n := sm.LoadClientRecovery(context.Background(), true); n != 0 {
 		t.Fatalf("all-complete store should seed 0, got %d", n)
 	}
 	if sm.IsInGrace() {
 		t.Fatal("all-reclaim-complete roster must NOT enter grace")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// armGrace=false: roster is read, verifier gate armed, but no window opened
+// ---------------------------------------------------------------------------
+
+func TestClientRecovery_NoReclaimableStateSkipsGrace(t *testing.T) {
+	spy := newSpyRecoveryStore()
+	verf := [8]byte{0xcd}
+	spy.records["idle-client"] = &lock.V4ClientRecoveryRecord{ClientIDString: "idle-client", BootVerifier: verf}
+
+	sm := NewStateManager(5*time.Second, 30*time.Second)
+	sm.SetClientRecoveryStore(spy, 1)
+
+	if n := sm.LoadClientRecovery(context.Background(), false); n != 0 {
+		t.Fatalf("seeded %d, want 0 when nothing is reclaimable", n)
+	}
+	if sm.IsInGrace() {
+		t.Fatal("a waitable roster must NOT open the grace window when no state is reclaimable")
+	}
+
+	// The verifier snapshot is still armed: it gates CLAIM_PREVIOUS for any
+	// prior client and must not depend on whether a window was opened.
+	sm.mu.RLock()
+	got, ok := sm.bootRecoveryVerifiers["idle-client"]
+	sm.mu.RUnlock()
+	if !ok {
+		t.Fatal("boot verifier snapshot must be taken even when grace is not seeded")
+	}
+	if got != verf {
+		t.Fatalf("boot verifier = %v, want %v", got, verf)
 	}
 }
 
@@ -281,7 +313,7 @@ func TestClientRecovery_ReclaimMatchingVerifierAndEarlyExit(t *testing.T) {
 
 	sm := NewStateManager(5*time.Second, 30*time.Second)
 	sm.SetClientRecoveryStore(spy, 1)
-	if n := sm.LoadClientRecovery(context.Background()); n != 1 {
+	if n := sm.LoadClientRecovery(context.Background(), true); n != 1 {
 		t.Fatalf("seeded %d, want 1", n)
 	}
 	if !sm.IsInGrace() {
@@ -318,7 +350,7 @@ func TestClientRecovery_ReclaimChangedVerifierRejected(t *testing.T) {
 
 	sm := NewStateManager(5*time.Second, 30*time.Second)
 	sm.SetClientRecoveryStore(spy, 1)
-	if n := sm.LoadClientRecovery(context.Background()); n != 1 {
+	if n := sm.LoadClientRecovery(context.Background(), true); n != 1 {
 		t.Fatalf("seeded %d, want 1", n)
 	}
 
@@ -348,7 +380,7 @@ func TestClientRecovery_GraceTimerBackstopLifts(t *testing.T) {
 
 	sm := NewStateManager(5*time.Second, 100*time.Millisecond)
 	sm.SetClientRecoveryStore(spy, 1)
-	if n := sm.LoadClientRecovery(context.Background()); n != 1 {
+	if n := sm.LoadClientRecovery(context.Background(), true); n != 1 {
 		t.Fatalf("seeded %d, want 1", n)
 	}
 	if !sm.IsInGrace() {
@@ -398,7 +430,7 @@ func TestClientRecovery_V41PersistAndReclaimComplete(t *testing.T) {
 	// Now simulate a restart roster containing this client, then RECLAIM_COMPLETE.
 	sm2 := NewStateManager(5*time.Second, 30*time.Second)
 	sm2.SetClientRecoveryStore(spy, 8)
-	if n := sm2.LoadClientRecovery(context.Background()); n != 1 {
+	if n := sm2.LoadClientRecovery(context.Background(), true); n != 1 {
 		t.Fatalf("post-restart seeded %d, want 1", n)
 	}
 	// Re-establish identity and a session, then RECLAIM_COMPLETE.

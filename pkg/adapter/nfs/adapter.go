@@ -535,6 +535,24 @@ func (s *NFSAdapter) SetKerberosConfig(cfg *config.KerberosConfig) {
 //
 // Thread safety:
 // Called exactly once before Serve(), no synchronization needed.
+// anyShareAwaitingReclaim reports whether any share opened a lock-reclaim
+// window on this start. The lock layer opens one only when the prior shutdown
+// was unclean or persisted locks were restored, which is the same question the
+// NFSv4 reboot-grace window needs answered: is there state a returning client
+// could reclaim?
+func anyShareAwaitingReclaim(rt *runtime.Runtime) bool {
+	metaSvc := rt.GetMetadataService()
+	if metaSvc == nil {
+		return false
+	}
+	for _, shareName := range rt.ListShares() {
+		if lm := metaSvc.GetLockManagerForShare(shareName); lm != nil && lm.IsInGracePeriod() {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *NFSAdapter) SetRuntime(rtAny any) {
 	s.BaseAdapter.SetRuntime(rtAny)
 	rt := rtAny.(*runtime.Runtime)
@@ -599,7 +617,12 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 		// This is what gives the previously-no-op v4 grace a real expected set
 		// after an ungraceful restart. With an empty/fresh store the roster is
 		// empty and grace is skipped, exactly as on develop today.
-		n := v4StateManager.LoadClientRecovery(context.Background())
+		// Only open the reboot-grace window when some share actually has state a
+		// returning client could reclaim. The lock layer opens its own window on
+		// exactly that condition (unclean prior shutdown, or locks restored), so
+		// reuse its verdict instead of opening a window for every client that has
+		// ever confirmed against this metadata store.
+		n := v4StateManager.LoadClientRecovery(context.Background(), anyShareAwaitingReclaim(rt))
 		logger.Debug("NFSv4 client-recovery store designated", "boot_loaded_clients", n)
 	}
 
