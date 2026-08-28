@@ -45,10 +45,11 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    # The suite runs `go test -timeout 30m`, plus a cold fetch+compile of the
-    # e2e-only test deps under sudo. 20m was only ever enough because the job
-    # was a no-op (go test never ran); a real run needs headroom past the 30m
-    # test timeout itself.
+    # Backstop only. The test step bounds itself at E2E_WALL (45m) so that a
+    # wedge fails the step; this number just has to stay comfortably above
+    # setup + that wall + the grace period, because a job killed by its own
+    # timeout concludes `cancelled` and every alarm that keys on `failure`
+    # stays silent.
     timeout-minutes: 75
 
     services:
@@ -118,21 +119,29 @@ jobs:
         run: nix develop .#ci --command go build -o dfs cmd/dfs/main.go
 
       - name: Run E2E tests
+        env:
+          E2E_LOG: ${{ github.workspace }}/e2e.log
+          # 30m of test timeout plus room for the sudo-side dependency
+          # fetch+compile, the panic dump, and the remaining packages. The
+          # observed worst case is 30m16s of productive work, so this fails a
+          # wedge roughly 15m past a legitimately slow run rather than letting
+          # it run out the job.
+          E2E_WALL: 45m
         run: |
-          set -o pipefail
-          # Full mode: all configurations including Docker-based stores.
-          # sudo resolves commands via secure_path (which omits the Nix profile),
-          # so `nix` was "command not found" under sudo and go test never ran.
-          # Pass the caller's PATH through so `nix` resolves; keep -E for the
-          # external-service env vars the suite reads. pipefail is required so the
-          # go-test exit code propagates through `tee` — without it the job was a
-          # false-green no-op regardless of whether the tests ran or passed.
+          # sudo resolves commands via secure_path (which omits the Nix
+          # profile), so `nix` was "command not found" under sudo and go test
+          # never ran. Pass the caller's PATH through so `nix` resolves; keep -E
+          # for the external-service env vars the suite reads.
           # DITTOFS_E2E_REQUIRE_NLM=1: the real-NLM lock-interop test hard-fails
           # (instead of skipping) if its prerequisites are missing, so a
           # misconfigured runner can't silently drop that coverage.
-          sudo -E env "PATH=$PATH" "DITTOFS_E2E_REQUIRE_NLM=1" nix develop .#ci --command \
-            go test -tags=e2e -v -timeout 30m ./test/e2e/... \
-            2>&1 | tee "$GITHUB_WORKSPACE/e2e.log"
+          # Full mode: all configurations including Docker-based stores.
+          #
+          # The harness owns redirection and grading — see the header of
+          # run-e2e.sh for why the output must not go through a pipe.
+          .github/scripts/run-e2e.sh \
+            sudo -E env "PATH=$PATH" "DITTOFS_E2E_REQUIRE_NLM=1" nix develop .#ci --command \
+            go test -tags=e2e -v -timeout 30m ./test/e2e/...
 
       - name: Generate summary
         if: always()

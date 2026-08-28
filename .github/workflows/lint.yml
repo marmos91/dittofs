@@ -120,3 +120,17 @@ jobs:
         with:
           scandir: .
           severity: warning
+
+  # The E2E harness is what decides whether a failing suite is visible at all,
+  # so it is exercised against deliberately failing, wedged and false-green
+  # stand-in test commands on every change.
+  e2e-harness:
+    name: E2E Harness Self-Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run harness self-test
+        run: .github/scripts/run-e2e-selftest.sh
