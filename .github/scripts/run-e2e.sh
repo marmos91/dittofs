@@ -20,7 +20,10 @@
 # Grading uses both the exit status and the log: the status alone was already
 # supposed to be sufficient and still lost the signal once, so a zero status
 # with a log that shows no completed pass is treated as a failure.
-set -uo pipefail
+# +e explicitly: errexit would abort before the exit status can be read, and
+# reading it is the point. It is not set here, but it can arrive from the
+# environment via SHELLOPTS.
+set +e -uo pipefail
 
 LOG="${E2E_LOG:?E2E_LOG must name the log file to write}"
 WALL="${E2E_WALL:-45m}"

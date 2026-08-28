@@ -7,7 +7,10 @@
 # Case 3 also runs the *old* pipeline shape against the same stand-in and asserts
 # it does NOT finish — without that, the case would pass against a harness that
 # never had to refuse anything.
-set -uo pipefail
+# +e explicitly: every case here runs a command that is supposed to fail, and
+# errexit arriving from the environment via SHELLOPTS would abort at the first
+# one instead of recording it.
+set +e -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 harness="$here/run-e2e.sh"
@@ -112,6 +115,20 @@ reason() {
 reason wedge "no result after"
 reason green "no package reported ok"
 reason fail  "test command exited 1"
+
+# errexit arriving through the environment would abort the harness at the test
+# command, before it can read the exit status that grading depends on.
+start=$SECONDS
+E2E_LOG="$work/errexit.log" env SHELLOPTS=errexit "$harness" "$work/fail.sh" \
+    >"$work/errexit.out" 2>&1
+got=$?
+if [ "$got" -eq 1 ] && grep -q "test command exited 1" "$work/errexit.out"; then
+    echo "ok   errexit: exit 1 in $((SECONDS - start))s — graded despite inherited errexit"
+else
+    echo "FAIL errexit: exit $got, and grading did not run"
+    sed 's/^/    /' "$work/errexit.out"
+    fails=$((fails + 1))
+fi
 
 # The real suite runs under sudo, where the harness may not be permitted to
 # signal what it started at all. A wall that only holds against a signalable
