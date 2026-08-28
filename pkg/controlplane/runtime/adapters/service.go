@@ -293,6 +293,15 @@ func (s *Service) DisableAdapter(ctx context.Context, adapterType string) error 
 // start of the same type is refused while this one is still binding, and it is
 // dropped again if the bind fails.
 func (s *Service) startAdapter(cfg *models.AdapterConfig) error {
+	// Every start routes through here, which is the only place that covers all
+	// of them: the adapter constructors panic on a port they cannot bind, and
+	// the boot-time load runs with no recover above it, so a port persisted
+	// before it could be refused would otherwise kill the process at startup
+	// with no API left to correct it through.
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid adapter config: %w", err)
+	}
+
 	entry, err := s.claimAndRunAdapter(cfg)
 	if err != nil {
 		return err
@@ -303,9 +312,9 @@ func (s *Service) startAdapter(cfg *models.AdapterConfig) error {
 // claimAndRunAdapter builds the adapter and registers its entry, holding mu for
 // the whole build so a competing start of the same type is refused while this
 // one is still constructing. The unlock is deferred rather than written out on
-// each exit: the factory constructs adapters from operator-supplied config and
-// a constructor that panics on it would otherwise leave mu held for the life of
-// the process, blocking every later adapter call including the read-only ones.
+// each exit: a constructor that panics under this lock would otherwise leave it
+// held for the life of the process, blocking every later adapter call including
+// the read-only ones.
 func (s *Service) claimAndRunAdapter(cfg *models.AdapterConfig) (*adapterEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
