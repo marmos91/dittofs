@@ -669,12 +669,25 @@ func TestLoadAdaptersFromStore_SkipsUnbindableAdapter(t *testing.T) {
 	}
 }
 
+// requireLockFree fails the test unless the service lock is free: a leak is what
+// wedged every adapter route, the read-only ones included.
+func requireLockFree(t *testing.T, svc *Service) {
+	t.Helper()
+
+	done := make(chan struct{})
+	go func() { defer close(done); _ = svc.ListRunningAdapters() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("adapters service lock was not released")
+	}
+}
+
 // TestStartAdapter_RefusesUnbuildableConfigBeforeFactory pins the guard that
 // keeps operator-supplied config away from the adapter constructors, which treat
 // a port they cannot bind as a programmer error and panic on it. A panic raised
-// under the service lock leaks it for the life of the process, and the boot-time
-// load has no recover above it at all, so the config has to be refused before the
-// factory ever sees it.
+// under the service lock leaks it, and the boot-time load has no recover above
+// it at all, so the config has to be refused before the factory ever sees it.
 func TestStartAdapter_RefusesUnbuildableConfigBeforeFactory(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -710,15 +723,7 @@ func TestStartAdapter_RefusesUnbuildableConfigBeforeFactory(t *testing.T) {
 				t.Error("unbuildable adapter registered as running")
 			}
 
-			// The lock must still be free: a leak here is what wedged every
-			// adapter route, read-only ones included.
-			done := make(chan struct{})
-			go func() { defer close(done); _ = svc.ListRunningAdapters() }()
-			select {
-			case <-done:
-			case <-time.After(5 * time.Second):
-				t.Fatal("adapters service lock was not released")
-			}
+			requireLockFree(t, svc)
 		})
 	}
 }
@@ -745,11 +750,5 @@ func TestStartAdapter_ReleasesLockWhenFactoryPanics(t *testing.T) {
 			&models.AdapterConfig{Type: "nfs", Port: 12049, Enabled: true})
 	}()
 
-	done := make(chan struct{})
-	go func() { defer close(done); _ = svc.ListRunningAdapters() }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("adapters service lock was not released after the factory panicked")
-	}
+	requireLockFree(t, svc)
 }

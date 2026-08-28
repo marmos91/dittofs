@@ -319,8 +319,12 @@ func testInvalidConfigRejection(t *testing.T, runner *helpers.CLIRunner) {
 // A bare assert.Error is satisfied by the apiclient's 30 second HTTP timeout, so
 // a control plane that has stopped responding reads as a validation rejection
 // and the case passes for the wrong reason. Pinning the rejection to the
-// server's own message, rejecting a client timeout outright, and requiring a
+// server's own message, naming the timeout as a disqualifier, and requiring a
 // following call to succeed are what make the assertion fail on a dead server.
+// The timeout check is not load-bearing on its own — a timeout error cannot
+// carry the validation message either — but it is what reports the real cause
+// instead of a bare "string did not contain", and it survives someone later
+// loosening the message match.
 func requireValidationRejection(t *testing.T, runner *helpers.CLIRunner, err error, wantMessage, what string) {
 	t.Helper()
 

@@ -43,10 +43,10 @@ func DefaultPort(adapterType string) int {
 }
 
 // Validate reports whether the configuration describes an adapter the server
-// can actually build. It is the guard at the API boundary: the adapter
-// constructors treat an out-of-range port as a programmer error and panic on
-// it, and the type decides which constructor runs at all, so both have to be
-// refused before a row is persisted or a start is attempted.
+// can actually build: the adapter constructors treat an out-of-range port as a
+// programmer error and panic on it, and the type decides which constructor runs
+// at all, so both have to be refused before a row is persisted or a start is
+// attempted.
 func (a *AdapterConfig) Validate() error {
 	// Only the types with a known default port have a constructor in the
 	// adapter factory, so a type without one has no adapter to build.
