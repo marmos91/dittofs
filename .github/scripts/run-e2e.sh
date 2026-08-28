@@ -39,13 +39,15 @@ mkdir -p "$(dirname "$LOG")"
 
 # TERM first so the suite can dump state, SIGKILL after GRACE for anything that
 # ignores it.
+started=$SECONDS
 timeout --signal=TERM --kill-after="$GRACE" "$WALL" "$@" >"$LOG" 2>&1
 status=$?
+elapsed=$((SECONDS - started))
 
 if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
     # Name what was still running. The holder of a wedge like this used to be
     # invisible, which is why it took five silent runs to notice one.
-    echo "::group::processes still running at the wall"
+    echo "::group::processes still running when the run was killed"
     ps -eo pid,ppid,pgid,stat,etimes,user,args 2>/dev/null || true
     echo "::endgroup::"
 fi
@@ -54,7 +56,10 @@ cat "$LOG"
 
 # Anything of ours still running is a leak. It can no longer hold this step open,
 # but it is worth naming.
-survivors=$(pgrep -a -f '(^|/)(dfs|dfsctl|mount\.nfs|mount\.cifs|rpc\.statd|rpcbind)( |$)' 2>/dev/null)
+# Only processes the suite itself starts. rpcbind and rpc.statd are deliberately
+# left out: the runner installs and starts them, so matching them would warn on
+# every run, and a warning that always fires is read as background noise.
+survivors=$(pgrep -a -f '(^|/)(dfs|dfsctl|mount\.nfs|mount\.cifs)( |$)' 2>/dev/null)
 if [ -n "$survivors" ]; then
     echo "::warning title=Leaked processes::the suite left processes running"
     printf '%s\n' "$survivors"
@@ -65,8 +70,17 @@ fail() {
     exit 1
 }
 
-if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+if [ "$status" -eq 124 ]; then
     fail "no result after $WALL — the suite or something it started never finished"
+fi
+if [ "$status" -eq 137 ]; then
+    # 137 is SIGKILL. The wall escalates to it when TERM is ignored, but so does
+    # the kernel out-of-memory killer, and the status alone cannot tell them
+    # apart. The elapsed time and the process table dumped above can: a wall
+    # kill lands at $WALL plus $GRACE, an out-of-memory kill lands wherever the
+    # allocation did. Both are failures with no result to grade, so the
+    # distinction changes the diagnosis, not the verdict.
+    fail "killed by SIGKILL after ${elapsed}s (wall $WALL + $GRACE) — the wall escalating past TERM, or the out-of-memory killer"
 fi
 if [ "$status" -ne 0 ]; then
     fail "test command exited $status"

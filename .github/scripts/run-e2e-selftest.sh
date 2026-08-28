@@ -56,6 +56,15 @@ echo "=== RUN   TestThing"
 sleep 60
 EOF
 
+# Ignores TERM, so the wall must escalate to SIGKILL — a different exit status
+# and a different diagnosis from a plain timeout.
+cat >"$work/deaf.sh" <<'EOF'
+#!/usr/bin/env bash
+trap "" TERM
+echo "=== RUN   TestThing"
+sleep 60
+EOF
+
 # Exits 0 having produced no result — the false-green shape.
 cat >"$work/green.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -101,6 +110,7 @@ run_case pass  0 10 30s "$work/pass.sh"
 run_case fail  1 10 30s "$work/fail.sh"
 run_case leak  1 10 30s "$work/leak.sh"
 run_case wedge 1 15  5s "$work/wedge.sh"
+run_case deaf  1 15  5s "$work/deaf.sh"
 run_case green 1 10 30s "$work/green.sh"
 
 # A wedge must fail *because of the wall*. Asserting only the exit code would let
@@ -113,6 +123,7 @@ reason() {
     fi
 }
 reason wedge "no result after"
+reason deaf  "killed by SIGKILL"
 reason green "no package reported ok"
 reason fail  "test command exited 1"
 
