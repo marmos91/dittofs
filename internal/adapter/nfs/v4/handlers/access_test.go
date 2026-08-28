@@ -14,15 +14,12 @@ const allValidAccessBits = uint32(ACCESS4_READ | ACCESS4_LOOKUP | ACCESS4_MODIFY
 // the RFC states, over every request an NFSv4.0 client can make. It mirrors what
 // pynfs asserts in st_access._try_all_combos and _try_invalid, so a change that
 // widens the reported set fails here rather than in a suite run.
-//
-// The narrowing to the requested bits happens at the call site, so the test
-// applies the same mask the handlers do.
 func TestAccessSupportedFor(t *testing.T) {
 	objects := []struct {
 		name  string
 		isDir bool
 		// forbid is the set with no meaning for this object type: RFC 7530
-		// Section 16.1.4 for LOOKUP and EXECUTE, Section 16.1.5 for DELETE.
+		// Section 16.1.4 for LOOKUP and EXECUTE, Section 16.1.2 for DELETE.
 		forbid uint32
 	}{
 		{"directory", true, ACCESS4_EXECUTE},
@@ -33,7 +30,7 @@ func TestAccessSupportedFor(t *testing.T) {
 		for _, minor := range []uint32{0, 1, 2} {
 			t.Run(fmt.Sprintf("%s/minor%d", obj.name, minor), func(t *testing.T) {
 				for requested := uint32(0); requested <= allValidAccessBits; requested++ {
-					supported := accessSupportedFor(obj.isDir, minor) & requested
+					supported := accessSupportedFor(obj.isDir, minor, requested)
 
 					if extra := supported &^ requested; extra != 0 {
 						t.Fatalf("minor %d, requested 0x%02x: supported 0x%02x is not a subset (extra 0x%02x)",
@@ -60,7 +57,7 @@ func TestAccessSupportedForUndefinedBits(t *testing.T) {
 	for _, isDir := range []bool{true, false} {
 		for _, minor := range []uint32{0, 1} {
 			for _, requested := range invalid {
-				supported := accessSupportedFor(isDir, minor) & requested
+				supported := accessSupportedFor(isDir, minor, requested)
 				if undefined := supported &^ allValidAccessBits; undefined != 0 {
 					t.Errorf("isDir=%v minor=%d requested=0x%02x: supported 0x%02x reports undefined bits 0x%02x",
 						isDir, minor, requested, supported, undefined)
@@ -70,7 +67,7 @@ func TestAccessSupportedForUndefinedBits(t *testing.T) {
 	}
 
 	// Minorversion 2 defines them, so there the bits are reportable.
-	if got := accessSupportedFor(false, 2) & ACCESS4_XAREAD; got != ACCESS4_XAREAD {
+	if got := accessSupportedFor(false, 2, ACCESS4_XAREAD); got != ACCESS4_XAREAD {
 		t.Errorf("minor 2 XAREAD = 0x%02x, want 0x%02x", got, ACCESS4_XAREAD)
 	}
 }

@@ -35,20 +35,20 @@ const (
 )
 
 // accessSupportedFor returns the ACCESS4 bits the server can reliably check for
-// one object under one minorversion, before the requested mask narrows them
-// further.
+// one object under one minorversion, narrowed to the bits the client asked
+// about: RFC 7530 Section 16.1.4 says the reply's "supported" field "will
+// contain only as many values as were originally sent in the arguments".
 //
-// Three bits are not reportable against every object. RFC 7530 Section 16.1.4
-// gives ACCESS4_LOOKUP "no meaning for non-directory objects" and
-// ACCESS4_EXECUTE "no meaning for a directory". Section 16.1.5 has a server that
-// derives a file's delete permission from the directory holding it report
-// ACCESS4_DELETE as 0 for a non-directory, since the object's own handle cannot
-// answer that question; the client then ignores the bit.
+// Three bits are not reportable against every object. Section 16.1.4 gives
+// ACCESS4_LOOKUP "no meaning for non-directory objects" and ACCESS4_EXECUTE "no
+// meaning for a directory". Section 16.1.2 defines ACCESS4_DELETE as deleting a
+// directory entry, so it too is a right of the directory, not of the object the
+// entry names.
 //
 // The RFC 8276 extended-attribute bits belong to minorversion 2, which is the
 // gate the dispatch table already applies to the operations they advertise, so
 // reporting them to a v4.0 or v4.1 client would promise ops it cannot call.
-func accessSupportedFor(isDir bool, minorVersion uint32) uint32 {
+func accessSupportedFor(isDir bool, minorVersion, requested uint32) uint32 {
 	supported := uint32(ACCESS4_READ | ACCESS4_MODIFY | ACCESS4_EXTEND)
 
 	if isDir {
@@ -61,7 +61,7 @@ func accessSupportedFor(isDir bool, minorVersion uint32) uint32 {
 		supported |= ACCESS4_XAREAD | ACCESS4_XAWRITE | ACCESS4_XALIST
 	}
 
-	return supported
+	return supported & requested
 }
 
 // handleAccess implements the ACCESS operation (RFC 7530 Section 16.1).
@@ -96,7 +96,7 @@ func (h *Handler) handleAccess(ctx *types.CompoundContext, reader io.Reader) *ty
 		// both fields from the same mask keeps granted a subset of supported, and
 		// supported a subset of the request, even when the client sends unknown or
 		// reserved bits.
-		supported := accessSupportedFor(true, ctx.MinorVersion) & accessReq
+		supported := accessSupportedFor(true, ctx.MinorVersion, accessReq)
 
 		var buf bytes.Buffer
 		_ = xdr.WriteUint32(&buf, types.NFS4_OK)
@@ -171,10 +171,7 @@ func (h *Handler) accessRealFS(ctx *types.CompoundContext, accessReq uint32) *ty
 		}
 	}
 
-	// RFC 7530 Section 16.1.4: "the supported field will contain only as many
-	// values as were originally sent in the arguments", so the bits this object
-	// and minorversion can answer for are narrowed to the request.
-	supported := accessSupportedFor(file.Type == metadata.FileTypeDirectory, ctx.MinorVersion) & accessReq
+	supported := accessSupportedFor(file.Type == metadata.FileTypeDirectory, ctx.MinorVersion, accessReq)
 
 	// Granted is masked by supported rather than by the request: CheckPermissions
 	// returns a subset of the requested generic flags, but the

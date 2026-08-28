@@ -675,10 +675,10 @@ func TestAccess_RealFS_RootGetsAll(t *testing.T) {
 
 	// Only the bits that are MEANINGFUL for the object type are reportable, and
 	// the target is a regular file on a minorversion-0 context. ACCESS4_LOOKUP
-	// is a directory-search right (RFC 7530 Section 16.1.4), ACCESS4_DELETE on a
-	// non-directory is decided by the parent directory rather than the file, so
-	// the server cannot check it from this handle (Section 16.1.5), and the RFC
-	// 8276 extended-attribute bits are not defined below minorversion 2.
+	// is a directory-search right (RFC 7530 Section 16.1.4), ACCESS4_DELETE
+	// deletes a directory entry and so belongs to the directory (Section
+	// 16.1.2), and the RFC 8276 extended-attribute bits are not defined below
+	// minorversion 2.
 	wantSupported := uint32(ACCESS4_READ | ACCESS4_MODIFY | ACCESS4_EXTEND | ACCESS4_EXECUTE)
 
 	if supported != wantSupported {
