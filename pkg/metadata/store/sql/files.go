@@ -157,6 +157,15 @@ func (c *Core) GetFileByPayloadID(ctx context.Context, payloadID metadata.Payloa
 	return file, nil
 }
 
+// SetParent records a file's parent. It writes nothing: the parent edge lives
+// in parent_child_map, which SetChild already maintains, so there is no second
+// place to keep in step. It still reports cancellation, so a caller draining a
+// tree in a tight loop sees the context give out here as it would anywhere
+// else.
+func (c *Core) SetParent(ctx context.Context, handle metadata.FileHandle, parentHandle metadata.FileHandle) error {
+	return ctx.Err()
+}
+
 // listChildrenDefaultLimit is the page size applied when the caller passes a
 // non-positive limit.
 const listChildrenDefaultLimit = 1000

@@ -28,6 +28,11 @@ type Core struct {
 	X Executor
 	// D supplies statement text and classifies driver errors. Never nil.
 	D Dialect
+	// Caps reports the store's currently configured filesystem capabilities.
+	// It is a function rather than a value because SetFilesystemCapabilities
+	// replaces them at runtime, and a copy taken at construction would go
+	// stale. Never nil.
+	Caps func() metadata.FilesystemCapabilities
 }
 
 // GetFileChunk reads one chunk by id, reporting metadata.ErrFileChunkNotFound

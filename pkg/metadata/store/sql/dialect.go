@@ -40,6 +40,27 @@ type Dialect interface {
 	// Files returns the dialect's file and directory read statements, under
 	// the same package-level-value expectation as Chunks.
 	Files() *FileQueries
+
+	// Shares returns the dialect's share read statements, under the same
+	// package-level-value expectation as Chunks.
+	Shares() *ShareQueries
+}
+
+// ShareQueries holds the share read statements in one dialect's syntax. These
+// differ only in placeholder syntax, but a placeholder is not a value a driver
+// will substitute, so each dialect still spells its own.
+type ShareQueries struct {
+	// GetRootHandle selects a share's root inode id. One parameter: the share
+	// name.
+	GetRootHandle string
+	// GetShareOptions selects a share's options blob. One parameter: the share
+	// name.
+	GetShareOptions string
+	// ListShares selects every share name. No parameters.
+	ListShares string
+	// GetFilesystemMeta selects a share's filesystem metadata blob. One
+	// parameter: the share name.
+	GetFilesystemMeta string
 }
 
 // FileQueries holds the file and directory read statements in one dialect's

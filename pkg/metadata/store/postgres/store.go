@@ -151,7 +151,7 @@ func NewPostgresMetadataStore(
 		quota:        basestore.NewQuotaCache(),
 	}
 	// The shared SQL bodies run on the pool for store-level calls.
-	store.Core = &storesql.Core{X: poolExecer{s: store}, D: pgDialect}
+	store.Core = &storesql.Core{X: poolExecer{s: store}, D: pgDialect, Caps: store.currentCapabilities}
 
 	// The substores derive only from pool, which is never reassigned, so bind
 	// them once here.

@@ -148,7 +148,7 @@ func (s *PostgresMetadataStore) withTransaction(ctx context.Context, fn func(tx 
 		}
 
 		ptx := &postgresTransaction{store: s, tx: tx}
-		ptx.Core = &storesql.Core{X: txExecer{tx: tx}, D: pgDialect}
+		ptx.Core = &storesql.Core{X: txExecer{tx: tx}, D: pgDialect, Caps: s.currentCapabilities}
 		if err := fn(ptx); err != nil {
 			// Apply timeout to rollback to prevent indefinite blocking
 			rollbackCtx, rollbackCancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
@@ -565,12 +565,6 @@ func (tx *postgresTransaction) DeleteChild(ctx context.Context, dirHandle metada
 	return nil
 }
 
-func (tx *postgresTransaction) SetParent(ctx context.Context, handle metadata.FileHandle, parentHandle metadata.FileHandle) error {
-	// In PostgreSQL, parent is tracked via parent_child_map table
-	// This is already handled by SetChild
-	return nil
-}
-
 func (tx *postgresTransaction) SetLinkCount(ctx context.Context, handle metadata.FileHandle, count uint32) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -592,30 +586,6 @@ func (tx *postgresTransaction) SetLinkCount(ctx context.Context, handle metadata
 	}
 
 	return nil
-}
-
-func (tx *postgresTransaction) GetFilesystemMeta(ctx context.Context, shareName string) (*metadata.FilesystemMeta, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	query := `SELECT meta FROM filesystem_meta WHERE share_name = $1`
-
-	var data []byte
-	err := tx.tx.QueryRow(ctx, query, shareName).Scan(&data)
-	if err != nil {
-		// Return defaults if not found
-		return &metadata.FilesystemMeta{
-			Capabilities: tx.store.capabilities,
-		}, nil
-	}
-
-	var meta metadata.FilesystemMeta
-	if err := json.Unmarshal(data, &meta); err != nil {
-		return nil, err
-	}
-
-	return &meta, nil
 }
 
 func (tx *postgresTransaction) PutFilesystemMeta(ctx context.Context, shareName string, meta *metadata.FilesystemMeta) error {
@@ -649,45 +619,6 @@ func (tx *postgresTransaction) GenerateHandle(ctx context.Context, shareName str
 // ============================================================================
 // Transaction Shares Operations
 // ============================================================================
-
-func (tx *postgresTransaction) GetRootHandle(ctx context.Context, shareName string) (metadata.FileHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	query := `SELECT root_file_id FROM shares WHERE share_name = $1`
-
-	var rootID uuid.UUID
-	err := tx.tx.QueryRow(ctx, query, shareName).Scan(&rootID)
-	if err != nil {
-		return nil, mapPgError(err, "GetRootHandle", shareName)
-	}
-
-	return metadata.EncodeShareHandle(shareName, rootID)
-}
-
-func (tx *postgresTransaction) GetShareOptions(ctx context.Context, shareName string) (*metadata.ShareOptions, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	query := `SELECT options FROM shares WHERE share_name = $1`
-
-	var optionsJSON []byte
-	err := tx.tx.QueryRow(ctx, query, shareName).Scan(&optionsJSON)
-	if err != nil {
-		return nil, mapPgError(err, "GetShareOptions", shareName)
-	}
-
-	var options metadata.ShareOptions
-	if len(optionsJSON) > 0 {
-		if err := json.Unmarshal(optionsJSON, &options); err != nil {
-			return nil, mapPgError(err, "GetShareOptions", shareName)
-		}
-	}
-
-	return &options, nil
-}
 
 func (tx *postgresTransaction) CreateShare(ctx context.Context, share *metadata.Share) error {
 	if err := ctx.Err(); err != nil {
@@ -820,35 +751,6 @@ func (tx *postgresTransaction) collectShareQuotaFreed(ctx context.Context, share
 		return mapPgError(err, "DeleteShare", shareName)
 	}
 	return nil
-}
-
-func (tx *postgresTransaction) ListShares(ctx context.Context) ([]string, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	rows, err := tx.tx.Query(ctx, `SELECT share_name FROM shares`)
-	if err != nil {
-		return nil, mapPgError(err, "ListShares", "")
-	}
-	defer rows.Close()
-
-	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		names = append(names, name)
-	}
-
-	// Surface any error that terminated the iteration early so a partial
-	// share list is not returned as if it were complete.
-	if err := rows.Err(); err != nil {
-		return nil, mapPgError(err, "ListShares", "")
-	}
-
-	return names, nil
 }
 
 func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareName string, attr *metadata.FileAttr) (*metadata.File, error) {

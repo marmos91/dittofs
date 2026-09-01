@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -62,47 +61,11 @@ func (s *PostgresMetadataStore) DeleteChild(ctx context.Context, dirHandle metad
 	})
 }
 
-// SetParent sets the parent handle for a file/directory.
-//
-// Parent tracking is handled implicitly by parent_child_map via SetChild, so
-// this performs no write. It still honours context cancellation, matching the
-// prior WithTransaction-based implementation, while avoiding the cost of
-// opening an empty transaction.
-func (s *PostgresMetadataStore) SetParent(ctx context.Context, handle metadata.FileHandle, parentHandle metadata.FileHandle) error {
-	return ctx.Err()
-}
-
 // SetLinkCount sets the hard link count for a file.
 func (s *PostgresMetadataStore) SetLinkCount(ctx context.Context, handle metadata.FileHandle, count uint32) error {
 	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.SetLinkCount(ctx, handle, count)
 	})
-}
-
-// GetFilesystemMeta retrieves filesystem metadata for a share.
-// Uses direct pool query without transaction for better performance.
-func (s *PostgresMetadataStore) GetFilesystemMeta(ctx context.Context, shareName string) (*metadata.FilesystemMeta, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	query := `SELECT meta FROM filesystem_meta WHERE share_name = $1`
-
-	var data []byte
-	err := s.queryRow(ctx, query, shareName).Scan(&data)
-	if err != nil {
-		// Return defaults if not found
-		return &metadata.FilesystemMeta{
-			Capabilities: s.capabilities,
-		}, nil
-	}
-
-	var meta metadata.FilesystemMeta
-	if err := json.Unmarshal(data, &meta); err != nil {
-		return nil, err
-	}
-
-	return &meta, nil
 }
 
 // PutFilesystemMeta stores filesystem metadata for a share.

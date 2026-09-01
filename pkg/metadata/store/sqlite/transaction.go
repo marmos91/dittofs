@@ -98,7 +98,7 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 		}
 
 		ptx := &sqliteTransaction{store: s, tx: execer{e: rawTx, op: "tx"}}
-		ptx.Core = &storesql.Core{X: ptx.tx, D: sqliteDialect}
+		ptx.Core = &storesql.Core{X: ptx.tx, D: sqliteDialect, Caps: s.currentCapabilities}
 		if err := fn(ptx); err != nil {
 			_ = rawTx.Rollback()
 			if isBusyError(err) {
@@ -508,12 +508,6 @@ func (tx *sqliteTransaction) DeleteChild(ctx context.Context, dirHandle metadata
 	return nil
 }
 
-func (tx *sqliteTransaction) SetParent(ctx context.Context, handle metadata.FileHandle, parentHandle metadata.FileHandle) error {
-	// Parent is tracked via the parent_child_map table, already handled by SetChild.
-	// Still honours context cancellation, matching the store-level SetParent.
-	return ctx.Err()
-}
-
 func (tx *sqliteTransaction) SetLinkCount(ctx context.Context, handle metadata.FileHandle, count uint32) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -535,30 +529,6 @@ func (tx *sqliteTransaction) SetLinkCount(ctx context.Context, handle metadata.F
 	}
 
 	return nil
-}
-
-func (tx *sqliteTransaction) GetFilesystemMeta(ctx context.Context, shareName string) (*metadata.FilesystemMeta, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	query := `SELECT meta FROM filesystem_meta WHERE share_name = ?1`
-
-	var data []byte
-	err := tx.tx.QueryRow(ctx, query, shareName).Scan(&data)
-	if err != nil {
-		// Return defaults if not found
-		return &metadata.FilesystemMeta{
-			Capabilities: tx.store.capabilities,
-		}, nil
-	}
-
-	var meta metadata.FilesystemMeta
-	if err := json.Unmarshal(data, &meta); err != nil {
-		return nil, err
-	}
-
-	return &meta, nil
 }
 
 func (tx *sqliteTransaction) PutFilesystemMeta(ctx context.Context, shareName string, meta *metadata.FilesystemMeta) error {
@@ -592,45 +562,6 @@ func (tx *sqliteTransaction) GenerateHandle(ctx context.Context, shareName strin
 // ============================================================================
 // Transaction Shares Operations
 // ============================================================================
-
-func (tx *sqliteTransaction) GetRootHandle(ctx context.Context, shareName string) (metadata.FileHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	query := `SELECT root_file_id FROM shares WHERE share_name = ?1`
-
-	var rootID uuid.UUID
-	err := tx.tx.QueryRow(ctx, query, shareName).Scan(&rootID)
-	if err != nil {
-		return nil, mapDBError(err, "GetRootHandle", shareName)
-	}
-
-	return metadata.EncodeShareHandle(shareName, rootID)
-}
-
-func (tx *sqliteTransaction) GetShareOptions(ctx context.Context, shareName string) (*metadata.ShareOptions, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	query := `SELECT options FROM shares WHERE share_name = ?1`
-
-	var optionsJSON []byte
-	err := tx.tx.QueryRow(ctx, query, shareName).Scan(&optionsJSON)
-	if err != nil {
-		return nil, mapDBError(err, "GetShareOptions", shareName)
-	}
-
-	var options metadata.ShareOptions
-	if len(optionsJSON) > 0 {
-		if err := json.Unmarshal(optionsJSON, &options); err != nil {
-			return nil, mapDBError(err, "GetShareOptions", shareName)
-		}
-	}
-
-	return &options, nil
-}
 
 func (tx *sqliteTransaction) CreateShare(ctx context.Context, share *metadata.Share) error {
 	if err := ctx.Err(); err != nil {
@@ -749,35 +680,6 @@ func (tx *sqliteTransaction) collectShareQuotaFreed(ctx context.Context, shareNa
 		return mapDBError(err, "DeleteShare", shareName)
 	}
 	return nil
-}
-
-func (tx *sqliteTransaction) ListShares(ctx context.Context) ([]string, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	rows, err := tx.tx.Query(ctx, `SELECT share_name FROM shares`)
-	if err != nil {
-		return nil, mapDBError(err, "ListShares", "")
-	}
-	defer rows.Close()
-
-	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		names = append(names, name)
-	}
-
-	// Surface any error that terminated the iteration early so a partial
-	// share list is not returned as if it were complete.
-	if err := rows.Err(); err != nil {
-		return nil, mapDBError(err, "ListShares", "")
-	}
-
-	return names, nil
 }
 
 func (tx *sqliteTransaction) CreateRootDirectory(ctx context.Context, shareName string, attr *metadata.FileAttr) (*metadata.File, error) {
