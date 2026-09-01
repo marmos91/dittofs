@@ -612,10 +612,6 @@ func (tx *postgresTransaction) PutFilesystemMeta(ctx context.Context, shareName 
 	return nil
 }
 
-func (tx *postgresTransaction) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
-	return basestore.GenerateHandle(ctx, shareName)
-}
-
 // ============================================================================
 // Transaction Shares Operations
 // ============================================================================
@@ -952,36 +948,8 @@ func (tx *postgresTransaction) GetServerConfig(ctx context.Context) (metadata.Me
 	}, nil
 }
 
-func (tx *postgresTransaction) GetFilesystemCapabilities(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemCapabilities, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// Return cached capabilities
-	caps := tx.store.capabilities
-	return &caps, nil
-}
-
 func (tx *postgresTransaction) SetFilesystemCapabilities(capabilities metadata.FilesystemCapabilities) {
 	tx.store.capabilities = capabilities
-}
-
-func (tx *postgresTransaction) GetFilesystemStatistics(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemStatistics, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	shareName, _, err := metadata.DecodeFileHandle(handle)
-	if err != nil {
-		return nil, err
-	}
-	sql, args := statfsQuery(shareName)
-	var bytesUsed, filesUsed int64
-	if err := tx.tx.QueryRow(ctx, sql, args...).Scan(&bytesUsed, &filesUsed); err != nil {
-		return nil, mapPgError(err, "GetFilesystemStatistics", "")
-	}
-
-	return basestore.BuildStatistics(bytesUsed, filesUsed), nil
 }
 
 // ============================================================================

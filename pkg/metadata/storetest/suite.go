@@ -197,6 +197,13 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		runShareOptionsOps(t, factory)
 	})
 
+	// StatfsOps pins that filesystem statistics are scoped to the share asked
+	// about. A store-wide total looks correct on the single-share stores most
+	// tests build.
+	t.Run("StatfsOps", func(t *testing.T) {
+		runStatfsOps(t, factory)
+	})
+
 	// FileReadTxOps pins that the transaction-level file and directory reads
 	// run inside the caller's transaction. Every other test here reads only
 	// committed state, which a read that escaped to the pool would answer just

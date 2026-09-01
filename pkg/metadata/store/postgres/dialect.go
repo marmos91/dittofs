@@ -100,6 +100,7 @@ var shareQueries = storesql.ShareQueries{
 	GetShareOptions:   `SELECT options FROM shares WHERE share_name = $1`,
 	ListShares:        `SELECT share_name FROM shares`,
 	GetFilesystemMeta: `SELECT meta FROM filesystem_meta WHERE share_name = $1`,
+	Statfs:            `SELECT COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE share_name = $1 AND file_type = $2`,
 }
 
 var _ storesql.Dialect = dialect{}
