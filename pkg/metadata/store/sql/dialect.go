@@ -65,6 +65,9 @@ type ShareQueries struct {
 	// in that column order. Two parameters: the share name and the numeric
 	// regular-file type.
 	Statfs string
+	// PutFilesystemMeta upserts a share's filesystem metadata blob. Two
+	// parameters: the share name and the encoded blob.
+	PutFilesystemMeta string
 }
 
 // FileQueries holds the file and directory read statements in one dialect's
@@ -93,6 +96,15 @@ type FileQueries struct {
 	// GetFileByPayloadID selects one full inode row by content id, block-ref
 	// aggregate included. One parameter: the content id.
 	GetFileByPayloadID string
+	// SetChild inserts a directory entry, repointing an existing name at the
+	// new child. Three parameters: the parent id, the child name, the child id.
+	SetChild string
+	// DeleteChild removes a directory entry. Two parameters: the parent id and
+	// the child name.
+	DeleteChild string
+	// SetLinkCount writes one inode's nlink. Two parameters: the count and the
+	// file id.
+	SetLinkCount string
 }
 
 // ChunkQueries holds the file-chunk statements in one dialect's syntax. Field

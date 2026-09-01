@@ -123,3 +123,21 @@ func (c *Core) GetFilesystemMeta(ctx context.Context, shareName string) (*metada
 
 	return &meta, nil
 }
+
+// PutFilesystemMeta stores a share's filesystem metadata, replacing whatever
+// was there.
+func (c *Core) PutFilesystemMeta(ctx context.Context, shareName string, meta *metadata.FilesystemMeta) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+
+	if _, err := c.X.Exec(ctx, c.D.Shares().PutFilesystemMeta, shareName, data); err != nil {
+		return c.D.MapError(err, "PutFilesystemMeta", shareName)
+	}
+	return nil
+}

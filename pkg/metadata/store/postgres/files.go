@@ -21,6 +21,12 @@ import (
 // live on store/sql.Core, whose methods are promoted onto both this store and
 // its transaction. What is left here is what could not be either — the reads
 // that need store state, and the ones with no transaction-level counterpart.
+//
+// Several delegates below shadow a promoted Core method of the same name. That
+// is what keeps a store-level write inside a transaction: deleting one would
+// not break the build, since the promoted method satisfies the interface, but
+// the write would go straight to the pool and a contended failure would reach
+// the caller instead of being retried.
 
 // UpdateAttrs stores or updates file metadata.
 // Creates the entry if it doesn't exist.
@@ -54,7 +60,6 @@ func (s *PostgresMetadataStore) SetChild(ctx context.Context, dirHandle metadata
 }
 
 // DeleteChild removes a child entry from a directory.
-// Returns ErrNotFound if name doesn't exist.
 func (s *PostgresMetadataStore) DeleteChild(ctx context.Context, dirHandle metadata.FileHandle, name string) error {
 	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.DeleteChild(ctx, dirHandle, name)
