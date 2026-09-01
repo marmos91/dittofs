@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"math"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
@@ -170,6 +171,27 @@ func EncodeLOCK4denied(buf *bytes.Buffer, denied *LOCK4denied) {
 // ============================================================================
 // Validation Helpers
 // ============================================================================
+
+// validateLockRange checks that offset and length describe a byte range the
+// server will act on. RFC 7530 Section 16.10.4 rejects a length of zero, and
+// rejects a length that is not all-ones whose sum with the offset exceeds the
+// maximum 64-bit unsigned value. A length with every bit set is the wire
+// encoding for "from offset to end-of-file", so it is exempt from that sum.
+// Sections 16.11.4 and 16.12.4 apply the same two rules to LOCKT and LOCKU.
+//
+// Exempting all-ones only admits the range: the lock manager still receives the
+// literal length, which is not the end-of-file range it names.
+//
+// Returns NFS4ERR_INVAL on a rejected range.
+func validateLockRange(offset, length uint64) error {
+	if length != 0 && (length == math.MaxUint64 || offset <= math.MaxUint64-length) {
+		return nil
+	}
+	return &NFS4StateError{
+		Status:  types.NFS4ERR_INVAL,
+		Message: "invalid byte-range lock offset/length",
+	}
+}
 
 // validateOpenModeForLock checks that the open state's share_access mode
 // is compatible with the requested lock type.

@@ -2,6 +2,8 @@ package state
 
 import (
 	"context"
+	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -941,5 +943,44 @@ func TestLockNew_BlockingType(t *testing.T) {
 	}
 	if lockResult2.Denied == nil {
 		t.Fatal("expected LOCK4denied for READW_LT on conflicting exclusive range")
+	}
+}
+
+// ============================================================================
+// ValidateLockRange Tests
+// ============================================================================
+
+func TestValidateLockRange(t *testing.T) {
+	tests := []struct {
+		name    string
+		offset  uint64
+		length  uint64
+		wantErr bool
+	}{
+		{"ordinary range", 25, 75, false},
+		{"zero length", 25, 0, true},
+		{"zero length at zero offset", 0, 0, true},
+		{"all-ones length locks through EOF", 100, math.MaxUint64, false},
+		{"all-ones length from the highest offset", math.MaxUint64, math.MaxUint64, false},
+		{"sum lands exactly on the maximum", 1, math.MaxUint64 - 1, false},
+		{"sum passes the maximum by one", 2, math.MaxUint64 - 1, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateLockRange(tt.offset, tt.length)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateLockRange(%d, %d) = %v, wantErr %v",
+					tt.offset, tt.length, err, tt.wantErr)
+			}
+			if err == nil {
+				return
+			}
+			var stateErr *NFS4StateError
+			if !errors.As(err, &stateErr) || stateErr.Status != types.NFS4ERR_INVAL {
+				t.Errorf("validateLockRange(%d, %d) error = %v, want NFS4ERR_INVAL",
+					tt.offset, tt.length, err)
+			}
+		})
 	}
 }
