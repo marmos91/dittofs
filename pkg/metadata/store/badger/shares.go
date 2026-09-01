@@ -34,26 +34,12 @@ func (s *BadgerMetadataStore) GetRootHandle(ctx context.Context, shareName strin
 
 	var rootHandle metadata.FileHandle
 	err := s.db.View(func(txn *badgerdb.Txn) error {
-		item, err := txn.Get(keyShare(shareName))
-		if err != nil {
-			return mapBadgerError(err, "share", shareName)
-		}
-
-		return item.Value(func(val []byte) error {
-			data, err := decodeShareData(val)
-			if err != nil {
-				return err
-			}
-			rootHandle = data.RootHandle
-			return nil
-		})
+		tx := &badgerTransaction{store: s, txn: txn}
+		var err error
+		rootHandle, err = tx.GetRootHandle(ctx, shareName)
+		return err
 	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	return rootHandle, nil
+	return rootHandle, err
 }
 
 // GetShareOptions returns the share configuration options.
@@ -69,27 +55,16 @@ func (s *BadgerMetadataStore) GetShareOptions(ctx context.Context, shareName str
 	}
 
 	// Snapshot the invalidation generation BEFORE the backing read so a write
-	// that races this read cannot leave a stale value cached (store() checks it).
+	// that races this read cannot leave a stale value cached (Store checks it).
 	gen := s.shareCache.Generation()
 
 	var opts *metadata.ShareOptions
 	err := s.db.View(func(txn *badgerdb.Txn) error {
-		item, err := txn.Get(keyShare(shareName))
-		if err != nil {
-			return mapBadgerError(err, "share", shareName)
-		}
-
-		return item.Value(func(val []byte) error {
-			data, err := decodeShareData(val)
-			if err != nil {
-				return err
-			}
-			optsCopy := data.Share.Options
-			opts = &optsCopy
-			return nil
-		})
+		tx := &badgerTransaction{store: s, txn: txn}
+		var err error
+		opts, err = tx.GetShareOptions(ctx, shareName)
+		return err
 	})
-
 	if err != nil {
 		return nil, err
 	}
@@ -104,112 +79,23 @@ func (s *BadgerMetadataStore) GetShareOptions(ctx context.Context, shareName str
 
 // CreateShare creates a new share with the given configuration.
 func (s *BadgerMetadataStore) CreateShare(ctx context.Context, share *metadata.Share) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	err := s.updateWithConflictRetry(ctx, func(txn *badgerdb.Txn) error {
-		_, err := txn.Get(keyShare(share.Name))
-		if err == nil {
-			return &metadata.StoreError{
-				Code:    metadata.ErrAlreadyExists,
-				Message: "share already exists",
-				Path:    share.Name,
-			}
-		}
-		if err != badgerdb.ErrKeyNotFound {
-			return err
-		}
-
-		// Store as shareData for consistency with GetRootHandle and CreateRootDirectory
-		shareDataValue := &shareData{
-			Share: *share,
-			// RootHandle will be set by CreateRootDirectory
-		}
-
-		encoded, err := encodeShareData(shareDataValue)
-		if err != nil {
-			return err
-		}
-
-		return txn.Set(keyShare(share.Name), encoded)
+	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return tx.CreateShare(ctx, share)
 	})
-	if err == nil {
-		s.shareCache.Invalidate(share.Name)
-	}
-	return err
 }
 
 // UpdateShareOptions updates the share configuration options.
 func (s *BadgerMetadataStore) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	err := s.updateWithConflictRetry(ctx, func(txn *badgerdb.Txn) error {
-		item, err := txn.Get(keyShare(shareName))
-		if err != nil {
-			return mapBadgerError(err, "share", shareName)
-		}
-
-		var data *shareData
-		err = item.Value(func(val []byte) error {
-			d, err := decodeShareData(val)
-			if err != nil {
-				return err
-			}
-			data = d
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-
-		// Update options
-		data.Share.Options = *options
-
-		updatedData, err := encodeShareData(data)
-		if err != nil {
-			return err
-		}
-
-		return txn.Set(keyShare(shareName), updatedData)
+	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return tx.UpdateShareOptions(ctx, shareName, options)
 	})
-	if err == nil {
-		s.shareCache.Invalidate(shareName)
-	}
-	return err
 }
 
 // DeleteShare removes a share and all its metadata.
 func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	var quotaFreed map[basestore.QuotaKey]metadata.UsageStat
-	err := s.updateWithConflictRetry(ctx, func(txn *badgerdb.Txn) error {
-		_, err := txn.Get(keyShare(shareName))
-		if err != nil {
-			return mapBadgerError(err, "share", shareName)
-		}
-
-		quota, err := s.deleteShareFiles(txn, shareName)
-		if err != nil {
-			return err
-		}
-		quotaFreed = quota
-
-		return txn.Delete(keyShare(shareName))
+	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return tx.DeleteShare(ctx, shareName)
 	})
-	if err != nil {
-		return err
-	}
-	// Drop any cached options for the removed share, after a successful commit.
-	s.shareCache.Invalidate(shareName)
-	// Apply the usage decrement once, after a successful commit.
-	s.applyQuotaDelta(quotaFreed)
-	return nil
 }
 
 // applyQuotaDelta folds a per-identity usage delta into the in-memory usage
@@ -376,37 +262,27 @@ func (s *BadgerMetadataStore) ListShares(ctx context.Context) ([]string, error) 
 	}
 
 	var names []string
-
 	err := s.db.View(func(txn *badgerdb.Txn) error {
-		prefix := []byte(prefixShare)
-		opts := badgerdb.DefaultIteratorOptions
-		opts.Prefix = prefix
-		opts.PrefetchValues = false
-
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			key := it.Item().Key()
-			name := string(key[len(prefix):])
-			names = append(names, name)
-		}
-
-		return nil
+		tx := &badgerTransaction{store: s, txn: txn}
+		var err error
+		names, err = tx.ListShares(ctx)
+		return err
 	})
-
 	return names, err
 }
-
-// ============================================================================
-// Root Directory Operations
-// ============================================================================
 
 // CreateRootDirectory creates or retrieves the root directory for a share.
 //
 // If a root directory already exists (from a previous server run), it is returned.
 // Otherwise, a new root directory is created. This idempotent behavior ensures
 // metadata persists across server restarts.
+//
+// This one deliberately does NOT delegate to the transaction path the way the
+// rest of this file does: the existing-share branch here reconciles the stored
+// root inode against the configured attrs (loadExistingRoot diffs mode/UID/GID
+// and rewrites it), which the transaction path does not do. Delegating would
+// silently drop that reconciliation, so the two stay split until the
+// transaction path grows it.
 func (s *BadgerMetadataStore) CreateRootDirectory(ctx context.Context, shareName string, attr *metadata.FileAttr) (*metadata.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
