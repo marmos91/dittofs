@@ -84,7 +84,7 @@ Fix nothing here separately; the design eliminates the class.
 
 | Finding | Closed by |
 |---|---|
-| `doc.go`'s false stdlib/two-interfaces claim | §9.1 import-graph **test** — a claim that cannot rot |
+| `doc.go`'s false stdlib/two-interfaces claim | design-plan §8.1 import-graph **test** — a claim that cannot rot |
 | Dead API: `RemoteStore`, `BlockID`, `PinVersion`, `SegmentLocation`, `GC` | deleted; `RemoteStore` becomes `ferry.Store` |
 | Three type-asserted manifest interfaces | evaporate: one becomes `DurableTail`, two become the caller calling itself |
 | `store.go` 1297 / `reclaim.go` 999 / `carve.go` 995 | §6.2 file layout |
@@ -369,10 +369,6 @@ open-questions space, linking to it. **Discussions is currently disabled** on th
   expose — keeping it DittoFS-side would mean widening pier's surface to let it reach in. The
   cost is accepted: pier must carry it AND test it before it is fit to publish. Its tests are
   part of step 0 (they are the prerequisite for fixing H1 and H3 at all), not deferred to step 3.
-- **D4. H1 is NOT an incident — no production exposure.** Customers are evaluating DittoFS;
-  nothing runs in production. So the five HIGH findings are serious bugs to fix on the normal
-  path, not a data-loss event to respond to, and step 0 does not need an emergency release.
-  **This also cheapens step 4 substantially** — see §4.
 - **D3. The 45 LOW findings fold into the step that touches their file.** No separate backlog, no
   issue churn.
   **Guard against the known failure mode of D3:** LOWs living in files no step rewrites would be
@@ -380,6 +376,11 @@ open-questions space, linking to it. **Discussions is currently disabled** on th
   record, and step 3 ends with an explicit sweep: walk all 45, mark each addressed / consciously
   declined / still open. A LOW that is declined is a decision, not an oversight — but it has to
   be written down as one.
+- **D4. H1 is NOT an incident — no production exposure.** Customers are evaluating DittoFS;
+  nothing runs in production. So the five HIGH findings are serious bugs to fix on the normal
+  path, not a data-loss event to respond to, and step 0 does not need an emergency release.
+  **This also cheapens step 4 substantially** — see §4.
+
 
 ## 10. The external API — what the runtime calls
 
@@ -529,7 +530,7 @@ Both live in DittoFS, not in a module: they test the seam, and the seam is what 
 
 ## 11. Format migration
 
-Deferred from §9 open question 3 and now decided. This replaces that entry.
+Deferred from §14 open question 3 and now decided. This replaces that entry.
 
 ### 11.1 Compatibility classes, not a version number
 
@@ -695,21 +696,21 @@ exactly that reason: a harbourmaster has authority, and a package named for auth
 policy drift §12 exists to prevent. If someone proposes adding a decision to `harbour`, the name
 itself is the argument against it.
 
-**D14. The assembly is `harbour`**, ships with the library set, and holds no policy.
+**D10. The assembly is `harbour`**, ships with the library set, and holds no policy.
 
 §10.7's ingestion integration test and benchmark move here, since this is the smallest thing that
 can run the whole path without DittoFS in the tree.
 
-### D9-D12 — migration and assembly (§11, §12)
+### D5-D10 — migration and assembly (§11, §12)
 
-- **D9. Scope is the block store only.** The four metadata backends keep their existing schema
+- **D5. Scope is the block store only.** The four metadata backends keep their existing schema
   handling. The block format is the one that has actually churned twice.
-- **D10. Compatibility classes, not a version integer**, and the runner/substrate split of §11.3
+- **D6. Compatibility classes, not a version integer**, and the runner/substrate split of §11.3
   is committed: one runner, `pier.Substrate` and `ferry.Substrate`, three injected primitives.
-- **D11. Revert means abort-in-progress and undo pre-contract only.** No downgrade of a completed
+- **D7. Revert means abort-in-progress and undo pre-contract only.** No downgrade of a completed
   destructive migration. `Down` is optional and its absence is a stated fact.
-- **D12. Minor applies automatically, major refuses and requires an explicit command.**
-- **D13. The remote fence lives in the metadata store**, not the bucket. Client-side CAS is
+- **D8. Minor applies automatically, major refuses and requires an explicit command.**
+- **D9. The remote fence lives in the metadata store**, not the bucket. Client-side CAS is
   forbidden. Conditional PUT is defence in depth where the backend supports it.
 
 ## 13. Merged audit results — journal + engine + block root
@@ -836,14 +837,14 @@ Three defects span packages, and each was invisible to at least one audit:
 5. Re-verify every journal finding before acting: that audit's baseline `ff14b24cb` predates
    `4ec814bc2`.
 
-## 9. Open questions
+## 14. Open questions
 
 1. **Who reviews step 3?** It rewrites the silent-zeros path. One reviewer is not enough, and the
    external contributors will not be up to speed in time.
 2. **Does step 0 ship as a release?** No production exposure (D4), so this is a judgement call
    about testers' builds rather than an incident response. Cutting one anyway is cheap and gives
    the refactor a clean tagged baseline to diff against.
-3. **Does the remote backend honour `If-None-Match`?** No longer blocking after D13 — the fence
+3. **Does the remote backend honour `If-None-Match`?** No longer blocking after D9 — the fence
    is in the metadata store — but it decides whether the second, independent check exists. One
    conditional PUT against a scratch key settles it; probe rather than assume.
 4. **Where does the assembly (§12) live in the tree, and what is it called?** It is small enough

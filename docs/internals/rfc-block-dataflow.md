@@ -1,7 +1,7 @@
 # RFC: splitting the block data flow into pier, crane and ferry
 
 **Status:** proposed, open for comment. Nothing here is built.
-**Discussion:** see the linked GitHub Discussion for open questions.
+**Discussion:** https://github.com/marmos91/dittofs/discussions/2234
 **Detail:** `.planning/2026-09-01-block-dataflow-MASTER-PLAN.md` (plan),
 `.planning/2026-09-01-pier-library-design-PLAN.md` (design),
 `.planning/2026-09-01-journal-audit-report.md` (59 verified audit findings).

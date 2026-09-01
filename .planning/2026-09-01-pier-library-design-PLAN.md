@@ -432,7 +432,7 @@ one team and one consumer is real overhead: CI matrices, version skew, cross-cut
 needing two PRs (see #1872, one defect spanning journal and engine). Get the four PACKAGE
 boundaries right in-tree now; promote to modules only when something is actually published.
 `git subtree split` stays mechanical as long as each package's imports stay clean, which is
-exactly what §7.1's import-graph test enforces.
+exactly what §8.1's import-graph test enforces.
 
 `crane` today means chunking AND packing AND uploading AND manifest commit AND flipping records
 — **541 occurrences across 60 non-test files**. The smear is visible in the type name
@@ -744,7 +744,7 @@ GetRange}` — never implemented, never read, `nil` at its one production call s
 | any DittoFS package | **no** | **no** | **no** |
 | any cloud SDK | no | no | **no** — `Store` is injected |
 
-Enforced by the import-graph test in §9.1, in each repo. Only DittoFS imports all three.
+Enforced by the import-graph test in §8.1, in each repo. Only DittoFS imports all three.
 
 ## 8. Findings that motivate this (recon; audit verification pending)
 
@@ -796,12 +796,18 @@ fails**. Two contracts exist, one declared and one informal.
 **Requirement: `pier`'s test suite must pass with zero imports outside stdlib + `golang.org/x/sys`.**
 Not as a policy — as a test.
 
-### 7.1 The enforcing mechanism
+### 8.1 The enforcing mechanism
 
 ```go
 // TestNoForeignImports fails if pier's non-test OR test files import anything
 // outside the standard library and golang.org/x/sys.
-func TestNoForeignImports(t *testing.T) { /* go/packages walk over the package */ }
+func TestNoForeignImports(t *testing.T) {
+    // go/build is STDLIB and reports Imports + TestImports for a directory.
+    // Deliberately not go/packages: that lives in golang.org/x/tools, which is
+    // exactly what this test forbids — it would fail itself.
+    pkg, err := build.ImportDir(".", 0)
+    ...
+}
 ```
 
 This is the whole point. `doc.go`'s "depends only on the standard library plus a pair of narrow
@@ -820,7 +826,7 @@ Today's violations, all removable:
 | `lukechampine.com/blake3` | `carve.go:558` (one call) | leaves with crane |
 | `badgerstore` (**test**) | `carve_pack_test.go:11`, used only by `BenchmarkCarveScatteredPass` | latency-injecting fake `Deduper`; the real-Badger measurement belongs in DittoFS's suite, not the library's |
 
-### 7.2 Coverage gaps to close
+### 8.2 Coverage gaps to close
 
 Six exported methods have **zero** test call sites across all 29 test files — package coverage
 of 79.2% hides every one:
@@ -836,7 +842,7 @@ remote-durable files and zero-filling cold ranges. Pending verification, but it 
 **Every new regression test must be run against a deliberately broken build before it is
 trusted.** A test that passes on unmodified code proves nothing about the bug it claims to pin.
 
-### 7.3 What a standalone suite needs that this one lacks
+### 8.3 What a standalone suite needs that this one lacks
 
 1. **One canonical harness.** Six near-duplicate store-openers exist today — `testStore`,
    `carveStore`, `evictStore`, `ctrlStore`, `openDirtyExpireStore`, `benchStore` — each
@@ -1014,7 +1020,7 @@ because each is a candidate OSS repo:
   cancellation, health transitions. Benchmarks: throughput vs. window size, latency
   distribution, and behaviour under an injected-latency `Store` (no cloud SDK in the test path).
 
-Each repo gets its own import-graph test per §7.4.
+Each repo gets its own import-graph test per §8.1.
 
 ### P2. Legacy cleanup across the whole data flow
 
