@@ -4,7 +4,8 @@
 **Discussion:** https://github.com/marmos91/dittofs/discussions/2234
 **Detail:** `.planning/2026-09-01-block-dataflow-MASTER-PLAN.md` (plan),
 `.planning/2026-09-01-pier-library-design-PLAN.md` (design),
-`.planning/2026-09-01-journal-audit-report.md` (59 verified audit findings).
+`.planning/2026-09-01-journal-audit-report.md`, `-engine-audit-report.md` and
+`-block-root-audit-report.md` (196 verified findings across the three).
 
 If you are about to work in `pkg/block/`, read this first — it describes where that code is
 going, and retires two words (`journal`, `carve`) that currently mean several things each.
@@ -13,8 +14,9 @@ going, and retires two words (`journal`, `carve`) that currently mean several th
 
 ## 1. Why
 
-An audit of `pkg/block/journal` (7 lenses, 70 agents, adversarially verified) produced 59
-findings: 6 HIGH, 8 MED, 45 LOW. The bug count is not the interesting part. The shape is:
+Three audits — `pkg/block/journal`, `pkg/block/engine` and the `pkg/block` root, each 7 lenses
+with an adversarial verify gate, 204 agents over 19,632 LOC — produced **196 findings: 7 HIGH,
+23 MED, 117 LOW**. The bug count is not the interesting part. The shape is:
 
 > **Every one of the five distinct HIGH findings is a residency-truth failure** — the cache's
 > map of what it holds disagreeing with what it actually holds, resolving either to zeros or to
@@ -23,7 +25,20 @@ findings: 6 HIGH, 8 MED, 45 LOW. The bug count is not the interesting part. The 
 That is also the signature of the entire prior field history — #1850, #1879, #1888, #2084,
 #1872/#2073/#2093, #1956, #2110. Ten incidents, one defect class, over a year.
 
-The five HIGHs are filed as #2227, #2228, #2229, #2230, #2231.
+The five journal HIGHs are filed as #2227, #2228, #2229, #2230, #2231.
+
+The engine audit added a sixth, **#2238**, which extends the class rather than repeating it: a
+new file dedups onto a past-grace orphaned hash, writing only a manifest row that the GC's
+already-taken mark snapshot cannot see, and the sweep frees the only durable copy. Where the
+journal's five are disagreements *at rest*, this is a time-of-check/time-of-use race — every view
+individually correct, read at different instants. **Making the states explicit is necessary and
+not sufficient; the model has to pin transitions under concurrency too.**
+
+One caveat worth stating plainly rather than burying: the extraction moves roughly 500 of
+engine's 11,304 LOC, and #2238 lives in `gc_sweep_index.go`, which does not move. GC, reclaim,
+manifest check/repair and cold-read resolution all stay. The split is still worth doing, but it
+does not by itself reach the newest instance of the class that justifies it — which is why that
+work is sequenced *before* the API boundary hardens.
 
 Three of the five live in `RestoreToVersion` — a 180-line, gocyclo-37 method with **zero test
 call sites** across all 29 test files. Package coverage is 79.2% and hides that completely.
@@ -155,7 +170,7 @@ step 3, taken last.
 
 | Step | What | Risk |
 |---|---|---|
-| **0** | Fix #2227-#2231 with regression tests first | live bugs, unblocks everything |
+| **0** | Fix #2227-#2231 and #2238 with regression tests first | live bugs, unblocks everything |
 | **1** | ferry — upload transport, ordered completion | behaviour-preserving |
 | **2** | crane — chunking + block assembly | behaviour-preserving |
 | **3** | pier — the seam inversion and state model | the real change |
@@ -179,4 +194,4 @@ The parts most likely to be wrong, and where comment is most useful:
    The remainder still needs a benchmark to defend it.
 3. **Whether `RestoreToVersion` belongs in pier at all** — 180 lines, gocyclo 37, zero tests,
    three of the five HIGH findings.
-4. **Anything in the 45 LOW findings** you think is actually a MED or HIGH.
+4. **Anything in the 117 LOW findings** you think is actually a MED or HIGH.
