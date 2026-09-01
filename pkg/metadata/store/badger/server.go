@@ -15,19 +15,8 @@ import (
 
 // SetServerConfig sets the server-wide configuration.
 func (s *BadgerMetadataStore) SetServerConfig(ctx context.Context, config metadata.MetadataServerConfig) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	return s.db.Update(func(txn *badgerdb.Txn) error {
-		configBytes, err := encodeServerConfig(&config)
-		if err != nil {
-			return err
-		}
-		if err := txn.Set(keyServerConfig(), configBytes); err != nil {
-			return fmt.Errorf("failed to store server config: %w", err)
-		}
-		return nil
+	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return tx.SetServerConfig(ctx, config)
 	})
 }
 
@@ -38,33 +27,15 @@ func (s *BadgerMetadataStore) GetServerConfig(ctx context.Context) (metadata.Met
 	}
 
 	var config metadata.MetadataServerConfig
-
 	err := s.db.View(func(txn *badgerdb.Txn) error {
-		item, err := txn.Get(keyServerConfig())
-		if err == badgerdb.ErrKeyNotFound {
-			config = metadata.MetadataServerConfig{
-				CustomSettings: make(map[string]any),
-			}
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-
-		return item.Value(func(val []byte) error {
-			cfg, err := decodeServerConfig(val)
-			if err != nil {
-				return err
-			}
-			config = *cfg
-			return nil
-		})
+		tx := &badgerTransaction{store: s, txn: txn}
+		var err error
+		config, err = tx.GetServerConfig(ctx)
+		return err
 	})
-
 	if err != nil {
 		return metadata.MetadataServerConfig{}, fmt.Errorf("failed to get server config: %w", err)
 	}
-
 	return config, nil
 }
 
@@ -79,32 +50,15 @@ func (s *BadgerMetadataStore) GetFilesystemCapabilities(ctx context.Context, han
 	}
 
 	var caps *metadata.FilesystemCapabilities
-
 	err := s.db.View(func(txn *badgerdb.Txn) error {
-		item, err := txn.Get(keyFilesystemCapabilities())
-		if err == badgerdb.ErrKeyNotFound {
-			c := s.loadCapabilities()
-			caps = &c
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-
-		return item.Value(func(val []byte) error {
-			c, err := decodeFilesystemCapabilities(val)
-			if err != nil {
-				return err
-			}
-			caps = c
-			return nil
-		})
+		tx := &badgerTransaction{store: s, txn: txn}
+		var err error
+		caps, err = tx.GetFilesystemCapabilities(ctx, handle)
+		return err
 	})
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to get filesystem capabilities: %w", err)
 	}
-
 	return caps, nil
 }
 
@@ -143,6 +97,13 @@ func (s *BadgerMetadataStore) storeCapabilities(capabilities metadata.Filesystem
 
 // GetFilesystemStatistics returns dynamic filesystem statistics for the share
 // the handle belongs to.
+//
+// This one deliberately does NOT delegate to the transaction path the way the
+// rest of this file does. The transaction path scans every file key so a statfs
+// issued inside a transaction sees that transaction's own uncommitted writes;
+// outside a transaction there is nothing uncommitted to see, so this reads the
+// O(1) per-share usage bucket instead. Delegating would turn every statfs into
+// a full keyspace scan.
 //
 // The store instance is shared by every share naming the same metadata store
 // config, so usage is scoped to that share; the capacity ceilings
