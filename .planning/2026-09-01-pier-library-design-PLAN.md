@@ -140,7 +140,7 @@ func (c *Cache) Stats() Stats
 
 // ── transitions ──
 func (c *Cache) Flush(ctx context.Context, id FileID, opts FlushOptions,
-        fn func(context.Context, Block) (durable []Extent, err error)) error
+        fn func(context.Context, Run) (durable []Extent, err error)) error
 func (c *Cache) Evict(ctx context.Context, targetBytes int64) (Reclaimed, error)
 func (c *Cache) Invalidate(ctx context.Context, id FileID, off, length int64) error
 func (c *Cache) Seed(ctx context.Context, seeds []Seed) error
@@ -167,119 +167,126 @@ var ErrClosed = errors.New("pier: closed")
 type CorruptError struct{ ID FileID; Off, Len int64 } // healable: invalidate + refetch
 ```
 
-### `Flush` — the seam, corrected after adversarial review
+### `Flush` — the seam (v4)
 
-**The first draft of this section was wrong and was rejected.** It defined the callback as
-one-call-per-dirty-run returning `consumed int64`. See §4.2.
+Three earlier drafts were rejected. §4.3 records why, so they are not re-walked.
 
 ```go
-// Block is one committed unit — what today is exactly one CommitBlock.
-// It may span several dirty runs; that is the point.
-type Block struct {
+func (c *Cache) Flush(ctx context.Context, id FileID, opts FlushOptions,
+        fn func(ctx context.Context, r Run) (durable []Extent, err error)) error
+
+// Run is one offer: a contiguous dirty region of one file, plus its bytes.
+// It is NOT a block. pier does not know what a block is — that is the whole
+// point of being chunk-agnostic. crane turns Runs into Blocks.
+type Run struct {
     ID          FileID
-    Extents     []Extent // dirty extents this block covers, ascending, MAY SPAN RUNS
-    DurableTail []Extent // contiguous already-durable extents after the last one:
-                         // both Resident AND Remote, because a clobbered row's owed
+    Extent      Extent   // the dirty region being offered
+    DurableTail []Extent // contiguous already-durable extents immediately after:
+                         // BOTH Resident and Remote, because a clobbered row's owed
                          // range can straddle evicted bytes (carve.go:749 unions both)
-    io.ReaderAt          // bytes, addressed by file offset
+    Final       bool     // last call for this file; drain anything buffered
+    io.ReaderAt          // the run's bytes, addressed by file offset
 }
-```
 
-`fn` returns **the extents it actually made durable**, and may return a non-empty slice
-*together with* an error. `pier` flips exactly those, then stops. That is what expresses
-"committed 3 of 5 chunks, then failed" — which `consumed int64` could not, because credit is
-not always a prefix.
-
-Division of labour:
-
-| Owns | What |
-|---|---|
-| **pier** | what is dirty, run grouping, age/size gating, the version fence, watermark-ordered flip, crash safety. **Calls `fn` STRICTLY SEQUENTIALLY** — one file, one run at a time, ascending offset; call N+1 does not start until call N returns |
-| **crane** | chunk boundaries, accumulating chunks into `BlockSize` blocks |
-| **ferry** | ALL upload concurrency: bounded window, retry, ordered completion |
-| **DittoFS** | dedup oracle, manifest rows, scheduling |
-
-**pier does NOT accumulate blocks.** Verified at `carve.go:598-601`: the `batchBytes >=
-CarveBlockSize` flush fires *after* a whole chunk is appended, so a block boundary is always a
-chunk boundary. Block accumulation is therefore downstream of chunking, and pier — which must
-stay chunk-agnostic so a consumer can ingest blobs it never chunks — cannot know where a block
-may legally end.
-
-The seam that permits this: **`fn` may return an empty `durable` slice.** It is called once per
-dirty run and buffers internally; when it has a block's worth it uploads and returns those
-extents; pier flips exactly those, in order. A final call with `Block.Final == true` drains the
-partial batch — the same `final bool` pattern `chunker.Next(data []byte, final bool)` already
-uses.
-
-This answers the review's "the caller rebuilds the accumulator by hand" objection: it does not.
-The accumulator **is** the crane library — published, tested, reusable — not hand-rolled closure
-state.
-
-`manifestRowEnder`, `supersededReaper` and `clobberGuard` still evaporate: the first becomes
-`DurableTail`, and the other two become the caller calling its own manifest — the reap once
-after `Flush` returns, using spans its closure recorded across `fn` calls.
-
-### v3.1 — four changes required by the second review
-
-**1. Calls are sequential; upload concurrency lives in ferry.** v3 said pier owned "bounded
-concurrency" AND that `fn` buffers internally across calls. Those contradict: concurrent calls
-to one accumulator race over which run's bytes land in which block, and break the reap's
-contiguous-prefix assumption (`carve_pack.go:16-24`). Today's code already splits them — packing
-is single-goroutine (`carve.go:397-408`: "packing itself stays sequential"), only commit+flip is
-dispatched concurrently (`carve_dispatch.go`). v3.1 keeps that split, along module lines:
-
-- pier calls `fn` sequentially, ascending offset, one file at a time.
-- `fn` submits uploads into ferry's bounded window and returns `(nil, nil)`.
-- `fn` reports extents whose uploads have SINCE completed, on a later call.
-- the `Final` call drains ferry's in-flight set and returns the remainder.
-
-So `CarveUploadConcurrency` maps to **`ferry.Options.MaxConcurrent`, never `FlushOptions`** —
-§5.0's rename table said `FlushOptions`; that was wrong.
-
-**2. pier MUST validate extent provenance before flipping.** Today `flipUpTo` walks only the
-`run []interval` it was handed, advancing `flipIdx` (`carve.go:844-865`) — structurally incapable
-of flipping something it was not given. A free-form `durable []Extent` reopens that class: a
-buggy `fn` (bad offset maths, wrong file, an extent re-sent after cancellation) could flip a
-range pier never offered. pier must check every returned extent against this file's
-offered-and-unflipped set and reject the rest. **New required surface, not carried over.**
-
-**3. `Block.DurableTail` is computed per call, lazily** — matching `anySyncedFrom`'s gate
-(`carve.go:684`), NOT eagerly for the whole file, which is precisely what
-`extendRunToRowEnd`'s comment (`carve.go:469-483`) exists to avoid.
-
-**4. `FlushOptions.AfterFile` is MANDATORY — the reap is unsafe outside the lock.**
-
-The race fires on a predictable 2-second cadence, not adversarial timing.
-`engine/carve_dispatch.go:33-58` runs a pass per file every `UploadInterval` (default 2s), and
-manual `SyncNow` is a second trigger, so any pass outlasting one tick is re-entered. Today only
-`sh.carveMu` prevents overlap, and it is held across BOTH flip and reap (`carve.go:274-360`).
-Release it at `Flush` return and:
-
-1. `Flush(X)` packs, flips, returns; the caller's closure holds `spans`/`newOffsets`.
-2. The next tick starts `Flush(X)` again — the lock that held passes apart is gone.
-3. Pass 2 carves new dirty bytes inside pass 1's about-to-be-reaped span, commits a row.
-4. Pass 1's delayed reap runs against `newOffsets` captured before pass 2 existed, does not
-   recognise pass 2's row as its own, and **deletes a load-bearing row.**
-
-That is #1872/#2093 reintroduced by construction, on a timer. Therefore:
-
-```go
 type FlushOptions struct {
-    // AfterFile runs once per file after the last flip, WHILE pier still holds the
-    // shard's flush lock. The manifest reap goes here. Not optional: a caller that
-    // reaps after Flush returns reintroduces the race above.
+    MaxAge time.Duration // dirty-age eligibility gate
+    MinSize int64        // dirty-bytes eligibility gate
+
+    // AfterFile runs once per file after the last flip, WHILE pier still holds
+    // the shard's flush lock. The manifest reap goes here. MANDATORY — see §4.2.
     AfterFile func(ctx context.Context, id FileID) error
 }
 ```
 
-A caller-side lock is the wrong alternative — it makes the engine invent a second per-shard
-locking scheme with no visibility into pier's partitioning. Fold `maybeResetDirtyClock`
-(`carve.go:920-935`) in too, for symmetry; it is low-risk either way.
+**No `Concurrency` field.** All upload concurrency lives in ferry. pier is sequential.
 
-**Confirmed sound by the same review:** `durable []Extent` does express the pinned partial-credit
-tests (`TestCarvePackFlipPlanWatermarks`, `TestCarvePackSpanningBlockFailureReapsTheCommittedPrefix`),
-and crash-safety between individual flips is no weaker than today's `flipUpTo` — unflipped
-extents stay dirty and the dedup oracle collapses the re-upload.
+### 4.1 The contract, stated completely
+
+Everything below was implicit in v3.1 and is load-bearing.
+
+**C1 — Call ordering.** `fn` is called **strictly sequentially** for one file: one run at a
+time, ascending file offset, and call N+1 does not begin until call N returns. Block boundaries
+depend on it (a block is closed by accumulated size, and the accumulator is `fn`'s), and so does
+the reap's contiguous-prefix assumption (`carve_pack.go:16-24`).
+
+**C2 — Locks held when `fn` runs.** pier holds the shard's `flushMu` (which serializes passes
+for that shard) and **does NOT hold `sh.mu`**, the index lock. This mirrors today exactly:
+`sh.mu` is taken and released in short sections (`carve.go:239-240`, `:275-285`) and the sink
+call at `:449` runs outside it. `fn` performs network I/O; holding the index lock across it
+would stall every read on the shard.
+
+**C3 — Deferred credit.** `fn` may return an empty `durable` slice for any number of calls while
+it buffers toward a block. It reports extents whose uploads have **since** completed on a later
+call. Consequence, accepted: for a file with few runs but slow uploads, most flips arrive on the
+`Final` call. `Final` must therefore drain — it blocks until ferry's in-flight set for this file
+resolves.
+
+**C4 — Credit is validated, not trusted.** For every returned extent, pier verifies it is in
+this file's *offered-and-unflipped* set, matching on **(offset, length, version)** — not offset
+alone. A concurrent `WriteAt` bumps the interval's version, and flipping by offset alone would
+mark the *new* bytes synced when the *old* ones were uploaded. That is the #1872 shape exactly.
+Extents failing validation are **dropped, not flipped**, and the drop is logged. Today's
+`flipIdx` cursor (`carve.go:844-865`) makes this class impossible by construction; a free-form
+`[]Extent` reopens it, so the check is mandatory, not defensive.
+
+**C5 — Partial credit with error.** `fn` may return a non-empty `durable` **together with** a
+non-nil error: "these committed, then I failed." pier flips the validated extents, stops
+offering runs for this file, and **still calls `AfterFile`** — because the committed prefix must
+be reaped. `TestCarvePackSpanningBlockFailureReapsTheCommittedPrefix` pins exactly this. Then
+`Flush` returns the error; remaining dirty ranges stay dirty for the next pass, where the dedup
+oracle collapses any re-upload.
+
+**C6 — Backpressure.** If ferry's window is full, `fn` blocks in `Submit`, which stalls pier's
+sequential loop while `flushMu` is held. **Not a regression** — today's uploads run under
+`carveMu` for the same duration — but it means a slow remote delays that shard's next flush
+pass, not its reads or writes. `ctx` is the escape hatch.
+
+**C7 — Cancellation.** On `ctx` cancellation pier stops offering runs, flips whatever was
+already validated, and still calls `AfterFile`. A cancel between the last flip and the reap can
+strand superseded rows — the same window today's `ponytail:` marker at `carve.go:335` documents.
+Unchanged, and explicitly not made worse.
+
+**C8 — Buffer lifetime.** `Run`'s `ReaderAt` is valid only for the duration of the `fn` call.
+It reads from a pooled buffer pier reuses on the next call. An implementation that needs the
+bytes longer must copy them — the same contract `BlockSink.CommitBlock` states today
+(`carve.go:100-103`).
+
+### 4.2 `AfterFile` is mandatory
+
+The reap cannot move outside the lock. `engine/carve_dispatch.go:33-58` runs a pass per file
+every `UploadInterval` (default 2s), and manual `SyncNow` is a second trigger, so any pass
+outlasting one tick is re-entered. Today only `sh.carveMu` holds passes apart, and it covers
+BOTH the flip and the reap (`carve.go:274-360`). Release it at `Flush` return and:
+
+1. `Flush(X)` packs, flips, returns; the caller's closure holds `spans`/`newOffsets`.
+2. The next tick starts `Flush(X)` again — the lock that held passes apart is gone.
+3. Pass 2 commits a fresh manifest row inside pass 1's about-to-be-reaped span.
+4. Pass 1's delayed reap runs against a `newOffsets` captured before pass 2 existed, does not
+   recognise pass 2's row as its own, and **deletes a load-bearing row.**
+
+That is #1872/#2093 reintroduced by construction, on a timer. A caller-side lock is the wrong
+alternative: it makes the engine invent a second per-shard scheme with no visibility into pier's
+partitioning. Fold `maybeResetDirtyClock` (`carve.go:920-935`) into `AfterFile` too.
+
+### 4.3 Rejected drafts — do not re-walk
+
+| Draft | Shape | Why it failed |
+|---|---|---|
+| v1 | one call per run, returns `consumed int64` | Cannot name bytes from an *earlier* call. `packRuns` does not reset `blockFirstRun` per run (`carve.go:442`, `:600-603`), so one block routinely spans runs. Forced either one small object per run, or the caller rebuilding the accumulator. |
+| v2 | pier accumulates to `BlockSize`, calls `fn` per block | Impossible. `carve.go:598-601` closes a block only after a whole chunk is appended, so **block boundaries are always chunk boundaries** — and a chunk-agnostic pier cannot know where a block may legally end. |
+| v3 | v4's shape, but the parameter was named `Block` and pier owned "bounded concurrency" | Two errors: `Block` collides with crane's output type and implies pier understands blocks, which contradicts the chunk-agnostic requirement; and pier-owned concurrency contradicts C1's sequential calling — concurrent calls race over one accumulator. |
+
+### 4.4 What still needs proving before code
+
+1. **C3's latency.** Deferring most flips to `Final` on upload-bound files is accepted in theory.
+   Measure it: dirty-byte residency and time-to-flip vs. today, on a scattered-write workload.
+2. **C4's cost.** A per-extent index lookup replaces a cursor advance. Bounded by `sort.Search`
+   like `findRecord`, it should be negligible; benchmark against `BenchmarkCarveScatteredPass`.
+3. **The whole seam against the pinned tests.** `TestCarvePackFlipPlanWatermarks`,
+   `TestCarvePackSpanningBlockFailureReapsTheCommittedPrefix`,
+   `TestCarvePackSeamRunFailureLeavesSuffixDirty`, `TestCarveCommitStrictlyBeforeFlip` must all
+   be expressible and passing. Port them **before** rewriting the implementation.
+
 
 ### Method-count delta
 

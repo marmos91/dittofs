@@ -100,11 +100,13 @@ These do not exist today. The design introduces them and must close them.
 
 | Risk | Mitigation | Source |
 |---|---|---|
-| A free-form `durable []Extent` lets a buggy `fn` flip a range pier never offered — today's `flipIdx` cursor makes that structurally impossible | pier validates extent provenance against the offered-and-unflipped set | v3.1 change 2 |
-| Reap outside the flush lock deletes the *next* pass's row — on a **2-second cadence**, not adversarial timing | `FlushOptions.AfterFile`, under the lock. **Mandatory** | v3.1 change 4 |
-| Concurrent `fn` calls race over block boundaries | `fn` called strictly sequentially; ALL upload concurrency lives in ferry | v3.1 change 1 |
-| `DurableTail` computed eagerly per file loses the per-run cost property | computed lazily, per call | v3.1 change 3 |
+| A free-form `durable []Extent` lets a buggy `fn` flip a range pier never offered — today's `flipIdx` cursor makes that structurally impossible | pier validates every returned extent against the offered-and-unflipped set, matching on **(offset, length, version)** — offset alone would flip new bytes when old ones were uploaded, which is the #1872 shape | §4.1 C4 |
+| Reap outside the flush lock deletes the *next* pass's row — on a **2-second cadence**, not adversarial timing | `FlushOptions.AfterFile`, under the lock. **Mandatory** | §4.2 |
+| Concurrent `fn` calls race over block boundaries | `fn` called strictly sequentially; ALL upload concurrency lives in ferry | §4.1 C1 |
+| `DurableTail` computed eagerly per file loses the per-run cost property | computed lazily, per call | §4.1 C3 |
 | `Extents()` collapsing five queries regresses the hot path | `Size` and `DurableExtent` stay separate methods; benchmark and keep receipts | review finding |
+| `fn` erroring skips the reap, stranding superseded rows that DID commit | on error pier flips validated extents and **still calls `AfterFile`** | §4.1 C5 |
+| Deferred credit bunches most flips onto the `Final` call on upload-bound files | accepted; must be **measured** (residency + time-to-flip vs today) before code | §4.4 |
 
 ## 4. Sequencing
 
