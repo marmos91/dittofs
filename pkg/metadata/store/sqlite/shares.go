@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 )
@@ -18,11 +17,6 @@ import (
 // ============================================================================
 // Handle/Share Operations
 // ============================================================================
-
-// GenerateHandle creates a new unique file handle for a path in a share.
-func (s *SQLiteMetadataStore) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
-	return basestore.GenerateHandle(ctx, shareName)
-}
 
 // GetShareOptions returns the share configuration options, reporting
 // ErrNotFound if the share does not exist.

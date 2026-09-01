@@ -61,6 +61,10 @@ type ShareQueries struct {
 	// GetFilesystemMeta selects a share's filesystem metadata blob. One
 	// parameter: the share name.
 	GetFilesystemMeta string
+	// Statfs sums a share's regular-file bytes and counts its regular files,
+	// in that column order. Two parameters: the share name and the numeric
+	// regular-file type.
+	Statfs string
 }
 
 // FileQueries holds the file and directory read statements in one dialect's
