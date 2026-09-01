@@ -18,6 +18,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/txretry"
+
+	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 )
 
 // Transaction retry policy (#1769). Under write contention DittoFS must
@@ -39,6 +41,11 @@ import (
 // accumulating per-attempt and applying post-commit prevents double-counting
 // across retries.
 type postgresTransaction struct {
+	// Core runs the shared SQL bodies on THIS transaction, not the pool. A
+	// body reached through the pool would run on a separate connection and
+	// survive this transaction's rollback.
+	*storesql.Core
+
 	store *PostgresMetadataStore
 	tx    pgx.Tx
 	// quota accumulates usage changes (bytes + file count) keyed by share and
@@ -143,6 +150,7 @@ func (s *PostgresMetadataStore) withTransaction(ctx context.Context, fn func(tx 
 		}
 
 		ptx := &postgresTransaction{store: s, tx: tx}
+		ptx.Core = &storesql.Core{X: txExecer{tx: tx}, D: pgDialect}
 		if err := fn(ptx); err != nil {
 			// Apply timeout to rollback to prevent indefinite blocking
 			rollbackCtx, rollbackCancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
