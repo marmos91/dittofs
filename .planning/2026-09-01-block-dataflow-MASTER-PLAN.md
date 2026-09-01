@@ -11,8 +11,8 @@ Inputs, all authoritative, none superseded by this document:
 All three audits ran 7 lenses and an adversarial verify gate. **196 findings over 19,632 LOC.**
 
 Baselines: journal at `ff14b24cb`, engine and root at `4ec814bc2` — so **journal findings must be
-re-verified before action**. Audit trees: `~/dittofs-worktrees/audit-journal` and
-`~/dittofs-worktrees/audit-engine`, both immutable.
+re-verified before action**. Each audit ran against an immutable detached worktree pinned to its
+baseline commit.
 
 ---
 
@@ -216,7 +216,7 @@ not legacy or shim, and each has a better home in pier:
    skipped by a caller. Note it is on the zero-test list in §2: it needs a test as it moves.
 2. The `filepath.Join(dir, "journal")` subdirectory convention — pier's own layout decision.
 3. `durable = true` — a field.
-4. The `nil` remote argument — that is the dead `journal.RemoteStore` seam, which §7.3 turns into
+4. The `nil` remote argument — that is the dead `journal.RemoteStore` seam, which design-plan §7.3 turns into
    `ferry.Store`. It disappears on its own.
 
 **What stays:** `local.LocalStore` — the interface DittoFS declares — is exactly the §5 mechanism
@@ -347,13 +347,13 @@ compile-time completeness check as §5, applied to behaviour:
 Concretely, per module:
 
 - **`piertest/`** — the one options-taking store-opener replacing today's six near-duplicate
-  openers (§6.3), plus the residency-truth state table: every operation's effect on all five
+  openers (design-plan §6.3), plus the residency-truth state table: every operation's effect on all five
   states, including `StateLost`. `RestoreToVersion` gets the real suite D2 promises here, not in
   a consumer.
 - **`cranetest/`** — boundary stability first (the same blob chunked in one call vs. many must
   yield identical boundaries, or fleet-wide dedup silently degrades), then packing determinism.
 - **`ferrytest/`** — ordered completion under concurrency, window saturation, retry idempotence,
-  and the per-call-future contract that replaces the shared `Completions()` channel (§4.1 C3).
+  and the per-call-future contract that replaces the shared `Completions()` channel (design-plan §4.1 C3).
 
 What stays in DittoFS: integration tests that cross module boundaries, the E2E suite, and the
 crash rigs — those test the composition, which is DittoFS's job and no library's.
@@ -403,7 +403,7 @@ Everything above is internal shape. This section fixes the surface DittoFS's con
 protocol adapters actually call when a read or write handler touches a file. It is written last
 because the module split only pays off if this boundary is narrow.
 
-### 10.1 Where it stands
+### 9.1 Where it stands
 
 `*engine.Store` exports **46 methods; 44 have callers outside `pkg/block`.** That is not an API,
 it is the absence of one. Measured on the same tree, it also contains:
@@ -416,7 +416,7 @@ it is the absence of one. Measured on the same tree, it also contains:
 | `HealthCheck` / `Healthcheck` | both exist, different signatures | casing drift on one concept, both externally called |
 | `Stats`, `GetStats`, `GetStatsLite`, `LocalStats`, `SyncCounts` | five | one concept |
 
-### 10.2 The shape follows from NFS and SMB, not from taste
+### 9.2 The shape follows from NFS and SMB, not from taste
 
 Both protocols have the **same** write model, and it is precisely *unstable write + explicit
 commit*:
@@ -440,7 +440,7 @@ already visible in the adapters and they do not even agree with each other:
 One adapter implements the capability, the other throws it away, because the block store has no
 way to express it. That is an API defect, not an adapter defect.
 
-### 10.3 The data plane — six methods
+### 9.3 The data plane — six methods
 
 ```go
 type Stability uint8
@@ -476,7 +476,7 @@ type DataPlane interface {
 `got Stability` and the range-scoped `Commit` are the two additions. Neither is speculative
 generality — each is a field the wire protocols already carry and the current API drops.
 
-### 10.4 Residency is part of the API, not an internal detail
+### 9.4 Residency is part of the API, not an internal detail
 
 Every one of H1-H5 was a disagreement about where bytes live, and **no interface exposed that
 question**, so no caller could ask and no test could pin it. The five-state model becomes public:
@@ -503,7 +503,7 @@ func (s *Store) Extents(ctx context.Context, f FileID) ([]Span, error)
 Lifecycle, drain, snapshot/restore, capacity and stats each get their own small interface. Mixing
 them into one receiver is how 46 methods happened.
 
-### 10.5 `pkg/block` root holds the API and nothing else
+### 9.5 `pkg/block` root holds the API and nothing else
 
 After §4.1 and the legacy deletion, the root keeps the contract and the types the contract names —
 `FileID`, `Stability`, `Verifier`, `State`, `Span`, `ContentHash`, `FileChunk`, `Locator` — and
@@ -511,21 +511,21 @@ nothing else. Everything that is machinery moves down into `pier` / `crane` / `f
 everything legacy is deleted outright rather than relocated. A reader opening `pkg/block/` should
 see what the block store promises, not how it keeps the promise.
 
-### 10.6 Folder and file structure
+### 9.6 Folder and file structure
 
 Two rules, both forcing functions rather than aesthetics:
 
 1. **No non-test file over ~400 LOC.** Current state: **18 of 108 files exceed it, 5,565 LOC above
    the line** — `journal/store.go` 1297, `engine/syncer.go` 1056, `journal/reclaim.go` 999,
    `journal/carve.go` 995, `engine/gc.go` 876, `remote/s3/store.go` 751, `engine/readwrite.go` 735,
-   `engine/fetch.go` 693. The journal side of that list is already scheduled by §6.2/§6.3; the
+   `engine/fetch.go` 693. The journal side of that list is already scheduled by §6.2/design-plan §6.3; the
    engine side is not, and needs the same treatment. The limit is a guideline with teeth: a file
    that will not fit is a file holding more than one responsibility, which is the condition every
-   one of §6.3's entries describes.
+   one of design-plan §6.3's entries describes.
 2. **A file's name states its responsibility.** `segment.go`/`index.go` holding the hot read and
    write paths is the anti-pattern; `write.go`/`read.go` is the fix.
 
-### 10.7 One integration test and one benchmark for the whole ingestion path
+### 9.7 One integration test and one benchmark for the whole ingestion path
 
 Per §6.1 each module tests itself, but **composition is DittoFS's job**, and the ingestion path
 has never been exercised end to end in one place. Add exactly one of each, both driving the §9.3
@@ -538,7 +538,7 @@ API in the shape an adapter drives it:
   deliberately corrupted remote produces `Lost` **with an error**, never zeros. That last case is
   the one no existing test covers and the one that has shipped five times.
 - **Benchmark** — the same path, measured, with the `Verifier` stable across the run. It is the
-  before/after number §6 item 4 requires, and it is what will show whether §4.4's deferred-credit
+  before/after number §6 item 4 requires, and it is what will show whether design-plan §4.4's deferred-credit
   change moved time-to-flip.
 
 Both live in DittoFS, not in a module: they test the seam, and the seam is what the split creates.
@@ -547,7 +547,7 @@ Both live in DittoFS, not in a module: they test the seam, and the seam is what 
 
 Deferred from §13 open question 3 and now decided. This replaces that entry.
 
-### 11.1 Compatibility classes, not a version number
+### 10.1 Compatibility classes, not a version number
 
 Do not ask "what version is this store". Ask **what an older binary must do when it meets
 something it does not understand** — the ext4/btrfs model, and the only one that keeps cheap
@@ -568,7 +568,7 @@ with unsupported `roCompat` features could be opened read-only and then *remount
 because the check ran before the read-only flag was set. Any future read-only mode inherits that
 trap.
 
-### 11.2 Registry — migrations are files in a folder
+### 10.2 Registry — migrations are files in a folder
 
 ```go
 type Class uint8 // Compat | ROCompat | Incompat
@@ -588,7 +588,7 @@ type Migration struct {
 One `.go` file per migration in a `migrations/` folder, self-registering via `init()`. The runner
 sorts by `From`/`To`, refuses a registry with a gap or a fork, and applies iteratively.
 
-### 11.3 One runner, two substrates
+### 10.3 One runner, two substrates
 
 The algorithm — read stamp, select, order, gate on class, apply, record, abort — is identical
 local and remote. Only three primitives differ, so only those are injected:
@@ -638,7 +638,7 @@ This is not hypothetical work in another sense either: the S3 layout has already
 
 `cas/{hh}/{hh}/{hex}` → `blocks/<blockID>`, migrated by the ad-hoc code §4 deletes.
 
-### 11.4 Revert means abort and un-expand, never downgrade
+### 10.4 Revert means abort and un-expand, never downgrade
 
 Roll-forward is the operational default; reverting a completed destructive change generally is not
 possible without a backup. What makes revert cheap is **expand/contract**: add the new form,
@@ -653,14 +653,14 @@ appear to offer a revert it cannot perform.
 The documented failure mode is stopping halfway — shipping the expand and never contracting,
 leaving both forms alive forever. Each migration names the release its contract phase lands in.
 
-### 11.5 Trigger
+### 10.5 Trigger
 
 `compat` and `roCompat` migrations apply automatically at open. `incompat` migrations **refuse to
 open** and print the `dfsctl` command to run, so a data-rewriting change is an operator decision
 with a window to take a backup. This is a deliberate change from today's behaviour, where the
 cas→blocks pass runs backgrounded on every boot with no operator involvement.
 
-### 11.6 Relationship to D4
+### 10.6 Relationship to D4
 
 D4 says delete legacy paths rather than build scaffolding for users who do not exist, and it still
 holds — this machine is **not** a reason to keep any of §4's legacy surface. The two are about
@@ -671,7 +671,7 @@ exist before the first migration, and no migrations at all.
 
 ## 11. `harbour` — the assembly
 
-pier, crane and ferry are three libraries; something must wire them. Today §6.2 assigns that to
+pier, crane and ferry are three libraries; something must wire them. Today design-plan §6.2 assigns that to
 `dittofs/pkg/block/engine`. Moving the wiring into the library set makes the trio testable and
 `git subtree split` shippable — otherwise the split yields three modules nobody can assemble
 without re-deriving the `Flush` seam from prose.
@@ -681,7 +681,7 @@ counts as durable, what the manifest says — stays in DittoFS. An assembly that
 the god object relocated, and it would re-absorb precisely the residency-truth judgements that
 produced H1-H5.
 
-Its scope is defined by subtraction. **Enforcement of the §4.1 seam contract stays in pier**, for
+Its scope is defined by subtraction. **Enforcement of the design-plan §4.1 seam contract stays in pier**, for
 everything pier can observe: per-fragment credit validation, strictly sequential `fn`,
 `AfterFile` under the flush lock. The assembly owns only the residue pier structurally *cannot*
 see:
@@ -742,7 +742,7 @@ Three audits, one rubric. `pkg/block/journal` (2026-09-01, baseline `ff14b24cb`)
 | block root | 2,038 | 0 | 2 | 20 | 45 |
 | **total** | **19,632** | **7** | **23** | **117** | **204** |
 
-### 13.1 The new HIGH extends the taxonomy
+### 12.1 The new HIGH extends the taxonomy
 
 **Remote sweep reclaims a hash a concurrent dedup write just re-referenced**
 (`engine/gc_sweep_index.go:69`). Independently re-verified here; two refutation attempts failed.
@@ -769,7 +769,7 @@ while a writer moves between them. The five-state model in §9.4 is necessary bu
 it needs **transitions under concurrency**, not just states. Fold that into `piertest`'s state
 table — every transition needs a concurrent-writer case, not only a sequential one.
 
-### 13.2 The finding that neither single-package audit could have found
+### 12.2 The finding that neither single-package audit could have found
 
 `ComputeObjectID` (`block/objectid.go:36`) folds only `ChunkRef.Hash` into its Merkle root,
 never `Size`/`StartOffset`. Since `PruneChunkRefsToSize` deliberately keeps a ref straddling the
@@ -801,14 +801,14 @@ that is the only thing the collision can currently hurt. Finishing it requires f
 `ComputeObjectID` first — mixing `Size`/`StartOffset` into the digest and bumping the domain
 prefix — which makes it **§10's first real migration customer**.
 
-### 13.3 The uncomfortable conclusion about scope
+### 12.3 The uncomfortable conclusion about scope
 
 Engine findings by area, most-hit first: `gc-mark-sweep-compaction` **15**,
 `reclaim-reconcile-audit` 10, `write-path-carve` 9, `syncer-upload-health` 9,
 `composition-lifecycle` 8, `read-path-cold-fetch` 6, `manifest-check-repair` 4,
 `offline-readiness` 3.
 
-Per §6.2, the extraction moves roughly **500 of engine's 11,304 LOC** into ferry — the upload
+Per design-plan §6.2, the extraction moves roughly **500 of engine's 11,304 LOC** into ferry — the upload
 window, the PUT, and a dead interface. GC, reclaim, manifest check/repair, cold-read resolution
 and offline readiness all stay. **The single new HIGH lives in `gc_sweep_index.go`, which does not
 move**, and the heaviest-hit area is the one least touched by the refactor.
@@ -825,7 +825,7 @@ So the merged result does not fit the three buckets of §3 cleanly, and a fourth
 That is an argument for sequencing, not against the refactor: **§3d work is worth doing before
 the boundary hardens**, while the code is still one package and a cross-cutting fix is one diff.
 
-### 13.4 Cross-boundary findings
+### 12.4 Cross-boundary findings
 
 Three defects span packages, and each was invisible to at least one audit:
 
@@ -839,7 +839,7 @@ Three defects span packages, and each was invisible to at least one audit:
    engine, and the NFSv4 adapter — outside all three audit scopes, found only because the engine
    audit was allowed to grep beyond its own package.
 
-### 13.5 Next actions
+### 12.5 Next actions
 
 1. **Filed as #2238.** Add it to step 0 alongside #2227-#2231. The cheap fix is to re-arm `syncedAt` on a dedup hit, so the existing grace gate covers the
    resurrection window; the correct fix is to revalidate liveness inside the transaction that

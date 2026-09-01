@@ -1,11 +1,10 @@
 # pier — target design for extracting `pkg/block/journal` as a library
 
-Status: **DESIGN / NOT APPROVED.** No code written. Audit of the current package
-(`/auditing-ai-codebases`, 7 lenses) still running at time of writing; findings will be
-folded in and may change §5.
+Status: **DESIGN / NOT APPROVED.** No code written. The audit that was still running when this
+was drafted is **complete**, as are the sibling audits of `pkg/block/engine` and the `pkg/block`
+root. All three are folded into the master plan's §12 — read that alongside §5 here.
 
-Baseline commit: `ff14b24cb` (origin/develop). Immutable audit worktree:
-`~/dittofs-worktrees/audit-journal`.
+Baseline commit: `ff14b24cb` (origin/develop). Audited in an immutable detached worktree at that commit.
 
 Naming: **DECIDED — `pier`.** See §11.1 for the rationale and the vocabulary it gives us.
 

@@ -198,7 +198,7 @@ Stack: Go (module github.com/marmos91/dittofs, part of the `dfs` server binary �
 - **Verified:** CONFIRMED. Reachable via dfsctl store block audit→BlockStoreAuditRefcounts. Downgraded HIGH→LOW: perf only, on-demand operator command, bites only hardlink-heavy trees.
 
 ### [LOW] WarmAll silently drops unplaceable manifest rows with zero signal · `bugs` · area: read-path-cold-fetch
-- **Where:** `/Users/marmos91/dittofs-worktrees/audit-engine/pkg/block/engine/warm.go:116`
+- **Where:** `pkg/block/engine/warm.go:116`
 - **What:** `absOff, ok := block.ParseChunkOffset(fb.ID); if !ok { continue }` drops row silently — no log, no counter. `total` computed AFTER filter so progress()/WarmResult look like a clean complete run even with excluded rows.
 - **Why it matters:** Every other consumer of this condition (findRowCoveringOffset→ErrManifestInconsistent, resolveNextChunkStart, DataExtents) treats it as reportable; WarmAll swallows it. WarmAll exists to pre-warm before going remote-unreachable — a skipped range is never fetched, caller has no way to know it wasn't warmed.
 - **Fix:** Count/log skipped unplaceable rows (Warn/Error w/ payloadID+fb.ID, or surface via WarmResult) instead of bare `continue`, mirror SeedColdFromManifest's report.unplaceable pattern.
@@ -261,21 +261,21 @@ Stack: Go (module github.com/marmos91/dittofs, part of the `dfs` server binary �
 - **Verified:** CONFIRMED read_internal.go:170/229/450, fetch.go:107. Downgraded MED→LOW: pure in-memory uint64 compares on already-materialized slice (~1e6 compares, sub-ms) next to K remote GETs at hundreds of ms each — nowhere near a bottleneck; file's own "not the profiled hot path" note (:311) directionally right.
 
 ### [LOW] compactOneBlock re-fetches locators one-by-one, defeating the EnumerateSynced batching CompactBlocks just did · `perf` · area: gc-mark-sweep-compaction
-- **Where:** `/Users/marmos91/dittofs-worktrees/audit-engine/pkg/block/engine/compaction.go:237`
+- **Where:** `pkg/block/engine/compaction.go:237`
 - **What:** CompactBlocks (line 143) does one EnumerateSynced scan per share explicitly to avoid GetLocator-per-hash round trips (comment cites sqlite MaxOpenConns(1) O(N) serial cost) — but only keeps aggregated liveBytes[blockID], discards per-hash locator. compactOneBlock's moveable-selection loop then calls v.GetLocator once per chunk record in every candidate block — thousands of serial single-row queries on the same pool the batching was built to avoid.
 - **Why it matters:** Self-contradicts the file's own documented rationale two paragraphs above. N candidate blocks × M chunks each = O(N*M) individual queries instead of the one sequential scan already paid for.
 - **Fix:** Build hash→ChunkLocator (or hash→BlockID) map during the same EnumerateSynced pass used for liveBytes; thread into compactOneBlock so moveable loop does map lookup not GetLocator call.
 - **Verified:** CONFIRMED compaction.go:143-150/237. Reachable blockgc.go:596. Downgraded MED→LOW: only over CANDIDATE blocks (already below LiveRatio, ~128 records at 8MiB/64KiB not "thousands"), background GC pass off client path; naive fix has real memory tradeoff current code deliberately avoids.
 
 ### [LOW] sweepByWalk hex-encodes every walked hash unconditionally, even on the common keep-alive path · `perf` · area: gc-mark-sweep-compaction
-- **Where:** `/Users/marmos91/dittofs-worktrees/audit-engine/pkg/block/engine/gc.go:668`
+- **Where:** `pkg/block/engine/gc.go:668`
 - **What:** `key := h.String()` (hex.EncodeToString, fresh alloc) runs for every object before grace-window/live-set checks that usually return early. key only used on error/delete branches (addError, recordDryRunCandidate).
 - **Why it matters:** sweepByWalk runs over entire local chunk namespace; per-object allocation multiplied across millions of live/kept objects for a value thrown away unused most of the time.
 - **Fix:** Move `key := h.String()` down into each branch that actually needs it (addError calls, recordDryRunCandidate, delete-error path).
 - **Verified:** CONFIRMED gc.go:668 vs filters at 675-687; ContentHash.String is hex.EncodeToString(h[:]) (types.go:27-29). Reachable gc.go:481. LOW not MED: small alloc next to a disk-backed gcs.Has lookup already paid per object.
 
 ### [LOW] sweepFromSyncedIndex hex-encodes every synced hash unconditionally, even on the common live-keep path · `perf` · area: gc-mark-sweep-compaction
-- **Where:** `/Users/marmos91/dittofs-worktrees/audit-engine/pkg/block/engine/gc_sweep_index.go:54`
+- **Where:** `pkg/block/engine/gc_sweep_index.go:54`
 - **What:** `key := h.String()` runs for every marker EnumerateSynced yields, before syncedAt-zero/grace-window/live-set checks (present==true majority case). Same hex.EncodeToString allocation-per-call as gc.go:668.
 - **Why it matters:** This is the whole synced-hash index — whole live remote object population. Computing+discarding hex string per hash on common path wastes allocation at exactly the scale (millions of markers) surrounding code was engineered to bound.
 - **Fix:** Compute key lazily inside branches that use it (addError, recordDryRunCandidate) instead of unconditionally at callback top.

@@ -109,7 +109,7 @@ Stack: Go (module github.com/... single go.mod at repo root, no separate module 
 - **Verified:** CONFIRMED, duplicate of idx 0/1/7. No pkg/block/migrate, no pkg/block/gc, no pkg/block/storetest; gc in engine, storetest in pkg/metadata. Doc-only → LOW, no runtime path.
 
 ### [LOW] ContentHash.UnmarshalJSON legacy array form skips length validation — silently accepts a truncated/oversized hash instead of erroring · `bugs` · area: manifest-identity-types
-- **Where:** `/Users/marmos91/dittofs-worktrees/audit-engine/pkg/block/types.go:115`
+- **Where:** `pkg/block/types.go:115`
 - **What:** Legacy branch: `var arr [HashSize]byte; json.Unmarshal(data, &arr)`, accepts on `err == nil`. encoding/json array-into-fixed-array: silently zero-pads short arrays, silently truncates long ones — never errors on length mismatch. `[]` → zero hash, no error. 10 or 40-element array → wrong hash, no error. Sibling branches (hex :125, base64 :133) both gate on `len(...) == HashSize` first — array branch is the ONLY one with no check.
 - **Why it matters:** Package's own ErrFutureFormat rationale explicitly rejects "decodes cleanly into ... the wrong thing." ContentHash flows into FileChunk.Hash/ChunkRef.Hash → dedup lookups, read-path chunk resolution.
 - **Fix:** Unmarshal into `[]byte` first, check `len(raw) == HashSize`, else return ErrInvalidHash-wrapped error — mirror hex/base64 branches.
@@ -158,7 +158,7 @@ Stack: Go (module github.com/... single go.mod at repo root, no separate module 
 - **Verified:** Confirmed: `grep -rn 'TRANSITIONAL-'` over whole worktree hits only doc.go:128,132,144 (definition + own grep recipe) + `.planning/audits/2026-08-05-dataplane/report.md:1088` (already flagged this exact paragraph dead a month ago; its suggested fallback site `engine/cache.go` carries no marker either). Zero adopters. Doc-only → LOW.
 
 ### [LOW] ContentHash.MarshalJSON allocates+discards via CASKey() instead of encoding hex directly into the preallocated buffer · `perf` · area: manifest-identity-types
-- **Where:** `/Users/marmos91/dittofs-worktrees/audit-engine/pkg/block/types.go:98`
+- **Where:** `pkg/block/types.go:98`
 - **What:** MarshalJSON preallocates `out` exact-cap (99) then calls `h.CASKey()` (101), which does `hex.EncodeToString` (2 allocs) + `"blake3:"+...` concat (1 alloc) = 3 throwaway allocs, all copied into `out` then discarded.
 - **Why it matters:** Drives ChunkRef JSON serialization for every FileAttr.Blocks write to Postgres/Badger, once per chunk per manifest write/read — 3 extra allocs × N chunks on hot metadata path for large files.
 - **Fix:** Write directly into `out`: copy `"blake3:"` then `hex.Encode(out[tail:], h[:])` instead of calling CASKey(). 3 allocs → the 1 already-planned `out` alloc.
@@ -204,4 +204,4 @@ No dedicated `gaps` findings this pass — table below cross-refs the reference 
 | GC never deletes an object mid-write; fails closed on zero timestamp | doc.go states GC "fails closed on a zero timestamp" but GC code itself lives in `pkg/block/engine/gc*.go`, out of scope here. Also: doc.go's own Sub-packages list still claims a `gc` sub-package under pkg/block that doesn't exist (multiple LOW findings above, store-contract-policy) | Contract not verified against actual engine/gc*.go this pass; doc's own package map for where to find it is wrong | https://git-scm.com/docs/git-gc |
 | Every backend stamps non-zero reliable write timestamp | Not checked — backend write paths are sibling pkgs (local/remote/badger etc), out of scope | Unverified — flag for backend-scope audit | DittoFS `pkg/block/doc.go` (internal invariant, no external source) |
 
-Path: `/Users/marmos91/dittofs-worktrees/audit-engine/pkg/block/report.md`
+Generated into the audit worktree; committed here as this file.

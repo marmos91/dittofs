@@ -49,7 +49,7 @@ Stack: Go (1.x, stdlib-first). Package `pkg/block/journal` inside the single rep
 - **Verified:** CONFIRMED. Not drop-in: rr.rec is retained by caller (carve.go:955-957), so a shared pool needs release semantics — simpler fix is per-runReader scratch reused across records. LOW.
 
 ### [LOW] loadCold slurps the whole cold.log into one buffer instead of streaming · `perf` · area: cold-tier
-- **Where:** `/Users/marmos91/dittofs-worktrees/audit-journal/pkg/block/journal/cold.go:193`
+- **Where:** `pkg/block/journal/cold.go:193`
 - **What:** `os.ReadFile(...)` pulls entire cold.log before decoding one entry; decode loop (200-210) appends with no cap hint; compaction gate (recovery.go:397) only evaluated after the full load.
 - **Why:** Breaks the package's own bounded-read convention (record.go streams via fixed hdrBuf/ReaderAt); store-open memory becomes O(total historical cold churn), not O(live cold intervals).
 - **Fix:** Decode via bufio.Reader / fixed scratch buf, same pattern as readRecordAt; size out's initial cap from fileSize/(coldHeaderSize+typicalIDLen).
@@ -231,7 +231,7 @@ Stack: Go (1.x, stdlib-first). Package `pkg/block/journal` inside the single rep
 - **Verified:** CONFIRMED at groupcommit_durability_test.go:18. Only two such refs in the whole package (grep for #1xxx/#2xxx), these two. Fix: delete the parenthetical.
 
 ### [LOW] appendCold permanently skips directory-fsync retry after first failure, defeating D4's durability guarantee · `bugs` · area: cold-tier
-- **Where:** `/Users/marmos91/dittofs-worktrees/audit-journal/pkg/block/journal/cold.go:145`
+- **Where:** `pkg/block/journal/cold.go:145`
 - **What:** First appendCold call: OpenFile(O_CREATE) makes cold.log even if fsyncDir(s.dir) then fails; error returned, file not removed. coldFD nil, next call os.Stat finds file exists, created=false, fsyncDir skipped forever after.
 - **Why it matters:** cold.go's own doc says this fsync exists so a crash right after first eviction can't come back to no cold.log. Losing the dir entry loses every cold marker → ranges read as POSIX holes → silent zeros (#2084-class). Fails open, untested.
 - **Fix:** On fsyncDir failure, `os.Remove(s.coldPath())` before returning so next call retries: `if derr := fsyncDir(s.dir); derr != nil { _ = fd.Close(); _ = os.Remove(s.coldPath()); return fmt.Errorf(...) }`.
@@ -322,7 +322,7 @@ Stack: Go (1.x, stdlib-first). Package `pkg/block/journal` inside the single rep
 - **Verified:** CONFIRMED. store.go:276-282. Reachable: Open is the package's sole constructor. Needs already-full volume at Open → MED→LOW. Fix: drop `&& free > 0` guard or make else unconditional.
 
 ### [LOW] SeedColdBatch re-locks the same per-shard mutex once per cold entry instead of grouping by shard · `perf` · area: store-api
-- **Where:** `/Users/marmos91/dittofs-worktrees/audit-journal/pkg/block/journal/store.go:628`
+- **Where:** `pkg/block/journal/store.go:628`
 - **What:** After appendCold, insert loop does `for _, e := range entries { sh := s.shardFor(e.id); sh.mu.Lock(); sh.indexFor(e.id).insert(...); sh.mu.Unlock() }`. entries built by iterating seeds in order, so every extent of one file is contiguous → back-to-back Lock/Unlock of the same shard mutex.
 - **Why it matters:** SeedColdBatch is documented as a bulk primitive seeding "whole manifest at once" for share-add/snapshot-restore, scaling with file count × extents-per-file. Re-acquiring the same mutex per entry adds needless lock/unlock churn proportional to N instead of distinct shards touched.
 - **Fix:** Group entries by shard before the insert pass (bucket by s.shardFor(e.id)), take each shard's lock once, insert all its entries under one critical section.
