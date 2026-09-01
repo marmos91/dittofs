@@ -40,7 +40,7 @@ func (s *BadgerMetadataStore) Reset(ctx context.Context) error {
 // never goes through a badgerTransaction at all.
 func (s *BadgerMetadataStore) invalidateDerivedCaches() {
 	s.shareCache.InvalidateAll()
-	s.readCache.invalidateAll()
-	s.parentCache.invalidateAll()
-	s.direntCache.invalidateAll()
+	s.readCache.InvalidateAll()
+	s.parentCache.InvalidateAll()
+	s.direntCache.InvalidateAll()
 }

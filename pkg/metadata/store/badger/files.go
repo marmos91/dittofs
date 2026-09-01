@@ -52,14 +52,14 @@ func (s *BadgerMetadataStore) GetFileForRead(ctx context.Context, handle metadat
 	var key string
 	if decErr == nil {
 		key = fileID.String()
-		if cached, ok := s.readCache.get(key); ok {
+		if cached, ok := s.readCache.Get(key); ok {
 			return copyForRead(cached), nil
 		}
 	}
 
 	// Snapshot the invalidation generation BEFORE the backing read so a write
 	// that races this read cannot leave a stale value cached (store() checks it).
-	gen := s.readCache.generation()
+	gen := s.readCache.Generation()
 	var result *metadata.File
 	err := s.db.View(func(txn *badgerdb.Txn) error {
 		tx := &badgerTransaction{store: s, txn: txn}
@@ -71,7 +71,7 @@ func (s *BadgerMetadataStore) GetFileForRead(ctx context.Context, handle metadat
 		return nil, err
 	}
 	if key != "" {
-		s.readCache.store(key, result, gen)
+		s.readCache.Store(key, result, gen)
 		return copyForRead(result), nil
 	}
 	return result, nil

@@ -151,11 +151,11 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			// pre-commit value cannot leave it cached (its generation-guarded
 			// store loses). A stale share entry is a wrong permission decision.
 			for _, id := range dirtyFiles {
-				s.readCache.invalidate(id)
+				s.readCache.Invalidate(id)
 				// The parentCache is keyed by the same fileID string; a mutation
 				// to an inode that is cached as some create's parent (chmod/chown/
 				// rename PutFiles it) must drop that stale parent entry too (#1735).
-				s.parentCache.invalidate(id)
+				s.parentCache.Invalidate(id)
 			}
 			for _, name := range dirtyShares {
 				s.shareCache.Invalidate(name)
@@ -164,7 +164,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			// edge this transaction wrote or deleted, so a subsequent existence
 			// check re-reads instead of serving a stale ABSENT/present (#1735).
 			for _, k := range dirtyDirents {
-				s.direntCache.invalidate(k)
+				s.direntCache.Invalidate(k)
 			}
 			// Durable (data-paired) commit in relaxed mode: fsync now so the
 			// write survives a crash. A sync failure must not falsely ack a

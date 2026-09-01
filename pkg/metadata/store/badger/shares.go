@@ -447,8 +447,8 @@ func (s *BadgerMetadataStore) CreateRootDirectory(ctx context.Context, shareName
 	s.shareCache.Invalidate(shareName)
 	if rootFile != nil {
 		id := rootFile.ID.String()
-		s.readCache.invalidate(id)
-		s.parentCache.invalidate(id)
+		s.readCache.Invalidate(id)
+		s.parentCache.Invalidate(id)
 	}
 
 	return rootFile, nil
