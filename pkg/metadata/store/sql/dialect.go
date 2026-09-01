@@ -14,11 +14,12 @@ package sql
 //     the driver's empty-result sentinel. Those are genuinely per-dialect
 //     behaviour, so they are methods.
 //
-// Error *mapping* (MapError) and retryability (IsRetryable) stay on each
-// dialect's own errors.go: postgres classifies by SQLSTATE via
-// errors.As(&pgErr) and carries five error classes sqlite has no analogue for,
-// while sqlite matches lowercased substrings. There is no merged errors.go and
-// there was never meant to be one.
+// Error mapping reaches the shared bodies as a MapError hook, but the mapping
+// itself stays on each dialect's own errors.go: postgres classifies by SQLSTATE
+// via errors.As(&pgErr) and carries five error classes sqlite has no analogue
+// for, while sqlite matches lowercased substrings. Retryability is not here at
+// all — only WithTransaction consults it, and that stays per-dialect. There is
+// no merged errors.go and there was never meant to be one.
 type Dialect interface {
 	// IsNoRows reports whether err is this driver's empty-result sentinel:
 	// sql.ErrNoRows for database/sql, pgx.ErrNoRows for pgx. A shared body
@@ -26,9 +27,47 @@ type Dialect interface {
 	// "absent" into a hard error rather than the not-found the callers expect.
 	IsNoRows(err error) bool
 
+	// MapError translates a driver error into the metadata.ExportError the
+	// callers switch on, tagging it with the operation name and the path it
+	// concerned (either may be empty). It dispatches to the dialect's own
+	// errors.go rather than merging the two classifiers.
+	MapError(err error, operation, path string) error
+
 	// Chunks returns the dialect's file-chunk statements. The pointer is
 	// expected to address a package-level value, not a fresh struct per call.
 	Chunks() *ChunkQueries
+
+	// Files returns the dialect's file and directory read statements, under
+	// the same package-level-value expectation as Chunks.
+	Files() *FileQueries
+}
+
+// FileQueries holds the file and directory read statements in one dialect's
+// syntax. Field names name the operation, not the SQL, so the shared bodies in
+// files.go read the same whichever dialect is underneath.
+//
+// These differ by more than placeholder syntax: the path column is a rewritten
+// recursive CTE per dialect, the block-ref aggregate likewise, and postgres
+// matches a payload id through an md5 of it because a content id near PATH_MAX
+// overruns its btree key limit.
+type FileQueries struct {
+	// GetFile selects one full inode row, block-ref aggregate included. Two
+	// parameters: the file id and the share name.
+	GetFile string
+	// GetChild selects a directory entry's child id. Two parameters: the
+	// parent id and the child name.
+	GetChild string
+	// GetParent selects one parent id for a child. One parameter: the child id.
+	GetParent string
+	// GetLinkCount selects one inode's nlink. One parameter: the file id.
+	GetLinkCount string
+	// ListChildren selects a page of directory entries joined to their inode
+	// rows, ordered by name. Three parameters: the parent id, the exclusive
+	// name cursor, and the row limit.
+	ListChildren string
+	// GetFileByPayloadID selects one full inode row by content id, block-ref
+	// aggregate included. One parameter: the content id.
+	GetFileByPayloadID string
 }
 
 // ChunkQueries holds the file-chunk statements in one dialect's syntax. Field
