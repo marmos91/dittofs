@@ -155,22 +155,29 @@ func (sm *StateManager) validateReclaimVerifier(clientIDString string, bootVerif
 }
 
 // LoadClientRecovery reads the durable recovery records on boot and starts the
-// v4 grace period seeded with the prior clients' stable identity strings:
-// today the v4 roster is empty on a fresh process so v4 grace
-// is a no-op; now it is the durable prior-client set).
-//
-// Records whose ReclaimComplete is already true are NOT waited on (a second
+// v4 grace period seeded with the prior clients' stable identity strings.
+// Records whose ReclaimComplete is already true are NOT waited on: a second
 // restart inside one grace window must not re-wait on a client that already
-// finished reclaim — §3.2 RecordReclaimComplete rationale).
+// finished reclaim.
 //
-// Returns the number of clients added to the expected reclaim roster. When no
-// recovery store is wired, or the store has no waitable records, this is a
-// no-op and grace behaves exactly as on develop (empty roster -> skipped),
-// which preserves the fresh-CI fast path. The hard grace timer remains the
-// backstop regardless.
+// The boot verifier snapshot is taken unconditionally, because the
+// CLAIM_PREVIOUS verifier gate must be armed for any prior client whether or
+// not a reclaim window is opened.
+//
+// armGrace decides whether the roster opens a window. A record is written for
+// every client that reaches SETCLIENTID_CONFIRM, even one that never opened or
+// locked anything, and a v4.0 client with nothing to reclaim can never retire
+// its own entry (it returns with CLAIM_NULL, and v4.0 has no RECLAIM_COMPLETE).
+// Arming on the roster alone therefore burns a full grace duration on every
+// later start, refusing every CLAIM_NULL OPEN with no client able to end it
+// early.
+//
+// Returns the number of clients added to the expected reclaim roster; 0 when no
+// recovery store is wired, no records are waitable, or armGrace is false. The
+// hard grace timer remains the backstop regardless.
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) LoadClientRecovery(ctx context.Context) int {
+func (sm *StateManager) LoadClientRecovery(ctx context.Context, armGrace bool) int {
 	sm.mu.RLock()
 	store := sm.recoveryStore
 	sm.mu.RUnlock()
@@ -209,6 +216,12 @@ func (sm *StateManager) LoadClientRecovery(ctx context.Context) int {
 
 	if len(expectedStrings) == 0 {
 		logger.Info("client-recovery boot load: no waitable prior clients; v4 grace not seeded")
+		return 0
+	}
+
+	if !armGrace {
+		logger.Info("client-recovery boot load: no reclaimable state on this start; v4 grace not seeded",
+			"prior_clients", len(expectedStrings))
 		return 0
 	}
 

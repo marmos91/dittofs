@@ -522,6 +522,24 @@ func (s *NFSAdapter) SetKerberosConfig(cfg *config.KerberosConfig) {
 	}
 }
 
+// anyShareAwaitingReclaim reports whether any share opened a lock-reclaim window
+// on this start. The lock layer opens one only when the prior shutdown was
+// unclean or persisted locks were restored, which is the same question the NFSv4
+// reboot-grace window needs answered: is there state a returning client could
+// reclaim?
+func anyShareAwaitingReclaim(rt *runtime.Runtime) bool {
+	metaSvc := rt.GetMetadataService()
+	if metaSvc == nil {
+		return false
+	}
+	for _, shareName := range rt.ListShares() {
+		if lm := metaSvc.GetLockManagerForShare(shareName); lm != nil && lm.IsInGracePeriod() {
+			return true
+		}
+	}
+	return false
+}
+
 // SetRuntime injects the runtime containing all stores and shares.
 //
 // Called by Runtime before Serve() is called. The runtime
@@ -594,12 +612,12 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	}
 	if recoveryStore != nil {
 		v4StateManager.SetClientRecoveryStore(recoveryStore, uint64(v4StateManager.BootEpoch()))
-		// On boot, load the durable prior-client set and seed the v4 grace
-		// expected-reclaim roster (records already reclaim-complete are excluded).
-		// This is what gives the previously-no-op v4 grace a real expected set
-		// after an ungraceful restart. With an empty/fresh store the roster is
-		// empty and grace is skipped, exactly as on develop today.
-		n := v4StateManager.LoadClientRecovery(context.Background())
+		// Seed the v4 grace expected-reclaim roster from the durable prior-client
+		// set (records already reclaim-complete are excluded), but open the window
+		// only when a share actually holds state a returning client could reclaim.
+		// The lock layer opens its own window on exactly that condition, so reuse
+		// its verdict rather than gracing every client that ever confirmed here.
+		n := v4StateManager.LoadClientRecovery(context.Background(), anyShareAwaitingReclaim(rt))
 		logger.Debug("NFSv4 client-recovery store designated", "boot_loaded_clients", n)
 	}
 
