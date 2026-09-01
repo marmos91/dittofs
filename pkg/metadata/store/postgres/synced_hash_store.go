@@ -16,6 +16,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
+
+	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 )
 
 // Compile-time assertions: the Postgres engine and its transaction implement
@@ -85,64 +87,104 @@ func locatorFromCols(blockID sql.NullString, off, length sql.NullInt64) (block.C
 // Returns (false, nil) when no row exists for hash — an absent hash is
 // treated as "not yet synced", not as an error.
 func (s *PostgresMetadataStore) IsSynced(ctx context.Context, hash block.ContentHash) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
+	return isSyncedTx(ctx, s.conn(), "postgres", hash)
+}
 
-	row := s.queryRow(ctx,
-		`SELECT 1 FROM synced_hashes WHERE hash = $1`,
-		hash[:])
+// MarkSynced records that hash has been mirrored to remote, persisting loc's
+// block columns atomically.
+func (s *PostgresMetadataStore) MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error {
+	return markSyncedTx(ctx, s.conn(), "postgres", hash, loc)
+}
+
+// GetLocator returns the recorded remote locator for hash.
+func (s *PostgresMetadataStore) GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
+	return getLocatorTx(ctx, s.conn(), "postgres", hash)
+}
+
+// DeleteSynced removes the synced marker for hash.
+func (s *PostgresMetadataStore) DeleteSynced(ctx context.Context, hash block.ContentHash) error {
+	return deleteSyncedTx(ctx, s.conn(), "postgres", hash)
+}
+
+// ============================================================================
+// Transaction-level SyncedHashStore
+// ============================================================================
+//
+// The transaction variants run the same bodies against the enclosing pgx.Tx
+// instead of the pool. Postgres gives read-your-writes within a transaction, so
+// a MarkSynced after a DeleteSynced in the same tx records the new locator.
+
+func (tx *postgresTransaction) IsSynced(ctx context.Context, hash block.ContentHash) (bool, error) {
+	return isSyncedTx(ctx, tx.conn(), "postgres tx", hash)
+}
+
+func (tx *postgresTransaction) MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error {
+	return markSyncedTx(ctx, tx.conn(), "postgres tx", hash, loc)
+}
+
+func (tx *postgresTransaction) GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
+	return getLocatorTx(ctx, tx.conn(), "postgres tx", hash)
+}
+
+func (tx *postgresTransaction) DeleteSynced(ctx context.Context, hash block.ContentHash) error {
+	return deleteSyncedTx(ctx, tx.conn(), "postgres tx", hash)
+}
+
+// ============================================================================
+// Shared bodies
+// ============================================================================
+//
+// Each takes the caller's op prefix ("postgres" or "postgres tx") so a failure
+// still records whether it happened on the pool path or inside a transaction.
+// Merging the bodies would otherwise erase that distinction, and it is the one
+// worth keeping here: the failures these report are usually visibility or
+// locking problems, where knowing there was an open transaction is the answer.
+
+// isSyncedTx reports whether a synced marker exists for hash. An absent row is
+// "not yet synced", not an error.
+func isSyncedTx(ctx context.Context, x storesql.Executor, op string, hash block.ContentHash) (bool, error) {
 	var dummy int
-	err := row.Scan(&dummy)
+	err := x.QueryRow(ctx, `SELECT 1 FROM synced_hashes WHERE hash = $1`, hash[:]).Scan(&dummy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("postgres synced get: %w", err)
+		return false, fmt.Errorf("%s synced get: %w", op, err)
 	}
 	return true, nil
 }
 
-// MarkSynced records that hash has been mirrored to remote, persisting loc's
+// markSyncedTx records that hash has been mirrored to remote, persisting loc's
 // block columns atomically. Idempotent via ON CONFLICT (hash) DO NOTHING —
 // re-applying the same hash is a no-op that preserves the first locator. A
 // standalone locator (BlockID == "") leaves the block columns NULL, identical to
 // a pre-locator row, so existing data needs no migration.
-func (s *PostgresMetadataStore) MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
+func markSyncedTx(ctx context.Context, x storesql.Executor, op string, hash block.ContentHash, loc block.ChunkLocator) error {
 	blockID, off, length := locatorArgs(loc)
-	if _, err := s.exec(ctx,
+	if _, err := x.Exec(ctx,
 		`INSERT INTO synced_hashes (hash, synced_at, block_id, block_offset, block_length)
 			VALUES ($1, NOW(), $2, $3, $4)
 			ON CONFLICT (hash) DO NOTHING`,
 		hash[:], blockID, off, length); err != nil {
-		return fmt.Errorf("postgres synced mark: %w", err)
+		return fmt.Errorf("%s synced mark: %w", op, err)
 	}
 	return nil
 }
 
-// GetLocator returns the recorded remote locator for hash. (zero, false, nil)
+// getLocatorTx returns the recorded remote locator for hash: (zero, false, nil)
 // when no row exists; a synced row with NULL/empty block columns yields the zero
 // (standalone) locator with found == true.
-func (s *PostgresMetadataStore) GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return block.ChunkLocator{}, false, err
-	}
-
-	row := s.queryRow(ctx,
-		`SELECT block_id, block_offset, block_length FROM synced_hashes WHERE hash = $1`,
-		hash[:])
+func getLocatorTx(ctx context.Context, x storesql.Executor, op string, hash block.ContentHash) (block.ChunkLocator, bool, error) {
 	var blockID sql.NullString
 	var off, length sql.NullInt64
-	err := row.Scan(&blockID, &off, &length)
+	err := x.QueryRow(ctx,
+		`SELECT block_id, block_offset, block_length FROM synced_hashes WHERE hash = $1`,
+		hash[:]).Scan(&blockID, &off, &length)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return block.ChunkLocator{}, false, nil
 	}
 	if err != nil {
-		return block.ChunkLocator{}, false, fmt.Errorf("postgres synced get locator: %w", err)
+		return block.ChunkLocator{}, false, fmt.Errorf("%s synced get locator: %w", op, err)
 	}
 	if !blockID.Valid || blockID.String == "" {
 		return block.ChunkLocator{}, true, nil
@@ -151,6 +193,15 @@ func (s *PostgresMetadataStore) GetLocator(ctx context.Context, hash block.Conte
 		return block.ChunkLocator{}, false, fmt.Errorf("corrupt locator row: block_id %q with NULL offset/length", blockID.String)
 	}
 	return block.ChunkLocator{BlockID: blockID.String, WireOffset: off.Int64, WireLength: length.Int64}, true, nil
+}
+
+// deleteSyncedTx removes the synced marker for hash. Idempotent: zero rows
+// affected is not an error.
+func deleteSyncedTx(ctx context.Context, x storesql.Executor, op string, hash block.ContentHash) error {
+	if _, err := x.Exec(ctx, `DELETE FROM synced_hashes WHERE hash = $1`, hash[:]); err != nil {
+		return fmt.Errorf("%s synced delete: %w", op, err)
+	}
+	return nil
 }
 
 // locatorArgs maps a ChunkLocator onto the (block_id, block_offset, block_length)
@@ -163,111 +214,6 @@ func locatorArgs(loc block.ChunkLocator) (blockID, off, length any) {
 	return loc.BlockID, loc.WireOffset, loc.WireLength
 }
 
-// DeleteSynced removes the synced marker for hash. Idempotent: DELETE
-// returns no error when the row does not exist (zero rows affected is
-// not an error condition).
-func (s *PostgresMetadataStore) DeleteSynced(ctx context.Context, hash block.ContentHash) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	if _, err := s.exec(ctx,
-		`DELETE FROM synced_hashes WHERE hash = $1`,
-		hash[:]); err != nil {
-		return fmt.Errorf("postgres synced delete: %w", err)
-	}
-	return nil
-}
-
-// ============================================================================
-// Transaction-level SyncedHashStore
-// ============================================================================
-//
-// Same executor plumbing as the transaction-level BlockRecordStore /
-// LocalChunkIndex (block_record_store.go): each method runs its statement on
-// the enclosing pgx.Tx (tx.tx) instead of the pool helpers, sharing the
-// locatorArgs / scan logic with the store-level variants. Postgres gives
-// read-your-writes within a transaction, so a MarkSynced after a DeleteSynced
-// in the same tx records the new locator.
-
-func (tx *postgresTransaction) IsSynced(ctx context.Context, hash block.ContentHash) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	var dummy int
-	err := tx.tx.QueryRow(ctx,
-		`SELECT 1 FROM synced_hashes WHERE hash = $1`,
-		hash[:]).Scan(&dummy)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("postgres tx synced get: %w", err)
-	}
-	return true, nil
-}
-
-// MarkSynced records the synced marker inside the transaction. First-wins per
-// ON CONFLICT (hash) DO NOTHING, matching the store-level method — except
-// after a DeleteSynced in the same tx, whose pending delete makes this insert
-// take effect with the new locator (read-your-writes).
-func (tx *postgresTransaction) MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	blockID, off, length := locatorArgs(loc)
-	if _, err := tx.tx.Exec(ctx,
-		`INSERT INTO synced_hashes (hash, synced_at, block_id, block_offset, block_length)
-			VALUES ($1, NOW(), $2, $3, $4)
-			ON CONFLICT (hash) DO NOTHING`,
-		hash[:], blockID, off, length); err != nil {
-		return fmt.Errorf("postgres tx synced mark: %w", err)
-	}
-	return nil
-}
-
-func (tx *postgresTransaction) GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return block.ChunkLocator{}, false, err
-	}
-	var blockID sql.NullString
-	var off, length sql.NullInt64
-	err := tx.tx.QueryRow(ctx,
-		`SELECT block_id, block_offset, block_length FROM synced_hashes WHERE hash = $1`,
-		hash[:]).Scan(&blockID, &off, &length)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return block.ChunkLocator{}, false, nil
-	}
-	if err != nil {
-		return block.ChunkLocator{}, false, fmt.Errorf("postgres tx synced get locator: %w", err)
-	}
-	if !blockID.Valid || blockID.String == "" {
-		return block.ChunkLocator{}, true, nil
-	}
-	if !off.Valid || !length.Valid {
-		return block.ChunkLocator{}, false, fmt.Errorf("corrupt locator row: block_id %q with NULL offset/length", blockID.String)
-	}
-	return block.ChunkLocator{BlockID: blockID.String, WireOffset: off.Int64, WireLength: length.Int64}, true, nil
-}
-
-func (tx *postgresTransaction) DeleteSynced(ctx context.Context, hash block.ContentHash) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if _, err := tx.tx.Exec(ctx,
-		`DELETE FROM synced_hashes WHERE hash = $1`,
-		hash[:]); err != nil {
-		return fmt.Errorf("postgres tx synced delete: %w", err)
-	}
-	return nil
-}
-
-// PutSyncedLocators overwrites the marker of every chunk. The upserts are
-// pipelined as one batch, so a commit packing hundreds of chunks costs a single
-// network round trip instead of two per chunk. Each upsert is its own
-// statement, executed in slice order, so a repeated hash ends on the locator of
-// its last occurrence — the same row the sequential delete-then-mark pair
-// leaves behind.
 func (tx *postgresTransaction) PutSyncedLocators(ctx context.Context, chunks []block.BlockChunkCommit) error {
 	if err := ctx.Err(); err != nil {
 		return err

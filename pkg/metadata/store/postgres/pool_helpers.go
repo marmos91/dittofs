@@ -210,3 +210,85 @@ var (
 	_ storesql.Rows       = (pgx.Rows)(nil)
 	_ storesql.CommandTag = pgconn.CommandTag{}
 )
+
+// ============================================================================
+// Executor construction
+// ============================================================================
+//
+// The shared SQL-family contract is consumed by query bodies that must run
+// either against the pool or inside an open transaction. Postgres produces one
+// Executor for each; the bodies then exist once instead of twice, which is the
+// shape sqlite already had (see its execer).
+
+// poolExecer runs statements on the pool, acquiring and releasing a connection
+// per operation under the shared acquire timeout.
+type poolExecer struct{ s *PostgresMetadataStore }
+
+func (x poolExecer) QueryRow(ctx context.Context, sql string, args ...any) storesql.Row {
+	return x.s.queryRow(ctx, sql, args...)
+}
+
+func (x poolExecer) Query(ctx context.Context, sql string, args ...any) (storesql.Rows, error) {
+	rows, err := x.s.query(ctx, sql, args...)
+	if err != nil {
+		// Return an untyped nil: a typed nil pgx.Rows in a storesql.Rows would
+		// read as non-nil at the call site.
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (x poolExecer) Exec(ctx context.Context, sql string, args ...any) (storesql.CommandTag, error) {
+	return x.s.exec(ctx, sql, args...)
+}
+
+// txExecer runs statements on an open pgx.Tx, so a rollback undoes them.
+//
+// It checks the context and maps Query/Exec errors, which the pool helpers
+// already do on their side. That keeps the guard out of every shared body: a
+// body that carried its own ctx check would double-check on the pool path and
+// be the only thing standing between a cancelled context and the transaction on
+// this one. QueryRow is lazy in pgx, so its error surfaces from the caller's
+// Scan and is not mapped here — matching the pool path, which does not map it
+// either.
+type txExecer struct{ tx pgx.Tx }
+
+func (x txExecer) QueryRow(ctx context.Context, sql string, args ...any) storesql.Row {
+	if err := ctx.Err(); err != nil {
+		return &errorRow{err: err}
+	}
+	return x.tx.QueryRow(ctx, sql, args...)
+}
+
+func (x txExecer) Query(ctx context.Context, sql string, args ...any) (storesql.Rows, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	rows, err := x.tx.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, mapPgError(err, "query", sql)
+	}
+	return rows, nil
+}
+
+func (x txExecer) Exec(ctx context.Context, sql string, args ...any) (storesql.CommandTag, error) {
+	if err := ctx.Err(); err != nil {
+		return pgconn.CommandTag{}, err
+	}
+	tag, err := x.tx.Exec(ctx, sql, args...)
+	if err != nil {
+		return pgconn.CommandTag{}, mapPgError(err, "exec", sql)
+	}
+	return tag, nil
+}
+
+var (
+	_ storesql.Executor = poolExecer{}
+	_ storesql.Executor = txExecer{}
+)
+
+// conn returns the Executor over the pool.
+func (s *PostgresMetadataStore) conn() storesql.Executor { return poolExecer{s: s} }
+
+// conn returns the Executor over this transaction's open pgx.Tx.
+func (tx *postgresTransaction) conn() storesql.Executor { return txExecer{tx: tx.tx} }
