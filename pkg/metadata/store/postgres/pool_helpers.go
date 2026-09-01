@@ -8,6 +8,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 )
 
 // poolConnectionAcquireTimeout is the maximum time to wait for a connection from the pool.
@@ -194,3 +196,17 @@ func (r *poolRows) CommandTag() pgconn.CommandTag {
 func (r *poolRows) Conn() *pgx.Conn {
 	return r.rows.Conn()
 }
+
+// The pgx surface this store is written against must present the shared
+// SQL-family contract, which it does structurally: pgx.Row.Scan,
+// pgx.Rows.{Next,Scan,Close,Err} and pgconn.CommandTag.RowsAffected already
+// match. Asserting it here means a pgx upgrade that changed one of those shapes
+// breaks the build once, rather than at every shared call site once the merged
+// bodies ride on it.
+var (
+	_ storesql.Row        = (*poolRow)(nil)
+	_ storesql.Row        = (*errorRow)(nil)
+	_ storesql.Rows       = (*poolRows)(nil)
+	_ storesql.Rows       = (pgx.Rows)(nil)
+	_ storesql.CommandTag = pgconn.CommandTag{}
+)
