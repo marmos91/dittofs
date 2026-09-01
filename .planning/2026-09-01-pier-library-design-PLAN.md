@@ -167,9 +167,9 @@ var ErrClosed = errors.New("pier: closed")
 type CorruptError struct{ ID FileID; Off, Len int64 } // healable: invalidate + refetch
 ```
 
-### `Flush` — the seam (v4)
+### `Flush` — the seam (v5)
 
-Three earlier drafts were rejected. §4.3 records why, so they are not re-walked.
+Four earlier drafts were rejected. §4.3 records why, so they are not re-walked.
 
 ```go
 func (c *Cache) Flush(ctx context.Context, id FileID, opts FlushOptions,
@@ -218,16 +218,35 @@ would stall every read on the shard.
 **C3 — Deferred credit.** `fn` may return an empty `durable` slice for any number of calls while
 it buffers toward a block. It reports extents whose uploads have **since** completed on a later
 call. Consequence, accepted: for a file with few runs but slow uploads, most flips arrive on the
-`Final` call. `Final` must therefore drain — it blocks until ferry's in-flight set for this file
-resolves.
+`Final` call, which blocks until this file's in-flight uploads resolve.
 
-**C4 — Credit is validated, not trusted.** For every returned extent, pier verifies it is in
-this file's *offered-and-unflipped* set, matching on **(offset, length, version)** — not offset
-alone. A concurrent `WriteAt` bumps the interval's version, and flipping by offset alone would
-mark the *new* bytes synced when the *old* ones were uploaded. That is the #1872 shape exactly.
-Extents failing validation are **dropped, not flipped**, and the drop is logged. Today's
-`flipIdx` cursor (`carve.go:844-865`) makes this class impossible by construction; a free-form
-`[]Extent` reopens it, so the check is mandatory, not defensive.
+**Credit is tracked per `Submit` call, never through a shared stream.** `ferry.Submit` returns a
+future scoped to that one upload; `fn` waits on futures in submission order, exactly as
+`journal/carve_dispatch.go:109-114` chains `prev`/`mine` today. A single shared
+`Completions()` channel CANNOT work: Go delivers each message to exactly one receiver, and
+`engine/carve_dispatch.go:91-127` already flushes many files concurrently, so file B's completion
+would be delivered to file A's `fn` with no `FileID` in `Submit` and no demultiplexer anywhere.
+That loses durability credit silently — the disease this design exists to cure, relocated to the
+transport. See §7.3.
+
+**C4 — Credit is validated per FRAGMENT, not per extent.** pier decomposes each returned
+`(offset, length)` against its own retained snapshot of the fragments it offered, and flips
+**fragment by fragment**, skipping any whose version no longer matches while still flipping every
+sibling that does. This mirrors `flipUpTo` (`carve.go:844-865`), which already validates per live
+interval via `fi.findRecord(iv.fileOff, iv.version)`.
+
+A monolithic (offset, length, version) match on the whole returned extent would be WRONG, and
+routinely so: `splitRuns` (`carve.go:364-375`) groups runs by file-offset adjacency only, never
+by version, so one offered extent can already span differently-versioned fragments *before* any
+race — and a concurrent partial overwrite of one byte (`clamp`, `index.go:53-67`, which preserves
+version on untouched sub-ranges) splits it further. `fn` reports at block/chunk granularity, a
+different partitioning again. Whole-extent matching would forfeit credit for an entire run
+because one unrelated byte moved, on exactly the scattered-write workload this package is tuned
+for (`carve.go:377-387`).
+
+The version check itself is pier's own bookkeeping — `Extent` carries no version field and `fn`
+never sees one. Skipped fragments are logged and stay dirty; the next pass's dedup collapses the
+re-upload to a no-op, so this costs repeated CDC/hash work, not correctness.
 
 **C5 — Partial credit with error.** `fn` may return a non-empty `durable` **together with** a
 non-nil error: "these committed, then I failed." pier flips the validated extents, stops
@@ -246,10 +265,32 @@ already validated, and still calls `AfterFile`. A cancel between the last flip a
 strand superseded rows — the same window today's `ponytail:` marker at `carve.go:335` documents.
 Unchanged, and explicitly not made worse.
 
-**C8 — Buffer lifetime.** `Run`'s `ReaderAt` is valid only for the duration of the `fn` call.
-It reads from a pooled buffer pier reuses on the next call. An implementation that needs the
-bytes longer must copy them — the same contract `BlockSink.CommitBlock` states today
+**C8 — Buffer lifetime, and NO extra copy.** `Run`'s `ReaderAt` is a **lazy pass-through to the
+underlying record reads** — it does NOT pre-materialize into a pier-owned buffer. This is
+deliberate and is the difference between two copies and three:
+
+- today: record -> `buf` (pooled scratch, `carve.go:530`) -> `arena` (`copy`, `:589`). Two hops.
+- pre-materializing would add record -> pier-buf -> fn-scratch -> crane arena. Three.
+- lazy pass-through keeps it at two: `fn` reads straight into its own scratch, then crane copies
+  accepted chunk bytes into its block arena.
+
+`ReaderAt` is valid only for the duration of the `fn` call. An implementation needing the bytes
+longer must copy them — the same contract `BlockSink.CommitBlock` states today
 (`carve.go:100-103`).
+
+**C9 — `fn` and its accumulator MUST be constructed fresh per `Flush` call.** pier cannot enforce
+this and cannot detect a violation: it is chunk-agnostic, so it has no visibility into what `fn`
+does with the bytes. **Caller obligation, stated because it is silent when broken.**
+`engine/carve_dispatch.go:91-127` launches one goroutine per file, gated only by a *count*
+limiter, so files on different shards flush truly concurrently. Today that is safe because
+`packRuns` allocates its chunker (`carve.go:513`) and dispatcher (`:400`) fresh per call. In v5
+that state is `crane.Boxer`, living in the engine's closure — and hoisting it to a
+`Syncer`-lifetime field reads like harmless stateless config while actually interleaving two
+files' bytes into one block. That is cross-file corruption, worse than anything in §2.
+
+**C10 — One `Flush` per file at a time.** Guaranteed by `flushMu` being shard-scoped and
+`shardFor(id)` deterministic, so a manual `SyncNow` racing the periodic pass blocks rather than
+interleaving. Stated once here rather than left to be assembled from C1, C2 and §4.2.
 
 ### 4.2 `AfterFile` is mandatory
 
@@ -268,6 +309,17 @@ That is #1872/#2093 reintroduced by construction, on a timer. A caller-side lock
 alternative: it makes the engine invent a second per-shard scheme with no visibility into pier's
 partitioning. Fold `maybeResetDirtyClock` (`carve.go:920-935`) into `AfterFile` too.
 
+**`AfterFile` needs no parameters beyond the id**: `fn` and `AfterFile` share the caller's closure,
+so the `spans`/`newOffsets` the reap needs are already in scope.
+
+**`DurableTail` supplies residency only.** It answers "is anything durable past this run, and is
+it local or remote" — the `anySyncedFrom`/`warmAt` half of `extendRunToRowEnd` (`carve.go:673-711`).
+It does NOT answer where the manifest row ends: that is `ManifestRowEndAfter`
+(`blocksink.go:190-213`), a metadata-store call pier will never have, so `fn` makes it directly.
+And to re-chunk the tail, `fn` reads it via `pier.ReadAt` — `Run.ReaderAt` is scoped to
+`Run.Extent`, not the tail. A reader would otherwise assume `DurableTail` is self-sufficient and
+go looking for a manifest hook that will never exist.
+
 ### 4.3 Rejected drafts — do not re-walk
 
 | Draft | Shape | Why it failed |
@@ -275,6 +327,7 @@ partitioning. Fold `maybeResetDirtyClock` (`carve.go:920-935`) into `AfterFile` 
 | v1 | one call per run, returns `consumed int64` | Cannot name bytes from an *earlier* call. `packRuns` does not reset `blockFirstRun` per run (`carve.go:442`, `:600-603`), so one block routinely spans runs. Forced either one small object per run, or the caller rebuilding the accumulator. |
 | v2 | pier accumulates to `BlockSize`, calls `fn` per block | Impossible. `carve.go:598-601` closes a block only after a whole chunk is appended, so **block boundaries are always chunk boundaries** — and a chunk-agnostic pier cannot know where a block may legally end. |
 | v3 | v4's shape, but the parameter was named `Block` and pier owned "bounded concurrency" | Two errors: `Block` collides with crane's output type and implies pier understands blocks, which contradicts the chunk-agnostic requirement; and pier-owned concurrency contradicts C1's sequential calling — concurrent calls race over one accumulator. |
+| v4 | v5's shape, but ferry exposed one shared `Completions()` channel, C4 matched whole extents, C8 pre-materialized, and C9/C10 were unstated | `Completions()` is undemultiplexable: Go delivers each message to one receiver, `Submit` carries no `FileID`, and many files flush concurrently — file B's completion reaches file A's `fn`. Whole-extent matching forfeits credit whenever one unrelated byte moves, which is the common case. |
 
 ### 4.4 What still needs proving before code
 
@@ -646,12 +699,21 @@ func New(s Store, o Options) *Ferry
 func (f *Ferry) Put(ctx context.Context, id BlockID, data []byte) error
 func (f *Ferry) Get(ctx context.Context, id BlockID, off, n int64) (io.ReadCloser, error)
 
-// Submit is the asynchronous form: uploads overlap up to the adaptive window, but
-// Completions reports them IN SUBMISSION ORDER. That ordering is exactly what lets
-// pier flip its watermark safely — it is ferry's real contract, not a convenience.
-func (f *Ferry) Submit(ctx context.Context, id BlockID, data []byte, tag any) error
-func (f *Ferry) Completions() <-chan Completion
-type Completion struct { Tag any; Err error }
+// Submit queues an upload and returns a future for THAT CALL ONLY. Uploads overlap
+// up to the adaptive window; the caller waits on futures in submission order, which
+// is what lets pier flip its watermark safely.
+//
+// There is deliberately NO shared Completions() channel. Go delivers each message to
+// exactly one receiver, Submit carries no FileID, and many files flush concurrently
+// (engine/carve_dispatch.go:91-127) — so a shared stream routes one file's completion
+// to another file's callback, silently losing durability credit. Per-call futures make
+// that unrepresentable, and mirror journal/carve_dispatch.go:109-114's prev/mine chain.
+func (f *Ferry) Submit(ctx context.Context, id BlockID, data []byte) (<-chan Completion, error)
+type Completion struct { Err error }
+
+// A window slot is released when the upload RESOLVES — success, exhausted retries, or
+// cancellation — independent of whether anyone reads the returned future. Otherwise a
+// caller blocked in Submit could never free the slot it is waiting for.
 
 func (f *Ferry) Health() Health // drives pier.SetEvictionEnabled when the remote degrades
 

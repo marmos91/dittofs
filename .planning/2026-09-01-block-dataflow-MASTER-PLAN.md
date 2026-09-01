@@ -107,6 +107,9 @@ These do not exist today. The design introduces them and must close them.
 | `Extents()` collapsing five queries regresses the hot path | `Size` and `DurableExtent` stay separate methods; benchmark and keep receipts | review finding |
 | `fn` erroring skips the reap, stranding superseded rows that DID commit | on error pier flips validated extents and **still calls `AfterFile`** | §4.1 C5 |
 | Deferred credit bunches most flips onto the `Final` call on upload-bound files | accepted; must be **measured** (residency + time-to-flip vs today) before code | §4.4 |
+| A shared `ferry.Completions()` channel routes one file's upload completion to another file's callback — many files flush concurrently and `Submit` carries no `FileID` — silently losing durability credit | `Submit` returns a **per-call future**; no shared stream exists | §4.1 C3 |
+| Whole-extent credit matching forfeits a whole run when one unrelated byte moves — the common case on scattered writes, since `splitRuns` groups by offset only | validate and flip **per fragment**, mirroring `flipUpTo` | §4.1 C4 |
+| One `crane.Boxer` hoisted to `Syncer` lifetime interleaves two files' bytes into one block — **cross-file corruption**, and pier cannot detect it | stated caller obligation: `fn` and its accumulator constructed fresh per `Flush` | §4.1 C9 |
 
 ## 4. Sequencing
 
