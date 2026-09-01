@@ -34,6 +34,9 @@ const (
 	ACCESS4_XALIST  = 0x100 // list named attributes
 )
 
+// accessXattrBits is the RFC 8276 extended-attribute set.
+const accessXattrBits = uint32(ACCESS4_XAREAD | ACCESS4_XAWRITE | ACCESS4_XALIST)
+
 // accessSupportedFor returns the ACCESS4 bits the server can reliably check for
 // one object under one minorversion, narrowed to the bits the client asked
 // about: RFC 7530 Section 16.1.4 says the reply's "supported" field "will
@@ -41,7 +44,7 @@ const (
 //
 // Three bits are not reportable against every object. Section 16.1.4 gives
 // ACCESS4_LOOKUP "no meaning for non-directory objects" and ACCESS4_EXECUTE "no
-// meaning for a directory". Section 16.1.2 defines ACCESS4_DELETE as deleting a
+// meaning for a directory". It also defines ACCESS4_DELETE as deleting a
 // directory entry, so it too is a right of the directory, not of the object the
 // entry names.
 //
@@ -58,7 +61,7 @@ func accessSupportedFor(isDir bool, minorVersion, requested uint32) uint32 {
 	}
 
 	if minorVersion >= 2 {
-		supported |= ACCESS4_XAREAD | ACCESS4_XAWRITE | ACCESS4_XALIST
+		supported |= accessXattrBits
 	}
 
 	return supported & requested
@@ -96,7 +99,12 @@ func (h *Handler) handleAccess(ctx *types.CompoundContext, reader io.Reader) *ty
 		// both fields from the same mask keeps granted a subset of supported, and
 		// supported a subset of the request, even when the client sends unknown or
 		// reserved bits.
-		supported := accessSupportedFor(true, ctx.MinorVersion, accessReq)
+		//
+		// Pseudo-fs nodes hold no named attributes, whatever the minorversion:
+		// GETXATTR and LISTXATTRS answer NFS4ERR_NOTSUPP on these handles and
+		// SETXATTR answers NFS4ERR_ROFS, so claiming the RFC 8276 bits would send
+		// a v4.2 client into calls that cannot succeed.
+		supported := accessSupportedFor(true, ctx.MinorVersion, accessReq) &^ accessXattrBits
 
 		var buf bytes.Buffer
 		_ = xdr.WriteUint32(&buf, types.NFS4_OK)

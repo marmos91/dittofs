@@ -19,7 +19,7 @@ func TestAccessSupportedFor(t *testing.T) {
 		name  string
 		isDir bool
 		// forbid is the set with no meaning for this object type: RFC 7530
-		// Section 16.1.4 for LOOKUP and EXECUTE, Section 16.1.2 for DELETE.
+		// Section 16.1.4 for LOOKUP, EXECUTE and DELETE.
 		forbid uint32
 	}{
 		{"directory", true, ACCESS4_EXECUTE},

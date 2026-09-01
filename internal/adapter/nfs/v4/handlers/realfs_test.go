@@ -676,8 +676,8 @@ func TestAccess_RealFS_RootGetsAll(t *testing.T) {
 	// Only the bits that are MEANINGFUL for the object type are reportable, and
 	// the target is a regular file on a minorversion-0 context. ACCESS4_LOOKUP
 	// is a directory-search right (RFC 7530 Section 16.1.4), ACCESS4_DELETE
-	// deletes a directory entry and so belongs to the directory (Section
-	// 16.1.2), and the RFC 8276 extended-attribute bits are not defined below
+	// deletes a directory entry and so belongs to the directory (same section),
+	// and the RFC 8276 extended-attribute bits are not defined below
 	// minorversion 2.
 	wantSupported := uint32(ACCESS4_READ | ACCESS4_MODIFY | ACCESS4_EXTEND | ACCESS4_EXECUTE)
 
@@ -750,6 +750,77 @@ func TestAccess_RealFS_OtherPermissions(t *testing.T) {
 	// Other user should have NO access (mode 0700, other = ---)
 	if access != 0 {
 		t.Errorf("other user should have no access for mode 0700, got 0x%x", access)
+	}
+}
+
+// TestAccess_RealFS_SupportedNarrowsToRequest pins the rule at the call site
+// rather than in accessSupportedFor: a client that asks about one right is told
+// about that right alone, however many the server could have answered for the
+// object. The file is readable and executable, so the three bits left out of
+// the request are ones the reply could otherwise have carried.
+func TestAccess_RealFS_SupportedNarrowsToRequest(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+
+	fileHandle := fx.createTestFile(t, fx.rootHandle, "one-bit.txt", metadata.FileTypeRegular, 0o755, 1000, 1000)
+
+	ctx := newRealFSContext(1000, 1000) // owner
+	ctx.CurrentFH = make([]byte, len(fileHandle))
+	copy(ctx.CurrentFH, fileHandle)
+
+	result := fx.handler.accessRealFS(ctx, ACCESS4_READ)
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("ACCESS status = %d, want NFS4_OK", result.Status)
+	}
+
+	reader := bytes.NewReader(result.Data)
+	_, _ = xdr.DecodeUint32(reader) // status
+	supported, _ := xdr.DecodeUint32(reader)
+	access, _ := xdr.DecodeUint32(reader)
+
+	if supported != ACCESS4_READ {
+		t.Errorf("supported = 0x%x, want 0x%x", supported, uint32(ACCESS4_READ))
+	}
+	if access != ACCESS4_READ {
+		t.Errorf("access = 0x%x, want 0x%x", access, uint32(ACCESS4_READ))
+	}
+}
+
+// TestAccess_PseudoFS_NarrowsAndDropsXattrBits pins the pseudo-fs call site.
+// Narrowing to the request is the same rule the real-FS path follows, and the
+// RFC 8276 bits stay out even at minorversion 2, where accessSupportedFor would
+// otherwise report them: the xattr operations refuse pseudo-fs handles, so a
+// v4.2 client told it may read or write named attributes here would only walk
+// into NFS4ERR_NOTSUPP and NFS4ERR_ROFS.
+func TestAccess_PseudoFS_NarrowsAndDropsXattrBits(t *testing.T) {
+	pfs := pseudofs.New()
+	pfs.Rebuild([]string{"/export"})
+	h := NewHandler(nil, pfs)
+
+	ctx := &types.CompoundContext{
+		Context:      context.Background(),
+		ClientAddr:   "127.0.0.1:9999",
+		CurrentFH:    pfs.GetRootHandle(),
+		MinorVersion: 2,
+	}
+
+	var req bytes.Buffer
+	_ = xdr.WriteUint32(&req, ACCESS4_READ|ACCESS4_XAREAD|ACCESS4_XAWRITE|ACCESS4_XALIST)
+
+	result := h.handleAccess(ctx, bytes.NewReader(req.Bytes()))
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("ACCESS status = %d, want NFS4_OK", result.Status)
+	}
+
+	reader := bytes.NewReader(result.Data)
+	_, _ = xdr.DecodeUint32(reader) // status
+	supported, _ := xdr.DecodeUint32(reader)
+	access, _ := xdr.DecodeUint32(reader)
+
+	if supported != ACCESS4_READ {
+		t.Errorf("supported = 0x%x, want 0x%x", supported, uint32(ACCESS4_READ))
+	}
+	if access != ACCESS4_READ {
+		t.Errorf("access = 0x%x, want 0x%x", access, uint32(ACCESS4_READ))
 	}
 }
 
