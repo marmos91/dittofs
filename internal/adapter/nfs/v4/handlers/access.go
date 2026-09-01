@@ -34,12 +34,38 @@ const (
 	ACCESS4_XALIST  = 0x100 // list named attributes
 )
 
-// accessSupported is every ACCESS4 bit this server can evaluate, reported in the
-// ACCESS reply's "supported" field. The "access" (granted) field is always a
-// subset of this.
-const accessSupported = uint32(ACCESS4_READ | ACCESS4_LOOKUP | ACCESS4_MODIFY |
-	ACCESS4_EXTEND | ACCESS4_DELETE | ACCESS4_EXECUTE |
-	ACCESS4_XAREAD | ACCESS4_XAWRITE | ACCESS4_XALIST)
+// accessXattrBits is the RFC 8276 extended-attribute set.
+const accessXattrBits = uint32(ACCESS4_XAREAD | ACCESS4_XAWRITE | ACCESS4_XALIST)
+
+// accessSupportedFor returns the ACCESS4 bits the server can reliably check for
+// one object under one minorversion, narrowed to the bits the client asked
+// about: RFC 7530 Section 16.1.4 says the reply's "supported" field "will
+// contain only as many values as were originally sent in the arguments".
+//
+// Three bits are not reportable against every object. Section 16.1.4 gives
+// ACCESS4_LOOKUP "no meaning for non-directory objects" and ACCESS4_EXECUTE "no
+// meaning for a directory". It also defines ACCESS4_DELETE as deleting a
+// directory entry, so it too is a right of the directory, not of the object the
+// entry names.
+//
+// The RFC 8276 extended-attribute bits belong to minorversion 2, which is the
+// gate the dispatch table already applies to the operations they advertise, so
+// reporting them to a v4.0 or v4.1 client would promise ops it cannot call.
+func accessSupportedFor(isDir bool, minorVersion, requested uint32) uint32 {
+	supported := uint32(ACCESS4_READ | ACCESS4_MODIFY | ACCESS4_EXTEND)
+
+	if isDir {
+		supported |= ACCESS4_LOOKUP | ACCESS4_DELETE
+	} else {
+		supported |= ACCESS4_EXECUTE
+	}
+
+	if minorVersion >= 2 {
+		supported |= accessXattrBits
+	}
+
+	return supported & requested
+}
 
 // handleAccess implements the ACCESS operation (RFC 7530 Section 16.1).
 // Checks access permissions for the current filehandle against a requested bitmask.
@@ -68,13 +94,22 @@ func (h *Handler) handleAccess(ctx *types.CompoundContext, reader io.Reader) *ty
 
 	// Check if current FH is a pseudo-fs handle
 	if pseudofs.IsPseudoFSHandle(ctx.CurrentFH) {
-		// Pseudo-fs directories are always accessible: grant every supported bit
-		// the client asked for. Masking by accessSupported keeps the granted set a
-		// subset of supported even if the client sends unknown/reserved bits.
+		// Pseudo-fs nodes are directories and are always accessible: grant every
+		// bit the client asked for that is checkable against a directory. Deriving
+		// both fields from the same mask keeps granted a subset of supported, and
+		// supported a subset of the request, even when the client sends unknown or
+		// reserved bits.
+		//
+		// Pseudo-fs nodes hold no named attributes, whatever the minorversion:
+		// GETXATTR and LISTXATTRS answer NFS4ERR_NOTSUPP on these handles and
+		// SETXATTR answers NFS4ERR_ROFS, so claiming the RFC 8276 bits would send
+		// a v4.2 client into calls that cannot succeed.
+		supported := accessSupportedFor(true, ctx.MinorVersion, accessReq) &^ accessXattrBits
+
 		var buf bytes.Buffer
 		_ = xdr.WriteUint32(&buf, types.NFS4_OK)
-		_ = xdr.WriteUint32(&buf, accessSupported)           // supported
-		_ = xdr.WriteUint32(&buf, accessReq&accessSupported) // access granted
+		_ = xdr.WriteUint32(&buf, supported) // supported
+		_ = xdr.WriteUint32(&buf, supported) // access granted
 
 		return &types.CompoundResult{
 			Status: types.NFS4_OK,
@@ -94,7 +129,8 @@ func (h *Handler) handleAccess(ctx *types.CompoundContext, reader io.Reader) *ty
 // so ACLs, DENY ACEs, and SID-based grants are honored identically across
 // protocols. The handler only translates protocol access bits to and from the
 // canonical metadata.Permission vocabulary; all permission logic lives in the
-// metadata layer. All 6 access bits are reported as supported.
+// metadata layer. The reported "supported" set is whatever accessSupportedFor
+// allows for this object and minorversion, narrowed to the requested bits.
 func (h *Handler) accessRealFS(ctx *types.CompoundContext, accessReq uint32) *types.CompoundResult {
 	authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
 	if err != nil {
@@ -143,16 +179,14 @@ func (h *Handler) accessRealFS(ctx *types.CompoundContext, accessReq uint32) *ty
 		}
 	}
 
-	// Mask back to what the client actually asked for; CheckPermissions only
-	// ever returns a subset of the requested generic flags, but the
-	// permission<->access translation is not perfectly bijective for
-	// directories (LOOKUP and EXECUTE both map to Traverse), so re-AND with
-	// the requested ACCESS4 bits.
-	granted := permissionsToNFSAccess(grantedPerms, file.Type) & accessReq
+	supported := accessSupportedFor(file.Type == metadata.FileTypeDirectory, ctx.MinorVersion, accessReq)
 
-	// Report all ACCESS4 bits the server can evaluate, including the RFC 8276
-	// extended-attribute bits so the NFSv4.2 client will issue xattr operations.
-	supported := accessSupported
+	// Granted is masked by supported rather than by the request: CheckPermissions
+	// returns a subset of the requested generic flags, but the
+	// permission<->access translation is not perfectly bijective for directories
+	// (LOOKUP and EXECUTE both map to Traverse), and a right the server declined
+	// to claim it can check must not come back granted.
+	granted := permissionsToNFSAccess(grantedPerms, file.Type) & supported
 
 	// Debug log the access check result
 	var uid, gid uint32
