@@ -849,8 +849,12 @@ Three defects span packages, and each was invisible to at least one audit:
 4. Triage the 117 LOW findings per D3 — fold into the step that touches the file, sweep the
    remainder at the end of step 3. Note the prior lesson that "duplicated"/"boilerplate"-looking
    LOW findings have twice concealed real drift bugs here; triage by diffing, never in bulk.
-5. Re-verify every journal finding before acting: that audit's baseline `ff14b24cb` predates
-   `4ec814bc2`.
+5. **Done — all six HIGH premises re-verified against `60e2bd9f7`, none refuted.** The ten commits
+   between `ff14b24cb` and current develop touch metadata, badger and nfs4 — none touch
+   `pkg/block/`. Each fix still needs its own premise check at the commit it is written on, but
+   the backlog is not stale. Method note: on #2227 the branch structure, not the line numbers,
+   is what proves the mutual exclusion — `RestoreToVersion` sits 33 lines below the `if` that
+   appears to enclose it and is actually inside the `else`. Check braces, not proximity.
 
 ## 13. Open questions
 
