@@ -3,6 +3,8 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+
+	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 )
 
 // ============================================================================
@@ -26,26 +28,13 @@ type sqlExecutor interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
-// scanRow is the single-row scan surface used across the store (mirrors
-// pgx.Row).
-type scanRow interface {
-	Scan(dest ...any) error
-}
-
-// scanRows is the streaming surface used across the store (mirrors pgx.Rows,
-// minus the wire-format accessors only backup.go needed — backup is
-// reimplemented without them).
-type scanRows interface {
-	Next() bool
-	Scan(dest ...any) error
-	Close()
-	Err() error
-}
-
-// errorRow returns a deferred error from Scan (mirrors pgx's lazy error rows).
-type errorRow struct{ err error }
-
-func (r errorRow) Scan(dest ...any) error { return r.err }
+// The single-row, streaming and affected-count surfaces are the shared
+// SQL-family contract; only the database/sql adaptation that produces them is
+// dialect-specific and stays here.
+type (
+	scanRow  = storesql.Row
+	scanRows = storesql.Rows
+)
 
 // cmdResult mirrors pgx's CommandTag.RowsAffected() (single int64 return) so
 // the ported bodies can write `result.RowsAffected()` without the (n, err)
@@ -75,7 +64,7 @@ type execer struct {
 
 func (x execer) QueryRow(ctx context.Context, query string, args ...any) scanRow {
 	if err := ctx.Err(); err != nil {
-		return errorRow{err: err}
+		return storesql.ErrorRow{Err: err}
 	}
 	return x.e.QueryRowContext(ctx, query, args...)
 }
@@ -91,7 +80,7 @@ func (x execer) Query(ctx context.Context, query string, args ...any) (scanRows,
 	return sqlRows{r}, nil
 }
 
-func (x execer) Exec(ctx context.Context, query string, args ...any) (cmdResult, error) {
+func (x execer) Exec(ctx context.Context, query string, args ...any) (storesql.CommandTag, error) {
 	if err := ctx.Err(); err != nil {
 		return cmdResult{}, err
 	}
@@ -120,7 +109,7 @@ func (s *SQLiteMetadataStore) query(ctx context.Context, query string, args ...a
 
 // exec executes a statement against the shared *sql.DB and returns the result
 // for RowsAffected inspection.
-func (s *SQLiteMetadataStore) exec(ctx context.Context, query string, args ...any) (cmdResult, error) {
+func (s *SQLiteMetadataStore) exec(ctx context.Context, query string, args ...any) (storesql.CommandTag, error) {
 	return execer{e: s.db, op: "exec"}.Exec(ctx, query, args...)
 }
 
@@ -130,3 +119,11 @@ func (s *SQLiteMetadataStore) exec(ctx context.Context, query string, args ...an
 func (s *SQLiteMetadataStore) conn() execer {
 	return execer{e: s.db, op: "substore"}
 }
+
+// The database/sql adaptations above must present the shared SQL-family
+// contract; a drift here would surface at every call site instead of once.
+var (
+	_ storesql.Rows       = sqlRows{}
+	_ storesql.CommandTag = cmdResult{}
+	_ storesql.Executor   = execer{}
+)
