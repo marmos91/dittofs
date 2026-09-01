@@ -244,10 +244,13 @@ func (x poolExecer) Exec(ctx context.Context, sql string, args ...any) (storesql
 
 // txExecer runs statements on an open pgx.Tx, so a rollback undoes them.
 //
-// It checks the context and maps errors itself, which the pool helpers already
-// do on their side. That keeps the guard out of every shared body: a body that
-// carried its own ctx check would double-check on the pool path and be the only
-// thing standing between a cancelled context and the transaction on this one.
+// It checks the context and maps Query/Exec errors, which the pool helpers
+// already do on their side. That keeps the guard out of every shared body: a
+// body that carried its own ctx check would double-check on the pool path and
+// be the only thing standing between a cancelled context and the transaction on
+// this one. QueryRow is lazy in pgx, so its error surfaces from the caller's
+// Scan and is not mapped here — matching the pool path, which does not map it
+// either.
 type txExecer struct{ tx pgx.Tx }
 
 func (x txExecer) QueryRow(ctx context.Context, sql string, args ...any) storesql.Row {

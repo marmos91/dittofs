@@ -37,9 +37,12 @@ func TestTransactionChunkWritesRollBack(t *testing.T) {
 		State:       block.BlockStateRemote,
 	}
 
-	// Make sure the row is absent to begin with, so a pass cannot come from a
-	// leftover of an earlier run.
-	_ = store.Delete(ctx, chunkID)
+	// Assert the row is absent to begin with rather than deleting blindly: a
+	// leftover from an earlier run would otherwise make the final check pass or
+	// fail for the wrong reason.
+	if _, err := store.GetFileChunk(ctx, chunkID); !errors.Is(err, metadata.ErrFileChunkNotFound) {
+		t.Fatalf("probe chunk %q already present before the test (err = %v)", chunkID, err)
+	}
 
 	sentinel := errors.New("roll this back")
 	err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
@@ -63,7 +66,9 @@ func TestTransactionChunkWritesRollBack(t *testing.T) {
 
 	// The rollback must have taken the chunk with it.
 	if _, err := store.GetFileChunk(ctx, chunkID); !errors.Is(err, metadata.ErrFileChunkNotFound) {
-		_ = store.Delete(ctx, chunkID) // don't poison the shared database
+		// The database is shared across tests, so clear the stray row before
+		// failing or the next run reports the leftover instead of the bug.
+		_ = store.Delete(ctx, chunkID)
 		t.Fatalf("chunk survived a rolled-back transaction (err = %v) — the write escaped to the pool", err)
 	}
 }

@@ -87,23 +87,23 @@ func locatorFromCols(blockID sql.NullString, off, length sql.NullInt64) (block.C
 // Returns (false, nil) when no row exists for hash — an absent hash is
 // treated as "not yet synced", not as an error.
 func (s *PostgresMetadataStore) IsSynced(ctx context.Context, hash block.ContentHash) (bool, error) {
-	return isSyncedTx(ctx, s.conn(), hash)
+	return isSyncedTx(ctx, s.conn(), "postgres", hash)
 }
 
 // MarkSynced records that hash has been mirrored to remote, persisting loc's
 // block columns atomically.
 func (s *PostgresMetadataStore) MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error {
-	return markSyncedTx(ctx, s.conn(), hash, loc)
+	return markSyncedTx(ctx, s.conn(), "postgres", hash, loc)
 }
 
 // GetLocator returns the recorded remote locator for hash.
 func (s *PostgresMetadataStore) GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
-	return getLocatorTx(ctx, s.conn(), hash)
+	return getLocatorTx(ctx, s.conn(), "postgres", hash)
 }
 
 // DeleteSynced removes the synced marker for hash.
 func (s *PostgresMetadataStore) DeleteSynced(ctx context.Context, hash block.ContentHash) error {
-	return deleteSyncedTx(ctx, s.conn(), hash)
+	return deleteSyncedTx(ctx, s.conn(), "postgres", hash)
 }
 
 // ============================================================================
@@ -115,35 +115,41 @@ func (s *PostgresMetadataStore) DeleteSynced(ctx context.Context, hash block.Con
 // a MarkSynced after a DeleteSynced in the same tx records the new locator.
 
 func (tx *postgresTransaction) IsSynced(ctx context.Context, hash block.ContentHash) (bool, error) {
-	return isSyncedTx(ctx, tx.conn(), hash)
+	return isSyncedTx(ctx, tx.conn(), "postgres tx", hash)
 }
 
 func (tx *postgresTransaction) MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error {
-	return markSyncedTx(ctx, tx.conn(), hash, loc)
+	return markSyncedTx(ctx, tx.conn(), "postgres tx", hash, loc)
 }
 
 func (tx *postgresTransaction) GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
-	return getLocatorTx(ctx, tx.conn(), hash)
+	return getLocatorTx(ctx, tx.conn(), "postgres tx", hash)
 }
 
 func (tx *postgresTransaction) DeleteSynced(ctx context.Context, hash block.ContentHash) error {
-	return deleteSyncedTx(ctx, tx.conn(), hash)
+	return deleteSyncedTx(ctx, tx.conn(), "postgres tx", hash)
 }
 
 // ============================================================================
 // Shared bodies
 // ============================================================================
+//
+// Each takes the caller's op prefix ("postgres" or "postgres tx") so a failure
+// still records whether it happened on the pool path or inside a transaction.
+// Merging the bodies would otherwise erase that distinction, and it is the one
+// worth keeping here: the failures these report are usually visibility or
+// locking problems, where knowing there was an open transaction is the answer.
 
 // isSyncedTx reports whether a synced marker exists for hash. An absent row is
 // "not yet synced", not an error.
-func isSyncedTx(ctx context.Context, x storesql.Executor, hash block.ContentHash) (bool, error) {
+func isSyncedTx(ctx context.Context, x storesql.Executor, op string, hash block.ContentHash) (bool, error) {
 	var dummy int
 	err := x.QueryRow(ctx, `SELECT 1 FROM synced_hashes WHERE hash = $1`, hash[:]).Scan(&dummy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("postgres synced get: %w", err)
+		return false, fmt.Errorf("%s synced get: %w", op, err)
 	}
 	return true, nil
 }
@@ -153,14 +159,14 @@ func isSyncedTx(ctx context.Context, x storesql.Executor, hash block.ContentHash
 // re-applying the same hash is a no-op that preserves the first locator. A
 // standalone locator (BlockID == "") leaves the block columns NULL, identical to
 // a pre-locator row, so existing data needs no migration.
-func markSyncedTx(ctx context.Context, x storesql.Executor, hash block.ContentHash, loc block.ChunkLocator) error {
+func markSyncedTx(ctx context.Context, x storesql.Executor, op string, hash block.ContentHash, loc block.ChunkLocator) error {
 	blockID, off, length := locatorArgs(loc)
 	if _, err := x.Exec(ctx,
 		`INSERT INTO synced_hashes (hash, synced_at, block_id, block_offset, block_length)
 			VALUES ($1, NOW(), $2, $3, $4)
 			ON CONFLICT (hash) DO NOTHING`,
 		hash[:], blockID, off, length); err != nil {
-		return fmt.Errorf("postgres synced mark: %w", err)
+		return fmt.Errorf("%s synced mark: %w", op, err)
 	}
 	return nil
 }
@@ -168,7 +174,7 @@ func markSyncedTx(ctx context.Context, x storesql.Executor, hash block.ContentHa
 // getLocatorTx returns the recorded remote locator for hash: (zero, false, nil)
 // when no row exists; a synced row with NULL/empty block columns yields the zero
 // (standalone) locator with found == true.
-func getLocatorTx(ctx context.Context, x storesql.Executor, hash block.ContentHash) (block.ChunkLocator, bool, error) {
+func getLocatorTx(ctx context.Context, x storesql.Executor, op string, hash block.ContentHash) (block.ChunkLocator, bool, error) {
 	var blockID sql.NullString
 	var off, length sql.NullInt64
 	err := x.QueryRow(ctx,
@@ -178,7 +184,7 @@ func getLocatorTx(ctx context.Context, x storesql.Executor, hash block.ContentHa
 		return block.ChunkLocator{}, false, nil
 	}
 	if err != nil {
-		return block.ChunkLocator{}, false, fmt.Errorf("postgres synced get locator: %w", err)
+		return block.ChunkLocator{}, false, fmt.Errorf("%s synced get locator: %w", op, err)
 	}
 	if !blockID.Valid || blockID.String == "" {
 		return block.ChunkLocator{}, true, nil
@@ -191,9 +197,9 @@ func getLocatorTx(ctx context.Context, x storesql.Executor, hash block.ContentHa
 
 // deleteSyncedTx removes the synced marker for hash. Idempotent: zero rows
 // affected is not an error.
-func deleteSyncedTx(ctx context.Context, x storesql.Executor, hash block.ContentHash) error {
+func deleteSyncedTx(ctx context.Context, x storesql.Executor, op string, hash block.ContentHash) error {
 	if _, err := x.Exec(ctx, `DELETE FROM synced_hashes WHERE hash = $1`, hash[:]); err != nil {
-		return fmt.Errorf("postgres synced delete: %w", err)
+		return fmt.Errorf("%s synced delete: %w", op, err)
 	}
 	return nil
 }
