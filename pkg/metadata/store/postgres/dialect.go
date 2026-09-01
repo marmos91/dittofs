@@ -92,4 +92,14 @@ var fileQueries = storesql.FileQueries{
 		LIMIT 1`,
 }
 
+// Shares returns the postgres share read statements.
+func (dialect) Shares() *storesql.ShareQueries { return &shareQueries }
+
+var shareQueries = storesql.ShareQueries{
+	GetRootHandle:     `SELECT root_file_id FROM shares WHERE share_name = $1`,
+	GetShareOptions:   `SELECT options FROM shares WHERE share_name = $1`,
+	ListShares:        `SELECT share_name FROM shares`,
+	GetFilesystemMeta: `SELECT meta FROM filesystem_meta WHERE share_name = $1`,
+}
+
 var _ storesql.Dialect = dialect{}

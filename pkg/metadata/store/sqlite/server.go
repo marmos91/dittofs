@@ -111,3 +111,10 @@ func (s *SQLiteMetadataStore) GetFilesystemStatistics(ctx context.Context, handl
 	}
 	return basestore.BuildStatistics(bytesUsed, filesUsed), nil
 }
+
+// currentCapabilities reports the capabilities the store is configured with
+// right now. SetFilesystemCapabilities replaces them, so the shared reads take
+// this rather than a copy captured at construction.
+func (s *SQLiteMetadataStore) currentCapabilities() metadata.FilesystemCapabilities {
+	return s.capabilities
+}

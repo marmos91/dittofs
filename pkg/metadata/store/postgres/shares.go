@@ -24,33 +24,20 @@ func (s *PostgresMetadataStore) GenerateHandle(ctx context.Context, shareName st
 	return basestore.GenerateHandle(ctx, shareName)
 }
 
-// GetRootHandle returns the root handle for a share.
-// Returns ErrNotFound if the share doesn't exist.
-func (s *PostgresMetadataStore) GetRootHandle(ctx context.Context, shareName string) (metadata.FileHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	query := `SELECT root_file_id FROM shares WHERE share_name = $1`
-
-	var rootID uuid.UUID
-	err := s.queryRow(ctx, query, shareName).Scan(&rootID)
-	if err != nil {
-		return nil, mapPgError(err, "GetRootHandle", shareName)
-	}
-
-	return metadata.EncodeShareHandle(shareName, rootID)
-}
-
-// GetShareOptions returns the share configuration options.
-// Returns ErrNotFound if the share doesn't exist.
+// GetShareOptions returns the share configuration options, reporting
+// ErrNotFound if the share does not exist.
+//
+// This shadows the promoted Core.GetShareOptions to put the share cache in
+// front of it: every permission check funnels through this read, so the SELECT
+// and decode are worth skipping. The returned value is always a deep copy, so
+// a caller can never reach the shared cache entry.
 func (s *PostgresMetadataStore) GetShareOptions(ctx context.Context, shareName string) (*metadata.ShareOptions, error) {
+	// Ahead of the cache lookup, not just inside the backing read: a hit must
+	// not report success for a request whose context has already given out.
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	// Cache fast path: skip the SELECT + decode on a hit. Return a deep copy so
-	// callers can never mutate the shared cache entry.
 	if cached, ok := s.shareCache.Get(shareName); ok {
 		return sharecache.Clone(cached), nil
 	}
@@ -59,23 +46,13 @@ func (s *PostgresMetadataStore) GetShareOptions(ctx context.Context, shareName s
 	// that races this read cannot leave a stale value cached (Store checks it).
 	gen := s.shareCache.Generation()
 
-	query := `SELECT options FROM shares WHERE share_name = $1`
-
-	var optionsJSON []byte
-	err := s.queryRow(ctx, query, shareName).Scan(&optionsJSON)
+	options, err := s.Core.GetShareOptions(ctx, shareName)
 	if err != nil {
-		return nil, mapPgError(err, "GetShareOptions", shareName)
+		return nil, err
 	}
 
-	var options metadata.ShareOptions
-	if len(optionsJSON) > 0 {
-		if err := json.Unmarshal(optionsJSON, &options); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal share options: %w", err)
-		}
-	}
-
-	s.shareCache.Store(shareName, &options, gen)
-	return sharecache.Clone(&options), nil
+	s.shareCache.Store(shareName, options, gen)
+	return sharecache.Clone(options), nil
 }
 
 // ============================================================================
@@ -183,36 +160,6 @@ func (s *PostgresMetadataStore) DeleteShare(ctx context.Context, shareName strin
 	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.DeleteShare(ctx, shareName)
 	})
-}
-
-// ListShares returns the names of all shares.
-func (s *PostgresMetadataStore) ListShares(ctx context.Context) ([]string, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	rows, err := s.query(ctx, `SELECT share_name FROM shares`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		names = append(names, name)
-	}
-
-	// Surface any error that terminated the iteration early so a partial
-	// share list is not returned as if it were complete.
-	if err := rows.Err(); err != nil {
-		return nil, mapPgError(err, "ListShares", "")
-	}
-
-	return names, nil
 }
 
 // ============================================================================
