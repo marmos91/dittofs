@@ -175,9 +175,12 @@ func EncodeLOCK4denied(buf *bytes.Buffer, denied *LOCK4denied) {
 // validateLockRange checks that offset and length describe a byte range the
 // server will act on. RFC 7530 Section 16.10.4 rejects a length of zero, and
 // rejects a length that is not all-ones whose sum with the offset exceeds the
-// maximum 64-bit unsigned value. A length with every bit set means "from offset
-// through end-of-file", so it is exempt from that sum. Sections 16.11.4 and
-// 16.12.4 apply the same two rules to LOCKT and LOCKU.
+// maximum 64-bit unsigned value. A length with every bit set is the wire
+// encoding for "from offset to end-of-file", so it is exempt from that sum.
+// Sections 16.11.4 and 16.12.4 apply the same two rules to LOCKT and LOCKU.
+//
+// Exempting all-ones only admits the range: the lock manager still receives the
+// literal length, which is not the end-of-file range it names.
 //
 // Returns NFS4ERR_INVAL on a rejected range.
 func validateLockRange(offset, length uint64) error {

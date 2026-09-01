@@ -1264,7 +1264,8 @@ func TestHandleLock_InvalidRange(t *testing.T) {
 				t.Fatalf("failed to decode lock stateid: %v", err)
 			}
 
-			// LOCKT carries no seqid, so its range check sits in the handler.
+			// LOCKT carries no seqid, so state.TestLock rejects the range with
+			// no owner sequence to move.
 			locktArgs := encodeLocktArgs(types.WRITE_LT, r.offset, r.length, clientID, owner)
 			if got := h.handleLockT(ctx, bytes.NewReader(locktArgs)); got.Status != types.NFS4ERR_INVAL {
 				t.Errorf("LOCKT status = %d, want NFS4ERR_INVAL (%d)", got.Status, types.NFS4ERR_INVAL)
