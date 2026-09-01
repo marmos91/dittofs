@@ -93,11 +93,11 @@ func (c *Core) ListShares(ctx context.Context) ([]string, error) {
 // GetFilesystemMeta returns a share's stored filesystem metadata, or the
 // store's configured capabilities when the share has none.
 //
-// ponytail: any read failure — not just a missing row — reports the defaults,
-// because postgres has no filesystem_meta table at all and every call there
-// fails with an undefined-relation error. Tighten this to the no-rows case
-// alone once that table exists on both dialects; until then the strict version
-// fails the conformance suite on postgres.
+// ponytail: every read failure except a cancelled context — not just a missing
+// row — reports the defaults, because postgres has no filesystem_meta table at
+// all and each call there fails with an undefined-relation error. Narrow this
+// to the no-rows case alone once that table exists on both dialects; until
+// then the strict version fails the conformance suite on postgres.
 func (c *Core) GetFilesystemMeta(ctx context.Context, shareName string) (*metadata.FilesystemMeta, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -105,6 +105,12 @@ func (c *Core) GetFilesystemMeta(ctx context.Context, shareName string) (*metada
 
 	var data []byte
 	if err := c.X.QueryRow(ctx, c.D.Shares().GetFilesystemMeta, shareName).Scan(&data); err != nil {
+		// The context can give out while the query is in flight, and a
+		// cancelled request must not read as a share with default
+		// capabilities.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return &metadata.FilesystemMeta{Capabilities: c.Caps()}, nil
 	}
 

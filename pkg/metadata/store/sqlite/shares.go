@@ -32,6 +32,12 @@ func (s *SQLiteMetadataStore) GenerateHandle(ctx context.Context, shareName stri
 // and decode are worth skipping. The returned value is always a deep copy, so
 // a caller can never reach the shared cache entry.
 func (s *SQLiteMetadataStore) GetShareOptions(ctx context.Context, shareName string) (*metadata.ShareOptions, error) {
+	// Ahead of the cache lookup, not just inside the backing read: a hit must
+	// not report success for a request whose context has already given out.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	if cached, ok := s.shareCache.Get(shareName); ok {
 		return sharecache.Clone(cached), nil
 	}

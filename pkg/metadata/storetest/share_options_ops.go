@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -75,6 +76,25 @@ func runShareOptionsOps(t *testing.T, factory StoreFactory) {
 
 		_, err = store.GetShareOptions(ctx, "/opts-delete")
 		require.Error(t, err, "read served options for a deleted share")
+	})
+
+	t.Run("CancelledContextIsRefused", func(t *testing.T) {
+		store := factory(t)
+		ctx := t.Context()
+		require.NoError(t, store.CreateShare(ctx, &metadata.Share{Name: "/opts-cancel"}))
+
+		// Read once so a caching backend is warm. The cache-hit path is the
+		// one that skips the backing read, so it is also the one that can
+		// answer a cancelled request without ever noticing.
+		_, err := store.GetShareOptions(ctx, "/opts-cancel")
+		require.NoError(t, err)
+
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+
+		_, err = store.GetShareOptions(cancelled, "/opts-cancel")
+		require.ErrorIs(t, err, context.Canceled,
+			"a cancelled request was served options anyway")
 	})
 
 	t.Run("RolledBackUpdateIsNotVisible", func(t *testing.T) {
