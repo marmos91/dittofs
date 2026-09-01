@@ -23,15 +23,19 @@ func runStatfsOps(t *testing.T, factory StoreFactory) {
 		rootA := createTestShare(t, store, "/statfs-a")
 		rootB := createTestShare(t, store, "/statfs-b")
 
-		createTestFile(t, store, "/statfs-a", rootA, "only-file.txt", 0644)
+		createTestFileOwned(t, store, "/statfs-a", rootA, "only-file.txt", 1000, 1000, 512)
 
 		before, err := store.GetFilesystemStatistics(ctx, rootA)
 		require.NoError(t, err)
 		require.NotNil(t, before)
 
 		// Fill the neighbouring share. Share A's numbers must not budge.
+		//
+		// The sizes must be non-zero or the UsedBytes assertion below is
+		// decorative: a store-wide SUM over zero-byte rows is zero, which is
+		// what a correctly scoped query returns too.
 		for _, name := range []string{"b1.txt", "b2.txt", "b3.txt"} {
-			createTestFile(t, store, "/statfs-b", rootB, name, 0644)
+			createTestFileOwned(t, store, "/statfs-b", rootB, name, 1000, 1000, 4096)
 		}
 
 		after, err := store.GetFilesystemStatistics(ctx, rootA)
