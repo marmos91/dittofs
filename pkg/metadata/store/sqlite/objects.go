@@ -83,43 +83,15 @@ const putFileChunkQuery = insertFileChunk + `
 		state = EXCLUDED.state,
 		last_sync_attempt_at = EXCLUDED.last_sync_attempt_at`
 
-// AddRef atomically bumps RefCount on the FileChunk row(s) indexed by
-// the given content hash. Implements the FileChunkStore.AddRef contract
-// used by the in-memory hash dedup LRU hit path to
-// reference an already-stored block without creating a new row.
-//
-// Atomicity: a single UPDATE statement performs the bump — the SQLite
-// single-writer engine serializes contended updates against the same row,
-// so AddRef is TOCTOU-free against concurrent DecrementRefCount cascade
-// (matches the existing IncrementRefCount idiom).
-//
-// Returns metadata.ErrUnknownHash when RowsAffected == 0 (no row exists
-// for this hash). Callers (the LRU hit site) fall back to the full Put
-// path on this sentinel.
-//
-// Multi-row-per-hash tolerance:
-// the hash index on file_blocks is a NON-UNIQUE partial index (migration
-// 000011), so a single hash may match multiple rows in legacy data. The
-// UPDATE deliberately omits LIMIT — all matching rows are bumped
-// uniformly so refcount accounting stays correct regardless of which
-// row a later DecrementRefCount targets. The conformance test seeds a
-// single row, so RefCount goes from N to N+1 exactly.
-//
-// Only ref_count is mutated. block_state is never touched: AddRef
-// references an existing block, and the LRU hit path never creates
-// or transitions one.
+// AddRef bumps RefCount on the rows indexed by the given content hash,
+// implementing the FileChunkStore.AddRef contract the in-memory dedup LRU hit
+// path uses. Returns metadata.ErrUnknownHash when no row matches; the caller
+// falls back to the full Put path on that sentinel. The reasoning about
+// atomicity, Remote-only scoping and multi-row tolerance lives on the shared
+// implementation in store/sql.
 func (s *SQLiteMetadataStore) AddRef(ctx context.Context, hash block.ContentHash, _ string, _ block.ChunkRef) error {
-	// payloadID + blockRef accepted for future GC traceability;
-	// postgres backend records ref count only — parameters intentionally
-	// blanked.
-	//
-	// state = 2 (Remote) scoping mirrors GetByHash and the memory/badger
-	// backends, whose AddRef resolves the hash only through the finalized
-	// hash index. The dedup hit path references a block already confirmed
-	// on the remote; a Pending row (which now also carries its hash) is
-	// not a valid dedup donor, so AddRef must miss it and return
-	// ErrUnknownHash exactly as before, letting the caller fall back to
-	// the full Put path.
+	// payloadID + blockRef are accepted for future GC traceability; this
+	// backend records ref count only, so they are intentionally blanked.
 	return s.Core.AddRef(ctx, hash)
 }
 
@@ -264,18 +236,17 @@ var _ block.FileChunkStore = (*sqliteTransaction)(nil)
 // subsequent rollback undoes it. Returns metadata.ErrUnknownHash when no row
 // matches.
 func (tx *sqliteTransaction) AddRef(ctx context.Context, hash block.ContentHash, _ string, _ block.ChunkRef) error {
-	// payloadID + blockRef accepted for future GC traceability;
-	// postgres backend records ref count only — parameters intentionally
-	// blanked.
+	// payloadID + blockRef are accepted for future GC traceability; this
+	// backend records ref count only, so they are intentionally blanked.
 	return tx.Core.AddRef(ctx, hash)
 }
 
-// ListFileChunks / EnumerateFileChunks run on the active
-// transaction (tx.tx), NOT the pool. Delegating to the pool opens a separate
-// connection that cannot see this transaction's uncommitted writes, so a Put
-// followed by a List in the same WithTransaction would miss the pending row
-// (read-after-write violation; the SQL is otherwise identical to the
-// store-level methods).
+// ListFileChunks and EnumerateFileChunks run on this transaction's executor,
+// NOT the pool. Going through the pool would open a separate connection that
+// cannot see this transaction's uncommitted writes, so a Put followed by a List
+// inside one WithTransaction would miss the pending row — a read-after-write
+// violation. On SQLite it is worse than a wrong answer: the pool write blocks
+// on the write lock this transaction holds, so it hangs.
 
 // The file_blocks table schema lives in
 // pkg/metadata/store/postgres/migrations/000010_file_blocks.up.sql.

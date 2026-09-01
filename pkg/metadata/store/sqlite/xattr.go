@@ -7,9 +7,9 @@ import (
 )
 
 // Extended-attribute (xattr) operations delegate to the shared resolver in
-// pkg/metadata/xattr.go over the Files interface. Both the Postgres store and
-// its transaction satisfy metadata.Files, so the same Resolve* helpers serve
-// both. Inline values ride the existing eas JSONB column.
+// pkg/metadata/xattr.go over the Files interface. Both this store and its
+// transaction satisfy metadata.Files, so the same Resolve* helpers serve both.
+// Inline values ride the existing eas column.
 
 // GetXattr implements metadata.Files.
 func (s *SQLiteMetadataStore) GetXattr(ctx context.Context, handle metadata.FileHandle, name string) ([]byte, bool, error) {
