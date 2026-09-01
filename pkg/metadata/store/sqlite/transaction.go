@@ -10,9 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/txretry"
@@ -148,55 +146,6 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 // ============================================================================
 // Transaction CRUD Operations
 // ============================================================================
-
-func (tx *sqliteTransaction) GetFile(ctx context.Context, handle metadata.FileHandle) (*metadata.File, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	shareName, id, err := metadata.DecodeFileHandle(handle)
-	if err != nil {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidHandle,
-			Message: "invalid file handle",
-		}
-	}
-
-	// Fold FileAttr.Blocks into the metadata read (#1176): one round-trip
-	// instead of the SELECT plus a separate getFileChunkRefs. See GetFile
-	// (pool path) and blockRefsAggExpr for the equivalence rationale.
-	query := `
-		SELECT
-			f.id, f.share_name, ` + inodePathExpr + `,
-			f.file_type, f.mode, f.uid, f.gid, f.size,
-			f.atime, f.mtime, f.ctime, f.creation_time,
-			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, f.eas, f.object_id,
-			f.deleted_at, f.original_path, f.deleted_by, f.nlink,
-			` + blockRefsAggExpr + `
-		FROM inodes f
-		WHERE f.id = ?1 AND f.share_name = ?2
-	`
-
-	row := tx.tx.QueryRow(ctx, query, id, shareName)
-	file, err := sqlcodec.FileRowToFileWithNlinkAndBlocks(row, true)
-	if err != nil {
-		return nil, mapDBError(err, "GetFile", "")
-	}
-
-	// Debug logging to trace file type issues, gated so the id formatting and
-	// variadic boxing are skipped when Debug is off.
-	if tx.store.logger.Enabled(ctx, slog.LevelDebug) {
-		tx.store.logger.Debug("GetFile retrieved",
-			"id", id.String(),
-			"share", shareName,
-			"path", file.Path,
-			"file_type", int(file.Type),
-			"size", file.Size)
-	}
-
-	return file, nil
-}
 
 // UpdateAttrs persists the file's attributes and leaves the stored
 // file_block_refs manifest untouched.
@@ -498,43 +447,6 @@ func (tx *sqliteTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 	return nil
 }
 
-func (tx *sqliteTransaction) GetChild(ctx context.Context, dirHandle metadata.FileHandle, name string) (metadata.FileHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	shareName, parentID, err := metadata.DecodeFileHandle(dirHandle)
-	if err != nil {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidHandle,
-			Message: "invalid directory handle",
-		}
-	}
-
-	query := `
-		SELECT dc.child_id FROM parent_child_map dc
-		WHERE dc.parent_id = ?1 AND dc.child_name = ?2
-	`
-
-	var childID string
-	err = tx.tx.QueryRow(ctx, query, parentID, name).Scan(&childID)
-	if err != nil {
-		return nil, mapDBError(err, "GetChild", name)
-	}
-
-	// Debug logging to trace child lookup, gated so the parent-id formatting is
-	// skipped when Debug is off.
-	if tx.store.logger.Enabled(ctx, slog.LevelDebug) {
-		tx.store.logger.Debug("GetChild found",
-			"parent_id", parentID.String(),
-			"child_name", name,
-			"child_id", childID,
-			"share", shareName)
-	}
-
-	return encodeFileHandle(shareName, childID)
-}
-
 func (tx *sqliteTransaction) SetChild(ctx context.Context, dirHandle metadata.FileHandle, name string, childHandle metadata.FileHandle) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -596,216 +508,10 @@ func (tx *sqliteTransaction) DeleteChild(ctx context.Context, dirHandle metadata
 	return nil
 }
 
-func (tx *sqliteTransaction) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int) ([]metadata.DirEntry, string, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, "", err
-	}
-
-	shareName, parentID, err := metadata.DecodeFileHandle(dirHandle)
-	if err != nil {
-		return nil, "", &metadata.StoreError{
-			Code:    metadata.ErrInvalidHandle,
-			Message: "invalid directory handle",
-		}
-	}
-
-	if limit <= 0 {
-		limit = 1000
-	}
-
-	// Refs #532 (PR #536 review): hydrate f.acl — keep parity with the
-	// pool-query ListChildren above. See files.go for rationale.
-	query := `
-		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size,
-		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.eas, f.object_id,
-		       f.deleted_at, f.original_path, f.deleted_by, f.nlink
-		FROM parent_child_map dc
-		LEFT JOIN inodes f ON dc.child_id = f.id
-		WHERE dc.parent_id = ?1 AND dc.child_name > ?2
-		ORDER BY dc.child_name
-		LIMIT ?3
-	`
-
-	rows, err := tx.tx.Query(ctx, query, parentID, cursor, limit+1)
-	if err != nil {
-		return nil, "", mapDBError(err, "ListChildren", "")
-	}
-	defer rows.Close()
-
-	var entries []metadata.DirEntry
-	for rows.Next() && len(entries) < limit {
-		var name, childIDStr string
-		var fileType int16
-		var mode, uid, gid int32
-		var size int64
-		var atime, mtime, ctime, creationTime int64
-		var hidden bool
-		var aclJSON []byte
-		var easJSON []byte
-		var objectIDRaw []byte
-		var deletedAt sql.NullInt64
-		var originalPath string
-		var deletedBy string
-		var linkCount sql.NullInt32
-
-		err := rows.Scan(&name, &childIDStr, &fileType, &mode, &uid, &gid, &size,
-			&atime, &mtime, &ctime, &creationTime, &hidden, &aclJSON, &easJSON, &objectIDRaw,
-			&deletedAt, &originalPath, &deletedBy, &linkCount)
-		if err != nil {
-			return nil, "", err
-		}
-
-		childHandle, err := encodeFileHandle(shareName, childIDStr)
-		if err != nil {
-			return nil, "", err
-		}
-
-		// Determine Nlink value
-		var nlink uint32
-		if linkCount.Valid {
-			nlink = uint32(linkCount.Int32)
-		} else {
-			// Default based on file type
-			if metadata.FileType(fileType) == metadata.FileTypeDirectory {
-				nlink = 2
-			} else {
-				nlink = 1
-			}
-		}
-
-		// hydrate ObjectID for directory entries so the
-		// shape matches GetFile. NULL/empty -> zero (sentinel).
-		attr := &metadata.FileAttr{
-			Type:         metadata.FileType(fileType),
-			Mode:         uint32(mode),
-			Nlink:        nlink,
-			UID:          uint32(uid),
-			GID:          uint32(gid),
-			Size:         uint64(size),
-			Atime:        sqlcodec.FiletimeToTime(atime),
-			Mtime:        sqlcodec.FiletimeToTime(mtime),
-			Ctime:        sqlcodec.FiletimeToTime(ctime),
-			CreationTime: sqlcodec.FiletimeToTime(creationTime),
-			Hidden:       hidden,
-		}
-		if len(objectIDRaw) > 0 {
-			if len(objectIDRaw) != block.HashSize {
-				return nil, "", fmt.Errorf(
-					"ListChildren: object_id has invalid length %d (want %d)",
-					len(objectIDRaw), block.HashSize,
-				)
-			}
-			copy(attr.ObjectID[:], objectIDRaw)
-		}
-
-		// Recycle-bin metadata (#190): carried on DirEntry.Attr so trash
-		// enumeration via listing reflects recycle state without a re-read,
-		// matching the pool-query path. deleted_at is BIGINT unix-nanoseconds;
-		// decode via sqlcodec.FiletimeToTime.
-		if deletedAt.Valid {
-			t := sqlcodec.FiletimeToTime(deletedAt.Int64)
-			attr.DeletedAt = &t
-		}
-		attr.OriginalPath = originalPath
-		attr.DeletedBy = deletedBy
-
-		// Refs #532 (PR #536 review): mirror sqlcodec.FileRowToFileWithNlink — soft
-		// failure on malformed ACL JSON, same as the pool-query path.
-		if len(aclJSON) > 0 {
-			var fileACL acl.ACL
-			if err := json.Unmarshal(aclJSON, &fileACL); err == nil {
-				attr.ACL = &fileACL
-			}
-		}
-
-		// Hydrate EAs for directory entries (same lenient unmarshal as ACL).
-		if len(easJSON) > 0 {
-			var eas map[string][]byte
-			if err := json.Unmarshal(easJSON, &eas); err == nil && len(eas) > 0 {
-				attr.EAs = eas
-			}
-		}
-
-		entry := metadata.DirEntry{
-			ID:     metadata.HandleToINode(childHandle),
-			Name:   name,
-			Handle: childHandle,
-			Attr:   attr,
-		}
-
-		entries = append(entries, entry)
-	}
-
-	// Surface any error that terminated the iteration early (e.g. a network
-	// drop mid-stream). Without this check a partial result would be returned
-	// as a complete, successful listing.
-	if err := rows.Err(); err != nil {
-		return nil, "", mapDBError(err, "ListChildren", "")
-	}
-
-	nextCursor := ""
-	if len(entries) >= limit {
-		nextCursor = entries[len(entries)-1].Name
-	}
-
-	return entries, nextCursor, nil
-}
-
-func (tx *sqliteTransaction) GetParent(ctx context.Context, handle metadata.FileHandle) (metadata.FileHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	shareName, childID, err := metadata.DecodeFileHandle(handle)
-	if err != nil {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidHandle,
-			Message: "invalid file handle",
-		}
-	}
-
-	query := `SELECT parent_id FROM parent_child_map WHERE child_id = ?1 LIMIT 1`
-
-	var parentIDStr string
-	err = tx.tx.QueryRow(ctx, query, childID).Scan(&parentIDStr)
-	if err != nil {
-		return nil, mapDBError(err, "GetParent", "")
-	}
-
-	return encodeFileHandle(shareName, parentIDStr)
-}
-
 func (tx *sqliteTransaction) SetParent(ctx context.Context, handle metadata.FileHandle, parentHandle metadata.FileHandle) error {
 	// Parent is tracked via the parent_child_map table, already handled by SetChild.
 	// Still honours context cancellation, matching the store-level SetParent.
 	return ctx.Err()
-}
-
-func (tx *sqliteTransaction) GetLinkCount(ctx context.Context, handle metadata.FileHandle) (uint32, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-
-	_, fileID, err := metadata.DecodeFileHandle(handle)
-	if err != nil {
-		return 0, &metadata.StoreError{
-			Code:    metadata.ErrInvalidHandle,
-			Message: "invalid file handle",
-		}
-	}
-
-	var count uint32
-	err = tx.tx.QueryRow(ctx, `SELECT nlink FROM inodes WHERE id = ?1`, fileID).Scan(&count)
-	if errors.Is(err, sql.ErrNoRows) {
-		// Not found means count is 0
-		return 0, nil
-	}
-	if err != nil {
-		// A fabricated 0 would let callers treat live content as unreferenced.
-		return 0, mapDBError(err, "GetLinkCount", "")
-	}
-
-	return count, nil
 }
 
 func (tx *sqliteTransaction) SetLinkCount(ctx context.Context, handle metadata.FileHandle, count uint32) error {
@@ -1322,38 +1028,3 @@ func (tx *sqliteTransaction) GetFilesystemStatistics(ctx context.Context, handle
 // ============================================================================
 // Transaction Files Operations (additional)
 // ============================================================================
-
-func (tx *sqliteTransaction) GetFileByPayloadID(ctx context.Context, payloadID metadata.PayloadID) (*metadata.File, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	if payloadID == "" {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "content ID cannot be empty",
-		}
-	}
-
-	query := `
-		SELECT
-			f.id, f.share_name, ` + inodePathExpr + `,
-			f.file_type, f.mode, f.uid, f.gid, f.size,
-			f.atime, f.mtime, f.ctime, f.creation_time,
-			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, f.eas, f.object_id,
-			f.deleted_at, f.original_path, f.deleted_by, f.nlink,
-			` + blockRefsAggExpr + `
-		FROM inodes f
-		WHERE f.content_id = ?1
-		LIMIT 1
-	`
-
-	row := tx.tx.QueryRow(ctx, query, string(payloadID))
-	file, err := sqlcodec.FileRowToFileWithNlinkAndBlocks(row, true)
-	if err != nil {
-		return nil, mapDBError(err, "GetFileByPayloadID", string(payloadID))
-	}
-
-	return file, nil
-}

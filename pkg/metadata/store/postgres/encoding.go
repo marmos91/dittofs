@@ -1,22 +1,8 @@
 package postgres
 
-import (
-	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/metadata"
-)
-
 // ============================================================================
-// File Handle Encoding/Decoding
+// Shared SELECT expressions
 // ============================================================================
-
-// encodeFileHandle creates a file handle from share name and UUID string
-func encodeFileHandle(shareName string, idStr string) (metadata.FileHandle, error) {
-	id, err := uuid.Parse(idStr)
-	if err != nil {
-		return nil, err
-	}
-	return metadata.EncodeShareHandle(shareName, id)
-}
 
 // blockRefsAggExpr is a correlated scalar subquery aggregating a file's
 // file_block_refs rows into a single JSON array, ordered by "offset" ASC to

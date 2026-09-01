@@ -196,6 +196,14 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	t.Run("ShareOptionsOps", func(t *testing.T) {
 		runShareOptionsOps(t, factory)
 	})
+
+	// FileReadTxOps pins that the transaction-level file and directory reads
+	// run inside the caller's transaction. Every other test here reads only
+	// committed state, which a read that escaped to the pool would answer just
+	// as correctly.
+	t.Run("FileReadTxOps", func(t *testing.T) {
+		runFileReadTxOps(t, factory)
+	})
 }
 
 // createTestShare is a helper that creates a share and root directory for testing.
