@@ -347,12 +347,16 @@ func TestBuildCBRPCCallMessage(t *testing.T) {
 		t.Errorf("procedure = %d, want %d", gotProc, proc)
 	}
 
-	// AUTH_NULL credentials: flavor=0, length=0
+	// AUTH_SYS credentials: flavor=1 with an authsys_parms body
 	var credFlavor, credLen uint32
 	_ = binary.Read(reader, binary.BigEndian, &credFlavor)
 	_ = binary.Read(reader, binary.BigEndian, &credLen)
-	if credFlavor != rpc.AuthNull || credLen != 0 {
-		t.Errorf("cred = (flavor=%d, len=%d), want (0, 0)", credFlavor, credLen)
+	if credFlavor != rpc.AuthUnix {
+		t.Errorf("cred flavor = %d, want %d (AUTH_SYS)", credFlavor, rpc.AuthUnix)
+	}
+	credBody := make([]byte, credLen)
+	if _, err := io.ReadFull(reader, credBody); err != nil {
+		t.Fatalf("read cred body: %v", err)
 	}
 
 	// AUTH_NULL verifier: flavor=0, length=0
@@ -1100,5 +1104,80 @@ func TestSendCBNull_VerifyProcedure(t *testing.T) {
 	// Verify the procedure was CB_PROC_NULL
 	if receivedProc != types.CB_PROC_NULL {
 		t.Errorf("procedure = %d, want %d (CB_PROC_NULL)", receivedProc, types.CB_PROC_NULL)
+	}
+}
+
+// readCBCred returns the credential flavor and body of a callback RPC CALL
+// message, skipping the six fixed header words that precede them.
+func readCBCred(t *testing.T, msg []byte) (uint32, []byte) {
+	t.Helper()
+
+	reader := bytes.NewReader(msg)
+	var word uint32
+	for i := 0; i < 6; i++ { // xid, msgtype, rpcvers, prog, vers, proc
+		if err := binary.Read(reader, binary.BigEndian, &word); err != nil {
+			t.Fatalf("read header word %d: %v", i, err)
+		}
+	}
+
+	var flavor, length uint32
+	if err := binary.Read(reader, binary.BigEndian, &flavor); err != nil {
+		t.Fatalf("read cred flavor: %v", err)
+	}
+	if err := binary.Read(reader, binary.BigEndian, &length); err != nil {
+		t.Fatalf("read cred length: %v", err)
+	}
+	body := make([]byte, length)
+	if _, err := io.ReadFull(reader, body); err != nil {
+		t.Fatalf("read cred body (%d bytes): %v", length, err)
+	}
+	return flavor, body
+}
+
+// TestBuildCBRPCCallMessage_CredIsParseableAuthSys pins the credential a
+// callback carries to a well-formed AUTH_SYS record. A receiver that gates
+// callbacks on the flavor rejects AUTH_NULL, and one that parses the body
+// rejects a malformed one, so both halves have to hold.
+func TestBuildCBRPCCallMessage_CredIsParseableAuthSys(t *testing.T) {
+	flavor, body := readCBCred(t, BuildCBRPCCallMessage(1, 0x40000000, 1, types.CB_PROC_COMPOUND, []byte{0xCA, 0xFE}))
+
+	if flavor != rpc.AuthUnix {
+		t.Fatalf("cred flavor = %d, want %d (AUTH_SYS)", flavor, rpc.AuthUnix)
+	}
+
+	auth, err := rpc.ParseUnixAuth(body)
+	if err != nil {
+		t.Fatalf("AUTH_SYS body does not parse as authsys_parms: %v", err)
+	}
+	if auth.UID != 0 || auth.GID != 0 {
+		t.Errorf("cred uid/gid = %d/%d, want 0/0", auth.UID, auth.GID)
+	}
+
+	// Receivers that walk authsys_parms field by field require the declared
+	// credential length to balance to exactly zero, so a body that merely parses
+	// is not enough — a missing trailing field is rejected as a bad credential.
+	// stamp(4) + machinename length(4) + machinename(0) + uid(4) + gid(4) + gids
+	// count(4) = 20 bytes for an empty name and no supplementary groups.
+	const wantLen = 20
+	if len(body) != wantLen {
+		t.Errorf("AUTH_SYS body = %d bytes, want %d; every authsys_parms field must be present", len(body), wantLen)
+	}
+}
+
+// TestBuildCBRPCCallMessage_ProbeAndPayloadShareCredential pins the invariant
+// the CB_NULL reachability probe depends on: it must present the same
+// credential as the callbacks it vouches for. A probe sent under a credential
+// the payload does not use certifies a backchannel that can still reject every
+// recall, and the rejection only surfaces once a delegation needs recalling.
+func TestBuildCBRPCCallMessage_ProbeAndPayloadShareCredential(t *testing.T) {
+	probeFlavor, probeBody := readCBCred(t, BuildCBRPCCallMessage(1, 0x40000000, 1, types.CB_PROC_NULL, nil))
+	payloadFlavor, payloadBody := readCBCred(t, BuildCBRPCCallMessage(2, 0x40000000, 1, types.CB_PROC_COMPOUND, []byte{0xCA, 0xFE}))
+
+	if probeFlavor != payloadFlavor {
+		t.Errorf("CB_NULL probe cred flavor = %d, CB_COMPOUND = %d; the probe must use the credential it vouches for",
+			probeFlavor, payloadFlavor)
+	}
+	if !bytes.Equal(probeBody, payloadBody) {
+		t.Errorf("CB_NULL probe cred body = %v, CB_COMPOUND = %v; both must be identical", probeBody, payloadBody)
 	}
 }

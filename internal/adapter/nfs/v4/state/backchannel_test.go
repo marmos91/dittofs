@@ -392,17 +392,7 @@ func TestBackchannelSender_SequenceIDIncrement(t *testing.T) {
 		}
 		xid := binary.BigEndian.Uint32(body[0:4])
 
-		// Parse past RPC header (10 uint32s = 40 bytes) to get to CB_COMPOUND args
-		// XID(4) + msg_type(4) + rpc_vers(4) + prog(4) + vers(4) + proc(4) +
-		// cred_flavor(4) + cred_len(4) + verf_flavor(4) + verf_len(4) = 40 bytes
-		// Then CB_COMPOUND: tag_len(4) + minorversion(4) + callback_ident(4) +
-		// op_count(4) + first_op_code(4) = 20 bytes
-		// CB_SEQUENCE args start at offset 60
-		// CB_SEQUENCE args: sessionID(16 bytes) + seqID(4 bytes)
-		if len(body) < 60+16+4 {
-			t.Fatalf("body too short: %d bytes", len(body))
-		}
-		seqID := binary.BigEndian.Uint32(body[60+16 : 60+16+4])
+		seqID := cbSequenceSeqID(t, body)
 
 		replyBody := buildMockCBCompoundReplyBody(xid)
 		pending.Deliver(xid, replyBody)
@@ -472,11 +462,11 @@ func TestBackchannelSender_SeqIDAndXIDAreIndependent(t *testing.T) {
 		if _, err := io.ReadFull(clientConn, body); err != nil {
 			t.Fatalf("read body: %v", err)
 		}
-		if len(body) < 60+16+4 {
+		if len(body) < 4 {
 			t.Fatalf("body too short: %d bytes", len(body))
 		}
 		xid = binary.BigEndian.Uint32(body[0:4])
-		seqID = binary.BigEndian.Uint32(body[60+16 : 60+16+4])
+		seqID = cbSequenceSeqID(t, body)
 
 		pending.Deliver(xid, buildMockCBCompoundReplyBody(xid))
 		return xid, seqID
@@ -710,4 +700,32 @@ func buildMockCBCompoundReplyBody(xid uint32) []byte {
 	_ = binary.Write(&reply, binary.BigEndian, uint32(0))
 
 	return reply.Bytes()
+}
+
+// cbSequenceSeqID extracts the CB_SEQUENCE sequence ID from a callback RPC CALL
+// message. The credential and verifier are length-prefixed and their sizes
+// depend on the flavor in use, so both are skipped by their declared length
+// rather than by a fixed header size.
+func cbSequenceSeqID(t *testing.T, body []byte) uint32 {
+	t.Helper()
+
+	// XID + msg_type + rpc_vers + prog + vers + proc
+	off := 6 * 4
+
+	// Credential and verifier: flavor(4) + length(4) + body(length, padded).
+	for i := 0; i < 2; i++ {
+		if len(body) < off+8 {
+			t.Fatalf("body too short for auth field %d: %d bytes", i, len(body))
+		}
+		length := int(binary.BigEndian.Uint32(body[off+4 : off+8]))
+		off += 8 + (length+3)/4*4
+	}
+
+	// CB_COMPOUND: tag_len + minorversion + callback_ident + op_count +
+	// first_op_code, then CB_SEQUENCE args: sessionID(16) + seqID(4).
+	off += 5*4 + 16
+	if len(body) < off+4 {
+		t.Fatalf("body too short for CB_SEQUENCE seqID: %d bytes", len(body))
+	}
+	return binary.BigEndian.Uint32(body[off : off+4])
 }
