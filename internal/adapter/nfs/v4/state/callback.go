@@ -222,10 +222,12 @@ func SendCBRecall(ctx context.Context, callback CallbackInfo, stateid *types.Sta
 	}
 	defer func() { _ = conn.Close() }()
 
-	// Encode CB_RECALL wrapped in CB_COMPOUND
-	// callback_ident=0: client identifies via the program number
+	// Encode CB_RECALL wrapped in CB_COMPOUND. The callback_ident is echoed from
+	// SETCLIENTID: an NFSv4.0 client resolves an incoming CB_COMPOUND to one of
+	// its mounts by that value alone, and rejects an ident it does not recognise
+	// at the RPC layer, before the recall inside is decoded.
 	recallOp := EncodeCBRecallOp(stateid, truncate, fh)
-	compoundArgs := encodeCBCompound(0, recallOp)
+	compoundArgs := encodeCBCompound(callback.Ident, recallOp)
 
 	// Build and send RPC CALL message
 	xid := uint32(time.Now().UnixNano() & 0xFFFFFFFF)

@@ -65,7 +65,7 @@ func (h *Handler) handleSetClientID(ctx *types.CompoundContext, reader io.Reader
 	}
 
 	// Read callback_ident (uint32)
-	_, err = xdr.DecodeUint32(reader)
+	callbackIdent, err := xdr.DecodeUint32(reader)
 	if err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADXDR,
@@ -79,6 +79,7 @@ func (h *Handler) handleSetClientID(ctx *types.CompoundContext, reader io.Reader
 		Program: cbProgram,
 		NetID:   cbNetID,
 		Addr:    cbAddr,
+		Ident:   callbackIdent,
 	}
 
 	// Delegate to StateManager for the five-case algorithm

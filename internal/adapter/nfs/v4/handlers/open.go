@@ -516,7 +516,7 @@ func (h *Handler) handleOpenClaimNull(
 		"createMode", createMode,
 		"stateid_seqid", openResult.Stateid.Seqid,
 		"rflags", openResult.RFlags,
-		"delegation", delegType,
+		"delegation", encodedDelegType(deleg),
 		"client", ctx.ClientAddr)
 
 	// Encode OPEN4resok
@@ -605,7 +605,7 @@ func (h *Handler) handleOpenClaimFH(
 	logger.Debug("NFSv4 OPEN CLAIM_FH successful",
 		"stateid_seqid", openResult.Stateid.Seqid,
 		"rflags", openResult.RFlags,
-		"delegation", delegType,
+		"delegation", encodedDelegType(deleg),
 		"client", ctx.ClientAddr)
 
 	// CLAIM_FH does not create or change a directory, so change_info is empty.
@@ -1009,4 +1009,14 @@ func effectiveUIDGID(authCtx *metadata.AuthContext) (uint32, uint32) {
 		}
 	}
 	return uid, gid
+}
+
+// encodedDelegType reports the delegation type that OPEN actually puts on the
+// wire. A refused grant leaves deleg nil, which encodes as OPEN_DELEGATE_NONE —
+// distinct from the type the open attempted.
+func encodedDelegType(deleg *state.DelegationState) uint32 {
+	if deleg == nil {
+		return types.OPEN_DELEGATE_NONE
+	}
+	return deleg.DelegType
 }

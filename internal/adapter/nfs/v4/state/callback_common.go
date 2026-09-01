@@ -60,7 +60,34 @@ func EncodeCBRecallOp(stateid *types.Stateid4, truncate bool, fh []byte) []byte 
 	return buf.Bytes()
 }
 
-// BuildCBRPCCallMessage builds an RPC CALL message with AUTH_NULL credentials.
+// encodeAuthSysCred writes an AUTH_SYS credential carrying the server's own
+// identity, as flavor + length-prefixed authsys_parms body.
+//
+// Body per RFC 5531 Section 9.2:
+//
+//	stamp:       [uint32]
+//	machinename: [string<255>]
+//	uid:         [uint32]
+//	gid:         [uint32]
+//	gids:        [uint32<16>]
+//
+// The callback runs on the server's own behalf rather than any end user's, so
+// it presents uid/gid 0 with an empty machine name and no supplementary groups.
+// Receivers gate callbacks on the credential's flavor, not its contents; an
+// empty machine name keeps the encoding free of a hostname lookup that can fail.
+func encodeAuthSysCred(buf *bytes.Buffer) {
+	var body bytes.Buffer
+	_ = xdr.WriteUint32(&body, 0)     // stamp
+	_ = xdr.WriteXDRString(&body, "") // machinename
+	_ = xdr.WriteUint32(&body, 0)     // uid
+	_ = xdr.WriteUint32(&body, 0)     // gid
+	_ = xdr.WriteUint32(&body, 0)     // gids: empty array
+
+	_ = xdr.WriteUint32(buf, uint32(rpc.AuthUnix))
+	_ = xdr.WriteXDROpaque(buf, body.Bytes())
+}
+
+// BuildCBRPCCallMessage builds an RPC CALL message with AUTH_SYS credentials.
 //
 // Wire format per RFC 5531:
 //
@@ -70,9 +97,19 @@ func EncodeCBRecallOp(stateid *types.Stateid4, truncate bool, fh []byte) []byte 
 //	Program:    [uint32]
 //	Version:    [uint32]
 //	Procedure:  [uint32]
-//	Cred:       AUTH_NULL (flavor=0, length=0)
+//	Cred:       AUTH_SYS (flavor=1, authsys_parms body)
 //	Verf:       AUTH_NULL (flavor=0, length=0)
 //	Args:       [procedure args]
+//
+// Every callback procedure carries the same credential, the CB_NULL reachability
+// probe included. A probe sent under a credential the payload does not use
+// proves nothing about the payload: Linux clients accept AUTH_NULL for CB_NULL
+// alone and answer AUTH_BADCRED to every other procedure, so a CB_NULL-only
+// AUTH_NULL probe reports a healthy backchannel that cannot carry one recall.
+// AUTH_SYS is accepted for all of them, which keeps the probe honest.
+//
+// The verifier stays AUTH_NULL: RFC 5531 Section 9.2 pairs AUTH_SYS credentials
+// with an AUTH_NONE verifier.
 func BuildCBRPCCallMessage(xid, prog, vers, proc uint32, args []byte) []byte {
 	var buf bytes.Buffer
 
@@ -84,9 +121,7 @@ func BuildCBRPCCallMessage(xid, prog, vers, proc uint32, args []byte) []byte {
 	_ = xdr.WriteUint32(&buf, vers)
 	_ = xdr.WriteUint32(&buf, proc)
 
-	// Auth credentials: AUTH_NULL (flavor=0, length=0)
-	_ = xdr.WriteUint32(&buf, uint32(rpc.AuthNull))
-	_ = xdr.WriteUint32(&buf, 0)
+	encodeAuthSysCred(&buf)
 
 	// Auth verifier: AUTH_NULL (flavor=0, length=0)
 	_ = xdr.WriteUint32(&buf, uint32(rpc.AuthNull))
