@@ -21,6 +21,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
+
+	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 )
 
 // sqliteDriverName is the database/sql driver name registered by the imported
@@ -33,6 +35,13 @@ const sqliteDriverName = "sqlite"
 // hard-link model (parent_child_map + nlink), and object_id dedup index are all
 // preserved, with SQL adapted to the SQLite dialect.
 type SQLiteMetadataStore struct {
+	// Core carries the executor and dialect the shared SQL bodies run on, and
+	// promotes those bodies onto this type so they exist once for both
+	// backends. Embedded by pointer: the transaction embeds its own Core over
+	// the open transaction, and nothing is shared between the two but the
+	// dialect.
+	*storesql.Core
+
 	// db is the database/sql handle over the single SQLite file. SQLite is a
 	// single-writer engine; the pool is bounded to keep contention predictable.
 	db *sql.DB
@@ -154,6 +163,9 @@ func NewSQLiteMetadataStore(
 		cancel:       cancel,
 		quota:        basestore.NewQuotaCache(),
 	}
+	// The shared SQL bodies run on the pool for store-level calls.
+	store.Core = &storesql.Core{X: store.conn(), D: sqliteDialect}
+
 	// The substores derive only from db, which is never reassigned, so bind
 	// them once here.
 	store.lockStore = newSQLiteLockStore(store.conn())

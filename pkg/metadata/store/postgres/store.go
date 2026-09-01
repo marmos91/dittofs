@@ -15,10 +15,18 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
+
+	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 )
 
 // PostgresMetadataStore implements the metadata.Store interface using PostgreSQL
 type PostgresMetadataStore struct {
+	// Core carries the executor and dialect the shared SQL bodies run on, and
+	// promotes those bodies onto this type so they exist once for both
+	// backends. Embedded by pointer: the transaction embeds its own Core over
+	// the open pgx.Tx, and nothing is shared between the two but the dialect.
+	*storesql.Core
+
 	// pool is the PostgreSQL connection pool
 	pool *pgxpool.Pool
 
@@ -142,6 +150,9 @@ func NewPostgresMetadataStore(
 		cancel:       cancel,
 		quota:        basestore.NewQuotaCache(),
 	}
+	// The shared SQL bodies run on the pool for store-level calls.
+	store.Core = &storesql.Core{X: poolExecer{s: store}, D: pgDialect}
+
 	// The substores derive only from pool, which is never reassigned, so bind
 	// them once here.
 	store.lockStore = newPostgresLockStore(pool)

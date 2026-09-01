@@ -16,6 +16,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/txretry"
+
+	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 )
 
 // Transaction retry policy (#1769). Under write contention DittoFS must
@@ -40,6 +42,11 @@ import (
 // tx is the pgx-shaped executor (QueryRow/Query/Exec with (ctx, sql, args...))
 // over the underlying *sql.Tx, so the ported query bodies use it unchanged.
 type sqliteTransaction struct {
+	// Core runs the shared SQL bodies on THIS transaction, not the pool. A
+	// body reached through the pool would run on a separate connection and
+	// survive this transaction's rollback.
+	*storesql.Core
+
 	store *SQLiteMetadataStore
 	tx    execer
 	// quota accumulates usage changes (bytes + file count) keyed by share and
@@ -93,6 +100,7 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 		}
 
 		ptx := &sqliteTransaction{store: s, tx: execer{e: rawTx, op: "tx"}}
+		ptx.Core = &storesql.Core{X: ptx.tx, D: sqliteDialect}
 		if err := fn(ptx); err != nil {
 			_ = rawTx.Rollback()
 			if isBusyError(err) {
