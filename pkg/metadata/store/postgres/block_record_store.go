@@ -12,6 +12,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
+
+	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 )
 
 // Compile-time assertions: the store and its transaction both satisfy the
@@ -44,14 +46,7 @@ func (tx *postgresTransaction) PutBlockRecord(ctx context.Context, rec block.Blo
 }
 
 func (tx *postgresTransaction) GetBlockRecord(ctx context.Context, blockID string) (block.BlockRecord, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return block.BlockRecord{}, false, err
-	}
-	return scanBlockRecord(tx.tx.QueryRow(ctx,
-		`SELECT block_id, block_hash, length, live_chunk_count, sync_state
-		 FROM block_records WHERE block_id = $1`,
-		blockID,
-	))
+	return getBlockRecordTx(ctx, tx.conn(), blockID)
 }
 
 func (tx *postgresTransaction) DeleteBlockRecord(ctx context.Context, blockID string) error {
@@ -66,17 +61,7 @@ func (tx *postgresTransaction) DeleteBlockRecord(ctx context.Context, blockID st
 }
 
 func (tx *postgresTransaction) WalkBlockRecords(ctx context.Context, fn func(block.BlockRecord) error) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	rows, err := tx.tx.Query(ctx,
-		`SELECT block_id, block_hash, length, live_chunk_count, sync_state FROM block_records`,
-	)
-	if err != nil {
-		return fmt.Errorf("postgres WalkBlockRecords: %w", err)
-	}
-	defer rows.Close()
-	return iterBlockRecordRows(rows, fn)
+	return walkBlockRecordsTx(ctx, tx.conn(), fn)
 }
 
 // DecrLiveChunkCount atomically floors live_chunk_count at 0.
@@ -113,14 +98,7 @@ func (s *PostgresMetadataStore) PutBlockRecord(ctx context.Context, rec block.Bl
 }
 
 func (s *PostgresMetadataStore) GetBlockRecord(ctx context.Context, blockID string) (block.BlockRecord, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return block.BlockRecord{}, false, err
-	}
-	return scanBlockRecord(s.queryRow(ctx,
-		`SELECT block_id, block_hash, length, live_chunk_count, sync_state
-		 FROM block_records WHERE block_id = $1`,
-		blockID,
-	))
+	return getBlockRecordTx(ctx, s.conn(), blockID)
 }
 
 func (s *PostgresMetadataStore) DeleteBlockRecord(ctx context.Context, blockID string) error {
@@ -130,10 +108,21 @@ func (s *PostgresMetadataStore) DeleteBlockRecord(ctx context.Context, blockID s
 }
 
 func (s *PostgresMetadataStore) WalkBlockRecords(ctx context.Context, fn func(block.BlockRecord) error) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	rows, err := s.query(ctx,
+	return walkBlockRecordsTx(ctx, s.conn(), fn)
+}
+
+// getBlockRecordTx reads one block record, reporting (_, false, nil) when absent.
+func getBlockRecordTx(ctx context.Context, x storesql.Executor, blockID string) (block.BlockRecord, bool, error) {
+	return scanBlockRecord(x.QueryRow(ctx,
+		`SELECT block_id, block_hash, length, live_chunk_count, sync_state
+		 FROM block_records WHERE block_id = $1`,
+		blockID,
+	))
+}
+
+// walkBlockRecordsTx streams every block record through fn.
+func walkBlockRecordsTx(ctx context.Context, x storesql.Executor, fn func(block.BlockRecord) error) error {
+	rows, err := x.Query(ctx,
 		`SELECT block_id, block_hash, length, live_chunk_count, sync_state FROM block_records`,
 	)
 	if err != nil {
@@ -170,7 +159,7 @@ func (s *PostgresMetadataStore) CommitBlock(ctx context.Context, rec block.Block
 
 // scanBlockRecord reads a BlockRecord from a single pgx.Row (or pgx.Rows
 // result reused as a row). Returns (_, false, nil) on a missing row.
-func scanBlockRecord(row pgx.Row) (block.BlockRecord, bool, error) {
+func scanBlockRecord(row storesql.Row) (block.BlockRecord, bool, error) {
 	var (
 		blockID        string
 		blockHashRaw   []byte
@@ -200,7 +189,7 @@ func scanBlockRecord(row pgx.Row) (block.BlockRecord, bool, error) {
 }
 
 // iterBlockRecordRows calls fn for every row in rows, returning the first error.
-func iterBlockRecordRows(rows pgx.Rows, fn func(block.BlockRecord) error) error {
+func iterBlockRecordRows(rows storesql.Rows, fn func(block.BlockRecord) error) error {
 	for rows.Next() {
 		rec, ok, err := scanBlockRecord(rows)
 		if err != nil {
