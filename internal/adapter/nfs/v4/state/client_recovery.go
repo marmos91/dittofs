@@ -155,32 +155,26 @@ func (sm *StateManager) validateReclaimVerifier(clientIDString string, bootVerif
 }
 
 // LoadClientRecovery reads the durable recovery records on boot and starts the
-// v4 grace period seeded with the prior clients' stable identity strings:
-// today the v4 roster is empty on a fresh process so v4 grace
-// is a no-op; now it is the durable prior-client set).
-//
-// Records whose ReclaimComplete is already true are NOT waited on (a second
+// v4 grace period seeded with the prior clients' stable identity strings.
+// Records whose ReclaimComplete is already true are NOT waited on: a second
 // restart inside one grace window must not re-wait on a client that already
-// finished reclaim — §3.2 RecordReclaimComplete rationale).
+// finished reclaim.
 //
 // The boot verifier snapshot is taken unconditionally, because the
 // CLAIM_PREVIOUS verifier gate must be armed for any prior client whether or
 // not a reclaim window is opened.
 //
-// armGrace decides whether the roster actually opens the 90s window. A record
-// is written for every client that reaches SETCLIENTID_CONFIRM, including one
-// that never opened or locked anything, so the roster alone does not mean there
-// is state to reclaim -- and a v4.0 client with nothing to reclaim can never
-// retire its own entry, since it returns with CLAIM_NULL and v4.0 has no
-// RECLAIM_COMPLETE. Opening the window on the roster alone therefore costs a
-// full grace duration on every subsequent start, refusing every CLAIM_NULL
-// OPEN, with no client able to end it early. The caller passes the same
-// reclaim-warranted signal the lock layer computes for its own window.
+// armGrace decides whether the roster opens a window. A record is written for
+// every client that reaches SETCLIENTID_CONFIRM, even one that never opened or
+// locked anything, and a v4.0 client with nothing to reclaim can never retire
+// its own entry (it returns with CLAIM_NULL, and v4.0 has no RECLAIM_COMPLETE).
+// Arming on the roster alone therefore burns a full grace duration on every
+// later start, refusing every CLAIM_NULL OPEN with no client able to end it
+// early.
 //
-// Returns the number of clients added to the expected reclaim roster. When no
-// recovery store is wired, the store has no waitable records, or armGrace is
-// false, no window is opened. The hard grace timer remains the backstop
-// regardless.
+// Returns the number of clients added to the expected reclaim roster; 0 when no
+// recovery store is wired, no records are waitable, or armGrace is false. The
+// hard grace timer remains the backstop regardless.
 //
 // Caller must NOT hold sm.mu.
 func (sm *StateManager) LoadClientRecovery(ctx context.Context, armGrace bool) int {
