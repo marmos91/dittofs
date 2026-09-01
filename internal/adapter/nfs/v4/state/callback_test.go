@@ -1181,3 +1181,74 @@ func TestBuildCBRPCCallMessage_ProbeAndPayloadShareCredential(t *testing.T) {
 		t.Errorf("CB_NULL probe cred body = %v, CB_COMPOUND = %v; both must be identical", probeBody, payloadBody)
 	}
 }
+
+// TestSendCBRecall_EchoesCallbackIdent pins the callback_ident an NFSv4.0
+// CB_COMPOUND carries to the one the client supplied in SETCLIENTID. A client
+// resolves the callback to one of its mounts by this value alone and rejects an
+// unrecognised one at the RPC layer, so a hardcoded ident silently disables
+// every recall while the CB_NULL reachability probe still reports it healthy.
+func TestSendCBRecall_EchoesCallbackIdent(t *testing.T) {
+	enableLoopbackCallback(t)
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	callback := makeCallbackInfoFromListener(l)
+	callback.Ident = 0x2A
+
+	identCh := make(chan uint32, 1)
+	go func() {
+		conn, acceptErr := l.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		var headerBuf [4]byte
+		if _, readErr := io.ReadFull(conn, headerBuf[:]); readErr != nil {
+			return
+		}
+		body := make([]byte, binary.BigEndian.Uint32(headerBuf[:])&0x7FFFFFFF)
+		if _, readErr := io.ReadFull(conn, body); readErr != nil {
+			return
+		}
+
+		// Skip the RPC header, then the CB_COMPOUND tag and minorversion, to
+		// reach callback_ident. The credential and verifier are length-prefixed,
+		// so both are skipped by their declared length.
+		off := 6 * 4
+		for i := 0; i < 2; i++ {
+			if len(body) < off+8 {
+				return
+			}
+			off += 8 + (int(binary.BigEndian.Uint32(body[off+4:off+8]))+3)/4*4
+		}
+		if len(body) < off+4 {
+			return
+		}
+		off += 4 + (int(binary.BigEndian.Uint32(body[off:off+4]))+3)/4*4 // tag
+		off += 4                                                         // minorversion
+		if len(body) < off+4 {
+			return
+		}
+		identCh <- binary.BigEndian.Uint32(body[off : off+4])
+	}()
+
+	// The reply never arrives, so SendCBRecall errors out; the assertion is on
+	// what went onto the wire, not on the call succeeding.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = SendCBRecall(ctx, callback, &types.Stateid4{Seqid: 1}, false, []byte{0x01, 0x02})
+
+	select {
+	case got := <-identCh:
+		if got != callback.Ident {
+			t.Errorf("CB_COMPOUND callback_ident = 0x%X, want 0x%X (the value from SETCLIENTID)", got, callback.Ident)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no CB_COMPOUND received")
+	}
+}

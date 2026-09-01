@@ -1388,3 +1388,38 @@ func TestReadDir_NoCurrentFH(t *testing.T) {
 			decoded.Status, types.NFS4ERR_NOFILEHANDLE)
 	}
 }
+
+// TestSetClientID_StoresCallbackIdent pins that SETCLIENTID keeps the client's
+// callback_ident. An NFSv4.0 client matches an incoming CB_COMPOUND to one of
+// its mounts by this value, so discarding it here leaves every later callback
+// carrying an identifier the client rejects, with nothing on the acquire path
+// to reveal it.
+func TestSetClientID_StoresCallbackIdent(t *testing.T) {
+	h := newTestHandlerWithShares([]string{"/export"})
+	ctx := newOpsTestContext()
+
+	data := encodeCompoundWithOps("", 0, []encodedOp{
+		encodeSetClientID("ident-test-client"),
+	})
+
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	decoded, _ := decodeCompoundResp(resp)
+	if decoded.Results[0].Status != types.NFS4_OK {
+		t.Fatalf("SETCLIENTID status = %d, want NFS4_OK", decoded.Results[0].Status)
+	}
+
+	clientID := binary.BigEndian.Uint64(decoded.Results[0].ExtraData[0:8])
+	client := h.StateManager.GetClient(clientID)
+	if client == nil {
+		t.Fatalf("no client record for id %d", clientID)
+	}
+
+	// encodeSetClientID sends callback_ident = 1.
+	if client.Callback.Ident != 1 {
+		t.Errorf("stored callback ident = %d, want 1 (the value the client sent)", client.Callback.Ident)
+	}
+}

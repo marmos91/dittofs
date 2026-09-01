@@ -144,6 +144,13 @@ type CallbackInfo struct {
 
 	// Addr is the callback address in universal address format.
 	Addr string
+
+	// Ident is the callback_ident the client supplied in SETCLIENTID. NFSv4.0
+	// clients match an incoming CB_COMPOUND to their own mount by this value, so
+	// it has to be echoed back in every callback; a callback carrying the wrong
+	// one is rejected before any operation in it is looked at. NFSv4.1 replaced
+	// it with the session and ignores the field.
+	Ident uint32
 }
 
 // ============================================================================
