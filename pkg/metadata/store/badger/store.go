@@ -16,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/gencache"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
 )
 
@@ -64,8 +65,13 @@ type BadgerMetadataStore struct {
 
 	// readCache caches decoded File records for the read hot path so
 	// GetFileForRead skips the per-read badger View transaction + File JSON
-	// decode. Invalidated after each committed write (see withTransaction).
-	readCache fileReadCache
+	// decode. That decode inlines the full ChunkRef list — measured ~800 µs for a
+	// 1 GiB (≈1024-chunk) file — and the per-read badger View transaction is the
+	// top mutex contender under concurrent reads (server pprof, #1169). A
+	// random-read fleet hammering one file re-decoded that blob on every 4 KiB
+	// read; the cache collapses it to one decode per file. Invalidated after each
+	// committed write (see withTransaction).
+	readCache gencache.Cache[*metadata.File]
 
 	// parentCache caches decoded parent-directory File records (WITH derived
 	// Path) for the create hot path so repeated creates in one directory skip the
@@ -74,13 +80,13 @@ type BadgerMetadataStore struct {
 	// never pollute the shared readCache (whose consumers derive Path fresh,
 	// #1166). Invalidated in lockstep with readCache on the parent's own mutation
 	// (parentID in dirtyFiles) — see GetFileForCreate and withTransaction.
-	parentCache fileReadCache
+	parentCache gencache.Cache[*metadata.File]
 
 	// direntCache caches (parentID,name) -> childHandle|ABSENT for the
 	// pre-transaction existence check on the create path and LOOKUP (#1735).
 	// Populate-after-commit, generation-guarded; NEVER consulted for the in-txn
 	// TOCTOU recheck. Invalidated after each committed SetChild/DeleteChild.
-	direntCache direntCache
+	direntCache gencache.Cache[direntEntry]
 
 	// gcStop signals the value-log GC goroutine to exit. Closed once by
 	// Close() (guarded by gcStopOnce); gcWG waits for the goroutine to
@@ -367,6 +373,12 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		syncStop:          make(chan struct{}),
 		quota:             basestore.NewQuotaCache(),
 	}
+	// Bound the hot-path caches. Set before first use and never written again;
+	// the share cache stays unbounded because shares are few (see sharecache).
+	store.readCache.Cap = fileReadCacheCap
+	store.parentCache.Cap = fileReadCacheCap
+	store.direntCache.Cap = direntCacheCap
+
 	// The substores derive only from db, which is never reassigned, so bind
 	// them once here.
 	store.lockStore = newBadgerLockStore(db)

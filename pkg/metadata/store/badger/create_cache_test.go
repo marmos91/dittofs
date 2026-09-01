@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/gencache"
 )
 
 // newCreateCacheStore builds a store with a share + root directory so the dirent
@@ -87,7 +88,7 @@ func TestWarmFileReadCache_HitAndPathless(t *testing.T) {
 
 	s.WarmFileReadCache(f)
 
-	cached, ok := s.readCache.get(f.ID.String())
+	cached, ok := s.readCache.Get(f.ID.String())
 	if !ok {
 		t.Fatal("WarmFileReadCache did not populate the read cache")
 	}
@@ -107,7 +108,7 @@ func TestWarmFileReadCache_HitAndPathless(t *testing.T) {
 
 	// Caller mutation of the warmed value must not corrupt the shared entry.
 	got.Mode = 0
-	again, ok := s.readCache.get(f.ID.String())
+	again, ok := s.readCache.Get(f.ID.String())
 	if !ok || again.Mode != 0o644 {
 		t.Fatal("warm cache entry aliased or evicted by caller mutation")
 	}
@@ -126,13 +127,13 @@ func TestDirentCache_NegativeThenInvalidate(t *testing.T) {
 	if _, err := s.GetChildForCreate(ctx, root, "foo"); !metadata.IsNotFoundError(err) {
 		t.Fatalf("first lookup err=%v, want NotFound", err)
 	}
-	if e, ok := s.direntCache.get(key); !ok || e.present {
+	if e, ok := s.direntCache.Get(key); !ok || e.present {
 		t.Fatalf("expected a cached ABSENT entry, got ok=%v entry=%+v", ok, e)
 	}
 
 	// Create "foo": SetChild must invalidate the negative entry after commit.
 	child := putDir(t, s, "/s", root, "foo")
-	if _, ok := s.direntCache.get(key); ok {
+	if _, ok := s.direntCache.Get(key); ok {
 		t.Fatal("SetChild did not invalidate the negative dirent entry")
 	}
 
@@ -149,7 +150,7 @@ func TestDirentCache_NegativeThenInvalidate(t *testing.T) {
 	if err := s.DeleteChild(ctx, root, "foo"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := s.direntCache.get(key); ok {
+	if _, ok := s.direntCache.Get(key); ok {
 		t.Fatal("DeleteChild did not invalidate the positive dirent entry")
 	}
 	if _, err := s.GetChildForCreate(ctx, root, "foo"); !metadata.IsNotFoundError(err) {
@@ -162,14 +163,14 @@ func TestDirentCache_NegativeThenInvalidate(t *testing.T) {
 // concurrent create committed) must be rejected, so no permanently-stale ABSENT
 // entry is pinned.
 func TestDirentCache_NegativeGenGuard(t *testing.T) {
-	var c direntCache
+	var c gencache.Cache[direntEntry]
 	key := direntKey("parent", "foo")
 
-	genBefore := c.generation()            // reader snapshots gen, then "reads" badger (absent)
-	c.invalidate(key)                      // concurrent create commits + invalidates
-	c.store(key, direntEntry{}, genBefore) // stale populate must be dropped
+	genBefore := c.Generation()            // reader snapshots gen, then "reads" badger (absent)
+	c.Invalidate(key)                      // concurrent create commits + invalidates
+	c.Store(key, direntEntry{}, genBefore) // stale populate must be dropped
 
-	if _, ok := c.get(key); ok {
+	if _, ok := c.Get(key); ok {
 		t.Fatal("stale ABSENT entry pinned despite a racing invalidation (gen guard failed)")
 	}
 }

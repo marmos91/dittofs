@@ -2,49 +2,19 @@ package badger
 
 import (
 	"context"
-	"sync"
-	"sync/atomic"
-
 	badgerdb "github.com/dgraph-io/badger/v4"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// direntCacheCap bounds the dirent cache (positive + negative entries).
-const direntCacheCap = 8192
+const (
+	// fileReadCacheCap bounds the read caches. Entries are decoded *File (held
+	// read-only), so this is a soft cap on the number of tracked hot files.
+	fileReadCacheCap = 8192
 
-// direntCache is a lock-free, generation-guarded cache of directory-entry
-// lookups keyed by (parentID, name): a positive entry records the child handle,
-// a negative entry records ABSENT. It accelerates the *pre-transaction*
-// existence check on the create hot path (createEntry / CheckParentCreateAccess)
-// and is usable by LOOKUP, so a directory repeatedly probed for the same
-// (mostly-absent) names skips the per-probe badger View transaction.
-//
-// It is a read-only / populate-after-commit cache, NEVER a write-back cache: the
-// authoritative c:/cn: dirent keys are always written inside the create
-// transaction, and the in-transaction TOCTOU recheck (file_create.go) reads the
-// real badger txn — it is NEVER served from here, so it still builds Badger's SSI
-// conflict read-set and two concurrent same-name creates still conflict (one
-// wins, the loser aborts). Serving that recheck from a cache would let both
-// commit and orphan an inode.
-//
-// Correctness mirrors fileReadCache exactly (single-node badger is single-writer,
-// which makes this tractable):
-//   - invalidate() runs AFTER a SetChild/DeleteChild commits, bumping gen then
-//     deleting, so a reader that observed the pre-commit state cannot leave it
-//     cached (its generation-guarded store loses). Without the gen guard a reader
-//     that missed, fell through to a not-found badger read, and cached ABSENT
-//     while a concurrent create committed that name would pin a permanently-stale
-//     negative entry -> spurious ENOENT for a file that exists.
-//   - store() writes only when gen is unchanged since the snapshot taken before
-//     the backing read; any racing dirent write moves gen and the populate drops.
-//     A dropped populate is a cache miss (re-read), never a stale hit.
-type direntCache struct {
-	m     sync.Map // key string -> direntEntry
-	n     atomic.Int64
-	gen   atomic.Uint64
-	prune atomic.Bool
-}
+	// direntCacheCap bounds the dirent cache (positive + negative entries).
+	direntCacheCap = 8192
+)
 
 // direntEntry is a cached lookup result. present=false is a negative (ABSENT)
 // entry; present=true carries the resolved child handle as a string so the
@@ -60,77 +30,6 @@ type direntEntry struct {
 // name, so distinct (parent, name) pairs never collide.
 func direntKey(parentID, name string) string {
 	return parentID + "\x00" + name
-}
-
-// generation snapshots the invalidation counter; pass the result to store.
-func (c *direntCache) generation() uint64 { return c.gen.Load() }
-
-func (c *direntCache) get(key string) (direntEntry, bool) {
-	v, ok := c.m.Load(key)
-	if !ok {
-		return direntEntry{}, false
-	}
-	return v.(direntEntry), true
-}
-
-// store caches e under key only if no dirent write raced the backing read (the
-// generation is unchanged since genAtRead).
-func (c *direntCache) store(key string, e direntEntry, genAtRead uint64) {
-	if c.gen.Load() != genAtRead {
-		return
-	}
-	if _, loaded := c.m.Swap(key, e); !loaded {
-		if c.n.Add(1) > direntCacheCap {
-			c.pruneToHalf()
-		}
-	}
-	// The guard and the Swap are not atomic: a dirent write could commit and
-	// invalidate() (bump gen + delete) in between, leaving our now-stale entry
-	// live. Re-check the generation; if it moved, drop our entry — but only if a
-	// newer reader hasn't already replaced it (CompareAndDelete on our value).
-	if c.gen.Load() != genAtRead {
-		if c.m.CompareAndDelete(key, e) {
-			c.n.Add(-1)
-		}
-	}
-}
-
-// invalidate drops key and advances the generation so any in-flight populate for
-// a now-superseded value is rejected. MUST be called AFTER the write commits.
-// Order matters: bump gen BEFORE delete (see fileReadCache.invalidate).
-func (c *direntCache) invalidate(key string) {
-	c.gen.Add(1)
-	if _, ok := c.m.LoadAndDelete(key); ok {
-		c.n.Add(-1)
-	}
-}
-
-// invalidateAll drops every entry, positive and negative, for callers that
-// replace the whole backing store rather than a single directory entry (Reset,
-// RestoreSnapshot). Order matters: bump gen BEFORE clearing (see
-// fileReadCache.invalidateAll).
-func (c *direntCache) invalidateAll() {
-	c.gen.Add(1)
-	c.m.Clear()
-	c.n.Store(0)
-}
-
-// pruneToHalf best-effort trims the map back toward half the cap on overflow.
-func (c *direntCache) pruneToHalf() {
-	if !c.prune.CompareAndSwap(false, true) {
-		return
-	}
-	defer c.prune.Store(false)
-	target := int64(direntCacheCap / 2)
-	c.m.Range(func(k, _ any) bool {
-		if c.n.Load() <= target {
-			return false
-		}
-		if _, ok := c.m.LoadAndDelete(k); ok {
-			c.n.Add(-1)
-		}
-		return true
-	})
 }
 
 // ============================================================================
@@ -152,10 +51,10 @@ func (s *BadgerMetadataStore) WarmFileReadCache(file *metadata.File) {
 	if file == nil {
 		return
 	}
-	gen := s.readCache.generation()
+	gen := s.readCache.Generation()
 	cp := copyForRead(file)
 	cp.Path = "" // never cache a path in the shared read cache (#1166)
-	s.readCache.store(file.ID.String(), cp, gen)
+	s.readCache.Store(file.ID.String(), cp, gen)
 }
 
 // GetFileForCreate loads the parent directory for a create with File.Path
@@ -180,14 +79,14 @@ func (s *BadgerMetadataStore) GetFileForCreate(ctx context.Context, handle metad
 	var key string
 	if decErr == nil {
 		key = fileID.String()
-		if cached, ok := s.parentCache.get(key); ok {
+		if cached, ok := s.parentCache.Get(key); ok {
 			return copyForRead(cached), nil
 		}
 	}
 
 	// Snapshot the generation BEFORE the backing read so a mutation racing this
 	// read cannot leave a stale value cached (store() checks it).
-	gen := s.parentCache.generation()
+	gen := s.parentCache.Generation()
 	var result *metadata.File
 	err := s.db.View(func(txn *badgerdb.Txn) error {
 		tx := &badgerTransaction{store: s, txn: txn}
@@ -199,7 +98,7 @@ func (s *BadgerMetadataStore) GetFileForCreate(ctx context.Context, handle metad
 		return nil, err
 	}
 	if key != "" {
-		s.parentCache.store(key, result, gen)
+		s.parentCache.Store(key, result, gen)
 		return copyForRead(result), nil
 	}
 	return result, nil
@@ -224,7 +123,7 @@ func (s *BadgerMetadataStore) GetChildForCreate(ctx context.Context, dirHandle m
 	var key string
 	if decErr == nil {
 		key = direntKey(dirID.String(), name)
-		if e, ok := s.direntCache.get(key); ok {
+		if e, ok := s.direntCache.Get(key); ok {
 			if e.present {
 				return metadata.FileHandle(e.handle), nil
 			}
@@ -233,7 +132,7 @@ func (s *BadgerMetadataStore) GetChildForCreate(ctx context.Context, dirHandle m
 	}
 
 	// Snapshot the generation BEFORE the backing read (store() checks it).
-	gen := s.direntCache.generation()
+	gen := s.direntCache.Generation()
 	var result metadata.FileHandle
 	err := s.db.View(func(txn *badgerdb.Txn) error {
 		tx := &badgerTransaction{store: s, txn: txn}
@@ -243,12 +142,12 @@ func (s *BadgerMetadataStore) GetChildForCreate(ctx context.Context, dirHandle m
 	})
 	if err != nil {
 		if key != "" && metadata.IsNotFoundError(err) {
-			s.direntCache.store(key, direntEntry{present: false}, gen)
+			s.direntCache.Store(key, direntEntry{present: false}, gen)
 		}
 		return nil, err
 	}
 	if key != "" {
-		s.direntCache.store(key, direntEntry{handle: string(result), present: true}, gen)
+		s.direntCache.Store(key, direntEntry{handle: string(result), present: true}, gen)
 	}
 	return result, nil
 }
