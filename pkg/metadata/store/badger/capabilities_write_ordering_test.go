@@ -9,9 +9,10 @@ import (
 )
 
 // TestSetFilesystemCapabilities_FailedPersistLeavesInMemoryValue pins the write
-// ordering of the pool-path setter: the in-memory copy that GetFilesystemMeta
-// reports must only advance once the write has actually committed. Closing the
-// store makes every subsequent write fail, standing in for any persist failure.
+// ordering of BadgerMetadataStore.SetFilesystemCapabilities: the in-memory copy
+// that GetFilesystemMeta reports must only advance once the write has actually
+// committed. Closing the store makes every subsequent write fail, standing in
+// for any persist failure.
 func TestSetFilesystemCapabilities_FailedPersistLeavesInMemoryValue(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "metadata.db")
