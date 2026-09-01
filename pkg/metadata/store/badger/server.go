@@ -109,15 +109,14 @@ func (s *BadgerMetadataStore) GetFilesystemCapabilities(ctx context.Context, han
 }
 
 // SetFilesystemCapabilities updates the filesystem capabilities for this store.
+//
+// It delegates to the transaction path so the in-memory copy is staged and
+// applied only after a successful commit: updating it here before the write
+// would leave GetFilesystemMeta advertising capabilities that never reached
+// the store. The interface is void, so a failure can only be logged.
 func (s *BadgerMetadataStore) SetFilesystemCapabilities(capabilities metadata.FilesystemCapabilities) {
-	s.storeCapabilities(capabilities)
-
-	err := s.db.Update(func(txn *badgerdb.Txn) error {
-		data, err := encodeFilesystemCapabilities(&capabilities)
-		if err != nil {
-			return err
-		}
-		return txn.Set(keyFilesystemCapabilities(), data)
+	err := s.WithTransaction(context.Background(), func(tx metadata.Transaction) error {
+		return tx.(*badgerTransaction).writeCapabilities(capabilities)
 	})
 	if err != nil {
 		logger.Error("badger: failed to persist filesystem capabilities", "error", err)
