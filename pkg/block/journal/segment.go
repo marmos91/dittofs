@@ -312,7 +312,7 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 	// and the fetched bytes are the wrong ones.
 	if synced {
 		n := int64(len(data))
-		if staleAfterTruncate(sh, id, notAfter) || !coversWhole(sh.index[id].hydratable(offset, n, notAfter), offset, n) {
+		if hydrateFenced(sh, id, notAfter) || !coversWhole(sh.index[id].hydratable(offset, n, notAfter), offset, n) {
 			return nil
 		}
 	}
@@ -448,6 +448,16 @@ func (s *Store) appendTombstone(ctx context.Context, id FileID) (uint64, error) 
 	}
 	seg := sh.active
 	version := s.nextVersion()
+	// Published in the same critical section that mints the Version, which is the
+	// only place it closes the whole window. A hydrate that takes sh.mu after this
+	// point is refused if its caller sampled a bound at or below the tombstone;
+	// one that got in before it stamped a lower Version and the scrub in Delete
+	// buries it. Stamping earlier (from Delete, before this call) leaves the fence
+	// below the Version this mints, so a hydrate holding a bound in between passes
+	// the fence, appends ABOVE the tombstone, and the scrub then reads it as a
+	// rewrite that raced past the delete and deliberately keeps it. Stamping later
+	// cannot help either: by then that record is already committed.
+	sh.fenceDelete(id, version)
 	recStart, err := writeTombstoneRecord(seg, id, version)
 	if err != nil {
 		sh.mu.Unlock()

@@ -32,12 +32,35 @@ type shard struct {
 	active *segmentMeta
 	sealed map[uint64]*segmentMeta
 	index  map[FileID]*fileIndex
-	// truncVer is, per file, the store LSN as it stood when that file's most
-	// recent truncate began. A hydrate whose caller sampled its bound at or
-	// below it is refused: truncate clips intervals away rather than recording
-	// one, so a range it emptied leaves nothing for hydratable to weigh a stale
-	// write-back against. Entries die with the file's index on delete.
-	truncVer map[FileID]uint64
+	// hydrateFence is, per file, the store LSN as it stood when that file's most
+	// recent truncate or delete began. A hydrate whose caller sampled its bound
+	// at or below it is refused: both mutations empty intervals away rather than
+	// recording over them, so the range they cleared leaves nothing for
+	// hydratable to weigh a stale write-back against — a delete leaves not even
+	// an index entry, and hydratable's nil receiver offers the whole range.
+	//
+	// A delete's entry therefore has to outlive the file's index entry, and
+	// deleteFences is what keeps that from growing without bound.
+	hydrateFence map[FileID]uint64
+	// deleteFences records the fences stamped by Delete, oldest first. Nothing
+	// else ever takes a delete fence back out of hydrateFence, so without this
+	// the map would retain one entry per FileID the store has ever deleted.
+	//
+	// ponytail: a flat FIFO capped at maxDeleteFences per shard, evicting the
+	// oldest fence rather than the one that has outlived every hydrate that
+	// could still cite it. evictedFenceFloor keeps that approximation safe, so
+	// the cap trades memory against re-fetches and is not load-bearing for
+	// correctness; raise it, or make it an age-based sweep, only if a workload
+	// is measured refusing hydrates it should have kept.
+	deleteFences []fenceEntry
+	// evictedFenceFloor is the highest version among the delete fences the FIFO
+	// has dropped. A hydrate at or below it is refused even though its own fence
+	// is gone, so overflowing the cap costs a re-fetch rather than letting a
+	// stale fill land. The cap is reachable — ShardCount may be 1, so every
+	// delete shares one FIFO, and a remote serving errors stretches the fetch
+	// window widest exactly when cold reads are most likely to be outstanding —
+	// and overflow must not fail open.
+	evictedFenceFloor uint64
 	// lastVersion is the highest record Version appended to this shard, stamped
 	// under mu once the record's write() returned. syncedVersion is the highest
 	// Version a completed fsync has covered — records above it exist only in the
@@ -87,16 +110,53 @@ type shard struct {
 	segSync func(*segmentMeta) error
 }
 
+// maxDeleteFences caps how many delete fences one shard retains. See
+// shard.deleteFences.
+const maxDeleteFences = 4096
+
+// fenceEntry is one delete fence as it was stamped. The version is kept so an
+// eviction leaves alone a fence a later truncate has since re-stamped.
+type fenceEntry struct {
+	id  FileID
+	ver uint64
+}
+
 func newShard(active *segmentMeta) *shard {
 	sh := &shard{
-		active:   active,
-		sealed:   make(map[uint64]*segmentMeta),
-		index:    make(map[FileID]*fileIndex),
-		truncVer: make(map[FileID]uint64),
-		segSync:  func(seg *segmentMeta) error { return seg.fd.Sync() },
+		active:       active,
+		sealed:       make(map[uint64]*segmentMeta),
+		index:        make(map[FileID]*fileIndex),
+		hydrateFence: make(map[FileID]uint64),
+		segSync:      func(seg *segmentMeta) error { return seg.fd.Sync() },
 	}
 	sh.commitCond = sync.NewCond(&sh.commitMu)
 	return sh
+}
+
+// fenceDelete publishes id's delete fence at ver and drops the oldest fence
+// once the shard holds more than maxDeleteFences of them. Caller holds sh.mu.
+func (sh *shard) fenceDelete(id FileID, ver uint64) {
+	if ver > sh.hydrateFence[id] {
+		sh.hydrateFence[id] = ver // never lower a fence a racing Truncate stamped higher
+	}
+	sh.deleteFences = append(sh.deleteFences, fenceEntry{id: id, ver: ver})
+	if len(sh.deleteFences) > maxDeleteFences {
+		oldest := sh.deleteFences[0]
+		// Clear the slot before the reslice: the backing array outlives the reslice
+		// until it reallocates, and until then it would pin every evicted FileID
+		// string for nothing.
+		sh.deleteFences[0] = fenceEntry{}
+		sh.deleteFences = sh.deleteFences[1:]
+		// Only if nothing has raised the fence since. A Truncate re-stamp belongs
+		// to a file that is live again and still needs its fence; that entry is
+		// then bounded by the live file set, as every truncate fence always was.
+		if sh.hydrateFence[oldest.id] <= oldest.ver {
+			delete(sh.hydrateFence, oldest.id)
+		}
+		// Entries are appended in mint order, so this only ever climbs. It stands
+		// in for every fence dropped so far.
+		sh.evictedFenceFloor = oldest.ver
+	}
 }
 
 // markSynced raises the shard's durable watermark to v, which must be a Version
