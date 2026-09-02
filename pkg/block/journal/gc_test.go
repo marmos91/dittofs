@@ -170,6 +170,75 @@ func TestGCForcedRepackPreservesData(t *testing.T) {
 	if newTarget == nil || newTarget.syncedRecords.Load() != 1 {
 		t.Fatalf("target syncedRecords not preserved")
 	}
+	// The relocated record is synced, so the target must still qualify for
+	// eviction: a record count left behind at zero makes the gate compare 1 == 0
+	// and strands the segment's space forever.
+	if !evictable(newTarget) {
+		t.Fatalf("fully synced target is not evictable: records=%d syncedRecords=%d",
+			newTarget.records.Load(), newTarget.syncedRecords.Load())
+	}
+	if got := newTarget.records.Load(); got != 1 {
+		t.Fatalf("target records = %d, want 1", got)
+	}
+}
+
+// TestGCRepackDirtyTargetNotEvictable pins the other side of the same gate: a
+// victim whose surviving records are all unsynced produces a target with a zero
+// synced count, so a record count left at zero reads as fully synced and lets
+// eviction cold-mark bytes that were never pushed to the remote store.
+func TestGCRepackDirtyTargetNotEvictable(t *testing.T) {
+	s := testStore(t, Config{SegmentSize: minSegmentSize, ShardCount: 1})
+	ctx := context.Background()
+
+	keep := make([]byte, 300<<10)
+	rand.New(rand.NewSource(4)).Read(keep)
+	if err := s.WriteAt(ctx, "keep", 0, keep); err != nil { // synced=false
+		t.Fatal(err)
+	}
+	if err := s.WriteAt(ctx, "gone", 0, make([]byte, 700<<10)); err != nil {
+		t.Fatal(err)
+	}
+	// Roll the active segment over so keep+gone land in a sealed segment.
+	if err := s.WriteAt(ctx, "trigger", 0, make([]byte, 200<<10)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, "gone"); err != nil { // 70% dead: an auto pass repacks
+		t.Fatal(err)
+	}
+
+	res, err := s.GC(ctx, GCOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SegmentsRepacked != 1 {
+		t.Fatalf("SegmentsRepacked = %d, want 1", res.SegmentsRepacked)
+	}
+
+	target := onlySealed(t, s, "keep")
+	if evictable(target) {
+		t.Fatalf("target holding an unsynced record is evictable: records=%d syncedRecords=%d",
+			target.records.Load(), target.syncedRecords.Load())
+	}
+
+	// That gate is all that stands between the dirty bytes and eviction, so an
+	// explicit pass must free nothing and leave keep readable locally.
+	ev, err := s.Evict(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.SegmentsEvicted != 0 {
+		t.Fatalf("evicted %d segments holding unsynced data, want 0", ev.SegmentsEvicted)
+	}
+	got := make([]byte, len(keep))
+	if _, st, err := s.ReadAt(ctx, "keep", 0, got); err != nil || st.Cold {
+		t.Fatalf("ReadAt keep after evict: err=%v cold=%v", err, st.Cold)
+	}
+	if !bytes.Equal(got, keep) {
+		t.Fatalf("keep not byte-identical after repack + evict")
+	}
+	if got := target.records.Load(); got != 1 {
+		t.Fatalf("target records = %d, want 1", got)
+	}
 }
 
 func TestGCBelowThresholdNeedsForce(t *testing.T) {
