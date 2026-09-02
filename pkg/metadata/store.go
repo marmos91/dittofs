@@ -549,6 +549,22 @@ type Store interface {
 	// accumulated (memory).
 	GetQuotaUsage(shareName string, scope QuotaScope, id uint32) (UsageStat, error)
 
+	// RecomputeUsage rebuilds the usage counters from the durable file rows,
+	// replacing whatever the in-memory buckets currently hold.
+	//
+	// The counters are maintained by transactional deltas, so a backend bug or
+	// an upgrade from a version that accounted differently leaves a share
+	// reporting a figure its files do not support — and since the number gates
+	// writes through the share quota, a share can report itself full while
+	// holding nothing. This is the repair, run on demand: it is a full scan of
+	// the store's file rows, which is why nothing calls it on the write path or
+	// at startup.
+	//
+	// It is store-wide rather than per-share: one store instance backs every
+	// share naming the same metadata store config, and rebuilding one share's
+	// buckets costs the same scan as rebuilding all of them.
+	RecomputeUsage(ctx context.Context) error
+
 	// ========================================================================
 	// Store Lifecycle (not transactional)
 	// ========================================================================

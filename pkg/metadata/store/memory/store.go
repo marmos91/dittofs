@@ -608,3 +608,50 @@ func childPageStart(sortedNames []string, cursor string) int {
 	}
 	return idx
 }
+
+// RecomputeUsage rebuilds the usage counters from the stored file records,
+// discarding whatever the buckets hold. The memory store has no durable rows
+// behind its counters — the records ARE the source of truth — so this is a
+// walk of them under the store lock.
+func (store *MemoryMetadataStore) RecomputeUsage(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	store.mu.RLock()
+	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
+	for key, fd := range store.files {
+		if fd.Attr == nil {
+			continue
+		}
+		count, ok := store.linkCounts[key]
+		if !ok {
+			count = 1
+			if fd.Attr.Type == metadata.FileTypeDirectory {
+				count = 2
+			}
+		}
+		if !basestore.Charged(fd.Attr.Type, count) {
+			continue
+		}
+		for scope, id := range map[metadata.QuotaScope]uint32{
+			metadata.QuotaScopeUser:  fd.Attr.UID,
+			metadata.QuotaScopeGroup: fd.Attr.GID,
+		} {
+			k := basestore.QuotaKey{Share: fd.ShareName, Scope: scope, ID: id}
+			u := byIdentity[k]
+			if u == nil {
+				u = &metadata.UsageStat{}
+				byIdentity[k] = u
+			}
+			u.Bytes += int64(fd.Attr.Size)
+			u.Files++
+		}
+	}
+	store.mu.RUnlock()
+
+	store.quotaMu.Lock()
+	defer store.quotaMu.Unlock()
+	store.quota.Seed(byIdentity, nil)
+	return nil
+}

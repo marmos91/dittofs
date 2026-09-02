@@ -376,3 +376,10 @@ func initializeFilesystemCapabilities(ctx context.Context, db *sql.DB, caps meta
 	_, err := db.ExecContext(ctx, upsertCapabilitiesSQL, capabilityArgs(caps)...)
 	return err
 }
+
+// RecomputeUsage rebuilds the usage counters from the inodes table, discarding
+// whatever the in-memory buckets hold. Same aggregate the store runs at open,
+// re-run on demand.
+func (s *SQLiteMetadataStore) RecomputeUsage(ctx context.Context) error {
+	return s.initUsedBytesCounter(ctx)
+}

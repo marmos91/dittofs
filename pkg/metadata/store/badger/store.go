@@ -888,3 +888,14 @@ func (s *BadgerMetadataStore) GetStoreID() string { return s.storeID }
 
 // Compile-time assertion: the Badger engine exposes GetStoreID.
 var _ interface{ GetStoreID() string } = (*BadgerMetadataStore)(nil)
+
+// RecomputeUsage rebuilds the usage counters from the durable file rows,
+// discarding whatever the in-memory buckets hold. Same scan the store runs at
+// open, re-run on demand; the payload index is already built by then, so
+// nothing is staged this time.
+func (s *BadgerMetadataStore) RecomputeUsage(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.initUsedBytesCounter(nil)
+}

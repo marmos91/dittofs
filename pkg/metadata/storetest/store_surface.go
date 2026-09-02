@@ -211,6 +211,25 @@ func testUnlinkReleasesUsedBytes(t *testing.T, factory StoreFactory) {
 	assertShareUsed("unlinking the last name", 0)
 	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 0, 0)
 	wantUsage(t, store, shareName, metadata.QuotaScopeGroup, gid, 0, 0)
+
+	// The on-demand repair rebuilds the counters from the stored rows, so it
+	// must read the retained inode the same way the transactional deltas did.
+	// A recompute that counted it would put the bytes back — and, for the
+	// backends that seed their counters the same way, so would a restart.
+	if err := store.RecomputeUsage(ctx); err != nil {
+		t.Fatalf("RecomputeUsage() failed: %v", err)
+	}
+	assertShareUsed("recomputing usage", 0)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 0, 0)
+
+	// And it must agree with the live counter for files that are still linked.
+	createTestFileOwned(t, store, shareName, rootHandle, "kept.bin", uid, gid, 4096)
+	assertShareUsed("creating kept.bin", 4096)
+	if err := store.RecomputeUsage(ctx); err != nil {
+		t.Fatalf("RecomputeUsage() after kept.bin failed: %v", err)
+	}
+	assertShareUsed("recomputing usage with a live file", 4096)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 4096, 1)
 }
 
 func namesOf(entries []metadata.DirEntry) []string {
