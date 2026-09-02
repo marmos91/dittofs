@@ -237,7 +237,7 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 	// RowsAffected()==0 check relied on.
 	updateQuery := `
 		WITH old AS (
-			SELECT id, share_name, size, uid, gid, file_type
+			SELECT id, share_name, size, uid, gid, file_type, nlink
 			FROM inodes
 			WHERE id = $21 AND share_name = $22
 			FOR UPDATE
