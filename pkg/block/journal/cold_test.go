@@ -198,6 +198,68 @@ func TestColdLogTornTailKeepsIntactEntries(t *testing.T) {
 	}
 }
 
+// TestColdLogTornTailIsRepairedOnOpen: the log is opened for append, so a torn
+// tail that recovery reads past but leaves on disk sits in front of everything
+// written afterwards. The next load stops at the same offset again, so every
+// cold interval recorded by the intervening process is lost — and a lost cold
+// interval reads as a hole that zero-fills instead of fetching from the remote.
+func TestColdLogTornTailIsRepairedOnOpen(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
+
+	s, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s.SeedCold(ctx, "f", [][2]int64{{0, 4096}}); err != nil {
+		t.Fatalf("SeedCold: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// A crash mid-append leaves a partial entry after the intact ones.
+	path := filepath.Join(dir, coldLogName)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read cold log: %v", err)
+	}
+	// The header lands, the FileID bytes behind it do not.
+	torn := append(raw, encodeColdEntry(coldEntry{id: "torn", length: 4096})[:coldHeaderSize]...)
+	if err := os.WriteFile(path, torn, 0o644); err != nil {
+		t.Fatalf("write torn cold log: %v", err)
+	}
+
+	// The process after the crash records another cold range.
+	s2, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	if err != nil {
+		t.Fatalf("reopen over the torn tail: %v", err)
+	}
+	if err := s2.SeedCold(ctx, "g", [][2]int64{{0, 4096}}); err != nil {
+		t.Fatalf("SeedCold after the torn tail: %v", err)
+	}
+	if err := s2.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	s3, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = s3.Close() }()
+
+	for _, id := range []FileID{"f", "g"} {
+		_, st, err := s3.ReadAt(ctx, id, 0, make([]byte, 4096))
+		if err != nil {
+			t.Fatalf("ReadAt %q: %v", id, err)
+		}
+		if !st.Cold {
+			t.Errorf("cold interval for %q was lost: the read reports a hole and zero-fills instead of fetching from the remote", id)
+		}
+	}
+}
+
 // TestSeedColdLeavesLocalBytesAlone is what makes a re-seed safe to run against a
 // store that is only partly missing its markers. A cold interval carries a fresh
 // version, so seeding a range the journal already holds would shadow those bytes
@@ -349,7 +411,7 @@ func TestEvictAppendsColdEntriesBeforeReturning(t *testing.T) {
 
 	// Deliberately no Close and no Sync from the test: whatever is on disk here,
 	// the eviction put there before it returned.
-	entries, err := loadCold(dir)
+	entries, _, err := loadCold(dir)
 	if err != nil {
 		t.Fatalf("loadCold: %v", err)
 	}
@@ -390,7 +452,7 @@ func TestSeedColdBatchIsDurableAndMatchesPerFileSeeding(t *testing.T) {
 	}
 
 	// Again no Close: a batch that only becomes durable on shutdown is the bug.
-	got, err := loadCold(batchDir)
+	got, _, err := loadCold(batchDir)
 	if err != nil {
 		t.Fatalf("loadCold after batch: %v", err)
 	}
@@ -418,7 +480,7 @@ func TestSeedColdBatchIsDurableAndMatchesPerFileSeeding(t *testing.T) {
 			t.Fatalf("SeedCold %q: %v", sd.ID, err)
 		}
 	}
-	want, err := loadCold(oneDir)
+	want, _, err := loadCold(oneDir)
 	if err != nil {
 		t.Fatalf("loadCold after per-file seeding: %v", err)
 	}
