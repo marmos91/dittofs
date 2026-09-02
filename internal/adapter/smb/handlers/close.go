@@ -544,7 +544,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				"messageID", notify.MessageID)
 		}
 
-		// Per [MS-FSA] 2.1.5.14.3, a directory marked for deletion completes
+		// Per [MS-FSA] 2.1.5.15.3 step 3.2.3.2, a directory marked for deletion completes
 		// every pending CHANGE_NOTIFY on it with STATUS_DELETE_PENDING. A
 		// handle carrying FILE_DELETE_ON_CLOSE from CREATE commits that mark
 		// in the election above rather than at CREATE, so this is the point

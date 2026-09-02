@@ -119,9 +119,9 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 // entry (FileOffset uint64 + Length uint64).
 const fileAllocatedRangeBufSize = 16
 
-// handleQueryAllocatedRanges handles FSCTL_QUERY_ALLOCATED_RANGES [MS-FSCC]
-// 2.3.32. The client supplies a (FileOffset, Length) window and the server
-// reports which sub-ranges are non-sparse.
+// handleQueryAllocatedRanges handles FSCTL_QUERY_ALLOCATED_RANGES. The client
+// supplies a (FileOffset, Length) window ([MS-FSCC] 2.3.51) and the server
+// reports which sub-ranges are non-sparse ([MS-FSCC] 2.3.52).
 //
 // Allocation model: for non-sparse files (modeDOSSparse clear), we report the
 // intersection of the request window with [0, FileSize) as a single range —
