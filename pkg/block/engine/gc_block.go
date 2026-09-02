@@ -8,7 +8,9 @@
 // globally dead (no sibling FileChunk row, in any file, still references it).
 // Deciding to free a block on a single file's unlink would corrupt a dedup
 // sibling that shares the content; the sweep reaches a hash only after that
-// hazard is excluded, so DecrLiveChunkCount here can never race a live sibling.
+// hazard is excluded — no live manifest row, past grace, and claimed against
+// any carve deduping onto it right now — so DecrLiveChunkCount here cannot
+// race a live sibling.
 package engine
 
 import (

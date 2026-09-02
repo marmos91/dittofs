@@ -841,9 +841,34 @@ Three defects span packages, and each was invisible to at least one audit:
 
 ### 12.5 Next actions
 
-1. **Filed as #2238.** Add it to step 0 alongside #2227-#2231. The cheap fix is to re-arm `syncedAt` on a dedup hit, so the existing grace gate covers the
-   resurrection window; the correct fix is to revalidate liveness inside the transaction that
-   deletes the marker.
+1. **Filed as #2238.** Add it to step 0 alongside #2227-#2231. **Both fixes named here were
+   wrong; corrected while fixing the issue.**
+
+   *"The cheap fix is to re-arm `syncedAt`"* mischaracterises it twice. It is cheaper than it
+   sounds — `MarkSynced` is first-wins on all four backends, but `Transaction.PutSyncedLocators`
+   already refreshes `synced_at` on all four (`syncedUpsert` on sqlite, `ON CONFLICT DO UPDATE`
+   on postgres, delete-then-mark on badger and memory), so no new store method and no new
+   conformance coverage are needed. It is also not a fix. Routing deduped chunks into that call
+   stamps the timestamp at *commit* time, which leaves the whole interval from the dedup decision
+   to the commit unprotected — and that interval is precisely where the bytes exist nowhere else,
+   because the carver has already dropped the plaintext. A sweep whose `EnumerateSynced` runs in
+   that interval reads the original, past-grace timestamp and reclaims. It narrows; it does not
+   close. (It also costs a `GetLocator` per deduped chunk on the carve path, since `CarveChunk`
+   carries no locator.)
+
+   *"The correct fix is to revalidate liveness inside the transaction that deletes the marker"*
+   describes a transaction that does not exist and cannot. The production `SyncedHashIndex` is
+   `multiSyncedHashStore` (`pkg/controlplane/runtime/blockgc.go:442`), whose `DeleteSynced`
+   (`:481`) loops over N independent per-share stores and `errors.Join`s the failures. The union
+   lives in `controlplane/runtime`, a layer *above* `engine`, so an engine-level sweep cannot open
+   a transaction spanning it even in principle; the interface exposes no transaction handle; the
+   evidence sought may live in a different share's `file_chunks` than the marker being deleted;
+   and the reclaim it would guard includes a remote `DeleteBlock`.
+
+   Both framings miss the ordering problem: the oracle's decision is what discards the bytes, and
+   it precedes the manifest row, so any check against committed metadata looks for evidence not
+   yet written. Fixed instead by ordering the two decisions at their decision points — see
+   `dedupSweepGuard` in `pkg/block/engine/dedup_sweep_guard.go`.
 2. Decide §12.2: finish the dedup feature or delete its scaffolding.
 3. Delete the retired local-GC machinery (see §9.1) — dead since the journal switchover.
 4. Triage the 117 LOW findings per D3 — fold into the step that touches the file, sweep the

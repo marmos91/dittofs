@@ -29,7 +29,10 @@ import (
 //
 // Fail-closed rules: a missing first-mirror timestamp (a legacy marker with no
 // recorded syncedAt) is preserved, the grace window protects freshly-committed
-// hashes, and a live-set hit keeps the marker. The per-object byte size is not
+// hashes, a live-set hit keeps the marker, and a hash a concurrent carve has
+// deduped onto is kept via dedupGuard — that write refreshes no timestamp and
+// commits its manifest row too late for the mark phase, so it is the one live
+// reference neither of the other gates can see. The per-object byte size is not
 // available from the index, so BytesFreed reflects what the reclaimer reports
 // (freed block bytes); ObjectsSwept counts reclaimed chunks.
 func sweepFromSyncedIndex(
@@ -46,6 +49,11 @@ func sweepFromSyncedIndex(
 
 	graceCutoff := snapshotTime.Add(-gracePeriod)
 	var scanned int64
+
+	// Adoptions too old to protect anything: either their manifest row landed,
+	// and the live set takes over, or the carve that took them died without
+	// committing one.
+	dedupGuard.pruneAdoptions()
 
 	enumErr := options.SyncedHashIndex.EnumerateSynced(ctx, func(h block.ContentHash, _ block.ChunkLocator, syncedAt time.Time) error {
 		if err := ctx.Err(); err != nil {
@@ -81,12 +89,21 @@ func sweepFromSyncedIndex(
 			return nil
 		}
 
+		// Both gates above answer from state that predates this moment, so a
+		// carve that deduped onto h in between is invisible to both. Claim h
+		// so that carve either already holds it (and the reclaim is skipped)
+		// or is locked out of adopting it for the rest of the reclamation.
+		if !dedupGuard.claim(h) {
+			return nil // a live dedup adoption holds h — keep it
+		}
+		defer dedupGuard.releaseClaim(h)
+
 		// Block reclaim (#1414 object packing) is the ONLY remote reclaim
-		// path: the sweep reaches h only here, where it has already proven h
-		// globally dead (past grace, absent from the live set), so
-		// decrementing the enclosing block can never race a live dedup
-		// sibling. A deployment without a reclaimer cannot reclaim anything —
-		// record the drift and keep the marker (fail-closed).
+		// path: the sweep reaches h only here, past grace, absent from the
+		// live set and claimed against a concurrent dedup, so decrementing
+		// the enclosing block cannot race a live sibling. A deployment
+		// without a reclaimer cannot reclaim anything — record the drift and
+		// keep the marker (fail-closed).
 		if options.BlockReclaimer == nil {
 			addError("block-reclaim " + key + ": no block reclaimer wired — dead chunk kept (drift)")
 			return nil
