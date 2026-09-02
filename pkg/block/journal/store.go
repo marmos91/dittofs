@@ -455,7 +455,7 @@ func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byt
 	sh := s.shardFor(id)
 	sh.mu.Lock()
 	var ranges [][2]int64
-	if !staleAfterTruncate(sh, id, notAfter) {
+	if !hydrateFenced(sh, id, notAfter) {
 		ranges = sh.index[id].hydratable(offset, int64(len(data)), notAfter)
 	}
 	sh.mu.Unlock()
@@ -472,11 +472,11 @@ func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byt
 // (see Hydrate).
 func (s *Store) WriteVersion() uint64 { return s.version.Load() }
 
-// staleAfterTruncate reports whether a hydrate's bound predates the file's most
-// recent truncate, which is the one mutation that leaves no interval behind to
-// compare against. Callers hold sh.mu.
-func staleAfterTruncate(sh *shard, id FileID, notAfter uint64) bool {
-	return notAfter > 0 && notAfter <= sh.truncVer[id]
+// hydrateFenced reports whether a hydrate's bound predates the file's most
+// recent truncate or delete — the two mutations that leave no interval behind
+// to compare against. Callers hold sh.mu.
+func hydrateFenced(sh *shard, id FileID, notAfter uint64) bool {
+	return notAfter > 0 && notAfter <= sh.hydrateFence[id]
 }
 
 // SeedCold registers a byte range as remote-durable-but-not-local: a read of it
@@ -768,6 +768,20 @@ func (s *Store) Delete(ctx context.Context, id FileID) error {
 	if s.closed.Load() {
 		return errClosed
 	}
+	sh := s.shardFor(id)
+	// Published before the tombstone's Version is minted, so a cold read that
+	// sampled its bound earlier is refused rather than racing the append: an
+	// in-flight hydrate is otherwise free to land above the tombstone's Version,
+	// where the scrub below reads it as a rewrite that survives and re-creates
+	// the file out of pre-delete remote bytes. A hydrate that samples after this
+	// point carries a higher bound and is left alone, so a file written again
+	// after the unlink still hydrates. If the append below fails the fence stays,
+	// costing at most a re-fetch — dropping a write-back cache fill is always
+	// safe, resurrecting a deleted file is not.
+	sh.mu.Lock()
+	sh.fenceDelete(id, s.version.Load())
+	sh.mu.Unlock()
+
 	// Durability first: persist and fsync the tombstone BEFORE touching the
 	// in-memory index or the counters. If the append fails, the file's ranges are
 	// left intact — a failed Delete never makes data disappear, and a crash can
@@ -780,7 +794,6 @@ func (s *Store) Delete(ctx context.Context, id FileID) error {
 		return err
 	}
 
-	sh := s.shardFor(id)
 	sh.mu.Lock()
 	fi := sh.index[id]
 	var dirty int64
@@ -808,8 +821,6 @@ func (s *Store) Delete(ctx context.Context, id FileID) error {
 			fi.ivs = kept
 		}
 	}
-	// The file is gone, so its truncate bound has nothing left to guard.
-	delete(sh.truncVer, id)
 	sh.mu.Unlock()
 	if dirty != 0 {
 		s.unsynced.Add(-dirty)
@@ -970,7 +981,7 @@ func (s *Store) Truncate(ctx context.Context, id FileID, newSize int64) error {
 	if past {
 		// Published before the marker is stamped, so a hydrate that samples its
 		// bound after this point is never mistaken for one that predates the clip.
-		sh.truncVer[id] = s.version.Load()
+		sh.hydrateFence[id] = s.version.Load()
 	}
 	sh.mu.Unlock()
 	if !past {
