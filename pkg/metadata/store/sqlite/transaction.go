@@ -179,7 +179,7 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 	// first, then UPDATE; a zero-row read means the file does not exist and we
 	// fall through to INSERT — the same not-found signal as before.
 	const selectOldQuery = `
-		SELECT size, uid, gid, file_type
+		SELECT size, uid, gid, file_type, nlink
 		FROM inodes
 		WHERE id = ?1 AND share_name = ?2
 	`
@@ -274,14 +274,14 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 	// transaction. A missing row (sql.ErrNoRows) means the file does not exist,
 	// so we fall through to INSERT.
 	var oldSizeVal sql.NullInt64
-	var oldUIDVal, oldGIDVal, oldTypeVal sql.NullInt64
+	var oldUIDVal, oldGIDVal, oldTypeVal, oldNlinkVal sql.NullInt64
 	// A caller that knows the inode is new skips the probe entirely: on a
 	// create the round-trip can only ever report "no such row", and a stale
 	// claim surfaces as the INSERT's duplicate-key error.
 	updated := !file.NewInode
 	if updated {
 		scanErr := tx.tx.QueryRow(ctx, selectOldQuery, file.ID, file.ShareName).
-			Scan(&oldSizeVal, &oldUIDVal, &oldGIDVal, &oldTypeVal)
+			Scan(&oldSizeVal, &oldUIDVal, &oldGIDVal, &oldTypeVal, &oldNlinkVal)
 		switch {
 		case scanErr == nil:
 			// Row exists; update it in place.
@@ -306,7 +306,12 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 	// Track size delta for regular files after a successful update.
 	// Accumulated on the tx and applied once after a successful commit so a
 	// serialization/deadlock retry never double-counts.
-	if updated && file.Type == metadata.FileTypeRegular {
+	//
+	// nlink is not one of the columns this write touches, so the row's link
+	// count is the same before and after: an inode whose last name is already
+	// gone holds no share bytes to move, and a write through a still-open
+	// descriptor must not put them back.
+	if updated && basestore.Charged(file.Type, uint32(oldNlinkVal.Int64)) {
 		var oldSize uint64
 		if oldSizeVal.Valid {
 			oldSize = uint64(oldSizeVal.Int64)

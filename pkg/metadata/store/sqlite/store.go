@@ -229,7 +229,7 @@ func (s *SQLiteMetadataStore) initUsedBytesCounter(ctx context.Context) error {
 // never user input.
 func (s *SQLiteMetadataStore) seedUsageByColumn(ctx context.Context, col string, scope metadata.QuotaScope, out map[basestore.QuotaKey]*metadata.UsageStat) error {
 	query := fmt.Sprintf(
-		`SELECT share_name, %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE file_type = ?1 GROUP BY share_name, %s`,
+		`SELECT share_name, %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE file_type = ?1 AND nlink > 0 GROUP BY share_name, %s`,
 		col, col,
 	)
 	rows, err := s.db.QueryContext(ctx, query, int(metadata.FileTypeRegular))

@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 )
 
@@ -41,7 +42,7 @@ func (tx *postgresTransaction) ApplyDataWrite(
 	// An empty old (missing row) yields zero rows.
 	const q = `
 		WITH old AS (
-			SELECT size, uid, gid, file_type FROM inodes
+			SELECT size, uid, gid, file_type, nlink FROM inodes
 			WHERE id = $1 AND share_name = $2
 			FOR UPDATE
 		),
@@ -54,13 +55,14 @@ func (tx *postgresTransaction) ApplyDataWrite(
 			WHERE inodes.id = $1 AND inodes.share_name = $2 AND inodes.file_type = $6::smallint
 			RETURNING inodes.size
 		)
-		SELECT (SELECT size FROM upd), old.size, old.uid, old.gid FROM old
+		SELECT (SELECT size FROM upd), old.size, old.uid, old.gid, old.nlink FROM old
 	`
 	var newSz *int64
 	var oldSize int64
 	var oldUID, oldGID int32
+	var oldNlink int32
 	err = tx.tx.QueryRow(ctx, q, id, shareName, int64(newSize), ft, mask, int16(metadata.FileTypeRegular)).
-		Scan(&newSz, &oldSize, &oldUID, &oldGID)
+		Scan(&newSz, &oldSize, &oldUID, &oldGID, &oldNlink)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return 0, &metadata.StoreError{Code: metadata.ErrNotFound, Message: "file not found"}
@@ -72,8 +74,11 @@ func (tx *postgresTransaction) ApplyDataWrite(
 		return 0, &metadata.StoreError{Code: metadata.ErrIsDirectory, Message: "not a regular file"}
 	}
 
+	// An unlinked-but-open file still accepts writes, but it gave its bytes
+	// back to the share when its last name went, so its growth is not the
+	// share's to account for.
 	finalSize := *newSz
-	if delta := finalSize - oldSize; delta != 0 {
+	if delta := finalSize - oldSize; delta != 0 && basestore.Charged(metadata.FileTypeRegular, uint32(oldNlink)) {
 		tx.quota.Add(shareName, uint32(oldUID), uint32(oldGID), delta, 0)
 	}
 	return uint64(finalSize), nil

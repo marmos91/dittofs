@@ -208,3 +208,16 @@ func (d *QuotaDelta) AddKeyed(k QuotaKey, s metadata.UsageStat) {
 func (d *QuotaDelta) Map() map[QuotaKey]metadata.UsageStat {
 	return d.m
 }
+
+// Charged reports whether an inode contributes to the usage counters. Only
+// regular files hold logical bytes, and only while at least one directory
+// entry still names them.
+//
+// The link count is the deciding term because unlinking the last name does not
+// remove the inode: the row survives with nlink=0 so fstat(2) on a descriptor
+// that is still open keeps reporting the file. Keying usage off the row's
+// existence instead would charge the share for that inode forever, since
+// nothing ever deletes it.
+func Charged(fileType metadata.FileType, nlink uint32) bool {
+	return fileType == metadata.FileTypeRegular && nlink > 0
+}

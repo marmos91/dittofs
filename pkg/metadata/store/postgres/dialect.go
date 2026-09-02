@@ -96,7 +96,7 @@ var fileQueries = storesql.FileQueries{
 	// inodes.nlink is the sole source of truth for the hard-link count, so
 	// GETATTR reads it straight off the inode row without a join.
 	SetLinkCount:    `UPDATE inodes SET nlink = $1 WHERE id = $2`,
-	DeleteFileOwner: `SELECT file_type, size, uid, gid FROM inodes WHERE id = $1 AND share_name = $2`,
+	FileUsageRow:    `SELECT file_type, size, uid, gid, nlink FROM inodes WHERE id = $1 AND share_name = $2`,
 	DeleteFile:      `DELETE FROM inodes WHERE id = $1 AND share_name = $2`,
 
 	GetFileByPayloadID: `SELECT ` + inodeSelectColumns + ` FROM inodes f
@@ -187,7 +187,7 @@ var shareQueries = storesql.ShareQueries{
 	DeleteShare:       `DELETE FROM shares WHERE share_name = $1`,
 	DeleteShareInodes: `DELETE FROM inodes WHERE share_name = $1`,
 	ShareQuotaFreed: `SELECT %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes
-		WHERE share_name = $1 AND file_type = $2 GROUP BY %s`,
+		WHERE share_name = $1 AND file_type = $2 AND nlink > 0 GROUP BY %s`,
 }
 
 var _ storesql.Dialect = dialect{}
