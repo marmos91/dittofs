@@ -856,7 +856,115 @@ Three defects span packages, and each was invisible to at least one audit:
    is what proves the mutual exclusion — `RestoreToVersion` sits 33 lines below the `if` that
    appears to enclose it and is actually inside the `else`. Check braces, not proximity.
 
-## 13. Open questions
+## 13. Prefetch
+
+Prefetch exists today and works. It is in this plan for one reason: **an extraction can lose
+behaviour silently, and this behaviour has no test that would notice.** A green suite has already
+failed to catch a data-path regression here once. So the job is not to design prefetch; it is to
+pin what exists, carry it across the boundary intact, and close the soundness gaps that are
+already open.
+
+### 13.1 What exists, and what must survive
+
+| behaviour | where | must survive as |
+|---|---|---|
+| sliding window, each block scheduled exactly once | `Syncer.planWindow`, `engine/readahead.go` | pinned by test before step 1 |
+| driven on **every** read, local hits included | `engine/readwrite.go:29` | a sequential reader must not stall once reads stop missing |
+| window size, default **64 blocks** | `engine.DefaultPrefetchBlocks` | configurable, same default |
+| anchor resets on a random jump | `planWindow` | a random reader drags no window |
+| lowest-priority transfer class | `TransferPrefetch`, `types.go:64` | never ahead of a demand fetch |
+| 4 workers | `block.DefaultPrefetchWorkers` | bounded, separate from demand concurrency |
+| all fetched bytes land here | `engine/fetch.go:201` → `local.Hydrate` | one landing point, still one |
+
+Every row is a **preservation contract**, not a description. Each needs a test that fails if the
+refactor drops it, written **before** step 1 — the extraction is the thing most likely to break
+them, so a test written afterwards is written against whatever the refactor happened to produce.
+
+### 13.2 The warm unit is one whole block. Never a partial read.
+
+**Invariant: the minimum unit warmed from the remote is exactly one block.** Not a byte range,
+not a sub-block extent, not the tail of a block.
+
+This is a correctness rule, not a performance preference. A block is **content-addressed** — its
+identity is the BLAKE3 hash of its full contents. You can verify only what you hold in full, so a
+partial fetch is **unverifiable by construction**. Warming a sub-range would place bytes in the
+local tier that were never checked against any hash, and the tier cannot later tell them apart
+from bytes that were. That is the same failure family as the residency states: two things that
+must be distinguishable rendered identically. `SetVerifyReads`'s per-read check cannot save it
+either, since there is nothing complete to check against.
+
+Consequences, all binding:
+
+1. **Gap-finding rounds outward to block boundaries.** A 4 KiB hole inside a 16 MiB block warms
+   that entire block, or nothing at all. Never the 4 KiB.
+2. **`ferry.GetRange` is not part of the warm path.** It exists for a demand read that can
+   tolerate and verify a partial answer. Prefetch calls `Get`, whole-block, always.
+3. **Partial residency within a block is not representable in the warm path.** If it becomes
+   representable, this invariant has already been broken somewhere upstream.
+4. A warm that cannot complete a whole block **fetches nothing** and records nothing (see S2).
+
+### 13.3 What is genuinely missing
+
+Block-index adjacency is built. What is not built is **gap awareness**: `planWindow` walks block
+indices forward from the read frontier, but never consults the residency map, so on a partially
+resident file it happily schedules blocks that are already local and skips past a non-resident
+gap that is not the next index. §9.4's `Extents` is what makes the gap expressible — and per
+§13.2 the fetch that results is still whole blocks, rounded out from the gap.
+
+### 13.4 Where it lands after the split
+
+- **Policy — when, how far, when to stop — stays in DittoFS.** It needs the manifest and the
+  access pattern; pier has neither, ferry has neither.
+- **Mechanism is `ferry.Get`**, whole-block, at a priority below demand fetches.
+- **Landing is `pier.Hydrate`.**
+- **`harbour` holds none of it.** Prefetch is policy, and §11 is explicit. If prefetch logic turns
+  up in the assembly, the boundary has already failed.
+
+### 13.5 Soundness — prefetch widens an open race, today
+
+**S1. Prefetch multiplies #2231 by the window size, and nothing cancels it.** `Store.Delete`
+(`engine/readwrite.go:362`) calls `bs.local.Delete` and cancels **no in-flight transfers**; there
+is no per-payload transfer cancellation anywhere in the package. With a 64-block window, up to 64
+speculative fetches can complete *after* a file is deleted, each landing via `Hydrate`. #2231's
+`hydratable` returns the **entire requested range** when `fi == nil` — exactly what `Delete`
+leaves behind. Prefetch turns #2231 from a demand-read race into a continuous speculative one,
+running for files no reader has touched recently.
+
+> **Ordering: #2231 is fixed before the window is widened, and its fence must cover the prefetch
+> path, not only demand reads.** Widening first scales a known silent-corruption window by 64.
+
+**S2. A failed or cancelled prefetch records nothing.** Not a hole, not zeros, not a cold marker.
+A speculative fetch that 404s, times out, or loses a race has learned **nothing** about residency.
+Recording anything makes `StateLost` indistinguishable from `StateAbsent` — the mechanism behind
+#1850, #1888 and #2084.
+
+**S3. A prefetch in flight is not a live reference.** It must not enter GC's mark set — that would
+make reclamation depend on speculation — and it must tolerate its target being reclaimed
+mid-flight, returning empty-handed rather than resurrecting it. #2238 seen from the other side,
+and the same discipline applies: revalidate at the landing, not at the decision.
+
+**S4. Prefetch must not consume the eviction budget it creates pressure on.** 64 blocks at up to
+16 MiB is up to 1 GiB of speculative residency per sequential reader. Speculative bytes are
+evictable **ahead of** demand-fetched bytes, or one large sequential scan evicts the working set
+of every other file on the share.
+
+### 13.6 Tests
+
+Every test below is run against a **deliberately broken build** first. S1 is not a guard that has
+never fired; it is a guard that has never existed.
+
+- **Preservation** (before step 1): each row of §13.1's table, asserted directly — window size,
+  scheduled-once, anchor reset on random jump, driven on local hits, priority below demand.
+- **S1:** delete a file with prefetches in flight; assert it stays deleted and no interval
+  reappears. **This test fails on current `develop`.**
+- **S2:** fault a prefetch (404, timeout, cancel); assert `Extents` is byte-identical either side.
+- **S3:** reclaim a prefetch target mid-flight; assert the prefetch returns empty, records nothing.
+- **S4:** sequential-scan a file larger than the local tier; assert a second file's demand-fetched
+  bytes survive.
+- **§13.2 invariant:** assert no warm-path call ever requests less than a whole block — including
+  when the triggering gap is a few KiB inside one.
+
+## 14. Open questions
 
 1. **Who reviews step 3?** It rewrites the silent-zeros path. One reviewer is not enough, and the
    external contributors will not be up to speed in time.
