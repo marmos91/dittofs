@@ -148,10 +148,10 @@ type FileQueries struct {
 	// SetLinkCount writes one inode's nlink. Two parameters: the count and the
 	// file id.
 	SetLinkCount string
-	// DeleteFileOwner selects the type, size and owning uid/gid of the inode
-	// about to be deleted, in that column order. Two parameters: the file id
-	// and the share name.
-	DeleteFileOwner string
+	// FileUsageRow selects everything the usage counters need about one
+	// inode — its type, size, owning uid/gid and link count, in that column
+	// order. Two parameters: the file id and the share name.
+	FileUsageRow string
 	// DeleteFile removes one inode row. Two parameters: the file id and the
 	// share name.
 	DeleteFile string

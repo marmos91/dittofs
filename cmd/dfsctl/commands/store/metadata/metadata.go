@@ -31,4 +31,5 @@ func init() {
 	Cmd.AddCommand(editCmd)
 	Cmd.AddCommand(removeCmd)
 	Cmd.AddCommand(healthCmd)
+	Cmd.AddCommand(recomputeUsageCmd)
 }

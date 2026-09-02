@@ -11,6 +11,7 @@ import (
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
+	"github.com/google/uuid"
 	"github.com/oklog/ulid/v2"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -657,6 +658,31 @@ func (s *BadgerMetadataStore) initUsedBytesCounter(indexBatch *badger.WriteBatch
 	}
 
 	err := s.db.View(func(txn *badger.Txn) error {
+		// An unlinked-but-open inode keeps its row so fstat(2) on a live
+		// descriptor still works, but it no longer holds any of the share's
+		// bytes. Collect those first — the l: values are four bytes each, so
+		// this pass costs a fraction of the file decode below, and only the
+		// unlinked ids are retained.
+		unlinked := make(map[uuid.UUID]struct{})
+		lcOpts := badger.DefaultIteratorOptions
+		lcOpts.Prefix = []byte(prefixLinkCount)
+		lcOpts.PrefetchValues = true
+		lcIt := txn.NewIterator(lcOpts)
+		for lcIt.Rewind(); lcIt.Valid(); lcIt.Next() {
+			item := lcIt.Item()
+			id, idErr := uuid.Parse(string(item.Key()[len(prefixLinkCount):]))
+			if idErr != nil {
+				continue
+			}
+			_ = item.Value(func(val []byte) error {
+				if c, decErr := decodeUint32(val); decErr == nil && c == 0 {
+					unlinked[id] = struct{}{}
+				}
+				return nil
+			})
+		}
+		lcIt.Close()
+
 		opts := badger.DefaultIteratorOptions
 		opts.Prefix = []byte(prefixFile)
 		opts.PrefetchValues = true
@@ -671,7 +697,8 @@ func (s *BadgerMetadataStore) initUsedBytesCounter(indexBatch *badger.WriteBatch
 				if err != nil {
 					return nil // Skip corrupted entries
 				}
-				if file.Type == metadata.FileTypeRegular {
+				_, isUnlinked := unlinked[file.ID]
+				if file.Type == metadata.FileTypeRegular && !isUnlinked {
 					addUsage(basestore.QuotaKey{Share: file.ShareName, Scope: metadata.QuotaScopeUser, ID: file.UID}, int64(file.Size))
 					addUsage(basestore.QuotaKey{Share: file.ShareName, Scope: metadata.QuotaScopeGroup, ID: file.GID}, int64(file.Size))
 				}
@@ -861,3 +888,20 @@ func (s *BadgerMetadataStore) GetStoreID() string { return s.storeID }
 
 // Compile-time assertion: the Badger engine exposes GetStoreID.
 var _ interface{ GetStoreID() string } = (*BadgerMetadataStore)(nil)
+
+// RecomputeUsage rebuilds the usage counters from the durable file rows,
+// discarding whatever the in-memory buckets hold. Same scan the store runs at
+// open, re-run on demand; the payload index is already built by then, so
+// nothing is staged this time.
+func (s *BadgerMetadataStore) RecomputeUsage(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// The scan runs with no lock held, so arm the cache to record what commits
+	// during it — otherwise a transaction landing between the scan and the seed
+	// is scanned out and then overwritten.
+	s.quotaMu.Lock()
+	s.quota.BeginRebuild()
+	s.quotaMu.Unlock()
+	return s.initUsedBytesCounter(nil)
+}
