@@ -36,7 +36,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # PostgreSQL for the metadata-store integration + conformance suites.
       # Started as a step-managed container (not a `services:` block) so the
@@ -94,7 +94,7 @@ jobs:
         run: ./test/kmip/start-pykmip.sh "${{ runner.temp }}/kmip-certs" "$GITHUB_ENV"
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
           cache: true  # Built-in caching (replaces actions/cache)
@@ -135,7 +135,7 @@ jobs:
 
       - name: Upload test logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: integration-test-logs-${{ matrix.go-version }}
           path: |
