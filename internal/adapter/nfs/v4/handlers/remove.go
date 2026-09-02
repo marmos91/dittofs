@@ -109,7 +109,7 @@ func (h *Handler) handleRemove(ctx *types.CompoundContext, reader io.Reader) *ty
 	}
 
 	// Try RemoveFile first (works for regular files, symlinks, etc.)
-	_, _, removeErr := metaSvc.RemoveFile(authCtx, parentHandle, target)
+	removedFile, _, removeErr := metaSvc.RemoveFile(authCtx, parentHandle, target)
 	if removeErr != nil {
 		// Check if the error indicates this is a directory (ErrIsDirectory)
 		var storeErr *metaerrors.StoreError
@@ -130,6 +130,26 @@ func (h *Handler) handleRemove(ctx *types.CompoundContext, reader io.Reader) *ty
 			Status: status,
 			OpCode: types.OP_REMOVE,
 			Data:   encodeStatusOnly(status),
+		}
+	}
+
+	// RemoveFile drops the name and the inode but never the bytes: the caller
+	// coordinates content deletion from the PayloadID it returns, which is empty
+	// whenever the content must survive (a remaining hard link, or a recycle to
+	// trash). Skipping this leaves the payload's local journal records indexed as
+	// live, so their segments are never reclaimed and the share keeps its bytes on
+	// disk across restarts even once every file in it is gone. Best-effort: the
+	// entry is already removed from the client's view, and the block GC sweep
+	// reclaims a straggler payload.
+	if removedFile != nil && removedFile.PayloadID != "" {
+		payloadID := string(removedFile.PayloadID)
+		blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, parentHandle)
+		if bsErr != nil {
+			logger.Warn("NFSv4 REMOVE: no block store for content delete",
+				"target", target, "payload_id", payloadID, "error", bsErr)
+		} else if delErr := blockStore.Delete(ctx.Context, payloadID, nil); delErr != nil {
+			logger.Warn("NFSv4 REMOVE: failed to delete content",
+				"target", target, "payload_id", payloadID, "error", delErr)
 		}
 	}
 
