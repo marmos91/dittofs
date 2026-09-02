@@ -315,6 +315,36 @@ func (h *Handler) removeElectedTarget(
 		}
 	}
 
+	// Retire the directory's delete-pending marker. The handle carrying the
+	// disposition is the one closing here, so whichever way the removal below
+	// goes the marker has stopped describing anything: either the entry goes
+	// and the name is free for reuse, or it survives with nothing left holding
+	// it delete-pending. A marker that outlived either outcome would leave that
+	// name permanently unwatchable.
+	//
+	// Unlike the two things left to the callers above, this is unconditionally
+	// right for both close paths, and it runs ahead of the removal so every
+	// exit below is covered.
+	//
+	// target.Name is the closing handle's own name, which is the entry being
+	// removed except when a stream handle carries a deferred base delete —
+	// there it names the stream, and clearing under it would leave the base
+	// directory's marker behind. Only that case swaps the last component, and
+	// it swaps it textually: watch paths are keyed as the open spells them,
+	// which is not necessarily rooted, so rejoining through path.Join would
+	// produce a key that matches nothing.
+	if isDeleteTargetDir && h.NotifyRegistry != nil {
+		clearedPath := target.Name.Path
+		if target.IsBaseFile {
+			if i := strings.LastIndex(clearedPath, "/"); i >= 0 {
+				clearedPath = clearedPath[:i+1] + target.FileName
+			} else {
+				clearedPath = target.FileName
+			}
+		}
+		h.NotifyRegistry.ClearDeletePendingMark(openFile.ShareName, clearedPath)
+	}
+
 	var removedPayloadID metadata.PayloadID
 	if isDeleteTargetDir {
 		_, err = metaSvc.RemoveDirectory(authCtx, target.ParentHandle, target.FileName)
