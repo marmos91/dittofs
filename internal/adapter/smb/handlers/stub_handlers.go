@@ -760,6 +760,17 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 				"messageID", ctx.MessageID)
 			return NewErrorResult(types.StatusCancelled), nil
 		}
+		// Per [MS-FSA] 2.1.5.11 step 4: a CHANGE_NOTIFY on a directory that
+		// is already marked for deletion is completed immediately with
+		// STATUS_DELETE_PENDING rather than left waiting. STATUS_DELETE_PENDING
+		// is error severity, so the error body is the right one here.
+		if errors.Is(err, ErrDirectoryDeletePending) {
+			logger.Debug("CHANGE_NOTIFY: directory marked for deletion — replying STATUS_DELETE_PENDING",
+				"path", watchPath,
+				"sessionID", ctx.SessionID,
+				"messageID", ctx.MessageID)
+			return NewErrorResult(types.StatusDeletePending), nil
+		}
 		logger.Warn("CHANGE_NOTIFY: rejected — too many pending watches",
 			"path", watchPath,
 			"sessionID", ctx.SessionID)

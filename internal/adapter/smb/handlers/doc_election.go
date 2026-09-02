@@ -365,5 +365,15 @@ func (h *Handler) removeElectedTarget(
 	h.purgeBlockStorePayload(ctx, deleteTargetHandle, removedPayloadID, target.Name.Path, caller)
 	h.restoreParentDirFrozenTimestamps(authCtx, target.ParentHandle)
 
+	// The name is free again, so the directory's delete-pending marker must go
+	// with it: a CHANGE_NOTIFY on a directory later created under the same name
+	// would otherwise be answered STATUS_DELETE_PENDING forever. This sits here
+	// rather than in the two callers because it is unconditionally right for
+	// both — it retires state the removal has just made false, not a
+	// notification whose shape differs by close path.
+	if isDeleteTargetDir && !target.IsBaseFile && h.NotifyRegistry != nil {
+		h.NotifyRegistry.ClearDeletePendingMark(openFile.ShareName, target.Name.Path)
+	}
+
 	return isDeleteTargetDir, true, nil
 }

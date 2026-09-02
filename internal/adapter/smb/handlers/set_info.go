@@ -1440,8 +1440,18 @@ func (h *Handler) setFileInfoFromStore(
 		// STATUS_DELETE_PENDING. The watcher is normally a different handle on
 		// the same directory, so this cannot be reached from the close path
 		// that answers this handle's own watch.
-		if deletePending && openFile.IsDirectory && h.NotifyRegistry != nil {
-			h.NotifyRegistry.CompleteWatchersForDeletePending(openFile.ShareName, openFile.Name().Path)
+		//
+		// Clearing the disposition drops the marker again. The one-way rule in
+		// [MS-FSA] 2.1.1.6 (Per Open, item 21) is scoped to a single Open,
+		// whose flag dies with the handle; the marker here is scoped to the
+		// directory, so keeping it after the deletion has been called off would
+		// leave a live directory permanently unwatchable.
+		if openFile.IsDirectory && h.NotifyRegistry != nil {
+			if deletePending {
+				h.NotifyRegistry.CompleteWatchersForDeletePending(openFile.ShareName, openFile.Name().Path)
+			} else {
+				h.NotifyRegistry.ClearDeletePendingMark(openFile.ShareName, openFile.Name().Path)
+			}
 		}
 
 		logger.Debug("SET_INFO: delete disposition set",

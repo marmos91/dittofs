@@ -352,6 +352,33 @@ type NotifyRegistry struct {
 	// then wait forever. Keyed by FileID, expiring on cancelTombstoneTTL.
 	closeTombstones map[string]time.Time
 
+	// deletePendingDirs records directories whose delete disposition has been
+	// committed, keyed by (share, watch path). CompleteWatchersForDeletePending
+	// sweeps the watches that are registered at that moment; this marker covers
+	// the ones that register afterwards, which that sweep cannot see and which
+	// nothing else would ever complete — the directory entry is still there
+	// (the watcher's own handle holds it open), so no FileActionRemoved is
+	// produced for it either, and the client waits forever.
+	//
+	// Unlike cancelTombstones and closeTombstones this is NOT time-based, and
+	// must not become so. Those two cover a goroutine-scheduling race and are
+	// correct to expire; this one is the directory's own state. A TTL here
+	// would reinstate the hang for every CHANGE_NOTIFY arriving after it.
+	//
+	// Entries are dropped when the entry actually goes away and the name can be
+	// reused, and when the disposition that set them is explicitly cleared —
+	// a marker that outlives the deletion is a directory that can never be
+	// watched again.
+	//
+	// ponytail: an entry for a directory whose delete-disposition was set but
+	// whose removal then failed for a reason nothing clears (a non-empty
+	// directory whose opener never retries) is retained for the process
+	// lifetime. One small entry per such path, so the ceiling is the number of
+	// distinct directories a client marks and abandons. Tie it to the
+	// directory's last open handle only if a workload is found that marks
+	// enough of them to show up in a heap profile.
+	deletePendingDirs map[notifyDirKey]struct{}
+
 	// flushDelay is the per-registry accumulation window for buffered events.
 	// Defaults to notifyFlushDelay (100µs) in production. Tests that drive
 	// delivery synchronously via FlushAll set this to a large value so the
@@ -426,18 +453,28 @@ type notifyMsgKey struct {
 	MessageID uint64
 }
 
+// notifyDirKey names a directory by share and share-relative watch path. It is
+// deliberately not handle-scoped: the state it keys outlives the handle that
+// produced it and must be visible to a CHANGE_NOTIFY arriving on a handle that
+// did not exist when the state was written.
+type notifyDirKey struct {
+	ShareName string
+	Path      string
+}
+
 // NewNotifyRegistry creates a new notify registry.
 func NewNotifyRegistry() *NotifyRegistry {
 	return &NotifyRegistry{
-		pending:          make(map[string][]*PendingNotify),
-		byFileID:         make(map[string][]*PendingNotify),
-		byMsgKey:         make(map[notifyMsgKey]*PendingNotify),
-		byAsyncId:        make(map[uint64]*PendingNotify),
-		inFlightNotify:   make(map[string][]notifyMsgKey),
-		armed:            make(map[string]*armedHandle),
-		cancelTombstones: make(map[notifyMsgKey]time.Time),
-		closeTombstones:  make(map[string]time.Time),
-		flushDelay:       notifyFlushDelay,
+		pending:           make(map[string][]*PendingNotify),
+		byFileID:          make(map[string][]*PendingNotify),
+		byMsgKey:          make(map[notifyMsgKey]*PendingNotify),
+		byAsyncId:         make(map[uint64]*PendingNotify),
+		inFlightNotify:    make(map[string][]notifyMsgKey),
+		armed:             make(map[string]*armedHandle),
+		cancelTombstones:  make(map[notifyMsgKey]time.Time),
+		closeTombstones:   make(map[string]time.Time),
+		deletePendingDirs: make(map[notifyDirKey]struct{}),
+		flushDelay:        notifyFlushDelay,
 	}
 }
 
@@ -549,6 +586,12 @@ func (r *NotifyRegistry) CancelByMessageID(connID, messageID uint64) *PendingNot
 // respond with STATUS_NOTIFY_CLEANUP synchronously instead of registering a
 // watch on a handle that is going away.
 var ErrHandleClosed = fmt.Errorf("change_notify handle closed before register")
+
+// ErrDirectoryDeletePending is returned from Register when the watched
+// directory's delete disposition was already committed. The handler must
+// respond with STATUS_DELETE_PENDING synchronously instead of registering a
+// watch that the mark-time sweep has already run past.
+var ErrDirectoryDeletePending = fmt.Errorf("change_notify directory marked for deletion before register")
 
 // CloseByFileID is the single completion path for a handle that is going
 // away. Under one acquisition of r.mu it disarms the handle's buffered-event
@@ -843,6 +886,25 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 		return ErrHandleClosed
 	}
 	r.gcCloseTombstonesLocked()
+
+	// The directory's delete disposition was committed before this request
+	// arrived. Answer it now instead of parking a watch that the mark-time
+	// sweep has already passed and that nothing else will ever complete.
+	//
+	// Checked after the two tombstones above so a cancelled or closing request
+	// keeps the answer its own lifecycle owes it: a client that cancelled has
+	// stopped waiting, and a closing handle is owed STATUS_NOTIFY_CLEANUP.
+	if _, marked := r.deletePendingDirs[notifyDirKey{
+		ShareName: notify.ShareName,
+		Path:      notifyWatchPath(notify.WatchPath),
+	}]; marked {
+		logger.Debug("NotifyRegistry: register short-circuited by delete-pending directory",
+			"connID", notify.ConnID,
+			"messageID", notify.MessageID,
+			"share", notify.ShareName,
+			"path", notify.WatchPath)
+		return ErrDirectoryDeletePending
+	}
 
 	// A watch already registered on this FileID is NOT replaced: the client is
 	// entitled to keep several CHANGE_NOTIFYs outstanding on one handle and
@@ -1739,6 +1801,10 @@ func (r *NotifyRegistry) CompleteWatchersForDeletePending(shareName, dirPath str
 	dirPath = notifyWatchPath(dirPath)
 
 	r.mu.Lock()
+	// Record the mark before sweeping. The sweep only reaches watches that are
+	// registered right now; the marker is what answers the ones that register
+	// afterwards.
+	r.deletePendingDirs[notifyDirKey{ShareName: shareName, Path: dirPath}] = struct{}{}
 	var marked []*PendingNotify
 	for _, w := range r.pending[dirPath] {
 		if w.ShareName == shareName {
@@ -1763,6 +1829,29 @@ func (r *NotifyRegistry) CompleteWatchersForDeletePending(shareName, dirPath str
 			"count", len(marked))
 	}
 	return len(marked)
+}
+
+// ClearDeletePendingMark drops the delete-pending marker
+// CompleteWatchersForDeletePending recorded for a directory, so a later
+// CHANGE_NOTIFY on that name registers normally again.
+//
+// Called when the marked directory entry actually goes away and the name
+// becomes available for reuse, and when an opener explicitly clears the
+// disposition that set the marker. Without both, a directory that was marked
+// and then survived — the deletion cancelled, or the removal refused — could
+// never be watched again for the life of the process.
+func (r *NotifyRegistry) ClearDeletePendingMark(shareName, dirPath string) {
+	key := notifyDirKey{ShareName: shareName, Path: notifyWatchPath(dirPath)}
+	r.mu.Lock()
+	_, had := r.deletePendingDirs[key]
+	delete(r.deletePendingDirs, key)
+	r.mu.Unlock()
+
+	if had {
+		logger.Debug("CHANGE_NOTIFY: cleared directory delete-pending marker",
+			"path", key.Path,
+			"share", shareName)
+	}
 }
 
 // MarkNotifyInFlight records that a CHANGE_NOTIFY for fileID has been read off
