@@ -127,10 +127,9 @@ get_known_reason() { kf_reason "$1"; }
 #     ../../source4/.../smb2.c:95: Establishing SMB2 connection failed
 #     ]
 # and under load may interleave a "time:" line, or report the header as
-# "error:" instead of "failure:". The previous single-line, failure-only
-# lookahead missed those orderings and let the flake red the job. We instead
-# buffer each failure/error result and scan its whole detail block (up to the
-# closing "]" or the next result/test marker) for either pattern.
+# "error:" instead of "failure:". So we buffer each failure/error result and
+# scan its whole detail block (up to the closing "]" or the next result/test
+# marker) for either pattern.
 # --------------------------------------------------------------------------
 CONN_FAIL_PATTERN="Establishing SMB2 connection failed"
 NO_MEMORY_PATTERN="NT_STATUS_NO_MEMORY"
@@ -177,7 +176,7 @@ csn_boundary_drawn=false
 flush_pending() {
     [[ ${#pending_block[@]} -eq 0 ]] && return
     if $pending_is_flake; then
-        # Reclassify the header (failure:/error:) to skip:; emit detail verbatim.
+        # Rewrite the header (failure:/error:) to skip:; detail lines stay verbatim.
         local header="${pending_block[0]}"
         header="${header/#failure:/skip:}"
         header="${header/#error:/skip:}"
@@ -188,14 +187,9 @@ flush_pending() {
             [[ "$reclassified" != smb2.* ]] && reclassified="smb2.${reclassified}"
             RECLASSIFIED_LIST+=("${reclassified} — ${pending_flake_reason}")
         fi
-        printf '%s\n' "$header" >> "$TEMP_OUTPUT"
-        local i
-        for ((i = 1; i < ${#pending_block[@]}; i++)); do
-            printf '%s\n' "${pending_block[$i]}" >> "$TEMP_OUTPUT"
-        done
-    else
-        printf '%s\n' "${pending_block[@]}" >> "$TEMP_OUTPUT"
+        pending_block[0]="$header"
     fi
+    printf '%s\n' "${pending_block[@]}" >> "$TEMP_OUTPUT"
     pending_block=()
     pending_is_flake=false
     pending_flake_reason=""
