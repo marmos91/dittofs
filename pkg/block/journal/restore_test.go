@@ -23,12 +23,14 @@ type restoreFixture struct {
 	durable map[uint64]int64
 }
 
-// newRestoreFixture opens a store over a fresh directory with shardCount shards
-// and the dirty-age sync loop disabled, so the only fsyncs are the ones the code
-// under test issues.
+// newRestoreFixture opens a store over a fresh directory with shardCount shards.
+// The dirty-age sync loop is disabled and the background repack is put out of
+// reach (no segment's dead ratio can exceed 1), so the only fsyncs are the ones
+// the code under test issues and no pass moves records between the segments the
+// crash model tracks.
 func newRestoreFixture(t *testing.T, shardCount int) *restoreFixture {
 	t.Helper()
-	s := testStore(t, Config{ShardCount: shardCount, DirtyExpiry: -1})
+	s := testStore(t, Config{ShardCount: shardCount, DirtyExpiry: -1, GCDeadRatioForce: 2})
 	f := &restoreFixture{Store: s, t: t, durable: map[uint64]int64{}}
 	for _, sh := range s.shards {
 		inner := sh.segSync
@@ -77,7 +79,7 @@ func (f *restoreFixture) commitAll() uint64 {
 // helper's own Close is a no-op.
 func (f *restoreFixture) crashReopen() *Store {
 	f.t.Helper()
-	if err := f.Store.Close(); err != nil {
+	if err := f.Close(); err != nil {
 		f.t.Fatalf("Close: %v", err)
 	}
 	ids, err := scanSegmentIDs(f.dir)
