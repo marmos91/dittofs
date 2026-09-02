@@ -223,6 +223,14 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		runServerConfigOps(t, factory)
 	})
 
+	// TxWriteRollbackOps pins that the transaction-level writes land inside the
+	// caller's transaction. A write that escaped to the pool is durable: it
+	// outlives the rollback meant to erase it, and every other test here still
+	// passes, because they only ever ask what is committed.
+	t.Run("TxWriteRollbackOps", func(t *testing.T) {
+		runTxWriteRollbackOps(t, factory)
+	})
+
 	// FileReadTxOps pins that the transaction-level file and directory reads
 	// run inside the caller's transaction. Every other test here reads only
 	// committed state, which a read that escaped to the pool would answer just
