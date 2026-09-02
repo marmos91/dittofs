@@ -1786,6 +1786,10 @@ func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
 // restoreParentDirFrozenTimestamps.
 //
 // Returns a no-op if the read fails.
+//
+// ponytail: read-then-write-back costs an extra store round-trip per rename;
+// teach Service.Move to skip the stamp for its SMB caller only if rename
+// throughput ever shows up in a profile.
 func (h *Handler) snapshotChangeTime(authCtx *metadata.AuthContext, handle metadata.FileHandle) func() {
 	metaSvc := h.Registry.GetMetadataService()
 	file, err := metaSvc.GetFile(authCtx.Context, handle)
