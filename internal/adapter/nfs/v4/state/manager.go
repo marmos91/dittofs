@@ -2110,7 +2110,8 @@ func (sm *StateManager) LockNew(
 	// 6. Validate the byte range and the open mode for the lock type. Both run
 	// after the seqid checks so a bad seqid, which must leave the sequence
 	// untouched, outranks NFS4ERR_INVAL and NFS4ERR_OPENMODE, which consume it.
-	if err := validateLockRange(offset, length); err != nil {
+	length, err = normalizeLockRange(offset, length)
+	if err != nil {
 		return nil, err
 	}
 	if err := validateOpenModeForLock(openState, lockType); err != nil {
@@ -2249,7 +2250,8 @@ func (sm *StateManager) LockExisting(
 	}
 
 	// 4. Validate the byte range and the open mode for the lock type
-	if err := validateLockRange(offset, length); err != nil {
+	length, err = normalizeLockRange(offset, length)
+	if err != nil {
 		return nil, err
 	}
 	if err := validateOpenModeForLock(lockState.OpenState, lockType); err != nil {
@@ -2404,7 +2406,8 @@ func (sm *StateManager) TestLock(
 	clientID uint64, ownerData []byte,
 	fileHandle []byte, lockType uint32, offset, length uint64,
 ) (*LOCK4denied, error) {
-	if err := validateLockRange(offset, length); err != nil {
+	length, err := normalizeLockRange(offset, length)
+	if err != nil {
 		return nil, err
 	}
 
@@ -2554,7 +2557,8 @@ func (sm *StateManager) UnlockFile(
 	}
 
 	// 4. Validate the byte range
-	if err := validateLockRange(offset, length); err != nil {
+	length, err = normalizeLockRange(offset, length)
+	if err != nil {
 		return nil, err
 	}
 
