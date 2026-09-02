@@ -105,6 +105,15 @@ var fileQueries = storesql.FileQueries{
 // Shares returns the SQLite share read statements.
 func (dialect) Shares() *storesql.ShareQueries { return &shareQueries }
 
+func (dialect) Server() *storesql.ServerQueries { return &serverQueries }
+
+var serverQueries = storesql.ServerQueries{
+	GetServerConfig: `SELECT config FROM server_config WHERE id = 1`,
+	SetServerConfig: `INSERT INTO server_config (id, config)
+		VALUES (1, ?1)
+		ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config, updated_at = CURRENT_TIMESTAMP`,
+}
+
 var shareQueries = storesql.ShareQueries{
 	GetRootHandle:     `SELECT root_file_id FROM shares WHERE share_name = ?1`,
 	GetShareOptions:   `SELECT options FROM shares WHERE share_name = ?1`,

@@ -597,66 +597,6 @@ func (tx *sqliteTransaction) CreateRootDirectory(ctx context.Context, shareName 
 // Transaction ServerConfig Operations
 // ============================================================================
 
-func (tx *sqliteTransaction) SetServerConfig(ctx context.Context, config metadata.MetadataServerConfig) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	query := `
-		INSERT INTO server_config (id, config)
-		VALUES (1, ?1)
-		ON CONFLICT (id) DO UPDATE
-		SET config = EXCLUDED.config, updated_at = CURRENT_TIMESTAMP
-	`
-
-	// config is a JSON TEXT column; marshal explicitly (SQLite, unlike Postgres
-	// JSONB, does not serialize a Go map bind value).
-	settings := config.CustomSettings
-	if settings == nil {
-		settings = map[string]any{}
-	}
-	raw, err := json.Marshal(settings)
-	if err != nil {
-		return mapDBError(err, "SetServerConfig", "")
-	}
-	if _, err := tx.tx.Exec(ctx, query, raw); err != nil {
-		return mapDBError(err, "SetServerConfig", "")
-	}
-
-	return nil
-}
-
-func (tx *sqliteTransaction) GetServerConfig(ctx context.Context) (metadata.MetadataServerConfig, error) {
-	if err := ctx.Err(); err != nil {
-		return metadata.MetadataServerConfig{}, err
-	}
-
-	query := `SELECT config FROM server_config WHERE id = 1`
-
-	// config is a JSON TEXT column; scan raw bytes and unmarshal (parity with
-	// the pool-path GetServerConfig).
-	var raw []byte
-	err := tx.tx.QueryRow(ctx, query).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		// Match the pool-path and the memory/badger backends: a missing
-		// config row is an empty (non-nil) config, not a not-found error.
-		return metadata.MetadataServerConfig{CustomSettings: map[string]any{}}, nil
-	}
-	if err != nil {
-		return metadata.MetadataServerConfig{}, mapDBError(err, "GetServerConfig", "")
-	}
-
-	customSettings := map[string]any{}
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &customSettings); err != nil {
-			return metadata.MetadataServerConfig{}, mapDBError(err, "GetServerConfig", "")
-		}
-	}
-	return metadata.MetadataServerConfig{
-		CustomSettings: customSettings,
-	}, nil
-}
-
 func (tx *sqliteTransaction) SetFilesystemCapabilities(capabilities metadata.FilesystemCapabilities) {
 	tx.store.capabilities = capabilities
 }

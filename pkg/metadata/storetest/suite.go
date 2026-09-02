@@ -210,6 +210,13 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		runShareDeleteQuotaOps(t, factory)
 	})
 
+	// ServerConfigOps pins the store-wide config round-trip, including the
+	// shape of the values, which is where a structured column and an opaque
+	// blob disagree.
+	t.Run("ServerConfigOps", func(t *testing.T) {
+		runServerConfigOps(t, factory)
+	})
+
 	// FileReadTxOps pins that the transaction-level file and directory reads
 	// run inside the caller's transaction. Every other test here reads only
 	// committed state, which a read that escaped to the pool would answer just

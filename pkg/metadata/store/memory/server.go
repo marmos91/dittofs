@@ -39,7 +39,18 @@ func (s *MemoryMetadataStore) GetServerConfig(ctx context.Context) (metadata.Met
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return s.serverConfig, nil
+	return withSettings(s.serverConfig), nil
+}
+
+// withSettings guarantees a non-nil CustomSettings map, which a store that has
+// never had a config written would otherwise leave nil. The other three
+// backends all hand back an empty map there, and a caller that assigns into
+// what it reads panics on a nil one.
+func withSettings(config metadata.MetadataServerConfig) metadata.MetadataServerConfig {
+	if config.CustomSettings == nil {
+		config.CustomSettings = map[string]any{}
+	}
+	return config
 }
 
 // ============================================================================

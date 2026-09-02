@@ -654,52 +654,6 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 // Transaction ServerConfig Operations
 // ============================================================================
 
-func (tx *postgresTransaction) SetServerConfig(ctx context.Context, config metadata.MetadataServerConfig) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	query := `
-		INSERT INTO server_config (id, config)
-		VALUES (1, $1)
-		ON CONFLICT (id) DO UPDATE
-		SET config = EXCLUDED.config, updated_at = NOW()
-	`
-
-	_, err := tx.tx.Exec(ctx, query, config.CustomSettings)
-	if err != nil {
-		return mapPgError(err, "SetServerConfig", "")
-	}
-
-	return nil
-}
-
-func (tx *postgresTransaction) GetServerConfig(ctx context.Context) (metadata.MetadataServerConfig, error) {
-	if err := ctx.Err(); err != nil {
-		return metadata.MetadataServerConfig{}, err
-	}
-
-	query := `SELECT config FROM server_config WHERE id = 1`
-
-	var customSettings map[string]any
-	err := tx.tx.QueryRow(ctx, query).Scan(&customSettings)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// Match the pool-path and the memory/badger backends: a missing
-		// config row is an empty (non-nil) config, not a not-found error.
-		return metadata.MetadataServerConfig{CustomSettings: map[string]any{}}, nil
-	}
-	if err != nil {
-		return metadata.MetadataServerConfig{}, mapPgError(err, "GetServerConfig", "")
-	}
-
-	if customSettings == nil {
-		customSettings = map[string]any{}
-	}
-	return metadata.MetadataServerConfig{
-		CustomSettings: customSettings,
-	}, nil
-}
-
 func (tx *postgresTransaction) SetFilesystemCapabilities(capabilities metadata.FilesystemCapabilities) {
 	tx.store.capabilities = capabilities
 }
