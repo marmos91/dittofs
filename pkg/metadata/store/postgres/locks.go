@@ -167,8 +167,6 @@ func (s *postgresLockStore) putLockTx(ctx context.Context, tx storesql.Executor,
 // shares the scanLock destination layout.
 const selectByID = `SELECT ` + lockColumns + ` FROM locks WHERE id = $1`
 
-// rowScanner is satisfied by both pgx.Row (QueryRow) and pgx.Rows so a single
-// scanLock helper serves every read path.
 // scanLock scans one row into a PersistedLock. byte_offset/byte_length are
 // NUMERIC(20) (full uint64 range) and are scanned as decimal strings, then
 // parsed: pgx cannot scan a numeric above MaxInt64 into a Go uint64 directly.
