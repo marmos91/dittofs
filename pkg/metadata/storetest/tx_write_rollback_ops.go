@@ -87,7 +87,8 @@ func runTxWriteRollbackOps(t *testing.T, factory StoreFactory) {
 		})
 
 		_, err := store.GetChild(ctx, root, "ghost.txt")
-		assert.Error(t, err, "SetChild survived the rollback: it ran outside the transaction")
+		assert.True(t, metadata.IsNotFoundError(err),
+			"SetChild survived the rollback: it ran outside the transaction (got %v)", err)
 	})
 
 	t.Run("DeleteChild", func(t *testing.T) {
