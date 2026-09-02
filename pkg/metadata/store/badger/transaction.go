@@ -626,6 +626,13 @@ func (tx *badgerTransaction) DeleteChild(ctx context.Context, dirHandle metadata
 	}
 
 	item, err := tx.txn.Get(keyChild(dirID, name))
+	if goerrors.Is(err, badgerdb.ErrKeyNotFound) {
+		// Nothing under this name, which is the state DeleteChild is asked to
+		// reach. There is no forward edge to remove and so no reverse edge to
+		// repoint, and the dirent cache already holds no present entry for a
+		// key the store does not have.
+		return nil
+	}
 	if err != nil {
 		return mapBadgerError(err, "child", "")
 	}

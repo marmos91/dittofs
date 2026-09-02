@@ -76,8 +76,16 @@ type Files interface {
 	// Overwrites existing mapping if name already exists.
 	SetChild(ctx context.Context, dirHandle FileHandle, name string, childHandle FileHandle) error
 
-	// DeleteChild removes a child entry from a directory.
-	// Returns ErrNotFound if name doesn't exist in the directory.
+	// DeleteChild removes a child entry from a directory. It is idempotent:
+	// a name that is not in the directory is not an error, and the call
+	// returns nil. A caller that needs to distinguish "was there" from "was
+	// not" must read the entry first.
+	//
+	// Idempotence is the only contract the backends can all keep. In the SQL
+	// backends the parent edge carries ON DELETE CASCADE, so deleting the
+	// inode takes the edge with it and a later DeleteChild for the same name
+	// legitimately finds nothing; reporting that as ErrNotFound would make
+	// the error depend on the order two statements happened to run in.
 	DeleteChild(ctx context.Context, dirHandle FileHandle, name string) error
 
 	// ListChildren returns directory entries with pagination support.

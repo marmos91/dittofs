@@ -215,8 +215,8 @@ func (store *MemoryMetadataStore) SetChild(ctx context.Context, dirHandle metada
 	})
 }
 
-// DeleteChild removes a child entry from a directory.
-// Returns ErrNotFound if name doesn't exist.
+// DeleteChild removes a child entry from a directory. Absent names are not
+// an error.
 func (store *MemoryMetadataStore) DeleteChild(ctx context.Context, dirHandle metadata.FileHandle, name string) error {
 	return store.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.DeleteChild(ctx, dirHandle, name)
