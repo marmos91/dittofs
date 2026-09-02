@@ -34,7 +34,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Pin the toolchain rather than letting autobuild resolve one: a Go
       # version drift between here and the other workflows changes which
@@ -42,7 +42,7 @@ jobs:
       # rather than reported as an error.
       - name: Set up Go
         if: matrix.language == 'go'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "1.25.x"
           cache: true
