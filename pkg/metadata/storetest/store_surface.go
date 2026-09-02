@@ -100,7 +100,7 @@ func testListChildrenCursorAfterDelete(t *testing.T, factory StoreFactory) {
 	}
 
 	// Page 1: limit=2, cursor="". Returns ["a","b"], nextCursor="b".
-	page1, cur1, err := store.ListChildren(ctx, rootHandle, "", 2)
+	page1, cur1, err := store.ListChildren(ctx, rootHandle, "", 2, metadata.WithAttrs)
 	if err != nil {
 		t.Fatalf("ListChildren page1: %v", err)
 	}
@@ -124,7 +124,7 @@ func testListChildrenCursorAfterDelete(t *testing.T, factory StoreFactory) {
 	}
 
 	// Page 2: cursor="b" but "b" no longer exists. Must return ["c","d"], not restart from "a".
-	page2, _, err := store.ListChildren(ctx, rootHandle, cur1, 2)
+	page2, _, err := store.ListChildren(ctx, rootHandle, cur1, 2, metadata.WithAttrs)
 	if err != nil {
 		t.Fatalf("ListChildren page2: %v", err)
 	}
@@ -757,7 +757,7 @@ func testListChildrenPagination(t *testing.T, factory StoreFactory) {
 		if pages > total+5 {
 			t.Fatalf("pagination did not terminate after %d pages — cursor likely not advancing", pages)
 		}
-		entries, next, err := store.ListChildren(ctx, rootHandle, cursor, pageSize)
+		entries, next, err := store.ListChildren(ctx, rootHandle, cursor, pageSize, metadata.WithAttrs)
 		if err != nil {
 			t.Fatalf("ListChildren(cursor=%q) failed: %v", cursor, err)
 		}
@@ -798,7 +798,7 @@ func testListChildrenPagination(t *testing.T, factory StoreFactory) {
 
 	// limit==0 selects the default page size, which is large enough to return
 	// every child in a single page (no continuation cursor).
-	entries, next, err := store.ListChildren(ctx, rootHandle, "", 0)
+	entries, next, err := store.ListChildren(ctx, rootHandle, "", 0, metadata.WithAttrs)
 	if err != nil {
 		t.Fatalf("ListChildren(limit=0) failed: %v", err)
 	}

@@ -80,7 +80,7 @@ func TestRestartPersistence_EAsAndADSStream(t *testing.T) {
 	// Directory enumeration still lists both the base and the ADS sibling.
 	names := map[string]bool{}
 	require.NoError(t, store.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		entries, _, err := tx.ListChildren(ctx, root, "", 100)
+		entries, _, err := tx.ListChildren(ctx, root, "", 100, metadata.WithAttrs)
 		if err != nil {
 			return err
 		}

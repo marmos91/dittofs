@@ -39,7 +39,7 @@ func testEATxListChildrenNoAlias(t *testing.T, factory StoreFactory) {
 	// Use WithTransaction to call ListChildren — this exercises the tx path.
 	var dirEntryEAs map[string][]byte
 	if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		entries, _, err := tx.ListChildren(ctx, root, "", 100)
+		entries, _, err := tx.ListChildren(ctx, root, "", 100, metadata.WithAttrs)
 		if err != nil {
 			return err
 		}

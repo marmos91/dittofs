@@ -572,7 +572,7 @@ func reconcileINV02(ctx context.Context, store metadata.Store, shareName string)
 func walkShareFiles(ctx context.Context, store metadata.Store, dirHandle metadata.FileHandle, fn func(*metadata.File) error) error {
 	cursor := ""
 	for {
-		entries, next, err := store.ListChildren(ctx, dirHandle, cursor, 0)
+		entries, next, err := store.ListChildren(ctx, dirHandle, cursor, 0, metadata.WithAttrs)
 		if err != nil {
 			return fmt.Errorf("ListChildren: %w", err)
 		}

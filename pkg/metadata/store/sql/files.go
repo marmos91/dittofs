@@ -170,6 +170,50 @@ func (c *Core) SetParent(ctx context.Context, handle metadata.FileHandle, parent
 // non-positive limit.
 const listChildrenDefaultLimit = 1000
 
+// listChildNames is ListChildren without the attributes: it runs the query that
+// drops the inode join, so a page costs one row of two columns per entry
+// instead of nineteen columns and two JSON decodes. Paging and ordering are the
+// caller's own, unchanged — only Attr is missing.
+func (c *Core) listChildNames(ctx context.Context, shareName string, parentID uuid.UUID, cursor string, limit int) ([]metadata.DirEntry, string, error) {
+	rows, err := c.X.Query(ctx, c.D.Files().ListChildNames, parentID, cursor, limit+1)
+	if err != nil {
+		return nil, "", c.D.MapError(err, "ListChildren", "")
+	}
+	defer rows.Close()
+
+	var entries []metadata.DirEntry
+	for rows.Next() && len(entries) < limit {
+		var name, childIDStr string
+		if err := rows.Scan(&name, &childIDStr); err != nil {
+			return nil, "", err
+		}
+
+		childHandle, err := EncodeFileHandle(shareName, childIDStr)
+		if err != nil {
+			return nil, "", err
+		}
+
+		entries = append(entries, metadata.DirEntry{
+			ID:     metadata.HandleToINode(childHandle),
+			Name:   name,
+			Handle: childHandle,
+		})
+	}
+
+	// Surface an error that terminated the iteration early. Without this a
+	// partial result would be returned as a complete, successful listing.
+	if err := rows.Err(); err != nil {
+		return nil, "", c.D.MapError(err, "ListChildren", "")
+	}
+
+	nextCursor := ""
+	if len(entries) >= limit {
+		nextCursor = entries[len(entries)-1].Name
+	}
+
+	return entries, nextCursor, nil
+}
+
 // ListChildren returns a page of directory entries plus the cursor for the
 // next page, empty when the listing is exhausted.
 //
@@ -180,7 +224,7 @@ const listChildrenDefaultLimit = 1000
 // Memory and Badger backends do populate Blocks here, because their
 // serialisation already carries the slice. Callers that need the ChunkRef list
 // must re-read through GetFile.
-func (c *Core) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int) ([]metadata.DirEntry, string, error) {
+func (c *Core) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int, attrs metadata.ChildAttrs) ([]metadata.DirEntry, string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
@@ -192,6 +236,10 @@ func (c *Core) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, 
 
 	if limit <= 0 {
 		limit = listChildrenDefaultLimit
+	}
+
+	if attrs == metadata.NamesOnly {
+		return c.listChildNames(ctx, shareName, parentID, cursor, limit)
 	}
 
 	rows, err := c.X.Query(ctx, c.D.Files().ListChildren, parentID, cursor, limit+1)

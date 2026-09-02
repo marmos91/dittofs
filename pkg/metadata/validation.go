@@ -39,8 +39,30 @@ type DirEntry struct {
 	// Attr contains the file attributes (optional, for READDIRPLUS optimization)
 	// If nil, READDIRPLUS will call GetFile() to retrieve attributes
 	// If populated, READDIRPLUS can avoid per-entry GetFile() calls
+	// A listing asked for NamesOnly always leaves this nil
 	Attr *FileAttr
 }
+
+// ChildAttrs says whether a directory listing carries each entry's attributes.
+//
+// Filling Attr costs one inode read per child, which is the bulk of what a
+// listing does: on the badger backend a 10,000-entry directory spends roughly
+// six times as long fetching and decoding attributes as it does producing the
+// names. Most callers discard them — they want the set of names, or one name
+// matched case-insensitively — so they pass NamesOnly and the backend skips
+// the per-entry read entirely.
+//
+// Under NamesOnly an entry carries ID, Name and Handle; Attr is nil and a
+// caller that needs attributes fetches them with GetFile for the entries it
+// actually cares about.
+type ChildAttrs bool
+
+const (
+	// WithAttrs fills DirEntry.Attr for every entry returned.
+	WithAttrs ChildAttrs = true
+	// NamesOnly leaves DirEntry.Attr nil and skips the work of filling it.
+	NamesOnly ChildAttrs = false
+)
 
 // ============================================================================
 // Pointer Helper Functions

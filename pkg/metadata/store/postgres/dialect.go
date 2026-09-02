@@ -82,6 +82,11 @@ var fileQueries = storesql.FileQueries{
 		WHERE dc.parent_id = $1 AND dc.child_name > $2
 		ORDER BY dc.child_name
 		LIMIT $3`,
+	ListChildNames: `SELECT dc.child_name, dc.child_id
+		FROM parent_child_map dc
+		WHERE dc.parent_id = $1 AND dc.child_name > $2
+		ORDER BY dc.child_name
+		LIMIT $3`,
 
 	// The lookup goes through content_id_hash (an md5 of content_id) because a
 	// content id for a path near PATH_MAX overruns postgres' 2704-byte btree

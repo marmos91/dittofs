@@ -723,7 +723,7 @@ func (tx *badgerTransaction) anyOtherChildName(parentID, child uuid.UUID, exclud
 	return ""
 }
 
-func (tx *badgerTransaction) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int) ([]metadata.DirEntry, string, error) {
+func (tx *badgerTransaction) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int, attrs metadata.ChildAttrs) ([]metadata.DirEntry, string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
@@ -785,17 +785,27 @@ func (tx *badgerTransaction) ListChildren(ctx context.Context, dirHandle metadat
 		}
 
 		// Try to get attributes (errors are intentionally ignored - attributes are optional)
-		fileItem, err := tx.txn.Get(keyFile(childID))
-		if err == nil {
-			_ = fileItem.Value(func(val []byte) error {
-				file, decErr := decodeFile(val)
-				if decErr != nil {
-					return decErr
-				}
-				file.Nlink = fileLinkCountTxn(tx.txn, file)
-				entry.Attr = &file.FileAttr
-				return nil
-			})
+		//
+		// This is the whole cost of a listing: the child keys iterated above
+		// are contiguous under one prefix, while each attribute costs a
+		// separate Get plus a decode plus the link-count read inside
+		// fileLinkCountTxn. Skipping it for a caller that only wants names
+		// also narrows the transaction's read set to the directory's own
+		// entries, so a concurrent write to a child's attributes no longer
+		// conflicts with a listing that never looked at them.
+		if attrs == metadata.WithAttrs {
+			fileItem, err := tx.txn.Get(keyFile(childID))
+			if err == nil {
+				_ = fileItem.Value(func(val []byte) error {
+					file, decErr := decodeFile(val)
+					if decErr != nil {
+						return decErr
+					}
+					file.Nlink = fileLinkCountTxn(tx.txn, file)
+					entry.Attr = &file.FileAttr
+					return nil
+				})
+			}
 		}
 
 		entries = append(entries, entry)

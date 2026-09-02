@@ -379,7 +379,7 @@ func (s *BadgerMetadataStore) DeleteChild(ctx context.Context, dirHandle metadat
 
 // ListChildren returns directory entries with pagination support.
 // Uses a read-only transaction for better concurrency.
-func (s *BadgerMetadataStore) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int) ([]metadata.DirEntry, string, error) {
+func (s *BadgerMetadataStore) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int, attrs metadata.ChildAttrs) ([]metadata.DirEntry, string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
@@ -389,7 +389,7 @@ func (s *BadgerMetadataStore) ListChildren(ctx context.Context, dirHandle metada
 	err := s.db.View(func(txn *badgerdb.Txn) error {
 		tx := &badgerTransaction{store: s, txn: txn}
 		var err error
-		entries, nextCursor, err = tx.ListChildren(ctx, dirHandle, cursor, limit)
+		entries, nextCursor, err = tx.ListChildren(ctx, dirHandle, cursor, limit, attrs)
 		return err
 	})
 	return entries, nextCursor, err

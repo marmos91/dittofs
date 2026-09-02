@@ -424,12 +424,12 @@ func (tx *memoryTransaction) DeleteChild(ctx context.Context, dirHandle metadata
 	return nil
 }
 
-func (tx *memoryTransaction) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int) ([]metadata.DirEntry, string, error) {
+func (tx *memoryTransaction) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int, attrs metadata.ChildAttrs) ([]metadata.DirEntry, string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
 
-	return tx.store.listChildrenLocked(dirHandle, cursor, limit)
+	return tx.store.listChildrenLocked(dirHandle, cursor, limit, attrs)
 }
 
 func (tx *memoryTransaction) GetParent(ctx context.Context, handle metadata.FileHandle) (metadata.FileHandle, error) {
