@@ -8,13 +8,11 @@ import (
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -28,7 +26,7 @@ const (
 	maxPort           = 65535
 )
 
-// DittoServerValidator implements webhook.CustomValidator with cluster client access.
+// DittoServerValidator implements admission.Validator with cluster client access.
 // This enables validation of cluster resources like StorageClass and Secrets.
 // +kubebuilder:object:generate=false
 type DittoServerValidator struct {
@@ -36,7 +34,7 @@ type DittoServerValidator struct {
 	RESTMapper meta.RESTMapper
 }
 
-var _ webhook.CustomValidator = &DittoServerValidator{}
+var _ admission.Validator[*DittoServer] = &DittoServerValidator{}
 
 // +kubebuilder:webhook:path=/validate-dittofs-dittofs-com-v1alpha1-dittoserver,mutating=false,failurePolicy=fail,sideEffects=None,groups=dittofs.dittofs.com,resources=dittoservers,verbs=create;update,versions=v1alpha1,name=vdittoserver.kb.io,admissionReviewVersions=v1
 
@@ -47,8 +45,7 @@ func SetupDittoServerWebhookWithManager(mgr ctrl.Manager) error {
 		Client:     mgr.GetClient(),
 		RESTMapper: mgr.GetRESTMapper(),
 	}
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(&DittoServer{}).
+	return ctrl.NewWebhookManagedBy(mgr, &DittoServer{}).
 		WithValidator(validator).
 		Complete()
 }
@@ -188,22 +185,20 @@ func (r *DittoServer) validatePorts() (admission.Warnings, error) { //nolint:unp
 	return warnings, nil
 }
 
-// ValidateCreate implements webhook.CustomValidator for DittoServerValidator
-func (v *DittoServerValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	ds := obj.(*DittoServer)
+// ValidateCreate implements admission.Validator for DittoServerValidator
+func (v *DittoServerValidator) ValidateCreate(ctx context.Context, ds *DittoServer) (admission.Warnings, error) {
 	dittoserverlog.Info("validate create (with client)", "name", ds.Name)
 	return v.validateDittoServerWithClient(ctx, ds)
 }
 
-// ValidateUpdate implements webhook.CustomValidator for DittoServerValidator
-func (v *DittoServerValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	ds := newObj.(*DittoServer)
-	dittoserverlog.Info("validate update (with client)", "name", ds.Name)
-	return v.validateDittoServerWithClient(ctx, ds)
+// ValidateUpdate implements admission.Validator for DittoServerValidator
+func (v *DittoServerValidator) ValidateUpdate(ctx context.Context, _, newObj *DittoServer) (admission.Warnings, error) {
+	dittoserverlog.Info("validate update (with client)", "name", newObj.Name)
+	return v.validateDittoServerWithClient(ctx, newObj)
 }
 
-// ValidateDelete implements webhook.CustomValidator for DittoServerValidator
-func (v *DittoServerValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+// ValidateDelete implements admission.Validator for DittoServerValidator
+func (v *DittoServerValidator) ValidateDelete(_ context.Context, _ *DittoServer) (admission.Warnings, error) {
 	// No validation needed for delete
 	return nil, nil
 }
