@@ -48,6 +48,14 @@ type Dialect interface {
 	// Server returns the dialect's server-config statements, under the same
 	// package-level-value expectation as Chunks.
 	Server() *ServerQueries
+
+	// Clients returns the dialect's NSM client-registration statements, under
+	// the same package-level-value expectation as Chunks.
+	Clients() *ClientQueries
+
+	// Recovery returns the dialect's v4 client-recovery statements, under the
+	// same package-level-value expectation as Chunks.
+	Recovery() *RecoveryQueries
 }
 
 // ShareQueries holds the share statements in one dialect's syntax. These

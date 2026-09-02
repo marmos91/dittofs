@@ -94,9 +94,9 @@ type SQLiteMetadataStore struct {
 	// Sub-stores for lock / client / durable-handle / NFSv4-recovery
 	// persistence. Each wraps the shared *sql.DB executor.
 	lockStore     *sqliteLockStore
-	clientStore   *sqliteClientStore
+	clientStore   *storesql.ClientStore
 	durableStore  *sqliteDurableStore
-	recoveryStore *sqliteRecoveryStore
+	recoveryStore *storesql.RecoveryStore
 }
 
 // NewSQLiteMetadataStore creates a new SQLite-backed metadata store.
@@ -169,9 +169,9 @@ func NewSQLiteMetadataStore(
 	// The substores derive only from db, which is never reassigned, so bind
 	// them once here.
 	store.lockStore = newSQLiteLockStore(store.conn())
-	store.clientStore = newSQLiteClientStore(store.conn())
+	store.clientStore = &storesql.ClientStore{X: store.conn(), D: sqliteDialect}
 	store.durableStore = newSQLiteDurableStore(store.conn())
-	store.recoveryStore = newSQLiteRecoveryStore(store.conn())
+	store.recoveryStore = &storesql.RecoveryStore{X: store.conn(), D: sqliteDialect}
 
 	if err := store.initUsedBytesCounter(ctx); err != nil {
 		_ = db.Close()

@@ -77,6 +77,12 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		RunClientRecoveryStoreTests(t, factory)
 	})
 
+	// ClientRegistrationOps pins the NSM registration store the crash-recovery
+	// path reads on startup to decide who gets an SM_NOTIFY.
+	t.Run("ClientRegistrationOps", func(t *testing.T) {
+		RunClientRegistrationStoreTests(t, factory)
+	})
+
 	// ACLAliasing asserts both directions of FileAttr.ACL deep-copy
 	// discipline: UpdateAttrs must not alias the caller's ACE slice, and
 	// GetFile must not hand back the store's backing slice. Pins the

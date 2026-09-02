@@ -62,13 +62,13 @@ type PostgresMetadataStore struct {
 	lockStore *postgresLockStore
 
 	// clientStore holds NSM client registration persistence.
-	clientStore *postgresClientStore
+	clientStore *storesql.ClientStore
 
 	// durableStore holds SMB3 durable handle persistence.
 	durableStore *postgresDurableStore
 
 	// recoveryStore holds NFSv4 client-recovery persistence.
-	recoveryStore *postgresRecoveryStore
+	recoveryStore *storesql.RecoveryStore
 
 	// quota tracks per-identity usage (bytes + file count) for regular files,
 	// keyed by owner uid / gid. In-memory cache mirroring usedBytes, seeded from
@@ -156,9 +156,9 @@ func NewPostgresMetadataStore(
 	// The substores derive only from pool, which is never reassigned, so bind
 	// them once here.
 	store.lockStore = newPostgresLockStore(poolExecer{s: store})
-	store.clientStore = newPostgresClientStore(store)
+	store.clientStore = &storesql.ClientStore{X: poolExecer{s: store}, D: pgDialect}
 	store.durableStore = newPostgresDurableStore(store)
-	store.recoveryStore = newPostgresRecoveryStore(store)
+	store.recoveryStore = &storesql.RecoveryStore{X: poolExecer{s: store}, D: pgDialect}
 
 	// Initialize the usedBytes counter from a SQL SUM query.
 	if err := store.initUsedBytesCounter(ctx); err != nil {
