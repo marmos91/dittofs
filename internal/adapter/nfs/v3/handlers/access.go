@@ -175,7 +175,12 @@ func (h *Handler) Access(
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	grantedAccess := permissionsToNFSAccess(grantedPerms, file.Type)
+	// Narrow the reply to the rights the client asked about. RFC 1813 Section
+	// 3.3.4 defines the returned mask as the subset of the request that is
+	// permitted, and the Linux client caches this mask and answers later,
+	// different access checks from it without returning to the server, so a bit
+	// the client never asked about becomes a grant nothing here evaluated.
+	grantedAccess := permissionsToNFSAccess(grantedPerms, file.Type) & req.Access
 
 	logger.DebugCtx(ctx.Context, "ACCESS translation",
 		"generic_perms", fmt.Sprintf("0x%x", grantedPerms),
@@ -214,7 +219,7 @@ func (h *Handler) Access(
 //   - AccessLookup (0x0002): Look up names in directory
 //   - AccessModify (0x0004): Modify file data
 //   - AccessExtend (0x0008): Extend file (write beyond EOF)
-//   - AccessDelete (0x0010): Delete file or directory
+//   - AccessDelete (0x0010): Delete an existing directory entry
 //   - AccessExecute (0x0020): Execute file or search directory
 //
 // Generic Permission flags:
@@ -272,7 +277,12 @@ func nfsAccessToPermissions(nfsAccess uint32, fileType metadata.FileType) metada
 
 // permissionsToNFSAccess translates generic Permission flags back to NFS ACCESS bits.
 //
-// This is the inverse of nfsAccessToPermissions and must maintain consistency.
+// This is the inverse of nfsAccessToPermissions, with two asymmetries the caller
+// has to account for. It is not injective — one PermissionWrite comes back as
+// both AccessModify and AccessExtend, and one PermissionTraverse as both
+// AccessLookup and AccessExecute — so a reply built from it must be re-masked
+// with the bits the client actually requested. And AccessDelete is dropped for
+// non-directories, so a round trip through both functions loses it there.
 func permissionsToNFSAccess(perms metadata.Permission, fileType metadata.FileType) uint32 {
 	var nfsAccess uint32
 
@@ -303,8 +313,13 @@ func permissionsToNFSAccess(perms metadata.Permission, fileType metadata.FileTyp
 		}
 	}
 
-	// PermissionDelete maps directly
-	if perms&metadata.PermissionDelete != 0 {
+	// AccessDelete is the right to remove a directory entry, so it belongs to the
+	// containing directory rather than to the object the entry names. RFC 1813
+	// Section 3.3.4 says the bit is to be set to 0 in the reply for a
+	// non-directory object. PermissionDelete is not a safe stand-in there either:
+	// on the POSIX path CalculatePermissionsFromBits derives it from the object's
+	// own write bit, which grants nothing about deleting the object.
+	if fileType == metadata.FileTypeDirectory && perms&metadata.PermissionDelete != 0 {
 		nfsAccess |= types.AccessDelete
 	}
 
