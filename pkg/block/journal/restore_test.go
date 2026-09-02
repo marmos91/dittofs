@@ -16,9 +16,7 @@ import (
 // cannot tell a durable record from one that only reached the page cache.
 type restoreFixture struct {
 	*Store
-	t   *testing.T
-	dir string
-	cfg Config
+	t *testing.T
 
 	mu sync.Mutex
 	// durable maps a segment id to the tail some completed fsync covered.
@@ -30,14 +28,8 @@ type restoreFixture struct {
 // under test issues.
 func newRestoreFixture(t *testing.T, shardCount int) *restoreFixture {
 	t.Helper()
-	dir := t.TempDir()
-	cfg := Config{ShardCount: shardCount, DirtyExpiry: -1}
-	s, err := Open(dir, cfg, newFakeRemote(), SystemClock())
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	f := &restoreFixture{Store: s, t: t, dir: dir, cfg: cfg, durable: map[uint64]int64{}}
+	s := testStore(t, Config{ShardCount: shardCount, DirtyExpiry: -1})
+	f := &restoreFixture{Store: s, t: t, durable: map[uint64]int64{}}
 	for _, sh := range s.shards {
 		inner := sh.segSync
 		sh.segSync = func(seg *segmentMeta) error {
@@ -48,9 +40,7 @@ func newRestoreFixture(t *testing.T, shardCount int) *restoreFixture {
 				return err
 			}
 			f.mu.Lock()
-			if tail > f.durable[seg.id] {
-				f.durable[seg.id] = tail
-			}
+			f.durable[seg.id] = max(f.durable[seg.id], tail)
 			f.mu.Unlock()
 			return nil
 		}
@@ -67,7 +57,9 @@ func (f *restoreFixture) write(id FileID, off int64, data []byte) {
 }
 
 // commitAll makes everything written so far durable and returns the watermark
-// naming that point-in-time view, ready to hand to RestoreToVersion.
+// naming that point-in-time view, ready to hand to RestoreToVersion. It fsyncs
+// the shards itself rather than calling the store's own dirty-shard sweep, so a
+// test asserting that sweep runs cannot be set up by the very call it is pinning.
 func (f *restoreFixture) commitAll() uint64 {
 	f.t.Helper()
 	for _, sh := range f.shards {
@@ -80,8 +72,9 @@ func (f *restoreFixture) commitAll() uint64 {
 
 // crashReopen models a power cut: every segment is cut back to the tail its last
 // completed fsync covered and a fresh store is opened over the directory. Close
-// is safe to call first because it issues no fsync of its own — it only stops the
-// background loops and closes the fds.
+// is safe to call here because it issues no fsync of its own — it only stops the
+// background loops and closes the fds — and it is idempotent, so the reopen
+// helper's own Close is a no-op.
 func (f *restoreFixture) crashReopen() *Store {
 	f.t.Helper()
 	if err := f.Store.Close(); err != nil {
@@ -92,8 +85,7 @@ func (f *restoreFixture) crashReopen() *Store {
 		f.t.Fatalf("scanSegmentIDs: %v", err)
 	}
 	for _, id := range ids {
-		path := f.segPath(id)
-		fd, err := os.OpenFile(path, os.O_RDWR, 0o644)
+		fd, err := os.OpenFile(f.segPath(id), os.O_RDWR, 0o644)
 		if err != nil {
 			f.t.Fatalf("open segment %d: %v", id, err)
 		}
@@ -107,14 +99,11 @@ func (f *restoreFixture) crashReopen() *Store {
 		// it is durable and none of it is dropped.
 		if ok && flags&segFlagSealed == 0 {
 			f.mu.Lock()
-			tail := f.durable[id]
-			f.mu.Unlock()
 			// The header is kept even when nothing fsynced this segment: it carries
 			// no records, so keeping it costs the test nothing and spares recovery a
 			// torn-create sweep that has no bearing on what is being asserted.
-			if tail < segHeaderSize {
-				tail = segHeaderSize
-			}
+			tail := max(f.durable[id], int64(segHeaderSize))
+			f.mu.Unlock()
 			if err := fd.Truncate(tail); err != nil {
 				_ = fd.Close()
 				f.t.Fatalf("truncate segment %d to %d: %v", id, tail, err)
@@ -124,12 +113,7 @@ func (f *restoreFixture) crashReopen() *Store {
 			f.t.Fatalf("close segment %d: %v", id, err)
 		}
 	}
-	r, err := Open(f.dir, f.cfg, newFakeRemote(), SystemClock())
-	if err != nil {
-		f.t.Fatalf("reopen after crash: %v", err)
-	}
-	f.t.Cleanup(func() { _ = r.Close() })
-	return r
+	return reopen(f.t, f.Store)
 }
 
 // idsOnDistinctShards returns one FileID per shard index in [0, n), so a test
