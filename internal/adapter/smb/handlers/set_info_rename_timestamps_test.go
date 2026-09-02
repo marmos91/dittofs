@@ -1,7 +1,9 @@
 // Handler-level coverage for the timestamps a SET_INFO rename leaves behind.
 //
 // A client that renames through a handle it still holds open must keep
-// observing the ChangeTime that handle was handed in its CREATE reply.
+// observing the ChangeTime that handle was handed in its CREATE reply: MS-FSA
+// 2.1.5.15.12 note <187> defers the rename's LastChangeTime stamp until the
+// handle is closed, and conformance case smb2.rename.simple_modtime pins it.
 // LastModificationTime is left alone either way. A rename is authorized on the
 // parent directory, so both must hold for a caller who may rename the file
 // without being able to write that file's own attributes.
@@ -96,7 +98,8 @@ func TestSetInfo_Rename_ChangeTimePreservedForEveryCaller(t *testing.T) {
 				t.Fatalf("GetFile after rename: %v", err)
 			}
 			if !after.Ctime.Equal(past) {
-				t.Errorf("ChangeTime = %v after rename; want %v unchanged for a handle held open across it",
+				t.Errorf("ChangeTime = %v after rename; want %v unchanged while the handle is open "+
+					"(MS-FSA 2.1.5.15.12 note <187>; smb2.rename.simple_modtime)",
 					after.Ctime.UTC(), past.UTC())
 			}
 			if !after.Mtime.Equal(past) {
