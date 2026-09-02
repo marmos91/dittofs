@@ -163,9 +163,11 @@ func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName stri
 			payloadID: file.PayloadID,
 			isDir:     file.Type == metadata.FileTypeDirectory,
 			size:      file.Size,
-			isReg:     file.Type == metadata.FileTypeRegular,
-			uid:       file.UID,
-			gid:       file.GID,
+			// An unlinked-but-open inode released its bytes when its last name
+			// went, so the share has none of them left to give back here.
+			isReg: basestore.Charged(file.Type, fileLinkCountTxn(txn, file)),
+			uid:   file.UID,
+			gid:   file.GID,
 		})
 	}
 	it.Close()

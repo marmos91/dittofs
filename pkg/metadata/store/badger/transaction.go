@@ -396,7 +396,12 @@ func (tx *badgerTransaction) putFile(ctx context.Context, file *metadata.File, w
 
 	// Track size delta for regular files. Accumulated on the tx and applied
 	// once after a successful commit so a conflict-retry never double-counts.
-	if file.Type == metadata.FileTypeRegular {
+	//
+	// This write never touches the l: key, so the link count is the same before
+	// and after: an inode whose last name is already gone holds no share bytes
+	// to move, and a write through a still-open descriptor must not put them
+	// back.
+	if basestore.Charged(file.Type, fileLinkCountTxn(tx.txn, file)) {
 		switch {
 		case !hadOldRegular:
 			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
@@ -522,17 +527,21 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 	// PayloadID for secondary-index cleanup.
 	var existingObjectID metadata.ContentHash
 	var existingPayloadID metadata.PayloadID
+	var existing *metadata.File
 	_ = item.Value(func(val []byte) error {
 		file, decErr := decodeFile(val)
 		if decErr == nil {
-			if file.Type == metadata.FileTypeRegular {
-				tx.quota.Add(file.ShareName, file.UID, file.GID, -int64(file.Size), -1)
-			}
+			existing = file
 			existingObjectID = file.ObjectID
 			existingPayloadID = file.PayloadID
 		}
 		return nil
 	})
+	// An inode whose last name went already gave its bytes back, so removing
+	// the row itself owes the counters nothing.
+	if existing != nil && basestore.Charged(existing.Type, fileLinkCountTxn(tx.txn, existing)) {
+		tx.quota.Add(existing.ShareName, existing.UID, existing.GID, -int64(existing.Size), -1)
+	}
 
 	// Delete the primary file row plus parent/link-count/ObjectID/PayloadID
 	// keys via the shared per-file teardown (also used by DeleteShare).
@@ -930,6 +939,33 @@ func (tx *badgerTransaction) SetLinkCount(ctx context.Context, handle metadata.F
 			Code:    metadata.ErrInvalidHandle,
 			Message: "invalid file handle",
 		}
+	}
+
+	// Read the pre-image before the count moves. A link count crossing zero is
+	// what puts an inode's bytes into the share's usage or takes them back out,
+	// and once the l: key is overwritten there is no way to tell which side it
+	// came from. A missing inode owes the counters nothing.
+	if item, gErr := tx.txn.Get(keyFile(fileID)); gErr == nil {
+		raw, vErr := item.ValueCopy(nil)
+		if vErr != nil {
+			return vErr
+		}
+		file, decErr := decodeFile(raw)
+		if decErr != nil {
+			return decErr
+		}
+		// Only the crossing between zero and non-zero moves usage: adding or
+		// dropping a hard link alongside others leaves the inode charged
+		// exactly once either way.
+		was := basestore.Charged(file.Type, fileLinkCountTxn(tx.txn, file))
+		switch now := basestore.Charged(file.Type, count); {
+		case was && !now:
+			tx.quota.Add(file.ShareName, file.UID, file.GID, -int64(file.Size), -1)
+		case !was && now:
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
+		}
+	} else if gErr != badgerdb.ErrKeyNotFound {
+		return gErr
 	}
 
 	tx.dirtyFiles = append(tx.dirtyFiles, fileID.String())
