@@ -40,7 +40,7 @@ func dirTestAuthContext() *metadata.AuthContext {
 	}
 }
 
-// encodeRenameInfo builds a FILE_RENAME_INFORMATION buffer [MS-FSCC] 2.4.34
+// encodeRenameInfo builds a FILE_RENAME_INFORMATION buffer [MS-FSCC] 2.4.42.2
 // naming newName, share-relative.
 func encodeRenameInfo(newName string) []byte {
 	name := utf16.Encode([]rune(newName))
