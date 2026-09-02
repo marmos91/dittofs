@@ -46,7 +46,7 @@ type Dialect interface {
 	Shares() *ShareQueries
 }
 
-// ShareQueries holds the share read statements in one dialect's syntax. These
+// ShareQueries holds the share statements in one dialect's syntax. These
 // differ only in placeholder syntax, but a placeholder is not a value a driver
 // will substitute, so each dialect still spells its own.
 type ShareQueries struct {
@@ -70,7 +70,7 @@ type ShareQueries struct {
 	PutFilesystemMeta string
 }
 
-// FileQueries holds the file and directory read statements in one dialect's
+// FileQueries holds the file and directory statements in one dialect's
 // syntax. Field names name the operation, not the SQL, so the shared bodies in
 // files.go read the same whichever dialect is underneath.
 //
