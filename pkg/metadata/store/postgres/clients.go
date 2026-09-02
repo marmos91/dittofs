@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 )
 
 // ============================================================================
@@ -25,13 +26,13 @@ import (
 // Thread Safety:
 // All operations use database transactions for atomicity.
 type postgresClientStore struct {
-	st *PostgresMetadataStore
+	pool storesql.Executor
 }
 
 // newPostgresClientStore creates a new PostgreSQL client registration store.
 func newPostgresClientStore(st *PostgresMetadataStore) *postgresClientStore {
 	return &postgresClientStore{
-		st: st,
+		pool: poolExecer{s: st},
 	}
 }
 
@@ -54,7 +55,7 @@ func (s *postgresClientStore) PutClientRegistration(ctx context.Context, reg *lo
 			server_epoch = EXCLUDED.server_epoch
 	`
 
-	_, err := s.st.exec(ctx, query,
+	_, err := s.pool.Exec(ctx, query,
 		reg.ClientID,
 		reg.MonName,
 		reg.Priv[:], // Convert [16]byte to slice
@@ -80,7 +81,7 @@ func (s *postgresClientStore) GetClientRegistration(ctx context.Context, clientI
 	var reg lock.PersistedClientRegistration
 	var privBytes []byte
 
-	err := s.st.queryRow(ctx, query, clientID).Scan(
+	err := s.pool.QueryRow(ctx, query, clientID).Scan(
 		&reg.ClientID,
 		&reg.MonName,
 		&privBytes,
@@ -110,7 +111,7 @@ func (s *postgresClientStore) GetClientRegistration(ctx context.Context, clientI
 // DeleteClientRegistration removes a registration by client ID.
 func (s *postgresClientStore) DeleteClientRegistration(ctx context.Context, clientID string) error {
 	query := `DELETE FROM nsm_client_registrations WHERE client_id = $1`
-	_, err := s.st.exec(ctx, query, clientID)
+	_, err := s.pool.Exec(ctx, query, clientID)
 	return err
 }
 
@@ -123,7 +124,7 @@ func (s *postgresClientStore) ListClientRegistrations(ctx context.Context) ([]*l
 		ORDER BY registered_at
 	`
 
-	rows, err := s.st.query(ctx, query)
+	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +167,7 @@ func (s *postgresClientStore) ListClientRegistrations(ctx context.Context) ([]*l
 // DeleteAllClientRegistrations removes all registrations.
 func (s *postgresClientStore) DeleteAllClientRegistrations(ctx context.Context) (int, error) {
 	query := `DELETE FROM nsm_client_registrations`
-	result, err := s.st.exec(ctx, query)
+	result, err := s.pool.Exec(ctx, query)
 	if err != nil {
 		return 0, err
 	}
@@ -176,7 +177,7 @@ func (s *postgresClientStore) DeleteAllClientRegistrations(ctx context.Context) 
 // DeleteClientRegistrationsByMonName removes all registrations monitoring a specific host.
 func (s *postgresClientStore) DeleteClientRegistrationsByMonName(ctx context.Context, monName string) (int, error) {
 	query := `DELETE FROM nsm_client_registrations WHERE mon_name = $1`
-	result, err := s.st.exec(ctx, query, monName)
+	result, err := s.pool.Exec(ctx, query, monName)
 	if err != nil {
 		return 0, err
 	}

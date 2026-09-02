@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 )
 
 // ============================================================================
@@ -29,11 +29,11 @@ import (
 // Thread Safety:
 // All operations use database transactions for atomicity.
 type postgresLockStore struct {
-	pool *pgxpool.Pool
+	pool storesql.Executor
 }
 
 // newPostgresLockStore creates a new PostgreSQL lock store.
-func newPostgresLockStore(pool *pgxpool.Pool) *postgresLockStore {
+func newPostgresLockStore(pool storesql.Executor) *postgresLockStore {
 	return &postgresLockStore{
 		pool: pool,
 	}
@@ -158,7 +158,7 @@ func (s *postgresLockStore) PutLock(ctx context.Context, lk *lock.PersistedLock)
 }
 
 // putLockTx persists a lock within an existing transaction.
-func (s *postgresLockStore) putLockTx(ctx context.Context, tx pgx.Tx, lk *lock.PersistedLock) error {
+func (s *postgresLockStore) putLockTx(ctx context.Context, tx storesql.Executor, lk *lock.PersistedLock) error {
 	_, err := tx.Exec(ctx, putLockSQL, putLockArgs(lk)...)
 	return err
 }
@@ -169,14 +169,10 @@ const selectByID = `SELECT ` + lockColumns + ` FROM locks WHERE id = $1`
 
 // rowScanner is satisfied by both pgx.Row (QueryRow) and pgx.Rows so a single
 // scanLock helper serves every read path.
-type rowScanner interface {
-	Scan(dest ...interface{}) error
-}
-
 // scanLock scans one row into a PersistedLock. byte_offset/byte_length are
 // NUMERIC(20) (full uint64 range) and are scanned as decimal strings, then
 // parsed: pgx cannot scan a numeric above MaxInt64 into a Go uint64 directly.
-func scanLock(row rowScanner) (*lock.PersistedLock, error) {
+func scanLock(row storesql.Row) (*lock.PersistedLock, error) {
 	var lk lock.PersistedLock
 	var offsetStr, lengthStr string
 	var breakStarted sql.NullTime
@@ -256,7 +252,7 @@ func (s *postgresLockStore) GetLock(ctx context.Context, lockID string) (*lock.P
 }
 
 // getLockTx retrieves a lock within an existing transaction.
-func (s *postgresLockStore) getLockTx(ctx context.Context, tx pgx.Tx, lockID string) (*lock.PersistedLock, error) {
+func (s *postgresLockStore) getLockTx(ctx context.Context, tx storesql.Executor, lockID string) (*lock.PersistedLock, error) {
 	lk, err := scanLock(tx.QueryRow(ctx, selectByID, lockID))
 	if err == pgx.ErrNoRows {
 		return nil, &errors.StoreError{
@@ -292,7 +288,7 @@ func (s *postgresLockStore) DeleteLock(ctx context.Context, lockID string) error
 }
 
 // deleteLockTx removes a lock within an existing transaction.
-func (s *postgresLockStore) deleteLockTx(ctx context.Context, tx pgx.Tx, lockID string) error {
+func (s *postgresLockStore) deleteLockTx(ctx context.Context, tx storesql.Executor, lockID string) error {
 	query := `DELETE FROM locks WHERE id = $1`
 	result, err := tx.Exec(ctx, query, lockID)
 	if err != nil {
@@ -364,7 +360,7 @@ func (s *postgresLockStore) ListLocks(ctx context.Context, query lock.LockQuery)
 }
 
 // listLocksTx lists locks within an existing transaction.
-func (s *postgresLockStore) listLocksTx(ctx context.Context, tx pgx.Tx, query lock.LockQuery) ([]*lock.PersistedLock, error) {
+func (s *postgresLockStore) listLocksTx(ctx context.Context, tx storesql.Executor, query lock.LockQuery) ([]*lock.PersistedLock, error) {
 	baseQuery, args := buildListQuery(query)
 
 	rows, err := tx.Query(ctx, baseQuery, args...)
@@ -397,7 +393,7 @@ func (s *postgresLockStore) DeleteLocksByClient(ctx context.Context, clientID st
 }
 
 // deleteLocksByClientTx removes locks within an existing transaction.
-func (s *postgresLockStore) deleteLocksByClientTx(ctx context.Context, tx pgx.Tx, clientID string) (int, error) {
+func (s *postgresLockStore) deleteLocksByClientTx(ctx context.Context, tx storesql.Executor, clientID string) (int, error) {
 	query := `DELETE FROM locks WHERE client_id = $1`
 	result, err := tx.Exec(ctx, query, clientID)
 	if err != nil {
@@ -419,7 +415,7 @@ func (s *postgresLockStore) DeleteLocksByFile(ctx context.Context, fileID string
 }
 
 // deleteLocksByFileTx removes locks within an existing transaction.
-func (s *postgresLockStore) deleteLocksByFileTx(ctx context.Context, tx pgx.Tx, fileID string) (int, error) {
+func (s *postgresLockStore) deleteLocksByFileTx(ctx context.Context, tx storesql.Executor, fileID string) (int, error) {
 	query := `DELETE FROM locks WHERE file_id = $1`
 	result, err := tx.Exec(ctx, query, fileID)
 	if err != nil {
@@ -444,7 +440,7 @@ func (s *postgresLockStore) GetServerEpoch(ctx context.Context) (uint64, error) 
 }
 
 // getServerEpochTx gets epoch within an existing transaction.
-func (s *postgresLockStore) getServerEpochTx(ctx context.Context, tx pgx.Tx) (uint64, error) {
+func (s *postgresLockStore) getServerEpochTx(ctx context.Context, tx storesql.Executor) (uint64, error) {
 	query := `SELECT epoch FROM server_epoch WHERE id = 1`
 	var epoch uint64
 	err := tx.QueryRow(ctx, query).Scan(&epoch)
@@ -473,7 +469,7 @@ func (s *postgresLockStore) IncrementServerEpoch(ctx context.Context) (uint64, e
 }
 
 // incrementServerEpochTx increments epoch within an existing transaction.
-func (s *postgresLockStore) incrementServerEpochTx(ctx context.Context, tx pgx.Tx) (uint64, error) {
+func (s *postgresLockStore) incrementServerEpochTx(ctx context.Context, tx storesql.Executor) (uint64, error) {
 	query := `
 		INSERT INTO server_epoch (id, epoch, updated_at)
 		VALUES (1, 1, NOW())
@@ -519,7 +515,7 @@ func (s *postgresLockStore) SetCleanShutdown(ctx context.Context, clean bool) er
 }
 
 // getCleanShutdownTx reads the marker within an existing transaction.
-func (s *postgresLockStore) getCleanShutdownTx(ctx context.Context, tx pgx.Tx) (bool, error) {
+func (s *postgresLockStore) getCleanShutdownTx(ctx context.Context, tx storesql.Executor) (bool, error) {
 	query := `SELECT clean_shutdown FROM server_epoch WHERE id = 1`
 	var clean bool
 	err := tx.QueryRow(ctx, query).Scan(&clean)
@@ -533,7 +529,7 @@ func (s *postgresLockStore) getCleanShutdownTx(ctx context.Context, tx pgx.Tx) (
 }
 
 // setCleanShutdownTx writes the marker within an existing transaction.
-func (s *postgresLockStore) setCleanShutdownTx(ctx context.Context, tx pgx.Tx, clean bool) error {
+func (s *postgresLockStore) setCleanShutdownTx(ctx context.Context, tx storesql.Executor, clean bool) error {
 	query := `
 		INSERT INTO server_epoch (id, epoch, clean_shutdown, updated_at)
 		VALUES (1, 0, $1, NOW())
@@ -582,7 +578,7 @@ func (s *postgresLockStore) ReclaimLease(ctx context.Context, fileHandle lock.Fi
 }
 
 // reclaimLeaseTx reclaims a lease within an existing transaction.
-func (s *postgresLockStore) reclaimLeaseTx(ctx context.Context, tx pgx.Tx, fileHandle lock.FileHandle, leaseKey [16]byte, _ string) (*lock.UnifiedLock, error) {
+func (s *postgresLockStore) reclaimLeaseTx(ctx context.Context, tx storesql.Executor, fileHandle lock.FileHandle, leaseKey [16]byte, _ string) (*lock.UnifiedLock, error) {
 	// Search for leases on this file with matching lease key
 	locks, err := s.listLocksTx(ctx, tx, lock.LockQuery{FileID: string(fileHandle)})
 	if err != nil {
@@ -686,45 +682,45 @@ func (s *PostgresMetadataStore) ReclaimLease(ctx context.Context, fileHandle loc
 var _ lock.LockStore = (*postgresTransaction)(nil)
 
 func (ptx *postgresTransaction) PutLock(ctx context.Context, lk *lock.PersistedLock) error {
-	return ptx.store.lockStore.putLockTx(ctx, ptx.tx, lk)
+	return ptx.store.lockStore.putLockTx(ctx, txExecer{tx: ptx.tx}, lk)
 }
 
 func (ptx *postgresTransaction) GetLock(ctx context.Context, lockID string) (*lock.PersistedLock, error) {
-	return ptx.store.lockStore.getLockTx(ctx, ptx.tx, lockID)
+	return ptx.store.lockStore.getLockTx(ctx, txExecer{tx: ptx.tx}, lockID)
 }
 
 func (ptx *postgresTransaction) DeleteLock(ctx context.Context, lockID string) error {
-	return ptx.store.lockStore.deleteLockTx(ctx, ptx.tx, lockID)
+	return ptx.store.lockStore.deleteLockTx(ctx, txExecer{tx: ptx.tx}, lockID)
 }
 
 func (ptx *postgresTransaction) ListLocks(ctx context.Context, query lock.LockQuery) ([]*lock.PersistedLock, error) {
-	return ptx.store.lockStore.listLocksTx(ctx, ptx.tx, query)
+	return ptx.store.lockStore.listLocksTx(ctx, txExecer{tx: ptx.tx}, query)
 }
 
 func (ptx *postgresTransaction) DeleteLocksByClient(ctx context.Context, clientID string) (int, error) {
-	return ptx.store.lockStore.deleteLocksByClientTx(ctx, ptx.tx, clientID)
+	return ptx.store.lockStore.deleteLocksByClientTx(ctx, txExecer{tx: ptx.tx}, clientID)
 }
 
 func (ptx *postgresTransaction) DeleteLocksByFile(ctx context.Context, fileID string) (int, error) {
-	return ptx.store.lockStore.deleteLocksByFileTx(ctx, ptx.tx, fileID)
+	return ptx.store.lockStore.deleteLocksByFileTx(ctx, txExecer{tx: ptx.tx}, fileID)
 }
 
 func (ptx *postgresTransaction) GetServerEpoch(ctx context.Context) (uint64, error) {
-	return ptx.store.lockStore.getServerEpochTx(ctx, ptx.tx)
+	return ptx.store.lockStore.getServerEpochTx(ctx, txExecer{tx: ptx.tx})
 }
 
 func (ptx *postgresTransaction) IncrementServerEpoch(ctx context.Context) (uint64, error) {
-	return ptx.store.lockStore.incrementServerEpochTx(ctx, ptx.tx)
+	return ptx.store.lockStore.incrementServerEpochTx(ctx, txExecer{tx: ptx.tx})
 }
 
 func (ptx *postgresTransaction) GetCleanShutdown(ctx context.Context) (bool, error) {
-	return ptx.store.lockStore.getCleanShutdownTx(ctx, ptx.tx)
+	return ptx.store.lockStore.getCleanShutdownTx(ctx, txExecer{tx: ptx.tx})
 }
 
 func (ptx *postgresTransaction) SetCleanShutdown(ctx context.Context, clean bool) error {
-	return ptx.store.lockStore.setCleanShutdownTx(ctx, ptx.tx, clean)
+	return ptx.store.lockStore.setCleanShutdownTx(ctx, txExecer{tx: ptx.tx}, clean)
 }
 
 func (ptx *postgresTransaction) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
-	return ptx.store.lockStore.reclaimLeaseTx(ctx, ptx.tx, fileHandle, leaseKey, clientID)
+	return ptx.store.lockStore.reclaimLeaseTx(ctx, txExecer{tx: ptx.tx}, fileHandle, leaseKey, clientID)
 }
