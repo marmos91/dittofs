@@ -447,6 +447,10 @@ func TestRangesOverlap(t *testing.T) {
 		// still report self-overlap. Required for smb2.lock max/1 case.
 		{"max-byte self", ^uint64(0), 1, ^uint64(0), 1, true},
 		{"max-byte vs unbounded", ^uint64(0), 1, 0, 0, true},
+		// A length that carries the sum past the 64-bit maximum saturates
+		// rather than wrapping, so the range still covers everything above
+		// its own start instead of nothing.
+		{"overflowing length still covers what follows it", 100, ^uint64(0), 200, 100, true},
 	}
 
 	for _, tt := range tests {
@@ -1623,5 +1627,25 @@ func TestManager_ReleaseByOwnerPrefix_NoMatchIsSafe(t *testing.T) {
 	empty := NewManager()
 	if released := empty.ReleaseByOwnerPrefix("nlm:anyone:"); released != 0 {
 		t.Fatalf("want 0 released on empty manager, got %d", released)
+	}
+}
+
+// TestRangeLastNeverBelowOffset pins the invariant the overlap arithmetic rests
+// on: the inclusive last byte of a range is never before its first. A sum that
+// passes the 64-bit maximum saturates there, because a wrapped last byte
+// describes an inverted range that overlaps nothing above its own start.
+func TestRangeLastNeverBelowOffset(t *testing.T) {
+	t.Parallel()
+
+	max := ^uint64(0)
+	offsets := []uint64{0, 1, 100, max / 2, max - 1, max}
+	lengths := []uint64{0, 1, 2, 100, max - 1, max}
+
+	for _, offset := range offsets {
+		for _, length := range lengths {
+			if last := rangeLast(offset, length); last < offset {
+				t.Errorf("rangeLast(%d, %d) = %d, which is below the offset", offset, length, last)
+			}
+		}
 	}
 }

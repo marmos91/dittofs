@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"math"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -947,40 +949,144 @@ func TestLockNew_BlockingType(t *testing.T) {
 }
 
 // ============================================================================
-// ValidateLockRange Tests
+// NormalizeLockRange Tests
 // ============================================================================
 
-func TestValidateLockRange(t *testing.T) {
+func TestNormalizeLockRange(t *testing.T) {
 	tests := []struct {
-		name    string
-		offset  uint64
-		length  uint64
-		wantErr bool
+		name       string
+		offset     uint64
+		length     uint64
+		wantLength uint64
+		wantErr    bool
 	}{
-		{"ordinary range", 25, 75, false},
-		{"zero length", 25, 0, true},
-		{"zero length at zero offset", 0, 0, true},
-		{"all-ones length locks through EOF", 100, math.MaxUint64, false},
-		{"all-ones length from the highest offset", math.MaxUint64, math.MaxUint64, false},
-		{"sum lands exactly on the maximum", 1, math.MaxUint64 - 1, false},
-		{"sum passes the maximum by one", 2, math.MaxUint64 - 1, true},
+		{"ordinary range", 25, 75, 75, false},
+		{"zero length", 25, 0, 0, true},
+		{"zero length at zero offset", 0, 0, 0, true},
+		{"all-ones length becomes the unbounded range", 100, math.MaxUint64, 0, false},
+		{"all-ones length from the highest offset", math.MaxUint64, math.MaxUint64, 0, false},
+		{"sum lands exactly on the maximum", 1, math.MaxUint64 - 1, math.MaxUint64 - 1, false},
+		{"sum passes the maximum by one", 2, math.MaxUint64 - 1, 0, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateLockRange(tt.offset, tt.length)
+			gotLength, err := normalizeLockRange(tt.offset, tt.length)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("validateLockRange(%d, %d) = %v, wantErr %v",
+				t.Fatalf("normalizeLockRange(%d, %d) = %v, wantErr %v",
 					tt.offset, tt.length, err, tt.wantErr)
 			}
-			if err == nil {
+			if err != nil {
+				var stateErr *NFS4StateError
+				if !errors.As(err, &stateErr) || stateErr.Status != types.NFS4ERR_INVAL {
+					t.Errorf("normalizeLockRange(%d, %d) error = %v, want NFS4ERR_INVAL",
+						tt.offset, tt.length, err)
+				}
 				return
 			}
-			var stateErr *NFS4StateError
-			if !errors.As(err, &stateErr) || stateErr.Status != types.NFS4ERR_INVAL {
-				t.Errorf("validateLockRange(%d, %d) error = %v, want NFS4ERR_INVAL",
-					tt.offset, tt.length, err)
+			if gotLength != tt.wantLength {
+				t.Errorf("normalizeLockRange(%d, %d) length = %d, want %d",
+					tt.offset, tt.length, gotLength, tt.wantLength)
 			}
 		})
+	}
+}
+
+// TestEncodeLOCK4denied_UnboundedLength pins that the unbounded range travels
+// back to the client as the all-ones length it was requested with. A denial by
+// a to-EOF lock is the only way a client sees this field carry that range.
+func TestEncodeLOCK4denied_UnboundedLength(t *testing.T) {
+	var buf bytes.Buffer
+	EncodeLOCK4denied(&buf, &LOCK4denied{Offset: 100, Length: 0, LockType: types.WRITE_LT})
+
+	reader := bytes.NewReader(buf.Bytes())
+	offset, err := xdr.DecodeUint64(reader)
+	if err != nil {
+		t.Fatalf("decode offset: %v", err)
+	}
+	length, err := xdr.DecodeUint64(reader)
+	if err != nil {
+		t.Fatalf("decode length: %v", err)
+	}
+	if offset != 100 || length != math.MaxUint64 {
+		t.Errorf("encoded range = (%d, %d), want (100, %d)", offset, length, uint64(math.MaxUint64))
+	}
+}
+
+// TestLockToEndOfFile drives the all-ones length through all three ops that
+// carry one. A lock taken from offset 100 to end-of-file must deny a request at
+// 200, and releasing it with the same all-ones length must let that request
+// through: LOCK, LOCKT and LOCKU all read the same overlap primitive, so a
+// length that reached it untranslated made the lock cover nothing past 100.
+func TestLockToEndOfFile(t *testing.T) {
+	const toEOF = uint64(math.MaxUint64)
+
+	lm := lock.NewManager()
+	sm := NewStateManager(90 * time.Second)
+	sm.SetLockManager(lm)
+
+	callback := CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "10.0.0.1.8.1"}
+	fh := []byte("/export:eof-file")
+
+	holder, _ := sm.SetClientID("client-eof-holder", [8]byte{1}, callback, "10.0.0.1:1234")
+	_ = sm.ConfirmClientID(holder.ClientID, holder.ConfirmVerifier)
+	holderOpen, _ := sm.OpenFile(holder.ClientID, []byte("owner-holder"), 1, fh,
+		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+	holderConfirmed, _ := sm.ConfirmOpen(&holderOpen.Stateid, 2)
+
+	rival, _ := sm.SetClientID("client-eof-rival", [8]byte{2}, callback, "10.0.0.2:1234")
+	_ = sm.ConfirmClientID(rival.ClientID, rival.ConfirmVerifier)
+	rivalOpen, _ := sm.OpenFile(rival.ClientID, []byte("owner-rival"), 1, fh,
+		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+	rivalConfirmed, _ := sm.ConfirmOpen(&rivalOpen.Stateid, 2)
+
+	held, err := sm.LockNew(context.Background(),
+		holder.ClientID, []byte("lock-owner-holder"), 1,
+		&holderConfirmed.Stateid, 3,
+		fh, types.WRITE_LT, 100, toEOF, false,
+	)
+	if err != nil {
+		t.Fatalf("LOCK through end-of-file failed: %v", err)
+	}
+	if held.Denied != nil {
+		t.Fatalf("LOCK through end-of-file was denied: %+v", held.Denied)
+	}
+
+	// LOCKT: the range at 200 sits inside the held lock.
+	denied, err := sm.TestLock(rival.ClientID, []byte("lock-owner-rival"), fh, types.WRITE_LT, 200, 100)
+	if err != nil {
+		t.Fatalf("LOCKT failed: %v", err)
+	}
+	if denied == nil {
+		t.Fatal("LOCKT at 200 reported no conflict with the lock held from 100 to end-of-file")
+	}
+	if denied.Offset != 100 || denied.Length != 0 {
+		t.Errorf("LOCKT conflict range = (%d, %d), want (100, 0) for the unbounded lock",
+			denied.Offset, denied.Length)
+	}
+
+	// LOCK: the same range must be refused, not handed out.
+	rivalLock, err := sm.LockNew(context.Background(),
+		rival.ClientID, []byte("lock-owner-rival"), 1,
+		&rivalConfirmed.Stateid, 3,
+		fh, types.WRITE_LT, 200, 100, false,
+	)
+	if err != nil {
+		t.Fatalf("conflicting LOCK failed: %v", err)
+	}
+	if rivalLock.Denied == nil {
+		t.Fatal("LOCK at 200 was granted over the lock held from 100 to end-of-file")
+	}
+
+	// LOCKU: releasing with the same all-ones length must clear the whole range.
+	if _, err := sm.UnlockFile(&held.Stateid, 2, types.WRITE_LT, 100, toEOF); err != nil {
+		t.Fatalf("LOCKU through end-of-file failed: %v", err)
+	}
+	denied, err = sm.TestLock(rival.ClientID, []byte("lock-owner-rival"), fh, types.WRITE_LT, 200, 100)
+	if err != nil {
+		t.Fatalf("LOCKT after unlock failed: %v", err)
+	}
+	if denied != nil {
+		t.Errorf("LOCKT at 200 still reports a conflict after the to-EOF lock was released: %+v", denied)
 	}
 }
