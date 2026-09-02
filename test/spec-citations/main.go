@@ -233,6 +233,12 @@ func loadKnownWrong() (map[string]bool, error) {
 var skipDirs = map[string]bool{
 	".git": true, "vendor": true, "node_modules": true,
 	"graphify-out": true, ".planning": true,
+	// Nested working copies of this same repository. Their .go files are
+	// someone else's in-progress edits, so citations there are neither this
+	// tree's problem nor keyed by a path known_wrong.txt can name. Scanning
+	// them buries the findings that belong to this tree under hundreds that
+	// do not, which is the state in which a check stops being read.
+	".claude": true,
 	// This check's own fixtures cite the wrong sections on purpose.
 	"spec-citations": true,
 }
@@ -246,18 +252,13 @@ func exitOnErr(err error) {
 	}
 }
 
-func main() {
-	root := flag.String("root", ".", "directory tree to scan")
-	flag.Parse()
-
-	specs, err := loadSpecs()
-	exitOnErr(err)
-	known, err := loadKnownWrong()
-	exitOnErr(err)
-
+// scanTree walks root and reports every citation problem in it, plus the number
+// of Go files read. known is updated in place: an entry it matched is marked
+// seen, so the caller can report the ones that no longer match anything.
+func scanTree(root string, specs map[string]*specMap, known map[string]bool) ([]finding, int, error) {
 	var findings []finding
 	scanned := 0
-	err = filepath.WalkDir(*root, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -277,7 +278,7 @@ func main() {
 		scanned++
 		// known_wrong.txt spells its paths with forward slashes, so the key
 		// has to be separator-independent.
-		rel, relErr := filepath.Rel(*root, path)
+		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil {
 			rel = path
 		}
@@ -296,6 +297,19 @@ func main() {
 		}
 		return nil
 	})
+	return findings, scanned, err
+}
+
+func main() {
+	root := flag.String("root", ".", "directory tree to scan")
+	flag.Parse()
+
+	specs, err := loadSpecs()
+	exitOnErr(err)
+	known, err := loadKnownWrong()
+	exitOnErr(err)
+
+	findings, scanned, err := scanTree(*root, specs, known)
 	exitOnErr(err)
 
 	for _, f := range findings {

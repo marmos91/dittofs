@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -145,5 +147,54 @@ func TestSectionMapsArePopulated(t *testing.T) {
 		if m.Revision == "" || m.Revision == "unknown" {
 			t.Errorf("%s: revision is %q", spec, m.Revision)
 		}
+	}
+}
+
+// TestScanTreeSkipsNestedCheckouts pins that a working copy of this repository
+// nested inside the tree is not scanned.
+//
+// Without the skip the check reported hundreds of findings from other people's
+// in-progress edits and none of them could be silenced: known_wrong.txt keys on
+// a path, and a nested checkout's path is whoever happened to create it. The
+// findings that belong to this tree were buried, so the local run said 685
+// problems where CI said none — and a check whose local output disagrees that
+// far with CI is one nobody runs before pushing.
+func TestScanTreeSkipsNestedCheckouts(t *testing.T) {
+	specs, err := loadSpecs()
+	if err != nil {
+		t.Fatalf("loadSpecs: %v", err)
+	}
+
+	// The same bad citation in both trees: one in the tree being scanned, one
+	// inside a nested checkout. Only the first may be reported.
+	const badCitation = "// Per [MS-FSA] 2.1.5.14.3, a directory marked for deletion\n"
+
+	root := t.TempDir()
+	writeGo := func(rel string) {
+		t.Helper()
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s): %v", rel, err)
+		}
+		if err := os.WriteFile(full, []byte("package p\n\n"+badCitation), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s): %v", rel, err)
+		}
+	}
+	writeGo("mine.go")
+	writeGo(".claude/worktrees/someone-else/theirs.go")
+
+	findings, scanned, err := scanTree(root, specs, map[string]bool{})
+	if err != nil {
+		t.Fatalf("scanTree: %v", err)
+	}
+
+	if scanned != 1 {
+		t.Errorf("scanned %d files, want 1: the nested checkout was read", scanned)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
+	}
+	if findings[0].file != "mine.go" {
+		t.Errorf("finding came from %q, want mine.go", findings[0].file)
 	}
 }
