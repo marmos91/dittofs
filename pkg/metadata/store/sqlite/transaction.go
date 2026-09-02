@@ -307,10 +307,8 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 	// Accumulated on the tx and applied once after a successful commit so a
 	// serialization/deadlock retry never double-counts.
 	//
-	// nlink is not one of the columns this write touches, so the row's link
-	// count is the same before and after: an inode whose last name is already
-	// gone holds no share bytes to move, and a write through a still-open
-	// descriptor must not put them back.
+	// nlink is not among the columns this write touches, so the pre-update
+	// count is also the post-update one.
 	if updated && basestore.Charged(file.Type, uint32(oldNlinkVal.Int64)) {
 		var oldSize uint64
 		if oldSizeVal.Valid {

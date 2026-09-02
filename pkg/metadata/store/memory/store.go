@@ -618,35 +618,25 @@ func (store *MemoryMetadataStore) RecomputeUsage(ctx context.Context) error {
 		return err
 	}
 
-	store.mu.RLock()
 	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
+	addUsage := func(k basestore.QuotaKey, bytes int64) {
+		u := byIdentity[k]
+		if u == nil {
+			u = &metadata.UsageStat{}
+			byIdentity[k] = u
+		}
+		u.Bytes += bytes
+		u.Files++
+	}
+
+	store.mu.RLock()
 	for key, fd := range store.files {
-		if fd.Attr == nil {
+		if fd.Attr == nil || !store.chargedLocked(key, fd.Attr.Type) {
 			continue
 		}
-		count, ok := store.linkCounts[key]
-		if !ok {
-			count = 1
-			if fd.Attr.Type == metadata.FileTypeDirectory {
-				count = 2
-			}
-		}
-		if !basestore.Charged(fd.Attr.Type, count) {
-			continue
-		}
-		for scope, id := range map[metadata.QuotaScope]uint32{
-			metadata.QuotaScopeUser:  fd.Attr.UID,
-			metadata.QuotaScopeGroup: fd.Attr.GID,
-		} {
-			k := basestore.QuotaKey{Share: fd.ShareName, Scope: scope, ID: id}
-			u := byIdentity[k]
-			if u == nil {
-				u = &metadata.UsageStat{}
-				byIdentity[k] = u
-			}
-			u.Bytes += int64(fd.Attr.Size)
-			u.Files++
-		}
+		size := int64(fd.Attr.Size)
+		addUsage(basestore.QuotaKey{Share: fd.ShareName, Scope: metadata.QuotaScopeUser, ID: fd.Attr.UID}, size)
+		addUsage(basestore.QuotaKey{Share: fd.ShareName, Scope: metadata.QuotaScopeGroup, ID: fd.Attr.GID}, size)
 	}
 	store.mu.RUnlock()
 
@@ -654,4 +644,23 @@ func (store *MemoryMetadataStore) RecomputeUsage(ctx context.Context) error {
 	defer store.quotaMu.Unlock()
 	store.quota.Seed(byIdentity, nil)
 	return nil
+}
+
+// chargedLocked reports whether the inode stored under key currently holds
+// share bytes: a regular file with at least one name still reaching it. Must
+// be called with store.mu held.
+//
+// An absent linkCounts entry means no count was ever written, which mirrors
+// GetFile's default-by-type rather than "unlinked" — only an explicit
+// SetLinkCount(0) puts a zero there, and that is what marks an inode as
+// unlinked-but-open.
+func (store *MemoryMetadataStore) chargedLocked(key string, fileType metadata.FileType) bool {
+	count, ok := store.linkCounts[key]
+	if !ok {
+		count = 1
+		if fileType == metadata.FileTypeDirectory {
+			count = 2
+		}
+	}
+	return basestore.Charged(fileType, count)
 }

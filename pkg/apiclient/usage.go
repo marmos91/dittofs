@@ -15,11 +15,8 @@ type UsageRecomputeResult struct {
 
 // RecomputeShareUsage rebuilds the metadata store's used-bytes counters from
 // its file rows and returns the named share's figure before and after.
-//
-// A share whose counter drifted above what its files hold reports itself
-// fuller than it is, and that figure gates writes through the share quota. The
-// rebuild scans every file row in the store, so it is slow in proportion to the
-// store's size and repairs every share that store serves, not only this one.
+// The scan covers every file row in the store, so it is slow in proportion to
+// the store's size and repairs every share that store serves, not only this one.
 func (c *Client) RecomputeShareUsage(shareName string) (*UsageRecomputeResult, error) {
 	return createResource[UsageRecomputeResult](
 		c,

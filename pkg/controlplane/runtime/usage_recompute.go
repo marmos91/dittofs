@@ -22,20 +22,10 @@ type UsageRecomputeResult struct {
 // RecomputeShareUsage rebuilds the used-bytes counters from the metadata
 // store's file rows and reports what the named share held before and after.
 //
-// The counters are maintained transactionally and are correct on a store that
-// has only ever run code that maintains them. This repairs one that has not:
-// a share carrying bytes from a version that never released them on unlink
-// reports itself fuller than it is, and since that figure gates writes through
-// the share quota, it can report itself full while holding nothing.
-//
-// The rebuild is a full scan of the store's file rows, so this is an
-// operator-invoked repair, not something the server does at startup — a
-// per-file walk on every boot is a cost every share pays forever to fix a
-// number that is almost always already right.
-//
-// It covers every share served by the same metadata store instance, not only
-// the named one: they share the scan, and rebuilding one share's buckets alone
-// would cost exactly the same.
+// The rebuild is a full scan of the store's file rows, which is why it runs
+// only when asked. It covers every share served by that store instance, not
+// only the named one: rebuilding one share's buckets alone costs the same
+// scan.
 //
 // Returns ErrShareNotFound (wrapped) when the share is unknown.
 func (r *Runtime) RecomputeShareUsage(ctx context.Context, shareName string) (*UsageRecomputeResult, error) {

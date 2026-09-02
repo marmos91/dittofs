@@ -397,10 +397,8 @@ func (tx *badgerTransaction) putFile(ctx context.Context, file *metadata.File, w
 	// Track size delta for regular files. Accumulated on the tx and applied
 	// once after a successful commit so a conflict-retry never double-counts.
 	//
-	// This write never touches the l: key, so the link count is the same before
-	// and after: an inode whose last name is already gone holds no share bytes
-	// to move, and a write through a still-open descriptor must not put them
-	// back.
+	// This write never touches the l: key, so the pre-write count is also the
+	// post-write one.
 	if basestore.Charged(file.Type, fileLinkCountTxn(tx.txn, file)) {
 		switch {
 		case !hadOldRegular:
@@ -945,7 +943,11 @@ func (tx *badgerTransaction) SetLinkCount(ctx context.Context, handle metadata.F
 	// what puts an inode's bytes into the share's usage or takes them back out,
 	// and once the l: key is overwritten there is no way to tell which side it
 	// came from. A missing inode owes the counters nothing.
-	if item, gErr := tx.txn.Get(keyFile(fileID)); gErr == nil {
+	item, gErr := tx.txn.Get(keyFile(fileID))
+	if gErr != nil && !goerrors.Is(gErr, badgerdb.ErrKeyNotFound) {
+		return gErr
+	}
+	if gErr == nil {
 		raw, vErr := item.ValueCopy(nil)
 		if vErr != nil {
 			return vErr
@@ -958,14 +960,13 @@ func (tx *badgerTransaction) SetLinkCount(ctx context.Context, handle metadata.F
 		// dropping a hard link alongside others leaves the inode charged
 		// exactly once either way.
 		was := basestore.Charged(file.Type, fileLinkCountTxn(tx.txn, file))
-		switch now := basestore.Charged(file.Type, count); {
+		now := basestore.Charged(file.Type, count)
+		switch {
 		case was && !now:
 			tx.quota.Add(file.ShareName, file.UID, file.GID, -int64(file.Size), -1)
 		case !was && now:
 			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		}
-	} else if gErr != badgerdb.ErrKeyNotFound {
-		return gErr
 	}
 
 	tx.dirtyFiles = append(tx.dirtyFiles, fileID.String())

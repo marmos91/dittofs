@@ -43,13 +43,9 @@ type UsageRecomputeResponse struct {
 // Recompute handles POST /api/v1/shares/{name}/usage/recompute.
 //
 // It rebuilds the metadata store's used-bytes counters from its file rows and
-// reports the named share's figure before and after. A share carrying bytes it
-// no longer holds reports itself fuller than it is, and that figure gates
-// writes through the share quota — this is the repair for one.
-//
-// The rebuild scans every file row in the store, so it is slow in proportion to
-// the store's size and covers every share the store serves, not only the named
-// one.
+// reports the named share's figure before and after. The scan covers every file
+// row in the store, so it is slow in proportion to the store's size and repairs
+// every share that store serves, not only the named one.
 //
 // Status codes:
 //   - 200 OK with UsageRecomputeResponse on success

@@ -394,7 +394,8 @@ func (c *Core) SetLinkCount(ctx context.Context, handle metadata.FileHandle, cou
 		// dropping a hard link alongside others leaves the inode charged
 		// exactly once either way.
 		was := basestore.Charged(metadata.FileType(pre.fileType), uint32(pre.nlink))
-		switch now := basestore.Charged(metadata.FileType(pre.fileType), count); {
+		now := basestore.Charged(metadata.FileType(pre.fileType), count)
+		switch {
 		case was && !now:
 			c.Quota.Add(shareName, uint32(pre.uid), uint32(pre.gid), -pre.size, -1)
 		case !was && now:
