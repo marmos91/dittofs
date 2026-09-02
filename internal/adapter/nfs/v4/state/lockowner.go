@@ -159,10 +159,19 @@ type LOCK4denied struct {
 	}
 }
 
-// EncodeLOCK4denied encodes a LOCK4denied structure in XDR format.
+// EncodeLOCK4denied encodes the LOCK4denied structure in XDR format.
+//
+// A stored length of zero is the lock manager's spelling for "to end-of-file";
+// on the wire that range is a length with every bit set. Zero is not a length a
+// client may send, so emitting it would name a range the client cannot parse
+// back into the lock it was denied by.
 func EncodeLOCK4denied(buf *bytes.Buffer, denied *LOCK4denied) {
+	length := denied.Length
+	if length == 0 {
+		length = math.MaxUint64
+	}
 	_ = xdr.WriteUint64(buf, denied.Offset)
-	_ = xdr.WriteUint64(buf, denied.Length)
+	_ = xdr.WriteUint64(buf, length)
 	_ = xdr.WriteUint32(buf, denied.LockType)
 	_ = xdr.WriteUint64(buf, denied.Owner.ClientID)
 	_ = xdr.WriteXDROpaque(buf, denied.Owner.OwnerData)
@@ -172,22 +181,28 @@ func EncodeLOCK4denied(buf *bytes.Buffer, denied *LOCK4denied) {
 // Validation Helpers
 // ============================================================================
 
-// validateLockRange checks that offset and length describe a byte range the
-// server will act on. RFC 7530 Section 16.10.4 rejects a length of zero, and
-// rejects a length that is not all-ones whose sum with the offset exceeds the
-// maximum 64-bit unsigned value. A length with every bit set is the wire
-// encoding for "from offset to end-of-file", so it is exempt from that sum.
-// Sections 16.11.4 and 16.12.4 apply the same two rules to LOCKT and LOCKU.
+// normalizeLockRange checks that offset and length describe a byte range the
+// server will act on, and translates it into the lock manager's spelling.
 //
-// Exempting all-ones only admits the range: the lock manager still receives the
-// literal length, which is not the end-of-file range it names.
+// RFC 7530 Section 16.10.4 rejects a length of zero, and rejects a length that
+// is not all-ones whose sum with the offset exceeds the maximum 64-bit unsigned
+// value. A length with every bit set is the wire encoding for "from offset to
+// end-of-file", so it is exempt from that sum. Sections 16.11.4 and 16.12.4
+// apply the same two rules to LOCKT and LOCKU.
+//
+// The lock manager spells that same end-of-file range as a length of zero, so
+// an accepted all-ones length is returned as zero and every other accepted
+// length is returned unchanged.
 //
 // Returns NFS4ERR_INVAL on a rejected range.
-func validateLockRange(offset, length uint64) error {
-	if length != 0 && (length == math.MaxUint64 || offset <= math.MaxUint64-length) {
-		return nil
+func normalizeLockRange(offset, length uint64) (uint64, error) {
+	if length == math.MaxUint64 {
+		return 0, nil
 	}
-	return &NFS4StateError{
+	if length != 0 && offset <= math.MaxUint64-length {
+		return length, nil
+	}
+	return 0, &NFS4StateError{
 		Status:  types.NFS4ERR_INVAL,
 		Message: "invalid byte-range lock offset/length",
 	}
