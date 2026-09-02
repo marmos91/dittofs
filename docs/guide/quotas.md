@@ -52,3 +52,19 @@ dfsctl quota remove /export --scope user --id 1000
 
 Quota limits live in the control-plane database and are also reachable via the REST API
 at `/api/v1/shares/{name}/quotas`.
+
+## Repairing a drifted usage figure
+
+Usage counters are maintained transactionally as files are written and removed, so they
+are normally already correct. If a share reports more bytes than its files hold — most
+visibly, it refuses writes while `dfsctl share list` shows it far from full — rebuild them
+from the file rows:
+
+```bash
+dfsctl store metadata recompute-usage /export
+```
+
+The rebuild scans every file row in the metadata store, so it takes time in proportion to
+the store's size, and it repairs every share that store serves rather than only the one
+named. Nothing runs it automatically: a per-file walk on every server start would be a
+cost every share pays forever to correct a number that is almost always already right.
