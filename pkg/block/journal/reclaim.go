@@ -368,11 +368,16 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 			deadline = time.Now().Add(s.cfg.EvictMaxWait)
 		}
 		if !warned {
-			logger.Warn("journal local store full: nothing evictable, backpressuring writes until carve drains to remote",
+			// The fields are the discriminator, so state the observation and let
+			// them name the cause: unsynced_bytes>0 means carve is behind and the
+			// wait will clear; eviction_disabled means it never will; both zero
+			// and false leaves a snapshot pinning every candidate.
+			logger.Warn("journal local store full: nothing evictable, backpressuring writes",
 				"dir", s.dir,
 				"disk_bytes", s.diskBytes.Load(),
 				"max_local_bytes", s.cfg.MaxLocalBytes,
-				"unsynced_bytes", s.unsynced.Load())
+				"unsynced_bytes", s.unsynced.Load(),
+				"eviction_disabled", s.evictionDisabled.Load())
 			warned = true
 		}
 		if time.Now().After(deadline) {
