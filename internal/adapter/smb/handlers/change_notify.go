@@ -1726,7 +1726,7 @@ func (r *NotifyRegistry) deliverChanges(notify *PendingNotify, changes []FileNot
 // that marks a directory for deletion is usually not the handle that is
 // watching it.
 //
-// Per [MS-FSA] 2.1.5.14.3, setting the delete disposition on a directory sweeps
+// Per [MS-FSA] 2.1.5.11, setting the delete disposition on a directory sweeps
 // every ChangeNotifyEntry whose OpenedDirectory.File is the same file, removes
 // it, and completes it with STATUS_DELETE_PENDING. The trigger is the mark, not
 // the unlink — the directory is still on disk until the last handle closes, and

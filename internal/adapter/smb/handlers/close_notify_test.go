@@ -162,7 +162,7 @@ func TestClose_NoPendingNotify_PostSendNil(t *testing.T) {
 // smb2.notify.rmdir1-4 shape: one handle watches a directory while a second
 // handle on the SAME directory is closed carrying a delete-on-close. The
 // watcher's own handle is untouched, so nothing on the close path answers it
-// unless the delete mark itself does — [MS-FSA] 2.1.5.14.3 requires
+// unless the delete mark itself does — [MS-FSA] 2.1.5.11 requires
 // STATUS_DELETE_PENDING.
 func TestClose_DeleteOnClose_CompletesOtherHandlesNotify(t *testing.T) {
 	h := NewHandler()
@@ -225,7 +225,7 @@ func TestClose_DeleteOnClose_CompletesOtherHandlesNotify(t *testing.T) {
 	if !fired.Load() {
 		t.Fatal("the watcher's CHANGE_NOTIFY was never answered: a client watching a " +
 			"directory another handle marked for deletion waits until its own transport " +
-			"gives up (MS-FSA 2.1.5.14.3)")
+			"gives up (MS-FSA 2.1.5.11)")
 	}
 	if got := types.Status(gotStatus.Load()); got != types.StatusDeletePending {
 		t.Errorf("expected STATUS_DELETE_PENDING (0x%08X), got 0x%08X",
