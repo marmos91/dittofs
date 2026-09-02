@@ -128,12 +128,17 @@ func newShard(active *segmentMeta) *shard {
 // fenceDelete publishes id's delete fence at ver and drops the oldest fence
 // once the shard holds more than maxDeleteFences of them. Caller holds sh.mu.
 func (sh *shard) fenceDelete(id FileID, ver uint64) {
-	sh.hydrateFence[id] = ver
+	if ver > sh.hydrateFence[id] {
+		sh.hydrateFence[id] = ver // never lower a fence a racing Truncate stamped higher
+	}
 	sh.deleteFences = append(sh.deleteFences, fenceEntry{id: id, ver: ver})
 	if len(sh.deleteFences) > maxDeleteFences {
 		oldest := sh.deleteFences[0]
 		sh.deleteFences = sh.deleteFences[1:]
-		if sh.hydrateFence[oldest.id] == oldest.ver {
+		// Only if nothing has raised the fence since. A Truncate re-stamp belongs
+		// to a file that is live again and still needs its fence; that entry is
+		// then bounded by the live file set, as every truncate fence always was.
+		if sh.hydrateFence[oldest.id] <= oldest.ver {
 			delete(sh.hydrateFence, oldest.id)
 		}
 	}

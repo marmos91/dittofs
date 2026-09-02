@@ -3,7 +3,7 @@ package journal
 import (
 	"bytes"
 	"context"
-	"sync"
+	"fmt"
 	"testing"
 )
 
@@ -38,36 +38,33 @@ func TestHydrateAfterDeleteIsDropped(t *testing.T) {
 	}
 }
 
-// TestHydrateRacingDeleteNeverResurrects runs the two against each other rather
-// than in a fixed order. Whichever wins the shard lock, a hydrate whose bound
-// was sampled before the delete must leave nothing behind: it either loses the
-// fence check or lands below the tombstone's Version and is buried by it.
-func TestHydrateRacingDeleteNeverResurrects(t *testing.T) {
+// TestHydrateBoundAtTombstoneVersionIsDropped pins WHICH Version the fence
+// carries. Delete cannot stamp it from a version peeked before calling
+// appendTombstone: the tombstone's own Version is minted later under a
+// different acquisition of the lock and is strictly higher, so a cold read
+// holding a bound in between clears the fence, finds the index entry already
+// scrubbed, and re-creates the whole file through hydratable's nil receiver.
+// Stamping in the same critical section that mints the Version is what leaves
+// no gap, and this is the test that says so — the plain
+// TestHydrateAfterDeleteIsDropped passes with the fence stamped either way.
+func TestHydrateBoundAtTombstoneVersionIsDropped(t *testing.T) {
 	ctx := context.Background()
+	s, _ := evictStore(t, Config{})
 	data := bytes.Repeat([]byte{0xAB}, 4096)
-	for i := 0; i < 64; i++ {
-		s, _ := evictStore(t, Config{})
-		if err := s.WriteAt(ctx, "f", 0, data); err != nil {
-			t.Fatalf("WriteAt: %v", err)
-		}
-		mark := s.WriteVersion()
-
-		var wg sync.WaitGroup
-		var delErr, hydErr error
-		wg.Add(2)
-		go func() { defer wg.Done(); delErr = s.Delete(ctx, "f") }()
-		go func() { defer wg.Done(); hydErr = s.Hydrate(ctx, "f", 0, data, mark) }()
-		wg.Wait()
-		if delErr != nil {
-			t.Fatalf("Delete: %v", delErr)
-		}
-		if hydErr != nil {
-			t.Fatalf("Hydrate: %v", hydErr)
-		}
-		if sz, ok := s.FileSize(ctx, "f"); ok {
-			t.Fatalf("iteration %d: hydrate resurrected a deleted file: FileSize = %d", i, sz)
-		}
-		_ = s.Close()
+	if err := s.WriteAt(ctx, "f", 0, data); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	if err := s.Delete(ctx, "f"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	// Nothing appends after the tombstone, so this is exactly the tombstone's
+	// Version — above any version Delete could peek before minting it, and the
+	// record a fill would append lands above it too, where the scrub keeps it.
+	if err := s.Hydrate(ctx, "f", 0, data, s.WriteVersion()); err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+	if sz, ok := s.FileSize(ctx, "f"); ok {
+		t.Fatalf("a hydrate bounded at the tombstone's own Version resurrected the file: FileSize = %d", sz)
 	}
 }
 
@@ -98,5 +95,41 @@ func TestHydrateAfterDeleteAndRecreate(t *testing.T) {
 	}
 	if !bytes.Equal(got[len(head):], tail) {
 		t.Fatal("the delete fence outlived the file and blocked a hydrate of its replacement")
+	}
+}
+
+// TestDeleteFenceCountIsBounded pins the cap on a fence that has to outlive the
+// file's index entry: nothing else takes a delete fence back out, so without the
+// FIFO a shard would retain one entry per FileID the store has ever deleted.
+func TestDeleteFenceCountIsBounded(t *testing.T) {
+	sh := newShard(nil)
+	for i := 0; i < maxDeleteFences*3; i++ {
+		sh.fenceDelete(FileID(fmt.Sprintf("f%d", i)), uint64(i+1))
+	}
+	if n := len(sh.hydrateFence); n > maxDeleteFences {
+		t.Fatalf("delete fences grew unbounded: %d entries retained, cap is %d", n, maxDeleteFences)
+	}
+	if _, ok := sh.hydrateFence["f0"]; ok {
+		t.Fatal("the oldest delete fence was never evicted")
+	}
+	newest := FileID(fmt.Sprintf("f%d", maxDeleteFences*3-1))
+	if _, ok := sh.hydrateFence[newest]; !ok {
+		t.Fatal("the newest delete fence was evicted")
+	}
+}
+
+// TestDeleteFenceEvictionSparesARestampedFence covers the version guard. A file
+// deleted, written again and then truncated holds a truncate fence under the
+// same key; evicting the stale delete entry must leave that fence in place,
+// since the file is live and still needs it.
+func TestDeleteFenceEvictionSparesARestampedFence(t *testing.T) {
+	sh := newShard(nil)
+	sh.fenceDelete("x", 5)
+	sh.hydrateFence["x"] = 99 // a later Truncate re-stamps the same key
+	for i := 0; i < maxDeleteFences+1; i++ {
+		sh.fenceDelete(FileID(fmt.Sprintf("f%d", i)), uint64(i+100))
+	}
+	if got := sh.hydrateFence["x"]; got != 99 {
+		t.Fatalf("eviction dropped a re-stamped fence: hydrateFence[x] = %d, want 99", got)
 	}
 }

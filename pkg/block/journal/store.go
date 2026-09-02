@@ -764,18 +764,6 @@ func (s *Store) Delete(ctx context.Context, id FileID) error {
 		return errClosed
 	}
 	sh := s.shardFor(id)
-	// Published before the tombstone's Version is minted, so a cold read that
-	// sampled its bound earlier is refused rather than racing the append: an
-	// in-flight hydrate is otherwise free to land above the tombstone's Version,
-	// where the scrub below reads it as a rewrite that survives and re-creates
-	// the file out of pre-delete remote bytes. A hydrate that samples after this
-	// point carries a higher bound and is left alone, so a file written again
-	// after the unlink still hydrates. If the append below fails the fence stays,
-	// costing at most a re-fetch — dropping a write-back cache fill is always
-	// safe, resurrecting a deleted file is not.
-	sh.mu.Lock()
-	sh.fenceDelete(id, s.version.Load())
-	sh.mu.Unlock()
 
 	// Durability first: persist and fsync the tombstone BEFORE touching the
 	// in-memory index or the counters. If the append fails, the file's ranges are
