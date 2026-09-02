@@ -1075,10 +1075,10 @@ func (s *Store) PinVersion() uint64 { return s.pinVersion.Load() }
 //     pre-overwrite records survive because a live snapshot pinned their segments.
 //  2. Re-materialize: for each file, read the V-view bytes from their pinned
 //     source records and re-append them as fresh dirty records at the head (a
-//     tombstone first to bury the current head, then the V-view data), and fsync
-//     every shard the pass touched. Fresh versions exceed everything, so
-//     recover() rebuilds V on reopen; a file present at head but absent at V is
-//     tombstoned away.
+//     tombstone first to bury the current head, then the V-view data), then fsync
+//     every shard still holding unsynced records — a superset of the shards this
+//     pass wrote. Fresh versions exceed everything, so recover() rebuilds V on
+//     reopen; a file present at head but absent at V is tombstoned away.
 //
 // The caller (restore orchestration) drains rollups afterward and holds the share
 // disabled, so no concurrent writer races this.
@@ -1231,8 +1231,9 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 	// Every tombstone fsynced itself, but the V-view data went in through WriteAt,
 	// which only buffers. A crash before the next commit would leave each burial
 	// durable and its replacement not, and the restored files would read empty.
-	// The barrier covers every shard rather than the last one written, because a
-	// restore touches whichever shards its files hash to.
+	// The sweep covers every shard still holding unsynced records rather than the
+	// last one written: a restore's files hash across shards, and a shard already
+	// at its durable watermark is skipped, so the superset costs nothing.
 	if err := s.commitDirtyShards(); err != nil {
 		return fmt.Errorf("journal: restore: commit re-materialized view: %w", err)
 	}
