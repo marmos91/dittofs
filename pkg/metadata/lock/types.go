@@ -408,11 +408,19 @@ func RangesOverlap(offset1, length1, offset2, length2 uint64) bool {
 
 // rangeLast returns the inclusive last byte of a byte range.
 // For unbounded ranges (length=0), returns max uint64 to represent infinity.
+//
+// The result is never below offset. A length that carries offset+length past
+// the 64-bit maximum saturates at that maximum instead of wrapping to an
+// inverted range that overlaps nothing above its own start.
 func rangeLast(offset, length uint64) uint64 {
 	if length == 0 {
 		return ^uint64(0)
 	}
-	return offset + length - 1
+	last := offset + length - 1
+	if last < offset {
+		return ^uint64(0)
+	}
+	return last
 }
 
 // rangeEnd returns the exclusive end of a byte range.
