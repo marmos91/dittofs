@@ -58,9 +58,11 @@ func (s *Store) Evict(ctx context.Context, targetBytes int64) (EvictResult, erro
 }
 
 // evict is the shared eviction loop. allowActiveSeal enables the force-seal
-// fall-through used by the explicit Evict path; the write-path capacity gate
-// (ensureSpace) passes false so a sustained writer backpressures on its own
-// unsynced bytes instead of sealing the very segment it is appending into.
+// fall-through, which both callers want: without it the sealed set is the only
+// reclaimable set, and a working set below the rotation threshold never enters
+// it. The parameter stays so a caller that must not disturb segment layout can
+// opt out. The fall-through is bounded to one pass per call, and sealableActive
+// keeps it from touching an active holding unsynced records.
 func (s *Store) evict(ctx context.Context, targetBytes int64, allowActiveSeal bool) (EvictResult, error) {
 	if err := ctx.Err(); err != nil {
 		return EvictResult{}, err
@@ -337,10 +339,15 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 			return err
 		}
 		overage := s.diskBytes.Load() + needed - s.cfg.MaxLocalBytes
-		// Write-path eviction never force-seals the active segment: the bytes
-		// pinning the cap are this writer's own unsynced records, so the fix is to
-		// wait for carve to drain them, not to seal-and-strand them.
-		res, err := s.evict(ctx, overage, false)
+		// Force-sealing is enabled here for the same reason the explicit drain
+		// enables it: sealing happens only when an append would overflow
+		// SegmentSize, so a working set below that threshold sits entirely in
+		// active segments, and eviction scans the sealed set alone. Denying the
+		// gate a seal leaves the cap structurally unreachable — every byte synced
+		// and droppable, nothing evictable. It cannot strand this writer's own
+		// dirty bytes: sealableActive refuses any active still holding an unsynced
+		// record, so a sustained writer's segment stays put and backpressures.
+		res, err := s.evict(ctx, overage, true)
 		if err != nil {
 			return err
 		}
@@ -361,7 +368,7 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 			deadline = time.Now().Add(s.cfg.EvictMaxWait)
 		}
 		if !warned {
-			logger.Warn("journal local store full: every segment pinned by unsynced bytes, backpressuring writes until carve drains to remote",
+			logger.Warn("journal local store full: nothing evictable, backpressuring writes until carve drains to remote",
 				"dir", s.dir,
 				"disk_bytes", s.diskBytes.Load(),
 				"max_local_bytes", s.cfg.MaxLocalBytes,

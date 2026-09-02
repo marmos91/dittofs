@@ -577,3 +577,30 @@ func TestEvictWaitsForCarve(t *testing.T) {
 		t.Fatal("Evict never completed after the carve released carveMu")
 	}
 }
+
+// TestEnsureSpaceReclaimsSyncedActiveBelowRotation pins the write-path capacity
+// gate against a working set that never reaches the rotation threshold. Sealing
+// happens only when an append would overflow SegmentSize, so such a set lives
+// entirely in active segments — and eviction scans the sealed set alone. Without
+// a force-seal the gate has nothing to reclaim, and writes fail
+// ErrLocalStoreFull while every byte on disk is synced and droppable.
+func TestEnsureSpaceReclaimsSyncedActiveBelowRotation(t *testing.T) {
+	s, _ := evictStore(t, Config{
+		SegmentSize:   8 << 20, // far above the bytes written: nothing ever rotates
+		MaxLocalBytes: 2 << 20,
+		EvictMaxWait:  200 * time.Millisecond,
+	})
+	ctx := context.Background()
+
+	buf := bytes.Repeat([]byte{0xCD}, chunk256)
+	var off int64
+	for i := range 24 { // 6 MiB of synced bytes against a 2 MiB cap
+		if err := s.Hydrate(ctx, "f", off, buf, 0); err != nil {
+			t.Fatalf("synced write %d at offset %d: %v", i, off, err)
+		}
+		off += chunk256
+	}
+	if got, max := s.diskBytes.Load(), int64(3<<20); got > max {
+		t.Fatalf("cap never enforced: diskBytes=%d want <=%d", got, max)
+	}
+}
