@@ -819,9 +819,10 @@ else
     # NOTE: Skipped interactive hold tests:
     #   smb2.hold-oplock    - waits 5 min for oplock events (no real test)
     #   smb2.hold-sharemode - blocks indefinitely waiting for SIGINT
-    # Also skipped: smb2.bench (throughput benchmarks — flaky under load, no
-    # conformance signal; see the SUITES list above).
-    log_warn "Skipped: smb2.hold-oplock, smb2.hold-sharemode (interactive hold tests), smb2.bench (benchmarks)"
+    # Also skipped: smb2.bench and smb2.create.bench-path-contention-shared
+    # (throughput benchmarks — flaky under load, no conformance signal; see the
+    # SUITES list above).
+    log_warn "Skipped: smb2.hold-oplock, smb2.hold-sharemode (interactive hold tests), smb2.bench and smb2.create.bench-path-contention-shared (benchmarks)"
 fi
 
 # Collect DittoFS logs
