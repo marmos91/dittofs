@@ -401,24 +401,29 @@ func (s *Store) syncLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.commitDirtyShards()
+			if err := s.commitDirtyShards(); err != nil {
+				logger.Warn("journal: dirty-age commit failed", "error", err)
+			}
 		}
 	}
 }
 
 // commitDirtyShards fsyncs each shard holding records above its durable
-// watermark. groupCommit coalesces with any concurrent client commit, so
+// watermark and reports the first failure, having still attempted every other
+// dirty shard. groupCommit coalesces with any concurrent client commit, so
 // overlapping with a carve pass or an explicit Commit costs at most one extra
 // fsync and never duplicates work.
-func (s *Store) commitDirtyShards() {
+func (s *Store) commitDirtyShards() error {
+	var firstErr error
 	for _, sh := range s.shards {
 		if !sh.dirty() {
 			continue
 		}
-		if err := sh.groupCommit(); err != nil {
-			logger.Warn("journal: dirty-age commit failed", "error", err)
+		if err := sh.groupCommit(); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
+	return firstErr
 }
 
 // WriteAt buffers a dirty client write. It never fsyncs; durability is a
@@ -1070,9 +1075,10 @@ func (s *Store) PinVersion() uint64 { return s.pinVersion.Load() }
 //     pre-overwrite records survive because a live snapshot pinned their segments.
 //  2. Re-materialize: for each file, read the V-view bytes from their pinned
 //     source records and re-append them as fresh dirty records at the head (a
-//     tombstone first to bury the current head, then the V-view data). Fresh
-//     versions exceed everything, so recover() rebuilds V on reopen; a file
-//     present at head but absent at V is tombstoned away.
+//     tombstone first to bury the current head, then the V-view data), then fsync
+//     every shard still holding unsynced records — a superset of the shards this
+//     pass wrote. Fresh versions exceed everything, so recover() rebuilds V on
+//     reopen; a file present at head but absent at V is tombstoned away.
 //
 // The caller (restore orchestration) drains rollups afterward and holds the share
 // disabled, so no concurrent writer races this.
@@ -1220,6 +1226,16 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 		if err := s.Delete(ctx, id); err != nil {
 			return fmt.Errorf("journal: restore: tombstone post-V file %q: %w", id, err)
 		}
+	}
+
+	// Every tombstone fsynced itself, but the V-view data went in through WriteAt,
+	// which only buffers. A crash before the next commit would leave each burial
+	// durable and its replacement not, and the restored files would read empty.
+	// The sweep covers every shard still holding unsynced records rather than the
+	// last one written: a restore's files hash across shards, and a shard already
+	// at its durable watermark is skipped, so the superset costs nothing.
+	if err := s.commitDirtyShards(); err != nil {
+		return fmt.Errorf("journal: restore: commit re-materialized view: %w", err)
 	}
 	return nil
 }
