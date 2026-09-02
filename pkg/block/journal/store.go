@@ -763,8 +763,6 @@ func (s *Store) Delete(ctx context.Context, id FileID) error {
 	if s.closed.Load() {
 		return errClosed
 	}
-	sh := s.shardFor(id)
-
 	// Durability first: persist and fsync the tombstone BEFORE touching the
 	// in-memory index or the counters. If the append fails, the file's ranges are
 	// left intact — a failed Delete never makes data disappear, and a crash can
@@ -777,6 +775,7 @@ func (s *Store) Delete(ctx context.Context, id FileID) error {
 		return err
 	}
 
+	sh := s.shardFor(id)
 	sh.mu.Lock()
 	fi := sh.index[id]
 	var dirty int64
