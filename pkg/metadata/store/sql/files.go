@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 )
 
@@ -370,15 +371,67 @@ func (c *Core) SetLinkCount(ctx context.Context, handle metadata.FileHandle, cou
 		return err
 	}
 
-	_, fileID, err := metadata.DecodeFileHandle(handle)
+	shareName, fileID, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return invalidHandle("file")
+	}
+
+	// Read the pre-image before the count moves. A link count crossing zero is
+	// what puts an inode's bytes into the share's usage or takes them back out,
+	// and once the UPDATE has landed there is no way to tell which side it came
+	// from.
+	pre, err := c.fileUsage(ctx, shareName, fileID, "SetLinkCount")
+	if err != nil {
+		return err
 	}
 
 	if _, err := c.X.Exec(ctx, c.D.Files().SetLinkCount, count, fileID); err != nil {
 		return c.D.MapError(err, "SetLinkCount", "")
 	}
+
+	if pre != nil {
+		// Only the crossing between zero and non-zero moves usage: adding or
+		// dropping a hard link alongside others leaves the inode charged
+		// exactly once either way.
+		was := basestore.Charged(metadata.FileType(pre.fileType), uint32(pre.nlink))
+		now := basestore.Charged(metadata.FileType(pre.fileType), count)
+		switch {
+		case was && !now:
+			c.Quota.Add(shareName, uint32(pre.uid), uint32(pre.gid), -pre.size, -1)
+		case !was && now:
+			c.Quota.Add(shareName, uint32(pre.uid), uint32(pre.gid), pre.size, 1)
+		}
+	}
 	return nil
+}
+
+// usageRow is the inode pre-image the usage counters are computed from.
+type usageRow struct {
+	fileType int
+	size     int64
+	uid, gid int64
+	nlink    int64
+}
+
+// fileUsage reads one inode's usage pre-image. A row that is not there yields
+// (nil, nil): it owes the counters nothing, and callers that need to know it
+// was missing learn that from their own write's RowsAffected.
+//
+// Any other scan failure is fatal rather than silenced, because FileTypeRegular
+// is the zero value: a dropped error would move bytes on uid 0's bucket and
+// leave the real owner's wrong, with nothing to notice it afterwards.
+func (c *Core) fileUsage(ctx context.Context, shareName string, fileID uuid.UUID, op string) (*usageRow, error) {
+	var u usageRow
+	err := c.X.QueryRow(ctx, c.D.Files().FileUsageRow, fileID, shareName).
+		Scan(&u.fileType, &u.size, &u.uid, &u.gid, &u.nlink)
+	switch {
+	case err == nil:
+		return &u, nil
+	case c.D.IsNoRows(err):
+		return nil, nil
+	default:
+		return nil, c.D.MapError(err, op, "")
+	}
 }
 
 // DeleteFile removes one inode, reporting metadata.ErrNotFound when it is not
@@ -400,20 +453,12 @@ func (c *Core) DeleteFile(ctx context.Context, handle metadata.FileHandle) error
 	}
 
 	// Read the size and owner before the row goes, so the usage counters can be
-	// decremented after the delete lands.
-	//
-	// A missing row is expected and not an error here: the RowsAffected check
-	// below turns it into ErrNotFound before the usage is touched. Any other
-	// scan failure is fatal, because FileTypeRegular is the zero value — a
-	// dropped error would charge -1 file to uid 0 and leave the real owner
-	// charged for a file that is gone, with nothing to notice it afterwards.
-	var fileType int
-	var fileSize int64
-	var fileUID, fileGID int64
-	scanErr := c.X.QueryRow(ctx, c.D.Files().DeleteFileOwner, id, shareName).
-		Scan(&fileType, &fileSize, &fileUID, &fileGID)
-	if scanErr != nil && !c.D.IsNoRows(scanErr) {
-		return c.D.MapError(scanErr, "DeleteFile", "")
+	// decremented after the delete lands. A missing row is expected and not an
+	// error here: the RowsAffected check below turns it into ErrNotFound before
+	// the usage is touched.
+	pre, err := c.fileUsage(ctx, shareName, id, "DeleteFile")
+	if err != nil {
+		return err
 	}
 
 	result, err := c.X.Exec(ctx, c.D.Files().DeleteFile, id, shareName)
@@ -427,8 +472,10 @@ func (c *Core) DeleteFile(ctx context.Context, handle metadata.FileHandle) error
 		}
 	}
 
-	if metadata.FileType(fileType) == metadata.FileTypeRegular {
-		c.Quota.Add(shareName, uint32(fileUID), uint32(fileGID), -fileSize, -1)
+	// An inode whose last name went already gave its bytes back, so removing the
+	// row itself owes the counters nothing.
+	if pre != nil && basestore.Charged(metadata.FileType(pre.fileType), uint32(pre.nlink)) {
+		c.Quota.Add(shareName, uint32(pre.uid), uint32(pre.gid), -pre.size, -1)
 	}
 
 	return nil

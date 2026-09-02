@@ -94,3 +94,54 @@ func TestApplyPerShareIsOrderIndependent(t *testing.T) {
 		}
 	}
 }
+
+// TestRebuildKeepsConcurrentCommit pins that a rebuild does not discard a
+// transaction that commits while it is scanning.
+//
+// A rebuild reads the durable rows with no lock held and then replaces the
+// cache wholesale. A commit landing in that window is missing from the scan and
+// has already been applied to the buckets the Seed is about to overwrite, so
+// without the capture its bytes vanish until the next mutation touches that
+// owner — on an endpoint whose whole purpose is to make the counter trustworthy.
+func TestRebuildKeepsConcurrentCommit(t *testing.T) {
+	c := NewQuotaCache()
+
+	// A share already holding one 1000-byte file owned by uid 7 / gid 3.
+	var seeded QuotaDelta
+	seeded.Add("/s", 7, 3, 1000, 1)
+	c.Apply(seeded.Map())
+
+	// Seed takes ownership of the map it is handed and mutates it when it
+	// replays, so every rebuild builds its own — exactly as the backends do.
+	scan := func() map[QuotaKey]*metadata.UsageStat {
+		return map[QuotaKey]*metadata.UsageStat{
+			{Share: "/s", Scope: metadata.QuotaScopeUser, ID: 7}:  {Bytes: 1000, Files: 1},
+			{Share: "/s", Scope: metadata.QuotaScopeGroup, ID: 3}: {Bytes: 1000, Files: 1},
+		}
+	}
+
+	// The rebuild starts and reads the rows: it sees only that one file.
+	c.BeginRebuild()
+	scanned := scan()
+
+	// A second file commits before the scan's result is installed.
+	var mid QuotaDelta
+	mid.Add("/s", 7, 3, 500, 1)
+	c.Apply(mid.Map())
+
+	c.Seed(scanned, nil)
+
+	if got := c.Share("/s"); got.Bytes != 1500 || got.Files != 2 {
+		t.Fatalf("share usage after rebuild = %+v, want {1500 2} — the commit that landed mid-scan was dropped", got)
+	}
+	if got := c.Get("/s", metadata.QuotaScopeUser, 7); got.Bytes != 1500 || got.Files != 2 {
+		t.Fatalf("user usage after rebuild = %+v, want {1500 2}", got)
+	}
+
+	// The capture ends with the Seed: a later rebuild must not replay it again.
+	c.BeginRebuild()
+	c.Seed(scan(), nil)
+	if got := c.Share("/s"); got.Bytes != 1000 || got.Files != 1 {
+		t.Fatalf("share usage after a second rebuild = %+v, want {1000 1} — the capture replayed twice", got)
+	}
+}

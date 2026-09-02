@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 )
 
@@ -33,9 +34,10 @@ func (tx *sqliteTransaction) ApplyDataWrite(
 	var oldSize int64
 	var oldUID, oldGID uint32
 	var oldType int
+	var oldNlink uint32
 	err = tx.tx.QueryRow(ctx,
-		`SELECT size, uid, gid, file_type FROM inodes WHERE id = ?1 AND share_name = ?2`,
-		id, shareName).Scan(&oldSize, &oldUID, &oldGID, &oldType)
+		`SELECT size, uid, gid, file_type, nlink FROM inodes WHERE id = ?1 AND share_name = ?2`,
+		id, shareName).Scan(&oldSize, &oldUID, &oldGID, &oldType, &oldNlink)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return 0, &metadata.StoreError{Code: metadata.ErrNotFound, Message: "file not found"}
@@ -62,7 +64,10 @@ func (tx *sqliteTransaction) ApplyDataWrite(
 		return 0, mapDBError(err, "ApplyDataWrite", "")
 	}
 
-	if delta := finalSize - oldSize; delta != 0 {
+	// An unlinked-but-open file still accepts writes, but it gave its bytes
+	// back to the share when its last name went, so its growth is not the
+	// share's to account for.
+	if delta := finalSize - oldSize; delta != 0 && basestore.Charged(metadata.FileTypeRegular, oldNlink) {
 		tx.quota.Add(shareName, oldUID, oldGID, delta, 0)
 	}
 	return uint64(finalSize), nil

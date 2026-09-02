@@ -35,6 +35,7 @@ func runStoreSurfaceTests(t *testing.T, factory StoreFactory) {
 	t.Run("Pagination", func(t *testing.T) { testListChildrenPagination(t, factory) })
 	t.Run("DeleteSharePurgesUsedBytesAndObjectIndex", func(t *testing.T) { testDeleteSharePurgesCounters(t, factory) })
 	t.Run("ListChildrenCursorAfterDeletedEntry", func(t *testing.T) { testListChildrenCursorAfterDelete(t, factory) })
+	t.Run("UnlinkReleasesUsedBytes", func(t *testing.T) { testUnlinkReleasesUsedBytes(t, factory) })
 }
 
 func testDeleteSharePurgesCounters(t *testing.T, factory StoreFactory) {
@@ -139,6 +140,96 @@ func testListChildrenCursorAfterDelete(t *testing.T, factory StoreFactory) {
 	if page2[0].Name != "c" {
 		t.Errorf("page2[0] = %q, want 'c' — cursor must resume after the deleted entry's sorted position", page2[0].Name)
 	}
+}
+
+// testUnlinkReleasesUsedBytes pins the per-file half of usage accounting: a
+// share's used bytes must fall when a file is unlinked, not only when the whole
+// share is deleted.
+//
+// Unlinking the last name for a regular file does NOT remove its inode — the
+// row is retained with nlink=0 so fstat(2) on a still-open descriptor keeps
+// working — so the usage counters cannot key off the inode's existence. They
+// key off its link count: a regular inode contributes its size and one file to
+// the share and to its owner's identity buckets exactly while nlink > 0.
+// Dropping one of several hard links moves nothing; dropping the last one
+// releases everything the inode held.
+func testUnlinkReleasesUsedBytes(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const shareName = "/unlink-usage"
+	const uid, gid = uint32(1001), uint32(2002)
+	rootHandle := createTestShare(t, store, shareName)
+
+	assertShareUsed := func(what string, want int64) {
+		t.Helper()
+		got, err := store.GetUsedBytesForShare(ctx, shareName)
+		if err != nil {
+			t.Fatalf("GetUsedBytesForShare(%q) failed after %s: %v", shareName, what, err)
+		}
+		if got != want {
+			t.Fatalf("GetUsedBytesForShare(%q) = %d, want %d after %s", shareName, got, want, what)
+		}
+	}
+
+	handle := createTestFileOwned(t, store, shareName, rootHandle, "big.bin", uid, gid, 8192)
+	assertShareUsed("creating big.bin", 8192)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 8192, 1)
+
+	// A second hard link adds a name, not bytes: one inode, still 8192.
+	if err := store.SetChild(ctx, rootHandle, "link.bin", handle); err != nil {
+		t.Fatalf("SetChild(link.bin) failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 2); err != nil {
+		t.Fatalf("SetLinkCount(2) failed: %v", err)
+	}
+	assertShareUsed("hard-linking big.bin", 8192)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 8192, 1)
+
+	// Dropping one of two names leaves the inode reachable, so it keeps its
+	// bytes.
+	if err := store.DeleteChild(ctx, rootHandle, "link.bin"); err != nil {
+		t.Fatalf("DeleteChild(link.bin) failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 1); err != nil {
+		t.Fatalf("SetLinkCount(1) failed: %v", err)
+	}
+	assertShareUsed("unlinking one of two names", 8192)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 8192, 1)
+
+	// Dropping the last name releases the bytes, even though the inode itself
+	// survives for POSIX open-but-unlinked semantics.
+	if err := store.DeleteChild(ctx, rootHandle, "big.bin"); err != nil {
+		t.Fatalf("DeleteChild(big.bin) failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 0); err != nil {
+		t.Fatalf("SetLinkCount(0) failed: %v", err)
+	}
+	if _, err := store.GetFile(ctx, handle); err != nil {
+		t.Fatalf("GetFile after last unlink: %v — the inode must survive for open descriptors", err)
+	}
+	assertShareUsed("unlinking the last name", 0)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 0, 0)
+	wantUsage(t, store, shareName, metadata.QuotaScopeGroup, gid, 0, 0)
+
+	// The on-demand repair rebuilds the counters from the stored rows, so it
+	// must read the retained inode the same way the transactional deltas did.
+	// A recompute that counted it would put the bytes back — and, for the
+	// backends that seed their counters the same way, so would a restart.
+	if err := store.RecomputeUsage(ctx); err != nil {
+		t.Fatalf("RecomputeUsage() failed: %v", err)
+	}
+	assertShareUsed("recomputing usage", 0)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 0, 0)
+
+	// And it must agree with the live counter for files that are still linked.
+	createTestFileOwned(t, store, shareName, rootHandle, "kept.bin", uid, gid, 4096)
+	assertShareUsed("creating kept.bin", 4096)
+	if err := store.RecomputeUsage(ctx); err != nil {
+		t.Fatalf("RecomputeUsage() after kept.bin failed: %v", err)
+	}
+	assertShareUsed("recomputing usage with a live file", 4096)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 4096, 1)
 }
 
 func namesOf(entries []metadata.DirEntry) []string {

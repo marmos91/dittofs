@@ -237,7 +237,7 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 	// RowsAffected()==0 check relied on.
 	updateQuery := `
 		WITH old AS (
-			SELECT id, share_name, size, uid, gid, file_type
+			SELECT id, share_name, size, uid, gid, file_type, nlink
 			FROM inodes
 			WHERE id = $21 AND share_name = $22
 			FOR UPDATE
@@ -265,7 +265,7 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 			deleted_by = $20
 		FROM old
 		WHERE inodes.id = old.id AND inodes.share_name = old.share_name
-		RETURNING old.size, old.uid, old.gid, old.file_type
+		RETURNING old.size, old.uid, old.gid, old.file_type, old.nlink
 	`
 
 	var deviceMajor, deviceMinor *int32
@@ -335,7 +335,7 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 	// write. A returned row means the file existed (and we have its old size);
 	// pgx.ErrNoRows means it did not, so we fall through to INSERT.
 	var oldSizeVal sql.NullInt64
-	var oldUIDVal, oldGIDVal, oldTypeVal sql.NullInt64
+	var oldUIDVal, oldGIDVal, oldTypeVal, oldNlinkVal sql.NullInt64
 	// A caller that knows the inode is new skips the probe entirely: on a
 	// create the round-trip can only ever report "no such row", and a stale
 	// claim surfaces as the INSERT's duplicate-key error.
@@ -349,7 +349,7 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 			file.Hidden, aclJSON, easJSON, objectIDArg,
 			deletedAtArg, file.OriginalPath, file.DeletedBy,
 			file.ID, file.ShareName,
-		).Scan(&oldSizeVal, &oldUIDVal, &oldGIDVal, &oldTypeVal)
+		).Scan(&oldSizeVal, &oldUIDVal, &oldGIDVal, &oldTypeVal, &oldNlinkVal)
 		switch {
 		case scanErr == nil:
 			// Row existed and was updated; oldSizeVal holds the pre-update size.
@@ -363,7 +363,10 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 	// Track size delta for regular files after a successful update.
 	// Accumulated on the tx and applied once after a successful commit so a
 	// serialization/deadlock retry never double-counts.
-	if updated && file.Type == metadata.FileTypeRegular {
+	//
+	// nlink is not among the columns this write touches, so the pre-update
+	// count is also the post-update one.
+	if updated && basestore.Charged(file.Type, uint32(oldNlinkVal.Int64)) {
 		var oldSize uint64
 		if oldSizeVal.Valid {
 			oldSize = uint64(oldSizeVal.Int64)
