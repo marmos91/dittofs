@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"path"
 	"strings"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -327,15 +326,23 @@ func (h *Handler) removeElectedTarget(
 	// right for both close paths, and it runs ahead of the removal so every
 	// exit below is covered.
 	//
-	// The path is rebuilt from the entry being removed rather than taken from
-	// target.Name, which is the closing handle's own name: reached through a
-	// stream handle carrying a deferred base delete, that name is the stream's,
-	// and clearing under it would leave the base directory's marker behind.
+	// target.Name is the closing handle's own name, which is the entry being
+	// removed except when a stream handle carries a deferred base delete —
+	// there it names the stream, and clearing under it would leave the base
+	// directory's marker behind. Only that case swaps the last component, and
+	// it swaps it textually: watch paths are keyed as the open spells them,
+	// which is not necessarily rooted, so rejoining through path.Join would
+	// produce a key that matches nothing.
 	if isDeleteTargetDir && h.NotifyRegistry != nil {
-		h.NotifyRegistry.ClearDeletePendingMark(
-			openFile.ShareName,
-			path.Join(GetParentPath(target.Name.Path), target.FileName),
-		)
+		clearedPath := target.Name.Path
+		if target.IsBaseFile {
+			if i := strings.LastIndex(clearedPath, "/"); i >= 0 {
+				clearedPath = clearedPath[:i+1] + target.FileName
+			} else {
+				clearedPath = target.FileName
+			}
+		}
+		h.NotifyRegistry.ClearDeletePendingMark(openFile.ShareName, clearedPath)
 	}
 
 	var removedPayloadID metadata.PayloadID

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -233,5 +234,66 @@ func TestClose_DeleteOnClose_CompletesOtherHandlesNotify(t *testing.T) {
 	}
 	if h.NotifyRegistry.WatcherCount() != 0 {
 		t.Errorf("watch survived the delete mark: %d", h.NotifyRegistry.WatcherCount())
+	}
+}
+
+// TestClose_DirectoryDeleteOnClose_RetiresNotifyMarker walks the marker's whole
+// life through the real handlers: SET_INFO commits the delete disposition, a
+// CHANGE_NOTIFY arriving after that is answered rather than parked, and the
+// CLOSE that actually removes the entry frees the name to be watched again.
+//
+// The clear is deliberately not wired to the close paths' own sweep: both of
+// them remove the directory entry before they sweep, so a marker recorded there
+// would be stamped onto a name that has just been freed.
+func TestClose_DirectoryDeleteOnClose_RetiresNotifyMarker(t *testing.T) {
+	h, ctx, _ := setupStreamsDisabledShare(t, false)
+	if h.NotifyRegistry == nil {
+		h.NotifyRegistry = NewNotifyRegistry()
+	}
+
+	dirID := dirTestCreate(t, h, ctx, "doomed", types.FileOpenIf, types.FileDirectoryFile)
+	openFile, ok := h.GetOpenFile(dirID)
+	if !ok {
+		t.Fatal("directory handle missing from the open-file table")
+	}
+	shareName, watchPath := openFile.ShareName, openFile.Name().Path
+
+	lateNotify := func(messageID uint64) *PendingNotify {
+		return &PendingNotify{
+			FileID:           [16]byte{0x51, byte(messageID)},
+			SessionID:        ctx.SessionID,
+			MessageID:        messageID,
+			AsyncId:          messageID * 10,
+			WatchPath:        watchPath,
+			ShareName:        shareName,
+			CompletionFilter: FileNotifyChangeFileName,
+			MaxOutputLength:  4096,
+			AsyncCallback:    func(uint64, uint64, uint64, *ChangeNotifyResponse) error { return nil },
+		}
+	}
+
+	resp, err := h.SetInfo(ctx, &SetInfoRequest{
+		InfoType:      types.SMB2InfoTypeFile,
+		FileInfoClass: uint8(types.FileDispositionInformation),
+		FileID:        dirID,
+		Buffer:        encodeDispositionInfo(true),
+	})
+	if err != nil {
+		t.Fatalf("SetInfo disposition: %v", err)
+	}
+	if resp.Status != types.StatusSuccess {
+		t.Fatalf("disposition on an empty directory = %v, want STATUS_SUCCESS", resp.Status)
+	}
+
+	if err := h.NotifyRegistry.Register(lateNotify(11)); !errors.Is(err, ErrDirectoryDeletePending) {
+		t.Fatalf("a watch registering after the mark: got %v, want ErrDirectoryDeletePending", err)
+	}
+
+	if _, err := h.Close(ctx, &CloseRequest{FileID: dirID}); err != nil {
+		t.Fatalf("close doomed: %v", err)
+	}
+
+	if err := h.NotifyRegistry.Register(lateNotify(12)); err != nil {
+		t.Fatalf("once the entry is gone the name must be watchable again: %v", err)
 	}
 }
