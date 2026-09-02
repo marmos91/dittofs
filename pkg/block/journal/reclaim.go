@@ -834,7 +834,7 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta, live map[uint64]in
 	target.liveBytes.Store(relocated)
 	// Data records only — the markers carried forward above are excluded, matching
 	// the append path and the recovery replay so a restart reconstructs the same
-	// denominator. Leaving it zero makes the synced-gate below compare against
+	// denominator. Leaving it zero makes evictable's synced-gate compare against
 	// zero: a target holding only unsynced records reads as fully synced and
 	// eviction discards the sole copy of dirty bytes, while one holding synced
 	// records never reaches equality again and its space is never reclaimed.
