@@ -18,9 +18,12 @@ Three audits — `pkg/block/journal`, `pkg/block/engine` and the `pkg/block` roo
 with an adversarial verify gate, 204 agents over 19,632 LOC — produced **196 findings: 7 HIGH,
 23 MED, 117 LOW**. The bug count is not the interesting part. The shape is:
 
-> **Every one of the five distinct HIGH findings is a residency-truth failure** — the cache's
-> map of what it holds disagreeing with what it actually holds, resolving either to zeros or to
-> reclaiming live data. Not one is a throughput, eviction-policy or chunking bug.
+> **Every one of the journal audit's five distinct HIGH findings is a residency-truth failure**:
+> the cache's map of what it holds disagreeing with what it actually holds, resolving either to
+> zeros or to reclaiming live data. Not one is a throughput, eviction-policy or chunking bug.
+
+(Six HIGH were filed against the journal, five of them distinct defects; the engine audit adds a
+seventh, #2238, discussed below. Hence 7 HIGH in total but five in the claim above.)
 
 That is also the signature of the entire prior field history — #1850, #1879, #1888, #2084,
 #1872/#2073/#2093, #1956, #2110. Ten incidents, one defect class, over a year.
