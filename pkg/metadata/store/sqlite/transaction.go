@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -98,7 +97,7 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 		}
 
 		ptx := &sqliteTransaction{store: s, tx: execer{e: rawTx, op: "tx"}}
-		ptx.Core = &storesql.Core{X: ptx.tx, D: sqliteDialect, Caps: s.currentCapabilities}
+		ptx.Core = &storesql.Core{X: ptx.tx, D: sqliteDialect, Caps: s.currentCapabilities, Quota: &ptx.quota}
 		if err := fn(ptx); err != nil {
 			_ = rawTx.Rollback()
 			if isBusyError(err) {
@@ -450,6 +449,18 @@ func (tx *sqliteTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 // ============================================================================
 // Transaction Shares Operations
 // ============================================================================
+//
+// UpdateShareOptions and DeleteShare shadow their promoted Core namesakes for
+// one reason: sharesDirty. It tells the commit path to drop the store's share
+// cache, it lives on the transaction, and Core has no way to reach it — so the
+// flag is set here and the statement runs there. Delete a shadow and the build
+// still passes, since the promoted method satisfies the interface, but the
+// cache then serves the options the transaction just overwrote.
+//
+// CreateShare keeps its own body: it runs the same UPDATE, but the memory and
+// badger transactions reject a name that already exists where these two
+// silently overwrite it, and collapsing the SQL pair onto Core would fix that
+// divergence in place rather than decide it.
 
 func (tx *sqliteTransaction) CreateShare(ctx context.Context, share *metadata.Share) error {
 	if err := ctx.Err(); err != nil {
@@ -473,101 +484,13 @@ func (tx *sqliteTransaction) CreateShare(ctx context.Context, share *metadata.Sh
 }
 
 func (tx *sqliteTransaction) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	tx.sharesDirty = true
-
-	optionsData, err := json.Marshal(options)
-	if err != nil {
-		return err
-	}
-
-	query := `UPDATE shares SET options = ?1 WHERE share_name = ?2`
-	result, err := tx.tx.Exec(ctx, query, optionsData, shareName)
-	if err != nil {
-		return mapDBError(err, "UpdateShareOptions", shareName)
-	}
-
-	if result.RowsAffected() == 0 {
-		return &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "share not found",
-			Path:    shareName,
-		}
-	}
-
-	return nil
+	return tx.Core.UpdateShareOptions(ctx, shareName, options)
 }
 
 func (tx *sqliteTransaction) DeleteShare(ctx context.Context, shareName string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	tx.sharesDirty = true
-
-	// Capture per-identity usage about to be removed (uid + gid) so the
-	// in-memory usage cache stays accurate. Aggregated before the rows are
-	// deleted; applied to the tx quota delta (post-commit) below.
-	if err := tx.collectShareQuotaFreed(ctx, shareName, "uid", metadata.QuotaScopeUser); err != nil {
-		return err
-	}
-	if err := tx.collectShareQuotaFreed(ctx, shareName, "gid", metadata.QuotaScopeGroup); err != nil {
-		return err
-	}
-
-	// Drop the share row first: shares.root_file_id references inodes(id)
-	// WITHOUT ON DELETE CASCADE, so the inode rows cannot be removed while
-	// the share still points at the root inode.
-	result, err := tx.tx.Exec(ctx, `DELETE FROM shares WHERE share_name = ?1`, shareName)
-	if err != nil {
-		return mapDBError(err, "DeleteShare", shareName)
-	}
-	if result.RowsAffected() == 0 {
-		return &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "share not found",
-			Path:    shareName,
-		}
-	}
-
-	// Delete all inode rows for the share. The store.go:161 contract is
-	// "removes a share and all its metadata"; dropping only the share row
-	// orphans every inodes/parent_child_map/file_block_refs row.
-	// parent_child_map and file_block_refs both cascade from inodes(id).
-	if _, err := tx.tx.Exec(ctx, `DELETE FROM inodes WHERE share_name = ?1`, shareName); err != nil {
-		return mapDBError(err, "DeleteShare", shareName)
-	}
-
-	return nil
-}
-
-// collectShareQuotaFreed aggregates per-identity usage for the regular files of
-// a share being deleted (grouped by uid or gid) and records the negative delta
-// on the tx so the in-memory usage cache is decremented post-commit. The column
-// is a fixed internal constant, never user input.
-func (tx *sqliteTransaction) collectShareQuotaFreed(ctx context.Context, shareName, col string, scope metadata.QuotaScope) error {
-	query := fmt.Sprintf(
-		`SELECT %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes
-		 WHERE share_name = ?1 AND file_type = ?2 GROUP BY %s`,
-		col, col,
-	)
-	rows, err := tx.tx.Query(ctx, query, shareName, int(metadata.FileTypeRegular))
-	if err != nil {
-		return mapDBError(err, "DeleteShare", shareName)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id, bytes, files int64
-		if err := rows.Scan(&id, &bytes, &files); err != nil {
-			return mapDBError(err, "DeleteShare", shareName)
-		}
-		tx.quota.AddKeyed(basestore.QuotaKey{Share: shareName, Scope: scope, ID: uint32(id)}, metadata.UsageStat{Bytes: -bytes, Files: -files})
-	}
-	if err := rows.Err(); err != nil {
-		return mapDBError(err, "DeleteShare", shareName)
-	}
-	return nil
+	return tx.Core.DeleteShare(ctx, shareName)
 }
 
 func (tx *sqliteTransaction) CreateRootDirectory(ctx context.Context, shareName string, attr *metadata.FileAttr) (*metadata.File, error) {

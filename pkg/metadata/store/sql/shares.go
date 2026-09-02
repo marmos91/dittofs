@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 // ============================================================================
@@ -138,6 +139,100 @@ func (c *Core) PutFilesystemMeta(ctx context.Context, shareName string, meta *me
 
 	if _, err := c.X.Exec(ctx, c.D.Shares().PutFilesystemMeta, shareName, data); err != nil {
 		return c.D.MapError(err, "PutFilesystemMeta", shareName)
+	}
+	return nil
+}
+
+// UpdateShareOptions replaces an existing share's options, reporting
+// metadata.ErrNotFound when the share does not exist.
+func (c *Core) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(options)
+	if err != nil {
+		return err
+	}
+
+	result, err := c.X.Exec(ctx, c.D.Shares().SetShareOptions, data, shareName)
+	if err != nil {
+		return c.D.MapError(err, "UpdateShareOptions", shareName)
+	}
+	if result.RowsAffected() == 0 {
+		return &metadata.StoreError{
+			Code:    metadata.ErrNotFound,
+			Message: "share not found",
+			Path:    shareName,
+		}
+	}
+	return nil
+}
+
+// DeleteShare removes a share and every inode belonging to it, reporting
+// metadata.ErrNotFound when the share does not exist.
+func (c *Core) DeleteShare(ctx context.Context, shareName string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// Aggregate the usage about to disappear before the rows go, so the
+	// store's quota cache can be decremented once the transaction commits.
+	if err := c.collectShareQuotaFreed(ctx, shareName, "uid", metadata.QuotaScopeUser); err != nil {
+		return err
+	}
+	if err := c.collectShareQuotaFreed(ctx, shareName, "gid", metadata.QuotaScopeGroup); err != nil {
+		return err
+	}
+
+	// Drop the share row first: shares.root_file_id references inodes(id)
+	// WITHOUT ON DELETE CASCADE, so the inode rows cannot be removed while the
+	// share still points at the root inode.
+	result, err := c.X.Exec(ctx, c.D.Shares().DeleteShare, shareName)
+	if err != nil {
+		return c.D.MapError(err, "DeleteShare", shareName)
+	}
+	if result.RowsAffected() == 0 {
+		return &metadata.StoreError{
+			Code:    metadata.ErrNotFound,
+			Message: "share not found",
+			Path:    shareName,
+		}
+	}
+
+	// The contract is "removes a share and all its metadata"; dropping only the
+	// share row orphans every inodes/parent_child_map/file_block_refs row.
+	// parent_child_map and file_block_refs both cascade from inodes(id).
+	if _, err := c.X.Exec(ctx, c.D.Shares().DeleteShareInodes, shareName); err != nil {
+		return c.D.MapError(err, "DeleteShare", shareName)
+	}
+
+	return nil
+}
+
+// collectShareQuotaFreed aggregates the regular-file usage of a share being
+// deleted, grouped by uid or gid, and records the negative delta so the
+// in-memory usage cache is decremented after the commit.
+func (c *Core) collectShareQuotaFreed(ctx context.Context, shareName, col string, scope metadata.QuotaScope) error {
+	query := fmt.Sprintf(c.D.Shares().ShareQuotaFreed, col, col)
+	rows, err := c.X.Query(ctx, query, shareName, int(metadata.FileTypeRegular))
+	if err != nil {
+		return c.D.MapError(err, "DeleteShare", shareName)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, bytes, files int64
+		if err := rows.Scan(&id, &bytes, &files); err != nil {
+			return c.D.MapError(err, "DeleteShare", shareName)
+		}
+		c.Quota.AddKeyed(
+			basestore.QuotaKey{Share: shareName, Scope: scope, ID: uint32(id)},
+			metadata.UsageStat{Bytes: -bytes, Files: -files},
+		)
+	}
+	if err := rows.Err(); err != nil {
+		return c.D.MapError(err, "DeleteShare", shareName)
 	}
 	return nil
 }

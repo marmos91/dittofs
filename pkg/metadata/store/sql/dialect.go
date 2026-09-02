@@ -68,6 +68,21 @@ type ShareQueries struct {
 	// PutFilesystemMeta upserts a share's filesystem metadata blob. Two
 	// parameters: the share name and the encoded blob.
 	PutFilesystemMeta string
+	// SetShareOptions writes a share's options blob over whatever is there.
+	// Two parameters: the encoded blob and the share name.
+	SetShareOptions string
+	// DeleteShare removes one share row. One parameter: the share name.
+	DeleteShare string
+	// DeleteShareInodes removes every inode row belonging to a share. One
+	// parameter: the share name.
+	DeleteShareInodes string
+	// ShareQuotaFreed is a format string, not a statement: it takes the
+	// owner column twice, for the SELECT and the GROUP BY, because a column
+	// name is not something a driver will substitute. The column is a fixed
+	// internal constant, never user input. Two parameters once formatted:
+	// the share name and the numeric regular-file type; three result
+	// columns: the identity, its summed bytes, its file count.
+	ShareQuotaFreed string
 }
 
 // FileQueries holds the file and directory statements in one dialect's

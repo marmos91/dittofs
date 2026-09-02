@@ -8,6 +8,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 // Core is the shared half of a SQL-backed metadata store: an executor to run
@@ -33,6 +34,19 @@ type Core struct {
 	// replaces them at runtime, and a copy taken at construction would go
 	// stale. Never nil.
 	Caps func() metadata.FilesystemCapabilities
+	// Quota accumulates the usage changes a write owes the store's quota
+	// cache, which applies them once the transaction commits. Set only on a
+	// transaction's Core; the pool's Core leaves it nil, and the one method
+	// that reads it is reached solely through a transaction-level shadow.
+	//
+	// Left unguarded on purpose. A guard would have to invent an error for a
+	// state the package cannot produce, and nothing could ever exercise it, so
+	// it would sit here accruing confidence without having refused anything.
+	// The bare dereference is the louder failure and it is a safe one:
+	// DeleteShare aggregates the usage before it deletes any row, and a panic
+	// inside a transaction unwinds past the commit, so nothing reaches the
+	// database either way.
+	Quota *basestore.QuotaDelta
 }
 
 // GetFileChunk reads one chunk by id, reporting metadata.ErrFileChunkNotFound

@@ -114,6 +114,11 @@ var shareQueries = storesql.ShareQueries{
 	PutFilesystemMeta: `INSERT INTO filesystem_meta (share_name, meta)
 		VALUES ($1, $2)
 		ON CONFLICT (share_name) DO UPDATE SET meta = EXCLUDED.meta`,
+	SetShareOptions:   `UPDATE shares SET options = $1 WHERE share_name = $2`,
+	DeleteShare:       `DELETE FROM shares WHERE share_name = $1`,
+	DeleteShareInodes: `DELETE FROM inodes WHERE share_name = $1`,
+	ShareQuotaFreed: `SELECT %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes
+		WHERE share_name = $1 AND file_type = $2 GROUP BY %s`,
 }
 
 var _ storesql.Dialect = dialect{}
