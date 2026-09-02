@@ -302,3 +302,64 @@ func TestRestoreToVersion_KeepsColdRangesOfMixedFile(t *testing.T) {
 	check(f.Store, "pre-crash")
 	check(f.crashReopen(), "post-crash")
 }
+
+// TestRestoreToVersion_KeepsEvictedRange pins the provenance the issue reports:
+// a range whose local bytes eviction unlinked. It is a separate case from a
+// seeded one because the two writers stamp the entry's version differently —
+// eviction copies the version of the interval it is replacing, so the entry
+// still says when the data was written.
+//
+// The eviction here runs after the target version is captured, which is what
+// makes the test discriminating: the bytes were written below the watermark and
+// must be restored, even though the moment they stopped being local is above it.
+// A ceiling replay that judged the entry by when the range went cold, rather than
+// by the version the entry carries, would skip it and tombstone the file.
+func TestRestoreToVersion_KeepsEvictedRange(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t, Config{
+		ShardCount:       1,
+		SegmentSize:      minSegmentSize,
+		DirtyExpiry:      -1,
+		GCDeadRatioForce: 2,
+	})
+
+	// Hydrated records are born synced, so the whole shard qualifies for eviction.
+	evicted := FileID("evicted")
+	fillUntilSealed(t, s, evicted, true, 2)
+
+	// A warm peer whose head moves past V, so the restore has real work to do. Its
+	// records are unsynced, which also keeps its segment out of the eviction below.
+	peer := FileID("warm-peer")
+	v1 := bytes.Repeat([]byte("first-version-"), 64)
+	if err := s.WriteAt(ctx, peer, 0, v1); err != nil {
+		t.Fatalf("WriteAt peer: %v", err)
+	}
+	target := s.JournalVersion()
+
+	if _, err := s.Evict(ctx, 1<<30); err != nil {
+		t.Fatalf("Evict: %v", err)
+	}
+	if _, st, err := s.ReadAt(ctx, evicted, 0, make([]byte, chunk256)); err != nil {
+		t.Fatalf("ReadAt after evict: %v", err)
+	} else if !st.Cold {
+		t.Fatal("setup: the range is not cold after eviction, so this test would prove nothing")
+	}
+
+	if err := s.WriteAt(ctx, peer, 0, bytes.Repeat([]byte("second-version"), 64)); err != nil {
+		t.Fatalf("WriteAt peer post-V: %v", err)
+	}
+
+	if err := s.RestoreToVersion(ctx, target); err != nil {
+		t.Fatalf("RestoreToVersion: %v", err)
+	}
+	assertColdAt(t, s, evicted, 0, chunk256, "pre-reopen")
+
+	// A plain reopen is enough for this assertion: the re-asserted entry's
+	// durability comes from appendCold's own fsync of the cold log, not from
+	// buffered segment writes, so there is no page-cache masquerade to defeat.
+	r := reopen(t, s)
+	assertColdAt(t, r, evicted, 0, chunk256, "post-reopen")
+	if got := readAll(t, r, peer, len(v1)); !bytes.Equal(got, v1) {
+		t.Fatalf("post-reopen %s: restore did not produce the V1 view", peer)
+	}
+}

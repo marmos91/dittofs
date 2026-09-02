@@ -1083,8 +1083,12 @@ func (s *Store) PinVersion() uint64 { return s.pinVersion.Load() }
 //     versions exceed everything, so recover() rebuilds V on reopen; a file
 //     present at head but absent at V is tombstoned away.
 //
-// The caller (restore orchestration) drains rollups afterward and holds the share
-// disabled, so no concurrent writer races this.
+// Precondition: the share is disabled, so nothing else is touching the store. The
+// caller (restore orchestration) enforces that and drains rollups afterward. It is
+// load-bearing rather than incidental — the cold ranges are re-asserted with one
+// batched append whose plan and fsync are not under a single shard lock, so a
+// Delete landing between them would bury an entry the insert then recreates.
+// Running this against a live share reintroduces that race silently.
 func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1153,6 +1157,26 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 	// so the passes below clip it like any warm interval. The log needs no tail
 	// repair here: recovery already trimmed it at open, and appendCold rolls its
 	// own tail back on a failed write, so a live store's log ends intact.
+	//
+	// The version test below asks whether the content existed at V, and only one
+	// of the log's two writers records something that answers it. Eviction copies
+	// the version off the interval it replaces, so its entry still dates the data.
+	// A seed mints a fresh one, dating the scan that noticed the range was
+	// remote-durable: that version exists so a racing Delete sweeps below the
+	// entry, and says nothing about when the bytes were written. An entry does not
+	// record which writer made it, so the two cannot be told apart here.
+	//
+	// Eviction is the only writer that reaches a store this runs against — both
+	// manifest-seed callers require the share to have a remote, and this method
+	// runs only on a restore's local-only branch. The exception is a store seeded
+	// while it had a remote that was later detached.
+	//
+	// ponytail: on that store a seeded entry is skipped as post-V, which is the
+	// same lost cold range this fold exists to prevent. The entry alone cannot do
+	// better — including it unconditionally would instead resurrect content written
+	// after V, because a seed describes the file as the manifest currently has it.
+	// Closing it needs the entry to record its writer, a change to a durable
+	// on-disk format that wants its own migration.
 	coldEntries, _, cerr := loadCold(s.dir)
 	if cerr != nil {
 		return fmt.Errorf("journal: restore: load cold log: %w", cerr)
@@ -1275,9 +1299,9 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 	// log entries that described them, so the V-view's cold ranges are holes until
 	// they are re-asserted at a version above those tombstones. Seeding covers only
 	// what the index still calls a hole, which after the re-materialization above is
-	// exactly those ranges. One durable append covers the whole pass: the share is
-	// disabled for the restore, so nothing can delete through the plan/append gap
-	// SeedColdBatch documents.
+	// exactly those ranges. One durable append covers the whole pass, which is safe
+	// only under this method's disabled-share precondition: it is what closes the
+	// plan/append gap SeedColdBatch documents.
 	if err := s.SeedColdBatch(ctx, coldSeeds); err != nil {
 		return fmt.Errorf("journal: restore: re-assert cold ranges: %w", err)
 	}
