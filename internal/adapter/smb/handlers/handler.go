@@ -1597,7 +1597,7 @@ func (h *Handler) closeFilesWithFilter(
 			}
 		}
 
-		// Per [MS-FSA] 2.1.5.11: a directory marked for deletion completes
+		// Per [MS-FSA] 2.1.5.15.3 step 3.2.3.2: a directory marked for deletion completes
 		// every pending CHANGE_NOTIFY on it with STATUS_DELETE_PENDING. Runs
 		// after the loop above so a watch on a handle this teardown is closing
 		// still gets the STATUS_NOTIFY_CLEANUP its own close owes it; what is

@@ -1427,7 +1427,9 @@ func (h *Handler) setFileInfoFromStore(
 		openFile.mu.Unlock()
 		h.StoreOpenFile(openFile)
 
-		// Per [MS-FSA] 2.1.5.11: marking a directory for deletion completes
+		// Per [MS-FSA] 2.1.5.15.3 step 3.2.3.2 (and 2.1.5.15.4 step 4.3.3.2, which
+		// states the same sweep for the Ex class this branch also serves):
+		// marking a directory for deletion completes
 		// every pending CHANGE_NOTIFY on that directory with
 		// STATUS_DELETE_PENDING. The watcher is normally a different handle on
 		// the same directory, so this cannot be reached from the close path
