@@ -3800,3 +3800,147 @@ func TestBufferEventLocked_InterleavedEmissionsDoNotMerge(t *testing.T) {
 		{Action: FileActionAdded, FileName: "a2"},
 	})
 }
+
+// TestRegisterAfterDeletePendingMark covers the ordering the mark-time sweep
+// cannot: a CHANGE_NOTIFY that reaches Register after the directory's delete
+// disposition has already been committed. The sweep has nothing left to walk,
+// the directory entry is still there because the watcher's own handle holds it
+// open, and so nothing produces a FileActionRemoved for it either — without a
+// marker consulted at Register the request parks forever.
+func TestRegisterAfterDeletePendingMark(t *testing.T) {
+	r := newTestNotifyRegistry()
+
+	newNotify := func(fileID byte, messageID uint64, share, watchPath string) *PendingNotify {
+		return &PendingNotify{
+			FileID:           [16]byte{fileID},
+			SessionID:        1,
+			MessageID:        messageID,
+			AsyncId:          messageID * 10,
+			WatchPath:        watchPath,
+			ShareName:        share,
+			CompletionFilter: FileNotifyChangeFileName | FileNotifyChangeDirName,
+			MaxOutputLength:  4096,
+			AsyncCallback:    func(uint64, uint64, uint64, *ChangeNotifyResponse) error { return nil },
+		}
+	}
+
+	// Nothing is registered yet, so the sweep answers nobody.
+	if got := r.CompleteWatchersForDeletePending("share1", "/parent/target"); got != 0 {
+		t.Fatalf("expected the sweep to find no watchers, got %d", got)
+	}
+
+	// The late arrival must be refused, not parked.
+	err := r.Register(newNotify(1, 10, "share1", "/parent/target"))
+	if !errors.Is(err, ErrDirectoryDeletePending) {
+		t.Fatalf("Register on a delete-pending directory: got %v, want ErrDirectoryDeletePending", err)
+	}
+	if n := r.WatcherCount(); n != 0 {
+		t.Fatalf("a refused Register must leave no watcher behind, got %d", n)
+	}
+
+	// A trailing "/" or "." spelling of the same directory is the same
+	// directory: notifyWatchPath normalises both sides of the comparison.
+	if err := r.Register(newNotify(2, 11, "share1", "/parent/target/")); !errors.Is(err, ErrDirectoryDeletePending) {
+		t.Errorf("unnormalised path: got %v, want ErrDirectoryDeletePending", err)
+	}
+
+	// The mark is scoped to one directory on one share. An ancestor and a
+	// same-named directory on another share are unaffected.
+	if err := r.Register(newNotify(3, 12, "share1", "/parent")); err != nil {
+		t.Errorf("ancestor directory must still register: %v", err)
+	}
+	if err := r.Register(newNotify(4, 13, "share2", "/parent/target")); err != nil {
+		t.Errorf("same path on another share must still register: %v", err)
+	}
+}
+
+// TestClearDeletePendingMark pins the other half: the marker is sticky for the
+// directory, not permanent for the name. Once the entry is gone (or the
+// disposition is called off) the name must be watchable again, or a directory
+// created later under the same name can never be watched.
+func TestClearDeletePendingMark(t *testing.T) {
+	r := newTestNotifyRegistry()
+
+	notify := func(fileID byte, messageID uint64) *PendingNotify {
+		return &PendingNotify{
+			FileID:           [16]byte{fileID},
+			SessionID:        1,
+			MessageID:        messageID,
+			AsyncId:          messageID * 10,
+			WatchPath:        "/parent/target",
+			ShareName:        "share1",
+			CompletionFilter: FileNotifyChangeFileName,
+			MaxOutputLength:  4096,
+			AsyncCallback:    func(uint64, uint64, uint64, *ChangeNotifyResponse) error { return nil },
+		}
+	}
+
+	r.CompleteWatchersForDeletePending("share1", "/parent/target")
+	if err := r.Register(notify(1, 10)); !errors.Is(err, ErrDirectoryDeletePending) {
+		t.Fatalf("precondition: got %v, want ErrDirectoryDeletePending", err)
+	}
+
+	// Clearing a different share's mark must not touch this one.
+	r.ClearDeletePendingMark("share2", "/parent/target")
+	if err := r.Register(notify(2, 11)); !errors.Is(err, ErrDirectoryDeletePending) {
+		t.Fatalf("another share's clear must not lift this mark: got %v", err)
+	}
+
+	r.ClearDeletePendingMark("share1", "/parent/target")
+	if err := r.Register(notify(3, 12)); err != nil {
+		t.Fatalf("after the entry goes away the name must be watchable again: %v", err)
+	}
+	if n := r.WatcherCount(); n != 1 {
+		t.Errorf("expected the re-registered watch to be parked, got %d watchers", n)
+	}
+}
+
+// TestChangeNotify_DeletePendingDirectory_AnsweredSynchronously pins the wire
+// answer for the ordering #2199 describes: the directory's delete disposition
+// is committed, and only then does the CHANGE_NOTIFY reach the handler. It
+// must come back on its own MessageID with STATUS_DELETE_PENDING rather than
+// going async on a wait that has already been swept past.
+func TestChangeNotify_DeletePendingDirectory_AnsweredSynchronously(t *testing.T) {
+	h := NewHandler()
+	h.NotifyRegistry = NewNotifyRegistry()
+	h.MaxTransactSize = 1 << 20
+
+	fileID := [16]byte{0x44}
+	openFile := (&OpenFile{
+		FileID: fileID, IsDirectory: true, ShareName: "share1", SessionID: 1, TreeID: 1,
+		DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
+	}).WithName(OpenName{Path: "/dir"})
+	h.StoreOpenFile(openFile)
+
+	// Another handle marked the directory for deletion first. The sweep finds
+	// nothing: this watch has not registered yet.
+	h.NotifyRegistry.CompleteWatchersForDeletePending("share1", "/dir")
+
+	var wentAsync bool
+	ctx := &SMBHandlerContext{
+		SessionID: 1, TreeID: 1, MessageID: 79, ConnID: 5,
+		TryReserveAsync: func() bool { return true },
+		ReleaseAsync:    func() {},
+		AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
+			wentAsync = true
+			return nil
+		},
+	}
+
+	res, err := h.ChangeNotify(ctx, encodeChangeNotifyReq(0, 1000, fileID, FileNotifyChangeFileName))
+	if err != nil {
+		t.Fatalf("ChangeNotify error: %v", err)
+	}
+	if res.Status != types.StatusDeletePending {
+		t.Fatalf("status = %v, want STATUS_DELETE_PENDING", res.Status)
+	}
+	if res.AsyncId != 0 {
+		t.Errorf("AsyncId = %d, want 0 — the reply is synchronous on the original MessageID", res.AsyncId)
+	}
+	if wentAsync {
+		t.Error("the request must not be parked as an async watch")
+	}
+	if n := h.NotifyRegistry.WatcherCount(); n != 0 {
+		t.Errorf("WatcherCount = %d, want 0 — nothing may be left waiting", n)
+	}
+}
