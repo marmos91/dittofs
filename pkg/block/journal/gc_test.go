@@ -85,10 +85,12 @@ func TestDeadBytesOnTombstone(t *testing.T) {
 	}
 }
 
-// seedRepackable builds a store with one sealed segment holding a synced "keep"
-// record and a dirty "gone" record, then deletes "gone" so the sealed segment is
-// 70% dead. It returns the keep payload for byte-identity checks.
-func seedRepackable(t *testing.T, s *Store) []byte {
+// seedRepackable builds a store with one sealed segment holding a "keep" record
+// and a dirty "gone" record, then deletes "gone" so the sealed segment is 70%
+// dead. keepSynced decides whether "keep" lands already synced to the remote,
+// which is what makes the repack target evictable or not. It returns the keep
+// payload for byte-identity checks.
+func seedRepackable(t *testing.T, s *Store, keepSynced bool) []byte {
 	t.Helper()
 	ctx := context.Background()
 	keep := make([]byte, 300<<10)
@@ -96,7 +98,13 @@ func seedRepackable(t *testing.T, s *Store) []byte {
 	rand.New(rand.NewSource(1)).Read(keep)
 	rand.New(rand.NewSource(2)).Read(gone)
 
-	if err := s.Hydrate(ctx, "keep", 0, keep, 0); err != nil { // synced=true
+	var err error
+	if keepSynced {
+		err = s.Hydrate(ctx, "keep", 0, keep, 0)
+	} else {
+		err = s.WriteAt(ctx, "keep", 0, keep)
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := s.WriteAt(ctx, "gone", 0, gone); err != nil { // synced=false
@@ -115,7 +123,7 @@ func seedRepackable(t *testing.T, s *Store) []byte {
 func TestGCForcedRepackPreservesData(t *testing.T) {
 	s := testStore(t, Config{SegmentSize: minSegmentSize, ShardCount: 1})
 	ctx := context.Background()
-	keep := seedRepackable(t, s)
+	keep := seedRepackable(t, s, true)
 
 	victim := onlySealed(t, s, "keep")
 	occupied := victim.liveBytes.Load()
@@ -189,23 +197,9 @@ func TestGCForcedRepackPreservesData(t *testing.T) {
 func TestGCRepackDirtyTargetNotEvictable(t *testing.T) {
 	s := testStore(t, Config{SegmentSize: minSegmentSize, ShardCount: 1})
 	ctx := context.Background()
+	keep := seedRepackable(t, s, false)
 
-	keep := make([]byte, 300<<10)
-	rand.New(rand.NewSource(4)).Read(keep)
-	if err := s.WriteAt(ctx, "keep", 0, keep); err != nil { // synced=false
-		t.Fatal(err)
-	}
-	if err := s.WriteAt(ctx, "gone", 0, make([]byte, 700<<10)); err != nil {
-		t.Fatal(err)
-	}
-	// Roll the active segment over so keep+gone land in a sealed segment.
-	if err := s.WriteAt(ctx, "trigger", 0, make([]byte, 200<<10)); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Delete(ctx, "gone"); err != nil { // 70% dead: an auto pass repacks
-		t.Fatal(err)
-	}
-
+	// 0.7 dead ratio >= default GCDeadRatioForce (0.5): an auto pass repacks it.
 	res, err := s.GC(ctx, GCOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -282,7 +276,7 @@ func TestGCCrashBeforeUnlinkOrphanSwept(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	keep := seedRepackable(t, s)
+	keep := seedRepackable(t, s, true)
 
 	// Repack but stop right before reclaiming the victim: on disk the target is
 	// durable while the victim still exists (crash-before-unlink).

@@ -832,13 +832,12 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta, live map[uint64]in
 		return 0, err
 	}
 	target.liveBytes.Store(relocated)
-	// records counts data records only — the markers carried forward above are
-	// excluded, matching both the append path and the recovery replay, so a
-	// restart reconstructs the same denominator. Without it the target's
-	// synced-gate compares syncedCount against zero: a target holding only
-	// unsynced records reads as fully synced and eviction discards the sole copy
-	// of dirty bytes, while one holding synced records never reaches equality
-	// again and its space is never reclaimed.
+	// Data records only — the markers carried forward above are excluded, matching
+	// the append path and the recovery replay so a restart reconstructs the same
+	// denominator. Leaving it zero makes the synced-gate below compare against
+	// zero: a target holding only unsynced records reads as fully synced and
+	// eviction discards the sole copy of dirty bytes, while one holding synced
+	// records never reaches equality again and its space is never reclaimed.
 	target.records.Store(int64(len(moves)))
 	target.syncedRecords.Store(syncedCount)
 	// Account the relocated records + tombstones now durable in the target;

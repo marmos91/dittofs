@@ -93,7 +93,7 @@ func TestCarveRefusesCorruptedRecord(t *testing.T) {
 func TestRepackRefusesTruncatedRecordStream(t *testing.T) {
 	s := testStore(t, Config{SegmentSize: minSegmentSize, ShardCount: 1})
 	ctx := context.Background()
-	seedRepackable(t, s)
+	seedRepackable(t, s, true)
 
 	victim := onlySealed(t, s, "keep")
 	corruptFirstPayloadByte(t, s, "keep")
@@ -135,7 +135,7 @@ func TestRepackRefusesTruncatedRecordStream(t *testing.T) {
 func TestRepackRefusesRecordFramingAnotherFile(t *testing.T) {
 	s := testStore(t, Config{SegmentSize: minSegmentSize, ShardCount: 1})
 	ctx := context.Background()
-	seedRepackable(t, s)
+	seedRepackable(t, s, true)
 
 	victim := onlySealed(t, s, "keep")
 	iv := firstInterval(t, s, "keep")
