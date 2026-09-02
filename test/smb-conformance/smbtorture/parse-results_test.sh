@@ -23,6 +23,7 @@ cat > "${WORK}/KNOWN_FAILURES.md" <<'EOF'
 |-----------|----------|--------|-------|
 | smb2.lock.lock1 | proto | expected | - |
 | smb2.oplock.* | proto | wildcard row | - |
+| smb2.charset.Testing | proto | unpaired surrogate | - |
 EOF
 
 # run_case NAME EXPECTED_EXIT <<< output
@@ -228,6 +229,55 @@ failed to test CSN with replay flag
 test: smb2.replay.replay3
 failure: smb2.replay.replay3 [ unrelated ]
 EOF
+
+# -- NT_STATUS_NO_MEMORY is not on its own evidence of anything. smbtorture's
+# own iconv returns it for an unpaired UTF-16 surrogate, so
+# smb2.charset.Testing partial surrogate fails with a genuine protocol
+# assertion carrying that status. Excusing it hid a real, every-run failure
+# and then advertised the row as a candidate to drop from KNOWN_FAILURES.md. --
+run_case "NO_MEMORY assertion is still a failure" 0 <<'EOF'
+test: charset.Testing composite character (a umlaut)
+success: charset.Testing composite character (a umlaut)
+test: charset.Testing partial surrogate
+failure: charset.Testing partial surrogate [
+../../source4/torture/smb2/charset.c:174: status was NT_STATUS_NO_MEMORY, expected NT_STATUS_OK: Failed to create partial surrogate 1
+]
+test: charset.Testing wide-a
+success: charset.Testing wide-a
+EOF
+assert_output "NO_MEMORY assertion counted as a failure" "| Failed | 1 |"
+assert_output "NO_MEMORY assertion graded against the blacklist" "### Known failures still failing (1)"
+assert_not_output "NO_MEMORY assertion is not a removal candidate" "### Known failures that now PASS"
+
+# -- The same assertion on a test that is not blacklisted reds the job. --
+run_case "unlisted NO_MEMORY assertion fails the job" 1 <<'EOF'
+test: smb2.rename.rename1
+failure: smb2.rename.rename1 [
+../../source4/torture/smb2/rename.c:174: status was NT_STATUS_NO_MEMORY, expected NT_STATUS_OK: whatever
+]
+EOF
+assert_output "unlisted NO_MEMORY assertion named" "- smb2.rename.rename1"
+
+# -- NO_MEMORY still earns the flake excuse when the block says the client was
+# setting up its connection — the case the pattern was added for. --
+run_case "NO_MEMORY during connection setup is excused" 0 <<'EOF'
+test: smb2.rename.rename1
+failure: smb2.rename.rename1 [
+../../source4/torture/smb2/rename.c:41: status was NT_STATUS_NO_MEMORY, expected NT_STATUS_OK: smb2_connect failed
+]
+EOF
+assert_output "excused block counted" "| Reclassified as flakes | 1 |"
+assert_output "excused block named" "- smb2.rename.rename1 — connection setup"
+
+# -- The canonical connect diagnostic is excused on its own, and says so. --
+run_case "connection diagnostic is excused" 0 <<'EOF'
+test: rename.rename1
+failure: rename.rename1 [
+../../source4/torture/smb2/rename.c:41: Establishing SMB2 connection failed
+]
+EOF
+assert_output "connect flake named with the suite prefix" "- smb2.rename.rename1 — connection setup"
+
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then
