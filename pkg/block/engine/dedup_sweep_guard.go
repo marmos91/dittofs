@@ -35,18 +35,20 @@ const _ = uint(-(numDedupGuardStripes & (numDedupGuardStripes - 1)))
 // safe branch — the carver uploads the bytes it would have deduped, or the
 // sweep keeps the marker for the next pass.
 //
-// An adoption is held by age, not by an explicit release on commit: a carve
-// that fails between the oracle and its block commit would otherwise strand a
-// hold and make the hash permanently unreclaimable. The sweep supplies its own
-// grace cutoff as the age bound, so an adoption protects a hash for exactly as
-// long as the grace window already protects a freshly-synced one.
+// An adoption is held by age, not released explicitly when its manifest row
+// commits: two carves can adopt the same hash, so a release would need a
+// refcount, and a carve that dies between the oracle and its block commit would
+// strand its hold and make the hash unreclaimable for the life of the process.
 //
-// ponytail: process-local, so it orders a sweep only against carves in the
-// same process — which is all the GC itself supports today (the run lock in
-// gc.go is process-local for the same reason). Cross-process safety needs the
-// adoption recorded on the synced marker itself, which means a store-level
-// conditional delete across all four backends; do that only when GC actually
-// runs outside the writing process.
+// ponytail: two ceilings, both from that age bound. It holds only within one
+// process, which is all the GC supports today — the run lock in gc.go is
+// process-local for the same reason. And a carve whose dedup-to-commit gap
+// exceeds dedupAdoptionMaxAge drops out from under its own adoption while its
+// row is still unwritten, which the mark phase would then miss. Both close by
+// recording the adoption on the synced marker itself and deleting that marker
+// conditionally, which is a new store method across all four backends plus its
+// storetest conformance; do that when GC runs outside the writing process, or
+// when a carve pass can credibly stall for an hour mid-run.
 type dedupSweepGuard struct {
 	stripes [numDedupGuardStripes]dedupGuardStripe
 }
@@ -54,12 +56,26 @@ type dedupSweepGuard struct {
 type dedupGuardStripe struct {
 	mu sync.Mutex
 	// adopted holds the time each in-flight dedup adoption was taken. An
-	// entry survives until the sweep's grace cutoff passes it.
+	// entry survives until it ages past dedupAdoptionMaxAge.
 	adopted map[block.ContentHash]time.Time
 	// claimed holds the hashes the sweep is currently reclaiming. Entries
 	// are short-lived: one reclamation each.
 	claimed map[block.ContentHash]struct{}
+	// sinceSweep counts adoptions recorded since this stripe was last
+	// pruned, so a deployment with the GC scheduler switched off still
+	// sheds them.
+	sinceSweep int
 }
+
+// dedupAdoptionMaxAge is how long an adoption protects its hash. It only has to
+// outlive the carve's block commit, which follows the oracle by seconds; an
+// hour matches the default grace period and leaves the margin wide.
+const dedupAdoptionMaxAge = time.Hour
+
+// dedupPruneInterval is how many adoptions a stripe records before it sheds
+// aged ones itself. Large enough that the O(n) walk is amortized away, small
+// enough that the map tracks recent dedup traffic rather than all of it.
+const dedupPruneInterval = 512
 
 // dedupGuard is the process-wide instance. The carve oracle is constructed per
 // share while the sweep runs per remote store, so the two only meet at package
@@ -95,20 +111,39 @@ func (g *dedupSweepGuard) adopt(h block.ContentHash, now time.Time, probe func()
 		s.adopted = make(map[block.ContentHash]time.Time)
 	}
 	s.adopted[h] = now
+	s.sinceSweep++
+	if s.sinceSweep >= dedupPruneInterval {
+		s.pruneLocked(now.Add(-dedupAdoptionMaxAge))
+	}
 	return true, nil
 }
 
+// pruneLocked drops adoptions older than cutoff. Callers hold s.mu.
+func (s *dedupGuardStripe) pruneLocked(cutoff time.Time) {
+	for h, at := range s.adopted {
+		if at.Before(cutoff) {
+			delete(s.adopted, h)
+		}
+	}
+	s.sinceSweep = 0
+}
+
 // claim reserves h for reclamation, locking the dedup oracle out until
-// releaseClaim. It refuses when an adoption taken at or after notBefore still
-// holds h: that carve's manifest row may not have landed before the mark phase
-// read its share, so the hash cannot be proven dead. Callers that get true MUST
-// pair it with releaseClaim.
-func (g *dedupSweepGuard) claim(h block.ContentHash, notBefore time.Time) bool {
+// releaseClaim. It refuses while a recent adoption still holds h: that carve's
+// manifest row may not have landed before the mark phase read its share, so the
+// hash cannot be proven dead. Callers that get true MUST pair it with
+// releaseClaim.
+//
+// The age bound is dedupAdoptionMaxAge rather than the run's grace period on
+// purpose. Grace answers a different question — how long a freshly-committed
+// hash is spared — and an operator may legitimately set it to zero, which would
+// leave every adoption claimable the moment it is recorded.
+func (g *dedupSweepGuard) claim(h block.ContentHash) bool {
 	s := g.stripeFor(h)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if at, adopted := s.adopted[h]; adopted && !at.Before(notBefore) {
+	if at, adopted := s.adopted[h]; adopted && !at.Before(time.Now().Add(-dedupAdoptionMaxAge)) {
 		return false
 	}
 	if s.claimed == nil {
@@ -128,18 +163,15 @@ func (g *dedupSweepGuard) releaseClaim(h block.ContentHash) {
 	s.mu.Unlock()
 }
 
-// pruneAdoptions drops adoptions older than cutoff. Anything that old has
-// either committed its manifest row — where the mark phase takes over — or
+// pruneAdoptions drops adoptions past dedupAdoptionMaxAge. Anything that old
+// has either committed its manifest row — where the mark phase takes over — or
 // belongs to a carve that died before committing one.
-func (g *dedupSweepGuard) pruneAdoptions(cutoff time.Time) {
+func (g *dedupSweepGuard) pruneAdoptions() {
+	cutoff := time.Now().Add(-dedupAdoptionMaxAge)
 	for i := range g.stripes {
 		s := &g.stripes[i]
 		s.mu.Lock()
-		for h, at := range s.adopted {
-			if at.Before(cutoff) {
-				delete(s.adopted, h)
-			}
-		}
+		s.pruneLocked(cutoff)
 		s.mu.Unlock()
 	}
 }

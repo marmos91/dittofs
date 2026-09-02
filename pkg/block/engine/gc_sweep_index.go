@@ -50,10 +50,10 @@ func sweepFromSyncedIndex(
 	graceCutoff := snapshotTime.Add(-gracePeriod)
 	var scanned int64
 
-	// Adoptions older than the cutoff can no longer protect anything: either
-	// their manifest row landed, and the live set takes over, or the carve
-	// that took them died without committing one.
-	dedupGuard.pruneAdoptions(graceCutoff)
+	// Adoptions too old to protect anything: either their manifest row landed,
+	// and the live set takes over, or the carve that took them died without
+	// committing one.
+	dedupGuard.pruneAdoptions()
 
 	enumErr := options.SyncedHashIndex.EnumerateSynced(ctx, func(h block.ContentHash, _ block.ChunkLocator, syncedAt time.Time) error {
 		if err := ctx.Err(); err != nil {
@@ -96,7 +96,7 @@ func sweepFromSyncedIndex(
 		// and writes its manifest row after the mark phase has passed. Claim h
 		// so that carve either already holds it (and the reclaim is skipped)
 		// or is locked out of adopting it for the rest of the reclamation.
-		if !dedupGuard.claim(h, graceCutoff) {
+		if !dedupGuard.claim(h) {
 			return nil // a live dedup adoption holds h — keep it
 		}
 		defer dedupGuard.releaseClaim(h)
