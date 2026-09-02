@@ -68,6 +68,20 @@ type dedupGuardStripe struct {
 // dedupAdoptionMaxAge is how long an adoption protects its hash. It only has to
 // outlive the carve's block commit, which follows the oracle by seconds; an
 // hour matches the default grace period and leaves the margin wide.
+//
+// It also sets the guard's memory ceiling. Only adopt() inserts, and it prunes
+// every dedupPruneInterval insertions, so the map cannot grow without bound —
+// it settles at roughly one dedup-adoption rate times this age, plus under one
+// prune interval per stripe. A stripe that goes quiet stops growing but does
+// not shrink until traffic resumes or a sweep prunes it.
+//
+// ponytail: that ceiling is an hour of dedup adoptions, which is megabytes at
+// a modest rate but not at a sustained heavy one. Shrinking this constant is
+// the wrong lever — it trades memory for the carve-stall ceiling above. The
+// upgrade is to release an adoption when its manifest row commits, which needs
+// a refcount because two carves can adopt the same hash, and leaves the map
+// tracking in-flight carves instead of an hour of history. Do that when the
+// guard shows up in a heap profile.
 const dedupAdoptionMaxAge = time.Hour
 
 // dedupPruneInterval is how many adoptions a stripe records before it sheds
