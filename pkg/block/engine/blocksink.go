@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"sync"
-	"time"
 
 	"lukechampine.com/blake3"
 
@@ -72,7 +71,7 @@ type engineDeduper struct {
 // the bytes, so it must not be given for a hash the sweep has already claimed.
 func (d engineDeduper) IsChunkDurable(ctx context.Context, hash journal.ChunkHash) (bool, error) {
 	h := block.ContentHash(hash)
-	return dedupGuard.adopt(h, time.Now(), func() (bool, error) {
+	return dedupGuard.adopt(h, func() (bool, error) {
 		return d.synced.IsSynced(ctx, h)
 	})
 }

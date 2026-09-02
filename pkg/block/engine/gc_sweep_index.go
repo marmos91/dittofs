@@ -89,11 +89,8 @@ func sweepFromSyncedIndex(
 			return nil
 		}
 
-		// Both gates above answer from state that predates this moment: the
-		// grace cutoff from a timestamp a dedup hit never refreshes, the live
-		// set from a snapshot taken before the sweep began. A carve that
-		// deduped onto h in between is invisible to both — it uploads nothing
-		// and writes its manifest row after the mark phase has passed. Claim h
+		// Both gates above answer from state that predates this moment, so a
+		// carve that deduped onto h in between is invisible to both. Claim h
 		// so that carve either already holds it (and the reclaim is skipped)
 		// or is locked out of adopting it for the rest of the reclamation.
 		if !dedupGuard.claim(h) {

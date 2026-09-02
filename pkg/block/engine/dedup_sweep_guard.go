@@ -10,11 +10,6 @@ import (
 // numDedupGuardStripes must be a power of two so stripeFor can mask.
 const numDedupGuardStripes = 64
 
-// Compile-time guard: the mask below only yields a valid index when the count
-// is a power of two. If it is not, the unsigned subtraction underflows and the
-// build fails.
-const _ = uint(-(numDedupGuardStripes & (numDedupGuardStripes - 1)))
-
 // dedupSweepGuard orders the only two decisions in the engine that can destroy
 // the last copy of a chunk's bytes:
 //
@@ -83,9 +78,9 @@ const dedupPruneInterval = 512
 var dedupGuard dedupSweepGuard
 
 func (g *dedupSweepGuard) stripeFor(h block.ContentHash) *dedupGuardStripe {
-	// The hash is already uniformly distributed; its first two bytes are as
-	// good a stripe index as any derived mix.
-	return &g.stripes[(uint(h[0])<<8|uint(h[1]))&(numDedupGuardStripes-1)]
+	// The hash is already uniformly distributed; one byte of it is as good a
+	// stripe index as any derived mix.
+	return &g.stripes[uint(h[1])&(numDedupGuardStripes-1)]
 }
 
 // adopt runs probe under h's stripe and records an adoption when probe reports
@@ -95,7 +90,7 @@ func (g *dedupSweepGuard) stripeFor(h block.ContentHash) *dedupGuardStripe {
 //
 // Probing under the stripe is what orders the two decisions: the sweep cannot
 // claim h between the probe and the adoption being recorded.
-func (g *dedupSweepGuard) adopt(h block.ContentHash, now time.Time, probe func() (bool, error)) (bool, error) {
+func (g *dedupSweepGuard) adopt(h block.ContentHash, probe func() (bool, error)) (bool, error) {
 	s := g.stripeFor(h)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -107,6 +102,7 @@ func (g *dedupSweepGuard) adopt(h block.ContentHash, now time.Time, probe func()
 	if err != nil || !durable {
 		return durable, err
 	}
+	now := time.Now()
 	if s.adopted == nil {
 		s.adopted = make(map[block.ContentHash]time.Time)
 	}
@@ -143,7 +139,7 @@ func (g *dedupSweepGuard) claim(h block.ContentHash) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if at, adopted := s.adopted[h]; adopted && !at.Before(time.Now().Add(-dedupAdoptionMaxAge)) {
+	if at, adopted := s.adopted[h]; adopted && time.Since(at) <= dedupAdoptionMaxAge {
 		return false
 	}
 	if s.claimed == nil {
