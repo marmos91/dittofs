@@ -95,7 +95,9 @@ var fileQueries = storesql.FileQueries{
 
 	// inodes.nlink is the sole source of truth for the hard-link count, so
 	// GETATTR reads it straight off the inode row without a join.
-	SetLinkCount: `UPDATE inodes SET nlink = $1 WHERE id = $2`,
+	SetLinkCount:    `UPDATE inodes SET nlink = $1 WHERE id = $2`,
+	DeleteFileOwner: `SELECT file_type, size, uid, gid FROM inodes WHERE id = $1 AND share_name = $2`,
+	DeleteFile:      `DELETE FROM inodes WHERE id = $1 AND share_name = $2`,
 
 	GetFileByPayloadID: `SELECT ` + inodeSelectColumns + ` FROM inodes f
 		WHERE f.content_id_hash = md5($1)
@@ -104,6 +106,15 @@ var fileQueries = storesql.FileQueries{
 
 // Shares returns the postgres share read statements.
 func (dialect) Shares() *storesql.ShareQueries { return &shareQueries }
+
+func (dialect) Server() *storesql.ServerQueries { return &serverQueries }
+
+var serverQueries = storesql.ServerQueries{
+	GetServerConfig: `SELECT config FROM server_config WHERE id = 1`,
+	SetServerConfig: `INSERT INTO server_config (id, config)
+		VALUES (1, $1)
+		ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config, updated_at = NOW()`,
+}
 
 var shareQueries = storesql.ShareQueries{
 	GetRootHandle:     `SELECT root_file_id FROM shares WHERE share_name = $1`,

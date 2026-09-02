@@ -2,13 +2,14 @@ package sql
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 )
 
 // ============================================================================
-// Server and filesystem reads
+// Server and filesystem operations
 // ============================================================================
 
 // GenerateHandle mints a handle for a new file in a share. The path plays no
@@ -53,4 +54,57 @@ func (c *Core) GetFilesystemStatistics(ctx context.Context, handle metadata.File
 	}
 
 	return basestore.BuildStatistics(bytesUsed, filesUsed), nil
+}
+
+// GetServerConfig reads the store-wide server configuration.
+//
+// A missing row is an empty configuration rather than a not-found error, which
+// is what the memory and badger backends report for a store that has never had
+// one written.
+func (c *Core) GetServerConfig(ctx context.Context) (metadata.MetadataServerConfig, error) {
+	if err := ctx.Err(); err != nil {
+		return metadata.MetadataServerConfig{}, err
+	}
+
+	var raw []byte
+	err := c.X.QueryRow(ctx, c.D.Server().GetServerConfig).Scan(&raw)
+	if c.D.IsNoRows(err) {
+		return metadata.MetadataServerConfig{CustomSettings: map[string]any{}}, nil
+	}
+	if err != nil {
+		return metadata.MetadataServerConfig{}, c.D.MapError(err, "GetServerConfig", "")
+	}
+
+	settings := map[string]any{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &settings); err != nil {
+			return metadata.MetadataServerConfig{}, c.D.MapError(err, "GetServerConfig", "")
+		}
+	}
+	return metadata.MetadataServerConfig{CustomSettings: settings}, nil
+}
+
+// SetServerConfig writes the store-wide server configuration, replacing
+// whatever was there.
+//
+// Nil settings are stored as an empty object, so the column never holds SQL
+// NULL and the read above never has to tell "no row" from "row holding null".
+func (c *Core) SetServerConfig(ctx context.Context, config metadata.MetadataServerConfig) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	settings := config.CustomSettings
+	if settings == nil {
+		settings = map[string]any{}
+	}
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		return c.D.MapError(err, "SetServerConfig", "")
+	}
+
+	if _, err := c.X.Exec(ctx, c.D.Server().SetServerConfig, raw); err != nil {
+		return c.D.MapError(err, "SetServerConfig", "")
+	}
+	return nil
 }

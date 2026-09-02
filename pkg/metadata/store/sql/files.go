@@ -380,3 +380,56 @@ func (c *Core) SetLinkCount(ctx context.Context, handle metadata.FileHandle, cou
 	}
 	return nil
 }
+
+// DeleteFile removes one inode, reporting metadata.ErrNotFound when it is not
+// there.
+//
+// parent_child_map.parent_id declares ON DELETE CASCADE against inodes(id), so
+// removing the inode reaps a directory's child-map rows with it, and the hard
+// link count lives on the inode row so it goes too. The entry naming this file
+// in its own parent is not touched here — that is DeleteChild, which the
+// service layer calls separately, matching the memory and badger stores.
+func (c *Core) DeleteFile(ctx context.Context, handle metadata.FileHandle) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	shareName, id, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return invalidHandle("file")
+	}
+
+	// Read the size and owner before the row goes, so the usage counters can be
+	// decremented after the delete lands.
+	//
+	// A missing row is expected and not an error here: the RowsAffected check
+	// below turns it into ErrNotFound before the usage is touched. Any other
+	// scan failure is fatal, because FileTypeRegular is the zero value — a
+	// dropped error would charge -1 file to uid 0 and leave the real owner
+	// charged for a file that is gone, with nothing to notice it afterwards.
+	var fileType int
+	var fileSize int64
+	var fileUID, fileGID int64
+	scanErr := c.X.QueryRow(ctx, c.D.Files().DeleteFileOwner, id, shareName).
+		Scan(&fileType, &fileSize, &fileUID, &fileGID)
+	if scanErr != nil && !c.D.IsNoRows(scanErr) {
+		return c.D.MapError(scanErr, "DeleteFile", "")
+	}
+
+	result, err := c.X.Exec(ctx, c.D.Files().DeleteFile, id, shareName)
+	if err != nil {
+		return c.D.MapError(err, "DeleteFile", "")
+	}
+	if result.RowsAffected() == 0 {
+		return &metadata.StoreError{
+			Code:    metadata.ErrNotFound,
+			Message: "file not found",
+		}
+	}
+
+	if metadata.FileType(fileType) == metadata.FileTypeRegular {
+		c.Quota.Add(shareName, uint32(fileUID), uint32(fileGID), -fileSize, -1)
+	}
+
+	return nil
+}

@@ -397,55 +397,6 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 	return nil
 }
 
-func (tx *sqliteTransaction) DeleteFile(ctx context.Context, handle metadata.FileHandle) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	shareName, id, err := metadata.DecodeFileHandle(handle)
-	if err != nil {
-		return &metadata.StoreError{
-			Code:    metadata.ErrInvalidHandle,
-			Message: "invalid file handle",
-		}
-	}
-
-	// Read size + owner before deletion for counter tracking.
-	var fileType int
-	var fileSize int64
-	var fileUID, fileGID int64
-	_ = tx.tx.QueryRow(ctx,
-		`SELECT file_type, size, uid, gid FROM inodes WHERE id = ?1 AND share_name = ?2`,
-		id, shareName,
-	).Scan(&fileType, &fileSize, &fileUID, &fileGID)
-
-	// Delete the file. parent_child_map.parent_id declares ON DELETE CASCADE
-	// against inodes(id), so deleting the inode row reaps (if it is a directory)
-	// its child-map rows automatically. The hard-link count lives on the inode
-	// row itself (inodes.nlink), so it is removed with the row. We do NOT delete
-	// this file from its parent's children
-	// map here — that is the responsibility of DeleteChild, which the service
-	// layer calls separately. This matches the memory and badger stores.
-	result, err := tx.tx.Exec(ctx, `DELETE FROM inodes WHERE id = ?1 AND share_name = ?2`, id, shareName)
-	if err != nil {
-		return mapDBError(err, "DeleteFile", "")
-	}
-
-	if result.RowsAffected() == 0 {
-		return &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "file not found",
-		}
-	}
-
-	// Subtract size from the pending delta + per-identity usage for regular files.
-	if metadata.FileType(fileType) == metadata.FileTypeRegular {
-		tx.quota.Add(shareName, uint32(fileUID), uint32(fileGID), -fileSize, -1)
-	}
-
-	return nil
-}
-
 // ============================================================================
 // Transaction Shares Operations
 // ============================================================================
@@ -645,66 +596,6 @@ func (tx *sqliteTransaction) CreateRootDirectory(ctx context.Context, shareName 
 // ============================================================================
 // Transaction ServerConfig Operations
 // ============================================================================
-
-func (tx *sqliteTransaction) SetServerConfig(ctx context.Context, config metadata.MetadataServerConfig) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	query := `
-		INSERT INTO server_config (id, config)
-		VALUES (1, ?1)
-		ON CONFLICT (id) DO UPDATE
-		SET config = EXCLUDED.config, updated_at = CURRENT_TIMESTAMP
-	`
-
-	// config is a JSON TEXT column; marshal explicitly (SQLite, unlike Postgres
-	// JSONB, does not serialize a Go map bind value).
-	settings := config.CustomSettings
-	if settings == nil {
-		settings = map[string]any{}
-	}
-	raw, err := json.Marshal(settings)
-	if err != nil {
-		return mapDBError(err, "SetServerConfig", "")
-	}
-	if _, err := tx.tx.Exec(ctx, query, raw); err != nil {
-		return mapDBError(err, "SetServerConfig", "")
-	}
-
-	return nil
-}
-
-func (tx *sqliteTransaction) GetServerConfig(ctx context.Context) (metadata.MetadataServerConfig, error) {
-	if err := ctx.Err(); err != nil {
-		return metadata.MetadataServerConfig{}, err
-	}
-
-	query := `SELECT config FROM server_config WHERE id = 1`
-
-	// config is a JSON TEXT column; scan raw bytes and unmarshal (parity with
-	// the pool-path GetServerConfig).
-	var raw []byte
-	err := tx.tx.QueryRow(ctx, query).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		// Match the pool-path and the memory/badger backends: a missing
-		// config row is an empty (non-nil) config, not a not-found error.
-		return metadata.MetadataServerConfig{CustomSettings: map[string]any{}}, nil
-	}
-	if err != nil {
-		return metadata.MetadataServerConfig{}, mapDBError(err, "GetServerConfig", "")
-	}
-
-	customSettings := map[string]any{}
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &customSettings); err != nil {
-			return metadata.MetadataServerConfig{}, mapDBError(err, "GetServerConfig", "")
-		}
-	}
-	return metadata.MetadataServerConfig{
-		CustomSettings: customSettings,
-	}, nil
-}
 
 func (tx *sqliteTransaction) SetFilesystemCapabilities(capabilities metadata.FilesystemCapabilities) {
 	tx.store.capabilities = capabilities

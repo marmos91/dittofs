@@ -36,8 +36,9 @@ type Core struct {
 	Caps func() metadata.FilesystemCapabilities
 	// Quota accumulates the usage changes a write owes the store's quota
 	// cache, which applies them once the transaction commits. Set only on a
-	// transaction's Core; the pool's Core leaves it nil, and the one method
-	// that reads it is reached solely through a transaction-level shadow.
+	// transaction's Core; the pool's Core leaves it nil. Every method that
+	// reads it is reached only through a store-level delegate that opens a
+	// transaction first, so a nil here is unreachable.
 	//
 	// Left unguarded on purpose. A guard would have to invent an error for a
 	// state the package cannot produce, and nothing could ever exercise it, so
@@ -45,7 +46,7 @@ type Core struct {
 	// The bare dereference is the louder failure and it is a safe one:
 	// DeleteShare aggregates the usage before it deletes any row, and a panic
 	// inside a transaction unwinds past the commit, so nothing reaches the
-	// database either way.
+	// database either way whichever order the calls came in.
 	Quota *basestore.QuotaDelta
 }
 

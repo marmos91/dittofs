@@ -39,7 +39,26 @@ func (s *MemoryMetadataStore) GetServerConfig(ctx context.Context) (metadata.Met
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return s.serverConfig, nil
+	return withSettings(s.serverConfig), nil
+}
+
+// withSettings hands back a copy of the config with a non-nil CustomSettings
+// map.
+//
+// Both halves matter, and both are about matching the other three backends.
+// A store that has never had a config written leaves the map nil, where they
+// return an empty one, and a caller that assigns into what it read panics on
+// nil. And the map they return is freshly decoded per read, where this store
+// would otherwise hand out the live one — so a caller like the block-GC
+// reconcile marker, which reads the config, sets a key and writes it back,
+// would mutate store state before the write and outside the lock.
+func withSettings(config metadata.MetadataServerConfig) metadata.MetadataServerConfig {
+	settings := make(map[string]any, len(config.CustomSettings))
+	for k, v := range config.CustomSettings {
+		settings[k] = v
+	}
+	config.CustomSettings = settings
+	return config
 }
 
 // ============================================================================

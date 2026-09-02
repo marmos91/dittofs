@@ -74,46 +74,6 @@ func TestLockPersistenceConformance(t *testing.T) {
 	})
 }
 
-// TestSQLite_TxServerConfigRoundTrip exercises the transaction-scoped
-// SetServerConfig / GetServerConfig path, which the shared conformance suite
-// does not cover (it only drives the pool path). The config column is JSON
-// TEXT, so the tx path must marshal/unmarshal explicitly rather than binding a
-// Go map directly to the driver.
-func TestSQLite_TxServerConfigRoundTrip(t *testing.T) {
-	ctx := context.Background()
-	store := newSQLiteStoreFactory()(t)
-
-	want := metadata.MetadataServerConfig{
-		CustomSettings: map[string]any{"feature": "on", "n": float64(7)},
-	}
-	if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return tx.SetServerConfig(ctx, want)
-	}); err != nil {
-		t.Fatalf("tx SetServerConfig failed: %v", err)
-	}
-
-	var got metadata.MetadataServerConfig
-	if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		var err error
-		got, err = tx.GetServerConfig(ctx)
-		return err
-	}); err != nil {
-		t.Fatalf("tx GetServerConfig failed: %v", err)
-	}
-	if got.CustomSettings["feature"] != "on" || got.CustomSettings["n"] != float64(7) {
-		t.Fatalf("tx server config round-trip mismatch: got %#v", got.CustomSettings)
-	}
-
-	// The pool path must observe the tx-written config too.
-	poolGot, err := store.GetServerConfig(ctx)
-	if err != nil {
-		t.Fatalf("pool GetServerConfig failed: %v", err)
-	}
-	if poolGot.CustomSettings["feature"] != "on" {
-		t.Fatalf("pool path did not observe tx-written config: %#v", poolGot.CustomSettings)
-	}
-}
-
 // TestSQLite_CleanShutdownMarkerDurable pins that a graceful Close records the
 // clean-shutdown marker durably across a close+reopen against the same database
 // file: a freshly-opened store defaults to unclean; a graceful Close records

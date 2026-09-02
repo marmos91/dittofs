@@ -37,13 +37,17 @@ type Dialect interface {
 	// expected to address a package-level value, not a fresh struct per call.
 	Chunks() *ChunkQueries
 
-	// Files returns the dialect's file and directory read statements, under
+	// Files returns the dialect's file and directory statements, under
 	// the same package-level-value expectation as Chunks.
 	Files() *FileQueries
 
-	// Shares returns the dialect's share read statements, under the same
+	// Shares returns the dialect's share statements, under the same
 	// package-level-value expectation as Chunks.
 	Shares() *ShareQueries
+
+	// Server returns the dialect's server-config statements, under the same
+	// package-level-value expectation as Chunks.
+	Server() *ServerQueries
 }
 
 // ShareQueries holds the share statements in one dialect's syntax. These
@@ -85,6 +89,22 @@ type ShareQueries struct {
 	ShareQuotaFreed string
 }
 
+// ServerQueries holds the store-wide server-config statements in one dialect's
+// syntax.
+//
+// The config column is JSON on both dialects — TEXT on sqlite, jsonb on
+// postgres — and both bodies carry it as raw bytes. pgx encodes a []byte into
+// jsonb and decodes jsonb back into one without a cast, so the marshalling is
+// the same on either side and the statements differ only in their placeholder
+// and their clock function.
+type ServerQueries struct {
+	// GetServerConfig selects the single config blob. No parameters.
+	GetServerConfig string
+	// SetServerConfig upserts the single config blob. One parameter: the
+	// encoded blob.
+	SetServerConfig string
+}
+
 // FileQueries holds the file and directory statements in one dialect's
 // syntax. Field names name the operation, not the SQL, so the shared bodies in
 // files.go read the same whichever dialect is underneath.
@@ -120,6 +140,13 @@ type FileQueries struct {
 	// SetLinkCount writes one inode's nlink. Two parameters: the count and the
 	// file id.
 	SetLinkCount string
+	// DeleteFileOwner selects the type, size and owning uid/gid of the inode
+	// about to be deleted, in that column order. Two parameters: the file id
+	// and the share name.
+	DeleteFileOwner string
+	// DeleteFile removes one inode row. Two parameters: the file id and the
+	// share name.
+	DeleteFile string
 }
 
 // ChunkQueries holds the file-chunk statements in one dialect's syntax. Field

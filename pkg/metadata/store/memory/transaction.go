@@ -783,7 +783,7 @@ func (tx *memoryTransaction) GetServerConfig(ctx context.Context) (metadata.Meta
 		return metadata.MetadataServerConfig{}, err
 	}
 
-	return tx.store.serverConfig, nil
+	return withSettings(tx.store.serverConfig), nil
 }
 
 func (tx *memoryTransaction) GetFilesystemCapabilities(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemCapabilities, error) {
