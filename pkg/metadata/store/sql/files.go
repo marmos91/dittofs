@@ -306,3 +306,77 @@ func (c *Core) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, 
 
 	return entries, nextCursor, nil
 }
+
+// ============================================================================
+// Directory-entry and link-count writes
+// ============================================================================
+//
+// These reach Core rather than staying on the transaction because the two
+// dialects had them character-for-character alike apart from placeholders and
+// the error mapper, which are already Dialect's job.
+//
+// The store types keep their own WithTransaction delegates, which shadow these
+// promoted methods. That is deliberate: a store-level write must run under the
+// package's retry, and the shadowing is what preserves it.
+
+// SetChild adds a directory entry, or repoints an existing name at a new child.
+func (c *Core) SetChild(ctx context.Context, dirHandle metadata.FileHandle, name string, childHandle metadata.FileHandle) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	_, parentID, err := metadata.DecodeFileHandle(dirHandle)
+	if err != nil {
+		return invalidHandle("directory")
+	}
+
+	_, childID, err := metadata.DecodeFileHandle(childHandle)
+	if err != nil {
+		return invalidHandle("child")
+	}
+
+	if _, err := c.X.Exec(ctx, c.D.Files().SetChild, parentID, name, childID); err != nil {
+		return c.D.MapError(err, "SetChild", name)
+	}
+	return nil
+}
+
+// DeleteChild removes a directory entry.
+//
+// A row that is already gone is not an error. Deleting a file cascades to its
+// parent_child_map rows through the child_id foreign key, so by the time a
+// caller unlinks the name it may already have gone with the inode — and either
+// way the entry no longer exists, which is what was asked for.
+func (c *Core) DeleteChild(ctx context.Context, dirHandle metadata.FileHandle, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	_, parentID, err := metadata.DecodeFileHandle(dirHandle)
+	if err != nil {
+		return invalidHandle("directory")
+	}
+
+	if _, err := c.X.Exec(ctx, c.D.Files().DeleteChild, parentID, name); err != nil {
+		return c.D.MapError(err, "DeleteChild", name)
+	}
+	return nil
+}
+
+// SetLinkCount writes a file's hard link count. nlink on the inode row is the
+// sole source of truth; it is never derived from the parent edges.
+func (c *Core) SetLinkCount(ctx context.Context, handle metadata.FileHandle, count uint32) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	_, fileID, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return invalidHandle("file")
+	}
+
+	if _, err := c.X.Exec(ctx, c.D.Files().SetLinkCount, count, fileID); err != nil {
+		return c.D.MapError(err, "SetLinkCount", "")
+	}
+	return nil
+}

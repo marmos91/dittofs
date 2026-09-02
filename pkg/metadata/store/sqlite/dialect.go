@@ -85,6 +85,16 @@ var fileQueries = storesql.FileQueries{
 		ORDER BY dc.child_name
 		LIMIT ?3`,
 
+	SetChild: `INSERT INTO parent_child_map (parent_id, child_name, child_id)
+		VALUES (?1, ?2, ?3)
+		ON CONFLICT (parent_id, child_name) DO UPDATE SET child_id = EXCLUDED.child_id`,
+
+	DeleteChild: `DELETE FROM parent_child_map WHERE parent_id = ?1 AND child_name = ?2`,
+
+	// inodes.nlink is the sole source of truth for the hard-link count, so
+	// GETATTR reads it straight off the inode row without a join.
+	SetLinkCount: `UPDATE inodes SET nlink = ?1 WHERE id = ?2`,
+
 	GetFileByPayloadID: `SELECT ` + inodeSelectColumns + ` FROM inodes f
 		WHERE f.content_id = ?1
 		LIMIT 1`,
@@ -99,6 +109,9 @@ var shareQueries = storesql.ShareQueries{
 	ListShares:        `SELECT share_name FROM shares`,
 	GetFilesystemMeta: `SELECT meta FROM filesystem_meta WHERE share_name = ?1`,
 	Statfs:            `SELECT COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE share_name = ?1 AND file_type = ?2`,
+	PutFilesystemMeta: `INSERT INTO filesystem_meta (share_name, meta)
+		VALUES (?1, ?2)
+		ON CONFLICT (share_name) DO UPDATE SET meta = EXCLUDED.meta`,
 }
 
 var _ storesql.Dialect = dialect{}
