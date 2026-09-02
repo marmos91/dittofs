@@ -1448,7 +1448,7 @@ func (h *Handler) setFileInfoFromStore(
 		// leave a live directory permanently unwatchable.
 		if openFile.IsDirectory && h.NotifyRegistry != nil {
 			if deletePending {
-				h.NotifyRegistry.CompleteWatchersForDeletePending(openFile.ShareName, openFile.Name().Path)
+				h.NotifyRegistry.MarkDirectoryDeletePending(openFile.ShareName, openFile.Name().Path)
 			} else {
 				h.NotifyRegistry.ClearDeletePendingMark(openFile.ShareName, openFile.Name().Path)
 			}

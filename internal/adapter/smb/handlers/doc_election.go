@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path"
 	"strings"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -315,6 +316,28 @@ func (h *Handler) removeElectedTarget(
 		}
 	}
 
+	// Retire the directory's delete-pending marker. The handle carrying the
+	// disposition is the one closing here, so whichever way the removal below
+	// goes the marker has stopped describing anything: either the entry goes
+	// and the name is free for reuse, or it survives with nothing left holding
+	// it delete-pending. A marker that outlived either outcome would leave that
+	// name permanently unwatchable.
+	//
+	// Unlike the two things left to the callers above, this is unconditionally
+	// right for both close paths, and it runs ahead of the removal so every
+	// exit below is covered.
+	//
+	// The path is rebuilt from the entry being removed rather than taken from
+	// target.Name, which is the closing handle's own name: reached through a
+	// stream handle carrying a deferred base delete, that name is the stream's,
+	// and clearing under it would leave the base directory's marker behind.
+	if isDeleteTargetDir && h.NotifyRegistry != nil {
+		h.NotifyRegistry.ClearDeletePendingMark(
+			openFile.ShareName,
+			path.Join(GetParentPath(target.Name.Path), target.FileName),
+		)
+	}
+
 	var removedPayloadID metadata.PayloadID
 	if isDeleteTargetDir {
 		_, err = metaSvc.RemoveDirectory(authCtx, target.ParentHandle, target.FileName)
@@ -364,16 +387,6 @@ func (h *Handler) removeElectedTarget(
 
 	h.purgeBlockStorePayload(ctx, deleteTargetHandle, removedPayloadID, target.Name.Path, caller)
 	h.restoreParentDirFrozenTimestamps(authCtx, target.ParentHandle)
-
-	// The name is free again, so the directory's delete-pending marker must go
-	// with it: a CHANGE_NOTIFY on a directory later created under the same name
-	// would otherwise be answered STATUS_DELETE_PENDING forever. This sits here
-	// rather than in the two callers because it is unconditionally right for
-	// both — it retires state the removal has just made false, not a
-	// notification whose shape differs by close path.
-	if isDeleteTargetDir && !target.IsBaseFile && h.NotifyRegistry != nil {
-		h.NotifyRegistry.ClearDeletePendingMark(openFile.ShareName, target.Name.Path)
-	}
 
 	return isDeleteTargetDir, true, nil
 }

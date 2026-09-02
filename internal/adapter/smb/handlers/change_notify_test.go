@@ -3825,7 +3825,7 @@ func TestRegisterAfterDeletePendingMark(t *testing.T) {
 	}
 
 	// Nothing is registered yet, so the sweep answers nobody.
-	if got := r.CompleteWatchersForDeletePending("share1", "/parent/target"); got != 0 {
+	if got := r.MarkDirectoryDeletePending("share1", "/parent/target"); got != 0 {
 		t.Fatalf("expected the sweep to find no watchers, got %d", got)
 	}
 
@@ -3875,7 +3875,7 @@ func TestClearDeletePendingMark(t *testing.T) {
 		}
 	}
 
-	r.CompleteWatchersForDeletePending("share1", "/parent/target")
+	r.MarkDirectoryDeletePending("share1", "/parent/target")
 	if err := r.Register(notify(1, 10)); !errors.Is(err, ErrDirectoryDeletePending) {
 		t.Fatalf("precondition: got %v, want ErrDirectoryDeletePending", err)
 	}
@@ -3896,8 +3896,8 @@ func TestClearDeletePendingMark(t *testing.T) {
 }
 
 // TestChangeNotify_DeletePendingDirectory_AnsweredSynchronously pins the wire
-// answer for the ordering #2199 describes: the directory's delete disposition
-// is committed, and only then does the CHANGE_NOTIFY reach the handler. It
+// answer for the late-arrival ordering: the directory's delete disposition is
+// committed, and only then does the CHANGE_NOTIFY reach the handler. It
 // must come back on its own MessageID with STATUS_DELETE_PENDING rather than
 // going async on a wait that has already been swept past.
 func TestChangeNotify_DeletePendingDirectory_AnsweredSynchronously(t *testing.T) {
@@ -3914,7 +3914,7 @@ func TestChangeNotify_DeletePendingDirectory_AnsweredSynchronously(t *testing.T)
 
 	// Another handle marked the directory for deletion first. The sweep finds
 	// nothing: this watch has not registered yet.
-	h.NotifyRegistry.CompleteWatchersForDeletePending("share1", "/dir")
+	h.NotifyRegistry.MarkDirectoryDeletePending("share1", "/dir")
 
 	var wentAsync bool
 	ctx := &SMBHandlerContext{
@@ -3942,5 +3942,35 @@ func TestChangeNotify_DeletePendingDirectory_AnsweredSynchronously(t *testing.T)
 	}
 	if n := h.NotifyRegistry.WatcherCount(); n != 0 {
 		t.Errorf("WatcherCount = %d, want 0 — nothing may be left waiting", n)
+	}
+}
+
+// TestCompleteWatchersForDeletePendingDoesNotStick pins the asymmetry between
+// the two entry points. Both close paths remove the directory entry before they
+// sweep, so a sticky marker recorded from the plain sweep would be stamped onto
+// a name that has just been freed — and every directory successfully deleted
+// over SMB would become permanently unwatchable under that name.
+func TestCompleteWatchersForDeletePendingDoesNotStick(t *testing.T) {
+	r := newTestNotifyRegistry()
+
+	notify := &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/parent/target",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength:  4096,
+		AsyncCallback:    func(uint64, uint64, uint64, *ChangeNotifyResponse) error { return nil },
+	}
+
+	r.CompleteWatchersForDeletePending("share1", "/parent/target")
+
+	if err := r.Register(notify); err != nil {
+		t.Fatalf("the plain sweep must leave no sticky marker behind: %v", err)
+	}
+	if n := r.WatcherCount(); n != 1 {
+		t.Errorf("expected the watch to be parked normally, got %d watchers", n)
 	}
 }
