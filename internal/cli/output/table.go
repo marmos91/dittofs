@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/tw"
 )
 
 // TableRenderer is implemented by types that can render themselves as a table.
@@ -13,6 +14,36 @@ type TableRenderer interface {
 	Headers() []string
 	// Rows returns the data rows for the table.
 	Rows() [][]string
+}
+
+// borderless returns the options for the CLI's plain column layout: no borders,
+// no separators and no header rule, every cell left-aligned and never wrapped,
+// with two trailing spaces per cell standing in for the gap between columns.
+func borderless() []tablewriter.Option {
+	return []tablewriter.Option{
+		tablewriter.WithRendition(tw.Rendition{
+			Borders: tw.BorderNone,
+			Settings: tw.Settings{
+				Separators: tw.Separators{
+					ShowHeader:     tw.Off,
+					ShowFooter:     tw.Off,
+					BetweenRows:    tw.Off,
+					BetweenColumns: tw.Off,
+				},
+				Lines: tw.Lines{
+					ShowTop:        tw.Off,
+					ShowBottom:     tw.Off,
+					ShowHeaderLine: tw.Off,
+					ShowFooterLine: tw.Off,
+				},
+			},
+		}),
+		tablewriter.WithPadding(tw.Padding{Left: tw.Empty, Right: "  ", Overwrite: true}),
+		tablewriter.WithHeaderAlignment(tw.AlignLeft),
+		tablewriter.WithAlignment(tw.Alignment{tw.AlignLeft}),
+		tablewriter.WithHeaderAutoWrap(tw.WrapNone),
+		tablewriter.WithRowAutoWrap(tw.WrapNone),
+	}
 }
 
 // PrintTable writes data as a formatted table to the writer.
@@ -26,28 +57,17 @@ func PrintTable(w io.Writer, data TableRenderer) error {
 	if data == nil {
 		return errors.New("no table renderer for this resource; retry with -o json")
 	}
-	table := tablewriter.NewWriter(w)
-	table.SetHeader(data.Headers())
-
-	// Configure table style for clean output
-	table.SetAutoWrapText(false)
-	table.SetAutoFormatHeaders(true)
-	table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
-	table.SetAlignment(tablewriter.ALIGN_LEFT)
-	table.SetCenterSeparator("")
-	table.SetColumnSeparator("")
-	table.SetRowSeparator("")
-	table.SetHeaderLine(false)
-	table.SetBorder(false)
-	table.SetTablePadding("  ")
-	table.SetNoWhiteSpace(true)
+	opts := append(borderless(), tablewriter.WithHeaderAutoFormat(tw.On))
+	table := tablewriter.NewTable(w, opts...)
+	table.Header(data.Headers())
 
 	for _, row := range data.Rows() {
-		table.Append(row)
+		if err := table.Append(row); err != nil {
+			return err
+		}
 	}
 
-	table.Render()
-	return nil
+	return table.Render()
 }
 
 // TableData is a simple implementation of TableRenderer for ad-hoc tables.
@@ -81,24 +101,13 @@ func (t *TableData) Rows() [][]string {
 
 // SimpleTable prints a simple key-value table.
 func SimpleTable(w io.Writer, pairs [][2]string) error {
-	table := tablewriter.NewWriter(w)
-
-	table.SetAutoWrapText(false)
-	table.SetAutoFormatHeaders(false)
-	table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
-	table.SetAlignment(tablewriter.ALIGN_LEFT)
-	table.SetCenterSeparator("")
-	table.SetColumnSeparator(":")
-	table.SetRowSeparator("")
-	table.SetHeaderLine(false)
-	table.SetBorder(false)
-	table.SetTablePadding("  ")
-	table.SetNoWhiteSpace(true)
+	table := tablewriter.NewTable(w, borderless()...)
 
 	for _, pair := range pairs {
-		table.Append([]string{pair[0], pair[1]})
+		if err := table.Append([]string{pair[0], pair[1]}); err != nil {
+			return err
+		}
 	}
 
-	table.Render()
-	return nil
+	return table.Render()
 }
