@@ -40,7 +40,7 @@ func borderless() []tablewriter.Option {
 		}),
 		tablewriter.WithPadding(tw.Padding{Left: tw.Empty, Right: "  ", Overwrite: true}),
 		tablewriter.WithHeaderAlignment(tw.AlignLeft),
-		tablewriter.WithAlignment(tw.Alignment{tw.AlignLeft}),
+		tablewriter.WithRowAlignment(tw.AlignLeft),
 		tablewriter.WithHeaderAutoWrap(tw.WrapNone),
 		tablewriter.WithRowAutoWrap(tw.WrapNone),
 	}
