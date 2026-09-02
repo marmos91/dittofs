@@ -356,8 +356,13 @@ func (r *recoveryState) replayRecords(m *segmentMeta, sh, id uint64, recs []reco
 // each entry's original Version, so a later warm write shadows it and the
 // tombstone/truncate passes clip it exactly like a warm interval.
 func (r *recoveryState) applyColdLog() error {
-	coldLoaded, err := loadCold(r.s.dir)
+	coldLoaded, validUpTo, err := loadCold(r.s.dir)
 	if err != nil {
+		return err
+	}
+	// Repair before anything appends: recovery is the only point where the log
+	// is known to end at an intact entry.
+	if err := truncateColdTail(r.s.dir, validUpTo); err != nil {
 		return err
 	}
 	r.coldLoaded = len(coldLoaded)

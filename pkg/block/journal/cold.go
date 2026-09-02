@@ -188,17 +188,20 @@ func (s *Store) appendCold(entries []coldEntry) error {
 
 // loadCold reads every intact entry from dir's cold log. A missing log is not an
 // error (no eviction or seed has happened yet). It stops at the first torn entry
-// and returns what precedes it.
-func loadCold(dir string) ([]coldEntry, error) {
+// and returns what precedes it, along with the byte offset just past the last
+// intact entry: anything between that offset and the end of the file is garbage
+// the caller is expected to drop with truncateColdTail before appending.
+func loadCold(dir string) ([]coldEntry, int64, error) {
 	raw, err := os.ReadFile(filepath.Join(dir, coldLogName))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+			return nil, 0, nil
 		}
-		return nil, fmt.Errorf("journal: read cold log: %w", err)
+		return nil, 0, fmt.Errorf("journal: read cold log: %w", err)
 	}
 	var out []coldEntry
-	for off := 0; off < len(raw); {
+	off := 0
+	for off < len(raw) {
 		e, n, derr := decodeColdEntry(raw[off:])
 		if derr != nil {
 			logger.Warn("journal: cold log torn, keeping the intact entries",
@@ -208,7 +211,39 @@ func loadCold(dir string) ([]coldEntry, error) {
 		out = append(out, e)
 		off += n
 	}
-	return out, nil
+	return out, int64(off), nil
+}
+
+// truncateColdTail drops whatever follows the last intact entry and makes the
+// truncation durable. The log is only ever opened for append, so a torn tail
+// left in place sits in front of every later entry: the next load stops at the
+// same offset and discards everything appended in between, turning one torn
+// write into the permanent loss of every cold interval recorded after it.
+func truncateColdTail(dir string, validUpTo int64) error {
+	fd, err := os.OpenFile(filepath.Join(dir, coldLogName), os.O_WRONLY, 0o644)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("journal: open cold log for tail repair: %w", err)
+	}
+	defer func() { _ = fd.Close() }()
+	st, err := fd.Stat()
+	if err != nil {
+		return fmt.Errorf("journal: stat cold log: %w", err)
+	}
+	if st.Size() <= validUpTo {
+		return nil
+	}
+	logger.Warn("journal: dropping torn cold log tail",
+		"valid_up_to", validUpTo, "dropped_bytes", st.Size()-validUpTo)
+	if err := fd.Truncate(validUpTo); err != nil {
+		return fmt.Errorf("journal: truncate torn cold log tail: %w", err)
+	}
+	if err := fd.Sync(); err != nil {
+		return fmt.Errorf("journal: fsync truncated cold log: %w", err)
+	}
+	return nil
 }
 
 // rewriteCold replaces the log with exactly entries, dropping the ones recovery
