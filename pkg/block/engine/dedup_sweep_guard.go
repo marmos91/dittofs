@@ -105,8 +105,14 @@ func (g *dedupSweepGuard) stripeFor(h block.ContentHash) *dedupGuardStripe {
 // the sweep holds a claim on h, so a carver that loses the race uploads the
 // chunk instead of pointing at bytes about to be freed.
 //
-// Probing under the stripe is what orders the two decisions: the sweep cannot
-// claim h between the probe and the adoption being recorded.
+// The stripe mutex is deliberately held across probe, a metadata-store round
+// trip on the carve path. Narrowing it — check claimed, unlock, probe, relock,
+// re-check claimed — is not equivalent: a claim is released as soon as its
+// reclamation finishes, so an entire claim, reclaim and marker delete can begin
+// and complete inside the probe window, leaving the re-check nothing to see and
+// the carver deduping onto bytes freed while it was probing. Holding the lock
+// across the probe is what makes the two decisions totally ordered rather than
+// merely both visible at some instant, and that ordering is the point.
 func (g *dedupSweepGuard) adopt(h block.ContentHash, probe func() (bool, error)) (bool, error) {
 	s := g.stripeFor(h)
 	s.mu.Lock()
