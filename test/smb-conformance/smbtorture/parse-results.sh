@@ -109,7 +109,7 @@ get_known_reason() { kf_reason "$1"; }
 # not count as new failures. Every rewrite is named in the summary, so a
 # reclassification is something you can see rather than a silent subtraction
 # from the failure count. (smb2.oplock.batch1 is proven to deliver its oplock
-# break well within the client's 5 s timeout even at 6x CPU oversubscription,
+# break well within the client's 5 s timeout even at 6× CPU oversubscription,
 # so a batch1 "new failure" carrying one of these diagnostics is always a
 # connection flake, never the break path.)
 #
@@ -181,8 +181,13 @@ flush_pending() {
         local header="${pending_block[0]}"
         header="${header/#failure:/skip:}"
         header="${header/#error:/skip:}"
-        local reclassified="${header#skip: }"
-        RECLASSIFIED_LIST+=("${reclassified%% *} — ${pending_flake_reason}")
+        # Name it the way the rest of the summary does: first token, "smb2."
+        # prepended when smbtorture emitted a bare suite-less name.
+        if [[ "$header" =~ ^skip:[[:space:]]+([^[:space:]]+) ]]; then
+            local reclassified="${BASH_REMATCH[1]}"
+            [[ "$reclassified" != smb2.* ]] && reclassified="smb2.${reclassified}"
+            RECLASSIFIED_LIST+=("${reclassified} — ${pending_flake_reason}")
+        fi
         printf '%s\n' "$header" >> "$TEMP_OUTPUT"
         local i
         for ((i = 1; i < ${#pending_block[@]}; i++)); do

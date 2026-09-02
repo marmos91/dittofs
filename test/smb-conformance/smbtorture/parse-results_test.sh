@@ -271,12 +271,12 @@ assert_output "excused block named" "- smb2.rename.rename1 — connection setup"
 
 # -- The canonical connect diagnostic is excused on its own, and says so. --
 run_case "connection diagnostic is excused" 0 <<'EOF'
-test: smb2.rename.rename1
-failure: smb2.rename.rename1 [
+test: rename.rename1
+failure: rename.rename1 [
 ../../source4/torture/smb2/rename.c:41: Establishing SMB2 connection failed
 ]
 EOF
-assert_output "connect flake named" "- smb2.rename.rename1 — connection setup"
+assert_output "connect flake named with the suite prefix" "- smb2.rename.rename1 — connection setup"
 
 
 echo ""
