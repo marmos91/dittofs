@@ -83,7 +83,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y xmlstarlet gettext-base
@@ -129,7 +129,7 @@ jobs:
 
       - name: Upload results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: smb-conformance-${{ matrix.profile }}
           path: test/smb-conformance/results/
@@ -145,7 +145,7 @@ jobs:
     # of in a 40-minute suite run.
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Test grading logic
         run: test/smb-conformance/smbtorture/parse-results_test.sh
@@ -179,7 +179,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run smbtorture tests
         run: |
@@ -200,7 +200,7 @@ jobs:
 
       - name: Upload results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: smbtorture-${{ matrix.profile }}
           path: test/smb-conformance/results/smbtorture-*/
@@ -222,7 +222,7 @@ jobs:
 
     steps:
       - name: Checkout develop
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: develop
           # GITHUB_TOKEN cannot bypass branch protection on develop. If that
@@ -278,7 +278,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # The self-contained KDC (test/smb-conformance/kdc) is started via
       # the docker-compose "kerberos" profile by run.sh --kerberos. No
@@ -315,7 +315,7 @@ jobs:
 
       - name: Upload results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: smbtorture-kerberos
           path: test/smb-conformance/results/smbtorture-*/
