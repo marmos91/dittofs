@@ -17,6 +17,7 @@ func runDirOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("NestedDirectories", func(t *testing.T) { testNestedDirectories(t, factory) })
 	t.Run("RootDirectoryIdempotent", func(t *testing.T) { testRootDirectoryIdempotent(t, factory) })
 	t.Run("LinkCountAgreesWithGetFile", func(t *testing.T) { testLinkCountAgreesWithGetFile(t, factory) })
+	t.Run("DeleteChildIsIdempotent", func(t *testing.T) { testDeleteChildIsIdempotent(t, factory) })
 }
 
 // testCreateDirectory verifies that creating a directory results in the correct type and link count.
@@ -371,5 +372,62 @@ func testLinkCountAgreesWithGetFile(t *testing.T, factory StoreFactory) {
 				t.Errorf("GetLinkCount() = %d, GetFile().Nlink = %d; both surfaces must agree", count, file.Nlink)
 			}
 		})
+	}
+}
+
+// testDeleteChildIsIdempotent pins DeleteChild's contract: removing a name the
+// directory does not hold succeeds and reports no error.
+//
+// Both halves matter and they fail differently. A backend that resolves the
+// name before deleting fails "NeverExisted"; a backend that reports how many
+// rows the delete matched fails "AlreadyRemoved", because the first call is
+// what leaves the second with nothing to do. The transaction path is checked
+// separately from the pool path — the two are distinct bodies in every backend
+// that has not yet collapsed them, and only the transaction path is what a
+// rename or an rmdir actually runs.
+func testDeleteChildIsIdempotent(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	rootHandle := createTestShare(t, store, "/test")
+	ctx := t.Context()
+
+	if err := store.DeleteChild(ctx, rootHandle, "never-existed"); err != nil {
+		t.Errorf("DeleteChild(absent name) = %v, want nil", err)
+	}
+
+	createTestDir(t, store, "/test", rootHandle, "victim")
+	if err := store.DeleteChild(ctx, rootHandle, "victim"); err != nil {
+		t.Fatalf("DeleteChild(present name) failed: %v", err)
+	}
+	if err := store.DeleteChild(ctx, rootHandle, "victim"); err != nil {
+		t.Errorf("DeleteChild(already removed) = %v, want nil", err)
+	}
+
+	err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		if txErr := tx.DeleteChild(ctx, rootHandle, "never-existed"); txErr != nil {
+			t.Errorf("tx.DeleteChild(absent name) = %v, want nil", txErr)
+		}
+		if txErr := tx.DeleteChild(ctx, rootHandle, "victim"); txErr != nil {
+			t.Errorf("tx.DeleteChild(already removed) = %v, want nil", txErr)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithTransaction() failed: %v", err)
+	}
+
+	// The directory still has to be usable afterwards: a delete that found
+	// nothing must not have torn down state the next create depends on.
+	createTestDir(t, store, "/test", rootHandle, "after")
+	entries, _, err := store.ListChildren(ctx, rootHandle, "", 0)
+	if err != nil {
+		t.Fatalf("ListChildren() failed: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name)
+	}
+	sort.Strings(names)
+	if len(names) != 1 || names[0] != "after" {
+		t.Errorf("children after idempotent deletes = %v, want [after]", names)
 	}
 }

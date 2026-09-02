@@ -414,17 +414,9 @@ func (tx *memoryTransaction) DeleteChild(ctx context.Context, dirHandle metadata
 	dirKey := handleToKey(dirHandle)
 	childrenMap, exists := tx.store.children[dirKey]
 	if !exists {
-		return &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "child not found",
-		}
-	}
-
-	if _, exists := childrenMap[name]; !exists {
-		return &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "child not found",
-		}
+		// A directory with no children map has nothing under any name, which
+		// is the state DeleteChild is asked to reach.
+		return nil
 	}
 
 	delete(childrenMap, name)
