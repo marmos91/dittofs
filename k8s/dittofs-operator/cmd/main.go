@@ -187,9 +187,11 @@ func main() {
 	}
 
 	if err := (&controller.DittoServerReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("dittoserver-controller"),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		// The reconcilers emit events through record.EventRecorder; switching to
+		// mgr.GetEventRecorder would change the emitted event schema.
+		Recorder: mgr.GetEventRecorderFor("dittoserver-controller"), //nolint:staticcheck
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DittoServer")
 		os.Exit(1)
