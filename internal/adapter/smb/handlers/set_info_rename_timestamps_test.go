@@ -1,10 +1,10 @@
 // Handler-level coverage for the timestamps a SET_INFO rename leaves behind.
 //
 // A client that renames through a handle it still holds open must keep
-// observing the ChangeTime that handle was handed in its CREATE reply: MS-FSA
-// 2.1.5.15.12 note <187> defers the rename's LastChangeTime stamp until the
-// handle is closed, and conformance case smb2.rename.simple_modtime pins it.
-// LastModificationTime is left alone either way. A rename is authorized on the
+// observing the pre-rename ChangeTime: MS-FSA 2.1.5.15.12 note <187> defers the
+// rename's LastChangeTime stamp until the handle is closed, and conformance
+// case smb2.rename.simple_modtime pins it. LastModificationTime is left alone
+// either way. A rename is authorized on the
 // parent directory, so both must hold for a caller who may rename the file
 // without being able to write that file's own attributes.
 package handlers

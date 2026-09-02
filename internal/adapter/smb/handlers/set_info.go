@@ -1770,10 +1770,13 @@ func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
 // that writes it back. Service.Move stamps the renamed inode's Ctime, but
 // MS-FSA 2.1.5.15.12 note <187> defers that stamp until the handle is closed,
 // so a client that renames through a handle it still holds open keeps
-// observing the ChangeTime that handle was handed in its CREATE reply. The
-// normative text of 2.1.5.15.12 says only that a rename updates LastChangeTime;
-// the note is the half that says when it becomes visible. Conformance case
-// smb2.rename.simple_modtime pins it.
+// observing the pre-rename ChangeTime. The normative text of 2.1.5.15.12 says
+// only that a rename updates LastChangeTime; the note is the half that says
+// when it becomes visible. Conformance case smb2.rename.simple_modtime pins
+// it, by comparing a CREATE reply's change_time against a post-rename query on
+// the same handle — the two coincide because nothing else advances the file's
+// Ctime in between, which is the same assumption the ponytail note below
+// records.
 //
 // The write-back runs as the system identity on purpose. An explicit timestamp
 // write is ownership-gated in the metadata layer while the rename itself is
