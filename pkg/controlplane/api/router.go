@@ -26,7 +26,6 @@ const passwordChangePath = "/api/v1/users/me/password"
 //
 // The router is configured with:
 //   - Request ID middleware for request tracking
-//   - Real IP extraction for proper client identification
 //   - Custom request logging using the internal logger
 //   - Panic recovery to prevent server crashes
 //   - Request timeout to prevent hung requests
@@ -61,7 +60,11 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 
 	// Middleware stack - order matters
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	// No RealIP: it rewrites RemoteAddr from X-Forwarded-For / True-Client-IP /
+	// X-Real-IP unconditionally, and DittoFS trusts no proxy list, so any client
+	// could choose the address the request log records for it. The TCP peer is
+	// less specific behind an ingress but cannot be forged. Honouring forwarded
+	// headers again needs a trusted-hop allowlist, not this middleware.
 	r.Use(requestLogger)
 	r.Use(middleware.Recoverer)
 
