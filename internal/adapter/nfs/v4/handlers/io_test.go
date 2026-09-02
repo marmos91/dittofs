@@ -3,6 +3,8 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -31,6 +33,10 @@ type ioTestFixture struct {
 	store      metadata.Store
 	rootHandle metadata.FileHandle
 	shareName  string
+	// localStore and localDir are the local tier and its directory, so a test can
+	// observe the bytes a payload actually occupies on disk.
+	localStore *fs.FSStore
+	localDir   string
 }
 
 // newIOTestFixture creates a test fixture with metadata service and block store.
@@ -108,6 +114,8 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 		store:      metaStore,
 		rootHandle: rootHandle,
 		shareName:  shareName,
+		localStore: localStore,
+		localDir:   tmpDir,
 	}
 }
 
@@ -1598,5 +1606,69 @@ func TestReadNonRegularType(t *testing.T) {
 				t.Errorf("READ_PLUS status = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// localDirBytes sums every file under dir: the bytes the local tier actually
+// occupies, which is what an operator sees and what survives a restart.
+func localDirBytes(t *testing.T, dir string) int64 {
+	t.Helper()
+	var total int64
+	if err := filepath.Walk(dir, func(_ string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !fi.IsDir() {
+			total += fi.Size()
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk local dir: %v", err)
+	}
+	return total
+}
+
+// TestRemove_ReclaimsLocalPayloadBytes pins that a v4 REMOVE frees the removed
+// file's content, not just its name. The metadata layer deliberately never
+// deletes payload bytes — it returns the removed file's PayloadID so the
+// protocol handler can — so a handler that discards that return value never
+// tells the block store the file is gone. Its records stay indexed as live, no
+// reclamation path (fast-path retire, eviction, repack) will ever treat them as
+// dead, and the share keeps those bytes on disk across restarts even once every
+// file in it has been removed.
+//
+// The assertion is on block-store state an operator can observe rather than on
+// how the handler achieves it: after the unlink the payload must be unknown to
+// the local tier, which is the precondition every reclamation path shares.
+func TestRemove_ReclaimsLocalPayloadBytes(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+	ctxBg := context.Background()
+
+	fh := fx.createRegularFile(t, fx.rootHandle, "big.bin", 0o644, 1000, 1000)
+	file, err := fx.metaSvc.GetFile(ctxBg, fh)
+	if err != nil {
+		t.Fatalf("get file: %v", err)
+	}
+	payloadID := string(file.PayloadID)
+	payload := bytes.Repeat([]byte{0xAB}, 4<<20)
+	fx.writeContent(t, fh, payload)
+
+	if size, ok := fx.localStore.FileSize(ctxBg, payloadID); !ok || size != int64(len(payload)) {
+		t.Fatalf("local tier holds %d bytes (present=%v) before REMOVE, want %d", size, ok, len(payload))
+	}
+	if before := localDirBytes(t, fx.localDir); before < int64(len(payload)) {
+		t.Fatalf("local dir holds %d bytes before REMOVE, want at least the %d written", before, len(payload))
+	}
+
+	ctx := newRealFSContext(1000, 1000)
+	ctx.CurrentFH = append([]byte(nil), fx.rootHandle...)
+
+	result := fx.handler.handleRemove(ctx, bytes.NewReader(encodeRemoveArgs("big.bin")))
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("REMOVE status = %d, want NFS4_OK", result.Status)
+	}
+
+	if size, ok := fx.localStore.FileSize(ctxBg, payloadID); ok {
+		t.Fatalf("payload %q still holds %d live bytes in the local tier after REMOVE", payloadID, size)
 	}
 }
