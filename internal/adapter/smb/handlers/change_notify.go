@@ -353,7 +353,7 @@ type NotifyRegistry struct {
 	closeTombstones map[string]time.Time
 
 	// deletePendingDirs records directories whose delete disposition has been
-	// committed, keyed by (share, watch path). CompleteWatchersForDeletePending
+	// committed, keyed by (share, watch path). MarkDirectoryDeletePending
 	// sweeps the watches that are registered at that moment; this marker covers
 	// the ones that register afterwards, which that sweep cannot see and which
 	// nothing else would ever complete — the directory entry is still there
