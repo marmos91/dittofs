@@ -5,6 +5,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 )
 
 // ============================================================================
@@ -20,12 +21,12 @@ import (
 // Thread Safety:
 // All operations are single statements executed against the connection pool.
 type postgresRecoveryStore struct {
-	st *PostgresMetadataStore
+	pool storesql.Executor
 }
 
 // newPostgresRecoveryStore creates a new PostgreSQL client recovery store.
 func newPostgresRecoveryStore(st *PostgresMetadataStore) *postgresRecoveryStore {
-	return &postgresRecoveryStore{st: st}
+	return &postgresRecoveryStore{pool: poolExecer{s: st}}
 }
 
 // PutClientRecovery stores or replaces the record for a confirmed client using
@@ -52,7 +53,7 @@ func (s *postgresRecoveryStore) PutClientRecovery(ctx context.Context, rec *lock
 			reclaim_complete = EXCLUDED.reclaim_complete
 	`
 
-	_, err := s.st.exec(ctx, query,
+	_, err := s.pool.Exec(ctx, query,
 		rec.ClientIDString,
 		int64(rec.ClientID),
 		rec.BootVerifier[:], // [8]byte -> BYTEA
@@ -67,7 +68,7 @@ func (s *postgresRecoveryStore) PutClientRecovery(ctx context.Context, rec *lock
 // DeleteClientRecovery removes the record for a client.
 func (s *postgresRecoveryStore) DeleteClientRecovery(ctx context.Context, clientIDString string) error {
 	query := `DELETE FROM v4_client_recovery WHERE clientid_string = $1`
-	_, err := s.st.exec(ctx, query, clientIDString)
+	_, err := s.pool.Exec(ctx, query, clientIDString)
 	return err
 }
 
@@ -108,7 +109,7 @@ func (s *postgresRecoveryStore) ListClientRecovery(ctx context.Context) ([]*lock
 		ORDER BY confirmed_at
 	`
 
-	rows, err := s.st.query(ctx, query)
+	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +133,7 @@ func (s *postgresRecoveryStore) ListClientRecovery(ctx context.Context) ([]*lock
 // record is a no-op (RowsAffected == 0), not an error.
 func (s *postgresRecoveryStore) RecordReclaimComplete(ctx context.Context, clientIDString string) error {
 	query := `UPDATE v4_client_recovery SET reclaim_complete = TRUE WHERE clientid_string = $1`
-	_, err := s.st.exec(ctx, query, clientIDString)
+	_, err := s.pool.Exec(ctx, query, clientIDString)
 	return err
 }
 

@@ -155,7 +155,7 @@ func NewPostgresMetadataStore(
 
 	// The substores derive only from pool, which is never reassigned, so bind
 	// them once here.
-	store.lockStore = newPostgresLockStore(pool)
+	store.lockStore = newPostgresLockStore(poolExecer{s: store})
 	store.clientStore = newPostgresClientStore(store)
 	store.durableStore = newPostgresDurableStore(store)
 	store.recoveryStore = newPostgresRecoveryStore(store)

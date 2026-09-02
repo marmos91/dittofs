@@ -7,16 +7,17 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 )
 
 // postgresDurableStore implements lock.DurableHandleStore using PostgreSQL.
 type postgresDurableStore struct {
-	st *PostgresMetadataStore
+	pool storesql.Executor
 }
 
 func newPostgresDurableStore(st *PostgresMetadataStore) *postgresDurableStore {
 	return &postgresDurableStore{
-		st: st,
+		pool: poolExecer{s: st},
 	}
 }
 
@@ -90,7 +91,7 @@ func scanDurableHandle(row pgx.Row) (*lock.PersistedDurableHandle, error) {
 	return &h, nil
 }
 
-func scanDurableHandleRows(rows pgx.Rows) ([]*lock.PersistedDurableHandle, error) {
+func scanDurableHandleRows(rows storesql.Rows) ([]*lock.PersistedDurableHandle, error) {
 	defer rows.Close()
 
 	var result []*lock.PersistedDurableHandle
@@ -232,7 +233,7 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 			client_guid = EXCLUDED.client_guid
 	`
 
-	_, err := s.st.exec(ctx, query,
+	_, err := s.pool.Exec(ctx, query,
 		handle.ID,
 		handle.FileID[:],
 		handle.Path,
@@ -288,17 +289,17 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 
 func (s *postgresDurableStore) GetDurableHandle(ctx context.Context, id string) (*lock.PersistedDurableHandle, error) {
 	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles WHERE id = $1`
-	return scanDurableHandle(s.st.queryRow(ctx, query, id))
+	return scanDurableHandle(s.pool.QueryRow(ctx, query, id))
 }
 
 func (s *postgresDurableStore) GetDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
 	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles WHERE file_id = $1 ORDER BY id LIMIT 1`
-	return scanDurableHandle(s.st.queryRow(ctx, query, fileID[:]))
+	return scanDurableHandle(s.pool.QueryRow(ctx, query, fileID[:]))
 }
 
 func (s *postgresDurableStore) GetDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
 	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles WHERE create_guid = $1 LIMIT 1`
-	return scanDurableHandle(s.st.queryRow(ctx, query, createGuid[:]))
+	return scanDurableHandle(s.pool.QueryRow(ctx, query, createGuid[:]))
 }
 
 // ConsumeDurableHandle atomically fetches and deletes via
@@ -306,12 +307,12 @@ func (s *postgresDurableStore) GetDurableHandleByCreateGuid(ctx context.Context,
 // caller validated and leaves the file's other handles untouched.
 func (s *postgresDurableStore) ConsumeDurableHandle(ctx context.Context, id string) (*lock.PersistedDurableHandle, error) {
 	query := `DELETE FROM durable_handles WHERE id = $1 RETURNING ` + durableHandleColumns
-	return scanDurableHandle(s.st.queryRow(ctx, query, id))
+	return scanDurableHandle(s.pool.QueryRow(ctx, query, id))
 }
 
 func (s *postgresDurableStore) GetDurableHandlesByAppInstanceId(ctx context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {
 	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles WHERE app_instance_id = $1 ORDER BY created_at`
-	rows, err := s.st.query(ctx, query, appInstanceId[:])
+	rows, err := s.pool.Query(ctx, query, appInstanceId[:])
 	if err != nil {
 		return nil, err
 	}
@@ -320,7 +321,7 @@ func (s *postgresDurableStore) GetDurableHandlesByAppInstanceId(ctx context.Cont
 
 func (s *postgresDurableStore) GetDurableHandlesByFileHandle(ctx context.Context, fileHandle []byte) ([]*lock.PersistedDurableHandle, error) {
 	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles WHERE metadata_handle = $1 ORDER BY created_at`
-	rows, err := s.st.query(ctx, query, fileHandle)
+	rows, err := s.pool.Query(ctx, query, fileHandle)
 	if err != nil {
 		return nil, err
 	}
@@ -329,13 +330,13 @@ func (s *postgresDurableStore) GetDurableHandlesByFileHandle(ctx context.Context
 
 func (s *postgresDurableStore) DeleteDurableHandle(ctx context.Context, id string) error {
 	query := `DELETE FROM durable_handles WHERE id = $1`
-	_, err := s.st.exec(ctx, query, id)
+	_, err := s.pool.Exec(ctx, query, id)
 	return err
 }
 
 func (s *postgresDurableStore) ListDurableHandles(ctx context.Context) ([]*lock.PersistedDurableHandle, error) {
 	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles ORDER BY created_at`
-	rows, err := s.st.query(ctx, query)
+	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +345,7 @@ func (s *postgresDurableStore) ListDurableHandles(ctx context.Context) ([]*lock.
 
 func (s *postgresDurableStore) ListDurableHandlesByShare(ctx context.Context, shareName string) ([]*lock.PersistedDurableHandle, error) {
 	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles WHERE share_name = $1 ORDER BY created_at`
-	rows, err := s.st.query(ctx, query, shareName)
+	rows, err := s.pool.Query(ctx, query, shareName)
 	if err != nil {
 		return nil, err
 	}
@@ -356,7 +357,7 @@ func (s *postgresDurableStore) DeleteExpiredDurableHandles(ctx context.Context, 
 		DELETE FROM durable_handles
 		WHERE disconnected_at + (timeout_ms || ' milliseconds')::interval <= $1
 	`
-	result, err := s.st.exec(ctx, query, now)
+	result, err := s.pool.Exec(ctx, query, now)
 	if err != nil {
 		return 0, err
 	}
