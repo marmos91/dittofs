@@ -57,8 +57,11 @@ type dedupGuardStripe struct {
 	// are short-lived: one reclamation each.
 	claimed map[block.ContentHash]struct{}
 	// sinceSweep counts adoptions recorded since this stripe was last
-	// pruned, so a deployment with the GC scheduler switched off still
-	// sheds them.
+	// pruned. Every dedupPruneInterval adoptions the stripe sheds its aged
+	// entries, which bounds the map against ongoing dedup traffic even with
+	// the GC scheduler switched off. Traffic that stops leaves its final
+	// entries in place until it resumes or a sweep runs — a residue of under
+	// one interval per stripe.
 	sinceSweep int
 }
 
