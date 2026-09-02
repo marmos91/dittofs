@@ -1005,6 +1005,21 @@ func (s *Store) Truncate(ctx context.Context, id FileID, newSize int64) error {
 			fi.ivs = kept
 		}
 	}
+	// The clip has been applied, so a reader bounded at the marker's own Version
+	// is reading the post-truncate file and its write-back is legitimate; the
+	// file survives a truncate, unlike a delete, so refusing it would strand
+	// every later cold read of the surviving range until some unrelated write
+	// raised the store's LSN. While the clip was pending that reader was NOT
+	// safe — sh.mu is released between the mint and here, and hydratable still
+	// offered the range about to be removed — so the fence stands at the marker's
+	// Version for exactly that window and drops one below it now.
+	//
+	// Only if nothing raised it since. A concurrent truncate or delete that
+	// stamped higher owns the fence, and lowering it under them would admit
+	// readers their own window must refuse.
+	if sh.hydrateFence[id] == truncVer {
+		sh.hydrateFence[id] = truncVer - 1
+	}
 	sh.mu.Unlock()
 	if dirty != 0 {
 		s.unsynced.Add(-dirty)

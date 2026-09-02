@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -269,32 +270,96 @@ func TestDeleteFenceEvictionSparesARestampedFence(t *testing.T) {
 	}
 }
 
-// TestHydrateBoundAtTruncateMarkerVersionIsDropped is the truncate twin of
-// TestHydrateBoundAtTombstoneVersionIsDropped, and fails for the same reason if
-// the fence is stamped from a version peeked before appendTruncateMarker rather
-// than from the Version that call mints. TestHydrateAfterTruncateIsDropped
-// passes either way, so it cannot stand in for this one.
-func TestHydrateBoundAtTruncateMarkerVersionIsDropped(t *testing.T) {
+// TestHydrateAfterTruncateServesSurvivingPrefix bounds how far the truncate
+// fence may go. The file survives a truncate, so once the clip has run a cold
+// read of the range the truncate did NOT remove is legitimate and must be
+// filled. If nothing appends after the marker the reader's bound equals the
+// marker's own Version, so a fence that refuses at-or-below its stamp refuses
+// this reader — permanently, until some unrelated write happens to raise the
+// store's LSN. That is the shape that took out the engine's cold-read tests.
+func TestHydrateAfterTruncateServesSurvivingPrefix(t *testing.T) {
 	ctx := context.Background()
 	s, _ := evictStore(t, Config{})
-	data := bytes.Repeat([]byte{0xAB}, 8192)
-	if err := s.WriteAt(ctx, "f", 0, data); err != nil {
+	orig := bytes.Repeat([]byte{0xAB}, 8192)
+	if err := s.WriteAt(ctx, "f", 0, orig); err != nil {
 		t.Fatalf("WriteAt: %v", err)
 	}
 	if err := s.Truncate(ctx, "f", 4096); err != nil {
 		t.Fatalf("Truncate: %v", err)
 	}
-	// Nothing appends after the marker, so this is exactly the marker's Version:
-	// above any version Truncate could peek before minting it. The clip has left
-	// [4096, 8192) a hole, which hydratable offers in full.
-	if err := s.Hydrate(ctx, "f", 0, data, s.WriteVersion()); err != nil {
+	// Evict what survived: the prefix is now cold, so a read of it fetches and
+	// hydrates rather than serving local bytes.
+	sh := s.shardFor("f")
+	sh.mu.Lock()
+	for i := range sh.index["f"].ivs {
+		sh.index["f"].ivs[i].cold = true
+	}
+	sh.mu.Unlock()
+
+	fetched := bytes.Repeat([]byte{0xCD}, 4096)
+	// Nothing has appended since the marker, so this IS the marker's Version.
+	if err := s.Hydrate(ctx, "f", 0, fetched, s.WriteVersion()); err != nil {
 		t.Fatalf("Hydrate: %v", err)
 	}
-	got := make([]byte, len(data))
+	got := make([]byte, 4096)
+	if _, st, err := s.ReadAt(ctx, "f", 0, got); err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	} else if st.Cold {
+		t.Fatal("the surviving prefix is still cold: the truncate fence refused a legitimate cold read")
+	}
+	if !bytes.Equal(got, fetched) {
+		t.Fatal("the surviving prefix did not take the fetched bytes")
+	}
+}
+
+// TestHydrateDuringTruncateIsDropped is the other half of the two-state
+// requirement, and the half that fails if the fence is simply relaxed. sh.mu is
+// released between the marker's mint and the clip, and the marker's fsync runs
+// in that gap, so a hydrate can take the lock while the index still holds the
+// pre-truncate intervals. Bounded at the marker's own Version it would offer the
+// whole range, and the record it appends carries a Version the clip's own
+// iv.version > truncVer test then preserves — the removed tail comes back.
+//
+// Together with TestHydrateAfterTruncateServesSurvivingPrefix this pins both
+// states: the SAME bound must be refused during the truncate and served after
+// it, which is why no single comparison against a fixed stamp can be right.
+func TestHydrateDuringTruncateIsDropped(t *testing.T) {
+	ctx := context.Background()
+	s, _ := evictStore(t, Config{})
+	orig := bytes.Repeat([]byte{0xAB}, 8192)
+	if err := s.WriteAt(ctx, "f", 0, orig); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	sh := s.shardFor("f")
+	sh.mu.Lock()
+	for i := range sh.index["f"].ivs {
+		sh.index["f"].ivs[i].cold = true // evicted: hydratable will offer these
+	}
+	sh.mu.Unlock()
+
+	realSync := sh.segSync
+	var once sync.Once
+	var hydErr error
+	sh.segSync = func(seg *segmentMeta) error {
+		err := realSync(seg)
+		once.Do(func() {
+			// Mid-marker-fsync: the Version is minted, the clip has not run.
+			hydErr = s.Hydrate(ctx, "f", 0, orig, s.WriteVersion())
+		})
+		return err
+	}
+	if err := s.Truncate(ctx, "f", 4096); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+	if hydErr != nil {
+		t.Fatalf("Hydrate: %v", hydErr)
+	}
+
+	got := make([]byte, 8192)
 	if _, _, err := s.ReadAt(ctx, "f", 0, got); err != nil {
 		t.Fatalf("ReadAt: %v", err)
 	}
 	if !bytes.Equal(got[4096:], make([]byte, 4096)) {
-		t.Fatal("a hydrate bounded at the marker's own Version refilled the clipped tail")
+		t.Fatal("a hydrate landing inside the truncate window resurrected the removed tail")
 	}
 }

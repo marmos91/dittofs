@@ -131,7 +131,12 @@ func (sh *shard) hydrateFenced(id FileID, notAfter uint64) bool {
 
 // fenceHydrate publishes id's fence at version. Callers stamp in the same
 // critical section that mints the version, and the store's version counter only
-// climbs, so this shard's successive stamps for a file already arrive in order.
+// climbs, so this shard's successive stamps for a file arrive in order.
+//
+// Stamps are not the only writer: Truncate lowers the fence by one once its clip
+// has been applied, so the value is not monotonic over a file's lifetime. Any
+// reader of hydrateFence must tolerate that, and any writer must check it still
+// owns the value before changing it.
 // Caller holds sh.mu.
 func (sh *shard) fenceHydrate(id FileID, version uint64) {
 	sh.hydrateFence[id] = version
