@@ -95,7 +95,9 @@ var fileQueries = storesql.FileQueries{
 
 	// inodes.nlink is the sole source of truth for the hard-link count, so
 	// GETATTR reads it straight off the inode row without a join.
-	SetLinkCount: `UPDATE inodes SET nlink = $1 WHERE id = $2`,
+	SetLinkCount:    `UPDATE inodes SET nlink = $1 WHERE id = $2`,
+	DeleteFileOwner: `SELECT file_type, size, uid, gid FROM inodes WHERE id = $1 AND share_name = $2`,
+	DeleteFile:      `DELETE FROM inodes WHERE id = $1 AND share_name = $2`,
 
 	GetFileByPayloadID: `SELECT ` + inodeSelectColumns + ` FROM inodes f
 		WHERE f.content_id_hash = md5($1)

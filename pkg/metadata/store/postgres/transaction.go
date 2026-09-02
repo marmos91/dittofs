@@ -454,55 +454,6 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 	return nil
 }
 
-func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.FileHandle) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	shareName, id, err := metadata.DecodeFileHandle(handle)
-	if err != nil {
-		return &metadata.StoreError{
-			Code:    metadata.ErrInvalidHandle,
-			Message: "invalid file handle",
-		}
-	}
-
-	// Read size + owner before deletion for counter tracking.
-	var fileType int
-	var fileSize int64
-	var fileUID, fileGID int64
-	_ = tx.tx.QueryRow(ctx,
-		`SELECT file_type, size, uid, gid FROM inodes WHERE id = $1 AND share_name = $2`,
-		id, shareName,
-	).Scan(&fileType, &fileSize, &fileUID, &fileGID)
-
-	// Delete the file. parent_child_map.parent_id declares ON DELETE CASCADE
-	// against inodes(id), so deleting the inode row reaps (if it is a directory)
-	// its child-map rows automatically. The hard-link count lives on the inode
-	// row itself (inodes.nlink), so it is removed with the row. We do NOT delete
-	// this file from its parent's children
-	// map here — that is the responsibility of DeleteChild, which the service
-	// layer calls separately. This matches the memory and badger stores.
-	result, err := tx.tx.Exec(ctx, `DELETE FROM inodes WHERE id = $1 AND share_name = $2`, id, shareName)
-	if err != nil {
-		return mapPgError(err, "DeleteFile", "")
-	}
-
-	if result.RowsAffected() == 0 {
-		return &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "file not found",
-		}
-	}
-
-	// Subtract size from the pending delta + per-identity usage for regular files.
-	if metadata.FileType(fileType) == metadata.FileTypeRegular {
-		tx.quota.Add(shareName, uint32(fileUID), uint32(fileGID), -fileSize, -1)
-	}
-
-	return nil
-}
-
 // ============================================================================
 // Transaction Shares Operations
 // ============================================================================
