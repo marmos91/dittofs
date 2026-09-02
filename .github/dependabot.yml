@@ -1,10 +1,17 @@
 # Dependabot raises the bump PRs for the alerts on the Security tab. Without
 # this file GitHub still reports vulnerabilities but never opens a PR for them,
 # so they accumulate until someone bumps by hand.
+#
+# Every ecosystem sets target-branch: develop. Unset, Dependabot opens against
+# the repository default branch, which is main — and main only ever fast-forwards
+# from develop, so a bump merged there directly would put a commit on main that
+# is not in develop and break the strict-ancestor invariant the release flow
+# depends on. It also left the PRs blocked behind main's protection rules.
 version: 2
 updates:
   - package-ecosystem: gomod
     directory: /
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -22,6 +29,7 @@ updates:
 
   - package-ecosystem: gomod
     directory: /k8s/dittofs-operator
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -37,6 +45,7 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
