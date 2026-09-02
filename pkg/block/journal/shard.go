@@ -142,6 +142,10 @@ func (sh *shard) fenceDelete(id FileID, ver uint64) {
 	sh.deleteFences = append(sh.deleteFences, fenceEntry{id: id, ver: ver})
 	if len(sh.deleteFences) > maxDeleteFences {
 		oldest := sh.deleteFences[0]
+		// Clear the slot before the reslice: the backing array outlives the reslice
+		// until it reallocates, and until then it would pin every evicted FileID
+		// string for nothing.
+		sh.deleteFences[0] = fenceEntry{}
 		sh.deleteFences = sh.deleteFences[1:]
 		// Only if nothing has raised the fence since. A Truncate re-stamp belongs
 		// to a file that is live again and still needs its fence; that entry is
