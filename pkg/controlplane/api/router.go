@@ -26,7 +26,6 @@ const passwordChangePath = "/api/v1/users/me/password"
 //
 // The router is configured with:
 //   - Request ID middleware for request tracking
-//   - Real IP extraction for proper client identification
 //   - Custom request logging using the internal logger
 //   - Panic recovery to prevent server crashes
 //   - Request timeout to prevent hung requests
