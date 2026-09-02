@@ -1,9 +1,12 @@
 // Handler-level coverage for the timestamps a SET_INFO rename leaves behind.
 //
-// Per MS-FSA 2.1.5.15.12 ("FileRenameInformation") a rename updates
-// LastChangeTime and leaves LastModificationTime alone. A rename is authorized
-// on the parent directory, so both must also hold for a caller who may rename
-// the file without being able to write that file's own attributes.
+// A client holding the renamed file open must keep observing the ChangeTime it
+// was handed in the CREATE reply: smbtorture smb2.rename.simple_modtime renames
+// through an outstanding handle and compares the CREATE reply's change_time
+// against a post-rename query on that same handle. LastModificationTime is left
+// alone either way. A rename is authorized on the parent directory, so both
+// must hold for a caller who may rename the file without being able to write
+// that file's own attributes.
 package handlers
 
 import (
@@ -52,13 +55,15 @@ func setupRenameTimestampFixture(t *testing.T, fileUID, fileGID, callerUID, call
 	return h, callerCtx, open, past
 }
 
-// TestSetInfo_Rename_ChangeTimeAdvancesForEveryCaller pins that a rename's
-// LastChangeTime update survives regardless of whether the caller could have
-// written the file's timestamps directly. The two cases differ only in file
-// ownership: both may rename (the parent directory is 0o777), only the owner
-// may set the file's timestamps explicitly. Before the fix the owner's rename
-// put the pre-rename ChangeTime back and the non-owner's did not.
-func TestSetInfo_Rename_ChangeTimeAdvancesForEveryCaller(t *testing.T) {
+// TestSetInfo_Rename_ChangeTimePreservedForEveryCaller pins that a rename
+// leaves the ChangeTime a client already observed alone, and that it does so
+// regardless of whether the caller could have written the file's timestamps
+// directly. The two cases differ only in file ownership: both may rename (the
+// parent directory is 0o777), only the owner may set the file's timestamps
+// explicitly. The preserve must not turn on that difference — one rename that
+// reports two different ChangeTimes depending on who ran it is the defect
+// #2205 named.
+func TestSetInfo_Rename_ChangeTimePreservedForEveryCaller(t *testing.T) {
 	cases := []struct {
 		name                                   string
 		fileUID, fileGID, callerUID, callerGID uint32
@@ -92,24 +97,23 @@ func TestSetInfo_Rename_ChangeTimeAdvancesForEveryCaller(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetFile after rename: %v", err)
 			}
-			if !after.Ctime.After(past) {
-				t.Errorf("ChangeTime = %v after rename; want an advance past %v (MS-FSA 2.1.5.15.12)",
+			if !after.Ctime.Equal(past) {
+				t.Errorf("ChangeTime = %v after rename; want %v unchanged (smb2.rename.simple_modtime)",
 					after.Ctime.UTC(), past.UTC())
 			}
 			if !after.Mtime.Equal(past) {
-				t.Errorf("LastWriteTime = %v after rename; want %v unchanged (MS-FSA 2.1.5.15.12 does not update it)",
+				t.Errorf("LastWriteTime = %v after rename; want %v unchanged",
 					after.Mtime.UTC(), past.UTC())
 			}
 		})
 	}
 }
 
-// TestSetInfo_Rename_FrozenChangeTimeSurvivesRename covers the other half of
-// the rule the test above pins: the rename's LastChangeTime update is an
-// automatic one, so a handle that froze ChangeTime with the -1 sentinel must
-// not see it move. Reads the store directly rather than closing the handle,
-// because CLOSE runs its own frozen-timestamp restore and would mask whether
-// the rename path did anything.
+// TestSetInfo_Rename_FrozenChangeTimeSurvivesRename covers the -1 sentinel on
+// the same path: a handle that froze ChangeTime must not see it move either.
+// Reads the store directly rather than closing the handle, because CLOSE runs
+// its own frozen-timestamp restore and would mask whether the rename path did
+// anything.
 func TestSetInfo_Rename_FrozenChangeTimeSurvivesRename(t *testing.T) {
 	// Only an owner can freeze a timestamp — the sentinel pins the pre-image
 	// through the same ownership-gated write the restore uses — so there is no
