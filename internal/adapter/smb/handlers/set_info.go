@@ -1446,10 +1446,17 @@ func (h *Handler) setFileInfoFromStore(
 		// whose flag dies with the handle; the marker here is scoped to the
 		// directory, so keeping it after the deletion has been called off would
 		// leave a live directory permanently unwatchable.
+		//
+		// Only once NO open still carries the disposition, though: the marker
+		// describes the directory, and the write above cleared one handle's
+		// view of it. Dropping it while a sibling open still holds the
+		// directory delete-pending would put the late-arriving CHANGE_NOTIFYs
+		// straight back to waiting on a sweep that has already run.
 		if openFile.IsDirectory && h.NotifyRegistry != nil {
-			if deletePending {
+			switch {
+			case deletePending:
 				h.NotifyRegistry.MarkDirectoryDeletePending(openFile.ShareName, openFile.Name().Path)
-			} else {
+			case !h.isFileDeletePending(openFile.MetadataHandle):
 				h.NotifyRegistry.ClearDeletePendingMark(openFile.ShareName, openFile.Name().Path)
 			}
 		}
