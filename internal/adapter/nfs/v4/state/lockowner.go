@@ -192,8 +192,7 @@ func EncodeLOCK4denied(buf *bytes.Buffer, denied *LOCK4denied) {
 //
 // The lock manager spells that same end-of-file range as a length of zero, so
 // an accepted all-ones length is returned as zero and every other accepted
-// length is returned unchanged. Handing the literal all-ones length on would
-// overflow the manager's inclusive-end arithmetic and cover nothing.
+// length is returned unchanged.
 //
 // Returns NFS4ERR_INVAL on a rejected range.
 func normalizeLockRange(offset, length uint64) (uint64, error) {
