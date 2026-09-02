@@ -1071,17 +1071,24 @@ func (s *Store) PinVersion() uint64 { return s.pinVersion.Load() }
 //
 //  1. Ceiling replay: scan every on-disk record and rebuild each file's coverage
 //     as of V — data records with Version<=V resolved newest-wins, tombstones and
-//     truncate markers with Version<=V honored, everything above V ignored. The
-//     pre-overwrite records survive because a live snapshot pinned their segments.
+//     truncate markers with Version<=V honored, everything above V ignored, and
+//     the cold log folded in so a range that is durable remotely but holds no
+//     local bytes counts as covered rather than as a hole. The pre-overwrite
+//     records survive because a live snapshot pinned their segments.
 //  2. Re-materialize: for each file, read the V-view bytes from their pinned
 //     source records and re-append them as fresh dirty records at the head (a
-//     tombstone first to bury the current head, then the V-view data), then fsync
-//     every shard still holding unsynced records — a superset of the shards this
-//     pass wrote. Fresh versions exceed everything, so recover() rebuilds V on
-//     reopen; a file present at head but absent at V is tombstoned away.
+//     tombstone first to bury the current head, then the V-view data), re-assert
+//     the V-view's cold ranges into the cold log, then fsync every shard still
+//     holding unsynced records — a superset of the shards this pass wrote. Fresh
+//     versions exceed everything, so recover() rebuilds V on reopen; a file
+//     present at head but absent at V is tombstoned away.
 //
-// The caller (restore orchestration) drains rollups afterward and holds the share
-// disabled, so no concurrent writer races this.
+// Precondition: the share is disabled, so nothing else is touching the store. The
+// caller (restore orchestration) enforces that and drains rollups afterward. It is
+// load-bearing rather than incidental — the cold ranges are re-asserted with one
+// batched append whose plan and fsync are not under a single shard lock, so a
+// Delete landing between them would bury an entry the insert then recreates.
+// Running this against a live share reintroduces that race silently.
 func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1143,6 +1150,55 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 			}
 		}
 	}
+	// A cold interval owns no record — eviction unlinked the bytes it described,
+	// or the range was seeded cold from a manifest — so the record scan above
+	// cannot see one and would read a remote-durable range as a hole. Fold the
+	// cold log in at each entry's persisted version, exactly as recover() does,
+	// so the passes below clip it like any warm interval. The log needs no tail
+	// repair here: recovery already trimmed it at open, and appendCold rolls its
+	// own tail back on a failed write, so a live store's log ends intact.
+	//
+	// The version test below asks whether the content existed at V, and only one
+	// of the log's two writers records something that answers it. Eviction copies
+	// the version off the interval it replaces, so its entry still dates the data.
+	// A seed mints a fresh one, dating the scan that noticed the range was
+	// remote-durable: that version exists so a racing Delete sweeps below the
+	// entry, and says nothing about when the bytes were written. An entry does not
+	// record which writer made it, so the two cannot be told apart here.
+	//
+	// Eviction is the only writer that reaches a store this runs against — both
+	// manifest-seed callers require the share to have a remote, and this method
+	// runs only on a restore's local-only branch. The exception is a store seeded
+	// while it had a remote that was later detached.
+	//
+	// ponytail: on that store a seeded entry is skipped as post-V, which is the
+	// same lost cold range this fold exists to prevent. The entry alone cannot do
+	// better — including it unconditionally would instead resurrect content written
+	// after V, because a seed describes the file as the manifest currently has it.
+	// Closing it needs the entry to record its writer, a change to a durable
+	// on-disk format that wants its own migration.
+	coldEntries, _, cerr := loadCold(s.dir)
+	if cerr != nil {
+		return fmt.Errorf("journal: restore: load cold log: %w", cerr)
+	}
+	for _, e := range coldEntries {
+		if e.length <= 0 || e.version > v {
+			continue
+		}
+		fi := vIndex[e.id]
+		if fi == nil {
+			fi = &fileIndex{}
+			vIndex[e.id] = fi
+		}
+		fi.insert(interval{
+			fileOff: e.fileOff,
+			length:  e.length,
+			version: e.version,
+			synced:  true,
+			cold:    true,
+		})
+	}
+
 	// Honor tombstones and truncate markers at or below V, mirroring recover().
 	for fid, fi := range vIndex {
 		if tv, ok := tombstones[fid]; ok {
@@ -1177,15 +1233,23 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 	for _, id := range s.ListFiles(ctx) {
 		head[id] = struct{}{}
 	}
+	var coldSeeds []ColdSeed
 	for id, fi := range vIndex {
 		type extent struct {
 			off  int64
 			data []byte
 		}
 		exts := make([]extent, 0, len(fi.ivs))
+		var coldExts [][2]int64
 		sh := s.shardFor(id)
 		for _, iv := range fi.ivs {
 			if iv.length <= 0 {
+				continue
+			}
+			// Nothing to read back for a cold range: it is re-asserted below,
+			// after the burial tombstone, as a fresh cold-log entry.
+			if iv.cold {
+				coldExts = append(coldExts, [2]int64{iv.fileOff, iv.length})
 				continue
 			}
 			sh.mu.Lock()
@@ -1218,6 +1282,9 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 				return fmt.Errorf("journal: restore: re-materialize %q@%d: %w", id, e.off, err)
 			}
 		}
+		if len(coldExts) > 0 {
+			coldSeeds = append(coldSeeds, ColdSeed{ID: id, Extents: coldExts})
+		}
 		delete(head, id)
 	}
 	// Files present at head but not in the V-view were created after V: tombstone
@@ -1226,6 +1293,17 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 		if err := s.Delete(ctx, id); err != nil {
 			return fmt.Errorf("journal: restore: tombstone post-V file %q: %w", id, err)
 		}
+	}
+
+	// The burials above swept every cold interval out of the index and buried the
+	// log entries that described them, so the V-view's cold ranges are holes until
+	// they are re-asserted at a version above those tombstones. Seeding covers only
+	// what the index still calls a hole, which after the re-materialization above is
+	// exactly those ranges. One durable append covers the whole pass, which is safe
+	// only under this method's disabled-share precondition: it is what closes the
+	// plan/append gap SeedColdBatch documents.
+	if err := s.SeedColdBatch(ctx, coldSeeds); err != nil {
+		return fmt.Errorf("journal: restore: re-assert cold ranges: %w", err)
 	}
 
 	// Every tombstone fsynced itself, but the V-view data went in through WriteAt,
