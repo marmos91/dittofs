@@ -20,9 +20,9 @@ CONFORMANCE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 VALID_PROFILES=("memory" "memory-fs" "badger-fs" "sqlite" "postgres" "memory-kerberos")
 
-# Name given to every one-off smbtorture container, so a client the CLI failed
-# to stop can still be found and removed. Scoped to this harness process so a
-# container leaked by an earlier one can never block the name.
+# Name given to every one-off smbtorture container so it stays addressable (see
+# run_smbtorture). Scoped to this harness process so a container leaked by an
+# earlier one can never block the name.
 SMBTORTURE_RUN_NAME="smbtorture-run-$$"
 
 # --------------------------------------------------------------------------
@@ -226,9 +226,9 @@ fi
 cleanup() {
     local exit_code=$?
 
-    # Reap the one-off client even under --keep: it holds no state worth
-    # inspecting (its output is already teed to the results file) and a wedged
-    # one spins a core for as long as it is left alive.
+    # Reaped even under --keep: the client holds no state worth inspecting, its
+    # output is already teed to the results file, and the compose down below
+    # does not cover one-off run containers.
     docker rm -f "$SMBTORTURE_RUN_NAME" >/dev/null 2>&1 || true
 
     if ! $KEEP; then
@@ -461,9 +461,8 @@ run_smbtorture() {
     # timeout fires, the CLI dies, --rm never runs, and the container keeps a
     # core busy for as long as the daemon is up. A panicked smbtorture reaches
     # exactly that state — smb_panic stops emitting output without exiting.
-    # Naming the one-off container makes it addressable, so it can be removed
-    # here whatever the CLI did or did not manage to tear down. Removing a
-    # container that already exited via --rm is a no-op.
+    # `docker compose down -v` in cleanup does not reap one-off run containers,
+    # so the name is what makes this removable at all.
     docker rm -f "$SMBTORTURE_RUN_NAME" >/dev/null 2>&1 || true
     # Classify the exit code (see _smbtorture_exit handling at end of file):
     #   124            -> the per-suite timeout fired: the harness gave up on this
@@ -629,9 +628,11 @@ else
         # client's own timer can resolve trips the assert, smbtorture panics
         # and the process stops emitting without exiting, so the rest of
         # smb2.create burns the budget ungraded. The same reasoning already
-        # excludes the whole smb2.bench family below; that exclusion is keyed
+        # excludes the whole smb2.bench family above; that exclusion is keyed
         # on the smb2.bench filter, which does not reach this copy of the
-        # benchmark inside a functional suite.
+        # benchmark inside a functional suite. Collapse these back into a
+        # single smb2.create entry once the benchmark no longer ships inside
+        # the create suite.
         "smb2.create.gentest:create"
         "smb2.create.blob:create"
         "smb2.create.open:create"
@@ -819,10 +820,12 @@ else
     # NOTE: Skipped interactive hold tests:
     #   smb2.hold-oplock    - waits 5 min for oplock events (no real test)
     #   smb2.hold-sharemode - blocks indefinitely waiting for SIGINT
-    # Also skipped: smb2.bench and smb2.create.bench-path-contention-shared
-    # (throughput benchmarks — flaky under load, no conformance signal; see the
-    # SUITES list above).
-    log_warn "Skipped: smb2.hold-oplock, smb2.hold-sharemode (interactive hold tests), smb2.bench and smb2.create.bench-path-contention-shared (benchmarks)"
+    # Also skipped: smb2.bench (throughput benchmarks — flaky under load, no
+    # conformance signal) and smb2.create.bench-path-contention-shared (the
+    # same benchmark reachable from inside a functional suite; see the SUITES
+    # list above for why it panics the client). Run them ad hoc with
+    # `--filter smb2.bench` and `--filter smb2.create.bench-path-contention-shared`.
+    log_warn "Skipped: smb2.hold-oplock, smb2.hold-sharemode (interactive hold tests), smb2.bench, smb2.create.bench-path-contention-shared (benchmarks)"
 fi
 
 # Collect DittoFS logs
