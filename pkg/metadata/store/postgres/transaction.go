@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -148,7 +147,7 @@ func (s *PostgresMetadataStore) withTransaction(ctx context.Context, fn func(tx 
 		}
 
 		ptx := &postgresTransaction{store: s, tx: tx}
-		ptx.Core = &storesql.Core{X: txExecer{tx: tx}, D: pgDialect, Caps: s.currentCapabilities}
+		ptx.Core = &storesql.Core{X: txExecer{tx: tx}, D: pgDialect, Caps: s.currentCapabilities, Quota: &ptx.quota}
 		if err := fn(ptx); err != nil {
 			// Apply timeout to rollback to prevent indefinite blocking
 			rollbackCtx, rollbackCancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
@@ -547,73 +546,8 @@ func (tx *postgresTransaction) UpdateShareOptions(ctx context.Context, shareName
 }
 
 func (tx *postgresTransaction) DeleteShare(ctx context.Context, shareName string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	tx.sharesDirty = true
-
-	// Capture per-identity usage about to be removed (uid + gid) so the
-	// in-memory usage cache stays accurate. Aggregated before the rows are
-	// deleted; applied to the tx quota delta (post-commit) below.
-	if err := tx.collectShareQuotaFreed(ctx, shareName, "uid", metadata.QuotaScopeUser); err != nil {
-		return err
-	}
-	if err := tx.collectShareQuotaFreed(ctx, shareName, "gid", metadata.QuotaScopeGroup); err != nil {
-		return err
-	}
-
-	// Drop the share row first: shares.root_file_id references inodes(id)
-	// WITHOUT ON DELETE CASCADE, so the inode rows cannot be removed while
-	// the share still points at the root inode.
-	result, err := tx.tx.Exec(ctx, `DELETE FROM shares WHERE share_name = $1`, shareName)
-	if err != nil {
-		return mapPgError(err, "DeleteShare", shareName)
-	}
-	if result.RowsAffected() == 0 {
-		return &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "share not found",
-			Path:    shareName,
-		}
-	}
-
-	// Delete all inode rows for the share. The store.go:161 contract is
-	// "removes a share and all its metadata"; dropping only the share row
-	// orphans every inodes/parent_child_map/file_block_refs row.
-	// parent_child_map and file_block_refs both cascade from inodes(id).
-	if _, err := tx.tx.Exec(ctx, `DELETE FROM inodes WHERE share_name = $1`, shareName); err != nil {
-		return mapPgError(err, "DeleteShare", shareName)
-	}
-
-	return nil
-}
-
-// collectShareQuotaFreed aggregates per-identity usage for the regular files of
-// a share being deleted (grouped by uid or gid) and records the negative delta
-// on the tx so the in-memory usage cache is decremented post-commit. The column
-// is a fixed internal constant, never user input.
-func (tx *postgresTransaction) collectShareQuotaFreed(ctx context.Context, shareName, col string, scope metadata.QuotaScope) error {
-	query := fmt.Sprintf(
-		`SELECT %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes
-		 WHERE share_name = $1 AND file_type = $2 GROUP BY %s`,
-		col, col,
-	)
-	rows, err := tx.tx.Query(ctx, query, shareName, int(metadata.FileTypeRegular))
-	if err != nil {
-		return mapPgError(err, "DeleteShare", shareName)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id, bytes, files int64
-		if err := rows.Scan(&id, &bytes, &files); err != nil {
-			return mapPgError(err, "DeleteShare", shareName)
-		}
-		tx.quota.AddKeyed(basestore.QuotaKey{Share: shareName, Scope: scope, ID: uint32(id)}, metadata.UsageStat{Bytes: -bytes, Files: -files})
-	}
-	if err := rows.Err(); err != nil {
-		return mapPgError(err, "DeleteShare", shareName)
-	}
-	return nil
+	return tx.Core.DeleteShare(ctx, shareName)
 }
 
 func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareName string, attr *metadata.FileAttr) (*metadata.File, error) {
