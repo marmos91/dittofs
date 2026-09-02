@@ -1,12 +1,10 @@
 // Handler-level coverage for the timestamps a SET_INFO rename leaves behind.
 //
-// A client holding the renamed file open must keep observing the ChangeTime it
-// was handed in the CREATE reply: smbtorture smb2.rename.simple_modtime renames
-// through an outstanding handle and compares the CREATE reply's change_time
-// against a post-rename query on that same handle. LastModificationTime is left
-// alone either way. A rename is authorized on the parent directory, so both
-// must hold for a caller who may rename the file without being able to write
-// that file's own attributes.
+// A client that renames through a handle it still holds open must keep
+// observing the ChangeTime that handle was handed in its CREATE reply.
+// LastModificationTime is left alone either way. A rename is authorized on the
+// parent directory, so both must hold for a caller who may rename the file
+// without being able to write that file's own attributes.
 package handlers
 
 import (
@@ -60,9 +58,9 @@ func setupRenameTimestampFixture(t *testing.T, fileUID, fileGID, callerUID, call
 // regardless of whether the caller could have written the file's timestamps
 // directly. The two cases differ only in file ownership: both may rename (the
 // parent directory is 0o777), only the owner may set the file's timestamps
-// explicitly. The preserve must not turn on that difference — one rename that
-// reports two different ChangeTimes depending on who ran it is the defect
-// #2205 named.
+// explicitly. The preserve must not turn on that difference: one rename that
+// reports two different ChangeTimes depending on who ran it is a defect in its
+// own right.
 func TestSetInfo_Rename_ChangeTimePreservedForEveryCaller(t *testing.T) {
 	cases := []struct {
 		name                                   string
@@ -98,7 +96,7 @@ func TestSetInfo_Rename_ChangeTimePreservedForEveryCaller(t *testing.T) {
 				t.Fatalf("GetFile after rename: %v", err)
 			}
 			if !after.Ctime.Equal(past) {
-				t.Errorf("ChangeTime = %v after rename; want %v unchanged (smb2.rename.simple_modtime)",
+				t.Errorf("ChangeTime = %v after rename; want %v unchanged for a handle held open across it",
 					after.Ctime.UTC(), past.UTC())
 			}
 			if !after.Mtime.Equal(past) {

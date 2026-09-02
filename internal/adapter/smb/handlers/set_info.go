@@ -1768,17 +1768,17 @@ func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
 
 // snapshotChangeTime reads a file's current ChangeTime and returns a function
 // that writes it back. Service.Move stamps the renamed inode's Ctime, but a
-// client that renames through an outstanding handle must keep observing the
-// ChangeTime it was handed in the CREATE reply — smbtorture
-// smb2.rename.simple_modtime compares exactly those two values.
+// client that renames through a handle it still holds open must keep observing
+// the ChangeTime that handle was handed in its CREATE reply, so the stamp is
+// put back.
 //
 // The write-back runs as the system identity on purpose. An explicit timestamp
 // write is ownership-gated in the metadata layer while the rename itself is
 // authorized on the parent directory, so writing the stamp back as the caller
-// lands for an owner and is silently refused for everyone else: one rename,
-// two observable ChangeTimes, selected by a permission check the caller never
-// asked for (#2205). As the system identity it lands for every caller, so the
-// ChangeTime a client observes no longer depends on who owns the file. A
+// would land for an owner and be silently refused for everyone else: one
+// rename, two observable ChangeTimes, chosen by a permission check the caller
+// never asked for. As the system identity it lands for every caller, so the
+// ChangeTime a client observes does not depend on who owns the file. A
 // read-only share cannot reach here — Move would already have refused.
 //
 // Only Ctime is snapshotted: Move leaves the renamed inode's Mtime alone, and
@@ -1787,9 +1787,18 @@ func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
 //
 // Returns a no-op if the read fails.
 //
-// ponytail: read-then-write-back costs an extra store round-trip per rename;
-// teach Service.Move to skip the stamp for its SMB caller only if rename
-// throughput ever shows up in a profile.
+// ponytail: the rule being implemented is handle-scoped — what a handle that
+// was already open keeps observing — but this writes the stored timestamp, so
+// it is file-scoped, and a Ctime advanced between the read and the write-back
+// (a WRITE, truncate or SET_INFO on another handle, or over NFS) is walked
+// backwards for every observer. The two coincide whenever nothing else is
+// touching the file. Upgrade to a per-OpenFile overlay consulted by
+// QUERY_INFO — the seam applyFrozenTimestamps already uses — once that overlay
+// can also say when to stop applying: it has to yield to the next real Ctime
+// advance, including one made through a different handle, which an OpenFile
+// field cannot see on its own. A directory enumeration reports a child's
+// ChangeTime with no OpenFile at all, so an overlay does not cover that path
+// either.
 func (h *Handler) snapshotChangeTime(authCtx *metadata.AuthContext, handle metadata.FileHandle) func() {
 	metaSvc := h.Registry.GetMetadataService()
 	file, err := metaSvc.GetFile(authCtx.Context, handle)
