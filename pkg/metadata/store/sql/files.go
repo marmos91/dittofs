@@ -402,18 +402,19 @@ func (c *Core) DeleteFile(ctx context.Context, handle metadata.FileHandle) error
 	// Read the size and owner before the row goes, so the usage counters can be
 	// decremented after the delete lands.
 	//
-	// ponytail: the scan error is dropped. A missing row is the common case and
-	// the RowsAffected check below turns it into ErrNotFound before the usage
-	// is touched, so the only cost is on a row that exists but fails to scan:
-	// FileTypeRegular is the zero value, so the delete then charges -1 file to
-	// uid 0 / gid 0 and leaves the real owner charged for a file that is gone.
-	// Distinguishing that from no-rows costs an IsNoRows branch; do it if a
-	// counter is ever seen drifting.
+	// A missing row is expected and not an error here: the RowsAffected check
+	// below turns it into ErrNotFound before the usage is touched. Any other
+	// scan failure is fatal, because FileTypeRegular is the zero value — a
+	// dropped error would charge -1 file to uid 0 and leave the real owner
+	// charged for a file that is gone, with nothing to notice it afterwards.
 	var fileType int
 	var fileSize int64
 	var fileUID, fileGID int64
-	_ = c.X.QueryRow(ctx, c.D.Files().DeleteFileOwner, id, shareName).
+	scanErr := c.X.QueryRow(ctx, c.D.Files().DeleteFileOwner, id, shareName).
 		Scan(&fileType, &fileSize, &fileUID, &fileGID)
+	if scanErr != nil && !c.D.IsNoRows(scanErr) {
+		return c.D.MapError(scanErr, "DeleteFile", "")
+	}
 
 	result, err := c.X.Exec(ctx, c.D.Files().DeleteFile, id, shareName)
 	if err != nil {
