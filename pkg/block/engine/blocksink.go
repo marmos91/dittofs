@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"time"
 
 	"lukechampine.com/blake3"
 
@@ -65,8 +66,15 @@ type engineDeduper struct {
 	synced metadata.SyncedHashStore
 }
 
+// IsChunkDurable answers through dedupGuard, which records the adoption so a
+// remote sweep running concurrently cannot reclaim the hash the carver is about
+// to point a manifest row at. A true answer costs the carver its only copy of
+// the bytes, so it must not be given for a hash the sweep has already claimed.
 func (d engineDeduper) IsChunkDurable(ctx context.Context, hash journal.ChunkHash) (bool, error) {
-	return d.synced.IsSynced(ctx, block.ContentHash(hash))
+	h := block.ContentHash(hash)
+	return dedupGuard.adopt(h, time.Now(), func() (bool, error) {
+		return d.synced.IsSynced(ctx, h)
+	})
 }
 
 // localDeduper is the carve dedup oracle for a share with NO remote block store.

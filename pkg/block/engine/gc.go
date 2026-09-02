@@ -246,8 +246,9 @@ type Options struct {
 	// the remote sweep. Every synced hash lives inside a blocks/<id> object, so this is the ONLY remote reclaim path: the sweep
 	// decrements the enclosing block and frees the block object + record when
 	// its last live chunk is gone. It is reached only after the sweep has
-	// proven the hash globally dead (past grace, absent from the live set),
-	// so freeing a block here can never race a live dedup sibling. A nil
+	// proven the hash globally dead (past grace, absent from the live set)
+	// and claimed it against a concurrent carve dedup, so freeing a block
+	// here cannot race a live sibling. A nil
 	// reclaimer — or a hash no share can resolve — is metadata drift: the
 	// sweep records the error and keeps the marker (fail-closed). Set ONLY
 	// for the remote tier (the index sweep); the local tier leaves it nil.
