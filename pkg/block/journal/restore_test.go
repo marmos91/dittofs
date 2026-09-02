@@ -190,3 +190,98 @@ func TestRestoreToVersion_ReMaterializedViewSurvivesCrash(t *testing.T) {
 		}
 	}
 }
+
+// assertColdAt fails unless the store reports the range at off as cold — durable
+// on the remote and fetchable — rather than as a hole a read would zero-fill.
+func assertColdAt(t *testing.T, s *Store, id FileID, off, length int64, when string) {
+	t.Helper()
+	_, st, err := s.ReadAt(context.Background(), id, off, make([]byte, length))
+	if err != nil {
+		t.Fatalf("%s: ReadAt %s@%d: %v", when, id, off, err)
+	}
+	if !st.Cold {
+		t.Fatalf("%s: %s@%d+%d is no longer cold (hole=%v) — the range is durable on the "+
+			"remote, but the restored view calls it never-written, so a read zero-fills "+
+			"instead of fetching it back", when, id, off, length, st.Hole)
+	}
+}
+
+// TestRestoreToVersion_KeepsFullyColdFile pins a file whose every byte was cold
+// at the target version. It owns no segment record — eviction unlinked the bytes
+// and the cold log is the only trace — so a ceiling replay that reads records
+// alone finds nothing for it, files it under "present at head, absent at V", and
+// tombstones a file that is durably present on the remote.
+func TestRestoreToVersion_KeepsFullyColdFile(t *testing.T) {
+	f := newRestoreFixture(t, 1)
+	ctx := context.Background()
+
+	const coldLen = 4096
+	cold := FileID("cold-only")
+	peer := FileID("warm-peer")
+
+	if err := f.SeedCold(ctx, cold, [][2]int64{{0, coldLen}}); err != nil {
+		t.Fatalf("SeedCold: %v", err)
+	}
+	v1 := bytes.Repeat([]byte("first-version-"), 64)
+	f.write(peer, 0, v1)
+	target := f.commitAll()
+
+	// Move the head past V so the restore has real work to do.
+	f.write(peer, 0, bytes.Repeat([]byte("second-version"), 64))
+	f.commitAll()
+
+	if err := f.RestoreToVersion(ctx, target); err != nil {
+		t.Fatalf("RestoreToVersion: %v", err)
+	}
+	assertColdAt(t, f.Store, cold, 0, coldLen, "pre-crash")
+
+	r := f.crashReopen()
+	assertColdAt(t, r, cold, 0, coldLen, "post-crash")
+	if got := readAll(t, r, peer, len(v1)); !bytes.Equal(got, v1) {
+		t.Fatalf("post-crash %s: restore did not produce the V1 view", peer)
+	}
+}
+
+// TestRestoreToVersion_KeepsColdRangesOfMixedFile pins a file that was part warm
+// and part cold at the target version. The warm half has records and replays; the
+// cold half does not, so it is missing from the extents phase 2 re-asserts and the
+// burial tombstone leaves it a genuine POSIX hole — the hole-versus-cold
+// conflation the module treats as its cardinal sin.
+func TestRestoreToVersion_KeepsColdRangesOfMixedFile(t *testing.T) {
+	f := newRestoreFixture(t, 1)
+	ctx := context.Background()
+
+	const half = 1024
+	id := FileID("half-cold")
+	warm := bytes.Repeat([]byte("warm"), half/4)
+
+	f.write(id, 0, warm)
+	if err := f.SeedCold(ctx, id, [][2]int64{{half, half}}); err != nil {
+		t.Fatalf("SeedCold: %v", err)
+	}
+	target := f.commitAll()
+
+	// Post-V, the cold half is overwritten with local bytes. Restoring V has to
+	// take those bytes away again and put the cold marking back.
+	f.write(id, half, bytes.Repeat([]byte("post"), half/4))
+	f.commitAll()
+
+	if err := f.RestoreToVersion(ctx, target); err != nil {
+		t.Fatalf("RestoreToVersion: %v", err)
+	}
+	check := func(s *Store, when string) {
+		t.Helper()
+		got := make([]byte, half)
+		if _, st, err := s.ReadAt(ctx, id, 0, got); err != nil {
+			t.Fatalf("%s: ReadAt warm half: %v", when, err)
+		} else if st.Cold || st.Hole {
+			t.Fatalf("%s: warm half reports cold=%v hole=%v", when, st.Cold, st.Hole)
+		}
+		if !bytes.Equal(got, warm) {
+			t.Fatalf("%s: warm half did not restore to its V view", when)
+		}
+		assertColdAt(t, s, id, half, half, when)
+	}
+	check(f.Store, "pre-crash")
+	check(f.crashReopen(), "post-crash")
+}
