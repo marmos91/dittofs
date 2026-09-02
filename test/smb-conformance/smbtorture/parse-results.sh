@@ -106,12 +106,20 @@ get_known_reason() { kf_reason "$1"; }
 # own connection setup overruns — it reports the test with a connection
 # diagnostic rather than a real protocol assertion. These are infrastructure
 # flakes, not DittoFS bugs, so we rewrite the result to "skip:" and they do
-# not count as new failures. (NT_STATUS_NO_MEMORY here is a client-side
-# overrun artifact, NOT a server out-of-memory — see
-# internal/adapter/smb/framing.go and #717. smb2.oplock.batch1 is proven to
-# deliver its oplock break well within the client's 5 s timeout even at 6×
-# CPU oversubscription, so a batch1 "new failure" carrying one of these
-# diagnostics is always a connection flake, never the break path.)
+# not count as new failures. Every rewrite is named in the summary, so a
+# reclassification is something you can see rather than a silent subtraction
+# from the failure count. (smb2.oplock.batch1 is proven to deliver its oplock
+# break well within the client's 5 s timeout even at 6x CPU oversubscription,
+# so a batch1 "new failure" carrying one of these diagnostics is always a
+# connection flake, never the break path.)
+#
+# NT_STATUS_NO_MEMORY says nothing on its own. It is what the client's own
+# talloc/iconv paths return, so it turns up both in a starved client's
+# connection setup — the case this excuse exists for — and in ordinary
+# protocol assertions: smbtorture's iconv maps EILSEQ on an unpaired UTF-16
+# surrogate to it, which is smb2.charset.Testing partial surrogate failing for
+# real, every run. So the status alone does not earn the excuse; the block must
+# also say the client was setting up its connection.
 #
 # The diagnostic is NOT reliably on the line immediately after the result
 # header: smbtorture brackets it as
@@ -126,6 +134,10 @@ get_known_reason() { kf_reason "$1"; }
 # --------------------------------------------------------------------------
 CONN_FAIL_PATTERN="Establishing SMB2 connection failed"
 NO_MEMORY_PATTERN="NT_STATUS_NO_MEMORY"
+# Extended-regex alternation of the phrasings smbtorture uses when the failure
+# happened in its own connect path rather than in the test body. Anchors the
+# NO_MEMORY excuse; CONN_FAIL_PATTERN is excused without it.
+CONN_SETUP_PATTERN="Establishing SMB2 connection|smb2_connect|Unable to connect|Failed to connect"
 
 # smb2.replay.channel-sequence draws two of its sixteen ChannelSequence values
 # at random and expects STATUS_FILE_NOT_AVAILABLE for both, but both ranges
@@ -149,6 +161,14 @@ is_result_marker() {
 # pending_block is non-empty iff we are inside a failure/error block.
 declare -a pending_block=()
 pending_is_flake=false
+# Why the pending block is excused, shown next to the test name in the summary.
+pending_flake_reason=""
+# "test name — reason" for every failure the pre-filter rewrote to a skip.
+declare -a RECLASSIFIED_LIST=()
+# Set once a NO_MEMORY diagnostic has been seen in the pending block, so the
+# connection marker that anchors it may arrive on either line, in either order.
+pending_saw_no_memory=false
+pending_saw_conn_setup=false
 
 # Set while the currently running test has printed the self-contradictory
 # ChannelSequence draw described above; cleared at every test boundary.
@@ -161,6 +181,8 @@ flush_pending() {
         local header="${pending_block[0]}"
         header="${header/#failure:/skip:}"
         header="${header/#error:/skip:}"
+        local reclassified="${header#skip: }"
+        RECLASSIFIED_LIST+=("${reclassified%% *} — ${pending_flake_reason}")
         printf '%s\n' "$header" >> "$TEMP_OUTPUT"
         local i
         for ((i = 1; i < ${#pending_block[@]}; i++)); do
@@ -171,6 +193,9 @@ flush_pending() {
     fi
     pending_block=()
     pending_is_flake=false
+    pending_flake_reason=""
+    pending_saw_no_memory=false
+    pending_saw_conn_setup=false
 }
 
 while IFS= read -r line; do
@@ -186,6 +211,7 @@ while IFS= read -r line; do
                 # test is graded normally.
                 csn_boundary_drawn=false
                 pending_is_flake=true
+                pending_flake_reason="self-contradictory ChannelSequence draw"
             fi
         else
             [[ "$line" == test:* ]] && csn_boundary_drawn=false
@@ -197,8 +223,12 @@ while IFS= read -r line; do
     if [[ ${#pending_block[@]} -gt 0 ]]; then
         # Inside a pending failure/error detail block.
         pending_block+=("$line")
-        if [[ "$line" == *"$CONN_FAIL_PATTERN"* || "$line" == *"$NO_MEMORY_PATTERN"* ]]; then
+        [[ "$line" == *"$NO_MEMORY_PATTERN"* ]] && pending_saw_no_memory=true
+        [[ "$line" =~ $CONN_SETUP_PATTERN ]] && pending_saw_conn_setup=true
+        if [[ "$line" == *"$CONN_FAIL_PATTERN"* ]] ||
+           { $pending_saw_no_memory && $pending_saw_conn_setup; }; then
             pending_is_flake=true
+            pending_flake_reason="connection setup"
         fi
         # A closing "]" ends the bracketed detail block.
         [[ "$line" == "]" ]] && flush_pending
@@ -613,6 +643,7 @@ report_body() {
     echo "| Inconclusive | ${#INCOMPLETE_LIST[@]} |"
     echo "| Suites cut short | ${#TIMED_OUT_SUITES[@]} |"
     echo "| Cut short unexpectedly | ${#UNEXPECTED_TRUNCATIONS[@]} |"
+    echo "| Reclassified as flakes | ${#RECLASSIFIED_LIST[@]} |"
 
     report_list "New failures — not in KNOWN_FAILURES.md, these fail the job" \
         "${NEW_FAILURE_LIST[@]+"${NEW_FAILURE_LIST[@]}"}"
@@ -624,6 +655,8 @@ report_body() {
         "${INCOMPLETE_LIST[@]+"${INCOMPLETE_LIST[@]}"}"
     report_list "Known failures that now PASS — candidates to drop from KNOWN_FAILURES.md" \
         "${NOW_PASSING_LIST[@]+"${NOW_PASSING_LIST[@]}"}"
+    report_list "Failures reclassified as infrastructure flakes — graded as skips, not failures" \
+        "${RECLASSIFIED_LIST[@]+"${RECLASSIFIED_LIST[@]}"}"
     report_list "Known failures still failing" \
         "${KNOWN_STILL_FAILING[@]+"${KNOWN_STILL_FAILING[@]}"}"
 }
