@@ -12,10 +12,16 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
 )
 
-// poolAcquireTimeout mirrors the unexported poolConnectionAcquireTimeout the
-// store applies to every checkout. If that constant changes, this test starts
-// failing on its deadline rather than silently passing for the wrong reason.
-const poolAcquireTimeout = 10 * time.Second
+// poolAcquireTimeout is the store's own checkout bound, read through
+// export_test.go rather than copied.
+//
+// It tracks the constant rather than detecting a change to it, and that is the
+// intent: the bound is a policy value somebody may legitimately tune, and what
+// has to hold is that the guard fires at whatever it is set to. A mirrored
+// literal could not say that — it would drift, and the timing assertion below
+// would then be checking the behaviour of the store against a number the store
+// no longer uses.
+const poolAcquireTimeout = postgres.PoolConnectionAcquireTimeout
 
 // TestPostgresLockPath_ExhaustedPoolFailsRatherThanBlocking pins what the lock
 // path does when the pool has no connection to give.
@@ -62,7 +68,7 @@ func TestPostgresLockPath_ExhaustedPoolFailsRatherThanBlocking(t *testing.T) {
 
 	select {
 	case <-held:
-	case <-time.After(30 * time.Second):
+	case <-time.After(poolAcquireTimeout * 3):
 		close(release)
 		t.Fatal("could not open the transaction that saturates the pool")
 	}
@@ -90,13 +96,16 @@ func TestPostgresLockPath_ExhaustedPoolFailsRatherThanBlocking(t *testing.T) {
 		if !strings.Contains(r.err.Error(), "pool may be exhausted") {
 			t.Fatalf("GetLock failed after %v, but the error does not name the cause: %v", r.elapsed, r.err)
 		}
-		// The bound is what produced this, not some faster unrelated failure:
-		// a checkout that gave up well before the timeout would mean something
-		// else refused the query and this test would not be pinning the guard.
-		if r.elapsed < poolAcquireTimeout/2 {
-			t.Fatalf("GetLock failed after only %v, far short of the %v acquire timeout — "+
-				"something other than the pool bound refused it, so this test is not "+
-				"exercising what it claims", r.elapsed, poolAcquireTimeout)
+		// The bound is what produced this, not some faster unrelated failure.
+		// Bracketing it on both sides matters: too early means something else
+		// refused the query and this test is not exercising the guard at all,
+		// too late means the checkout was not what gave up. The band is wide
+		// enough to absorb a loaded runner and narrow enough that it cannot sit
+		// astride a different value of the constant.
+		if r.elapsed < poolAcquireTimeout*9/10 || r.elapsed >= poolAcquireTimeout*2 {
+			t.Fatalf("GetLock failed after %v, outside the [%v, %v) the %v acquire bound "+
+				"should produce — something other than the pool bound decided this",
+				r.elapsed, poolAcquireTimeout*9/10, poolAcquireTimeout*2, poolAcquireTimeout)
 		}
 		t.Logf("lock read gave up after %v with: %v", r.elapsed, r.err)
 	case <-time.After(poolAcquireTimeout + 20*time.Second):
