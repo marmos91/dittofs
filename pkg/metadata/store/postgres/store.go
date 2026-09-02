@@ -229,7 +229,7 @@ func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error 
 // never user input.
 func (s *PostgresMetadataStore) seedUsageByColumn(ctx context.Context, col string, scope metadata.QuotaScope, out map[basestore.QuotaKey]*metadata.UsageStat) error {
 	query := fmt.Sprintf(
-		`SELECT share_name, %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE file_type = $1 GROUP BY share_name, %s`,
+		`SELECT share_name, %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE file_type = $1 AND nlink > 0 GROUP BY share_name, %s`,
 		col, col,
 	)
 	rows, err := s.pool.Query(ctx, query, int(metadata.FileTypeRegular))
@@ -397,4 +397,17 @@ func capabilityArgs(caps metadata.FilesystemCapabilities) []any {
 func initializeFilesystemCapabilities(ctx context.Context, pool *pgxpool.Pool, caps metadata.FilesystemCapabilities) error {
 	_, err := pool.Exec(ctx, upsertCapabilitiesSQL, capabilityArgs(caps)...)
 	return err
+}
+
+// RecomputeUsage rebuilds the usage counters from the inodes table, discarding
+// whatever the in-memory buckets hold. Same aggregate the store runs at open,
+// re-run on demand.
+func (s *PostgresMetadataStore) RecomputeUsage(ctx context.Context) error {
+	// The aggregate runs with no lock held, so arm the cache to record what
+	// commits during it — otherwise a transaction landing between the query and
+	// the seed is scanned out and then overwritten.
+	s.quotaMu.Lock()
+	s.quota.BeginRebuild()
+	s.quotaMu.Unlock()
+	return s.initUsedBytesCounter(ctx)
 }

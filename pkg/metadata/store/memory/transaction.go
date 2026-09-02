@@ -264,7 +264,10 @@ func (tx *memoryTransaction) UpdateAttrs(ctx context.Context, file *metadata.Fil
 	// usage. Handles three cases: new regular file (count +1, bytes +size),
 	// in-place size change (same owner, bytes delta), and chown (move
 	// bytes+count from old owner identity to new).
-	if file.Type == metadata.FileTypeRegular {
+	//
+	// This write never touches linkCounts, so the pre-write count is also the
+	// post-write one.
+	if tx.store.chargedLocked(key, file.Type) {
 		var oldSize uint64
 		var hadOldRegular bool
 		var oldUID, oldGID uint32
@@ -361,7 +364,9 @@ func (tx *memoryTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 	}
 
 	// Remove the inode + bytes from the owner's per-share, per-identity usage.
-	if existing.Attr.Type == metadata.FileTypeRegular {
+	// An inode whose last name went already gave them back, so removing the
+	// record itself owes the counters nothing.
+	if tx.store.chargedLocked(key, existing.Attr.Type) {
 		tx.quota.Add(existing.ShareName, existing.Attr.UID, existing.Attr.GID, -int64(existing.Attr.Size), -1)
 	}
 
@@ -464,6 +469,21 @@ func (tx *memoryTransaction) SetLinkCount(ctx context.Context, handle metadata.F
 	}
 
 	key := handleToKey(handle)
+
+	// A link count crossing zero is what puts an inode's bytes into the share's
+	// usage or takes them back out; any other change (a hard link added or
+	// dropped alongside others) leaves it charged exactly once either way.
+	if existing, exists := tx.store.files[key]; exists {
+		was := tx.store.chargedLocked(key, existing.Attr.Type)
+		now := basestore.Charged(existing.Attr.Type, count)
+		switch {
+		case was && !now:
+			tx.quota.Add(existing.ShareName, existing.Attr.UID, existing.Attr.GID, -int64(existing.Attr.Size), -1)
+		case !was && now:
+			tx.quota.Add(existing.ShareName, existing.Attr.UID, existing.Attr.GID, int64(existing.Attr.Size), 1)
+		}
+	}
+
 	tx.store.linkCounts[key] = count
 	return nil
 }
@@ -628,8 +648,10 @@ func (tx *memoryTransaction) DeleteShare(ctx context.Context, shareName string) 
 	for key, fd := range tx.store.files {
 		if fd.ShareName == shareName {
 			// Remove the inode + bytes from the owner's per-share,
-			// per-identity usage.
-			if fd.Attr.Type == metadata.FileTypeRegular {
+			// per-identity usage. An unlinked-but-open inode released them
+			// when its last name went, so the share has none left to give
+			// back for it.
+			if tx.store.chargedLocked(key, fd.Attr.Type) {
 				tx.quota.Add(fd.ShareName, fd.Attr.UID, fd.Attr.GID, -int64(fd.Attr.Size), -1)
 			}
 			// drop ObjectID secondary entry too.
