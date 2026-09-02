@@ -200,6 +200,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			blockGCHandler := handlers.NewBlockStoreGCHandler(rt)
 			blockAuditHandler := handlers.NewBlockStoreAuditHandler(rt)
 			manifestCheckHandler := handlers.NewBlockStoreManifestCheckHandler(rt)
+			usageRecomputeHandler := handlers.NewUsageRecomputeHandler(rt)
 			mountHandler := handlers.NewMountHandler(rt)
 
 			// Share management (admin only)
@@ -310,6 +311,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				// inherited admin middleware); persists last-inv02.json
 				// under the share's audit-state directory.
 				r.Post("/{name}/audit/refcounts", blockAuditHandler.RunAudit)
+				r.Post("/{name}/usage/recompute", usageRecomputeHandler.Recompute)
 
 				// Per-share manifest-coverage scan. Metadata-only: it
 				// reads no block data and touches no remote store.

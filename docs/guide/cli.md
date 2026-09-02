@@ -724,6 +724,7 @@ Global flags:
       - [`dfsctl store metadata edit`](#dfsctl-store-metadata-edit) — Edit a metadata store
       - [`dfsctl store metadata health`](#dfsctl-store-metadata-health) — Check metadata store health
       - [`dfsctl store metadata list`](#dfsctl-store-metadata-list) — List metadata stores
+      - [`dfsctl store metadata recompute-usage`](#dfsctl-store-metadata-recompute-usage) — Rebuild a share's used-bytes counter from its files
       - [`dfsctl store metadata remove`](#dfsctl-store-metadata-remove) — Remove a metadata store
   - [`dfsctl switch-user`](#dfsctl-switch-user) — Switch to a different user on the current server
   - [`dfsctl system`](#dfsctl-system) — System operations
@@ -6738,6 +6739,49 @@ dfsctl store metadata list -o json
 
 # List as YAML
 dfsctl store metadata list -o yaml
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl store metadata recompute-usage`
+
+Rebuild a share's used-bytes counter from its files
+
+Rebuild the used-bytes counters of the metadata store backing the named share.
+
+The counters are maintained transactionally as files are written and removed, so
+they are normally already correct. This repairs a store where they are not: a
+share carrying bytes it no longer holds reports itself fuller than it is, and
+because that figure is what the share quota is checked against, it can refuse
+writes to a share that is actually empty.
+
+The rebuild scans every file row in the store, so it takes time in proportion to
+the store's size, and it repairs every share that store serves — not only the
+one named here. Nothing runs it automatically; a per-file walk on every server
+start is a cost every share would pay forever to fix a number that is almost
+always already right.
+
+```
+dfsctl store metadata recompute-usage <share>
+```
+
+**Examples:**
+
+```bash
+dfsctl store metadata recompute-usage myshare
+dfsctl store metadata recompute-usage myshare -o json
 ```
 
 Global flags:
