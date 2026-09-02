@@ -45,13 +45,13 @@ signed `chore(release)` on develop → FF main → signed annotated tag → push
    Feeds directly into #1828. Plans: `perf/2026-07-15-metadata-cleanup-PLAN.md`,
    `perf/2026-07-15-metadata-{entity-model,schema-inventory,sql-schema}.md`.
 5. **#1692** — three-wall NFS/SMB read/write perf (segstore redesign + adapter wins).
-   Plans: `perf/2026-07-15-nfs-smb-three-walls-PLAN.md`, `perf/2026-07-15-wall-a-segstore-BLUEPRINT.md`.
+   Plans retired once shipped; retrievable from git history.
 6. **#1658** — intermittent SMB rename/dirlease SHARING_VIOLATION flake. Reproduce deterministically
    BEFORE fixing (see #1701 lesson); #1655 diagnostic is armed.
 7. **#1616** — `feat(smb)`: serve share-level SD via srvsvc `NetrShareGetInfo` level 502 (Explorer Share tab).
 8. **#1432** — S3 uploader parallelization. Perf has improved a lot since the report; **ask the reporter to
    re-test on current develop and temporarily close** pending their confirmation.
-   Plan: `2026-06-29-1432-upload-perf-plan.md`.
+   Plan retired once shipped; retrievable from git history.
 
 Parallelizable within this phase (no shared files): #1616, #1658, #1432-retest are independent of
 the metadata/perf tracks (#1715, #1692). #1715 must land before / feed #1692's segstore + #1828.
