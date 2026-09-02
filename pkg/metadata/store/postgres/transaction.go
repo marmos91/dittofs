@@ -507,6 +507,18 @@ func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.F
 // ============================================================================
 // Transaction Shares Operations
 // ============================================================================
+//
+// UpdateShareOptions and DeleteShare shadow their promoted Core namesakes for
+// one reason: sharesDirty. It tells the commit path to drop the store's share
+// cache, it lives on the transaction, and Core has no way to reach it — so the
+// flag is set here and the statement runs there. Delete a shadow and the build
+// still passes, since the promoted method satisfies the interface, but the
+// cache then serves the options the transaction just overwrote.
+//
+// CreateShare keeps its own body: it runs the same UPDATE, but the memory and
+// badger transactions reject a name that already exists where these two
+// silently overwrite it, and collapsing the SQL pair onto Core would fix that
+// divergence in place rather than decide it.
 
 func (tx *postgresTransaction) CreateShare(ctx context.Context, share *metadata.Share) error {
 	if err := ctx.Err(); err != nil {
@@ -530,31 +542,8 @@ func (tx *postgresTransaction) CreateShare(ctx context.Context, share *metadata.
 }
 
 func (tx *postgresTransaction) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	tx.sharesDirty = true
-
-	optionsData, err := json.Marshal(options)
-	if err != nil {
-		return err
-	}
-
-	query := `UPDATE shares SET options = $1 WHERE share_name = $2`
-	result, err := tx.tx.Exec(ctx, query, optionsData, shareName)
-	if err != nil {
-		return mapPgError(err, "UpdateShareOptions", shareName)
-	}
-
-	if result.RowsAffected() == 0 {
-		return &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "share not found",
-			Path:    shareName,
-		}
-	}
-
-	return nil
+	return tx.Core.UpdateShareOptions(ctx, shareName, options)
 }
 
 func (tx *postgresTransaction) DeleteShare(ctx context.Context, shareName string) error {
@@ -562,20 +551,6 @@ func (tx *postgresTransaction) DeleteShare(ctx context.Context, shareName string
 		return err
 	}
 	tx.sharesDirty = true
-
-	// Sum the regular-file bytes about to be removed so the usedBytes
-	// counter stays accurate without a full recompute. A failed Scan must not
-	// be swallowed: silently proceeding with freedBytes=0 would delete the
-	// files but never decrement the counter, drifting statfs for the process
-	// lifetime.
-	var freedBytes int64
-	if err := tx.tx.QueryRow(ctx,
-		`SELECT COALESCE(SUM(size), 0) FROM inodes
-		 WHERE share_name = $1 AND file_type = $2 AND size > 0`,
-		shareName, int(metadata.FileTypeRegular),
-	).Scan(&freedBytes); err != nil {
-		return mapPgError(err, "DeleteShare", shareName)
-	}
 
 	// Capture per-identity usage about to be removed (uid + gid) so the
 	// in-memory usage cache stays accurate. Aggregated before the rows are
