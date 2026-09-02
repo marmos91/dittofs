@@ -107,6 +107,64 @@ var fileQueries = storesql.FileQueries{
 // Shares returns the postgres share read statements.
 func (dialect) Shares() *storesql.ShareQueries { return &shareQueries }
 
+func (dialect) Clients() *storesql.ClientQueries { return &clientQueries }
+
+var clientQueries = storesql.ClientQueries{
+	Put: `
+		INSERT INTO nsm_client_registrations (
+			client_id, mon_name, priv, callback_host, callback_prog,
+			callback_vers, callback_proc, registered_at, server_epoch
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (client_id) DO UPDATE SET
+			mon_name = EXCLUDED.mon_name,
+			priv = EXCLUDED.priv,
+			callback_host = EXCLUDED.callback_host,
+			callback_prog = EXCLUDED.callback_prog,
+			callback_vers = EXCLUDED.callback_vers,
+			callback_proc = EXCLUDED.callback_proc,
+			registered_at = EXCLUDED.registered_at,
+			server_epoch = EXCLUDED.server_epoch`,
+	Get: `
+		SELECT client_id, mon_name, priv, callback_host, callback_prog,
+		       callback_vers, callback_proc, registered_at, server_epoch
+		FROM nsm_client_registrations
+		WHERE client_id = $1`,
+	Delete: `DELETE FROM nsm_client_registrations WHERE client_id = $1`,
+	List: `
+		SELECT client_id, mon_name, priv, callback_host, callback_prog,
+		       callback_vers, callback_proc, registered_at, server_epoch
+		FROM nsm_client_registrations
+		ORDER BY registered_at`,
+	DeleteAll:       `DELETE FROM nsm_client_registrations`,
+	DeleteByMonName: `DELETE FROM nsm_client_registrations WHERE mon_name = $1`,
+}
+
+func (dialect) Recovery() *storesql.RecoveryQueries { return &recoveryQueries }
+
+var recoveryQueries = storesql.RecoveryQueries{
+	Put: `
+		INSERT INTO v4_client_recovery (
+			clientid_string, clientid, boot_verifier, principal,
+			confirmed_at, server_epoch, reclaim_complete
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (clientid_string) DO UPDATE SET
+			clientid = EXCLUDED.clientid,
+			boot_verifier = EXCLUDED.boot_verifier,
+			principal = EXCLUDED.principal,
+			confirmed_at = EXCLUDED.confirmed_at,
+			server_epoch = EXCLUDED.server_epoch,
+			reclaim_complete = EXCLUDED.reclaim_complete`,
+	Delete: `DELETE FROM v4_client_recovery WHERE clientid_string = $1`,
+	List: `
+		SELECT clientid_string, clientid, boot_verifier, principal,
+		       confirmed_at, server_epoch, reclaim_complete
+		FROM v4_client_recovery
+		ORDER BY confirmed_at`,
+	RecordReclaimComplete: `UPDATE v4_client_recovery SET reclaim_complete = TRUE WHERE clientid_string = $1`,
+}
+
 func (dialect) Server() *storesql.ServerQueries { return &serverQueries }
 
 var serverQueries = storesql.ServerQueries{
