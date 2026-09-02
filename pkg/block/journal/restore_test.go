@@ -226,8 +226,14 @@ func TestRestoreToVersion_KeepsFullyColdFile(t *testing.T) {
 	f.write(peer, 0, v1)
 	target := f.commitAll()
 
-	// Move the head past V so the restore has real work to do.
+	// Move the head past V so the restore has real work to do, and add a file
+	// that is cold only above V: folding the log in without honoring the
+	// watermark would resurrect it.
 	f.write(peer, 0, bytes.Repeat([]byte("second-version"), 64))
+	postV := FileID("cold-after-v")
+	if err := f.SeedCold(ctx, postV, [][2]int64{{0, coldLen}}); err != nil {
+		t.Fatalf("SeedCold post-V: %v", err)
+	}
 	f.commitAll()
 
 	if err := f.RestoreToVersion(ctx, target); err != nil {
@@ -235,10 +241,21 @@ func TestRestoreToVersion_KeepsFullyColdFile(t *testing.T) {
 	}
 	assertColdAt(t, f.Store, cold, 0, coldLen, "pre-crash")
 
+	if _, st, err := f.ReadAt(ctx, postV, 0, make([]byte, coldLen)); err != nil {
+		t.Fatalf("pre-crash ReadAt %s: %v", postV, err)
+	} else if st.Cold {
+		t.Fatalf("pre-crash: %s was cold only above V and must not survive the rewind", postV)
+	}
+
 	r := f.crashReopen()
 	assertColdAt(t, r, cold, 0, coldLen, "post-crash")
 	if got := readAll(t, r, peer, len(v1)); !bytes.Equal(got, v1) {
 		t.Fatalf("post-crash %s: restore did not produce the V1 view", peer)
+	}
+	if _, st, err := r.ReadAt(ctx, postV, 0, make([]byte, coldLen)); err != nil {
+		t.Fatalf("post-crash ReadAt %s: %v", postV, err)
+	} else if st.Cold {
+		t.Fatalf("post-crash: %s was cold only above V and must not survive the rewind", postV)
 	}
 }
 
