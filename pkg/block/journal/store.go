@@ -450,7 +450,7 @@ func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byt
 	sh := s.shardFor(id)
 	sh.mu.Lock()
 	var ranges [][2]int64
-	if !hydrateFenced(sh, id, notAfter) {
+	if !sh.hydrateFenced(id, notAfter) {
 		ranges = sh.index[id].hydratable(offset, int64(len(data)), notAfter)
 	}
 	sh.mu.Unlock()
@@ -466,13 +466,6 @@ func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byt
 // resolves what to fetch, it bounds what that fetch is allowed to write back
 // (see Hydrate).
 func (s *Store) WriteVersion() uint64 { return s.version.Load() }
-
-// hydrateFenced reports whether a hydrate's bound predates the file's most
-// recent truncate or delete — the two mutations that leave no interval behind
-// to compare against. Callers hold sh.mu.
-func hydrateFenced(sh *shard, id FileID, notAfter uint64) bool {
-	return notAfter > 0 && notAfter <= sh.hydrateFence[id]
-}
 
 // SeedCold registers a byte range as remote-durable-but-not-local: a read of it
 // reports cold so the engine hydrates it from the remote store instead of
@@ -959,11 +952,6 @@ func (s *Store) Truncate(ctx context.Context, id FileID, newSize int64) error {
 				break
 			}
 		}
-	}
-	if past {
-		// Published before the marker is stamped, so a hydrate that samples its
-		// bound after this point is never mistaken for one that predates the clip.
-		sh.hydrateFence[id] = s.version.Load()
 	}
 	sh.mu.Unlock()
 	if !past {
