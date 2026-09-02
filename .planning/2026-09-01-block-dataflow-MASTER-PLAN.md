@@ -885,22 +885,32 @@ them, so a test written afterwards is written against whatever the refactor happ
 **Invariant: the minimum unit warmed from the remote is exactly one block.** Not a byte range,
 not a sub-block extent, not the tail of a block.
 
-This is a correctness rule, not a performance preference. A block is **content-addressed** — its
-identity is the BLAKE3 hash of its full contents. You can verify only what you hold in full, so a
-partial fetch is **unverifiable by construction**. Warming a sub-range would place bytes in the
-local tier that were never checked against any hash, and the tier cannot later tell them apart
-from bytes that were. That is the same failure family as the residency states: two things that
-must be distinguishable rendered identically. `SetVerifyReads`'s per-read check cannot save it
-either, since there is nothing complete to check against.
+**The binding reason is request economics.** Object-store cost is dominated by per-request
+latency, and that latency is close to flat in object size — #2070's rig measured 240,000 requests
+against 234 for the identical bytes, with per-request latency around 0.45s regardless of size.
+(That measurement is on the write path; the asymmetry it demonstrates, cost per request rather
+than per byte, is a property of the store.) A partial read pays a whole request for a fraction of
+a block, so warming a block in N pieces costs N times the requests to move the same bytes. Whole
+blocks are how the request count stays proportional to bytes moved instead of to fragmentation.
+
+**It also makes S3 cheap to satisfy.** A whole-block fetch is all-or-nothing, so a prefetch whose
+target is reclaimed mid-flight discards one complete unit and records nothing. Partial reads would
+leave fragments of a reclaimed block half-landed, and "record nothing" stops being a discard and
+becomes a reconciliation.
+
+**And verification comes for free at that granularity.** `engine/fetch.go:346` already hashes what
+it fetched — `blake3.Sum256(data)` — against the content address. That check is only expressible
+over a complete block, so whole-block warming keeps it available rather than having to weaken or
+defer it. This is a real benefit but a secondary one; the request economics would force the same
+rule even without it.
 
 Consequences, all binding:
 
 1. **Gap-finding rounds outward to block boundaries.** A 4 KiB hole inside a 16 MiB block warms
    that entire block, or nothing at all. Never the 4 KiB.
 2. **`ferry.GetRange` is not part of the warm path.** It exists for a demand read that can
-   tolerate and verify a partial answer. Prefetch calls `Get`, whole-block, always.
-3. **Partial residency within a block is not representable in the warm path.** If it becomes
-   representable, this invariant has already been broken somewhere upstream.
+   tolerate a partial answer. Prefetch calls `Get`, whole-block, always.
+3. **Partial residency within a block is not representable in the warm path.**
 4. A warm that cannot complete a whole block **fetches nothing** and records nothing (see S2).
 
 ### 13.3 What is genuinely missing
