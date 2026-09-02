@@ -474,9 +474,11 @@ func (s *Store) WriteVersion() uint64 { return s.version.Load() }
 
 // hydrateFenced reports whether a hydrate's bound predates the file's most
 // recent truncate or delete — the two mutations that leave no interval behind
-// to compare against. Callers hold sh.mu.
+// to compare against. A delete's fence may have been evicted from the shard's
+// FIFO, in which case evictedFenceFloor still stands in for it. Callers hold
+// sh.mu.
 func hydrateFenced(sh *shard, id FileID, notAfter uint64) bool {
-	return notAfter > 0 && notAfter <= sh.hydrateFence[id]
+	return notAfter > 0 && (notAfter <= sh.hydrateFence[id] || notAfter <= sh.evictedFenceFloor)
 }
 
 // SeedCold registers a byte range as remote-durable-but-not-local: a read of it

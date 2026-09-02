@@ -48,11 +48,19 @@ type shard struct {
 	//
 	// ponytail: a flat FIFO capped at maxDeleteFences per shard, evicting the
 	// oldest fence rather than the one that has outlived every hydrate that
-	// could still cite it. A fence only has to survive one in-flight remote
-	// fetch, so overflowing the cap takes maxDeleteFences deletes into a single
-	// shard inside that window; make it an age-based sweep only if a workload
-	// is measured doing that.
+	// could still cite it. evictedFenceFloor keeps that approximation safe, so
+	// the cap trades memory against re-fetches and is not load-bearing for
+	// correctness; raise it, or make it an age-based sweep, only if a workload
+	// is measured refusing hydrates it should have kept.
 	deleteFences []fenceEntry
+	// evictedFenceFloor is the highest version among the delete fences the FIFO
+	// has dropped. A hydrate at or below it is refused even though its own fence
+	// is gone, so overflowing the cap costs a re-fetch rather than letting a
+	// stale fill land. The cap is reachable — ShardCount may be 1, so every
+	// delete shares one FIFO, and a remote serving errors stretches the fetch
+	// window widest exactly when cold reads are most likely to be outstanding —
+	// and overflow must not fail open.
+	evictedFenceFloor uint64
 	// lastVersion is the highest record Version appended to this shard, stamped
 	// under mu once the record's write() returned. syncedVersion is the highest
 	// Version a completed fsync has covered — records above it exist only in the
@@ -141,6 +149,9 @@ func (sh *shard) fenceDelete(id FileID, ver uint64) {
 		if sh.hydrateFence[oldest.id] <= oldest.ver {
 			delete(sh.hydrateFence, oldest.id)
 		}
+		// Entries are appended in mint order, so this only ever climbs. It stands
+		// in for every fence dropped so far.
+		sh.evictedFenceFloor = oldest.ver
 	}
 }
 
