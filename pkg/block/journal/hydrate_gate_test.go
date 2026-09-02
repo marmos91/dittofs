@@ -363,3 +363,46 @@ func TestHydrateDuringTruncateIsDropped(t *testing.T) {
 		t.Fatal("a hydrate landing inside the truncate window resurrected the removed tail")
 	}
 }
+
+// TestHydrateOverEvictedFenceIsDropped pins the direction the FIFO fails in.
+// The cap is reachable — ShardCount may be 1, so every delete lands in one
+// shard, and a remote serving 503s stretches the fetch window widest exactly
+// when cold reads are most likely to be outstanding — so evicting a fence whose
+// hydrate is still in flight must not let that hydrate land. evictedFenceFloor
+// stands in for the dropped entry, which makes overflow cost a re-fetch instead
+// of a resurrection, and makes maxDeleteFences a memory knob rather than a
+// correctness bound.
+func TestHydrateOverEvictedFenceIsDropped(t *testing.T) {
+	ctx := context.Background()
+	s, _ := evictStore(t, Config{}) // single shard: every fence shares one FIFO
+	data := bytes.Repeat([]byte{0xAB}, 4096)
+	if err := s.WriteAt(ctx, "victim", 0, data); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	mark := s.WriteVersion() // a cold read resolves the pre-delete manifest here
+	if err := s.Delete(ctx, "victim"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	// Push the victim's fence out of the FIFO behind enough later deletes. Real
+	// deletes would each cost a tombstone fsync; the fences they stamp go through
+	// this same call.
+	sh := s.shardFor("victim")
+	sh.mu.Lock()
+	base := s.WriteVersion()
+	for i := 0; i <= maxDeleteFences; i++ {
+		sh.fenceDelete(FileID(fmt.Sprintf("later%d", i)), base+1+uint64(i))
+	}
+	_, stillFenced := sh.hydrateFence["victim"]
+	sh.mu.Unlock()
+	if stillFenced {
+		t.Fatal("setup: the victim's fence was not evicted, so this proves nothing")
+	}
+
+	if err := s.Hydrate(ctx, "victim", 0, data, mark); err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+	if sz, ok := s.FileSize(ctx, "victim"); ok {
+		t.Fatalf("a hydrate over an evicted fence resurrected the file: FileSize = %d", sz)
+	}
+}
