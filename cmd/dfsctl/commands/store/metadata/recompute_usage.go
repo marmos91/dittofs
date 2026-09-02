@@ -73,11 +73,23 @@ func runRecomputeUsage(_ *cobra.Command, args []string) error {
 // reported usage was not backed by any file.
 func printRecomputeUsageTable(res *apiclient.UsageRecomputeResult) error {
 	r := res.Result
+	// The rebuild normally only ever removes bytes the share does not hold, but
+	// a write landing during it can leave the share genuinely larger than
+	// before. ByteSize is unsigned, so render that as growth rather than
+	// wrapping the subtraction.
+	moved := "0 B"
+	label := "Reclaimed"
+	if r.BeforeBytes > r.AfterBytes {
+		moved = bytesize.ByteSize(r.BeforeBytes - r.AfterBytes).String()
+	} else if r.AfterBytes > r.BeforeBytes {
+		label = "Added"
+		moved = bytesize.ByteSize(r.AfterBytes - r.BeforeBytes).String()
+	}
 	pairs := [][2]string{
 		{"Share", r.ShareName},
 		{"Used before", bytesize.ByteSize(r.BeforeBytes).String()},
 		{"Used after", bytesize.ByteSize(r.AfterBytes).String()},
-		{"Reclaimed", bytesize.ByteSize(r.BeforeBytes - r.AfterBytes).String()},
+		{label, moved},
 		{"Duration", fmt.Sprintf("%dms", r.DurationMS)},
 	}
 	return output.SimpleTable(os.Stdout, pairs)

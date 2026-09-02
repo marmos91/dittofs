@@ -618,6 +618,13 @@ func (store *MemoryMetadataStore) RecomputeUsage(ctx context.Context) error {
 		return err
 	}
 
+	// The walk drops store.mu before the seed takes quotaMu, so arm the cache to
+	// record what commits in between — otherwise that transaction's delta is
+	// applied and then overwritten. The two locks are never held at once.
+	store.quotaMu.Lock()
+	store.quota.BeginRebuild()
+	store.quotaMu.Unlock()
+
 	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
 	addUsage := func(k basestore.QuotaKey, bytes int64) {
 		u := byIdentity[k]

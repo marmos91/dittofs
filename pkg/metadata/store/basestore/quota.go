@@ -38,6 +38,12 @@ type QuotaKey struct {
 type QuotaCache struct {
 	byIdentity map[QuotaKey]*metadata.UsageStat
 	byShare    map[string]*metadata.UsageStat
+	// captured accumulates every delta applied while a rebuild is in flight.
+	// A rebuild reads the durable rows with no lock held, so a transaction that
+	// commits between its scan and its Seed would be scanned out and then have
+	// its applied delta overwritten. Seed folds this back in. nil when no
+	// rebuild is in flight.
+	captured map[QuotaKey]metadata.UsageStat
 }
 
 // NewQuotaCache returns an empty, ready-to-use QuotaCache.
@@ -52,6 +58,17 @@ func NewQuotaCache() *QuotaCache {
 func (c *QuotaCache) Reset() {
 	c.byIdentity = make(map[QuotaKey]*metadata.UsageStat)
 	c.byShare = make(map[string]*metadata.UsageStat)
+	c.captured = nil
+}
+
+// BeginRebuild marks the start of a rebuild: until the next Seed, every
+// applied delta is also recorded, so a commit that lands while the rebuild is
+// scanning survives the Seed that replaces the buckets.
+//
+// Startup rebuilds do not need it — nothing is committing yet — and calling
+// Seed without it behaves exactly as before.
+func (c *QuotaCache) BeginRebuild() {
+	c.captured = make(map[QuotaKey]metadata.UsageStat)
 }
 
 // Seed replaces the cache contents with usage pre-aggregated from durable rows
@@ -79,6 +96,15 @@ func (c *QuotaCache) Seed(byIdentity map[QuotaKey]*metadata.UsageStat, byShare m
 	}
 	c.byIdentity = byIdentity
 	c.byShare = byShare
+
+	// Fold back anything that committed while the rebuild was scanning; its
+	// bytes are in the cache's buckets but not in the scan that just replaced
+	// them.
+	if c.captured != nil {
+		replay := c.captured
+		c.captured = nil
+		c.Apply(replay)
+	}
 }
 
 // Get returns the usage for one identity within one share. A missing key
@@ -118,6 +144,17 @@ func (c *QuotaCache) DropShare(share string) {
 // contributes one user-scope entry and one group-scope entry for the same
 // bytes, so counting both would double the share total.
 func (c *QuotaCache) Apply(delta map[QuotaKey]metadata.UsageStat) {
+	// Record the delta for a rebuild in flight, so replacing the buckets does
+	// not drop a commit the rebuild's scan happened to miss.
+	if c.captured != nil {
+		for k, d := range delta {
+			u := c.captured[k]
+			u.Bytes += d.Bytes
+			u.Files += d.Files
+			c.captured[k] = u
+		}
+	}
+
 	// Per-share movements are summed across the share's owners before being
 	// applied, so the result does not depend on map iteration order: applying
 	// them one owner at a time lets the clamp below fire on an intermediate

@@ -897,5 +897,11 @@ func (s *BadgerMetadataStore) RecomputeUsage(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// The scan runs with no lock held, so arm the cache to record what commits
+	// during it — otherwise a transaction landing between the scan and the seed
+	// is scanned out and then overwritten.
+	s.quotaMu.Lock()
+	s.quota.BeginRebuild()
+	s.quotaMu.Unlock()
 	return s.initUsedBytesCounter(nil)
 }

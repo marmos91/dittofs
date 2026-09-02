@@ -403,5 +403,11 @@ func initializeFilesystemCapabilities(ctx context.Context, pool *pgxpool.Pool, c
 // whatever the in-memory buckets hold. Same aggregate the store runs at open,
 // re-run on demand.
 func (s *PostgresMetadataStore) RecomputeUsage(ctx context.Context) error {
+	// The aggregate runs with no lock held, so arm the cache to record what
+	// commits during it — otherwise a transaction landing between the query and
+	// the seed is scanned out and then overwritten.
+	s.quotaMu.Lock()
+	s.quota.BeginRebuild()
+	s.quotaMu.Unlock()
 	return s.initUsedBytesCounter(ctx)
 }

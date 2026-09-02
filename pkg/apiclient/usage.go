@@ -3,14 +3,26 @@ package apiclient
 import (
 	"fmt"
 	"net/url"
-
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // UsageRecomputeResult is the response body for RecomputeShareUsage. Mirrors
 // the server-side handlers.UsageRecomputeResponse shape.
 type UsageRecomputeResult struct {
-	Result *runtime.UsageRecomputeResult `json:"result"`
+	Result *ShareUsageRecompute `json:"result"`
+}
+
+// ShareUsageRecompute reports what a share's used-bytes repair moved. Declared
+// here rather than reused from the server so a client build does not pull in
+// the control-plane runtime.
+type ShareUsageRecompute struct {
+	// ShareName is the share the counter was read for.
+	ShareName string `json:"share_name"`
+	// BeforeBytes is the share's used bytes as reported before the rebuild.
+	BeforeBytes int64 `json:"before_bytes"`
+	// AfterBytes is what its live files actually add up to.
+	AfterBytes int64 `json:"after_bytes"`
+	// DurationMS is how long the rebuild took.
+	DurationMS int64 `json:"duration_ms"`
 }
 
 // RecomputeShareUsage rebuilds the metadata store's used-bytes counters from
