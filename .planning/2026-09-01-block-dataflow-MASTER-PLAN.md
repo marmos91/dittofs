@@ -841,9 +841,20 @@ Three defects span packages, and each was invisible to at least one audit:
 
 ### 12.5 Next actions
 
-1. **Filed as #2238.** Add it to step 0 alongside #2227-#2231. The cheap fix is to re-arm `syncedAt` on a dedup hit, so the existing grace gate covers the
-   resurrection window; the correct fix is to revalidate liveness inside the transaction that
-   deletes the marker.
+1. **Filed as #2238.** Add it to step 0 alongside #2227-#2231. **Both fixes named here were
+   wrong; corrected while fixing the issue.** Re-arming `syncedAt` is implementable
+   (`PutSyncedLocators` already upserts the timestamp last-wins) but only narrows the window: it
+   publishes the adoption after the sweep has read `syncedAt` and consulted the live set, and the
+   sweep never looks again. Revalidating liveness inside the marker-deleting transaction is not
+   implementable at all — the production `SyncedHashIndex` is `multiSyncedHashStore`, a slice
+   whose `DeleteSynced` loops over N independent per-share metadata stores, so no transaction
+   spans it; the interface exposes no transaction handle; the evidence sought may live in a
+   different share's `file_chunks` than the marker being deleted; and the reclaim it would guard
+   includes a remote `DeleteBlock`, which cannot sit inside a database transaction. Both framings
+   also miss the ordering problem: the oracle's decision is what discards the bytes, and it
+   precedes the manifest row, so any check against committed metadata looks for evidence not yet
+   written. Fixed instead by ordering the two decisions at their decision points — see
+   `dedupSweepGuard` in `pkg/block/engine/dedup_sweep_guard.go`.
 2. Decide §12.2: finish the dedup feature or delete its scaffolding.
 3. Delete the retired local-GC machinery (see §9.1) — dead since the journal switchover.
 4. Triage the 117 LOW findings per D3 — fold into the step that touches the file, sweep the
