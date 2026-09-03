@@ -186,7 +186,7 @@ func (s *Store) claimColdestEvictable() (*segmentMeta, *shard) {
 					// of an at-or-below-watermark record (local-only) — never evict.
 					continue
 				}
-				if la := seg.lastAccess.Load(); best == nil || la < bestAccess {
+				if la := seg.evictionAge(); best == nil || la < bestAccess {
 					best, bestShard, bestAccess = seg, sh, la
 				}
 			}
