@@ -422,8 +422,12 @@ func TestCopyChunk_SparseDest_SurvivesPriorPayloadReuse(t *testing.T) {
 	// Delete-on-close the dest (real CLOSE path). This MUST purge the
 	// block-store payload so the reused PayloadID starts clean.
 	dst1.DeletePending = true
-	if _, err := h.Close(smbCtx, &CloseRequest{FileID: dst1.FileID}); err != nil {
+	dst1Close, err := h.Close(smbCtx, &CloseRequest{FileID: dst1.FileID})
+	if err != nil {
 		t.Fatalf("round1 Close (delete-on-close): %v", err)
+	}
+	if dst1Close.GetStatus() != types.StatusSuccess {
+		t.Fatalf("round1 Close (delete-on-close) status = %v, want STATUS_SUCCESS", dst1Close.GetStatus())
 	}
 
 	// --- Round 2: recreate dest at the same path, then the sparse_dest copy

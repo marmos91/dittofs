@@ -289,8 +289,12 @@ func TestClose_DirectoryDeleteOnClose_RetiresNotifyMarker(t *testing.T) {
 		t.Fatalf("a watch registering after the mark: got %v, want ErrDirectoryDeletePending", err)
 	}
 
-	if _, err := h.Close(ctx, &CloseRequest{FileID: dirID}); err != nil {
+	doomedClose, err := h.Close(ctx, &CloseRequest{FileID: dirID})
+	if err != nil {
 		t.Fatalf("close doomed: %v", err)
+	}
+	if doomedClose.GetStatus() != types.StatusSuccess {
+		t.Fatalf("close doomed status = %v, want STATUS_SUCCESS", doomedClose.GetStatus())
 	}
 
 	if err := h.NotifyRegistry.Register(lateNotify(12)); err != nil {
