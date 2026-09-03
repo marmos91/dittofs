@@ -7,7 +7,6 @@ import (
 	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/remote"
 )
 
 // Migration-only legacy standalone-CAS forwards (#1493 PR4): the compression
@@ -16,20 +15,6 @@ import (
 // (and, further down the stack, decrypts) exactly as the old standalone read
 // path did. None of this is on the production RemoteStore surface. Delete when
 // the cas→blocks migration is retired.
-
-var _ remote.LegacyCASStore = (*Decorator)(nil)
-
-// WalkLegacyChunks implements remote.LegacyCASStore.
-func (d *Decorator) WalkLegacyChunks(ctx context.Context, fn func(hash block.ContentHash, size int64) error) error {
-	return d.Walk(ctx, func(hash block.ContentHash, meta block.Meta) error {
-		return fn(hash, meta.Size)
-	})
-}
-
-// ReadLegacyChunkVerified implements remote.LegacyCASStore.
-func (d *Decorator) ReadLegacyChunkVerified(ctx context.Context, hash block.ContentHash) ([]byte, error) {
-	return d.ReadBlockVerified(ctx, hash, hash)
-}
 
 // ReadBlockVerified GETs the standalone object, decodes it, then re-verifies
 // the BLAKE3 hash over the plaintext. Streaming verification over the wire

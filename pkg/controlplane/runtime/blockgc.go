@@ -152,7 +152,6 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, dryRun bool, progress fun
 			r.compactRemoteForEntry(ctx, entry, dryRun, gcDefaults, total)
 			// Reclaim the pre-flip cas/ namespace, gated on every share on this
 			// remote having finished the cas→blocks migration.
-			r.purgeLegacyCASForEntry(ctx, entry, dryRun, total)
 		}()
 	}
 	// Sweep the local tier too, so one `gc` invocation reclaims orphaned
@@ -355,7 +354,6 @@ func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bo
 			r.compactRemoteForEntry(ctx, entry, dryRun, gcDefaults, total)
 			// Reclaim the pre-flip cas/ namespace, gated on every share on this
 			// remote having finished the cas→blocks migration.
-			r.purgeLegacyCASForEntry(ctx, entry, dryRun, total)
 		}()
 	}
 	// Sweep this share's local tier too (#1433).
@@ -680,131 +678,6 @@ func knownRemoteRef(remotes []*models.BlockStoreConfig, ref string) bool {
 	return slices.ContainsFunc(remotes, func(c *models.BlockStoreConfig) bool {
 		return c.ID == ref || c.Name == ref
 	})
-}
-
-// purgeLegacyCASForEntry reclaims what is left of the pre-flip cas/ namespace
-// on one remote. The namespace is content-addressed and NOT scoped per share,
-// so a cas/<hash> object is reclaimable only once no share on this remote can
-// still resolve a chunk through it — a per-remote question the per-share
-// cas→blocks migration cannot answer, which is why the migration itself deletes
-// nothing. The gate is every share on the remote carrying zero standalone
-// (empty-BlockID) synced locators.
-//
-// Each share is enumerated on its own, NOT through the sweep's union index
-// (syncedHashStoreForShares): that index keeps a single locator per hash, so a
-// share still standalone on a hash a sibling has already re-packed would be
-// invisible to the gate.
-//
-// The share set is re-read here rather than taken from entry.Shares: the
-// caller's snapshot predates the per-remote lock, so a share that registered in
-// between would not be gated on. A share whose AddShare is still in flight is
-// not in the registry at all while its block store — and the migration that
-// block store starts — is already running, so any pending registration also
-// blocks the purge.
-//
-// It fails closed: a share whose synced index cannot be read or enumerated
-// leaves the namespace untouched, so the worst outcome is legacy objects
-// lingering until a later GC pass — never a delete of a chunk a share that was
-// merely unreadable this run still needs. Runs under the caller's
-// per-remote GC lock, and never on a dry run.
-func (r *Runtime) purgeLegacyCASForEntry(ctx context.Context, entry shares.RemoteStoreEntry, dryRun bool, total *engine.GCStats) {
-	if dryRun {
-		return
-	}
-	legacy, ok := entry.Store.(remote.LegacyCASStore)
-	if !ok {
-		return // backend has no legacy namespace
-	}
-	if pending := r.sharesSvc.PendingShareRegistrations(); pending > 0 {
-		logger.Info("GC: legacy cas/ purge skipped — a share is still registering, so the share set for this remote is not knowable",
-			"configID", entry.ConfigID, "pending_registrations", pending)
-		return
-	}
-	shareNames := r.sharesForRemote(entry.ConfigID)
-	if len(shareNames) == 0 {
-		logger.Info("GC: legacy cas/ purge skipped — no registered share claims this remote",
-			"configID", entry.ConfigID)
-		return
-	}
-	// The enumeration below only walks registered shares, so a configured one
-	// missing from that set blocks the purge outright.
-	unregistered, err := r.unregisteredConfiguredShare(ctx, entry.ConfigID, shareNames)
-	if err != nil {
-		logger.Warn("GC: legacy cas/ purge skipped — configured shares for this remote could not be read",
-			"configID", entry.ConfigID, "err", err)
-		return
-	}
-	if unregistered != "" {
-		logger.Info("GC: legacy cas/ purge skipped — a configured share on this remote is not registered, so its chunks may still be un-migrated",
-			"configID", entry.ConfigID, "share", unregistered)
-		return
-	}
-	for _, shareName := range shareNames {
-		mds, err := r.GetMetadataStoreForShare(shareName)
-		if err != nil {
-			logger.Warn("GC: legacy cas/ purge skipped — metadata store unavailable for a share on this remote",
-				"configID", entry.ConfigID, "share", shareName, "err", err)
-			return
-		}
-		idx, ok := mds.(engine.SyncedHashIndex)
-		if !ok {
-			logger.Warn("GC: legacy cas/ purge skipped — share's metadata store cannot enumerate synced hashes",
-				"configID", entry.ConfigID, "share", shareName)
-			return
-		}
-		// One standalone locator answers the gate, so the scan stops there
-		// instead of counting them: while a migration is in flight this runs on
-		// every GC pass, and the enumeration is O(synced markers) per share.
-		err = idx.EnumerateSynced(ctx, func(_ block.ContentHash, loc block.ChunkLocator, _ time.Time) error {
-			if loc.BlockID == "" {
-				return errStandaloneLocator
-			}
-			return nil
-		})
-		if errors.Is(err, errStandaloneLocator) {
-			logger.Info("GC: legacy cas/ purge deferred — a share on this remote still has un-migrated standalone chunks",
-				"configID", entry.ConfigID, "share", shareName)
-			return
-		}
-		if err != nil {
-			logger.Warn("GC: legacy cas/ purge skipped — enumerating a share's synced hashes failed",
-				"configID", entry.ConfigID, "share", shareName, "err", err)
-			return
-		}
-	}
-
-	var purged int
-	var freed int64
-	walkErr := legacy.WalkLegacyChunks(ctx, func(h block.ContentHash, size int64) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := legacy.DeleteLegacyChunk(ctx, h); err != nil {
-			return fmt.Errorf("delete cas object %s: %w", h, err)
-		}
-		purged++
-		freed += size
-		return nil
-	})
-	if purged > 0 {
-		total.ObjectsSwept += int64(purged)
-		total.BytesFreed += freed
-		total.BytesReclaimed += freed
-	}
-	// A failed walk leaves part of the namespace behind, so it never reports
-	// the namespace as reclaimed — only the progress it did make.
-	if walkErr != nil {
-		logger.Warn("GC: legacy cas/ purge incomplete — will retry next pass",
-			"configID", entry.ConfigID, "purged_objects", purged, "bytesFreed", freed, "err", walkErr)
-		total.ErrorCount++
-		total.Errors++
-		return
-	}
-	if purged > 0 {
-		logger.Info("GC: legacy cas/ namespace reclaimed",
-			"configID", entry.ConfigID, "shares", shareNames,
-			"purged_objects", purged, "bytesFreed", freed)
-	}
 }
 
 // remoteGCLock returns the per-remote serializing mutex for a remote-store

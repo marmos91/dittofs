@@ -161,13 +161,6 @@ func (p Passthrough) Delete(ctx context.Context, hash block.ContentHash) error {
 	return cs.Delete(ctx, hash)
 }
 
-// DeleteLegacyChunk implements LegacyCASStore. The legacy standalone
-// object is keyed by the plaintext hash, which no transform changes, so
-// this is the same removal as Delete.
-func (p Passthrough) DeleteLegacyChunk(ctx context.Context, hash block.ContentHash) error {
-	return p.Delete(ctx, hash)
-}
-
 // Close releases inner resources. A decorator holding resources of its
 // own overrides this and closes both.
 func (p Passthrough) Close() error { return p.inner.Close() }

@@ -92,7 +92,6 @@
 //     from the store (local or remote).
 //   - ErrChunkContentMismatch — recomputed BLAKE3 disagreed with the
 //     expected ContentHash on read (fail-closed).
-//   - ErrCASKeyMalformed — ParseCASKey (migration-only, legacy_cas.go)
 //     rejected an input that did not match the legacy key shape.
 //   - ErrChunkRefMissing — ChunkRef.Hash referred to an absent
 //     FileChunk (mapped to NFS3ERR_IO / STATUS_DATA_ERROR by the

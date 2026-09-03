@@ -12,7 +12,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/remote"
 )
 
 // Migration-only legacy standalone-CAS accessors (#1493 PR4). This file is
@@ -23,31 +22,9 @@ import (
 // the one-shot cas→blocks startup migration. Delete this file (and the
 // legacy_cas_verifier.go helpers) when the migration is retired.
 
-var _ remote.LegacyCASStore = (*Store)(nil)
-
 // casPrefix is the CAS object-key prefix walked by Walk. Mirrors the
 // block.FormatCASKey output ("cas/{hh}/{hh}/{hex}").
 const casPrefix = "cas/"
-
-// WalkLegacyChunks implements remote.LegacyCASStore: a LIST of the cas/
-// namespace. An empty namespace costs a single LIST page.
-func (s *Store) WalkLegacyChunks(ctx context.Context, fn func(hash block.ContentHash, size int64) error) error {
-	return s.Walk(ctx, func(hash block.ContentHash, meta block.Meta) error {
-		return fn(hash, meta.Size)
-	})
-}
-
-// ReadLegacyChunkVerified implements remote.LegacyCASStore. The hash is both
-// the lookup key and the expected plaintext BLAKE3 (they coincide on the
-// standalone layout).
-func (s *Store) ReadLegacyChunkVerified(ctx context.Context, hash block.ContentHash) ([]byte, error) {
-	return s.ReadBlockVerified(ctx, hash, hash)
-}
-
-// DeleteLegacyChunk implements remote.LegacyCASStore.
-func (s *Store) DeleteLegacyChunk(ctx context.Context, hash block.ContentHash) error {
-	return s.Delete(ctx, hash)
-}
 
 // hashKey returns the full S3 key for a CAS content hash.
 func (s *Store) hashKey(hash block.ContentHash) string {

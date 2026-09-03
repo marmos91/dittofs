@@ -272,10 +272,9 @@ func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *block.FileChunk) (
 //     yet, so it has no remote copy. NOT drift — the bytes are still local-only
 //     (a read that raced the async carve). Returns ("", nil, nil) so the caller
 //     falls back to the local read path rather than failing closed.
-//   - Synced marker present but empty BlockID: a pre-flip standalone chunk the
-//     background cas→blocks migration has not repacked yet. Served through the
-//     legacy CAS fallback (readStandaloneChunk); only a chunk that is resident
-//     nowhere yields an error.
+//   - Synced marker present but empty BlockID: a locator written by a release
+//     that predates the packed-block format. Nothing can read it any more, so
+//     it fails closed rather than falling through to an empty block key.
 func (m *Syncer) resolveAndReadChunk(ctx context.Context, fb *block.FileChunk) (string, []byte, error) {
 	loc, synced, err := m.resolveLocator(ctx, fb.Hash)
 	if err != nil {
@@ -285,22 +284,13 @@ func (m *Syncer) resolveAndReadChunk(ctx context.Context, fb *block.FileChunk) (
 		return "", nil, nil // not on remote yet — caller serves from local
 	}
 	if loc.BlockID == "" {
-		// Pre-flip standalone locator: the cas→blocks repack runs as a
-		// background pass, so a synced hash can still carry the legacy layout
-		// while the repack is in flight. Serve it from the legacy CAS objects
-		// (local-first, then remote, BLAKE3-verified); the background migration
-		// repacks it and rewrites the locator. Only when the chunk is resident
-		// nowhere is this genuine drift / live-data-loss — surfaced (as
-		// ErrChunkNotFound) so the caller fails closed rather than serving zeros.
-		data, rerr := m.readStandaloneChunk(ctx, fb.Hash)
-		if rerr != nil {
-			logger.Error("standalone chunk unreadable (no local copy, no legacy object)",
-				"block_id", fb.ID, "hash", fb.Hash.String(), "error", rerr)
-			return "", nil, rerr
-		}
-		// Non-empty key so the caller persists the bytes (an empty key is its
-		// sparse/never-uploaded sentinel); the hash is the natural CAS key here.
-		return fb.Hash.String(), data, nil
+		// A locator with no block id was written by a release predating the
+		// packed-block format. The reader for it is gone, so refuse rather than
+		// fall through to an empty block key — an empty key would resolve to a
+		// bogus object and could surface as zeros.
+		logger.Error("locator predates the packed-block format and can no longer be read",
+			"block_id", fb.ID, "hash", fb.Hash.String())
+		return "", nil, fmt.Errorf("%w: hash %s has a pre-block-format locator", block.ErrChunkNotFound, fb.Hash)
 	}
 	key := block.FormatBlockKey(loc.BlockID)
 	data, perr := m.readChunkVerified(ctx, loc, fb.Hash)
