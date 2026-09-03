@@ -2140,18 +2140,14 @@ stored secret. Equivalent CLI: `dfsctl identity-provider {list,get,set,test}`
 
 ## Migration
 
-### Standalone CAS (v0.16 - v0.21) → packed blocks: automatic
+### Standalone CAS (v0.16 - v0.21) → packed blocks: removed
 
-Current servers store remote data as packed `blocks/<id>` containers. Shares
-that still hold standalone-CAS state (per-chunk `cas/` objects and locators
-from v0.16-v0.21 servers) are converted automatically at startup, per share,
-**before the share serves** — no command, flag, or sentinel involved. The
-conversion is idempotent and resumable; a killed run converges on the next
-start. See [the migration guide](block-store-migration.md).
-
-If a share's remote is unreachable while standalone chunks remain, that
-share fails to start (its data would be unreadable anyway); restore
-connectivity and start again.
+Current servers store remote data as packed `blocks/<id>` containers. The
+automatic startup conversion for shares still holding standalone-CAS state
+(per-chunk `cas/` objects and locators from v0.16-v0.21 servers) has been
+removed: such a store cannot be upgraded in place by this build, and a
+locator still pointing at a standalone object fails closed on read. See
+[the migration guide](block-store-migration.md).
 
 ### Pre-v0.16 `.blk` layouts: migrate with dittofs ≤ v0.21 first
 

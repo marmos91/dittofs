@@ -1443,10 +1443,11 @@ Both fire off the random-write hot path.
 
 ## Migration & Block-Layout Routing
 
-DittoFS has had three block layouts (see the migration guide's table). Two
-transitions are handled at startup, per share, before the share serves.
+DittoFS has had three block layouts (see the migration guide's table). One
+transition is handled at startup, per share, before the share serves; the
+older one is no longer supported.
 
-### Standalone CAS (v0.16-v0.21) → packed blocks: automatic
+### Standalone CAS (v0.16-v0.21) → packed blocks: removed
 
 The current layout packs chunks into `blocks/<id>` container objects. A share
 carrying leftover standalone-CAS state — pre-flip per-chunk local files, remote

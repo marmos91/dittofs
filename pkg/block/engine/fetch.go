@@ -288,7 +288,9 @@ func (m *Syncer) resolveAndReadChunk(ctx context.Context, fb *block.FileChunk) (
 		// packed-block format. The reader for it is gone, so refuse rather than
 		// fall through to an empty block key — an empty key would resolve to a
 		// bogus object and could surface as zeros.
-		logger.Error("locator predates the packed-block format and can no longer be read",
+		logger.Error("this share still holds v0.16-v0.21 standalone-CAS locators, which this build "+
+			"cannot read; the automatic migration was removed. Stage the upgrade through a release "+
+			"that still ships it, or re-ingest the data",
 			"block_id", fb.ID, "hash", fb.Hash.String())
 		return "", nil, fmt.Errorf("%w: hash %s has a pre-block-format locator", block.ErrChunkNotFound, fb.Hash)
 	}
