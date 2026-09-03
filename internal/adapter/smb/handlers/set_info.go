@@ -2559,10 +2559,37 @@ func (h *Handler) handleFileLinkInformation(
 	metaSvc := h.Registry.GetMetadataService()
 	if linkInfo.ReplaceIfExists {
 		if existing, matchedName, lookupErr := metaSvc.LookupCaseInsensitive(authCtx, dstDir, linkName); lookupErr == nil && existing != nil {
-			if _, _, rmErr := metaSvc.RemoveFile(authCtx, dstDir, matchedName); rmErr != nil {
+			// A destination that already names the file being linked is the
+			// requested end state, so there is nothing to do. Removing it
+			// would drop the inode's last link and free its content, and the
+			// CreateHardLink below would then resurrect the name over bytes
+			// that no longer exist. Move takes the same shortcut for a rename
+			// onto its own name.
+			existingHandle, encErr := metadata.EncodeFileHandle(existing)
+			if encErr != nil {
+				// Identity is unprovable, so the removal below cannot be shown
+				// to be safe. Refuse rather than fall through into it: the
+				// wrong branch here destroys the caller's content.
+				logger.Debug("SET_INFO: hardlink replace cannot identify existing destination",
+					"name", matchedName, "error", encErr)
+				return setInfoStatus(types.StatusInvalidParameter), nil
+			}
+			if bytes.Equal(existingHandle, openFile.MetadataHandle) {
+				return setInfoStatus(types.StatusSuccess), nil
+			}
+
+			removed, _, rmErr := metaSvc.RemoveFile(authCtx, dstDir, matchedName)
+			if rmErr != nil {
 				logger.Debug("SET_INFO: hardlink replace failed to remove existing",
 					"name", matchedName, "error", rmErr)
 				return setInfoStatus(common.MapToSMB(rmErr)), nil
+			}
+			// RemoveFile drops the name and the inode but never the bytes; its
+			// PayloadID is empty whenever the content must survive. Left
+			// unreleased, the replaced file's records stay indexed as live in
+			// the local tier, where no reclamation path can reach them.
+			if removed != nil {
+				h.purgeBlockStorePayload(authCtx.Context, dstDir, removed.PayloadID, matchedName, "SET_INFO hardlink replace")
 			}
 		}
 	}
