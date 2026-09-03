@@ -53,7 +53,7 @@ type segmentMeta struct {
 	deadBytes     atomic.Int64 // superseded/tombstoned payload bytes (GC input)
 	records       atomic.Int64 // physical records appended (eviction synced-gate denominator)
 	syncedRecords atomic.Int64 // records with the synced flag set (eviction gate)
-	lastAccess    atomic.Int64 // unix nanos, approx-LRU victim key
+	lastAccess    atomic.Int64 // unix nanos, approx-LRU victim key; 0 = never stamped
 	// minVersion is the lowest record Version stored in this segment (0 = empty).
 	// Segments fill sequentially, so a segment's records span a contiguous
 	// [minVersion, maxVersion]; minVersion<=pinVersion means the segment holds a
@@ -179,6 +179,22 @@ func (s *Store) createSegment() (*segmentMeta, error) {
 	m.tail.Store(segHeaderSize)
 	s.diskBytes.Add(segHeaderSize)
 	return m, nil
+}
+
+// evictionAge is the approx-LRU victim key: when the segment was last touched,
+// or when it was created if nothing has touched it. Only the append and read
+// paths stamp lastAccess, so a segment can become evictable while still zero —
+// a repack target is filled by writeDataRecord, and every sealed segment
+// rebuilt at open starts unstamped. Zero would sort ahead of every real
+// timestamp, offering exactly those segments to eviction first: the ones GC
+// just consolidated, and after a restart every segment that survived it.
+// createdAt is durable (it round-trips through the segment header, including
+// the seal rewrite), so it orders unstamped segments by age instead.
+func (seg *segmentMeta) evictionAge() int64 {
+	if la := seg.lastAccess.Load(); la != 0 {
+		return la
+	}
+	return seg.createdAt.UnixNano()
 }
 
 // fsyncDir flushes a directory's entries so a freshly created file survives a
