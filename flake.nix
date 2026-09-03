@@ -109,7 +109,10 @@
           let
             python = pkgs.python312;
           in
-          pkgs.stdenv.mkDerivation {
+          # stdenvNoCC: pynfs is pure Python, and a plain mkDerivation would pull
+          # the whole C toolchain (on darwin, clang plus the Apple SDK — the best
+          # part of a gigabyte) to run a script that never compiles anything.
+          pkgs.stdenvNoCC.mkDerivation {
             pname = "pynfs";
             version = "2026-03-27";
             src = pynfs-src;

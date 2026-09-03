@@ -15,27 +15,27 @@
 # of per-test knfsd verdicts, written to baseline-knfsd.md and committed, so
 # triage can cite it and later readers can see the evidence without re-running.
 #
-# knfsd runs in a privileged container, so this works the same on a macOS
-# laptop and on a CI runner. It needs a host kernel with nfsd (Docker Desktop
-# and GitHub's ubuntu runners both have it) and a Docker volume for the export,
-# because overlayfs cannot be NFS-exported.
+# Linux only, and deliberately not containerised: knfsd hands its listening
+# sockets to the kernel, which refuses them from a container's network namespace
+# (rpc.nfsd fails with errno 111). Host networking gets past that, but then the
+# export is reachable only from inside the VM on a macOS Docker host, so pynfs
+# cannot reach it either. Running both directly on a Linux host avoids the whole
+# problem — on macOS, run it from CI instead.
 #
 # Not a CI gate: it measures a third-party server, so its verdict says nothing
 # about any given commit.
 #
 # Usage:
-#   ./baseline-knfsd.sh [--port 12050] [--keep]
+#   sudo ./baseline-knfsd.sh [--export-dir DIR] [--lease-time 30] [--keep]
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
-PORT=12050
+EXPORT_DIR="/srv/pynfs-baseline"
+LEASE_TIME=30
 KEEP=false
-CONTAINER="dittofs-knfsd-baseline"
-VOLUME="dittofs-knfsd-export"
-IMAGE="dittofs-knfsd-baseline"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; NC='\033[0m'
 log()       { echo -e "${GREEN}[BASELINE]${NC} $*"; }
@@ -43,27 +43,32 @@ log_error() { echo -e "${RED}[BASELINE]${NC} $*" >&2; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --port) PORT="$2"; shift 2 ;;
-        --keep) KEEP=true; shift ;;
+        --export-dir) EXPORT_DIR="$2"; shift 2 ;;
+        --lease-time) LEASE_TIME="$2"; shift 2 ;;
+        --keep)       KEEP=true; shift ;;
         --help|-h)
-            echo "Usage: $0 [--port PORT] [--keep]"
+            echo "Usage: sudo $0 [--export-dir DIR] [--lease-time SECONDS] [--keep]"
             echo ""
-            echo "Runs pynfs 4.0 and 4.1 against the Linux kernel NFS server in a"
-            echo "privileged container and writes per-test verdicts to baseline-knfsd.md."
+            echo "Runs pynfs 4.0 and 4.1 against the Linux kernel NFS server and"
+            echo "writes per-test verdicts to baseline-knfsd.md."
             exit 0
             ;;
         *) log_error "Unknown option: $1"; exit 1 ;;
     esac
 done
 
-if ! docker info >/dev/null 2>&1; then
-    log_error "Docker is not available; knfsd runs in a privileged container."
+if [[ "$(uname -s)" != "Linux" ]]; then
+    log_error "The baseline needs the in-kernel nfsd, so it only runs on Linux."
+    log_error "From a macOS box, run it in CI instead:"
+    log_error "  gh workflow run nfs-pynfs.yml -f baseline=true"
     exit 1
 fi
 
-# --------------------------------------------------------------------------
-# Locate pynfs.
-# --------------------------------------------------------------------------
+if [[ $EUID -ne 0 ]]; then
+    log_error "This script must be run as root (sudo): it exports a filesystem."
+    exit 1
+fi
+
 PYNFS_PREFIX=""
 if ! command -v pynfs-4.0 >/dev/null 2>&1; then
     log "Building pynfs via nix..."
@@ -74,58 +79,77 @@ if ! command -v pynfs-4.0 >/dev/null 2>&1; then
     PYNFS_PREFIX="${PYNFS_OUT}/bin/"
 fi
 
+EXPORTS_FILE="/etc/exports.d/pynfs-baseline.exports"
+
 cleanup() {
     if [[ "$KEEP" == true ]]; then
-        log "Leaving ${CONTAINER} running (--keep)."
+        log "Leaving the export in place (--keep)."
         return
     fi
-    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-    docker volume rm "$VOLUME" >/dev/null 2>&1 || true
+    log "Removing the export..."
+    rm -f "$EXPORTS_FILE"
+    exportfs -ra 2>/dev/null || true
+    rm -rf "$EXPORT_DIR"
 }
 trap cleanup EXIT
 
-log "Building the knfsd image..."
-docker build -q -t "$IMAGE" "${SCRIPT_DIR}/knfsd" >/dev/null || {
-    log_error "docker build failed"
-    exit 1
-}
-
-cleanup
-log "Starting knfsd on port ${PORT}..."
-docker volume create "$VOLUME" >/dev/null
-if ! docker run -d --name "$CONTAINER" --privileged \
-        -v "${VOLUME}:/export" -p "${PORT}:2049" "$IMAGE" >/dev/null; then
-    log_error "Could not start the container"
-    exit 1
+if ! command -v exportfs >/dev/null 2>&1; then
+    log "Installing nfs-kernel-server..."
+    apt-get update -qq && apt-get install -y -qq nfs-kernel-server || {
+        log_error "Could not install nfs-kernel-server"
+        exit 1
+    }
 fi
 
-for _ in $(seq 1 30); do
-    if docker exec "$CONTAINER" exportfs -v >/dev/null 2>&1; then
-        break
-    fi
-    sleep 1
-done
-if ! docker exec "$CONTAINER" exportfs -v 2>/dev/null | grep -q /export; then
-    log_error "knfsd did not export /export — is nfsd available on the host kernel?"
-    docker logs "$CONTAINER"
+# `insecure` is required: pynfs connects from an unprivileged source port, which
+# knfsd rejects by default. `fsid=0` makes this the NFSv4 pseudo-root, so the
+# path pynfs asks for is "/".
+log "Exporting ${EXPORT_DIR}..."
+mkdir -p "$EXPORT_DIR" /etc/exports.d
+chmod 777 "$EXPORT_DIR"
+echo "${EXPORT_DIR} *(rw,insecure,no_root_squash,no_subtree_check,fsid=0)" > "$EXPORTS_FILE"
+
+# Match run-pynfs.sh's lease time: expiry tests sleep for a full lease, and at
+# the 90s default they dominate the run. nfsv4leasetime lives in the nfsd
+# filesystem, which rpc.nfsd mounts, and the kernel refuses to change it while
+# threads are running — so start, drop to zero threads, set, start again.
+# Best-effort: a baseline at the kernel default is slower but just as valid,
+# since lease time changes how long expiry tests wait, not their verdict.
+modprobe nfsd 2>/dev/null || true
+systemctl start nfs-server 2>/dev/null || service nfs-kernel-server start 2>/dev/null || true
+rpc.nfsd --no-udp 2049 2>/dev/null || true
+rpc.nfsd 0 2>/dev/null || true
+if echo "$LEASE_TIME" > /proc/fs/nfsd/nfsv4leasetime 2>/dev/null; then
+    log "nfsv4leasetime set to $(cat /proc/fs/nfsd/nfsv4leasetime)s"
+else
+    log "WARNING: could not set nfsv4leasetime; using the kernel default"
+fi
+
+if ! rpc.nfsd --no-udp 2049; then
+    log_error "rpc.nfsd failed to start"
     exit 1
 fi
-docker exec "$CONTAINER" exportfs -v
+exportfs -ra
+exportfs -v
+
+if ! exportfs -v | grep -q insecure; then
+    log_error "The export is not marked 'insecure'; pynfs connects from a high"
+    log_error "port and every test would fail at connect."
+    exit 1
+fi
 
 RESULTS_DIR="${SCRIPT_DIR}/results/baseline-knfsd-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$RESULTS_DIR"
 
-# --------------------------------------------------------------------------
-# Run both trees. The flags must match run-pynfs.sh exactly, or this compares
-# two different experiments. fsid=0 makes the export path "/".
-# --------------------------------------------------------------------------
+# Flags must match run-pynfs.sh exactly, or this compares two different
+# experiments. fsid=0 makes the export path "/".
 for v in 4.0 4.1; do
     case "$v" in
         4.0) minor=0 ;;
         4.1) minor=1 ;;
     esac
     log "Running pynfs ${v} against knfsd..."
-    "${PYNFS_PREFIX}pynfs-${v}" "localhost:${PORT}/" \
+    "${PYNFS_PREFIX}pynfs-${v}" "localhost:2049/" \
         --minorversion "$minor" \
         --security sys \
         --uid 0 --gid 0 \
@@ -135,13 +159,9 @@ for v in 4.0 4.1; do
     tail -2 "${RESULTS_DIR}/knfsd-v${v}.log"
 done
 
-# --------------------------------------------------------------------------
 # Emit the evidence table. Only the final results block is read, for the same
 # reason parse-results.sh reads only that: -v reprints every test as it runs.
-# --------------------------------------------------------------------------
 OUT="${SCRIPT_DIR}/baseline-knfsd.md"
-KERNEL="$(docker exec "$CONTAINER" uname -r 2>/dev/null || echo unknown)"
-NFSD_VER="$(docker exec "$CONTAINER" rpc.nfsd --version 2>&1 | head -1 || echo unknown)"
 {
     echo "# pynfs against Linux knfsd — baseline"
     echo ""
@@ -154,8 +174,8 @@ NFSD_VER="$(docker exec "$CONTAINER" rpc.nfsd --version 2>&1 | head -1 || echo u
     echo "DittoFS, and is the only thing that justifies a \`suite\` row in"
     echo "KNOWN_FAILURES."
     echo ""
-    echo "- Kernel: \`${KERNEL}\`"
-    echo "- nfs-utils: \`${NFSD_VER}\`"
+    echo "- Kernel: \`$(uname -r)\`"
+    echo "- Lease time: \`$(cat /proc/fs/nfsd/nfsv4leasetime 2>/dev/null || echo unknown)s\`"
     echo "- Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo ""
     for v in 4.0 4.1; do
@@ -169,7 +189,7 @@ NFSD_VER="$(docker exec "$CONTAINER" rpc.nfsd --version 2>&1 | head -1 || echo u
         echo "| Test | knfsd |"
         echo "|------|-------|"
         awk '
-            /^\*{50}$/ { n++; starts[n] = NR; next }
+            /^\*{50}$/ { n++; starts[n] = NR }
             { line[NR] = $0 }
             END {
                 if (n < 2) exit
