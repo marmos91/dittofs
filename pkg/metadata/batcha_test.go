@@ -36,7 +36,7 @@ func TestBatchA_Move_DescendantPathUpdate(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "/parent/child.txt", childBefore.Path)
 
-	_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "parent", fx.rootHandle, "renamed")
+	_, _, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "parent", fx.rootHandle, "renamed")
 	require.NoError(t, err, "rename of directory with children must succeed")
 
 	childAfter, err := fx.store.GetFile(ctx, childHandle)

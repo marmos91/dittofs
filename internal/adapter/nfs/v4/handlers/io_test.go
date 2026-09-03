@@ -1672,3 +1672,60 @@ func TestRemove_ReclaimsLocalPayloadBytes(t *testing.T) {
 		t.Fatalf("payload %q still holds %d live bytes in the local tier after REMOVE", payloadID, size)
 	}
 }
+
+// TestRename_ReclaimsClobberedPayloadBytes pins that renaming onto an existing
+// name frees the clobbered file's content, not just its directory entry. The
+// metadata layer deliberately never deletes payload bytes — Move returns the
+// clobbered victim so the handler can — and a handler that ignores that return
+// leaves the victim's records indexed as live in the local tier, where no
+// reclamation path treats them as dead and the bytes survive every restart.
+// Write-to-temp-then-rename makes this a steady churn, not a corner case.
+//
+// Asserting on observable block-store state pins both directions: the victim's
+// payload must be gone AND the renamed file's must survive, so releasing the
+// wrong payload fails here instead of passing.
+func TestRename_ReclaimsClobberedPayloadBytes(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+	ctxBg := context.Background()
+
+	payloadIDOf := func(fh metadata.FileHandle) string {
+		t.Helper()
+		file, err := fx.metaSvc.GetFile(ctxBg, fh)
+		if err != nil {
+			t.Fatalf("get file: %v", err)
+		}
+		return string(file.PayloadID)
+	}
+
+	victimFH := fx.createRegularFile(t, fx.rootHandle, "victim.bin", 0o644, 1000, 1000)
+	victimPayload := payloadIDOf(victimFH)
+	victimBytes := bytes.Repeat([]byte{0xAB}, 4<<20)
+	fx.writeContent(t, victimFH, victimBytes)
+
+	survivorFH := fx.createRegularFile(t, fx.rootHandle, "incoming.bin", 0o644, 1000, 1000)
+	survivorPayload := payloadIDOf(survivorFH)
+	fx.writeContent(t, survivorFH, bytes.Repeat([]byte{0xCD}, 1<<20))
+
+	if survivorPayload == victimPayload {
+		t.Fatalf("test setup: both files share payload %q, the assertions below cannot discriminate", victimPayload)
+	}
+	if size, ok := fx.localStore.FileSize(ctxBg, victimPayload); !ok || size != int64(len(victimBytes)) {
+		t.Fatalf("local tier holds %d bytes (present=%v) for the victim before RENAME, want %d", size, ok, len(victimBytes))
+	}
+
+	ctx := newRealFSContext(1000, 1000)
+	setCurrentFH(ctx, fx.rootHandle) // target dir
+	setSavedFH(ctx, fx.rootHandle)   // source dir
+
+	result := fx.handler.handleRename(ctx, bytes.NewReader(encodeRenameArgs("incoming.bin", "victim.bin")))
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("RENAME status = %d, want NFS4_OK", result.Status)
+	}
+
+	if size, ok := fx.localStore.FileSize(ctxBg, victimPayload); ok {
+		t.Fatalf("clobbered payload %q still holds %d live bytes in the local tier after RENAME", victimPayload, size)
+	}
+	if _, ok := fx.localStore.FileSize(ctxBg, survivorPayload); !ok {
+		t.Fatalf("renamed file's payload %q was dropped from the local tier by RENAME", survivorPayload)
+	}
+}

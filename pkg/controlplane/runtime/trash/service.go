@@ -326,7 +326,7 @@ func (s *Service) Restore(ctx *metadata.AuthContext, shareName, binPath, dest st
 	}
 
 	// Move the entry out of the bin, then clear its deletion stamp in place.
-	if _, err := svc.Move(ctx, binSrcParent, binSrcName, destParent, destName); err != nil {
+	if _, _, err := svc.Move(ctx, binSrcParent, binSrcName, destParent, destName); err != nil {
 		return err
 	}
 	return clearStamp(ctx, svc, shareName, destParent, destName)

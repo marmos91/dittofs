@@ -149,7 +149,7 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 	tgtBeforeCtime := uint64(tgtDirFile.Ctime.UnixNano())
 
 	// Perform the rename: Move(fromDir, fromName, toDir, toName)
-	_, renameErr := metaSvc.Move(authCtx, srcDirHandle, oldName, tgtDirHandle, newName)
+	clobbered, _, renameErr := metaSvc.Move(authCtx, srcDirHandle, oldName, tgtDirHandle, newName)
 	if renameErr != nil {
 		status := common.MapToNFS4(renameErr)
 		logger.Debug("NFSv4 RENAME failed",
@@ -163,6 +163,16 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 			OpCode: types.OP_RENAME,
 			Data:   encodeStatusOnly(status),
 		}
+	}
+
+	// Free the bytes of whatever this rename renamed over. The rename is
+	// already committed and the client has its answer, so a failure to release
+	// them is logged rather than surfaced.
+	if relErr := common.ReleaseClobberedPayload(ctx.Context, h.Registry, tgtDirHandle, clobbered); relErr != nil {
+		logger.Warn("NFSv4 RENAME: failed to delete clobbered content",
+			"newname", newName,
+			"payload_id", clobbered.PayloadID,
+			"error", relErr)
 	}
 
 	// Get post-operation attributes for both directories

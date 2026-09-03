@@ -336,7 +336,7 @@ func testOverwriteRecyclesVictim(t *testing.T, factory StoreFactory) {
 	fx.trashCreateFile(t, fx.rootHandle, "b", modeB)
 
 	// Rename "b" onto "a" — an overwrite that recycles the old "a".
-	if _, err := fx.svc.Move(fx.ctx, fx.rootHandle, "b", fx.rootHandle, "a"); err != nil {
+	if _, _, err := fx.svc.Move(fx.ctx, fx.rootHandle, "b", fx.rootHandle, "a"); err != nil {
 		t.Fatalf("Move(b -> a) failed: %v", err)
 	}
 

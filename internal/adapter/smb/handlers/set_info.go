@@ -768,7 +768,8 @@ func (h *Handler) setFileInfoFromStore(
 			metaSvc := h.Registry.GetMetadataService()
 			restoreChangeTime := h.snapshotChangeTime(authCtx, openFile.MetadataHandle)
 
-			_, err = metaSvc.Move(authCtx, toDir, oldFileName, toDir, toName)
+			var clobberedStream *metadata.File
+			clobberedStream, _, err = metaSvc.Move(authCtx, toDir, oldFileName, toDir, toName)
 			if err != nil {
 				logger.Debug("SET_INFO: stream rename failed",
 					"from", oldFileName,
@@ -778,6 +779,12 @@ func (h *Handler) setFileInfoFromStore(
 			}
 
 			restoreChangeTime()
+
+			// Renaming a stream onto an existing stream name unlinks the
+			// stream that was there; free its content.
+			if clobberedStream != nil {
+				h.purgeBlockStorePayload(ctx.Context, toDir, clobberedStream.PayloadID, toName, "SET_INFO stream rename")
+			}
 
 			// Move's LastChangeTime stamp is an automatic update, so a
 			// timestamp frozen on this handle has to be put back the same way
@@ -1184,10 +1191,16 @@ func (h *Handler) setFileInfoFromStore(
 		// sibling entry. Remove the matched-case destination upfront so Move
 		// inserts the source under the client-requested casing.
 		if isOverwrite && dstMatchedName != "" && dstMatchedName != toName {
-			if _, _, rmErr := metaSvc.RemoveFile(authCtx, toDir, dstMatchedName); rmErr != nil {
+			removed, _, rmErr := metaSvc.RemoveFile(authCtx, toDir, dstMatchedName)
+			if rmErr != nil {
 				logger.Debug("SET_INFO: rename overwrite pre-remove failed",
 					"name", dstMatchedName, "error", rmErr)
 				return setInfoStatus(common.MapToSMB(rmErr)), nil
+			}
+			// RemoveFile drops the name and the inode but never the bytes; its
+			// PayloadID is empty whenever the content must survive.
+			if removed != nil {
+				h.purgeBlockStorePayload(ctx.Context, toDir, removed.PayloadID, dstMatchedName, "SET_INFO rename overwrite")
 			}
 		}
 
@@ -1196,7 +1209,8 @@ func (h *Handler) setFileInfoFromStore(
 		// CREATE, so put the pre-rename value back.
 		restoreChangeTime := h.snapshotChangeTime(authCtx, openFile.MetadataHandle)
 
-		_, err = metaSvc.Move(authCtx, srcParentHandle, oldFileName, toDir, toName)
+		var clobbered *metadata.File
+		clobbered, _, err = metaSvc.Move(authCtx, srcParentHandle, oldFileName, toDir, toName)
 		if err != nil {
 			logger.Debug("SET_INFO: rename failed",
 				"from", openFile.Name().Path,
@@ -1206,6 +1220,13 @@ func (h *Handler) setFileInfoFromStore(
 		}
 
 		restoreChangeTime()
+
+		// The pre-remove above only fires for a case-mismatched destination, so
+		// an exact-case ReplaceIfExists overwrite reaches Move's own clobber
+		// path instead, and its victim's bytes are released here.
+		if clobbered != nil {
+			h.purgeBlockStorePayload(ctx.Context, toDir, clobbered.PayloadID, toName, "SET_INFO rename")
+		}
 
 		// Move's LastChangeTime stamp is an automatic update, so a timestamp
 		// frozen on this handle has to be put back the same way WRITE and
