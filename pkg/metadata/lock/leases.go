@@ -214,11 +214,7 @@ func (lm *Manager) hasPersistedLeaseKeyOnOtherFile(ctx context.Context, leaseKey
 	if lm.lockStore == nil || clientID == "" {
 		return false
 	}
-	isLease := true
-	persisted, err := lm.lockStore.ListLocks(ctx, LockQuery{
-		ClientID: clientID,
-		IsLease:  &isLease,
-	})
+	persisted, err := lm.lockStore.ListLocks(ctx, LockQuery{ClientID: clientID})
 	if err != nil {
 		logger.Error("hasPersistedLeaseKeyOnOtherFile: ListLocks failed; failing closed to preserve cross-file lease-key uniqueness",
 			"clientID", clientID,

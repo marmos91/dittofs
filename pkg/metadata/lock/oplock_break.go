@@ -250,18 +250,16 @@ func (s *OpLockBreakScanner) scanExpiredLeaseBreaks(now time.Time) {
 	timeout := s.timeout
 	s.mu.Unlock()
 
-	// Query all leases
-	isLease := true
-	leases, err := s.lockStore.ListLocks(ctx, LockQuery{
-		IsLease: &isLease,
-	})
+	locks, err := s.lockStore.ListLocks(ctx, LockQuery{})
 	if err != nil {
 		logger.Warn("OpLockBreakScanner: failed to list locks", "error", err)
 		return
 	}
 
-	for _, pl := range leases {
-		// Skip non-leases (should not happen with IsLease filter, but be safe)
+	for _, pl := range locks {
+		// Leases and byte-range locks share one table; a 16-byte lease key is
+		// what marks a row as a lease, so anything else is a byte-range lock
+		// and has no break to expire.
 		if len(pl.LeaseKey) != 16 {
 			continue
 		}
