@@ -49,7 +49,7 @@ func postgresTestConfig() (*postgres.PostgresMetadataStoreConfig, metadata.Files
 
 // newPostgresStore opens a Postgres store WITHOUT resetting it. Used by
 // dedicated tests that manage their own data lifecycle (store_id stability,
-// CreateShare contract). The store is closed via t.Cleanup.
+// format version). The store is closed via t.Cleanup.
 func newPostgresStore(t *testing.T) *postgres.PostgresMetadataStore {
 	t.Helper()
 	cfg, caps := postgresTestConfig()

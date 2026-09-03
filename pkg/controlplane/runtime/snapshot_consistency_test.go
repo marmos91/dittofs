@@ -279,8 +279,11 @@ func newRealBackupFixture(t *testing.T) *realBackupFixture {
 	localStoreDir := t.TempDir()
 	shareName := "data"
 
-	if err := mem.CreateShare(context.Background(), &metadata.Share{Name: shareName}); err != nil {
-		t.Fatalf("CreateShare: %v", err)
+	if _, err := mem.CreateRootDirectory(context.Background(), shareName, &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory,
+		Mode: 0o755,
+	}); err != nil {
+		t.Fatalf("CreateRootDirectory: %v", err)
 	}
 
 	localStore := bsmemory.New()

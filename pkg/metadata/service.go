@@ -951,15 +951,6 @@ func (s *Service) RemoveFileLocks(handle FileHandle) {
 	lm.RemoveFileLocks(handleKey)
 }
 
-// CreateShare creates a new share with its root directory.
-func (s *Service) CreateShare(ctx context.Context, shareName string, share *Share) error {
-	store, err := s.GetStoreForShare(shareName)
-	if err != nil {
-		return err
-	}
-	return store.CreateShare(ctx, share)
-}
-
 // GetShareOptions returns the options for a share.
 func (s *Service) GetShareOptions(ctx context.Context, shareName string) (*ShareOptions, error) {
 	store, err := s.GetStoreForShare(shareName)

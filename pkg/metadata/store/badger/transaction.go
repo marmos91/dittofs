@@ -1079,41 +1079,6 @@ func (tx *badgerTransaction) GetShareOptions(ctx context.Context, shareName stri
 	return opts, nil
 }
 
-func (tx *badgerTransaction) CreateShare(ctx context.Context, share *metadata.Share) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	_, err := tx.txn.Get(keyShare(share.Name))
-	if err == nil {
-		return &metadata.StoreError{
-			Code:    metadata.ErrAlreadyExists,
-			Message: "share already exists",
-			Path:    share.Name,
-		}
-	}
-	if err != badgerdb.ErrKeyNotFound {
-		return err
-	}
-
-	// Store as shareData for consistency with GetRootHandle and CreateRootDirectory
-	shareDataValue := &shareData{
-		Share: *share,
-		// RootHandle will be set by CreateRootDirectory
-	}
-
-	encoded, err := encodeShareData(shareDataValue)
-	if err != nil {
-		return err
-	}
-
-	if err := tx.txn.Set(keyShare(share.Name), encoded); err != nil {
-		return err
-	}
-	tx.dirtyShares = append(tx.dirtyShares, share.Name)
-	return nil
-}
-
 func (tx *badgerTransaction) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1286,31 +1251,10 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 		return nil, err
 	}
 
-	// Preserve existing share configuration (e.g. ShareOptions written
-	// by a prior CreateShare call) when materializing the root row.
-	// Mirrors the same fix in the non-transactional createNewRoot — the
-	// original code wrote a fresh `metadata.Share{Name: shareName}`
-	// here, silently wiping any Options the caller had set via
-	// CreateShare.
-	preservedShare := metadata.Share{Name: shareName}
-	if existingItem, getErr := tx.txn.Get(keyShare(shareName)); getErr == nil {
-		if vErr := existingItem.Value(func(val []byte) error {
-			existing, dErr := decodeShareData(val)
-			if dErr != nil {
-				return dErr
-			}
-			preservedShare = existing.Share
-			preservedShare.Name = shareName
-			return nil
-		}); vErr != nil {
-			return nil, fmt.Errorf("failed to read existing share for option preservation: %w", vErr)
-		}
-	} else if getErr != badgerdb.ErrKeyNotFound {
-		return nil, fmt.Errorf("failed to probe existing share: %w", getErr)
-	}
-
+	// This path runs only when the share record was absent above, and nothing
+	// writes one in between, so there are no recorded options to carry over.
 	shareDataObj := &shareData{
-		Share:      preservedShare,
+		Share:      metadata.Share{Name: shareName},
 		RootHandle: rootHandle,
 	}
 	shareBytes, err := encodeShareData(shareDataObj)

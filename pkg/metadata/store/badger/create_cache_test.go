@@ -22,9 +22,6 @@ func newCreateCacheStore(t *testing.T) (*BadgerMetadataStore, metadata.FileHandl
 	t.Cleanup(func() { _ = s.Close() })
 
 	const share = "/s"
-	if err := s.CreateShare(ctx, &metadata.Share{Name: share}); err != nil {
-		t.Fatal(err)
-	}
 	root, err := s.CreateRootDirectory(ctx, share, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory, Mode: 0o755,
 	})
