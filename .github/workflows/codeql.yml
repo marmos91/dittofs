@@ -75,50 +75,79 @@ jobs:
         with:
           category: "/language:${{ matrix.language }}"
 
-      # The repository holds two Go modules and no go.work. The autobuilder
-      # discovers every go.mod under the checkout and runs the extractor once
-      # per module, so the operator lands in this same database — but nothing
-      # announces it when that stops being true. A package that is never
-      # discovered is absent from the database rather than reported as an
-      # error, so an analysis narrowed to the root module still finishes green
-      # and still shows zero operator findings.
+      # The repository holds two Go modules. The autobuilder discovers every
+      # go.mod under the checkout and extracts each module in turn, but a module
+      # it never discovers, or fails to extract, is simply absent from the
+      # database rather than reported as an error: the analysis still finishes
+      # green and still shows zero operator findings.
       #
-      # Compare the operator's source files against the database's source
-      # archive, so a narrowing fails the job instead of passing as silence.
-      # The archive is written when the analysis finalizes the database, so
-      # this has to run after it. Only the operator is checked: the root module
-      # carries files behind windows, darwin and e2e build tags that are
-      # correctly absent from a linux database.
-      - name: Verify the operator module reached the database
+      # Read the extractor's own report of what it did. The database's source
+      # archive cannot answer this — it holds the text of files the extractor
+      # merely saw, and the database is built as an overlay on a cached base, so
+      # the archive also carries text from an earlier run. A module can sit in
+      # the archive in full while this run extracted none of it.
+      #
+      # Anything that cannot be confirmed positively fails the job: no
+      # diagnostics, no discovery report from this run, no way to tell this
+      # run's diagnostics from the base's, or a diagnostic stream truncated to
+      # the point where it can no longer be trusted to report a failure.
+      - name: Verify the operator module was extracted
         if: matrix.language == 'go'
         run: |
           set -euo pipefail
 
-          archive=$(find "${RUNNER_TEMP}/codeql-db" -name src.zip -print -quit)
-          if [ -z "${archive}" ]; then
-            echo "::error::no CodeQL source archive under ${RUNNER_TEMP}/codeql-db"
+          dir="${RUNNER_TEMP}/codeql-db/go/diagnostic/extractors/go"
+          diagnostics=("${dir}"/*.json)
+          if [ ! -e "${diagnostics[0]}" ]; then
+            echo "::error::no Go extractor diagnostics under ${dir}; cannot confirm what was extracted"
             exit 1
           fi
 
-          # Test files are out of scope: the Go extractor's extract_tests
-          # option is off by default, for both modules alike.
-          want="${RUNNER_TEMP}/operator-sources.txt"
-          got="${RUNNER_TEMP}/operator-extracted.txt"
-          # A git pathspec matches across directory separators, so this
-          # reaches the whole module, not just its top level.
-          git ls-files 'k8s/dittofs-operator/*.go' | grep -v '_test\.go$' | sort >"${want}"
-          if [ ! -s "${want}" ]; then
-            echo "::error::found no operator sources to check for; has the module moved?"
+          since="${CODEQL_WORKFLOW_STARTED_AT:-}"
+          if [ -z "${since}" ]; then
+            echo "::error::CODEQL_WORKFLOW_STARTED_AT is unset; cannot separate this run's extractor diagnostics from the overlay base's"
             exit 1
           fi
-          unzip -Z1 "${archive}" | grep -oE 'k8s/dittofs-operator/.*\.go$' | sort -u >"${got}" || true
 
-          found=$(comm -12 "${want}" "${got}" | wc -l)
-          echo "operator source files in the CodeQL database: ${found} of $(wc -l <"${want}")"
+          all=$(jq -s . "${diagnostics[@]}")
 
-          missing=$(comm -23 "${want}" "${got}")
-          if [ -n "${missing}" ]; then
-            echo "::error::CodeQL did not analyse these operator files:"
-            printf '%s\n' "${missing}"
+          # The autobuilder names every go.mod it found, before extracting any of
+          # them. Discovery is what makes a module's disappearance observable: one
+          # that is never discovered is never extracted, and is never reported as
+          # a failure either. Only this run's report counts, since the overlay
+          # base carries the previous one alongside it. Both sides write UTC ISO
+          # 8601 with fractional seconds, which jq's ISO parser rejects, so the
+          # fraction is dropped before parsing; a timestamp that still will not
+          # parse aborts jq and fails the step.
+          if ! jq -e --arg since "${since}" '
+            def epoch: sub("\\.[0-9]+"; "") | fromdateiso8601;
+            ($since | epoch) as $start
+            | any(.[]; (.timestamp | epoch) >= $start
+                       and ((.markdownMessage // "") | contains("k8s/dittofs-operator/go.mod")))' \
+            >/dev/null <<<"${all}"; then
+            echo "::error::the Go autobuilder did not report discovering k8s/dittofs-operator/go.mod in this run; either the operator was not analysed, the module moved and this check needs its new path, or the extractor stopped emitting that report"
+            jq -r '.[] | "\(.timestamp) \(.source.id): \(.markdownMessage // .source.name)"' <<<"${all}"
             exit 1
           fi
+
+          # Whatever says a project did not build — or that the diagnostic stream
+          # was truncated, and so can no longer be trusted to say so. Deliberately
+          # not scoped to this run: overlay extraction reuses the files the base
+          # already holds, so a module the base failed on is missing from this
+          # analysis too, and stays missing until a push to a default branch
+          # rebuilds the base.
+          unclean=$(jq -r '.[]
+            | select(((.source.id // "") | test("extraction-failed|diagnostic-limit-reached")) or .severity == "error")
+            | "\(.timestamp) \(.source.id): \(.markdownMessage // .source.name)"' <<<"${all}")
+          if [ -n "${unclean}" ]; then
+            echo "::error::the Go extractor did not extract every project cleanly:"
+            printf '%s\n' "${unclean}"
+            exit 1
+          fi
+
+          # ponytail: a project counts as extracted even when individual packages
+          # inside it fail to resolve, which is the extractor's own definition of
+          # success; proving that every operator file reached the database would
+          # mean running a QL query against the finalized one. Upgrade to that if
+          # a package-level gap ever ships.
+          echo "the Go extractor discovered k8s/dittofs-operator and reported no extraction failures"
