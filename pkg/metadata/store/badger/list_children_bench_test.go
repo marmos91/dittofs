@@ -58,18 +58,25 @@ func benchListStore(tb testing.TB, children int) (*BadgerMetadataStore, metadata
 	return store, rootHandle
 }
 
-// BenchmarkListChildren measures the real ListChildren against a names-only
-// walk of the same prefix — the floor an attrs-optional variant could reach.
+// BenchmarkListChildren measures what filling DirEntry.Attr costs: the child
+// keys are contiguous under one prefix, while each entry's attributes cost a
+// separate Get, a decode and a link-count read. The gap is what a caller that
+// only wants names pays for nothing.
+//
+// Each sub-benchmark builds its own store. Sharing one across the two modes
+// would let whichever ran second read caches the first had warmed, which is
+// exactly the direction that would flatter the mode under test.
 func BenchmarkListChildren(b *testing.B) {
 	for _, n := range []int{100, 1000, 10000} {
-		store, rootHandle := benchListStore(b, n)
-		ctx := context.Background()
-
 		for _, mode := range []struct {
 			name  string
 			attrs metadata.ChildAttrs
 		}{{"WithAttrs", metadata.WithAttrs}, {"NamesOnly", metadata.NamesOnly}} {
 			b.Run(fmt.Sprintf("%s/n=%d", mode.name, n), func(b *testing.B) {
+				store, rootHandle := benchListStore(b, n)
+				ctx := context.Background()
+
+				b.ResetTimer()
 				b.ReportAllocs()
 				for i := 0; i < b.N; i++ {
 					entries, _, err := store.ListChildren(ctx, rootHandle, "", n, mode.attrs)

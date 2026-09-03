@@ -64,6 +64,15 @@ const (
 	NamesOnly ChildAttrs = false
 )
 
+// String names the mode, so a log line or a test failure reports which listing
+// was asked for rather than a bare true/false.
+func (c ChildAttrs) String() string {
+	if c == WithAttrs {
+		return "WithAttrs"
+	}
+	return "NamesOnly"
+}
+
 // ============================================================================
 // Pointer Helper Functions
 // ============================================================================

@@ -521,4 +521,39 @@ func testNamesOnlyMatchesWithAttrs(t *testing.T, factory StoreFactory) {
 	if len(paged) != total {
 		t.Errorf("paging WithAttrs yielded %d names, want %d: %v", len(paged), total, paged)
 	}
+
+	// Resume each mode from the other's cursor. Paging each mode against
+	// itself would still pass if the two modes agreed internally and only
+	// with each other's cursors disagreed, which is the case a caller hits
+	// the moment it switches modes mid-listing.
+	crossed := func(first, second metadata.ChildAttrs) []string {
+		t.Helper()
+		head, cursor, err := store.ListChildren(ctx, rootHandle, "", 2, first)
+		if err != nil {
+			t.Fatalf("ListChildren(%v) failed: %v", first, err)
+		}
+		if cursor == "" {
+			t.Fatalf("ListChildren(%v, limit 2) over %d entries returned no cursor", first, total)
+		}
+		tail, _, err := store.ListChildren(ctx, rootHandle, cursor, 100, second)
+		if err != nil {
+			t.Fatalf("ListChildren(%v, cursor from %v) failed: %v", second, first, err)
+		}
+		var names []string
+		for _, e := range head {
+			names = append(names, e.Name)
+		}
+		for _, e := range tail {
+			names = append(names, e.Name)
+		}
+		return names
+	}
+
+	for _, c := range []struct {
+		first, second metadata.ChildAttrs
+	}{{metadata.WithAttrs, metadata.NamesOnly}, {metadata.NamesOnly, metadata.WithAttrs}} {
+		if got := crossed(c.first, c.second); !slices.Equal(got, paged) {
+			t.Errorf("resuming %v from a %v cursor yielded %v, want %v", c.second, c.first, got, paged)
+		}
+	}
 }
