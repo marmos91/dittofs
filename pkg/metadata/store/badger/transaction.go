@@ -1251,29 +1251,10 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 		return nil, err
 	}
 
-	// Preserve any ShareOptions already recorded for this share when
-	// materializing the root row, as the non-transactional createNewRoot
-	// does: writing a fresh metadata.Share{Name: shareName} here would
-	// wipe them.
-	preservedShare := metadata.Share{Name: shareName}
-	if existingItem, getErr := tx.txn.Get(keyShare(shareName)); getErr == nil {
-		if vErr := existingItem.Value(func(val []byte) error {
-			existing, dErr := decodeShareData(val)
-			if dErr != nil {
-				return dErr
-			}
-			preservedShare = existing.Share
-			preservedShare.Name = shareName
-			return nil
-		}); vErr != nil {
-			return nil, fmt.Errorf("failed to read existing share for option preservation: %w", vErr)
-		}
-	} else if getErr != badgerdb.ErrKeyNotFound {
-		return nil, fmt.Errorf("failed to probe existing share: %w", getErr)
-	}
-
+	// This path runs only when the share record was absent above, and nothing
+	// writes one in between, so there are no recorded options to carry over.
 	shareDataObj := &shareData{
-		Share:      preservedShare,
+		Share:      metadata.Share{Name: shareName},
 		RootHandle: rootHandle,
 	}
 	shareBytes, err := encodeShareData(shareDataObj)

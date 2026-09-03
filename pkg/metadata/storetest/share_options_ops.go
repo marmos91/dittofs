@@ -61,6 +61,23 @@ func runShareOptionsOps(t *testing.T, factory StoreFactory) {
 		require.True(t, got.ReadOnly, "read served a stale value after a transactional update")
 	})
 
+	t.Run("OptionsSurviveReattach", func(t *testing.T) {
+		store := factory(t)
+		ctx := t.Context()
+		createTestShare(t, store, "/opts-reattach")
+		require.NoError(t, store.UpdateShareOptions(ctx, "/opts-reattach",
+			&metadata.ShareOptions{ReadOnly: true}))
+
+		// Attaching a share again calls CreateRootDirectory a second time. It
+		// must reuse the existing share record rather than write a fresh one,
+		// or every restart silently resets the share to default permissions.
+		createTestShare(t, store, "/opts-reattach")
+
+		got, err := store.GetShareOptions(ctx, "/opts-reattach")
+		require.NoError(t, err)
+		require.True(t, got.ReadOnly, "re-attaching the share reset its options")
+	})
+
 	t.Run("DeletedShareIsNotServed", func(t *testing.T) {
 		store := factory(t)
 		ctx := t.Context()
