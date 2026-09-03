@@ -93,3 +93,42 @@ func TestSetEvictionEnabledGatesEvict(t *testing.T) {
 		t.Fatalf("eviction enabled but nothing evicted")
 	}
 }
+
+func TestEvictionPinOutranksEnable(t *testing.T) {
+	// The pin and the health-driven gate are independent: whichever call comes
+	// last, a pinned store must not evict, and clearing the pin must restore
+	// whatever the health gate last asked for.
+	s, _ := evictStore(t, Config{})
+	ctx := context.Background()
+	fillUntilSealed(t, s, "f", true, 1) // Hydrate => synced => evictable
+
+	s.SetEvictionPinned(true)
+	s.SetEvictionEnabled(true) // what Start and SetRemoteStore do on a healthy remote
+	res, err := s.Evict(ctx, 1)
+	if err != nil {
+		t.Fatalf("Evict (pinned): %v", err)
+	}
+	if res.SegmentsEvicted != 0 {
+		t.Fatalf("pinned but evicted %d segments", res.SegmentsEvicted)
+	}
+
+	// Unpinned while the health gate is suspended: still no eviction.
+	s.SetEvictionEnabled(false)
+	s.SetEvictionPinned(false)
+	res, err = s.Evict(ctx, 1)
+	if err != nil {
+		t.Fatalf("Evict (unpinned, suspended): %v", err)
+	}
+	if res.SegmentsEvicted != 0 {
+		t.Fatalf("eviction suspended but evicted %d segments", res.SegmentsEvicted)
+	}
+
+	s.SetEvictionEnabled(true)
+	res, err = s.Evict(ctx, 1)
+	if err != nil {
+		t.Fatalf("Evict (unpinned, healthy): %v", err)
+	}
+	if res.SegmentsEvicted == 0 {
+		t.Fatalf("unpinned and healthy but nothing evicted")
+	}
+}

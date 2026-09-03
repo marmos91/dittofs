@@ -122,6 +122,11 @@ type LocalStore interface {
 	// eviction is paused.
 	SetEvictionEnabled(enabled bool)
 
+	// SetEvictionPinned gates eviction on the share's retention policy. It is
+	// independent of SetEvictionEnabled: a pinned store never evicts, so a
+	// health transition re-enabling eviction cannot shed a pinned share's bytes.
+	SetEvictionPinned(pinned bool)
+
 	// --- Lifecycle ---
 
 	// Start launches background goroutines (if any). Close flushes and marks the
