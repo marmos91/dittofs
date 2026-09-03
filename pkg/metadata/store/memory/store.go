@@ -23,15 +23,6 @@ import (
 type shareData struct {
 	Share      metadata.Share
 	RootHandle metadata.FileHandle
-	// seeded is true when this entry was created by CreateRootDirectory (which
-	// records only the share name + root handle) rather than by a full
-	// CreateShare. A seeded entry lets GetRootHandle/GetShareOptions resolve a
-	// runtime-created share by name (the runtime calls CreateRootDirectory, not
-	// CreateShare), and is later "finished" by CreateShare/UpdateShareOptions.
-	// This mirrors the SQLite backend, where a share exists once its root inode
-	// does. Without it, by-name lookups (e.g. the #recycle trash path) fail with
-	// "share not found" for every runtime-created share.
-	seeded bool
 }
 
 type fileData struct {
@@ -563,13 +554,11 @@ func (store *MemoryMetadataStore) childNameLocked(
 // under: the share's pre-assigned RootHandle when one exists, otherwise a
 // fresh one.
 //
-// CreateShare generates a root handle up front so that GetRootHandle can
-// succeed immediately after share creation; the root directory MUST reuse it
-// so the file tree and the share's root pointer stay consistent. Without the
-// reuse, CreateShare and CreateRootDirectory produce two distinct UUIDs and
-// GetRootHandle ends up pointing at an empty subtree while the real tree lives
-// elsewhere. Minting fails for a share name too long to encode a handle; share
-// creation rejects such names up front.
+// A share record already carrying a RootHandle MUST have it reused, or the
+// file tree and the share's root pointer drift apart: two distinct UUIDs are
+// minted and GetRootHandle ends up pointing at an empty subtree while the real
+// tree lives elsewhere. Minting fails for a share name too long to encode a
+// handle; share creation rejects such names up front.
 //
 // Thread Safety: Must be called with the write lock held.
 func (store *MemoryMetadataStore) rootHandleLocked(shareName string) (metadata.FileHandle, error) {

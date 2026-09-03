@@ -112,11 +112,6 @@ func newByteVerifyFixtureOpts(t *testing.T, meta metadata.Store, metaType string
 	}
 
 	shareName := "/bv-share"
-	// AddShare creates the root directory but not the Share record itself;
-	// the metadata store needs the Share row so GetRootHandle can resolve it.
-	if err := meta.CreateShare(context.Background(), &metadata.Share{Name: shareName}); err != nil {
-		t.Fatalf("metadata CreateShare: %v", err)
-	}
 	// Persist the cpstore Share row so DisableShare (which writes
 	// shares.enabled in the DB) resolves it. AddShare only populates the
 	// runtime registry, not this row.

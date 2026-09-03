@@ -864,8 +864,7 @@ func TestMetadataService_GetRootHandle(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
 
-		// GetRootHandle requires the share to be fully set up via CreateShare
-		// Our test fixture only uses CreateRootDirectory, so this will fail
+		// A name no share was ever registered under must not resolve.
 		_, err := fx.service.GetRootHandle(context.Background(), "/nonexistent")
 
 		require.Error(t, err)

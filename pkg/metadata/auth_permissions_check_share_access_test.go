@@ -64,17 +64,13 @@ func TestCheckShareAccess_IPACLWithPort(t *testing.T) {
 			f := newTestFixture(t)
 			ctx := context.Background()
 
-			// CreateRootDirectory in the fixture builds the file tree but does
-			// not register a share record, so GetShareOptions/CheckShareAccess
-			// would fail with "share not found". Register the share with the
-			// ACL lists under test.
-			require.NoError(t, f.store.CreateShare(ctx, &metadata.Share{
-				Name: f.shareName,
-				Options: metadata.ShareOptions{
+			// The fixture's CreateRootDirectory registered the share; give it
+			// the ACL lists under test.
+			require.NoError(t, f.store.UpdateShareOptions(ctx, f.shareName,
+				&metadata.ShareOptions{
 					DeniedClients:  tt.denied,
 					AllowedClients: tt.allowed,
-				},
-			}))
+				}))
 
 			decision, _, err := f.service.CheckShareAccess(
 				ctx, f.shareName, tt.clientAddr, "unix",

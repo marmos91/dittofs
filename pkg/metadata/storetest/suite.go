@@ -145,7 +145,7 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	// had ZERO cross-backend conformance coverage (area-6 audit H1):
 	// DeleteShare, GetUsedBytes, GetFileByPayloadID, filesystem
 	// meta/stats/caps, server config, Healthcheck, plus a pagination
-	// scenario and a duplicate-CreateShare scenario.
+	// scenario.
 	t.Run("StoreSurface", func(t *testing.T) {
 		runStoreSurfaceTests(t, factory)
 	})
@@ -247,15 +247,7 @@ func createTestShare(t *testing.T, store metadata.Store, shareName string) metad
 
 	ctx := t.Context()
 
-	// Create share
-	share := &metadata.Share{
-		Name: shareName,
-	}
-	if err := store.CreateShare(ctx, share); err != nil {
-		t.Fatalf("CreateShare(%q) failed: %v", shareName, err)
-	}
-
-	// Create root directory
+	// Creating the root directory is what registers the share.
 	rootAttr := &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0755,

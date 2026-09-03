@@ -20,10 +20,7 @@ func runShareOptionsOps(t *testing.T, factory StoreFactory) {
 	t.Run("UpdateIsVisibleToNextRead", func(t *testing.T) {
 		store := factory(t)
 		ctx := t.Context()
-		require.NoError(t, store.CreateShare(ctx, &metadata.Share{
-			Name:    "/opts-update",
-			Options: metadata.ShareOptions{ReadOnly: false},
-		}))
+		createTestShare(t, store, "/opts-update")
 
 		got, err := store.GetShareOptions(ctx, "/opts-update")
 		require.NoError(t, err)
@@ -49,7 +46,7 @@ func runShareOptionsOps(t *testing.T, factory StoreFactory) {
 	t.Run("TxUpdateIsVisibleToNextRead", func(t *testing.T) {
 		store := factory(t)
 		ctx := t.Context()
-		require.NoError(t, store.CreateShare(ctx, &metadata.Share{Name: "/opts-tx"}))
+		createTestShare(t, store, "/opts-tx")
 
 		got, err := store.GetShareOptions(ctx, "/opts-tx")
 		require.NoError(t, err)
@@ -64,10 +61,27 @@ func runShareOptionsOps(t *testing.T, factory StoreFactory) {
 		require.True(t, got.ReadOnly, "read served a stale value after a transactional update")
 	})
 
+	t.Run("OptionsSurviveReattach", func(t *testing.T) {
+		store := factory(t)
+		ctx := t.Context()
+		createTestShare(t, store, "/opts-reattach")
+		require.NoError(t, store.UpdateShareOptions(ctx, "/opts-reattach",
+			&metadata.ShareOptions{ReadOnly: true}))
+
+		// Attaching a share again calls CreateRootDirectory a second time. It
+		// must reuse the existing share record rather than write a fresh one,
+		// or every restart silently resets the share to default permissions.
+		createTestShare(t, store, "/opts-reattach")
+
+		got, err := store.GetShareOptions(ctx, "/opts-reattach")
+		require.NoError(t, err)
+		require.True(t, got.ReadOnly, "re-attaching the share reset its options")
+	})
+
 	t.Run("DeletedShareIsNotServed", func(t *testing.T) {
 		store := factory(t)
 		ctx := t.Context()
-		require.NoError(t, store.CreateShare(ctx, &metadata.Share{Name: "/opts-delete"}))
+		createTestShare(t, store, "/opts-delete")
 
 		_, err := store.GetShareOptions(ctx, "/opts-delete")
 		require.NoError(t, err)
@@ -81,7 +95,7 @@ func runShareOptionsOps(t *testing.T, factory StoreFactory) {
 	t.Run("CancelledContextIsRefused", func(t *testing.T) {
 		store := factory(t)
 		ctx := t.Context()
-		require.NoError(t, store.CreateShare(ctx, &metadata.Share{Name: "/opts-cancel"}))
+		createTestShare(t, store, "/opts-cancel")
 
 		// Read once so a caching backend is warm. The cache-hit path is the
 		// one that skips the backing read, so it is also the one that can
@@ -100,7 +114,7 @@ func runShareOptionsOps(t *testing.T, factory StoreFactory) {
 	t.Run("RolledBackUpdateIsNotVisible", func(t *testing.T) {
 		store := factory(t)
 		ctx := t.Context()
-		require.NoError(t, store.CreateShare(ctx, &metadata.Share{Name: "/opts-rollback"}))
+		createTestShare(t, store, "/opts-rollback")
 
 		_, err := store.GetShareOptions(ctx, "/opts-rollback")
 		require.NoError(t, err)

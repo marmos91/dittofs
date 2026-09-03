@@ -46,9 +46,6 @@ func TestReset_Populated(t *testing.T) {
 	ctx := t.Context()
 
 	const shareName = "/reset-populated"
-	if err := store.CreateShare(ctx, &metadata.Share{Name: shareName}); err != nil {
-		t.Fatalf("CreateShare: %v", err)
-	}
 	rootAttr := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755}
 	if _, err := store.CreateRootDirectory(ctx, shareName, rootAttr); err != nil {
 		t.Fatalf("CreateRootDirectory: %v", err)
@@ -74,8 +71,11 @@ func TestReset_HandleReusable(t *testing.T) {
 	store := newBadgerStoreForReset(t)
 	ctx := t.Context()
 
-	if err := store.CreateShare(ctx, &metadata.Share{Name: "/before"}); err != nil {
-		t.Fatalf("CreateShare first: %v", err)
+	if _, err := store.CreateRootDirectory(ctx, "/before", &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory,
+		Mode: 0o755,
+	}); err != nil {
+		t.Fatalf("CreateRootDirectory first: %v", err)
 	}
 
 	r := any(store).(metadata.Resetable)
@@ -83,8 +83,11 @@ func TestReset_HandleReusable(t *testing.T) {
 		t.Fatalf("Reset: %v", err)
 	}
 
-	if err := store.CreateShare(ctx, &metadata.Share{Name: "/after"}); err != nil {
-		t.Fatalf("CreateShare after Reset (handle reuse): %v", err)
+	if _, err := store.CreateRootDirectory(ctx, "/after", &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory,
+		Mode: 0o755,
+	}); err != nil {
+		t.Fatalf("CreateRootDirectory after Reset (handle reuse): %v", err)
 	}
 	shares, err := store.ListShares(ctx)
 	if err != nil {

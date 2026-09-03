@@ -114,12 +114,6 @@ func testRootOwnership(t *testing.T, factory StoreFactory) {
 
 	ctx := t.Context()
 
-	// Create share
-	share := &metadata.Share{Name: "/owntest"}
-	if err := store.CreateShare(ctx, share); err != nil {
-		t.Fatalf("CreateShare() failed: %v", err)
-	}
-
 	// Create root with specific ownership
 	rootAttr := &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,

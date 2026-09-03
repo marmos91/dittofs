@@ -134,7 +134,6 @@ func TestBadgerStore_DerivePathReverseIndex(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
 
 	shareName := "/rev"
-	require.NoError(t, store.CreateShare(ctx, &metadata.Share{Name: shareName}))
 	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory, Mode: 0o755,
 	})
@@ -218,7 +217,6 @@ func TestBadgerStore_PutGetFile_BlocksRoundTrip(t *testing.T) {
 
 	// Set up share + root.
 	shareName := "/blocks-test"
-	require.NoError(t, store.CreateShare(ctx, &metadata.Share{Name: shareName}))
 	rootAttr := &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0o755,

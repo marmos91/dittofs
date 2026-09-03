@@ -40,9 +40,6 @@ func TestReset_PopulatedStore(t *testing.T) {
 
 	// Populate: one share, two files.
 	const shareName = "/reset-populated"
-	if err := store.CreateShare(ctx, &metadata.Share{Name: shareName}); err != nil {
-		t.Fatalf("CreateShare: %v", err)
-	}
 	rootAttr := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755}
 	rootFile, err := store.CreateRootDirectory(ctx, shareName, rootAttr)
 	if err != nil {
@@ -144,8 +141,11 @@ func TestReset_ReusableAfterReset(t *testing.T) {
 
 	// Populate, Reset, then re-populate using the SAME store instance.
 	const firstShare = "/before-reset"
-	if err := store.CreateShare(ctx, &metadata.Share{Name: firstShare}); err != nil {
-		t.Fatalf("CreateShare first: %v", err)
+	if _, err := store.CreateRootDirectory(ctx, firstShare, &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory,
+		Mode: 0o755,
+	}); err != nil {
+		t.Fatalf("CreateRootDirectory first: %v", err)
 	}
 
 	r := any(store).(metadata.Resetable)
@@ -154,8 +154,11 @@ func TestReset_ReusableAfterReset(t *testing.T) {
 	}
 
 	const secondShare = "/after-reset"
-	if err := store.CreateShare(ctx, &metadata.Share{Name: secondShare}); err != nil {
-		t.Fatalf("CreateShare after Reset: %v", err)
+	if _, err := store.CreateRootDirectory(ctx, secondShare, &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory,
+		Mode: 0o755,
+	}); err != nil {
+		t.Fatalf("CreateRootDirectory after Reset: %v", err)
 	}
 	shares, err := store.ListShares(ctx)
 	if err != nil {
