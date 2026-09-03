@@ -224,7 +224,6 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	// An existing root is reconciled against the configured attributes rather
 	// than returned as it stands (see reconcileRootAttrs).
 	if existingData, exists := store.files[key]; exists {
-		// Decode handle to get ID
 		_, id, err := metadata.DecodeFileHandle(rootHandle)
 		if err != nil {
 			return nil, &metadata.StoreError{
@@ -232,13 +231,14 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 				Message: "failed to decode root handle",
 			}
 		}
-		reconcileRootAttrs(existingData.Attr, attr)
+		reconciled := reconcileRootAttrs(existingData.Attr, attr)
+		store.files[key] = &fileData{Attr: reconciled, ShareName: existingData.ShareName}
 
 		return &metadata.File{
 			ID:        id,
 			ShareName: shareName,
 			Path:      "/",
-			FileAttr:  *existingData.Attr,
+			FileAttr:  *reconciled,
 		}, nil
 	}
 
@@ -246,7 +246,7 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	// Complete root directory attributes with defaults
 	rootAttrCopy := *attr
 	if rootAttrCopy.Mode == 0 {
-		rootAttrCopy.Mode = 0777
+		rootAttrCopy.Mode = defaultRootMode
 	}
 	now := time.Now()
 	if rootAttrCopy.Atime.IsZero() {
@@ -321,16 +321,29 @@ func (store *MemoryMetadataStore) Close() error {
 // Both entry points call this, because a backend that reconciles on one and not
 // the other makes whether an operator's change lands depend on which call site
 // reached it.
-func reconcileRootAttrs(stored *metadata.FileAttr, configured *metadata.FileAttr) {
+func reconcileRootAttrs(stored *metadata.FileAttr, configured *metadata.FileAttr) *metadata.FileAttr {
 	mode := configured.Mode
 	if mode == 0 {
-		mode = 0o755
+		mode = defaultRootMode
 	}
 	if stored.Mode == mode && stored.UID == configured.UID && stored.GID == configured.GID {
-		return
+		return stored
 	}
-	stored.Mode = mode
-	stored.UID = configured.UID
-	stored.GID = configured.GID
-	stored.Ctime = time.Now()
+
+	// A copy rather than an edit in place: a transaction's rollback snapshot
+	// clones the file map only one level deep, so the *FileAttr behind an entry
+	// is shared with the snapshot and an edit through it would survive the
+	// rollback it is supposed to be undone by. Callers replace the entry.
+	updated := *stored
+	updated.Mode = mode
+	updated.UID = configured.UID
+	updated.GID = configured.GID
+	updated.Ctime = time.Now()
+	return &updated
 }
+
+// defaultRootMode is the mode a share root gets when the caller configures
+// none. Every backend and both entry points must agree on it: the reconcile
+// compares a stored mode against it, so two entry points with different
+// defaults would each rewrite what the other wrote.
+const defaultRootMode = 0o755

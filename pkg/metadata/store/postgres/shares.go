@@ -157,10 +157,10 @@ func (s *PostgresMetadataStore) DeleteShare(ctx context.Context, shareName strin
 
 // CreateRootDirectory creates the root directory for a share.
 //
-// The store path wraps the shared body in a transaction rather than promoting
-// it: the probe and the create must not have a commit between them, or a
-// concurrent caller slips in and leaves an orphaned root inode behind. The
-// transaction's own shadow is what marks the share cache dirty.
+// The store path runs the shared body through a transaction rather than on the
+// pool: the probe and the create must not have a commit between them, or a
+// concurrent caller slips in and leaves an orphaned root inode behind. Going
+// through the transaction method is also what marks the share cache dirty.
 func (s *PostgresMetadataStore) CreateRootDirectory(
 	ctx context.Context,
 	shareName string,

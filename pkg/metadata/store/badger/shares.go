@@ -273,18 +273,13 @@ func (s *BadgerMetadataStore) ListShares(ctx context.Context) ([]string, error) 
 	return names, err
 }
 
-// CreateRootDirectory creates or retrieves the root directory for a share.
+// CreateRootDirectory creates a share's root directory, or reconciles an
+// existing one (from a previous server run) against the configured attrs, so
+// metadata persists across restarts and a changed config still lands.
 //
-// If a root directory already exists (from a previous server run), it is returned.
-// Otherwise, a new root directory is created. This idempotent behavior ensures
-// metadata persists across server restarts.
-//
-// This one deliberately does NOT delegate to the transaction path the way the
-// rest of this file does: the existing-share branch here reconciles the stored
-// root inode against the configured attrs (loadExistingRoot diffs mode/UID/GID
-// and rewrites it), which the transaction path does not do. Delegating would
-// silently drop that reconciliation, so the two stay split until the
-// transaction path grows it.
+// This one does not delegate to the transaction path the way the rest of this
+// file does: the two share loadExistingRoot, but only this path drops the cache
+// entries a reconciliation invalidates (see below).
 func (s *BadgerMetadataStore) CreateRootDirectory(ctx context.Context, shareName string, attr *metadata.FileAttr) (*metadata.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -378,14 +373,22 @@ func (s *BadgerMetadataStore) loadExistingRoot(txn *badgerdb.Txn, item *badgerdb
 	// default of 2.
 	(*rootFile).Nlink = fileLinkCountTxn(txn, *rootFile)
 
+	// A zero configured mode means "use the default", the same as it does when
+	// the root is first created. Comparing against the raw zero instead would
+	// reconcile a defaulted root down to mode 0 on the next call.
+	mode := attr.Mode
+	if mode == 0 {
+		mode = defaultRootMode
+	}
+
 	// Update attributes if config changed
 	needsUpdate := false
-	if (*rootFile).Mode != attr.Mode {
+	if (*rootFile).Mode != mode {
 		logger.Info("Updating root directory mode from config",
 			"share", shareName,
 			"oldMode", fmt.Sprintf("%o", (*rootFile).Mode),
-			"newMode", fmt.Sprintf("%o", attr.Mode))
-		(*rootFile).Mode = attr.Mode
+			"newMode", fmt.Sprintf("%o", mode))
+		(*rootFile).Mode = mode
 		needsUpdate = true
 	}
 	if (*rootFile).UID != attr.UID {
@@ -425,7 +428,7 @@ func (s *BadgerMetadataStore) createNewRoot(txn *badgerdb.Txn, shareName string,
 
 	rootAttrCopy := *attr
 	if rootAttrCopy.Mode == 0 {
-		rootAttrCopy.Mode = 0755
+		rootAttrCopy.Mode = defaultRootMode
 	}
 	now := time.Now()
 	if rootAttrCopy.Atime.IsZero() {
@@ -503,3 +506,9 @@ func (s *BadgerMetadataStore) createNewRoot(txn *badgerdb.Txn, shareName string,
 
 	return nil
 }
+
+// defaultRootMode is the mode a share root gets when the caller configures
+// none. Creation and reconciliation must agree on it: the reconcile compares a
+// stored mode against it, so a raw zero here would rewrite a defaulted root to
+// mode 0 the second time a share is attached.
+const defaultRootMode = 0o755

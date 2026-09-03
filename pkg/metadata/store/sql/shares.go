@@ -241,9 +241,8 @@ func (c *Core) collectShareQuotaFreed(ctx context.Context, shareName, col string
 // GetExistingRootDirectory loads a share's root directory, or (nil, nil) when
 // the share has no root yet.
 //
-// The root is resolved through the share row's root_file_id: with the path
-// column gone, that pointer is the authoritative answer to "which inode is
-// this share's root".
+// The root is resolved through the share row's root_file_id, the authoritative
+// pointer to a share's root inode.
 func (c *Core) GetExistingRootDirectory(ctx context.Context, shareName string) (*metadata.File, error) {
 	var (
 		id           uuid.UUID
@@ -296,14 +295,13 @@ func (c *Core) GetExistingRootDirectory(ctx context.Context, shareName string) (
 //
 // Reconciling rather than returning the stored root as-is is what makes
 // re-attaching a share with changed root ownership or mode take effect: the
-// configured attributes are the intent, and the stored inode is a cache of a
-// previous run's intent. A caller that only wants to read the root uses
+// configured attributes are the intent, the stored inode records a previous
+// run's. A caller that only wants to read the root uses
 // GetExistingRootDirectory.
 //
-// The probe and the create are one statement pair with no commit between
-// them, so a concurrent caller cannot slip between them and leave an orphaned
-// root inode behind; the caller supplies the transaction by running this on a
-// Core bound to it.
+// The probe and the create must have no commit between them, or a concurrent
+// caller slips in and leaves an orphaned root inode behind — so run this on a
+// Core bound to a transaction.
 func (c *Core) CreateRootDirectory(ctx context.Context, shareName string, attr *metadata.FileAttr) (*metadata.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

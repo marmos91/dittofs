@@ -98,8 +98,8 @@ type ShareQueries struct {
 	DeleteShareInodes string
 
 	// SelectRootInode selects a share's root inode through the share row's
-	// root_file_id pointer, in the column order ScanRootInode expects. One
-	// parameter: the share name.
+	// root_file_id pointer, in the column order GetExistingRootDirectory
+	// scans. One parameter: the share name.
 	SelectRootInode string
 	// UpdateRootAttrs rewrites a root inode's mode, owner and change time to
 	// match the configured attributes. Five parameters: mode, uid, gid, ctime

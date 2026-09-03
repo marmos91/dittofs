@@ -715,9 +715,7 @@ func (tx *memoryTransaction) CreateRootDirectory(ctx context.Context, shareName 
 	}
 
 	// An existing root is reconciled against the configured attributes rather
-	// than returned as it stands: the configuration is the intent, and the
-	// stored root records a previous run's intent. Without this, re-attaching
-	// a share with changed root ownership or mode silently keeps the old one.
+	// than returned as it stands (see reconcileRootAttrs).
 	if existingData, exists := tx.store.files[key]; exists {
 		_, id, err := metadata.DecodeFileHandle(rootHandle)
 		if err != nil {
@@ -727,20 +725,21 @@ func (tx *memoryTransaction) CreateRootDirectory(ctx context.Context, shareName 
 			}
 		}
 
-		reconcileRootAttrs(existingData.Attr, attr)
+		reconciled := reconcileRootAttrs(existingData.Attr, attr)
+		tx.store.files[key] = &fileData{Attr: reconciled, ShareName: existingData.ShareName}
 
 		return &metadata.File{
 			ID:        id,
 			ShareName: shareName,
 			Path:      "/",
-			FileAttr:  *existingData.Attr,
+			FileAttr:  *reconciled,
 		}, nil
 	}
 
 	// Complete root directory attributes with defaults
 	rootAttrCopy := *attr
 	if rootAttrCopy.Mode == 0 {
-		rootAttrCopy.Mode = 0755
+		rootAttrCopy.Mode = defaultRootMode
 	}
 	now := time.Now()
 	if rootAttrCopy.Atime.IsZero() {
