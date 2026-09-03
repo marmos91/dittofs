@@ -1251,12 +1251,10 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 		return nil, err
 	}
 
-	// Preserve existing share configuration (e.g. ShareOptions written
-	// by a prior CreateShare call) when materializing the root row.
-	// Mirrors the same fix in the non-transactional createNewRoot — the
-	// original code wrote a fresh `metadata.Share{Name: shareName}`
-	// here, silently wiping any Options the caller had set via
-	// CreateShare.
+	// Preserve any ShareOptions already recorded for this share when
+	// materializing the root row, as the non-transactional createNewRoot
+	// does: writing a fresh metadata.Share{Name: shareName} here would
+	// wipe them.
 	preservedShare := metadata.Share{Name: shareName}
 	if existingItem, getErr := tx.txn.Get(keyShare(shareName)); getErr == nil {
 		if vErr := existingItem.Value(func(val []byte) error {

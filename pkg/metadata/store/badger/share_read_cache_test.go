@@ -18,6 +18,17 @@ func newShareCacheStore(t *testing.T) *BadgerMetadataStore {
 	return store
 }
 
+// createShareRoot registers a share by creating its root directory, the only
+// entry point that records one.
+func createShareRoot(tb testing.TB, store *BadgerMetadataStore, shareName string) {
+	tb.Helper()
+	_, err := store.CreateRootDirectory(context.Background(), shareName, &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory,
+		Mode: 0o755,
+	})
+	require.NoError(tb, err)
+}
+
 // TestShareCache_CopySafety proves the returned *ShareOptions is a deep copy:
 // mutating it (including appending to its slice) cannot corrupt the cache.
 func TestShareCache_CopySafety(t *testing.T) {
@@ -26,11 +37,7 @@ func TestShareCache_CopySafety(t *testing.T) {
 
 	sid := "S-1-5-7"
 	uid := uint32(65534)
-	_, err := store.CreateRootDirectory(ctx, "s1", &metadata.FileAttr{
-		Type: metadata.FileTypeDirectory,
-		Mode: 0o755,
-	})
-	require.NoError(t, err)
+	createShareRoot(t, store, "s1")
 	require.NoError(t, store.UpdateShareOptions(ctx, "s1", &metadata.ShareOptions{
 		AllowedClients:  []string{"192.168.1.0/24"},
 		IdentityMapping: &metadata.IdentityMapping{AnonymousUID: &uid, AnonymousSID: &sid},
@@ -59,11 +66,7 @@ func BenchmarkGetShareOptions_Cached(b *testing.B) {
 	store, err := NewBadgerMetadataStoreWithDefaults(ctx, filepath.Join(b.TempDir(), "metadata.db"))
 	require.NoError(b, err)
 	defer func() { _ = store.Close() }()
-	_, err = store.CreateRootDirectory(ctx, "s1", &metadata.FileAttr{
-		Type: metadata.FileTypeDirectory,
-		Mode: 0o755,
-	})
-	require.NoError(b, err)
+	createShareRoot(b, store, "s1")
 	require.NoError(b, store.UpdateShareOptions(ctx, "s1",
 		&metadata.ShareOptions{AllowedClients: []string{"10.0.0.0/8"}}))
 	_, _ = store.GetShareOptions(ctx, "s1") // warm the cache
@@ -84,11 +87,7 @@ func BenchmarkGetShareOptions_Uncached(b *testing.B) {
 	store, err := NewBadgerMetadataStoreWithDefaults(ctx, filepath.Join(b.TempDir(), "metadata.db"))
 	require.NoError(b, err)
 	defer func() { _ = store.Close() }()
-	_, err = store.CreateRootDirectory(ctx, "s1", &metadata.FileAttr{
-		Type: metadata.FileTypeDirectory,
-		Mode: 0o755,
-	})
-	require.NoError(b, err)
+	createShareRoot(b, store, "s1")
 	require.NoError(b, store.UpdateShareOptions(ctx, "s1",
 		&metadata.ShareOptions{AllowedClients: []string{"10.0.0.0/8"}}))
 

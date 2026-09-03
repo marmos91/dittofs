@@ -334,8 +334,7 @@ func (s *BadgerMetadataStore) loadExistingRoot(txn *badgerdb.Txn, item *badgerdb
 		return fmt.Errorf("failed to decode existing share data: %w", err)
 	}
 
-	// If share exists but has no root handle yet (e.g., CreateShare was called
-	// separately before CreateRootDirectory), create a new root directory.
+	// A share record without a root handle gets a fresh root directory.
 	if len(existingShareData.RootHandle) == 0 {
 		return s.createNewRoot(txn, shareName, attr, rootFile)
 	}
@@ -462,10 +461,9 @@ func (s *BadgerMetadataStore) createNewRoot(txn *badgerdb.Txn, shareName string,
 		return fmt.Errorf("failed to encode root handle: %w", err)
 	}
 
-	// Preserve existing share configuration (e.g. ShareOptions written
-	// by a prior CreateShare call) when materializing the root row:
-	// writing a fresh metadata.Share{Name: shareName} here would wipe
-	// any Options the caller already set.
+	// Preserve any ShareOptions already recorded for this share when
+	// materializing the root row: writing a fresh metadata.Share{Name:
+	// shareName} here would wipe them.
 	preservedShare := metadata.Share{Name: shareName}
 	if existingItem, getErr := txn.Get(keyShare(shareName)); getErr == nil {
 		if vErr := existingItem.Value(func(val []byte) error {
@@ -474,8 +472,8 @@ func (s *BadgerMetadataStore) createNewRoot(txn *badgerdb.Txn, shareName string,
 				return dErr
 			}
 			preservedShare = existing.Share
-			// Defensive: ensure Name stays canonical even if a buggy
-			// caller stored it as "" via CreateShare.
+			// Defensive: ensure Name stays canonical even if the
+			// stored record has an empty one.
 			preservedShare.Name = shareName
 			return nil
 		}); vErr != nil {

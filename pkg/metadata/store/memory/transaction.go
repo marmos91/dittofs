@@ -670,7 +670,7 @@ func (tx *memoryTransaction) CreateRootDirectory(ctx context.Context, shareName 
 	}
 	key := handleToKey(rootHandle)
 
-	// Seed the share registry so the share resolves by name (see store-level
+	// Register the share so it resolves by name (see store-level
 	// CreateRootDirectory). Idempotent.
 	if _, ok := tx.store.shares[shareName]; !ok {
 		tx.store.shares[shareName] = &shareData{

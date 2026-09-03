@@ -17,11 +17,7 @@ func BenchmarkInitUsedBytesCounter(b *testing.B) {
 	const files = 50000
 	ctx := context.Background()
 	store := newSizeTestStore(b)
-	_, err := store.CreateRootDirectory(ctx, "bench", &metadata.FileAttr{
-		Type: metadata.FileTypeDirectory,
-		Mode: 0o755,
-	})
-	require.NoError(b, err)
+	createShareRoot(b, store, "bench")
 
 	for i := 0; i < files; i++ {
 		path := fmt.Sprintf("/f%06d", i)

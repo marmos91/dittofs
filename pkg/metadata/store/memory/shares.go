@@ -166,10 +166,9 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	}
 	key := handleToKey(rootHandle)
 
-	// Register the share so it resolves by name: this is the only entry point
-	// that records a share, so without it GetRootHandle and GetShareOptions
-	// return "share not found" for every share. Idempotent — an existing entry
-	// keeps whatever options were set on it.
+	// Register the share so GetRootHandle and GetShareOptions resolve it by
+	// name; this is the only entry point that records one. Idempotent: an
+	// existing entry keeps the options already set on it.
 	if _, ok := store.shares[shareName]; !ok {
 		store.shares[shareName] = &shareData{
 			Share:      metadata.Share{Name: shareName},
