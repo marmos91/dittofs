@@ -40,11 +40,19 @@ jobs:
       # version drift between here and the other workflows changes which
       # packages resolve, and an unresolved package is analyzed as empty
       # rather than reported as an error.
+      #
+      # Read the version from the operator's go.mod, the higher of the two
+      # floors in the repo — it builds the root module too, and no hardcoded
+      # version can serve both modules across a bump of either. Autobuild runs
+      # with GOTOOLCHAIN=local, so a toolchain below a module's floor does not
+      # downgrade the analysis, it drops the module: the operator failed to
+      # extract on every run between its go directive reaching 1.26.0 and this
+      # change. Matches operator-tests.yml and release.yml.
       - name: Set up Go
         if: matrix.language == 'go'
         uses: actions/setup-go@v7
         with:
-          go-version: "1.25.x"
+          go-version-file: k8s/dittofs-operator/go.mod
           cache: true
 
       - name: Initialize CodeQL
