@@ -334,7 +334,9 @@ func (s *BadgerMetadataStore) loadExistingRoot(txn *badgerdb.Txn, item *badgerdb
 		return fmt.Errorf("failed to decode existing share data: %w", err)
 	}
 
-	// A share record without a root handle gets a fresh root directory.
+	// A share record without a root handle gets a fresh root directory. No
+	// write path leaves one empty any more, so this fires only for records a
+	// previous version wrote; it is unreachable in a store created by this one.
 	if len(existingShareData.RootHandle) == 0 {
 		return s.createNewRoot(txn, shareName, attr, rootFile)
 	}

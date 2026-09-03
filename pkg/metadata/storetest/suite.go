@@ -145,7 +145,7 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	// had ZERO cross-backend conformance coverage (area-6 audit H1):
 	// DeleteShare, GetUsedBytes, GetFileByPayloadID, filesystem
 	// meta/stats/caps, server config, Healthcheck, plus a pagination
-	// scenario and a duplicate-CreateShare scenario.
+	// scenario.
 	t.Run("StoreSurface", func(t *testing.T) {
 		runStoreSurfaceTests(t, factory)
 	})

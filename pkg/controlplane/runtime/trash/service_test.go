@@ -82,10 +82,8 @@ type trashTest struct {
 	ctx  *metadata.AuthContext
 }
 
-// newTestTrash builds a real in-memory MetadataService with trash enabled
-// (mirroring pkg/metadata/file_recycle_test.go's newRecycleFixture ordering:
-// CreateShare BEFORE CreateRootDirectory + SetTrashPolicy), wraps it in a Deps
-// impl, and constructs the trash.Service over it.
+// newTestTrash builds a real in-memory MetadataService with trash enabled,
+// wraps it in a Deps impl, and constructs the trash.Service over it.
 func newTestTrash(t *testing.T) *trashTest {
 	t.Helper()
 
