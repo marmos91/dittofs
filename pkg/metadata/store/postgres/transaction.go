@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -218,24 +217,23 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 		return err
 	}
 
-	// For existing files (updates), use UPDATE directly to avoid unique constraint issues.
-	// This is more efficient and handles concurrent updates properly.
+	values, err := storesql.InodeValues(file)
+	if err != nil {
+		return mapPgError(err, "UpdateAttrs", "marshal attributes")
+	}
+
+	// Postgres is multi-writer, so the pre-update row cannot be read in a
+	// statement of its own: another transaction could change it before the
+	// UPDATE ran. The leading CTE reads it under FOR UPDATE and the UPDATE
+	// joins that locked row, so RETURNING hands back the old values in the
+	// same round-trip. Exactly one row comes back when the file existed and
+	// none when it did not, which is the signal to fall through to the INSERT.
 	//
-	// Namespace uniqueness lives in parent_child_map(parent_id, child_name); the
-	// inodes row no longer carries a path/path_hash column (#1166), so a Move is
-	// just a parent_child_map re-link (SetChild/DeleteChild) — there is nothing
-	// path-related to update on the inode row here. content_id is still set:
-	// it keys file_blocks and is consumed by GetFileByPayloadID.
-	//
-	// The leading CTE reads the pre-update size under FOR UPDATE and the UPDATE
-	// joins against it, so a single round-trip both locks the row and returns
-	// its old size for usedBytes delta tracking. This replaces a separate
-	// SELECT-then-UPDATE that left a serialization window between the two
-	// statements (the read size could be stale by the time the UPDATE ran).
-	// RETURNING old.size yields exactly one row when the file existed and zero
-	// rows when it did not — the same not-found signal the previous
-	// RowsAffected()==0 check relied on.
-	updateQuery := `
+	// Namespace uniqueness lives in parent_child_map(parent_id, child_name);
+	// the inodes row carries no path column, so a Move is a re-link there and
+	// touches nothing here. content_id is still written: it keys the
+	// file_blocks GetFileByPayloadID consumes.
+	const updateQuery = `
 		WITH old AS (
 			SELECT id, share_name, size, uid, gid, file_type, nlink
 			FROM inodes
@@ -268,91 +266,18 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 		RETURNING old.size, old.uid, old.gid, old.file_type, old.nlink
 	`
 
-	var deviceMajor, deviceMinor *int32
-	if file.Type == metadata.FileTypeBlockDevice || file.Type == metadata.FileTypeCharDevice {
-		major := int32(metadata.RdevMajor(file.Rdev))
-		minor := int32(metadata.RdevMinor(file.Rdev))
-		deviceMajor = &major
-		deviceMinor = &minor
-	}
+	var old storesql.OldInode
 
-	var payloadIDPtr *string
-	if file.PayloadID != "" {
-		str := string(file.PayloadID)
-		payloadIDPtr = &str
-	}
-
-	var linkTargetPtr *string
-	if file.LinkTarget != "" {
-		linkTargetPtr = &file.LinkTarget
-	}
-
-	// Marshal ACL to JSON for JSONB storage
-	var aclJSON []byte
-	if file.ACL != nil {
-		var marshalErr error
-		aclJSON, marshalErr = json.Marshal(file.ACL)
-		if marshalErr != nil {
-			return mapPgError(marshalErr, "UpdateAttrs", "marshal ACL")
-		}
-	}
-
-	// Marshal extended attributes to JSON for JSONB storage. Empty/nil EAs
-	// write SQL NULL so a file that never had EAs stores nothing.
-	var easJSON []byte
-	if len(file.EAs) > 0 {
-		var marshalErr error
-		easJSON, marshalErr = json.Marshal(file.EAs)
-		if marshalErr != nil {
-			return mapPgError(marshalErr, "UpdateAttrs", "marshal EAs")
-		}
-	}
-
-	// object_id BYTEA argument.
-	// Zero-valued ObjectID writes SQL NULL so the partial unique index
-	// (files_object_id_idx WHERE object_id IS NOT NULL) skips the row —
-	// legacy / never-quiesced / partially-flushed files never collide on
-	// the all-zero sentinel.
-	var objectIDArg interface{}
-	if !file.ObjectID.IsZero() {
-		objectIDArg = file.ObjectID[:]
-	}
-
-	// deleted_at is a BIGINT Windows-FILETIME column (#190), nullable: NULL marks
-	// a live node, a value records the recycle instant losslessly (same encoding
-	// as the other file timestamps — must use sqlcodec.TimeToFiletime, not UnixNano, so it
-	// decodes back correctly via sqlcodec.FiletimeToTime). Pass *int64 so a nil DeletedAt
-	// writes SQL NULL.
-	var deletedAtArg *int64
-	if file.DeletedAt != nil {
-		n := sqlcodec.TimeToFiletime(*file.DeletedAt)
-		deletedAtArg = &n
-	}
-
-	// Try UPDATE first (most common case for existing files). The CTE locks the
-	// row and RETURNING old.size hands back the pre-update size in the same
-	// round-trip, so there is no separate SELECT and no window between read and
-	// write. A returned row means the file existed (and we have its old size);
-	// pgx.ErrNoRows means it did not, so we fall through to INSERT.
-	var oldSizeVal sql.NullInt64
-	var oldUIDVal, oldGIDVal, oldTypeVal, oldNlinkVal sql.NullInt64
 	// A caller that knows the inode is new skips the probe entirely: on a
-	// create the round-trip can only ever report "no such row", and a stale
+	// create the round-trip could only ever report "no such row", and a stale
 	// claim surfaces as the INSERT's duplicate-key error.
 	updated := !file.NewInode
 	if updated {
 		scanErr := tx.tx.QueryRow(ctx, updateQuery,
-			file.Type, file.Mode, file.UID, file.GID, file.Size,
-			sqlcodec.TimeToFiletime(file.Atime), sqlcodec.TimeToFiletime(file.Mtime),
-			sqlcodec.TimeToFiletime(file.Ctime), sqlcodec.TimeToFiletime(file.CreationTime),
-			payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
-			file.Hidden, aclJSON, easJSON, objectIDArg,
-			deletedAtArg, file.OriginalPath, file.DeletedBy,
-			file.ID, file.ShareName,
-		).Scan(&oldSizeVal, &oldUIDVal, &oldGIDVal, &oldTypeVal, &oldNlinkVal)
+			append(values, file.ID, file.ShareName)...,
+		).Scan(&old.Size, &old.UID, &old.GID, &old.Type, &old.Nlink)
 		switch {
 		case scanErr == nil:
-			// Row existed and was updated; oldSizeVal holds the pre-update size.
 		case errors.Is(scanErr, pgx.ErrNoRows):
 			updated = false
 		default:
@@ -360,38 +285,16 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 		}
 	}
 
-	// Track size delta for regular files after a successful update.
-	// Accumulated on the tx and applied once after a successful commit so a
-	// serialization/deadlock retry never double-counts.
-	//
-	// nlink is not among the columns this write touches, so the pre-update
-	// count is also the post-update one.
-	if updated && basestore.Charged(file.Type, uint32(oldNlinkVal.Int64)) {
-		var oldSize uint64
-		if oldSizeVal.Valid {
-			oldSize = uint64(oldSizeVal.Int64)
-		}
-
-		// Per-identity usage. The previous row may not have been a regular file
-		// (type change), in which case it contributed nothing before.
-		oldWasRegular := oldTypeVal.Valid && metadata.FileType(oldTypeVal.Int64) == metadata.FileTypeRegular
-		oldUID := uint32(oldUIDVal.Int64)
-		oldGID := uint32(oldGIDVal.Int64)
-		switch {
-		case !oldWasRegular:
-			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
-		case oldUID == file.UID && oldGID == file.GID:
-			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
-		default:
-			// Chown: move bytes + inode from old owner to new owner.
-			tx.quota.Add(file.ShareName, oldUID, oldGID, -int64(oldSize), -1)
-			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
-		}
+	// The usage delta is accumulated on the transaction and applied once after
+	// a successful commit, so a serialization or deadlock retry never
+	// double-counts it.
+	if updated {
+		storesql.ApplyPutQuota(&tx.quota, file, old)
 	}
 
 	// If no rows were updated, the file doesn't exist - do an INSERT
 	if !updated {
-		insertQuery := `
+		const insertQuery = `
 			INSERT INTO inodes (
 				id, share_name, file_type, mode, uid, gid, size,
 				atime, mtime, ctime, creation_time, content_id, link_target,
@@ -404,18 +307,12 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 		`
 
 		if _, err := tx.tx.Exec(ctx, insertQuery,
-			file.ID, file.ShareName,
-			file.Type, file.Mode, file.UID, file.GID, file.Size,
-			sqlcodec.TimeToFiletime(file.Atime), sqlcodec.TimeToFiletime(file.Mtime),
-			sqlcodec.TimeToFiletime(file.Ctime), sqlcodec.TimeToFiletime(file.CreationTime),
-			payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
-			file.Hidden, aclJSON, easJSON, objectIDArg,
-			deletedAtArg, file.OriginalPath, file.DeletedBy,
+			append([]any{file.ID, file.ShareName}, values...)...,
 		); err != nil {
 			return mapPgError(err, "UpdateAttrs", "")
 		}
 
-		// Charge the new regular file to its share and owner.
+		// Charge the new regular file to the share owner.
 		if file.Type == metadata.FileTypeRegular {
 			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		}
