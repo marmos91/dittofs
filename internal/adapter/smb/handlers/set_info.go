@@ -2571,7 +2571,7 @@ func (h *Handler) handleFileLinkInformation(
 			// Without it the replaced file's records stay indexed as live in
 			// the local tier, where no reclamation path can reach them.
 			if removed != nil {
-				h.purgeBlockStorePayload(ctx.Context, dstDir, removed.PayloadID, matchedName, "SET_INFO hardlink replace")
+				h.purgeBlockStorePayload(authCtx.Context, dstDir, removed.PayloadID, matchedName, "SET_INFO hardlink replace")
 			}
 		}
 	}
