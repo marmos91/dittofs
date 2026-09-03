@@ -206,11 +206,21 @@ type Store struct {
 	reads     atomic.Int64
 	coldReads atomic.Int64
 
-	// evictionDisabled gates Evict (and thus the write-path ensureSpace that
-	// drives it). Health-driven: while the remote is unhealthy, cold-marking a
-	// segment would strand bytes that can't be refetched, so eviction is paused.
-	// Zero value = enabled, the safe default.
-	evictionDisabled atomic.Bool
+	// evictionSuspended and evictionPinned are the two independent reasons to
+	// hold eviction off; either one gates Evict (and thus the write-path
+	// ensureSpace that drives it). They are read together by evictionHeld rather
+	// than folded into one derived flag, so two concurrent setters cannot lose
+	// each other's update. Zero values = eviction enabled, the safe default.
+	//
+	// evictionSuspended is health-driven: while the remote is unreachable,
+	// cold-marking a segment would strand bytes that can't be refetched, so
+	// eviction pauses until the remote returns.
+	evictionSuspended atomic.Bool
+
+	// evictionPinned is the retention-policy reason: a pinned share keeps its
+	// bytes local indefinitely. It is held here rather than in a caller so a
+	// health transition re-enabling eviction cannot lift it.
+	evictionPinned atomic.Bool
 
 	// verifyReads turns on per-read record-CRC verification of warm reads (opt-in
 	// for durable tiers; off for the fast writeback path). When off, ReadAt serves
@@ -887,12 +897,25 @@ func (s *Store) DurableExtent(_ context.Context, id FileID) (int64, bool) {
 	return size, true
 }
 
-// SetEvictionEnabled toggles whole-segment eviction. Disabling it pauses Evict
-// (and the write-path ensureSpace that drives it) so a health monitor can stop
-// the store shedding local bytes while the remote is unreachable — a cold-marked
-// range would otherwise be unrecoverable until the remote returns.
+// SetEvictionEnabled toggles the health-driven half of the eviction gate.
+// Disabling it pauses Evict (and the write-path ensureSpace that drives it) so a
+// health monitor can stop the store shedding local bytes while the remote is
+// unreachable — a cold-marked range would otherwise be unrecoverable until the
+// remote returns. Enabling it does not lift a retention pin.
 func (s *Store) SetEvictionEnabled(enabled bool) {
-	s.evictionDisabled.Store(!enabled)
+	s.evictionSuspended.Store(!enabled)
+}
+
+// SetEvictionPinned toggles the retention-policy half of the eviction gate. A
+// pinned store never evicts, whatever the remote's health does; clearing the pin
+// returns the store to whatever the health monitor last asked for.
+func (s *Store) SetEvictionPinned(pinned bool) {
+	s.evictionPinned.Store(pinned)
+}
+
+// evictionHeld reports whether either reason currently holds eviction off.
+func (s *Store) evictionHeld() bool {
+	return s.evictionSuspended.Load() || s.evictionPinned.Load()
 }
 
 // FileCount reports how many files the journal indexes. It is what a caller that
