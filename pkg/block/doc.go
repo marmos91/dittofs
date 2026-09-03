@@ -85,13 +85,15 @@
 // errors.Is. See errors.go for full doc paragraphs and protocol-error
 // mappings.
 //
-// - ErrStopWalk — Walk callback early-exit signal.
+//   - ErrStopWalk — Walk callback early-exit signal.
 //   - ErrFutureFormat — a store refused on-disk state written by a
 //     newer release than this build can read.
 //   - ErrChunkNotFound — content-addressed chunk is absent
 //     from the store (local or remote).
 //   - ErrChunkContentMismatch — recomputed BLAKE3 disagreed with the
 //     expected ContentHash on read (fail-closed).
+//   - ErrCASKeyMalformed — ParseCASKey (cas_key.go) rejected an input
+//     that did not match the "cas/" key shape.
 //   - ErrChunkRefMissing — ChunkRef.Hash referred to an absent
 //     FileChunk (mapped to NFS3ERR_IO / STATUS_DATA_ERROR by the
 //     adapter errmap).
@@ -109,14 +111,11 @@
 //     they claim.
 //   - engine: BlockStore engine composing local store + syncer +
 //     unified Cache + metadata.
-//   - chunker: FastCDC chunker used by both writes and by the
-//     migration tool.
-//   - migrate: Migration library and shared utilities (journal
-//     walk helpers, MigrateShareToCAS).
-//   - gc: Mark-sweep garbage collection, fail-closed against the
-//     union of live ContentHashes.
-//   - storetest: Legacy conformance test suites for higher-level
-//     FileChunkStore implementations.
+//   - journal: the append-log write-back store behind local/fs —
+//     records, shards, carve, eviction and GC.
+//   - chunker: the FastCDC chunker the carve pass runs over dirty
+//     ranges.
+//   - blockcodec: the packed-block wire framing.
 //
 // # Transitional-marker convention
 //
