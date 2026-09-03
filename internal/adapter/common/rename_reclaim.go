@@ -16,8 +16,8 @@ import (
 // orphans from (synced − live) in the metadata store, which the unlink already
 // drives.
 //
-// This is the single seam all protocol adapters drive after a clobbering
-// rename, so one protocol cannot forget it while another gets it right.
+// SMB reaches the same block-store delete through its own
+// purgeBlockStorePayload, which additionally resolves the handle it is given.
 //
 // No-ops when there is nothing to release: no victim (the rename replaced
 // nothing, replaced a directory, or trash recycled the victim), or an empty
