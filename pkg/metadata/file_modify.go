@@ -602,32 +602,41 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 }
 
 // Move moves or renames a file or directory atomically.
-func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, toDir FileHandle, toName string) (*RenameWcc, error) {
+//
+// POSIX rename silently unlinks an existing destination. The clobbered victim
+// is returned as the first result so the caller can coordinate content
+// deletion, the same contract RemoveFile carries: nil when the rename replaced
+// nothing (or replaced a directory, which owns no content), and a non-nil File
+// whose PayloadID is empty whenever the content must survive — a remaining hard
+// link, or a recycle into the trash bin. Move itself never touches the block
+// store; without this the victim's bytes stay indexed as live in the local tier
+// and no reclamation path can ever free them.
+func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, toDir FileHandle, toName string) (*File, *RenameWcc, error) {
 	store, err := s.storeForHandle(fromDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Validate names
 	if err := ValidateName(fromName); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := ValidateName(toName); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Same directory and same name - no-op (POSIX rename semantics)
 	if string(fromDir) == string(toDir) && fromName == toName {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// Get source directory
 	srcDir, err := store.GetFile(ctx.Context, fromDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if srcDir.Type != FileTypeDirectory {
-		return nil, &StoreError{
+		return nil, nil, &StoreError{
 			Code:    ErrNotDirectory,
 			Message: "source parent is not a directory",
 		}
@@ -636,10 +645,10 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	// Get destination directory
 	dstDir, err := store.GetFile(ctx.Context, toDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if dstDir.Type != FileTypeDirectory {
-		return nil, &StoreError{
+		return nil, nil, &StoreError{
 			Code:    ErrNotDirectory,
 			Message: "destination parent is not a directory",
 		}
@@ -648,30 +657,30 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	// Validate destination path length (POSIX PATH_MAX compliance)
 	destPath := buildPath(dstDir.Path, toName)
 	if err := ValidatePath(destPath); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Check write permission on both directories
 	if err := s.checkWritePermission(ctx, fromDir); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := s.checkWritePermission(ctx, toDir); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Get source file
 	srcHandle, err := store.GetChild(ctx.Context, fromDir, fromName)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	srcFile, err := store.GetFile(ctx.Context, srcHandle)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Check sticky bit on source directory
 	if err := CheckStickyBitRestriction(ctx, &srcDir.FileAttr, &srcFile.FileAttr); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// POSIX: When moving a directory to a different parent from a sticky directory,
@@ -692,7 +701,7 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 				"reason", "caller does not own directory being moved",
 				"src_file_uid", srcFile.UID,
 				"caller_uid", callerUID)
-			return nil, &StoreError{
+			return nil, nil, &StoreError{
 				Code:    ErrAccessDenied,
 				Message: "sticky bit set: cannot move directory you don't own to different parent",
 			}
@@ -707,18 +716,18 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		// Destination exists - check compatibility
 		dstFile, err = store.GetFile(ctx.Context, dstHandle)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		// Check sticky bit on destination directory
 		if err := CheckStickyBitRestriction(ctx, &dstDir.FileAttr, &dstFile.FileAttr); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		// Type compatibility checks
 		if srcFile.Type == FileTypeDirectory {
 			if dstFile.Type != FileTypeDirectory {
-				return nil, &StoreError{
+				return nil, nil, &StoreError{
 					Code:    ErrNotDirectory,
 					Message: "cannot overwrite non-directory with directory",
 				}
@@ -726,14 +735,14 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 			// Check if destination directory is empty
 			entries, _, err := store.ListChildren(ctx.Context, dstHandle, "", 1, NamesOnly)
 			if err == nil && len(entries) > 0 {
-				return nil, &StoreError{
+				return nil, nil, &StoreError{
 					Code:    ErrNotEmpty,
 					Message: "destination directory not empty",
 				}
 			}
 		} else {
 			if dstFile.Type == FileTypeDirectory {
-				return nil, &StoreError{
+				return nil, nil, &StoreError{
 					Code:    ErrIsDirectory,
 					Message: "cannot overwrite directory with non-directory",
 				}
@@ -761,7 +770,7 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 						// into #recycle (the reaper frees its blocks later), so we
 						// have no blocks to release here.
 						if _, err := s.recycleNode(ctx, shareName, toDir, toName, victimRel); err != nil {
-							return nil, err // never silently clobber
+							return nil, nil, err // never silently clobber
 						}
 						// The victim has moved into #recycle, so the destination
 						// name is now free. Drop the cached dest-exists state so
@@ -774,7 +783,7 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 			}
 		}
 	} else if !IsNotFoundError(err) {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// rename carries the source/destination directory pre/post attributes for
@@ -804,6 +813,9 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	// so this is pure namespace. A crash can lose the rename (old name
 	// persists), never corrupt data.
 	now := time.Now()
+	// Link count the clobbered destination is left with, written by the
+	// transaction below. Only meaningful when a non-directory victim exists.
+	var clobberedNlink uint32
 	txErr := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
 		// The GetChild lookups above ran outside this transaction and are
 		// advisory only: no lock covers a file rename, so a concurrent rename
@@ -882,6 +894,12 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 				if err := tx.SetLinkCount(ctx.Context, dstHandle, newCount); err != nil {
 					return err
 				}
+				// Record what the victim ends up with so the post-commit
+				// return value reports content ownership from the count the
+				// transaction actually wrote. Assigned unconditionally: an
+				// optimistic backend may run this closure more than once, and
+				// only the committing attempt's value must survive.
+				clobberedNlink = newCount
 				// Update ctime on the file being unlinked (affects remaining hard links)
 				dstFile.Ctime = now
 				if err := tx.UpdateAttrs(ctx.Context, dstFile); err != nil {
@@ -957,7 +975,26 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	})
 
 	if txErr != nil {
-		return nil, txErr
+		return nil, nil, txErr
+	}
+
+	// Report the clobbered victim, if the rename replaced a file. Directories
+	// own no content, and dstFile is nil both when the destination was absent
+	// and when trash recycled it above, so neither case reports one. The
+	// PayloadID contract mirrors RemoveFile: empty means the content must
+	// survive because another hard link still references it.
+	var clobbered *File
+	if dstFile != nil && dstFile.Type != FileTypeDirectory {
+		clobbered = &File{
+			ID:        dstFile.ID,
+			ShareName: dstFile.ShareName,
+			Path:      dstFile.Path,
+			FileAttr:  *CopyFileAttr(&dstFile.FileAttr),
+		}
+		clobbered.Nlink = clobberedNlink
+		if clobberedNlink > 0 {
+			clobbered.PayloadID = ""
+		}
 	}
 
 	// Coalesce the parent directory mtime/ctime bumps out of the transaction so
@@ -982,7 +1019,7 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		s.notifyDirChange(shareNameForHandle(toDir), toDir, lock.DirChangeAddEntry, ctx)
 	}
 
-	return rename, nil
+	return clobbered, rename, nil
 }
 
 // MarkFileAsOrphaned sets a file's link count to 0, marking it as orphaned.
