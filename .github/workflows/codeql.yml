@@ -52,10 +52,11 @@ jobs:
         if: matrix.language == 'go'
         uses: actions/setup-go@v7
         with:
-          go-version-file: k8s/dittofs-operator/go.mod
+          go-version: "1.25.x"
           cache: true
 
       - name: Initialize CodeQL
+        id: init
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
@@ -122,3 +123,20 @@ jobs:
             printf '%s\n' "${missing}"
             exit 1
           fi
+
+      - name: DEBUG dump codeql db layout
+        if: ${{ always() && matrix.language == 'go' }}
+        run: |
+          echo "codeql-path=${{ steps.init.outputs.codeql-path }}"
+          echo "=== tree (depth 4) ==="
+          find "${RUNNER_TEMP}/codeql-db" -maxdepth 4 | head -200
+          echo "=== any log/json/diagnostic ==="
+          find "${RUNNER_TEMP}/codeql-db" \( -name '*.log' -o -name '*.json' -o -path '*diagnostic*' \) | head -100
+          echo "=== files mentioning extraction failure ==="
+          grep -ril 'xtraction failed' "${RUNNER_TEMP}/codeql-db" 2>/dev/null | head -50 || true
+          echo "=== files mentioning dittofs-operator (non-src.zip) ==="
+          grep -rl 'dittofs-operator' "${RUNNER_TEMP}/codeql-db" --include='*.log' --include='*.json' --include='*.yml' 2>/dev/null | head -50 || true
+          echo "=== diagnostic json contents ==="
+          find "${RUNNER_TEMP}/codeql-db" -path '*diagnostic*' -type f | head -40 | while read -r f; do echo "--- $f"; cat "$f"; echo; done
+          echo "=== log greps ==="
+          find "${RUNNER_TEMP}/codeql-db" -name '*.log' | head -20 | while read -r f; do echo "--- $f"; wc -l "$f"; grep -in 'xtraction\|dittofs-operator\|requires go >=' "$f" | head -40; done
