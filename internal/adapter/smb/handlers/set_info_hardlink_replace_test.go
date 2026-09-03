@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -179,5 +180,84 @@ func TestSetInfo_HardlinkReplace_ReclaimsReplacedPayload(t *testing.T) {
 	}
 	if !exists(srcPayload) {
 		t.Errorf("linked file's payload %q was dropped by the hardlink replace", srcPayload)
+	}
+}
+
+// TestSetInfo_HardlinkReplace_SelfLinkKeepsContent pins that linking a file
+// onto the name it already has is a no-op rather than a self-destruct.
+//
+// ReplaceIfExists removes the existing destination before creating the link. If
+// that destination IS the file being linked, and it holds the only link, the
+// removal drops the last link and hands back a non-empty PayloadID — so
+// releasing those bytes destroys the very content the operation was supposed to
+// leave in place, while CreateHardLink resurrects the name over nothing. The
+// client sees STATUS_SUCCESS and a file whose contents are gone.
+//
+// This is why the release is guarded on the destination being a different
+// inode, and this test is what proves the guard fires.
+func TestSetInfo_HardlinkReplace_SelfLinkKeepsContent(t *testing.T) {
+	rt, rootHandle, authCtx := newHardlinkTestShare(t)
+	ctx := authCtx.Context
+	metaSvc := rt.GetMetadataService()
+
+	file, _, err := metaSvc.CreateFile(authCtx, rootHandle, "a.txt", &metadata.FileAttr{
+		Type: metadata.FileTypeRegular, Mode: 0o644,
+	})
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	handle, err := metadata.EncodeFileHandle(file)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle: %v", err)
+	}
+	bs, err := rt.GetBlockStoreForHandle(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetBlockStoreForHandle: %v", err)
+	}
+	wop, err := metaSvc.PrepareWrite(authCtx, handle, 4096)
+	if err != nil {
+		t.Fatalf("PrepareWrite: %v", err)
+	}
+	if _, err := bs.WriteAt(ctx, string(wop.PayloadID), nil, bytes.Repeat([]byte{0xEE}, 4096), 0); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	if _, err := metaSvc.CommitWrite(authCtx, wop); err != nil {
+		t.Fatalf("CommitWrite: %v", err)
+	}
+	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, handle, true); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	payloadID := string(wop.PayloadID)
+
+	h := NewHandler()
+	h.Registry = rt
+	const treeID = uint32(9)
+	h.StoreTree(&TreeConnection{TreeID: treeID, ShareName: hardlinkTestShareName})
+	open := (&OpenFile{
+		FileID:         [16]byte{0xAA, 0x03, 0x5E, 0x11},
+		MetadataHandle: handle,
+		ShareName:      hardlinkTestShareName,
+		TreeID:         treeID,
+		DesiredAccess:  uint32(types.FileWriteAttributes),
+	}).WithName(OpenName{Path: "a.txt", FileName: "a.txt", ParentHandle: rootHandle})
+	h.StoreOpenFile(open)
+
+	// Link a.txt onto its own name with ReplaceIfExists set.
+	buf := encodeFileLinkInfoWire(t, true, [8]byte{}, "a.txt")
+	resp, err := h.setFileInfoFromStore(nil, authCtx, open, types.FileLinkInformation, buf)
+	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
+		t.Fatalf("setFileInfoFromStore(self link): err=%v resp=%v", err, resp)
+	}
+
+	// The name must survive, and so must the bytes behind it.
+	if _, cErr := metaSvc.GetChild(ctx, rootHandle, "a.txt"); cErr != nil {
+		t.Fatalf("a.txt no longer resolves after linking it onto its own name: %v", cErr)
+	}
+	stillThere, exErr := bs.Exists(ctx, payloadID)
+	if exErr != nil {
+		t.Fatalf("Exists: %v", exErr)
+	}
+	if !stillThere {
+		t.Errorf("payload %q was destroyed by linking a.txt onto its own name", payloadID)
 	}
 }
