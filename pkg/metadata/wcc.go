@@ -1,5 +1,7 @@
 package metadata
 
+import "time"
+
 // DirWcc carries the parent-directory attributes captured atomically with a
 // mutating metadata operation, for protocol weak-cache-consistency (WCC) data.
 //
@@ -30,4 +32,23 @@ type RenameWcc struct {
 
 	// ToDir holds the destination parent directory's pre/post attributes.
 	ToDir *DirWcc
+
+	// SourcePreCtime is the renamed inode's ChangeTime as it stood immediately
+	// before the rename stamped its own, and SourceCtime is that stamp. Both are
+	// read back through the transaction that performed the rename, so both are
+	// values the store holds rather than values a caller computed.
+	//
+	// Together they let a caller undo the rename's bump without erasing anyone
+	// else's: restore SourcePreCtime only while the stored ChangeTime is still
+	// SourceCtime. Reading the "before" inside the transaction is what makes
+	// that safe — an update committed between the caller's own read and the
+	// rename is already reflected in it, so putting it back cannot walk that
+	// update backwards.
+	//
+	// That holds on backends whose transaction serialises the read against
+	// concurrent writers. Under READ COMMITTED with an unlocked read — postgres
+	// — a write can still land between the "before" read and the row lock, so
+	// the window is narrowed rather than closed (#2324).
+	SourcePreCtime time.Time
+	SourceCtime    time.Time
 }

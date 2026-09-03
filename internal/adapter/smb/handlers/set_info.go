@@ -778,10 +778,10 @@ func (h *Handler) setFileInfoFromStore(
 			// holding this handle open must keep observing the ChangeTime it
 			// was handed at CREATE, so put the pre-rename value back.
 			metaSvc := h.Registry.GetMetadataService()
-			restoreChangeTime := h.snapshotChangeTime(authCtx, openFile.MetadataHandle)
 
 			var clobberedStream *metadata.File
-			clobberedStream, _, err = metaSvc.Move(authCtx, toDir, oldFileName, toDir, toName)
+			var renameWcc *metadata.RenameWcc
+			clobberedStream, renameWcc, err = metaSvc.Move(authCtx, toDir, oldFileName, toDir, toName)
 			if err != nil {
 				logger.Debug("SET_INFO: stream rename failed",
 					"from", oldFileName,
@@ -790,7 +790,7 @@ func (h *Handler) setFileInfoFromStore(
 				return setInfoStatus(common.MapToSMB(err)), nil
 			}
 
-			restoreChangeTime()
+			h.restorePreRenameChangeTime(authCtx.Context, openFile.MetadataHandle, renameWcc)
 
 			// Renaming a stream onto an existing stream name unlinks the
 			// stream that was there; free its content.
@@ -1219,10 +1219,9 @@ func (h *Handler) setFileInfoFromStore(
 		// Move stamps the renamed inode's LastChangeTime. A client holding
 		// this handle open must keep observing the ChangeTime it was handed at
 		// CREATE, so put the pre-rename value back.
-		restoreChangeTime := h.snapshotChangeTime(authCtx, openFile.MetadataHandle)
-
 		var clobbered *metadata.File
-		clobbered, _, err = metaSvc.Move(authCtx, srcParentHandle, oldFileName, toDir, toName)
+		var renameWcc *metadata.RenameWcc
+		clobbered, renameWcc, err = metaSvc.Move(authCtx, srcParentHandle, oldFileName, toDir, toName)
 		if err != nil {
 			logger.Debug("SET_INFO: rename failed",
 				"from", openFile.Name().Path,
@@ -1231,7 +1230,7 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(common.MapToSMB(err)), nil
 		}
 
-		restoreChangeTime()
+		h.restorePreRenameChangeTime(authCtx.Context, openFile.MetadataHandle, renameWcc)
 
 		// The pre-remove above only fires for a case-mismatched destination, so
 		// an exact-case ReplaceIfExists overwrite reaches Move's own clobber
@@ -1818,57 +1817,59 @@ func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
 	}
 }
 
-// snapshotChangeTime reads a file's current ChangeTime and returns a function
-// that writes it back. Service.Move stamps the renamed inode's Ctime, but
-// MS-FSA 2.1.5.15.12 note <187> defers that stamp until the handle is closed,
-// so a client that renames through a handle it still holds open keeps
+// restorePreRenameChangeTime puts back the ChangeTime the renamed inode had
+// before Service.Move stamped its own. Move stamps the renamed inode's Ctime,
+// but MS-FSA 2.1.5.15.12 note <187> defers that stamp until the handle is
+// closed, so a client that renames through a handle it still holds open keeps
 // observing the pre-rename ChangeTime. The normative text of 2.1.5.15.12 says
 // only that a rename updates LastChangeTime; the note is the half that says
-// when it becomes visible. Conformance case smb2.rename.simple_modtime pins
-// it, by comparing a CREATE reply's change_time against a post-rename query on
-// the same handle — the two coincide because nothing else advances the file's
-// Ctime in between, which is the same assumption the ponytail note below
-// records.
+// when it becomes visible. Conformance case smb2.rename.simple_modtime pins it,
+// by comparing a CREATE reply's change_time against a post-rename query on the
+// same handle.
 //
-// The write-back runs as the system identity on purpose. An explicit timestamp
-// write is ownership-gated in the metadata layer while the rename itself is
-// authorized on the parent directory, so writing the stamp back as the caller
-// would land for an owner and be silently refused for everyone else: one
-// rename, two observable ChangeTimes, chosen by a permission check the caller
-// never asked for. As the system identity it lands for every caller, so the
-// ChangeTime a client observes does not depend on who owns the file. A
-// read-only share cannot reach here — Move would already have refused.
+// Both timestamps come from the rename's own transaction rather than from a
+// read taken here. That is what keeps the restore from erasing somebody else's
+// update: an advance committed before the rename is already in SourcePreCtime,
+// so putting it back is a no-op rather than a walk backwards, and the value
+// compared against has been through the store, so it still compares equal on
+// backends that truncate timestamps on the way in.
 //
-// Only Ctime is snapshotted: Move leaves the renamed inode's Mtime alone, and
-// the parent directories' timestamps are handled by
+// The first of those holds on backends whose transaction serialises the read
+// against concurrent writers. Under READ COMMITTED with an unlocked read —
+// postgres — a write can still land inside the rename's own window, so there the
+// erasure is narrowed rather than eliminated (#2324).
+//
+// There is no permission check on the restore. An explicit timestamp write is
+// ownership-gated in the metadata layer while the rename itself is authorized
+// on the parent directories, so writing the stamp back as the caller would land
+// for an owner and be refused for everyone else: one rename, two observable
+// ChangeTimes, chosen by a check the caller never asked for. A read-only share
+// cannot reach here, because Move would already have refused.
+//
+// Only Ctime is restored: Move leaves the renamed inode's Mtime alone, and the
+// parent directories' timestamps are handled by
 // restoreParentDirFrozenTimestamps.
-//
-// Returns a no-op if the read fails.
 //
 // ponytail: the rule being implemented is handle-scoped — what a handle that
 // was already open keeps observing — but this writes the stored timestamp, so
-// it is file-scoped, and a Ctime advanced between the read and the write-back
-// (a WRITE, truncate or SET_INFO on another handle, or over NFS) is walked
-// backwards for every observer. The two coincide whenever nothing else is
-// touching the file. Upgrade to a per-OpenFile overlay consulted by
-// QUERY_INFO — the seam applyFrozenTimestamps already uses — once that overlay
-// can also say when to stop applying: it has to yield to the next real Ctime
-// advance, including one made through a different handle, which an OpenFile
-// field cannot see on its own. A directory enumeration reports a child's
-// ChangeTime with no OpenFile at all, so an overlay does not cover that path
-// either.
-func (h *Handler) snapshotChangeTime(authCtx *metadata.AuthContext, handle metadata.FileHandle) func() {
-	metaSvc := h.Registry.GetMetadataService()
-	file, err := metaSvc.GetFile(authCtx.Context, handle)
-	if err != nil {
-		return func() {}
+// it stays file-scoped. The conditional restore removes the case that was
+// actively wrong, a concurrent advance being walked backwards for everyone; it
+// does not make the preserve per-handle, so a second handle on the same file
+// still observes the restored value rather than the one the rename stamped.
+// Upgrade to a per-OpenFile overlay consulted by QUERY_INFO — the seam
+// applyFrozenTimestamps already uses — once that overlay can also say when to
+// stop applying: it has to yield to the next real Ctime advance, including one
+// made through a different handle, which an OpenFile field cannot see on its
+// own. A directory enumeration reports a child's ChangeTime with no OpenFile at
+// all, so an overlay does not cover that path either.
+func (h *Handler) restorePreRenameChangeTime(ctx context.Context, handle metadata.FileHandle, wcc *metadata.RenameWcc) {
+	if wcc == nil {
+		return
 	}
-	ctime := file.Ctime
-	sysCtx := metadata.NewSystemAuthContext(authCtx.Context)
-	return func() {
-		if _, err := metaSvc.SetFileAttributes(sysCtx, handle, &metadata.SetAttrs{Ctime: &ctime}); err != nil {
-			logger.Debug("SET_INFO: restoring pre-rename ChangeTime failed", "error", err)
-		}
+	if err := h.Registry.GetMetadataService().RestoreChangeTimeIfUnchanged(
+		ctx, handle, wcc.SourceCtime, wcc.SourcePreCtime,
+	); err != nil {
+		logger.Debug("SET_INFO: restoring pre-rename ChangeTime failed", "error", err)
 	}
 }
 
