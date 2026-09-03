@@ -509,7 +509,7 @@ func NewPostgresHelper(t *testing.T) *PostgresHelper {
 		T:         t,
 		Container: container,
 		Host:      host,
-		Port:      port.Int(),
+		Port:      int(port.Num()),
 		Database:  "dittofs_e2e",
 		User:      "dittofs_e2e",
 		Password:  "dittofs_e2e",

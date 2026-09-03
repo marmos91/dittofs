@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/go-connections/nat"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -73,7 +72,7 @@ func NewKDCHelper(t *testing.T, cfg KDCConfig) *KDCHelper {
 	require.NoError(t, err, "failed to start KDC container")
 
 	// Get the mapped port
-	mappedPort, err := container.MappedPort(ctx, nat.Port("88/tcp"))
+	mappedPort, err := container.MappedPort(ctx, "88/tcp")
 	require.NoError(t, err, "failed to get KDC port")
 
 	host, err := container.Host(ctx)
@@ -88,7 +87,7 @@ func NewKDCHelper(t *testing.T, cfg KDCConfig) *KDCHelper {
 		keytabDir: keytabDir,
 		ccacheDir: ccacheDir,
 		kdcHost:   host,
-		kdcPort:   mappedPort.Int(),
+		kdcPort:   int(mappedPort.Num()),
 	}
 
 	// Generate krb5.conf for this KDC instance
