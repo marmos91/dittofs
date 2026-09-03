@@ -13,6 +13,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
 
@@ -57,9 +58,6 @@ type PostgresMetadataStore struct {
 
 	// cancel cancels the store context
 	cancel context.CancelFunc
-
-	// lockStore holds persisted lock data for NLM/SMB lock persistence.
-	lockStore *postgresLockStore
 
 	// clientStore holds NSM client registration persistence.
 	clientStore *storesql.ClientStore
@@ -155,7 +153,6 @@ func NewPostgresMetadataStore(
 
 	// The substores derive only from pool, which is never reassigned, so bind
 	// them once here.
-	store.lockStore = newPostgresLockStore(poolExecer{s: store})
 	store.clientStore = &storesql.ClientStore{X: poolExecer{s: store}, D: pgDialect}
 	store.durableStore = newPostgresDurableStore(store)
 	store.recoveryStore = &storesql.RecoveryStore{X: poolExecer{s: store}, D: pgDialect}
@@ -411,3 +408,9 @@ func (s *PostgresMetadataStore) RecomputeUsage(ctx context.Context) error {
 	s.quotaMu.Unlock()
 	return s.initUsedBytesCounter(ctx)
 }
+
+// metadata.Store does not embed lock.LockStore: the store's lock surface is
+// reached through a runtime type assertion, which skips lock initialisation
+// silently rather than failing when the store no longer satisfies it. This
+// states the requirement where the compiler can see it.
+var _ lock.LockStore = (*PostgresMetadataStore)(nil)
