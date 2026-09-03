@@ -222,11 +222,7 @@ jobs:
   baseline:
     name: knfsd baseline
     runs-on: ubuntu-latest
-    # TEMPORARY: also runs on this PR, to produce the first baseline-knfsd.md.
-    # workflow_dispatch cannot target a branch until the workflow is on develop,
-    # so there is no other way to get Linux nfsd evidence before merge. Remove
-    # the pull_request clause once the baseline is committed.
-    if: github.event_name == 'schedule' || inputs.baseline || github.event_name == 'pull_request'
+    if: github.event_name == 'schedule' || inputs.baseline
     timeout-minutes: 45
     steps:
       - name: Checkout
