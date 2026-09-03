@@ -466,3 +466,53 @@ func TestRemoveFile_DeleteAccessStillSucceedsOnWritableShare(t *testing.T) {
 	_, _, err = f.service.RemoveFile(f.smbDeleteContext(uid, gid), f.rootHandle, "removable.txt")
 	require.NoError(t, err, "delete on a writable share must still succeed")
 }
+
+// TestSetFileAttributes_ReadOnlyShareBlocksHandleTimestamp asserts both
+// read-only ceilings beat TimestampAuthorizedByHandle: the per-user
+// AuthContext.ShareReadOnly flag and the store-level ShareOptions.ReadOnly. A
+// SETATTR is a write, so neither a read-only user nor any user on a read-only
+// share may set a timestamp, whatever the handle was granted.
+func TestSetFileAttributes_ReadOnlyShareBlocksHandleTimestamp(t *testing.T) {
+	uid, gid := uint32(1001), uint32(1001)
+
+	t.Run("per-user read-only", func(t *testing.T) {
+		f := newTestFixture(t)
+		created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "ro_user.txt",
+			&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o777, UID: 2002, GID: 2002})
+		require.NoError(t, err)
+		handle, err := metadata.EncodeShareHandle(f.shareName, created.ID)
+		require.NoError(t, err)
+
+		// Baseline: the handle grant works on a writable share.
+		rw := f.authContext(uid, gid)
+		rw.TimestampAuthorizedByHandle = true
+		_, err = f.service.SetFileAttributes(rw, handle, &metadata.SetAttrs{Mtime: &stampTime})
+		require.NoError(t, err, "precondition: handle timestamp grant works on a writable share")
+
+		ro := f.authContext(uid, gid)
+		ro.TimestampAuthorizedByHandle = true
+		ro.ShareReadOnly = true
+		_, err = f.service.SetFileAttributes(ro, handle, &metadata.SetAttrs{Mtime: &stampTime})
+		require.Error(t, err, "per-user read-only must beat TimestampAuthorizedByHandle")
+		requireErrorCode(t, err, metadata.ErrReadOnly)
+	})
+
+	t.Run("store-level read-only", func(t *testing.T) {
+		f := newTestFixture(t)
+		created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "ro_store.txt",
+			&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o777, UID: 2002, GID: 2002})
+		require.NoError(t, err)
+		handle, err := metadata.EncodeShareHandle(f.shareName, created.ID)
+		require.NoError(t, err)
+
+		require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
+			&metadata.ShareOptions{ReadOnly: true}))
+
+		authCtx := f.authContext(uid, gid)
+		authCtx.TimestampAuthorizedByHandle = true
+		authCtx.ShareReadOnly = false
+		_, err = f.service.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{Mtime: &stampTime})
+		require.Error(t, err, "store-level read-only must beat TimestampAuthorizedByHandle")
+		requireErrorCode(t, err, metadata.ErrReadOnly)
+	})
+}

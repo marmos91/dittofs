@@ -306,11 +306,27 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// as an alternative to ownership (POSIX semantics).
 	writePermSufficient := onlySettingTimesToNow || onlySettingSize || onlyClearingSuidSgid
 
+	// SMB authorizes an explicit timestamp write by FILE_WRITE_ATTRIBUTES on the
+	// open handle rather than by ownership, so such a handle satisfies the
+	// ownership gate below — but only for a SetAttrs that changes nothing except
+	// the four timestamps, and never past an explicit DENY ACE, which encodes
+	// intent POSIX bits cannot express (mirroring the handle write bypass in
+	// checkFilePermissions). Both read-only ceilings are already enforced by
+	// shareForbidsWrites above. See AuthContext.TimestampAuthorizedByHandle.
+	onlySettingExplicitTimes := noOwnershipAttrs && attrs.Size == nil &&
+		attrs.ModeOrMask == nil && attrs.ModeAndNotMask == nil &&
+		attrs.Hidden == nil && attrs.ACL == nil && len(attrs.EAMutations) == 0 &&
+		!attrs.AtimeNow && !attrs.MtimeNow &&
+		(attrs.Atime != nil || attrs.Mtime != nil ||
+			attrs.Ctime != nil || attrs.CreationTime != nil)
+	timestampAuthorizedByHandle := ctx.TimestampAuthorizedByHandle &&
+		onlySettingExplicitTimes && !acl.HasExplicitDeny(file.ACL)
+
 	if writePermSufficient && !isOwner && !isRoot {
 		if err := s.checkWritePermission(ctx, handle); err != nil {
 			return nil, err
 		}
-	} else if !isOwner && !isRoot {
+	} else if !isOwner && !isRoot && !timestampAuthorizedByHandle {
 		return nil, &StoreError{
 			Code:    ErrPermissionDenied,
 			Message: "operation not permitted",
