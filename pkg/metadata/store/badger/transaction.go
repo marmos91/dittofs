@@ -1218,50 +1218,25 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 		}
 	}
 
-	// Check if share already exists
+	// An existing root is reconciled against the configured attrs by the same
+	// body the pool path uses, so whether a config change lands does not depend
+	// on which of the two entry points reached it.
 	item, err := tx.txn.Get(keyShare(shareName))
 	if err == nil {
-		// Share exists - load and return existing root
-		var existingShareData *shareData
-		err := item.Value(func(val []byte) error {
-			sd, decErr := decodeShareData(val)
-			if decErr != nil {
-				return decErr
-			}
-			existingShareData = sd
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-
-		_, rootID, err := metadata.DecodeFileHandle(existingShareData.RootHandle)
-		if err != nil {
-			return nil, err
-		}
-
-		rootItem, err := tx.txn.Get(keyFile(rootID))
-		if err != nil {
-			return nil, err
-		}
-
 		var rootFile *metadata.File
-		err = rootItem.Value(func(val []byte) error {
-			rf, decErr := decodeFile(val)
-			if decErr != nil {
-				return decErr
-			}
-			rootFile = rf
-			return nil
-		})
-		if err != nil {
+		if err := tx.store.loadExistingRoot(tx.txn, item, shareName, attr, &rootFile); err != nil {
 			return nil, err
 		}
 
-		// A root directory with no stored link count falls back to the
-		// directory default of 2.
-		rootFile.Nlink = fileLinkCountTxn(tx.txn, rootFile)
-
+		// loadExistingRoot may rewrite the root inode to match the configured
+		// attrs, a write that does not go through the methods that record a
+		// dirty file — so record it here, or the commit leaves the pre-reconcile
+		// mode/UID/GID cached. Recorded whether or not it actually rewrote:
+		// re-reading one root is cheaper than tracking which branch it took.
+		if rootFile != nil {
+			tx.dirtyFiles = append(tx.dirtyFiles, rootFile.ID.String())
+			tx.dirtyShares = append(tx.dirtyShares, shareName)
+		}
 		return rootFile, nil
 	} else if err != badgerdb.ErrKeyNotFound {
 		return nil, err
@@ -1270,7 +1245,7 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 	// Create new root directory
 	rootAttrCopy := *attr
 	if rootAttrCopy.Mode == 0 {
-		rootAttrCopy.Mode = 0755
+		rootAttrCopy.Mode = metadata.DefaultRootMode
 	}
 	now := time.Now()
 	if rootAttrCopy.Atime.IsZero() {
