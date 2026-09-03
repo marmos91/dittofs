@@ -170,8 +170,12 @@ func TestClose_DeleteOnClose_NonEmptyDirectorySucceeds(t *testing.T) {
 
 	// subdir-name, closed straight away.
 	fileID := dirTestCreate(t, h, ctx, "subdir-name", types.FileOpenIf, types.FileDirectoryFile)
-	if _, err := h.Close(ctx, &CloseRequest{FileID: fileID}); err != nil {
+	cr, err := h.Close(ctx, &CloseRequest{FileID: fileID})
+	if err != nil {
 		t.Fatalf("close subdir-name: %v", err)
+	}
+	if cr.GetStatus() != types.StatusSuccess {
+		t.Fatalf("close subdir-name status = %v, want STATUS_SUCCESS", cr.GetStatus())
 	}
 
 	// subname1 (a directory) renamed within subdir-name; handle left open.
@@ -224,8 +228,12 @@ func TestSetInfo_DeleteDisposition_NonEmptyDirectoryRefused(t *testing.T) {
 
 	parentID := dirTestCreate(t, h, ctx, "parent", types.FileOpenIf, types.FileDirectoryFile)
 	childID := dirTestCreate(t, h, ctx, "parent\\child", types.FileOpenIf, types.FileNonDirectoryFile)
-	if _, err := h.Close(ctx, &CloseRequest{FileID: childID}); err != nil {
+	childClose, err := h.Close(ctx, &CloseRequest{FileID: childID})
+	if err != nil {
 		t.Fatalf("close child: %v", err)
+	}
+	if childClose.GetStatus() != types.StatusSuccess {
+		t.Fatalf("close child status = %v, want STATUS_SUCCESS", childClose.GetStatus())
 	}
 
 	resp, err := h.SetInfo(ctx, &SetInfoRequest{
