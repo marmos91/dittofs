@@ -139,7 +139,7 @@ func (s *Service) LookupCaseInsensitive(ctx *AuthContext, dirHandle FileHandle, 
 
 	cursor := ""
 	for {
-		entries, nextCursor, listErr := store.ListChildren(ctx.Context, dirHandle, cursor, 500)
+		entries, nextCursor, listErr := store.ListChildren(ctx.Context, dirHandle, cursor, 500, NamesOnly)
 		if listErr != nil {
 			if IsNotFoundError(listErr) {
 				return nil, "", nil
@@ -724,7 +724,7 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 				}
 			}
 			// Check if destination directory is empty
-			entries, _, err := store.ListChildren(ctx.Context, dstHandle, "", 1)
+			entries, _, err := store.ListChildren(ctx.Context, dstHandle, "", 1, NamesOnly)
 			if err == nil && len(entries) > 0 {
 				return nil, &StoreError{
 					Code:    ErrNotEmpty,

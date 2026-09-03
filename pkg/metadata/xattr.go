@@ -142,7 +142,7 @@ func findStreamChild(ctx context.Context, files Files, parent FileHandle, baseNa
 
 	cursor := ""
 	for {
-		entries, next, err := files.ListChildren(ctx, parent, cursor, 0)
+		entries, next, err := files.ListChildren(ctx, parent, cursor, 0, NamesOnly)
 		if err != nil {
 			return nil, nil, false, err
 		}
@@ -152,7 +152,15 @@ func findStreamChild(ctx context.Context, files Files, parent FileHandle, baseNa
 				continue
 			}
 			if strings.EqualFold(streamName, name) {
-				return entries[i].Handle, entries[i].Attr, true, nil
+				// The scan runs names-only, so the attrs come from one
+				// GetFile on the entry that matched — the same read the
+				// exact-name branch above does, rather than one per child
+				// of a directory that may hold thousands.
+				file, ferr := files.GetFile(ctx, entries[i].Handle)
+				if ferr != nil {
+					return nil, nil, false, ferr
+				}
+				return entries[i].Handle, &file.FileAttr, true, nil
 			}
 		}
 		if next == "" {
@@ -279,7 +287,7 @@ func ResolveListXattr(ctx context.Context, files Files, handle FileHandle) ([]st
 	if parent != nil && baseName != "" {
 		cursor := ""
 		for {
-			entries, next, lerr := files.ListChildren(ctx, parent, cursor, 0)
+			entries, next, lerr := files.ListChildren(ctx, parent, cursor, 0, NamesOnly)
 			if lerr != nil {
 				return nil, lerr
 			}

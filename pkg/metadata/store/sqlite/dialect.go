@@ -84,6 +84,11 @@ var fileQueries = storesql.FileQueries{
 		WHERE dc.parent_id = ?1 AND dc.child_name > ?2
 		ORDER BY dc.child_name
 		LIMIT ?3`,
+	ListChildNames: `SELECT dc.child_name, dc.child_id
+		FROM parent_child_map dc
+		WHERE dc.parent_id = ?1 AND dc.child_name > ?2
+		ORDER BY dc.child_name
+		LIMIT ?3`,
 
 	SetChild: `INSERT INTO parent_child_map (parent_id, child_name, child_id)
 		VALUES (?1, ?2, ?3)

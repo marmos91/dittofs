@@ -208,7 +208,7 @@ func (f *realBackupFixture) assertNoTornFiles(t *testing.T, store metadata.Store
 		t.Fatalf("snapshot %d: root handle missing from restored dump: %v", n, err)
 	}
 
-	entries, _, err := store.ListChildren(ctx, root, "", 0)
+	entries, _, err := store.ListChildren(ctx, root, "", 0, metadata.WithAttrs)
 	if err != nil {
 		t.Fatalf("snapshot %d: list children: %v", n, err)
 	}
