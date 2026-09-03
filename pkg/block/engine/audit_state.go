@@ -213,7 +213,7 @@ func walkAuditShareFiles(
 ) error {
 	cursor := ""
 	for {
-		entries, next, err := store.ListChildren(ctx, dirHandle, cursor, 0)
+		entries, next, err := store.ListChildren(ctx, dirHandle, cursor, 0, metadata.NamesOnly)
 		if err != nil {
 			return fmt.Errorf("list children: %w", err)
 		}

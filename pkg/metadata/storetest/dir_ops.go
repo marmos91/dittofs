@@ -1,6 +1,9 @@
 package storetest
 
 import (
+	"bytes"
+	"fmt"
+	"slices"
 	"sort"
 	"testing"
 
@@ -18,6 +21,7 @@ func runDirOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("RootDirectoryIdempotent", func(t *testing.T) { testRootDirectoryIdempotent(t, factory) })
 	t.Run("LinkCountAgreesWithGetFile", func(t *testing.T) { testLinkCountAgreesWithGetFile(t, factory) })
 	t.Run("DeleteChildIsIdempotent", func(t *testing.T) { testDeleteChildIsIdempotent(t, factory) })
+	t.Run("NamesOnlyMatchesWithAttrs", func(t *testing.T) { testNamesOnlyMatchesWithAttrs(t, factory) })
 }
 
 // testCreateDirectory verifies that creating a directory results in the correct type and link count.
@@ -74,7 +78,7 @@ func testListDirectory(t *testing.T, factory StoreFactory) {
 	ctx := t.Context()
 
 	// List children
-	entries, nextCursor, err := store.ListChildren(ctx, rootHandle, "", 100)
+	entries, nextCursor, err := store.ListChildren(ctx, rootHandle, "", 100, metadata.WithAttrs)
 	if err != nil {
 		t.Fatalf("ListChildren() failed: %v", err)
 	}
@@ -135,7 +139,7 @@ func testListDirectoryHydratesACL(t *testing.T, factory StoreFactory) {
 		t.Fatalf("UpdateAttrs with ACL: %v", err)
 	}
 
-	entries, _, err := store.ListChildren(ctx, rootHandle, "", 100)
+	entries, _, err := store.ListChildren(ctx, rootHandle, "", 100, metadata.WithAttrs)
 	if err != nil {
 		t.Fatalf("ListChildren: %v", err)
 	}
@@ -418,7 +422,7 @@ func testDeleteChildIsIdempotent(t *testing.T, factory StoreFactory) {
 	// The directory still has to be usable afterwards: a delete that found
 	// nothing must not have torn down state the next create depends on.
 	createTestDir(t, store, "/test", rootHandle, "after")
-	entries, _, err := store.ListChildren(ctx, rootHandle, "", 0)
+	entries, _, err := store.ListChildren(ctx, rootHandle, "", 0, metadata.WithAttrs)
 	if err != nil {
 		t.Fatalf("ListChildren() failed: %v", err)
 	}
@@ -429,5 +433,127 @@ func testDeleteChildIsIdempotent(t *testing.T, factory StoreFactory) {
 	sort.Strings(names)
 	if len(names) != 1 || names[0] != "after" {
 		t.Errorf("children after idempotent deletes = %v, want [after]", names)
+	}
+}
+
+// testNamesOnlyMatchesWithAttrs pins the one guarantee that makes NamesOnly
+// safe to substitute at a call site: the two modes differ in Attr and in
+// nothing else. Same entries, same order, same ids and handles, same cursor.
+//
+// Both modes are read twice over the same directory — once whole, once paged —
+// because the SQL backends answer NamesOnly with a different query than
+// WithAttrs, and a page boundary is where two queries that were meant to agree
+// stop agreeing. A cursor handed out by one mode has to resume the other in
+// the same place or a caller that switched modes would silently skip or repeat
+// a name.
+func testNamesOnlyMatchesWithAttrs(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	rootHandle := createTestShare(t, store, "/test")
+
+	const total = 5
+	for i := range total {
+		createTestFile(t, store, "/test", rootHandle, fmt.Sprintf("file%d.txt", i), 0644)
+	}
+
+	ctx := t.Context()
+
+	withAttrs, withCursor, err := store.ListChildren(ctx, rootHandle, "", 100, metadata.WithAttrs)
+	if err != nil {
+		t.Fatalf("ListChildren(WithAttrs) failed: %v", err)
+	}
+	namesOnly, namesCursor, err := store.ListChildren(ctx, rootHandle, "", 100, metadata.NamesOnly)
+	if err != nil {
+		t.Fatalf("ListChildren(NamesOnly) failed: %v", err)
+	}
+
+	if len(namesOnly) != len(withAttrs) {
+		t.Fatalf("NamesOnly returned %d entries, WithAttrs returned %d", len(namesOnly), len(withAttrs))
+	}
+	if namesCursor != withCursor {
+		t.Errorf("nextCursor = %q under NamesOnly, %q under WithAttrs", namesCursor, withCursor)
+	}
+
+	for i := range withAttrs {
+		want, got := withAttrs[i], namesOnly[i]
+		if got.Name != want.Name {
+			t.Errorf("entry %d: name = %q under NamesOnly, %q under WithAttrs", i, got.Name, want.Name)
+		}
+		if got.ID != want.ID {
+			t.Errorf("entry %d (%s): ID = %d under NamesOnly, %d under WithAttrs", i, want.Name, got.ID, want.ID)
+		}
+		if !bytes.Equal(got.Handle, want.Handle) {
+			t.Errorf("entry %d (%s): handle differs between modes", i, want.Name)
+		}
+		if want.Attr == nil {
+			t.Errorf("entry %d (%s): WithAttrs left Attr nil", i, want.Name)
+		}
+		if got.Attr != nil {
+			t.Errorf("entry %d (%s): NamesOnly populated Attr; callers are told it is nil and may not pay for it",
+				i, want.Name)
+		}
+	}
+
+	// Page both modes two at a time, following each mode's own cursor.
+	pageNames := func(attrs metadata.ChildAttrs) []string {
+		t.Helper()
+		var names []string
+		cursor := ""
+		for range total + 1 {
+			page, next, err := store.ListChildren(ctx, rootHandle, cursor, 2, attrs)
+			if err != nil {
+				t.Fatalf("ListChildren(cursor=%q, %v) failed: %v", cursor, attrs, err)
+			}
+			for _, e := range page {
+				names = append(names, e.Name)
+			}
+			if next == "" {
+				break
+			}
+			cursor = next
+		}
+		return names
+	}
+
+	paged, pagedNamesOnly := pageNames(metadata.WithAttrs), pageNames(metadata.NamesOnly)
+	if !slices.Equal(paged, pagedNamesOnly) {
+		t.Errorf("paging disagrees between modes:\n WithAttrs: %v\n NamesOnly: %v", paged, pagedNamesOnly)
+	}
+	if len(paged) != total {
+		t.Errorf("paging WithAttrs yielded %d names, want %d: %v", len(paged), total, paged)
+	}
+
+	// Resume each mode from the other's cursor. Paging each mode against
+	// itself would still pass if the two modes agreed internally and only
+	// with each other's cursors disagreed, which is the case a caller hits
+	// the moment it switches modes mid-listing.
+	crossed := func(first, second metadata.ChildAttrs) []string {
+		t.Helper()
+		head, cursor, err := store.ListChildren(ctx, rootHandle, "", 2, first)
+		if err != nil {
+			t.Fatalf("ListChildren(%v) failed: %v", first, err)
+		}
+		if cursor == "" {
+			t.Fatalf("ListChildren(%v, limit 2) over %d entries returned no cursor", first, total)
+		}
+		tail, _, err := store.ListChildren(ctx, rootHandle, cursor, 100, second)
+		if err != nil {
+			t.Fatalf("ListChildren(%v, cursor from %v) failed: %v", second, first, err)
+		}
+		var names []string
+		for _, e := range head {
+			names = append(names, e.Name)
+		}
+		for _, e := range tail {
+			names = append(names, e.Name)
+		}
+		return names
+	}
+
+	for _, c := range []struct {
+		first, second metadata.ChildAttrs
+	}{{metadata.WithAttrs, metadata.NamesOnly}, {metadata.NamesOnly, metadata.WithAttrs}} {
+		if got := crossed(c.first, c.second); !slices.Equal(got, paged) {
+			t.Errorf("resuming %v from a %v cursor yielded %v, want %v", c.second, c.first, got, paged)
+		}
 	}
 }

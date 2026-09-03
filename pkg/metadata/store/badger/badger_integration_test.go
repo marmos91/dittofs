@@ -262,7 +262,7 @@ func TestBadgerMetadataStore_CRUD(t *testing.T) {
 	})
 
 	t.Run("ListChildren", func(t *testing.T) {
-		entries, _, err := store.ListChildren(ctx, rootHandle, "", 100)
+		entries, _, err := store.ListChildren(ctx, rootHandle, "", 100, metadata.WithAttrs)
 		if err != nil {
 			t.Fatalf("Failed to list children: %v", err)
 		}
