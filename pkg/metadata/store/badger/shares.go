@@ -378,7 +378,7 @@ func (s *BadgerMetadataStore) loadExistingRoot(txn *badgerdb.Txn, item *badgerdb
 	// reconcile a defaulted root down to mode 0 on the next call.
 	mode := attr.Mode
 	if mode == 0 {
-		mode = defaultRootMode
+		mode = metadata.DefaultRootMode
 	}
 
 	// Update attributes if config changed
@@ -428,7 +428,7 @@ func (s *BadgerMetadataStore) createNewRoot(txn *badgerdb.Txn, shareName string,
 
 	rootAttrCopy := *attr
 	if rootAttrCopy.Mode == 0 {
-		rootAttrCopy.Mode = defaultRootMode
+		rootAttrCopy.Mode = metadata.DefaultRootMode
 	}
 	now := time.Now()
 	if rootAttrCopy.Atime.IsZero() {
@@ -506,9 +506,3 @@ func (s *BadgerMetadataStore) createNewRoot(txn *badgerdb.Txn, shareName string,
 
 	return nil
 }
-
-// defaultRootMode is the mode a share root gets when the caller configures
-// none. Creation and reconciliation must agree on it: the reconcile compares a
-// stored mode against it, so a raw zero here would rewrite a defaulted root to
-// mode 0 the second time a share is attached.
-const defaultRootMode = 0o755

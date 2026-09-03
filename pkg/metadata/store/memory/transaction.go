@@ -739,7 +739,7 @@ func (tx *memoryTransaction) CreateRootDirectory(ctx context.Context, shareName 
 	// Complete root directory attributes with defaults
 	rootAttrCopy := *attr
 	if rootAttrCopy.Mode == 0 {
-		rootAttrCopy.Mode = defaultRootMode
+		rootAttrCopy.Mode = metadata.DefaultRootMode
 	}
 	now := time.Now()
 	if rootAttrCopy.Atime.IsZero() {

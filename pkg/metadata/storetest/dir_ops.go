@@ -337,13 +337,14 @@ func testRootDirectoryReconcilesAttrs(t *testing.T, factory StoreFactory) {
 		// Read the root before reconciling so any per-inode cache holds the
 		// pre-reconcile value. A backend that writes the new attrs but does not
 		// drop that entry then keeps serving the old ones, which a cold read
-		// after the write would not notice.
+		// after the write would not notice. The read has to go through the
+		// read fast path where one exists, because that is where the cache is.
 		warm, err := store.GetRootHandle(ctx, shareName)
 		if err != nil {
 			t.Fatalf("GetRootHandle() before reconcile failed: %v", err)
 		}
-		if _, err := store.GetFile(ctx, warm); err != nil {
-			t.Fatalf("GetFile(root) before reconcile failed: %v", err)
+		if _, err := readRootForCache(ctx, store, warm); err != nil {
+			t.Fatalf("read of root before reconcile failed: %v", err)
 		}
 
 		changed := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: wantMode, UID: wantUID, GID: wantGID}
@@ -360,9 +361,9 @@ func testRootDirectoryReconcilesAttrs(t *testing.T, factory StoreFactory) {
 		if err != nil {
 			t.Fatalf("GetRootHandle() failed: %v", err)
 		}
-		stored, err := store.GetFile(ctx, handle)
+		stored, err := readRootForCache(ctx, store, handle)
 		if err != nil {
-			t.Fatalf("GetFile(root) failed: %v", err)
+			t.Fatalf("read of root failed: %v", err)
 		}
 		if stored.Mode != wantMode || stored.UID != wantUID || stored.GID != wantGID {
 			t.Errorf("stored root not reconciled: mode=%o uid=%d gid=%d, want mode=%o uid=%d gid=%d",
@@ -381,33 +382,38 @@ func testRootDirectoryReconcilesAttrs(t *testing.T, factory StoreFactory) {
 	})
 
 	// A zero mode means "use the default". Both entry points have to pick the
-	// SAME default, or each rewrites what the other wrote and re-creating a
-	// share flips its root mode back and forth.
-	t.Run("ZeroModeIsIdempotent", func(t *testing.T) {
+	// SAME default, so the create and the re-create go through DIFFERENT ones:
+	// two self-consistent but different defaults would each rewrite what the
+	// other wrote, and running one path twice could not tell.
+	t.Run("ZeroModeIsIdempotentAcrossEntryPoints", func(t *testing.T) {
+		storeCreate := func(ctx context.Context, store metadata.Store, attr *metadata.FileAttr) (*metadata.File, error) {
+			return store.CreateRootDirectory(ctx, shareName, attr)
+		}
+		txCreate := txCreateRoot(shareName)
+
 		for _, tc := range []struct {
-			name   string
-			create func(context.Context, metadata.Store, *metadata.FileAttr) (*metadata.File, error)
+			name          string
+			first, second func(context.Context, metadata.Store, *metadata.FileAttr) (*metadata.File, error)
 		}{
-			{"StorePath", func(ctx context.Context, store metadata.Store, attr *metadata.FileAttr) (*metadata.File, error) {
-				return store.CreateRootDirectory(ctx, shareName, attr)
-			}},
-			{"TransactionPath", txCreateRoot(shareName)},
+			{"StoreThenTransaction", storeCreate, txCreate},
+			{"TransactionThenStore", txCreate, storeCreate},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				store := factory(t)
 				ctx := t.Context()
 
 				zero := &metadata.FileAttr{Type: metadata.FileTypeDirectory}
-				first, err := tc.create(ctx, store, zero)
+				created, err := tc.first(ctx, store, zero)
 				if err != nil {
 					t.Fatalf("first CreateRootDirectory() failed: %v", err)
 				}
-				second, err := tc.create(ctx, store, zero)
+				recreated, err := tc.second(ctx, store, zero)
 				if err != nil {
 					t.Fatalf("second CreateRootDirectory() failed: %v", err)
 				}
-				if first.Mode != second.Mode {
-					t.Errorf("zero-mode root changed on re-create: %o then %o", first.Mode, second.Mode)
+				if created.Mode != recreated.Mode {
+					t.Errorf("zero-mode root changed when re-created through the other entry point: %o then %o",
+						created.Mode, recreated.Mode)
 				}
 			})
 		}
@@ -721,4 +727,13 @@ func testNamesOnlyMatchesWithAttrs(t *testing.T, factory StoreFactory) {
 			t.Errorf("resuming %v from a %v cursor yielded %v, want %v", c.second, c.first, got, paged)
 		}
 	}
+}
+
+// readRootForCache reads through the backend's cached path when it has one,
+// falling back to GetFile when it does not.
+func readRootForCache(ctx context.Context, store metadata.Store, handle metadata.FileHandle) (*metadata.File, error) {
+	if fr, ok := store.(fileForReadStore); ok {
+		return fr.GetFileForRead(ctx, handle)
+	}
+	return store.GetFile(ctx, handle)
 }

@@ -318,7 +318,7 @@ func (c *Core) CreateRootDirectory(ctx context.Context, shareName string, attr *
 	gid := attr.GID
 	mode := attr.Mode
 	if mode == 0 {
-		mode = 0o755
+		mode = metadata.DefaultRootMode
 	}
 
 	c.Log.Info("Creating root directory", "share", shareName, "uid", uid, "gid", gid)

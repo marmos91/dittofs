@@ -246,7 +246,7 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	// Complete root directory attributes with defaults
 	rootAttrCopy := *attr
 	if rootAttrCopy.Mode == 0 {
-		rootAttrCopy.Mode = defaultRootMode
+		rootAttrCopy.Mode = metadata.DefaultRootMode
 	}
 	now := time.Now()
 	if rootAttrCopy.Atime.IsZero() {
@@ -324,7 +324,7 @@ func (store *MemoryMetadataStore) Close() error {
 func reconcileRootAttrs(stored *metadata.FileAttr, configured *metadata.FileAttr) *metadata.FileAttr {
 	mode := configured.Mode
 	if mode == 0 {
-		mode = defaultRootMode
+		mode = metadata.DefaultRootMode
 	}
 	if stored.Mode == mode && stored.UID == configured.UID && stored.GID == configured.GID {
 		return stored
@@ -341,9 +341,3 @@ func reconcileRootAttrs(stored *metadata.FileAttr, configured *metadata.FileAttr
 	updated.Ctime = time.Now()
 	return &updated
 }
-
-// defaultRootMode is the mode a share root gets when the caller configures
-// none. Every backend and both entry points must agree on it: the reconcile
-// compares a stored mode against it, so two entry points with different
-// defaults would each rewrite what the other wrote.
-const defaultRootMode = 0o755

@@ -1245,7 +1245,7 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 	// Create new root directory
 	rootAttrCopy := *attr
 	if rootAttrCopy.Mode == 0 {
-		rootAttrCopy.Mode = defaultRootMode
+		rootAttrCopy.Mode = metadata.DefaultRootMode
 	}
 	now := time.Now()
 	if rootAttrCopy.Atime.IsZero() {
