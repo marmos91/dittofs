@@ -20,6 +20,7 @@
 [![Lint](https://github.com/marmos91/dittofs/actions/workflows/lint.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/lint.yml)
 [![POSIX Tests](https://github.com/marmos91/dittofs/actions/workflows/posix-tests.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/posix-tests.yml)
 [![SMB Conformance](https://github.com/marmos91/dittofs/actions/workflows/smb-conformance.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/smb-conformance.yml)
+[![NFS Conformance](https://github.com/marmos91/dittofs/actions/workflows/nfs-pynfs.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/nfs-pynfs.yml)
 
 **A modular virtual filesystem written entirely in Go**
 

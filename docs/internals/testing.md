@@ -33,7 +33,8 @@ For the end-user guide to connecting a Windows client, see
 - [Conformance test suites](#conformance-test-suites)
   - [WPTS (Windows Protocol Test Suites)](#wpts-windows-protocol-test-suites)
   - [smbtorture (Samba Test Suite)](#smbtorture-samba-test-suite)
-  - [Running both suites](#running-both-suites)
+  - [Running both SMB suites](#running-both-smb-suites)
+  - [pynfs (NFSv4 protocol)](#pynfs-nfsv4-protocol)
 - [Device-loss crash testing (dm-flakey)](#device-loss-crash-testing-dm-flakey)
 
 ---
@@ -389,7 +390,8 @@ lock, for the reason above) is `TestNLMSystemRpcbindRegistration` in `test/e2e/n
 
 ## Conformance test suites
 
-DittoFS is validated against two industry-standard conformance test suites.
+DittoFS is validated against three industry-standard conformance test suites:
+two for SMB, one for NFSv4.
 
 ### WPTS (Windows Protocol Test Suites)
 
@@ -416,15 +418,39 @@ DittoFS is validated against two industry-standard conformance test suites.
   make smbtorture-quick  # Quick run (memory profile only)
   ```
 
-### Running both suites
+### Running both SMB suites
 
 ```bash
 cd test/smb-conformance
 make test smbtorture     # Run WPTS + smbtorture in sequence
 ```
 
-Both test suites run in CI via `.github/workflows/smb-conformance.yml` on every PR touching
+Both SMB suites run in CI via `.github/workflows/smb-conformance.yml` on every PR touching
 SMB-related code.
+
+### pynfs (NFSv4 protocol)
+
+The reference NFSv4 suite, and the only one that exercises the protocol rather than
+filesystem semantics: state, sessions, owners, locking and wire error codes. It is its own
+NFSv4 client, so it needs no kernel mount and no root — `test/posix/` and `test/e2e/` go
+through a kernel client, which only ever sends the subset of the protocol it needs.
+
+- **Suite:** pynfs NFSv4.0 (689 tests) and NFSv4.1 (269 tests)
+- **Known failures:** see
+  [`../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md)
+  and [`KNOWN_FAILURES_V41.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md)
+- **Baseline:** [`baseline-knfsd.md`](../../test/nfs-conformance/pynfs/baseline-knfsd.md) —
+  the same suite against the Linux kernel server, which is what distinguishes an assertion
+  no server satisfies from one DittoFS fails alone
+- **Run locally:**
+  ```bash
+  cd test/nfs-conformance/pynfs
+  ./run-pynfs.sh --minor-version 4.0     # provisions and tears down a server
+  ./run-pynfs.sh --minor-version 4.1
+  ```
+
+Runs in CI via `.github/workflows/nfs-pynfs.yml` on every non-docs PR. See
+[`test/nfs-conformance/pynfs/README.md`](../../test/nfs-conformance/pynfs/README.md).
 
 > Do not run two instances of the e2e or conformance suites concurrently — they share a Docker
 > container name and will collide. Run them serially and `docker rm -f` between runs if needed.
