@@ -24,7 +24,7 @@ func TestEngine_Flush_DurableLocalDefault_NoSyncRemote(t *testing.T) {
 		ctx := context.Background()
 		mem := remotememory.New()
 		mem.SetDurable(true)
-		fx := newCarveFixture(t, mem, DefaultBlockCarveBytes) // durable fs local, ManualSync, wired carve
+		fx := newCarveFixture(t, mem, defaultTestCarveBlockSize) // durable fs local, ManualSync, wired carve
 		bs, err := New(BlockStoreConfig{
 			Local:           fx.local,
 			Remote:          mem,

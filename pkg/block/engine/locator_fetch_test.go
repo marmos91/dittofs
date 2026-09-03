@@ -125,7 +125,7 @@ func TestDispatchRemoteFetch_SyncedStandaloneLocatorMissingFailsClosed(t *testin
 func TestDispatchRemoteFetch_CarvedChunkRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	mem := remotememory.New()
-	f := newCarveFixture(t, mem, DefaultBlockCarveBytes)
+	f := newCarveFixture(t, mem, defaultTestCarveBlockSize)
 
 	data := bytes.Repeat([]byte("carved-round-trip-"), 512)
 	hash := f.storeChunk(t, ctx, data)
