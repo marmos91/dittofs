@@ -313,10 +313,6 @@ func TestLockQuery_IsEmpty(t *testing.T) {
 
 	notEmpty4 := LockQuery{ShareName: "share"}
 	assert.False(t, notEmpty4.IsEmpty())
-
-	isLease := true
-	notEmpty5 := LockQuery{IsLease: &isLease}
-	assert.False(t, notEmpty5.IsEmpty())
 }
 
 func TestLockQuery_MatchesLock(t *testing.T) {
@@ -362,14 +358,6 @@ func TestLockQuery_MatchesLock(t *testing.T) {
 	// ShareName filter
 	assert.True(t, LockQuery{ShareName: "share1"}.MatchesLock(lease))
 	assert.False(t, LockQuery{ShareName: "share1"}.MatchesLock(byteRange))
-
-	// IsLease filter
-	isLeaseTrue := true
-	isLeaseFalse := false
-	assert.True(t, LockQuery{IsLease: &isLeaseTrue}.MatchesLock(lease))
-	assert.False(t, LockQuery{IsLease: &isLeaseTrue}.MatchesLock(byteRange))
-	assert.False(t, LockQuery{IsLease: &isLeaseFalse}.MatchesLock(lease))
-	assert.True(t, LockQuery{IsLease: &isLeaseFalse}.MatchesLock(byteRange))
 
 	// Combined filters
 	combinedQuery := LockQuery{
