@@ -45,14 +45,12 @@ type Meta struct {
 //
 // The production REMOTE tier no longer exposes this hash-keyed surface — it is
 // block-keyed via remote.RemoteBlockStore (packed blocks/<id> objects, #1414).
-// The remote s3/memory backends still implement Store, but only behind the
-// migration-only remote.LegacyCASStore path used to read and purge legacy
-// standalone cas/<hash> objects during the one-shot cas→blocks migration
-// (#1493). New production code must not depend on remote backends implementing
-// this interface.
+// The remote s3/memory backends still implement Store on their concrete types,
+// under the hash-keyed cas/<hash> layout. New production code must not depend on
+// remote backends implementing this interface.
 //
 // Implementations
-//   - pkg/block/remote/s3.Store, pkg/block/remote/memory.Store (legacy-CAS only)
+//   - pkg/block/remote/s3.Store, pkg/block/remote/memory.Store (hash-keyed only)
 //   - the compression / encryption decorators, which forward this surface
 //     inward through remote.Passthrough
 //

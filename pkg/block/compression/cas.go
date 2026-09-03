@@ -9,12 +9,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
-// Migration-only legacy standalone-CAS forwards (#1493 PR4): the compression
-// decorator's remote.LegacyCASStore implementation plus the hash-keyed
-// ReadBlockVerified it rides. ReadLegacyChunkVerified decodes the stored bytes
-// (and, further down the stack, decrypts) exactly as the old standalone read
-// path did. None of this is on the production RemoteStore surface. Delete when
-// the cas→blocks migration is retired.
+// The compression decorator's hash-keyed CAS forwards: ReadBlockVerified and the
+// operations it rides. None of this is on the production RemoteStore surface,
+// which is block-keyed.
 
 // ReadBlockVerified GETs the standalone object, decodes it, then re-verifies
 // the BLAKE3 hash over the plaintext. Streaming verification over the wire

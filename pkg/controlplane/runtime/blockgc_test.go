@@ -43,19 +43,11 @@ func (f *fakeRemoteStore) SealChunk(_ context.Context, _ block.ContentHash, plai
 	return plaintext, nil
 }
 
-// remote.LegacyCASStore
-func (f *fakeRemoteStore) WalkLegacyChunks(_ context.Context, _ func(block.ContentHash, int64) error) error {
-	return nil
-}
-func (f *fakeRemoteStore) ReadLegacyChunkVerified(_ context.Context, _ block.ContentHash) ([]byte, error) {
-	return nil, nil
-}
-func (f *fakeRemoteStore) DeleteLegacyChunk(_ context.Context, _ block.ContentHash) error { return nil }
-
 func (f *fakeRemoteStore) HealthCheck(_ context.Context) error { return nil }
 func (f *fakeRemoteStore) Healthcheck(_ context.Context) health.Report {
 	return health.Report{Status: health.StatusHealthy}
 }
+
 func (f *fakeRemoteStore) Close() error { return nil }
 
 // installCollectGarbageSpy replaces collectGarbageFn with a capturing spy
@@ -199,28 +191,6 @@ func TestRunBlockGC_NoRemoteShares(t *testing.T) {
 	if len(*captured) != 0 {
 		t.Fatalf("expected 0 GC calls with no remote shares, got %d", len(*captured))
 	}
-}
-
-// recordingLegacyRemote exposes a fixed legacy cas/ namespace and counts the
-// deletes a GC pass performs on it.
-type recordingLegacyRemote struct {
-	*fakeRemoteStore
-	objects []block.ContentHash
-	deleted int
-}
-
-func (r *recordingLegacyRemote) WalkLegacyChunks(_ context.Context, fn func(block.ContentHash, int64) error) error {
-	for _, h := range r.objects {
-		if err := fn(h, 16); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (r *recordingLegacyRemote) DeleteLegacyChunk(_ context.Context, _ block.ContentHash) error {
-	r.deleted++
-	return nil
 }
 
 // TestRunBlockGC_PropagatesRemoteTierErrorDetail asserts the server-wide sweep

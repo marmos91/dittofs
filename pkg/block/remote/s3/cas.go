@@ -14,12 +14,10 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
-// Migration-only legacy standalone-CAS accessors (#1493 PR4). This file is
-// the S3 backend's implementation of remote.LegacyCASStore and holds the only
-// surviving hash-keyed CAS operations (Put/Get/GetRange/Has/Head/Delete/Walk +
-// ReadBlockVerified). They are NOT part of the production RemoteStore surface —
-// they exist solely to read and purge legacy per-chunk "cas/" objects during
-// the one-shot cas→blocks startup migration. Delete this file (and the
+// The S3 backend's hash-keyed CAS operations (Put/Get/GetRange/Has/Head/
+// Delete/Walk + ReadBlockVerified), keyed by content hash under "cas/". These
+// are NOT part of the production RemoteStore surface, which is block-keyed;
+// they are reachable only on the concrete type. See also (the
 // legacy_cas_verifier.go helpers) when the migration is retired.
 
 // casPrefix is the CAS object-key prefix walked by Walk. Mirrors the

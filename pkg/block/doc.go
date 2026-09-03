@@ -15,7 +15,7 @@
 //     same-bytes Put, no opaque "block key" strings, every method
 //     takes a context.Context first. Implemented by:
 //     *pkg/block/remote/s3.Store and *pkg/block/remote/memory.Store
-//     (behind the migration-only legacy-CAS path), and by the
+//     (behind the hash-keyed CAS path), and by the
 //     compression / encryption decorators.
 //
 // The local random-write absorber tier (per-file append log + FastCDC
@@ -92,7 +92,6 @@
 //     from the store (local or remote).
 //   - ErrChunkContentMismatch — recomputed BLAKE3 disagreed with the
 //     expected ContentHash on read (fail-closed).
-//     rejected an input that did not match the legacy key shape.
 //   - ErrChunkRefMissing — ChunkRef.Hash referred to an absent
 //     FileChunk (mapped to NFS3ERR_IO / STATUS_DATA_ERROR by the
 //     adapter errmap).
