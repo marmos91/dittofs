@@ -35,26 +35,18 @@ func newLocatorFetchSyncer(t *testing.T) (*Syncer, *remotememory.Store, *metadat
 	return syncer, rem, ms
 }
 
-// TestDispatchRemoteFetch_StandaloneLocatorServedViaFallback: the cas→blocks
-// repack runs as a background pass, so a synced hash whose recorded locator is
-// still standalone (BlockID == "") is served
-// through the legacy CAS fallback — byte-identical — instead of being refused.
-// This is what lets a share serve immediately while the migration repacks in
-// the background.
-func TestDispatchRemoteFetch_StandaloneLocatorServedViaFallback(t *testing.T) {
+// TestDispatchRemoteFetch_PreBlockFormatLocatorIsRefused: a synced hash whose
+// recorded locator carries no BlockID was written by a release predating the
+// packed-block format. The reader for it is gone, so the fetch must fail closed
+// rather than fall through to an empty block key — an empty key resolves to a
+// bogus object and could surface as zeros.
+func TestDispatchRemoteFetch_PreBlockFormatLocatorIsRefused(t *testing.T) {
 	ctx := context.Background()
 	syncer, rem, ms := newLocatorFetchSyncer(t)
-	// Wire the block-keyed remote like production so the fallback can reach the
-	// legacy cas/ namespace through it.
 	syncer.SetRemoteBlockStore(rem)
 
 	data := bytes.Repeat([]byte{0xAB}, 4096)
 	hash := block.ContentHash(blake3.Sum256(data))
-	// Plant the legacy standalone cas/ object plus a standalone locator — the
-	// exact pre-flip state a not-yet-repacked synced hash carries.
-	if err := rem.PutLegacyChunk(ctx, hash, data); err != nil {
-		t.Fatalf("PutLegacyChunk: %v", err)
-	}
 	if err := ms.MarkSynced(ctx, hash, block.ChunkLocator{WireLength: int64(len(data))}); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
@@ -67,15 +59,15 @@ func TestDispatchRemoteFetch_StandaloneLocatorServedViaFallback(t *testing.T) {
 		t.Fatalf("standalone write resolved to block: %+v", loc)
 	}
 
-	key, got, err := syncer.dispatchRemoteFetch(ctx, &block.FileChunk{Hash: hash})
-	if err != nil {
-		t.Fatalf("dispatchRemoteFetch: want standalone fallback to serve, got err=%v", err)
+	_, got, err := syncer.dispatchRemoteFetch(ctx, &block.FileChunk{Hash: hash})
+	if err == nil {
+		t.Fatalf("pre-block-format locator was served (%d bytes); want a refusal", len(got))
 	}
-	if !bytes.Equal(got, data) {
-		t.Fatalf("dispatchRemoteFetch standalone fallback returned %d bytes, want the planted payload", len(got))
+	if !errors.Is(err, block.ErrChunkNotFound) {
+		t.Fatalf("dispatchRemoteFetch err = %v; want ErrChunkNotFound", err)
 	}
-	if key == "" {
-		t.Fatal("dispatchRemoteFetch key is empty; want a non-empty CAS key so the caller persists the bytes")
+	if got != nil {
+		t.Fatalf("refusal returned %d bytes; want none", len(got))
 	}
 }
 

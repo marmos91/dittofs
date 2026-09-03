@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	localmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/sqlite"
 )
@@ -126,38 +124,6 @@ func seedLiveAndOrphan(t *testing.T, st *sqlite.SQLiteMetadataStore) {
 	}
 }
 
-// TestSQLiteStartup_LegacyCASMigration_NoDeadlock drives the real block engine's
-// Store.Start against a sqlite-backed SyncedHashStore. Start runs the one-shot
-// legacy-CAS migration (migrateLegacyCASRemote) synchronously — the exact path
-// that blocked whole-server startup in #1552 — which enumerates synced hashes
-// and resolves each locator. With block-resident markers nothing is standalone,
-// so no repack happens, but the deadlock-prone enumerate+GetLocator pass still
-// runs against the single-connection pool.
-func TestSQLiteStartup_LegacyCASMigration_NoDeadlock(t *testing.T) {
-	st := newSQLiteStoreForDeadlockTest(t)
-	seedSyncedMarkers(t, st, "blk-live", 8)
-
-	local := localmemory.New()
-	rbs := remotememory.New()
-	fbs := newStubFileChunkStore()
-	syncer := NewSyncer(local, rbs, fbs, DefaultConfig())
-	syncer.SetRemoteBlockStore(rbs)
-
-	bs, err := New(BlockStoreConfig{
-		Local:           local,
-		Remote:          rbs,
-		Syncer:          syncer,
-		FileChunkStore:  fbs,
-		SyncedHashStore: st,
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	cleanupClose(t, "block store", bs.Close)
-
-	runBounded(t, "Store.Start (legacy-CAS migration)", bs.Start)
-}
-
 // TestSQLiteReconcile_NoDeadlock runs the read-only Reconcile reporter against a
 // real sqlite view. Reconcile enumerates synced hashes then resolves every
 // locator; on the single-connection pool a nested resolve would deadlock.
@@ -243,54 +209,5 @@ func TestSQLiteReconcile_LocatorResolutionIsSinglePass(t *testing.T) {
 	// so nothing serializes on the single sqlite connection per hash.
 	if view.getLocatorCall != 0 {
 		t.Errorf("GetLocator round trips = %d; want 0 (locator folded into EnumerateSynced) — regression of the #1554 N+1 fix", view.getLocatorCall)
-	}
-}
-
-// TestSQLiteStartup_MigrationDetectionIsSinglePass reproduces the #1554 cold-
-// start on the boot-critical path: Store.Start's one-shot legacy-CAS migration
-// runs its standalone-detection scan on every boot, before the API server binds.
-// With the locator folded into EnumerateSynced, detection is a single scan with
-// zero per-hash GetLocator round trips (was O(n) serial statements on the
-// MaxOpenConns(1) pool). Block-resident markers mean nothing is standalone, so
-// no repack runs — the point is the detection scan's round-trip shape.
-func TestSQLiteStartup_MigrationDetectionIsSinglePass(t *testing.T) {
-	st := newSQLiteStoreForDeadlockTest(t)
-	const n = 32
-	seedSyncedMarkers(t, st, "blk-live", n)
-	view := &countingMetaView{SQLiteMetadataStore: st}
-
-	local := localmemory.New()
-	rbs := remotememory.New()
-	fbs := newStubFileChunkStore()
-	syncer := NewSyncer(local, rbs, fbs, DefaultConfig())
-	syncer.SetRemoteBlockStore(rbs)
-
-	bs, err := New(BlockStoreConfig{
-		Local:           local,
-		Remote:          rbs,
-		Syncer:          syncer,
-		FileChunkStore:  fbs,
-		SyncedHashStore: view,
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	cleanupClose(t, "block store", bs.Close)
-
-	runBounded(t, "Store.Start (migration detection)", bs.Start)
-
-	// The migration detection scan now runs in a background goroutine; wait for
-	// it to finish before reading the call counters (avoids a race on
-	// countingMetaView and asserts on the completed scan).
-	<-bs.migrateDone
-
-	if view.enumerateCalls < 1 {
-		t.Errorf("EnumerateSynced calls = %d; want >=1 (migration detection scan ran)", view.enumerateCalls)
-	}
-	// The migration detection must resolve standalone-ness from the folded
-	// locator, never a per-hash GetLocator — the O(n) serial cost that delayed
-	// the :8080 bind past 120s on a large sqlite+S3 share.
-	if view.getLocatorCall != 0 {
-		t.Errorf("migration detection issued %d GetLocator round trips; want 0 (locator folded into the scan) — regression of the #1554 cold-start fix", view.getLocatorCall)
 	}
 }

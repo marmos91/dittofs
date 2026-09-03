@@ -15,7 +15,7 @@
 //     same-bytes Put, no opaque "block key" strings, every method
 //     takes a context.Context first. Implemented by:
 //     *pkg/block/remote/s3.Store and *pkg/block/remote/memory.Store
-//     (behind the migration-only legacy-CAS path), and by the
+//     (behind the hash-keyed CAS path), and by the
 //     compression / encryption decorators.
 //
 // The local random-write absorber tier (per-file append log + FastCDC
@@ -72,12 +72,12 @@
 // has run, the previous release can no longer read the result. The migration
 // warns about that before it starts.
 //
-// The offline .blk-to-CAS migration tool (`dfs migrate-to-cas`) shipped
-// through dittofs v0.21 and has been removed; shares still on the `.blk`
-// layout must be migrated with an older release before upgrading. The
-// follow-on cas->blocks conversion (standalone CAS objects into packed
-// blocks/<id> containers) is automatic: it runs in the background from
-// engine.Store.Start, is resumable and idempotent, and needs no tooling.
+// Two conversions into the current remote layout shipped and have since been
+// removed: the offline .blk-to-CAS tool (`dfs migrate-to-cas`, through v0.21)
+// and the automatic cas->blocks conversion that folded standalone CAS objects
+// into packed blocks/<id> containers. A share still on either older layout must
+// be staged through a release that carries them, or re-ingested; this build
+// refuses the reads rather than guessing.
 //
 // # Error sentinels
 //
@@ -85,15 +85,15 @@
 // errors.Is. See errors.go for full doc paragraphs and protocol-error
 // mappings.
 //
-// - ErrStopWalk — Walk callback early-exit signal.
+//   - ErrStopWalk — Walk callback early-exit signal.
 //   - ErrFutureFormat — a store refused on-disk state written by a
 //     newer release than this build can read.
 //   - ErrChunkNotFound — content-addressed chunk is absent
 //     from the store (local or remote).
 //   - ErrChunkContentMismatch — recomputed BLAKE3 disagreed with the
 //     expected ContentHash on read (fail-closed).
-//   - ErrCASKeyMalformed — ParseCASKey (migration-only, legacy_cas.go)
-//     rejected an input that did not match the legacy key shape.
+//   - ErrCASKeyMalformed — ParseCASKey (cas_key.go) rejected an input
+//     that did not match the "cas/" key shape.
 //   - ErrChunkRefMissing — ChunkRef.Hash referred to an absent
 //     FileChunk (mapped to NFS3ERR_IO / STATUS_DATA_ERROR by the
 //     adapter errmap).
@@ -111,14 +111,11 @@
 //     they claim.
 //   - engine: BlockStore engine composing local store + syncer +
 //     unified Cache + metadata.
-//   - chunker: FastCDC chunker used by both writes and by the
-//     migration tool.
-//   - migrate: Migration library and shared utilities (journal
-//     walk helpers, MigrateShareToCAS).
-//   - gc: Mark-sweep garbage collection, fail-closed against the
-//     union of live ContentHashes.
-//   - storetest: Legacy conformance test suites for higher-level
-//     FileChunkStore implementations.
+//   - journal: the append-log write-back store behind local/fs —
+//     records, shards, carve, eviction and GC.
+//   - chunker: the FastCDC chunker the carve pass runs over dirty
+//     ranges.
+//   - blockcodec: the packed-block wire framing.
 //
 // # Transitional-marker convention
 //

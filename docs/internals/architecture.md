@@ -1443,46 +1443,52 @@ Both fire off the random-write hot path.
 
 ## Migration & Block-Layout Routing
 
-DittoFS has had three block layouts (see the migration guide's table). Two
-transitions are handled at startup, per share, before the share serves.
+DittoFS has had three block layouts (see the migration guide's table). Neither
+transition into the current one is performed by this build any more: both
+conversions shipped, and both have been removed. A share still on an older
+layout must be staged through a release that still carries the conversion, or
+re-ingested.
 
-### Standalone CAS (v0.16-v0.21) → packed blocks: automatic
+### Standalone CAS (v0.16-v0.21) -> packed blocks: removed
 
 The current layout packs chunks into `blocks/<id>` container objects. A share
-carrying leftover standalone-CAS state — pre-flip per-chunk local files, remote
-`cas/` objects, or chunk locators that still point at standalone objects — is
-converted at `engine.Store.Start`, blocking until done, by
-`engine.Store.migrateLegacyCAS` (`pkg/block/engine/legacy_migration.go`):
+carrying leftover standalone-CAS state — remote `cas/` objects, or chunk
+locators that still point at standalone objects — is no longer converted. The
+conversion ran at `engine.Store.Start` through v0.31 and is gone; nothing
+replaces it, and there is no boot-time scan for the state it handled.
 
-1. **Phase L** imports pre-flip per-chunk local files into the local journal
-   (BLAKE3-verified, deduplicated) and deletes them
-   (`fs.FSStore.MigrateLegacyChunkFiles`).
-2. **Phase R** re-packs every chunk whose synced marker still carries a
-   standalone locator into `blocks/<id>` objects. Each block's record and all
-   its chunk-locator rewrites commit in **one metadata transaction**
-   (`metadata.DefaultCommitBlock`, last-wins locator overwrite), so a crash can
-   never leave a block record pointing at only some of its chunks.
-3. **Phase P** purges the now-unreferenced `cas/` namespace.
+The read path refuses that state rather than guessing, one chunk at a time:
 
-The migration is idempotent and resumable: a killed run converges on the next
-start (a crash between PutBlock and the commit leaves at most one orphan block
-object — the same class the live carver produces, reclaimed by the reconcile
-sweep — never a leaked record). Detection is state-free: an `EnumerateSynced`
-scan for standalone locators plus one remote LIST page. The legacy standalone
-layout is understood ONLY by this routine and the `remote.LegacyCASStore`
-accessors it drives; the live read path refuses a standalone locator as
-post-migration drift. If a share's remote is unreachable while standalone
-chunks remain, that share fails to start (its data would be unreadable anyway).
+- A synced locator with an empty `BlockID` fails closed with `ErrChunkNotFound`
+  (`engine.resolveAndReadChunk`), because an empty block id would otherwise
+  resolve to a bogus object key and could surface as zeros.
+- A `FileChunk` with a zero `Hash` predates content addressing entirely and is
+  refused for the same reason (`engine.dispatchRemoteFetch`).
 
-### Pre-v0.16 `.blk` → CAS: migrate with dittofs ≤ v0.21
+Both log what the operator has to do. **There is no boot signal**: such a share
+starts normally and fails reads as they arrive, which is why staging the upgrade
+matters more than it used to.
 
-The offline `.blk`→CAS tool (`migrate-to-cas`) shipped through v0.21 and
-has been removed. `newFSStore` still probes each share for the legacy `.blk`
-layout on open (a `.cas-migrated-v1` sentinel from an old run short-circuits
-the probe) and returns `block.ErrLegacyLayoutDetected`; the boot guard in
+Two consequences worth knowing:
+
+- Pre-flip `cas/` objects are never purged. The GC sweep reclaims only what a
+  share resolves to a block locator, and fails toward leaking rather than
+  deleting an object it cannot attribute, so leftover `cas/` objects are billed
+  until removed by hand.
+- The hash-keyed CAS accessors (`Put`/`Get`/`GetRange`/`Has`/`Head`/`Delete`/
+  `Walk` + `ReadBlockVerified`) survive on the concrete backends and decorators,
+  reachable through `remote.CASInner`. They are not part of the block-keyed
+  production `RemoteStore` surface and have no production caller.
+
+### Pre-v0.16 `.blk` -> CAS: migrate with dittofs <= v0.21
+
+The offline `.blk`->CAS tool (`migrate-to-cas`) shipped through v0.21 and has
+been removed. `newFSStore` still probes each share for the legacy `.blk` layout
+on open (a `.cas-migrated-v1` sentinel from an old run short-circuits the probe)
+and returns `block.ErrLegacyLayoutDetected`; the boot guard in
 `cmd/dfs/commands/start.go` unwraps it, prints a directive to migrate with an
-earlier release, and exits 78 (`EX_CONFIG`). After that migration + upgrade,
-the automatic cas→blocks conversion above finishes the job.
+earlier release, and exits 78 (`EX_CONFIG`). Unlike the standalone-CAS case
+above, this one still refuses at boot rather than at read time.
 
 See [the migration guide](../guide/block-store-migration.md) for the operator
 runbook.

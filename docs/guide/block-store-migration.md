@@ -12,30 +12,20 @@ Current servers store file content as FastCDC chunks (BLAKE3-hashed,
 dedup-safe) packed into ~16 MiB block containers. What you need to do
 depends on the layout your data is on.
 
-## Standalone CAS (v0.16 – v0.21) → packed blocks: automatic
+## Standalone CAS (v0.16 – v0.21) → packed blocks: no longer supported
 
-Nothing to run. On startup, each share's block store detects leftover
-standalone-CAS state — pre-flip per-chunk local files, remote `cas/`
-objects, or chunk locators that still point at standalone objects — and
-converts it **before the share starts serving**:
+The automatic startup migration has been **removed**. A store still holding
+standalone-CAS state cannot be upgraded in place by this build.
 
-1. Local per-chunk files are imported into the local journal (the append-only
-   write-back cache; BLAKE3-verified, deduplicated) and deleted.
-2. Standalone remote chunks are re-packed into `blocks/<id>` containers.
-   Each container's chunk locators and block record commit in a single
-   metadata transaction, so a crash can never leave a half-pointed block.
-3. The now-unreferenced `cas/` namespace is purged.
+The read path no longer understands standalone objects. A chunk locator that
+still points at one fails closed with a chunk-not-found error rather than
+being repacked, and the `cas/` namespace is neither read nor purged — objects
+left there stay, billed and unreachable, until removed by hand
+(`aws s3 rm --recursive s3://<bucket>/cas/`).
 
-The migration is **idempotent and resumable**: if the process is killed
-mid-way, the next start picks up where it left off and converges. There is
-no flag, sentinel, or journal to manage. Expect the first start after an
-upgrade to take roughly (total standalone bytes ÷ remote throughput);
-chunks that are still cached locally are re-packed without downloading.
-
-If the share's remote is unreachable at startup and standalone chunks
-remain, the server refuses to start that share (the data would be
-unreadable anyway — the read path no longer understands standalone
-objects). Restore connectivity and start again.
+If you are carrying such a store, stage the upgrade through a release that
+still ships the migration, let it converge, and only then move to this build.
+Otherwise re-ingest the data.
 
 ## Path-indexed `.blk` (≤ v0.15): migrate with an older release first
 

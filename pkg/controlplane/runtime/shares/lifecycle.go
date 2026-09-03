@@ -328,18 +328,6 @@ func (s *Service) reserveShareName(name string) error {
 	return nil
 }
 
-// PendingShareRegistrations reports how many AddShare calls hold a name
-// reservation they have not yet published to the registry. Such a share is
-// invisible to DistinctRemoteStores even though its block store — and the
-// background legacy migration that block store starts — is already running, so
-// callers that must reason about every share on a remote have to treat a
-// non-zero count as "the share set is not knowable right now".
-func (s *Service) PendingShareRegistrations() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.reservations)
-}
-
 // releaseShareName drops an in-flight AddShare reservation. Idempotent.
 func (s *Service) releaseShareName(name string) {
 	s.mu.Lock()

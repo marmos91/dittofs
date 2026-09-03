@@ -6,8 +6,7 @@ import (
 	"testing"
 )
 
-// Tests for the migration-only legacy cas/ key helpers (legacy_cas.go).
-// Deleted with that file when the cas→blocks migration is retired.
+// Tests for the cas/ key helpers in cas_key.go.
 
 // TestFormatCASKey asserts FormatCASKey returns exactly
 // "cas/{hex[0:2]}/{hex[2:4]}/{hex}" for both the all-zero hash and a

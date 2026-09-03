@@ -8,53 +8,12 @@ import (
 	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/remote"
 )
 
-// Migration-only legacy standalone-CAS accessors (#1493 PR4). This file is
-// the memory backend's implementation of remote.LegacyCASStore and holds the
-// only surviving hash-keyed CAS operations (Put/Get/GetRange/Has/Head/Delete/
-// Walk + ReadBlockVerified). They are NOT part of the production RemoteStore
-// surface — they back the legacy per-chunk "cas/" namespace used by the one-shot
-// cas→blocks startup migration and its test fixtures. Delete when the migration
-// is retired.
-
-var _ remote.LegacyCASStore = (*Store)(nil)
-
-// WalkLegacyChunks implements remote.LegacyCASStore.
-func (s *Store) WalkLegacyChunks(ctx context.Context, fn func(hash block.ContentHash, size int64) error) error {
-	return s.Walk(ctx, func(hash block.ContentHash, meta block.Meta) error {
-		return fn(hash, meta.Size)
-	})
-}
-
-// ReadLegacyChunkVerified implements remote.LegacyCASStore. The hash is both
-// the lookup key and the expected plaintext BLAKE3 (they coincide on the
-// standalone layout).
-func (s *Store) ReadLegacyChunkVerified(ctx context.Context, hash block.ContentHash) ([]byte, error) {
-	return s.ReadBlockVerified(ctx, hash, hash)
-}
-
-// DeleteLegacyChunk implements remote.LegacyCASStore.
-func (s *Store) DeleteLegacyChunk(ctx context.Context, hash block.ContentHash) error {
-	return s.Delete(ctx, hash)
-}
-
-// PutLegacyChunk plants a pre-flip standalone object. Fixture generator for
-// cas→blocks migration tests — the production writer for this layout is gone.
-func (s *Store) PutLegacyChunk(ctx context.Context, hash block.ContentHash, sealed []byte) error {
-	return s.Put(ctx, hash, sealed)
-}
-
-// CountLegacyChunks reports how many standalone objects remain. Test support.
-func (s *Store) CountLegacyChunks(ctx context.Context) (int, error) {
-	n := 0
-	err := s.WalkLegacyChunks(ctx, func(block.ContentHash, int64) error {
-		n++
-		return nil
-	})
-	return n, err
-}
+// The memory backend's hash-keyed CAS operations (Put/Get/GetRange/Has/Head/
+// Delete/Walk + ReadBlockVerified), keyed by content hash under "cas/". They
+// are NOT part of the production RemoteStore surface, which is block-keyed;
+// they are reachable only on the concrete type, and today only from tests.
 
 // Put writes data under the CAS-shaped key derived from hash. The
 // in-memory backend stamps time.Now() (via nowFn) into LastModified at
