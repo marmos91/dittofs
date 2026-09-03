@@ -145,6 +145,63 @@ var clientQueries = storesql.ClientQueries{
 
 func (dialect) Recovery() *storesql.RecoveryQueries { return &recoveryQueries }
 
+func (dialect) Durable() *storesql.DurableQueries { return &durableQueries }
+
+var durableQueries = storesql.DurableQueries{
+	Put: `
+		INSERT INTO durable_handles (` + storesql.DurableHandleInsertColumns + `)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)
+		ON CONFLICT (id) DO UPDATE SET
+			file_id = EXCLUDED.file_id,
+			path = EXCLUDED.path,
+			share_name = EXCLUDED.share_name,
+			desired_access = EXCLUDED.desired_access,
+			granted_access = EXCLUDED.granted_access,
+			share_access = EXCLUDED.share_access,
+			create_options = EXCLUDED.create_options,
+			metadata_handle = EXCLUDED.metadata_handle,
+			payload_id = EXCLUDED.payload_id,
+			oplock_level = EXCLUDED.oplock_level,
+			lease_key = EXCLUDED.lease_key,
+			lease_state = EXCLUDED.lease_state,
+			create_guid = EXCLUDED.create_guid,
+			app_instance_id = EXCLUDED.app_instance_id,
+			username = EXCLUDED.username,
+			session_key_hash = EXCLUDED.session_key_hash,
+			is_v2 = EXCLUDED.is_v2,
+			created_at = EXCLUDED.created_at,
+			disconnected_at = EXCLUDED.disconnected_at,
+			timeout_ms = EXCLUDED.timeout_ms,
+			server_start_time = EXCLUDED.server_start_time,
+			delete_pending = EXCLUDED.delete_pending,
+			parent_handle = EXCLUDED.parent_handle,
+			file_name = EXCLUDED.file_name,
+			is_directory = EXCLUDED.is_directory,
+			position_info = EXCLUDED.position_info,
+			original_file_id = EXCLUDED.original_file_id,
+			requested_alloc_size = EXCLUDED.requested_alloc_size,
+			lease_epoch = EXCLUDED.lease_epoch,
+			is_persistent = EXCLUDED.is_persistent,
+			client_guid = EXCLUDED.client_guid`,
+	Get:             `SELECT ` + storesql.DurableHandleColumns + ` FROM durable_handles WHERE id = ?1`,
+	GetByFileID:     `SELECT ` + storesql.DurableHandleColumns + ` FROM durable_handles WHERE file_id = ?1 ORDER BY id LIMIT 1`,
+	GetByCreateGuid: `SELECT ` + storesql.DurableHandleColumns + ` FROM durable_handles WHERE create_guid = ?1 ORDER BY id LIMIT 1`,
+	Consume:         `DELETE FROM durable_handles WHERE id = ?1 RETURNING ` + storesql.DurableHandleColumns,
+
+	ListByAppInstanceId: `SELECT ` + storesql.DurableHandleColumns + ` FROM durable_handles WHERE app_instance_id = ?1 ORDER BY created_at`,
+	ListByFileHandle:    `SELECT ` + storesql.DurableHandleColumns + ` FROM durable_handles WHERE metadata_handle = ?1 ORDER BY created_at`,
+	List:                `SELECT ` + storesql.DurableHandleColumns + ` FROM durable_handles ORDER BY created_at`,
+	ListByShare:         `SELECT ` + storesql.DurableHandleColumns + ` FROM durable_handles WHERE share_name = ?1 ORDER BY created_at`,
+
+	Delete:     `DELETE FROM durable_handles WHERE id = ?1`,
+	DeleteByID: `DELETE FROM durable_handles WHERE id = ?1`,
+
+	ExpiryCandidates: `SELECT id, disconnected_at, timeout_ms FROM durable_handles`,
+	// DeleteExpired is deliberately empty: modernc stores time.Time in a
+	// textual layout SQLite's date functions cannot parse, so the sqlite store
+	// computes the deadline in Go over ExpiryCandidates instead.
+}
+
 var recoveryQueries = storesql.RecoveryQueries{
 	Put: `
 		INSERT INTO v4_client_recovery (
