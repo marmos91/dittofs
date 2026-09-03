@@ -170,8 +170,12 @@ func TestSetInfo_HardlinkReplace_ReclaimsReplacedPayload(t *testing.T) {
 	}
 
 	if exists(victimPayload) {
-		size, _ := bs.GetSize(ctx, victimPayload)
-		t.Errorf("replaced payload %q still holds %d live bytes after the hardlink replace", victimPayload, size)
+		size, sizeErr := bs.GetSize(ctx, victimPayload)
+		if sizeErr != nil {
+			t.Errorf("replaced payload %q still present after the hardlink replace (size unreadable: %v)", victimPayload, sizeErr)
+		} else {
+			t.Errorf("replaced payload %q still holds %d live bytes after the hardlink replace", victimPayload, size)
+		}
 	}
 	if !exists(srcPayload) {
 		t.Errorf("linked file's payload %q was dropped by the hardlink replace", srcPayload)
