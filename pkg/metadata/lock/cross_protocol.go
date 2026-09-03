@@ -207,11 +207,7 @@ func CheckNLMLocksForLeaseConflict(lockStore LockStore, ctx context.Context, han
 		return false
 	}
 
-	isLease := false
-	locks, err := lockStore.ListLocks(ctx, LockQuery{
-		FileID:  handleKey,
-		IsLease: &isLease,
-	})
+	locks, err := lockStore.ListLocks(ctx, LockQuery{FileID: handleKey})
 	if err != nil {
 		logger.Warn("CheckNLMLocksForLeaseConflict: failed to query NLM locks",
 			"handleKey", handleKey,

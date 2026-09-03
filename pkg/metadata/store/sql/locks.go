@@ -245,10 +245,6 @@ func (c *Core) DeleteLock(ctx context.Context, lockID string) error {
 }
 
 // ListLocks returns the locks matching query.
-//
-// The IsLease filter is not applied here: no backend implements it, and every
-// caller re-classifies the rows it gets back. A query that sets it is answered
-// as if it had not.
 func (c *Core) ListLocks(ctx context.Context, query lock.LockQuery) ([]*lock.PersistedLock, error) {
 	where, args := c.D.Locks().ListWhere(query)
 
