@@ -17,17 +17,14 @@ import (
 
 // TestStore_BlockStoreConformance runs the unified
 // BlockStoreConformance suite against the in-memory remote backend.
-// The remote backends expose the hash-keyed Store surface only behind
-// the legacy-CAS path, so BlockStoreConformance runs here.
+// The remote backends expose the hash-keyed Store surface only on the concrete
+// type, so BlockStoreConformance runs here.
 //
 // The inline TestStore_* tests below remain in place as a fine-grained
 // per-method baseline (data-isolation defensive copies, closed-store
 // rejection paths) — they exercise backend-specific behaviors that are not
-// part of the unified contract. The legacy standalone-CAS verified-read
-// coverage lives in legacy_cas_migration_test.go.
-//
-// -07 lands the missing Has() method on the remote-memory
-// *Store; until then the factory return type does not type-check.
+// part of the unified contract. The verified-read coverage lives in
+// cas_test.go.
 func TestStore_BlockStoreConformance(t *testing.T) {
 	factory := func(t *testing.T) (block.Store, func()) {
 		t.Helper()

@@ -12,15 +12,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journal"
 )
 
-// carveBlockSize returns the configured target block size, falling back to the
-// default when unset. Retained for the cas→blocks migration repacker.
-func (m *Syncer) carveBlockSize() int64 {
-	if m.config.BlockCarveBytes > 0 {
-		return m.config.BlockCarveBytes
-	}
-	return DefaultBlockCarveBytes
-}
-
 // carveDispatcher is the background carve loop. Every UploadInterval it asks the
 // journal-backed local store to pack its eligible dirty ranges into remote
 // blocks (journal.Carve applies its own age/size batching gate). The journal

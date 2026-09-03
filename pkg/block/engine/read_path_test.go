@@ -11,9 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/compression"
 	"github.com/marmos91/dittofs/pkg/block/encryption"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // TestReadPath_BlockLocator_Plaintext verifies that fetchResolvedBlock routes a
@@ -118,52 +116,6 @@ func TestReadPath_BlockLocator_ThroughCompressEncrypt(t *testing.T) {
 	}
 	if !bytes.Equal(got, data) {
 		t.Fatal("fetchResolvedBlock round-trip mismatch (compress+encrypt remote)")
-	}
-}
-
-// TestReadPath_StandaloneLocatorServedViaFallback: a synced hash whose recorded
-// locator is still standalone (BlockID == "") — a chunk the now-background
-// cas→blocks migration has not repacked yet — is served
-// through the legacy CAS fallback, byte-identical, instead of being refused.
-// This is what lets the share serve immediately while the migration runs in the
-// background. The genuine-data-loss case (bytes resident nowhere) is covered by
-// TestReadPath_StandaloneLocatorMissingEverywhere below.
-func TestReadPath_StandaloneLocatorServedViaFallback(t *testing.T) {
-	ctx := context.Background()
-	mem := remotememory.New()
-
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	local, err := fs.NewWithOptions(t.TempDir(), 0, metadatamemory.NewMemoryMetadataStoreWithDefaults(), fs.FSStoreOptions{})
-	if err != nil {
-		t.Fatalf("fs.NewWithOptions: %v", err)
-	}
-	t.Cleanup(func() { _ = local.Close() })
-
-	syncer := NewSyncer(local, mem, ms, DefaultConfig())
-	syncer.SetSyncedHashStore(ms)
-	// Wire the block-keyed remote like production (shares/service.go) and
-	// carveFixture do — it's the object the legacy-CAS fallback reads through.
-	syncer.SetRemoteBlockStore(mem)
-
-	data := []byte("cas-back-compat-payload")
-	h := block.ContentHash(blake3.Sum256(data))
-
-	// Plant the legacy standalone cas/ object (a pre-#1414 upload shape) plus a
-	// standalone locator (BlockID == "") — the exact pre-flip state a synced
-	// hash carries before the background migration repacks it.
-	if err := mem.PutLegacyChunk(ctx, h, data); err != nil {
-		t.Fatalf("PutLegacyChunk: %v", err)
-	}
-	if err := ms.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
-		t.Fatalf("MarkSynced: %v", err)
-	}
-
-	got, err := syncer.fetchResolvedBlock(ctx, &block.FileChunk{ID: "share/standalone/0", Hash: h}, hydrateSpan{})
-	if err != nil {
-		t.Fatalf("fetchResolvedBlock: want standalone fallback to serve, got err=%v", err)
-	}
-	if !bytes.Equal(got, data) {
-		t.Fatalf("fetchResolvedBlock standalone fallback returned %d bytes, want the planted payload", len(got))
 	}
 }
 

@@ -148,19 +148,6 @@ func remoteForShare(t *testing.T, rt *Runtime) (remote.RemoteStore, remote.Remot
 	return rs, rbs
 }
 
-func countCAS(t *testing.T, rs remote.RemoteStore) int {
-	t.Helper()
-	legacy, ok := rs.(remote.LegacyCASStore)
-	if !ok {
-		t.Fatalf("remote store %T does not implement LegacyCASStore", rs)
-	}
-	n := 0
-	if err := legacy.WalkLegacyChunks(context.Background(), func(block.ContentHash, int64) error { n++; return nil }); err != nil {
-		t.Fatalf("WalkLegacyChunks (cas count): %v", err)
-	}
-	return n
-}
-
 func countBlocks(t *testing.T, rbs remote.RemoteBlockStore) int {
 	t.Helper()
 	n := 0
@@ -239,20 +226,11 @@ func TestBlocksFlip_NewWriteCarvesToBlocks(t *testing.T) {
 		t.Fatalf("DrainAllUploads: %v", err)
 	}
 
-	rs, rbs := remoteForShare(t, rt)
+	_, rbs := remoteForShare(t, rt)
 
 	if got := countBlocks(t, rbs); got == 0 {
 		t.Fatalf("no block object created — carve did not run (flip not wired); blocks=%d", got)
 	}
-	// Definitive proof mirrorChunk was never called on the new write path: its
-	// ONLY observable output is a standalone cas/<hash> PUT (remoteStore.Put).
-	// Zero cas objects with a block present means every chunk routed through the
-	// carver, never the legacy standalone mirror. (SyncCounts is NOT a spy here:
-	// the carve commit path shares the completedSyncs counter with mirrorChunk.)
-	if got := countCAS(t, rs); got != 0 {
-		t.Fatalf("new write produced %d cas/ object(s) — mirrorChunk ran (flip not wired)", got)
-	}
-
 	// Carve writes the per-file FileChunk manifest rows with populated content
 	// hashes. Under the journal model the journal owns the local bytes
 	// (BlockChunkCommit.Local is always zero, no LocalChunkIndex), so the old
