@@ -140,4 +140,9 @@ jobs:
             exit 1
           fi
 
+          # ponytail: a project counts as extracted even when individual packages
+          # inside it fail to resolve, which is the extractor's own definition of
+          # success; proving that every operator file reached the database would
+          # mean running a QL query against the finalized one. Upgrade to that if
+          # a package-level gap ever ships.
           echo "the Go extractor discovered k8s/dittofs-operator and reported no extraction failures"
