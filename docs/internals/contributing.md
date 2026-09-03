@@ -519,6 +519,8 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 | `smb-conformance.yml` | PR (memory), push (all), weekly | WPTS BVT + smbtorture + Kerberos | ~20 min |
 | `smb-client-compat.yml` | push, weekly | Windows/macOS/Linux SMB client testing | ~10 min |
 | `posix-tests.yml` | push, weekly | POSIX compliance (pjdfstest) | ~15 min |
+| `nfs-pynfs.yml` | PR, push, nightly | NFSv4 protocol conformance (pynfs) | ~20 min |
+| `nfs-kerberos.yml` | PR (krb/NFS paths), push, nightly | NFS `sec=krb5` mount interop | ~10 min |
 | `operator-tests.yml` | push, weekly | Operational scenario tests | ~10 min |
 
 ### What Runs on PR (Fast, Must-Pass Before Merge)
@@ -529,6 +531,7 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 - **unit-tests.yml** -- All unit tests with race detection
 - **windows-build.yml** -- Windows cross-compilation verification
 - **smb-conformance.yml** -- Memory-only WPTS BVT + memory-only smbtorture (fast feedback)
+- **nfs-pynfs.yml** -- NFSv4.0 + NFSv4.1 protocol conformance (memory + postgres-s3)
 - **e2e-tests.yml** -- Full E2E suite including SMB3, cross-protocol, and Kerberos tests
 
 ### What Runs on Push to Develop (Comprehensive)

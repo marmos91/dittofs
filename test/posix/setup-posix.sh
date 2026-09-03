@@ -8,7 +8,7 @@
 # 4. Mounts the NFS share
 #
 # Usage:
-#   ./setup-posix.sh [config-type] [--nfs-version 3|4|4.0|4.1]
+#   ./setup-posix.sh [config-type] [--nfs-version 3|4|4.0|4.1] [--no-mount]
 #
 # Config types:
 #   memory         - Memory metadata store (default)
@@ -24,10 +24,15 @@
 #   4.0 - NFSv4.0 (explicit minor version)
 #   4.1 - NFSv4.1
 #
+# --no-mount provisions the server but skips the NFS mount, for clients that
+# speak the protocol themselves (pynfs). Nothing then needs privilege, so the
+# root check is skipped too.
+#
 # Example:
 #   sudo ./setup-posix.sh memory
 #   sudo ./setup-posix.sh memory --nfs-version 4
 #   sudo ./setup-posix.sh badger --nfs-version 4.1
+#   ./setup-posix.sh memory --no-mount
 
 set -euo pipefail
 
@@ -37,6 +42,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Parse arguments: first positional arg is config type, then named params
 CONFIG_TYPE="memory"
 NFS_VERSION="3"
+NO_MOUNT=false
 
 # Parse positional and named arguments
 POSITIONAL_ARGS=()
@@ -50,21 +56,29 @@ while [[ $# -gt 0 ]]; do
             NFS_VERSION="${1#*=}"
             shift
             ;;
+        --no-mount)
+            NO_MOUNT=true
+            shift
+            ;;
         --help|-h)
-            echo "Usage: $0 [config-type] [--nfs-version 3|4|4.0|4.1]"
+            echo "Usage: $0 [config-type] [--nfs-version 3|4|4.0|4.1] [--no-mount]"
             echo ""
             echo "Config types: memory (default), badger, postgres, memory-content, cache-s3, postgres-s3"
             echo "NFS versions: 3 (default), 4, 4.0, 4.1"
+            echo ""
+            echo "Options:"
+            echo "  --no-mount   Provision the server but do not mount (does not need root)"
             echo ""
             echo "Examples:"
             echo "  sudo $0 memory                     # NFSv3 with memory stores"
             echo "  sudo $0 memory --nfs-version 4     # NFSv4.0 with memory stores"
             echo "  sudo $0 badger --nfs-version 4.1   # NFSv4.1 with BadgerDB stores"
+            echo "  $0 memory --no-mount               # server only, for pynfs"
             exit 0
             ;;
         -*)
             echo "Unknown option: $1"
-            echo "Usage: $0 [config-type] [--nfs-version 3|4|4.0|4.1]"
+            echo "Usage: $0 [config-type] [--nfs-version 3|4|4.0|4.1] [--no-mount]"
             exit 1
             ;;
         *)
@@ -116,10 +130,23 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $*"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
-# Check if running as root
-if [[ $EUID -ne 0 ]]; then
+# Mounting is the only step that needs privilege.
+if [[ $EUID -ne 0 && "$NO_MOUNT" != true ]]; then
     log_error "This script must be run as root (sudo)"
     exit 1
+fi
+
+# An unprivileged run cannot clean up after a previous sudo run: the state under
+# /tmp is root-owned, and the failure would otherwise surface much later as a
+# confusing permission error from rm or from a redirection.
+if [[ $EUID -ne 0 ]]; then
+    for path in "$DATA_DIR" /tmp/dittofs-posix-server.log /tmp/dittofs-server.pid; do
+        if [[ -e "$path" && ! -w "$path" ]]; then
+            log_error "$path exists and is not writable by $(id -un) — a previous run left root-owned state."
+            log_error "Clear it first:  sudo $SCRIPT_DIR/teardown-posix.sh"
+            exit 1
+        fi
+    done
 fi
 
 # Check if config file exists
@@ -147,7 +174,7 @@ cleanup_existing() {
     log_info "Cleaning up existing state..."
 
     # Unmount if mounted
-    if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
+    if [[ "$NO_MOUNT" != true ]] && mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
         log_info "Unmounting $MOUNT_POINT"
         umount -f "$MOUNT_POINT" 2>/dev/null || true
     fi
@@ -397,19 +424,31 @@ main() {
     cleanup_existing
     start_server
     configure_via_api
-    mount_nfs
+
+    if [[ "$NO_MOUNT" != true ]]; then
+        mount_nfs
+    fi
 
     echo ""
     log_info "Setup complete!"
     log_info ""
-    log_info "Mount point: $MOUNT_POINT"
+    if [[ "$NO_MOUNT" == true ]]; then
+        log_info "Server:      localhost:${NFS_PORT}, share /export (not mounted)"
+    else
+        log_info "Mount point: $MOUNT_POINT"
+    fi
     log_info "NFS version: NFSv${NFS_VERSION}"
     log_info "Server log:  /tmp/dittofs-posix-server.log"
     log_info "Data dir:    $DATA_DIR"
     log_info ""
-    log_info "To run POSIX tests:"
-    log_info "  cd $MOUNT_POINT"
-    log_info "  sudo env PATH=\"\$PATH\" $SCRIPT_DIR/run-posix.sh"
+    if [[ "$NO_MOUNT" == true ]]; then
+        log_info "To run pynfs protocol tests:"
+        log_info "  $REPO_ROOT/test/nfs-conformance/pynfs/run-pynfs.sh --no-setup"
+    else
+        log_info "To run POSIX tests:"
+        log_info "  cd $MOUNT_POINT"
+        log_info "  sudo env PATH=\"\$PATH\" $SCRIPT_DIR/run-posix.sh"
+    fi
     log_info ""
     log_info "To clean up:"
     log_info "  sudo $SCRIPT_DIR/teardown-posix.sh"
