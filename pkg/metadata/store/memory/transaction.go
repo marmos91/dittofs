@@ -714,7 +714,8 @@ func (tx *memoryTransaction) CreateRootDirectory(ctx context.Context, shareName 
 		}
 	}
 
-	// Check if root already exists - if so, just return success (idempotent)
+	// An existing root is reconciled against the configured attributes rather
+	// than returned as it stands (see reconcileRootAttrs).
 	if existingData, exists := tx.store.files[key]; exists {
 		_, id, err := metadata.DecodeFileHandle(rootHandle)
 		if err != nil {
@@ -723,18 +724,22 @@ func (tx *memoryTransaction) CreateRootDirectory(ctx context.Context, shareName 
 				Message: "failed to decode root handle",
 			}
 		}
+
+		reconciled := reconcileRootAttrs(existingData.Attr, attr)
+		tx.store.files[key] = &fileData{Attr: reconciled, ShareName: existingData.ShareName}
+
 		return &metadata.File{
 			ID:        id,
 			ShareName: shareName,
 			Path:      "/",
-			FileAttr:  *existingData.Attr,
+			FileAttr:  *reconciled,
 		}, nil
 	}
 
 	// Complete root directory attributes with defaults
 	rootAttrCopy := *attr
 	if rootAttrCopy.Mode == 0 {
-		rootAttrCopy.Mode = 0755
+		rootAttrCopy.Mode = metadata.DefaultRootMode
 	}
 	now := time.Now()
 	if rootAttrCopy.Atime.IsZero() {
