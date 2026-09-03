@@ -135,14 +135,19 @@ SERVER_STARTED=false
 # a scratch dir: running this suite must not overwrite a developer's real
 # dfsctl session, which it otherwise would now that --no-mount lets it run as an
 # ordinary user rather than only under sudo.
-DFSCTL_HOME="$(mktemp -d)"
+# An unchecked mktemp is worse than none: an empty XDG_CONFIG_HOME resolves
+# straight back to the real config directory, which is what this prevents.
+if ! DFSCTL_HOME="$(mktemp -d)" || [[ -z "$DFSCTL_HOME" ]]; then
+    log_error "Could not create a scratch config directory for dfsctl."
+    exit 1
+fi
 export XDG_CONFIG_HOME="$DFSCTL_HOME"
 
 # teardown-posix.sh unmounts, so it insists on root. Nothing was mounted here,
 # so fall back to stopping the server directly rather than blocking on a sudo
 # password prompt on a developer machine.
 cleanup() {
-    rm -rf "$DFSCTL_HOME"
+    [[ -n "${DFSCTL_HOME:-}" ]] && rm -rf "$DFSCTL_HOME"
     [[ "$SERVER_STARTED" == true && "$KEEP" != true ]] || return 0
     log "Stopping DittoFS..."
     if [[ $EUID -eq 0 ]]; then
@@ -193,8 +198,10 @@ PYNFS_ARGS=(
     # reads only the final results block.
     -v
 )
-# shellcheck disable=SC2206  # --tests is a deliberate word-split list of codes
-PYNFS_ARGS+=($TESTS)
+# --tests is a deliberate word-split list of codes, but it must not glob: a
+# selector like "LOCK*" would otherwise expand against the working directory.
+read -ra TESTS_ARGS <<< "$TESTS"
+PYNFS_ARGS+=("${TESTS_ARGS[@]}")
 
 log "Running pynfs ${MINOR_VERSION} against ${SERVER}${EXPORT_PATH}"
 log "  tests:   ${TESTS}"

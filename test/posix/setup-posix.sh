@@ -136,6 +136,19 @@ if [[ $EUID -ne 0 && "$NO_MOUNT" != true ]]; then
     exit 1
 fi
 
+# An unprivileged run cannot clean up after a previous sudo run: the state under
+# /tmp is root-owned, and the failure would otherwise surface much later as a
+# confusing permission error from rm or from a redirection.
+if [[ $EUID -ne 0 ]]; then
+    for path in "$DATA_DIR" /tmp/dittofs-posix-server.log /tmp/dittofs-server.pid; do
+        if [[ -e "$path" && ! -w "$path" ]]; then
+            log_error "$path exists and is not writable by $(id -un) — a previous run left root-owned state."
+            log_error "Clear it first:  sudo $SCRIPT_DIR/teardown-posix.sh"
+            exit 1
+        fi
+    done
+fi
+
 # Check if config file exists
 if [[ ! -f "$CONFIG_FILE" ]]; then
     log_error "Config file not found: $CONFIG_FILE"
