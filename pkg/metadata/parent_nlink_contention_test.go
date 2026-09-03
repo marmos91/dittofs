@@ -146,7 +146,7 @@ func TestConcurrentDirRenameNoParentLinkConflict(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			name := fmt.Sprintf("c-%d", i)
-			_, err := svc.Move(auth, fromHandle, name, toHandle, name)
+			_, _, err := svc.Move(auth, fromHandle, name, toHandle, name)
 			switch {
 			case err == nil:
 				atomic.AddInt64(&ok, 1)
