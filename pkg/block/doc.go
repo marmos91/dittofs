@@ -72,12 +72,12 @@
 // has run, the previous release can no longer read the result. The migration
 // warns about that before it starts.
 //
-// The offline .blk-to-CAS migration tool (`dfs migrate-to-cas`) shipped
-// through dittofs v0.21 and has been removed; shares still on the `.blk`
-// layout must be migrated with an older release before upgrading. The
-// follow-on cas->blocks conversion (standalone CAS objects into packed
-// blocks/<id> containers) is automatic: it runs in the background from
-// engine.Store.Start, is resumable and idempotent, and needs no tooling.
+// Two conversions into the current remote layout shipped and have since been
+// removed: the offline .blk-to-CAS tool (`dfs migrate-to-cas`, through v0.21)
+// and the automatic cas->blocks conversion that folded standalone CAS objects
+// into packed blocks/<id> containers. A share still on either older layout must
+// be staged through a release that carries them, or re-ingested; this build
+// refuses the reads rather than guessing.
 //
 // # Error sentinels
 //

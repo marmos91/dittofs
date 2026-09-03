@@ -17,8 +17,8 @@ import (
 // The S3 backend's hash-keyed CAS operations (Put/Get/GetRange/Has/Head/
 // Delete/Walk + ReadBlockVerified), keyed by content hash under "cas/". These
 // are NOT part of the production RemoteStore surface, which is block-keyed;
-// they are reachable only on the concrete type. See also (the
-// legacy_cas_verifier.go helpers) when the migration is retired.
+// they are reachable only on the concrete type. The verifying reader they read
+// through lives in verifier.go.
 
 // casPrefix is the CAS object-key prefix walked by Walk. Mirrors the
 // block.FormatCASKey output ("cas/{hh}/{hh}/{hex}").
@@ -57,8 +57,7 @@ func (s *Store) Put(ctx context.Context, hash block.ContentHash, data []byte) er
 }
 
 // Get reads a complete object from S3 by content hash. Returns raw bytes
-// WITHOUT BLAKE3 verification — the migration read path uses
-// ReadBlockVerified.
+// WITHOUT BLAKE3 verification — ReadBlockVerified is the checked read.
 func (s *Store) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
 	if err := s.checkClosed(); err != nil {
 		return nil, err

@@ -3,8 +3,6 @@ package runtime
 import (
 	"context"
 	"errors"
-	"fmt"
-	"slices"
 	"sync"
 	"time"
 
@@ -12,7 +10,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/remote"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -150,8 +147,6 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, dryRun bool, progress fun
 			// synced markers of past-grace dead chunks. Gated by the operator's
 			// gc.compaction_live_ratio (no-op when unset or on dry-run).
 			r.compactRemoteForEntry(ctx, entry, dryRun, gcDefaults, total)
-			// Reclaim the pre-flip cas/ namespace, gated on every share on this
-			// remote having finished the cas→blocks migration.
 		}()
 	}
 	// Sweep the local tier too, so one `gc` invocation reclaims orphaned
@@ -352,8 +347,6 @@ func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bo
 			// Compact partially-dead blocks on this remote (#1487), under the
 			// same per-remote lock and after the sweep. See runBlockGCSweep.
 			r.compactRemoteForEntry(ctx, entry, dryRun, gcDefaults, total)
-			// Reclaim the pre-flip cas/ namespace, gated on every share on this
-			// remote having finished the cas→blocks migration.
 		}()
 	}
 	// Sweep this share's local tier too (#1433).
@@ -534,8 +527,9 @@ func (r *Runtime) syncedHashStoreForShares(shares []string) engine.SyncedHashInd
 // reclaimer touches only its own share's block record, so decrementing all of
 // them is correct, not a double-decrement. A reclaimer error aborts the union
 // (fail-toward-leak — never a premature free of a live dedup sibling).
-// handled=false from every share means the hash is a standalone cas/<hash>
-// object and the sweep deletes it as before.
+// handled=false from every share means no share resolves a block locator for
+// the hash; the sweep keeps the marker and records the drift rather than
+// guessing at a remote key.
 type unionBlockReclaimer []*engine.BlockGCReclaimer
 
 var _ engine.BlockReclaimer = unionBlockReclaimer(nil)
@@ -614,72 +608,6 @@ func (r *Runtime) compactRemoteForEntry(ctx context.Context, entry shares.Remote
 	total.Errors += int(rep.Errors)
 }
 
-// errStandaloneLocator stops a synced-hash enumeration at the first standalone
-// locator. It never escapes purgeLegacyCASForEntry.
-var errStandaloneLocator = errors.New("standalone locator found")
-
-// sharesForRemote returns the share names currently registered against a
-// remote-store config, read fresh rather than from a caller's earlier snapshot.
-// Empty when no registered share references that config.
-func (r *Runtime) sharesForRemote(configID string) []string {
-	for _, e := range r.sharesSvc.DistinctRemoteStores() {
-		if e.ConfigID == configID {
-			return e.Shares
-		}
-	}
-	return nil
-}
-
-// unregisteredConfiguredShare names a share whose persisted row references a
-// remote-store config while the registry does not carry it — an unknown
-// metadata store, or any other AddShare failure LoadSharesFromStore only warned
-// about and skipped. Such a share never ran its cas→blocks migration, so its
-// chunks are exactly the standalone cas/<hash> objects a purge would delete.
-//
-// Empty when every configured share on the remote is registered, and for a
-// Runtime with no config store or a test-only remote binding, neither of which
-// has persisted rows to disagree about.
-func (r *Runtime) unregisteredConfiguredShare(ctx context.Context, configID string, registered []string) (string, error) {
-	if r.store == nil || configID == "" {
-		return "", nil
-	}
-	cfg, err := r.store.GetBlockStoreByID(ctx, configID)
-	if err != nil {
-		return "", fmt.Errorf("resolve remote block store %s: %w", configID, err)
-	}
-	remotes, err := r.store.ListBlockStores(ctx, models.BlockStoreKindRemote)
-	if err != nil {
-		return "", fmt.Errorf("list remote block stores: %w", err)
-	}
-	rows, err := r.store.ListShares(ctx)
-	if err != nil {
-		return "", fmt.Errorf("list configured shares: %w", err)
-	}
-	for _, sh := range rows {
-		ref := derefString(sh.RemoteBlockStoreID)
-		if ref == "" || slices.Contains(registered, sh.Name) {
-			continue
-		}
-		// Rows written before block stores were referenced by UUID hold the
-		// config name instead, and both forms resolve to this one store. A
-		// reference matching no remote at all is treated as this one's: it is
-		// most likely a stale name for a since-renamed config, and the share
-		// that carries it is exactly the one that failed to register.
-		if ref == configID || ref == cfg.Name || !knownRemoteRef(remotes, ref) {
-			return sh.Name, nil
-		}
-	}
-	return "", nil
-}
-
-// knownRemoteRef reports whether a share row's remote reference resolves to one
-// of the configured remote block stores, by UUID or by legacy name.
-func knownRemoteRef(remotes []*models.BlockStoreConfig, ref string) bool {
-	return slices.ContainsFunc(remotes, func(c *models.BlockStoreConfig) bool {
-		return c.ID == ref || c.Name == ref
-	})
-}
-
 // remoteGCLock returns the per-remote serializing mutex for a remote-store
 // config UUID, allocating it on first use and reusing the same pointer
 // thereafter so every GC sweep of that remote contends on ONE lock. Held
@@ -700,9 +628,9 @@ func (r *Runtime) remoteGCLock(configID string) *sync.Mutex {
 // that does not exist.
 //
 // Returns nil when the remote does not implement RemoteBlockStore (cannot hold
-// blocks) or no share resolves — the sweep then deletes standalone cas/<hash>
-// objects exactly as before, so non-block deployments are unaffected. Set for
-// the remote (index) tier only; the local tier and reconcile leave it nil.
+// blocks) or no share resolves; with no reclaimer wired the sweep reclaims
+// nothing and records the drift. Set for the remote (index) tier only; the
+// local tier and reconcile leave it nil.
 func (r *Runtime) blockReclaimerForEntry(entry shares.RemoteStoreEntry) engine.BlockReclaimer {
 	rbs, ok := entry.Store.(remote.RemoteBlockStore)
 	if !ok {

@@ -49,9 +49,8 @@ func (p Passthrough) blockInner() (RemoteBlockStore, error) {
 	return rbs, nil
 }
 
-// CASInner exposes s's hash-keyed CAS surface (block.Store), used only by
-// the legacy standalone-CAS read path (block.Store methods +
-// ReadBlockVerified in each decorator's legacy_cas_migration.go). Every
+// CASInner exposes s's hash-keyed CAS surface (block.Store) — the "cas/"
+// namespace each backend and decorator implements in its own cas.go. Every
 // shipped remote backend and decorator implements block.Store, so the
 // assertion succeeds in practice; it returns an error rather than
 // panicking for defense in depth.

@@ -219,12 +219,16 @@ func clampSpan(span hydrateSpan, chunkStart, n uint64) (lo, hi uint64) {
 	return lo, hi
 }
 
-// dispatchRemoteFetch routes a per-block S3 GET through the CAS verified-
-// read path. There is no legacy fallback: any FileChunk surfacing here
-// with a zero Hash is migration drift and the boot guard (cmd/dfs/start)
-// should have refused to start. If a stray row
-// reaches this code path at runtime, refuse the read instead of returning
-// silent zeros.
+// errPreBlockFormatLocator tags the deterministic refusal of a synced locator
+// with no block id, so dispatchRemoteFetch's stale-locator retry — which exists
+// for locators that moved, not for locators nothing can read — skips it.
+var errPreBlockFormatLocator = errors.New("pre-block-format locator")
+
+// dispatchRemoteFetch routes a per-block S3 GET through the CAS verified-read
+// path. There is no fallback for the two shapes that predate the packed-block
+// format — a zero Hash, or a synced locator with no block id. Nothing converts
+// either one any more, and both would otherwise resolve to a bogus key, so each
+// refuses the read rather than returning silent zeros.
 //
 // Returns ("", nil, nil) if the FileChunk has no actionable key (sparse
 // or never-uploaded). Errors from the remote store flow through unchanged.
@@ -233,21 +237,18 @@ func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *block.FileChunk) (
 		return "", nil, nil
 	}
 	if fb.Hash.IsZero() {
-		// Legacy path deleted (subsumes A6). Any
-		// FileChunk surfacing here without a CAS hash is migration
-		// drift — refuse the read instead of returning silent zeros.
-		// Boot guard (cmd/dfs/start) refuses to start against an un-
-		// migrated store; if this triggers at runtime, the sentinel
-		// file was lost or hand-removed.
-		logger.Error("legacy zero-hash FileChunk encountered post-migration — refusing read",
+		// A row with no content hash predates content addressing entirely.
+		// Nothing can locate its bytes, so refuse the read instead of
+		// returning silent zeros.
+		logger.Error("zero-hash FileChunk has no locatable remote bytes — refusing read",
 			"block_id", fb.ID)
-		return "", nil, fmt.Errorf("blockstore: legacy zero-hash FileChunk encountered post-migration: block_id=%s", fb.ID)
+		return "", nil, fmt.Errorf("blockstore: zero-hash FileChunk has no locatable remote bytes: block_id=%s", fb.ID)
 	}
 
 	key, data, err := m.resolveAndReadChunk(ctx, fb)
-	if err != nil && errors.Is(err, block.ErrChunkNotFound) {
-		// Stale-locator window (compaction, the cas→blocks migration, and the
-		// refcount reclaim paths): a concurrent maintenance pass relocated this
+	if err != nil && errors.Is(err, block.ErrChunkNotFound) && !errors.Is(err, errPreBlockFormatLocator) {
+		// Stale-locator window (compaction and the refcount reclaim paths): a
+		// concurrent maintenance pass relocated this
 		// chunk into a fresh block and deleted the old one AFTER we resolved its
 		// locator, so the GET 404s against bytes that moved. Re-resolve ONCE — a
 		// fresh GetLocator now points at the new block, so a merely-relocated live
@@ -256,7 +257,9 @@ func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *block.FileChunk) (
 		// fails closed. Single bounded retry — never a loop, to avoid livelock.
 		// This is the shared chokepoint for BOTH read paths (fetchResolvedBlock's
 		// background prefetch/warm and inlineFetchOrWait's client demand read), so
-		// the guard lives here rather than in either caller.
+		// the guard lives here rather than in either caller. A pre-block-format
+		// locator is excluded above: it is deterministic, so a retry only repeats
+		// the refusal and its log line.
 		key, data, err = m.resolveAndReadChunk(ctx, fb)
 	}
 	return key, data, err
@@ -273,8 +276,9 @@ func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *block.FileChunk) (
 //     (a read that raced the async carve). Returns ("", nil, nil) so the caller
 //     falls back to the local read path rather than failing closed.
 //   - Synced marker present but empty BlockID: a locator written by a release
-//     that predates the packed-block format. Nothing can read it any more, so
-//     it fails closed rather than falling through to an empty block key.
+//     that predates the packed-block format. Nothing can read it any more, so it
+//     fails closed rather than falling through to an empty block key, tagged
+//     errPreBlockFormatLocator so the caller's retry does not repeat it.
 func (m *Syncer) resolveAndReadChunk(ctx context.Context, fb *block.FileChunk) (string, []byte, error) {
 	loc, synced, err := m.resolveLocator(ctx, fb.Hash)
 	if err != nil {
@@ -292,7 +296,7 @@ func (m *Syncer) resolveAndReadChunk(ctx context.Context, fb *block.FileChunk) (
 			"cannot read; the automatic migration was removed. Stage the upgrade through a release "+
 			"that still ships it, or re-ingest the data",
 			"block_id", fb.ID, "hash", fb.Hash.String())
-		return "", nil, fmt.Errorf("%w: hash %s has a pre-block-format locator", block.ErrChunkNotFound, fb.Hash)
+		return "", nil, fmt.Errorf("%w: hash %s has a pre-block-format locator: %w", block.ErrChunkNotFound, fb.Hash, errPreBlockFormatLocator)
 	}
 	key := block.FormatBlockKey(loc.BlockID)
 	data, perr := m.readChunkVerified(ctx, loc, fb.Hash)

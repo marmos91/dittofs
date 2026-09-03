@@ -10,13 +10,10 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
-// Migration-only legacy standalone-CAS accessors (#1493 PR4). This file is
-// the memory backend's implementation of remote.LegacyCASStore and holds the
-// only surviving hash-keyed CAS operations (Put/Get/GetRange/Has/Head/Delete/
-// Walk + ReadBlockVerified). They are NOT part of the production RemoteStore
-// surface — they back the legacy per-chunk "cas/" namespace used by the one-shot
-// cas→blocks startup migration and its test fixtures. Delete when the migration
-// is retired.
+// The memory backend's hash-keyed CAS operations (Put/Get/GetRange/Has/Head/
+// Delete/Walk + ReadBlockVerified), keyed by content hash under "cas/". They
+// are NOT part of the production RemoteStore surface, which is block-keyed;
+// they are reachable only on the concrete type, and today only from tests.
 
 // Put writes data under the CAS-shaped key derived from hash. The
 // in-memory backend stamps time.Now() (via nowFn) into LastModified at
