@@ -2566,7 +2566,15 @@ func (h *Handler) handleFileLinkInformation(
 			// that no longer exist. Move takes the same shortcut for a rename
 			// onto its own name.
 			existingHandle, encErr := metadata.EncodeFileHandle(existing)
-			if encErr == nil && bytes.Equal(existingHandle, openFile.MetadataHandle) {
+			if encErr != nil {
+				// Identity is unprovable, so the removal below cannot be shown
+				// to be safe. Refuse rather than fall through into it: the
+				// wrong branch here destroys the caller's content.
+				logger.Debug("SET_INFO: hardlink replace cannot identify existing destination",
+					"name", matchedName, "error", encErr)
+				return setInfoStatus(types.StatusInvalidParameter), nil
+			}
+			if bytes.Equal(existingHandle, openFile.MetadataHandle) {
 				return setInfoStatus(types.StatusSuccess), nil
 			}
 
