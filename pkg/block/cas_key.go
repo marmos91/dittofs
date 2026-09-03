@@ -1,11 +1,7 @@
-// Package block — legacy_cas.go.
-//
-// Migration-only helpers for the legacy standalone-CAS object layout
-// (one sealed chunk per remote object under "cas/"). The production
-// write/read paths no longer use this layout (#1493); the only consumers
-// are the remote backends' legacy_cas_migration.go accessors feeding the
-// one-shot cas→blocks startup migration. Delete this file with them when
-// the migration is retired.
+// Key helpers for the hash-keyed object layout: one sealed chunk per remote
+// object under "cas/". The production write and read paths are block-keyed and
+// do not use this layout; the remaining consumers are the remote backends'
+// hash-keyed accessors in their own cas.go files.
 package block
 
 import (

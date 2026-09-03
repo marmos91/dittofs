@@ -69,9 +69,6 @@ func MapContentToNFS4(err error) uint32 {
 	if goerrors.Is(err, engine.ErrStoreClosed) {
 		return nfs4types.NFS4ERR_STALE
 	}
-	if goerrors.Is(err, block.ErrCASKeyMalformed) {
-		return nfs4types.NFS4ERR_INVAL
-	}
 	if goerrors.Is(err, block.ErrChunkContentMismatch) {
 		return nfs4types.NFS4ERR_IO
 	}
