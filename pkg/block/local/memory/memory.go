@@ -294,6 +294,9 @@ func (s *MemoryStore) Evict(context.Context, int64) (journal.EvictResult, error)
 // SetEvictionEnabled is a no-op.
 func (s *MemoryStore) SetEvictionEnabled(bool) {}
 
+// SetEvictionPinned is a no-op.
+func (s *MemoryStore) SetEvictionPinned(bool) {}
+
 // Start is a no-op.
 func (s *MemoryStore) Start(context.Context) {}
 

@@ -35,13 +35,10 @@ func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *st
 	// evicts whole fully-synced segments approx-LRU and has no ttl or lru knob to
 	// receive, so the rest of the policy is metadata the API reports back.
 	if (retentionPolicy != nil || retentionTTL != nil) && share.BlockStore != nil {
-		// Pin mode disables eviction; switching away from pin re-enables it
-		// (unless the share is local-only, in which case eviction stays disabled).
-		if share.RetentionPolicy == block.RetentionPin {
-			share.BlockStore.SetEvictionEnabled(false)
-		} else if share.BlockStore.HasRemoteStore() {
-			share.BlockStore.SetEvictionEnabled(true)
-		}
+		// Pin mode holds eviction off. Switching away from pin drops only the pin,
+		// leaving the store on whatever the remote-health monitor last asked for,
+		// so an unpin during an outage does not start evicting.
+		share.BlockStore.SetEvictionPinned(share.RetentionPolicy == block.RetentionPin)
 	}
 
 	return nil
