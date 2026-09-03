@@ -19,7 +19,7 @@ import (
 func TestReadPath_BlockLocator_Plaintext(t *testing.T) {
 	ctx := context.Background()
 	mem := remotememory.New()
-	f := newCarveFixture(t, mem, DefaultBlockCarveBytes)
+	f := newCarveFixture(t, mem, defaultTestCarveBlockSize)
 
 	data := bytes.Repeat([]byte("read-path-plain-"), 512)
 	h := f.storeChunk(t, ctx, data)
@@ -54,7 +54,7 @@ func TestReadPath_BlockLocator_ThroughCompress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compression.NewRemote: %v", err)
 	}
-	f := newCarveFixture(t, dec, DefaultBlockCarveBytes)
+	f := newCarveFixture(t, dec, defaultTestCarveBlockSize)
 
 	data := bytes.Repeat([]byte("XXXX-YYYY-ZZZZ-"), 4096)
 	h := f.storeChunk(t, ctx, data)
@@ -93,7 +93,7 @@ func TestReadPath_BlockLocator_ThroughCompressEncrypt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compression.NewRemote: %v", err)
 	}
-	f := newCarveFixture(t, dec, DefaultBlockCarveBytes)
+	f := newCarveFixture(t, dec, defaultTestCarveBlockSize)
 
 	data := bytes.Repeat([]byte("secret-read-path-"), 1024)
 	h := f.storeChunk(t, ctx, data)
@@ -126,7 +126,7 @@ func TestReadPath_BlockLocator_ThroughCompressEncrypt(t *testing.T) {
 func TestReadPath_StandaloneLocatorMissingEverywhere(t *testing.T) {
 	ctx := context.Background()
 	mem := remotememory.New()
-	f := newCarveFixture(t, mem, DefaultBlockCarveBytes)
+	f := newCarveFixture(t, mem, defaultTestCarveBlockSize)
 
 	// A standalone marker with no bytes anywhere (nothing planted on the remote,
 	// nothing stored locally).
@@ -149,7 +149,7 @@ func TestReadPath_StandaloneLocatorMissingEverywhere(t *testing.T) {
 func TestReadPath_CorruptBlock_FailClosed(t *testing.T) {
 	ctx := context.Background()
 	mem := remotememory.New()
-	f := newCarveFixture(t, mem, DefaultBlockCarveBytes)
+	f := newCarveFixture(t, mem, defaultTestCarveBlockSize)
 
 	data := bytes.Repeat([]byte("corrupt-check-data-"), 256)
 	h := f.storeChunk(t, ctx, data)

@@ -56,17 +56,23 @@ type carveFixture struct {
 	off    int64 // running write offset within carveFixturePayload
 }
 
+// defaultTestCarveBlockSize is the pack size a fixture takes when the test does
+// not care: the journal's own default, so a fixture built with it behaves the
+// same as a share built from a config that names no size.
+const defaultTestCarveBlockSize int64 = 4 << 20
+
 func newCarveFixture(t *testing.T, rbs remote.RemoteStore, carveBytes int64) *carveFixture {
 	t.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	local, err := fs.NewWithOptions(t.TempDir(), 0, ms, fs.FSStoreOptions{})
+	// carveBytes reaches the carve loop through the local store: the journal owns
+	// the loop, so this is the only route to it.
+	local, err := fs.NewWithOptions(t.TempDir(), 0, ms, fs.FSStoreOptions{CarveBlockSize: carveBytes})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}
 	t.Cleanup(func() { _ = local.Close() })
 
 	cfg := DefaultConfig()
-	cfg.BlockCarveBytes = carveBytes
 	cfg.ManualSync = true // explicit carve only; no background goroutine racing assertions
 
 	syncer := NewSyncer(local, rbs, ms, cfg)
@@ -147,3 +153,56 @@ var (
 	_ remote.RemoteBlockStore = (*latencyRemote)(nil)
 	_ remote.ChunkReader      = (*latencyRemote)(nil)
 )
+
+// TestCarveBlockSizeReachesTheCarveLoop pins the wiring the fixture's carveBytes
+// parameter depends on: the size travels FSStoreOptions -> journal.Config, and
+// nothing in the engine's syncer config has a say in it. Without the wiring both
+// sizes carve at the journal default and the block counts match.
+func TestCarveBlockSizeReachesTheCarveLoop(t *testing.T) {
+	const payloadSize = 8 << 20
+
+	carveInto := func(t *testing.T, blockSize int64) int {
+		t.Helper()
+		ctx := context.Background()
+		mem := remotememory.New()
+		mem.SetDurable(true)
+		fx := newCarveFixture(t, mem, blockSize)
+		bs, err := New(BlockStoreConfig{
+			Local:           fx.local,
+			Remote:          mem,
+			Syncer:          fx.syncer,
+			FileChunkStore:  fx.ms,
+			SyncedHashStore: fx.ms,
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		t.Cleanup(func() { _ = bs.Close() })
+		bs.SetRequireDurableCommit(true)
+
+		buf := make([]byte, 64<<10)
+		for i := range buf {
+			buf[i] = byte(i)
+		}
+		for written := 0; written < payloadSize; written += len(buf) {
+			// Vary the bytes so dedup does not collapse the writes into one chunk.
+			buf[0] = byte(written >> 16)
+			buf[1] = byte(written >> 8)
+			fx.storeChunk(t, ctx, buf)
+		}
+		if _, err := bs.Flush(ctx, carveFixturePayload); err != nil {
+			t.Fatalf("Flush(blockSize=%d): %v", blockSize, err)
+		}
+		return countRemoteBlocks(t, ctx, mem)
+	}
+
+	small := carveInto(t, 1<<20)
+	large := carveInto(t, 16<<20)
+	if small <= large {
+		t.Fatalf("a 1 MiB block size must produce more blocks for the same %d bytes than a 16 MiB one: got %d vs %d",
+			payloadSize, small, large)
+	}
+	if large != 1 {
+		t.Errorf("a 16 MiB block size should pack %d bytes into one block, got %d", payloadSize, large)
+	}
+}
