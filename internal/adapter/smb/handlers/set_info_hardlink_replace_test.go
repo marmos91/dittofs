@@ -12,18 +12,13 @@ import (
 	metamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// TestSetInfo_HardlinkReplace_ReclaimsReplacedPayload pins that a SET_INFO
-// FileLinkInformation with ReplaceIfExists=TRUE frees the content of the file it
-// replaced, not just its directory entry. The metadata layer deliberately never
-// deletes payload bytes — RemoveFile returns the removed file's PayloadID so the
-// handler can — and a handler that ignores that return leaves the replaced
-// file's records indexed as live in the local tier, where no reclamation path
-// treats them as dead and the bytes survive every restart.
-//
-// Asserting on observable block-store state pins both directions: the replaced
-// file's payload must be gone AND the newly linked file's payload must survive,
-// so releasing the wrong payload fails here instead of passing.
-func TestSetInfo_HardlinkReplace_ReclaimsReplacedPayload(t *testing.T) {
+const hardlinkTestShareName = "/hl"
+
+// newHardlinkTestShare builds a memory-backed runtime holding one empty share
+// and returns it with that share's root handle and a root auth context. Tests
+// that need a plain context for block-store calls take authCtx.Context.
+func newHardlinkTestShare(t *testing.T) (*runtime.Runtime, metadata.FileHandle, *metadata.AuthContext) {
+	t.Helper()
 	ctx := context.Background()
 
 	cps, err := cpstore.New(&cpstore.Config{
@@ -48,9 +43,8 @@ func TestSetInfo_HardlinkReplace_ReclaimsReplacedPayload(t *testing.T) {
 		t.Fatalf("CreateBlockStore: %v", err)
 	}
 
-	const shareName = "/hl"
 	if err := rt.AddShare(ctx, &runtime.ShareConfig{
-		Name:              shareName,
+		Name:              hardlinkTestShareName,
 		MetadataStore:     "hlmeta",
 		Enabled:           true,
 		LocalBlockStoreID: localBSID,
@@ -59,20 +53,36 @@ func TestSetInfo_HardlinkReplace_ReclaimsReplacedPayload(t *testing.T) {
 		t.Fatalf("AddShare: %v", err)
 	}
 
-	rootHandle, err := rt.GetRootHandle(shareName)
+	rootHandle, err := rt.GetRootHandle(hardlinkTestShareName)
 	if err != nil {
 		t.Fatalf("GetRootHandle: %v", err)
 	}
 
 	uid, gid := uint32(0), uint32(0)
-	authCtx := &metadata.AuthContext{
+	return rt, rootHandle, &metadata.AuthContext{
 		Context:  ctx,
 		Identity: &metadata.Identity{UID: &uid, GID: &gid},
 	}
+}
+
+// TestSetInfo_HardlinkReplace_ReclaimsReplacedPayload pins that a SET_INFO
+// FileLinkInformation with ReplaceIfExists=TRUE frees the content of the file it
+// replaced, not just its directory entry. The metadata layer deliberately never
+// deletes payload bytes — RemoveFile returns the removed file's PayloadID so the
+// handler can — and a handler that ignores that return leaves the replaced
+// file's records indexed as live in the local tier, where no reclamation path
+// treats them as dead and the bytes survive every restart.
+//
+// Asserting on observable block-store state pins both directions: the replaced
+// file's payload must be gone AND the newly linked file's payload must survive,
+// so releasing the wrong payload fails here instead of passing.
+func TestSetInfo_HardlinkReplace_ReclaimsReplacedPayload(t *testing.T) {
+	rt, rootHandle, authCtx := newHardlinkTestShare(t)
+	ctx := authCtx.Context
 	metaSvc := rt.GetMetadataService()
 
-	// create makes a file with `size` bytes of content and returns its handle
-	// and payload id.
+	// create makes a file holding `size` bytes of a non-zero pattern and
+	// returns its handle and payload id.
 	create := func(name string, size int) (metadata.FileHandle, string) {
 		t.Helper()
 		file, _, err := metaSvc.CreateFile(authCtx, rootHandle, name, &metadata.FileAttr{
@@ -114,6 +124,8 @@ func TestSetInfo_HardlinkReplace_ReclaimsReplacedPayload(t *testing.T) {
 	_, victimPayload := create("victim.bin", 4096)
 	srcHandle, srcPayload := create("src.bin", 2048)
 
+	// Without this the two Exists assertions below could both be reading the
+	// same payload, and the test would pass whatever the handler did.
 	if victimPayload == srcPayload {
 		t.Fatalf("test setup: both files share payload %q, the assertions below cannot discriminate", victimPayload)
 	}
@@ -139,11 +151,11 @@ func TestSetInfo_HardlinkReplace_ReclaimsReplacedPayload(t *testing.T) {
 	// A zero RootDirectory means the link name is resolved from the share
 	// root, which the handler reaches through the tree.
 	const treeID = uint32(7)
-	h.StoreTree(&TreeConnection{TreeID: treeID, ShareName: shareName})
+	h.StoreTree(&TreeConnection{TreeID: treeID, ShareName: hardlinkTestShareName})
 	open := (&OpenFile{
 		FileID:         [16]byte{0x2C, 0x71, 0x04, 0x18},
 		MetadataHandle: srcHandle,
-		ShareName:      shareName,
+		ShareName:      hardlinkTestShareName,
 		TreeID:         treeID,
 		DesiredAccess:  uint32(types.FileWriteAttributes),
 	}).WithName(OpenName{Path: "src.bin", FileName: "src.bin", ParentHandle: rootHandle})

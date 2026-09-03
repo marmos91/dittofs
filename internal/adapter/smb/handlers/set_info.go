@@ -2565,10 +2565,9 @@ func (h *Handler) handleFileLinkInformation(
 					"name", matchedName, "error", rmErr)
 				return setInfoStatus(common.MapToSMB(rmErr)), nil
 			}
-			// RemoveFile drops the name and the inode but never the bytes; the
-			// returned PayloadID is empty exactly when the content must
-			// survive, so releasing it here is hard-link- and trash-safe.
-			// Without it the replaced file's records stay indexed as live in
+			// RemoveFile drops the name and the inode but never the bytes; its
+			// PayloadID is empty whenever the content must survive. Left
+			// unreleased, the replaced file's records stay indexed as live in
 			// the local tier, where no reclamation path can reach them.
 			if removed != nil {
 				h.purgeBlockStorePayload(authCtx.Context, dstDir, removed.PayloadID, matchedName, "SET_INFO hardlink replace")
