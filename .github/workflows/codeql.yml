@@ -115,10 +115,15 @@ jobs:
           # them. Discovery is what makes a module's disappearance observable: one
           # that is never discovered is never extracted, and is never reported as
           # a failure either. Only this run's report counts, since the overlay
-          # base carries the previous one alongside it. Timestamps are ISO 8601 in
-          # UTC, so they order lexicographically.
-          if ! jq -e --arg since "${since}" \
-            'any(.[]; .timestamp >= $since and ((.markdownMessage // "") | contains("k8s/dittofs-operator/go.mod")))' \
+          # base carries the previous one alongside it. Both sides write UTC ISO
+          # 8601 with fractional seconds, which jq's ISO parser rejects, so the
+          # fraction is dropped before parsing; a timestamp that still will not
+          # parse aborts jq and fails the step.
+          if ! jq -e --arg since "${since}" '
+            def epoch: sub("\\.[0-9]+"; "") | fromdateiso8601;
+            ($since | epoch) as $start
+            | any(.[]; (.timestamp | epoch) >= $start
+                       and ((.markdownMessage // "") | contains("k8s/dittofs-operator/go.mod")))' \
             >/dev/null <<<"${all}"; then
             echo "::error::the Go autobuilder did not report discovering k8s/dittofs-operator/go.mod in this run; either the operator was not analysed, the module moved and this check needs its new path, or the extractor stopped emitting that report"
             jq -r '.[] | "\(.timestamp) \(.source.id): \(.markdownMessage // .source.name)"' <<<"${all}"
