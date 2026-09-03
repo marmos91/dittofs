@@ -51,7 +51,9 @@ const (
 	// by position and an older stream would run out of values partway through the
 	// row rather than default the new column — the version gate is what turns
 	// that into a legible refusal.
-	postgresSchemaVersion = uint32(10)
+	// v11 adds the filesystem_meta table section (migration 000046), raising
+	// the backup table count by one.
+	postgresSchemaVersion = uint32(11)
 )
 
 // backupTables lists every metadata table in FK-safe dependency order
@@ -66,6 +68,7 @@ var backupTables = []string{
 	"filesystem_capabilities",
 	"inodes",
 	"shares",
+	"filesystem_meta",
 	"parent_child_map",
 	"file_block_refs",
 	"file_blocks",
