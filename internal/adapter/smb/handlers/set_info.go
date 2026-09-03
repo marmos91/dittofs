@@ -1958,6 +1958,13 @@ func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFil
 // (createEntry, removeFile, etc.) always updates parent directory timestamps. This
 // method iterates open handles to find directory handles matching the given parent
 // metadata handle and restores any frozen timestamps.
+//
+// The restore writes explicit timestamps, which the metadata layer gates on
+// ownership, and the child operation's caller need not own the directory — so
+// it is authorized by the freezing handle's own FILE_WRITE_ATTRIBUTES grant
+// instead, the right SMB says governs a timestamp write. That grant is always
+// present: the frozen flags are only ever set by SET_INFO FileBasicInformation,
+// which is itself gated on FILE_WRITE_ATTRIBUTES.
 func (h *Handler) restoreParentDirFrozenTimestamps(authCtx *metadata.AuthContext, parentMetadataHandle metadata.FileHandle) {
 	if len(parentMetadataHandle) == 0 {
 		return
@@ -1977,7 +1984,11 @@ func (h *Handler) restoreParentDirFrozenTimestamps(authCtx *metadata.AuthContext
 		}
 
 		metaSvc := h.Registry.GetMetadataService()
-		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, restoreAttrs); err != nil {
+		// Carry the grant of the handle that froze these values, rather than the
+		// identity of whoever drove the child operation.
+		if _, err := metaSvc.SetFileAttributes(
+			withTimestampHandleAuth(authCtx, openFile.GrantedAccess),
+			openFile.MetadataHandle, restoreAttrs); err != nil {
 			logger.Debug("restoreParentDirFrozenTimestamps: failed",
 				"path", openFile.Name().Path, "error", err)
 		} else {
