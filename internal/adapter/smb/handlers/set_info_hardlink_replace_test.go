@@ -124,8 +124,9 @@ func TestSetInfo_HardlinkReplace_ReclaimsReplacedPayload(t *testing.T) {
 	_, victimPayload := create("victim.bin", 4096)
 	srcHandle, srcPayload := create("src.bin", 2048)
 
-	// Without this the two Exists assertions below could both be reading the
-	// same payload, and the test would pass whatever the handler did.
+	// Equal ids would make the two assertions below contradictory, so the test
+	// would fail either way; this just names the broken setup instead of
+	// reporting it as a handler bug.
 	if victimPayload == srcPayload {
 		t.Fatalf("test setup: both files share payload %q, the assertions below cannot discriminate", victimPayload)
 	}
