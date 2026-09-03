@@ -472,7 +472,17 @@ func (h *Handler) setFileInfoFromStore(
 			setAttrs.Ctime = &preFile.Ctime
 		}
 
-		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
+		// Per MS-FSA 2.1.5.15.2 ("FileBasicInformation") a timestamp write is
+		// authorized by FILE_WRITE_ATTRIBUTES on the open, not by ownership of
+		// the file. Carry that grant so the metadata layer's ownership gate
+		// reflects the protocol's rule. It is scoped to this call rather than
+		// stamped on authCtx, which the rename path also hands to the
+		// parent-directory restore — a different object, on which this handle's
+		// grant says nothing. It relaxes nothing else either: a SET_INFO that
+		// also changes DOS attributes is still ownership checked.
+		basicAuthCtx := withTimestampHandleAuth(authCtx, openFile.GrantedAccess)
+
+		if _, err := metaSvc.SetFileAttributes(basicAuthCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			openFile.mu.Unlock() // release before returning; refs #606.
 			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Name().Path, "error", err)
 			return setInfoStatus(common.MapToSMB(err)), nil
@@ -534,7 +544,9 @@ func (h *Handler) setFileInfoFromStore(
 					basePropagate.Atime != nil || basePropagate.CreationTime != nil ||
 					basePropagate.Mode != nil || basePropagate.Hidden != nil {
 					if baseHandle, encErr := metadata.EncodeFileHandle(baseFile); encErr == nil {
-						_, _ = metaSvc.SetFileAttributes(authCtx, baseHandle, basePropagate)
+						// A stream shares its base file's security descriptor, so
+						// the grant carried on this handle is a grant on the base.
+						_, _ = metaSvc.SetFileAttributes(basicAuthCtx, baseHandle, basePropagate)
 					}
 				}
 			}
@@ -1860,6 +1872,16 @@ func (h *Handler) snapshotChangeTime(authCtx *metadata.AuthContext, handle metad
 	}
 }
 
+// withTimestampHandleAuth returns a copy of authCtx carrying the open handle's
+// FILE_WRITE_ATTRIBUTES grant, which authorizes an explicit timestamp write in
+// the metadata layer in place of POSIX ownership. A copy, because the caller's
+// AuthContext outlives the timestamp write the grant is meant for.
+func withTimestampHandleAuth(authCtx *metadata.AuthContext, grantedAccess uint32) *metadata.AuthContext {
+	scoped := *authCtx
+	scoped.TimestampAuthorizedByHandle = hasAccessRight(grantedAccess, uint32(types.FileWriteAttributes))
+	return &scoped
+}
+
 // restoreFrozenTimestamps restores timestamps that are frozen via SET_INFO -1 sentinel.
 // Called after operations that unconditionally update timestamps (WRITE, truncate).
 //
@@ -1905,7 +1927,13 @@ func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFil
 		"frozenAtime", frozenAtime)
 
 	metaSvc := h.Registry.GetMetadataService()
-	if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, restoreAttrs); err != nil {
+	// The restore writes explicit timestamps. The handle being restored is the
+	// one that froze them, and freezing required FILE_WRITE_ATTRIBUTES on it, so
+	// carry that grant through rather than letting the restore succeed or fail
+	// on who owns the file.
+	if _, err := metaSvc.SetFileAttributes(
+		withTimestampHandleAuth(authCtx, openFile.GrantedAccess),
+		openFile.MetadataHandle, restoreAttrs); err != nil {
 		logger.Debug("restoreFrozenTimestamps: failed", "path", openFile.Name().Path, "error", err)
 		return
 	}

@@ -213,3 +213,74 @@ func TestCheckPermissions_AllowOnlyACLKeepsHandleWriteBypass(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestSetFileAttributes_ACLDenyOverridesHandleTimestamp is the timestamp
+// counterpart of TestCheckPermissions_ACLDenyOverridesHandleWrite: an explicit
+// DENY ACE beats TimestampAuthorizedByHandle, so a handle grant can never let a
+// caller past a deny the DACL expresses.
+//
+// As with the write bypass this cannot arise in production — the open-time DACL
+// gate strips FILE_WRITE_ATTRIBUTES when a deny ACE covers it, so the handler
+// never sets the flag on such a file. The flag is set here anyway to prove the
+// metadata-layer guard holds even if it were mis-set.
+func TestSetFileAttributes_ACLDenyOverridesHandleTimestamp(t *testing.T) {
+	f := newTestFixture(t)
+
+	requesterUID := uint32(1001)
+	requesterSID := "S-1-5-21-1-2-3-2001"
+
+	deniedACL := &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_DENIED_ACE_TYPE,
+				Who:        "sid:" + requesterSID,
+				AccessMask: acl.ACE4_WRITE_ATTRIBUTES,
+			},
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Who:        acl.SpecialEveryone,
+				AccessMask: 0xFFFFFFFF,
+			},
+		},
+	}
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "deny_ts.txt",
+		&metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o777,
+			UID:  2002, // not the requester
+			GID:  2002,
+			ACL:  deniedACL,
+		})
+	require.NoError(t, err)
+	handle, err := metadata.EncodeShareHandle(f.shareName, created.ID)
+	require.NoError(t, err)
+
+	authCtx := f.authContext(requesterUID, 1001)
+	authCtx.Identity.SID = strPtr(requesterSID)
+	authCtx.TimestampAuthorizedByHandle = true
+	authCtx.ShareReadOnly = false
+
+	_, err = f.service.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{Mtime: &stampTime})
+	require.Error(t, err, "an explicit deny ACE must beat TimestampAuthorizedByHandle")
+
+	// The same grant on a file with an allow-only ACL still works, so the guard
+	// is keyed on the deny and not on the mere presence of an ACL.
+	allowOnly, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "allow_ts.txt",
+		&metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o777,
+			UID:  2002,
+			GID:  2002,
+			ACL: &acl.ACL{ACEs: []acl.ACE{{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Who:        acl.SpecialEveryone,
+				AccessMask: 0xFFFFFFFF,
+			}}},
+		})
+	require.NoError(t, err)
+	allowHandle, err := metadata.EncodeShareHandle(f.shareName, allowOnly.ID)
+	require.NoError(t, err)
+
+	_, err = f.service.SetFileAttributes(authCtx, allowHandle, &metadata.SetAttrs{Mtime: &stampTime})
+	require.NoError(t, err, "an allow-only ACL must keep the handle timestamp grant working")
+}
