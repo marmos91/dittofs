@@ -96,6 +96,23 @@ type ShareQueries struct {
 	// DeleteShareInodes removes every inode row belonging to a share. One
 	// parameter: the share name.
 	DeleteShareInodes string
+
+	// SelectRootInode selects a share's root inode through the share row's
+	// root_file_id pointer, in the column order ScanRootInode expects. One
+	// parameter: the share name.
+	SelectRootInode string
+	// UpdateRootAttrs rewrites a root inode's mode, owner and change time to
+	// match the configured attributes. Five parameters: mode, uid, gid, ctime
+	// and the inode id.
+	UpdateRootAttrs string
+	// InsertRootInode inserts a share's root directory inode. Fifteen
+	// parameters, in the column order the statement lists; nlink is the
+	// literal 2, the directory default for "." plus the parent's entry.
+	InsertRootInode string
+	// UpsertShareRoot inserts the share row pointing at its root inode,
+	// repointing an existing row rather than failing. Two parameters: the
+	// share name and the root inode id.
+	UpsertShareRoot string
 	// ShareQuotaFreed is a format string, not a statement: it takes the
 	// owner column twice, for the SELECT and the GROUP BY, because a column
 	// name is not something a driver will substitute. The column is a fixed

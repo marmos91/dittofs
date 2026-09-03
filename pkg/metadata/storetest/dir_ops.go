@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"slices"
 	"sort"
@@ -19,6 +20,7 @@ func runDirOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("RemoveEmptyDirectory", func(t *testing.T) { testRemoveEmptyDirectory(t, factory) })
 	t.Run("NestedDirectories", func(t *testing.T) { testNestedDirectories(t, factory) })
 	t.Run("RootDirectoryIdempotent", func(t *testing.T) { testRootDirectoryIdempotent(t, factory) })
+	t.Run("RootDirectoryReconcilesAttrs", func(t *testing.T) { testRootDirectoryReconcilesAttrs(t, factory) })
 	t.Run("LinkCountAgreesWithGetFile", func(t *testing.T) { testLinkCountAgreesWithGetFile(t, factory) })
 	t.Run("DeleteChildIsIdempotent", func(t *testing.T) { testDeleteChildIsIdempotent(t, factory) })
 	t.Run("NamesOnlyMatchesWithAttrs", func(t *testing.T) { testNamesOnlyMatchesWithAttrs(t, factory) })
@@ -298,6 +300,85 @@ func testRootDirectoryIdempotent(t *testing.T, factory StoreFactory) {
 	if root1.ShareName != root2.ShareName {
 		t.Errorf("ShareName mismatch: %q vs %q", root1.ShareName, root2.ShareName)
 	}
+}
+
+// testRootDirectoryReconcilesAttrs pins what CreateRootDirectory does when the
+// share already has a root: the configured attributes win, and the stored
+// inode is rewritten to match.
+//
+// This is what makes re-attaching a share with changed root ownership or mode
+// take effect. It is asserted through the transaction as well as through the
+// store because the two are separate entry points — a backend can reconcile on
+// one and return the stored root untouched on the other, and then whether an
+// operator's config change lands depends on which call site reached it.
+func testRootDirectoryReconcilesAttrs(t *testing.T, factory StoreFactory) {
+	const shareName = "/reconcile"
+
+	// reconciled runs one create-then-recreate cycle through the caller's
+	// entry point and returns what the second call reported.
+	reconciled := func(t *testing.T, create func(context.Context, metadata.Store, *metadata.FileAttr) (*metadata.File, error)) (*metadata.File, metadata.Store) {
+		t.Helper()
+		store := factory(t)
+		ctx := t.Context()
+
+		first := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755, UID: 1000, GID: 1000}
+		if _, err := create(ctx, store, first); err != nil {
+			t.Fatalf("first CreateRootDirectory() failed: %v", err)
+		}
+
+		changed := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o700, UID: 4242, GID: 4343}
+		got, err := create(ctx, store, changed)
+		if err != nil {
+			t.Fatalf("second CreateRootDirectory() failed: %v", err)
+		}
+		return got, store
+	}
+
+	// assertRoot checks the returned root AND the stored one: a body that
+	// returns the new attrs without writing them would pass on the first
+	// check alone.
+	assertRoot := func(t *testing.T, store metadata.Store, got *metadata.File) {
+		t.Helper()
+		ctx := t.Context()
+
+		if got.Mode != 0o700 || got.UID != 4242 || got.GID != 4343 {
+			t.Errorf("returned root not reconciled: mode=%o uid=%d gid=%d, want mode=700 uid=4242 gid=4343",
+				got.Mode, got.UID, got.GID)
+		}
+
+		handle, err := store.GetRootHandle(ctx, shareName)
+		if err != nil {
+			t.Fatalf("GetRootHandle() failed: %v", err)
+		}
+		stored, err := store.GetFile(ctx, handle)
+		if err != nil {
+			t.Fatalf("GetFile(root) failed: %v", err)
+		}
+		if stored.Mode != 0o700 || stored.UID != 4242 || stored.GID != 4343 {
+			t.Errorf("stored root not reconciled: mode=%o uid=%d gid=%d, want mode=700 uid=4242 gid=4343",
+				stored.Mode, stored.UID, stored.GID)
+		}
+	}
+
+	t.Run("StorePath", func(t *testing.T) {
+		got, store := reconciled(t, func(ctx context.Context, store metadata.Store, attr *metadata.FileAttr) (*metadata.File, error) {
+			return store.CreateRootDirectory(ctx, shareName, attr)
+		})
+		assertRoot(t, store, got)
+	})
+
+	t.Run("TransactionPath", func(t *testing.T) {
+		got, store := reconciled(t, func(ctx context.Context, store metadata.Store, attr *metadata.FileAttr) (*metadata.File, error) {
+			var root *metadata.File
+			err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+				var txErr error
+				root, txErr = tx.CreateRootDirectory(ctx, shareName, attr)
+				return txErr
+			})
+			return root, err
+		})
+		assertRoot(t, store, got)
+	})
 }
 
 // testLinkCountAgreesWithGetFile verifies that GetLinkCount reports the same

@@ -221,9 +221,9 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 		}
 	}
 
-	// Check if root already exists - if so, just return success (idempotent)
+	// An existing root is reconciled against the configured attributes rather
+	// than returned as it stands (see reconcileRootAttrs).
 	if existingData, exists := store.files[key]; exists {
-		// Root already exists, this is OK (idempotent operation)
 		// Decode handle to get ID
 		_, id, err := metadata.DecodeFileHandle(rootHandle)
 		if err != nil {
@@ -232,6 +232,8 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 				Message: "failed to decode root handle",
 			}
 		}
+		reconcileRootAttrs(existingData.Attr, attr)
+
 		return &metadata.File{
 			ID:        id,
 			ShareName: shareName,
@@ -309,4 +311,26 @@ func (store *MemoryMetadataStore) Close() error {
 	store.lockStore.cleanShutdown = true
 	store.mu.Unlock()
 	return nil
+}
+
+// reconcileRootAttrs brings a stored root directory in line with the attributes
+// a share was configured with, so re-attaching a share with changed root
+// ownership or mode takes effect rather than silently keeping the old values.
+// The configuration is the intent; the stored root records a previous run's.
+//
+// Both entry points call this, because a backend that reconciles on one and not
+// the other makes whether an operator's change lands depend on which call site
+// reached it.
+func reconcileRootAttrs(stored *metadata.FileAttr, configured *metadata.FileAttr) {
+	mode := configured.Mode
+	if mode == 0 {
+		mode = 0o755
+	}
+	if stored.Mode == mode && stored.UID == configured.UID && stored.GID == configured.GID {
+		return
+	}
+	stored.Mode = mode
+	stored.UID = configured.UID
+	stored.GID = configured.GID
+	stored.Ctime = time.Now()
 }

@@ -247,6 +247,26 @@ var shareQueries = storesql.ShareQueries{
 	SetShareOptions:   `UPDATE shares SET options = ?1 WHERE share_name = ?2`,
 	DeleteShare:       `DELETE FROM shares WHERE share_name = ?1`,
 	DeleteShareInodes: `DELETE FROM inodes WHERE share_name = ?1`,
+	SelectRootInode: `
+		SELECT f.id, f.file_type, f.mode, f.uid, f.gid, f.size,
+		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.nlink
+		FROM inodes f
+		WHERE f.id = (SELECT root_file_id FROM shares WHERE share_name = ?1)`,
+	UpdateRootAttrs: `UPDATE inodes SET mode = ?1, uid = ?2, gid = ?3, ctime = ?4 WHERE id = ?5`,
+	InsertRootInode: `
+		INSERT INTO inodes (
+			id, share_name, file_type, mode, uid, gid, size,
+			atime, mtime, ctime, creation_time, content_id,
+			link_target, device_major, device_minor, nlink
+		) VALUES (
+			?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+			?11, ?12, ?13, ?14, ?15, 2
+		)`,
+	UpsertShareRoot: `
+		INSERT INTO shares (share_name, root_file_id)
+		VALUES (?1, ?2)
+		ON CONFLICT (share_name) DO UPDATE
+		SET root_file_id = EXCLUDED.root_file_id`,
 	ShareQuotaFreed: `SELECT %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes
 		WHERE share_name = ?1 AND file_type = ?2 AND nlink > 0 GROUP BY %s`,
 }

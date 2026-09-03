@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 )
 
 // ============================================================================
@@ -234,4 +236,195 @@ func (c *Core) collectShareQuotaFreed(ctx context.Context, shareName, col string
 		return c.D.MapError(err, "DeleteShare", shareName)
 	}
 	return nil
+}
+
+// GetExistingRootDirectory loads a share's root directory, or (nil, nil) when
+// the share has no root yet.
+//
+// The root is resolved through the share row's root_file_id: with the path
+// column gone, that pointer is the authoritative answer to "which inode is
+// this share's root".
+func (c *Core) GetExistingRootDirectory(ctx context.Context, shareName string) (*metadata.File, error) {
+	var (
+		id           uuid.UUID
+		fileType     int16
+		mode         int32
+		uid          int32
+		gid          int32
+		size         int64
+		atime        int64
+		mtime        int64
+		ctime        int64
+		creationTime int64
+		hidden       bool
+		nlink        int32
+	)
+
+	err := c.X.QueryRow(ctx, c.D.Shares().SelectRootInode, shareName).Scan(
+		&id, &fileType, &mode, &uid, &gid, &size,
+		&atime, &mtime, &ctime, &creationTime, &hidden, &nlink,
+	)
+	if c.D.IsNoRows(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return &metadata.File{
+		ID:        id,
+		ShareName: shareName,
+		Path:      "/",
+		FileAttr: metadata.FileAttr{
+			Type:         metadata.FileType(fileType),
+			Mode:         uint32(mode),
+			Nlink:        uint32(nlink),
+			UID:          uint32(uid),
+			GID:          uint32(gid),
+			Size:         uint64(size),
+			Atime:        sqlcodec.FiletimeToTime(atime),
+			Mtime:        sqlcodec.FiletimeToTime(mtime),
+			Ctime:        sqlcodec.FiletimeToTime(ctime),
+			CreationTime: sqlcodec.FiletimeToTime(creationTime),
+			Hidden:       hidden,
+		},
+	}, nil
+}
+
+// CreateRootDirectory creates a share's root directory, or reconciles the
+// existing one against attr when the share already has a root.
+//
+// Reconciling rather than returning the stored root as-is is what makes
+// re-attaching a share with changed root ownership or mode take effect: the
+// configured attributes are the intent, and the stored inode is a cache of a
+// previous run's intent. A caller that only wants to read the root uses
+// GetExistingRootDirectory.
+//
+// The probe and the create are one statement pair with no commit between
+// them, so a concurrent caller cannot slip between them and leave an orphaned
+// root inode behind; the caller supplies the transaction by running this on a
+// Core bound to it.
+func (c *Core) CreateRootDirectory(ctx context.Context, shareName string, attr *metadata.FileAttr) (*metadata.File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if shareName == "" {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrInvalidArgument,
+			Message: "share name cannot be empty",
+		}
+	}
+
+	uid := attr.UID
+	gid := attr.GID
+	mode := attr.Mode
+	if mode == 0 {
+		mode = 0o755
+	}
+
+	c.Log.Info("Creating root directory", "share", shareName, "uid", uid, "gid", gid)
+
+	existing, err := c.GetExistingRootDirectory(ctx, shareName)
+	if err != nil {
+		return nil, c.D.MapError(err, "CreateRootDirectory", shareName)
+	}
+	if existing != nil {
+		return c.reconcileRootDirectory(ctx, shareName, existing, mode, uid, gid)
+	}
+
+	rootID := uuid.New()
+	now := time.Now()
+
+	_, err = c.X.Exec(ctx, c.D.Shares().InsertRootInode,
+		rootID,
+		shareName,
+		int16(metadata.FileTypeDirectory),
+		int32(mode),
+		int32(uid),
+		int32(gid),
+		int64(0),
+		sqlcodec.TimeToFiletime(now), // atime
+		sqlcodec.TimeToFiletime(now), // mtime
+		sqlcodec.TimeToFiletime(now), // ctime
+		sqlcodec.TimeToFiletime(now), // creation_time
+		nil,                          // content_id, NULL for directories
+		nil,                          // link_target
+		nil,                          // device_major
+		nil,                          // device_minor
+	)
+	if err != nil {
+		return nil, c.D.MapError(err, "CreateRootDirectory", shareName)
+	}
+
+	if _, err := c.X.Exec(ctx, c.D.Shares().UpsertShareRoot, shareName, rootID); err != nil {
+		return nil, c.D.MapError(err, "CreateRootDirectory", shareName)
+	}
+
+	c.Log.Info("Root directory created", "share", shareName, "root_id", rootID)
+
+	return &metadata.File{
+		ID:        rootID,
+		ShareName: shareName,
+		Path:      "/",
+		FileAttr: metadata.FileAttr{
+			Type:         metadata.FileTypeDirectory,
+			Mode:         mode,
+			Nlink:        2, // "." and the parent's entry
+			UID:          uid,
+			GID:          gid,
+			Size:         0,
+			Atime:        now,
+			Mtime:        now,
+			Ctime:        now,
+			CreationTime: now,
+		},
+	}, nil
+}
+
+// reconcileRootDirectory brings an existing root inode in line with the
+// configured mode and owner, rewriting the row only when something actually
+// differs so an unchanged share costs one read and no write.
+func (c *Core) reconcileRootDirectory(ctx context.Context, shareName string, root *metadata.File, mode, uid, gid uint32) (*metadata.File, error) {
+	needsUpdate := false
+	if root.Mode != mode {
+		c.Log.Info("Updating root directory mode from config",
+			"share", shareName,
+			"oldMode", fmt.Sprintf("%o", root.Mode),
+			"newMode", fmt.Sprintf("%o", mode))
+		root.Mode = mode
+		needsUpdate = true
+	}
+	if root.UID != uid {
+		c.Log.Info("Updating root directory UID from config",
+			"share", shareName, "oldUID", root.UID, "newUID", uid)
+		root.UID = uid
+		needsUpdate = true
+	}
+	if root.GID != gid {
+		c.Log.Info("Updating root directory GID from config",
+			"share", shareName, "oldGID", root.GID, "newGID", gid)
+		root.GID = gid
+		needsUpdate = true
+	}
+
+	if !needsUpdate {
+		c.Log.Info("Root directory already exists, returning existing",
+			"share", shareName, "root_id", root.ID)
+		return root, nil
+	}
+
+	now := time.Now()
+	_, err := c.X.Exec(ctx, c.D.Shares().UpdateRootAttrs,
+		int32(root.Mode), int32(root.UID), int32(root.GID),
+		sqlcodec.TimeToFiletime(now), root.ID,
+	)
+	if err != nil {
+		return nil, c.D.MapError(err, "CreateRootDirectory", shareName)
+	}
+	root.Ctime = now
+
+	c.Log.Info("Root directory attributes updated from config",
+		"share", shareName, "root_id", root.ID)
+	return root, nil
 }

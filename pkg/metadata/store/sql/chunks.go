@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -34,6 +35,11 @@ type Core struct {
 	// replaces them at runtime, and a copy taken at construction would go
 	// stale. Never nil.
 	Caps func() metadata.FilesystemCapabilities
+	// Log records what a shared body did when the operation is one an
+	// operator needs to see after the fact — a root inode rewritten to match
+	// a changed config, say. Each dialect passes its own component-tagged
+	// logger, so the backend stays identifiable in the output. Never nil.
+	Log *slog.Logger
 	// Quota accumulates the usage changes a write owes the store's quota
 	// cache, which applies them once the transaction commits. Set only on a
 	// transaction's Core; the pool's Core leaves it nil. Every method that

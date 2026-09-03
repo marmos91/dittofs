@@ -3,15 +3,10 @@ package postgres
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"time"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 )
 
 // ============================================================================
@@ -79,7 +74,7 @@ func (s *PostgresMetadataStore) CreateShare(ctx context.Context, share *metadata
 	// primary key (the ON CONFLICT upsert just re-points root_file_id, leaving
 	// at most one root). (Production also serializes share creation upstream in
 	// the control plane.)
-	existing, err := s.getExistingRootDirectory(ctx, s.queryRow, share.Name)
+	existing, err := s.GetExistingRootDirectory(ctx, share.Name)
 	if err != nil {
 		return fmt.Errorf("create share %q: check existing: %w", share.Name, err)
 	}
@@ -162,269 +157,23 @@ func (s *PostgresMetadataStore) DeleteShare(ctx context.Context, shareName strin
 
 // CreateRootDirectory creates the root directory for a share.
 //
-// The whole probe-then-create sequence runs in one transaction through
-// WithTransaction, so a serialization failure or deadlock retries under the
-// package's backoff and a concurrent caller cannot slip between the probe and
-// the insert and leave an orphaned root inode behind.
+// The store path wraps the shared body in a transaction rather than promoting
+// it: the probe and the create must not have a commit between them, or a
+// concurrent caller slips in and leaves an orphaned root inode behind. The
+// transaction's own shadow is what marks the share cache dirty.
 func (s *PostgresMetadataStore) CreateRootDirectory(
 	ctx context.Context,
 	shareName string,
 	attr *metadata.FileAttr,
 ) (*metadata.File, error) {
-	if shareName == "" {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "share name cannot be empty",
-		}
-	}
-
 	var root *metadata.File
-	err := s.WithTransaction(ctx, func(mtx metadata.Transaction) error {
-		ptx := mtx.(*postgresTransaction)
-		// The body rewrites the shares row without going through the tx method
-		// that would flag it, so flag it here.
-		ptx.sharesDirty = true
+	err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		var txErr error
-		root, txErr = s.createRootDirectoryTx(ctx, ptx.tx, shareName, attr)
+		root, txErr = tx.CreateRootDirectory(ctx, shareName, attr)
 		return txErr
 	})
 	if err != nil {
 		return nil, err
 	}
 	return root, nil
-}
-
-// createRootDirectoryTx holds the probe/reconcile/create body, run against the
-// caller's transaction.
-func (s *PostgresMetadataStore) createRootDirectoryTx(
-	ctx context.Context,
-	tx pgx.Tx,
-	shareName string,
-	attr *metadata.FileAttr,
-) (*metadata.File, error) {
-	// Apply defaults
-	uid := attr.UID
-	gid := attr.GID
-	mode := attr.Mode
-	if mode == 0 {
-		mode = 0o755
-	}
-
-	s.logger.Info("Creating root directory",
-		"share", shareName,
-		"uid", uid,
-		"gid", gid,
-	)
-
-	// Check if root directory already exists (idempotent behavior)
-	existingRoot, err := s.getExistingRootDirectory(ctx, tx.QueryRow, shareName)
-	if err == nil && existingRoot != nil {
-		// Check if root directory attributes need to be updated from config
-		// This handles the case where the config changed since the share was first created
-		needsUpdate := false
-		if mode != 0 && existingRoot.Mode != mode {
-			s.logger.Info("Updating root directory mode from config",
-				"share", shareName,
-				"oldMode", fmt.Sprintf("%o", existingRoot.Mode),
-				"newMode", fmt.Sprintf("%o", mode))
-			existingRoot.Mode = mode
-			needsUpdate = true
-		}
-		if existingRoot.UID != uid {
-			s.logger.Info("Updating root directory UID from config",
-				"share", shareName,
-				"oldUID", existingRoot.UID,
-				"newUID", uid)
-			existingRoot.UID = uid
-			needsUpdate = true
-		}
-		if existingRoot.GID != gid {
-			s.logger.Info("Updating root directory GID from config",
-				"share", shareName,
-				"oldGID", existingRoot.GID,
-				"newGID", gid)
-			existingRoot.GID = gid
-			needsUpdate = true
-		}
-
-		if needsUpdate {
-			now := time.Now()
-			updateQuery := `
-				UPDATE inodes
-				SET mode = $1, uid = $2, gid = $3, ctime = $4
-				WHERE id = $5
-			`
-			_, err := tx.Exec(ctx, updateQuery,
-				int32(existingRoot.Mode),
-				int32(existingRoot.UID),
-				int32(existingRoot.GID),
-				sqlcodec.TimeToFiletime(now),
-				existingRoot.ID,
-			)
-			if err != nil {
-				return nil, err
-			}
-			existingRoot.Ctime = now
-			s.logger.Info("Root directory attributes updated from config",
-				"share", shareName,
-				"root_id", existingRoot.ID)
-		} else {
-			s.logger.Info("Root directory already exists, returning existing",
-				"share", shareName,
-				"root_id", existingRoot.ID,
-			)
-		}
-		return existingRoot, nil
-	}
-
-	// Generate UUID for root directory
-	rootID := uuid.New()
-
-	now := time.Now()
-
-	// Insert root directory inode. Directories start with nlink = 2 ("." and the
-	// parent's entry). nlink is the sole source of truth for the hard-link count
-	// (#1166).
-	insertFileQuery := `
-		INSERT INTO inodes (
-			id, share_name,
-			file_type, mode, uid, gid, size,
-			atime, mtime, ctime, creation_time,
-			content_id, link_target, device_major, device_minor, nlink
-		) VALUES (
-			$1, $2,
-			$3, $4, $5, $6, $7,
-			$8, $9, $10, $11,
-			$12, $13, $14, $15, 2
-		)
-	`
-
-	_, err = tx.Exec(ctx, insertFileQuery,
-		rootID,                            // id
-		shareName,                         // share_name
-		int16(metadata.FileTypeDirectory), // file_type
-		int32(mode),                       // mode
-		int32(uid),                        // uid
-		int32(gid),                        // gid
-		int64(0),                          // size
-		sqlcodec.TimeToFiletime(now),      // atime
-		sqlcodec.TimeToFiletime(now),      // mtime
-		sqlcodec.TimeToFiletime(now),      // ctime
-		sqlcodec.TimeToFiletime(now),      // creation_time
-		nil,                               // content_id (NULL for directories)
-		nil,                               // link_target (NULL)
-		nil,                               // device_major (NULL)
-		nil,                               // device_minor (NULL)
-	)
-	if err != nil {
-		return nil, mapPgError(err, "CreateRootDirectory", shareName)
-	}
-
-	// Insert into shares table
-	insertShareQuery := `
-		INSERT INTO shares (share_name, root_file_id)
-		VALUES ($1, $2)
-		ON CONFLICT (share_name) DO UPDATE
-		SET root_file_id = EXCLUDED.root_file_id
-	`
-
-	_, err = tx.Exec(ctx, insertShareQuery, shareName, rootID)
-	if err != nil {
-		return nil, mapPgError(err, "CreateRootDirectory", shareName)
-	}
-
-	s.logger.Info("Root directory created successfully",
-		"share", shareName,
-		"root_id", rootID,
-	)
-
-	// Build File
-	file := &metadata.File{
-		ID:        rootID,
-		ShareName: shareName,
-		Path:      "/",
-		FileAttr: metadata.FileAttr{
-			Type:         metadata.FileTypeDirectory,
-			Mode:         mode,
-			Nlink:        2, // Root directories have 2 links ("." and parent's entry)
-			UID:          uid,
-			GID:          gid,
-			Size:         0,
-			Atime:        now,
-			Mtime:        now,
-			Ctime:        now,
-			CreationTime: now,
-		},
-	}
-
-	return file, nil
-}
-
-// getExistingRootDirectory checks if a root directory already exists for the share
-// and returns it if found. Returns nil, nil if not found.
-func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, queryRow rowQuerier, shareName string) (*metadata.File, error) {
-	// Resolve the root inode via shares.root_file_id (the share row is the
-	// authoritative pointer to its root) now that the path column is gone (#1166).
-	query := `
-		SELECT f.id, f.file_type, f.mode, f.uid, f.gid, f.size,
-			   f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.nlink
-		FROM inodes f
-		WHERE f.id = (SELECT root_file_id FROM shares WHERE share_name = $1)
-	`
-
-	var (
-		id           uuid.UUID
-		fileType     int16
-		mode         int32
-		uid          int32
-		gid          int32
-		size         int64
-		atime        int64
-		mtime        int64
-		ctime        int64
-		creationTime int64
-		hidden       bool
-		nlink        int32
-	)
-
-	err := queryRow(ctx, query, shareName).Scan(
-		&id,
-		&fileType,
-		&mode,
-		&uid,
-		&gid,
-		&size,
-		&atime,
-		&mtime,
-		&ctime,
-		&creationTime,
-		&hidden,
-		&nlink,
-	)
-
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil // Not found, not an error
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	return &metadata.File{
-		ID:        id,
-		ShareName: shareName,
-		Path:      "/",
-		FileAttr: metadata.FileAttr{
-			Type:         metadata.FileType(fileType),
-			Mode:         uint32(mode),
-			Nlink:        uint32(nlink),
-			UID:          uint32(uid),
-			GID:          uint32(gid),
-			Size:         uint64(size),
-			Atime:        sqlcodec.FiletimeToTime(atime),
-			Mtime:        sqlcodec.FiletimeToTime(mtime),
-			Ctime:        sqlcodec.FiletimeToTime(ctime),
-			CreationTime: sqlcodec.FiletimeToTime(creationTime),
-			Hidden:       hidden,
-		},
-	}, nil
 }

@@ -1218,50 +1218,16 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 		}
 	}
 
-	// Check if share already exists
+	// Check if the share already exists. An existing root is reconciled
+	// against the configured attrs by the same body the pool path uses, so
+	// whether an operator's config change lands does not depend on which of
+	// the two entry points reached it.
 	item, err := tx.txn.Get(keyShare(shareName))
 	if err == nil {
-		// Share exists - load and return existing root
-		var existingShareData *shareData
-		err := item.Value(func(val []byte) error {
-			sd, decErr := decodeShareData(val)
-			if decErr != nil {
-				return decErr
-			}
-			existingShareData = sd
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-
-		_, rootID, err := metadata.DecodeFileHandle(existingShareData.RootHandle)
-		if err != nil {
-			return nil, err
-		}
-
-		rootItem, err := tx.txn.Get(keyFile(rootID))
-		if err != nil {
-			return nil, err
-		}
-
 		var rootFile *metadata.File
-		err = rootItem.Value(func(val []byte) error {
-			rf, decErr := decodeFile(val)
-			if decErr != nil {
-				return decErr
-			}
-			rootFile = rf
-			return nil
-		})
-		if err != nil {
+		if err := tx.store.loadExistingRoot(tx.txn, item, shareName, attr, &rootFile); err != nil {
 			return nil, err
 		}
-
-		// A root directory with no stored link count falls back to the
-		// directory default of 2.
-		rootFile.Nlink = fileLinkCountTxn(tx.txn, rootFile)
-
 		return rootFile, nil
 	} else if err != badgerdb.ErrKeyNotFound {
 		return nil, err
