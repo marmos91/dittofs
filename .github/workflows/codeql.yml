@@ -52,7 +52,7 @@ jobs:
         if: matrix.language == 'go'
         uses: actions/setup-go@v7
         with:
-          go-version: "1.25.x"
+          go-version-file: k8s/dittofs-operator/go.mod
           cache: true
 
       - name: Initialize CodeQL
