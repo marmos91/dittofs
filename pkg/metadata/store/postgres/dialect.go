@@ -2,9 +2,11 @@ package postgres
 
 import (
 	"errors"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 )
 
@@ -251,3 +253,87 @@ var shareQueries = storesql.ShareQueries{
 }
 
 var _ storesql.Dialect = dialect{}
+
+func (dialect) Locks() *storesql.LockQueries { return &lockQueries }
+
+var lockQueries = storesql.LockQueries{
+	Put: `
+		INSERT INTO locks (` + storesql.LockColumns + `)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+		        $14, $15, $16, $17, $18, $19, $20, $21, $22,
+		        $23, $24, $25, $26, $27, $28, $29)
+		ON CONFLICT (id) DO UPDATE SET
+			share_name = EXCLUDED.share_name,
+			file_id = EXCLUDED.file_id,
+			owner_id = EXCLUDED.owner_id,
+			client_id = EXCLUDED.client_id,
+			lock_type = EXCLUDED.lock_type,
+			byte_offset = EXCLUDED.byte_offset,
+			byte_length = EXCLUDED.byte_length,
+			is_zero_byte = EXCLUDED.is_zero_byte,
+			is_legacy_byte_range = EXCLUDED.is_legacy_byte_range,
+			share_reservation = EXCLUDED.share_reservation,
+			acquired_at = EXCLUDED.acquired_at,
+			server_epoch = EXCLUDED.server_epoch,
+			lease_key = EXCLUDED.lease_key,
+			lease_state = EXCLUDED.lease_state,
+			lease_epoch = EXCLUDED.lease_epoch,
+			break_to_state = EXCLUDED.break_to_state,
+			breaking_to_required = EXCLUDED.breaking_to_required,
+			breaking = EXCLUDED.breaking,
+			parent_lease_key = EXCLUDED.parent_lease_key,
+			is_directory = EXCLUDED.is_directory,
+			is_traditional_oplock = EXCLUDED.is_traditional_oplock,
+			delegation_id = EXCLUDED.delegation_id,
+			deleg_type = EXCLUDED.deleg_type,
+			deleg_breaking = EXCLUDED.deleg_breaking,
+			deleg_recalled = EXCLUDED.deleg_recalled,
+			deleg_revoked = EXCLUDED.deleg_revoked,
+			deleg_notification_mask = EXCLUDED.deleg_notification_mask,
+			break_started = EXCLUDED.break_started`,
+	SelectByID:     `SELECT ` + storesql.LockColumns + ` FROM locks WHERE id = $1`,
+	Delete:         `DELETE FROM locks WHERE id = $1`,
+	DeleteByClient: `DELETE FROM locks WHERE client_id = $1`,
+	DeleteByFile:   `DELETE FROM locks WHERE file_id = $1`,
+	IncrementEpoch: `
+		INSERT INTO server_epoch (id, epoch, updated_at)
+		VALUES (1, 1, NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			epoch = server_epoch.epoch + 1,
+			updated_at = NOW()
+		RETURNING epoch`,
+	SetCleanShutdown: `
+		INSERT INTO server_epoch (id, epoch, clean_shutdown, updated_at)
+		VALUES (1, 0, $1, NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			clean_shutdown = EXCLUDED.clean_shutdown,
+			updated_at = NOW()`,
+	ListWhere: lockListWhere,
+}
+
+// lockListWhere renders a LockQuery as numbered `$N` placeholders, counting up
+// in the order the arguments are appended.
+func lockListWhere(query lock.LockQuery) (string, []any) {
+	var where string
+	var args []any
+
+	add := func(column string, value any) {
+		args = append(args, value)
+		where += ` AND ` + column + ` = $` + strconv.Itoa(len(args))
+	}
+
+	if query.FileID != "" {
+		add("file_id", query.FileID)
+	}
+	if query.OwnerID != "" {
+		add("owner_id", query.OwnerID)
+	}
+	if query.ClientID != "" {
+		add("client_id", query.ClientID)
+	}
+	if query.ShareName != "" {
+		add("share_name", query.ShareName)
+	}
+
+	return where, args
+}
