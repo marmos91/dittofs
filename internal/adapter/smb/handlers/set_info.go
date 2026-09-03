@@ -2559,10 +2559,19 @@ func (h *Handler) handleFileLinkInformation(
 	metaSvc := h.Registry.GetMetadataService()
 	if linkInfo.ReplaceIfExists {
 		if existing, matchedName, lookupErr := metaSvc.LookupCaseInsensitive(authCtx, dstDir, linkName); lookupErr == nil && existing != nil {
-			if _, _, rmErr := metaSvc.RemoveFile(authCtx, dstDir, matchedName); rmErr != nil {
+			removed, _, rmErr := metaSvc.RemoveFile(authCtx, dstDir, matchedName)
+			if rmErr != nil {
 				logger.Debug("SET_INFO: hardlink replace failed to remove existing",
 					"name", matchedName, "error", rmErr)
 				return setInfoStatus(common.MapToSMB(rmErr)), nil
+			}
+			// RemoveFile drops the name and the inode but never the bytes; the
+			// returned PayloadID is empty exactly when the content must
+			// survive, so releasing it here is hard-link- and trash-safe.
+			// Without it the replaced file's records stay indexed as live in
+			// the local tier, where no reclamation path can reach them.
+			if removed != nil {
+				h.purgeBlockStorePayload(ctx.Context, dstDir, removed.PayloadID, matchedName, "SET_INFO hardlink replace")
 			}
 		}
 	}
