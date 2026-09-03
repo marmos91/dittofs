@@ -58,7 +58,7 @@ func InodeValues(file *metadata.File) ([]any, error) {
 	}
 
 	// A zero-valued ObjectID writes SQL NULL so the partial unique index
-	// (files_object_id_idx WHERE object_id IS NOT NULL) skips the row —
+	// (inodes_object_id_idx WHERE object_id IS NOT NULL) skips the row —
 	// legacy, never-quiesced and partially-flushed files must not collide on
 	// the all-zero sentinel.
 	var objectIDArg any

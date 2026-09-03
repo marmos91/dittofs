@@ -258,7 +258,7 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 			return mapDBError(err, "UpdateAttrs", "")
 		}
 
-		// Charge the new regular file to the share owner.
+		// Charge the new regular file to its owning identity.
 		if file.Type == metadata.FileTypeRegular {
 			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		}
