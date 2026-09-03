@@ -81,12 +81,6 @@ func (bs *Store) HasRemoteStore() bool {
 	return bs.remote != nil
 }
 
-// SetEvictionEnabled controls whether the local store can evict blocks to free disk space.
-// Delegates to the local store's SetEvictionEnabled method.
-func (bs *Store) SetEvictionEnabled(enabled bool) {
-	bs.local.SetEvictionEnabled(enabled)
-}
-
 // SetEvictionPinned pins the local store's bytes in place for a pin-retention
 // share. It survives the health-driven SetEvictionEnabled calls the syncer and
 // Start make, so it is the only correct way to express a retention pin.
