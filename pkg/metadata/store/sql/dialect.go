@@ -60,6 +60,10 @@ type Dialect interface {
 	// Durable returns the dialect's durable-handle statements, under the same
 	// package-level-value expectation as Chunks.
 	Durable() *DurableQueries
+
+	// Locks returns the dialect's lock and server-epoch statements, under the
+	// same package-level-value expectation as Chunks.
+	Locks() *LockQueries
 }
 
 // ShareQueries holds the share statements in one dialect's syntax. These
