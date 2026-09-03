@@ -606,10 +606,10 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 // POSIX rename silently unlinks an existing destination, and Move never
 // touches the block store. The clobbered victim is returned as the first
 // result so the caller can coordinate content deletion, the same contract
-// RemoveFile carries: nil when the rename replaced nothing (or replaced a
-// directory, which owns no content), and a non-nil File whose PayloadID is
-// empty whenever the content must survive — a remaining hard link, or a
-// recycle into the trash bin.
+// RemoveFile carries: nil when the rename replaced nothing, replaced a
+// directory (which owns no content), or recycled the victim into the trash bin
+// rather than destroying it; and a non-nil File whose PayloadID is empty when
+// a remaining hard link means the content must survive.
 func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, toDir FileHandle, toName string) (*File, *RenameWcc, error) {
 	store, err := s.storeForHandle(fromDir)
 	if err != nil {
