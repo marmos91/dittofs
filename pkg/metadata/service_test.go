@@ -931,7 +931,7 @@ func TestMetadataService_Move(t *testing.T) {
 		require.NoError(t, err)
 
 		// Rename it
-		_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "old.txt", fx.rootHandle, "new.txt")
+		_, _, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "old.txt", fx.rootHandle, "new.txt")
 
 		require.NoError(t, err)
 
@@ -955,7 +955,7 @@ func TestMetadataService_Move(t *testing.T) {
 		require.NoError(t, err)
 
 		// Move to same name
-		_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "test.txt", fx.rootHandle, "test.txt")
+		_, _, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "test.txt", fx.rootHandle, "test.txt")
 
 		require.NoError(t, err)
 
@@ -990,7 +990,7 @@ func TestMetadataService_Move(t *testing.T) {
 		require.NoError(t, err)
 
 		// Move to destination
-		_, err = fx.service.Move(fx.rootContext(), srcDir, "test.txt", dstDir, "test.txt")
+		_, _, err = fx.service.Move(fx.rootContext(), srcDir, "test.txt", dstDir, "test.txt")
 
 		require.NoError(t, err)
 
@@ -1019,7 +1019,7 @@ func TestMetadataService_Move(t *testing.T) {
 		require.NoError(t, err)
 
 		// Try to move directory over file
-		_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "dir", fx.rootHandle, "file.txt")
+		_, _, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "dir", fx.rootHandle, "file.txt")
 
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
@@ -1068,7 +1068,7 @@ func TestMetadataService_Move(t *testing.T) {
 		// - User 65534 does not own the file (file owned by UID 0)
 		// - User 65534 does not own the directory (dir owned by UID 0)
 		nobodyCtx := fx.authContext(65534, 65534)
-		_, err = fx.service.Move(nobodyCtx, stickyDirHandle, "rootfile.txt", destDirHandle, "renamed.txt")
+		_, _, err = fx.service.Move(nobodyCtx, stickyDirHandle, "rootfile.txt", destDirHandle, "renamed.txt")
 
 		// Should return ErrAccessDenied
 		require.Error(t, err, "rename should fail due to sticky bit restriction")
@@ -1116,7 +1116,7 @@ func TestMetadataService_Move(t *testing.T) {
 		require.NoError(t, err)
 
 		// User 65534 should be able to rename their own file
-		_, err = fx.service.Move(userCtx, stickyDirHandle, "myfile.txt", destDirHandle, "renamed.txt")
+		_, _, err = fx.service.Move(userCtx, stickyDirHandle, "myfile.txt", destDirHandle, "renamed.txt")
 		require.NoError(t, err, "owner should be able to rename their own file despite sticky bit")
 	})
 }

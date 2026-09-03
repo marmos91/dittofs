@@ -1,6 +1,8 @@
 package handlers_test
 
 import (
+	"bytes"
+	"context"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
@@ -420,4 +422,61 @@ func TestRename_NestedDirectory(t *testing.T) {
 
 	assert.Nil(t, fx.GetHandle("a/b/c/nested.txt"))
 	assert.NotNil(t, fx.GetHandle("a/b/c/renamed.txt"))
+}
+
+// TestRename_ReclaimsClobberedPayloadBytes pins that a v3 RENAME onto an
+// existing name frees the clobbered file's content, not just its directory
+// entry. POSIX rename silently unlinks whatever was at the destination, and the
+// metadata layer deliberately never deletes payload bytes — Move returns the
+// clobbered victim so the protocol handler can. A handler that ignores that
+// return leaves the victim's records indexed as live in the local tier, where no
+// reclamation path (fast-path retire, eviction, repack) will ever treat them as
+// dead, so the bytes survive every restart.
+//
+// The assertion is on block-store state an operator can observe rather than on
+// how the handler achieves it, and it pins both directions: the victim's payload
+// must be gone AND the renamed file's payload must survive, so a fix that
+// releases the wrong payload fails here instead of passing.
+func TestRename_ReclaimsClobberedPayloadBytes(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+	ctxBg := context.Background()
+
+	payloadIDOf := func(name string) string {
+		t.Helper()
+		handle, err := fx.MetadataService.GetChild(ctxBg, fx.RootHandle, name)
+		require.NoError(t, err)
+		file, err := fx.MetadataService.GetFile(ctxBg, handle)
+		require.NoError(t, err)
+		return string(file.PayloadID)
+	}
+
+	victimBytes := bytes.Repeat([]byte{0xAB}, 1<<20)
+	fx.CreateFile("victim.bin", victimBytes)
+	fx.CreateFile("incoming.bin", bytes.Repeat([]byte{0xCD}, 4096))
+
+	victimPayload := payloadIDOf("victim.bin")
+	survivorPayload := payloadIDOf("incoming.bin")
+	require.NotEqual(t, victimPayload, survivorPayload,
+		"test setup: both files share a payload, the assertions below cannot discriminate")
+
+	size, ok := fx.LocalStore.FileSize(ctxBg, victimPayload)
+	require.True(t, ok, "victim payload absent from the local tier before RENAME")
+	require.Equal(t, int64(len(victimBytes)), size)
+
+	resp, err := fx.Handler.Rename(fx.ContextWithUID(0, 0), &handlers.RenameRequest{
+		FromDirHandle: fx.RootHandle,
+		FromName:      "incoming.bin",
+		ToDirHandle:   fx.RootHandle,
+		ToName:        "victim.bin",
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, resp.Status)
+
+	leaked, stillThere := fx.LocalStore.FileSize(ctxBg, victimPayload)
+	assert.Falsef(t, stillThere,
+		"clobbered payload %q still holds %d live bytes in the local tier after RENAME", victimPayload, leaked)
+
+	_, survived := fx.LocalStore.FileSize(ctxBg, survivorPayload)
+	assert.Truef(t, survived,
+		"renamed file's payload %q was dropped from the local tier by RENAME", survivorPayload)
 }

@@ -361,7 +361,7 @@ func TestMetadataService_Move_Extended(t *testing.T) {
 		require.NoError(t, err)
 
 		// Rename it
-		_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "original.txt", fx.rootHandle, "renamed.txt")
+		_, _, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "original.txt", fx.rootHandle, "renamed.txt")
 
 		require.NoError(t, err)
 
@@ -395,7 +395,7 @@ func TestMetadataService_Move_Extended(t *testing.T) {
 		require.NoError(t, err)
 
 		// Move file
-		_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "moveme.txt", destHandle, "moved.txt")
+		_, _, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "moveme.txt", destHandle, "moved.txt")
 
 		require.NoError(t, err)
 
@@ -428,7 +428,7 @@ func TestMetadataService_Move_Extended(t *testing.T) {
 		require.NoError(t, err)
 
 		// Move (overwrite)
-		_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "source.txt", fx.rootHandle, "dest.txt")
+		_, _, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "source.txt", fx.rootHandle, "dest.txt")
 
 		require.NoError(t, err)
 
@@ -453,7 +453,7 @@ func TestMetadataService_Move_Extended(t *testing.T) {
 		require.NoError(t, err)
 
 		// Rename directory
-		_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "srcdir", fx.rootHandle, "newdir")
+		_, _, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "srcdir", fx.rootHandle, "newdir")
 
 		require.NoError(t, err)
 
@@ -477,7 +477,7 @@ func TestMetadataService_Move_Extended(t *testing.T) {
 		require.NoError(t, err)
 
 		// Move to same location
-		_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "same.txt", fx.rootHandle, "same.txt")
+		_, _, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "same.txt", fx.rootHandle, "same.txt")
 
 		require.NoError(t, err)
 
@@ -503,7 +503,7 @@ func TestMetadataService_Move_Extended(t *testing.T) {
 		require.NoError(t, err)
 
 		// Try to move file over directory
-		_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "file.txt", fx.rootHandle, "dir")
+		_, _, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "file.txt", fx.rootHandle, "dir")
 
 		require.Error(t, err)
 	})
@@ -525,7 +525,7 @@ func TestMetadataService_Move_Extended(t *testing.T) {
 		require.NoError(t, err)
 
 		// Try to move directory over file
-		_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "srcdir", fx.rootHandle, "destfile.txt")
+		_, _, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "srcdir", fx.rootHandle, "destfile.txt")
 
 		require.Error(t, err)
 	})

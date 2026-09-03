@@ -56,6 +56,11 @@ type HandlerTestFixture struct {
 	// BlockStore provides block storage for content operations.
 	BlockStore *engine.Store
 
+	// LocalStore is the block store's local tier. Exposed so tests can assert
+	// that a payload's bytes actually left the disk, which is the precondition
+	// every reclamation path shares.
+	LocalStore *fs.FSStore
+
 	// ShareName is the name of the test share.
 	ShareName string
 
@@ -174,6 +179,7 @@ func NewHandlerFixtureWithStore(
 		MetadataService: reg.GetMetadataService(),
 		MetaStore:       metaStore,
 		BlockStore:      blockSvc,
+		LocalStore:      localStore,
 		ShareName:       DefaultShareName,
 		RootHandle:      rootHandle,
 	}
