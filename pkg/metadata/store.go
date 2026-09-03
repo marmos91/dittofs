@@ -212,11 +212,6 @@ type Shares interface {
 	// Share Lifecycle (CRUD)
 	// ========================================================================
 
-	// CreateShare creates a new share with the given configuration.
-	// Also creates the root directory for the share.
-	// Returns ErrAlreadyExists if share already exists.
-	CreateShare(ctx context.Context, share *Share) error
-
 	// UpdateShareOptions updates the share configuration options.
 	// Returns ErrNotFound if share doesn't exist.
 	UpdateShareOptions(ctx context.Context, shareName string, options *ShareOptions) error

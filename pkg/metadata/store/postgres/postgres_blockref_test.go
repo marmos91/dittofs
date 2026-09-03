@@ -73,11 +73,8 @@ func createShareAndFile(t *testing.T, store metadata.Store, shareName, fileName 
 	t.Helper()
 	ctx := t.Context()
 
-	// CreateRootDirectory creates both the files row and the shares row
-	// (via ON CONFLICT in transaction.go's CreateRootDirectory). We skip
-	// the standalone CreateShare call because the postgres backend's
-	// CreateShare INSERT does not include root_file_id (pre-existing
-	// scope-boundary issue, not introduced by).
+	// CreateRootDirectory writes both the files row and the shares row, via
+	// the ON CONFLICT upsert in transaction.go's CreateRootDirectory.
 	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0o755,

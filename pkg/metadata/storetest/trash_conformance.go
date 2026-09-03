@@ -31,9 +31,7 @@ type trashFixture struct {
 }
 
 // newTrashService bootstraps a MetadataService over a fresh backend store with
-// trash enabled (and the given exclude patterns). It follows the fixture
-// ordering the recycle path requires: CreateShare BEFORE CreateRootDirectory,
-// so GetRootHandle resolves when recycleNode looks up the share root.
+// trash enabled (and the given exclude patterns).
 func newTrashService(t *testing.T, factory StoreFactory, excludes []string) *trashFixture {
 	t.Helper()
 
@@ -41,11 +39,8 @@ func newTrashService(t *testing.T, factory StoreFactory, excludes []string) *tra
 	ctx := context.Background()
 	shareName := "/test"
 
-	// Share must exist before the root directory: the recycle path resolves the
-	// share root via GetRootHandle, which fails if the share isn't registered.
-	if err := store.CreateShare(ctx, &metadata.Share{Name: shareName}); err != nil {
-		t.Fatalf("CreateShare(%q) failed: %v", shareName, err)
-	}
+	// Creating the root directory also registers the share, which the recycle
+	// path needs: it resolves the share root via GetRootHandle.
 	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0777,

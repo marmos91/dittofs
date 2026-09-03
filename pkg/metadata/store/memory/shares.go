@@ -67,48 +67,6 @@ func (store *MemoryMetadataStore) GetShareOptions(ctx context.Context, shareName
 // Share Lifecycle Operations
 // ============================================================================
 
-// CreateShare creates a new share with the given configuration.
-func (store *MemoryMetadataStore) CreateShare(ctx context.Context, share *metadata.Share) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	store.mu.Lock()
-	defer store.mu.Unlock()
-
-	if existing, exists := store.shares[share.Name]; exists {
-		// A seeded entry (from CreateRootDirectory) is not a "real" share yet —
-		// finish it by recording the caller's options while keeping the root
-		// handle that the already-materialized root inode is keyed under. A
-		// non-seeded entry is a genuine duplicate.
-		if !existing.seeded {
-			return &metadata.StoreError{
-				Code:    metadata.ErrAlreadyExists,
-				Message: "share already exists",
-				Path:    share.Name,
-			}
-		}
-		store.shares[share.Name] = &shareData{
-			Share:      *share,
-			RootHandle: existing.RootHandle,
-		}
-		return nil
-	}
-
-	// Generate root handle
-	rootHandle, err := metadata.GenerateNewHandle(share.Name)
-	if err != nil {
-		return err
-	}
-
-	store.shares[share.Name] = &shareData{
-		Share:      *share,
-		RootHandle: rootHandle,
-	}
-
-	return nil
-}
-
 // UpdateShareOptions updates the share configuration options.
 func (store *MemoryMetadataStore) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
 	if err := ctx.Err(); err != nil {
@@ -208,16 +166,13 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	}
 	key := handleToKey(rootHandle)
 
-	// Seed the share registry so the share can be resolved by name. The runtime
-	// initialises a share's metadata via CreateRootDirectory (not CreateShare),
-	// so without this GetRootHandle/GetShareOptions return "share not found" for
-	// runtime shares. Idempotent: an existing entry (seeded or from CreateShare)
-	// is left untouched.
+	// Register the share so GetRootHandle and GetShareOptions resolve it by
+	// name; this is the only entry point that records one. Idempotent: an
+	// existing entry keeps the options already set on it.
 	if _, ok := store.shares[shareName]; !ok {
 		store.shares[shareName] = &shareData{
 			Share:      metadata.Share{Name: shareName},
 			RootHandle: rootHandle,
-			seeded:     true,
 		}
 	}
 

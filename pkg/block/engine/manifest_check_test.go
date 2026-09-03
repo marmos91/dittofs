@@ -70,9 +70,6 @@ func newCheckStore(t *testing.T, backend, share string) (metadata.Store, metadat
 		t.Fatalf("unknown backend %q", backend)
 	}
 
-	if err := store.CreateShare(ctx, &metadata.Share{Name: share}); err != nil {
-		t.Fatalf("CreateShare: %v", err)
-	}
 	if _, err := store.CreateRootDirectory(ctx, share, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory, Mode: 0o755,
 	}); err != nil {

@@ -28,11 +28,7 @@ func TestCheckPermissions_StoreReadOnlyShareBlocksHandleBypass(t *testing.T) {
 	handle, err := metadata.EncodeShareHandle(f.shareName, created.ID)
 	require.NoError(t, err)
 
-	// Register the share options entry (the fixture's CreateRootDirectory builds
-	// the file tree but not the share-options record) and toggle it read-only at
-	// the store level. CreateShare is a no-op-on-exists guard so the test is
-	// robust to either fixture shape.
-	_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
+	// Toggle the share read-only at the store level.
 	require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
 		&metadata.ShareOptions{ReadOnly: true}))
 
@@ -180,7 +176,6 @@ func TestCheckParentCreateAccess_StoreReadOnlyShareReturnsErrReadOnly(t *testing
 
 	// Toggle the share read-only at the STORE level; per-user ShareReadOnly stays
 	// false so only the store-level flag is in play.
-	_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
 	require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
 		&metadata.ShareOptions{ReadOnly: true}))
 
@@ -220,10 +215,6 @@ func TestCheckParentCreateAccess_NoACLParent_ReadOnlyDiscriminator(t *testing.T)
 
 	t.Run("store-level read-only share is EROFS", func(t *testing.T) {
 		f := newTestFixture(t)
-		// The fixture already registered the share (via CreateRootDirectory), so
-		// CreateShare returns ErrExist here — intentionally ignored; the call only
-		// guarantees a share entry for UpdateShareOptions to target.
-		_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
 		require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
 			&metadata.ShareOptions{ReadOnly: true}))
 		// Owner, per-user ShareReadOnly explicitly false: only the store-level
@@ -273,7 +264,6 @@ func TestCheckParentWriteAccess_ReadOnlyDiscriminator(t *testing.T) {
 
 	t.Run("store-level read-only share is EROFS", func(t *testing.T) {
 		f := newTestFixture(t)
-		_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
 		require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
 			&metadata.ShareOptions{ReadOnly: true}))
 		owner := f.authContext(1101, 1101)
@@ -369,7 +359,6 @@ func TestSetFileAttributes_StoreReadOnlyDeniesOwnerMutation(t *testing.T) {
 	handle, err := metadata.EncodeShareHandle(f.shareName, created.ID)
 	require.NoError(t, err)
 
-	_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
 	require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
 		&metadata.ShareOptions{ReadOnly: true}))
 
@@ -434,7 +423,6 @@ func TestRemoveFile_StoreReadOnlyShareBlocksDeleteAccessBypass(t *testing.T) {
 	require.NoError(t, err)
 
 	// Share flips read-only after the handle was authorized.
-	_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
 	require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
 		&metadata.ShareOptions{ReadOnly: true}))
 
