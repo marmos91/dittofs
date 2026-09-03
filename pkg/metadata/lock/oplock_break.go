@@ -257,9 +257,9 @@ func (s *OpLockBreakScanner) scanExpiredLeaseBreaks(now time.Time) {
 	}
 
 	for _, pl := range locks {
-		// Leases and byte-range locks share one table; a 16-byte lease key is
-		// what marks a row as a lease, so anything else is a byte-range lock
-		// and has no break to expire.
+		// Every kind of lock record shares one table, and a 16-byte lease key
+		// is what marks a row as carrying lease state. A row without one has
+		// no break to expire, whatever else it is.
 		if len(pl.LeaseKey) != 16 {
 			continue
 		}
