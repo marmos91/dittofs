@@ -437,6 +437,13 @@ type FilesystemMeta struct {
 //
 // Thread Safety:
 // Implementations must be safe for concurrent use by multiple goroutines.
+// DefaultRootMode is the mode a share root gets when the caller configures
+// none. Every backend and every entry point must use this one value: creating
+// a root and reconciling an existing one both compare against it, so two
+// defaults would each rewrite what the other wrote and a share's root mode
+// would flip depending on which call happened last.
+const DefaultRootMode = 0o755
+
 type Store interface {
 	Files                      // File CRUD operations (non-transactional calls)
 	Shares                     // Share lifecycle and handle management

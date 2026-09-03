@@ -2,6 +2,8 @@ package storetest
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -19,6 +21,7 @@ func runDirOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("RemoveEmptyDirectory", func(t *testing.T) { testRemoveEmptyDirectory(t, factory) })
 	t.Run("NestedDirectories", func(t *testing.T) { testNestedDirectories(t, factory) })
 	t.Run("RootDirectoryIdempotent", func(t *testing.T) { testRootDirectoryIdempotent(t, factory) })
+	t.Run("RootDirectoryReconcilesAttrs", func(t *testing.T) { testRootDirectoryReconcilesAttrs(t, factory) })
 	t.Run("LinkCountAgreesWithGetFile", func(t *testing.T) { testLinkCountAgreesWithGetFile(t, factory) })
 	t.Run("DeleteChildIsIdempotent", func(t *testing.T) { testDeleteChildIsIdempotent(t, factory) })
 	t.Run("NamesOnlyMatchesWithAttrs", func(t *testing.T) { testNamesOnlyMatchesWithAttrs(t, factory) })
@@ -300,6 +303,174 @@ func testRootDirectoryIdempotent(t *testing.T, factory StoreFactory) {
 	}
 }
 
+// testRootDirectoryReconcilesAttrs pins what CreateRootDirectory does when the
+// share already has a root: the configured attributes win, and the stored
+// inode is rewritten to match.
+//
+// This is what makes re-attaching a share with changed root ownership or mode
+// take effect. It is asserted through the transaction as well as through the
+// store because the two are separate entry points — a backend can reconcile on
+// one and return the stored root untouched on the other, and then whether an
+// operator's config change lands depends on which call site reached it.
+func testRootDirectoryReconcilesAttrs(t *testing.T, factory StoreFactory) {
+	const (
+		shareName = "/reconcile"
+		wantMode  = 0o700
+		wantUID   = 4242
+		wantGID   = 4343
+	)
+
+	// check creates a root, re-creates it with different attributes through the
+	// caller's entry point, and asserts the returned root AND the stored one: a
+	// body that reports the new attributes without writing them would pass on
+	// the returned root alone.
+	check := func(t *testing.T, create func(context.Context, metadata.Store, *metadata.FileAttr) (*metadata.File, error)) {
+		t.Helper()
+		store := factory(t)
+		ctx := t.Context()
+
+		first := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755, UID: 1000, GID: 1000}
+		if _, err := create(ctx, store, first); err != nil {
+			t.Fatalf("first CreateRootDirectory() failed: %v", err)
+		}
+
+		// Read the root before reconciling so any per-inode cache holds the
+		// pre-reconcile value. A backend that writes the new attrs but does not
+		// drop that entry then keeps serving the old ones, which a cold read
+		// after the write would not notice. The read has to go through the
+		// read fast path where one exists, because that is where the cache is.
+		warm, err := store.GetRootHandle(ctx, shareName)
+		if err != nil {
+			t.Fatalf("GetRootHandle() before reconcile failed: %v", err)
+		}
+		if _, err := readRootForCache(ctx, store, warm); err != nil {
+			t.Fatalf("read of root before reconcile failed: %v", err)
+		}
+
+		changed := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: wantMode, UID: wantUID, GID: wantGID}
+		got, err := create(ctx, store, changed)
+		if err != nil {
+			t.Fatalf("second CreateRootDirectory() failed: %v", err)
+		}
+		if got.Mode != wantMode || got.UID != wantUID || got.GID != wantGID {
+			t.Errorf("returned root not reconciled: mode=%o uid=%d gid=%d, want mode=%o uid=%d gid=%d",
+				got.Mode, got.UID, got.GID, wantMode, wantUID, wantGID)
+		}
+
+		handle, err := store.GetRootHandle(ctx, shareName)
+		if err != nil {
+			t.Fatalf("GetRootHandle() failed: %v", err)
+		}
+		stored, err := readRootForCache(ctx, store, handle)
+		if err != nil {
+			t.Fatalf("read of root failed: %v", err)
+		}
+		if stored.Mode != wantMode || stored.UID != wantUID || stored.GID != wantGID {
+			t.Errorf("stored root not reconciled: mode=%o uid=%d gid=%d, want mode=%o uid=%d gid=%d",
+				stored.Mode, stored.UID, stored.GID, wantMode, wantUID, wantGID)
+		}
+	}
+
+	t.Run("StorePath", func(t *testing.T) {
+		check(t, func(ctx context.Context, store metadata.Store, attr *metadata.FileAttr) (*metadata.File, error) {
+			return store.CreateRootDirectory(ctx, shareName, attr)
+		})
+	})
+
+	t.Run("TransactionPath", func(t *testing.T) {
+		check(t, txCreateRoot(shareName))
+	})
+
+	// A zero mode means "use the default". Both entry points have to pick the
+	// SAME default, so the create and the re-create go through DIFFERENT ones:
+	// two self-consistent but different defaults would each rewrite what the
+	// other wrote, and running one path twice could not tell.
+	t.Run("ZeroModeIsIdempotentAcrossEntryPoints", func(t *testing.T) {
+		storeCreate := func(ctx context.Context, store metadata.Store, attr *metadata.FileAttr) (*metadata.File, error) {
+			return store.CreateRootDirectory(ctx, shareName, attr)
+		}
+		txCreate := txCreateRoot(shareName)
+
+		for _, tc := range []struct {
+			name          string
+			first, second func(context.Context, metadata.Store, *metadata.FileAttr) (*metadata.File, error)
+		}{
+			{"StoreThenTransaction", storeCreate, txCreate},
+			{"TransactionThenStore", txCreate, storeCreate},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				store := factory(t)
+				ctx := t.Context()
+
+				zero := &metadata.FileAttr{Type: metadata.FileTypeDirectory}
+				created, err := tc.first(ctx, store, zero)
+				if err != nil {
+					t.Fatalf("first CreateRootDirectory() failed: %v", err)
+				}
+				recreated, err := tc.second(ctx, store, zero)
+				if err != nil {
+					t.Fatalf("second CreateRootDirectory() failed: %v", err)
+				}
+				if created.Mode != recreated.Mode {
+					t.Errorf("zero-mode root changed when re-created through the other entry point: %o then %o",
+						created.Mode, recreated.Mode)
+				}
+			})
+		}
+	})
+
+	// A reconcile is a write like any other, so a transaction that fails after
+	// one must leave the root as it was.
+	t.Run("ReconcileRollsBack", func(t *testing.T) {
+		store := factory(t)
+		ctx := t.Context()
+
+		first := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755, UID: 1000, GID: 1000}
+		if _, err := store.CreateRootDirectory(ctx, shareName, first); err != nil {
+			t.Fatalf("CreateRootDirectory() failed: %v", err)
+		}
+
+		errRollback := errors.New("abandon the transaction")
+		changed := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: wantMode, UID: wantUID, GID: wantGID}
+		err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+			if _, txErr := tx.CreateRootDirectory(ctx, shareName, changed); txErr != nil {
+				return txErr
+			}
+			return errRollback
+		})
+		if !errors.Is(err, errRollback) {
+			t.Fatalf("WithTransaction() error = %v, want %v", err, errRollback)
+		}
+
+		handle, err := store.GetRootHandle(ctx, shareName)
+		if err != nil {
+			t.Fatalf("GetRootHandle() failed: %v", err)
+		}
+		stored, err := store.GetFile(ctx, handle)
+		if err != nil {
+			t.Fatalf("GetFile(root) failed: %v", err)
+		}
+		if stored.Mode != first.Mode || stored.UID != first.UID || stored.GID != first.GID {
+			t.Errorf("reconcile survived rollback: mode=%o uid=%d gid=%d, want mode=%o uid=%d gid=%d",
+				stored.Mode, stored.UID, stored.GID, first.Mode, first.UID, first.GID)
+		}
+	})
+}
+
+// txCreateRoot returns a create func that runs CreateRootDirectory through a
+// transaction, so a caller can drive both entry points from one body.
+func txCreateRoot(shareName string) func(context.Context, metadata.Store, *metadata.FileAttr) (*metadata.File, error) {
+	return func(ctx context.Context, store metadata.Store, attr *metadata.FileAttr) (*metadata.File, error) {
+		var root *metadata.File
+		err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+			var txErr error
+			root, txErr = tx.CreateRootDirectory(ctx, shareName, attr)
+			return txErr
+		})
+		return root, err
+	}
+}
+
 // testLinkCountAgreesWithGetFile verifies that GetLinkCount reports the same
 // hard-link count as GetFile for an inode whose count was never explicitly
 // stored. Backends keep the count outside the inode record (a separate key or
@@ -556,4 +727,13 @@ func testNamesOnlyMatchesWithAttrs(t *testing.T, factory StoreFactory) {
 			t.Errorf("resuming %v from a %v cursor yielded %v, want %v", c.second, c.first, got, paged)
 		}
 	}
+}
+
+// readRootForCache reads through the backend's cached path when it has one,
+// falling back to GetFile when it does not.
+func readRootForCache(ctx context.Context, store metadata.Store, handle metadata.FileHandle) (*metadata.File, error) {
+	if fr, ok := store.(fileForReadStore); ok {
+		return fr.GetFileForRead(ctx, handle)
+	}
+	return store.GetFile(ctx, handle)
 }

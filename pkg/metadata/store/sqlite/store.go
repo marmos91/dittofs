@@ -164,7 +164,7 @@ func NewSQLiteMetadataStore(
 		quota:        basestore.NewQuotaCache(),
 	}
 	// The shared SQL bodies run on the pool for store-level calls.
-	store.Core = &storesql.Core{X: store.conn(), D: sqliteDialect, Caps: store.currentCapabilities}
+	store.Core = &storesql.Core{X: store.conn(), D: sqliteDialect, Caps: store.currentCapabilities, Log: log}
 
 	// The substores derive only from db, which is never reassigned, so bind
 	// them once here.

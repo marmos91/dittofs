@@ -6,12 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/txretry"
 
 	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
@@ -97,7 +94,7 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 		}
 
 		ptx := &sqliteTransaction{store: s, tx: execer{e: rawTx, op: "tx"}}
-		ptx.Core = &storesql.Core{X: ptx.tx, D: sqliteDialect, Caps: s.currentCapabilities, Quota: &ptx.quota}
+		ptx.Core = &storesql.Core{X: ptx.tx, D: sqliteDialect, Caps: s.currentCapabilities, Quota: &ptx.quota, Log: s.logger}
 		if err := fn(ptx); err != nil {
 			_ = rawTx.Rollback()
 			if isBusyError(err) {
@@ -348,152 +345,8 @@ func (tx *sqliteTransaction) DeleteShare(ctx context.Context, shareName string) 
 }
 
 func (tx *sqliteTransaction) CreateRootDirectory(ctx context.Context, shareName string, attr *metadata.FileAttr) (*metadata.File, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
 	tx.sharesDirty = true
-
-	if shareName == "" {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "share name cannot be empty",
-		}
-	}
-
-	// Apply defaults
-	uid := attr.UID
-	gid := attr.GID
-	mode := attr.Mode
-	if mode == 0 {
-		mode = 0o755
-	}
-
-	// Check if root directory already exists (idempotent behavior). The root is
-	// resolved via shares.root_file_id — with the path column gone (#1166), the
-	// share row is the authoritative pointer to its root inode.
-	checkQuery := `
-		SELECT f.id, f.file_type, f.mode, f.uid, f.gid, f.size,
-			   f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.nlink
-		FROM inodes f
-		WHERE f.id = (SELECT root_file_id FROM shares WHERE share_name = ?1)
-	`
-
-	var (
-		id           string
-		fileType     int16
-		existingMode int32
-		existingUID  int32
-		existingGID  int32
-		size         int64
-		atime        int64
-		mtime        int64
-		ctime        int64
-		creationTime int64
-		hidden       bool
-		nlink        int32
-	)
-
-	err := tx.tx.QueryRow(ctx, checkQuery, shareName).Scan(
-		&id, &fileType, &existingMode, &existingUID, &existingGID, &size,
-		&atime, &mtime, &ctime, &creationTime, &hidden, &nlink,
-	)
-
-	if err == nil {
-		// Root exists - return it
-		return &metadata.File{
-			ID:        uuid.MustParse(id),
-			ShareName: shareName,
-			Path:      "/",
-			FileAttr: metadata.FileAttr{
-				Type:         metadata.FileType(fileType),
-				Mode:         uint32(existingMode),
-				Nlink:        uint32(nlink),
-				UID:          uint32(existingUID),
-				GID:          uint32(existingGID),
-				Size:         uint64(size),
-				Atime:        sqlcodec.FiletimeToTime(atime),
-				Mtime:        sqlcodec.FiletimeToTime(mtime),
-				Ctime:        sqlcodec.FiletimeToTime(ctime),
-				CreationTime: sqlcodec.FiletimeToTime(creationTime),
-				Hidden:       hidden,
-			},
-		}, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return nil, mapDBError(err, "CreateRootDirectory", shareName)
-	}
-
-	// Create new root directory
-	rootID := uuid.New()
-	now := time.Now()
-
-	// Directories start with nlink = 2 ("." and the parent's entry). nlink is
-	// the sole source of truth for the hard-link count (#1166).
-	insertFileQuery := `
-		INSERT INTO inodes (
-			id, share_name,
-			file_type, mode, uid, gid, size,
-			atime, mtime, ctime, creation_time,
-			content_id, link_target, device_major, device_minor, nlink
-		) VALUES (
-			?1, ?2,
-			?3, ?4, ?5, ?6, ?7,
-			?8, ?9, ?10, ?11,
-			?12, ?13, ?14, ?15, 2
-		)
-	`
-
-	_, err = tx.tx.Exec(ctx, insertFileQuery,
-		rootID,                            // id
-		shareName,                         // share_name
-		int16(metadata.FileTypeDirectory), // file_type
-		int32(mode),                       // mode
-		int32(uid),                        // uid
-		int32(gid),                        // gid
-		int64(0),                          // size
-		sqlcodec.TimeToFiletime(now),      // atime
-		sqlcodec.TimeToFiletime(now),      // mtime
-		sqlcodec.TimeToFiletime(now),      // ctime
-		sqlcodec.TimeToFiletime(now),      // creation_time
-		nil,                               // content_id (NULL for directories)
-		nil,                               // link_target (NULL)
-		nil,                               // device_major (NULL)
-		nil,                               // device_minor (NULL)
-	)
-	if err != nil {
-		return nil, mapDBError(err, "CreateRootDirectory", shareName)
-	}
-
-	// Insert into shares table
-	insertShareQuery := `
-		INSERT INTO shares (share_name, root_file_id)
-		VALUES (?1, ?2)
-		ON CONFLICT (share_name) DO UPDATE
-		SET root_file_id = EXCLUDED.root_file_id
-	`
-
-	_, err = tx.tx.Exec(ctx, insertShareQuery, shareName, rootID)
-	if err != nil {
-		return nil, mapDBError(err, "CreateRootDirectory", shareName)
-	}
-
-	return &metadata.File{
-		ID:        rootID,
-		ShareName: shareName,
-		Path:      "/",
-		FileAttr: metadata.FileAttr{
-			Type:         metadata.FileTypeDirectory,
-			Mode:         mode,
-			Nlink:        2, // Root directories have 2 links (. and parent's entry)
-			UID:          uid,
-			GID:          gid,
-			Size:         0,
-			Atime:        now,
-			Mtime:        now,
-			Ctime:        now,
-			CreationTime: now,
-		},
-	}, nil
+	return tx.Core.CreateRootDirectory(ctx, shareName, attr)
 }
 
 // ============================================================================
