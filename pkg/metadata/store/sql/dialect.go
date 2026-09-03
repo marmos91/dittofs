@@ -56,6 +56,10 @@ type Dialect interface {
 	// Recovery returns the dialect's v4 client-recovery statements, under the
 	// same package-level-value expectation as Chunks.
 	Recovery() *RecoveryQueries
+
+	// Durable returns the dialect's durable-handle statements, under the same
+	// package-level-value expectation as Chunks.
+	Durable() *DurableQueries
 }
 
 // ShareQueries holds the share statements in one dialect's syntax. These

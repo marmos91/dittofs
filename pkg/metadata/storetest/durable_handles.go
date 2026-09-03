@@ -135,6 +135,9 @@ func makeDurableHandle(id string, shareName string) *lock.PersistedDurableHandle
 	var originalFileID [16]byte
 	copy(originalFileID[:], []byte("origfid-"+id))
 
+	var clientGUID [16]byte
+	copy(clientGUID[:], []byte("cliguid-"+id))
+
 	return &lock.PersistedDurableHandle{
 		ID:                 id,
 		FileID:             fileID,
@@ -163,6 +166,16 @@ func makeDurableHandle(id string, shareName string) *lock.PersistedDurableHandle
 		OriginalFileID:     originalFileID,
 		RequestedAllocSize: 0x1000,
 		IsPersistent:       true,
+		// The delete-on-close group and the client GUID are set to distinct
+		// non-zero values on purpose. Left at their zero values they would
+		// round-trip correctly through a query that had lost or reordered
+		// their columns, which is the one mistake a hand-written column list
+		// invites.
+		DeletePending: true,
+		ParentHandle:  []byte("parent-" + id),
+		FileName:      id + ".txt",
+		IsDirectory:   true,
+		ClientGUID:    clientGUID,
 	}
 }
 
@@ -217,6 +230,21 @@ func assertDurableHandleEqual(t *testing.T, expected, actual *lock.PersistedDura
 	}
 	if expected.CreateGuid != actual.CreateGuid {
 		t.Errorf("CreateGuid: got %x, want %x", actual.CreateGuid, expected.CreateGuid)
+	}
+	if expected.ClientGUID != actual.ClientGUID {
+		t.Errorf("ClientGUID: got %x, want %x", actual.ClientGUID, expected.ClientGUID)
+	}
+	if expected.DeletePending != actual.DeletePending {
+		t.Errorf("DeletePending: got %v, want %v", actual.DeletePending, expected.DeletePending)
+	}
+	if !bytes.Equal(expected.ParentHandle, actual.ParentHandle) {
+		t.Errorf("ParentHandle: got %x, want %x", actual.ParentHandle, expected.ParentHandle)
+	}
+	if expected.FileName != actual.FileName {
+		t.Errorf("FileName: got %q, want %q", actual.FileName, expected.FileName)
+	}
+	if expected.IsDirectory != actual.IsDirectory {
+		t.Errorf("IsDirectory: got %v, want %v", actual.IsDirectory, expected.IsDirectory)
 	}
 	if expected.AppInstanceId != actual.AppInstanceId {
 		t.Errorf("AppInstanceId: got %x, want %x", actual.AppInstanceId, expected.AppInstanceId)
