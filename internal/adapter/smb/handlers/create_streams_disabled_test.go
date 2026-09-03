@@ -22,6 +22,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -32,21 +33,48 @@ import (
 // and tree, and the share's root handle (the latter is unused by these tests
 // but matches the pattern used by other handler-level integration tests in
 // this package).
+//
+// The share owns a local memory block store. CLOSE flushes the block store for
+// any handle carrying a payload, so without one every CLOSE of a regular file
+// returns STATUS_INTERNAL_ERROR ("block store not available for handle") and
+// never reaches its metadata flush or its frozen-timestamp restore. A test that
+// checks only the Go error sees that as a pass.
 func setupStreamsDisabledShare(t *testing.T, streamsDisabled bool) (*Handler, *SMBHandlerContext, metadata.FileHandle) {
 	t.Helper()
 
-	rt := runtime.New(nil)
+	cps, err := cpstore.New(&cpstore.Config{
+		Type:   cpstore.DatabaseTypeSQLite,
+		SQLite: cpstore.SQLiteConfig{Path: ":memory:"},
+	})
+	if err != nil {
+		t.Fatalf("cpstore.New: %v", err)
+	}
+	rt := runtime.New(cps)
 	memStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("streams-test-meta", memStore); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 
+	if _, err := cps.CreateMetadataStore(context.Background(), &models.MetadataStoreConfig{
+		Name: "streams-test-meta", Type: "memory",
+	}); err != nil {
+		t.Fatalf("CreateMetadataStore: %v", err)
+	}
+
+	localBSID, err := cps.CreateBlockStore(context.Background(), &models.BlockStoreConfig{
+		Name: "streams-test-bs", Kind: models.BlockStoreKindLocal, Type: "memory",
+	})
+	if err != nil {
+		t.Fatalf("CreateBlockStore: %v", err)
+	}
+
 	const shareName = "/streams-test"
 	if err := rt.AddShare(context.Background(), &runtime.ShareConfig{
-		Name:            shareName,
-		MetadataStore:   "streams-test-meta",
-		Enabled:         true,
-		StreamsDisabled: streamsDisabled,
+		Name:              shareName,
+		MetadataStore:     "streams-test-meta",
+		Enabled:           true,
+		LocalBlockStoreID: localBSID,
+		StreamsDisabled:   streamsDisabled,
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o777,

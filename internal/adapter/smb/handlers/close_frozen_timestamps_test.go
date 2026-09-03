@@ -22,6 +22,12 @@ import (
 // and the restore are gated by the same ownership rule in the metadata layer,
 // so a handle that could not have frozen a timestamp is not a case this can
 // reach. The file is chowned to the session's user first for that reason.
+//
+// It pins the end-to-end outcome, not the mechanism: it still passes with the
+// CLOSE-time restore disabled, because the rename preserves ChangeTime on its
+// own and advances none of the other three. Use
+// TestClose_FrozenTimestampsSurviveOutOfBandAdvance below to cover the restore
+// itself.
 func TestClose_FrozenTimestampsSurviveRename(t *testing.T) {
 	h, smbCtx, _, fileID := setupReparseShare(t)
 	openFile, ok := h.GetOpenFile(fileID)
@@ -100,6 +106,95 @@ func TestClose_FrozenTimestampsSurviveRename(t *testing.T) {
 	} {
 		if !tc.got.Equal(past) {
 			t.Errorf("%s = %v after rename + CLOSE; want the frozen %v", tc.name, tc.got.UTC(), past)
+		}
+	}
+}
+
+// TestClose_FrozenTimestampsSurviveOutOfBandAdvance pins the configuration in
+// which CLOSE-time timestamp behaviour is observable at all: a block store is
+// wired, so CLOSE reaches step 4 rather than failing on the flush, and the file
+// carries no pending write, so FlushPendingWriteForFile returns early without
+// stamping Mtime/Ctime itself. What CLOSE does to the timestamps is then
+// attributable to the frozen restore and nothing else.
+//
+// The advance is made out of band, as a second handle or an NFS client would:
+// the renaming test above cannot separate the restore from the rename's own
+// stamp, and a flush-backed file cannot separate it from the flush.
+func TestClose_FrozenTimestampsSurviveOutOfBandAdvance(t *testing.T) {
+	h, smbCtx, _, fileID := setupReparseShare(t)
+	openFile, ok := h.GetOpenFile(fileID)
+	if !ok {
+		t.Fatal("open file missing")
+	}
+	metaSvc := h.Registry.GetMetadataService()
+
+	rootUID, rootGID := uint32(0), uint32(0)
+	rootCtx := &metadata.AuthContext{
+		Context:  context.Background(),
+		Identity: &metadata.Identity{UID: &rootUID, GID: &rootGID},
+	}
+	sessUID, sessGID := uint32(1000), uint32(1000)
+	past := time.Date(2021, 2, 3, 4, 5, 6, 0, time.UTC)
+	if _, err := metaSvc.SetFileAttributes(rootCtx, openFile.MetadataHandle, &metadata.SetAttrs{
+		UID: &sessUID, GID: &sessGID,
+		CreationTime: &past, Atime: &past, Mtime: &past, Ctime: &past,
+	}); err != nil {
+		t.Fatalf("seed owner + timestamps: %v", err)
+	}
+
+	access := uint32(types.FileReadData | types.FileWriteData |
+		types.FileReadAttributes | types.FileWriteAttributes | types.Delete)
+	openFile.DesiredAccess = access
+	openFile.GrantedAccess = access
+
+	h.primeAuthContextFromOpenFile(smbCtx, openFile)
+	authCtx, err := BuildAuthContext(smbCtx)
+	if err != nil {
+		t.Fatalf("BuildAuthContext: %v", err)
+	}
+
+	freeze := encodeBasicInfo(filetimeFreeze, filetimeFreeze, filetimeFreeze, filetimeFreeze, 0)
+	resp, err := h.setFileInfoFromStore(smbCtx, authCtx, openFile, types.FileBasicInformation, freeze)
+	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
+		t.Fatalf("freeze SET_INFO: err=%v resp=%v", err, resp)
+	}
+
+	// Advance Mtime and Ctime behind this handle's back.
+	future := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := metaSvc.SetFileAttributes(rootCtx, openFile.MetadataHandle, &metadata.SetAttrs{
+		Mtime: &future, Ctime: &future,
+	}); err != nil {
+		t.Fatalf("out-of-band advance: %v", err)
+	}
+	mid, err := metaSvc.GetFile(context.Background(), openFile.MetadataHandle)
+	if err != nil {
+		t.Fatalf("GetFile after advance: %v", err)
+	}
+	if !mid.Ctime.Equal(future) {
+		t.Fatalf("advance did not land: ChangeTime = %v, want %v", mid.Ctime.UTC(), future)
+	}
+
+	cresp, err := h.Close(smbCtx, &CloseRequest{FileID: fileID})
+	if err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if cresp.GetStatus() != types.StatusSuccess {
+		t.Fatalf("Close status = %v, want STATUS_SUCCESS", cresp.GetStatus())
+	}
+
+	final, err := metaSvc.GetFile(context.Background(), openFile.MetadataHandle)
+	if err != nil {
+		t.Fatalf("GetFile after close: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		got  time.Time
+	}{
+		{"LastWriteTime", final.Mtime},
+		{"ChangeTime", final.Ctime},
+	} {
+		if !tc.got.Equal(past) {
+			t.Errorf("%s = %v after CLOSE; want the frozen %v", tc.name, tc.got.UTC(), past)
 		}
 	}
 }
