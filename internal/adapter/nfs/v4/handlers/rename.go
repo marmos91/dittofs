@@ -165,9 +165,9 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 		}
 	}
 
-	// Renaming onto an existing name silently unlinked whatever was there.
-	// Best-effort: the rename has already committed and the client has its
-	// answer, so a failure to free the victim's bytes is logged, not surfaced.
+	// Free the bytes of whatever this rename renamed over. The rename is
+	// already committed and the client has its answer, so a failure to release
+	// them is logged rather than surfaced.
 	if relErr := common.ReleaseClobberedPayload(ctx.Context, h.Registry, tgtDirHandle, clobbered); relErr != nil {
 		logger.Warn("NFSv4 RENAME: failed to delete clobbered content",
 			"newname", newName,

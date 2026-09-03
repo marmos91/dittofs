@@ -1221,10 +1221,9 @@ func (h *Handler) setFileInfoFromStore(
 
 		restoreChangeTime()
 
-		// ReplaceIfExists renames over an existing name, which silently unlinks
-		// it. The pre-remove above only fires for a case-mismatched
-		// destination, so an exact-case overwrite reaches Move's clobber path
-		// and its victim's bytes are released here.
+		// The pre-remove above only fires for a case-mismatched destination, so
+		// an exact-case ReplaceIfExists overwrite reaches Move's own clobber
+		// path instead, and its victim's bytes are released here.
 		if clobbered != nil {
 			h.purgeBlockStorePayload(ctx.Context, toDir, clobbered.PayloadID, toName, "SET_INFO rename")
 		}

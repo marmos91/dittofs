@@ -1674,19 +1674,16 @@ func TestRemove_ReclaimsLocalPayloadBytes(t *testing.T) {
 }
 
 // TestRename_ReclaimsClobberedPayloadBytes pins that renaming onto an existing
-// name frees the clobbered file's content, not just its directory entry. POSIX
-// rename silently unlinks whatever was at the destination, and the metadata
-// layer deliberately never deletes payload bytes — Move returns the clobbered
-// victim so the protocol handler can. A handler that ignores that return leaves
-// the victim's records indexed as live in the local tier, where no reclamation
-// path (fast-path retire, eviction, repack) will ever treat them as dead, so the
-// bytes survive every restart. Write-to-temp-then-rename makes this a steady
-// churn rather than a corner case.
+// name frees the clobbered file's content, not just its directory entry. The
+// metadata layer deliberately never deletes payload bytes — Move returns the
+// clobbered victim so the handler can — and a handler that ignores that return
+// leaves the victim's records indexed as live in the local tier, where no
+// reclamation path treats them as dead and the bytes survive every restart.
+// Write-to-temp-then-rename makes this a steady churn, not a corner case.
 //
-// The assertion is on block-store state an operator can observe rather than on
-// how the handler achieves it, and it pins both directions: the victim's payload
-// must be gone AND the renamed file's payload must survive, so a fix that
-// releases the wrong payload fails here instead of passing.
+// Asserting on observable block-store state pins both directions: the victim's
+// payload must be gone AND the renamed file's must survive, so releasing the
+// wrong payload fails here instead of passing.
 func TestRename_ReclaimsClobberedPayloadBytes(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 	ctxBg := context.Background()

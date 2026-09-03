@@ -603,14 +603,13 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 
 // Move moves or renames a file or directory atomically.
 //
-// POSIX rename silently unlinks an existing destination. The clobbered victim
-// is returned as the first result so the caller can coordinate content
-// deletion, the same contract RemoveFile carries: nil when the rename replaced
-// nothing (or replaced a directory, which owns no content), and a non-nil File
-// whose PayloadID is empty whenever the content must survive — a remaining hard
-// link, or a recycle into the trash bin. Move itself never touches the block
-// store; without this the victim's bytes stay indexed as live in the local tier
-// and no reclamation path can ever free them.
+// POSIX rename silently unlinks an existing destination, and Move never
+// touches the block store. The clobbered victim is returned as the first
+// result so the caller can coordinate content deletion, the same contract
+// RemoveFile carries: nil when the rename replaced nothing (or replaced a
+// directory, which owns no content), and a non-nil File whose PayloadID is
+// empty whenever the content must survive — a remaining hard link, or a
+// recycle into the trash bin.
 func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, toDir FileHandle, toName string) (*File, *RenameWcc, error) {
 	store, err := s.storeForHandle(fromDir)
 	if err != nil {
@@ -813,8 +812,8 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	// so this is pure namespace. A crash can lose the rename (old name
 	// persists), never corrupt data.
 	now := time.Now()
-	// Link count the clobbered destination is left with, written by the
-	// transaction below. Only meaningful when a non-directory victim exists.
+	// Link count the transaction below leaves the clobbered destination with.
+	// Only meaningful when a non-directory victim exists.
 	var clobberedNlink uint32
 	txErr := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
 		// The GetChild lookups above ran outside this transaction and are
@@ -894,11 +893,10 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 				if err := tx.SetLinkCount(ctx.Context, dstHandle, newCount); err != nil {
 					return err
 				}
-				// Record what the victim ends up with so the post-commit
-				// return value reports content ownership from the count the
-				// transaction actually wrote. Assigned unconditionally: an
-				// optimistic backend may run this closure more than once, and
-				// only the committing attempt's value must survive.
+				// Report content ownership from the count actually written.
+				// Assigned unconditionally: an optimistic backend may run this
+				// closure more than once, and only the committing attempt's
+				// value must survive.
 				clobberedNlink = newCount
 				// Update ctime on the file being unlinked (affects remaining hard links)
 				dstFile.Ctime = now
@@ -980,21 +978,18 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 
 	// Report the clobbered victim, if the rename replaced a file. Directories
 	// own no content, and dstFile is nil both when the destination was absent
-	// and when trash recycled it above, so neither case reports one. The
-	// PayloadID contract mirrors RemoveFile: empty means the content must
-	// survive because another hard link still references it.
+	// and when trash recycled it above, so neither case reports one.
 	var clobbered *File
 	if dstFile != nil && dstFile.Type != FileTypeDirectory {
-		clobbered = &File{
-			ID:        dstFile.ID,
-			ShareName: dstFile.ShareName,
-			Path:      dstFile.Path,
-			FileAttr:  *CopyFileAttr(&dstFile.FileAttr),
-		}
-		clobbered.Nlink = clobberedNlink
+		victim := *dstFile
+		victim.FileAttr = *CopyFileAttr(&dstFile.FileAttr)
+		victim.Nlink = clobberedNlink
 		if clobberedNlink > 0 {
-			clobbered.PayloadID = ""
+			// Another hard link still references the content, so it must
+			// survive. An empty PayloadID is how RemoveFile says that too.
+			victim.PayloadID = ""
 		}
+		clobbered = &victim
 	}
 
 	// Coalesce the parent directory mtime/ctime bumps out of the transaction so

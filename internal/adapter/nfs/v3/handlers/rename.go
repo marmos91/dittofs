@@ -258,9 +258,9 @@ func (h *Handler) Rename(
 
 	clobbered, renameWcc, err := metaSvc.Move(authCtx, fromDirHandle, req.FromName, toDirHandle, req.ToName)
 	if err == nil {
-		// Renaming onto an existing name silently unlinked whatever was there.
-		// Best-effort: the rename has already committed and the client has its
-		// answer, so a failure to free the victim's bytes is logged, not surfaced.
+		// Free the bytes of whatever this rename renamed over. The rename is
+		// already committed and the client has its answer, so a failure to
+		// release them is logged rather than surfaced.
 		if relErr := common.ReleaseClobberedPayload(ctx.Context, h.Registry, toDirHandle, clobbered); relErr != nil {
 			logger.WarnCtx(ctx.Context, "RENAME: failed to delete clobbered content",
 				"name", req.ToName, "payload_id", clobbered.PayloadID, "error", relErr)
