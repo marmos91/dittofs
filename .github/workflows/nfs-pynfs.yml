@@ -1,0 +1,254 @@
+# NFSv4 protocol conformance for DittoFS.
+#
+# pynfs is the reference NFSv4 suite. Unlike pjdfstest it is its own NFSv4
+# client, so what it exercises is the protocol itself — state, sessions, owners,
+# locking and wire error codes — which every POSIX test passes straight over.
+#
+# Tiered by EVENT, not by path, for the same reason as posix-tests.yml: a change
+# to shared code (a metadata store, the runtime) can break the protocol from
+# underneath, so this runs on all non-docs PRs. Path filters skip docs only.
+#
+#   presubmit (pull_request): memory + postgres-s3 x 2 minor versions = 4 jobs
+#   postsubmit (push develop/main) + nightly:
+#     memory, badger, postgres, postgres-s3 x 2 minor versions = 8 jobs
+#
+# Graded against KNOWN_FAILURES_V40.md / KNOWN_FAILURES_V41.md the same way the
+# POSIX and SMB suites are graded: red only on a failure that is not on the list.
+
+name: NFS Protocol Conformance
+
+on:
+  push:
+    branches: [develop, main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '**.png'
+      - '**.jpg'
+      - '**.svg'
+  pull_request:
+    branches: [develop, main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '**.png'
+      - '**.jpg'
+      - '**.svg'
+  schedule:
+    # Nightly at 4 AM UTC.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: 'Also refresh the Linux knfsd baseline'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The grader decides whether the suite is red, so it is guarded on its own in
+  # about a second rather than only through a 45-minute run that would have to
+  # fail first to reveal a grading regression.
+  grading:
+    name: Grading logic
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Test the KNOWN_FAILURES grader
+        run: ./test/nfs-conformance/pynfs/parse-results_test.sh
+
+  # Build binaries once and share them across the matrix.
+  build:
+    name: Build Binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build DittoFS
+        run: |
+          nix develop .#ci --command sh -c "CGO_ENABLED=0 go build -o dfs cmd/dfs/main.go"
+          nix develop .#ci --command sh -c "CGO_ENABLED=0 go build -o dfsctl cmd/dfsctl/main.go"
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: dfs-binaries
+          path: |
+            dfs
+            dfsctl
+          retention-days: 1
+
+  pynfs:
+    name: pynfs v${{ matrix.minor_version }} / ${{ matrix.profile }}
+    runs-on: ubuntu-latest
+    needs: [build, grading]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # presubmit: memory + postgres-s3; postsubmit/nightly: full backends.
+        profile: >-
+          ${{ github.event_name == 'pull_request'
+              && fromJson('["memory", "postgres-s3"]')
+              || fromJson('["memory", "badger", "postgres", "postgres-s3"]') }}
+        minor_version: ['4.0', '4.1']
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: dittofs
+          POSTGRES_PASSWORD: dittofs
+          POSTGRES_DB: dittofs_test
+          POSTGRES_INITDB_ARGS: "--data-checksums"
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --shm-size=256mb
+
+      localstack:
+        image: localstack/localstack:4.13.1
+        env:
+          SERVICES: s3
+          EAGER_SERVICE_LOADING: "1"
+          GATEWAY_LISTEN: "0.0.0.0:4566"
+          DISABLE_CORS_CHECKS: "1"
+          DISABLE_CUSTOM_CORS_S3: "1"
+          DEBUG: "0"
+          LOCALSTACK_HOST: localhost:4566
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "curl -sf https://localhost:4566/_localstack/health -k || curl -sf http://localhost:4566/_localstack/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: dfs-binaries
+
+      - name: Make binaries executable
+        run: chmod +x dfs dfsctl
+
+      - name: Build pynfs
+        run: |
+          PYNFS=$(nix build .#pynfs --no-link --print-out-paths)
+          echo "${PYNFS}/bin" >> "$GITHUB_PATH"
+
+      - name: Tune PostgreSQL for testing
+        if: startsWith(matrix.profile, 'postgres')
+        run: |
+          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET synchronous_commit = 'off';"
+          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET checkpoint_timeout = '30min';"
+          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET work_mem = '64MB';"
+          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "SELECT pg_reload_conf();"
+
+      # run-pynfs.sh provisions the server (setup-posix.sh --no-mount), runs the
+      # suite and grades it, exiting with the number of NEW failures.
+      - name: Run pynfs
+        id: pynfs
+        run: |
+          ./test/nfs-conformance/pynfs/run-pynfs.sh \
+            --profile "${{ matrix.profile }}" \
+            --minor-version "${{ matrix.minor_version }}"
+
+      - name: Add step summary
+        if: always()
+        run: |
+          RESULTS=$(ls -td test/nfs-conformance/pynfs/results/*/ 2>/dev/null | head -1)
+          {
+            echo "## pynfs v${{ matrix.minor_version }} / ${{ matrix.profile }}"
+            if [ -n "$RESULTS" ] && [ -f "${RESULTS}summary.txt" ]; then
+              grep -E '^Of those: ' "${RESULTS}pynfs.log" | tail -1
+              echo ""
+              cat "${RESULTS}summary.txt"
+            else
+              echo "No graded results found."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup
+        if: always()
+        run: sudo ./test/posix/teardown-posix.sh || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pynfs-v${{ matrix.minor_version }}-${{ matrix.profile }}-results
+          path: test/nfs-conformance/pynfs/results/
+          retention-days: 30
+
+  # The evidence behind every `suite` row in KNOWN_FAILURES: which tests the
+  # Linux kernel server fails too. Never gates — it measures a third-party
+  # server, so its verdict says nothing about this commit.
+  baseline:
+    name: knfsd baseline
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || inputs.baseline
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Install kernel NFS server
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nfs-kernel-server
+          sudo modprobe nfsd || echo "WARNING: could not load nfsd"
+
+      - name: Run pynfs against knfsd
+        run: sudo -E env "PATH=$PATH" ./test/nfs-conformance/pynfs/baseline-knfsd.sh
+
+      - name: Upload baseline
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pynfs-knfsd-baseline
+          path: |
+            test/nfs-conformance/pynfs/baseline-knfsd.md
+            test/nfs-conformance/pynfs/results/
+          retention-days: 30
