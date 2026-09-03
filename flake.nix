@@ -10,6 +10,12 @@
       url = "github:pjd/pjdfstest";
       flake = false;
     };
+    # pynfs - the reference NFSv4.0/4.1 protocol conformance suite.
+    # Speaks NFSv4 itself, so it needs no kernel mount and no privileges.
+    pynfs-src = {
+      url = "github:kofemann/pynfs";
+      flake = false;
+    };
   };
 
   outputs =
@@ -18,6 +24,7 @@
       nixpkgs,
       flake-utils,
       pjdfstest-src,
+      pynfs-src,
     }:
     let
       # Version configuration - update this for releases
@@ -87,6 +94,77 @@
             platforms = platforms.linux;
           };
         };
+
+        # pynfs - the reference NFSv4 protocol conformance suite.
+        #
+        # Unlike pjdfstest, pynfs is its own NFSv4 client: it speaks the protocol
+        # over TCP and needs neither a kernel mount nor root, so it runs on any
+        # unix host that can reach the server.
+        #
+        # Python 3.12 is deliberate. pynfs unpacks XDR with the stdlib `xdrlib`
+        # module, which was removed in 3.13; the replacement `xdrlib3` is not in
+        # nixpkgs. Moving to python3 (currently 3.13) silently breaks every test
+        # at import time, so pin the interpreter rather than the alias.
+        pynfs =
+          let
+            python = pkgs.python312;
+          in
+          pkgs.stdenv.mkDerivation {
+            pname = "pynfs";
+            version = "2026-03-27";
+            src = pynfs-src;
+
+            nativeBuildInputs = [
+              python
+              python.pkgs.ply
+              python.pkgs.setuptools
+              pkgs.makeWrapper
+            ];
+
+            # Generates xdrdef/*_const.py, *_type.py and *_pack.py in place from
+            # the .x files. The top-level setup.py shells out per subdirectory
+            # with os.system and discards the status, so verify the outputs.
+            buildPhase = ''
+              runHook preBuild
+              ${python}/bin/python3 setup.py build
+              for f in nfs4.1/xdrdef/nfs4_const.py \
+                       nfs4.1/xdrdef/nfs4_pack.py \
+                       nfs4.1/xdrdef/nfs3_const.py; do
+                if [ ! -f "$f" ]; then
+                  echo "pynfs: XDR generation did not produce $f" >&2
+                  exit 1
+                fi
+              done
+              runHook postBuild
+            '';
+
+            # -a keeps the symlinks: nfs4.0/xdrdef and nfs4.0/lib/testmod.py both
+            # point into the nfs4.1 tree, and dereferencing them desynchronises
+            # the two suites.
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out/share/pynfs $out/bin
+              cp -a . $out/share/pynfs/
+
+              for v in 4.0 4.1; do
+                makeWrapper ${python}/bin/python3 "$out/bin/pynfs-$v" \
+                  --add-flags "$out/share/pynfs/nfs$v/testserver.py" \
+                  --run "cd $out/share/pynfs/nfs$v"
+              done
+              runHook postInstall
+            '';
+
+            # nfs4.1/testserver.py imports use_local, which builds sys.path from
+            # the current directory, so the wrappers must cd into their own tree.
+            doCheck = false;
+
+            meta = with pkgs.lib; {
+              description = "NFSv4.0/4.1 protocol conformance test suite";
+              homepage = "https://linux-nfs.org/wiki/index.php/Pynfs";
+              license = licenses.gpl2Only;
+              platforms = platforms.unix;
+            };
+          };
 
         # Helper script to start PostgreSQL for testing
         # Uses sudo for docker commands to avoid docker group requirement
@@ -441,6 +519,10 @@
                 };
               }
             );
+
+            # NFSv4 protocol conformance suite. Not Linux-gated: pynfs is a
+            # pure-Python NFSv4 client, so it also runs against a server on macOS.
+            inherit pynfs;
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
             inherit pjdfstest;
