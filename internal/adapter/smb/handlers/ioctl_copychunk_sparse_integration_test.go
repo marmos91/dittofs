@@ -477,52 +477,8 @@ func TestCopyChunk_SparseDest_SurvivesPriorPayloadReuse(t *testing.T) {
 // PayloadID precisely when content must survive (nlink>1 or recycle-to-trash);
 // the purge must honour that signal rather than the open handle's PayloadID.
 func TestPurgeBlockStorePayload_PreservesHardLinkedContent(t *testing.T) {
-	ctx := context.Background()
-
-	cps, err := cpstore.New(&cpstore.Config{
-		Type:   cpstore.DatabaseTypeSQLite,
-		SQLite: cpstore.SQLiteConfig{Path: ":memory:"},
-	})
-	if err != nil {
-		t.Fatalf("cpstore.New: %v", err)
-	}
-	rt := runtime.New(cps)
-
-	if _, err := cps.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "hlmeta", Type: "memory"}); err != nil {
-		t.Fatalf("CreateMetadataStore: %v", err)
-	}
-	metaStore := metamemory.NewMemoryMetadataStoreWithDefaults()
-	if err := rt.RegisterMetadataStore("hlmeta", metaStore); err != nil {
-		t.Fatalf("RegisterMetadataStore: %v", err)
-	}
-	localBSID, err := cps.CreateBlockStore(ctx, &models.BlockStoreConfig{
-		Name: "hlbs", Kind: models.BlockStoreKindLocal, Type: "memory",
-	})
-	if err != nil {
-		t.Fatalf("CreateBlockStore: %v", err)
-	}
-
-	const shareName = "/hl"
-	if err := rt.AddShare(ctx, &runtime.ShareConfig{
-		Name:              shareName,
-		MetadataStore:     "hlmeta",
-		Enabled:           true,
-		LocalBlockStoreID: localBSID,
-		RootAttr:          &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o777},
-	}); err != nil {
-		t.Fatalf("AddShare: %v", err)
-	}
-
-	rootHandle, err := rt.GetRootHandle(shareName)
-	if err != nil {
-		t.Fatalf("GetRootHandle: %v", err)
-	}
-
-	uid, gid := uint32(0), uint32(0)
-	authCtx := &metadata.AuthContext{
-		Context:  ctx,
-		Identity: &metadata.Identity{UID: &uid, GID: &gid},
-	}
+	rt, rootHandle, authCtx := newHardlinkTestShare(t)
+	ctx := authCtx.Context
 	metaSvc := rt.GetMetadataService()
 
 	// Create "a", write a non-zero pattern, then hard-link it as "b".
@@ -573,11 +529,7 @@ func TestPurgeBlockStorePayload_PreservesHardLinkedContent(t *testing.T) {
 	if removed.PayloadID != "" {
 		t.Fatalf("RemoveFile of a hard-linked file should return empty PayloadID, got %q", removed.PayloadID)
 	}
-	var removedPayloadID metadata.PayloadID
-	if removed != nil {
-		removedPayloadID = removed.PayloadID
-	}
-	h.purgeBlockStorePayload(ctx, handle, removedPayloadID, "a", "TEST")
+	h.purgeBlockStorePayload(ctx, handle, removed.PayloadID, "a", "TEST")
 
 	// The surviving "b" link must still read the full pattern.
 	dst := make([]byte, 4096)
