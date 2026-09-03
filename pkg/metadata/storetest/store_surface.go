@@ -666,11 +666,11 @@ func assertPayloadBlocks(t *testing.T, variant string, got *metadata.File, want 
 // testFilesystemMetaStatsCaps verifies the filesystem metadata / statistics /
 // capabilities surfaces.
 //
-// Note: GetFilesystemMeta does NOT round-trip a prior PutFilesystemMeta on the
-// memory backend (memory always recomputes from store.capabilities + live
-// statistics rather than reading back a persisted blob), so the cross-backend
-// contract asserted here is the one every backend honors: GetFilesystemMeta
-// returns a populated struct, and SetFilesystemCapabilities is observable via
+// Note: only the capabilities half of FilesystemMeta round-trips on every
+// backend — memory and badger recompute statistics on demand rather than
+// reading back a persisted blob — so the cross-backend contract asserted here
+// is that capabilities written by PutFilesystemMeta come back out of
+// GetFilesystemMeta, and that SetFilesystemCapabilities is observable via
 // GetFilesystemCapabilities. Both capabilities and statistics resolve against
 // a live root handle.
 func testFilesystemMetaStatsCaps(t *testing.T, factory StoreFactory) {
@@ -691,6 +691,26 @@ func testFilesystemMetaStatsCaps(t *testing.T, factory StoreFactory) {
 	}
 	if meta.Capabilities.MaxFilenameLen == 0 {
 		t.Error("GetFilesystemMeta() Capabilities.MaxFilenameLen = 0, want a sane non-zero limit")
+	}
+
+	// Capabilities written through PutFilesystemMeta must come back out of
+	// GetFilesystemMeta. The value is deliberately one no backend's configured
+	// defaults produce, so a store that cannot read its own metadata and
+	// answers with those defaults instead fails here rather than passing on
+	// the strength of a plausible-looking struct.
+	stored := *meta
+	stored.Capabilities.MaxFilenameLen = meta.Capabilities.MaxFilenameLen + 41
+	if err := store.PutFilesystemMeta(ctx, shareName, &stored); err != nil {
+		t.Fatalf("PutFilesystemMeta() failed: %v", err)
+	}
+
+	roundTripped, err := store.GetFilesystemMeta(ctx, shareName)
+	if err != nil {
+		t.Fatalf("GetFilesystemMeta() after Put failed: %v", err)
+	}
+	if roundTripped.Capabilities.MaxFilenameLen != stored.Capabilities.MaxFilenameLen {
+		t.Errorf("GetFilesystemMeta() after Put: Capabilities.MaxFilenameLen = %d, want %d",
+			roundTripped.Capabilities.MaxFilenameLen, stored.Capabilities.MaxFilenameLen)
 	}
 
 	// Statistics resolve against the root handle and report a non-zero total.
