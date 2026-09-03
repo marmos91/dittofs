@@ -56,7 +56,6 @@ jobs:
           cache: true
 
       - name: Initialize CodeQL
-        id: init
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
@@ -77,66 +76,60 @@ jobs:
           category: "/language:${{ matrix.language }}"
 
       # The repository holds two Go modules and no go.work. The autobuilder
-      # discovers every go.mod under the checkout and runs the extractor once
-      # per module, so the operator lands in this same database — but nothing
-      # announces it when that stops being true. A package that is never
-      # discovered is absent from the database rather than reported as an
-      # error, so an analysis narrowed to the root module still finishes green
-      # and still shows zero operator findings.
+      # discovers every go.mod under the checkout and extracts each module in
+      # turn, but a module it never discovers, or fails to extract, is simply
+      # absent from the database rather than reported as an error: the analysis
+      # still finishes green and still shows zero operator findings.
       #
-      # Compare the operator's source files against the database's source
-      # archive, so a narrowing fails the job instead of passing as silence.
-      # The archive is written when the analysis finalizes the database, so
-      # this has to run after it. Only the operator is checked: the root module
-      # carries files behind windows, darwin and e2e build tags that are
-      # correctly absent from a linux database.
-      - name: Verify the operator module reached the database
+      # Read the extractor's own report of what it did. The database's source
+      # archive cannot answer this — it holds the text of files the extractor
+      # merely saw, and the database is built as an overlay on a cached base, so
+      # the archive also carries text from an earlier run. A module can sit in
+      # the archive in full while this run extracted none of it.
+      #
+      # Diagnostics accumulate the same way, so both checks below are scoped to
+      # the ones this run wrote. Anything that cannot be confirmed positively —
+      # no diagnostics, no discovery report, no way to tell this run's from the
+      # base's — fails the job.
+      - name: Verify the operator module was extracted
         if: matrix.language == 'go'
         run: |
           set -euo pipefail
 
-          archive=$(find "${RUNNER_TEMP}/codeql-db" -name src.zip -print -quit)
-          if [ -z "${archive}" ]; then
-            echo "::error::no CodeQL source archive under ${RUNNER_TEMP}/codeql-db"
+          diagnostics="${RUNNER_TEMP}/codeql-db/go/diagnostic/extractors/go"
+          if [ -z "$(find "${diagnostics}" -name '*.json' -print -quit 2>/dev/null)" ]; then
+            echo "::error::no Go extractor diagnostics under ${diagnostics}; cannot confirm what was extracted"
             exit 1
           fi
 
-          # Test files are out of scope: the Go extractor's extract_tests
-          # option is off by default, for both modules alike.
-          want="${RUNNER_TEMP}/operator-sources.txt"
-          got="${RUNNER_TEMP}/operator-extracted.txt"
-          # A git pathspec matches across directory separators, so this
-          # reaches the whole module, not just its top level.
-          git ls-files 'k8s/dittofs-operator/*.go' | grep -v '_test\.go$' | sort >"${want}"
-          if [ ! -s "${want}" ]; then
-            echo "::error::found no operator sources to check for; has the module moved?"
-            exit 1
-          fi
-          unzip -Z1 "${archive}" | grep -oE 'k8s/dittofs-operator/.*\.go$' | sort -u >"${got}" || true
-
-          found=$(comm -12 "${want}" "${got}" | wc -l)
-          echo "operator source files in the CodeQL database: ${found} of $(wc -l <"${want}")"
-
-          missing=$(comm -23 "${want}" "${got}")
-          if [ -n "${missing}" ]; then
-            echo "::error::CodeQL did not analyse these operator files:"
-            printf '%s\n' "${missing}"
+          since="${CODEQL_WORKFLOW_STARTED_AT:-}"
+          if [ -z "${since}" ]; then
+            echo "::error::CODEQL_WORKFLOW_STARTED_AT is unset; cannot separate this run's extractor diagnostics from the overlay base's"
             exit 1
           fi
 
-      - name: DEBUG dump codeql db layout
-        if: ${{ always() && matrix.language == 'go' }}
-        run: |
-          echo "codeql-path=${{ steps.init.outputs.codeql-path }}"
-          echo "=== tree (depth 4) ==="
-          find "${RUNNER_TEMP}/codeql-db" -maxdepth 4 | head -200
-          echo "=== any log/json/diagnostic ==="
-          find "${RUNNER_TEMP}/codeql-db" \( -name '*.log' -o -name '*.json' -o -path '*diagnostic*' \) | head -100
-          echo "=== files mentioning extraction failure ==="
-          grep -ril 'xtraction failed' "${RUNNER_TEMP}/codeql-db" 2>/dev/null | head -50 || true
-          echo "=== files mentioning dittofs-operator (non-src.zip) ==="
-          grep -rl 'dittofs-operator' "${RUNNER_TEMP}/codeql-db" --include='*.log' --include='*.json' --include='*.yml' 2>/dev/null | head -50 || true
-          echo "=== diagnostic json contents ==="
-          find "${RUNNER_TEMP}/codeql-db" -path '*diagnostic*' -type f | head -40 | while read -r f; do echo "--- $f"; cat "$f"; echo; done
-          echo "=== log greps ==="
-          find "${RUNNER_TEMP}/codeql-db" -name '*.log' | head -20 | while read -r f; do echo "--- $f"; wc -l "$f"; grep -in 'xtraction\|dittofs-operator\|requires go >=' "$f" | head -40; done
+          # Timestamps are ISO 8601 in UTC, so they order lexicographically.
+          mine="${RUNNER_TEMP}/go-extractor-diagnostics.json"
+          jq -s --arg since "${since}" '[.[] | select(.timestamp >= $since)]' \
+            "${diagnostics}"/*.json >"${mine}"
+
+          # The autobuilder names every go.mod it found. Discovery is what makes
+          # a module's disappearance observable: one that is never discovered is
+          # never extracted, and never reported as a failure either.
+          if ! jq -e --arg mod 'k8s/dittofs-operator/go.mod' \
+            'any(.[]; (.markdownMessage // "") | contains($mod))' "${mine}" >/dev/null; then
+            echo "::error::the Go autobuilder did not report discovering k8s/dittofs-operator/go.mod; either the operator was not analysed, or the module moved and this check needs its path updated"
+            jq -r '.[] | "\(.source.id): \(.markdownMessage // .source.name)"' "${mine}"
+            exit 1
+          fi
+
+          # Projects the extractor could not build are named here, one message
+          # per project set. Their sources are archived regardless.
+          failed=$(jq -r '.[] | select((.source.id // "") | contains("extraction-failed")) | .markdownMessage // .source.name' "${mine}")
+          if [ -n "${failed}" ]; then
+            echo "::error::the Go extractor could not extract every project:"
+            printf '%s\n' "${failed}"
+            exit 1
+          fi
+
+          echo "the Go extractor discovered k8s/dittofs-operator and reported no extraction failures"
