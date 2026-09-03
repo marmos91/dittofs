@@ -70,7 +70,7 @@ func (s *Store) evict(ctx context.Context, targetBytes int64, allowActiveSeal bo
 	if s.closed.Load() {
 		return EvictResult{}, errClosed
 	}
-	if s.evictionDisabled.Load() {
+	if s.evictionHeld() {
 		return EvictResult{}, nil
 	}
 	var res EvictResult
@@ -377,7 +377,7 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 				"disk_bytes", s.diskBytes.Load(),
 				"max_local_bytes", s.cfg.MaxLocalBytes,
 				"unsynced_bytes", s.unsynced.Load(),
-				"eviction_disabled", s.evictionDisabled.Load())
+				"eviction_disabled", s.evictionHeld())
 			warned = true
 		}
 		if time.Now().After(deadline) {

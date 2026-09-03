@@ -365,11 +365,10 @@ func (s *Service) createBlockStoreForShare(
 		}
 	}
 
-	// Pin mode keeps blocks stored locally indefinitely. The pin is held by the
-	// local store itself so the health-driven SetEvictionEnabled calls that Start
-	// and the syncer make cannot lift it. Eviction also requires a remote store
-	// (so evicted blocks can be re-fetched); that half is enforced by Start
-	// reconciling against remote health, which is false without a remote.
+	// Pin mode keeps blocks stored locally indefinitely. The local store holds the
+	// pin itself so the health-driven SetEvictionEnabled calls Start and the
+	// syncer make cannot lift it. Requiring a remote is Start's job: it reconciles
+	// eviction against remote health, which is false when there is no remote.
 	localStore.SetEvictionPinned(config.RetentionPolicy == block.RetentionPin)
 	// Note: SetSkipFsync was removed. Local-disk durability is now
 	// unconditional (the syncer will refetch from S3 on the rare crash path).

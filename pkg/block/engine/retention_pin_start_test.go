@@ -54,8 +54,10 @@ func drainAfterFill(t *testing.T, pinned bool) int64 {
 
 	const oneMiB = 1024 * 1024
 	const fileSize = 16 * oneMiB
+	// Random, not zeros: a zero-filled file dedupes to a single chunk, which
+	// would leave the unpinned control with almost nothing to evict.
 	src := make([]byte, fileSize)
-	rand.New(rand.NewSource(0x2257)).Read(src) //nolint:gosec // deterministic fixture
+	rand.New(rand.NewSource(1)).Read(src) //nolint:gosec // deterministic fixture
 	for off := 0; off < fileSize; off += oneMiB {
 		if _, err := bs.WriteAt(ctx, pid, nil, src[off:off+oneMiB], uint64(off)); err != nil {
 			t.Fatalf("WriteAt off=%d: %v", off, err)

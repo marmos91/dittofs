@@ -206,15 +206,15 @@ type Store struct {
 	reads     atomic.Int64
 	coldReads atomic.Int64
 
-	// evictionDisabled gates Evict (and thus the write-path ensureSpace that
-	// drives it). It is the OR of the two independent reasons to hold eviction
-	// off, recomputed by refreshEviction; nothing writes it directly.
-	// Zero value = enabled, the safe default.
-	evictionDisabled atomic.Bool
-
-	// evictionSuspended is the health-driven reason: while the remote is
-	// unreachable, cold-marking a segment would strand bytes that can't be
-	// refetched, so eviction pauses until the remote returns.
+	// evictionSuspended and evictionPinned are the two independent reasons to
+	// hold eviction off; either one gates Evict (and thus the write-path
+	// ensureSpace that drives it). They are read together by evictionHeld rather
+	// than folded into one derived flag, so two concurrent setters cannot lose
+	// each other's update. Zero values = eviction enabled, the safe default.
+	//
+	// evictionSuspended is health-driven: while the remote is unreachable,
+	// cold-marking a segment would strand bytes that can't be refetched, so
+	// eviction pauses until the remote returns.
 	evictionSuspended atomic.Bool
 
 	// evictionPinned is the retention-policy reason: a pinned share keeps its
@@ -904,7 +904,6 @@ func (s *Store) DurableExtent(_ context.Context, id FileID) (int64, bool) {
 // remote returns. Enabling it does not lift a retention pin.
 func (s *Store) SetEvictionEnabled(enabled bool) {
 	s.evictionSuspended.Store(!enabled)
-	s.refreshEviction()
 }
 
 // SetEvictionPinned toggles the retention-policy half of the eviction gate. A
@@ -912,13 +911,11 @@ func (s *Store) SetEvictionEnabled(enabled bool) {
 // returns the store to whatever the health monitor last asked for.
 func (s *Store) SetEvictionPinned(pinned bool) {
 	s.evictionPinned.Store(pinned)
-	s.refreshEviction()
 }
 
-// refreshEviction recomputes the gate from its two independent reasons. Either
-// one holds eviction off.
-func (s *Store) refreshEviction() {
-	s.evictionDisabled.Store(s.evictionSuspended.Load() || s.evictionPinned.Load())
+// evictionHeld reports whether either reason currently holds eviction off.
+func (s *Store) evictionHeld() bool {
+	return s.evictionSuspended.Load() || s.evictionPinned.Load()
 }
 
 // FileCount reports how many files the journal indexes. It is what a caller that
