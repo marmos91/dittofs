@@ -43,7 +43,7 @@ func TestMove_UpdatesFilePath(t *testing.T) {
 	assert.Equal(t, "/myfile.txt", file.Path)
 
 	// Move file to dest directory
-	_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "myfile.txt", destHandle, "moved.txt")
+	_, _, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "myfile.txt", destHandle, "moved.txt")
 	require.NoError(t, err)
 
 	// Verify path updated in store
@@ -72,7 +72,7 @@ func TestMove_UpdatesDirectoryPath(t *testing.T) {
 	assert.Equal(t, "/olddir", dir.Path)
 
 	// Rename directory
-	_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "olddir", fx.rootHandle, "newdir")
+	_, _, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "olddir", fx.rootHandle, "newdir")
 	require.NoError(t, err)
 
 	// Verify path updated in store
@@ -137,7 +137,7 @@ func TestMove_UpdatesDescendantPaths(t *testing.T) {
 	assert.Equal(t, "/a/b/c/file.txt", leafFile.Path)
 
 	// Rename /a to /x
-	_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "a", fx.rootHandle, "x")
+	_, _, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "a", fx.rootHandle, "x")
 	require.NoError(t, err)
 
 	// Verify all paths updated recursively
@@ -178,7 +178,7 @@ func TestMove_SameDirectoryRename(t *testing.T) {
 	assert.Equal(t, "/old.txt", file.Path)
 
 	// Rename within same directory
-	_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "old.txt", fx.rootHandle, "new.txt")
+	_, _, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "old.txt", fx.rootHandle, "new.txt")
 	require.NoError(t, err)
 
 	// Verify path updated
@@ -207,7 +207,7 @@ func TestMove_EmptyDirectoryRename(t *testing.T) {
 	assert.Equal(t, "/empty", dir.Path)
 
 	// Rename empty directory
-	_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "empty", fx.rootHandle, "renamed")
+	_, _, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "empty", fx.rootHandle, "renamed")
 	require.NoError(t, err)
 
 	// Verify path updated (no children to traverse)
