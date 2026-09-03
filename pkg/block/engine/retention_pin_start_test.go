@@ -11,10 +11,11 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// premiseDrainFreed builds a remote-backed engine, optionally disables eviction
-// the way the share constructor does for a pinned share, fills it and reports
-// how many local bytes an explicit force-evict reclaims.
-func premiseDrainFreed(t *testing.T, pin bool) int64 {
+// drainAfterFill builds a remote-backed engine the way the share constructor
+// does — pinning the local store before Start when the share's retention policy
+// is pin — fills it with a file that is rolled up and uploaded, then force-evicts
+// and reports how many local bytes were reclaimed.
+func drainAfterFill(t *testing.T, pinned bool) int64 {
 	t.Helper()
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
@@ -26,10 +27,7 @@ func premiseDrainFreed(t *testing.T, pin bool) int64 {
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}
-	// This is what blockstore_config.go does for a RetentionPin share, before Start.
-	if pin {
-		localStore.SetEvictionEnabled(false)
-	}
+	localStore.SetEvictionPinned(pinned)
 
 	syncer := engine.NewSyncer(localStore, mem, ms, engine.DefaultConfig())
 	syncer.SetSyncedHashStore(ms)
@@ -44,6 +42,8 @@ func premiseDrainFreed(t *testing.T, pin bool) int64 {
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
 	}
+	// Start probes the remote, finds it healthy and reconciles eviction against
+	// that health. The pin must survive it.
 	if err := bs.Start(ctx); err != nil {
 		t.Fatalf("engine.Start: %v", err)
 	}
@@ -77,18 +77,22 @@ func premiseDrainFreed(t *testing.T, pin bool) int64 {
 	return freed
 }
 
-func TestPremise_ControlUnpinnedEvicts(t *testing.T) {
-	if freed := premiseDrainFreed(t, false); freed == 0 {
-		t.Fatalf("control: unpinned share freed 0 bytes; the probe cannot detect eviction")
-	} else {
-		t.Logf("control: unpinned share freed %d bytes", freed)
-	}
-}
-
-func TestPremise_PinnedShareStillEvictsAfterStart(t *testing.T) {
-	freed := premiseDrainFreed(t, true)
-	t.Logf("pinned share freed %d bytes", freed)
-	if freed != 0 {
-		t.Fatalf("PREMISE CONFIRMED: pinned share freed %d local bytes after Start", freed)
-	}
+// TestRetentionPinSurvivesStart covers the pin being lifted by the eviction
+// reconcile at the end of engine Start: the constructor pinned the local store,
+// Start found the remote healthy, and every synced local byte then became
+// evictable again.
+//
+// The unpinned subtest is the control — without it a pinned share reporting
+// "freed 0" proves only that the probe cannot evict anything at all.
+func TestRetentionPinSurvivesStart(t *testing.T) {
+	t.Run("unpinned evicts", func(t *testing.T) {
+		if freed := drainAfterFill(t, false); freed == 0 {
+			t.Fatal("unpinned share freed 0 bytes; the probe cannot observe eviction")
+		}
+	})
+	t.Run("pinned keeps its bytes", func(t *testing.T) {
+		if freed := drainAfterFill(t, true); freed != 0 {
+			t.Fatalf("pinned share freed %d local bytes; the retention pin was lifted", freed)
+		}
+	})
 }
