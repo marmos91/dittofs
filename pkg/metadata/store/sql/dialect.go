@@ -136,6 +136,15 @@ type FileQueries struct {
 	// rows, ordered by name. Three parameters: the parent id, the exclusive
 	// name cursor, and the row limit.
 	ListChildren string
+	// ListChildNames selects the same page as ListChildren, in the same order,
+	// with the inode join and every attribute column dropped: it returns only
+	// the child name and id. Three parameters: the parent id, the exclusive
+	// name cursor, and the row limit.
+	//
+	// It must agree with ListChildren on which rows a page contains and on
+	// their order, or a cursor handed out by one would resume the other in the
+	// wrong place.
+	ListChildNames string
 	// GetFileByPayloadID selects one full inode row by content id, block-ref
 	// aggregate included. One parameter: the content id.
 	GetFileByPayloadID string

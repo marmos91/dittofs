@@ -289,7 +289,7 @@ func (store *MemoryMetadataStore) SetLinkCount(ctx context.Context, handle metad
 
 // ListChildren returns directory entries with pagination support.
 // This is a read-only operation and uses a read lock for better concurrency.
-func (store *MemoryMetadataStore) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int) ([]metadata.DirEntry, string, error) {
+func (store *MemoryMetadataStore) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int, attrs metadata.ChildAttrs) ([]metadata.DirEntry, string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
@@ -298,12 +298,12 @@ func (store *MemoryMetadataStore) ListChildren(ctx context.Context, dirHandle me
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
-	return store.listChildrenLocked(dirHandle, cursor, limit)
+	return store.listChildrenLocked(dirHandle, cursor, limit, attrs)
 }
 
 // listChildrenLocked is the shared body of ListChildren and the
 // transaction-level ListChildren. Must be called with store.mu held.
-func (store *MemoryMetadataStore) listChildrenLocked(dirHandle metadata.FileHandle, cursor string, limit int) ([]metadata.DirEntry, string, error) {
+func (store *MemoryMetadataStore) listChildrenLocked(dirHandle metadata.FileHandle, cursor string, limit int, attrs metadata.ChildAttrs) ([]metadata.DirEntry, string, error) {
 	dirKey := handleToKey(dirHandle)
 	childrenMap, exists := store.children[dirKey]
 	if !exists {
@@ -335,7 +335,7 @@ func (store *MemoryMetadataStore) listChildrenLocked(dirHandle metadata.FileHand
 
 		// Try to get attributes with correct nlink
 		childKey := handleToKey(childHandle)
-		if fileData, exists := store.files[childKey]; exists {
+		if fileData, exists := store.files[childKey]; exists && attrs == metadata.WithAttrs {
 			attr := *fileData.Attr
 			if nlink, ok := store.linkCounts[childKey]; ok {
 				attr.Nlink = nlink

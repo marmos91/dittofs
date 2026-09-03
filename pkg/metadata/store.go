@@ -91,8 +91,14 @@ type Files interface {
 	// ListChildren returns directory entries with pagination support.
 	// cursor: Pagination token (empty string = start from beginning)
 	// limit: Maximum entries to return (0 = use default)
+	// attrs: WithAttrs fills each entry's Attr; NamesOnly leaves it nil and
+	//   lets the backend skip the per-entry inode read that fills it
 	// Returns: entries, nextCursor (empty if no more), error
-	ListChildren(ctx context.Context, dirHandle FileHandle, cursor string, limit int) ([]DirEntry, string, error)
+	//
+	// Name, ID, Handle and the cursor are identical under either mode: the
+	// choice changes what work the backend does, never which entries it
+	// reports or in what order.
+	ListChildren(ctx context.Context, dirHandle FileHandle, cursor string, limit int, attrs ChildAttrs) ([]DirEntry, string, error)
 
 	// ========================================================================
 	// Extended Attribute (xattr) Operations

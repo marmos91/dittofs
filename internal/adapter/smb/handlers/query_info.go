@@ -1021,7 +1021,7 @@ func (h *Handler) buildFileStreamInformation(authCtx *metadata.AuthContext, file
 			prefix := baseName + ":"
 			cursor := ""
 			for {
-				entries, nextCursor, listErr := store.ListChildren(ctx, name.ParentHandle, cursor, 1000)
+				entries, nextCursor, listErr := store.ListChildren(ctx, name.ParentHandle, cursor, 1000, metadata.WithAttrs)
 				if listErr != nil {
 					break
 				}
