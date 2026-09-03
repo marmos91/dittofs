@@ -20,11 +20,6 @@ var ErrStoreClosed = errors.New("engine: block store is closed")
 // With 200-connection S3 pool and 8MB blocks, 32 workers can saturate the pool.
 const DefaultParallelDownloads = 32
 
-// DefaultBlockCarveBytes is the default target size of a packed block object
-// (#1414): ~16 MiB. Large enough to amortize one PUT over many small chunks,
-// small enough to cap the carver's per-block RAM and keep ranged reads cheap.
-const DefaultBlockCarveBytes int64 = 16 << 20
-
 // Adaptive upload-concurrency bounds (#1407). When SyncerConfig.ParallelUploads
 // is unset (0), the carver auto-tunes concurrent block PUTs to saturate the
 // uplink: it starts at AdaptiveUploadFloor and ramps toward AdaptiveUploadCeiling,
@@ -92,14 +87,6 @@ type SyncerConfig struct {
 	UploadInterval     time.Duration // Periodic uploader scan interval (default: 2s)
 	UploadDelay        time.Duration // Min block age before periodic upload; Flush ignores this (default: 10s)
 
-	// BlockCarveBytes is the target size of a packed block object (#1414). The
-	// block carver accumulates synced-pending log-blob chunks and seals one
-	// block once the accumulated raw bytes reach this threshold; a partial
-	// block is flushed on idle (after UploadDelay with no new chunk) or on an
-	// explicit Flush/SyncNow. <= 0 falls back to DefaultBlockCarveBytes. The
-	// carver buffers at most one block (this many bytes) in RAM at a time.
-	BlockCarveBytes int64
-
 	// ParallelUploads bounds concurrent block PUTs from the carver (#1407 /
 	// #1432). 0 (the default, AdaptiveUploadDefault) means the carver auto-tunes
 	// the window between AdaptiveUploadFloor and AdaptiveUploadCeiling to
@@ -148,7 +135,6 @@ func DefaultConfig() SyncerConfig {
 		SmallFileThreshold:          0,
 		UploadInterval:              2 * time.Second,
 		UploadDelay:                 10 * time.Second,
-		BlockCarveBytes:             DefaultBlockCarveBytes,
 		ParallelUploads:             AdaptiveUploadDefault,
 		DemandFetchTimeout:          DefaultDemandFetchTimeout,
 		HealthCheckInterval:         30 * time.Second,

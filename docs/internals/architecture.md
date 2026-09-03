@@ -280,7 +280,8 @@ shard internally. Carving a file FastCDC-chunks its dirty ranges (min 1 MiB /
 avg 4 MiB / max 16 MiB by default), BLAKE3-hashes each chunk, and — via the
 engine-supplied `BlockSink` — dedups against remote-durable chunks, seals each
 chunk (compression/encryption), frames the survivors into a packed block
-(~16 MiB, `BlockCarveBytes`), uploads the block with one `PutBlock`, and
+(4 MiB by default, `journal.Config.CarveBlockSize`, settable through
+`fs.FSStoreOptions`), uploads the block with one `PutBlock`, and
 commits the block record, per-chunk synced markers, and per-file FileChunk
 manifest rows in a single metadata transaction (`metadata.DefaultCommitBlock`).
 `PutBlock` runs before the commit, so a crash in between leaves an orphan block
