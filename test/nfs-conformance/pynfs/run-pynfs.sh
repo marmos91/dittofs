@@ -26,6 +26,11 @@ TESTS="all"
 NO_SETUP=false
 KEEP=false
 VERBOSE=false
+# Several pynfs tests wait out a whole lease to check expiry behaviour, so the
+# server's lease time is most of the suite's wall clock: at the 90s default a
+# single test costs a minute and a half. 30s keeps those tests meaningful while
+# staying far above the slowest operation here, so nothing expires mid-test.
+LEASE_TIME=30
 # pynfs authenticates with AUTH_SYS. The export squashes root to admin
 # (setup-posix.sh: share nfs-config set /export --squash root_to_admin), which
 # is the same identity pjdfstest runs as, so uid 0 gets a usable export root.
@@ -54,6 +59,10 @@ Options:
   --export PATH            Export path on the server (default: /export)
   --tests "CODES"          pynfs test codes or flags (default: all)
                            e.g. --tests "LOOK1 OPEN4", --tests lookup
+  --lease-time SECONDS     NFSv4 lease time to configure (default: 30)
+                           Lease-expiry tests sleep for a full lease; the 90s
+                           product default makes the suite several times slower.
+                           Ignored with --no-setup.
   --no-setup               Do not start or tear down a server; test whatever is
                            already listening on --server
   --keep                   Leave the server running after the run
@@ -74,6 +83,7 @@ while [[ $# -gt 0 ]]; do
         --server)         SERVER="$2"; shift 2 ;;
         --export)         EXPORT_PATH="$2"; shift 2 ;;
         --tests)          TESTS="$2"; shift 2 ;;
+        --lease-time)     LEASE_TIME="$2"; shift 2 ;;
         --no-setup)       NO_SETUP=true; shift ;;
         --keep)           KEEP=true; shift ;;
         --verbose|-v)     VERBOSE=true; shift ;;
@@ -120,10 +130,19 @@ SETUP_SCRIPT="${REPO_ROOT}/test/posix/setup-posix.sh"
 TEARDOWN_SCRIPT="${REPO_ROOT}/test/posix/teardown-posix.sh"
 SERVER_STARTED=false
 
+# setup-posix.sh runs `dfsctl login`, which persists credentials to the config
+# directory. dfsctl has no --config flag, so point the whole config directory at
+# a scratch dir: running this suite must not overwrite a developer's real
+# dfsctl session, which it otherwise would now that --no-mount lets it run as an
+# ordinary user rather than only under sudo.
+DFSCTL_HOME="$(mktemp -d)"
+export XDG_CONFIG_HOME="$DFSCTL_HOME"
+
 # teardown-posix.sh unmounts, so it insists on root. Nothing was mounted here,
 # so fall back to stopping the server directly rather than blocking on a sudo
 # password prompt on a developer machine.
 cleanup() {
+    rm -rf "$DFSCTL_HOME"
     [[ "$SERVER_STARTED" == true && "$KEEP" != true ]] || return 0
     log "Stopping DittoFS..."
     if [[ $EUID -eq 0 ]]; then
@@ -144,6 +163,12 @@ if [[ "$NO_SETUP" != true ]]; then
         exit 1
     fi
     SERVER_STARTED=true
+
+    log "Setting NFSv4 lease time to ${LEASE_TIME}s..."
+    if ! "${REPO_ROOT}/dfsctl" adapter settings nfs update \
+            --lease-time "$LEASE_TIME" >/dev/null 2>&1; then
+        log_warn "Could not set lease time; expiry tests will run at the server default."
+    fi
 fi
 
 # --------------------------------------------------------------------------
@@ -163,6 +188,10 @@ PYNFS_ARGS=(
     --gid "$TEST_GID"
     --maketree
     --json "${RESULTS_DIR}/pynfs.json"
+    # Names each test as it starts, so a stalled run says which test stalled.
+    # pynfs reprints results in the same format here, which is why the grader
+    # reads only the final results block.
+    -v
 )
 # shellcheck disable=SC2206  # --tests is a deliberate word-split list of codes
 PYNFS_ARGS+=($TESTS)

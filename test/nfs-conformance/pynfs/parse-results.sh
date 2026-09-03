@@ -17,6 +17,12 @@
 # did not run. Failure detail follows on indented continuation lines, which is
 # why lines are matched on the padded " : " form rather than by keyword.
 #
+# Only the final results block is graded — the run of lines between the last two
+# rows of fifty asterisks that printresults() emits. This matters because pynfs
+# -v prints every test in the *same* format as it runs, once on entry and once
+# on completion, so scanning the whole file would count each failure three times
+# and grade a passing run red.
+#
 # The blacklist is keyed on the test CODE, because that is what you pass back to
 # testserver.py to re-run a single test. `pynfs-4.0 --showcodes` lists them.
 #
@@ -64,13 +70,25 @@ kf_load "$KNOWN_FAILURES_FILE"
 echo -e "${BOLD}Loaded ${KF_COUNT} known failures from $(basename "${KNOWN_FAILURES_FILE:-<none>}")${NC}"
 echo "$TALLY"
 
-# Collect the codes of every FAILURE line. Field 1 is the code, and the outcome
-# is whatever follows the last " : " on the line.
+# Isolate the final results block, then collect the code of every FAILURE line
+# in it. Field 1 is the code; the outcome is the last field.
+RESULTS_BLOCK="$(awk '
+    /^\*{50}$/ { n++; starts[n] = NR }
+    END { if (n >= 2) print starts[n-1] "," starts[n] }
+' "$OUTPUT_FILE")"
+
+if [[ -z "$RESULTS_BLOCK" ]]; then
+    echo -e "${RED}ERROR: no results block — pynfs printed a tally but no per-test results.${NC}"
+    echo "$TALLY"
+    exit 1
+fi
+
 declare -a FAILING=()
 while IFS= read -r code; do
     [[ -z "$code" ]] && continue
     FAILING+=("$code")
-done < <(awk '/ : FAILURE[[:space:]]*$/ { print $1 }' "$OUTPUT_FILE")
+done < <(sed -n "${RESULTS_BLOCK}p" "$OUTPUT_FILE" \
+         | awk '/ : FAILURE[[:space:]]*$/ { print $1 }')
 
 KNOWN_HITS=0
 NEW_FAILURES=0

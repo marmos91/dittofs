@@ -131,6 +131,38 @@ Of those: 0 Skipped, 1 Failed, 0 Warned, 0 Passed
 EOF
 assert_output "only the real row graded" "Known failures: 1"
 
+# -- pynfs -v reprints each test in the SAME format as it runs, once on entry
+# -- and once on completion. Only the final results block counts, or a single
+# -- failure would be graded three times.
+run_case "verbose reruns are not extra failures" 0 <<'EOF'
+LOOK1    st_lookup.testDir                                        : RUNNING
+LOOK1    st_lookup.testDir                                        : FAILURE
+ACC1a    st_access.testReadable                                   : RUNNING
+ACC1a    st_access.testReadable                                   : PASS
+**************************************************
+LOOK1    st_lookup.testDir                                        : FAILURE
+**************************************************
+Command line asked for 2 of 689 tests
+Of those: 0 Skipped, 1 Failed, 0 Warned, 1 Passed
+EOF
+assert_output "counted once" "Known failures: 1"
+
+# -- Same, for a failure that is NOT on the list: exit code is 1, not 2. --
+run_case "verbose new failure counted once" 1 <<'EOF'
+OPEN4    st_open.testStateid                                      : RUNNING
+OPEN4    st_open.testStateid                                      : FAILURE
+**************************************************
+OPEN4    st_open.testStateid                                      : FAILURE
+**************************************************
+Of those: 0 Skipped, 1 Failed, 0 Warned, 0 Passed
+EOF
+
+# -- A tally with no results block at all is an error, not a pass. --
+run_case "tally without results block is an error" 1 <<'EOF'
+Of those: 0 Skipped, 3 Failed, 0 Warned, 0 Passed
+EOF
+assert_output "missing block explained" "no per-test results"
+
 # -- A run that never reached its tally is an error, not a pass. --
 run_case "truncated log is an error" 1 <<'EOF'
 **************************************************
