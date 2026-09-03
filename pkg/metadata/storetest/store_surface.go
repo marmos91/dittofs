@@ -1,7 +1,6 @@
 package storetest
 
 import (
-	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -23,7 +22,6 @@ import (
 func runStoreSurfaceTests(t *testing.T, factory StoreFactory) {
 	t.Run("DeleteShare", func(t *testing.T) { testDeleteShare(t, factory) })
 	t.Run("DeleteShareViaTransaction", func(t *testing.T) { testDeleteShareViaTransaction(t, factory) })
-	t.Run("DuplicateCreateShare", func(t *testing.T) { testDuplicateCreateShare(t, factory) })
 	t.Run("GetUsedBytesForShare", func(t *testing.T) { testGetUsedBytesForShare(t, factory) })
 	t.Run("GetQuotaUsage", func(t *testing.T) { testGetQuotaUsage(t, factory) })
 	t.Run("GetQuotaUsageChown", func(t *testing.T) { testGetQuotaUsageChown(t, factory) })
@@ -306,7 +304,7 @@ func testDeleteShare(t *testing.T, factory StoreFactory) {
 	// Recreating a share with the same name must succeed: the orphaned root
 	// inode must not keep the unique root-path index occupied.
 	if root2 := createTestShare(t, store, shareName); root2 == nil {
-		t.Fatal("re-CreateShare after DeleteShare returned nil root handle")
+		t.Fatal("re-creating the share after DeleteShare returned nil root handle")
 	}
 
 	// Deleting a share that does not exist returns not-found.
@@ -350,29 +348,7 @@ func testDeleteShareViaTransaction(t *testing.T, factory StoreFactory) {
 
 	// Same-name recreation must succeed (no stale root inode in the index).
 	if root2 := createTestShare(t, store, shareName); root2 == nil {
-		t.Fatal("re-CreateShare after tx DeleteShare returned nil root handle")
-	}
-}
-
-// testDuplicateCreateShare verifies the store.go:154 clause "Returns
-// ErrAlreadyExists if share already exists" across backends. All three guard
-// this individually; this is the missing shared-suite assertion.
-func testDuplicateCreateShare(t *testing.T, factory StoreFactory) {
-	store := factory(t)
-	ctx := t.Context()
-
-	const shareName = "/dup-share"
-	if err := store.CreateShare(ctx, &metadata.Share{Name: shareName}); err != nil {
-		t.Fatalf("first CreateShare() failed: %v", err)
-	}
-
-	err := store.CreateShare(ctx, &metadata.Share{Name: shareName})
-	if err == nil {
-		t.Fatal("duplicate CreateShare() should fail")
-	}
-	var se *metadata.StoreError
-	if !errors.As(err, &se) || se.Code != metadata.ErrAlreadyExists {
-		t.Fatalf("duplicate CreateShare: got %v, want StoreError{Code: ErrAlreadyExists}", err)
+		t.Fatal("re-creating the share after tx DeleteShare returned nil root handle")
 	}
 }
 

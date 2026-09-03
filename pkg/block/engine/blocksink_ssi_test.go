@@ -27,7 +27,6 @@ func newBadgerCommitter(t *testing.T) (*metadatabadger.BadgerMetadataStore, meta
 	t.Cleanup(func() { _ = store.Close() })
 
 	const shareName = "s1"
-	require.NoError(t, store.CreateShare(ctx, &metadata.Share{Name: shareName}))
 	root, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory, Mode: 0o755,
 	})

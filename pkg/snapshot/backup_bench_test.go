@@ -247,9 +247,6 @@ func newEngine(ctx context.Context, opts SeedOpts) (metadata.Store, func(), erro
 }
 
 func seed(ctx context.Context, store metadata.Store, opts SeedOpts) (int, error) {
-	if err := store.CreateShare(ctx, &metadata.Share{Name: shareName}); err != nil {
-		return 0, fmt.Errorf("snapshots bench: create share: %w", err)
-	}
 	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0o755,

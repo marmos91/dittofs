@@ -579,40 +579,6 @@ func (tx *memoryTransaction) GetShareOptions(ctx context.Context, shareName stri
 	return &optsCopy, nil
 }
 
-func (tx *memoryTransaction) CreateShare(ctx context.Context, share *metadata.Share) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	if existing, exists := tx.store.shares[share.Name]; exists {
-		// Finish a seeded entry (from CreateRootDirectory) rather than rejecting
-		// it; a non-seeded entry is a genuine duplicate. See store-level CreateShare.
-		if !existing.seeded {
-			return &metadata.StoreError{
-				Code:    metadata.ErrAlreadyExists,
-				Message: "share already exists",
-				Path:    share.Name,
-			}
-		}
-		tx.store.shares[share.Name] = &shareData{
-			Share:      *share,
-			RootHandle: existing.RootHandle,
-		}
-		return nil
-	}
-
-	rootHandle, err := metadata.GenerateNewHandle(share.Name)
-	if err != nil {
-		return err
-	}
-	tx.store.shares[share.Name] = &shareData{
-		Share:      *share,
-		RootHandle: rootHandle,
-	}
-
-	return nil
-}
-
 func (tx *memoryTransaction) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -710,7 +676,6 @@ func (tx *memoryTransaction) CreateRootDirectory(ctx context.Context, shareName 
 		tx.store.shares[shareName] = &shareData{
 			Share:      metadata.Share{Name: shareName},
 			RootHandle: rootHandle,
-			seeded:     true,
 		}
 	}
 

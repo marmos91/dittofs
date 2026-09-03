@@ -1079,41 +1079,6 @@ func (tx *badgerTransaction) GetShareOptions(ctx context.Context, shareName stri
 	return opts, nil
 }
 
-func (tx *badgerTransaction) CreateShare(ctx context.Context, share *metadata.Share) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	_, err := tx.txn.Get(keyShare(share.Name))
-	if err == nil {
-		return &metadata.StoreError{
-			Code:    metadata.ErrAlreadyExists,
-			Message: "share already exists",
-			Path:    share.Name,
-		}
-	}
-	if err != badgerdb.ErrKeyNotFound {
-		return err
-	}
-
-	// Store as shareData for consistency with GetRootHandle and CreateRootDirectory
-	shareDataValue := &shareData{
-		Share: *share,
-		// RootHandle will be set by CreateRootDirectory
-	}
-
-	encoded, err := encodeShareData(shareDataValue)
-	if err != nil {
-		return err
-	}
-
-	if err := tx.txn.Set(keyShare(share.Name), encoded); err != nil {
-		return err
-	}
-	tx.dirtyShares = append(tx.dirtyShares, share.Name)
-	return nil
-}
-
 func (tx *badgerTransaction) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
 	if err := ctx.Err(); err != nil {
 		return err

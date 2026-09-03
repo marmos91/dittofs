@@ -14,7 +14,6 @@ import (
 func mkPayloadShare(t testing.TB, store *BadgerMetadataStore, shareName string) metadata.FileHandle {
 	t.Helper()
 	ctx := context.Background()
-	require.NoError(t, store.CreateShare(ctx, &metadata.Share{Name: shareName}))
 	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory, Mode: 0o755,
 	})

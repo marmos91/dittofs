@@ -274,12 +274,6 @@ func testRootDirectoryIdempotent(t *testing.T, factory StoreFactory) {
 
 	ctx := t.Context()
 
-	// Create share
-	share := &metadata.Share{Name: "/idem"}
-	if err := store.CreateShare(ctx, share); err != nil {
-		t.Fatalf("CreateShare() failed: %v", err)
-	}
-
 	rootAttr := &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0755,

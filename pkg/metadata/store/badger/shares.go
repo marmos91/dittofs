@@ -77,13 +77,6 @@ func (s *BadgerMetadataStore) GetShareOptions(ctx context.Context, shareName str
 // Share Lifecycle Operations
 // ============================================================================
 
-// CreateShare creates a new share with the given configuration.
-func (s *BadgerMetadataStore) CreateShare(ctx context.Context, share *metadata.Share) error {
-	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return tx.CreateShare(ctx, share)
-	})
-}
-
 // UpdateShareOptions updates the share configuration options.
 func (s *BadgerMetadataStore) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
 	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {

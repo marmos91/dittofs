@@ -30,7 +30,6 @@ func newRecycleFixture(t *testing.T) *testFixture {
 	ctx := context.Background()
 	shareName := "/test"
 
-	require.NoError(t, store.CreateShare(ctx, &metadata.Share{Name: shareName}))
 	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0777,

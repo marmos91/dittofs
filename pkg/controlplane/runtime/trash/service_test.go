@@ -93,7 +93,6 @@ func newTestTrash(t *testing.T) *trashTest {
 	bg := context.Background()
 	shareName := "/test"
 
-	require.NoError(t, store.CreateShare(bg, &metadata.Share{Name: shareName}))
 	rootFile, err := store.CreateRootDirectory(bg, shareName, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0o777,

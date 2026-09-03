@@ -3,7 +3,6 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"log/slog"
 
@@ -307,32 +306,6 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 // flag is set here and the statement runs there. Delete a shadow and the build
 // still passes, since the promoted method satisfies the interface, but the
 // cache then serves the options the transaction just overwrote.
-//
-// CreateShare keeps its own body: it runs the same UPDATE, but the memory and
-// badger transactions reject a name that already exists where these two
-// silently overwrite it, and collapsing the SQL pair onto Core would fix that
-// divergence in place rather than decide it.
-
-func (tx *sqliteTransaction) CreateShare(ctx context.Context, share *metadata.Share) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	tx.sharesDirty = true
-
-	optionsData, err := json.Marshal(share.Options)
-	if err != nil {
-		return err
-	}
-
-	// Update options for existing share (created by CreateRootDirectory)
-	query := `UPDATE shares SET options = ?1 WHERE share_name = ?2`
-	_, err = tx.tx.Exec(ctx, query, optionsData, share.Name)
-	if err != nil {
-		return mapDBError(err, "CreateShare", share.Name)
-	}
-
-	return nil
-}
 
 func (tx *sqliteTransaction) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
 	tx.sharesDirty = true

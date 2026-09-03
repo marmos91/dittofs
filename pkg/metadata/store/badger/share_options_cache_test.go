@@ -20,14 +20,16 @@ func newShareOptionsStore(t *testing.T) (*BadgerMetadataStore, string) {
 
 	const shareName = "/opts"
 	anonUID := uint32(65534)
-	require.NoError(t, store.CreateShare(ctx, &metadata.Share{
-		Name: shareName,
-		Options: metadata.ShareOptions{
-			AllowedClients:     []string{"10.0.0.0/8"},
-			DeniedClients:      []string{"10.1.2.3"},
-			AllowedAuthMethods: []string{"sys"},
-			IdentityMapping:    &metadata.IdentityMapping{AnonymousUID: &anonUID},
-		},
+	_, err = store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory,
+		Mode: 0o755,
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.UpdateShareOptions(ctx, shareName, &metadata.ShareOptions{
+		AllowedClients:     []string{"10.0.0.0/8"},
+		DeniedClients:      []string{"10.1.2.3"},
+		AllowedAuthMethods: []string{"sys"},
+		IdentityMapping:    &metadata.IdentityMapping{AnonymousUID: &anonUID},
 	}))
 	return store, shareName
 }

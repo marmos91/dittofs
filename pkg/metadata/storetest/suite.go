@@ -247,15 +247,8 @@ func createTestShare(t *testing.T, store metadata.Store, shareName string) metad
 
 	ctx := t.Context()
 
-	// Create share
-	share := &metadata.Share{
-		Name: shareName,
-	}
-	if err := store.CreateShare(ctx, share); err != nil {
-		t.Fatalf("CreateShare(%q) failed: %v", shareName, err)
-	}
-
-	// Create root directory
+	// Creating the root directory is what registers the share: it is the only
+	// entry point that records one, so nothing precedes it here.
 	rootAttr := &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0755,
