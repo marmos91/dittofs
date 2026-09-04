@@ -125,8 +125,7 @@ type ReconcileOptions struct {
 // and 2 are per-share (a share's records vs its own live locator set); class 3
 // unions every share's block records so a sibling share's live block is never
 // misreported as a record-less object. rbs is that shared block store (nil
-// skips class 3 — a remote that cannot hold packed blocks). locals are the
-// per-share local stores for class 4 (may be empty).
+// skips class 3 — a remote that cannot hold packed blocks).
 //
 // It mutates nothing: only Enumerate/Walk/Get calls are issued.
 func Reconcile(

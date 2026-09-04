@@ -9,11 +9,11 @@ import (
 )
 
 // ReconcileReport scans every remote-backed share for orphaned block storage
-// and returns a structured, READ-ONLY report of the three orphan classes
-// (#1493/#1525 reconcile reporter, PR5a): zero-ref records, leaked blocks,
-// record-less remote objects (past the grace window), and stranded local-only
-// chunks. It mutates nothing — no deletes, no decrements, no marker changes —
-// so an operator can review orphans before the later delete stages act.
+// and returns a structured, READ-ONLY report of the three orphan classes:
+// zero-ref records, leaked blocks, and record-less remote objects past the
+// grace window. It mutates nothing — no deletes, no decrements, no marker
+// changes — so an operator can review orphans before the later delete stages
+// act.
 //
 // It is server-wide: for each remote store it unions the shares that reference
 // it (mirroring the GC per-remote reconciler) so a sibling share's live block
