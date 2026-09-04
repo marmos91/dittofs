@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -205,6 +206,50 @@ func (s *Service) ReadSymlink(ctx *AuthContext, handle FileHandle) (string, *Fil
 	}
 
 	return file.LinkTarget, file, nil
+}
+
+// RestoreChangeTimeIfUnchanged writes want into the file's ChangeTime, but only
+// while the stored value is still expected. It is the conditional half of the
+// SMB rename ChangeTime preserve: the renaming handle reads a ChangeTime before
+// Move and asks for it back afterwards, and this refuses to put it back once
+// anything else has advanced the same file's ChangeTime in the meantime.
+//
+// The comparison and the write happen inside one transaction, against a row read
+// inside that transaction, so on a backend whose transaction serialises that
+// read against concurrent writers a WRITE either loses the race and is
+// overwritten by a value newer than its own, or wins it and is left alone.
+// Comparing outside the transaction would only move the window rather than
+// narrow it. What makes this safe is the store's isolation, not the shape of
+// this function: under READ COMMITTED with an unlocked read — postgres — the
+// pair is not atomic and the window stays open (#2324).
+//
+// On the losing path nothing is written at all. On the winning path the row
+// read in this transaction is written back with nothing but ChangeTime changed,
+// which spares a concurrent size or mtime advance only where that read is
+// serialised against the writer. Where it is not, a write committing between the
+// read and the update is overwritten wholesale, the same lost-update shape the
+// surrounding rename and attribute paths already have (#2324).
+//
+// There is no permission check: the caller is the rename itself, which the
+// metadata layer has already authorized on the parent directories, and the
+// stored value is only ever moved back to one this file already had. A
+// read-only share cannot reach here, because Move would have refused first.
+func (s *Service) RestoreChangeTimeIfUnchanged(ctx context.Context, handle FileHandle, expected, want time.Time) error {
+	store, err := s.storeForHandle(handle)
+	if err != nil {
+		return err
+	}
+	return withRelaxedTransaction(store, ctx, func(tx Transaction) error {
+		current, err := tx.GetFile(ctx, handle)
+		if err != nil {
+			return err
+		}
+		if !current.Ctime.Equal(expected) {
+			return nil
+		}
+		current.Ctime = want
+		return tx.UpdateAttrs(ctx, current)
+	})
 }
 
 // SetFileAttributes updates file attributes with validation and access control.
@@ -980,10 +1025,41 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		// This is what makes hard links correct: renaming one name can never
 		// stale another name's path. UpdateAttrs is tx-critical: a failed ctime
 		// write must roll the whole rename back.
+		//
+		// Read the inode inside the transaction, both before and after the
+		// stamp, so a caller that wants to put the pre-rename ChangeTime back
+		// gets values the store actually holds.
+		//
+		// Before, because srcFile was read outside this transaction: anything
+		// that advanced the inode's ChangeTime since then is already committed,
+		// and restoring the outside-tx value would erase it. After, because the
+		// SQL backends store timestamps as FILETIME ticks and truncate; an
+		// in-memory time.Time would not compare equal to what was written, so a
+		// conditional restore keyed on it would silently never fire.
+		//
+		// Neither read may be discarded on error: a failed "before" with a
+		// successful "after" leaves a zero SourcePreCtime that still matches,
+		// and the restore would then write a zero ChangeTime.
+		//
+		// The "before" read covers the window only on backends whose
+		// transaction serialises it against concurrent writers. Under READ
+		// COMMITTED with an unlocked read — postgres — a write can still commit
+		// between this read and the row lock the update takes, narrowing the
+		// window rather than closing it (#2324).
+		pre, err := tx.GetFile(ctx.Context, srcHandle)
+		if err != nil {
+			return err
+		}
+		rename.SourcePreCtime = pre.Ctime
 		srcFile.Ctime = now
 		if err := tx.UpdateAttrs(ctx.Context, srcFile); err != nil {
 			return err
 		}
+		post, err := tx.GetFile(ctx.Context, srcHandle)
+		if err != nil {
+			return err
+		}
+		rename.SourceCtime = post.Ctime
 
 		return nil
 	})
