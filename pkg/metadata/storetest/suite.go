@@ -235,6 +235,12 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	// run inside the caller's transaction. Every other test here reads only
 	// committed state, which a read that escaped to the pool would answer just
 	// as correctly.
+	// BlockRecordTxOps pins that the transaction-level block-record operations
+	// run inside the caller's transaction, which BlockRecordOps cannot tell.
+	t.Run("BlockRecordTxOps", func(t *testing.T) {
+		runBlockRecordTxOps(t, factory)
+	})
+
 	t.Run("FileReadTxOps", func(t *testing.T) {
 		runFileReadTxOps(t, factory)
 	})

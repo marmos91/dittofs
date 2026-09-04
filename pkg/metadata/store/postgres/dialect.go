@@ -357,3 +357,25 @@ func lockListWhere(query lock.LockQuery) (string, []any) {
 
 	return where, args
 }
+
+func (dialect) BlockRecords() *storesql.BlockRecordQueries { return &blockRecordQueries }
+
+var blockRecordQueries = storesql.BlockRecordQueries{
+	Put: `
+		INSERT INTO block_records (` + storesql.BlockRecordColumns + `)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (block_id) DO UPDATE SET
+			block_hash       = EXCLUDED.block_hash,
+			length           = EXCLUDED.length,
+			live_chunk_count = EXCLUDED.live_chunk_count,
+			sync_state       = EXCLUDED.sync_state`,
+	SelectByID: `SELECT ` + storesql.BlockRecordColumns + ` FROM block_records WHERE block_id = $1`,
+	Delete:     `DELETE FROM block_records WHERE block_id = $1`,
+	// GREATEST where sqlite spells MAX: postgres's MAX is an aggregate and
+	// would not compile here.
+	Decr: `
+		UPDATE block_records
+		SET live_chunk_count = GREATEST(0, live_chunk_count - $1)
+		WHERE block_id = $2
+		RETURNING live_chunk_count`,
+}
