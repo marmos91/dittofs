@@ -19,14 +19,10 @@ import (
 // separate the paths — a write is visible to a read in the same transaction
 // before commit, and a rolled-back write is visible to nobody afterwards.
 //
-// CommitBlock already exercises the transaction's Get and Put indirectly, so
-// the operations with no other transaction-level coverage at all are Delete,
-// Walk and DecrLiveChunkCount.
-//
 // A backend that escapes to the pool fails this by wedging rather than
 // erroring: the escaped statement waits on a connection the enclosing
-// transaction still holds, so the symptom is the package's test timeout, not
-// an assertion message.
+// transaction still holds, so the symptom is a test timeout rather than an
+// assertion message.
 func runBlockRecordTxOps(t *testing.T, factory StoreFactory) {
 	t.Helper()
 

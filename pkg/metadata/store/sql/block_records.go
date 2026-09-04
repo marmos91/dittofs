@@ -61,11 +61,14 @@ func (c *Core) GetBlockRecord(ctx context.Context, blockID string) (block.BlockR
 	if err := ctx.Err(); err != nil {
 		return block.BlockRecord{}, false, err
 	}
-	rec, found, err := c.scanBlockRecord(c.X.QueryRow(ctx, c.D.BlockRecords().SelectByID, blockID))
+	rec, err := scanBlockRecord(c.X.QueryRow(ctx, c.D.BlockRecords().SelectByID, blockID))
+	if c.D.IsNoRows(err) {
+		return block.BlockRecord{}, false, nil
+	}
 	if err != nil {
 		return block.BlockRecord{}, false, fmt.Errorf("block_records get %q: %w", blockID, err)
 	}
-	return rec, found, nil
+	return rec, true, nil
 }
 
 // DeleteBlockRecord removes the block record for blockID. Deleting an absent
@@ -93,10 +96,7 @@ func (c *Core) WalkBlockRecords(ctx context.Context, fn func(block.BlockRecord) 
 	defer rows.Close()
 
 	for rows.Next() {
-		// A row that came back from an iterator is present by construction, so
-		// the found flag scanBlockRecord reports for a single-row miss carries
-		// no information here.
-		rec, _, err := c.scanBlockRecord(rows)
+		rec, err := scanBlockRecord(rows)
 		if err != nil {
 			return fmt.Errorf("block_records walk scan: %w", err)
 		}
@@ -115,9 +115,6 @@ func (c *Core) DecrLiveChunkCount(ctx context.Context, blockID string, delta uin
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	// One statement rather than a SELECT then an UPDATE: the floor is applied
-	// in SQL, so the read-modify-write cannot interleave with another
-	// decrement and does not need a transaction around it.
 	var remaining int64
 	err := c.X.QueryRow(ctx, c.D.BlockRecords().Decr, delta, blockID).Scan(&remaining)
 	if c.D.IsNoRows(err) {
@@ -129,13 +126,12 @@ func (c *Core) DecrLiveChunkCount(ctx context.Context, blockID string, delta uin
 	return uint32(remaining), nil
 }
 
-// scanBlockRecord reads one row, reporting (_, false, nil) when the row source
-// was an empty single-row query.
+// scanBlockRecord reads one block-record row.
 //
 // The scan targets are the widest type each dialect can hand back: postgres
 // declares length and live_chunk_count BIGINT and sync_state SMALLINT, and pgx
 // will not narrow either on the caller's behalf.
-func (c *Core) scanBlockRecord(row Row) (block.BlockRecord, bool, error) {
+func scanBlockRecord(row Row) (block.BlockRecord, error) {
 	var (
 		blockID        string
 		blockHash      []byte
@@ -143,15 +139,11 @@ func (c *Core) scanBlockRecord(row Row) (block.BlockRecord, bool, error) {
 		liveChunkCount int64
 		syncState      int16
 	)
-	err := row.Scan(&blockID, &blockHash, &length, &liveChunkCount, &syncState)
-	if c.D.IsNoRows(err) {
-		return block.BlockRecord{}, false, nil
-	}
-	if err != nil {
-		return block.BlockRecord{}, false, err
+	if err := row.Scan(&blockID, &blockHash, &length, &liveChunkCount, &syncState); err != nil {
+		return block.BlockRecord{}, err
 	}
 	if len(blockHash) != len(block.ContentHash{}) {
-		return block.BlockRecord{}, false,
+		return block.BlockRecord{},
 			fmt.Errorf("malformed block_hash length %d for block %q", len(blockHash), blockID)
 	}
 	var h block.ContentHash
@@ -162,5 +154,5 @@ func (c *Core) scanBlockRecord(row Row) (block.BlockRecord, bool, error) {
 		Length:         length,
 		LiveChunkCount: uint32(liveChunkCount),
 		SyncState:      block.BlockState(syncState),
-	}, true, nil
+	}, nil
 }

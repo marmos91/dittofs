@@ -1,8 +1,7 @@
 // Block-record support for the SQLite metadata store. The statements and the
 // bodies that run them live in store/sql, promoted onto both the store and its
-// transaction through the embedded Core; only CommitBlock stays here, because
-// it needs a Transactor to open the transaction it commits in and Core is not
-// one.
+// transaction through the embedded Core. Only CommitBlock stays here: it needs
+// a Transactor to open the transaction it commits in, and Core is not one.
 package sqlite
 
 import (
@@ -12,9 +11,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// Compile-time assertions: the store and its transaction both satisfy the
-// interface. Both reach it through the promoted Core methods, so a signature
-// drift there fails here before any test runs.
+// Both the store and its transaction satisfy the interface through the
+// promoted Core methods.
 var _ metadata.BlockRecordStore = (*SQLiteMetadataStore)(nil)
 var _ metadata.BlockRecordStore = (*sqliteTransaction)(nil)
 
