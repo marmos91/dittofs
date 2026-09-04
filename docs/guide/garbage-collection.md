@@ -63,7 +63,8 @@ You can also run it on demand — recommended if an older deployment accumulated
 large backlog:
 
 ```bash
-# Server-wide: reap stranded rows, then sweep.
+# --reconcile reaps stranded rows across every share, then sweeps. The share
+# name addresses the API; the reap itself is server-wide.
 dfsctl store block gc <share> --reconcile
 
 # Preview the reconcile first:

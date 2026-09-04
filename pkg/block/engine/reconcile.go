@@ -66,7 +66,7 @@ func (c *ReconcileClass) merge(other ReconcileClass, cap int) {
 	}
 }
 
-// ReconcileReport is the read-only output of a scan: four orphan classes plus
+// ReconcileReport is the read-only output of a scan: three orphan classes plus
 // scan bookkeeping. Nothing in the store is mutated to produce it.
 type ReconcileReport struct {
 	// ZeroRefRecords: block records absent from the live locator set with
@@ -119,7 +119,7 @@ type ReconcileOptions struct {
 }
 
 // Reconcile scans one remote-store scope for orphaned block storage and returns
-// a structured, READ-ONLY report of the four orphan classes.
+// a structured, READ-ONLY report of the three orphan classes.
 //
 // views are the per-share metadata views that share one remote store. Classes 1
 // and 2 are per-share (a share's records vs its own live locator set); class 3

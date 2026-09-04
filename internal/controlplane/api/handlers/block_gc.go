@@ -43,7 +43,7 @@ type BlockGCRuntime interface {
 	GCStateDirForShare(shareName string) (string, error)
 
 	// ReconcileReport scans every remote-backed share for orphaned block
-	// storage and returns a READ-ONLY report of the four orphan classes. It
+	// storage and returns a READ-ONLY report of the three orphan classes. It
 	// mutates nothing (#1493/#1525 reconcile reporter).
 	ReconcileReport(ctx context.Context) (*engine.ReconcileReport, error)
 

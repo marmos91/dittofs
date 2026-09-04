@@ -22,7 +22,7 @@ classified report. This is READ-ONLY: it deletes nothing, decrements nothing,
 and changes no markers. Use it to review what the later reclaim stages would
 act on before running them.
 
-Four orphan classes are reported:
+Three orphan classes are reported:
 
   Zero-ref records       Block records with no live locator and a zero live
                          chunk count — a crash between decrementing the count
