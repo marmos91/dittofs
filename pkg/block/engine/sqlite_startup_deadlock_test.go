@@ -134,7 +134,7 @@ func TestSQLiteReconcile_NoDeadlock(t *testing.T) {
 	var rep ReconcileReport
 	runBounded(t, "Reconcile", func(ctx context.Context) error {
 		var err error
-		rep, err = Reconcile(ctx, []ReconcileMetaView{st}, nil, nil, ReconcileOptions{})
+		rep, err = Reconcile(ctx, []ReconcileMetaView{st}, nil, ReconcileOptions{})
 		return err
 	})
 
@@ -198,7 +198,7 @@ func TestSQLiteReconcile_LocatorResolutionIsSinglePass(t *testing.T) {
 	seedSyncedMarkers(t, st, "blk-live", n)
 
 	view := &countingMetaView{SQLiteMetadataStore: st}
-	if _, err := Reconcile(context.Background(), []ReconcileMetaView{view}, nil, nil, ReconcileOptions{}); err != nil {
+	if _, err := Reconcile(context.Background(), []ReconcileMetaView{view}, nil, ReconcileOptions{}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 

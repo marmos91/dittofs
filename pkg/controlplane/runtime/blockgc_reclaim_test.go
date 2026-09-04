@@ -114,8 +114,6 @@ func TestUnionBlockReclaimer_ReclaimsEveryShare(t *testing.T) {
 // "inside" a remote's sweep and records the peak concurrency observed per
 // remote config; the fix caps it at 1.
 func TestBlockGC_SerializesPerRemote(t *testing.T) {
-	installCollectGarbageLocalSpy(t)
-
 	var mu sync.Mutex
 	inFlight := map[string]int{}
 	peak := map[string]int{}

@@ -40,7 +40,7 @@ reclamation entirely on demand or via external scheduling.
 You can trigger GC at any time:
 
 ```bash
-# Reclaim now (both tiers) for a share:
+# Reclaim now for a share:
 dfsctl store block gc <share>
 
 # Preview only — enumerate candidates, delete nothing:
@@ -63,7 +63,8 @@ You can also run it on demand — recommended if an older deployment accumulated
 large backlog:
 
 ```bash
-# Server-wide: reap stranded rows, then sweep both tiers.
+# --reconcile reaps stranded rows across every share, then sweeps. The share
+# name addresses the API; the reap itself is server-wide.
 dfsctl store block gc <share> --reconcile
 
 # Preview the reconcile first:
@@ -80,8 +81,9 @@ in the Prometheus counter `dittofs_gc_stranded_rows_reaped_total`, and in the se
 A share's `retention` policy controls the **local cache**, not GC of orphans:
 
 - `retention: pin` keeps *referenced* blocks on local disk indefinitely (no cache
-  eviction). It does **not** protect *orphaned* blocks — GC still reclaims blocks
-  that no live file or snapshot references, on both tiers, regardless of `pin`.
+  eviction). It does **not** protect *orphaned* blocks — GC still reclaims remote
+  blocks that no live file or snapshot references regardless of `pin`, and the
+  local journal still reclaims the disk bytes of superseded records.
 - Other retention policies additionally let the local cache evict cold *referenced*
   blocks under disk pressure (they can be refetched from the remote tier).
 
@@ -120,8 +122,8 @@ GC health is exported on the Prometheus endpoint (see
 | --- | --- |
 | `dittofs_gc_runs_total{result}` | GC passes, labelled `ok`/`error` |
 | `dittofs_gc_running` | passes currently in flight (0 when idle) |
-| `dittofs_gc_swept_objects_total` | objects reclaimed across both tiers |
-| `dittofs_gc_freed_bytes_total` | bytes reclaimed across both tiers |
+| `dittofs_gc_swept_objects_total` | remote objects reclaimed |
+| `dittofs_gc_freed_bytes_total` | remote bytes reclaimed |
 | `dittofs_gc_duration_seconds` | per-pass duration histogram |
 | `dittofs_gc_last_run_timestamp_seconds` | wall-clock of the last completed pass |
 | `dittofs_gc_stranded_rows_reaped_total` | rows reaped by reconcile/migration runs |

@@ -149,12 +149,6 @@ type GCStats struct {
 	// closes). Zero for a plain GC run; only the reconcile sets it.
 	StrandedRowsReaped int64 `json:"stranded_rows_reaped,omitempty"`
 
-	// IsLocalTier is true when these stats come from a local-store pass
-	// (CollectGarbageLocal), false for the default remote pass. Per-invocation
-	// metadata only — accumulateGCStats does not fold it into a total; the
-	// runtime uses it to tag metrics/logs with the tier.
-	IsLocalTier bool
-
 	// Legacy aggregator fields (compat aliases — see finalizeStats).
 
 	OrphanFiles    int   // = ObjectsSwept.
@@ -338,21 +332,7 @@ func CollectGarbage(
 	reconciler MetadataReconciler,
 	options *Options,
 ) *GCStats {
-	return collectGarbage(ctx, nil, reconciler, options, false)
-}
-
-// CollectGarbageLocal reclaims orphaned chunks on a per-share LOCAL block
-// store. Local stores are isolated per share (architecture invariant #4), so
-// the caller scopes the reconciler and snapshot holds to that single share.
-// The grace period protects freshly-written chunks whose FileChunk rows have
-// not yet committed.
-func CollectGarbageLocal(
-	ctx context.Context,
-	localStore block.Store,
-	reconciler MetadataReconciler,
-	options *Options,
-) *GCStats {
-	return collectGarbage(ctx, localStore, reconciler, options, true)
+	return collectGarbage(ctx, reconciler, options)
 }
 
 // resolveGracePeriod returns the effective sweep grace period. An explicit
@@ -373,24 +353,22 @@ func resolveGracePeriod(options *Options) time.Duration {
 	return options.GracePeriod
 }
 
-// collectGarbage is the shared mark-sweep kernel for both tiers. The live-set,
-// grace, and fail-closed semantics are identical regardless of tier; the sweep
-// mechanism differs — the local tier Walks its own namespace (store is the
-// per-share local store), the remote tier sweeps from the synced-hash index
-// (store is nil).
+// collectGarbage is the mark-sweep kernel. Orphan candidates come from the
+// synced-hash index (synced minus live) rather than a namespace listing, so the
+// remote is never LISTed, and a run without an index sweeps nothing rather than
+// guessing. Local disk is not swept here: the journal reclaims its own dead
+// bytes and evicts under pressure, both internal to it.
 func collectGarbage(
 	ctx context.Context,
-	store sweepable,
 	reconciler MetadataReconciler,
 	options *Options,
-	isLocal bool,
 ) *GCStats {
 	if options == nil {
 		options = &Options{}
 	}
 	started := time.Now()
 	runID := started.UTC().Format("20060102T150405Z") + "-" + randSuffix(6)
-	stats := &GCStats{RunID: runID, DryRun: options.DryRun, IsLocalTier: isLocal}
+	stats := &GCStats{RunID: runID, DryRun: options.DryRun}
 
 	// serialize concurrent CollectGarbage calls that
 	// share a GCStateRoot. Without this, two parallel runs race in
@@ -473,31 +451,13 @@ func collectGarbage(
 		return stats
 	}
 
-	// SWEEP: the local tier Walks its own (local-disk) namespace; the remote
-	// tier derives orphan candidates from the synced-hash index (synced −
-	// live) — the remote namespace is never LISTed. A remote sweep without an
-	// index cannot prove anything is orphaned, so it is skipped fail-closed.
-	switch {
-	case isLocal:
-		sweepByWalk(ctx, store, gcs, stats, snapshotTime, gracePeriod, dryRunSample, options)
-		// Reclaim the physical bytes of any log blob the sweep just fully
-		// orphaned. sweepByWalk (DeleteChunk) removes a chunk's index entry but
-		// blob bytes are reclaimed only by blob-level eviction, which skips the
-		// still-open ACTIVE blob — so read-through-staged chunks that land in
-		// the active blob would otherwise leak local disk after an unlink.
-		if !options.DryRun {
-			if r, ok := store.(deadBlobReclaimer); ok {
-				if freed, err := r.ReclaimDeadBlobs(ctx); err != nil {
-					recordGCError(stats, "reclaim dead blobs: "+err.Error())
-				} else {
-					stats.BytesFreed += freed
-				}
-			}
-		}
-	case options.SyncedHashIndex != nil:
+	// SWEEP: orphan candidates come from the synced-hash index (synced − live);
+	// the remote namespace is never LISTed. Without an index a sweep cannot
+	// prove anything is orphaned, so it is skipped fail-closed.
+	if options.SyncedHashIndex != nil {
 		sweepFromSyncedIndex(ctx, gcs, stats, snapshotTime, gracePeriod, dryRunSample, options)
-	default:
-		recordGCError(stats, "remote sweep skipped: no synced-hash index available (index sweep is the only remote reclaim path)")
+	} else {
+		recordGCError(stats, "sweep skipped: no synced-hash index available (index sweep is the only reclaim path)")
 	}
 
 	// Mark complete + persist summary.
@@ -614,108 +574,6 @@ func sharesForReconciler(r MetadataReconciler) []string {
 		return multi.SharesForGC()
 	}
 	return nil
-}
-
-// sweepable is the minimal store surface the local walk sweep needs: enumerate
-// the chunk namespace and delete one object by hash. The per-share local
-// block.Store satisfies it.
-//
-// Walk MUST invoke its callback sequentially: sweepByWalk mutates unsynchronized
-// per-run counters (scanned/swept/bytes) from inside the callback. The local
-// backend (filepath.WalkDir) honors this; a backend that parallelizes Walk must
-// serialize the callback before satisfying this interface.
-// deadBlobReclaimer is the optional local-store surface the local GC sweep uses
-// to reclaim the physical bytes of log blobs it just fully orphaned (the fs
-// store implements it; other backends do not need it). Kept off sweepable so
-// only the local tier reaches for it.
-type deadBlobReclaimer interface {
-	ReclaimDeadBlobs(ctx context.Context) (int64, error)
-}
-
-type sweepable interface {
-	Walk(ctx context.Context, fn func(block.ContentHash, block.Meta) error) error
-	Delete(ctx context.Context, hash block.ContentHash) error
-}
-
-// sweepByWalk reclaims orphans by enumerating the ENTIRE store namespace via
-// store.Walk and deleting objects absent from the live set (past grace).
-// LOCAL tier only (a cheap local-disk walk); remote GC never LISTs the remote
-// and uses sweepFromSyncedIndex instead. Per-object errors are captured in
-// stats but do not abort the sweep. Objects within snapshot - GracePeriod are
-// preserved.
-func sweepByWalk(
-	ctx context.Context,
-	store sweepable,
-	gcs *GCState,
-	stats *GCStats,
-	snapshotTime time.Time,
-	gracePeriod time.Duration,
-	dryRunSample int,
-	options *Options,
-) {
-	var statsMu sync.Mutex
-	addError := newSweepErrorRecorder(stats, &statsMu)
-
-	// Count every object the backend reports — before any grace /
-	// zero-LastModified / live-set filtering — so ObjectsScanned is the
-	// total chunk objects present in the store ("blocks found"). Walk
-	// invokes the callback sequentially, so a local counter folded into
-	// stats once after the walk avoids a mutex round-trip per object.
-	var scanned int64
-	walkErr := store.Walk(ctx, func(h block.ContentHash, meta block.Meta) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		key := h.String()
-		scanned++
-		// — fail-closed on missing LastModified.
-		// A zero LastModified means the backend did not report
-		// per-object age; we cannot evaluate the snapshot - grace
-		// TTL filter and we MUST NOT proceed to delete on
-		// the live-set check alone. Preserve the object and capture
-		// a diagnostic.
-		if meta.LastModified.IsZero() {
-			addError("zero LastModified " + key + ": backend Walk must populate LastModified for grace TTL evaluation")
-			return nil
-		}
-		if meta.LastModified.After(snapshotTime.Add(-gracePeriod)) {
-			return nil // within grace window
-		}
-		present, err := gcs.Has(h)
-		if err != nil {
-			addError("gcstate has " + key + ": " + err.Error())
-			return nil
-		}
-		if present {
-			return nil // live — keep
-		}
-		if options.DryRun {
-			recordDryRunCandidate(stats, &statsMu, key, dryRunSample)
-			return nil
-		}
-		if err := store.Delete(ctx, h); err != nil {
-			// continue + capture
-			addError("delete " + key + ": " + err.Error())
-			return nil
-		}
-		statsMu.Lock()
-		stats.ObjectsSwept++
-		stats.BytesFreed += meta.Size
-		statsMu.Unlock()
-		return nil
-	})
-	if walkErr != nil {
-		addError("walk: " + walkErr.Error())
-	}
-	statsMu.Lock()
-	stats.ObjectsScanned += scanned
-	statsMu.Unlock()
-	if options.ProgressCallback != nil {
-		statsMu.Lock()
-		snap := *stats
-		statsMu.Unlock()
-		options.ProgressCallback(snap)
-	}
 }
 
 // finalizeStats fills the legacy aggregator fields from the mark-sweep

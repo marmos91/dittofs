@@ -72,7 +72,7 @@ Examples:
 
 func init() {
 	gcCmd.Flags().Bool("dry-run", false, "Run mark + sweep enumeration but skip deletes; print candidate keys")
-	gcCmd.Flags().Bool("reconcile", false, "Also reap stranded file_blocks rows leaked by older versions (server-wide), then sweep both tiers")
+	gcCmd.Flags().Bool("reconcile", false, "Also reap stranded file_blocks rows leaked by older versions (server-wide), then sweep")
 	gcCmd.Flags().Bool("no-wait", false, "Start the job and print its id without waiting for completion")
 	gcCmd.Flags().Duration("grace-period", 0, "Override the sweep grace for this run (e.g. 30m, 0 to reap immediately); bypasses the server's 5m floor. Unset = server default")
 }

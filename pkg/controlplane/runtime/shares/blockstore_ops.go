@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -96,46 +95,6 @@ func (s *Service) DistinctRemoteStores() []RemoteStoreEntry {
 			Store:    sr.store,
 			ConfigID: cid,
 			Shares:   shareNames,
-		})
-	}
-	return out
-}
-
-// LocalStoreEntry describes one share's local block store for a per-share local
-// GC pass. Unlike remote stores, local stores are never shared across shares
-// (architecture invariant #4), so there is exactly one entry per share and no
-// deduplication is needed.
-type LocalStoreEntry struct {
-	// ShareName is the single share that owns this local store.
-	ShareName string
-	// Store is the share's local block store. The local GC pass uses only its
-	// Walk + Delete methods.
-	Store block.Store
-	// GCStateRoot is the persistent gc-state directory for this share. Empty
-	// for in-memory backends (no on-disk chunks worth sweeping).
-	GCStateRoot string
-}
-
-// ShareLocalStores returns one LocalStoreEntry per registered share that has a
-// block store with a non-nil local tier. The local GC pass sweeps each share's
-// own local store against that share's live set (per-share isolation).
-func (s *Service) ShareLocalStores() []LocalStoreEntry {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	out := make([]LocalStoreEntry, 0, len(s.registry))
-	for name, sh := range s.registry {
-		if sh.BlockStore == nil {
-			continue
-		}
-		local := sh.BlockStore.LocalStore()
-		if local == nil {
-			continue
-		}
-		out = append(out, LocalStoreEntry{
-			ShareName:   name,
-			Store:       local,
-			GCStateRoot: sh.gcStateRoot,
 		})
 	}
 	return out

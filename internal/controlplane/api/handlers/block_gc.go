@@ -27,7 +27,7 @@ import (
 type BlockGCRuntime interface {
 	// StartBlockGC launches (or returns the already-running) async GC job. When
 	// reconcile is true the run reaps stranded file_blocks rows across all
-	// shares before sweeping both tiers; otherwise it runs the share-scoped
+	// shares before sweeping; otherwise it runs the share-scoped
 	// sweep. The run executes on a context detached from the request, so a
 	// request/client timeout cannot abort the (potentially multi-minute) mark
 	// phase (#1433).
@@ -43,7 +43,7 @@ type BlockGCRuntime interface {
 	GCStateDirForShare(shareName string) (string, error)
 
 	// ReconcileReport scans every remote-backed share for orphaned block
-	// storage and returns a READ-ONLY report of the four orphan classes. It
+	// storage and returns a READ-ONLY report of the three orphan classes. It
 	// mutates nothing (#1493/#1525 reconcile reporter).
 	ReconcileReport(ctx context.Context) (*engine.ReconcileReport, error)
 

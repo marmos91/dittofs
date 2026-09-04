@@ -209,7 +209,7 @@ func (r *gcRegistry) cancelActive() {
 
 // StartBlockGC launches (or returns the already-running) async block-store GC
 // job. When reconcile is true the run reaps stranded file_blocks rows across all
-// shares before sweeping both tiers; otherwise it runs the share-scoped sweep.
+// shares before sweeping; otherwise it runs the share-scoped sweep.
 // The run executes on a detached context so a request/client timeout cannot
 // abort it. Returns a snapshot of the job; poll GetGCJobStatus(job.ID) for
 // completion.
