@@ -84,8 +84,12 @@ func runBlockRecordTxOps(t *testing.T, factory StoreFactory) {
 		errAbort := errors.New("abort after the block-record writes")
 		err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
 			require.NoError(t, tx.PutBlockRecord(ctx, rec("tx-rollback-new", 1)))
-			_, decErr := tx.DecrLiveChunkCount(ctx, "tx-rollback", 5)
+			// The remainder is asserted here, not just discarded: the
+			// post-abort state below cannot tell a decrement that ran and was
+			// undone from one that never ran.
+			remaining, decErr := tx.DecrLiveChunkCount(ctx, "tx-rollback", 5)
 			require.NoError(t, decErr)
+			require.Equal(t, uint32(0), remaining)
 			require.NoError(t, tx.DeleteBlockRecord(ctx, "tx-rollback"))
 			return errAbort
 		})
@@ -100,5 +104,29 @@ func runBlockRecordTxOps(t *testing.T, factory StoreFactory) {
 		_, found, err = store.GetBlockRecord(ctx, "tx-rollback-new")
 		require.NoError(t, err)
 		require.False(t, found, "a rolled-back insert survived")
+	})
+
+	// The rollback case cannot vouch for the delete on its own: a transaction
+	// whose delete silently does nothing leaves exactly the state a rolled-back
+	// delete leaves. Committing one is what separates them, and it is the only
+	// place the suite asks a transaction-level delete to actually take effect.
+	t.Run("CommittedDeleteTakesEffect", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+
+		require.NoError(t, store.PutBlockRecord(ctx, rec("tx-delete", 3)))
+
+		require.NoError(t, store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+			require.NoError(t, tx.DeleteBlockRecord(ctx, "tx-delete"))
+
+			_, found, err := tx.GetBlockRecord(ctx, "tx-delete")
+			require.NoError(t, err)
+			require.False(t, found, "the deleting transaction still saw the record")
+			return nil
+		}))
+
+		_, found, err := store.GetBlockRecord(ctx, "tx-delete")
+		require.NoError(t, err)
+		require.False(t, found, "a committed delete left the record behind")
 	})
 }
