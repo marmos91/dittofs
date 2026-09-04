@@ -3,7 +3,6 @@ package engine
 import (
 	"bytes"
 	"context"
-	"iter"
 	"testing"
 	"time"
 
@@ -11,22 +10,6 @@ import (
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
-
-// fakeUnsynced is a hermetic ReconcileLocalView yielding a fixed set of
-// unsynced chunk hashes. The real implementation is *fs.FSStore.ListUnsynced;
-// the class-4 classification only needs the iterator surface, so this keeps the
-// engine test off-disk.
-type fakeUnsynced struct{ hashes []block.ContentHash }
-
-func (f fakeUnsynced) ListUnsynced(context.Context) iter.Seq2[block.ContentHash, error] {
-	return func(yield func(block.ContentHash, error) bool) {
-		for _, h := range f.hashes {
-			if !yield(h, nil) {
-				return
-			}
-		}
-	}
-}
 
 // putBareBlock writes a remote object with no backing block record, stamping its
 // LastModified at the given time so the grace-window filter can be exercised.
@@ -88,14 +71,10 @@ func TestReconcile_ClassifiesEachOrphanClass(t *testing.T) {
 	putBareBlock(t, rbs, "blk-orphan-aged", time.Now().Add(-2*time.Hour)) // aged → orphan
 	putBareBlock(t, rbs, "blk-orphan-fresh", time.Now())                  // within grace → preserved
 
-	// --- CLASS 4: stranded local-only chunk (unsynced, local-durable). ---
-	hStranded := hashFromString("stranded-local-chunk")
-	local := fakeUnsynced{hashes: []block.ContentHash{hStranded}}
-
 	// --- Snapshot state to prove the scan is non-mutating. ---
 	before := captureState(t, st, rbs)
 
-	rep, err := Reconcile(ctx, []ReconcileMetaView{st}, rbs, []ReconcileLocalView{local}, ReconcileOptions{})
+	rep, err := Reconcile(ctx, []ReconcileMetaView{st}, rbs, ReconcileOptions{})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -122,11 +101,6 @@ func TestReconcile_ClassifiesEachOrphanClass(t *testing.T) {
 	if rep.OrphanRemoteObjects.Count != 1 || rep.OrphanRemoteObjects.Sample[0] != "blk-orphan-aged" {
 		t.Errorf("OrphanRemoteObjects = %+v; want count 1 sample [blk-orphan-aged]", rep.OrphanRemoteObjects)
 	}
-	// Class 4.
-	if rep.StrandedLocalChunks.Count != 1 || rep.StrandedLocalChunks.Sample[0] != hStranded.String() {
-		t.Errorf("StrandedLocalChunks = %+v; want count 1 sample [%s]", rep.StrandedLocalChunks, hStranded)
-	}
-
 	// Non-mutation: state identical after the scan.
 	after := captureState(t, st, rbs)
 	before.assertEqual(t, after)
@@ -145,7 +119,7 @@ func TestReconcile_GraceWindowBoundary(t *testing.T) {
 	putBareBlock(t, rbs, "blk-young", time.Now().Add(-20*time.Minute))
 	putBareBlock(t, rbs, "blk-old", time.Now().Add(-40*time.Minute))
 
-	rep, err := Reconcile(ctx, []ReconcileMetaView{st}, rbs, nil, ReconcileOptions{GracePeriod: 30 * time.Minute})
+	rep, err := Reconcile(ctx, []ReconcileMetaView{st}, rbs, ReconcileOptions{GracePeriod: 30 * time.Minute})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -249,7 +223,7 @@ func (v *nestedGuardMetaView) WalkBlockRecords(_ context.Context, fn func(block.
 // never issues a per-hash GetLocator (the guard view fatals if it does).
 func TestReconcile_ResolvesLocatorsFromEnumerateScan(t *testing.T) {
 	v := &nestedGuardMetaView{t: t}
-	rep, err := Reconcile(t.Context(), []ReconcileMetaView{v}, nil, nil, ReconcileOptions{})
+	rep, err := Reconcile(t.Context(), []ReconcileMetaView{v}, nil, ReconcileOptions{})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}

@@ -5643,7 +5643,7 @@ Flags:
       --dry-run                 Run mark + sweep enumeration but skip deletes; print candidate keys
       --grace-period duration   Override the sweep grace for this run (e.g. 30m, 0 to reap immediately); bypasses the server's 5m floor. Unset = server default
       --no-wait                 Start the job and print its id without waiting for completion
-      --reconcile               Also reap stranded file_blocks rows leaked by older versions (server-wide), then sweep both tiers
+      --reconcile               Also reap stranded file_blocks rows leaked by older versions (server-wide), then sweep
 ```
 
 Global flags:
@@ -6073,7 +6073,6 @@ Orphan remote objects  blocks/<id> objects with no backing record, older than
                        the grace window — the upload succeeded but the commit
                        failed. Objects within the grace window are preserved
                        (they may be freshly uploaded, commit pending).
-Stranded local chunks  Unsynced, local-durable chunks awaiting upload.
 ```
 
 Each class reports an exact count plus a bounded sample of IDs (truncated is

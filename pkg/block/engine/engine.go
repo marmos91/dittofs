@@ -410,14 +410,6 @@ func (bs *Store) DurableExtent(ctx context.Context, payloadID metadata.PayloadID
 	return reporter.DurableExtent(ctx, string(payloadID))
 }
 
-// LocalStore returns nil: the journal-backed local tier is a per-file byte
-// cache, not a content-addressed block.Store, so there is no hash-namespace to
-// sweep. The journal self-manages local segment reclaim (dead-byte GC +
-// pressure eviction) internally, and the remote-tier FileChunk reap/refcount
-// GC runs on gc_block.go. Controlplane's ShareLocalStores() skips a nil local
-// store, so per-share local GC (CollectGarbageLocal) is a natural no-op.
-func (bs *Store) LocalStore() block.Store { return nil }
-
 // LocalDurable reports whether the engine's local store survives a process
 // crash / restart (block.DurabilityReporter). It is the localDurable input to
 // the honest CLOSE/COMMIT commit rule (#1274). When the local store does not

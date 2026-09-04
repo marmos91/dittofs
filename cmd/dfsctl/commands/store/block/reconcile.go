@@ -34,7 +34,6 @@ Four orphan classes are reported:
                          the grace window — the upload succeeded but the commit
                          failed. Objects within the grace window are preserved
                          (they may be freshly uploaded, commit pending).
-  Stranded local chunks  Unsynced, local-durable chunks awaiting upload.
 
 Each class reports an exact count plus a bounded sample of IDs (truncated is
 flagged when the full set is larger than the sample).
@@ -75,7 +74,6 @@ func runBlockStoreReconcile(cmd *cobra.Command, args []string) error {
 			{"Zero-ref records", classSummary(report.ZeroRefRecords)},
 			{"Leaked blocks", classSummary(report.LeakedBlocks)},
 			{"Orphan remote objects", classSummary(report.OrphanRemoteObjects)},
-			{"Stranded local chunks", classSummary(report.StrandedLocalChunks)},
 			{"Block records scanned", fmt.Sprintf("%d", report.BlockRecordsScanned)},
 			{"Remote objects scanned", fmt.Sprintf("%d", report.RemoteObjectsScanned)},
 			{"Grace period", report.GracePeriod.String()},
@@ -86,7 +84,6 @@ func runBlockStoreReconcile(cmd *cobra.Command, args []string) error {
 		printSample(os.Stdout, "Zero-ref records", report.ZeroRefRecords)
 		printSample(os.Stdout, "Leaked blocks", report.LeakedBlocks)
 		printSample(os.Stdout, "Orphan remote objects", report.OrphanRemoteObjects)
-		printSample(os.Stdout, "Stranded local chunks", report.StrandedLocalChunks)
 		return nil
 	}
 }

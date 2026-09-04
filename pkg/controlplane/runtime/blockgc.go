@@ -149,87 +149,7 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, dryRun bool, progress fun
 			r.compactRemoteForEntry(ctx, entry, dryRun, gcDefaults, total)
 		}()
 	}
-	// Sweep the local tier too, so one `gc` invocation reclaims orphaned
-	// chunks on both remote and local stores (#1433).
-	r.runLocalGC(ctx, "", dryRun, total, progress, nil)
 	return total, nil
-}
-
-// collectGarbageLocalFn is a package-level indirection that lets tests
-// intercept the engine.CollectGarbageLocal call. Production code always
-// resolves to engine.CollectGarbageLocal.
-var collectGarbageLocalFn = engine.CollectGarbageLocal
-
-// RunBlockGCLocal sweeps orphaned chunks off every registered share's LOCAL
-// block store. Local stores are isolated per share (architecture invariant
-// #4), so each share is swept against its OWN live set: that share's
-// EnumerateFileChunks plus its snapshot holds. Shares with an in-memory
-// backend (no persistent gc-state root) are skipped — their chunks evaporate
-// on restart, so on-disk reclamation is moot.
-//
-// This is the local-tier counterpart to RunBlockGC (which sweeps the shared
-// remote tier). Together they reclaim deleted-file blocks on both tiers
-// (#1433).
-func (r *Runtime) RunBlockGCLocal(ctx context.Context, dryRun bool) (*engine.GCStats, error) {
-	total := &engine.GCStats{}
-	r.runLocalGC(ctx, "", dryRun, total, nil, nil)
-	return total, nil
-}
-
-// runLocalGC sweeps each share's local block store, accumulating per-share
-// stats into total. When shareFilter is non-empty only that share is swept;
-// otherwise every share with a local store is swept. Shares with an in-memory
-// backend (empty gc-state root) are skipped. Shared by RunBlockGC,
-// RunBlockGCForShare, and RunBlockGCLocal so a single `gc` invocation reclaims
-// orphans on BOTH tiers (#1433).
-// gracePeriod, when non-nil, overrides the configured local-tier sweep grace
-// for this run (including zero). nil leaves the configured/default grace, used
-// by the server-wide and reconcile sweeps.
-func (r *Runtime) runLocalGC(ctx context.Context, shareFilter string, dryRun bool, total *engine.GCStats, progress func(engine.GCStats), gracePeriod *time.Duration) {
-	gcDefaults := r.gcDefaultsSnapshot()
-	for _, entry := range r.sharesSvc.ShareLocalStores() {
-		if shareFilter != "" && entry.ShareName != shareFilter {
-			continue
-		}
-		if entry.GCStateRoot == "" {
-			logger.Debug("local GC: skipping in-memory share (no persistent gc-state)",
-				"share", entry.ShareName)
-			continue
-		}
-		opts := &engine.Options{
-			DryRun:      dryRun,
-			GCStateRoot: entry.GCStateRoot,
-			Shares:      []string{entry.ShareName},
-		}
-		applyGCDefaults(opts, gcDefaults)
-		if gracePeriod != nil {
-			// Operator override for this run only: authoritative grace,
-			// including zero (no age guard).
-			opts.GracePeriod = *gracePeriod
-			opts.GracePeriodSet = true
-		}
-		applyGCProgress(opts, progress)
-		opts.HoldProvider = r.gcHoldForShare(entry.ShareName)
-		logger.Info("local GC: starting",
-			"tier", "local",
-			"share", entry.ShareName,
-			"dryRun", dryRun,
-			"gcStateRoot", entry.GCStateRoot,
-			"gracePeriod", opts.GracePeriod,
-		)
-
-		rec := &perRemoteReconciler{rt: r, shares: []string{entry.ShareName}}
-		stats := collectGarbageLocalFn(ctx, entry.Store, rec, opts)
-		s := accumulateGCStats(total, stats)
-		logger.Info("local GC: complete",
-			"tier", "local",
-			"share", entry.ShareName,
-			"hashesMarked", s.HashesMarked,
-			"objectsSwept", s.ObjectsSwept,
-			"bytesFreed", s.BytesFreed,
-			"errors", s.ErrorCount,
-		)
-	}
 }
 
 // perRemoteReconciler scopes the GC mark phase to the shares pointing at
@@ -349,8 +269,6 @@ func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bo
 			r.compactRemoteForEntry(ctx, entry, dryRun, gcDefaults, total)
 		}()
 	}
-	// Sweep this share's local tier too (#1433).
-	r.runLocalGC(ctx, name, dryRun, total, progress, gracePeriod)
 	return total, nil
 }
 

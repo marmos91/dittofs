@@ -27,7 +27,7 @@ import (
 type BlockGCRuntime interface {
 	// StartBlockGC launches (or returns the already-running) async GC job. When
 	// reconcile is true the run reaps stranded file_blocks rows across all
-	// shares before sweeping both tiers; otherwise it runs the share-scoped
+	// shares before sweeping; otherwise it runs the share-scoped
 	// sweep. The run executes on a context detached from the request, so a
 	// request/client timeout cannot abort the (potentially multi-minute) mark
 	// phase (#1433).

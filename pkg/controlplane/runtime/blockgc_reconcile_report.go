@@ -22,23 +22,12 @@ import (
 func (r *Runtime) ReconcileReport(ctx context.Context) (*engine.ReconcileReport, error) {
 	grace := r.reconcileGracePeriod()
 
-	// Per-share local views (class 4), indexed by share. Only stores exposing
-	// ListUnsynced (a durable local tier) contribute; in-memory backends have
-	// nothing to strand.
-	localsByShare := make(map[string][]engine.ReconcileLocalView)
-	for _, le := range r.sharesSvc.ShareLocalStores() {
-		if lv, ok := le.Store.(engine.ReconcileLocalView); ok {
-			localsByShare[le.ShareName] = append(localsByShare[le.ShareName], lv)
-		}
-	}
-
 	total := &engine.ReconcileReport{}
 	for _, entry := range r.sharesSvc.DistinctRemoteStores() {
 		if err := ctx.Err(); err != nil {
 			return total, err
 		}
 		views := make([]engine.ReconcileMetaView, 0, len(entry.Shares))
-		var locals []engine.ReconcileLocalView
 		for _, shareName := range entry.Shares {
 			mds, err := r.GetMetadataStoreForShare(shareName)
 			if err != nil {
@@ -56,7 +45,6 @@ func (r *Runtime) ReconcileReport(ctx context.Context) (*engine.ReconcileReport,
 				continue
 			}
 			views = append(views, view)
-			locals = append(locals, localsByShare[shareName]...)
 		}
 		// No usable metadata view for any share on this remote: metaBlockIDs
 		// would be empty, so EVERY aged remote object would be misreported as a
@@ -71,7 +59,7 @@ func (r *Runtime) ReconcileReport(ctx context.Context) (*engine.ReconcileReport,
 		// A remote that cannot hold packed blocks (no RemoteBlockStore) still
 		// gets classes 1/2 scanned; class 3 is skipped with a nil remote.
 		rbs, _ := entry.Store.(remote.RemoteBlockStore)
-		rep, err := engine.Reconcile(ctx, views, rbs, locals, engine.ReconcileOptions{GracePeriod: grace})
+		rep, err := engine.Reconcile(ctx, views, rbs, engine.ReconcileOptions{GracePeriod: grace})
 		if err != nil {
 			return total, err
 		}
@@ -82,7 +70,6 @@ func (r *Runtime) ReconcileReport(ctx context.Context) (*engine.ReconcileReport,
 		"zeroRefRecords", total.ZeroRefRecords.Count,
 		"leakedBlocks", total.LeakedBlocks.Count,
 		"orphanRemoteObjects", total.OrphanRemoteObjects.Count,
-		"strandedLocalChunks", total.StrandedLocalChunks.Count,
 		"blockRecordsScanned", total.BlockRecordsScanned,
 		"remoteObjectsScanned", total.RemoteObjectsScanned,
 		"gracePeriod", total.GracePeriod,
