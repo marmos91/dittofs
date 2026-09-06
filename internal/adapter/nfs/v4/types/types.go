@@ -135,6 +135,13 @@ type CompoundContext struct {
 	// BIND_CONN_TO_SESSION and connection draining checks.
 	ConnectionID uint64
 
+	// CacheReply is set by the v4.0 dispatcher when the COMPOUND executed an
+	// operation that must not run twice, so the adapter records its reply in the
+	// duplicate request cache and answers a retransmission from there. v4.1 and
+	// v4.2 get exactly-once semantics from the session slot table and never set
+	// it.
+	CacheReply bool
+
 	// RequestDigest is a fingerprint of the full COMPOUND request body,
 	// computed once in ProcessCompound. The v4.1 SEQUENCE path uses it as the
 	// slot request fingerprint to detect false retries (RFC 8881
