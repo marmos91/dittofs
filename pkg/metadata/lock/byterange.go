@@ -374,6 +374,7 @@ func (lm *Manager) AddUnifiedLock(handleKey string, lock *UnifiedLock) error {
 	// type is an upgrade or downgrade, handled by the exact-match update above.
 	if !lock.IsLease() && !lock.IsDelegation() {
 		merged, kept := lock, existing
+		var absorbed []*UnifiedLock
 		for grew := true; grew; {
 			grew = false
 			var rest []*UnifiedLock
@@ -386,17 +387,32 @@ func (lm *Manager) AddUnifiedLock(handleKey string, lock *UnifiedLock) error {
 					continue
 				}
 				merged = mergeTwoLocks(merged, el)
-				lm.deleteUnifiedLockLocked(el)
+				absorbed = append(absorbed, el)
 				grew = true
 			}
 			kept = rest
 		}
-		// kept is existing minus every absorbed row, so a shorter slice means
-		// the new range joined at least one of them.
-		if len(kept) < len(existing) {
+		if len(absorbed) > 0 {
 			merged.AcquiredAt = time.Now()
-			lm.unifiedLocks[handleKey] = append(kept, merged)
+			final := append(kept, merged)
+			lm.unifiedLocks[handleKey] = final
 			lm.reindexHandleLocked(handleKey, existing)
+
+			// A persisted record is keyed by lock ID, and nothing stops a caller
+			// handing the same ID to more than one live row, so an absorbed row's
+			// ID may still belong to a row that survives. Drop only the records no
+			// survivor answers to: deleting by ID alone would strip the
+			// persistence out from under a lock that is still held, which surfaces
+			// after a restart as a lock that silently no longer exists.
+			survivors := make(map[string]struct{}, len(final))
+			for _, el := range final {
+				survivors[el.ID] = struct{}{}
+			}
+			for _, el := range absorbed {
+				if _, alive := survivors[el.ID]; !alive {
+					lm.deleteUnifiedLockLocked(el)
+				}
+			}
 			lm.persistUnifiedLockLocked(merged)
 			return nil
 		}

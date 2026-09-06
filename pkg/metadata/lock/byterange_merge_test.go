@@ -1,6 +1,9 @@
 package lock
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // Adjacent and overlapping byte-range locks held by one lock-owner on one file
 // are a single logical lock (RFC 7530 Section 9.3). AddUnifiedLock must fold a
@@ -165,4 +168,57 @@ func TestAddUnifiedLock_MergeScopedToOwnerAndType(t *testing.T) {
 			t.Fatalf("downgraded lock = [%d,%d] type %v, want [25,75] shared", got.Offset, got.Length, got.Type)
 		}
 	})
+}
+
+// Persisted records are keyed by lock ID, and nothing stops a caller reusing one
+// ID for two live rows — a lock type change leaves the old row in place, so a
+// second row can arrive carrying the same ID. Absorbing one of those two must
+// not delete the record the other still depends on, or the survivor is a lock
+// that is held in memory and simply gone after a restart.
+func TestAddUnifiedLock_MergeKeepsRecordOfSameIDSurvivor(t *testing.T) {
+	t.Parallel()
+
+	store := newMockLockStore()
+	lm := NewManager()
+	lm.SetLockStore(store)
+	lm.SetShareName("share-dup")
+
+	add := func(id string, offset, length uint64, lt LockType) {
+		t.Helper()
+		l := mergeOwnerLock("owner-1", offset, length, lt)
+		l.ID = id
+		if err := lm.AddUnifiedLock(mergeHandle, l); err != nil {
+			t.Fatalf("AddUnifiedLock(%s, [%d,%d)): %v", id, offset, offset+length, err)
+		}
+	}
+	owner := LockOwner{OwnerID: "owner-1", ClientID: "client-1"}
+
+	// One row under "dup", promoted so a later shared row cannot merge with it.
+	add("dup", 0, 40, LockTypeShared)
+	if _, err := lm.UpgradeLock(mergeHandle, owner, 0, 40); err != nil {
+		t.Fatalf("UpgradeLock: %v", err)
+	}
+	// A second live row reusing that same ID: different type, so no merge and no
+	// exact-range update — it is appended alongside.
+	add("dup", 20, 40, LockTypeShared)
+	if got := len(lm.ListUnifiedLocks(mergeHandle)); got != 2 {
+		t.Fatalf("expected 2 rows sharing one ID, got %d", got)
+	}
+
+	// Absorb only the shared one. The exclusive row still answers to "dup".
+	add("other", 50, 20, LockTypeShared)
+
+	snap, err := store.ListLocks(context.Background(), LockQuery{ShareName: "share-dup"})
+	if err != nil {
+		t.Fatalf("ListLocks: %v", err)
+	}
+	stored := map[string]bool{}
+	for _, pl := range snap {
+		stored[pl.ID] = true
+	}
+	for id := range liveManagerPersistIDs(lm, mergeHandle) {
+		if !stored[id] {
+			t.Fatalf("in-memory lock %s has no store record after the merge", id)
+		}
+	}
 }
