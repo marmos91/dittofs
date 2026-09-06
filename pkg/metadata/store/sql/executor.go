@@ -10,9 +10,9 @@
 // that genuinely differ at runtime. SQL *text* mostly does not: ?N versus $N,
 // NOW() versus CURRENT_TIMESTAMP and the handful of rewritten queries stay as
 // per-dialect constants, because moving a two-line difference into an
-// indirection would buy nothing. The one text difference that does cross is
-// Dialect.Placeholder, for the statements assembled at runtime from a
-// variable-length list, which have no constant to bake. The consequence to be
+// indirection would buy nothing. The text differences that do cross are
+// Dialect.Placeholder and Dialect.Now, for the statements the shared bodies
+// assemble themselves and so have no constant to bake. The consequence to be
 // honest about is that this merges logic, not SQL: what costs us maintenance is
 // hand-maintained control flow duplicated around the queries, not the query text.
 //

@@ -11,12 +11,14 @@ package sql
 //     statements, because moving a two-line difference into an indirection
 //     would buy nothing.
 //
-//     Placeholder is the exception, and only for the statements that have no
-//     constant to bake: a manifest delta binds one parameter per changed
-//     offset, so its IN-lists and multi-row VALUES groups are assembled at
-//     runtime and there is nothing for a dialect to spell in advance. Reach
-//     for it only there — a statement whose shape is known writes its own
-//     placeholders.
+//     Placeholder and Now are the exceptions, and only for the statements
+//     that have no constant to bake: a manifest delta binds one parameter per
+//     changed offset, so its IN-lists and multi-row VALUES groups are
+//     assembled at runtime and there is nothing for a dialect to spell in
+//     advance. They also carry the tables whose whole statement set is
+//     identical bar those two fragments, which spell it once in the shared
+//     body rather than twice in the dialects. Everything else stays in the
+//     statement structs.
 //
 //   - Behavioural divergence — error classification, and whether an error is
 //     the driver's empty-result sentinel. Those are genuinely per-dialect
@@ -36,9 +38,15 @@ type Dialect interface {
 	IsNoRows(err error) bool
 
 	// Placeholder renders the bind marker for the i'th parameter, 1-based:
-	// "?1" for sqlite, "$1" for postgres. Only for statements assembled at
-	// runtime from a variable-length list; see the type doc.
+	// "?1" for sqlite, "$1" for postgres. Only for statements the shared
+	// bodies assemble themselves; see the type doc.
 	Placeholder(i int) string
+
+	// Now renders the clock expression that stamps a timestamp column:
+	// CURRENT_TIMESTAMP for sqlite, NOW() for postgres. Like Placeholder it is
+	// a fragment, not a statement, for the statements that are assembled at
+	// runtime rather than baked into a constant.
+	Now() string
 
 	// MapError translates a driver error into the metadata.ExportError the
 	// callers switch on, tagging it with the operation name and the path it
