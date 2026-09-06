@@ -182,6 +182,9 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 	// Open stateids (type 0x01) use openStateByOther.
 	openState, exists := sm.openStateByOther[stateid.Other]
 	if !exists {
+		if sm.isExpiredStateidLocked(stateid.Other) {
+			return nil, ErrExpired
+		}
 		if !sm.isCurrentEpoch(stateid.Other) {
 			return nil, &NFS4StateError{
 				Status:  types.NFS4ERR_STALE_STATEID,
@@ -247,6 +250,9 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 func (sm *StateManager) validateDelegStateid(stateid *types.Stateid4, currentFH []byte) (*OpenState, error) {
 	deleg, exists := sm.delegByOther[stateid.Other]
 	if !exists {
+		if sm.isExpiredStateidLocked(stateid.Other) {
+			return nil, ErrExpired
+		}
 		if !sm.isCurrentEpoch(stateid.Other) {
 			return nil, &NFS4StateError{
 				Status:  types.NFS4ERR_STALE_STATEID,
@@ -313,6 +319,9 @@ func (sm *StateManager) validateDelegStateid(stateid *types.Stateid4, currentFH 
 func (sm *StateManager) validateLockStateid(stateid *types.Stateid4, currentFH []byte) (*OpenState, error) {
 	lockState, exists := sm.lockStateByOther[stateid.Other]
 	if !exists {
+		if sm.isExpiredStateidLocked(stateid.Other) {
+			return nil, ErrExpired
+		}
 		if !sm.isCurrentEpoch(stateid.Other) {
 			return nil, &NFS4StateError{
 				Status:  types.NFS4ERR_STALE_STATEID,
