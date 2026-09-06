@@ -204,6 +204,30 @@ fi
 assert_output "blacklist row now new" "- LOOK1"
 assert_output "empty table reported" "Loaded 0 known failures"
 
+# A run in which every test skipped emits no FAILURE line. Without a guard it is
+# indistinguishable from a clean pass, which is how a scoped run that never
+# executed its targets grades green.
+run_case "all tests skipped is refused" 1 <<'EOF'
+Command line asked for 2 of 689 tests
+**************************************************
+LOCK20   st_lock.testLockMerge                                    : OMIT
+LOCKMRG  st_lock.testMergeRanges                                  : OMIT
+**************************************************
+Of those: 2 Skipped, 0 Failed, 0 Warned, 0 Passed
+EOF
+assert_output "skip refusal names the cause" "every test was skipped"
+
+# A partial skip still has real results, so the grader keeps grading; refusing
+# the scoped case is run-pynfs.sh's job, since only it knows what was requested.
+run_case "partial skip with a real pass still grades" 0 <<'EOF'
+Command line asked for 2 of 689 tests
+**************************************************
+LOCK20   st_lock.testLockMerge                                    : OMIT
+LOCKMRG  st_lock.testMergeRanges                                  : PASS
+**************************************************
+Of those: 1 Skipped, 0 Failed, 0 Warned, 1 Passed
+EOF
+
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then
     echo "PASS: all parse-results.sh grading tests passed"
