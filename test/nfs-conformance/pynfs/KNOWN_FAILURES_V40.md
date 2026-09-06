@@ -146,9 +146,6 @@ Categories:
 | RDDR7 | bug | READDIR cookie and attribute-request validation | #2336 |
 | RDDR8 | bug | READDIR cookie and attribute-request validation | #2336 |
 | RDDR9 | bug | READDIR cookie and attribute-request validation | #2336 |
-| SEC2 | bug | SECINFO validation | #2339 |
-| SEC3 | bug | SECINFO validation | #2339 |
-| SEC5 | bug | SECINFO validation | #2339 |
 | CLOSE4 | bug | bad/old/stale stateid accepted | #2341 |
 | CLOSE5 | bug | bad/old/stale stateid accepted | #2341 |
 | CLOSE6 | bug | bad/old/stale stateid accepted | #2341 |
