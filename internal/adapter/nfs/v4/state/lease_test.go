@@ -428,3 +428,47 @@ func TestLeaseRenewAfterStop(t *testing.T) {
 	// Renew after stop should not panic
 	ls.Renew()
 }
+
+// A re-SETCLIENTID reuses the client ID, so SETCLIENTID_CONFIRM must confirm the
+// record that already owns that ID rather than installing a second one beside
+// it. Two records under one ID leave whichever the maps do not point at holding
+// a lease timer nothing renews, and when that timer fires it reaps the client on
+// its original schedule no matter how often RENEW refreshed the live lease.
+func TestRenewLease_SurvivesReSetClientID(t *testing.T) {
+	const lease = time.Second
+
+	sm := NewStateManager(lease)
+	verifier := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+
+	setClientID := func(port string) uint64 {
+		t.Helper()
+		callback := CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "10.0.0.1.8." + port}
+		result, err := sm.SetClientID("client-resetclientid", verifier, callback, "10.0.0.1:1234")
+		if err != nil {
+			t.Fatalf("SetClientID: %v", err)
+		}
+		if err := sm.ConfirmClientID(result.ClientID, result.ConfirmVerifier); err != nil {
+			t.Fatalf("ConfirmClientID: %v", err)
+		}
+		return result.ClientID
+	}
+
+	clientID := setClientID("1")
+	// Same verifier, new callback: RFC 7530 Case 5, which reuses the client ID.
+	if got := setClientID("2"); got != clientID {
+		t.Fatalf("re-SETCLIENTID returned client ID %d, want the reused %d", got, clientID)
+	}
+
+	// Renew inside the lease, then check the client is still live past the point
+	// where the first confirm's timer was originally due to fire.
+	for _, wait := range []time.Duration{lease * 6 / 10, lease * 6 / 10} {
+		time.Sleep(wait)
+		if err := sm.RenewLease(clientID); err != nil {
+			t.Fatalf("RenewLease after %v: %v", wait, err)
+		}
+	}
+
+	if sm.GetClient(clientID) == nil {
+		t.Fatal("client was reaped despite being renewed within its lease")
+	}
+}
