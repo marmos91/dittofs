@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"errors"
 	"io"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
@@ -131,7 +132,8 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 	setAttrs, _, fattr4Err := attrs.DecodeFattr4ToSetAttrs(reader)
 	if fattr4Err != nil {
 		// Check for typed NFS4 error (e.g., ATTRNOTSUPP, BADOWNER)
-		if nfsErr, ok := fattr4Err.(attrs.NFS4StatusError); ok {
+		var nfsErr attrs.NFS4StatusError
+		if errors.As(fattr4Err, &nfsErr) {
 			status := nfsErr.NFS4Status()
 			return &types.CompoundResult{
 				Status: status,

@@ -180,14 +180,28 @@ func DecodeFattr4ToSetAttrs(reader io.Reader) (*metadata.SetAttrs, []uint32, err
 			continue
 		}
 
-		// Check if this attribute is writable
+		// An attribute the server knows but does not let a client write is a
+		// read-only attribute, which is a malformed request rather than a gap
+		// in the server: NFS4ERR_INVAL. NFS4ERR_ATTRNOTSUPP is reserved for
+		// attributes the server does not implement at all (RFC 7530 Section
+		// 5.5 and Section 13.1.11.1).
 		if !isWritableAttr(bit) {
+			if IsBitSet(SupportedAttrs(), bit) {
+				return nil, nil, &readOnlyAttrError{bit: bit}
+			}
 			return nil, nil, &attrNotSuppError{bit: bit}
 		}
 
 		if err := decodeSingleSetAttr(attrReader, bit, setAttrs); err != nil {
 			return nil, nil, err
 		}
+	}
+
+	// attr_vals holds exactly the values the bitmap names. Bytes left over are
+	// values for attributes that were never requested, which makes the encoding
+	// self-inconsistent and the whole fattr4 undecodable.
+	if attrReader.Len() != 0 {
+		return nil, nil, &badXDRError{msg: fmt.Sprintf("fattr4 attr_vals has %d trailing bytes", attrReader.Len())}
 	}
 
 	return setAttrs, bitmap, nil
@@ -233,6 +247,12 @@ func decodeSingleSetAttr(reader io.Reader, bit uint32, setAttrs *metadata.SetAtt
 		if err != nil {
 			return fmt.Errorf("decode FATTR4_OWNER: %w", err)
 		}
+		// An empty principal names nobody: there is no local identity it could
+		// fail to map to, so it is a malformed argument rather than the
+		// untranslatable-name case NFS4ERR_BADOWNER describes.
+		if ownerStr == "" {
+			return &invalidAttrError{msg: "empty owner principal"}
+		}
 		uid, err := ParseOwnerString(ownerStr)
 		if err != nil {
 			return &badOwnerError{owner: ownerStr}
@@ -244,6 +264,9 @@ func decodeSingleSetAttr(reader io.Reader, bit uint32, setAttrs *metadata.SetAtt
 		groupStr, err := xdr.DecodeString(reader)
 		if err != nil {
 			return fmt.Errorf("decode FATTR4_OWNER_GROUP: %w", err)
+		}
+		if groupStr == "" {
+			return &invalidAttrError{msg: "empty owner_group principal"}
 		}
 		gid, err := ParseGroupString(groupStr)
 		if err != nil {
@@ -310,6 +333,12 @@ func decodeNFSTime4(reader io.Reader) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, fmt.Errorf("decode nfstime4 nseconds: %w", err)
 	}
+	// nfstime4.nseconds is a fraction of a second, so it only spans 0 to
+	// 999999999; a larger value would silently roll the time forward whole
+	// seconds instead of naming the instant the client meant.
+	if nseconds > 999999999 {
+		return time.Time{}, &invalidAttrError{msg: fmt.Sprintf("nfstime4 nseconds out of range: %d", nseconds)}
+	}
 	return time.Unix(int64(seconds), int64(nseconds)), nil
 }
 
@@ -342,6 +371,36 @@ func (e *invalidModeError) Error() string {
 
 // NFS4Status returns the NFS4 error code for this error.
 func (e *invalidModeError) NFS4Status() uint32 {
+	return v4types.NFS4ERR_INVAL
+}
+
+// readOnlyAttrError represents an NFS4ERR_INVAL condition raised by a SETATTR
+// naming an attribute the server maintains but does not let a client write.
+type readOnlyAttrError struct {
+	bit uint32
+}
+
+func (e *readOnlyAttrError) Error() string {
+	return fmt.Sprintf("attribute %d is read-only", e.bit)
+}
+
+// NFS4Status returns the NFS4 error code for this error.
+func (e *readOnlyAttrError) NFS4Status() uint32 {
+	return v4types.NFS4ERR_INVAL
+}
+
+// invalidAttrError represents an NFS4ERR_INVAL condition raised by an attribute
+// value that decodes cleanly but names something the protocol does not allow.
+type invalidAttrError struct {
+	msg string
+}
+
+func (e *invalidAttrError) Error() string {
+	return e.msg
+}
+
+// NFS4Status returns the NFS4 error code for this error.
+func (e *invalidAttrError) NFS4Status() uint32 {
 	return v4types.NFS4ERR_INVAL
 }
 

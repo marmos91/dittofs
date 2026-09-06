@@ -190,7 +190,43 @@ type PseudoFSAttrSource interface {
 // Supported Attributes
 // ============================================================================
 
-// SupportedAttrs returns the bitmap of all attributes this server supports.
+// highestAttrForMinorVersion gives the largest attribute number each minor
+// version defines: 55 (mounted_on_fileid) for 4.0, 76 (fs_charset_cap) for 4.1,
+// 82 (xattr_support) for 4.2. A client can only name attributes its own minor
+// version defines, so anything above its entry is noise to it and must be kept
+// out of the supported set it is shown.
+var highestAttrForMinorVersion = [...]uint32{0: 55, 1: 76, 2: 82}
+
+// SupportedAttrsFor returns the attributes this server supports that the given
+// COMPOUND minor version can express.
+//
+// FATTR4_SUPPORTED_ATTRS is the client's contract for which attribute numbers
+// it may name, so it must not carry numbers that were only defined by a later
+// minor version: a 4.0 client has no decoder for FATTR4_XATTR_SUPPORT and no
+// way to act on it, and the ops that would honour such an attribute are
+// themselves gated on the minor version in dispatchOne.
+func SupportedAttrsFor(minorVersion uint32) []uint32 {
+	bitmap := SupportedAttrs()
+
+	highest := highestAttrForMinorVersion[len(highestAttrForMinorVersion)-1]
+	if int(minorVersion) < len(highestAttrForMinorVersion) {
+		highest = highestAttrForMinorVersion[minorVersion]
+	}
+
+	for bit := highest + 1; bit < uint32(len(bitmap))*32; bit++ {
+		ClearBit(bitmap, bit)
+	}
+	// Drop words that are now entirely empty so the encoded bitmap4 is no
+	// longer than the attributes it carries.
+	for len(bitmap) > 0 && bitmap[len(bitmap)-1] == 0 {
+		bitmap = bitmap[:len(bitmap)-1]
+	}
+	return bitmap
+}
+
+// SupportedAttrs returns the bitmap of all attributes this server supports,
+// across every minor version. Callers answering a client request want
+// SupportedAttrsFor, which narrows this to what that client can express.
 //
 // This includes all mandatory attributes plus the recommended attributes
 // needed for pseudo-fs browsing and file operations.
@@ -241,32 +277,63 @@ func SupportedAttrs() []uint32 {
 	// FATTR4_SUPPORTED_ATTRS because the Linux NFSv4 client gates whether it
 	// sends TIME_*_SET in SETATTR on their presence here: dropping them makes
 	// the client issue an empty SETATTR for utimensat()/touch, so the times
-	// silently never change (#1152). GETATTR of these write-only bits is
-	// handled as a no-op by the encoder so advertising them is safe.
+	// silently never change (#1152). A GETATTR naming one of these bits is
+	// rejected with NFS4ERR_INVAL rather than answered.
 
 	// NFSv4.1 exclusive create attributes (word 2)
 	SetBit(&bitmap, FATTR4_SUPPATTR_EXCLCREAT)
 
-	// NFSv4.2 / RFC 7862 CLONE block size (word 2, bit 13). Advertising this
-	// reports the preferred/required alignment for CLONE source/destination
-	// offsets and count. Like FATTR4_XATTR_SUPPORT it is advertised
-	// unconditionally; pre-4.2 clients never query bit 77 and dispatchOne gates
-	// the CLONE op itself to minorversion 2 (NFS4ERR_NOTSUPP otherwise).
+	// NFSv4.2 / RFC 7862 CLONE block size (word 2, bit 13). Reports the
+	// preferred/required alignment for CLONE source/destination offsets and
+	// count. SupportedAttrsFor keeps it out of what a pre-4.2 client is shown,
+	// and dispatchOne gates the CLONE op itself to minorversion 2.
 	SetBit(&bitmap, FATTR4_CLONE_BLKSIZE)
 
 	// NFSv4.2 / RFC 8276 extended attribute support (word 2, bit 18).
 	// Advertising this tells the Linux client that getfattr/setfattr over the
 	// user.* namespace is available, so it issues the RFC 8276 xattr ops.
-	//
-	// This bit is advertised unconditionally (independent of the COMPOUND's
-	// minor version). Per RFC 8276 §8.4 FATTR4_XATTR_SUPPORT is only meaningful
-	// to minorversion-2 clients, and v4.0/v4.1 clients do not query bit 82, so a
-	// constant supported-attrs bitmap is harmless. dispatchOne still gates the
-	// xattr ops themselves to minorversion 2 (NFS4ERR_NOTSUPP otherwise), so a
-	// pre-4.2 client can never act on this bit.
+	// Per RFC 8276 §8.4 it is only meaningful to minorversion-2 clients, so
+	// SupportedAttrsFor withholds it from earlier ones; dispatchOne gates the
+	// xattr ops themselves to minorversion 2 (NFS4ERR_NOTSUPP otherwise).
 	SetBit(&bitmap, FATTR4_XATTR_SUPPORT)
 
 	return bitmap
+}
+
+// writeOnlyAttrs are settable but have no read representation (RFC 7530
+// Section 5.5): the server accepts them in SETATTR and must refuse to produce
+// a value for them anywhere else.
+var writeOnlyAttrs = []uint32{FATTR4_TIME_ACCESS_SET, FATTR4_TIME_MODIFY_SET}
+
+// HasWriteOnlyAttr reports whether a requested bitmap names a set-only
+// attribute. GETATTR, VERIFY and NVERIFY answer such a request with
+// NFS4ERR_INVAL (RFC 7530 Sections 5.5, 16.15.5 and 16.35.5).
+func HasWriteOnlyAttr(requested []uint32) bool {
+	for _, bit := range writeOnlyAttrs {
+		if IsBitSet(requested, bit) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasUnsupportedAttr reports whether a requested bitmap names an attribute
+// outside the supported set. VERIFY and NVERIFY answer such a request with
+// NFS4ERR_ATTRNOTSUPP; GETATTR must not, and drops the bit instead.
+func HasUnsupportedAttr(requested, supported []uint32) bool {
+	for i, word := range requested {
+		if i >= len(supported) {
+			// Beyond the supported bitmap every bit is implicitly zero.
+			if word != 0 {
+				return true
+			}
+			continue
+		}
+		if word&^supported[i] != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // ============================================================================
@@ -283,25 +350,24 @@ func SupportedAttrs() []uint32 {
 // Only attributes that are both requested and supported are encoded.
 // Attribute values are written in ascending bit-number order within the
 // opaque data block.
-// writeOnlyResponseAttrs are advertised as settable in FATTR4_SUPPORTED_ATTRS
-// but have no read representation: a GETATTR must never echo or encode them.
-// They are settable-only (RFC 7530 Section 5.7) and are listed in SUPPORTED so
-// the Linux client sends them in SETATTR (see #1152), but a GETATTR response
-// drops them so no value is encoded for a non-existent reader.
-var writeOnlyResponseAttrs = []uint32{FATTR4_TIME_ACCESS_SET, FATTR4_TIME_MODIFY_SET}
-
-// responseAttrBitmap returns the attributes to encode in a GETATTR response:
-// the requested∩supported set with the write-only settable bits removed.
+// responseAttrBitmap returns the attributes to encode in an attribute
+// response: the requested∩supported set, minus the settable-only bits.
+//
+// GETATTR, VERIFY and NVERIFY refuse a request naming a settable-only
+// attribute before reaching here. READDIR does not — it carries whatever
+// bitmap the client attached to it and has no way to report a per-attribute
+// error — so the encoder still drops those bits rather than reaching an
+// attribute it has no value to write.
 func responseAttrBitmap(requested, supported []uint32) []uint32 {
 	bitmap := Intersect(requested, supported)
-	for _, bit := range writeOnlyResponseAttrs {
+	for _, bit := range writeOnlyAttrs {
 		ClearBit(bitmap, bit)
 	}
 	return bitmap
 }
 
-func EncodePseudoFSAttrs(buf *bytes.Buffer, requested []uint32, node PseudoFSAttrSource) error {
-	supported := SupportedAttrs()
+func EncodePseudoFSAttrs(buf *bytes.Buffer, requested []uint32, minorVersion uint32, node PseudoFSAttrSource) error {
+	supported := SupportedAttrsFor(minorVersion)
 	responseBitmap := responseAttrBitmap(requested, supported)
 
 	// Encode the response bitmap
@@ -320,7 +386,7 @@ func EncodePseudoFSAttrs(buf *bytes.Buffer, requested []uint32, node PseudoFSAtt
 			continue
 		}
 
-		if err := encodeSingleAttr(&attrData, bit, node); err != nil {
+		if err := encodeSingleAttr(&attrData, bit, minorVersion, node); err != nil {
 			return fmt.Errorf("encode attr bit %d: %w", bit, err)
 		}
 	}
@@ -348,11 +414,11 @@ func nonZeroFileID(id uint64) uint64 {
 }
 
 // encodeSingleAttr encodes a single attribute value into the buffer.
-func encodeSingleAttr(buf *bytes.Buffer, bit uint32, node PseudoFSAttrSource) error {
+func encodeSingleAttr(buf *bytes.Buffer, bit uint32, minorVersion uint32, node PseudoFSAttrSource) error {
 	switch bit {
 	case FATTR4_SUPPORTED_ATTRS:
 		// Encode the supported attributes bitmap
-		return EncodeBitmap4(buf, SupportedAttrs())
+		return EncodeBitmap4(buf, SupportedAttrsFor(minorVersion))
 
 	case FATTR4_TYPE:
 		// nfs_ftype4 (uint32)
@@ -539,15 +605,6 @@ func exclcreatAttrs() []uint32 {
 // Real File Attribute Encoding
 // ============================================================================
 
-// SupportedRealAttrs returns the bitmap of all attributes supported for real files.
-//
-// This is the same as SupportedAttrs() -- the pseudo-fs and real-FS share the
-// same supported attribute set. The function exists for clarity in handler code
-// that distinguishes pseudo-fs from real-FS attribute encoding.
-func SupportedRealAttrs() []uint32 {
-	return SupportedAttrs()
-}
-
 // EncodeRealFileAttrs encodes the requested attributes for a real file.
 //
 // This mirrors EncodePseudoFSAttrs but sources values from a metadata.File
@@ -557,11 +614,12 @@ func SupportedRealAttrs() []uint32 {
 // Parameters:
 //   - buf: Output buffer to write the encoded fattr4 (bitmap + opaque data)
 //   - requested: Client-requested attribute bitmap
+//   - minorVersion: COMPOUND minor version, bounding the attributes reported
 //   - file: The real file metadata
 //   - handle: The file handle (used for FILEHANDLE and FILEID attributes)
 //   - fsStats: Optional filesystem statistics for SPACE_TOTAL/FREE/AVAIL (can be nil)
-func EncodeRealFileAttrs(buf *bytes.Buffer, requested []uint32, file *metadata.File, handle metadata.FileHandle, fsStats ...*metadata.FilesystemStatistics) error {
-	supported := SupportedRealAttrs()
+func EncodeRealFileAttrs(buf *bytes.Buffer, requested []uint32, minorVersion uint32, file *metadata.File, handle metadata.FileHandle, fsStats ...*metadata.FilesystemStatistics) error {
+	supported := SupportedAttrsFor(minorVersion)
 	responseBitmap := responseAttrBitmap(requested, supported)
 
 	// Encode the response bitmap
@@ -585,7 +643,7 @@ func EncodeRealFileAttrs(buf *bytes.Buffer, requested []uint32, file *metadata.F
 			continue
 		}
 
-		if err := encodeRealFileAttr(&attrData, bit, file, handle, stats); err != nil {
+		if err := encodeRealFileAttr(&attrData, bit, minorVersion, file, handle, stats); err != nil {
 			return fmt.Errorf("encode attr bit %d: %w", bit, err)
 		}
 	}
@@ -599,10 +657,10 @@ func EncodeRealFileAttrs(buf *bytes.Buffer, requested []uint32, file *metadata.F
 }
 
 // encodeRealFileAttr encodes a single attribute value for a real file.
-func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, file *metadata.File, handle metadata.FileHandle, fsStats *metadata.FilesystemStatistics) error {
+func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, minorVersion uint32, file *metadata.File, handle metadata.FileHandle, fsStats *metadata.FilesystemStatistics) error {
 	switch bit {
 	case FATTR4_SUPPORTED_ATTRS:
-		return EncodeBitmap4(buf, SupportedRealAttrs())
+		return EncodeBitmap4(buf, SupportedAttrsFor(minorVersion))
 
 	case FATTR4_TYPE:
 		return xdr.WriteUint32(buf, MapFileTypeToNFS4(file.Type))

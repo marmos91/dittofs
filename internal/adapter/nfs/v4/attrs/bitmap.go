@@ -41,19 +41,27 @@ func EncodeBitmap4(buf *bytes.Buffer, bitmap []uint32) error {
 	return nil
 }
 
+// maxBitmap4Words caps the words accepted in a bitmap4 so a hostile length
+// prefix cannot drive an unbounded allocation. It has to leave room well past
+// the highest attribute the protocol defines, because a client may name an
+// attribute number the server has never heard of: GETATTR answers such a
+// request by returning nothing for it, which it can only do after decoding the
+// bitmap that carries it. 64 words covers attribute numbers up to 2047.
+const maxBitmap4Words = 64
+
 // DecodeBitmap4 decodes a variable-length bitmap from XDR format.
 //
 // Reads the word count first, then each uint32 word. Rejects bitmaps
-// with more than 8 words to prevent memory exhaustion from malicious input.
+// with more than maxBitmap4Words words to prevent memory exhaustion from
+// malicious input.
 func DecodeBitmap4(reader io.Reader) ([]uint32, error) {
 	numWords, err := xdr.DecodeUint32(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode bitmap4 length: %w", err)
 	}
 
-	// Reject unreasonably large bitmaps (8 words = 256 attribute bits)
-	if numWords > 8 {
-		return nil, fmt.Errorf("bitmap4 too large: %d words (max 8)", numWords)
+	if numWords > maxBitmap4Words {
+		return nil, fmt.Errorf("bitmap4 too large: %d words (max %d)", numWords, maxBitmap4Words)
 	}
 
 	bitmap := make([]uint32, numWords)
