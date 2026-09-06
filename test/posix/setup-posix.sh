@@ -159,15 +159,16 @@ fi
 DITTOFS_BIN="$REPO_ROOT/dfs"
 DITTOFSCTL_BIN="$REPO_ROOT/dfsctl"
 
-if [[ ! -x "$DITTOFS_BIN" ]]; then
-    log_info "Building dfs..."
-    (cd "$REPO_ROOT" && go build -o dfs ./cmd/dfs)
-fi
+# Always rebuild. Building only when the binary is absent silently serves a
+# stale one to every later run, so a suite reports on code that is not the code
+# under test — a fix reads as not working, and a regression reads as absent.
+# Go's build cache makes the no-change case cheap enough that skipping is not
+# worth the failure mode.
+log_info "Building dfs..."
+(cd "$REPO_ROOT" && go build -o dfs ./cmd/dfs)
 
-if [[ ! -x "$DITTOFSCTL_BIN" ]]; then
-    log_info "Building dfsctl..."
-    (cd "$REPO_ROOT" && go build -o dfsctl ./cmd/dfsctl)
-fi
+log_info "Building dfsctl..."
+(cd "$REPO_ROOT" && go build -o dfsctl ./cmd/dfsctl)
 
 # Clean up any existing state
 cleanup_existing() {
