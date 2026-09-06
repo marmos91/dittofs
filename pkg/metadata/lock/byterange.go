@@ -183,6 +183,16 @@ func mergeRanges(locks []*UnifiedLock) []*UnifiedLock {
 	return result
 }
 
+// locksTouch reports whether two ranges overlap or abut, so together they cover
+// one contiguous region. canMerge assumes its arguments are sorted by offset;
+// this orders them first, for callers that hold an unsorted pair.
+func locksTouch(a, b *UnifiedLock) bool {
+	if a.Offset <= b.Offset {
+		return canMerge(a, b)
+	}
+	return canMerge(b, a)
+}
+
 // canMerge checks if two locks can be merged (adjacent or overlapping).
 func canMerge(a, b *UnifiedLock) bool {
 	// Must be same owner, type, and file (assumed by caller grouping)
@@ -364,6 +374,50 @@ func (lm *Manager) AddUnifiedLock(handleKey string, lock *UnifiedLock) error {
 			existing[i].Type = lock.Type
 			existing[i].AcquiredAt = time.Now()
 			lm.persistUnifiedLockLocked(existing[i])
+			return nil
+		}
+	}
+
+	// Adjacent and overlapping byte-range locks held by the same lock-owner on
+	// the same file are one logical lock (RFC 7530 Section 9.3), so absorb
+	// every same-owner, same-type row the new range touches into a single row
+	// spanning their union. Without this a LOCKT reports whichever fragment it
+	// scans first instead of the merged range, and a LOCKU over the union
+	// leaves the fragments it did not name behind.
+	//
+	// Locks of a different type are left alone: an overlapping range in the
+	// other type is an upgrade or downgrade, handled by the exact-match update
+	// above, not a merge.
+	if !lock.IsLease() && !lock.IsDelegation() {
+		merged := lock
+		kept := existing
+		absorbed := false
+		for {
+			var rest []*UnifiedLock
+			grew := false
+			for _, el := range kept {
+				if el.IsLease() || el.IsDelegation() ||
+					el.Owner.OwnerID != lock.Owner.OwnerID ||
+					el.Type != lock.Type ||
+					!locksTouch(el, merged) {
+					rest = append(rest, el)
+					continue
+				}
+				merged = mergeTwoLocks(merged, el)
+				lm.deleteUnifiedLockLocked(el)
+				grew = true
+				absorbed = true
+			}
+			kept = rest
+			if !grew {
+				break
+			}
+		}
+		if absorbed {
+			merged.AcquiredAt = time.Now()
+			lm.unifiedLocks[handleKey] = append(kept, merged)
+			lm.reindexHandleLocked(handleKey, existing)
+			lm.persistUnifiedLockLocked(merged)
 			return nil
 		}
 	}

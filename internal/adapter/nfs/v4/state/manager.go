@@ -598,8 +598,18 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 		// Check if there's an unconfirmed record for the same client name
 		// that reuses this client ID (Case 5: re-SETCLIENTID for confirmed client)
 		if unconfirmed := sm.unconfirmedByName[record.ClientIDString]; unconfirmed != nil && unconfirmed.ClientID == clientID {
-			// Use the unconfirmed record instead - this is confirming the re-SETCLIENTID
-			record = unconfirmed
+			// Case 5 reuses the client ID, so confirming it updates the live
+			// client rather than replacing it. Fold the new record's fields
+			// into the one that already owns this ID's open state, lease and
+			// map entries, and confirm that one: swapping in the second record
+			// instead leaves clientsByID pointing at the first, so RENEW keeps
+			// refreshing a lease nobody watches while the confirmed record's
+			// own timer runs down and reaps the client.
+			record.Verifier = unconfirmed.Verifier
+			record.ConfirmVerifier = unconfirmed.ConfirmVerifier
+			record.Callback = unconfirmed.Callback
+			record.ClientAddr = unconfirmed.ClientAddr
+			record.Principal = unconfirmed.Principal
 		} else {
 			// True retransmit - validate verifier matches the confirmed record
 			if record.ConfirmVerifier != confirmVerifier {
@@ -636,7 +646,13 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 	record.Confirmed = true
 	sm.clientsByName[record.ClientIDString] = record
 
-	// Create lease timer for the newly confirmed client
+	// Create lease timer for the newly confirmed client. Stop any timer the
+	// record already carries first: an orphaned timer still fires
+	// onLeaseExpired for this client ID on its original schedule and reaps the
+	// client however often RENEW refreshes the lease that replaced it.
+	if record.Lease != nil {
+		record.Lease.Stop()
+	}
 	record.Lease = NewLeaseState(clientID, sm.leaseDuration, sm.onLeaseExpired)
 	record.LastRenewal = time.Now()
 
