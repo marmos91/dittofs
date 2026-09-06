@@ -64,6 +64,10 @@ type Dialect interface {
 	// Locks returns the dialect's lock and server-epoch statements, under the
 	// same package-level-value expectation as Chunks.
 	Locks() *LockQueries
+
+	// BlockRecords returns the dialect's block-record statements, under the
+	// same package-level-value expectation as Chunks.
+	BlockRecords() *BlockRecordQueries
 }
 
 // ShareQueries holds the share statements in one dialect's syntax. These
