@@ -336,6 +336,46 @@ func testDecrementRefCountAndReapMany(t *testing.T, factory StoreFactory) {
 		}
 	})
 
+	// A set larger than one statement's bound-parameter ceiling still reaps
+	// every row. The SQL backends split it into several IN-list batches, so an
+	// off-by-one in the split leaves a tail of rows alive.
+	t.Run("SpansBatchBoundary", func(t *testing.T) {
+		store := factory(t)
+		ctx := t.Context()
+
+		// Comfortably past the 900-parameter ceiling the SQL backends batch at,
+		// and not a multiple of it, so the last batch is a partial one.
+		ids := make([]string, 1201)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("batch/%d", i*4096)
+		}
+		if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+			for _, id := range ids {
+				if err := tx.Put(ctx, &block.FileChunk{
+					ID: id, Hash: hashOfSeed(id), State: block.BlockStateRemote,
+					DataSize: 4096, RefCount: 1,
+					LastAccess: time.Now(), CreatedAt: time.Now(),
+				}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+			return tx.DecrementRefCountAndReapMany(ctx, ids)
+		}); err != nil {
+			t.Fatalf("DecrementRefCountAndReapMany: %v", err)
+		}
+		for _, id := range []string{ids[0], ids[899], ids[900], ids[1199], ids[1200]} {
+			if chunkRowPresent(t, store, id) {
+				t.Errorf("row %s survived the batched reap; want it gone at refcount 0", id)
+			}
+		}
+	})
+
 	// The whole set is one transaction, so an error raised after the batched
 	// call rolls every row back — no half-reaped manifest.
 	t.Run("RollsBackWholeSet", func(t *testing.T) {
