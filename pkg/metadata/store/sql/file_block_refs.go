@@ -50,8 +50,14 @@ type storedChunkRef struct {
 
 // PutFileChunkRefs brings the stored file_block_refs rows for fileID into
 // agreement with blocks by writing only the rows that actually differ, and
-// reports whether it wrote any. It is atomic when reached through a
-// transaction's Core.
+// reports whether it wrote any.
+//
+// It takes its executor rather than riding on Core, because it is the one
+// shared body that spans several statements: a torn delta leaves the manifest
+// with holes, which read back as zeros rather than as an error. A method on
+// Core would be promoted onto the pool-backed store too, where those
+// statements autocommit separately and nothing binds them together. Passing
+// the executor keeps the caller's transaction visible at the call site.
 //
 // Rather than rewriting the whole manifest on every data write, it diffs the
 // incoming list against the stored rows — keyed by the unique (file_id,
@@ -73,8 +79,8 @@ type storedChunkRef struct {
 // scope, when non-nil, restricts the whole delta to those offsets — see
 // chunkRefsDelta. The returned count is how many stored rows the diff had to
 // read, which is what scope bounds.
-func (c *Core) PutFileChunkRefs(ctx context.Context, fileID uuid.UUID, blocks []block.ChunkRef, hasPriorRefs bool, scope []uint64) (bool, int, error) {
-	upserts, deletes, scanned, err := c.chunkRefsDelta(ctx, fileID, blocks, hasPriorRefs, scope)
+func PutFileChunkRefs(ctx context.Context, x Executor, d Dialect, fileID uuid.UUID, blocks []block.ChunkRef, hasPriorRefs bool, scope []uint64) (bool, int, error) {
+	upserts, deletes, scanned, err := chunkRefsDelta(ctx, x, d, fileID, blocks, hasPriorRefs, scope)
 	if err != nil {
 		return false, scanned, err
 	}
@@ -85,10 +91,10 @@ func (c *Core) PutFileChunkRefs(ctx context.Context, fileID uuid.UUID, blocks []
 	// Delete the removed offsets, then upsert the changed and new ones. The
 	// order is immaterial — the two offset sets are disjoint — but deleting
 	// first keeps a shrink's row count from transiently peaking.
-	if err := c.deleteChunkRefOffsets(ctx, fileID, deletes); err != nil {
+	if err := deleteChunkRefOffsets(ctx, x, d, fileID, deletes); err != nil {
 		return false, scanned, err
 	}
-	if err := c.upsertChunkRefs(ctx, fileID, upserts); err != nil {
+	if err := upsertChunkRefs(ctx, x, d, fileID, upserts); err != nil {
 		return false, scanned, err
 	}
 	return true, scanned, nil
@@ -106,7 +112,7 @@ func (c *Core) PutFileChunkRefs(ctx context.Context, fileID uuid.UUID, blocks []
 // chunks costs a handful of rows instead of the file's entire manifest. A nil
 // scope keeps the full diff, which is what a caller that re-derived the
 // manifest from scratch needs.
-func (c *Core) chunkRefsDelta(ctx context.Context, fileID uuid.UUID, blocks []block.ChunkRef, hasPriorRefs bool, scope []uint64) ([]block.ChunkRef, []int64, int, error) {
+func chunkRefsDelta(ctx context.Context, x Executor, d Dialect, fileID uuid.UUID, blocks []block.ChunkRef, hasPriorRefs bool, scope []uint64) ([]block.ChunkRef, []int64, int, error) {
 	var inScope map[int64]struct{}
 	if scope != nil {
 		inScope = make(map[int64]struct{}, len(scope))
@@ -117,7 +123,7 @@ func (c *Core) chunkRefsDelta(ctx context.Context, fileID uuid.UUID, blocks []bl
 
 	stored := make(map[int64]storedChunkRef)
 	if hasPriorRefs {
-		if err := c.scanStoredChunkRefs(ctx, fileID, inScope, stored); err != nil {
+		if err := scanStoredChunkRefs(ctx, x, d, fileID, inScope, stored); err != nil {
 			return nil, nil, len(stored), err
 		}
 	}
@@ -130,6 +136,13 @@ func (c *Core) chunkRefsDelta(ctx context.Context, fileID uuid.UUID, blocks []bl
 			if _, ok := inScope[off]; !ok {
 				continue
 			}
+		}
+		if _, seen := incoming[off]; seen {
+			// An offset repeated in blocks would put two conflicting rows in
+			// one multi-row insert, which postgres rejects outright while
+			// sqlite quietly applies both. Neither is a manifest anyone asked
+			// for, so the later ref wins and the dialects agree.
+			upserts = dropChunkRefAt(upserts, off)
 		}
 		incoming[off] = struct{}{}
 		if s, ok := stored[off]; ok &&
@@ -151,13 +164,24 @@ func (c *Core) chunkRefsDelta(ctx context.Context, fileID uuid.UUID, blocks []bl
 	return upserts, deletes, len(stored), nil
 }
 
+// dropChunkRefAt removes the ref already queued for off, so the caller can
+// append the later one in its place.
+func dropChunkRefAt(upserts []block.ChunkRef, off int64) []block.ChunkRef {
+	for i := range upserts {
+		if int64(upserts[i].Offset) == off {
+			return append(upserts[:i], upserts[i+1:]...)
+		}
+	}
+	return upserts
+}
+
 // scanStoredChunkRefs loads the stored rows for fileID into out. A nil inScope
 // reads the whole manifest; otherwise only those offsets are read, in IN-list
 // batches capped the same way the write helpers are.
-func (c *Core) scanStoredChunkRefs(ctx context.Context, fileID uuid.UUID, inScope map[int64]struct{}, out map[int64]storedChunkRef) error {
+func scanStoredChunkRefs(ctx context.Context, x Executor, d Dialect, fileID uuid.UUID, inScope map[int64]struct{}, out map[int64]storedChunkRef) error {
 	const selectRefs = `SELECT ` + chunkRefCols + ` FROM file_block_refs`
 	if inScope == nil {
-		return c.scanChunkRefBatch(ctx, fileID, selectRefs+` WHERE file_id = `+c.D.Placeholder(1), []any{fileID}, out)
+		return scanChunkRefBatch(ctx, x, fileID, selectRefs+` WHERE file_id = `+d.Placeholder(1), []any{fileID}, out)
 	}
 
 	offsets := make([]int64, 0, len(inScope))
@@ -166,16 +190,16 @@ func (c *Core) scanStoredChunkRefs(ctx context.Context, fileID uuid.UUID, inScop
 	}
 	for start := 0; start < len(offsets); start += perBatchOffsets {
 		batch := offsets[start:min(start+perBatchOffsets, len(offsets))]
-		query, args := c.chunkRefOffsetStmt(selectRefs, fileID, batch)
-		if err := c.scanChunkRefBatch(ctx, fileID, query, args, out); err != nil {
+		query, args := chunkRefOffsetStmt(d, selectRefs, fileID, batch)
+		if err := scanChunkRefBatch(ctx, x, fileID, query, args, out); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *Core) scanChunkRefBatch(ctx context.Context, fileID uuid.UUID, query string, args []any, out map[int64]storedChunkRef) error {
-	rows, err := c.X.Query(ctx, query, args...)
+func scanChunkRefBatch(ctx context.Context, x Executor, fileID uuid.UUID, query string, args []any, out map[int64]storedChunkRef) error {
+	rows, err := x.Query(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("query file_block_refs for %s: %w", fileID, err)
 	}
@@ -201,11 +225,11 @@ func (c *Core) scanChunkRefBatch(ctx context.Context, fileID uuid.UUID, query st
 
 // deleteChunkRefOffsets removes the given offsets for fileID, batched into
 // IN-lists so the bound-parameter count stays under maxBoundParams.
-func (c *Core) deleteChunkRefOffsets(ctx context.Context, fileID uuid.UUID, offsets []int64) error {
+func deleteChunkRefOffsets(ctx context.Context, x Executor, d Dialect, fileID uuid.UUID, offsets []int64) error {
 	for start := 0; start < len(offsets); start += perBatchOffsets {
 		batch := offsets[start:min(start+perBatchOffsets, len(offsets))]
-		query, args := c.chunkRefOffsetStmt(`DELETE FROM file_block_refs`, fileID, batch)
-		if _, err := c.X.Exec(ctx, query, args...); err != nil {
+		query, args := chunkRefOffsetStmt(d, `DELETE FROM file_block_refs`, fileID, batch)
+		if _, err := x.Exec(ctx, query, args...); err != nil {
 			return fmt.Errorf("delete file_block_refs offsets: %w", err)
 		}
 	}
@@ -216,11 +240,11 @@ func (c *Core) deleteChunkRefOffsets(ctx context.Context, fileID uuid.UUID, offs
 // needs — `WHERE file_id = ? AND "offset" IN (?, ...)` — and returns the
 // statement together with its bound arguments. The read and the delete differ
 // only in that head.
-func (c *Core) chunkRefOffsetStmt(head string, fileID uuid.UUID, batch []int64) (string, []any) {
+func chunkRefOffsetStmt(d Dialect, head string, fileID uuid.UUID, batch []int64) (string, []any) {
 	var sb strings.Builder
 	sb.WriteString(head)
 	sb.WriteString(` WHERE file_id = `)
-	sb.WriteString(c.D.Placeholder(1))
+	sb.WriteString(d.Placeholder(1))
 	sb.WriteString(` AND "offset" IN (`)
 	args := make([]any, 0, len(batch)+1)
 	args = append(args, fileID)
@@ -228,7 +252,7 @@ func (c *Core) chunkRefOffsetStmt(head string, fileID uuid.UUID, batch []int64) 
 		if i > 0 {
 			sb.WriteByte(',')
 		}
-		sb.WriteString(c.D.Placeholder(len(args) + 1))
+		sb.WriteString(d.Placeholder(len(args) + 1))
 		args = append(args, off)
 	}
 	sb.WriteByte(')')
@@ -242,7 +266,7 @@ func (c *Core) chunkRefOffsetStmt(head string, fileID uuid.UUID, batch []int64) 
 // maxBoundParams, where the whole Exec would fail. Incoming offsets are unique
 // under the (file_id, "offset") primary key, so no batch upserts the same row
 // twice.
-func (c *Core) upsertChunkRefs(ctx context.Context, fileID uuid.UUID, refs []block.ChunkRef) error {
+func upsertChunkRefs(ctx context.Context, x Executor, d Dialect, fileID uuid.UUID, refs []block.ChunkRef) error {
 	const colsPerRow = 5
 	const rowsPerBatch = maxBoundParams / colsPerRow
 	for start := 0; start < len(refs); start += rowsPerBatch {
@@ -259,14 +283,14 @@ func (c *Core) upsertChunkRefs(ctx context.Context, fileID uuid.UUID, refs []blo
 				if col > 0 {
 					sb.WriteByte(',')
 				}
-				sb.WriteString(c.D.Placeholder(len(args) + col + 1))
+				sb.WriteString(d.Placeholder(len(args) + col + 1))
 			}
 			sb.WriteByte(')')
 			args = append(args, fileID, int64(b.Offset), int32(b.Size), int32(b.StartOffset), b.Hash[:])
 		}
 		sb.WriteString(` ON CONFLICT (file_id, "offset") DO UPDATE SET` +
 			` size = excluded.size, start_offset = excluded.start_offset, hash = excluded.hash`)
-		if _, err := c.X.Exec(ctx, sb.String(), args...); err != nil {
+		if _, err := x.Exec(ctx, sb.String(), args...); err != nil {
 			return fmt.Errorf("upsert file_block_refs batch: %w", err)
 		}
 	}
