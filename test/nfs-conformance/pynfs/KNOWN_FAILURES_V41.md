@@ -51,9 +51,6 @@ Categories:
 | DELEG6 | bug | no delegation is granted | #2329 |
 | DELEG7 | bug | no delegation is granted | #2329 |
 | DELEG8 | bug | no delegation is granted | #2329 |
-| COMP5 | bug | COMPOUND op-count and request-size limits not enforced | #2330 |
-| SEQ6 | bug | COMPOUND op-count and request-size limits not enforced | #2330 |
-| SEQ7 | bug | COMPOUND op-count and request-size limits not enforced | #2330 |
 | LKPP1a | bug | lookupp41 | #2335 |
 | LKPP1b | bug | lookupp41 | #2335 |
 | LKPP1c | bug | lookupp41 | #2335 |
