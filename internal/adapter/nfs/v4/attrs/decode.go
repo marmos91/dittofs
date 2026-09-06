@@ -216,6 +216,12 @@ func decodeSingleSetAttr(reader io.Reader, bit uint32, setAttrs *metadata.SetAtt
 		if err != nil {
 			return fmt.Errorf("decode FATTR4_SIZE: %w", err)
 		}
+		// FATTR4_MAXFILESIZE is the server's own statement of the largest file
+		// it can represent. Accepting a size above it would report success for
+		// a length no subsequent GETATTR could ever read back.
+		if size > fsMaxFileSize.Load() {
+			return &fileTooBigError{size: size}
+		}
 		setAttrs.Size = &size
 
 	case FATTR4_ACL:
@@ -372,6 +378,20 @@ func (e *invalidModeError) Error() string {
 // NFS4Status returns the NFS4 error code for this error.
 func (e *invalidModeError) NFS4Status() uint32 {
 	return v4types.NFS4ERR_INVAL
+}
+
+// fileTooBigError represents an NFS4ERR_FBIG condition.
+type fileTooBigError struct {
+	size uint64
+}
+
+func (e *fileTooBigError) Error() string {
+	return fmt.Sprintf("size %d exceeds the maximum file size", e.size)
+}
+
+// NFS4Status returns the NFS4 error code for this error.
+func (e *fileTooBigError) NFS4Status() uint32 {
+	return v4types.NFS4ERR_FBIG
 }
 
 // readOnlyAttrError represents an NFS4ERR_INVAL condition raised by a SETATTR

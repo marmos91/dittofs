@@ -285,3 +285,26 @@ func TestHandleSetAttr_InvalidNanoseconds(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleSetAttr_SizeAboveMaxFileSize asserts a size beyond the value
+// FATTR4_MAXFILESIZE advertises is refused. Reporting success would leave the
+// file at a length no GETATTR can read back, and on a backend that stores the
+// size as a signed 64-bit column the value cannot round-trip at all.
+func TestHandleSetAttr_SizeAboveMaxFileSize(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+	handle := fx.createTestFile(t, fx.rootHandle, "test.txt", metadata.FileTypeRegular, 0o644, 0, 0)
+
+	var attrVals bytes.Buffer
+	_ = xdr.WriteUint64(&attrVals, ^uint64(0))
+
+	var bitmap []uint32
+	attrs.SetBit(&bitmap, attrs.FATTR4_SIZE)
+
+	args := encodeSetAttrArgs(t, specialStateid(), bitmap, attrVals.Bytes())
+	result := fx.handler.handleSetAttr(ctxForHandle(handle), bytes.NewReader(args))
+
+	if result.Status != types.NFS4ERR_FBIG {
+		t.Errorf("SETATTR(size=U64_MAX) status = %d, want NFS4ERR_FBIG (%d)",
+			result.Status, types.NFS4ERR_FBIG)
+	}
+}
