@@ -58,10 +58,9 @@ func (h *Handler) registerV41Ops() {
 		var args types.LayoutReturnArgs
 		return args.Decode(r)
 	})
-	h.v41DispatchTable[types.OP_SECINFO_NO_NAME] = v41StubHandler(types.OP_SECINFO_NO_NAME, func(r io.Reader) error {
-		var args types.SecinfoNoNameArgs
-		return args.Decode(r)
-	})
+	// SECINFO_NO_NAME: security flavors for an object named by filehandle
+	// (RFC 8881 Section 18.45)
+	h.v41DispatchTable[types.OP_SECINFO_NO_NAME] = h.handleSecInfoNoName
 	// SEQUENCE at position > 0 returns NFS4ERR_SEQUENCE_POS per RFC 8881.
 	// SEQUENCE at position 0 is handled specially in dispatchV41 before the op loop.
 	h.v41DispatchTable[types.OP_SEQUENCE] = func(ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {

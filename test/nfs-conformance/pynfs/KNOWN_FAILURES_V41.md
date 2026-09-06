@@ -92,9 +92,5 @@ Categories:
 | EID9 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
 | RECC3 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
 | RECC4 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| SECNN1 | feature | SECINFO_NO_NAME not implemented | #2338 |
-| SECNN2 | feature | SECINFO_NO_NAME not implemented | #2338 |
-| SECNN3 | feature | SECINFO_NO_NAME not implemented | #2338 |
-| SECNN4 | feature | SECINFO_NO_NAME not implemented | #2338 |
 | DELEG24 | suite | knfsd fails this too — needs FATTR4_OPEN_ARGUMENTS (v4.2) | - |
 | DELEG25 | suite | knfsd fails this too — needs FATTR4_OPEN_ARGUMENTS (v4.2) | - |
