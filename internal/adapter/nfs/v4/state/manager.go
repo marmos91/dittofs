@@ -66,6 +66,21 @@ type StateManager struct {
 	// when the owner is reaped (lease expiry) or the stateid is reused.
 	closedOwnerByOther map[[types.NFS4_OTHER_SIZE]byte]*OpenOwner
 
+	// expiredStateids holds the "other" of every stateid whose state was freed
+	// because the owning client's lease was cancelled. Without it the freed
+	// stateid is simply absent from the tables and looks like one the server
+	// never issued, so the client is told NFS4ERR_BAD_STATEID when RFC 7530
+	// §9.6.3.2 requires NFS4ERR_EXPIRED ("When a lease is canceled, all locking
+	// state associated with it is freed, and the use of any of the associated
+	// stateids will result in NFS4ERR_EXPIRED being returned").
+	//
+	// ponytail: capped and dropped wholesale on overflow rather than aged out
+	// per entry; losing an entry only degrades the answer to the
+	// NFS4ERR_BAD_STATEID the server gave before, and both statuses send the
+	// client into the same recovery. Give entries timestamps and sweep them if
+	// a deployment is ever seen to overflow the cap with clients still retrying.
+	expiredStateids map[[types.NFS4_OTHER_SIZE]byte]struct{}
+
 	// lockOwners maps lock-owner keys to LockOwner records.
 	// Key is composite of clientID + hex(ownerData), same pattern as openOwners.
 	lockOwners map[lockOwnerKey]*LockOwner
@@ -262,6 +277,7 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		openStateByFile:     make(map[string][]*OpenState),
 		openOwners:          make(map[openOwnerKey]*OpenOwner),
 		closedOwnerByOther:  make(map[[types.NFS4_OTHER_SIZE]byte]*OpenOwner),
+		expiredStateids:     make(map[[types.NFS4_OTHER_SIZE]byte]struct{}),
 		lockOwners:          make(map[lockOwnerKey]*LockOwner),
 		lockStateByOther:    make(map[[types.NFS4_OTHER_SIZE]byte]*LockState),
 		delegByOther:        make(map[[types.NFS4_OTHER_SIZE]byte]*DelegationState),
@@ -836,6 +852,50 @@ func (sm *StateManager) removeClientOpenStateLocked(clientID uint64) {
 	}
 }
 
+// maxExpiredStateids caps how many freed-by-lease-cancellation stateids the
+// server remembers; see the expiredStateids field for what overflow costs.
+const maxExpiredStateids = 4096
+
+// markClientStateidsExpiredLocked remembers every open, lock, and delegation
+// stateid belonging to clientID as freed by a lease cancellation, so later use
+// of one answers NFS4ERR_EXPIRED rather than NFS4ERR_BAD_STATEID (RFC 7530
+// Section 9.6.3.2). Call it before the state itself is dropped.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) markClientStateidsExpiredLocked(clientID uint64) {
+	if len(sm.expiredStateids) >= maxExpiredStateids {
+		sm.expiredStateids = make(map[[types.NFS4_OTHER_SIZE]byte]struct{})
+	}
+
+	for _, owner := range sm.openOwners {
+		if owner.ClientID != clientID {
+			continue
+		}
+		for _, openState := range owner.OpenStates {
+			sm.expiredStateids[openState.Stateid.Other] = struct{}{}
+			for _, lockState := range openState.LockStates {
+				sm.expiredStateids[lockState.Stateid.Other] = struct{}{}
+			}
+		}
+	}
+
+	for other, deleg := range sm.delegByOther {
+		if deleg.ClientID == clientID {
+			sm.expiredStateids[other] = struct{}{}
+		}
+	}
+}
+
+// isExpiredStateidLocked reports whether the state this stateid named was freed
+// when the server cancelled the owning client's lease. Callers use it on a
+// table miss, before falling back to NFS4ERR_BAD_STATEID.
+//
+// Caller must hold sm.mu (read or write).
+func (sm *StateManager) isExpiredStateidLocked(other [types.NFS4_OTHER_SIZE]byte) bool {
+	_, ok := sm.expiredStateids[other]
+	return ok
+}
+
 // onLeaseExpired is the callback invoked when a client's lease timer fires.
 // It cleans up all state for the expired client: open states, open owners,
 // and the client record itself.
@@ -861,6 +921,11 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 	// state, so drop its durable recovery record. Best-effort; no-op
 	// when no recovery store is wired.
 	sm.deleteClientRecoveryLocked(record.ClientIDString)
+
+	// Record what the cleanup below is about to free, so a client that comes
+	// back after the partition and uses one of these stateids is told the lease
+	// expired instead of being told the stateid was never valid.
+	sm.markClientStateidsExpiredLocked(clientID)
 
 	sm.removeClientOpenStateLocked(clientID)
 
@@ -1473,6 +1538,9 @@ func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32) (resu
 	// Look up the open state
 	openState, exists := sm.openStateByOther[stateid.Other]
 	if !exists {
+		if sm.isExpiredStateidLocked(stateid.Other) {
+			return nil, ErrExpired
+		}
 		return nil, &NFS4StateError{
 			Status:  types.NFS4ERR_BAD_STATEID,
 			Message: "stateid not found for OPEN_CONFIRM",
@@ -1579,6 +1647,9 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (result
 			if owner.ValidateSeqID(seqid) == SeqIDReplay && owner.LastResult != nil {
 				return nil, &ReplayError{Status: owner.LastResult.Status, Data: owner.LastResult.Data}
 			}
+		}
+		if sm.isExpiredStateidLocked(stateid.Other) {
+			return nil, ErrExpired
 		}
 		return nil, &NFS4StateError{
 			Status:  types.NFS4ERR_BAD_STATEID,
@@ -1758,6 +1829,9 @@ func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, new
 	// Look up the open state
 	openState, exists := sm.openStateByOther[stateid.Other]
 	if !exists {
+		if sm.isExpiredStateidLocked(stateid.Other) {
+			return nil, ErrExpired
+		}
 		return nil, &NFS4StateError{
 			Status:  types.NFS4ERR_BAD_STATEID,
 			Message: "stateid not found for OPEN_DOWNGRADE",
