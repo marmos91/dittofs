@@ -384,3 +384,6 @@ var blockRecordQueries = storesql.BlockRecordQueries{
 
 // Placeholder implements storesql.Dialect.
 func (dialect) Placeholder(i int) string { return "$" + strconv.Itoa(i) }
+
+// Now implements storesql.Dialect.
+func (dialect) Now() string { return "NOW()" }

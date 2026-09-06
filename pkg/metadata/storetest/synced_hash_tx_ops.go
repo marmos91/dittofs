@@ -169,4 +169,57 @@ func runSyncedHashTxOps(t *testing.T, store metadata.Store) {
 		require.True(t, found)
 		assert.Equal(t, newLoc, got, "tx delete+mark must overwrite the committed standalone locator")
 	})
+
+	t.Run("PutSyncedLocatorsRepeatedHash", func(t *testing.T) {
+		// A hash repeated within one call keeps the locator of its last
+		// occurrence, matching what a per-chunk sequential form leaves behind.
+		// A backend that folds the call into one statement has to drop the
+		// earlier duplicate itself rather than hand the same row twice to an
+		// upsert.
+		h := makeHash(0x07)
+		first := blockLoc("tx-dup-first")
+		last := blockLoc("tx-dup-last")
+
+		require.NoError(t, store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+			return tx.PutSyncedLocators(ctx, []block.BlockChunkCommit{
+				{Hash: h, Remote: first},
+				{Hash: h, Remote: last},
+			})
+		}))
+
+		got, found, err := store.GetLocator(ctx, h)
+		require.NoError(t, err)
+		require.True(t, found)
+		assert.Equal(t, last, got, "the last occurrence of a repeated hash must win")
+	})
+
+	t.Run("PutSyncedLocatorsLargeCommit", func(t *testing.T) {
+		// A block object packs hundreds of chunks into one commit, which is
+		// more than a backend batching by bound-parameter count fits in a
+		// single statement. Every chunk must land, whichever batch carried it.
+		const n = 600
+		chunks := make([]block.BlockChunkCommit, n)
+		for i := range chunks {
+			var h block.ContentHash
+			h[0] = 0x7A
+			h[1] = 0xFF // namespace away from makeHash's single-byte seeds
+			h[2] = byte(i)
+			h[3] = byte(i >> 8)
+			chunks[i] = block.BlockChunkCommit{
+				Hash:   h,
+				Remote: block.ChunkLocator{BlockID: "tx-big", WireOffset: int64(i) * 512, WireLength: 512},
+			}
+		}
+
+		require.NoError(t, store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+			return tx.PutSyncedLocators(ctx, chunks)
+		}))
+
+		for i, c := range chunks {
+			got, found, err := store.GetLocator(ctx, c.Hash)
+			require.NoError(t, err)
+			require.Truef(t, found, "chunk %d must be marked synced", i)
+			require.Equalf(t, c.Remote, got, "chunk %d must keep its locator", i)
+		}
+	})
 }
