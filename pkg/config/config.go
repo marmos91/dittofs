@@ -157,7 +157,7 @@ type GCConfig struct {
 	CompactionLiveRatio float64 `mapstructure:"compaction_live_ratio" yaml:"compaction_live_ratio"`
 
 	// AutoEnabled turns on the background GC scheduler, which periodically
-	// reclaims orphaned blocks on both tiers without operator action.
+	// reclaims orphaned blocks without operator action.
 	// Defaults to true. Set false to require manual `dfsctl store block gc`.
 	AutoEnabled *bool `mapstructure:"auto_enabled" yaml:"auto_enabled"`
 
