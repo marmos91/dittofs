@@ -524,13 +524,13 @@ func TestSetIdentityMapper_NoDataRace(t *testing.T) {
 // Write-only attribute regression (RFC 7530 Section 5.7)
 // ============================================================================
 
-// TestSupportedAttrsAdvertisesTimeSet pins the #1152 fix: FATTR4_TIME_ACCESS_SET
-// and FATTR4_TIME_MODIFY_SET MUST be advertised in FATTR4_SUPPORTED_ATTRS. The
-// Linux NFSv4 client gates whether it sends these settable time attributes in
-// SETATTR on their presence here; dropping them (as #1146 did) makes the client
-// issue an empty SETATTR for utimensat()/touch so file times silently never
-// change. GETATTR of these write-only bits stays a no-op (see
-// TestGetattrWriteOnlyTimeSetDoesNotFail).
+// TestSupportedAttrsAdvertisesTimeSet asserts FATTR4_TIME_ACCESS_SET and
+// FATTR4_TIME_MODIFY_SET stay advertised in FATTR4_SUPPORTED_ATTRS, at every
+// minor version that defines them. The Linux NFSv4 client gates whether it
+// sends these settable time attributes in SETATTR on their presence here, so
+// dropping them makes the client issue an empty SETATTR for utimensat() and
+// touch, and file times silently never change. Being settable-only, they are
+// still refused by a GETATTR that names them.
 func TestSupportedAttrsAdvertisesTimeSet(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -542,17 +542,21 @@ func TestSupportedAttrsAdvertisesTimeSet(t *testing.T) {
 		if !IsBitSet(SupportedAttrs(), tc.bit) {
 			t.Errorf("SupportedAttrs() must advertise settable bit %s (%d)", tc.name, tc.bit)
 		}
-		if !IsBitSet(SupportedAttrs(), tc.bit) {
-			t.Errorf("SupportedAttrs() must advertise settable bit %s (%d)", tc.name, tc.bit)
+		for minorVersion := uint32(0); minorVersion <= 2; minorVersion++ {
+			if !IsBitSet(SupportedAttrsFor(minorVersion), tc.bit) {
+				t.Errorf("SupportedAttrsFor(%d) must advertise settable bit %s (%d)",
+					minorVersion, tc.name, tc.bit)
+			}
 		}
 	}
 }
 
-// TestGetattrWriteOnlyTimeSetDoesNotFail verifies that a GETATTR requesting the
-// write-only time-set bits does not error: the encoder treats them as a no-op so
-// they are simply absent from the response bitmap even though SUPPORTED_ATTRS
-// advertises them as settable.
-func TestGetattrWriteOnlyTimeSetDoesNotFail(t *testing.T) {
+// TestEncoderDropsWriteOnlyTimeSet verifies the encoder omits the settable-only
+// time bits rather than failing on an attribute it has no value to write. This
+// is what READDIR relies on: it carries a raw client bitmap and cannot report a
+// per-attribute error, so the bits are dropped and the surrounding entry still
+// encodes. GETATTR does not reach here — it refuses such a request outright.
+func TestEncoderDropsWriteOnlyTimeSet(t *testing.T) {
 	node := newMockNode()
 
 	var requested []uint32
@@ -571,10 +575,10 @@ func TestGetattrWriteOnlyTimeSetDoesNotFail(t *testing.T) {
 		t.Fatalf("decode response bitmap: %v", err)
 	}
 	if IsBitSet(responseBitmap, FATTR4_TIME_ACCESS_SET) {
-		t.Error("FATTR4_TIME_ACCESS_SET leaked into GETATTR response bitmap")
+		t.Error("FATTR4_TIME_ACCESS_SET leaked into the response bitmap")
 	}
 	if IsBitSet(responseBitmap, FATTR4_TIME_MODIFY_SET) {
-		t.Error("FATTR4_TIME_MODIFY_SET leaked into GETATTR response bitmap")
+		t.Error("FATTR4_TIME_MODIFY_SET leaked into the response bitmap")
 	}
 	if !IsBitSet(responseBitmap, FATTR4_TYPE) {
 		t.Error("FATTR4_TYPE missing from response bitmap")
@@ -582,8 +586,8 @@ func TestGetattrWriteOnlyTimeSetDoesNotFail(t *testing.T) {
 }
 
 // TestWritableAndExclcreatStillIncludeTimeSet guards the inverse: the
-// write-only bits must remain valid for SETATTR and EXCLUSIVE4_1 create even
-// though they are excluded from SUPPORTED_ATTRS.
+// settable-only bits must remain valid for SETATTR and EXCLUSIVE4_1 create,
+// which is the whole reason they are advertised as supported.
 func TestWritableAndExclcreatStillIncludeTimeSet(t *testing.T) {
 	for _, bit := range []uint32{FATTR4_TIME_ACCESS_SET, FATTR4_TIME_MODIFY_SET} {
 		if !IsBitSet(WritableAttrs(), bit) {
