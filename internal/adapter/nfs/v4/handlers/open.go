@@ -322,9 +322,10 @@ func (h *Handler) handleOpenClaimNull(
 		if encErr != nil {
 			return openError(types.NFS4ERR_SERVERFAULT)
 		}
-		// Check access permissions for the requested share_access
-		if accessErr := checkOpenAccess(metaSvc, authCtx, fh, shareAccess); accessErr != nil {
-			return openError(common.MapToNFS4(accessErr))
+		// Check that the target is a regular file the caller may open with the
+		// requested share_access.
+		if status := checkOpenTarget(metaSvc, authCtx, fh, shareAccess); status != types.NFS4_OK {
+			return openError(status)
 		}
 		fileHandle = fh
 
@@ -376,9 +377,10 @@ func (h *Handler) handleOpenClaimNull(
 			if encErr != nil {
 				return openError(types.NFS4ERR_SERVERFAULT)
 			}
-			// Check access permissions for the requested share_access
-			if accessErr := checkOpenAccess(metaSvc, authCtx, fh, shareAccess); accessErr != nil {
-				return openError(common.MapToNFS4(accessErr))
+			// Check that the target is a regular file the caller may open with
+			// the requested share_access.
+			if status := checkOpenTarget(metaSvc, authCtx, fh, shareAccess); status != types.NFS4_OK {
+				return openError(status)
 			}
 			fileHandle = fh
 
@@ -555,9 +557,9 @@ func (h *Handler) handleOpenClaimFH(
 		return openError(types.NFS4ERR_SERVERFAULT)
 	}
 
-	// Enforce the requested share_access against the file's permissions.
-	if accessErr := checkOpenAccess(metaSvc, authCtx, fileHandle, shareAccess); accessErr != nil {
-		return openError(common.MapToNFS4(accessErr))
+	// Enforce the file type and the requested share_access against the file.
+	if status := checkOpenTarget(metaSvc, authCtx, fileHandle, shareAccess); status != types.NFS4_OK {
+		return openError(status)
 	}
 
 	// If another client holds a conflicting delegation, recall it and ask the
@@ -898,8 +900,8 @@ func (h *Handler) handleOpenClaimDelegateCur(
 	// Enforce file permissions for the requested share_access, exactly as the
 	// CLAIM_NULL paths do. A delegation stateid proves the client held a
 	// delegation, not that this RPC caller may read/write the file.
-	if accessErr := checkOpenAccess(metaSvc, authCtx, fileHandle, shareAccess); accessErr != nil {
-		return openError(common.MapToNFS4(accessErr))
+	if status := checkOpenTarget(metaSvc, authCtx, fileHandle, shareAccess); status != types.NFS4_OK {
+		return openError(status)
 	}
 
 	ctx.CurrentFH = make([]byte, len(fileHandle))
@@ -967,10 +969,32 @@ func openError(status uint32) *types.CompoundResult {
 	}
 }
 
-// checkOpenAccess verifies that the caller has appropriate file-level permissions
-// for the requested share_access mode. This is required by NFSv4 OPEN to enforce
-// POSIX access control -- without it, any user can open any file regardless of mode bits.
-func checkOpenAccess(metaSvc *metadata.Service, authCtx *metadata.AuthContext, handle metadata.FileHandle, shareAccess uint32) error {
+// checkOpenTarget gates every OPEN of an object that already exists: the object
+// must be a regular file, and the caller must hold the file-level permissions
+// the requested share_access implies. It returns NFS4_OK when the open may
+// proceed and the NFS4 status to report otherwise.
+//
+// The type check is what keeps OPEN to the objects it is defined over. RFC 7530
+// Section 16.16.6: "If the component provided to OPEN resolves to something
+// other than a regular file (or a named attribute), an error will be returned
+// to the client. If it is a directory, NFS4ERR_ISDIR is returned; otherwise,
+// NFS4ERR_SYMLINK is returned" -- and NFS4ERR_SYMLINK covers special files of
+// every other type, not just symbolic links.
+//
+// The permission check enforces POSIX access control; without it any user could
+// open any file regardless of its mode bits.
+func checkOpenTarget(metaSvc *metadata.Service, authCtx *metadata.AuthContext, handle metadata.FileHandle, shareAccess uint32) uint32 {
+	file, err := metaSvc.GetFileForRead(authCtx.Context, handle)
+	if err != nil {
+		return common.MapToNFS4(err)
+	}
+	if file.Type != metadata.FileTypeRegular {
+		if file.Type == metadata.FileTypeDirectory {
+			return types.NFS4ERR_ISDIR
+		}
+		return types.NFS4ERR_SYMLINK
+	}
+
 	var requiredPerm metadata.Permission
 	if shareAccess&types.OPEN4_SHARE_ACCESS_READ != 0 {
 		requiredPerm |= metadata.PermissionRead
@@ -979,21 +1003,18 @@ func checkOpenAccess(metaSvc *metadata.Service, authCtx *metadata.AuthContext, h
 		requiredPerm |= metadata.PermissionWrite
 	}
 	if requiredPerm == 0 {
-		return nil
+		return types.NFS4_OK
 	}
 
 	granted, err := metaSvc.CheckPermissions(authCtx, handle, requiredPerm)
 	if err != nil {
-		return err
+		return common.MapToNFS4(err)
 	}
 
 	if granted&requiredPerm != requiredPerm {
-		return &metadata.StoreError{
-			Code:    metadata.ErrAccessDenied,
-			Message: "open access denied",
-		}
+		return types.NFS4ERR_ACCESS
 	}
-	return nil
+	return types.NFS4_OK
 }
 
 // effectiveUIDGID extracts the UID and GID from the auth context identity,
