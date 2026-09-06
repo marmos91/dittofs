@@ -595,16 +595,13 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 	// If already confirmed, check for a pending re-SETCLIENTID (Case 5)
 	// where an unconfirmed record exists with the same client ID.
 	if record.Confirmed {
-		// Check if there's an unconfirmed record for the same client name
-		// that reuses this client ID (Case 5: re-SETCLIENTID for confirmed client)
 		if unconfirmed := sm.unconfirmedByName[record.ClientIDString]; unconfirmed != nil && unconfirmed.ClientID == clientID {
-			// Case 5 reuses the client ID, so confirming it updates the live
-			// client rather than replacing it. Fold the new record's fields
-			// into the one that already owns this ID's open state, lease and
-			// map entries, and confirm that one: swapping in the second record
-			// instead leaves clientsByID pointing at the first, so RENEW keeps
-			// refreshing a lease nobody watches while the confirmed record's
-			// own timer runs down and reaps the client.
+			// The re-SETCLIENTID reuses the client ID, so confirm the record
+			// that already owns it and fold in what the new one carried.
+			// Swapping the unconfirmed record in instead would leave two
+			// records under one ID, and the one clientsByID does not point at
+			// keeps a lease timer that RENEW never refreshes yet that still
+			// fires and reaps the client.
 			record.Verifier = unconfirmed.Verifier
 			record.ConfirmVerifier = unconfirmed.ConfirmVerifier
 			record.Callback = unconfirmed.Callback
@@ -646,9 +643,9 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 	record.Confirmed = true
 	sm.clientsByName[record.ClientIDString] = record
 
-	// Create lease timer for the newly confirmed client. Stop any timer the
-	// record already carries first: an orphaned timer still fires
-	// onLeaseExpired for this client ID on its original schedule and reaps the
+	// Create the lease timer for the newly confirmed client, replacing any
+	// timer the record already carries: an orphaned timer still fires
+	// onLeaseExpired for this client ID on its original schedule, reaping the
 	// client however often RENEW refreshes the lease that replaced it.
 	if record.Lease != nil {
 		record.Lease.Stop()

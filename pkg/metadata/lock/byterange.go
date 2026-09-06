@@ -183,33 +183,17 @@ func mergeRanges(locks []*UnifiedLock) []*UnifiedLock {
 	return result
 }
 
-// locksTouch reports whether two ranges overlap or abut, so together they cover
-// one contiguous region. canMerge assumes its arguments are sorted by offset;
-// this orders them first, for callers that hold an unsorted pair.
-func locksTouch(a, b *UnifiedLock) bool {
-	if a.Offset <= b.Offset {
-		return canMerge(a, b)
-	}
-	return canMerge(b, a)
-}
-
-// canMerge checks if two locks can be merged (adjacent or overlapping).
+// canMerge checks if two locks can be merged, i.e. whether they overlap or abut
+// and so together cover one contiguous region. Argument order does not matter:
+// it is the earlier-starting range that has to reach the other one's start.
 func canMerge(a, b *UnifiedLock) bool {
 	// Must be same owner, type, and file (assumed by caller grouping)
-
-	// Handle unbounded locks
-	if a.Length == 0 {
-		// a is unbounded - can merge with anything at or after a.Offset
-		return b.Offset >= a.Offset
+	if a.Offset > b.Offset {
+		a, b = b, a
 	}
-	if b.Length == 0 {
-		// b is unbounded - can merge if a overlaps or is adjacent to b.Offset
-		return a.End() >= b.Offset
-	}
-
-	// Both bounded - check if adjacent or overlapping
-	aEnd := a.End()
-	return aEnd >= b.Offset // Adjacent (aEnd == b.Offset) or overlapping
+	// End() is maxUint64 for an unbounded (Length 0) lock, which therefore
+	// reaches every offset at or after its own.
+	return a.End() >= b.Offset
 }
 
 // mergeTwoLocks combines two locks into one.
@@ -378,42 +362,38 @@ func (lm *Manager) AddUnifiedLock(handleKey string, lock *UnifiedLock) error {
 		}
 	}
 
-	// Adjacent and overlapping byte-range locks held by the same lock-owner on
-	// the same file are one logical lock (RFC 7530 Section 9.3), so absorb
-	// every same-owner, same-type row the new range touches into a single row
-	// spanning their union. Without this a LOCKT reports whichever fragment it
-	// scans first instead of the merged range, and a LOCKU over the union
-	// leaves the fragments it did not name behind.
+	// Adjacent and overlapping byte-range locks held by one lock-owner on one
+	// file are a single logical lock (RFC 7530 Section 9.3), so absorb every
+	// same-owner, same-type row the new range touches into one row spanning
+	// their union. Without this a LOCKT reports whichever fragment it scans
+	// first instead of the merged range, and a LOCKU over the union leaves the
+	// fragments it did not name behind. Absorbing a row can extend the span
+	// onto a row already passed over, so rescan until nothing more is absorbed.
 	//
-	// Locks of a different type are left alone: an overlapping range in the
-	// other type is an upgrade or downgrade, handled by the exact-match update
-	// above, not a merge.
+	// Rows of the other type are left alone: an overlapping range in the other
+	// type is an upgrade or downgrade, handled by the exact-match update above.
 	if !lock.IsLease() && !lock.IsDelegation() {
-		merged := lock
-		kept := existing
-		absorbed := false
-		for {
+		merged, kept := lock, existing
+		for grew := true; grew; {
+			grew = false
 			var rest []*UnifiedLock
-			grew := false
 			for _, el := range kept {
 				if el.IsLease() || el.IsDelegation() ||
 					el.Owner.OwnerID != lock.Owner.OwnerID ||
 					el.Type != lock.Type ||
-					!locksTouch(el, merged) {
+					!canMerge(el, merged) {
 					rest = append(rest, el)
 					continue
 				}
 				merged = mergeTwoLocks(merged, el)
 				lm.deleteUnifiedLockLocked(el)
 				grew = true
-				absorbed = true
 			}
 			kept = rest
-			if !grew {
-				break
-			}
 		}
-		if absorbed {
+		// kept is existing minus every absorbed row, so a shorter slice means
+		// the new range joined at least one of them.
+		if len(kept) < len(existing) {
 			merged.AcquiredAt = time.Now()
 			lm.unifiedLocks[handleKey] = append(kept, merged)
 			lm.reindexHandleLocked(handleKey, existing)

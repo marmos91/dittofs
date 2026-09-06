@@ -90,12 +90,14 @@ func TestAddUnifiedLock_MergeKeepsUnbounded(t *testing.T) {
 }
 
 // A new range that bridges the gap between two rows must absorb both, leaving a
-// single span rather than merging only the row it happens to meet first.
+// single span rather than merging only the row it happens to meet first. The
+// rows go in descending order so the disjoint check below is also asked the
+// question the wrong way round, where the existing row starts after the new one.
 func TestAddUnifiedLock_MergeBridgesTwoRanges(t *testing.T) {
 	t.Parallel()
 
 	lm := NewManager()
-	for _, r := range [][2]uint64{{0, 10}, {90, 10}} {
+	for _, r := range [][2]uint64{{90, 10}, {0, 10}} {
 		if err := lm.AddUnifiedLock(mergeHandle, mergeOwnerLock("owner-1", r[0], r[1], LockTypeExclusive)); err != nil {
 			t.Fatalf("AddUnifiedLock(%d,%d): %v", r[0], r[1], err)
 		}
