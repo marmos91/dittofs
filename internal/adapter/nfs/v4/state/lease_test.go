@@ -472,3 +472,47 @@ func TestRenewLease_SurvivesReSetClientID(t *testing.T) {
 		t.Fatal("client was reaped despite being renewed within its lease")
 	}
 }
+
+// A confirm carrying the wrong verifier must leave the live client exactly as it
+// was. Confirming a re-SETCLIENTID writes through to the record that already
+// owns the client ID, so validating after the write would let a stale retransmit
+// of the previous confirm install an unconfirmed callback address on a client
+// that is still using the old one, and then report failure.
+func TestConfirmClientID_StaleRetransmitLeavesRecordIntact(t *testing.T) {
+	sm := NewStateManager(time.Minute)
+	verifier := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+
+	setClientID := func(addr string) *SetClientIDResult {
+		t.Helper()
+		callback := CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: addr}
+		result, err := sm.SetClientID("client-stale-confirm", verifier, callback, "10.0.0.1:1234")
+		if err != nil {
+			t.Fatalf("SetClientID(%s): %v", addr, err)
+		}
+		return result
+	}
+
+	first := setClientID("10.0.0.1.8.1")
+	if err := sm.ConfirmClientID(first.ClientID, first.ConfirmVerifier); err != nil {
+		t.Fatalf("ConfirmClientID: %v", err)
+	}
+
+	// Same verifier, new callback: a re-SETCLIENTID, left pending.
+	second := setClientID("10.0.0.1.8.2")
+
+	// The first confirm arrives again while that one is pending.
+	if err := sm.ConfirmClientID(first.ClientID, first.ConfirmVerifier); err == nil {
+		t.Fatal("a confirm carrying the superseded verifier must be refused")
+	}
+	if got := sm.GetClient(first.ClientID).Callback.Addr; got != "10.0.0.1.8.1" {
+		t.Fatalf("refused confirm changed the live callback to %q, want the confirmed 10.0.0.1.8.1", got)
+	}
+
+	// The real confirm still lands and installs the new callback.
+	if err := sm.ConfirmClientID(second.ClientID, second.ConfirmVerifier); err != nil {
+		t.Fatalf("ConfirmClientID(re-SETCLIENTID): %v", err)
+	}
+	if got := sm.GetClient(second.ClientID).Callback.Addr; got != "10.0.0.1.8.2" {
+		t.Fatalf("confirmed callback = %q, want 10.0.0.1.8.2", got)
+	}
+}

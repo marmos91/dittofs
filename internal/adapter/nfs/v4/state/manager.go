@@ -602,6 +602,15 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 			// records under one ID, and the one clientsByID does not point at
 			// keeps a lease timer that RENEW never refreshes yet that still
 			// fires and reaps the client.
+			//
+			// Validated before the fold, not by the shared check below: the
+			// fold writes through to the live client, so a confirm carrying the
+			// wrong verifier must be refused while the record it names is still
+			// untouched. A stale retransmit of the previous confirm reaches
+			// here whenever a re-SETCLIENTID is pending.
+			if unconfirmed.ConfirmVerifier != confirmVerifier {
+				return fmt.Errorf("%w: confirm verifier mismatch for client %d", ErrStaleClientID, clientID)
+			}
 			record.Verifier = unconfirmed.Verifier
 			record.ConfirmVerifier = unconfirmed.ConfirmVerifier
 			record.Callback = unconfirmed.Callback
