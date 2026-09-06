@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
@@ -99,5 +100,69 @@ func TestV40Compound_ReleasesDRCSlotOnPanic(t *testing.T) {
 	// A slot left in-progress answers the retransmission with a drop.
 	if res, _ := adapter.drc.lookup(clientAddr, xid, body); res != drcMiss {
 		t.Fatalf("after a panicking COMPOUND, lookup = %v, want drcMiss (the reserved slot leaked)", res)
+	}
+}
+
+// TestDRCEligibleV40Compound covers the size bound that keeps bulk-data
+// compounds out of the duplicate request cache.
+//
+// Keying the cache checksums the whole request body, and the v4.0 path
+// checksums it twice -- once to reserve the slot and once to release it. On a
+// 1 MiB payload that is roughly half a millisecond of CRC-32 for a compound the
+// cache would never keep anyway, since only CREATE, REMOVE, RENAME and LINK are
+// recorded and those carry a filehandle and a name.
+func TestDRCEligibleV40Compound(t *testing.T) {
+	// A v4.0 compound padded past the bound with a long tag. The tag is echoed,
+	// not interpreted, so this is a well-formed request that is simply too big.
+	oversized := compoundPrefix(strings.Repeat("x", maxDupReqBytes), 0)
+	if len(oversized) <= maxDupReqBytes {
+		t.Fatalf("test body is %d bytes, expected more than %d", len(oversized), maxDupReqBytes)
+	}
+
+	cases := []struct {
+		name string
+		body []byte
+		want bool
+	}{
+		{"small v4.0", compoundPrefix("", 0), true},
+		{"small v4.1", compoundPrefix("", 1), false},
+		{"oversized v4.0", oversized, false},
+		{"exactly at the bound", append(compoundPrefix("", 0), make([]byte, maxDupReqBytes-len(compoundPrefix("", 0)))...), true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := drcEligibleV40Compound(tc.body); got != tc.want {
+				t.Fatalf("drcEligibleV40Compound(%d bytes) = %v, want %v", len(tc.body), got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDRCRecordableReply covers the reply-side half of the bound. The cache
+// caps how many entries it holds, not how large they are, so without this a
+// COMPOUND pairing a mutation with a large READ would pin its whole reply --
+// 4096 of those is a memory cap in name only.
+func TestDRCRecordableReply(t *testing.T) {
+	cases := []struct {
+		name       string
+		cacheReply bool
+		replyLen   int
+		want       bool
+	}{
+		{"small mutation", true, 512, true},
+		{"exactly at the bound", true, maxDupReqBytes, true},
+		{"one byte over", true, maxDupReqBytes + 1, false},
+		{"large mutation reply", true, 1 << 20, false},
+		{"small but not a mutation", false, 512, false},
+		{"large and not a mutation", false, 1 << 20, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := drcRecordableReply(tc.cacheReply, tc.replyLen); got != tc.want {
+				t.Fatalf("drcRecordableReply(%v, %d) = %v, want %v", tc.cacheReply, tc.replyLen, got, tc.want)
+			}
+		})
 	}
 }
