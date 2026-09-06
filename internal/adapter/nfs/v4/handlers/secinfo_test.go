@@ -410,3 +410,38 @@ func TestEncodeSecInfoGSSEntry_None(t *testing.T) {
 		t.Fatalf("service = %d, want 1 (none)", svc)
 	}
 }
+
+func TestHandleSecInfo_RejectsInvalidName(t *testing.T) {
+	pfs := pseudofs.New()
+	pfs.Rebuild([]string{"/export"})
+	h := NewHandler(nil, pfs)
+
+	rootHandle := pfs.GetRootHandle()
+
+	tests := []struct {
+		name string
+		want uint32
+	}{
+		{"", types.NFS4ERR_INVAL},
+		{".", types.NFS4ERR_BADNAME},
+		{"..", types.NFS4ERR_BADNAME},
+		{"a/b", types.NFS4ERR_BADNAME},
+	}
+
+	for _, tt := range tests {
+		ctx := &types.CompoundContext{
+			Context:    context.Background(),
+			ClientAddr: "127.0.0.1:9999",
+			CurrentFH:  make([]byte, len(rootHandle)),
+		}
+		copy(ctx.CurrentFH, rootHandle)
+
+		var args bytes.Buffer
+		_ = xdr.WriteXDRString(&args, tt.name)
+
+		result := h.handleSecInfo(ctx, bytes.NewReader(args.Bytes()))
+		if result.Status != tt.want {
+			t.Errorf("SECINFO %q status = %d, want %d", tt.name, result.Status, tt.want)
+		}
+	}
+}

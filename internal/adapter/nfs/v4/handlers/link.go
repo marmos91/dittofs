@@ -16,7 +16,7 @@ import (
 // Creates a hard link from SavedFH (source file) into CurrentFH (target directory).
 // Delegates to MetadataService.Link after cross-share and pseudo-fs validation.
 // Adds a directory entry in the target directory pointing to the source file; returns change info.
-// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_RESTOREFH, NFS4ERR_ISDIR, NFS4ERR_XDEV, NFS4ERR_EXIST.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_XDEV, NFS4ERR_EXIST.
 func (h *Handler) handleLink(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle (target directory)
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
@@ -28,7 +28,7 @@ func (h *Handler) handleLink(ctx *types.CompoundContext, reader io.Reader) *type
 	}
 
 	// Require saved filehandle (source file to link)
-	if status := types.RequireSavedFH(ctx); status != types.NFS4_OK {
+	if status := types.RequireSavedFHOperand(ctx); status != types.NFS4_OK {
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_LINK,
