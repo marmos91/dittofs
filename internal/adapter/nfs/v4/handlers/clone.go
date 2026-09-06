@@ -53,14 +53,12 @@ import (
 func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// CURRENT_FH is the destination, SAVED_FH is the source. Both must be set
 	// (the client PUTFHs the source, SAVEFHs it, then PUTFHs the destination).
-	// A missing handle on either side is NFS4ERR_NOFILEHANDLE (RFC 7862 15.13);
-	// note RequireSavedFH returns NFS4ERR_RESTOREFH, which is RESTOREFH-specific
-	// and wrong here, so check SavedFH directly.
+	// A missing handle on either side is NFS4ERR_NOFILEHANDLE (RFC 7862 15.13).
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
 		return cloneErr(status)
 	}
-	if ctx.SavedFH == nil {
-		return cloneErr(types.NFS4ERR_NOFILEHANDLE)
+	if status := types.RequireSavedFHOperand(ctx); status != types.NFS4_OK {
+		return cloneErr(status)
 	}
 	// Neither side may be the read-only pseudo-filesystem.
 	if pseudofs.IsPseudoFSHandle(ctx.CurrentFH) || pseudofs.IsPseudoFSHandle(ctx.SavedFH) {

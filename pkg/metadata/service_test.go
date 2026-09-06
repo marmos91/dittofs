@@ -965,6 +965,33 @@ func TestMetadataService_Move(t *testing.T) {
 		assert.Equal(t, original.Mode, file.Mode)
 	})
 
+	t.Run("rename onto own hard link is a no-op", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "file", &metadata.FileAttr{
+			Mode: 0644,
+		})
+		require.NoError(t, err)
+
+		fileHandle, err := fx.store.GetChild(context.Background(), fx.rootHandle, "file")
+		require.NoError(t, err)
+
+		_, err = fx.service.CreateHardLink(fx.rootContext(), fx.rootHandle, "link", fileHandle)
+		require.NoError(t, err)
+
+		clobbered, _, err := fx.service.Move(fx.rootContext(), fx.rootHandle, "file", fx.rootHandle, "link")
+		require.NoError(t, err)
+		assert.Nil(t, clobbered)
+
+		// Both names still resolve to the same file, and the link count is intact.
+		for _, name := range []string{"file", "link"} {
+			f, err := fx.service.Lookup(fx.rootContext(), fx.rootHandle, name)
+			require.NoError(t, err, "name %q", name)
+			assert.EqualValues(t, 2, f.Nlink, "name %q", name)
+		}
+	})
+
 	t.Run("move to different directory", func(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
