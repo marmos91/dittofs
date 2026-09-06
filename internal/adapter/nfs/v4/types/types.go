@@ -346,6 +346,19 @@ func RequireSavedFH(ctx *CompoundContext) uint32 {
 	return NFS4_OK
 }
 
+// RequireSavedFHOperand checks that the CompoundContext has a saved filehandle
+// for an operation that takes it as an operand (LINK, RENAME, CLONE).
+//
+// Returns NFS4_OK when SavedFH is set, NFS4ERR_NOFILEHANDLE otherwise.
+// NFS4ERR_RESTOREFH belongs to RESTOREFH alone and is not a valid status for
+// these operations.
+func RequireSavedFHOperand(ctx *CompoundContext) uint32 {
+	if ctx.SavedFH == nil {
+		return NFS4ERR_NOFILEHANDLE
+	}
+	return NFS4_OK
+}
+
 // ============================================================================
 // NFSv4.1 Request Context
 // ============================================================================

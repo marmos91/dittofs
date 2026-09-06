@@ -153,9 +153,9 @@ func TestHandleLink_NoSavedFH(t *testing.T) {
 	args := encodeLinkArgs("newlink")
 	result := fx.handler.handleLink(ctx, bytes.NewReader(args))
 
-	if result.Status != types.NFS4ERR_RESTOREFH {
-		t.Errorf("LINK without SavedFH status = %d, want NFS4ERR_RESTOREFH (%d)",
-			result.Status, types.NFS4ERR_RESTOREFH)
+	if result.Status != types.NFS4ERR_NOFILEHANDLE {
+		t.Errorf("LINK without SavedFH status = %d, want NFS4ERR_NOFILEHANDLE (%d)",
+			result.Status, types.NFS4ERR_NOFILEHANDLE)
 	}
 }
 
@@ -416,9 +416,9 @@ func TestHandleRename_NoSavedFH(t *testing.T) {
 	args := encodeRenameArgs("old", "new")
 	result := fx.handler.handleRename(ctx, bytes.NewReader(args))
 
-	if result.Status != types.NFS4ERR_RESTOREFH {
-		t.Errorf("RENAME without SavedFH status = %d, want NFS4ERR_RESTOREFH (%d)",
-			result.Status, types.NFS4ERR_RESTOREFH)
+	if result.Status != types.NFS4ERR_NOFILEHANDLE {
+		t.Errorf("RENAME without SavedFH status = %d, want NFS4ERR_NOFILEHANDLE (%d)",
+			result.Status, types.NFS4ERR_NOFILEHANDLE)
 	}
 }
 
@@ -624,5 +624,115 @@ func TestHandleRename_CompoundSequence(t *testing.T) {
 	}
 	if moved.Type != metadata.FileTypeRegular {
 		t.Errorf("moved type = %v, want regular", moved.Type)
+	}
+}
+
+// ============================================================================
+// Component name validation ('.' and '..')
+// ============================================================================
+
+// TestComponentDotsRejected covers the operations that take a component4 off
+// the wire: none of them may resolve or create "." or "..".
+func TestComponentDotsRejected(t *testing.T) {
+	for _, dots := range []string{".", ".."} {
+		t.Run("LOOKUP "+dots, func(t *testing.T) {
+			fx := newRealFSTestFixture(t, "/export")
+			ctx := newRealFSContext(0, 0)
+			setCurrentFH(ctx, fx.rootHandle)
+
+			var args bytes.Buffer
+			_ = xdr.WriteXDRString(&args, dots)
+			result := fx.handler.handleLookup(ctx, bytes.NewReader(args.Bytes()))
+
+			if result.Status != types.NFS4ERR_BADNAME {
+				t.Errorf("LOOKUP %q status = %d, want NFS4ERR_BADNAME (%d)",
+					dots, result.Status, types.NFS4ERR_BADNAME)
+			}
+		})
+
+		t.Run("LINK "+dots, func(t *testing.T) {
+			fx := newRealFSTestFixture(t, "/export")
+			fileHandle := fx.createTestFile(t, fx.rootHandle, "original.txt", metadata.FileTypeRegular, 0o644, 0, 0)
+
+			ctx := newRealFSContext(0, 0)
+			setCurrentFH(ctx, fx.rootHandle)
+			setSavedFH(ctx, fileHandle)
+
+			result := fx.handler.handleLink(ctx, bytes.NewReader(encodeLinkArgs(dots)))
+
+			if result.Status != types.NFS4ERR_BADNAME {
+				t.Errorf("LINK to %q status = %d, want NFS4ERR_BADNAME (%d)",
+					dots, result.Status, types.NFS4ERR_BADNAME)
+			}
+		})
+
+		t.Run("RENAME oldname "+dots, func(t *testing.T) {
+			fx := newRealFSTestFixture(t, "/export")
+			ctx := newRealFSContext(0, 0)
+			setCurrentFH(ctx, fx.rootHandle)
+			setSavedFH(ctx, fx.rootHandle)
+
+			result := fx.handler.handleRename(ctx, bytes.NewReader(encodeRenameArgs(dots, "target")))
+
+			if result.Status != types.NFS4ERR_BADNAME {
+				t.Errorf("RENAME from %q status = %d, want NFS4ERR_BADNAME (%d)",
+					dots, result.Status, types.NFS4ERR_BADNAME)
+			}
+		})
+
+		t.Run("RENAME newname "+dots, func(t *testing.T) {
+			fx := newRealFSTestFixture(t, "/export")
+			fx.createTestFile(t, fx.rootHandle, "source.txt", metadata.FileTypeRegular, 0o644, 0, 0)
+
+			ctx := newRealFSContext(0, 0)
+			setCurrentFH(ctx, fx.rootHandle)
+			setSavedFH(ctx, fx.rootHandle)
+
+			result := fx.handler.handleRename(ctx, bytes.NewReader(encodeRenameArgs("source.txt", dots)))
+
+			if result.Status != types.NFS4ERR_BADNAME {
+				t.Errorf("RENAME to %q status = %d, want NFS4ERR_BADNAME (%d)",
+					dots, result.Status, types.NFS4ERR_BADNAME)
+			}
+		})
+	}
+}
+
+// TestHandleRename_OntoOwnHardLink checks that renaming a file onto one of its
+// own hard links keeps both names and reports unchanged change_info4.
+func TestHandleRename_OntoOwnHardLink(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+	fileHandle := fx.createTestFile(t, fx.rootHandle, "file", metadata.FileTypeRegular, 0o644, 0, 0)
+
+	authCtx := newTestAuthCtx(0, 0)
+	if _, err := fx.metaSvc.CreateHardLink(authCtx, fx.rootHandle, "link", fileHandle); err != nil {
+		t.Fatalf("CreateHardLink: %v", err)
+	}
+
+	ctx := newRealFSContext(0, 0)
+	setCurrentFH(ctx, fx.rootHandle)
+	setSavedFH(ctx, fx.rootHandle)
+
+	result := fx.handler.handleRename(ctx, bytes.NewReader(encodeRenameArgs("file", "link")))
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("RENAME onto own hard link status = %d, want NFS4_OK", result.Status)
+	}
+
+	reader := bytes.NewReader(result.Data)
+	if _, err := xdr.DecodeUint32(reader); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	_, srcBefore, srcAfter := parseChangeInfo4(reader)
+	_, tgtBefore, tgtAfter := parseChangeInfo4(reader)
+	if srcBefore != srcAfter || tgtBefore != tgtAfter {
+		t.Errorf("change_info4 changed (src %d->%d, tgt %d->%d), want unchanged",
+			srcBefore, srcAfter, tgtBefore, tgtAfter)
+	}
+
+	// Both names must survive the no-op.
+	for _, name := range []string{"file", "link"} {
+		if _, err := fx.metaSvc.Lookup(authCtx, fx.rootHandle, name); err != nil {
+			t.Errorf("Lookup %q after no-op rename: %v", name, err)
+		}
 	}
 }

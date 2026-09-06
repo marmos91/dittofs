@@ -16,7 +16,7 @@ import (
 // Moves/renames a file or directory from SavedFH (source dir) to CurrentFH (target dir).
 // Delegates to MetadataService.Move after cross-share and pseudo-fs validation.
 // Updates source and target directory entries and timestamps; returns change info for both dirs.
-// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_RESTOREFH, NFS4ERR_NOENT, NFS4ERR_XDEV, NFS4ERR_BADXDR.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_NOENT, NFS4ERR_XDEV, NFS4ERR_BADXDR.
 func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle (target directory)
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
@@ -28,7 +28,7 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 	}
 
 	// Require saved filehandle (source directory)
-	if status := types.RequireSavedFH(ctx); status != types.NFS4_OK {
+	if status := types.RequireSavedFHOperand(ctx); status != types.NFS4_OK {
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_RENAME,
