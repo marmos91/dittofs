@@ -146,9 +146,6 @@ Categories:
 | RDDR7 | bug | READDIR cookie and attribute-request validation | #2336 |
 | RDDR8 | bug | READDIR cookie and attribute-request validation | #2336 |
 | RDDR9 | bug | READDIR cookie and attribute-request validation | #2336 |
-| RPLY10 | bug | duplicate request cache replays the wrong status | #2337 |
-| RPLY14 | bug | duplicate request cache replays the wrong status | #2337 |
-| RPLY3 | bug | duplicate request cache replays the wrong status | #2337 |
 | SEC2 | bug | SECINFO validation | #2339 |
 | SEC3 | bug | SECINFO validation | #2339 |
 | SEC5 | bug | SECINFO validation | #2339 |
