@@ -595,11 +595,33 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 	// If already confirmed, check for a pending re-SETCLIENTID (Case 5)
 	// where an unconfirmed record exists with the same client ID.
 	if record.Confirmed {
-		// Check if there's an unconfirmed record for the same client name
-		// that reuses this client ID (Case 5: re-SETCLIENTID for confirmed client)
 		if unconfirmed := sm.unconfirmedByName[record.ClientIDString]; unconfirmed != nil && unconfirmed.ClientID == clientID {
-			// Use the unconfirmed record instead - this is confirming the re-SETCLIENTID
-			record = unconfirmed
+			// The re-SETCLIENTID reuses the client ID, so confirm the record
+			// that already owns it and fold in what the new one carried.
+			// Swapping the unconfirmed record in instead would leave two
+			// records under one ID, and the one clientsByID does not point at
+			// keeps a lease timer that RENEW never refreshes yet that still
+			// fires and reaps the client.
+			//
+			// Validated before the fold, not by the shared check below: the
+			// fold writes through to the live client, so a confirm carrying the
+			// wrong verifier must be refused while the record it names is still
+			// untouched. A stale retransmit of the previous confirm reaches
+			// here whenever a re-SETCLIENTID is pending.
+			if unconfirmed.ConfirmVerifier != confirmVerifier {
+				return fmt.Errorf("%w: confirm verifier mismatch for client %d", ErrStaleClientID, clientID)
+			}
+			record.Verifier = unconfirmed.Verifier
+			record.ConfirmVerifier = unconfirmed.ConfirmVerifier
+			record.Callback = unconfirmed.Callback
+			record.ClientAddr = unconfirmed.ClientAddr
+			record.Principal = unconfirmed.Principal
+			// The callback address just changed, so the path to it is unproven
+			// again until the CB_NULL below says otherwise. Carrying the old
+			// generation's verdict forward would let delegations be granted in
+			// the window before that probe answers, and recalled to an address
+			// this client never confirmed it listens on.
+			record.CBPathUp = false
 		} else {
 			// True retransmit - validate verifier matches the confirmed record
 			if record.ConfirmVerifier != confirmVerifier {
@@ -636,7 +658,13 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 	record.Confirmed = true
 	sm.clientsByName[record.ClientIDString] = record
 
-	// Create lease timer for the newly confirmed client
+	// Create the lease timer for the newly confirmed client, replacing any
+	// timer the record already carries: an orphaned timer still fires
+	// onLeaseExpired for this client ID on its original schedule, reaping the
+	// client however often RENEW refreshes the lease that replaced it.
+	if record.Lease != nil {
+		record.Lease.Stop()
+	}
 	record.Lease = NewLeaseState(clientID, sm.leaseDuration, sm.onLeaseExpired)
 	record.LastRenewal = time.Now()
 
@@ -662,10 +690,12 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 			sm.mu.Lock()
 			defer sm.mu.Unlock()
 			rec, ok := sm.clientsByID[clientID]
-			if !ok || rec != recordPtr {
-				// Client was removed, or this client ID now points at a
-				// different record generation (reboot / re-SETCLIENTID) while
-				// CB_NULL was in flight. Do not touch the replacement.
+			if !ok || rec != recordPtr || rec.Callback != cbInfo {
+				// Client was removed, this client ID now points at a different
+				// record generation (reboot) while CB_NULL was in flight, or the
+				// record kept its identity but moved to another callback address
+				// (re-SETCLIENTID). Do not report this probe's verdict about an
+				// address the record no longer uses.
 				return
 			}
 			rec.CBPathUp = (err == nil)
