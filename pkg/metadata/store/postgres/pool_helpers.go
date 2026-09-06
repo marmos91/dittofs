@@ -282,8 +282,5 @@ var (
 	_ storesql.Executor = txExecer{}
 )
 
-// conn returns the Executor over the pool.
-func (s *PostgresMetadataStore) conn() storesql.Executor { return poolExecer{s: s} }
-
 // conn returns the Executor over this transaction's open pgx.Tx.
 func (tx *postgresTransaction) conn() storesql.Executor { return txExecer{tx: tx.tx} }

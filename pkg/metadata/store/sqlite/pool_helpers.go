@@ -101,12 +101,6 @@ func (s *SQLiteMetadataStore) queryRow(ctx context.Context, query string, args .
 	return execer{e: s.db, op: "queryRow"}.QueryRow(ctx, query, args...)
 }
 
-// query executes a multi-row query against the shared *sql.DB. The caller MUST
-// Close the returned rows.
-func (s *SQLiteMetadataStore) query(ctx context.Context, query string, args ...any) (scanRows, error) {
-	return execer{e: s.db, op: "query"}.Query(ctx, query, args...)
-}
-
 // exec executes a statement against the shared *sql.DB and returns the result
 // for RowsAffected inspection.
 func (s *SQLiteMetadataStore) exec(ctx context.Context, query string, args ...any) (storesql.CommandTag, error) {
