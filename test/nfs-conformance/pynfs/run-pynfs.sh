@@ -217,6 +217,26 @@ fi
 # not a harness error, so the verdict comes from parse-results.sh alone.
 cp /tmp/dittofs-posix-server.log "${RESULTS_DIR}/dittofs.log" 2>/dev/null || true
 
+# pynfs skips any test whose DEPEND prerequisites did not run in the same
+# invocation. Naming a subset therefore skips the targets instead of running
+# them, and a skip emits no FAILURE line, so the grader would report a clean
+# pass for a run that proved nothing. A scoped run is only evidence when it
+# names the whole dependency closure and nothing skips.
+if [[ "$TESTS" != "all" ]]; then
+    SCOPED_TALLY="$(grep -E '^Of those: [0-9]+ Skipped' "$LOG_FILE" | tail -1 || true)"
+    if [[ "$SCOPED_TALLY" =~ ^Of\ those:\ ([0-9]+)\ Skipped ]] && (( BASH_REMATCH[1] > 0 )); then
+        echo ""
+        echo -e "${RED}${BOLD}ERROR: ${BASH_REMATCH[1]} of the requested tests were skipped.${NC}"
+        echo "$SCOPED_TALLY"
+        echo "A skipped test emits no FAILURE line, so grading this run would report"
+        echo "a pass for tests that never executed. Add the DEPEND prerequisites to"
+        echo "--tests, or drop --tests and run the full suite."
+        echo ""
+        log "Log:     ${LOG_FILE}"
+        exit 1
+    fi
+fi
+
 echo ""
 echo -e "${BOLD}=== Grading against $(basename "$KNOWN_FAILURES") ===${NC}"
 "${SCRIPT_DIR}/parse-results.sh" "$LOG_FILE" "$KNOWN_FAILURES" "$RESULTS_DIR"
