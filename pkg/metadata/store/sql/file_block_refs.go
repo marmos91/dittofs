@@ -40,12 +40,12 @@ const maxBoundParams = 900
 // offset plus the file id, not a row's worth each.
 const perBatchOffsets = 200
 
-// StoredChunkRef is a stored file_block_refs row minus its offset, which is the
+// storedChunkRef is a stored file_block_refs row minus its offset, which is the
 // key it is stored under.
-type StoredChunkRef struct {
-	Size  int32
-	Start int32
-	Hash  []byte
+type storedChunkRef struct {
+	size  int32
+	start int32
+	hash  []byte
 }
 
 // PutFileChunkRefs brings the stored file_block_refs rows for fileID into
@@ -115,7 +115,7 @@ func (c *Core) chunkRefsDelta(ctx context.Context, fileID uuid.UUID, blocks []bl
 		}
 	}
 
-	stored := make(map[int64]StoredChunkRef)
+	stored := make(map[int64]storedChunkRef)
 	if hasPriorRefs {
 		if err := c.scanStoredChunkRefs(ctx, fileID, inScope, stored); err != nil {
 			return nil, nil, len(stored), err
@@ -133,9 +133,9 @@ func (c *Core) chunkRefsDelta(ctx context.Context, fileID uuid.UUID, blocks []bl
 		}
 		incoming[off] = struct{}{}
 		if s, ok := stored[off]; ok &&
-			s.Size == int32(b.Size) &&
-			s.Start == int32(b.StartOffset) &&
-			bytes.Equal(s.Hash, b.Hash[:]) {
+			s.size == int32(b.Size) &&
+			s.start == int32(b.StartOffset) &&
+			bytes.Equal(s.hash, b.Hash[:]) {
 			continue // identical row already stored — no write
 		}
 		upserts = append(upserts, b)
@@ -154,38 +154,27 @@ func (c *Core) chunkRefsDelta(ctx context.Context, fileID uuid.UUID, blocks []bl
 // scanStoredChunkRefs loads the stored rows for fileID into out. A nil inScope
 // reads the whole manifest; otherwise only those offsets are read, in IN-list
 // batches capped the same way the write helpers are.
-func (c *Core) scanStoredChunkRefs(ctx context.Context, fileID uuid.UUID, inScope map[int64]struct{}, out map[int64]StoredChunkRef) error {
-	selectRefs := `SELECT ` + chunkRefCols + ` FROM file_block_refs WHERE file_id = ` + c.D.Placeholder(1)
+func (c *Core) scanStoredChunkRefs(ctx context.Context, fileID uuid.UUID, inScope map[int64]struct{}, out map[int64]storedChunkRef) error {
+	const selectRefs = `SELECT ` + chunkRefCols + ` FROM file_block_refs`
 	if inScope == nil {
-		return c.scanChunkRefBatch(ctx, fileID, selectRefs, []any{fileID}, out)
+		return c.scanChunkRefBatch(ctx, fileID, selectRefs+` WHERE file_id = `+c.D.Placeholder(1), []any{fileID}, out)
 	}
 
 	offsets := make([]int64, 0, len(inScope))
 	for off := range inScope {
 		offsets = append(offsets, off)
 	}
-	for _, batch := range batchOffsets(offsets) {
-		var sb strings.Builder
-		sb.WriteString(selectRefs)
-		sb.WriteString(` AND "offset" IN (`)
-		args := make([]any, 0, len(batch)+1)
-		args = append(args, fileID)
-		for i, off := range batch {
-			if i > 0 {
-				sb.WriteByte(',')
-			}
-			sb.WriteString(c.D.Placeholder(len(args) + 1))
-			args = append(args, off)
-		}
-		sb.WriteByte(')')
-		if err := c.scanChunkRefBatch(ctx, fileID, sb.String(), args, out); err != nil {
+	for start := 0; start < len(offsets); start += perBatchOffsets {
+		batch := offsets[start:min(start+perBatchOffsets, len(offsets))]
+		query, args := c.chunkRefOffsetStmt(selectRefs, fileID, batch)
+		if err := c.scanChunkRefBatch(ctx, fileID, query, args, out); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *Core) scanChunkRefBatch(ctx context.Context, fileID uuid.UUID, query string, args []any, out map[int64]StoredChunkRef) error {
+func (c *Core) scanChunkRefBatch(ctx context.Context, fileID uuid.UUID, query string, args []any, out map[int64]storedChunkRef) error {
 	rows, err := c.X.Query(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("query file_block_refs for %s: %w", fileID, err)
@@ -202,7 +191,7 @@ func (c *Core) scanChunkRefBatch(ctx context.Context, fileID uuid.UUID, query st
 		// copied out before it is retained in the map.
 		h := make([]byte, len(raw))
 		copy(h, raw)
-		out[off] = StoredChunkRef{Size: sz, Start: start, Hash: h}
+		out[off] = storedChunkRef{size: sz, start: start, hash: h}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate file_block_refs: %w", err)
@@ -213,26 +202,37 @@ func (c *Core) scanChunkRefBatch(ctx context.Context, fileID uuid.UUID, query st
 // deleteChunkRefOffsets removes the given offsets for fileID, batched into
 // IN-lists so the bound-parameter count stays under maxBoundParams.
 func (c *Core) deleteChunkRefOffsets(ctx context.Context, fileID uuid.UUID, offsets []int64) error {
-	for _, batch := range batchOffsets(offsets) {
-		var sb strings.Builder
-		sb.WriteString(`DELETE FROM file_block_refs WHERE file_id = `)
-		sb.WriteString(c.D.Placeholder(1))
-		sb.WriteString(` AND "offset" IN (`)
-		args := make([]any, 0, len(batch)+1)
-		args = append(args, fileID)
-		for i, off := range batch {
-			if i > 0 {
-				sb.WriteByte(',')
-			}
-			sb.WriteString(c.D.Placeholder(len(args) + 1))
-			args = append(args, off)
-		}
-		sb.WriteByte(')')
-		if _, err := c.X.Exec(ctx, sb.String(), args...); err != nil {
+	for start := 0; start < len(offsets); start += perBatchOffsets {
+		batch := offsets[start:min(start+perBatchOffsets, len(offsets))]
+		query, args := c.chunkRefOffsetStmt(`DELETE FROM file_block_refs`, fileID, batch)
+		if _, err := c.X.Exec(ctx, query, args...); err != nil {
 			return fmt.Errorf("delete file_block_refs offsets: %w", err)
 		}
 	}
 	return nil
+}
+
+// chunkRefOffsetStmt completes head with the predicate one batch of offsets
+// needs — `WHERE file_id = ? AND "offset" IN (?, ...)` — and returns the
+// statement together with its bound arguments. The read and the delete differ
+// only in that head.
+func (c *Core) chunkRefOffsetStmt(head string, fileID uuid.UUID, batch []int64) (string, []any) {
+	var sb strings.Builder
+	sb.WriteString(head)
+	sb.WriteString(` WHERE file_id = `)
+	sb.WriteString(c.D.Placeholder(1))
+	sb.WriteString(` AND "offset" IN (`)
+	args := make([]any, 0, len(batch)+1)
+	args = append(args, fileID)
+	for i, off := range batch {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteString(c.D.Placeholder(len(args) + 1))
+		args = append(args, off)
+	}
+	sb.WriteByte(')')
+	return sb.String(), args
 }
 
 // upsertChunkRefs inserts-or-updates the given refs for fileID with one
@@ -271,15 +271,6 @@ func (c *Core) upsertChunkRefs(ctx context.Context, fileID uuid.UUID, refs []blo
 		}
 	}
 	return nil
-}
-
-// batchOffsets slices offsets into IN-list-sized runs.
-func batchOffsets(offsets []int64) [][]int64 {
-	var batches [][]int64
-	for start := 0; start < len(offsets); start += perBatchOffsets {
-		batches = append(batches, offsets[start:min(start+perBatchOffsets, len(offsets))])
-	}
-	return batches
 }
 
 // DeleteFileChunkRefs removes every ref row for fileID. The foreign key
