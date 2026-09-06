@@ -53,6 +53,7 @@ func (h *Handler) handleSecInfo(ctx *types.CompoundContext, reader io.Reader) *t
 		}
 	}
 
+	// Validate UTF-8 filename
 	if status := types.ValidateUTF8Filename(name); status != types.NFS4_OK {
 		return &types.CompoundResult{
 			Status: status,
