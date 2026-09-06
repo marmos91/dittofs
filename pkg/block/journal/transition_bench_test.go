@@ -6,6 +6,20 @@ import (
 	"testing"
 )
 
+// Running these: six of them rebuild their state inside StopTimer on every
+// iteration — Carve, CarveScatteredPass, Evict, GCRepack, Truncate and Delete.
+// Go sizes b.N from the timed region alone, so on a fast device it picks an
+// iteration count whose *untimed* setup runs for tens of minutes; Truncate
+// reached 28k iterations on tmpfs, each rebuilding 4096 intervals. Give that
+// group an explicit iteration cap rather than a duration:
+//
+//	go test -run '^$' -bench . -benchtime=1s -count=6                        # the rest
+//	go test -run '^$' -bench 'Carve|Evict|GCRepack|Truncate|Delete' \
+//	        -benchtime=200x -count=6                                          # this group
+//
+// ns/op stays directly comparable between the two invocations; only the sample
+// count differs.
+//
 // This file completes the benchmark contract: one benchmark per state
 // transition, so the benchmark set and the state model are the same list. The
 // write path was already covered; everything a byte does after it is written —
