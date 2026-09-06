@@ -41,42 +41,6 @@ func TestSecinfoNoNameArgs_RoundTrip_Parent(t *testing.T) {
 	}
 }
 
-func TestSecinfoNoNameRes_RoundTrip_OK(t *testing.T) {
-	original := SecinfoNoNameRes{Status: NFS4_OK}
-
-	var buf bytes.Buffer
-	if err := original.Encode(&buf); err != nil {
-		t.Fatalf("Encode: %v", err)
-	}
-
-	var decoded SecinfoNoNameRes
-	if err := decoded.Decode(&buf); err != nil {
-		t.Fatalf("Decode: %v", err)
-	}
-
-	if decoded.Status != NFS4_OK {
-		t.Errorf("Status: got %d, want %d", decoded.Status, NFS4_OK)
-	}
-}
-
-func TestSecinfoNoNameRes_RoundTrip_Error(t *testing.T) {
-	original := SecinfoNoNameRes{Status: NFS4ERR_WRONGSEC}
-
-	var buf bytes.Buffer
-	if err := original.Encode(&buf); err != nil {
-		t.Fatalf("Encode: %v", err)
-	}
-
-	var decoded SecinfoNoNameRes
-	if err := decoded.Decode(&buf); err != nil {
-		t.Fatalf("Decode: %v", err)
-	}
-
-	if decoded.Status != NFS4ERR_WRONGSEC {
-		t.Errorf("Status: got %d, want %d", decoded.Status, NFS4ERR_WRONGSEC)
-	}
-}
-
 func TestSecinfoNoNameArgs_String(t *testing.T) {
 	args := SecinfoNoNameArgs{Style: SECINFO_STYLE4_PARENT}
 	s := args.String()

@@ -398,6 +398,7 @@ NFSv4.1 extends v4.0 with session-based operation, backchannel callbacks, and ad
 | FREE_STATEID | Implemented | |
 | GET_DIR_DELEGATION | Implemented | Directory delegation with CB_NOTIFY |
 | RECLAIM_COMPLETE | Implemented | |
+| SECINFO_NO_NAME | Implemented | Both styles; PARENT applies LOOKUPP's rules |
 | SEQUENCE | Implemented | |
 | TEST_STATEID | Implemented | |
 
