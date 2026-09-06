@@ -379,3 +379,6 @@ var blockRecordQueries = storesql.BlockRecordQueries{
 		WHERE block_id = $2
 		RETURNING live_chunk_count`,
 }
+
+// Placeholder implements storesql.Dialect.
+func (dialect) Placeholder(i int) string { return "$" + strconv.Itoa(i) }

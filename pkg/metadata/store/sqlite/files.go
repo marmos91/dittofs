@@ -111,7 +111,7 @@ func (s *SQLiteMetadataStore) FindByObjectID(ctx context.Context, objectID block
 		return nil, mapDBError(err, "FindByObjectID", objectID.String())
 	}
 
-	return s.loadFileChunkRefs(ctx, fileID)
+	return s.LoadFileChunkRefs(ctx, fileID)
 }
 
 // CountObjectIDIndexRows implements the storetest.ObjectIDIndexAccessor
