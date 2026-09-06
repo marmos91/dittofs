@@ -773,6 +773,14 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	var dstFile *File
 	dstHandle, err = store.GetChild(ctx.Context, toDir, toName)
 	if err == nil {
+		// Both names already resolve to the same file, so they are hard links
+		// of each other and the rename has nothing to move: renaming one over
+		// the other would destroy a link. POSIX rename(2) and RFC 7530
+		// section 16.27.4 both make this a successful no-op.
+		if string(srcHandle) == string(dstHandle) {
+			return nil, nil, nil
+		}
+
 		// Destination exists - check compatibility
 		dstFile, err = store.GetFile(ctx.Context, dstHandle)
 		if err != nil {

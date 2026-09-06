@@ -53,6 +53,14 @@ func (h *Handler) handleSecInfo(ctx *types.CompoundContext, reader io.Reader) *t
 		}
 	}
 
+	if status := types.ValidateUTF8Filename(name); status != types.NFS4_OK {
+		return &types.CompoundResult{
+			Status: status,
+			OpCode: types.OP_SECINFO,
+			Data:   encodeStatusOnly(status),
+		}
+	}
+
 	// Per RFC 7530 Section 16.31.4: SECINFO consumes the current filehandle.
 	ctx.CurrentFH = nil
 

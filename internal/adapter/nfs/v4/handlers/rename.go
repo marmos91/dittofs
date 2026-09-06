@@ -28,7 +28,7 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 	}
 
 	// Require saved filehandle (source directory)
-	if status := types.RequireSavedFH(ctx); status != types.NFS4_OK {
+	if status := types.RequireSavedFHOperand(ctx); status != types.NFS4_OK {
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_RENAME,

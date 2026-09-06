@@ -28,7 +28,7 @@ func (h *Handler) handleLink(ctx *types.CompoundContext, reader io.Reader) *type
 	}
 
 	// Require saved filehandle (source file to link)
-	if status := types.RequireSavedFH(ctx); status != types.NFS4_OK {
+	if status := types.RequireSavedFHOperand(ctx); status != types.NFS4_OK {
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_LINK,
