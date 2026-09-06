@@ -59,37 +59,37 @@ func (f *fakeRemote) GetRange(_ context.Context, id BlockID, off, length int64) 
 
 func benchStore(b *testing.B) *Store {
 	b.Helper()
-	s, err := Open(b.TempDir(), Config{}, newFakeRemote(), SystemClock())
-	if err != nil {
-		b.Fatalf("Open: %v", err)
-	}
-	b.Cleanup(func() { _ = s.Close() })
+	s, _ := benchStoreDir(b, Config{})
 	return s
 }
 
 // BenchmarkWriteAt measures the dirty-write append path with a 64 KiB payload.
 func BenchmarkWriteAt(b *testing.B) {
-	s := benchStore(b)
+	s, dir := benchStoreDir(b, Config{})
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("x"), 64<<10)
 
 	b.SetBytes(int64(len(data)))
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if err := s.WriteAt(ctx, "bench-file", int64(i)*int64(len(data)), data); err != nil {
 			b.Fatalf("WriteAt: %v", err)
 		}
 	}
+	b.StopTimer()
+	reportWriteAmp(b, s, dir, "bench-file", int64(b.N)*int64(len(data)))
 }
 
 // BenchmarkTinyWritesCommit measures the many-tiny-scattered-writes-then-COMMIT
 // burst that pays full per-record framing overhead before any record merge.
 func BenchmarkTinyWritesCommit(b *testing.B) {
-	s := benchStore(b)
+	s, dir := benchStoreDir(b, Config{})
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("x"), 512)
 
 	b.SetBytes(int64(len(data)))
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if err := s.WriteAt(ctx, "bench-tiny", int64(i)*int64(len(data)), data); err != nil {
@@ -99,6 +99,8 @@ func BenchmarkTinyWritesCommit(b *testing.B) {
 			b.Fatalf("Commit: %v", err)
 		}
 	}
+	b.StopTimer()
+	reportWriteAmp(b, s, dir, "bench-tiny", int64(b.N)*int64(len(data)))
 }
 
 // BenchmarkReadWarm measures the warm-read path (index lookup + pread) over a
@@ -117,6 +119,7 @@ func BenchmarkReadWarm(b *testing.B) {
 
 	dst := make([]byte, chunk)
 	b.SetBytes(int64(chunk))
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		off := int64(i%spans) * int64(chunk)
@@ -141,6 +144,7 @@ func BenchmarkCarve(b *testing.B) {
 	data := bytes.Repeat([]byte("dittofs-journal-carve-"), (8<<20)/22)
 
 	b.SetBytes(int64(len(data)))
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
