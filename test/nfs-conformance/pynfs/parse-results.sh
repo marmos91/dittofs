@@ -66,6 +66,18 @@ if grep -q '^Tests interrupted!' "$OUTPUT_FILE"; then
     exit 1
 fi
 
+# A run in which nothing executed produces no FAILURE lines, and would otherwise
+# grade exactly like a clean pass. pynfs skips any test whose DEPEND
+# prerequisites did not run in the same invocation, so this is reachable
+# whenever a caller names a subset of tests.
+if [[ "$TALLY" =~ ^Of\ those:\ ([0-9]+)\ Skipped,\ ([0-9]+)\ Failed,\ ([0-9]+)\ Warned,\ ([0-9]+)\ Passed ]]; then
+    if (( BASH_REMATCH[2] + BASH_REMATCH[3] + BASH_REMATCH[4] == 0 )); then
+        echo -e "${RED}ERROR: every test was skipped — this run is not evidence.${NC}"
+        echo "$TALLY"
+        exit 1
+    fi
+fi
+
 kf_load "$KNOWN_FAILURES_FILE"
 echo -e "${BOLD}Loaded ${KF_COUNT} known failures from $(basename "${KNOWN_FAILURES_FILE:-<none>}")${NC}"
 echo "$TALLY"
