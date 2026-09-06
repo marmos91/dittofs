@@ -13,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
+	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 )
 
 // hashOfSeed returns a deterministic ContentHash for the given seed string.
@@ -247,7 +248,7 @@ func TestPostgres_FileChunkRefs_CascadeDelete(t *testing.T) {
 	}
 
 	// Pre-delete: 2 rows expected.
-	rawSQL, ok := store.(postgres.RawSQLAccessor)
+	rawSQL, ok := store.(storesql.RawSQLAccessor)
 	if !ok {
 		t.Fatalf("store does not implement RawSQLAccessor — cannot count file_block_refs rows")
 	}
@@ -390,7 +391,7 @@ func TestPostgres_Restore_ReconcilesNullHashFileChunks(t *testing.T) {
 	// The file_blocks read-index row ID is "{content_id}/{offset}".
 	blockID := payloadID + "/0"
 
-	rawSQL, ok := store.(postgres.RawSQLAccessor)
+	rawSQL, ok := store.(storesql.RawSQLAccessor)
 	if !ok {
 		t.Fatalf("store does not implement RawSQLAccessor")
 	}
