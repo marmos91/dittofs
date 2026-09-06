@@ -387,9 +387,9 @@ func (h *Handler) dispatchV40(compCtx *types.CompoundContext, tag []byte, numOps
 		return encodeCompoundResponse(types.NFS4ERR_RESOURCE, tag, nil)
 	}
 
-	// v4.0 has no SEQUENCE/replay cache, so an opcode that fails to decode is a
-	// fatal protocol error (hardErrOnDecodeError) rather than a cached partial
-	// reply.
+	// v4.0 has no SEQUENCE, so an opcode that fails to decode is a fatal
+	// protocol error (hardErrOnDecodeError): there is no slot to cache a partial
+	// reply in.
 	results, lastStatus, err := h.runCompoundOps(compCtx, numOps, reader, compoundLoopParams{
 		isV41:                false,
 		hardErrOnDecodeError: true,
@@ -398,7 +398,40 @@ func (h *Handler) dispatchV40(compCtx *types.CompoundContext, tag []byte, numOps
 		return nil, err
 	}
 
+	// Tell the adapter whether this reply has to survive for a retransmission.
+	// Sequenced operations carry their own replay protection in the open- and
+	// lock-owner seqid caches; these four carry none, so re-executing a
+	// retransmitted one turns a success into NFS4ERR_EXIST or NFS4ERR_NOENT.
+	compCtx.CacheReply = compoundIsNonIdempotent(results)
+
 	return encodeCompoundResponse(lastStatus, tag, results)
+}
+
+// nonIdempotentV40Ops are the NFSv4.0 operations that change the namespace and
+// have no seqid of their own, and so rely entirely on the duplicate request
+// cache to survive a retransmission (RFC 7530 Section 16.16.6 refers to it as
+// "the server duplicate request cache mechanism").
+//
+// The rest of the operation set is either seqid-protected (OPEN, CLOSE, LOCK,
+// LOCKU, OPEN_CONFIRM, OPEN_DOWNGRADE, RELEASE_LOCKOWNER) or safe to repeat, and
+// caching a READ reply would pin megabytes to protect an operation that can
+// simply run again.
+var nonIdempotentV40Ops = map[uint32]bool{
+	types.OP_CREATE: true,
+	types.OP_REMOVE: true,
+	types.OP_RENAME: true,
+	types.OP_LINK:   true,
+}
+
+// compoundIsNonIdempotent reports whether a COMPOUND ran an operation that must
+// not be executed a second time.
+func compoundIsNonIdempotent(results []types.CompoundResult) bool {
+	for i := range results {
+		if nonIdempotentV40Ops[results[i].OpCode] {
+			return true
+		}
+	}
+	return false
 }
 
 // dispatchV41 executes the v4.1 COMPOUND dispatch loop with SEQUENCE gating.

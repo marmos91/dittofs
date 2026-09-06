@@ -324,7 +324,7 @@ func (h *Handler) handleOpenClaimNull(
 		}
 		// Check that the target is a regular file the caller may open with the
 		// requested share_access.
-		if status := checkOpenTarget(metaSvc, authCtx, fh, shareAccess); status != types.NFS4_OK {
+		if status := checkOpenTarget(metaSvc, authCtx, fh, child, shareAccess); status != types.NFS4_OK {
 			return openError(status)
 		}
 		fileHandle = fh
@@ -379,7 +379,7 @@ func (h *Handler) handleOpenClaimNull(
 			}
 			// Check that the target is a regular file the caller may open with
 			// the requested share_access.
-			if status := checkOpenTarget(metaSvc, authCtx, fh, shareAccess); status != types.NFS4_OK {
+			if status := checkOpenTarget(metaSvc, authCtx, fh, child, shareAccess); status != types.NFS4_OK {
 				return openError(status)
 			}
 			fileHandle = fh
@@ -558,7 +558,7 @@ func (h *Handler) handleOpenClaimFH(
 	}
 
 	// Enforce the file type and the requested share_access against the file.
-	if status := checkOpenTarget(metaSvc, authCtx, fileHandle, shareAccess); status != types.NFS4_OK {
+	if status := checkOpenTarget(metaSvc, authCtx, fileHandle, nil, shareAccess); status != types.NFS4_OK {
 		return openError(status)
 	}
 
@@ -900,7 +900,7 @@ func (h *Handler) handleOpenClaimDelegateCur(
 	// Enforce file permissions for the requested share_access, exactly as the
 	// CLAIM_NULL paths do. A delegation stateid proves the client held a
 	// delegation, not that this RPC caller may read/write the file.
-	if status := checkOpenTarget(metaSvc, authCtx, fileHandle, shareAccess); status != types.NFS4_OK {
+	if status := checkOpenTarget(metaSvc, authCtx, fileHandle, child, shareAccess); status != types.NFS4_OK {
 		return openError(status)
 	}
 
@@ -974,6 +974,11 @@ func openError(status uint32) *types.CompoundResult {
 // the requested share_access implies. It returns NFS4_OK when the open may
 // proceed and the NFS4 status to report otherwise.
 //
+// file is the already-resolved target when the caller has one and nil when it
+// does not, in which case it is fetched here. The claim types that resolve a
+// name have it from the lookup they just did; CLAIM_FH does not, because it
+// opens a filehandle the client already holds.
+//
 // The type check is what keeps OPEN to the objects it is defined over. RFC 7530
 // Section 16.16.6: "If the component provided to OPEN resolves to something
 // other than a regular file (or a named attribute), an error will be returned
@@ -983,15 +988,21 @@ func openError(status uint32) *types.CompoundResult {
 //
 // The permission check enforces POSIX access control; without it any user could
 // open any file regardless of its mode bits.
-func checkOpenTarget(metaSvc *metadata.Service, authCtx *metadata.AuthContext, handle metadata.FileHandle, shareAccess uint32) uint32 {
-	file, err := metaSvc.GetFileForRead(authCtx.Context, handle)
-	if err != nil {
-		return common.MapToNFS4(err)
-	}
-	if file.Type != metadata.FileTypeRegular {
-		if file.Type == metadata.FileTypeDirectory {
-			return types.NFS4ERR_ISDIR
+func checkOpenTarget(metaSvc *metadata.Service, authCtx *metadata.AuthContext, handle metadata.FileHandle, file *metadata.File, shareAccess uint32) uint32 {
+	if file == nil {
+		var err error
+		// GetFileForRead: handle-addressed, File.Path unused -- skip derivePath.
+		file, err = metaSvc.GetFileForRead(authCtx.Context, handle)
+		if err != nil {
+			return common.MapToNFS4(err)
 		}
+	}
+
+	switch file.Type {
+	case metadata.FileTypeRegular:
+	case metadata.FileTypeDirectory:
+		return types.NFS4ERR_ISDIR
+	default:
 		return types.NFS4ERR_SYMLINK
 	}
 
@@ -1017,8 +1028,6 @@ func checkOpenTarget(metaSvc *metadata.Service, authCtx *metadata.AuthContext, h
 	return types.NFS4_OK
 }
 
-// effectiveUIDGID extracts the UID and GID from the auth context identity,
-// defaulting to 0 (root) if the identity or its fields are nil.
 func effectiveUIDGID(authCtx *metadata.AuthContext) (uint32, uint32) {
 	var uid, gid uint32
 	if authCtx.Identity != nil {
