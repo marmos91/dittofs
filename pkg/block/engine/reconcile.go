@@ -8,7 +8,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"iter"
 	"log/slog"
 	"time"
 
@@ -27,12 +26,6 @@ type ReconcileMetaView interface {
 	EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, loc block.ChunkLocator, syncedAt time.Time) error) error
 	GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error)
 	WalkBlockRecords(ctx context.Context, fn func(block.BlockRecord) error) error
-}
-
-// ReconcileLocalView is the read-only local surface: enumerate unsynced,
-// local-durable chunks. *fs.FSStore satisfies it (ListUnsynced).
-type ReconcileLocalView interface {
-	ListUnsynced(ctx context.Context) iter.Seq2[block.ContentHash, error]
 }
 
 // ReconcileClass is one orphan category's tally plus a bounded sample of IDs.
@@ -73,7 +66,7 @@ func (c *ReconcileClass) merge(other ReconcileClass, cap int) {
 	}
 }
 
-// ReconcileReport is the read-only output of a scan: four orphan classes plus
+// ReconcileReport is the read-only output of a scan: three orphan classes plus
 // scan bookkeeping. Nothing in the store is mutated to produce it.
 type ReconcileReport struct {
 	// ZeroRefRecords: block records absent from the live locator set with
@@ -89,8 +82,6 @@ type ReconcileReport struct {
 	// older than the grace window — PutBlock succeeded but the commit failed
 	// (class 3).
 	OrphanRemoteObjects ReconcileClass `json:"orphan_remote_objects"`
-	// StrandedLocalChunks: unsynced, local-durable chunks (class 4).
-	StrandedLocalChunks ReconcileClass `json:"stranded_local_chunks"`
 
 	BlockRecordsScanned  int64         `json:"block_records_scanned"`
 	RemoteObjectsScanned int64         `json:"remote_objects_scanned"`
@@ -109,7 +100,6 @@ func (r *ReconcileReport) Merge(other ReconcileReport) {
 	r.ZeroRefRecords.merge(other.ZeroRefRecords, cap)
 	r.LeakedBlocks.merge(other.LeakedBlocks, cap)
 	r.OrphanRemoteObjects.merge(other.OrphanRemoteObjects, cap)
-	r.StrandedLocalChunks.merge(other.StrandedLocalChunks, cap)
 	r.BlockRecordsScanned += other.BlockRecordsScanned
 	r.RemoteObjectsScanned += other.RemoteObjectsScanned
 	if other.GracePeriod > r.GracePeriod {
@@ -129,21 +119,19 @@ type ReconcileOptions struct {
 }
 
 // Reconcile scans one remote-store scope for orphaned block storage and returns
-// a structured, READ-ONLY report of the four orphan classes.
+// a structured, READ-ONLY report of the three orphan classes.
 //
 // views are the per-share metadata views that share one remote store. Classes 1
 // and 2 are per-share (a share's records vs its own live locator set); class 3
 // unions every share's block records so a sibling share's live block is never
 // misreported as a record-less object. rbs is that shared block store (nil
-// skips class 3 — a remote that cannot hold packed blocks). locals are the
-// per-share local stores for class 4 (may be empty).
+// skips class 3 — a remote that cannot hold packed blocks).
 //
 // It mutates nothing: only Enumerate/Walk/Get calls are issued.
 func Reconcile(
 	ctx context.Context,
 	views []ReconcileMetaView,
 	rbs remote.RemoteBlockStore,
-	locals []ReconcileLocalView,
 	opts ReconcileOptions,
 ) (ReconcileReport, error) {
 	grace := resolveGracePeriod(&Options{GracePeriod: opts.GracePeriod})
@@ -217,30 +205,13 @@ func Reconcile(
 		}
 	}
 
-	// Class 4: stranded local-only chunks (unsynced, local-durable).
-	// Note: no per-chunk byte accounting — that costs one stat each and the
-	// count + sample is enough for a human to decide. Add Bytes if a cheap size
-	// surfaces on the local view.
-	for _, l := range locals {
-		if l == nil {
-			continue
-		}
-		for h, err := range l.ListUnsynced(ctx) {
-			if err != nil {
-				return report, fmt.Errorf("reconcile: list unsynced: %w", err)
-			}
-			report.StrandedLocalChunks.add(h.String(), 0, sampleCap)
-		}
-	}
-
 	if report.ZeroRefRecords.Truncated || report.LeakedBlocks.Truncated ||
-		report.OrphanRemoteObjects.Truncated || report.StrandedLocalChunks.Truncated {
+		report.OrphanRemoteObjects.Truncated {
 		slog.Warn("reconcile: ID sample truncated — full orphan set is larger than the sample cap",
 			"sample_cap", sampleCap,
 			"zero_ref_records", report.ZeroRefRecords.Count,
 			"leaked_blocks", report.LeakedBlocks.Count,
 			"orphan_remote_objects", report.OrphanRemoteObjects.Count,
-			"stranded_local_chunks", report.StrandedLocalChunks.Count,
 		)
 	}
 	return report, nil
