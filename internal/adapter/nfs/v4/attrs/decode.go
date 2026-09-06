@@ -187,7 +187,7 @@ func DecodeFattr4ToSetAttrs(reader io.Reader) (*metadata.SetAttrs, []uint32, err
 		// 5.5 and Section 13.1.11.1).
 		if !isWritableAttr(bit) {
 			if IsBitSet(SupportedAttrs(), bit) {
-				return nil, nil, &readOnlyAttrError{bit: bit}
+				return nil, nil, &invalidAttrError{msg: fmt.Sprintf("attribute %d is read-only", bit)}
 			}
 			return nil, nil, &attrNotSuppError{bit: bit}
 		}
@@ -394,23 +394,9 @@ func (e *fileTooBigError) NFS4Status() uint32 {
 	return v4types.NFS4ERR_FBIG
 }
 
-// readOnlyAttrError represents an NFS4ERR_INVAL condition raised by a SETATTR
-// naming an attribute the server maintains but does not let a client write.
-type readOnlyAttrError struct {
-	bit uint32
-}
-
-func (e *readOnlyAttrError) Error() string {
-	return fmt.Sprintf("attribute %d is read-only", e.bit)
-}
-
-// NFS4Status returns the NFS4 error code for this error.
-func (e *readOnlyAttrError) NFS4Status() uint32 {
-	return v4types.NFS4ERR_INVAL
-}
-
 // invalidAttrError represents an NFS4ERR_INVAL condition raised by an attribute
-// value that decodes cleanly but names something the protocol does not allow.
+// the request may not name, or a value that decodes cleanly but says something
+// the protocol does not allow.
 type invalidAttrError struct {
 	msg string
 }

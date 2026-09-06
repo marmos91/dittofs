@@ -277,8 +277,8 @@ func SupportedAttrs() []uint32 {
 	// FATTR4_SUPPORTED_ATTRS because the Linux NFSv4 client gates whether it
 	// sends TIME_*_SET in SETATTR on their presence here: dropping them makes
 	// the client issue an empty SETATTR for utimensat()/touch, so the times
-	// silently never change (#1152). A GETATTR naming one of these bits is
-	// rejected with NFS4ERR_INVAL rather than answered.
+	// silently never change. A GETATTR naming one of these bits is rejected
+	// with NFS4ERR_INVAL rather than answered.
 
 	// NFSv4.1 exclusive create attributes (word 2)
 	SetBit(&bitmap, FATTR4_SUPPATTR_EXCLCREAT)
@@ -322,14 +322,12 @@ func HasWriteOnlyAttr(requested []uint32) bool {
 // NFS4ERR_ATTRNOTSUPP; GETATTR must not, and drops the bit instead.
 func HasUnsupportedAttr(requested, supported []uint32) bool {
 	for i, word := range requested {
-		if i >= len(supported) {
-			// Beyond the supported bitmap every bit is implicitly zero.
-			if word != 0 {
-				return true
-			}
-			continue
+		// Beyond the supported bitmap every bit is implicitly zero.
+		var supportedWord uint32
+		if i < len(supported) {
+			supportedWord = supported[i]
 		}
-		if word&^supported[i] != 0 {
+		if word&^supportedWord != 0 {
 			return true
 		}
 	}

@@ -495,15 +495,14 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// is bookkeeping the store owns, and a symlink, device, fifo or socket
 		// has no byte stream to lengthen or discard, so accepting the value
 		// would record a size no read could ever agree with.
-		switch file.Type {
-		case FileTypeRegular:
-		case FileTypeDirectory:
+		if file.Type == FileTypeDirectory {
 			return nil, &StoreError{
 				Code:    ErrIsDirectory,
 				Message: "cannot set size of a directory",
 				Path:    file.Path,
 			}
-		default:
+		}
+		if file.Type != FileTypeRegular {
 			return nil, &StoreError{
 				Code:    ErrInvalidArgument,
 				Message: "cannot set size of a non-regular file",
