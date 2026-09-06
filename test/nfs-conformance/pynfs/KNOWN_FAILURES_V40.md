@@ -98,8 +98,6 @@ Categories:
 | CID2 | bug | SETCLIENTID/SETCLIENTID_CONFIRM and RENEW validation | #2326 |
 | CID2a | bug | SETCLIENTID/SETCLIENTID_CONFIRM and RENEW validation | #2326 |
 | RENEW3 | bug | SETCLIENTID/SETCLIENTID_CONFIRM and RENEW validation | #2326 |
-| LOCK20 | bug | lock range merging and RENEW behaviour | #2331 |
-| LOCKMRG | bug | lock range merging and RENEW behaviour | #2331 |
 | CLOSE8 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
 | CLOSE9 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
 | LKU10 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
