@@ -316,6 +316,7 @@ func (h *Handler) ProcessCompound(compCtx *types.CompoundContext, data []byte) (
 	// hash could allow a malicious client to engineer.
 	digest := sha256.Sum256(data)
 	compCtx.RequestDigest = digest[:]
+	compCtx.RequestSize = uint32(len(data))
 
 	reader := bytes.NewReader(data)
 
@@ -480,6 +481,20 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 		return h.dispatchV41Ops(compCtx, tag, firstOpCode, numOps, nil, reader, isV42)
 	}
 
+	// An opcode outside the operation-number range of this minor version is not
+	// an operation at all, so the SEQUENCE requirement does not reach it:
+	// NFS4ERR_OP_NOT_IN_SESSION is defined (RFC 8881 §15.1.3.5) for operations
+	// that are only valid inside a session, while RFC 8881 §16.2.3 says the reply
+	// to an out-of-range opcode encodes OP_ILLEGAL with NFS4ERR_OP_ILLEGAL and
+	// that the COMPOUND status is NFS4ERR_OP_ILLEGAL too. Dispatching it produces
+	// exactly that, and the non-OK status stops the COMPOUND there.
+	if firstOpCode < types.OP_ACCESS || firstOpCode > h.maxValidOpCode(true, isV42) {
+		logger.Debug("NFSv4.1 COMPOUND illegal first opcode",
+			"opcode", firstOpCode,
+			"client", compCtx.ClientAddr)
+		return h.dispatchV41Ops(compCtx, tag, firstOpCode, numOps, nil, reader, isV42)
+	}
+
 	// Non-exempt: first op MUST be SEQUENCE
 	if firstOpCode != types.OP_SEQUENCE {
 		logger.Debug("NFSv4.1 COMPOUND missing SEQUENCE",
@@ -489,7 +504,7 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 	}
 
 	// Process SEQUENCE
-	seqResult, v41ctx, sess, cachedReply, seqErr := v41handlers.HandleSequenceOp(h.v41Deps, compCtx, reader)
+	seqResult, v41ctx, sess, cachedReply, seqErr := v41handlers.HandleSequenceOp(h.v41Deps, compCtx, numOps, reader)
 	if seqErr != nil {
 		return nil, fmt.Errorf("SEQUENCE processing error: %w", seqErr)
 	}

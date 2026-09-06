@@ -148,6 +148,13 @@ type CompoundContext struct {
 	// Section 2.10.6.1.3 -- a slot+seqid reused for a different request).
 	RequestDigest []byte
 
+	// RequestSize is the length in bytes of the COMPOUND arguments, set
+	// alongside RequestDigest in ProcessCompound. SEQUENCE weighs it against the
+	// session's negotiated ca_maxrequestsize. It excludes the RPC header, so it
+	// undercounts what a client's own request-size accounting includes; the
+	// resulting check is more permissive than the negotiated limit, never less.
+	RequestSize uint32
+
 	// MinorVersion is the minorversion field decoded from the COMPOUND
 	// arguments (0 for NFSv4.0, 1 for NFSv4.1, 2 for NFSv4.2). ProcessCompound
 	// sets it only once the value has passed the accepted-range check, so it
