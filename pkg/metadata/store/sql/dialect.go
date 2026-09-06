@@ -81,6 +81,32 @@ type Dialect interface {
 	// BlockRecords returns the dialect's block-record statements, under the
 	// same package-level-value expectation as Chunks.
 	BlockRecords() *BlockRecordQueries
+
+	// SyncedHashes returns the dialect's synced-hash statements, under the
+	// same package-level-value expectation as Chunks.
+	SyncedHashes() *SyncedHashQueries
+}
+
+// SyncedHashQueries holds the per-hash synced-marker statements that differ
+// between the dialects. Every difference is placeholder syntax except Now,
+// which is not a statement at all: it is the clock expression PutSyncedLocators
+// splices into the multi-row INSERT it assembles, spelled CURRENT_TIMESTAMP on
+// sqlite and NOW() on postgres.
+type SyncedHashQueries struct {
+	// SelectPresence reads a marker's existence, selecting a constant rather
+	// than a column. One parameter: the raw hash.
+	SelectPresence string
+	// SelectLocator reads a marker's locator columns, in
+	// SyncedLocatorColumns order. One parameter: the raw hash.
+	SelectLocator string
+	// Mark inserts a marker, leaving an existing row untouched so the first
+	// recorded locator wins. Four parameters: the raw hash then the three
+	// locator values, synced_at being stamped by the statement itself.
+	Mark string
+	// Delete removes one marker. One parameter: the raw hash.
+	Delete string
+	// Now is the clock expression that stamps synced_at.
+	Now string
 }
 
 // ShareQueries holds the share statements in one dialect's syntax. These
