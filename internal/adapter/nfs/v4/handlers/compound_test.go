@@ -802,6 +802,11 @@ func TestCompound_V41_V42OpStillNeedsSequence(t *testing.T) {
 		t.Errorf("status = %d, want NFS4ERR_OP_NOT_IN_SESSION (%d)",
 			decoded.Status, types.NFS4ERR_OP_NOT_IN_SESSION)
 	}
+	// Nothing ran, so the reply carries no results, which is what separates this
+	// path from the OP_ILLEGAL one that emits a single ILLEGAL result.
+	if decoded.NumResults != 0 {
+		t.Errorf("numResults = %d, want 0 (no op executed without SEQUENCE)", decoded.NumResults)
+	}
 }
 
 func TestCompound_V41_EmptyCompound(t *testing.T) {
