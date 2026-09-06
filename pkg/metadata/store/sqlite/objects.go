@@ -1,40 +1,47 @@
+// FileChunkStore support for the SQLite metadata store: content-addressed file
+// chunk tracking for deduplication and caching, over the file_blocks table.
+//
+// The statements and the bodies that run them live in store/sql, promoted onto
+// both the store and its transaction through the embedded Core. What stays here
+// is the dialect's own SQL text and the two entry points that must not be
+// promoted: DecrementRefCountAndReap, which needs a transaction Core is not one
+// of, and DecrementRefCountAndReapMany, whose two statements are only atomic
+// when they share the transaction the caller opened.
 package sqlite
 
 import (
 	"context"
-	"fmt"
-	"strings"
-	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
+
+	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 )
 
-// ============================================================================
-// FileChunkStore Implementation for SQLite Store
-// ============================================================================
-//
-// This file implements the FileChunkStore interface for the SQLite metadata store.
-// It provides content-addressed file chunk tracking for deduplication and caching.
-//
-// The FileChunkStore interface is narrowed to 6 methods. The backend
-// retains the legacy GetFileChunk + ListFileChunks helpers as
-// concrete methods on the struct (not on the public interface) for
-// engine-internal callers.
-//
-// Table:
-//   - file_blocks: File block data with UUID as primary key and hash index
-//
-// Thread Safety: All operations use SQLite transactions for ACID guarantees.
-//
-// ============================================================================
-
-// Ensure SQLiteMetadataStore implements FileChunkStore
+// Both the store and its transaction satisfy the interface through the
+// promoted Core methods.
 var _ block.FileChunkStore = (*SQLiteMetadataStore)(nil)
+var _ block.FileChunkStore = (*sqliteTransaction)(nil)
 
-// ============================================================================
-// FileChunk Operations
-// ============================================================================
+// insertFileChunk is the INSERT the row writers share; each appends its own
+// ON CONFLICT clause.
+const insertFileChunk = `INSERT INTO file_blocks (` + storesql.FileChunkColumns + `) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
+
+// listFileChunksQuery is ChunkQueries.ListByPayloadRange for sqlite; what the
+// bounds mean, and why the byte collation, lives on that field.
+const listFileChunksQuery = `SELECT ` + storesql.FileChunkColumns + `
+	FROM file_blocks
+	WHERE id >= ?1 COLLATE BINARY AND id < ?2 COLLATE BINARY
+	ORDER BY id COLLATE BINARY ASC`
+
+// enumerateHashesQuery is ChunkQueries.EnumerateHashes for sqlite; what the
+// union must cover, and why UNION ALL, lives on that field. The manifest arm
+// renders the BLOB hash column as hex with lower(hex(...)).
+const enumerateHashesQuery = `SELECT hash FROM file_blocks
+UNION ALL
+SELECT lower(hex(fbr.hash)) FROM file_block_refs fbr
+JOIN inodes i ON fbr.file_id = i.id
+WHERE i.nlink > 0`
 
 // DecrementRefCountAndReap atomically decrements ref_count and, when it hits 0,
 // deletes the row — both statements run inside ONE transaction so the
@@ -56,181 +63,25 @@ func (s *SQLiteMetadataStore) DecrementRefCountAndReap(ctx context.Context, id s
 	return newCount, nil
 }
 
-// The bodies below carry the file_blocks CRUD SQL once. Both the pool path and
-// the transaction path run them over their own executor, so the two surfaces
-// cannot drift apart.
+// DecrementRefCountAndReapMany runs the batched decrement + reap on this
+// transaction's executor so a subsequent rollback undoes the whole set. Going
+// through the pool would let the two statements autocommit separately and
+// survive that rollback.
+func (tx *sqliteTransaction) DecrementRefCountAndReapMany(ctx context.Context, ids []string) error {
+	return storesql.DecrementAndReapMany(ctx, tx.tx, sqliteDialect, ids)
+}
 
-// fileChunkColumns is the file_blocks column list every chunk read and write
-// names, in the order scanFileChunk reads them. Naming it once is what keeps a
-// column added to one query from being missed by the others, or by the scan.
-const fileChunkColumns = `id, hash, data_size, start_offset, ref_count, last_access, created_at, state, last_sync_attempt_at`
-
-// insertFileChunk is the INSERT the row writers share; each appends its own
-// ON CONFLICT clause.
-const insertFileChunk = `INSERT INTO file_blocks (` + fileChunkColumns + `) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
-
-// putFileChunkQuery omits ref_count from the ON CONFLICT update list so a
-// concurrent IncrementRefCount / DecrementRefCount (atomic SQL +1 / -1 UPDATEs)
-// cannot be overwritten by a stale in-memory RefCount; the INSERT path still
-// writes the caller's value verbatim. hash uses COALESCE so a zero-hash Put
-// never NULLs a previously persisted good hash.
-const putFileChunkQuery = insertFileChunk + `
-	ON CONFLICT (id) DO UPDATE SET
-		hash = COALESCE(EXCLUDED.hash, file_blocks.hash),
-		data_size = EXCLUDED.data_size,
-		start_offset = EXCLUDED.start_offset,
-		last_access = EXCLUDED.last_access,
-		state = EXCLUDED.state,
-		last_sync_attempt_at = EXCLUDED.last_sync_attempt_at`
-
-// AddRef bumps RefCount on the rows indexed by the given content hash,
+// AddRef bumps RefCount on the row(s) indexed by the given content hash,
 // implementing the FileChunkStore.AddRef contract the in-memory dedup LRU hit
-// path uses. Returns metadata.ErrUnknownHash when no row matches; the caller
-// falls back to the full Put path on that sentinel. The reasoning about
-// atomicity, Remote-only scoping and multi-row tolerance lives on the shared
+// path uses. Returns metadata.ErrUnknownHash when no row matches; callers fall
+// back to the full Put path on that sentinel. The reasoning about atomicity,
+// Remote-only scoping and multi-row tolerance lives on the shared
 // implementation in store/sql.
 func (s *SQLiteMetadataStore) AddRef(ctx context.Context, hash block.ContentHash, _ string, _ block.ChunkRef) error {
 	// payloadID + blockRef are accepted for future GC traceability; this
 	// backend records ref count only, so they are intentionally blanked.
 	return s.Core.AddRef(ctx, hash)
 }
-
-// listFileChunksQuery takes the bounds of block.PayloadPrefixRange and is a
-// prefilter; block.ChunksForPayload decides membership and order.
-//
-// The range is compared and ordered in byte collation, not the database
-// default: the bounds only bracket the prefix under byte ordering, and a
-// byte-ordered id column lets the primary-key index seek the range instead of
-// filtering the whole table.
-const listFileChunksQuery = `SELECT ` + fileChunkColumns + `
-	FROM file_blocks
-	WHERE id >= ?1 COLLATE BINARY AND id < ?2 COLLATE BINARY
-	ORDER BY id COLLATE BINARY ASC`
-
-// enumerateHashesQuery is the GC mark live-set query. It UNIONs the CAS index
-// (file_blocks.hash, VARCHAR hex) with the per-file manifest
-// (file_block_refs.hash, BYTEA → encode hex) so the live set is a strict
-// SUPERSET of both structures, so a hash present in only one (e.g. a manifest
-// row whose CAS index row was never written or already reaped) still keeps its
-// chunk live. The manifest arm is filtered to nlink>0 inodes (#1433): once a
-// file is unlinked its manifest rows linger but the payload is dead, so
-// including them would pin orphaned chunks live forever and the sweep could
-// never reclaim them. Snapshot-held blocks are protected independently by the
-// GC HoldProvider (on-disk snapshot manifests), not by this union. NULL
-// hashes (legacy pre-CAS file_blocks rows) are emitted as the zero ContentHash
-// and skipped by the mark phase; file_block_refs.hash is NOT NULL.
-//
-// UNION ALL, not UNION: the consumer (GC mark phase) dedupes hashes into a set,
-// so cross-source and intra-source duplicates are harmless. UNION would force an
-// expensive sort/hash-aggregate to dedupe at the query layer for no benefit.
-const enumerateHashesQuery = `SELECT hash FROM file_blocks
-UNION ALL
-SELECT lower(hex(fbr.hash)) FROM file_block_refs fbr
-JOIN inodes i ON fbr.file_id = i.id
-WHERE i.nlink > 0`
-
-// EnumeratePayloads streams every distinct payloadID that has at least one
-// FileChunk row through fn. FileChunk row IDs have the form
-// {payloadID}/{chunkOffset}; the payloadID is everything BEFORE THE LAST '/'
-// (payloadIDs are BuildPayloadID(shareName, filePath) and themselves contain
-// slashes, so a substr/split on the FIRST slash would truncate every
-// subdirectory file to its share name). We therefore parse the payloadID in
-// Go on the last slash rather than in SQL.
-//
-// The rows cursor is fully drained and CLOSED before any fn callback runs.
-// The SQLite pool is MaxOpenConns(1), and warm/stats fn callbacks issue
-// further reads (ListFileChunks) that need that single connection — calling fn
-// while the cursor is still open would deadlock. This collect-then-call shape
-// also matches the badger/memory backends.
-func (s *SQLiteMetadataStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
-	const query = `SELECT DISTINCT id FROM file_blocks`
-	ids, err := s.collectFileChunkIDs(ctx, query)
-	if err != nil {
-		return err
-	}
-
-	seen := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("enumerate payloads: %w", err)
-		}
-		i := strings.LastIndex(id, "/")
-		if i < 0 {
-			continue
-		}
-		payloadID := id[:i]
-		if _, ok := seen[payloadID]; ok {
-			continue
-		}
-		seen[payloadID] = struct{}{}
-		if err := fn(payloadID); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// EnumerateLivePayloadIDs streams every distinct content_id referenced by a
-// live inode. content_id IS the payloadID, so no id-splitting is needed.
-// Hardlinks share one inode row, so DISTINCT yields one payloadID regardless of
-// link count. nlink=0 (unlinked) inodes are excluded (#1433): their payload is
-// dead, so the reconcile must treat it as stranded, not live.
-func (s *SQLiteMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn func(payloadID string) error) error {
-	const query = `SELECT DISTINCT content_id FROM inodes WHERE content_id IS NOT NULL AND content_id != '' AND nlink > 0`
-	ids, err := s.collectFileChunkIDs(ctx, query)
-	if err != nil {
-		return err
-	}
-	for _, id := range ids {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("enumerate live payloads: %w", err)
-		}
-		if err := fn(id); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// collectFileChunkIDs runs query (which must SELECT a single TEXT id column),
-// scans every id into a slice, and closes the rows cursor before returning so
-// the caller may safely issue further queries on the single-connection pool.
-func (s *SQLiteMetadataStore) collectFileChunkIDs(ctx context.Context, query string) ([]string, error) {
-	rows, err := s.query(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("enumerate payloads: query: %w", err)
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("enumerate payloads: scan: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("enumerate payloads: rows: %w", err)
-	}
-	return ids, nil
-}
-
-// ============================================================================
-// Scan Helpers
-// ============================================================================
-
-// ============================================================================
-// Transaction Support
-// ============================================================================
-
-// Ensure sqliteTransaction implements FileChunkStore
-var _ block.FileChunkStore = (*sqliteTransaction)(nil)
-
-// Every FileChunkStore method below runs on the transaction's own executor,
-// never the store's pool helpers: a pool connection cannot see the
-// transaction's uncommitted writes and would survive its rollback, so a caller
-// that bumped RefCount inside WithTransaction and then hit a downstream
-// UpdateAttrs failure would leak the bump.
 
 // AddRef bumps ref_count keyed by hash on the active transaction so a
 // subsequent rollback undoes it. Returns metadata.ErrUnknownHash when no row
@@ -239,70 +90,4 @@ func (tx *sqliteTransaction) AddRef(ctx context.Context, hash block.ContentHash,
 	// payloadID + blockRef are accepted for future GC traceability; this
 	// backend records ref count only, so they are intentionally blanked.
 	return tx.Core.AddRef(ctx, hash)
-}
-
-// ListFileChunks and EnumerateFileChunks run on this transaction's executor,
-// NOT the pool. Going through the pool would open a separate connection that
-// cannot see this transaction's uncommitted writes, so a Put followed by a List
-// inside one WithTransaction would miss the pending row — a read-after-write
-// violation. On SQLite it is worse than a wrong answer: the pool write blocks
-// on the write lock this transaction holds, so it hangs.
-
-// The file_blocks table schema lives in
-// pkg/metadata/store/postgres/migrations/000010_file_blocks.up.sql.
-
-// InjectCorruptHashRow stores a file_blocks row whose hash column holds a
-// syntactically malformed value. Test-only: implements the storetest
-// CorruptHashInjector capability so the conformance suite can exercise
-// fail-closed enumeration. The TEXT column lets us bypass the
-// Put contract that always serializes a valid ContentHash.String().
-func (s *SQLiteMetadataStore) InjectCorruptHashRow(ctx context.Context, blockID string, badHash string) error {
-	now := time.Now()
-	_, err := s.exec(ctx, insertFileChunk+` ON CONFLICT (id) DO UPDATE SET hash = EXCLUDED.hash`,
-		blockID, badHash, uint32(64), uint32(0), uint32(1), now, now, int(block.BlockStateRemote), nil,
-	)
-	if err != nil {
-		return fmt.Errorf("inject corrupt hash row: %w", err)
-	}
-	return nil
-}
-
-// decrementAndReapManyTx applies the -1 UPDATE and the reap-at-zero DELETE to a
-// whole id set, two statements per batch instead of two per id. The
-// `ref_count = 0` predicate on the DELETE means a bump that landed between the
-// two statements leaves that row alive, and an id with no row is a no-op — the
-// same outcomes decrementAndReapTx produces one row at a time. SQLite caps how
-// many parameters one statement may bind, so a large set runs as several
-// batches.
-func decrementAndReapManyTx(ctx context.Context, tx execer, ids []string) error {
-	const maxIDsPerStatement = 500
-	for len(ids) > 0 {
-		batch := ids[:min(len(ids), maxIDsPerStatement)]
-		ids = ids[len(batch):]
-
-		args := make([]any, len(batch))
-		for i, id := range batch {
-			args[i] = id
-		}
-		in := " WHERE id IN (?" + strings.Repeat(",?", len(batch)-1) + ")"
-
-		if _, err := tx.Exec(ctx,
-			`UPDATE file_blocks SET ref_count = MAX(ref_count - 1, 0)`+in, args...); err != nil {
-			return fmt.Errorf("decrement ref count: %w", err)
-		}
-		if _, err := tx.Exec(ctx,
-			`DELETE FROM file_blocks`+in+` AND ref_count = 0`, args...); err != nil {
-			return fmt.Errorf("reap zero-ref block: %w", err)
-		}
-	}
-	return nil
-}
-
-// DecrementRefCountAndReapMany runs the batched decrement + reap on the active
-// transaction so a subsequent rollback undoes the whole set.
-func (tx *sqliteTransaction) DecrementRefCountAndReapMany(ctx context.Context, ids []string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return decrementAndReapManyTx(ctx, tx.tx, ids)
 }

@@ -26,12 +26,14 @@ func (dialect) IsNoRows(err error) bool { return errors.Is(err, sql.ErrNoRows) }
 func (dialect) Chunks() *storesql.ChunkQueries { return &chunkQueries }
 
 var chunkQueries = storesql.ChunkQueries{
-	SelectByID:   `SELECT ` + fileChunkColumns + ` FROM file_blocks WHERE id = ?1`,
-	SelectByHash: `SELECT ` + fileChunkColumns + ` FROM file_blocks WHERE hash = ?1 AND state = 2 /* Remote */`,
-	Upsert:       putFileChunkQuery,
-	Delete:       `DELETE FROM file_blocks WHERE id = ?1`,
-	IncrementRef: `UPDATE file_blocks SET ref_count = ref_count + 1 WHERE id = ?1`,
-	DecrementRef: `UPDATE file_blocks SET ref_count = MAX(ref_count - 1, 0) WHERE id = ?1 RETURNING ref_count`,
+	SelectByID:       `SELECT ` + storesql.FileChunkColumns + ` FROM file_blocks WHERE id = ?1`,
+	SelectByHash:     `SELECT ` + storesql.FileChunkColumns + ` FROM file_blocks WHERE hash = ?1 AND state = 2 /* Remote */`,
+	Insert:           insertFileChunk,
+	Upsert:           insertFileChunk + storesql.FileChunkUpsertTail,
+	Delete:           `DELETE FROM file_blocks WHERE id = ?1`,
+	IncrementRef:     `UPDATE file_blocks SET ref_count = ref_count + 1 WHERE id = ?1`,
+	DecrementRef:     `UPDATE file_blocks SET ref_count = MAX(ref_count - 1, 0) WHERE id = ?1 RETURNING ref_count`,
+	DecrementRefMany: `UPDATE file_blocks SET ref_count = MAX(ref_count - 1, 0)`,
 	// state = 2 (Remote) scoping mirrors SelectByHash and the memory/badger
 	// backends: a Pending row is not a valid dedup donor.
 	AddRef:             `UPDATE file_blocks SET ref_count = ref_count + 1 WHERE hash = ?1 AND state = 2 /* Remote */`,
