@@ -8,8 +8,16 @@ package sql
 //   - Text divergence — ?N versus $N, NOW() versus CURRENT_TIMESTAMP, the two
 //     rewritten recursive-CTE path queries, the two block-ref aggregates. That
 //     is baked into per-dialect SQL constants, supplied here as a struct of
-//     statements. A Placeholder(n int) method would move the same two-line
-//     difference into an indirection and buy nothing.
+//     statements, because moving a two-line difference into an indirection
+//     would buy nothing.
+//
+//     Placeholder is the exception, and only for the statements that have no
+//     constant to bake: a manifest delta binds one parameter per changed
+//     offset, so its IN-lists and multi-row VALUES groups are assembled at
+//     runtime and there is nothing for a dialect to spell in advance. Reach
+//     for it only there — a statement whose shape is known writes its own
+//     placeholders.
+//
 //   - Behavioural divergence — error classification, and whether an error is
 //     the driver's empty-result sentinel. Those are genuinely per-dialect
 //     behaviour, so they are methods.
@@ -26,6 +34,11 @@ type Dialect interface {
 	// cannot compare against either directly, and getting this wrong turns
 	// "absent" into a hard error rather than the not-found the callers expect.
 	IsNoRows(err error) bool
+
+	// Placeholder renders the bind marker for the i'th parameter, 1-based:
+	// "?1" for sqlite, "$1" for postgres. Only for statements assembled at
+	// runtime from a variable-length list; see the type doc.
+	Placeholder(i int) string
 
 	// MapError translates a driver error into the metadata.ExportError the
 	// callers switch on, tagging it with the operation name and the path it

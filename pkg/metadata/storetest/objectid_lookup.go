@@ -19,14 +19,19 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 	fileA := createTestFile(t, store, "objid-find", rootHandle, "a.bin", 0o644)
 	fileB := createTestFile(t, store, "objid-find", rootHandle, "b.bin", 0o644)
 
+	// StartOffset is non-zero throughout: it says where a chunk's bytes begin
+	// inside a packed block, so a lookup that returns zero for it resolves to
+	// the head of the block and reads the wrong bytes without erroring. A
+	// fixture that leaves it zero cannot tell a backend that carries the
+	// column from one that drops it.
 	blocksA := []block.ChunkRef{
-		{Hash: hashOfSeed("oid-find-a-0"), Offset: 0, Size: 4096},
-		{Hash: hashOfSeed("oid-find-a-1"), Offset: 4096, Size: 4096},
+		{Hash: hashOfSeed("oid-find-a-0"), Offset: 0, Size: 4096, StartOffset: 512},
+		{Hash: hashOfSeed("oid-find-a-1"), Offset: 4096, Size: 4096, StartOffset: 4608},
 	}
 	blocksB := []block.ChunkRef{
-		{Hash: hashOfSeed("oid-find-b-0"), Offset: 0, Size: 4096},
-		{Hash: hashOfSeed("oid-find-b-1"), Offset: 4096, Size: 4096},
-		{Hash: hashOfSeed("oid-find-b-2"), Offset: 8192, Size: 4096},
+		{Hash: hashOfSeed("oid-find-b-0"), Offset: 0, Size: 4096, StartOffset: 128},
+		{Hash: hashOfSeed("oid-find-b-1"), Offset: 4096, Size: 4096, StartOffset: 4224},
+		{Hash: hashOfSeed("oid-find-b-2"), Offset: 8192, Size: 4096, StartOffset: 8320},
 	}
 	oidA := block.ComputeObjectID(blocksA)
 	oidB := block.ComputeObjectID(blocksB)
@@ -64,7 +69,7 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 		t.Fatalf("FindByObjectID(A): got %d refs, want %d", len(gotA), len(blocksA))
 	}
 	for i, want := range blocksA {
-		if gotA[i].Hash != want.Hash || gotA[i].Offset != want.Offset || gotA[i].Size != want.Size {
+		if gotA[i] != want {
 			t.Errorf("FindByObjectID(A)[%d] = %+v, want %+v", i, gotA[i], want)
 		}
 	}
@@ -76,6 +81,11 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 	}
 	if len(gotB) != len(blocksB) {
 		t.Fatalf("FindByObjectID(B): got %d refs, want %d", len(gotB), len(blocksB))
+	}
+	for i, want := range blocksB {
+		if gotB[i] != want {
+			t.Errorf("FindByObjectID(B)[%d] = %+v, want %+v", i, gotB[i], want)
+		}
 	}
 
 	// Miss: an ObjectID nobody indexed.

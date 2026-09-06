@@ -111,7 +111,7 @@ func (s *PostgresMetadataStore) FindByObjectID(ctx context.Context, objectID blo
 		return nil, mapPgError(err, "FindByObjectID", objectID.String())
 	}
 
-	return s.loadFileChunkRefs(ctx, fileID)
+	return s.LoadFileChunkRefs(ctx, fileID)
 }
 
 // CountObjectIDIndexRows implements the storetest.ObjectIDIndexAccessor

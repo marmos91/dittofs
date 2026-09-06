@@ -414,3 +414,17 @@ func (s *PostgresMetadataStore) RecomputeUsage(ctx context.Context) error {
 // silently rather than failing when the store no longer satisfies it. This
 // states the requirement where the compiler can see it.
 var _ lock.LockStore = (*PostgresMetadataStore)(nil)
+
+// PutFileChunkRefsCallCount reports how many writes actually persisted
+// file_block_refs rows — the delta upserted or deleted at least one row — since
+// the store opened. Test-only: it proves that attr-only writes and no-op
+// re-projections of an unchanged manifest perform zero manifest writes.
+func (s *PostgresMetadataStore) PutFileChunkRefsCallCount() int64 { return s.manifestWrites.Load() }
+
+// PutFileChunkRefsManifestRowsScanned reports how many stored file_block_refs
+// rows the manifest diff has read since the store opened. Test-only: it proves
+// a scoped commit's read cost tracks the changed offsets, not the file's total
+// chunk count.
+func (s *PostgresMetadataStore) PutFileChunkRefsManifestRowsScanned() int64 {
+	return s.manifestRowsScanned.Load()
+}
