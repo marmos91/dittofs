@@ -152,17 +152,21 @@ func BenchmarkHydrate(b *testing.B) {
 	}
 }
 
-// BenchmarkEvict measures Resident -> Remote: reclaiming whole sealed segments
+// BenchmarkEvict measures Resident -> Remote: reclaiming a whole sealed segment
 // under storage pressure. Only fully-synced segments qualify, so the fill uses
 // Hydrate, which appends records already marked synced; a WriteAt fill would
 // measure a pass that correctly declines to evict anything.
+//
+// The refill runs once per iteration and writes just past a segment's worth, so
+// the rotation it forces leaves exactly one sealed segment for the Evict that
+// follows. Filling several iterations ahead does not work — a refill's bytes
+// coalesce into a single active segment, so the second Evict onwards finds
+// nothing and times an empty pass.
 func BenchmarkEvict(b *testing.B) {
 	s, _ := benchStoreDir(b, Config{SegmentSize: minSegmentSize, ShardCount: 1})
 	ctx := context.Background()
-	const (
-		span    = 256 << 10
-		perFill = 8 // segments made available per refill
-	)
+	const span = 128 << 10
+	perFill := int(minSegmentSize/span) + 1
 	buf := make([]byte, span)
 	fill := func(round int) {
 		for j := 0; j < perFill; j++ {
@@ -176,11 +180,9 @@ func BenchmarkEvict(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if i%perFill == 0 {
-			b.StopTimer()
-			fill(i / perFill)
-			b.StartTimer()
-		}
+		b.StopTimer()
+		fill(i)
+		b.StartTimer()
 		// targetBytes <= 0 evicts a single qualifying segment, which is the unit
 		// this benchmark is timing.
 		res, err := s.Evict(ctx, 0)
