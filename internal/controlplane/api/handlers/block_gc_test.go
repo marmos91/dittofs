@@ -526,7 +526,6 @@ func TestBlockStoreHandler_ReconcileReport_Success(t *testing.T) {
 		ZeroRefRecords:      engine.ReconcileClass{Count: 1, Sample: []string{"blk-zeroref"}},
 		LeakedBlocks:        engine.ReconcileClass{Count: 2},
 		OrphanRemoteObjects: engine.ReconcileClass{Count: 3},
-		StrandedLocalChunks: engine.ReconcileClass{Count: 4},
 	}}
 	h := NewBlockStoreGCHandler(fake)
 
@@ -543,7 +542,7 @@ func TestBlockStoreHandler_ReconcileReport_Success(t *testing.T) {
 		t.Fatalf("ReconcileReport: decode: %v", err)
 	}
 	if got.ZeroRefRecords.Count != 1 || got.LeakedBlocks.Count != 2 ||
-		got.OrphanRemoteObjects.Count != 3 || got.StrandedLocalChunks.Count != 4 {
+		got.OrphanRemoteObjects.Count != 3 {
 		t.Fatalf("ReconcileReport: unexpected body: %+v", got)
 	}
 }
