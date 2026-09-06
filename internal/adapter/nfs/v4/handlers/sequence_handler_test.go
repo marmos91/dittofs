@@ -38,14 +38,18 @@ func createTestSession(t *testing.T) (*Handler, types.SessionId4) {
 func createSessionOn(t *testing.T, h *Handler, ownerID string) types.SessionId4 {
 	t.Helper()
 	clientID, seqID := registerExchangeID(t, h, ownerID)
-
-	ctx := newTestCompoundContext()
 	secParms := []types.CallbackSecParms4{{CbSecFlavor: 0}} // AUTH_NONE
-	csArgs := encodeCreateSessionArgsWithSec(clientID, seqID, 0, secParms)
-	ops := []compoundOp{{opCode: types.OP_CREATE_SESSION, data: csArgs}}
-	data := buildCompoundArgsWithOps([]byte("cs"), 1, ops)
+	return runCreateSession(t, h, encodeCreateSessionArgsWithSec(clientID, seqID, 0, secParms)).SessionID
+}
 
-	resp, err := h.ProcessCompound(ctx, data)
+// runCreateSession sends the given CREATE_SESSION args as a single-op COMPOUND
+// and returns the decoded result, failing the test unless the session was
+// created.
+func runCreateSession(t *testing.T, h *Handler, csArgs []byte) types.CreateSessionRes {
+	t.Helper()
+	ops := []compoundOp{{opCode: types.OP_CREATE_SESSION, data: csArgs}}
+	resp, err := h.ProcessCompound(newTestCompoundContext(),
+		buildCompoundArgsWithOps([]byte("cs"), 1, ops))
 	if err != nil {
 		t.Fatalf("CREATE_SESSION ProcessCompound error: %v", err)
 	}
@@ -67,7 +71,7 @@ func createSessionOn(t *testing.T, h *Handler, ownerID string) types.SessionId4 
 		t.Fatalf("CREATE_SESSION status = %d, want NFS4_OK", csRes.Status)
 	}
 
-	return csRes.SessionID
+	return csRes
 }
 
 // decodeSequenceRes decodes SEQUENCE4res from a COMPOUND response that has
@@ -807,9 +811,12 @@ func TestCompound_V41_OpCountLimit(t *testing.T) {
 		t.Fatalf("decode response error: %v", err)
 	}
 
-	if decoded.Status != types.NFS4ERR_RESOURCE {
-		t.Errorf("status = %d, want NFS4ERR_RESOURCE (%d)",
-			decoded.Status, types.NFS4ERR_RESOURCE)
+	// NFS4ERR_RESOURCE, which the v4.0 path answers here, is an NFSv4.0 error
+	// that RFC 8881 does not define; the v4.1 cap is below every session's
+	// negotiated ca_maxoperations, so NFS4ERR_TOO_MANY_OPS is what it owes.
+	if decoded.Status != types.NFS4ERR_TOO_MANY_OPS {
+		t.Errorf("status = %d, want NFS4ERR_TOO_MANY_OPS (%d)",
+			decoded.Status, types.NFS4ERR_TOO_MANY_OPS)
 	}
 }
 
@@ -989,25 +996,9 @@ func createLimitedSession(t *testing.T, h *Handler, ownerID string, maxOps, maxR
 		t.Fatalf("encode CreateSessionArgs: %v", err)
 	}
 
-	ops := []compoundOp{{opCode: types.OP_CREATE_SESSION, data: argBuf.Bytes()}}
-	resp, err := h.ProcessCompound(newTestCompoundContext(),
-		buildCompoundArgsWithOps([]byte("cs"), 1, ops))
-	if err != nil {
-		t.Fatalf("CREATE_SESSION ProcessCompound error: %v", err)
-	}
-
-	reader := bytes.NewReader(resp)
-	if status, _ := xdr.DecodeUint32(reader); status != types.NFS4_OK {
-		t.Fatalf("CREATE_SESSION overall status = %d, want NFS4_OK", status)
-	}
-	_, _ = xdr.DecodeOpaque(reader) // tag
-	_, _ = xdr.DecodeUint32(reader) // numResults
-	_, _ = xdr.DecodeUint32(reader) // opcode
-
-	var csRes types.CreateSessionRes
-	if err := csRes.Decode(reader); err != nil {
-		t.Fatalf("decode CreateSessionRes: %v", err)
-	}
+	// The server may negotiate the fore channel down but never up, so the test
+	// limits are only usable once the reply confirms them.
+	csRes := runCreateSession(t, h, argBuf.Bytes())
 	if csRes.ForeChannelAttrs.MaxOperations != maxOps {
 		t.Fatalf("negotiated MaxOperations = %d, want %d",
 			csRes.ForeChannelAttrs.MaxOperations, maxOps)

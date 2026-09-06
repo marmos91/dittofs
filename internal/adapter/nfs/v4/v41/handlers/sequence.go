@@ -15,7 +15,8 @@ import (
 // Establishes slot-based exactly-once semantics as the first op in every non-exempt v4.1 COMPOUND.
 // Delegates to StateManager for session lookup, slot validation, replay detection, and lease renewal.
 // Validates session/slot/seqid; returns cached reply on replay; builds V41RequestContext for new requests.
-// Errors: NFS4ERR_BADSESSION, NFS4ERR_SEQ_MISORDERED, NFS4ERR_BAD_SLOT, NFS4ERR_BADXDR.
+// Errors: NFS4ERR_BADSESSION, NFS4ERR_SEQ_MISORDERED, NFS4ERR_BAD_SLOT, NFS4ERR_BADXDR,
+// NFS4ERR_TOO_MANY_OPS, NFS4ERR_REQ_TOO_BIG.
 func HandleSequenceOp(d *Deps, compCtx *types.CompoundContext, numOps uint32, reader io.Reader) (
 	sequenceResult *types.CompoundResult,
 	v41ctx *types.V41RequestContext,

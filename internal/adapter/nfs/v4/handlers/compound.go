@@ -446,19 +446,28 @@ func compoundIsNonIdempotent(results []types.CompoundResult) bool {
 //  1. Validate op count
 //  2. Read first opcode
 //  3. If exempt op: dispatch all ops with v41ctx=nil (no session context)
-//  4. If SEQUENCE: validate session/slot/seqid, then dispatch remaining ops
-//  5. If neither: return NFS4ERR_OP_NOT_IN_SESSION
+//  4. If outside this minor version's op-number range: dispatch it, which
+//     answers OP_ILLEGAL/NFS4ERR_OP_ILLEGAL
+//  5. If SEQUENCE: validate session/slot/seqid, then dispatch remaining ops
+//  6. If none of those: return NFS4ERR_OP_NOT_IN_SESSION
 //
 // On SEQUENCE replay (duplicate slot+seqid), returns the cached COMPOUND
 // response bytes directly without re-executing any operations.
 func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps uint32, reader io.Reader, isV42 bool) ([]byte, error) {
-	// Validate operation count limit
+	// Cap the op count before the session is known: numOps is client-supplied and
+	// sizes the result slice, so it is bounded here rather than after SEQUENCE
+	// parses. NFS4ERR_TOO_MANY_OPS is answerable without the session because
+	// negotiateChannelAttrs clamps every session's ca_maxoperations to
+	// MaxCompoundOps, so a COMPOUND over the global cap is over its session's
+	// limit too. NFS4ERR_RESOURCE, which the v4.0 path returns here, is an
+	// NFSv4.0 error (RFC 7530 Section 13.1.3.4) and is absent from both the
+	// NFSv4.1 error registry and every operation's valid-error list in RFC 8881.
 	if numOps > types.MaxCompoundOps {
 		logger.Debug("NFSv4.1 COMPOUND op count exceeds limit",
 			"count", numOps,
 			"max", types.MaxCompoundOps,
 			"client", compCtx.ClientAddr)
-		return encodeCompoundResponse(types.NFS4ERR_RESOURCE, tag, nil)
+		return encodeCompoundResponse(types.NFS4ERR_TOO_MANY_OPS, tag, nil)
 	}
 
 	// Empty compound: just return success
@@ -483,11 +492,12 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 
 	// An opcode outside the operation-number range of this minor version is not
 	// an operation at all, so the SEQUENCE requirement does not reach it:
-	// NFS4ERR_OP_NOT_IN_SESSION is defined (RFC 8881 §15.1.3.5) for operations
-	// that are only valid inside a session, while RFC 8881 §16.2.3 says the reply
-	// to an out-of-range opcode encodes OP_ILLEGAL with NFS4ERR_OP_ILLEGAL and
-	// that the COMPOUND status is NFS4ERR_OP_ILLEGAL too. Dispatching it produces
-	// exactly that, and the non-OK status stops the COMPOUND there.
+	// NFS4ERR_OP_NOT_IN_SESSION is defined (RFC 8881 Section 15.1.3.5) for
+	// operations that are only valid inside a session, while RFC 8881
+	// Section 16.2.3 says the reply to an out-of-range opcode encodes OP_ILLEGAL
+	// with NFS4ERR_OP_ILLEGAL and that the COMPOUND status is NFS4ERR_OP_ILLEGAL
+	// too. Dispatching it produces exactly that, and the non-OK status stops the
+	// COMPOUND there.
 	if firstOpCode < types.OP_ACCESS || firstOpCode > h.maxValidOpCode(true, isV42) {
 		logger.Debug("NFSv4.1 COMPOUND illegal first opcode",
 			"opcode", firstOpCode,
