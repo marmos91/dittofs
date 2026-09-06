@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -515,4 +516,112 @@ func TestConfirmClientID_StaleRetransmitLeavesRecordIntact(t *testing.T) {
 	if got := sm.GetClient(second.ClientID).Callback.Addr; got != "10.0.0.1.8.2" {
 		t.Fatalf("confirmed callback = %q, want 10.0.0.1.8.2", got)
 	}
+}
+
+// cbProbeHarness drives SETCLIENTID_CONFIRM with CB_NULL held under test
+// control, so a probe can be left in flight across a re-SETCLIENTID.
+type cbProbeHarness struct {
+	sm      *StateManager
+	t       *testing.T
+	probing chan string
+	release map[string]chan error
+}
+
+func newCBProbeHarness(t *testing.T, addrs ...string) *cbProbeHarness {
+	t.Helper()
+	h := &cbProbeHarness{
+		sm:      NewStateManager(time.Minute),
+		t:       t,
+		probing: make(chan string, 4),
+		release: map[string]chan error{},
+	}
+	for _, a := range addrs {
+		h.release[a] = make(chan error)
+	}
+	h.sm.cbNullFunc = func(_ context.Context, cb CallbackInfo) error {
+		h.probing <- cb.Addr
+		return <-h.release[cb.Addr]
+	}
+	return h
+}
+
+// confirm runs SETCLIENTID + SETCLIENTID_CONFIRM for addr and waits until its
+// CB_NULL probe has started, so the probe is reliably in flight on return.
+func (h *cbProbeHarness) confirm(addr string) uint64 {
+	h.t.Helper()
+	verifier := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+	result, err := h.sm.SetClientID("client-cbpath", verifier,
+		CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: addr}, "10.0.0.1:1234")
+	if err != nil {
+		h.t.Fatalf("SetClientID(%s): %v", addr, err)
+	}
+	if err := h.sm.ConfirmClientID(result.ClientID, result.ConfirmVerifier); err != nil {
+		h.t.Fatalf("ConfirmClientID(%s): %v", addr, err)
+	}
+	if got := <-h.probing; got != addr {
+		h.t.Fatalf("probe went to %q, want %q", got, addr)
+	}
+	return result.ClientID
+}
+
+func (h *cbProbeHarness) cbPathUp(clientID uint64) bool {
+	h.sm.mu.Lock()
+	defer h.sm.mu.Unlock()
+	return h.sm.clientsByID[clientID].CBPathUp
+}
+
+func (h *cbProbeHarness) waitCBPathUp(clientID uint64) {
+	h.t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); !h.cbPathUp(clientID); {
+		if time.Now().After(deadline) {
+			h.t.Fatal("CB_NULL success never enabled the callback path")
+		}
+	}
+}
+
+// Delegations are gated on CBPathUp. A re-SETCLIENTID can move the client to a
+// new callback address, so confirming it must drop the verdict earned by the
+// address it replaces — otherwise a delegation is granted in the window before
+// the new address has been probed at all, and recalled somewhere this client is
+// not listening.
+func TestConfirmClientID_ReSetClientIDClearsCallbackVerdict(t *testing.T) {
+	const addr1, addr2 = "10.0.0.1.8.1", "10.0.0.1.8.2"
+	h := newCBProbeHarness(t, addr1, addr2)
+
+	clientID := h.confirm(addr1)
+	h.release[addr1] <- nil
+	h.waitCBPathUp(clientID)
+
+	if got := h.confirm(addr2); got != clientID {
+		t.Fatal("re-SETCLIENTID returned a different client ID")
+	}
+	if h.cbPathUp(clientID) {
+		t.Fatal("confirm kept the previous callback address's verdict for a new one")
+	}
+}
+
+// CB_NULL runs asynchronously, so a re-SETCLIENTID can land while the previous
+// address is still being probed. That probe's verdict is about an address the
+// client no longer uses and must not vouch for the one that replaced it.
+func TestConfirmClientID_StaleCallbackProbeDoesNotVouchForNewAddress(t *testing.T) {
+	const addr1, addr2 = "10.0.0.1.8.1", "10.0.0.1.8.2"
+	h := newCBProbeHarness(t, addr1, addr2)
+
+	clientID := h.confirm(addr1)
+	// Re-SETCLIENTID while the first probe is still in flight.
+	if got := h.confirm(addr2); got != clientID {
+		t.Fatal("re-SETCLIENTID returned a different client ID")
+	}
+
+	// The stale probe succeeds, about the replaced address.
+	h.release[addr1] <- nil
+	for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline); {
+		if h.cbPathUp(clientID) {
+			t.Fatal("a CB_NULL for the replaced address enabled the new one")
+		}
+	}
+
+	// Only the new address's own probe may enable the callback path.
+	h.release[addr2] <- nil
+	h.waitCBPathUp(clientID)
 }

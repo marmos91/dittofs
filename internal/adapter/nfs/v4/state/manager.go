@@ -616,6 +616,12 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 			record.Callback = unconfirmed.Callback
 			record.ClientAddr = unconfirmed.ClientAddr
 			record.Principal = unconfirmed.Principal
+			// The callback address just changed, so the path to it is unproven
+			// again until the CB_NULL below says otherwise. Carrying the old
+			// generation's verdict forward would let delegations be granted in
+			// the window before that probe answers, and recalled to an address
+			// this client never confirmed it listens on.
+			record.CBPathUp = false
 		} else {
 			// True retransmit - validate verifier matches the confirmed record
 			if record.ConfirmVerifier != confirmVerifier {
@@ -684,10 +690,12 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 			sm.mu.Lock()
 			defer sm.mu.Unlock()
 			rec, ok := sm.clientsByID[clientID]
-			if !ok || rec != recordPtr {
-				// Client was removed, or this client ID now points at a
-				// different record generation (reboot / re-SETCLIENTID) while
-				// CB_NULL was in flight. Do not touch the replacement.
+			if !ok || rec != recordPtr || rec.Callback != cbInfo {
+				// Client was removed, this client ID now points at a different
+				// record generation (reboot) while CB_NULL was in flight, or the
+				// record kept its identity but moved to another callback address
+				// (re-SETCLIENTID). Do not report this probe's verdict about an
+				// address the record no longer uses.
 				return
 			}
 			rec.CBPathUp = (err == nil)
