@@ -106,12 +106,6 @@ Categories:
 | LOCK13 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
 | LOCK15 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
 | LOCK17 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
-| LINK2 | bug | '.' and '..' and malformed names not rejected | #2333 |
-| LINK9 | bug | '.' and '..' and malformed names not rejected | #2333 |
-| LOOK8 | bug | '.' and '..' and malformed names not rejected | #2333 |
-| RNM10 | bug | '.' and '..' and malformed names not rejected | #2333 |
-| RNM11 | bug | '.' and '..' and malformed names not rejected | #2333 |
-| RNM20 | bug | '.' and '..' and malformed names not rejected | #2333 |
 | CR11 | bug | OPEN claim, share-reservation and create-mode validation | #2334 |
 | CR13 | bug | OPEN claim, share-reservation and create-mode validation | #2334 |
 | OPEN14 | bug | OPEN claim, share-reservation and create-mode validation | #2334 |

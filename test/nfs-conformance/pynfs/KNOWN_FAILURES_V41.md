@@ -63,10 +63,6 @@ Categories:
 | LKPP1s | bug | lookupp41 | #2335 |
 | LKPP2 | bug | lookupp41 | #2335 |
 | PUTFH2 | bug | lookupp41 | #2335 |
-| RNM10 | bug | names41 | #2333 |
-| RNM11 | bug | names41 | #2333 |
-| RNM20 | bug | names41 | #2333 |
-| RNM4 | bug | names41 | #2333 |
 | CSESS15 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
 | CSESS16a | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
 | CSESS23 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
