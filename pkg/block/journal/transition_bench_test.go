@@ -39,6 +39,27 @@ func intervalCount(s *Store, id FileID) int {
 	return len(fi.ivs)
 }
 
+// coldIntervalCount reports how many of a file's intervals are cold. Counting
+// intervals alone cannot tell a seeded-cold file from a written one — both hold
+// the same number — so any check that a range is genuinely remote-only has to
+// look at the flag.
+func coldIntervalCount(s *Store, id FileID) int {
+	sh := s.shardFor(id)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	fi := sh.index[id]
+	if fi == nil {
+		return 0
+	}
+	n := 0
+	for _, iv := range fi.ivs {
+		if iv.cold {
+			n++
+		}
+	}
+	return n
+}
+
 // reportWriteAmp attaches the three write-path metrics to any benchmark that
 // appends: segment count, write amplification (on-disk bytes over payload
 // bytes) and the file's interval count. Write amplification is the number that
@@ -117,6 +138,12 @@ func BenchmarkHydrate(b *testing.B) {
 			if err := s.SeedCold(ctx, id, ext); err != nil {
 				b.Fatalf("SeedCold: %v", err)
 			}
+			// SeedCold only fills holes. If it ever stopped taking, every Hydrate
+			// below would be an ordinary append and this would quietly become a
+			// second write benchmark.
+			if got := coldIntervalCount(s, id); got != spans {
+				b.Fatalf("seeded %d cold intervals, want %d", got, spans)
+			}
 			b.StartTimer()
 		}
 		if err := s.Hydrate(ctx, id, int64(i%spans)*chunk, buf, 0); err != nil {
@@ -156,8 +183,15 @@ func BenchmarkEvict(b *testing.B) {
 		}
 		// targetBytes <= 0 evicts a single qualifying segment, which is the unit
 		// this benchmark is timing.
-		if _, err := s.Evict(ctx, 0); err != nil {
+		res, err := s.Evict(ctx, 0)
+		if err != nil {
 			b.Fatalf("Evict: %v", err)
+		}
+		// A pass that qualifies nothing returns cleanly and costs almost nothing,
+		// so without this the benchmark would keep reporting a fast, meaningless
+		// number if the fill ever stopped producing evictable segments.
+		if res.SegmentsEvicted == 0 {
+			b.Fatal("nothing evicted: the benchmark is timing an empty pass")
 		}
 	}
 }
