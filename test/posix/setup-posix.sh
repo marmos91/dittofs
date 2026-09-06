@@ -155,7 +155,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     exit 1
 fi
 
-# Check if binaries exist
+# Binaries the suite runs against.
 DITTOFS_BIN="$REPO_ROOT/dfs"
 DITTOFSCTL_BIN="$REPO_ROOT/dfsctl"
 
