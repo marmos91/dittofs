@@ -748,10 +748,46 @@ func TestCompound_V41_IllegalOpOutsideRange(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
-	// Currently: opcode 99999 is not exempt from SEQUENCE.
-	// The first op check sees it's not exempt and not SEQUENCE, so
-	// NFS4ERR_OP_NOT_IN_SESSION is returned before opcode validation.
+	// Opcode 99999 is outside the operation-number range, so it is not an
+	// operation the session requirement can apply to: the reply carries a single
+	// result whose opcode is OP_ILLEGAL with NFS4ERR_OP_ILLEGAL, not the
+	// NFS4ERR_OP_NOT_IN_SESSION owed to a real op sent without SEQUENCE
+	// (RFC 8881 Sections 16.2.3 and 15.1.3.5).
 	data := buildCompoundArgs([]byte(""), 1, []uint32{99999})
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	decoded, err := decodeCompoundResponse(resp)
+	if err != nil {
+		t.Fatalf("decode response error: %v", err)
+	}
+
+	if decoded.Status != types.NFS4ERR_OP_ILLEGAL {
+		t.Errorf("status = %d, want NFS4ERR_OP_ILLEGAL (%d)",
+			decoded.Status, types.NFS4ERR_OP_ILLEGAL)
+	}
+	if decoded.NumResults != 1 {
+		t.Fatalf("numResults = %d, want 1", decoded.NumResults)
+	}
+	if decoded.Results[0].OpCode != types.OP_ILLEGAL {
+		t.Errorf("result opcode = %d, want OP_ILLEGAL (%d) rather than the request's",
+			decoded.Results[0].OpCode, types.OP_ILLEGAL)
+	}
+}
+
+// TestCompound_V41_V42OpStillNeedsSequence checks that an opcode a dispatch
+// table knows keeps meeting the SEQUENCE requirement even when it is not valid
+// in this minor version. GETXATTR is a v4.2 op, so under v4.1 it is out of the
+// operation-number range, but it is a real operation and so owes
+// NFS4ERR_OP_NOT_IN_SESSION rather than NFS4ERR_OP_ILLEGAL -- the same answer a
+// v4.0-only op such as SETCLIENTID gets here.
+func TestCompound_V41_V42OpStillNeedsSequence(t *testing.T) {
+	h := newTestHandler()
+	ctx := newTestCompoundContext()
+
+	data := buildCompoundArgs([]byte(""), 1, []uint32{types.OP_GETXATTR})
 	resp, err := h.ProcessCompound(ctx, data)
 	if err != nil {
 		t.Fatalf("ProcessCompound error: %v", err)
@@ -766,8 +802,10 @@ func TestCompound_V41_IllegalOpOutsideRange(t *testing.T) {
 		t.Errorf("status = %d, want NFS4ERR_OP_NOT_IN_SESSION (%d)",
 			decoded.Status, types.NFS4ERR_OP_NOT_IN_SESSION)
 	}
+	// Nothing ran, so the reply carries no results, which is what separates this
+	// path from the OP_ILLEGAL one that emits a single ILLEGAL result.
 	if decoded.NumResults != 0 {
-		t.Errorf("numResults = %d, want 0 (no results without SEQUENCE)", decoded.NumResults)
+		t.Errorf("numResults = %d, want 0 (no op executed without SEQUENCE)", decoded.NumResults)
 	}
 }
 
