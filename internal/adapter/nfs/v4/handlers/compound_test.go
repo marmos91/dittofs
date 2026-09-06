@@ -777,6 +777,33 @@ func TestCompound_V41_IllegalOpOutsideRange(t *testing.T) {
 	}
 }
 
+// TestCompound_V41_V42OpStillNeedsSequence checks that an opcode a dispatch
+// table knows keeps meeting the SEQUENCE requirement even when it is not valid
+// in this minor version. GETXATTR is a v4.2 op, so under v4.1 it is out of the
+// operation-number range, but it is a real operation and so owes
+// NFS4ERR_OP_NOT_IN_SESSION rather than NFS4ERR_OP_ILLEGAL -- the same answer a
+// v4.0-only op such as SETCLIENTID gets here.
+func TestCompound_V41_V42OpStillNeedsSequence(t *testing.T) {
+	h := newTestHandler()
+	ctx := newTestCompoundContext()
+
+	data := buildCompoundArgs([]byte(""), 1, []uint32{types.OP_GETXATTR})
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	decoded, err := decodeCompoundResponse(resp)
+	if err != nil {
+		t.Fatalf("decode response error: %v", err)
+	}
+
+	if decoded.Status != types.NFS4ERR_OP_NOT_IN_SESSION {
+		t.Errorf("status = %d, want NFS4ERR_OP_NOT_IN_SESSION (%d)",
+			decoded.Status, types.NFS4ERR_OP_NOT_IN_SESSION)
+	}
+}
+
 func TestCompound_V41_EmptyCompound(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()

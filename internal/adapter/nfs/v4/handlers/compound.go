@@ -498,7 +498,14 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 	// with NFS4ERR_OP_ILLEGAL and that the COMPOUND status is NFS4ERR_OP_ILLEGAL
 	// too. Dispatching it produces exactly that, and the non-OK status stops the
 	// COMPOUND there.
-	if firstOpCode < types.OP_ACCESS || firstOpCode > h.maxValidOpCode(true, isV42) {
+	//
+	// The v4.2 table is consulted alongside the range so a v4.2-only op arriving
+	// under v4.1 stays a known operation and still has to meet the SEQUENCE
+	// requirement, the way a v4.0-only op such as SETCLIENTID does. That leaves
+	// only opcodes no table recognises here, which are the ones dispatchOne
+	// answers from its illegal-opcode branch.
+	if h.v42DispatchTable[firstOpCode] == nil &&
+		(firstOpCode < types.OP_ACCESS || firstOpCode > h.maxValidOpCode(true, isV42)) {
 		logger.Debug("NFSv4.1 COMPOUND illegal first opcode",
 			"opcode", firstOpCode,
 			"client", compCtx.ClientAddr)
