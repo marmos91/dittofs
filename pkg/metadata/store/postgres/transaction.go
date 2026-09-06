@@ -337,7 +337,7 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 		// manifest, so putFileChunkRefs writes nothing and reports wrote=false.
 		// Freshly-inserted rows (!updated) have no prior refs, so every ref is
 		// a plain insert. The counter tracks manifests that truly changed.
-		wrote, scanned, err := storesql.PutFileChunkRefs(ctx, tx.Core.X, tx.Core.D, file.ID, file.Blocks, updated, file.ManifestDirtyOffsets)
+		wrote, scanned, err := storesql.PutFileChunkRefs(ctx, tx.X, tx.D, file.ID, file.Blocks, updated, file.ManifestDirtyOffsets)
 		tx.store.manifestRowsScanned.Add(int64(scanned))
 		if err != nil {
 			return mapPgError(err, "SetManifest", "blocks")
