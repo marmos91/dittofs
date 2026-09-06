@@ -217,6 +217,10 @@ type ChunkQueries struct {
 	// SelectByHash selects one finalized (Remote) chunk row by content hash.
 	// One parameter: the hex hash.
 	SelectByHash string
+	// Insert inserts one chunk row and stops there, leaving the caller to
+	// append its own conflict clause. Nine parameters, in FileChunkColumns
+	// order. Upsert is this plus FileChunkUpsertTail.
+	Insert string
 	// Upsert inserts or updates a chunk row. Nine parameters, in the column
 	// order of the chunk table.
 	Upsert string
@@ -227,6 +231,10 @@ type ChunkQueries struct {
 	// DecrementRef decrements one row's ref_count, floored at zero, and
 	// returns the new value. One parameter: the id.
 	DecrementRef string
+	// DecrementRefMany decrements ref_count, floored at zero, and carries NO
+	// predicate: the caller appends the IN-list naming the rows it applies to.
+	// Spelled MAX on sqlite and GREATEST on postgres.
+	DecrementRefMany string
 	// AddRef bumps ref_count on every Remote row carrying a content hash.
 	// One parameter: the hex hash.
 	AddRef string
@@ -235,7 +243,31 @@ type ChunkQueries struct {
 	ReapZeroRef string
 	// ListByPayloadRange selects the chunk rows whose ids fall in a payload's
 	// prefix range, in byte order. Two parameters: the low and high bounds.
+	//
+	// The bounds are block.PayloadPrefixRange's and only prefilter;
+	// block.ChunksForPayload decides membership and order. Both dialects
+	// compare and order in byte collation rather than the database default:
+	// the bounds bracket the prefix only under byte ordering, and a
+	// byte-ordered id column lets the primary-key index seek the range instead
+	// of filtering the whole table.
 	ListByPayloadRange string
 	// EnumerateHashes selects the GC live set. No parameters.
+	//
+	// It UNIONs the CAS index (file_blocks.hash, stored as hex text) with the
+	// per-file manifest (file_block_refs.hash, raw bytes rendered as hex) so
+	// the live set is a strict SUPERSET of both structures, and a hash present
+	// in only one — a manifest row whose CAS index row was never written or
+	// was already reaped — still keeps its chunk live. The manifest arm is
+	// filtered to nlink>0 inodes: once a file is unlinked its manifest rows
+	// linger but the payload is dead, so including them would pin orphaned
+	// chunks live forever and the sweep could never reclaim them.
+	// Snapshot-held blocks are protected independently by the GC HoldProvider
+	// (on-disk snapshot manifests), not by this union. NULL hashes (legacy
+	// pre-CAS file_blocks rows) are emitted as the zero ContentHash and
+	// skipped by the mark phase; file_block_refs.hash is NOT NULL.
+	//
+	// UNION ALL, not UNION: the consumer dedupes hashes into a set, so
+	// cross-source and intra-source duplicates are harmless, while UNION would
+	// force an expensive sort/hash-aggregate at the query layer for no benefit.
 	EnumerateHashes string
 }
