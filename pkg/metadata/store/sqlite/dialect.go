@@ -384,18 +384,5 @@ var blockRecordQueries = storesql.BlockRecordQueries{
 // Placeholder implements storesql.Dialect.
 func (dialect) Placeholder(i int) string { return "?" + strconv.Itoa(i) }
 
-func (dialect) SyncedHashes() *storesql.SyncedHashQueries { return &syncedHashQueries }
-
-var syncedHashQueries = storesql.SyncedHashQueries{
-	SelectPresence: `SELECT 1 FROM synced_hashes WHERE hash = ?1`,
-	SelectLocator: `
-		SELECT ` + storesql.SyncedLocatorColumns + `
-		FROM synced_hashes
-		WHERE hash = ?1`,
-	Mark: `
-		INSERT INTO synced_hashes (hash, synced_at, ` + storesql.SyncedLocatorColumns + `)
-		VALUES (?1, CURRENT_TIMESTAMP, ?2, ?3, ?4)
-		ON CONFLICT (hash) DO NOTHING`,
-	Delete: `DELETE FROM synced_hashes WHERE hash = ?1`,
-	Now:    `CURRENT_TIMESTAMP`,
-}
+// Now implements storesql.Dialect.
+func (dialect) Now() string { return "CURRENT_TIMESTAMP" }

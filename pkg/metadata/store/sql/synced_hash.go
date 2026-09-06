@@ -16,18 +16,15 @@ import (
 // triple for a chunk packed inside a block object. Presence of the row is the
 // marker; absence means local-only.
 //
-// The columns and their decode are spelled once here. The per-hash statements
-// differ only in placeholder syntax and in the clock function that stamps
-// synced_at, both of which SyncedHashQueries supplies.
+// Every statement here is spelled once: the columns, the predicates and the
+// conflict clause are identical in both dialects, and only the placeholders and
+// the clock expression that stamps synced_at differ, which Dialect.Placeholder
+// and Dialect.Now supply.
 
-// SyncedLocatorColumns is the locator column list every read names and every
-// write supplies, in the order the scans below read them. Naming it once is
-// what keeps a column added to one statement from being missed by the others.
-const SyncedLocatorColumns = `block_id, block_offset, block_length`
-
-// enumerateSyncedHashes carries no placeholder, so both dialects spell it
-// identically and it stays here rather than in SyncedHashQueries.
-const enumerateSyncedHashes = `SELECT hash, synced_at, ` + SyncedLocatorColumns + ` FROM synced_hashes`
+// syncedLocatorCols is the locator column list every read names and every write
+// supplies, in the order the scans below read them. Naming it once is what
+// keeps a column added to one statement from being missed by the others.
+const syncedLocatorCols = `block_id, block_offset, block_length`
 
 // syncedUpsertConflict is the last-wins tail PutSyncedLocators appends to the
 // multi-row INSERT it generates. Every column the table carries besides the key
@@ -47,7 +44,7 @@ func (c *Core) EnumerateSynced(ctx context.Context, fn func(hash block.ContentHa
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	rows, err := c.X.Query(ctx, enumerateSyncedHashes)
+	rows, err := c.X.Query(ctx, `SELECT hash, synced_at, `+syncedLocatorCols+` FROM synced_hashes`)
 	if err != nil {
 		return fmt.Errorf("synced enumerate: %w", err)
 	}
@@ -87,8 +84,10 @@ func (c *Core) IsSynced(ctx context.Context, hash block.ContentHash) (bool, erro
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	var dummy int
-	err := c.X.QueryRow(ctx, c.D.SyncedHashes().SelectPresence, hash[:]).Scan(&dummy)
+	var present int
+	err := c.X.QueryRow(ctx,
+		`SELECT 1 FROM synced_hashes WHERE hash = `+c.D.Placeholder(1), hash[:],
+	).Scan(&present)
 	if c.D.IsNoRows(err) {
 		return false, nil
 	}
@@ -108,7 +107,13 @@ func (c *Core) MarkSynced(ctx context.Context, hash block.ContentHash, loc block
 		return err
 	}
 	blockID, off, length := locatorArgs(loc)
-	if _, err := c.X.Exec(ctx, c.D.SyncedHashes().Mark, hash[:], blockID, off, length); err != nil {
+	// synced_at is stamped by the statement's own clock, matching the rows
+	// PutSyncedLocators writes.
+	mark := `INSERT INTO synced_hashes (hash, synced_at, ` + syncedLocatorCols + `)` +
+		` VALUES (` + c.D.Placeholder(1) + `, ` + c.D.Now() + `, ` +
+		c.D.Placeholder(2) + `, ` + c.D.Placeholder(3) + `, ` + c.D.Placeholder(4) + `)` +
+		` ON CONFLICT (hash) DO NOTHING`
+	if _, err := c.X.Exec(ctx, mark, hash[:], blockID, off, length); err != nil {
 		return fmt.Errorf("synced mark: %w", err)
 	}
 	return nil
@@ -123,7 +128,9 @@ func (c *Core) GetLocator(ctx context.Context, hash block.ContentHash) (block.Ch
 	}
 	var blockID sql.NullString
 	var off, length sql.NullInt64
-	err := c.X.QueryRow(ctx, c.D.SyncedHashes().SelectLocator, hash[:]).Scan(&blockID, &off, &length)
+	err := c.X.QueryRow(ctx,
+		`SELECT `+syncedLocatorCols+` FROM synced_hashes WHERE hash = `+c.D.Placeholder(1), hash[:],
+	).Scan(&blockID, &off, &length)
 	if c.D.IsNoRows(err) {
 		return block.ChunkLocator{}, false, nil
 	}
@@ -143,7 +150,9 @@ func (c *Core) DeleteSynced(ctx context.Context, hash block.ContentHash) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if _, err := c.X.Exec(ctx, c.D.SyncedHashes().Delete, hash[:]); err != nil {
+	if _, err := c.X.Exec(ctx,
+		`DELETE FROM synced_hashes WHERE hash = `+c.D.Placeholder(1), hash[:],
+	); err != nil {
 		return fmt.Errorf("synced delete: %w", err)
 	}
 	return nil
@@ -176,24 +185,23 @@ func PutSyncedLocators(ctx context.Context, x Executor, d Dialect, chunks []bloc
 	// whole Exec would fail.
 	const colsPerRow = 4
 	const rowsPerBatch = maxBoundParams / colsPerRow
-	now := d.SyncedHashes().Now
+	now := d.Now()
 
 	for start := 0; start < len(chunks); start += rowsPerBatch {
 		batch := chunks[start:min(start+rowsPerBatch, len(chunks))]
 		var sb strings.Builder
-		sb.WriteString(`INSERT INTO synced_hashes (hash, synced_at, ` + SyncedLocatorColumns + `) VALUES `)
+		sb.WriteString(`INSERT INTO synced_hashes (hash, synced_at, ` + syncedLocatorCols + `) VALUES `)
 		args := make([]any, 0, len(batch)*colsPerRow)
 		for i, c := range batch {
 			if i > 0 {
 				sb.WriteByte(',')
 			}
-			sb.WriteByte('(')
-			sb.WriteString(d.Placeholder(len(args) + 1))
-			sb.WriteByte(',')
-			sb.WriteString(now)
+			// The row's bound columns are the hash and the three locator
+			// values; synced_at sits between them as the clock expression.
+			base := len(args)
+			sb.WriteString(`(` + d.Placeholder(base+1) + `,` + now)
 			for col := 1; col < colsPerRow; col++ {
-				sb.WriteByte(',')
-				sb.WriteString(d.Placeholder(len(args) + col + 1))
+				sb.WriteString(`,` + d.Placeholder(base+col+1))
 			}
 			sb.WriteByte(')')
 			blockID, off, length := locatorArgs(c.Remote)
