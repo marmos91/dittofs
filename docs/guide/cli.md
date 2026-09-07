@@ -6518,7 +6518,7 @@ Manage metadata stores
 Manage metadata stores on the DittoFS server.
 
 Metadata stores hold file system structure, attributes, and permissions.
-Supported types: memory, badger, postgres
+Supported types: memory, badger, sqlite, postgres
 
 **Examples:**
 
@@ -6558,6 +6558,7 @@ Supported types:
 ```
 - memory: In-memory store (fast, ephemeral)
 - badger: BadgerDB store (persistent, embedded)
+- sqlite: SQLite store (persistent, embedded)
 - postgres: PostgreSQL store (persistent, distributed)
 ```
 
@@ -6566,6 +6567,9 @@ Type-specific options:
 ```
 badger:
   --db-path: Path to BadgerDB directory (or prompted interactively)
+
+sqlite:
+  --db-path: Path to the SQLite database file (or prompted interactively)
 
 postgres:
   --config: JSON with connection settings, or omit for interactive prompts
@@ -6587,6 +6591,9 @@ dfsctl store metadata add --name persistent-meta --type badger --db-path /data/m
 # Add a BadgerDB store interactively
 dfsctl store metadata add --name persistent-meta --type badger
 
+# Add a SQLite store with flags
+dfsctl store metadata add --name persistent-meta --type sqlite --db-path /data/meta.db
+
 # Add a PostgreSQL store with JSON config
 dfsctl store metadata add --name pg-meta --type postgres --config '{"host":"localhost","dbname":"dittofs"}'
 
@@ -6598,9 +6605,9 @@ Flags:
 
 ```
       --config string    Store configuration as JSON (for advanced config)
-      --db-path string   Database path (required for badger)
+      --db-path string   Database path (required for badger and sqlite)
       --name string      Store name (required)
-      --type string      Store type: memory, badger, postgres (required)
+      --type string      Store type: memory, badger, sqlite, postgres (required)
 ```
 
 Global flags:
@@ -6650,8 +6657,8 @@ Flags:
 
 ```
       --config string    Store configuration as JSON
-      --db-path string   Database path (for badger)
-      --type string      Store type: memory, badger, postgres
+      --db-path string   Database path (for badger and sqlite)
+      --type string      Store type: memory, badger, sqlite, postgres
 ```
 
 Global flags:

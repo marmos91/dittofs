@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/pathutil"
@@ -17,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
+	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 	"github.com/marmos91/dittofs/pkg/metadata/store/sqlite"
 )
 
@@ -149,27 +149,7 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 
 		pgCfg.AutoMigrate = true
 
-		capabilities := metadata.FilesystemCapabilities{
-			MaxReadSize:           1024 * 1024,
-			PreferredReadSize:     64 * 1024,
-			MaxWriteSize:          1024 * 1024,
-			PreferredWriteSize:    64 * 1024,
-			MaxFileSize:           1024 * 1024 * 1024 * 100, // 100 GB
-			MaxFilenameLen:        255,
-			MaxPathLen:            4096,
-			MaxHardLinkCount:      32767,
-			SupportsHardLinks:     true,
-			SupportsSymlinks:      true,
-			CaseSensitive:         true,
-			CasePreserving:        true,
-			SupportsACLs:          false,
-			SupportsExtendedAttrs: true, // EAs persist in the inodes.eas JSONB column (migration 000028)
-			// File timestamps are stored as BIGINT unix nanoseconds (lossless),
-			// so nanosecond resolution is accurate for the postgres backend.
-			TimestampResolution: time.Nanosecond,
-		}
-
-		return postgres.NewPostgresMetadataStore(ctx, pgCfg, capabilities)
+		return postgres.NewPostgresMetadataStore(ctx, pgCfg, sqlCapabilities())
 
 	case "sqlite":
 		dbPath, ok := config["path"].(string)
@@ -189,29 +169,37 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 			AutoMigrate: true,
 		}
 
-		capabilities := metadata.FilesystemCapabilities{
-			MaxReadSize:           1024 * 1024,
-			PreferredReadSize:     64 * 1024,
-			MaxWriteSize:          1024 * 1024,
-			PreferredWriteSize:    64 * 1024,
-			MaxFileSize:           1024 * 1024 * 1024 * 100, // 100 GB
-			MaxFilenameLen:        255,
-			MaxPathLen:            4096,
-			MaxHardLinkCount:      32767,
-			SupportsHardLinks:     true,
-			SupportsSymlinks:      true,
-			CaseSensitive:         true,
-			CasePreserving:        true,
-			SupportsACLs:          false,
-			SupportsExtendedAttrs: true, // EAs persist in the inodes.eas column.
-			// File timestamps are stored as INTEGER unix nanoseconds (lossless).
-			TimestampResolution: time.Nanosecond,
-		}
-
-		return sqlite.NewSQLiteMetadataStore(ctx, sqliteCfg, capabilities)
+		return sqlite.NewSQLiteMetadataStore(ctx, sqliteCfg, sqlCapabilities())
 
 	default:
 		return nil, fmt.Errorf("unsupported metadata store type: %s", storeType)
+	}
+}
+
+// sqlCapabilities returns the filesystem capabilities both SQL-backed metadata
+// stores advertise. They share a schema and a row codec, so anything a client
+// is told about one is true of the other.
+//
+// These are advertised to clients, not enforced here: the transfer sizes are
+// the shipped defaults rather than a backend limit, and ACLs are reported off
+// because neither store persists them yet.
+func sqlCapabilities() metadata.FilesystemCapabilities {
+	return metadata.FilesystemCapabilities{
+		MaxReadSize:           1024 * 1024,
+		PreferredReadSize:     64 * 1024,
+		MaxWriteSize:          1024 * 1024,
+		PreferredWriteSize:    64 * 1024,
+		MaxFileSize:           1024 * 1024 * 1024 * 100, // 100 GB
+		MaxFilenameLen:        255,
+		MaxPathLen:            4096,
+		MaxHardLinkCount:      32767,
+		SupportsHardLinks:     true,
+		SupportsSymlinks:      true,
+		CaseSensitive:         true,
+		CasePreserving:        true,
+		SupportsACLs:          false,
+		SupportsExtendedAttrs: true, // EAs persist in the inodes.eas column.
+		TimestampResolution:   storesql.TimestampResolution,
 	}
 }
 
