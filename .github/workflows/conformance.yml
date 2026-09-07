@@ -122,6 +122,9 @@ jobs:
       - name: Test the common runner
         run: ./test/conformance/run_test.sh
 
+      - name: Test the shared known-failures parser
+        run: ./test/common/known-failures_test.sh
+
       - name: Test the smbtorture grader
         run: ./test/smb-conformance/smbtorture/parse-results_test.sh
 
