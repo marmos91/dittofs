@@ -189,8 +189,35 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 		return openError(types.NFS4ERR_BADXDR)
 	}
 
-	// Dispatch by claim type
+	// Dispatch by claim type.
+	//
+	// An OPEN this handler refuses on its own -- a create collision, a target
+	// of the wrong object type, a name the server rejects -- never reaches the
+	// state manager, which is where an owner's seqid is normally consumed.
+	// RFC 7530 Section 9.1.7 consumes it for those failures just the same, and
+	// the client advances its own sequence either way, so leaving it unrecorded
+	// put the server permanently one behind and answered every later OPEN for
+	// that owner NFS4ERR_BAD_SEQID. ConsumeOpenSeqid is a no-op when the state
+	// manager already accounted for this seqid.
+	result := h.dispatchOpenClaim(ctx, reader, seqid, shareAccess, shareDeny,
+		clientID, ownerData, openType, createMode, claimType, createAttrs, createVerifier)
+	if result.Status != types.NFS4_OK {
+		h.StateManager.ConsumeOpenSeqid(clientID, ownerData, seqid, result.Status)
+	}
+	return result
+}
 
+// dispatchOpenClaim routes an OPEN to the handler for its claim type.
+func (h *Handler) dispatchOpenClaim(
+	ctx *types.CompoundContext,
+	reader io.Reader,
+	seqid, shareAccess, shareDeny uint32,
+	clientID uint64,
+	ownerData []byte,
+	openType, createMode, claimType uint32,
+	createAttrs *metadata.SetAttrs,
+	createVerifier *uint64,
+) *types.CompoundResult {
 	switch claimType {
 	case types.CLAIM_NULL:
 		// New open: check grace period BEFORE file creation/lookup

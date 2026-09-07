@@ -1471,6 +1471,38 @@ func (sm *StateManager) removeOpenStateFromFileLocked(os *OpenState) {
 	}
 }
 
+// ConsumeOpenSeqid records against an open-owner's sequence an OPEN that failed
+// before it ever reached OpenFile, and caches the status so a retransmission
+// replays it.
+//
+// RFC 7530 Section 9.1.7 advances an owner's sequence for every OPEN that
+// reaches seqid checking, and the client advances its own whether the server
+// answered success or a consuming error. An OPEN the handler refuses on its own
+// -- a create collision, a target of the wrong object type, a name the server
+// rejects -- never reached the state manager, so its seqid went unrecorded and
+// the server fell one behind the client. Every later OPEN for that owner was
+// then answered NFS4ERR_BAD_SEQID, which a client can only escape by tearing
+// the owner down.
+//
+// It is a no-op for an owner that does not exist yet, because a first OPEN that
+// fails leaves no owner behind and the client's retry at seqid 1 is valid
+// against a fresh one; for a seqid that is not the owner's expected next one,
+// so a replay returns its cached reply rather than consuming a second seqid;
+// and for the statuses Section 9.1.7 exempts.
+func (sm *StateManager) ConsumeOpenSeqid(clientID uint64, ownerData []byte, seqid, status uint32) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	owner, exists := sm.openOwners[makeOwnerKey(clientID, ownerData)]
+	if !exists {
+		return
+	}
+	if owner.ValidateSeqID(seqid) != SeqIDOK {
+		return
+	}
+	owner.consumeSeqidOnError(seqid, &NFS4StateError{Status: status})
+}
+
 // CacheOpenOwnerResult stores the encoded reply for an open-owner so that a
 // replay (retransmit at the same seqid) returns the exact original response.
 //
