@@ -931,6 +931,10 @@ func (sm *StateManager) releaseClientStateLocked(clientID uint64) {
 		if deleg.ClientID != clientID {
 			continue
 		}
+		// Both timers outlive the tables they fire against, so they are
+		// stopped before the delegation leaves them.
+		sm.cleanupDirDelegation(deleg)
+		deleg.StopRecallTimer()
 		sm.deleteDelegByOtherLocked(other)
 		sm.removeDelegFromFile(deleg)
 
@@ -1089,6 +1093,13 @@ func (sm *StateManager) expireV40ClientLocked(clientID uint64) {
 		"client_id", clientID,
 		"client_id_str", record.ClientIDString,
 		"client_addr", record.ClientAddr)
+
+	// The timer is already spent when its own callback brought us here, but a
+	// conflicting request can expire a lapsed client while the timer is still
+	// armed, and a later fire would look up a client that no longer exists.
+	if record.Lease != nil {
+		record.Lease.Stop()
+	}
 
 	// The client's lease lapsed without renewal: it no longer holds reclaimable
 	// state, so drop its durable recovery record. Best-effort; no-op
