@@ -198,7 +198,16 @@ func TestSetClientID_IdentitylessCallerCannotTakeOver(t *testing.T) {
 	sm := fx.handler.StateManager
 
 	const name = "victim-client"
-	testClientID(t, sm, name, "uid:1000")
+	victim := testClientID(t, sm, name, "uid:1000")
+
+	// The bar exists to protect leased state (RFC 7530 Section 9.1.1), and
+	// Section 9.1.2 requires the takeover to be allowed against a client ID
+	// that holds none, so the victim has to hold some for this to be a test of
+	// the credential check rather than of that exemption.
+	if _, err := sm.OpenFile(victim, []byte("victim-owner"), 1, []byte("victim-fh"),
+		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); err != nil {
+		t.Fatalf("OpenFile for the victim: %v", err)
+	}
 
 	cb := state.CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "127.0.0.1.8.1"}
 

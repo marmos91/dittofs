@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -408,6 +409,69 @@ func firstOrEmpty(ss []string) string {
 	return ""
 }
 
+// clientHasLiveStateLocked reports whether clientID still holds leased state
+// that another principal's SETCLIENTID would cancel -- an open, a byte-range
+// lock or a delegation -- under a lease that has not lapsed.
+//
+// Locks are counted separately from opens rather than through them: a lock
+// hangs off an open state, but LOCK takes the lock-owner's client ID from the
+// wire and does not require it to match the client that owns that open, so a
+// client can hold live lock state without owning an open here.
+//
+// This is what makes the principal check in RFC 7530 Section 16.33.5
+// conditional. Section 9.1.2 spells the condition out: when a SETCLIENTID
+// arrives "for a client ID that currently has no state, or it has state but
+// the lease has expired, rather than returning NFS4ERR_CLID_INUSE, the server
+// MUST allow the SETCLIENTID". The security rule the check exists for is the
+// MUST NOT in Section 9.1.1 against cancelling leased state established by a
+// different principal, and a record holding none has nothing to cancel.
+//
+// Refusing unconditionally makes a client id string permanently unusable by
+// every other principal once one has touched it. Clients derive that string
+// from the hostname rather than from their credential, so a second user on the
+// same host would never get a client id at all.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) clientHasLiveStateLocked(clientID uint64) bool {
+	if sm.clientLeaseLapsedLocked(clientID) {
+		return false
+	}
+	for _, owner := range sm.openOwners {
+		if owner.ClientID == clientID && len(owner.OpenStates) > 0 {
+			return true
+		}
+	}
+	for _, lockState := range sm.lockStateByOther {
+		if lockState.LockOwner != nil && lockState.LockOwner.ClientID == clientID {
+			return true
+		}
+	}
+	for _, deleg := range sm.delegByOther {
+		if deleg.ClientID == clientID {
+			return true
+		}
+	}
+	return false
+}
+
+// unknownClientIDError answers a client ID that no record matches. There are
+// two ways that happens and they call for different errors. RFC 7530 Section
+// 9.6.3.2 covers the first: once a lease is cancelled, "the use of the
+// associated clientid will result in NFS4ERR_EXPIRED being returned", telling
+// the client its state is gone and a new client id is what it needs. An id no
+// boot of this server could have issued means something else entirely -- the
+// server restarted -- and stays NFS4ERR_STALE_CLIENTID. generateClientID puts
+// the boot epoch in the high 32 bits, which is what keeps the two apart.
+//
+// Answering STALE_CLIENTID for both makes a client that merely fell behind on
+// RENEW conclude the server rebooted.
+func (sm *StateManager) unknownClientIDError(clientID uint64) error {
+	if uint32(clientID>>32) == sm.bootEpoch {
+		return ErrExpired
+	}
+	return ErrStaleClientID
+}
+
 // createNewClient handles Case 1: completely new client.
 // Creates a new unconfirmed record with a fresh client ID and confirm verifier.
 // Caller must hold sm.mu.
@@ -450,8 +514,8 @@ func (sm *StateManager) createNewClient(clientIDStr string, verifier [8]byte, ca
 func (sm *StateManager) reuseConfirmedClient(confirmed *ClientRecord, clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr, principal string) (*SetClientIDResult, error) {
 	// Reject a re-SETCLIENTID by anyone but the principal that established the
 	// confirmed record: it would hijack the client's lease and state. See
-	// principalHijacks.
-	if principalHijacks(confirmed.Principal, principal) {
+	// principalHijacks and clientHasLiveStateLocked.
+	if principalHijacks(confirmed.Principal, principal) && sm.clientHasLiveStateLocked(confirmed.ClientID) {
 		return nil, ErrClientIDInUse
 	}
 
@@ -505,9 +569,9 @@ func (sm *StateManager) reuseConfirmedClient(confirmed *ClientRecord, clientIDSt
 func (sm *StateManager) handleClientReboot(clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr, principal string) (*SetClientIDResult, error) {
 	// A reboot (different verifier) claimed by anyone but the principal that
 	// established the confirmed record is a hijack attempt, not a real reboot.
-	// See principalHijacks.
+	// See principalHijacks and clientHasLiveStateLocked.
 	if confirmed := sm.clientsByName[clientIDStr]; confirmed != nil {
-		if principalHijacks(confirmed.Principal, principal) {
+		if principalHijacks(confirmed.Principal, principal) && sm.clientHasLiveStateLocked(confirmed.ClientID) {
 			return nil, ErrClientIDInUse
 		}
 	}
@@ -664,6 +728,14 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 		if oldConfirmed.Lease != nil {
 			oldConfirmed.Lease.Stop()
 		}
+		// The client rebooted, and RFC 7530 Section 16.34.5 requires more of
+		// this confirm than forgetting the record: where a confirmed record
+		// for the same id string already exists, "the server MUST remove
+		// client x's relevant leased client state". Leaving it behind keeps
+		// every stateid the client held before the reboot working, so the
+		// files stay share-reserved and byte-range locked on behalf of an
+		// incarnation that no longer exists and will never close them.
+		sm.releaseClientStateLocked(oldConfirmed.ClientID)
 		delete(sm.clientsByID, oldConfirmed.ClientID)
 		logger.Info("SETCLIENTID_CONFIRM: replaced old confirmed client",
 			"old_client_id", oldConfirmed.ClientID,
@@ -779,7 +851,7 @@ func (sm *StateManager) ValidateAndRenewClient(clientID uint64) error {
 	if v41 := sm.v41ClientsByID[clientID]; v41 != nil {
 		return renewConfirmedClient(v41.Confirmed, v41.Lease, &v41.LastRenewal)
 	}
-	return ErrStaleClientID
+	return sm.unknownClientIDError(clientID)
 }
 
 // RemoveClient removes a client record and all associated state.
@@ -852,6 +924,155 @@ func (sm *StateManager) removeClientOpenStateLocked(clientID uint64) {
 	}
 }
 
+// removeClientLockStateLocked frees the byte-range locks clientID holds on
+// opens it does not own. LOCK takes the lock-owner's client ID from the wire
+// and does not require it to match the client owning the open the lock hangs
+// from, so removeClientOpenStateLocked -- which reaches locks through this
+// client's own opens -- does not see these. Left behind, they stay held in the
+// cross-protocol lock manager on behalf of a client that is gone, with nothing
+// left that could ever unlock them.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) removeClientLockStateLocked(clientID uint64) {
+	for other, lockState := range sm.lockStateByOther {
+		if lockState.LockOwner == nil || lockState.LockOwner.ClientID != clientID {
+			continue
+		}
+
+		sm.removeOwnerLocksLocked(lockState)
+		delete(sm.lockStateByOther, other)
+		delete(sm.lockOwners, lockState.LockOwner.Key())
+		detachLockStateFromOpen(lockState)
+	}
+}
+
+// detachLockStateFromOpen drops a lock state from the open state it hangs off,
+// so the open does not keep reporting a lock that is gone.
+func detachLockStateFromOpen(lockState *LockState) {
+	if lockState.OpenState == nil {
+		return
+	}
+	for i, ls := range lockState.OpenState.LockStates {
+		if ls != lockState {
+			continue
+		}
+		lockState.OpenState.LockStates = append(
+			lockState.OpenState.LockStates[:i],
+			lockState.OpenState.LockStates[i+1:]...,
+		)
+		return
+	}
+}
+
+// releaseClientStateLocked frees every open, lock and delegation held by
+// clientID, first remembering the stateids so that a client which comes back
+// and uses one is told its lease expired rather than told the stateid was
+// never valid.
+//
+// It does not touch the client record itself: the caller knows why the state
+// went away and which maps the record still belongs in.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) releaseClientStateLocked(clientID uint64) {
+	sm.markClientStateidsExpiredLocked(clientID)
+	sm.removeClientOpenStateLocked(clientID)
+	sm.removeClientLockStateLocked(clientID)
+
+	for other, deleg := range sm.delegByOther {
+		if deleg.ClientID != clientID {
+			continue
+		}
+		// Both timers outlive the tables they fire against, so they are
+		// stopped before the delegation leaves them.
+		sm.cleanupDirDelegation(deleg)
+		deleg.StopRecallTimer()
+		sm.deleteDelegByOtherLocked(other)
+		sm.removeDelegFromFile(deleg)
+
+		logger.Info("Delegation revoked with the client's state",
+			"client_id", clientID,
+			"deleg_type", deleg.DelegType)
+	}
+}
+
+// clientLeaseLapsedLocked reports whether a confirmed client's lease has run
+// out. Both client generations are checked: the caller has a client ID and no
+// reason to know which minor version minted it.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) clientLeaseLapsedLocked(clientID uint64) bool {
+	if record := sm.clientsByID[clientID]; record != nil {
+		return record.Confirmed && record.Lease != nil && record.Lease.IsExpired()
+	}
+	if v41 := sm.v41ClientsByID[clientID]; v41 != nil {
+		return v41.Confirmed && v41.Lease != nil && v41.Lease.IsExpired()
+	}
+	return false
+}
+
+// expireLapsedHoldersLocked releases the state of every client that holds an
+// open on fileHandle under a lease that has already run out, except for the
+// clients in keepClientIDs. Callers name every client whose records they are
+// holding a pointer into, since releasing one frees its opens and locks.
+//
+// What keeps an expired client's opens and locks alive is courtesy: a client
+// that merely lost contact for a moment should not come back to find its locks
+// broken, so the state outlives the lease and a sweeper collects it later.
+// RFC 7530 Section 9.6.3.1 says what happens when someone else then wants the
+// file: on "a lock or I/O request that conflicts with one of the courtesy
+// locks", a courtesy lock that is not a delegation "MUST free the courtesy
+// lock and grant the new request".
+//
+// So the collision, not the sweeper's schedule, is what ends the courtesy.
+// Deferring to the sweep refuses a request that nothing live objects to, for
+// however much of the sweep interval is left, which is why the same request is
+// granted or refused depending on when it arrives.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) expireLapsedHoldersLocked(fileHandle []byte, keepClientIDs ...uint64) {
+	// Collected before anything is released: expiring a client rewrites the
+	// index this ranges over.
+	//
+	// ponytail: linear scans of a slice rather than two sets. n is the distinct
+	// clients holding state on ONE file, which is one or two outside a
+	// share-reservation fight, and the allocation two maps would add lands on
+	// every OPEN and LOCK. Switch to sets if a file ever collects enough
+	// simultaneous holders for this to show up in a profile.
+	var lapsed []uint64
+	consider := func(clientID uint64) {
+		if slices.Contains(keepClientIDs, clientID) || slices.Contains(lapsed, clientID) {
+			return
+		}
+		if sm.clientLeaseLapsedLocked(clientID) {
+			lapsed = append(lapsed, clientID)
+		}
+	}
+	for _, os := range sm.openStateByFile[string(fileHandle)] {
+		if os.Owner != nil {
+			consider(os.Owner.ClientID)
+		}
+		// The lock-owner's client can differ from the open-owner's, and it is
+		// the one holding the lock this request may be colliding with.
+		for _, lockState := range os.LockStates {
+			if lockState.LockOwner != nil {
+				consider(lockState.LockOwner.ClientID)
+			}
+		}
+	}
+
+	for _, clientID := range lapsed {
+		logger.Info("Expiring a lapsed client to resolve a conflicting request",
+			"client_id", clientID)
+
+		if v41 := sm.v41ClientsByID[clientID]; v41 != nil {
+			sm.markClientStateidsExpiredLocked(clientID)
+			sm.purgeV41Client(v41)
+			continue
+		}
+		sm.expireV40ClientLocked(clientID)
+	}
+}
+
 // maxExpiredStateids caps how many freed-by-lease-cancellation stateids the
 // server remembers; see the expiredStateids field for what overflow costs.
 const maxExpiredStateids = 4096
@@ -876,6 +1097,12 @@ func (sm *StateManager) markClientStateidsExpiredLocked(clientID uint64) {
 			for _, lockState := range openState.LockStates {
 				sm.expiredStateids[lockState.Stateid.Other] = struct{}{}
 			}
+		}
+	}
+
+	for other, lockState := range sm.lockStateByOther {
+		if lockState.LockOwner != nil && lockState.LockOwner.ClientID == clientID {
+			sm.expiredStateids[other] = struct{}{}
 		}
 	}
 
@@ -923,6 +1150,15 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	sm.expireV40ClientLocked(clientID)
+}
+
+// expireV40ClientLocked drops a v4.0 client and everything it holds. It is what
+// a lapsed lease does, and what a conflicting request does to a client whose
+// lease already lapsed.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) expireV40ClientLocked(clientID uint64) {
 	record, exists := sm.clientsByID[clientID]
 	if !exists {
 		return
@@ -933,30 +1169,19 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 		"client_id_str", record.ClientIDString,
 		"client_addr", record.ClientAddr)
 
+	// The timer is already spent when its own callback brought us here, but a
+	// conflicting request can expire a lapsed client while the timer is still
+	// armed, and a later fire would look up a client that no longer exists.
+	if record.Lease != nil {
+		record.Lease.Stop()
+	}
+
 	// The client's lease lapsed without renewal: it no longer holds reclaimable
 	// state, so drop its durable recovery record. Best-effort; no-op
 	// when no recovery store is wired.
 	sm.deleteClientRecoveryLocked(record.ClientIDString)
 
-	// Record what the cleanup below is about to free, so a client that comes
-	// back after the partition and uses one of these stateids is told the lease
-	// expired instead of being told the stateid was never valid.
-	sm.markClientStateidsExpiredLocked(clientID)
-
-	sm.removeClientOpenStateLocked(clientID)
-
-	// Clean up delegations for the expired client
-	for other, deleg := range sm.delegByOther {
-		if deleg.ClientID != clientID {
-			continue
-		}
-		sm.deleteDelegByOtherLocked(other)
-		sm.removeDelegFromFile(deleg)
-
-		logger.Info("Delegation revoked on lease expiry",
-			"client_id", clientID,
-			"deleg_type", deleg.DelegType)
-	}
+	sm.releaseClientStateLocked(clientID)
 
 	// Remove client from all maps
 	delete(sm.clientsByID, clientID)
@@ -1347,6 +1572,8 @@ func (sm *StateManager) OpenFile(
 	// re-establishes prior state and is exempt. The scan runs under sm.mu so it
 	// observes a consistent snapshot of every live open.
 	if claimType != types.CLAIM_PREVIOUS {
+		sm.expireLapsedHoldersLocked(fileHandle, clientID)
+
 		if conflict := sm.shareConflictLocked(fileHandle, shareAccess, shareDeny); conflict {
 			logger.Debug("OpenFile: share reservation conflict",
 				"client_id", clientID,
@@ -2071,7 +2298,7 @@ func (sm *StateManager) RenewLease(clientID uint64, principal ...string) error {
 	// v4.0 only: RENEW does not exist in v4.1, where SEQUENCE renews the lease.
 	record, exists := sm.clientsByID[clientID]
 	if !exists {
-		return ErrStaleClientID
+		return sm.unknownClientIDError(clientID)
 	}
 
 	// Checked before the renewal below: a refused RENEW must leave the lease
@@ -2503,6 +2730,20 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 	enhLock.Reclaim = reclaim
 
 	handleKey := string(lockState.FileHandle)
+
+	// A lock held on behalf of a client whose lease has already run out is
+	// courtesy state, and this request is the collision that ends the courtesy.
+	// Released here rather than left to the sweeper, the answer no longer
+	// depends on where in the sweep interval the request happened to land.
+	//
+	// A reclaim is exempt, as CLAIM_PREVIOUS is on the OPEN side: during grace
+	// every client is re-establishing state it already held, and one that has
+	// reclaimed its opens but not yet its locks can outlive the fresh lease it
+	// was given, which would make its half-rebuilt state look abandoned.
+	if !reclaim {
+		sm.expireLapsedHoldersLocked(lockState.FileHandle,
+			lockState.LockOwner.ClientID, lockState.OpenState.Owner.ClientID)
+	}
 
 	// Break any conflicting cross-protocol read leases (e.g. an SMB read/write
 	// oplock) before acquiring the byte-range lock. A held lease lets another

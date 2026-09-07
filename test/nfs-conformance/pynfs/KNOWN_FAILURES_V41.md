@@ -30,10 +30,6 @@ Categories:
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| COUR2 | bug | courtesy-client state reclaimed too aggressively | #2327 |
-| COUR3 | bug | courtesy-client state reclaimed too aggressively | #2327 |
-| COUR5 | bug | courtesy-client state reclaimed too aggressively | #2327 |
-| COUR6 | bug | courtesy-client state reclaimed too aggressively | #2327 |
 | CSID1 | bug | current stateid not tracked across a COMPOUND | #2328 |
 | CSID10 | bug | current stateid not tracked across a COMPOUND | #2328 |
 | CSID2 | bug | current stateid not tracked across a COMPOUND | #2328 |
