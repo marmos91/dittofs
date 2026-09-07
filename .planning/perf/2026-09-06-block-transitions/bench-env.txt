@@ -1,0 +1,9 @@
+commit:  74a74e812f49b7515bfcba044a955b981a733fd0
+kernel:  6.8.0-138-generic
+cpu:     AMD EPYC 7543 32-Core Processor
+cores:   32
+mem:     62G
+go:      go version go1.25.0 linux/amd64
+method:  light set -benchtime=1s -count=6; heavy set -benchtime=200x -count=6
+heavy:   BenchmarkCarve$|BenchmarkCarveScatteredPass$|BenchmarkEvict$|BenchmarkGCRepack$|BenchmarkTruncate$|BenchmarkDelete$
+started: 2026-09-06T22:41:21+00:00

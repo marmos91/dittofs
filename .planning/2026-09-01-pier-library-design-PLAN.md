@@ -896,9 +896,20 @@ Rules:
   round-trips ~2.7x and has already produced one wrong headline number in this codebase.
 - **`Extents` needs a defence.** Collapsing `FileSize`/`DataExtents`/`DurableExtent`/
   `ColdExtents` into one slice-returning query is the design's biggest performance risk:
-  `FileSize` is on the hot read path (`engine/readwrite.go:40,53`) and `ColdExtents` is
-  documented as O(live intervals) and deliberately avoids holding all shard locks at once.
-  `Size` stays separate for exactly this reason; benchmark it and keep the receipts.
+  `ColdExtents` is documented as O(live intervals) and deliberately avoids holding all
+  shard locks at once. Benchmark it and keep the receipts.
+
+  **Corrected 2026-09-06, from the receipts.** This paragraph originally kept `Size`
+  separate on the grounds that `FileSize` is on the hot read path, citing
+  `engine/readwrite.go:40,53`. Those lines are inside `engine.Store.GetSize` and
+  `engine.Store.Exists`, and **neither has a non-test caller**, nor does the
+  `block.Reader` interface declaring them — a dead surface of the same shape as the
+  hash-keyed CAS island. `FileSize`'s one live caller is `findStaleSizes`
+  (`controlplane/runtime/shares/lifecycle.go:241`), which runs at share start over every
+  locally-resident file. It *is* O(intervals) under the shard lock and measurably linear
+  (#2366), but the cost lands on startup latency, not on reads. So the hot-path argument
+  for keeping `Size` out of `Extents` does not hold; if `Size` stays separate it needs a
+  different reason. Nothing else in this section changes.
 
 ## 11. Open decisions
 
