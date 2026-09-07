@@ -529,12 +529,16 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 | `windows-build.yml` | PR, push | Windows build + unit tests | ~5 min |
 | `integration-tests.yml` | push, weekly | Integration tests (S3, BadgerDB) | ~10 min |
 | `e2e-tests.yml` | PR, push | E2E tests (NFS, SMB, cross-protocol, Kerberos) | ~15 min |
-| `smb-conformance.yml` | PR (memory), push (all), weekly | WPTS BVT + smbtorture + Kerberos | ~20 min |
+| `conformance.yml` | PR, push, nightly | WPTS BVT, smbtorture, pjdfstest, NFS `sec=krb5` | ~45 min |
 | `smb-client-compat.yml` | push, weekly | Windows/macOS/Linux SMB client testing | ~10 min |
-| `posix-tests.yml` | push, weekly | POSIX compliance (pjdfstest) | ~15 min |
 | `nfs-pynfs.yml` | PR, push, nightly | NFSv4 protocol conformance (pynfs) | ~20 min |
-| `nfs-kerberos.yml` | PR (krb/NFS paths), push, nightly | NFS `sec=krb5` mount interop | ~10 min |
 | `operator-tests.yml` | push, weekly | Operational scenario tests | ~10 min |
+
+### Conformance suites
+
+Every suite's profiles, variants and per-event tiering live in
+[`test/conformance/suites.json`](../../test/conformance/suites.json); the rendered table is in
+[testing.md](testing.md#conformance-test-suites).
 
 ### What Runs on PR (Fast, Must-Pass Before Merge)
 
@@ -543,7 +547,7 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 - **lint.yml** -- Go formatting, vetting, and linting
 - **unit-tests.yml** -- All unit tests with race detection
 - **windows-build.yml** -- Windows cross-compilation verification
-- **smb-conformance.yml** -- Memory-only WPTS BVT + memory-only smbtorture (fast feedback)
+- **conformance.yml** -- The presubmit profiles of each suite (see the table above)
 - **nfs-pynfs.yml** -- NFSv4.0 + NFSv4.1 protocol conformance (memory + postgres-s3)
 - **e2e-tests.yml** -- Full E2E suite including SMB3, cross-protocol, and Kerberos tests
 
@@ -552,17 +556,16 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 These run after merging to develop and should complete in under 30 minutes:
 
 - Everything from PR checks
-- **smb-conformance.yml** -- All storage profiles (memory, memory-fs, badger-fs, badger-s3, postgres-s3)
+- **conformance.yml** -- Every profile of every suite
 - **smb-client-compat.yml** -- Multi-OS client compatibility (Linux, macOS, Windows)
 - **integration-tests.yml** -- Backend-specific integration tests
-- **posix-tests.yml** -- POSIX compliance validation
 
 ### What Runs Weekly (Full Matrix)
 
 The weekly cron runs the complete test matrix (Monday mornings UTC):
 
 - Everything from push checks
-- **smb-conformance.yml** -- Kerberos smbtorture (runs only on push/weekly, not PRs)
+- **conformance.yml** -- Kerberos smbtorture (runs only on push/weekly, not PRs)
 - **operator-tests.yml** -- Operational scenarios
 - Auto-creates GitHub issues for regressions
 
@@ -572,8 +575,8 @@ All workflows support `workflow_dispatch` for manual triggering:
 
 ```bash
 # Trigger via GitHub CLI
-gh workflow run smb-conformance.yml
-gh workflow run smb-conformance.yml -f profile=badger-fs
+gh workflow run conformance.yml
+gh workflow run conformance.yml -f suite=smbtorture
 gh workflow run smb-client-compat.yml
 gh workflow run e2e-tests.yml
 ```
@@ -608,7 +611,7 @@ Follow this template pattern for new workflow jobs:
           ${{
             github.event_name == 'pull_request'
               && fromJson('["memory"]')
-            || fromJson('["memory", "memory-fs", "badger-fs"]')
+            || fromJson('["memory", "badger"]')
           }}
     steps:
       - uses: actions/checkout@v4

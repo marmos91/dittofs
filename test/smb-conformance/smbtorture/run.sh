@@ -4,7 +4,7 @@
 #
 # Usage:
 #   ./run.sh                                  # Run full smb2 suite with memory profile
-#   ./run.sh --profile badger-fs              # Run with specific profile
+#   ./run.sh --profile badger                 # Run with specific profile
 #   ./run.sh --filter smb2.connect            # Run specific sub-test
 #   ./run.sh --keep                           # Leave containers running for debugging
 #   ./run.sh --dry-run                        # Show configuration and exit
@@ -18,7 +18,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFORMANCE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VALID_PROFILES=("memory" "memory-fs" "badger-fs" "sqlite" "postgres" "memory-kerberos")
+VALID_PROFILES=("memory" "badger" "sqlite" "postgres" "memory-kerberos")
 
 # Name given to every one-off smbtorture container so it stays addressable (see
 # run_smbtorture). Scoped to this harness process so a container leaked by an
@@ -95,14 +95,13 @@ Options:
 
 Profiles:
   memory           Memory metadata + memory payload (fastest)
-  memory-fs        Memory metadata + memory payload (legacy name, same as memory)
-  badger-fs        BadgerDB metadata + memory payload (legacy name)
+  badger           BadgerDB metadata + memory payload
   memory-kerberos  Memory profile with Kerberos auth enabled (auto-selected by --kerberos)
 
 Examples:
   $(basename "$0")                              # Full smb2 suite with memory
   $(basename "$0") --filter smb2.connect        # Run only smb2.connect tests
-  $(basename "$0") --profile badger-fs          # Test with persistent backend
+  $(basename "$0") --profile badger             # Test with persistent backend
   $(basename "$0") --kerberos --filter smb2.session  # Kerberos session tests
   $(basename "$0") --keep --verbose             # Debug a failure
   $(basename "$0") --timeout 600               # 10 minute timeout
@@ -164,7 +163,7 @@ fi
 # self-contained kdc container provisions at startup. Any other profile is
 # silently overridden (with a warning for non-memory variants).
 if $KERBEROS && [[ "$PROFILE" != "memory-kerberos" ]]; then
-    if [[ "$PROFILE" != "memory" && "$PROFILE" != "memory-fs" ]]; then
+    if [[ "$PROFILE" != "memory" ]]; then
         log_warn "Profile ${PROFILE} does not include Kerberos config; forcing memory-kerberos"
     fi
     PROFILE="memory-kerberos"
@@ -369,7 +368,7 @@ if $KERBEROS; then
         # subdirectories still exercises the many-open path far past any real
         # client, at a thirtieth of the work. A passing smb2.maxfid therefore
         # means "2000 handles are fine", NOT "the server's ceiling was found".
-        # Bounded it finishes in 5s (memory) / 15s (badger-fs), so it needs no
+        # Bounded it finishes in 5s (memory) / 15s (badger), so it needs no
         # extra budget — it keeps the standard 60s standalone-test allowance.
         "--option=torture:maxopenfiles=2000"
         # Reserved server-side ACL xattr name surfaced to smbtorture
@@ -395,7 +394,7 @@ else
         # subdirectories still exercises the many-open path far past any real
         # client, at a thirtieth of the work. A passing smb2.maxfid therefore
         # means "2000 handles are fine", NOT "the server's ceiling was found".
-        # Bounded it finishes in 5s (memory) / 15s (badger-fs), so it needs no
+        # Bounded it finishes in 5s (memory) / 15s (badger), so it needs no
         # extra budget — it keeps the standard 60s standalone-test allowance.
         "--option=torture:maxopenfiles=2000"
         # Reserved server-side ACL xattr name surfaced to smbtorture
@@ -578,7 +577,7 @@ else
         log_info "  Running: ${test}"
         # Same budget as the sub-suites, and for the same reason. The 60s these
         # used to get was not slack: smb2.maxfid opens 2000 handles one at a
-        # time, which is 18s on badger-fs but 52s on postgres, and one postgres
+        # time, which is 18s on badger but 52s on postgres, and one postgres
         # draw ran into the wall at 60s and lost the test entirely. Every other
         # standalone finishes inside 20s, so the larger figure costs nothing
         # unless something actually hangs.

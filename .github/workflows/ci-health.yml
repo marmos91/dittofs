@@ -19,12 +19,13 @@ name: CI Health
 
 on:
   workflow_run:
+    # A GitHub trigger cannot be computed, so these names are repeated from the
+    # "workflows" map in test/conformance/suites.json. The monitored-file list
+    # below is read from that map rather than repeated a second time.
     workflows:
-      - "POSIX Compliance Tests"
-      - "SMB Conformance Tests"
-      - "E2E Tests"
-      - "NFS Kerberos"
+      - "Conformance Suites"
       - "NFS Protocol Conformance"
+      - "E2E Tests"
     types: [completed]
   pull_request:
     branches: [develop, main]
@@ -88,6 +89,11 @@ jobs:
       issues: write
 
     steps:
+      # The list of workflows to check comes from test/conformance/suites.json,
+      # so the manifest has to be on disk.
+      - name: Checkout
+        uses: actions/checkout@v7
+
       - name: Post/update develop-red warning
         # Warn-only: never let a GitHub API/CLI hiccup turn this into a red check.
         # Individual gh calls are made best-effort; the step always exits 0.
@@ -102,7 +108,7 @@ jobs:
           # completed run on develop failed. `none` (never ran) and `cancelled`
           # (concurrency-superseded) are benign — treated as not-red.
           RED=""
-          for wf in posix-tests.yml smb-conformance.yml e2e-tests.yml nfs-kerberos.yml nfs-pynfs.yml; do
+          for wf in $(jq -r '.workflows | keys[]' test/conformance/suites.json); do
             CONC=$(gh run list --repo "$REPO" --workflow "$wf" --branch develop \
               --status completed -L 1 --json conclusion --jq '.[0].conclusion // "none"' \
               || echo "none")
