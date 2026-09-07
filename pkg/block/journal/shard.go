@@ -154,9 +154,20 @@ type hydrateFence struct {
 // arrives second must not re-admit the hydrates the first was refusing. Caller
 // holds sh.mu.
 func (sh *shard) raiseHydrateFence(id FileID, minBound uint64, survives int64) {
-	if minBound > sh.hydrateFence[id].minBound {
-		sh.hydrateFence[id] = hydrateFence{minBound: minBound, survives: survives}
+	cur, had := sh.hydrateFence[id]
+	if had && minBound <= cur.minBound {
+		return
 	}
+	// survives only ever narrows. Raising minBound must not widen the range the
+	// fence admits: a delete survives nothing, and a file deleted, written again
+	// and then truncated would otherwise re-admit a pre-delete hydrate over the
+	// prefix, filling whatever holes the re-created file left there with content
+	// the delete removed. Two truncates narrow for the same reason — the lower
+	// newSize cleared more.
+	if had && cur.survives < survives {
+		survives = cur.survives
+	}
+	sh.hydrateFence[id] = hydrateFence{minBound: minBound, survives: survives}
 }
 
 // fenceDelete publishes id's delete fence at ver and drops the oldest fence

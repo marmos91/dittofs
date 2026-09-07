@@ -147,3 +147,48 @@ func TestTruncateDoesNotLowerADeleteFence(t *testing.T) {
 		t.Fatalf("Truncate lowered the fence from %d to %d", fenced, after)
 	}
 }
+
+// TestTruncateAfterDeleteDoesNotReAdmitPreDeleteHydrates covers the range half
+// of the same non-relaxation rule.
+//
+// A delete fences every range; a later truncate on the re-created file raises
+// the version but must not widen what the fence admits. Otherwise a hydrate
+// that predates the delete is let back in below newSize and fills whatever
+// holes the re-created file left there with the content the delete removed —
+// the delete-resurrection class again, limited to the prefix.
+func TestTruncateAfterDeleteDoesNotReAdmitPreDeleteHydrates(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t, Config{})
+
+	old := bytes.Repeat([]byte{0xAB}, 8192)
+	if err := s.WriteAt(ctx, "f", 0, old); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	// A cold read that resolved here, before the delete.
+	stale := s.WriteVersion()
+
+	if err := s.Delete(ctx, "f"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	// Re-created sparsely: [4096,8192) is written, [0,4096) is a hole the stale
+	// hydrate would land in.
+	if err := s.WriteAt(ctx, "f", 4096, bytes.Repeat([]byte{0xCD}, 4096)); err != nil {
+		t.Fatalf("WriteAt(recreate): %v", err)
+	}
+	if err := s.Truncate(ctx, "f", 6144); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+
+	if err := s.Hydrate(ctx, "f", 0, old[:4096], stale); err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+
+	got := make([]byte, 4096)
+	if _, _, err := s.ReadAt(ctx, "f", 0, got); err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	if bytes.Equal(got, old[:4096]) {
+		t.Fatal("a truncate after a delete re-admitted a pre-delete hydrate: deleted content resurrected in the prefix")
+	}
+}
