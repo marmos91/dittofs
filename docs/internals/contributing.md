@@ -42,6 +42,19 @@ The Nix flake provides:
 - golangci-lint for code quality
 - NFS utilities for E2E testing (Linux)
 - ACL libraries for POSIX compliance testing
+- pjdfstest for POSIX compliance testing (Linux)
+- pynfs for NFSv4 protocol conformance, as `pynfs-4.0` and `pynfs-4.1`
+- `dfs-postgres-start` / `dfs-postgres-stop` for a PostgreSQL test container
+
+`nix flake check` builds both binaries and runs the conformance graders, which is
+what decides whether a suite run counts as green.
+
+The binaries also run straight from the flake, without a clone:
+
+```bash
+nix run github:marmos91/dittofs#dfs -- start
+nix run github:marmos91/dittofs#dfsctl -- --help
+```
 
 ### Manual Setup (Alternative)
 
