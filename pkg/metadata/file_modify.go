@@ -221,14 +221,15 @@ func (s *Service) ReadSymlink(ctx *AuthContext, handle FileHandle) (string, *Fil
 // Comparing outside the transaction would only move the window rather than
 // narrow it. What makes this safe is the store's isolation, not the shape of
 // this function: under READ COMMITTED with an unlocked read — postgres — the
-// pair is not atomic and the window stays open (#2324).
+// pair is not atomic and the window stays open.
 //
 // On the losing path nothing is written at all. On the winning path the row
 // read in this transaction is written back with nothing but ChangeTime changed,
 // which spares a concurrent size or mtime advance only where that read is
 // serialised against the writer. Where it is not, a write committing between the
-// read and the update is overwritten wholesale, the same lost-update shape the
-// surrounding rename and attribute paths already have (#2324).
+// read and the update is overwritten wholesale — the residual half of the
+// lost-update shape the rename path shares, which writing the in-transaction
+// row narrows but only the store's isolation can close.
 //
 // There is no permission check: the caller is the rename itself, which the
 // metadata layer has already authorized on the parent directories, and the
@@ -1072,14 +1073,19 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		// transaction serialises it against concurrent writers. Under READ
 		// COMMITTED with an unlocked read — postgres — a write can still commit
 		// between this read and the row lock the update takes, narrowing the
-		// window rather than closing it (#2324).
+		// window rather than closing it.
 		pre, err := tx.GetFile(ctx.Context, srcHandle)
 		if err != nil {
 			return err
 		}
 		rename.SourcePreCtime = pre.Ctime
-		srcFile.Ctime = now
-		if err := tx.UpdateAttrs(ctx.Context, srcFile); err != nil {
+		// Write the row this transaction read, not the one read before it
+		// opened. Ctime is the only field a rename changes on the source
+		// inode, so every other column must come from committed state:
+		// writing the earlier snapshot back would silently restore whatever
+		// Size or Mtime a concurrent write had already committed.
+		pre.Ctime = now
+		if err := tx.UpdateAttrs(ctx.Context, pre); err != nil {
 			return err
 		}
 		post, err := tx.GetFile(ctx.Context, srcHandle)

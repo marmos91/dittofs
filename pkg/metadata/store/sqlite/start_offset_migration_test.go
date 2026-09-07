@@ -45,7 +45,7 @@ func TestStartOffsetMigration_PreExistingRowClaimsChunkStart(t *testing.T) {
 	}{
 		{q: `ALTER TABLE file_blocks DROP COLUMN start_offset`},
 		{q: `ALTER TABLE file_block_refs DROP COLUMN start_offset`},
-		{q: `DELETE FROM schema_migrations WHERE version >= 9`},
+		{q: `DELETE FROM schema_migrations WHERE version = 9`},
 		{
 			q: `INSERT INTO file_blocks (id, hash, data_size, ref_count, last_access, created_at, state)
 			    VALUES (?1, ?2, ?3, 1, ?4, ?4, 2)`,

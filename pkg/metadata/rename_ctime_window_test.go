@@ -96,3 +96,50 @@ func TestRenameCtime_AdvanceInsideMoveWindowIsNotErased(t *testing.T) {
 			"(pre-rename value was %v) — the pre-read came from outside the transaction and erased it",
 		after.Ctime.UTC(), mid.Ctime.UTC(), c0.Ctime.UTC())
 }
+
+// TestRenameCtime_SizeCommittedInMoveWindowSurvives pins that Move writes the
+// row its own transaction read, not the copy it took before opening one.
+//
+// ChangeTime is the only field a rename changes on the source inode, so every
+// other column on the row it writes must come from committed state. Writing the
+// earlier snapshot back restores whatever that snapshot held — here a Size that
+// a WRITE has since superseded — which is a lost update rather than a rename.
+//
+// The distinction is invisible unless a writer commits between the two reads,
+// so the hook places one exactly there, the same way the ChangeTime case does.
+// Asserting on Size rather than ChangeTime is deliberate: the rename is entitled
+// to move ChangeTime, so ChangeTime cannot show whether the rest of the row came
+// from the stale copy.
+func TestRenameCtime_SizeCommittedInMoveWindowSurvives(t *testing.T) {
+	ws := &windowStore{SQLiteMetadataStore: newSQLiteRenameStore(t)}
+	svc, rootHandle, share := registerRenameStore(t, ws)
+	root := rootAuth()
+
+	created, _, err := svc.CreateFile(root, rootHandle, "s.bin",
+		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o666})
+	require.NoError(t, err)
+	handle, err := metadata.EncodeShareHandle(share, created.ID)
+	require.NoError(t, err)
+
+	const grown = uint64(4096)
+	var mid *metadata.File
+	ws.beforeTx = func() {
+		size := grown
+		_, hookErr := svc.SetFileAttributes(root, handle, &metadata.SetAttrs{Size: &size})
+		require.NoError(t, hookErr)
+		mid, hookErr = svc.GetFile(root.Context, handle)
+		require.NoError(t, hookErr)
+	}
+
+	_, _, err = svc.Move(root, rootHandle, "s.bin", rootHandle, "t.bin")
+	require.NoError(t, err)
+	require.NotNil(t, mid, "hook did not fire: Move opened no transaction through the wrapper")
+	require.Equal(t, grown, mid.Size, "precondition: the injected size must have committed")
+
+	after, err := svc.GetFile(root.Context, handle)
+	require.NoError(t, err)
+	require.Equal(t, grown, after.Size,
+		"Size = %d; want the %d committed inside the rename's own window — Move wrote back the "+
+			"inode snapshot it read before opening its transaction, discarding the newer size",
+		after.Size, grown)
+}
