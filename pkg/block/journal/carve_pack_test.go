@@ -5,10 +5,9 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/chunker"
-	badgerstore "github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
 
 // TestCarvePackReachesBlockSizeOnScatteredRuns pins the defect this plan fixes:
@@ -308,24 +307,42 @@ func TestCarvePackSeamRunFailureLeavesSuffixDirty(t *testing.T) {
 	}
 }
 
-// badgerDeduper answers IsChunkDurable from a real BadgerMetadataStore's
-// IsSynced, the same lookup production wiring uses (pkg/block/engine's
-// engineDeduper). Unlike fakeDeduper's mutex-guarded map, each call opens an
-// actual Badger read transaction — the per-call cost BenchmarkCarveScatteredPass
-// exists to measure. Never marked synced by this benchmark, so every lookup is
-// a miss, which matches carve encountering novel scattered writes.
-type badgerDeduper struct {
-	store *badgerstore.BadgerMetadataStore
+// slowDeduper answers IsChunkDurable after a fixed delay, standing in for a
+// real key-value oracle without importing one. The delay is what matters: every
+// lookup is serialised through the single packer goroutine, so a map-backed fake
+// elides the very cost the benchmark exists to show.
+//
+// It spins rather than sleeping because the delay is tens of microseconds, well
+// under the scheduler's sleep granularity, and the figure being measured is the
+// packer's blocked time — sleep noise would land directly on it.
+//
+// ponytail: one flat delay, no distribution and no cache-hit skew. A real store
+// is bimodal (page cache vs. disk); model that only if a pass ever needs to
+// predict absolute latency rather than compare two packer designs. The
+// against-real-Badger measurement belongs in DittoFS's own suite, not here —
+// this package must not depend on a metadata store to benchmark itself.
+type slowDeduper struct {
+	delay time.Duration
 }
 
-func (d badgerDeduper) IsChunkDurable(ctx context.Context, h ChunkHash) (bool, error) {
-	return d.store.IsSynced(ctx, block.ContentHash(h))
+// deduperLookupDelay approximates a warm point lookup in an embedded LSM store.
+// A calibration knob, not a constant of nature: re-measure it against the real
+// oracle on the hardware a run is quoting before reading absolute numbers off
+// this benchmark.
+const deduperLookupDelay = 50 * time.Microsecond
+
+func (d slowDeduper) IsChunkDurable(_ context.Context, _ ChunkHash) (bool, error) {
+	for start := time.Now(); time.Since(start) < d.delay; {
+	}
+	return false, nil
 }
 
 // BenchmarkCarveScatteredPass measures a full scattered carve pass against a
-// real dedup oracle, so the cost of serialising IsChunkDurable through one
-// packer goroutine is visible rather than elided by a map-backed fake.
+// latency-injecting dedup oracle, so the cost of serialising IsChunkDurable
+// through one packer goroutine is visible rather than elided by a map-backed
+// fake.
 func BenchmarkCarveScatteredPass(b *testing.B) {
+	b.ReportAllocs()
 	const (
 		runs    = 5000
 		runSize = 4 << 10
@@ -339,12 +356,7 @@ func BenchmarkCarveScatteredPass(b *testing.B) {
 			CarveUploadConcurrency: 8,
 			ChunkParams:            chunker.Params{Min: 1 << 10, Avg: 2 << 10, Max: 8 << 10},
 		})
-		md, err := badgerstore.NewBadgerMetadataStoreWithDefaults(ctx, b.TempDir())
-		if err != nil {
-			b.Fatalf("open badger metadata store: %v", err)
-		}
-		b.Cleanup(func() { _ = md.Close() })
-		s.SetCarveTargets(badgerDeduper{md}, sink)
+		s.SetCarveTargets(slowDeduper{delay: deduperLookupDelay}, sink)
 		for r := 0; r < runs; r++ {
 			if err := s.WriteAt(ctx, "f", int64(r)*gap, randBytes(runSize, int64(r))); err != nil {
 				b.Fatalf("WriteAt %d: %v", r, err)
