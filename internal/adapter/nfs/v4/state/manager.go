@@ -952,9 +952,10 @@ func (sm *StateManager) clientLeaseLapsedLocked(clientID uint64) bool {
 	return false
 }
 
-// expireLapsedHoldersLocked releases the state of every client other than
-// exceptClientID that holds an open on fileHandle under a lease that has
-// already run out.
+// expireLapsedHoldersLocked releases the state of every client that holds an
+// open on fileHandle under a lease that has already run out, except for the
+// clients in keepClientIDs. Callers name every client whose records they are
+// holding a pointer into, since releasing one frees its opens and locks.
 //
 // What keeps an expired client's opens and locks alive is courtesy: a client
 // that merely lost contact for a moment should not come back to find its locks
@@ -967,12 +968,12 @@ func (sm *StateManager) clientLeaseLapsedLocked(clientID uint64) bool {
 // arrives.
 //
 // Caller must hold sm.mu.
-func (sm *StateManager) expireLapsedHoldersLocked(fileHandle []byte, exceptClientID uint64) {
+func (sm *StateManager) expireLapsedHoldersLocked(fileHandle []byte, keepClientIDs ...uint64) {
 	// Collected before anything is released: expiring a client rewrites the
 	// index this ranges over.
 	var lapsed []uint64
 	for _, os := range sm.openStateByFile[string(fileHandle)] {
-		if os.Owner == nil || os.Owner.ClientID == exceptClientID || slices.Contains(lapsed, os.Owner.ClientID) {
+		if os.Owner == nil || slices.Contains(keepClientIDs, os.Owner.ClientID) || slices.Contains(lapsed, os.Owner.ClientID) {
 			continue
 		}
 		if sm.clientLeaseLapsedLocked(os.Owner.ClientID) {
@@ -2642,7 +2643,8 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 	// courtesy state, and this request is the collision that ends the courtesy.
 	// Released here rather than left to the sweeper, the answer no longer
 	// depends on where in the sweep interval the request happened to land.
-	sm.expireLapsedHoldersLocked(lockState.FileHandle, lockState.LockOwner.ClientID)
+	sm.expireLapsedHoldersLocked(lockState.FileHandle,
+		lockState.LockOwner.ClientID, lockState.OpenState.Owner.ClientID)
 
 	// Break any conflicting cross-protocol read leases (e.g. an SMB read/write
 	// oplock) before acquiring the byte-range lock. A held lease lets another
