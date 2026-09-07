@@ -43,7 +43,7 @@ func (h *Handler) handleAllocate(ctx *types.CompoundContext, reader io.Reader) *
 		return allocErr(types.NFS4ERR_ROFS)
 	}
 
-	stateid, offset, length, st := decodeAllocArgs(reader)
+	stateid, offset, length, st := decodeAllocArgs(ctx, reader)
 	if st != types.NFS4_OK {
 		return allocErr(st)
 	}

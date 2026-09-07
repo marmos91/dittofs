@@ -39,7 +39,7 @@ func (h *Handler) handleDeallocate(ctx *types.CompoundContext, reader io.Reader)
 		return deallocErr(types.NFS4ERR_ROFS)
 	}
 
-	stateid, offset, length, st := decodeAllocArgs(reader)
+	stateid, offset, length, st := decodeAllocArgs(ctx, reader)
 	if st != types.NFS4_OK {
 		return deallocErr(st)
 	}
@@ -104,10 +104,10 @@ func (h *Handler) handleDeallocate(ctx *types.CompoundContext, reader io.Reader)
 // decodeAllocArgs decodes the shared (stateid, offset, length) argument tuple of
 // ALLOCATE and DEALLOCATE. Returns NFS4ERR_BADXDR on a malformed stream and
 // NFS4ERR_INVAL when offset+length overflows uint64.
-func decodeAllocArgs(reader io.Reader) (*types.Stateid4, uint64, uint64, uint32) {
-	stateid, err := types.DecodeStateid4(reader)
-	if err != nil {
-		return nil, 0, 0, types.NFS4ERR_BADXDR
+func decodeAllocArgs(ctx *types.CompoundContext, reader io.Reader) (*types.Stateid4, uint64, uint64, uint32) {
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		return nil, 0, 0, argStatus
 	}
 	offset, err := xdr.DecodeUint64(reader)
 	if err != nil {

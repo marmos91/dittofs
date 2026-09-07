@@ -30,13 +30,6 @@ Categories:
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| CSID1 | bug | current stateid not tracked across a COMPOUND | #2328 |
-| CSID10 | bug | current stateid not tracked across a COMPOUND | #2328 |
-| CSID2 | bug | current stateid not tracked across a COMPOUND | #2328 |
-| CSID3 | bug | current stateid not tracked across a COMPOUND | #2328 |
-| CSID4 | bug | current stateid not tracked across a COMPOUND | #2328 |
-| CSID8 | bug | current stateid not tracked across a COMPOUND | #2328 |
-| CSID9 | bug | current stateid not tracked across a COMPOUND | #2328 |
 | DELEG1 | bug | no delegation is granted | #2329 |
 | DELEG2 | bug | no delegation is granted | #2329 |
 | DELEG23 | bug | no delegation is granted | #2329 |

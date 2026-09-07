@@ -26,15 +26,16 @@ func HandleFreeStateid(
 	v41ctx *types.V41RequestContext,
 	reader io.Reader,
 ) *types.CompoundResult {
-	var args types.FreeStateidArgs
-	if err := args.Decode(reader); err != nil {
-		logger.Debug("FREE_STATEID: decode error", "error", err, "client", ctx.ClientAddr)
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		logger.Debug("FREE_STATEID: stateid argument rejected", "status", argStatus, "client", ctx.ClientAddr)
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
+			Status: argStatus,
 			OpCode: types.OP_FREE_STATEID,
-			Data:   EncodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   EncodeStatusOnly(argStatus),
 		}
 	}
+	args := types.FreeStateidArgs{Stateid: *stateid}
 
 	// FREE_STATEID requires SEQUENCE context for client authorization
 	if v41ctx == nil {

@@ -764,9 +764,10 @@ func (h *Handler) encodeOpenResult(
 	h.StateManager.CacheOpenOwnerResult(clientID, ownerData, types.NFS4_OK, buf.Bytes())
 
 	return &types.CompoundResult{
-		Status: types.NFS4_OK,
-		OpCode: types.OP_OPEN,
-		Data:   buf.Bytes(),
+		Status:  types.NFS4_OK,
+		Stateid: stateid,
+		OpCode:  types.OP_OPEN,
+		Data:    buf.Bytes(),
 	}
 }
 
@@ -837,9 +838,10 @@ func (h *Handler) handleOpenConfirm(ctx *types.CompoundContext, reader io.Reader
 	}
 
 	return &types.CompoundResult{
-		Status: types.NFS4_OK,
-		OpCode: types.OP_OPEN_CONFIRM,
-		Data:   buf.Bytes(),
+		Status:  types.NFS4_OK,
+		Stateid: &confirmResult.Stateid,
+		OpCode:  types.OP_OPEN_CONFIRM,
+		Data:    buf.Bytes(),
 	}
 }
 

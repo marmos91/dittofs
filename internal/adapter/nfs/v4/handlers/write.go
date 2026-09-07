@@ -74,9 +74,9 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 	}
 
 	// Decode WRITE4args
-	stateid, err := types.DecodeStateid4(reader)
-	if err != nil {
-		return writeErr(types.NFS4ERR_BADXDR)
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		return writeErr(argStatus)
 	}
 
 	offset, err := xdr.DecodeUint64(reader)
