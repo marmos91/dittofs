@@ -66,6 +66,16 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 		return commitErr(status)
 	}
 
+	// COMMIT is defined only over regular files: a directory is
+	// NFS4ERR_ISDIR and any other type NFS4ERR_INVAL. Without the gate the
+	// handler flushed whatever the handle named, and an object with no
+	// payload answered NFS4_OK.
+	if status := regularFileStatus(file.Type); status != types.NFS4_OK {
+		logger.Debug("NFSv4 COMMIT on non-regular file",
+			"type", file.Type, "status", status, "client", ctx.ClientAddr)
+		return commitErr(status)
+	}
+
 	// Enforce write permission before forcing anything to stable storage.
 	// COMMIT (RFC 7530 16.5) is the durability half of WRITE, so it takes the
 	// same gate WRITE takes via PrepareWrite — otherwise any client holding a

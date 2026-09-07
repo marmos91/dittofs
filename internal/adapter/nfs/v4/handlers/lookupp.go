@@ -58,6 +58,22 @@ func (h *Handler) lookupParentInRealFS(ctx *types.CompoundContext) *types.Compou
 		}
 	}
 
+	// LOOKUPP walks out of a directory, so a current filehandle of any other
+	// type is an error (RFC 7530 Section 16.16.4). Every object carries a
+	// parent, so without this gate LOOKUPP on a file or a device node
+	// answered NFS4_OK with the parent directory's handle.
+	fileType, status := h.fileTypeForHandle(ctx, ctx.CurrentFH)
+	if status == types.NFS4_OK {
+		status = directoryStatus(fileType)
+	}
+	if status != types.NFS4_OK {
+		return &types.CompoundResult{
+			Status: status,
+			OpCode: types.OP_LOOKUPP,
+			Data:   encodeStatusOnly(status),
+		}
+	}
+
 	// Get current file's parent handle from metadata store
 	store, err := metaSvc.GetStoreForShare(shareName)
 	if err != nil {
@@ -91,9 +107,16 @@ func (h *Handler) lookupParentInRealFS(ctx *types.CompoundContext) *types.Compou
 	}
 }
 
-// crossBackToPseudoFS sets the current filehandle to the pseudo-fs junction
-// for the given share name. Called when LOOKUPP at share root needs to go
-// back to the virtual namespace.
+// crossBackToPseudoFS sets the current filehandle to the parent of the
+// pseudo-fs junction for the given share name. Called when LOOKUPP at a share
+// root needs to go back to the virtual namespace.
+//
+// The junction node and the share root are two views of one directory -- a
+// share exported at /export is reached either as the pseudo-fs node /export or
+// as the real filesystem's root -- so answering with the junction itself left
+// the client in the directory it was already in, and a walk upwards stalled
+// there. The step out of the share lands on what contains it, which is the
+// junction's parent.
 func (h *Handler) crossBackToPseudoFS(ctx *types.CompoundContext, shareName string) *types.CompoundResult {
 	if h.PseudoFS == nil {
 		return &types.CompoundResult{
@@ -113,9 +136,16 @@ func (h *Handler) crossBackToPseudoFS(ctx *types.CompoundContext, shareName stri
 		}
 	}
 
-	// Set current FH to the junction's handle (copy-on-set)
-	ctx.CurrentFH = make([]byte, len(junction.Handle))
-	copy(ctx.CurrentFH, junction.Handle)
+	// A junction directly under the pseudo-fs root has the root as its parent;
+	// the root itself is never a junction, so there is always one to step to.
+	target := junction.Handle
+	if parent, ok := h.PseudoFS.LookupParent(junction); ok && parent != nil {
+		target = parent.Handle
+	}
+
+	// Set current FH to the parent's handle (copy-on-set)
+	ctx.CurrentFH = make([]byte, len(target))
+	copy(ctx.CurrentFH, target)
 
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,
@@ -136,13 +166,16 @@ func (h *Handler) lookupParentInPseudoFS(ctx *types.CompoundContext) *types.Comp
 		}
 	}
 
-	// Get parent node (root's parent is root itself)
+	// The pseudo-fs root has no parent to walk to, and RFC 7530
+	// Section 16.16.4 answers that with NFS4ERR_NOENT. LookupParent reports
+	// the root as its own parent, which would otherwise answer NFS4_OK and
+	// leave the current filehandle unchanged.
 	parent, ok := h.PseudoFS.LookupParent(node)
-	if !ok {
+	if !ok || parent == nil || parent == node {
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
+			Status: types.NFS4ERR_NOENT,
 			OpCode: types.OP_LOOKUPP,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   encodeStatusOnly(types.NFS4ERR_NOENT),
 		}
 	}
 

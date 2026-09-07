@@ -80,8 +80,8 @@ func TestOpen_ClientIDSpansPrincipals(t *testing.T) {
 
 	// The permission check is load-bearing: uid 1001 cannot write the file, and
 	// naming uid 1000's client ID and owner does not get it write access.
-	// checkOpenAccess refuses before the state layer sees the request, so seqid
-	// 3 is still unused when the read OPEN below presents it.
+	// NFS4ERR_ACCESS is one of the statuses RFC 7530 Section 9.1.7 consumes, so
+	// seqid 3 is spent on that refusal and the read OPEN below presents 4.
 	if status := doOpen(fx, other, 3, clientID, owner, "victim.txt",
 		types.OPEN4_NOCREATE, types.OPEN4_SHARE_ACCESS_BOTH).Status; status != types.NFS4ERR_ACCESS {
 		t.Errorf("OPEN for write by a uid without write permission: status = %d, want NFS4ERR_ACCESS", status)
@@ -89,7 +89,7 @@ func TestOpen_ClientIDSpansPrincipals(t *testing.T) {
 
 	// Read access it does have, and there it joins the existing open state --
 	// the documented shape of a shared client ID, not a defect.
-	shared := openStateid(t, fx, other, 3, clientID, owner, "victim.txt",
+	shared := openStateid(t, fx, other, 4, clientID, owner, "victim.txt",
 		types.OPEN4_NOCREATE, types.OPEN4_SHARE_ACCESS_READ)
 	if shared.Other != victimStateid.Other {
 		t.Errorf("second principal got a distinct open state (%x vs %x)", shared.Other, victimStateid.Other)

@@ -167,6 +167,9 @@ type OpenOwner struct {
 	// server" (RFC 7530 Section 16.28.5).
 	Principal string
 
+	// openRefusal is the last OPEN this server refused on its own, if any.
+	openRefusal *openRefusal
+
 	// ownerSeq carries this owner's seqid sequence and replay cache.
 	ownerSeq
 
@@ -216,6 +219,20 @@ type CachedResult struct {
 
 	// Data is the XDR-encoded operation-specific result data.
 	Data []byte
+}
+
+// openRefusal remembers an OPEN this server refused before the state layer saw
+// it: the seqid it consumed and the status it answered.
+//
+// It is deliberately kept apart from OpenOwner.LastResult. That cache is shared
+// by every owner-seqid-advancing operation -- CLOSE, OPEN_CONFIRM and
+// OPEN_DOWNGRADE all write to it -- so at any moment it may hold a reply of a
+// different shape than an OPEN's. Replaying those bytes in an OPEN's place
+// answers with the right operation number and the wrong body, and the client
+// reads the next operation's number out of the middle of it.
+type openRefusal struct {
+	seqid  uint32
+	status uint32
 }
 
 // ReplayError is returned by owner-seqid-advancing StateManager methods when a
