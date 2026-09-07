@@ -345,7 +345,7 @@ func BenchmarkDelete(b *testing.B) {
 }
 
 // The four residency queries below are the receipts for the merged Extents
-// query the pier design proposes. Collapsing them into one slice-returning call
+// query the design plan proposes. Collapsing them into one slice-returning call
 // is that design's biggest performance risk — ColdExtents is O(live intervals)
 // across every shard — so the before-numbers have to exist on the same hardware
 // before the after-numbers mean anything. Recorded now; compared when Extents
