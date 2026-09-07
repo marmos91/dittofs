@@ -964,20 +964,38 @@ func testIdempotencyTokenRoundTrip(t *testing.T, factory StoreFactory) {
 			got.IdempotencyToken, want)
 	}
 
-	// Insert path: the token is present on the very first write of the inode.
-	created := createTestFile(t, store, shareName, rootHandle, "created.dat", 0o644)
-	newFile, err := store.GetFile(ctx, created)
+	// Insert path: the token must be on the inode's very FIRST write, so the
+	// insert statement carries the column. Going through createTestFile would
+	// insert the row with a zero token and then set it, which is the update
+	// path again and leaves the insert's column list untested.
+	insertPath := childFullPath(t, store, rootHandle, "created.dat")
+	insertHandle, err := store.GenerateHandle(ctx, shareName, insertPath)
 	if err != nil {
-		t.Fatalf("GetFile() failed: %v", err)
+		t.Fatalf("GenerateHandle() failed: %v", err)
 	}
-	newFile.IdempotencyToken = want
-	if err := store.UpdateAttrs(ctx, newFile); err != nil {
-		t.Fatalf("UpdateAttrs() failed: %v", err)
+	_, insertID, err := metadata.DecodeFileHandle(insertHandle)
+	if err != nil {
+		t.Fatalf("DecodeFileHandle() failed: %v", err)
 	}
-	if got, err = store.GetFile(ctx, created); err != nil {
-		t.Fatalf("GetFile() failed: %v", err)
+	if err := store.UpdateAttrs(ctx, &metadata.File{
+		ShareName: shareName,
+		Path:      insertPath,
+		ID:        insertID,
+		FileAttr: metadata.FileAttr{
+			Type:             metadata.FileTypeRegular,
+			Mode:             0o644,
+			UID:              1000,
+			GID:              1000,
+			IdempotencyToken: want,
+		},
+	}); err != nil {
+		t.Fatalf("UpdateAttrs() inserting with a token failed: %v", err)
+	}
+	if got, err = store.GetFile(ctx, insertHandle); err != nil {
+		t.Fatalf("GetFile() after insert failed: %v", err)
 	} else if got.IdempotencyToken != want {
-		t.Errorf("IdempotencyToken on second file = %#x, want %#x", got.IdempotencyToken, want)
+		t.Errorf("IdempotencyToken after insert = %#x, want %#x — the insert statement does not carry the column",
+			got.IdempotencyToken, want)
 	}
 
 	// A file that never carried a token still reads back zero, so the absence
