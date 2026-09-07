@@ -221,10 +221,19 @@ func (bs *Store) Start(ctx context.Context) error {
 	// When remote goes unhealthy, suspend eviction to prevent evicting blocks
 	// that cannot be re-downloaded. When healthy again, re-enable eviction.
 	bs.syncer.SetHealthCallback(func(healthy bool) {
-		bs.local.SetEvictionEnabled(bs.syncer.CanEvict())
-		if healthy {
+		// Log what was actually decided, not what health alone implies: a healthy
+		// remote no longer means eviction resumes, because carve must also be
+		// wired to it. Saying "re-enabled" while eviction stays off would leave a
+		// log that disagrees with the store, which is the hazard this gate exists
+		// to remove.
+		canEvict := bs.syncer.CanEvict()
+		bs.local.SetEvictionEnabled(canEvict)
+		switch {
+		case canEvict:
 			logger.Info("Remote store healthy: eviction re-enabled")
-		} else {
+		case healthy:
+			logger.Info("Remote store healthy but carve is not wired to it: eviction stays suspended")
+		default:
 			logger.Warn("Remote store unhealthy: eviction suspended")
 		}
 	})

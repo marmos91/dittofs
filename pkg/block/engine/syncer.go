@@ -304,8 +304,6 @@ func (m *Syncer) SetHealthCallback(fn healthTransitionCallback) {
 	}
 }
 
-// IsRemoteHealthy returns the health state of the remote store.
-// Returns true when there is no HealthMonitor (local-only mode).
 // CanEvict reports whether reclaiming local bytes is safe: they may only be
 // dropped when something can fetch them back. That is carveActive — the carve
 // path wired to a remote — AND that remote being healthy.
@@ -321,6 +319,10 @@ func (m *Syncer) CanEvict() bool {
 	return m.carveActive.Load() && m.IsRemoteHealthy()
 }
 
+// IsRemoteHealthy returns the health state of the remote store.
+// Returns true when there is no HealthMonitor (local-only mode) — which is why
+// it is not sufficient on its own to decide whether eviction is safe. Use
+// CanEvict for that.
 func (m *Syncer) IsRemoteHealthy() bool {
 	if m.healthMonitor == nil {
 		return true
