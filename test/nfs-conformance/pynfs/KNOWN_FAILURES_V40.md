@@ -30,10 +30,6 @@ Categories:
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| CID1 | bug | SETCLIENTID/SETCLIENTID_CONFIRM and RENEW validation | #2326 |
-| CID2 | bug | SETCLIENTID/SETCLIENTID_CONFIRM and RENEW validation | #2326 |
-| CID2a | bug | SETCLIENTID/SETCLIENTID_CONFIRM and RENEW validation | #2326 |
-| RENEW3 | bug | SETCLIENTID/SETCLIENTID_CONFIRM and RENEW validation | #2326 |
 | OPEN4 | bug | exclusive re-create with the same verifier answers EXIST on the SQL backends, which do not persist the create verifier | #2317 |
 | CLOSE4 | bug | bad/old/stale stateid accepted | #2341 |
 | CLOSE5 | bug | bad/old/stale stateid accepted | #2341 |

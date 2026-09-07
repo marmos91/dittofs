@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,7 +12,7 @@ import (
 
 // The lease these tests run under is short enough to lapse inside the test and
 // long enough that nothing lapses while the setup is still running.
-const courtesyLease = 40 * time.Millisecond
+const courtesyLease = 250 * time.Millisecond
 
 // courtesyClient registers a v4.1 client, confirms it with a session, and
 // returns its client ID. A v4.1 client's state outlives its lease until a
@@ -59,7 +60,7 @@ func TestOpen_ConflictExpiresLapsedShareReservation(t *testing.T) {
 	// While the lease is live the reservation is enforced.
 	newcomer := courtesyClient(t, sm, "courtesy-newcomer")
 	if _, err := sm.OpenFile(newcomer, []byte("newcomer-owner"), 0, fh,
-		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); err != ErrShareDenied {
+		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); !errors.Is(err, ErrShareDenied) {
 		t.Fatalf("OPEN against a live share reservation: got %v, want ErrShareDenied", err)
 	}
 
@@ -145,7 +146,7 @@ func TestOpen_ConflictKeepsLiveShareReservation(t *testing.T) {
 
 	newcomer := courtesyClient(t, sm, "mixed-newcomer")
 	if _, err := sm.OpenFile(newcomer, []byte("newcomer-owner"), 0, fh,
-		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); err != ErrShareDenied {
+		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); !errors.Is(err, ErrShareDenied) {
 		t.Errorf("OPEN against a live reservation held alongside a lapsed one: got %v, want ErrShareDenied", err)
 	}
 }

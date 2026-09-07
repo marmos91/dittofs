@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -953,7 +954,7 @@ func (sm *StateManager) clientLeaseLapsedLocked(clientID uint64) bool {
 
 // expireLapsedHoldersLocked releases the state of every client other than
 // exceptClientID that holds an open on fileHandle under a lease that has
-// already run out, and reports whether it released any.
+// already run out.
 //
 // What keeps an expired client's opens and locks alive is courtesy: a client
 // that merely lost contact for a moment should not come back to find its locks
@@ -966,22 +967,16 @@ func (sm *StateManager) clientLeaseLapsedLocked(clientID uint64) bool {
 // arrives.
 //
 // Caller must hold sm.mu.
-func (sm *StateManager) expireLapsedHoldersLocked(fileHandle []byte, exceptClientID uint64) bool {
+func (sm *StateManager) expireLapsedHoldersLocked(fileHandle []byte, exceptClientID uint64) {
+	// Collected before anything is released: expiring a client rewrites the
+	// index this ranges over.
 	var lapsed []uint64
-	seen := make(map[uint64]struct{})
-
 	for _, os := range sm.openStateByFile[string(fileHandle)] {
-		if os.Owner == nil || os.Owner.ClientID == exceptClientID {
+		if os.Owner == nil || os.Owner.ClientID == exceptClientID || slices.Contains(lapsed, os.Owner.ClientID) {
 			continue
 		}
-		clientID := os.Owner.ClientID
-		if _, dup := seen[clientID]; dup {
-			continue
-		}
-		seen[clientID] = struct{}{}
-
-		if sm.clientLeaseLapsedLocked(clientID) {
-			lapsed = append(lapsed, clientID)
+		if sm.clientLeaseLapsedLocked(os.Owner.ClientID) {
+			lapsed = append(lapsed, os.Owner.ClientID)
 		}
 	}
 
@@ -996,8 +991,6 @@ func (sm *StateManager) expireLapsedHoldersLocked(fileHandle []byte, exceptClien
 		}
 		sm.expireV40ClientLocked(clientID)
 	}
-
-	return len(lapsed) > 0
 }
 
 // maxExpiredStateids caps how many freed-by-lease-cancellation stateids the
