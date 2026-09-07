@@ -2643,8 +2643,15 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 	// courtesy state, and this request is the collision that ends the courtesy.
 	// Released here rather than left to the sweeper, the answer no longer
 	// depends on where in the sweep interval the request happened to land.
-	sm.expireLapsedHoldersLocked(lockState.FileHandle,
-		lockState.LockOwner.ClientID, lockState.OpenState.Owner.ClientID)
+	//
+	// A reclaim is exempt, as CLAIM_PREVIOUS is on the OPEN side: during grace
+	// every client is re-establishing state it already held, and one that has
+	// reclaimed its opens but not yet its locks can outlive the fresh lease it
+	// was given, which would make its half-rebuilt state look abandoned.
+	if !reclaim {
+		sm.expireLapsedHoldersLocked(lockState.FileHandle,
+			lockState.LockOwner.ClientID, lockState.OpenState.Owner.ClientID)
+	}
 
 	// Break any conflicting cross-protocol read leases (e.g. an SMB read/write
 	// oplock) before acquiring the byte-range lock. A held lease lets another
