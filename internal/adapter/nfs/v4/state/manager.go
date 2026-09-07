@@ -427,7 +427,7 @@ func firstOrEmpty(ss []string) string {
 //
 // Caller must hold sm.mu.
 func (sm *StateManager) clientHasLiveStateLocked(clientID uint64) bool {
-	if record := sm.clientsByID[clientID]; record != nil && record.Lease != nil && record.Lease.IsExpired() {
+	if sm.clientLeaseLapsedLocked(clientID) {
 		return false
 	}
 	for _, owner := range sm.openOwners {
@@ -936,6 +936,70 @@ func (sm *StateManager) releaseClientStateLocked(clientID uint64) {
 	}
 }
 
+// clientLeaseLapsedLocked reports whether a confirmed client's lease has run
+// out. Both client generations are checked: the caller has a client ID and no
+// reason to know which minor version minted it.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) clientLeaseLapsedLocked(clientID uint64) bool {
+	if record := sm.clientsByID[clientID]; record != nil {
+		return record.Confirmed && record.Lease != nil && record.Lease.IsExpired()
+	}
+	if v41 := sm.v41ClientsByID[clientID]; v41 != nil {
+		return v41.Confirmed && v41.Lease != nil && v41.Lease.IsExpired()
+	}
+	return false
+}
+
+// expireLapsedHoldersLocked releases the state of every client other than
+// exceptClientID that holds an open on fileHandle under a lease that has
+// already run out, and reports whether it released any.
+//
+// What keeps an expired client's opens and locks alive is courtesy: a client
+// that merely lost contact for a moment should not come back to find its locks
+// broken, so the state outlives the lease and a sweeper collects it later. The
+// courtesy is owed to nobody once another client's request actually collides
+// with that state, and the collision is the only event that says so. Deciding
+// the conflict on the sweeper's schedule instead refuses a request that
+// nothing live objects to, for however much of the sweep interval is left --
+// which is why the same request is granted or refused depending on when it
+// arrives.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) expireLapsedHoldersLocked(fileHandle []byte, exceptClientID uint64) bool {
+	var lapsed []uint64
+	seen := make(map[uint64]struct{})
+
+	for _, os := range sm.openStateByFile[string(fileHandle)] {
+		if os.Owner == nil || os.Owner.ClientID == exceptClientID {
+			continue
+		}
+		clientID := os.Owner.ClientID
+		if _, dup := seen[clientID]; dup {
+			continue
+		}
+		seen[clientID] = struct{}{}
+
+		if sm.clientLeaseLapsedLocked(clientID) {
+			lapsed = append(lapsed, clientID)
+		}
+	}
+
+	for _, clientID := range lapsed {
+		logger.Info("Expiring a lapsed client to resolve a conflicting request",
+			"client_id", clientID)
+
+		if v41 := sm.v41ClientsByID[clientID]; v41 != nil {
+			sm.markClientStateidsExpiredLocked(clientID)
+			sm.purgeV41Client(v41)
+			continue
+		}
+		sm.expireV40ClientLocked(clientID)
+	}
+
+	return len(lapsed) > 0
+}
+
 // maxExpiredStateids caps how many freed-by-lease-cancellation stateids the
 // server remembers; see the expiredStateids field for what overflow costs.
 const maxExpiredStateids = 4096
@@ -1007,6 +1071,15 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	sm.expireV40ClientLocked(clientID)
+}
+
+// expireV40ClientLocked drops a v4.0 client and everything it holds. It is what
+// a lapsed lease does, and what a conflicting request does to a client whose
+// lease already lapsed.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) expireV40ClientLocked(clientID uint64) {
 	record, exists := sm.clientsByID[clientID]
 	if !exists {
 		return
@@ -1413,6 +1486,8 @@ func (sm *StateManager) OpenFile(
 	// re-establishes prior state and is exempt. The scan runs under sm.mu so it
 	// observes a consistent snapshot of every live open.
 	if claimType != types.CLAIM_PREVIOUS {
+		sm.expireLapsedHoldersLocked(fileHandle, clientID)
+
 		if conflict := sm.shareConflictLocked(fileHandle, shareAccess, shareDeny); conflict {
 			logger.Debug("OpenFile: share reservation conflict",
 				"client_id", clientID,
@@ -2569,6 +2644,12 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 	enhLock.Reclaim = reclaim
 
 	handleKey := string(lockState.FileHandle)
+
+	// A lock held on behalf of a client whose lease has already run out is
+	// courtesy state, and this request is the collision that ends the courtesy.
+	// Released here rather than left to the sweeper, the answer no longer
+	// depends on where in the sweep interval the request happened to land.
+	sm.expireLapsedHoldersLocked(lockState.FileHandle, lockState.LockOwner.ClientID)
 
 	// Break any conflicting cross-protocol read leases (e.g. an SMB read/write
 	// oplock) before acquiring the byte-range lock. A held lease lets another
