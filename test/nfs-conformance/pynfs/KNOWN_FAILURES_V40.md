@@ -40,9 +40,6 @@ Categories:
 | LOCK13 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
 | LOCK15 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
 | LOCK17 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
-| CR11 | bug | OPEN claim, share-reservation and create-mode validation | #2334 |
-| CR13 | bug | OPEN claim, share-reservation and create-mode validation | #2334 |
-| OPEN14 | bug | OPEN claim, share-reservation and create-mode validation | #2334 |
 | OPEN2 | bug | OPEN claim, share-reservation and create-mode validation | #2334 |
 | OPEN21 | bug | OPEN claim, share-reservation and create-mode validation | #2334 |
 | OPEN23 | bug | OPEN claim, share-reservation and create-mode validation | #2334 |
@@ -70,14 +67,7 @@ Categories:
 | LOOKP2r | bug | operation on the wrong object type returns NFS4_OK | #2335 |
 | LOOKP2s | bug | operation on the wrong object type returns NFS4_OK | #2335 |
 | LOOKP3 | bug | operation on the wrong object type returns NFS4_OK | #2335 |
-| OPEN7a | bug | operation on the wrong object type returns NFS4_OK | #2335 |
-| OPEN7b | bug | operation on the wrong object type returns NFS4_OK | #2335 |
-| OPEN7c | bug | operation on the wrong object type returns NFS4_OK | #2335 |
-| OPEN7d | bug | operation on the wrong object type returns NFS4_OK | #2335 |
-| OPEN7f | bug | operation on the wrong object type returns NFS4_OK | #2335 |
-| OPEN7s | bug | operation on the wrong object type returns NFS4_OK | #2335 |
 | PUTFH2 | bug | operation on the wrong object type returns NFS4_OK | #2335 |
-| RM7 | bug | operation on the wrong object type returns NFS4_OK | #2335 |
 | RDDR10 | bug | READDIR cookie and attribute-request validation | #2336 |
 | RDDR7 | bug | READDIR cookie and attribute-request validation | #2336 |
 | RDDR8 | bug | READDIR cookie and attribute-request validation | #2336 |
