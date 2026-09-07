@@ -29,6 +29,7 @@ func runStoreSurfaceTests(t *testing.T, factory StoreFactory) {
 	t.Run("GetFileByPayloadID", func(t *testing.T) { testGetFileByPayloadID(t, factory) })
 	t.Run("FilesystemMetaStatsCaps", func(t *testing.T) { testFilesystemMetaStatsCaps(t, factory) })
 	t.Run("ServerConfigRoundTrip", func(t *testing.T) { testServerConfigRoundTrip(t, factory) })
+	t.Run("IdempotencyTokenRoundTrip", func(t *testing.T) { testIdempotencyTokenRoundTrip(t, factory) })
 	t.Run("Healthcheck", func(t *testing.T) { testHealthcheck(t, factory) })
 	t.Run("Pagination", func(t *testing.T) { testListChildrenPagination(t, factory) })
 	t.Run("DeleteSharePurgesUsedBytesAndObjectIndex", func(t *testing.T) { testDeleteSharePurgesCounters(t, factory) })
@@ -920,4 +921,91 @@ func testGetQuotaUsagePerShare(t *testing.T, factory StoreFactory) {
 
 	// An unknown share reports no usage for a known identity.
 	wantUsage(t, store, "/no-such-share", metadata.QuotaScopeUser, 1000, 0, 0)
+}
+
+// testIdempotencyTokenRoundTrip pins FileAttr.IdempotencyToken through both
+// inode write paths. The token is the create verifier an exclusive CREATE/OPEN
+// carries: a retransmitted request is recognised as a replay by comparing the
+// client's verifier against the stored one, so a backend that reads it back as
+// zero answers EEXIST to every retry instead.
+//
+// The value deliberately sits above 2^63. The field is uint64 and the SQL
+// column is signed, so a backend that clamps rather than carrying the bit
+// pattern loses exactly the high half of the space and still passes a
+// small-value check.
+//
+// Both paths are exercised because the insert and the update are separate
+// statements: wiring a column into one and forgetting the other is the failure
+// this guards.
+func testIdempotencyTokenRoundTrip(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const shareName = "/idem"
+	const want = uint64(0xdeadbeefcafef00d)
+	rootHandle := createTestShare(t, store, shareName)
+
+	// Update path: an existing inode takes the token on a later write.
+	handle := createTestFile(t, store, shareName, rootHandle, "updated.dat", 0o644)
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() failed: %v", err)
+	}
+	file.IdempotencyToken = want
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs() with IdempotencyToken failed: %v", err)
+	}
+	got, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() after UpdateAttrs failed: %v", err)
+	}
+	if got.IdempotencyToken != want {
+		t.Errorf("IdempotencyToken after UpdateAttrs = %#x, want %#x — the token does not survive the update path, so an exclusive-create retry compares against the wrong value",
+			got.IdempotencyToken, want)
+	}
+
+	// Insert path: the token must be on the inode's very FIRST write, so the
+	// insert statement carries the column. Going through createTestFile would
+	// insert the row with a zero token and then set it, which is the update
+	// path again and leaves the insert's column list untested.
+	insertPath := childFullPath(t, store, rootHandle, "created.dat")
+	insertHandle, err := store.GenerateHandle(ctx, shareName, insertPath)
+	if err != nil {
+		t.Fatalf("GenerateHandle() failed: %v", err)
+	}
+	_, insertID, err := metadata.DecodeFileHandle(insertHandle)
+	if err != nil {
+		t.Fatalf("DecodeFileHandle() failed: %v", err)
+	}
+	if err := store.UpdateAttrs(ctx, &metadata.File{
+		ShareName: shareName,
+		Path:      insertPath,
+		ID:        insertID,
+		FileAttr: metadata.FileAttr{
+			Type:             metadata.FileTypeRegular,
+			Mode:             0o644,
+			UID:              1000,
+			GID:              1000,
+			IdempotencyToken: want,
+		},
+	}); err != nil {
+		t.Fatalf("UpdateAttrs() inserting with a token failed: %v", err)
+	}
+	if got, err = store.GetFile(ctx, insertHandle); err != nil {
+		t.Fatalf("GetFile() after insert failed: %v", err)
+	} else if got.IdempotencyToken != want {
+		t.Errorf("IdempotencyToken after insert = %#x, want %#x — the insert statement does not carry the column",
+			got.IdempotencyToken, want)
+	}
+
+	// A file that never carried a token still reads back zero, so the absence
+	// of a verifier stays distinguishable from a stored one.
+	untouched := createTestFile(t, store, shareName, rootHandle, "plain.dat", 0o644)
+	plain, err := store.GetFile(ctx, untouched)
+	if err != nil {
+		t.Fatalf("GetFile() failed: %v", err)
+	}
+	if plain.IdempotencyToken != 0 {
+		t.Errorf("IdempotencyToken on an untouched file = %#x, want 0", plain.IdempotencyToken)
+	}
 }
