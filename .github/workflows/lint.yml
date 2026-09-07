@@ -57,6 +57,23 @@ jobs:
       - name: Check MS-FSCC / MS-FSA / MS-SMB2 citations
         run: go run ./test/spec-citations
 
+  # The conformance manifest is the single description of every suite. This job
+  # is what stops the documentation tables drifting away from it again — the
+  # conformance workflow itself ignores docs-only changes, so it cannot.
+  conformance-manifest:
+    name: Conformance Manifest
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Check the generated documentation tables
+        run: ./test/conformance/check-docs.sh
+
+      - name: Test the common conformance runner
+        run: ./test/conformance/run_test.sh
+
   golangci-lint:
     name: golangci-lint
     runs-on: ubuntu-latest
