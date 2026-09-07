@@ -281,3 +281,44 @@ func TestValidateStateid_AnonymousBlockedByShareDeny(t *testing.T) {
 		}
 	})
 }
+
+// TestReplayOpenSeqid_IgnoresOtherOperationsReplies pins what an OPEN may
+// replay. The open-owner's reply cache is shared by every operation that
+// advances the owner's seqid -- CLOSE, OPEN_CONFIRM and OPEN_DOWNGRADE all
+// write to it -- so it routinely holds a reply of a different shape than an
+// OPEN's. Returning those bytes in an OPEN's place answers with OPEN's
+// operation number and another operation's body, and the client then reads the
+// next operation's number out of the middle of it and abandons the COMPOUND.
+//
+// Only a refusal this server recorded against an OPEN may be replayed here.
+func TestReplayOpenSeqid_IgnoresOtherOperationsReplies(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	fh := []byte("fh-replay-scope")
+	owner := []byte("ownerA")
+
+	if _, err := sm.OpenFile(0, owner, 1, fh,
+		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+
+	// Some other owner-seqid operation caches its reply, as CLOSE does.
+	sm.CacheOpenOwnerResult(0, owner, types.NFS4_OK, []byte("a CLOSE reply body"))
+
+	if status, ok := sm.ReplayOpenSeqid(0, owner, 1); ok {
+		t.Fatalf("replayed another operation's cached reply as an OPEN: status = %d", status)
+	}
+
+	// A refusal recorded against an OPEN is replayable, at its own seqid only.
+	sm.ConsumeOpenSeqid(0, owner, 2, types.NFS4ERR_EXIST)
+
+	status, ok := sm.ReplayOpenSeqid(0, owner, 2)
+	if !ok {
+		t.Fatal("a recorded OPEN refusal was not replayed")
+	}
+	if status != types.NFS4ERR_EXIST {
+		t.Fatalf("replayed status = %d, want NFS4ERR_EXIST (%d)", status, types.NFS4ERR_EXIST)
+	}
+	if _, ok := sm.ReplayOpenSeqid(0, owner, 3); ok {
+		t.Fatal("replayed a refusal at a seqid it does not belong to")
+	}
+}

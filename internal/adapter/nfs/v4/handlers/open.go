@@ -207,14 +207,10 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) (resu
 	// had when the client first asked. NFSv4.1 takes exactly-once from the
 	// session slot table and carries no owner seqid, so it stays out of both.
 	if !ctx.SkipOwnerSeqid {
-		if cached, ok := h.StateManager.ReplayOpenSeqid(clientID, ownerData, seqid); ok {
-			logger.Debug("NFSv4 OPEN replayed from the open-owner cache",
-				"seqid", seqid, "status", cached.Status, "client", ctx.ClientAddr)
-			return &types.CompoundResult{
-				Status: cached.Status,
-				OpCode: types.OP_OPEN,
-				Data:   cached.Data,
-			}
+		if status, ok := h.StateManager.ReplayOpenSeqid(clientID, ownerData, seqid); ok {
+			logger.Debug("NFSv4 OPEN refusal replayed",
+				"seqid", seqid, "status", status, "client", ctx.ClientAddr)
+			return openError(status)
 		}
 		defer func() {
 			if result != nil && result.Status != types.NFS4_OK {

@@ -1471,34 +1471,32 @@ func (sm *StateManager) removeOpenStateFromFileLocked(os *OpenState) {
 	}
 }
 
-// ReplayOpenSeqid returns the reply cached for an open-owner when seqid is a
-// retransmission of the last request the server processed for it, so the caller
-// can answer it byte-for-byte instead of running the operation a second time
-// (RFC 7530 Section 9.1.7).
+// ReplayOpenSeqid reports the status to replay when seqid retransmits an OPEN
+// this server refused on its own, so the caller can answer it without running
+// the OPEN a second time (RFC 7530 Section 9.1.7).
 //
-// OpenFile answers replays for the OPENs that reach it, but an OPEN the handler
-// refuses on its own never does. Re-executing such a retransmission answers
-// from the state of the world now rather than the state it had when the client
-// first asked, so a refusal whose cause has since gone away -- the colliding
-// name removed, the permission granted -- came back as a success the client had
-// no reply slot for.
+// Re-executing such a retransmission answers from the state of the world now
+// rather than the state it had when the client first asked, so a refusal whose
+// cause has since gone away -- the colliding name removed, the permission
+// granted -- came back as a success the client had no reply slot for.
 //
-// It reports no replay for an owner that does not exist, for a seqid that is
-// the expected next one rather than a repeat, and for an owner with nothing
-// cached yet: a fresh owner's sequence starts at zero, which would otherwise
-// read as a replay of a request that never happened.
-func (sm *StateManager) ReplayOpenSeqid(clientID uint64, ownerData []byte, seqid uint32) (*CachedResult, bool) {
+// It covers only the refusals ConsumeOpenSeqid recorded. An OPEN that reached
+// the state layer is replayed by OpenFile from the owner's shared reply cache,
+// and that cache must not be consulted here: CLOSE, OPEN_CONFIRM and
+// OPEN_DOWNGRADE write to it too, so it may hold a reply of a different shape,
+// which an OPEN replaying it would return under its own operation number.
+func (sm *StateManager) ReplayOpenSeqid(clientID uint64, ownerData []byte, seqid uint32) (uint32, bool) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
 	owner, exists := sm.openOwners[makeOwnerKey(clientID, ownerData)]
-	if !exists || owner.LastResult == nil {
-		return nil, false
+	if !exists || owner.openRefusal == nil {
+		return 0, false
 	}
-	if owner.ValidateSeqID(seqid) != SeqIDReplay {
-		return nil, false
+	if owner.openRefusal.seqid != seqid || owner.ValidateSeqID(seqid) != SeqIDReplay {
+		return 0, false
 	}
-	return owner.LastResult, true
+	return owner.openRefusal.status, true
 }
 
 // ConsumeOpenSeqid records against an open-owner's sequence an OPEN that failed
@@ -1530,7 +1528,14 @@ func (sm *StateManager) ConsumeOpenSeqid(clientID uint64, ownerData []byte, seqi
 	if owner.ValidateSeqID(seqid) != SeqIDOK {
 		return
 	}
+	before := owner.LastSeqID
 	owner.consumeSeqidOnError(seqid, &NFS4StateError{Status: status})
+	// consumeSeqidOnError leaves the sequence alone for the statuses
+	// Section 9.1.7 exempts; nothing was recorded, so there is nothing to
+	// replay either.
+	if owner.LastSeqID != before {
+		owner.openRefusal = &openRefusal{seqid: seqid, status: status}
+	}
 }
 
 // CacheOpenOwnerResult stores the encoded reply for an open-owner so that a
