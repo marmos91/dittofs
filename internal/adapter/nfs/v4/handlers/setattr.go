@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 
@@ -59,7 +60,8 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 	setAttrs, requestedBitmap, err := attrs.DecodeFattr4ToSetAttrs(reader)
 	if err != nil {
 		// Check for typed NFS4 error
-		if nfsErr, ok := err.(attrs.NFS4StatusError); ok {
+		var nfsErr attrs.NFS4StatusError
+		if errors.As(err, &nfsErr) {
 			status := nfsErr.NFS4Status()
 			logger.Debug("NFSv4 SETATTR decode attrs error",
 				"error", err,

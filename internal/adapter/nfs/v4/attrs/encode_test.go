@@ -107,7 +107,7 @@ func TestEncodePseudoFSAttrsEmptyRequest(t *testing.T) {
 	var buf bytes.Buffer
 	node := newMockNode()
 
-	err := EncodePseudoFSAttrs(&buf, []uint32{}, node)
+	err := EncodePseudoFSAttrs(&buf, []uint32{}, 0, node)
 	if err != nil {
 		t.Fatalf("EncodePseudoFSAttrs failed: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestEncodePseudoFSAttrsTypeRequested(t *testing.T) {
 	var requested []uint32
 	SetBit(&requested, FATTR4_TYPE)
 
-	err := EncodePseudoFSAttrs(&buf, requested, node)
+	err := EncodePseudoFSAttrs(&buf, requested, 0, node)
 	if err != nil {
 		t.Fatalf("EncodePseudoFSAttrs failed: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestEncodePseudoFSAttrsFSIDRequested(t *testing.T) {
 	var requested []uint32
 	SetBit(&requested, FATTR4_FSID)
 
-	err := EncodePseudoFSAttrs(&buf, requested, node)
+	err := EncodePseudoFSAttrs(&buf, requested, 0, node)
 	if err != nil {
 		t.Fatalf("EncodePseudoFSAttrs failed: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestEncodePseudoFSAttrsUnsupportedBitNotInResponse(t *testing.T) {
 	var requested []uint32
 	SetBit(&requested, 62) // Not in SupportedAttrs
 
-	err := EncodePseudoFSAttrs(&buf, requested, node)
+	err := EncodePseudoFSAttrs(&buf, requested, 0, node)
 	if err != nil {
 		t.Fatalf("EncodePseudoFSAttrs failed: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestEncodePseudoFSAttrsMultipleAttributes(t *testing.T) {
 	SetBit(&requested, FATTR4_CHANGE)
 	SetBit(&requested, FATTR4_SIZE)
 
-	err := EncodePseudoFSAttrs(&buf, requested, node)
+	err := EncodePseudoFSAttrs(&buf, requested, 0, node)
 	if err != nil {
 		t.Fatalf("EncodePseudoFSAttrs failed: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestEncodePseudoFSAttrsFileIDNeverZero(t *testing.T) {
 	SetBit(&requested, FATTR4_FILEID)
 	SetBit(&requested, FATTR4_MOUNTED_ON_FILEID)
 
-	if err := EncodePseudoFSAttrs(&buf, requested, node); err != nil {
+	if err := EncodePseudoFSAttrs(&buf, requested, 0, node); err != nil {
 		t.Fatalf("EncodePseudoFSAttrs failed: %v", err)
 	}
 
@@ -473,7 +473,7 @@ func TestSetLeaseTime_NoDataRace(t *testing.T) {
 			var buf bytes.Buffer
 			var req []uint32
 			SetBit(&req, FATTR4_LEASE_TIME)
-			_ = EncodePseudoFSAttrs(&buf, req, node)
+			_ = EncodePseudoFSAttrs(&buf, req, 0, node)
 		}()
 	}
 
@@ -512,7 +512,7 @@ func TestSetIdentityMapper_NoDataRace(t *testing.T) {
 			var req []uint32
 			SetBit(&req, FATTR4_OWNER)
 			SetBit(&req, FATTR4_OWNER_GROUP)
-			_ = EncodePseudoFSAttrs(&buf, req, node)
+			_ = EncodePseudoFSAttrs(&buf, req, 0, node)
 		}()
 	}
 
@@ -524,13 +524,13 @@ func TestSetIdentityMapper_NoDataRace(t *testing.T) {
 // Write-only attribute regression (RFC 7530 Section 5.7)
 // ============================================================================
 
-// TestSupportedAttrsAdvertisesTimeSet pins the #1152 fix: FATTR4_TIME_ACCESS_SET
-// and FATTR4_TIME_MODIFY_SET MUST be advertised in FATTR4_SUPPORTED_ATTRS. The
-// Linux NFSv4 client gates whether it sends these settable time attributes in
-// SETATTR on their presence here; dropping them (as #1146 did) makes the client
-// issue an empty SETATTR for utimensat()/touch so file times silently never
-// change. GETATTR of these write-only bits stays a no-op (see
-// TestGetattrWriteOnlyTimeSetDoesNotFail).
+// TestSupportedAttrsAdvertisesTimeSet asserts FATTR4_TIME_ACCESS_SET and
+// FATTR4_TIME_MODIFY_SET stay advertised in FATTR4_SUPPORTED_ATTRS, at every
+// minor version that defines them. The Linux NFSv4 client gates whether it
+// sends these settable time attributes in SETATTR on their presence here, so
+// dropping them makes the client issue an empty SETATTR for utimensat() and
+// touch, and file times silently never change. Being settable-only, they are
+// still refused by a GETATTR that names them.
 func TestSupportedAttrsAdvertisesTimeSet(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -542,17 +542,21 @@ func TestSupportedAttrsAdvertisesTimeSet(t *testing.T) {
 		if !IsBitSet(SupportedAttrs(), tc.bit) {
 			t.Errorf("SupportedAttrs() must advertise settable bit %s (%d)", tc.name, tc.bit)
 		}
-		if !IsBitSet(SupportedRealAttrs(), tc.bit) {
-			t.Errorf("SupportedRealAttrs() must advertise settable bit %s (%d)", tc.name, tc.bit)
+		for minorVersion := uint32(0); minorVersion <= 2; minorVersion++ {
+			if !IsBitSet(SupportedAttrsFor(minorVersion), tc.bit) {
+				t.Errorf("SupportedAttrsFor(%d) must advertise settable bit %s (%d)",
+					minorVersion, tc.name, tc.bit)
+			}
 		}
 	}
 }
 
-// TestGetattrWriteOnlyTimeSetDoesNotFail verifies that a GETATTR requesting the
-// write-only time-set bits does not error: the encoder treats them as a no-op so
-// they are simply absent from the response bitmap even though SUPPORTED_ATTRS
-// advertises them as settable.
-func TestGetattrWriteOnlyTimeSetDoesNotFail(t *testing.T) {
+// TestEncoderDropsWriteOnlyTimeSet verifies the encoder omits the settable-only
+// time bits rather than failing on an attribute it has no value to write. This
+// is what READDIR relies on: it carries a raw client bitmap and cannot report a
+// per-attribute error, so the bits are dropped and the surrounding entry still
+// encodes. GETATTR does not reach here — it refuses such a request outright.
+func TestEncoderDropsWriteOnlyTimeSet(t *testing.T) {
 	node := newMockNode()
 
 	var requested []uint32
@@ -562,7 +566,7 @@ func TestGetattrWriteOnlyTimeSetDoesNotFail(t *testing.T) {
 	SetBit(&requested, FATTR4_TYPE)
 
 	var buf bytes.Buffer
-	if err := EncodePseudoFSAttrs(&buf, requested, node); err != nil {
+	if err := EncodePseudoFSAttrs(&buf, requested, 0, node); err != nil {
 		t.Fatalf("EncodePseudoFSAttrs failed on write-only bits: %v", err)
 	}
 
@@ -571,10 +575,10 @@ func TestGetattrWriteOnlyTimeSetDoesNotFail(t *testing.T) {
 		t.Fatalf("decode response bitmap: %v", err)
 	}
 	if IsBitSet(responseBitmap, FATTR4_TIME_ACCESS_SET) {
-		t.Error("FATTR4_TIME_ACCESS_SET leaked into GETATTR response bitmap")
+		t.Error("FATTR4_TIME_ACCESS_SET leaked into the response bitmap")
 	}
 	if IsBitSet(responseBitmap, FATTR4_TIME_MODIFY_SET) {
-		t.Error("FATTR4_TIME_MODIFY_SET leaked into GETATTR response bitmap")
+		t.Error("FATTR4_TIME_MODIFY_SET leaked into the response bitmap")
 	}
 	if !IsBitSet(responseBitmap, FATTR4_TYPE) {
 		t.Error("FATTR4_TYPE missing from response bitmap")
@@ -582,8 +586,8 @@ func TestGetattrWriteOnlyTimeSetDoesNotFail(t *testing.T) {
 }
 
 // TestWritableAndExclcreatStillIncludeTimeSet guards the inverse: the
-// write-only bits must remain valid for SETATTR and EXCLUSIVE4_1 create even
-// though they are excluded from SUPPORTED_ATTRS.
+// settable-only bits must remain valid for SETATTR and EXCLUSIVE4_1 create,
+// which is the whole reason they are advertised as supported.
 func TestWritableAndExclcreatStillIncludeTimeSet(t *testing.T) {
 	for _, bit := range []uint32{FATTR4_TIME_ACCESS_SET, FATTR4_TIME_MODIFY_SET} {
 		if !IsBitSet(WritableAttrs(), bit) {
@@ -612,10 +616,59 @@ func TestXattrSupportAttr(t *testing.T) {
 
 	// Real-file encode: bool true (uint32 1).
 	var buf bytes.Buffer
-	if err := encodeRealFileAttr(&buf, FATTR4_XATTR_SUPPORT, &metadata.File{}, metadata.FileHandle("/s:id"), nil); err != nil {
+	if err := encodeRealFileAttr(&buf, FATTR4_XATTR_SUPPORT, 0, &metadata.File{}, metadata.FileHandle("/s:id"), nil); err != nil {
 		t.Fatalf("encodeRealFileAttr(XATTR_SUPPORT): %v", err)
 	}
 	if got := binary.BigEndian.Uint32(buf.Bytes()); got != 1 {
 		t.Errorf("real-file FATTR4_XATTR_SUPPORT encoded = %d, want 1 (true)", got)
+	}
+}
+
+// TestSupportedAttrsFor asserts the supported set shown to a client never
+// carries an attribute number that client's minor version does not define.
+// FATTR4_SUPPORTED_ATTRS is the contract for which numbers a client may name,
+// and a 4.0 client has no decoder for a 4.1 or 4.2 attribute.
+func TestSupportedAttrsFor(t *testing.T) {
+	for _, tc := range []struct {
+		minorVersion uint32
+		highest      uint32
+	}{
+		{0, 55}, // mounted_on_fileid
+		{1, 76}, // fs_charset_cap
+		{2, 82}, // xattr_support
+	} {
+		bitmap := SupportedAttrsFor(tc.minorVersion)
+		for bit := tc.highest + 1; bit < uint32(len(bitmap))*32; bit++ {
+			if IsBitSet(bitmap, bit) {
+				t.Errorf("SupportedAttrsFor(%d) advertises bit %d, above the highest attribute (%d) that minor version defines",
+					tc.minorVersion, bit, tc.highest)
+			}
+		}
+	}
+
+	// Every mandatory attribute stays present at every minor version.
+	for bit := uint32(0); bit <= FATTR4_RDATTR_ERROR; bit++ {
+		if !IsBitSet(SupportedAttrsFor(0), bit) {
+			t.Errorf("SupportedAttrsFor(0) dropped mandatory attribute %d", bit)
+		}
+	}
+
+	// The minor-version-gated attributes appear exactly where they belong.
+	if IsBitSet(SupportedAttrsFor(0), FATTR4_SUPPATTR_EXCLCREAT) {
+		t.Error("SupportedAttrsFor(0) advertises the 4.1 suppattr_exclcreat")
+	}
+	if IsBitSet(SupportedAttrsFor(1), FATTR4_XATTR_SUPPORT) {
+		t.Error("SupportedAttrsFor(1) advertises the 4.2 xattr_support")
+	}
+	if !IsBitSet(SupportedAttrsFor(1), FATTR4_SUPPATTR_EXCLCREAT) {
+		t.Error("SupportedAttrsFor(1) dropped suppattr_exclcreat")
+	}
+	if !IsBitSet(SupportedAttrsFor(2), FATTR4_XATTR_SUPPORT) {
+		t.Error("SupportedAttrsFor(2) dropped xattr_support")
+	}
+
+	// SupportedAttrs is the union and must not be mutated by the narrowing.
+	if !IsBitSet(SupportedAttrs(), FATTR4_XATTR_SUPPORT) {
+		t.Error("SupportedAttrsFor mutated the bitmap SupportedAttrs returns")
 	}
 }
