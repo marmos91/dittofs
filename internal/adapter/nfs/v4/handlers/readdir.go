@@ -201,7 +201,7 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, cooki
 				ShareName: entryShareName,
 				FileAttr:  *entry.Attr,
 			}
-			_ = attrs.EncodeRealFileAttrs(&entryBuf, attrRequest, file, entry.Handle)
+			_ = attrs.EncodeRealFileAttrs(&entryBuf, attrRequest, ctx.MinorVersion, file, entry.Handle)
 		} else {
 			// No attrs available -- encode empty fattr4
 			_ = attrs.EncodeBitmap4(&entryBuf, nil)
@@ -325,7 +325,7 @@ func (h *Handler) readDirPseudoFS(ctx *types.CompoundContext, cookie uint64, max
 		_ = xdr.WriteXDRString(&entryBuf, entry.name)
 
 		// attrs (fattr4)
-		_ = attrs.EncodePseudoFSAttrs(&entryBuf, attrRequest, entry.node)
+		_ = attrs.EncodePseudoFSAttrs(&entryBuf, attrRequest, ctx.MinorVersion, entry.node)
 
 		// Check maxcount limit (approximate: include overhead for remaining entries)
 		entrySize := uint32(entryBuf.Len())

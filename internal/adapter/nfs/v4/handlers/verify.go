@@ -39,6 +39,21 @@ func verifyAttributes(h *Handler, ctx *types.CompoundContext, reader io.Reader) 
 		return false, types.NFS4ERR_BADXDR
 	}
 
+	// A comparison is only meaningful over attributes the server can produce a
+	// value for. Silently narrowing the bitmap to the supported set would make
+	// VERIFY report a match on attributes it never looked at, so an attribute
+	// outside that set ends the operation (RFC 7530 Sections 16.15.5, 16.35.5).
+	if attrs.HasUnsupportedAttr(clientBitmap, attrs.SupportedAttrsFor(ctx.MinorVersion)) {
+		return false, types.NFS4ERR_ATTRNOTSUPP
+	}
+
+	// rdattr_error is a per-entry READDIR status, not a stored attribute, and a
+	// settable-only attribute has no read representation; both are NFS4ERR_INVAL
+	// here rather than ATTRNOTSUPP, which they would not be, being supported.
+	if attrs.HasWriteOnlyAttr(clientBitmap) || attrs.IsBitSet(clientBitmap, attrs.FATTR4_RDATTR_ERROR) {
+		return false, types.NFS4ERR_INVAL
+	}
+
 	// Encode server attributes using the client's bitmap (intersected with supported)
 	var serverAttrData []byte
 
@@ -50,7 +65,7 @@ func verifyAttributes(h *Handler, ctx *types.CompoundContext, reader io.Reader) 
 		}
 
 		serverAttrData, err = encodeAttrValsOnly(func(buf *bytes.Buffer, responseBitmap []uint32) error {
-			return attrs.EncodePseudoFSAttrs(buf, clientBitmap, node)
+			return attrs.EncodePseudoFSAttrs(buf, clientBitmap, ctx.MinorVersion, node)
 		}, clientBitmap)
 		if err != nil {
 			return false, types.NFS4ERR_SERVERFAULT
@@ -74,7 +89,7 @@ func verifyAttributes(h *Handler, ctx *types.CompoundContext, reader io.Reader) 
 		}
 
 		serverAttrData, err = encodeAttrValsOnly(func(buf *bytes.Buffer, responseBitmap []uint32) error {
-			return attrs.EncodeRealFileAttrs(buf, clientBitmap, file, metadata.FileHandle(ctx.CurrentFH))
+			return attrs.EncodeRealFileAttrs(buf, clientBitmap, ctx.MinorVersion, file, metadata.FileHandle(ctx.CurrentFH))
 		}, clientBitmap)
 		if err != nil {
 			return false, types.NFS4ERR_SERVERFAULT

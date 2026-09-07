@@ -25,7 +25,7 @@ func TestEncodeCloneBlksize(t *testing.T) {
 	var requested []uint32
 	SetBit(&requested, FATTR4_CLONE_BLKSIZE)
 
-	if err := EncodePseudoFSAttrs(&buf, requested, node); err != nil {
+	if err := EncodePseudoFSAttrs(&buf, requested, 2, node); err != nil {
 		t.Fatalf("EncodePseudoFSAttrs failed: %v", err)
 	}
 

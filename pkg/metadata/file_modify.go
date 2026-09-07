@@ -491,6 +491,25 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	}
 
 	if attrs.Size != nil {
+		// Only a regular file has a length a caller can set. A directory's size
+		// is bookkeeping the store owns, and a symlink, device, fifo or socket
+		// has no byte stream to lengthen or discard, so accepting the value
+		// would record a size no read could ever agree with.
+		if file.Type == FileTypeDirectory {
+			return nil, &StoreError{
+				Code:    ErrIsDirectory,
+				Message: "cannot set size of a directory",
+				Path:    file.Path,
+			}
+		}
+		if file.Type != FileTypeRegular {
+			return nil, &StoreError{
+				Code:    ErrInvalidArgument,
+				Message: "cannot set size of a non-regular file",
+				Path:    file.Path,
+			}
+		}
+
 		// Size change requires write permission
 		if err := s.checkWritePermission(ctx, handle); err != nil {
 			return nil, err

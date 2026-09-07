@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
@@ -142,7 +143,8 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 			// Decode createattrs (fattr4 = bitmap4 + opaque)
 			setAttrs, _, fattr4Err := attrs.DecodeFattr4ToSetAttrs(reader)
 			if fattr4Err != nil {
-				if nfsErr, ok := fattr4Err.(attrs.NFS4StatusError); ok {
+				var nfsErr attrs.NFS4StatusError
+				if errors.As(fattr4Err, &nfsErr) {
 					return openError(nfsErr.NFS4Status())
 				}
 				return openError(types.NFS4ERR_BADXDR)
@@ -168,7 +170,8 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 			}
 			setAttrs, _, fattr4Err := attrs.DecodeFattr4ToSetAttrs(reader)
 			if fattr4Err != nil {
-				if nfsErr, ok := fattr4Err.(attrs.NFS4StatusError); ok {
+				var nfsErr attrs.NFS4StatusError
+				if errors.As(fattr4Err, &nfsErr) {
 					return openError(nfsErr.NFS4Status())
 				}
 				return openError(types.NFS4ERR_BADXDR)
