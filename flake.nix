@@ -166,6 +166,7 @@
               homepage = "https://linux-nfs.org/wiki/index.php/Pynfs";
               license = licenses.gpl2Only;
               platforms = platforms.unix;
+              mainProgram = "pynfs-4.1";
             };
           };
 
@@ -352,14 +353,25 @@
           xmlstarlet # TRX result parsing
           curl # health checks in bootstrap/local mode
 
-          # Benchmark load generator for the dfsbench harness (bench/, cmd/bench)
-          fio
+          # NFSv4 conformance suite. Pure Python speaking NFSv4 over TCP, so it
+          # needs no kernel mount and runs on every platform. Kept on PATH so
+          # run-pynfs.sh finds it instead of rebuilding it per invocation.
+          pynfs
+
+          # PostgreSQL test container helpers. They only drive the docker CLI,
+          # which exists on macOS too.
+          dfs-postgres-start
+          dfs-postgres-stop
         ];
 
         # Platform-specific inputs
         linuxInputs =
           with pkgs;
           lib.optionals stdenv.isLinux [
+            # Benchmark load generator for the dfsbench harness (bench/, cmd/bench).
+            # Its libnbd dependency is Linux-only, and evaluating it on macOS
+            # fails outright, taking the whole dev shell with it.
+            fio
             # NFS testing tools (Linux only)
             nfs-utils
             # ACL support for POSIX compliance testing
@@ -372,13 +384,12 @@
             pjdfstest
             # Docker client for PostgreSQL testing (daemon must be running on host)
             docker-client
-            # Helper scripts (work in any shell - bash, zsh, etc.)
+            # Helper scripts that need the Linux NFS client, /proc/mounts or
+            # pjdfstest. The docker-only helpers live in commonBuildInputs.
             dfs-mount
             dfs-umount
             dfs-posix
             dfs-e2e
-            dfs-postgres-start
-            dfs-postgres-stop
           ];
 
         darwinInputs =
@@ -388,18 +399,18 @@
             # For pjdfstest on macOS, use Docker: see test/posix/README.md
           ];
 
-      in
-      {
-        # Development shell
-        devShells.default = pkgs.mkShell {
+        # Go cache locations, shared by every shell.
+        goEnv = ''
+          # Ensure Go modules are cached in user's home directory
+          export GOPATH="$HOME/go"
+          export GOMODCACHE="$HOME/go/pkg/mod"
+          export GOCACHE="$HOME/.cache/go-build"
+        '';
+
+        devShell = pkgs.mkShell {
           buildInputs = commonBuildInputs ++ linuxInputs ++ darwinInputs;
 
-          shellHook = ''
-            # Ensure Go modules are cached in user's home directory
-            export GOPATH="$HOME/go"
-            export GOMODCACHE="$HOME/go/pkg/mod"
-            export GOCACHE="$HOME/.cache/go-build"
-
+          shellHook = goEnv + ''
             echo "╔═══════════════════════════════════════════╗"
             echo "║     DittoFS Development Environment       ║"
             echo "╚═══════════════════════════════════════════╝"
@@ -429,14 +440,17 @@
               echo "  dfs-posix chmod             Run chmod tests only"
               echo "  dfs-posix chown             Run chown tests only"
               echo ""
-              echo "PostgreSQL testing:"
-              echo "  dfs-postgres-start          Start PostgreSQL container"
-              echo "  dfs-postgres-stop           Stop and remove container"
-              echo ""
               echo "E2E testing (requires sudo for NFS mounts):"
               echo "  dfs-e2e                     Run all E2E tests"
               echo "  dfs-e2e -run TestName       Run specific test"
+              echo ""
             fi
+            echo "PostgreSQL testing:"
+            echo "  dfs-postgres-start          Start PostgreSQL container"
+            echo "  dfs-postgres-stop           Stop and remove container"
+            echo ""
+            echo "NFSv4 protocol conformance (no mount, no root):"
+            echo "  pynfs-4.0 / pynfs-4.1       pynfs test client"
             echo ""
 
             # Use zsh if available and not already in zsh
@@ -447,18 +461,13 @@
             fi
           '';
         };
+      in
+      {
+        devShells.default = devShell;
 
-        # CI shell (minimal, for running tests in CI)
-        devShells.ci = pkgs.mkShell {
-          buildInputs = commonBuildInputs ++ linuxInputs;
-
-          shellHook = ''
-            # Ensure Go modules are cached in user's home directory
-            export GOPATH="$HOME/go"
-            export GOMODCACHE="$HOME/go/pkg/mod"
-            export GOCACHE="$HOME/.cache/go-build"
-          '';
-        };
+        # Same toolchain as the development shell, without the banner and
+        # without exec-ing into zsh.
+        devShells.ci = devShell.overrideAttrs { shellHook = goEnv; };
 
         # Packages for building DittoFS
         packages =
@@ -531,6 +540,28 @@
             inherit pjdfstest;
           };
 
+        # `nix run .#dfs` / `nix run github:marmos91/dittofs#dfsctl`, so the
+        # binaries are reachable without cloning and building first.
+        apps =
+          let
+            # mkApp alone leaves out meta, which `nix flake check` warns about.
+            app =
+              drv: name: description:
+              flake-utils.lib.mkApp { inherit drv name; } // { meta.description = description; };
+          in
+          rec {
+            default = dfs;
+            dfs = app self.packages.${system}.dfs "dfs" "DittoFS server daemon";
+            dfsctl = app self.packages.${system}.dfsctl "dfsctl" "DittoFS REST client";
+
+            # pynfs ships one entrypoint per NFSv4 minor version; `nix run .#pynfs`
+            # resolves to the 4.1 one through the package's mainProgram. The
+            # attribute names use an underscore because nix splits an attribute
+            # path on dots.
+            pynfs-4_0 = app pynfs "pynfs-4.0" "pynfs NFSv4.0 conformance client";
+            pynfs-4_1 = app pynfs "pynfs-4.1" "pynfs NFSv4.1 conformance client";
+          };
+
         # Flake checks - run with `nix flake check`
         checks = {
           # Verify the default package builds and contains both binaries
@@ -554,6 +585,33 @@
           dfsctl-binary = pkgs.runCommand "check-dfsctl-binary" { } ''
             ${self.packages.${system}.dfsctl}/bin/dfsctl version > /dev/null 2>&1 || \
             ${self.packages.${system}.dfsctl}/bin/dfsctl --help > /dev/null 2>&1
+            touch $out
+          '';
+
+          # The conformance graders decide whether a suite run counts as green.
+          # They run against synthetic output in about a second each, with no
+          # server and no network, so they belong in the pre-push check.
+          conformance-graders = pkgs.runCommand "check-conformance-graders" { } ''
+            mkdir -p test/smb-conformance test/nfs-conformance
+            cp -r ${./test/common} test/common
+            cp -r ${./test/smb-conformance/smbtorture} test/smb-conformance/smbtorture
+            cp -r ${./test/nfs-conformance/pynfs} test/nfs-conformance/pynfs
+            chmod -R u+w test
+
+            status=0
+            for suite in test/smb-conformance/smbtorture test/nfs-conformance/pynfs; do
+              echo "== $suite/parse-results_test.sh"
+              report="$(bash "$suite/parse-results_test.sh" 2>&1)" || status=1
+              printf '%s\n' "$report"
+              # A suite that matched no cases exits 0 having asserted nothing,
+              # which reads exactly like a pass.
+              if ! printf '%s\n' "$report" | grep -q '^ok:'; then
+                echo "$suite asserted nothing" >&2
+                status=1
+              fi
+            done
+
+            [ "$status" -eq 0 ]
             touch $out
           '';
         };
