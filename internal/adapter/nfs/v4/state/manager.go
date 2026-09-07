@@ -1323,17 +1323,15 @@ func (sm *StateManager) OpenFile(
 	// does, and the client advances either way.
 	defer func() { owner.consumeSeqidOnError(seqid, err) }()
 
-	// Enforce share reservations across open-owners (RFC 7530 Section 9.7 /
-	// Section 16.16.5; Linux nfsd nfs4_share_conflict). This runs AFTER the
-	// owner seqid/replay gate above: a replayed OPEN must return its cached
-	// result and a bad seqid must return NFS4ERR_BAD_SEQID — neither may be
-	// turned into NFS4ERR_SHARE_DENIED by a conflict that arose after the
-	// original request. Reclaim (CLAIM_PREVIOUS) re-establishes prior state and
-	// is exempt. The scan runs under sm.mu so it observes a consistent snapshot
-	// of every live open; opens by THIS owner are skipped (share bits
-	// accumulate per owner).
+	// Enforce share reservations (RFC 7530 Section 9.9; Linux nfsd
+	// nfs4_share_conflict). This runs AFTER the owner seqid/replay gate above:
+	// a replayed OPEN must return its cached result and a bad seqid must return
+	// NFS4ERR_BAD_SEQID — neither may be turned into NFS4ERR_SHARE_DENIED by a
+	// conflict that arose after the original request. Reclaim (CLAIM_PREVIOUS)
+	// re-establishes prior state and is exempt. The scan runs under sm.mu so it
+	// observes a consistent snapshot of every live open.
 	if claimType != types.CLAIM_PREVIOUS {
-		if conflict := sm.shareConflictLocked(ownerKey, fileHandle, shareAccess, shareDeny); conflict {
+		if conflict := sm.shareConflictLocked(fileHandle, shareAccess, shareDeny); conflict {
 			logger.Debug("OpenFile: share reservation conflict",
 				"client_id", clientID,
 				"owner", string(ownerData),
@@ -1413,26 +1411,28 @@ func (sm *StateManager) OpenFile(
 }
 
 // shareConflictLocked reports whether granting an OPEN with the requested
-// share_access / share_deny on fileHandle would conflict with an open held by a
-// DIFFERENT open-owner. A conflict exists when the requested access is denied by
-// an existing open, or the requested deny would exclude an existing open's
-// access (RFC 7530 Section 9.7; mirrors Linux nfsd nfs4_share_conflict /
-// test_share). Opens by the requesting owner (ownerKey) are skipped because
-// share bits accumulate per owner on the same file.
+// share_access / share_deny on fileHandle would conflict with an open already
+// held on it. A conflict exists when the requested access is denied by an
+// existing open, or the requested deny would exclude an existing open's access.
+//
+// RFC 7530 Section 9.9 gives the rule as pseudo-code over the file's
+// accumulated state -- "(request.access & file_state.deny) || (request.deny &
+// file_state.access)" -- and then says in as many words that "this checking of
+// share reservations on OPEN is done with no exception for an existing OPEN for
+// the same open-owner". Skipping the requesting owner's own opens, on the theory
+// that share bits merely accumulate per owner, let an owner that had denied
+// READ to everyone go on to open the same file for reading itself. Linux nfsd
+// keeps the deny mask on the file (nfs4_file, fi_share_deny) for the same
+// reason.
 //
 // Caller must hold sm.mu.
 func (sm *StateManager) shareConflictLocked(
-	ownerKey openOwnerKey,
 	fileHandle []byte,
 	reqAccess, reqDeny uint32,
 ) bool {
 	// Iterate only the opens on this file via the secondary per-file index
 	// (openStateByFile), not every open in the server.
 	for _, os := range sm.openStateByFile[string(fileHandle)] {
-		// Same owner: bits are OR-merged, never in conflict with themselves.
-		if os.Owner != nil && os.Owner.Key() == ownerKey {
-			continue
-		}
 		if reqAccess&os.ShareDeny != 0 || reqDeny&os.ShareAccess != 0 {
 			return true
 		}

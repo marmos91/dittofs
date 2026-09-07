@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -96,7 +97,15 @@ func TestOpenFile_ShareDeny_NonConflictingCombosSucceed(t *testing.T) {
 	})
 }
 
-func TestOpenFile_ShareDeny_SameOwnerAccumulatesNoConflict(t *testing.T) {
+// TestOpenFile_ShareDeny_SameOwnerIsNotExempt pins RFC 7530 Section 9.9, which
+// states the rule and then removes the obvious exception from it: "This checking
+// of share reservations on OPEN is done with no exception for an existing OPEN
+// for the same open-owner."
+//
+// The check used to skip the requesting owner's own opens, so an owner that had
+// denied WRITE to everyone could still open the same file for writing again, and
+// a deny mode was only ever enforced against other owners.
+func TestOpenFile_ShareDeny_SameOwnerIsNotExempt(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	fh := []byte("fh-same-owner")
 
@@ -104,11 +113,19 @@ func TestOpenFile_ShareDeny_SameOwnerAccumulatesNoConflict(t *testing.T) {
 	openConfirmed(t, sm, 0, []byte("ownerA"), fh,
 		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_WRITE)
 
-	// The SAME owner re-opening the same file with WRITE must NOT self-conflict;
-	// bits accumulate per owner (RFC 7530 Section 9.1.7).
-	if _, err := sm.OpenFile(0, []byte("ownerA"), 3, fh,
-		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_WRITE, types.CLAIM_NULL); err != nil {
-		t.Fatalf("same-owner re-open should not conflict: %v", err)
+	// request.access (WRITE) & file_state.deny (WRITE) is non-zero, so the
+	// same owner's second OPEN is refused just as another owner's would be.
+	_, err := sm.OpenFile(0, []byte("ownerA"), 3, fh,
+		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_WRITE, types.CLAIM_NULL)
+	if !errors.Is(err, ErrShareDenied) {
+		t.Fatalf("same-owner OPEN against its own DENY_WRITE: err = %v, want ErrShareDenied", err)
+	}
+
+	// A deny mode the request does not touch is still no conflict: DENY_WRITE
+	// says nothing about reading.
+	if _, err := sm.OpenFile(0, []byte("ownerA"), 4, fh,
+		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); err != nil {
+		t.Fatalf("same-owner READ open against DENY_WRITE: %v", err)
 	}
 }
 
