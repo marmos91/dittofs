@@ -1138,8 +1138,9 @@ Metadata stores are managed at runtime via `dfsctl` and persisted in the control
   --config '{"path":"/tmp/dittofs-metadata-isolated"}'
 
 # SQLite for a persistent single-binary / edge appliance (pure-Go, no cgo).
-# Reuses the PostgreSQL data model (parent_child_map hard links, nlink,
-# recursive-CTE path reconstruction, object_id dedup index).
+# Same implementation as PostgreSQL over a different dialect: one schema
+# (parent_child_map hard links, nlink, recursive-CTE path reconstruction,
+# object_id dedup index) and one set of operation bodies.
 ./dfsctl store metadata add --name sqlite-edge --type sqlite \
   --config '{"path":"/var/lib/dittofs/metadata.db"}'
 
@@ -1158,6 +1159,7 @@ Metadata stores are managed at runtime via `dfsctl` and persisted in the control
 > **Persistence Options**:
 > - **Memory**: Fast but ephemeral - all data lost on restart. Ideal for caching and temporary workloads.
 > - **BadgerDB**: Persistent embedded database - single-node deployments. File handles and metadata survive restarts.
+> - **SQLite**: Persistent embedded database - single-node deployments, pure-Go with no cgo. Shares its implementation with PostgreSQL, so the two behave alike apart from concurrency.
 > - **PostgreSQL**: Persistent distributed database - multi-node deployments with horizontal scaling. Survives restarts and supports multiple DittoFS instances sharing the same metadata.
 
 ### 8. Shares (Exports)

@@ -43,9 +43,9 @@ Examples:
 }
 
 func init() {
-	editCmd.Flags().StringVar(&editType, "type", "", "Store type: memory, badger, postgres")
+	editCmd.Flags().StringVar(&editType, "type", "", "Store type: memory, badger, sqlite, postgres")
 	editCmd.Flags().StringVar(&editConfig, "config", "", "Store configuration as JSON")
-	editCmd.Flags().StringVar(&editDBPath, "db-path", "", "Database path (for badger)")
+	editCmd.Flags().StringVar(&editDBPath, "db-path", "", "Database path (for badger and sqlite)")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
@@ -119,7 +119,7 @@ func runEditInteractive(client *apiclient.Client, name string, current *apiclien
 
 	// Based on store type, prompt for relevant fields
 	switch current.Type {
-	case "badger":
+	case "badger", "sqlite":
 		currentPath := ""
 		if currentConfig != nil {
 			if p, ok := currentConfig["path"].(string); ok {
