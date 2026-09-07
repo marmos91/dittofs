@@ -34,17 +34,7 @@ Categories:
 | CID2 | bug | SETCLIENTID/SETCLIENTID_CONFIRM and RENEW validation | #2326 |
 | CID2a | bug | SETCLIENTID/SETCLIENTID_CONFIRM and RENEW validation | #2326 |
 | RENEW3 | bug | SETCLIENTID/SETCLIENTID_CONFIRM and RENEW validation | #2326 |
-| CLOSE8 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
-| CLOSE9 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
-| LKU10 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
-| LOCK13 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
-| LOCK15 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
-| LOCK17 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
 | OPEN4 | bug | exclusive re-create with the same verifier answers EXIST on the SQL backends, which do not persist the create verifier | #2317 |
-| RDDR10 | bug | READDIR cookie and attribute-request validation | #2336 |
-| RDDR7 | bug | READDIR cookie and attribute-request validation | #2336 |
-| RDDR8 | bug | READDIR cookie and attribute-request validation | #2336 |
-| RDDR9 | bug | READDIR cookie and attribute-request validation | #2336 |
 | CLOSE4 | bug | bad/old/stale stateid accepted | #2341 |
 | CLOSE5 | bug | bad/old/stale stateid accepted | #2341 |
 | CLOSE6 | bug | bad/old/stale stateid accepted | #2341 |
