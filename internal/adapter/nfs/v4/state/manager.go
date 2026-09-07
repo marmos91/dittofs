@@ -924,6 +924,46 @@ func (sm *StateManager) removeClientOpenStateLocked(clientID uint64) {
 	}
 }
 
+// removeClientLockStateLocked frees the byte-range locks clientID holds on
+// opens it does not own. LOCK takes the lock-owner's client ID from the wire
+// and does not require it to match the client owning the open the lock hangs
+// from, so removeClientOpenStateLocked -- which reaches locks through this
+// client's own opens -- does not see these. Left behind, they stay held in the
+// cross-protocol lock manager on behalf of a client that is gone, with nothing
+// left that could ever unlock them.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) removeClientLockStateLocked(clientID uint64) {
+	for other, lockState := range sm.lockStateByOther {
+		if lockState.LockOwner == nil || lockState.LockOwner.ClientID != clientID {
+			continue
+		}
+
+		sm.removeOwnerLocksLocked(lockState)
+		delete(sm.lockStateByOther, other)
+		delete(sm.lockOwners, lockState.LockOwner.Key())
+		detachLockStateFromOpen(lockState)
+	}
+}
+
+// detachLockStateFromOpen drops a lock state from the open state it hangs off,
+// so the open does not keep reporting a lock that is gone.
+func detachLockStateFromOpen(lockState *LockState) {
+	if lockState.OpenState == nil {
+		return
+	}
+	for i, ls := range lockState.OpenState.LockStates {
+		if ls != lockState {
+			continue
+		}
+		lockState.OpenState.LockStates = append(
+			lockState.OpenState.LockStates[:i],
+			lockState.OpenState.LockStates[i+1:]...,
+		)
+		return
+	}
+}
+
 // releaseClientStateLocked frees every open, lock and delegation held by
 // clientID, first remembering the stateids so that a client which comes back
 // and uses one is told its lease expired rather than told the stateid was
@@ -936,6 +976,7 @@ func (sm *StateManager) removeClientOpenStateLocked(clientID uint64) {
 func (sm *StateManager) releaseClientStateLocked(clientID uint64) {
 	sm.markClientStateidsExpiredLocked(clientID)
 	sm.removeClientOpenStateLocked(clientID)
+	sm.removeClientLockStateLocked(clientID)
 
 	for other, deleg := range sm.delegByOther {
 		if deleg.ClientID != clientID {
@@ -992,12 +1033,24 @@ func (sm *StateManager) expireLapsedHoldersLocked(fileHandle []byte, keepClientI
 	// Collected before anything is released: expiring a client rewrites the
 	// index this ranges over.
 	var lapsed []uint64
-	for _, os := range sm.openStateByFile[string(fileHandle)] {
-		if os.Owner == nil || slices.Contains(keepClientIDs, os.Owner.ClientID) || slices.Contains(lapsed, os.Owner.ClientID) {
-			continue
+	consider := func(clientID uint64) {
+		if slices.Contains(keepClientIDs, clientID) || slices.Contains(lapsed, clientID) {
+			return
 		}
-		if sm.clientLeaseLapsedLocked(os.Owner.ClientID) {
-			lapsed = append(lapsed, os.Owner.ClientID)
+		if sm.clientLeaseLapsedLocked(clientID) {
+			lapsed = append(lapsed, clientID)
+		}
+	}
+	for _, os := range sm.openStateByFile[string(fileHandle)] {
+		if os.Owner != nil {
+			consider(os.Owner.ClientID)
+		}
+		// The lock-owner's client can differ from the open-owner's, and it is
+		// the one holding the lock this request may be colliding with.
+		for _, lockState := range os.LockStates {
+			if lockState.LockOwner != nil {
+				consider(lockState.LockOwner.ClientID)
+			}
 		}
 	}
 
@@ -1038,6 +1091,12 @@ func (sm *StateManager) markClientStateidsExpiredLocked(clientID uint64) {
 			for _, lockState := range openState.LockStates {
 				sm.expiredStateids[lockState.Stateid.Other] = struct{}{}
 			}
+		}
+	}
+
+	for other, lockState := range sm.lockStateByOther {
+		if lockState.LockOwner != nil && lockState.LockOwner.ClientID == clientID {
+			sm.expiredStateids[other] = struct{}{}
 		}
 	}
 

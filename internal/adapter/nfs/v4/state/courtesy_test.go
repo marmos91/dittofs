@@ -150,3 +150,93 @@ func TestOpen_ConflictKeepsLiveShareReservation(t *testing.T) {
 		t.Errorf("OPEN against a live reservation held alongside a lapsed one: got %v, want ErrShareDenied", err)
 	}
 }
+
+// lockAcrossClients has locker take a byte-range lock on an open owned by
+// opener, which LOCK permits: the lock-owner's client ID comes off the wire
+// and need not match the client owning the open.
+func lockAcrossClients(t *testing.T, sm *StateManager, opener, locker uint64, fh []byte, owner string) types.Stateid4 {
+	t.Helper()
+
+	open, err := sm.OpenFile(opener, []byte("open-owner-"+owner), 0, fh,
+		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	res, err := sm.LockNew(context.Background(), locker, []byte("lock-owner-"+owner), 0,
+		&open.Stateid, 0, fh, types.WRITE_LT, 0, ^uint64(0), false)
+	if err != nil {
+		t.Fatalf("LockNew: %v", err)
+	}
+	if res.Denied != nil {
+		t.Fatalf("LockNew: got LOCK4denied, want success")
+	}
+	return open.Stateid
+}
+
+// TestExpireClient_ReleasesLocksHeldOnAnotherClientsOpen covers the lock a
+// client holds on an open it does not own. Reaching a client's locks through
+// its own opens misses those, and a lock left in the cross-protocol lock
+// manager after its owner is gone has nothing left that could unlock it.
+func TestExpireClient_ReleasesLocksHeldOnAnotherClientsOpen(t *testing.T) {
+	sm := NewStateManager(courtesyLease)
+	defer sm.Shutdown()
+	lm := lock.NewManager()
+	sm.SetLockManager(lm)
+
+	fh := []byte("cross-client-lock-fh")
+	opener := courtesyClient(t, sm, "cross-opener")
+	locker := courtesyClient(t, sm, "cross-locker")
+	lockAcrossClients(t, sm, opener, locker, fh, "a")
+
+	if got := len(lm.ListUnifiedLocks(string(fh))); got != 1 {
+		t.Fatalf("locks held before expiry = %d, want 1", got)
+	}
+
+	sm.mu.Lock()
+	sm.releaseClientStateLocked(locker)
+	sm.mu.Unlock()
+
+	if got := len(lm.ListUnifiedLocks(string(fh))); got != 0 {
+		t.Errorf("locks still held after the lock-owner's client was released = %d, want 0", got)
+	}
+}
+
+// TestLock_ConflictExpiresLapsedCrossClientLock is the same asymmetry on the
+// conflict side: the client whose lease lapsed holds the lock but not the
+// open, so looking only at open-owners leaves its courtesy lock enforced.
+func TestLock_ConflictExpiresLapsedCrossClientLock(t *testing.T) {
+	sm := NewStateManager(courtesyLease)
+	defer sm.Shutdown()
+	sm.SetLockManager(lock.NewManager())
+
+	fh := []byte("cross-client-conflict-fh")
+
+	opener := courtesyClient(t, sm, "conflict-opener")
+	locker := courtesyClient(t, sm, "conflict-locker")
+	lockAcrossClients(t, sm, opener, locker, fh, "b")
+
+	time.Sleep(2 * courtesyLease)
+
+	// Only the lock-owner's client is allowed to lapse. If the open's owner
+	// lapses too, the sweep reaches the lock through that client's open and
+	// the test passes whether or not lock-owners are considered at all.
+	sm.mu.Lock()
+	sm.v41ClientsByID[opener].Lease.Renew()
+	sm.mu.Unlock()
+
+	newcomer := courtesyClient(t, sm, "conflict-newcomer")
+	newcomerOpen, err := sm.OpenFile(newcomer, []byte("newcomer-owner"), 0, fh,
+		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+	if err != nil {
+		t.Fatalf("newcomer OpenFile: %v", err)
+	}
+
+	res, err := sm.LockNew(context.Background(), newcomer, []byte("newcomer-lock-owner"), 0,
+		&newcomerOpen.Stateid, 0, fh, types.WRITE_LT, 0, ^uint64(0), false)
+	if err != nil {
+		t.Fatalf("newcomer LockNew: %v", err)
+	}
+	if res.Denied != nil {
+		t.Errorf("LOCK against a lapsed lock-owner's lock on another client's open: got LOCK4denied, want success")
+	}
+}
