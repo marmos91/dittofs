@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
 
@@ -109,7 +110,7 @@ func (h *Handler) handleSetClientID(ctx *types.CompoundContext, reader io.Reader
 
 // encodeSetClientIDError encodes a failed SETCLIENTID4res. The result is a
 // union over the status, and its NFS4ERR_CLID_INUSE arm carries a clientaddr4
-// (RFC 7530 Section 16.33.2) -- two XDR strings the default arm does not have.
+// (RFC 7530 Section 16.33.3) -- two XDR strings the default arm does not have.
 // A status-only reply for that one status is therefore short on the wire, and
 // the client's decode runs off the end of the whole COMPOUND rather than
 // reading a CLID_INUSE it could act on.
@@ -122,11 +123,12 @@ func encodeSetClientIDError(status uint32) []byte {
 		return encodeStatusOnly(status)
 	}
 
-	var buf bytes.Buffer
-	_ = xdr.WriteUint32(&buf, status)
-	_ = xdr.WriteXDRString(&buf, "") // client_using.na_r_netid
-	_ = xdr.WriteXDRString(&buf, "") // client_using.na_r_addr
-	return buf.Bytes()
+	// The status, then client_using as two empty strings: an XDR string is a
+	// length followed by that many bytes, so an empty one is a zero length and
+	// nothing else, and all twelve bytes are zero but the status.
+	b := make([]byte, 12)
+	binary.BigEndian.PutUint32(b, status)
+	return b
 }
 
 // handleSetClientIDConfirm implements the SETCLIENTID_CONFIRM operation (RFC 7530 Section 16.34).

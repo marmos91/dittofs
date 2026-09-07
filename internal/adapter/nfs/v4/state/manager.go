@@ -1032,6 +1032,12 @@ func (sm *StateManager) clientLeaseLapsedLocked(clientID uint64) bool {
 func (sm *StateManager) expireLapsedHoldersLocked(fileHandle []byte, keepClientIDs ...uint64) {
 	// Collected before anything is released: expiring a client rewrites the
 	// index this ranges over.
+	//
+	// ponytail: linear scans of a slice rather than two sets. n is the distinct
+	// clients holding state on ONE file, which is one or two outside a
+	// share-reservation fight, and the allocation two maps would add lands on
+	// every OPEN and LOCK. Switch to sets if a file ever collects enough
+	// simultaneous holders for this to show up in a profile.
 	var lapsed []uint64
 	consider := func(clientID uint64) {
 		if slices.Contains(keepClientIDs, clientID) || slices.Contains(lapsed, clientID) {

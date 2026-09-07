@@ -36,6 +36,45 @@ func courtesyClient(t *testing.T, sm *StateManager, ownerID string) uint64 {
 	return res.ClientID
 }
 
+// waitLeaseLapsed blocks until clientID's lease has run out, polling the same
+// predicate the production paths branch on rather than sleeping for a guessed
+// interval. A stalled runner makes it wait longer, never makes it proceed
+// early.
+func waitLeaseLapsed(t *testing.T, sm *StateManager, clientID uint64) {
+	t.Helper()
+
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		sm.mu.Lock()
+		lapsed := sm.clientLeaseLapsedLocked(clientID)
+		sm.mu.Unlock()
+		if lapsed {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("client %d lease still live after 30s (lease is %s)", clientID, courtesyLease)
+		}
+		time.Sleep(courtesyLease / 10)
+	}
+}
+
+// renewLease puts a client's lease back to full. Tests that need one client to
+// stay live while another lapses call this immediately before asserting: the
+// live client's lease is the same short one, so any stall between establishing
+// it and the assertion would otherwise lapse it too and the test would fail
+// for a reason it is not about.
+func renewLease(t *testing.T, sm *StateManager, clientID uint64) {
+	t.Helper()
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	record, ok := sm.v41ClientsByID[clientID]
+	if !ok || record.Lease == nil {
+		t.Fatalf("no v4.1 lease for client %d", clientID)
+	}
+	record.Lease.Renew()
+}
+
 // TestOpen_ConflictExpiresLapsedShareReservation covers a courtesy client's
 // share reservation meeting a conflicting OPEN. Holding the reservation past
 // the lease is what makes the server courteous; enforcing it against another
@@ -64,7 +103,7 @@ func TestOpen_ConflictExpiresLapsedShareReservation(t *testing.T) {
 		t.Fatalf("OPEN against a live share reservation: got %v, want ErrShareDenied", err)
 	}
 
-	time.Sleep(2 * courtesyLease)
+	waitLeaseLapsed(t, sm, holder)
 
 	if _, err := sm.OpenFile(newcomer, []byte("newcomer-owner"), 0, fh,
 		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); err != nil {
@@ -110,7 +149,7 @@ func TestLock_ConflictExpiresLapsedByteRangeLock(t *testing.T) {
 		t.Fatal("LOCK against a live conflicting lock: got success, want LOCK4denied")
 	}
 
-	time.Sleep(2 * courtesyLease)
+	waitLeaseLapsed(t, sm, holder)
 
 	res, err = sm.LockNew(context.Background(), newcomer, []byte("newcomer-lock-owner-2"), 0,
 		&newcomerOpen.Stateid, 0, fh, types.WRITE_LT, 0, ^uint64(0), false)
@@ -135,7 +174,7 @@ func TestOpen_ConflictKeepsLiveShareReservation(t *testing.T) {
 		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_READ, types.CLAIM_NULL); err != nil {
 		t.Fatalf("lapsed OpenFile: %v", err)
 	}
-	time.Sleep(2 * courtesyLease)
+	waitLeaseLapsed(t, sm, lapsed)
 
 	// Established after the first client's lease ran out, so this one is live.
 	live := courtesyClient(t, sm, "mixed-live")
@@ -145,6 +184,7 @@ func TestOpen_ConflictKeepsLiveShareReservation(t *testing.T) {
 	}
 
 	newcomer := courtesyClient(t, sm, "mixed-newcomer")
+	renewLease(t, sm, live)
 	if _, err := sm.OpenFile(newcomer, []byte("newcomer-owner"), 0, fh,
 		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); !errors.Is(err, ErrShareDenied) {
 		t.Errorf("OPEN against a live reservation held alongside a lapsed one: got %v, want ErrShareDenied", err)
@@ -215,14 +255,12 @@ func TestLock_ConflictExpiresLapsedCrossClientLock(t *testing.T) {
 	locker := courtesyClient(t, sm, "conflict-locker")
 	lockAcrossClients(t, sm, opener, locker, fh, "b")
 
-	time.Sleep(2 * courtesyLease)
+	waitLeaseLapsed(t, sm, locker)
 
 	// Only the lock-owner's client is allowed to lapse. If the open's owner
 	// lapses too, the sweep reaches the lock through that client's open and
 	// the test passes whether or not lock-owners are considered at all.
-	sm.mu.Lock()
-	sm.v41ClientsByID[opener].Lease.Renew()
-	sm.mu.Unlock()
+	renewLease(t, sm, opener)
 
 	newcomer := courtesyClient(t, sm, "conflict-newcomer")
 	newcomerOpen, err := sm.OpenFile(newcomer, []byte("newcomer-owner"), 0, fh,
