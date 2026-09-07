@@ -401,7 +401,7 @@ jobs:
               - '.github/workflows/conformance.yml'
 
   nfs-kerberos:
-    name: NFS sec=krb5 mount test
+    name: NFS sec=krb5 / ${{ matrix.profile }}
     runs-on: ubuntu-latest
     needs: [matrix, kerberos-changes]
     if: >-
