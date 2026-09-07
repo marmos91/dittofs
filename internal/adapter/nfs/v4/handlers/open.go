@@ -40,7 +40,7 @@ import (
 //	bitmap4     attrset      (empty - no attrs set by server)
 //	open_delegation4:
 //	  uint32    delegation_type (OPEN_DELEGATE_NONE / READ / WRITE)
-func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
+func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) (result *types.CompoundResult) {
 	// Require current filehandle (parent directory for CLAIM_NULL)
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
 		return openError(status)
@@ -199,25 +199,30 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 	// put the server permanently one behind and answered every later OPEN for
 	// that owner NFS4ERR_BAD_SEQID. ConsumeOpenSeqid is a no-op when the state
 	// manager already accounted for this seqid.
-	result := h.dispatchOpenClaim(ctx, reader, seqid, shareAccess, shareDeny,
-		clientID, ownerData, openType, createMode, claimType, createAttrs, createVerifier)
-	if result.Status != types.NFS4_OK {
-		h.StateManager.ConsumeOpenSeqid(clientID, ownerData, seqid, result.Status)
+	//
+	// The two halves go together. A retransmission at the seqid the server last
+	// recorded must replay that reply rather than run the operation again, and
+	// answering a refusal here without also replaying it would re-execute the
+	// retransmission against the state of the world now instead of the state it
+	// had when the client first asked. NFSv4.1 takes exactly-once from the
+	// session slot table and carries no owner seqid, so it stays out of both.
+	if !ctx.SkipOwnerSeqid {
+		if cached, ok := h.StateManager.ReplayOpenSeqid(clientID, ownerData, seqid); ok {
+			logger.Debug("NFSv4 OPEN replayed from the open-owner cache",
+				"seqid", seqid, "status", cached.Status, "client", ctx.ClientAddr)
+			return &types.CompoundResult{
+				Status: cached.Status,
+				OpCode: types.OP_OPEN,
+				Data:   cached.Data,
+			}
+		}
+		defer func() {
+			if result != nil && result.Status != types.NFS4_OK {
+				h.StateManager.ConsumeOpenSeqid(clientID, ownerData, seqid, result.Status)
+			}
+		}()
 	}
-	return result
-}
 
-// dispatchOpenClaim routes an OPEN to the handler for its claim type.
-func (h *Handler) dispatchOpenClaim(
-	ctx *types.CompoundContext,
-	reader io.Reader,
-	seqid, shareAccess, shareDeny uint32,
-	clientID uint64,
-	ownerData []byte,
-	openType, createMode, claimType uint32,
-	createAttrs *metadata.SetAttrs,
-	createVerifier *uint64,
-) *types.CompoundResult {
 	switch claimType {
 	case types.CLAIM_NULL:
 		// New open: check grace period BEFORE file creation/lookup

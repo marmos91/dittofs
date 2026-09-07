@@ -329,15 +329,11 @@ func (h *Handler) handleLockT(ctx *types.CompoundContext, reader io.Reader) *typ
 	// tables are keyed by filehandle bytes alone, so without this gate a
 	// probe against a directory or a device node answered NFS4_OK.
 	fileType, status := h.fileTypeForHandle(ctx, ctx.CurrentFH)
-	if status != types.NFS4_OK {
-		return &types.CompoundResult{
-			Status: status,
-			OpCode: types.OP_LOCKT,
-			Data:   encodeStatusOnly(status),
-		}
+	if status == types.NFS4_OK {
+		status = regularFileStatus(fileType)
 	}
-	if status := regularFileStatus(fileType); status != types.NFS4_OK {
-		logger.Debug("NFSv4 LOCKT on non-regular file",
+	if status != types.NFS4_OK {
+		logger.Debug("NFSv4 LOCKT refused",
 			"type", fileType, "status", status, "client", ctx.ClientAddr)
 		return &types.CompoundResult{
 			Status: status,

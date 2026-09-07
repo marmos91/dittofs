@@ -113,19 +113,23 @@ func TestOpen_Exclusive4_RetryDifferentVerifier(t *testing.T) {
 	clientID := testClientID(t, fx.handler.StateManager, "excl-test-client")
 	ctx := newRealFSContext(0, 0)
 
-	open := func(verf uint64) *types.CompoundResult {
+	// Each OPEN carries its own seqid: two requests at the same seqid are a
+	// retransmission by RFC 7530 Section 9.1.7 and are answered from the
+	// open-owner's replay cache, which would test the cache rather than the
+	// verifier comparison this test is about.
+	open := func(seqid uint32, verf uint64) *types.CompoundResult {
 		ctx.CurrentFH = make([]byte, len(fx.rootHandle))
 		copy(ctx.CurrentFH, fx.rootHandle)
-		args := encodeOpenExclusiveArgs(1, types.OPEN4_SHARE_ACCESS_BOTH,
+		args := encodeOpenExclusiveArgs(seqid, types.OPEN4_SHARE_ACCESS_BOTH,
 			types.OPEN4_SHARE_DENY_NONE, clientID, owner, verf, "excl2.txt")
 		return fx.handler.handleOpen(ctx, bytes.NewReader(args))
 	}
 
-	if r := open(0x1111111111111111); r.Status != types.NFS4_OK {
+	if r := open(1, 0x1111111111111111); r.Status != types.NFS4_OK {
 		t.Fatalf("first EXCLUSIVE4 OPEN status = %d, want NFS4_OK", r.Status)
 	}
 
-	if r := open(0x2222222222222222); r.Status != types.NFS4ERR_EXIST {
+	if r := open(2, 0x2222222222222222); r.Status != types.NFS4ERR_EXIST {
 		t.Fatalf("EXCLUSIVE4 with different verifier status = %d, want NFS4ERR_EXIST", r.Status)
 	}
 }

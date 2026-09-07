@@ -55,20 +55,23 @@ func TestOpen_HandlerRefusalConsumesSeqid(t *testing.T) {
 	}
 }
 
-// TestOpen_RefusalReplaysRatherThanConsumingTwice pins the other half of
-// Section 9.1.7: a retransmission at the seqid the refusal consumed replays that
-// refusal's status and does not advance the sequence a second time.
-func TestOpen_RefusalReplaysRatherThanConsumingTwice(t *testing.T) {
+// TestOpen_RefusalIsReplayedNotReExecuted pins the other half of
+// Section 9.1.7: a retransmission at the seqid a refusal consumed must return
+// that refusal's reply, not run the OPEN a second time.
+//
+// The distinction only shows when the condition behind the refusal has changed
+// in between, so the test removes the colliding name before retransmitting. Two
+// GUARDED4 creates in a row would answer NFS4ERR_EXIST whether the server
+// replayed the cached reply or simply re-ran the create, and would pass against
+// a server that does neither correctly.
+func TestOpen_RefusalIsReplayedNotReExecuted(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 	clientID := testClientID(t, fx.handler.StateManager, "replay-client")
 	owner := []byte("replay-owner")
 
-	ctx := newRealFSContext(1000, 1000)
-	setCurrentFH(ctx, fx.rootHandle)
+	ctx := newRealFSContext(0, 0)
 
 	open := func(seqid, createMode uint32) *types.CompoundResult {
-		// OPEN leaves the created file as the current filehandle; every call
-		// here starts from the parent directory again.
 		setCurrentFH(ctx, fx.rootHandle)
 		args := encodeOpenArgs(seqid, types.OPEN4_SHARE_ACCESS_BOTH,
 			types.OPEN4_SHARE_DENY_NONE, clientID, owner,
@@ -82,8 +85,26 @@ func TestOpen_RefusalReplaysRatherThanConsumingTwice(t *testing.T) {
 	if r := open(2, types.GUARDED4); r.Status != types.NFS4ERR_EXIST {
 		t.Fatalf("GUARDED4 recreate: status = %d, want NFS4ERR_EXIST", r.Status)
 	}
+
+	// Take the collision away. A re-executed OPEN would now create the file and
+	// answer NFS4_OK; a replayed one still answers the refusal it cached.
+	setCurrentFH(ctx, fx.rootHandle)
+	rm := fx.handler.handleRemove(ctx, bytes.NewReader(encodeRemoveArgs("replayed.txt")))
+	if rm.Status != types.NFS4_OK {
+		t.Fatalf("REMOVE of the colliding name: status = %d, want NFS4_OK", rm.Status)
+	}
+
 	if r := open(2, types.GUARDED4); r.Status != types.NFS4ERR_EXIST {
-		t.Fatalf("retransmitted refusal: status = %d, want the replayed NFS4ERR_EXIST", r.Status)
+		t.Fatalf("retransmitted refusal after the collision was removed: status = %d, want the replayed NFS4ERR_EXIST (%d)",
+			r.Status, types.NFS4ERR_EXIST)
+	}
+
+	// The status alone does not separate a replay from a re-execution: an OPEN
+	// that runs again creates the file and is then answered NFS4ERR_EXIST by the
+	// state layer's own replay check, having already done the work. The side
+	// effect is what tells them apart, so assert the file was not recreated.
+	if _, err := fx.metaSvc.Lookup(newTestAuthCtx(0, 0), fx.rootHandle, "replayed.txt"); err == nil {
+		t.Fatal("the retransmitted OPEN recreated the file: it was re-executed, not replayed")
 	}
 
 	// The replay must not have consumed a second seqid.

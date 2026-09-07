@@ -750,18 +750,20 @@ func (sm *StateManager) anonymousIOBlocked(currentFH []byte, op StateidOp) error
 		return nil
 	}
 
-	deny := uint32(types.OPEN4_SHARE_DENY_READ)
+	// The I/O is judged exactly as an OPEN requesting that access would be, so
+	// it goes through the same conflict test rather than a second copy of the
+	// rule: with no deny of its own to assert, only the "requested access is
+	// denied by an existing open" half can fire.
+	access := uint32(types.OPEN4_SHARE_ACCESS_READ)
 	if op == StateidOpWrite {
-		deny = types.OPEN4_SHARE_DENY_WRITE
+		access = types.OPEN4_SHARE_ACCESS_WRITE
 	}
 
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	for _, os := range sm.openStateByFile[string(currentFH)] {
-		if os.ShareDeny&deny != 0 {
-			return ErrLocked
-		}
+	if sm.shareConflictLocked(currentFH, access, types.OPEN4_SHARE_DENY_NONE) {
+		return ErrLocked
 	}
 	return nil
 }

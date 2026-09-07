@@ -193,3 +193,28 @@ func TestPutFH_UndecodableHandle(t *testing.T) {
 		})
 	}
 }
+
+// TestLookupP_ShareRootCrossesToJunctionParent pins the step out of a share.
+//
+// The pseudo-fs junction and the share root are two views of one directory: a
+// share exported at /export is reached either as the pseudo-fs node /export or
+// as the real filesystem's root. Answering LOOKUPP at the share root with the
+// junction therefore left the client in the directory it started in, and a walk
+// upwards stalled there instead of reaching the pseudo-fs root.
+func TestLookupP_ShareRootCrossesToJunctionParent(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+
+	ctx := newRealFSContext(1000, 1000)
+	ctx.CurrentFH = append([]byte(nil), fx.rootHandle...)
+
+	r := fx.handler.handleLookupP(ctx, bytes.NewReader(nil))
+	if r.Status != types.NFS4_OK {
+		t.Fatalf("LOOKUPP at the share root: status = %d, want NFS4_OK", r.Status)
+	}
+
+	pseudoRoot := fx.handler.PseudoFS.GetRootHandle()
+	if !bytes.Equal(ctx.CurrentFH, pseudoRoot) {
+		t.Fatalf("LOOKUPP at the share root landed on %q, want the pseudo-fs root %q",
+			ctx.CurrentFH, pseudoRoot)
+	}
+}

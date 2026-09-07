@@ -1425,7 +1425,7 @@ func (sm *StateManager) OpenFile(
 // keeps the deny mask on the file (nfs4_file, fi_share_deny) for the same
 // reason.
 //
-// Caller must hold sm.mu.
+// Caller must hold sm.mu, for reading or for writing.
 func (sm *StateManager) shareConflictLocked(
 	fileHandle []byte,
 	reqAccess, reqDeny uint32,
@@ -1469,6 +1469,36 @@ func (sm *StateManager) removeOpenStateFromFileLocked(os *OpenState) {
 		}
 		return
 	}
+}
+
+// ReplayOpenSeqid returns the reply cached for an open-owner when seqid is a
+// retransmission of the last request the server processed for it, so the caller
+// can answer it byte-for-byte instead of running the operation a second time
+// (RFC 7530 Section 9.1.7).
+//
+// OpenFile answers replays for the OPENs that reach it, but an OPEN the handler
+// refuses on its own never does. Re-executing such a retransmission answers
+// from the state of the world now rather than the state it had when the client
+// first asked, so a refusal whose cause has since gone away -- the colliding
+// name removed, the permission granted -- came back as a success the client had
+// no reply slot for.
+//
+// It reports no replay for an owner that does not exist, for a seqid that is
+// the expected next one rather than a repeat, and for an owner with nothing
+// cached yet: a fresh owner's sequence starts at zero, which would otherwise
+// read as a replay of a request that never happened.
+func (sm *StateManager) ReplayOpenSeqid(clientID uint64, ownerData []byte, seqid uint32) (*CachedResult, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	owner, exists := sm.openOwners[makeOwnerKey(clientID, ownerData)]
+	if !exists || owner.LastResult == nil {
+		return nil, false
+	}
+	if owner.ValidateSeqID(seqid) != SeqIDReplay {
+		return nil, false
+	}
+	return owner.LastResult, true
 }
 
 // ConsumeOpenSeqid records against an open-owner's sequence an OPEN that failed
