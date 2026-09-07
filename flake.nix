@@ -171,7 +171,6 @@
           };
 
         # Helper script to start PostgreSQL for testing
-        # Uses sudo for docker commands to avoid docker group requirement
         dfs-postgres-start = pkgs.writeShellScriptBin "dfs-postgres-start" ''
           container_name="dittofs-postgres-test"
 
@@ -181,26 +180,31 @@
             exit 1
           fi
 
-          # Check if docker daemon is running (using sudo)
-          if ! sudo docker info &>/dev/null; then
+          # Docker Desktop and a rootless daemon answer to the invoking user;
+          # a system daemon usually does not. Probe before reaching for sudo,
+          # so the script neither demands a password it does not need nor
+          # loses, to sudo's secure_path, the docker it just found.
+          DOCKER=(docker)
+          docker info &>/dev/null || DOCKER=(sudo "$(command -v docker)")
+          if ! "''${DOCKER[@]}" info &>/dev/null; then
             echo "Error: Cannot connect to Docker daemon."
-            echo "Make sure Docker daemon is running: sudo systemctl start docker"
+            echo "Start it first (Linux: sudo systemctl start docker)."
             exit 1
           fi
 
           # Check if container already exists
-          if sudo docker ps -a --format '{{.Names}}' | grep -q "^$container_name$"; then
+          if "''${DOCKER[@]}" ps -a --format '{{.Names}}' | grep -q "^$container_name$"; then
             # Check if it's running
-            if sudo docker ps --format '{{.Names}}' | grep -q "^$container_name$"; then
+            if "''${DOCKER[@]}" ps --format '{{.Names}}' | grep -q "^$container_name$"; then
               echo "PostgreSQL container already running"
               exit 0
             else
               echo "Starting existing PostgreSQL container..."
-              sudo docker start "$container_name"
+              "''${DOCKER[@]}" start "$container_name"
             fi
           else
             echo "Creating PostgreSQL container for DittoFS testing..."
-            sudo docker run -d \
+            "''${DOCKER[@]}" run -d \
               --name "$container_name" \
               -e POSTGRES_USER=dittofs \
               -e POSTGRES_PASSWORD=dittofs \
@@ -210,8 +214,8 @@
           fi
 
           echo "Waiting for PostgreSQL to be ready..."
-          for i in $(seq 1 30); do
-            if sudo docker exec "$container_name" pg_isready -U dittofs -d dittofs_test &>/dev/null; then
+          for _ in $(seq 1 30); do
+            if "''${DOCKER[@]}" exec "$container_name" pg_isready -U dittofs -d dittofs_test &>/dev/null; then
               echo "PostgreSQL is ready!"
               echo ""
               echo "Connection details:"
@@ -232,15 +236,17 @@
         '';
 
         # Helper script to stop PostgreSQL test container
-        # Uses sudo for docker commands to avoid docker group requirement
         dfs-postgres-stop = pkgs.writeShellScriptBin "dfs-postgres-stop" ''
           container_name="dittofs-postgres-test"
 
-          if sudo docker ps -a --format '{{.Names}}' | grep -q "^$container_name$"; then
+          DOCKER=(docker)
+          docker info &>/dev/null || DOCKER=(sudo "$(command -v docker)")
+
+          if "''${DOCKER[@]}" ps -a --format '{{.Names}}' | grep -q "^$container_name$"; then
             echo "Stopping PostgreSQL container..."
-            sudo docker stop "$container_name" 2>/dev/null || true
+            "''${DOCKER[@]}" stop "$container_name" 2>/dev/null || true
             echo "Removing PostgreSQL container..."
-            sudo docker rm "$container_name" 2>/dev/null || true
+            "''${DOCKER[@]}" rm "$container_name" 2>/dev/null || true
             echo "PostgreSQL container removed"
           else
             echo "PostgreSQL container not found"
@@ -249,7 +255,8 @@
           # Also clean up content store
           if [ -d "/tmp/dittofs-content-postgres" ]; then
             echo "Cleaning up content store..."
-            sudo rm -rf /tmp/dittofs-content-postgres
+            rm -rf /tmp/dittofs-content-postgres 2>/dev/null \
+              || sudo rm -rf /tmp/dittofs-content-postgres
           fi
 
           echo "Cleanup complete"
