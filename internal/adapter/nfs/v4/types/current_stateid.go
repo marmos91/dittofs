@@ -23,18 +23,10 @@ import "io"
 // which is what RFC 8881 Section 16.2.3.1.2's last example requires and what
 // the Linux server does.
 
-// IsCurrentStateidPlaceholder reports whether this stateid is the NFSv4.1
+// isCurrentStateidPlaceholder reports whether this stateid is the NFSv4.1
 // "use the current stateid" value: seqid 1 with an all-zeros "other".
-func (s *Stateid4) IsCurrentStateidPlaceholder() bool {
-	if s.Seqid != 1 {
-		return false
-	}
-	for _, b := range s.Other {
-		if b != 0 {
-			return false
-		}
-	}
-	return true
+func (s *Stateid4) isCurrentStateidPlaceholder() bool {
+	return s.Seqid == 1 && s.Other == [NFS4_OTHER_SIZE]byte{}
 }
 
 // tracksCurrentStateid reports whether the placeholder is meaningful in this
@@ -72,12 +64,12 @@ func (c *CompoundContext) RestoreCurrentStateid() {
 	c.hasCurrentStateid = c.hasSavedStateid
 }
 
-// ResolveStateid substitutes the COMPOUND's current stateid for the placeholder
+// resolveStateid substitutes the COMPOUND's current stateid for the placeholder
 // value, returning the stateid the operation should act on and an NFSv4 status.
 // Any other stateid — and any stateid at all in a v4.0 COMPOUND — is returned
 // unchanged.
-func (c *CompoundContext) ResolveStateid(sid *Stateid4) (*Stateid4, uint32) {
-	if !c.tracksCurrentStateid() || !sid.IsCurrentStateidPlaceholder() {
+func (c *CompoundContext) resolveStateid(sid *Stateid4) (*Stateid4, uint32) {
+	if !c.tracksCurrentStateid() || !sid.isCurrentStateidPlaceholder() {
 		return sid, NFS4_OK
 	}
 	if !c.hasCurrentStateid {
@@ -97,7 +89,7 @@ func DecodeStateidArg(ctx *CompoundContext, reader io.Reader) (*Stateid4, uint32
 	if err != nil {
 		return nil, NFS4ERR_BADXDR
 	}
-	return ctx.ResolveStateid(sid)
+	return ctx.resolveStateid(sid)
 }
 
 // ClearsCurrentStateid reports whether an operation sets or voids the current

@@ -35,7 +35,6 @@ func HandleFreeStateid(
 			Data:   EncodeStatusOnly(argStatus),
 		}
 	}
-	args := types.FreeStateidArgs{Stateid: *stateid}
 
 	// FREE_STATEID requires SEQUENCE context for client authorization
 	if v41ctx == nil {
@@ -63,13 +62,13 @@ func HandleFreeStateid(
 	clientID := session.ClientID
 
 	// Delegate to StateManager
-	err := d.StateManager.FreeStateid(clientID, &args.Stateid)
+	err := d.StateManager.FreeStateid(clientID, stateid)
 	if err != nil {
 		nfsStatus := MapStateError(err)
 		logger.Debug("FREE_STATEID: state error",
 			"error", err,
 			"client_id", fmt.Sprintf("0x%016x", clientID),
-			"stateid_other", hex.EncodeToString(args.Stateid.Other[:]),
+			"stateid_other", hex.EncodeToString(stateid.Other[:]),
 			"nfs_status", nfsStatus,
 			"client", ctx.ClientAddr)
 		return &types.CompoundResult{
@@ -93,7 +92,7 @@ func HandleFreeStateid(
 
 	logger.Info("FREE_STATEID: stateid freed",
 		"client_id", fmt.Sprintf("0x%016x", clientID),
-		"stateid_other", hex.EncodeToString(args.Stateid.Other[:]),
+		"stateid_other", hex.EncodeToString(stateid.Other[:]),
 		"client", ctx.ClientAddr)
 
 	return &types.CompoundResult{

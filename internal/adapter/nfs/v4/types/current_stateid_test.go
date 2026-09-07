@@ -14,21 +14,21 @@ func realStateid(seqid uint32, tag byte) *Stateid4 {
 
 func TestIsCurrentStateidPlaceholder(t *testing.T) {
 	placeholder := &Stateid4{Seqid: 1}
-	if !placeholder.IsCurrentStateidPlaceholder() {
+	if !placeholder.isCurrentStateidPlaceholder() {
 		t.Error("(1, all-zeros) should be the current-stateid placeholder")
 	}
 	// The anonymous stateid is (0, all-zeros) and must not be mistaken for it.
-	if (&Stateid4{}).IsCurrentStateidPlaceholder() {
+	if (&Stateid4{}).isCurrentStateidPlaceholder() {
 		t.Error("the anonymous stateid is not the placeholder")
 	}
-	if realStateid(1, 0x01).IsCurrentStateidPlaceholder() {
+	if realStateid(1, 0x01).isCurrentStateidPlaceholder() {
 		t.Error("a real stateid with seqid 1 is not the placeholder")
 	}
 }
 
 func TestResolveStateid_NoCurrentStateidIsBadStateid(t *testing.T) {
 	ctx := v41Ctx()
-	if _, status := ctx.ResolveStateid(&Stateid4{Seqid: 1}); status != NFS4ERR_BAD_STATEID {
+	if _, status := ctx.resolveStateid(&Stateid4{Seqid: 1}); status != NFS4ERR_BAD_STATEID {
 		t.Errorf("status = %d, want NFS4ERR_BAD_STATEID (%d)", status, NFS4ERR_BAD_STATEID)
 	}
 }
@@ -38,7 +38,7 @@ func TestResolveStateid_SubstitutesCurrent(t *testing.T) {
 	open := realStateid(3, 0x01)
 	ctx.SetCurrentStateid(open)
 
-	got, status := ctx.ResolveStateid(&Stateid4{Seqid: 1})
+	got, status := ctx.resolveStateid(&Stateid4{Seqid: 1})
 	if status != NFS4_OK {
 		t.Fatalf("status = %d, want NFS4_OK", status)
 	}
@@ -48,7 +48,7 @@ func TestResolveStateid_SubstitutesCurrent(t *testing.T) {
 
 	// A filehandle operation drops it again.
 	ctx.ClearCurrentStateid()
-	if _, status := ctx.ResolveStateid(&Stateid4{Seqid: 1}); status != NFS4ERR_BAD_STATEID {
+	if _, status := ctx.resolveStateid(&Stateid4{Seqid: 1}); status != NFS4ERR_BAD_STATEID {
 		t.Errorf("after clear: status = %d, want NFS4ERR_BAD_STATEID", status)
 	}
 }
@@ -57,7 +57,7 @@ func TestResolveStateid_V40LeavesPlaceholderAlone(t *testing.T) {
 	ctx := &CompoundContext{MinorVersion: 0, MinorVersionAccepted: true}
 	placeholder := &Stateid4{Seqid: 1}
 
-	got, status := ctx.ResolveStateid(placeholder)
+	got, status := ctx.resolveStateid(placeholder)
 	if status != NFS4_OK {
 		t.Fatalf("status = %d, want NFS4_OK", status)
 	}
@@ -75,7 +75,7 @@ func TestSaveRestoreCurrentStateid(t *testing.T) {
 	ctx.ClearCurrentStateid()
 	ctx.RestoreCurrentStateid() // RESTOREFH
 
-	got, status := ctx.ResolveStateid(&Stateid4{Seqid: 1})
+	got, status := ctx.resolveStateid(&Stateid4{Seqid: 1})
 	if status != NFS4_OK {
 		t.Fatalf("status = %d, want NFS4_OK", status)
 	}
@@ -90,7 +90,7 @@ func TestSaveCurrentStateid_CarriesAbsence(t *testing.T) {
 	ctx.SetCurrentStateid(realStateid(3, 0x01))
 	ctx.RestoreCurrentStateid()
 
-	if _, status := ctx.ResolveStateid(&Stateid4{Seqid: 1}); status != NFS4ERR_BAD_STATEID {
+	if _, status := ctx.resolveStateid(&Stateid4{Seqid: 1}); status != NFS4ERR_BAD_STATEID {
 		t.Errorf("status = %d, want NFS4ERR_BAD_STATEID: RESTOREFH must bring back the absence SAVEFH saved", status)
 	}
 }
