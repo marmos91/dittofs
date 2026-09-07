@@ -48,25 +48,6 @@ func NewRemote(inner remote.RemoteStore, p CompressionPolicy) (*Decorator, error
 
 // --- write path ---------------------------------------------------------
 
-// Put compresses data; if the result is strictly smaller than the input
-// (header overhead included) it stores the framed compressed body, else
-// it stores the raw plaintext with no header — incompressible blocks
-// skip the allocate-and-copy frame build entirely.
-//
-// Put and SealChunk share the same single-layer transform (sealLayer) so the
-// standalone-object and packed-block write paths never drift.
-func (d *Decorator) Put(ctx context.Context, hash block.ContentHash, data []byte) error {
-	wire, err := d.sealLayer(data)
-	if err != nil {
-		return err
-	}
-	cs, err := remote.CASInner(d.inner)
-	if err != nil {
-		return err
-	}
-	return cs.Put(ctx, hash, wire)
-}
-
 // SealChunk applies this decorator's compression layer to plaintext, then
 // delegates to the inner store's ChunkSealer so a decorated chain produces the
 // fully-transformed wire bytes for a packed block. Implements
@@ -116,19 +97,6 @@ func (d *Decorator) sealLayer(data []byte) ([]byte, error) {
 
 // --- read path ----------------------------------------------------------
 
-// Get returns the plaintext for the block identified by hash.
-func (d *Decorator) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
-	cs, err := remote.CASInner(d.inner)
-	if err != nil {
-		return nil, err
-	}
-	raw, err := cs.Get(ctx, hash)
-	if err != nil {
-		return nil, err
-	}
-	return d.decode(raw)
-}
-
 func (d *Decorator) decode(raw []byte) ([]byte, error) {
 	algo, origSize, body, framed, err := tryDecodeFrame(raw)
 	if !framed {
@@ -166,91 +134,6 @@ func (d *Decorator) decode(raw []byte) ([]byte, error) {
 	return out, nil
 }
 
-// GetRange returns a byte sub-range of the plaintext. For framed
-// blocks this materialises the full plaintext and slices — there is no
-// random access into compressed bodies.
-func (d *Decorator) GetRange(ctx context.Context, hash block.ContentHash, offset, length int64) ([]byte, error) {
-	if length <= 0 {
-		return nil, fmt.Errorf("%w: length %d", block.ErrInvalidSize, length)
-	}
-	full, err := d.Get(ctx, hash)
-	if err != nil {
-		return nil, err
-	}
-	return remote.SliceRange(full, offset, length)
-}
-
-// Head returns Meta whose Size is the plaintext byte length. For
-// framed blocks this requires a short range-GET to parse the frame
-// header.
-func (d *Decorator) Head(ctx context.Context, hash block.ContentHash) (block.Meta, error) {
-	cs, err := remote.CASInner(d.inner)
-	if err != nil {
-		return block.Meta{}, err
-	}
-	m, err := cs.Head(ctx, hash)
-	if err != nil {
-		return m, err
-	}
-	size, err := d.plaintextSizeFor(ctx, hash, m.Size)
-	if err != nil {
-		return block.Meta{}, err
-	}
-	m.Size = size
-	return m, nil
-}
-
-// plaintextSizeFor returns the plaintext byte length of the block by
-// probing the frame header in the inner store. For framed blocks the
-// header carries the plaintext size; for raw passthrough blocks
-// wireSize already equals plaintext size and is returned unchanged.
-//
-// A probe failure is propagated as an error rather than silently
-// reporting wireSize: when the magic check can't run, the caller has
-// no way to distinguish a raw block (wireSize correct) from a framed
-// block (wireSize is the compressed size) — surfacing the error keeps
-// Meta.Size honest per the blockstore.go:130 contract.
-func (d *Decorator) plaintextSizeFor(ctx context.Context, hash block.ContentHash, wireSize int64) (int64, error) {
-	probeLen := min(int64(FrameHeaderFixedSize+maxOrigSizeVarint), wireSize)
-	if probeLen <= 0 {
-		return wireSize, nil
-	}
-	cs, err := remote.CASInner(d.inner)
-	if err != nil {
-		return 0, err
-	}
-	probe, err := cs.GetRange(ctx, hash, 0, probeLen)
-	if err != nil {
-		return 0, fmt.Errorf("compression: plaintext-size probe: %w", err)
-	}
-	_, origSize, _, framed, err := tryDecodeFrame(probe)
-	if err != nil {
-		return 0, err
-	}
-	if !framed {
-		return wireSize, nil
-	}
-	return int64(origSize), nil
-}
-
-// Walk wraps the inner Walk and rewrites Meta.Size to plaintext size
-// for each framed block before invoking the user callback. Per-block
-// probe errors halt the walk and are surfaced to the caller.
-func (d *Decorator) Walk(ctx context.Context, fn func(hash block.ContentHash, meta block.Meta) error) error {
-	cs, err := remote.CASInner(d.inner)
-	if err != nil {
-		return err
-	}
-	return cs.Walk(ctx, func(h block.ContentHash, m block.Meta) error {
-		size, err := d.plaintextSizeFor(ctx, h, m.Size)
-		if err != nil {
-			return err
-		}
-		m.Size = size
-		return fn(h, m)
-	})
-}
-
 // ReadChunk reads the chunk's compressed wire bytes from the inner store's
 // block object and decompresses them, returning the next layer's input (or the
 // engine's plaintext). A block stores each chunk's full self-framed compression
@@ -272,7 +155,6 @@ func (d *Decorator) ReadChunk(ctx context.Context, blockID string, offset, lengt
 
 // Compile-time interface assertions.
 var (
-	_ block.Store              = (*Decorator)(nil)
 	_ remote.RemoteStore       = (*Decorator)(nil)
 	_ remote.RemoteBlockStore  = (*Decorator)(nil)
 	_ remote.ChunkReader       = (*Decorator)(nil)

@@ -48,24 +48,6 @@ func NewRemote(inner remote.RemoteStore, policy EncryptionPolicy, provider keypr
 	}, nil
 }
 
-// Put encrypts data and stores the framed result under hash. The block
-// key is fresh per call; the plaintext hash is bound into the AEAD's
-// additional data so a swapped block fails authentication on Get.
-// Put encrypts data into a self-describing frame and stores it on the inner
-// store. Put and SealChunk share the same single-layer transform (sealLayer)
-// so the standalone-object and packed-block write paths never drift.
-func (d *EncryptedRemote) Put(ctx context.Context, hash block.ContentHash, data []byte) error {
-	wire, err := d.sealLayer(ctx, hash, data)
-	if err != nil {
-		return err
-	}
-	cs, err := remote.CASInner(d.inner)
-	if err != nil {
-		return err
-	}
-	return cs.Put(ctx, hash, wire)
-}
-
 // SealChunk encrypts one chunk's plaintext into a frame and delegates inward so
 // a decorated chain produces the fully-transformed wire bytes for a packed
 // block. Implements remote.ChunkSealer (#1414). hash is bound as AEAD AAD,
@@ -113,103 +95,6 @@ func (d *EncryptedRemote) sealLayer(ctx context.Context, hash block.ContentHash,
 		return nil, err
 	}
 	return aead.Seal(wire, nonce, data, hash[:]), nil
-}
-
-// Get returns the plaintext for the block identified by hash.
-func (d *EncryptedRemote) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
-	cs, err := remote.CASInner(d.inner)
-	if err != nil {
-		return nil, err
-	}
-	raw, err := cs.Get(ctx, hash)
-	if err != nil {
-		return nil, err
-	}
-	return d.decrypt(ctx, hash, raw)
-}
-
-// GetRange returns a byte sub-range of the plaintext. For encrypted
-// blocks this materialises the full plaintext and slices — there is no
-// random access into ciphertext.
-func (d *EncryptedRemote) GetRange(ctx context.Context, hash block.ContentHash, offset, length int64) ([]byte, error) {
-	if length <= 0 {
-		return nil, fmt.Errorf("%w: length %d", block.ErrInvalidSize, length)
-	}
-	full, err := d.Get(ctx, hash)
-	if err != nil {
-		return nil, err
-	}
-	return remote.SliceRange(full, offset, length)
-}
-
-// Head returns Meta whose Size is the plaintext byte length, derived
-// from the wire size via a short range-GET that parses the frame
-// header — no full decrypt. AEAD output is plaintext-length plus a
-// 16-byte authentication tag, so plaintext_size = wire_size -
-// header_size - aeadTagSize.
-func (d *EncryptedRemote) Head(ctx context.Context, hash block.ContentHash) (block.Meta, error) {
-	cs, err := remote.CASInner(d.inner)
-	if err != nil {
-		return block.Meta{}, err
-	}
-	m, err := cs.Head(ctx, hash)
-	if err != nil {
-		return m, err
-	}
-	size, err := d.plaintextSizeFor(ctx, hash, m.Size)
-	if err != nil {
-		return block.Meta{}, err
-	}
-	m.Size = size
-	return m, nil
-}
-
-// Walk rewrites Meta.Size to plaintext size for each block via the same
-// range-GET probe as Head. Per-block probe errors halt the walk.
-func (d *EncryptedRemote) Walk(ctx context.Context, fn func(hash block.ContentHash, meta block.Meta) error) error {
-	cs, err := remote.CASInner(d.inner)
-	if err != nil {
-		return err
-	}
-	return cs.Walk(ctx, func(h block.ContentHash, m block.Meta) error {
-		size, err := d.plaintextSizeFor(ctx, h, m.Size)
-		if err != nil {
-			return err
-		}
-		m.Size = size
-		return fn(h, m)
-	})
-}
-
-// plaintextSizeFor returns the plaintext byte length of the block.
-// Reads at most maxFrameHeaderSize bytes off the wire to parse the
-// header, then derives plaintext size from the total wire size. Returns
-// ErrCiphertextWithoutFrame for an unframed inner block.
-func (d *EncryptedRemote) plaintextSizeFor(ctx context.Context, hash block.ContentHash, wireSize int64) (int64, error) {
-	probeLen := min(int64(maxFrameHeaderSize), wireSize)
-	if probeLen <= 0 {
-		return 0, ErrCiphertextWithoutFrame
-	}
-	cs, err := remote.CASInner(d.inner)
-	if err != nil {
-		return 0, err
-	}
-	probe, err := cs.GetRange(ctx, hash, 0, probeLen)
-	if err != nil {
-		return 0, fmt.Errorf("encryption: plaintext-size probe: %w", err)
-	}
-	headerLen, framed, err := frameHeaderSize(probe)
-	if !framed {
-		return 0, ErrCiphertextWithoutFrame
-	}
-	if err != nil {
-		return 0, err
-	}
-	plain := wireSize - int64(headerLen) - aeadTagSize
-	if plain < 0 {
-		return 0, fmt.Errorf("%w: wire size %d smaller than header %d + tag %d", ErrEncryptedFrameCorrupt, wireSize, headerLen, aeadTagSize)
-	}
-	return plain, nil
 }
 
 // ReadChunk reads the chunk's encrypted wire bytes from the inner store's
@@ -308,7 +193,6 @@ func newAEAD(algo AEAD, key []byte) (cipher.AEAD, error) {
 
 // Compile-time interface assertions.
 var (
-	_ block.Store              = (*EncryptedRemote)(nil)
 	_ remote.RemoteStore       = (*EncryptedRemote)(nil)
 	_ remote.RemoteBlockStore  = (*EncryptedRemote)(nil)
 	_ remote.ChunkReader       = (*EncryptedRemote)(nil)
