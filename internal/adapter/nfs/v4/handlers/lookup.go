@@ -86,7 +86,13 @@ func (h *Handler) lookupInRealFS(ctx *types.CompoundContext, name string) *types
 		// the client knows to resolve it rather than give up on the path.
 		if status == types.NFS4ERR_NOTDIR {
 			if fileType, st := h.fileTypeForHandle(ctx, ctx.CurrentFH); st == types.NFS4_OK {
-				status = directoryStatus(fileType)
+				// Only ever narrows one failure into a more precise one. A
+				// directory maps to NFS4_OK, which here would report success
+				// for a lookup that resolved nothing and leave the current
+				// filehandle where it was.
+				if refined := directoryStatus(fileType); refined != types.NFS4_OK {
+					status = refined
+				}
 			}
 		}
 		return &types.CompoundResult{
