@@ -3,6 +3,7 @@ package journal
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -361,5 +362,55 @@ func TestRestoreToVersion_KeepsEvictedRange(t *testing.T) {
 	assertColdAt(t, r, evicted, 0, chunk256, "post-reopen")
 	if got := readAll(t, r, peer, len(v1)); !bytes.Equal(got, v1) {
 		t.Fatalf("post-reopen %s: restore did not produce the V1 view", peer)
+	}
+}
+
+// TestRestoreToVersion_RefusesAShardWhoseFsyncHasPermanentlyFailed pins the one
+// case the closing barrier cannot see.
+//
+// syncFailed is sticky and freezes the shard's durable watermark, so dirty()
+// reports the shard clean forever and commitDirtyShards skips it — contributing
+// no error, and leaving the sweep to return nil for records that will never
+// reach the device. The restore then reports a durable V-view it does not have.
+//
+// The injected failure is transient on purpose: the device "recovers", so every
+// fsync the restore itself issues succeeds and nothing on that path can report
+// the problem. That is also the real shape of it — under Linux fsync-error
+// semantics the kernel drops the failed pages and the next fsync returns
+// success for bytes that never landed, which is why the flag is sticky.
+func TestRestoreToVersion_RefusesAShardWhoseFsyncHasPermanentlyFailed(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t, Config{ShardCount: 1, DirtyExpiry: -1, GCDeadRatioForce: 2})
+	sh := s.shards[0]
+
+	v1 := randBytes(4096, 23)
+	if err := s.WriteAt(ctx, "f", 0, v1); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	if err := sh.groupCommit(); err != nil {
+		t.Fatalf("groupCommit: %v", err)
+	}
+	v := s.JournalVersion()
+
+	// Something for the restore to undo, so it is a real pass and not a no-op.
+	if err := s.WriteAt(ctx, "f", 0, bytes.Repeat([]byte{0xEE}, 4096)); err != nil {
+		t.Fatalf("WriteAt(post-V): %v", err)
+	}
+
+	inner := sh.segSync
+	sh.segSync = func(*segmentMeta) error { return errors.New("device gone") }
+	if err := sh.groupCommit(); err == nil {
+		t.Fatal("groupCommit: want the injected fsync failure")
+	}
+	sh.segSync = inner
+	if !sh.syncFailed.Load() {
+		t.Fatal("syncFailed not set: the injected failure did not take")
+	}
+	if sh.dirty() {
+		t.Fatal("shard reports dirty: the barrier would have covered it and this test proves nothing")
+	}
+
+	if err := s.RestoreToVersion(ctx, v); err == nil {
+		t.Fatal("RestoreToVersion reported success for a shard whose fsync has permanently failed")
 	}
 }
