@@ -221,7 +221,7 @@ func (bs *Store) Start(ctx context.Context) error {
 	// When remote goes unhealthy, suspend eviction to prevent evicting blocks
 	// that cannot be re-downloaded. When healthy again, re-enable eviction.
 	bs.syncer.SetHealthCallback(func(healthy bool) {
-		bs.local.SetEvictionEnabled(healthy)
+		bs.local.SetEvictionEnabled(bs.syncer.CanEvict())
 		if healthy {
 			logger.Info("Remote store healthy: eviction re-enabled")
 		} else {
@@ -242,7 +242,7 @@ func (bs *Store) Start(ctx context.Context) error {
 	// where the initial probe settled health without driving a transition
 	// callback (e.g. it started unhealthy with no prior state to transition
 	// from).
-	bs.local.SetEvictionEnabled(bs.syncer.IsRemoteHealthy())
+	bs.local.SetEvictionEnabled(bs.syncer.CanEvict())
 
 	// Wire the Cache in Start so the loadByHash closure captures bs and
 	// NewCache spawns workers immediately. A single Cache type replaces
