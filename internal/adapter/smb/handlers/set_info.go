@@ -1047,16 +1047,16 @@ func (h *Handler) setFileInfoFromStore(
 		isOverwrite := renameInfo.ReplaceIfExists
 		metaSvc := h.Registry.GetMetadataService()
 
-		// A destination name that already resolves to the file being renamed is
-		// another hard link to it, so the rename has nothing to move and
-		// unlinking either name would drop a link the caller never asked to
-		// lose. Move returns success without touching the store in that case,
-		// which leaves everything below describing a change that did not
-		// happen: the lease breaks, the paired rename notification, and the
-		// handle's own name. Take the same shortcut the link path takes when
-		// asked to link a file onto a name it already answers to.
+		// A destination name that already resolves to the file being renamed
+		// is another hard link to it, so there is nothing to move: unlinking
+		// either name would drop a link the caller never asked to lose, and
+		// Move returns success without touching the store. Everything below
+		// would then describe a change that did not happen — the lease
+		// breaks, the paired rename notification, and the handle's own name.
+		// The link path takes the same shortcut for a link onto a name the
+		// file already answers to.
 		//
-		// The probe is exact-case to match the GetChild inside Move, so a
+		// The probe is exact-case, matching the GetChild inside Move, so a
 		// case-mismatched destination still falls through to the overwrite
 		// path below and replaces the entry it found.
 		if dstHandle, childErr := metaSvc.GetChild(authCtx.Context, toDir, toName); childErr == nil &&

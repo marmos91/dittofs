@@ -15,12 +15,11 @@ func encodeFileRenameInfoWire(t *testing.T, replaceIfExists bool, rootDir [8]byt
 	return encodeFileLinkInfoWire(t, replaceIfExists, rootDir, fileName)
 }
 
-// renameWatcher arms reg with a watcher on the share root and reports through
-// the returned pointer whether a name-change notification reached it. Delivery
-// is buffered, so callers must FlushAll before reading the flag.
-func renameWatcher(t *testing.T, reg *NotifyRegistry) *bool {
+// renameWatcher arms reg with a watcher on the share root that sets *notified
+// when a name-change notification reaches it. Delivery is buffered, so callers
+// must FlushAll before reading the flag.
+func renameWatcher(t *testing.T, reg *NotifyRegistry, notified *bool) {
 	t.Helper()
-	notified := false
 	mustRegister(t, reg, &PendingNotify{
 		FileID:           [16]byte{0x9E},
 		SessionID:        1,
@@ -31,11 +30,10 @@ func renameWatcher(t *testing.T, reg *NotifyRegistry) *bool {
 		CompletionFilter: FileNotifyChangeFileName,
 		MaxOutputLength:  4096,
 		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
-			notified = true
+			*notified = true
 			return nil
 		},
 	})
-	return &notified
 }
 
 // TestSetInfo_Rename_OntoOwnHardLink pins that renaming a file onto a name
@@ -62,7 +60,8 @@ func TestSetInfo_Rename_OntoOwnHardLink(t *testing.T) {
 	h, open := openHardlinkTestFile(t, rt, rootHandle, handle, "a.txt")
 	open.GrantedAccess = uint32(types.Delete)
 	h.NotifyRegistry = newTestNotifyRegistry()
-	notified := renameWatcher(t, h.NotifyRegistry)
+	notified := false
+	renameWatcher(t, h.NotifyRegistry, &notified)
 
 	// Rename a.txt onto b.txt, which is the same inode reached by its other
 	// link. Exact case, so the case-mismatch pre-remove branch stays out.
@@ -73,7 +72,7 @@ func TestSetInfo_Rename_OntoOwnHardLink(t *testing.T) {
 	}
 
 	h.NotifyRegistry.FlushAll()
-	if *notified {
+	if notified {
 		t.Error("watcher told a.txt was renamed away, but both links still resolve")
 	}
 
@@ -105,7 +104,8 @@ func TestSetInfo_Rename_DistinctDestination(t *testing.T) {
 	h, open := openHardlinkTestFile(t, rt, rootHandle, handle, "a.txt")
 	open.GrantedAccess = uint32(types.Delete)
 	h.NotifyRegistry = newTestNotifyRegistry()
-	notified := renameWatcher(t, h.NotifyRegistry)
+	notified := false
+	renameWatcher(t, h.NotifyRegistry, &notified)
 
 	buf := encodeFileRenameInfoWire(t, true, [8]byte{}, "c.txt")
 	resp, err := h.setFileInfoFromStore(nil, authCtx, open, types.FileRenameInformation, buf)
@@ -114,7 +114,7 @@ func TestSetInfo_Rename_DistinctDestination(t *testing.T) {
 	}
 
 	h.NotifyRegistry.FlushAll()
-	if !*notified {
+	if !notified {
 		t.Error("watcher missed a rename that did move the file")
 	}
 
