@@ -16,8 +16,9 @@ name: Close linked issues on main
 #   1. Closing keywords ("Fixes #N") written directly in a commit message.
 #   2. The squash-merge convention `subject (#<issue>) (#<pr>)`: we take every
 #      "#N" in the commits, treat it as a PR, and grep that PR's DESCRIPTION
-#      for closing keywords. (We must grep the body ourselves —
-#      closingIssuesReferences is empty for develop-targeted PRs.)
+#      for closing keywords. (We grep the body rather than read
+#      closingIssuesReferences because this scans an arbitrary commit range on
+#      main, where the reference is attached to the PR and not to the commits.)
 #
 # All PR bodies are fetched in batched GraphQL calls (one request per ~50 PRs)
 # to avoid the secondary rate limit a per-PR REST loop would hit.
