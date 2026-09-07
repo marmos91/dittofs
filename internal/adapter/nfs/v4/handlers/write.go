@@ -89,6 +89,18 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 		return writeErr(types.NFS4ERR_BADXDR)
 	}
 
+	// stable_how4 is an enum of exactly three values (RFC 7530 Section 16.36.2).
+	// Anything else is an undefined enum on the wire, and the reply's committed
+	// field is drawn from the same enum -- echoing an out-of-range value back
+	// would put an invalid stable_how4 in a successful WRITE4resok. knfsd
+	// rejects it at the same point, as bad XDR rather than as a bad argument.
+	if stable > types.FILE_SYNC4 {
+		logger.Debug("NFSv4 WRITE rejected: stable_how4 out of range",
+			"stable", stable,
+			"client", ctx.ClientAddr)
+		return writeErr(types.NFS4ERR_BADXDR)
+	}
+
 	data, err := xdr.DecodeOpaque(reader)
 	if err != nil {
 		return writeErr(types.NFS4ERR_BADXDR)

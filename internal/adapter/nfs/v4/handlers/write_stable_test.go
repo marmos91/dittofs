@@ -102,3 +102,24 @@ func TestWrite_ZeroCountLeavesTimeModify(t *testing.T) {
 		t.Errorf("size moved on a zero-count WRITE: %d -> %d", before.Size, after.Size)
 	}
 }
+
+// TestWrite_RejectsOutOfRangeStableHow pins that an undefined stable_how4 is
+// refused rather than echoed back. The reply's committed field is drawn from
+// the same three-value enum (RFC 7530 Section 16.36.2), so accepting the write
+// and reporting what was asked for would put an invalid enum on the wire.
+func TestWrite_RejectsOutOfRangeStableHow(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+	fileHandle, stateid := openFileAndGetStateid(t, fx, "badstable",
+		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE)
+
+	ctx := newRealFSContext(0, 0)
+	setCurrentFH(ctx, fileHandle)
+
+	args := encodeWriteArgs(stateid, 0, types.FILE_SYNC4+1, []byte("payload"))
+	result := fx.handler.handleWrite(ctx, bytes.NewReader(args))
+
+	if result.Status != types.NFS4ERR_BADXDR {
+		t.Errorf("WRITE with stable_how4=%d status = %d, want NFS4ERR_BADXDR (%d)",
+			types.FILE_SYNC4+1, result.Status, types.NFS4ERR_BADXDR)
+	}
+}
