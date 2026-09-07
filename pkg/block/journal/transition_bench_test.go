@@ -419,6 +419,47 @@ func BenchmarkDurableExtent(b *testing.B) {
 	}
 }
 
+// BenchmarkColdExtentsStoreWide is the one that bears on the design plan's
+// stated worry. ColdExtents walks every shard, every file in it and every
+// interval of each; a single-file store exercises none of that fan-out, so
+// BenchmarkColdExtents below measures one file's interval walk and understates
+// the store-wide cost it is usually quoted for. This spreads the same number of
+// cold intervals over many files so the shard walk and the per-shard map
+// iteration are actually in the measurement.
+func BenchmarkColdExtentsStoreWide(b *testing.B) {
+	s := benchStore(b)
+	ctx := context.Background()
+	const (
+		files    = 2048
+		perFile  = 16
+		chunk    = 4 << 10
+		wantCold = files * perFile
+	)
+	ext := make([][2]int64, perFile)
+	for j := range ext {
+		ext[j] = [2]int64{int64(j) * chunk * 2, chunk}
+	}
+	for i := 0; i < files; i++ {
+		if err := s.SeedCold(ctx, FileID(fmt.Sprintf("cw-%d", i)), ext); err != nil {
+			b.Fatalf("SeedCold: %v", err)
+		}
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, extents, err := s.ColdExtents(ctx)
+		if err != nil {
+			b.Fatalf("ColdExtents: %v", err)
+		}
+		// Without this the benchmark would keep timing a walk over an empty or
+		// half-seeded store if the fan-out ever stopped being built.
+		if extents != wantCold {
+			b.Fatalf("walked %d cold extents, want %d", extents, wantCold)
+		}
+	}
+}
+
 func BenchmarkColdExtents(b *testing.B) {
 	s, _, _ := residencyStore(b)
 	ctx := context.Background()

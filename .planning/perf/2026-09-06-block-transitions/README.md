@@ -123,6 +123,19 @@ move is about a fifth, and only at low queue depth. It has to stand on residency
 correctness, which is what the plan claims for it anyway. The one place block-engine work
 *does* pay is the code-bound set above: `FileSize`, recovery, and the carve CPU path.
 
+## Known gap in this baseline
+
+`BenchmarkColdExtentsStoreWide` was added **after** these numbers were recorded and is not
+in the tables above. It exists because `BenchmarkColdExtents` could not answer the
+question the design plan asks: `ColdExtents` walks every shard, every file in it and every
+interval of each, and a single-file store exercises none of that fan-out. Spreading the
+same work over 2048 files costs **12.6× more** (108.9 µs vs 8.6 µs on a laptop,
+shape-only) and grows with file count — so the plan's concern about that query is real,
+and the 10.31 µs in the table above understates the store-wide cost it would otherwise be
+quoted for.
+
+Record it on reference hardware with the next baseline run.
+
 ## Caveats
 
 - One machine, one run each. Six samples per point, sequential tiers, no other load.
