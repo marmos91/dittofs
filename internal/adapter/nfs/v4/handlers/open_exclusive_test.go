@@ -187,9 +187,9 @@ func TestOpen_Unchecked4_SizeOnReadOnlyOpenRejected(t *testing.T) {
 	}
 }
 
-// TestOpen_Unchecked4_ExistingFileTruncates verifies RFC 7530 §16.16: an
-// UNCHECKED4 OPEN of an existing file applies the supplied createattrs. A
-// requested size=0 must truncate the file's metadata size to zero.
+// TestOpen_Unchecked4_ExistingFileTruncates verifies the one createattr
+// RFC 7530 §16.16.3 still lets through to an existing file: "when a size of
+// zero is specified, the existing file is truncated".
 func TestOpen_Unchecked4_ExistingFileTruncates(t *testing.T) {
 	owner := []byte("unchecked-owner")
 

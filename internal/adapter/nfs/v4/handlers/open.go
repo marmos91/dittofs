@@ -427,23 +427,26 @@ func (h *Handler) handleOpenClaimNull(
 				return openError(types.NFS4ERR_DELAY)
 			}
 
-			// UNCHECKED4 on an existing file applies the supplied createattrs
-			// (RFC 7530 §16.16: "the existing file is opened ... and the
-			// attributes specified are set"). Only the attributes the client
-			// actually sent are applied (the createAttrs bitmap), so e.g.
-			// size=0 truncates while unset attributes are left untouched.
-			// SetFileAttributes enforces its own permission checks. Exclusive
-			// creates do not carry settable createattrs in EXCLUSIVE4, and an
-			// EXCLUSIVE4_1 retry must not re-mutate the existing file, so this
-			// is gated to UNCHECKED4.
-			if createMode == types.UNCHECKED4 && createAttrs != nil {
-				// A size change is a write to the file. Mirror the SETATTR
-				// gating (RFC 7530 §5.11): a size-bearing createattrs on an
-				// open that does not carry WRITE access is rejected with
+			// RFC 7530 §16.16.3: "When an UNCHECKED4 create encounters an
+			// existing file, the attributes specified by createattrs are not
+			// used, except that when a size of zero is specified, the existing
+			// file is truncated."
+			//
+			// Applying the whole set let a client that merely reopened a file
+			// rewrite its mode and ownership as a side effect, and honoured a
+			// non-zero size as a truncation the specification does not ask for.
+			// EXCLUSIVE4 carries no settable createattrs and an EXCLUSIVE4_1
+			// retry must not re-mutate the file, so this stays gated to
+			// UNCHECKED4.
+			if createMode == types.UNCHECKED4 && createAttrs != nil &&
+				createAttrs.Size != nil && *createAttrs.Size == 0 {
+				// A truncation is a write to the file. Mirror the SETATTR
+				// gating (RFC 7530 §5.11): a truncating createattrs on an open
+				// that does not carry WRITE access is rejected with
 				// NFS4ERR_OPENMODE, so a read-only OPEN cannot truncate the
 				// file even when POSIX permissions would otherwise allow it.
-				if createAttrs.Size != nil && shareAccess&types.OPEN4_SHARE_ACCESS_WRITE == 0 {
-					logger.Debug("NFSv4 OPEN UNCHECKED4 rejected: size change on read-only open",
+				if shareAccess&types.OPEN4_SHARE_ACCESS_WRITE == 0 {
+					logger.Debug("NFSv4 OPEN UNCHECKED4 rejected: truncate on read-only open",
 						"file", filename,
 						"share_access", shareAccess,
 						"client", ctx.ClientAddr)
@@ -452,7 +455,8 @@ func (h *Handler) handleOpenClaimNull(
 				// child was fetched via Lookup above and still reflects the full
 				// pre-truncate extent, so it is the pre-op snapshot the reclaim
 				// needs. Shared with the SETATTR path.
-				if setErr := h.applySetAttrsWithTruncateReclaim(ctx, metaSvc, authCtx, fileHandle, child, createAttrs); setErr != nil {
+				truncate := &metadata.SetAttrs{Size: createAttrs.Size}
+				if setErr := h.applySetAttrsWithTruncateReclaim(ctx, metaSvc, authCtx, fileHandle, child, truncate); setErr != nil {
 					return openError(common.MapToNFS4(setErr))
 				}
 			}
@@ -484,6 +488,20 @@ func (h *Handler) handleOpenClaimNull(
 			}
 			fileHandle = fh
 			created = true
+
+			// RFC 7530 §16.16.3: on a create that actually creates,
+			// "createattrs specifies the initial set of attributes for the
+			// file". CreateFile takes the mode and the ownership; everything
+			// else the client asked for -- a size, timestamps -- goes through
+			// the same path SETATTR uses, which is what makes a create
+			// carrying size=N produce a file of N bytes rather than an empty
+			// one. EXCLUSIVE4 carries a verifier in place of attributes, so
+			// createAttrs is nil there and nothing is applied.
+			if createAttrs != nil {
+				if _, setErr := metaSvc.SetFileAttributes(authCtx, fileHandle, createAttrs); setErr != nil {
+					return openError(common.MapToNFS4(setErr))
+				}
+			}
 		}
 	}
 
