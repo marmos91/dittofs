@@ -58,6 +58,26 @@ func (h *Handler) lookupParentInRealFS(ctx *types.CompoundContext) *types.Compou
 		}
 	}
 
+	// LOOKUPP walks out of a directory, so a current filehandle of any other
+	// type is an error (RFC 7530 Section 16.16.4). Every object carries a
+	// parent, so without this gate LOOKUPP on a file or a device node
+	// answered NFS4_OK with the parent directory's handle.
+	fileType, status := h.fileTypeForHandle(ctx, ctx.CurrentFH)
+	if status != types.NFS4_OK {
+		return &types.CompoundResult{
+			Status: status,
+			OpCode: types.OP_LOOKUPP,
+			Data:   encodeStatusOnly(status),
+		}
+	}
+	if status := directoryStatus(fileType); status != types.NFS4_OK {
+		return &types.CompoundResult{
+			Status: status,
+			OpCode: types.OP_LOOKUPP,
+			Data:   encodeStatusOnly(status),
+		}
+	}
+
 	// Get current file's parent handle from metadata store
 	store, err := metaSvc.GetStoreForShare(shareName)
 	if err != nil {
@@ -136,13 +156,16 @@ func (h *Handler) lookupParentInPseudoFS(ctx *types.CompoundContext) *types.Comp
 		}
 	}
 
-	// Get parent node (root's parent is root itself)
+	// The pseudo-fs root has no parent to walk to, and RFC 7530
+	// Section 16.16.4 answers that with NFS4ERR_NOENT. LookupParent reports
+	// the root as its own parent, which would otherwise answer NFS4_OK and
+	// leave the current filehandle unchanged.
 	parent, ok := h.PseudoFS.LookupParent(node)
-	if !ok {
+	if !ok || parent == nil || parent == node {
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
+			Status: types.NFS4ERR_NOENT,
 			OpCode: types.OP_LOOKUPP,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   encodeStatusOnly(types.NFS4ERR_NOENT),
 		}
 	}
 
