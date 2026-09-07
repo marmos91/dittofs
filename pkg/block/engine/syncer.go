@@ -304,8 +304,25 @@ func (m *Syncer) SetHealthCallback(fn healthTransitionCallback) {
 	}
 }
 
+// CanEvict reports whether reclaiming local bytes is safe: they may only be
+// dropped when something can fetch them back. That is carveActive — the carve
+// path wired to a remote — AND that remote being healthy.
+//
+// carveActive is deliberately the same flag that decides whether a record can
+// ever become synced, so "may be evicted" and "can be re-fetched" are one answer
+// by construction rather than two that agree by luck. Health alone is not
+// enough: IsRemoteHealthy reports true for a nil monitor, so a share with no
+// remote at all reads as healthy, and a journal carrying synced records from a
+// previous remote-backed life would then satisfy the eviction gate and lose the
+// only copy of those bytes.
+func (m *Syncer) CanEvict() bool {
+	return m.carveActive.Load() && m.IsRemoteHealthy()
+}
+
 // IsRemoteHealthy returns the health state of the remote store.
-// Returns true when there is no HealthMonitor (local-only mode).
+// Returns true when there is no HealthMonitor (local-only mode) — which is why
+// it is not sufficient on its own to decide whether eviction is safe. Use
+// CanEvict for that.
 func (m *Syncer) IsRemoteHealthy() bool {
 	if m.healthMonitor == nil {
 		return true
