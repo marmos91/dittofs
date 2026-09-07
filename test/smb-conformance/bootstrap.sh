@@ -118,15 +118,9 @@ create_block_stores() {
     log_info "Creating block stores for profile: ${PROFILE}"
 
     case "$PROFILE" in
-        memory|memory-kerberos|sqlite|postgres)
-            # sqlite/postgres profiles exercise the metadata store only; they
-            # pair it with the memory block store (no S3) so smbtorture stays
-            # self-contained.
-            $DFSCTL store block local add --name default --type memory
-            ;;
-        *-s3-legacy|*-fs)
-            # Legacy profile names kept for CI compatibility.
-            # Filesystem block store was removed in Phase 42; these use memory.
+        memory|memory-kerberos|badger|sqlite|postgres)
+            # Metadata-store profiles: each pairs its metadata engine with the
+            # memory block store (no S3) so the suite stays self-contained.
             $DFSCTL store block local add --name default --type memory
             ;;
         *-s3)

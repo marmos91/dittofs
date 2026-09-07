@@ -189,7 +189,10 @@ fi
 if [[ "$GRADE" == true ]]; then
     RESULTS_DIR="${DITTOFS_RESULTS_DIR:-$SCRIPT_DIR/results}"
     mkdir -p "$RESULTS_DIR"
-    LOG="$RESULTS_DIR/run.log"
+    # Not run.log: the common runner tees the whole step to that name, and two
+    # non-appending tees racing on one path interleave and truncate. This log is
+    # what the grader reads, so it gets its own.
+    LOG="$RESULTS_DIR/prove.log"
 
     # prove exits non-zero on any failure, including the ones on the blacklist,
     # so its status says nothing about the verdict — the grader decides that.

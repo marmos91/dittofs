@@ -301,8 +301,11 @@ write_summary() {
         echo "|---|---|---|"
         echo "| ${SUITE} | ${label} | ${icon} ${verdict} |"
         echo ""
-        local run_log="${results_dir}/run.log"
-        [[ -f "$run_log" ]] || return 0
+        # The newest log, not a hardcoded step name: which step produced the
+        # interesting output differs per suite.
+        local run_log
+        run_log="$(ls -t "${results_dir}"/*.log 2>/dev/null | head -1)"
+        [[ -n "$run_log" ]] || return 0
         echo "<details><summary>Last 40 lines</summary>"
         echo ""
         echo '```'

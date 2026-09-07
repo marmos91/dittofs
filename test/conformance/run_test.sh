@@ -163,6 +163,54 @@ while IFS= read -r kf; do
 done < <(jq -r '[.suites[].known_failures | select(. != null) | if type == "string" then . else .[] end] | unique[]' "${SCRIPT_DIR}/suites.json")
 assert_eq "every declared blacklist exists" "" "$MISSING"
 
+# A profile the manifest declares but bootstrap.sh's case arms do not match
+# falls straight through to its error arm, and the suite dies at provisioning
+# with the profile looking perfectly valid everywhere else.
+SMB_PROFILES="$(jq -r '.suites | to_entries[]
+                       | select(.key == "wpts" or .key == "smbtorture")
+                       | .value.profiles[]' "${SCRIPT_DIR}/suites.json" | sort -u)"
+BOOTSTRAP="${SCRIPT_DIR}/../smb-conformance/bootstrap.sh"
+UNMATCHED=""
+for fn in create_metadata_store create_block_stores; do
+    arms=()
+    while IFS= read -r arm; do
+        [[ "$arm" == "*" ]] || arms+=("$arm")
+    done < <(sed -n "/^${fn}()/,/^}/p" "$BOOTSTRAP" | sed -n 's/^ *\([A-Za-z0-9*|_-]*\))$/\1/p')
+    for profile in $SMB_PROFILES; do
+        matched=false
+        for arm in "${arms[@]}"; do
+            IFS='|' read -ra globs <<<"$arm"
+            for glob in "${globs[@]}"; do
+                # shellcheck disable=SC2053  # glob match is the point
+                if [[ "$profile" == $glob ]]; then
+                    matched=true
+                    break 2
+                fi
+            done
+        done
+        [[ "$matched" == true ]] || UNMATCHED="${UNMATCHED} ${fn}:${profile}"
+    done
+done
+assert_eq "every SMB profile hits a bootstrap case arm" "" "$UNMATCHED"
+
+MISSING=""
+for profile in $SMB_PROFILES; do
+    [[ -f "${SCRIPT_DIR}/../smb-conformance/configs/${profile}.yaml" ]] \
+        || MISSING="${MISSING} ${profile}"
+done
+assert_eq "every SMB profile has a config file" "" "$MISSING"
+
+# The common runner tees each step to <step>.log in the results directory. A
+# suite runner that writes the same name races it: two non-appending tees on
+# one path interleave and truncate, and the grader then reads a partial log.
+CLASH=""
+while IFS=$'\t' read -r cmd name; do
+    runner="${SCRIPT_DIR}/../${cmd}"
+    [[ -f "$runner" ]] || continue
+    grep -q "RESULTS_DIR/${name}\.log" "$runner" && CLASH="${CLASH} ${cmd}:${name}.log"
+done < <(jq -r '.suites[].steps[] | [.cmd, .name] | @tsv' "${SCRIPT_DIR}/suites.json")
+assert_eq "no suite runner writes the common runner's step log" "" "$CLASH"
+
 # The CI matrix is the manifest's cross product, not a hand-kept list.
 PR_MATRIX="$("$RUNNER" --matrix pull_request)"
 assert_eq "presubmit matrix size" \
