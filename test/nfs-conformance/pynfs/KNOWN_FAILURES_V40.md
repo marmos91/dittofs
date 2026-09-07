@@ -40,6 +40,7 @@ Categories:
 | LOCK13 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
 | LOCK15 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
 | LOCK17 | bug | LOOKUP fails opening the test tree, so the test cannot run | #2332 |
+| OPEN4 | bug | exclusive re-create with the same verifier answers EXIST on the SQL backends, which do not persist the create verifier | #2317 |
 | RDDR10 | bug | READDIR cookie and attribute-request validation | #2336 |
 | RDDR7 | bug | READDIR cookie and attribute-request validation | #2336 |
 | RDDR8 | bug | READDIR cookie and attribute-request validation | #2336 |
