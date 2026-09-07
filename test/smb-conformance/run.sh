@@ -4,7 +4,7 @@
 #
 # Usage:
 #   ./run.sh                                     # Run BVT tests with memory profile
-#   ./run.sh --profile badger-fs                 # Run with specific profile
+#   ./run.sh --profile badger                    # Run with specific profile
 #   ./run.sh --mode local                        # Run DittoFS natively, WPTS in Docker
 #   ./run.sh --filter "TestCategory=BVT"         # Custom test filter
 #   ./run.sh --category BVT                      # Shorthand for --filter
@@ -20,7 +20,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-VALID_PROFILES=("memory" "memory-fs" "badger-fs" "badger-s3" "postgres-s3")
+VALID_PROFILES=("memory" "badger" "badger-s3" "postgres-s3")
 
 # --------------------------------------------------------------------------
 # Colors
@@ -147,8 +147,7 @@ Options:
 
 Profiles:
   memory        Memory metadata + memory payload (fastest)
-  memory-fs     Memory metadata + memory payload (legacy name, same as memory)
-  badger-fs     BadgerDB metadata + memory payload (legacy name)
+  badger        BadgerDB metadata + memory payload
   badger-s3     BadgerDB metadata + S3 payload (requires Localstack)
   postgres-s3   PostgreSQL metadata + S3 payload (requires Localstack + PostgreSQL)
 
