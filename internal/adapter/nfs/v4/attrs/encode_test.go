@@ -552,10 +552,10 @@ func TestSupportedAttrsAdvertisesTimeSet(t *testing.T) {
 }
 
 // TestEncoderDropsWriteOnlyTimeSet verifies the encoder omits the settable-only
-// time bits rather than failing on an attribute it has no value to write. This
-// is what READDIR relies on: it carries a raw client bitmap and cannot report a
-// per-attribute error, so the bits are dropped and the surrounding entry still
-// encodes. GETATTR does not reach here — it refuses such a request outright.
+// time bits rather than failing on an attribute it has no value to write. Every
+// caller now refuses such a request before reaching the encoder, so this pins
+// the backstop that keeps a future one from encoding an attribute that has no
+// value.
 func TestEncoderDropsWriteOnlyTimeSet(t *testing.T) {
 	node := newMockNode()
 

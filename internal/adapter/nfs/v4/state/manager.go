@@ -886,6 +886,22 @@ func (sm *StateManager) markClientStateidsExpiredLocked(clientID uint64) {
 	}
 }
 
+// lockStateidMissError classifies a lock-stateid table miss: state freed by a
+// lease cancellation answers NFS4ERR_EXPIRED (RFC 7530 Section 9.6.3.2), a
+// stateid minted by an earlier server incarnation answers
+// NFS4ERR_STALE_STATEID, and anything else was never issued.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) lockStateidMissError(other [types.NFS4_OTHER_SIZE]byte) error {
+	if sm.isExpiredStateidLocked(other) {
+		return ErrExpired
+	}
+	if !sm.isCurrentEpoch(other) {
+		return ErrStaleStateid
+	}
+	return ErrBadStateid
+}
+
 // isExpiredStateidLocked reports whether the state this stateid named was freed
 // when the server cancelled the owning client's lease. Callers use it on a
 // table miss, before falling back to NFS4ERR_BAD_STATEID.
@@ -2370,10 +2386,7 @@ func (sm *StateManager) LockExisting(
 	// 1. Look up lock state
 	lockState, exists := sm.lockStateByOther[lockStateid.Other]
 	if !exists {
-		if !sm.isCurrentEpoch(lockStateid.Other) {
-			return nil, ErrStaleStateid
-		}
-		return nil, ErrBadStateid
+		return nil, sm.lockStateidMissError(lockStateid.Other)
 	}
 
 	lockOwner := lockState.LockOwner
@@ -2676,11 +2689,7 @@ func (sm *StateManager) UnlockFile(
 	// 1. Look up lock state
 	lockState, exists := sm.lockStateByOther[lockStateid.Other]
 	if !exists {
-		// Check if it's a stale stateid from a previous boot
-		if !sm.isCurrentEpoch(lockStateid.Other) {
-			return nil, ErrStaleStateid
-		}
-		return nil, ErrBadStateid
+		return nil, sm.lockStateidMissError(lockStateid.Other)
 	}
 
 	lockOwner := lockState.LockOwner
