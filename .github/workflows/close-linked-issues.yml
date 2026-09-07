@@ -2,12 +2,17 @@ name: Close linked issues on main
 
 # Closes issues linked to work that reaches main.
 #
-# Background: GitHub's built-in auto-close only fires when a PR merges into the
-# DEFAULT branch, and it only records closingIssuesReferences for PRs that
-# TARGET the default branch. We merge PRs into `develop` and only fast-forward
-# `main` at release time, so neither mechanism ever fires — issues linger open.
+# Background: GitHub's built-in auto-close fires when a PR merges into the
+# DEFAULT branch. `develop` is now the default, so a PR body carrying `Closes #N`
+# closes its issue on merge and this workflow finds it already closed and skips
+# it. That is the normal outcome; the value here is the remaining gap.
 #
-# This workflow closes them when the work lands on main, via two paths:
+# The gap is a closing keyword that appears in a COMMIT message but never in a
+# PR body — native auto-close reads only the PR body and its linked references,
+# so nothing else catches that case. This also still covers the window before
+# `develop` became the default, when neither mechanism fired for us at all.
+#
+# It closes issues when the work lands on main, via two paths:
 #   1. Closing keywords ("Fixes #N") written directly in a commit message.
 #   2. The squash-merge convention `subject (#<issue>) (#<pr>)`: we take every
 #      "#N" in the commits, treat it as a PR, and grep that PR's DESCRIPTION
