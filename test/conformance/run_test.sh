@@ -288,6 +288,55 @@ OUT="$(run_fake --suite green --tier push)"
 assert_eq "a tier run covers every profile" "2" \
     "$(grep -c 'ran pass.sh' <<<"$OUT")"
 
+# ---------------------------------------------------------------------------
+# Orphan cleanup. A leftover dfs on the adapter port would grade a suite against
+# a build nobody is testing — but killing whatever happens to hold that port is
+# worse than the problem it solves, so an unrecognised listener must stop the
+# run, not be stopped by it.
+# ---------------------------------------------------------------------------
+if command -v lsof >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    # A port of this test's own, never the real adapter port: another agent's
+    # suite may legitimately be listening on that one.
+    HOLD_PORT=0
+    for candidate in 39117 39118 39119; do
+        python3 - "$candidate" <<'PYEOF' &
+import socket, sys, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1])))
+s.listen(1)
+time.sleep(30)
+PYEOF
+        HOLDER=$!
+        sleep 1
+        if kill -0 "$HOLDER" 2>/dev/null && lsof -ti "tcp:${candidate}" -sTCP:LISTEN >/dev/null 2>&1; then
+            HOLD_PORT="$candidate"
+            break
+        fi
+        kill "$HOLDER" 2>/dev/null || true
+    done
+
+    if [[ "$HOLD_PORT" != 0 ]]; then
+        OUT="$(CONFORMANCE_ADAPTER_PORT="$HOLD_PORT" run_fake --suite green --profile memory 2>&1)"
+        assert_eq "a listener that is not a dfs stops the run" "2" "$?"
+        assert_contains "the refusal names the port" "port ${HOLD_PORT} is held by" "$OUT"
+        # The point of the refusal: it must not have killed the thing it found.
+        if kill -0 "$HOLDER" 2>/dev/null; then
+            ok "the unrecognised listener is left alone"
+        else
+            fail "the unrecognised listener was killed"
+        fi
+        kill "$HOLDER" 2>/dev/null || true
+        wait "$HOLDER" 2>/dev/null || true
+    else
+        echo "note: could not hold a test port; orphan-cleanup assertions skipped" >&2
+    fi
+
+    # A free port is a no-op, not a refusal.
+    OUT="$(CONFORMANCE_ADAPTER_PORT=39120 run_fake --suite green --profile memory 2>&1)"
+    assert_eq "a free port runs normally" "0" "$?"
+fi
+
 echo ""
 if [[ "$ASSERTIONS" -eq 0 ]]; then
     echo "FAIL: no assertions ran"
