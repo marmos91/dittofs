@@ -186,10 +186,13 @@ if [[ "$NO_SETUP" != true ]]; then
     fi
 
     log "Creating an account for pynfs's second client (uid ${SECOND_UID})..."
-    if ! "${REPO_ROOT}/dfsctl" user create --username "$SECOND_USER" \
-            --password "$SECOND_PASSWORD" \
-            --uid "$SECOND_UID" --gid "$SECOND_GID" >/dev/null 2>&1 ||
-       ! "${REPO_ROOT}/dfsctl" share permission grant "$EXPORT_PATH" \
+    # The create is allowed to fail on an account that already exists; the grant
+    # is the step that must run either way, and it fails on its own if there is
+    # no such user, so one warning covers both.
+    "${REPO_ROOT}/dfsctl" user create --username "$SECOND_USER" \
+        --password "$SECOND_PASSWORD" \
+        --uid "$SECOND_UID" --gid "$SECOND_GID" >/dev/null 2>&1 || true
+    if ! "${REPO_ROOT}/dfsctl" share permission grant "$EXPORT_PATH" \
             --user "$SECOND_USER" --level read-write >/dev/null 2>&1; then
         log_warn "Could not provision uid ${SECOND_UID}; multi-client tests will fail on share access."
     fi
