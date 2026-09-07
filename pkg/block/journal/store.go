@@ -847,13 +847,16 @@ func (s *Store) FileSize(_ context.Context, id FileID) (int64, bool) {
 	if fi == nil {
 		return 0, false
 	}
-	var size int64
-	for _, iv := range fi.ivs {
-		if e := iv.end(); e > size {
-			size = e
-		}
+	if len(fi.ivs) == 0 {
+		return 0, true
 	}
-	return size, true
+	// ivs is sorted by fileOff and non-overlapping, so end() is strictly
+	// increasing and the last interval carries the high-water mark. insert is the
+	// only path that can reorder or overlap, and it maintains that; every other
+	// rewrite either drops intervals or clamps an end downwards. The same
+	// invariant is what makes the sort.Search predicates in index.go monotone, so
+	// a violation would already have broken lookup before it reached here.
+	return fi.ivs[len(fi.ivs)-1].end(), true
 }
 
 // DurableExtent reports how far a file's bytes survive device loss: the maximum
