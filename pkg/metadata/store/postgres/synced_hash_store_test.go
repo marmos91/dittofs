@@ -24,12 +24,11 @@ import (
 // by ON CONFLICT DO NOTHING — see
 // pkg/metadata/store/postgres/synced_hash_store.go.
 //
-// State isolation across runs: the conformance suite picks distinct
-// hash seeds per subtest (via mustHash), and every subtest's
-// assertions are idempotent against rows left by prior runs (Mark is
-// idempotent; Delete is idempotent; IsSyncedBeforeMark uses a seed
-// that no other subtest mutates). No table truncation is required;
-// this mirrors the rollup_store sibling test exactly.
+// State isolation across runs: the conformance suite picks distinct hash
+// seeds per subtest and scopes them to the run, so no assertion turns on
+// the synced_hashes rows an earlier run against the same database left
+// behind — EnumerateSynced still scans them, it just never matches one.
+// No table truncation is required.
 func TestPostgresSyncedHashStore_Suite(t *testing.T) {
 	if os.Getenv("DITTOFS_TEST_POSTGRES_DSN") == "" {
 		t.Skip("DITTOFS_TEST_POSTGRES_DSN not set, skipping PostgreSQL synced-hash tests")
