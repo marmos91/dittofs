@@ -23,12 +23,12 @@ func (h *Handler) handleDelegReturn(ctx *types.CompoundContext, reader io.Reader
 	}
 
 	// Decode DELEGRETURN4args: stateid4
-	stateid, err := types.DecodeStateid4(reader)
-	if err != nil {
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
+			Status: argStatus,
 			OpCode: types.OP_DELEGRETURN,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   encodeStatusOnly(argStatus),
 		}
 	}
 

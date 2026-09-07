@@ -1290,7 +1290,7 @@ func TestFreeStateid(t *testing.T) {
 		}
 	})
 
-	t.Run("free_open_stateid", func(t *testing.T) {
+	t.Run("free_open_stateid_still_open", func(t *testing.T) {
 		sm := NewStateManager(90 * time.Second)
 		defer sm.Shutdown()
 
@@ -1307,15 +1307,21 @@ func TestFreeStateid(t *testing.T) {
 			t.Fatalf("ConfirmOpen: %v", err)
 		}
 
-		// Free the open stateid (no locks held)
+		// An open is itself one of the "locks (of any kind)" of RFC 8881
+		// Section 18.38.3, so FREE_STATEID refuses it even with no byte-range
+		// locks: CLOSE is what releases an open.
 		err = sm.FreeStateid(0, &openResult.Stateid)
-		if err != nil {
-			t.Fatalf("FreeStateid open: %v", err)
+		stateErr, ok := err.(*NFS4StateError)
+		if !ok {
+			t.Fatalf("FreeStateid on a live open: expected NFS4StateError, got %T (%v)", err, err)
+		}
+		if stateErr.Status != types.NFS4ERR_LOCKS_HELD {
+			t.Errorf("Status = %d, want NFS4ERR_LOCKS_HELD (%d)",
+				stateErr.Status, types.NFS4ERR_LOCKS_HELD)
 		}
 
-		// Verify open state is gone
-		if sm.GetOpenState(openResult.Stateid.Other) != nil {
-			t.Error("Open state should be removed after FreeStateid")
+		if sm.GetOpenState(openResult.Stateid.Other) == nil {
+			t.Error("Open state should survive a refused FreeStateid")
 		}
 	})
 

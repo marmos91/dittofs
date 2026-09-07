@@ -41,13 +41,13 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 	}
 
 	// 3. Read stateid4 (16 bytes: uint32 seqid + [12]byte other)
-	stateid, err := types.DecodeStateid4(reader)
-	if err != nil {
-		logger.Error("NFSv4 SETATTR decode stateid failed", "error", err)
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		logger.Debug("NFSv4 SETATTR stateid argument rejected", "status", argStatus)
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
+			Status: argStatus,
 			OpCode: types.OP_SETATTR,
-			Data:   encodeSetAttrError(types.NFS4ERR_BADXDR),
+			Data:   encodeSetAttrError(argStatus),
 		}
 	}
 

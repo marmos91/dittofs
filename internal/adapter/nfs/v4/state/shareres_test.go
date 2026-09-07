@@ -172,7 +172,7 @@ func readBypassStateid() *types.Stateid4 {
 	return sid
 }
 
-func TestValidateStateid_ReadBypass_AllowedOnReadRejectedOnWrite(t *testing.T) {
+func TestValidateStateid_ReadBypass_AcceptedOnReadAndWrite(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
 	// READ: all-ones is permitted (returns nil openState, nil error).
@@ -184,17 +184,14 @@ func TestValidateStateid_ReadBypass_AllowedOnReadRejectedOnWrite(t *testing.T) {
 		t.Error("special stateid should return nil openState")
 	}
 
-	// WRITE: all-ones MUST be rejected with NFS4ERR_BAD_STATEID.
-	_, err = sm.ValidateStateid(readBypassStateid(), nil, StateidOpWrite)
-	if err == nil {
-		t.Fatal("read-bypass on WRITE should be rejected")
+	// WRITE: all-ones is accepted too, behaving as the anonymous stateid
+	// (RFC 7530 Section 16.36.4). With no open on the file nothing denies it.
+	openState, err = sm.ValidateStateid(readBypassStateid(), nil, StateidOpWrite)
+	if err != nil {
+		t.Fatalf("read-bypass on WRITE should be allowed: %v", err)
 	}
-	stateErr, ok := err.(*NFS4StateError)
-	if !ok {
-		t.Fatalf("expected *NFS4StateError, got %T", err)
-	}
-	if stateErr.Status != types.NFS4ERR_BAD_STATEID {
-		t.Errorf("status = %d, want NFS4ERR_BAD_STATEID (%d)", stateErr.Status, types.NFS4ERR_BAD_STATEID)
+	if openState != nil {
+		t.Error("special stateid should return nil openState")
 	}
 }
 

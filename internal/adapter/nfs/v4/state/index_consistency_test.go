@@ -136,7 +136,7 @@ func TestOpenStateByFile_EvictClearsIndex(t *testing.T) {
 	fileIndexMatchesAuthoritative(t, sm)
 }
 
-func TestOpenStateByFile_FreeStateidRemovesFromIndex(t *testing.T) {
+func TestOpenStateByFile_FreeStateidLeavesLiveOpenIndexed(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	fh := []byte("fh-free-stateid")
 
@@ -146,15 +146,17 @@ func TestOpenStateByFile_FreeStateidRemovesFromIndex(t *testing.T) {
 		t.Fatalf("after open: index len = %d, want 1", n)
 	}
 
+	// FREE_STATEID refuses a live open, so the per-file index — which is what
+	// share-reservation conflicts are decided from — must still list it.
 	sm.mu.Lock()
 	err := sm.freeOpenStateidLocked(0, &stateid)
 	sm.mu.Unlock()
-	if err != nil {
-		t.Fatalf("freeOpenStateidLocked: %v", err)
+	if stateErr, ok := err.(*NFS4StateError); !ok || stateErr.Status != types.NFS4ERR_LOCKS_HELD {
+		t.Fatalf("freeOpenStateidLocked: expected NFS4ERR_LOCKS_HELD, got %v", err)
 	}
 
-	if n := fileIndexLen(sm, fh); n != 0 {
-		t.Fatalf("after free: index len = %d, want 0", n)
+	if n := fileIndexLen(sm, fh); n != 1 {
+		t.Fatalf("after refused free: index len = %d, want 1", n)
 	}
 	fileIndexMatchesAuthoritative(t, sm)
 }

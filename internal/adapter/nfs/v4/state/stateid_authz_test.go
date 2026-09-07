@@ -162,9 +162,11 @@ func TestFreeStateid_CrossClientOpen(t *testing.T) {
 		t.Error("victim's open stateid was destroyed by another client")
 	}
 
-	// Owning client can still free it.
-	if err := sm.FreeStateid(victimClientID, &openResult.Stateid); err != nil {
-		t.Fatalf("FreeStateid by owning client: %v", err)
+	// The owning client gets a different refusal — LOCKS_HELD, because the open
+	// is still open — which is what distinguishes "not yours" from "not now".
+	err = sm.FreeStateid(victimClientID, &openResult.Stateid)
+	if stateErr, ok := err.(*NFS4StateError); !ok || stateErr.Status != types.NFS4ERR_LOCKS_HELD {
+		t.Errorf("expected NFS4ERR_LOCKS_HELD for the owning client, got %v", err)
 	}
 }
 

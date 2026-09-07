@@ -57,9 +57,9 @@ func (h *Handler) handleReadPlus(ctx *types.CompoundContext, reader io.Reader) *
 		return readPlusErr(types.NFS4ERR_ISDIR)
 	}
 
-	stateid, err := types.DecodeStateid4(reader)
-	if err != nil {
-		return readPlusErr(types.NFS4ERR_BADXDR)
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		return readPlusErr(argStatus)
 	}
 	offset, err := xdr.DecodeUint64(reader)
 	if err != nil {

@@ -268,6 +268,20 @@ func (h *Handler) runCompoundOps(compCtx *types.CompoundContext, numOps uint32, 
 		results = append(results, *result)
 		lastStatus = result.Status
 
+		// Current stateid bookkeeping (RFC 8881 Section 16.2.3.1.2): an
+		// operation that returned a stateid becomes the current one; one that
+		// set the current filehandle without returning a stateid drops it.
+		// Everything else — including every operation that merely consumed a
+		// stateid — leaves it as it was.
+		if result.Status == types.NFS4_OK {
+			switch {
+			case result.Stateid != nil:
+				compCtx.SetCurrentStateid(result.Stateid)
+			case types.ClearsCurrentStateid(opCode):
+				compCtx.ClearCurrentStateid()
+			}
+		}
+
 		logger.Debug("NFSv4 COMPOUND op dispatched",
 			"op_index", i, "opcode", opCode, "op_name", types.OpName(opCode),
 			"status", result.Status, "client", compCtx.ClientAddr)

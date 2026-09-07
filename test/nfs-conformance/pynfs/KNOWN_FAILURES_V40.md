@@ -45,10 +45,5 @@ Categories:
 | OPDG3 | bug | bad/old/stale stateid accepted | #2341 |
 | OPDG6 | bug | bad/old/stale stateid accepted | #2341 |
 | OPDG7 | bug | bad/old/stale stateid accepted | #2341 |
-| WRT1 | bug | WRITE ignores requested stability and special stateids | #2342 |
-| WRT18 | bug | WRITE ignores requested stability and special stateids | #2342 |
-| WRT2 | bug | WRITE ignores requested stability and special stateids | #2342 |
-| WRT3 | bug | WRITE ignores requested stability and special stateids | #2342 |
-| WRT4 | bug | WRITE ignores requested stability and special stateids | #2342 |
-| WRT9 | bug | WRITE ignores requested stability and special stateids | #2342 |
+| WRT18 | bug | change attribute frozen across a write session | #2382 |
 | RPLY8 | suite | knfsd fails this too — replay of a waiting LOCKU | - |

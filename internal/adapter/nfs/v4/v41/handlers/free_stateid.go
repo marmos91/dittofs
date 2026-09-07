@@ -26,13 +26,13 @@ func HandleFreeStateid(
 	v41ctx *types.V41RequestContext,
 	reader io.Reader,
 ) *types.CompoundResult {
-	var args types.FreeStateidArgs
-	if err := args.Decode(reader); err != nil {
-		logger.Debug("FREE_STATEID: decode error", "error", err, "client", ctx.ClientAddr)
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		logger.Debug("FREE_STATEID: stateid argument rejected", "status", argStatus, "client", ctx.ClientAddr)
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
+			Status: argStatus,
 			OpCode: types.OP_FREE_STATEID,
-			Data:   EncodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   EncodeStatusOnly(argStatus),
 		}
 	}
 
@@ -62,13 +62,13 @@ func HandleFreeStateid(
 	clientID := session.ClientID
 
 	// Delegate to StateManager
-	err := d.StateManager.FreeStateid(clientID, &args.Stateid)
+	err := d.StateManager.FreeStateid(clientID, stateid)
 	if err != nil {
 		nfsStatus := MapStateError(err)
 		logger.Debug("FREE_STATEID: state error",
 			"error", err,
 			"client_id", fmt.Sprintf("0x%016x", clientID),
-			"stateid_other", hex.EncodeToString(args.Stateid.Other[:]),
+			"stateid_other", hex.EncodeToString(stateid.Other[:]),
 			"nfs_status", nfsStatus,
 			"client", ctx.ClientAddr)
 		return &types.CompoundResult{
@@ -92,7 +92,7 @@ func HandleFreeStateid(
 
 	logger.Info("FREE_STATEID: stateid freed",
 		"client_id", fmt.Sprintf("0x%016x", clientID),
-		"stateid_other", hex.EncodeToString(args.Stateid.Other[:]),
+		"stateid_other", hex.EncodeToString(stateid.Other[:]),
 		"client", ctx.ClientAddr)
 
 	return &types.CompoundResult{

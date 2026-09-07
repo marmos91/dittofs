@@ -65,7 +65,7 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 		return cloneErr(types.NFS4ERR_ROFS)
 	}
 
-	srcStateid, dstStateid, srcOffset, dstOffset, count, st := decodeCloneArgs(reader)
+	srcStateid, dstStateid, srcOffset, dstOffset, count, st := decodeCloneArgs(ctx, reader)
 	if st != types.NFS4_OK {
 		return cloneErr(st)
 	}
@@ -213,14 +213,14 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 // cl_src_offset, cl_dst_offset, cl_count (RFC 7862 Section 15.13). Returns
 // NFS4ERR_BADXDR on a malformed stream and NFS4ERR_INVAL when src/dst range
 // arithmetic overflows uint64.
-func decodeCloneArgs(reader io.Reader) (srcStateid, dstStateid *types.Stateid4, srcOffset, dstOffset, count uint64, st uint32) {
-	src, err := types.DecodeStateid4(reader)
-	if err != nil {
-		return nil, nil, 0, 0, 0, types.NFS4ERR_BADXDR
+func decodeCloneArgs(ctx *types.CompoundContext, reader io.Reader) (srcStateid, dstStateid *types.Stateid4, srcOffset, dstOffset, count uint64, st uint32) {
+	src, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		return nil, nil, 0, 0, 0, argStatus
 	}
-	dst, err := types.DecodeStateid4(reader)
-	if err != nil {
-		return nil, nil, 0, 0, 0, types.NFS4ERR_BADXDR
+	dst, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		return nil, nil, 0, 0, 0, argStatus
 	}
 	so, err := xdr.DecodeUint64(reader)
 	if err != nil {
