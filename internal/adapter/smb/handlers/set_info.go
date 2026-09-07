@@ -1047,6 +1047,35 @@ func (h *Handler) setFileInfoFromStore(
 		isOverwrite := renameInfo.ReplaceIfExists
 		metaSvc := h.Registry.GetMetadataService()
 
+		// A destination name that already resolves to the file being renamed
+		// is another hard link to it, so there is nothing to move: unlinking
+		// either name would drop a link the caller never asked to lose, and
+		// Move returns success without touching the store. Everything below
+		// would then describe a change that did not happen — the lease
+		// breaks, the paired rename notification, and the handle's own name.
+		// The link path takes the same shortcut for a link onto a name the
+		// file already answers to.
+		//
+		// Renaming an entry onto itself is excluded. It reaches the same
+		// no-op inside Move, but it is the ordinary "rename to the name I
+		// already have" request rather than a second link, and the work that
+		// request carries is still owed — a client holding a lease on the
+		// file is broken for it.
+		//
+		// The probe is exact-case, matching the GetChild inside Move, so a
+		// case-mismatched destination still falls through to the overwrite
+		// path below and replaces the entry it found.
+		srcName := openFile.Name()
+		renamingOntoOwnEntry := toName == srcName.FileName && bytes.Equal(toDir, srcName.ParentHandle)
+		if dstHandle, childErr := metaSvc.GetChild(authCtx.Context, toDir, toName); childErr == nil &&
+			!renamingOntoOwnEntry && len(openFile.MetadataHandle) > 0 &&
+			bytes.Equal(dstHandle, openFile.MetadataHandle) {
+			logger.Debug("SET_INFO: rename destination is another link to the source",
+				"from", openFile.Name().Path,
+				"to", newPath)
+			return setInfoStatus(types.StatusSuccess), nil
+		}
+
 		// Dispatch the SOURCE file's break ahead of the destination lookup
 		// below. Every gate that can still reject this rename has already run,
 		// and the source break needs nothing the lookup produces.
