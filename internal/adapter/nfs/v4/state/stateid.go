@@ -51,6 +51,7 @@ var (
 	ErrExpired      = &NFS4StateError{Status: types.NFS4ERR_EXPIRED, Message: "lease expired"}
 	ErrBadSeqid     = &NFS4StateError{Status: types.NFS4ERR_BAD_SEQID, Message: "bad seqid"}
 	ErrShareDenied  = &NFS4StateError{Status: types.NFS4ERR_SHARE_DENIED, Message: "share reservation conflict"}
+	ErrLocked       = &NFS4StateError{Status: types.NFS4ERR_LOCKED, Message: "share reservation denies this I/O"}
 )
 
 // StateidOp identifies the operation family using a stateid. It controls which
@@ -155,8 +156,13 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 		}
 		return nil, nil
 	}
-	// The anonymous (all-zeros) stateid is permitted on READ and WRITE.
+	// The anonymous (all-zeros) stateid is permitted on READ and WRITE, but it
+	// names no open state, so the share reservations standing on the file are
+	// all the server has to judge the I/O by.
 	if stateid.IsAnonymousStateid() {
+		if err := sm.anonymousIOBlocked(currentFH, op); err != nil {
+			return nil, err
+		}
 		return nil, nil
 	}
 
@@ -721,4 +727,41 @@ func (sm *StateManager) testDelegStateid(stateid *types.Stateid4) uint32 {
 	}
 
 	return types.NFS4_OK
+}
+
+// anonymousIOBlocked reports NFS4ERR_LOCKED when a share reservation on the file
+// denies an I/O issued under the anonymous stateid.
+//
+// RFC 7530 Section 9.1.4: "Regardless of whether an anonymous stateid or a
+// stateid returned by the server is used, if there is a conflicting share
+// reservation or mandatory byte-range lock held on the file, the server MUST
+// refuse to service the READ or WRITE operation ... Share reservations are
+// established by OPEN operations and by their nature are mandatory in that when
+// the OPEN denies READ or WRITE operations, that denial results in such
+// operations being rejected with error NFS4ERR_LOCKED."
+//
+// Without this a deny mode was advisory: it refused a conflicting OPEN but not
+// the I/O of a client that skipped OPEN and used the anonymous stateid, which is
+// the case the deny mode exists to stop. Linux nfsd applies the same rule in
+// check_special_stateids, and likewise exempts the READ-bypass stateid on READ,
+// which never reaches here.
+func (sm *StateManager) anonymousIOBlocked(currentFH []byte, op StateidOp) error {
+	if len(currentFH) == 0 {
+		return nil
+	}
+
+	deny := uint32(types.OPEN4_SHARE_DENY_READ)
+	if op == StateidOpWrite {
+		deny = types.OPEN4_SHARE_DENY_WRITE
+	}
+
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	for _, os := range sm.openStateByFile[string(currentFH)] {
+		if os.ShareDeny&deny != 0 {
+			return ErrLocked
+		}
+	}
+	return nil
 }

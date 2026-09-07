@@ -212,3 +212,72 @@ func TestValidateStateid_Anonymous_AllowedOnReadAndWrite(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateStateid_AnonymousBlockedByShareDeny pins RFC 7530 Section 9.1.4:
+// "Regardless of whether an anonymous stateid or a stateid returned by the
+// server is used, if there is a conflicting share reservation ... the server
+// MUST refuse to service the READ or WRITE operation", with NFS4ERR_LOCKED.
+//
+// A deny mode used to be advisory in practice: it refused a conflicting OPEN,
+// but a client that skipped OPEN and issued I/O under the anonymous stateid --
+// the case the deny mode exists to stop -- was served.
+func TestValidateStateid_AnonymousBlockedByShareDeny(t *testing.T) {
+	anonymous := &types.Stateid4{}
+
+	t.Run("deny_read_blocks_anonymous_read", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		fh := []byte("fh-anon-denyread")
+		openConfirmed(t, sm, 0, []byte("ownerA"), fh,
+			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_READ)
+
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpRead); !errors.Is(err, ErrLocked) {
+			t.Fatalf("anonymous READ against DENY_READ: err = %v, want ErrLocked", err)
+		}
+		// DENY_READ says nothing about writing.
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpWrite); err != nil {
+			t.Fatalf("anonymous WRITE against DENY_READ: %v", err)
+		}
+	})
+
+	t.Run("deny_write_blocks_anonymous_write", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		fh := []byte("fh-anon-denywrite")
+		openConfirmed(t, sm, 0, []byte("ownerA"), fh,
+			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_WRITE)
+
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpWrite); !errors.Is(err, ErrLocked) {
+			t.Fatalf("anonymous WRITE against DENY_WRITE: err = %v, want ErrLocked", err)
+		}
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpRead); err != nil {
+			t.Fatalf("anonymous READ against DENY_WRITE: %v", err)
+		}
+	})
+
+	t.Run("no_deny_serves_anonymous_io", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		fh := []byte("fh-anon-nodeny")
+		openConfirmed(t, sm, 0, []byte("ownerA"), fh,
+			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE)
+
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpRead); err != nil {
+			t.Fatalf("anonymous READ with no deny in force: %v", err)
+		}
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpWrite); err != nil {
+			t.Fatalf("anonymous WRITE with no deny in force: %v", err)
+		}
+	})
+
+	// The READ-bypass stateid is exempt on READ (RFC 7530 Section 9.1.4.3), and
+	// is rejected outright on a write-family operation, so it never reaches the
+	// share check either way.
+	t.Run("read_bypass_stays_exempt", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		fh := []byte("fh-anon-bypass")
+		openConfirmed(t, sm, 0, []byte("ownerA"), fh,
+			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_READ)
+
+		if _, err := sm.ValidateStateid(readBypassStateid(), fh, StateidOpRead); err != nil {
+			t.Fatalf("read-bypass READ against DENY_READ: %v", err)
+		}
+	})
+}
