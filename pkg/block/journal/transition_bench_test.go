@@ -346,10 +346,15 @@ func BenchmarkDelete(b *testing.B) {
 
 // The four residency queries below are the receipts for the merged Extents
 // query the pier design proposes. Collapsing them into one slice-returning call
-// is that design's biggest performance risk — FileSize sits on the hot read
-// path and ColdExtents is O(live intervals) across every shard — so the
-// before-numbers have to exist on the same hardware before the after-numbers
-// mean anything. Recorded now; compared when Extents lands.
+// is that design's biggest performance risk — ColdExtents is O(live intervals)
+// across every shard — so the before-numbers have to exist on the same hardware
+// before the after-numbers mean anything. Recorded now; compared when Extents
+// lands.
+//
+// FileSize is the one to watch, but not because it is on the read path: it is
+// reached only from share start, and it is an O(intervals) scan that costs
+// three orders of magnitude more than DurableExtent for a narrower answer.
+// Measuring the four separately is what makes that visible.
 
 // residencyStore builds a file deep enough in intervals for the query cost to
 // be visible, with a cold tail so ColdExtents has something to walk.
