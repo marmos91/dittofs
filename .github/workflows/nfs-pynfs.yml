@@ -72,7 +72,12 @@ jobs:
       - name: Resolve from the manifest
         id: resolve
         env:
-          EVENT: ${{ github.event_name == 'pull_request' && 'pull_request' || 'push' }}
+          # A schedule reaches its own tier; workflow_dispatch has none of its own,
+          # so a manual run is treated like a postsubmit one.
+          EVENT: >-
+            ${{ github.event_name == 'pull_request' && 'pull_request'
+                || github.event_name == 'schedule' && 'schedule'
+                || 'push' }}
         run: |
           set -euo pipefail
           cells="$(./test/conformance/run.sh --matrix "$EVENT" \
