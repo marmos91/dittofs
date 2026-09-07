@@ -320,6 +320,7 @@ func (sm *StateManager) purgeV41Client(record *V41ClientRecord) {
 	}
 
 	sm.removeClientOpenStateLocked(record.ClientID)
+	sm.removeClientLockStateLocked(record.ClientID)
 
 	// Clean up all delegations (file + directory) for this client
 	for other, deleg := range sm.delegByOther {

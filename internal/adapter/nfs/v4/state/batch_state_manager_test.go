@@ -250,11 +250,54 @@ func TestSetClientID_PrincipalMismatchReturnsClientIDInUse(t *testing.T) {
 	if err := sm.ConfirmClientID(r1.ClientID, r1.ConfirmVerifier); err != nil {
 		t.Fatalf("ConfirmClientID failed: %v", err)
 	}
+	openClientState(t, sm, r1.ClientID, "hijack-owner", []byte("target-file"))
 
 	// Case 5 (same verifier) from a DIFFERENT principal -> CLID_INUSE.
 	_, err = sm.SetClientID("hijack-target", verifier, cb, "10.0.0.2:5678", "uid:9999")
 	if !errors.Is(err, ErrClientIDInUse) {
 		t.Errorf("expected ErrClientIDInUse, got %v", err)
+	}
+}
+
+// TestSetClientID_PrincipalMismatchAllowedWithoutState pins the condition on
+// that refusal. RFC 7530 Section 9.1.2 requires the SETCLIENTID to be allowed
+// when the recorded client ID holds no state, because the rule the principal
+// check enforces (Section 9.1.1) is a MUST NOT on cancelling *leased state*
+// established by another principal, and there is none here to cancel.
+//
+// Without the condition, whichever principal touches a client id string first
+// owns it for the life of the server: clients derive that string from the
+// hostname, not from their credential, so a second user on the same host can
+// never establish a client id at all.
+func TestSetClientID_PrincipalMismatchAllowedWithoutState(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	verifier := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+	cb := CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "10.0.0.1.8.1"}
+
+	r1, err := sm.SetClientID("stateless-target", verifier, cb, "10.0.0.1:1234", "uid:1000")
+	if err != nil {
+		t.Fatalf("SetClientID failed: %v", err)
+	}
+	if err := sm.ConfirmClientID(r1.ClientID, r1.ConfirmVerifier); err != nil {
+		t.Fatalf("ConfirmClientID failed: %v", err)
+	}
+
+	if _, err := sm.SetClientID("stateless-target", verifier, cb, "10.0.0.2:5678", "uid:9999"); err != nil {
+		t.Errorf("SETCLIENTID from a different principal against a stateless client ID: got %v, want success", err)
+	}
+}
+
+// openClientState gives clientID a confirmed open so that it counts as holding
+// leased state.
+func openClientState(t *testing.T, sm *StateManager, clientID uint64, owner string, fh []byte) {
+	t.Helper()
+
+	if _, err := sm.OpenFile(
+		clientID, []byte(owner), 1, fh,
+		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE,
+		types.CLAIM_NULL,
+	); err != nil {
+		t.Fatalf("OpenFile: %v", err)
 	}
 }
 
@@ -270,6 +313,7 @@ func TestSetClientID_RebootPrincipalMismatchReturnsClientIDInUse(t *testing.T) {
 	if err := sm.ConfirmClientID(r1.ClientID, r1.ConfirmVerifier); err != nil {
 		t.Fatalf("ConfirmClientID failed: %v", err)
 	}
+	openClientState(t, sm, r1.ClientID, "reboot-hijack-owner", []byte("reboot-target-file"))
 
 	// Case 3 (different verifier = reboot) from a DIFFERENT principal -> CLID_INUSE.
 	verifier2 := [8]byte{9, 10, 11, 12, 13, 14, 15, 16}
