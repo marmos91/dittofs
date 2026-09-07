@@ -249,6 +249,11 @@ type Store struct {
 	// production.
 	failTombstone FileID
 	failTruncate  FileID
+	// beforeTruncateMarker is a test seam run between Truncate publishing its
+	// provisional fence and minting the marker that supersedes it, so a test can
+	// land the concurrent write that opens the window between the two versions.
+	// Always nil in production.
+	beforeTruncateMarker func()
 }
 
 // SetVerifyReads enables or disables per-read record-CRC verification of warm
@@ -465,7 +470,7 @@ func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byt
 	sh := s.shardFor(id)
 	sh.mu.Lock()
 	var ranges [][2]int64
-	if !hydrateFenced(sh, id, notAfter) {
+	if !hydrateFenced(sh, id, notAfter, offset, int64(len(data))) {
 		ranges = sh.index[id].hydratable(offset, int64(len(data)), notAfter)
 	}
 	sh.mu.Unlock()
@@ -483,12 +488,39 @@ func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byt
 func (s *Store) WriteVersion() uint64 { return s.version.Load() }
 
 // hydrateFenced reports whether a hydrate's bound predates the file's most
-// recent truncate or delete — the two mutations that leave no interval behind
-// to compare against. A delete's fence may have been evicted from the shard's
-// FIFO, in which case evictedFenceFloor still stands in for it. Callers hold
-// sh.mu.
-func hydrateFenced(sh *shard, id FileID, notAfter uint64) bool {
-	return notAfter > 0 && (notAfter <= sh.hydrateFence[id] || notAfter <= sh.evictedFenceFloor)
+// recent truncate or delete over a range that mutation emptied — the two
+// mutations that leave no interval behind to compare against.
+//
+// The range test is what keeps a truncate from refusing its own survivors: the
+// prefix below newSize kept its intervals, so hydratable can still weigh a
+// stale fill against them there, and only a range reaching into the cleared
+// tail has to be turned away. A straddling range is refused whole rather than
+// trimmed, matching how the caller treats a short answer. A delete survives
+// nothing and so refuses everything.
+//
+// minBound is the lowest bound the fence still admits, and the two mutations
+// set it differently. A truncate admits its own marker version: the survivors
+// it kept are there for hydratable to arbitrate against, and DiscardLocalContent
+// depends on it — that path truncates to zero and hydrates the copied content
+// straight back, under a bound sampled just after. A delete admits nothing at
+// its tombstone version, because it scrubs the index entry and leaves nothing
+// to arbitrate against, so it fences one version higher.
+//
+// evictedFenceFloor stands in for fences the shard's FIFO has dropped, which
+// are all deletes. It stays inclusive: it is the maximum over several dropped
+// fences rather than any one mutation's version, so there is no single version
+// for it to be strict about, and erring wide there costs only a re-fetch.
+//
+// Callers hold sh.mu.
+func hydrateFenced(sh *shard, id FileID, notAfter uint64, offset, n int64) bool {
+	if notAfter == 0 {
+		return false
+	}
+	if notAfter <= sh.evictedFenceFloor {
+		return true
+	}
+	f, ok := sh.hydrateFence[id]
+	return ok && notAfter < f.minBound && offset+n > f.survives
 }
 
 // SeedCold registers a byte range as remote-durable-but-not-local: a read of it
@@ -996,11 +1028,17 @@ func (s *Store) Truncate(ctx context.Context, id FileID, newSize int64) error {
 	if past {
 		// Published before the marker is stamped, so a hydrate that samples its
 		// bound after this point is never mistaken for one that predates the clip.
-		sh.hydrateFence[id] = s.version.Load()
+		// This is a floor, not the final fence: the marker's own version is not
+		// minted yet, and the fence is raised to it below.
+		sh.raiseHydrateFence(id, s.version.Load()+1, newSize)
 	}
 	sh.mu.Unlock()
 	if !past {
 		return nil
+	}
+
+	if s.beforeTruncateMarker != nil {
+		s.beforeTruncateMarker()
 	}
 
 	// Durability first: the marker must be on disk before the index is clipped.
@@ -1010,6 +1048,12 @@ func (s *Store) Truncate(ctx context.Context, id FileID, newSize int64) error {
 	}
 
 	sh.mu.Lock()
+	// The clip below keeps every interval versioned above truncVer, so the fence
+	// has to reach truncVer too. Left at the peek it admits a hydrate bound in
+	// between: above the peek, so not stale, and the interval it writes back is
+	// versioned above truncVer, so the clip keeps it. The tail would come back
+	// and stay back.
+	sh.raiseHydrateFence(id, truncVer, newSize)
 	fi = sh.index[id]
 	var dirty int64
 	if fi != nil {
