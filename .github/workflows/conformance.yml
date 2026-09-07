@@ -502,8 +502,8 @@ jobs:
     # Nightly only. Regenerates baseline-results.md from a clean develop
     # memory-profile run so the documentation snapshot cannot drift. NOT a CI
     # gate — grading is done against KNOWN_FAILURES.md by parse-results.sh.
-    # Operates on develop explicitly because scheduled runs fire on the default
-    # branch (main), not develop.
+    # Checks out develop explicitly rather than relying on scheduled runs firing
+    # on the default branch, so this keeps working if the default moves.
     if: github.event_name == 'schedule'
     permissions:
       contents: write
