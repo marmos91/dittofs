@@ -4,10 +4,26 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// testDirFH returns a well-formed "<share>:<uuid>" filehandle. PUTFH refuses
+// any handle it cannot decode, so the directory handle these tests hand it has
+// to have that shape; GET_DIR_DELEGATION and DELEGRETURN only key delegation
+// state off the bytes and never resolve them, so it need not name a real
+// object.
+func testDirFH(t *testing.T) []byte {
+	t.Helper()
+	fh, err := metadata.EncodeShareHandle("/export", uuid.New())
+	if err != nil {
+		t.Fatalf("encode directory filehandle: %v", err)
+	}
+	return []byte(fh)
+}
 
 // encodeGetDirDelegationArgs encodes GET_DIR_DELEGATION4args for testing.
 func encodeGetDirDelegationArgs(notifMask uint32) []byte {
@@ -35,8 +51,7 @@ func TestGetDirDelegation_Success(t *testing.T) {
 	h, sessionID := createTestSession(t)
 	ctx := newTestCompoundContext()
 
-	// Set up a fake directory filehandle via PUTFH
-	dirFH := []byte("test-dir-fh-001")
+	dirFH := testDirFH(t)
 
 	notifMask := uint32((1 << types.NOTIFY4_ADD_ENTRY) | (1 << types.NOTIFY4_REMOVE_ENTRY))
 
@@ -121,7 +136,7 @@ func TestGetDirDelegation_Unavail_LimitReached(t *testing.T) {
 		t.Fatalf("pre-fill GrantDirDelegation error: %v", err)
 	}
 
-	dirFH := []byte("test-dir-fh-limit")
+	dirFH := testDirFH(t)
 	notifMask := uint32(1 << types.NOTIFY4_ADD_ENTRY)
 
 	seqArgs := encodeSequenceArgs(sessionID, 0, 1, 0, false)
@@ -183,7 +198,7 @@ func TestGetDirDelegation_Unavail_Disabled(t *testing.T) {
 	// Disable delegations
 	h.StateManager.SetDelegationsEnabled(false)
 
-	dirFH := []byte("test-dir-fh-disabled")
+	dirFH := testDirFH(t)
 	notifMask := uint32(1 << types.NOTIFY4_REMOVE_ENTRY)
 
 	seqArgs := encodeSequenceArgs(sessionID, 0, 1, 0, false)
@@ -270,7 +285,7 @@ func TestGetDirDelegation_BadSession(t *testing.T) {
 	copy(fakeSessionID[:], []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
 		0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF})
 
-	dirFH := []byte("test-dir-fh-badsession")
+	dirFH := testDirFH(t)
 	notifMask := uint32(1 << types.NOTIFY4_ADD_ENTRY)
 
 	seqArgs := encodeSequenceArgs(fakeSessionID, 0, 1, 0, false)
@@ -301,7 +316,7 @@ func TestGetDirDelegation_BadXDR(t *testing.T) {
 	h, sessionID := createTestSession(t)
 	ctx := newTestCompoundContext()
 
-	dirFH := []byte("test-dir-fh-badxdr")
+	dirFH := testDirFH(t)
 
 	seqArgs := encodeSequenceArgs(sessionID, 0, 1, 0, false)
 
@@ -330,7 +345,7 @@ func TestDelegReturn_FlushesDirectoryNotifications(t *testing.T) {
 	ctx := newTestCompoundContext()
 
 	// Grant a directory delegation
-	dirFH := []byte("test-dir-fh-flush")
+	dirFH := testDirFH(t)
 	notifMask := uint32((1 << types.NOTIFY4_ADD_ENTRY) | (1 << types.NOTIFY4_REMOVE_ENTRY))
 
 	// Get the client ID from the session

@@ -51,15 +51,6 @@ Categories:
 | DELEG6 | bug | no delegation is granted | #2329 |
 | DELEG7 | bug | no delegation is granted | #2329 |
 | DELEG8 | bug | no delegation is granted | #2329 |
-| LKPP1a | bug | lookupp41 | #2335 |
-| LKPP1b | bug | lookupp41 | #2335 |
-| LKPP1c | bug | lookupp41 | #2335 |
-| LKPP1d | bug | lookupp41 | #2335 |
-| LKPP1f | bug | lookupp41 | #2335 |
-| LKPP1r | bug | lookupp41 | #2335 |
-| LKPP1s | bug | lookupp41 | #2335 |
-| LKPP2 | bug | lookupp41 | #2335 |
-| PUTFH2 | bug | lookupp41 | #2335 |
 | CSESS15 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
 | CSESS16a | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
 | CSESS23 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |

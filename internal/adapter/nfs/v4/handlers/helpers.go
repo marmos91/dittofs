@@ -295,3 +295,52 @@ func encodeChangeInfo4(buf *bytes.Buffer, atomic bool, before, after uint64) {
 	_ = xdr.WriteUint64(buf, before)
 	_ = xdr.WriteUint64(buf, after)
 }
+
+// regularFileStatus reports the status an operation defined only over regular
+// files must return for the type of object its current filehandle designates:
+// NFS4_OK for a regular file, NFS4ERR_ISDIR for a directory and NFS4ERR_INVAL
+// for every other type. COMMIT (RFC 7530 Section 16.5.4), LOCK, LOCKT and LOCKU
+// (Section 16.10.4) and READ and WRITE (Sections 16.22.4 and 16.36.4) all state
+// the rule in the same words.
+func regularFileStatus(fileType metadata.FileType) uint32 {
+	switch fileType {
+	case metadata.FileTypeRegular:
+		return types.NFS4_OK
+	case metadata.FileTypeDirectory:
+		return types.NFS4ERR_ISDIR
+	default:
+		return types.NFS4ERR_INVAL
+	}
+}
+
+// directoryStatus reports the status LOOKUP and LOOKUPP must return for the
+// type of object their current filehandle designates. RFC 7530 Section 16.15.4:
+// a symbolic link is reported as NFS4ERR_SYMLINK so the client knows to resolve
+// it, and every other non-directory type as NFS4ERR_NOTDIR.
+func directoryStatus(fileType metadata.FileType) uint32 {
+	switch fileType {
+	case metadata.FileTypeDirectory:
+		return types.NFS4_OK
+	case metadata.FileTypeSymlink:
+		return types.NFS4ERR_SYMLINK
+	default:
+		return types.NFS4ERR_NOTDIR
+	}
+}
+
+// fileTypeForHandle resolves the object type of a real-filesystem filehandle
+// for the operations that gate on it but never load the file otherwise. The
+// second return is NFS4_OK when the type is usable and the status to report
+// when the handle could not be resolved.
+func (h *Handler) fileTypeForHandle(ctx *types.CompoundContext, handle []byte) (metadata.FileType, uint32) {
+	metaSvc, err := getMetadataServiceForCtx(h)
+	if err != nil {
+		return 0, types.NFS4ERR_SERVERFAULT
+	}
+	// GetFileForRead: handle-addressed, File.Path unused -- skip derivePath.
+	file, err := metaSvc.GetFileForRead(ctx.Context, metadata.FileHandle(handle))
+	if err != nil {
+		return 0, common.MapToNFS4(err)
+	}
+	return file.Type, types.NFS4_OK
+}
