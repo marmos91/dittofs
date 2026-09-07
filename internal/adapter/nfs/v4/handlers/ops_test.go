@@ -641,14 +641,20 @@ func TestLookupP_ChildToRoot(t *testing.T) {
 	}
 }
 
-func TestLookupP_RootStaysAtRoot(t *testing.T) {
+// TestLookupP_RootHasNoParent pins the pseudo-fs root as the top of the
+// namespace: it has no parent to walk to, and RFC 7530 Section 16.16.4 answers
+// LOOKUPP there with NFS4ERR_NOENT.
+//
+// The tree stores the root as its own parent, so LOOKUPP used to answer NFS4_OK
+// and leave the current filehandle where it was. A client walking upwards then
+// never reached a terminating error and saw the root repeat forever.
+func TestLookupP_RootHasNoParent(t *testing.T) {
 	h := newTestHandlerWithShares([]string{"/export"})
 	ctx := newOpsTestContext()
 
 	data := encodeCompoundWithOps("", 0, []encodedOp{
 		encodePutRootFH(),
 		encodeLookupP(),
-		encodeGetFH(),
 	})
 
 	resp, err := h.ProcessCompound(ctx, data)
@@ -658,16 +664,9 @@ func TestLookupP_RootStaysAtRoot(t *testing.T) {
 
 	decoded, _ := decodeCompoundResp(resp)
 
-	if decoded.Status != types.NFS4_OK {
-		t.Fatalf("status = %d, want NFS4_OK", decoded.Status)
-	}
-
-	// LOOKUPP from root should return root (root's parent is root)
-	rootHandle := h.PseudoFS.GetRootHandle()
-	gotHandle := decoded.Results[2].ExtraData
-	if !bytes.Equal(gotHandle, rootHandle) {
-		t.Errorf("LOOKUPP from root should stay at root, got %q want %q",
-			string(gotHandle), string(rootHandle))
+	if decoded.Status != types.NFS4ERR_NOENT {
+		t.Fatalf("LOOKUPP at pseudo-fs root: status = %d, want NFS4ERR_NOENT (%d)",
+			decoded.Status, types.NFS4ERR_NOENT)
 	}
 }
 
