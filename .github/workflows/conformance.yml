@@ -1,0 +1,585 @@
+# Conformance Suites
+#
+# Every protocol-conformance suite runs from here, and which profiles each one
+# runs per event comes from test/conformance/suites.json rather than from a
+# ternary copy-pasted into a workflow per suite. Adding a suite is a manifest
+# entry; changing a tier is a manifest edit.
+#
+# Tiered by EVENT, not by path. A change to shared code — a metadata store, the
+# runtime — can break any protocol from underneath, so conformance runs on all
+# non-docs PRs. Path filters skip docs-only changes only. The one exception is
+# nfs-kerberos, which stays path-scoped on PRs: Kerberos is expensive and rarely
+# regresses from unrelated work.
+#
+# The jobs differ in what they need around the suite — Docker Compose, a kernel
+# NFS mount and root, a postgres and a localstack service — because the suites
+# genuinely differ there. What they share is the manifest, test/conformance/run.sh,
+# and the KNOWN_FAILURES grading contract.
+
+name: Conformance Suites
+
+on:
+  push:
+    branches: [develop, main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '**.png'
+      - '**.jpg'
+      - '**.svg'
+  pull_request:
+    branches: [develop, main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '**.png'
+      - '**.jpg'
+      - '**.svg'
+  schedule:
+    # Nightly at 4 AM UTC.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: 'Single suite to run (blank runs the full postsubmit set)'
+        type: choice
+        options:
+          - ''
+          - wpts
+          - smbtorture
+          - pjdfstest
+          - nfs-kerberos
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  DITTOFS_MOUNT: /tmp/dittofs-test
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The manifest decides what runs. Everything below reads its matrix from here.
+  # ---------------------------------------------------------------------------
+  matrix:
+    name: Resolve suite matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      wpts: ${{ steps.resolve.outputs.wpts }}
+      smbtorture: ${{ steps.resolve.outputs.smbtorture }}
+      pjdfstest: ${{ steps.resolve.outputs.pjdfstest }}
+      nfs-kerberos: ${{ steps.resolve.outputs.nfs-kerberos }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Resolve the matrix from the manifest
+        id: resolve
+        env:
+          # workflow_dispatch has no tier of its own; treat a manual run like a
+          # postsubmit one so a dispatch covers every profile.
+          EVENT: ${{ github.event_name == 'pull_request' && 'pull_request' || 'push' }}
+          ONLY: ${{ inputs.suite }}
+        run: |
+          set -euo pipefail
+          FULL="$(./test/conformance/run.sh --matrix "$EVENT")"
+          echo "$FULL" | jq .
+          for suite in wpts smbtorture pjdfstest nfs-kerberos; do
+            if [ -n "$ONLY" ] && [ "$ONLY" != "$suite" ]; then
+              echo "${suite}=[]" >> "$GITHUB_OUTPUT"
+              continue
+            fi
+            cells="$(jq -c --arg s "$suite" '[.include[] | select(.suite == $s)]' <<<"$FULL")"
+            echo "${suite}=${cells}" >> "$GITHUB_OUTPUT"
+          done
+
+  # The graders decide whether a suite is red at all, so they are guarded on
+  # their own in about a second rather than only through a 40-minute run that
+  # would have to fail first to reveal a grading regression.
+  graders:
+    name: Grading logic
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Test the common runner
+        run: ./test/conformance/run_test.sh
+
+      - name: Test the smbtorture grader
+        run: ./test/smb-conformance/smbtorture/parse-results_test.sh
+
+  build:
+    name: Build Binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build DittoFS binaries
+        run: |
+          # Static binaries so they work outside the Nix environment.
+          nix develop .#ci --command sh -c "CGO_ENABLED=0 go build -o dfs cmd/dfs/main.go"
+          nix develop .#ci --command sh -c "CGO_ENABLED=0 go build -o dfsctl cmd/dfsctl/main.go"
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: dfs-binaries
+          path: |
+            dfs
+            dfsctl
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # SMB — Docker Compose, no host services, no root.
+  # ---------------------------------------------------------------------------
+  wpts:
+    name: WPTS BVT / ${{ matrix.profile }}
+    runs-on: ubuntu-latest
+    needs: matrix
+    if: needs.matrix.outputs.wpts != '[]'
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.wpts) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y xmlstarlet gettext-base
+
+      - name: Run WPTS BVT
+        run: ./test/conformance/run.sh --suite wpts --profile ${{ matrix.profile }}
+
+      - name: Add step summary
+        if: always()
+        run: |
+          RESULTS_DIR=$(ls -td test/smb-conformance/results/*/ 2>/dev/null | head -1)
+          TRX_FILE=""
+          [ -n "$RESULTS_DIR" ] && TRX_FILE=$(find "$RESULTS_DIR" -name "*.trx" -type f 2>/dev/null | head -1)
+          if [ -z "$TRX_FILE" ]; then
+            {
+              echo "## WPTS BVT: ${{ matrix.profile }}"
+              echo "No TRX results found."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          NS="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"
+          TOTAL=$(xmlstarlet sel -N t="$NS" -t -v "//t:Counters/@total" "$TRX_FILE" 2>/dev/null || echo "0")
+          PASSED=$(xmlstarlet sel -N t="$NS" -t -v "//t:Counters/@passed" "$TRX_FILE" 2>/dev/null || echo "0")
+          FAILED=$(xmlstarlet sel -N t="$NS" -t -v "//t:Counters/@failed" "$TRX_FILE" 2>/dev/null || echo "0")
+          NOT_EXEC=$(xmlstarlet sel -N t="$NS" -t -v "//t:Counters/@notExecuted" "$TRX_FILE" 2>/dev/null || echo "0")
+
+          {
+            echo "## WPTS BVT: ${{ matrix.profile }}"
+            echo ""
+            echo "| Metric | Count |"
+            echo "|--------|-------|"
+            echo "| Total | ${TOTAL} |"
+            echo "| Passed | ${PASSED} |"
+            echo "| Failed | ${FAILED} |"
+            echo "| Skipped | ${NOT_EXEC} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wpts-${{ matrix.profile }}
+          path: |
+            test/smb-conformance/results/
+            test/conformance/results/
+          retention-days: 30
+
+  smbtorture:
+    name: smbtorture / ${{ matrix.profile }}
+    runs-on: ubuntu-latest
+    needs: matrix
+    if: needs.matrix.outputs.smbtorture != '[]'
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.smbtorture) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run smbtorture
+        run: ./test/conformance/run.sh --suite smbtorture --profile ${{ matrix.profile }}
+
+      - name: Add step summary
+        if: always()
+        run: |
+          RESULTS_DIR=$(ls -td test/smb-conformance/results/smbtorture-*/ 2>/dev/null | head -1 || true)
+          {
+            echo "## smbtorture: ${{ matrix.profile }}"
+            if [ -n "$RESULTS_DIR" ] && [ -f "$RESULTS_DIR/summary.txt" ]; then
+              cat "$RESULTS_DIR/summary.txt"
+            else
+              echo "No results found."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smbtorture-${{ matrix.profile }}
+          path: |
+            test/smb-conformance/results/smbtorture-*/
+            test/conformance/results/
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # POSIX — kernel NFS mount, root, and both backing services. setup-posix.sh
+  # activates only what a profile needs; idle services are cheap and keep this
+  # to one job definition.
+  # ---------------------------------------------------------------------------
+  pjdfstest:
+    name: NFS v${{ matrix.variant }} / ${{ matrix.profile }}
+    runs-on: ubuntu-latest
+    needs: [matrix, build]
+    if: needs.matrix.outputs.pjdfstest != '[]'
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.pjdfstest) }}
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: dittofs
+          POSTGRES_PASSWORD: dittofs
+          POSTGRES_DB: dittofs_test
+          POSTGRES_INITDB_ARGS: "--data-checksums"
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --shm-size=256mb
+
+      localstack:
+        image: localstack/localstack:4.13.1
+        env:
+          SERVICES: s3
+          EAGER_SERVICE_LOADING: "1"
+          GATEWAY_LISTEN: "0.0.0.0:4566"
+          DISABLE_CORS_CHECKS: "1"
+          DISABLE_CUSTOM_CORS_S3: "1"
+          DEBUG: "0"
+          LOCALSTACK_HOST: localhost:4566
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "curl -sf https://localhost:4566/_localstack/health -k || curl -sf http://localhost:4566/_localstack/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Install NFS client utilities
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nfs-common
+
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: dfs-binaries
+
+      - name: Make binaries executable
+        run: chmod +x dfs dfsctl
+
+      - name: Build pjdfstest in Nix
+        run: |
+          PJDFSTEST=$(nix build .#pjdfstest --print-out-paths)
+          echo "PJDFSTEST_DIR=$PJDFSTEST" >> $GITHUB_ENV
+          echo "$PJDFSTEST/bin" >> $GITHUB_PATH
+
+      - name: Tune PostgreSQL for testing
+        if: startsWith(matrix.profile, 'postgres')
+        run: |
+          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET synchronous_commit = 'off';"
+          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET checkpoint_timeout = '30min';"
+          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET work_mem = '64MB';"
+          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "SELECT pg_reload_conf();"
+
+      - name: Run pjdfstest
+        run: |
+          ./test/conformance/run.sh \
+            --suite pjdfstest \
+            --profile ${{ matrix.profile }} \
+            --variant ${{ matrix.variant }}
+
+      - name: Show the server log on failure
+        if: failure()
+        run: |
+          echo "=== Server log ==="
+          cat /tmp/dittofs-posix-server.log 2>/dev/null || echo "no server log"
+          echo "=== Listeners ==="
+          ss -tlnp | grep -E '8080|12049' || echo "nothing on 8080/12049"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pjdfstest-v${{ matrix.variant }}-${{ matrix.profile }}
+          path: |
+            test/conformance/results/
+            /tmp/dittofs-posix-server.log
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # NFS Kerberos — path-scoped on PRs. Kerberos is expensive and rarely
+  # regresses from unrelated work, so an ordinary PR skips it; a PR that touches
+  # the Kerberos or NFS adapter trees still gets presubmit feedback.
+  # ---------------------------------------------------------------------------
+  kerberos-changes:
+    name: Detect Kerberos-relevant changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      relevant: ${{ steps.filter.outputs.krb }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Filter paths
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            krb:
+              - 'internal/auth/kerberos/**'
+              - 'pkg/auth/kerberos/**'
+              - 'internal/adapter/nfs/**'
+              - 'test/nfs-conformance/**'
+              - 'test/conformance/**'
+              - '.github/workflows/conformance.yml'
+
+  nfs-kerberos:
+    name: NFS sec=krb5 mount test
+    runs-on: ubuntu-latest
+    needs: [matrix, kerberos-changes]
+    if: >-
+      needs.matrix.outputs.nfs-kerberos != '[]'
+      && (github.event_name != 'pull_request' || needs.kerberos-changes.outputs.relevant == 'true')
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.nfs-kerberos) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install NFS kernel modules
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nfs-common linux-modules-extra-$(uname -r) || true
+          sudo modprobe nfs || echo "WARNING: NFS kernel module not available"
+
+      - name: Run NFS Kerberos tests
+        run: ./test/conformance/run.sh --suite nfs-kerberos --profile ${{ matrix.profile }}
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nfs-kerberos-results
+          path: |
+            test/nfs-conformance/results/
+            test/conformance/results/
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Extra SMB jobs that are not a profile cell of any suite.
+  # ---------------------------------------------------------------------------
+  smbtorture-kerberos:
+    name: smbtorture Kerberos
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Off on presubmit: Kerberos is expensive and rarely regressing on an
+    # ordinary PR. Runs on push to develop, nightly, and manual dispatch.
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # The self-contained KDC (test/smb-conformance/kdc) is started via the
+      # docker-compose "kerberos" profile by run.sh --kerberos. No external KDC
+      # or secrets required.
+      #
+      # The filters cover Kerberos-sensitive operations, not just session setup:
+      # a truncated or garbled GSS session key surfaces on read and lock too.
+      # run.sh takes a single --filter, so iterate — one suite per invocation —
+      # to keep each run inside the harness's per-suite timeout budget.
+      #
+      # smb2.create is deliberately excluded: its known failures are catalogued
+      # only in the non-Kerberos KNOWN_FAILURES.md, so they would grade as NEW
+      # failures under --kerberos. Re-add once the Kerberos list covers it.
+      - name: Run smbtorture Kerberos
+        run: |
+          cd test/smb-conformance/smbtorture
+          rc=0
+          for f in smb2.session smb2.read smb2.lock; do
+            ./run.sh --kerberos --filter "$f" --verbose || rc=$?
+          done
+          exit "$rc"
+
+      - name: Add step summary
+        if: always()
+        run: |
+          RESULTS_DIR=$(ls -td test/smb-conformance/results/smbtorture-*/ 2>/dev/null | head -1 || true)
+          {
+            echo "## smbtorture Kerberos"
+            if [ -n "$RESULTS_DIR" ] && [ -f "$RESULTS_DIR/summary.txt" ]; then
+              cat "$RESULTS_DIR/summary.txt"
+            else
+              echo "No results found."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smbtorture-kerberos
+          path: test/smb-conformance/results/smbtorture-*/
+          retention-days: 30
+
+  smbtorture-baseline-refresh:
+    name: smbtorture baseline refresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Nightly only. Regenerates baseline-results.md from a clean develop
+    # memory-profile run so the documentation snapshot cannot drift. NOT a CI
+    # gate — grading is done against KNOWN_FAILURES.md by parse-results.sh.
+    # Operates on develop explicitly because scheduled runs fire on the default
+    # branch (main), not develop.
+    if: github.event_name == 'schedule'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@v7
+        with:
+          ref: develop
+          # GITHUB_TOKEN cannot push past branch protection on develop. If that
+          # branch requires PRs or reviews, set a PAT secret BASELINE_PUSH_TOKEN
+          # with bypass rights.
+          token: ${{ secrets.BASELINE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Run smbtorture (memory profile)
+        run: |
+          cd test/smb-conformance/smbtorture
+          # A known-failure red run must not stop the baseline refresh.
+          ./run.sh --profile memory --verbose || true
+
+      - name: Regenerate baseline-results.md
+        run: |
+          cd test/smb-conformance/smbtorture
+          RESULTS_DIR=$(ls -td ../results/smbtorture-*/ 2>/dev/null | head -1 || true)
+          if [ -z "$RESULTS_DIR" ] || [ ! -f "$RESULTS_DIR/smbtorture-output.txt" ]; then
+            echo "no smbtorture output to snapshot"
+            exit 0
+          fi
+          BASELINE_PROFILE=memory \
+          BASELINE_COMMIT="$(git rev-parse --short HEAD)" \
+          BASELINE_PLATFORM="$(uname -sm) (GitHub Actions)" \
+            ./parse-results.sh --emit-baseline "$RESULTS_DIR/smbtorture-output.txt" KNOWN_FAILURES.md > baseline-results.md
+
+      - name: Commit the refreshed baseline
+        run: |
+          BASELINE=test/smb-conformance/smbtorture/baseline-results.md
+          if git diff --quiet "$BASELINE"; then
+            echo "baseline-results.md unchanged"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$BASELINE"
+          git commit -m "docs(smb-conformance): refresh smbtorture baseline-results.md [skip ci]"
+          # A PR may merge into develop during the run; rebase the lone baseline
+          # commit on top so the push fast-forwards instead of reddening the job
+          # on a non-fast-forward rejection.
+          git pull --rebase origin develop
+          git push origin HEAD:develop
+
+  # ---------------------------------------------------------------------------
+  summary:
+    name: Conformance summary
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [wpts, smbtorture, pjdfstest, nfs-kerberos]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Summarise
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          {
+            echo "## Conformance Suites"
+            echo ""
+            echo "| Suite | Result |"
+            echo "|---|---|"
+            jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"' <<<"$RESULTS"
+            echo ""
+            echo "Profiles, variants and per-event tiering come from"
+            echo "\`test/conformance/suites.json\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail if a suite failed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          # `skipped` is a legitimate outcome (a suite with no cells for this
+          # event, or a path-scoped one); `failure` and `cancelled` are not.
+          bad=$(jq -r '[to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | .key] | join(", ")' <<<"$RESULTS")
+          if [ -n "$bad" ]; then
+            echo "failed suites: $bad" >&2
+            exit 1
+          fi

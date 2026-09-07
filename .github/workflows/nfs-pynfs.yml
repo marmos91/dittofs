@@ -4,7 +4,7 @@
 # client, so what it exercises is the protocol itself — state, sessions, owners,
 # locking and wire error codes — which every POSIX test passes straight over.
 #
-# Tiered by EVENT, not by path, for the same reason as posix-tests.yml: a change
+# Tiered by EVENT, not by path, for the same reason as conformance.yml: a change
 # to shared code (a metadata store, the runtime) can break the protocol from
 # underneath, so this runs on all non-docs PRs. Path filters skip docs only.
 #

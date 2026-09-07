@@ -191,8 +191,14 @@
     }
   },
 
+  "_workflows_comment": [
+    "The conformance workflows ci-health.yml monitors, file to display name.",
+    "It reads the file names from here; the workflow_run trigger has to repeat",
+    "the display names because a GitHub trigger cannot be computed."
+  ],
   "workflows": {
     "conformance.yml": "Conformance Suites",
+    "nfs-pynfs.yml": "NFS Protocol Conformance",
     "e2e-tests.yml": "E2E Tests"
   }
 }

@@ -348,7 +348,7 @@ Each platform runs the same core operations:
 
 | Workflow | Trigger | Purpose | Duration |
 |----------|---------|---------|----------|
-| `smb-conformance.yml` | PR (memory), push (all), weekly | WPTS BVT + smbtorture + Kerberos | ~20 min |
+| `conformance.yml` | PR (presubmit profiles), push (all), nightly | WPTS BVT + smbtorture + Kerberos | ~20 min |
 | `smb-client-compat.yml` | push, weekly | Windows/macOS/Linux client testing | ~10 min |
 | `e2e-tests.yml` | PR, push | E2E tests (NFS, SMB, cross-protocol) | ~15 min |
 
