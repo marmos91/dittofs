@@ -90,7 +90,10 @@ jobs:
         env:
           # workflow_dispatch has no tier of its own; treat a manual run like a
           # postsubmit one so a dispatch covers every profile.
-          EVENT: ${{ github.event_name == 'pull_request' && 'pull_request' || 'push' }}
+          EVENT: >-
+            ${{ github.event_name == 'pull_request' && 'pull_request'
+                || github.event_name == 'schedule' && 'schedule'
+                || 'push' }}
           ONLY: ${{ inputs.suite }}
         run: |
           set -euo pipefail

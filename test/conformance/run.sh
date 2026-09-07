@@ -140,17 +140,31 @@ print_matrix() {
         | {include: .}'
 }
 
+# The NFS adapter port, under the name the rest of the tree already uses.
+ADAPTER_PORT="${NFS_PORT:-12049}"
+
 # A dfs left behind by a killed run answers on the adapter port and grades a
-# suite against a build nobody is testing. Clearing it is cheap; guessing which
-# build answered is not.
+# suite against a build nobody is testing. Only a leftover dfs is ever killed:
+# anything else holding the port belongs to someone, so refuse the run rather
+# than guess. Escalating to sudo is deliberately not attempted — it would either
+# block on a password prompt or kill a process this has no business killing.
+#
+# Only the suites that provision a dfs on the host care. The SMB suites and the
+# Kerberos one run entirely inside Docker and publish no host port, so a
+# listener here is none of their business and must not fail them.
 clear_orphan_server() {
-    local port="${DITTOFS_NFS_PORT:-12049}"
-    local pids
-    pids="$(lsof -ti "tcp:${port}" -sTCP:LISTEN 2>/dev/null || true)"
-    [[ -z "$pids" ]] && return 0
-    log_warn "port ${port} already has a listener (pid ${pids//$'\n'/ }); stopping it"
-    # shellcheck disable=SC2086
-    kill $pids 2>/dev/null || sudo kill $pids 2>/dev/null || true
+    [[ "$(mq --arg s "$SUITE" '.suites[$s].host_adapter // false')" == "true" ]] || return 0
+    command -v lsof >/dev/null 2>&1 || return 0
+    local pid name
+    for pid in $(lsof -ti "tcp:${ADAPTER_PORT}" -sTCP:LISTEN 2>/dev/null); do
+        name="$(ps -p "$pid" -o comm= 2>/dev/null)"
+        name="${name##*/}"
+        [[ "$name" == "dfs" ]] \
+            || die "port ${ADAPTER_PORT} is held by ${name:-pid $pid}, which is not a dfs; stop it first"
+        log_warn "stopping a leftover dfs on port ${ADAPTER_PORT} (pid ${pid})"
+        kill "$pid" 2>/dev/null \
+            || die "could not stop the dfs on port ${ADAPTER_PORT} (pid ${pid})"
+    done
 }
 
 SUITE=""
