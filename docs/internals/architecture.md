@@ -154,7 +154,12 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 - Implementations:
   - `pkg/metadata/store/memory/`: In-memory (fast, ephemeral, full hard link support)
   - `pkg/metadata/store/badger/`: BadgerDB (persistent, embedded, path-based handles)
+  - `pkg/metadata/store/sqlite/`: SQLite (persistent, embedded, UUID-based handles)
   - `pkg/metadata/store/postgres/`: PostgreSQL (persistent, distributed, UUID-based handles)
+- The two SQL backends share one schema and most of their operation bodies,
+  which live in `pkg/metadata/store/sql/`; their own packages carry connection
+  setup, error mapping, statement text, snapshot export, and the few bodies
+  whose mechanism diverges
 - File handles are opaque identifiers (implementation-specific format)
 
 ## Per-Share Block Store Isolation
@@ -889,7 +894,7 @@ No custom code required - configure via CLI:
 
 ```bash
 # Create stores
-./dfsctl store metadata add --name default-meta --type memory  # or badger, postgres
+./dfsctl store metadata add --name default-meta --type memory  # or badger, sqlite, postgres
 ./dfsctl store block local add --name default-local --type fs \
   --config '{"path":"/data/blocks"}'
 
@@ -952,7 +957,11 @@ dittofs/
 │   │   └── store/                # Store implementations
 │   │       ├── memory/           # In-memory (ephemeral)
 │   │       ├── badger/           # BadgerDB (persistent)
-│   │       └── postgres/         # PostgreSQL (distributed)
+│   │       ├── sql/              # Shared bodies for the two SQL backends
+│   │       ├── sqlite/           # SQLite dialect (persistent, embedded)
+│   │       ├── postgres/         # PostgreSQL dialect (distributed)
+│   │       ├── basestore/        # Helpers shared by every backend
+│   │       └── internal/         # Row codec, caches, retry
 │   │
 │   ├── blockstore/               # Per-share block storage
 │   │   ├── doc.go                # Package documentation
