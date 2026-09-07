@@ -49,12 +49,12 @@ func (h *Handler) handleClose(ctx *types.CompoundContext, reader io.Reader) *typ
 		closeSeqid = 0
 	}
 
-	stateid, err := types.DecodeStateid4(reader)
-	if err != nil {
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
+			Status: argStatus,
 			OpCode: types.OP_CLOSE,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   encodeStatusOnly(argStatus),
 		}
 	}
 
@@ -119,8 +119,9 @@ func (h *Handler) handleClose(ctx *types.CompoundContext, reader io.Reader) *typ
 	// NOTE: CLOSE does NOT clear ctx.CurrentFH per RFC 7530
 
 	return &types.CompoundResult{
-		Status: types.NFS4_OK,
-		OpCode: types.OP_CLOSE,
-		Data:   buf.Bytes(),
+		Status:  types.NFS4_OK,
+		Stateid: &closeResult.Stateid,
+		OpCode:  types.OP_CLOSE,
+		Data:    buf.Bytes(),
 	}
 }

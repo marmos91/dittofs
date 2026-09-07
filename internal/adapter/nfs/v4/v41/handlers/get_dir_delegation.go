@@ -132,10 +132,16 @@ func encodeGetDirDelegationOK(deleg *state.DelegationState) *types.CompoundResul
 		}
 	}
 
+	// A granted delegation returns a stateid, so it becomes the COMPOUND's
+	// current stateid (RFC 8881 Section 16.2.3.1.2). RFC 8881 Section 18.39.3
+	// spells out the other side of this for the GDD4_UNAVAIL reply below --
+	// "the current stateid is not changed" -- which is only worth saying
+	// because the granted case does change it.
 	return &types.CompoundResult{
-		Status: types.NFS4_OK,
-		OpCode: types.OP_GET_DIR_DELEGATION,
-		Data:   buf.Bytes(),
+		Status:  types.NFS4_OK,
+		Stateid: &deleg.Stateid,
+		OpCode:  types.OP_GET_DIR_DELEGATION,
+		Data:    buf.Bytes(),
 	}
 }
 
