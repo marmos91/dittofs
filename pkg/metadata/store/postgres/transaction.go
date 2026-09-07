@@ -233,7 +233,7 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 		WITH old AS (
 			SELECT id, share_name, size, uid, gid, file_type, nlink
 			FROM inodes
-			WHERE id = $21 AND share_name = $22
+			WHERE id = $22 AND share_name = $23
 			FOR UPDATE
 		)
 		UPDATE inodes SET
@@ -256,7 +256,8 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 			object_id = $17,
 			deleted_at = $18,
 			original_path = $19,
-			deleted_by = $20
+			deleted_by = $20,
+			idempotency_token = $21
 		FROM old
 		WHERE inodes.id = old.id AND inodes.share_name = old.share_name
 		RETURNING old.size, old.uid, old.gid, old.file_type, old.nlink
@@ -295,10 +296,10 @@ func (tx *postgresTransaction) putFile(ctx context.Context, file *metadata.File,
 				id, share_name, file_type, mode, uid, gid, size,
 				atime, mtime, ctime, creation_time, content_id, link_target,
 				device_major, device_minor, hidden, acl, eas, object_id,
-				deleted_at, original_path, deleted_by
+				deleted_at, original_path, deleted_by, idempotency_token
 			) VALUES (
 				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-				$19, $20, $21, $22
+				$19, $20, $21, $22, $23
 			)
 		`
 

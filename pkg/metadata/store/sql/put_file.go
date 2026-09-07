@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 )
 
-// InodeValues are the twenty column values an inode write sends, in the order
+// InodeValues are the twenty-one column values an inode write sends, in the order
 // both the UPDATE and the INSERT name them. Keeping one builder for both means
 // a column added to the table cannot be wired into one statement and forgotten
 // in the other.
@@ -83,6 +83,9 @@ func InodeValues(file *metadata.File) ([]any, error) {
 		payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 		file.Hidden, aclJSON, easJSON, objectIDArg,
 		deletedAtArg, file.OriginalPath, file.DeletedBy,
+		// Opaque create verifier: compared only for equality, so it travels as
+		// the signed bit pattern rather than being clamped into int64 range.
+		int64(file.IdempotencyToken),
 	}, nil
 }
 
