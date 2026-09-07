@@ -718,9 +718,10 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 		if oldConfirmed.Lease != nil {
 			oldConfirmed.Lease.Stop()
 		}
-		// The client rebooted: RFC 7530 Section 9.1.1 has this confirm release
-		// the previous incarnation's locks, opens and delegations, not just
-		// forget the record that owned them. Leaving the state behind keeps
+		// The client rebooted, and RFC 7530 Section 16.34.5 requires more of
+		// this confirm than forgetting the record: where a confirmed record
+		// for the same id string already exists, "the server MUST remove
+		// client x's relevant leased client state". Leaving it behind keeps
 		// every stateid the client held before the reboot working, so the
 		// files stay share-reserved and byte-range locked on behalf of an
 		// incarnation that no longer exists and will never close them.
