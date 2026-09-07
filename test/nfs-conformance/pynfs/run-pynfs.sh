@@ -36,6 +36,16 @@ LEASE_TIME=30
 # is the same identity pjdfstest runs as, so uid 0 gets a usable export root.
 TEST_UID=0
 TEST_GID=0
+# pynfs runs two clients, and the second one always authenticates as
+# TEST_UID+1 / TEST_GID+1 -- that is how the suite gets a second principal for
+# its multi-client and "as another user" cases. DittoFS refuses an NFS uid it
+# cannot map to an account when the share has no default permission, so that
+# second client needs an account of its own or every test that uses it fails
+# at the first LOOKUP.
+SECOND_UID=$((TEST_UID + 1))
+SECOND_GID=$((TEST_GID + 1))
+SECOND_USER="pynfs-client2"
+SECOND_PASSWORD="pynfs-client2-password-123"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
 log()       { echo -e "${GREEN}[PYNFS]${NC} $*"; }
@@ -173,6 +183,15 @@ if [[ "$NO_SETUP" != true ]]; then
     if ! "${REPO_ROOT}/dfsctl" adapter settings nfs update \
             --lease-time "$LEASE_TIME" >/dev/null 2>&1; then
         log_warn "Could not set lease time; expiry tests will run at the server default."
+    fi
+
+    log "Creating an account for pynfs's second client (uid ${SECOND_UID})..."
+    if ! "${REPO_ROOT}/dfsctl" user create --username "$SECOND_USER" \
+            --password "$SECOND_PASSWORD" \
+            --uid "$SECOND_UID" --gid "$SECOND_GID" >/dev/null 2>&1 ||
+       ! "${REPO_ROOT}/dfsctl" share permission grant "$EXPORT_PATH" \
+            --user "$SECOND_USER" --level read-write >/dev/null 2>&1; then
+        log_warn "Could not provision uid ${SECOND_UID}; multi-client tests will fail on share access."
     fi
 fi
 
