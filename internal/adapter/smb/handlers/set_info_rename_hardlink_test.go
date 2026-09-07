@@ -133,3 +133,55 @@ func TestSetInfo_Rename_DistinctDestination(t *testing.T) {
 		t.Error("c.txt resolves to a different file than the one renamed")
 	}
 }
+
+// TestSetInfo_Rename_OverwritesUnrelatedFile is the second control: the guard
+// must recognise only the file being renamed. A destination that exists but is
+// a different file is a real overwrite, and it has to stay one — a guard that
+// fired on any resolvable destination would turn every ReplaceIfExists rename
+// into a silent no-op, which the two tests above cannot tell apart from the
+// fix working.
+func TestSetInfo_Rename_OverwritesUnrelatedFile(t *testing.T) {
+	rt, rootHandle, authCtx := newHardlinkTestShare(t)
+	ctx := authCtx.Context
+	metaSvc := rt.GetMetadataService()
+
+	handle, _ := createHardlinkTestFile(t, rt, authCtx, rootHandle, "a.txt", 1024)
+	victim, _ := createHardlinkTestFile(t, rt, authCtx, rootHandle, "d.txt", 2048)
+	if bytes.Equal(handle, victim) {
+		t.Fatal("test setup: source and victim are the same file")
+	}
+
+	h, open := openHardlinkTestFile(t, rt, rootHandle, handle, "a.txt")
+	open.GrantedAccess = uint32(types.Delete)
+	h.NotifyRegistry = newTestNotifyRegistry()
+	notified := false
+	renameWatcher(t, h.NotifyRegistry, &notified)
+
+	// This is the only rename in the file that clobbers a victim, and the
+	// clobber path releases the replaced payload through the handler context.
+	buf := encodeFileRenameInfoWire(t, true, [8]byte{}, "d.txt")
+	hctx := &SMBHandlerContext{Context: ctx}
+	resp, err := h.setFileInfoFromStore(hctx, authCtx, open, types.FileRenameInformation, buf)
+	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
+		t.Fatalf("setFileInfoFromStore(overwrite rename): err=%v resp=%v", err, resp)
+	}
+
+	h.NotifyRegistry.FlushAll()
+	if !notified {
+		t.Error("watcher missed a rename that overwrote an unrelated file")
+	}
+
+	child, cErr := metaSvc.GetChild(ctx, rootHandle, "d.txt")
+	if cErr != nil {
+		t.Fatalf("d.txt does not resolve after being overwritten: %v", cErr)
+	}
+	if !bytes.Equal(child, handle) {
+		t.Error("d.txt was not replaced by the renamed file")
+	}
+	if _, cErr := metaSvc.GetChild(ctx, rootHandle, "a.txt"); cErr == nil {
+		t.Error("a.txt still resolves after being renamed over d.txt")
+	}
+	if got := open.Name().FileName; got != "d.txt" {
+		t.Errorf("open handle still named %q after the overwrite rename", got)
+	}
+}
