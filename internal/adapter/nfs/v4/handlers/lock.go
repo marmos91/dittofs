@@ -101,12 +101,12 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 			openSeqid = 0
 		}
 
-		openStateid, decErr := types.DecodeStateid4(reader)
-		if decErr != nil {
+		openStateid, argStatus := types.DecodeStateidArg(ctx, reader)
+		if argStatus != types.NFS4_OK {
 			return &types.CompoundResult{
-				Status: types.NFS4ERR_BADXDR,
+				Status: argStatus,
 				OpCode: types.OP_LOCK,
-				Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+				Data:   encodeStatusOnly(argStatus),
 			}
 		}
 
@@ -160,12 +160,12 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 		)
 	} else {
 		// exist_lock_owner4 path
-		lockStateid, decErr := types.DecodeStateid4(reader)
-		if decErr != nil {
+		lockStateid, argStatus := types.DecodeStateidArg(ctx, reader)
+		if argStatus != types.NFS4_OK {
 			return &types.CompoundResult{
-				Status: types.NFS4ERR_BADXDR,
+				Status: argStatus,
 				OpCode: types.OP_LOCK,
-				Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+				Data:   encodeStatusOnly(argStatus),
 			}
 		}
 
@@ -246,9 +246,10 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 	}
 
 	return &types.CompoundResult{
-		Status: types.NFS4_OK,
-		OpCode: types.OP_LOCK,
-		Data:   buf.Bytes(),
+		Status:  types.NFS4_OK,
+		Stateid: &result.Stateid,
+		OpCode:  types.OP_LOCK,
+		Data:    buf.Bytes(),
 	}
 }
 
@@ -432,12 +433,12 @@ func (h *Handler) handleLockU(ctx *types.CompoundContext, reader io.Reader) *typ
 		seqid = 0
 	}
 
-	lockStateid, err := types.DecodeStateid4(reader)
-	if err != nil {
+	lockStateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
+			Status: argStatus,
 			OpCode: types.OP_LOCKU,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   encodeStatusOnly(argStatus),
 		}
 	}
 
@@ -498,8 +499,9 @@ func (h *Handler) handleLockU(ctx *types.CompoundContext, reader io.Reader) *typ
 	}
 
 	return &types.CompoundResult{
-		Status: types.NFS4_OK,
-		OpCode: types.OP_LOCKU,
-		Data:   buf.Bytes(),
+		Status:  types.NFS4_OK,
+		Stateid: &unlockResult.Stateid,
+		OpCode:  types.OP_LOCKU,
+		Data:    buf.Bytes(),
 	}
 }

@@ -20,10 +20,11 @@ func readBypassStateidH() *types.Stateid4 {
 }
 
 // openFileAndGetStateid creates+opens a file via the OPEN handler with the given
-// share_access and returns the file handle and the real (confirmed) open stateid.
+// share_access and share_deny, returning the file handle and the real
+// (confirmed) open stateid.
 // It drives OPEN then OPEN_CONFIRM through the handler so the returned stateid is
 // usable on subsequent READ/WRITE ops.
-func openFileAndGetStateid(t *testing.T, fx *ioTestFixture, owner string, shareAccess uint32) (metadata.FileHandle, *types.Stateid4) {
+func openFileAndGetStateid(t *testing.T, fx *ioTestFixture, owner string, shareAccess, shareDeny uint32) (metadata.FileHandle, *types.Stateid4) {
 	t.Helper()
 
 	ctx := newRealFSContext(0, 0)
@@ -33,7 +34,7 @@ func openFileAndGetStateid(t *testing.T, fx *ioTestFixture, owner string, shareA
 	args := encodeOpenArgs(
 		1,
 		shareAccess,
-		types.OPEN4_SHARE_DENY_NONE,
+		shareDeny,
 		testClientID(t, fx.handler.StateManager, "shareres-client"),
 		[]byte(owner),
 		types.OPEN4_CREATE,
@@ -79,43 +80,71 @@ func openFileAndGetStateid(t *testing.T, fx *ioTestFixture, owner string, shareA
 }
 
 // ============================================================================
-// H3 — all-ones (READ-bypass) special stateid on write-family ops
+// Special stateids on write-family ops
 // ============================================================================
 
-func TestWrite_ReadBypassStateid_ReturnsBadStateid(t *testing.T) {
+// TestWrite_ReadBypassStateid_BehavesAsAnonymous checks that a WRITE carrying
+// the all-ones READ-bypass stateid is serviced. RFC 7530 Section 16.36.4:
+// "the WRITE is treated exactly the same as if the anonymous stateid were used".
+func TestWrite_ReadBypassStateid_BehavesAsAnonymous(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 	fileHandle := fx.createRegularFile(t, fx.rootHandle, "wbypass.txt", 0o644, 0, 0)
 
 	ctx := newRealFSContext(0, 0)
 	setCurrentFH(ctx, fileHandle)
 
-	args := encodeWriteArgs(readBypassStateidH(), 0, types.UNSTABLE4, []byte("nope"))
+	args := encodeWriteArgs(readBypassStateidH(), 0, types.UNSTABLE4, []byte("yes"))
 	result := fx.handler.handleWrite(ctx, bytes.NewReader(args))
 
-	if result.Status != types.NFS4ERR_BAD_STATEID {
-		t.Errorf("WRITE with all-ones stateid status = %d, want NFS4ERR_BAD_STATEID (%d)",
-			result.Status, types.NFS4ERR_BAD_STATEID)
+	if result.Status != types.NFS4_OK {
+		t.Errorf("WRITE with all-ones stateid status = %d, want NFS4_OK", result.Status)
 	}
 }
 
-func TestSetAttr_ReadBypassStateid_OnSizeChange_ReturnsBadStateid(t *testing.T) {
+// TestWrite_SpecialStateid_DeniedByShareReservation is the other half of that
+// rule: neither special stateid may write past an open that denies writing
+// (RFC 7530 Section 9.1.4.3), and the refusal is NFS4ERR_LOCKED.
+func TestWrite_SpecialStateid_DeniedByShareReservation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		stateid *types.Stateid4
+	}{
+		{"anonymous", &types.Stateid4{}},
+		{"read_bypass", readBypassStateidH()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newIOTestFixture(t, "/export")
+			fileHandle, _ := openFileAndGetStateid(t, fx, "denywrite-"+tc.name,
+				types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_WRITE)
+
+			ctx := newRealFSContext(0, 0)
+			setCurrentFH(ctx, fileHandle)
+
+			args := encodeWriteArgs(tc.stateid, 0, types.UNSTABLE4, []byte("nope"))
+			result := fx.handler.handleWrite(ctx, bytes.NewReader(args))
+
+			if result.Status != types.NFS4ERR_LOCKED {
+				t.Errorf("WRITE status = %d, want NFS4ERR_LOCKED (%d)",
+					result.Status, types.NFS4ERR_LOCKED)
+			}
+		})
+	}
+}
+
+// TestSetAttr_ReadBypassStateid_OnSizeChange_BehavesAsAnonymous mirrors the
+// WRITE case for the other write-family operation that carries a stateid.
+func TestSetAttr_ReadBypassStateid_OnSizeChange_BehavesAsAnonymous(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 	fileHandle := fx.createRegularFile(t, fx.rootHandle, "sbypass.txt", 0o644, 0, 0)
 
 	ctx := newRealFSContext(0, 0)
 	setCurrentFH(ctx, fileHandle)
 
-	var attrVals bytes.Buffer
-	_ = xdr.WriteUint64(&attrVals, 0) // truncate to 0
-	var bitmap []uint32
-	attrs.SetBit(&bitmap, attrs.FATTR4_SIZE)
-
-	args := encodeSetAttrArgs(t, readBypassStateidH(), bitmap, attrVals.Bytes())
+	args := encodeSetAttrSizeArgs(t, readBypassStateidH(), 0)
 	result := fx.handler.handleSetAttr(ctx, bytes.NewReader(args))
 
-	if result.Status != types.NFS4ERR_BAD_STATEID {
-		t.Errorf("SETATTR(size) with all-ones stateid status = %d, want NFS4ERR_BAD_STATEID (%d)",
-			result.Status, types.NFS4ERR_BAD_STATEID)
+	if result.Status != types.NFS4_OK {
+		t.Errorf("SETATTR(size) with all-ones stateid status = %d, want NFS4_OK", result.Status)
 	}
 }
 
@@ -164,7 +193,7 @@ func TestSetAttr_BogusStateid_OnSizeChange_ReturnsBadStateid(t *testing.T) {
 func TestSetAttr_ReadOnlyOpenStateid_OnSizeChange_ReturnsOpenMode(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 
-	fileHandle, stateid := openFileAndGetStateid(t, fx, "rdonly", types.OPEN4_SHARE_ACCESS_READ)
+	fileHandle, stateid := openFileAndGetStateid(t, fx, "rdonly", types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE)
 	fx.writeContent(t, fileHandle, []byte("content"))
 
 	ctx := newRealFSContext(0, 0)
@@ -184,7 +213,7 @@ func TestSetAttr_ReadOnlyOpenStateid_OnSizeChange_ReturnsOpenMode(t *testing.T) 
 func TestSetAttr_WriteOpenStateid_OnSizeChange_Allowed(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 
-	fileHandle, stateid := openFileAndGetStateid(t, fx, "rdwr", types.OPEN4_SHARE_ACCESS_BOTH)
+	fileHandle, stateid := openFileAndGetStateid(t, fx, "rdwr", types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE)
 	fx.writeContent(t, fileHandle, []byte("content"))
 
 	ctx := newRealFSContext(0, 0)
@@ -236,7 +265,7 @@ func TestRead_WriteOnlyOpenStateid_ReturnsOpenMode(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 
 	// Open write-only and grab the real stateid.
-	fileHandle, stateid := openFileAndGetStateid(t, fx, "writeonly", types.OPEN4_SHARE_ACCESS_WRITE)
+	fileHandle, stateid := openFileAndGetStateid(t, fx, "writeonly", types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_NONE)
 
 	ctx := newRealFSContext(0, 0)
 	setCurrentFH(ctx, fileHandle)
@@ -253,7 +282,7 @@ func TestRead_WriteOnlyOpenStateid_ReturnsOpenMode(t *testing.T) {
 func TestRead_ReadWriteOpenStateid_Allowed(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 
-	fileHandle, stateid := openFileAndGetStateid(t, fx, "readwrite", types.OPEN4_SHARE_ACCESS_BOTH)
+	fileHandle, stateid := openFileAndGetStateid(t, fx, "readwrite", types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE)
 	fx.writeContent(t, fileHandle, []byte("content"))
 
 	ctx := newRealFSContext(0, 0)

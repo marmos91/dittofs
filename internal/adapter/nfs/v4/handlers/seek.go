@@ -44,9 +44,9 @@ func (h *Handler) handleSeek(ctx *types.CompoundContext, reader io.Reader) *type
 		return seekErr(types.NFS4ERR_ISDIR)
 	}
 
-	stateid, err := types.DecodeStateid4(reader)
-	if err != nil {
-		return seekErr(types.NFS4ERR_BADXDR)
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		return seekErr(argStatus)
 	}
 	offset, err := xdr.DecodeUint64(reader)
 	if err != nil {

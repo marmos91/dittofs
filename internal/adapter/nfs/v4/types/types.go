@@ -56,6 +56,12 @@ type CompoundResult struct {
 
 	// Data contains the XDR-encoded operation-specific result.
 	Data []byte
+
+	// Stateid is the stateid this operation returned, when it returns one
+	// (OPEN, OPEN_CONFIRM, OPEN_DOWNGRADE, CLOSE, LOCK, LOCKU and
+	// GET_DIR_DELEGATION). The COMPOUND loop makes it the current stateid,
+	// per RFC 8881 Section 16.2.3.1.2. Nil for every other operation.
+	Stateid *Stateid4
 }
 
 // Compound4Response represents the COMPOUND4res XDR structure.
@@ -94,6 +100,16 @@ type CompoundContext struct {
 	// SavedFH is the saved filehandle for SAVEFH/RESTOREFH.
 	// Nil means no saved filehandle.
 	SavedFH []byte
+
+	// currentStateid / savedStateid are the NFSv4.1 current and saved stateids
+	// that travel with CurrentFH and SavedFH. The has* flags separate "no
+	// stateid" from the all-zeros stateid, which is a real (anonymous) value:
+	// the placeholder resolves to NFS4ERR_BAD_STATEID only in the former case.
+	// Reached through the methods in current_stateid.go.
+	currentStateid    Stateid4
+	savedStateid      Stateid4
+	hasCurrentStateid bool
+	hasSavedStateid   bool
 
 	// ClientAddr is the remote address of the client connection.
 	ClientAddr string
@@ -280,8 +296,9 @@ func (s *Stateid4) IsAnonymousStateid() bool {
 
 // IsReadBypassStateid reports whether the stateid is the READ-bypass special
 // stateid (seqid=0xFFFFFFFF, other=all-ones). Per RFC 7530 Section 9.1.4.3 it
-// bypasses share-mode and byte-range-lock checks and is valid ONLY on READ;
-// callers MUST reject it on write-family operations with NFS4ERR_BAD_STATEID.
+// bypasses share-mode and byte-range-lock checks on READ; on a write-family
+// operation RFC 7530 Section 16.36.4 makes it behave exactly like the
+// anonymous stateid.
 func (s *Stateid4) IsReadBypassStateid() bool {
 	return s.isReadBypass()
 }

@@ -164,7 +164,7 @@ func TestEncodeReadPlusResok(t *testing.T) {
 
 func TestDecodeAllocArgs(t *testing.T) {
 	t.Run("valid", func(t *testing.T) {
-		sid, off, length, st := decodeAllocArgs(encAllocArgs(anonStateid(), 100, 200))
+		sid, off, length, st := decodeAllocArgs(&types.CompoundContext{}, encAllocArgs(anonStateid(), 100, 200))
 		if st != types.NFS4_OK {
 			t.Fatalf("status = %d, want OK", st)
 		}
@@ -174,7 +174,7 @@ func TestDecodeAllocArgs(t *testing.T) {
 	})
 
 	t.Run("overflow -> INVAL", func(t *testing.T) {
-		_, _, _, st := decodeAllocArgs(encAllocArgs(anonStateid(), ^uint64(0)-5, 100))
+		_, _, _, st := decodeAllocArgs(&types.CompoundContext{}, encAllocArgs(anonStateid(), ^uint64(0)-5, 100))
 		if st != types.NFS4ERR_INVAL {
 			t.Fatalf("status = %d, want INVAL", st)
 		}
@@ -184,7 +184,7 @@ func TestDecodeAllocArgs(t *testing.T) {
 		var buf bytes.Buffer
 		writeStateid(&buf, anonStateid())
 		_ = xdr.WriteUint64(&buf, 0) // offset only, missing length
-		_, _, _, st := decodeAllocArgs(bytes.NewReader(buf.Bytes()))
+		_, _, _, st := decodeAllocArgs(&types.CompoundContext{}, bytes.NewReader(buf.Bytes()))
 		if st != types.NFS4ERR_BADXDR {
 			t.Fatalf("status = %d, want BADXDR", st)
 		}
