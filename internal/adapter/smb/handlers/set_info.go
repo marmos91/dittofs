@@ -1060,7 +1060,7 @@ func (h *Handler) setFileInfoFromStore(
 		// case-mismatched destination still falls through to the overwrite
 		// path below and replaces the entry it found.
 		if dstHandle, childErr := metaSvc.GetChild(authCtx.Context, toDir, toName); childErr == nil &&
-			bytes.Equal(dstHandle, openFile.MetadataHandle) {
+			len(openFile.MetadataHandle) > 0 && bytes.Equal(dstHandle, openFile.MetadataHandle) {
 			logger.Debug("SET_INFO: rename destination is another link to the source",
 				"from", openFile.Name().Path,
 				"to", newPath)

@@ -66,7 +66,7 @@ func TestSetInfo_Rename_OntoOwnHardLink(t *testing.T) {
 	// Rename a.txt onto b.txt, which is the same inode reached by its other
 	// link. Exact case, so the case-mismatch pre-remove branch stays out.
 	buf := encodeFileRenameInfoWire(t, true, [8]byte{}, "b.txt")
-	resp, err := h.setFileInfoFromStore(nil, authCtx, open, types.FileRenameInformation, buf)
+	resp, err := h.setFileInfoFromStore(&SMBHandlerContext{Context: ctx}, authCtx, open, types.FileRenameInformation, buf)
 	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
 		t.Fatalf("setFileInfoFromStore(rename onto own link): err=%v resp=%v", err, resp)
 	}
@@ -108,7 +108,7 @@ func TestSetInfo_Rename_DistinctDestination(t *testing.T) {
 	renameWatcher(t, h.NotifyRegistry, &notified)
 
 	buf := encodeFileRenameInfoWire(t, true, [8]byte{}, "c.txt")
-	resp, err := h.setFileInfoFromStore(nil, authCtx, open, types.FileRenameInformation, buf)
+	resp, err := h.setFileInfoFromStore(&SMBHandlerContext{Context: ctx}, authCtx, open, types.FileRenameInformation, buf)
 	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
 		t.Fatalf("setFileInfoFromStore(rename): err=%v resp=%v", err, resp)
 	}
@@ -157,11 +157,8 @@ func TestSetInfo_Rename_OverwritesUnrelatedFile(t *testing.T) {
 	notified := false
 	renameWatcher(t, h.NotifyRegistry, &notified)
 
-	// This is the only rename in the file that clobbers a victim, and the
-	// clobber path releases the replaced payload through the handler context.
 	buf := encodeFileRenameInfoWire(t, true, [8]byte{}, "d.txt")
-	hctx := &SMBHandlerContext{Context: ctx}
-	resp, err := h.setFileInfoFromStore(hctx, authCtx, open, types.FileRenameInformation, buf)
+	resp, err := h.setFileInfoFromStore(&SMBHandlerContext{Context: ctx}, authCtx, open, types.FileRenameInformation, buf)
 	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
 		t.Fatalf("setFileInfoFromStore(overwrite rename): err=%v resp=%v", err, resp)
 	}
@@ -183,5 +180,53 @@ func TestSetInfo_Rename_OverwritesUnrelatedFile(t *testing.T) {
 	}
 	if got := open.Name().FileName; got != "d.txt" {
 		t.Errorf("open handle still named %q after the overwrite rename", got)
+	}
+}
+
+// TestSetInfo_Rename_OntoOwnHardLinkWithSecondOpenHandle covers the shape a
+// real client produces: it holds both links open at once. The destination
+// resolves to the file being renamed, so the open-handle gate that protects an
+// overwrite victim sees the renamer's own inode through the sibling handle and
+// refuses the rename with ACCESS_DENIED. That gate exists to stop an unlink
+// under a live handle, and this rename unlinks nothing, so recognising the
+// self-link first is what makes the refusal go away.
+func TestSetInfo_Rename_OntoOwnHardLinkWithSecondOpenHandle(t *testing.T) {
+	rt, rootHandle, authCtx := newHardlinkTestShare(t)
+	ctx := authCtx.Context
+	metaSvc := rt.GetMetadataService()
+
+	handle, _ := createHardlinkTestFile(t, rt, authCtx, rootHandle, "a.txt", 1024)
+	if _, err := metaSvc.CreateHardLink(authCtx, rootHandle, "b.txt", handle); err != nil {
+		t.Fatalf("CreateHardLink b.txt: %v", err)
+	}
+
+	h, open := openHardlinkTestFile(t, rt, rootHandle, handle, "a.txt")
+	open.GrantedAccess = uint32(types.Delete)
+
+	// A second handle on the same inode, reached through the other link. Its
+	// FileID must differ from the renamer's or the gate would exclude it as
+	// the renamer's own open.
+	sibling := (&OpenFile{
+		FileID:         [16]byte{0x5A, 0x11, 0x99, 0x01},
+		MetadataHandle: handle,
+		ShareName:      hardlinkTestShareName,
+		TreeID:         open.TreeID,
+		ShareAccess:    uint32(types.FileShareRead | types.FileShareWrite | types.FileShareDelete),
+	}).WithName(OpenName{Path: "b.txt", FileName: "b.txt", ParentHandle: rootHandle})
+	h.StoreOpenFile(sibling)
+
+	buf := encodeFileRenameInfoWire(t, true, [8]byte{}, "b.txt")
+	resp, err := h.setFileInfoFromStore(&SMBHandlerContext{Context: ctx}, authCtx, open, types.FileRenameInformation, buf)
+	if err != nil {
+		t.Fatalf("setFileInfoFromStore: %v", err)
+	}
+	if resp == nil || resp.GetStatus() != types.StatusSuccess {
+		t.Fatalf("rename onto own link refused while a sibling handle is open: status=%v", resp.GetStatus())
+	}
+
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if _, cErr := metaSvc.GetChild(ctx, rootHandle, name); cErr != nil {
+			t.Errorf("%s no longer resolves: %v", name, cErr)
+		}
 	}
 }
