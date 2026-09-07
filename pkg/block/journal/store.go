@@ -1385,6 +1385,23 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 	if err := s.commitDirtyShards(); err != nil {
 		return fmt.Errorf("journal: restore: commit re-materialized view: %w", err)
 	}
+	// The barrier skips a shard whose fsync has permanently failed, deliberately:
+	// syncFailed freezes the durable watermark, so a dirty-driven sweep would
+	// re-fsync every record on every pass forever. Right for syncLoop, which has
+	// no caller to report to; wrong here, because the skip contributes no error
+	// and the barrier returns nil for records that will never reach the device.
+	// The burials above fsynced themselves and may have landed before the failure
+	// while their replacements did not — the burial-without-replacement state the
+	// barrier exists to prevent, reported as a completed restore.
+	//
+	// Every shard, not only the ones this pass wrote: a restore replays all of
+	// them and tombstones every file at the head, and only a shard that has
+	// appended records can have failed an fsync in the first place.
+	for i, sh := range s.shards {
+		if sh.syncFailed.Load() {
+			return fmt.Errorf("journal: restore: shard %d holds records no fsync can make durable: an earlier fsync failed permanently", i)
+		}
+	}
 	return nil
 }
 
