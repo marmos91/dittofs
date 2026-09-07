@@ -1056,11 +1056,20 @@ func (h *Handler) setFileInfoFromStore(
 		// The link path takes the same shortcut for a link onto a name the
 		// file already answers to.
 		//
+		// Renaming an entry onto itself is excluded. It reaches the same
+		// no-op inside Move, but it is the ordinary "rename to the name I
+		// already have" request rather than a second link, and the work that
+		// request carries is still owed — a client holding a lease on the
+		// file is broken for it.
+		//
 		// The probe is exact-case, matching the GetChild inside Move, so a
 		// case-mismatched destination still falls through to the overwrite
 		// path below and replaces the entry it found.
+		srcName := openFile.Name()
+		renamingOntoOwnEntry := toName == srcName.FileName && bytes.Equal(toDir, srcName.ParentHandle)
 		if dstHandle, childErr := metaSvc.GetChild(authCtx.Context, toDir, toName); childErr == nil &&
-			len(openFile.MetadataHandle) > 0 && bytes.Equal(dstHandle, openFile.MetadataHandle) {
+			!renamingOntoOwnEntry && len(openFile.MetadataHandle) > 0 &&
+			bytes.Equal(dstHandle, openFile.MetadataHandle) {
 			logger.Debug("SET_INFO: rename destination is another link to the source",
 				"from", openFile.Name().Path,
 				"to", newPath)

@@ -230,3 +230,34 @@ func TestSetInfo_Rename_OntoOwnHardLinkWithSecondOpenHandle(t *testing.T) {
 		}
 	}
 }
+
+// TestSetInfo_Rename_OntoItsOwnNameStillActs guards the boundary of the
+// self-link shortcut. Renaming an entry onto its own name reaches the same
+// no-op inside Move, but it is an ordinary rename request rather than a
+// second link, and the work it carries is still owed: the conformance suite
+// requires a lease break for it, and a watcher still expects the
+// notification. Only a destination reached through a *different* entry may be
+// short-circuited.
+func TestSetInfo_Rename_OntoItsOwnNameStillActs(t *testing.T) {
+	rt, rootHandle, authCtx := newHardlinkTestShare(t)
+	ctx := authCtx.Context
+
+	handle, _ := createHardlinkTestFile(t, rt, authCtx, rootHandle, "a.txt", 1024)
+
+	h, open := openHardlinkTestFile(t, rt, rootHandle, handle, "a.txt")
+	open.GrantedAccess = uint32(types.Delete)
+	h.NotifyRegistry = newTestNotifyRegistry()
+	notified := false
+	renameWatcher(t, h.NotifyRegistry, &notified)
+
+	buf := encodeFileRenameInfoWire(t, true, [8]byte{}, "a.txt")
+	resp, err := h.setFileInfoFromStore(&SMBHandlerContext{Context: ctx}, authCtx, open, types.FileRenameInformation, buf)
+	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
+		t.Fatalf("setFileInfoFromStore(rename onto own name): err=%v resp=%v", err, resp)
+	}
+
+	h.NotifyRegistry.FlushAll()
+	if !notified {
+		t.Error("rename onto the file's own name was short-circuited; it must still run the rename path")
+	}
+}
