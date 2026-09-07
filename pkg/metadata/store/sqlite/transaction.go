@@ -202,8 +202,9 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 			object_id = ?17,
 			deleted_at = ?18,
 			original_path = ?19,
-			deleted_by = ?20
-		WHERE id = ?21 AND share_name = ?22
+			deleted_by = ?20,
+			idempotency_token = ?21
+		WHERE id = ?22 AND share_name = ?23
 	`
 
 	var old storesql.OldInode
@@ -241,10 +242,10 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 				id, share_name, file_type, mode, uid, gid, size,
 				atime, mtime, ctime, creation_time, content_id, link_target,
 				device_major, device_minor, hidden, acl, eas, object_id,
-				deleted_at, original_path, deleted_by
+				deleted_at, original_path, deleted_by, idempotency_token
 			) VALUES (
 				?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-				?19, ?20, ?21, ?22
+				?19, ?20, ?21, ?22, ?23
 			)
 		`
 
