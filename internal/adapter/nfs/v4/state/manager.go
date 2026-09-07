@@ -413,13 +413,13 @@ func firstOrEmpty(ss []string) string {
 // that another principal's SETCLIENTID would cancel: an open (byte-range locks
 // hang off one) or a delegation, under a lease that has not lapsed.
 //
-// This is what makes the principal check in Section 16.33.5 conditional.
-// Section 9.1.2 spells the condition out: when a SETCLIENTID arrives "for a
-// client ID that currently has no state, or it has state but the lease has
-// expired, rather than returning NFS4ERR_CLID_INUSE, the server MUST allow the
-// SETCLIENTID". The security rule the check exists for is the MUST NOT in
-// Section 9.1.1 against cancelling leased state established by a different
-// principal, and a record holding none has nothing to cancel.
+// This is what makes the principal check in RFC 7530 Section 16.33.5
+// conditional. Section 9.1.2 spells the condition out: when a SETCLIENTID
+// arrives "for a client ID that currently has no state, or it has state but
+// the lease has expired, rather than returning NFS4ERR_CLID_INUSE, the server
+// MUST allow the SETCLIENTID". The security rule the check exists for is the
+// MUST NOT in Section 9.1.1 against cancelling leased state established by a
+// different principal, and a record holding none has nothing to cancel.
 //
 // Refusing unconditionally makes a client id string permanently unusable by
 // every other principal once one has touched it. Clients derive that string
@@ -444,11 +444,13 @@ func (sm *StateManager) clientHasLiveStateLocked(clientID uint64) bool {
 	return false
 }
 
-// unknownClientIDError answers a client ID that no record matches. RFC 7530
-// Section 16.28.5 separates the two ways that happens: an id this boot of the
-// server minted and has since released is NFS4ERR_EXPIRED, which tells the
-// client its lease lapsed and its state is gone, while an id no boot of this
-// server could have issued is NFS4ERR_STALE_CLIENTID. generateClientID puts
+// unknownClientIDError answers a client ID that no record matches. There are
+// two ways that happens and they call for different errors. RFC 7530 Section
+// 9.6.3.2 covers the first: once a lease is cancelled, "the use of the
+// associated clientid will result in NFS4ERR_EXPIRED being returned", telling
+// the client its state is gone and a new client id is what it needs. An id no
+// boot of this server could have issued means something else entirely -- the
+// server restarted -- and stays NFS4ERR_STALE_CLIENTID. generateClientID puts
 // the boot epoch in the high 32 bits, which is what keeps the two apart.
 //
 // Answering STALE_CLIENTID for both makes a client that merely fell behind on
@@ -959,13 +961,16 @@ func (sm *StateManager) clientLeaseLapsedLocked(clientID uint64) bool {
 //
 // What keeps an expired client's opens and locks alive is courtesy: a client
 // that merely lost contact for a moment should not come back to find its locks
-// broken, so the state outlives the lease and a sweeper collects it later. The
-// courtesy is owed to nobody once another client's request actually collides
-// with that state, and the collision is the only event that says so. Deciding
-// the conflict on the sweeper's schedule instead refuses a request that
-// nothing live objects to, for however much of the sweep interval is left --
-// which is why the same request is granted or refused depending on when it
-// arrives.
+// broken, so the state outlives the lease and a sweeper collects it later.
+// RFC 7530 Section 9.6.3.1 says what happens when someone else then wants the
+// file: on "a lock or I/O request that conflicts with one of the courtesy
+// locks", a courtesy lock that is not a delegation "MUST free the courtesy
+// lock and grant the new request".
+//
+// So the collision, not the sweeper's schedule, is what ends the courtesy.
+// Deferring to the sweep refuses a request that nothing live objects to, for
+// however much of the sweep interval is left, which is why the same request is
+// granted or refused depending on when it arrives.
 //
 // Caller must hold sm.mu.
 func (sm *StateManager) expireLapsedHoldersLocked(fileHandle []byte, keepClientIDs ...uint64) {
