@@ -552,7 +552,7 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 These run after merging to develop and should complete in under 30 minutes:
 
 - Everything from PR checks
-- **smb-conformance.yml** -- All storage profiles (memory, memory-fs, badger-fs, badger-s3, postgres-s3)
+- **smb-conformance.yml** -- All storage profiles (memory, badger, badger-s3, postgres-s3)
 - **smb-client-compat.yml** -- Multi-OS client compatibility (Linux, macOS, Windows)
 - **integration-tests.yml** -- Backend-specific integration tests
 - **posix-tests.yml** -- POSIX compliance validation
@@ -573,7 +573,7 @@ All workflows support `workflow_dispatch` for manual triggering:
 ```bash
 # Trigger via GitHub CLI
 gh workflow run smb-conformance.yml
-gh workflow run smb-conformance.yml -f profile=badger-fs
+gh workflow run smb-conformance.yml -f profile=badger
 gh workflow run smb-client-compat.yml
 gh workflow run e2e-tests.yml
 ```
@@ -608,7 +608,7 @@ Follow this template pattern for new workflow jobs:
           ${{
             github.event_name == 'pull_request'
               && fromJson('["memory"]')
-            || fromJson('["memory", "memory-fs", "badger-fs"]')
+            || fromJson('["memory", "badger"]')
           }}
     steps:
       - uses: actions/checkout@v4

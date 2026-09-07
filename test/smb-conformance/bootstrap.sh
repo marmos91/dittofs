@@ -91,7 +91,7 @@ create_metadata_store() {
     log_info "Creating metadata store for profile: ${PROFILE}"
 
     case "$PROFILE" in
-        memory|memory-fs|memory-kerberos)
+        memory|memory-kerberos)
             $DFSCTL store metadata add --name default --type memory
             ;;
         badger*)

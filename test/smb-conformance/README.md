@@ -61,8 +61,7 @@ make dry-run
 | Profile | Metadata Store | Block Store | Extra Services |
 |---------|---------------|---------------|----------------|
 | `memory` | Memory | Memory | None |
-| `memory-fs` | Memory | Filesystem | None |
-| `badger-fs` | BadgerDB | Filesystem | None |
+| `badger` | BadgerDB | Memory | None |
 | `badger-s3` | BadgerDB | S3 | Localstack |
 | `postgres-s3` | PostgreSQL | S3 | Localstack + PostgreSQL |
 
@@ -135,7 +134,7 @@ cd smbtorture
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--profile PROFILE` | `memory` | Storage profile (`memory`, `memory-fs`, `badger-fs`) |
+| `--profile PROFILE` | `memory` | Storage profile (`memory`, `badger`, `sqlite`, `postgres`) |
 | `--filter FILTER` | (all) | Run specific sub-test by name |
 | `--timeout SECONDS` | `1200` | Kill smbtorture after SECONDS |
 | `--keep` | off | Leave containers running |
@@ -380,8 +379,7 @@ test/smb-conformance/
 ├── bootstrap.sh              # DittoFS provisioning (stores, shares, users, SMB adapter)
 ├── configs/                  # DittoFS config files per profile
 │   ├── memory.yaml
-│   ├── memory-fs.yaml
-│   ├── badger-fs.yaml
+│   ├── badger.yaml
 │   ├── badger-s3.yaml
 │   └── postgres-s3.yaml
 ├── ptfconfig/                # WPTS configuration templates
