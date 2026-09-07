@@ -15,8 +15,6 @@
 #   ./run.sh --suite pjdfstest --profile memory --dry-run
 #   ./run.sh --matrix pull_request                   # JSON matrix for CI
 #
-# Anything after `--` is passed through to the suite's own runner untouched.
-#
 # Exit status is the suite's own status, not a boolean. The graders exit with the
 # NUMBER of failures that are not on the blacklist, and collapsing that to 1
 # throws away the only number that says how bad a red run is.
@@ -103,7 +101,6 @@ Usage: run.sh [options]
   --keep                    Skip the teardown steps
   --dry-run                 Print what would run and exit
   -h, --help                This message
-  --                        Pass the remaining arguments to the suite's runner
 
 Suites: $(suite_names | tr '\n' ' ')
 EOF
@@ -127,23 +124,20 @@ list_suites() {
 }
 
 # print_matrix EVENT — the profile/variant cross product CI should run, as JSON.
+# Each cell carries the suite's timeout so the workflow does not restate it.
 print_matrix() {
-    local event="$1" suite profile variant
-    local entries=()
-    for suite in $(suite_names); do
-        for profile in $(tier_profiles "$suite" "$event"); do
-            if [[ -n "$(suite_variant_name "$suite")" ]]; then
-                for variant in $(suite_variants "$suite"); do
-                    entries+=("$(jq -cn --arg s "$suite" --arg p "$profile" --arg v "$variant" \
-                        '{suite: $s, profile: $p, variant: $v}')")
-                done
-            else
-                entries+=("$(jq -cn --arg s "$suite" --arg p "$profile" \
-                    '{suite: $s, profile: $p, variant: ""}')")
-            fi
-        done
-    done
-    printf '%s\n' "${entries[@]}" | jq -cs '{include: .}'
+    mq -c --arg e "$1" '
+        .defaults as $d
+        | [ .suites | to_entries[]
+            | .key as $suite | .value as $s
+            | ((($s.tiers[$e] // $d.tiers[$e] // "all")
+                | if . == "all" then $s.profiles else . end)[]) as $profile
+            | ($s.variant.values // [""])[] as $variant
+            | { suite: $suite,
+                profile: $profile,
+                variant: $variant,
+                timeout: ($s.timeout_minutes // 30) } ]
+        | {include: .}'
 }
 
 # A dfs left behind by a killed run answers on the adapter port and grades a
@@ -167,7 +161,6 @@ MATRIX_EVENT=""
 RESULTS_ROOT="${SCRIPT_DIR}/results"
 KEEP=false
 DRY_RUN=false
-PASSTHROUGH=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -187,7 +180,6 @@ while [[ $# -gt 0 ]]; do
         --keep) KEEP=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage; exit 0 ;;
-        --) shift; PASSTHROUGH=("$@"); break ;;
         *) die "unknown argument: $1 (try --help)" ;;
     esac
 done
@@ -230,10 +222,9 @@ run_one() {
     local status=0 i
     for ((i = 0; i < step_count; i++)); do
         local name cmd needs_root always
-        name="$(mq --arg s "$SUITE" --argjson i "$i" '.suites[$s].steps[$i].name')"
-        cmd="$(mq --arg s "$SUITE" --argjson i "$i" '.suites[$s].steps[$i].cmd')"
-        needs_root="$(mq --arg s "$SUITE" --argjson i "$i" '.suites[$s].steps[$i].root // false')"
-        always="$(mq --arg s "$SUITE" --argjson i "$i" '.suites[$s].steps[$i].always // false')"
+        IFS=$'\t' read -r name cmd needs_root always < <(
+            mq --arg s "$SUITE" --argjson i "$i" \
+               '.suites[$s].steps[$i] | [.name, .cmd, (.root // false), (.always // false)] | @tsv')
 
         # A step that already failed skips the rest, except teardown, which has
         # to run precisely when something went wrong.
@@ -264,7 +255,7 @@ run_one() {
         fi
 
         if [[ "$DRY_RUN" == true ]]; then
-            echo "  ${name}: ${prefix[*]-} ${runner} ${args[*]-} ${PASSTHROUGH[*]-}"
+            echo "  ${name}: ${prefix[*]-} ${runner} ${args[*]-}"
             continue
         fi
 
@@ -274,11 +265,8 @@ run_one() {
         # Never read $? after a pipe: tee's status would mask the runner's, and
         # the graders exit with a failure COUNT that has to survive to the caller.
         set -o pipefail
-        DITTOFS_PROFILE="$profile" \
-        DITTOFS_VARIANT="$variant" \
-        DITTOFS_KNOWN_FAILURES="$kf" \
         DITTOFS_RESULTS_DIR="$results_dir" \
-            "${prefix[@]}" "$runner" "${args[@]}" "${PASSTHROUGH[@]}" 2>&1 | tee "$log"
+            "${prefix[@]}" "$runner" "${args[@]}" 2>&1 | tee "$log"
         local step_status="${PIPESTATUS[0]}"
         set +o pipefail
 

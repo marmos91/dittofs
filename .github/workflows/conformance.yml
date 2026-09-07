@@ -80,6 +80,7 @@ jobs:
       # Underscore, not hyphen: a GitHub expression cannot read a hyphenated
       # property with dot notation.
       nfs_kerberos: ${{ steps.resolve.outputs.nfs_kerberos }}
+      pynfs: ${{ steps.resolve.outputs.pynfs }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -95,7 +96,7 @@ jobs:
           set -euo pipefail
           FULL="$(./test/conformance/run.sh --matrix "$EVENT")"
           echo "$FULL" | jq .
-          for suite in wpts smbtorture pjdfstest nfs-kerberos; do
+          for suite in $(jq -r '.suites | keys_unsorted[]' test/conformance/suites.json); do
             if [ -n "$ONLY" ] && [ "$ONLY" != "$suite" ]; then
               echo "${suite//-/_}=[]" >> "$GITHUB_OUTPUT"
               continue
@@ -158,7 +159,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: matrix
     if: needs.matrix.outputs.wpts != '[]'
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
@@ -220,7 +221,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: matrix
     if: needs.matrix.outputs.smbtorture != '[]'
-    timeout-minutes: 45
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
@@ -266,7 +267,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [matrix, build]
     if: needs.matrix.outputs.pjdfstest != '[]'
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
@@ -406,7 +407,7 @@ jobs:
     if: >-
       needs.matrix.outputs.nfs_kerberos != '[]'
       && (github.event_name != 'pull_request' || needs.kerberos-changes.outputs.relevant == 'true')
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:

@@ -10,50 +10,38 @@
     "runner can read it with jq, which every runner and dev shell already has.",
     "",
     "Fields:",
-    "  runner_dir     suite root, relative to test/",
     "  profiles       every storage profile the suite's runner accepts",
     "  variant        second axis (NFS minor version, SMB auth), or absent",
     "  known_failures blacklist path relative to test/; a string when there is one",
     "                 table, or an object keyed by variant value when a suite",
     "                 grades each variant against its own table",
-    "  tiers          profiles to run per GitHub event; \"all\" means every profile",
-    "  steps          ordered steps. Each names its own privilege and mount needs;",
-    "                 they are per step on purpose, because pynfs speaks NFSv4",
-    "                 itself and must stay runnable with no mount and no root.",
-    "  grader         script whose exit status is the NUMBER of new failures"
+    "  tiers          profiles to run per GitHub event, defaulting to \"defaults\";",
+    "                 \"all\" means every profile the suite has",
+    "  timeout_minutes  the CI job timeout for one cell of this suite",
+    "  steps          ordered steps. Each declares its own privilege need, per",
+    "                 step on purpose: pynfs speaks NFSv4 itself and must stay",
+    "                 runnable with no mount and no root, so nothing may hoist",
+    "                 a root precondition to the whole run."
   ],
 
   "defaults": {
-    "tiers": {
-      "pull_request": "all",
-      "push": "all",
-      "schedule": "all",
-      "workflow_dispatch": "all"
-    }
+    "tiers": { "pull_request": "all", "push": "all", "schedule": "all" }
   },
 
   "suites": {
     "wpts": {
       "description": "Windows Protocol Test Suites FileServer BVT",
       "protocol": "SMB",
-      "runner_dir": "smb-conformance",
       "profiles": ["memory", "badger", "badger-s3", "postgres-s3"],
       "known_failures": "smb-conformance/KNOWN_FAILURES.md",
-      "grader": "smb-conformance/parse-results.sh",
-      "tiers": {
-        "pull_request": ["memory", "postgres-s3"],
-        "push": "all",
-        "schedule": "all"
-      },
+      "tiers": { "pull_request": ["memory", "postgres-s3"] },
       "timeout_minutes": 30,
       "steps": [
         {
           "name": "run",
           "cmd": "smb-conformance/run.sh",
           "args": ["--profile", "{profile}", "--verbose"],
-          "root": false,
-          "mount": false,
-          "docker": true
+          "root": false
         }
       ]
     },
@@ -61,24 +49,16 @@
     "smbtorture": {
       "description": "Samba smbtorture SMB2/3 protocol suite",
       "protocol": "SMB",
-      "runner_dir": "smb-conformance/smbtorture",
       "profiles": ["memory", "badger", "sqlite", "postgres"],
       "known_failures": "smb-conformance/smbtorture/KNOWN_FAILURES.md",
-      "grader": "smb-conformance/smbtorture/parse-results.sh",
-      "tiers": {
-        "pull_request": ["memory", "badger"],
-        "push": "all",
-        "schedule": "all"
-      },
+      "tiers": { "pull_request": ["memory", "badger"] },
       "timeout_minutes": 45,
       "steps": [
         {
           "name": "run",
           "cmd": "smb-conformance/smbtorture/run.sh",
           "args": ["--profile", "{profile}", "--verbose"],
-          "root": false,
-          "mount": false,
-          "docker": true
+          "root": false
         }
       ]
     },
@@ -86,7 +66,6 @@
     "pjdfstest": {
       "description": "pjdfstest POSIX filesystem semantics over NFS",
       "protocol": "NFS",
-      "runner_dir": "posix",
       "profiles": ["memory", "badger", "postgres", "postgres-s3"],
       "variant": {
         "name": "nfs-version",
@@ -97,37 +76,26 @@
         "4": "posix/KNOWN_FAILURES_V4.md",
         "4.1": "posix/KNOWN_FAILURES_V4.md"
       },
-      "grader": "posix/parse-results.sh",
-      "tiers": {
-        "pull_request": ["memory", "postgres-s3"],
-        "push": "all",
-        "schedule": "all"
-      },
+      "tiers": { "pull_request": ["memory", "postgres-s3"] },
       "timeout_minutes": 60,
       "steps": [
         {
           "name": "setup",
           "cmd": "posix/setup-posix.sh",
           "args": ["{profile}", "--nfs-version", "{variant}"],
-          "root": true,
-          "mount": true,
-          "docker": false
+          "root": true
         },
         {
           "name": "run",
           "cmd": "posix/run-posix.sh",
           "args": ["--nfs-version", "{variant}", "--grade"],
-          "root": true,
-          "mount": true,
-          "docker": false
+          "root": true
         },
         {
           "name": "teardown",
           "cmd": "posix/teardown-posix.sh",
           "args": [],
           "root": true,
-          "mount": true,
-          "docker": false,
           "always": true
         }
       ]
@@ -136,24 +104,15 @@
     "nfs-kerberos": {
       "description": "NFS sec=krb5 mount and Kerberos credential handling",
       "protocol": "NFS",
-      "runner_dir": "nfs-conformance",
       "profiles": ["memory-kerberos"],
       "known_failures": null,
-      "grader": null,
-      "tiers": {
-        "pull_request": "all",
-        "push": "all",
-        "schedule": "all"
-      },
       "timeout_minutes": 30,
       "steps": [
         {
           "name": "run",
           "cmd": "nfs-conformance/run.sh",
           "args": ["--verbose"],
-          "root": false,
-          "mount": false,
-          "docker": true
+          "root": false
         }
       ]
     },
@@ -161,7 +120,6 @@
     "pynfs": {
       "description": "pynfs NFSv4.0/4.1 protocol conformance",
       "protocol": "NFS",
-      "runner_dir": "nfs-conformance/pynfs",
       "profiles": ["memory", "badger", "postgres", "postgres-s3"],
       "variant": {
         "name": "minor-version",
@@ -171,21 +129,14 @@
         "4.0": "nfs-conformance/pynfs/KNOWN_FAILURES_V40.md",
         "4.1": "nfs-conformance/pynfs/KNOWN_FAILURES_V41.md"
       },
-      "grader": "nfs-conformance/pynfs/parse-results.sh",
-      "tiers": {
-        "pull_request": ["memory", "postgres-s3"],
-        "push": "all",
-        "schedule": "all"
-      },
+      "tiers": { "pull_request": ["memory", "postgres-s3"] },
       "timeout_minutes": 45,
       "steps": [
         {
           "name": "run",
           "cmd": "nfs-conformance/pynfs/run-pynfs.sh",
           "args": ["--profile", "{profile}", "--minor-version", "{variant}"],
-          "root": false,
-          "mount": false,
-          "docker": false
+          "root": false
         }
       ]
     }

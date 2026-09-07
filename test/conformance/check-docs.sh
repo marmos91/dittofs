@@ -19,10 +19,9 @@ MANIFEST="${SCRIPT_DIR}/suites.json"
 BEGIN='<!-- conformance-suites:begin -->'
 END='<!-- conformance-suites:end -->'
 
-DOCS=(
-    "docs/internals/testing.md"
-    "docs/internals/contributing.md"
-)
+# Rendered in one place only. contributing.md links to it rather than carrying
+# a second copy that has to be kept in sync with the first.
+DOCS=("docs/internals/testing.md")
 
 WRITE=false
 [[ "${1:-}" == "--write" ]] && WRITE=true
@@ -77,7 +76,7 @@ for doc in "${DOCS[@]}"; do
         !skip       { print }
     ' "$path")"
 
-    if [[ "$updated" == "$(cat "$path")" ]]; then
+    if [[ "$updated" == "$(<"$path")" ]]; then
         echo "ok: ${doc}"
         continue
     fi

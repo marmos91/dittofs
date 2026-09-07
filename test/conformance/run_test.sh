@@ -71,7 +71,7 @@ FAKE_MANIFEST="${FAKE_TEST}/conformance/suites.json"
 
 cat >"${FAKE_TEST}/fake/pass.sh" <<'EOF'
 #!/usr/bin/env bash
-echo "ran pass.sh profile=${DITTOFS_PROFILE} variant=${DITTOFS_VARIANT} kf=$(basename "${DITTOFS_KNOWN_FAILURES:-none}")"
+echo "ran pass.sh results=$(basename "${DITTOFS_RESULTS_DIR:-none}")"
 echo "args: $*"
 exit 0
 EOF
@@ -166,18 +166,24 @@ assert_eq "every declared blacklist exists" "" "$MISSING"
 # The CI matrix is the manifest's cross product, not a hand-kept list.
 PR_MATRIX="$("$RUNNER" --matrix pull_request)"
 assert_eq "presubmit matrix size" \
-    "$(jq -r '[.suites | to_entries[] | (.value.tiers.pull_request // "all") as $t
-              | (if $t == "all" then (.value.profiles | length) else ($t | length) end)
-                * (.value.variant.values // [""] | length)] | add' "${SCRIPT_DIR}/suites.json")" \
+    "$(jq -r '.defaults as $d
+              | [.suites | to_entries[]
+                 | ((.value.tiers.pull_request // $d.tiers.pull_request // "all") as $t
+                    | if $t == "all" then (.value.profiles | length) else ($t | length) end)
+                   * (.value.variant.values // [""] | length)] | add' "${SCRIPT_DIR}/suites.json")" \
     "$(jq -r '.include | length' <<<"$PR_MATRIX")"
 assert_contains "presubmit matrix carries the variant axis" '"variant":"4.1"' "$PR_MATRIX"
+
+# The workflow reads its per-job timeout from the cell, so every cell needs one.
+assert_eq "every matrix cell carries a timeout" "0" \
+    "$(jq -r '[.include[] | select((.timeout // 0) <= 0)] | length' <<<"$PR_MATRIX")"
 
 # ---------------------------------------------------------------------------
 # Verdicts
 # ---------------------------------------------------------------------------
 OUT="$(run_fake --suite green --profile memory)"
 assert_eq "a green suite exits 0" "0" "$?"
-assert_contains "the step actually ran" "ran pass.sh profile=memory" "$OUT"
+assert_contains "the step actually ran" "ran pass.sh results=memory" "$OUT"
 assert_contains "profile placeholder is substituted" "args: --profile memory" "$OUT"
 
 # The whole point of the exit contract: 3 new failures must arrive as 3, not 1.

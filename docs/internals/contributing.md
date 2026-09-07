@@ -536,21 +536,9 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 
 ### Conformance suites
 
-<!-- conformance-suites:begin -->
-<!-- Generated from test/conformance/suites.json by test/conformance/check-docs.sh. Do not edit by hand. -->
-
-| Suite | Protocol | Profiles | Variants | Presubmit | Known failures |
-|---|---|---|---|---|---|
-| `wpts` | SMB | `memory`, `badger`, `badger-s3`, `postgres-s3` | — | `memory`, `postgres-s3` | [`test/smb-conformance/KNOWN_FAILURES.md`](../../test/smb-conformance/KNOWN_FAILURES.md) |
-| `smbtorture` | SMB | `memory`, `badger`, `sqlite`, `postgres` | — | `memory`, `badger` | [`test/smb-conformance/smbtorture/KNOWN_FAILURES.md`](../../test/smb-conformance/smbtorture/KNOWN_FAILURES.md) |
-| `pjdfstest` | NFS | `memory`, `badger`, `postgres`, `postgres-s3` | `3`, `4`, `4.1` | `memory`, `postgres-s3` | [`test/posix/KNOWN_FAILURES.md`](../../test/posix/KNOWN_FAILURES.md), [`test/posix/KNOWN_FAILURES_V4.md`](../../test/posix/KNOWN_FAILURES_V4.md) |
-| `nfs-kerberos` | NFS | `memory-kerberos` | — | `memory-kerberos` | — |
-| `pynfs` | NFS | `memory`, `badger`, `postgres`, `postgres-s3` | `4.0`, `4.1` | `memory`, `postgres-s3` | [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V40.md), [`test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md`](../../test/nfs-conformance/pynfs/KNOWN_FAILURES_V41.md) |
-
-Tiering, profiles and blacklists come from
-[`test/conformance/suites.json`](../../test/conformance/suites.json); every suite runs through
-[`test/conformance/run.sh`](../../test/conformance/run.sh).
-<!-- conformance-suites:end -->
+Every suite's profiles, variants and per-event tiering live in
+[`test/conformance/suites.json`](../../test/conformance/suites.json); the rendered table is in
+[testing.md](testing.md#conformance-test-suites).
 
 ### What Runs on PR (Fast, Must-Pass Before Merge)
 
