@@ -58,9 +58,9 @@ type CompoundResult struct {
 	Data []byte
 
 	// Stateid is the stateid this operation returned, when it returns one
-	// (OPEN, OPEN_CONFIRM, OPEN_DOWNGRADE, CLOSE, LOCK, LOCKU). The COMPOUND
-	// loop makes it the current stateid, per RFC 8881 Section 16.2.3.1.2. Nil
-	// for every other operation.
+	// (OPEN, OPEN_CONFIRM, OPEN_DOWNGRADE, CLOSE, LOCK, LOCKU and
+	// GET_DIR_DELEGATION). The COMPOUND loop makes it the current stateid,
+	// per RFC 8881 Section 16.2.3.1.2. Nil for every other operation.
 	Stateid *Stateid4
 }
 
