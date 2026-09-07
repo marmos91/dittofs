@@ -90,7 +90,7 @@ func (h *Handler) handleSetClientID(ctx *types.CompoundContext, reader io.Reader
 		return &types.CompoundResult{
 			Status: nfsStatus,
 			OpCode: types.OP_SETCLIENTID,
-			Data:   encodeStatusOnly(nfsStatus),
+			Data:   encodeSetClientIDError(nfsStatus),
 		}
 	}
 
@@ -105,6 +105,28 @@ func (h *Handler) handleSetClientID(ctx *types.CompoundContext, reader io.Reader
 		OpCode: types.OP_SETCLIENTID,
 		Data:   buf.Bytes(),
 	}
+}
+
+// encodeSetClientIDError encodes a failed SETCLIENTID4res. The result is a
+// union over the status, and its NFS4ERR_CLID_INUSE arm carries a clientaddr4
+// (RFC 7530 Section 16.33.2) -- two XDR strings the default arm does not have.
+// A status-only reply for that one status is therefore short on the wire, and
+// the client's decode runs off the end of the whole COMPOUND rather than
+// reading a CLID_INUSE it could act on.
+//
+// ponytail: the address reported back is empty, as Linux nfsd's is. It names
+// the client already holding the id, which SETCLIENTID has no obligation to
+// track; fill it in only if a client turns up that does something with it.
+func encodeSetClientIDError(status uint32) []byte {
+	if status != types.NFS4ERR_CLID_INUSE {
+		return encodeStatusOnly(status)
+	}
+
+	var buf bytes.Buffer
+	_ = xdr.WriteUint32(&buf, status)
+	_ = xdr.WriteXDRString(&buf, "") // client_using.na_r_netid
+	_ = xdr.WriteXDRString(&buf, "") // client_using.na_r_addr
+	return buf.Bytes()
 }
 
 // handleSetClientIDConfirm implements the SETCLIENTID_CONFIRM operation (RFC 7530 Section 16.34).
