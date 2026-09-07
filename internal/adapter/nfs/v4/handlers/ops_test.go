@@ -898,9 +898,9 @@ func TestReadDir_PseudoFSRoot(t *testing.T) {
 		t.Errorf("eof = %d, want 1 (true)", eof)
 	}
 
-	// Should contain ".", "..", then "data" and "export" (children sorted).
-	// "." has cookie 1, ".." cookie 2, children start at cookie 3.
-	want := []string{".", "..", "data", "export"}
+	// "." and ".." are not part of a READDIR listing, so only the children
+	// appear (sorted). Cookies 0, 1 and 2 are reserved, so they start at 3.
+	want := []string{"data", "export"}
 	if len(entryNames) != len(want) {
 		t.Fatalf("entry count = %d, want %d, got %v", len(entryNames), len(want), entryNames)
 	}
@@ -909,7 +909,7 @@ func TestReadDir_PseudoFSRoot(t *testing.T) {
 			t.Errorf("entry[%d] = %q, want %q", i, entryNames[i], w)
 		}
 	}
-	wantCookies := []uint64{1, 2, 3, 4}
+	wantCookies := []uint64{3, 4}
 	if len(entryCookies) != len(wantCookies) {
 		t.Fatalf("cookie count = %d, want %d, got %v", len(entryCookies), len(wantCookies), entryCookies)
 	}
@@ -921,16 +921,16 @@ func TestReadDir_PseudoFSRoot(t *testing.T) {
 }
 
 // TestReadDir_PseudoFSRoot_CookieContinuation verifies that resuming a READDIR
-// with a non-zero cookie skips already-returned entries (including the
-// synthesized "." and ".." entries) and continues from the next child.
+// with a non-zero cookie skips already-returned entries and continues from the
+// next child.
 func TestReadDir_PseudoFSRoot_CookieContinuation(t *testing.T) {
 	h := newTestHandlerWithShares([]string{"/export", "/data/archive"})
 	ctx := newOpsTestContext()
 
-	// Resume after cookie 2 ("..") -- should return only the children.
+	// Resume after cookie 3 ("data") -- should return only the entries past it.
 	data := encodeCompoundWithOps("", 0, []encodedOp{
 		encodePutRootFH(),
-		encodeReadDir(2, 8192, attrs.FATTR4_TYPE),
+		encodeReadDir(3, 8192, attrs.FATTR4_TYPE),
 	})
 
 	resp, err := h.ProcessCompound(ctx, data)
@@ -968,7 +968,7 @@ func TestReadDir_PseudoFSRoot_CookieContinuation(t *testing.T) {
 		_, _ = xdr.DecodeOpaque(extraReader)
 	}
 
-	want := []string{"data", "export"}
+	want := []string{"export"}
 	if len(entryNames) != len(want) {
 		t.Fatalf("entry count = %d, want %d, got %v", len(entryNames), len(want), entryNames)
 	}
@@ -977,7 +977,7 @@ func TestReadDir_PseudoFSRoot_CookieContinuation(t *testing.T) {
 			t.Errorf("entry[%d] = %q, want %q", i, entryNames[i], w)
 		}
 	}
-	wantCookies := []uint64{3, 4}
+	wantCookies := []uint64{4}
 	if len(entryCookies) != len(wantCookies) {
 		t.Fatalf("cookie count = %d, want %d, got %v", len(entryCookies), len(wantCookies), entryCookies)
 	}

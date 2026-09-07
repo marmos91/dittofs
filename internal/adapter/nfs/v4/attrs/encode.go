@@ -351,11 +351,11 @@ func HasUnsupportedAttr(requested, supported []uint32) bool {
 // responseAttrBitmap returns the attributes to encode in an attribute
 // response: the requested∩supported set, minus the settable-only bits.
 //
-// GETATTR, VERIFY and NVERIFY refuse a request naming a settable-only
-// attribute before reaching here. READDIR does not — it carries whatever
-// bitmap the client attached to it and has no way to report a per-attribute
-// error — so the encoder still drops those bits rather than reaching an
-// attribute it has no value to write.
+// Every operation that encodes attributes — GETATTR, VERIFY, NVERIFY and
+// READDIR — refuses a request naming a settable-only attribute before reaching
+// here, so clearing the bits is a backstop: it keeps the encoder from reaching
+// an attribute it has no value to write rather than being the only thing that
+// does.
 func responseAttrBitmap(requested, supported []uint32) []uint32 {
 	bitmap := Intersect(requested, supported)
 	for _, bit := range writeOnlyAttrs {
