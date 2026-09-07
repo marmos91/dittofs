@@ -39,16 +39,12 @@ func diskBytesOnDisk(b *testing.B, dir string) int64 {
 // any gap between the two isolates the offset-dependent cost (index insertion
 // position). Reports ns/op plus segments and write-amp as custom metrics.
 func benchWrites(b *testing.B, offsets []int64) {
-	dir := b.TempDir()
-	s, err := Open(dir, Config{}, newFakeRemote(), SystemClock())
-	if err != nil {
-		b.Fatalf("Open: %v", err)
-	}
-	b.Cleanup(func() { _ = s.Close() })
+	s, dir := benchStoreDir(b, Config{})
 	ctx := context.Background()
 	data := make([]byte, 4<<10)
 
 	b.SetBytes(int64(len(data)))
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if err := s.WriteAt(ctx, "f", offsets[i%len(offsets)], data); err != nil {
@@ -57,11 +53,7 @@ func benchWrites(b *testing.B, offsets []int64) {
 	}
 	b.StopTimer()
 
-	disk := diskBytesOnDisk(b, dir)
-	st := s.Stats()
-	b.ReportMetric(float64(st.Segments), "segments")
-	b.ReportMetric(float64(disk)/float64(int64(b.N)*int64(len(data))), "write-amp")
-	b.ReportMetric(float64(len(s.shardFor("f").index["f"].ivs)), "intervals")
+	reportWriteAmp(b, s, dir, "f", int64(b.N)*int64(len(data)))
 }
 
 const randSpan = 1 << 20 // 1 Mi distinct 4 KiB slots => a 4 GiB address space
