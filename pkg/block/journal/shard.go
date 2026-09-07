@@ -32,16 +32,23 @@ type shard struct {
 	active *segmentMeta
 	sealed map[uint64]*segmentMeta
 	index  map[FileID]*fileIndex
-	// hydrateFence is, per file, the store LSN as it stood when that file's most
-	// recent truncate or delete began. A hydrate whose caller sampled its bound
-	// at or below it is refused: both mutations empty intervals away rather than
-	// recording over them, so the range they cleared leaves nothing for
-	// hydratable to weigh a stale write-back against — a delete leaves not even
-	// an index entry, and hydratable's nil receiver offers the whole range.
+	// hydrateFence is, per file, the version of that file's most recent truncate
+	// or delete together with the offset that mutation left standing. A hydrate
+	// whose caller sampled its bound at or below the version, and whose range
+	// reaches past the surviving offset, is refused: both mutations empty
+	// intervals away rather than recording over them, so the range they cleared
+	// leaves nothing for hydratable to weigh a stale write-back against — a
+	// delete leaves not even an index entry, and hydratable's nil receiver
+	// offers the whole range.
+	//
+	// The offset is what keeps a truncate from fencing off its own survivors:
+	// the prefix below newSize still holds its intervals and can be filled
+	// safely, and only the emptied tail has to be refused. A delete leaves
+	// nothing standing, so its offset is zero and it refuses every range.
 	//
 	// A delete's entry therefore has to outlive the file's index entry, and
 	// deleteFences is what keeps that from growing without bound.
-	hydrateFence map[FileID]uint64
+	hydrateFence map[FileID]hydrateFence
 	// deleteFences records the fences stamped by Delete, oldest first. Nothing
 	// else ever takes a delete fence back out of hydrateFence, so without this
 	// the map would retain one entry per FileID the store has ever deleted.
@@ -126,19 +133,41 @@ func newShard(active *segmentMeta) *shard {
 		active:       active,
 		sealed:       make(map[uint64]*segmentMeta),
 		index:        make(map[FileID]*fileIndex),
-		hydrateFence: make(map[FileID]uint64),
+		hydrateFence: make(map[FileID]hydrateFence),
 		segSync:      func(seg *segmentMeta) error { return seg.fd.Sync() },
 	}
 	sh.commitCond = sync.NewCond(&sh.commitMu)
 	return sh
 }
 
+// hydrateFence is the lowest bound a hydrate may still carry after a truncate
+// or delete emptied intervals away, and the offset that mutation left standing:
+// everything from survives upwards was cleared. A delete survives nothing, so
+// it fences from zero.
+type hydrateFence struct {
+	minBound uint64
+	survives int64
+}
+
+// raiseHydrateFence moves id's fence up to ver, never down. Truncate and Delete
+// both publish into it and neither orders against the other, so whichever
+// arrives second must not re-admit the hydrates the first was refusing. Caller
+// holds sh.mu.
+func (sh *shard) raiseHydrateFence(id FileID, minBound uint64, survives int64) {
+	if minBound > sh.hydrateFence[id].minBound {
+		sh.hydrateFence[id] = hydrateFence{minBound: minBound, survives: survives}
+	}
+}
+
 // fenceDelete publishes id's delete fence at ver and drops the oldest fence
 // once the shard holds more than maxDeleteFences of them. Caller holds sh.mu.
 func (sh *shard) fenceDelete(id FileID, ver uint64) {
-	if ver > sh.hydrateFence[id] {
-		sh.hydrateFence[id] = ver // never lower a fence a racing Truncate stamped higher
-	}
+	// ver+1, not ver: a delete scrubs the index entry outright, so between the
+	// tombstone being minted and the scrub landing there is no interval left for
+	// hydratable to arbitrate against — its nil receiver offers the whole range
+	// and a fill bounded at exactly ver re-creates the file. A truncate keeps
+	// its survivors and so can admit that bound; a delete cannot.
+	sh.raiseHydrateFence(id, ver+1, 0) // a delete leaves nothing standing
 	sh.deleteFences = append(sh.deleteFences, fenceEntry{id: id, ver: ver})
 	if len(sh.deleteFences) > maxDeleteFences {
 		oldest := sh.deleteFences[0]
@@ -150,7 +179,7 @@ func (sh *shard) fenceDelete(id FileID, ver uint64) {
 		// Only if nothing has raised the fence since. A Truncate re-stamp belongs
 		// to a file that is live again and still needs its fence; that entry is
 		// then bounded by the live file set, as every truncate fence always was.
-		if sh.hydrateFence[oldest.id] <= oldest.ver {
+		if sh.hydrateFence[oldest.id].minBound <= oldest.ver+1 {
 			delete(sh.hydrateFence, oldest.id)
 		}
 		// Entries are appended in mint order, so this only ever climbs. It stands
