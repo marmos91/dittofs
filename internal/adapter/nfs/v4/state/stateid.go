@@ -54,19 +54,21 @@ var (
 	ErrLocked       = &NFS4StateError{Status: types.NFS4ERR_LOCKED, Message: "share reservation denies this I/O"}
 )
 
-// StateidOp identifies the operation family using a stateid. It controls which
-// special stateids are accepted: per RFC 7530 Section 9.1.4.3 the all-ones
-// "READ bypass" stateid is valid only on READ; using it on a write-family
-// operation (WRITE / SETATTR-size / LOCK) MUST yield NFS4ERR_BAD_STATEID.
+// StateidOp identifies the operation family using a stateid. It controls how
+// the two special stateids of RFC 7530 Section 9.1.4.3 are treated: on READ the
+// all-ones "READ bypass" stateid skips share-mode enforcement, while on a
+// write-family operation it is treated exactly like the anonymous stateid
+// (RFC 7530 Section 16.36.4).
 type StateidOp uint8
 
 const (
-	// StateidOpRead is a READ-family operation. Both the anonymous (all-zeros)
-	// and the READ-bypass (all-ones) special stateids are permitted.
+	// StateidOpRead is a READ-family operation. The anonymous (all-zeros)
+	// stateid is subject to the file's share-deny modes; the READ-bypass
+	// (all-ones) stateid is not.
 	StateidOpRead StateidOp = iota
 
 	// StateidOpWrite is a write-family operation (WRITE, SETATTR size change,
-	// LOCK). The anonymous stateid is permitted; the READ-bypass stateid is not.
+	// LOCK). Both special stateids are subject to the file's share-deny modes.
 	StateidOpWrite
 )
 
@@ -129,10 +131,12 @@ func (sm *StateManager) isCurrentEpoch(other [types.NFS4_OTHER_SIZE]byte) bool {
 // returns the associated OpenState.
 //
 // Per RFC 7530 Section 9.1.4, validation checks:
-//  1. Special stateids: the anonymous (all-zeros) stateid bypasses validation
-//     on any op; the READ-bypass (all-ones) stateid is accepted ONLY when
-//     op == StateidOpRead and otherwise rejected with NFS4ERR_BAD_STATEID
-//     (RFC 7530 Section 9.1.4.3). Both return (nil, nil) when accepted.
+//  1. Special stateids: the anonymous (all-zeros) stateid carries no open
+//     state, so it is checked against the share-deny modes of the opens that
+//     do exist on the file; the READ-bypass (all-ones) stateid skips that
+//     check on READ and is treated as the anonymous stateid everywhere else
+//     (RFC 7530 Sections 9.1.4.3 and 16.36.4). Both return (nil, nil) when
+//     accepted, and NFS4ERR_LOCKED when an open denies the access.
 //  2. Route by type tag: open -> openStateByOther, lock -> lockStateByOther
 //     (returns the parent open state), delegation -> delegByOther
 //  3. If not found -> NFS4ERR_BAD_STATEID (or NFS4ERR_STALE_STATEID for wrong epoch)
@@ -147,19 +151,16 @@ func (sm *StateManager) isCurrentEpoch(other [types.NFS4_OTHER_SIZE]byte) bool {
 // Caller must NOT hold sm.mu.
 func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byte, op StateidOp) (*OpenState, error) {
 	// Step 1: Special stateids.
-	// The READ-bypass (all-ones) stateid is READ-only: reject it on
-	// write-family operations so a client cannot use it to bypass share-mode
-	// enforcement and byte-range locks (RFC 7530 Section 9.1.4.3).
-	if stateid.IsReadBypassStateid() {
-		if op != StateidOpRead {
-			return nil, ErrBadStateid
-		}
+	// The READ-bypass (all-ones) stateid asks the server to serve a READ even
+	// where an open would deny it, so on READ it skips the share-deny check
+	// below. On a write-family operation it carries no such licence: RFC 7530
+	// Section 16.36.4 makes it behave exactly like the anonymous stateid.
+	if stateid.IsReadBypassStateid() && op == StateidOpRead {
 		return nil, nil
 	}
-	// The anonymous (all-zeros) stateid is permitted on READ and WRITE, but it
-	// names no open state, so the share reservations standing on the file are
-	// all the server has to judge the I/O by.
-	if stateid.IsAnonymousStateid() {
+	// Neither special stateid names an open state, so the share reservations
+	// standing on the file are all the server has to judge the I/O by.
+	if stateid.IsSpecialStateid() {
 		if err := sm.anonymousIOBlocked(currentFH, op); err != nil {
 			return nil, err
 		}
@@ -505,8 +506,8 @@ func (sm *StateManager) freeLockStateidLocked(clientID uint64, stateid *types.St
 	return nil
 }
 
-// freeOpenStateidLocked frees an open stateid.
-// Returns NFS4ERR_LOCKS_HELD if the open has associated locks.
+// freeOpenStateidLocked answers FREE_STATEID for an open stateid.
+// A live open is itself a held lock, so this always refuses.
 // Caller must hold sm.mu.
 func (sm *StateManager) freeOpenStateidLocked(clientID uint64, stateid *types.Stateid4) error {
 	openState, exists := sm.openStateByOther[stateid.Other]
@@ -526,41 +527,15 @@ func (sm *StateManager) freeOpenStateidLocked(clientID uint64, stateid *types.St
 		}
 	}
 
-	// Check if any lock stateids reference this open
-	if len(openState.LockStates) > 0 {
-		return &NFS4StateError{
-			Status:  types.NFS4ERR_LOCKS_HELD,
-			Message: fmt.Sprintf("open stateid has %d locks held", len(openState.LockStates)),
-		}
+	// An open stateid that is still in openStateByOther names a live open, and
+	// RFC 8881 Section 18.38.3 counts an open among the "locks (of any kind)"
+	// that make FREE_STATEID return NFS4ERR_LOCKS_HELD. CLOSE, not FREE_STATEID,
+	// is what releases an open; freeing it here would drop the share
+	// reservation while the client still believes it holds one.
+	return &NFS4StateError{
+		Status:  types.NFS4ERR_LOCKS_HELD,
+		Message: fmt.Sprintf("open stateid is still open (%d lock stateids)", len(openState.LockStates)),
 	}
-
-	// Remove from openStateByOther and the per-file index
-	delete(sm.openStateByOther, stateid.Other)
-	sm.removeOpenStateFromFileLocked(openState)
-
-	// Remove from owner's OpenStates slice
-	if openState.Owner != nil {
-		for i, os := range openState.Owner.OpenStates {
-			if os == openState {
-				openState.Owner.OpenStates = append(
-					openState.Owner.OpenStates[:i],
-					openState.Owner.OpenStates[i+1:]...,
-				)
-				break
-			}
-		}
-
-		// If owner has no more open states, clean up the owner
-		if len(openState.Owner.OpenStates) == 0 {
-			delete(sm.openOwners, openState.Owner.Key())
-		}
-	}
-
-	logger.Info("FREE_STATEID: open stateid freed",
-		"client_id", clientID,
-		"stateid_other", hex.EncodeToString(stateid.Other[:]))
-
-	return nil
 }
 
 // freeDelegStateidLocked frees a delegation stateid.
@@ -743,8 +718,11 @@ func (sm *StateManager) testDelegStateid(stateid *types.Stateid4) uint32 {
 // Without this a deny mode was advisory: it refused a conflicting OPEN but not
 // the I/O of a client that skipped OPEN and used the anonymous stateid, which is
 // the case the deny mode exists to stop. Linux nfsd applies the same rule in
-// check_special_stateids, and likewise exempts the READ-bypass stateid on READ,
-// which never reaches here.
+// check_special_stateids.
+//
+// The READ-bypass stateid reaches this on a write-family operation, where
+// RFC 7530 Section 16.36.4 makes it behave exactly like the anonymous stateid.
+// On READ it does not: bypassing this check is the whole point of it.
 func (sm *StateManager) anonymousIOBlocked(currentFH []byte, op StateidOp) error {
 	if len(currentFH) == 0 {
 		return nil

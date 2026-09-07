@@ -8,7 +8,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -297,7 +296,7 @@ func (h *Handler) Write(
 	// crash-safe cache and the client can retry COMMIT.
 	committed := uint32(UnstableWrite)
 	if req.Stable >= DataSyncWrite {
-		if err := h.flushStableWrite(ctx, metaSvc, blockStore, fileHandle, writeIntent.PayloadID, authCtx, req.Stable); err != nil {
+		if err := common.FlushStableWrite(authCtx, metaSvc, blockStore, fileHandle, writeIntent.PayloadID, req.Stable >= FileSyncWrite); err != nil {
 			logError(ctx.Context, err, "WRITE: stable flush failed, downgrading to UNSTABLE",
 				"handle", xdr.LazyHandle(req.Handle), "stable_requested", req.Stable, "client", clientIP)
 		} else {
@@ -325,44 +324,6 @@ func (h *Handler) Write(
 }
 
 // Write Helper Functions
-
-// flushStableWrite forces this file's cached data (and, for FILE_SYNC, metadata)
-// to stable storage so a DATA_SYNC / FILE_SYNC WRITE can be acknowledged as
-// committed, per RFC 1813 Section 3.3.7. It mirrors the COMMIT path: flush the
-// block store, then persist any pending metadata for the file.
-//
-// RFC 1813 distinguishes the two stable levels:
-//   - DATA_SYNC (1): only the file data must be on stable storage. A metadata
-//     flush failure is tolerated — it is reconciled by a later COMMIT — and the
-//     write is still reported at the requested level.
-//   - FILE_SYNC (2): both data AND metadata must be on stable storage before the
-//     reply. A metadata flush failure must therefore propagate so the caller
-//     reports UNSTABLE instead of falsely claiming FILE_SYNC durability.
-func (h *Handler) flushStableWrite(
-	ctx *NFSHandlerContext,
-	metaSvc *metadata.Service,
-	blockStore *engine.Store,
-	handle metadata.FileHandle,
-	payloadID metadata.PayloadID,
-	authCtx *metadata.AuthContext,
-	stable uint32,
-) error {
-	if err := common.CommitBlockStore(ctx.Context, blockStore, payloadID); err != nil {
-		return err
-	}
-	// FILE_SYNC (stable>=2) promised durable metadata → strict inline fsync.
-	// DATA_SYNC/UNSTABLE defer it via the relaxed path (#1687); a later COMMIT or
-	// the journal size reconcile on restart makes the size durable.
-	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, handle, stable >= FileSyncWrite); err != nil {
-		if stable >= FileSyncWrite {
-			// FILE_SYNC requires durable metadata; surface the failure.
-			return err
-		}
-		logger.WarnCtx(ctx.Context, "WRITE: DATA_SYNC metadata flush failed (data durable, will reconcile)",
-			"handle", xdr.LazyHandle(handle), "error", err)
-	}
-	return nil
-}
 
 // buildWriteErrorResponse creates a consistent error response with WCC data.
 // This centralizes error response creation to reduce duplication.
