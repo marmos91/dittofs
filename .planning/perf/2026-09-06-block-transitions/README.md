@@ -53,8 +53,7 @@ the two-tier disk-sensitivity curve this run was commissioned to produce does no
 and `sbs15k` is retained only as evidence of that.
 
 The RAM tier is what supplies the fast end. It is not a machine anyone should run on —
-it is an upper bound that separates *device* cost from *code* cost, which is the split
-the block-size decision actually needs.
+it is an upper bound that separates *device* cost from *code* cost.
 
 ## Results — `sbs5k` is the baseline, RAM shows what the device is buying
 
@@ -135,6 +134,40 @@ and the 10.31 µs in the table above understates the store-wide cost it would ot
 quoted for.
 
 Record it on reference hardware with the next baseline run.
+
+## What this baseline is NOT about — read before quoting it at the block-size default
+
+**Corrected 2026-09-07.** This run was first written up as if it informed the block-size
+default. It does not, and the original wording overreached. Three separate things were
+being conflated:
+
+1. **Local fsync latency** — what this baseline measures. Block size does not change it:
+   a barrier costs the same round trip whatever it carries.
+2. **Remote request overhead** — every S3 PUT pays connection setup, TLS and request
+   framing regardless of payload, so small blocks multiply the fixed cost. #2070 measured
+   this directly: **240,000 PUTs versus 234 for identical bytes**, with latency close to
+   flat across object sizes. Object size is binding. **Nothing in this baseline can see
+   it — the remote store is `fakeRemote` throughout.**
+3. **Bandwidth saturation** — the actual objective. Filling the uplink needs roughly
+   bandwidth × RTT of data in flight, and with object size S and upload concurrency C the
+   in-flight figure is about C × S. Because per-request latency is flat in S, **raising S
+   is the cheap way to reach that figure and raising C is the expensive one** (more
+   sockets, more memory, more failure surface, for the same bytes in flight). #1739's
+   "server 97% idle at rig load" is what an unsaturated uplink looks like from the
+   server side.
+
+So the block-size experiment is a **bandwidth-saturation** experiment against a real
+endpoint, not a latency experiment against a local disk. Localstack will not serve: with
+no real HTTP/TLS or WAN cost it reproduces the same flatness `fakeRemote` does here.
+
+The counter-pressures that keep "just pick big" from being the answer, and that the
+experiment has to find the knee of: a small random read fetches a whole block, a partial
+overwrite rewrites one, eviction granularity coarsens, and carve holds
+`CarveUploadConcurrency × (CarveBlockSize + one overhang chunk)` in RAM.
+
+What this baseline *does* contribute to that experiment is the local-side input: the
+per-operation costs that sit underneath the upload, and which of them are device-bound
+versus code-bound.
 
 ## Caveats
 
