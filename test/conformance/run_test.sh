@@ -97,6 +97,7 @@ cat >"$FAKE_MANIFEST" <<'EOF'
   "suites": {
     "green": {
       "description": "always passes",
+      "host_adapter": true,
       "runner_dir": "fake",
       "profiles": ["memory", "badger"],
       "known_failures": "fake/KNOWN_FAILURES_A.md",
@@ -119,6 +120,14 @@ cat >"$FAKE_MANIFEST" <<'EOF'
         { "name": "run", "cmd": "fake/fail3.sh", "args": [], "root": false },
         { "name": "grade", "cmd": "fake/pass.sh", "args": [], "root": false },
         { "name": "teardown", "cmd": "fake/teardown.sh", "args": [], "root": false, "always": true }
+      ]
+    },
+    "dockeronly": {
+      "description": "runs entirely in a container, owns no host port",
+      "profiles": ["memory"],
+      "known_failures": null,
+      "steps": [
+        { "name": "run", "cmd": "fake/pass.sh", "args": [], "root": false }
       ]
     },
     "privileged": {
@@ -210,6 +219,13 @@ while IFS=$'\t' read -r cmd name; do
     grep -q "RESULTS_DIR/${name}\.log" "$runner" && CLASH="${CLASH} ${cmd}:${name}.log"
 done < <(jq -r '.suites[].steps[] | [.cmd, .name] | @tsv' "${SCRIPT_DIR}/suites.json")
 assert_eq "no suite runner writes the common runner's step log" "" "$CLASH"
+
+# Only the suites that put a dfs on the host may be failed by a listener on the
+# adapter port. nfs-kerberos is the trap here: it speaks NFS but runs entirely
+# in Docker and publishes no host port, so keying this off `protocol` would fail
+# it for something that is none of its business.
+assert_eq "suites owning the host adapter port" "pjdfstest pynfs" \
+    "$(jq -r '[.suites | to_entries[] | select(.value.host_adapter == true) | .key] | join(" ")' "${SCRIPT_DIR}/suites.json")"
 
 # The CI matrix is the manifest's cross product, not a hand-kept list.
 PR_MATRIX="$("$RUNNER" --matrix pull_request)"
@@ -317,9 +333,19 @@ PYEOF
     done
 
     if [[ "$HOLD_PORT" != 0 ]]; then
-        OUT="$(CONFORMANCE_ADAPTER_PORT="$HOLD_PORT" run_fake --suite green --profile memory 2>&1)"
+        # NFS_PORT, not a name invented here: setup-posix.sh reads the same one,
+        # so the port the cleanup inspects is the port the suite will bind.
+        OUT="$(NFS_PORT="$HOLD_PORT" run_fake --suite green --profile memory 2>&1)"
         assert_eq "a listener that is not a dfs stops the run" "2" "$?"
         assert_contains "the refusal names the port" "port ${HOLD_PORT} is held by" "$OUT"
+        assert_contains "the override is honoured, not the default" "port ${HOLD_PORT}" "$OUT"
+
+        # The negative case: a suite that owns no host port must not be failed
+        # by a listener on one. A guard that has never declined to fire is as
+        # unverified as one that has never fired.
+        OUT="$(NFS_PORT="$HOLD_PORT" run_fake --suite dockeronly --profile memory 2>&1)"
+        assert_eq "a docker-only suite ignores the held port" "0" "$?"
+        assert_not_contains "and says nothing about it" "is held by" "$OUT"
         # The point of the refusal: it must not have killed the thing it found.
         if kill -0 "$HOLDER" 2>/dev/null; then
             ok "the unrecognised listener is left alone"
@@ -333,7 +359,7 @@ PYEOF
     fi
 
     # A free port is a no-op, not a refusal.
-    OUT="$(CONFORMANCE_ADAPTER_PORT=39120 run_fake --suite green --profile memory 2>&1)"
+    OUT="$(NFS_PORT=39120 run_fake --suite green --profile memory 2>&1)"
     assert_eq "a free port runs normally" "0" "$?"
 fi
 

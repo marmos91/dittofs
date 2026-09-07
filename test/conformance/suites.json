@@ -18,6 +18,10 @@
     "  tiers          profiles to run per GitHub event, defaulting to \"defaults\";",
     "                 \"all\" means every profile the suite has",
     "  timeout_minutes  the CI job timeout for one cell of this suite",
+    "  host_adapter   true when the suite provisions a dfs on the host's NFS",
+    "                 adapter port, so a stale server there would grade it",
+    "                 against the wrong build. Docker-only suites publish no",
+    "                 host port and must not be failed by a listener on it.",
     "  steps          ordered steps. Each declares its own privilege need, per",
     "                 step on purpose: pynfs speaks NFSv4 itself and must stay",
     "                 runnable with no mount and no root, so nothing may hoist",
@@ -65,6 +69,7 @@
 
     "pjdfstest": {
       "description": "pjdfstest POSIX filesystem semantics over NFS",
+      "host_adapter": true,
       "protocol": "NFS",
       "profiles": ["memory", "badger", "postgres", "postgres-s3"],
       "variant": {
@@ -119,6 +124,7 @@
 
     "pynfs": {
       "description": "pynfs NFSv4.0/4.1 protocol conformance",
+      "host_adapter": true,
       "protocol": "NFS",
       "profiles": ["memory", "badger", "postgres", "postgres-s3"],
       "variant": {

@@ -140,16 +140,20 @@ print_matrix() {
         | {include: .}'
 }
 
-# The NFS adapter's default port. Overridable so a test can use a port of its
-# own rather than fighting whatever is really listening on this one.
-ADAPTER_PORT="${CONFORMANCE_ADAPTER_PORT:-12049}"
+# The NFS adapter port, under the name the rest of the tree already uses.
+ADAPTER_PORT="${NFS_PORT:-12049}"
 
 # A dfs left behind by a killed run answers on the adapter port and grades a
 # suite against a build nobody is testing. Only a leftover dfs is ever killed:
 # anything else holding the port belongs to someone, so refuse the run rather
 # than guess. Escalating to sudo is deliberately not attempted — it would either
 # block on a password prompt or kill a process this has no business killing.
+#
+# Only the suites that provision a dfs on the host care. The SMB suites and the
+# Kerberos one run entirely inside Docker and publish no host port, so a
+# listener here is none of their business and must not fail them.
 clear_orphan_server() {
+    [[ "$(mq --arg s "$SUITE" '.suites[$s].host_adapter // false')" == "true" ]] || return 0
     command -v lsof >/dev/null 2>&1 || return 0
     local pid name
     for pid in $(lsof -ti "tcp:${ADAPTER_PORT}" -sTCP:LISTEN 2>/dev/null); do

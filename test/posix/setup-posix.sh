@@ -117,7 +117,7 @@ export DITTOFS_CACHE_PATH="${DATA_DIR}/cache"
 
 MOUNT_POINT="${DITTOFS_MOUNT:-/tmp/dittofs-test}"
 API_PORT=8080
-NFS_PORT=12049
+NFS_PORT="${NFS_PORT:-12049}"
 TEST_PASSWORD="posix-test-password-123"
 
 # Colors for output
