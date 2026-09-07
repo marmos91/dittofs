@@ -39,6 +39,17 @@ func (h *Handler) handleGetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		}
 	}
 
+	// A settable-only attribute has no value to return: RFC 7530 Section 5.5
+	// makes reading one an error rather than a request the server narrows down
+	// to the attributes it can answer.
+	if attrs.HasWriteOnlyAttr(requested) {
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_INVAL,
+			OpCode: types.OP_GETATTR,
+			Data:   encodeStatusOnly(types.NFS4ERR_INVAL),
+		}
+	}
+
 	// Ensure lease_time reflects configured duration from StateManager
 	if h.StateManager != nil {
 		leaseDur := h.StateManager.LeaseDuration()
@@ -126,7 +137,7 @@ func (h *Handler) getAttrRealFS(ctx *types.CompoundContext, requested []uint32) 
 	var buf bytes.Buffer
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
 
-	if err := attrs.EncodeRealFileAttrs(&buf, requested, file, metadata.FileHandle(ctx.CurrentFH), fsStats); err != nil {
+	if err := attrs.EncodeRealFileAttrs(&buf, requested, ctx.MinorVersion, file, metadata.FileHandle(ctx.CurrentFH), fsStats); err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_GETATTR,
@@ -158,7 +169,7 @@ func (h *Handler) getAttrPseudoFS(ctx *types.CompoundContext, requested []uint32
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
 
 	// Encode pseudo-fs attributes
-	if err := attrs.EncodePseudoFSAttrs(&buf, requested, node); err != nil {
+	if err := attrs.EncodePseudoFSAttrs(&buf, requested, ctx.MinorVersion, node); err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_GETATTR,
