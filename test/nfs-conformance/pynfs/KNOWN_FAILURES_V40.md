@@ -45,5 +45,5 @@ Categories:
 | OPDG3 | bug | bad/old/stale stateid accepted | #2341 |
 | OPDG6 | bug | bad/old/stale stateid accepted | #2341 |
 | OPDG7 | bug | bad/old/stale stateid accepted | #2341 |
-| WRT18 | bug | change attribute frozen across a write session | #2342 |
+| WRT18 | bug | change attribute frozen across a write session | #2382 |
 | RPLY8 | suite | knfsd fails this too — replay of a waiting LOCKU | - |
