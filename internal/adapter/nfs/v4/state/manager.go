@@ -410,8 +410,13 @@ func firstOrEmpty(ss []string) string {
 }
 
 // clientHasLiveStateLocked reports whether clientID still holds leased state
-// that another principal's SETCLIENTID would cancel: an open (byte-range locks
-// hang off one) or a delegation, under a lease that has not lapsed.
+// that another principal's SETCLIENTID would cancel -- an open, a byte-range
+// lock or a delegation -- under a lease that has not lapsed.
+//
+// Locks are counted separately from opens rather than through them: a lock
+// hangs off an open state, but LOCK takes the lock-owner's client ID from the
+// wire and does not require it to match the client that owns that open, so a
+// client can hold live lock state without owning an open here.
 //
 // This is what makes the principal check in RFC 7530 Section 16.33.5
 // conditional. Section 9.1.2 spells the condition out: when a SETCLIENTID
@@ -433,6 +438,11 @@ func (sm *StateManager) clientHasLiveStateLocked(clientID uint64) bool {
 	}
 	for _, owner := range sm.openOwners {
 		if owner.ClientID == clientID && len(owner.OpenStates) > 0 {
+			return true
+		}
+	}
+	for _, lockState := range sm.lockStateByOther {
+		if lockState.LockOwner != nil && lockState.LockOwner.ClientID == clientID {
 			return true
 		}
 	}

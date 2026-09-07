@@ -1,11 +1,13 @@
 package state
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // TestConfirmClientID_RebootReleasesPreviousIncarnationState covers the purge
@@ -94,5 +96,51 @@ func TestRenewLease_ForgottenClientIDIsExpiredNotStale(t *testing.T) {
 	}
 	if err := sm.RenewLease(0, "uid:0"); !errors.Is(err, ErrStaleClientID) {
 		t.Errorf("RENEW for client ID 0: got %v, want ErrStaleClientID", err)
+	}
+}
+
+// TestSetClientID_LockOnlyStateStillBlocksAnotherPrincipal covers the gap
+// between "holds an open" and "holds state". LOCK takes the lock-owner's
+// client ID from the wire and does not require it to match the client that
+// owns the open the lock hangs from, so a client can hold a live byte-range
+// lock while owning no open state of its own. That is still leased state a
+// SETCLIENTID from another principal would cancel.
+func TestSetClientID_LockOnlyStateStillBlocksAnotherPrincipal(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	defer sm.Shutdown()
+	sm.SetLockManager(lock.NewManager())
+
+	cb := CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "10.0.0.1.8.1"}
+	fh := []byte("lock-only-fh")
+
+	// The client that owns the open, under one principal.
+	opener, err := sm.SetClientID("lock-only-opener", [8]byte{1}, cb, "10.0.0.1:1", "uid:1000")
+	if err != nil {
+		t.Fatalf("SetClientID(opener): %v", err)
+	}
+	if err := sm.ConfirmClientID(opener.ClientID, opener.ConfirmVerifier); err != nil {
+		t.Fatalf("ConfirmClientID(opener): %v", err)
+	}
+	open, err := sm.OpenFile(opener.ClientID, []byte("open-owner"), 1, fh,
+		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+
+	// A second client, holding only the lock.
+	locker, err := sm.SetClientID("lock-only-locker", [8]byte{2}, cb, "10.0.0.2:2", "uid:2000")
+	if err != nil {
+		t.Fatalf("SetClientID(locker): %v", err)
+	}
+	if err := sm.ConfirmClientID(locker.ClientID, locker.ConfirmVerifier); err != nil {
+		t.Fatalf("ConfirmClientID(locker): %v", err)
+	}
+	if _, err := sm.LockNew(context.Background(), locker.ClientID, []byte("lock-owner"), 1,
+		&open.Stateid, 2, fh, types.WRITE_LT, 0, 100, false); err != nil {
+		t.Fatalf("LockNew: %v", err)
+	}
+
+	if _, err := sm.SetClientID("lock-only-locker", [8]byte{2}, cb, "10.0.0.3:3", "uid:9999"); !errors.Is(err, ErrClientIDInUse) {
+		t.Errorf("SETCLIENTID from another principal against a lock-holding client ID: got %v, want ErrClientIDInUse", err)
 	}
 }
