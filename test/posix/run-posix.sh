@@ -11,12 +11,18 @@
 #   sudo env PATH="$PATH" ./run-posix.sh 'chmod/*.t'            # Run specific test pattern
 #   sudo env PATH="$PATH" ./run-posix.sh --nfs-version 4        # Run all tests (log NFSv4)
 #   sudo env PATH="$PATH" ./run-posix.sh --nfs-version 4 chmod  # Run chmod tests (log NFSv4)
+#   sudo env PATH="$PATH" ./run-posix.sh --grade                # Run everything, then grade
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOUNT_POINT="${DITTOFS_MOUNT:-/tmp/dittofs-test}"
 NFS_VERSION=""
+# Interactively the blacklist is a skip list: known failures are not worth
+# waiting for. Under --grade it is the opposite — every test runs and the
+# blacklist only decides which failures are allowed, so a listed test that
+# starts passing is visible instead of never executed.
+GRADE=false
 
 # Parse --nfs-version if provided (for informational logging)
 POSITIONAL_ARGS=()
@@ -28,6 +34,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --nfs-version=*)
             NFS_VERSION="${1#*=}"
+            shift
+            ;;
+        --grade)
+            GRADE=true
             shift
             ;;
         *)
@@ -159,7 +169,7 @@ collect_tests() {
     local search_dir="$1"
     find -L "$search_dir" -name '*.t' -type f 2>/dev/null | sort | while IFS= read -r test_file; do
         local rel_path="${test_file#"$WORK_DIR/tests/"}"
-        if ! is_excluded "$rel_path"; then
+        if [[ "$GRADE" == true ]] || ! is_excluded "$rel_path"; then
             echo "$test_file"
         fi
     done
@@ -174,6 +184,22 @@ fi
 if [[ -z "$TEST_FILES" ]]; then
     echo "No test files found (all excluded or missing)"
     exit 1
+fi
+
+if [[ "$GRADE" == true ]]; then
+    RESULTS_DIR="${DITTOFS_RESULTS_DIR:-$SCRIPT_DIR/results}"
+    mkdir -p "$RESULTS_DIR"
+    LOG="$RESULTS_DIR/run.log"
+
+    # prove exits non-zero on any failure, including the ones on the blacklist,
+    # so its status says nothing about the verdict — the grader decides that.
+    # Reading $? after the pipe would report tee's status instead of prove's.
+    set -o pipefail
+    # shellcheck disable=SC2086
+    prove -rv --timer $TEST_FILES 2>&1 | tee "$LOG" || true
+    set +o pipefail
+
+    exec "$SCRIPT_DIR/parse-results.sh" "$LOG" "$KNOWN_FAILURES_FILE" "$RESULTS_DIR"
 fi
 
 # shellcheck disable=SC2086

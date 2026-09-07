@@ -116,7 +116,7 @@
         {
           "name": "run",
           "cmd": "posix/run-posix.sh",
-          "args": ["--nfs-version", "{variant}"],
+          "args": ["--nfs-version", "{variant}", "--grade"],
           "root": true,
           "mount": true,
           "docker": false
