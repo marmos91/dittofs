@@ -522,9 +522,15 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 		// keyed by TreeID alone), while the file-close pass filters on both
 		// TreeID and SessionID and so spares the owner's opens — leaving those
 		// handles orphaned behind a tree that no longer exists, with no way to
-		// close them. Gating here covers every NeedsTree command at once, so
-		// the per-handler lookups downstream (TREE_DISCONNECT, CREATE) can stay
-		// existence-only.
+		// close them.
+		//
+		// ponytail: gating here covers every NeedsTree command at once, so the
+		// per-handler lookups downstream (TREE_DISCONNECT, CREATE) stay
+		// existence-only rather than each repeating the comparison. The ceiling
+		// is that ownership then holds only for commands that reach a handler
+		// through this function; a future path that invokes a handler directly
+		// would carry no tree-ownership check at all. Push the comparison down
+		// into the handlers only if such a path appears.
 		tree, ok := connInfo.Handler.GetTree(reqHeader.TreeID)
 		if !ok || tree.SessionID != reqHeader.SessionID {
 			logger.Debug("Tree not connected on this session",

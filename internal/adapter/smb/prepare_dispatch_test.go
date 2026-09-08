@@ -130,30 +130,19 @@ func TestPrepareDispatch_DoesNotGateSMB2x(t *testing.T) {
 	}
 }
 
-// TestPrepareDispatch_RejectsTreeFromAnotherSession verifies that a
-// tree-scoped command carrying a TreeID owned by a different session is
-// rejected with STATUS_NETWORK_NAME_DELETED. Tree connections live in a
-// process-wide table keyed by a small sequential TreeID, so without this gate
-// any authenticated client can name another session's tree and act on it —
-// TREE_DISCONNECT on a stranger's tree deletes it and cancels the blocking
-// LOCKs parked on it, orphaning the owner's still-open handles. MS-SMB2
-// §3.3.5.2.11 requires the lookup to be scoped to Session.TreeConnectTable.
+// TestPrepareDispatch_RejectsTreeFromAnotherSession asserts that TREE_DISCONNECT
+// naming a live TreeID owned by a different session is refused with
+// STATUS_NETWORK_NAME_DELETED. See the gate in prepareDispatch for why.
 func TestPrepareDispatch_RejectsTreeFromAnotherSession(t *testing.T) {
 	victim := newConnInfoForDispatch(t, 1, types.Dialect0311)
 
-	// Second connection, same process-wide handler and session manager.
-	attacker := &ConnInfo{
-		ConnID:         2,
-		Conn:           fakeConn{},
-		Handler:        victim.Handler,
-		SessionManager: victim.SessionManager,
-		WriteMu:        &LockedWriter{},
-		WriteTimeout:   2 * time.Second,
-		CryptoState:    victim.CryptoState,
-	}
+	// Second connection, sharing only the process-wide tree table and session
+	// manager — as two real connections to one server do.
+	attacker := newConnInfoForDispatch(t, 2, types.Dialect0311)
+	attacker.Handler = victim.Handler
+	attacker.SessionManager = victim.SessionManager
 
 	victimSess := victim.Handler.CreateSession("127.0.0.1:1", false, "alice", "WORKGROUP")
-	victimSess.OriginConnID = victim.ConnID
 	attackerSess := victim.Handler.CreateSession("127.0.0.1:2", false, "mallory", "WORKGROUP")
 	attackerSess.OriginConnID = attacker.ConnID
 
