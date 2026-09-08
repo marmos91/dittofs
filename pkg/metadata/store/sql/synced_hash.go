@@ -265,3 +265,17 @@ func locatorFromCols(blockID sql.NullString, off, length sql.NullInt64) (block.C
 	}
 	return block.ChunkLocator{BlockID: blockID.String, WireOffset: off.Int64, WireLength: length.Int64}, nil
 }
+
+// PutSyncedLocators writes the marker and locator of every chunk, last-wins per
+// hash, over the executor this Core holds.
+//
+// Reached through a transaction's Core the statements already share the
+// caller's transaction, which is where this belongs and how every caller uses
+// it: PutSyncedLocators is part of metadata.Transaction, not of
+// metadata.SyncedHashStore. A store's Core runs on the pool, where the several
+// statements would autocommit one at a time and a failure part-way would leave
+// some hashes marked synced and the rest not — so PoolPath overrides this to
+// open a transaction first rather than leaving the unsafe version reachable.
+func (c *Core) PutSyncedLocators(ctx context.Context, chunks []block.BlockChunkCommit) error {
+	return PutSyncedLocators(ctx, c.X, c.D, chunks)
+}
