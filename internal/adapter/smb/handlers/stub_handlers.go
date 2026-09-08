@@ -373,7 +373,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 			}
 		}
 	}
-	if cancelFn, ok := h.pendingLocks.LoadAndDelete(ctx.MessageID); ok {
+	if cancelFn, ok := h.pendingLocks.LoadAndDelete(lockMsgKey{ConnID: ctx.ConnID, MessageID: ctx.MessageID}); ok {
 		cancelledSomething = true
 		cancelFn.(context.CancelFunc)()
 		logger.Debug("CANCEL: cancelled inline blocking LOCK",

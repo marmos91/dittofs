@@ -144,10 +144,16 @@ type Handler struct {
 	// smb2.lock.open-brlock-deadlock / ctdb-delrec-deadlock).
 	LockWaitGraph *lock.WaitForGraph
 
-	// Pending blocking lock operations (messageID -> cancel func). Legacy
+	// Pending blocking lock operations (lockMsgKey -> cancel func). Legacy
 	// path for inline retry inside the request goroutine — used as a
 	// fallback when async parking is unavailable (no callback wired,
 	// async-credit pool exhausted, or registry full).
+	//
+	// The key carries the ConnID because SMB2 scopes MessageIDs per
+	// connection: keyed by MessageID alone, a CANCEL on one connection
+	// cancels an unrelated connection's inline LOCK that happens to hold the
+	// same MessageID, and both connections start their sequence window near
+	// zero.
 	pendingLocks sync.Map
 
 	// Configuration
