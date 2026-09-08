@@ -126,17 +126,19 @@ func readPastSequenceResult(t *testing.T, resp []byte, wantResults uint32) *byte
 	t.Helper()
 	reader := bytes.NewReader(resp)
 
-	status, _ := xdr.DecodeUint32(reader)
+	status := decodeUint32OrFail(t, reader, "overall status")
 	if status != types.NFS4_OK {
 		t.Fatalf("overall status = %d, want NFS4_OK", status)
 	}
-	_, _ = xdr.DecodeOpaque(reader) // tag
-	numResults, _ := xdr.DecodeUint32(reader)
+	if _, err := xdr.DecodeOpaque(reader); err != nil { // tag
+		t.Fatalf("decode tag: %v", err)
+	}
+	numResults := decodeUint32OrFail(t, reader, "numResults")
 	if numResults != wantResults {
 		t.Fatalf("numResults = %d, want %d", numResults, wantResults)
 	}
 
-	opCode, _ := xdr.DecodeUint32(reader)
+	opCode := decodeUint32OrFail(t, reader, "result[0] opcode")
 	if opCode != types.OP_SEQUENCE {
 		t.Fatalf("result[0] opcode = %d, want OP_SEQUENCE", opCode)
 	}
@@ -148,17 +150,29 @@ func readPastSequenceResult(t *testing.T, resp []byte, wantResults uint32) *byte
 	return reader
 }
 
+// decodeUint32OrFail reads one XDR uint32, failing the test on a short or
+// malformed read. A discarded decode error would leave the zero value behind,
+// and NFS4_OK is zero, so a truncated response would otherwise read as success.
+func decodeUint32OrFail(t *testing.T, reader *bytes.Reader, what string) uint32 {
+	t.Helper()
+	v, err := xdr.DecodeUint32(reader)
+	if err != nil {
+		t.Fatalf("decode %s: %v", what, err)
+	}
+	return v
+}
+
 // expectPutRootFHOK asserts that the next result the reader yields is a
 // successful PUTROOTFH, which it only is when the preceding operation consumed
 // its args without desyncing the reader.
 func expectPutRootFHOK(t *testing.T, reader *bytes.Reader) {
 	t.Helper()
 
-	opCode, _ := xdr.DecodeUint32(reader)
+	opCode := decodeUint32OrFail(t, reader, "trailing result opcode")
 	if opCode != types.OP_PUTROOTFH {
 		t.Errorf("trailing result opcode = %d, want OP_PUTROOTFH", opCode)
 	}
-	status, _ := xdr.DecodeUint32(reader)
+	status := decodeUint32OrFail(t, reader, "PUTROOTFH status")
 	if status != types.NFS4_OK {
 		t.Errorf("PUTROOTFH status = %d, want NFS4_OK", status)
 	}
