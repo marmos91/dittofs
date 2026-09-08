@@ -14,10 +14,8 @@ type AsyncPipeReadCallback func(sessionID, messageID, asyncId uint64, status typ
 type PendingPipeRead struct {
 	FileID    [16]byte
 	SessionID uint64
-	// ConnID is the stable per-TCP-connection identifier the READ arrived on.
-	// Both cancel keys are scoped to it: MessageID because SMB2 scopes
-	// MessageIDs per connection, and AsyncId because a client-supplied AsyncId
-	// must not reach a read parked on somebody else's connection.
+	// ConnID scopes both cancel keys: a MessageID and an AsyncId are unique
+	// only within the connection the request arrived on.
 	ConnID    uint64
 	MessageID uint64
 	AsyncId   uint64

@@ -545,11 +545,12 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 				Context:  cancelCtx,
 				Identity: authCtx.Identity,
 			}
-			h.pendingLocks.Store(lockMsgKey{ConnID: ctx.ConnID, MessageID: ctx.MessageID}, cancelFn)
+			pendingKey := lockMsgKey{ConnID: ctx.ConnID, MessageID: ctx.MessageID}
+			h.pendingLocks.Store(pendingKey, cancelFn)
 
 			err = h.acquireLockWithRetry(lockAuthCtx, metaSvc, openFile.MetadataHandle, fileLock, false)
 			ctxErr := lockAuthCtx.Context.Err()
-			h.pendingLocks.LoadAndDelete(lockMsgKey{ConnID: ctx.ConnID, MessageID: ctx.MessageID})
+			h.pendingLocks.LoadAndDelete(pendingKey)
 			cancelFn()
 
 			if err != nil {

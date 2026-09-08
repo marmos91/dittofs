@@ -150,10 +150,9 @@ type Handler struct {
 	// async-credit pool exhausted, or registry full).
 	//
 	// The key carries the ConnID because SMB2 scopes MessageIDs per
-	// connection: keyed by MessageID alone, a CANCEL on one connection
-	// cancels an unrelated connection's inline LOCK that happens to hold the
-	// same MessageID, and both connections start their sequence window near
-	// zero.
+	// connection, and every connection starts its sequence window near zero:
+	// keyed by MessageID alone, one connection's CANCEL tears down another
+	// connection's inline LOCK.
 	pendingLocks sync.Map
 
 	// Configuration
