@@ -102,6 +102,19 @@ func (t *PendingWritesTracker) RecordWrite(handle FileHandle, intent *WriteOpera
 		// critical for NFS client page cache stability. The Linux NFS client
 		// keys its cache on (mtime, ctime, size) and invalidates it if mtime
 		// changes between WRITEs.
+		//
+		// ponytail: this state is keyed by file handle alone, with no notion of
+		// which client wrote, so the freeze applies to every client at once.
+		// The stable mtime/ctime it buys one writer also holds the NFSv4 change
+		// attribute still, since that attribute is encoded from ctime. So from
+		// the second write of a session onward, another client's writes to the
+		// same file go unannounced: MaxSize is not frozen, so a write that
+		// extends the file moves size, but one that overwrites in place moves
+		// no attribute at all, and a reader re-reading the change attribute
+		// sees the frozen value and keeps serving its cached copy. Upgrade to a
+		// per-client freeze — the writing client sees its own stable value
+		// while other clients observe the real one — if concurrent writers to
+		// a single file become a case to serve.
 		if state.LastMtime.IsZero() {
 			state.LastMtime = intent.NewMtime
 		}
