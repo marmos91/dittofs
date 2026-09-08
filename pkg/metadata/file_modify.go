@@ -692,9 +692,29 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 // rather than destroying it; and a non-nil File whose PayloadID is empty when
 // a remaining hard link means the content must survive.
 func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, toDir FileHandle, toName string) (*File, *RenameWcc, error) {
-	store, err := s.storeForHandle(fromDir)
+	fromShare, _, err := DecodeFileHandle(fromDir)
 	if err != nil {
 		return nil, nil, err
+	}
+	store, err := s.GetStoreForShare(fromShare)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// A move re-parents one entry, so both directories must live in the same
+	// share. Only the source handle selects the store, and a store resolves any
+	// handle it is handed, so without this the destination lookup below would
+	// succeed against a foreign directory whenever two shares share a store.
+	toShare, _, err := DecodeFileHandle(toDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	if toShare != fromShare {
+		return nil, nil, &StoreError{
+			Code:    ErrInvalidArgument,
+			Message: "cannot move an entry across shares",
+			Path:    toName,
+		}
 	}
 
 	// Validate names
