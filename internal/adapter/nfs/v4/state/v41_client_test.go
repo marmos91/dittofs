@@ -300,8 +300,8 @@ func TestListV41Clients(t *testing.T) {
 		t.Fatalf("ListV41Clients returned %d clients, want 3", len(clients))
 	}
 
-	// Verify returned values are pointers to internal records (not copies)
-	// to avoid copylocks issues with V41ClientRecord containing atomic fields.
+	// The slice holds live pointers to the internal records, so every entry
+	// must be non-nil for a caller to read one without a check of its own.
 	for _, c := range clients {
 		if c == nil {
 			t.Error("ListV41Clients returned nil pointer")

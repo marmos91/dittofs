@@ -32,7 +32,10 @@ const DefaultLeaseDuration = 90 * time.Second
 type StateManager struct {
 	mu sync.RWMutex
 
-	// clientsByID maps server-assigned client IDs to client records.
+	// clientsByID maps server-assigned client IDs to v4.0 client records
+	// (those established by SETCLIENTID). v4.1 clients are indexed by
+	// v41ClientsByID; the two maps never hold the same ID because
+	// generateClientID draws both from one sequence.
 	clientsByID map[uint64]*ClientRecord
 
 	// clientsByName maps nfs_client_id4.id strings to confirmed client records.
@@ -188,11 +191,11 @@ type StateManager struct {
 	// ============================================================================
 
 	// v41ClientsByID maps server-assigned client IDs to v4.1 client records.
-	v41ClientsByID map[uint64]*V41ClientRecord
+	v41ClientsByID map[uint64]*ClientRecord
 
 	// v41ClientsByOwner maps owner ID bytes (string key) to v4.1 client records.
 	// Uses string(ownerID) for byte-exact comparison.
-	v41ClientsByOwner map[string]*V41ClientRecord
+	v41ClientsByOwner map[string]*ClientRecord
 
 	// sessionsByID maps session IDs to session objects.
 	sessionsByID map[types.SessionId4]*Session
@@ -289,8 +292,8 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		leaseDuration:       leaseDuration,
 		graceDuration:       gd,
 		// NFSv4.1 state
-		v41ClientsByID:       make(map[uint64]*V41ClientRecord),
-		v41ClientsByOwner:    make(map[string]*V41ClientRecord),
+		v41ClientsByID:       make(map[uint64]*ClientRecord),
+		v41ClientsByOwner:    make(map[string]*ClientRecord),
 		sessionsByID:         make(map[types.SessionId4]*Session),
 		sessionsByClientID:   make(map[uint64][]*Session),
 		maxSessionsPerClient: 16,
@@ -793,10 +796,32 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 // GetClient returns the client record for the given client ID, or nil
 // if no record exists. Used by RENEW and other operations that need
 // to look up client state.
+//
+// v4.0 only: it reads the SETCLIENTID index, so a v4.1 client ID comes back
+// nil even though both minor versions now share the record type. Use
+// clientRecordLocked for a lookup that should not care which flow minted the
+// ID.
 func (sm *StateManager) GetClient(clientID uint64) *ClientRecord {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.clientsByID[clientID]
+}
+
+// clientRecordLocked returns the record for clientID from whichever index holds
+// it, or nil when no client owns that ID. The v4.0 index is consulted first;
+// the two never hold the same ID because generateClientID draws both from one
+// sequence, so the order only decides which map absorbs the lookup.
+//
+// Callers hold a client ID and have no reason to know which minor version
+// minted it, which is why version-independent policy reads the record through
+// here rather than naming a map.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) clientRecordLocked(clientID uint64) *ClientRecord {
+	if record := sm.clientsByID[clientID]; record != nil {
+		return record
+	}
+	return sm.v41ClientsByID[clientID]
 }
 
 // renewConfirmedClient admits a confirmed client whose lease is still live and
@@ -805,17 +830,17 @@ func (sm *StateManager) GetClient(clientID uint64) *ClientRecord {
 // disagree about what a renewal updates.
 //
 // Caller must hold sm.mu.
-func renewConfirmedClient(confirmed bool, lease *LeaseState, lastRenewal *time.Time) error {
-	if !confirmed {
+func renewConfirmedClient(record *ClientRecord) error {
+	if !record.Confirmed {
 		return ErrStaleClientID
 	}
-	if lease != nil {
-		if lease.IsExpired() {
+	if record.Lease != nil {
+		if record.Lease.IsExpired() {
 			return ErrExpired
 		}
-		lease.Renew()
+		record.Lease.Renew()
 	}
-	*lastRenewal = time.Now()
+	record.LastRenewal = time.Now()
 	return nil
 }
 
@@ -835,13 +860,11 @@ func (sm *StateManager) ValidateAndRenewClient(clientID uint64) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	if record := sm.clientsByID[clientID]; record != nil {
-		return renewConfirmedClient(record.Confirmed, record.Lease, &record.LastRenewal)
+	record := sm.clientRecordLocked(clientID)
+	if record == nil {
+		return sm.unknownClientIDError(clientID)
 	}
-	if v41 := sm.v41ClientsByID[clientID]; v41 != nil {
-		return renewConfirmedClient(v41.Confirmed, v41.Lease, &v41.LastRenewal)
-	}
-	return sm.unknownClientIDError(clientID)
+	return renewConfirmedClient(record)
 }
 
 // RemoveClient removes a client record and all associated state.
@@ -881,10 +904,10 @@ func (sm *StateManager) RemoveClient(clientID uint64) {
 // together with its open states, its lock states, and the locks those hold in
 // the unified lock manager.
 //
-// It scans sm.openOwners by ClientID rather than walking a per-client owner
-// list: V41ClientRecord carries no such list, and the v4.0 ClientRecord one
-// goes stale because freeOpenStateidLocked removes owners from sm.openOwners
-// without removing them there.
+// It scans sm.openOwners by ClientID rather than walking the record's
+// OpenOwners map: that map is only populated on the v4.0 path, and it goes
+// stale even there because freeOpenStateidLocked removes owners from
+// sm.openOwners without removing them from it.
 //
 // Caller must hold sm.mu.
 func (sm *StateManager) removeClientOpenStateLocked(clientID uint64) {
@@ -991,13 +1014,8 @@ func (sm *StateManager) releaseClientStateLocked(clientID uint64) {
 //
 // Caller must hold sm.mu.
 func (sm *StateManager) clientLeaseLapsedLocked(clientID uint64) bool {
-	if record := sm.clientsByID[clientID]; record != nil {
-		return record.Confirmed && record.Lease != nil && record.Lease.IsExpired()
-	}
-	if v41 := sm.v41ClientsByID[clientID]; v41 != nil {
-		return v41.Confirmed && v41.Lease != nil && v41.Lease.IsExpired()
-	}
-	return false
+	record := sm.clientRecordLocked(clientID)
+	return record != nil && record.Confirmed && record.Lease != nil && record.Lease.IsExpired()
 }
 
 // expireLapsedHoldersLocked releases the state of every client that holds an
@@ -2325,7 +2343,7 @@ func (sm *StateManager) RenewLease(clientID uint64, principal ...string) error {
 		return ErrRenewAccess
 	}
 
-	if err := renewConfirmedClient(record.Confirmed, record.Lease, &record.LastRenewal); err != nil {
+	if err := renewConfirmedClient(record); err != nil {
 		return err
 	}
 
@@ -3614,7 +3632,7 @@ func (sm *StateManager) reapExpiredSessions() {
 	now := time.Now()
 
 	// Collect client IDs to purge (avoid modifying map during iteration)
-	var toPurge []*V41ClientRecord
+	var toPurge []*ClientRecord
 
 	for _, record := range sm.v41ClientsByID {
 		// Check lease expiry for confirmed clients

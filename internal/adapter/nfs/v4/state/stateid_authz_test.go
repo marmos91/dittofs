@@ -308,7 +308,7 @@ func TestExchangeID_Case2_PrincipalMismatch(t *testing.T) {
 	}
 }
 
-func recPrincipal(rec *V41ClientRecord) string {
+func recPrincipal(rec *ClientRecord) string {
 	if rec == nil {
 		return ""
 	}
