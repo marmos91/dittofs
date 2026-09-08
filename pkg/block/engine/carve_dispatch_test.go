@@ -11,6 +11,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local"
+	"github.com/marmos91/dittofs/pkg/block/syncer"
 )
 
 // carveFanoutLocal is a minimal LocalStore that records per-file Carve calls and
@@ -53,7 +54,7 @@ func TestCarvePass_FansOutBoundedByUploadWindow(t *testing.T) {
 	const window = 3
 	m := &RemoteSync{
 		local:         fl,
-		uploadLimiter: newDynamicSemaphore(window),
+		uploadLimiter: syncer.NewDynamicSemaphore(window),
 		stopCh:        make(chan struct{}),
 		config:        DefaultConfig(),
 	}
@@ -91,7 +92,7 @@ func TestCarvePass_FansOutBoundedByUploadWindow(t *testing.T) {
 // TestCarvePass_NoFilesIsNoop guards the empty working-set path.
 func TestCarvePass_NoFilesIsNoop(t *testing.T) {
 	fl := &carveFanoutLocal{started: make(chan string, 1), release: make(chan struct{}), carved: map[string]int{}}
-	m := &RemoteSync{local: fl, uploadLimiter: newDynamicSemaphore(4), stopCh: make(chan struct{}), config: DefaultConfig()}
+	m := &RemoteSync{local: fl, uploadLimiter: syncer.NewDynamicSemaphore(4), stopCh: make(chan struct{}), config: DefaultConfig()}
 	m.carvePass(context.Background()) // returns immediately, acquires nothing
 	require.Equal(t, int32(0), fl.inFlight.Load())
 }

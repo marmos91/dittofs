@@ -21,11 +21,14 @@ var ErrStoreClosed = errors.New("engine: block store is closed")
 const DefaultParallelDownloads = 32
 
 // Adaptive upload-concurrency bounds (#1407). When RemoteSyncConfig.ParallelUploads
-// is unset (0), the carver auto-tunes concurrent block PUTs to saturate the
-// uplink: it starts at AdaptiveUploadFloor and ramps toward AdaptiveUploadCeiling,
+// is unset (0), the syncer auto-tunes the upload window to saturate the uplink:
+// it starts at AdaptiveUploadFloor and ramps toward AdaptiveUploadCeiling,
 // settling at the goodput knee. A pinned ParallelUploads > 0 overrides this with
-// a fixed window. Block PUTs are network-latency bound, so a serial carver leaves
-// the link idle — one in-flight PutBlock sustained only ~200 Mbit/s VM→fr-par.
+// a fixed window. The window bounds concurrent whole-file carve passes, not
+// individual block PUTs — each pass applies its own bound on concurrent
+// PutBlock calls, so the PUTs in flight are the product of the two. Block PUTs
+// are network-latency bound, so a serial carver leaves the link idle — one
+// in-flight PutBlock sustained only ~200 Mbit/s VM→fr-par.
 const (
 	AdaptiveUploadFloor   = 16  // starting window in adaptive mode (greedy start)
 	AdaptiveUploadCeiling = 64  // max window the adaptive controller ramps to

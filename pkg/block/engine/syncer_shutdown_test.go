@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/marmos91/dittofs/pkg/block/syncer"
 )
 
 // gatedChunkStore wraps a stubFileChunkStore so a download worker can be pinned
@@ -143,7 +144,7 @@ func TestSyncerClose_JoinsCarveDispatcher(t *testing.T) {
 	cfg.UploadInterval = time.Millisecond
 	m := &RemoteSync{
 		local:         fl,
-		uploadLimiter: newDynamicSemaphore(2),
+		uploadLimiter: syncer.NewDynamicSemaphore(2),
 		stopCh:        make(chan struct{}),
 		config:        cfg,
 	}

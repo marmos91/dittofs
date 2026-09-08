@@ -1,4 +1,4 @@
-package engine
+package syncer
 
 import (
 	"context"
@@ -7,13 +7,13 @@ import (
 	"time"
 )
 
-// dynamicSemaphore is the concurrency primitive the adaptive upload controller
+// DynamicSemaphore is the concurrency primitive the adaptive upload controller
 // resizes at runtime. golang.org/x/sync/semaphore fixes its size at
 // construction, so the syncer needs one whose limit can grow and shrink while
 // slots are held. These tests pin the contract independently of the syncer.
 
 func TestDynamicSemaphore_BlocksAtLimit(t *testing.T) {
-	s := newDynamicSemaphore(2)
+	s := NewDynamicSemaphore(2)
 	ctx := context.Background()
 	if err := s.Acquire(ctx); err != nil {
 		t.Fatal(err)
@@ -46,7 +46,7 @@ func TestDynamicSemaphore_BlocksAtLimit(t *testing.T) {
 }
 
 func TestDynamicSemaphore_GrowUnblocksWaiter(t *testing.T) {
-	s := newDynamicSemaphore(1)
+	s := NewDynamicSemaphore(1)
 	ctx := context.Background()
 	if err := s.Acquire(ctx); err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func TestDynamicSemaphore_GrowUnblocksWaiter(t *testing.T) {
 }
 
 func TestDynamicSemaphore_ShrinkHoldsNewAcquires(t *testing.T) {
-	s := newDynamicSemaphore(4)
+	s := NewDynamicSemaphore(4)
 	ctx := context.Background()
 	for i := 0; i < 4; i++ {
 		if err := s.Acquire(ctx); err != nil {
@@ -111,7 +111,7 @@ func TestDynamicSemaphore_ShrinkHoldsNewAcquires(t *testing.T) {
 }
 
 func TestDynamicSemaphore_TakePeakTracksHighWater(t *testing.T) {
-	s := newDynamicSemaphore(8)
+	s := NewDynamicSemaphore(8)
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
 		if err := s.Acquire(ctx); err != nil {
@@ -132,7 +132,7 @@ func TestDynamicSemaphore_TakePeakTracksHighWater(t *testing.T) {
 }
 
 func TestDynamicSemaphore_AcquireRespectsContext(t *testing.T) {
-	s := newDynamicSemaphore(1)
+	s := NewDynamicSemaphore(1)
 	if err := s.Acquire(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestDynamicSemaphore_AcquireRespectsContext(t *testing.T) {
 
 func TestDynamicSemaphore_ConcurrentNeverExceedsLimit(t *testing.T) {
 	const limit = 5
-	s := newDynamicSemaphore(limit)
+	s := NewDynamicSemaphore(limit)
 	ctx := context.Background()
 	var (
 		mu      sync.Mutex
