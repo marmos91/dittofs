@@ -37,6 +37,7 @@ func runXattrOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("StreamBackedGet", func(t *testing.T) { testXattrStreamBackedGet(t, factory) })
 	t.Run("StreamWinsPrecedence", func(t *testing.T) { testXattrStreamPrecedence(t, factory) })
 	t.Run("ConcurrentDistinctNames", func(t *testing.T) { testXattrConcurrentDistinctNames(t, factory) })
+	t.Run("TransactionIsNotATransactor", func(t *testing.T) { testXattrTransactionIsNotATransactor(t, factory) })
 }
 
 // testReader builds a StreamContentReader serving a fixed value for the given
@@ -398,5 +399,31 @@ func testXattrConcurrentDistinctNames(t *testing.T, factory StoreFactory) {
 	}
 	if accepted == 0 {
 		t.Fatalf("every concurrent SetXattr failed; the case proves nothing about lost updates: %v", errs)
+	}
+}
+
+// testXattrTransactionIsNotATransactor pins the invariant the xattr write path
+// depends on: a Transaction must NOT open transactions of its own.
+//
+// The resolvers wrap themselves in a transaction by asking whether the target
+// is a metadata.Transactor. An in-transaction caller has to fall through that
+// check unwrapped, which it does only because no backend's transaction type
+// carries WithTransaction. Nothing in the type system enforces that — a
+// transaction that grew the method later (savepoints, say) would silently make
+// every in-transaction SetXattr nest, and nesting is implementation-defined
+// per the Transactor doc, so the symptom would be a deadlock or a discarded
+// write rather than a compile error.
+func testXattrTransactionIsNotATransactor(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+
+	err := store.WithTransaction(t.Context(), func(tx metadata.Transaction) error {
+		if _, ok := tx.(metadata.Transactor); ok {
+			t.Error("this backend's Transaction implements Transactor: the xattr resolvers " +
+				"would open a nested transaction for an in-transaction caller")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithTransaction: %v", err)
 	}
 }
