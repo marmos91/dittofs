@@ -39,9 +39,16 @@ func validityFixture(t *testing.T, sm *StateManager, owner string) (fh []byte, o
 // type tag and random bytes alone, so a rejection can only be the epoch's
 // doing. It is what the pynfs suite's makeStaleId simulates: a stateid a client
 // held across a server restart.
+//
+// The fragment is complemented rather than set to a fixed value. No byte equals
+// its own complement, so the result differs from whatever epoch the manager
+// drew, for every epoch -- a hard-coded fragment would instead read as current
+// on the one epoch that happens to match it.
 func foreignEpoch(sid types.Stateid4) *types.Stateid4 {
 	stale := sid
-	stale.Other[1], stale.Other[2], stale.Other[3] = 0xFE, 0xED, 0xFA
+	stale.Other[1] = ^stale.Other[1]
+	stale.Other[2] = ^stale.Other[2]
+	stale.Other[3] = ^stale.Other[3]
 	return &stale
 }
 
