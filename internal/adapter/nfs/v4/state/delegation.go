@@ -188,13 +188,8 @@ func (sm *StateManager) delegationBudgetAvailableLocked() bool {
 //
 // Caller must hold sm.mu.
 func (sm *StateManager) clientLeaseLiveLocked(clientID uint64) bool {
-	if v40, ok := sm.clientsByID[clientID]; ok {
-		return v40.Lease != nil && !v40.Lease.IsExpired()
-	}
-	if v41, ok := sm.v41ClientsByID[clientID]; ok {
-		return v41.Lease != nil && !v41.Lease.IsExpired()
-	}
-	return false
+	record := sm.clientRecordLocked(clientID)
+	return record != nil && record.Lease != nil && !record.Lease.IsExpired()
 }
 
 // revokeInLockManagerLocked hands a delegation back to the cross-protocol

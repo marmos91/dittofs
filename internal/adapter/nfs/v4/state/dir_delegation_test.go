@@ -541,7 +541,7 @@ func registerTestV41Client(t *testing.T, sm *StateManager) uint64 {
 	defer sm.mu.Unlock()
 
 	clientID := sm.generateClientID()
-	record := &V41ClientRecord{
+	record := &ClientRecord{
 		ClientID:   clientID,
 		OwnerID:    []byte("test-v41-client-dir-deleg"),
 		Confirmed:  true,
