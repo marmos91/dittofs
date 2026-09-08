@@ -115,11 +115,14 @@ type RemoteSync struct {
 	completedSyncs atomic.Int64
 	failedSyncs    atomic.Int64
 
-	// uploadLimiter bounds concurrent block PUTs in carveFlush. When
-	// ParallelUploads is pinned (> 0) its limit is fixed at that value.
+	// uploadLimiter bounds concurrent whole-file carve passes: carveDispatcher
+	// acquires it before starting a file and releases it when that file's pass
+	// returns. It does not bound the block PUTs inside a pass — those have their
+	// own per-file semaphore sized by CarveUploadConcurrency — so the PUTs
+	// actually in flight are the product of the two windows, not this limit.
+	// When ParallelUploads is pinned (> 0) its limit is fixed at that value.
 	// When unset (adaptive mode) the uploadController resizes it every control
-	// interval to track the goodput knee. Lazily created by ensureUploadLimiter
-	// so directly-built test fixtures still get bounded concurrency.
+	// interval to track the goodput knee.
 	uploadLimiter *syncer.DynamicSemaphore
 	// uploadController is non-nil only in adaptive mode. It consumes one
 	// (goodput, windowLimited, sawError) sample per control interval and returns
