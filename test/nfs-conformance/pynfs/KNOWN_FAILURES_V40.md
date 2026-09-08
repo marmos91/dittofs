@@ -68,5 +68,5 @@ flake worth re-running.
 | OPDG3 | bug | bad/old/stale stateid accepted | #2341 |
 | OPDG6 | bug | bad/old/stale stateid accepted | #2341 |
 | OPDG7 | bug | bad/old/stale stateid accepted | #2341 |
-| WRT18 | proto | write-session timestamp freeze holds ctime, so change cannot advance | - |
+| WRT18 | feature | write-session freeze deliberately holds ctime, so change cannot advance | - |
 | RPLY8 | suite | knfsd fails this too — replay of a waiting LOCKU | - |
