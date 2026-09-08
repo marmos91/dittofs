@@ -415,17 +415,23 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 	//
 	// Invalid params fall back to the default profile because that is what the
 	// chunker itself does with them, so the arena matches the chunks actually cut.
-	// Compute in int64 and clamp before the int conversion so a pathological
-	// CarveBlockSize can't silently wrap on 32-bit platforms.
+	//
+	// Clamp the block size before adding the overhang, not after: a pathological
+	// CarveBlockSize near the int64 ceiling would wrap to a negative sum, sail
+	// past a clamp that only tests the upper bound, and reach make() as a
+	// negative length. CarveBlockSize is positive by then (withDefaults replaces
+	// anything <= 0) and the overhang is at most chunker.MaxChunkSize, so the
+	// subtraction below cannot itself go negative.
 	overhang := s.cfg.ChunkParams.Max
 	if s.cfg.ChunkParams.Validate() != nil {
 		overhang = chunker.DefaultParams().Max
 	}
-	arenaCap64 := s.cfg.CarveBlockSize + int64(overhang)
-	if arenaCap64 > math.MaxInt {
-		arenaCap64 = math.MaxInt
+	overhang64 := int64(overhang)
+	blockCap64 := s.cfg.CarveBlockSize
+	if blockCap64 > math.MaxInt-overhang64 {
+		blockCap64 = math.MaxInt - overhang64
 	}
-	arenaCap := int(arenaCap64)
+	arenaCap := int(blockCap64 + overhang64)
 
 	// The block currently being packed. arena is its private buffer (nil until the
 	// first novel chunk claims a pool buffer and a concurrency slot); arenaOff is
