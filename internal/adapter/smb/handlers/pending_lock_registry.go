@@ -122,6 +122,7 @@ func NewPendingLockRegistry() *PendingLockRegistry {
 	return &PendingLockRegistry{
 		reg: newPendingRegistry(registryConfig[PendingLock]{
 			asyncID: func(p *PendingLock) uint64 { return p.AsyncId },
+			connID:  func(p *PendingLock) uint64 { return p.ConnID },
 			indexes: []keyFunc[PendingLock]{
 				func(p *PendingLock) any {
 					return lockMsgKey{ConnID: p.ConnID, MessageID: p.MessageID}
@@ -185,10 +186,10 @@ func (r *PendingLockRegistry) UnregisterByMessageID(connID, messageID uint64) *P
 	return p
 }
 
-// UnregisterByAsyncId removes a pending LOCK matching asyncId and invokes its
-// Cancel closure. Used by async-flagged SMB2_CANCEL.
-func (r *PendingLockRegistry) UnregisterByAsyncId(asyncId uint64) *PendingLock {
-	p := r.reg.unregisterByAsyncID(asyncId)
+// UnregisterByAsyncId removes the pending LOCK parked on (connID, asyncId) and
+// invokes its Cancel closure. Used by async-flagged SMB2_CANCEL.
+func (r *PendingLockRegistry) UnregisterByAsyncId(connID, asyncId uint64) *PendingLock {
+	p := r.reg.unregisterByAsyncIDOn(asyncId, connID)
 	if p != nil && p.Cancel != nil {
 		p.Cancel()
 	}
