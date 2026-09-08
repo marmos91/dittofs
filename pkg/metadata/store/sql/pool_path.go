@@ -54,7 +54,7 @@ type PoolPath struct {
 // ============================================================================
 
 // UpdateAttrs stores or updates file metadata, creating the entry if absent.
-func (p PoolPath) UpdateAttrs(ctx context.Context, file *metadata.File) error {
+func (p *PoolPath) UpdateAttrs(ctx context.Context, file *metadata.File) error {
 	return p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.UpdateAttrs(ctx, file)
 	})
@@ -62,7 +62,7 @@ func (p PoolPath) UpdateAttrs(ctx context.Context, file *metadata.File) error {
 
 // SetManifest stores or updates file metadata and rewrites the stored block
 // manifest from file.Blocks.
-func (p PoolPath) SetManifest(ctx context.Context, file *metadata.File) error {
+func (p *PoolPath) SetManifest(ctx context.Context, file *metadata.File) error {
 	return p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.SetManifest(ctx, file)
 	})
@@ -70,35 +70,35 @@ func (p PoolPath) SetManifest(ctx context.Context, file *metadata.File) error {
 
 // DeleteFile removes file metadata by handle, reporting ErrNotFound when the
 // handle does not exist.
-func (p PoolPath) DeleteFile(ctx context.Context, handle metadata.FileHandle) error {
+func (p *PoolPath) DeleteFile(ctx context.Context, handle metadata.FileHandle) error {
 	return p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.DeleteFile(ctx, handle)
 	})
 }
 
 // SetChild adds or updates a child entry in a directory.
-func (p PoolPath) SetChild(ctx context.Context, dirHandle metadata.FileHandle, name string, childHandle metadata.FileHandle) error {
+func (p *PoolPath) SetChild(ctx context.Context, dirHandle metadata.FileHandle, name string, childHandle metadata.FileHandle) error {
 	return p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.SetChild(ctx, dirHandle, name, childHandle)
 	})
 }
 
 // DeleteChild removes a child entry from a directory.
-func (p PoolPath) DeleteChild(ctx context.Context, dirHandle metadata.FileHandle, name string) error {
+func (p *PoolPath) DeleteChild(ctx context.Context, dirHandle metadata.FileHandle, name string) error {
 	return p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.DeleteChild(ctx, dirHandle, name)
 	})
 }
 
 // SetLinkCount sets the hard link count for a file.
-func (p PoolPath) SetLinkCount(ctx context.Context, handle metadata.FileHandle, count uint32) error {
+func (p *PoolPath) SetLinkCount(ctx context.Context, handle metadata.FileHandle, count uint32) error {
 	return p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.SetLinkCount(ctx, handle, count)
 	})
 }
 
 // PutFilesystemMeta stores filesystem metadata for a share.
-func (p PoolPath) PutFilesystemMeta(ctx context.Context, shareName string, meta *metadata.FilesystemMeta) error {
+func (p *PoolPath) PutFilesystemMeta(ctx context.Context, shareName string, meta *metadata.FilesystemMeta) error {
 	return p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.PutFilesystemMeta(ctx, shareName, meta)
 	})
@@ -110,7 +110,7 @@ func (p PoolPath) PutFilesystemMeta(ctx context.Context, shareName string, meta 
 
 // CommitBlock atomically writes rec and marks each chunk synced within a single
 // transaction. Idempotent on BlockID.
-func (p PoolPath) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
+func (p *PoolPath) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
 	return metadata.DefaultCommitBlock(ctx, p.T, rec, chunks, nil)
 }
 
@@ -123,7 +123,7 @@ func (p PoolPath) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks
 // block as unsynced and skips the decrement entirely — a decrement lost to a
 // transient conflict is lost for good, and the block it belonged to is never
 // reclaimed.
-func (p PoolPath) DecrLiveChunkCount(ctx context.Context, blockID string, delta uint32) (uint32, error) {
+func (p *PoolPath) DecrLiveChunkCount(ctx context.Context, blockID string, delta uint32) (uint32, error) {
 	var remaining uint32
 	err := p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		var err error
@@ -148,7 +148,7 @@ func (p PoolPath) DecrLiveChunkCount(ctx context.Context, blockID string, delta 
 // declared anyway because promotion makes the Core version reachable here
 // whether or not anything calls it, and the reachable version should be the
 // safe one.
-func (p PoolPath) PutSyncedLocators(ctx context.Context, chunks []block.BlockChunkCommit) error {
+func (p *PoolPath) PutSyncedLocators(ctx context.Context, chunks []block.BlockChunkCommit) error {
 	return p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.PutSyncedLocators(ctx, chunks)
 	})
@@ -162,7 +162,7 @@ func (p PoolPath) PutSyncedLocators(ctx context.Context, chunks []block.BlockChu
 // front of it: every permission check funnels through this read, so the SELECT
 // and the decode are worth skipping. The returned value is always a deep copy,
 // so a caller can never reach the shared cache entry.
-func (p PoolPath) GetShareOptions(ctx context.Context, shareName string) (*metadata.ShareOptions, error) {
+func (p *PoolPath) GetShareOptions(ctx context.Context, shareName string) (*metadata.ShareOptions, error) {
 	// Ahead of the cache lookup, not just inside the backing read: a hit must
 	// not report success for a request whose context has already given out.
 	if err := ctx.Err(); err != nil {
@@ -189,7 +189,7 @@ func (p PoolPath) GetShareOptions(ctx context.Context, shareName string) (*metad
 // UpdateShareOptions shadows the promoted Core method to invalidate the share
 // cache around it. The write itself is a single statement, so it does not need
 // a transaction of its own.
-func (p PoolPath) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
+func (p *PoolPath) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
 	err := p.Core.UpdateShareOptions(ctx, shareName, options)
 	// Drop the cached options AFTER the write lands, whatever it reported: an
 	// extra invalidation costs a re-read, a missed one is a stale permission.
@@ -200,7 +200,7 @@ func (p PoolPath) UpdateShareOptions(ctx context.Context, shareName string, opti
 // DeleteShare removes a share and all its metadata. It runs inside a
 // transaction so the share row and its inode rows are dropped atomically; see
 // the Core method for the cascade rationale.
-func (p PoolPath) DeleteShare(ctx context.Context, shareName string) error {
+func (p *PoolPath) DeleteShare(ctx context.Context, shareName string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -215,7 +215,7 @@ func (p PoolPath) DeleteShare(ctx context.Context, shareName string) error {
 // probe and the create must not have a commit between them, or a concurrent
 // caller slips in and leaves an orphaned root inode behind. Going through the
 // transaction method is also what marks the share cache dirty.
-func (p PoolPath) CreateRootDirectory(ctx context.Context, shareName string, attr *metadata.FileAttr) (*metadata.File, error) {
+func (p *PoolPath) CreateRootDirectory(ctx context.Context, shareName string, attr *metadata.FileAttr) (*metadata.File, error) {
 	var root *metadata.File
 	err := p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		var txErr error
@@ -239,7 +239,7 @@ func (p PoolPath) CreateRootDirectory(ctx context.Context, shareName string, att
 // absent — a swept row is not a caller error. Running through WithTransaction
 // also gives a busy/serialization collision the package's bounded retry rather
 // than surfacing it as a hard error.
-func (p PoolPath) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
+func (p *PoolPath) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
 	var newCount uint32
 	err := p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		var txErr error
@@ -260,7 +260,7 @@ func (p PoolPath) DecrementRefCountAndReap(ctx context.Context, id string) (uint
 // As with PutSyncedLocators, no caller needs this on a store today — it belongs
 // to metadata.Transaction — but promotion makes a store-level version reachable
 // regardless, and the reachable version should be the safe one.
-func (p PoolPath) DecrementRefCountAndReapMany(ctx context.Context, ids []string) error {
+func (p *PoolPath) DecrementRefCountAndReapMany(ctx context.Context, ids []string) error {
 	return p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return tx.DecrementRefCountAndReapMany(ctx, ids)
 	})
