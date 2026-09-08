@@ -34,7 +34,7 @@ import (
 // The sub-tests assert, against a real EncryptedRemote wired into a real
 // engine.Store + the production CreateSnapshot orchestration:
 //
-//   - Manifest entries are the plaintext content hashes used to Put, so
+//   - Manifest entries are the plaintext content hashes used to seal, so
 //     the hashes recorded on disk address the encrypted blocks correctly.
 //   - The verify gate's per-hash probe reads every manifest chunk back
 //     through ReadChunk (deframe + authenticated decrypt) against the
@@ -173,7 +173,7 @@ func newEncryptedRemote(t *testing.T, inner *remotememory.Store) *encryption.Enc
 	return enc
 }
 
-// seedEncrypted Puts each payload through the encryption decorator under
+// seedEncrypted seals each payload through the encryption decorator under
 // its plaintext content hash and drives the orchestration's backup
 // HashSet to exactly those hashes.
 func (f *encryptedFixture) seedEncrypted(payloads [][]byte) []block.ContentHash {
@@ -181,13 +181,8 @@ func (f *encryptedFixture) seedEncrypted(payloads [][]byte) []block.ContentHash 
 	hashes := make([]block.ContentHash, 0, len(payloads))
 	for _, p := range payloads {
 		h := block.ContentHash(blake3.Sum256(p))
-		// Legacy standalone-CAS object (framed ciphertext) so the decorator
-		// round-trip sanity check still works.
-		if err := f.enc.Put(context.Background(), h, p); err != nil {
-			f.t.Fatalf("encrypted Put: %v", err)
-		}
-		// Post-#1493 durability is block-only: seed a real sealed frame as the
-		// packed block so the verify gate's ReadChunk probe deframes and
+		// Durability is block-only: seed a real sealed frame as the packed
+		// block so the verify gate's ReadChunk probe deframes and
 		// decrypt-verifies it. seedBlockFrame records the frame's wire extent
 		// on the hash's locator.
 		f.seedBlockFrame(h, p)
@@ -195,6 +190,18 @@ func (f *encryptedFixture) seedEncrypted(payloads [][]byte) []block.ContentHash 
 	}
 	f.backup.setHashes(hashes)
 	return hashes
+}
+
+// readChunk reads h's block back through the encryption decorator using the
+// locator seedBlockFrame recorded — the restore-time read path: range-read the
+// frame out of the packed block, deframe, authenticated-decrypt against h.
+func (f *encryptedFixture) readChunk(ctx context.Context, h block.ContentHash) ([]byte, error) {
+	f.t.Helper()
+	loc, ok, err := f.backup.GetLocator(ctx, h)
+	if err != nil || !ok {
+		f.t.Fatalf("GetLocator(%s): ok=%v err=%v", h, ok, err)
+	}
+	return f.enc.ReadChunk(ctx, loc.BlockID, loc.WireOffset, loc.WireLength, h)
 }
 
 // seedBlockFrame seals plaintext into an encryption frame, stores it as the
@@ -229,14 +236,23 @@ func testEncryptionManifestAndVerify(t *testing.T) {
 	}
 	hashes := fx.seedEncrypted(payloads)
 
-	// Sanity: the decorator round-trips the plaintext, proving the inner
-	// store holds framed ciphertext keyed by the plaintext content hash.
-	rawFramed, err := fx.enc.Get(context.Background(), hashes[0])
+	// Sanity: the block sitting in the inner store is NOT the plaintext (it is
+	// a framed ciphertext at rest), yet reading it back through the decorator
+	// under the plaintext content hash yields the plaintext exactly — the
+	// storage key is the plaintext BLAKE3, the stored bytes are not.
+	atRest, err := fx.inner.GetBlock(context.Background(), hashes[0].String())
 	if err != nil {
-		t.Fatalf("decorator Get (sanity): %v", err)
+		t.Fatalf("inner GetBlock (sanity): %v", err)
 	}
-	if !bytes.Equal(rawFramed, payloads[0]) {
-		t.Fatalf("decorator Get returned wrong plaintext for hash[0]")
+	if bytes.Contains(atRest, payloads[0]) {
+		t.Fatalf("block for hash[0] is stored as plaintext; want encrypted at rest")
+	}
+	plain, err := fx.readChunk(context.Background(), hashes[0])
+	if err != nil {
+		t.Fatalf("decorator ReadChunk (sanity): %v", err)
+	}
+	if !bytes.Equal(plain, payloads[0]) {
+		t.Fatalf("decorator ReadChunk returned wrong plaintext for hash[0]")
 	}
 
 	ctx := fx.ctx()
@@ -247,7 +263,7 @@ func testEncryptionManifestAndVerify(t *testing.T) {
 
 	snap, werr := fx.rt.WaitForSnapshot(ctx, fx.shareName, snapID)
 	if werr != nil {
-		t.Fatalf("WaitForSnapshot: %v (verify gate must HEAD-probe the encrypted remote successfully)", werr)
+		t.Fatalf("WaitForSnapshot: %v (verify gate must read every chunk back through the encrypted remote successfully)", werr)
 	}
 	if snap.State != models.StateReady {
 		t.Fatalf("snap.State = %q, want %q", snap.State, models.StateReady)
@@ -257,7 +273,7 @@ func testEncryptionManifestAndVerify(t *testing.T) {
 	}
 
 	// The manifest on disk must record the PLAINTEXT content hashes — the
-	// same identity used to Put and to HEAD-probe — not any ciphertext key.
+	// same identity used to seal and to probe — not any ciphertext key.
 	manifestPath := snap.ManifestPath(fx.localStoreDir)
 	mf, err := os.Open(manifestPath)
 	if err != nil {
@@ -312,14 +328,17 @@ func testEncryptionMultiChunkRoundTrip(t *testing.T) {
 
 	// Restore-time reads pull each manifest block back through the
 	// decorator. Assert byte-for-byte plaintext recovery + that the
-	// re-derived hash equals the manifest identity (ReadBlockVerified).
+	// re-derived hash equals the manifest identity.
 	for i, h := range hashes {
-		got, err := fx.enc.ReadBlockVerified(ctx, h, h)
+		got, err := fx.readChunk(ctx, h)
 		if err != nil {
-			t.Fatalf("ReadBlockVerified block %d (%s): %v", i, h, err)
+			t.Fatalf("ReadChunk block %d (%s): %v", i, h, err)
 		}
 		if !bytes.Equal(got, payloads[i]) {
 			t.Fatalf("block %d round-trip mismatch: got %d bytes, want %d", i, len(got), len(payloads[i]))
+		}
+		if regot := block.ContentHash(blake3.Sum256(got)); regot != h {
+			t.Fatalf("block %d re-derived hash %s != manifest identity %s", i, regot, h)
 		}
 	}
 }

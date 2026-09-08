@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"errors"
 	"runtime"
-	"sync"
 	"testing"
 
 	"lukechampine.com/blake3"
@@ -16,11 +14,10 @@ import (
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
 
-func factoryFor(algo Algo) blockstoretest.Factory {
-	return func(t *testing.T) (block.Store, func()) {
+func factoryFor(algo Algo) blockstoretest.RemoteBlockStoreFactory {
+	return func(t *testing.T) (blockstoretest.RemoteBlockStore, func()) {
 		t.Helper()
-		inner := remotememory.New()
-		d, err := NewRemote(inner, CompressionPolicy{Algo: algo})
+		d, err := NewRemote(remotememory.New(), CompressionPolicy{Algo: algo})
 		if err != nil {
 			t.Fatalf("NewRemote: %v", err)
 		}
@@ -29,39 +26,17 @@ func factoryFor(algo Algo) blockstoretest.Factory {
 }
 
 func TestConformance_Zstd(t *testing.T) {
-	blockstoretest.BlockStoreConformance(t, factoryFor(AlgoZstd))
+	blockstoretest.RemoteBlockStoreConformance(t, factoryFor(AlgoZstd))
 }
 
 func TestConformance_LZ4(t *testing.T) {
-	blockstoretest.BlockStoreConformance(t, factoryFor(AlgoLZ4))
+	blockstoretest.RemoteBlockStoreConformance(t, factoryFor(AlgoLZ4))
 }
 
 // --- savings (paired raw vs zstd vs lz4) --------------------------------
 
-// spyRemote wraps an inner memory store and records the wire bytes
-// observed at the legacy hash-keyed Put, so the savings test can compare the
-// compressed wire size against the plaintext.
-type spyRemote struct {
-	*remotememory.Store
-	mu       sync.Mutex
-	lastWire []byte
-}
-
-func (s *spyRemote) Put(ctx context.Context, h block.ContentHash, data []byte) error {
-	s.mu.Lock()
-	s.lastWire = append([]byte(nil), data...)
-	s.mu.Unlock()
-	return s.Store.Put(ctx, h, data)
-}
-
-func (s *spyRemote) wireLen() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.lastWire)
-}
-
-// hashOf returns the BLAKE3 CAS key for payload — the same shape all
-// tests use to derive the plaintext hash before Put.
+// hashOf returns the BLAKE3 CAS key for payload — the hash the engine binds to
+// a chunk before sealing it.
 func hashOf(payload []byte) block.ContentHash {
 	sum := blake3.Sum256(payload)
 	var h block.ContentHash
@@ -69,20 +44,34 @@ func hashOf(payload []byte) block.ContentHash {
 	return h
 }
 
-func putAndGet(t *testing.T, bs block.Store, payload []byte) block.ContentHash {
+// sealAndRead seals payload under algo, stages the sealed bytes as a one-chunk
+// block, reads that chunk back, and asserts the plaintext survives. It returns
+// the wire bytes so callers can compare the compressed size against the
+// plaintext — the base store's SealChunk is the identity transform, so the
+// returned length is exactly what this decorator's layer put on the wire.
+func sealAndRead(t *testing.T, algo Algo, blockID string, payload []byte) []byte {
 	t.Helper()
-	h := hashOf(payload)
-	if err := bs.Put(context.Background(), h, payload); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	got, err := bs.Get(context.Background(), h)
+	d, err := NewRemote(remotememory.New(), CompressionPolicy{Algo: algo})
 	if err != nil {
-		t.Fatalf("Get: %v", err)
+		t.Fatalf("NewRemote %v: %v", algo, err)
+	}
+	ctx := context.Background()
+	h := hashOf(payload)
+	wire, err := d.SealChunk(ctx, h, payload)
+	if err != nil {
+		t.Fatalf("SealChunk %v: %v", algo, err)
+	}
+	if err := d.PutBlock(ctx, blockID, bytes.NewReader(wire)); err != nil {
+		t.Fatalf("PutBlock %v: %v", algo, err)
+	}
+	got, err := d.ReadChunk(ctx, blockID, 0, int64(len(wire)), h)
+	if err != nil {
+		t.Fatalf("ReadChunk %v: %v", algo, err)
 	}
 	if !bytes.Equal(got, payload) {
-		t.Fatalf("round-trip mismatch: %d bytes back, want %d", len(got), len(payload))
+		t.Fatalf("%v round-trip mismatch: %d bytes back, want %d", algo, len(got), len(payload))
 	}
-	return h
+	return wire
 }
 
 func TestSavings_PairedRawZstdLZ4(t *testing.T) {
@@ -108,35 +97,11 @@ func TestSavings_PairedRawZstdLZ4(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// raw baseline
-			rawSpy := &spyRemote{Store: remotememory.New()}
-			rawHash := putThroughSpy(t, rawSpy, tc.payload)
-			rawWire := rawSpy.wireLen()
-
-			zstdSpy := &spyRemote{Store: remotememory.New()}
-			zstdDec, err := NewRemote(zstdSpy, CompressionPolicy{Algo: AlgoZstd})
-			if err != nil {
-				t.Fatalf("NewRemote zstd: %v", err)
-			}
-			zstdHash := putAndGet(t, zstdDec, tc.payload)
-			zstdWire := zstdSpy.wireLen()
-
-			lz4Spy := &spyRemote{Store: remotememory.New()}
-			lz4Dec, err := NewRemote(lz4Spy, CompressionPolicy{Algo: AlgoLZ4})
-			if err != nil {
-				t.Fatalf("NewRemote lz4: %v", err)
-			}
-			lz4Hash := putAndGet(t, lz4Dec, tc.payload)
-			lz4Wire := lz4Spy.wireLen()
-
-			// CAS invariant: hash is over plaintext, same across all variants.
-			if rawHash != zstdHash || rawHash != lz4Hash {
-				t.Fatalf("hashes differ: raw=%s zstd=%s lz4=%s", rawHash, zstdHash, lz4Hash)
-			}
-
-			if rawWire != len(tc.payload) {
-				t.Fatalf("raw wire size: got %d want %d", rawWire, len(tc.payload))
-			}
+			// The raw baseline is the plaintext: an undecorated chain seals a
+			// chunk verbatim, so that is the wire cost compression must beat.
+			rawWire := len(tc.payload)
+			zstdWire := len(sealAndRead(t, AlgoZstd, "zstd-"+tc.name, tc.payload))
+			lz4Wire := len(sealAndRead(t, AlgoLZ4, "lz4-"+tc.name, tc.payload))
 
 			if tc.expectShrinkZstd {
 				if zstdWire >= rawWire {
@@ -165,109 +130,19 @@ func TestSavings_PairedRawZstdLZ4(t *testing.T) {
 	}
 }
 
-func putThroughSpy(t *testing.T, spy *spyRemote, payload []byte) block.ContentHash {
-	t.Helper()
-	h := hashOf(payload)
-	if err := spy.Put(context.Background(), h, payload); err != nil {
-		t.Fatalf("spy Put: %v", err)
-	}
-	got, err := spy.Get(context.Background(), h)
-	if err != nil {
-		t.Fatalf("spy Get: %v", err)
-	}
-	if !bytes.Equal(got, payload) {
-		t.Fatalf("spy round-trip mismatch")
-	}
-	return h
-}
-
-// --- Head + Walk plaintext-size contract --------------------------------
-
-func TestHead_ReportsPlaintextSize(t *testing.T) {
-	inner := remotememory.New()
-	d, err := NewRemote(inner, CompressionPolicy{Algo: AlgoZstd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload := bytes.Repeat([]byte("compressible-text. "), 4096)
-	h := hashOf(payload)
-	if err := d.Put(context.Background(), h, payload); err != nil {
-		t.Fatal(err)
-	}
-	m, err := d.Head(context.Background(), h)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m.Size != int64(len(payload)) {
-		t.Fatalf("Head.Size: got %d want %d (plaintext)", m.Size, len(payload))
-	}
-}
-
-func TestGetRange_InvalidLength(t *testing.T) {
-	inner := remotememory.New()
-	d, err := NewRemote(inner, CompressionPolicy{Algo: AlgoZstd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload := bytes.Repeat([]byte("range. "), 4096)
-	h := hashOf(payload)
-	if err := d.Put(context.Background(), h, payload); err != nil {
-		t.Fatal(err)
-	}
-	for _, length := range []int64{0, -1, -1024} {
-		_, err := d.GetRange(context.Background(), h, 0, length)
-		if !errors.Is(err, block.ErrInvalidSize) {
-			t.Errorf("length=%d: got %v, want wraps ErrInvalidSize", length, err)
-		}
-	}
-}
-
-// failingRangeStore wraps an inner memory store and forces the legacy
-// hash-keyed GetRange to return an error. Used to exercise the plaintext-size
-// probe failure path.
-type failingRangeStore struct {
-	*remotememory.Store
-}
-
-func (f *failingRangeStore) GetRange(ctx context.Context, hash block.ContentHash, offset, length int64) ([]byte, error) {
-	return nil, errors.New("simulated backend range failure")
-}
-
-func TestHead_ProbeFailurePropagates(t *testing.T) {
-	// Stage a real framed block in the inner store via a normally
-	// functioning decorator, then re-wrap the same inner with a
-	// failingRangeStore so the plaintext-size probe path is exercised
-	// against actual framed bytes on the wire.
-	inner := remotememory.New()
-	payload := bytes.Repeat([]byte("compressible. "), 4096)
-	h := hashOf(payload)
-	staging, err := NewRemote(inner, CompressionPolicy{Algo: AlgoZstd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := staging.Put(context.Background(), h, payload); err != nil {
-		t.Fatal(err)
-	}
-	d, err := NewRemote(&failingRangeStore{Store: inner}, CompressionPolicy{Algo: AlgoZstd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.Head(context.Background(), h); err == nil {
-		t.Fatal("Head: expected probe error, got nil")
-	}
-}
-
 // --- alloc bound --------------------------------------------------------
 
-func TestPut_AllocBounded(t *testing.T) {
+// TestSealChunk_AllocBounded pins sealLayer's single-buffer design: the frame
+// header is reserved up front and the codec streams the body straight after it,
+// so sealing a 4 MiB chunk must not cost a second full copy of the plaintext.
+func TestSealChunk_AllocBounded(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping alloc bound under -short")
 	}
 	if raceEnabled {
 		t.Skip("skipping alloc bound under -race (instrumentation doubles allocs)")
 	}
-	inner := remotememory.New()
-	d, err := NewRemote(inner, CompressionPolicy{Algo: AlgoZstd})
+	d, err := NewRemote(remotememory.New(), CompressionPolicy{Algo: AlgoZstd})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,8 +151,8 @@ func TestPut_AllocBounded(t *testing.T) {
 	h := hashOf(payload)
 	// Warm pools.
 	for range 4 {
-		if err := d.Put(context.Background(), h, payload); err != nil {
-			t.Fatalf("warmup Put: %v", err)
+		if _, err := d.SealChunk(context.Background(), h, payload); err != nil {
+			t.Fatalf("warmup SealChunk: %v", err)
 		}
 	}
 	var before, after runtime.MemStats
@@ -285,36 +160,16 @@ func TestPut_AllocBounded(t *testing.T) {
 	runtime.ReadMemStats(&before)
 	const N = 8
 	for range N {
-		if err := d.Put(context.Background(), h, payload); err != nil {
-			t.Fatalf("measured Put: %v", err)
+		if _, err := d.SealChunk(context.Background(), h, payload); err != nil {
+			t.Fatalf("measured SealChunk: %v", err)
 		}
 	}
 	runtime.ReadMemStats(&after)
-	allocPerPut := (after.TotalAlloc - before.TotalAlloc) / N
+	allocPerSeal := (after.TotalAlloc - before.TotalAlloc) / N
 	// Plaintext (4 MiB) + codec window (≤ ~256 KiB) — leave generous headroom for runtime noise.
 	const budget = (4 << 20) + (1 << 20)
-	if allocPerPut > budget {
-		t.Fatalf("alloc per Put = %d bytes, budget %d", allocPerPut, budget)
+	if allocPerSeal > budget {
+		t.Fatalf("alloc per SealChunk = %d bytes, budget %d", allocPerSeal, budget)
 	}
-	t.Logf("alloc per 4 MiB Put: %d bytes (budget %d)", allocPerPut, budget)
-}
-
-// TestGetRange_InvalidLengthOnAbsentBlock pins the order of the two checks: an
-// invalid length is rejected before the block is fetched, so a caller passing a
-// bad length learns that rather than being told the block is missing. Asserting
-// this needs a block that does not exist — when the block is present, a length
-// check placed after the fetch returns ErrInvalidSize just the same, and the
-// ordering goes untested.
-func TestGetRange_InvalidLengthOnAbsentBlock(t *testing.T) {
-	d, err := NewRemote(remotememory.New(), CompressionPolicy{Algo: AlgoZstd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	absent := hashOf([]byte("never stored"))
-	for _, length := range []int64{0, -1, -1024} {
-		_, err := d.GetRange(context.Background(), absent, 0, length)
-		if !errors.Is(err, block.ErrInvalidSize) {
-			t.Errorf("length=%d: got %v, want wraps ErrInvalidSize", length, err)
-		}
-	}
+	t.Logf("alloc per 4 MiB SealChunk: %d bytes (budget %d)", allocPerSeal, budget)
 }

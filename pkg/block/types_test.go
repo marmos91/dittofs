@@ -157,7 +157,7 @@ func TestParseBlockID_Invalid(t *testing.T) {
 }
 
 // blake3EmptyHex is the BLAKE3-256 of the empty input — used as a known
-// vector for the FormatCASKey/ParseCASKey round-trip tests.
+// vector for the ContentHash parse and JSON round-trip tests.
 const blake3EmptyHex = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
 
 // TestBlockStateConstants asserts the collapsed state machine
@@ -203,18 +203,18 @@ func TestFileChunkLastSyncAttemptAt(t *testing.T) {
 // TestErrCASSentinels asserts the CAS sentinels exist, are distinct,
 // self-identical via errors.Is, and have non-empty messages prefixed
 // with "blockstore:" (the package-qualified style used by
-// ErrChunkContentMismatch and ErrCASKeyMalformed).
+// ErrChunkContentMismatch and ErrManifestInconsistent).
 func TestErrCASSentinels(t *testing.T) {
 	if !errors.Is(ErrChunkContentMismatch, ErrChunkContentMismatch) {
 		t.Error("errors.Is(ErrChunkContentMismatch, ErrChunkContentMismatch) = false")
 	}
-	if !errors.Is(ErrCASKeyMalformed, ErrCASKeyMalformed) {
-		t.Error("errors.Is(ErrCASKeyMalformed, ErrCASKeyMalformed) = false")
+	if !errors.Is(ErrManifestInconsistent, ErrManifestInconsistent) {
+		t.Error("errors.Is(ErrManifestInconsistent, ErrManifestInconsistent) = false")
 	}
-	if errors.Is(ErrChunkContentMismatch, ErrCASKeyMalformed) {
-		t.Error("ErrChunkContentMismatch and ErrCASKeyMalformed should be distinct")
+	if errors.Is(ErrChunkContentMismatch, ErrManifestInconsistent) {
+		t.Error("ErrChunkContentMismatch and ErrManifestInconsistent should be distinct")
 	}
-	for _, err := range []error{ErrChunkContentMismatch, ErrCASKeyMalformed} {
+	for _, err := range []error{ErrChunkContentMismatch, ErrManifestInconsistent} {
 		msg := err.Error()
 		if msg == "" {
 			t.Errorf("sentinel error has empty message: %v", err)
@@ -407,8 +407,8 @@ func TestErrChunkRefMissing(t *testing.T) {
 	if !errors.Is(ErrChunkRefMissing, ErrChunkRefMissing) {
 		t.Error("errors.Is(ErrChunkRefMissing, ErrChunkRefMissing) = false")
 	}
-	if errors.Is(ErrChunkRefMissing, ErrCASKeyMalformed) {
-		t.Error("ErrChunkRefMissing should be distinct from ErrCASKeyMalformed")
+	if errors.Is(ErrChunkRefMissing, ErrChunkContentMismatch) {
+		t.Error("ErrChunkRefMissing should be distinct from ErrChunkContentMismatch")
 	}
 	msg := ErrChunkRefMissing.Error()
 	if !strings.HasPrefix(msg, "blockstore:") {
