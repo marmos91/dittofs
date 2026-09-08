@@ -96,6 +96,9 @@ jobs:
         with:
           version: v2.12.2
           args: --timeout=5m
+          # Probe for #2433: is the restored analysis cache what makes
+          # staticcheck emit false-positive SA5011 findings on the runner?
+          skip-cache: true
           # Skip the action's online `config verify` — it fetches the config
           # JSON schema over the network and times out intermittently, failing
           # the job for reasons unrelated to the diff. golangci-lint still
