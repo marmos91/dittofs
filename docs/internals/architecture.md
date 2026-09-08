@@ -789,6 +789,66 @@ private copy of the same logic. The package exposes:
 See CONTRIBUTING.md "Adding a new metadata.ErrorCode" for the recipe and
 NFS.md / SMB.md "Error mapping" for protocol-specific notes.
 
+### Object ownership: a client-supplied identifier is not authorization
+
+Every protocol here lets a client name a server-side object by an identifier the
+server issued earlier — an SMB `TreeID` or `FileId`, an SMB `AsyncId`, an NFSv4
+stateid. **An operation must verify that the named object belongs to the
+requesting session or client before acting on it, and especially before adopting
+its identity.** Resolving the identifier proves the object exists; it says
+nothing about who is entitled to it.
+
+The checks live at choke points rather than in each handler, so an operation
+added later inherits them:
+
+- **SMB tree-scoped commands** — `prepareDispatch`'s `NeedsTree` branch
+  (`internal/adapter/smb/response.go`) rejects a request whose
+  `tree.SessionID` differs from the header's. It is the only dispatch gate,
+  so TREE_DISCONNECT, CREATE and every tree-scoped command are covered once.
+- **SMB file handles** — `primeAuthContextFromOpenFile`
+  (`internal/adapter/smb/handlers/auth_helper.go`) refuses with
+  `StatusFileClosed` unless `openFileBelongsToRequest` matches both the tree
+  and the session. This matters more than a plain existence check because the
+  function then *prefills the auth context from the located handle*: without
+  the guard, a request naming another session's `FileId` would execute as that
+  handle's user.
+- **SMB parked requests** — `pendingRegistry.unregisterByAsyncIDOn`
+  (`internal/adapter/smb/handlers/pending_registry.go`) scopes an `AsyncId`
+  lookup to the connection that parked it, as the `MessageID` lookups already
+  did, so a CANCEL cannot retire another connection's request.
+- **NFSv4 stateids** — `ValidateStateid` takes the caller's client ID and
+  compares it through `checkStateidOwner` (`v4/state/stateid.go`) for all three
+  stateid families, so the I/O operations are covered at one point. The
+  state-changing operations do not go through `ValidateStateid`, and reach the
+  same comparison two ways: `CloseFile`, `ConfirmOpen`, `ConfirmOpenV41`,
+  `DowngradeOpen`, `ReturnDelegation` and the three TEST_STATEID probes call
+  `checkStateidOwner` themselves, while the byte-range lock paths
+  (`LockNew`, `LockExisting`, `UnlockFile`) go through
+  `revalidateLockStateLocked`, which additionally compares the lock state and
+  lock owner **by pointer identity** — a stateid `other` can be reissued after
+  the original state is freed, so re-finding an entry under that key is not
+  proof it is the same entry.
+
+Two exceptions are deliberate, and the rule is not true without them:
+
+1. **NFSv4.0 carries no trusted client identity** on the operations above, so
+   the caller's client ID is zero there and `checkStateidOwner` skips the
+   comparison by design. The binding is real for v4.1 and later only; on v4.0
+   the unguessability of the stateid is all that stands behind it.
+2. **Per-handler `GetTree(ctx.TreeID)` lookups stay existence-only**, because
+   the dispatcher already bound that tree to the session before the handler
+   ran. A `ponytail:` comment at those sites names the ceiling.
+
+Unguessability is not the guarantee. A stateid's `other` and an SMB `FileId`
+each carry 64 bits from `crypto/rand`, which makes them infeasible to forge but
+does nothing once one has been observed — so these checks are defence in depth
+layered under the identifier's entropy, not a substitute for it.
+
+**Extending this:** an operation that resolves a client-supplied identifier
+routes through the existing choke point instead of adding a comparison of its
+own, and ships with a test that fails when the guard is removed. A guard that
+has never refused anything in a test is unverified.
+
 ## Control Plane Pattern
 
 The Control Plane is the central management component enabling flexible, multi-share configurations.
