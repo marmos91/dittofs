@@ -174,6 +174,43 @@ func (sm *StateManager) countActiveDelegations() int {
 	return count
 }
 
+// delegationBudgetAvailableLocked reports whether another delegation fits
+// under the configured maximum. A maximum of zero or less means unlimited.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) delegationBudgetAvailableLocked() bool {
+	return sm.maxDelegations <= 0 || sm.countActiveDelegations() < sm.maxDelegations
+}
+
+// clientLeaseLiveLocked reports whether clientID names a client record, v4.0 or
+// v4.1, whose lease has not lapsed. A delegation is lease-backed state, so a
+// client without a live lease cannot hold one.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) clientLeaseLiveLocked(clientID uint64) bool {
+	if v40, ok := sm.clientsByID[clientID]; ok {
+		return v40.Lease != nil && !v40.Lease.IsExpired()
+	}
+	if v41, ok := sm.v41ClientsByID[clientID]; ok {
+		return v41.Lease != nil && !v41.Lease.IsExpired()
+	}
+	return false
+}
+
+// revokeInLockManagerLocked hands a delegation back to the cross-protocol
+// lock manager, for a grant that succeeded there but can no longer be
+// published. Without it the manager keeps a delegation no NFSv4 state
+// references, and it blocks every later conflicting lease and byte-range lock
+// on the file for the lifetime of the server.
+//
+// Caller must hold sm.mu; the mutex is released for the call and held again on
+// return, as everywhere else the lock manager is called from this package.
+func (sm *StateManager) revokeInLockManagerLocked(lm lock.LockManager, fhKey, delegID string) {
+	sm.mu.Unlock()
+	_ = lm.RevokeDelegation(fhKey, delegID)
+	sm.mu.Lock()
+}
+
 // removeDelegFromFile removes a delegation from the delegByFile map.
 // Cleans up the map entry if no delegations remain for the file.
 //
@@ -243,9 +280,13 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 	sm.pruneStaleRecentlyRecalledLocked()
 
 	// Check total active delegation count against limit
-	if sm.maxDelegations > 0 && sm.countActiveDelegations() >= sm.maxDelegations {
+	if !sm.delegationBudgetAvailableLocked() {
 		return nil
 	}
+
+	// Sampled for the recommit check below, not as an admission rule: this path
+	// has never required a live lease to grant.
+	clientWasLive := sm.clientLeaseLiveLocked(clientID)
 
 	other := sm.generateStateidOther(StateTypeDeleg)
 	stateid := types.Stateid4{
@@ -285,13 +326,35 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 		// (see acquireLock), so break paths that exclude by client can tell a
 		// client's own delegation from another client's.
 		lockDeleg := lock.NewDelegation(lmDelegType, nfsClientIdentity(clientID), "", false)
-		if err := lm.GrantDelegation(fhKey, lockDeleg); err != nil {
+
+		// The manager's grant path is cross-protocol, and sm.mu serializes every
+		// client's state operation server-wide, so the mutex is released across
+		// the call (see acquireLock in manager.go).
+		sm.mu.Unlock()
+		grantErr := lm.GrantDelegation(fhKey, lockDeleg)
+		sm.mu.Lock()
+		if grantErr != nil {
 			logger.Debug("delegation denied by lock manager",
 				"client_id", clientID,
 				"deleg_type", delegType,
-				"error", err)
+				"error", grantErr)
 			return nil
 		}
+
+		// Nothing published references this delegation yet, so what the released
+		// mutex can falsify is the inputs to the decision made above: concurrent
+		// grants may have taken the last of the budget, and a client that had a
+		// live lease going in may have been torn down. The teardown matters
+		// because the sweeper frees a client's delegations in one critical
+		// section and never revisits it, so a grant published after that sweep
+		// is unreachable from cleanup and blocks every later conflicting lease
+		// and byte-range lock on the file. Hand the grant back instead.
+		if !sm.delegationBudgetAvailableLocked() ||
+			(clientWasLive && !sm.clientLeaseLiveLocked(clientID)) {
+			sm.revokeInLockManagerLocked(lm, fhKey, lockDeleg.DelegationID)
+			return nil
+		}
+
 		sm.delegStateidMap[lockDeleg.DelegationID] = stateid
 		deleg.LockManagerDelegID = lockDeleg.DelegationID
 	}
