@@ -434,22 +434,40 @@ fix must profile+attack the WRITE PATH"). #2398 belongs to this axis as much as 
 
 ## Conformance
 
-### The ledger, recounted (the first draft was wrong)
+### The ledger — read from each file's own tally, not counted a fourth time
 
-| Suite | First draft | **Actual** | Note |
-| --- | --- | --- | --- |
-| smbtorture | 76 | **48** | 4 singleton tables + one 44-row table (`smbtorture/KNOWN_FAILURES.md:325-368`) |
-| WPTS | 50 | **39** | the file says so itself at `:123`; 50 counts template lines inside fences as rows — PR #2412 (open) fixes exactly this parser bug |
-| smbtorture-krb | 1 | 1 | |
-| pynfs v4.0 / v4.1 | 16 / 44 | 16 / 44 | verified: #2341=14, #2382=1, #2340=32, #2329=10, 2 unassigned |
-| posix v3 / v4 | 19 / 13 | 19 / 13 | but 15 of 19 are directory globs (`xattr/*`, `flock/*`, `acl/*`) — a row is a whole feature |
-| **Total** | 219 | **180** | **SMB 88, NFS 92 — NFS has more** |
+**This ledger has now been wrong three times** (219, then 180, now 178), because three separate
+passes counted markdown rows instead of reading what the files say about themselves. Both SMB files
+state their own totals in prose:
 
-**"SMB has zero triage" was also wrong.** All 39 WPTS rows carry written architectural
-justifications (RSVD VHD 26, Witness 6, SQoS 3, DFS referrals 2, named-pipe-over-SSH 2), and the
-44-row smbtorture table is multichannel-needs-`torture_block_tcp_transport`, Windows-replay, TWRP,
-Samba-private, kernel-oplocks, 8.3 mangling. The genuinely unjustified SMB set is roughly **four
-singleton rows**: `notify.rec`, `oplock.batch22b`, `charset.Testing`, `session.reauth5`.
+| Suite | Rows | Source of truth |
+| --- | --- | --- |
+| smbtorture | **46** | the file's own Final Tally, `KNOWN_FAILURES.md:18-27` |
+| WPTS | **39** | the file's own line: "Total permanently unimplementable: 39 tests" |
+| smbtorture Kerberos | 1 | `reauth5`, upstream knownfail, excluded from the v1.0 gate |
+| pynfs v4.0 | 16 | #2341=14, #2382=1, RPLY8 dead |
+| pynfs v4.1 | 44 | #2340=32, #2329=10, 2 unassigned |
+| pjdfstest POSIX v3 / v4 | 19 / 13 | 15 of 19 are directory globs — a row is a whole feature |
+| **Total** | **178** | SMB **86**, NFS **92** |
+
+Earlier counts, all wrong and all produced by regexes: 76 and 48 for smbtorture, 50 for WPTS, 219
+and 180 for the total. `KNOWN_FAILURES.md:28` even explains that its tally is rendered as a list
+rather than a table *specifically* so `parse-results.sh` will not mistake it for rows — the file
+anticipated this mistake and it was made anyway.
+
+**Never count these files again. Read the tally, or run `kf_load`.**
+
+### SMB conformance is already compliant — the outstanding work is NFS
+
+The plan's original framing ("SMB has more accepted failures and zero triage") was wrong twice over.
+`KNOWN_FAILURES.md:20-21`: **"Every remaining entry is justified and falls into exactly one bucket.
+No UNJUSTIFIED entries remain — the #673 acceptance criterion is met."** The 46 break down as 2
+upstream Samba known-fails (fail on the reference server too, cited), 0 deferred, and 44 permanently
+unimplementable or harness-only. WPTS's 39 are all architecturally justified.
+
+So the compliance rule below is **already satisfied for both SMB suites.** The remaining work is
+entirely NFS-side: 60 pynfs rows (Wave 2) and 32 POSIX rows. Wave 4's justification is the ~155
+untriaged *audit findings*, and nothing about the conformance ledger.
 
 ### The compliance rule
 
