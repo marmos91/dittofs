@@ -385,6 +385,8 @@ func (r *recoveryState) applyColdLog() error {
 			version: e.version,
 			synced:  true,
 			cold:    true,
+			// Carried so a compaction can write it back out (liveColdEntries).
+			provenance: e.provenance,
 		})
 	}
 	return nil

@@ -36,6 +36,11 @@ func readStampVersion(t *testing.T, dir string) int {
 	return st.Version
 }
 
+// journalFormatVersion mirrors journal's unexported formatVersion. Kept here so
+// these cases read as "current", "one above" and "one below" rather than as bare
+// numbers that go stale on the next bump.
+const journalFormatVersion = 2
+
 // writeStamp plants a stamp at version v, standing in for a directory a
 // different release left behind.
 func writeStamp(t *testing.T, dir string, v int) {
@@ -54,7 +59,7 @@ func writeStamp(t *testing.T, dir string, v int) {
 // would read every range the newer format holds elsewhere as a hole.
 func TestOpenRefusesFutureFormat(t *testing.T) {
 	dir := t.TempDir()
-	writeStamp(t, dir, 2)
+	writeStamp(t, dir, journalFormatVersion+1)
 
 	s, err := New(dir, 1<<30, nil)
 	if err == nil {
@@ -70,7 +75,7 @@ func TestOpenRefusesFutureFormat(t *testing.T) {
 // wrote itself.
 func TestOpenAcceptsCurrentFormat(t *testing.T) {
 	dir := t.TempDir()
-	writeStamp(t, dir, 1)
+	writeStamp(t, dir, journalFormatVersion)
 
 	s, err := New(dir, 1<<30, nil)
 	if err != nil {
@@ -79,8 +84,28 @@ func TestOpenAcceptsCurrentFormat(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if got := readStampVersion(t, dir); got != 1 {
-		t.Fatalf("stamp version after open = %d, want 1", got)
+	if got := readStampVersion(t, dir); got != journalFormatVersion {
+		t.Fatalf("stamp version after open = %d, want %d", got, journalFormatVersion)
+	}
+}
+
+// TestOpenRaisesStaleStamp is the other half of the downgrade guard. Opening
+// with an older stamp left in place would let the previous release open the
+// directory again after this build had already written current-format state
+// into it — the shape the stamp exists to keep it away from.
+func TestOpenRaisesStaleStamp(t *testing.T) {
+	dir := t.TempDir()
+	writeStamp(t, dir, journalFormatVersion-1)
+
+	s, err := New(dir, 1<<30, nil)
+	if err != nil {
+		t.Fatalf("New on an older-format directory: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := readStampVersion(t, dir); got != journalFormatVersion {
+		t.Fatalf("stamp version after open = %d, want it raised to %d", got, journalFormatVersion)
 	}
 }
 
@@ -97,7 +122,7 @@ func TestOpenStampsUnstampedDir(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if got := readStampVersion(t, dir); got != 1 {
-		t.Fatalf("stamp version after open = %d, want 1", got)
+	if got := readStampVersion(t, dir); got != journalFormatVersion {
+		t.Fatalf("stamp version after open = %d, want %d", got, journalFormatVersion)
 	}
 }
