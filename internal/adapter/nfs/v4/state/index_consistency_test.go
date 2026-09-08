@@ -72,7 +72,7 @@ func TestOpenStateByFile_OpenThenCloseRemovesFromIndex(t *testing.T) {
 	fileIndexMatchesAuthoritative(t, sm)
 
 	// CLOSE advances the owner seqid; open used 1, confirm used 2, close uses 3.
-	if _, err := sm.CloseFile(&stateid, 3); err != nil {
+	if _, err := sm.CloseFile(&stateid, 3, 0); err != nil {
 		t.Fatalf("CloseFile: %v", err)
 	}
 
@@ -98,7 +98,7 @@ func TestOpenStateByFile_MultipleOwnersSameFile(t *testing.T) {
 	fileIndexMatchesAuthoritative(t, sm)
 
 	// Closing one owner leaves the other indexed.
-	if _, err := sm.CloseFile(&sidA, 3); err != nil {
+	if _, err := sm.CloseFile(&sidA, 3, 0); err != nil {
 		t.Fatalf("CloseFile(A): %v", err)
 	}
 	if n := fileIndexLen(sm, fh); n != 1 {

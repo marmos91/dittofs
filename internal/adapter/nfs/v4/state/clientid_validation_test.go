@@ -50,7 +50,7 @@ func TestConfirmClientID_RebootReleasesPreviousIncarnationState(t *testing.T) {
 		t.Fatalf("ConfirmClientID after reboot: %v", err)
 	}
 
-	if _, err := sm.CloseFile(&stale, 2); !errors.Is(err, ErrExpired) {
+	if _, err := sm.CloseFile(&stale, 2, 0); !errors.Is(err, ErrExpired) {
 		t.Errorf("CLOSE with the pre-reboot stateid: got %v, want ErrExpired", err)
 	}
 
@@ -135,8 +135,7 @@ func TestSetClientID_LockOnlyStateStillBlocksAnotherPrincipal(t *testing.T) {
 	if err := sm.ConfirmClientID(locker.ClientID, locker.ConfirmVerifier); err != nil {
 		t.Fatalf("ConfirmClientID(locker): %v", err)
 	}
-	if _, err := sm.LockNew(context.Background(), locker.ClientID, []byte("lock-owner"), 1,
-		&open.Stateid, 2, fh, types.WRITE_LT, 0, 100, false); err != nil {
+	if _, err := sm.LockNew(context.Background(), locker.ClientID, []byte("lock-owner"), 1, &open.Stateid, 2, fh, types.WRITE_LT, 0, 100, false, 0); err != nil {
 		t.Fatalf("LockNew: %v", err)
 	}
 

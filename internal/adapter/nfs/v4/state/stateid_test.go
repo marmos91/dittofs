@@ -250,7 +250,7 @@ func TestValidateStateid_OldSeqid(t *testing.T) {
 	}
 
 	// Confirm to increment seqid
-	_, err = sm.ConfirmOpen(&result.Stateid, 2)
+	_, err = sm.ConfirmOpen(&result.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
@@ -444,7 +444,7 @@ func TestValidateStateid_Seqid0_AcceptedAsAny(t *testing.T) {
 	}
 
 	// Confirm to increment seqid to 2
-	_, err = sm.ConfirmOpen(&result.Stateid, 2)
+	_, err = sm.ConfirmOpen(&result.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
@@ -544,7 +544,7 @@ func TestOpenFile_ConfirmedOwer_SecondOpen(t *testing.T) {
 	}
 
 	// Confirm
-	_, err = sm.ConfirmOpen(&result1.Stateid, 2)
+	_, err = sm.ConfirmOpen(&result1.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
@@ -583,7 +583,7 @@ func TestOpenFile_SameFile_ShareAccumulation(t *testing.T) {
 	}
 
 	// Confirm
-	_, err = sm.ConfirmOpen(&result1.Stateid, 2)
+	_, err = sm.ConfirmOpen(&result1.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
@@ -689,7 +689,7 @@ func TestConfirmOpen_Success(t *testing.T) {
 		t.Fatalf("OpenFile: %v", err)
 	}
 
-	confirmed, err := sm.ConfirmOpen(&result.Stateid, 2)
+	confirmed, err := sm.ConfirmOpen(&result.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
@@ -704,7 +704,7 @@ func TestConfirmOpen_BadStateid(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
 	badStateid := &types.Stateid4{Seqid: 1}
-	_, err := sm.ConfirmOpen(badStateid, 1)
+	_, err := sm.ConfirmOpen(badStateid, 1, 0)
 	if err == nil {
 		t.Fatal("ConfirmOpen should fail for unknown stateid")
 	}
@@ -720,7 +720,7 @@ func TestConfirmOpen_BadSeqid(t *testing.T) {
 	}
 
 	// Use wrong seqid (5 instead of expected 2)
-	_, err = sm.ConfirmOpen(&result.Stateid, 5)
+	_, err = sm.ConfirmOpen(&result.Stateid, 5, 0)
 	if err == nil {
 		t.Fatal("ConfirmOpen should fail with bad seqid")
 	}
@@ -741,13 +741,13 @@ func TestCloseFile_Success(t *testing.T) {
 	}
 
 	// Confirm
-	confirmed, err := sm.ConfirmOpen(&result.Stateid, 2)
+	confirmed, err := sm.ConfirmOpen(&result.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
 
 	// Close
-	closed, err := sm.CloseFile(&confirmed.Stateid, 3)
+	closed, err := sm.CloseFile(&confirmed.Stateid, 3, 0)
 	if err != nil {
 		t.Fatalf("CloseFile: %v", err)
 	}
@@ -773,7 +773,7 @@ func TestCloseFile_SpecialStateid(t *testing.T) {
 
 	// Close with anonymous (all-zeros) stateid
 	zeroed := &types.Stateid4{Seqid: 0}
-	closed, err := sm.CloseFile(zeroed, 1)
+	closed, err := sm.CloseFile(zeroed, 1, 0)
 	if err != nil {
 		t.Fatalf("CloseFile with special stateid: %v", err)
 	}
@@ -793,13 +793,13 @@ func TestCloseFile_CleansUpOwner(t *testing.T) {
 	}
 
 	// Confirm
-	confirmed, err := sm.ConfirmOpen(&result.Stateid, 2)
+	confirmed, err := sm.ConfirmOpen(&result.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
 
 	// Close
-	closed, err := sm.CloseFile(&confirmed.Stateid, 3)
+	closed, err := sm.CloseFile(&confirmed.Stateid, 3, 0)
 	if err != nil {
 		t.Fatalf("CloseFile: %v", err)
 	}
@@ -825,7 +825,7 @@ func TestCloseFile_CleansUpOwner(t *testing.T) {
 	}
 
 	// A retransmitted CLOSE at the same seqid must replay the cached reply.
-	_, replayErr := sm.CloseFile(&confirmed.Stateid, 3)
+	_, replayErr := sm.CloseFile(&confirmed.Stateid, 3, 0)
 	var re *ReplayError
 	if !errors.As(replayErr, &re) {
 		t.Fatalf("retransmitted CLOSE should replay, got %T: %v", replayErr, replayErr)
@@ -846,7 +846,7 @@ func TestCloseFile_BadStateid(t *testing.T) {
 	badStateid.Other[3] = byte(sm.bootEpoch)
 	badStateid.Other[4] = 0xFF // unique sequence that doesn't exist
 
-	_, err := sm.CloseFile(badStateid, 1)
+	_, err := sm.CloseFile(badStateid, 1, 0)
 	if err == nil {
 		t.Fatal("CloseFile should fail for unknown stateid")
 	}
@@ -871,16 +871,13 @@ func TestDowngradeOpen_Success(t *testing.T) {
 	}
 
 	// Confirm
-	confirmed, err := sm.ConfirmOpen(&result.Stateid, 2)
+	confirmed, err := sm.ConfirmOpen(&result.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
 
 	// Downgrade to READ only
-	downgraded, err := sm.DowngradeOpen(&confirmed.Stateid, 3,
-		types.OPEN4_SHARE_ACCESS_READ,
-		types.OPEN4_SHARE_DENY_NONE,
-	)
+	downgraded, err := sm.DowngradeOpen(&confirmed.Stateid, 3, types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, 0)
 	if err != nil {
 		t.Fatalf("DowngradeOpen: %v", err)
 	}
@@ -913,16 +910,13 @@ func TestDowngradeOpen_CannotAddBits(t *testing.T) {
 	}
 
 	// Confirm
-	confirmed, err := sm.ConfirmOpen(&result.Stateid, 2)
+	confirmed, err := sm.ConfirmOpen(&result.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
 
 	// Try to "downgrade" to BOTH (adds WRITE bit) - should fail
-	_, err = sm.DowngradeOpen(&confirmed.Stateid, 3,
-		types.OPEN4_SHARE_ACCESS_BOTH,
-		types.OPEN4_SHARE_DENY_NONE,
-	)
+	_, err = sm.DowngradeOpen(&confirmed.Stateid, 3, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, 0)
 	if err == nil {
 		t.Fatal("DowngradeOpen should fail when trying to add bits")
 	}
@@ -951,13 +945,13 @@ func TestDowngradeOpen_ZeroAccess(t *testing.T) {
 	}
 
 	// Confirm
-	confirmed, err := sm.ConfirmOpen(&result.Stateid, 2)
+	confirmed, err := sm.ConfirmOpen(&result.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
 
 	// Downgrade to zero access - should fail
-	_, err = sm.DowngradeOpen(&confirmed.Stateid, 3, 0, 0)
+	_, err = sm.DowngradeOpen(&confirmed.Stateid, 3, 0, 0, 0)
 	if err == nil {
 		t.Fatal("DowngradeOpen should fail with zero share_access")
 	}
@@ -1095,7 +1089,7 @@ func TestFullLifecycle_OpenConfirmClose(t *testing.T) {
 	}
 
 	// OPEN_CONFIRM (seqid=2)
-	confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+	confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
@@ -1114,7 +1108,7 @@ func TestFullLifecycle_OpenConfirmClose(t *testing.T) {
 	}
 
 	// CLOSE (seqid=3)
-	closed, err := sm.CloseFile(confirmedStateid, 3)
+	closed, err := sm.CloseFile(confirmedStateid, 3, 0)
 	if err != nil {
 		t.Fatalf("CloseFile: %v", err)
 	}
@@ -1150,18 +1144,14 @@ func TestFreeStateid(t *testing.T) {
 		}
 
 		// Confirm open
-		confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+		confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2, 0)
 		if err != nil {
 			t.Fatalf("ConfirmOpen: %v", err)
 		}
 		confirmedStateid := &confirmed.Stateid
 
 		// Create lock state
-		lockResult, err := sm.LockNew(context.Background(),
-			0, []byte("lock-owner1"), 1,
-			confirmedStateid, 3,
-			fh, types.WRITE_LT, 0, 100, false,
-		)
+		lockResult, err := sm.LockNew(context.Background(), 0, []byte("lock-owner1"), 1, confirmedStateid, 3, fh, types.WRITE_LT, 0, 100, false, 0)
 		if err != nil {
 			t.Fatalf("LockNew: %v", err)
 		}
@@ -1199,7 +1189,7 @@ func TestFreeStateid(t *testing.T) {
 		if err != nil {
 			t.Fatalf("OpenFile 1: %v", err)
 		}
-		conf1, err := sm.ConfirmOpen(&open1.Stateid, 2)
+		conf1, err := sm.ConfirmOpen(&open1.Stateid, 2, 0)
 		if err != nil {
 			t.Fatalf("ConfirmOpen 1: %v", err)
 		}
@@ -1212,11 +1202,7 @@ func TestFreeStateid(t *testing.T) {
 		// open2 uses a confirmed owner; no OPEN_CONFIRM needed.
 
 		// Acquire a lock on file1 with the shared lock owner.
-		lock1, err := sm.LockNew(context.Background(),
-			clientID, lockOwnerData, 1,
-			&conf1.Stateid, 4,
-			fh1, types.WRITE_LT, 0, 100, false,
-		)
+		lock1, err := sm.LockNew(context.Background(), clientID, lockOwnerData, 1, &conf1.Stateid, 4, fh1, types.WRITE_LT, 0, 100, false, 0)
 		if err != nil {
 			t.Fatalf("LockNew on fh1: %v", err)
 		}
@@ -1225,18 +1211,14 @@ func TestFreeStateid(t *testing.T) {
 		}
 
 		// LOCKU to release the actual byte-range lock before FREE_STATEID.
-		_, err = sm.UnlockFile(&lock1.Stateid, 2, types.WRITE_LT, 0, 100)
+		_, err = sm.UnlockFile(&lock1.Stateid, 2, types.WRITE_LT, 0, 100, 0)
 		if err != nil {
 			t.Fatalf("UnlockFile on fh1: %v", err)
 		}
 
 		// Acquire a lock on file2 with the SAME lock owner — this reuses the
 		// existing LockOwner entry in sm.lockOwners and creates a second LockState.
-		lock2, err := sm.LockNew(context.Background(),
-			clientID, lockOwnerData, 3,
-			&open2.Stateid, 5,
-			fh2, types.WRITE_LT, 0, 50, false,
-		)
+		lock2, err := sm.LockNew(context.Background(), clientID, lockOwnerData, 3, &open2.Stateid, 5, fh2, types.WRITE_LT, 0, 50, false, 0)
 		if err != nil {
 			t.Fatalf("LockNew on fh2: %v", err)
 		}
@@ -1295,7 +1277,7 @@ func TestFreeStateid(t *testing.T) {
 		}
 
 		// Now LOCKU and FREE_STATEID the second stateid; owner should be deleted then.
-		_, err = sm.UnlockFile(&lock2.Stateid, 4, types.WRITE_LT, 0, 50)
+		_, err = sm.UnlockFile(&lock2.Stateid, 4, types.WRITE_LT, 0, 50, 0)
 		if err != nil {
 			t.Fatalf("UnlockFile on fh2: %v", err)
 		}
@@ -1323,7 +1305,7 @@ func TestFreeStateid(t *testing.T) {
 		}
 
 		// Confirm open
-		_, err = sm.ConfirmOpen(&openResult.Stateid, 2)
+		_, err = sm.ConfirmOpen(&openResult.Stateid, 2, 0)
 		if err != nil {
 			t.Fatalf("ConfirmOpen: %v", err)
 		}
@@ -1359,18 +1341,14 @@ func TestFreeStateid(t *testing.T) {
 			t.Fatalf("OpenFile: %v", err)
 		}
 
-		confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+		confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2, 0)
 		if err != nil {
 			t.Fatalf("ConfirmOpen: %v", err)
 		}
 		confirmedStateid := &confirmed.Stateid
 
 		// Create a lock
-		_, err = sm.LockNew(context.Background(),
-			0, []byte("lock-owner1"), 1,
-			confirmedStateid, 3,
-			fh, types.WRITE_LT, 0, 100, false,
-		)
+		_, err = sm.LockNew(context.Background(), 0, []byte("lock-owner1"), 1, confirmedStateid, 3, fh, types.WRITE_LT, 0, 100, false, 0)
 		if err != nil {
 			t.Fatalf("LockNew: %v", err)
 		}
@@ -1537,8 +1515,7 @@ func TestTestStateids(t *testing.T) {
 		deleg := sm.GrantDelegation(100, fh2, types.OPEN_DELEGATE_READ)
 
 		stateids := []types.Stateid4{result1.Stateid, deleg.Stateid}
-		results := sm.TestStateids(stateids)
-
+		results := sm.TestStateids(stateids, 0)
 		if len(results) != 2 {
 			t.Fatalf("Expected 2 results, got %d", len(results))
 		}
@@ -1574,8 +1551,7 @@ func TestTestStateids(t *testing.T) {
 		staleStateid := types.Stateid4{Seqid: 1, Other: staleOther}
 
 		stateids := []types.Stateid4{openResult.Stateid, invalidStateid, staleStateid}
-		results := sm.TestStateids(stateids)
-
+		results := sm.TestStateids(stateids, 0)
 		if len(results) != 3 {
 			t.Fatalf("Expected 3 results, got %d", len(results))
 		}
@@ -1594,7 +1570,7 @@ func TestTestStateids(t *testing.T) {
 		sm := NewStateManager(90 * time.Second)
 		defer sm.Shutdown()
 
-		results := sm.TestStateids([]types.Stateid4{})
+		results := sm.TestStateids([]types.Stateid4{}, 0)
 		if len(results) != 0 {
 			t.Errorf("Expected empty results for empty input, got %d", len(results))
 		}
@@ -1629,8 +1605,7 @@ func TestTestStateids(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		stateids := []types.Stateid4{openResult.Stateid}
-		results := sm.TestStateids(stateids)
-
+		results := sm.TestStateids(stateids, 0)
 		if len(results) != 1 {
 			t.Fatalf("Expected 1 result, got %d", len(results))
 		}
@@ -1674,8 +1649,7 @@ func TestTestStateids(t *testing.T) {
 
 		// TestStateids should NOT renew the lease
 		stateids := []types.Stateid4{openResult.Stateid}
-		results := sm.TestStateids(stateids)
-
+		results := sm.TestStateids(stateids, 0)
 		if results[0] != types.NFS4_OK {
 			t.Fatalf("TestStateids should return NFS4_OK, got %d", results[0])
 		}

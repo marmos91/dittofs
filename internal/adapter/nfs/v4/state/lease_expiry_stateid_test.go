@@ -35,7 +35,7 @@ func TestExpiredLease_StateidsReportExpired(t *testing.T) {
 		t.Fatalf("ValidateStateid after lease cancellation: got %v, want NFS4ERR_EXPIRED", err)
 	}
 
-	if _, err := sm.CloseFile(openStateid, openSeqid+1); !isStatus(err, types.NFS4ERR_EXPIRED) {
+	if _, err := sm.CloseFile(openStateid, openSeqid+1, 0); !isStatus(err, types.NFS4ERR_EXPIRED) {
 		t.Fatalf("CloseFile after lease cancellation: got %v, want NFS4ERR_EXPIRED", err)
 	}
 
@@ -55,11 +55,7 @@ func TestExpiredLease_LockStateidsReportExpired(t *testing.T) {
 
 	clientID, fileHandle, openStateid, openSeqid := setupClientAndOpenState(t, sm)
 
-	lockResult, err := sm.LockNew(context.Background(),
-		clientID, []byte("lock-owner"), 1,
-		openStateid, openSeqid+1,
-		fileHandle, types.WRITE_LT, 0, 100, false,
-	)
+	lockResult, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner"), 1, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
 	if err != nil {
 		t.Fatalf("LockNew: %v", err)
 	}
@@ -70,17 +66,15 @@ func TestExpiredLease_LockStateidsReportExpired(t *testing.T) {
 
 	sm.onLeaseExpired(clientID)
 
-	if _, err := sm.UnlockFile(&lockStateid, 2, types.WRITE_LT, 0, 100); !isStatus(err, types.NFS4ERR_EXPIRED) {
+	if _, err := sm.UnlockFile(&lockStateid, 2, types.WRITE_LT, 0, 100, 0); !isStatus(err, types.NFS4ERR_EXPIRED) {
 		t.Fatalf("UnlockFile after lease cancellation: got %v, want NFS4ERR_EXPIRED", err)
 	}
 
-	if _, err := sm.LockExisting(context.Background(),
-		&lockStateid, 2, fileHandle, types.WRITE_LT, 200, 100, false,
-	); !isStatus(err, types.NFS4ERR_EXPIRED) {
+	if _, err := sm.LockExisting(context.Background(), &lockStateid, 2, fileHandle, types.WRITE_LT, 200, 100, false, 0); !isStatus(err, types.NFS4ERR_EXPIRED) {
 		t.Fatalf("LockExisting after lease cancellation: got %v, want NFS4ERR_EXPIRED", err)
 	}
 
-	if _, err := sm.UnlockFile(unknown, 2, types.WRITE_LT, 0, 100); !isStatus(err, types.NFS4ERR_BAD_STATEID) {
+	if _, err := sm.UnlockFile(unknown, 2, types.WRITE_LT, 0, 100, 0); !isStatus(err, types.NFS4ERR_BAD_STATEID) {
 		t.Fatalf("UnlockFile of a never-issued stateid: got %v, want NFS4ERR_BAD_STATEID", err)
 	}
 }
