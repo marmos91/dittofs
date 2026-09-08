@@ -28,6 +28,12 @@ MANIFEST="${CONFORMANCE_MANIFEST:-${SCRIPT_DIR}/suites.json}"
 # CONFORMANCE_MANIFEST at a synthetic tree and get its own scripts dispatched.
 TEST_DIR="$(cd "$(dirname "$MANIFEST")/.." && pwd)"
 
+# The one step per suite whose exit status is a failure COUNT rather than a
+# plain shell status. Every other step — fetching dependencies, building an
+# image, mounting an export — either succeeds or leaves the suite ungraded, and
+# its exit code says nothing about how many tests regressed.
+GRADED_STEP="run"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -233,7 +239,7 @@ run_one() {
     log_step "${SUITE} / ${label}"
     [[ -n "$kf" ]] && log_info "blacklist: ${kf#"${REPO_ROOT}/"}"
 
-    local status=0 i
+    local status=0 failed_step="" i
     for ((i = 0; i < step_count; i++)); do
         local name cmd needs_root always
         IFS=$'\t' read -r name cmd needs_root always < <(
@@ -286,21 +292,33 @@ run_one() {
 
         if [[ "$step_status" -ne 0 ]]; then
             log_error "step ${name} exited ${step_status}"
-            [[ "$always" == "true" ]] || status="$step_status"
+            if [[ "$always" != "true" ]]; then
+                status="$step_status"
+                failed_step="$name"
+            fi
         fi
     done
 
-    [[ "$DRY_RUN" == true ]] || write_summary "$label" "$status" "${results_dir}"
+    [[ "$DRY_RUN" == true ]] || write_summary "$label" "$status" "${results_dir}" "$failed_step"
     return "$status"
 }
 
-# write_summary LABEL STATUS RESULTS_DIR
+# write_summary LABEL STATUS RESULTS_DIR [FAILED_STEP]
+#
+# Only GRADED_STEP exits with a failure count; every other step exits with a
+# plain shell status. Reporting the two the same way spends "N new failure(s)" —
+# the phrase that means a test which used to pass now fails — on a toolchain
+# that could not download a dependency, and sends the reader hunting a
+# regression against a suite that never ran.
 write_summary() {
-    local label="$1" status="$2" results_dir="$3"
+    local label="$1" status="$2" results_dir="$3" failed_step="${4:-}"
     local verdict icon
     if [[ "$status" -eq 0 ]]; then
         verdict="pass"
         icon=":white_check_mark:"
+    elif [[ -n "$failed_step" && "$failed_step" != "$GRADED_STEP" ]]; then
+        verdict="${failed_step} failed (exit ${status}) — no tests were graded"
+        icon=":construction:"
     else
         verdict="${status} new failure(s)"
         icon=":x:"

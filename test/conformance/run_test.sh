@@ -130,6 +130,18 @@ cat >"$FAKE_MANIFEST" <<'EOF'
         { "name": "run", "cmd": "fake/pass.sh", "args": [], "root": false }
       ]
     },
+    "brokensetup": {
+      "description": "setup fails, so the run step never grades anything",
+      "runner_dir": "fake",
+      "profiles": ["memory"],
+      "known_failures": null,
+      "tiers": { "pull_request": "all", "push": "all" },
+      "steps": [
+        { "name": "setup", "cmd": "fake/fail3.sh", "args": [], "root": false },
+        { "name": "run", "cmd": "fake/pass.sh", "args": [], "root": false },
+        { "name": "teardown", "cmd": "fake/teardown.sh", "args": [], "root": false, "always": true }
+      ]
+    },
     "privileged": {
       "description": "one step needs root, one does not",
       "runner_dir": "fake",
@@ -164,6 +176,24 @@ while IFS= read -r cmd; do
     [[ -x "${SCRIPT_DIR}/../${cmd}" ]] || MISSING="${MISSING} ${cmd}"
 done < <(jq -r '.suites[].steps[].cmd' "${SCRIPT_DIR}/suites.json")
 assert_eq "every declared step command is executable" "" "$MISSING"
+
+# The runner tells a graded failure from an infrastructure one by the step's
+# name, so a suite with no step called "run" would have every failure reported
+# as setup breakage. And a graded step marked "always" would have its failure
+# count discarded along with teardown's — a suite that reports pass while its
+# tests regressed, which is the dangerous direction of the same defect.
+UNGRADED=""
+ALWAYS_GRADED=""
+while IFS=$'\t' read -r suite has_run run_always; do
+    [[ "$has_run" == "true" ]] || UNGRADED="${UNGRADED} ${suite}"
+    [[ "$run_always" == "true" ]] && ALWAYS_GRADED="${ALWAYS_GRADED} ${suite}"
+done < <(jq -r '.suites | to_entries[] | [
+    .key,
+    ([.value.steps[] | select(.name == "run")] | length > 0),
+    ([.value.steps[] | select(.name == "run" and (.always // false))] | length > 0)
+] | @tsv' "${SCRIPT_DIR}/suites.json")
+assert_eq "every suite has a graded step named run" "" "$UNGRADED"
+assert_eq "no suite marks its graded step always" "" "$ALWAYS_GRADED"
 
 # Same for the blacklists.
 MISSING=""
@@ -259,6 +289,22 @@ assert_not_contains "steps after a failure are skipped" "ran pass.sh" "$OUT"
 
 OUT="$(run_fake --suite graded --profile memory --variant 4.0 --keep)"
 assert_not_contains "--keep skips teardown" "TEARDOWN RAN" "$OUT"
+
+assert_contains "a graded failure is reported as a failure count" "3 new failure(s)" \
+    "$(run_fake --suite graded --profile memory --variant 4.0)"
+
+# A step that is not the graded one exits with a shell status, not a count. It
+# must stay red — nothing here weakens that — but calling it "N new failure(s)"
+# claims a regression in a suite that never ran, and costs a real investigation
+# every time an image pull or a module fetch blips.
+OUT="$(run_fake --suite brokensetup --profile memory)"
+rc=$?
+assert_eq "a setup failure still fails the suite" "3" "$rc"
+assert_contains "a setup failure names the step that failed" "setup failed (exit 3)" "$OUT"
+assert_contains "a setup failure says nothing was graded" "no tests were graded" "$OUT"
+assert_not_contains "a setup failure is not reported as new failures" "new failure(s)" "$OUT"
+assert_not_contains "the graded step never ran" "ran pass.sh" "$OUT"
+assert_contains "teardown still runs after a failed setup" "TEARDOWN RAN" "$OUT"
 
 # ---------------------------------------------------------------------------
 # Per-variant blacklists. One path per suite cannot express these.
