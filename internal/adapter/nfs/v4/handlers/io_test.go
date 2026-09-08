@@ -1729,3 +1729,74 @@ func TestRename_ReclaimsClobberedPayloadBytes(t *testing.T) {
 		t.Fatalf("renamed file's payload %q was dropped from the local tier by RENAME", survivorPayload)
 	}
 }
+
+// readFamilyOps are the v4 operations that serve, or derive from, file
+// content and therefore share one read-permission gate.
+var readFamilyOps = []struct {
+	name string
+	call func(*Handler, *types.CompoundContext) *types.CompoundResult
+}{
+	{"READ", func(h *Handler, ctx *types.CompoundContext) *types.CompoundResult {
+		return h.handleRead(ctx, bytes.NewReader(encodeReadArgs(&anonymousStateid, 0, 1024)))
+	}},
+	{"READ_PLUS", func(h *Handler, ctx *types.CompoundContext) *types.CompoundResult {
+		return h.handleReadPlus(ctx, bytes.NewReader(encodeReadArgs(&anonymousStateid, 0, 1024)))
+	}},
+	// SEEK reports where a file's data and holes begin. That map derives from
+	// the same content, so it is subject to the same gate: without it a caller
+	// who cannot read the file can still binary-search the layout of its
+	// non-zero bytes.
+	{"SEEK", func(h *Handler, ctx *types.CompoundContext) *types.CompoundResult {
+		return h.handleSeek(ctx, encSeekArgs(&anonymousStateid, 0, types.NFS4_CONTENT_DATA))
+	}},
+}
+
+// TestReadPermissionDenied runs the read-family operations against a
+// root-owned mode-0600 file as uid 1000, presenting the anonymous (all-zero)
+// stateid. That stateid carries no open state, so nothing else in the read
+// path consults the file's mode: without the gate the handlers answer NFS4_OK
+// and hand back the file's bytes.
+//
+// The mode is 0600 rather than 0000 because CreateFile treats a zero mode as
+// "unset" and substitutes the 0644 default, which would leave the file
+// world-readable and the test vacuous.
+func TestReadPermissionDenied(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+	fileHandle := fx.createRegularFile(t, fx.rootHandle, "rootsecret.txt", 0o600, 0, 0)
+	secret := []byte("root eyes only")
+	fx.writeContent(t, fileHandle, secret)
+
+	for _, op := range readFamilyOps {
+		t.Run(op.name, func(t *testing.T) {
+			ctx := newRealFSContext(1000, 1000)
+			ctx.CurrentFH = fileHandle
+			result := op.call(fx.handler, ctx)
+			if result.Status != types.NFS4ERR_ACCESS {
+				t.Errorf("status = %d, want NFS4ERR_ACCESS (%d)", result.Status, types.NFS4ERR_ACCESS)
+			}
+			if bytes.Contains(result.Data, secret) {
+				t.Errorf("leaked file content in a denied reply")
+			}
+		})
+	}
+}
+
+// TestReadPermissionGranted is the companion: the gate must cost an ordinary
+// owner read nothing. It also establishes that the denials above come from the
+// per-file check and not from the share-level policy, which is permissive for
+// uid 1000 in this fixture.
+func TestReadPermissionGranted(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+	fileHandle := fx.createRegularFile(t, fx.rootHandle, "mine.txt", 0o644, 1000, 1000)
+	fx.writeContent(t, fileHandle, []byte("owner readable"))
+
+	for _, op := range readFamilyOps {
+		t.Run(op.name, func(t *testing.T) {
+			ctx := newRealFSContext(1000, 1000)
+			ctx.CurrentFH = fileHandle
+			if result := op.call(fx.handler, ctx); result.Status != types.NFS4_OK {
+				t.Errorf("status = %d, want NFS4_OK", result.Status)
+			}
+		})
+	}
+}
