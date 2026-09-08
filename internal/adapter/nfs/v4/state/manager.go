@@ -796,6 +796,11 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 // GetClient returns the client record for the given client ID, or nil
 // if no record exists. Used by RENEW and other operations that need
 // to look up client state.
+//
+// v4.0 only: it reads the SETCLIENTID index, so a v4.1 client ID comes back
+// nil even though both minor versions now share the record type. Use
+// clientRecordLocked for a lookup that should not care which flow minted the
+// ID.
 func (sm *StateManager) GetClient(clientID uint64) *ClientRecord {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
