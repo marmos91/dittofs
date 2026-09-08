@@ -615,7 +615,7 @@ func exclcreatAttrs() []uint32 {
 //   - minorVersion: COMPOUND minor version, bounding the attributes reported
 //   - file: The real file metadata
 //   - handle: The file handle (used for FILEHANDLE and FILEID attributes)
-//   - fsStats: Optional filesystem statistics for SPACE_TOTAL/FREE/AVAIL (can be nil)
+//   - fsStats: Optional filesystem statistics for SPACE_AVAIL/FREE/TOTAL (can be nil)
 func EncodeRealFileAttrs(buf *bytes.Buffer, requested []uint32, minorVersion uint32, file *metadata.File, handle metadata.FileHandle, fsStats ...*metadata.FilesystemStatistics) error {
 	supported := SupportedAttrsFor(minorVersion)
 	responseBitmap := responseAttrBitmap(requested, supported)
@@ -838,7 +838,7 @@ func MapFileTypeToNFS4(fileType metadata.FileType) uint32 {
 }
 
 // NeedsFilesystemStats returns true if the requested bitmap includes any of
-// FATTR4_SPACE_AVAIL (42), FATTR4_SPACE_FREE (43), or FATTR4_SPACE_TOTAL (44).
+// FATTR4_SPACE_AVAIL, FATTR4_SPACE_FREE, or FATTR4_SPACE_TOTAL.
 // The caller should fetch FilesystemStatistics and pass it to EncodeRealFileAttrs
 // when this returns true.
 func NeedsFilesystemStats(requested []uint32) bool {
