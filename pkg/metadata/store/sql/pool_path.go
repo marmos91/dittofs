@@ -227,3 +227,41 @@ func (p PoolPath) CreateRootDirectory(ctx context.Context, shareName string, att
 	}
 	return root, nil
 }
+
+// ============================================================================
+// File chunks
+// ============================================================================
+
+// DecrementRefCountAndReap atomically decrements ref_count and, when it hits 0,
+// deletes the row. Both statements run inside ONE transaction, so the
+// decrement-and-reap is atomic and TOCTOU-free against a concurrent AddRef,
+// which takes the same row lock. Reports (0, nil) when the row is already
+// absent — a swept row is not a caller error. Running through WithTransaction
+// also gives a busy/serialization collision the package's bounded retry rather
+// than surfacing it as a hard error.
+func (p PoolPath) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
+	var newCount uint32
+	err := p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		var txErr error
+		newCount, txErr = tx.DecrementRefCountAndReap(ctx, id)
+		return txErr
+	})
+	if err != nil {
+		return 0, err
+	}
+	return newCount, nil
+}
+
+// DecrementRefCountAndReapMany shadows the promoted Core method so the batch
+// shares one transaction. On the pool the decrement and the reap would
+// autocommit separately and survive a caller's rollback, which is the one thing
+// the batched form exists to prevent.
+//
+// As with PutSyncedLocators, no caller needs this on a store today — it belongs
+// to metadata.Transaction — but promotion makes a store-level version reachable
+// regardless, and the reachable version should be the safe one.
+func (p PoolPath) DecrementRefCountAndReapMany(ctx context.Context, ids []string) error {
+	return p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return tx.DecrementRefCountAndReapMany(ctx, ids)
+	})
+}

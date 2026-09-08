@@ -197,7 +197,18 @@ func (c *Core) DecrementRefCountAndReap(ctx context.Context, id string) (uint32,
 // data. The statement deliberately has no LIMIT — all matching rows are bumped
 // uniformly, so accounting stays correct regardless of which row a later
 // decrement targets. Only ref_count is touched; chunk state never is.
-func (c *Core) AddRef(ctx context.Context, hash block.ContentHash) error {
+// AddRef implements the block.FileChunkStore signature, which carries a
+// payloadID and a ChunkRef for future GC traceability. This family records a
+// ref count only, so both are deliberately ignored rather than stored.
+//
+// It exists so the store and the transaction inherit the interface method by
+// promotion. Each backend previously declared its own two-line adapter around
+// addRefByHash for exactly this, four copies of it in total.
+func (c *Core) AddRef(ctx context.Context, hash block.ContentHash, _ string, _ block.ChunkRef) error {
+	return c.addRefByHash(ctx, hash)
+}
+
+func (c *Core) addRefByHash(ctx context.Context, hash block.ContentHash) error {
 	result, err := c.X.Exec(ctx, c.D.Chunks().AddRef, hash.String())
 	if err != nil {
 		return fmt.Errorf("add ref: %w", err)
