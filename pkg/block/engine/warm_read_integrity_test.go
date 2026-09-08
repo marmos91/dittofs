@@ -35,12 +35,12 @@ func newEngineWithRemote(t *testing.T, ms metadata.Store, mem *remotememory.Stor
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}
 	coord := &testCoordinator{store: ms}
-	syncer := engine.NewSyncer(localStore, mem, ms, engine.DefaultConfig())
+	syncer := engine.NewRemoteSync(localStore, mem, ms, engine.DefaultConfig())
 	syncer.SetSyncedHashStore(syncedHashStore)
 	syncer.SetRemoteBlockStore(mem)
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		Coordinator:     coord,
 		SyncedHashStore: syncedHashStore,

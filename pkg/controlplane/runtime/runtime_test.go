@@ -554,10 +554,10 @@ func TestGetBlockStoreForHandle(t *testing.T) {
 	// Create a minimal BlockStore with memory local store.
 	localStore := localmemory.New()
 	localStore.Start(context.Background())
-	syncer := engine.NewSyncer(localStore, nil, metaStore, engine.DefaultConfig())
+	syncer := engine.NewRemoteSync(localStore, nil, metaStore, engine.DefaultConfig())
 	bs, err := engine.New(engine.BlockStoreConfig{
-		Local:  localStore,
-		Syncer: syncer,
+		Local:      localStore,
+		RemoteSync: syncer,
 	})
 	if err != nil {
 		t.Fatalf("failed to create BlockStore: %v", err)

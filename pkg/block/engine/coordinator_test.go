@@ -64,7 +64,7 @@ type fakeCoordinator struct {
 	// unique-violation on the partial UNIQUE index.
 	persistErr error
 	// fileObjectIDs is the seedable per-payload current-ObjectID lookup
-	// for GetFileObjectID.: Syncer.Flush
+	// for GetFileObjectID.: RemoteSync.Flush
 	// reads this to evaluate the trigger condition before the
 	// per-block upload pump. Unset / zero-valued entries mean "never
 	// quiesced" (zero ObjectID), which lets the trigger condition fire

@@ -136,12 +136,12 @@ func newPerfTestEngine(tb testing.TB, readBufferBytes int64, prefetchWorkers int
 	tb.Helper()
 	localStore := memory.New()
 	fbs := newStubFileChunkStore()
-	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
+	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
 
 	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Remote:          nil,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		ReadBufferBytes: readBufferBytes,
 		PrefetchWorkers: prefetchWorkers,
 	})

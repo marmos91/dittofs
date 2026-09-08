@@ -46,15 +46,15 @@ var (
 	_ remote.ChunkReader      = (*blockingRemote)(nil)
 )
 
-// TestNewSyncer_DefaultsDemandFetchTimeout guards against the bound being dead
+// TestNewRemoteSync_DefaultsDemandFetchTimeout guards against the bound being dead
 // in production: a config that leaves DemandFetchTimeout unset (every path that
 // does not thread the field, e.g. pkg/config) must still get the default, or
 // EnsureAvailable would run unbounded and the hang would return.
-func TestNewSyncer_DefaultsDemandFetchTimeout(t *testing.T) {
+func TestNewRemoteSync_DefaultsDemandFetchTimeout(t *testing.T) {
 	fbs := newStubFileChunkStore()
-	m := NewSyncer(memorylocal.New(), remotememory.New(), fbs, SyncerConfig{})
+	m := NewRemoteSync(memorylocal.New(), remotememory.New(), fbs, RemoteSyncConfig{})
 	if m.config.DemandFetchTimeout != DefaultDemandFetchTimeout {
-		t.Fatalf("NewSyncer left DemandFetchTimeout = %v; want default %v",
+		t.Fatalf("NewRemoteSync left DemandFetchTimeout = %v; want default %v",
 			m.config.DemandFetchTimeout, DefaultDemandFetchTimeout)
 	}
 }

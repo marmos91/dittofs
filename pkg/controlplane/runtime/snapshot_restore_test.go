@@ -613,13 +613,13 @@ func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
 		wrappedRemote = newRestoreRemote(innerRemote)
 		engineRemote = wrappedRemote
 	}
-	syncer := engine.NewSyncer(localStore, engineRemote, mem, engine.SyncerConfig{
+	syncer := engine.NewRemoteSync(localStore, engineRemote, mem, engine.RemoteSyncConfig{
 		ParallelDownloads: 1,
 	})
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          localStore,
 		Remote:         engineRemote,
-		Syncer:         syncer,
+		RemoteSync:     syncer,
 		FileChunkStore: mem,
 	})
 	if err != nil {

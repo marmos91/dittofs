@@ -26,11 +26,11 @@ func newLocalOnlyTestEngine(t *testing.T, coord *fakeCoordinator, ms *metadatame
 	if !ok {
 		t.Fatalf("metadata store %T does not implement metadata.SyncedHashStore", ms)
 	}
-	syncer := engine.NewSyncer(localStore, nil, ms, engine.DefaultConfig())
+	syncer := engine.NewRemoteSync(localStore, nil, ms, engine.DefaultConfig())
 	syncer.SetSyncedHashStore(syncedHashStore)
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		Coordinator:     coord,
 		SyncedHashStore: syncedHashStore,

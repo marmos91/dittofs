@@ -40,7 +40,7 @@ type warmTarget struct {
 // (fetchResolvedBlock). It enumerates payloads from the authoritative metadata
 // (fileChunkStore.EnumeratePayloads) and the per-payload FileChunk rows, and
 // fetches every one of them with bounded concurrency
-// (SyncerConfig.ParallelDownloads). Enumerating the metadata rather than the
+// (RemoteSyncConfig.ParallelDownloads). Enumerating the metadata rather than the
 // local store's ListFiles is what lets warm materialize payloads whose append
 // log was discarded after rollup — their FileChunk rows survive, but
 // local.ListFiles no longer reports them, so the old surface made warm a silent
@@ -61,7 +61,7 @@ type warmTarget struct {
 // fails with fs.ErrDiskFull is terminal — the bounded local tier cannot hold
 // the working set — so the whole run is cancelled and the error surfaced.
 // Context cancellation stops the run promptly.
-func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) (WarmResult, error) {
+func (m *RemoteSync) WarmAll(ctx context.Context, progress func(done, total int64)) (WarmResult, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return WarmResult{}, err
 	}

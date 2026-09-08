@@ -31,11 +31,11 @@ func newDrainResetFixture(t *testing.T) (*Store, *fs.FSStore) {
 	rem := remotememory.New()
 	cfg := DefaultConfig()
 	cfg.ManualSync = true
-	syncer := NewSyncer(localStore, rem, ms, cfg)
+	syncer := NewRemoteSync(localStore, rem, ms, cfg)
 	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Remote:          rem,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		SyncedHashStore: ms,
 		ReadBufferBytes: 64 * 1024 * 1024,
