@@ -153,7 +153,7 @@ What actually moves:
 | file | verdict |
 |---|---|
 | `engine/dynsem.go`, `engine/upload_controller.go` | **move whole.** The window mechanism. The only parts that port cleanly, and the original scope omitted both. |
-| `engine/carve_dispatch.go` | **moves**, minus `newBlockID` (:125), which `blocksink.go` calls. |
+| `engine/carve_dispatch.go` | **cannot move — corrected 2026-09-08b.** Its 131 lines are two methods on `*RemoteSync` plus `newBlockID`. Go forbids declaring a method on a type from another package, so the file cannot leave `engine` while `RemoteSync` lives there. See below. |
 | `journal/carve_dispatch.go` | **stays.** It calls `s.flipUpTo` and mutates `rs[i].committedTo` — unexported internals through unexported types. Extracting it *is* step 3's seam inversion; pulling it forward exports journal's flip contract inside a PR labelled step 1. |
 | `engine/blocksink.go` | **stays, minus ~5%.** Of 365 lines the PUT is one (`rbs.PutBlock`, :336) and framing ~35. The rest is manifest projection, SSI stripe locking and three optional-capability impls — none of which the three-package model gives a home. |
 
@@ -181,6 +181,21 @@ both describe the window as bounding PUTs; neither does.
 Collapsing the two windows changes observed throughput, so it is a semantics decision and ships
 as its own PR. **Step 1 carries both windows over verbatim** — an extraction that also retunes
 upload concurrency is unreviewable.
+
+**Correction, 2026-09-08b: there is no step 1.4.** The line above originally said this file
+moves. That was wrong, and wrong in the way the first version of this section was wrong — a file
+named without its contents being read. `carve_dispatch.go` holds
+`func (m *RemoteSync) carveDispatcher` and `func (m *RemoteSync) carvePass`, and a method can only
+be declared in the package that defines its receiver. Moving the file therefore requires either
+moving `RemoteSync` itself — 1074 LOC and the whole remote-sync surface, far outside step 1 — or
+turning both methods into functions over a narrow interface. `carvePass` alone reaches
+`m.local`, `m.stopCh`, `m.uploadLimiter`, `m.uploadErrWindow` and `m.failedSyncs`, and
+`carveDispatcher` adds `m.config`, `m.carveActive`, `m.canProcess` and `m.IsRemoteHealthy`.
+Defining that interface **is** the seam inversion, which §4 already assigns to step 3.
+
+So step 1 ends after the upload-window extraction. Carve dispatch stays in `engine` and moves in
+step 3 with the rest of the seam. What remains of step 1 is the ordered-completion contract, and
+it is added **in place** across `engine` and `journal` rather than in a new package.
 
 **Traps** (each verified on develop):
 
