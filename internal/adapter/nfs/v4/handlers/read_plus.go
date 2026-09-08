@@ -72,7 +72,7 @@ func (h *Handler) handleReadPlus(ctx *types.CompoundContext, reader io.Reader) *
 
 	// READ_PLUS shares READ's stateid semantics: special stateids are allowed,
 	// a real open stateid must carry READ access.
-	if openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpRead); stateErr != nil {
+	if openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpRead, ctx.SessionClientID); stateErr != nil {
 		st := mapStateError(stateErr)
 		logger.Debug("NFSv4.2 READ_PLUS stateid validation failed", "error", stateErr, "nfs_status", st, "client", ctx.ClientAddr)
 		return readPlusErr(st)
