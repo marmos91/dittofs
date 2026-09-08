@@ -719,17 +719,18 @@ them on every WRITE. The Linux NFS client keys its page cache on
 without this a client would invalidate its own cache on each write it had just
 issued.
 
-The freeze is per file, not per client. NFSv4's `change` attribute is derived
-from `ctime`, so for as long as a write session is open a *second* client's
-writes to the same file go unannounced: the first client re-reads `change`, sees
-the unchanged value, and keeps serving its cached copy. RFC 7530 §5.4 makes
-`change` exactly the attribute a client uses to decide whether its cached copy
-is still valid, so this is a real divergence and not just a coarse timestamp.
+The freeze is per file, not per client, and it bites from the *second* write of
+a session onward. NFSv4's `change` attribute is derived from `ctime`, so the
+first write of a session does move `change` and is seen — but every later write
+in that same session leaves it untouched. A second client that noticed the first
+write, refetched the file and re-cached it will then keep serving that copy no
+matter how much more the writer changes. RFC 7530 §5.4 makes `change` exactly
+the attribute a client uses to decide whether its cached copy is still valid, so
+this is a real divergence and not merely a coarse timestamp.
 
-`size` is not frozen, so a second client that *appends* still moves an attribute
-the Linux client watches and may be noticed by luck. A write that overwrites
-bytes in place changes no attribute at all and is invisible until the write
-session ends.
+`size` is not frozen, so a later write that *extends* the file still moves
+`size`, which the Linux client also watches, and may be noticed on that basis
+alone. A later write that overwrites bytes in place moves no attribute at all.
 
 This is a deliberate trade — DittoFS is single-node and the overwhelmingly
 common case is one writer per file — and it is why the pynfs `WRT18` case is
