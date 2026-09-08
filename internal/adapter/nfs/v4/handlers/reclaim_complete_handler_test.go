@@ -116,57 +116,12 @@ func TestHandleReclaimComplete(t *testing.T) {
 
 		ctx := newTestCompoundContext()
 
-		// First RECLAIM_COMPLETE (slot 0, seqid 1)
-		seqArgs1 := encodeSequenceArgs(sessionID, 0, 1, 0, false)
-		var rcBuf1 bytes.Buffer
-		rcArgs1 := types.ReclaimCompleteArgs{OneFS: false}
-		_ = rcArgs1.Encode(&rcBuf1)
-
-		ops1 := []compoundOp{
-			{opCode: types.OP_SEQUENCE, data: seqArgs1},
-			{opCode: types.OP_RECLAIM_COMPLETE, data: rcBuf1.Bytes()},
+		if got := sendReclaimComplete(t, h, ctx, sessionID, 1); got != types.NFS4_OK {
+			t.Fatalf("first RECLAIM_COMPLETE overall status = %d, want NFS4_OK", got)
 		}
-		data1 := buildCompoundArgsWithOps([]byte("rc1"), 1, ops1)
-		resp1, err := h.ProcessCompound(ctx, data1)
-		if err != nil {
-			t.Fatalf("first RECLAIM_COMPLETE error: %v", err)
-		}
-		decoded1, _ := decodeCompoundResponse(resp1)
-		if decoded1.Status != types.NFS4_OK {
-			t.Fatalf("first RECLAIM_COMPLETE overall status = %d, want NFS4_OK", decoded1.Status)
-		}
-
-		// Second RECLAIM_COMPLETE (slot 0, seqid 2)
-		seqArgs2 := encodeSequenceArgs(sessionID, 0, 2, 0, false)
-		var rcBuf2 bytes.Buffer
-		rcArgs2 := types.ReclaimCompleteArgs{OneFS: false}
-		_ = rcArgs2.Encode(&rcBuf2)
-
-		ops2 := []compoundOp{
-			{opCode: types.OP_SEQUENCE, data: seqArgs2},
-			{opCode: types.OP_RECLAIM_COMPLETE, data: rcBuf2.Bytes()},
-		}
-		data2 := buildCompoundArgsWithOps([]byte("rc2"), 1, ops2)
-		resp2, err := h.ProcessCompound(ctx, data2)
-		if err != nil {
-			t.Fatalf("second RECLAIM_COMPLETE error: %v", err)
-		}
-
-		// Decode second response to check RECLAIM_COMPLETE status
-		reader := bytes.NewReader(resp2)
-		overallStatus, _ := xdr.DecodeUint32(reader)
-		_, _ = xdr.DecodeOpaque(reader)           // tag
-		numResults, _ := xdr.DecodeUint32(reader) // numResults
-
-		if numResults < 2 {
-			// If only SEQUENCE result, the compound failed at RECLAIM_COMPLETE
-			t.Logf("overall status = %d, numResults = %d", overallStatus, numResults)
-		}
-
-		// The overall status should be NFS4ERR_COMPLETE_ALREADY
-		if overallStatus != types.NFS4ERR_COMPLETE_ALREADY {
+		if got := sendReclaimComplete(t, h, ctx, sessionID, 2); got != types.NFS4ERR_COMPLETE_ALREADY {
 			t.Errorf("second RECLAIM_COMPLETE overall status = %d, want NFS4ERR_COMPLETE_ALREADY (%d)",
-				overallStatus, types.NFS4ERR_COMPLETE_ALREADY)
+				got, types.NFS4ERR_COMPLETE_ALREADY)
 		}
 	})
 
