@@ -144,7 +144,7 @@ type Handler struct {
 	// smb2.lock.open-brlock-deadlock / ctdb-delrec-deadlock).
 	LockWaitGraph *lock.WaitForGraph
 
-	// Pending blocking lock operations (messageID -> cancel func). Legacy
+	// Pending blocking lock operations (lockMsgKey -> cancel func). Legacy
 	// path for inline retry inside the request goroutine — used as a
 	// fallback when async parking is unavailable (no callback wired,
 	// async-credit pool exhausted, or registry full).

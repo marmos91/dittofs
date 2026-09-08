@@ -587,6 +587,7 @@ func (h *Handler) handlePipeRead(ctx *SMBHandlerContext, req *ReadRequest, openF
 		pending := &PendingPipeRead{
 			FileID:    req.FileID,
 			SessionID: ctx.SessionID,
+			ConnID:    ctx.ConnID,
 			MessageID: ctx.MessageID,
 			AsyncId:   asyncId,
 			MaxLen:    int(req.Length),
