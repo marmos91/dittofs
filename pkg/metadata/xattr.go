@@ -217,6 +217,24 @@ func ResolveGetXattr(ctx context.Context, files Files, handle FileHandle, name s
 	return nil, false, nil
 }
 
+// withFileTx runs fn against a transactional view of files when files can open
+// a transaction, and against files directly when it cannot.
+//
+// The two write resolvers below are read-modify-writes over the WHOLE EA map:
+// they load the file, apply one mutation to FileAttr.EAs and persist the file.
+// Run outside a transaction, two writers naming different attributes each load
+// before either persists, so each writes back a map missing the other's name
+// and the later write silently drops the earlier one — the call returned nil
+// and the value is gone. Only a store needs the wrap; a Transaction is already
+// inside one and does not implement Transactor, so it falls through.
+func withFileTx(ctx context.Context, files Files, fn func(Files) error) error {
+	tr, ok := files.(Transactor)
+	if !ok {
+		return fn(files)
+	}
+	return tr.WithTransaction(ctx, func(tx Transaction) error { return fn(tx) })
+}
+
 // ResolveSetXattr writes an xattr value into the inline backing when it fits
 // (<= XattrInlineMaxBytes), reusing ApplyEAMutations for case-insensitive,
 // casing-preserving upsert. Oversized values return ErrXattrTooLarge (PR1 does
@@ -225,12 +243,14 @@ func ResolveSetXattr(ctx context.Context, files Files, handle FileHandle, name s
 	if len(value) > XattrInlineMaxBytes {
 		return ErrXattrTooLarge
 	}
-	file, err := files.GetFile(ctx, handle)
-	if err != nil {
-		return err
-	}
-	file.ApplyEAMutations([]EAMutation{{Name: name, Value: value}})
-	return files.UpdateAttrs(ctx, file)
+	return withFileTx(ctx, files, func(files Files) error {
+		file, err := files.GetFile(ctx, handle)
+		if err != nil {
+			return err
+		}
+		file.ApplyEAMutations([]EAMutation{{Name: name, Value: value}})
+		return files.UpdateAttrs(ctx, file)
+	})
 }
 
 // ResolveRemoveXattr removes an xattr from the inline backing. Removing a name
@@ -240,15 +260,17 @@ func ResolveSetXattr(ctx context.Context, files Files, handle FileHandle, name s
 // backings removes only the inline copy (the stream entity is untouched), which
 // then makes the stream copy visible per the stream-wins precedence.
 func ResolveRemoveXattr(ctx context.Context, files Files, handle FileHandle, name string) error {
-	file, err := files.GetFile(ctx, handle)
-	if err != nil {
-		return err
-	}
-	if _, found := file.LookupEA(name); !found {
-		return &StoreError{Code: metaerrors.ErrNotFound, Message: "xattr not found"}
-	}
-	file.ApplyEAMutations([]EAMutation{{Name: name, Delete: true}})
-	return files.UpdateAttrs(ctx, file)
+	return withFileTx(ctx, files, func(files Files) error {
+		file, err := files.GetFile(ctx, handle)
+		if err != nil {
+			return err
+		}
+		if _, found := file.LookupEA(name); !found {
+			return &StoreError{Code: metaerrors.ErrNotFound, Message: "xattr not found"}
+		}
+		file.ApplyEAMutations([]EAMutation{{Name: name, Delete: true}})
+		return files.UpdateAttrs(ctx, file)
+	})
 }
 
 // ResolveListXattr returns every xattr name on the file, merged from both
