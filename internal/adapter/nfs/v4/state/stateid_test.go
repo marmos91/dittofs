@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"sync"
 	"testing"
@@ -87,6 +88,26 @@ func TestGenerateStateidOther_ConcurrentUniqueness(t *testing.T) {
 			t.Fatalf("duplicate concurrent stateid other at index %d", i)
 		}
 		seen[other] = true
+	}
+}
+
+// TestGenerateStateidOther_NotSequential pins the low eight bytes as random
+// rather than sequential: a counter makes successive mints differ by exactly
+// one, so holding one stateid gives away its neighbours. Random bytes landing
+// adjacent has probability 2^-64 per pair.
+func TestGenerateStateidOther_NotSequential(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	first := sm.generateStateidOther(StateTypeOpen)
+	prev := binary.BigEndian.Uint64(first[4:])
+	for i := 1; i < 32; i++ {
+		other := sm.generateStateidOther(StateTypeOpen)
+		cur := binary.BigEndian.Uint64(other[4:])
+		if cur == prev+1 {
+			t.Fatalf("mint %d is exactly one more than mint %d (%d, %d): sequential, not random",
+				i, i-1, prev, cur)
+		}
+		prev = cur
 	}
 }
 

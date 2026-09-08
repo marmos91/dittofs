@@ -148,9 +148,6 @@ type StateManager struct {
 	// nextClientSeq is an atomic counter for the low 32 bits of client IDs.
 	nextClientSeq uint32
 
-	// nextStateSeq is an atomic counter for stateid "other" field generation.
-	nextStateSeq uint64
-
 	// leaseDuration is the configured lease duration for all clients.
 	leaseDuration time.Duration
 
