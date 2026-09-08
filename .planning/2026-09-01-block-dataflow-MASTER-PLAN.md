@@ -131,8 +131,9 @@ These do not exist today. The design introduces them and must close them.
 **Order: syncer → carver → journal.** Reverse of the data flow: leaves first, trunk last.
 
 The property that earns this order: **no step before 3 touches on-disk format, the state model
-or the flip contract.** Step 2 is a pure extraction, verifiable by the existing suite plus the
-crash rigs. **Step 1 is not** — the ordered-completion contract it delivers does not exist across
+or the flip contract.** Step 2 was described as a pure extraction verifiable by the existing
+suite; recon found it has no extraction to make — see its section below, rewritten 2026-09-08 —
+and it ships as the boundary-stability test alone. **Step 1 is not** — the ordered-completion contract it delivers does not exist across
 the file boundary today, so it is an addition and needs its own tests; see the step 1 section
 below, rewritten 2026-09-08. All *semantic* risk still concentrates in step 3, taken last, when
 the other two modules are already proven in production.
@@ -218,9 +219,46 @@ it is added **in place** across `engine` and `journal` rather than in a new pack
 
 ### Step 2 — carver
 
-Touches `journal/carve.go`'s packing loop and `pkg/block/chunker`. The critical test is
-**boundary stability**: the same blob chunked in one call vs. many must yield identical
-boundaries, or dedup silently stops working across the fleet.
+**Rewritten 2026-09-08 after recon against develop, the same way step 1 was. The extraction
+half of the scope below does not hold; the test half does and has landed.**
+
+The original scope: *touches `journal/carve.go`'s packing loop and `pkg/block/chunker`. The
+critical test is boundary stability — the same blob chunked in one call vs. many must yield
+identical boundaries, or dedup silently stops working across the fleet.*
+
+**The packing loop cannot move, for the reason `engine/carve_dispatch.go` could not move in
+step 1.** `packRuns` is `func (s *Store) packRuns(ctx, sh *shard, id FileID, rs []*runState)`.
+Go forbids declaring a method on a type from another package, and inside it the body reaches
+`s.cfg`, `s.sink`, `s.deduper` and `s.extendRunToRowEnd`, while two of its parameters are the
+unexported `*shard` and `[]*runState`. Moving it therefore requires either moving `Store` — the
+trunk, which is step 3 — or defining an interface over it. Defining that interface **is** the
+seam inversion, which §4 already assigns to step 3. This is the second time a step's file list
+was written without the file's contents being read; the entry above and step 1's
+"Correction, 2026-09-08b" have the same shape and the same cause.
+
+**`pkg/block/chunker` needs no move.** It is already its own package, 4 non-test files and
+under 300 LOC, and nothing about the three-package model changes where it lives.
+
+**What was genuinely missing was the test, and it did not exist.** `TestChunker_BoundaryStability_70pct`
+reads as though it covers this but measures shift resistance — how many boundaries survive an
+inserted prefix — and its `chunkAll` helper passes `final=true` on every call, so the
+accumulate-and-cut path `packRuns` actually runs (`Next` returns 0, the caller reads more) had
+no coverage at all.
+
+Two properties now pin it, each verified to fail against a break that violates it:
+
+- the boundary reported for a chunk start is the same whatever length of buffer `Next` is shown;
+- the cut points for a whole blob are the same whatever size buffer the packer accumulates into.
+
+**A trap worth recording, because the obvious version of this test proves nothing.** Framing it
+as "vary the reader's read size and compare cut points" passes against both breaks. The packer's
+read loop fills to `cap(buf)` before every ask, so read size changes how many reads it takes to
+fill the buffer and never changes the buffer length at the moment `Next` decides. The variable
+has to be the buffer length itself.
+
+**So step 2 is the test, and it has landed.** The packing loop moves in step 3 with the rest of
+the seam. What remains of step 1 — the ordered-completion contract — is unchanged by this and
+still has no caller until that inversion.
 
 ### Step 3 — journal
 
