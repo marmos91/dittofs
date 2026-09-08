@@ -224,3 +224,32 @@ func TestStateidMissError_CurrentEpochIsBadNotStale(t *testing.T) {
 		t.Errorf("CLOSE with an unissued stateid of this incarnation: err = %v, want NFS4ERR_BAD_STATEID", err)
 	}
 }
+
+// TestBootEpoch_DiffersAcrossIncarnations pins what separates one run of the
+// server from the next. generateClientID restarts its sequence at 0 every boot,
+// so two incarnations sharing a boot epoch hand out byte-identical client IDs
+// and unknownClientIDError then reads a stale one as merely expired rather than
+// from another incarnation. A clock read at seconds resolution collided for
+// every restart inside one second, which is what this many managers in a loop
+// reproduces.
+func TestBootEpoch_DiffersAcrossIncarnations(t *testing.T) {
+	const incarnations = 8
+
+	seen := make(map[uint32]struct{}, incarnations)
+	firstClientIDs := make(map[uint64]struct{}, incarnations)
+	for range incarnations {
+		sm := NewStateManager(90 * time.Second)
+		seen[sm.BootEpoch()] = struct{}{}
+		firstClientIDs[sm.generateClientID()] = struct{}{}
+		sm.Shutdown()
+	}
+
+	if len(seen) != incarnations {
+		t.Errorf("%d incarnations produced %d distinct boot epochs, want %d",
+			incarnations, len(seen), incarnations)
+	}
+	if len(firstClientIDs) != incarnations {
+		t.Errorf("%d incarnations produced %d distinct first client IDs, want %d",
+			incarnations, len(firstClientIDs), incarnations)
+	}
+}

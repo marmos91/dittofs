@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"slices"
@@ -144,8 +145,9 @@ type StateManager struct {
 	// handle, taking precedence over lockManager. See SetLockManagerResolver.
 	lockManagerResolver func(handle []byte) lock.LockManager
 
-	// bootEpoch is the server boot epoch, used as the high 32 bits of
-	// client IDs to ensure uniqueness across server restarts.
+	// bootEpoch identifies this incarnation of the server. It is the high 32
+	// bits of every client ID and a 24-bit fragment of every stateid, and both
+	// readers only ever test it for equality, never for order.
 	bootEpoch uint32
 
 	// nextClientSeq is an atomic counter for the low 32 bits of client IDs.
@@ -255,7 +257,7 @@ type StateManager struct {
 }
 
 // NewStateManager creates a new StateManager with the given lease duration.
-// The boot epoch is derived from the current time.
+// The boot epoch is drawn at random.
 // An optional graceDuration parameter controls the grace period length;
 // if omitted or zero, the lease duration is used.
 func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration) *StateManager {
@@ -268,7 +270,22 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		gd = graceDuration[0]
 	}
 
-	epoch := uint32(time.Now().Unix())
+	// The boot epoch has to differ from the last incarnation's, because
+	// generateClientID restarts its sequence at 0 every boot: two runs sharing
+	// an epoch hand out byte-identical client IDs, and a stale one is then
+	// admitted as a live client rather than refused. A clock read at seconds
+	// resolution guaranteed that collision for any restart inside one second,
+	// which is well within a supervisor's restart time.
+	//
+	// ponytail: random and not persisted, so nothing rules out drawing the same
+	// epoch twice -- the 24-bit stateid fragment puts that at roughly one
+	// restart in 16 million before a stale stateid could read as current.
+	// Persisting the epoch and reloading it incremented removes the chance
+	// outright; the durable client-recovery store is already handed this value,
+	// so the seam to persist it through exists.
+	var epochBytes [4]byte
+	_, _ = rand.Read(epochBytes[:])
+	epoch := binary.BigEndian.Uint32(epochBytes[:])
 
 	return &StateManager{
 		clientsByID:         make(map[uint64]*ClientRecord),
