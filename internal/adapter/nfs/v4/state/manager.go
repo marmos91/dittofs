@@ -1591,6 +1591,7 @@ func (sm *StateManager) OpenFile(
 		// Accumulate share_access and share_deny (Pitfall 7)
 		existingState.ShareAccess |= shareAccess
 		existingState.ShareDeny |= shareDeny
+		existingState.openedAccessModes |= shareModeBit(shareAccess)
 
 		// Increment the stateid seqid for this operation
 		existingState.Stateid.Seqid = nextSeqID(existingState.Stateid.Seqid)
@@ -1607,12 +1608,13 @@ func (sm *StateManager) OpenFile(
 		copy(fhCopy, fileHandle)
 
 		openState := &OpenState{
-			Stateid:     resultStateid,
-			Owner:       owner,
-			FileHandle:  fhCopy,
-			ShareAccess: shareAccess,
-			ShareDeny:   shareDeny,
-			Confirmed:   owner.Confirmed,
+			Stateid:           resultStateid,
+			Owner:             owner,
+			FileHandle:        fhCopy,
+			ShareAccess:       shareAccess,
+			ShareDeny:         shareDeny,
+			openedAccessModes: shareModeBit(shareAccess),
+			Confirmed:         owner.Confirmed,
 		}
 
 		owner.OpenStates = append(owner.OpenStates, openState)
@@ -2219,11 +2221,15 @@ func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, new
 		return nil, err
 	}
 
-	// Verify the new access is a subset of current (can only remove bits)
-	if newShareAccess & ^openState.ShareAccess != 0 {
+	// The new share_access must be a mode some OPEN behind this state actually
+	// asked for, which is stricter than being a subset of the accumulated
+	// union: one OPEN for BOTH leaves READ and WRITE standing in that union
+	// with neither ever opened, and downgrading to one of them would name a
+	// mode the client never held (RFC 7530 Section 16.19.4).
+	if openState.openedAccessModes&shareModeBit(newShareAccess) == 0 {
 		return nil, &NFS4StateError{
 			Status:  types.NFS4ERR_INVAL,
-			Message: "OPEN_DOWNGRADE cannot add share_access bits",
+			Message: "OPEN_DOWNGRADE to a share_access mode no OPEN asked for",
 		}
 	}
 	if newShareDeny & ^openState.ShareDeny != 0 {
@@ -2244,6 +2250,14 @@ func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, new
 	// Update share modes
 	openState.ShareAccess = newShareAccess
 	openState.ShareDeny = newShareDeny
+
+	// Forget the opened modes this downgrade drops: a later OPEN_DOWNGRADE may
+	// only name one that is still a subset of what this one kept.
+	for mode := uint32(types.OPEN4_SHARE_ACCESS_READ); mode <= types.OPEN4_SHARE_ACCESS_BOTH; mode++ {
+		if mode&newShareAccess != mode {
+			openState.openedAccessModes &^= shareModeBit(mode)
+		}
+	}
 
 	// Increment stateid seqid
 	openState.Stateid.Seqid = nextSeqID(openState.Stateid.Seqid)

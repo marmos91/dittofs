@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -41,6 +42,14 @@ type NFS4StateError struct {
 
 func (e *NFS4StateError) Error() string {
 	return e.Message
+}
+
+// Is matches two state errors on their NFS4 status alone, so errors.Is against
+// one of the sentinels below also matches an error of the same status carrying
+// a more specific message.
+func (e *NFS4StateError) Is(target error) bool {
+	var other *NFS4StateError
+	return errors.As(target, &other) && other.Status == e.Status
 }
 
 // Common state errors used throughout the state package.

@@ -94,11 +94,14 @@ func TestOpenDowngrade_CrossClient(t *testing.T) {
 
 	sid, seqid := newConfirmedOpen(t, sm, authzClientA, []byte("fh-downgrade"))
 
-	if _, err := sm.DowngradeOpen(&sid, seqid, types.OPEN4_SHARE_ACCESS_READ,
+	// The open behind these stateids was opened for BOTH and nothing else, so
+	// BOTH is the only share_access an OPEN_DOWNGRADE on it may name: RFC 7530
+	// Section 16.19.4 admits only a mode some OPEN actually asked for.
+	if _, err := sm.DowngradeOpen(&sid, seqid, types.OPEN4_SHARE_ACCESS_BOTH,
 		types.OPEN4_SHARE_DENY_NONE, authzClientB); !isStatus(err, types.NFS4ERR_BAD_STATEID) {
 		t.Errorf("client B downgrading client A's open: err = %v, want NFS4ERR_BAD_STATEID", err)
 	}
-	if _, err := sm.DowngradeOpen(&sid, seqid, types.OPEN4_SHARE_ACCESS_READ,
+	if _, err := sm.DowngradeOpen(&sid, seqid, types.OPEN4_SHARE_ACCESS_BOTH,
 		types.OPEN4_SHARE_DENY_NONE, authzClientA); err != nil {
 		t.Errorf("owning client rejected: %v", err)
 	}
