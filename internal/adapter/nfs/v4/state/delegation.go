@@ -727,6 +727,53 @@ func (sm *StateManager) sendRecallV40(deleg *DelegationState) {
 // EncodeDelegation
 // ============================================================================
 
+// DelegationWantReason reads the delegation-want bits a v4.1 client set in
+// share_access and reports the why_no_delegation4 reason they compel, if they
+// compel refusing a delegation outright (RFC 8881 Section 18.16.3).
+//
+// Only two of the want values are answers in themselves. WANT_NO_DELEG says
+// the client does not want one, which is WND4_NOT_WANTED. WANT_CANCEL
+// withdraws a standing want, and since this server keeps no want queue there
+// is nothing left outstanding to satisfy, which is WND4_CANCELLED. Every other
+// value -- no preference, or a preference for a particular type -- leaves the
+// decision to the normal grant policy, so this reports false for them and the
+// caller goes on to ShouldGrantDelegation.
+func DelegationWantReason(shareAccess uint32) (uint32, bool) {
+	switch shareAccess & types.OPEN4_SHARE_ACCESS_WANT_DELEG_MASK {
+	case types.OPEN4_SHARE_ACCESS_WANT_NO_DELEG:
+		return types.WND4_NOT_WANTED, true
+	case types.OPEN4_SHARE_ACCESS_WANT_CANCEL:
+		return types.WND4_CANCELLED, true
+	default:
+		return 0, false
+	}
+}
+
+// EncodeNoDelegationExt encodes the OPEN_DELEGATE_NONE_EXT arm of
+// open_delegation4, which tells a v4.1 client why it is getting no delegation
+// (RFC 8881 Section 18.16.3):
+//
+//	OPEN_DELEGATE_NONE_EXT: why_no_delegation4 + arm
+//	  WND4_CONTENTION: bool ond_server_will_push_deleg
+//	  WND4_RESOURCE:   bool ond_server_will_signal_avail
+//	  default:         void
+//
+// The two reasons carrying a bool promise a later callback when the obstacle
+// clears. This server makes no such promise, so it encodes false for them
+// rather than leaving the arm off and truncating the reply.
+//
+// Never encode this for a v4.0 client: the arm did not exist in RFC 7530 and a
+// v4.0 client cannot decode past the discriminant.
+func EncodeNoDelegationExt(buf *bytes.Buffer, why uint32) {
+	_ = xdr.WriteUint32(buf, types.OPEN_DELEGATE_NONE_EXT)
+	_ = xdr.WriteUint32(buf, why)
+
+	switch why {
+	case types.WND4_CONTENTION, types.WND4_RESOURCE:
+		_ = xdr.WriteBool(buf, false)
+	}
+}
+
 // EncodeDelegation encodes an open_delegation4 into the given buffer.
 //
 // If deleg is nil, writes OPEN_DELEGATE_NONE (uint32 = 0).
