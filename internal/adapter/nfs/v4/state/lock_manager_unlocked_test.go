@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,24 +29,30 @@ type hookedLockManager struct {
 	onAddLock    func()
 	onRemoveLock func()
 	onGrantDeleg func()
-	fired        bool
+
+	mu    sync.Mutex
+	fired bool
 }
 
 // fire runs a hook at most once. The state-freeing paths these hooks trigger
-// call the lock manager themselves, so an unguarded hook would re-enter.
+// call the lock manager themselves, so the hook re-enters this method from the
+// goroutine it spawned, and the latch has to let that re-entrant call fall
+// straight through rather than wait for the first to finish.
 //
-// The latch has to let a re-entrant call fall straight through, which is why it
-// is a plain flag and not a sync.Once: Once.Do blocks every later caller until
-// the first returns, and the first is waiting on the goroutine whose lock
-// manager call re-enters here. The flag is written before the hook body starts
-// the goroutine that reads it, and read again only after that goroutine has
-// been joined, so the accesses are ordered.
+// That rules out sync.Once, whose Do blocks every later caller until the first
+// returns — and the first is blocked waiting on the very goroutine that
+// re-enters here. Only the claim is serialized; the hook itself runs unlocked.
 func (h *hookedLockManager) fire(hook func()) {
-	if hook == nil || h.fired {
+	if hook == nil {
 		return
 	}
+	h.mu.Lock()
+	first := !h.fired
 	h.fired = true
-	hook()
+	h.mu.Unlock()
+	if first {
+		hook()
+	}
 }
 
 func (h *hookedLockManager) AddUnifiedLock(handleKey string, l *lock.UnifiedLock) error {
