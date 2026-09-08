@@ -103,6 +103,45 @@ Integrated verify on merged develop: 65 packages pass, 0 fail.
 - **#2434's collision debt stays as a `ponytail:` marker**, not a retry loop. ~1 in 40M at 1M live
   stateids, math independently re-derived.
 
+### Wave 1 soundness audit — 2026-09-08, post-landing
+
+Each guard was neutralized through `go test -overlay=` (compile-time file substitution, repo
+untouched) and the named test observed to **fail**. Verified, not read.
+
+| Fix | Verdict | Guard | Test proven to fail without it |
+| --- | --- | --- | --- |
+| #2413 / #2424 | SOUND | `smb/response.go:534-539`, `prepareDispatch` is the only gate (2 call sites = whole dispatch surface) | `smb/prepare_dispatch_test.go:136` |
+| #2414 / #2426 | SOUND | `pending_registry.go:165-172` `unregisterByAsyncIDOn`, all 3 generic registries; `change_notify.go:1006` for Notify | `smb/handlers/cancel_asyncid_scope_test.go`, 5 funcs |
+| #2394 / #2427 | SOUND | one helper `helpers.go:258`, 3 call sites (`read.go:111`, `read_plus.go:101`, `seek.go:91`) | `v4/handlers/io_test.go:1765` |
+| #2395 / #2448 | SOUND | `ValidateStateid` a real choke point — **all 9** non-test callers pass `ctx.SessionClientID`; `checkStateidOwner` in all 3 stateid families | `state/stateid_authz_test.go`, `handlers/stateid_client_binding_test.go:22` |
+| #2396 / #2448 | **PARTIAL** | live at `delegation.go:331,344` and its test does fail without it — but see below | `handlers/delegreturn_test.go:180` |
+
+**#2396 is a no-op for every file delegation the server can actually grant.** File delegations need
+`client.CBPathUp` (`delegation.go:477`), set only in `ConfirmClientID` (`manager.go:655,779`) — the
+v4.0 SETCLIENTID_CONFIRM path — and `ShouldGrantDelegation` reads only `clientsByID`, never
+`v41ClientsByID`. So they are v4.0-only, where `SessionClientID == 0` and `checkStateidOwner` skips
+by design (#2437). The commit's own table encodes it: `{"no client identity to check", 0, NFS4_OK}`.
+The guard bites only on **directory** delegations (`v41/handlers/get_dir_delegation.go:79`), which
+are v4.1-only and need no `CBPathUp`. Recorded on **#2436**, whose fix converts #2396 from
+directory-only to real coverage. Not a reason to reopen #2396.
+
+- [x] Residual gap filed → **#2451**: CLOSE, LOCK, LOCKU, OPEN_DOWNGRADE, OPEN_CONFIRM and
+      TEST_STATEID resolve a client-supplied stateid by `Other` alone with no owner compare and no
+      `ValidateStateid` upstream. Sharpest is `LockNew` (`manager.go:2419`) — never compares
+      `openState.Owner.ClientID` against the `lockOwnerClientID` handed in, so on v4.1 a client can
+      lock through another client's open. Bounded, not enumerable: after #2448 a stateid `other`
+      carries 64 `crypto/rand` bits. **Assigned to the #2398 agent**, stacked on top of the hoist —
+      three of the sites are the functions #2398 restructures, and the CAS re-validation it adds is
+      where the owner compare belongs.
+- [x] Doc PR unblocked by dispatching **#2449** (one guard in `primeAuthContextFromOpenFile`, which
+      also retires the 3 hand-rolled copies). Write the rule as fact once it lands, not with an
+      exception list. Two corrections to #2449's own text: there is a **third** hand-rolled compare
+      (`stub_handlers.go:510`, ChangeNotify), and `ioctl_copychunk.go:203` compares the two handles
+      to *each other* rather than to `ctx`, so two foreign FileIds from one other session pass it.
+- Not gaps, checked: `ValidateDelegationStateid` (`delegation.go:739`) is existence-only but its only
+  caller re-compares at `open.go:894`; `freeLockStateidLocked` (`stateid.go:513`) compares inline and
+  rejects even for clientID 0; the 14 per-handler `GetTree` sites stay existence-only by design.
+
 ## Wave 2 — `sm.mu`, then the pynfs conformance wave (goal 1)
 
 - [ ] **#2398 decided first** — #2341/#2340 add *write-side* work under the contended lock.
@@ -110,8 +149,16 @@ Integrated verify on merged develop: 65 packages pass, 0 fail.
       post-gap write is **idempotent, keyed by something stable, and records a fact the gap cannot
       falsify**. `ReclaimComplete` meets all three; a stateid/seqid commit meets **none** and owes a CAS
 - [ ] #2341 (14 v4.0 rows) · #2340 (**32** v4.1) · #2329 (10 v4.1)
-- [ ] Singles: #2371, #2382, #2389, #2399, #2359, #2362, #2369 (#2399 is now a plain consumer of
-      `types/current_stateid.go`)
+- [~] Singles **in flight 2026-09-08**, one agent each, disjoint files: #2362 (`attrs/encode.go`) ·
+      #2369 (`handlers/secinfo.go` + `helpers.go`) · #2399 (`handlers/open.go`) · #2382
+      (`pending_writes.go`). Decisions taken by the user before fan-out, settled in each prompt:
+      **#2382** document the change-attr freeze as intended (ponytail marker + faq.md + reclassify
+      WRT18; #2342 stays open), do *not* build the per-client freeze · **#2369** reject
+      `RequireKerberos` with no Kerberos configured at share add, so SECINFO can never return an
+      empty flavor list; a junction reports the target share's policy · **#2399** ship now with a
+      decode-level test rather than folding into #2329 · **#2398** hoist all four LockManager sites,
+      not just the two blocking LOCK paths
+- [ ] Blocked behind #2398 (all touch `state/manager.go`): #2371, #2359, #2389, #2329, #2340, #2341
 - [ ] Run against **memory AND postgres-s3** — memory-passes/SQL-fails is a persistence diagnosis,
       not a protocol one
 - [ ] Read verdicts from the **CI artifact**; the local pynfs harness reports ~2× CI's failures on the same SHA
