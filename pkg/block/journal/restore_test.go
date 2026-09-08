@@ -414,3 +414,67 @@ func TestRestoreToVersion_RefusesAShardWhoseFsyncHasPermanentlyFailed(t *testing
 		t.Fatal("RestoreToVersion reported success for a shard whose fsync has permanently failed")
 	}
 }
+
+// TestRestoreToVersion_RefusesSeededRangeOverwrittenOnRemote pins the one case a
+// manifest-seeded cold entry cannot answer for.
+//
+// The entry's version dates the scan that found the range remote-durable, not
+// the bytes, and what a cold read returns is whatever the remote holds now. A
+// post-V write that reached the remote replaced that copy, so serving the entry
+// would hand back content from after the requested version while reporting
+// success. Neither of the two silent choices is acceptable, so the restore
+// refuses.
+//
+// Hydrate is what makes the post-V write reach the remote: it records the range
+// already synced, where WriteAt leaves it local-only. The sibling cases above
+// use WriteAt and must keep restoring, which is the whole point of testing on
+// the synced flag rather than on the overlap alone.
+func TestRestoreToVersion_RefusesSeededRangeOverwrittenOnRemote(t *testing.T) {
+	f := newRestoreFixture(t, 1)
+	ctx := context.Background()
+
+	const span = 1024
+	id := FileID("seeded-then-remote-overwritten")
+
+	if err := f.SeedCold(ctx, id, [][2]int64{{0, span}}); err != nil {
+		t.Fatalf("SeedCold: %v", err)
+	}
+	target := f.commitAll()
+
+	if err := f.Hydrate(ctx, id, 0, bytes.Repeat([]byte("post"), span/4), 0); err != nil {
+		t.Fatalf("Hydrate post-V: %v", err)
+	}
+	f.commitAll()
+
+	err := f.RestoreToVersion(ctx, target)
+	if !errors.Is(err, ErrColdProvenanceAmbiguous) {
+		t.Fatalf("RestoreToVersion: want ErrColdProvenanceAmbiguous, got %v", err)
+	}
+}
+
+// TestRestoreToVersion_KeepsSeededRangeOverwrittenLocally is the negative half of
+// the case above: the same shape with a post-V write that never left the local
+// tier. The remote still holds what the seed described, the restore is about to
+// drop the local bytes anyway, so the entry is still good and the restore must
+// proceed rather than refuse.
+func TestRestoreToVersion_KeepsSeededRangeOverwrittenLocally(t *testing.T) {
+	f := newRestoreFixture(t, 1)
+	ctx := context.Background()
+
+	const span = 1024
+	id := FileID("seeded-then-locally-overwritten")
+
+	if err := f.SeedCold(ctx, id, [][2]int64{{0, span}}); err != nil {
+		t.Fatalf("SeedCold: %v", err)
+	}
+	target := f.commitAll()
+
+	f.write(id, 0, bytes.Repeat([]byte("post"), span/4))
+	f.commitAll()
+
+	if err := f.RestoreToVersion(ctx, target); err != nil {
+		t.Fatalf("RestoreToVersion: %v", err)
+	}
+	assertColdAt(t, f.Store, id, 0, span, "pre-crash")
+	assertColdAt(t, f.crashReopen(), id, 0, span, "post-crash")
+}
