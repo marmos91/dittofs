@@ -40,14 +40,7 @@ func (sm *StateManager) admitDirDelegationLocked(clientID uint64, fhKey string) 
 		return fmt.Errorf("delegations disabled")
 	}
 
-	// Check client has valid, non-expired lease (v4.0 or v4.1)
-	var leaseValid bool
-	if v40, ok := sm.clientsByID[clientID]; ok {
-		leaseValid = v40.Lease != nil && !v40.Lease.IsExpired()
-	} else if v41, ok := sm.v41ClientsByID[clientID]; ok {
-		leaseValid = v41.Lease != nil && !v41.Lease.IsExpired()
-	}
-	if !leaseValid {
+	if !sm.clientLeaseLiveLocked(clientID) {
 		return &NFS4StateError{
 			Status:  types.NFS4ERR_EXPIRED,
 			Message: fmt.Sprintf("client %d not found or lease expired", clientID),
@@ -132,7 +125,7 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 		// been taken by concurrent grants, or the client could have been given a
 		// directory delegation on this same handle.
 		if err := sm.admitDirDelegationLocked(clientID, fhKey); err != nil {
-			sm.revokeInLockManagerUnlocked(lm, fhKey, lockDeleg.DelegationID)
+			sm.revokeInLockManagerLocked(lm, fhKey, lockDeleg.DelegationID)
 			return nil, err
 		}
 

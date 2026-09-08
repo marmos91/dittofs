@@ -182,7 +182,22 @@ func (sm *StateManager) delegationBudgetAvailableLocked() bool {
 	return sm.maxDelegations <= 0 || sm.countActiveDelegations() < sm.maxDelegations
 }
 
-// revokeInLockManagerUnlocked hands a delegation back to the cross-protocol
+// clientLeaseLiveLocked reports whether clientID names a client record, v4.0 or
+// v4.1, whose lease has not lapsed. A delegation is lease-backed state, so a
+// client without a live lease cannot hold one.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) clientLeaseLiveLocked(clientID uint64) bool {
+	if v40, ok := sm.clientsByID[clientID]; ok {
+		return v40.Lease != nil && !v40.Lease.IsExpired()
+	}
+	if v41, ok := sm.v41ClientsByID[clientID]; ok {
+		return v41.Lease != nil && !v41.Lease.IsExpired()
+	}
+	return false
+}
+
+// revokeInLockManagerLocked hands a delegation back to the cross-protocol
 // lock manager, for a grant that succeeded there but can no longer be
 // published. Without it the manager keeps a delegation no NFSv4 state
 // references, and it blocks every later conflicting lease and byte-range lock
@@ -190,7 +205,7 @@ func (sm *StateManager) delegationBudgetAvailableLocked() bool {
 //
 // Caller must hold sm.mu; the mutex is released for the call and held again on
 // return, as everywhere else the lock manager is called from this package.
-func (sm *StateManager) revokeInLockManagerUnlocked(lm lock.LockManager, fhKey, delegID string) {
+func (sm *StateManager) revokeInLockManagerLocked(lm lock.LockManager, fhKey, delegID string) {
 	sm.mu.Unlock()
 	_ = lm.RevokeDelegation(fhKey, delegID)
 	sm.mu.Lock()
@@ -269,6 +284,10 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 		return nil
 	}
 
+	// Sampled for the recommit check below, not as an admission rule: this path
+	// has never required a live lease to grant.
+	clientWasLive := sm.clientLeaseLiveLocked(clientID)
+
 	other := sm.generateStateidOther(StateTypeDeleg)
 	stateid := types.Stateid4{
 		Seqid: 1,
@@ -322,12 +341,17 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 			return nil
 		}
 
-		// Nothing published references this delegation yet, so the only fact the
-		// released mutex can falsify is the admission decision made above:
-		// concurrent grants may have taken the last of the budget. Hand the
-		// grant back rather than publish past the cap.
-		if !sm.delegationBudgetAvailableLocked() {
-			sm.revokeInLockManagerUnlocked(lm, fhKey, lockDeleg.DelegationID)
+		// Nothing published references this delegation yet, so what the released
+		// mutex can falsify is the inputs to the decision made above: concurrent
+		// grants may have taken the last of the budget, and a client that had a
+		// live lease going in may have been torn down. The teardown matters
+		// because the sweeper frees a client's delegations in one critical
+		// section and never revisits it, so a grant published after that sweep
+		// is unreachable from cleanup and blocks every later conflicting lease
+		// and byte-range lock on the file. Hand the grant back instead.
+		if !sm.delegationBudgetAvailableLocked() ||
+			(clientWasLive && !sm.clientLeaseLiveLocked(clientID)) {
+			sm.revokeInLockManagerLocked(lm, fhKey, lockDeleg.DelegationID)
 			return nil
 		}
 

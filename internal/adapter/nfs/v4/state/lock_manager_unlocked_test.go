@@ -166,6 +166,33 @@ func TestGrantDelegation_LockManagerCalledWithoutStateMutex(t *testing.T) {
 	}
 }
 
+// TestGrantDelegation_ClientTornDownDuringLockManagerCall covers the other half
+// of the same recommit check: a client whose lease is swept while the manager
+// call is in flight. The sweeper frees that client's delegations once and never
+// revisits it, so a grant published afterwards would be unreachable from
+// cleanup.
+func TestGrantDelegation_ClientTornDownDuringLockManagerCall(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	realLM := lock.NewManager()
+
+	fileHandle := []byte("/export:deleg-file")
+	var clientID uint64
+	lm := &hookedLockManager{LockManager: realLM}
+	lm.onGrantDeleg = func() {
+		mutateUnderStateMutex(t, "the lease sweeper", func() { sm.onLeaseExpired(clientID) })
+	}
+	sm.SetLockManagerResolver(func(_ []byte) lock.LockManager { return lm })
+
+	clientID, _, _, _ = setupClientAndOpenState(t, sm)
+
+	if deleg := sm.GrantDelegation(clientID, fileHandle, types.OPEN_DELEGATE_READ); deleg != nil {
+		t.Fatal("delegation published for a client swept while the lock manager was called")
+	}
+	if delegs := realLM.ListDelegations(string(fileHandle)); len(delegs) != 0 {
+		t.Fatalf("refused delegation stranded %d delegation(s) in the lock manager", len(delegs))
+	}
+}
+
 // TestGrantDirDelegation_LockManagerCalledWithoutStateMutex is the directory
 // delegation counterpart. Its recommit check re-runs the whole admission
 // decision, so the window is closed here by expiring the client's lease.

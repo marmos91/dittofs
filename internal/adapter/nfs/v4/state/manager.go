@@ -2822,7 +2822,7 @@ func acquireUnifiedLock(
 
 	// Drain the in-flight lease break before inserting the lock: the break is
 	// fire-and-forget, so a still-present (Breaking, not-yet-ACKed) write lease is
-	// otherwise observed as a spurious DENIED → client EIO (#1501). See
+	// otherwise observed as a spurious DENIED → client EIO. See
 	// lock.WaitForByteRangeLockBreak for the deadlock-safety and timeout reasoning.
 	// A non-nil error means the originating request was cancelled, so don't insert
 	// a lock nobody is waiting for.
