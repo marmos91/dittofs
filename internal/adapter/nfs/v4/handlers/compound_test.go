@@ -2597,17 +2597,17 @@ func encodeReleaseLockOwnerArgsForTest() []byte {
 	return buf.Bytes()
 }
 
-// TestCompound_V41ExemptOps_CancelledContext_EncodesPartialReply verifies that
-// when a v4.1 exempt-op COMPOUND (dispatched via dispatchV41Ops with no session
-// context) is cancelled between operations, the handler encodes a well-formed
-// partial reply with NFS4ERR_DELAY instead of returning a bare error that would
-// make the RPC layer drop the reply and reset the connection. This mirrors the
-// SEQUENCE-bearing path (dispatchV41), so both behave identically on cancel.
-func TestCompound_V41ExemptOps_CancelledContext_EncodesPartialReply(t *testing.T) {
-	h := newTestHandler()
+// TestCompound_V41_CancelledContext_EncodesPartialReply verifies that when a
+// v4.1 COMPOUND is cancelled between operations, the handler encodes a
+// well-formed partial reply with NFS4ERR_DELAY instead of returning a bare
+// error that would make the RPC layer drop the reply and reset the connection.
+// A cancel can only be observed at an op boundary, and a v4.1 COMPOUND has more
+// than one operation only when it starts with SEQUENCE.
+func TestCompound_V41_CancelledContext_EncodesPartialReply(t *testing.T) {
+	h, sessionID := createTestSession(t)
 
-	// Cancel the context before dispatch. EXCHANGE_ID (op0) is session-exempt
-	// and executes first; the cancellation is observed at the next op boundary.
+	// Cancel the context before dispatch. SEQUENCE (op0) runs first; the
+	// cancellation is observed at the next op boundary.
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 	ctx := &types.CompoundContext{
@@ -2615,15 +2615,8 @@ func TestCompound_V41ExemptOps_CancelledContext_EncodesPartialReply(t *testing.T
 		ClientAddr: "127.0.0.1:12345",
 	}
 
-	ownerID := []byte("cancel-test-client")
-	var verifier [8]byte
-	copy(verifier[:], "cancelvf")
-	eidArgs := encodeExchangeIdArgs(ownerID, verifier, 0, types.SP4_NONE, nil)
-
-	// Two ops: EXCHANGE_ID (exempt, op0) then GETATTR. The cancel check fires at
-	// op index 1, before GETATTR is dispatched.
 	ops := []compoundOp{
-		{opCode: types.OP_EXCHANGE_ID, data: eidArgs},
+		{opCode: types.OP_SEQUENCE, data: encodeSequenceArgs(sessionID, 0, 1, 0, true)},
 		{opCode: types.OP_GETATTR, data: encodeGetAttrArgsForCancel()},
 	}
 	data := buildCompoundArgsWithOps([]byte("cxl"), 1, ops)
@@ -2636,27 +2629,22 @@ func TestCompound_V41ExemptOps_CancelledContext_EncodesPartialReply(t *testing.T
 		t.Fatal("ProcessCompound returned empty reply on cancel; expected encoded partial response")
 	}
 
-	decoded, err := decodeCompoundResponse(resp)
-	if err != nil {
-		t.Fatalf("decode response error: %v", err)
+	reader := bytes.NewReader(resp)
+	status, _ := xdr.DecodeUint32(reader)
+	if status != types.NFS4ERR_DELAY {
+		t.Errorf("overall status = %d, want NFS4ERR_DELAY (%d)", status, types.NFS4ERR_DELAY)
 	}
-
-	// Overall status must be DELAY so the client retries.
-	if decoded.Status != types.NFS4ERR_DELAY {
-		t.Errorf("overall status = %d, want NFS4ERR_DELAY (%d)", decoded.Status, types.NFS4ERR_DELAY)
+	tag, _ := xdr.DecodeOpaque(reader)
+	if string(tag) != "cxl" {
+		t.Errorf("tag = %q, want %q (tag must be echoed in partial reply)", string(tag), "cxl")
 	}
-	// The partial reply must include the op0 (EXCHANGE_ID) result, which
-	// dispatched before the cancellation was observed; op1 (GETATTR) was skipped
-	// at the next op boundary.
-	if decoded.NumResults != 1 {
-		t.Errorf("numResults = %d, want 1 (EXCHANGE_ID completed, GETATTR cancelled)", decoded.NumResults)
+	numResults, _ := xdr.DecodeUint32(reader)
+	if numResults != 1 {
+		t.Fatalf("numResults = %d, want 1 (SEQUENCE completed, GETATTR cancelled)", numResults)
 	}
-	if decoded.NumResults >= 1 && decoded.Results[0].OpCode != types.OP_EXCHANGE_ID {
-		t.Errorf("first result opcode = %d, want OP_EXCHANGE_ID (%d)",
-			decoded.Results[0].OpCode, types.OP_EXCHANGE_ID)
-	}
-	if string(decoded.Tag) != "cxl" {
-		t.Errorf("tag = %q, want %q (tag must be echoed in partial reply)", string(decoded.Tag), "cxl")
+	opCode, _ := xdr.DecodeUint32(reader)
+	if opCode != types.OP_SEQUENCE {
+		t.Errorf("first result opcode = %d, want OP_SEQUENCE (%d)", opCode, types.OP_SEQUENCE)
 	}
 }
 

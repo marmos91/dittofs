@@ -277,16 +277,22 @@ func TestHandleCreateSession_UnknownClient(t *testing.T) {
 }
 
 func TestHandleCreateSession_FollowedByPutRootFH(t *testing.T) {
-	// Verify CREATE_SESSION properly consumes its args without desyncing
-	// the XDR reader -- PUTROOTFH after CREATE_SESSION should succeed.
+	// Verify CREATE_SESSION properly consumes its args without desyncing the
+	// XDR reader -- PUTROOTFH after CREATE_SESSION should succeed. CREATE_SESSION
+	// may share a COMPOUND only when that COMPOUND starts with SEQUENCE
+	// (RFC 8881 Section 18.36.3), so the reader is exercised there; the session
+	// SEQUENCE runs on is unrelated to the one CREATE_SESSION makes.
 	h := newTestHandler()
 	clientID, seqID := registerExchangeID(t, h, "cs-desync-client")
 
-	ctx := newTestCompoundContext()
 	secParms := []types.CallbackSecParms4{{CbSecFlavor: 0}}
-	csArgs := encodeCreateSessionArgsWithSec(clientID, seqID, 0, secParms)
+	sessionID := runCreateSession(t, h, encodeCreateSessionArgsWithSec(clientID, seqID, 0, secParms)).SessionID
+
+	ctx := newTestCompoundContext()
+	csArgs := encodeCreateSessionArgsWithSec(clientID, seqID+1, 0, secParms)
 
 	ops := []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: encodeSequenceArgs(sessionID, 0, 1, 0, true)},
 		{opCode: types.OP_CREATE_SESSION, data: csArgs},
 		{opCode: types.OP_PUTROOTFH},
 	}
@@ -305,14 +311,24 @@ func TestHandleCreateSession_FollowedByPutRootFH(t *testing.T) {
 
 	_, _ = xdr.DecodeOpaque(reader) // tag
 	numResults, _ := xdr.DecodeUint32(reader)
-	if numResults != 2 {
-		t.Fatalf("numResults = %d, want 2", numResults)
+	if numResults != 3 {
+		t.Fatalf("numResults = %d, want 3", numResults)
 	}
 
-	// First op: CREATE_SESSION
+	// First op: SEQUENCE
+	seqOpCode, _ := xdr.DecodeUint32(reader)
+	if seqOpCode != types.OP_SEQUENCE {
+		t.Fatalf("result[0] opcode = %d, want OP_SEQUENCE", seqOpCode)
+	}
+	var seqRes types.SequenceRes
+	if err := seqRes.Decode(reader); err != nil {
+		t.Fatalf("decode SEQUENCE result: %v", err)
+	}
+
+	// Second op: CREATE_SESSION
 	op1Code, _ := xdr.DecodeUint32(reader)
 	if op1Code != types.OP_CREATE_SESSION {
-		t.Errorf("result[0] opcode = %d, want OP_CREATE_SESSION", op1Code)
+		t.Errorf("result[1] opcode = %d, want OP_CREATE_SESSION", op1Code)
 	}
 	var csRes types.CreateSessionRes
 	_ = csRes.Decode(reader)
@@ -320,10 +336,10 @@ func TestHandleCreateSession_FollowedByPutRootFH(t *testing.T) {
 		t.Errorf("CREATE_SESSION status = %d, want NFS4_OK", csRes.Status)
 	}
 
-	// Second op: PUTROOTFH
+	// Third op: PUTROOTFH (only reached if the reader was not desynced)
 	op2Code, _ := xdr.DecodeUint32(reader)
 	if op2Code != types.OP_PUTROOTFH {
-		t.Errorf("result[1] opcode = %d, want OP_PUTROOTFH", op2Code)
+		t.Errorf("result[2] opcode = %d, want OP_PUTROOTFH", op2Code)
 	}
 	op2Status, _ := xdr.DecodeUint32(reader)
 	if op2Status != types.NFS4_OK {

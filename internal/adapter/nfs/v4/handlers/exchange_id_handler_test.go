@@ -257,8 +257,10 @@ func TestHandleExchangeID_WithImplId(t *testing.T) {
 
 func TestHandleExchangeID_FollowedByPutRootFH(t *testing.T) {
 	// Verify EXCHANGE_ID properly consumes its args without desyncing the
-	// XDR reader -- PUTROOTFH after EXCHANGE_ID should succeed.
-	h := newTestHandler()
+	// XDR reader -- PUTROOTFH after EXCHANGE_ID should succeed. EXCHANGE_ID may
+	// share a COMPOUND only when that COMPOUND starts with SEQUENCE
+	// (RFC 8881 Section 18.35.3), so the reader is exercised there.
+	h, sessionID := createTestSession(t)
 	ctx := newTestCompoundContext()
 
 	ownerID := []byte("desync-test")
@@ -266,6 +268,7 @@ func TestHandleExchangeID_FollowedByPutRootFH(t *testing.T) {
 	args := encodeExchangeIdArgs(ownerID, verifier, 0, types.SP4_NONE, nil)
 
 	ops := []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: encodeSequenceArgs(sessionID, 0, 1, 0, true)},
 		{opCode: types.OP_EXCHANGE_ID, data: args},
 		{opCode: types.OP_PUTROOTFH},
 	}
@@ -284,14 +287,24 @@ func TestHandleExchangeID_FollowedByPutRootFH(t *testing.T) {
 
 	_, _ = xdr.DecodeOpaque(reader) // tag
 	numResults, _ := xdr.DecodeUint32(reader)
-	if numResults != 2 {
-		t.Fatalf("numResults = %d, want 2", numResults)
+	if numResults != 3 {
+		t.Fatalf("numResults = %d, want 3", numResults)
 	}
 
-	// First op: EXCHANGE_ID
+	// First op: SEQUENCE
+	seqOpCode, _ := xdr.DecodeUint32(reader)
+	if seqOpCode != types.OP_SEQUENCE {
+		t.Fatalf("result[0] opcode = %d, want OP_SEQUENCE", seqOpCode)
+	}
+	var seqRes types.SequenceRes
+	if err := seqRes.Decode(reader); err != nil {
+		t.Fatalf("decode SEQUENCE result: %v", err)
+	}
+
+	// Second op: EXCHANGE_ID
 	op1Code, _ := xdr.DecodeUint32(reader)
 	if op1Code != types.OP_EXCHANGE_ID {
-		t.Errorf("result[0] opcode = %d, want OP_EXCHANGE_ID", op1Code)
+		t.Errorf("result[1] opcode = %d, want OP_EXCHANGE_ID", op1Code)
 	}
 	var res types.ExchangeIdRes
 	_ = res.Decode(reader)
@@ -299,10 +312,10 @@ func TestHandleExchangeID_FollowedByPutRootFH(t *testing.T) {
 		t.Errorf("EXCHANGE_ID status = %d, want NFS4_OK", res.Status)
 	}
 
-	// Second op: PUTROOTFH
+	// Third op: PUTROOTFH (only reached if the reader was not desynced)
 	op2Code, _ := xdr.DecodeUint32(reader)
 	if op2Code != types.OP_PUTROOTFH {
-		t.Errorf("result[1] opcode = %d, want OP_PUTROOTFH", op2Code)
+		t.Errorf("result[2] opcode = %d, want OP_PUTROOTFH", op2Code)
 	}
 	op2Status, _ := xdr.DecodeUint32(reader)
 	if op2Status != types.NFS4_OK {
