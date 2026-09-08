@@ -517,10 +517,13 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 		// exist somewhere on the server. Tree connections are held in one
 		// process-wide table keyed by a small sequential TreeID, so an
 		// existence-only lookup lets any authenticated session name another
-		// session's tree — TREE_DISCONNECT would then close that session's
-		// opens, drop its byte-range locks and delete the tree out from under
-		// it. Gating here covers every NeedsTree command at once, so the
-		// per-handler lookups downstream (TREE_DISCONNECT, CREATE) can stay
+		// session's tree. TREE_DISCONNECT is the sharpest edge: it deletes the
+		// tree and cancels every blocking LOCK parked on it (that registry is
+		// keyed by TreeID alone), while the file-close pass filters on both
+		// TreeID and SessionID and so spares the owner's opens — leaving those
+		// handles orphaned behind a tree that no longer exists, with no way to
+		// close them. Gating here covers every NeedsTree command at once, so
+		// the per-handler lookups downstream (TREE_DISCONNECT, CREATE) can stay
 		// existence-only.
 		tree, ok := connInfo.Handler.GetTree(reqHeader.TreeID)
 		if !ok || tree.SessionID != reqHeader.SessionID {

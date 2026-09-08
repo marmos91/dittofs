@@ -135,9 +135,9 @@ func TestPrepareDispatch_DoesNotGateSMB2x(t *testing.T) {
 // rejected with STATUS_NETWORK_NAME_DELETED. Tree connections live in a
 // process-wide table keyed by a small sequential TreeID, so without this gate
 // any authenticated client can name another session's tree and act on it —
-// TREE_DISCONNECT on a stranger's tree would close its opens and drop its
-// locks. MS-SMB2 §3.3.5.2.11 requires the lookup to be scoped to
-// Session.TreeConnectTable.
+// TREE_DISCONNECT on a stranger's tree deletes it and cancels the blocking
+// LOCKs parked on it, orphaning the owner's still-open handles. MS-SMB2
+// §3.3.5.2.11 requires the lookup to be scoped to Session.TreeConnectTable.
 func TestPrepareDispatch_RejectsTreeFromAnotherSession(t *testing.T) {
 	victim := newConnInfoForDispatch(t, 1, types.Dialect0311)
 
