@@ -736,8 +736,12 @@ common case is one writer per file — and it is why the pynfs `WRT18` case is
 listed as a documented divergence rather than a bug. Applications that need two
 clients to observe each other's writes to the *same* file should coordinate
 through locking (NFSv4 in-protocol locks, or NLM over NFSv3) rather than by
-polling attributes. Once the writer stops and its pending metadata is committed,
-timestamps and `change` advance normally and all clients converge.
+polling attributes.
+
+The window is exactly the open write session. Ending it commits the frozen
+timestamp rather than a fresh one, so `change` does not jump at commit time
+either — it advances again on the first write of the *next* session, which
+carries a current timestamp.
 
 ### SMB Client Limitations
 
