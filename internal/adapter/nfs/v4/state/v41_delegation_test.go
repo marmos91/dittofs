@@ -69,6 +69,11 @@ func bindBackchannel(t *testing.T, sm *StateManager, sessionID types.SessionId4,
 // TestProbeCallbackPath_AnsweredCBNullEnablesDelegation is the positive half of
 // the guard: a client that answers CB_NULL over its back channel gets
 // CBPathUp, and an OPEN on an uncontended file is then offered a delegation.
+//
+// It drives probeV41CallbackPath, the function production calls, rather than
+// the probe underneath it plus a hand-set flag. Setting the flag by hand would
+// leave the recording step unpinned: a probe that succeeded but stopped writing
+// its verdict down would still pass, which is the whole behaviour under test.
 func TestProbeCallbackPath_AnsweredCBNullEnablesDelegation(t *testing.T) {
 	sender, sm, sessionID := createTestBackchannelSender(t)
 	defer sm.Shutdown()
@@ -86,15 +91,11 @@ func TestProbeCallbackPath_AnsweredCBNullEnablesDelegation(t *testing.T) {
 		pending.Deliver(xid, buildMockCBNullReplyBody(xid))
 	}()
 
-	if err := sender.probeCallbackPath(context.Background()); err != nil {
-		t.Fatalf("probeCallbackPath on a live back channel: %v", err)
-	}
+	sm.probeV41CallbackPath(context.Background(), sender)
 
 	if proc := <-gotProc; proc != types.CB_PROC_NULL {
 		t.Errorf("probe sent callback procedure %d, want CB_PROC_NULL (%d)", proc, types.CB_PROC_NULL)
 	}
-
-	sm.setCBPathUp(sender.clientID, true)
 
 	sm.mu.RLock()
 	record := sm.clientRecordLocked(sender.clientID)
