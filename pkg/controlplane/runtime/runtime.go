@@ -220,6 +220,12 @@ type Runtime struct {
 	// registers an LDAP provider in the identity resolution chain. Guarded by mu.
 	ldapConfig *ldap.Config
 
+	// kerberosEnabled records whether the server has Kerberos (RPCSEC_GSS)
+	// configured. Set at startup from the effective Kerberos config, so the
+	// share-config API can refuse a per-share policy only Kerberos could
+	// satisfy. Guarded by mu.
+	kerberosEnabled bool
+
 	// netlogonCredential is the optional NETLOGON machine credential / DC binding
 	// used for SMB NTLM pass-through. Set at startup from the Kerberos
 	// machine-account config and updated by the identity-provider API; nil when
@@ -1180,6 +1186,26 @@ func (r *Runtime) LDAPConfig() *ldap.Config {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.ldapConfig
+}
+
+// SetKerberosEnabled records whether the server has Kerberos configured,
+// sourced from the same effective Kerberos config the adapter factory is built
+// with at startup. A Kerberos config change applies on the next restart -- the
+// NFS and SMB adapters read it at startup -- so a value fixed at startup here
+// matches what the adapters actually run with.
+func (r *Runtime) SetKerberosEnabled(enabled bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.kerberosEnabled = enabled
+}
+
+// KerberosEnabled reports whether RPCSEC_GSS is available on this server. It
+// gates share policies that only Kerberos can satisfy: a share that requires
+// Kerberos on a server without it can be reached by no auth flavor at all.
+func (r *Runtime) KerberosEnabled() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.kerberosEnabled
 }
 
 // ResolveDirectoryPrincipalSID resolves an AD principal NAME (bare
