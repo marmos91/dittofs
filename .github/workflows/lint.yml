@@ -96,6 +96,16 @@ jobs:
         with:
           version: v2.12.2
           args: --timeout=5m
+          # Analyse cold every run. The action's cache key covers go.sum, but
+          # its restore-key fallback does not: when a dependency bump changes
+          # go.sum the run misses its own key, restores the pre-bump analysis
+          # cache, and then saves a fact set built from it under the new key.
+          # Every later run gets an exact hit on that entry, and staticcheck
+          # loses the cross-package fact that t.Fatal never returns — which
+          # turns every `if x == nil { t.Fatal(...) }` guard into a spurious
+          # SA5011 nil-dereference report. Restoring is what breaks it, so the
+          # cache is skipped rather than pinned: costs ~20s (112s -> 134s).
+          skip-cache: true
           # Skip the action's online `config verify` — it fetches the config
           # JSON schema over the network and times out intermittently, failing
           # the job for reasons unrelated to the diff. golangci-lint still
