@@ -81,7 +81,7 @@ type RenameResponse struct {
 // Moves/renames a file or directory between directories, atomically replacing target if it exists.
 // Delegates to MetadataService.Move after cross-share validation; handles .nfs* silly-rename orphaning.
 // Updates source and dest directory entries and timestamps; returns WCC data for both directories.
-// Errors: NFS3ErrNoEnt, NFS3ErrNotDir, NFS3ErrNotEmpty, NFS3ErrAcces, NFS3ErrInval, NFS3ErrIO.
+// Errors: NFS3ErrNoEnt, NFS3ErrNotDir, NFS3ErrNotEmpty, NFS3ErrAcces, NFS3ErrInval, NFS3ErrXDev, NFS3ErrIO.
 func (h *Handler) Rename(
 	ctx *NFSHandlerContext,
 	req *RenameRequest,
@@ -123,7 +123,7 @@ func (h *Handler) Rename(
 
 	if fromShareName != toShareName {
 		logger.WarnCtx(ctx.Context, "RENAME failed: cross-share rename attempted", "from_share", fromShareName, "to_share", toShareName, "client", clientIP)
-		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrInval}}, nil
+		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrXDev}}, nil
 	}
 
 	logger.DebugCtx(ctx.Context, "RENAME", "share", ctx.Share, "from", req.FromName, "to", req.ToName)

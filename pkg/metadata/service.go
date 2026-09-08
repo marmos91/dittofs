@@ -252,6 +252,37 @@ func (s *Service) storeForHandle(handle FileHandle) (Store, error) {
 	return s.GetStoreForShare(shareName)
 }
 
+// requireSameShare reports an error unless both handles name the same share.
+//
+// Only one handle ever selects the store for a two-handle operation, and a
+// store resolves whichever handle it is handed, so an operation that pairs two
+// handles must compare them itself: without this, a second handle from another
+// share resolves against the first share's store and the mutation lands on a
+// foreign file. Both handles are decoded explicitly rather than via
+// shareNameForHandle, which yields "" for an undecodable handle and would let
+// two malformed handles compare equal.
+//
+// what names the operation for the error message; path carries the entry name
+// the caller was acting on.
+func requireSameShare(a, b FileHandle, what, path string) error {
+	shareA, _, err := DecodeFileHandle(a)
+	if err != nil {
+		return err
+	}
+	shareB, _, err := DecodeFileHandle(b)
+	if err != nil {
+		return err
+	}
+	if shareA != shareB {
+		return &StoreError{
+			Code:    ErrInvalidArgument,
+			Message: "cannot " + what + " across shares",
+			Path:    path,
+		}
+	}
+	return nil
+}
+
 // shareNameForHandle extracts the share name from a file handle.
 // Returns empty string if the handle is invalid.
 func shareNameForHandle(handle FileHandle) string {

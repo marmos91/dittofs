@@ -697,6 +697,12 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		return nil, nil, err
 	}
 
+	// A move re-parents one entry, so both directories must live in the same
+	// share.
+	if err := requireSameShare(fromDir, toDir, "move an entry", toName); err != nil {
+		return nil, nil, err
+	}
+
 	// Validate names
 	if err := ValidateName(fromName); err != nil {
 		return nil, nil, err
