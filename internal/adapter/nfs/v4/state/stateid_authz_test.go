@@ -27,7 +27,6 @@ func newLockedFile(t *testing.T, sm *StateManager, clientID uint64, fh []byte) t
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
 	lockResult, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner"), 1, &confirmed.Stateid, 3, fh, types.WRITE_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew: %v", err)
 	}

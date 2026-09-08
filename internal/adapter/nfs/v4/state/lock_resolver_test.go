@@ -76,7 +76,6 @@ func TestLockManagerResolver_DetectsCrossProtocolConflict(t *testing.T) {
 
 	// NFSv4 LOCK for the same overlapping range must also be denied (not granted).
 	res, err := sm.LockNew(context.Background(), clientID, []byte("nfs-owner"), 1, openStateid, openSeqid, fileHandle, types.WRITE_LT, 50, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew returned error: %v", err)
 	}

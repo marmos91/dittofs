@@ -150,7 +150,6 @@ func TestReplay_Lock_ReturnsCachedReply(t *testing.T) {
 
 	// LOCK (new lock-owner) at lock seqid 1.
 	res, err := sm.LockNew(context.Background(), clientID, []byte("lock-replay-owner"), 1, openStateid, openSeqid+1, fh, types.WRITE_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew: %v", err)
 	}
@@ -176,7 +175,6 @@ func TestReplay_LockU_ReturnsCachedReply(t *testing.T) {
 	clientID, fh, openStateid, openSeqid := setupClientAndOpenState(t, sm)
 
 	res, err := sm.LockNew(context.Background(), clientID, []byte("locku-replay-owner"), 1, openStateid, openSeqid+1, fh, types.WRITE_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew: %v", err)
 	}

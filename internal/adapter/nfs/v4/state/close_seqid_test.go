@@ -46,7 +46,6 @@ func TestCloseFile_LocksHeldStillAdvancesSeqid(t *testing.T) {
 	lockSeqid := uint32(1)
 	openSeqid++
 	lockRes, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner"), lockSeqid, openStateid, openSeqid, fileHandle, types.WRITE_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew failed: %v", err)
 	}
@@ -117,7 +116,6 @@ func TestUnlockFile_BadStateidLeavesLockOwnerSeqidUntouched(t *testing.T) {
 
 	lockSeqid := uint32(1)
 	lockRes, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner"), lockSeqid, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew failed: %v", err)
 	}

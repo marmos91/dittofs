@@ -140,7 +140,6 @@ func TestLock_ConflictExpiresLapsedByteRangeLock(t *testing.T) {
 
 	// While the lease is live the lock is enforced.
 	res, err := sm.LockNew(context.Background(), newcomer, []byte("newcomer-lock-owner"), 0, &newcomerOpen.Stateid, 0, fh, types.WRITE_LT, 0, ^uint64(0), false, 0)
-
 	if err != nil {
 		t.Fatalf("newcomer LockNew against a live lock: %v", err)
 	}
@@ -151,7 +150,6 @@ func TestLock_ConflictExpiresLapsedByteRangeLock(t *testing.T) {
 	waitLeaseLapsed(t, sm, holder)
 
 	res, err = sm.LockNew(context.Background(), newcomer, []byte("newcomer-lock-owner-2"), 0, &newcomerOpen.Stateid, 0, fh, types.WRITE_LT, 0, ^uint64(0), false, 0)
-
 	if err != nil {
 		t.Fatalf("newcomer LockNew after the holder's lease lapsed: %v", err)
 	}
@@ -202,7 +200,6 @@ func lockAcrossClients(t *testing.T, sm *StateManager, opener, locker uint64, fh
 		t.Fatalf("OpenFile: %v", err)
 	}
 	res, err := sm.LockNew(context.Background(), locker, []byte("lock-owner-"+owner), 0, &open.Stateid, 0, fh, types.WRITE_LT, 0, ^uint64(0), false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew: %v", err)
 	}
@@ -269,7 +266,6 @@ func TestLock_ConflictExpiresLapsedCrossClientLock(t *testing.T) {
 	}
 
 	res, err := sm.LockNew(context.Background(), newcomer, []byte("newcomer-lock-owner"), 0, &newcomerOpen.Stateid, 0, fh, types.WRITE_LT, 0, ^uint64(0), false, 0)
-
 	if err != nil {
 		t.Fatalf("newcomer LockNew: %v", err)
 	}

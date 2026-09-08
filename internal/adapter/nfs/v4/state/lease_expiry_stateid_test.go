@@ -56,7 +56,6 @@ func TestExpiredLease_LockStateidsReportExpired(t *testing.T) {
 	clientID, fileHandle, openStateid, openSeqid := setupClientAndOpenState(t, sm)
 
 	lockResult, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner"), 1, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew: %v", err)
 	}

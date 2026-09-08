@@ -878,7 +878,6 @@ func TestDowngradeOpen_Success(t *testing.T) {
 
 	// Downgrade to READ only
 	downgraded, err := sm.DowngradeOpen(&confirmed.Stateid, 3, types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, 0)
-
 	if err != nil {
 		t.Fatalf("DowngradeOpen: %v", err)
 	}
@@ -918,7 +917,6 @@ func TestDowngradeOpen_CannotAddBits(t *testing.T) {
 
 	// Try to "downgrade" to BOTH (adds WRITE bit) - should fail
 	_, err = sm.DowngradeOpen(&confirmed.Stateid, 3, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, 0)
-
 	if err == nil {
 		t.Fatal("DowngradeOpen should fail when trying to add bits")
 	}
@@ -1154,7 +1152,6 @@ func TestFreeStateid(t *testing.T) {
 
 		// Create lock state
 		lockResult, err := sm.LockNew(context.Background(), 0, []byte("lock-owner1"), 1, confirmedStateid, 3, fh, types.WRITE_LT, 0, 100, false, 0)
-
 		if err != nil {
 			t.Fatalf("LockNew: %v", err)
 		}
@@ -1206,7 +1203,6 @@ func TestFreeStateid(t *testing.T) {
 
 		// Acquire a lock on file1 with the shared lock owner.
 		lock1, err := sm.LockNew(context.Background(), clientID, lockOwnerData, 1, &conf1.Stateid, 4, fh1, types.WRITE_LT, 0, 100, false, 0)
-
 		if err != nil {
 			t.Fatalf("LockNew on fh1: %v", err)
 		}
@@ -1223,7 +1219,6 @@ func TestFreeStateid(t *testing.T) {
 		// Acquire a lock on file2 with the SAME lock owner — this reuses the
 		// existing LockOwner entry in sm.lockOwners and creates a second LockState.
 		lock2, err := sm.LockNew(context.Background(), clientID, lockOwnerData, 3, &open2.Stateid, 5, fh2, types.WRITE_LT, 0, 50, false, 0)
-
 		if err != nil {
 			t.Fatalf("LockNew on fh2: %v", err)
 		}
@@ -1354,7 +1349,6 @@ func TestFreeStateid(t *testing.T) {
 
 		// Create a lock
 		_, err = sm.LockNew(context.Background(), 0, []byte("lock-owner1"), 1, confirmedStateid, 3, fh, types.WRITE_LT, 0, 100, false, 0)
-
 		if err != nil {
 			t.Fatalf("LockNew: %v", err)
 		}
@@ -1522,7 +1516,6 @@ func TestTestStateids(t *testing.T) {
 
 		stateids := []types.Stateid4{result1.Stateid, deleg.Stateid}
 		results := sm.TestStateids(stateids, 0)
-
 		if len(results) != 2 {
 			t.Fatalf("Expected 2 results, got %d", len(results))
 		}
@@ -1559,7 +1552,6 @@ func TestTestStateids(t *testing.T) {
 
 		stateids := []types.Stateid4{openResult.Stateid, invalidStateid, staleStateid}
 		results := sm.TestStateids(stateids, 0)
-
 		if len(results) != 3 {
 			t.Fatalf("Expected 3 results, got %d", len(results))
 		}
@@ -1614,7 +1606,6 @@ func TestTestStateids(t *testing.T) {
 
 		stateids := []types.Stateid4{openResult.Stateid}
 		results := sm.TestStateids(stateids, 0)
-
 		if len(results) != 1 {
 			t.Fatalf("Expected 1 result, got %d", len(results))
 		}
@@ -1659,7 +1650,6 @@ func TestTestStateids(t *testing.T) {
 		// TestStateids should NOT renew the lease
 		stateids := []types.Stateid4{openResult.Stateid}
 		results := sm.TestStateids(stateids, 0)
-
 		if results[0] != types.NFS4_OK {
 			t.Fatalf("TestStateids should return NFS4_OK, got %d", results[0])
 		}

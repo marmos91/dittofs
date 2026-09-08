@@ -189,7 +189,6 @@ func TestLockNew_CreatesLockOwnerAndState(t *testing.T) {
 	clientID, fileHandle, openStateid, openSeqid := setupClientAndOpenState(t, sm)
 
 	lockResult, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner-1"), 1, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew failed: %v", err)
 	}
@@ -210,14 +209,12 @@ func TestLockNew_ExistingLockOwner(t *testing.T) {
 
 	// First lock
 	_, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner-1"), 1, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 50, false, 0)
-
 	if err != nil {
 		t.Fatalf("first LockNew failed: %v", err)
 	}
 
 	// Second lock with same owner on different range
 	result, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner-1"), 2, openStateid, openSeqid+2, fileHandle, types.WRITE_LT, 100, 50, false, 0)
-
 	if err != nil {
 		t.Fatalf("second LockNew failed: %v", err)
 	}
@@ -237,7 +234,6 @@ func TestLockNew_BadOpenStateid(t *testing.T) {
 	bogusStateid := &types.Stateid4{Seqid: 1}
 
 	_, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner-1"), 1, bogusStateid, 1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
-
 	if err == nil {
 		t.Fatal("expected error for bad open stateid")
 	}
@@ -259,7 +255,6 @@ func TestLockNew_BadOpenSeqid(t *testing.T) {
 
 	// Use a wrong open seqid (too high)
 	_, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner-1"), 1, openStateid, openSeqid+100, fileHandle, types.WRITE_LT, 0, 100, false, 0)
-
 	if err == nil {
 		t.Fatal("expected error for bad open seqid")
 	}
@@ -311,7 +306,6 @@ func TestLockNew_OpenModeViolation(t *testing.T) {
 
 	// Try to get a write lock on a read-only open
 	_, lockErr := sm.LockNew(context.Background(), result.ClientID, []byte("lock-owner"), 1, confirmedStateid, 3, fh, types.WRITE_LT, 0, 100, false, 0)
-
 	if lockErr == nil {
 		t.Fatal("expected NFS4ERR_OPENMODE for write lock on read-only open")
 	}
@@ -336,7 +330,6 @@ func TestLockNew_GracePeriod(t *testing.T) {
 
 	// Non-reclaim should be blocked
 	_, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner-1"), 1, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
-
 	if err == nil {
 		t.Fatal("expected NFS4ERR_GRACE for non-reclaim lock during grace period")
 	}
@@ -350,7 +343,6 @@ func TestLockNew_GracePeriod(t *testing.T) {
 
 	// Reclaim should be allowed
 	result, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner-1"), 1, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, true, 0)
-
 	if err != nil {
 		t.Fatalf("reclaim LockNew during grace period failed: %v", err)
 	}
@@ -375,14 +367,12 @@ func TestLockExisting_Success(t *testing.T) {
 
 	// First lock to get a lock stateid
 	lockResult, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner-1"), 1, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 50, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew failed: %v", err)
 	}
 
 	// Second lock using existing lock stateid
 	existResult, err := sm.LockExisting(context.Background(), &lockResult.Stateid, 2, fileHandle, types.WRITE_LT, 100, 50, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockExisting failed: %v", err)
 	}
@@ -408,7 +398,6 @@ func TestLockExisting_BadStateid(t *testing.T) {
 	bogusStateid := &types.Stateid4{Seqid: 1}
 
 	_, err := sm.LockExisting(context.Background(), bogusStateid, 1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
-
 	if err == nil {
 		t.Fatal("expected error for bad lock stateid")
 	}
@@ -432,14 +421,12 @@ func TestLockExisting_BadSeqid(t *testing.T) {
 
 	// First lock
 	lockResult, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner-1"), 1, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 50, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew failed: %v", err)
 	}
 
 	// LockExisting with wrong seqid (too high)
 	_, err = sm.LockExisting(context.Background(), &lockResult.Stateid, 100, fileHandle, types.WRITE_LT, 100, 50, false, 0)
-
 	if err == nil {
 		t.Fatal("expected error for bad lock seqid")
 	}
@@ -505,7 +492,6 @@ func TestLockNew_Conflict(t *testing.T) {
 
 	// Client 1 acquires exclusive lock on range [0, 100)
 	lockResult1, err := sm.LockNew(context.Background(), res1.ClientID, []byte("lock-owner-1"), 1, confirmed1, 3, fh, types.WRITE_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew client 1 failed: %v", err)
 	}
@@ -515,7 +501,6 @@ func TestLockNew_Conflict(t *testing.T) {
 
 	// Client 2 tries to acquire exclusive lock on overlapping range [50, 150)
 	lockResult2, err := sm.LockNew(context.Background(), res2.ClientID, []byte("lock-owner-2"), 1, confirmed2, 3, fh, types.WRITE_LT, 50, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew client 2 error: %v", err)
 	}
@@ -558,7 +543,6 @@ func TestLockNew_SharedNoConflict(t *testing.T) {
 
 	// Client 1 acquires shared lock
 	lockResult1, err := sm.LockNew(context.Background(), res1.ClientID, []byte("lock-owner-1"), 1, confirmed1, 3, fh, types.READ_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew client 1 failed: %v", err)
 	}
@@ -568,7 +552,6 @@ func TestLockNew_SharedNoConflict(t *testing.T) {
 
 	// Client 2 acquires shared lock on same range -- should succeed
 	lockResult2, err := sm.LockNew(context.Background(), res2.ClientID, []byte("lock-owner-2"), 1, confirmed2, 3, fh, types.READ_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew client 2 failed: %v", err)
 	}
@@ -590,7 +573,6 @@ func TestCloseFile_LocksHeld(t *testing.T) {
 
 	// Acquire a lock
 	lockResult, err := sm.LockNew(context.Background(), clientID, []byte("close-lock-owner"), 1, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew failed: %v", err)
 	}
@@ -649,7 +631,6 @@ func TestReleaseLockOwner_NoLocks(t *testing.T) {
 
 	// Create lock-owner via LockNew
 	lockResult, err := sm.LockNew(context.Background(), clientID, []byte("release-owner"), 1, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew failed: %v", err)
 	}
@@ -682,7 +663,6 @@ func TestReleaseLockOwner_WithLocks(t *testing.T) {
 
 	// Create lock-owner and hold a lock
 	_, err := sm.LockNew(context.Background(), clientID, []byte("held-lock-owner"), 1, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew failed: %v", err)
 	}
@@ -724,7 +704,6 @@ func TestLeaseExpiry_CleansLockState(t *testing.T) {
 
 	// Acquire a lock
 	lockResult, err := sm.LockNew(context.Background(), clientID, []byte("expiry-lock-owner"), 1, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew failed: %v", err)
 	}
@@ -770,7 +749,6 @@ func TestLeaseExpiry_CleansLockManager(t *testing.T) {
 
 	// Acquire a lock with client 1
 	_, err := sm.LockNew(context.Background(), clientID1, []byte("client1-lock-owner"), 1, openStateid1, openSeqid1+1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew failed: %v", err)
 	}
@@ -807,7 +785,6 @@ func TestLeaseExpiry_CleansLockManager(t *testing.T) {
 	// Client 2 should be able to acquire a lock on the same range
 	// (previously held by expired client 1)
 	lockResult2, err := sm.LockNew(context.Background(), res2.ClientID, []byte("client2-lock-owner"), 1, confirmed2, 3, fileHandle, types.WRITE_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew for client 2 failed: %v", err)
 	}
@@ -844,14 +821,12 @@ func TestLockNew_BlockingType(t *testing.T) {
 
 	// Client 1 acquires exclusive lock
 	_, err := sm.LockNew(context.Background(), res1.ClientID, []byte("lock-owner-1"), 1, confirmed1, 3, fh, types.WRITE_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew failed: %v", err)
 	}
 
 	// Client 2 tries blocking write lock (WRITEW_LT) -- should get DENIED, not block
 	lockResult, err := sm.LockNew(context.Background(), res2.ClientID, []byte("lock-owner-2"), 1, confirmed2, 3, fh, types.WRITEW_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew with WRITEW_LT failed: %v", err)
 	}
@@ -864,7 +839,6 @@ func TestLockNew_BlockingType(t *testing.T) {
 	// seqid-exempt error), so this reuse of the same open-owner uses the next
 	// open seqid (4), not 3.
 	lockResult2, err := sm.LockNew(context.Background(), res2.ClientID, []byte("lock-owner-2b"), 1, confirmed2, 4, fh, types.READW_LT, 0, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("LockNew with READW_LT failed: %v", err)
 	}
@@ -966,7 +940,6 @@ func TestLockToEndOfFile(t *testing.T) {
 	rivalConfirmed, _ := sm.ConfirmOpen(&rivalOpen.Stateid, 2, 0)
 
 	held, err := sm.LockNew(context.Background(), holder.ClientID, []byte("lock-owner-holder"), 1, &holderConfirmed.Stateid, 3, fh, types.WRITE_LT, 100, toEOF, false, 0)
-
 	if err != nil {
 		t.Fatalf("LOCK through end-of-file failed: %v", err)
 	}
@@ -989,7 +962,6 @@ func TestLockToEndOfFile(t *testing.T) {
 
 	// LOCK: the same range must be refused, not handed out.
 	rivalLock, err := sm.LockNew(context.Background(), rival.ClientID, []byte("lock-owner-rival"), 1, &rivalConfirmed.Stateid, 3, fh, types.WRITE_LT, 200, 100, false, 0)
-
 	if err != nil {
 		t.Fatalf("conflicting LOCK failed: %v", err)
 	}
