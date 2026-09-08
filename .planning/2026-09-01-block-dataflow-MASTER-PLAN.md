@@ -130,10 +130,12 @@ These do not exist today. The design introduces them and must close them.
 
 **Order: syncer → carver → journal.** Reverse of the data flow: leaves first, trunk last.
 
-The property that earns this order: **steps 1 and 2 are behaviour-preserving.** No on-disk
-format change, no state-model change, no flip-contract change — pure extraction, verifiable by
-the existing suite plus the crash rigs. All semantic risk concentrates in step 3, taken last,
-when the other two modules are already proven in production.
+The property that earns this order: **no step before 3 touches on-disk format, the state model
+or the flip contract.** Step 2 is a pure extraction, verifiable by the existing suite plus the
+crash rigs. **Step 1 is not** — the ordered-completion contract it delivers does not exist across
+the file boundary today, so it is an addition and needs its own tests; see the step 1 section
+below, rewritten 2026-09-08. All *semantic* risk still concentrates in step 3, taken last, when
+the other two modules are already proven in production.
 
 ### Step 0 — the HIGH fixes (§3a), before any extraction
 
@@ -143,9 +145,61 @@ for review attention.
 
 ### Step 1 — syncer
 
-Touches `engine/carve_dispatch.go` (upload window), `journal/carve_dispatch.go` (dispatcher),
-`engine/blocksink.go` (the PUT). Does not touch on-disk format, state model, flip contract, or
-the interval index. Delivers the ordered-completion contract step 3 depends on.
+**Rewritten 2026-09-08 after recon against develop. The three-file scope above was wrong in
+both directions, and the "behaviour-preserving" claim does not hold. What follows replaces it.**
+
+What actually moves:
+
+| file | verdict |
+|---|---|
+| `engine/dynsem.go`, `engine/upload_controller.go` | **move whole.** The window mechanism. The only parts that port cleanly, and the original scope omitted both. |
+| `engine/carve_dispatch.go` | **moves**, minus `newBlockID` (:125), which `blocksink.go` calls. |
+| `journal/carve_dispatch.go` | **stays.** It calls `s.flipUpTo` and mutates `rs[i].committedTo` — unexported internals through unexported types. Extracting it *is* step 3's seam inversion; pulling it forward exports journal's flip contract inside a PR labelled step 1. |
+| `engine/blocksink.go` | **stays, minus ~5%.** Of 365 lines the PUT is one (`rbs.PutBlock`, :336) and framing ~35. The rest is manifest projection, SSI stripe locking and three optional-capability impls — none of which the three-package model gives a home. |
+
+Also in scope, and absent from the original list: the four `Force: true` drivers
+(`syncer.go:432,884`, `flush.go:66,101`) and the `ManualSync` early return (`syncer.go:733-736`),
+which bypass the outer window entirely.
+
+**It is not behaviour-preserving, because the contract does not exist yet.** Ordered completion
+exists *within* `journal/carve_dispatch.go` — a chain of one-shot channels with `runState.flipIdx`
+as the watermark and `committedTo` as the durable frontier. Across the file boundary, `carvePass`
+is a bare `WaitGroup` fan-out with no ordering and no completion reporting; its only outbound
+signal is `onBlockCommitted(bytes int64)`, which carries no FileID, no offset and no error.
+Step 1 **adds** that contract. Say so in the PR rather than claiming the existing suite covers it.
+
+**Prerequisite, not part of step 1: #2423.** Concurrent `PutBlock` is the product of two nested
+semaphores — the outer `Syncer.uploadLimiter` (`engine/carve_dispatch.go:98`, adaptive 16→64)
+bounds whole-file carve passes, and the inner `sem` (`journal/carve.go:395`, fixed default 8 from
+`store.go:100`) bounds PUTs within one carve. So 128 floor / 512 ceiling, while
+`engine.MaxParallelUploads = 256` (`engine/types.go:33`) is validated against the *outer* window
+alone (`blockstore_init.go:161`, `blockstore_config.go:270`). The adaptive controller samples the
+outer one (`syncer.go:802-803`), so one big file reads as app-limited while eight PUTs saturate
+the link. The comment block at `engine/types.go:25-28` and the one at `carve_dispatch.go:56-58`
+both describe the window as bounding PUTs; neither does.
+
+Collapsing the two windows changes observed throughput, so it is a semantics decision and ships
+as its own PR. **Step 1 carries both windows over verbatim** — an extraction that also retunes
+upload concurrency is unreviewable.
+
+**Traps** (each verified on develop):
+
+- `engine.Syncer` already exists, 1074 LOC, of which carve dispatch is ~10%. A new `syncer`
+  package beside it is a name collision. Settle the name before the first file moves.
+- Three optional interfaces are asserted in `journal` and implemented in `engine`
+  (`supersededReaper`, `manifestRowEnder`, `clobberGuard`, `carve.go:106-162`) — unexported,
+  structurally satisfied, **no compile-time guard**. A signature change makes reap, widen and
+  clobber-guard go dark rather than fail to build. Add the `var _ = ...` assertions as the first
+  commit of step 1, before anything moves.
+- `dedupGuard` is a process-global (`dedup_sweep_guard.go:95`) shared between
+  `engineDeduper.IsChunkDurable` and `gc_sweep_index.go`, and it is what orders them. If blocksink
+  moves, the singleton spans a package boundary.
+- Test fakes that will not survive: `carveFanoutLocal` (nil-embedded interface), `stubJournalRemote`
+  (implements the dead `journal.RemoteStore`), `realSink` (nil `commitLocks`, so it exercises a
+  different locking path than production). Port `journal/carve_dispatch_test.go`'s
+  `TestCarveFlipsInWatermarkOrder` first — it is the spec for the contract being added.
+- `newCarveFixture` uses `ManualSync`, so much of the engine carve suite never exercises the outer
+  window at all. A green suite is not evidence about it.
 
 ### Step 2 — carver
 
