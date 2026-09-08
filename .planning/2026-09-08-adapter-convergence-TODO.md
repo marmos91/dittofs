@@ -1,6 +1,6 @@
 # Adapter convergence — program todo
 
-Source of truth: `.planning/2026-09-08-adapter-convergence-MASTER-PLAN.md` (PR #2420, open).
+Source of truth: `.planning/2026-09-08-adapter-convergence-MASTER-PLAN.md` (PR #2420, merged).
 This file tracks execution only. **If the two disagree, the plan wins** — it carries its own
 corrections ledger and has already overturned twelve claims.
 
@@ -25,28 +25,83 @@ Legend: `[ ]` open · `[~]` in flight · `[x]` done · `[!]` blocked/needs a dec
       Count with `^\| *[A-Z]+[0-9]+[a-z]? *\|`; a trailing-digit regex silently drops
       `CSESS16a`, `EID5c/5d/5f/5g`, `EID6a`–`EID6g`
 
-## Wave 1 — Ownership-check class (goal 1) — IN FLIGHT
+## Wave 1 — Ownership-check class (goal 1) — ✅ LANDED 2026-09-08
 
-One rule, both protocols, shipped together. 6 issues → 7 PRs, 4 agents.
+7 PRs, 4 agents, 16 review passes (simplifier + reviewer each). **No correctness defect survived
+in any PR.** All findings relayed and applied.
 
-- [~] **#2413** SMB tree-scoped commands don't check TreeID ownership — guard in `prepareDispatch`'s
-      `NeedsTree` branch, `smb/response.go:514-520`. Covers TREE_DISCONNECT, CREATE and every
-      tree-scoped command at once. *Both pre-checks already done — do not re-run.*
-- [~] **#2414** CANCEL resolves a parked request by AsyncId with no ownership check.
-      Scope the AsyncId lookups as the MessageID ones already are. **MS-SMB2 3.3.5.16 first** —
-      SessionID, not ConnectionID, because SMB3 multichannel spans connections
-- [~] **#2394** NFSv4 READ / READ_PLUS never check read permission → one shared helper, not two copies
-- [ ] **#2395a** `ValidateStateid` owner-to-client binding (mirror `free*StateidLocked`, RFC 8881 §18.38.3).
-      No dependency on #2398 — it is a field compare under an existing `RLock`
-- [ ] **#2395b** stateid `other` → `crypto/rand`, separate PR (lock-neutral minting change)
-- [ ] **#2396** DELEGRETURN stateid-ownership. **Check reachability first** — #2218 says recall never
-      worked until #2219; a guard on a dead path is not worth shipping
-- [ ] Follow-up issue for the NFSv4.0 DELEGRETURN gap (no clientid4 on the wire)
-- [ ] Merge serially, smallest blast radius first; rebase each survivor before the next
-- [ ] Doc PR: write the ownership rule into `docs/internals/architecture.md` —
-      **grep for violations BEFORE writing it**; a prior rule went in with 3 counterexamples in-tree
-- [ ] Regression tests per plan §Verification 3: a second session cannot TREE_DISCONNECT the first's
-      tree and the first's opens survive; a CANCEL carrying another session's AsyncId cancels nothing
+| PR | Issue | Base | Lint can run? | State |
+| --- | --- | --- | --- | --- |
+| #2424 | 2413 tree ownership | develop | yes | reviewed, applied, rebased |
+| #2426 | 2414 AsyncId scope | develop | yes | reviewed, must-fix applied + verified |
+| #2432 | 2393 LINK cross-share | develop | yes | reviewed clean on all 7 points |
+| #2427 | 2394 read permission | develop | yes | reviewed clean |
+| ~~#2429~~ → #2448 | 2395a owner binding | develop | yes | CLOSED by base deletion; reopened as #2448 |
+| #2434 | 2395b stateid entropy | ← #2429 | **NO — ran zero checks** | merged to feature branch by an unattributed actor; landed via #2448 |
+| #2439 | 2396 DELEGRETURN | ← #2434 | **NO — ran zero checks** | same; landed via #2448 |
+
+- [x] **#2443 merged FIRST** — `skip-cache: true`. A rebase before it just inherits the red.
+- [x] #2424, #2426, #2432, #2427 merged — independent, rebase should go green
+- [x] Stack collapsed onto #2448 and landed in one merge (see below); not: #2427 → wait for #2429's *first* lint → #2429 →
+      wait for #2434's first lint → #2434 → wait → #2439. Four sequential runs.
+- [x] Follow-up issue: NFSv4.0 gap → **#2437** shared by #2395a and #2396 (no trusted clientid on the wire)
+- [x] Follow-up issue: `ErrCrossShare` → **#2441** code + errmap rows, so SMB stops reporting
+      STATUS_INVALID_PARAMETER for the condition NFS now reports as XDEV
+- [ ] Doc PR: ownership rule into `docs/internals/architecture.md` — **BLOCKED, needs a scope call.**
+      The grep was done and found **14 live counterexamples → #2449**: `GetOpenFile` is a global
+      lookup over one `h.files` map spanning every connection/session, and 14 of 16 handlers call
+      `primeAuthContextFromOpenFile`, which adopts the located handle's SessionID/TreeID/user.
+      Only `read.go` and `write.go` check ownership first. NOT remotely exploitable — FileId
+      carries 64 bits of `crypto/rand` — so it is defence-in-depth, same posture as #2395.
+      Either write the rule WITH an explicit "not enforced at these sites, see #2449", or land
+      #2449 first (one guard inside `primeAuthContextFromOpenFile` + a refusal test).
+- [x] `graphify update .` done — 30800 nodes / 66818 edges at 1d69f4d4a from the main checkout after the wave lands
+- [x] Worktrees removed; all 5 remote wave-1 branches deleted (content-verified); VM torn down
+
+### How Wave 1 actually landed
+
+Final merge: **#2448 = `1d69f4d4a`**, carrying all three remaining commits after #2434 and #2439
+were squash-merged into their *stacked bases* (not develop) at 11:54:38/39 by an actor none of the
+three live sessions could identify. Nothing was lost; the effect was to collapse the stack onto one
+PR targeting develop, which is what finally gave those two commits any CI at all.
+
+All six issues closed COMPLETED: #2393, #2394, #2395, #2396, #2413, #2414.
+Integrated verify on merged develop: 65 packages pass, 0 fail.
+
+### Traps found this wave (carry forward)
+
+- **A stacked PR runs ZERO checks, not a subset.** Every workflow gates on
+  `pull_request: branches: [develop, main]`. `gh pr checks` prints "no checks reported" rather than
+  failing, so a failure count reads clean at zero checks. Count the checks, not the failures.
+- **You cannot retarget out of a stack to buy CI.** `gh pr edit --base develop` is refused with
+  "Cannot change the base branch because the pull request is part of a stack". Merge it or recreate
+  the PR off develop — there is no third option.
+- **A green is evidence only for its head SHA, and someone else can move your head.** My 38-SUCCESS
+  run was for `e9d754359`; the 11:54 merges moved the branch to `8171c5d41` without touching it.
+  Merge via `PUT pulls/{n}/merge -f sha=<re-read head>` so GitHub refuses on a moved head.
+- **A timed-out job concludes `cancelled`, not `failure`.** The Nix cache *save* post-step hung
+  ~12 min against `timeout-minutes: 10` (`nfs-pynfs.yml:106`, `conformance.yml:134`); downstream
+  matrices came back `skipped` and `ci-health.yml` treats `cancelled` as benign — so NFS conformance
+  silently did not run. Classify anything outside {pass, skipping, pending} as suspect.
+- **Do not `--delete-branch` a PR that is a base.** It closes the dependent PR irrecoverably
+  (`gh pr reopen` fails). Retarget dependents first, delete after.
+
+### Decisions taken during the wave (do not re-litigate)
+
+- **#2414 is ConnectionID-scoped, and that is correct.** My SessionID steer was wrong. MS-SMB2
+  3.3.5.16 confines the async search to `Connection.AsyncCommandList`; 3.3.1.13 scopes AsyncId
+  uniqueness to one transport connection, so a ConnID-blind lookup can resolve the WRONG request;
+  3.2.4.24/25 has the client send CANCEL on the connection holding the request.
+- **Do NOT fold the three `free*StateidLocked` into `checkStateidOwner`.** I asked for this and
+  retracted it. `checkStateidOwner` SKIPS on a zero clientID (v4.0 has no trusted identity);
+  the free* helpers REJECT on any mismatch including zero. Folding flips "zero is refused" to
+  "zero is waved through", and `stateid_test.go` passes zero at six sites expecting rejection.
+- **`cp -l` does NOT fall back to copying on EXDEV** — it errors; `mv` is the one that falls back.
+  My original rationale for XDEV was wrong. The decision stands on RFC 1813 + knfsd only.
+- **#2434's discarded `rand.Read` error is correct** — since Go 1.24 the default reader calls
+  `fatal()` rather than returning; `go.mod` pins 1.25.0. Depends on that; noted in the comment.
+- **#2434's collision debt stays as a `ponytail:` marker**, not a retry loop. ~1 in 40M at 1M live
+  stateids, math independently re-derived.
 
 ## Wave 2 — `sm.mu`, then the pynfs conformance wave (goal 1)
 
