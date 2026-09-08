@@ -209,8 +209,8 @@ func (n *nonClosingRemote) ReadChunk(ctx context.Context, blockID string, offset
 	return cr.ReadChunk(ctx, blockID, offset, length, hash)
 }
 
-// buildSyncerConfigFromDefaults merges SyncerDefaults into a engine.SyncerConfig.
-func buildSyncerConfigFromDefaults(defaults *SyncerDefaults) engine.SyncerConfig {
+// buildSyncerConfigFromDefaults merges SyncerDefaults into a engine.RemoteSyncConfig.
+func buildSyncerConfigFromDefaults(defaults *SyncerDefaults) engine.RemoteSyncConfig {
 	cfg := engine.DefaultConfig()
 	if defaults == nil {
 		return cfg
@@ -387,7 +387,7 @@ func (s *Service) createBlockStoreForShare(
 		engineRemote = &nonClosingRemote{remoteStore}
 	}
 
-	syncer := engine.NewSyncer(localStore, engineRemote, fileChunkStore, syncerCfg)
+	syncer := engine.NewRemoteSync(localStore, engineRemote, fileChunkStore, syncerCfg)
 
 	// Write-path backpressure is now internal to the journal-backed local store
 	// (Config.EvictMaxWait): a full local cache stalls the writer while the carve
@@ -435,7 +435,7 @@ func (s *Service) createBlockStoreForShare(
 	engineCfg := engine.BlockStoreConfig{
 		Local:          localStore,
 		Remote:         engineRemote,
-		Syncer:         syncer,
+		RemoteSync:     syncer,
 		FileChunkStore: fileChunkStore,
 		Coordinator:    coordinator,
 	}

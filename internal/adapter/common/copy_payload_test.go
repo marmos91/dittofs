@@ -73,7 +73,7 @@ func (f *fakeCoordinator) FindByObjectID(_ context.Context, _ block.ObjectID) ([
 }
 
 // GetFileObjectID stub. Adapter-common tests do not drive the
-// Syncer.Flush short-circuit path; returning the zero ObjectID + nil is
+// RemoteSync.Flush short-circuit path; returning the zero ObjectID + nil is
 // the "never quiesced" disposition that keeps the interface satisfied
 // without affecting any assertions.
 // ReprojectBlocks is a no-op: this fake does not model the Blocks
@@ -390,14 +390,14 @@ func newCopyTestEngineWithLocal(t *testing.T, coord *fakeCoordinator, ms *metada
 	if !ok {
 		t.Fatalf("metadata store %T does not implement metadata.SyncedHashStore", ms)
 	}
-	syncer := engine.NewSyncer(localStore, mem, ms, engine.DefaultConfig())
+	syncer := engine.NewRemoteSync(localStore, mem, ms, engine.DefaultConfig())
 	syncer.SetSyncedHashStore(syncedHashStore)
 	syncer.SetRemoteBlockStore(mem)
 
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
 		Remote:          mem,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		Coordinator:     coord,
 		SyncedHashStore: syncedHashStore,

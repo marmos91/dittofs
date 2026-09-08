@@ -229,12 +229,12 @@ func buildCascadeFixture(t *testing.T, coord MetadataCoordinator, syncedStore me
 	t.Helper()
 	localStore := memory.New()
 	fbs := newStubFileChunkStore()
-	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
+	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
 
 	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Remote:          nil,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		Coordinator:     coord,
 		SyncedHashStore: syncedStore,
 	})

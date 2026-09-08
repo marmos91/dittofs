@@ -113,11 +113,11 @@ func NewHandlerFixtureWithStore(
 		t.Fatalf("Failed to create local store: %v", err)
 	}
 	t.Cleanup(func() { _ = localStore.Close() })
-	syncer := engine.NewSyncer(localStore, nil, metaStore, engine.DefaultConfig())
+	syncer := engine.NewRemoteSync(localStore, nil, metaStore, engine.DefaultConfig())
 
 	blockSvc, err := engine.New(engine.BlockStoreConfig{
-		Local:  localStore,
-		Syncer: syncer,
+		Local:      localStore,
+		RemoteSync: syncer,
 	})
 	if err != nil {
 		t.Fatalf("Failed to create block store: %v", err)

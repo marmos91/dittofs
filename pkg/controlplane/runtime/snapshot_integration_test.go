@@ -482,13 +482,13 @@ func newOrchestrationFixture(t *testing.T) *orchestrationFixture {
 	innerRemote := remotememory.New()
 	t.Cleanup(func() { _ = innerRemote.Close() })
 	wrappedRemote := newInterceptingRemote(innerRemote)
-	syncer := engine.NewSyncer(localStore, wrappedRemote, mem, engine.SyncerConfig{
+	syncer := engine.NewRemoteSync(localStore, wrappedRemote, mem, engine.RemoteSyncConfig{
 		ParallelDownloads: 1,
 	})
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          localStore,
 		Remote:         wrappedRemote,
-		Syncer:         syncer,
+		RemoteSync:     syncer,
 		FileChunkStore: mem,
 	})
 	if err != nil {

@@ -262,7 +262,7 @@ func (s engineBlockSink) ReapSupersededManifest(ctx context.Context, id journal.
 // engineBlockSink is journal's production BlockSink: it seals each carved chunk,
 // frames them into one block via blockcodec, uploads the block with PutBlock,
 // and atomically commits the block record + synced locators + per-file manifest
-// rows. It mirrors Syncer.carveAndCommitBlock minus the local-byte resolution —
+// rows. It mirrors RemoteSync.carveAndCommitBlock minus the local-byte resolution —
 // journal hands the plaintext in-hand on each CarveChunk.
 type engineBlockSink struct {
 	sealer      remote.ChunkSealer

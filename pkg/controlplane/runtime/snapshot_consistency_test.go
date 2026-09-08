@@ -289,13 +289,13 @@ func newRealBackupFixture(t *testing.T) *realBackupFixture {
 	localStore := bsmemory.New()
 	innerRemote := remotememory.New()
 	t.Cleanup(func() { _ = innerRemote.Close() })
-	syncer := engine.NewSyncer(localStore, innerRemote, mem, engine.SyncerConfig{
+	syncer := engine.NewRemoteSync(localStore, innerRemote, mem, engine.RemoteSyncConfig{
 		ParallelDownloads: 1,
 	})
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          localStore,
 		Remote:         innerRemote,
-		Syncer:         syncer,
+		RemoteSync:     syncer,
 		FileChunkStore: mem,
 	})
 	if err != nil {

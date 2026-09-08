@@ -32,14 +32,14 @@ func newMemoryEngine(t *testing.T, remote *remotememory.Store, durableLocalOverr
 	}
 	if remote != nil {
 		cfg.Remote = remote
-		cfg.Syncer = engine.NewSyncer(localStore, remote, ms, engine.DefaultConfig())
+		cfg.RemoteSync = engine.NewRemoteSync(localStore, remote, ms, engine.DefaultConfig())
 		// Mirror the production wiring (shares service): the block-keyed
 		// remote surface activates the carve path — the only upload path
 		// post-#1493. Memory local stores carve through the hash-keyed
 		// local read fallback.
-		cfg.Syncer.SetRemoteBlockStore(remote)
+		cfg.RemoteSync.SetRemoteBlockStore(remote)
 	} else {
-		cfg.Syncer = engine.NewSyncer(localStore, nil, ms, engine.DefaultConfig())
+		cfg.RemoteSync = engine.NewRemoteSync(localStore, nil, ms, engine.DefaultConfig())
 	}
 
 	bs, err := engine.New(cfg)

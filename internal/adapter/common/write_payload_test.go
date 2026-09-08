@@ -32,12 +32,12 @@ func newTestEngine(t *testing.T) *engine.Store {
 		t.Fatalf("fs.NewWithOptions failed: %v", err)
 	}
 
-	syncer := engine.NewSyncer(localStore, nil, ms, engine.DefaultConfig())
+	syncer := engine.NewRemoteSync(localStore, nil, ms, engine.DefaultConfig())
 
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
 		Remote:          nil,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		ReadBufferBytes: 0,
 		PrefetchWorkers: 0,
