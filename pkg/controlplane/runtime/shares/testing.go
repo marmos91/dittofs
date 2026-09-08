@@ -46,6 +46,9 @@ func (s *Service) RegisterShareForTesting(name string) {
 // LOOKUP across the share's pseudo-fs export junction land on a zero-length
 // handle instead of the share root. Returns ErrShareNotFound if the share is
 // not registered.
+//
+// The handle is copied, so a caller that reuses or mutates its slice afterwards
+// cannot reach into registry state.
 func (s *Service) SetRootHandleForTesting(name string, handle metadata.FileHandle) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -53,7 +56,7 @@ func (s *Service) SetRootHandleForTesting(name string, handle metadata.FileHandl
 	if !ok {
 		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
 	}
-	share.RootHandle = handle
+	share.RootHandle = append(metadata.FileHandle(nil), handle...)
 	return nil
 }
 

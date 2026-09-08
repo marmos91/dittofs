@@ -143,9 +143,8 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		// A share that requires Kerberos on a server without Kerberos
 		// configured is reachable by no auth flavor at all: AUTH_SYS and
 		// AUTH_NONE are refused by the policy and RPCSEC_GSS cannot be
-		// negotiated. Refusing it here is also what keeps SECINFO from having
-		// to answer with a zero-length flavor list, which RFC 7530 does not
-		// provide for.
+		// negotiated. Refusing it here is also what leaves SECINFO with at
+		// least one flavor to report for every share.
 		if *req.RequireKerberos && h.runtime != nil && !h.runtime.KerberosEnabled() {
 			BadRequest(w, "require_kerberos needs Kerberos configured on this server")
 			return
