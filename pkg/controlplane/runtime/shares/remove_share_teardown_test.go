@@ -23,10 +23,10 @@ func newLocalEngineStore(t *testing.T) *engine.Store {
 	// requires a non-nil one); the teardown path never exercises it.
 	fbs := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = fbs.Close() })
-	syncer := engine.NewSyncer(local, nil, fbs, engine.DefaultConfig())
+	syncer := engine.NewRemoteSync(local, nil, fbs, engine.DefaultConfig())
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          local,
-		Syncer:         syncer,
+		RemoteSync:     syncer,
 		FileChunkStore: fbs,
 	})
 	if err != nil {

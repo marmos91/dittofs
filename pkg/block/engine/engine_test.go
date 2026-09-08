@@ -130,12 +130,12 @@ func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *St
 	t.Helper()
 	localStore := memory.New()
 	fbs := newStubFileChunkStore()
-	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
+	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
 
 	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Remote:          nil,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		FileChunkStore:  fbs,
 		ReadBufferBytes: readBufferBytes,
 		PrefetchWorkers: prefetchWorkers,
@@ -153,17 +153,17 @@ func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *St
 // newTestEngineWithCoordinator creates an engine.Store with the
 // supplied MetadataCoordinator wired in (Task 0).
 // Used by tests that assert engine-coordinator integration without
-// touching the heavier Syncer/Remote setup.
+// touching the heavier RemoteSync/Remote setup.
 func newTestEngineWithCoordinator(t *testing.T, c MetadataCoordinator) *Store {
 	t.Helper()
 	localStore := memory.New()
 	fbs := newStubFileChunkStore()
-	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
+	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
 
 	bs, err := New(BlockStoreConfig{
 		Local:          localStore,
 		Remote:         nil,
-		Syncer:         syncer,
+		RemoteSync:     syncer,
 		FileChunkStore: fbs,
 		Coordinator:    c,
 	})
@@ -236,7 +236,7 @@ func TestReadAt_CacheDisabled(t *testing.T) {
 
 // TestReadAt_DoesNotInvokeCacheOnReadPath guards the Step-1 retirement of the
 // dead cache read-prefetch trigger: readahead is now driven by the offset-based
-// Syncer.scheduleReadahead (covered in readahead_test.go), and the RAM Cache is
+// RemoteSync.scheduleReadahead (covered in readahead_test.go), and the RAM Cache is
 // off the read path entirely (readAtInternal serves from the local store). So a
 // successful ReadAt must NOT call cache.OnRead — even when the caller passes a
 // non-nil []ChunkRef (the argument is opaque to the read path). This prevents
@@ -364,12 +364,12 @@ func (r *recordingCache) Close() error      { r.closed.Store(true); return nil }
 func TestClose_ClosesCache(t *testing.T) {
 	localStore := memory.New()
 	fbs := newStubFileChunkStore()
-	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
+	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
 
 	bs, err := New(BlockStoreConfig{
-		Local:  localStore,
-		Remote: nil,
-		Syncer: syncer,
+		Local:      localStore,
+		Remote:     nil,
+		RemoteSync: syncer,
 	})
 	if err != nil {
 		t.Fatalf("New failed: %v", err)

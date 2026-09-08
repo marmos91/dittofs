@@ -23,7 +23,7 @@ func (r *probeHookRemote) HealthCheck(ctx context.Context) error { return r.prob
 // syncer lock across it, or every read and flush stalls for a remote timeout
 // while a share comes up.
 func TestSyncerStart_EagerProbeDoesNotHoldLock(t *testing.T) {
-	var m *Syncer
+	var m *RemoteSync
 	rem := &probeHookRemote{
 		RemoteStore: remotememory.New(),
 		probe: func(context.Context) error {
@@ -32,7 +32,7 @@ func TestSyncerStart_EagerProbeDoesNotHoldLock(t *testing.T) {
 			return nil
 		},
 	}
-	m = NewSyncer(memorylocal.New(), rem, newStubFileChunkStore(), DefaultConfig())
+	m = NewRemoteSync(memorylocal.New(), rem, newStubFileChunkStore(), DefaultConfig())
 
 	done := make(chan struct{})
 	go func() {
@@ -43,7 +43,7 @@ func TestSyncerStart_EagerProbeDoesNotHoldLock(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Syncer.Start held its lock across the eager health probe")
+		t.Fatal("RemoteSync.Start held its lock across the eager health probe")
 	}
 	_ = m.Close()
 }

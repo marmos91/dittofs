@@ -29,12 +29,12 @@ func drainAfterFill(t *testing.T, pinned bool) int64 {
 	}
 	localStore.SetEvictionPinned(pinned)
 
-	syncer := engine.NewSyncer(localStore, mem, ms, engine.DefaultConfig())
+	syncer := engine.NewRemoteSync(localStore, mem, ms, engine.DefaultConfig())
 	syncer.SetSyncedHashStore(ms)
 	syncer.SetRemoteBlockStore(mem)
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		Coordinator:     &testCoordinator{store: ms},
 		SyncedHashStore: ms,

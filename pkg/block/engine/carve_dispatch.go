@@ -21,7 +21,7 @@ import (
 //
 // Runs only when a remote and the carve substrate are wired (carveActive) and
 // not in ManualSync mode (where Flush/SyncNow are the sole carve drivers).
-func (m *Syncer) carveDispatcher(ctx context.Context) {
+func (m *RemoteSync) carveDispatcher(ctx context.Context) {
 	logger.Info("Carve dispatcher started")
 	interval := m.config.UploadInterval
 	if interval <= 0 {
@@ -61,7 +61,7 @@ func (m *Syncer) carveDispatcher(ctx context.Context) {
 // without it the window is never consumed and stays pinned at the floor. Files
 // in one shard still serialize on the journal's internal carve lock, so the
 // concurrency here overlaps distinct shards' upload latency.
-func (m *Syncer) carvePass(ctx context.Context) {
+func (m *RemoteSync) carvePass(ctx context.Context) {
 	files := m.local.ListFiles(ctx)
 	if len(files) == 0 {
 		return

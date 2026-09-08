@@ -25,10 +25,10 @@ func localOnlyPair(t *testing.T, ms metadata.Store) (*engine.Store, *fs.FSStore)
 	if !ok {
 		t.Fatalf("metadata store %T is not a SyncedHashStore", ms)
 	}
-	syncer := engine.NewSyncer(localStore, nil, ms, engine.DefaultConfig())
+	syncer := engine.NewRemoteSync(localStore, nil, ms, engine.DefaultConfig())
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		Coordinator:     &testCoordinator{store: ms},
 		SyncedHashStore: syncedHashStore,

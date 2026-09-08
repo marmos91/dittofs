@@ -14,7 +14,7 @@ import (
 // sparse holes.
 //
 // After a successful read the engine drives the offset-based readahead window
-// (Syncer.scheduleReadahead) so a sequential reader keeps the local read-serving
+// (RemoteSync.scheduleReadahead) so a sequential reader keeps the local read-serving
 // tier populated ahead of the read frontier. This fires on EVERY read; the
 // window is computed purely from offset+len(data).
 func (bs *Store) ReadAt(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
@@ -98,7 +98,7 @@ func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []
 	// carve.go carveRun) and lands as
 	// Pending FileChunks with chunk-hash populated. The canonical
 	// []ChunkRef projection is built at Flush time from
-	// ListFileChunks(payloadID) — see Syncer.snapshotChunkRefs
+	// ListFileChunks(payloadID) — see RemoteSync.snapshotChunkRefs
 	// (post-drain canonical list for the post-Flush hook). WriteAt
 	// itself remains a per-write append into the local store and does
 	// NOT need to return a merged []ChunkRef; the dual-read shim's

@@ -26,8 +26,8 @@ type BlockStoreConfig struct {
 	// Remote is the durable backend store (nil for local-only mode).
 	Remote remote.RemoteStore
 
-	// Syncer handles async local-to-remote transfers (required).
-	Syncer *Syncer
+	// RemoteSync handles async local-to-remote transfers (required).
+	RemoteSync *RemoteSync
 
 	// FileChunkStore provides block metadata for block store statistics
 	// AND the engine-internal lookups (GetFileChunk, ListFileChunks) the
@@ -46,7 +46,7 @@ type BlockStoreConfig struct {
 
 	// SyncedHashStore persists per-CAS-hash local→remote sync state.
 	// Sourced from the same per-share metadata-store handle the
-	// Coordinator wraps. Threaded through to the Syncer so the carver
+	// Coordinator wraps. Threaded through to the RemoteSync so the carver
 	// can commit synced markers + block locators atomically
 	// (DefaultCommitBlock). Nil is accepted (local-only / no-remote
 	// fixtures); carve stays disabled in that mode.
@@ -72,7 +72,7 @@ type BlockStoreConfig struct {
 type Store struct {
 	local  local.LocalStore
 	remote remote.RemoteStore
-	syncer *Syncer
+	syncer *RemoteSync
 
 	// metrics is the engine-side data-plane metrics sink (carve/upload
 	// path). Retained from SetMetrics when the injected recorder also
@@ -100,7 +100,7 @@ type Store struct {
 
 	// syncedHashStore persists per-CAS-hash local→remote mirror state.
 	// Held alongside the coordinator so the engine constructor can thread
-	// it into the Syncer (via SetSyncedHashStore). May be nil in tests.
+	// it into the RemoteSync (via SetSyncedHashStore). May be nil in tests.
 	syncedHashStore metadata.SyncedHashStore
 
 	// cache is the CAS-keyed cache (CACHE-01..05). The block-coord
@@ -159,14 +159,14 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 	if cfg.Local == nil {
 		return nil, errors.New("local store is required")
 	}
-	if cfg.Syncer == nil {
+	if cfg.RemoteSync == nil {
 		return nil, errors.New("syncer is required")
 	}
 
 	bs := &Store{
 		local:           cfg.Local,
 		remote:          cfg.Remote,
-		syncer:          cfg.Syncer,
+		syncer:          cfg.RemoteSync,
 		fileChunkStore:  cfg.FileChunkStore,
 		coordinator:     cfg.Coordinator,
 		syncedHashStore: cfg.SyncedHashStore,
@@ -178,26 +178,26 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 	// so engine code can call bs.cache.* without nil-checks even before
 	// Start runs.
 	bs.cache = nullCache{}
-	// Thread the SyncedHashStore into the Syncer so the carver can commit
+	// Thread the SyncedHashStore into the RemoteSync so the carver can commit
 	// synced markers + block locators atomically. Nil is accepted
 	// (local-only / no-remote fixtures); carve stays disabled in that
 	// mode.
 	if cfg.SyncedHashStore != nil {
-		cfg.Syncer.SetSyncedHashStore(cfg.SyncedHashStore)
+		cfg.RemoteSync.SetSyncedHashStore(cfg.SyncedHashStore)
 	}
 	// Chunk-lifecycle hooks are gone with the journal switchover: chunking now
 	// happens at carve time inside the journal, and the carve BlockSink writes
 	// the per-(file,offset) FileChunk manifest rows atomically in its commit
 	// transaction (metadata.DefaultCommitBlock). There is no rollup-completion
 	// persister, no write-side cache warm hook, and no per-chunk emitter.
-	// wire the Store back-reference onto the Syncer so it can reach the
-	// owning Store for dataplane metrics (Syncer.dataplaneMetrics) and
+	// wire the Store back-reference onto the RemoteSync so it can reach the
+	// owning Store for dataplane metrics (RemoteSync.dataplaneMetrics) and
 	// cache access (InvalidateFile on delete). Reading through the
 	// back-reference (instead of caching a cacheInterface field on the
-	// Syncer at construction time) lets test code swap `bs.cache = rec`
+	// RemoteSync at construction time) lets test code swap `bs.cache = rec`
 	// post-construction and still observe the invalidation — mirrors the
 	// TestClose_ClosesCache pattern.
-	cfg.Syncer.bs = bs
+	cfg.RemoteSync.bs = bs
 	return bs, nil
 }
 
@@ -498,7 +498,7 @@ func (bs *Store) DrainLocalSynced(ctx context.Context) (int64, error) {
 // WarmAll proactively fetches every remote block of every payload in this
 // share onto the local CAS tier, delegating to the syncer's WarmAll under the
 // store's close-gate so a concurrent Close drains the run instead of racing
-// the local/syncer/remote teardown. See (*Syncer).WarmAll for semantics
+// the local/syncer/remote teardown. See (*RemoteSync).WarmAll for semantics
 // (bounded by ParallelDownloads, errors on a missing remote, terminal on
 // ErrDiskFull, honors ctx cancellation). progress may be nil.
 func (bs *Store) WarmAll(ctx context.Context, progress func(done, total int64)) (WarmResult, error) {

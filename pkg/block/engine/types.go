@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// ErrClosed is returned when an operation is attempted on a closed Syncer.
+// ErrClosed is returned when an operation is attempted on a closed RemoteSync.
 var ErrClosed = errors.New("syncer is closed")
 
 // ErrStoreClosed is returned by a Store data op (WriteAt, ReadAt, Flush,
@@ -20,7 +20,7 @@ var ErrStoreClosed = errors.New("engine: block store is closed")
 // With 200-connection S3 pool and 8MB blocks, 32 workers can saturate the pool.
 const DefaultParallelDownloads = 32
 
-// Adaptive upload-concurrency bounds (#1407). When SyncerConfig.ParallelUploads
+// Adaptive upload-concurrency bounds (#1407). When RemoteSyncConfig.ParallelUploads
 // is unset (0), the carver auto-tunes concurrent block PUTs to saturate the
 // uplink: it starts at AdaptiveUploadFloor and ramps toward AdaptiveUploadCeiling,
 // settling at the goodput knee. A pinned ParallelUploads > 0 overrides this with
@@ -79,8 +79,8 @@ type TransferRequest struct {
 	Done       chan error   // Completion channel; nil for async (fire-and-forget)
 }
 
-// Config holds configuration for the Syncer.
-type SyncerConfig struct {
+// Config holds configuration for the RemoteSync.
+type RemoteSyncConfig struct {
 	ParallelDownloads  int           // Concurrent block downloads per file (default: 32)
 	PrefetchBlocks     int           // Blocks to prefetch ahead of reads; 0 = disabled (default: 64)
 	SmallFileThreshold int64         // Files below this are flushed synchronously; 0 = disabled
@@ -119,17 +119,15 @@ type SyncerConfig struct {
 	HealthCheckFailureThreshold int           // Consecutive failures to mark unhealthy (default: 3)
 	UnhealthyCheckInterval      time.Duration // Probe interval when unhealthy (default: 5s)
 
-	// — CAS upload-path knobs. The
-	// authoritative defaults live in pkg/config.SyncerConfig; these fields
-	// mirror them on the engine-local config struct so the syncer can be
-	// constructed without depending on pkg/config (avoids an import cycle
-	// from local/fs and other low-level callers).
+	// ClaimTimeout lives on the engine-local config struct rather than being
+	// read from pkg/config, so a RemoteSync can be constructed by low-level
+	// callers without an import cycle. Its default is set by DefaultConfig.
 	ClaimTimeout time.Duration // Max age of a Syncing row before the janitor requeues it (default: 10m)
 }
 
-// DefaultConfig returns the default Syncer configuration tuned for S3 performance.
-func DefaultConfig() SyncerConfig {
-	return SyncerConfig{
+// DefaultConfig returns the default RemoteSync configuration tuned for S3 performance.
+func DefaultConfig() RemoteSyncConfig {
+	return RemoteSyncConfig{
 		ParallelDownloads:           DefaultParallelDownloads,
 		PrefetchBlocks:              DefaultPrefetchBlocks,
 		SmallFileThreshold:          0,

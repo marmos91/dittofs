@@ -101,13 +101,13 @@ func newEncryptedFixture(t *testing.T) *encryptedFixture {
 
 	enc := newEncryptedRemote(t, inner)
 
-	syncer := engine.NewSyncer(localStore, enc, mem, engine.SyncerConfig{
+	syncer := engine.NewRemoteSync(localStore, enc, mem, engine.RemoteSyncConfig{
 		ParallelDownloads: 1,
 	})
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          localStore,
 		Remote:         enc,
-		Syncer:         syncer,
+		RemoteSync:     syncer,
 		FileChunkStore: mem,
 	})
 	if err != nil {

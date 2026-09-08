@@ -58,7 +58,7 @@ func (g *gatedChunkStore) Close() error {
 }
 
 // TestSyncerClose_JoinsInFlightDownloadWorker pins the shutdown ordering that
-// #1722 violated: Syncer.Close() (via SyncQueue.Stop) must block until every
+// #1722 violated: RemoteSync.Close() (via SyncQueue.Stop) must block until every
 // in-flight download worker has left the metadata store, so the store can then
 // be closed with no worker still reading it.
 //
@@ -73,8 +73,8 @@ func TestSyncerClose_JoinsInFlightDownloadWorker(t *testing.T) {
 	cfg.ParallelDownloads = 2
 	// A non-nil remote is required for fetchBlock to reach resolveFileChunk;
 	// a nil remote short-circuits before the store lookup. No HealthMonitor is
-	// started (we never call Syncer.Start), so IsRemoteHealthy() is true.
-	syncer := NewSyncer(memorylocal.New(), remotememory.New(), gs, cfg)
+	// started (we never call RemoteSync.Start), so IsRemoteHealthy() is true.
+	syncer := NewRemoteSync(memorylocal.New(), remotememory.New(), gs, cfg)
 
 	syncer.Queue().Start(context.Background())
 
@@ -99,7 +99,7 @@ func TestSyncerClose_JoinsInFlightDownloadWorker(t *testing.T) {
 	// did, the metadata store could be closed under a live worker -> #1722.
 	select {
 	case <-closeDone:
-		t.Fatal("Syncer.Close returned before the in-flight download worker finished — SyncQueue.Stop did not join workers (regression of #1722)")
+		t.Fatal("RemoteSync.Close returned before the in-flight download worker finished — SyncQueue.Stop did not join workers (regression of #1722)")
 	case <-time.After(150 * time.Millisecond):
 	}
 
@@ -110,7 +110,7 @@ func TestSyncerClose_JoinsInFlightDownloadWorker(t *testing.T) {
 	select {
 	case <-closeDone:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Syncer.Close did not return after the worker was released")
+		t.Fatal("RemoteSync.Close did not return after the worker was released")
 	}
 
 	// Only now — after Close() has joined all workers — is it safe to close the
@@ -118,7 +118,7 @@ func TestSyncerClose_JoinsInFlightDownloadWorker(t *testing.T) {
 	_ = gs.Close()
 
 	if gs.accessedClosed.Load() {
-		t.Fatal("metadata store was accessed after Close — download worker outlived Syncer.Close (#1722)")
+		t.Fatal("metadata store was accessed after Close — download worker outlived RemoteSync.Close (#1722)")
 	}
 }
 
@@ -141,7 +141,7 @@ func TestSyncerClose_JoinsCarveDispatcher(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.UploadInterval = time.Millisecond
-	m := &Syncer{
+	m := &RemoteSync{
 		local:         fl,
 		uploadLimiter: newDynamicSemaphore(2),
 		stopCh:        make(chan struct{}),
@@ -165,7 +165,7 @@ func TestSyncerClose_JoinsCarveDispatcher(t *testing.T) {
 
 	select {
 	case <-closeDone:
-		t.Fatal("Syncer.Close returned while a carve pass was still inside the local store — the carve dispatcher was not joined")
+		t.Fatal("RemoteSync.Close returned while a carve pass was still inside the local store — the carve dispatcher was not joined")
 	case <-time.After(150 * time.Millisecond):
 	}
 
@@ -174,7 +174,7 @@ func TestSyncerClose_JoinsCarveDispatcher(t *testing.T) {
 	select {
 	case <-closeDone:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Syncer.Close did not return after the carve was released")
+		t.Fatal("RemoteSync.Close did not return after the carve was released")
 	}
 
 	if n := fl.inFlight.Load(); n != 0 {

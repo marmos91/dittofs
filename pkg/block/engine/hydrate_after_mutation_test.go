@@ -47,12 +47,12 @@ func newEngineWithGatedRemote(t *testing.T, ms metadata.Store, rem *gatedRemote)
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}
-	syncer := engine.NewSyncer(localStore, rem, ms, engine.DefaultConfig())
+	syncer := engine.NewRemoteSync(localStore, rem, ms, engine.DefaultConfig())
 	syncer.SetSyncedHashStore(syncedHashStore)
 	syncer.SetRemoteBlockStore(rem)
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		Coordinator:     &testCoordinator{store: ms},
 		SyncedHashStore: syncedHashStore,

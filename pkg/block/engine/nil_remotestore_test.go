@@ -12,7 +12,7 @@ import (
 )
 
 // newNilRemoteStoreEnv creates a test environment with nil remoteStore (local-only mode).
-func newNilRemoteStoreEnv(t *testing.T) (*Syncer, local.LocalStore, func()) {
+func newNilRemoteStoreEnv(t *testing.T) (*RemoteSync, local.LocalStore, func()) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
@@ -21,7 +21,7 @@ func newNilRemoteStoreEnv(t *testing.T) (*Syncer, local.LocalStore, func()) {
 		t.Fatalf("fs.NewWithOptions() error = %v", err)
 	}
 	// nil remoteStore = local-only mode
-	m := NewSyncer(bc, nil, ms, DefaultConfig())
+	m := NewRemoteSync(bc, nil, ms, DefaultConfig())
 	return m, bc, func() {
 		_ = m.Close()
 		_ = bc.Close()

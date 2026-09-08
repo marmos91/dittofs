@@ -32,12 +32,12 @@ func newLocalOnlyEngine(t *testing.T, ms metadata.Store) *engine.Store {
 		t.Fatalf("metadata store %T does not implement metadata.SyncedHashStore", ms)
 	}
 	coord := &testCoordinator{store: ms}
-	syncer := engine.NewSyncer(localStore, nil, ms, engine.DefaultConfig())
+	syncer := engine.NewRemoteSync(localStore, nil, ms, engine.DefaultConfig())
 	// No remote block store: the journal owns the bytes and the local carve sink
 	// records the FileChunk manifest via the SyncedHashStore committer.
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		Coordinator:     coord,
 		SyncedHashStore: syncedHashStore,

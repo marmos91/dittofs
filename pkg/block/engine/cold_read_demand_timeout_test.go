@@ -52,9 +52,9 @@ var (
 // EnsureAvailable would run unbounded and the hang would return.
 func TestNewSyncer_DefaultsDemandFetchTimeout(t *testing.T) {
 	fbs := newStubFileChunkStore()
-	m := NewSyncer(memorylocal.New(), remotememory.New(), fbs, SyncerConfig{})
+	m := NewRemoteSync(memorylocal.New(), remotememory.New(), fbs, RemoteSyncConfig{})
 	if m.config.DemandFetchTimeout != DefaultDemandFetchTimeout {
-		t.Fatalf("NewSyncer left DemandFetchTimeout = %v; want default %v",
+		t.Fatalf("NewRemoteSync left DemandFetchTimeout = %v; want default %v",
 			m.config.DemandFetchTimeout, DefaultDemandFetchTimeout)
 	}
 }

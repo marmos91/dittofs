@@ -66,11 +66,11 @@ func TestNonClosingRemote_EngineRemoteDurableAndCommit(t *testing.T) {
 	// This is the production wrap: engine holds *nonClosingRemote, not the bare remote.
 	engineRemote := &nonClosingRemote{durableRemote}
 
-	syncer := engine.NewSyncer(localStore, engineRemote, ms, engine.DefaultConfig())
+	syncer := engine.NewRemoteSync(localStore, engineRemote, ms, engine.DefaultConfig())
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
 		Remote:          engineRemote,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		SyncedHashStore: ms,
 	})

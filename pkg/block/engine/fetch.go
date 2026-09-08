@@ -26,7 +26,7 @@ func inFlightKey(payloadID string, blockIdx uint64) string {
 // download concurrency the same way; the background SyncQueue prefetch pool is
 // separate. g.Go blocks once the limit is reached; the first task error cancels
 // the rest via the returned context.
-func (m *Syncer) fetchGroup(ctx context.Context) (*errgroup.Group, context.Context) {
+func (m *RemoteSync) fetchGroup(ctx context.Context) (*errgroup.Group, context.Context) {
 	parallel := m.config.ParallelDownloads
 	if parallel < 1 {
 		parallel = 1
@@ -90,7 +90,7 @@ type hydrateSpan struct {
 // so a window opening mid-chunk still hydrates that chunk whole and any row
 // hidden between the chunk's start and the window's is resolved rather than
 // written over.
-func (m *Syncer) collectCoveringChunks(ctx context.Context, payloadID string, start, end uint64) ([]coveringChunk, error) {
+func (m *RemoteSync) collectCoveringChunks(ctx context.Context, payloadID string, start, end uint64) ([]coveringChunk, error) {
 	if m.fileChunkStore == nil {
 		return nil, nil
 	}
@@ -139,7 +139,7 @@ func (m *Syncer) collectCoveringChunks(ctx context.Context, payloadID string, st
 // sparse / not-yet-uploaded payload (ErrFileChunkNotFound) yields (nil, nil).
 // Used by whole-manifest consumers (warm); the read path resolves a single
 // covering chunk via resolveCovering instead of enumerating.
-func (m *Syncer) listFileChunksSnapshot(ctx context.Context, payloadID string) ([]*block.FileChunk, error) {
+func (m *RemoteSync) listFileChunksSnapshot(ctx context.Context, payloadID string) ([]*block.FileChunk, error) {
 	rows, err := m.fileChunkStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
 		if errors.Is(err, block.ErrFileChunkNotFound) {
@@ -170,7 +170,7 @@ func (m *Syncer) listFileChunksSnapshot(ctx context.Context, payloadID string) (
 // is the range the caller's walk resolved it for (see hydrateSpan). A zero span
 // writes the whole claimed extent, which is what a caller holding a row but no
 // window wants.
-func (m *Syncer) hydrateChunk(ctx context.Context, fb *block.FileChunk, data []byte, span hydrateSpan) error {
+func (m *RemoteSync) hydrateChunk(ctx context.Context, fb *block.FileChunk, data []byte, span hydrateSpan) error {
 	// The claim is [StartOffset, StartOffset+DataSize) of the chunk, and the
 	// row's ID names the file offset of its FIRST claimed byte, so the write-back
 	// stays aligned only if the head is trimmed off too. A claim the chunk cannot
@@ -232,7 +232,7 @@ var errPreBlockFormatLocator = errors.New("pre-block-format locator")
 //
 // Returns ("", nil, nil) if the FileChunk has no actionable key (sparse
 // or never-uploaded). Errors from the remote store flow through unchanged.
-func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *block.FileChunk) (string, []byte, error) {
+func (m *RemoteSync) dispatchRemoteFetch(ctx context.Context, fb *block.FileChunk) (string, []byte, error) {
 	if fb == nil {
 		return "", nil, nil
 	}
@@ -279,7 +279,7 @@ func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *block.FileChunk) (
 //     that predates the packed-block format. Nothing can read it any more, so it
 //     fails closed rather than falling through to an empty block key, tagged
 //     errPreBlockFormatLocator so the caller's retry does not repeat it.
-func (m *Syncer) resolveAndReadChunk(ctx context.Context, fb *block.FileChunk) (string, []byte, error) {
+func (m *RemoteSync) resolveAndReadChunk(ctx context.Context, fb *block.FileChunk) (string, []byte, error) {
 	loc, synced, err := m.resolveLocator(ctx, fb.Hash)
 	if err != nil {
 		return "", nil, err
@@ -309,7 +309,7 @@ func (m *Syncer) resolveAndReadChunk(ctx context.Context, fb *block.FileChunk) (
 // "not on remote" and falls back to local, NOT as drift. A synced hash with an
 // empty BlockID is the drift case the caller fails closed on. With no
 // SyncedHashStore wired (test fixtures) the hash is reported not synced.
-func (m *Syncer) resolveLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
+func (m *RemoteSync) resolveLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
 	m.mu.RLock()
 	hs := m.syncedHashStore
 	m.mu.RUnlock()
@@ -332,7 +332,7 @@ func (m *Syncer) resolveLocator(ctx context.Context, hash block.ContentHash) (bl
 // both the chunk's wire bytes and its plaintext-hash domain — ReadChunk
 // returns decrypted/decompressed plaintext, and we recompute over it so a
 // corrupt ranged read can never be served.
-func (m *Syncer) readChunkVerified(ctx context.Context, loc block.ChunkLocator, hash block.ContentHash) ([]byte, error) {
+func (m *RemoteSync) readChunkVerified(ctx context.Context, loc block.ChunkLocator, hash block.ContentHash) ([]byte, error) {
 	// remote.RemoteStore embeds ChunkReader, so ranged block reads are always
 	// available — no capability probe needed.
 	data, err := m.remoteStore.ReadChunk(ctx, loc.BlockID, loc.WireOffset, loc.WireLength, hash)
@@ -370,7 +370,7 @@ func (m *Syncer) readChunkVerified(ctx context.Context, loc block.ChunkLocator, 
 // demand read for the same chunk piggybacks on this prefetch instead of issuing
 // its own S3 GET. That shared budget is what keeps total remote concurrency
 // bounded when the readahead window overlaps demand.
-func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint64) error {
+func (m *RemoteSync) fetchBlock(ctx context.Context, payloadID string, blockIdx uint64) error {
 	if !m.canProcess(ctx) {
 		return ErrClosed
 	}
@@ -419,7 +419,7 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 // start at arbitrary, non-BlockSize-aligned offsets, and a blockIdx lookup
 // would miss every non-aligned chunk and silently skip it). Returns nil data
 // when the row has no actionable remote key (sparse / never-uploaded).
-func (m *Syncer) fetchResolvedBlock(ctx context.Context, fb *block.FileChunk, span hydrateSpan) ([]byte, error) {
+func (m *RemoteSync) fetchResolvedBlock(ctx context.Context, fb *block.FileChunk, span hydrateSpan) ([]byte, error) {
 	if fb == nil {
 		return nil, nil
 	}
@@ -470,7 +470,7 @@ func blockRange(offset uint64, length uint32) (start, end uint64) {
 // EnsureAvailable hydrates the local tier for [offset, offset+length) so
 // the caller's subsequent local read is served warm. Demanded chunks are
 // downloaded inline in the caller's goroutine; prefetch uses the worker pool.
-func (m *Syncer) EnsureAvailable(ctx context.Context, payloadID string, offset uint64, length uint32) error {
+func (m *RemoteSync) EnsureAvailable(ctx context.Context, payloadID string, offset uint64, length uint32) error {
 	if length == 0 {
 		return nil
 	}
@@ -574,7 +574,7 @@ func (m *Syncer) EnsureAvailable(ctx context.Context, payloadID string, offset u
 // fb is the caller's already-resolved covering FileChunk for the block; a nil
 // fb is a sparse block (nothing to fetch). span is the part of the chunk the
 // caller resolved this row for, which is what gets written back locally.
-func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockIdx uint64, fb *block.FileChunk, span hydrateSpan) ([]byte, bool, error) {
+func (m *RemoteSync) inlineFetchOrWait(ctx context.Context, payloadID string, blockIdx uint64, fb *block.FileChunk, span hydrateSpan) ([]byte, bool, error) {
 	// Dedup key must be per-CHUNK, not per-block: a read window can span several
 	// chunks that live in the same 8 MiB block (FastCDC chunks are typically
 	// smaller than BlockSize), so keying by blockIdx alone would make the second
@@ -677,7 +677,7 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 }
 
 // completeInFlight signals completion to all waiters and cleans up tracking.
-func (m *Syncer) completeInFlight(key string, result *fetchResult, err error) {
+func (m *RemoteSync) completeInFlight(key string, result *fetchResult, err error) {
 	result.mu.Lock()
 	result.err = err
 	result.mu.Unlock()
