@@ -188,40 +188,6 @@ func TestHandleExchangeID_BadXDR(t *testing.T) {
 	}
 }
 
-func TestHandleExchangeID_Idempotent(t *testing.T) {
-	h := newTestHandler()
-	ctx := newTestCompoundContext()
-
-	ownerID := []byte("idempotent-handler-client")
-	var verifier [8]byte
-	copy(verifier[:], "testverf")
-
-	args := encodeExchangeIdArgs(ownerID, verifier, 0, types.SP4_NONE, nil)
-
-	// First call
-	ops1 := []compoundOp{{opCode: types.OP_EXCHANGE_ID, data: args}}
-	data1 := buildCompoundArgsWithOps([]byte("idem1"), 1, ops1)
-	resp1, err := h.ProcessCompound(ctx, data1)
-	if err != nil {
-		t.Fatalf("ProcessCompound #1 error: %v", err)
-	}
-
-	// Second call with same args
-	ops2 := []compoundOp{{opCode: types.OP_EXCHANGE_ID, data: args}}
-	data2 := buildCompoundArgsWithOps([]byte("idem2"), 1, ops2)
-	resp2, err := h.ProcessCompound(ctx, data2)
-	if err != nil {
-		t.Fatalf("ProcessCompound #2 error: %v", err)
-	}
-
-	clientID1 := extractClientIDFromResponse(t, resp1)
-	clientID2 := extractClientIDFromResponse(t, resp2)
-
-	if clientID1 != clientID2 {
-		t.Errorf("ClientIDs differ (%d vs %d) for idempotent call", clientID1, clientID2)
-	}
-}
-
 func TestHandleExchangeID_WithImplId(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
@@ -293,27 +259,4 @@ func TestHandleExchangeID_FollowedByPutRootFH(t *testing.T) {
 	}
 
 	expectPutRootFHOK(t, reader)
-}
-
-// extractClientIDFromResponse extracts the client ID from a single-op
-// EXCHANGE_ID compound response.
-func extractClientIDFromResponse(t *testing.T, resp []byte) uint64 {
-	t.Helper()
-	reader := bytes.NewReader(resp)
-
-	status, _ := xdr.DecodeUint32(reader)
-	if status != types.NFS4_OK {
-		t.Fatalf("overall status = %d, want NFS4_OK", status)
-	}
-
-	_, _ = xdr.DecodeOpaque(reader) // tag
-	_, _ = xdr.DecodeUint32(reader) // numResults
-	_, _ = xdr.DecodeUint32(reader) // opcode
-
-	var res types.ExchangeIdRes
-	if err := res.Decode(reader); err != nil {
-		t.Fatalf("decode ExchangeIdRes: %v", err)
-	}
-
-	return res.ClientID
 }

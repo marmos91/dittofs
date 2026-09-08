@@ -3382,6 +3382,7 @@ func (sm *StateManager) CreateSession(
 	foreAttrs, backAttrs types.ChannelAttrs,
 	cbProgram uint32,
 	cbSecParms []types.CallbackSecParms4,
+	principal ...string,
 ) (*CreateSessionResult, []byte, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -3390,6 +3391,29 @@ func (sm *StateManager) CreateSession(
 	record, exists := sm.v41ClientsByID[clientID]
 	if !exists {
 		return nil, nil, ErrStaleClientID
+	}
+
+	// An unconfirmed record not confirmed within a lease period is gone, so its
+	// client ID no longer resolves (RFC 8881 Section 18.35.4). Checked here as
+	// well as in the reaper so the client ID stops working the moment the lease
+	// has passed rather than at the next sweep.
+	if !record.Confirmed && time.Since(record.CreatedAt) > sm.leaseDuration {
+		logger.Debug("CREATE_SESSION: unconfirmed client record expired",
+			"client_id", fmt.Sprintf("0x%x", clientID),
+			"age", time.Since(record.CreatedAt).String())
+		sm.purgeV41Client(record)
+		return nil, nil, ErrStaleClientID
+	}
+
+	// Confirming a record is where its principal is bound, so a confirmation
+	// from another principal is a client-ID collision rather than the expected
+	// confirmation, and nothing on the server changes (RFC 8881 Section
+	// 18.36.3). A record already confirmed skips the confirmation phase
+	// entirely, which is why a later principal change is allowed.
+	if !record.Confirmed && principalHijacks(record.Principal, firstOrEmpty(principal)) {
+		logger.Debug("CREATE_SESSION: confirmation attempted by another principal",
+			"client_id", fmt.Sprintf("0x%x", clientID))
+		return nil, nil, ErrClientIDInUse
 	}
 
 	// Case 2: Replay (same seqid)
@@ -3438,6 +3462,11 @@ func (sm *StateManager) CreateSession(
 
 	// First CREATE_SESSION confirms the client
 	if !record.Confirmed {
+		// A record established by the client-restart case replaces the confirmed
+		// record it superseded, which is destroyed here now that the session is
+		// created (RFC 8881 Section 18.36.3).
+		sm.collapseSupersededLocked(record)
+
 		record.Confirmed = true
 		record.Lease = NewLeaseState(record.ClientID, sm.leaseDuration, nil)
 		record.LastRenewal = time.Now()
@@ -3617,7 +3646,7 @@ func (sm *StateManager) ListSessionsForClient(clientID uint64) []*Session {
 //
 // The reaper runs every 30 seconds and checks:
 //   - Clients with expired leases: destroys all sessions, purges client
-//   - Unconfirmed clients older than 2x lease duration: purges client
+//   - Unconfirmed clients older than the lease duration: purges client
 //
 // Stops when ctx is cancelled.
 func (sm *StateManager) StartSessionReaper(ctx context.Context) {
@@ -3661,8 +3690,9 @@ func (sm *StateManager) reapExpiredSessions() {
 			continue
 		}
 
-		// Check for unconfirmed clients that timed out
-		if !record.Confirmed && now.Sub(record.CreatedAt) > 2*sm.leaseDuration {
+		// Check for unconfirmed clients that timed out. A record not confirmed
+		// within a lease period is removed (RFC 8881 Section 18.35.4).
+		if !record.Confirmed && now.Sub(record.CreatedAt) > sm.leaseDuration {
 			logger.Info("Session reaper: unconfirmed client timed out",
 				"client_id", fmt.Sprintf("0x%x", record.ClientID),
 				"client_addr", record.ClientAddr,
