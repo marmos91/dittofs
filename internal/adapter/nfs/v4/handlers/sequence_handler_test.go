@@ -118,6 +118,52 @@ func decodeSequenceRes(t *testing.T, resp []byte) (*decodedCompoundResponse, *ty
 	return decoded, &seqRes
 }
 
+// readPastSequenceResult decodes the header of a successful COMPOUND response,
+// checks the result count, then consumes the leading SEQUENCE result, leaving
+// the reader positioned at the second result. SEQUENCE carries a result body
+// that decodeCompoundResponse does not know how to skip.
+func readPastSequenceResult(t *testing.T, resp []byte, wantResults uint32) *bytes.Reader {
+	t.Helper()
+	reader := bytes.NewReader(resp)
+
+	status, _ := xdr.DecodeUint32(reader)
+	if status != types.NFS4_OK {
+		t.Fatalf("overall status = %d, want NFS4_OK", status)
+	}
+	_, _ = xdr.DecodeOpaque(reader) // tag
+	numResults, _ := xdr.DecodeUint32(reader)
+	if numResults != wantResults {
+		t.Fatalf("numResults = %d, want %d", numResults, wantResults)
+	}
+
+	opCode, _ := xdr.DecodeUint32(reader)
+	if opCode != types.OP_SEQUENCE {
+		t.Fatalf("result[0] opcode = %d, want OP_SEQUENCE", opCode)
+	}
+	var seqRes types.SequenceRes
+	if err := seqRes.Decode(reader); err != nil {
+		t.Fatalf("decode SEQUENCE result: %v", err)
+	}
+
+	return reader
+}
+
+// expectPutRootFHOK asserts that the next result the reader yields is a
+// successful PUTROOTFH, which it only is when the preceding operation consumed
+// its args without desyncing the reader.
+func expectPutRootFHOK(t *testing.T, reader *bytes.Reader) {
+	t.Helper()
+
+	opCode, _ := xdr.DecodeUint32(reader)
+	if opCode != types.OP_PUTROOTFH {
+		t.Errorf("trailing result opcode = %d, want OP_PUTROOTFH", opCode)
+	}
+	status, _ := xdr.DecodeUint32(reader)
+	if status != types.NFS4_OK {
+		t.Errorf("PUTROOTFH status = %d, want NFS4_OK", status)
+	}
+}
+
 // ============================================================================
 // SEQUENCE Validation Tests
 // ============================================================================
@@ -637,9 +683,9 @@ func TestCompound_V41_MultipleSlots(t *testing.T) {
 // Exempt Operations (regression tests with new dispatch)
 // ============================================================================
 
-func TestCompound_V41_ExemptOps_AllFour(t *testing.T) {
-	// Verify all four exempt ops are accepted as first op without SEQUENCE.
-	// EXCHANGE_ID, CREATE_SESSION, DESTROY_SESSION, and BIND_CONN_TO_SESSION.
+func TestCompound_V41_ExemptOps(t *testing.T) {
+	// Verify every operation that may open a COMPOUND without SEQUENCE is
+	// recognised as exempt.
 	tests := []struct {
 		name   string
 		opCode uint32
@@ -647,6 +693,7 @@ func TestCompound_V41_ExemptOps_AllFour(t *testing.T) {
 		{"EXCHANGE_ID", types.OP_EXCHANGE_ID},
 		{"CREATE_SESSION", types.OP_CREATE_SESSION},
 		{"DESTROY_SESSION", types.OP_DESTROY_SESSION},
+		{"DESTROY_CLIENTID", types.OP_DESTROY_CLIENTID},
 		{"BIND_CONN_TO_SESSION", types.OP_BIND_CONN_TO_SESSION},
 	}
 
@@ -1222,27 +1269,7 @@ func TestCompound_V41_ExemptOpAfterSequence(t *testing.T) {
 		t.Fatalf("ProcessCompound error: %v", err)
 	}
 
-	// Decoded by hand: the SEQUENCE result carries a body that
-	// decodeCompoundResponse does not skip.
-	reader := bytes.NewReader(resp)
-	status, _ := xdr.DecodeUint32(reader)
-	if status != types.NFS4_OK {
-		t.Fatalf("overall status = %d, want NFS4_OK", status)
-	}
-	_, _ = xdr.DecodeOpaque(reader) // tag
-	numResults, _ := xdr.DecodeUint32(reader)
-	if numResults != 2 {
-		t.Fatalf("numResults = %d, want 2", numResults)
-	}
-
-	seqOpCode, _ := xdr.DecodeUint32(reader)
-	if seqOpCode != types.OP_SEQUENCE {
-		t.Fatalf("result[0] opcode = %d, want OP_SEQUENCE", seqOpCode)
-	}
-	var seqRes types.SequenceRes
-	if err := seqRes.Decode(reader); err != nil {
-		t.Fatalf("decode SEQUENCE result: %v", err)
-	}
+	reader := readPastSequenceResult(t, resp, 2)
 
 	eidOpCode, _ := xdr.DecodeUint32(reader)
 	if eidOpCode != types.OP_EXCHANGE_ID {

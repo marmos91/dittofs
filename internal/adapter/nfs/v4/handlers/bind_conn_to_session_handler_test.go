@@ -230,29 +230,9 @@ func TestBindConnToSession_XDRDesync(t *testing.T) {
 		t.Fatalf("ProcessCompound error: %v", err)
 	}
 
-	reader := bytes.NewReader(resp)
-	status, _ := xdr.DecodeUint32(reader)
-	if status != types.NFS4_OK {
-		t.Fatalf("overall status = %d, want NFS4_OK", status)
-	}
+	reader := readPastSequenceResult(t, resp, 3)
 
-	_, _ = xdr.DecodeOpaque(reader) // tag
-	numResults, _ := xdr.DecodeUint32(reader)
-	if numResults != 3 {
-		t.Fatalf("numResults = %d, want 3", numResults)
-	}
-
-	// First op: SEQUENCE
-	seqOpCode, _ := xdr.DecodeUint32(reader)
-	if seqOpCode != types.OP_SEQUENCE {
-		t.Fatalf("result[0] opcode = %d, want OP_SEQUENCE", seqOpCode)
-	}
-	var seqRes types.SequenceRes
-	if err := seqRes.Decode(reader); err != nil {
-		t.Fatalf("decode SEQUENCE result: %v", err)
-	}
-
-	// Second op: BIND_CONN_TO_SESSION
+	// BIND_CONN_TO_SESSION result
 	op1Code, _ := xdr.DecodeUint32(reader)
 	if op1Code != types.OP_BIND_CONN_TO_SESSION {
 		t.Errorf("result[1] opcode = %d, want OP_BIND_CONN_TO_SESSION", op1Code)
@@ -263,13 +243,5 @@ func TestBindConnToSession_XDRDesync(t *testing.T) {
 		t.Errorf("BIND_CONN_TO_SESSION status = %d, want NFS4_OK", bcsRes.Status)
 	}
 
-	// Third op: PUTROOTFH (only reached if the reader was not desynced)
-	op2Code, _ := xdr.DecodeUint32(reader)
-	if op2Code != types.OP_PUTROOTFH {
-		t.Errorf("result[2] opcode = %d, want OP_PUTROOTFH", op2Code)
-	}
-	op2Status, _ := xdr.DecodeUint32(reader)
-	if op2Status != types.NFS4_OK {
-		t.Errorf("PUTROOTFH status = %d, want NFS4_OK", op2Status)
-	}
+	expectPutRootFHOK(t, reader)
 }

@@ -499,24 +499,15 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 
 	// Check if the first operation is session-exempt
 	if v41handlers.IsSessionExemptOp(firstOpCode) {
-		// An operation allowed to execute outside a session must be the only
-		// operation in a COMPOUND that does not start with SEQUENCE, and
-		// NFS4ERR_NOT_ONLY_OP is the error when it is not (RFC 8881
-		// Section 15.1.3.3). Each of the five operations that reach this branch
-		// repeats the rule in its own description: EXCHANGE_ID
-		// (Section 18.35.3), CREATE_SESSION (Section 18.36.3), DESTROY_SESSION
-		// (Section 18.37.3), DESTROY_CLIENTID (Section 18.50.3) and
-		// BIND_CONN_TO_SESSION (Section 18.34.3), which is why the exempt set
-		// and the restricted set are the same set.
+		// A session-exempt operation must be the only operation in a COMPOUND
+		// that does not start with SEQUENCE, else NFS4ERR_NOT_ONLY_OP (RFC 8881
+		// Section 15.1.3.3). The restriction is on the COMPOUND, not on the
+		// operation: the same operations are legal at any position after a
+		// SEQUENCE, and those COMPOUNDs take the SEQUENCE path below instead.
 		//
-		// The restriction is on the COMPOUND, not on the operation: the same
-		// operations are permitted at any position after a SEQUENCE, and those
-		// COMPOUNDs never reach this branch — they take the SEQUENCE path below
-		// and are dispatched by the loop, which applies no such rule.
-		//
-		// The reply carries one result for the offending first operation rather
-		// than none, so a client can attribute the error to an operation the
-		// way it can for every other per-operation status.
+		// The reply carries one result for the offending operation rather than
+		// none, so a client can attribute the error to an operation the way it
+		// can for every other per-operation status.
 		if numOps != 1 {
 			logger.Debug("NFSv4.1 COMPOUND session-exempt op is not the only operation",
 				"op_name", types.OpName(firstOpCode),

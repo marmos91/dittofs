@@ -2629,22 +2629,24 @@ func TestCompound_V41_CancelledContext_EncodesPartialReply(t *testing.T) {
 		t.Fatal("ProcessCompound returned empty reply on cancel; expected encoded partial response")
 	}
 
-	reader := bytes.NewReader(resp)
-	status, _ := xdr.DecodeUint32(reader)
-	if status != types.NFS4ERR_DELAY {
-		t.Errorf("overall status = %d, want NFS4ERR_DELAY (%d)", status, types.NFS4ERR_DELAY)
+	// Only the SEQUENCE result is present, so its body cannot be mistaken for a
+	// following result and the generic decoder suffices.
+	decoded, err := decodeCompoundResponse(resp)
+	if err != nil {
+		t.Fatalf("decode response error: %v", err)
 	}
-	tag, _ := xdr.DecodeOpaque(reader)
-	if string(tag) != "cxl" {
-		t.Errorf("tag = %q, want %q (tag must be echoed in partial reply)", string(tag), "cxl")
+	if decoded.Status != types.NFS4ERR_DELAY {
+		t.Errorf("overall status = %d, want NFS4ERR_DELAY (%d)", decoded.Status, types.NFS4ERR_DELAY)
 	}
-	numResults, _ := xdr.DecodeUint32(reader)
-	if numResults != 1 {
-		t.Fatalf("numResults = %d, want 1 (SEQUENCE completed, GETATTR cancelled)", numResults)
+	if string(decoded.Tag) != "cxl" {
+		t.Errorf("tag = %q, want %q (tag must be echoed in partial reply)", decoded.Tag, "cxl")
 	}
-	opCode, _ := xdr.DecodeUint32(reader)
-	if opCode != types.OP_SEQUENCE {
-		t.Errorf("first result opcode = %d, want OP_SEQUENCE (%d)", opCode, types.OP_SEQUENCE)
+	if decoded.NumResults != 1 {
+		t.Fatalf("numResults = %d, want 1 (SEQUENCE completed, GETATTR cancelled)", decoded.NumResults)
+	}
+	if decoded.Results[0].OpCode != types.OP_SEQUENCE {
+		t.Errorf("first result opcode = %d, want OP_SEQUENCE (%d)",
+			decoded.Results[0].OpCode, types.OP_SEQUENCE)
 	}
 }
 
