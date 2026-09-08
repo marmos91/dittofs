@@ -1,13 +1,16 @@
-package engine
+// Package syncer holds the upload-window mechanism: a semaphore whose limit can
+// be resized while slots are held, and the goodput controller that decides the
+// limit.
+package syncer
 
 import (
 	"context"
 	gosync "sync"
 )
 
-// dynamicSemaphore is a counting semaphore whose limit can change while slots
-// are held. The adaptive upload controller (#1407) resizes it every control
-// interval, so the fixed-size golang.org/x/sync/semaphore.Weighted (size set at
+// DynamicSemaphore is a counting semaphore whose limit can change while slots
+// are held. The adaptive upload controller resizes it every control interval,
+// so the fixed-size golang.org/x/sync/semaphore.Weighted (size set at
 // construction) does not fit. Growing the limit wakes blocked Acquire callers
 // immediately; shrinking never preempts existing holders — it only withholds
 // new slots until in-flight falls below the new limit.
@@ -15,7 +18,7 @@ import (
 // It is also context-aware: Acquire returns ctx.Err() if the context is
 // cancelled while waiting, so a failing/cancelled mirror pass does not strand a
 // goroutine on a slot that will never free.
-type dynamicSemaphore struct {
+type DynamicSemaphore struct {
 	mu       gosync.Mutex
 	cond     *gosync.Cond
 	limit    int
@@ -23,26 +26,28 @@ type dynamicSemaphore struct {
 	peak     int // high-water mark of inflight since the last TakePeak
 }
 
-func newDynamicSemaphore(limit int) *dynamicSemaphore {
+// NewDynamicSemaphore returns a semaphore with the given starting limit,
+// clamped to at least 1.
+func NewDynamicSemaphore(limit int) *DynamicSemaphore {
 	if limit < 1 {
 		limit = 1
 	}
-	s := &dynamicSemaphore{limit: limit}
+	s := &DynamicSemaphore{limit: limit}
 	s.cond = gosync.NewCond(&s.mu)
 	return s
 }
 
 // Acquire blocks until a slot is available or ctx is done. On ctx cancellation
 // it returns ctx.Err() without consuming a slot.
-func (s *dynamicSemaphore) Acquire(ctx context.Context) error {
+func (s *DynamicSemaphore) Acquire(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
 	s.mu.Lock()
 	// Fast path: a slot is free now — take it without parking or spawning a
-	// cancellation watcher. This is the common case in the mirror loop (one
-	// Acquire per chunk), so it must not allocate a goroutine per call.
+	// cancellation watcher. This is the common case in the dispatch loop (one
+	// Acquire per carve pass), so it must not allocate a goroutine per call.
 	if s.inflight < s.limit {
 		s.inflight++
 		if s.inflight > s.peak {
@@ -91,8 +96,8 @@ func (s *dynamicSemaphore) Acquire(ctx context.Context) error {
 // TakePeak returns the high-water mark of in-flight slots since the last call
 // and resets it to the current in-flight count. The adaptive controller uses it
 // to tell window-limited intervals (peak reached the limit) from app-limited
-// ones (peak stayed below it) — see goodputController.observe.
-func (s *dynamicSemaphore) TakePeak() int {
+// ones (peak stayed below it) — see GoodputController.Observe.
+func (s *DynamicSemaphore) TakePeak() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p := s.peak
@@ -105,7 +110,7 @@ func (s *dynamicSemaphore) TakePeak() int {
 // freed slot, so waking exactly one risks stranding it — Broadcast lets the
 // next live waiter take the slot. Signalling under s.mu serializes it against a
 // waiter's ctx-check/Wait window (no lost wakeup).
-func (s *dynamicSemaphore) Release() {
+func (s *DynamicSemaphore) Release() {
 	s.mu.Lock()
 	if s.inflight > 0 {
 		s.inflight--
@@ -117,7 +122,7 @@ func (s *dynamicSemaphore) Release() {
 // SetLimit changes the maximum concurrency. Growing wakes blocked waiters;
 // shrinking takes effect for future acquires only (current holders run to
 // completion).
-func (s *dynamicSemaphore) SetLimit(n int) {
+func (s *DynamicSemaphore) SetLimit(n int) {
 	if n < 1 {
 		n = 1
 	}
@@ -128,14 +133,14 @@ func (s *dynamicSemaphore) SetLimit(n int) {
 }
 
 // Limit returns the current maximum concurrency.
-func (s *dynamicSemaphore) Limit() int {
+func (s *DynamicSemaphore) Limit() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.limit
 }
 
 // InFlight returns the number of currently held slots.
-func (s *dynamicSemaphore) InFlight() int {
+func (s *DynamicSemaphore) InFlight() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.inflight
