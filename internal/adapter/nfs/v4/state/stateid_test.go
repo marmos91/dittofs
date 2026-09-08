@@ -768,17 +768,23 @@ func TestCloseFile_Success(t *testing.T) {
 	}
 }
 
+// TestCloseFile_SpecialStateid rejects both special stateids on CLOSE. RFC 7530
+// Section 9.1.4.3 admits a special stateid only on READ, WRITE and SETATTR, so
+// CLOSE has no open state to act on and must not report success.
 func TestCloseFile_SpecialStateid(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
-	// Close with anonymous (all-zeros) stateid
-	zeroed := &types.Stateid4{Seqid: 0}
-	closed, err := sm.CloseFile(zeroed, 1, 0)
-	if err != nil {
-		t.Fatalf("CloseFile with special stateid: %v", err)
+	anonymous := &types.Stateid4{Seqid: 0}
+	if _, err := sm.CloseFile(anonymous, 1, 0); !errors.Is(err, ErrBadStateid) {
+		t.Errorf("CLOSE with the anonymous stateid: err = %v, want NFS4ERR_BAD_STATEID", err)
 	}
-	if closed.Stateid.Seqid != 0 {
-		t.Errorf("closed seqid = %d, want 0", closed.Stateid.Seqid)
+
+	readBypass := &types.Stateid4{Seqid: 0xFFFFFFFF}
+	for i := range readBypass.Other {
+		readBypass.Other[i] = 0xFF
+	}
+	if _, err := sm.CloseFile(readBypass, 1, 0); !errors.Is(err, ErrBadStateid) {
+		t.Errorf("CLOSE with the READ-bypass stateid: err = %v, want NFS4ERR_BAD_STATEID", err)
 	}
 }
 
@@ -871,20 +877,31 @@ func TestDowngradeOpen_Success(t *testing.T) {
 	}
 
 	// Confirm
-	confirmed, err := sm.ConfirmOpen(&result.Stateid, 2, 0)
-	if err != nil {
+	if _, err := sm.ConfirmOpen(&result.Stateid, 2, 0); err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
 
+	// A second OPEN for READ alone, so READ is a mode this state was actually
+	// opened for and OPEN_DOWNGRADE may name it.
+	reopened, err := sm.OpenFile(0, []byte("owner1"), 3,
+		[]byte("fh"),
+		types.OPEN4_SHARE_ACCESS_READ,
+		types.OPEN4_SHARE_DENY_NONE,
+		types.CLAIM_NULL,
+	)
+	if err != nil {
+		t.Fatalf("OpenFile (READ): %v", err)
+	}
+
 	// Downgrade to READ only
-	downgraded, err := sm.DowngradeOpen(&confirmed.Stateid, 3, types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, 0)
+	downgraded, err := sm.DowngradeOpen(&reopened.Stateid, 4, types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, 0)
 	if err != nil {
 		t.Fatalf("DowngradeOpen: %v", err)
 	}
 
 	// Seqid should be incremented
-	if downgraded.Stateid.Seqid != confirmed.Stateid.Seqid+1 {
-		t.Errorf("downgraded seqid = %d, want %d", downgraded.Stateid.Seqid, confirmed.Stateid.Seqid+1)
+	if downgraded.Stateid.Seqid != reopened.Stateid.Seqid+1 {
+		t.Errorf("downgraded seqid = %d, want %d", downgraded.Stateid.Seqid, reopened.Stateid.Seqid+1)
 	}
 
 	// Verify share_access was updated

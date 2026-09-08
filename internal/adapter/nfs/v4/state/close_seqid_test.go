@@ -144,7 +144,11 @@ func TestDowngradeOpen_ReplayLeavesOwnerSeqidUntouched(t *testing.T) {
 	clientID, _, openStateid, openSeqid := setupClientAndOpenState(t, sm)
 
 	seqid := openSeqid + 1
-	if _, err := sm.DowngradeOpen(openStateid, seqid, types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, 0); err != nil {
+	// The open behind these stateids was opened for BOTH and nothing else, so
+	// BOTH is the only share_access an OPEN_DOWNGRADE on it may name: RFC 7530
+	// Section 16.19.4 admits only a mode some OPEN actually asked for.
+	downgraded, err := sm.DowngradeOpen(openStateid, seqid, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, 0)
+	if err != nil {
 		t.Fatalf("OPEN_DOWNGRADE failed: %v", err)
 	}
 
@@ -167,8 +171,10 @@ func TestDowngradeOpen_ReplayLeavesOwnerSeqidUntouched(t *testing.T) {
 		}
 	}
 
-	// The sequence is still where the successful OPEN_DOWNGRADE left it.
-	if _, err := sm.DowngradeOpen(openStateid, seqid+1, types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, 0); err != nil {
+	// The sequence is still where the successful OPEN_DOWNGRADE left it. A new
+	// request carries the stateid that OPEN_DOWNGRADE returned, not the one the
+	// retransmits above replayed.
+	if _, err := sm.DowngradeOpen(&downgraded.Stateid, seqid+1, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, 0); err != nil {
 		t.Fatalf("OPEN_DOWNGRADE after replays failed: %v "+
 			"(a replay advanced the open-owner seqid; it must not)", err)
 	}
