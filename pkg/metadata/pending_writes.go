@@ -108,7 +108,7 @@ func (t *PendingWritesTracker) RecordWrite(handle FileHandle, intent *WriteOpera
 		// The stable mtime/ctime it buys one writer also holds the NFSv4 change
 		// attribute still, since that attribute is encoded from ctime. So from
 		// the second write of a session onward, another client's writes to the
-		// same file go unannounced: MaxSize below still grows, so a write that
+		// same file go unannounced: MaxSize is not frozen, so a write that
 		// extends the file moves size, but one that overwrites in place moves
 		// no attribute at all, and a reader re-reading the change attribute
 		// sees the frozen value and keeps serving its cached copy. Upgrade to a
