@@ -172,7 +172,7 @@ func TestPrepareDispatch_RejectsTreeFromAnotherSession(t *testing.T) {
 	}
 	_, _, errStatus := prepareDispatch(context.Background(), hdr, attacker)
 	if errStatus != types.StatusNetworkNameDeleted {
-		t.Fatalf("errStatus=0x%x, want StatusNetworkNameDeleted (0x%x) for a tree owned by another session",
+		t.Fatalf("errStatus=%v, want %v for a tree owned by another session",
 			errStatus, types.StatusNetworkNameDeleted)
 	}
 }
@@ -200,7 +200,7 @@ func TestPrepareDispatch_AllowsOwnTree(t *testing.T) {
 	}
 	_, handlerCtx, errStatus := prepareDispatch(context.Background(), hdr, ci)
 	if errStatus != 0 {
-		t.Fatalf("errStatus=0x%x, want 0 for the session's own tree", errStatus)
+		t.Fatalf("errStatus=%v, want success for the session's own tree", errStatus)
 	}
 	if handlerCtx.ShareName != "myshare" {
 		t.Fatalf("ShareName=%q, want %q", handlerCtx.ShareName, "myshare")
