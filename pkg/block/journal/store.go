@@ -69,9 +69,11 @@ type Config struct {
 	// across the whole file, one block at a time, and so are the manifest row-end
 	// lookups that widen each run; only the commits overlap, so a single large
 	// file's carve is not one PutBlock at a time.
-	// Peak carve RAM per file is window x (CarveBlockSize + one overhang chunk)
-	// for the block arenas, plus the single chunker scratch buffer of
-	// chunker.MaxChunkSize the pass holds — so keep it modest.
+	// Peak carve RAM per file is window x (CarveBlockSize + one ChunkParams.Max
+	// chunk) for the block arenas, plus the single chunker scratch buffer of
+	// chunker.MaxChunkSize the pass holds. Per file: whatever bounds how many
+	// files carve at once multiplies the arena term again, so the real ceiling
+	// is that product — keep this modest.
 	// Zero falls back to the default via withDefaults.
 	CarveUploadConcurrency int
 	// DirtyExpiry bounds how long an appended record may sit unfsynced. A
