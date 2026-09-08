@@ -49,14 +49,14 @@ func newRemoteBackedEngine(t *testing.T, b manifestBackend) (*Store, block.Engin
 	localStore := memorylocal.New()
 	rs := remotememory.New()
 
-	syncer := NewSyncer(localStore, rs, fbs, DefaultConfig())
+	syncer := NewRemoteSync(localStore, rs, fbs, DefaultConfig())
 	syncer.SetSyncedHashStore(shs)
 	syncer.SetRemoteBlockStore(rs)
 
 	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Remote:          rs,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		FileChunkStore:  fbs,
 		SyncedHashStore: shs,
 	})

@@ -14,10 +14,10 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// newLocatorFetchSyncer builds a Syncer over an in-memory local store, remote
+// newLocatorFetchSyncer builds a RemoteSync over an in-memory local store, remote
 // store, and synced-hash store — the minimal wiring dispatchRemoteFetch needs to
 // resolve a chunk locator and route the read.
-func newLocatorFetchSyncer(t *testing.T) (*Syncer, *remotememory.Store, *metadatamemory.MemoryMetadataStore) {
+func newLocatorFetchSyncer(t *testing.T) (*RemoteSync, *remotememory.Store, *metadatamemory.MemoryMetadataStore) {
 	t.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = ms.Close() })
@@ -30,7 +30,7 @@ func newLocatorFetchSyncer(t *testing.T) (*Syncer, *remotememory.Store, *metadat
 	t.Cleanup(func() { _ = localStore.Close() })
 
 	rem := remotememory.New()
-	syncer := NewSyncer(localStore, rem, ms, DefaultConfig())
+	syncer := NewRemoteSync(localStore, rem, ms, DefaultConfig())
 	syncer.SetSyncedHashStore(ms)
 	return syncer, rem, ms
 }

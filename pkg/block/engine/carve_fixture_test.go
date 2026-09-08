@@ -45,14 +45,14 @@ const carveFixturePayload = "share/p1"
 
 // carveFixture wires a journal-backed *fs.FSStore, a memory metadata store (the
 // blockCommitter: Transactor + SyncedHashStore), and the
-// provided block-keyed remote into a Syncer with the carve substrate fully
+// provided block-keyed remote into a RemoteSync with the carve substrate fully
 // active (ManualSync — no background dispatcher racing assertions). carveBytes
 // sizes the block target.
 type carveFixture struct {
 	local  *fs.FSStore
 	ms     *metadatamemory.MemoryMetadataStore
 	remote remote.RemoteBlockStore
-	syncer *Syncer
+	syncer *RemoteSync
 	off    int64 // running write offset within carveFixturePayload
 }
 
@@ -75,7 +75,7 @@ func newCarveFixture(t *testing.T, rbs remote.RemoteStore, carveBytes int64) *ca
 	cfg := DefaultConfig()
 	cfg.ManualSync = true // explicit carve only; no background goroutine racing assertions
 
-	syncer := NewSyncer(local, rbs, ms, cfg)
+	syncer := NewRemoteSync(local, rbs, ms, cfg)
 	syncer.SetSyncedHashStore(ms)
 	rblock, ok := rbs.(remote.RemoteBlockStore)
 	if !ok {
@@ -170,7 +170,7 @@ func TestCarveBlockSizeReachesTheCarveLoop(t *testing.T) {
 		bs, err := New(BlockStoreConfig{
 			Local:           fx.local,
 			Remote:          mem,
-			Syncer:          fx.syncer,
+			RemoteSync:      fx.syncer,
 			FileChunkStore:  fx.ms,
 			SyncedHashStore: fx.ms,
 		})

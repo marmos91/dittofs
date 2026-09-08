@@ -122,7 +122,7 @@ func TestReadAtInternal_StillColdAfterHydrateFailsClosed(t *testing.T) {
 	// the window is still cold on the re-read.
 	bs := &Store{
 		local:  alwaysColdLocal{},
-		syncer: &Syncer{stopCh: make(chan struct{}), config: DefaultConfig()},
+		syncer: &RemoteSync{stopCh: make(chan struct{}), config: DefaultConfig()},
 	}
 
 	data := bytes.Repeat([]byte{0xAA}, 4096)
