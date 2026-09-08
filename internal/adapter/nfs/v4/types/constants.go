@@ -369,6 +369,22 @@ const (
 	OPEN4_SHARE_DENY_BOTH  = 0x03
 )
 
+// OPEN share_access delegation-want bits (RFC 8881 Section 18.16.3), v4.1 and
+// later. They occupy bits outside OPEN4_SHARE_ACCESS_BOTH, so a server that
+// masks share_access down to the access mode ignores them harmlessly.
+//
+// WANT_NO_PREFERENCE leaves the choice to the server, which is what a client
+// sending none of these bits gets.
+const (
+	OPEN4_SHARE_ACCESS_WANT_DELEG_MASK    = 0xFF00
+	OPEN4_SHARE_ACCESS_WANT_NO_PREFERENCE = 0x0000
+	OPEN4_SHARE_ACCESS_WANT_READ_DELEG    = 0x0100
+	OPEN4_SHARE_ACCESS_WANT_WRITE_DELEG   = 0x0200
+	OPEN4_SHARE_ACCESS_WANT_ANY_DELEG     = 0x0300
+	OPEN4_SHARE_ACCESS_WANT_NO_DELEG      = 0x0400
+	OPEN4_SHARE_ACCESS_WANT_CANCEL        = 0x0500
+)
+
 // OPEN create type
 const (
 	OPEN4_NOCREATE = 0
@@ -394,11 +410,35 @@ const (
 	OPEN4_RESULT_LOCKTYPE_POSIX = 0x04
 )
 
-// OPEN delegation types
+// OPEN delegation types (open_delegation_type4)
 const (
 	OPEN_DELEGATE_NONE  = 0
 	OPEN_DELEGATE_READ  = 1
 	OPEN_DELEGATE_WRITE = 2
+
+	// OPEN_DELEGATE_NONE_EXT carries a reason for withholding a delegation
+	// (RFC 8881 Section 18.16.3). It exists only from v4.1 on: a v4.0 client
+	// cannot decode the arm, so a v4.0 reply that grants nothing must stay
+	// OPEN_DELEGATE_NONE.
+	OPEN_DELEGATE_NONE_EXT = 3
+)
+
+// why_no_delegation4 reasons carried by OPEN_DELEGATE_NONE_EXT
+// (RFC 8881 Section 18.16.3).
+//
+// WND4_CONTENTION and WND4_RESOURCE each carry a trailing bool saying whether
+// the server will follow up when the obstacle clears; every other reason
+// encodes as void.
+const (
+	WND4_NOT_WANTED                 = 0
+	WND4_CONTENTION                 = 1
+	WND4_RESOURCE                   = 2
+	WND4_NOT_SUPP_FTYPE             = 3
+	WND4_WRITE_DELEG_NOT_SUPP_FTYPE = 4
+	WND4_NOT_SUPP_UPGRADE           = 5
+	WND4_NOT_SUPP_DOWNGRADE         = 6
+	WND4_CANCELLED                  = 7
+	WND4_IS_DIR                     = 8
 )
 
 // ============================================================================

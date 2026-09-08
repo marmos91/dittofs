@@ -188,6 +188,16 @@ type CompoundContext struct {
 	MinorVersionAccepted bool
 }
 
+// IsV41OrLater reports whether this COMPOUND arrived under a minor version
+// that understands the NFSv4.1 additions to the protocol. Encoding one of them
+// into a reply to a v4.0 client would hand it a union arm it cannot decode.
+//
+// It reads both fields together so a caller cannot mistake an unset
+// MinorVersion for NFSv4.0.
+func (c *CompoundContext) IsV41OrLater() bool {
+	return c.MinorVersionAccepted && c.MinorVersion >= 1
+}
+
 // EffectiveClientID returns the client ID an open-owner or lock-owner should be
 // keyed under, given the clientid decoded from the owner's wire representation.
 //

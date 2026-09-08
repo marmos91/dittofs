@@ -33,7 +33,7 @@ func (s *Stateid4) isCurrentStateidPlaceholder() bool {
 // COMPOUND. It is an NFSv4.1 addition; in a v4.0 COMPOUND (1, 0) is just an
 // ordinary stateid the server never issued.
 func (c *CompoundContext) tracksCurrentStateid() bool {
-	return c.MinorVersionAccepted && c.MinorVersion >= 1
+	return c.IsV41OrLater()
 }
 
 // SetCurrentStateid records the stateid an operation returned as the COMPOUND's
