@@ -199,10 +199,21 @@ func (h *Handler) handleSrvCopyChunk(ctx *SMBHandlerContext, body []byte) (*Hand
 		return NewErrorResult(types.StatusObjectNameNotFound), nil
 	}
 
-	// Per [MS-SMB2] 3.3.5.15.6: source and destination must be in the same session
-	if srcOpen.SessionID != dstOpen.SessionID {
-		logger.Debug("COPYCHUNK: cross-session copy not allowed",
-			"srcSession", srcOpen.SessionID, "dstSession", dstOpen.SessionID)
+	// Per [MS-SMB2] 3.3.5.15.6: source and destination must be in the same
+	// session — and that session must be the requester's. Comparing the two
+	// handles only to each other is satisfied by any caller that supplies two
+	// foreign FileIds belonging to one other session, so anchor both to ctx.
+	//
+	// SessionID alone, deliberately: the source is reached through a resume key
+	// rather than a TreeID, and §3.3.5.15.6 constrains it to the session, not
+	// the tree connect. A server-side copy between two shares the session holds
+	// is legitimate, so requiring srcOpen.TreeID == ctx.TreeID would break it.
+	// The destination is this IOCTL's own handle and gets the full tree+session
+	// ownership check when it primes the auth context below.
+	if srcOpen.SessionID != ctx.SessionID || dstOpen.SessionID != ctx.SessionID {
+		logger.Debug("COPYCHUNK: handle does not belong to the requesting session",
+			"srcSession", srcOpen.SessionID, "dstSession", dstOpen.SessionID,
+			"reqSession", ctx.SessionID)
 		return NewErrorResult(types.StatusObjectNameNotFound), nil
 	}
 
@@ -388,7 +399,9 @@ func (h *Handler) executeCopyChunks(
 	// on the destination write (#619, same class as #603). srcOpen and
 	// dstOpen are required to share a SessionID by the upstream validator,
 	// so priming from dstOpen is equivalent to priming from srcOpen.
-	h.primeAuthContextFromOpenFile(ctx, dstOpen)
+	if st := h.primeAuthContextFromOpenFile(ctx, dstOpen); st != types.StatusSuccess {
+		return NewErrorResult(st), nil
+	}
 
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {

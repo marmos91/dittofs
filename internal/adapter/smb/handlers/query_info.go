@@ -351,7 +351,9 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	// BEFORE BuildAuthContext — otherwise ctx.User==nil falls into the
 	// anonymous arm and synthesises UID-0 (root), bypassing all DACL checks
 	// in the metadata layer (#619, same class as #603).
-	h.primeAuthContextFromOpenFile(ctx, openFile)
+	if st := h.primeAuthContextFromOpenFile(ctx, openFile); st != types.StatusSuccess {
+		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: st}}, nil
+	}
 
 	authCtx, authErr := BuildAuthContext(ctx)
 	if authErr != nil {
