@@ -217,10 +217,13 @@ func (r *PendingCreateRegistry) UnregisterByMessageID(connID, messageID uint64) 
 	return p
 }
 
-// UnregisterByAsyncId removes a pending CREATE matching asyncId and invokes
-// its Cancel closure. Used by async-flagged SMB2_CANCEL.
-func (r *PendingCreateRegistry) UnregisterByAsyncId(asyncId uint64) *PendingCreate {
-	p := r.reg.unregisterByAsyncID(asyncId)
+// UnregisterByAsyncId removes the pending CREATE parked on connID under
+// asyncId and invokes its Cancel closure. Used by async-flagged SMB2_CANCEL.
+// An entry parked on a different connection does not match and is left alone.
+func (r *PendingCreateRegistry) UnregisterByAsyncId(connID, asyncId uint64) *PendingCreate {
+	p := r.reg.unregisterByAsyncIDOwnedBy(asyncId, func(p *PendingCreate) bool {
+		return p.ConnID == connID
+	})
 	if p != nil {
 		markStarted(p)
 		if p.Cancel != nil {

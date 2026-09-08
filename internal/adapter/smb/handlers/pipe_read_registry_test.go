@@ -32,14 +32,14 @@ func TestPipeReadRegistry_RegisterAndUnregisterByFileID(t *testing.T) {
 	p := newTestPipeRead(1, 10, 100, 1000, nil)
 	r.Register(p)
 
-	if got := r.UnregisterByMessageID(100); got != p {
+	if got := r.UnregisterByMessageID(0, 100); got != p {
 		t.Fatalf("UnregisterByMessageID = %v, want p", got)
 	}
 	// Now gone from all indexes.
 	if got := r.UnregisterByFileID(p.FileID); got != nil {
 		t.Fatalf("UnregisterByFileID after removal = %v, want nil", got)
 	}
-	if got := r.UnregisterByAsyncId(1000); got != nil {
+	if got := r.UnregisterByAsyncId(0, 1000); got != nil {
 		t.Fatalf("UnregisterByAsyncId after removal = %v, want nil", got)
 	}
 }
@@ -67,7 +67,7 @@ func TestPipeReadRegistry_RegisterDisplacesSameFileID(t *testing.T) {
 	}
 
 	// Only the newer entry remains; old indexes are gone.
-	if got := r.UnregisterByAsyncId(1000); got != nil {
+	if got := r.UnregisterByAsyncId(0, 1000); got != nil {
 		t.Errorf("old entry still present: %v", got)
 	}
 	if got := r.UnregisterByFileID(newer.FileID); got != newer {
@@ -86,7 +86,7 @@ func TestPipeReadRegistry_UnregisterAllForSession(t *testing.T) {
 		t.Fatalf("UnregisterAllForSession(10) = %d, want 2", len(got))
 	}
 	// Session 11 entry survives.
-	if got := r.UnregisterByAsyncId(1002); got == nil {
+	if got := r.UnregisterByAsyncId(0, 1002); got == nil {
 		t.Errorf("session 11 entry should survive teardown of session 10")
 	}
 }

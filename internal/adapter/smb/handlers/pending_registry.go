@@ -140,9 +140,27 @@ func (r *pendingRegistry[V]) Len() int {
 }
 
 // unregisterByAsyncID removes the entry keyed by asyncID, returning it (or nil).
+// The AsyncId alone identifies the entry, so this is for server-internal
+// callers that already own the entry (the resume goroutine after it has
+// delivered its final response). Anything acting on a client-supplied AsyncId
+// must go through unregisterByAsyncIDOwnedBy.
 func (r *pendingRegistry[V]) unregisterByAsyncID(asyncID uint64) *V {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.removeLocked(asyncID)
+}
+
+// unregisterByAsyncIDOwnedBy removes the entry keyed by asyncID only when owns
+// reports true for it, and returns nil otherwise. An AsyncId that arrives on
+// the wire is just a number the peer chose, so every client-driven lookup
+// pairs it with an ownership predicate on the entry it resolves to.
+func (r *pendingRegistry[V]) unregisterByAsyncIDOwnedBy(asyncID uint64, owns func(*V) bool) *V {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.byAsyncID[asyncID]
+	if !ok || !owns(p) {
+		return nil
+	}
 	return r.removeLocked(asyncID)
 }
 

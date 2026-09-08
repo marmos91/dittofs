@@ -185,10 +185,13 @@ func (r *PendingLockRegistry) UnregisterByMessageID(connID, messageID uint64) *P
 	return p
 }
 
-// UnregisterByAsyncId removes a pending LOCK matching asyncId and invokes its
-// Cancel closure. Used by async-flagged SMB2_CANCEL.
-func (r *PendingLockRegistry) UnregisterByAsyncId(asyncId uint64) *PendingLock {
-	p := r.reg.unregisterByAsyncID(asyncId)
+// UnregisterByAsyncId removes the pending LOCK parked on connID under asyncId
+// and invokes its Cancel closure. Used by async-flagged SMB2_CANCEL. An entry
+// parked on a different connection does not match and is left alone.
+func (r *PendingLockRegistry) UnregisterByAsyncId(connID, asyncId uint64) *PendingLock {
+	p := r.reg.unregisterByAsyncIDOwnedBy(asyncId, func(p *PendingLock) bool {
+		return p.ConnID == connID
+	})
 	if p != nil && p.Cancel != nil {
 		p.Cancel()
 	}

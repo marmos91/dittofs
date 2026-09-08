@@ -994,15 +994,18 @@ func (r *NotifyRegistry) Unregister(fileID [16]byte) *PendingNotify {
 	return r.unregisterLocked(waiters[0])
 }
 
-// UnregisterByAsyncId removes a pending notification by AsyncId.
-// Called by CANCEL when the client sends a cancel with SMB2_FLAGS_ASYNC_COMMAND.
-// Returns the removed PendingNotify, or nil if not found.
-func (r *NotifyRegistry) UnregisterByAsyncId(asyncId uint64) *PendingNotify {
+// UnregisterByAsyncId removes the pending notification registered on connID
+// under asyncId. Called by CANCEL when the client sends a cancel with
+// SMB2_FLAGS_ASYNC_COMMAND. The AsyncId arrives verbatim off the wire, so it is
+// matched against the connection the cancel came in on: a notify registered on
+// another connection does not match and is left waiting. Returns the removed
+// PendingNotify, or nil if not found.
+func (r *NotifyRegistry) UnregisterByAsyncId(connID, asyncId uint64) *PendingNotify {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	notify, ok := r.byAsyncId[asyncId]
-	if !ok {
+	if !ok || notify.ConnID != connID {
 		return nil
 	}
 
