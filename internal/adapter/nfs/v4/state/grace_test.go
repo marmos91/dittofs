@@ -480,8 +480,8 @@ func TestReclaimComplete_StateManager(t *testing.T) {
 		}
 		wantCompleteAlready(t, sm.ReclaimComplete(clientID))
 
-		// The first call must still retire the client from the roster.
-		time.Sleep(20 * time.Millisecond)
+		// The first call must still retire the client from the roster, and the
+		// early exit lands before ReclaimComplete returns.
 		if sm.IsInGrace() {
 			t.Error("grace should end early once the only expected client reclaims")
 		}
