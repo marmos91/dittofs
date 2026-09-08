@@ -10,17 +10,20 @@ import (
 
 // sendReclaimComplete runs SEQUENCE + RECLAIM_COMPLETE on the given session
 // slot 0 at the given sequence ID and returns the COMPOUND's overall status.
+// oneFS selects the rca_one_fs flavour: false is the global reclaim, true the
+// file system-specific one.
 func sendReclaimComplete(
 	t *testing.T,
 	h *Handler,
 	ctx *types.CompoundContext,
 	sessionID types.SessionId4,
 	seqID uint32,
+	oneFS bool,
 ) uint32 {
 	t.Helper()
 
 	var rcBuf bytes.Buffer
-	rcArgs := types.ReclaimCompleteArgs{OneFS: false}
+	rcArgs := types.ReclaimCompleteArgs{OneFS: oneFS}
 	if err := rcArgs.Encode(&rcBuf); err != nil {
 		t.Fatalf("encode ReclaimCompleteArgs: %v", err)
 	}
@@ -116,10 +119,10 @@ func TestHandleReclaimComplete(t *testing.T) {
 
 		ctx := newTestCompoundContext()
 
-		if got := sendReclaimComplete(t, h, ctx, sessionID, 1); got != types.NFS4_OK {
+		if got := sendReclaimComplete(t, h, ctx, sessionID, 1, false); got != types.NFS4_OK {
 			t.Fatalf("first RECLAIM_COMPLETE overall status = %d, want NFS4_OK", got)
 		}
-		if got := sendReclaimComplete(t, h, ctx, sessionID, 2); got != types.NFS4ERR_COMPLETE_ALREADY {
+		if got := sendReclaimComplete(t, h, ctx, sessionID, 2, false); got != types.NFS4ERR_COMPLETE_ALREADY {
 			t.Errorf("second RECLAIM_COMPLETE overall status = %d, want NFS4ERR_COMPLETE_ALREADY (%d)",
 				got, types.NFS4ERR_COMPLETE_ALREADY)
 		}
@@ -132,12 +135,42 @@ func TestHandleReclaimComplete(t *testing.T) {
 		h, sessionID := createTestSession(t)
 		ctx := newTestCompoundContext()
 
-		if got := sendReclaimComplete(t, h, ctx, sessionID, 1); got != types.NFS4_OK {
+		if got := sendReclaimComplete(t, h, ctx, sessionID, 1, false); got != types.NFS4_OK {
 			t.Fatalf("first RECLAIM_COMPLETE overall status = %d, want NFS4_OK", got)
 		}
-		if got := sendReclaimComplete(t, h, ctx, sessionID, 2); got != types.NFS4ERR_COMPLETE_ALREADY {
+		if got := sendReclaimComplete(t, h, ctx, sessionID, 2, false); got != types.NFS4ERR_COMPLETE_ALREADY {
 			t.Errorf("second RECLAIM_COMPLETE overall status = %d, want NFS4ERR_COMPLETE_ALREADY (%d)",
 				got, types.NFS4ERR_COMPLETE_ALREADY)
+		}
+	})
+
+	t.Run("per_fs_then_global", func(t *testing.T) {
+		// The two rca_one_fs flavours are separate operations with separate
+		// scopes: the global one covers the server instance, the file
+		// system-specific one covers a migration of one file system. A client
+		// may issue both, in either order, so a per-FS reclaim must not retire
+		// the client's global reclaim.
+		h, sessionID := createTestSession(t)
+		ctx := newTestCompoundContext()
+
+		if got := sendReclaimComplete(t, h, ctx, sessionID, 1, true); got != types.NFS4_OK {
+			t.Fatalf("per-FS RECLAIM_COMPLETE overall status = %d, want NFS4_OK", got)
+		}
+		if got := sendReclaimComplete(t, h, ctx, sessionID, 2, false); got != types.NFS4_OK {
+			t.Errorf("global RECLAIM_COMPLETE after a per-FS one = %d, want NFS4_OK", got)
+		}
+	})
+
+	t.Run("repeated_per_fs_is_not_a_duplicate", func(t *testing.T) {
+		// No file system here is ever migrating, so a file system-specific
+		// reclaim is accepted and otherwise ignored however often it arrives.
+		h, sessionID := createTestSession(t)
+		ctx := newTestCompoundContext()
+
+		for seq := uint32(1); seq <= 3; seq++ {
+			if got := sendReclaimComplete(t, h, ctx, sessionID, seq, true); got != types.NFS4_OK {
+				t.Fatalf("per-FS RECLAIM_COMPLETE #%d = %d, want NFS4_OK", seq, got)
+			}
 		}
 	})
 
