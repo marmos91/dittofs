@@ -359,6 +359,13 @@ var ErrNoGrace = &NFS4StateError{
 	Message: "no grace period available for reclaim",
 }
 
+// ErrCompleteAlready is returned when a client sends RECLAIM_COMPLETE a second
+// time under the same client ID.
+var ErrCompleteAlready = &NFS4StateError{
+	Status:  types.NFS4ERR_COMPLETE_ALREADY,
+	Message: "reclaim already completed for this client",
+}
+
 // ============================================================================
 // Client Snapshot (for shutdown persistence)
 // ============================================================================

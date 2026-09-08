@@ -1345,21 +1345,23 @@ func (sm *StateManager) ForceEndGrace() {
 // reclaim roster so the window can end early.
 func (sm *StateManager) ReclaimComplete(clientID uint64) error {
 	sm.mu.Lock()
-	if record := sm.clientRecordLocked(clientID); record != nil {
-		if record.ReclaimComplete {
-			sm.mu.Unlock()
-			return &NFS4StateError{
-				Status:  types.NFS4ERR_COMPLETE_ALREADY,
-				Message: "reclaim already completed for this client",
-			}
-		}
-		record.ReclaimComplete = true
-	}
 	gp := sm.gracePeriod
 	// Resolve the durable recovery key for this client (v4.1 = co_ownerid,
 	// v4.0 = nfs_client_id4 string) so the boot-loaded string roster early-exits
 	// and the reclaim-done marker is persisted.
 	recoveryKey := sm.recoveryKeyForClientLocked(clientID)
+
+	// A caller with no record has nothing to deduplicate against, so it is let
+	// through: RECLAIM_COMPLETE is SEQUENCE-gated, so a live session always
+	// resolves to a record, and an unknown client ID is refused by the session
+	// lookup before it reaches here.
+	if record := sm.clientRecordLocked(clientID); record != nil {
+		if record.ReclaimComplete {
+			sm.mu.Unlock()
+			return ErrCompleteAlready
+		}
+		record.ReclaimComplete = true
+	}
 	if recoveryKey != "" {
 		sm.recordReclaimCompleteLocked(recoveryKey)
 	}

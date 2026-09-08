@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -451,7 +452,7 @@ func newReclaimClient(t *testing.T, sm *StateManager, ownerID string) uint64 {
 		t.Fatalf("ExchangeID(%q): %v", ownerID, err)
 	}
 	if _, _, err := sm.CreateSession(
-		exch.ClientID, exch.SequenceID, 0, types.ChannelAttrs{}, types.ChannelAttrs{}, 0, nil,
+		exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 	); err != nil {
 		t.Fatalf("CreateSession(%q): %v", ownerID, err)
 	}
@@ -461,16 +462,8 @@ func newReclaimClient(t *testing.T, sm *StateManager, ownerID string) uint64 {
 // wantCompleteAlready fails unless err carries NFS4ERR_COMPLETE_ALREADY.
 func wantCompleteAlready(t *testing.T, err error) {
 	t.Helper()
-	if err == nil {
-		t.Fatal("second ReclaimComplete returned nil, want NFS4ERR_COMPLETE_ALREADY")
-	}
-	stateErr, ok := err.(*NFS4StateError)
-	if !ok {
-		t.Fatalf("Expected NFS4StateError, got %T", err)
-	}
-	if stateErr.Status != types.NFS4ERR_COMPLETE_ALREADY {
-		t.Errorf("Status = %d, want NFS4ERR_COMPLETE_ALREADY (%d)",
-			stateErr.Status, types.NFS4ERR_COMPLETE_ALREADY)
+	if !errors.Is(err, ErrCompleteAlready) {
+		t.Fatalf("second ReclaimComplete err = %v, want ErrCompleteAlready", err)
 	}
 }
 
