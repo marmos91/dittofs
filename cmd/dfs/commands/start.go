@@ -358,6 +358,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		rt.SetNetlogonController(nlController)
 	}
 
+	rt.SetKerberosEnabled(effectiveKerberos.Enabled)
 	rt.SetAdapterFactory(createAdapterFactory(&effectiveKerberos, nlAuth))
 
 	// Create and set API server
