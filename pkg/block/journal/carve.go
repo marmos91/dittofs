@@ -105,7 +105,7 @@ type BlockSink interface {
 	CommitBlock(ctx context.Context, chunks []CarveChunk) error
 }
 
-// supersededReaper is an optional BlockSink capability. Once a carve pass has
+// SupersededReaper is an optional BlockSink capability. Once a carve pass has
 // committed a file's rows, journal calls ReapSupersededManifest so the sink can
 // delete the manifest rows they superseded — keeping the per-file FileChunk
 // manifest a gap-free, overlap-free tiling of [0,size) after a partial overwrite.
@@ -115,11 +115,11 @@ type BlockSink interface {
 // rather than one per run: the sink re-reads the whole manifest to answer it, and
 // that read happens under this shard's carve lock. Sinks without a metadata store
 // (test fakes) simply don't implement it and the reap is skipped.
-type supersededReaper interface {
+type SupersededReaper interface {
 	ReapSupersededManifest(ctx context.Context, id FileID, spans [][2]int64, newOffsets map[int64]struct{}) error
 }
 
-// manifestRowEnder is an optional BlockSink capability: it reports how far the
+// ManifestRowEnder is an optional BlockSink capability: it reports how far the
 // manifest coverage straddling an offset reaches. Carve uses it to widen a run to
 // a row boundary before packing it, so the fresh tiling covers every row the
 // run-end reap deletes. Sinks without a metadata store (test fakes) don't
@@ -130,11 +130,11 @@ type supersededReaper interface {
 // fake that answers with a constant, or with zero, is not answering this
 // question, and a caller that gates on the result will behave differently
 // against it than against a metadata store.
-type manifestRowEnder interface {
+type ManifestRowEnder interface {
 	ManifestRowEndAfter(ctx context.Context, id FileID, off int64) (int64, error)
 }
 
-// clobberGuard is an optional BlockSink capability, and it exists because a
+// ClobberGuard is an optional BlockSink capability, and it exists because a
 // manifest row is keyed by the file offset of its first claimed byte while the
 // commit that writes a row is an upsert. A run starting exactly on an existing
 // row's offset therefore REPLACES that row rather than superseding it: the row
@@ -157,7 +157,7 @@ type manifestRowEnder interface {
 //
 // Sinks without a metadata store (test fakes) don't implement it, and a run then
 // replaces a row exactly as it did before.
-type clobberGuard interface {
+type ClobberGuard interface {
 	PreserveClobberedRow(ctx context.Context, id FileID, runStart, runEnd int64, owed [][2]int64) error
 }
 
@@ -336,7 +336,7 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 	// those rows, since nothing retries a reap and the records are no longer
 	// dirty; persist a pending-reap intent, or defer the flip until the reap
 	// lands, if that window ever shows up in the field.
-	if r, ok := s.sink.(supersededReaper); ok {
+	if r, ok := s.sink.(SupersededReaper); ok {
 		spans := make([][2]int64, 0, len(rs))
 		newOffsets := make(map[int64]struct{})
 		for _, st := range rs {
@@ -497,7 +497,7 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 		// keep what that row still owns past where this run will stop — but only
 		// over ranges the interval index says are still owed, since the row may
 		// equally be spanning a hole it has no business re-covering.
-		if guard, ok := s.sink.(clobberGuard); ok {
+		if guard, ok := s.sink.(ClobberGuard); ok {
 			runEnd := rs[ri].end()
 			if owed := syncedRanges(sh, id, runEnd, rowEnd); len(owed) > 0 {
 				if err := guard.PreserveClobberedRow(ctx, id, rs[ri].start(), runEnd, owed); err != nil {
@@ -672,7 +672,7 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 // building only if that shape shows up in practice.
 func (s *Store) extendRunToRowEnd(ctx context.Context, sh *shard, id FileID, run []interval, limit int64) ([]interval, int64, error) {
 	runEnd := run[len(run)-1].end()
-	ender, ok := s.sink.(manifestRowEnder)
+	ender, ok := s.sink.(ManifestRowEnder)
 	if !ok {
 		return run, runEnd, nil
 	}
