@@ -70,12 +70,14 @@ func TestFattr4AttributeNumbers(t *testing.T) {
 	}
 }
 
-// TestSupportedAttrsAdvertisesSpaceToV40Clients asserts the three
-// filesystem-space attributes reach a 4.0 client. They sit below
-// mounted_on_fileid, the highest attribute 4.0 defines, so the narrowing
-// SupportedAttrsFor applies must not touch them: a 4.0 client that is not shown
-// them never asks, and statfs over the mount has no space figures to report.
-func TestSupportedAttrsAdvertisesSpaceToV40Clients(t *testing.T) {
+// TestSupportedAttrsAdvertisesSpaceAtEveryMinorVersion asserts the three
+// filesystem-space attributes are advertised to a client of any minor version.
+// They sit below mounted_on_fileid, the highest attribute 4.0 defines, so the
+// narrowing SupportedAttrsFor applies must not reach them at any version; 4.0
+// is the binding case, because its ceiling is the lowest. A client that is not
+// shown them never asks, and statfs over the mount has no space figures to
+// report.
+func TestSupportedAttrsAdvertisesSpaceAtEveryMinorVersion(t *testing.T) {
 	for minorVersion := uint32(0); minorVersion <= 2; minorVersion++ {
 		bitmap := SupportedAttrsFor(minorVersion)
 		for _, bit := range []uint32{FATTR4_SPACE_AVAIL, FATTR4_SPACE_FREE, FATTR4_SPACE_TOTAL} {
@@ -87,10 +89,10 @@ func TestSupportedAttrsAdvertisesSpaceToV40Clients(t *testing.T) {
 }
 
 // TestSupportedAttrsWithholdsNFSv41ACLAttributes asserts the server never
-// advertises attributes 58-61. RFC 8881 assigns those to dacl, sacl,
-// change_policy and fs_status, none of which this server implements; a 4.1
-// client shown them would receive a uint64 where an nfsacl41 or a chg_policy4
-// belongs.
+// advertises attributes 58-61 at any minor version. RFC 8881 assigns those to
+// dacl, sacl, change_policy and fs_status, none of which this server
+// implements; a 4.1 client shown them would receive a uint64 where an nfsacl41
+// or a chg_policy4 belongs.
 func TestSupportedAttrsWithholdsNFSv41ACLAttributes(t *testing.T) {
 	for minorVersion := uint32(0); minorVersion <= 2; minorVersion++ {
 		bitmap := SupportedAttrsFor(minorVersion)
