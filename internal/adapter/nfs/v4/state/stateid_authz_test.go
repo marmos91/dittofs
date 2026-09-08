@@ -55,7 +55,7 @@ func TestValidateStateid_LockStateid_RoutedToLockMap(t *testing.T) {
 
 	// A lock stateid presented to WRITE must validate and return the parent
 	// open state (carrying the share-access bits the caller enforces).
-	openState, err := sm.ValidateStateid(&lockStateid, fh, StateidOpWrite)
+	openState, err := sm.ValidateStateid(&lockStateid, fh, StateidOpWrite, 0)
 	if err != nil {
 		t.Fatalf("ValidateStateid on lock stateid (WRITE): %v", err)
 	}
@@ -67,7 +67,7 @@ func TestValidateStateid_LockStateid_RoutedToLockMap(t *testing.T) {
 	}
 
 	// Same lock stateid must also validate on READ.
-	if _, err := sm.ValidateStateid(&lockStateid, fh, StateidOpRead); err != nil {
+	if _, err := sm.ValidateStateid(&lockStateid, fh, StateidOpRead, 0); err != nil {
 		t.Fatalf("ValidateStateid on lock stateid (READ): %v", err)
 	}
 }
@@ -84,7 +84,7 @@ func TestValidateStateid_LockStateid_Seqid0(t *testing.T) {
 	lockStateid := newLockedFile(t, sm, 0, fh)
 	lockStateid.Seqid = 0
 
-	if _, err := sm.ValidateStateid(&lockStateid, fh, StateidOpRead); err != nil {
+	if _, err := sm.ValidateStateid(&lockStateid, fh, StateidOpRead, 0); err != nil {
 		t.Fatalf("ValidateStateid on lock stateid with seqid=0: %v", err)
 	}
 }
@@ -317,4 +317,89 @@ func recPrincipal(rec *V41ClientRecord) string {
 		return ""
 	}
 	return rec.Principal
+}
+
+// TestValidateStateid_CrossClient covers the owner-to-client binding on the
+// I/O path. A stateid names state owned by one client; another client that
+// learns or guesses its bytes must not be able to use it, the same rule
+// FREE_STATEID already enforces.
+//
+// Each case also asserts the owning client is still accepted, so the guard
+// cannot pass by rejecting everything, and that a zero caller client ID — an
+// NFSv4.0 request, which carries no clientid4 — still validates, since v4.0
+// has no identity to compare against.
+func TestValidateStateid_CrossClient(t *testing.T) {
+	const (
+		clientA uint64 = 0xAAAA
+		clientB uint64 = 0xBBBB
+	)
+
+	t.Run("open stateid", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		defer sm.Shutdown()
+
+		fh := []byte("fh-cross-client-open")
+		openResult, err := sm.OpenFile(clientA, []byte("owner-a"), 1, fh,
+			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+		if err != nil {
+			t.Fatalf("OpenFile: %v", err)
+		}
+		confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+		if err != nil {
+			t.Fatalf("ConfirmOpen: %v", err)
+		}
+		sid := confirmed.Stateid
+
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpWrite, clientB); !isStatus(err, types.NFS4ERR_BAD_STATEID) {
+			t.Errorf("client B writing through client A's open stateid: err = %v, want NFS4ERR_BAD_STATEID", err)
+		}
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpWrite, clientA); err != nil {
+			t.Errorf("owning client rejected: %v", err)
+		}
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpWrite, 0); err != nil {
+			t.Errorf("NFSv4.0 caller (no client identity) rejected: %v", err)
+		}
+	})
+
+	t.Run("lock stateid", func(t *testing.T) {
+		lm := lock.NewManager()
+		sm := NewStateManager(90 * time.Second)
+		sm.SetLockManager(lm)
+		defer sm.Shutdown()
+
+		fh := []byte("fh-cross-client-lock")
+		sid := newLockedFile(t, sm, clientA, fh)
+
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpWrite, clientB); !isStatus(err, types.NFS4ERR_BAD_STATEID) {
+			t.Errorf("client B writing through client A's lock stateid: err = %v, want NFS4ERR_BAD_STATEID", err)
+		}
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpWrite, clientA); err != nil {
+			t.Errorf("owning client rejected: %v", err)
+		}
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpWrite, 0); err != nil {
+			t.Errorf("NFSv4.0 caller (no client identity) rejected: %v", err)
+		}
+	})
+
+	t.Run("delegation stateid", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		defer sm.Shutdown()
+
+		fh := []byte("fh-cross-client-deleg")
+		deleg := sm.GrantDelegation(clientA, fh, types.OPEN_DELEGATE_READ)
+		if deleg == nil {
+			t.Fatal("GrantDelegation returned nil")
+		}
+		sid := deleg.Stateid
+
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpRead, clientB); !isStatus(err, types.NFS4ERR_BAD_STATEID) {
+			t.Errorf("client B reading through client A's delegation stateid: err = %v, want NFS4ERR_BAD_STATEID", err)
+		}
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpRead, clientA); err != nil {
+			t.Errorf("owning client rejected: %v", err)
+		}
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpRead, 0); err != nil {
+			t.Errorf("NFSv4.0 caller (no client identity) rejected: %v", err)
+		}
+	})
 }

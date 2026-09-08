@@ -97,7 +97,7 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		if sizeChange {
 			op = state.StateidOpWrite
 		}
-		openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, op)
+		openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, op, ctx.SessionClientID)
 		if stateErr != nil {
 			nfsStatus := mapStateError(stateErr)
 			logger.Debug("NFSv4 SETATTR stateid validation failed",

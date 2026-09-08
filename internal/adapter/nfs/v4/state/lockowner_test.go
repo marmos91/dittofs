@@ -814,7 +814,7 @@ func TestLeaseExpiry_CleansLockState(t *testing.T) {
 	}
 
 	// Verify open state is also removed
-	_, openValErr := sm.ValidateStateid(openStateid, fileHandle, StateidOpRead)
+	_, openValErr := sm.ValidateStateid(openStateid, fileHandle, StateidOpRead, 0)
 	if openValErr == nil {
 		t.Fatal("expected error for open stateid after lease expiry")
 	}

@@ -148,9 +148,6 @@ type StateManager struct {
 	// nextClientSeq is an atomic counter for the low 32 bits of client IDs.
 	nextClientSeq uint32
 
-	// nextStateSeq is an atomic counter for stateid "other" field generation.
-	nextStateSeq uint64
-
 	// leaseDuration is the configured lease duration for all clients.
 	leaseDuration time.Duration
 
@@ -333,18 +330,11 @@ func (sm *StateManager) generateClientID() uint64 {
 // using crypto/rand. This prevents malicious or stale clients from guessing
 // the verifier and confirming someone else's SETCLIENTID.
 //
-// Per research Pitfall 6: Do NOT use timestamps -- they are predictable.
+// Timestamps are not an acceptable source here: they are predictable, which is
+// the whole property the verifier must not have.
 func (sm *StateManager) generateConfirmVerifier() [8]byte {
 	var v [8]byte
-	if _, err := rand.Read(v[:]); err != nil {
-		// crypto/rand.Read should never fail on supported platforms.
-		// If it does, generate a non-zero fallback from time (degraded security).
-		logger.Error("crypto/rand.Read failed, using time-based fallback", "error", err)
-		now := time.Now().UnixNano()
-		for i := range 8 {
-			v[i] = byte(now >> (uint(i) * 8))
-		}
-	}
+	_, _ = rand.Read(v[:])
 	return v
 }
 
