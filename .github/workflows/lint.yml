@@ -96,6 +96,12 @@ jobs:
         with:
           version: v2.12.2
           args: --timeout=5m
+          # Analyse from scratch every run. The restored analysis cache carries
+          # staticcheck's per-package facts, and a stale entry loses the fact
+          # that `t.Fatal` never returns — SA5011 then reports the dereference
+          # after a nil guard as reachable, on files the diff never touched.
+          # A cold analysis recomputes the facts and costs about a minute.
+          skip-cache: true
           # Skip the action's online `config verify` — it fetches the config
           # JSON schema over the network and times out intermittently, failing
           # the job for reasons unrelated to the diff. golangci-lint still
