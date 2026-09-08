@@ -866,10 +866,10 @@ func (h *Handler) handleOpenClaimDelegateCur(
 	seqid, shareAccess, shareDeny uint32,
 	clientID uint64, ownerData []byte,
 ) *types.CompoundResult {
-	// Decode CLAIM_DELEGATE_CUR args: stateid4 + component4. OPEN is a v4.1
-	// operation, so the delegation stateid may be the current-stateid
-	// placeholder naming a stateid an earlier operation in this COMPOUND
-	// returned (RFC 8881 Section 16.2.3.1.2).
+	// Decode CLAIM_DELEGATE_CUR args: stateid4 + component4. OPEN is dispatched
+	// in v4.1 as well as v4.0, so the delegation stateid may be the
+	// current-stateid placeholder naming a stateid an earlier operation in this
+	// COMPOUND returned (RFC 8881 Section 16.2.3.1.2).
 	delegStateid, argStatus := types.DecodeStateidArg(ctx, reader)
 	if argStatus != types.NFS4_OK {
 		return openError(argStatus)
