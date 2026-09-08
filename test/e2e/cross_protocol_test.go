@@ -619,7 +619,8 @@ func assertErrnoMatches(t *testing.T, label string, got helpers.TriggerResult, w
 // nfs3StatusToErrno translates a raw NFS3 status code into the syscall.Errno
 // the Linux NFS client surfaces to userspace. This mapping is kernel-stable
 // (see linux/fs/nfs/nfs3proc.c nfs3_proc_error_to_errno et al). The table
-// below covers every code that appears in common/'s errorMap NFS3 column;
+// below covers every code that appears in common/'s errorMap NFS3 column, plus
+// the statuses handlers return directly without going through that map;
 // unknown codes fall through to EIO (matches kernel behavior for NFS3ERR_IO
 // and unrecognized codes).
 func nfs3StatusToErrno(code uint32) syscall.Errno {
@@ -636,6 +637,8 @@ func nfs3StatusToErrno(code uint32) syscall.Errno {
 		return syscall.EACCES
 	case nfs3types.NFS3ErrExist:
 		return syscall.EEXIST
+	case nfs3types.NFS3ErrXDev:
+		return syscall.EXDEV
 	case nfs3types.NFS3ErrNotDir:
 		return syscall.ENOTDIR
 	case nfs3types.NFS3ErrIsDir:
