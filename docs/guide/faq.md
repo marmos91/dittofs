@@ -724,9 +724,18 @@ a session onward. NFSv4's `change` attribute is derived from `ctime`, so the
 first write of a session does move `change` and is seen — but every later write
 in that same session leaves it untouched. A second client that noticed the first
 write, refetched the file and re-cached it will then keep serving that copy no
-matter how much more the writer changes. RFC 7530 §5.4 makes `change` exactly
-the attribute a client uses to decide whether its cached copy is still valid, so
-this is a real divergence and not merely a coarse timestamp.
+matter how much more the writer changes.
+
+RFC 7530 is specific about why that matters. §10.3.1 has the client revalidate a
+cached file by fetching `change` and comparing it with the cached value, and
+warns implementers off using `time_modify` in its place precisely because
+"[t]he change attribute is guaranteed to change for each update to the file",
+so substituting a timestamp "runs the risk of the client incorrectly marking
+stale data as valid". §5.8.1.4 does allow a server to derive `change` from
+`time_metadata`, but only "if the file system object cannot be updated more
+frequently than the resolution of time_metadata" — and a file under an open
+write session can be. DittoFS is knowingly outside that condition, so this is a
+real divergence rather than merely a coarse timestamp.
 
 `size` is not frozen, so a later write that *extends* the file still moves
 `size`, which the Linux client also watches, and may be noticed on that basis
