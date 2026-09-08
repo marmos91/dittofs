@@ -471,84 +471,60 @@ func TestOpenClaimDelegateCur_EnforcesFilePermissions(t *testing.T) {
 }
 
 // TestOpenClaimDelegateCur_CurrentStateidPlaceholder covers the NFSv4.1
-// current-stateid placeholder — seqid 1 with an all-zeros "other" — appearing
-// as CLAIM_DELEGATE_CUR's delegation stateid. OPEN is a v4.1 operation, so a
-// client may name the stateid an earlier operation in the COMPOUND returned
-// instead of repeating it, and the placeholder has to resolve to the COMPOUND's
-// current stateid before the delegation lookup. Taken literally it is a stateid
-// the server never issued, so a legal OPEN is refused.
+// current-stateid placeholder — seqid 1 with an all-zeros "other" — as
+// CLAIM_DELEGATE_CUR's delegation stateid: it resolves to the COMPOUND's
+// current stateid before the delegation lookup, and with no current stateid
+// set the OPEN is refused rather than falling back to whatever delegation the
+// client happens to hold (RFC 8881 Section 16.2.3.1.2).
 func TestOpenClaimDelegateCur_CurrentStateidPlaceholder(t *testing.T) {
 	placeholder := types.Stateid4{Seqid: 1}
 
-	// v41Context builds the COMPOUND context the placeholder is only meaningful
-	// in: minorversion 1, accepted, with the directory as current filehandle.
-	v41Context := func(rootHandle []byte) *types.CompoundContext {
-		ctx := newRealFSContext(0, 0)
-		ctx.SkipOwnerSeqid = true // v4.1 session
-		ctx.MinorVersion = 1
-		ctx.MinorVersionAccepted = true
-		ctx.CurrentFH = make([]byte, len(rootHandle))
-		copy(ctx.CurrentFH, rootHandle)
-		return ctx
+	tests := []struct {
+		name              string
+		setCurrentStateid bool
+		wantStatus        uint32
+	}{
+		{"resolves to the current stateid", true, types.NFS4_OK},
+		{"refused without a current stateid", false, types.NFS4ERR_BAD_STATEID},
 	}
 
-	t.Run("resolves to the current stateid", func(t *testing.T) {
-		fx := newIOTestFixture(t, "/export")
-		clientA := testClientID(t, fx.handler.StateManager, "deleg-cur-placeholder")
-		fileHandle := fx.createRegularFile(t, fx.rootHandle, "placeholder.txt", 0o644, 0, 0)
-		deleg := fx.handler.StateManager.GrantDelegation(clientA, []byte(fileHandle), types.OPEN_DELEGATE_WRITE)
-		if deleg == nil {
-			t.Fatalf("GrantDelegation returned nil")
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fx := newIOTestFixture(t, "/export")
+			clientA := testClientID(t, fx.handler.StateManager, "deleg-cur-placeholder")
+			fileHandle := fx.createRegularFile(t, fx.rootHandle, "placeholder.txt", 0o644, 0, 0)
+			deleg := fx.handler.StateManager.GrantDelegation(clientA, []byte(fileHandle), types.OPEN_DELEGATE_WRITE)
+			if deleg == nil {
+				t.Fatalf("GrantDelegation returned nil")
+			}
 
-		ctx := v41Context(fx.rootHandle)
-		// As an earlier operation in the COMPOUND returning the delegation
-		// stateid would have left it.
-		ctx.SetCurrentStateid(&deleg.Stateid)
+			// The placeholder is only meaningful in a v4.1 COMPOUND.
+			ctx := newRealFSContext(0, 0)
+			ctx.SkipOwnerSeqid = true // v4.1 session
+			ctx.MinorVersion = 1
+			ctx.MinorVersionAccepted = true
+			ctx.CurrentFH = append([]byte(nil), fx.rootHandle...)
+			if tt.setCurrentStateid {
+				// As an earlier operation in the COMPOUND returning the
+				// delegation stateid would have left it.
+				ctx.SetCurrentStateid(&deleg.Stateid)
+			}
 
-		args := encodeOpenArgsDelegateCur(
-			1,
-			types.OPEN4_SHARE_ACCESS_BOTH,
-			types.OPEN4_SHARE_DENY_NONE,
-			clientA,
-			[]byte("owner-placeholder"),
-			types.OPEN4_NOCREATE,
-			&placeholder,
-			"placeholder.txt",
-		)
+			args := encodeOpenArgsDelegateCur(
+				1,
+				types.OPEN4_SHARE_ACCESS_BOTH,
+				types.OPEN4_SHARE_DENY_NONE,
+				clientA,
+				[]byte("owner-placeholder"),
+				types.OPEN4_NOCREATE,
+				&placeholder,
+				"placeholder.txt",
+			)
 
-		result := fx.handler.handleOpen(ctx, bytes.NewReader(args))
-		if result.Status != types.NFS4_OK {
-			t.Fatalf("OPEN CLAIM_DELEGATE_CUR with the current-stateid placeholder status = %d, want NFS4_OK", result.Status)
-		}
-	})
-
-	t.Run("without a current stateid is refused", func(t *testing.T) {
-		fx := newIOTestFixture(t, "/export")
-		clientA := testClientID(t, fx.handler.StateManager, "deleg-cur-placeholder-unset")
-		fileHandle := fx.createRegularFile(t, fx.rootHandle, "unset.txt", 0o644, 0, 0)
-		deleg := fx.handler.StateManager.GrantDelegation(clientA, []byte(fileHandle), types.OPEN_DELEGATE_WRITE)
-		if deleg == nil {
-			t.Fatalf("GrantDelegation returned nil")
-		}
-
-		// No SetCurrentStateid: the placeholder names a stateid this COMPOUND
-		// does not have, which must not fall back to the delegation the client
-		// happens to hold.
-		args := encodeOpenArgsDelegateCur(
-			1,
-			types.OPEN4_SHARE_ACCESS_BOTH,
-			types.OPEN4_SHARE_DENY_NONE,
-			clientA,
-			[]byte("owner-placeholder-unset"),
-			types.OPEN4_NOCREATE,
-			&placeholder,
-			"unset.txt",
-		)
-
-		result := fx.handler.handleOpen(v41Context(fx.rootHandle), bytes.NewReader(args))
-		if result.Status != types.NFS4ERR_BAD_STATEID {
-			t.Fatalf("OPEN CLAIM_DELEGATE_CUR placeholder with no current stateid status = %d, want NFS4ERR_BAD_STATEID", result.Status)
-		}
-	})
+			result := fx.handler.handleOpen(ctx, bytes.NewReader(args))
+			if result.Status != tt.wantStatus {
+				t.Fatalf("OPEN CLAIM_DELEGATE_CUR with the current-stateid placeholder status = %d, want %d", result.Status, tt.wantStatus)
+			}
+		})
+	}
 }

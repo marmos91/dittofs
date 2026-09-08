@@ -786,7 +786,9 @@ func (h *Handler) handleOpenConfirm(ctx *types.CompoundContext, reader io.Reader
 		}
 	}
 
-	// Decode OPEN_CONFIRM4args: stateid4 + seqid
+	// Decode OPEN_CONFIRM4args: stateid4 + seqid. OPEN_CONFIRM exists only in
+	// v4.0, where (seqid 1, all-zeros other) is an ordinary stateid rather than
+	// the current-stateid placeholder, so this decodes literally.
 	stateid, err := types.DecodeStateid4(reader)
 	if err != nil {
 		return &types.CompoundResult{
@@ -867,7 +869,7 @@ func (h *Handler) handleOpenClaimDelegateCur(
 	// Decode CLAIM_DELEGATE_CUR args: stateid4 + component4. OPEN is a v4.1
 	// operation, so the delegation stateid may be the current-stateid
 	// placeholder naming a stateid an earlier operation in this COMPOUND
-	// returned; decoding it as a literal would reject a legal request.
+	// returned (RFC 8881 Section 16.2.3.1.2).
 	delegStateid, argStatus := types.DecodeStateidArg(ctx, reader)
 	if argStatus != types.NFS4_OK {
 		return openError(argStatus)
