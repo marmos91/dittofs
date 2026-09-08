@@ -261,18 +261,19 @@ func mergeImplicitAuthSIDs(userGroupSIDs []string) []string {
 }
 
 // primeAuthContextFromOpenFile hand-offs the open's recorded session/tree
-// identity onto ctx BEFORE BuildAuthContext is called (refs #603). Follow-up
-// operations arrive keyed only by FileID — the SMB2 dispatcher has no user
-// state to prefill ctx.User with. Without this hand-off
-// BuildAuthContext takes the ctx.User==nil arm and synthesises an
+// identity onto ctx BEFORE BuildAuthContext is called (refs #603). A
+// handle-based request carries its SessionID and TreeID in the SMB2 header,
+// but no user state for the dispatcher to prefill ctx.User from. Without this
+// hand-off BuildAuthContext takes the ctx.User==nil arm and synthesises an
 // unprivileged nobody (65534) identity instead of the authenticated user's
 // UID, causing follow-up ops to be authorized as nobody rather than the
 // real opener.
 //
-// We also realign ctx.TreeID / ctx.SessionID onto the IDs the open was
-// created against. Downstream gates (notably treeHasAccessBasedEnumeration
-// in QueryDirectory) read ctx.TreeID directly; if the dispatcher left a
-// stale or zero TreeID on ctx, ABE would be decided against the wrong tree.
+// It also resolves the open's tree onto ctx.ShareName / ctx.Permission, which
+// downstream gates consult — treeHasAccessBasedEnumeration in QueryDirectory
+// decides ABE from the tree ctx.TreeID names. The ctx.TreeID and ctx.SessionID
+// assignments themselves are no-ops by the time they run, since the ownership
+// check below has already established that they equal the open's.
 //
 // The sess.User nil-guard on the User assignment is load-bearing: GetSession(0)
 // returns the manager's seeded anonymous pre-auth session with User=nil, and
