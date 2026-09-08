@@ -171,8 +171,9 @@ func NewSQLiteMetadataStore(
 	// store itself, so the writes that span several statements can open a
 	// transaction rather than autocommitting piecemeal on the pool.
 	store.PoolPath = storesql.PoolPath{
-		Core: &storesql.Core{X: store.conn(), D: sqliteDialect, Caps: store.currentCapabilities, Log: log},
-		T:    store,
+		Core:       &storesql.Core{X: store.conn(), D: sqliteDialect, Caps: store.currentCapabilities, Log: log},
+		T:          store,
+		ShareCache: &store.shareCache,
 	}
 
 	// The substores derive only from db, which is never reassigned, so bind

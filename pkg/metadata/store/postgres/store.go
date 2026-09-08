@@ -157,8 +157,9 @@ func NewPostgresMetadataStore(
 	// store itself, so the writes that span several statements can open a
 	// transaction rather than autocommitting piecemeal on the pool.
 	store.PoolPath = storesql.PoolPath{
-		Core: &storesql.Core{X: poolExecer{s: store}, D: pgDialect, Caps: store.currentCapabilities, Log: log},
-		T:    store,
+		Core:       &storesql.Core{X: poolExecer{s: store}, D: pgDialect, Caps: store.currentCapabilities, Log: log},
+		T:          store,
+		ShareCache: &store.shareCache,
 	}
 
 	// The substores derive only from pool, which is never reassigned, so bind

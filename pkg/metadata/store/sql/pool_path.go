@@ -16,6 +16,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
 )
 
 // PoolPath carries the store-level half of the shared SQL implementation. A
@@ -39,6 +40,13 @@ type PoolPath struct {
 	// rather than going through here — nothing opens a transaction inside a
 	// transaction.
 	T metadata.Transactor
+
+	// ShareCache fronts the share-options read, which every permission check
+	// funnels through. Held by pointer because the cache carries a sync.Map and
+	// three atomics: a copy would be both a vet error and its own cache, so an
+	// invalidation on one would leave the other serving stale permissions.
+	// Never nil on a store's PoolPath.
+	ShareCache *sharecache.Cache
 }
 
 // ============================================================================
@@ -123,4 +131,99 @@ func (p PoolPath) DecrLiveChunkCount(ctx context.Context, blockID string, delta 
 		return err
 	})
 	return remaining, err
+}
+
+// ============================================================================
+// Synced hashes
+// ============================================================================
+
+// PutSyncedLocators shadows the promoted Core method so the batch runs inside
+// one transaction. On the pool each statement would autocommit separately, and
+// a failure part-way would leave some of the commit's hashes marked synced with
+// the rest unmarked — a synced set that claims chunks the remote store never
+// received.
+//
+// No caller needs this on a store today: PutSyncedLocators belongs to
+// metadata.Transaction and every call site already holds a transaction. It is
+// declared anyway because promotion makes the Core version reachable here
+// whether or not anything calls it, and the reachable version should be the
+// safe one.
+func (p PoolPath) PutSyncedLocators(ctx context.Context, chunks []block.BlockChunkCommit) error {
+	return p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return tx.PutSyncedLocators(ctx, chunks)
+	})
+}
+
+// ============================================================================
+// Shares
+// ============================================================================
+
+// GetShareOptions shadows the promoted Core method to put the share cache in
+// front of it: every permission check funnels through this read, so the SELECT
+// and the decode are worth skipping. The returned value is always a deep copy,
+// so a caller can never reach the shared cache entry.
+func (p PoolPath) GetShareOptions(ctx context.Context, shareName string) (*metadata.ShareOptions, error) {
+	// Ahead of the cache lookup, not just inside the backing read: a hit must
+	// not report success for a request whose context has already given out.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if cached, ok := p.ShareCache.Get(shareName); ok {
+		return sharecache.Clone(cached), nil
+	}
+
+	// Snapshot the invalidation generation BEFORE the backing read so a write
+	// that races this read cannot leave a stale value cached (Store checks it).
+	gen := p.ShareCache.Generation()
+
+	options, err := p.Core.GetShareOptions(ctx, shareName)
+	if err != nil {
+		return nil, err
+	}
+
+	p.ShareCache.Store(shareName, options, gen)
+	return sharecache.Clone(options), nil
+}
+
+// UpdateShareOptions shadows the promoted Core method to invalidate the share
+// cache around it. The write itself is a single statement, so it does not need
+// a transaction of its own.
+func (p PoolPath) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
+	err := p.Core.UpdateShareOptions(ctx, shareName, options)
+	// Drop the cached options AFTER the write lands, whatever it reported: an
+	// extra invalidation costs a re-read, a missed one is a stale permission.
+	p.ShareCache.InvalidateAll()
+	return err
+}
+
+// DeleteShare removes a share and all its metadata. It runs inside a
+// transaction so the share row and its inode rows are dropped atomically; see
+// the Core method for the cascade rationale.
+func (p PoolPath) DeleteShare(ctx context.Context, shareName string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return tx.DeleteShare(ctx, shareName)
+	})
+}
+
+// CreateRootDirectory creates the root directory for a share.
+//
+// This runs the shared body through a transaction rather than on the pool: the
+// probe and the create must not have a commit between them, or a concurrent
+// caller slips in and leaves an orphaned root inode behind. Going through the
+// transaction method is also what marks the share cache dirty.
+func (p PoolPath) CreateRootDirectory(ctx context.Context, shareName string, attr *metadata.FileAttr) (*metadata.File, error) {
+	var root *metadata.File
+	err := p.T.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		var txErr error
+		root, txErr = tx.CreateRootDirectory(ctx, shareName, attr)
+		return txErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return root, nil
 }
