@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -115,6 +116,35 @@ func TestClose_CrossClient(t *testing.T) {
 	if _, err := sm.CloseFile(&sid, seqid, authzClientA); err != nil {
 		t.Errorf("owning client rejected: %v", err)
 	}
+
+	// The open is gone now, so a repeat CLOSE takes the already-closed branch,
+	// which replays the cached reply. That reply is the owner's, so another
+	// client must not be handed it either.
+	//
+	// The reply itself is cached by the handler layer, which is not in play in a
+	// StateManager test, so it is seeded here to reach the branch at all.
+	sm.mu.Lock()
+	closed := sm.closedOwnerByOther[sid.Other]
+	sm.mu.Unlock()
+	if closed == nil {
+		t.Fatal("CLOSE left no closed-owner entry to replay from")
+	}
+	closed.LastResult = &CachedResult{
+		Status: types.NFS4_OK,
+		Data:   encodeStatusReply(types.NFS4_OK),
+	}
+
+	if _, err := sm.CloseFile(&sid, seqid, authzClientB); !isStatus(err, types.NFS4ERR_BAD_STATEID) {
+		t.Errorf("client B replaying client A's CLOSE reply: err = %v, want NFS4ERR_BAD_STATEID", err)
+	}
+	if _, err := sm.CloseFile(&sid, seqid, authzClientA); !isReplay(err) {
+		t.Errorf("owning client denied its own CLOSE replay: %v", err)
+	}
+}
+
+func isReplay(err error) bool {
+	var replay *ReplayError
+	return errors.As(err, &replay)
 }
 
 // TestLock_CrossClient covers LOCK on both paths and LOCKU. The open_to_lock

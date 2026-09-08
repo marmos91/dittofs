@@ -1955,7 +1955,10 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32, callerC
 		// The state was already removed by a prior CLOSE. If this is a
 		// retransmit of that CLOSE (same owner-seqid), replay its cached reply
 		// (RFC 7530 §9.1.7) rather than returning NFS4ERR_BAD_STATEID.
-		if owner, ok := sm.closedOwnerByOther[stateid.Other]; ok && seqid != 0 {
+		// The cached reply belongs to the owner that sent the original CLOSE, so
+		// it is only replayed to that owner's client; see checkStateidOwner.
+		if owner, ok := sm.closedOwnerByOther[stateid.Other]; ok && seqid != 0 &&
+			checkStateidOwner(callerClientID, owner.ClientID) == nil {
 			if owner.ValidateSeqID(seqid) == SeqIDReplay && owner.LastResult != nil {
 				return nil, &ReplayError{Status: owner.LastResult.Status, Data: owner.LastResult.Data}
 			}
