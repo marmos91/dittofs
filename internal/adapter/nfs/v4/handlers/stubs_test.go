@@ -56,7 +56,10 @@ func TestHandleOpenDowngrade_BadStateid(t *testing.T) {
 		CurrentFH:  pfs.GetRootHandle(),
 	}
 
-	// Encode OPEN_DOWNGRADE args with an unknown stateid (no open state exists)
+	// Encode OPEN_DOWNGRADE args with an unknown stateid (no open state
+	// exists). Its all-zero "other" carries a boot-epoch fragment no
+	// incarnation of this server ever minted, which is what makes it stale
+	// rather than merely unknown.
 	var args bytes.Buffer
 	sid := &types.Stateid4{Seqid: 1}
 	types.EncodeStateid4(&args, sid)
@@ -66,10 +69,9 @@ func TestHandleOpenDowngrade_BadStateid(t *testing.T) {
 
 	result := h.handleOpenDowngrade(ctx, bytes.NewReader(args.Bytes()))
 
-	// Should return BAD_STATEID since the stateid is not tracked
-	if result.Status != types.NFS4ERR_BAD_STATEID {
-		t.Errorf("OPEN_DOWNGRADE with unknown stateid status = %d, want NFS4ERR_BAD_STATEID (%d)",
-			result.Status, types.NFS4ERR_BAD_STATEID)
+	if result.Status != types.NFS4ERR_STALE_STATEID {
+		t.Errorf("OPEN_DOWNGRADE with a foreign-epoch stateid status = %d, want NFS4ERR_STALE_STATEID (%d)",
+			result.Status, types.NFS4ERR_STALE_STATEID)
 	}
 	if result.OpCode != types.OP_OPEN_DOWNGRADE {
 		t.Errorf("OPEN_DOWNGRADE opCode = %d, want OP_OPEN_DOWNGRADE (%d)",

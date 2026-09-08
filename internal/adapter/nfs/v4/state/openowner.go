@@ -258,6 +258,16 @@ func (e *ReplayError) Error() string { return "replay of cached owner-seqid resu
 // OpenState
 // ============================================================================
 
+// shareModeBit maps a share_access value to its bit in
+// OpenState.openedAccessModes. A value outside 0..3 is not a share mode at all
+// and gets no bit, so it can never satisfy an OPEN_DOWNGRADE.
+func shareModeBit(mode uint32) uint8 {
+	if mode > types.OPEN4_SHARE_ACCESS_BOTH {
+		return 0
+	}
+	return 1 << mode
+}
+
 // OpenState represents the state of a single open file for an open-owner.
 // Created by OPEN, removed by CLOSE.
 //
@@ -280,6 +290,15 @@ type OpenState struct {
 
 	// ShareDeny is the accumulated share deny mode (OR'd across OPENs).
 	ShareDeny uint32
+
+	// openedAccessModes records the share_access value every OPEN behind this
+	// state asked for, one bit per value (bit 1 READ, bit 2 WRITE, bit 3 BOTH).
+	// OPEN_DOWNGRADE may only name a mode that was actually opened, and the
+	// accumulated ShareAccess union cannot tell that apart: a single OPEN for
+	// BOTH leaves READ and WRITE standing in the union with neither ever
+	// opened. Linux nfsd keeps the same bitmap (st_access_bmap) for the same
+	// reason.
+	openedAccessModes uint8
 
 	// Confirmed indicates whether OPEN_CONFIRM has been called for this state.
 	Confirmed bool

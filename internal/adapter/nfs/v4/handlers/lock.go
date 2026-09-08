@@ -133,6 +133,22 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 		}
 		lockOwnerClientID = ctx.EffectiveClientID(lockOwnerClientID)
 
+		// Admit the clientid the lock-owner names before any lock-owner is
+		// keyed under it, as handleOpen does for open_owner4: a lock-owner
+		// behind an id no client record covers holds state no lease reaps.
+		if clientErr := h.StateManager.ValidateAndRenewClient(lockOwnerClientID); clientErr != nil {
+			nfsStatus := mapStateError(clientErr)
+			logger.Debug("NFSv4 LOCK rejected: invalid client id",
+				"client_id", lockOwnerClientID,
+				"error", clientErr,
+				"client", ctx.ClientAddr)
+			return &types.CompoundResult{
+				Status: nfsStatus,
+				OpCode: types.OP_LOCK,
+				Data:   encodeStatusOnly(nfsStatus),
+			}
+		}
+
 		lockOwnerData, decErr := xdr.DecodeOpaque(reader)
 		if decErr != nil {
 			return &types.CompoundResult{
@@ -317,6 +333,22 @@ func (h *Handler) handleLockT(ctx *types.CompoundContext, reader io.Reader) *typ
 		}
 	}
 	clientID = ctx.EffectiveClientID(clientID)
+
+	// LOCKT creates no state, but the clientid its lock_owner4 names is the
+	// identity the probe is made on behalf of: one no client record covers
+	// cannot be answered "no conflict".
+	if clientErr := h.StateManager.ValidateAndRenewClient(clientID); clientErr != nil {
+		nfsStatus := mapStateError(clientErr)
+		logger.Debug("NFSv4 LOCKT rejected: invalid client id",
+			"client_id", clientID,
+			"error", clientErr,
+			"client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: nfsStatus,
+			OpCode: types.OP_LOCKT,
+			Data:   encodeStatusOnly(nfsStatus),
+		}
+	}
 
 	ownerData, err := xdr.DecodeOpaque(reader)
 	if err != nil {

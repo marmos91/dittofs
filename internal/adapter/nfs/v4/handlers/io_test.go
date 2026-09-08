@@ -834,7 +834,29 @@ func TestClose_Success(t *testing.T) {
 	ctx.CurrentFH = make([]byte, len(fileHandle))
 	copy(ctx.CurrentFH, fileHandle)
 
-	args := encodeCloseArgs(1, &anonymousStateid)
+	// A real open to close. The anonymous stateid cannot stand in for one:
+	// RFC 7530 Section 9.1.4.3 admits a special stateid only on READ, WRITE
+	// and SETATTR, so CLOSE answers it NFS4ERR_BAD_STATEID.
+	sm := fx.handler.StateManager
+	clientRes, err := sm.SetClientID("close-success-client", [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
+		state.CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "10.0.0.1.8.1"}, "10.0.0.1:1234")
+	if err != nil {
+		t.Fatalf("SetClientID: %v", err)
+	}
+	if err := sm.ConfirmClientID(clientRes.ClientID, clientRes.ConfirmVerifier); err != nil {
+		t.Fatalf("ConfirmClientID: %v", err)
+	}
+	opened, err := sm.OpenFile(clientRes.ClientID, []byte("close-success-owner"), 1, ctx.CurrentFH,
+		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	confirmed, err := sm.ConfirmOpen(&opened.Stateid, 2, 0)
+	if err != nil {
+		t.Fatalf("ConfirmOpen: %v", err)
+	}
+
+	args := encodeCloseArgs(3, &confirmed.Stateid)
 	result := fx.handler.handleClose(ctx, bytes.NewReader(args))
 
 	if result.Status != types.NFS4_OK {
@@ -865,6 +887,27 @@ func TestClose_Success(t *testing.T) {
 	// CLOSE should NOT clear CurrentFH per RFC 7530
 	if ctx.CurrentFH == nil {
 		t.Error("CurrentFH should NOT be cleared by CLOSE")
+	}
+}
+
+// TestClose_AnonymousStateid pins the rejection of a special stateid on CLOSE.
+// RFC 7530 Section 9.1.4.3 admits one only on READ, WRITE and SETATTR, so CLOSE
+// names no open state and must not report success.
+func TestClose_AnonymousStateid(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+
+	fileHandle := fx.createRegularFile(t, fx.rootHandle, "closeanon.txt", 0o644, 0, 0)
+
+	ctx := newRealFSContext(0, 0)
+	ctx.CurrentFH = make([]byte, len(fileHandle))
+	copy(ctx.CurrentFH, fileHandle)
+
+	args := encodeCloseArgs(1, &anonymousStateid)
+	result := fx.handler.handleClose(ctx, bytes.NewReader(args))
+
+	if result.Status != types.NFS4ERR_BAD_STATEID {
+		t.Errorf("CLOSE with the anonymous stateid status = %d, want NFS4ERR_BAD_STATEID (%d)",
+			result.Status, types.NFS4ERR_BAD_STATEID)
 	}
 }
 

@@ -230,8 +230,10 @@ func TestLockNew_BadOpenStateid(t *testing.T) {
 
 	clientID, fileHandle, _, _ := setupClientAndOpenState(t, sm)
 
-	// Use a bogus open stateid
-	bogusStateid := &types.Stateid4{Seqid: 1}
+	// An "other" this server could have issued but never did: minting it from
+	// the current boot epoch keeps the answer NFS4ERR_BAD_STATEID rather than
+	// the NFS4ERR_STALE_STATEID a foreign epoch earns.
+	bogusStateid := &types.Stateid4{Seqid: 1, Other: sm.generateStateidOther(StateTypeOpen)}
 
 	_, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner-1"), 1, bogusStateid, 1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
 	if err == nil {
