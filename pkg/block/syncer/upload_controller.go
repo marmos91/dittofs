@@ -1,15 +1,15 @@
-package engine
+package syncer
 
 import "math"
 
-// goodputController is the pure decision core of adaptive upload concurrency
-// (#1407 / #1432). When the user does not pin parallel_uploads, the syncer ramps
-// the number of concurrent block PutBlock uploads in the carve path to saturate
-// the uplink on its own.
+// GoodputController is the pure decision core of adaptive upload concurrency.
+// When the user does not pin parallel_uploads, the syncer ramps the upload
+// window — the number of carve passes running concurrently, each of which
+// issues its own block PUTs — to saturate the uplink on its own.
 //
 // The control signal is GOODPUT (delivered bytes/sec), not latency. An earlier
-// latency-gradient design (#1400) read the per-PUT latency rise *caused by
-// useful concurrency* as congestion and collapsed the window to ~4, far below
+// latency-gradient design read the per-PUT latency rise *caused by useful
+// concurrency* as congestion and collapsed the window to ~4, far below
 // the bandwidth knee. Uploads here are network-latency bound, so opening more
 // connections raises both latency and throughput together until the link
 // saturates — the only honest saturation signal is "did goodput stop rising".
@@ -19,7 +19,7 @@ import "math"
 // that delivered the best goodput (the knee), and back off only on upload
 // errors or a goodput collapse. It is deterministic and depends on no clock,
 // network, or goroutine, so its behaviour is pinned entirely by unit tests.
-type goodputController struct {
+type GoodputController struct {
 	floor   int
 	ceiling int
 
@@ -30,7 +30,7 @@ type goodputController struct {
 	emaInit    bool
 	stall      int // consecutive samples without a meaningful improvement
 
-	// Tunables. Defaults chosen for the S3 upload path (see newGoodputController).
+	// Tunables. Defaults chosen for the S3 upload path (see NewGoodputController).
 	rampFactor    float64 // multiplicative window increase while improving
 	backoffFactor float64 // multiplicative decrease on error / collapse
 	improveFrac   float64 // min relative goodput gain that counts as "improving"
@@ -39,15 +39,15 @@ type goodputController struct {
 	stallLimit    int     // plateau samples before settling at the knee
 }
 
-// newGoodputController returns a controller that ramps within [floor, ceiling].
-func newGoodputController(floor, ceiling int) *goodputController {
+// NewGoodputController returns a controller that ramps within [floor, ceiling].
+func NewGoodputController(floor, ceiling int) *GoodputController {
 	if floor < 1 {
 		floor = 1
 	}
 	if ceiling < floor {
 		ceiling = floor
 	}
-	return &goodputController{
+	return &GoodputController{
 		floor:         floor,
 		ceiling:       ceiling,
 		cur:           floor,
@@ -62,9 +62,9 @@ func newGoodputController(floor, ceiling int) *goodputController {
 }
 
 // window returns the current target concurrency.
-func (c *goodputController) window() int { return c.cur }
+func (c *GoodputController) window() int { return c.cur }
 
-// observe feeds one control-interval sample and returns the next target window.
+// Observe feeds one control-interval sample and returns the next target window.
 // goodput is the delivered bytes/sec over the interval; windowLimited is true
 // when the window was actually saturated during the interval (in-flight uploads
 // reached the limit); sawError is true if any upload failed.
@@ -75,8 +75,8 @@ func (c *goodputController) window() int { return c.cur }
 // is app-limited, and reacting to it would shrink the window precisely when the
 // pipeline is about to burst a backlog that a wide window must drain fast. The
 // bursty rollup→upload pipeline does exactly this, so the controller only ramps
-// or backs off on window-limited samples and otherwise holds (#1407).
-func (c *goodputController) observe(goodput float64, windowLimited, sawError bool) int {
+// or backs off on window-limited samples and otherwise holds.
+func (c *GoodputController) Observe(goodput float64, windowLimited, sawError bool) int {
 	// Smooth the (noisy) per-interval goodput before any decision.
 	if !c.emaInit {
 		c.ema = goodput
@@ -133,7 +133,7 @@ func (c *goodputController) observe(goodput float64, windowLimited, sawError boo
 	return c.cur
 }
 
-func (c *goodputController) grow() {
+func (c *GoodputController) grow() {
 	next := int(math.Ceil(float64(c.cur) * c.rampFactor))
 	if next <= c.cur {
 		next = c.cur + 1
@@ -144,7 +144,7 @@ func (c *goodputController) grow() {
 	c.cur = next
 }
 
-func (c *goodputController) shrink() {
+func (c *GoodputController) shrink() {
 	next := int(math.Round(float64(c.cur) * c.backoffFactor))
 	if next >= c.cur {
 		next = c.cur - 1
