@@ -42,36 +42,6 @@ const MaxNonceSize = 64
 // magic bump.
 const wrapKindKeyProvider byte = 1
 
-// aeadTagSize is the AEAD authentication-tag length in bytes. All three
-// supported algorithms (AES-256-GCM, ChaCha20-Poly1305, XChaCha20-
-// Poly1305) emit a 16-byte tag, so plaintext_size = wire_size -
-// header_size - aeadTagSize without per-algo branching.
-const aeadTagSize = 16
-
-// maxFrameHeaderSize is the worst-case length of the fixed + variable
-// header bytes (everything before the ciphertext+tag). Used to bound a
-// range-GET probe that recovers the plaintext size without decrypting
-// the payload — see frameHeaderSize.
-const maxFrameHeaderSize = frameHeaderFixedSize +
-	maxVarint + MaxMasterKeyIDSize +
-	maxVarint + MaxWrappedBlockKeySize +
-	1 + MaxNonceSize
-
-// frameHeaderSize parses just enough of a frame prefix to return the
-// byte length of the header (everything before the ciphertext). The
-// input must begin with the DFENC magic; framed=false and err=nil mean
-// the input is unframed.
-func frameHeaderSize(b []byte) (headerLen int, framed bool, err error) {
-	view, framed, err := tryDecodeFrame(b)
-	if !framed || err != nil {
-		return 0, framed, err
-	}
-	// view.ciphertext aliases the input slice; its offset from b's start
-	// is the header length. cap(b) - cap(view.ciphertext) is robust
-	// regardless of how much trailing data we passed to tryDecodeFrame.
-	return len(b) - len(view.ciphertext), true, nil
-}
-
 // appendFrameHeader appends everything up to (but excluding) the ciphertext to
 // out, sized so a ciphertext of ciphertextLen bytes appended afterwards fits
 // without regrowing:
