@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
@@ -51,12 +52,16 @@ func setupShareNFSConfigTest(t *testing.T) (*store.GORMStore, *ShareNFSConfigHan
 		t.Fatalf("CreateShare: %v", err)
 	}
 
-	handler := NewShareNFSConfigHandler(struct {
+	return cpStore, nfsConfigHandler(cpStore, nil), share.ID
+}
+
+// nfsConfigHandler builds a ShareNFSConfigHandler over cpStore, which satisfies
+// both halves of the handler's composite store interface.
+func nfsConfigHandler(cpStore *store.GORMStore, rt *runtime.Runtime) *ShareNFSConfigHandler {
+	return NewShareNFSConfigHandler(struct {
 		store.ShareStore
 		store.NetgroupStore
-	}{cpStore, cpStore}, nil)
-
-	return cpStore, handler, share.ID
+	}{cpStore, cpStore}, rt)
 }
 
 // doRequest runs a request against a handler func and returns the recorder.
@@ -238,5 +243,51 @@ func TestShareNFSConfig_PatchRejectsInvalidSquash(t *testing.T) {
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("Patch(squash=%q) status = %d, want 400, body = %s", bad, w.Code, w.Body.String())
 		}
+	}
+}
+
+// TestShareNFSConfig_PatchRequireKerberosNeedsKerberos pins the config-time
+// guard: require_kerberos on a server without Kerberos leaves the share
+// reachable by no auth flavor at all, and would force SECINFO to answer with a
+// zero-length flavor list.
+func TestShareNFSConfig_PatchRequireKerberosNeedsKerberos(t *testing.T) {
+	cpStore, _, shareID := setupShareNFSConfigTest(t)
+	rt := runtime.New(nil)
+	handler := nfsConfigHandler(cpStore, rt)
+
+	w := doRequest(t, handler.Patch, http.MethodPatch, `{"require_kerberos":true}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("Patch(require_kerberos) with Kerberos disabled status = %d, want 400, body = %s",
+			w.Code, w.Body.String())
+	}
+
+	// Nothing was persisted by the refused request.
+	cfg, err := cpStore.GetShareAdapterConfig(context.Background(), shareID, "nfs")
+	if err != nil {
+		t.Fatalf("GetShareAdapterConfig: %v", err)
+	}
+	if cfg != nil {
+		var opts models.NFSExportOptions
+		if err := cfg.ParseConfig(&opts); err != nil {
+			t.Fatalf("ParseConfig: %v", err)
+		}
+		if opts.RequireKerberos {
+			t.Errorf("refused request persisted require_kerberos=true")
+		}
+	}
+
+	// With Kerberos configured the same request is accepted.
+	rt.SetKerberosEnabled(true)
+	w = doRequest(t, handler.Patch, http.MethodPatch, `{"require_kerberos":true}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Patch(require_kerberos) with Kerberos enabled status = %d, want 200, body = %s",
+			w.Code, w.Body.String())
+	}
+	var resp ShareNFSConfigResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !resp.RequireKerberos {
+		t.Errorf("RequireKerberos = false, want true")
 	}
 }

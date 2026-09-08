@@ -46,12 +46,18 @@ func (h *Handler) handleSecInfoNoName(
 		return secInfoErr(types.OP_SECINFO_NO_NAME, types.NFS4ERR_INVAL)
 	}
 
+	// Both styles report on the share the current filehandle belongs to: for
+	// SECINFO_STYLE4_CURRENT_FH it is the object itself, and a parent within a
+	// real share carries that same share's policy. Read it before the
+	// filehandle is consumed below.
+	flavors := h.secInfoFlavorsForHandle(ctx.CurrentFH)
+
 	ctx.CurrentFH = nil
 
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,
 		OpCode: types.OP_SECINFO_NO_NAME,
-		Data:   encodeSecInfoFlavors(h.KerberosEnabled),
+		Data:   flavors,
 	}
 }
 
@@ -80,5 +86,6 @@ func (h *Handler) secInfoParentStatus(ctx *types.CompoundContext) uint32 {
 
 	// Resolving "." applies the directory-type and search-permission checks
 	// LOOKUPP would, without needing the parent handle the caller never sees.
-	return h.secInfoLookupStatus(ctx, ".")
+	status, _ := h.secInfoLookupStatus(ctx, ".")
+	return status
 }
