@@ -78,8 +78,19 @@ jobs:
         run: ./test/common/known-failures_test.sh
 
   golangci-lint:
-    name: golangci-lint
+    name: golangci-lint (cache=${{ matrix.cache }} r${{ matrix.rep }})
     runs-on: ubuntu-latest
+
+    # Probe for #2433. The failure is non-deterministic: the same source, the
+    # same restored cache and the same linter build have come back both green
+    # and red. A single run therefore proves nothing either way, so both arms
+    # run side by side on one commit -- same source, same runner image -- and
+    # the only thing that differs is whether the analysis cache is restored.
+    strategy:
+      fail-fast: false
+      matrix:
+        cache: ["restored", "skipped"]
+        rep: [1, 2, 3, 4]
 
     steps:
       - name: Checkout code
@@ -96,10 +107,8 @@ jobs:
         with:
           version: v2.12.2
           args: --timeout=5m
-          # Probe for #2433: is the restored analysis cache what makes
-          # staticcheck emit false-positive SA5011 findings on the runner?
-          skip-cache: true
-          # Skip the action's online `config verify` — it fetches the config
+          skip-cache: ${{ matrix.cache == 'skipped' }}
+          # Skip the action's online `config verify` -- it fetches the config
           # JSON schema over the network and times out intermittently, failing
           # the job for reasons unrelated to the diff. golangci-lint still
           # validates the config locally at runtime.
