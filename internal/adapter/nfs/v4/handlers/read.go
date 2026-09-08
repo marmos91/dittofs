@@ -18,7 +18,7 @@ import (
 // Reads file data at a given offset, returning bytes and EOF flag.
 // Delegates to BlockStore.ReadAt via pooled buffers; validates stateid for open state.
 // No side effects; read-only data operation using buffer pools to reduce GC pressure.
-// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_STALE, NFS4ERR_IO, NFS4ERR_BADXDR.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_ACCESS, NFS4ERR_STALE, NFS4ERR_IO, NFS4ERR_BADXDR.
 func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
@@ -108,6 +108,9 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 		return readErr(status)
 	}
 
+	if status := checkReadPermission(metaSvc, ctx, authCtx, fileHandle, file, types.OP_READ); status != types.NFS4_OK {
+		return readErr(status)
+	}
 	// Empty file or no content
 	if file.Size == 0 || file.PayloadID == "" {
 		return encodeRead4resok(true, nil)

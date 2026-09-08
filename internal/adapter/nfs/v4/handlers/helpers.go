@@ -241,6 +241,40 @@ func (h *Handler) checkNetgroupAccess(ctx *types.CompoundContext, shareName stri
 	return nil
 }
 
+// checkReadPermission gates a data read on the caller's read permission for
+// handle, reporting the NFS4 status to answer with — NFS4_OK when the read may
+// proceed.
+//
+// The read-family operations all accept the anonymous (all-zero) and
+// READ-bypass (all-one) special stateids, which carry no open state and so
+// never went through OPEN's permission check. The share-access check on a real
+// open stateid does not cover it either: that constrains how the file was
+// opened, not who the caller is.
+//
+// The gate must stay unconditional rather than narrowing to the special-stateid
+// case. A non-nil open state says the file was opened with the right mode; it
+// says nothing about which client is presenting the stateid, so skipping the
+// check whenever one exists would reopen the same hole through another door.
+func checkReadPermission(
+	metaSvc *metadata.Service,
+	ctx *types.CompoundContext,
+	authCtx *metadata.AuthContext,
+	handle metadata.FileHandle,
+	file *metadata.File,
+	op uint32,
+) uint32 {
+	if err := metaSvc.CheckReadPermissionFile(authCtx, handle, file); err != nil {
+		status := common.MapToNFS4(err)
+		logger.Debug("NFSv4 read denied",
+			"op", types.OpName(op),
+			"nfs_status", status,
+			"error", err,
+			"client", ctx.ClientAddr)
+		return status
+	}
+	return types.NFS4_OK
+}
+
 // resolveBlockStore resolves the per-share block store for ctx.CurrentFH,
 // taking the write path when forWrite is set. On failure it returns the
 // SERVERFAULT result the caller returns unchanged, tagged with op.
