@@ -404,3 +404,99 @@ func encodeCBSequenceOp(sessionID types.SessionId4, seqID, slotID, highestSlotID
 
 	return buf.Bytes()
 }
+
+// ============================================================================
+// Callback Path Liveness (CB_NULL over the back channel)
+// ============================================================================
+
+// probeCallbackPath sends a CB_NULL over the session's back channel and reports
+// whether the client answered it.
+//
+// CB_NULL is RPC procedure 0, not a CB_COMPOUND operation, so it carries no
+// CB_SEQUENCE and consumes no back-channel slot. The reply demultiplexes by XID
+// like every other back-channel reply.
+//
+// This is the v4.1 counterpart of SendCBNull, which dials out to the address a
+// v4.0 client supplied in SETCLIENTID. A v4.1 client supplies no address: its
+// callbacks travel back over a connection it opened, so the probe writes to a
+// back-bound connection instead of dialing.
+//
+// Every step can fail, and each failure means the same thing to the caller --
+// the server cannot reach this client's callback service:
+//   - no connection has been bound for the back channel
+//   - the write to it fails
+//   - no reply arrives within the callback timeout
+//   - the reply is not an accepted, successful RPC
+func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
+	xid := bs.nextXID.Add(1)
+	callMsg := BuildCBRPCCallMessage(xid, bs.cbProgram.Load(), types.NFS4_CALLBACK_VERSION, types.CB_PROC_NULL, nil)
+	framedMsg := AddCBRecordMark(callMsg, true)
+
+	connID, writer, pending, ok := bs.sm.getBackBoundConnWriter(bs.sessionID, 0)
+	if !ok {
+		return fmt.Errorf("no back-bound connection for session %s", bs.sessionID.String())
+	}
+
+	replyCh := pending.Register(xid)
+	if err := writer(framedMsg); err != nil {
+		pending.Cancel(xid)
+		return fmt.Errorf("write CB_NULL to back-bound connection %d: %w", connID, err)
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, bs.callbackTimeout)
+	defer cancel()
+
+	select {
+	case <-timeoutCtx.Done():
+		pending.Cancel(xid)
+		return fmt.Errorf("CB_NULL timed out after %s", bs.callbackTimeout)
+	case <-bs.stopCh:
+		pending.Cancel(xid)
+		return fmt.Errorf("backchannel sender stopped")
+	case replyBytes := <-replyCh:
+		if err := ValidateCBReply(replyBytes); err != nil {
+			return fmt.Errorf("CB_NULL reply: %w", err)
+		}
+		return nil
+	}
+}
+
+// probeV41CallbackPath runs probeCallbackPath and records the verdict on the
+// client record, so ShouldGrantDelegation can read callback liveness the same
+// way for both minor versions.
+//
+// It runs asynchronously rather than inside CREATE_SESSION: a client that has
+// just asked for a back channel is not required to be serving callbacks by the
+// time its reply is written, and making every mount wait for a callback
+// round-trip would pay for a delegation the client may never ask for.
+//
+// The verdict is a snapshot, not a subscription. It goes stale when the client
+// stops answering, which is why a failed CB_RECALL clears CBPathUp again.
+func (sm *StateManager) probeV41CallbackPath(ctx context.Context, bs *BackchannelSender) {
+	err := bs.probeCallbackPath(ctx)
+	sm.setCBPathUp(bs.clientID, err == nil)
+
+	if err != nil {
+		logger.Info("CB_NULL failed, delegations stay disabled for client",
+			"client_id", fmt.Sprintf("0x%x", bs.clientID),
+			"session_id", bs.sessionID.String(),
+			"error", err)
+		return
+	}
+
+	logger.Info("CB_NULL succeeded, delegations enabled for client",
+		"client_id", fmt.Sprintf("0x%x", bs.clientID),
+		"session_id", bs.sessionID.String())
+}
+
+// setCBPathUp records the outcome of a callback-path probe on the client
+// record, whichever index holds it.
+//
+// Thread-safe: acquires sm.mu.Lock.
+func (sm *StateManager) setCBPathUp(clientID uint64, up bool) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if record := sm.clientRecordLocked(clientID); record != nil {
+		record.CBPathUp = up
+	}
+}

@@ -3988,6 +3988,13 @@ func (sm *StateManager) StartBackchannelSender(ctx context.Context, sessionID ty
 
 	go sender.Run(ctx)
 
+	// The back channel just became writable, which is the first moment a
+	// CB_NULL to this client can succeed or fail for a real reason. Probing
+	// here rather than in CreateSession keeps the callback round-trip off the
+	// mount path, and this function is the once-per-session gate: it returned
+	// above if a sender already existed.
+	go sm.probeV41CallbackPath(ctx, sender)
+
 	logger.Info("BackchannelSender started for session",
 		"session_id", sessionID.String(),
 		"client_id", fmt.Sprintf("0x%x", session.ClientID))

@@ -528,8 +528,8 @@ func (sm *StateManager) ShouldGrantDelegation(clientID uint64, fileHandle []byte
 		return types.OPEN_DELEGATE_NONE, false
 	}
 
-	client, exists := sm.clientsByID[clientID]
-	if !exists {
+	client := sm.clientRecordLocked(clientID)
+	if client == nil {
 		return types.OPEN_DELEGATE_NONE, false
 	}
 	if !client.CBPathUp {
@@ -663,6 +663,10 @@ func (sm *StateManager) sendRecallV41(deleg *DelegationState, sender *Backchanne
 			logger.Warn("CB_RECALL (v4.1) failed",
 				"client_id", deleg.ClientID,
 				"error", err)
+			// The callback path this client was granted a delegation on no
+			// longer answers, so stop granting more until a probe says
+			// otherwise, exactly as the v4.0 path does.
+			sm.setCBPathUp(deleg.ClientID, false)
 			sm.startRevocationTimer(deleg, 5*time.Second)
 			return
 		}
@@ -709,11 +713,7 @@ func (sm *StateManager) sendRecallV40(deleg *DelegationState) {
 			"client_id", deleg.ClientID,
 			"error", err)
 		sm.startRevocationTimer(deleg, 5*time.Second)
-		sm.mu.Lock()
-		if c, ok := sm.clientsByID[deleg.ClientID]; ok {
-			c.CBPathUp = false
-		}
-		sm.mu.Unlock()
+		sm.setCBPathUp(deleg.ClientID, false)
 		return
 	}
 
