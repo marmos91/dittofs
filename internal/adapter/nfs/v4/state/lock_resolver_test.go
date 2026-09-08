@@ -23,11 +23,7 @@ func TestLockManagerResolver_FixesMissingManager(t *testing.T) {
 	// No manager, no resolver: LOCK must fail (reproduces the EIO bug).
 	smBroken := NewStateManager(90 * time.Second)
 	clientID, fileHandle, openStateid, openSeqid := setupClientAndOpenState(t, smBroken)
-	if _, err := smBroken.LockNew(context.Background(),
-		clientID, []byte("owner-a"), 1,
-		openStateid, openSeqid,
-		fileHandle, types.WRITE_LT, 0, 100, false,
-	); err == nil {
+	if _, err := smBroken.LockNew(context.Background(), clientID, []byte("owner-a"), 1, openStateid, openSeqid, fileHandle, types.WRITE_LT, 0, 100, false, 0); err == nil {
 		t.Fatal("expected LOCK to fail when no lock manager is configured")
 	}
 
@@ -36,11 +32,7 @@ func TestLockManagerResolver_FixesMissingManager(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	sm.SetLockManagerResolver(func(_ []byte) lock.LockManager { return lm })
 	clientID, fileHandle, openStateid, openSeqid = setupClientAndOpenState(t, sm)
-	if _, err := sm.LockNew(context.Background(),
-		clientID, []byte("owner-a"), 1,
-		openStateid, openSeqid,
-		fileHandle, types.WRITE_LT, 0, 100, false,
-	); err != nil {
+	if _, err := sm.LockNew(context.Background(), clientID, []byte("owner-a"), 1, openStateid, openSeqid, fileHandle, types.WRITE_LT, 0, 100, false, 0); err != nil {
 		t.Fatalf("LOCK with resolved lock manager failed: %v", err)
 	}
 	if locks := lm.ListUnifiedLocks(string(fileHandle)); len(locks) != 1 {
@@ -83,11 +75,7 @@ func TestLockManagerResolver_DetectsCrossProtocolConflict(t *testing.T) {
 	}
 
 	// NFSv4 LOCK for the same overlapping range must also be denied (not granted).
-	res, err := sm.LockNew(context.Background(),
-		clientID, []byte("nfs-owner"), 1,
-		openStateid, openSeqid,
-		fileHandle, types.WRITE_LT, 50, 100, false,
-	)
+	res, err := sm.LockNew(context.Background(), clientID, []byte("nfs-owner"), 1, openStateid, openSeqid, fileHandle, types.WRITE_LT, 50, 100, false, 0)
 	if err != nil {
 		t.Fatalf("LockNew returned error: %v", err)
 	}

@@ -45,11 +45,7 @@ func TestCloseFile_LocksHeldStillAdvancesSeqid(t *testing.T) {
 	// Take a byte-range lock so the CLOSE below has something to trip over.
 	lockSeqid := uint32(1)
 	openSeqid++
-	lockRes, err := sm.LockNew(context.Background(),
-		clientID, []byte("lock-owner"), lockSeqid,
-		openStateid, openSeqid,
-		fileHandle, types.WRITE_LT, 0, 100, false,
-	)
+	lockRes, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner"), lockSeqid, openStateid, openSeqid, fileHandle, types.WRITE_LT, 0, 100, false, 0)
 	if err != nil {
 		t.Fatalf("LockNew failed: %v", err)
 	}
@@ -57,21 +53,21 @@ func TestCloseFile_LocksHeldStillAdvancesSeqid(t *testing.T) {
 	// CLOSE with locks outstanding: expected to fail, and expected to consume
 	// its seqid on the way out.
 	openSeqid++
-	_, err = sm.CloseFile(openStateid, openSeqid)
+	_, err = sm.CloseFile(openStateid, openSeqid, 0)
 	var stateErr *NFS4StateError
 	if !errors.As(err, &stateErr) || stateErr.Status != types.NFS4ERR_LOCKS_HELD {
 		t.Fatalf("CLOSE with locks held: got %v, want NFS4ERR_LOCKS_HELD", err)
 	}
 
 	// Release the lock, as a client does on being told LOCKS_HELD.
-	if _, err := sm.UnlockFile(&lockRes.Stateid, lockSeqid+1, types.WRITE_LT, 0, 100); err != nil {
+	if _, err := sm.UnlockFile(&lockRes.Stateid, lockSeqid+1, types.WRITE_LT, 0, 100, 0); err != nil {
 		t.Fatalf("UnlockFile failed: %v", err)
 	}
 
 	// The retry carries the next seqid. It must be accepted: the server owes
 	// the client agreement about where the sequence got to.
 	openSeqid++
-	if _, err := sm.CloseFile(openStateid, openSeqid); err != nil {
+	if _, err := sm.CloseFile(openStateid, openSeqid, 0); err != nil {
 		if errors.Is(err, ErrBadSeqid) {
 			t.Fatalf("CLOSE after LOCKS_HELD rejected with NFS4ERR_BAD_SEQID: "+
 				"the failed CLOSE did not advance the open-owner seqid, so the "+
@@ -97,12 +93,12 @@ func TestCloseFile_BadSeqidLeavesOwnerSeqidUntouched(t *testing.T) {
 
 	// A seqid the owner never reached: neither the expected next one nor a
 	// replay of the last.
-	if _, err := sm.CloseFile(openStateid, openSeqid+7); !errors.Is(err, ErrBadSeqid) {
+	if _, err := sm.CloseFile(openStateid, openSeqid+7, 0); !errors.Is(err, ErrBadSeqid) {
 		t.Fatalf("CLOSE at an out-of-sequence seqid: got %v, want NFS4ERR_BAD_SEQID", err)
 	}
 
 	// The client is still at the seqid it was, and so must the server be.
-	if _, err := sm.CloseFile(openStateid, openSeqid+1); err != nil {
+	if _, err := sm.CloseFile(openStateid, openSeqid+1, 0); err != nil {
 		t.Fatalf("CLOSE at the expected seqid after a rejected one failed: %v "+
 			"(the rejected request advanced the open-owner seqid; it must not)", err)
 	}
@@ -119,24 +115,20 @@ func TestUnlockFile_BadStateidLeavesLockOwnerSeqidUntouched(t *testing.T) {
 	clientID, fileHandle, openStateid, openSeqid := setupClientAndOpenState(t, sm)
 
 	lockSeqid := uint32(1)
-	lockRes, err := sm.LockNew(context.Background(),
-		clientID, []byte("lock-owner"), lockSeqid,
-		openStateid, openSeqid+1,
-		fileHandle, types.WRITE_LT, 0, 100, false,
-	)
+	lockRes, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner"), lockSeqid, openStateid, openSeqid+1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
 	if err != nil {
 		t.Fatalf("LockNew failed: %v", err)
 	}
 
 	ahead := lockRes.Stateid
 	ahead.Seqid = nextSeqID(ahead.Seqid)
-	if _, err := sm.UnlockFile(&ahead, lockSeqid+1, types.WRITE_LT, 0, 100); !errors.Is(err, ErrBadStateid) {
+	if _, err := sm.UnlockFile(&ahead, lockSeqid+1, types.WRITE_LT, 0, 100, 0); !errors.Is(err, ErrBadStateid) {
 		t.Fatalf("LOCKU with a stateid ahead of the server's: got %v, want NFS4ERR_BAD_STATEID", err)
 	}
 
 	// The retry carries the right stateid at the same lock-owner seqid, which
 	// the server must still be expecting.
-	if _, err := sm.UnlockFile(&lockRes.Stateid, lockSeqid+1, types.WRITE_LT, 0, 100); err != nil {
+	if _, err := sm.UnlockFile(&lockRes.Stateid, lockSeqid+1, types.WRITE_LT, 0, 100, 0); err != nil {
 		t.Fatalf("LOCKU retried after NFS4ERR_BAD_STATEID failed: %v "+
 			"(the rejected request advanced the lock-owner seqid; it must not)", err)
 	}
@@ -152,8 +144,7 @@ func TestDowngradeOpen_ReplayLeavesOwnerSeqidUntouched(t *testing.T) {
 	clientID, _, openStateid, openSeqid := setupClientAndOpenState(t, sm)
 
 	seqid := openSeqid + 1
-	if _, err := sm.DowngradeOpen(openStateid, seqid,
-		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE); err != nil {
+	if _, err := sm.DowngradeOpen(openStateid, seqid, types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, 0); err != nil {
 		t.Fatalf("OPEN_DOWNGRADE failed: %v", err)
 	}
 
@@ -163,8 +154,8 @@ func TestDowngradeOpen_ReplayLeavesOwnerSeqidUntouched(t *testing.T) {
 
 	// Every retransmit gets that reply back, not just the first.
 	for i := range 2 {
-		_, err := sm.DowngradeOpen(openStateid, seqid,
-			types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE)
+		_, err := sm.DowngradeOpen(openStateid, seqid, types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, 0)
+
 		var replayErr *ReplayError
 		if !errors.As(err, &replayErr) {
 			t.Fatalf("retransmit %d of OPEN_DOWNGRADE: got %v, want a replay", i+1, err)
@@ -177,8 +168,7 @@ func TestDowngradeOpen_ReplayLeavesOwnerSeqidUntouched(t *testing.T) {
 	}
 
 	// The sequence is still where the successful OPEN_DOWNGRADE left it.
-	if _, err := sm.DowngradeOpen(openStateid, seqid+1,
-		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE); err != nil {
+	if _, err := sm.DowngradeOpen(openStateid, seqid+1, types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, 0); err != nil {
 		t.Fatalf("OPEN_DOWNGRADE after replays failed: %v "+
 			"(a replay advanced the open-owner seqid; it must not)", err)
 	}

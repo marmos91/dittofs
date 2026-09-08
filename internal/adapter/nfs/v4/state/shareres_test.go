@@ -21,7 +21,7 @@ func openConfirmed(t *testing.T, sm *StateManager, clientID uint64, owner, fileH
 	if err != nil {
 		t.Fatalf("OpenFile(%s): %v", owner, err)
 	}
-	confirmed, err := sm.ConfirmOpen(&res.Stateid, 2)
+	confirmed, err := sm.ConfirmOpen(&res.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen(%s): %v", owner, err)
 	}
@@ -136,7 +136,7 @@ func TestOpenFile_ShareDeny_ReleasedAfterClose(t *testing.T) {
 	// Owner A opens with DENY_WRITE then closes.
 	aStateid := openConfirmed(t, sm, 0, []byte("ownerA"), fh,
 		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_WRITE)
-	if _, err := sm.CloseFile(&aStateid, 3); err != nil {
+	if _, err := sm.CloseFile(&aStateid, 3, 0); err != nil {
 		t.Fatalf("CloseFile: %v", err)
 	}
 

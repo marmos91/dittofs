@@ -157,6 +157,7 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 			lockOwnerClientID, lockOwnerData, lockSeqid,
 			openStateid, openSeqid,
 			ctx.CurrentFH, lockType, offset, length, reclaim,
+			ctx.SessionClientID,
 		)
 	} else {
 		// exist_lock_owner4 path
@@ -195,6 +196,7 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 			ctx.Context,
 			lockStateid, lockSeqid,
 			ctx.CurrentFH, lockType, offset, length, reclaim,
+			ctx.SessionClientID,
 		)
 	}
 
@@ -471,6 +473,7 @@ func (h *Handler) handleLockU(ctx *types.CompoundContext, reader io.Reader) *typ
 	// Delegate to StateManager
 	unlockResult, stateErr := h.StateManager.UnlockFile(
 		lockStateid, seqid, lockType, offset, length,
+		ctx.SessionClientID,
 	)
 	if stateErr != nil {
 		if replay := asReplay(types.OP_LOCKU, stateErr); replay != nil {

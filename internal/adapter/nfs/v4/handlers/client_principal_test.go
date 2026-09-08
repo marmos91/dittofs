@@ -70,7 +70,7 @@ func TestOpen_ClientIDSpansPrincipals(t *testing.T) {
 	setCurrentFH(victim, fx.rootHandle)
 	victimStateid := openStateid(t, fx, victim, 1, clientID, owner, "victim.txt",
 		types.OPEN4_CREATE, types.OPEN4_SHARE_ACCESS_BOTH)
-	if _, err := sm.ConfirmOpen(&victimStateid, 2); err != nil {
+	if _, err := sm.ConfirmOpen(&victimStateid, 2, 0); err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
 
@@ -131,7 +131,7 @@ func TestRenew_PrincipalBinding(t *testing.T) {
 		setCurrentFH(user, fx.rootHandle)
 		stateid := openStateid(t, fx, user, 1, clientID, []byte("open-owner-1000"), "u1000.txt",
 			types.OPEN4_CREATE, types.OPEN4_SHARE_ACCESS_BOTH)
-		if _, err := sm.ConfirmOpen(&stateid, 2); err != nil {
+		if _, err := sm.ConfirmOpen(&stateid, 2, 0); err != nil {
 			t.Fatalf("ConfirmOpen: %v", err)
 		}
 
