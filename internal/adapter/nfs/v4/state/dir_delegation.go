@@ -82,13 +82,7 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 
 	// Generate random cookie verifier
 	var cookieVerf [8]byte
-	if _, err := rand.Read(cookieVerf[:]); err != nil {
-		// Fallback to time-based if crypto/rand fails
-		now := time.Now().UnixNano()
-		for i := range 8 {
-			cookieVerf[i] = byte(now >> (uint(i) * 8))
-		}
-	}
+	_, _ = rand.Read(cookieVerf[:])
 
 	fhCopy := make([]byte, len(dirFH))
 	copy(fhCopy, dirFH)

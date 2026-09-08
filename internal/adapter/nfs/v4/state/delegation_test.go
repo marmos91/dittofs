@@ -81,7 +81,7 @@ func TestReturnDelegation_Success(t *testing.T) {
 
 	deleg := sm.GrantDelegation(100, []byte("fh-return-test"), types.OPEN_DELEGATE_READ)
 
-	err := sm.ReturnDelegation(&deleg.Stateid)
+	err := sm.ReturnDelegation(&deleg.Stateid, 0)
 	if err != nil {
 		t.Fatalf("ReturnDelegation: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestReturnDelegation_NotFound(t *testing.T) {
 	stateid := &types.Stateid4{Seqid: 1, Other: other}
 
 	// Not found but current epoch: idempotent success (per Pitfall 3)
-	err := sm.ReturnDelegation(stateid)
+	err := sm.ReturnDelegation(stateid, 0)
 	if err != nil {
 		t.Errorf("ReturnDelegation for unknown but current-epoch stateid should succeed, got %v", err)
 	}
@@ -124,7 +124,7 @@ func TestReturnDelegation_StaleStateid(t *testing.T) {
 
 	stateid := &types.Stateid4{Seqid: 1, Other: other}
 
-	err := sm.ReturnDelegation(stateid)
+	err := sm.ReturnDelegation(stateid, 0)
 	if err == nil {
 		t.Fatal("ReturnDelegation should fail for stale stateid")
 	}
@@ -143,13 +143,13 @@ func TestReturnDelegation_Idempotent(t *testing.T) {
 	deleg := sm.GrantDelegation(100, []byte("fh-idempotent"), types.OPEN_DELEGATE_READ)
 
 	// First return
-	err := sm.ReturnDelegation(&deleg.Stateid)
+	err := sm.ReturnDelegation(&deleg.Stateid, 0)
 	if err != nil {
 		t.Fatalf("first ReturnDelegation: %v", err)
 	}
 
 	// Second return (idempotent) -- should succeed
-	err = sm.ReturnDelegation(&deleg.Stateid)
+	err = sm.ReturnDelegation(&deleg.Stateid, 0)
 	if err != nil {
 		t.Errorf("second ReturnDelegation should be idempotent, got %v", err)
 	}
@@ -424,7 +424,7 @@ func TestReturnDelegation_CleansFileMap(t *testing.T) {
 	_ = sm.GrantDelegation(200, fh, types.OPEN_DELEGATE_READ)
 
 	// Return first delegation
-	err := sm.ReturnDelegation(&deleg1.Stateid)
+	err := sm.ReturnDelegation(&deleg1.Stateid, 0)
 	if err != nil {
 		t.Fatalf("ReturnDelegation: %v", err)
 	}
@@ -975,7 +975,7 @@ func TestRecallTimer_CancelledOnReturn(t *testing.T) {
 	})
 
 	// Return delegation before timer fires (cancels timer)
-	err := sm.ReturnDelegation(&deleg.Stateid)
+	err := sm.ReturnDelegation(&deleg.Stateid, 0)
 	if err != nil {
 		t.Fatalf("ReturnDelegation: %v", err)
 	}
@@ -1028,7 +1028,7 @@ func TestRevokeDelegation_AlreadyReturned(t *testing.T) {
 	deleg := sm.GrantDelegation(100, fh, types.OPEN_DELEGATE_READ)
 
 	// Return first
-	err := sm.ReturnDelegation(&deleg.Stateid)
+	err := sm.ReturnDelegation(&deleg.Stateid, 0)
 	if err != nil {
 		t.Fatalf("ReturnDelegation: %v", err)
 	}
@@ -1090,7 +1090,7 @@ func TestRevokedDelegation_ReturnSucceeds(t *testing.T) {
 	sm.RevokeDelegation(deleg.Stateid.Other)
 
 	// Client sends DELEGRETURN for revoked delegation: should succeed (NFS4_OK)
-	err := sm.ReturnDelegation(&deleg.Stateid)
+	err := sm.ReturnDelegation(&deleg.Stateid, 0)
 	if err != nil {
 		t.Fatalf("ReturnDelegation for revoked delegation should succeed, got %v", err)
 	}
@@ -1426,7 +1426,7 @@ func TestReturnDelegation_ConcurrentRevoke(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		_ = sm.ReturnDelegation(&deleg.Stateid)
+		_ = sm.ReturnDelegation(&deleg.Stateid, 0)
 	}()
 
 	go func() {

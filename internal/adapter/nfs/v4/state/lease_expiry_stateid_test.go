@@ -31,7 +31,7 @@ func TestExpiredLease_StateidsReportExpired(t *testing.T) {
 
 	sm.onLeaseExpired(clientID)
 
-	if _, err := sm.ValidateStateid(openStateid, fileHandle, StateidOpRead); !isStatus(err, types.NFS4ERR_EXPIRED) {
+	if _, err := sm.ValidateStateid(openStateid, fileHandle, StateidOpRead, 0); !isStatus(err, types.NFS4ERR_EXPIRED) {
 		t.Fatalf("ValidateStateid after lease cancellation: got %v, want NFS4ERR_EXPIRED", err)
 	}
 
@@ -39,7 +39,7 @@ func TestExpiredLease_StateidsReportExpired(t *testing.T) {
 		t.Fatalf("CloseFile after lease cancellation: got %v, want NFS4ERR_EXPIRED", err)
 	}
 
-	if _, err := sm.ValidateStateid(unknown, fileHandle, StateidOpRead); !isStatus(err, types.NFS4ERR_BAD_STATEID) {
+	if _, err := sm.ValidateStateid(unknown, fileHandle, StateidOpRead, 0); !isStatus(err, types.NFS4ERR_BAD_STATEID) {
 		t.Fatalf("ValidateStateid of a never-issued stateid: got %v, want NFS4ERR_BAD_STATEID", err)
 	}
 }
