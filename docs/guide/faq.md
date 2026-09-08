@@ -723,8 +723,8 @@ The freeze is per file, not per client, and it bites from the *second* write of
 a session onward. NFSv4's `change` attribute is derived from `ctime`, so the
 first write of a session does move `change` and is seen — but every later write
 in that same session leaves it untouched. A second client that noticed the first
-write, refetched the file and re-cached it will then keep serving that copy no
-matter how much more the writer changes.
+write, refetched the file and re-cached it will then keep serving that copy
+through every later in-place write of that session.
 
 RFC 7530 is specific about why that matters. §10.3.1 has the client revalidate a
 cached file by fetching `change` and comparing it with the cached value, and
