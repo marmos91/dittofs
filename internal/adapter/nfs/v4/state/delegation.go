@@ -319,11 +319,16 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 // Idempotent: returning an already-returned delegation succeeds with nil error
 // (per Pitfall 3 from research -- race between DELEGRETURN and CB_RECALL).
 //
-// Returns nil on success. Returns NFS4ERR_STALE_STATEID if the stateid
-// is from a previous server incarnation.
+// Returns nil on success. Returns NFS4ERR_STALE_STATEID if the stateid is from
+// a previous server incarnation, and NFS4ERR_BAD_STATEID when the delegation
+// belongs to a client other than clientID: any client could otherwise revoke a
+// delegation it never held, stopping the holder's recall timer and invalidating
+// its cache authority. A zero clientID means the caller has no trusted client
+// identity — DELEGRETURN carries no clientid4 on NFSv4.0 and there is no
+// session to derive one from — and skips the check; see checkStateidOwner.
 //
 // Caller must NOT hold sm.mu (method acquires it).
-func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
+func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4, clientID uint64) error {
 	sm.mu.Lock()
 	deleg, exists := sm.delegByOther[stateid.Other]
 	if !exists {
@@ -334,6 +339,11 @@ func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
 		}
 		// Current epoch but not found: already returned (idempotent)
 		return nil
+	}
+
+	if err := checkStateidOwner(clientID, deleg.ClientID); err != nil {
+		sm.mu.Unlock()
+		return err
 	}
 
 	deleg.StopRecallTimer()

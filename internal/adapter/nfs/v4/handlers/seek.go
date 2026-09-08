@@ -62,7 +62,7 @@ func (h *Handler) handleSeek(ctx *types.CompoundContext, reader io.Reader) *type
 
 	// SEEK is a read-family operation: validate the stateid for read access
 	// (special stateids permitted), mirroring READ.
-	if openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpRead); stateErr != nil {
+	if openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpRead, ctx.SessionClientID); stateErr != nil {
 		st := mapStateError(stateErr)
 		logger.Debug("NFSv4.2 SEEK stateid validation failed", "error", stateErr, "nfs_status", st, "client", ctx.ClientAddr)
 		return seekErr(st)

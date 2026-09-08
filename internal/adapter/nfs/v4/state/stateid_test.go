@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"sync"
 	"testing"
@@ -90,6 +91,26 @@ func TestGenerateStateidOther_ConcurrentUniqueness(t *testing.T) {
 	}
 }
 
+// TestGenerateStateidOther_NotSequential pins the low eight bytes as random
+// rather than sequential: a counter makes successive mints differ by exactly
+// one, so holding one stateid gives away its neighbours. Random bytes landing
+// adjacent has probability 2^-64 per pair.
+func TestGenerateStateidOther_NotSequential(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	first := sm.generateStateidOther(StateTypeOpen)
+	prev := binary.BigEndian.Uint64(first[4:])
+	for i := 1; i < 32; i++ {
+		other := sm.generateStateidOther(StateTypeOpen)
+		cur := binary.BigEndian.Uint64(other[4:])
+		if cur == prev+1 {
+			t.Fatalf("mint %d is exactly one more than mint %d (%d, %d): sequential, not random",
+				i, i-1, prev, cur)
+		}
+		prev = cur
+	}
+}
+
 func TestIsCurrentEpoch(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
@@ -120,7 +141,7 @@ func TestValidateStateid_SpecialStateid_AllZeros(t *testing.T) {
 
 	stateid := &types.Stateid4{Seqid: 0}
 	// Other is default zero
-	openState, err := sm.ValidateStateid(stateid, nil, StateidOpRead)
+	openState, err := sm.ValidateStateid(stateid, nil, StateidOpRead, 0)
 	if err != nil {
 		t.Fatalf("ValidateStateid for all-zeros: %v", err)
 	}
@@ -138,7 +159,7 @@ func TestValidateStateid_SpecialStateid_AllOnes(t *testing.T) {
 		stateid.Other[i] = 0xFF
 	}
 
-	openState, err := sm.ValidateStateid(stateid, nil, StateidOpRead)
+	openState, err := sm.ValidateStateid(stateid, nil, StateidOpRead, 0)
 	if err != nil {
 		t.Fatalf("ValidateStateid for all-ones READ bypass: %v", err)
 	}
@@ -154,7 +175,7 @@ func TestValidateStateid_NotFound(t *testing.T) {
 	other := sm.generateStateidOther(StateTypeOpen)
 	stateid := &types.Stateid4{Seqid: 1, Other: other}
 
-	_, err := sm.ValidateStateid(stateid, nil, StateidOpRead)
+	_, err := sm.ValidateStateid(stateid, nil, StateidOpRead, 0)
 	if err == nil {
 		t.Fatal("ValidateStateid should fail for unknown stateid")
 	}
@@ -181,7 +202,7 @@ func TestValidateStateid_StaleStateid(t *testing.T) {
 	other[3] = 0xFF
 	stateid := &types.Stateid4{Seqid: 1, Other: other}
 
-	_, err := sm.ValidateStateid(stateid, nil, StateidOpRead)
+	_, err := sm.ValidateStateid(stateid, nil, StateidOpRead, 0)
 	if err == nil {
 		t.Fatal("ValidateStateid should fail for stale epoch")
 	}
@@ -207,7 +228,7 @@ func TestValidateStateid_Success(t *testing.T) {
 	}
 
 	// Validate the returned stateid
-	openState, err := sm.ValidateStateid(&result.Stateid, fileHandle, StateidOpRead)
+	openState, err := sm.ValidateStateid(&result.Stateid, fileHandle, StateidOpRead, 0)
 	if err != nil {
 		t.Fatalf("ValidateStateid: %v", err)
 	}
@@ -236,7 +257,7 @@ func TestValidateStateid_OldSeqid(t *testing.T) {
 
 	// Now use the OLD seqid (1), current is 2
 	oldStateid := result.Stateid // has seqid=1
-	_, err = sm.ValidateStateid(&oldStateid, nil, StateidOpRead)
+	_, err = sm.ValidateStateid(&oldStateid, nil, StateidOpRead, 0)
 	if err == nil {
 		t.Fatal("ValidateStateid should fail for old seqid")
 	}
@@ -263,7 +284,7 @@ func TestValidateStateid_FutureSeqid(t *testing.T) {
 	// Use a seqid higher than current
 	futureStateid := result.Stateid
 	futureStateid.Seqid = 99
-	_, err = sm.ValidateStateid(&futureStateid, nil, StateidOpRead)
+	_, err = sm.ValidateStateid(&futureStateid, nil, StateidOpRead, 0)
 	if err == nil {
 		t.Fatal("ValidateStateid should fail for future seqid")
 	}
@@ -289,7 +310,7 @@ func TestValidateStateid_FilehandleMismatch(t *testing.T) {
 
 	// Validate with different filehandle
 	wrongFH := []byte("wrong-handle-456")
-	_, err = sm.ValidateStateid(&result.Stateid, wrongFH, StateidOpRead)
+	_, err = sm.ValidateStateid(&result.Stateid, wrongFH, StateidOpRead, 0)
 	if err == nil {
 		t.Fatal("ValidateStateid should fail for filehandle mismatch")
 	}
@@ -315,7 +336,7 @@ func TestValidateStateid_DelegationStateid_Success(t *testing.T) {
 	deleg := sm.GrantDelegation(100, fileHandle, types.OPEN_DELEGATE_WRITE)
 
 	// Validate the delegation stateid
-	openState, err := sm.ValidateStateid(&deleg.Stateid, fileHandle, StateidOpRead)
+	openState, err := sm.ValidateStateid(&deleg.Stateid, fileHandle, StateidOpRead, 0)
 	if err != nil {
 		t.Fatalf("ValidateStateid for delegation: %v", err)
 	}
@@ -331,7 +352,7 @@ func TestValidateStateid_DelegationStateid_NotFound(t *testing.T) {
 	other := sm.generateStateidOther(StateTypeDeleg)
 	stateid := &types.Stateid4{Seqid: 1, Other: other}
 
-	_, err := sm.ValidateStateid(stateid, nil, StateidOpRead)
+	_, err := sm.ValidateStateid(stateid, nil, StateidOpRead, 0)
 	if err == nil {
 		t.Fatal("ValidateStateid should fail for unknown delegation stateid")
 	}
@@ -356,7 +377,7 @@ func TestValidateStateid_DelegationStateid_Revoked(t *testing.T) {
 	deleg.Revoked = true
 	sm.mu.Unlock()
 
-	_, err := sm.ValidateStateid(&deleg.Stateid, fileHandle, StateidOpRead)
+	_, err := sm.ValidateStateid(&deleg.Stateid, fileHandle, StateidOpRead, 0)
 	if err == nil {
 		t.Fatal("ValidateStateid should fail for revoked delegation")
 	}
@@ -376,7 +397,7 @@ func TestValidateStateid_DelegationStateid_FilehandleMismatch(t *testing.T) {
 	deleg := sm.GrantDelegation(100, []byte("fh-deleg-mismatch"), types.OPEN_DELEGATE_READ)
 
 	wrongFH := []byte("fh-wrong-handle")
-	_, err := sm.ValidateStateid(&deleg.Stateid, wrongFH, StateidOpRead)
+	_, err := sm.ValidateStateid(&deleg.Stateid, wrongFH, StateidOpRead, 0)
 	if err == nil {
 		t.Fatal("ValidateStateid should fail for filehandle mismatch")
 	}
@@ -399,7 +420,7 @@ func TestValidateStateid_DelegationStateid_OldSeqid(t *testing.T) {
 	// to trigger OLD_STATEID. We manually bump the delegation seqid first.
 	deleg.Stateid.Seqid = 3 // simulate the server having advanced the seqid
 	oldStateid := types.Stateid4{Seqid: 1, Other: deleg.Stateid.Other}
-	_, err := sm.ValidateStateid(&oldStateid, nil, StateidOpRead)
+	_, err := sm.ValidateStateid(&oldStateid, nil, StateidOpRead, 0)
 	if err == nil {
 		t.Fatal("ValidateStateid should fail for old delegation seqid")
 	}
@@ -431,7 +452,7 @@ func TestValidateStateid_Seqid0_AcceptedAsAny(t *testing.T) {
 	// Per RFC 8881 Section 8.2.2, seqid=0 means "any seqid" and
 	// MUST be accepted regardless of the current seqid value.
 	anyStateid := types.Stateid4{Seqid: 0, Other: result.Stateid.Other}
-	_, err = sm.ValidateStateid(&anyStateid, nil, StateidOpRead)
+	_, err = sm.ValidateStateid(&anyStateid, nil, StateidOpRead, 0)
 	if err != nil {
 		t.Errorf("ValidateStateid should accept seqid=0 (any), got: %v", err)
 	}
@@ -1081,7 +1102,7 @@ func TestFullLifecycle_OpenConfirmClose(t *testing.T) {
 	confirmedStateid := &confirmed.Stateid
 
 	// Validate the confirmed stateid
-	openState, err := sm.ValidateStateid(confirmedStateid, []byte("file-handle-test"), StateidOpRead)
+	openState, err := sm.ValidateStateid(confirmedStateid, []byte("file-handle-test"), StateidOpRead, 0)
 	if err != nil {
 		t.Fatalf("ValidateStateid: %v", err)
 	}

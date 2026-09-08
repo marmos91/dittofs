@@ -50,7 +50,7 @@ func (h *Handler) handleAllocate(ctx *types.CompoundContext, reader io.Reader) *
 
 	// ALLOCATE may change the file size: validate the stateid as a write op and
 	// require WRITE share-access on a real open stateid (special stateids pass).
-	if openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpWrite); stateErr != nil {
+	if openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpWrite, ctx.SessionClientID); stateErr != nil {
 		s := mapStateError(stateErr)
 		logger.Debug("NFSv4.2 ALLOCATE stateid validation failed", "error", stateErr, "nfs_status", s, "client", ctx.ClientAddr)
 		return allocErr(s)

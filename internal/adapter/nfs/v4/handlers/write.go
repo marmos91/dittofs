@@ -114,7 +114,7 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 	// NFS4ERR_LOCKED when an open on this file denies writing. Real stateids
 	// are validated for correctness (seqid, epoch, filehandle match); implicit
 	// lease renewal happens inside ValidateStateid for real stateids.
-	openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpWrite)
+	openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpWrite, ctx.SessionClientID)
 	if stateErr != nil {
 		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 WRITE stateid validation failed",
