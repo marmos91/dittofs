@@ -453,13 +453,15 @@ func compoundIsNonIdempotent(results []types.CompoundResult) bool {
 //
 // Per RFC 8881, every non-exempt v4.1 COMPOUND must begin with SEQUENCE.
 // SEQUENCE establishes slot-based exactly-once semantics. Exempt operations
-// (EXCHANGE_ID, CREATE_SESSION, DESTROY_SESSION, BIND_CONN_TO_SESSION) can
-// appear as the first operation without a preceding SEQUENCE.
+// (EXCHANGE_ID, CREATE_SESSION, DESTROY_SESSION, DESTROY_CLIENTID,
+// BIND_CONN_TO_SESSION) can appear as the first operation without a preceding
+// SEQUENCE, in which case they must be the only operation in the COMPOUND.
 //
 // The dispatch flow:
 //  1. Validate op count
 //  2. Read first opcode
-//  3. If exempt op: dispatch all ops with v41ctx=nil (no session context)
+//  3. If exempt op: reject with NFS4ERR_NOT_ONLY_OP unless it is the only
+//     operation, then dispatch it with v41ctx=nil (no session context)
 //  4. If outside this minor version's op-number range: dispatch it, which
 //     answers OP_ILLEGAL/NFS4ERR_OP_ILLEGAL
 //  5. If SEQUENCE: validate session/slot/seqid, then dispatch remaining ops
@@ -497,6 +499,28 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 
 	// Check if the first operation is session-exempt
 	if v41handlers.IsSessionExemptOp(firstOpCode) {
+		// A session-exempt operation must be the only operation in a COMPOUND
+		// that does not start with SEQUENCE, else NFS4ERR_NOT_ONLY_OP (RFC 8881
+		// Section 15.1.3.3). The restriction is on the COMPOUND, not on the
+		// operation: the same operations are legal at any position after a
+		// SEQUENCE, and those COMPOUNDs take the SEQUENCE path below instead.
+		//
+		// The reply carries one result for the offending operation rather than
+		// none, so a client can attribute the error to an operation the way it
+		// can for every other per-operation status.
+		if numOps != 1 {
+			logger.Debug("NFSv4.1 COMPOUND session-exempt op is not the only operation",
+				"op_name", types.OpName(firstOpCode),
+				"num_ops", numOps,
+				"client", compCtx.ClientAddr)
+			results := []types.CompoundResult{{
+				Status: types.NFS4ERR_NOT_ONLY_OP,
+				OpCode: firstOpCode,
+				Data:   encodeStatusOnly(types.NFS4ERR_NOT_ONLY_OP),
+			}}
+			return encodeCompoundResponse(types.NFS4ERR_NOT_ONLY_OP, tag, results)
+		}
+
 		logger.Debug("NFSv4.1 COMPOUND exempt op",
 			"op_name", types.OpName(firstOpCode),
 			"num_ops", numOps,
