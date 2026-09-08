@@ -188,7 +188,9 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// would take the ctx.User==nil arm and synthesise UID-0 (root), bypassing
 	// DACL checks on the downstream metadata flush, delete-on-close unlink,
 	// and MFsymlink conversion (#619, same class as #603).
-	h.primeAuthContextFromOpenFile(ctx, openFile)
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return &CloseResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
+	}
 
 	// ========================================================================
 	// Step 3: Flush cached data to block store (ensures durability)
@@ -825,12 +827,11 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 		return fmt.Errorf("missing parent handle or filename for MFsymlink conversion")
 	}
 
-	// Prime ctx.User / IsGuest / TreeID from the OpenFile's recorded session
-	// BEFORE BuildAuthContext — otherwise ctx.User==nil falls into the
-	// anonymous arm and synthesises UID-0 (root), bypassing DACL checks on
-	// the RemoveFile + CreateSymlink (#619, same class as #603).
-	h.primeAuthContextFromOpenFile(ctx, openFile)
-
+	// Close, the only path in, primed ctx from this handle's session and so
+	// already refused a handle the requester does not own. ctx.User is set,
+	// so BuildAuthContext will not take the ctx.User==nil arm and synthesise
+	// UID-0 (root) over the RemoveFile + CreateSymlink below (#619, same class
+	// as #603).
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		return err

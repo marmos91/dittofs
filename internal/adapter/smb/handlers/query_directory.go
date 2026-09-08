@@ -307,7 +307,9 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	// QUERY_DIRECTORY arrives keyed only by FileID, so the dispatcher
 	// cannot prefill ctx.User. See primeAuthContextFromOpenFile for the
 	// UID-0 root-bypass this prevents (refs #603 — ABE filterByAccess).
-	h.primeAuthContextFromOpenFile(ctx, openFile)
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
+	}
 
 	// Build AuthContext
 	authCtx, err := BuildAuthContext(ctx)
