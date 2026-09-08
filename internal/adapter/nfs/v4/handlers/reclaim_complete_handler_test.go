@@ -8,6 +8,38 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 )
 
+// sendReclaimComplete runs SEQUENCE + RECLAIM_COMPLETE on the given session
+// slot 0 at the given sequence ID and returns the COMPOUND's overall status.
+func sendReclaimComplete(
+	t *testing.T,
+	h *Handler,
+	ctx *types.CompoundContext,
+	sessionID types.SessionId4,
+	seqID uint32,
+) uint32 {
+	t.Helper()
+
+	var rcBuf bytes.Buffer
+	rcArgs := types.ReclaimCompleteArgs{OneFS: false}
+	if err := rcArgs.Encode(&rcBuf); err != nil {
+		t.Fatalf("encode ReclaimCompleteArgs: %v", err)
+	}
+	ops := []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: encodeSequenceArgs(sessionID, 0, seqID, 0, false)},
+		{opCode: types.OP_RECLAIM_COMPLETE, data: rcBuf.Bytes()},
+	}
+
+	resp, err := h.ProcessCompound(ctx, buildCompoundArgsWithOps([]byte("rc"), 1, ops))
+	if err != nil {
+		t.Fatalf("RECLAIM_COMPLETE ProcessCompound error: %v", err)
+	}
+	status, err := xdr.DecodeUint32(bytes.NewReader(resp))
+	if err != nil {
+		t.Fatalf("decode overall status: %v", err)
+	}
+	return status
+}
+
 func TestHandleReclaimComplete(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		// Set up client with session, then send RECLAIM_COMPLETE via SEQUENCE-gated COMPOUND
@@ -135,6 +167,22 @@ func TestHandleReclaimComplete(t *testing.T) {
 		if overallStatus != types.NFS4ERR_COMPLETE_ALREADY {
 			t.Errorf("second RECLAIM_COMPLETE overall status = %d, want NFS4ERR_COMPLETE_ALREADY (%d)",
 				overallStatus, types.NFS4ERR_COMPLETE_ALREADY)
+		}
+	})
+
+	t.Run("complete_already_outside_grace", func(t *testing.T) {
+		// A client that reclaimed has finished reclaiming whether or not the
+		// server ever opened a grace window, so the second RECLAIM_COMPLETE is
+		// still a duplicate. No grace period is started here.
+		h, sessionID := createTestSession(t)
+		ctx := newTestCompoundContext()
+
+		if got := sendReclaimComplete(t, h, ctx, sessionID, 1); got != types.NFS4_OK {
+			t.Fatalf("first RECLAIM_COMPLETE overall status = %d, want NFS4_OK", got)
+		}
+		if got := sendReclaimComplete(t, h, ctx, sessionID, 2); got != types.NFS4ERR_COMPLETE_ALREADY {
+			t.Errorf("second RECLAIM_COMPLETE overall status = %d, want NFS4ERR_COMPLETE_ALREADY (%d)",
+				got, types.NFS4ERR_COMPLETE_ALREADY)
 		}
 	})
 
