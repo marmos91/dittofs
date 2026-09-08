@@ -51,7 +51,7 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 	// permitted on READ and return a nil openState. Real open stateids are
 	// validated for correctness (seqid, epoch, filehandle match) and carry the
 	// open's share-access bits.
-	openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpRead)
+	openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpRead, ctx.SessionClientID)
 	if stateErr != nil {
 		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 READ stateid validation failed",

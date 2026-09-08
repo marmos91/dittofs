@@ -46,7 +46,7 @@ func (h *Handler) handleDeallocate(ctx *types.CompoundContext, reader io.Reader)
 
 	// DEALLOCATE modifies file content: validate the stateid as a write op and
 	// require WRITE share-access on a real open stateid (special stateids pass).
-	if openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpWrite); stateErr != nil {
+	if openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpWrite, ctx.SessionClientID); stateErr != nil {
 		s := mapStateError(stateErr)
 		logger.Debug("NFSv4.2 DEALLOCATE stateid validation failed", "error", stateErr, "nfs_status", s, "client", ctx.ClientAddr)
 		return deallocErr(s)

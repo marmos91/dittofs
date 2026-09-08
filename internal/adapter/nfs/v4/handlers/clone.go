@@ -80,14 +80,14 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 
 	// Validate the source stateid for READ and the destination for WRITE. Special
 	// stateids pass; a real open must carry the matching share-access bit.
-	if openState, err := h.StateManager.ValidateStateid(srcStateid, ctx.SavedFH, state.StateidOpRead); err != nil {
+	if openState, err := h.StateManager.ValidateStateid(srcStateid, ctx.SavedFH, state.StateidOpRead, ctx.SessionClientID); err != nil {
 		s := mapStateError(err)
 		logger.Debug("NFSv4.2 CLONE src stateid validation failed", "error", err, "nfs_status", s, "client", ctx.ClientAddr)
 		return cloneErr(s)
 	} else if openState != nil && openState.ShareAccess&types.OPEN4_SHARE_ACCESS_READ == 0 {
 		return cloneErr(types.NFS4ERR_OPENMODE)
 	}
-	if openState, err := h.StateManager.ValidateStateid(dstStateid, ctx.CurrentFH, state.StateidOpWrite); err != nil {
+	if openState, err := h.StateManager.ValidateStateid(dstStateid, ctx.CurrentFH, state.StateidOpWrite, ctx.SessionClientID); err != nil {
 		s := mapStateError(err)
 		logger.Debug("NFSv4.2 CLONE dst stateid validation failed", "error", err, "nfs_status", s, "client", ctx.ClientAddr)
 		return cloneErr(s)

@@ -176,7 +176,7 @@ func TestValidateStateid_ReadBypass_AcceptedOnReadAndWrite(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
 	// READ: all-ones is permitted (returns nil openState, nil error).
-	openState, err := sm.ValidateStateid(readBypassStateid(), nil, StateidOpRead)
+	openState, err := sm.ValidateStateid(readBypassStateid(), nil, StateidOpRead, 0)
 	if err != nil {
 		t.Fatalf("read-bypass on READ should be allowed: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestValidateStateid_ReadBypass_AcceptedOnReadAndWrite(t *testing.T) {
 
 	// WRITE: all-ones is accepted too, behaving as the anonymous stateid
 	// (RFC 7530 Section 16.36.4). With no open on the file nothing denies it.
-	openState, err = sm.ValidateStateid(readBypassStateid(), nil, StateidOpWrite)
+	openState, err = sm.ValidateStateid(readBypassStateid(), nil, StateidOpWrite, 0)
 	if err != nil {
 		t.Fatalf("read-bypass on WRITE should be allowed: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestValidateStateid_Anonymous_AllowedOnReadAndWrite(t *testing.T) {
 	anon := &types.Stateid4{Seqid: 0} // all-zeros other
 
 	for _, op := range []StateidOp{StateidOpRead, StateidOpWrite} {
-		openState, err := sm.ValidateStateid(anon, nil, op)
+		openState, err := sm.ValidateStateid(anon, nil, op, 0)
 		if err != nil {
 			t.Fatalf("anonymous stateid (op=%d) should be allowed: %v", op, err)
 		}
@@ -227,11 +227,11 @@ func TestValidateStateid_AnonymousBlockedByShareDeny(t *testing.T) {
 		openConfirmed(t, sm, 0, []byte("ownerA"), fh,
 			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_READ)
 
-		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpRead); !errors.Is(err, ErrLocked) {
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpRead, 0); !errors.Is(err, ErrLocked) {
 			t.Fatalf("anonymous READ against DENY_READ: err = %v, want ErrLocked", err)
 		}
 		// DENY_READ says nothing about writing.
-		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpWrite); err != nil {
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpWrite, 0); err != nil {
 			t.Fatalf("anonymous WRITE against DENY_READ: %v", err)
 		}
 	})
@@ -242,10 +242,10 @@ func TestValidateStateid_AnonymousBlockedByShareDeny(t *testing.T) {
 		openConfirmed(t, sm, 0, []byte("ownerA"), fh,
 			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_WRITE)
 
-		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpWrite); !errors.Is(err, ErrLocked) {
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpWrite, 0); !errors.Is(err, ErrLocked) {
 			t.Fatalf("anonymous WRITE against DENY_WRITE: err = %v, want ErrLocked", err)
 		}
-		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpRead); err != nil {
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpRead, 0); err != nil {
 			t.Fatalf("anonymous READ against DENY_WRITE: %v", err)
 		}
 	})
@@ -256,10 +256,10 @@ func TestValidateStateid_AnonymousBlockedByShareDeny(t *testing.T) {
 		openConfirmed(t, sm, 0, []byte("ownerA"), fh,
 			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE)
 
-		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpRead); err != nil {
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpRead, 0); err != nil {
 			t.Fatalf("anonymous READ with no deny in force: %v", err)
 		}
-		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpWrite); err != nil {
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpWrite, 0); err != nil {
 			t.Fatalf("anonymous WRITE with no deny in force: %v", err)
 		}
 	})
@@ -273,7 +273,7 @@ func TestValidateStateid_AnonymousBlockedByShareDeny(t *testing.T) {
 		openConfirmed(t, sm, 0, []byte("ownerA"), fh,
 			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_READ)
 
-		if _, err := sm.ValidateStateid(readBypassStateid(), fh, StateidOpRead); err != nil {
+		if _, err := sm.ValidateStateid(readBypassStateid(), fh, StateidOpRead, 0); err != nil {
 			t.Fatalf("read-bypass READ against DENY_READ: %v", err)
 		}
 	})
