@@ -5,6 +5,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
@@ -332,7 +333,7 @@ func TestHandleSecInfo_KRB5OIDFormat(t *testing.T) {
 
 func TestEncodeSecInfoGSSEntry_Privacy(t *testing.T) {
 	var buf bytes.Buffer
-	encodeSecInfoGSSEntry(&buf, rpcGSSSvcPrivacy)
+	encodeSecInfoGSSEntry(&buf, gss.RPCGSSSvcPrivacy)
 
 	reader := bytes.NewReader(buf.Bytes())
 
@@ -359,7 +360,7 @@ func TestEncodeSecInfoGSSEntry_Privacy(t *testing.T) {
 
 func TestEncodeSecInfoGSSEntry_Integrity(t *testing.T) {
 	var buf bytes.Buffer
-	encodeSecInfoGSSEntry(&buf, rpcGSSSvcIntegrity)
+	encodeSecInfoGSSEntry(&buf, gss.RPCGSSSvcIntegrity)
 
 	reader := bytes.NewReader(buf.Bytes())
 
@@ -379,7 +380,7 @@ func TestEncodeSecInfoGSSEntry_Integrity(t *testing.T) {
 
 func TestEncodeSecInfoGSSEntry_None(t *testing.T) {
 	var buf bytes.Buffer
-	encodeSecInfoGSSEntry(&buf, rpcGSSSvcNone)
+	encodeSecInfoGSSEntry(&buf, gss.RPCGSSSvcNone)
 
 	reader := bytes.NewReader(buf.Bytes())
 
