@@ -280,17 +280,11 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		logger.Debug("WRITE: invalid session ID", "sessionID", openFile.SessionID)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUserSessionDeleted}}, nil
 	}
-	// Per MS-SMB2 §3.3.5.2.5: verify the request's TreeID/SessionID match
-	// the handle's owning TreeConnect/Session. The smb2.tcon torture test
-	// exercises this by deliberately mis-setting the wire-level TID/SID
-	// and expecting an error (Samba returns FILE_CLOSED).
-	if openFile.TreeID != ctx.TreeID || openFile.SessionID != ctx.SessionID {
-		logger.Debug("WRITE: handle does not belong to request's tree/session",
-			"handleTreeID", openFile.TreeID, "reqTreeID", ctx.TreeID,
-			"handleSessionID", openFile.SessionID, "reqSessionID", ctx.SessionID)
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileClosed}}, nil
+	// Priming also refuses a handle that does not belong to this request's
+	// TreeConnect/Session (MS-SMB2 §3.3.5.2.5).
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
 	}
-	h.primeAuthContextFromOpenFile(ctx, openFile)
 
 	// ========================================================================
 	// Step 5: Check write permission at share level

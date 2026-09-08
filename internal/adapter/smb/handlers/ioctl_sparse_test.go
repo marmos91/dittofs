@@ -9,28 +9,10 @@ import (
 )
 
 // buildSparseIoctlRequest assembles an SMB2 IOCTL request body with an
-// optional input buffer. The InputOffset is reported relative to the SMB2
-// header so the production parser (which lives at offset 56 of the body)
-// resolves to the same bytes the test wrote.
+// optional input buffer and no output-buffer allowance, which is all the
+// sparse FSCTLs look at.
 func buildSparseIoctlRequest(ctlCode uint32, fileID [16]byte, input []byte) []byte {
-	const fixedSize = 56
-	w := smbenc.NewWriter(fixedSize + len(input))
-	w.WriteUint16(57)                     // StructureSize
-	w.WriteUint16(0)                      // Reserved
-	w.WriteUint32(ctlCode)                // CtlCode
-	w.WriteBytes(fileID[:])               // FileId
-	w.WriteUint32(uint32(64 + fixedSize)) // InputOffset (header + fixed)
-	w.WriteUint32(uint32(len(input)))     // InputCount
-	w.WriteUint32(0)                      // MaxInputResponse
-	w.WriteUint32(uint32(64 + fixedSize)) // OutputOffset
-	w.WriteUint32(0)                      // OutputCount
-	w.WriteUint32(0)                      // MaxOutputResponse
-	w.WriteUint32(0)                      // Flags
-	w.WriteUint32(0)                      // Reserved2
-	if len(input) > 0 {
-		w.WriteBytes(input)
-	}
-	return w.Bytes()
+	return buildIoctlRequestBody(ctlCode, fileID, input, 0)
 }
 
 // TestSetSparse_NoHandle returns STATUS_FILE_CLOSED when the FileID has no

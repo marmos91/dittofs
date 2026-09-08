@@ -40,6 +40,16 @@ func (h *Handler) handleSetReparsePoint(ctx *SMBHandlerContext, body []byte) (*H
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
+	// Prime ctx.User / IsGuest / TreeID from the handle's recorded session
+	// BEFORE BuildAuthContext — otherwise ctx.User==nil synthesises UID-0
+	// (root), bypassing DACL checks on the RemoveFile + CreateSymlink in
+	// convertOpenFileToNativeSymlink (#619). Priming here rather than inside
+	// that helper keeps the ownership refusal on the handler's status path,
+	// which returns it as-is instead of mapping it from an error.
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return NewErrorResult(status), nil
+	}
+
 	input := parseIoctlInputData(body)
 	if len(input) < 8 {
 		logger.Debug("IOCTL SET_REPARSE_POINT: input too small", "len", len(input))
@@ -201,11 +211,9 @@ func (h *Handler) convertOpenFileToNativeSymlink(ctx *SMBHandlerContext, openFil
 		return fmt.Errorf("missing parent handle or filename for symlink conversion")
 	}
 
-	// Prime ctx.User / IsGuest / TreeID from the OpenFile's recorded session
-	// BEFORE BuildAuthContext — otherwise ctx.User==nil synthesises UID-0
-	// (root), bypassing DACL checks on RemoveFile + CreateSymlink (#619).
-	h.primeAuthContextFromOpenFile(ctx, openFile)
-
+	// handleSetReparsePoint, the only path in, primed ctx from this handle's
+	// session, so BuildAuthContext will not take the ctx.User==nil arm and
+	// synthesise UID-0 (root) over the RemoveFile + CreateSymlink below (#619).
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		return err
