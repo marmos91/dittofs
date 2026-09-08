@@ -54,16 +54,14 @@ flake worth re-running.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| DELEG1 | bug | no delegation is granted | #2329 |
-| DELEG2 | bug | no delegation is granted | #2329 |
-| DELEG23 | bug | no delegation is granted | #2329 |
-| DELEG26 | bug | no delegation is granted | #2329 |
-| DELEG3 | bug | no delegation is granted | #2329 |
-| DELEG4 | bug | no delegation is granted | #2329 |
-| DELEG5 | bug | no delegation is granted | #2329 |
-| DELEG6 | bug | no delegation is granted | #2329 |
-| DELEG7 | bug | no delegation is granted | #2329 |
-| DELEG8 | bug | no delegation is granted | #2329 |
+| DELEG1 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
+| DELEG2 | bug | delegation withheld on this OPEN: the callback-path probe had not answered yet | #2329 |
+| DELEG23 | bug | delegation break not received: every CB_RECALL fails with no back-bound connection for the session | #2329 |
+| DELEG3 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
+| DELEG5 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
+| DELEG6 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
+| DELEG7 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
+| DELEG8 | bug | delegation withheld on this OPEN: the callback-path probe had not answered yet | #2329 |
 | CSESS15 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
 | CSESS16a | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
 | CSESS25 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
