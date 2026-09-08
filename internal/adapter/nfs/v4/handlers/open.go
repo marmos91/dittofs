@@ -546,7 +546,7 @@ func (h *Handler) handleOpenClaimNull(
 		openResult.RFlags &^= types.OPEN4_RESULT_CONFIRM
 		// Auto-confirm the owner so subsequent OPENs don't require confirmation.
 		// Use ConfirmOpenV41 which does NOT increment seqid (must stay at 1).
-		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid)
+		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid, ctx.SessionClientID)
 	}
 
 	// Try to grant a delegation
@@ -644,7 +644,7 @@ func (h *Handler) handleOpenClaimFH(
 	// session, so strip OPEN4_RESULT_CONFIRM and auto-confirm.
 	if ctx.SkipOwnerSeqid && openResult.RFlags&types.OPEN4_RESULT_CONFIRM != 0 {
 		openResult.RFlags &^= types.OPEN4_RESULT_CONFIRM
-		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid)
+		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid, ctx.SessionClientID)
 	}
 
 	delegType, shouldGrant := h.StateManager.ShouldGrantDelegation(clientID, []byte(fileHandle), shareAccess)
@@ -727,7 +727,7 @@ func (h *Handler) handleOpenClaimPrevious(
 	// In NFSv4.1, OPEN_CONFIRM was removed; auto-confirm if needed.
 	if ctx.SkipOwnerSeqid && openResult.RFlags&types.OPEN4_RESULT_CONFIRM != 0 {
 		openResult.RFlags &^= types.OPEN4_RESULT_CONFIRM
-		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid)
+		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid, ctx.SessionClientID)
 	}
 
 	logger.Debug("NFSv4 OPEN CLAIM_PREVIOUS successful",
@@ -813,7 +813,7 @@ func (h *Handler) handleOpenConfirm(ctx *types.CompoundContext, reader io.Reader
 		"client", ctx.ClientAddr)
 
 	// Delegate to StateManager
-	confirmResult, stateErr := h.StateManager.ConfirmOpen(stateid, confirmSeqid)
+	confirmResult, stateErr := h.StateManager.ConfirmOpen(stateid, confirmSeqid, ctx.SessionClientID)
 	if stateErr != nil {
 		if replay := asReplay(types.OP_OPEN_CONFIRM, stateErr); replay != nil {
 			return replay
@@ -990,7 +990,7 @@ func (h *Handler) handleOpenClaimDelegateCur(
 	// In NFSv4.1, OPEN_CONFIRM was removed; auto-confirm if needed.
 	if ctx.SkipOwnerSeqid && openResult.RFlags&types.OPEN4_RESULT_CONFIRM != 0 {
 		openResult.RFlags &^= types.OPEN4_RESULT_CONFIRM
-		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid)
+		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid, ctx.SessionClientID)
 	}
 
 	logger.Debug("NFSv4 OPEN CLAIM_DELEGATE_CUR successful",

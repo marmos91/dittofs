@@ -1831,7 +1831,7 @@ func (sm *StateManager) CacheLockOwnerResult(clientID uint64, ownerData []byte, 
 //   - Increments the stateid seqid
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32) (result *OpenSeqResult, err error) {
+func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32, callerClientID uint64) (result *OpenSeqResult, err error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -1845,6 +1845,14 @@ func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32) (resu
 			Status:  types.NFS4ERR_BAD_STATEID,
 			Message: "stateid not found for OPEN_CONFIRM",
 		}
+	}
+
+	// A stateid is not a bearer token: reject one that names another client's
+	// state before acting on it (RFC 8881 Section 18.38.3). A zero
+	// callerClientID means the caller has no trusted client identity, which is
+	// every NFSv4.0 request; see checkStateidOwner.
+	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
+		return nil, err
 	}
 
 	owner := openState.Owner
@@ -1901,7 +1909,7 @@ func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32) (resu
 // nfs_set_open_stateid_locked() expects sequential stateids starting from 1.
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) ConfirmOpenV41(stateid *types.Stateid4) error {
+func (sm *StateManager) ConfirmOpenV41(stateid *types.Stateid4, callerClientID uint64) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -1911,6 +1919,12 @@ func (sm *StateManager) ConfirmOpenV41(stateid *types.Stateid4) error {
 			Status:  types.NFS4ERR_BAD_STATEID,
 			Message: "stateid not found for v4.1 auto-confirm",
 		}
+	}
+
+	// See ConfirmOpen: a stateid that names another client's open must not be
+	// confirmed through this caller.
+	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
+		return err
 	}
 
 	openState.Confirmed = true
@@ -1928,7 +1942,7 @@ func (sm *StateManager) ConfirmOpenV41(stateid *types.Stateid4) error {
 //   - Returns a zeroed stateid
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (result *OpenSeqResult, err error) {
+func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32, callerClientID uint64) (result *OpenSeqResult, err error) {
 	// Handle special stateids (all-zeros, all-ones): no state to clean up
 	if stateid.IsSpecialStateid() {
 		return &OpenSeqResult{}, nil
@@ -1955,6 +1969,14 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (result
 			Status:  types.NFS4ERR_BAD_STATEID,
 			Message: "stateid not found for CLOSE",
 		}
+	}
+
+	// A stateid is not a bearer token: reject one that names another client's
+	// state before acting on it (RFC 8881 Section 18.38.3). A zero
+	// callerClientID means the caller has no trusted client identity, which is
+	// every NFSv4.0 request; see checkStateidOwner.
+	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
+		return nil, err
 	}
 
 	owner := openState.Owner
@@ -2122,7 +2144,7 @@ func (sm *StateManager) dropLockOwnerIfUnreferencedLocked(lockOwner *LockOwner) 
 //   - Increments the stateid seqid
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, newShareAccess, newShareDeny uint32) (result *OpenSeqResult, err error) {
+func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, newShareAccess, newShareDeny uint32, callerClientID uint64) (result *OpenSeqResult, err error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -2136,6 +2158,14 @@ func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, new
 			Status:  types.NFS4ERR_BAD_STATEID,
 			Message: "stateid not found for OPEN_DOWNGRADE",
 		}
+	}
+
+	// A stateid is not a bearer token: reject one that names another client's
+	// state before acting on it (RFC 8881 Section 18.38.3). A zero
+	// callerClientID means the caller has no trusted client identity, which is
+	// every NFSv4.0 request; see checkStateidOwner.
+	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
+		return nil, err
 	}
 
 	owner := openState.Owner
@@ -2405,6 +2435,7 @@ func (sm *StateManager) LockNew(
 	lockClientID uint64, lockOwnerData []byte, lockSeqid uint32,
 	openStateid *types.Stateid4, openSeqid uint32,
 	fileHandle []byte, lockType uint32, offset, length uint64, reclaim bool,
+	callerClientID uint64,
 ) (result *LockResult, err error) {
 	// Grace period check (before acquiring sm.mu)
 	if !reclaim {
@@ -2420,6 +2451,14 @@ func (sm *StateManager) LockNew(
 	openState, exists := sm.openStateByOther[openStateid.Other]
 	if !exists {
 		return nil, ErrBadStateid
+	}
+
+	// A stateid is not a bearer token: reject one that names another client's
+	// state before acting on it (RFC 8881 Section 18.38.3). A zero
+	// callerClientID means the caller has no trusted client identity, which is
+	// every NFSv4.0 request; see checkStateidOwner.
+	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
+		return nil, err
 	}
 
 	// The request is attributable to this open-owner, so any failure below
@@ -2551,7 +2590,7 @@ func (sm *StateManager) LockNew(
 	}
 
 	// 8. Acquire the lock via unified lock manager
-	denied, err := sm.acquireLock(ctx, lockState, lockType, offset, length, reclaim)
+	denied, err := sm.acquireLock(ctx, lockState, lockType, offset, length, reclaim, callerClientID)
 	if err != nil {
 		return nil, err
 	}
@@ -2589,6 +2628,7 @@ func (sm *StateManager) LockExisting(
 	ctx context.Context,
 	lockStateid *types.Stateid4, lockSeqid uint32,
 	fileHandle []byte, lockType uint32, offset, length uint64, reclaim bool,
+	callerClientID uint64,
 ) (result *LockResult, err error) {
 	// Grace period check
 	if !reclaim {
@@ -2600,10 +2640,15 @@ func (sm *StateManager) LockExisting(
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// 1. Look up lock state
+	// 1. Look up lock state. The same check runs again on recommit, once the
+	// lock manager has been called with sm.mu released; here it rejects a
+	// stateid that is not the caller's before any cross-protocol work happens.
 	lockState, exists := sm.lockStateByOther[lockStateid.Other]
 	if !exists {
 		return nil, sm.lockStateidMissError(lockStateid.Other)
+	}
+	if err := sm.revalidateLockStateLocked(lockState, callerClientID); err != nil {
+		return nil, err
 	}
 
 	lockOwner := lockState.LockOwner
@@ -2660,7 +2705,7 @@ func (sm *StateManager) LockExisting(
 	}
 
 	// 5. Acquire the lock
-	denied, err := sm.acquireLock(ctx, lockState, lockType, offset, length, reclaim)
+	denied, err := sm.acquireLock(ctx, lockState, lockType, offset, length, reclaim, callerClientID)
 	if err != nil {
 		return nil, err
 	}
@@ -2700,7 +2745,7 @@ func (sm *StateManager) LockExisting(
 //
 // The state the caller resolved before that gap is re-validated on return, so a
 // caller may treat a nil error as "still safe to commit against lockState".
-func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, lockType uint32, offset, length uint64, reclaim bool) (*LOCK4denied, error) {
+func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, lockType uint32, offset, length uint64, reclaim bool, callerClientID uint64) (*LOCK4denied, error) {
 	lm := sm.lockManagerFor(lockState.FileHandle)
 	if lm == nil {
 		return nil, fmt.Errorf("no lock manager configured")
@@ -2758,7 +2803,7 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 	// the server no longer knows, and would strand the byte-range lock just
 	// inserted with no NFSv4 state left to ever release it. Give the lock back
 	// and fail the operation instead.
-	if staleErr := sm.revalidateLockStateLocked(lockState); staleErr != nil {
+	if staleErr := sm.revalidateLockStateLocked(lockState, callerClientID); staleErr != nil {
 		if denied == nil {
 			sm.mu.Unlock()
 			_ = lm.RemoveUnifiedLock(handleKey, owner, offset, length)
@@ -2771,9 +2816,11 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 }
 
 // revalidateLockStateLocked reports whether the lock state and its lock-owner
-// are still the records the StateManager's maps point at. It is the recommit
-// check for a path that resolves state under sm.mu, releases the mutex for an
-// external call, and then writes a result back.
+// are still the records the StateManager's maps point at, and whether the
+// lock-owner belongs to the calling client. It is both the admission check for
+// a lock stateid arriving from the wire and the recommit check for a path that
+// resolves state under sm.mu, releases the mutex for an external call, and then
+// writes a result back — the same three facts have to hold at both points.
 //
 // The comparison is by pointer identity, not by presence: a stateid "other" and
 // a lock-owner key can both be handed out again once the original records are
@@ -2786,14 +2833,21 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 // live lock state implies a live open.
 //
 // Caller must hold sm.mu.
-func (sm *StateManager) revalidateLockStateLocked(lockState *LockState) error {
+func (sm *StateManager) revalidateLockStateLocked(lockState *LockState, callerClientID uint64) error {
 	if sm.lockStateByOther[lockState.Stateid.Other] != lockState {
 		return sm.lockStateidMissError(lockState.Stateid.Other)
 	}
-	if lo := lockState.LockOwner; lo == nil || sm.lockOwners[lo.Key()] != lo {
+	lockOwner := lockState.LockOwner
+	if lockOwner == nil || sm.lockOwners[lockOwner.Key()] != lockOwner {
 		return ErrBadStateid
 	}
-	return nil
+
+	// A stateid is not a bearer token: a client presenting another client's lock
+	// stateid could otherwise unlock, or lock inside, a byte range it has no
+	// state on (RFC 8881 Section 18.38.3). A zero callerClientID means the
+	// caller has no trusted client identity, which is every NFSv4.0 request;
+	// see checkStateidOwner.
+	return checkStateidOwner(callerClientID, lockOwner.ClientID)
 }
 
 // acquireUnifiedLock performs the cross-protocol half of a byte-range lock
@@ -2982,6 +3036,7 @@ func (sm *StateManager) TestLock(
 func (sm *StateManager) UnlockFile(
 	lockStateid *types.Stateid4, seqid uint32,
 	lockType uint32, offset, length uint64,
+	callerClientID uint64,
 ) (result *LockResult, err error) {
 	// Special stateids cannot be used with LOCKU
 	if lockStateid.IsSpecialStateid() {
@@ -2991,10 +3046,15 @@ func (sm *StateManager) UnlockFile(
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// 1. Look up lock state
+	// 1. Look up lock state. As in LockExisting, the same check runs again on
+	// recommit; here it rejects a stateid that is not the caller's before the
+	// lock manager is touched.
 	lockState, exists := sm.lockStateByOther[lockStateid.Other]
 	if !exists {
 		return nil, sm.lockStateidMissError(lockStateid.Other)
+	}
+	if err := sm.revalidateLockStateLocked(lockState, callerClientID); err != nil {
+		return nil, err
 	}
 
 	lockOwner := lockState.LockOwner
@@ -3077,7 +3137,7 @@ func (sm *StateManager) UnlockFile(
 		// released. Removing the lock was the direction LOCKU was heading
 		// anyway, so it stands; the seqid bump below must not be committed onto
 		// state the server has since forgotten.
-		if staleErr := sm.revalidateLockStateLocked(lockState); staleErr != nil {
+		if staleErr := sm.revalidateLockStateLocked(lockState, callerClientID); staleErr != nil {
 			return nil, staleErr
 		}
 	}

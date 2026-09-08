@@ -636,14 +636,20 @@ func (sm *StateManager) freeDelegStateidLocked(clientID uint64, stateid *types.S
 // This is a read-only operation with no side effects: it does NOT renew leases
 // (Pitfall 5 from research).
 //
+// A stateid belonging to another client is reported as NFS4ERR_BAD_STATEID
+// rather than as valid, so the operation cannot be used as an existence oracle
+// for state the caller has no claim to. As everywhere else, a zero
+// callerClientID (every NFSv4.0 request) skips that comparison; see
+// checkStateidOwner.
+//
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) TestStateids(stateids []types.Stateid4) []uint32 {
+func (sm *StateManager) TestStateids(stateids []types.Stateid4, callerClientID uint64) []uint32 {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
 	results := make([]uint32, len(stateids))
 	for i := range stateids {
-		results[i] = sm.testSingleStateid(&stateids[i])
+		results[i] = sm.testSingleStateid(&stateids[i], callerClientID)
 	}
 
 	logger.Debug("TEST_STATEID: tested stateids",
@@ -655,7 +661,7 @@ func (sm *StateManager) TestStateids(stateids []types.Stateid4) []uint32 {
 // testSingleStateid validates a single stateid without lease renewal.
 // Returns the NFS4 status code for the stateid.
 // Caller must hold sm.mu.RLock.
-func (sm *StateManager) testSingleStateid(stateid *types.Stateid4) uint32 {
+func (sm *StateManager) testSingleStateid(stateid *types.Stateid4, callerClientID uint64) uint32 {
 	// Special stateids are always valid
 	if stateid.IsSpecialStateid() {
 		return types.NFS4_OK
@@ -670,11 +676,11 @@ func (sm *StateManager) testSingleStateid(stateid *types.Stateid4) uint32 {
 
 	switch stateType {
 	case StateTypeOpen:
-		return sm.testOpenStateid(stateid)
+		return sm.testOpenStateid(stateid, callerClientID)
 	case StateTypeLock:
-		return sm.testLockStateid(stateid)
+		return sm.testLockStateid(stateid, callerClientID)
 	case StateTypeDeleg:
-		return sm.testDelegStateid(stateid)
+		return sm.testDelegStateid(stateid, callerClientID)
 	default:
 		return types.NFS4ERR_BAD_STATEID
 	}
@@ -682,9 +688,12 @@ func (sm *StateManager) testSingleStateid(stateid *types.Stateid4) uint32 {
 
 // testOpenStateid validates an open stateid without lease renewal.
 // Caller must hold sm.mu.RLock.
-func (sm *StateManager) testOpenStateid(stateid *types.Stateid4) uint32 {
+func (sm *StateManager) testOpenStateid(stateid *types.Stateid4, callerClientID uint64) uint32 {
 	openState, exists := sm.openStateByOther[stateid.Other]
 	if !exists {
+		return types.NFS4ERR_BAD_STATEID
+	}
+	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
 		return types.NFS4ERR_BAD_STATEID
 	}
 
@@ -711,9 +720,12 @@ func (sm *StateManager) testOpenStateid(stateid *types.Stateid4) uint32 {
 
 // testLockStateid validates a lock stateid without lease renewal.
 // Caller must hold sm.mu.RLock.
-func (sm *StateManager) testLockStateid(stateid *types.Stateid4) uint32 {
+func (sm *StateManager) testLockStateid(stateid *types.Stateid4, callerClientID uint64) uint32 {
 	lockState, exists := sm.lockStateByOther[stateid.Other]
 	if !exists {
+		return types.NFS4ERR_BAD_STATEID
+	}
+	if err := checkStateidOwner(callerClientID, lockState.LockOwner.ClientID); err != nil {
 		return types.NFS4ERR_BAD_STATEID
 	}
 
@@ -732,9 +744,12 @@ func (sm *StateManager) testLockStateid(stateid *types.Stateid4) uint32 {
 
 // testDelegStateid validates a delegation stateid without lease renewal.
 // Caller must hold sm.mu.RLock.
-func (sm *StateManager) testDelegStateid(stateid *types.Stateid4) uint32 {
+func (sm *StateManager) testDelegStateid(stateid *types.Stateid4, callerClientID uint64) uint32 {
 	deleg, exists := sm.delegByOther[stateid.Other]
 	if !exists {
+		return types.NFS4ERR_BAD_STATEID
+	}
+	if err := checkStateidOwner(callerClientID, deleg.ClientID); err != nil {
 		return types.NFS4ERR_BAD_STATEID
 	}
 

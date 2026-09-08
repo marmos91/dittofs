@@ -212,7 +212,7 @@ func setupHandlerLockClient(t *testing.T, h *Handler, fileHandle []byte) (client
 
 	// OPEN_CONFIRM
 	confirmOpenSeqid := openSeqid + 1
-	confirmRes, err := h.StateManager.ConfirmOpen(&openResult.Stateid, confirmOpenSeqid)
+	confirmRes, err := h.StateManager.ConfirmOpen(&openResult.Stateid, confirmOpenSeqid, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen failed: %v", err)
 	}
