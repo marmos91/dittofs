@@ -2690,7 +2690,16 @@ func (sm *StateManager) LockExisting(
 // Returns (nil, nil) on success, (*LOCK4denied, nil) on conflict,
 // or (nil, error) on internal errors.
 //
-// Caller must hold sm.mu.
+// Caller must hold sm.mu. The mutex is RELEASED for the duration of the lock
+// manager call and held again on return: sm.mu serializes every client's state
+// operation server-wide, while the manager is cross-protocol and its acquire
+// path waits for an in-flight lease break in another protocol to drain, for as
+// long as lock.WaitForByteRangeLockBreak's timeout allows. Holding sm.mu across
+// that stalls every other client's SEQUENCE, OPEN, CLOSE and RENEW behind one
+// client's LOCK.
+//
+// The state the caller resolved before that gap is re-validated on return, so a
+// caller may treat a nil error as "still safe to commit against lockState".
 func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, lockType uint32, offset, length uint64, reclaim bool) (*LOCK4denied, error) {
 	lm := sm.lockManagerFor(lockState.FileHandle)
 	if lm == nil {
@@ -2735,6 +2744,72 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 			lockState.LockOwner.ClientID, lockState.OpenState.Owner.ClientID)
 	}
 
+	sm.mu.Unlock()
+	denied, err := acquireUnifiedLock(ctx, lm, handleKey, enhLock, &owner, lockType, offset, length)
+	sm.mu.Lock()
+
+	if err != nil {
+		return nil, err
+	}
+
+	// While sm.mu was released the resolved state may have been freed under it —
+	// by a CLOSE, a RELEASE_LOCKOWNER, or the lease sweeper expiring the client.
+	// Committing a seqid bump onto freed state would hand the client a stateid
+	// the server no longer knows, and would strand the byte-range lock just
+	// inserted with no NFSv4 state left to ever release it. Give the lock back
+	// and fail the operation instead.
+	if staleErr := sm.revalidateLockStateLocked(lockState); staleErr != nil {
+		if denied == nil {
+			sm.mu.Unlock()
+			_ = lm.RemoveUnifiedLock(handleKey, owner, offset, length)
+			sm.mu.Lock()
+		}
+		return nil, staleErr
+	}
+
+	return denied, nil
+}
+
+// revalidateLockStateLocked reports whether the lock state and its lock-owner
+// are still the records the StateManager's maps point at. It is the recommit
+// check for a path that resolves state under sm.mu, releases the mutex for an
+// external call, and then writes a result back.
+//
+// The comparison is by pointer identity, not by presence: a stateid "other" and
+// a lock-owner key can both be handed out again once the original records are
+// freed, so "something exists under this key" does not mean "the record
+// resolved earlier is still live".
+//
+// The parent open state needs no separate check. Every path that frees an open
+// state frees its lock stateids in the same critical section — CLOSE at
+// openStateByOther, and the lease sweeper via releaseClientStateLocked — so a
+// live lock state implies a live open.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) revalidateLockStateLocked(lockState *LockState) error {
+	if sm.lockStateByOther[lockState.Stateid.Other] != lockState {
+		return sm.lockStateidMissError(lockState.Stateid.Other)
+	}
+	if lo := lockState.LockOwner; lo == nil || sm.lockOwners[lo.Key()] != lo {
+		return ErrBadStateid
+	}
+	return nil
+}
+
+// acquireUnifiedLock performs the cross-protocol half of a byte-range lock
+// acquire: break conflicting leases, drain the break, insert the lock, and on
+// refusal describe the conflicting holder.
+//
+// It touches no StateManager state, so it runs without sm.mu.
+func acquireUnifiedLock(
+	ctx context.Context,
+	lm lock.LockManager,
+	handleKey string,
+	enhLock *lock.UnifiedLock,
+	owner *lock.LockOwner,
+	lockType uint32,
+	offset, length uint64,
+) (*LOCK4denied, error) {
 	// Break any conflicting cross-protocol read leases (e.g. an SMB read/write
 	// oplock) before acquiring the byte-range lock. A held lease lets another
 	// protocol cache the bytes this lock is about to protect, so it must be
@@ -2744,7 +2819,7 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 	// real byte-range lock is held. We pass this lock's owner as excludeOwner for
 	// symmetry with the SMB path; NFS owners never hold SMB leases, so in practice
 	// nothing is excluded.
-	_ = lm.BreakLeasesForByteRangeLock(handleKey, &owner)
+	_ = lm.BreakLeasesForByteRangeLock(handleKey, owner)
 
 	// Drain the in-flight lease break before inserting the lock: the break is
 	// fire-and-forget, so a still-present (Breaking, not-yet-ACKed) write lease is
@@ -2973,7 +3048,9 @@ func (sm *StateManager) UnlockFile(
 		return nil, err
 	}
 
-	// 5. Release the lock via unified lock manager
+	// 5. Release the lock via the unified lock manager, with sm.mu released for
+	// the call: the manager is cross-protocol and sm.mu serializes every
+	// client's state operation server-wide (see acquireLock).
 	if lm := sm.lockManagerFor(lockState.FileHandle); lm != nil {
 		owner := lock.LockOwner{
 			OwnerID:   lockOwner.LockManagerOwnerID(),
@@ -2982,17 +3059,27 @@ func (sm *StateManager) UnlockFile(
 		}
 
 		handleKey := string(lockState.FileHandle)
-		err := lm.RemoveUnifiedLock(handleKey, owner, offset, length)
-		if err != nil {
+		sm.mu.Unlock()
+		rmErr := lm.RemoveUnifiedLock(handleKey, owner, offset, length)
+		sm.mu.Lock()
+		if rmErr != nil {
 			// Lock-not-found is OK for LOCKU (idempotent).
 			// Only fail on unexpected errors.
 			// RemoveUnifiedLock returns StoreError with ErrLockNotFound code.
 			// We treat all errors as non-fatal for idempotency.
 			logger.Debug("LOCKU: lock manager RemoveUnifiedLock returned error (idempotent OK)",
-				"error", err,
+				"error", rmErr,
 				"handle", handleKey,
 				"offset", offset,
 				"length", length)
+		}
+
+		// The state resolved above may have been freed while sm.mu was
+		// released. Removing the lock was the direction LOCKU was heading
+		// anyway, so it stands; the seqid bump below must not be committed onto
+		// state the server has since forgotten.
+		if staleErr := sm.revalidateLockStateLocked(lockState); staleErr != nil {
+			return nil, staleErr
 		}
 	}
 
