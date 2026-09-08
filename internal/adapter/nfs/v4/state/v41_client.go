@@ -14,68 +14,6 @@ import (
 var BuildDate string
 
 // ============================================================================
-// V41 Client Record (separate from v4.0 ClientRecord)
-// ============================================================================
-
-// V41ClientRecord represents the server-side state for a single NFSv4.1 client
-// registered via EXCHANGE_ID (op 42) per RFC 8881 Section 18.35.
-//
-// This is separate from the v4.0 ClientRecord because v4.1 uses a completely
-// different client registration flow (EXCHANGE_ID -> CREATE_SESSION vs
-// SETCLIENTID -> SETCLIENTID_CONFIRM).
-type V41ClientRecord struct {
-	// ClientID is the server-assigned 64-bit client identifier.
-	ClientID uint64
-
-	// OwnerID is the co_ownerid from client_owner4 (stored as bytes for byte-exact comparison).
-	OwnerID []byte
-
-	// Verifier is the co_verifier from client_owner4.
-	Verifier [8]byte
-
-	// ImplDomain is the implementation domain from nfs_impl_id4 (e.g. "kernel.org").
-	ImplDomain string
-
-	// ImplName is the implementation name from nfs_impl_id4 (e.g. "Linux NFS client").
-	ImplName string
-
-	// ImplDate is the build date from nfs_impl_id4.
-	ImplDate time.Time
-
-	// SequenceID is the CREATE_SESSION slot sequence ID, initialized to 0.
-	// ExchangeID returns SequenceID+1 as eir_sequenceid so the client
-	// sends that value as csa_sequenceid. CreateSession validates
-	// csa_sequenceid == SequenceID+1 (the "new request" check per
-	// RFC 8881 Section 18.36), then advances SequenceID to match.
-	SequenceID uint32
-
-	// Confirmed becomes true after CREATE_SESSION completes.
-	Confirmed bool
-
-	// ClientAddr is the network address of the client (for logging/debugging).
-	ClientAddr string
-
-	// Principal is the RPCSEC_GSS / AUTH_SYS principal that established this
-	// client (best-effort). Persisted into the durable client-recovery record
-	// at CREATE_SESSION confirm time as a lease-stealing guard.
-	Principal string
-
-	// CreatedAt is when this record was created.
-	CreatedAt time.Time
-
-	// LastRenewal is the most recent lease renewal time.
-	LastRenewal time.Time
-
-	// Lease is the lease timer for this client (shared behavior via pointer, same as v4.0 pattern).
-	Lease *LeaseState
-
-	// CachedCreateSessionRes holds the full XDR-encoded CREATE_SESSION
-	// response bytes for replay detection (RFC 8881 Section 18.36).
-	// nil until the first successful CREATE_SESSION.
-	CachedCreateSessionRes []byte
-}
-
-// ============================================================================
 // Server Identity (immutable singleton)
 // ============================================================================
 
@@ -185,7 +123,7 @@ func (sm *StateManager) ExchangeID(
 	princ := firstOrEmpty(principal)
 	existing := sm.v41ClientsByOwner[string(ownerID)]
 
-	var record *V41ClientRecord
+	var record *ClientRecord
 
 	switch {
 	case existing == nil:
@@ -256,7 +194,7 @@ func (sm *StateManager) ExchangeID(
 	}, nil
 }
 
-// createV41Client creates and stores a new V41ClientRecord.
+// createV41Client creates and stores a new ClientRecord.
 // Caller must hold sm.mu.
 func (sm *StateManager) createV41Client(
 	ownerID []byte,
@@ -264,10 +202,10 @@ func (sm *StateManager) createV41Client(
 	clientImplId []types.NfsImplId4,
 	clientAddr string,
 	principal string,
-) *V41ClientRecord {
+) *ClientRecord {
 	now := time.Now()
 
-	record := &V41ClientRecord{
+	record := &ClientRecord{
 		ClientID:    sm.generateClientID(),
 		OwnerID:     make([]byte, len(ownerID)),
 		Verifier:    verifier,
@@ -290,7 +228,7 @@ func (sm *StateManager) createV41Client(
 // applyImplInfo extracts the first nfs_impl_id4 entry from clientImplId
 // and applies it to the record. Shared between createV41Client and the
 // idempotent branch of ExchangeID.
-func applyImplInfo(record *V41ClientRecord, clientImplId []types.NfsImplId4) {
+func applyImplInfo(record *ClientRecord, clientImplId []types.NfsImplId4) {
 	if len(clientImplId) == 0 {
 		return
 	}
@@ -302,12 +240,12 @@ func applyImplInfo(record *V41ClientRecord, clientImplId []types.NfsImplId4) {
 	}
 }
 
-// purgeV41Client removes a V41ClientRecord from both lookup maps, releases the
+// purgeV41Client removes a ClientRecord from both lookup maps, releases the
 // open and lock state its owners hold, and destroys all associated sessions.
 // Only deletes from v41ClientsByOwner if the map entry still points to this
 // record (guards against a concurrent createV41Client having already replaced it).
 // Caller must hold sm.mu.
-func (sm *StateManager) purgeV41Client(record *V41ClientRecord) {
+func (sm *StateManager) purgeV41Client(record *ClientRecord) {
 	// Drop the durable recovery record: a purged client (eviction, DESTROY_CLIENTID,
 	// or reboot-replace) cannot reclaim under this identity. Best-effort; no-op when
 	// the client was never confirmed (no record was ever persisted) or no store wired.
@@ -355,11 +293,11 @@ func (sm *StateManager) purgeV41Client(record *V41ClientRecord) {
 
 // ListV41Clients returns pointers to all registered v4.1 client records.
 // Thread-safe: acquires sm.mu.RLock.
-func (sm *StateManager) ListV41Clients() []*V41ClientRecord {
+func (sm *StateManager) ListV41Clients() []*ClientRecord {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	clients := make([]*V41ClientRecord, 0, len(sm.v41ClientsByID))
+	clients := make([]*ClientRecord, 0, len(sm.v41ClientsByID))
 	for _, record := range sm.v41ClientsByID {
 		clients = append(clients, record)
 	}
