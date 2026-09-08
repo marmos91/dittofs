@@ -27,7 +27,11 @@ import (
 type gatedSink struct {
 	real engineBlockSink
 
-	arrivals chan int64
+	// arrivals reports each block as it reaches the gate; committed reports each
+	// one after the real sink has finished with it. Both are keyed by the
+	// block's first file offset.
+	arrivals  chan int64
+	committed chan int64
 
 	mu    sync.Mutex
 	gates map[int64]chan struct{}
@@ -41,7 +45,12 @@ var (
 )
 
 func newGatedSink(real engineBlockSink) *gatedSink {
-	return &gatedSink{real: real, arrivals: make(chan int64, 64), gates: map[int64]chan struct{}{}}
+	return &gatedSink{
+		real:      real,
+		arrivals:  make(chan int64, 64),
+		committed: make(chan int64, 64),
+		gates:     map[int64]chan struct{}{},
+	}
 }
 
 // gate returns the release channel for the block whose first chunk sits at off,
@@ -73,7 +82,9 @@ func (g *gatedSink) CommitBlock(ctx context.Context, chunks []journal.CarveChunk
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return g.real.CommitBlock(ctx, chunks)
+	err := g.real.CommitBlock(ctx, chunks)
+	g.committed <- off
+	return err
 }
 
 func (g *gatedSink) ReapSupersededManifest(ctx context.Context, id journal.FileID, spans [][2]int64, newOffsets map[int64]struct{}) error {
@@ -128,7 +139,11 @@ func newChunkedCarveFixture(t *testing.T, rbs *remotememory.Store, carveBytes in
 // synced only once every lower-offset block has committed. A later block that
 // lands first must not credit durability the earliest block has not yet earned.
 func TestCarveFlipsInWatermarkOrderThroughProductionSink(t *testing.T) {
-	ctx := context.Background()
+	// A bounded context so a block stuck at a gate fails the test with a clear
+	// message instead of hanging to the package timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
 	const blockSize = 32 << 10
 	const blocks = 4
 
@@ -162,59 +177,78 @@ func TestCarveFlipsInWatermarkOrderThroughProductionSink(t *testing.T) {
 		t.Fatal("no dirty bytes to carve")
 	}
 
+	// The chain head is the block carrying the file's lowest dirty offset.
+	// packRuns walks runs in ascending order and the fixture writes from 0, so
+	// that is the block whose first chunk sits at offset 0.
+	const headOffset int64 = 0
+
 	done := make(chan error, 1)
 	go func() {
 		_, err := f.local.Carve(ctx, journal.CarveOptions{FileID: carveFixturePayload, Force: true})
 		done <- err
 	}()
 
-	// Collect the blocks that reached the sink concurrently. Packing is
-	// sequential, so submission is in ascending offset order; arrival here is not.
-	var offs []int64
-	deadline := time.After(5 * time.Second)
-	for len(offs) < 2 {
+	// Release every block except the head, as it arrives. A background releaser
+	// rather than a timed drain: a block that reaches the sink after a fixed
+	// window would otherwise never be released and would stall the carve.
+	var mu sync.Mutex
+	var seen []int64
+	go func() {
+		for {
+			select {
+			case off := <-gated.arrivals:
+				mu.Lock()
+				seen = append(seen, off)
+				mu.Unlock()
+				if off != headOffset {
+					gated.release(off)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	seenCount := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(seen)
+	}
+
+	// Wait for real concurrency: the head plus at least one later block.
+	deadline := time.After(30 * time.Second)
+	for seenCount() < 2 {
 		select {
-		case off := <-gated.arrivals:
-			offs = append(offs, off)
 		case err := <-done:
-			t.Fatalf("carve returned before 2 blocks were in flight (err=%v, got %d)", err, len(offs))
+			t.Fatalf("carve returned before 2 blocks were in flight (err=%v, seen=%d)", err, seenCount())
 		case <-deadline:
-			t.Fatalf("expected at least 2 blocks in flight, got %d", len(offs))
+			t.Fatalf("expected at least 2 blocks in flight, got %d", seenCount())
+		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	// Take whatever else is already queued, so the release below covers every
-	// block that is actually waiting.
-drain:
-	for {
+
+	// Wait until every released block has actually come back out of the real
+	// sink. Asserting after a sleep would let the test pass while the later
+	// blocks were merely still uploading, which proves nothing about ordering.
+	for range seenCount() - 1 {
 		select {
-		case off := <-gated.arrivals:
-			offs = append(offs, off)
-		case <-time.After(300 * time.Millisecond):
-			break drain
+		case <-gated.committed:
+		case err := <-done:
+			t.Fatalf("carve returned while the head block was still held (err=%v)", err)
+		case <-time.After(30 * time.Second):
+			t.Fatal("timed out waiting for the released blocks to commit")
 		}
 	}
 
-	first := offs[0]
-	for _, o := range offs {
-		if o < first {
-			first = o
-		}
-	}
-
-	// Release every block except the lowest-offset one. They commit for real;
-	// the ordered flip gate must hold all their flips behind the one still held.
-	for _, o := range offs {
-		if o != first {
-			gated.release(o)
-		}
-	}
-	time.Sleep(500 * time.Millisecond)
+	// Later blocks are durable and the head is not, so nothing may have flipped.
+	// Blocks that arrive after this point are released by the goroutine above and
+	// commit too, but none can flip while the head of the chain is still held.
 	if u := f.local.UnsyncedBytes(); u != full {
 		t.Fatalf("records flipped before the earliest block committed: unsynced=%d want %d", u, full)
 	}
 
-	// Releasing the earliest block lets the whole chain flip in order.
-	gated.release(first)
+	// Releasing the head lets the whole chain flip in order.
+	gated.release(headOffset)
 	if err := <-done; err != nil {
 		t.Fatalf("carve: %v", err)
 	}
