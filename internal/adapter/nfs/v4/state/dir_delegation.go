@@ -68,13 +68,8 @@ func (sm *StateManager) admitDirDelegationLocked(clientID uint64, fhKey string) 
 	return nil
 }
 
-// GrantDirDelegation creates a new directory delegation for a client.
-//
-// It performs the following checks before granting:
-//   - Delegations must be enabled
-//   - Client must have a valid lease
-//   - Total delegation count must be below maxDelegations limit
-//   - No duplicate directory delegation for same client+handle
+// GrantDirDelegation creates a new directory delegation for a client, subject
+// to the checks in admitDirDelegationLocked.
 //
 // Returns the DelegationState on success, or nil with an error.
 //
@@ -120,9 +115,7 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 		lockDeleg := lock.NewDelegation(lock.DelegTypeRead, nfsClientIdentity(clientID), "", true)
 		lockDeleg.NotificationMask = notifMask
 
-		// sm.mu is released across the manager call: it is cross-protocol and
-		// sm.mu serializes every client's state operation server-wide (see
-		// acquireLock in manager.go).
+		// sm.mu is released across the manager call (see acquireLock in manager.go).
 		sm.mu.Unlock()
 		grantErr := lm.GrantDelegation(fhKey, lockDeleg)
 		sm.mu.Lock()

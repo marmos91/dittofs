@@ -2745,7 +2745,7 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 	}
 
 	sm.mu.Unlock()
-	denied, err := acquireUnifiedLock(ctx, lm, handleKey, enhLock, &owner, lockType, offset, length)
+	denied, err := acquireUnifiedLock(ctx, lm, handleKey, enhLock, lockType)
 	sm.mu.Lock()
 
 	if err != nil {
@@ -2798,7 +2798,8 @@ func (sm *StateManager) revalidateLockStateLocked(lockState *LockState) error {
 
 // acquireUnifiedLock performs the cross-protocol half of a byte-range lock
 // acquire: break conflicting leases, drain the break, insert the lock, and on
-// refusal describe the conflicting holder.
+// refusal describe the conflicting holder. lockType is the requested NFS4 lock
+// type, needed only to describe an unidentifiable conflict.
 //
 // It touches no StateManager state, so it runs without sm.mu.
 func acquireUnifiedLock(
@@ -2806,9 +2807,7 @@ func acquireUnifiedLock(
 	lm lock.LockManager,
 	handleKey string,
 	enhLock *lock.UnifiedLock,
-	owner *lock.LockOwner,
 	lockType uint32,
-	offset, length uint64,
 ) (*LOCK4denied, error) {
 	// Break any conflicting cross-protocol read leases (e.g. an SMB read/write
 	// oplock) before acquiring the byte-range lock. A held lease lets another
@@ -2819,7 +2818,7 @@ func acquireUnifiedLock(
 	// real byte-range lock is held. We pass this lock's owner as excludeOwner for
 	// symmetry with the SMB path; NFS owners never hold SMB leases, so in practice
 	// nothing is excluded.
-	_ = lm.BreakLeasesForByteRangeLock(handleKey, owner)
+	_ = lm.BreakLeasesForByteRangeLock(handleKey, &enhLock.Owner)
 
 	// Drain the in-flight lease break before inserting the lock: the break is
 	// fire-and-forget, so a still-present (Breaking, not-yet-ACKed) write lease is
@@ -2865,8 +2864,8 @@ func acquireUnifiedLock(
 
 		// Conflict exists but we couldn't identify the exact lock (shouldn't happen)
 		denied := &LOCK4denied{
-			Offset:   offset,
-			Length:   length,
+			Offset:   enhLock.Offset,
+			Length:   enhLock.Length,
 			LockType: lockType,
 		}
 		return denied, nil

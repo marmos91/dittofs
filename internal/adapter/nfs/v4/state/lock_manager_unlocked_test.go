@@ -21,7 +21,7 @@ import (
 // very state the caller resolved, which is exactly the race the re-validation
 // has to catch.
 
-// hookedLockManager wraps a real lock manager and runs a hook at the point one
+// hookedLockManager wraps a realLM lock manager and runs a hook at the point one
 // chosen operation reaches it.
 type hookedLockManager struct {
 	lock.LockManager
@@ -79,10 +79,10 @@ func mutateUnderStateMutex(t *testing.T, what string, fn func()) {
 // window is refused instead of committing a seqid bump onto dead state.
 func TestLockNew_LockManagerCalledWithoutStateMutex(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
-	real := lock.NewManager()
+	realLM := lock.NewManager()
 
 	var clientID uint64
-	lm := &hookedLockManager{LockManager: real}
+	lm := &hookedLockManager{LockManager: realLM}
 	lm.onAddLock = func() {
 		mutateUnderStateMutex(t, "the lease sweeper", func() { sm.onLeaseExpired(clientID) })
 	}
@@ -101,7 +101,7 @@ func TestLockNew_LockManagerCalledWithoutStateMutex(t *testing.T) {
 
 	// The byte-range lock reached the manager before the state went away, so
 	// the refusal has to hand it back; otherwise nothing is left to release it.
-	if locks := real.ListUnifiedLocks(string(fileHandle)); len(locks) != 0 {
+	if locks := realLM.ListUnifiedLocks(string(fileHandle)); len(locks) != 0 {
 		t.Fatalf("refused LOCK stranded %d lock(s) in the lock manager", len(locks))
 	}
 }
@@ -111,17 +111,9 @@ func TestLockNew_LockManagerCalledWithoutStateMutex(t *testing.T) {
 // onto state freed in that window.
 func TestUnlockFile_LockManagerCalledWithoutStateMutex(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
-	real := lock.NewManager()
+	realLM := lock.NewManager()
 
-	var clientID uint64
-	release := false
-	lm := &hookedLockManager{LockManager: real}
-	lm.onRemoveLock = func() {
-		if !release {
-			return
-		}
-		mutateUnderStateMutex(t, "RemoveClient", func() { sm.RemoveClient(clientID) })
-	}
+	lm := &hookedLockManager{LockManager: realLM}
 	sm.SetLockManagerResolver(func(_ []byte) lock.LockManager { return lm })
 
 	clientID, fileHandle, openStateid, openSeqid := setupClientAndOpenState(t, sm)
@@ -135,6 +127,7 @@ func TestUnlockFile_LockManagerCalledWithoutStateMutex(t *testing.T) {
 		t.Fatalf("setup LOCK failed: err=%v denied=%v", err, locked)
 	}
 
+	// Hooked only now: the setup LOCK above must reach the manager unhooked.
 	lm.onRemoveLock = func() {
 		mutateUnderStateMutex(t, "the lease sweeper", func() { sm.onLeaseExpired(clientID) })
 	}
@@ -149,10 +142,10 @@ func TestUnlockFile_LockManagerCalledWithoutStateMutex(t *testing.T) {
 func TestGrantDelegation_LockManagerCalledWithoutStateMutex(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	sm.SetMaxDelegations(1)
-	real := lock.NewManager()
+	realLM := lock.NewManager()
 
 	fileHandle := []byte("/export:deleg-file")
-	lm := &hookedLockManager{LockManager: real}
+	lm := &hookedLockManager{LockManager: realLM}
 	lm.onGrantDeleg = func() {
 		// Take the last of the budget while the manager call is in flight.
 		mutateUnderStateMutex(t, "a competing delegation", func() {
@@ -168,7 +161,7 @@ func TestGrantDelegation_LockManagerCalledWithoutStateMutex(t *testing.T) {
 	if deleg := sm.GrantDelegation(clientID, fileHandle, types.OPEN_DELEGATE_READ); deleg != nil {
 		t.Fatal("delegation published past the budget that was taken while the lock manager was called")
 	}
-	if delegs := real.ListDelegations(string(fileHandle)); len(delegs) != 0 {
+	if delegs := realLM.ListDelegations(string(fileHandle)); len(delegs) != 0 {
 		t.Fatalf("refused delegation stranded %d delegation(s) in the lock manager", len(delegs))
 	}
 }
@@ -178,11 +171,11 @@ func TestGrantDelegation_LockManagerCalledWithoutStateMutex(t *testing.T) {
 // decision, so the window is closed here by expiring the client's lease.
 func TestGrantDirDelegation_LockManagerCalledWithoutStateMutex(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
-	real := lock.NewManager()
+	realLM := lock.NewManager()
 
 	dirFH := []byte("/export:deleg-dir")
 	var clientID uint64
-	lm := &hookedLockManager{LockManager: real}
+	lm := &hookedLockManager{LockManager: realLM}
 	lm.onGrantDeleg = func() {
 		mutateUnderStateMutex(t, "RemoveClient", func() { sm.RemoveClient(clientID) })
 	}
@@ -193,7 +186,7 @@ func TestGrantDirDelegation_LockManagerCalledWithoutStateMutex(t *testing.T) {
 	if _, err := sm.GrantDirDelegation(clientID, dirFH, 0xffff); err == nil {
 		t.Fatal("directory delegation published for a client removed while the lock manager was called")
 	}
-	if delegs := real.ListDelegations(string(dirFH)); len(delegs) != 0 {
+	if delegs := realLM.ListDelegations(string(dirFH)); len(delegs) != 0 {
 		t.Fatalf("refused delegation stranded %d delegation(s) in the lock manager", len(delegs))
 	}
 }
