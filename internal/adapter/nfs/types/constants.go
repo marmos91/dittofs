@@ -94,8 +94,7 @@ const (
 
 	// NFS3ErrXDev - Attempt to do a cross-device hard link.
 	// Returned when the two handles of a LINK or RENAME name objects in
-	// different exports; clients map it to EXDEV, which makes tools like
-	// `cp -l` fall back to copying instead of failing outright.
+	// different shares.
 	NFS3ErrXDev = 18
 
 	// NFS3ErrNotDir - Not a directory

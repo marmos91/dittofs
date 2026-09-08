@@ -95,15 +95,14 @@ func (h *Handler) Link(
 	}
 
 	// A hard link is a second name for one inode, so both handles must name the
-	// same share. Both share names are decoded from the handles themselves:
-	// ctx.Share comes from the first handle on the wire, which for LINK3args is
-	// the file handle, so it cannot stand in for the directory's share.
+	// same share. Both are decoded here: ctx.Share is the file handle's share
+	// and cannot stand in for the directory's.
 	fileHandle := metadata.FileHandle(req.FileHandle)
 	dirHandle := metadata.FileHandle(req.DirHandle)
 	fileShareName, _, fileErr := metadata.DecodeFileHandle(fileHandle)
 	dirShareName, _, dirErr := metadata.DecodeFileHandle(dirHandle)
 	if fileErr != nil || dirErr != nil {
-		logger.WarnCtx(ctx.Context, "LINK failed: invalid file handle", "file_handle", fmt.Sprintf("%x", req.FileHandle), "dir_handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "file_error", fileErr, "dir_error", dirErr)
+		logger.WarnCtx(ctx.Context, "LINK failed: invalid handle", "file_handle", fmt.Sprintf("%x", req.FileHandle), "dir_handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "file_error", fileErr, "dir_error", dirErr)
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 

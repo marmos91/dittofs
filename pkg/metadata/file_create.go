@@ -78,29 +78,15 @@ func (s *Service) CreateSpecialFile(ctx *AuthContext, parentHandle FileHandle, n
 // carries the link directory's pre/post attributes captured atomically with the
 // mutation (H9).
 func (s *Service) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name string, targetHandle FileHandle) (*DirWcc, error) {
-	dirShare, _, err := DecodeFileHandle(dirHandle)
-	if err != nil {
-		return nil, err
-	}
-	store, err := s.GetStoreForShare(dirShare)
+	store, err := s.storeForHandle(dirHandle)
 	if err != nil {
 		return nil, err
 	}
 
-	// A hard link is a second name for one inode, so the target must live in the
-	// same share as the directory receiving the entry. Only the directory handle
-	// selects the store, and a store resolves any handle it is handed, so
-	// without this the entry and the nlink bump would land on a foreign file.
-	targetShare, _, err := DecodeFileHandle(targetHandle)
-	if err != nil {
+	// A hard link is a second name for one inode, so the target must live in
+	// the same share as the directory receiving the entry.
+	if err := requireSameShare(dirHandle, targetHandle, "create a hard link", name); err != nil {
 		return nil, err
-	}
-	if targetShare != dirShare {
-		return nil, &StoreError{
-			Code:    ErrInvalidArgument,
-			Message: "cannot create a hard link across shares",
-			Path:    name,
-		}
 	}
 
 	// Validate name
