@@ -38,7 +38,7 @@ import (
 
 // HandleDestroyClientID implements the DESTROY_CLIENTID operation (RFC 8881 Section 18.50).
 // Destroys a client ID and all associated state (sessions, opens, locks, delegations).
-// Delegates to StateManager.PurgeV41Client for state teardown and cleanup.
+// Delegates to StateManager.DestroyV41ClientID for state teardown and cleanup.
 // Removes all client state; session-exempt (no SEQUENCE required); fails if sessions exist.
 // Errors: NFS4ERR_CLIENTID_BUSY (has sessions), NFS4ERR_STALE_CLIENTID, NFS4ERR_BADXDR,
 // in the order the package comment records.
