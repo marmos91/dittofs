@@ -807,7 +807,7 @@ added later inherits them:
   so TREE_DISCONNECT, CREATE and every tree-scoped command are covered once.
 - **SMB file handles** — `primeAuthContextFromOpenFile`
   (`internal/adapter/smb/handlers/auth_helper.go`) refuses with
-  `StatusFileClosed` unless `openFileBelongsToRequest` matches both the tree
+  `STATUS_FILE_CLOSED` unless `openFileBelongsToRequest` matches both the tree
   and the session. This matters more than a plain existence check because the
   function then *prefills the auth context from the located handle*: without
   the guard, a request naming another session's `FileId` would execute as that
@@ -817,7 +817,8 @@ added later inherits them:
   lookup to the connection that parked it, as the `MessageID` lookups already
   did, so a CANCEL cannot retire another connection's request.
 - **NFSv4 stateids** — `ValidateStateid` takes the caller's client ID and
-  compares it through `checkStateidOwner` (`v4/state/stateid.go`) for all three
+  compares it through `checkStateidOwner`
+  (`internal/adapter/nfs/v4/state/stateid.go`) for all three
   stateid families, so the I/O operations are covered at one point. The
   state-changing operations do not go through `ValidateStateid`, and reach the
   same comparison two ways: `CloseFile`, `ConfirmOpen`, `ConfirmOpenV41`,
