@@ -3,9 +3,11 @@ package handlers_test
 import (
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	handlertesting "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers/testing"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -102,4 +104,51 @@ func TestLink_NameExistsReturnsWCC(t *testing.T) {
 	assert.EqualValues(t, types.NFS3ErrExist, resp.Status)
 	assert.NotNil(t, resp.DirWccBefore, "WCC before must be set even on error")
 	assert.NotNil(t, resp.DirWccAfter, "WCC after must be set even on error")
+}
+
+// TestLink_CrossShareRejected pins that LINK refuses to join a file in one
+// share to a directory in another, and reports it as NFS3ErrXDev so clients
+// see EXDEV and can fall back to copying.
+//
+// Both share names must come from the handles themselves: ctx.Share is derived
+// from the first handle on the wire, which for LINK3args is the file handle,
+// so a check against it compares the file handle to itself and never fires.
+func TestLink_CrossShareRejected(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	fileHandle := fx.CreateFile("original.txt", []byte("hello"))
+
+	foreignDir, err := metadata.EncodeShareHandle("/other-share", uuid.New())
+	require.NoError(t, err)
+
+	req := &handlers.LinkRequest{
+		FileHandle: fileHandle,
+		DirHandle:  foreignDir,
+		Name:       "stolen.txt",
+	}
+	resp, err := fx.Handler.Link(fx.Context(), req)
+
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3ErrXDev, resp.Status,
+		"LINK across shares should return NFS3ErrXDev")
+}
+
+// TestLink_UndecodableDirHandleRejected pins that a directory handle that is
+// not a share handle is reported as a bad handle rather than reaching the
+// store.
+func TestLink_UndecodableDirHandleRejected(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	fileHandle := fx.CreateFile("original.txt", []byte("hello"))
+
+	req := &handlers.LinkRequest{
+		FileHandle: fileHandle,
+		DirHandle:  []byte("not-a-share-handle"),
+		Name:       "link.txt",
+	}
+	resp, err := fx.Handler.Link(fx.Context(), req)
+
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3ErrBadHandle, resp.Status,
+		"LINK with an undecodable directory handle should return NFS3ErrBadHandle")
 }
