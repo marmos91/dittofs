@@ -65,6 +65,10 @@ func (iv interval) clamp(lo, hi int64) interval {
 		recOff:  iv.recOff,
 		synced:  iv.synced,
 		cold:    iv.cold,
+		// Trimming a cold interval must not forget which writer recorded it:
+		// compaction rebuilds the log from the index, so a dropped provenance
+		// here comes back as coldFromUnknown on disk.
+		provenance: iv.provenance,
 		loc: SegmentLocation{
 			SegmentID: iv.loc.SegmentID,
 			Offset:    iv.loc.Offset + frontTrim,

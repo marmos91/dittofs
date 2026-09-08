@@ -25,11 +25,13 @@ type BlockID string
 // errClosed is returned by every operation attempted on a closed Store.
 var errClosed = errors.New("journal: store closed")
 
-// ErrColdProvenanceAmbiguous is returned by RestoreToVersion when the cold log
-// holds a manifest-seeded entry. Such an entry's version dates the scan that
-// found the range remote-durable, not the content, so no version test decides
-// whether the range belonged to the requested version — see the fold in
-// RestoreToVersion.
+// ErrColdProvenanceAmbiguous is returned by RestoreToVersion when a
+// manifest-seeded cold entry covers a range that a later write overwrote and
+// synced past the requested version. The entry's version dates the scan that
+// found the range remote-durable, not the bytes, and the remote copy it points
+// at is now that later content — so neither serving it nor dropping it answers
+// for the requested version. A seeded entry on its own is not ambiguous and
+// does not produce this: see the fold in RestoreToVersion.
 var ErrColdProvenanceAmbiguous = errors.New("journal: cold entry provenance cannot date the content")
 
 // minSegmentSize is the floor for Config.SegmentSize. A segment must comfortably

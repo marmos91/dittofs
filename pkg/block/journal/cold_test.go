@@ -562,3 +562,26 @@ func TestLiveColdEntriesKeepsProvenance(t *testing.T) {
 		t.Errorf("evicted interval came back as %s, want data", byOff[4096])
 	}
 }
+
+// TestClampKeepsProvenance pins provenance across a trim. A cold interval is
+// clamped whenever a neighbouring write punches part of it out, and compaction
+// rebuilds the log from the index, so a clamp that dropped the field would put
+// coldFromUnknown on disk for a range whose writer was known.
+func TestClampKeepsProvenance(t *testing.T) {
+	fi := &fileIndex{}
+	fi.insert(interval{fileOff: 0, length: 4096, version: 3, synced: true, cold: true, provenance: coldFromScan})
+
+	// A later warm write over the middle splits the cold interval in two, so
+	// both survivors come from clamp.
+	fi.insert(interval{fileOff: 1024, length: 1024, version: 4, synced: false})
+
+	out := liveColdEntries([]map[FileID]*fileIndex{{FileID("f"): fi}})
+	if len(out) != 2 {
+		t.Fatalf("expected the cold interval to survive as two fragments, got %d: %+v", len(out), out)
+	}
+	for _, e := range out {
+		if e.provenance != coldFromScan {
+			t.Errorf("fragment at %d came back as %s, want scan", e.fileOff, e.provenance)
+		}
+	}
+}
