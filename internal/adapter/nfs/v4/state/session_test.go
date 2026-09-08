@@ -1069,11 +1069,7 @@ func TestReaper_ExpiredLeaseReleasesOpenState(t *testing.T) {
 
 	// A byte-range lock on top of the open: seqid 0 is the v4.1 bypass, the
 	// slot table provides the replay protection the seqids give v4.0.
-	if _, err := sm.LockNew(context.Background(),
-		clientID, []byte("lock-owner-a"), 0,
-		&open.Stateid, 0,
-		fh, types.WRITE_LT, 0, 100, false,
-	); err != nil {
+	if _, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner-a"), 0, &open.Stateid, 0, fh, types.WRITE_LT, 0, 100, false, 0); err != nil {
 		t.Fatalf("LockNew error: %v", err)
 	}
 	if got := len(lm.ListUnifiedLocks(string(fh))); got != 1 {

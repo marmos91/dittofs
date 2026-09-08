@@ -108,7 +108,7 @@ func (h *Handler) handleOpenDowngrade(ctx *types.CompoundContext, reader io.Read
 
 	// Delegate to StateManager
 	downgradeResult, stateErr := h.StateManager.DowngradeOpen(
-		stateid, downgradeSeqid, newShareAccess, newShareDeny,
+		stateid, downgradeSeqid, newShareAccess, newShareDeny, ctx.SessionClientID,
 	)
 	if stateErr != nil {
 		if replay := asReplay(types.OP_OPEN_DOWNGRADE, stateErr); replay != nil {

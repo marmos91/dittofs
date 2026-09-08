@@ -104,11 +104,7 @@ func TestLockNew_LockManagerCalledWithoutStateMutex(t *testing.T) {
 
 	clientID, fileHandle, openStateid, openSeqid := setupClientAndOpenState(t, sm)
 
-	res, err := sm.LockNew(context.Background(),
-		clientID, []byte("owner-a"), 1,
-		openStateid, openSeqid,
-		fileHandle, types.WRITE_LT, 0, 100, false,
-	)
+	res, err := sm.LockNew(context.Background(), clientID, []byte("owner-a"), 1, openStateid, openSeqid, fileHandle, types.WRITE_LT, 0, 100, false, 0)
 	if err == nil {
 		t.Fatalf("LOCK committed against state freed while the lock manager was called: %+v", res)
 	}
@@ -132,11 +128,7 @@ func TestUnlockFile_LockManagerCalledWithoutStateMutex(t *testing.T) {
 
 	clientID, fileHandle, openStateid, openSeqid := setupClientAndOpenState(t, sm)
 
-	locked, err := sm.LockNew(context.Background(),
-		clientID, []byte("owner-a"), 1,
-		openStateid, openSeqid,
-		fileHandle, types.WRITE_LT, 0, 100, false,
-	)
+	locked, err := sm.LockNew(context.Background(), clientID, []byte("owner-a"), 1, openStateid, openSeqid, fileHandle, types.WRITE_LT, 0, 100, false, 0)
 	if err != nil || locked.Denied != nil {
 		t.Fatalf("setup LOCK failed: err=%v denied=%v", err, locked)
 	}
@@ -145,7 +137,7 @@ func TestUnlockFile_LockManagerCalledWithoutStateMutex(t *testing.T) {
 	lm.onRemoveLock = func() {
 		mutateUnderStateMutex(t, "the lease sweeper", func() { sm.onLeaseExpired(clientID) })
 	}
-	if _, err := sm.UnlockFile(&locked.Stateid, 2, types.WRITE_LT, 0, 100); err == nil {
+	if _, err := sm.UnlockFile(&locked.Stateid, 2, types.WRITE_LT, 0, 100, 0); err == nil {
 		t.Fatal("LOCKU committed a seqid bump against state freed while the lock manager was called")
 	}
 }

@@ -64,7 +64,7 @@ func (h *Handler) handleClose(ctx *types.CompoundContext, reader io.Reader) *typ
 		"client", ctx.ClientAddr)
 
 	// Delegate to StateManager for state cleanup
-	closeResult, stateErr := h.StateManager.CloseFile(stateid, closeSeqid)
+	closeResult, stateErr := h.StateManager.CloseFile(stateid, closeSeqid, ctx.SessionClientID)
 	if stateErr != nil {
 		if replay := asReplay(types.OP_CLOSE, stateErr); replay != nil {
 			return replay
