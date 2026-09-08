@@ -19,8 +19,6 @@ import (
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"lukechampine.com/blake3"
-
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/health"
 )
@@ -342,281 +340,34 @@ func newTestStore(t *testing.T) (*Store, *mockS3) {
 	return store, mock
 }
 
-// mustHash returns the BLAKE3-256 content hash of b. Unlike the
-// *testing.T-bound hashOf in verifier_test.go, this is usable from
-// helpers that do not hold a t.
-func mustHash(b []byte) block.ContentHash {
-	return block.ContentHash(blake3.Sum256(b))
-}
-
-// TestStore_Put_Get_RoundTrip drives the full PUT then GET wire path.
-func TestStore_Put_Get_RoundTrip(t *testing.T) {
-	store, _ := newTestStore(t)
-	ctx := context.Background()
-
-	data := []byte("mock-s3 round-trip payload — deterministic bytes")
-	h := mustHash(data)
-
-	if err := store.Put(ctx, h, data); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	got, err := store.Get(ctx, h)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if string(got) != string(data) {
-		t.Fatalf("Get returned %q, want %q", got, data)
-	}
-}
-
-// TestStore_Get_NotFound pins the NoSuchKey -> ErrChunkNotFound mapping.
-func TestStore_Get_NotFound(t *testing.T) {
-	store, _ := newTestStore(t)
-	ctx := context.Background()
-
-	if _, err := store.Get(ctx, mustHash([]byte("absent"))); !errors.Is(err, block.ErrChunkNotFound) {
-		t.Fatalf("Get on missing key: want ErrChunkNotFound, got %v", err)
-	}
-}
-
-// TestStore_Has covers both the present and absent HEAD outcomes.
-func TestStore_Has(t *testing.T) {
-	store, _ := newTestStore(t)
-	ctx := context.Background()
-
-	data := []byte("has-probe payload")
-	h := mustHash(data)
-
-	has, err := store.Has(ctx, h)
-	if err != nil {
-		t.Fatalf("Has (absent): %v", err)
-	}
-	if has {
-		t.Fatal("Has on absent key: want false")
-	}
-
-	if err := store.Put(ctx, h, data); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	has, err = store.Has(ctx, h)
-	if err != nil {
-		t.Fatalf("Has (present): %v", err)
-	}
-	if !has {
-		t.Fatal("Has on present key: want true")
-	}
-}
-
-// TestStore_Head verifies Meta.Size and a non-zero LastModified, plus the
-// NotFound mapping.
-func TestStore_Head(t *testing.T) {
-	store, _ := newTestStore(t)
-	ctx := context.Background()
-
-	data := make([]byte, 4096)
-	for i := range data {
-		data[i] = byte(i)
-	}
-	h := mustHash(data)
-	if err := store.Put(ctx, h, data); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-
-	m, err := store.Head(ctx, h)
-	if err != nil {
-		t.Fatalf("Head: %v", err)
-	}
-	if m.Size != int64(len(data)) {
-		t.Errorf("Head Size = %d, want %d", m.Size, len(data))
-	}
-	if m.LastModified.IsZero() {
-		t.Error("Head LastModified is zero")
-	}
-
-	if _, err := store.Head(ctx, mustHash([]byte("nope"))); !errors.Is(err, block.ErrChunkNotFound) {
-		t.Fatalf("Head on missing key: want ErrChunkNotFound, got %v", err)
-	}
-}
-
-// TestStore_GetRange exercises mid-block, tail, partial-past-EOF, and the
-// argument-validation sentinels.
-func TestStore_GetRange(t *testing.T) {
-	store, _ := newTestStore(t)
-	ctx := context.Background()
-
-	data := []byte("0123456789abcdef") // 16 bytes
-	h := mustHash(data)
-	if err := store.Put(ctx, h, data); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-
-	// Mid-block.
-	got, err := store.GetRange(ctx, h, 4, 8)
-	if err != nil {
-		t.Fatalf("GetRange mid: %v", err)
-	}
-	if string(got) != "456789ab" {
-		t.Fatalf("GetRange mid = %q, want %q", got, "456789ab")
-	}
-
-	// Partial past EOF: returns the available tail without error.
-	got, err = store.GetRange(ctx, h, 8, 20)
-	if err != nil {
-		t.Fatalf("GetRange partial-past-EOF: %v", err)
-	}
-	if string(got) != "89abcdef" {
-		t.Fatalf("GetRange partial-past-EOF = %q, want %q", got, "89abcdef")
-	}
-
-	// Offset strictly past EOF: the mock returns 416, surfaced as an error.
-	if _, err := store.GetRange(ctx, h, 100, 4); err == nil {
-		t.Fatal("GetRange offset past EOF: want error, got nil")
-	}
-
-	// Argument validation sentinels (checked before any wire call).
-	if _, err := store.GetRange(ctx, h, -1, 4); !errors.Is(err, block.ErrInvalidOffset) {
-		t.Fatalf("GetRange offset=-1: want ErrInvalidOffset, got %v", err)
-	}
-	if _, err := store.GetRange(ctx, h, 0, 0); !errors.Is(err, block.ErrInvalidSize) {
-		t.Fatalf("GetRange length=0: want ErrInvalidSize, got %v", err)
-	}
-	if _, err := store.GetRange(ctx, h, 0, -4); !errors.Is(err, block.ErrInvalidSize) {
-		t.Fatalf("GetRange length=-4: want ErrInvalidSize, got %v", err)
-	}
-
-	// Range on a missing key maps to ErrChunkNotFound.
-	if _, err := store.GetRange(ctx, mustHash([]byte("missing")), 0, 4); !errors.Is(err, block.ErrChunkNotFound) {
-		t.Fatalf("GetRange on missing key: want ErrChunkNotFound, got %v", err)
-	}
-}
-
-// TestStore_Delete_Idempotent confirms Delete succeeds whether or not the
-// object exists and that a subsequent Get misses.
-func TestStore_Delete_Idempotent(t *testing.T) {
-	store, _ := newTestStore(t)
-	ctx := context.Background()
-
-	data := []byte("to be deleted")
-	h := mustHash(data)
-	if err := store.Put(ctx, h, data); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	if err := store.Delete(ctx, h); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	if _, err := store.Get(ctx, h); !errors.Is(err, block.ErrChunkNotFound) {
-		t.Fatalf("Get after Delete: want ErrChunkNotFound, got %v", err)
-	}
-	// Idempotent: deleting an absent key still succeeds.
-	if err := store.Delete(ctx, h); err != nil {
-		t.Fatalf("Delete (idempotent): %v", err)
-	}
-}
-
-// TestStore_Walk_StopSentinel pins the ErrStopWalk clean-exit contract.
-func TestStore_Walk_StopSentinel(t *testing.T) {
-	store, _ := newTestStore(t)
-	ctx := context.Background()
-
-	for i := 0; i < 4; i++ {
-		p := []byte(fmt.Sprintf("stop-%d", i))
-		if err := store.Put(ctx, mustHash(p), p); err != nil {
-			t.Fatalf("Put: %v", err)
-		}
-	}
-
-	seen := 0
-	err := store.Walk(ctx, func(block.ContentHash, block.Meta) error {
-		seen++
-		return block.ErrStopWalk
-	})
-	if err != nil {
-		t.Fatalf("Walk ErrStopWalk: want nil, got %v", err)
-	}
-	if seen != 1 {
-		t.Fatalf("Walk should stop after first ErrStopWalk; saw %d", seen)
-	}
-}
-
-// TestStore_Walk_ErrorWrap pins the "walk halted at %s: %w" wrapping
-// contract for a non-sentinel callback error.
-func TestStore_Walk_ErrorWrap(t *testing.T) {
-	store, _ := newTestStore(t)
-	ctx := context.Background()
-
-	p := []byte("wrap-target")
-	if err := store.Put(ctx, mustHash(p), p); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-
-	custom := errors.New("custom walk callback error")
-	err := store.Walk(ctx, func(block.ContentHash, block.Meta) error {
-		return custom
-	})
-	if !errors.Is(err, custom) {
-		t.Fatalf("Walk error does not wrap custom: got %v", err)
-	}
-	if !strings.Contains(err.Error(), "walk halted at") {
-		t.Errorf("Walk error missing 'walk halted at' prefix: %q", err.Error())
-	}
-}
-
-// TestStore_Walk_ContextCancel verifies a cancelled context aborts Walk.
-func TestStore_Walk_ContextCancel(t *testing.T) {
-	store, mock := newTestStore(t)
-	mock.mu.Lock()
-	mock.listPageSize = 1
-	mock.mu.Unlock()
-
-	for i := 0; i < 4; i++ {
-		p := []byte(fmt.Sprintf("cancel-%d", i))
-		if err := store.Put(context.Background(), mustHash(p), p); err != nil {
-			t.Fatalf("Put: %v", err)
-		}
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel before Walk starts
-	err := store.Walk(ctx, func(block.ContentHash, block.Meta) error {
-		return nil
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("Walk on cancelled ctx: want context.Canceled, got %v", err)
-	}
-}
-
 // TestStore_ClosedGuards confirms every public method fails closed with
 // ErrStoreClosed after Close.
 func TestStore_ClosedGuards(t *testing.T) {
 	store, _ := newTestStore(t)
 	ctx := context.Background()
-	h := mustHash([]byte("x"))
 
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	if err := store.Put(ctx, h, []byte("x")); !errors.Is(err, block.ErrStoreClosed) {
-		t.Errorf("Put after Close: want ErrStoreClosed, got %v", err)
+	if err := store.PutBlock(ctx, "blk", strings.NewReader("x")); !errors.Is(err, block.ErrStoreClosed) {
+		t.Errorf("PutBlock after Close: want ErrStoreClosed, got %v", err)
 	}
-	if _, err := store.Get(ctx, h); !errors.Is(err, block.ErrStoreClosed) {
-		t.Errorf("Get after Close: want ErrStoreClosed, got %v", err)
+	if _, err := store.GetBlock(ctx, "blk"); !errors.Is(err, block.ErrStoreClosed) {
+		t.Errorf("GetBlock after Close: want ErrStoreClosed, got %v", err)
 	}
-	if _, err := store.GetRange(ctx, h, 0, 4); !errors.Is(err, block.ErrStoreClosed) {
-		t.Errorf("GetRange after Close: want ErrStoreClosed, got %v", err)
+	if _, err := store.GetBlockRange(ctx, "blk", 0, 4); !errors.Is(err, block.ErrStoreClosed) {
+		t.Errorf("GetBlockRange after Close: want ErrStoreClosed, got %v", err)
 	}
-	if _, err := store.Has(ctx, h); !errors.Is(err, block.ErrStoreClosed) {
-		t.Errorf("Has after Close: want ErrStoreClosed, got %v", err)
+	if _, err := store.ReadChunk(ctx, "blk", 0, 4, block.ContentHash{}); !errors.Is(err, block.ErrStoreClosed) {
+		t.Errorf("ReadChunk after Close: want ErrStoreClosed, got %v", err)
 	}
-	if _, err := store.Head(ctx, h); !errors.Is(err, block.ErrStoreClosed) {
-		t.Errorf("Head after Close: want ErrStoreClosed, got %v", err)
+	if err := store.DeleteBlock(ctx, "blk"); !errors.Is(err, block.ErrStoreClosed) {
+		t.Errorf("DeleteBlock after Close: want ErrStoreClosed, got %v", err)
 	}
-	if err := store.Delete(ctx, h); !errors.Is(err, block.ErrStoreClosed) {
-		t.Errorf("Delete after Close: want ErrStoreClosed, got %v", err)
-	}
-	walkErr := store.Walk(ctx, func(block.ContentHash, block.Meta) error { return nil })
+	walkErr := store.WalkBlocks(ctx, func(string, block.Meta) error { return nil })
 	if !errors.Is(walkErr, block.ErrStoreClosed) {
-		t.Errorf("Walk after Close: want ErrStoreClosed, got %v", walkErr)
+		t.Errorf("WalkBlocks after Close: want ErrStoreClosed, got %v", walkErr)
 	}
 	if err := store.HealthCheck(ctx); !errors.Is(err, block.ErrStoreClosed) {
 		t.Errorf("HealthCheck after Close: want ErrStoreClosed, got %v", err)
@@ -624,7 +375,7 @@ func TestStore_ClosedGuards(t *testing.T) {
 }
 
 // TestStore_RetryOn5xx verifies the SDK retryer recovers from a single
-// transient 5xx on Put (failNext fires once, then the retry succeeds).
+// transient 5xx on PutBlock (failNext fires once, then the retry succeeds).
 func TestStore_RetryOn5xx(t *testing.T) {
 	store, mock := newTestStore(t)
 	ctx := context.Background()
@@ -634,17 +385,16 @@ func TestStore_RetryOn5xx(t *testing.T) {
 	mock.failNextMethod = http.MethodPut
 	mock.mu.Unlock()
 
-	data := []byte("retry payload")
-	h := mustHash(data)
-	if err := store.Put(ctx, h, data); err != nil {
-		t.Fatalf("Put should recover after one 5xx: %v", err)
+	const data = "retry payload"
+	if err := store.PutBlock(ctx, "blk-retry", strings.NewReader(data)); err != nil {
+		t.Fatalf("PutBlock should recover after one 5xx: %v", err)
 	}
-	got, err := store.Get(ctx, h)
+	got, err := store.GetBlock(ctx, "blk-retry")
 	if err != nil {
-		t.Fatalf("Get: %v", err)
+		t.Fatalf("GetBlock: %v", err)
 	}
-	if string(got) != string(data) {
-		t.Fatalf("Get bytes mismatch after retry")
+	if string(got) != data {
+		t.Fatalf("GetBlock bytes mismatch after retry")
 	}
 }
 
@@ -663,44 +413,43 @@ func TestStore_HealthCheck(t *testing.T) {
 	}
 }
 
-// TestStore_PutContextCancel verifies a cancelled context propagates as an
-// error from a wire call rather than hanging.
-func TestStore_PutContextCancel(t *testing.T) {
+// TestStore_PutBlockContextCancel verifies a cancelled context propagates as
+// an error from a wire call rather than hanging.
+func TestStore_PutBlockContextCancel(t *testing.T) {
 	store, _ := newTestStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := store.Put(ctx, mustHash([]byte("x")), []byte("x"))
+	err := store.PutBlock(ctx, "blk-cancel", strings.NewReader("x"))
 	if err == nil {
-		t.Fatal("Put on cancelled ctx: want error, got nil")
+		t.Fatal("PutBlock on cancelled ctx: want error, got nil")
 	}
 	if !errors.Is(err, context.Canceled) {
-		t.Logf("Put on cancelled ctx returned %v (non-context.Canceled is acceptable if it is a wrapped transport error)", err)
+		t.Logf("PutBlock on cancelled ctx returned %v (non-context.Canceled is acceptable if it is a wrapped transport error)", err)
 	}
 }
 
-// TestStore_Get_NoContentLength exercises the readResponseBody fallback
+// TestStore_GetBlock_NoContentLength exercises the readResponseBody fallback
 // path where the response omits Content-Length (chunked transfer).
-func TestStore_Get_NoContentLength(t *testing.T) {
+func TestStore_GetBlock_NoContentLength(t *testing.T) {
 	store, mock := newTestStore(t)
 	ctx := context.Background()
 
-	data := []byte("chunked-transfer payload without content-length")
-	h := mustHash(data)
-	if err := store.Put(ctx, h, data); err != nil {
-		t.Fatalf("Put: %v", err)
+	const data = "chunked-transfer payload without content-length"
+	if err := store.PutBlock(ctx, "blk-chunked", strings.NewReader(data)); err != nil {
+		t.Fatalf("PutBlock: %v", err)
 	}
 
 	mock.mu.Lock()
 	mock.omitContentLength = true
 	mock.mu.Unlock()
 
-	got, err := store.Get(ctx, h)
+	got, err := store.GetBlock(ctx, "blk-chunked")
 	if err != nil {
-		t.Fatalf("Get (no content-length): %v", err)
+		t.Fatalf("GetBlock (no content-length): %v", err)
 	}
-	if string(got) != string(data) {
-		t.Fatalf("Get bytes mismatch on no-content-length path")
+	if string(got) != data {
+		t.Fatalf("GetBlock bytes mismatch on no-content-length path")
 	}
 }
 
@@ -829,11 +578,12 @@ func TestStore_WalkBlocks_EnumeratesAll(t *testing.T) {
 		}
 	}
 
-	// Also put a CAS object; WalkBlocks must not surface it.
-	casData := []byte("cas-only")
-	if err := store.Put(ctx, mustHash(casData), casData); err != nil {
-		t.Fatalf("Put CAS: %v", err)
-	}
+	// Seed two keys WalkBlocks must skip: one outside the blocks/ prefix
+	// entirely, and the bare prefix key itself (empty blockID).
+	mock.mu.Lock()
+	mock.objects["cas/aa/bb/deadbeef"] = mockObject{data: []byte("cas-only"), lastModified: time.Now().UTC()}
+	mock.objects["blocks/"] = mockObject{data: nil, lastModified: time.Now().UTC()}
+	mock.mu.Unlock()
 
 	seen := make(map[string]int)
 	err := store.WalkBlocks(ctx, func(blockID string, m block.Meta) error {
@@ -856,6 +606,49 @@ func TestStore_WalkBlocks_EnumeratesAll(t *testing.T) {
 		if n != 1 {
 			t.Errorf("WalkBlocks visited %s %d times, want 1", id, n)
 		}
+	}
+}
+
+// TestStore_WalkBlocks_ErrorWrap pins the "walk halted at %s: %w" wrapping
+// contract for a non-sentinel callback error.
+func TestStore_WalkBlocks_ErrorWrap(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	if err := store.PutBlock(ctx, "blk-wrap", strings.NewReader("wrap-target")); err != nil {
+		t.Fatalf("PutBlock: %v", err)
+	}
+
+	custom := errors.New("custom walk callback error")
+	err := store.WalkBlocks(ctx, func(string, block.Meta) error { return custom })
+	if !errors.Is(err, custom) {
+		t.Fatalf("WalkBlocks error does not wrap custom: got %v", err)
+	}
+	if !strings.Contains(err.Error(), "walk halted at") {
+		t.Errorf("WalkBlocks error missing 'walk halted at' prefix: %q", err.Error())
+	}
+}
+
+// TestStore_WalkBlocks_ContextCancel verifies a cancelled context aborts the
+// walk before the paginator drains.
+func TestStore_WalkBlocks_ContextCancel(t *testing.T) {
+	store, mock := newTestStore(t)
+	mock.mu.Lock()
+	mock.listPageSize = 1
+	mock.mu.Unlock()
+
+	for i := 0; i < 4; i++ {
+		id := fmt.Sprintf("blk-cancel-%d", i)
+		if err := store.PutBlock(context.Background(), id, strings.NewReader(id)); err != nil {
+			t.Fatalf("PutBlock: %v", err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before WalkBlocks starts
+	err := store.WalkBlocks(ctx, func(string, block.Meta) error { return nil })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WalkBlocks on cancelled ctx: want context.Canceled, got %v", err)
 	}
 }
 

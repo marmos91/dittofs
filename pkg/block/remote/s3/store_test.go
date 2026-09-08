@@ -36,25 +36,15 @@ func TestNormalizeEndpoint(t *testing.T) {
 	}
 }
 
-// TestStore_BlockStoreConformance runs the unified
-// BlockStoreConformance suite against the S3 backend.
+// TestS3_RemoteBlockStoreConformance_Endpoint runs the unified
+// RemoteBlockStoreConformance suite against a real S3 endpoint, exercising
+// the production wire path rather than the in-process mock.
 //
 // Skipped unless DITTOFS_S3_ENDPOINT (and the credential pair
 // DITTOFS_S3_ACCESS_KEY / DITTOFS_S3_SECRET_KEY) are set in the
-// environment — production-style S3 conformance requires either a
-// Localstack/MinIO container or a real bucket to exercise the wire
-// path. CI wires Localstack; local developers may run with `make
+// environment. CI wires Localstack; local developers may run with `make
 // e2e-s3` or by exporting the env directly.
-//
-// The S3 backend is hash-keyed only behind the legacy-CAS path, so
-// BlockStoreConformance runs here. The x-amz-meta-content-hash
-// header round-trip is exercised by verifier_test.go (the header is an
-// fs-internal defense-in-depth marker and is not part of the unified
-// Meta surface —).
-//
-// -07 adds the missing Has() method on *Store; until then the
-// factory return type does not type-check.
-func TestStore_BlockStoreConformance(t *testing.T) {
+func TestS3_RemoteBlockStoreConformance_Endpoint(t *testing.T) {
 	endpoint := os.Getenv("DITTOFS_S3_ENDPOINT")
 	if endpoint == "" {
 		t.Skip("DITTOFS_S3_ENDPOINT not set; skipping S3 conformance suite. Set the env var (with DITTOFS_S3_ACCESS_KEY/DITTOFS_S3_SECRET_KEY/DITTOFS_S3_BUCKET) to run against Localstack or MinIO.")
@@ -76,37 +66,39 @@ func TestStore_BlockStoreConformance(t *testing.T) {
 		}
 	}
 
-	factory := func(t *testing.T) (block.Store, func()) {
+	blockstoretest.RemoteBlockStoreConformance(t, func(t *testing.T) (blockstoretest.RemoteBlockStore, func()) {
 		t.Helper()
 		// Per-subtest prefix so subtests do not see each other's objects.
-		prefix := "conformance/" + t.Name() + "/"
 		cfg := Config{
 			Bucket:         bucket,
 			Region:         region,
 			Endpoint:       endpoint,
 			AccessKey:      accessKey,
 			SecretKey:      secretKey,
-			KeyPrefix:      prefix,
+			KeyPrefix:      "conformance/" + t.Name() + "/",
 			ForcePathStyle: forcePathStyle,
 		}
 		store, err := NewFromConfig(context.Background(), cfg)
 		if err != nil {
 			t.Fatalf("NewFromConfig: %v", err)
 		}
-		// Cleanup walks the prefix and deletes every CAS object so the
-		// next subtest starts clean. This is best-effort; if the test
-		// failed mid-way, residual objects may remain.
+		// Cleanup walks the prefix and deletes every block object so the next
+		// subtest starts clean. Best-effort: if the test failed mid-way,
+		// residual objects may remain.
 		cleanup := func() {
 			ctx := context.Background()
-			_ = store.Walk(ctx, func(h block.ContentHash, _ block.Meta) error {
-				_ = store.Delete(ctx, h)
+			var ids []string
+			_ = store.WalkBlocks(ctx, func(blockID string, _ block.Meta) error {
+				ids = append(ids, blockID)
 				return nil
 			})
+			for _, id := range ids {
+				_ = store.DeleteBlock(ctx, id)
+			}
 			_ = store.Close()
 		}
 		return store, cleanup
-	}
-	blockstoretest.BlockStoreConformance(t, factory)
+	})
 }
 
 // TestS3_RemoteBlockStoreConformance runs the unified
