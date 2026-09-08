@@ -5,9 +5,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	handlertesting "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers/testing"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -476,4 +478,28 @@ func TestRename_ReclaimsClobberedPayloadBytes(t *testing.T) {
 	_, survived := fx.LocalStore.FileSize(ctxBg, survivorPayload)
 	assert.Truef(t, survived,
 		"renamed file's payload %q was dropped from the local tier by RENAME", survivorPayload)
+}
+
+// TestRename_CrossShareRejected pins that RENAME reports a cross-share move as
+// NFS3ErrXDev, the same status LINK returns for the same condition, so one
+// condition does not surface as two different errnos.
+func TestRename_CrossShareRejected(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	fx.CreateFile("original.txt", []byte("content"))
+
+	foreignDir, err := metadata.EncodeShareHandle("/other-share", uuid.New())
+	require.NoError(t, err)
+
+	req := &handlers.RenameRequest{
+		FromDirHandle: fx.RootHandle,
+		FromName:      "original.txt",
+		ToDirHandle:   foreignDir,
+		ToName:        "stolen.txt",
+	}
+	resp, err := fx.Handler.Rename(fx.Context(), req)
+
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3ErrXDev, resp.Status,
+		"RENAME across shares should return NFS3ErrXDev")
 }

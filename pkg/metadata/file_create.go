@@ -83,6 +83,12 @@ func (s *Service) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name st
 		return nil, err
 	}
 
+	// A hard link is a second name for one inode, so the target must live in
+	// the same share as the directory receiving the entry.
+	if err := requireSameShare(dirHandle, targetHandle, "create a hard link", name); err != nil {
+		return nil, err
+	}
+
 	// Validate name
 	if err := ValidateName(name); err != nil {
 		return nil, err
