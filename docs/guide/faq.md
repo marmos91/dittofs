@@ -710,7 +710,7 @@ ordinary sparse file.
 
 | Status | Reason |
 |--------|--------|
-| NFSv4: `change` does not advance during another client's write session | Timestamps are held stable for the duration of a write session |
+| NFSv4: `change` is stable within a write session | Timestamps are frozen per session, and `change` derives from `ctime` |
 
 While a client is writing to a file, DittoFS holds that file's `mtime` and
 `ctime` at the value from the first write of the session instead of advancing
