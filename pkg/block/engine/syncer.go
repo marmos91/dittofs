@@ -370,7 +370,7 @@ func (m *RemoteSync) logOfflineRead(method, payloadID string, blockIdx uint64) {
 }
 
 // checkReady returns nil if the syncer can process requests.
-// Returns ctx.Err() if the context is cancelled, or ErrClosed if the syncer is closed.
+// Returns ctx.Err() if the context is cancelled, or ErrClosed if the RemoteSync is closed.
 func (m *RemoteSync) checkReady(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -383,7 +383,7 @@ func (m *RemoteSync) checkReady(ctx context.Context) error {
 	return nil
 }
 
-// canProcess returns false if the syncer is closed or context is cancelled.
+// canProcess returns false if the RemoteSync is closed or context is cancelled.
 func (m *RemoteSync) canProcess(ctx context.Context) bool {
 	return m.checkReady(ctx) == nil
 }

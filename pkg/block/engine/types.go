@@ -6,7 +6,7 @@ import (
 )
 
 // ErrClosed is returned when an operation is attempted on a closed RemoteSync.
-var ErrClosed = errors.New("syncer is closed")
+var ErrClosed = errors.New("remote sync is closed")
 
 // ErrStoreClosed is returned by a Store data op (WriteAt, ReadAt, Flush,
 // Truncate, Delete, …) that arrives after the Store has been Closed —

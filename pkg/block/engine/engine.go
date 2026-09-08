@@ -160,7 +160,7 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 		return nil, errors.New("local store is required")
 	}
 	if cfg.RemoteSync == nil {
-		return nil, errors.New("syncer is required")
+		return nil, errors.New("remote sync is required")
 	}
 
 	bs := &Store{
