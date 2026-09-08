@@ -184,6 +184,10 @@ jobs:
 
       - name: Upload logs
         if: always()
+        # A lost diagnostics zip must not invert a verdict the suite has already
+        # produced: the run step above decides pass or fail, this upload only
+        # preserves the evidence.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: e2e-logs

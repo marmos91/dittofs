@@ -214,6 +214,10 @@ jobs:
 
       - name: Upload results
         if: always()
+        # A lost diagnostics zip must not invert a verdict the suite has already
+        # produced: the run step above decides pass or fail, this upload only
+        # preserves the evidence.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: wpts-${{ matrix.profile }}
@@ -255,6 +259,10 @@ jobs:
 
       - name: Upload results
         if: always()
+        # A lost diagnostics zip must not invert a verdict the suite has already
+        # produced: the run step above decides pass or fail, this upload only
+        # preserves the evidence.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: smbtorture-${{ matrix.profile }}
@@ -384,6 +392,10 @@ jobs:
 
       - name: Upload results
         if: always()
+        # A lost diagnostics zip must not invert a verdict the suite has already
+        # produced: the run step above decides pass or fail, this upload only
+        # preserves the evidence.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: pjdfstest-v${{ matrix.variant }}-${{ matrix.profile }}
@@ -450,6 +462,10 @@ jobs:
 
       - name: Upload results
         if: always()
+        # A lost diagnostics zip must not invert a verdict the suite has already
+        # produced: the run step above decides pass or fail, this upload only
+        # preserves the evidence.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: nfs-kerberos-results
@@ -508,6 +524,10 @@ jobs:
 
       - name: Upload results
         if: always()
+        # A lost diagnostics zip must not invert a verdict the suite has already
+        # produced: the run step above decides pass or fail, this upload only
+        # preserves the evidence.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: smbtorture-kerberos
