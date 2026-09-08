@@ -301,7 +301,7 @@ func TestListV41Clients(t *testing.T) {
 	}
 
 	// Verify returned values are pointers to internal records (not copies)
-	// to avoid copylocks issues with V41ClientRecord containing atomic fields.
+	// to avoid copylocks issues with ClientRecord containing atomic fields.
 	for _, c := range clients {
 		if c == nil {
 			t.Error("ListV41Clients returned nil pointer")

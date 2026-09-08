@@ -32,7 +32,10 @@ const DefaultLeaseDuration = 90 * time.Second
 type StateManager struct {
 	mu sync.RWMutex
 
-	// clientsByID maps server-assigned client IDs to client records.
+	// clientsByID maps server-assigned client IDs to v4.0 client records
+	// (those established by SETCLIENTID). v4.1 clients are indexed by
+	// v41ClientsByID; the two maps never hold the same ID because
+	// generateClientID draws both from one sequence.
 	clientsByID map[uint64]*ClientRecord
 
 	// clientsByName maps nfs_client_id4.id strings to confirmed client records.
@@ -188,11 +191,11 @@ type StateManager struct {
 	// ============================================================================
 
 	// v41ClientsByID maps server-assigned client IDs to v4.1 client records.
-	v41ClientsByID map[uint64]*V41ClientRecord
+	v41ClientsByID map[uint64]*ClientRecord
 
 	// v41ClientsByOwner maps owner ID bytes (string key) to v4.1 client records.
 	// Uses string(ownerID) for byte-exact comparison.
-	v41ClientsByOwner map[string]*V41ClientRecord
+	v41ClientsByOwner map[string]*ClientRecord
 
 	// sessionsByID maps session IDs to session objects.
 	sessionsByID map[types.SessionId4]*Session
@@ -289,8 +292,8 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		leaseDuration:       leaseDuration,
 		graceDuration:       gd,
 		// NFSv4.1 state
-		v41ClientsByID:       make(map[uint64]*V41ClientRecord),
-		v41ClientsByOwner:    make(map[string]*V41ClientRecord),
+		v41ClientsByID:       make(map[uint64]*ClientRecord),
+		v41ClientsByOwner:    make(map[string]*ClientRecord),
 		sessionsByID:         make(map[types.SessionId4]*Session),
 		sessionsByClientID:   make(map[uint64][]*Session),
 		maxSessionsPerClient: 16,
@@ -881,10 +884,10 @@ func (sm *StateManager) RemoveClient(clientID uint64) {
 // together with its open states, its lock states, and the locks those hold in
 // the unified lock manager.
 //
-// It scans sm.openOwners by ClientID rather than walking a per-client owner
-// list: V41ClientRecord carries no such list, and the v4.0 ClientRecord one
-// goes stale because freeOpenStateidLocked removes owners from sm.openOwners
-// without removing them there.
+// It scans sm.openOwners by ClientID rather than walking the record's
+// OpenOwners map: that map is only populated on the v4.0 path, and it goes
+// stale even there because freeOpenStateidLocked removes owners from
+// sm.openOwners without removing them from it.
 //
 // Caller must hold sm.mu.
 func (sm *StateManager) removeClientOpenStateLocked(clientID uint64) {
@@ -3614,7 +3617,7 @@ func (sm *StateManager) reapExpiredSessions() {
 	now := time.Now()
 
 	// Collect client IDs to purge (avoid modifying map during iteration)
-	var toPurge []*V41ClientRecord
+	var toPurge []*ClientRecord
 
 	for _, record := range sm.v41ClientsByID {
 		// Check lease expiry for confirmed clients

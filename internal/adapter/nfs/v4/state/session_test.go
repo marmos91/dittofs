@@ -1037,9 +1037,9 @@ func TestReaper_ActiveLeaseNotCleaned(t *testing.T) {
 
 // TestReaper_ExpiredLeaseReleasesOpenState checks that reaping a client whose
 // lease lapsed also releases the open state its owners hold. v4.1 OPENs run
-// through the same OpenFile path as v4.0 and land in sm.openOwners, but the
-// V41ClientRecord has no owner list of its own, so a purge that only walked the
-// record left them behind — with their share reservations still denying every
+// through the same OpenFile path as v4.0 and land in sm.openOwners, but a
+// v4.1 client record carries no owner list of its own, so a purge that only
+// walked the record left them behind — with their share reservations still denying every
 // other client, and no client record left to ever CLOSE them.
 func TestReaper_ExpiredLeaseReleasesOpenState(t *testing.T) {
 	const lease = 20 * time.Millisecond
