@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -48,8 +47,8 @@ func (e *NFS4StateError) Error() string {
 // one of the sentinels below also matches an error of the same status carrying
 // a more specific message.
 func (e *NFS4StateError) Is(target error) bool {
-	var other *NFS4StateError
-	return errors.As(target, &other) && other.Status == e.Status
+	other, ok := target.(*NFS4StateError)
+	return ok && other.Status == e.Status
 }
 
 // Common state errors used throughout the state package.
@@ -338,7 +337,6 @@ func (sm *StateManager) validateDelegStateid(stateid *types.Stateid4, currentFH 
 		return nil, err
 	}
 
-	// Compare seqid.
 	if err := checkStateidSeqid(stateid.Seqid, deleg.Stateid.Seqid); err != nil {
 		return nil, err
 	}
@@ -384,7 +382,6 @@ func (sm *StateManager) validateLockStateid(stateid *types.Stateid4, currentFH [
 		return nil, err
 	}
 
-	// Compare seqid.
 	if err := checkStateidSeqid(stateid.Seqid, lockState.Stateid.Seqid); err != nil {
 		return nil, err
 	}

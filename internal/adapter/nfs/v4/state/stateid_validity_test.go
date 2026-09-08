@@ -145,9 +145,22 @@ func TestDowngradeOpen_NeverOpenedMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFile (READ): %v", err)
 	}
-	if _, err := sm.DowngradeOpen(&reopened.Stateid, seqid+2,
-		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, 0); err != nil {
+	downgraded, err := sm.DowngradeOpen(&reopened.Stateid, seqid+2,
+		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, 0)
+	if err != nil {
 		t.Fatalf("OPEN_DOWNGRADE to a mode that was opened: %v", err)
+	}
+
+	// That downgrade kept READ and dropped the modes it did not, so READ is the
+	// only mode a further OPEN_DOWNGRADE may name.
+	again, err := sm.DowngradeOpen(&downgraded.Stateid, seqid+3,
+		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, 0)
+	if err != nil {
+		t.Fatalf("second OPEN_DOWNGRADE to READ: %v", err)
+	}
+	if _, err := sm.DowngradeOpen(&again.Stateid, seqid+4,
+		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, 0); !isStatus(err, types.NFS4ERR_INVAL) {
+		t.Fatalf("OPEN_DOWNGRADE back up to BOTH: err = %v, want NFS4ERR_INVAL", err)
 	}
 }
 

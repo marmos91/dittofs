@@ -1837,9 +1837,8 @@ func (sm *StateManager) CacheLockOwnerResult(clientID uint64, ownerData []byte, 
 // Caller must NOT hold sm.mu.
 func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32, callerClientID uint64) (result *OpenSeqResult, err error) {
 	// A special stateid names no state at all, and RFC 7530 Section 9.1.4.3
-	// admits one only on READ, WRITE and SETATTR. Rejecting it here also keeps
-	// its all-zeros / all-ones "other" out of the table-miss classifier, which
-	// would read that as another incarnation's boot epoch and answer stale.
+	// admits one only on READ, WRITE and SETATTR. stateidMissError documents
+	// why it must be rejected before a table miss is classified.
 	if stateid.IsSpecialStateid() {
 		return nil, ErrBadStateid
 	}
@@ -1883,9 +1882,8 @@ func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32, calle
 		}
 	}
 
-	// The stateid must be the one this open currently answers to. Compared only
-	// after the owner seqid check above, so a retransmit replays its cached
-	// reply instead of being rejected for the seqid it is one behind on.
+	// The stateid must name this open's current seqid, compared after the owner
+	// seqid above so a retransmit still replays; see checkStateidSeqid.
 	if err := checkStateidSeqid(stateid.Seqid, openState.Stateid.Seqid); err != nil {
 		return nil, err
 	}
@@ -1960,9 +1958,8 @@ func (sm *StateManager) ConfirmOpenV41(stateid *types.Stateid4, callerClientID u
 func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32, callerClientID uint64) (result *OpenSeqResult, err error) {
 	// A special stateid names no open state, and RFC 7530 Section 9.1.4.3
 	// admits one only on READ, WRITE and SETATTR, so CLOSE has nothing to act
-	// on. Rejecting it here also keeps its all-zeros / all-ones "other" out of
-	// the table-miss classifier, which would read that as another incarnation's
-	// boot epoch and answer stale.
+	// on. stateidMissError documents why it must be rejected before a table
+	// miss is classified.
 	if stateid.IsSpecialStateid() {
 		return nil, ErrBadStateid
 	}
@@ -2020,9 +2017,8 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32, callerC
 		}
 	}
 
-	// The stateid must be the one this open currently answers to. Compared only
-	// after the owner seqid check above, so a retransmit replays its cached
-	// reply instead of being rejected for the seqid it is one behind on.
+	// The stateid must name this open's current seqid, compared after the owner
+	// seqid above so a retransmit still replays; see checkStateidSeqid.
 	if err := checkStateidSeqid(stateid.Seqid, openState.Stateid.Seqid); err != nil {
 		return nil, err
 	}
@@ -2167,9 +2163,8 @@ func (sm *StateManager) dropLockOwnerIfUnreferencedLocked(lockOwner *LockOwner) 
 // Caller must NOT hold sm.mu.
 func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, newShareAccess, newShareDeny uint32, callerClientID uint64) (result *OpenSeqResult, err error) {
 	// A special stateid names no state at all, and RFC 7530 Section 9.1.4.3
-	// admits one only on READ, WRITE and SETATTR. Rejecting it here also keeps
-	// its all-zeros / all-ones "other" out of the table-miss classifier, which
-	// would read that as another incarnation's boot epoch and answer stale.
+	// admits one only on READ, WRITE and SETATTR. stateidMissError documents
+	// why it must be rejected before a table miss is classified.
 	if stateid.IsSpecialStateid() {
 		return nil, ErrBadStateid
 	}
@@ -2214,9 +2209,8 @@ func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, new
 		}
 	}
 
-	// The stateid must be the one this open currently answers to. Compared only
-	// after the owner seqid check above, so a retransmit replays its cached
-	// reply instead of being rejected for the seqid it is one behind on.
+	// The stateid must name this open's current seqid, compared after the owner
+	// seqid above so a retransmit still replays; see checkStateidSeqid.
 	if err := checkStateidSeqid(stateid.Seqid, openState.Stateid.Seqid); err != nil {
 		return nil, err
 	}
@@ -2252,11 +2246,11 @@ func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, new
 	openState.ShareDeny = newShareDeny
 
 	// Forget the opened modes this downgrade drops: a later OPEN_DOWNGRADE may
-	// only name one that is still a subset of what this one kept.
-	for mode := uint32(types.OPEN4_SHARE_ACCESS_READ); mode <= types.OPEN4_SHARE_ACCESS_BOTH; mode++ {
-		if mode&newShareAccess != mode {
-			openState.openedAccessModes &^= shareModeBit(mode)
-		}
+	// only name one this one kept. Downgrading to a single mode leaves that
+	// mode as the only one opened; BOTH still covers all three, so it drops
+	// nothing.
+	if newShareAccess != types.OPEN4_SHARE_ACCESS_BOTH {
+		openState.openedAccessModes = shareModeBit(newShareAccess)
 	}
 
 	// Increment stateid seqid
@@ -2485,9 +2479,8 @@ func (sm *StateManager) LockNew(
 	}
 
 	// A special stateid names no state at all, and RFC 7530 Section 9.1.4.3
-	// admits one only on READ, WRITE and SETATTR. Rejecting it here also keeps
-	// its all-zeros / all-ones "other" out of the table-miss classifier, which
-	// would read that as another incarnation's boot epoch and answer stale.
+	// admits one only on READ, WRITE and SETATTR. stateidMissError documents
+	// why it must be rejected before a table miss is classified.
 	if openStateid.IsSpecialStateid() {
 		return nil, ErrBadStateid
 	}
@@ -2577,9 +2570,8 @@ func (sm *StateManager) LockNew(
 		return nil, ErrBadSeqid
 	}
 
-	// The open stateid must be the one that open currently answers to. Compared
-	// only after both seqid checks above, so a retransmit replays its cached
-	// reply instead of being rejected for the seqid it is one behind on.
+	// The open stateid must name that open's current seqid, compared after both
+	// seqid checks above so a retransmit still replays; see checkStateidSeqid.
 	if err := checkStateidSeqid(openStateid.Seqid, openState.Stateid.Seqid); err != nil {
 		return nil, err
 	}
