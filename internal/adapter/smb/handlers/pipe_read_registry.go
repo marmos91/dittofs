@@ -14,6 +14,9 @@ type AsyncPipeReadCallback func(sessionID, messageID, asyncId uint64, status typ
 type PendingPipeRead struct {
 	FileID    [16]byte
 	SessionID uint64
+	// ConnID is the connection the READ arrived on; both cancel keys are
+	// scoped to it.
+	ConnID    uint64
 	MessageID uint64
 	AsyncId   uint64
 	MaxLen    int
@@ -23,8 +26,15 @@ type PendingPipeRead struct {
 // Secondary-index slots for PipeReadRegistry, in configured order.
 const (
 	pipeIdxFileID = iota
-	pipeIdxMessageID
+	pipeIdxMsgKey
 )
+
+// pipeMsgKey identifies a pending pipe READ by the connection it arrived on
+// plus its MessageID, which is only unique within that connection.
+type pipeMsgKey struct {
+	ConnID    uint64
+	MessageID uint64
+}
 
 // PipeReadRegistry tracks outstanding async pipe READ operations.
 // Each named-pipe handle can have at most one pending read at a time.
@@ -38,9 +48,12 @@ func NewPipeReadRegistry() *PipeReadRegistry {
 	return &PipeReadRegistry{
 		reg: newPendingRegistry(registryConfig[PendingPipeRead]{
 			asyncID: func(p *PendingPipeRead) uint64 { return p.AsyncId },
+			connID:  func(p *PendingPipeRead) uint64 { return p.ConnID },
 			indexes: []keyFunc[PendingPipeRead]{
 				func(p *PendingPipeRead) any { return p.FileID },
-				func(p *PendingPipeRead) any { return p.MessageID },
+				func(p *PendingPipeRead) any {
+					return pipeMsgKey{ConnID: p.ConnID, MessageID: p.MessageID}
+				},
 			},
 		}),
 	}
@@ -77,16 +90,16 @@ func (r *PipeReadRegistry) UnregisterByFileID(fileID [16]byte) *PendingPipeRead 
 	return r.reg.unregisterByIndex(pipeIdxFileID, fileID)
 }
 
-// UnregisterByMessageID removes and returns the pending read with the given MessageID.
-// Returns nil if none is registered.
-func (r *PipeReadRegistry) UnregisterByMessageID(messageID uint64) *PendingPipeRead {
-	return r.reg.unregisterByIndex(pipeIdxMessageID, messageID)
+// UnregisterByMessageID removes and returns the pending read matching
+// (connID, messageID). Returns nil if none is registered.
+func (r *PipeReadRegistry) UnregisterByMessageID(connID, messageID uint64) *PendingPipeRead {
+	return r.reg.unregisterByIndex(pipeIdxMsgKey, pipeMsgKey{ConnID: connID, MessageID: messageID})
 }
 
-// UnregisterByAsyncId removes and returns the pending read with the given AsyncId.
-// Returns nil if none is registered.
-func (r *PipeReadRegistry) UnregisterByAsyncId(asyncId uint64) *PendingPipeRead {
-	return r.reg.unregisterByAsyncID(asyncId)
+// UnregisterByAsyncId removes and returns the pending read parked on
+// (connID, asyncId). Returns nil if none is registered.
+func (r *PipeReadRegistry) UnregisterByAsyncId(connID, asyncId uint64) *PendingPipeRead {
+	return r.reg.unregisterByAsyncIDOn(asyncId, connID)
 }
 
 // UnregisterAllForSession removes and returns all pending reads for the given session.

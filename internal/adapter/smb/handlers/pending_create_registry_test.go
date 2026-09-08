@@ -87,10 +87,10 @@ func TestPendingCreateRegistry_UnregisterByAsyncId(t *testing.T) {
 	if err := r.Register(p); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if got := r.UnregisterByAsyncId(99); got != nil {
+	if got := r.UnregisterByAsyncId(1, 99); got != nil {
 		t.Errorf("UnregisterByAsyncId(missing) = %v, want nil", got)
 	}
-	if got := r.UnregisterByAsyncId(7); got != p {
+	if got := r.UnregisterByAsyncId(1, 7); got != p {
 		t.Errorf("UnregisterByAsyncId = %v, want %v", got, p)
 	}
 	if r.Len() != 0 {
@@ -273,7 +273,7 @@ func TestPendingCreateRegistry_CancelReleasesGate(t *testing.T) {
 		{
 			name: "UnregisterByAsyncId",
 			cancel: func(r *PendingCreateRegistry, p *PendingCreate) {
-				r.UnregisterByAsyncId(p.AsyncId)
+				r.UnregisterByAsyncId(p.ConnID, p.AsyncId)
 			},
 		},
 		{

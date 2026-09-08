@@ -113,10 +113,10 @@ func TestNotifyRegistry_Register_CrossConnectionMessageIDNoEvict(t *testing.T) {
 	mustRegister(t, r, b)
 
 	// Both must still be resolvable — B's Register must NOT have evicted A.
-	if got := r.UnregisterByAsyncId(3600); got == nil || got.AsyncId != 3600 {
+	if got := r.UnregisterByAsyncId(1, 3600); got == nil || got.AsyncId != 3600 {
 		t.Fatalf("A (asyncId=3600) missing after B registered with same MessageID on a different ConnID")
 	}
-	if got := r.UnregisterByAsyncId(3605); got == nil || got.AsyncId != 3605 {
+	if got := r.UnregisterByAsyncId(2, 3605); got == nil || got.AsyncId != 3605 {
 		t.Fatalf("B (asyncId=3605) missing")
 	}
 }
@@ -198,6 +198,7 @@ func TestNotifyRegistry_UnregisterByAsyncId(t *testing.T) {
 	notify := &PendingNotify{
 		FileID:           [16]byte{2},
 		SessionID:        100,
+		ConnID:           1,
 		MessageID:        50,
 		AsyncId:          777,
 		WatchPath:        "/dir2",
@@ -207,7 +208,7 @@ func TestNotifyRegistry_UnregisterByAsyncId(t *testing.T) {
 	mustRegister(t, r, notify)
 
 	// Unregister by async ID
-	removed := r.UnregisterByAsyncId(777)
+	removed := r.UnregisterByAsyncId(1, 777)
 	if removed == nil {
 		t.Fatal("expected non-nil removed notify")
 	}
@@ -216,7 +217,7 @@ func TestNotifyRegistry_UnregisterByAsyncId(t *testing.T) {
 	}
 
 	// Should not find it again
-	removed = r.UnregisterByAsyncId(777)
+	removed = r.UnregisterByAsyncId(1, 777)
 	if removed != nil {
 		t.Error("expected nil on second unregister")
 	}
@@ -1334,7 +1335,7 @@ func TestArmedBuffer_OverflowsAfterCancelWithNoLiveWatcher(t *testing.T) {
 
 	// Client cancels the initial notify (smbtorture does this to "set up
 	// the buffer"). Pending entry is removed but the handle stays armed.
-	if got := r.UnregisterByAsyncId(100); got == nil {
+	if got := r.UnregisterByAsyncId(1, 100); got == nil {
 		t.Fatalf("expected to unregister live watcher on cancel")
 	}
 
@@ -1387,7 +1388,7 @@ func TestArmedBuffer_ResetClearsOverflowForNextWindow(t *testing.T) {
 		AsyncCallback:    func(_, _, _ uint64, _ *ChangeNotifyResponse) error { return nil },
 		OnOverflow:       func(_ [16]byte) { atomic.AddInt32(&overflowFireCount, 1) },
 	})
-	if got := r.UnregisterByAsyncId(200); got == nil {
+	if got := r.UnregisterByAsyncId(1, 200); got == nil {
 		t.Fatalf("cancel")
 	}
 
@@ -1443,7 +1444,7 @@ func TestArmedBuffer_ScopedByShareAndPath(t *testing.T) {
 		AsyncCallback:    func(_, _, _ uint64, _ *ChangeNotifyResponse) error { return nil },
 		OnOverflow:       func(_ [16]byte) { atomic.AddInt32(&overflowFireCount, 1) },
 	})
-	if got := r.UnregisterByAsyncId(300); got == nil {
+	if got := r.UnregisterByAsyncId(1, 300); got == nil {
 		t.Fatalf("cancel")
 	}
 
@@ -1540,7 +1541,7 @@ func TestArmedBuffer_RecursiveWatcherChargesRelativePath(t *testing.T) {
 		AsyncCallback:    func(_, _, _ uint64, _ *ChangeNotifyResponse) error { return nil },
 		OnOverflow:       func(_ [16]byte) { atomic.AddInt32(&overflowFireCount, 1) },
 	})
-	if r.UnregisterByAsyncId(500) == nil {
+	if r.UnregisterByAsyncId(1, 500) == nil {
 		t.Fatalf("cancel pending watcher to leave handle armed-but-unwatched")
 	}
 
@@ -2236,7 +2237,7 @@ func TestArmedBuffer_ReplayDeliversBufferedEventsOnReregister(t *testing.T) {
 		AsyncCallback:   func(uint64, uint64, uint64, *ChangeNotifyResponse) error { return nil },
 	}
 	mustRegister(t, r, first)
-	if got := r.UnregisterByAsyncId(100); got == nil {
+	if got := r.UnregisterByAsyncId(1, 100); got == nil {
 		t.Fatalf("expected to unregister first watcher")
 	}
 
@@ -2299,7 +2300,7 @@ func TestArmedBuffer_CancelClearsBufferedEvents(t *testing.T) {
 	mustRegister(t, r, first)
 	// Cancel via UnregisterByAsyncId (the CANCEL path in stub_handlers calls
 	// this and then ClearBufferedEvents).
-	if got := r.UnregisterByAsyncId(100); got == nil {
+	if got := r.UnregisterByAsyncId(1, 100); got == nil {
 		t.Fatalf("expected to unregister")
 	}
 
@@ -2353,7 +2354,7 @@ func TestArmedBuffer_OverflowClearsBufferedEvents(t *testing.T) {
 		AsyncCallback:   func(uint64, uint64, uint64, *ChangeNotifyResponse) error { return nil },
 	}
 	mustRegister(t, r, first)
-	if got := r.UnregisterByAsyncId(100); got == nil {
+	if got := r.UnregisterByAsyncId(1, 100); got == nil {
 		t.Fatalf("expected to unregister")
 	}
 
@@ -2812,7 +2813,7 @@ func TestArmedBuffer_RenameDoesNotDoubleChargeAncestorWatcher(t *testing.T) {
 	}
 	mustRegister(t, r, first)
 	// Cancel to leave handle armed-but-unwatched.
-	if r.UnregisterByAsyncId(100) == nil {
+	if r.UnregisterByAsyncId(1, 100) == nil {
 		t.Fatal("expected to unregister")
 	}
 

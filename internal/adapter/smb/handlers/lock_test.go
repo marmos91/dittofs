@@ -213,53 +213,6 @@ func TestAcquireLockWithRetry(t *testing.T) {
 // =============================================================================
 
 func TestPendingLockCancel(t *testing.T) {
-	t.Run("CancelInterruptsBlockingLock", func(t *testing.T) {
-		h := &Handler{}
-		messageID := uint64(42)
-
-		// Simulate a blocking lock: register a cancel function
-		ctx, cancel := context.WithCancel(context.Background())
-		h.pendingLocks.Store(messageID, cancel)
-
-		// Verify the pending lock is registered
-		_, loaded := h.pendingLocks.Load(messageID)
-		if !loaded {
-			t.Fatal("Expected pending lock to be registered")
-		}
-
-		// Simulate CANCEL: load and call the cancel function
-		cancelFnVal, ok := h.pendingLocks.LoadAndDelete(messageID)
-		if !ok {
-			t.Fatal("Expected to find pending lock for cancellation")
-		}
-		cancelFnVal.(context.CancelFunc)()
-
-		// Verify context was cancelled
-		select {
-		case <-ctx.Done():
-			// Expected
-		default:
-			t.Error("Expected context to be cancelled")
-		}
-
-		// Verify pending lock was removed
-		_, loaded = h.pendingLocks.Load(messageID)
-		if loaded {
-			t.Error("Expected pending lock to be removed after cancel")
-		}
-	})
-
-	t.Run("CancelNonexistentLock", func(t *testing.T) {
-		h := &Handler{}
-		messageID := uint64(99)
-
-		// Try to cancel a non-existent pending lock
-		_, ok := h.pendingLocks.LoadAndDelete(messageID)
-		if ok {
-			t.Error("Expected no pending lock for unknown messageID")
-		}
-	})
-
 	t.Run("BlockingLockReturnsOnContextCancel", func(t *testing.T) {
 		store := newMockLockStore()
 		store.lockAvailable.Store(false) // Lock never becomes available

@@ -248,7 +248,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	if h.NotifyRegistry != nil {
 		var cancelled *PendingNotify
 		if ctx.RequestAsyncId != 0 {
-			cancelled = h.NotifyRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)
+			cancelled = h.NotifyRegistry.UnregisterByAsyncId(ctx.ConnID, ctx.RequestAsyncId)
 		} else {
 			cancelled = h.NotifyRegistry.CancelByMessageID(ctx.ConnID, ctx.MessageID)
 		}
@@ -310,9 +310,9 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	if h.PipeReadRegistry != nil {
 		var pendingRead *PendingPipeRead
 		if ctx.RequestAsyncId != 0 {
-			pendingRead = h.PipeReadRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)
+			pendingRead = h.PipeReadRegistry.UnregisterByAsyncId(ctx.ConnID, ctx.RequestAsyncId)
 		} else {
-			pendingRead = h.PipeReadRegistry.UnregisterByMessageID(ctx.MessageID)
+			pendingRead = h.PipeReadRegistry.UnregisterByMessageID(ctx.ConnID, ctx.MessageID)
 		}
 		if pendingRead != nil {
 			cancelledSomething = true
@@ -350,7 +350,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	if h.PendingLockRegistry != nil {
 		var parked *PendingLock
 		if ctx.RequestAsyncId != 0 {
-			parked = h.PendingLockRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)
+			parked = h.PendingLockRegistry.UnregisterByAsyncId(ctx.ConnID, ctx.RequestAsyncId)
 		} else {
 			parked = h.PendingLockRegistry.UnregisterByMessageID(ctx.ConnID, ctx.MessageID)
 		}
@@ -373,7 +373,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 			}
 		}
 	}
-	if cancelFn, ok := h.pendingLocks.LoadAndDelete(ctx.MessageID); ok {
+	if cancelFn, ok := h.pendingLocks.LoadAndDelete(lockMsgKey{ConnID: ctx.ConnID, MessageID: ctx.MessageID}); ok {
 		cancelledSomething = true
 		cancelFn.(context.CancelFunc)()
 		logger.Debug("CANCEL: cancelled inline blocking LOCK",
@@ -386,7 +386,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	if h.PendingCreateRegistry != nil {
 		var parked *PendingCreate
 		if ctx.RequestAsyncId != 0 {
-			parked = h.PendingCreateRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)
+			parked = h.PendingCreateRegistry.UnregisterByAsyncId(ctx.ConnID, ctx.RequestAsyncId)
 		} else {
 			parked = h.PendingCreateRegistry.UnregisterByMessageID(ctx.ConnID, ctx.MessageID)
 		}
