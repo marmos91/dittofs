@@ -264,6 +264,8 @@ func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (freed int64, err erro
 					fileOff: fi.ivs[k].fileOff,
 					length:  fi.ivs[k].length,
 					version: fi.ivs[k].version,
+					// Copied off the interval being replaced, so it dates the content.
+					provenance: coldFromData,
 				})
 			}
 		}

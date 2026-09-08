@@ -3,6 +3,7 @@ package journal
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -486,5 +487,101 @@ func TestSeedColdBatchIsDurableAndMatchesPerFileSeeding(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("batched seed recorded %v, seeding the same files one at a time recorded %v", got, want)
+	}
+}
+
+// TestColdEntryProvenanceRoundTrips pins that the byte survives the encode and
+// that a pre-provenance entry still loads, as coldFromUnknown. The two shapes
+// differ in header size, so a decoder that assumed one would read the other's
+// FileID out of its CRC.
+func TestColdEntryProvenanceRoundTrips(t *testing.T) {
+	for _, p := range []coldProvenance{coldFromUnknown, coldFromData, coldFromScan} {
+		want := coldEntry{id: FileID("f"), fileOff: 4096, length: 1024, version: 7, provenance: p}
+		buf := encodeColdEntry(want)
+		if buf[0] != coldMagic {
+			t.Fatalf("provenance %s: encoded magic 0x%02x, want the current 0x%02x", p, buf[0], coldMagic)
+		}
+		got, n, err := decodeColdEntry(buf)
+		if err != nil {
+			t.Fatalf("provenance %s: decode: %v", p, err)
+		}
+		if n != len(buf) {
+			t.Fatalf("provenance %s: consumed %d bytes of %d", p, n, len(buf))
+		}
+		if got != want {
+			t.Fatalf("provenance %s: round-tripped to %+v, want %+v", p, got, want)
+		}
+	}
+
+	// A legacy entry, framed the way the log held them before provenance: no
+	// provenance byte, so CRC at [27,31) and the FileID at 31.
+	id := []byte("legacy")
+	legacy := make([]byte, coldHeaderSizeLegacy+len(id))
+	legacy[0] = coldMagicLegacy
+	binary.LittleEndian.PutUint16(legacy[1:3], uint16(len(id)))
+	binary.LittleEndian.PutUint64(legacy[3:11], uint64(8192))
+	binary.LittleEndian.PutUint64(legacy[11:19], uint64(2048))
+	binary.LittleEndian.PutUint64(legacy[19:27], 11)
+	copy(legacy[coldHeaderSizeLegacy:], id)
+	binary.LittleEndian.PutUint32(legacy[27:31], coldEntryCRC(legacy[:27], id))
+
+	got, n, err := decodeColdEntry(legacy)
+	if err != nil {
+		t.Fatalf("decode legacy entry: %v", err)
+	}
+	if n != len(legacy) {
+		t.Fatalf("legacy entry consumed %d bytes of %d", n, len(legacy))
+	}
+	want := coldEntry{id: FileID("legacy"), fileOff: 8192, length: 2048, version: 11, provenance: coldFromUnknown}
+	if got != want {
+		t.Fatalf("legacy entry decoded to %+v, want %+v", got, want)
+	}
+}
+
+// TestLiveColdEntriesKeepsProvenance is the regression for the subtle half of
+// recording provenance: compaction rewrites the log from the interval index, not
+// from the log, so an index that dropped the field would quietly rewrite every
+// entry as coldFromUnknown and undo what the log records.
+func TestLiveColdEntriesKeepsProvenance(t *testing.T) {
+	fi := &fileIndex{}
+	fi.insert(interval{fileOff: 0, length: 512, version: 3, synced: true, cold: true, provenance: coldFromScan})
+	fi.insert(interval{fileOff: 4096, length: 512, version: 4, synced: true, cold: true, provenance: coldFromData})
+
+	out := liveColdEntries([]map[FileID]*fileIndex{{FileID("f"): fi}})
+	if len(out) != 2 {
+		t.Fatalf("liveColdEntries returned %d entries, want 2: %+v", len(out), out)
+	}
+	byOff := map[int64]coldProvenance{}
+	for _, e := range out {
+		byOff[e.fileOff] = e.provenance
+	}
+	if byOff[0] != coldFromScan {
+		t.Errorf("seeded interval came back as %s, want scan", byOff[0])
+	}
+	if byOff[4096] != coldFromData {
+		t.Errorf("evicted interval came back as %s, want data", byOff[4096])
+	}
+}
+
+// TestClampKeepsProvenance pins provenance across a trim. A cold interval is
+// clamped whenever a neighbouring write punches part of it out, and compaction
+// rebuilds the log from the index, so a clamp that dropped the field would put
+// coldFromUnknown on disk for a range whose writer was known.
+func TestClampKeepsProvenance(t *testing.T) {
+	fi := &fileIndex{}
+	fi.insert(interval{fileOff: 0, length: 4096, version: 3, synced: true, cold: true, provenance: coldFromScan})
+
+	// A later warm write over the middle splits the cold interval in two, so
+	// both survivors come from clamp.
+	fi.insert(interval{fileOff: 1024, length: 1024, version: 4, synced: false})
+
+	out := liveColdEntries([]map[FileID]*fileIndex{{FileID("f"): fi}})
+	if len(out) != 2 {
+		t.Fatalf("expected the cold interval to survive as two fragments, got %d: %+v", len(out), out)
+	}
+	for _, e := range out {
+		if e.provenance != coldFromScan {
+			t.Errorf("fragment at %d came back as %s, want scan", e.fileOff, e.provenance)
+		}
 	}
 }

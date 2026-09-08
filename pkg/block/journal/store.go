@@ -25,6 +25,15 @@ type BlockID string
 // errClosed is returned by every operation attempted on a closed Store.
 var errClosed = errors.New("journal: store closed")
 
+// ErrColdProvenanceAmbiguous is returned by RestoreToVersion when a
+// manifest-seeded cold entry covers a range that a later write overwrote and
+// synced past the requested version. The entry's version dates the scan that
+// found the range remote-durable, not the bytes, and the remote copy it points
+// at is now that later content — so neither serving it nor dropping it answers
+// for the requested version. A seeded entry on its own is not ambiguous and
+// does not produce this: see the fold in RestoreToVersion.
+var ErrColdProvenanceAmbiguous = errors.New("journal: cold entry provenance cannot date the content")
+
 // minSegmentSize is the floor for Config.SegmentSize. A segment must comfortably
 // hold its header plus real records; below this a single write could exceed the
 // cap. 1 MiB clears the largest protocol write plus framing with wide margin.
@@ -590,6 +599,8 @@ func (s *Store) SeedCold(_ context.Context, id FileID, extents [][2]int64) error
 			version: e.version,
 			synced:  true,
 			cold:    true,
+			// Carried so a compaction can write it back out (liveColdEntries).
+			provenance: e.provenance,
 		})
 	}
 	return nil
@@ -606,7 +617,10 @@ func (s *Store) planColdSeed(sh *shard, id FileID, extents [][2]int64) []coldEnt
 			continue
 		}
 		if fi == nil { // unknown file: the whole extent is a hole
-			entries = append(entries, coldEntry{id: id, fileOff: e[0], length: e[1], version: s.nextVersion()})
+			entries = append(entries, coldEntry{
+				id: id, fileOff: e[0], length: e[1],
+				version: s.nextVersion(), provenance: coldFromScan,
+			})
 			continue
 		}
 		for _, p := range fi.plan(e[0], e[1]) {
@@ -618,6 +632,8 @@ func (s *Store) planColdSeed(sh *shard, id FileID, extents [][2]int64) []coldEnt
 				fileOff: e[0] + p.dstStart,
 				length:  p.dstEnd - p.dstStart,
 				version: s.nextVersion(),
+				// Minted here, so it dates this scan and not the content.
+				provenance: coldFromScan,
 			})
 		}
 	}
@@ -685,6 +701,8 @@ func (s *Store) SeedColdBatch(_ context.Context, seeds []ColdSeed) error {
 			version: e.version,
 			synced:  true,
 			cold:    true,
+			// Carried so a compaction can write it back out (liveColdEntries).
+			provenance: e.provenance,
 		})
 		sh.mu.Unlock()
 	}
@@ -1173,6 +1191,16 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 	vIndex := map[FileID]*fileIndex{}
 	tombstones := map[FileID]uint64{}
 	truncations := map[FileID]truncMark{}
+	// postV collects the *synced* ranges written above the watermark, which
+	// phase 1 otherwise only skips. A manifest-seeded cold entry needs them: the
+	// seed says the range is remote-durable but dates only the scan, so it is
+	// the remote's current copy that gets served. A post-V write that reached
+	// the remote replaced that copy, which makes the entry point at content from
+	// after V. An unsynced post-V write does not: its bytes never left the local
+	// tier, the restore is about to drop them, and the remote still holds what
+	// the seed described. Only the synced ones are collected, because only they
+	// make the entry ambiguous.
+	postV := map[FileID][]interval{}
 	for _, sh := range s.shards {
 		sh.mu.Lock()
 		segs := make([]*segmentMeta, 0, len(sh.sealed)+1)
@@ -1188,7 +1216,18 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 			recs, _ := scanValidRecords(seg.fd, s.cfg.SegmentSize, s.cfg.SegmentSize)
 			for _, rec := range recs {
 				if rec.header.Version > v {
-					continue // above the watermark: belongs to a post-snapshot state
+					// Above the watermark: belongs to a post-snapshot state. Keep
+					// the data writes' ranges for the cold fold below.
+					if rec.header.Flags&(flagTombstone|flagTruncate) == 0 &&
+						rec.header.Flags&flagSynced != 0 && rec.header.PayloadLen > 0 {
+						fid := FileID(rec.fileID)
+						postV[fid] = append(postV[fid], interval{
+							fileOff: int64(rec.header.FileOffset),
+							length:  int64(rec.header.PayloadLen),
+							version: rec.header.Version,
+						})
+					}
+					continue
 				}
 				fid := FileID(rec.fileID)
 				switch {
@@ -1231,31 +1270,48 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 	// own tail back on a failed write, so a live store's log ends intact.
 	//
 	// The version test below asks whether the content existed at V, and only one
-	// of the log's two writers records something that answers it. Eviction copies
-	// the version off the interval it replaces, so its entry still dates the data.
-	// A seed mints a fresh one, dating the scan that noticed the range was
-	// remote-durable: that version exists so a racing Delete sweeps below the
-	// entry, and says nothing about when the bytes were written. An entry does not
-	// record which writer made it, so the two cannot be told apart here.
+	// of the log's two writer kinds records something that answers it. Eviction
+	// and invalidation copy the version off the interval they replace, so their
+	// entries still date the data. A manifest seed mints a fresh one, dating the
+	// scan that noticed the range was remote-durable: that version exists so a
+	// racing Delete sweeps below the entry, and says nothing about when the bytes
+	// were written. Each entry records which kind wrote it, so the two are told
+	// apart here rather than assumed.
 	//
-	// Eviction is the only writer that reaches a store this runs against — both
-	// manifest-seed callers require the share to have a remote, and this method
-	// runs only on a restore's local-only branch. The exception is a store seeded
-	// while it had a remote that was later detached.
+	// A seed-dated entry is refused instead of guessed at, because both guesses
+	// are silently wrong: skipping it leaves the hole this fold exists to
+	// prevent, and including it resurrects whatever the manifest holds *now* for
+	// a range that may have been written after V. A restore that cannot answer
+	// for a range must say so rather than return bytes it cannot vouch for.
 	//
-	// ponytail: on that store a seeded entry is skipped as post-V, which is the
-	// same lost cold range this fold exists to prevent. The entry alone cannot do
-	// better — including it unconditionally would instead resurrect content written
-	// after V, because a seed describes the file as the manifest currently has it.
-	// Closing it needs the entry to record its writer, a change to a durable
-	// on-disk format that wants its own migration.
+	// An entry from before provenance was recorded reads as coldFromUnknown and
+	// keeps the version test. That is the pre-existing behaviour, and it is right
+	// for the overwhelming majority of such entries: eviction is the only writer
+	// that reaches a store this method runs against, because both seed callers
+	// require the share to have a remote and this runs on a restore's local-only
+	// branch. The residual case is a store seeded while it had a remote that was
+	// later detached, whose legacy entries cannot be distinguished — those logs
+	// re-stamp themselves as soon as this build appends or compacts.
 	coldEntries, _, cerr := loadCold(s.dir)
 	if cerr != nil {
 		return fmt.Errorf("journal: restore: load cold log: %w", cerr)
 	}
 	for _, e := range coldEntries {
-		if e.length <= 0 || e.version > v {
+		if e.length <= 0 {
 			continue
+		}
+		if e.version > v {
+			continue
+		}
+		if e.provenance == coldFromScan {
+			if w, ok := overlappingWrite(postV[e.id], e.fileOff, e.length); ok {
+				return fmt.Errorf("%w: file %s range [%d,%d) is cold from a manifest seed at version %d, "+
+					"and version %d wrote [%d,%d) over it and reached the remote after the requested version %d — "+
+					"the remote copy the entry points at is that later content, and the seed's version dates the "+
+					"scan, not the bytes",
+					ErrColdProvenanceAmbiguous, e.id, e.fileOff, e.fileOff+e.length, e.version,
+					w.version, w.fileOff, w.end(), v)
+			}
 		}
 		fi := vIndex[e.id]
 		if fi == nil {
@@ -1268,6 +1324,8 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 			version: e.version,
 			synced:  true,
 			cold:    true,
+			// Carried so a compaction can write it back out (liveColdEntries).
+			provenance: e.provenance,
 		})
 	}
 
@@ -1465,6 +1523,9 @@ func (s *Store) Invalidate(_ context.Context, id FileID, off, length int64) erro
 			fileOff: iv.fileOff,
 			length:  iv.length,
 			version: iv.version,
+			// Copied off the interval whose local bytes just failed checksum, so
+			// it dates the content exactly as eviction's does.
+			provenance: coldFromData,
 		})
 	}
 	if len(entries) == 0 {

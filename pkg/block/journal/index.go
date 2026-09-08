@@ -43,6 +43,12 @@ type interval struct {
 	// local bytes have been evicted. Distinct from an absent interval (a true
 	// hole): a cold range is served by fetching from the remote store.
 	cold bool
+	// provenance mirrors the cold log entry this interval was loaded from, and
+	// is meaningless unless cold. It rides the index because compaction rebuilds
+	// the log from the index (liveColdEntries): dropping it here would rewrite
+	// every entry as coldFromUnknown at the first compaction, silently undoing
+	// what the log records.
+	provenance coldProvenance
 }
 
 func (iv interval) end() int64 { return iv.fileOff + iv.length }
@@ -59,6 +65,10 @@ func (iv interval) clamp(lo, hi int64) interval {
 		recOff:  iv.recOff,
 		synced:  iv.synced,
 		cold:    iv.cold,
+		// Trimming a cold interval must not forget which writer recorded it:
+		// compaction rebuilds the log from the index, so a dropped provenance
+		// here comes back as coldFromUnknown on disk.
+		provenance: iv.provenance,
 		loc: SegmentLocation{
 			SegmentID: iv.loc.SegmentID,
 			Offset:    iv.loc.Offset + frontTrim,
@@ -546,4 +556,18 @@ func (fi *fileIndex) hydratable(off, n int64, mark uint64) [][2]int64 {
 // coversWhole reports whether ranges is exactly the single span [off, off+n).
 func coversWhole(ranges [][2]int64, off, n int64) bool {
 	return len(ranges) == 1 && ranges[0][0] == off && ranges[0][1] == off+n
+}
+
+// overlappingWrite reports the first interval in writes that overlaps
+// [off, off+length), if any. Used by the restore's cold fold, where writes are
+// the post-watermark records that reached the remote: a handful per file at
+// most, so a linear scan is cheaper than sorting them.
+func overlappingWrite(writes []interval, off, length int64) (interval, bool) {
+	end := off + length
+	for _, w := range writes {
+		if w.fileOff < end && w.end() > off {
+			return w, true
+		}
+	}
+	return interval{}, false
 }
