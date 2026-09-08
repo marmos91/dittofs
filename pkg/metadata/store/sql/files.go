@@ -528,3 +528,48 @@ func (c *Core) DeleteFile(ctx context.Context, handle metadata.FileHandle) error
 
 	return nil
 }
+
+// ============================================================================
+// Object-ID reads
+// ============================================================================
+
+// FindByObjectID looks up a file by its Merkle-root ObjectID and returns the
+// canonical ChunkRef list of the matching row. Reports (nil, nil) on a miss,
+// which a zero-valued objectID is by definition — it addresses no content, so
+// there is nothing to ask the database.
+func (c *Core) FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.ChunkRef, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if objectID.IsZero() {
+		return nil, nil
+	}
+
+	var fileID uuid.UUID
+	err := c.X.QueryRow(ctx, c.D.Files().FindByObjectID, objectID[:]).Scan(&fileID)
+	if c.D.IsNoRows(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, c.D.MapError(err, "FindByObjectID", objectID.String())
+	}
+
+	return c.LoadFileChunkRefs(ctx, fileID)
+}
+
+// CountObjectIDIndexRows implements the storetest.ObjectIDIndexAccessor
+// optional capability, reporting how many inodes are indexed under objectID.
+//
+// Test-only — never call it from production code. The ConcurrentQuiesceRace
+// scenario uses it to assert exactly one row survives first-committer-wins
+// resolution. Zero-valued input short-circuits the way FindByObjectID does.
+func (c *Core) CountObjectIDIndexRows(ctx context.Context, objectID block.ObjectID) (int, error) {
+	if objectID.IsZero() {
+		return 0, nil
+	}
+	var n int
+	if err := c.X.QueryRow(ctx, c.D.Files().CountByObjectID, objectID[:]).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count inodes.object_id: %w", err)
+	}
+	return n, nil
+}

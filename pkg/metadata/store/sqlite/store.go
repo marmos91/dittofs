@@ -36,12 +36,16 @@ const sqliteDriverName = "sqlite"
 // hard-link model (parent_child_map + nlink), and object_id dedup index are all
 // preserved, with SQL adapted to the SQLite dialect.
 type SQLiteMetadataStore struct {
-	// Core carries the executor and dialect the shared SQL bodies run on, and
-	// promotes those bodies onto this type so they exist once for both
-	// backends. Embedded by pointer: the transaction embeds its own Core over
-	// the open transaction, and nothing is shared between the two but the
-	// dialect.
-	*storesql.Core
+	// PoolPath carries the executor and dialect the shared SQL bodies run on,
+	// and promotes those bodies onto this type so they exist once for both
+	// backends. It holds the Core the transaction-free calls run against; the
+	// transaction embeds its own Core over the open transaction, and nothing is
+	// shared between the two but the dialect.
+	//
+	// Embedded here rather than embedding Core directly so the multi-statement
+	// writes PoolPath declares shadow their single-statement Core namesakes;
+	// see its type doc for why the depth matters.
+	storesql.PoolPath
 
 	// db is the database/sql handle over the single SQLite file. SQLite is a
 	// single-writer engine; the pool is bounded to keep contention predictable.
@@ -163,8 +167,14 @@ func NewSQLiteMetadataStore(
 		cancel:       cancel,
 		quota:        basestore.NewQuotaCache(),
 	}
-	// The shared SQL bodies run on the pool for store-level calls.
-	store.Core = &storesql.Core{X: store.conn(), D: sqliteDialect, Caps: store.currentCapabilities, Log: log}
+	// The shared SQL bodies run on the pool for store-level calls. T is the
+	// store itself, so the writes that span several statements can open a
+	// transaction rather than autocommitting piecemeal on the pool.
+	store.PoolPath = storesql.PoolPath{
+		Core:       &storesql.Core{X: store.conn(), D: sqliteDialect, Caps: store.currentCapabilities, Log: log},
+		T:          store,
+		ShareCache: &store.shareCache,
+	}
 
 	// The substores derive only from db, which is never reassigned, so bind
 	// them once here.

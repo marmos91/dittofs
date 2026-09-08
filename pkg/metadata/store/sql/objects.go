@@ -199,3 +199,15 @@ func (c *Core) InjectCorruptHashRow(ctx context.Context, blockID string, badHash
 	}
 	return nil
 }
+
+// DecrementRefCountAndReapMany runs the batched decrement + reap on the
+// executor this Core holds.
+//
+// Reached through a transaction's Core the two statements share the caller's
+// transaction, so a later rollback undoes the whole set — which is the point,
+// and how every caller uses it. On a store's Core they would autocommit
+// separately and survive that rollback, so PoolPath overrides this rather than
+// leaving the unsafe version reachable.
+func (c *Core) DecrementRefCountAndReapMany(ctx context.Context, ids []string) error {
+	return DecrementAndReapMany(ctx, c.X, c.D, ids)
+}
