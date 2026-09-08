@@ -1156,6 +1156,11 @@ func (r *Runtime) SetExportAuthPolicyForTesting(name string, allowAuthSys, requi
 	return r.sharesSvc.SetExportAuthPolicyForTesting(name, allowAuthSys, requireKerberos)
 }
 
+// SetRootHandleForTesting sets a registered share's root filehandle. Test-only.
+func (r *Runtime) SetRootHandleForTesting(name string, handle metadata.FileHandle) error {
+	return r.sharesSvc.SetRootHandleForTesting(name, handle)
+}
+
 // SetMinKerberosLevelForTesting overrides a registered share's MinKerberosLevel
 // GSS protection floor ("", "krb5", "krb5i", "krb5p"). Test-only.
 func (r *Runtime) SetMinKerberosLevelForTesting(name, minLevel string) error {
