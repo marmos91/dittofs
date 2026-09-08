@@ -1621,11 +1621,8 @@ func TestGrantDelegation_DeniedWhileForeignByteRangeLockHeld(t *testing.T) {
 	}
 
 	// The client, undelegated, sends the LOCK — which the NLM lock denies.
-	res, err := sm.LockNew(context.Background(),
-		clientID, []byte("nfs-owner"), 1,
-		openStateid, openSeqid,
-		fileHandle, types.WRITE_LT, 0, 100, false,
-	)
+	res, err := sm.LockNew(context.Background(), clientID, []byte("nfs-owner"), 1, openStateid, openSeqid, fileHandle, types.WRITE_LT, 0, 100, false, 0)
+
 	if err != nil {
 		t.Fatalf("LockNew returned error: %v", err)
 	}

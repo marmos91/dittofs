@@ -85,7 +85,7 @@ func TestLeaseExpiration_CleansUpAllState(t *testing.T) {
 	}
 
 	// Confirm the open
-	_, err = sm.ConfirmOpen(&openResult.Stateid, 2)
+	_, err = sm.ConfirmOpen(&openResult.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestImplicitRenewal_ViaValidateStateid(t *testing.T) {
 	}
 
 	// Confirm the open
-	confirmedRes, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+	confirmedRes, err := sm.ConfirmOpen(&openResult.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestLeaseExpired_ReturnsError(t *testing.T) {
 	}
 
 	// Confirm the open
-	confirmedRes, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+	confirmedRes, err := sm.ConfirmOpen(&openResult.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}

@@ -22,15 +22,12 @@ func newLockedFile(t *testing.T, sm *StateManager, clientID uint64, fh []byte) t
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
 	}
-	confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+	confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
-	lockResult, err := sm.LockNew(context.Background(),
-		clientID, []byte("lock-owner"), 1,
-		&confirmed.Stateid, 3,
-		fh, types.WRITE_LT, 0, 100, false,
-	)
+	lockResult, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner"), 1, &confirmed.Stateid, 3, fh, types.WRITE_LT, 0, 100, false, 0)
+
 	if err != nil {
 		t.Fatalf("LockNew: %v", err)
 	}
@@ -147,7 +144,7 @@ func TestFreeStateid_CrossClientOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
 	}
-	if _, err := sm.ConfirmOpen(&openResult.Stateid, 2); err != nil {
+	if _, err := sm.ConfirmOpen(&openResult.Stateid, 2, 0); err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
 
@@ -218,7 +215,7 @@ func TestLockExisting_V41Seqid0(t *testing.T) {
 	// protection). Extend the lock with a second byte range via LockExisting.
 	v41Stateid := lockStateid
 	v41Stateid.Seqid = 0
-	result, err := sm.LockExisting(context.Background(), &v41Stateid, 0, fh, types.WRITE_LT, 200, 100, false)
+	result, err := sm.LockExisting(context.Background(), &v41Stateid, 0, fh, types.WRITE_LT, 200, 100, false, 0)
 	if err != nil {
 		t.Fatalf("LockExisting with v4.1 stateid seqid=0: %v", err)
 	}
@@ -244,14 +241,14 @@ func TestUnlockFile_V41Seqid0(t *testing.T) {
 	// the LOCKU below is unambiguously after a seqid increment.
 	v41Lock := lockStateid
 	v41Lock.Seqid = 0
-	if _, err := sm.LockExisting(context.Background(), &v41Lock, 0, fh, types.WRITE_LT, 200, 100, false); err != nil {
+	if _, err := sm.LockExisting(context.Background(), &v41Lock, 0, fh, types.WRITE_LT, 200, 100, false, 0); err != nil {
 		t.Fatalf("LockExisting setup: %v", err)
 	}
 
 	// v4.1 LOCKU: stateid seqid=0, owner seqid=0.
 	unlockStateid := lockStateid
 	unlockStateid.Seqid = 0
-	if _, err := sm.UnlockFile(&unlockStateid, 0, types.WRITE_LT, 0, 100); err != nil {
+	if _, err := sm.UnlockFile(&unlockStateid, 0, types.WRITE_LT, 0, 100, 0); err != nil {
 		t.Fatalf("UnlockFile with v4.1 stateid seqid=0: %v", err)
 	}
 }
@@ -344,7 +341,7 @@ func TestValidateStateid_CrossClient(t *testing.T) {
 		if err != nil {
 			t.Fatalf("OpenFile: %v", err)
 		}
-		confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+		confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2, 0)
 		if err != nil {
 			t.Fatalf("ConfirmOpen: %v", err)
 		}
