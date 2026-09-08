@@ -53,42 +53,40 @@ func encodeDestroyClientidArgs(t *testing.T, clientID uint64) *bytes.Reader {
 	return bytes.NewReader(buf.Bytes())
 }
 
-// TestHandleDestroyClientID_CrossClientRejected is the core security regression
-// test: a request whose identity resolves to client A must NOT be able to
-// destroy client B's client ID. Before the fix DESTROY_CLIENTID performed no
-// ownership check, so any peer operating its own session could tear down a
-// victim's state by targeting the victim's 64-bit client ID. The server must
-// now return NFS4ERR_NOT_SAME and leave the victim intact.
-func TestHandleDestroyClientID_CrossClientRejected(t *testing.T) {
+// TestHandleDestroyClientID_CrossClientTargetPermitted pins the behaviour
+// RFC 8881 Section 18.50.3 requires when the client ID derived from the
+// preceding SEQUENCE is not the one being destroyed: the operation proceeds.
+// The target here holds no session and no state, so it is destroyed.
+func TestHandleDestroyClientID_CrossClientTargetPermitted(t *testing.T) {
 	sm := state.NewStateManager(90 * time.Second)
 	d := &Deps{StateManager: sm}
 
-	_, attackerSession := makeV41Client(t, sm, "attacker")
-	victimClientID, _ := makeV41Client(t, sm, "victim")
+	_, requesterSession := makeV41Client(t, sm, "requester")
 
-	ctx := &types.CompoundContext{Context: context.Background(), ClientAddr: "10.0.0.9:1"}
-	// The attacker identifies via its own SEQUENCE (v41ctx points at its session)
-	// but targets the victim's client ID.
-	v41ctx := &types.V41RequestContext{SessionID: attackerSession}
-
-	res := HandleDestroyClientID(d, ctx, v41ctx, encodeDestroyClientidArgs(t, victimClientID))
-	if res.Status != types.NFS4ERR_NOT_SAME {
-		t.Fatalf("cross-client DESTROY_CLIENTID: status = %d, want NFS4ERR_NOT_SAME (%d)",
-			res.Status, types.NFS4ERR_NOT_SAME)
+	var verifier [8]byte
+	copy(verifier[:], "verify01")
+	target, err := sm.ExchangeID([]byte("destroy-clientid-test-target"), verifier, 0, nil, "10.0.0.2:12345")
+	if err != nil {
+		t.Fatalf("ExchangeID(target): %v", err)
 	}
 
-	// The victim's client record must still exist -- it was NOT destroyed.
-	if !v41ClientExists(sm, victimClientID) {
-		t.Fatal("victim client was destroyed despite ownership mismatch")
+	ctx := &types.CompoundContext{Context: context.Background(), ClientAddr: "10.0.0.9:1"}
+	v41ctx := &types.V41RequestContext{SessionID: requesterSession}
+
+	res := HandleDestroyClientID(d, ctx, v41ctx, encodeDestroyClientidArgs(t, target.ClientID))
+	if res.Status != types.NFS4_OK {
+		t.Fatalf("cross-client DESTROY_CLIENTID: status = %d, want NFS4_OK", res.Status)
+	}
+	if v41ClientExists(sm, target.ClientID) {
+		t.Fatal("target client still exists after a successful DESTROY_CLIENTID")
 	}
 }
 
-// TestHandleDestroyClientID_OwnerPassesOwnershipCheck verifies the owner is not
-// wrongly blocked: a request whose SEQUENCE identifies the same client that owns
-// the target client ID clears the ownership gate. Because the owner still holds
-// the identifying session, the operation then correctly returns
-// NFS4ERR_CLIENTID_BUSY (RFC 8881 Section 18.50) rather than an authz error.
-func TestHandleDestroyClientID_OwnerPassesOwnershipCheck(t *testing.T) {
+// TestHandleDestroyClientID_SelfTargetIsBusy verifies the converse: when the
+// SEQUENCE identifies the same client the request targets, that client still
+// holds the session carrying the request, so the reply is
+// NFS4ERR_CLIENTID_BUSY (RFC 8881 Section 18.50).
+func TestHandleDestroyClientID_SelfTargetIsBusy(t *testing.T) {
 	sm := state.NewStateManager(90 * time.Second)
 	d := &Deps{StateManager: sm}
 
@@ -99,7 +97,7 @@ func TestHandleDestroyClientID_OwnerPassesOwnershipCheck(t *testing.T) {
 
 	res := HandleDestroyClientID(d, ctx, v41ctx, encodeDestroyClientidArgs(t, ownerClientID))
 	if res.Status != types.NFS4ERR_CLIENTID_BUSY {
-		t.Fatalf("owner DESTROY_CLIENTID with active session: status = %d, want NFS4ERR_CLIENTID_BUSY (%d)",
+		t.Fatalf("self-target DESTROY_CLIENTID with active session: status = %d, want NFS4ERR_CLIENTID_BUSY (%d)",
 			res.Status, types.NFS4ERR_CLIENTID_BUSY)
 	}
 }

@@ -248,9 +248,12 @@ func TestDestroyClientID_UnrecognizedTargetBeatsRequesterIdentity(t *testing.T) 
 	if decoded.NumResults != 2 {
 		t.Fatalf("numResults = %d, want 2", decoded.NumResults)
 	}
-	if decoded.Results[1].Status != types.NFS4ERR_STALE_CLIENTID {
-		t.Errorf("result[1] status = %d, want NFS4ERR_STALE_CLIENTID (%d)",
-			decoded.Results[1].Status, types.NFS4ERR_STALE_CLIENTID)
+	// The SEQUENCE succeeded, so the requester was identifiable and distinct
+	// from the target: the reply above is the target-recognition verdict, not a
+	// side effect of the request failing before DESTROY_CLIENTID ran.
+	if decoded.Results[0].OpCode != types.OP_SEQUENCE || decoded.Results[0].Status != types.NFS4_OK {
+		t.Fatalf("result[0] = op %d status %d, want OP_SEQUENCE with NFS4_OK",
+			decoded.Results[0].OpCode, decoded.Results[0].Status)
 	}
 }
 
