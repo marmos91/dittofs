@@ -202,7 +202,7 @@ func TestRevokedDelegIndex_SetOnRevokeClearedOnReturn(t *testing.T) {
 
 	// Returning the (revoked) delegation frees it from delegByOther and must
 	// clear the revoked index entry.
-	if err := sm.ReturnDelegation(&deleg.Stateid); err != nil {
+	if err := sm.ReturnDelegation(&deleg.Stateid, 0); err != nil {
 		t.Fatalf("ReturnDelegation: %v", err)
 	}
 	if c := revokedCount(sm, clientID); c != 0 {
@@ -287,7 +287,7 @@ func TestRevokedDelegIndex_NonRevokedFreeDoesNotUnderflow(t *testing.T) {
 	if deleg == nil {
 		t.Fatal("GrantDelegation returned nil")
 	}
-	if err := sm.ReturnDelegation(&deleg.Stateid); err != nil {
+	if err := sm.ReturnDelegation(&deleg.Stateid, 0); err != nil {
 		t.Fatalf("ReturnDelegation: %v", err)
 	}
 	if c := revokedCount(sm, clientID); c != 0 {
