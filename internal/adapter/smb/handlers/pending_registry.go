@@ -33,6 +33,7 @@ type pendingRegistry[V any] struct {
 	byAsyncID map[uint64]*V
 
 	asyncID func(*V) uint64
+	connID  func(*V) uint64
 
 	indexes []*uniqueIndex[V]
 	buckets []*bucketIndex[V]
@@ -64,6 +65,9 @@ type keyFunc[V any] func(*V) any
 // is configured by a key extractor and addressed by its ordinal position.
 type registryConfig[V any] struct {
 	asyncID func(*V) uint64
+	// connID extracts the connection an entry was parked on, so a lookup
+	// driven by a client-supplied AsyncId can be confined to it.
+	connID  func(*V) uint64
 	indexes []keyFunc[V]
 	buckets []keyFunc[V]
 	maxOps  int
@@ -73,6 +77,7 @@ func newPendingRegistry[V any](cfg registryConfig[V]) *pendingRegistry[V] {
 	r := &pendingRegistry[V]{
 		byAsyncID: make(map[uint64]*V),
 		asyncID:   cfg.asyncID,
+		connID:    cfg.connID,
 		maxOps:    cfg.maxOps,
 	}
 	for _, keyFn := range cfg.indexes {
@@ -140,25 +145,29 @@ func (r *pendingRegistry[V]) Len() int {
 }
 
 // unregisterByAsyncID removes the entry keyed by asyncID, returning it (or nil).
-// The AsyncId alone identifies the entry, so this is for server-internal
-// callers that already own the entry (the resume goroutine after it has
-// delivered its final response). Anything acting on a client-supplied AsyncId
-// must go through unregisterByAsyncIDOwnedBy.
+// For server-internal callers that already own the entry — the resume
+// goroutine retiring its own parked request after it has delivered the final
+// response. A lookup driven by a client-supplied AsyncId must use
+// unregisterByAsyncIDOn instead.
 func (r *pendingRegistry[V]) unregisterByAsyncID(asyncID uint64) *V {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.removeLocked(asyncID)
 }
 
-// unregisterByAsyncIDOwnedBy removes the entry keyed by asyncID only when owns
-// reports true for it, and returns nil otherwise. An AsyncId that arrives on
-// the wire is just a number the peer chose, so every client-driven lookup
-// pairs it with an ownership predicate on the entry it resolves to.
-func (r *pendingRegistry[V]) unregisterByAsyncIDOwnedBy(asyncID uint64, owns func(*V) bool) *V {
+// unregisterByAsyncIDOn removes the entry keyed by asyncID only when it was
+// parked on connID, and returns nil otherwise.
+//
+// An AsyncId is unique only among the requests being processed asynchronously
+// on one transport connection, and one that arrives on the wire is just a
+// number the peer chose. So a client-driven lookup resolves an (AsyncId,
+// connection) pair, never an AsyncId alone — the same way the MessageID
+// indexes carry a ConnID.
+func (r *pendingRegistry[V]) unregisterByAsyncIDOn(asyncID, connID uint64) *V {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p, ok := r.byAsyncID[asyncID]
-	if !ok || !owns(p) {
+	if !ok || r.connID(p) != connID {
 		return nil
 	}
 	return r.removeLocked(asyncID)

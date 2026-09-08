@@ -198,6 +198,7 @@ func TestNotifyRegistry_UnregisterByAsyncId(t *testing.T) {
 	notify := &PendingNotify{
 		FileID:           [16]byte{2},
 		SessionID:        100,
+		ConnID:           1,
 		MessageID:        50,
 		AsyncId:          777,
 		WatchPath:        "/dir2",
@@ -207,7 +208,7 @@ func TestNotifyRegistry_UnregisterByAsyncId(t *testing.T) {
 	mustRegister(t, r, notify)
 
 	// Unregister by async ID
-	removed := r.UnregisterByAsyncId(0, 777)
+	removed := r.UnregisterByAsyncId(1, 777)
 	if removed == nil {
 		t.Fatal("expected non-nil removed notify")
 	}
@@ -216,7 +217,7 @@ func TestNotifyRegistry_UnregisterByAsyncId(t *testing.T) {
 	}
 
 	// Should not find it again
-	removed = r.UnregisterByAsyncId(0, 777)
+	removed = r.UnregisterByAsyncId(1, 777)
 	if removed != nil {
 		t.Error("expected nil on second unregister")
 	}

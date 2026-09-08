@@ -149,6 +149,7 @@ func NewPendingCreateRegistry() *PendingCreateRegistry {
 	return &PendingCreateRegistry{
 		reg: newPendingRegistry(registryConfig[PendingCreate]{
 			asyncID: func(p *PendingCreate) uint64 { return p.AsyncId },
+			connID:  func(p *PendingCreate) uint64 { return p.ConnID },
 			indexes: []keyFunc[PendingCreate]{
 				func(p *PendingCreate) any {
 					return createMsgKey{ConnID: p.ConnID, MessageID: p.MessageID}
@@ -217,13 +218,10 @@ func (r *PendingCreateRegistry) UnregisterByMessageID(connID, messageID uint64) 
 	return p
 }
 
-// UnregisterByAsyncId removes the pending CREATE parked on connID under
-// asyncId and invokes its Cancel closure. Used by async-flagged SMB2_CANCEL.
-// An entry parked on a different connection does not match and is left alone.
+// UnregisterByAsyncId removes the pending CREATE parked on (connID, asyncId)
+// and invokes its Cancel closure. Used by async-flagged SMB2_CANCEL.
 func (r *PendingCreateRegistry) UnregisterByAsyncId(connID, asyncId uint64) *PendingCreate {
-	p := r.reg.unregisterByAsyncIDOwnedBy(asyncId, func(p *PendingCreate) bool {
-		return p.ConnID == connID
-	})
+	p := r.reg.unregisterByAsyncIDOn(asyncId, connID)
 	if p != nil {
 		markStarted(p)
 		if p.Cancel != nil {

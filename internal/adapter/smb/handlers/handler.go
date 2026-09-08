@@ -148,11 +148,6 @@ type Handler struct {
 	// path for inline retry inside the request goroutine — used as a
 	// fallback when async parking is unavailable (no callback wired,
 	// async-credit pool exhausted, or registry full).
-	//
-	// The key carries the ConnID because SMB2 scopes MessageIDs per
-	// connection, and every connection starts its sequence window near zero:
-	// keyed by MessageID alone, one connection's CANCEL tears down another
-	// connection's inline LOCK.
 	pendingLocks sync.Map
 
 	// Configuration

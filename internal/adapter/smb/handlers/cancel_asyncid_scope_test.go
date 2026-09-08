@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 
@@ -69,8 +70,7 @@ func TestPendingLockRegistry_UnregisterByAsyncIdIsConnectionScoped(t *testing.T)
 func TestPipeReadRegistry_UnregisterByAsyncIdIsConnectionScoped(t *testing.T) {
 	r := NewPipeReadRegistry()
 	done := make(chan types.Status, 1)
-	victim := newTestPipeRead(1, 10, 100, 1000, done)
-	victim.ConnID = 1
+	victim := newTestPipeRead(1, 1, 10, 100, 1000, done)
 	r.Register(victim)
 
 	if got := r.UnregisterByAsyncId(2, 1000); got != nil {
@@ -105,5 +105,49 @@ func TestNotifyRegistry_UnregisterByAsyncIdIsConnectionScoped(t *testing.T) {
 	}
 	if got := r.UnregisterByAsyncId(1, 777); got != victim {
 		t.Errorf("UnregisterByAsyncId(conn 1) = %v, want victim", got)
+	}
+}
+
+// The inline-retry fallback parks its cancel func in h.pendingLocks rather than
+// in a registry, and is taken whenever async parking is unavailable. Its key
+// carries the ConnID for the same reason the registries' do — and here the
+// collision needs no attacker: MessageIDs are per-connection sequence numbers
+// and every connection's window starts near zero, so two clients blocking on
+// locks routinely hold the same MessageID at the same time.
+//
+// This drives the real Handler.Cancel dispatch path rather than the map.
+func TestCancel_InlineBlockingLockIsConnectionScoped(t *testing.T) {
+	h := &Handler{}
+	const messageID = 100
+
+	lockCtx, cancel := context.WithCancel(context.Background())
+	h.pendingLocks.Store(lockMsgKey{ConnID: 1, MessageID: messageID}, context.CancelFunc(cancel))
+
+	cancelBody := []byte{4, 0, 0, 0} // StructureSize = 4, Reserved
+
+	// A CANCEL from another connection carrying the same MessageID.
+	if _, err := h.Cancel(&SMBHandlerContext{ConnID: 2, MessageID: messageID}, cancelBody); err != nil {
+		t.Fatalf("Cancel(conn 2): %v", err)
+	}
+	select {
+	case <-lockCtx.Done():
+		t.Fatal("a CANCEL from another connection tore down the inline LOCK")
+	default:
+	}
+	if _, ok := h.pendingLocks.Load(lockMsgKey{ConnID: 1, MessageID: messageID}); !ok {
+		t.Fatal("inline LOCK was unregistered by another connection's CANCEL")
+	}
+
+	// The owning connection still cancels it.
+	if _, err := h.Cancel(&SMBHandlerContext{ConnID: 1, MessageID: messageID}, cancelBody); err != nil {
+		t.Fatalf("Cancel(conn 1): %v", err)
+	}
+	select {
+	case <-lockCtx.Done():
+	default:
+		t.Fatal("the owning connection's CANCEL did not tear down the inline LOCK")
+	}
+	if _, ok := h.pendingLocks.Load(lockMsgKey{ConnID: 1, MessageID: messageID}); ok {
+		t.Fatal("inline LOCK still registered after its own connection cancelled it")
 	}
 }
