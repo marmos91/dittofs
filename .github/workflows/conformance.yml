@@ -330,6 +330,22 @@ jobs:
           sudo apt-get install -y nfs-common
 
       - name: Download binaries
+        id: download-binaries
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: dfs-binaries
+
+      # The artifact service refuses for a few seconds at a time, long enough
+      # to fail two sibling jobs at once while others pull the same artifact
+      # minutes either side and succeed. One paused retry covers that window,
+      # and an artifact that genuinely is not there still fails the job.
+      - name: Pause before retrying the binaries download
+        if: steps.download-binaries.outcome == 'failure'
+        run: sleep 20
+
+      - name: Download binaries (second attempt)
+        if: steps.download-binaries.outcome == 'failure'
         uses: actions/download-artifact@v8
         with:
           name: dfs-binaries
