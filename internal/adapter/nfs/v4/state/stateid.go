@@ -2,9 +2,9 @@ package state
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"sync/atomic"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -76,15 +76,22 @@ const (
 // Stateid Generation
 // ============================================================================
 
-// generateStateidOther creates a unique 12-byte "other" field for a stateid.
+// generateStateidOther creates a 12-byte "other" field for a stateid.
 //
 // Layout:
 //   - Byte 0:    state type tag (open=0x01, lock=0x02, deleg=0x03)
 //   - Bytes 1-3: boot epoch fragment (low 24 bits of sm.bootEpoch)
-//   - Bytes 4-11: atomic sequence counter (8 bytes, big-endian)
+//   - Bytes 4-11: 64 bits from crypto/rand
 //
 // The boot epoch fragment allows ValidateStateid to detect stale stateids
 // from a previous server incarnation without a map lookup.
+//
+// The low eight bytes are random rather than sequential, so holding one
+// stateid reveals nothing about any other.
+//
+// ponytail: uniqueness is probabilistic, around one chance in 40 million at a
+// million concurrent stateids; retry against the by-other map at each mint
+// site if a deployment ever holds enough live state to care.
 func (sm *StateManager) generateStateidOther(stateType byte) [types.NFS4_OTHER_SIZE]byte {
 	var other [types.NFS4_OTHER_SIZE]byte
 
@@ -96,16 +103,11 @@ func (sm *StateManager) generateStateidOther(stateType byte) [types.NFS4_OTHER_S
 	other[2] = byte(sm.bootEpoch >> 8)
 	other[3] = byte(sm.bootEpoch)
 
-	// Bytes 4-11: monotonic sequence counter
-	seq := atomic.AddUint64(&sm.nextStateSeq, 1)
-	other[4] = byte(seq >> 56)
-	other[5] = byte(seq >> 48)
-	other[6] = byte(seq >> 40)
-	other[7] = byte(seq >> 32)
-	other[8] = byte(seq >> 24)
-	other[9] = byte(seq >> 16)
-	other[10] = byte(seq >> 8)
-	other[11] = byte(seq)
+	// Bytes 4-11: unpredictable. From Go 1.24 the default crypto/rand Reader
+	// calls fatal() rather than returning an error, so a partial fill that
+	// leaves guessable zeros here is not reachable and the error is dead. If
+	// the module ever drops below Go 1.24 this must become a real error check.
+	_, _ = rand.Read(other[4:])
 
 	return other
 }
