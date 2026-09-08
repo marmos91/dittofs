@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"io"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // krb5OIDDER is the DER-encoded OID for the Kerberos 5 GSS-API mechanism.
@@ -17,14 +21,6 @@ import (
 // Per RFC 7530 Section 3.2.1, sec_oid4 is opaque<> containing the
 // mechanism OID in DER format.
 var krb5OIDDER = []byte{0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02}
-
-// RPCSEC_GSS service levels for SECINFO responses.
-// These match the rpc_gss_svc_t values from RFC 2203 Section 5.3.1.
-const (
-	rpcGSSSvcNone      uint32 = 1
-	rpcGSSSvcIntegrity uint32 = 2
-	rpcGSSSvcPrivacy   uint32 = 3
-)
 
 // RPCSEC_GSS auth flavor value per RFC 2203.
 const authRPCSECGSS uint32 = 6
@@ -52,8 +48,12 @@ func (h *Handler) handleSecInfo(ctx *types.CompoundContext, reader io.Reader) *t
 	}
 
 	// SECINFO reports on an existing directory entry, so the name has to
-	// resolve before any flavor list is built.
-	if status := h.secInfoLookupStatus(ctx, name); status != types.NFS4_OK {
+	// resolve before any flavor list is built. The resolved handle is what the
+	// flavor list is about: a name that crosses an export junction lands in
+	// another share, whose auth-flavor policy -- not the parent's -- is the one
+	// the client will meet.
+	status, target := h.secInfoLookupStatus(ctx, name)
+	if status != types.NFS4_OK {
 		logger.Debug("SECINFO: name did not resolve",
 			"name", name,
 			"status", status,
@@ -72,19 +72,21 @@ func (h *Handler) handleSecInfo(ctx *types.CompoundContext, reader io.Reader) *t
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,
 		OpCode: types.OP_SECINFO,
-		Data:   encodeSecInfoFlavors(h.KerberosEnabled),
+		Data:   h.secInfoFlavorsForHandle(target),
 	}
 }
 
 // secInfoLookupStatus resolves name under the current filehandle and reports
-// the status of that resolution, leaving the current filehandle unchanged.
+// the status of that resolution together with the handle it resolved to,
+// leaving the current filehandle unchanged. The returned handle is the current
+// filehandle itself when the resolution did not advance it.
 //
 // SECINFO applies the same access methodology as LOOKUP (RFC 7530
 // Section 16.31.4): a non-directory current filehandle answers NFS4ERR_NOTDIR,
 // a name that is not there NFS4ERR_NOENT, and a directory the caller may not
 // search NFS4ERR_ACCESS. Reusing the LOOKUP path is what keeps the two in
 // step; only LOOKUP's effect on the current filehandle is discarded.
-func (h *Handler) secInfoLookupStatus(ctx *types.CompoundContext, name string) uint32 {
+func (h *Handler) secInfoLookupStatus(ctx *types.CompoundContext, name string) (uint32, []byte) {
 	saved := ctx.CurrentFH
 	defer func() { ctx.CurrentFH = saved }()
 
@@ -94,6 +96,7 @@ func (h *Handler) secInfoLookupStatus(ctx *types.CompoundContext, name string) u
 	} else {
 		status = h.lookupInRealFS(ctx, name).Status
 	}
+	target := ctx.CurrentFH
 
 	// A WRONGSEC from the export's auth-flavor policy is the one status that
 	// must not reach the caller: it is the answer to the question SECINFO was
@@ -104,9 +107,11 @@ func (h *Handler) secInfoLookupStatus(ctx *types.CompoundContext, name string) u
 	// the entry exists goes unreported, and it is unreachable on this flavor
 	// either way.
 	if status == types.NFS4ERR_WRONGSEC {
-		return types.NFS4_OK
+		// The lookup never advanced the filehandle, so the policy reported is
+		// the refusing share's own -- which is the one the client needs.
+		return types.NFS4_OK, target
 	}
-	return status
+	return status, target
 }
 
 // secInfoErr builds a status-only result for SECINFO or SECINFO_NO_NAME.
@@ -118,36 +123,87 @@ func secInfoErr(opCode, status uint32) *types.CompoundResult {
 	}
 }
 
+// secInfoFlavorsForHandle encodes the SECINFO4res flavor list for the object
+// handle designates, narrowed to the export auth-flavor policy of the share
+// owning it. A pseudo-filesystem handle belongs to no share and gets the
+// server-wide list.
+func (h *Handler) secInfoFlavorsForHandle(handle []byte) []byte {
+	return encodeSecInfoFlavors(h.KerberosEnabled, h.shareForHandle(handle))
+}
+
+// shareForHandle resolves the share a real-filesystem filehandle belongs to.
+// It returns nil for a pseudo-filesystem handle, an undecodable handle, or a
+// share the registry no longer holds -- all cases where no per-share policy is
+// known.
+func (h *Handler) shareForHandle(handle []byte) *runtime.Share {
+	if h.Registry == nil || pseudofs.IsPseudoFSHandle(handle) {
+		return nil
+	}
+	shareName, _, err := metadata.DecodeFileHandle(metadata.FileHandle(handle))
+	if err != nil {
+		return nil
+	}
+	share, err := h.Registry.GetShare(shareName)
+	if err != nil {
+		return nil
+	}
+	return share
+}
+
 // encodeSecInfoFlavors encodes a SECINFO4res body: NFS4_OK followed by the
-// secinfo4 array the server offers, most preferred first (RFC 7530
-// Section 16.31.4). SECINFO_NO_NAME shares the result type (RFC 8881
-// Section 18.45.2) and so shares this encoding.
+// secinfo4 array the server offers for one object, most preferred first
+// (RFC 7530 Section 16.31.4). SECINFO_NO_NAME shares the result type
+// (RFC 8881 Section 18.45.2) and so shares this encoding.
 //
-// The list is server-wide rather than per-object: it depends only on whether
-// Kerberos is configured.
-func encodeSecInfoFlavors(kerberosEnabled bool) []byte {
+// The candidate set is server-wide -- it depends on whether Kerberos is
+// configured -- but the answer is per-object, because share carries the export
+// auth-flavor policy buildV4AuthContext enforces on every real operation.
+// Advertising a flavor that policy rejects is the exact failure SECINFO exists
+// to prevent: the client picks a listed flavor, gets NFS4ERR_WRONGSEC, asks
+// SECINFO again and is handed the same list. A nil share means no policy is
+// known, so nothing is narrowed.
+func encodeSecInfoFlavors(kerberosEnabled bool, share *runtime.Share) []byte {
 	const (
 		authNoneFlavor = 0
 		authSysFlavor  = 1
 	)
 
-	var buf bytes.Buffer
-	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
-
+	var gssServices []uint32
 	if kerberosEnabled {
-		// krb5p, krb5i, krb5, AUTH_SYS, AUTH_NONE -- most secure first.
-		_ = xdr.WriteUint32(&buf, 5)
-		encodeSecInfoGSSEntry(&buf, rpcGSSSvcPrivacy)
-		encodeSecInfoGSSEntry(&buf, rpcGSSSvcIntegrity)
-		encodeSecInfoGSSEntry(&buf, rpcGSSSvcNone)
-		_ = xdr.WriteUint32(&buf, authSysFlavor)
-		_ = xdr.WriteUint32(&buf, authNoneFlavor)
-	} else {
-		_ = xdr.WriteUint32(&buf, 2)
-		_ = xdr.WriteUint32(&buf, authSysFlavor)
-		_ = xdr.WriteUint32(&buf, authNoneFlavor)
+		gssServices = []uint32{gss.RPCGSSSvcPrivacy, gss.RPCGSSSvcIntegrity, gss.RPCGSSSvcNone}
+	}
+	rawFlavors := []uint32{authSysFlavor, authNoneFlavor}
+
+	if share != nil {
+		// RequireKerberos refuses every non-GSS flavor; AllowAuthSys=false
+		// refuses only AUTH_SYS. Same two conditions, same order, as the
+		// checks in buildV4AuthContext.
+		switch {
+		case share.RequireKerberos:
+			rawFlavors = nil
+		case !share.AllowAuthSys:
+			rawFlavors = []uint32{authNoneFlavor}
+		}
+		// MinKerberosLevel is a floor on the negotiated GSS service, so any
+		// weaker service is unusable on this share.
+		kept := make([]uint32, 0, len(gssServices))
+		for _, svc := range gssServices {
+			if auth.MeetsMinKerberosLevel(share.MinKerberosLevel, svc) {
+				kept = append(kept, svc)
+			}
+		}
+		gssServices = kept
 	}
 
+	var buf bytes.Buffer
+	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
+	_ = xdr.WriteUint32(&buf, uint32(len(gssServices)+len(rawFlavors)))
+	for _, svc := range gssServices {
+		encodeSecInfoGSSEntry(&buf, svc)
+	}
+	for _, flavor := range rawFlavors {
+		_ = xdr.WriteUint32(&buf, flavor)
+	}
 	return buf.Bytes()
 }
 
