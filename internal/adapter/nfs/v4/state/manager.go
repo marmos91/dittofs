@@ -1334,32 +1334,44 @@ func (sm *StateManager) ForceEndGrace() {
 	gp.ForceEnd()
 }
 
-// ReclaimComplete tracks per-client RECLAIM_COMPLETE for the grace period.
-// Delegates to GracePeriodState.ReclaimComplete.
-// Returns nil if no grace period has been configured (not an error per RFC 8881).
+// ReclaimComplete marks a client as having finished reclaiming state.
+//
+// Returns NFS4ERR_COMPLETE_ALREADY when this client already sent
+// RECLAIM_COMPLETE (RFC 8881 Section 18.51.3). The first call succeeds whether
+// or not a grace period is running: RECLAIM_COMPLETE outside grace is not an
+// error, it just has nothing to reclaim.
+//
+// When a grace period is running, the call also retires the client from the
+// reclaim roster so the window can end early.
 func (sm *StateManager) ReclaimComplete(clientID uint64) error {
-	sm.mu.RLock()
+	sm.mu.Lock()
+	if record := sm.clientRecordLocked(clientID); record != nil {
+		if record.ReclaimComplete {
+			sm.mu.Unlock()
+			return &NFS4StateError{
+				Status:  types.NFS4ERR_COMPLETE_ALREADY,
+				Message: "reclaim already completed for this client",
+			}
+		}
+		record.ReclaimComplete = true
+	}
 	gp := sm.gracePeriod
 	// Resolve the durable recovery key for this client (v4.1 = co_ownerid,
 	// v4.0 = nfs_client_id4 string) so the boot-loaded string roster early-exits
 	// and the reclaim-done marker is persisted.
 	recoveryKey := sm.recoveryKeyForClientLocked(clientID)
-	sm.mu.RUnlock()
-
 	if recoveryKey != "" {
-		if gp != nil {
+		sm.recordReclaimCompleteLocked(recoveryKey)
+	}
+	sm.mu.Unlock()
+
+	if gp != nil {
+		if recoveryKey != "" {
 			gp.ClientReclaimedByString(recoveryKey)
 		}
-		sm.mu.Lock()
-		sm.recordReclaimCompleteLocked(recoveryKey)
-		sm.mu.Unlock()
+		gp.ClientReclaimed(clientID)
 	}
-
-	if gp == nil {
-		// Not in grace period, but RECLAIM_COMPLETE outside grace is OK per RFC 8881
-		return nil
-	}
-	return gp.ReclaimComplete(clientID)
+	return nil
 }
 
 // CheckGraceForNewState returns NFS4ERR_GRACE if the server is in a grace period

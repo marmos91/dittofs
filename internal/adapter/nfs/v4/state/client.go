@@ -155,6 +155,18 @@ type ClientRecord struct {
 	// Keyed by hex-encoded owner data. v4.0 only.
 	OpenOwners map[string]*OpenOwner
 
+	// ReclaimComplete records that this client has sent RECLAIM_COMPLETE.
+	// A second RECLAIM_COMPLETE under the same client ID is a duplicate and
+	// draws NFS4ERR_COMPLETE_ALREADY. v4.1 only: v4.0 has no such operation.
+	//
+	// The flag lives on the client rather than on the grace period because
+	// "this client has finished reclaiming" is a property of the client: it
+	// holds whether or not a grace window was ever opened, and it outlives the
+	// window that prompted the reclaim. A client instance that re-registers
+	// gets a new client ID and so a new record with the flag clear, which is
+	// the scope the duplicate check is meant to have.
+	ReclaimComplete bool
+
 	// CBPathUp indicates whether the callback path to this client has been
 	// verified via CB_NULL. Defaults to false (not verified).
 	// Set to true after a successful CB_NULL on SETCLIENTID_CONFIRM.

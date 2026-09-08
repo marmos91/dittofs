@@ -77,10 +77,6 @@ type GracePeriodState struct {
 	// reclaimedClientStrings tracks which expected client strings have reclaimed.
 	reclaimedClientStrings map[string]bool
 
-	// reclaimCompleted tracks per-client RECLAIM_COMPLETE tracking (RFC 8881).
-	// Separate from reclaimedClients which tracks grace period early-exit.
-	reclaimCompleted map[uint64]bool
-
 	// onGraceEnd is the callback invoked when the grace period ends.
 	// Called outside the mutex to avoid deadlocks.
 	onGraceEnd func()
@@ -93,7 +89,6 @@ func NewGracePeriodState(duration time.Duration, onGraceEnd func()) *GracePeriod
 		duration:               duration,
 		expectedClients:        make(map[uint64]bool),
 		reclaimedClients:       make(map[uint64]bool),
-		reclaimCompleted:       make(map[uint64]bool),
 		expectedClientStrings:  make(map[string]bool),
 		reclaimedClientStrings: make(map[string]bool),
 		onGraceEnd:             onGraceEnd,
@@ -145,7 +140,6 @@ func (g *GracePeriodState) startGrace(expectedClientIDs []uint64, expectedClient
 		g.expectedClients[id] = true
 	}
 	g.reclaimedClients = make(map[uint64]bool)
-	g.reclaimCompleted = make(map[uint64]bool)
 
 	g.expectedClientStrings = make(map[string]bool, len(expectedClientStrings))
 	for _, s := range expectedClientStrings {
@@ -347,49 +341,6 @@ func (g *GracePeriodState) endGraceWithReason(reason string) {
 	if callback != nil {
 		callback()
 	}
-}
-
-// ReclaimComplete tracks per-client RECLAIM_COMPLETE per RFC 8881 Section 18.51.
-//
-// Returns:
-//   - NFS4ERR_COMPLETE_ALREADY if the client has already sent RECLAIM_COMPLETE
-//   - nil on success (including when not in grace period, per RFC 8881)
-//
-// When in grace period, also calls ClientReclaimed() for grace period early-exit tracking.
-func (g *GracePeriodState) ReclaimComplete(clientID uint64) error {
-	g.mu.Lock()
-
-	// Check for duplicate
-	if g.reclaimCompleted[clientID] {
-		g.mu.Unlock()
-		return &NFS4StateError{
-			Status:  types.NFS4ERR_COMPLETE_ALREADY,
-			Message: "reclaim already completed for this client",
-		}
-	}
-
-	// Mark as reclaim-complete
-	g.reclaimCompleted[clientID] = true
-
-	isActive := g.active
-	var reclaimDuration time.Duration
-	if isActive {
-		reclaimDuration = time.Since(g.startedAt)
-	}
-
-	logger.Info("RECLAIM_COMPLETE: client reclaim complete",
-		"client_id", clientID,
-		"in_grace", isActive,
-		"reclaim_duration", reclaimDuration)
-
-	g.mu.Unlock()
-
-	// If in grace period, also track for early exit
-	if isActive {
-		g.ClientReclaimed(clientID)
-	}
-
-	return nil
 }
 
 // ============================================================================
