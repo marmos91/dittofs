@@ -721,10 +721,15 @@ issued.
 
 The freeze is per file, not per client. NFSv4's `change` attribute is derived
 from `ctime`, so for as long as a write session is open a *second* client's
-writes to the same file are not observable: the first client re-reads `change`,
-sees the unchanged value, and keeps serving its cached copy. RFC 7530 §5.4 makes
+writes to the same file go unannounced: the first client re-reads `change`, sees
+the unchanged value, and keeps serving its cached copy. RFC 7530 §5.4 makes
 `change` exactly the attribute a client uses to decide whether its cached copy
 is still valid, so this is a real divergence and not just a coarse timestamp.
+
+`size` is not frozen, so a second client that *appends* still moves an attribute
+the Linux client watches and may be noticed by luck. A write that overwrites
+bytes in place changes no attribute at all and is invisible until the write
+session ends.
 
 This is a deliberate trade — DittoFS is single-node and the overwhelmingly
 common case is one writer per file — and it is why the pynfs `WRT18` case is
