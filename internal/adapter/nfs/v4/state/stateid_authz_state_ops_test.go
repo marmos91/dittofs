@@ -13,11 +13,12 @@ import (
 // the owning client. The state-changing operations resolve it themselves, and
 // these tests pin that they compare too.
 //
-// Each subtest asserts the same three things, because all three are part of the
-// rule: another client is refused NFS4ERR_BAD_STATEID, the owning client is
-// still served, and a caller with no trusted client identity — every NFSv4.0
-// request, which carries no clientid4 and has no session to derive one from —
-// is served as before.
+// Each test asserts two halves of the rule: another client is refused
+// NFS4ERR_BAD_STATEID, and the owning client is still served. The third half —
+// a caller with no trusted client identity, every NFSv4.0 request, which
+// carries no clientid4 and has no session to derive one from, is served as
+// before — is what the rest of this package's tests pass 0 for; it is asserted
+// explicitly here only for the operations that have no other coverage of it.
 //
 // The refusals also double as a check that NFS4ERR_BAD_STATEID leaves the
 // owner's sequence untouched (RFC 7530 Section 9.1.7): every "owning client"
@@ -116,11 +117,12 @@ func TestClose_CrossClient(t *testing.T) {
 	}
 }
 
-// TestLockNew_CrossClientOpenStateid is the sharpest of these: without the
-// comparison a client can take a byte-range lock through another client's open,
-// because LockNew resolves the open stateid but keys the lock-owner by the
-// client ID it was handed.
-func TestLockNew_CrossClientOpenStateid(t *testing.T) {
+// TestLock_CrossClient covers LOCK on both paths and LOCKU. The open_to_lock
+// path is the sharpest case of all of these: without the comparison a client
+// can take a byte-range lock through another client's open, because LockNew
+// resolves the open stateid but keys the lock-owner by the client ID it was
+// handed.
+func TestLock_CrossClient(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	sm.SetLockManager(lock.NewManager())
 	defer sm.Shutdown()

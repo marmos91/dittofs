@@ -1848,9 +1848,7 @@ func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32, calle
 	}
 
 	// A stateid is not a bearer token: reject one that names another client's
-	// state before acting on it (RFC 8881 Section 18.38.3). A zero
-	// callerClientID means the caller has no trusted client identity, which is
-	// every NFSv4.0 request; see checkStateidOwner.
+	// state before acting on it; see checkStateidOwner.
 	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
 		return nil, err
 	}
@@ -1921,8 +1919,8 @@ func (sm *StateManager) ConfirmOpenV41(stateid *types.Stateid4, callerClientID u
 		}
 	}
 
-	// See ConfirmOpen: a stateid that names another client's open must not be
-	// confirmed through this caller.
+	// A stateid is not a bearer token: another client's open must not be
+	// confirmed through this caller; see checkStateidOwner.
 	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
 		return err
 	}
@@ -1972,9 +1970,7 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32, callerC
 	}
 
 	// A stateid is not a bearer token: reject one that names another client's
-	// state before acting on it (RFC 8881 Section 18.38.3). A zero
-	// callerClientID means the caller has no trusted client identity, which is
-	// every NFSv4.0 request; see checkStateidOwner.
+	// state before acting on it; see checkStateidOwner.
 	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
 		return nil, err
 	}
@@ -2161,9 +2157,7 @@ func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, new
 	}
 
 	// A stateid is not a bearer token: reject one that names another client's
-	// state before acting on it (RFC 8881 Section 18.38.3). A zero
-	// callerClientID means the caller has no trusted client identity, which is
-	// every NFSv4.0 request; see checkStateidOwner.
+	// state before acting on it; see checkStateidOwner.
 	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
 		return nil, err
 	}
@@ -2454,9 +2448,7 @@ func (sm *StateManager) LockNew(
 	}
 
 	// A stateid is not a bearer token: reject one that names another client's
-	// state before acting on it (RFC 8881 Section 18.38.3). A zero
-	// callerClientID means the caller has no trusted client identity, which is
-	// every NFSv4.0 request; see checkStateidOwner.
+	// state before acting on it; see checkStateidOwner.
 	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
 		return nil, err
 	}
@@ -2844,9 +2836,7 @@ func (sm *StateManager) revalidateLockStateLocked(lockState *LockState, callerCl
 
 	// A stateid is not a bearer token: a client presenting another client's lock
 	// stateid could otherwise unlock, or lock inside, a byte range it has no
-	// state on (RFC 8881 Section 18.38.3). A zero callerClientID means the
-	// caller has no trusted client identity, which is every NFSv4.0 request;
-	// see checkStateidOwner.
+	// state on; see checkStateidOwner.
 	return checkStateidOwner(callerClientID, lockOwner.ClientID)
 }
 

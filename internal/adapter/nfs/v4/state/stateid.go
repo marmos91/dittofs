@@ -638,9 +638,7 @@ func (sm *StateManager) freeDelegStateidLocked(clientID uint64, stateid *types.S
 //
 // A stateid belonging to another client is reported as NFS4ERR_BAD_STATEID
 // rather than as valid, so the operation cannot be used as an existence oracle
-// for state the caller has no claim to. As everywhere else, a zero
-// callerClientID (every NFSv4.0 request) skips that comparison; see
-// checkStateidOwner.
+// for state the caller has no claim to; see checkStateidOwner.
 //
 // Caller must NOT hold sm.mu.
 func (sm *StateManager) TestStateids(stateids []types.Stateid4, callerClientID uint64) []uint32 {
