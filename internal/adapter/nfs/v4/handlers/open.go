@@ -78,13 +78,25 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) (resu
 	}
 	logger.Debug("NFSv4 OPEN share", "access", shareAccess, "deny", shareDeny)
 
+	// A v4.1 client can use the high share_access bits to say it wants no
+	// delegation, or to cancel a standing want. Read that before the mask
+	// below discards them, since it is the only thing outside the access mode
+	// that this server acts on. A v4.0 client's high bits mean nothing in RFC
+	// 7530 and it could not decode the reply arm that reports a reason, so it
+	// is never asked.
+	var noDelegWhy *uint32
+	if ctx.IsV41OrLater() {
+		if why, refuse := state.DelegationWantReason(shareAccess); refuse {
+			noDelegWhy = &why
+		}
+	}
+
 	// Validate the share_access / share_deny modes (RFC 7530 Section 16.16).
 	// The access mode (low 2 bits) must be exactly READ, WRITE, or BOTH; the
 	// deny mode must be a subset of {READ, WRITE}. Reject anything else with
-	// NFS4ERR_INVAL before touching state. The server ignores any higher
-	// share_access bits (e.g. the v4.1 want-delegation hints), so the access
-	// mode is masked to OPEN4_SHARE_ACCESS_BOTH and the masked value carried
-	// forward consistently with the rest of the handler.
+	// NFS4ERR_INVAL before touching state. Every remaining share_access bit is
+	// ignored, so the access mode is masked to OPEN4_SHARE_ACCESS_BOTH and the
+	// masked value carried forward consistently with the rest of the handler.
 	accessMode := shareAccess & uint32(types.OPEN4_SHARE_ACCESS_BOTH)
 	if accessMode == 0 {
 		logger.Debug("NFSv4 OPEN invalid share_access", "access", shareAccess, "client", ctx.ClientAddr)
@@ -231,7 +243,8 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) (resu
 		}
 
 		return h.handleOpenClaimNull(ctx, reader, seqid, shareAccess, shareDeny,
-			clientID, ownerData, openType, createMode, claimType, createAttrs, createVerifier)
+			clientID, ownerData, openType, createMode, claimType, createAttrs, createVerifier,
+			noDelegWhy)
 
 	case types.CLAIM_FH:
 		// CLAIM_FH (RFC 8881 Section 18.16.3): re-open the file named by the
@@ -254,7 +267,7 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) (resu
 			return openError(types.NFS4ERR_INVAL)
 		}
 		return h.handleOpenClaimFH(ctx, seqid, shareAccess, shareDeny,
-			clientID, ownerData, claimType)
+			clientID, ownerData, claimType, noDelegWhy)
 
 	case types.CLAIM_PREVIOUS:
 		return h.handleOpenClaimPrevious(ctx, reader, seqid, shareAccess, shareDeny,
@@ -286,6 +299,7 @@ func (h *Handler) handleOpenClaimNull(
 	openType, createMode, claimType uint32,
 	createAttrs *metadata.SetAttrs,
 	createVerifier *uint64,
+	noDelegWhy *uint32,
 ) *types.CompoundResult {
 	// CLAIM_NULL: decode filename (component4 = XDR string)
 	filename, err := xdr.DecodeString(reader)
@@ -551,7 +565,7 @@ func (h *Handler) handleOpenClaimNull(
 
 	// Try to grant a delegation
 
-	deleg, noneExtWhy := h.resolveDelegation(ctx, clientID, []byte(fileHandle), shareAccess)
+	deleg, noneExtWhy := h.resolveDelegation(clientID, []byte(fileHandle), shareAccess, noDelegWhy)
 
 	// Directory change notifications for OPEN+CREATE are now handled by
 	// MetadataService.CreateFile via DirChangeNotifier -> LockManager -> BreakCallbacks.
@@ -584,6 +598,7 @@ func (h *Handler) handleOpenClaimFH(
 	seqid, shareAccess, shareDeny uint32,
 	clientID uint64, ownerData []byte,
 	claimType uint32,
+	noDelegWhy *uint32,
 ) *types.CompoundResult {
 	// The current filehandle is the file being opened.
 	fileHandle := make(metadata.FileHandle, len(ctx.CurrentFH))
@@ -643,7 +658,7 @@ func (h *Handler) handleOpenClaimFH(
 		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid, ctx.SessionClientID)
 	}
 
-	deleg, noneExtWhy := h.resolveDelegation(ctx, clientID, []byte(fileHandle), shareAccess)
+	deleg, noneExtWhy := h.resolveDelegation(clientID, []byte(fileHandle), shareAccess, noDelegWhy)
 
 	logger.Debug("NFSv4 OPEN CLAIM_FH successful",
 		"stateid_seqid", openResult.Stateid.Seqid,
@@ -749,15 +764,13 @@ func (h *Handler) handleOpenClaimPrevious(
 // (WND4_CONTENTION, WND4_RESOURCE) each carry a promise to follow up when the
 // obstacle clears that this server does not keep.
 func (h *Handler) resolveDelegation(
-	ctx *types.CompoundContext,
 	clientID uint64,
 	fileHandle []byte,
 	shareAccess uint32,
+	noDelegWhy *uint32,
 ) (*state.DelegationState, *uint32) {
-	if ctx.IsV41OrLater() {
-		if why, refuse := state.DelegationWantReason(shareAccess); refuse {
-			return nil, &why
-		}
+	if noDelegWhy != nil {
+		return nil, noDelegWhy
 	}
 
 	delegType, shouldGrant := h.StateManager.ShouldGrantDelegation(clientID, fileHandle, shareAccess)

@@ -341,3 +341,47 @@ func TestEncodeNoDelegationExt(t *testing.T) {
 		})
 	}
 }
+
+// TestV41Delegation_GrantedStateidResolvesForClaimDelegateCur walks the chain
+// CLAIM_DELEGATE_CUR depends on, end to end, for a v4.1 client: a verified
+// callback path makes the grant policy say yes, the grant produces a stateid,
+// and that stateid resolves back to a delegation this same client owns -- which
+// is what OPEN checks before honouring the claim.
+//
+// Every step after the first was unreachable on v4.1 before the callback-path
+// probe existed, because the policy always said no.
+func TestV41Delegation_GrantedStateidResolvesForClaimDelegateCur(t *testing.T) {
+	sender, sm, _ := createTestBackchannelSender(t)
+	defer sm.Shutdown()
+
+	clientID := sender.clientID
+	fileHandle := []byte("claim-delegate-cur-file")
+
+	sm.setCBPathUp(clientID, true)
+
+	delegType, granted := sm.ShouldGrantDelegation(clientID, fileHandle, types.OPEN4_SHARE_ACCESS_WRITE)
+	if !granted {
+		t.Fatal("grant policy refused a v4.1 client with a verified callback path")
+	}
+	if delegType != types.OPEN_DELEGATE_WRITE {
+		t.Fatalf("delegation type = %d, want OPEN_DELEGATE_WRITE", delegType)
+	}
+
+	deleg := sm.GrantDelegation(clientID, fileHandle, delegType)
+	if deleg == nil {
+		t.Fatal("GrantDelegation returned nil for a client the policy approved")
+	}
+	t.Cleanup(deleg.StopRecallTimer)
+
+	resolved, err := sm.ValidateDelegationStateid(&deleg.Stateid)
+	if err != nil {
+		t.Fatalf("the stateid a v4.1 OPEN would return does not validate: %v", err)
+	}
+	if resolved.ClientID != clientID {
+		t.Errorf("delegation owner = 0x%x, want the granting v4.1 client 0x%x",
+			resolved.ClientID, clientID)
+	}
+	if !bytes.Equal(resolved.FileHandle, fileHandle) {
+		t.Errorf("delegation file handle = %q, want %q", resolved.FileHandle, fileHandle)
+	}
+}
