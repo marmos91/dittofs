@@ -864,10 +864,13 @@ func (h *Handler) handleOpenClaimDelegateCur(
 	seqid, shareAccess, shareDeny uint32,
 	clientID uint64, ownerData []byte,
 ) *types.CompoundResult {
-	// Decode CLAIM_DELEGATE_CUR args: stateid4 + component4
-	delegStateid, err := types.DecodeStateid4(reader)
-	if err != nil {
-		return openError(types.NFS4ERR_BADXDR)
+	// Decode CLAIM_DELEGATE_CUR args: stateid4 + component4. OPEN is a v4.1
+	// operation, so the delegation stateid may be the current-stateid
+	// placeholder naming a stateid an earlier operation in this COMPOUND
+	// returned; decoding it as a literal would reject a legal request.
+	delegStateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		return openError(argStatus)
 	}
 
 	filename, err := xdr.DecodeString(reader)
