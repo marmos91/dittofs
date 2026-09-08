@@ -129,3 +129,69 @@ func TestPrepareDispatch_DoesNotGateSMB2x(t *testing.T) {
 		t.Fatalf("errStatus=0x%x, want 0 for SMB 2.x (per-connection scoping handles cross-conn elsewhere)", errStatus)
 	}
 }
+
+// TestPrepareDispatch_RejectsTreeFromAnotherSession asserts that TREE_DISCONNECT
+// naming a live TreeID owned by a different session is refused with
+// STATUS_NETWORK_NAME_DELETED. See the gate in prepareDispatch for why.
+func TestPrepareDispatch_RejectsTreeFromAnotherSession(t *testing.T) {
+	victim := newConnInfoForDispatch(t, 1, types.Dialect0311)
+
+	// Second connection, sharing only the process-wide tree table and session
+	// manager — as two real connections to one server do.
+	attacker := newConnInfoForDispatch(t, 2, types.Dialect0311)
+	attacker.Handler = victim.Handler
+	attacker.SessionManager = victim.SessionManager
+
+	victimSess := victim.Handler.CreateSession("127.0.0.1:1", false, "alice", "WORKGROUP")
+	attackerSess := victim.Handler.CreateSession("127.0.0.1:2", false, "mallory", "WORKGROUP")
+	attackerSess.OriginConnID = attacker.ConnID
+
+	victimTree := &handlers.TreeConnection{
+		TreeID:    victim.Handler.GenerateTreeID(),
+		SessionID: victimSess.SessionID,
+		ShareName: "victimshare",
+	}
+	victim.Handler.StoreTree(victimTree)
+
+	hdr := &header.SMB2Header{
+		Command:   types.SMB2TreeDisconnect,
+		SessionID: attackerSess.SessionID,
+		TreeID:    victimTree.TreeID,
+		MessageID: 1,
+	}
+	_, _, errStatus := prepareDispatch(context.Background(), hdr, attacker)
+	if errStatus != types.StatusNetworkNameDeleted {
+		t.Fatalf("errStatus=%v, want %v for a tree owned by another session",
+			errStatus, types.StatusNetworkNameDeleted)
+	}
+}
+
+// TestPrepareDispatch_AllowsOwnTree is the positive control for the ownership
+// gate: the session that owns the tree still dispatches, with ShareName
+// resolved from it.
+func TestPrepareDispatch_AllowsOwnTree(t *testing.T) {
+	ci := newConnInfoForDispatch(t, 1, types.Dialect0311)
+	sess := ci.Handler.CreateSession("127.0.0.1:1", false, "alice", "WORKGROUP")
+	sess.OriginConnID = ci.ConnID
+
+	tree := &handlers.TreeConnection{
+		TreeID:    ci.Handler.GenerateTreeID(),
+		SessionID: sess.SessionID,
+		ShareName: "myshare",
+	}
+	ci.Handler.StoreTree(tree)
+
+	hdr := &header.SMB2Header{
+		Command:   types.SMB2TreeDisconnect,
+		SessionID: sess.SessionID,
+		TreeID:    tree.TreeID,
+		MessageID: 1,
+	}
+	_, handlerCtx, errStatus := prepareDispatch(context.Background(), hdr, ci)
+	if errStatus != 0 {
+		t.Fatalf("errStatus=%v, want success for the session's own tree", errStatus)
+	}
+	if handlerCtx.ShareName != "myshare" {
+		t.Fatalf("ShareName=%q, want %q", handlerCtx.ShareName, "myshare")
+	}
+}

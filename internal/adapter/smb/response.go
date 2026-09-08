@@ -512,8 +512,31 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 	}
 
 	if cmd.NeedsTree && reqHeader.TreeID != 0 {
+		// MS-SMB2 §3.3.5.2.11: the tree connect must be found in the
+		// TreeConnectTable of the session the request arrived on, not merely
+		// exist somewhere on the server. Tree connections are held in one
+		// process-wide table keyed by a small sequential TreeID, so an
+		// existence-only lookup lets any authenticated session name another
+		// session's tree. TREE_DISCONNECT is the sharpest edge: it deletes the
+		// tree and cancels every blocking LOCK parked on it (that registry is
+		// keyed by TreeID alone), while the file-close pass filters on both
+		// TreeID and SessionID and so spares the owner's opens — leaving those
+		// handles orphaned behind a tree that no longer exists, with no way to
+		// close them.
+		//
+		// ponytail: gating here covers every NeedsTree command at once, so the
+		// per-handler lookups downstream (TREE_DISCONNECT, CREATE) stay
+		// existence-only rather than each repeating the comparison. The ceiling
+		// is that ownership then holds only for commands that reach a handler
+		// through this function; a future path that invokes a handler directly
+		// would carry no tree-ownership check at all. Push the comparison down
+		// into the handlers only if such a path appears.
 		tree, ok := connInfo.Handler.GetTree(reqHeader.TreeID)
-		if !ok {
+		if !ok || tree.SessionID != reqHeader.SessionID {
+			logger.Debug("Tree not connected on this session",
+				"command", reqHeader.Command.String(),
+				"treeID", reqHeader.TreeID,
+				"sessionID", reqHeader.SessionID)
 			return nil, nil, types.StatusNetworkNameDeleted
 		}
 		handlerCtx.ShareName = tree.ShareName
