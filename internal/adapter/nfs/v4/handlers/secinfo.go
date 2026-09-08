@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"io"
+	"slices"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
@@ -25,9 +26,17 @@ var krb5OIDDER = []byte{0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x
 // RPCSEC_GSS auth flavor value per RFC 2203.
 const authRPCSECGSS uint32 = 6
 
+// The non-GSS auth flavors SECINFO can offer.
+const (
+	authNoneFlavor uint32 = 0
+	authSysFlavor  uint32 = 1
+)
+
 // handleSecInfo implements the SECINFO operation (RFC 7530 Section 16.31).
 // Resolves a name in the current directory, then returns the security
-// mechanisms (AUTH_SYS, AUTH_NONE, optionally Kerberos) the server offers.
+// mechanisms usable on what it resolved to -- AUTH_SYS, AUTH_NONE and the
+// Kerberos services, less whatever the target share's export auth-flavor
+// policy refuses.
 // Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_BADXDR, NFS4ERR_INVAL, NFS4ERR_NOTDIR,
 // NFS4ERR_NOENT, NFS4ERR_ACCESS.
 func (h *Handler) handleSecInfo(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
@@ -109,7 +118,7 @@ func (h *Handler) secInfoLookupStatus(ctx *types.CompoundContext, name string) (
 	if status == types.NFS4ERR_WRONGSEC {
 		// The lookup never advanced the filehandle, so the policy reported is
 		// the refusing share's own -- which is the one the client needs.
-		return types.NFS4_OK, target
+		status = types.NFS4_OK
 	}
 	return status, target
 }
@@ -156,18 +165,13 @@ func (h *Handler) shareForHandle(handle []byte) *runtime.Share {
 // (RFC 8881 Section 18.45.2) and so shares this encoding.
 //
 // The candidate set is server-wide -- it depends on whether Kerberos is
-// configured -- but the answer is per-object, because share carries the export
-// auth-flavor policy buildV4AuthContext enforces on every real operation.
-// Advertising a flavor that policy rejects is the exact failure SECINFO exists
-// to prevent: the client picks a listed flavor, gets NFS4ERR_WRONGSEC, asks
-// SECINFO again and is handed the same list. A nil share means no policy is
-// known, so nothing is narrowed.
+// configured -- but the answer is per-object, because the share carries the
+// export auth-flavor policy buildV4AuthContext enforces on every real
+// operation. Advertising a flavor that policy rejects is the exact failure
+// SECINFO exists to prevent: the client picks a listed flavor, gets
+// NFS4ERR_WRONGSEC, asks SECINFO again and is handed the same list. A nil
+// share means no policy is known, so nothing is narrowed.
 func encodeSecInfoFlavors(kerberosEnabled bool, share *runtime.Share) []byte {
-	const (
-		authNoneFlavor = 0
-		authSysFlavor  = 1
-	)
-
 	var gssServices []uint32
 	if kerberosEnabled {
 		gssServices = []uint32{gss.RPCGSSSvcPrivacy, gss.RPCGSSSvcIntegrity, gss.RPCGSSSvcNone}
@@ -186,13 +190,9 @@ func encodeSecInfoFlavors(kerberosEnabled bool, share *runtime.Share) []byte {
 		}
 		// MinKerberosLevel is a floor on the negotiated GSS service, so any
 		// weaker service is unusable on this share.
-		kept := make([]uint32, 0, len(gssServices))
-		for _, svc := range gssServices {
-			if auth.MeetsMinKerberosLevel(share.MinKerberosLevel, svc) {
-				kept = append(kept, svc)
-			}
-		}
-		gssServices = kept
+		gssServices = slices.DeleteFunc(gssServices, func(svc uint32) bool {
+			return !auth.MeetsMinKerberosLevel(share.MinKerberosLevel, svc)
+		})
 	}
 
 	var buf bytes.Buffer
