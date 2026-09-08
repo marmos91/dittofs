@@ -26,20 +26,20 @@ func TestCreateHardLink_RejectsCrossShareTarget(t *testing.T) {
 	// Two shares backed by the same store: the foreign file is genuinely
 	// readable through the directory's store, which is what makes an
 	// unguarded link succeed rather than fail as a lookup miss.
-	handles := make(map[string]metadata.FileHandle, 2)
-	for _, share := range []string{"/share-a", "/share-b"} {
+	mkShare := func(share string) metadata.FileHandle {
 		root, err := store.CreateRootDirectory(ctx, share, &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o777,
 		})
 		require.NoError(t, err)
+		require.NoError(t, svc.RegisterStoreForShare(share, store))
 
 		handle, err := metadata.EncodeShareHandle(share, root.ID)
 		require.NoError(t, err)
-		handles[share] = handle
-
-		require.NoError(t, svc.RegisterStoreForShare(share, store))
+		return handle
 	}
+	dirRoot := mkShare("/share-a")
+	targetRoot := mkShare("/share-b")
 
 	authCtx := &metadata.AuthContext{
 		Context:    ctx,
@@ -52,7 +52,7 @@ func TestCreateHardLink_RejectsCrossShareTarget(t *testing.T) {
 		ClientAddr: "127.0.0.1",
 	}
 
-	target, _, err := svc.CreateFile(authCtx, handles["/share-b"], "victim.txt",
+	target, _, err := svc.CreateFile(authCtx, targetRoot, "victim.txt",
 		&metadata.FileAttr{Mode: 0o644})
 	require.NoError(t, err)
 
@@ -60,11 +60,11 @@ func TestCreateHardLink_RejectsCrossShareTarget(t *testing.T) {
 	require.NoError(t, err)
 
 	// Directory in share A, target file in share B.
-	_, err = svc.CreateHardLink(authCtx, handles["/share-a"], "stolen.txt", targetHandle)
+	_, err = svc.CreateHardLink(authCtx, dirRoot, "stolen.txt", targetHandle)
 	require.Error(t, err, "hard link across shares must be rejected")
 
 	// The rejection must leave no entry behind and no inflated link count.
-	_, err = svc.Lookup(authCtx, handles["/share-a"], "stolen.txt")
+	_, err = svc.Lookup(authCtx, dirRoot, "stolen.txt")
 	require.Error(t, err, "no directory entry may be created for a rejected link")
 
 	after, err := svc.GetFile(ctx, targetHandle)
