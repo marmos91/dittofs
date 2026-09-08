@@ -114,8 +114,8 @@ func (h *Handler) handleGetReparsePoint(ctx *SMBHandlerContext, body []byte) (*H
 	// BEFORE BuildAuthContext — otherwise ctx.User==nil falls into the
 	// anonymous arm and synthesises UID-0 (root), bypassing DACL checks on
 	// the downstream ReadSymlink (#619, same class as #603).
-	if st := h.primeAuthContextFromOpenFile(ctx, openFile); st != types.StatusSuccess {
-		return NewErrorResult(st), nil
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return NewErrorResult(status), nil
 	}
 
 	// Build auth context
@@ -508,10 +508,9 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 
-	// CHANGE_NOTIFY does not prime an auth context off the handle, so it checks
-	// the same ownership predicate the priming helper applies. It keeps
-	// StatusInvalidHandle rather than the helper's StatusFileClosed, which is
-	// the status this path has always returned.
+	// CHANGE_NOTIFY primes no auth context off the handle, so it applies the
+	// ownership predicate directly. It keeps StatusInvalidHandle, the status
+	// this path has always returned, rather than the helper's StatusFileClosed.
 	if !openFileBelongsToRequest(ctx, openFile) {
 		logger.Debug("CHANGE_NOTIFY: handle does not belong to the request's tree/session",
 			"handleTreeID", openFile.TreeID, "reqTreeID", ctx.TreeID,

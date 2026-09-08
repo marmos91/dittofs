@@ -260,8 +260,8 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	// BEFORE BuildAuthContext — otherwise ctx.User==nil falls into the
 	// anonymous arm and synthesises UID-0 (root), bypassing DACL checks on
 	// the metadata flush (#619, same class as #603).
-	if st := h.primeAuthContextFromOpenFile(ctx, openFile); st != types.StatusSuccess {
-		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: st}}, nil
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
 	}
 
 	authCtx, authErr := BuildAuthContext(ctx)

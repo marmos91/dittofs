@@ -200,9 +200,8 @@ func (h *Handler) handleSrvCopyChunk(ctx *SMBHandlerContext, body []byte) (*Hand
 	}
 
 	// Per [MS-SMB2] 3.3.5.15.6: source and destination must be in the same
-	// session — and that session must be the requester's. Comparing the two
-	// handles only to each other is satisfied by any caller that supplies two
-	// foreign FileIds belonging to one other session, so anchor both to ctx.
+	// session — and that session must be the requester's, not merely each
+	// other's.
 	//
 	// SessionID alone, deliberately: the source is reached through a resume key
 	// rather than a TreeID, and §3.3.5.15.6 constrains it to the session, not
@@ -399,8 +398,8 @@ func (h *Handler) executeCopyChunks(
 	// on the destination write (#619, same class as #603). srcOpen and
 	// dstOpen are required to share a SessionID by the upstream validator,
 	// so priming from dstOpen is equivalent to priming from srcOpen.
-	if st := h.primeAuthContextFromOpenFile(ctx, dstOpen); st != types.StatusSuccess {
-		return NewErrorResult(st), nil
+	if status := h.primeAuthContextFromOpenFile(ctx, dstOpen); status != types.StatusSuccess {
+		return NewErrorResult(status), nil
 	}
 
 	authCtx, err := BuildAuthContext(ctx)

@@ -257,11 +257,10 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		logger.Debug("READ: invalid session ID", "sessionID", openFile.SessionID)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUserSessionDeleted}}, nil
 	}
-	// Priming refuses a handle that does not belong to this request's
-	// TreeConnect/Session (MS-SMB2 §3.3.5.2.5) — the gate the smb2.tcon torture
-	// test exercises by mis-setting the wire-level TID/SID.
-	if st := h.primeAuthContextFromOpenFile(ctx, openFile); st != types.StatusSuccess {
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: st}}, nil
+	// Priming also refuses a handle that does not belong to this request's
+	// TreeConnect/Session (MS-SMB2 §3.3.5.2.5).
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
 	}
 
 	// ========================================================================

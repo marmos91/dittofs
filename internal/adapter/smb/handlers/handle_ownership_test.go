@@ -17,15 +17,14 @@ import (
 // Opens live in one process-wide table keyed by the FileId alone, so
 // GetOpenFile hands any live handle to any caller that names it. Every
 // handle-based command then adopts that handle's session, tree, share and
-// permission through primeAuthContextFromOpenFile before building the
-// AuthContext, which means an unowned handle would run the request as its
-// owner, against its share, with its tree permission. These tests pin the
-// refusal, per site class.
+// permission through primeAuthContextFromOpenFile, so an unowned handle would
+// run the request as its owner, against its share, with its tree permission.
+// These tests pin the refusal, one command per site class.
 
-// ownedHandleFixture builds a share with a handle owned by the session
-// setupReparseShare creates, then adds a second session with its own tree —
-// the shape prepareDispatch guarantees, since it already refuses a tree
-// belonging to another session. It returns a ctx for each.
+// ownedHandleFixture builds a share holding a handle owned by the session
+// setupReparseShare creates, then adds a second session with a tree of its
+// own — the shape prepareDispatch guarantees, since it already refuses a tree
+// belonging to another session. It returns a ctx for each session.
 //
 // The owner's handle gains FILE_WRITE_ATTRIBUTES so SET_INFO clears its own
 // GrantedAccess gate, which sits ahead of the priming call.
@@ -105,8 +104,10 @@ func storeSecondHandle(t *testing.T, h *Handler, ownerCtx *SMBHandlerContext, na
 }
 
 // buildIoctlRequestBody encodes an SMB2 IOCTL request body [MS-SMB2] 2.2.31.
-// maxOutput matters to COPYCHUNK, which rejects a response buffer too small
-// for SRV_COPYCHUNK_RESPONSE before it ever resolves the source handle.
+// The offsets are reported relative to the SMB2 header so the production
+// parser, which sees the body from offset 56, resolves to the bytes written
+// here. maxOutput matters to COPYCHUNK, which rejects a response buffer too
+// small for SRV_COPYCHUNK_RESPONSE before it resolves the source handle.
 func buildIoctlRequestBody(ctlCode uint32, fileID [16]byte, input []byte, maxOutput uint32) []byte {
 	const fixedSize = 56
 	w := smbenc.NewWriter(fixedSize + len(input))
@@ -147,10 +148,10 @@ func copyChunkInput(resumeKey [resumeKeyLen]byte) []byte {
 // handlers return for a FileId that does not exist, so a handle belonging to
 // somebody else stays indistinguishable from a closed one.
 //
-// The owner arm is the positive control the refusal needs: it asserts the guard
-// does not fire on the session that opened the handle. It checks only that the
-// status is not the refusal, because what each handler goes on to return past
-// that point is its own business, covered by its own tests.
+// The owner arm is the positive control: it asserts the guard does not fire on
+// the session that opened the handle. It checks only that the status is not the
+// refusal, since what each handler returns past that point is its own business,
+// covered by its own tests.
 func TestHandleOwnership_ForeignSessionRefused(t *testing.T) {
 	ioctlOp := func(ctlCode uint32, input []byte) func(*Handler, *SMBHandlerContext, [16]byte) types.Status {
 		return func(h *Handler, ctx *SMBHandlerContext, fileID [16]byte) types.Status {
@@ -206,14 +207,17 @@ func TestHandleOwnership_ForeignSessionRefused(t *testing.T) {
 		{"IOCTL FSCTL_GET_REPARSE_POINT", ioctlOp(FsctlGetReparsePoint, nil)},
 	}
 
+	// A fixture per arm, since several of these commands consume the handle.
 	for _, op := range ops {
-		t.Run(op.name, func(t *testing.T) {
+		t.Run(op.name+"/foreign", func(t *testing.T) {
 			h, _, other, fileID := ownedHandleFixture(t)
 			if got := op.call(h, other, fileID); got != types.StatusFileClosed {
 				t.Errorf("%s from a second session = %v, want %v — the handle belongs to another session",
 					op.name, got, types.StatusFileClosed)
 			}
+		})
 
+		t.Run(op.name+"/owner", func(t *testing.T) {
 			h, owner, _, fileID := ownedHandleFixture(t)
 			if got := op.call(h, owner, fileID); got == types.StatusFileClosed {
 				t.Errorf("%s from the owning session = %v, want anything but the ownership refusal",
@@ -224,9 +228,8 @@ func TestHandleOwnership_ForeignSessionRefused(t *testing.T) {
 }
 
 // TestHandleOwnership_CopyChunkForeignHandles covers the one command that holds
-// two handles at once. Its check compared the source and destination to each
-// other rather than to the requester, so a caller supplying two FileIds that
-// both belong to one *other* session satisfied it.
+// two handles at once: two FileIds that belong to a single other session agree
+// with each other, so only anchoring both to the requester refuses them.
 func TestHandleOwnership_CopyChunkForeignHandles(t *testing.T) {
 	h, owner, other, srcFileID := ownedHandleFixture(t)
 	dstFileID := storeSecondHandle(t, h, owner, "dst", owner.TreeID)
@@ -237,10 +240,8 @@ func TestHandleOwnership_CopyChunkForeignHandles(t *testing.T) {
 	}
 	body := buildIoctlRequestBody(FsctlSrvCopyChunk, dstFileID, copyChunkInput(resumeKey), 4096)
 
-	// Both handles belong to the owner and so agree with each other, which is
-	// all the old src-vs-dst comparison asked. STATUS_OBJECT_NAME_NOT_FOUND is
-	// what this path already returns for a source the requester may not use
-	// (MS-SMB2 3.3.5.15.6).
+	// STATUS_OBJECT_NAME_NOT_FOUND is what this path already returns for a
+	// source the requester may not use (MS-SMB2 3.3.5.15.6).
 	res, err := h.Ioctl(other, body)
 	if err != nil {
 		t.Fatalf("Ioctl: %v", err)
@@ -265,7 +266,7 @@ func TestHandleOwnership_CopyChunkForeignHandles(t *testing.T) {
 // than a TreeID, and MS-SMB2 3.3.5.15.6 scopes it to the requester's session,
 // not to one tree connect. A server-side copy reading from another tree the
 // same session holds is legitimate, so the source is checked on SessionID
-// alone. Tightening it to the full tree+session predicate would break this.
+// alone — the full tree+session predicate would refuse it.
 func TestHandleOwnership_CopyChunkCrossTreeSourceAllowed(t *testing.T) {
 	h, owner, _, _ := ownedHandleFixture(t)
 

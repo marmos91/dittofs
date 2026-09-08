@@ -188,8 +188,8 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// would take the ctx.User==nil arm and synthesise UID-0 (root), bypassing
 	// DACL checks on the downstream metadata flush, delete-on-close unlink,
 	// and MFsymlink conversion (#619, same class as #603).
-	if st := h.primeAuthContextFromOpenFile(ctx, openFile); st != types.StatusSuccess {
-		return &CloseResponse{SMBResponseBase: SMBResponseBase{Status: st}}, nil
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return &CloseResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
 	}
 
 	// ========================================================================
@@ -827,12 +827,11 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 		return fmt.Errorf("missing parent handle or filename for MFsymlink conversion")
 	}
 
-	// ctx is already primed with this handle's session by Close, the only path
-	// that reaches here, so ctx.User is set and BuildAuthContext will not take
-	// the ctx.User==nil arm and synthesise UID-0 (root) over the RemoveFile +
-	// CreateSymlink below (#619, same class as #603). Close's priming also
-	// established that the handle belongs to the requesting session; re-priming
-	// the same handle here would be a no-op.
+	// Close, the only path in, primed ctx from this handle's session and so
+	// already refused a handle the requester does not own. ctx.User is set,
+	// so BuildAuthContext will not take the ctx.User==nil arm and synthesise
+	// UID-0 (root) over the RemoveFile + CreateSymlink below (#619, same class
+	// as #603).
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		return err

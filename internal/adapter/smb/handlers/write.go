@@ -280,12 +280,10 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		logger.Debug("WRITE: invalid session ID", "sessionID", openFile.SessionID)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUserSessionDeleted}}, nil
 	}
-	// Priming refuses a handle that does not belong to this request's
-	// TreeConnect/Session (MS-SMB2 §3.3.5.2.5). The smb2.tcon torture test
-	// exercises this by deliberately mis-setting the wire-level TID/SID and
-	// expecting an error (Samba returns FILE_CLOSED).
-	if st := h.primeAuthContextFromOpenFile(ctx, openFile); st != types.StatusSuccess {
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: st}}, nil
+	// Priming also refuses a handle that does not belong to this request's
+	// TreeConnect/Session (MS-SMB2 §3.3.5.2.5).
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
 	}
 
 	// ========================================================================

@@ -262,9 +262,8 @@ func mergeImplicitAuthSIDs(userGroupSIDs []string) []string {
 
 // primeAuthContextFromOpenFile hand-offs the open's recorded session/tree
 // identity onto ctx BEFORE BuildAuthContext is called (refs #603). Follow-up
-// operations CREATE / READ / WRITE / QUERY_DIRECTORY (the four current
-// callers of this helper) arrive keyed only by FileID — the SMB2 dispatcher
-// has no user state to prefill ctx.User with. Without this hand-off
+// operations arrive keyed only by FileID — the SMB2 dispatcher has no user
+// state to prefill ctx.User with. Without this hand-off
 // BuildAuthContext takes the ctx.User==nil arm and synthesises an
 // unprivileged nobody (65534) identity instead of the authenticated user's
 // UID, causing follow-up ops to be authorized as nobody rather than the
@@ -283,21 +282,21 @@ func mergeImplicitAuthSIDs(userGroupSIDs []string) []string {
 // sessions are created with User=nil and IsGuest=true (see
 // session.NewSession), and the BuildAuthContext guest arm is what maps them
 // to UID/GID 65534 instead of root.
-// It returns StatusFileClosed without touching ctx when the handle was not
-// opened on the tree and session the request arrived on — see
-// openFileBelongsToRequest. Callers must surface that status instead of
-// proceeding: everything this helper sets is the located handle's identity, so
-// priming from a handle the requester does not own executes the request as that
-// handle's user, against that handle's share, with that handle's tree
-// permission.
 //
-// ponytail: one gate inside the priming helper covers every handle-based
-// command at once, because they all adopt the handle's identity through here.
-// The ceiling is that Go does not force a caller to consume a non-error return,
-// so a future call site can drop the status silently and prime unchecked; a
-// dispatch-level gate would close that, but cannot replace this one, because
-// COPYCHUNK resolves its source handle from a resume key inside the handler
-// body rather than from a FileId in the request header.
+// It refuses a handle the requester does not own (openFileBelongsToRequest),
+// returning StatusFileClosed without touching ctx; callers must surface that
+// status rather than proceed, because everything primed here is the located
+// handle's identity — priming from a foreign handle runs the request as that
+// handle's user, against its share, with its tree permission. StatusFileClosed
+// is what these handlers already return for an unknown FileId, so a handle
+// belonging to somebody else stays indistinguishable from a closed one.
+//
+// ponytail: one gate here covers every handle-based command, since they all
+// adopt the handle's identity through this helper. The ceiling is that Go does
+// not force a caller to consume a non-error return, so a new call site can
+// prime unchecked; a dispatch-level gate would close that but cannot replace
+// this one, because COPYCHUNK resolves its source handle from a resume key in
+// the handler body rather than from a FileId in the request header.
 func (h *Handler) primeAuthContextFromOpenFile(ctx *SMBHandlerContext, openFile *OpenFile) types.Status {
 	if !openFileBelongsToRequest(ctx, openFile) {
 		logger.Debug("Handle does not belong to the request's tree/session",
@@ -310,19 +309,14 @@ func (h *Handler) primeAuthContextFromOpenFile(ctx *SMBHandlerContext, openFile 
 }
 
 // openFileBelongsToRequest reports whether openFile was opened on the tree and
-// session that this request arrived on.
+// session this request arrived on.
 //
 // MS-SMB2 §3.3.5.2.5 resolves a FileId against Session.OpenTable: the handle
 // must belong to the requesting session, not merely exist somewhere on the
 // server. Opens live in one process-wide table keyed by the FileId alone, so
 // GetOpenFile answers "does this handle exist" and this answers "may this
-// requester use it".
-//
-// StatusFileClosed is the refusal used for a handle that fails this, which
-// keeps a foreign FileId indistinguishable from a closed one and matches what
-// these handlers already return for an unknown FileId. smbtorture smb2.tcon
-// deliberately mis-sets the wire-level TreeID/SessionID and expects an error
-// there (Samba returns FILE_CLOSED).
+// requester use it". smbtorture smb2.tcon deliberately mis-sets the wire-level
+// TreeID/SessionID and expects an error here (Samba returns FILE_CLOSED).
 func openFileBelongsToRequest(ctx *SMBHandlerContext, openFile *OpenFile) bool {
 	return openFile.SessionID == ctx.SessionID && openFile.TreeID == ctx.TreeID
 }

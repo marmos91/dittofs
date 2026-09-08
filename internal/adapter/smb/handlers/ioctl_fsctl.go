@@ -105,8 +105,8 @@ func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	// session BEFORE BuildAuthContext — otherwise ctx.User==nil falls
 	// into the anonymous arm and synthesises UID-0 (root), bypassing
 	// DACL checks on SetFileAttributes (#619, same class as #603).
-	if st := h.primeAuthContextFromOpenFile(ctx, openFile); st != types.StatusSuccess {
-		return NewErrorResult(st), nil
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return NewErrorResult(status), nil
 	}
 	authCtx, authErr := BuildAuthContext(ctx)
 	if authErr != nil {
