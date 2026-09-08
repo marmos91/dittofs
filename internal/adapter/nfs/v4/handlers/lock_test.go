@@ -1204,3 +1204,41 @@ func TestHandleLock_InvalidRange(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleLock_UnknownClientID and TestHandleLockT_UnknownClientID pin the
+// admission of the clientid inside lock_owner4. Neither operation checked it,
+// so a LOCK keyed a lock-owner under an id no client record covers and a LOCKT
+// answered "no conflict" on behalf of an identity that does not exist. An id
+// whose high half is not this incarnation's boot epoch is stale rather than
+// merely unknown (RFC 7530 Section 13.1.10.2).
+func TestHandleLock_UnknownClientID(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+	handle := fx.createTestFile(t, fx.rootHandle, "lock-badclid.txt", metadata.FileTypeRegular, 0o644, 1000, 1000)
+
+	ctx := newRealFSContext(1000, 1000)
+	ctx.CurrentFH = append([]byte(nil), handle...)
+
+	args := encodeNewLockOwnerArgs(types.WRITE_LT, 0, 100, 2, &types.Stateid4{Seqid: 1}, 1, 0, []byte("lock-owner"))
+	result := fx.handler.handleLock(ctx, bytes.NewReader(args))
+
+	if result.Status != types.NFS4ERR_STALE_CLIENTID {
+		t.Errorf("LOCK with an unknown clientid status = %d, want NFS4ERR_STALE_CLIENTID (%d)",
+			result.Status, types.NFS4ERR_STALE_CLIENTID)
+	}
+}
+
+func TestHandleLockT_UnknownClientID(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+	handle := fx.createTestFile(t, fx.rootHandle, "lockt-badclid.txt", metadata.FileTypeRegular, 0o644, 1000, 1000)
+
+	ctx := newRealFSContext(1000, 1000)
+	ctx.CurrentFH = append([]byte(nil), handle...)
+
+	args := encodeLocktArgs(types.WRITE_LT, 0, 100, 0, []byte("lockt-owner"))
+	result := fx.handler.handleLockT(ctx, bytes.NewReader(args))
+
+	if result.Status != types.NFS4ERR_STALE_CLIENTID {
+		t.Errorf("LOCKT with an unknown clientid status = %d, want NFS4ERR_STALE_CLIENTID (%d)",
+			result.Status, types.NFS4ERR_STALE_CLIENTID)
+	}
+}

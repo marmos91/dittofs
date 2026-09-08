@@ -54,19 +54,6 @@ flake worth re-running.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| CLOSE4 | bug | bad/old/stale stateid accepted | #2341 |
-| CLOSE5 | bug | bad/old/stale stateid accepted | #2341 |
-| CLOSE6 | bug | bad/old/stale stateid accepted | #2341 |
-| LKT9 | bug | bad/old/stale stateid accepted | #2341 |
-| LKU6b | bug | bad/old/stale stateid accepted | #2341 |
-| LOCK10 | bug | bad/old/stale stateid accepted | #2341 |
-| LOCK9b | bug | bad/old/stale stateid accepted | #2341 |
-| LOCK9c | bug | bad/old/stale stateid accepted | #2341 |
-| OPCF1 | bug | bad/old/stale stateid accepted | #2341 |
-| OPCF6 | bug | bad/old/stale stateid accepted | #2341 |
-| OPDG2 | bug | bad/old/stale stateid accepted | #2341 |
-| OPDG3 | bug | bad/old/stale stateid accepted | #2341 |
-| OPDG6 | bug | bad/old/stale stateid accepted | #2341 |
-| OPDG7 | bug | bad/old/stale stateid accepted | #2341 |
+| LKU6b | bug | seqid=0 means "v4.1, skip owner sequencing", but a v4.0 client may send 0 | #2483 |
 | WRT18 | feature | write-session freeze deliberately holds ctime, so change cannot advance | - |
 | RPLY8 | suite | knfsd fails this too — replay of a waiting LOCKU | - |

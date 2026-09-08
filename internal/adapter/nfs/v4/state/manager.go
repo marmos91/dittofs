@@ -1121,22 +1121,6 @@ func (sm *StateManager) markClientStateidsExpiredLocked(clientID uint64) {
 	}
 }
 
-// lockStateidMissError classifies a lock-stateid table miss: state freed by a
-// lease cancellation answers NFS4ERR_EXPIRED (RFC 7530 Section 9.6.3.2), a
-// stateid minted by an earlier server incarnation answers
-// NFS4ERR_STALE_STATEID, and anything else was never issued.
-//
-// Caller must hold sm.mu.
-func (sm *StateManager) lockStateidMissError(other [types.NFS4_OTHER_SIZE]byte) error {
-	if sm.isExpiredStateidLocked(other) {
-		return ErrExpired
-	}
-	if !sm.isCurrentEpoch(other) {
-		return ErrStaleStateid
-	}
-	return ErrBadStateid
-}
-
 // isExpiredStateidLocked reports whether the state this stateid named was freed
 // when the server cancelled the owning client's lease. Callers use it on a
 // table miss, before falling back to NFS4ERR_BAD_STATEID.
@@ -1607,6 +1591,7 @@ func (sm *StateManager) OpenFile(
 		// Accumulate share_access and share_deny (Pitfall 7)
 		existingState.ShareAccess |= shareAccess
 		existingState.ShareDeny |= shareDeny
+		existingState.openedAccessModes |= shareModeBit(shareAccess)
 
 		// Increment the stateid seqid for this operation
 		existingState.Stateid.Seqid = nextSeqID(existingState.Stateid.Seqid)
@@ -1623,12 +1608,13 @@ func (sm *StateManager) OpenFile(
 		copy(fhCopy, fileHandle)
 
 		openState := &OpenState{
-			Stateid:     resultStateid,
-			Owner:       owner,
-			FileHandle:  fhCopy,
-			ShareAccess: shareAccess,
-			ShareDeny:   shareDeny,
-			Confirmed:   owner.Confirmed,
+			Stateid:           resultStateid,
+			Owner:             owner,
+			FileHandle:        fhCopy,
+			ShareAccess:       shareAccess,
+			ShareDeny:         shareDeny,
+			openedAccessModes: shareModeBit(shareAccess),
+			Confirmed:         owner.Confirmed,
 		}
 
 		owner.OpenStates = append(owner.OpenStates, openState)
@@ -1850,19 +1836,20 @@ func (sm *StateManager) CacheLockOwnerResult(clientID uint64, ownerData []byte, 
 //
 // Caller must NOT hold sm.mu.
 func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32, callerClientID uint64) (result *OpenSeqResult, err error) {
+	// A special stateid names no state at all, and RFC 7530 Section 9.1.4.3
+	// admits one only on READ, WRITE and SETATTR. stateidMissError documents
+	// why it must be rejected before a table miss is classified.
+	if stateid.IsSpecialStateid() {
+		return nil, ErrBadStateid
+	}
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	// Look up the open state
 	openState, exists := sm.openStateByOther[stateid.Other]
 	if !exists {
-		if sm.isExpiredStateidLocked(stateid.Other) {
-			return nil, ErrExpired
-		}
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
-			Message: "stateid not found for OPEN_CONFIRM",
-		}
+		return nil, sm.stateidMissError(stateid.Other)
 	}
 
 	// A stateid is not a bearer token: reject one that names another client's
@@ -1893,6 +1880,19 @@ func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32, calle
 		case SeqIDOK:
 			// Continue
 		}
+	}
+
+	// The stateid must name this open's current seqid, compared after the owner
+	// seqid above so a retransmit still replays; see checkStateidSeqid.
+	if err := checkStateidSeqid(stateid.Seqid, openState.Stateid.Seqid); err != nil {
+		return nil, err
+	}
+
+	// An open confirms once. A second OPEN_CONFIRM finds no unconfirmed state,
+	// so the stateid it carries no longer names anything OPEN_CONFIRM can act
+	// on (RFC 7530 Section 16.18.5).
+	if openState.Confirmed {
+		return nil, ErrBadStateid
 	}
 
 	// Promote to confirmed
@@ -1931,10 +1931,7 @@ func (sm *StateManager) ConfirmOpenV41(stateid *types.Stateid4, callerClientID u
 
 	openState, exists := sm.openStateByOther[stateid.Other]
 	if !exists {
-		return &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
-			Message: "stateid not found for v4.1 auto-confirm",
-		}
+		return sm.stateidMissError(stateid.Other)
 	}
 
 	// A stateid is not a bearer token: another client's open must not be
@@ -1959,9 +1956,12 @@ func (sm *StateManager) ConfirmOpenV41(stateid *types.Stateid4, callerClientID u
 //
 // Caller must NOT hold sm.mu.
 func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32, callerClientID uint64) (result *OpenSeqResult, err error) {
-	// Handle special stateids (all-zeros, all-ones): no state to clean up
+	// A special stateid names no open state, and RFC 7530 Section 9.1.4.3
+	// admits one only on READ, WRITE and SETATTR, so CLOSE has nothing to act
+	// on. stateidMissError documents why it must be rejected before a table
+	// miss is classified.
 	if stateid.IsSpecialStateid() {
-		return &OpenSeqResult{}, nil
+		return nil, ErrBadStateid
 	}
 
 	sm.mu.Lock()
@@ -1981,13 +1981,7 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32, callerC
 				return nil, &ReplayError{Status: owner.LastResult.Status, Data: owner.LastResult.Data}
 			}
 		}
-		if sm.isExpiredStateidLocked(stateid.Other) {
-			return nil, ErrExpired
-		}
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
-			Message: "stateid not found for CLOSE",
-		}
+		return nil, sm.stateidMissError(stateid.Other)
 	}
 
 	// A stateid is not a bearer token: reject one that names another client's
@@ -2021,6 +2015,12 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32, callerC
 		case SeqIDOK:
 			// Continue
 		}
+	}
+
+	// The stateid must name this open's current seqid, compared after the owner
+	// seqid above so a retransmit still replays; see checkStateidSeqid.
+	if err := checkStateidSeqid(stateid.Seqid, openState.Stateid.Seqid); err != nil {
+		return nil, err
 	}
 
 	// Refuse while ranges are genuinely held -- RFC 7530 Section 16.2.4 permits
@@ -2162,19 +2162,20 @@ func (sm *StateManager) dropLockOwnerIfUnreferencedLocked(lockOwner *LockOwner) 
 //
 // Caller must NOT hold sm.mu.
 func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, newShareAccess, newShareDeny uint32, callerClientID uint64) (result *OpenSeqResult, err error) {
+	// A special stateid names no state at all, and RFC 7530 Section 9.1.4.3
+	// admits one only on READ, WRITE and SETATTR. stateidMissError documents
+	// why it must be rejected before a table miss is classified.
+	if stateid.IsSpecialStateid() {
+		return nil, ErrBadStateid
+	}
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	// Look up the open state
 	openState, exists := sm.openStateByOther[stateid.Other]
 	if !exists {
-		if sm.isExpiredStateidLocked(stateid.Other) {
-			return nil, ErrExpired
-		}
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
-			Message: "stateid not found for OPEN_DOWNGRADE",
-		}
+		return nil, sm.stateidMissError(stateid.Other)
 	}
 
 	// A stateid is not a bearer token: reject one that names another client's
@@ -2208,11 +2209,21 @@ func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, new
 		}
 	}
 
-	// Verify the new access is a subset of current (can only remove bits)
-	if newShareAccess & ^openState.ShareAccess != 0 {
+	// The stateid must name this open's current seqid, compared after the owner
+	// seqid above so a retransmit still replays; see checkStateidSeqid.
+	if err := checkStateidSeqid(stateid.Seqid, openState.Stateid.Seqid); err != nil {
+		return nil, err
+	}
+
+	// The new share_access must be a mode some OPEN behind this state actually
+	// asked for, which is stricter than being a subset of the accumulated
+	// union: one OPEN for BOTH leaves READ and WRITE standing in that union
+	// with neither ever opened, and downgrading to one of them would name a
+	// mode the client never held (RFC 7530 Section 16.19.4).
+	if openState.openedAccessModes&shareModeBit(newShareAccess) == 0 {
 		return nil, &NFS4StateError{
 			Status:  types.NFS4ERR_INVAL,
-			Message: "OPEN_DOWNGRADE cannot add share_access bits",
+			Message: "OPEN_DOWNGRADE to a share_access mode no OPEN asked for",
 		}
 	}
 	if newShareDeny & ^openState.ShareDeny != 0 {
@@ -2233,6 +2244,14 @@ func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, new
 	// Update share modes
 	openState.ShareAccess = newShareAccess
 	openState.ShareDeny = newShareDeny
+
+	// Forget the opened modes this downgrade drops: a later OPEN_DOWNGRADE may
+	// only name one this one kept. Downgrading to a single mode leaves that
+	// mode as the only one opened; BOTH still covers all three, so it drops
+	// nothing.
+	if newShareAccess != types.OPEN4_SHARE_ACCESS_BOTH {
+		openState.openedAccessModes = shareModeBit(newShareAccess)
+	}
 
 	// Increment stateid seqid
 	openState.Stateid.Seqid = nextSeqID(openState.Stateid.Seqid)
@@ -2459,13 +2478,20 @@ func (sm *StateManager) LockNew(
 		}
 	}
 
+	// A special stateid names no state at all, and RFC 7530 Section 9.1.4.3
+	// admits one only on READ, WRITE and SETATTR. stateidMissError documents
+	// why it must be rejected before a table miss is classified.
+	if openStateid.IsSpecialStateid() {
+		return nil, ErrBadStateid
+	}
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	// 1. Validate open stateid
 	openState, exists := sm.openStateByOther[openStateid.Other]
 	if !exists {
-		return nil, ErrBadStateid
+		return nil, sm.stateidMissError(openStateid.Other)
 	}
 
 	// A stateid is not a bearer token: reject one that names another client's
@@ -2542,6 +2568,12 @@ func (sm *StateManager) LockNew(
 		// Open seqid replayed but the lock-owner is brand new / not yet
 		// seqid-tracked: nothing consistent to replay.
 		return nil, ErrBadSeqid
+	}
+
+	// The open stateid must name that open's current seqid, compared after both
+	// seqid checks above so a retransmit still replays; see checkStateidSeqid.
+	if err := checkStateidSeqid(openStateid.Seqid, openState.Stateid.Seqid); err != nil {
+		return nil, err
 	}
 
 	// 5. Find or create lock-owner -- only after seqid validation passes.
@@ -2658,7 +2690,7 @@ func (sm *StateManager) LockExisting(
 	// stateid that is not the caller's before any cross-protocol work happens.
 	lockState, exists := sm.lockStateByOther[lockStateid.Other]
 	if !exists {
-		return nil, sm.lockStateidMissError(lockStateid.Other)
+		return nil, sm.stateidMissError(lockStateid.Other)
 	}
 	if err := sm.revalidateLockStateLocked(lockState, callerClientID); err != nil {
 		return nil, err
@@ -2694,18 +2726,8 @@ func (sm *StateManager) LockExisting(
 	}
 
 	// 3. Validate stateid seqid (only for non-replay LOCK).
-	// Per RFC 8881 Section 8.2.2, a v4.1 client may send stateid seqid=0 to
-	// mean "the most recent seqid"; the slot table already provides replay
-	// protection, so the server MUST bypass the seqid comparison in that case.
-	// lockState.Stateid.Seqid starts at 1 after LockNew, so without this bypass
-	// every v4.1 LOCK via LockExisting would return NFS4ERR_OLD_STATEID.
-	if lockStateid.Seqid != 0 {
-		if lockStateid.Seqid < lockState.Stateid.Seqid {
-			return nil, ErrOldStateid
-		}
-		if lockStateid.Seqid > lockState.Stateid.Seqid {
-			return nil, ErrBadStateid
-		}
+	if err := checkStateidSeqid(lockStateid.Seqid, lockState.Stateid.Seqid); err != nil {
+		return nil, err
 	}
 
 	// 4. Validate the byte range and the open mode for the lock type
@@ -2848,7 +2870,7 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 // Caller must hold sm.mu.
 func (sm *StateManager) revalidateLockStateLocked(lockState *LockState, callerClientID uint64) error {
 	if sm.lockStateByOther[lockState.Stateid.Other] != lockState {
-		return sm.lockStateidMissError(lockState.Stateid.Other)
+		return sm.stateidMissError(lockState.Stateid.Other)
 	}
 	lockOwner := lockState.LockOwner
 	if lockOwner == nil || sm.lockOwners[lockOwner.Key()] != lockOwner {
@@ -3062,7 +3084,7 @@ func (sm *StateManager) UnlockFile(
 	// lock manager is touched.
 	lockState, exists := sm.lockStateByOther[lockStateid.Other]
 	if !exists {
-		return nil, sm.lockStateidMissError(lockStateid.Other)
+		return nil, sm.stateidMissError(lockStateid.Other)
 	}
 	if err := sm.revalidateLockStateLocked(lockState, callerClientID); err != nil {
 		return nil, err
@@ -3099,17 +3121,8 @@ func (sm *StateManager) UnlockFile(
 	}
 
 	// 3. Validate stateid seqid (only for non-replay LOCKU).
-	// Per RFC 8881 Section 8.2.2, a v4.1 client may send stateid seqid=0;
-	// bypass the seqid comparison as in LockExisting. lockState.Stateid.Seqid
-	// is >=2 after any prior LOCK, so without this bypass every v4.1 LOCKU
-	// would return NFS4ERR_OLD_STATEID, making unlock impossible.
-	if lockStateid.Seqid != 0 {
-		if lockStateid.Seqid < lockState.Stateid.Seqid {
-			return nil, ErrOldStateid
-		}
-		if lockStateid.Seqid > lockState.Stateid.Seqid {
-			return nil, ErrBadStateid
-		}
+	if err := checkStateidSeqid(lockStateid.Seqid, lockState.Stateid.Seqid); err != nil {
+		return nil, err
 	}
 
 	// 4. Validate the byte range

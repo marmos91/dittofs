@@ -43,6 +43,14 @@ func (e *NFS4StateError) Error() string {
 	return e.Message
 }
 
+// Is matches two state errors on their NFS4 status alone, so errors.Is against
+// one of the sentinels below also matches an error of the same status carrying
+// a more specific message.
+func (e *NFS4StateError) Is(target error) bool {
+	other, ok := target.(*NFS4StateError)
+	return ok && other.Status == e.Status
+}
+
 // Common state errors used throughout the state package.
 var (
 	ErrBadStateid   = &NFS4StateError{Status: types.NFS4ERR_BAD_STATEID, Message: "bad stateid"}
@@ -154,6 +162,51 @@ func checkStateidOwner(callerClientID, ownerClientID uint64) error {
 	}
 }
 
+// stateidMissError classifies a stateid that names no live state: state freed
+// when a lease was cancelled answers NFS4ERR_EXPIRED (RFC 7530 Section 9.6.3.2),
+// a stateid minted by an earlier server incarnation answers
+// NFS4ERR_STALE_STATEID, and anything else was never issued at all.
+//
+// A special stateid must be rejected before it reaches here. Its "other" is
+// all-zeros or all-ones, so the boot-epoch fragment reads as some other
+// incarnation's and the miss would be answered stale rather than bad.
+//
+// Caller must hold sm.mu (read or write).
+func (sm *StateManager) stateidMissError(other [types.NFS4_OTHER_SIZE]byte) error {
+	if sm.isExpiredStateidLocked(other) {
+		return ErrExpired
+	}
+	if !sm.isCurrentEpoch(other) {
+		return ErrStaleStateid
+	}
+	return ErrBadStateid
+}
+
+// checkStateidSeqid compares the seqid a client presented against the current
+// seqid of the state its stateid names: an earlier one is NFS4ERR_OLD_STATEID
+// and a later one NFS4ERR_BAD_STATEID (RFC 7530 Section 9.1.4). Seqid zero asks
+// for "the most recent seqid" (RFC 8881 Section 8.2.2) and skips the comparison.
+//
+// An operation that also sequences an owner must compare here only AFTER the
+// owner's own seqid check. A retransmission carries the pre-operation stateid,
+// whose seqid is by then one behind, and RFC 7530 Section 9.1.7 wants it
+// answered from the owner's reply cache rather than rejected as old.
+func checkStateidSeqid(presented, current uint32) error {
+	if presented == 0 || presented == current {
+		return nil
+	}
+	if presented < current {
+		return &NFS4StateError{
+			Status:  types.NFS4ERR_OLD_STATEID,
+			Message: fmt.Sprintf("stateid seqid %d < current %d", presented, current),
+		}
+	}
+	return &NFS4StateError{
+		Status:  types.NFS4ERR_BAD_STATEID,
+		Message: fmt.Sprintf("stateid seqid %d > current %d", presented, current),
+	}
+}
+
 // ValidateStateid validates a stateid for the given operation family and
 // returns the associated OpenState.
 //
@@ -219,19 +272,7 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 	// Open stateids (type 0x01) use openStateByOther.
 	openState, exists := sm.openStateByOther[stateid.Other]
 	if !exists {
-		if sm.isExpiredStateidLocked(stateid.Other) {
-			return nil, ErrExpired
-		}
-		if !sm.isCurrentEpoch(stateid.Other) {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_STALE_STATEID,
-				Message: "stateid from previous server incarnation",
-			}
-		}
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
-			Message: "stateid not found",
-		}
+		return nil, sm.stateidMissError(stateid.Other)
 	}
 
 	// Step 4: the state must belong to the calling client.
@@ -244,23 +285,8 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 	}
 
 	// Step 5: Compare seqid.
-	// Per RFC 8881 Section 8.2.2 (NFSv4.1): if the client sends seqid=0
-	// in a non-special stateid, the server MUST accept it regardless of
-	// the current seqid value.  This is safe for v4.0 too since v4.0
-	// clients never legitimately send seqid=0 for real stateids.
-	if stateid.Seqid != 0 {
-		if stateid.Seqid < openState.Stateid.Seqid {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_OLD_STATEID,
-				Message: fmt.Sprintf("stateid seqid %d < current %d", stateid.Seqid, openState.Stateid.Seqid),
-			}
-		}
-		if stateid.Seqid > openState.Stateid.Seqid {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_BAD_STATEID,
-				Message: fmt.Sprintf("stateid seqid %d > current %d", stateid.Seqid, openState.Stateid.Seqid),
-			}
-		}
+	if err := checkStateidSeqid(stateid.Seqid, openState.Stateid.Seqid); err != nil {
+		return nil, err
 	}
 
 	// Step 6: Verify filehandle matches (if provided)
@@ -296,19 +322,7 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 func (sm *StateManager) validateDelegStateid(stateid *types.Stateid4, currentFH []byte, clientID uint64) (*OpenState, error) {
 	deleg, exists := sm.delegByOther[stateid.Other]
 	if !exists {
-		if sm.isExpiredStateidLocked(stateid.Other) {
-			return nil, ErrExpired
-		}
-		if !sm.isCurrentEpoch(stateid.Other) {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_STALE_STATEID,
-				Message: "stateid from previous server incarnation",
-			}
-		}
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
-			Message: "delegation stateid not found",
-		}
+		return nil, sm.stateidMissError(stateid.Other)
 	}
 
 	// Revoked delegations are no longer valid
@@ -323,20 +337,8 @@ func (sm *StateManager) validateDelegStateid(stateid *types.Stateid4, currentFH 
 		return nil, err
 	}
 
-	// Compare seqid (seqid=0 means "any" per RFC 8881 Section 8.2.2)
-	if stateid.Seqid != 0 {
-		if stateid.Seqid < deleg.Stateid.Seqid {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_OLD_STATEID,
-				Message: fmt.Sprintf("delegation stateid seqid %d < current %d", stateid.Seqid, deleg.Stateid.Seqid),
-			}
-		}
-		if stateid.Seqid > deleg.Stateid.Seqid {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_BAD_STATEID,
-				Message: fmt.Sprintf("delegation stateid seqid %d > current %d", stateid.Seqid, deleg.Stateid.Seqid),
-			}
-		}
+	if err := checkStateidSeqid(stateid.Seqid, deleg.Stateid.Seqid); err != nil {
+		return nil, err
 	}
 
 	// Verify filehandle matches
@@ -369,19 +371,7 @@ func (sm *StateManager) validateDelegStateid(stateid *types.Stateid4, currentFH 
 func (sm *StateManager) validateLockStateid(stateid *types.Stateid4, currentFH []byte, clientID uint64) (*OpenState, error) {
 	lockState, exists := sm.lockStateByOther[stateid.Other]
 	if !exists {
-		if sm.isExpiredStateidLocked(stateid.Other) {
-			return nil, ErrExpired
-		}
-		if !sm.isCurrentEpoch(stateid.Other) {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_STALE_STATEID,
-				Message: "stateid from previous server incarnation",
-			}
-		}
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
-			Message: "lock stateid not found",
-		}
+		return nil, sm.stateidMissError(stateid.Other)
 	}
 
 	var ownerClientID uint64
@@ -392,21 +382,8 @@ func (sm *StateManager) validateLockStateid(stateid *types.Stateid4, currentFH [
 		return nil, err
 	}
 
-	// Compare seqid. Per RFC 8881 Section 8.2.2, seqid=0 in a non-special
-	// stateid bypasses the seqid comparison entirely.
-	if stateid.Seqid != 0 {
-		if stateid.Seqid < lockState.Stateid.Seqid {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_OLD_STATEID,
-				Message: fmt.Sprintf("lock stateid seqid %d < current %d", stateid.Seqid, lockState.Stateid.Seqid),
-			}
-		}
-		if stateid.Seqid > lockState.Stateid.Seqid {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_BAD_STATEID,
-				Message: fmt.Sprintf("lock stateid seqid %d > current %d", stateid.Seqid, lockState.Stateid.Seqid),
-			}
-		}
+	if err := checkStateidSeqid(stateid.Seqid, lockState.Stateid.Seqid); err != nil {
+		return nil, err
 	}
 
 	// Verify filehandle matches the locked file.

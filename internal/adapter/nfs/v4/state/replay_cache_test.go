@@ -91,7 +91,10 @@ func TestReplay_OpenDowngrade_ReturnsCachedReply(t *testing.T) {
 	owner := []byte("downgrade-replay-owner")
 	stateid, clientID := setupConfirmedOpen(t, sm, owner, []byte("fh-downgrade"), types.OPEN4_SHARE_ACCESS_BOTH)
 
-	dg, err := sm.DowngradeOpen(stateid, 3, types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, 0)
+	// The open behind these stateids was opened for BOTH and nothing else, so
+	// BOTH is the only share_access an OPEN_DOWNGRADE on it may name: RFC 7530
+	// Section 16.19.4 admits only a mode some OPEN actually asked for.
+	dg, err := sm.DowngradeOpen(stateid, 3, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, 0)
 	if err != nil {
 		t.Fatalf("DowngradeOpen: %v", err)
 	}
