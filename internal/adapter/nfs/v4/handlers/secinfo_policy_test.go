@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"slices"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
@@ -63,8 +64,8 @@ func decodeSecInfoFlavors(t *testing.T, data []byte) []secInfoEntry {
 	return entries
 }
 
-// secInfoOnName runs SECINFO for name against the fixture's share root and
-// returns the decoded flavor list.
+// secInfoOnName runs SECINFO for name under the current filehandle and returns
+// the decoded flavor list.
 func secInfoOnName(t *testing.T, fx *realFSTestFixture, current metadata.FileHandle, name string) []secInfoEntry {
 	t.Helper()
 
@@ -79,27 +80,16 @@ func secInfoOnName(t *testing.T, fx *realFSTestFixture, current metadata.FileHan
 }
 
 func hasFlavor(entries []secInfoEntry, flavor uint32) bool {
-	for _, e := range entries {
-		if e.Flavor == flavor {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(entries, func(e secInfoEntry) bool {
+		return e.Flavor == flavor
+	})
 }
 
 func hasGSSService(entries []secInfoEntry, service uint32) bool {
-	for _, e := range entries {
-		if e.Flavor == authRPCSECGSS && e.GSSService == service {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(entries, func(e secInfoEntry) bool {
+		return e.Flavor == authRPCSECGSS && e.GSSService == service
+	})
 }
-
-const (
-	testAuthNoneFlavor = 0
-	testAuthSysFlavor  = 1
-)
 
 // TestSecInfo_AllowAuthSysFalseDropsAuthSys pins the AllowAuthSys narrowing:
 // buildV4AuthContext answers NFS4ERR_WRONGSEC on AUTH_SYS for such a share, so
@@ -114,10 +104,10 @@ func TestSecInfo_AllowAuthSysFalseDropsAuthSys(t *testing.T) {
 
 	entries := secInfoOnName(t, fx, fx.rootHandle, "hello.txt")
 
-	if hasFlavor(entries, testAuthSysFlavor) {
+	if hasFlavor(entries, authSysFlavor) {
 		t.Errorf("SECINFO offered AUTH_SYS on an allow_auth_sys=false share: %+v", entries)
 	}
-	if !hasFlavor(entries, testAuthNoneFlavor) {
+	if !hasFlavor(entries, authNoneFlavor) {
 		t.Errorf("SECINFO dropped AUTH_NONE, which allow_auth_sys=false does not refuse: %+v", entries)
 	}
 }
@@ -136,7 +126,7 @@ func TestSecInfo_RequireKerberosDropsNonGSS(t *testing.T) {
 
 	entries := secInfoOnName(t, fx, fx.rootHandle, "hello.txt")
 
-	if hasFlavor(entries, testAuthSysFlavor) || hasFlavor(entries, testAuthNoneFlavor) {
+	if hasFlavor(entries, authSysFlavor) || hasFlavor(entries, authNoneFlavor) {
 		t.Errorf("SECINFO offered a non-GSS flavor on a require_kerberos share: %+v", entries)
 	}
 	if len(entries) != 3 {
@@ -188,10 +178,10 @@ func TestSecInfo_JunctionReportsTargetPolicy(t *testing.T) {
 	pseudoRoot := fx.handler.PseudoFS.GetRootHandle()
 	entries := secInfoOnName(t, fx, pseudoRoot, "export")
 
-	if hasFlavor(entries, testAuthSysFlavor) {
+	if hasFlavor(entries, authSysFlavor) {
 		t.Errorf("SECINFO across a junction offered AUTH_SYS, which the target share refuses: %+v", entries)
 	}
-	if !hasFlavor(entries, testAuthNoneFlavor) {
+	if !hasFlavor(entries, authNoneFlavor) {
 		t.Errorf("SECINFO across a junction dropped AUTH_NONE: %+v", entries)
 	}
 }
@@ -209,15 +199,14 @@ func TestSecInfoNoName_PseudoFSKeepsServerWideList(t *testing.T) {
 	ctx := newRealFSContext(0, 0)
 	ctx.CurrentFH = append([]byte(nil), fx.handler.PseudoFS.GetRootHandle()...)
 
-	args := encodeSecInfoNoNameArgs(types.SECINFO_STYLE4_CURRENT_FH)
-
-	result := fx.handler.handleSecInfoNoName(ctx, nil, bytes.NewReader(args))
+	args := bytes.NewReader(encodeSecInfoNoNameArgs(types.SECINFO_STYLE4_CURRENT_FH))
+	result := fx.handler.handleSecInfoNoName(ctx, nil, args)
 	if result.Status != types.NFS4_OK {
 		t.Fatalf("SECINFO_NO_NAME status = %d, want NFS4_OK", result.Status)
 	}
 
 	entries := decodeSecInfoFlavors(t, result.Data)
-	if !hasFlavor(entries, testAuthSysFlavor) || !hasFlavor(entries, testAuthNoneFlavor) {
+	if !hasFlavor(entries, authSysFlavor) || !hasFlavor(entries, authNoneFlavor) {
 		t.Errorf("SECINFO_NO_NAME on the pseudo-fs root narrowed to a share's policy: %+v", entries)
 	}
 }

@@ -52,12 +52,16 @@ func setupShareNFSConfigTest(t *testing.T) (*store.GORMStore, *ShareNFSConfigHan
 		t.Fatalf("CreateShare: %v", err)
 	}
 
-	handler := NewShareNFSConfigHandler(struct {
+	return cpStore, nfsConfigHandler(cpStore, nil), share.ID
+}
+
+// nfsConfigHandler builds a ShareNFSConfigHandler over cpStore, which satisfies
+// both halves of the handler's composite store interface.
+func nfsConfigHandler(cpStore *store.GORMStore, rt *runtime.Runtime) *ShareNFSConfigHandler {
+	return NewShareNFSConfigHandler(struct {
 		store.ShareStore
 		store.NetgroupStore
-	}{cpStore, cpStore}, nil)
-
-	return cpStore, handler, share.ID
+	}{cpStore, cpStore}, rt)
 }
 
 // doRequest runs a request against a handler func and returns the recorder.
@@ -249,10 +253,7 @@ func TestShareNFSConfig_PatchRejectsInvalidSquash(t *testing.T) {
 func TestShareNFSConfig_PatchRequireKerberosNeedsKerberos(t *testing.T) {
 	cpStore, _, shareID := setupShareNFSConfigTest(t)
 	rt := runtime.New(nil)
-	handler := NewShareNFSConfigHandler(struct {
-		store.ShareStore
-		store.NetgroupStore
-	}{cpStore, cpStore}, rt)
+	handler := nfsConfigHandler(cpStore, rt)
 
 	w := doRequest(t, handler.Patch, http.MethodPatch, `{"require_kerberos":true}`)
 	if w.Code != http.StatusBadRequest {

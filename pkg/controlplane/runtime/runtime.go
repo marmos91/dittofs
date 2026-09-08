@@ -221,9 +221,8 @@ type Runtime struct {
 	ldapConfig *ldap.Config
 
 	// kerberosEnabled records whether the server has Kerberos (RPCSEC_GSS)
-	// configured. Set at startup from the effective Kerberos config, so the
-	// share-config API can refuse a per-share policy only Kerberos could
-	// satisfy. Guarded by mu.
+	// configured, so the share-config API can refuse a per-share policy only
+	// Kerberos could satisfy. Set at startup by SetKerberosEnabled. Guarded by mu.
 	kerberosEnabled bool
 
 	// netlogonCredential is the optional NETLOGON machine credential / DC binding
