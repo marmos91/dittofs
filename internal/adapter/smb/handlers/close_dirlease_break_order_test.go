@@ -115,6 +115,7 @@ func TestClose_DirLeaseRelease_AfterOpenFileRemoval(t *testing.T) {
 		FileID:         fileID,
 		IsDirectory:    true,
 		ShareName:      shareName,
+		SessionID:      1,
 		OplockLevel:    OplockLevelLease,
 		LeaseKey:       leaseKey,
 		MetadataHandle: dirMetaHandle,

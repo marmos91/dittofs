@@ -93,7 +93,9 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 
 	// Persist the sparse bit via SetFileAttributes so QUERY_INFO and
 	// subsequent CREATEs see the FILE_ATTRIBUTE_SPARSE_FILE attribute.
-	h.primeAuthContextFromOpenFile(ctx, openFile)
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return NewErrorResult(status), nil
+	}
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		return NewErrorResult(types.StatusAccessDenied), nil
@@ -182,7 +184,9 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 	// Prime ctx with the OpenFile's recorded session state — without this
 	// hand-off BuildAuthContext takes the ctx.User==nil arm and synthesises
 	// UID-0 (root), bypassing DACL checks on the GetFile probe (#619).
-	h.primeAuthContextFromOpenFile(ctx, openFile)
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return NewErrorResult(status), nil
+	}
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		return NewErrorResult(types.StatusAccessDenied), nil
@@ -422,7 +426,9 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 	// Without this, FileID-only IOCTL requests fall through to anonymous
 	// UID-0 (root) and CommitWrite skips the non-root SUID/SGID clearing
 	// path (#619, same class as #603).
-	h.primeAuthContextFromOpenFile(ctx, openFile)
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return NewErrorResult(status), nil
+	}
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		return NewErrorResult(types.StatusAccessDenied), nil

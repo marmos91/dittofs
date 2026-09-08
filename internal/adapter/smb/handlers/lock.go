@@ -250,7 +250,9 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	// BEFORE BuildAuthContext — otherwise ctx.User==nil falls into the
 	// anonymous arm and synthesises UID-0 (root), bypassing DACL checks on
 	// the downstream lock/unlock metadata operations (#619, same class as #603).
-	h.primeAuthContextFromOpenFile(ctx, openFile)
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return NewErrorResult(status), nil
+	}
 
 	// Build auth context
 	authCtx, err := BuildAuthContext(ctx)

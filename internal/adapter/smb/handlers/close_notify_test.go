@@ -32,6 +32,7 @@ func TestClose_PendingNotifyCleanup_DeferredViaPostSend(t *testing.T) {
 		FileID:      fileID,
 		IsDirectory: true,
 		ShareName:   "share",
+		SessionID:   42,
 		OplockLevel: OplockLevelNone,
 	}).WithName(OpenName{Path: "/share/watched-dir", FileName: "watched-dir"})
 	h.StoreOpenFile(openFile)
@@ -135,6 +136,7 @@ func TestClose_NoPendingNotify_PostSendNil(t *testing.T) {
 		FileID:      fileID,
 		IsDirectory: true,
 		ShareName:   "share",
+		SessionID:   1,
 		OplockLevel: OplockLevelNone,
 	}).WithName(OpenName{Path: "/share/plain-dir", FileName: "plain-dir"})
 	h.StoreOpenFile(openFile)
@@ -188,6 +190,7 @@ func TestClose_DeleteOnClose_CompletesOtherHandlesNotify(t *testing.T) {
 		FileID:               deleterID,
 		IsDirectory:          true,
 		ShareName:            "share",
+		SessionID:            42,
 		MetadataHandle:       metaHandle,
 		InitialDeleteOnClose: true,
 		OplockLevel:          OplockLevelNone,

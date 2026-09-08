@@ -61,9 +61,10 @@ func TestClose_PrimesAuthContextFromOpenFile(t *testing.T) {
 	}).WithName(OpenName{Path: "/share/a.txt"})
 	h.StoreOpenFile(openFile)
 
-	// Build a ctx with zero session/tree state — mirrors the dispatcher,
-	// which arrives keyed only by FileID.
-	ctx := NewSMBHandlerContext(context.TODO(), "127.0.0.1:0", 0 /*session*/, 0 /*tree*/, 1 /*msg*/)
+	// Build a ctx carrying the session/tree the handle was opened on — as the
+	// dispatcher does from the request header — but no user state, which is
+	// what the prime has to supply.
+	ctx := NewSMBHandlerContext(context.TODO(), "127.0.0.1:0", sess.SessionID, treeID, 1 /*msg*/)
 	if ctx.User != nil {
 		t.Fatal("precondition: ctx.User should start nil so the prime is observable")
 	}
@@ -126,7 +127,7 @@ func TestFlush_PrimesAuthContextFromOpenFile(t *testing.T) {
 		SessionID: sess.SessionID,
 	}).WithName(OpenName{Path: "/share2/b.txt"})
 
-	ctx := NewSMBHandlerContext(context.TODO(), "127.0.0.1:0", 0, 0, 1)
+	ctx := NewSMBHandlerContext(context.TODO(), "127.0.0.1:0", sess.SessionID, treeID, 1)
 	if ctx.User != nil {
 		t.Fatal("precondition: ctx.User should start nil")
 	}
