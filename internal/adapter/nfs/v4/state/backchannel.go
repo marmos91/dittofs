@@ -427,6 +427,13 @@ func encodeCBSequenceOp(sessionID types.SessionId4, seqID, slotID, highestSlotID
 //   - the write to it fails
 //   - no reply arrives within the callback timeout
 //   - the reply is not an accepted, successful RPC
+//
+// A failed write ends the probe rather than falling back to a second
+// back-bound connection the way sendCallback does. That is stricter than a
+// real CB_RECALL, so a client whose recalls would have landed on its second
+// connection is judged unreachable and gets no delegation. Withholding one is
+// the safe direction: the cost is a client that caches less, where the reverse
+// is a delegation the server cannot recall.
 func (bs *BackchannelSender) probeCallbackPath(ctx context.Context) error {
 	xid := bs.nextXID.Add(1)
 	callMsg := BuildCBRPCCallMessage(xid, bs.cbProgram.Load(), types.NFS4_CALLBACK_VERSION, types.CB_PROC_NULL, nil)

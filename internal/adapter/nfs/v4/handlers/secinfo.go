@@ -74,7 +74,7 @@ func (h *Handler) handleSecInfo(ctx *types.CompoundContext, reader io.Reader) *t
 	// finds none (RFC 8881 Section 2.6.3.1.1.8). NFSv4.0 retains it
 	// (RFC 7530 Section 16.31.4), and that difference is deliberate in the
 	// spec: 4.1 relies on it to resolve NFS4ERR_WRONGSEC.
-	if ctx.MinorVersionAccepted && ctx.MinorVersion > 0 {
+	if ctx.IsV41OrLater() {
 		ctx.CurrentFH = nil
 	}
 

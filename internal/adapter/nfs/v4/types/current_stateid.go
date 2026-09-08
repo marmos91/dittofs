@@ -29,13 +29,6 @@ func (s *Stateid4) isCurrentStateidPlaceholder() bool {
 	return s.Seqid == 1 && s.Other == [NFS4_OTHER_SIZE]byte{}
 }
 
-// IsV41OrLater reports whether this COMPOUND arrived under a minor version
-// that understands the NFSv4.1 additions to the protocol. Encoding one of them
-// into a reply to a v4.0 client would hand it a union arm it cannot decode.
-func (c *CompoundContext) IsV41OrLater() bool {
-	return c.MinorVersionAccepted && c.MinorVersion >= 1
-}
-
 // tracksCurrentStateid reports whether the placeholder is meaningful in this
 // COMPOUND. It is an NFSv4.1 addition; in a v4.0 COMPOUND (1, 0) is just an
 // ordinary stateid the server never issued.
