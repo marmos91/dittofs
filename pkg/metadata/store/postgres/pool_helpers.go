@@ -281,6 +281,3 @@ var (
 	_ storesql.Executor = poolExecer{}
 	_ storesql.Executor = txExecer{}
 )
-
-// conn returns the Executor over this transaction's open pgx.Tx.
-func (tx *postgresTransaction) conn() storesql.Executor { return txExecer{tx: tx.tx} }
