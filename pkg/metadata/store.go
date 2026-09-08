@@ -366,6 +366,24 @@ type Transactor interface {
 	WithTransaction(ctx context.Context, fn func(tx Transaction) error) error
 }
 
+// FileRowLocker is implemented by a Transaction that needs an explicit row lock
+// for a read-modify-write of one file's attribute record to serialise against
+// another writer.
+//
+// A backend whose transaction already serialises such a pair does not implement
+// it: sqlite and badger both refuse the second writer (SQLITE_BUSY, an SSI
+// conflict) and their retry loop re-runs the whole body, so the retried attempt
+// re-reads. Postgres under READ COMMITTED does neither — the second UPDATE
+// waits for the first to commit and then writes a value computed from the
+// pre-image, losing the first write with no error — so it takes the lock before
+// the read instead.
+type FileRowLocker interface {
+	// LockFileRow blocks until this transaction holds the file's row, and
+	// reports nil when the handle names no row: the caller's own read is what
+	// turns that into ErrNotFound.
+	LockFileRow(ctx context.Context, handle FileHandle) error
+}
+
 // RelaxedTransactor is an OPTIONAL store capability (#1573 Wall 1): running a
 // transaction whose commit may become durable with bounded lag instead of an
 // inline fsync. It is intended ONLY for pure-namespace/attr writes

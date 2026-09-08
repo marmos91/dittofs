@@ -388,3 +388,40 @@ func (tx *postgresTransaction) SetFilesystemCapabilities(capabilities metadata.F
 // ============================================================================
 // Transaction Files Operations (additional)
 // ============================================================================
+
+// LockFileRow implements metadata.FileRowLocker so a read-modify-write of one
+// inode's attributes serialises.
+//
+// Postgres runs this transaction at READ COMMITTED, where a bare read followed
+// by an UPDATE loses a concurrent writer's change without reporting anything:
+// the second UPDATE waits for the first to commit and then writes attributes
+// computed from the pre-image it read earlier. Taking the row here, before that
+// read, makes the second transaction wait at the lock instead, so its read sees
+// the committed value. sqlite and badger need no equivalent — they refuse the
+// second writer and their retry re-reads.
+//
+// No rows come back when the handle names nothing; the caller's read reports
+// that as ErrNotFound.
+func (tx *postgresTransaction) LockFileRow(ctx context.Context, handle metadata.FileHandle) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	shareName, id, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return &metadata.StoreError{
+			Code:    metadata.ErrInvalidHandle,
+			Message: "invalid file handle",
+		}
+	}
+
+	const lockQuery = `SELECT 1 FROM inodes WHERE id = $1 AND share_name = $2 FOR UPDATE`
+	var one int
+	if err := tx.tx.QueryRow(ctx, lockQuery, id, shareName).Scan(&one); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return mapPgError(err, "LockFileRow", "lock inode row")
+	}
+	return nil
+}

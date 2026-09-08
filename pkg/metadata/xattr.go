@@ -227,12 +227,21 @@ func ResolveGetXattr(ctx context.Context, files Files, handle FileHandle, name s
 // and the later write silently drops the earlier one — the call returned nil
 // and the value is gone. Only a store needs the wrap; a Transaction is already
 // inside one and does not implement Transactor, so it falls through.
-func withFileTx(ctx context.Context, files Files, fn func(Files) error) error {
+func withFileTx(ctx context.Context, files Files, handle FileHandle, fn func(Files) error) error {
 	tr, ok := files.(Transactor)
 	if !ok {
 		return fn(files)
 	}
-	return tr.WithTransaction(ctx, func(tx Transaction) error { return fn(tx) })
+	return tr.WithTransaction(ctx, func(tx Transaction) error {
+		// Before the read, so the value the body computes is the committed one
+		// on a backend that neither refuses nor retries the second writer.
+		if locker, ok := tx.(FileRowLocker); ok {
+			if err := locker.LockFileRow(ctx, handle); err != nil {
+				return err
+			}
+		}
+		return fn(tx)
+	})
 }
 
 // ResolveSetXattr writes an xattr value into the inline backing when it fits
@@ -243,7 +252,7 @@ func ResolveSetXattr(ctx context.Context, files Files, handle FileHandle, name s
 	if len(value) > XattrInlineMaxBytes {
 		return ErrXattrTooLarge
 	}
-	return withFileTx(ctx, files, func(files Files) error {
+	return withFileTx(ctx, files, handle, func(files Files) error {
 		file, err := files.GetFile(ctx, handle)
 		if err != nil {
 			return err
@@ -260,7 +269,7 @@ func ResolveSetXattr(ctx context.Context, files Files, handle FileHandle, name s
 // backings removes only the inline copy (the stream entity is untouched), which
 // then makes the stream copy visible per the stream-wins precedence.
 func ResolveRemoveXattr(ctx context.Context, files Files, handle FileHandle, name string) error {
-	return withFileTx(ctx, files, func(files Files) error {
+	return withFileTx(ctx, files, handle, func(files Files) error {
 		file, err := files.GetFile(ctx, handle)
 		if err != nil {
 			return err
