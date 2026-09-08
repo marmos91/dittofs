@@ -22,11 +22,16 @@ import (
 
 // PostgresMetadataStore implements the metadata.Store interface using PostgreSQL
 type PostgresMetadataStore struct {
-	// Core carries the executor and dialect the shared SQL bodies run on, and
-	// promotes those bodies onto this type so they exist once for both
-	// backends. Embedded by pointer: the transaction embeds its own Core over
-	// the open pgx.Tx, and nothing is shared between the two but the dialect.
-	*storesql.Core
+	// PoolPath carries the executor and dialect the shared SQL bodies run on,
+	// and promotes those bodies onto this type so they exist once for both
+	// backends. It holds the Core the transaction-free calls run against; the
+	// transaction embeds its own Core over the open pgx.Tx, and nothing is
+	// shared between the two but the dialect.
+	//
+	// Embedded here rather than embedding Core directly so the multi-statement
+	// writes PoolPath declares shadow their single-statement Core namesakes;
+	// see its type doc for why the depth matters.
+	storesql.PoolPath
 
 	// pool is the PostgreSQL connection pool
 	pool *pgxpool.Pool
@@ -148,8 +153,14 @@ func NewPostgresMetadataStore(
 		cancel:       cancel,
 		quota:        basestore.NewQuotaCache(),
 	}
-	// The shared SQL bodies run on the pool for store-level calls.
-	store.Core = &storesql.Core{X: poolExecer{s: store}, D: pgDialect, Caps: store.currentCapabilities, Log: log}
+	// The shared SQL bodies run on the pool for store-level calls. T is the
+	// store itself, so the writes that span several statements can open a
+	// transaction rather than autocommitting piecemeal on the pool.
+	store.PoolPath = storesql.PoolPath{
+		Core:       &storesql.Core{X: poolExecer{s: store}, D: pgDialect, Caps: store.currentCapabilities, Log: log},
+		T:          store,
+		ShareCache: &store.shareCache,
+	}
 
 	// The substores derive only from pool, which is never reassigned, so bind
 	// them once here.

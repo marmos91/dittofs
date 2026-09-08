@@ -106,6 +106,9 @@ var fileQueries = storesql.FileQueries{
 	FileUsageRow: `SELECT file_type, size, uid, gid, nlink FROM inodes WHERE id = ?1 AND share_name = ?2`,
 	DeleteFile:   `DELETE FROM inodes WHERE id = ?1 AND share_name = ?2`,
 
+	FindByObjectID:  `SELECT id FROM inodes WHERE object_id = ?1 LIMIT 1`,
+	CountByObjectID: `SELECT count(*) FROM inodes WHERE object_id = ?1`,
+
 	GetFileByPayloadID: `SELECT ` + inodeSelectColumns + ` FROM inodes f
 		WHERE f.content_id = ?1
 		LIMIT 1`,

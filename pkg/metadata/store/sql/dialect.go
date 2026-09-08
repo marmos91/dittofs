@@ -214,6 +214,16 @@ type FileQueries struct {
 	// DeleteFile removes one inode row. Two parameters: the file id and the
 	// share name.
 	DeleteFile string
+	// FindByObjectID selects one inode id by Merkle-root object id, over the
+	// partial UNIQUE index files_object_id_idx. One parameter: the object id's
+	// bytes. The LIMIT is defensive — the partial UNIQUE constraint already
+	// admits a single row per non-NULL object id.
+	FindByObjectID string
+	// CountByObjectID counts the inodes indexed under one object id. One
+	// parameter: the object id's bytes. Test-only, backing the
+	// storetest.ObjectIDIndexAccessor capability that asserts exactly one row
+	// survives a first-committer-wins race.
+	CountByObjectID string
 }
 
 // ChunkQueries holds the file-chunk statements in one dialect's syntax. Field
