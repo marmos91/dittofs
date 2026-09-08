@@ -475,10 +475,10 @@ func TestReclaimComplete_StateManager(t *testing.T) {
 		clientID := newReclaimClient(t, sm, "in-grace")
 		sm.StartGracePeriod([]uint64{clientID})
 
-		if err := sm.ReclaimComplete(clientID); err != nil {
+		if err := sm.ReclaimComplete(clientID, false); err != nil {
 			t.Fatalf("ReclaimComplete during grace: %v", err)
 		}
-		wantCompleteAlready(t, sm.ReclaimComplete(clientID))
+		wantCompleteAlready(t, sm.ReclaimComplete(clientID, false))
 
 		// The first call must still retire the client from the roster, and the
 		// early exit lands before ReclaimComplete returns.
@@ -494,10 +494,10 @@ func TestReclaimComplete_StateManager(t *testing.T) {
 		defer sm.Shutdown()
 
 		clientID := newReclaimClient(t, sm, "outside-grace")
-		if err := sm.ReclaimComplete(clientID); err != nil {
+		if err := sm.ReclaimComplete(clientID, false); err != nil {
 			t.Fatalf("first ReclaimComplete outside grace: %v", err)
 		}
-		wantCompleteAlready(t, sm.ReclaimComplete(clientID))
+		wantCompleteAlready(t, sm.ReclaimComplete(clientID, false))
 	})
 
 	t.Run("after_grace_ended", func(t *testing.T) {
@@ -508,10 +508,47 @@ func TestReclaimComplete_StateManager(t *testing.T) {
 		sm.StartGracePeriod([]uint64{clientID, 999})
 		sm.ForceEndGrace()
 
-		if err := sm.ReclaimComplete(clientID); err != nil {
+		if err := sm.ReclaimComplete(clientID, false); err != nil {
 			t.Fatalf("first ReclaimComplete after grace ended: %v", err)
 		}
-		wantCompleteAlready(t, sm.ReclaimComplete(clientID))
+		wantCompleteAlready(t, sm.ReclaimComplete(clientID, false))
+	})
+
+	t.Run("per_fs_does_not_retire_the_global_reclaim", func(t *testing.T) {
+		// The two scopes are independent, and a client may issue both in
+		// either order, so neither flavour may deduplicate against the other.
+		sm := NewStateManager(5*time.Second, 5*time.Second)
+		defer sm.Shutdown()
+
+		clientID := newReclaimClient(t, sm, "both-flavours")
+
+		if err := sm.ReclaimComplete(clientID, true); err != nil {
+			t.Fatalf("per-FS ReclaimComplete: %v", err)
+		}
+		if err := sm.ReclaimComplete(clientID, false); err != nil {
+			t.Fatalf("global ReclaimComplete after a per-FS one: %v", err)
+		}
+		// Only the global scope deduplicates.
+		wantCompleteAlready(t, sm.ReclaimComplete(clientID, false))
+		if err := sm.ReclaimComplete(clientID, true); err != nil {
+			t.Fatalf("per-FS ReclaimComplete after the global one: %v", err)
+		}
+	})
+
+	t.Run("global_then_per_fs", func(t *testing.T) {
+		// The reverse order is equally legitimate.
+		sm := NewStateManager(5*time.Second, 5*time.Second)
+		defer sm.Shutdown()
+
+		clientID := newReclaimClient(t, sm, "global-first")
+
+		if err := sm.ReclaimComplete(clientID, false); err != nil {
+			t.Fatalf("global ReclaimComplete: %v", err)
+		}
+		if err := sm.ReclaimComplete(clientID, true); err != nil {
+			t.Fatalf("per-FS ReclaimComplete after the global one: %v", err)
+		}
+		wantCompleteAlready(t, sm.ReclaimComplete(clientID, false))
 	})
 
 	t.Run("per_client", func(t *testing.T) {
@@ -522,14 +559,14 @@ func TestReclaimComplete_StateManager(t *testing.T) {
 		first := newReclaimClient(t, sm, "client-a")
 		second := newReclaimClient(t, sm, "client-b")
 
-		if err := sm.ReclaimComplete(first); err != nil {
+		if err := sm.ReclaimComplete(first, false); err != nil {
 			t.Fatalf("ReclaimComplete(first): %v", err)
 		}
-		if err := sm.ReclaimComplete(second); err != nil {
+		if err := sm.ReclaimComplete(second, false); err != nil {
 			t.Fatalf("ReclaimComplete(second) after first completed: %v", err)
 		}
-		wantCompleteAlready(t, sm.ReclaimComplete(first))
-		wantCompleteAlready(t, sm.ReclaimComplete(second))
+		wantCompleteAlready(t, sm.ReclaimComplete(first, false))
+		wantCompleteAlready(t, sm.ReclaimComplete(second, false))
 	})
 }
 
