@@ -283,6 +283,11 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 	// Persisting the epoch and reloading it incremented removes the chance
 	// outright; the durable client-recovery store is already handed this value,
 	// so the seam to persist it through exists.
+	// From Go 1.24 the default crypto/rand Reader calls fatal() rather than
+	// returning an error, so a partial fill that would leave this epoch zeroed
+	// is not reachable and the error is dead, exactly as at the other draw in
+	// generateStateidOther. If the module ever drops below Go 1.24 both must
+	// become real error checks.
 	var epochBytes [4]byte
 	_, _ = rand.Read(epochBytes[:])
 	epoch := binary.BigEndian.Uint32(epochBytes[:])
