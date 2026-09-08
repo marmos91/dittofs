@@ -1,4 +1,4 @@
-# Master plan — block data-flow: audit findings + pier/crane/ferry refactor
+# Master plan — block data-flow: audit findings + journal/carver/syncer refactor
 
 Status: **FOR DISCUSSION.** No code written. HIGH findings filed as #2227-#2231 and **#2238**.
 
@@ -6,7 +6,7 @@ Inputs, all authoritative, none superseded by this document:
 - `2026-09-01-journal-audit-report.md` — 59 findings (6 HIGH / 8 MED / 45 LOW), 70 agents.
 - `2026-09-01-engine-audit-report.md` — 66 findings (1 HIGH / 13 MED / 52 LOW), 89 agents.
 - `2026-09-01-block-root-audit-report.md` — 22 findings (0 HIGH / 2 MED / 20 LOW), 45 agents.
-- `2026-09-01-pier-library-design-PLAN.md` — the target design (state model, three interfaces, folder structure, test/bench contracts).
+- `2026-09-01-journal-library-design-PLAN.md` — the target design (state model, three interfaces, folder structure, test/bench contracts).
 
 All three audits ran 7 lenses and an adversarial verify gate. **196 findings over 19,632 LOC.**
 
@@ -42,7 +42,7 @@ verdict overstates its reach if read alone.
 
 Corroborating the extraction case specifically:
 - `RemoteStore`/`BlockID` are entirely dead — never implemented, never read, `nil` at the one
-  production call site. The remote seam pier *actually* has is inbound-only (`Fill`), which is
+  production call site. The remote seam journal *actually* has is inbound-only (`Fill`), which is
   what makes the split viable.
 - Import coupling is trivial: 11 `logger.Warn`, 2 `block.ErrFutureFormat`, one `blake3` call.
 - Semantic coupling is real but localised: three type-asserted manifest interfaces, all in carve.
@@ -100,12 +100,12 @@ Fix nothing here separately; the design eliminates the class.
 | Finding | Closed by |
 |---|---|
 | `doc.go`'s false stdlib/two-interfaces claim | design-plan §8.1 import-graph **test** — a claim that cannot rot |
-| Dead API: `RemoteStore`, `BlockID`, `PinVersion`, `SegmentLocation`, `GC` | deleted; `RemoteStore` becomes `ferry.Store` |
+| Dead API: `RemoteStore`, `BlockID`, `PinVersion`, `SegmentLocation`, `GC` | deleted; `RemoteStore` becomes `syncer.Store` |
 | Three type-asserted manifest interfaces | evaporate: one becomes `DurableTail`, two become the caller calling itself |
 | `store.go` 1297 / `reclaim.go` 999 / `carve.go` 995 | design-plan §6.2 file layout |
 | `segment.go`/`index.go` holding the hot paths their names disown | `write.go` / `read.go` |
-| Two files named `carve_dispatch.go` | one `ferry` |
-| Six near-duplicate test store-openers | one harness in `piertest/` |
+| Two files named `carve_dispatch.go` | one `syncer` |
+| Six near-duplicate test store-openers | one harness in `journaltest/` |
 | `SetCarveTargets` unsynchronized field write | gone — collaborators move to construction |
 | Doc drift (`gc.go`, `logblob.EvictBlob`) | rewritten wholesale |
 
@@ -115,20 +115,20 @@ These do not exist today. The design introduces them and must close them.
 
 | Risk | Mitigation | Source |
 |---|---|---|
-| A free-form `durable []Extent` lets a buggy `fn` flip a range pier never offered — today's `flipIdx` cursor makes that structurally impossible | pier validates every returned extent against the offered-and-unflipped set, matching on **(offset, length, version)** — offset alone would flip new bytes when old ones were uploaded, which is the #1872 shape | design-plan §4.1 C4 |
+| A free-form `durable []Extent` lets a buggy `fn` flip a range journal never offered — today's `flipIdx` cursor makes that structurally impossible | journal validates every returned extent against the offered-and-unflipped set, matching on **(offset, length, version)** — offset alone would flip new bytes when old ones were uploaded, which is the #1872 shape | design-plan §4.1 C4 |
 | Reap outside the flush lock deletes the *next* pass's row — on a **2-second cadence**, not adversarial timing | `FlushOptions.AfterFile`, under the lock. **Mandatory** | design-plan §4.2 |
-| Concurrent `fn` calls race over block boundaries | `fn` called strictly sequentially; ALL upload concurrency lives in ferry | design-plan §4.1 C1 |
+| Concurrent `fn` calls race over block boundaries | `fn` called strictly sequentially; ALL upload concurrency lives in syncer | design-plan §4.1 C1 |
 | `DurableTail` computed eagerly per file loses the per-run cost property | computed lazily, per call | design-plan §4.1 C3 |
 | `Extents()` collapsing five queries regresses the hot path | `Size` and `DurableExtent` stay separate methods; benchmark and keep receipts | review finding |
-| `fn` erroring skips the reap, stranding superseded rows that DID commit | on error pier flips validated extents and **still calls `AfterFile`** | design-plan §4.1 C5 |
+| `fn` erroring skips the reap, stranding superseded rows that DID commit | on error journal flips validated extents and **still calls `AfterFile`** | design-plan §4.1 C5 |
 | Deferred credit bunches most flips onto the `Final` call on upload-bound files | accepted; must be **measured** (residency + time-to-flip vs today) before code | design-plan §4.4 |
-| A shared `ferry.Completions()` channel routes one file's upload completion to another file's callback — many files flush concurrently and `Submit` carries no `FileID` — silently losing durability credit | `Submit` returns a **per-call future**; no shared stream exists | design-plan §4.1 C3 |
+| A shared `syncer.Completions()` channel routes one file's upload completion to another file's callback — many files flush concurrently and `Submit` carries no `FileID` — silently losing durability credit | `Submit` returns a **per-call future**; no shared stream exists | design-plan §4.1 C3 |
 | Whole-extent credit matching forfeits a whole run when one unrelated byte moves — the common case on scattered writes, since `splitRuns` groups by offset only | validate and flip **per fragment**, mirroring `flipUpTo` | design-plan §4.1 C4 |
-| One `crane.Boxer` hoisted to `Syncer` lifetime interleaves two files' bytes into one block — **cross-file corruption**, and pier cannot detect it | **superseded by §11**: `harbour`'s per-`Flush` factory constructs the accumulator inside the closure, so a hoisted one is unrepresentable rather than merely forbidden | design-plan §4.1 C9 |
+| One `carver.Carver` hoisted to `Syncer` lifetime interleaves two files' bytes into one block — **cross-file corruption**, and journal cannot detect it | **superseded by §11**: `engine`'s per-`Flush` factory constructs the accumulator inside the closure, so a hoisted one is unrepresentable rather than merely forbidden | design-plan §4.1 C9 |
 
 ## 4. Sequencing
 
-**Order: ferry → crane → pier.** Reverse of the data flow: leaves first, trunk last.
+**Order: syncer → carver → journal.** Reverse of the data flow: leaves first, trunk last.
 
 The property that earns this order: **steps 1 and 2 are behaviour-preserving.** No on-disk
 format change, no state-model change, no flip-contract change — pure extraction, verifiable by
@@ -141,19 +141,19 @@ Each its own PR, each with a regression test that fails on unmodified `develop`.
 first means the extraction starts from a correct baseline and is not competing with bug fixes
 for review attention.
 
-### Step 1 — ferry
+### Step 1 — syncer
 
 Touches `engine/carve_dispatch.go` (upload window), `journal/carve_dispatch.go` (dispatcher),
 `engine/blocksink.go` (the PUT). Does not touch on-disk format, state model, flip contract, or
 the interval index. Delivers the ordered-completion contract step 3 depends on.
 
-### Step 2 — crane
+### Step 2 — carver
 
 Touches `journal/carve.go`'s packing loop and `pkg/block/chunker`. The critical test is
 **boundary stability**: the same blob chunked in one call vs. many must yield identical
 boundaries, or dedup silently stops working across the fleet.
 
-### Step 3 — pier
+### Step 3 — journal
 
 The seam inversion, `StateLost`, `AfterFile`, provenance validation, the query collapse, the
 file reorganisation. Everything in §3c lands here.
@@ -209,25 +209,25 @@ Still not bundled into refactor PRs — separate workstream, separate revert.
 body is `journal.FileID(payloadID)`, plus `Start()` and `SetMetrics()`, which are empty stubs.
 
 Once the legacy is gone there is no tier left to keep. Only four behaviours in the package are
-not legacy or shim, and each has a better home in pier:
+not legacy or shim, and each has a better home in journal:
 
 1. `journal.CheckFormat(dir/journal)` **before** `Open` — the guard that stops a directory written
-   by a newer release from reading as holes. Move it *inside* `pier.Open`, where it cannot be
+   by a newer release from reading as holes. Move it *inside* `journal.Open`, where it cannot be
    skipped by a caller. Note it is on the zero-test list in §2: it needs a test as it moves.
-2. The `filepath.Join(dir, "journal")` subdirectory convention — pier's own layout decision.
+2. The `filepath.Join(dir, "journal")` subdirectory convention — journal's own layout decision.
 3. `durable = true` — a field.
 4. The `nil` remote argument — that is the dead `journal.RemoteStore` seam, which design-plan §7.3 turns into
-   `ferry.Store`. It disappears on its own.
+   `syncer.Store`. It disappears on its own.
 
 **What stays:** `local.LocalStore` — the interface DittoFS declares — is exactly the §5 mechanism
 and must survive. It has two real implementations (`local/memory` is production-imported at
 `shares/blockstore_config.go:25`, not a test double), so it is not a one-implementation interface.
-It is the *wrapper* that goes, never the contract. `pier.Cache` satisfies `local.LocalStore`
+It is the *wrapper* that goes, never the contract. `journal.Store` satisfies `local.LocalStore`
 directly.
 
 **The one real decision — the ID type.** `journal.FileID` is a defined type (`type FileID string`),
 which is the only reason the ten shims exist. Either alias it (`type FileID = string`, zero
-call-site churn) or re-declare `local.LocalStore` in terms of `pier.FileID` and convert at the
+call-site churn) or re-declare `local.LocalStore` in terms of `journal.FileID` and convert at the
 metadata boundary instead. **Take the second.** An alias discards the only type safety the
 conversion currently buys, and §5's entire premise is that this boundary is checked at compile
 time. The churn is mechanical and the compiler finds every site.
@@ -243,7 +243,7 @@ prospective, not a live bug, and the deletion is not urgent — it is just clear
 
 ## 5. API completeness — DittoFS uses only public APIs
 
-**Requirement: after extraction, DittoFS reaches pier, crane and ferry through their exported
+**Requirement: after extraction, DittoFS reaches journal, carver and syncer through their exported
 APIs only. No embedding, no type assertions on the concrete type, no unexported structural
 interfaces, no custom back doors.**
 
@@ -267,7 +267,7 @@ different fixes:
 | `engine/legacy_migration.go:79` | `prober{HasLogBlobSubstrate}` | ❌ **never — no implementation exists** |
 
 So the hazard is **prospective, not live**. Seven assertions resolve because `FSStore` embeds
-`*journal.Store` and promotion covers them; a rename inside pier would not break the build, it
+`*journal.Store` and promotion covers them; a rename inside journal would not break the build, it
 would silently disable snapshot pinning, cold seed tracking, or per-read verification, and every
 test not exercising that exact path would stay green. **That is the same silent-failure shape as
 H1-H5, held off by nothing but an embed.** `fs.go:57-63` already flags it; this requirement
@@ -281,7 +281,7 @@ problem; it is deletion work, and it belongs to step 4.
 
 ### The enforcement mechanism
 
-> **Only the construction site may name `*pier.Cache` (likewise `*crane.Boxer`, `*ferry.Ferry`).
+> **Only the construction site may name `*journal.Store` (likewise `*carver.Carver`, `*syncer.Syncer`).
 > Everywhere else holds an interface DittoFS declares.**
 
 Consequences, all of them wanted:
@@ -297,10 +297,10 @@ Consequences, all of them wanted:
 
 Greppable gate for "done":
 ```
-rg '\*pier\.Cache|\*crane\.|\*ferry\.' --type go | grep -v _test.go
+rg '\*journal\.Cache|\*carver\.|\*syncer\.' --type go | grep -v _test.go
 ```
 returns only the construction sites. Plus, in each library's own test suite:
-`var _ SomeConsumerInterface = (*pier.Cache)(nil)` — so the library itself pins the contract it
+`var _ SomeConsumerInterface = (*journal.Store)(nil)` — so the library itself pins the contract it
 promises.
 
 ### The forcing function
@@ -310,8 +310,8 @@ incomplete**, and the resolution is to add it deliberately — with a doc commen
 place in the surface — never to reach around it. Every such addition is a design decision made
 in the open rather than a structural interface added quietly in a consumer.
 
-This applies per step: ferry's consumers use only ferry's API at the end of step 1, crane's at
-the end of step 2, pier's at the end of step 3. The requirement is not deferred to a cleanup pass.
+This applies per step: syncer's consumers use only syncer's API at the end of step 1, carver's at
+the end of step 2, journal's at the end of step 3. The requirement is not deferred to a cleanup pass.
 
 ## 6. The green bar
 
@@ -332,8 +332,8 @@ not the complete one.
 
 ### 6.1 Each module owns its own tests
 
-**A module's tests live in that module, and must pass with nothing else in the tree.** pier's
-suite runs against pier alone; likewise crane and ferry. This is not tidiness — it is the same
+**A module's tests live in that module, and must pass with nothing else in the tree.** journal's
+suite runs against journal alone; likewise carver and syncer. This is not tidiness — it is the same
 compile-time completeness check as §5, applied to behaviour:
 
 1. A test that can only be written from DittoFS names a capability the library's public API does
@@ -346,13 +346,13 @@ compile-time completeness check as §5, applied to behaviour:
 
 Concretely, per module:
 
-- **`piertest/`** — the one options-taking store-opener replacing today's six near-duplicate
+- **`journaltest/`** — the one options-taking store-opener replacing today's six near-duplicate
   openers (design-plan §6.3), plus the residency-truth state table: every operation's effect on all five
   states, including `StateLost`. `RestoreToVersion` gets the real suite D2 promises here, not in
   a consumer.
-- **`cranetest/`** — boundary stability first (the same blob chunked in one call vs. many must
+- **`carvertest/`** — boundary stability first (the same blob chunked in one call vs. many must
   yield identical boundaries, or fleet-wide dedup silently degrades), then packing determinism.
-- **`ferrytest/`** — ordered completion under concurrency, window saturation, retry idempotence,
+- **`syncertest/`** — ordered completion under concurrency, window saturation, retry idempotence,
   and the per-call-future contract that replaces the shared `Completions()` channel (design-plan §4.1 C3).
 
 What stays in DittoFS: integration tests that cross module boundaries, the E2E suite, and the
@@ -379,10 +379,10 @@ open-questions space, linking to it. **Discussions is currently disabled** on th
   any extraction begins. The refactor starts from a correct, tested baseline, and a regression
   during steps 1-3 is unambiguously attributable to the refactor rather than to a concurrent bug
   fix — which matters specifically because this is the silent-zeros path.
-- **D2. `RestoreToVersion` ships in pier, with a real test suite.** "Rewind to LSN V" is generic,
+- **D2. `RestoreToVersion` ships in journal, with a real test suite.** "Rewind to LSN V" is generic,
   and it needs ceiling-replay machinery over on-disk records that the public surface will not
-  expose — keeping it DittoFS-side would mean widening pier's surface to let it reach in. The
-  cost is accepted: pier must carry it AND test it before it is fit to publish. Its tests are
+  expose — keeping it DittoFS-side would mean widening journal's surface to let it reach in. The
+  cost is accepted: journal must carry it AND test it before it is fit to publish. Its tests are
   part of step 0 (they are the prerequisite for fixing H1 and H3 at all), not deferred to step 3.
 - **D3. The 45 LOW findings fold into the step that touches their file.** No separate backlog, no
   issue churn.
@@ -507,7 +507,7 @@ them into one receiver is how 46 methods happened.
 
 After §4.1 and the legacy deletion, the root keeps the contract and the types the contract names —
 `FileID`, `Stability`, `Verifier`, `State`, `Span`, `ContentHash`, `FileChunk`, `Locator` — and
-nothing else. Everything that is machinery moves down into `pier` / `crane` / `ferry` / `engine`;
+nothing else. Everything that is machinery moves down into `journal` / `carver` / `syncer` / `engine`;
 everything legacy is deleted outright rather than relocated. A reader opening `pkg/block/` should
 see what the block store promises, not how it keeps the promise.
 
@@ -532,7 +532,7 @@ has never been exercised end to end in one place. Add exactly one of each, both 
 API in the shape an adapter drives it:
 
 - **Integration test** — adapter-shaped writes (unstable, then a range `Commit`) through
-  `WriteAt → pier → crane → ferry → remote`, asserting the **residency transition after every
+  `WriteAt → journal → carver → syncer → remote`, asserting the **residency transition after every
   step** via §9.4's `Extents`, not just the final bytes. It must cover: unstable write leaves
   `Dirty`; commit moves to `Synced`; eviction moves to `Cold`; a cold read faults back in; and a
   deliberately corrupted remote produces `Lost` **with an error**, never zeros. That last case is
@@ -605,8 +605,8 @@ type Substrate interface {
 }
 ```
 
-- **`pier.Substrate`** — stamp is a file; the fence is write-temp + fsync + rename.
-- **`ferry.Substrate`** — stamp is an object at a well-known key; the fence is a conditional PUT.
+- **`journal.Substrate`** — stamp is a file; the fence is write-temp + fsync + rename.
+- **`syncer.Substrate`** — stamp is an object at a well-known key; the fence is a conditional PUT.
 
 #### Where the remote fence lives
 
@@ -669,9 +669,9 @@ migration should be written when a real format change needs one, not speculative
 with the refactor is the stamp, the three classes, the registry and the gate — the parts that must
 exist before the first migration, and no migrations at all.
 
-## 11. `harbour` — the assembly
+## 11. `engine` — the assembly
 
-pier, crane and ferry are three libraries; something must wire them. Today design-plan §6.2 assigns that to
+journal, carver and syncer are three libraries; something must wire them. Today design-plan §6.2 assigns that to
 `dittofs/pkg/block/engine`. Moving the wiring into the library set makes the trio testable and
 `git subtree split` shippable — otherwise the split yields three modules nobody can assemble
 without re-deriving the `Flush` seam from prose.
@@ -681,37 +681,37 @@ counts as durable, what the manifest says — stays in DittoFS. An assembly that
 the god object relocated, and it would re-absorb precisely the residency-truth judgements that
 produced H1-H5.
 
-Its scope is defined by subtraction. **Enforcement of the design-plan §4.1 seam contract stays in pier**, for
-everything pier can observe: per-fragment credit validation, strictly sequential `fn`,
-`AfterFile` under the flush lock. The assembly owns only the residue pier structurally *cannot*
+Its scope is defined by subtraction. **Enforcement of the design-plan §4.1 seam contract stays in journal**, for
+everything journal can observe: per-fragment credit validation, strictly sequential `fn`,
+`AfterFile` under the flush lock. The assembly owns only the residue journal structurally *cannot*
 see:
 
-1. **C9 — the fresh-per-`Flush` accumulator.** The design records that pier cannot detect a
-   hoisted `crane.Boxer`, and that hoisting interleaves two files' bytes into one block:
-   cross-file corruption, undetectable from pier. Today C9 is a *stated caller obligation*. The
+1. **C9 — the fresh-per-`Flush` accumulator.** The design records that journal cannot detect a
+   hoisted `carver.Carver`, and that hoisting interleaves two files' bytes into one block:
+   cross-file corruption, undetectable from journal. Today C9 is a *stated caller obligation*. The
    assembly makes it structural by constructing the accumulator inside a per-`Flush` factory, so
-   a hoisted one cannot be expressed — the same move as ferry's per-call futures replacing the
+   a hoisted one cannot be expressed — the same move as syncer's per-call futures replacing the
    shared `Completions()` channel.
-2. **Config consistency** — crane's chunk params must match what pier records, or dedup silently
+2. **Config consistency** — carver's chunk params must match what journal records, or dedup silently
    degrades across the fleet. One constructor, one place to get it wrong.
 
 That is the whole surface: a constructor and a `fn` factory. If it grows a third responsibility,
 that is the signal it is absorbing policy.
 
 ```
-harbour/
-  harbour.go    New(pier, crane, ferry, Options) — assembles, validates config consistency
+engine/
+  engine.go    New(journal, carver, syncer, Options) — assembles, validates config consistency
   flush.go      the per-Flush fn factory; C9 made structural
   README.md
 ```
 
-**The name is load-bearing.** A harbour is the *place* a pier, its cranes and its ferries sit —
-not an actor. `harbourmaster` was the closer fit for "sequences the three" and was rejected for
-exactly that reason: a harbourmaster has authority, and a package named for authority invites the
-policy drift §11 exists to prevent. If someone proposes adding a decision to `harbour`, the name
-itself is the argument against it.
+**The name is load-bearing, and it already exists.** `engine` is where the three libraries are
+composed, and the package is already called that and already does exactly this job — so the
+assembly needs no new name, only a narrower one. What it must not become is an actor: a package
+that *sequences* the three will attract the decisions §11 exists to keep out. Anything proposing
+to add a policy to `engine` is proposing to make it something other than composition.
 
-**D10. The assembly is `harbour`**, ships with the library set, and holds no policy.
+**D10. The assembly is `engine`**, ships with the library set, and holds no policy.
 
 §9.7's ingestion integration test and benchmark move here, since this is the smallest thing that
 can run the whole path without DittoFS in the tree.
@@ -721,7 +721,7 @@ can run the whole path without DittoFS in the tree.
 - **D5. Scope is the block store only.** The four metadata backends keep their existing schema
   handling. The block format is the one that has actually churned twice.
 - **D6. Compatibility classes, not a version integer**, and the runner/substrate split of §10.3
-  is committed: one runner, `pier.Substrate` and `ferry.Substrate`, three injected primitives.
+  is committed: one runner, `journal.Substrate` and `syncer.Substrate`, three injected primitives.
 - **D7. Revert means abort-in-progress and undo pre-contract only.** No downgrade of a completed
   destructive migration. `Down` is optional and its absence is a stated fact.
 - **D8. Minor applies automatically, major refuses and requires an explicit command.**
@@ -766,7 +766,7 @@ log success.
 rest* — two views of the same byte, out of sync. This one is a **time-of-check/time-of-use race**:
 every view is individually correct, and the defect is that they are read at different instants
 while a writer moves between them. The five-state model in §9.4 is necessary but not sufficient;
-it needs **transitions under concurrency**, not just states. Fold that into `piertest`'s state
+it needs **transitions under concurrency**, not just states. Fold that into `journaltest`'s state
 table — every transition needs a concurrent-writer case, not only a sequential one.
 
 ### 12.2 The finding that neither single-package audit could have found
@@ -808,7 +808,7 @@ Engine findings by area, most-hit first: `gc-mark-sweep-compaction` **15**,
 `composition-lifecycle` 8, `read-path-cold-fetch` 6, `manifest-check-repair` 4,
 `offline-readiness` 3.
 
-Per design-plan §6.2, the extraction moves roughly **500 of engine's 11,304 LOC** into ferry — the upload
+Per design-plan §6.2, the extraction moves roughly **500 of engine's 11,304 LOC** into syncer — the upload
 window, the PUT, and a dead interface. GC, reclaim, manifest check/repair, cold-read resolution
 and offline readiness all stay. **The single new HIGH lives in `gc_sweep_index.go`, which does not
 move**, and the heaviest-hit area is the one least touched by the refactor.
@@ -933,7 +933,7 @@ Consequences, all binding:
 
 1. **Gap-finding rounds outward to block boundaries.** A 4 KiB hole inside a 16 MiB block warms
    that entire block, or nothing at all. Never the 4 KiB.
-2. **`ferry.GetRange` is not part of the warm path.** It exists for a demand read that can
+2. **`syncer.GetRange` is not part of the warm path.** It exists for a demand read that can
    tolerate a partial answer. Prefetch calls `Get`, whole-block, always.
 3. **Partial residency within a block is not representable in the warm path.**
 4. A warm that cannot complete a whole block **fetches nothing** and records nothing (see S2).
@@ -949,10 +949,10 @@ gap that is not the next index. §9.4's `Extents` is what makes the gap expressi
 ### 13.4 Where it lands after the split
 
 - **Policy — when, how far, when to stop — stays in DittoFS.** It needs the manifest and the
-  access pattern; pier has neither, ferry has neither.
-- **Mechanism is `ferry.Get`**, whole-block, at a priority below demand fetches.
-- **Landing is `pier.Hydrate`.**
-- **`harbour` holds none of it.** Prefetch is policy, and §11 is explicit. If prefetch logic turns
+  access pattern; journal has neither, syncer has neither.
+- **Mechanism is `syncer.Get`**, whole-block, at a priority below demand fetches.
+- **Landing is `journal.Hydrate`.**
+- **`engine` holds none of it.** Prefetch is policy, and §11 is explicit. If prefetch logic turns
   up in the assembly, the boundary has already failed.
 
 ### 13.5 Soundness — prefetch widens an open race, today
