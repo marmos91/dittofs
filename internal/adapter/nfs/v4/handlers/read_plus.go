@@ -90,12 +90,16 @@ func (h *Handler) handleReadPlus(ctx *types.CompoundContext, reader io.Reader) *
 	}
 
 	// GetFileForRead: handle-addressed, File.Path unused — skip derivePath.
-	file, err := metaSvc.GetFileForRead(authCtx.Context, metadata.FileHandle(ctx.CurrentFH))
+	fileHandle := metadata.FileHandle(ctx.CurrentFH)
+	file, err := metaSvc.GetFileForRead(authCtx.Context, fileHandle)
 	if err != nil {
 		return readPlusErr(common.MapToNFS4(err))
 	}
 	if file.Type != metadata.FileTypeRegular {
 		return readPlusErr(readTypeError(file.Type))
+	}
+	if status := checkReadPermission(metaSvc, ctx, authCtx, fileHandle, file, types.OP_READ_PLUS); status != types.NFS4_OK {
+		return readPlusErr(status)
 	}
 
 	// Empty file or read entirely past EOF: an empty content array with EOF set.
