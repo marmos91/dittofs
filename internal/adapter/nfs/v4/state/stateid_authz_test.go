@@ -276,7 +276,7 @@ func TestExchangeID_Case2_PrincipalMismatch(t *testing.T) {
 		t.Fatalf("ExchangeID (alice): %v", err)
 	}
 	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0,
-		types.ChannelAttrs{}, types.ChannelAttrs{}, 0, nil, "alice"); err != nil {
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, "alice"); err != nil {
 		t.Fatalf("CreateSession (alice): %v", err)
 	}
 
