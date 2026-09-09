@@ -2779,6 +2779,11 @@ func (sm *StateManager) LockExisting(
 	fileHandle []byte, lockType uint32, offset, length uint64, reclaim bool,
 	callerClientID uint64,
 ) (result *LockResult, err error) {
+	// Special stateids cannot be used with LOCK
+	if lockStateid.IsSpecialStateid() {
+		return nil, ErrBadStateid
+	}
+
 	// Grace period check
 	if !reclaim {
 		if err := sm.CheckGraceForNewState(); err != nil {
