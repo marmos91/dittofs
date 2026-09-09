@@ -26,8 +26,7 @@ Two binaries: `dfs` (server, `cmd/dfs/`) and `dfsctl` (REST client, `cmd/dfsctl/
 
 ## Finding your way around the code
 
-There is a graphify code graph at `graphify-out/`, and a `PreToolUse` hook in
-`.claude/settings.json` that reminds you about it. It is one tool among several,
+There is a graphify code graph at `graphify-out/`. It is one tool among several,
 not a gate you must pass through — route by the *shape* of the question, because
 the wrong tool costs either tokens or a round trip, and there is no prize for
 using the graph on a question it cannot answer.
@@ -37,7 +36,7 @@ using the graph on a question it cannot answer.
 | Who calls `X`? What breaks if I change it? How do `A` and `B` connect? | `graphify query` / `path` / `explain` |
 | Where is the identifier `X` — a symbol, error string, flag, `DITTOFS_*` key? | `rg` directly |
 | Something spanning many files whose names you don't know yet | an `Explore` / `Agent` subagent |
-| Anything in `test/`, `docs/`, `.planning/`, `.claude/`, or non-Go files | `rg` / `Read` — not in the graph |
+| Anything in `test/`, `docs/`, `.planning/`, `.pi/`, `.claude/`, or non-Go files | `rg` / `Read` — not in the graph |
 
 **The graph is AST-only.** `graphify update .` extracts symbols and edges; it
 runs no model and infers no intent. So a question phrased the way you'd ask a
