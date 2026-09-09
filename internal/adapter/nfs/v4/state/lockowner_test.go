@@ -414,6 +414,27 @@ func TestLockExisting_BadStateid(t *testing.T) {
 	}
 }
 
+// A special stateid names no lock state at all: RFC 7530 Section 9.1.4.3
+// admits one only on READ, WRITE and SETATTR, so LOCK must answer
+// NFS4ERR_BAD_STATEID — like every sibling op — and never the STALE that
+// the epoch classifier would draw from a miss.
+func TestLockExisting_SpecialStateid_BadStateid(t *testing.T) {
+	lm := lock.NewManager()
+	sm := NewStateManager(90 * time.Second)
+	sm.SetLockManager(lm)
+
+	_, fileHandle, _, _ := setupClientAndOpenState(t, sm)
+
+	special := &types.Stateid4{} // all-zeros special stateid
+	_, err := sm.LockExisting(context.Background(), special, 1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
+	if !errors.Is(err, ErrBadStateid) {
+		t.Fatalf("LockExisting with a special stateid: got %v, want ErrBadStateid", err)
+	}
+	if errors.Is(err, ErrStaleStateid) {
+		t.Fatal("a special stateid must not reach the epoch classifier (STALE_STATEID)")
+	}
+}
+
 func TestLockExisting_BadSeqid(t *testing.T) {
 	lm := lock.NewManager()
 	sm := NewStateManager(90 * time.Second)
