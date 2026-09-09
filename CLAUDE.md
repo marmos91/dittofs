@@ -52,7 +52,6 @@ drowning the signal, and `-B2 -A2` instead of reading the whole file afterwards.
 Run `graphify update .` after merging, from the main checkout on the merged
 code — see the `fix-issue` skill, step 10.
 
-
 ## Frequent commands
 
 ```bash
