@@ -253,11 +253,15 @@ func TestUnlockFile_V41Seqid0(t *testing.T) {
 }
 
 // TestExchangeID_Case2_PrincipalMismatch is the negative control for the
-// EXCHANGE_ID Case 2 principal-mismatch fix (v41_client.go). RFC 8881
-// Section 18.35.4 requires NFS4ERR_CLID_INUSE when the existing record's
-// principal differs from the incoming one. Before the fix Case 2 unconditionally
-// overwrote the principal, allowing a peer that knows the owner ID + verifier to
-// hijack the client.
+// EXCHANGE_ID principal-mismatch guard (v41_client.go). RFC 8881
+// Section 18.35.4 case 3 requires NFS4ERR_CLID_INUSE when the record's
+// principal differs from the incoming one and that record still holds state
+// under a live lease; without the guard a peer that knows the owner ID +
+// verifier hijacks the client's lease and state.
+//
+// The record has to be confirmed and holding a session for the guard to apply:
+// an unconfirmed record is replaced outright by case 4, and a confirmed record
+// holding nothing is taken over by case 3 itself.
 func TestExchangeID_Case2_PrincipalMismatch(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	defer sm.Shutdown()
@@ -265,16 +269,22 @@ func TestExchangeID_Case2_PrincipalMismatch(t *testing.T) {
 	ownerID := []byte("client-owner-principal")
 	verifier := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
 
-	// Establish the record under principal "alice".
-	if _, err := sm.ExchangeID(ownerID, verifier, 0, nil, "10.0.0.1:12345", "alice"); err != nil {
+	// Establish the record under principal "alice" and confirm it, so it holds
+	// a session.
+	exch, err := sm.ExchangeID(ownerID, verifier, 0, nil, "10.0.0.1:12345", "alice")
+	if err != nil {
 		t.Fatalf("ExchangeID (alice): %v", err)
+	}
+	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0,
+		types.ChannelAttrs{}, types.ChannelAttrs{}, 0, nil, "alice"); err != nil {
+		t.Fatalf("CreateSession (alice): %v", err)
 	}
 
 	// A peer that knows the owner ID + verifier replays EXCHANGE_ID under a
 	// different principal -- must be rejected with NFS4ERR_CLID_INUSE.
-	_, err := sm.ExchangeID(ownerID, verifier, 0, nil, "10.0.0.9:12345", "mallory")
+	_, err = sm.ExchangeID(ownerID, verifier, 0, nil, "10.0.0.9:12345", "mallory")
 	if err == nil {
-		t.Fatal("EXCHANGE_ID Case 2 with a different principal must be rejected")
+		t.Fatal("EXCHANGE_ID with a different principal must be rejected")
 	}
 	if err != ErrClientIDInUse {
 		t.Errorf("expected ErrClientIDInUse, got %v", err)

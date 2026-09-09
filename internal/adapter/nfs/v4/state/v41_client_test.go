@@ -53,7 +53,7 @@ func TestExchangeID_NewClient(t *testing.T) {
 	}
 }
 
-func TestExchangeID_SameOwnerSameVerifier(t *testing.T) {
+func TestExchangeID_SameOwnerSameVerifierUnconfirmed(t *testing.T) {
 	sm := NewStateManager(DefaultLeaseDuration)
 
 	ownerID := []byte("idempotent-client")
@@ -70,12 +70,20 @@ func TestExchangeID_SameOwnerSameVerifier(t *testing.T) {
 		t.Fatalf("ExchangeID #2 error: %v", err)
 	}
 
-	// Same owner + same verifier = same clientID (idempotent)
-	if result1.ClientID != result2.ClientID {
-		t.Errorf("ClientIDs differ: %d vs %d (should be idempotent)", result1.ClientID, result2.ClientID)
+	// The first record was never confirmed, so the repeat request replaces it
+	// with a fresh client ID rather than returning the same one.
+	if result1.ClientID == result2.ClientID {
+		t.Errorf("ClientID unchanged (%d): an unconfirmed record must be replaced", result1.ClientID)
 	}
-	if result1.SequenceID != result2.SequenceID {
-		t.Errorf("SequenceIDs differ: %d vs %d", result1.SequenceID, result2.SequenceID)
+	if result2.SequenceID != 1 {
+		t.Errorf("SequenceID on the replacement = %d, want 1", result2.SequenceID)
+	}
+
+	sm.mu.RLock()
+	_, existsOld := sm.v41ClientsByID[result1.ClientID]
+	sm.mu.RUnlock()
+	if existsOld {
+		t.Error("the replaced unconfirmed record should have been purged")
 	}
 }
 
@@ -392,12 +400,13 @@ func TestExchangeID_ConfirmedReboot(t *testing.T) {
 		t.Fatalf("ExchangeID #1 error: %v", err)
 	}
 
-	// Simulate confirmation
-	sm.mu.Lock()
-	sm.v41ClientsByID[result1.ClientID].Confirmed = true
-	sm.mu.Unlock()
+	// Confirm the first incarnation the way a client does.
+	if _, _, err := sm.CreateSession(result1.ClientID, result1.SequenceID, 0,
+		types.ChannelAttrs{}, types.ChannelAttrs{}, 0, nil); err != nil {
+		t.Fatalf("CreateSession error: %v", err)
+	}
 
-	// Reboot with different verifier -> Case 3
+	// Reboot with a different verifier -> case 5
 	result2, err := sm.ExchangeID(ownerID, verifier2, 0, nil, "10.0.0.1:12345")
 	if err != nil {
 		t.Fatalf("ExchangeID #2 error: %v", err)
@@ -407,18 +416,35 @@ func TestExchangeID_ConfirmedReboot(t *testing.T) {
 		t.Error("ClientID should change after reboot of confirmed client")
 	}
 
-	// Verify old record is gone
+	// The previous incarnation survives until the new client ID is confirmed,
+	// and the owner ID now resolves to the new record.
 	sm.mu.RLock()
 	_, existsOld := sm.v41ClientsByID[result1.ClientID]
+	byOwner := sm.v41ClientsByOwner[string(ownerID)]
 	sm.mu.RUnlock()
 
-	if existsOld {
-		t.Error("Old confirmed client should be purged after reboot")
+	if !existsOld {
+		t.Error("Old confirmed client should survive until the new client ID is confirmed")
+	}
+	if byOwner == nil || byOwner.ClientID != result2.ClientID {
+		t.Error("Owner ID should resolve to the new unconfirmed record")
 	}
 
 	// New record should not have CONFIRMED_R
 	if result2.Flags&types.EXCHGID4_FLAG_CONFIRMED_R != 0 {
 		t.Error("New client after reboot should not have CONFIRMED_R")
+	}
+
+	// Confirming the new client ID collapses the two records into one.
+	if _, _, err := sm.CreateSession(result2.ClientID, result2.SequenceID, 0,
+		types.ChannelAttrs{}, types.ChannelAttrs{}, 0, nil); err != nil {
+		t.Fatalf("CreateSession on the new incarnation: %v", err)
+	}
+	sm.mu.RLock()
+	_, existsOld = sm.v41ClientsByID[result1.ClientID]
+	sm.mu.RUnlock()
+	if existsOld {
+		t.Error("Old confirmed client should be purged once the reboot is confirmed")
 	}
 }
 
