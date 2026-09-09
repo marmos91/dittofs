@@ -443,7 +443,7 @@ func TestClientRecovery_V41PersistAndReclaimComplete(t *testing.T) {
 		t.Fatalf("CreateSession(2): %v", err)
 	}
 	_ = cs
-	if err := sm2.ReclaimComplete(exch2.ClientID); err != nil {
+	if err := sm2.ReclaimComplete(exch2.ClientID, false); err != nil {
 		t.Fatalf("ReclaimComplete: %v", err)
 	}
 	if sm2.IsInGrace() {
