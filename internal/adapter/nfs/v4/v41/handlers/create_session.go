@@ -46,6 +46,7 @@ func HandleCreateSession(d *Deps, ctx *types.CompoundContext, _ *types.V41Reques
 		args.BackChannelAttrs,
 		args.CbProgram,
 		args.CbSecParms,
+		ctx.Principal(),
 	)
 
 	// Replay case: return cached XDR response bytes directly
