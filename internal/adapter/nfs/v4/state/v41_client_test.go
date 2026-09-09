@@ -80,7 +80,7 @@ func TestExchangeID_SameOwnerSameVerifierUnconfirmed(t *testing.T) {
 	}
 
 	sm.mu.RLock()
-	_, existsOld := sm.v41ClientsByID[result1.ClientID]
+	existsOld := sm.v41ClientLocked(result1.ClientID) != nil
 	sm.mu.RUnlock()
 	if existsOld {
 		t.Error("the replaced unconfirmed record should have been purged")
@@ -139,8 +139,8 @@ func TestExchangeID_UnconfirmedReplace(t *testing.T) {
 
 	// Old client should be purged
 	sm.mu.RLock()
-	_, existsOld := sm.v41ClientsByID[result1.ClientID]
-	_, existsNew := sm.v41ClientsByID[result2.ClientID]
+	existsOld := sm.v41ClientLocked(result1.ClientID) != nil
+	existsNew := sm.v41ClientLocked(result2.ClientID) != nil
 	sm.mu.RUnlock()
 
 	if existsOld {
@@ -333,12 +333,12 @@ func TestEvictV41Client(t *testing.T) {
 		t.Fatalf("EvictV41Client error: %v", err)
 	}
 	sm.mu.RLock()
-	_, existsID := sm.v41ClientsByID[result.ClientID]
+	existsID := sm.v41ClientLocked(result.ClientID) != nil
 	_, existsOwner := sm.v41ClientsByOwner[string(ownerID)]
 	sm.mu.RUnlock()
 
 	if existsID {
-		t.Error("Client should not exist in v41ClientsByID after eviction")
+		t.Error("Client should not exist in the client index after eviction")
 	}
 	if existsOwner {
 		t.Error("Client should not exist in v41ClientsByOwner after eviction")
@@ -419,7 +419,7 @@ func TestExchangeID_ConfirmedReboot(t *testing.T) {
 	// The previous incarnation survives until the new client ID is confirmed,
 	// and the owner ID now resolves to the new record.
 	sm.mu.RLock()
-	_, existsOld := sm.v41ClientsByID[result1.ClientID]
+	existsOld := sm.v41ClientLocked(result1.ClientID) != nil
 	byOwner := sm.v41ClientsByOwner[string(ownerID)]
 	sm.mu.RUnlock()
 
@@ -441,7 +441,7 @@ func TestExchangeID_ConfirmedReboot(t *testing.T) {
 		t.Fatalf("CreateSession on the new incarnation: %v", err)
 	}
 	sm.mu.RLock()
-	_, existsOld = sm.v41ClientsByID[result1.ClientID]
+	existsOld = sm.v41ClientLocked(result1.ClientID) != nil
 	sm.mu.RUnlock()
 	if existsOld {
 		t.Error("Old confirmed client should be purged once the reboot is confirmed")
@@ -462,7 +462,7 @@ func TestExchangeID_ConfirmedIdempotent(t *testing.T) {
 
 	// Simulate confirmation
 	sm.mu.Lock()
-	sm.v41ClientsByID[result1.ClientID].Confirmed = true
+	sm.v41ClientLocked(result1.ClientID).Confirmed = true
 	sm.mu.Unlock()
 
 	// Same verifier -> idempotent, should return CONFIRMED_R
@@ -549,7 +549,7 @@ func TestExchangeID_Timing(t *testing.T) {
 	after := time.Now()
 
 	sm.mu.RLock()
-	record := sm.v41ClientsByID[result.ClientID]
+	record := sm.v41ClientLocked(result.ClientID)
 	sm.mu.RUnlock()
 
 	if record.CreatedAt.Before(before) || record.CreatedAt.After(after) {
@@ -586,12 +586,12 @@ func TestDestroyV41ClientID(t *testing.T) {
 
 		// Verify client is gone
 		sm.mu.RLock()
-		_, existsID := sm.v41ClientsByID[result.ClientID]
+		existsID := sm.v41ClientLocked(result.ClientID) != nil
 		_, existsOwner := sm.v41ClientsByOwner[string(ownerID)]
 		sm.mu.RUnlock()
 
 		if existsID {
-			t.Error("Client should not exist in v41ClientsByID after destroy")
+			t.Error("Client should not exist in the client index after destroy")
 		}
 		if existsOwner {
 			t.Error("Client should not exist in v41ClientsByOwner after destroy")

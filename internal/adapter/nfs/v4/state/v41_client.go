@@ -373,7 +373,7 @@ func (sm *StateManager) collapseSupersededLocked(record *ClientRecord) {
 	if superseded == nil {
 		return
 	}
-	if sm.v41ClientsByID[superseded.ClientID] != superseded {
+	if sm.clientsByID[superseded.ClientID] != superseded {
 		return
 	}
 
@@ -395,20 +395,21 @@ func (sm *StateManager) createV41Client(
 	now := time.Now()
 
 	record := &ClientRecord{
-		ClientID:    sm.generateClientID(),
-		OwnerID:     make([]byte, len(ownerID)),
-		Verifier:    verifier,
-		SequenceID:  0,
-		ClientAddr:  clientAddr,
-		Principal:   principal,
-		CreatedAt:   now,
-		LastRenewal: now,
+		ClientID:     sm.generateClientID(),
+		MinorVersion: 1,
+		OwnerID:      make([]byte, len(ownerID)),
+		Verifier:     verifier,
+		SequenceID:   0,
+		ClientAddr:   clientAddr,
+		Principal:    principal,
+		CreatedAt:    now,
+		LastRenewal:  now,
 	}
 	copy(record.OwnerID, ownerID)
 	applyImplInfo(record, clientImplId)
 
 	ownerKey := string(ownerID)
-	sm.v41ClientsByID[record.ClientID] = record
+	sm.clientsByID[record.ClientID] = record
 	sm.v41ClientsByOwner[ownerKey] = record
 
 	return record
@@ -471,14 +472,14 @@ func (sm *StateManager) purgeV41Client(record *ClientRecord) {
 	}
 	delete(sm.sessionsByClientID, record.ClientID)
 
-	delete(sm.v41ClientsByID, record.ClientID)
+	delete(sm.clientsByID, record.ClientID)
 	ownerKey := string(record.OwnerID)
 	if existing := sm.v41ClientsByOwner[ownerKey]; existing == record {
 		// A record that superseded a still-live confirmed one hands the owner ID
 		// back to it, so the confirmed client remains reachable by owner ID once
 		// its unconfirmed replacement is gone.
 		if superseded := record.Superseded; superseded != nil &&
-			sm.v41ClientsByID[superseded.ClientID] == superseded {
+			sm.clientsByID[superseded.ClientID] == superseded {
 			sm.v41ClientsByOwner[ownerKey] = superseded
 		} else {
 			delete(sm.v41ClientsByOwner, ownerKey)
@@ -496,8 +497,11 @@ func (sm *StateManager) ListV41Clients() []*ClientRecord {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	clients := make([]*ClientRecord, 0, len(sm.v41ClientsByID))
-	for _, record := range sm.v41ClientsByID {
+	clients := make([]*ClientRecord, 0, len(sm.clientsByID))
+	for _, record := range sm.clientsByID {
+		if record.MinorVersion != 1 {
+			continue
+		}
 		clients = append(clients, record)
 	}
 	return clients
@@ -523,8 +527,8 @@ func (sm *StateManager) EvictV41Client(clientID uint64) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	record, exists := sm.v41ClientsByID[clientID]
-	if !exists {
+	record := sm.v41ClientLocked(clientID)
+	if record == nil {
 		return fmt.Errorf("v4.1 client %d not found", clientID)
 	}
 
@@ -551,8 +555,8 @@ func (sm *StateManager) DestroyV41ClientID(clientID uint64) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	record, exists := sm.v41ClientsByID[clientID]
-	if !exists {
+	record := sm.v41ClientLocked(clientID)
+	if record == nil {
 		return &NFS4StateError{
 			Status:  types.NFS4ERR_STALE_CLIENTID,
 			Message: fmt.Sprintf("v4.1 client %d not found", clientID),
