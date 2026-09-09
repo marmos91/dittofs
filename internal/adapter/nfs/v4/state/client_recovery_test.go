@@ -599,3 +599,142 @@ func TestClientRecovery_ReclaimPersistRetryAbandonedWhenIncarnationGone(t *testi
 		t.Fatalf("stale retry stamped a fresh incarnation's record: %v", marks)
 	}
 }
+
+// A v4.0 CLAIM_PREVIOUS reclaim must persist its reclaim-complete marker and
+// set the in-memory flag, so a failed write is repaired by the background
+// retry: the v4.0 path sets ReclaimComplete before scheduling (the flag is
+// what a retry re-validates against), and the first successful CLAIM_PREVIOUS
+// is the v4.0 analog of RECLAIM_COMPLETE.
+func TestClientRecovery_V40ReclaimPersistRetriedAfterFailure(t *testing.T) {
+	spy := newSpyRecoveryStore()
+	spy.reclaimFailuresLeft = 1
+	sm := NewStateManager(5*time.Second, 30*time.Second)
+	sm.SetClientRecoveryStore(spy, 7)
+
+	// Re-establish identity with a matching boot verifier, then reclaim via
+	// CLAIM_PREVIOUS during grace.
+	verf := [8]byte{0x35}
+	spy.records["v40-retry-owner"] = &lock.V4ClientRecoveryRecord{
+		ClientIDString: "v40-retry-owner",
+		BootVerifier:   verf,
+	}
+	if n := sm.LoadClientRecovery(context.Background(), true); n != 1 {
+		t.Fatalf("seeded %d, want 1", n)
+	}
+	if !sm.IsInGrace() {
+		t.Fatal("should be in grace")
+	}
+	res, err := sm.SetClientID("v40-retry-owner", verf, CallbackInfo{}, "10.0.0.32:1")
+	if err != nil {
+		t.Fatalf("SetClientID: %v", err)
+	}
+	if err := sm.ConfirmClientID(res.ClientID, res.ConfirmVerifier); err != nil {
+		t.Fatalf("ConfirmClientID: %v", err)
+	}
+	if _, err := sm.OpenFile(res.ClientID, []byte("owner"), 1, []byte("fh"), 1, 0, types.CLAIM_PREVIOUS); err != nil {
+		t.Fatalf("CLAIM_PREVIOUS: %v", err)
+	}
+
+	// The first write failed, so no durable mark may have landed yet.
+	marks := spy.snapshotReclaims()
+	if len(marks) != 0 {
+		t.Fatalf("no reclaim mark should have landed yet, got %v", marks)
+	}
+
+	// The background retry (2s base delay) must repair the write on its own.
+	deadline := time.After(10 * time.Second)
+	for {
+		if len(spy.snapshotReclaims()) > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("v4.0 reclaim-complete persist was never retried")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if !spy.records["v40-retry-owner"].ReclaimComplete {
+		t.Fatal("durable record not marked reclaim-complete after retry")
+	}
+}
+
+// A v4.0 retry must not stamp ReclaimComplete over a fresh incarnation's
+// durable record either: once the issuing client no longer holds the key, the
+// pending entry is dropped and the chain dies.
+func TestClientRecovery_V40ReclaimPersistRetryAbandonedWhenClientGone(t *testing.T) {
+	spy := newSpyRecoveryStore()
+	spy.reclaimFailuresLeft = 1
+	sm := NewStateManager(5*time.Second, 30*time.Second)
+	sm.SetClientRecoveryStore(spy, 7)
+
+	verf := [8]byte{0x36}
+	spy.records["v40-stale-retry-owner"] = &lock.V4ClientRecoveryRecord{
+		ClientIDString: "v40-stale-retry-owner",
+		BootVerifier:   verf,
+	}
+	if n := sm.LoadClientRecovery(context.Background(), true); n != 1 {
+		t.Fatalf("seeded %d, want 1", n)
+	}
+	res, err := sm.SetClientID("v40-stale-retry-owner", verf, CallbackInfo{}, "10.0.0.33:1")
+	if err != nil {
+		t.Fatalf("SetClientID: %v", err)
+	}
+	if err := sm.ConfirmClientID(res.ClientID, res.ConfirmVerifier); err != nil {
+		t.Fatalf("ConfirmClientID: %v", err)
+	}
+	if _, err := sm.OpenFile(res.ClientID, []byte("owner"), 1, []byte("fh"), 1, 0, types.CLAIM_PREVIOUS); err != nil {
+		t.Fatalf("CLAIM_PREVIOUS: %v", err)
+	}
+
+	// Drop the client's in-memory record before the retry fires: the issuing
+	// client no longer holds the key, so the stale retry must be abandoned.
+	sm.mu.Lock()
+	delete(sm.clientsByID, res.ClientID)
+	sm.mu.Unlock()
+
+	time.Sleep(3 * time.Second)
+	if marks := spy.snapshotReclaims(); len(marks) != 0 {
+		t.Fatalf("stale v4.0 retry stamped a record after the client was gone: %v", marks)
+	}
+}
+
+// A re-schedule while a retry chain is live must adopt the chain, not fork a
+// second one: two failed persists for the same key leave exactly one pending
+// entry, so a down backend cannot pile up chains for one client.
+func TestClientRecovery_ReclaimPersistRescheduleAdoptsExistingChain(t *testing.T) {
+	spy := newSpyRecoveryStore()
+	spy.reclaimErr = errors.New("backend down")
+	sm := NewStateManager(5*time.Second, 30*time.Second)
+	sm.SetClientRecoveryStore(spy, 7)
+
+	owner := []byte("adopt-owner")
+	exch, err := sm.ExchangeID(owner, [8]byte{0x37}, 0, nil, "10.0.0.34:1", "uid:0")
+	if err != nil {
+		t.Fatalf("ExchangeID: %v", err)
+	}
+	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, types.ChannelAttrs{}, types.ChannelAttrs{}, 0, nil, "uid:0"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := sm.ReclaimComplete(exch.ClientID, false); err != nil {
+		t.Fatalf("ReclaimComplete: %v", err)
+	}
+
+	// The store is persistently down, so the first chain is live and backing
+	// off. A second RECLAIM_COMPLETE would draw COMPLETE_ALREADY, so drive the
+	// re-schedule directly through the internal seam the write site uses.
+	sm.mu.Lock()
+	sm.scheduleReclaimPersistRetryLocked(exch.ClientID, v41RecoveryKey(owner), reclaimPersistRetryBase)
+	pendingCount := len(sm.pendingReclaimPersists)
+	clientID, delay := sm.pendingReclaimPersists[v41RecoveryKey(owner)].clientID, sm.pendingReclaimPersists[v41RecoveryKey(owner)].delay
+	sm.mu.Unlock()
+
+	if pendingCount != 1 {
+		t.Fatalf("pending chains = %d, want 1 (a re-schedule must adopt, not fork)", pendingCount)
+	}
+	if clientID != exch.ClientID {
+		t.Errorf("adopted chain points at client %d, want the latest issuer %d", clientID, exch.ClientID)
+	}
+	if delay != reclaimPersistRetryBase {
+		t.Errorf("adopted chain delay = %v, want the fresh %v", delay, reclaimPersistRetryBase)
+	}
+}
