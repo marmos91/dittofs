@@ -310,7 +310,7 @@ func TestCreateSession_ConfirmsClient(t *testing.T) {
 
 	// Before CREATE_SESSION, client should not be confirmed
 	sm.mu.RLock()
-	record := sm.v41ClientsByID[clientID]
+	record := sm.v41ClientLocked(clientID)
 	confirmed := record.Confirmed
 	sm.mu.RUnlock()
 
@@ -328,7 +328,7 @@ func TestCreateSession_ConfirmsClient(t *testing.T) {
 
 	// After CREATE_SESSION, client should be confirmed with a lease
 	sm.mu.RLock()
-	record = sm.v41ClientsByID[clientID]
+	record = sm.v41ClientLocked(clientID)
 	confirmed = record.Confirmed
 	hasLease := record.Lease != nil
 	sm.mu.RUnlock()
@@ -1143,7 +1143,7 @@ func TestReaper_ExpiredLease(t *testing.T) {
 	}
 
 	sm.mu.RLock()
-	_, exists := sm.v41ClientsByID[clientID]
+	exists := sm.v41ClientLocked(clientID) != nil
 	sm.mu.RUnlock()
 
 	if exists {
@@ -1158,7 +1158,7 @@ func TestReaper_UnconfirmedTimeout(t *testing.T) {
 
 	// Client is unconfirmed (no CREATE_SESSION yet)
 	sm.mu.RLock()
-	record := sm.v41ClientsByID[clientID]
+	record := sm.v41ClientLocked(clientID)
 	confirmed := record.Confirmed
 	sm.mu.RUnlock()
 
@@ -1174,7 +1174,7 @@ func TestReaper_UnconfirmedTimeout(t *testing.T) {
 
 	// Client should be purged
 	sm.mu.RLock()
-	_, exists := sm.v41ClientsByID[clientID]
+	exists := sm.v41ClientLocked(clientID) != nil
 	sm.mu.RUnlock()
 
 	if exists {
@@ -1204,7 +1204,7 @@ func TestReaper_ActiveLeaseNotCleaned(t *testing.T) {
 	}
 
 	sm.mu.RLock()
-	_, exists := sm.v41ClientsByID[clientID]
+	exists := sm.v41ClientLocked(clientID) != nil
 	sm.mu.RUnlock()
 
 	if !exists {
@@ -1258,7 +1258,7 @@ func TestReaper_ExpiredLeaseReleasesOpenState(t *testing.T) {
 	sm.reapExpiredSessions()
 
 	sm.mu.RLock()
-	_, clientLives := sm.v41ClientsByID[clientID]
+	clientLives := sm.v41ClientLocked(clientID) != nil
 	owners := len(sm.openOwners)
 	opens := len(sm.openStateByOther)
 	lockOwners := len(sm.lockOwners)
@@ -1417,7 +1417,7 @@ func TestCacheCreateSessionResponse(t *testing.T) {
 	sm.CacheCreateSessionResponse(clientID, responseBytes)
 
 	sm.mu.RLock()
-	record := sm.v41ClientsByID[clientID]
+	record := sm.v41ClientLocked(clientID)
 	cached := record.CachedCreateSessionRes
 	sm.mu.RUnlock()
 
@@ -1428,7 +1428,7 @@ func TestCacheCreateSessionResponse(t *testing.T) {
 	// Verify it's a copy (modifying original shouldn't affect cached)
 	responseBytes[0] = 'X'
 	sm.mu.RLock()
-	record = sm.v41ClientsByID[clientID]
+	record = sm.v41ClientLocked(clientID)
 	cached = record.CachedCreateSessionRes
 	sm.mu.RUnlock()
 

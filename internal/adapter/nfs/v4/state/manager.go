@@ -33,10 +33,14 @@ const DefaultLeaseDuration = 90 * time.Second
 type StateManager struct {
 	mu sync.RWMutex
 
-	// clientsByID maps server-assigned client IDs to v4.0 client records
-	// (those established by SETCLIENTID). v4.1 clients are indexed by
-	// v41ClientsByID; the two maps never hold the same ID because
-	// generateClientID draws both from one sequence.
+	// clientsByID maps server-assigned client IDs to client records of both
+	// minor versions: v4.0 records (established by SETCLIENTID, MinorVersion 0)
+	// and v4.1 records (established by EXCHANGE_ID, MinorVersion 1). The two
+	// never hold the same ID because generateClientID draws both flows from one
+	// sequence, and ClientRecord.MinorVersion says which flow minted each
+	// entry. Version-sensitive operations read it through the v40Client /
+	// v41Client helpers below; version-agnostic readers (e.g. the shared
+	// recovery-key switch, delegation handback) may index the map directly.
 	clientsByID map[uint64]*ClientRecord
 
 	// clientsByName maps nfs_client_id4.id strings to confirmed client records.
@@ -189,14 +193,13 @@ type StateManager struct {
 	bootRecoveryVerifiers map[string][8]byte
 
 	// ============================================================================
-	// NFSv4.1 State
+	// Version-sensitive lookup helpers
 	// ============================================================================
+	// (methods on StateManager; see v40ClientLocked / v41ClientLocked below)
 
-	// v41ClientsByID maps server-assigned client IDs to v4.1 client records.
-	v41ClientsByID map[uint64]*ClientRecord
-
-	// v41ClientsByOwner maps owner ID bytes (string key) to v4.1 client records.
-	// Uses string(ownerID) for byte-exact comparison.
+	// v41ClientsByOwner maps v4.1 owner ID bytes (string key) to client
+	// records. EXCHANGE_ID resolves by owner, which no v4.0 flow supplies,
+	// so every entry is a MinorVersion-1 record by construction.
 	v41ClientsByOwner map[string]*ClientRecord
 
 	// sessionsByID maps session IDs to session objects.
@@ -295,7 +298,6 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 	return &StateManager{
 		clientsByID:         make(map[uint64]*ClientRecord),
 		clientsByName:       make(map[string]*ClientRecord),
-		unconfirmedByName:   make(map[string]*ClientRecord),
 		openStateByOther:    make(map[[types.NFS4_OTHER_SIZE]byte]*OpenState),
 		openStateByFile:     make(map[string][]*OpenState),
 		openOwners:          make(map[openOwnerKey]*OpenOwner),
@@ -313,8 +315,9 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		bootEpoch:           epoch,
 		leaseDuration:       leaseDuration,
 		graceDuration:       gd,
-		// NFSv4.1 state
-		v41ClientsByID:       make(map[uint64]*ClientRecord),
+		// v4.0 SETCLIENTID confirmation state
+		unconfirmedByName: make(map[string]*ClientRecord),
+		// v4.1 state
 		v41ClientsByOwner:    make(map[string]*ClientRecord),
 		sessionsByID:         make(map[types.SessionId4]*Session),
 		sessionsByClientID:   make(map[uint64][]*Session),
@@ -681,9 +684,12 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// Look up the record by client ID
-	record, exists := sm.clientsByID[clientID]
-	if !exists {
+	// Look up the record by client ID. SETCLIENTID_CONFIRM is a v4.0-only
+	// operation, so a v4.1 record under this ID must not be reachable here:
+	// confirming it would arm the CBPathUp probe and the lease timer the
+	// EXCHANGE_ID flow manages through CREATE_SESSION instead.
+	record := sm.v40ClientLocked(clientID)
+	if record == nil {
 		return fmt.Errorf("%w: client ID %d not found", ErrStaleClientID, clientID)
 	}
 
@@ -792,8 +798,8 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 			err := sm.cbNullFunc(context.Background(), cbInfo)
 			sm.mu.Lock()
 			defer sm.mu.Unlock()
-			rec, ok := sm.clientsByID[clientID]
-			if !ok || rec != recordPtr || rec.Callback != cbInfo {
+			rec := sm.v40ClientLocked(clientID)
+			if rec == nil || rec != recordPtr || rec.Callback != cbInfo {
 				// Client was removed, this client ID now points at a different
 				// record generation (reboot) while CB_NULL was in flight, or the
 				// record kept its identity but moved to another callback address
@@ -819,31 +825,53 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 // if no record exists. Used by RENEW and other operations that need
 // to look up client state.
 //
-// v4.0 only: it reads the SETCLIENTID index, so a v4.1 client ID comes back
-// nil even though both minor versions now share the record type. Use
-// clientRecordLocked for a lookup that should not care which flow minted the
-// ID.
+// v4.0 only: the shared index holds both minor versions, so a v4.1 client ID
+// is filtered out here and comes back nil. Use clientRecordLocked for a
+// lookup that should not care which flow minted the ID.
 func (sm *StateManager) GetClient(clientID uint64) *ClientRecord {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	return sm.clientsByID[clientID]
+	return sm.v40ClientLocked(clientID)
 }
 
-// clientRecordLocked returns the record for clientID from whichever index holds
-// it, or nil when no client owns that ID. The v4.0 index is consulted first;
-// the two never hold the same ID because generateClientID draws both from one
-// sequence, so the order only decides which map absorbs the lookup.
+// clientRecordLocked returns the record for clientID from the shared client
+// index, or nil when no client owns that ID.
 //
 // Callers hold a client ID and have no reason to know which minor version
 // minted it, which is why version-independent policy reads the record through
-// here rather than naming a map.
+// here rather than naming a version.
 //
 // Caller must hold sm.mu.
 func (sm *StateManager) clientRecordLocked(clientID uint64) *ClientRecord {
-	if record := sm.clientsByID[clientID]; record != nil {
-		return record
+	return sm.clientsByID[clientID]
+}
+
+// v40ClientLocked returns the v4.0 record for clientID, or nil when the ID is
+// unknown or names a v4.1 record. Every SETCLIENTID-flow operation reads the
+// index through here: a v4.1 client must be invisible to RENEW, to
+// SETCLIENTID_CONFIRM, and to the v4.0 expiry path, all of which would
+// otherwise act on state the EXCHANGE_ID flow owns.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) v40ClientLocked(clientID uint64) *ClientRecord {
+	record := sm.clientsByID[clientID]
+	if record == nil || record.MinorVersion != 0 {
+		return nil
 	}
-	return sm.v41ClientsByID[clientID]
+	return record
+}
+
+// v41ClientLocked returns the v4.1 record for clientID, or nil when the ID is
+// unknown or names a v4.0 record. Every EXCHANGE_ID-flow operation reads the
+// index through here, mirroring v40ClientLocked.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) v41ClientLocked(clientID uint64) *ClientRecord {
+	record := sm.clientsByID[clientID]
+	if record == nil || record.MinorVersion != 1 {
+		return nil
+	}
+	return record
 }
 
 // renewConfirmedClient admits a confirmed client whose lease is still live and
@@ -895,8 +923,8 @@ func (sm *StateManager) RemoveClient(clientID uint64) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	record, exists := sm.clientsByID[clientID]
-	if !exists {
+	record := sm.v40ClientLocked(clientID)
+	if record == nil {
 		return
 	}
 
@@ -1094,7 +1122,7 @@ func (sm *StateManager) expireLapsedHoldersLocked(fileHandle []byte, keepClientI
 		logger.Info("Expiring a lapsed client to resolve a conflicting request",
 			"client_id", clientID)
 
-		if v41 := sm.v41ClientsByID[clientID]; v41 != nil {
+		if v41 := sm.v41ClientLocked(clientID); v41 != nil {
 			sm.markClientStateidsExpiredLocked(clientID)
 			sm.purgeV41Client(v41)
 			continue
@@ -1173,8 +1201,8 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 //
 // Caller must hold sm.mu.
 func (sm *StateManager) expireV40ClientLocked(clientID uint64) {
-	record, exists := sm.clientsByID[clientID]
-	if !exists {
+	record := sm.v40ClientLocked(clientID)
+	if record == nil {
 		return
 	}
 
@@ -1521,7 +1549,7 @@ func (sm *StateManager) OpenFile(
 		// a no-op when no durable prior record exists (reclaim allowed as before).
 		sm.mu.RLock()
 		gp := sm.gracePeriod
-		rec := sm.clientsByID[clientID]
+		rec := sm.v40ClientLocked(clientID)
 		sm.mu.RUnlock()
 		if rec != nil {
 			if err := sm.validateReclaimVerifier(rec.ClientIDString, rec.Verifier); err != nil {
@@ -1580,7 +1608,7 @@ func (sm *StateManager) OpenFile(
 		}
 	} else {
 		// New owner: create it
-		clientRecord := sm.clientsByID[clientID]
+		clientRecord := sm.clientRecordLocked(clientID)
 		owner = &OpenOwner{
 			ClientID:  clientID,
 			OwnerData: make([]byte, len(ownerData)),
@@ -1600,8 +1628,9 @@ func (sm *StateManager) OpenFile(
 		copy(owner.OwnerData, ownerData)
 		sm.openOwners[ownerKey] = owner
 
-		// Nil for v4.1 clients, torn down by purgeV41Client instead.
-		if clientRecord != nil {
+		// OpenOwners is populated on the v4.0 path only; it is left nil on a
+		// v4.1 record, whose owners are torn down by purgeV41Client instead.
+		if clientRecord != nil && clientRecord.OpenOwners != nil {
 			clientRecord.OpenOwners[string(ownerData)] = owner
 		}
 	}
@@ -2405,8 +2434,10 @@ func (sm *StateManager) RenewLease(clientID uint64, principal ...string) error {
 	defer sm.mu.Unlock()
 
 	// v4.0 only: RENEW does not exist in v4.1, where SEQUENCE renews the lease.
-	record, exists := sm.clientsByID[clientID]
-	if !exists {
+	// A v4.1 record must be unreachable through this renewal: it would stamp a
+	// lease the SEQUENCE handler owns.
+	record := sm.v40ClientLocked(clientID)
+	if record == nil {
 		return sm.unknownClientIDError(clientID)
 	}
 
@@ -2633,7 +2664,7 @@ func (sm *StateManager) LockNew(
 
 	// 5. Find or create lock-owner -- only after seqid validation passes.
 	if !ownerExists {
-		clientRecord := sm.clientsByID[lockClientID]
+		clientRecord := sm.clientRecordLocked(lockClientID)
 		lockOwner = &LockOwner{
 			ClientID:  lockClientID,
 			OwnerData: make([]byte, len(lockOwnerData)),
@@ -3348,8 +3379,8 @@ func (sm *StateManager) RenewV41Lease(clientID uint64) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	record, exists := sm.v41ClientsByID[clientID]
-	if !exists {
+	record := sm.v41ClientLocked(clientID)
+	if record == nil {
 		return
 	}
 
@@ -3393,8 +3424,7 @@ func (sm *StateManager) GetStatusFlags(session *Session) uint32 {
 	}
 
 	// Check client lease expiry
-	record, exists := sm.v41ClientsByID[session.ClientID]
-	if exists && record.Lease != nil && record.Lease.IsExpired() {
+	if record := sm.v41ClientLocked(session.ClientID); record != nil && record.Lease != nil && record.Lease.IsExpired() {
 		flags |= types.SEQ4_STATUS_EXPIRED_ALL_STATE_REVOKED
 	}
 
@@ -3442,9 +3472,11 @@ func (sm *StateManager) CreateSession(
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// Case 1: Unknown client
-	record, exists := sm.v41ClientsByID[clientID]
-	if !exists {
+	// Case 1: Unknown client (or an ID a v4.0 record owns: the two flows draw
+	// from one sequence, so a CREATE_SESSION can never reach a SETCLIENTID
+	// record, but the version filter keeps that invariant explicit)
+	record := sm.v41ClientLocked(clientID)
+	if record == nil {
 		return nil, nil, ErrStaleClientID
 	}
 
@@ -3618,8 +3650,8 @@ func (sm *StateManager) CacheCreateSessionResponse(clientID uint64, responseByte
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	record, exists := sm.v41ClientsByID[clientID]
-	if !exists {
+	record := sm.v41ClientLocked(clientID)
+	if record == nil {
 		return
 	}
 
@@ -3762,7 +3794,10 @@ func (sm *StateManager) reapExpiredSessions() {
 	// Collect client IDs to purge (avoid modifying map during iteration)
 	var toPurge []*ClientRecord
 
-	for _, record := range sm.v41ClientsByID {
+	for _, record := range sm.clientsByID {
+		if record.MinorVersion != 1 {
+			continue
+		}
 		// Check lease expiry for confirmed clients
 		if record.Lease != nil && record.Lease.IsExpired() {
 			logger.Info("Session reaper: lease expired",
