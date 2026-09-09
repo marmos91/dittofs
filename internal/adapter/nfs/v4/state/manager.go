@@ -3499,11 +3499,14 @@ func (sm *StateManager) CreateSession(
 		return nil, nil, err
 	}
 
-	// Unknown flag bits are a client-contract violation rather than something
-	// to ignore: the server MUST return NFS4ERR_INVAL for any set bit it does
-	// not recognise (RFC 8881 Section 18.36.3), because silently masking would
-	// let a client believe it negotiated PERSIST or RDMA support it did not
-	// get. Only the three defined bits are accepted.
+	// Unknown flag bits draw NFS4ERR_INVAL because that is the answer the
+	// conformance suite expects (CSESS15); RFC 8881 Section 18.36.3 defines
+	// exactly three flag bits (PERSIST, CONN_BACK_CHAN, CONN_RDMA) and does
+	// not specify handling for unrecognized ones, so returning INVAL instead
+	// of silently masking is a deliberate choice: masking would let a client
+	// believe it negotiated PERSIST or RDMA support it did not get. An
+	// extension that adds a new flag bit (RFC 8178 sanctions adding bits to
+	// flag fields) must extend this check.
 	const knownFlags = uint32(types.CREATE_SESSION4_FLAG_PERSIST |
 		types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN |
 		types.CREATE_SESSION4_FLAG_CONN_RDMA)

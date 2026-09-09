@@ -642,6 +642,8 @@ func TestCreateSession_TooSmallRequestSize(t *testing.T) {
 		t.Errorf("Expected NFS4ERR_TOOSMALL (%d) on the back channel, got: %v", types.NFS4ERR_TOOSMALL, err)
 	}
 
+	// A 400-byte request budget is workable (CSESS26 creates exactly that and
+	// expects success), so the floor must stay under it.
 	result, _, err := sm.CreateSession(
 		clientID, seqID, 0,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,

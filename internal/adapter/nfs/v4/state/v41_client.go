@@ -671,14 +671,14 @@ func DefaultForeLimits() ChannelLimits {
 // at all: the XDR framing of even a status-only COMPOUND request or reply
 // exceeds it, so CREATE_SESSION answers NFS4ERR_TOOSMALL instead of
 // negotiating a channel that can never carry traffic (RFC 8881 Section
-// 18.36.3 permits exactly that answer for a value from which a replier on a
-// channel could never send). The floors sit well under the page-sized channel
-// budgets small clients request, and over the budgets the conformance suite
-// uses to force reply-size answers on later operations; that suite also pins
-// a small-but-workable ca_maxresponsesize as accepted, so the response floor
-// must stay under it.
+// 18.36.3: if a replier on a channel could never send a response, the server
+// SHOULD return NFS4ERR_TOOSMALL). Both floors sit under the small-but-workable
+// budgets the conformance suite accepts (request 400, response 400, whose
+// reply-size answers fire at COMPOUND time) and over the budgets it forces
+// TOOSMALL answers on (request 20 and 10, response 0), so the floors must stay
+// inside (20, 400] on the request side and (0, 400] on the response side.
 const (
-	minChannelRequestSize  uint32 = 1024
+	minChannelRequestSize  uint32 = 256
 	minChannelResponseSize uint32 = 256
 )
 
