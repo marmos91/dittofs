@@ -425,13 +425,17 @@ func TestLockExisting_SpecialStateid_BadStateid(t *testing.T) {
 
 	_, fileHandle, _, _ := setupClientAndOpenState(t, sm)
 
-	special := &types.Stateid4{} // all-zeros special stateid
-	_, err := sm.LockExisting(context.Background(), special, 1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
-	if !errors.Is(err, ErrBadStateid) {
-		t.Fatalf("LockExisting with a special stateid: got %v, want ErrBadStateid", err)
-	}
-	if errors.Is(err, ErrStaleStateid) {
-		t.Fatal("a special stateid must not reach the epoch classifier (STALE_STATEID)")
+	for name, special := range map[string]*types.Stateid4{
+		"anonymous (all-zeros)":  {},
+		"READ bypass (all-ones)": {Other: [12]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, Seqid: 0xffffffff},
+	} {
+		_, err := sm.LockExisting(context.Background(), special, 1, fileHandle, types.WRITE_LT, 0, 100, false, 0)
+		if !errors.Is(err, ErrBadStateid) {
+			t.Fatalf("%s: LockExisting with a special stateid: got %v, want ErrBadStateid", name, err)
+		}
+		if errors.Is(err, ErrStaleStateid) {
+			t.Fatalf("%s: a special stateid must not reach the epoch classifier (STALE_STATEID)", name)
+		}
 	}
 }
 
