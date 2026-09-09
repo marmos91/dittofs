@@ -39,7 +39,8 @@ type StateManager struct {
 	// never hold the same ID because generateClientID draws both flows from one
 	// sequence, and ClientRecord.MinorVersion says which flow minted each
 	// entry. Version-sensitive operations read it through the v40Client /
-	// v41Client helpers below, never the map directly.
+	// v41Client helpers below; version-agnostic readers (e.g. the shared
+	// recovery-key switch, delegation handback) may index the map directly.
 	clientsByID map[uint64]*ClientRecord
 
 	// clientsByName maps nfs_client_id4.id strings to confirmed client records.
