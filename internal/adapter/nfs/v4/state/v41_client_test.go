@@ -402,7 +402,7 @@ func TestExchangeID_ConfirmedReboot(t *testing.T) {
 
 	// Confirm the first incarnation the way a client does.
 	if _, _, err := sm.CreateSession(result1.ClientID, result1.SequenceID, 0,
-		types.ChannelAttrs{}, types.ChannelAttrs{}, 0, nil); err != nil {
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil); err != nil {
 		t.Fatalf("CreateSession error: %v", err)
 	}
 
@@ -437,7 +437,7 @@ func TestExchangeID_ConfirmedReboot(t *testing.T) {
 
 	// Confirming the new client ID collapses the two records into one.
 	if _, _, err := sm.CreateSession(result2.ClientID, result2.SequenceID, 0,
-		types.ChannelAttrs{}, types.ChannelAttrs{}, 0, nil); err != nil {
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil); err != nil {
 		t.Fatalf("CreateSession on the new incarnation: %v", err)
 	}
 	sm.mu.RLock()

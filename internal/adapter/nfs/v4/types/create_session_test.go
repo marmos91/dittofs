@@ -114,6 +114,58 @@ func TestCreateSessionArgs_RoundTrip_MultipleSec(t *testing.T) {
 	}
 }
 
+// TestCreateSessionArgs_DecodeMixedSecParms pins the inner-loop index handling
+// of csa_sec_parms decoding: the array carries AUTH_NONE, RPCSEC_GSS and
+// AUTH_SYS entries in that order, and the decoder must advance the stream by
+// each entry's own XDR size rather than reslicing from a stale index, which
+// desyncs every following entry (the decode problem the reference suite's
+// mixed-order row probes). The GSS entry between the two also pins that a
+// zero-length AUTH_SYS gid list after a variable-length entry decodes intact.
+func TestCreateSessionArgs_DecodeMixedSecParms(t *testing.T) {
+	original := &CreateSessionArgs{
+		ClientID:         0xfeedfacecafef00d,
+		SequenceID:       1,
+		Flags:            0,
+		ForeChannelAttrs: ValidChannelAttrs(),
+		BackChannelAttrs: ValidChannelAttrs(),
+		CbProgram:        123,
+		CbSecParms: []CallbackSecParms4{
+			{CbSecFlavor: 0}, // AUTH_NONE: void, smallest possible entry
+			{CbSecFlavor: 6, RpcGssData: []byte("handle-from-server")},                                                   // RPCSEC_GSS: variable-length
+			{CbSecFlavor: 1, AuthSysParms: &AuthSysParms{Stamp: 5, MachineName: "Random machine name", UID: 7, GID: 11}}, // AUTH_SYS, empty gids
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := original.Encode(&buf); err != nil {
+		t.Fatalf("Encode failed: %v", err)
+	}
+
+	decoded := &CreateSessionArgs{}
+	if err := decoded.Decode(bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatalf("Decode of mixed sec_parms failed: %v", err)
+	}
+
+	if len(decoded.CbSecParms) != 3 {
+		t.Fatalf("CbSecParms length = %d, want 3", len(decoded.CbSecParms))
+	}
+	if decoded.CbSecParms[0].CbSecFlavor != 0 {
+		t.Errorf("entry[0] flavor = %d, want 0 (AUTH_NONE)", decoded.CbSecParms[0].CbSecFlavor)
+	}
+	if decoded.CbSecParms[1].CbSecFlavor != 6 || string(decoded.CbSecParms[1].RpcGssData) != "handle-from-server" {
+		t.Errorf("entry[1] roundtrip failed: flavor %d, data %q",
+			decoded.CbSecParms[1].CbSecFlavor, decoded.CbSecParms[1].RpcGssData)
+	}
+	p := decoded.CbSecParms[2].AuthSysParms
+	if decoded.CbSecParms[2].CbSecFlavor != 1 || p == nil || p.MachineName != "Random machine name" || p.UID != 7 || p.GID != 11 || len(p.GIDs) != 0 {
+		t.Errorf("entry[2] roundtrip failed: flavor %d, parms %+v",
+			decoded.CbSecParms[2].CbSecFlavor, p)
+	}
+	if decoded.CbProgram != 123 {
+		t.Errorf("CbProgram = %d, want 123 (a desynced decode would land elsewhere)", decoded.CbProgram)
+	}
+}
+
 // TestCreateSessionRes_RoundTrip tests a success response with negotiated attrs.
 func TestCreateSessionRes_RoundTrip(t *testing.T) {
 	original := &CreateSessionRes{
