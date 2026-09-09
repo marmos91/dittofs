@@ -126,9 +126,10 @@ const (
 // chain, so a down backend cannot pile up attempts and a new issuer's persist
 // failure cannot be skipped while an old chain lives. Before each write the
 // retry re-validates that the issuing client still holds the key, so a client
-// that re-registers (and whose durable record is then deleted or replaced)
-// never has a stale retry stamp ReclaimComplete over the fresh incarnation's
-// record.
+// that re-registers (and whose durable record is then deleted or replaced) is
+// in the common case skipped by the validation; the write is best-effort and
+// out of lock, so a narrow stale-success window remains (a retry racing the
+// removal path) and self-heals on the client's next reclaim-complete.
 type pendingReclaimPersist struct {
 	key      string
 	clientID uint64

@@ -1580,9 +1580,9 @@ func (sm *StateManager) OpenFile(
 		// in-memory flag (the durable write mirrors it, and a pending retry
 		// re-validates against it) and persist it so a second restart inside
 		// one grace window does not wait on this client again. Later reclaim
-		// OPENs short-circuit: persisting per OPEN would serialize a
-		// recoveryPersistTimeout store call under sm.mu for every reclaimed
-		// file.
+		// OPENs short-circuit: a per-OPEN persist attempt would fire a store
+		// write for every reclaimed file even though the durable record is
+		// already marked.
 		if rec != nil {
 			sm.mu.Lock()
 			firstReclaim := !rec.ReclaimComplete
