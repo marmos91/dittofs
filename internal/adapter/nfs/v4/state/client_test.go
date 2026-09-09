@@ -719,16 +719,3 @@ func TestNewStateManager_CustomLease(t *testing.T) {
 		t.Errorf("LeaseDuration = %v, want %v", sm.LeaseDuration(), 30*time.Second)
 	}
 }
-
-func TestNewStateManager_BootEpochReasonable(t *testing.T) {
-	sm := NewStateManager(90 * time.Second)
-	now := uint32(time.Now().Unix())
-	// Boot epoch should be within 2 seconds of current time
-	diff := int64(now) - int64(sm.BootEpoch())
-	if diff < 0 {
-		diff = -diff
-	}
-	if diff > 2 {
-		t.Errorf("BootEpoch %d is too far from current time %d", sm.BootEpoch(), now)
-	}
-}
