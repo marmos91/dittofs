@@ -185,6 +185,30 @@ if [[ "$NO_SETUP" != true ]]; then
         log_warn "Could not set lease time; expiry tests will run at the server default."
     fi
 
+    # The update returns as soon as the server accepts the request, but the
+    # reload may still be propagating: leases opened in that window arm at the
+    # old lease time, so an expiry test that sleeps one lease plus headroom
+    # waits out the previous lease instead (a 90s product default against a
+    # 30s sleep resolves a reaping expectation late and fails the test). Poll
+    # the applied value until it matches the request before any client runs,
+    # and fail the run rather than grade a suite whose sleep assumption is
+    # invalid.
+    applied_lease_ok=false
+    for _ in $(seq 1 10); do
+        reported="$("${REPO_ROOT}/dfsctl" adapter settings nfs show -o json 2>/dev/null \
+            | sed -n 's/.*"lease_time"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)"
+        if [[ "$reported" == "$LEASE_TIME" ]]; then
+            applied_lease_ok=true
+            break
+        fi
+        sleep 1
+    done
+    if [[ "$applied_lease_ok" != true ]]; then
+        log_error "Server reports lease_time=${reported:-unknown}, expected ${LEASE_TIME}."
+        log_error "Lease-expiry tests would sleep against the wrong lease; aborting."
+        exit 1
+    fi
+
     log "Creating an account for pynfs's second client (uid ${SECOND_UID})..."
     # The create is allowed to fail on an account that already exists; the grant
     # is the step that must run either way, and it fails on its own if there is
