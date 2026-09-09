@@ -192,6 +192,14 @@ type StateManager struct {
 	// only by LoadClientRecovery; nil/empty otherwise (reclaim ungated).
 	bootRecoveryVerifiers map[string][8]byte
 
+	// pendingReclaimPersists tracks the at-most-one live retry chain per
+	// recovery key (see pendingReclaimPersist). A re-schedule while an entry
+	// exists adopts it instead of forking a second chain, so a down backend
+	// cannot pile up chains and a new issuer's persist failure is not skipped
+	// while an old chain lives. Entries are dropped on success or when the
+	// issuer no longer holds the key.
+	pendingReclaimPersists map[string]*pendingReclaimPersist
+
 	// ============================================================================
 	// Version-sensitive lookup helpers
 	// ============================================================================
@@ -318,12 +326,13 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		// v4.0 SETCLIENTID confirmation state
 		unconfirmedByName: make(map[string]*ClientRecord),
 		// v4.1 state
-		v41ClientsByOwner:    make(map[string]*ClientRecord),
-		sessionsByID:         make(map[types.SessionId4]*Session),
-		sessionsByClientID:   make(map[uint64][]*Session),
-		maxSessionsPerClient: 16,
-		foreMaxSlots:         64,
-		serverIdentity:       newServerIdentity(epoch),
+		v41ClientsByOwner:      make(map[string]*ClientRecord),
+		sessionsByID:           make(map[types.SessionId4]*Session),
+		sessionsByClientID:     make(map[uint64][]*Session),
+		maxSessionsPerClient:   16,
+		foreMaxSlots:           64,
+		serverIdentity:         newServerIdentity(epoch),
+		pendingReclaimPersists: make(map[string]*pendingReclaimPersist),
 		// Connection binding state
 		connByID:           make(map[uint64]*BoundConnection),
 		connBySession:      make(map[types.SessionId4][]*BoundConnection),
@@ -1432,7 +1441,7 @@ func (sm *StateManager) ReclaimComplete(clientID uint64, oneFS bool) error {
 		record.ReclaimComplete = true
 	}
 	if recoveryKey != "" {
-		sm.recordReclaimCompleteLocked(recoveryKey)
+		sm.recordReclaimCompleteLocked(clientID, recoveryKey)
 	}
 	sm.mu.Unlock()
 
@@ -1567,11 +1576,20 @@ func (sm *StateManager) OpenFile(
 			}
 		}
 		// v4.0 has no RECLAIM_COMPLETE; the first successful CLAIM_PREVIOUS is
-		// the analog reclaim marker. Persist it so a second
-		// restart inside one grace window does not wait on this client again.
+		// the analog reclaim marker. On that false→true transition, set the
+		// in-memory flag (the durable write mirrors it, and a pending retry
+		// re-validates against it) and persist it so a second restart inside
+		// one grace window does not wait on this client again. Later reclaim
+		// OPENs short-circuit: a per-OPEN persist attempt would fire a store
+		// write for every reclaimed file even though the durable record is
+		// already marked.
 		if rec != nil {
 			sm.mu.Lock()
-			sm.recordReclaimCompleteLocked(rec.ClientIDString)
+			firstReclaim := !rec.ReclaimComplete
+			rec.ReclaimComplete = true
+			if firstReclaim {
+				sm.recordReclaimCompleteLocked(clientID, rec.ClientIDString)
+			}
 			sm.mu.Unlock()
 		}
 	}
