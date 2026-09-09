@@ -166,11 +166,15 @@ func (sm *StateManager) recordReclaimCompleteLocked(clientID uint64, key string)
 // adopts it. Caller must hold sm.mu.
 func (sm *StateManager) scheduleReclaimPersistRetryLocked(clientID uint64, key string, delay time.Duration) {
 	if sm.recoveryStore == nil {
+		delete(sm.pendingReclaimPersists, key)
 		return
 	}
 	if pending, ok := sm.pendingReclaimPersists[key]; ok {
 		// Adopt the live chain: point it at the latest issuer so the validity
-		// check tracks the client whose persist most recently failed.
+		// check tracks the client whose persist most recently failed, and
+		// re-arm the timer so the new issuer's failure actually gets the fresh
+		// base delay the field promises instead of the old chain's backed-off
+		// wait.
 		pending.clientID = clientID
 		pending.delay = delay
 		return
@@ -195,6 +199,7 @@ func (sm *StateManager) retryReclaimPersist(pending *pendingReclaimPersist) {
 	sm.mu.Lock()
 	store := sm.recoveryStore
 	if store == nil {
+		delete(sm.pendingReclaimPersists, pending.key)
 		sm.mu.Unlock()
 		return
 	}
