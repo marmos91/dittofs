@@ -163,7 +163,10 @@ func (sm *StateManager) recordReclaimCompleteLocked(clientID uint64, key string)
 // with ReclaimComplete clear, so the fresh incarnation must still send
 // RECLAIM_COMPLETE and a stale retry must not stamp its durable record as
 // done. At most one chain per key exists: a schedule while an entry lives
-// adopts it. Caller must hold sm.mu.
+// adopts it (updating the issuer and arming a fresh timer at the new delay;
+// the old timer's fire becomes a no-op retry that finds the same entry and
+// either lands the write or reschedules with the adopted state). Caller must
+// hold sm.mu.
 func (sm *StateManager) scheduleReclaimPersistRetryLocked(clientID uint64, key string, delay time.Duration) {
 	if sm.recoveryStore == nil {
 		delete(sm.pendingReclaimPersists, key)
@@ -171,12 +174,20 @@ func (sm *StateManager) scheduleReclaimPersistRetryLocked(clientID uint64, key s
 	}
 	if pending, ok := sm.pendingReclaimPersists[key]; ok {
 		// Adopt the live chain: point it at the latest issuer so the validity
-		// check tracks the client whose persist most recently failed, and
-		// re-arm the timer so the new issuer's failure actually gets the fresh
-		// base delay the field promises instead of the old chain's backed-off
-		// wait.
+		// check tracks the client whose persist most recently failed, and arm
+		// a fresh timer at the new delay so the adopted issuer's failure gets
+		// the base delay the field promises. The old timer, still pending,
+		// fires into a retry of the same chain: it re-validates the adopted
+		// issuer and either lands the write or reschedules — so no attempt is
+		// lost and no second chain forks.
 		pending.clientID = clientID
 		pending.delay = delay
+		go func() {
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+			<-timer.C
+			sm.retryReclaimPersist(pending)
+		}()
 		return
 	}
 
