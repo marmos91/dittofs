@@ -1576,14 +1576,20 @@ func (sm *StateManager) OpenFile(
 			}
 		}
 		// v4.0 has no RECLAIM_COMPLETE; the first successful CLAIM_PREVIOUS is
-		// the analog reclaim marker. Set the in-memory flag (the durable write
-		// mirrors it, and a pending retry re-validates against it) and persist
-		// it so a second restart inside one grace window does not wait on this
-		// client again.
+		// the analog reclaim marker. On that false→true transition, set the
+		// in-memory flag (the durable write mirrors it, and a pending retry
+		// re-validates against it) and persist it so a second restart inside
+		// one grace window does not wait on this client again. Later reclaim
+		// OPENs short-circuit: persisting per OPEN would serialize a
+		// recoveryPersistTimeout store call under sm.mu for every reclaimed
+		// file.
 		if rec != nil {
 			sm.mu.Lock()
+			firstReclaim := !rec.ReclaimComplete
 			rec.ReclaimComplete = true
-			sm.recordReclaimCompleteLocked(clientID, rec.ClientIDString)
+			if firstReclaim {
+				sm.recordReclaimCompleteLocked(clientID, rec.ClientIDString)
+			}
 			sm.mu.Unlock()
 		}
 	}
