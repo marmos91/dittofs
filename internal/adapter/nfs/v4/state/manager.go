@@ -314,8 +314,9 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		bootEpoch:           epoch,
 		leaseDuration:       leaseDuration,
 		graceDuration:       gd,
-		// NFSv4.1 state
-		unconfirmedByName:    make(map[string]*ClientRecord),
+		// v4.0 SETCLIENTID confirmation state
+		unconfirmedByName: make(map[string]*ClientRecord),
+		// v4.1 state
 		v41ClientsByOwner:    make(map[string]*ClientRecord),
 		sessionsByID:         make(map[types.SessionId4]*Session),
 		sessionsByClientID:   make(map[uint64][]*Session),
