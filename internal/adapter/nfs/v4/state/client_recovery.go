@@ -108,6 +108,29 @@ func (sm *StateManager) deleteClientRecoveryLocked(clientIDString string) {
 	}
 }
 
+// reclaimPersistRetryBase / reclaimPersistRetryCap bound the backoff of the
+// asynchronous reclaim-complete persist retry. The base sits well under the
+// lease duration so a failed write is repaired long before the next restart
+// could re-wait on the client; the cap keeps a persistently down backend from
+// piling up attempts.
+const (
+	reclaimPersistRetryBase = 2 * time.Second
+	reclaimPersistRetryCap  = 30 * time.Second
+)
+
+// pendingReclaimPersist carries one retry of a failed reclaim-complete persist:
+// the recovery key, the incarnation that issued the mark, and the next backoff
+// delay. The pointer identity is the only tracking a retry needs; before each
+// write it re-validates that the issuing incarnation still holds the key, so a
+// client that re-registers (and whose durable record is then deleted or
+// replaced) never has a stale retry stamp ReclaimComplete over the fresh
+// incarnation's record.
+type pendingReclaimPersist struct {
+	key         string
+	incarnation uint64
+	delay       time.Duration
+}
+
 // recordReclaimCompleteLocked marks a client's recovery record reclaim-complete
 // (v4.1 RECLAIM_COMPLETE, or first CLAIM_PREVIOUS for v4.0) so a second restart
 // inside one grace window does not wait on an already-reclaimed client.
@@ -120,10 +143,109 @@ func (sm *StateManager) recordReclaimCompleteLocked(clientIDString string) {
 	ctx, cancel := context.WithTimeout(context.Background(), recoveryPersistTimeout)
 	defer cancel()
 	if err := sm.recoveryStore.RecordReclaimComplete(ctx, clientIDString); err != nil {
-		logger.Error("client-recovery reclaim-complete persistence failed: a second restart may re-wait on this client",
+		logger.Error("client-recovery reclaim-complete persistence failed: retrying in background; until it lands a second restart may re-wait on this client",
 			"client_id_str", clientIDString,
 			"error", err)
+		sm.scheduleReclaimPersistRetryLocked(clientIDString, reclaimPersistRetryBase)
 	}
+}
+
+// scheduleReclaimPersistRetryLocked arms one asynchronous retry of a failed
+// reclaim-complete persist. The retry runs OFF sm.mu (a synchronous backoff
+// under the lock would wedge every state operation behind the down backend,
+// which is what recoveryPersistTimeout exists to prevent), and re-validates
+// before each write that the client incarnation that issued the mark still
+// holds the key — a client that re-registers after a restart gets a fresh
+// in-memory record with ReclaimComplete clear, so the fresh incarnation must
+// still send RECLAIM_COMPLETE and a stale retry must not stamp its durable
+// record as done. Caller must hold sm.mu.
+func (sm *StateManager) scheduleReclaimPersistRetryLocked(key string, delay time.Duration) {
+	if sm.recoveryStore == nil {
+		return
+	}
+	// Identify the incarnation by the client record that currently owns this
+	// recovery key. The roster key is either a v4.0 nfs_client_id4 string or
+	// the v4.1 v41RecoveryKey(ownerID) form, so resolve whichever table the
+	// key lives in.
+	var incarnation uint64
+	for id, rec := range sm.clientsByID {
+		if rec.ClientIDString == key {
+			incarnation = id
+			break
+		}
+	}
+	if incarnation == 0 {
+		for id, rec := range sm.v41ClientsByID {
+			if v41RecoveryKey(rec.OwnerID) == key {
+				incarnation = id
+				break
+			}
+		}
+	}
+
+	pending := &pendingReclaimPersist{key: key, incarnation: incarnation, delay: delay}
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		<-timer.C
+		sm.retryReclaimPersist(pending)
+	}()
+}
+
+// retryReclaimPersist runs one retry of a failed reclaim-complete persist.
+// On success or on an incarnation that no longer holds the key (re-registered,
+// expired, destroyed) the pending entry is dropped; on a store failure it
+// reschedules itself with the backoff doubled up to reclaimPersistRetryCap.
+// Thread-safe: acquires sm.mu.
+func (sm *StateManager) retryReclaimPersist(pending *pendingReclaimPersist) {
+	sm.mu.Lock()
+	store := sm.recoveryStore
+	if store == nil {
+		sm.mu.Unlock()
+		return
+	}
+	// The incarnation that issued the mark must still hold the key: its
+	// in-memory record's ReclaimComplete is what the durable write mirrors.
+	if !sm.incarnationHoldsKeyLocked(pending.key, pending.incarnation) {
+		sm.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), recoveryPersistTimeout)
+	defer cancel()
+	err := store.RecordReclaimComplete(ctx, pending.key)
+	if err == nil {
+		sm.mu.Unlock()
+		return
+	}
+	delay := pending.delay * 2
+	if delay > reclaimPersistRetryCap {
+		delay = reclaimPersistRetryCap
+	}
+	pending.delay = delay
+	sm.mu.Unlock()
+	logger.Error("client-recovery reclaim-complete persist retry failed; retrying with backoff",
+		"client_id_str", pending.key,
+		"next_delay", delay,
+		"error", err)
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		<-timer.C
+		sm.retryReclaimPersist(pending)
+	}()
+}
+
+// incarnationHoldsKeyLocked reports whether the given client incarnation still
+// owns the recovery key and has ReclaimComplete set in memory. Caller must
+// hold sm.mu (write).
+func (sm *StateManager) incarnationHoldsKeyLocked(key string, incarnation uint64) bool {
+	if rec, ok := sm.clientsByID[incarnation]; ok && rec.ClientIDString == key {
+		return rec.ReclaimComplete
+	}
+	if rec, ok := sm.v41ClientsByID[incarnation]; ok && v41RecoveryKey(rec.OwnerID) == key {
+		return rec.ReclaimComplete
+	}
+	return false
 }
 
 // validateReclaimVerifier rejects a CLAIM_PREVIOUS reclaim whose boot verifier

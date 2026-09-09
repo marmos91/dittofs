@@ -26,6 +26,11 @@ type spyRecoveryStore struct {
 	deleteErr    error
 	listErr      error
 	reclaimErr   error
+
+	// reclaimFailuresLeft counts down how many RecordReclaimComplete calls fail
+	// before the store starts succeeding; a test seeds it to make the persist
+	// fail exactly N times.
+	reclaimFailuresLeft int
 }
 
 func newSpyRecoveryStore() *spyRecoveryStore {
@@ -75,6 +80,10 @@ func (s *spyRecoveryStore) RecordReclaimComplete(_ context.Context, clientIDStri
 	defer s.mu.Unlock()
 	if s.reclaimErr != nil {
 		return s.reclaimErr
+	}
+	if s.reclaimFailuresLeft > 0 {
+		s.reclaimFailuresLeft--
+		return errors.New("backend down")
 	}
 	s.reclaimMarks = append(s.reclaimMarks, clientIDString)
 	if r, ok := s.records[clientIDString]; ok {
@@ -489,5 +498,104 @@ func TestClientRecovery_V41DestroyDeletes(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected DeleteClientRecovery(%q), got %v", key, dels)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Failed reclaim-complete persist is retried in the background
+// ---------------------------------------------------------------------------
+
+// A failed reclaim-complete persist must be repaired by the background retry
+// without any further protocol activity: the store fails the first write, the
+// retry lands, and the durable record carries ReclaimComplete so a second
+// restart inside one grace window does not re-wait on the client.
+func TestClientRecovery_ReclaimPersistRetriedAfterFailure(t *testing.T) {
+	spy := newSpyRecoveryStore()
+	spy.reclaimFailuresLeft = 1
+	sm := NewStateManager(5*time.Second, 30*time.Second)
+	sm.SetClientRecoveryStore(spy, 7)
+
+	owner := []byte("v41-retry-owner")
+	exch, err := sm.ExchangeID(owner, [8]byte{0x33}, 0, nil, "10.0.0.30:1", "uid:0")
+	if err != nil {
+		t.Fatalf("ExchangeID: %v", err)
+	}
+	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, types.ChannelAttrs{}, types.ChannelAttrs{}, 0, nil, "uid:0"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := sm.ReclaimComplete(exch.ClientID, false); err != nil {
+		t.Fatalf("ReclaimComplete: %v", err)
+	}
+
+	// The first write failed, so the durable record must not be marked yet.
+	key := v41RecoveryKey(owner)
+	marks := spy.snapshotReclaims()
+	if len(marks) != 0 {
+		t.Fatalf("no reclaim mark should have landed yet, got %v", marks)
+	}
+
+	// The background retry (2s base delay) must repair the write on its own.
+	deadline := time.After(10 * time.Second)
+	for {
+		if len(spy.snapshotReclaims()) > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("reclaim-complete persist was never retried")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if !spy.records[key].ReclaimComplete {
+		t.Fatal("durable record not marked reclaim-complete after retry")
+	}
+}
+
+// A retry must not stamp ReclaimComplete over a fresh incarnation's durable
+// record: once the issuing incarnation no longer holds the key, the pending
+// retry is abandoned. A client that re-registers after a restart must still
+// send RECLAIM_COMPLETE itself.
+func TestClientRecovery_ReclaimPersistRetryAbandonedWhenIncarnationGone(t *testing.T) {
+	spy := newSpyRecoveryStore()
+	spy.reclaimFailuresLeft = 1
+	sm := NewStateManager(5*time.Second, 30*time.Second)
+	sm.SetClientRecoveryStore(spy, 7)
+
+	owner := []byte("v41-stale-retry-owner")
+	exch, err := sm.ExchangeID(owner, [8]byte{0x34}, 0, nil, "10.0.0.31:1", "uid:0")
+	if err != nil {
+		t.Fatalf("ExchangeID: %v", err)
+	}
+	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, types.ChannelAttrs{}, types.ChannelAttrs{}, 0, nil, "uid:0"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := sm.ReclaimComplete(exch.ClientID, false); err != nil {
+		t.Fatalf("ReclaimComplete: %v", err)
+	}
+
+	// Destroy the client (removes both the in-memory record and the durable
+	// one) before the retry fires, then re-register the same owner identity.
+	sessions := sm.ListSessionsForClient(exch.ClientID)
+	for _, s := range sessions {
+		if err := sm.DestroySession(s.SessionID); err != nil {
+			t.Fatalf("DestroySession: %v", err)
+		}
+	}
+	if err := sm.DestroyV41ClientID(exch.ClientID); err != nil {
+		t.Fatalf("DestroyV41ClientID: %v", err)
+	}
+	exch2, err := sm.ExchangeID(owner, [8]byte{0x34}, 0, nil, "10.0.0.31:2", "uid:0")
+	if err != nil {
+		t.Fatalf("ExchangeID(2): %v", err)
+	}
+	if _, _, err := sm.CreateSession(exch2.ClientID, exch2.SequenceID, 0, types.ChannelAttrs{}, types.ChannelAttrs{}, 0, nil, "uid:0"); err != nil {
+		t.Fatalf("CreateSession(2): %v", err)
+	}
+
+	// Wait out the retry window: no mark may land, the fresh incarnation has
+	// not sent RECLAIM_COMPLETE and a stale retry must not do it for it.
+	time.Sleep(3 * time.Second)
+	if marks := spy.snapshotReclaims(); len(marks) != 0 {
+		t.Fatalf("stale retry stamped a fresh incarnation's record: %v", marks)
 	}
 }
