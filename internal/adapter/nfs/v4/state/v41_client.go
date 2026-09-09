@@ -595,8 +595,8 @@ func (sm *StateManager) EvictV40Client(clientID uint64) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	record, exists := sm.clientsByID[clientID]
-	if !exists {
+	record := sm.v40ClientLocked(clientID)
+	if record == nil {
 		return fmt.Errorf("v4.0 client %d not found", clientID)
 	}
 

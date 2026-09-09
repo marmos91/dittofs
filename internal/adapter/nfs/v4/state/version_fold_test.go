@@ -1,8 +1,11 @@
 package state
 
 import (
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
 // These tests guard the version fold of the client index: clientsByID holds
@@ -168,32 +171,81 @@ func leaseIsStopped(sm *StateManager, clientID uint64) bool {
 	return lease.stopped
 }
 
-// A v4.0 record must never resolve through a v4.1-only flow either: the
-// filter is symmetric. EXCHANGE_ID update on a v4.0 client ID must draw the
-// no-confirmed-record error rather than touching the SETCLIENTID record.
-func TestExchangeIDUpdate_V40Record_Invisible(t *testing.T) {
+// OPEN on a v4.1 client resolves the live v4.1 record through the shared
+// index, so the owner's ClientRecord carries the renewing v4.1 lease and a
+// stateid I/O after that lease lapses draws ErrExpired. This is intended
+// semantics: every real v4.1 COMPOUND renews the lease via SEQUENCE first, so
+// the stateid lease check only bites direct API calls that skip SEQUENCE.
+func TestOpenFile_V41OwnerRecord_CarriesLiveLease(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	defer sm.Shutdown()
 
-	v40ID := registerTestClientWithName(t, sm, "eidthru-v40-client")
+	v41ID := registerConfirmedV41Client(t, sm, "open-lease-v41-owner")
 
-	sm.mu.RLock()
-	rec := sm.clientsByID[v40ID]
-	sm.mu.RUnlock()
-	if rec == nil {
-		t.Fatal("v4.0 record missing")
+	open, err := sm.OpenFile(v41ID, []byte("owner"), 1, []byte("/export:lease-file"),
+		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+	if err != nil {
+		t.Fatalf("OpenFile on a v4.1 client: %v", err)
 	}
 
-	// The owner-keyed v4.1 index cannot resolve a v4.0 client: EXCHANGE_ID
-	// with UPD_CONFIRMED_REC_A against an owner the v4.0 flow minted finds no
-	// confirmed v4.1 record and draws ErrNoConfirmedRecord.
-	var verifier [8]byte
-	copy(verifier[:], rec.Verifier[:])
+	sm.mu.RLock()
+	owner := sm.openStateByOther[open.Stateid.Other].Owner
+	sm.mu.RUnlock()
+	if owner == nil || owner.ClientRecord == nil {
+		t.Fatal("OpenOwner.ClientRecord must be the live v4.1 record")
+	}
+	if owner.ClientRecord.ClientID != v41ID || owner.ClientRecord.MinorVersion != 1 {
+		t.Fatalf("ClientRecord = v%d client %d, want the v4.1 record for %d",
+			owner.ClientRecord.MinorVersion, owner.ClientRecord.ClientID, v41ID)
+	}
+	if owner.ClientRecord.Lease == nil {
+		t.Fatal("the v4.1 record must carry its lease")
+	}
+
+	// The lease renews on stateid I/O: drive an I/O through ValidateStateid
+	// and confirm the renewal stamped the SAME lease the v4.1 SEQUENCE
+	// handler owns.
+	sm.mu.RLock()
+	before := owner.ClientRecord.Lease.LastRenew
+	sm.mu.RUnlock()
+
+	if _, err := sm.ValidateStateid(&open.Stateid, nil, StateidOpRead, v41ID); err != nil {
+		t.Fatalf("stateid I/O with a live lease: %v", err)
+	}
+
+	sm.mu.RLock()
+	renewed := owner.ClientRecord.Lease.LastRenew
+	sm.mu.RUnlock()
+	if !renewed.After(before) {
+		t.Fatal("stateid I/O must renew the v4.1 owner's lease")
+	}
+}
+
+// The same lapsed-lease I/O must draw ErrExpired when the record carries no
+// live lease path — the stateid check reads the owner's ClientRecord, so a
+// direct API caller skipping SEQUENCE gets the expiry rather than a silent
+// renewal against a dead lease.
+func TestValidateStateid_V41ExpiredLease_ReturnsErrExpired(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	defer sm.Shutdown()
+
+	v41ID := registerConfirmedV41Client(t, sm, "expired-lease-v41-owner")
+
+	open, err := sm.OpenFile(v41ID, []byte("owner"), 1, []byte("/export:expired-file"),
+		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+
+	// Stop the lease and age its LastRenew past the duration, simulating a
+	// client whose SEQUENCE stopped arriving: the next stateid I/O that skips
+	// SEQUENCE must draw the expiry instead of renewing.
 	sm.mu.Lock()
-	_, err := sm.exchangeIDUpdateLocked(nil, verifier, nil, "10.0.0.1:12345", "")
+	sm.openStateByOther[open.Stateid.Other].Owner.ClientRecord.Lease.Stop()
+	sm.openStateByOther[open.Stateid.Other].Owner.ClientRecord.Lease.LastRenew = time.Now().Add(-2 * time.Hour)
 	sm.mu.Unlock()
 
-	if err != ErrNoConfirmedRecord {
-		t.Fatalf("EXCHANGE_ID update with no v4.1 record: got %v, want ErrNoConfirmedRecord", err)
+	if _, err := sm.ValidateStateid(&open.Stateid, nil, StateidOpRead, v41ID); !errors.Is(err, ErrExpired) {
+		t.Fatalf("stateid I/O against an expired v4.1 lease: got %v, want ErrExpired", err)
 	}
 }
