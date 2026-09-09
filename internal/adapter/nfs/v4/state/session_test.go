@@ -644,9 +644,11 @@ func TestCreateSession_TooSmallRequestSize(t *testing.T) {
 
 	// A 400-byte request budget is workable (CSESS26 creates exactly that and
 	// expects success), so the floor must stay under it.
+	csess26 := defaultForeAttrs()
+	csess26.MaxRequestSize = 400
 	result, _, err := sm.CreateSession(
 		clientID, seqID, 0,
-		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		csess26, defaultBackAttrs(), 0, nil,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession with workable budgets after two rejections: %v", err)
