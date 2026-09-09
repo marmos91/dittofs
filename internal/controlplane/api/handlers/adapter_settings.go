@@ -908,7 +908,7 @@ func (h *AdapterSettingsHandler) validateAndRespond(
 // this refresh leaves clients arming against the stale lease until the
 // ticker fires. A failed refresh is logged and otherwise ignored: the
 // DB write already succeeded, and the next poll picks the change up.
-func (h *AdapterSettingsHandler) refreshNFSWatcher(w http.ResponseWriter, r *http.Request) {
+func (h *AdapterSettingsHandler) refreshNFSWatcher(_ http.ResponseWriter, r *http.Request) {
 	if h.runtime == nil || h.runtime.GetSettingsWatcher() == nil {
 		return
 	}
