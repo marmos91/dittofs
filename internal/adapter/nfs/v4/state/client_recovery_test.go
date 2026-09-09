@@ -536,10 +536,7 @@ func TestClientRecovery_ReclaimPersistRetriedAfterFailure(t *testing.T) {
 
 	// The background retry (2s base delay) must repair the write on its own.
 	deadline := time.After(10 * time.Second)
-	for {
-		if len(spy.snapshotReclaims()) > 0 {
-			break
-		}
+	for len(spy.snapshotReclaims()) == 0 {
 		select {
 		case <-deadline:
 			t.Fatal("reclaim-complete persist was never retried")
@@ -643,10 +640,7 @@ func TestClientRecovery_V40ReclaimPersistRetriedAfterFailure(t *testing.T) {
 
 	// The background retry (2s base delay) must repair the write on its own.
 	deadline := time.After(10 * time.Second)
-	for {
-		if len(spy.snapshotReclaims()) > 0 {
-			break
-		}
+	for len(spy.snapshotReclaims()) == 0 {
 		select {
 		case <-deadline:
 			t.Fatal("v4.0 reclaim-complete persist was never retried")
