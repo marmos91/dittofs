@@ -667,6 +667,43 @@ func DefaultForeLimits() ChannelLimits {
 	}
 }
 
+// Channel size floors. A requested budget below these cannot carry a COMPOUND
+// at all: the XDR framing of even a status-only COMPOUND request or reply
+// exceeds it, so CREATE_SESSION answers NFS4ERR_TOOSMALL instead of
+// negotiating a channel that can never carry traffic (RFC 8881 Section
+// 18.36.3: if a replier on a channel could never send a response, the server
+// SHOULD return NFS4ERR_TOOSMALL). Both floors sit under the small-but-workable
+// budgets the conformance suite accepts (request 400, response 400, whose
+// reply-size answers fire at COMPOUND time) and over the budgets it forces
+// TOOSMALL answers on (request 20 and 10, response 0), so the floors must stay
+// inside (20, 400] on the request side and (0, 400] on the response side.
+const (
+	minChannelRequestSize  uint32 = 256
+	minChannelResponseSize uint32 = 256
+)
+
+// channelAttrsTooSmall returns an NFS4ERR_TOOSMALL error when a requested
+// channel could never carry a COMPOUND request or reply. MaxResponseSizeCached
+// is deliberately not floored here: the answer to an unusable cache budget is
+// NFS4ERR_REP_TOO_BIG_TO_CACHE on the operation that overflows it, not a
+// CREATE_SESSION rejection.
+func channelAttrsTooSmall(requested types.ChannelAttrs) *NFS4StateError {
+	switch {
+	case requested.MaxRequestSize < minChannelRequestSize:
+		return &NFS4StateError{
+			Status:  types.NFS4ERR_TOOSMALL,
+			Message: fmt.Sprintf("ca_maxrequestsize %d below the %d-byte floor; no COMPOUND request could fit", requested.MaxRequestSize, minChannelRequestSize),
+		}
+	case requested.MaxResponseSize < minChannelResponseSize:
+		return &NFS4StateError{
+			Status:  types.NFS4ERR_TOOSMALL,
+			Message: fmt.Sprintf("ca_maxresponsesize %d below the %d-byte floor; no COMPOUND reply could fit", requested.MaxResponseSize, minChannelResponseSize),
+		}
+	default:
+		return nil
+	}
+}
+
 // DefaultBackLimits returns the default server limits for back channel negotiation.
 // MaxSlots must be at least 16 because the Linux kernel NFS client requests 16
 // back channel slots and rejects CREATE_SESSION with EINVAL if the server
@@ -742,7 +779,10 @@ var (
 	ErrDelay = &NFS4StateError{Status: types.NFS4ERR_DELAY, Message: "operation in progress, retry later"}
 
 	// ErrTooManySessions indicates the per-client session limit has been reached.
-	ErrTooManySessions = &NFS4StateError{Status: types.NFS4ERR_RESOURCE, Message: "per-client session limit exceeded"}
+	// NFS4ERR_RESOURCE is absent from CREATE_SESSION's valid-error list in
+	// RFC 8881 Section 18.36; the resource-exhaustion answer there is
+	// NFS4ERR_NOSPC, which is what this sentinel must carry.
+	ErrTooManySessions = &NFS4StateError{Status: types.NFS4ERR_NOSPC, Message: "per-client session limit exceeded"}
 
 	// ErrSeqMisordered indicates a CREATE_SESSION sequence ID mismatch.
 	ErrSeqMisordered = &NFS4StateError{Status: types.NFS4ERR_SEQ_MISORDERED, Message: "sequence ID misordered"}

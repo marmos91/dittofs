@@ -414,7 +414,7 @@ func TestClientRecovery_V41PersistAndReclaimComplete(t *testing.T) {
 		t.Fatalf("ExchangeID: %v", err)
 	}
 	// First CREATE_SESSION confirms + persists.
-	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, types.ChannelAttrs{}, types.ChannelAttrs{}, 0, nil, "uid:0"); err != nil {
+	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil, "uid:0"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
@@ -438,7 +438,7 @@ func TestClientRecovery_V41PersistAndReclaimComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExchangeID(2): %v", err)
 	}
-	cs, _, err := sm2.CreateSession(exch2.ClientID, exch2.SequenceID, 0, types.ChannelAttrs{}, types.ChannelAttrs{}, 0, nil)
+	cs, _, err := sm2.CreateSession(exch2.ClientID, exch2.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSession(2): %v", err)
 	}
@@ -466,7 +466,7 @@ func TestClientRecovery_V41DestroyDeletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExchangeID: %v", err)
 	}
-	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, types.ChannelAttrs{}, types.ChannelAttrs{}, 0, nil); err != nil {
+	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	// Destroy requires no active sessions; tear them down first.
