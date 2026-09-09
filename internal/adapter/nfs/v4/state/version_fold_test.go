@@ -217,7 +217,10 @@ func TestOpenFile_V41OwnerRecord_CarriesLiveLease(t *testing.T) {
 	lease.mu.Lock()
 	renewed := lease.LastRenew
 	lease.mu.Unlock()
-	if !renewed.After(before) {
+	// Windows' clock granularity can land both stamps in the same tick, so
+	// compare against the pre-validation wall time instead of demanding a
+	// strict After on coarse clocks.
+	if !renewed.After(before) && !renewed.Equal(before) {
 		t.Fatal("stateid I/O must renew the v4.1 owner's lease")
 	}
 }
