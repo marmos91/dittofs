@@ -68,8 +68,8 @@ func renewLease(t *testing.T, sm *StateManager, clientID uint64) {
 
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	record, ok := sm.v41ClientsByID[clientID]
-	if !ok || record.Lease == nil {
+	record := sm.v41ClientLocked(clientID)
+	if record == nil || record.Lease == nil {
 		t.Fatalf("no v4.1 lease for client %d", clientID)
 	}
 	record.Lease.Renew()

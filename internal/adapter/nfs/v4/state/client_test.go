@@ -631,7 +631,7 @@ func TestValidateAndRenewClient_V41LapsedLeaseBeforeReaping_ReturnsExpired(t *te
 	// Age the lease past its duration without running the reaper, which is the
 	// state a v4.1 client is in for up to one reaper interval.
 	sm.mu.RLock()
-	lease := sm.v41ClientsByID[clientID].Lease
+	lease := sm.v41ClientLocked(clientID).Lease
 	sm.mu.RUnlock()
 	lease.mu.Lock()
 	lease.LastRenew = time.Now().Add(-2 * lease.Duration)
@@ -677,7 +677,7 @@ func TestValidateAndRenewClient_StampsLastRenewal(t *testing.T) {
 			lastRenewal: func(sm *StateManager, clientID uint64) time.Time {
 				sm.mu.RLock()
 				defer sm.mu.RUnlock()
-				return sm.v41ClientsByID[clientID].LastRenewal
+				return sm.v41ClientLocked(clientID).LastRenewal
 			},
 		},
 	}

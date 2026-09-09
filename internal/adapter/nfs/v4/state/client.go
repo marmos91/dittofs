@@ -68,15 +68,22 @@ func principalHijacks(stored, incoming string) bool {
 // because they index different lookup maps and different durable
 // client-recovery keys; the wire formats they carry are not interchangeable.
 //
-// Fields that apply to only one minor version are marked as such and are left
-// at their zero value for the other. Anything version-independent — lease
-// timing, principal, callback-path liveness — is shared, so a policy decision
-// that reads it does not have to know which registration flow created the
-// record.
+// MinorVersion discriminates the two registration flows, and fields that
+// apply to only one minor version are marked as such and are left at their
+// zero value for the other. Anything version-independent — lease timing,
+// principal, callback-path liveness — is shared, so a policy decision that
+// reads it does not have to know which registration flow created the record.
 type ClientRecord struct {
 	// ClientID is the server-assigned 64-bit client identifier.
 	// Generated using boot epoch (high 32) + sequence counter (low 32).
 	ClientID uint64
+
+	// MinorVersion is the NFSv4 minor version that minted this record: 0 for
+	// the SETCLIENTID flow, 1 for the EXCHANGE_ID flow. generateClientID draws
+	// both flows from one sequence, so client IDs never collide across the
+	// shared numeric index; this field is what keeps a version-sensitive
+	// operation from reaching a record the other flow created.
+	MinorVersion uint32
 
 	// ClientIDString is the client-provided opaque identifier
 	// (nfs_client_id4.id). v4.0 only. This is the stable identity that
