@@ -155,6 +155,12 @@ type ClientRecord struct {
 	// Keyed by hex-encoded owner data. v4.0 only.
 	OpenOwners map[string]*OpenOwner
 
+	// ReclaimComplete records that this client has sent RECLAIM_COMPLETE, so a
+	// second one draws NFS4ERR_COMPLETE_ALREADY. v4.1 only: v4.0 has no such
+	// operation. It holds whether or not a grace window was ever opened, and a
+	// client instance that re-registers gets a fresh record with it clear.
+	ReclaimComplete bool
+
 	// CBPathUp indicates whether the callback path to this client has been
 	// verified via CB_NULL. Defaults to false (not verified).
 	// Set to true after a successful CB_NULL on SETCLIENTID_CONFIRM.

@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -443,108 +444,130 @@ func TestForceEndGrace_StateManager(t *testing.T) {
 // ReclaimComplete Tests
 // ============================================================================
 
-func TestReclaimComplete(t *testing.T) {
-	t.Run("success", func(t *testing.T) {
-		gp := NewGracePeriodState(5*time.Second, nil)
-		defer gp.Stop()
+// newReclaimClient registers a confirmed v4.1 client and returns its client ID.
+func newReclaimClient(t *testing.T, sm *StateManager, ownerID string) uint64 {
+	t.Helper()
+	exch, err := sm.ExchangeID([]byte(ownerID), [8]byte{0x1}, 0, nil, "10.0.0.1:1")
+	if err != nil {
+		t.Fatalf("ExchangeID(%q): %v", ownerID, err)
+	}
+	if _, _, err := sm.CreateSession(
+		exch.ClientID, exch.SequenceID, 0, defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+	); err != nil {
+		t.Fatalf("CreateSession(%q): %v", ownerID, err)
+	}
+	return exch.ClientID
+}
 
-		gp.StartGrace([]uint64{100, 200, 300})
+// wantCompleteAlready fails unless err carries NFS4ERR_COMPLETE_ALREADY.
+func wantCompleteAlready(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, ErrCompleteAlready) {
+		t.Fatalf("second ReclaimComplete err = %v, want ErrCompleteAlready", err)
+	}
+}
 
-		err := gp.ReclaimComplete(100)
-		if err != nil {
-			t.Fatalf("ReclaimComplete: %v", err)
+func TestReclaimComplete_StateManager(t *testing.T) {
+	t.Run("during_grace", func(t *testing.T) {
+		sm := NewStateManager(5*time.Second, 5*time.Second)
+		defer sm.Shutdown()
+
+		clientID := newReclaimClient(t, sm, "in-grace")
+		sm.StartGracePeriod([]uint64{clientID})
+
+		if err := sm.ReclaimComplete(clientID, false); err != nil {
+			t.Fatalf("ReclaimComplete during grace: %v", err)
 		}
-	})
+		wantCompleteAlready(t, sm.ReclaimComplete(clientID, false))
 
-	t.Run("complete_already", func(t *testing.T) {
-		gp := NewGracePeriodState(5*time.Second, nil)
-		defer gp.Stop()
-
-		gp.StartGrace([]uint64{100, 200})
-
-		// First call succeeds
-		if err := gp.ReclaimComplete(100); err != nil {
-			t.Fatalf("First ReclaimComplete: %v", err)
-		}
-
-		// Second call returns NFS4ERR_COMPLETE_ALREADY
-		err := gp.ReclaimComplete(100)
-		if err == nil {
-			t.Fatal("Expected NFS4ERR_COMPLETE_ALREADY error")
-		}
-		stateErr, ok := err.(*NFS4StateError)
-		if !ok {
-			t.Fatalf("Expected NFS4StateError, got %T", err)
-		}
-		if stateErr.Status != types.NFS4ERR_COMPLETE_ALREADY {
-			t.Errorf("Status = %d, want NFS4ERR_COMPLETE_ALREADY (%d)",
-				stateErr.Status, types.NFS4ERR_COMPLETE_ALREADY)
+		// The first call must still retire the client from the roster, and the
+		// early exit lands before ReclaimComplete returns.
+		if sm.IsInGrace() {
+			t.Error("grace should end early once the only expected client reclaims")
 		}
 	})
 
 	t.Run("outside_grace", func(t *testing.T) {
-		gp := NewGracePeriodState(5*time.Second, nil)
-		defer gp.Stop()
+		// No grace period is ever configured. The first RECLAIM_COMPLETE is
+		// still not an error, and the second is still a duplicate.
+		sm := NewStateManager(5*time.Second, 5*time.Second)
+		defer sm.Shutdown()
 
-		// Not in grace period
-		err := gp.ReclaimComplete(100)
-		if err != nil {
-			t.Fatalf("ReclaimComplete outside grace should return nil, got: %v", err)
+		clientID := newReclaimClient(t, sm, "outside-grace")
+		if err := sm.ReclaimComplete(clientID, false); err != nil {
+			t.Fatalf("first ReclaimComplete outside grace: %v", err)
+		}
+		wantCompleteAlready(t, sm.ReclaimComplete(clientID, false))
+	})
+
+	t.Run("after_grace_ended", func(t *testing.T) {
+		sm := NewStateManager(5*time.Second, 5*time.Second)
+		defer sm.Shutdown()
+
+		clientID := newReclaimClient(t, sm, "after-grace")
+		sm.StartGracePeriod([]uint64{clientID, 999})
+		sm.ForceEndGrace()
+
+		if err := sm.ReclaimComplete(clientID, false); err != nil {
+			t.Fatalf("first ReclaimComplete after grace ended: %v", err)
+		}
+		wantCompleteAlready(t, sm.ReclaimComplete(clientID, false))
+	})
+
+	t.Run("per_fs_does_not_retire_the_global_reclaim", func(t *testing.T) {
+		// The two scopes are independent, and a client may issue both in
+		// either order, so neither flavour may deduplicate against the other.
+		sm := NewStateManager(5*time.Second, 5*time.Second)
+		defer sm.Shutdown()
+
+		clientID := newReclaimClient(t, sm, "both-flavours")
+
+		if err := sm.ReclaimComplete(clientID, true); err != nil {
+			t.Fatalf("per-FS ReclaimComplete: %v", err)
+		}
+		if err := sm.ReclaimComplete(clientID, false); err != nil {
+			t.Fatalf("global ReclaimComplete after a per-FS one: %v", err)
+		}
+		// Only the global scope deduplicates.
+		wantCompleteAlready(t, sm.ReclaimComplete(clientID, false))
+		if err := sm.ReclaimComplete(clientID, true); err != nil {
+			t.Fatalf("per-FS ReclaimComplete after the global one: %v", err)
 		}
 	})
 
-	t.Run("all_clients_reclaim", func(t *testing.T) {
-		gp := NewGracePeriodState(5*time.Second, nil)
-		defer gp.Stop()
+	t.Run("global_then_per_fs", func(t *testing.T) {
+		// The reverse order is equally legitimate.
+		sm := NewStateManager(5*time.Second, 5*time.Second)
+		defer sm.Shutdown()
 
-		gp.StartGrace([]uint64{100, 200, 300})
+		clientID := newReclaimClient(t, sm, "global-first")
 
-		// Each client sends ReclaimComplete
-		for _, id := range []uint64{100, 200, 300} {
-			if err := gp.ReclaimComplete(id); err != nil {
-				t.Fatalf("ReclaimComplete(%d): %v", id, err)
-			}
+		if err := sm.ReclaimComplete(clientID, false); err != nil {
+			t.Fatalf("global ReclaimComplete: %v", err)
 		}
-
-		// Allow early exit to propagate
-		time.Sleep(20 * time.Millisecond)
-
-		if gp.IsInGrace() {
-			t.Error("Grace period should end when all clients complete reclaim")
+		if err := sm.ReclaimComplete(clientID, true); err != nil {
+			t.Fatalf("per-FS ReclaimComplete after the global one: %v", err)
 		}
+		wantCompleteAlready(t, sm.ReclaimComplete(clientID, false))
 	})
-}
 
-func TestReclaimComplete_StateManager(t *testing.T) {
-	sm := NewStateManager(5*time.Second, 5*time.Second)
-	defer sm.Shutdown()
+	t.Run("per_client", func(t *testing.T) {
+		// One client's completion must not answer for another's.
+		sm := NewStateManager(5*time.Second, 5*time.Second)
+		defer sm.Shutdown()
 
-	// ReclaimComplete without grace period is OK
-	err := sm.ReclaimComplete(100)
-	if err != nil {
-		t.Fatalf("ReclaimComplete without grace: %v", err)
-	}
+		first := newReclaimClient(t, sm, "client-a")
+		second := newReclaimClient(t, sm, "client-b")
 
-	// Start grace period
-	sm.StartGracePeriod([]uint64{100, 200})
-
-	err = sm.ReclaimComplete(100)
-	if err != nil {
-		t.Fatalf("ReclaimComplete during grace: %v", err)
-	}
-
-	// Second call for same client
-	err = sm.ReclaimComplete(100)
-	if err == nil {
-		t.Fatal("Expected NFS4ERR_COMPLETE_ALREADY")
-	}
-	stateErr, ok := err.(*NFS4StateError)
-	if !ok {
-		t.Fatalf("Expected NFS4StateError, got %T", err)
-	}
-	if stateErr.Status != types.NFS4ERR_COMPLETE_ALREADY {
-		t.Errorf("Status = %d, want NFS4ERR_COMPLETE_ALREADY", stateErr.Status)
-	}
+		if err := sm.ReclaimComplete(first, false); err != nil {
+			t.Fatalf("ReclaimComplete(first): %v", err)
+		}
+		if err := sm.ReclaimComplete(second, false); err != nil {
+			t.Fatalf("ReclaimComplete(second) after first completed: %v", err)
+		}
+		wantCompleteAlready(t, sm.ReclaimComplete(first, false))
+		wantCompleteAlready(t, sm.ReclaimComplete(second, false))
+	})
 }
 
 func TestGraceStatus_StateManager(t *testing.T) {
