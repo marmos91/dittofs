@@ -347,9 +347,19 @@ func TestClientRecovery_ReclaimMatchingVerifierAndEarlyExit(t *testing.T) {
 	if sm.IsInGrace() {
 		t.Fatal("grace should early-exit once the only expected client reclaimed")
 	}
-	// First CLAIM_PREVIOUS is the v4.0 reclaim marker.
-	if marks := spy.snapshotReclaims(); len(marks) == 0 || marks[len(marks)-1] != "reclaimer" {
-		t.Fatalf("expected RecordReclaimComplete(reclaimer), got %v", marks)
+	// First CLAIM_PREVIOUS is the v4.0 reclaim marker; the persist is now
+	// asynchronous, so poll for the mark.
+	deadline := time.After(5 * time.Second)
+	for {
+		marks := spy.snapshotReclaims()
+		if len(marks) > 0 && marks[len(marks)-1] == "reclaimer" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("expected RecordReclaimComplete(reclaimer), got %v", marks)
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
 }
 
@@ -458,9 +468,17 @@ func TestClientRecovery_V41PersistAndReclaimComplete(t *testing.T) {
 	if sm2.IsInGrace() {
 		t.Fatal("grace should early-exit after the only expected v4.1 client RECLAIM_COMPLETEs")
 	}
-	marks := spy.snapshotReclaims()
-	if len(marks) == 0 || marks[len(marks)-1] != key {
-		t.Fatalf("expected RecordReclaimComplete(%q), got %v", key, marks)
+	deadline := time.After(5 * time.Second)
+	for {
+		marks := spy.snapshotReclaims()
+		if len(marks) > 0 && marks[len(marks)-1] == key {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("expected RecordReclaimComplete(%q), got %v", key, marks)
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
 }
 

@@ -139,19 +139,26 @@ type pendingReclaimPersist struct {
 // (v4.1 RECLAIM_COMPLETE, or first CLAIM_PREVIOUS for v4.0) so a second restart
 // inside one grace window does not wait on an already-reclaimed client.
 // Best-effort, bounded timeout. No-op when no recovery store is wired.
-// Caller must hold sm.mu.
+// The decision runs under sm.mu (caller holds it); the store write itself
+// runs after the caller releases the lock, so a slow backend never wedges
+// state operations — the same discipline the retry chain follows.
 func (sm *StateManager) recordReclaimCompleteLocked(clientID uint64, key string) {
 	if sm.recoveryStore == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), recoveryPersistTimeout)
-	defer cancel()
-	if err := sm.recoveryStore.RecordReclaimComplete(ctx, key); err != nil {
-		logger.Error("client-recovery reclaim-complete persistence failed: retrying in background; until it lands a second restart may re-wait on this client",
-			"client_id_str", key,
-			"error", err)
-		sm.scheduleReclaimPersistRetryLocked(clientID, key, reclaimPersistRetryBase)
-	}
+	store := sm.recoveryStore
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), recoveryPersistTimeout)
+		defer cancel()
+		if err := store.RecordReclaimComplete(ctx, key); err != nil {
+			logger.Error("client-recovery reclaim-complete persistence failed: retrying in background; until it lands a second restart may re-wait on this client",
+				"client_id_str", key,
+				"error", err)
+			sm.mu.Lock()
+			sm.scheduleReclaimPersistRetryLocked(clientID, key, reclaimPersistRetryBase)
+			sm.mu.Unlock()
+		}
+	}()
 }
 
 // scheduleReclaimPersistRetryLocked arms the asynchronous retry of a failed
