@@ -100,6 +100,13 @@ type ClientRecord struct {
 	// SETCLIENTID_CONFIRM on v4.0, CREATE_SESSION on v4.1.
 	Confirmed bool
 
+	// Superseded is the confirmed record this unconfirmed one replaces once it
+	// is itself confirmed. v4.1 only: a restarted client's new incarnation is
+	// registered alongside the old one, which keeps its client ID, sessions and
+	// locking state until the replacement's CREATE_SESSION collapses the two.
+	// Nil on every other record.
+	Superseded *ClientRecord
+
 	// Callback holds the client's callback information for delegations.
 	// v4.0 only: a v4.1 client's callbacks travel over the session
 	// backchannel, which carries no separate address.
