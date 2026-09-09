@@ -270,11 +270,8 @@ func (sm *StateManager) retryReclaimPersist(pending *pendingReclaimPersist) {
 // clientHoldsKeyLocked reports whether the given client still owns the recovery
 // key and has ReclaimComplete set in memory. Caller must hold sm.mu (write).
 func (sm *StateManager) clientHoldsKeyLocked(clientID uint64, key string) bool {
-	rec, ok := sm.clientsByID[clientID]
-	if !ok {
-		rec, ok = sm.v41ClientsByID[clientID]
-	}
-	if !ok {
+	rec := sm.clientRecordLocked(clientID)
+	if rec == nil {
 		return false
 	}
 	switch {
