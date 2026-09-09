@@ -603,6 +603,179 @@ func TestCreateSession_ChannelNegotiation(t *testing.T) {
 }
 
 // ============================================================================
+// CreateSession channel-size and flag validation tests
+// ============================================================================
+
+// TestCreateSession_TooSmallRequestSize pins NFS4ERR_TOOSMALL for a channel
+// whose ca_maxrequestsize can never carry a COMPOUND request: the session must
+// be rejected before any slot table, reply cache, or lease is armed for it.
+func TestCreateSession_TooSmallRequestSize(t *testing.T) {
+	sm := NewStateManager(DefaultLeaseDuration)
+	clientID, seqID := registerV41Client(t, sm)
+
+	tooSmallFore := defaultForeAttrs()
+	tooSmallFore.MaxRequestSize = 20
+
+	_, _, err := sm.CreateSession(
+		clientID, seqID, 0,
+		tooSmallFore, defaultBackAttrs(), 0, nil,
+	)
+	if err == nil {
+		t.Fatal("Expected TOOSMALL for a 20-byte ca_maxrequestsize")
+	}
+	if stateErr, ok := err.(*NFS4StateError); !ok || stateErr.Status != types.NFS4ERR_TOOSMALL {
+		t.Errorf("Expected NFS4ERR_TOOSMALL (%d), got: %v", types.NFS4ERR_TOOSMALL, err)
+	}
+
+	// The rejected request consumed no sequence ID: a retry with a workable
+	// budget at the same seqid must succeed, proving no state leaked.
+	smallBack := defaultBackAttrs()
+	smallBack.MaxRequestSize = 10
+	_, _, err = sm.CreateSession(
+		clientID, seqID, 0,
+		defaultForeAttrs(), smallBack, 0, nil,
+	)
+	if err == nil {
+		t.Fatal("Expected TOOSMALL for a 10-byte back-channel ca_maxrequestsize")
+	}
+	if stateErr, ok := err.(*NFS4StateError); !ok || stateErr.Status != types.NFS4ERR_TOOSMALL {
+		t.Errorf("Expected NFS4ERR_TOOSMALL (%d) on the back channel, got: %v", types.NFS4ERR_TOOSMALL, err)
+	}
+
+	result, _, err := sm.CreateSession(
+		clientID, seqID, 0,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+	)
+	if err != nil {
+		t.Fatalf("CreateSession with workable budgets after two rejections: %v", err)
+	}
+	if result.SessionID == (types.SessionId4{}) {
+		t.Error("SessionID should be non-zero after the accepted request")
+	}
+}
+
+// TestCreateSession_TooSmallResponseSize pins NFS4ERR_TOOSMALL for a channel
+// whose ca_maxresponsesize can never carry a COMPOUND reply.
+func TestCreateSession_TooSmallResponseSize(t *testing.T) {
+	sm := NewStateManager(DefaultLeaseDuration)
+	clientID, seqID := registerV41Client(t, sm)
+
+	tooSmallFore := defaultForeAttrs()
+	tooSmallFore.MaxResponseSize = 0
+
+	_, _, err := sm.CreateSession(
+		clientID, seqID, 0,
+		tooSmallFore, defaultBackAttrs(), 0, nil,
+	)
+	if err == nil {
+		t.Fatal("Expected TOOSMALL for a zero ca_maxresponsesize")
+	}
+	if stateErr, ok := err.(*NFS4StateError); !ok || stateErr.Status != types.NFS4ERR_TOOSMALL {
+		t.Errorf("Expected NFS4ERR_TOOSMALL (%d), got: %v", types.NFS4ERR_TOOSMALL, err)
+	}
+
+	// A small-but-workable response budget is accepted: the floor must stay
+	// under it, because the reference suite negotiates one and then forces
+	// reply-size answers on the operations that overflow it.
+	workable := defaultForeAttrs()
+	workable.MaxResponseSize = 400
+	if _, _, err := sm.CreateSession(
+		clientID, seqID, 0,
+		workable, defaultBackAttrs(), 0, nil,
+	); err != nil {
+		t.Fatalf("A 400-byte ca_maxresponsesize must be accepted, got: %v", err)
+	}
+}
+
+// TestCreateSession_SmallCacheSizeAccepted pins that ca_maxresponsesize_cached
+// is NOT floored: an unusable cache budget is answered with
+// NFS4ERR_REP_TOO_BIG_TO_CACHE on the operation that overflows it, not a
+// CREATE_SESSION rejection, so creating the session must succeed.
+func TestCreateSession_SmallCacheSizeAccepted(t *testing.T) {
+	sm := NewStateManager(DefaultLeaseDuration)
+	clientID, seqID := registerV41Client(t, sm)
+
+	smallCache := defaultForeAttrs()
+	smallCache.MaxResponseSizeCached = 10
+
+	result, _, err := sm.CreateSession(
+		clientID, seqID, 0,
+		smallCache, defaultBackAttrs(), 0, nil,
+	)
+	if err != nil {
+		t.Fatalf("A 10-byte ca_maxresponsesize_cached must not reject the session: %v", err)
+	}
+	if result.ForeChannelAttrs.MaxResponseSizeCached != 10 {
+		t.Errorf("negotiated MaxResponseSizeCached = %d, want the client's 10",
+			result.ForeChannelAttrs.MaxResponseSizeCached)
+	}
+}
+
+// TestCreateSession_UnknownFlagBits pins NFS4ERR_INVAL for flag bits the server
+// does not recognise: silently masking would let a client believe it negotiated
+// support it did not get.
+func TestCreateSession_UnknownFlagBits(t *testing.T) {
+	sm := NewStateManager(DefaultLeaseDuration)
+	clientID, seqID := registerV41Client(t, sm)
+
+	_, _, err := sm.CreateSession(
+		clientID, seqID, 0xf,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+	)
+	if err == nil {
+		t.Fatal("Expected INVAL for undefined flag bits (0xf has bit 3 set)")
+	}
+	if stateErr, ok := err.(*NFS4StateError); !ok || stateErr.Status != types.NFS4ERR_INVAL {
+		t.Errorf("Expected NFS4ERR_INVAL (%d), got: %v", types.NFS4ERR_INVAL, err)
+	}
+
+	// All three defined bits together are accepted.
+	all := uint32(types.CREATE_SESSION4_FLAG_PERSIST |
+		types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN |
+		types.CREATE_SESSION4_FLAG_CONN_RDMA)
+	if _, _, err := sm.CreateSession(
+		clientID, seqID, all,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+	); err != nil {
+		t.Fatalf("The three defined flag bits together must be accepted, got: %v", err)
+	}
+}
+
+// TestCreateSession_SessionLimitStatus pins that the per-client session-limit
+// sentinel carries NFS4ERR_NOSPC: NFS4ERR_RESOURCE is absent from
+// CREATE_SESSION's valid-error list in RFC 8881 Section 18.36.
+func TestCreateSession_SessionLimitStatus(t *testing.T) {
+	sm := NewStateManager(DefaultLeaseDuration)
+	sm.mu.Lock()
+	sm.maxSessionsPerClient = 1
+	sm.mu.Unlock()
+
+	clientID, seqID := registerV41Client(t, sm)
+
+	if _, _, err := sm.CreateSession(
+		clientID, seqID, 0,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+	); err != nil {
+		t.Fatalf("first CreateSession: %v", err)
+	}
+	sm.CacheCreateSessionResponse(clientID, []byte("cached"))
+
+	_, _, err := sm.CreateSession(
+		clientID, seqID+1, 0,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+	)
+	if err == nil {
+		t.Fatal("Expected an error for the per-client session limit")
+	}
+	if !errors.Is(err, ErrTooManySessions) {
+		t.Errorf("Expected ErrTooManySessions, got: %v", err)
+	}
+	if stateErr, ok := err.(*NFS4StateError); !ok || stateErr.Status != types.NFS4ERR_NOSPC {
+		t.Errorf("Expected NFS4ERR_NOSPC (%d), got status: %v", types.NFS4ERR_NOSPC, err)
+	}
+}
+
+// ============================================================================
 // DestroySession Tests
 // ============================================================================
 

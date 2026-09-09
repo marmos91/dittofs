@@ -3486,6 +3486,34 @@ func (sm *StateManager) CreateSession(
 
 	// Case 3: New request (seqid == record.SequenceID + 1)
 
+	// A channel budget from which no COMPOUND could ever be sent must be
+	// rejected before any session state is allocated: accepting it would arm a
+	// slot table, a reply cache, and a lease for a channel that can never carry
+	// traffic, which is the resource leak the conformance suite's TOOSMALL rows
+	// probe. Negotiation itself only clamps downward from the server max and
+	// has no floor, so the floor check runs ahead of it.
+	if err := channelAttrsTooSmall(foreAttrs); err != nil {
+		return nil, nil, err
+	}
+	if err := channelAttrsTooSmall(backAttrs); err != nil {
+		return nil, nil, err
+	}
+
+	// Unknown flag bits are a client-contract violation rather than something
+	// to ignore: the server MUST return NFS4ERR_INVAL for any set bit it does
+	// not recognise (RFC 8881 Section 18.36.3), because silently masking would
+	// let a client believe it negotiated PERSIST or RDMA support it did not
+	// get. Only the three defined bits are accepted.
+	const knownFlags = uint32(types.CREATE_SESSION4_FLAG_PERSIST |
+		types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN |
+		types.CREATE_SESSION4_FLAG_CONN_RDMA)
+	if flags&^knownFlags != 0 {
+		return nil, nil, &NFS4StateError{
+			Status:  types.NFS4ERR_INVAL,
+			Message: fmt.Sprintf("unknown CREATE_SESSION flag bits 0x%08x", flags&^knownFlags),
+		}
+	}
+
 	// Check per-client session limit
 	if len(sm.sessionsByClientID[clientID]) >= sm.maxSessionsPerClient {
 		return nil, nil, ErrTooManySessions
