@@ -205,17 +205,18 @@ func TestOpenFile_V41OwnerRecord_CarriesLiveLease(t *testing.T) {
 	// The lease renews on stateid I/O: drive an I/O through ValidateStateid
 	// and confirm the renewal stamped the SAME lease the v4.1 SEQUENCE
 	// handler owns.
-	sm.mu.RLock()
-	before := owner.ClientRecord.Lease.LastRenew
-	sm.mu.RUnlock()
+	lease := owner.ClientRecord.Lease
+	lease.mu.Lock()
+	before := lease.LastRenew
+	lease.mu.Unlock()
 
 	if _, err := sm.ValidateStateid(&open.Stateid, nil, StateidOpRead, v41ID); err != nil {
 		t.Fatalf("stateid I/O with a live lease: %v", err)
 	}
 
-	sm.mu.RLock()
-	renewed := owner.ClientRecord.Lease.LastRenew
-	sm.mu.RUnlock()
+	lease.mu.Lock()
+	renewed := lease.LastRenew
+	lease.mu.Unlock()
 	if !renewed.After(before) {
 		t.Fatal("stateid I/O must renew the v4.1 owner's lease")
 	}
@@ -240,10 +241,11 @@ func TestValidateStateid_V41ExpiredLease_ReturnsErrExpired(t *testing.T) {
 	// Stop the lease and age its LastRenew past the duration, simulating a
 	// client whose SEQUENCE stopped arriving: the next stateid I/O that skips
 	// SEQUENCE must draw the expiry instead of renewing.
-	sm.mu.Lock()
-	sm.openStateByOther[open.Stateid.Other].Owner.ClientRecord.Lease.Stop()
-	sm.openStateByOther[open.Stateid.Other].Owner.ClientRecord.Lease.LastRenew = time.Now().Add(-2 * time.Hour)
-	sm.mu.Unlock()
+	lease := sm.openStateByOther[open.Stateid.Other].Owner.ClientRecord.Lease
+	lease.Stop()
+	lease.mu.Lock()
+	lease.LastRenew = time.Now().Add(-2 * time.Hour)
+	lease.mu.Unlock()
 
 	if _, err := sm.ValidateStateid(&open.Stateid, nil, StateidOpRead, v41ID); !errors.Is(err, ErrExpired) {
 		t.Fatalf("stateid I/O against an expired v4.1 lease: got %v, want ErrExpired", err)
