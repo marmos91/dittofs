@@ -296,15 +296,14 @@ func TestExchangeID_UpdateWithUnconfirmedRecord(t *testing.T) {
 	// An unconfirmed record is not updatable: there is no confirmed record to
 	// update, whatever verifier and principal the update carries.
 	tests := []struct {
-		name       string
-		verifier   [8]byte
-		uid        uint32
-		wantClient bool
+		name     string
+		verifier [8]byte
+		uid      uint32
 	}{
-		{"otherVerifierOtherPrincipal", eidVerifier("verify02"), 2222, true},
-		{"otherVerifierSamePrincipal", eidVerifier("verify02"), 1111, true},
-		{"sameVerifierOtherPrincipal", eidVerifier("verify01"), 2222, true},
-		{"sameVerifierSamePrincipal", eidVerifier("verify01"), 1111, true},
+		{"otherVerifierOtherPrincipal", eidVerifier("verify02"), 2222},
+		{"otherVerifierSamePrincipal", eidVerifier("verify02"), 1111},
+		{"sameVerifierOtherPrincipal", eidVerifier("verify01"), 2222},
+		{"sameVerifierSamePrincipal", eidVerifier("verify01"), 1111},
 	}
 
 	for _, tt := range tests {
