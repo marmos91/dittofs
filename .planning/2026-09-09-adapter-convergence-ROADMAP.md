@@ -7,6 +7,7 @@ the point-in-time status + proposed order. If the two disagree, the plan wins.
 Verified against GitHub on 2026-09-09 ~23:40: Wave 2 fully landed — PRs #2494/#2495/#2496/#2497/#2498
 all squash-merged, issues #2471/#2487/#2482/#2464/#2490 auto-closed, `origin/develop` at `7e5cd2e40`,
 worktrees and branches deleted, `graphify update .` re-run from the merged checkout (31,103 nodes).
+Note: develop carries 2 local docs commits (23de25e56 + eda765c47) not yet pushed to origin/develop.
 
 ---
 
@@ -34,7 +35,7 @@ worktrees and branches deleted, `graphify update .` re-run from the merged check
 | #2490 LOCK special-stateid BAD_STATEID | #2498 | `7e5cd2e40` |
 
 Earlier Wave 2 singles: #2398 via #2459+#2466, #2362 via #2458, #2369 via #2460, #2382 via #2456,
-#2399 via #2457, #2341 via #2484+#2481, #2340 partial via #2491/#2489/#2486/#2485.
+# 2399 via #2457, #2341 via #2484+#2481, #2340 partial via #2491/#2489/#2486/#2485.
 
 **Wave 2 residual (carries into Wave 3+):** #2340's remaining pynfs v4.1 rows (walk out of
 KNOWN_FAILURES only on demonstrated CI passes), #2329's pynfs delegation confirmation (server side
@@ -52,18 +53,27 @@ warranted — verdict in `.planning/2026-09-09-diag-2329-2464.md`).
 
 ### Step 2 — Wave 3: shared-layer reuse + lifecycle (goals 2 + 4) — NEXT
 
-Small, mostly independent PRs; good for a parallel fan-out (disjoint files):
+Small, mostly independent PRs; good for a parallel fan-out (disjoint files). Premises re-verified
+on develop 7e5cd2e40 (details in `.planning/2026-09-09-wave2-closure.md`):
 
-1. Wire all five bypassing content paths to the shared error mapper; restore `ErrStoreClosed → STALE`
-2. `TestErrorMapCoverage` enum rewrite (5-line PR, unguards everything else in this wave) — land FIRST
-3. Delete dead `MapLockToNFS3/4`; fix `ErrLockLimitExceeded` Jukebox-vs-IO; add `ErrConflict` row
-4. Delete `getUserIdentity` (SMB uses the `ResolvedIdentity` it already has); scope to resolved identities
-5. Listener stop-before-bind leak + EMFILE/ENFILE accept busy-loop (`pkg/adapter/base.go:246-263`)
-6. `CheckExportAccess` stale-citation fix in `CLAUDE.md:105` + `create.go:1874`
-7. Delete `grantAdaptive` dead branch
+1. `TestErrorMapCoverage` enum rewrite — **LAND FIRST** (errmap_test.go:54 types 25, enum has 26
+   with ErrConflict; until this lands every other errmap fix is unguarded)
+2. Wire the NFSv4 bypassing content paths (read.go:143, write.go:215, read_plus.go:125) to the
+   shared mapper; restore `ErrStoreClosed → STALE` end to end (lookupErrorRow already maps it)
+3. Delete dead `MapLockToNFS3/4` (SMB is the only production caller); fix `ErrLockLimitExceeded`
+   Jukebox-vs-IO drift; add the `ErrConflict` row **and name the handler that observes it**
+   (mind the errors.Join wrap at shares/coordinator.go:290-303)
+4. Delete `getUserIdentity` (SMB uses the `ResolvedIdentity` it already has); scope to resolved
+   identities only — AUTH_SYS is exempt by RFC 5531
+5. Listener stop-before-bind leak + EMFILE/ENFILE accept busy-loop (`pkg/adapter/base.go:203-218,
+   246-263`)
+6. `CheckExportAccess` stale-citation fix in `CLAUDE.md:105` + `create.go:1874` (real symbols:
+   `ResolveSharePermission`, `tree_connect.go:442`)
+7. Async credit grants (response.go:1207-1210, 1278-1281) bypass Session.credits — under-counts
+   GetOutstanding for grantAdaptive's throttle (grantAdaptive itself is NOT dead)
 
 Guards from the plan: a dead function does not make its file dead (check `init()`-filled tables
-before deleting); audits predate #2356 — re-verify each premise on develop.
+before deleting).
 
 ### Step 3 — Wave 4: SMB triage (before the SMB fix waves)
 
