@@ -50,16 +50,19 @@ func v41RecoveryKey(ownerID []byte) string {
 }
 
 // recoveryKeyForClientLocked resolves the durable recovery key for a confirmed
-// client by numeric clientID, checking the v4.0 then v4.1 tables. Returns ""
-// when the client is unknown. Caller must hold sm.mu (R or W).
+// client by numeric clientID. The key shape carries the minor version (v4.0 =
+// the raw nfs_client_id4 string, v4.1 = the prefixed co_ownerid hex), so the
+// record's version decides it. Returns "" when the client is unknown. Caller
+// must hold sm.mu (R or W).
 func (sm *StateManager) recoveryKeyForClientLocked(clientID uint64) string {
-	if rec, ok := sm.clientsByID[clientID]; ok {
-		return rec.ClientIDString
+	rec := sm.clientRecordLocked(clientID)
+	if rec == nil {
+		return ""
 	}
-	if rec, ok := sm.v41ClientsByID[clientID]; ok {
+	if rec.MinorVersion == 1 {
 		return v41RecoveryKey(rec.OwnerID)
 	}
-	return ""
+	return rec.ClientIDString
 }
 
 // persistClientRecoveryLocked stores a durable recovery record for a confirmed

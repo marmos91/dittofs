@@ -21,7 +21,8 @@ Legend: `[ ]` open · `[~]` in flight · `[x]` done · `[!]` blocked/needs a dec
 - [x] Deleted `~/dittofs-worktrees/{2340-session-validation,2341-stateid-classes}` and their branches.
       Nothing was unmerged: both branches pointed at the **same** commit `c5ba24c49`, a strict ancestor
       of develop — 0 unique commits, never pushed, no PR ever opened
-- [ ] Re-derive #2340's 32 pynfs rows — the peer's sizing context died with it.
+- [ ] Re-derive #2340's 32 pynfs rows — the peer's sizing context died with it. (Still open —
+      blocks the #2340 residual in Wave 2.)
       Count with `^\| *[A-Z]+[0-9]+[a-z]? *\|`; a trailing-digit regex silently drops
       `CSESS16a`, `EID5c/5d/5f/5g`, `EID6a`–`EID6g`
 
@@ -142,26 +143,31 @@ directory-only to real coverage. Not a reason to reopen #2396.
   caller re-compares at `open.go:894`; `freeLockStateidLocked` (`stateid.go:513`) compares inline and
   rejects even for clientID 0; the 14 per-handler `GetTree` sites stay existence-only by design.
 
-## Wave 2 — `sm.mu`, then the pynfs conformance wave (goal 1)
+## Wave 2 — `sm.mu`, then the pynfs conformance wave (goal 1) — ~90% LANDED as of 2026-09-09
 
-- [ ] **#2398 decided first** — #2341/#2340 add *write-side* work under the contended lock.
-      Criterion (settled, on the issue): release-call-recommit is safe without re-validation only if the
-      post-gap write is **idempotent, keyed by something stable, and records a fact the gap cannot
-      falsify**. `ReclaimComplete` meets all three; a stateid/seqid commit meets **none** and owes a CAS
-- [ ] #2341 (14 v4.0 rows) · #2340 (**32** v4.1) · #2329 (10 v4.1)
-- [~] Singles **in flight 2026-09-08**, one agent each, disjoint files: #2362 (`attrs/encode.go`) ·
-      #2369 (`handlers/secinfo.go` + `helpers.go`) · #2399 (`handlers/open.go`) · #2382
-      (`pending_writes.go`). Decisions taken by the user before fan-out, settled in each prompt:
-      **#2382** document the change-attr freeze as intended (ponytail marker + faq.md + reclassify
-      WRT18; #2342 stays open), do *not* build the per-client freeze · **#2369** reject
-      `RequireKerberos` with no Kerberos configured at share add, so SECINFO can never return an
-      empty flavor list; a junction reports the target share's policy · **#2399** ship now with a
-      decode-level test rather than folding into #2329 · **#2398** hoist all four LockManager sites,
-      not just the two blocking LOCK paths
-- [ ] Blocked behind #2398 (all touch `state/manager.go`): #2371, #2359, #2389, #2329, #2340, #2341
+Status re-verified against GitHub 2026-09-09 (see `.planning/2026-09-09-adapter-convergence-ROADMAP.md`
+for the landed-via table). Remaining work:
+
+- [x] **#2398 decided and landed** — hoisted via #2459 + #2466; closed 2026-09-08
+- [x] #2341 (14 v4.0 rows) — closed 2026-09-08 (#2484, #2481)
+- [x] Singles: #2362 (#2458) · #2369 (#2460) · #2399 (#2457) · #2382 (#2456, documented per decision)
+- [x] Blocked-behind-#2398 singles: #2359, #2389 — closed 2026-09-08/09
+- [x] #2340 partially: #2491 (EXCHANGE_ID), #2489 (DESTROY_CLIENTID), #2486 (RECLAIM_COMPLETE),
+      #2485 (boot epoch) merged; closed 2026-09-09
+- [x] #2329's root cause landed: #2476 (client-record unify) + #2479 (grant delegations on a
+      verified callback path, incl. the CREATE_SESSION auto-bind fore-only fix)
+- [ ] #2340 remaining v4.1 rows — re-derive the 32-row sizing first (Wave 0 item below)
+- [ ] #2329 — confirm with an actual pynfs run that delegations now flow, then close
+- [ ] #2471 CREATE_SESSION negotiated reply sizes (NFS4ERR_RESOURCE where invalid) — last #2340-class gap
+- [ ] #2371 NFS4ERR_RESOURCE on two v4.1-only paths — unblocked now that #2398 hoisted `sm.mu`
+- [ ] Post-merge churn from the landed wave: #2482 (fold client indexes — do FIRST, unblocks
+      #2490/#2483), #2483 (seqid=0 bypass leaks into v4.0), #2487 (reclaim persist never retried),
+      #2490 (BAD vs STALE on `exist_lock_owner4`), #2467 (persisted require_kerberos at load time),
+      #2464 (COUR6 flake — diagnose, needs postgres-s3)
 - [ ] Run against **memory AND postgres-s3** — memory-passes/SQL-fails is a persistence diagnosis,
       not a protocol one
 - [ ] Read verdicts from the **CI artifact**; the local pynfs harness reports ~2× CI's failures on the same SHA
+- [ ] One writer: all remaining work touches `state/manager.go` / `v4/state` — sequential PRs, no stacking
 
 ## Wave 3 — Reuse the shared layer, delete bypasses (goals 2 + 4)
 
