@@ -168,9 +168,11 @@ func (sm *StateManager) recordReclaimCompleteLocked(clientID uint64, key string)
 // which is what recoveryPersistTimeout exists to prevent), and re-validates
 // before each write that the client that issued the mark still holds the key
 // — a client that re-registers after a restart gets a fresh in-memory record
-// with ReclaimComplete clear, so the fresh incarnation must still send
-// RECLAIM_COMPLETE and a stale retry must not stamp its durable record as
-// done. At most one chain per key exists: a schedule while an entry lives
+// with ReclaimComplete clear, so a stale retry is abandoned once the issuer
+// is gone and in the common case never reaches the durable write; the write
+// runs out of lock, so a narrow stale-success window remains (a retry racing
+// the removal path) and self-heals on the client's next reclaim-complete.
+// At most one chain per key exists: a schedule while an entry lives
 // adopts it (updating the issuer and arming a fresh timer at the new delay;
 // the old timer's fire becomes a no-op retry that finds the same entry and
 // either lands the write or reschedules with the adopted state). Caller must
@@ -219,6 +221,13 @@ func (sm *StateManager) retryReclaimPersist(pending *pendingReclaimPersist) {
 	store := sm.recoveryStore
 	if store == nil {
 		delete(sm.pendingReclaimPersists, pending.key)
+		sm.mu.Unlock()
+		return
+	}
+	// A stale timer (whose chain succeeded, was adopted, or was replaced) must
+	// not issue a store write for an entry it no longer owns: drop the entry
+	// when this timer's chain is not the live one.
+	if live, ok := sm.pendingReclaimPersists[pending.key]; !ok || live != pending {
 		sm.mu.Unlock()
 		return
 	}
