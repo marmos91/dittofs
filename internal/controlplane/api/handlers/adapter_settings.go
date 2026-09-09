@@ -389,7 +389,6 @@ func (h *AdapterSettingsHandler) PutSettings(w http.ResponseWriter, r *http.Requ
 			InternalServerError(w, "Failed to update NFS adapter settings")
 			return
 		}
-
 		// Re-fetch to get updated version (incremented by store)
 		updatedSettings, err := h.store.GetNFSAdapterSettings(r.Context(), adapter.ID)
 		if err != nil {
@@ -397,6 +396,7 @@ func (h *AdapterSettingsHandler) PutSettings(w http.ResponseWriter, r *http.Requ
 			return
 		}
 
+		h.refreshNFSWatcher(w, r)
 		h.auditLog(r, "NFS adapter settings replaced")
 		WriteJSONOK(w, nfsSettingsToResponse(updatedSettings))
 
@@ -573,7 +573,6 @@ func (h *AdapterSettingsHandler) PatchSettings(w http.ResponseWriter, r *http.Re
 			InternalServerError(w, "Failed to update NFS adapter settings")
 			return
 		}
-
 		// Re-fetch to get updated version (incremented by store)
 		updatedSettings, err := h.store.GetNFSAdapterSettings(r.Context(), adapter.ID)
 		if err != nil {
@@ -581,6 +580,7 @@ func (h *AdapterSettingsHandler) PatchSettings(w http.ResponseWriter, r *http.Re
 			return
 		}
 
+		h.refreshNFSWatcher(w, r)
 		h.auditLog(r, "NFS adapter settings updated (patch)")
 		WriteJSONOK(w, nfsSettingsToResponse(updatedSettings))
 
@@ -736,6 +736,7 @@ func (h *AdapterSettingsHandler) ResetSettings(w http.ResponseWriter, r *http.Re
 			InternalServerError(w, "Failed to get updated NFS adapter settings")
 			return
 		}
+		h.refreshNFSWatcher(w, r)
 		h.auditLog(r, fmt.Sprintf("NFS adapter setting '%s' reset to default", settingName))
 		WriteJSONOK(w, nfsSettingsToResponse(updatedSettings))
 
@@ -899,6 +900,22 @@ func (h *AdapterSettingsHandler) validateAndRespond(
 }
 
 // --- Helpers ---
+
+// refreshNFSWatcher forces the settings watcher to re-read NFS adapter
+// settings from the database immediately, so the running adapter sees the
+// update before this request returns instead of at the next poll tick.
+// Lease consumers read the watcher cache, so a settings write that skips
+// this refresh leaves clients arming against the stale lease until the
+// ticker fires. A failed refresh is logged and otherwise ignored: the
+// DB write already succeeded, and the next poll picks the change up.
+func (h *AdapterSettingsHandler) refreshNFSWatcher(w http.ResponseWriter, r *http.Request) {
+	if h.runtime == nil || h.runtime.GetSettingsWatcher() == nil {
+		return
+	}
+	if err := h.runtime.GetSettingsWatcher().RefreshNFSSettings(r.Context()); err != nil {
+		logger.Error("Failed to refresh NFS settings watcher after update", "error", err)
+	}
+}
 
 func (h *AdapterSettingsHandler) auditLog(r *http.Request, action string) {
 	claims := middleware.GetClaimsFromContext(r.Context())
