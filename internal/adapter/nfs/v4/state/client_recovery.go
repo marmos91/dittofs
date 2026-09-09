@@ -229,6 +229,15 @@ func (sm *StateManager) retryReclaimPersist(pending *pendingReclaimPersist) {
 
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+	// A stale timer (one whose chain was adopted, so a fresher timer now owns
+	// the entry) must not reschedule after its write lands: if the entry was
+	// replaced, its delay was reset, and this write's doubled delay would
+	// overwrite it. Only the write whose entry is still the one it scheduled
+	// may drive the chain forward; the freshest timer always is.
+	live, ok := sm.pendingReclaimPersists[pending.key]
+	if !ok || live != pending {
+		return
+	}
 	if err == nil {
 		delete(sm.pendingReclaimPersists, pending.key)
 		return
