@@ -123,7 +123,9 @@ Invoke it with `subagent({ workflowScriptPath: "<skill-dir>/refute-root-cause.js
 cwd: "<repo-or-worktree>", async: false })` after editing the CONFIG block at the
 top of the script — `CLAIM` (the root cause, stated as a falsifiable sentence),
 `EVIDENCE` (repro output, logs, file:line anchors), and `SYMPTOM` (what someone
-actually observed).
+actually observed). `<skill-dir>` is the user-level skill directory
+(`~/.pi/agent/skills/refute-root-cause/`) — the script ships with the skill, not
+with this repo, so passing a repo-relative path is the common mistake.
 
 **How to read the result.** Any refutation with a concrete counterexample kills
 the claim — go back to step 3, do not average the votes. Refutations without a
@@ -293,7 +295,9 @@ When CI is green and every Copilot comment is addressed:
 
 ```bash
 gh pr merge <PR> --squash --delete-branch
-gh issue close <N> --comment "Fixed in #<PR>."     # manual — see step 8
+# the issue auto-closed at merge (step 8); post verification notes with
+# `gh issue comment <N>` — `gh issue close` on a closed issue exits 0 and
+# silently discards the comment
 
 # Refresh the graph in the MAIN checkout, on the merged code — not in the worktree
 cd "$(git worktree list --porcelain | head -1 | cut -d' ' -f2)"   # the main checkout
@@ -302,9 +306,6 @@ graphify update .                                   # AST-only, no API cost
 
 git worktree remove ~/dittofs-worktrees/<slug>
 ```
-
-Closing is manual because that automation only fires when work reaches `main` at
-release time. An issue left open here stays open for weeks.
 
 Order matters in that block. `graphify-out/` lives in the main checkout, so
 `graphify update .` run from the worktree either builds a throwaway graph that
