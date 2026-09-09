@@ -16,9 +16,9 @@ import (
 
 // HandleReclaimComplete implements the RECLAIM_COMPLETE operation (RFC 8881 Section 18.51).
 // Signals the server that the client has finished reclaiming state after a restart.
-// Delegates to StateManager.ReclaimComplete for one-shot tracking per client.
-// Marks client as reclaim-complete; for single-FS servers, rca_one_fs=true/false are equivalent.
-// Errors: NFS4ERR_COMPLETE_ALREADY (called twice), NFS4ERR_BADXDR.
+// rca_one_fs travels to StateManager.ReclaimComplete because it selects which
+// reclaim scope the client is retiring, and the two scopes are tracked apart.
+// Errors: NFS4ERR_COMPLETE_ALREADY (global reclaim done twice), NFS4ERR_BADXDR.
 func HandleReclaimComplete(
 	d *Deps,
 	ctx *types.CompoundContext,
@@ -61,7 +61,7 @@ func HandleReclaimComplete(
 	clientID := session.ClientID
 
 	// Delegate to StateManager
-	err := d.StateManager.ReclaimComplete(clientID)
+	err := d.StateManager.ReclaimComplete(clientID, args.OneFS)
 	if err != nil {
 		nfsStatus := MapStateError(err)
 		logger.Debug("RECLAIM_COMPLETE: state error",

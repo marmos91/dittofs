@@ -1356,32 +1356,65 @@ func (sm *StateManager) ForceEndGrace() {
 	gp.ForceEnd()
 }
 
-// ReclaimComplete tracks per-client RECLAIM_COMPLETE for the grace period.
-// Delegates to GracePeriodState.ReclaimComplete.
-// Returns nil if no grace period has been configured (not an error per RFC 8881).
-func (sm *StateManager) ReclaimComplete(clientID uint64) error {
-	sm.mu.RLock()
+// ReclaimComplete marks a client as having finished reclaiming state.
+//
+// oneFS selects which of the two RECLAIM_COMPLETE scopes the client is
+// retiring (RFC 8881 Section 18.51.3). A global reclaim (oneFS false) covers
+// every lock the client held on the previous server instance. A file
+// system-specific reclaim (oneFS true) covers only the file system named by
+// the current filehandle, and only because that file system is migrating. A
+// client may legitimately issue both forms in either order, so the two do not
+// deduplicate against each other.
+//
+// Section 18.51.4 scopes the duplicate to "once for each server instance or
+// occasion of the transition of a file system", so only the global reclaim is
+// tracked here: it returns NFS4ERR_COMPLETE_ALREADY on a second global call.
+// No file system ever migrates here, and Section 18.51.3 requires that a
+// file system-specific reclaim naming a file system that is not migrating
+// "returns NFS4_OK and is otherwise ignored".
+//
+// The first global call succeeds whether or not a grace period is running:
+// RECLAIM_COMPLETE outside grace is not an error, it just has nothing to
+// reclaim. When a grace period is running, it also retires the client from the
+// reclaim roster so the window can end early.
+func (sm *StateManager) ReclaimComplete(clientID uint64, oneFS bool) error {
+	// ponytail: no per-file-system reclaim set, because nothing here migrates
+	// and an ignored call needs no bookkeeping; add one keyed by file system
+	// if migration ever lands, and refuse the second call per file system.
+	if oneFS {
+		return nil
+	}
+
+	sm.mu.Lock()
 	gp := sm.gracePeriod
 	// Resolve the durable recovery key for this client (v4.1 = co_ownerid,
 	// v4.0 = nfs_client_id4 string) so the boot-loaded string roster early-exits
 	// and the reclaim-done marker is persisted.
 	recoveryKey := sm.recoveryKeyForClientLocked(clientID)
-	sm.mu.RUnlock()
 
+	// A caller with no record has nothing to deduplicate against, so it is let
+	// through: RECLAIM_COMPLETE is SEQUENCE-gated, so a live session always
+	// resolves to a record, and an unknown client ID is refused by the session
+	// lookup before it reaches here.
+	if record := sm.clientRecordLocked(clientID); record != nil {
+		if record.ReclaimComplete {
+			sm.mu.Unlock()
+			return ErrCompleteAlready
+		}
+		record.ReclaimComplete = true
+	}
 	if recoveryKey != "" {
-		if gp != nil {
+		sm.recordReclaimCompleteLocked(recoveryKey)
+	}
+	sm.mu.Unlock()
+
+	if gp != nil {
+		if recoveryKey != "" {
 			gp.ClientReclaimedByString(recoveryKey)
 		}
-		sm.mu.Lock()
-		sm.recordReclaimCompleteLocked(recoveryKey)
-		sm.mu.Unlock()
+		gp.ClientReclaimed(clientID)
 	}
-
-	if gp == nil {
-		// Not in grace period, but RECLAIM_COMPLETE outside grace is OK per RFC 8881
-		return nil
-	}
-	return gp.ReclaimComplete(clientID)
+	return nil
 }
 
 // CheckGraceForNewState returns NFS4ERR_GRACE if the server is in a grace period
