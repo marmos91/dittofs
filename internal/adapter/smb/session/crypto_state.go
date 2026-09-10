@@ -1,8 +1,11 @@
 package session
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/encryption"
 	"github.com/marmos91/dittofs/internal/adapter/smb/kdf"
@@ -72,6 +75,50 @@ type SessionCryptoState struct {
 
 	// CipherId is the negotiated cipher ID for this session.
 	CipherId uint16
+
+	// nonce holds the encrypt-nonce counter behind a pointer so the state is
+	// never copied (EnableSigning swaps whole SessionCryptoState values). The
+	// counter must be strictly monotonic per session so the AEAD nonce
+	// (prefix+counter) never repeats — MS-SMB2 3.1.4.3 forbids nonce reuse
+	// under the same key.
+	nonce *nonceState
+}
+
+// nonceState is the encrypt-nonce counter shared by a session's crypto state.
+// Separate struct so the mutex is never copied when a SessionCryptoState value
+// is swapped (EnableSigning).
+type nonceState struct {
+	mu      sync.Mutex
+	prefix  [4]byte
+	counter uint64
+}
+
+// NextNonce returns a fresh encrypt nonce for this session: the per-session
+// random 4-byte prefix followed by a big-endian counter that increments
+// per call. The counter is monotonic under the nonce state's mutex, so the
+// nonce never repeats within a session key's lifetime (MS-SMB2 3.1.4.3:
+// reusing an AEAD nonce with the same key breaks confidentiality and
+// authenticity). Safe for concurrent use.
+func (cs *SessionCryptoState) NextNonce(nonceSize int) ([]byte, error) {
+	if cs.nonce == nil {
+		cs.nonce = &nonceState{}
+	}
+	ns := cs.nonce
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	if ns.counter == 0 {
+		// First nonce for this session: seed the random prefix.
+		if _, err := rand.Read(ns.prefix[:]); err != nil {
+			return nil, fmt.Errorf("seed nonce prefix: %w", err)
+		}
+	}
+	ns.counter++
+	nonce := make([]byte, nonceSize)
+	copy(nonce, ns.prefix[:])
+	if nonceSize > len(ns.prefix) {
+		binary.BigEndian.PutUint64(nonce[len(ns.prefix):], ns.counter)
+	}
+	return nonce, nil
 }
 
 // DeriveAllKeys creates a fully constructed SessionCryptoState with all keys

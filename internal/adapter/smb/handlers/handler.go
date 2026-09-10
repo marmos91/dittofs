@@ -374,6 +374,14 @@ type PendingAuth struct {
 	// final accept-completed response (MS-NLMP 3.4.5.2 + 2.2.2.9.1).
 	// Nil for clients that send raw NTLM without SPNEGO wrapping.
 	MechListBytes []byte
+	// NegotiateMessage holds the client's Type-1 NEGOTIATE message bytes from
+	// the first SESSION_SETUP of this handshake, and ChallengeMessage the
+	// server's Type-2 CHALLENGE reply. Together with the Type-3 AUTHENTICATE
+	// (MIC zeroed) they are the exact input to the AUTHENTICATE MIC check
+	// (MS-NLMP 3.2.5.2.1). Nil when that message was not seen on this
+	// pending-auth flow.
+	NegotiateMessage []byte
+	ChallengeMessage []byte
 }
 
 // TreeConnection represents an active tree connection mapping a client

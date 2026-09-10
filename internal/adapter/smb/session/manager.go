@@ -85,10 +85,15 @@ func (m *Manager) GetSession(sessionID uint64) (*Session, bool) {
 
 // DeleteSession removes a session and cleans up all associated resources.
 // This is the single point of session cleanup - no orphaned credit entries.
+// The session's key material is zeroed before the record is removed so the
+// signing/encryption keys do not linger in memory after teardown.
 func (m *Manager) DeleteSession(sessionID uint64) {
 	// Don't delete the anonymous session (ID 0)
 	if sessionID == 0 {
 		return
+	}
+	if sess, ok := m.GetSession(sessionID); ok {
+		sess.DestroyCryptoState()
 	}
 	m.sessions.Delete(sessionID)
 }

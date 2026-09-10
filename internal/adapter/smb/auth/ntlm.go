@@ -111,6 +111,14 @@ const (
 	authEncryptedRandomSessionKeyOff = 56 // 4 bytes: EncryptedRandomSessionKey buffer offset
 	authNegotiateFlagsOffset         = 60 // 4 bytes: NegotiateFlags
 	authBaseSize                     = 64 // Minimum size without payload (not including Version)
+
+	// authMicOffset is the fixed location of the AUTHENTICATE MIC
+	// (MS-NLMP 2.2.1.3): the 8-byte Version structure occupies 64..72 and the
+	// 16-byte MIC follows at 72..88 in messages that carry one. A zero MIC
+	// means the client sent no MIC (the field is always readable in NTLMv2
+	// messages long enough, since Version is mandatory there).
+	authMicOffset = 72
+	authMicSize   = 16
 )
 
 // =============================================================================
@@ -623,6 +631,13 @@ type AuthenticateMessage struct {
 	// IsAnonymous indicates if this is an anonymous authentication request.
 	// Set when FlagAnonymous is present in NegotiateFlags.
 	IsAnonymous bool
+
+	// Mic is the 16-byte message-integrity code from the AUTHENTICATE message
+	// (MS-NLMP 2.2.1.3), present when the client negotiated the MIC
+	// (MsvAvFlags MIC bit). nil when the client sent none. Verified against the
+	// exported session key per MS-NLMP 3.2.5.2.1 before the session is
+	// published.
+	Mic []byte
 }
 
 // ParseAuthenticate parses an NTLM Type 3 (AUTHENTICATE) message.
@@ -705,6 +720,24 @@ func ParseAuthenticate(buf []byte) (*AuthenticateMessage, error) {
 	if keyLen > 0 && int(keyOff)+int(keyLen) <= len(buf) {
 		msg.EncryptedRandomSessionKey = make([]byte, keyLen)
 		copy(msg.EncryptedRandomSessionKey, buf[keyOff:keyOff+uint32(keyLen)])
+	}
+
+	// Parse the MIC at its fixed location (MS-NLMP 2.2.1.3). A message shorter
+	// than the MIC region carries no MIC; a zeroed 16-byte MIC also means
+	// absent (clients that negotiate no MIC zero the field).
+	if len(buf) >= authMicOffset+authMicSize {
+		mic := make([]byte, authMicSize)
+		copy(mic, buf[authMicOffset:authMicOffset+authMicSize])
+		zero := true
+		for _, b := range mic {
+			if b != 0 {
+				zero = false
+				break
+			}
+		}
+		if !zero {
+			msg.Mic = mic
+		}
 	}
 
 	return msg, nil
@@ -962,6 +995,55 @@ func DeriveSigningKey(sessionBaseKey [16]byte, flags NegotiateFlag, encryptedKey
 	cipher.XORKeyStream(exportedSessionKey[:], encryptedKey)
 
 	return exportedSessionKey
+}
+
+// VerifyNTLMSSPMechListMIC checks an NTLMSSP mechListMIC against the expected
+// signature computed by ComputeNTLMSSPMechListMIC over the same inputs
+// (exported session key, mechList bytes, negotiate flags). Returns nil when
+// the received MIC matches; ErrAuthenticationFailed on a mismatch. The
+// received MIC is the 16-byte NTLMSSP signature form (legacy or NTLM2 layout
+// per the negotiated flags), not the GSS-API MICToken form the Kerberos path
+// uses.
+func VerifyNTLMSSPMechListMIC(exportedSessionKey [16]byte, mechListBytes, receivedMIC []byte, flags NegotiateFlag) error {
+	expected := ComputeNTLMSSPMechListMIC(exportedSessionKey, mechListBytes, flags, nil)
+	if len(receivedMIC) != len(expected) {
+		return ErrAuthenticationFailed
+	}
+	if !hmac.Equal(receivedMIC, expected[:]) {
+		return ErrAuthenticationFailed
+	}
+	return nil
+}
+
+// VerifyAuthMessageMIC checks the AUTHENTICATE message's MIC against the
+// exported session key (MS-NLMP 3.2.5.2.1): the MIC is HMAC-MD5 over the
+// concatenation of the Type-1 NEGOTIATE, the Type-2 CHALLENGE, and the
+// Type-3 AUTHENTICATE with its own MIC field zeroed. negotiateMessage,
+// challengeMessage, and authenticateMessage are the exact wire bytes of the
+// three handshake messages; authenticateMessage must be the full buffer the
+// MIC was parsed from. Returns nil when the MIC matches.
+func VerifyAuthMessageMIC(exportedSessionKey [16]byte, negotiateMessage, challengeMessage, authenticateMessage []byte) error {
+	if len(authenticateMessage) < authMicOffset+authMicSize {
+		return ErrMessageTooShort
+	}
+	concat := make([]byte, 0, len(negotiateMessage)+len(challengeMessage)+len(authenticateMessage))
+	concat = append(concat, negotiateMessage...)
+	concat = append(concat, challengeMessage...)
+	concat = append(concat, authenticateMessage...)
+	// Zero the MIC in place for the computation, then restore so the caller's
+	// buffer is unchanged.
+	micCopy := make([]byte, authMicSize)
+	copy(micCopy, authenticateMessage[authMicOffset:authMicOffset+authMicSize])
+	clear(concat[len(concat)-len(authenticateMessage)+authMicOffset:][:authMicSize])
+
+	mac := hmac.New(md5.New, exportedSessionKey[:])
+	mac.Write(concat)
+	expected := mac.Sum(nil)
+
+	if !hmac.Equal(micCopy, expected) {
+		return ErrAuthenticationFailed
+	}
+	return nil
 }
 
 // NTLMSSP key-derivation magic constants (MS-NLMP 3.4.5.2 + 3.4.5.3).

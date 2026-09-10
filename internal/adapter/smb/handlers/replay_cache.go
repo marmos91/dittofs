@@ -287,8 +287,8 @@ type lockReplayKey struct {
 }
 
 // LockReplayCache stores the last (LockSequenceNumber, status) pair
-// per (FileID, LockSequenceIndex). Bounded implicitly by the per-open
-// 16-slot cap × max concurrent opens.
+// per (FileID, LockSequenceIndex). Bounded implicitly by LockSequenceIndexMax
+// tracked indices per open × max concurrent opens.
 type LockReplayCache struct {
 	mu      sync.RWMutex
 	entries map[lockReplayKey]CachedLockResponse
@@ -349,6 +349,10 @@ func (c *LockReplayCache) Store(fileID [16]byte, index uint32, number uint8, sta
 
 // ForgetFile drops all buckets for the given FileID. Called by
 // CLOSE so the cache footprint is freed with the handle.
+//
+// ponytail: O(n) full-map scan per CLOSE; a FileID-indexed secondary map
+// would make this O(buckets-per-file), worth it only if profiling at real
+// open counts shows the scan.
 func (c *LockReplayCache) ForgetFile(fileID [16]byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

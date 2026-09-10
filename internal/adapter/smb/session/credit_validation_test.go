@@ -120,15 +120,15 @@ func TestValidateCreditCharge(t *testing.T) {
 	makeIoctlBody := func(maxOutput uint32) []byte {
 		body := make([]byte, 57)                              // SMB2 IOCTL request is 57 bytes
 		binary.LittleEndian.PutUint16(body[0:2], 57)          // StructureSize
-		binary.LittleEndian.PutUint32(body[28:32], maxOutput) // MaxOutputResponse
+		binary.LittleEndian.PutUint32(body[44:48], maxOutput) // MaxOutputResponse at offset 44
 		return body
 	}
 
 	// Helper to build a QUERY_DIRECTORY body with OutputBufferLength at offset 4
 	makeQueryDirBody := func(outputLen uint32) []byte {
-		body := make([]byte, 33)                            // SMB2 QUERY_DIRECTORY request is 33 bytes
-		binary.LittleEndian.PutUint16(body[0:2], 33)        // StructureSize
-		binary.LittleEndian.PutUint32(body[4:8], outputLen) // OutputBufferLength
+		body := make([]byte, 33)                              // SMB2 QUERY_DIRECTORY request is 33 bytes
+		binary.LittleEndian.PutUint16(body[0:2], 33)          // StructureSize
+		binary.LittleEndian.PutUint32(body[28:32], outputLen) // OutputBufferLength
 		return body
 	}
 

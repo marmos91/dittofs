@@ -1,7 +1,6 @@
 package encryption
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 
@@ -38,6 +37,9 @@ type EncryptableSession interface {
 	EncryptorNonceSize() int
 	DecryptorNonceSize() int
 	EncryptorOverhead() int
+	// NextNonce returns a fresh encrypt nonce (per-session counter form) that
+	// never repeats under this session's key (MS-SMB2 3.1.4.3).
+	NextNonce(nonceSize int) ([]byte, error)
 	// IsNullSession reports whether the session was created with anonymous
 	// NTLM credentials (SMB2_SESSION_FLAG_IS_NULL). Used by the framing
 	// layer to map any decryption failure on such a session to
@@ -182,12 +184,12 @@ func (m *sessionEncryptionMiddleware) EncryptResponse(sessionID uint64, smb2Mess
 		SessionId:           sessionID,
 	}
 
-	// Generate nonce externally so we can set it in the header before computing AAD.
-	// The nonce in the TransformHeader IS the AEAD nonce, and the AAD includes the
-	// nonce bytes. We must know the nonce before computing AAD.
+	// The nonce is a per-session counter (prefix + monotonic counter) so the
+	// AEAD nonce never repeats under the same session key — MS-SMB2 3.1.4.3
+	// forbids nonce reuse. The counter lives on the session's crypto state.
 	nonceSize := sess.EncryptorNonceSize()
-	nonce := make([]byte, nonceSize)
-	if _, err := rand.Read(nonce); err != nil {
+	nonce, err := sess.NextNonce(nonceSize)
+	if err != nil {
 		return nil, fmt.Errorf("generate nonce: %w", err)
 	}
 

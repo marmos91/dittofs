@@ -467,7 +467,7 @@ func TestBuildSessionSetupResponse(t *testing.T) {
 func TestExtractNTLMToken(t *testing.T) {
 	t.Run("PassesThroughRawNTLM", func(t *testing.T) {
 		ntlmMsg := validNTLMNegotiateMessage()
-		result, isWrapped, mechList := extractNTLMToken(ntlmMsg)
+		result, isWrapped, mechList, _ := extractNTLMToken(ntlmMsg)
 
 		if !auth.IsValid(result) {
 			t.Error("Should pass through raw NTLM unchanged")
@@ -483,7 +483,7 @@ func TestExtractNTLMToken(t *testing.T) {
 	t.Run("ExtractsFromSPNEGO", func(t *testing.T) {
 		ntlmMsg := validNTLMNegotiateMessage()
 		spnegoMsg := wrapInSPNEGO(ntlmMsg)
-		result, _, mechList := extractNTLMToken(spnegoMsg)
+		result, _, mechList, _ := extractNTLMToken(spnegoMsg)
 
 		if !auth.IsValid(result) {
 			t.Error("Should extract NTLM from SPNEGO")
@@ -494,12 +494,12 @@ func TestExtractNTLMToken(t *testing.T) {
 	})
 
 	t.Run("ReturnsEmptyForEmpty", func(t *testing.T) {
-		result, _, _ := extractNTLMToken(nil)
+		result, _, _, _ := extractNTLMToken(nil)
 		if len(result) != 0 {
 			t.Error("Should return empty for nil input")
 		}
 
-		result, _, _ = extractNTLMToken([]byte{})
+		result, _, _, _ = extractNTLMToken([]byte{})
 		if len(result) != 0 {
 			t.Error("Should return empty for empty input")
 		}
