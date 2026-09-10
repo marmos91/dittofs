@@ -20,7 +20,7 @@ Note: develop carries 2 local docs commits (23de25e56 + eda765c47) not yet pushe
 | 2 — `sm.mu` + pynfs | #2398 + singles | ✅ **LANDED 2026-09-09** — residual #2340 rows + #2329 confirmation tracked below |
 | 3 — Shared-layer reuse | errmap, identity, lifecycle | ✅ **LANDED 2026-09-10** — 6 PRs (#2499–#2504), all reviewed green |
 | 3.5 — Error-universe consolidation | sentinel normalization + `StatusFor` extraction | ✅ IMPLEMENTED 2026-09-10 — consolidation @ f1d554b26 on origin (78 files, +933/-1423), pynfs v4.1 walkout @ f6e191892 on origin (38→14 rows; 4 #2340 rows remain: CSESS16a/26/27, RECC3); review fan-out running |
-| 4 — SMB triage | ~155 untriaged findings | 🔄 **TRIAGED + fix-wave 1 LANDED 2026-09-10** — #2518/#2512/#2514/#2516 closed via #2523/#2526/#2524/#2525; fix-wave 2 next (#2513, #2515, #2517) |
+| 4 — SMB triage | ~155 untriaged findings | ✅ **COMPLETE 2026-09-10** — triage 159 rows; fix-wave 1 landed #2518/#2512/#2514/#2516 via #2523/#2526/#2524/#2525; fix-wave 2 landed #2513/#2515/#2517 via #2527/#2528 |
 | 5 — God objects | `manager.go` 3,985, `Create()` 1,016… | ❌ blocked behind 1–4 |
 | 6 — Dispatch-core finish line | acceptance test | lands inside 1/3/5 |
 | 7 — Perf lens | bufpool, measurement plan | ❌ not started |
@@ -220,6 +220,9 @@ Fix-wave 2 fanned 2026-09-10 ~20:40 as two file-disjoint lanes (base 3afd8383c):
   the noAsyncPark guard (60915afb3 — mid-chain CREATE parks per MS-SMB2 3.3.4.2, test converted to
   pin parking) plus the QF1008 selector fix; PR bodies updated, Copilot re-requested, babysitter
   v2 merging A then B when CLEAN.
+- **LANDED 2026-09-10 ~23:55:** #2527 squash-merged as 44d4d70ab, #2528 as a558b0dce; issues
+  #2513/#2515/#2517 all auto-closed; merged branches deleted; worktrees removed; build green on
+  develop a558b0dce. Wave 4 is COMPLETE (both fix waves landed).
 
 1. **Priority HIGHs (all three LIVE verbatim, each needs a design decision):** unclaimed
    nonzero SessionId kept at `session_setup.go:976-984`; anonymous/guest encryption bypass at
