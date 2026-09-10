@@ -57,38 +57,15 @@ flake worth re-running.
 | DELEG1 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
 | DELEG2 | bug | delegation withheld on this OPEN: the callback-path probe had not answered yet | #2329 |
 | DELEG23 | bug | delegation break not received: every CB_RECALL fails with no back-bound connection for the session | #2329 |
+| DELEG26 | bug | delegation read after close fails: delegation recall handling, same harness-side family | #2329 |
 | DELEG3 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
 | DELEG5 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
 | DELEG6 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
 | DELEG7 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
 | DELEG8 | bug | delegation withheld on this OPEN: the callback-path probe had not answered yet | #2329 |
-| CSESS15 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
 | CSESS16a | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| CSESS25 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
 | CSESS26 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
 | CSESS27 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| CSESS28 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| CSESS29 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| CSESS9 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| DESCID1 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| DESCID2 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| DESCID4 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| DESCID8 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| EID4 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| EID5c | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| EID5d | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| EID5f | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| EID5g | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| EID6 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| EID6a | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| EID6b | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| EID6c | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| EID6d | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| EID6e | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| EID6f | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| EID6g | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| EID7 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
-| EID9 | bug | EXCHANGE_ID/CREATE_SESSION/DESTROY_CLIENTID validation | #2340 |
 | RECC3 | bug | non-reclaim op before RECLAIM_COMPLETE must draw NFS4ERR_GRACE | #2340 |
 | DELEG24 | suite | knfsd fails this too — needs FATTR4_OPEN_ARGUMENTS (v4.2) | - |
 | DELEG25 | suite | knfsd fails this too — needs FATTR4_OPEN_ARGUMENTS (v4.2) | - |
