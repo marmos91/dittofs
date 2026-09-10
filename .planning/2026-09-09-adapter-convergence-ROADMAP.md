@@ -143,7 +143,22 @@ Filed on GitHub 2026-09-10: umbrella **#2511** + seven tranches **#2512-#2518** 
 set-info/read-write, T1 negotiate/durable, T2 compound/tree, T2 auth/session, T3
 dispatch/security, T3/T4 create, T5 adapter+HIGHs), all assigned marmos91.
 
-Next in Wave 4: fix waves ordered by severity:
+**Fix-wave 1 fanned out 2026-09-10** (workflow `3ba95578`, four worktree-isolated worker lanes,
+Promise.allSettled): Lane A `fix/wave4-highs-2518` (#2518 — Session-id squat →
+STATUS_USER_SESSION_DELETED per MS-SMB2 3.3.5.5, encryption bypass fail-closed →
+STATUS_ACCESS_DENIED, AppInstanceId scoping per 3.3.5.9.13), Lane B `fix/wave4-setinfo-rw-2512`
+(#2512 — ten rows incl. PositionInfo lock + speculative-fallback removal), Lane C
+`fix/wave4-compound-tree-2514` (#2514 — signature classes/teardown, CreditCharge 2..N,
+CHANGE_NOTIFY gate, EncryptData dialect check), Lane D `fix/wave4-security-hygiene-2516`
+(#2516 — ACE panic guard, IS_FSCTL/MaxOutputResponse checks, doc.go + comment sweep). Lane
+prompts at `.planning/2026-09-10-wave4-fix-prompts.md`. Lanes push branches + /tmp PR bodies;
+PRs opened after the review fan-out.
+
+Remaining fix-wave 2 candidates (not yet fanned): #2513 negotiate/session+durable (Kerberos
+MIC-after-commit ordering, AEAD nonce, unlocked session writes) and #2515 auth/session (NTLMv2
+MIC verification, wrong-field credit decoders, oplock break-ack ownership) — both touch
+session_setup.go/kerberos_auth.go so they serialize after Lane A lands; #2517 create/post-break
+last (touches create.go, also in Lane A's file set).
 
 1. **Priority HIGHs (all three LIVE verbatim, each needs a design decision):** unclaimed
    nonzero SessionId kept at `session_setup.go:976-984`; anonymous/guest encryption bypass at
