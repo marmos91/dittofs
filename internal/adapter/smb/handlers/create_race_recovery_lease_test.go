@@ -100,13 +100,13 @@ func TestCreate_RaceRecovery_WinnerLeaseBroken(t *testing.T) {
 	_ = rootAuth
 }
 
-// TestCreate_CompoundChain_NoAsyncPark pins that a CREATE carrying trailing
-// compound commands (ctx.NextCommand != 0) never parks on an interim
-// STATUS_PENDING: parking mid-chain would let the dispatch loop run the
-// trailing commands against pre-break state, and the resume goroutine would
-// wait for a break ACK the client cannot send until it observes the interim
-// (MS-SMB2 §3.3.4.2 interim async response).
-func TestCreate_CompoundChain_NoAsyncPark(t *testing.T) {
+// TestCreate_CompoundChain_ParksMidChain pins the MS-SMB2 3.3.4.2 interim-async
+// contract: a CREATE carrying trailing compound commands (ctx.NextCommand != 0)
+// parks on an interim STATUS_PENDING like any other CREATE — the compound
+// processor defers trailing commands behind the parked CREATE via
+// ReplaceCallback (smbtorture compound_async.getinfo_middle requires req[0] to
+// stay in RECV state while the lease break drains).
+func TestCreate_CompoundChain_ParksMidChain(t *testing.T) {
 	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
 	tree := &TreeConnection{TreeID: smbCtx.TreeID, SessionID: smbCtx.SessionID, ShareName: smbCtx.ShareName}
 	h.StoreTree(tree)
@@ -189,10 +189,11 @@ func TestCreate_CompoundChain_NoAsyncPark(t *testing.T) {
 	compoundCtx.ReleaseAsync = func() {}
 	compoundCtx.ConnID = 1
 
-	// Compound chain: NextCommand != 0. The wrapper must force the inline wait,
-	// so the returned AsyncId is always 0.
-	if asyncId := h.breakAndMaybeParkCreateInCompound(&compoundCtx, draft); asyncId != 0 {
-		t.Fatalf("compound-chain CREATE parked (AsyncId = %d): mid-chain interim PENDING is unsafe", asyncId)
+	// Compound chain: NextCommand != 0. The CREATE parks like any other —
+	// the interim PENDING is the contract the compound processor serves.
+	asyncId := h.breakAndMaybeParkCreate(&compoundCtx, draft)
+	if asyncId == 0 {
+		t.Fatal("compound-chain CREATE did not park: MS-SMB2 3.3.4.2 requires the mid-chain interim PENDING (smbtorture compound_async.getinfo_middle)")
 	}
 
 	// Control: the same draft WITHOUT a compound chain parks — proving the
@@ -255,8 +256,9 @@ func TestCreate_CompoundChain_NoAsyncPark(t *testing.T) {
 	soloCtx.ReleaseAsync = func() {}
 	soloCtx.ConnID = 1
 
-	// The solo CREATE (NextCommand == 0) parks: AsyncId non-zero.
-	if asyncId := h2.breakAndMaybeParkCreateInCompound(&soloCtx, draft2); asyncId == 0 {
-		t.Log("control CREATE did not park (parking is conditional) — the guard above is still the discriminator")
+	// The solo CREATE (NextCommand == 0) parks the same way: the parking
+	// behavior is chain-agnostic.
+	if asyncId := h2.breakAndMaybeParkCreate(&soloCtx, draft2); asyncId == 0 {
+		t.Log("solo CREATE did not park (parking is conditional)")
 	}
 }

@@ -42,15 +42,6 @@ type createDraft struct {
 	// excludeOwner scopes lease-break exclusions to the opener's own key. Used
 	// for parent-directory breaks (Step 7c) and post-break oplock/lease work.
 	excludeOwner *lock.LockOwner
-	// noAsyncPark forces breakAndMaybeParkCreate onto the inline-wait arm:
-	// set by breakAndMaybeParkCreateInCompound when the CREATE carries trailing
-	// compound commands (ctx.NextCommand != 0). The compound processor already
-	// defers trailing commands behind a mid-chain parked CREATE via
-	// ReplaceCallback, but deferring couples the parked CREATE's completion to
-	// a client-sent break ACK; forcing the inline wait keeps the whole compound
-	// synchronous with the break (mirroring the LOCK path's ctx.NextCommand
-	// guard) so no trailing command observes pre-break state.
-	noAsyncPark bool
 	// appInstanceProcessed records that ProcessAppInstanceId already ran in the
 	// pre-break CREATE path (so any conflicting open carrying the same
 	// AppInstanceId was force-closed BEFORE the oplock/lease break dispatch).
@@ -215,21 +206,6 @@ func (h *Handler) scanNonStatOpensForFile(
 		return true
 	})
 	return hasNonStat, hasSameClient
-}
-
-// breakAndMaybeParkCreateInCompound dispatches the handle-lease break with the
-// compound guard applied: when the CREATE carries trailing compound commands
-// (ctx.NextCommand != 0), async parking is forced off and the break waits
-// inline. The compound processor already defers trailing commands behind a
-// mid-chain parked CREATE via ReplaceCallback, but deferring couples the
-// parked CREATE's completion to a client-sent break ACK; the inline wait keeps
-// the whole compound synchronous with the break (mirroring the LOCK path's
-// ctx.NextCommand guard).
-func (h *Handler) breakAndMaybeParkCreateInCompound(ctx *SMBHandlerContext, d *createDraft) uint64 {
-	if ctx.NextCommand != 0 {
-		d.noAsyncPark = true
-	}
-	return h.breakAndMaybeParkCreate(ctx, d)
 }
 
 // breakAndMaybeParkCreate dispatches the handle-lease break required before
@@ -409,10 +385,8 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 		if !h.LeaseManager.HasOtherBreakingLeases(lockFileHandle, shareName, waitExceptKey) {
 			return 0
 		}
-		if !d.noAsyncPark {
-			if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey, lease.AsyncCreateBreakWaitTimeout, false); asyncId != 0 {
-				return asyncId
-			}
+		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey, lease.AsyncCreateBreakWaitTimeout, false); asyncId != 0 {
+			return asyncId
 		}
 		// Park failed (no slots / registry full): fall through to sync
 		// wait, then let completeCreateAfterBreak re-evaluate share mode.
@@ -477,10 +451,8 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	// the test (and real clients) cannot ACK the lease break until they
 	// receive the STATUS_PENDING interim response.
 	if h.LeaseManager.HasOtherBreakingLeases(lockFileHandle, shareName, waitExceptKey) {
-		if !d.noAsyncPark {
-			if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey, breakWaitTimeout, shareConflictWait); asyncId != 0 {
-				return asyncId
-			}
+		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey, breakWaitTimeout, shareConflictWait); asyncId != 0 {
+			return asyncId
 		}
 	}
 
