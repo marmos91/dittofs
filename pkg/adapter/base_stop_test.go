@@ -280,7 +280,7 @@ func TestBaseAdapter_AcceptBackoff_ExitsOnShutdown(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		b.acceptConnections(stubFactory{}, nil, nil)
+		_ = b.acceptConnections(stubFactory{}, nil, nil)
 	}()
 
 	// Let the loop accumulate several backoff-cycle failures. With the backoff
@@ -330,7 +330,7 @@ func TestBaseAdapter_AcceptBackoff_ResetsOnSuccess(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		b.acceptConnections(stubFactory{}, nil, nil)
+		_ = b.acceptConnections(stubFactory{}, nil, nil)
 	}()
 
 	// Wait until the listener has served one successful accept.
