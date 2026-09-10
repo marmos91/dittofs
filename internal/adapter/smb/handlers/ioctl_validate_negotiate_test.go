@@ -35,7 +35,7 @@ func buildVNEGRequest(capabilities uint32, guid [16]byte, securityMode uint16, d
 	w.WriteUint32(0)                          // OutputOffset
 	w.WriteUint32(0)                          // OutputCount
 	w.WriteUint32(0)                          // MaxOutputResponse
-	w.WriteUint32(0x00000001)                 // Flags: IS_FSCTL
+	w.WriteUint32(0)                          // Flags
 	w.WriteUint32(0)                          // Reserved2
 	w.WriteBytes(payloadBytes)                // Buffer (VNEG payload)
 
@@ -382,27 +382,19 @@ func TestIoctlDispatchTable_RoutesCorrectly(t *testing.T) {
 	}
 
 	// Test that unsupported IOCTL codes return StatusNotSupported
-	w := smbenc.NewWriter(56)
-	w.WriteUint16(57)              // StructureSize
-	w.WriteUint16(0)               // Reserved
-	w.WriteUint32(0x00FFFFFF)      // Unknown CtlCode
-	w.WriteBytes(make([]byte, 16)) // FileId
-	w.WriteUint32(64 + 56)         // InputOffset
-	w.WriteUint32(0)               // InputCount
-	w.WriteUint32(0)               // MaxInputResponse
-	w.WriteUint32(0)               // OutputOffset
-	w.WriteUint32(0)               // OutputCount
-	w.WriteUint32(4096)            // MaxOutputResponse
-	w.WriteUint32(0x00000001)      // Flags: IS_FSCTL
-	w.WriteUint32(0)               // Reserved2
+	w := smbenc.NewWriter(16)
+	w.WriteUint16(57)             // StructureSize
+	w.WriteUint16(0)              // Reserved
+	w.WriteUint32(0x00FFFFFF)     // Unknown CtlCode
+	w.WriteBytes(make([]byte, 4)) // Padding to make minimum size
 	body := w.Bytes()
 
 	result, err := h.Ioctl(ctx, body)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Status != types.StatusFileClosed {
-		t.Errorf("expected StatusFileClosed for unknown IOCTL with sentinel FileID, got %v", result.Status)
+	if result.Status != types.StatusNotSupported {
+		t.Errorf("expected StatusNotSupported for unknown IOCTL, got %v", result.Status)
 	}
 
 	// FSCTL_QUERY_NETWORK_INTERFACE_INFO now dispatches to a real handler.

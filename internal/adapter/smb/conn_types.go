@@ -40,7 +40,7 @@ type ConnInfo struct {
 	// ConnID is a stable, monotonic identifier assigned when the TCP
 	// connection is accepted. It identifies the connection within a session's
 	// Channel registry for per-channel signing-key lookup (MS-SMB2 §3.3.5.5.2
-	// multi-channel). Zero for connections that predate channel
+	// multi-channel; issue #361). Zero for connections that predate channel
 	// bookkeeping; callers must treat zero as "no channel registered" and
 	// fall back to session-level signing state.
 	ConnID uint64
@@ -189,7 +189,7 @@ type SessionTracker interface {
 // source3/smbd/smb2_server.c credits.max = lp_smb2_max_credits()). The Samba
 // client hard-caps its own per-connection cur_credits counter at uint16 max
 // (libcli/smb/smbXcli_base.c:4295–4298), so this cap protects against
-// INVALID_NETWORK_RESPONSE.
+// INVALID_NETWORK_RESPONSE — issue #378.
 func NewSequenceWindowForConnection(mgr *session.Manager) *session.CommandSequenceWindow {
 	maxSize := uint64(8192) // Samba default
 	if mgr != nil {

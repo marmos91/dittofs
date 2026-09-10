@@ -67,18 +67,6 @@ func (h *Handler) handleValidateNegotiateInfo(ctx *SMBHandlerContext, body []byt
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
-	// The success response is 24 bytes (Capabilities + ServerGuid + SecurityMode
-	// + Dialect). A client that offers a nonzero output buffer too small to
-	// hold the reply can never receive it, so reject the request before
-	// validating. MaxOutputResponse = 0 means "no preference" (MS-SMB2 2.2.31)
-	// and is honored.
-	maxOutput := parseIoctlMaxOutputSize(body)
-	if maxOutput != 0 && maxOutput < 24 {
-		logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: MaxOutputResponse too small",
-			"maxOutput", maxOutput)
-		return NewErrorResult(types.StatusInvalidParameter), nil
-	}
-
 	// Extract input data from buffer portion
 	bufferStart := uint32(56)
 	if uint32(len(body)) < bufferStart+inputCount {
