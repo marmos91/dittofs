@@ -18,7 +18,7 @@ Note: develop carries 2 local docs commits (23de25e56 + eda765c47) not yet pushe
 | 0 — Coordination | peer takeover, worktree cleanup | ✅ done (only #2340's 32-row re-derivation left) |
 | 1 — Ownership class | #2393–#2396, #2413, #2414 | ✅ **LANDED 2026-09-08** — 7 PRs, soundness-audited; follow-ups #2449, #2451, #2436 closed; doc rule merged (#2468) |
 | 2 — `sm.mu` + pynfs | #2398 + singles | ✅ **LANDED 2026-09-09** — residual #2340 rows + #2329 confirmation tracked below |
-| 3 — Shared-layer reuse | errmap, identity, lifecycle | 🔨 **PRs open** (#2499–#2504), merge babysitter running |
+| 3 — Shared-layer reuse | errmap, identity, lifecycle | ✅ **LANDED 2026-09-10** — 6 PRs (#2499–#2504), all reviewed green |
 | 3.5 — Error-universe consolidation | sentinel normalization + `StatusFor` extraction | ❌ not started — **NEXT** (see Step 2.5; lands after Wave 3 merges) |
 | 4 — SMB triage | ~155 untriaged findings | ❌ not started (plan moved it *before* the SMB fix waves) |
 | 5 — God objects | `manager.go` 3,985, `Create()` 1,016… | ❌ blocked behind 1–4 |
@@ -52,27 +52,30 @@ All five PRs merged and assigned marmos91; #2490/#2482/#2487/#2471/#2464 auto-cl
 pynfs delegation confirmation remains open as harness-side verification (no DittoFS change
 warranted — verdict in `.planning/2026-09-09-diag-2329-2464.md`).
 
-### Step 2 — Wave 3: shared-layer reuse + lifecycle (goals 2 + 4) — IMPLEMENTED, review passes running
+### Step 2 — Wave 3: shared-layer reuse + lifecycle (goals 2 + 4) — ✅ LANDED 2026-09-10
 
-All six branches pushed 2026-09-10 after the fan-out (5 workers, plan-validation corrections baked
-in; full state in `.planning/2026-09-09-wave3-plan.md`). All six reviewed green (correctness +
-adversarial + simplification per branch; 2 errmap P2s + 1 v4content P2 applied inline). All six
-PRs open against develop, assigned marmos91, Copilot re-requested; serialized merge babysitter
-running (guard #2499 first). No lane maps to an open GitHub issue — no Closes #N.
+All six PRs squash-merged (serialized babysitter, order #2499→#2504), no Closes #N (none map to an
+open issue). All six reviewed green before open (correctness + adversarial + simplification per
+branch; errmap ErrStoreClosed P2 and v4content xdr-import P2 applied inline). Full history:
+`.planning/2026-09-09-wave3-plan.md`.
 
-| Branch | Content | Head |
+| PR | Content | Squash commit |
 | --- | --- | --- |
-| fix/errmap-coverage-dead-columns | COMBINED GUARD: enum walk + ErrConflict row + exoticCodes pin + delete MapLockToNFS3/4 (L0+L2 merged) | 98769af27 |
-| fix/v4-content-errmap-wiring | 5 sites (read/read_plus/write/commit/deallocate) → MapContentToNFS4, ErrStoreClosed→STALE end to end | 27c86db9a |
-| fix/smb-resolved-identity | getUserIdentity → uidGIDFromSessionUser pure rename (Option B: ResolvedIdentity-consumption deferred to follow-up) | 0bd237197 |
-| fix/adapter-lifecycle-accept | Stop-path listenerReady close (double-close-guarded) + accept backoff 10ms→1s; bind-failure close killed (awaitListener two-channel select) | 60caff603 |
-| fix/async-credit-grants | 2 async grant sites → GrantCredits + SequenceWindow.Grant + nil-SessionManager floor guard | 3bf0a5fd4 |
-| fix/export-acl-citations | CheckExportAccess → ResolveSharePermission/Tree Connect ACL renames (CLAUDE.md + create.go) | e68dbb49b |
+| #2499 guard: enum walk + ErrConflict row + delete MapLockToNFS3/4 | `6ffc4262b` |
+| #2500 5 content-path sites → MapContentToNFS4 | `0a0e96c34` |
+| #2501 getUserIdentity → uidGIDFromSessionUser rename | `cc4a5864d` |
+| #2502 Stop-path listenerReady close + accept backoff | `7d7033b39` |
+| #2503 async grant sites → GrantCredits + SequenceWindow.Grant | `c69818453` |
+| #2504 stale CheckExportAccess citation fixes | `0390b3fb8` |
 
-### Step 2.5 — Wave 3.5: error-universe consolidation (sentinel normalization + `StatusFor` extraction) — PLANNED 2026-09-10
+Deferred disclosures carried forward: awaitListener false-'Adapter started' narrow race (#2502 PR
+body, service.go outside file set); ResolvedIdentity direct consumption (#2501 PR body).
 
-One PR, lands after #2499–#2504 merge (it rewrites the same files: `errmap.go`, `lock_errmap.go`,
-`content_errmap.go`, the payload helpers). Two parts, zero behaviour change, ~15 files.
+### Step 2.5 — Wave 3.5: error-universe consolidation (sentinel normalization + `StatusFor` extraction) — **NEXT**
+
+One PR, based on post-merge develop `7d7033b39` (its target files `errmap.go`, `lock_errmap.go`,
+`content_errmap.go`, the payload helpers are now at their landed shape). Two parts, zero behaviour
+change, ~15 files.
 
 **Part 1 — sentinel normalization at the payload choke point.** `ReadFromBlockStore` /
 `WriteToBlockStore` / `CommitBlockStore` (`internal/adapter/common/read_payload.go`,
