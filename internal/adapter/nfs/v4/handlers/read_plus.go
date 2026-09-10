@@ -118,11 +118,12 @@ func (h *Handler) handleReadPlus(ctx *types.CompoundContext, reader io.Reader) *
 		logger.Debug("NFSv4.2 READ_PLUS content build failed", "error", err, "client", ctx.ClientAddr)
 		// A missing registry is a server misconfiguration, not an I/O fault —
 		// mirror READ's nil-Registry guard (NFS4ERR_SERVERFAULT). All other
-		// failures are block-store read errors → NFS4ERR_IO.
+		// failures are block-store read errors, mapped via the shared content
+		// mapper (ErrStoreClosed → STALE, the rest keep their I/O class).
 		if errors.Is(err, errNoRegistry) {
 			return readPlusErr(types.NFS4ERR_SERVERFAULT)
 		}
-		return readPlusErr(types.NFS4ERR_IO)
+		return readPlusErr(common.MapContentToNFS4(err))
 	}
 	eof := readEnd >= file.Size
 
