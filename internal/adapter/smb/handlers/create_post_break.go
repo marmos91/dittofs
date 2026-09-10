@@ -789,6 +789,44 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 						}
 						grantedAccess = rg
 						grantedComputed = rc
+						// Break the winner's leases/oplocks before the
+						// overwrite/open proceeds. The pre-break break ran
+						// against the stale (nil) view, so the winner's
+						// holders never saw a break: without this, the race
+						// branch truncates a file whose holder still holds a
+						// write lease and a cached read state. Mirrors the
+						// inline-wait arm of breakAndMaybeParkCreate: dispatch
+						// the break on the winner's handle, then wait for the
+						// delay-mask bits to drain (the pre-break wait cannot
+						// be reused — its handle was the nil view).
+						raceReason := lock.BreakReasonDefault
+						if isDestructiveDisposition(req.CreateDisposition) {
+							raceReason = lock.BreakReasonDestructive
+						} else if d.req.CreateOptions&types.FileDeleteOnClose != 0 {
+							raceReason = lock.BreakReasonSharingViolation
+						}
+						raceMask := lock.LeaseStateWrite
+						if raceReason == lock.BreakReasonSharingViolation {
+							raceMask = lock.LeaseStateHandle
+						}
+						if h.LeaseManager != nil {
+							raceHandle := lock.FileHandle(d.existingHandle)
+							var raceExceptKey [16]byte
+							if d.excludeOwner != nil {
+								raceExceptKey = d.excludeOwner.ExcludeLeaseKey
+							}
+							if err := h.LeaseManager.BreakHandleLeasesOnOpenAsync(raceHandle, d.tree.ShareName, raceReason, d.excludeOwner); err != nil {
+								logger.Debug("CREATE: race-recovery winner lease break failed", "error", err)
+							}
+							if h.LeaseManager.AnyHolderHasLeaseBits(raceHandle, d.tree.ShareName, raceExceptKey, raceMask) {
+								releaseResponseOrder(ctx)
+								raceWaitCtx, cancelRaceWait := context.WithTimeout(authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
+								if err := h.LeaseManager.WaitForOtherKeyBreaks(raceWaitCtx, raceHandle, d.tree.ShareName, raceExceptKey); err != nil {
+									logger.Debug("CREATE: race-recovery winner break wait completed", "error", err)
+								}
+								cancelRaceWait()
+							}
+						}
 						if createAction == types.FileOpened {
 							file = winner
 							fileHandle = d.existingHandle

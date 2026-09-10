@@ -461,6 +461,9 @@ func leaseReconnectClientGUIDMismatch(handle *lock.PersistedDurableHandle, connC
 
 // processV1Reconnect handles V1 (DHnC) reconnect validation and restoration.
 // Returns the restored OpenFile, persisted lease state, status code, and error.
+// sessionKeyHash is accepted for signature symmetry with ProcessDurableReconnectContext
+// (which also builds the persisted row via buildPersistedDurableHandle) but is unused
+// here: reconnect validation is lease-key/path based, not session-key based.
 func processV1Reconnect(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
@@ -469,7 +472,7 @@ func processV1Reconnect(
 	dhnCCtx *CreateContext,
 	sessionID uint64,
 	username string,
-	sessionKeyHash [32]byte,
+	sessionKeyHash [32]byte, // accepted, unused on the reconnect path
 	shareName string,
 	filename string,
 	connClientGUID [16]byte,
@@ -546,12 +549,15 @@ func processV1Reconnect(
 	checkPath := persistedHasLease
 
 	openFile, status, restoreErr := validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
-		sessionKeyHash, shareName, filename, checkPath)
+		shareName, filename, checkPath)
 	return openFile, handle.LeaseState, handle.LeaseEpoch, handle.OriginalFileID, status, restoreErr
 }
 
 // processV2Reconnect handles V2 (DH2C) reconnect validation and restoration.
 // Returns the restored OpenFile, persisted lease state, status code, and error.
+// sessionKeyHash is accepted for signature symmetry with ProcessDurableReconnectContext
+// (which also builds the persisted row via buildPersistedDurableHandle) but is unused
+// here: reconnect validation is lease-key/path based, not session-key based.
 func processV2Reconnect(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
@@ -560,7 +566,7 @@ func processV2Reconnect(
 	dh2cCtx *CreateContext,
 	sessionID uint64,
 	username string,
-	sessionKeyHash [32]byte,
+	sessionKeyHash [32]byte, // accepted, unused on the reconnect path
 	shareName string,
 	filename string,
 	connClientGUID [16]byte,
@@ -673,7 +679,7 @@ func processV2Reconnect(
 	// lease-backed reconnects, where a wrong-fname-with-lease reconnect is the final
 	// negative-ladder rung that yields INVALID_PARAMETER.
 	openFile, status, restoreErr := validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
-		sessionKeyHash, shareName, filename, persistedHasLease)
+		shareName, filename, persistedHasLease)
 	return openFile, handle.LeaseState, handle.LeaseEpoch, handle.OriginalFileID, status, restoreErr
 }
 
@@ -705,7 +711,6 @@ func validateAndRestore(
 	handle *lock.PersistedDurableHandle,
 	sessionID uint64,
 	username string,
-	sessionKeyHash [32]byte,
 	shareName string,
 	filename string,
 	checkPath bool,
@@ -741,12 +746,13 @@ func validateAndRestore(
 		return nil, types.StatusInternalError, err
 	}
 
-	// NOTE: We intentionally do NOT compare session key hashes here.
-	// Per MS-SMB2 3.3.5.9.7/12, the server validates the user identity
+	// NOTE: The session key hash is deliberately absent from this signature:
+	// per MS-SMB2 3.3.5.9.7/12 the server validates the user identity
 	// (ValidateReconnect above), not the session key. With NTLM KEY_EXCH,
 	// each session generates a random ExportedSessionKey, so the session
-	// key hash will differ between the original and reconnect sessions
-	// even for the same user with the same credentials.
+	// key hash differs between the original and reconnect sessions even for
+	// the same user with the same credentials — carrying it here would only
+	// enable a comparison that must never run.
 
 	// DesiredAccess and ShareAccess are intentionally NOT re-validated on
 	// reconnect. Samba's durable reconnect path (source3/smbd/smb2_create.c,
