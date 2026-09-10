@@ -210,7 +210,14 @@ Fix-wave 2 fanned 2026-09-10 ~20:40 as two file-disjoint lanes (base 3afd8383c):
   the fixed line; red-without-fix re-proven), P2 park-guard comments corrected, P2 inline
   race-break block disclosed as deliberate.
 - PRs opened 2026-09-10 ~21:30: #2527 (A, Closes #2513 + Closes #2515), #2528 (B, Closes #2517),
-  both assigned marmos91 with Copilot wired; babysitter merges A then B when CLEAN.
+  both assigned marmos91 with Copilot wired.
+- CI red 2026-09-10 ~22:00 on both PRs: #2527 smbtorture 16 new failures (625 NT_LOGON_FAILURE on
+  connect — the server rejects ALL smbtorture logins; prime suspect the new SPNEGO mechListMIC
+  verify); #2528 one new failure smb2.compound_async.getinfo_middle (req[0] must STAY in RECV
+  state while the lease break drains — the noAsyncPark guard converted a working async park into
+  an inline wait) + a golangci-lint QF1008. Fixes: B guard DROPPED as 60915afb3 (mid-chain CREATE
+  parks per MS-SMB2 3.3.4.2, test converted to pin parking, QF1008 selector fixed); A
+  reproduction running locally with DEBUG logging to isolate the auth rejection.
 
 1. **Priority HIGHs (all three LIVE verbatim, each needs a design decision):** unclaimed
    nonzero SessionId kept at `session_setup.go:976-984`; anonymous/guest encryption bypass at
