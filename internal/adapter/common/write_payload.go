@@ -62,7 +62,10 @@ func WriteToBlockStore(
 	// path; discard the returned []ChunkRef. Caller-snapshot []ChunkRef
 	// threading lands in a later refactor.
 	_, err := blockStore.WriteAt(ctx, string(payloadID), nil, data, offset)
-	return err
+	if err != nil {
+		return normalizeBlockStoreError(err)
+	}
+	return nil
 }
 
 // CommitBlockStore is the COMMIT/flush seam used by NFSv3 COMMIT, NFSv4
@@ -109,8 +112,10 @@ func CommitBlockStore(
 ) error {
 	res, err := blockStore.Flush(ctx, string(payloadID))
 	if err != nil {
-		// Hard error: unchanged behavior (mapped via the content errmap).
-		return err
+		// Hard error: unchanged behavior, normalized so the wire mappers see
+		// the code (a closed store wraps as the stale-handle row, the rest as
+		// the I/O row; the original error stays reachable via Cause).
+		return normalizeBlockStoreError(err)
 	}
 
 	// Observability: record the per-store durability decision at the
@@ -156,7 +161,10 @@ func CommitBlockStore(
 	}
 	// Not yet durable anywhere that survives a crash — report so the client
 	// re-drives. The bytes remain in local CAS and the syncer keeps mirroring.
-	return ErrNotDurableYet
+	// Normalized so the wire mappers see the I/O-class code while the
+	// ErrNotDurableYet sentinel stays reachable via Cause for tests and the
+	// durability policy's own retry classification.
+	return normalizeBlockStoreError(ErrNotDurableYet)
 }
 
 // FlushStableWrite forces a file's cached data — and, when fileSync is set, its

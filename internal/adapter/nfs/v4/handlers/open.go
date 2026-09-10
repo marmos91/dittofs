@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
@@ -331,7 +330,7 @@ func (h *Handler) handleOpenClaimNull(
 	// Get pre-operation parent attributes for change_info
 	parentFile, err := metaSvc.GetFile(ctx.Context, parentHandle)
 	if err != nil {
-		return openError(common.MapToNFS4(err))
+		return openError(types.StatusForErr(err))
 	}
 	beforeCtime := uint64(parentFile.Ctime.UnixNano())
 
@@ -361,7 +360,7 @@ func (h *Handler) handleOpenClaimNull(
 		// Open existing file
 		child, lookupErr := metaSvc.Lookup(authCtx, parentHandle, filename)
 		if lookupErr != nil {
-			return openError(common.MapToNFS4(lookupErr))
+			return openError(types.StatusForErr(lookupErr))
 		}
 		fh, encErr := metadata.EncodeFileHandle(child)
 		if encErr != nil {
@@ -472,7 +471,7 @@ func (h *Handler) handleOpenClaimNull(
 				// needs. Shared with the SETATTR path.
 				truncate := &metadata.SetAttrs{Size: createAttrs.Size}
 				if setErr := h.applySetAttrsWithTruncateReclaim(ctx, metaSvc, authCtx, fileHandle, child, truncate); setErr != nil {
-					return openError(common.MapToNFS4(setErr))
+					return openError(types.StatusForErr(setErr))
 				}
 			}
 		} else {
@@ -495,7 +494,7 @@ func (h *Handler) handleOpenClaimNull(
 			}
 			newFile, _, createErr := metaSvc.CreateFile(authCtx, parentHandle, filename, newAttr)
 			if createErr != nil {
-				return openError(common.MapToNFS4(createErr))
+				return openError(types.StatusForErr(createErr))
 			}
 			fh, encErr := metadata.EncodeFileHandle(newFile)
 			if encErr != nil {
@@ -514,7 +513,7 @@ func (h *Handler) handleOpenClaimNull(
 			// createAttrs is nil there and nothing is applied.
 			if createAttrs != nil {
 				if _, setErr := metaSvc.SetFileAttributes(authCtx, fileHandle, createAttrs); setErr != nil {
-					return openError(common.MapToNFS4(setErr))
+					return openError(types.StatusForErr(setErr))
 				}
 			}
 		}
@@ -978,14 +977,14 @@ func (h *Handler) handleOpenClaimDelegateCur(
 	// Get pre-operation parent attributes for change_info
 	parentFile, err := metaSvc.GetFile(ctx.Context, parentHandle)
 	if err != nil {
-		return openError(common.MapToNFS4(err))
+		return openError(types.StatusForErr(err))
 	}
 	beforeCtime := uint64(parentFile.Ctime.UnixNano())
 
 	// Lookup the file (delegation holder opening an existing file)
 	child, lookupErr := metaSvc.Lookup(authCtx, parentHandle, filename)
 	if lookupErr != nil {
-		return openError(common.MapToNFS4(lookupErr))
+		return openError(types.StatusForErr(lookupErr))
 	}
 
 	fileHandle, encErr := metadata.EncodeFileHandle(child)
@@ -1099,7 +1098,7 @@ func checkOpenTarget(metaSvc *metadata.Service, authCtx *metadata.AuthContext, h
 		// GetFileForRead: handle-addressed, File.Path unused -- skip derivePath.
 		file, err = metaSvc.GetFileForRead(authCtx.Context, handle)
 		if err != nil {
-			return common.MapToNFS4(err)
+			return types.StatusForErr(err)
 		}
 	}
 
@@ -1124,7 +1123,7 @@ func checkOpenTarget(metaSvc *metadata.Service, authCtx *metadata.AuthContext, h
 
 	granted, err := metaSvc.CheckPermissions(authCtx, handle, requiredPerm)
 	if err != nil {
-		return common.MapToNFS4(err)
+		return types.StatusForErr(err)
 	}
 
 	if granted&requiredPerm != requiredPerm {

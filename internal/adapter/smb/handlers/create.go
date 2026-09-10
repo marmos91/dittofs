@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
@@ -1207,7 +1206,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 				"path", filename,
 				"disposition", req.CreateDisposition,
 				"error", pErr)
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(pErr)}}, nil
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(pErr)}}, nil
 		}
 		isDirCreate := req.CreateOptions&types.FileDirectoryFile != 0
 		if err := metaSvc.CheckParentCreateAccessFile(authCtx, parentHandle, parentFile, isDirCreate); err != nil {
@@ -1216,7 +1215,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 				"disposition", req.CreateDisposition,
 				"isDirectory", isDirCreate,
 				"error", err)
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
 		}
 	}
 
@@ -1231,7 +1230,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	existingFile, foundName, lookupErr := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, baseName)
 	if lookupErr != nil {
 		logger.Debug("CREATE: parent lookup failed", "name", baseName, "error", lookupErr)
-		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(lookupErr)}}, nil
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(lookupErr)}}, nil
 	}
 	fileExists := (existingFile != nil)
 	if fileExists && foundName != baseName {
@@ -1280,7 +1279,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	createAction, dispErr := ResolveCreateDisposition(req.CreateDisposition, fileExists)
 	if dispErr != nil {
-		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(dispErr)}}, nil
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(dispErr)}}, nil
 	}
 
 	// ADS auto-create: when the disposition would create the stream,
@@ -1308,7 +1307,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 				} else {
 					logger.Debug("CREATE: ADS auto-create base file failed",
 						"base", adsBaseFileName, "error", createBaseErr)
-					return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(createBaseErr)}}, nil
+					return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(createBaseErr)}}, nil
 				}
 			} else {
 				// We exclusively created the base file; record ownership so

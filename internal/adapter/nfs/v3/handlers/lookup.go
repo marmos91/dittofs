@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -205,7 +204,7 @@ func (h *Handler) Lookup(
 			"error", err)
 
 		// Map store errors to NFS status codes
-		status := common.MapToNFS3(err)
+		status := types.StatusForErr(err)
 
 		// Include directory post-op attributes for cache consistency
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)

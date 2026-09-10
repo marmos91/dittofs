@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -292,7 +291,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("QUERY_INFO: failed to get file", "path", openFile.Name().Path, "error", err)
-		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
+		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
 	}
 
 	// READ coalesces its LastAccessTime bumps, so the newest access may still be
@@ -426,7 +425,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 			return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported}}, nil
 		}
 		logger.Debug("QUERY_INFO: metadata/filesystem error", "error", err)
-		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
+		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
 	}
 
 	// Truncate if necessary.

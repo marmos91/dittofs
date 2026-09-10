@@ -225,13 +225,13 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// error — it surfaces handle-decode / share-registry / config
 			// problems. Map it through the generic mapper (StatusInternalError
 			// etc.), mirroring READ/WRITE/FLUSH which map their resolve/handle
-			// errors via common.MapToSMB. Only the CommitBlockStore failure
-			// below is a true content error (MapContentToSMB).
+			// errors via smb/types.StatusForErr. Only the CommitBlockStore failure
+			// below is a true content error (ClassifyBlockStoreError).
 			logger.Warn("CLOSE: block store not available for handle", "path", closePath, "error", bsErr)
-			flushFailStatus = common.MapToSMB(bsErr)
+			flushFailStatus = types.StatusForErr(bsErr)
 		} else if flushErr := common.CommitBlockStore(ctx.Context, blockStore, payloadID); flushErr != nil {
 			logger.Warn("CLOSE: flush failed", "path", closePath, "error", flushErr)
-			flushFailStatus = common.MapContentToSMB(flushErr)
+			flushFailStatus = types.StatusFor(common.ClassifyBlockStoreError(flushErr))
 		} else {
 			logger.Debug("CLOSE: flushed", "path", closePath, "payloadID", payloadID)
 		}
@@ -266,7 +266,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				// no block-store flush failure was already captured, so the
 				// data-loss signal (block flush) takes precedence in the status.
 				if flushFailStatus == types.StatusSuccess {
-					flushFailStatus = common.MapToSMB(metaErr)
+					flushFailStatus = types.StatusForErr(metaErr)
 				}
 			} else if flushed {
 				logger.Debug("CLOSE: metadata flushed", "path", closePath)
@@ -434,7 +434,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				// precedence: if both fail, the client must see the flush
 				// (data-integrity) status, not the delete error.
 				if resp.Status == types.StatusSuccess {
-					resp.Status = common.MapToSMB(deleteErr)
+					resp.Status = types.StatusForErr(deleteErr)
 				}
 			} else if removed {
 				// Removing the entry already broke the parent directory's

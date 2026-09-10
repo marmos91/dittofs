@@ -180,7 +180,7 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		preFile, _ = metaSvc.GetFile(ctx.Context, metadata.FileHandle(ctx.CurrentFH))
 	}
 	if err := h.applySetAttrsWithTruncateReclaim(ctx, metaSvc, authCtx, metadata.FileHandle(ctx.CurrentFH), preFile, setAttrs); err != nil {
-		nfsStatus := common.MapToNFS4(err)
+		nfsStatus := types.StatusForErr(err)
 		logger.Debug("NFSv4 SETATTR failed",
 			"error", err,
 			"nfs4status", nfsStatus,

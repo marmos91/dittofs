@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	nfs3types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	smbtypes "github.com/marmos91/dittofs/internal/adapter/smb/types"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
@@ -378,28 +377,29 @@ func testDirSMBToNFS(t *testing.T, nfsMount, smbMount *framework.Mount) {
 //
 // Table-driven verification that the same metadata.ErrorCode produces
 // consistent client-observable errnos on both the NFS and SMB mounts, using
-// the common/ error table as the single source of truth for expected
+// the per-adapter types tables as the single source of truth for expected
 // per-protocol codes. Extends the XPR-01..06 pattern: one shared server + one
 // NFS mount + one SMB mount, reused across all ~18 subtests (PATTERNS.md
 // gotcha: per-subtest mount bootstrap is flaky and compounds CI time).
 //
-// The assertion is: MapToNFS3(storeErr) AND MapToSMB(storeErr) from
-// the common/ table match what the kernel NFS/SMB client actually delivers.
+// The assertion is: types.StatusForErr(storeErr) (nfs/types) AND
+// smb/types.StatusForErr(storeErr) from
+// the per-adapter types switches match what the kernel NFS/SMB client actually delivers.
 // Since the kernel translates protocol codes into errnos for userspace, the
 // test compares observed syscall.Errno to the errno that the protocol code
 // maps to (via kernel-stable translations documented in this file's
 // nfs3StatusToErrno and smbStatusToErrno tables). This preserves the
 // one-edit contract: adding a new ErrorCode only requires adding a row in
-// common/errmap.go plus (when e2e-triggerable) one trigger helper in
+// the per-adapter types tables plus (when e2e-triggerable) one trigger helper in
 // test/e2e/helpers/error_triggers.go and one table row here — the expected
-// errnos are derived at runtime from common/'s MapToNFS3 / MapToSMB.
+// errnos are derived at runtime from the per-adapter types packages' StatusForErr.
 //
 // Test tier split:
 //   - E2E tier (this function): ~18 codes triggerable via real kernel ops.
 //   - Unit tier: ~9 exotic codes (deadlock, quota, grace period, connection
 //     limits) that require backend fault injection or protocol-specific
 //     RPCs the kernel does not expose at the file-I/O syscall layer. See
-//     internal/adapter/common/errmap_test.go:TestExoticErrorCodes.
+//     internal/adapter/nfs/types/statusfor_test.go (per-package full-enum tables).
 func TestCrossProtocol_ErrorConformance(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping cross-protocol error conformance tests in short mode")
@@ -412,10 +412,10 @@ func TestCrossProtocol_ErrorConformance(t *testing.T) {
 	// (optionally) overrides the mount root — e.g., TriggerErrReadOnly must
 	// target the read-only share's mount, not the primary read-write share.
 	//
-	// Expected errnos are derived at runtime from the common/ errmap via
-	// nfs3StatusToErrno(common.MapToNFS3(sentinelErr)) and
-	// smbStatusToErrno(common.MapToSMB(sentinelErr)). This keeps a single
-	// source of truth (the common/ table) — adding a new ErrorCode requires
+	// Expected errnos are derived at runtime from the per-adapter types packages via
+	// nfs3StatusToErrno(nfs3types.StatusForErr(sentinelErr)) and
+	// smbStatusToErrno(smbtypes.StatusForErr(sentinelErr)). This keeps a single
+	// source of truth (the per-adapter types tables) — adding a new ErrorCode requires
 	// one row here, not a second hand-transcribed errno column.
 	cases := []errorConformanceCase{
 		{name: "ErrNotFound", code: merrs.ErrNotFound, trigger: helpers.TriggerErrNotFound},
@@ -452,12 +452,12 @@ func TestCrossProtocol_ErrorConformance(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			// Derive expected errno-per-protocol from common/'s table.
-			// Single-source-of-truth pivot: adding a new row in
-			// common/errmap.go propagates here automatically.
+			// Derive expected errno-per-protocol from the per-adapter types tables.
+			// Single-source-of-truth pivot: adding a new ErrorCode row
+			// in the per-adapter types tables propagates here automatically.
 			sentinel := &merrs.StoreError{Code: c.code, Message: c.name}
-			wantNFSErrno := nfs3StatusToErrno(common.MapToNFS3(sentinel))
-			wantSMBErrno := smbStatusToErrno(common.MapToSMB(sentinel))
+			wantNFSErrno := nfs3StatusToErrno(nfs3types.StatusForErr(sentinel))
+			wantSMBErrno := smbStatusToErrno(smbtypes.StatusForErr(sentinel))
 
 			nfsRoot := fixture.NFSMount.Path
 			smbRoot := fixture.SMBMount.Path
@@ -492,7 +492,7 @@ func TestCrossProtocol_ErrorConformance(t *testing.T) {
 type errorConformanceCase struct {
 	name string
 	// code is the sentinel metadata.ErrorCode whose expected NFS/SMB codes
-	// are derived via common.MapToNFS3 / common.MapToSMB at test time.
+	// are derived via nfs3types.StatusForErr / smbtypes.StatusForErr at test time.
 	code merrs.ErrorCode
 	// trigger fires ONE scenario against the given mount root and returns
 	// the observed TriggerResult. Both protocols share the same trigger.
@@ -590,7 +590,7 @@ func setupErrorConformanceFixture(t *testing.T) *errorConformanceFixture {
 	// the framework's MountSMB hardcodes "/export". For now alias smbRO to
 	// the rw SMB mount and document that ErrReadOnly's SMB assertion is
 	// effectively disabled (trigger targets the NFS read-only mount; the
-	// common/ table row is still verified unit-side).
+	// per-adapter types table row is still verified unit-side).
 	smbRO := smbMount
 
 	return &errorConformanceFixture{
@@ -619,7 +619,7 @@ func assertErrnoMatches(t *testing.T, label string, got helpers.TriggerResult, w
 // nfs3StatusToErrno translates a raw NFS3 status code into the syscall.Errno
 // the Linux NFS client surfaces to userspace. This mapping is kernel-stable
 // (see linux/fs/nfs/nfs3proc.c nfs3_proc_error_to_errno et al). The table
-// below covers every code that appears in common/'s errorMap NFS3 column;
+// below covers every code the NFSv3 adapter maps (nfs/types StatusFor);
 // unknown codes fall through to EIO (matches kernel behavior for NFS3ERR_IO
 // and unrecognized codes).
 func nfs3StatusToErrno(code uint32) syscall.Errno {
@@ -672,7 +672,7 @@ func nfs3StatusToErrno(code uint32) syscall.Errno {
 
 // smbStatusToErrno translates a raw SMB NT status into the syscall.Errno the
 // Linux cifs client surfaces to userspace. This mapping mirrors kernel
-// fs/cifs/smb2maperror.c — every code that appears in common/'s errorMap SMB
+// fs/cifs/smb2maperror.c — every code the SMB adapter maps (smb/types StatusFor)
 // column is covered explicitly; unknown codes fall through to EIO.
 func smbStatusToErrno(code smbtypes.Status) syscall.Errno {
 	switch code {

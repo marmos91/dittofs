@@ -93,7 +93,7 @@ func (h *Handler) handleReadPlus(ctx *types.CompoundContext, reader io.Reader) *
 	fileHandle := metadata.FileHandle(ctx.CurrentFH)
 	file, err := metaSvc.GetFileForRead(authCtx.Context, fileHandle)
 	if err != nil {
-		return readPlusErr(common.MapToNFS4(err))
+		return readPlusErr(types.StatusForErr(err))
 	}
 	if file.Type != metadata.FileTypeRegular {
 		return readPlusErr(readTypeError(file.Type))
@@ -123,7 +123,7 @@ func (h *Handler) handleReadPlus(ctx *types.CompoundContext, reader io.Reader) *
 		if errors.Is(err, errNoRegistry) {
 			return readPlusErr(types.NFS4ERR_SERVERFAULT)
 		}
-		return readPlusErr(common.MapContentToNFS4(err))
+		return readPlusErr(types.StatusFor(common.ClassifyBlockStoreError(err)))
 	}
 	eof := readEnd >= file.Size
 

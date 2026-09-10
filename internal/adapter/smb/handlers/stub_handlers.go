@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"unicode/utf16"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -135,7 +134,7 @@ func (h *Handler) handleGetReparsePoint(ctx *SMBHandlerContext, body []byte) (*H
 		if storeErr, ok := err.(*metadata.StoreError); ok && storeErr.Code == metadata.ErrInvalidArgument {
 			return NewErrorResult(types.StatusNotAReparsePoint), nil
 		}
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 
 	logger.Debug("IOCTL GET_REPARSE_POINT: symlink target", "path", openFile.Name().Path, "target", target)
@@ -1099,7 +1098,7 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 	metaSvc := h.Registry.GetMetadataService()
 	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 
 	// Parse READ_FILE_USN_DATA input to determine requested version.

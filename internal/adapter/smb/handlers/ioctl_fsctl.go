@@ -4,7 +4,6 @@ import (
 	"crypto/md5"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -30,7 +29,7 @@ func (h *Handler) handleGetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	metaSvc := h.Registry.GetMetadataService()
 	file, err := metaSvc.GetFileForRead(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 	if file.Mode&modeDOSCompressed != 0 {
 		format = 0x0002 // COMPRESSION_FORMAT_LZNT1
@@ -235,7 +234,7 @@ func (h *Handler) handleQueryFileRegions(ctx *SMBHandlerContext, body []byte) (*
 	metaSvc := h.Registry.GetMetadataService()
 	file, err := metaSvc.GetFileForRead(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 	size := getSMBSize(&file.FileAttr)
 
@@ -268,6 +267,9 @@ func (h *Handler) handleQueryFileRegions(ctx *SMBHandlerContext, body []byte) (*
 
 // deriveObjectID creates a deterministic 16-byte object ID from a metadata handle
 // by computing its MD5 hash.
+// ponytail: md5 is collision-prone, but this only needs a stable 16-byte wire
+// value derived from an already-trusted handle; upgrade to truncating SHA-256
+// only if object IDs ever need to be unforgeable across trust boundaries.
 func deriveObjectID(handle []byte) [16]byte {
 	return md5.Sum(handle)
 }

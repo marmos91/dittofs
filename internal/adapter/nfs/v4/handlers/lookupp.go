@@ -3,7 +3,6 @@ package handlers
 import (
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -77,7 +76,7 @@ func (h *Handler) lookupParentInRealFS(ctx *types.CompoundContext) *types.Compou
 	// Get current file's parent handle from metadata store
 	store, err := metaSvc.GetStoreForShare(shareName)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_LOOKUPP,

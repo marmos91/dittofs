@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -290,7 +289,7 @@ func (h *Handler) Create(
 		logError(ctx.Context, err, "CREATE failed: repository error", "file", req.Filename, "client", clientIP)
 
 		// Map repository errors to NFS status codes
-		nfsStatus := common.MapToNFS3(err)
+		nfsStatus := types.StatusForErr(err)
 
 		dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 

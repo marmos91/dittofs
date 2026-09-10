@@ -775,16 +775,16 @@ private copy of the same logic. The package exposes:
   edit points that feed resolved `[]BlockRef` into the engine. Handler code
   stays untouched; changes to the block-ref threading stay confined to
   `common/`.
-- **Metadata error translation**: a struct-per-code table (`errorMap` in
-  `common/errmap.go`) with NFS3/NFS4/SMB columns; `common.MapToNFS3`,
-  `common.MapToNFS4`, and `common.MapToSMB` are thin accessors. Lock-
-  operation context uses the parallel `lockErrorMap` (`common/lock_errmap.go`)
-  which overrides a handful of codes (e.g., `ErrLocked` →
+- **Metadata error translation**: per-package `StatusFor` switches in the
+  adapter types packages (`internal/adapter/nfs/types`,
+  `internal/adapter/nfs/v4/types`, `internal/adapter/smb/types`), each with
+  its enum-walk test; `StatusForErr` is the error-level wrapper. SMB lock-
+  operation context uses the parallel `StatusForLock`/`StatusForLockErr`
+  functions in the same package (e.g., `ErrLocked` →
   `STATUS_LOCK_NOT_GRANTED` in lock context vs. `STATUS_FILE_LOCK_CONFLICT`
-  in general I/O context). Adding a new `metadata.ErrorCode` is one edit
-  across all three protocols — the struct literal requires every column
-  to be populated, so you cannot ship a code that is missing an NFS or
-  SMB mapping.
+  in general I/O context). Adding a new `metadata.ErrorCode` means adding a
+  switch arm plus an expectation row in each relevant package — the
+  enum-walk test fails loudly if either is missing.
 
 See CONTRIBUTING.md "Adding a new metadata.ErrorCode" for the recipe and
 NFS.md / SMB.md "Error mapping" for protocol-specific notes.
@@ -1081,9 +1081,8 @@ dittofs/
 │   │   │                         # ResolveForRead/Write
 │   │   ├── read_payload.go       # Pooled BlockReadResult + ReadFromBlockStore
 │   │   ├── write_payload.go      # WriteToBlockStore + CommitBlockStore seams
-│   │   ├── errmap.go             # Struct-per-code table (NFS3/NFS4/SMB columns)
-│   │   ├── content_errmap.go     # Block-store content error table
-│   │   └── lock_errmap.go        # Lock-context error table
+│   │   ├── normalize.go          # Block-store error → *merrs.StoreError normalization
+│   │   └── errclassify.go        # Raw block-store error → metadata code classifier
 │   ├── adapter/nfs/              # NFS protocol implementation
 │   │   ├── dispatch.go           # RPC procedure routing
 │   │   ├── rpc/                  # RPC layer (call/reply handling)

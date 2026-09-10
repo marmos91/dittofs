@@ -172,7 +172,7 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 
 	intent, err := metaSvc.PrepareWrite(authCtx, fileHandle, newSize)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		logger.Debug("NFSv4 WRITE PrepareWrite failed",
 			"error", err,
 			"status", status,
@@ -212,12 +212,12 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 			"error", err,
 			"payloadID", intent.PayloadID,
 			"client", ctx.ClientAddr)
-		return writeErr(common.MapContentToNFS4(err))
+		return writeErr(types.StatusFor(common.ClassifyBlockStoreError(err)))
 	}
 
 	_, err = metaSvc.CommitWrite(authCtx, intent)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		logger.Debug("NFSv4 WRITE CommitWrite failed",
 			"error", err,
 			"status", status,

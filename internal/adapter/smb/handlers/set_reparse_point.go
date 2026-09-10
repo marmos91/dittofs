@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -99,13 +98,13 @@ func (h *Handler) handleSetReparsePoint(ctx *SMBHandlerContext, body []byte) (*H
 	target = strings.ReplaceAll(target, "\\", "/")
 	if err := metadata.ValidateSymlinkTarget(target); err != nil {
 		logger.Debug("IOCTL SET_REPARSE_POINT: invalid symlink target", "error", err)
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 
 	if err := h.convertOpenFileToNativeSymlink(ctx, openFile, target); err != nil {
 		logger.Warn("IOCTL SET_REPARSE_POINT: failed to create symlink",
 			"path", openFile.Name().Path, "target", target, "error", err)
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 
 	logger.Debug("IOCTL SET_REPARSE_POINT: created symlink", "path", openFile.Name().Path, "target", target)
