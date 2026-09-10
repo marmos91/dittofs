@@ -564,7 +564,7 @@ layout and the orchestration flows.
 ### Subsystem layout
 
 | Location | Role |
-|---|---|
+| --- | --- |
 | `pkg/snapshot/` | Verify gate, hash-manifest read/write, helper types. |
 | `pkg/controlplane/runtime/snapshot.go` | `Runtime.CreateSnapshot`, `WaitForSnapshot`, `RestoreSnapshot`, `GetSnapshot`, `ListSnapshots`, `DeleteSnapshot`. Composition over the metadata store, block store, and snapshot store. |
 | `pkg/controlplane/runtime/snapshot_hold.go` | `SnapshotHoldProvider` — per-share delete lock + manifest-on-disk hold surface for GC. |
@@ -661,7 +661,7 @@ Five REST endpoints under `/api/v1/shares/{name}/snapshots` (admin
 only, inherits the existing `RequireAdmin` middleware):
 
 | Method | Path | Result |
-|---|---|---|
+| --- | --- | --- |
 | `POST` | `/` | 202 Accepted + `Location` header |
 | `GET` | `/` | 200 OK + JSON array (empty: `[]`, not `null`) |
 | `GET` | `/{id}` | 200 OK + full record |
@@ -670,7 +670,7 @@ only, inherits the existing `RequireAdmin` middleware):
 
 The single `mapSnapshotError` helper handles the 14 typed sentinels
 that can cross the boundary (12 snapshot sentinels + share-not-found
-+ nil-guard). The mapping table lives in the handler file as the
+- nil-guard). The mapping table lives in the handler file as the
 sole source of truth; future sentinels add a single case.
 
 The Restore handler wraps `r.Context()` with
