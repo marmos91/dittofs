@@ -140,7 +140,7 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 	readResult, err := common.ReadFromBlockStore(ctx.Context, blockStore, file.PayloadID, offset, uint32(actualLen))
 	if err != nil {
 		logger.Debug("NFSv4 READ payload error", "error", err, "client", ctx.ClientAddr)
-		return readErr(types.NFS4ERR_IO)
+		return readErr(common.MapContentToNFS4(err))
 	}
 	// Release the pooled buffer after the compound result has been encoded.
 	// encodeRead4resok copies readResult.Data into a fresh bytes.Buffer before

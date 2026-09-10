@@ -108,7 +108,7 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 			"error", flushErr,
 			"payloadID", file.PayloadID,
 			"client", ctx.ClientAddr)
-		return commitErr(types.NFS4ERR_IO)
+		return commitErr(common.MapContentToNFS4(flushErr))
 	}
 
 	// Flush pending metadata writes (deferred commit optimization)

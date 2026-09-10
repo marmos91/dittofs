@@ -212,7 +212,7 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 			"error", err,
 			"payloadID", intent.PayloadID,
 			"client", ctx.ClientAddr)
-		return writeErr(types.NFS4ERR_IO)
+		return writeErr(common.MapContentToNFS4(err))
 	}
 
 	_, err = metaSvc.CommitWrite(authCtx, intent)
