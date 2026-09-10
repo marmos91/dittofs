@@ -5,7 +5,7 @@ description: DittoFS adapter-convergence program memory (update after each wave)
 
 # DittoFS adapter convergence — program memory
 
-Last updated: 2026-09-09 ~24:00 (Wave 2 closed, Wave 3 prepared)
+Last updated: 2026-09-10 (Wave 3 fan-out running with plan-validation corrections)
 
 ## Program state (as of 2026-09-09)
 
@@ -14,7 +14,7 @@ Last updated: 2026-09-09 ~24:00 (Wave 2 closed, Wave 3 prepared)
 | 0 — Coordination | peer takeover, worktree cleanup | ✅ done (32-row #2340 re-derivation left) |
 | 1 — Ownership class | #2393–#2396, #2413, #2414 | ✅ landed 2026-09-08 (7 PRs) |
 | 2 — `sm.mu` + pynfs | #2398 + singles | ✅ **landed 2026-09-09** — PRs #2494-#2498, issues #2471/#2482/#2487/#2464/#2490 closed |
-| 3 — Shared-layer reuse | errmap, identity, lifecycle | ❌ not started — **NEXT**, lane plan ready |
+| 3 — Shared-layer reuse | errmap, identity, lifecycle | 🔄 **fan-out running** — 4 workers in worktrees, review corrections baked in |
 | 4 — SMB triage | ~155 untriaged findings | ❌ not started |
 | 5 — God objects | manager.go 3,985 LOC | ❌ blocked behind 1-4 |
 | 7 — Perf lens | bufpool, measurement plan | ❌ not started |
@@ -36,15 +36,15 @@ Last updated: 2026-09-09 ~24:00 (Wave 2 closed, Wave 3 prepared)
 | #2497 | #2464 | sync SettingsWatcher.RefreshNFSSettings after settings writes + harness lease guard |
 | #2498 | #2490 | LockExisting special-stateid → NFS4ERR_BAD_STATEID (both forms), before grace check |
 
-## Wave 3 lane plan (fan out immediately — 7 lanes, disjoint files)
+## Wave 3 lane plan (fan out immediately — lanes, disjoint files; CORRECTED by plan-validation review)
 
-0. GUARD — TestErrorMapCoverage enum walk + ErrConflict row + count 26 (LAND FIRST)
-1. NFSv4 content-path wiring (read.go:143, write.go:215, read_plus.go:125 → MapToNFS4)
-2. lock-errmap dead columns (delete MapLockToNFS3/4; fix ErrLockLimitExceeded drift)
-3. identity (delete getUserIdentity; use ResolvedIdentity; AUTH_SYS exempt)
-4. adapter lifecycle (listenerReady leak + EMFILE/ENFILE accept backoff, base.go)
-5. async credit grants (response.go:1207/1278 bypass Session.credits)
-6. citations (CLAUDE.md:105 + create.go:1874 → real symbols)
+- COMBINED GUARD (fix/errmap-coverage-dead-columns) — enum walk + ErrConflict row + exoticCodes guard + delete MapLockToNFS3/4 (L0+L2 merged: shared errmap_test.go)
+- v4 content wiring (fix/v4-content-errmap-wiring) — read/read_plus/write/commit/deallocate → **MapContentToNFS4** (NOT MapToNFS4: fmt.Errorf wrap defeats StoreError lookup, would regress ErrRemoteUnavailable IO→SERVERFAULT)
+- identity (fix/smb-resolved-identity) — ResolvedIdentity direct; handler.go:2038 second production caller; AUTH_SYS exempt
+- lifecycle (fix/adapter-lifecycle-accept) — listenerReady Stop-leak (sync.Once-guarded close; base.go:225 unconditional normal-path close would double-close) + accept backoff
+- credits+citations (fix/async-credit-grants, fix/export-acl-citations) — 2 async grant sites (1232/1303) through GrantCredits + SessionManager nil-check; CLAUDE.md:103 (not 105) + create.go:1874 → buildV4AuthContext/ResolveSharePermission
+
+Full corrections: `.planning/2026-09-09-wave3-plan.md` (plan-validation review, verdict CONCERNS, all baked in).
 
 ## Standing hazards (carry into every prompt)
 
