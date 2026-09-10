@@ -133,11 +133,28 @@ open/closed win the extraction buys.
 **Supersedes:** the previously queued two-fold tidy-up (`fix/errmap-single-file` lock fold +
 content fold) — discarded before landing; it was an intermediate state this extraction rewrites.
 
-### Step 3 — Wave 4: SMB triage (before the SMB fix waves)
+### Step 3 — Wave 4: SMB triage — **TRIAGED 2026-09-10** (`.planning/2026-09-10-wave4-triage.md`)
 
-- File an SMB umbrella (#2407 mirror) + area tranches for the ~155 untriaged findings
-- Quote the audit's *diagnosis*, re-derive the *fix* (`Verified: CONFIRMED` covers only the diagnosis)
-- Triage "duplicate/boilerplate" findings by diffing — the Kerberos AP-REP copies have already drifted
+Five read-only lanes re-derived all 157 audit findings against develop (workflow `ec014755`):
+**7 rows FIXED (6 defects), 61 rows LIVE (~55 defects after de-dup), 91 rows WAVE5**, 0
+DRIFTED/INVALID. Committed as `ff6209016`.
+
+Next in Wave 4: file the GitHub umbrella + area tranches from the triage doc, then fix waves
+ordered by severity:
+
+1. **Priority HIGHs (all three LIVE verbatim, each needs a design decision):** unclaimed
+   nonzero SessionId kept at `session_setup.go:976-984`; anonymous/guest encryption bypass at
+   `response.go:709-713` (MS-SMB2 3.3.5.2.9 tension); AppInstanceId force-close without
+   share/path/access scoping at `durable_context.go:907,970` (MS-SMB2 3.3.5.9.13).
+2. **Security cluster:** Kerberos MIC-after-commit (`kerberos_auth.go:290`), malformed-ACE
+   slice-bounds panic (`security.go:929`), oplock break-ack ownership
+   (`stub_handlers.go:959`), wrong-field credit decoders (`credit_validation.go:98-112`),
+   TOCTOU create-race overwrite (`create_post_break.go:797`), parked-CREATE mid-chain resume
+   hang (`create_post_break.go:1639`), AEAD nonce reuse (`encryption/middleware.go:189`).
+3. **Small LIVE rows** (stale doc.go, issue-number comment citations, Debug-swallowed lease
+   errors) batch into one hygiene PR.
+4. **The 91 WAVE5 rows are Wave 5 input** — do not open fix PRs for them here; they feed the
+   god-object/move-only wave with updated line numbers.
 - Credit/sequencing: the plan's `smb/state/` + `handlers/create/` + `handlers/info/` split is Wave 5;
   triage decides what joins it
 
