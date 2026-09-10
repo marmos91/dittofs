@@ -5,7 +5,7 @@ description: DittoFS adapter-convergence program memory (update after each wave)
 
 # DittoFS adapter convergence — program memory
 
-Last updated: 2026-09-10 (Wave 3 LANDED, Wave 3.5 consolidation NEXT)
+Last updated: 2026-09-10 (Wave 3.5 LANDED, Wave 4 SMB triage NEXT)
 
 ## Program state (as of 2026-09-10)
 
@@ -15,8 +15,8 @@ Last updated: 2026-09-10 (Wave 3 LANDED, Wave 3.5 consolidation NEXT)
 | 1 — Ownership class | #2393–#2396, #2413, #2414 | ✅ landed 2026-09-08 (7 PRs) |
 | 2 — `sm.mu` + pynfs | #2398 + singles | ✅ **landed 2026-09-09** — PRs #2494-#2498, issues #2471/#2482/#2487/#2464/#2490 closed |
 | 3 — Shared-layer reuse | errmap, identity, lifecycle | ✅ **landed 2026-09-10** — 6 PRs (#2499-#2504) squash-merged, review-green, no open issues |
-| 3.5 — Error-universe consolidation | sentinel normalization + StatusFor extraction | ❌ **NEXT** — one PR per roadmap Step 2.5 |
-| 4 — SMB triage | ~155 untriaged findings | ❌ not started |
+| 3.5 — Error-universe consolidation | sentinel normalization + StatusFor extraction | ✅ **landed 2026-09-10** — #2505 @ `4f418ff83` (StatusFor/StatusForErr in all three types packages, common/ reduced to errclassify+normalize+payload helpers), #2506 pynfs walk-out @ `75b45e987` (38→15 rows), #2507 follow-up @ `b2927215d` |
+| 4 — SMB triage | ~157 untriaged findings (7 HIGH / 62 MED / 88 LOW), audit predates ~12 landed SMB fixes — re-derivation pass required | ❌ not started — umbrella + area tranches, re-derive against develop |
 | 5 — God objects | manager.go 3,985 LOC | ❌ blocked behind 1-4 |
 | 7 — Perf lens | bufpool, measurement plan | ❌ not started |
 
