@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -963,10 +964,13 @@ func ProcessAppInstanceId(
 			if f.AppInstanceId != appId {
 				return false
 			}
-			if f.ShareName != shareName {
+			// Share and path compare case-insensitively: SMB namespaces are
+			// case-insensitive, so different-case spellings of the same file
+			// must still match (MS-SMB2 2.2.1.1 object names).
+			if !strings.EqualFold(f.ShareName, shareName) {
 				return false
 			}
-			if f.Name().Path != filePath {
+			if !strings.EqualFold(f.Name().Path, filePath) {
 				return false
 			}
 			return true
@@ -1027,7 +1031,8 @@ func ProcessAppInstanceId(
 	}
 
 	for _, h := range existing {
-		if h.ShareName != shareName || h.Path != filePath {
+		// Case-insensitive share/path match, same as the live-open filter.
+		if !strings.EqualFold(h.ShareName, shareName) || !strings.EqualFold(h.Path, filePath) {
 			continue
 		}
 		persistedClosed++

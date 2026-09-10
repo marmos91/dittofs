@@ -112,3 +112,31 @@ func TestAppInstanceId_FailoverScopedToClaimedFile(t *testing.T) {
 		t.Error("a persisted handle on a different share must survive: the AppInstanceId was reused there")
 	}
 }
+
+// TestAppInstanceId_FailoverCaseInsensitivePath pins that the share/path match
+// is case-insensitive: SMB namespaces are case-insensitive, so a failover
+// CREATE spelling the file with different case must still displace the
+// persisted handle for the same file.
+func TestAppInstanceId_FailoverCaseInsensitivePath(t *testing.T) {
+	store := newMockDurableStore()
+	ctx := context.Background()
+
+	appId := [16]byte{0xB0}
+	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:            "case-variant",
+		AppInstanceId: appId,
+		ShareName:     "/Share1",
+		Path:          "VM/DISK.VHDX",
+	})
+
+	appIdData := make([]byte, 20)
+	binary.LittleEndian.PutUint16(appIdData[0:2], 20)
+	copy(appIdData[4:20], appId[:])
+	contexts := []CreateContext{{Name: AppInstanceIdTag, Data: appIdData}}
+
+	ProcessAppInstanceId(ctx, store, nil, contexts, "/share1", "vm/disk.vhdx")
+
+	if h, _ := store.GetDurableHandle(ctx, "case-variant"); h != nil {
+		t.Error("the persisted handle under a different-case spelling of the same (share, path) must be displaced")
+	}
+}
