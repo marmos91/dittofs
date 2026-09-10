@@ -226,6 +226,11 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 			types.FileEndOfFileInformation, types.FileAllocationInformation:
 			// These have specific access checks in their handlers or
 			// are validated by the metadata layer
+		case types.FileFullEaInformation:
+			// Exempt from the FILE_WRITE_ATTRIBUTES gate: EA writes carry
+			// their own FILE_WRITE_EA check in their case arm below, and
+			// requiring both bits would fail handles opened with write-EA
+			// access only (MS-FSA 2.1.5.15.3).
 		default:
 			if !hasAccessRight(openFile.GrantedAccess, uint32(types.FileWriteAttributes)) {
 				return setInfoStatus(types.StatusAccessDenied), nil

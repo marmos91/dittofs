@@ -341,8 +341,13 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// caller with write access (the SMB EA case authorizes the open handle's
 	// FILE_WRITE_EA bit at the handler layer) may apply it without owning the
 	// file.
+	// Explicit timestamp pointers are excluded: an EA write must not grant
+	// the right to back- or forward-date the file, only to let the server
+	// stamp the mutation time (UTIME_NOW semantics above).
 	onlyEAMutations := noOwnershipAttrs && attrs.Size == nil &&
 		!attrs.AtimeNow && !attrs.MtimeNow &&
+		attrs.Atime == nil && attrs.Mtime == nil && attrs.Ctime == nil &&
+		attrs.CreationTime == nil &&
 		attrs.ModeOrMask == nil && attrs.ModeAndNotMask == nil &&
 		attrs.Hidden == nil && attrs.ACL == nil &&
 		len(attrs.EAMutations) > 0

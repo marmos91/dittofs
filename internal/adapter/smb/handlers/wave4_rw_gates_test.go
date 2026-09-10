@@ -7,11 +7,11 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -195,10 +195,12 @@ func TestSetInfo_EAWithoutFileWriteEA_AccessDenied(t *testing.T) {
 		t.Fatalf("EA set without FILE_WRITE_EA: status = 0x%08x, want STATUS_ACCESS_DENIED (0x%08x)",
 			uint32(got), uint32(types.StatusAccessDenied))
 	}
-	// The same handle with FILE_WRITE_EA granted must pass the gate.
-	h2, fileID2, _, sessionID2, treeID2 := setupSetInfoGateTest(t, w4FileReadData|w4FileWriteData|w4FileWriteEA|w4FileWriteAttr)
+	// A handle with FILE_WRITE_EA but WITHOUT FILE_WRITE_ATTRIBUTES must
+	// still pass: the EA class is exempt from the step-1b attributes gate
+	// (its own FILE_WRITE_EA check is what governs).
+	h2, fileID2, _, sessionID2, treeID2 := setupSetInfoGateTest(t, w4FileReadData|w4FileWriteEA)
 	if got := w4SetInfo(t, w4Context(sessionID2, treeID2), h2, fileID2, types.FileFullEaInformation, buf); got != types.StatusSuccess {
-		t.Fatalf("EA set with FILE_WRITE_EA: status = 0x%08x, want STATUS_SUCCESS (0x%08x)",
+		t.Fatalf("EA set with FILE_WRITE_EA only (no FILE_WRITE_ATTRIBUTES): status = 0x%08x, want STATUS_SUCCESS (0x%08x)",
 			uint32(got), uint32(types.StatusSuccess))
 	}
 }
@@ -253,13 +255,13 @@ func TestDecodeWriteRequest_DataOffsetMismatch_Fails(t *testing.T) {
 	// falling back to offset 48.
 	body := make([]byte, 48+16)
 	w := body
-	binary.LittleEndian.PutUint16(w[0:], 49)     // StructureSize
-	binary.LittleEndian.PutUint16(w[2:], 64+56)  // DataOffset claims body byte 56
-	binary.LittleEndian.PutUint32(w[4:], 16)     // Length: 16 bytes needed
-	binary.LittleEndian.PutUint64(w[8:], 0)      // Offset
-	copy(w[48:], "0123456789abcdef")             // payload at 48, not at 56
-	binary.LittleEndian.PutUint64(w[8:], 0)   // Offset
-	copy(w[48:], "0123456789abcdef")           // payload at 48, DataOffset says 64
+	binary.LittleEndian.PutUint16(w[0:], 49)    // StructureSize
+	binary.LittleEndian.PutUint16(w[2:], 64+56) // DataOffset claims body byte 56
+	binary.LittleEndian.PutUint32(w[4:], 16)    // Length: 16 bytes needed
+	binary.LittleEndian.PutUint64(w[8:], 0)     // Offset
+	copy(w[48:], "0123456789abcdef")            // payload at 48, not at 56
+	binary.LittleEndian.PutUint64(w[8:], 0)     // Offset
+	copy(w[48:], "0123456789abcdef")            // payload at 48, DataOffset says 64
 	if _, err := DecodeWriteRequest(body); err == nil {
 		t.Fatal("DecodeWriteRequest with payload not at DataOffset: want error, got nil")
 	}
@@ -352,9 +354,9 @@ func TestWrite_AdvancesPositionInfo(t *testing.T) {
 func w4EncodeEAEntry(name string, value []byte) []byte {
 	total := 8 + len(name) + 1 + len(value)
 	buf := make([]byte, total)
-	binary.LittleEndian.PutUint32(buf[0:], 0)       // NextEntryOffset: single entry
-	buf[4] = 0                                      // Flags
-	buf[5] = byte(len(name))                        // NameLength (excludes NUL)
+	binary.LittleEndian.PutUint32(buf[0:], 0)                  // NextEntryOffset: single entry
+	buf[4] = 0                                                 // Flags
+	buf[5] = byte(len(name))                                   // NameLength (excludes NUL)
 	binary.LittleEndian.PutUint16(buf[6:], uint16(len(value))) // ValueLength
 	copy(buf[8:], name)
 	buf[8+len(name)] = 0

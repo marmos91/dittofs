@@ -116,17 +116,11 @@ func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
 	// Data typically starts at offset 48 in the body (or wherever DataOffset-64 points)
 
 	if req.Length > 0 {
-		// Calculate where data starts in body
+		// Data must sit exactly where DataOffset says. Clamping a bad offset
+		// to 48 would substitute bytes the client did not place in the
+		// message — per MS-SMB2 3.3.5.13 the server must fail the request
+		// with STATUS_INVALID_PARAMETER instead of writing guessed content.
 		dataStart := int(req.DataOffset) - 64
-
-		// Clamp to valid range - data can't start before byte 48 (after fixed fields)
-		dataStart = max(dataStart, 48)
-
-		// Data must sit exactly where DataOffset says. A speculative fallback to
-		// offset 48 would substitute bytes the client did not place in the
-		// message when DataOffset points elsewhere — per MS-SMB2 3.3.5.13 the
-		// server must fail the request with STATUS_INVALID_PARAMETER instead of
-		// writing guessed content.
 		if dataStart < 48 || dataStart+int(req.Length) > len(body) {
 			return nil, fmt.Errorf("write request body too short: need %d bytes at offset %d, have %d", req.Length, dataStart, len(body))
 		}
