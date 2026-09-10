@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -176,7 +175,7 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 	// Get pre-operation parent attributes for change_info
 	parentFile, err := metaSvc.GetFile(ctx.Context, parentHandle)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_CREATE,
@@ -315,7 +314,7 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 	}
 
 	if createErr != nil {
-		status := common.MapToNFS4(createErr)
+		status := types.StatusForErr(createErr)
 		logger.Debug("NFSv4 CREATE failed",
 			"name", objName,
 			"type", objType,

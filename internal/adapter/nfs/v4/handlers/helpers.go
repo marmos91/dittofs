@@ -11,7 +11,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -264,7 +264,7 @@ func checkReadPermission(
 	op uint32,
 ) uint32 {
 	if err := metaSvc.CheckReadPermissionFile(authCtx, handle, file); err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		logger.Debug("NFSv4 read denied",
 			"op", types.OpName(op),
 			"nfs_status", status,
@@ -374,7 +374,7 @@ func (h *Handler) fileTypeForHandle(ctx *types.CompoundContext, handle []byte) (
 	// GetFileForRead: handle-addressed, File.Path unused -- skip derivePath.
 	file, err := metaSvc.GetFileForRead(ctx.Context, metadata.FileHandle(handle))
 	if err != nil {
-		return 0, common.MapToNFS4(err)
+		return 0, types.StatusForErr(err)
 	}
 	return file.Type, types.NFS4_OK
 }

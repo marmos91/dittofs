@@ -128,7 +128,7 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 	// Get pre-operation attributes for both directories (for change_info4)
 	srcDirFile, err := metaSvc.GetFile(ctx.Context, srcDirHandle)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_RENAME,
@@ -139,7 +139,7 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 
 	tgtDirFile, err := metaSvc.GetFile(ctx.Context, tgtDirHandle)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_RENAME,
@@ -151,7 +151,7 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 	// Perform the rename: Move(fromDir, fromName, toDir, toName)
 	clobbered, _, renameErr := metaSvc.Move(authCtx, srcDirHandle, oldName, tgtDirHandle, newName)
 	if renameErr != nil {
-		status := common.MapToNFS4(renameErr)
+		status := types.StatusForErr(renameErr)
 		logger.Debug("NFSv4 RENAME failed",
 			"oldname", oldName,
 			"newname", newName,

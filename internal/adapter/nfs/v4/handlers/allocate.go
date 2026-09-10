@@ -3,7 +3,6 @@ package handlers
 import (
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -68,7 +67,7 @@ func (h *Handler) handleAllocate(ctx *types.CompoundContext, reader io.Reader) *
 	}
 
 	if _, err := metaSvc.Allocate(authCtx, metadata.FileHandle(ctx.CurrentFH), offset, length); err != nil {
-		return allocErr(common.MapToNFS4(err))
+		return allocErr(types.StatusForErr(err))
 	}
 
 	logger.Debug("NFSv4.2 ALLOCATE", "offset", offset, "length", length, "client", ctx.ClientAddr)

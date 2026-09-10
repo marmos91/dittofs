@@ -245,45 +245,50 @@ NFS uses RPC authentication flavors:
 
 Internal errors are mapped to NFS status codes in `pkg/metadata/errors.go`.
 
-### Canonical translation table
+### Per-package translation switches
 
 Every `metadata.ErrorCode` value is translated to an NFSv3 or NFSv4 status
-code by a single shared table in `internal/adapter/common/errmap.go`. The
+code by the `StatusFor` switch in the adapter types packages
+(`internal/adapter/nfs/types`, `internal/adapter/nfs/v4/types`). The
 accessors are:
 
-- `common.MapToNFS3(err) uint32` — NFSv3 status (e.g., `NFS3ERR_NOENT`)
-- `common.MapToNFS4(err) uint32` — NFSv4 status (e.g., `NFS4ERR_NOENT`)
+- `nfs/types.StatusForErr(err) uint32` — NFSv3 status (e.g., `NFS3ERR_NOENT`)
+- `nfs/v4/types.StatusForErr(err) uint32` — NFSv4 status (e.g., `NFS4ERR_NOENT`)
 
-Both NFSv3 and NFSv4 handlers consume the **same** table — adding a new
-error code requires exactly one struct-literal row edit that populates all
-three protocol columns (NFSv3, NFSv4, SMB) at once. The Go type system
-enforces this: you cannot add a row without filling every column.
+Each package owns its protocol's switch; the package name implies the
+protocol. Adding a new error code means adding one switch arm plus one
+expectation row per package — the enum-walk test in each package fails
+loudly if either is missing.
 
 Unwrapping uses `errors.As`, so wrapped StoreError values
 (`fmt.Errorf("...: %w", storeErr)`) map correctly in every handler path.
+Raw block-store errors are normalized to `*merrs.StoreError` at the
+payload choke point (`internal/adapter/common`), so handler paths see one
+error shape.
 
 ### Audit-logging wrapper
 
 The NFSv3 audit wrapper at `internal/adapter/nfs/xdr/errors.go`
 (`MapStoreErrorToNFSStatus`) is preserved as a thin logging layer: its body
-calls `common.MapToNFS3(err)` and adds a severity-based log dispatch
+calls `nfs/types.StatusForErr(err)` and adds a severity-based log dispatch
 (Warn for client-side faults, Error for server-side I/O/space exhaustion)
 with structured fields (`operation`, `code`, `message`, `path`, `client`).
-Callers that want raw mapping call `common.MapToNFS3` directly; callers
-that want audit output call `xdr.MapStoreErrorToNFSStatus`.
+Callers that want raw mapping call `nfs/types.StatusForErr` directly;
+callers that want audit output call `xdr.MapStoreErrorToNFSStatus`.
 
 ### Lock-context translation
 
 `metadata.ErrLocked`, `ErrDeadlock`, `ErrGracePeriod`, and other
 lock-operation codes have different status codes in lock context
 (SMB2 LOCK) versus general I/O context (READ/WRITE) on SMB: the
-`lockErrorMap` table in `internal/adapter/common/lock_errmap.go` holds the
-lock-context SMB deltas and falls through to `errorMap` for non-lock codes.
-The NFSv3/NFSv4 lock answers live in `errorMap` directly — its lock-class
-rows already carry the retry-class codes (e.g., `ErrLocked` →
-`NFS4ERR_LOCKED`/`NFS3ErrJukebox`, `ErrDeadlock` → `NFS4ERR_DEADLOCK`). SMB
-diverges (e.g., `ErrLocked` → `STATUS_LOCK_NOT_GRANTED` in lock context vs.
-`STATUS_FILE_LOCK_CONFLICT` in general context).
+`smb/types` package exposes `StatusForLock`/`StatusForLockErr` for the
+lock context alongside `StatusFor`/`StatusForErr` for general I/O —
+separate functions, same package, so the divergence is visible at the
+call site. NFS has no lock-context split: `ErrLocked` → `NFS4ERR_LOCKED`
+in both contexts (pinned by the nfs/v4/types enum-walk expectations), and
+NFSv3 has no lock procedure (NLM is unimplemented; only NSM exists). SMB
+diverges (e.g., `ErrLocked` → `STATUS_LOCK_NOT_GRANTED` in lock context
+vs. `STATUS_FILE_LOCK_CONFLICT` in general context).
 
 ### Conformance testing
 
@@ -291,9 +296,10 @@ diverges (e.g., `ErrLocked` → `STATUS_LOCK_NOT_GRANTED` in lock context vs.
 table-drives every triggerable code through real NFS/SMB mounts and
 asserts the kernel delivers the expected errno. Exotic codes that cannot
 be e2e-triggered (quota, grace-period, connection-limit) are covered by
-`internal/adapter/common/errmap_test.go:TestExoticErrorCodes`. Both tiers
-iterate over the same `common/` tables — adding a new code without adding
-a test case fails `TestErrorMapCoverage` at CI time.
+the enum-walk tests in the types packages (`statusfor_test.go` per
+package). Both tiers derive from the same switches — adding a new code
+without a switch arm or expectation row fails `TestStatusFor_EnumWalk` at
+CI time.
 
 ---
 
