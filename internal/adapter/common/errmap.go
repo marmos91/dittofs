@@ -222,11 +222,13 @@ var errorMap = map[merrs.ErrorCode]protoCodes{
 		SMB:  smbtypes.StatusInternalError,
 	},
 	merrs.ErrLockLimitExceeded: {
-		// NFSv3: no direct code — fallback NFS3ErrIO.
+		// NFSv3: no direct code — fallback NFS3ErrJukebox (transient retry,
+		// matching the lock-context table's retry-class intent for lock
+		// limits).
 		// NFSv4: NFS4ERR_DENIED (standard "lock request denied" code).
 		// SMB: fallback StatusInsufficientResources — closest SMB signal for
 		// "too many locks held".
-		NFS3: nfs3types.NFS3ErrIO,
+		NFS3: nfs3types.NFS3ErrJukebox,
 		NFS4: nfs4types.NFS4ERR_DENIED,
 		SMB:  smbtypes.StatusInsufficientResources,
 	},
@@ -236,6 +238,18 @@ var errorMap = map[merrs.ErrorCode]protoCodes{
 		NFS3: nfs3types.NFS3ErrJukebox,
 		NFS4: nfs4types.NFS4ERR_DENIED,
 		SMB:  smbtypes.StatusFileLockConflict,
+	},
+	merrs.ErrConflict: {
+		// Concurrent-write conflict on ObjectID secondary-index maintenance
+		// (store-transaction level; runtime coordinator wraps it into
+		// engine.ErrObjectIDConflict). Not client-actionable: the client's
+		// state is fine, the store lost a race. NFSv3: no direct code —
+		// fallback NFS3ErrJukebox (retry the request later). NFSv4:
+		// NFS4ERR_DELAY (retryable, no client state change implied). SMB:
+		// StatusInsufficientResources (transient server-side condition).
+		NFS3: nfs3types.NFS3ErrJukebox,
+		NFS4: nfs4types.NFS4ERR_DELAY,
+		SMB:  smbtypes.StatusInsufficientResources,
 	},
 	merrs.ErrConnectionLimitReached: {
 		// No protocol has a "connection limit" code at the file-I/O layer
