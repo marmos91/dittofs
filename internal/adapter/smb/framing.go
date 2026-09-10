@@ -119,7 +119,7 @@ func ReadRequest(
 			// peer waits the full client-side timeout, and the cascading
 			// "Establishing SMB2 connection failed / NT_STATUS_NO_MEMORY"
 			// errors that flow out of an overrun smbtorture client mask
-			// downstream per-algorithm crypto tests (#717).
+			// downstream per-algorithm crypto tests .
 			//
 			// Synthesize a minimal SMB2 request header so the connection
 			// layer can dispatch through SendErrorResponse — MessageID is

@@ -49,7 +49,7 @@ func init() {
 		// fixtures (notably the multichannel.leases.test{2,3} pair) don't get
 		// stranded on the very first assertion when test2's
 		// `test_block_smb2_transport` falls through to a hard failure.
-		// See issue #436 and the constant comment in stub_handlers.go.
+		// See the constant comment in stub_handlers.go.
 		FsctlSmbtortureForceUnackedTimeout: (*Handler).handleSmbtortureForceUnackedTimeout,
 		FsctlSmbtortureFspAsyncSleep:       (*Handler).handleSmbtortureFspAsyncSleep,
 	}
@@ -74,6 +74,15 @@ func (h *Handler) Ioctl(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 	logger.Debug("IOCTL request",
 		"ctlCode", fmt.Sprintf("0x%08X", ctlCode),
 		"bodyLen", len(body))
+
+	// Per MS-SMB2 3.3.5.15: every SMB2 IOCTL request is an FSCTL request
+	// (Flags.IS_FSCTL set). A request without the bit is not a filesystem
+	// control and MUST be rejected.
+	if !ioctlRequestIsFSCTL(body) {
+		logger.Debug("IOCTL request without IS_FSCTL flag",
+			"ctlCode", fmt.Sprintf("0x%08X", ctlCode))
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
 
 	// Per MS-SMB2 3.3.5.15: validate that the FileID corresponds to an open
 	// file, unless this is a "no-handle" FSCTL that uses the 16-byte all-0xFF
@@ -114,12 +123,23 @@ func ioctlNoHandleFSCTL(ctlCode uint32) bool {
 	}
 }
 
+// ioctlRequestIsFSCTL reports whether the IOCTL request body carries the
+// IS_FSCTL flag (Flags bit 0, offset 48 in the request layout). A body too
+// short to hold the Flags field is treated as not-an-FSCTL.
+func ioctlRequestIsFSCTL(body []byte) bool {
+	if len(body) < 52 {
+		return false
+	}
+	r := smbenc.NewReader(body[48:52])
+	return r.ReadUint32()&0x00000001 != 0
+}
+
 // handleSmbtortureForceUnackedTimeout accepts FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT
 // (Samba's torture-only FSCTL 0x83848003) as a no-op success. The wire
 // contract is buffer-less and the response payload is just the IOCTL header
 // echoing the sentinel FileID.
 //
-// See the constant doc in stub_handlers.go for the rationale (issue #436):
+// See the constant doc in stub_handlers.go for the rationale:
 // smbtorture's multichannel.leases.test2 keys off the IOCTL's NTSTATUS to
 // decide `block_ok`. Returning STATUS_FILE_CLOSED (the default for an
 // unknown FSCTL using the 0xFF... sentinel handle) makes test2 fail before

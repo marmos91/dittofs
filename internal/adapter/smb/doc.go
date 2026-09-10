@@ -7,13 +7,14 @@
 //   - Adapter Layer (pkg/adapter/smb/): Connection management, lifecycle, configuration
 //   - Dispatch Layer (dispatch.go): Command routing and handler invocation
 //   - Header Layer (header/): SMB2 header parsing and encoding
-//   - Handler Layer (v2/handlers/): Protocol-specific business logic
+//   - Handler Layer (handlers/): Protocol-specific business logic
 //   - Session Layer (session/): Session and credit management
 //   - Types Layer (types/): Protocol constants and type definitions
 //
 // # Protocol Support
 //
-// DittoFS implements SMB2 dialect 0x0202 (SMB 2.0.2):
+// DittoFS implements the SMB 2.x and 3.x dialect family (2.0.2 through 3.1.1,
+// negotiated per connection):
 //
 //   - Session management: NEGOTIATE, SESSION_SETUP, LOGOFF
 //   - Share access: TREE_CONNECT, TREE_DISCONNECT

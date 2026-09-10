@@ -403,7 +403,7 @@ func ProcessLeaseCreateContext(
 	// Request the lease through LeaseManager (delegates to shared LockManager).
 	// A stat-open requester routes through the break-suppressing variant so a
 	// cross-key conflict grants the best coexisting state without breaking the
-	// existing holder (MS-SMB2 §3.3.5.9.8 / Samba `is_lease_stat_open`, #751).
+	// existing holder (MS-SMB2 §3.3.5.9.8 / Samba `is_lease_stat_open`).
 	requestLease := leaseMgr.RequestLease
 	if statOpen {
 		requestLease = leaseMgr.RequestLeaseStatOpen

@@ -121,7 +121,7 @@ func buildIoctlRequestBody(ctlCode uint32, fileID [16]byte, input []byte, maxOut
 	w.WriteUint32(uint32(64 + fixedSize)) // OutputOffset
 	w.WriteUint32(0)                      // OutputCount
 	w.WriteUint32(maxOutput)              // MaxOutputResponse
-	w.WriteUint32(0)                      // Flags
+	w.WriteUint32(0x00000001)             // Flags: IS_FSCTL
 	w.WriteUint32(0)                      // Reserved2
 	if len(input) > 0 {
 		w.WriteBytes(input)

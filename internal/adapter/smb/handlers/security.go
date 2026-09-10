@@ -137,11 +137,11 @@ func GetSIDMapper() *sid.SIDMapper {
 }
 
 // ============================================================================
-// Directory SID Bridge (#1617)
+// Directory SID Bridge
 // ============================================================================
 
 // DirectorySIDBridge couples a POSIX UID/GID to its real directory (AD) SID in
-// both directions, backing #1617. Emit (SIDForUID/SIDForGID) advertises a file
+// both directions, backing . Emit (SIDForUID/SIDForGID) advertises a file
 // owner/group as the account's actual AD SID instead of the algorithmic
 // machine-domain SID from the SIDMapper; parse (UIDForSID/GIDForSID) recovers
 // the UID/GID when Windows echoes that AD SID back through SET_INFO so an owner
@@ -151,7 +151,7 @@ func GetSIDMapper() *sid.SIDMapper {
 // back to the SIDMapper's machine-domain mapping. Because the bridge only hits
 // on accounts the directory actually holds, a local-only or conformance
 // deployment (no AD provider) is a transparent no-op: SIDForUID/GID always miss
-// and the descriptor stays byte-for-byte what it was before #1617.
+// and the descriptor stays byte-for-byte what it was before .
 type DirectorySIDBridge interface {
 	// SIDForUID resolves a POSIX UID to its directory user SID string.
 	SIDForUID(uid uint32) (sidStr string, ok bool)
@@ -169,11 +169,11 @@ type dirSIDHolder struct{ bridge DirectorySIDBridge }
 
 // _directorySIDBridge is the package-level directory-SID bridge, installed by
 // SetDirectorySIDBridge during adapter wiring. Unset means "machine-domain SID
-// only" — the pre-#1617 behavior.
+// only" — the pre- behavior.
 var _directorySIDBridge atomic.Pointer[dirSIDHolder]
 
 // SetDirectorySIDBridge installs the package-level DirectorySIDBridge used to
-// emit and round-trip real directory (AD) owner/group SIDs (#1617). Passing nil
+// emit and round-trip real directory (AD) owner/group SIDs. Passing nil
 // clears it (back to machine-domain SIDs only). Wired alongside SetSIDMapper
 // before any connections are accepted.
 func SetDirectorySIDBridge(b DirectorySIDBridge) {
@@ -194,7 +194,7 @@ func directoryBridge() DirectorySIDBridge {
 }
 
 // ownerSIDFor returns the SID to advertise for a file owner UID: the real
-// directory (AD) SID when the bridge maps it (#1617), otherwise the algorithmic
+// directory (AD) SID when the bridge maps it, otherwise the algorithmic
 // machine-domain SID from the mapper. A malformed bridge SID string falls back
 // to the machine SID rather than faulting.
 func ownerSIDFor(mapper *sid.SIDMapper, uid uint32) *sid.SID {
@@ -221,7 +221,7 @@ func groupSIDFor(mapper *sid.SIDMapper, gid uint32) *sid.SID {
 }
 
 // directoryUIDForSID resolves a decoded directory (AD) SID back to its POSIX UID
-// via the bridge, the parse-side inverse of ownerSIDFor (#1617). Returns
+// via the bridge, the parse-side inverse of ownerSIDFor. Returns
 // ok=false when no bridge is configured or the SID is not a directory account.
 func directoryUIDForSID(s *sid.SID) (uint32, bool) {
 	if b := directoryBridge(); b != nil {
@@ -240,7 +240,7 @@ func directoryGIDForSID(s *sid.SID) (uint32, bool) {
 
 // sameSID reports whether two SIDs are identical. A nil operand never matches.
 // Used by the SET_INFO owner/group gate to recognize a re-set of the file's
-// current owner/group SID as a no-op (#1617).
+// current owner/group SID as a no-op.
 func sameSID(a, b *sid.SID) bool {
 	if a == nil || b == nil {
 		return false
@@ -250,9 +250,9 @@ func sameSID(a, b *sid.SID) bool {
 
 // isCurrentOwnerSID reports whether reqSID equals the SID the server currently
 // emits for a file owned by uid — the machine-domain SID, or the real directory
-// SID when the bridge maps the uid (#1617). The SET_INFO gate uses this to
+// SID when the bridge maps the uid. The SET_INFO gate uses this to
 // distinguish a no-op owner re-set (accept) from a genuine unmappable chown
-// (reject, #1228), independent of whether the reverse directory lookup is up.
+// (reject,), independent of whether the reverse directory lookup is up.
 func isCurrentOwnerSID(reqSID *sid.SID, uid uint32) bool {
 	return sameSID(reqSID, ownerSIDFor(_defaultSIDMapper.Load(), uid))
 }
@@ -295,8 +295,8 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 // BuildSecurityDescriptorWithGrants is BuildSecurityDescriptor plus a set of
 // share-grant ACEs (the output of Runtime.ShareRootGrantACL for the share owning
 // the file) to surface in the DACL so Windows' Security tab lists the direct
-// AD/SID principals (#1528) that govern the share, not just the file's
-// synthesized owner+SYSTEM descriptor (#1608). Pass nil to build a descriptor
+// AD/SID principals that govern the share, not just the file's
+// synthesized owner+SYSTEM descriptor. Pass nil to build a descriptor
 // from per-file metadata only.
 //
 // The projection is intentionally narrow (see buildDACL): only direct "sid:"
@@ -482,14 +482,14 @@ func principalToSID(who string, fileUID, fileGID uint32) *sid.SID {
 //
 // grantACEs, when non-nil, are share-level grant ACEs (Runtime.ShareRootGrantACL)
 // surfaced in the DACL so Windows' Security tab lists the AD principals that
-// govern the share (#1608). The projection is deliberately narrow so it can
+// govern the share. The projection is deliberately narrow so it can
 // never alter a descriptor a client set or that a conformance client round-trips
 // against:
 //
 //   - Only files with NO explicitly-stored ACL (file.ACL == nil → synthesized
 //     default) are decorated. A client that SET a file's ACL — or one that reads
 //     a NULL DACL back — sees exactly what was stored, unperturbed.
-//   - Only direct AD/SID grants (#1528, Who has the "sid:" prefix) are surfaced.
+//   - Only direct AD/SID grants (Who has the "sid:" prefix) are surfaced.
 //     A direct SID grant has no other way to appear in Windows (it maps to no
 //     local file owner/group). The always-on OWNER@/SYSTEM@/ADMINISTRATORS@
 //     trustees, local user/group grants, and the EVERYONE@ default already reach
@@ -563,7 +563,7 @@ func buildDACL(buf *smbenc.Writer, file *metadata.File, grantACEs []acl.ACE) *ac
 	// and the EVERYONE@ default already reach Windows via the reconciled share
 	// root and the owner/group SIDs. Skipping them here keeps child descriptors
 	// conformance-clean. Any surviving grant whose SID the file already carries is
-	// also skipped so the Security tab does not show duplicate rows (#1608).
+	// also skipped so the Security tab does not show duplicate rows.
 	for _, ace := range grantACEs {
 		if !strings.HasPrefix(ace.Who, "sid:") {
 			continue
@@ -720,7 +720,7 @@ func ParseSecurityDescriptorWithOptions(data []byte, opts ParseSDOptions) (owner
 
 	// Parse Owner SID — only set ownerUID if the SID is recognized. The machine
 	// mapper resolves algorithmic machine-domain SIDs; a real directory (AD) SID
-	// we emitted for the owner (#1617) is unknown to the mapper, so fall back to
+	// we emitted for the owner is unknown to the mapper, so fall back to
 	// the directory bridge to recover the same UID. Without this, Windows echoing
 	// back the AD-SID owner would look like a foreign-domain chown and trip the
 	// unmappable-owner gate in SET_INFO.
@@ -736,7 +736,7 @@ func ParseSecurityDescriptorWithOptions(data []byte, opts ParseSDOptions) (owner
 	}
 
 	// Parse Group SID — only set ownerGID if the SID is recognized. Directory
-	// bridge fallback mirrors the owner path (#1617); the trailing user-SID
+	// bridge fallback mirrors the owner path; the trailing user-SID
 	// fallback preserves the pre-existing lenient behavior for a group section
 	// carrying a user SID.
 	if offsetGroup > 0 && int(offsetGroup) < len(data) {
@@ -828,7 +828,7 @@ func ParseSecurityDescriptorWithOptions(data []byte, opts ParseSDOptions) (owner
 // omitted the SID section entirely, and (2) the section was present but its SID
 // could not be mapped to a local UID/GID. The caller pairs the raw SIDs from
 // here with the parsed UID/GID to reject a genuinely unmappable owner/group
-// change instead of silently succeeding (refs #1228), while still treating a
+// change instead of silently succeeding (refs), while still treating a
 // re-set of the file's existing owner/group SID as a no-op success.
 //
 // Presence is decided purely on "offset != 0"; it is NOT bounds-gated against
@@ -919,6 +919,13 @@ func parseACEs(data []byte) ([]acl.ACE, error) {
 		accessMask := aceR.ReadUint32()
 		if aceR.Err() != nil {
 			return nil, fmt.Errorf("ACE %d header parse error: %w", i, aceR.Err())
+		}
+
+		// An ACE cannot be smaller than its own fixed header. A size below
+		// aceHeaderSize makes the SID slice bounds inverted (low > high), so
+		// reject it before slicing instead of panicking.
+		if aceSize < aceHeaderSize {
+			return nil, fmt.Errorf("ACE %d size %d smaller than ACE header (%d bytes)", i, aceSize, aceHeaderSize)
 		}
 
 		if offset+int(aceSize) > len(data) {

@@ -120,7 +120,7 @@ func preauthHashAfterHook(connInfo *ConnInfo, cmd types.Command, rawMessage []by
 // Pre-fix: this hook used to also stash rawMessage in a single per-connection
 // slot for InitSessionPreauthHash to later consume. That stash overwrote
 // itself when concurrent SESSION_SETUPs were dispatched on a single connection
-// (issue #362) and produced wrong signing keys → "Bad SMB2 signature". The
+// (the earlier signing path) and produced wrong signing keys → "Bad SMB2 signature". The
 // rawMessage now flows through the handler context instead.
 func sessionPreauthBeforeHook(connInfo *ConnInfo, cmd types.Command, rawMessage []byte) {
 	if connInfo.CryptoState == nil {
