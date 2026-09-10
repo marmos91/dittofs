@@ -19,7 +19,7 @@ Note: develop carries 2 local docs commits (23de25e56 + eda765c47) not yet pushe
 | 1 — Ownership class | #2393–#2396, #2413, #2414 | ✅ **LANDED 2026-09-08** — 7 PRs, soundness-audited; follow-ups #2449, #2451, #2436 closed; doc rule merged (#2468) |
 | 2 — `sm.mu` + pynfs | #2398 + singles | ✅ **LANDED 2026-09-09** — residual #2340 rows + #2329 confirmation tracked below |
 | 3 — Shared-layer reuse | errmap, identity, lifecycle | ✅ **LANDED 2026-09-10** — 6 PRs (#2499–#2504), all reviewed green |
-| 3.5 — Error-universe consolidation | sentinel normalization + `StatusFor` extraction | ❌ not started — **NEXT** (see Step 2.5; lands after Wave 3 merges) |
+| 3.5 — Error-universe consolidation | sentinel normalization + `StatusFor` extraction | ✅ IMPLEMENTED 2026-09-10 — consolidation @ f1d554b26 on origin (78 files, +933/-1423), pynfs v4.1 walkout @ f6e191892 on origin (38→14 rows; 4 #2340 rows remain: CSESS16a/26/27, RECC3); review fan-out running |
 | 4 — SMB triage | ~155 untriaged findings | ❌ not started (plan moved it *before* the SMB fix waves) |
 | 5 — God objects | `manager.go` 3,985, `Create()` 1,016… | ❌ blocked behind 1–4 |
 | 6 — Dispatch-core finish line | acceptance test | lands inside 1/3/5 |
@@ -71,7 +71,7 @@ branch; errmap ErrStoreClosed P2 and v4content xdr-import P2 applied inline). Fu
 Deferred disclosures carried forward: awaitListener false-'Adapter started' narrow race (#2502 PR
 body, service.go outside file set); ResolvedIdentity direct consumption (#2501 PR body).
 
-### Step 2.5 — Wave 3.5: error-universe consolidation (sentinel normalization + `StatusFor` extraction) — **NEXT**
+### Step 2.5 — Wave 3.5: error-universe consolidation (sentinel normalization + `StatusFor` extraction) — IMPLEMENTED, reviews running
 
 One PR, based on post-merge develop `7d7033b39` (its target files `errmap.go`, `lock_errmap.go`,
 `content_errmap.go`, the payload helpers are now at their landed shape). Two parts, zero behaviour
