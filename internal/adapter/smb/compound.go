@@ -3,6 +3,7 @@ package smb
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
@@ -130,13 +131,33 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	if connInfo.SequenceWindow != nil {
 		rem := compoundData
 		for len(rem) >= header.HeaderSize {
-			hdr, _, nextRem, err := ParseCompoundCommand(rem)
+			hdr, cmdBody, nextRem, err := ParseCompoundCommand(rem)
 			if err != nil {
 				break
 			}
 			rem = nextRem
 			if hdr.Command == types.CommandCancel {
 				continue
+			}
+			// Payload-size validation per sub-command (MS-SMB2 §3.3.5.2.5):
+			// every payload-bearing command in the compound must carry enough
+			// CreditCharge for its own Length/Read/Write payload — not just the
+			// first. Without this, a client undersizes a trailing READ/WRITE and
+			// the server reads/writes past the credits it was paid.
+			// Credit exemption is a property of the command itself, so it is
+			// re-evaluated per sub-command: a CANCEL first command must not
+			// exempt a trailing underpaid WRITE from validation.
+			subExempt := session.IsCreditExempt(hdr.Command, hdr.SessionID)
+			if !subExempt && connInfo.SupportsMultiCredit {
+				if err := session.ValidateCreditCharge(hdr.Command, hdr.CreditCharge, cmdBody); err != nil {
+					logger.Debug("Compound sub-command credit charge validation failed",
+						"command", hdr.Command.String(),
+						"creditCharge", hdr.CreditCharge,
+						"error", err)
+					orderToken.WaitTurn(ctx)
+					failEntireCompound(firstHeader, compoundData, types.StatusInvalidParameter, connInfo, isEncrypted)
+					return
+				}
 			}
 			charge := session.EffectiveCreditCharge(hdr.CreditCharge)
 			if !connInfo.SequenceWindow.Consume(hdr.MessageID, charge) {
@@ -163,6 +184,19 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	logger.Debug("Processing compound request - first command",
 		"command", firstHeader.Command.String(),
 		"messageID", firstHeader.MessageID)
+
+	// Same non-last gate processRemaining applies (MS-SMB2 / Windows behavior
+	// validated by smbtorture compound.interim2): CHANGE_NOTIFY can only go
+	// async as the last command in a compound. Without this, a CHANGE_NOTIFY
+	// first command parks a watch and returns STATUS_PENDING, and the interim
+	// handling below defers the trailing commands to the async completion —
+	// the compound response cannot be split around an async operation.
+	if firstHeader.Command == types.SMB2ChangeNotify && len(compoundData) >= header.HeaderSize {
+		logger.Debug("CHANGE_NOTIFY as first compound command with trailing commands - returning INTERNAL_ERROR",
+			"messageID", firstHeader.MessageID)
+		failEntireCompound(firstHeader, compoundData, types.StatusInternalError, connInfo, isEncrypted)
+		return
+	}
 
 	result, fileID, handlerCtx := ProcessRequestWithFileIDAndCallback(ctx, firstHeader, firstBody, firstRaw, connInfo, isEncrypted, asyncNotifyCallback)
 
@@ -193,7 +227,14 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		// on a fast localhost loop, causing the CREATE to complete
 		// standalone, the GETINFO never to run, and the client to time out).
 		if connInfo.Handler.PendingCreateRegistry != nil {
-			connInfo.Handler.PendingCreateRegistry.ReplaceCallback(result.AsyncId, func(sessionID, messageID, asyncID uint64, status types.Status, createBody []byte) error {
+			// ReplaceCallback returns false when the pending CREATE is already gone
+			// (concurrently cancelled): the cancel path drove the callback
+			// synchronously, so the compound resume wrapper must NOT be installed
+			// and the interim must still be sent for MessageId correlation — the
+			// client will get the cancel-driven completion separately. Skipping the
+			// interim would leave the client waiting on a response that never
+			// arrives for its MessageId.
+			replaced := connInfo.Handler.PendingCreateRegistry.ReplaceCallback(result.AsyncId, func(sessionID, messageID, asyncID uint64, status types.Status, createBody []byte) error {
 				connInfo.ReleaseAsync()
 				// Build a compound response starting with the CREATE's final result,
 				// followed by the remaining compound commands processed with the
@@ -204,6 +245,12 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 				)
 				return nil
 			})
+			if !replaced {
+				// The entry is gone; release the async slot the interim would have
+				// tracked and let the cancel-driven completion answer the client.
+				connInfo.ReleaseAsync()
+				return
+			}
 		}
 
 		// Send interim STATUS_PENDING as a standalone async response.
@@ -291,6 +338,15 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	sendErr := sendCompoundResponses(state.responses, connInfo, isEncrypted)
 	if sendErr != nil {
 		logger.Debug("Error sending compound responses", "error", sendErr)
+	}
+
+	// A teardown-class signature violation (unsigned on a SigningRequired
+	// session, or unsigned-unencrypted on 3.1.1) closes the connection after
+	// the error responses are on the wire, matching the single-request
+	// framing verifier's reaction to the same violations (MS-SMB2 3.3.5.2.4
+	// / 3.3.5.7).
+	if state.protocolViolation {
+		_ = connInfo.Conn.Close()
 	}
 
 	// Release any parked-CREATE resume goroutines now that the interim
@@ -642,6 +698,33 @@ func ParseCompoundCommand(data []byte) (*header.SMB2Header, []byte, []byte, erro
 	return hdr, body, remaining, nil
 }
 
+// Compound signature failure classes per MS-SMB2. The single-request verifier
+// (framing.go) distinguishes three outcomes and the connection loop reacts to
+// each differently: an unsigned message on a SigningRequired session tears the
+// connection down (the plain error falls through to close-on-error), a bad
+// signature keeps the connection and answers ACCESS_DENIED on the same
+// MessageId, and 3.1.1 unsigned-unencrypted disconnects. Compound sub-commands
+// must map to the same classes — an unsigned frame with signing required MUST
+// tear down the connection, not merely reject one command of the chain.
+var (
+	// errCompoundUnsignedRequired is returned for an unsigned compound
+	// sub-command on a SigningRequired session. The connection loop's
+	// close-on-error branch treats it as a protocol violation and disconnects,
+	// matching the single-request path.
+	errCompoundUnsignedRequired = fmt.Errorf("compound message not signed (signing required): closing connection")
+
+	// errCompoundUnsignedDisconnect is returned for an unsigned unencrypted
+	// compound sub-command from an authenticated SMB 3.1.1 session. The
+	// connection must be dropped per MS-SMB2 3.3.5.2.4.
+	errCompoundUnsignedDisconnect = fmt.Errorf("SMB 3.1.1: unsigned unencrypted compound request requires disconnect")
+
+	// errCompoundBadSignature is returned when the signature is present but
+	// wrong. The connection stays open; processRemaining answers
+	// STATUS_ACCESS_DENIED on the sub-command's MessageId, matching Samba's
+	// smb2_verify_signature failure handling.
+	errCompoundBadSignature = fmt.Errorf("STATUS_ACCESS_DENIED: compound signature verification failed")
+)
+
 // VerifyCompoundCommandSignature verifies the signature of a compound sub-command.
 //
 // Per MS-SMB2 3.3.5.2.7.2 ("Handling Compounded Related Requests"):
@@ -675,7 +758,7 @@ func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInf
 	isSigned := hdr.Flags.IsSigned()
 	sessCrypto := sess.GetCryptoState()
 	if sessCrypto != nil && sessCrypto.SigningRequired && !isSigned {
-		return fmt.Errorf("STATUS_ACCESS_DENIED: compound message not signed")
+		return errCompoundUnsignedRequired
 	}
 
 	// Per MS-SMB2 3.3.5.2.4: For dialect 3.1.1, unsigned unencrypted requests
@@ -683,7 +766,7 @@ func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInf
 	if !isSigned && connInfo.CryptoState != nil && connInfo.CryptoState.GetDialect() == types.Dialect0311 &&
 		!sess.IsGuest && !sess.IsNull &&
 		sessCrypto != nil && sessCrypto.ShouldVerify() {
-		return fmt.Errorf("SMB 3.1.1: unsigned unencrypted compound request requires disconnect")
+		return errCompoundUnsignedDisconnect
 	}
 
 	if isSigned && sess.ShouldVerify() {
@@ -699,7 +782,7 @@ func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInf
 				"sessionID", hdr.SessionID,
 				"connID", connInfo.ConnID,
 				"verifyLen", len(verifyBytes))
-			return fmt.Errorf("STATUS_ACCESS_DENIED: compound signature verification failed")
+			return errCompoundBadSignature
 		}
 		logger.Debug("Verified compound command signature",
 			"command", hdr.Command.String(),
@@ -714,13 +797,28 @@ func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInf
 func fileIDOffset(command types.Command) int {
 	switch command {
 	case types.SMB2Close, types.SMB2QueryDirectory, types.SMB2Ioctl,
-		types.SMB2Flush, types.SMB2Lock, types.SMB2OplockBreak,
-		types.SMB2ChangeNotify:
+		types.SMB2Lock, types.SMB2ChangeNotify:
+		// 2-byte StructureSize + 6 bytes of command-specific fields before the
+		// 16-byte FileId (MS-SMB2 §2.2.{14,16,20,22,33,35}).
 		return 8
 	case types.SMB2Read, types.SMB2Write, types.SMB2SetInfo:
+		// 2-byte StructureSize + 14 bytes of fields (incl. the 8-byte Offset)
+		// before the FileId (MS-SMB2 §2.2.{19,21,39}).
 		return 16
 	case types.SMB2QueryInfo:
+		// 2-byte StructureSize + 22 bytes of fields before the FileId
+		// (MS-SMB2 §2.2.37).
 		return 24
+	case types.SMB2Flush, types.SMB2OplockBreak:
+		// Both carry a 16-byte FileId at offset 8: FLUSH is
+		// StructureSize(2)+Reserved(6)+FileId(16) (§2.2.17) and an oplock
+		// break ACK is StructureSize(2)+OplockLevel(1)+Reserved(5)+FileId(16)
+		// (§2.2.24.1) — matching the standalone decoders (flush.go reads at
+		// offset 8; the OplockBreakRequest struct carries the same layout).
+		// Only the lease-break ACK (§2.2.24.2) has no FileId, and lease breaks
+		// arrive as server-initiated notifications, never as compound
+		// sub-commands.
+		return 8
 	default:
 		return -1
 	}
@@ -818,6 +916,13 @@ type compoundLoopState struct {
 	// never overtake the interim (MS-SMB2 §3.3.4.2 (interim async response); same ordering class as the
 	// standalone path that smb2.bench.oplock1 trips).
 	markStartedAsyncIDs []uint64
+
+	// protocolViolation is set when a sub-command fails signature verification
+	// with a connection-teardown class (unsigned on a SigningRequired session,
+	// or unsigned-unencrypted on 3.1.1). The caller MUST close the connection
+	// after sending the accumulated responses — the same reaction the
+	// single-request framing verifier produces for the same violations.
+	protocolViolation bool
 }
 
 // releaseStartedGates unblocks the resume goroutines for every parked CREATE
@@ -894,8 +999,19 @@ func (s *compoundLoopState) processRemaining(
 		if !isEncrypted {
 			if err := VerifyCompoundCommandSignature(currentCommandData, hdr, connInfo); err != nil {
 				logger.Warn("Compound command signature verification failed", "error", err)
+				// Class-specific handling, mirroring the single-request verifier
+				// and the connection loop: a bad signature answers
+				// STATUS_ACCESS_DENIED on this MessageId and stops the chain
+				// (connection stays open); unsigned-with-signing-required and
+				// 3.1.1 unsigned-unencrypted are protocol violations — answer
+				// ACCESS_DENIED for the chain and close the connection
+				// (MS-SMB2 3.3.5.2.4 / 3.3.5.7), matching the framing-layer
+				// verifier's close-on-error handling of the same violations.
 				errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, types.StatusAccessDenied, connInfo)
 				s.responses = append(s.responses, compoundResponse{respHeader: errHeader, body: errBody})
+				if errors.Is(err, errCompoundUnsignedRequired) || errors.Is(err, errCompoundUnsignedDisconnect) {
+					s.protocolViolation = true
+				}
 				break
 			}
 		}
@@ -1132,6 +1248,12 @@ func completeCompoundAfterAsyncCreate(
 	sendErr := sendCompoundResponses(state.responses, connInfo, isEncrypted)
 	if sendErr != nil {
 		logger.Debug("Error sending compound async completion responses", "error", sendErr)
+	}
+
+	// Same teardown-class handling as the sync path: close the connection
+	// once the error responses are on the wire.
+	if state.protocolViolation {
+		_ = connInfo.Conn.Close()
 	}
 
 	// Release any parked-CREATE resume goroutines whose interim was buffered
