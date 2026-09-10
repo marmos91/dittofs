@@ -71,7 +71,24 @@ branch; errmap ErrStoreClosed P2 and v4content xdr-import P2 applied inline). Fu
 Deferred disclosures carried forward: awaitListener false-'Adapter started' narrow race (#2502 PR
 body, service.go outside file set); ResolvedIdentity direct consumption (#2501 PR body).
 
-### Step 2.5 — Wave 3.5: error-universe consolidation (sentinel normalization + `StatusFor` extraction) — IMPLEMENTED, reviews running
+### Step 2.5 — Wave 3.5: error-universe consolidation (sentinel normalization + `StatusFor` extraction) — LANDED 2026-09-10
+
+Landed as PR #2505 (squash commit `4f418ff83` on develop, 84 files, +1036/−1521) plus the
+#2506 pynfs v4.1 walk-out (`75b45e987`, 38→15 rows: 24 walked out, DELEG26 added for a newly
+listed failure) and its #2507 follow-up (`b2927215d`, DELEG26 reason + evidence-tier
+disclosure). Reviews were three rounds (two combined correctness+simplification, one
+dedicated adversarial per branch); all P1s fixed before PR open: the three enum-walk loops
+bound at `merrs.ErrConflict` (red-without-fix proven by temporarily deleting the arm), the
+stale mapper-reference sweep across 12 code files + 4 docs, and the Copilot comment fixes
+(classify-at-bypass-site comment paths). Post-merge verified: build/vet/gofmt clean, full
+go test green, `internal/adapter/common/` holds only `errclassify.go` + `normalize.go` + the
+payload helpers; `statusfor.go` + `statusfor_test.go` live in all three types packages.
+
+What landed (differs from the plan below in one place): the enums walks bound at
+`merrs.ErrConflict` (the 26th code), `common.ClassifyBlockStoreError` is applied at the
+five raw-engine bypass sites + copychunk dest-WriteAt, and each types package exposes
+`StatusFor` + `StatusForErr` (error-level wrapper), SMB also `StatusForLock` +
+`StatusForLockErr`.
 
 One PR, based on post-merge develop `7d7033b39` (its target files `errmap.go`, `lock_errmap.go`,
 `content_errmap.go`, the payload helpers are now at their landed shape). Two parts, zero behaviour
