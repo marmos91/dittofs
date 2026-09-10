@@ -199,9 +199,18 @@ Fix-wave 2 fanned 2026-09-10 ~20:40 as two file-disjoint lanes (base 3afd8383c):
   pre-registration, per-session counter AEAD nonce, stale replay-cache bound comment. 21 files
   (15 modified + 6 new domain-named test files).
 - Lane B create (#2517, branch fix/wave4-create-post-break): first child died cold mid-verification
-  with a staged 4-file diff (TOCTOU winner-lease break, compound noAsyncPark guard, ADS swallow
-  fix, partial sessionKeyHash removal); finisher worker completing it in the existing worktree.
-- Merge order after reviews: A -> B.
+  with a staged 4-file diff; finisher worker landed it GREEN (signed 9f052fc98, 5 files +471/−16:
+  TOCTOU winner-lease break, compound noAsyncPark guard, ADS lookup-error surfacing + test,
+  sessionKeyHash removal partial by design with accepted-unused comments).
+- Review fan-out 2026-09-10: both branches adversarial+correctness reviewed. A verdict OK with a
+  verified P0 (NextNonce PutUint64 panics on AES-CCM's 11-byte nonce — first encrypted response on
+  any CCM session) plus a P1 (lazy nonce-init race) — both fixed as signed 57114e986 (adaptive
+  counter tail width, eager nonceState init in DeriveAllKeys + constructors, three new nonce tests).
+  B verdict OK WITH NOTES — P1 fixed (ADS test now fails only the second listing so it exercises
+  the fixed line; red-without-fix re-proven), P2 park-guard comments corrected, P2 inline
+  race-break block disclosed as deliberate.
+- PRs opened 2026-09-10 ~21:30: #2527 (A, Closes #2513 + Closes #2515), #2528 (B, Closes #2517),
+  both assigned marmos91 with Copilot wired; babysitter merges A then B when CLEAN.
 
 1. **Priority HIGHs (all three LIVE verbatim, each needs a design decision):** unclaimed
    nonzero SessionId kept at `session_setup.go:976-984`; anonymous/guest encryption bypass at
