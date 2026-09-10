@@ -183,23 +183,17 @@ func mergeRanges(locks []*UnifiedLock) []*UnifiedLock {
 	return result
 }
 
-// canMerge checks if two locks can be merged (adjacent or overlapping).
+// canMerge checks if two locks can be merged, i.e. whether they overlap or abut
+// and so together cover one contiguous region. Argument order does not matter:
+// it is the earlier-starting range that has to reach the other one's start.
 func canMerge(a, b *UnifiedLock) bool {
 	// Must be same owner, type, and file (assumed by caller grouping)
-
-	// Handle unbounded locks
-	if a.Length == 0 {
-		// a is unbounded - can merge with anything at or after a.Offset
-		return b.Offset >= a.Offset
+	if a.Offset > b.Offset {
+		a, b = b, a
 	}
-	if b.Length == 0 {
-		// b is unbounded - can merge if a overlaps or is adjacent to b.Offset
-		return a.End() >= b.Offset
-	}
-
-	// Both bounded - check if adjacent or overlapping
-	aEnd := a.End()
-	return aEnd >= b.Offset // Adjacent (aEnd == b.Offset) or overlapping
+	// End() is maxUint64 for an unbounded (Length 0) lock, which therefore
+	// reaches every offset at or after its own.
+	return a.End() >= b.Offset
 }
 
 // mergeTwoLocks combines two locks into one.
@@ -364,6 +358,62 @@ func (lm *Manager) AddUnifiedLock(handleKey string, lock *UnifiedLock) error {
 			existing[i].Type = lock.Type
 			existing[i].AcquiredAt = time.Now()
 			lm.persistUnifiedLockLocked(existing[i])
+			return nil
+		}
+	}
+
+	// Adjacent and overlapping byte-range locks held by one lock-owner on one
+	// file are a single logical lock (RFC 7530 Section 9.3), so absorb every
+	// same-owner, same-type row the new range touches into one row spanning
+	// their union. Without this a LOCKT reports whichever fragment it scans
+	// first instead of the merged range, and a LOCKU over the union leaves the
+	// fragments it did not name behind. Absorbing a row can extend the span
+	// onto a row already passed over, so rescan until nothing more is absorbed.
+	//
+	// Rows of the other type are left alone: an overlapping range in the other
+	// type is an upgrade or downgrade, handled by the exact-match update above.
+	if !lock.IsLease() && !lock.IsDelegation() {
+		merged, kept := lock, existing
+		var absorbed []*UnifiedLock
+		for grew := true; grew; {
+			grew = false
+			var rest []*UnifiedLock
+			for _, el := range kept {
+				if el.IsLease() || el.IsDelegation() ||
+					el.Owner.OwnerID != lock.Owner.OwnerID ||
+					el.Type != lock.Type ||
+					!canMerge(el, merged) {
+					rest = append(rest, el)
+					continue
+				}
+				merged = mergeTwoLocks(merged, el)
+				absorbed = append(absorbed, el)
+				grew = true
+			}
+			kept = rest
+		}
+		if len(absorbed) > 0 {
+			merged.AcquiredAt = time.Now()
+			final := append(kept, merged)
+			lm.unifiedLocks[handleKey] = final
+			lm.reindexHandleLocked(handleKey, existing)
+
+			// A persisted record is keyed by lock ID, and nothing stops a caller
+			// handing the same ID to more than one live row, so an absorbed row's
+			// ID may still belong to a row that survives. Drop only the records no
+			// survivor answers to: deleting by ID alone would strip the
+			// persistence out from under a lock that is still held, which surfaces
+			// after a restart as a lock that silently no longer exists.
+			survivors := make(map[string]struct{}, len(final))
+			for _, el := range final {
+				survivors[el.ID] = struct{}{}
+			}
+			for _, el := range absorbed {
+				if _, alive := survivors[el.ID]; !alive {
+					lm.deleteUnifiedLockLocked(el)
+				}
+			}
+			lm.persistUnifiedLockLocked(merged)
 			return nil
 		}
 	}

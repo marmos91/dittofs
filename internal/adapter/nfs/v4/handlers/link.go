@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
@@ -16,7 +15,7 @@ import (
 // Creates a hard link from SavedFH (source file) into CurrentFH (target directory).
 // Delegates to MetadataService.Link after cross-share and pseudo-fs validation.
 // Adds a directory entry in the target directory pointing to the source file; returns change info.
-// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_RESTOREFH, NFS4ERR_ISDIR, NFS4ERR_XDEV, NFS4ERR_EXIST.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_XDEV, NFS4ERR_EXIST.
 func (h *Handler) handleLink(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle (target directory)
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
@@ -28,7 +27,7 @@ func (h *Handler) handleLink(ctx *types.CompoundContext, reader io.Reader) *type
 	}
 
 	// Require saved filehandle (source file to link)
-	if status := types.RequireSavedFH(ctx); status != types.NFS4_OK {
+	if status := types.RequireSavedFHOperand(ctx); status != types.NFS4_OK {
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_LINK,
@@ -111,7 +110,7 @@ func (h *Handler) handleLink(ctx *types.CompoundContext, reader io.Reader) *type
 	// Get pre-operation target directory attributes for change_info4
 	dirFile, err := metaSvc.GetFile(ctx.Context, dirHandle)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_LINK,
@@ -123,7 +122,7 @@ func (h *Handler) handleLink(ctx *types.CompoundContext, reader io.Reader) *type
 	// Create the hard link: dirHandle (target dir) + newName + sourceHandle (source file)
 	_, linkErr := metaSvc.CreateHardLink(authCtx, dirHandle, newName, sourceHandle)
 	if linkErr != nil {
-		status := common.MapToNFS4(linkErr)
+		status := types.StatusForErr(linkErr)
 		logger.Debug("NFSv4 LINK failed",
 			"newname", newName,
 			"error", linkErr,

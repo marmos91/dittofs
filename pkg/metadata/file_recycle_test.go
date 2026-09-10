@@ -30,7 +30,6 @@ func newRecycleFixture(t *testing.T) *testFixture {
 	ctx := context.Background()
 	shareName := "/test"
 
-	require.NoError(t, store.CreateShare(ctx, &metadata.Share{Name: shareName}))
 	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0777,
@@ -212,7 +211,7 @@ func TestRemoveFile_RecyclesWhenTrashEnabled(t *testing.T) {
 		require.NoError(t, err)
 
 		// Rename "b" onto "a" — an overwrite. The old "a" must be recycled.
-		_, mvErr := fx.service.Move(fx.rootContext(), fx.rootHandle, "b", fx.rootHandle, "a")
+		_, _, mvErr := fx.service.Move(fx.rootContext(), fx.rootHandle, "b", fx.rootHandle, "a")
 		require.NoError(t, mvErr)
 
 		// Source "b" is gone.
@@ -244,7 +243,7 @@ func TestRemoveFile_RecyclesWhenTrashEnabled(t *testing.T) {
 		require.NoError(t, err)
 
 		// "c" does not exist: a plain rename must not touch the bin.
-		_, mvErr := fx.service.Move(fx.rootContext(), fx.rootHandle, "b", fx.rootHandle, "c")
+		_, _, mvErr := fx.service.Move(fx.rootContext(), fx.rootHandle, "b", fx.rootHandle, "c")
 		require.NoError(t, mvErr)
 
 		_, err = fx.service.Lookup(fx.rootContext(), fx.rootHandle, "c")

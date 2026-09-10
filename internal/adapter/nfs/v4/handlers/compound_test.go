@@ -748,10 +748,46 @@ func TestCompound_V41_IllegalOpOutsideRange(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
-	// Currently: opcode 99999 is not exempt from SEQUENCE.
-	// The first op check sees it's not exempt and not SEQUENCE, so
-	// NFS4ERR_OP_NOT_IN_SESSION is returned before opcode validation.
+	// Opcode 99999 is outside the operation-number range, so it is not an
+	// operation the session requirement can apply to: the reply carries a single
+	// result whose opcode is OP_ILLEGAL with NFS4ERR_OP_ILLEGAL, not the
+	// NFS4ERR_OP_NOT_IN_SESSION owed to a real op sent without SEQUENCE
+	// (RFC 8881 Sections 16.2.3 and 15.1.3.5).
 	data := buildCompoundArgs([]byte(""), 1, []uint32{99999})
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	decoded, err := decodeCompoundResponse(resp)
+	if err != nil {
+		t.Fatalf("decode response error: %v", err)
+	}
+
+	if decoded.Status != types.NFS4ERR_OP_ILLEGAL {
+		t.Errorf("status = %d, want NFS4ERR_OP_ILLEGAL (%d)",
+			decoded.Status, types.NFS4ERR_OP_ILLEGAL)
+	}
+	if decoded.NumResults != 1 {
+		t.Fatalf("numResults = %d, want 1", decoded.NumResults)
+	}
+	if decoded.Results[0].OpCode != types.OP_ILLEGAL {
+		t.Errorf("result opcode = %d, want OP_ILLEGAL (%d) rather than the request's",
+			decoded.Results[0].OpCode, types.OP_ILLEGAL)
+	}
+}
+
+// TestCompound_V41_V42OpStillNeedsSequence checks that an opcode a dispatch
+// table knows keeps meeting the SEQUENCE requirement even when it is not valid
+// in this minor version. GETXATTR is a v4.2 op, so under v4.1 it is out of the
+// operation-number range, but it is a real operation and so owes
+// NFS4ERR_OP_NOT_IN_SESSION rather than NFS4ERR_OP_ILLEGAL -- the same answer a
+// v4.0-only op such as SETCLIENTID gets here.
+func TestCompound_V41_V42OpStillNeedsSequence(t *testing.T) {
+	h := newTestHandler()
+	ctx := newTestCompoundContext()
+
+	data := buildCompoundArgs([]byte(""), 1, []uint32{types.OP_GETXATTR})
 	resp, err := h.ProcessCompound(ctx, data)
 	if err != nil {
 		t.Fatalf("ProcessCompound error: %v", err)
@@ -766,8 +802,10 @@ func TestCompound_V41_IllegalOpOutsideRange(t *testing.T) {
 		t.Errorf("status = %d, want NFS4ERR_OP_NOT_IN_SESSION (%d)",
 			decoded.Status, types.NFS4ERR_OP_NOT_IN_SESSION)
 	}
+	// Nothing ran, so the reply carries no results, which is what separates this
+	// path from the OP_ILLEGAL one that emits a single ILLEGAL result.
 	if decoded.NumResults != 0 {
-		t.Errorf("numResults = %d, want 0 (no results without SEQUENCE)", decoded.NumResults)
+		t.Errorf("numResults = %d, want 0 (no op executed without SEQUENCE)", decoded.NumResults)
 	}
 }
 
@@ -2559,17 +2597,17 @@ func encodeReleaseLockOwnerArgsForTest() []byte {
 	return buf.Bytes()
 }
 
-// TestCompound_V41ExemptOps_CancelledContext_EncodesPartialReply verifies that
-// when a v4.1 exempt-op COMPOUND (dispatched via dispatchV41Ops with no session
-// context) is cancelled between operations, the handler encodes a well-formed
-// partial reply with NFS4ERR_DELAY instead of returning a bare error that would
-// make the RPC layer drop the reply and reset the connection. This mirrors the
-// SEQUENCE-bearing path (dispatchV41), so both behave identically on cancel.
-func TestCompound_V41ExemptOps_CancelledContext_EncodesPartialReply(t *testing.T) {
-	h := newTestHandler()
+// TestCompound_V41_CancelledContext_EncodesPartialReply verifies that when a
+// v4.1 COMPOUND is cancelled between operations, the handler encodes a
+// well-formed partial reply with NFS4ERR_DELAY instead of returning a bare
+// error that would make the RPC layer drop the reply and reset the connection.
+// A cancel can only be observed at an op boundary, and a v4.1 COMPOUND has more
+// than one operation only when it starts with SEQUENCE.
+func TestCompound_V41_CancelledContext_EncodesPartialReply(t *testing.T) {
+	h, sessionID := createTestSession(t)
 
-	// Cancel the context before dispatch. EXCHANGE_ID (op0) is session-exempt
-	// and executes first; the cancellation is observed at the next op boundary.
+	// Cancel the context before dispatch. SEQUENCE (op0) runs first; the
+	// cancellation is observed at the next op boundary.
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 	ctx := &types.CompoundContext{
@@ -2577,15 +2615,8 @@ func TestCompound_V41ExemptOps_CancelledContext_EncodesPartialReply(t *testing.T
 		ClientAddr: "127.0.0.1:12345",
 	}
 
-	ownerID := []byte("cancel-test-client")
-	var verifier [8]byte
-	copy(verifier[:], "cancelvf")
-	eidArgs := encodeExchangeIdArgs(ownerID, verifier, 0, types.SP4_NONE, nil)
-
-	// Two ops: EXCHANGE_ID (exempt, op0) then GETATTR. The cancel check fires at
-	// op index 1, before GETATTR is dispatched.
 	ops := []compoundOp{
-		{opCode: types.OP_EXCHANGE_ID, data: eidArgs},
+		{opCode: types.OP_SEQUENCE, data: encodeSequenceArgs(sessionID, 0, 1, 0, true)},
 		{opCode: types.OP_GETATTR, data: encodeGetAttrArgsForCancel()},
 	}
 	data := buildCompoundArgsWithOps([]byte("cxl"), 1, ops)
@@ -2598,27 +2629,24 @@ func TestCompound_V41ExemptOps_CancelledContext_EncodesPartialReply(t *testing.T
 		t.Fatal("ProcessCompound returned empty reply on cancel; expected encoded partial response")
 	}
 
+	// Only the SEQUENCE result is present, so its body cannot be mistaken for a
+	// following result and the generic decoder suffices.
 	decoded, err := decodeCompoundResponse(resp)
 	if err != nil {
 		t.Fatalf("decode response error: %v", err)
 	}
-
-	// Overall status must be DELAY so the client retries.
 	if decoded.Status != types.NFS4ERR_DELAY {
 		t.Errorf("overall status = %d, want NFS4ERR_DELAY (%d)", decoded.Status, types.NFS4ERR_DELAY)
 	}
-	// The partial reply must include the op0 (EXCHANGE_ID) result, which
-	// dispatched before the cancellation was observed; op1 (GETATTR) was skipped
-	// at the next op boundary.
-	if decoded.NumResults != 1 {
-		t.Errorf("numResults = %d, want 1 (EXCHANGE_ID completed, GETATTR cancelled)", decoded.NumResults)
-	}
-	if decoded.NumResults >= 1 && decoded.Results[0].OpCode != types.OP_EXCHANGE_ID {
-		t.Errorf("first result opcode = %d, want OP_EXCHANGE_ID (%d)",
-			decoded.Results[0].OpCode, types.OP_EXCHANGE_ID)
-	}
 	if string(decoded.Tag) != "cxl" {
-		t.Errorf("tag = %q, want %q (tag must be echoed in partial reply)", string(decoded.Tag), "cxl")
+		t.Errorf("tag = %q, want %q (tag must be echoed in partial reply)", decoded.Tag, "cxl")
+	}
+	if decoded.NumResults != 1 {
+		t.Fatalf("numResults = %d, want 1 (SEQUENCE completed, GETATTR cancelled)", decoded.NumResults)
+	}
+	if decoded.Results[0].OpCode != types.OP_SEQUENCE {
+		t.Errorf("first result opcode = %d, want OP_SEQUENCE (%d)",
+			decoded.Results[0].OpCode, types.OP_SEQUENCE)
 	}
 }
 

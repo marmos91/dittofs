@@ -8,8 +8,18 @@ package sql
 //   - Text divergence — ?N versus $N, NOW() versus CURRENT_TIMESTAMP, the two
 //     rewritten recursive-CTE path queries, the two block-ref aggregates. That
 //     is baked into per-dialect SQL constants, supplied here as a struct of
-//     statements. A Placeholder(n int) method would move the same two-line
-//     difference into an indirection and buy nothing.
+//     statements, because moving a two-line difference into an indirection
+//     would buy nothing.
+//
+//     Placeholder and Now are the exceptions, and only for the statements
+//     that have no constant to bake: a manifest delta binds one parameter per
+//     changed offset, so its IN-lists and multi-row VALUES groups are
+//     assembled at runtime and there is nothing for a dialect to spell in
+//     advance. They also carry the tables whose whole statement set is
+//     identical bar those two fragments, which spell it once in the shared
+//     body rather than twice in the dialects. Everything else stays in the
+//     statement structs.
+//
 //   - Behavioural divergence — error classification, and whether an error is
 //     the driver's empty-result sentinel. Those are genuinely per-dialect
 //     behaviour, so they are methods.
@@ -26,6 +36,17 @@ type Dialect interface {
 	// cannot compare against either directly, and getting this wrong turns
 	// "absent" into a hard error rather than the not-found the callers expect.
 	IsNoRows(err error) bool
+
+	// Placeholder renders the bind marker for the i'th parameter, 1-based:
+	// "?1" for sqlite, "$1" for postgres. Only for statements the shared
+	// bodies assemble themselves; see the type doc.
+	Placeholder(i int) string
+
+	// Now renders the clock expression that stamps a timestamp column:
+	// CURRENT_TIMESTAMP for sqlite, NOW() for postgres. Like Placeholder it is
+	// a fragment, not a statement, for the statements that are assembled at
+	// runtime rather than baked into a constant.
+	Now() string
 
 	// MapError translates a driver error into the metadata.ExportError the
 	// callers switch on, tagging it with the operation name and the path it
@@ -56,6 +77,18 @@ type Dialect interface {
 	// Recovery returns the dialect's v4 client-recovery statements, under the
 	// same package-level-value expectation as Chunks.
 	Recovery() *RecoveryQueries
+
+	// Durable returns the dialect's durable-handle statements, under the same
+	// package-level-value expectation as Chunks.
+	Durable() *DurableQueries
+
+	// Locks returns the dialect's lock and server-epoch statements, under the
+	// same package-level-value expectation as Chunks.
+	Locks() *LockQueries
+
+	// BlockRecords returns the dialect's block-record statements, under the
+	// same package-level-value expectation as Chunks.
+	BlockRecords() *BlockRecordQueries
 }
 
 // ShareQueries holds the share statements in one dialect's syntax. These
@@ -88,6 +121,23 @@ type ShareQueries struct {
 	// DeleteShareInodes removes every inode row belonging to a share. One
 	// parameter: the share name.
 	DeleteShareInodes string
+
+	// SelectRootInode selects a share's root inode through the share row's
+	// root_file_id pointer, in the column order GetExistingRootDirectory
+	// scans. One parameter: the share name.
+	SelectRootInode string
+	// UpdateRootAttrs rewrites a root inode's mode, owner and change time to
+	// match the configured attributes. Five parameters: mode, uid, gid, ctime
+	// and the inode id.
+	UpdateRootAttrs string
+	// InsertRootInode inserts a share's root directory inode. Fifteen
+	// parameters, in the column order the statement lists; nlink is the
+	// literal 2, the directory default for "." plus the parent's entry.
+	InsertRootInode string
+	// UpsertShareRoot inserts the share row pointing at its root inode,
+	// repointing an existing row rather than failing. Two parameters: the
+	// share name and the root inode id.
+	UpsertShareRoot string
 	// ShareQuotaFreed is a format string, not a statement: it takes the
 	// owner column twice, for the SELECT and the GROUP BY, because a column
 	// name is not something a driver will substitute. The column is a fixed
@@ -136,6 +186,15 @@ type FileQueries struct {
 	// rows, ordered by name. Three parameters: the parent id, the exclusive
 	// name cursor, and the row limit.
 	ListChildren string
+	// ListChildNames selects the same page as ListChildren, in the same order,
+	// with the inode join and every attribute column dropped: it returns only
+	// the child name and id. Three parameters: the parent id, the exclusive
+	// name cursor, and the row limit.
+	//
+	// It must agree with ListChildren on which rows a page contains and on
+	// their order, or a cursor handed out by one would resume the other in the
+	// wrong place.
+	ListChildNames string
 	// GetFileByPayloadID selects one full inode row by content id, block-ref
 	// aggregate included. One parameter: the content id.
 	GetFileByPayloadID string
@@ -148,13 +207,23 @@ type FileQueries struct {
 	// SetLinkCount writes one inode's nlink. Two parameters: the count and the
 	// file id.
 	SetLinkCount string
-	// DeleteFileOwner selects the type, size and owning uid/gid of the inode
-	// about to be deleted, in that column order. Two parameters: the file id
-	// and the share name.
-	DeleteFileOwner string
+	// FileUsageRow selects everything the usage counters need about one
+	// inode — its type, size, owning uid/gid and link count, in that column
+	// order. Two parameters: the file id and the share name.
+	FileUsageRow string
 	// DeleteFile removes one inode row. Two parameters: the file id and the
 	// share name.
 	DeleteFile string
+	// FindByObjectID selects one inode id by Merkle-root object id, over the
+	// partial UNIQUE index files_object_id_idx. One parameter: the object id's
+	// bytes. The LIMIT is defensive — the partial UNIQUE constraint already
+	// admits a single row per non-NULL object id.
+	FindByObjectID string
+	// CountByObjectID counts the inodes indexed under one object id. One
+	// parameter: the object id's bytes. Test-only, backing the
+	// storetest.ObjectIDIndexAccessor capability that asserts exactly one row
+	// survives a first-committer-wins race.
+	CountByObjectID string
 }
 
 // ChunkQueries holds the file-chunk statements in one dialect's syntax. Field
@@ -166,6 +235,10 @@ type ChunkQueries struct {
 	// SelectByHash selects one finalized (Remote) chunk row by content hash.
 	// One parameter: the hex hash.
 	SelectByHash string
+	// Insert inserts one chunk row and stops there, leaving the caller to
+	// append its own conflict clause. Nine parameters, in FileChunkColumns
+	// order. Upsert is this plus FileChunkUpsertTail.
+	Insert string
 	// Upsert inserts or updates a chunk row. Nine parameters, in the column
 	// order of the chunk table.
 	Upsert string
@@ -176,6 +249,10 @@ type ChunkQueries struct {
 	// DecrementRef decrements one row's ref_count, floored at zero, and
 	// returns the new value. One parameter: the id.
 	DecrementRef string
+	// DecrementRefMany decrements ref_count, floored at zero, and carries NO
+	// predicate: the caller appends the IN-list naming the rows it applies to.
+	// Spelled MAX on sqlite and GREATEST on postgres.
+	DecrementRefMany string
 	// AddRef bumps ref_count on every Remote row carrying a content hash.
 	// One parameter: the hex hash.
 	AddRef string
@@ -184,7 +261,31 @@ type ChunkQueries struct {
 	ReapZeroRef string
 	// ListByPayloadRange selects the chunk rows whose ids fall in a payload's
 	// prefix range, in byte order. Two parameters: the low and high bounds.
+	//
+	// The bounds are block.PayloadPrefixRange's and only prefilter;
+	// block.ChunksForPayload decides membership and order. Both dialects
+	// compare and order in byte collation rather than the database default:
+	// the bounds bracket the prefix only under byte ordering, and a
+	// byte-ordered id column lets the primary-key index seek the range instead
+	// of filtering the whole table.
 	ListByPayloadRange string
 	// EnumerateHashes selects the GC live set. No parameters.
+	//
+	// It UNIONs the CAS index (file_blocks.hash, stored as hex text) with the
+	// per-file manifest (file_block_refs.hash, raw bytes rendered as hex) so
+	// the live set is a strict SUPERSET of both structures, and a hash present
+	// in only one — a manifest row whose CAS index row was never written or
+	// was already reaped — still keeps its chunk live. The manifest arm is
+	// filtered to nlink>0 inodes: once a file is unlinked its manifest rows
+	// linger but the payload is dead, so including them would pin orphaned
+	// chunks live forever and the sweep could never reclaim them.
+	// Snapshot-held blocks are protected independently by the GC HoldProvider
+	// (on-disk snapshot manifests), not by this union. NULL hashes (legacy
+	// pre-CAS file_blocks rows) are emitted as the zero ContentHash and
+	// skipped by the mark phase; file_block_refs.hash is NOT NULL.
+	//
+	// UNION ALL, not UNION: the consumer dedupes hashes into a set, so
+	// cross-source and intra-source duplicates are harmless, while UNION would
+	// force an expensive sort/hash-aggregate at the query layer for no benefit.
 	EnumerateHashes string
 }

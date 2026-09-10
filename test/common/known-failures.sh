@@ -18,7 +18,9 @@
 # Only the first column (Test Name) and third column (Reason) are consumed;
 # Category/Issue are documentation for humans. Lines that are blank, start
 # with '#', do not start with '|', are separator rows (|---), or are the
-# header row ("Test Name") are ignored.
+# header row ("Test Name") are ignored. So is anything inside a ``` or ~~~
+# fence: these files carry worked examples of table rows, and parsing one
+# would silently excuse a passing test.
 #
 # Pattern matching supports two wildcard styles so SMB and POSIX names both
 # work:
@@ -55,8 +57,21 @@ kf_load() {
     local file="$1"
     [[ -f "$file" ]] || return 0
 
-    local line name reason
+    local line name reason bare in_fence=false
     while IFS= read -r line; do
+        bare="${line#"${line%%[![:space:]]*}"}"
+        # Fenced blocks carry worked examples, including example table rows and
+        # verdict lines. A line inside one is documentation, not an entry: a row
+        # parsed out of an example ADDS a name, which excuses a test that is
+        # currently passing, and nothing reports it. (A dropped row fails
+        # loudly; an added one goes quiet, so this direction is the dangerous
+        # one.) Both fence markers Markdown accepts are tracked, with any
+        # language tag and any indentation.
+        if [[ "$bare" == '```'* || "$bare" == '~~~'* ]]; then
+            if [[ "$in_fence" == true ]]; then in_fence=false; else in_fence=true; fi
+            continue
+        fi
+        [[ "$in_fence" == true ]] && continue
         [[ -z "$line" ]] && continue
         [[ "$line" == \#* ]] && continue
         # Only Markdown table rows.

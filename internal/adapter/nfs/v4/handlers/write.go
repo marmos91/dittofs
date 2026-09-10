@@ -59,7 +59,8 @@ func bootVerifierBytes() [8]byte {
 // handleWrite implements the WRITE operation (RFC 7530 Section 16.36).
 // Writes data to a file using two-phase PrepareWrite/CommitWrite pattern with cache-backed I/O.
 // Delegates to MetadataService.PrepareWrite+CommitWrite and BlockStore.WriteAt.
-// Updates file size/timestamps via metadata; writes data to local store (flushed on COMMIT); always returns UNSTABLE4.
+// Updates file size/timestamps via metadata; writes data to the local store, flushing it
+// synchronously when the client asks for DATA_SYNC4 or FILE_SYNC4.
 // Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_FBIG, NFS4ERR_NOSPC, NFS4ERR_IO.
 func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
@@ -73,9 +74,9 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 	}
 
 	// Decode WRITE4args
-	stateid, err := types.DecodeStateid4(reader)
-	if err != nil {
-		return writeErr(types.NFS4ERR_BADXDR)
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		return writeErr(argStatus)
 	}
 
 	offset, err := xdr.DecodeUint64(reader)
@@ -88,18 +89,32 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 		return writeErr(types.NFS4ERR_BADXDR)
 	}
 
+	// stable_how4 is an enum of exactly three values (RFC 7530 Section 16.36.2).
+	// Anything else is an undefined enum on the wire, and the reply's committed
+	// field is drawn from the same enum -- echoing an out-of-range value back
+	// would put an invalid stable_how4 in a successful WRITE4resok. knfsd
+	// rejects it at the same point, as bad XDR rather than as a bad argument.
+	if stable > types.FILE_SYNC4 {
+		logger.Debug("NFSv4 WRITE rejected: stable_how4 out of range",
+			"stable", stable,
+			"client", ctx.ClientAddr)
+		return writeErr(types.NFS4ERR_BADXDR)
+	}
+
 	data, err := xdr.DecodeOpaque(reader)
 	if err != nil {
 		return writeErr(types.NFS4ERR_BADXDR)
 	}
 
 	// Validate stateid via StateManager for a write-family operation.
-	// The anonymous (all-zeros) special stateid is permitted; the READ-bypass
-	// (all-ones) special stateid is rejected with NFS4ERR_BAD_STATEID because it
-	// is READ-only (RFC 7530 Section 9.1.4.3). Real stateids are validated for
-	// correctness (seqid, epoch, filehandle match); implicit lease renewal
-	// happens inside ValidateStateid for real stateids.
-	openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpWrite)
+	// Both special stateids are accepted here and behave identically: RFC 7530
+	// Section 16.36.4 says a WRITE with the READ-bypass (all-ones) stateid "is
+	// treated exactly the same as if the anonymous stateid were used", so
+	// neither may bypass a share reservation — ValidateStateid answers
+	// NFS4ERR_LOCKED when an open on this file denies writing. Real stateids
+	// are validated for correctness (seqid, epoch, filehandle match); implicit
+	// lease renewal happens inside ValidateStateid for real stateids.
+	openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpWrite, ctx.SessionClientID)
 	if stateErr != nil {
 		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 WRITE stateid validation failed",
@@ -157,12 +172,22 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 
 	intent, err := metaSvc.PrepareWrite(authCtx, fileHandle, newSize)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		logger.Debug("NFSv4 WRITE PrepareWrite failed",
 			"error", err,
 			"status", status,
 			"client", ctx.ClientAddr)
 		return writeErr(status)
+	}
+
+	// RFC 7530 Section 16.36.5: "a WRITE request with count set to 0 should not
+	// cause the time_modify attribute of the file to be updated". PrepareWrite
+	// above is the permission gate the zero-count case is still "subject to"
+	// (Section 16.36.4) and changes no metadata by itself, so returning here
+	// leaves the file untouched. Nothing was written, so any committed level is
+	// truthful; report the one the client asked for.
+	if len(data) == 0 {
+		return encodeWrite4resok(0, stable)
 	}
 
 	// Trace SUID/SGID-related writes for debugging
@@ -187,12 +212,12 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 			"error", err,
 			"payloadID", intent.PayloadID,
 			"client", ctx.ClientAddr)
-		return writeErr(types.NFS4ERR_IO)
+		return writeErr(types.StatusFor(common.ClassifyBlockStoreError(err)))
 	}
 
 	_, err = metaSvc.CommitWrite(authCtx, intent)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		logger.Debug("NFSv4 WRITE CommitWrite failed",
 			"error", err,
 			"status", status,
@@ -200,21 +225,44 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 		return writeErr(status)
 	}
 
+	// Stability level (RFC 7530 Section 16.36.4). `stable` is what the client
+	// asked for; `committed` must report what the server actually did, and
+	// "it will not commit the data and metadata at a level less than that
+	// requested by the client". An UNSTABLE4 write leaves the bytes in the
+	// crash-safe local cache for a later COMMIT; DATA_SYNC4 and FILE_SYNC4 are
+	// honoured by flushing this file synchronously, exactly as COMMIT does. If
+	// that flush fails the reply drops back to UNSTABLE4 rather than claiming a
+	// durability that was not provided — the client then re-drives COMMIT.
+	committed := uint32(types.UNSTABLE4)
+	if stable >= types.DATA_SYNC4 {
+		if flushErr := common.FlushStableWrite(authCtx, metaSvc, blockStore, fileHandle, intent.PayloadID, stable >= types.FILE_SYNC4); flushErr != nil {
+			logger.Warn("NFSv4 WRITE stable flush failed, reporting UNSTABLE4",
+				"error", flushErr,
+				"stable_requested", stable,
+				"client", ctx.ClientAddr)
+		} else {
+			committed = stable
+		}
+	}
+
 	logger.Debug("NFSv4 WRITE successful",
 		"offset", offset,
 		"written", len(data),
 		"newSize", newSize,
+		"stable_requested", stable,
+		"committed", committed,
 		"client", ctx.ClientAddr)
 
-	// Encode WRITE4resok
+	return encodeWrite4resok(uint32(len(data)), committed)
+}
+
+// encodeWrite4resok encodes a successful WRITE4 response: the byte count, the
+// stability level actually achieved, and the server boot verifier.
+func encodeWrite4resok(count, committed uint32) *types.CompoundResult {
 	var buf bytes.Buffer
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
-
-	// count (uint32): bytes written
-	_ = xdr.WriteUint32(&buf, uint32(len(data)))
-
-	// committed: always UNSTABLE4 (cache is always enabled)
-	_ = xdr.WriteUint32(&buf, types.UNSTABLE4)
+	_ = xdr.WriteUint32(&buf, count)
+	_ = xdr.WriteUint32(&buf, committed)
 
 	// writeverf: 8-byte server boot verifier (fixed-length, NOT XDR opaque)
 	verf := bootVerifierBytes()

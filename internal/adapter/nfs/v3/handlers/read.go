@@ -195,7 +195,7 @@ func (h *Handler) Read(
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err
 		}
-		status := common.MapToNFS3(err)
+		status := types.StatusForErr(err)
 		logger.DebugCtx(ctx.Context, "READ denied", "handle", xdr.LazyHandle(req.Handle), "status", status, "client", clientIP, "error", err)
 		return &ReadResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},

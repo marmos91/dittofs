@@ -30,7 +30,12 @@ const (
 	// a change makes state unreadable by the previous release — a new sibling
 	// file, a moved record field, a renamed key — so that release refuses rather
 	// than reads holes.
-	formatVersion = 1
+	//
+	// 2: cold log entries carry a provenance byte under a new magic (see
+	// cold.go). A release that predates it reads that magic as a torn entry and
+	// ends the load there, dropping every cold interval recorded after it and
+	// serving those ranges as holes — so it must refuse the directory instead.
+	formatVersion = 2
 
 	formatFileName = "format"
 )
@@ -43,9 +48,17 @@ type formatStamp struct {
 }
 
 // CheckFormat verifies that this build understands the journal directory's
-// on-disk layout, and stamps the directory when it is not yet stamped. An
-// unstamped directory predates stamping and is adopted, so every later open is
-// guarded; a stamp above formatVersion fails with block.ErrFutureFormat.
+// on-disk layout, and brings the stamp up to what this build may write. An
+// unstamped directory predates stamping and is adopted; a stamp above
+// formatVersion fails with block.ErrFutureFormat.
+//
+// A stamp *below* formatVersion is raised, not left alone. The stamp has to
+// describe what the directory may now contain, and this build starts writing
+// the current shapes into it the moment it opens — cold log entries under the
+// current magic, for one. Leaving an old stamp in place would let the previous
+// release open the directory afterwards and then meet exactly the shape the
+// stamp exists to keep it away from, which for the cold log means reading a
+// remote-durable range as a hole and serving zeros.
 //
 // Call it before opening the journal: the point is to not touch state whose
 // shape is unknown.
@@ -66,6 +79,9 @@ func CheckFormat(dir string) error {
 	if st.Version > formatVersion {
 		return fmt.Errorf("%w: %s is at format version %d, this build reads up to %d",
 			block.ErrFutureFormat, dir, st.Version, formatVersion)
+	}
+	if st.Version < formatVersion {
+		return writeFormat(dir)
 	}
 	return nil
 }

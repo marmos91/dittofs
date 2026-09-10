@@ -16,11 +16,11 @@ import (
 func newReapFixture(t *testing.T, coord MetadataCoordinator, fbs *stubFileChunkStore) *Store {
 	t.Helper()
 	localStore := memory.New()
-	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
+	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
 	bs, err := New(BlockStoreConfig{
 		Local:          localStore,
 		Remote:         nil,
-		Syncer:         syncer,
+		RemoteSync:     syncer,
 		Coordinator:    coord,
 		FileChunkStore: fbs,
 	})

@@ -92,9 +92,11 @@ func (cm *CookieManager) GenerateCookie(dirHandle FileHandle, name string) uint6
 	// Generate cookie by hashing dirHandle + name
 	cookie := fnv1a64(dirHandle, name)
 
-	// Ensure cookie is never 0 (reserved for start of directory)
-	if cookie == 0 {
-		cookie = 1
+	// Cookies 0, 1 and 2 are reserved: 0 starts a directory scan, and NFSv4
+	// keeps 1 and 2 for the client's own "." and ".." entries, so no result
+	// cookie may take those values (RFC 7530 Section 16.24.4).
+	if cookie <= 2 {
+		cookie = 3
 	}
 
 	// Store reverse mapping in the bounded LRU.

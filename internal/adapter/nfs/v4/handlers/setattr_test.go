@@ -351,7 +351,33 @@ func TestHandleSetAttr_UnsupportedAttr(t *testing.T) {
 	ctx.CurrentFH = make([]byte, len(fileHandle))
 	copy(ctx.CurrentFH, fileHandle)
 
-	// Try to set FATTR4_TYPE (read-only, bit 1)
+	// FATTR4_ARCHIVE (bit 14) is not in the supported set at all.
+	var attrVals bytes.Buffer
+	_ = xdr.WriteUint32(&attrVals, 0)
+
+	var bitmap []uint32
+	attrs.SetBit(&bitmap, 14)
+
+	args := encodeSetAttrArgs(t, specialStateid(), bitmap, attrVals.Bytes())
+	result := fx.handler.handleSetAttr(ctx, bytes.NewReader(args))
+
+	if result.Status != types.NFS4ERR_ATTRNOTSUPP {
+		t.Errorf("SETATTR unsupported attr status = %d, want NFS4ERR_ATTRNOTSUPP (%d)",
+			result.Status, types.NFS4ERR_ATTRNOTSUPP)
+	}
+}
+
+// TestHandleSetAttr_ReadOnlyAttr asserts a SETATTR naming an attribute the
+// server maintains but never lets a client write is rejected as a malformed
+// request, not as a missing feature (RFC 7530 Section 5.5).
+func TestHandleSetAttr_ReadOnlyAttr(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+	fileHandle := fx.createTestFile(t, fx.rootHandle, "test.txt", metadata.FileTypeRegular, 0o644, 0, 0)
+
+	ctx := newRealFSContext(0, 0)
+	ctx.CurrentFH = make([]byte, len(fileHandle))
+	copy(ctx.CurrentFH, fileHandle)
+
 	var attrVals bytes.Buffer
 	_ = xdr.WriteUint32(&attrVals, types.NF4REG)
 
@@ -361,9 +387,9 @@ func TestHandleSetAttr_UnsupportedAttr(t *testing.T) {
 	args := encodeSetAttrArgs(t, specialStateid(), bitmap, attrVals.Bytes())
 	result := fx.handler.handleSetAttr(ctx, bytes.NewReader(args))
 
-	if result.Status != types.NFS4ERR_ATTRNOTSUPP {
-		t.Errorf("SETATTR unsupported attr status = %d, want NFS4ERR_ATTRNOTSUPP (%d)",
-			result.Status, types.NFS4ERR_ATTRNOTSUPP)
+	if result.Status != types.NFS4ERR_INVAL {
+		t.Errorf("SETATTR read-only attr status = %d, want NFS4ERR_INVAL (%d)",
+			result.Status, types.NFS4ERR_INVAL)
 	}
 }
 

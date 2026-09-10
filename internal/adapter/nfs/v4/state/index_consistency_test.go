@@ -72,7 +72,7 @@ func TestOpenStateByFile_OpenThenCloseRemovesFromIndex(t *testing.T) {
 	fileIndexMatchesAuthoritative(t, sm)
 
 	// CLOSE advances the owner seqid; open used 1, confirm used 2, close uses 3.
-	if _, err := sm.CloseFile(&stateid, 3); err != nil {
+	if _, err := sm.CloseFile(&stateid, 3, 0); err != nil {
 		t.Fatalf("CloseFile: %v", err)
 	}
 
@@ -98,7 +98,7 @@ func TestOpenStateByFile_MultipleOwnersSameFile(t *testing.T) {
 	fileIndexMatchesAuthoritative(t, sm)
 
 	// Closing one owner leaves the other indexed.
-	if _, err := sm.CloseFile(&sidA, 3); err != nil {
+	if _, err := sm.CloseFile(&sidA, 3, 0); err != nil {
 		t.Fatalf("CloseFile(A): %v", err)
 	}
 	if n := fileIndexLen(sm, fh); n != 1 {
@@ -136,7 +136,7 @@ func TestOpenStateByFile_EvictClearsIndex(t *testing.T) {
 	fileIndexMatchesAuthoritative(t, sm)
 }
 
-func TestOpenStateByFile_FreeStateidRemovesFromIndex(t *testing.T) {
+func TestOpenStateByFile_FreeStateidLeavesLiveOpenIndexed(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	fh := []byte("fh-free-stateid")
 
@@ -146,15 +146,17 @@ func TestOpenStateByFile_FreeStateidRemovesFromIndex(t *testing.T) {
 		t.Fatalf("after open: index len = %d, want 1", n)
 	}
 
+	// FREE_STATEID refuses a live open, so the per-file index — which is what
+	// share-reservation conflicts are decided from — must still list it.
 	sm.mu.Lock()
 	err := sm.freeOpenStateidLocked(0, &stateid)
 	sm.mu.Unlock()
-	if err != nil {
-		t.Fatalf("freeOpenStateidLocked: %v", err)
+	if stateErr, ok := err.(*NFS4StateError); !ok || stateErr.Status != types.NFS4ERR_LOCKS_HELD {
+		t.Fatalf("freeOpenStateidLocked: expected NFS4ERR_LOCKS_HELD, got %v", err)
 	}
 
-	if n := fileIndexLen(sm, fh); n != 0 {
-		t.Fatalf("after free: index len = %d, want 0", n)
+	if n := fileIndexLen(sm, fh); n != 1 {
+		t.Fatalf("after refused free: index len = %d, want 1", n)
 	}
 	fileIndexMatchesAuthoritative(t, sm)
 }
@@ -200,7 +202,7 @@ func TestRevokedDelegIndex_SetOnRevokeClearedOnReturn(t *testing.T) {
 
 	// Returning the (revoked) delegation frees it from delegByOther and must
 	// clear the revoked index entry.
-	if err := sm.ReturnDelegation(&deleg.Stateid); err != nil {
+	if err := sm.ReturnDelegation(&deleg.Stateid, 0); err != nil {
 		t.Fatalf("ReturnDelegation: %v", err)
 	}
 	if c := revokedCount(sm, clientID); c != 0 {
@@ -285,7 +287,7 @@ func TestRevokedDelegIndex_NonRevokedFreeDoesNotUnderflow(t *testing.T) {
 	if deleg == nil {
 		t.Fatal("GrantDelegation returned nil")
 	}
-	if err := sm.ReturnDelegation(&deleg.Stateid); err != nil {
+	if err := sm.ReturnDelegation(&deleg.Stateid, 0); err != nil {
 		t.Fatalf("ReturnDelegation: %v", err)
 	}
 	if c := revokedCount(sm, clientID); c != 0 {

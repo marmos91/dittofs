@@ -10,11 +10,12 @@ import (
 // newTestPipeRead builds a PendingPipeRead. If done is non-nil it receives the
 // callback status exactly once, letting tests wait deterministically for an
 // async displaced-callback completion.
-func newTestPipeRead(fileID byte, sessionID, messageID, asyncId uint64, done chan<- types.Status) *PendingPipeRead {
+func newTestPipeRead(fileID byte, connID, sessionID, messageID, asyncId uint64, done chan<- types.Status) *PendingPipeRead {
 	var fid [16]byte
 	fid[0] = fileID
 	return &PendingPipeRead{
 		FileID:    fid,
+		ConnID:    connID,
 		SessionID: sessionID,
 		MessageID: messageID,
 		AsyncId:   asyncId,
@@ -29,17 +30,17 @@ func newTestPipeRead(fileID byte, sessionID, messageID, asyncId uint64, done cha
 
 func TestPipeReadRegistry_RegisterAndUnregisterByFileID(t *testing.T) {
 	r := NewPipeReadRegistry()
-	p := newTestPipeRead(1, 10, 100, 1000, nil)
+	p := newTestPipeRead(1, 1, 10, 100, 1000, nil)
 	r.Register(p)
 
-	if got := r.UnregisterByMessageID(100); got != p {
+	if got := r.UnregisterByMessageID(1, 100); got != p {
 		t.Fatalf("UnregisterByMessageID = %v, want p", got)
 	}
 	// Now gone from all indexes.
 	if got := r.UnregisterByFileID(p.FileID); got != nil {
 		t.Fatalf("UnregisterByFileID after removal = %v, want nil", got)
 	}
-	if got := r.UnregisterByAsyncId(1000); got != nil {
+	if got := r.UnregisterByAsyncId(1, 1000); got != nil {
 		t.Fatalf("UnregisterByAsyncId after removal = %v, want nil", got)
 	}
 }
@@ -50,10 +51,10 @@ func TestPipeReadRegistry_RegisterAndUnregisterByFileID(t *testing.T) {
 func TestPipeReadRegistry_RegisterDisplacesSameFileID(t *testing.T) {
 	r := NewPipeReadRegistry()
 	done := make(chan types.Status, 1)
-	old := newTestPipeRead(1, 10, 100, 1000, done)
+	old := newTestPipeRead(1, 1, 10, 100, 1000, done)
 	r.Register(old)
 
-	newer := newTestPipeRead(1, 10, 101, 1001, nil) // same FileID
+	newer := newTestPipeRead(1, 1, 10, 101, 1001, nil) // same FileID
 	r.Register(newer)
 
 	// The displaced entry's callback fires asynchronously with STATUS_CANCELLED.
@@ -67,7 +68,7 @@ func TestPipeReadRegistry_RegisterDisplacesSameFileID(t *testing.T) {
 	}
 
 	// Only the newer entry remains; old indexes are gone.
-	if got := r.UnregisterByAsyncId(1000); got != nil {
+	if got := r.UnregisterByAsyncId(1, 1000); got != nil {
 		t.Errorf("old entry still present: %v", got)
 	}
 	if got := r.UnregisterByFileID(newer.FileID); got != newer {
@@ -77,16 +78,16 @@ func TestPipeReadRegistry_RegisterDisplacesSameFileID(t *testing.T) {
 
 func TestPipeReadRegistry_UnregisterAllForSession(t *testing.T) {
 	r := NewPipeReadRegistry()
-	r.Register(newTestPipeRead(1, 10, 100, 1000, nil))
-	r.Register(newTestPipeRead(2, 10, 101, 1001, nil))
-	r.Register(newTestPipeRead(3, 11, 102, 1002, nil)) // different session
+	r.Register(newTestPipeRead(1, 1, 10, 100, 1000, nil))
+	r.Register(newTestPipeRead(2, 1, 10, 101, 1001, nil))
+	r.Register(newTestPipeRead(3, 1, 11, 102, 1002, nil)) // different session
 
 	got := r.UnregisterAllForSession(10)
 	if len(got) != 2 {
 		t.Fatalf("UnregisterAllForSession(10) = %d, want 2", len(got))
 	}
 	// Session 11 entry survives.
-	if got := r.UnregisterByAsyncId(1002); got == nil {
+	if got := r.UnregisterByAsyncId(1, 1002); got == nil {
 		t.Errorf("session 11 entry should survive teardown of session 10")
 	}
 }

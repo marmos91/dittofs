@@ -73,14 +73,6 @@ func TestStore_Accessors(t *testing.T) {
 	_ = bs.LocalStats()
 }
 
-// TestStore_EvictionSetter exercises the delegating setter (it must not panic).
-func TestStore_EvictionSetter(t *testing.T) {
-	bs := newTestEngine(t, 64*1024*1024, 0)
-
-	bs.SetEvictionEnabled(true)
-	bs.SetEvictionEnabled(false)
-}
-
 // TestStore_HealthCheck covers both the legacy error probe and the
 // structured Healthcheck for a healthy local-only engine.
 func TestStore_HealthCheck(t *testing.T) {

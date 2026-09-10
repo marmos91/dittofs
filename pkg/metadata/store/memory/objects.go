@@ -265,7 +265,7 @@ func enumerateBlockHashes(ctx context.Context, snapshot []block.ContentHash, fn 
 }
 
 // EnumerateSyncingBlocks returns every FileChunk currently in
-// BlockStateSyncing. the engine.Syncer janitor uses this to
+// BlockStateSyncing. the engine.RemoteSync janitor uses this to
 // requeue rows abandoned by a previous syncer instance. The memory backend
 // implements this via direct map iteration; other backends may opt in
 // when their query surface allows.

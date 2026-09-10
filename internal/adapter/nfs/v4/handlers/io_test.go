@@ -3,6 +3,8 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -31,6 +33,10 @@ type ioTestFixture struct {
 	store      metadata.Store
 	rootHandle metadata.FileHandle
 	shareName  string
+	// localStore and localDir are the local tier and its directory, so a test can
+	// observe the bytes a payload actually occupies on disk.
+	localStore *fs.FSStore
+	localDir   string
 }
 
 // newIOTestFixture creates a test fixture with metadata service and block store.
@@ -47,11 +53,11 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 		t.Fatalf("create local store: %v", err)
 	}
 	t.Cleanup(func() { _ = localStore.Close() })
-	syncer := engine.NewSyncer(localStore, nil, metaStore, engine.DefaultConfig())
+	syncer := engine.NewRemoteSync(localStore, nil, metaStore, engine.DefaultConfig())
 
 	blockSvc, err := engine.New(engine.BlockStoreConfig{
-		Local:  localStore,
-		Syncer: syncer,
+		Local:      localStore,
+		RemoteSync: syncer,
 	})
 	if err != nil {
 		t.Fatalf("create block store: %v", err)
@@ -108,6 +114,8 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 		store:      metaStore,
 		rootHandle: rootHandle,
 		shareName:  shareName,
+		localStore: localStore,
+		localDir:   tmpDir,
 	}
 }
 
@@ -826,7 +834,29 @@ func TestClose_Success(t *testing.T) {
 	ctx.CurrentFH = make([]byte, len(fileHandle))
 	copy(ctx.CurrentFH, fileHandle)
 
-	args := encodeCloseArgs(1, &anonymousStateid)
+	// A real open to close. The anonymous stateid cannot stand in for one:
+	// RFC 7530 Section 9.1.4.3 admits a special stateid only on READ, WRITE
+	// and SETATTR, so CLOSE answers it NFS4ERR_BAD_STATEID.
+	sm := fx.handler.StateManager
+	clientRes, err := sm.SetClientID("close-success-client", [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
+		state.CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "10.0.0.1.8.1"}, "10.0.0.1:1234")
+	if err != nil {
+		t.Fatalf("SetClientID: %v", err)
+	}
+	if err := sm.ConfirmClientID(clientRes.ClientID, clientRes.ConfirmVerifier); err != nil {
+		t.Fatalf("ConfirmClientID: %v", err)
+	}
+	opened, err := sm.OpenFile(clientRes.ClientID, []byte("close-success-owner"), 1, ctx.CurrentFH,
+		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	confirmed, err := sm.ConfirmOpen(&opened.Stateid, 2, 0)
+	if err != nil {
+		t.Fatalf("ConfirmOpen: %v", err)
+	}
+
+	args := encodeCloseArgs(3, &confirmed.Stateid)
 	result := fx.handler.handleClose(ctx, bytes.NewReader(args))
 
 	if result.Status != types.NFS4_OK {
@@ -857,6 +887,27 @@ func TestClose_Success(t *testing.T) {
 	// CLOSE should NOT clear CurrentFH per RFC 7530
 	if ctx.CurrentFH == nil {
 		t.Error("CurrentFH should NOT be cleared by CLOSE")
+	}
+}
+
+// TestClose_AnonymousStateid pins the rejection of a special stateid on CLOSE.
+// RFC 7530 Section 9.1.4.3 admits one only on READ, WRITE and SETATTR, so CLOSE
+// names no open state and must not report success.
+func TestClose_AnonymousStateid(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+
+	fileHandle := fx.createRegularFile(t, fx.rootHandle, "closeanon.txt", 0o644, 0, 0)
+
+	ctx := newRealFSContext(0, 0)
+	ctx.CurrentFH = make([]byte, len(fileHandle))
+	copy(ctx.CurrentFH, fileHandle)
+
+	args := encodeCloseArgs(1, &anonymousStateid)
+	result := fx.handler.handleClose(ctx, bytes.NewReader(args))
+
+	if result.Status != types.NFS4ERR_BAD_STATEID {
+		t.Errorf("CLOSE with the anonymous stateid status = %d, want NFS4ERR_BAD_STATEID (%d)",
+			result.Status, types.NFS4ERR_BAD_STATEID)
 	}
 }
 
@@ -1596,6 +1647,198 @@ func TestReadNonRegularType(t *testing.T) {
 			ctx.CurrentFH = handle
 			if got := fx.handler.handleReadPlus(ctx, bytes.NewReader(args)).Status; got != tc.want {
 				t.Errorf("READ_PLUS status = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// localDirBytes sums every file under dir: the bytes the local tier actually
+// occupies, which is what an operator sees and what survives a restart.
+func localDirBytes(t *testing.T, dir string) int64 {
+	t.Helper()
+	var total int64
+	if err := filepath.Walk(dir, func(_ string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !fi.IsDir() {
+			total += fi.Size()
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk local dir: %v", err)
+	}
+	return total
+}
+
+// TestRemove_ReclaimsLocalPayloadBytes pins that a v4 REMOVE frees the removed
+// file's content, not just its name. The metadata layer deliberately never
+// deletes payload bytes — it returns the removed file's PayloadID so the
+// protocol handler can — so a handler that discards that return value never
+// tells the block store the file is gone. Its records stay indexed as live, no
+// reclamation path (fast-path retire, eviction, repack) will ever treat them as
+// dead, and the share keeps those bytes on disk across restarts even once every
+// file in it has been removed.
+//
+// The assertion is on block-store state an operator can observe rather than on
+// how the handler achieves it: after the unlink the payload must be unknown to
+// the local tier, which is the precondition every reclamation path shares.
+func TestRemove_ReclaimsLocalPayloadBytes(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+	ctxBg := context.Background()
+
+	fh := fx.createRegularFile(t, fx.rootHandle, "big.bin", 0o644, 1000, 1000)
+	file, err := fx.metaSvc.GetFile(ctxBg, fh)
+	if err != nil {
+		t.Fatalf("get file: %v", err)
+	}
+	payloadID := string(file.PayloadID)
+	payload := bytes.Repeat([]byte{0xAB}, 4<<20)
+	fx.writeContent(t, fh, payload)
+
+	if size, ok := fx.localStore.FileSize(ctxBg, payloadID); !ok || size != int64(len(payload)) {
+		t.Fatalf("local tier holds %d bytes (present=%v) before REMOVE, want %d", size, ok, len(payload))
+	}
+	if before := localDirBytes(t, fx.localDir); before < int64(len(payload)) {
+		t.Fatalf("local dir holds %d bytes before REMOVE, want at least the %d written", before, len(payload))
+	}
+
+	ctx := newRealFSContext(1000, 1000)
+	ctx.CurrentFH = append([]byte(nil), fx.rootHandle...)
+
+	result := fx.handler.handleRemove(ctx, bytes.NewReader(encodeRemoveArgs("big.bin")))
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("REMOVE status = %d, want NFS4_OK", result.Status)
+	}
+
+	if size, ok := fx.localStore.FileSize(ctxBg, payloadID); ok {
+		t.Fatalf("payload %q still holds %d live bytes in the local tier after REMOVE", payloadID, size)
+	}
+}
+
+// TestRename_ReclaimsClobberedPayloadBytes pins that renaming onto an existing
+// name frees the clobbered file's content, not just its directory entry. The
+// metadata layer deliberately never deletes payload bytes — Move returns the
+// clobbered victim so the handler can — and a handler that ignores that return
+// leaves the victim's records indexed as live in the local tier, where no
+// reclamation path treats them as dead and the bytes survive every restart.
+// Write-to-temp-then-rename makes this a steady churn, not a corner case.
+//
+// Asserting on observable block-store state pins both directions: the victim's
+// payload must be gone AND the renamed file's must survive, so releasing the
+// wrong payload fails here instead of passing.
+func TestRename_ReclaimsClobberedPayloadBytes(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+	ctxBg := context.Background()
+
+	payloadIDOf := func(fh metadata.FileHandle) string {
+		t.Helper()
+		file, err := fx.metaSvc.GetFile(ctxBg, fh)
+		if err != nil {
+			t.Fatalf("get file: %v", err)
+		}
+		return string(file.PayloadID)
+	}
+
+	victimFH := fx.createRegularFile(t, fx.rootHandle, "victim.bin", 0o644, 1000, 1000)
+	victimPayload := payloadIDOf(victimFH)
+	victimBytes := bytes.Repeat([]byte{0xAB}, 4<<20)
+	fx.writeContent(t, victimFH, victimBytes)
+
+	survivorFH := fx.createRegularFile(t, fx.rootHandle, "incoming.bin", 0o644, 1000, 1000)
+	survivorPayload := payloadIDOf(survivorFH)
+	fx.writeContent(t, survivorFH, bytes.Repeat([]byte{0xCD}, 1<<20))
+
+	if survivorPayload == victimPayload {
+		t.Fatalf("test setup: both files share payload %q, the assertions below cannot discriminate", victimPayload)
+	}
+	if size, ok := fx.localStore.FileSize(ctxBg, victimPayload); !ok || size != int64(len(victimBytes)) {
+		t.Fatalf("local tier holds %d bytes (present=%v) for the victim before RENAME, want %d", size, ok, len(victimBytes))
+	}
+
+	ctx := newRealFSContext(1000, 1000)
+	setCurrentFH(ctx, fx.rootHandle) // target dir
+	setSavedFH(ctx, fx.rootHandle)   // source dir
+
+	result := fx.handler.handleRename(ctx, bytes.NewReader(encodeRenameArgs("incoming.bin", "victim.bin")))
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("RENAME status = %d, want NFS4_OK", result.Status)
+	}
+
+	if size, ok := fx.localStore.FileSize(ctxBg, victimPayload); ok {
+		t.Fatalf("clobbered payload %q still holds %d live bytes in the local tier after RENAME", victimPayload, size)
+	}
+	if _, ok := fx.localStore.FileSize(ctxBg, survivorPayload); !ok {
+		t.Fatalf("renamed file's payload %q was dropped from the local tier by RENAME", survivorPayload)
+	}
+}
+
+// readFamilyOps are the v4 operations that serve, or derive from, file
+// content and therefore share one read-permission gate.
+var readFamilyOps = []struct {
+	name string
+	call func(*Handler, *types.CompoundContext) *types.CompoundResult
+}{
+	{"READ", func(h *Handler, ctx *types.CompoundContext) *types.CompoundResult {
+		return h.handleRead(ctx, bytes.NewReader(encodeReadArgs(&anonymousStateid, 0, 1024)))
+	}},
+	{"READ_PLUS", func(h *Handler, ctx *types.CompoundContext) *types.CompoundResult {
+		return h.handleReadPlus(ctx, bytes.NewReader(encodeReadArgs(&anonymousStateid, 0, 1024)))
+	}},
+	// SEEK reports where a file's data and holes begin. That map derives from
+	// the same content, so it is subject to the same gate: without it a caller
+	// who cannot read the file can still binary-search the layout of its
+	// non-zero bytes.
+	{"SEEK", func(h *Handler, ctx *types.CompoundContext) *types.CompoundResult {
+		return h.handleSeek(ctx, encSeekArgs(&anonymousStateid, 0, types.NFS4_CONTENT_DATA))
+	}},
+}
+
+// TestReadPermissionDenied runs the read-family operations against a
+// root-owned mode-0600 file as uid 1000, presenting the anonymous (all-zero)
+// stateid. That stateid carries no open state, so nothing else in the read
+// path consults the file's mode: without the gate the handlers answer NFS4_OK
+// and hand back the file's bytes.
+//
+// The mode is 0600 rather than 0000 because CreateFile treats a zero mode as
+// "unset" and substitutes the 0644 default, which would leave the file
+// world-readable and the test vacuous.
+func TestReadPermissionDenied(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+	fileHandle := fx.createRegularFile(t, fx.rootHandle, "rootsecret.txt", 0o600, 0, 0)
+	secret := []byte("root eyes only")
+	fx.writeContent(t, fileHandle, secret)
+
+	for _, op := range readFamilyOps {
+		t.Run(op.name, func(t *testing.T) {
+			ctx := newRealFSContext(1000, 1000)
+			ctx.CurrentFH = fileHandle
+			result := op.call(fx.handler, ctx)
+			if result.Status != types.NFS4ERR_ACCESS {
+				t.Errorf("status = %d, want NFS4ERR_ACCESS (%d)", result.Status, types.NFS4ERR_ACCESS)
+			}
+			if bytes.Contains(result.Data, secret) {
+				t.Errorf("leaked file content in a denied reply")
+			}
+		})
+	}
+}
+
+// TestReadPermissionGranted is the companion: the gate must cost an ordinary
+// owner read nothing. It also establishes that the denials above come from the
+// per-file check and not from the share-level policy, which is permissive for
+// uid 1000 in this fixture.
+func TestReadPermissionGranted(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+	fileHandle := fx.createRegularFile(t, fx.rootHandle, "mine.txt", 0o644, 1000, 1000)
+	fx.writeContent(t, fileHandle, []byte("owner readable"))
+
+	for _, op := range readFamilyOps {
+		t.Run(op.name, func(t *testing.T) {
+			ctx := newRealFSContext(1000, 1000)
+			ctx.CurrentFH = fileHandle
+			if result := op.call(fx.handler, ctx); result.Status != types.NFS4_OK {
+				t.Errorf("status = %d, want NFS4_OK", result.Status)
 			}
 		})
 	}

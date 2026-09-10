@@ -101,13 +101,13 @@ func addConcShare(t *testing.T, rt *Runtime, backup *controlledSnapshotable, sha
 	innerRemote := remotememory.New()
 	t.Cleanup(func() { _ = innerRemote.Close() })
 	mem := backup.MemoryMetadataStore
-	syncer := engine.NewSyncer(localStore, innerRemote, mem, engine.SyncerConfig{
+	syncer := engine.NewRemoteSync(localStore, innerRemote, mem, engine.RemoteSyncConfig{
 		ParallelDownloads: 1,
 	})
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          localStore,
 		Remote:         innerRemote,
-		Syncer:         syncer,
+		RemoteSync:     syncer,
 		FileChunkStore: mem,
 	})
 	if err != nil {

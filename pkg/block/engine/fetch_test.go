@@ -56,13 +56,13 @@ func (f *failingPutLocal) Hydrate(_ context.Context, _ string, _ int64, _ []byte
 	return errBoomLocalPut
 }
 
-// newFetchSyncer wires the minimum Syncer surface inlineFetchOrWait
+// newFetchSyncer wires the minimum RemoteSync surface inlineFetchOrWait
 // exercises: local, remoteStore, fileChunkStore, the SyncedHashStore the
 // post-#1493 fetch path resolves block locators from, the inFlight map, and a
 // nil HealthMonitor (so IsRemoteHealthy returns true). Coordinator is unused
 // on this path.
-func newFetchSyncer(localStore local.LocalStore, rs remote.RemoteStore, fbs block.EngineFileChunkStore, shs metadata.SyncedHashStore) *Syncer {
-	return &Syncer{
+func newFetchSyncer(localStore local.LocalStore, rs remote.RemoteStore, fbs block.EngineFileChunkStore, shs metadata.SyncedHashStore) *RemoteSync {
+	return &RemoteSync{
 		local:           localStore,
 		remoteStore:     rs,
 		fileChunkStore:  fbs,

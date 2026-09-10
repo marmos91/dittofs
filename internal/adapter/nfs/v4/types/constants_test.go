@@ -142,6 +142,24 @@ func TestRequireSavedFH(t *testing.T) {
 	})
 }
 
+func TestRequireSavedFHOperand(t *testing.T) {
+	t.Run("nil saved FH returns NFS4ERR_NOFILEHANDLE", func(t *testing.T) {
+		ctx := &CompoundContext{SavedFH: nil}
+		status := RequireSavedFHOperand(ctx)
+		if status != NFS4ERR_NOFILEHANDLE {
+			t.Errorf("RequireSavedFHOperand(nil) = %d, want %d", status, NFS4ERR_NOFILEHANDLE)
+		}
+	})
+
+	t.Run("non-nil saved FH returns NFS4_OK", func(t *testing.T) {
+		ctx := &CompoundContext{SavedFH: []byte("saved-handle")}
+		status := RequireSavedFHOperand(ctx)
+		if status != NFS4_OK {
+			t.Errorf("RequireSavedFHOperand(non-nil) = %d, want %d (NFS4_OK)", status, NFS4_OK)
+		}
+	})
+}
+
 // ============================================================================
 // ValidateUTF8Filename Tests
 // ============================================================================
@@ -220,6 +238,31 @@ func TestValidateUTF8Filename(t *testing.T) {
 		{
 			name:     "filename with spaces",
 			filename: "my file.txt",
+			expected: NFS4_OK,
+		},
+		{
+			name:     "dot component",
+			filename: ".",
+			expected: NFS4ERR_BADNAME,
+		},
+		{
+			name:     "dot-dot component",
+			filename: "..",
+			expected: NFS4ERR_BADNAME,
+		},
+		{
+			name:     "three dots is an ordinary name",
+			filename: "...",
+			expected: NFS4_OK,
+		},
+		{
+			name:     "dotfile is an ordinary name",
+			filename: ".config",
+			expected: NFS4_OK,
+		},
+		{
+			name:     "name ending in a dot is ordinary",
+			filename: "archive.",
 			expected: NFS4_OK,
 		},
 	}

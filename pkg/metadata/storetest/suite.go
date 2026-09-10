@@ -145,7 +145,7 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	// had ZERO cross-backend conformance coverage (area-6 audit H1):
 	// DeleteShare, GetUsedBytes, GetFileByPayloadID, filesystem
 	// meta/stats/caps, server config, Healthcheck, plus a pagination
-	// scenario and a duplicate-CreateShare scenario.
+	// scenario.
 	t.Run("StoreSurface", func(t *testing.T) {
 		runStoreSurfaceTests(t, factory)
 	})
@@ -235,6 +235,12 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	// run inside the caller's transaction. Every other test here reads only
 	// committed state, which a read that escaped to the pool would answer just
 	// as correctly.
+	// BlockRecordTxOps pins that the transaction-level block-record operations
+	// run inside the caller's transaction, which BlockRecordOps cannot tell.
+	t.Run("BlockRecordTxOps", func(t *testing.T) {
+		runBlockRecordTxOps(t, factory)
+	})
+
 	t.Run("FileReadTxOps", func(t *testing.T) {
 		runFileReadTxOps(t, factory)
 	})
@@ -247,15 +253,7 @@ func createTestShare(t *testing.T, store metadata.Store, shareName string) metad
 
 	ctx := t.Context()
 
-	// Create share
-	share := &metadata.Share{
-		Name: shareName,
-	}
-	if err := store.CreateShare(ctx, share); err != nil {
-		t.Fatalf("CreateShare(%q) failed: %v", shareName, err)
-	}
-
-	// Create root directory
+	// Creating the root directory is what registers the share.
 	rootAttr := &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0755,

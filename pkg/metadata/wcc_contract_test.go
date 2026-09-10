@@ -141,7 +141,7 @@ func TestWCC_Move_ReturnsBothDirAttrs(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	rw, err := fx.service.Move(fx.rootContext(), srcDir, "f.txt", dstDir, "f.txt")
+	_, rw, err := fx.service.Move(fx.rootContext(), srcDir, "f.txt", dstDir, "f.txt")
 	require.NoError(t, err)
 	require.NotNil(t, rw)
 	assertBracketsMutation(t, rw.FromDir)
@@ -156,7 +156,7 @@ func TestWCC_Move_SameDirectorySharesDirWcc(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	rw, err := fx.service.Move(fx.rootContext(), fx.rootHandle, "a.txt", fx.rootHandle, "b.txt")
+	_, rw, err := fx.service.Move(fx.rootContext(), fx.rootHandle, "a.txt", fx.rootHandle, "b.txt")
 	require.NoError(t, err)
 	require.NotNil(t, rw)
 	assert.Same(t, rw.FromDir, rw.ToDir, "intra-directory move must share one DirWcc")

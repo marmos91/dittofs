@@ -23,15 +23,6 @@ import (
 type shareData struct {
 	Share      metadata.Share
 	RootHandle metadata.FileHandle
-	// seeded is true when this entry was created by CreateRootDirectory (which
-	// records only the share name + root handle) rather than by a full
-	// CreateShare. A seeded entry lets GetRootHandle/GetShareOptions resolve a
-	// runtime-created share by name (the runtime calls CreateRootDirectory, not
-	// CreateShare), and is later "finished" by CreateShare/UpdateShareOptions.
-	// This mirrors the SQLite backend, where a share exists once its root inode
-	// does. Without it, by-name lookups (e.g. the #recycle trash path) fail with
-	// "share not found" for every runtime-created share.
-	seeded bool
 }
 
 type fileData struct {
@@ -563,13 +554,11 @@ func (store *MemoryMetadataStore) childNameLocked(
 // under: the share's pre-assigned RootHandle when one exists, otherwise a
 // fresh one.
 //
-// CreateShare generates a root handle up front so that GetRootHandle can
-// succeed immediately after share creation; the root directory MUST reuse it
-// so the file tree and the share's root pointer stay consistent. Without the
-// reuse, CreateShare and CreateRootDirectory produce two distinct UUIDs and
-// GetRootHandle ends up pointing at an empty subtree while the real tree lives
-// elsewhere. Minting fails for a share name too long to encode a handle; share
-// creation rejects such names up front.
+// A share record already carrying a RootHandle MUST have it reused, or the
+// file tree and the share's root pointer drift apart: two distinct UUIDs are
+// minted and GetRootHandle ends up pointing at an empty subtree while the real
+// tree lives elsewhere. Minting fails for a share name too long to encode a
+// handle; share creation rejects such names up front.
 //
 // Thread Safety: Must be called with the write lock held.
 func (store *MemoryMetadataStore) rootHandleLocked(shareName string) (metadata.FileHandle, error) {
@@ -607,4 +596,67 @@ func childPageStart(sortedNames []string, cursor string) int {
 		idx++
 	}
 	return idx
+}
+
+// RecomputeUsage rebuilds the usage counters from the stored file records,
+// discarding whatever the buckets hold. The memory store has no durable rows
+// behind its counters — the records ARE the source of truth — so this is a
+// walk of them under the store lock.
+func (store *MemoryMetadataStore) RecomputeUsage(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// The walk drops store.mu before the seed takes quotaMu, so arm the cache to
+	// record what commits in between — otherwise that transaction's delta is
+	// applied and then overwritten. The two locks are never held at once.
+	store.quotaMu.Lock()
+	store.quota.BeginRebuild()
+	store.quotaMu.Unlock()
+
+	byIdentity := make(map[basestore.QuotaKey]*metadata.UsageStat)
+	addUsage := func(k basestore.QuotaKey, bytes int64) {
+		u := byIdentity[k]
+		if u == nil {
+			u = &metadata.UsageStat{}
+			byIdentity[k] = u
+		}
+		u.Bytes += bytes
+		u.Files++
+	}
+
+	store.mu.RLock()
+	for key, fd := range store.files {
+		if fd.Attr == nil || !store.chargedLocked(key, fd.Attr.Type) {
+			continue
+		}
+		size := int64(fd.Attr.Size)
+		addUsage(basestore.QuotaKey{Share: fd.ShareName, Scope: metadata.QuotaScopeUser, ID: fd.Attr.UID}, size)
+		addUsage(basestore.QuotaKey{Share: fd.ShareName, Scope: metadata.QuotaScopeGroup, ID: fd.Attr.GID}, size)
+	}
+	store.mu.RUnlock()
+
+	store.quotaMu.Lock()
+	defer store.quotaMu.Unlock()
+	store.quota.Seed(byIdentity, nil)
+	return nil
+}
+
+// chargedLocked reports whether the inode stored under key currently holds
+// share bytes: a regular file with at least one name still reaching it. Must
+// be called with store.mu held.
+//
+// An absent linkCounts entry means no count was ever written, which mirrors
+// GetFile's default-by-type rather than "unlinked" — only an explicit
+// SetLinkCount(0) puts a zero there, and that is what marks an inode as
+// unlinked-but-open.
+func (store *MemoryMetadataStore) chargedLocked(key string, fileType metadata.FileType) bool {
+	count, ok := store.linkCounts[key]
+	if !ok {
+		count = 1
+		if fileType == metadata.FileTypeDirectory {
+			count = 2
+		}
+	}
+	return basestore.Charged(fileType, count)
 }

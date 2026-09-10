@@ -264,7 +264,10 @@ func (tx *memoryTransaction) UpdateAttrs(ctx context.Context, file *metadata.Fil
 	// usage. Handles three cases: new regular file (count +1, bytes +size),
 	// in-place size change (same owner, bytes delta), and chown (move
 	// bytes+count from old owner identity to new).
-	if file.Type == metadata.FileTypeRegular {
+	//
+	// This write never touches linkCounts, so the pre-write count is also the
+	// post-write one.
+	if tx.store.chargedLocked(key, file.Type) {
 		var oldSize uint64
 		var hadOldRegular bool
 		var oldUID, oldGID uint32
@@ -361,7 +364,9 @@ func (tx *memoryTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 	}
 
 	// Remove the inode + bytes from the owner's per-share, per-identity usage.
-	if existing.Attr.Type == metadata.FileTypeRegular {
+	// An inode whose last name went already gave them back, so removing the
+	// record itself owes the counters nothing.
+	if tx.store.chargedLocked(key, existing.Attr.Type) {
 		tx.quota.Add(existing.ShareName, existing.Attr.UID, existing.Attr.GID, -int64(existing.Attr.Size), -1)
 	}
 
@@ -424,12 +429,12 @@ func (tx *memoryTransaction) DeleteChild(ctx context.Context, dirHandle metadata
 	return nil
 }
 
-func (tx *memoryTransaction) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int) ([]metadata.DirEntry, string, error) {
+func (tx *memoryTransaction) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int, attrs metadata.ChildAttrs) ([]metadata.DirEntry, string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
 
-	return tx.store.listChildrenLocked(dirHandle, cursor, limit)
+	return tx.store.listChildrenLocked(dirHandle, cursor, limit, attrs)
 }
 
 func (tx *memoryTransaction) GetParent(ctx context.Context, handle metadata.FileHandle) (metadata.FileHandle, error) {
@@ -464,6 +469,21 @@ func (tx *memoryTransaction) SetLinkCount(ctx context.Context, handle metadata.F
 	}
 
 	key := handleToKey(handle)
+
+	// A link count crossing zero is what puts an inode's bytes into the share's
+	// usage or takes them back out; any other change (a hard link added or
+	// dropped alongside others) leaves it charged exactly once either way.
+	if existing, exists := tx.store.files[key]; exists {
+		was := tx.store.chargedLocked(key, existing.Attr.Type)
+		now := basestore.Charged(existing.Attr.Type, count)
+		switch {
+		case was && !now:
+			tx.quota.Add(existing.ShareName, existing.Attr.UID, existing.Attr.GID, -int64(existing.Attr.Size), -1)
+		case !was && now:
+			tx.quota.Add(existing.ShareName, existing.Attr.UID, existing.Attr.GID, int64(existing.Attr.Size), 1)
+		}
+	}
+
 	tx.store.linkCounts[key] = count
 	return nil
 }
@@ -559,40 +579,6 @@ func (tx *memoryTransaction) GetShareOptions(ctx context.Context, shareName stri
 	return &optsCopy, nil
 }
 
-func (tx *memoryTransaction) CreateShare(ctx context.Context, share *metadata.Share) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	if existing, exists := tx.store.shares[share.Name]; exists {
-		// Finish a seeded entry (from CreateRootDirectory) rather than rejecting
-		// it; a non-seeded entry is a genuine duplicate. See store-level CreateShare.
-		if !existing.seeded {
-			return &metadata.StoreError{
-				Code:    metadata.ErrAlreadyExists,
-				Message: "share already exists",
-				Path:    share.Name,
-			}
-		}
-		tx.store.shares[share.Name] = &shareData{
-			Share:      *share,
-			RootHandle: existing.RootHandle,
-		}
-		return nil
-	}
-
-	rootHandle, err := metadata.GenerateNewHandle(share.Name)
-	if err != nil {
-		return err
-	}
-	tx.store.shares[share.Name] = &shareData{
-		Share:      *share,
-		RootHandle: rootHandle,
-	}
-
-	return nil
-}
-
 func (tx *memoryTransaction) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -628,8 +614,10 @@ func (tx *memoryTransaction) DeleteShare(ctx context.Context, shareName string) 
 	for key, fd := range tx.store.files {
 		if fd.ShareName == shareName {
 			// Remove the inode + bytes from the owner's per-share,
-			// per-identity usage.
-			if fd.Attr.Type == metadata.FileTypeRegular {
+			// per-identity usage. An unlinked-but-open inode released them
+			// when its last name went, so the share has none left to give
+			// back for it.
+			if tx.store.chargedLocked(key, fd.Attr.Type) {
 				tx.quota.Add(fd.ShareName, fd.Attr.UID, fd.Attr.GID, -int64(fd.Attr.Size), -1)
 			}
 			// drop ObjectID secondary entry too.
@@ -682,17 +670,17 @@ func (tx *memoryTransaction) CreateRootDirectory(ctx context.Context, shareName 
 	}
 	key := handleToKey(rootHandle)
 
-	// Seed the share registry so the share resolves by name (see store-level
+	// Register the share so it resolves by name (see store-level
 	// CreateRootDirectory). Idempotent.
 	if _, ok := tx.store.shares[shareName]; !ok {
 		tx.store.shares[shareName] = &shareData{
 			Share:      metadata.Share{Name: shareName},
 			RootHandle: rootHandle,
-			seeded:     true,
 		}
 	}
 
-	// Check if root already exists - if so, just return success (idempotent)
+	// An existing root is reconciled against the configured attributes rather
+	// than returned as it stands (see reconcileRootAttrs).
 	if existingData, exists := tx.store.files[key]; exists {
 		_, id, err := metadata.DecodeFileHandle(rootHandle)
 		if err != nil {
@@ -701,18 +689,22 @@ func (tx *memoryTransaction) CreateRootDirectory(ctx context.Context, shareName 
 				Message: "failed to decode root handle",
 			}
 		}
+
+		reconciled := reconcileRootAttrs(existingData.Attr, attr)
+		tx.store.files[key] = &fileData{Attr: reconciled, ShareName: existingData.ShareName}
+
 		return &metadata.File{
 			ID:        id,
 			ShareName: shareName,
 			Path:      "/",
-			FileAttr:  *existingData.Attr,
+			FileAttr:  *reconciled,
 		}, nil
 	}
 
 	// Complete root directory attributes with defaults
 	rootAttrCopy := *attr
 	if rootAttrCopy.Mode == 0 {
-		rootAttrCopy.Mode = 0755
+		rootAttrCopy.Mode = metadata.DefaultRootMode
 	}
 	now := time.Now()
 	if rootAttrCopy.Atime.IsZero() {

@@ -44,9 +44,9 @@ func (h *Handler) handleSeek(ctx *types.CompoundContext, reader io.Reader) *type
 		return seekErr(types.NFS4ERR_ISDIR)
 	}
 
-	stateid, err := types.DecodeStateid4(reader)
-	if err != nil {
-		return seekErr(types.NFS4ERR_BADXDR)
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		return seekErr(argStatus)
 	}
 	offset, err := xdr.DecodeUint64(reader)
 	if err != nil {
@@ -62,7 +62,7 @@ func (h *Handler) handleSeek(ctx *types.CompoundContext, reader io.Reader) *type
 
 	// SEEK is a read-family operation: validate the stateid for read access
 	// (special stateids permitted), mirroring READ.
-	if openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpRead); stateErr != nil {
+	if openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpRead, ctx.SessionClientID); stateErr != nil {
 		st := mapStateError(stateErr)
 		logger.Debug("NFSv4.2 SEEK stateid validation failed", "error", stateErr, "nfs_status", st, "client", ctx.ClientAddr)
 		return seekErr(st)
@@ -80,12 +80,16 @@ func (h *Handler) handleSeek(ctx *types.CompoundContext, reader io.Reader) *type
 	}
 
 	// GetFileForRead: handle-addressed, File.Path unused — skip derivePath.
-	file, err := metaSvc.GetFileForRead(authCtx.Context, metadata.FileHandle(ctx.CurrentFH))
+	fileHandle := metadata.FileHandle(ctx.CurrentFH)
+	file, err := metaSvc.GetFileForRead(authCtx.Context, fileHandle)
 	if err != nil {
-		return seekErr(common.MapToNFS4(err))
+		return seekErr(types.StatusForErr(err))
 	}
 	if file.Type != metadata.FileTypeRegular {
 		return seekErr(types.NFS4ERR_ISDIR)
+	}
+	if status := checkReadPermission(metaSvc, ctx, authCtx, fileHandle, file, types.OP_SEEK); status != types.NFS4_OK {
+		return seekErr(status)
 	}
 
 	// sa_offset at or beyond EOF: no data and no in-file hole remain.
@@ -98,7 +102,7 @@ func (h *Handler) handleSeek(ctx *types.CompoundContext, reader io.Reader) *type
 	// manifest — the same view READ reconstructs. Deriving it from file.Blocks
 	// (the CAS block list) alone reports a hole where written-but-not-yet-
 	// rolled-up data exists, which RFC 7862 forbids and risks sparse-copy data
-	// loss (#1481). Fall back to the CAS-block-list path if the engine can't be
+	// loss. Fall back to the CAS-block-list path if the engine can't be
 	// resolved or errors, so SEEK never regresses below its prior behaviour.
 	var (
 		nextOffset uint64

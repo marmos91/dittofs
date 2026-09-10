@@ -706,6 +706,53 @@ hole until written) and grows the file size, but does **not** pre-reserve space
 — an out-of-space condition surfaces on the eventual write, exactly as for an
 ordinary sparse file.
 
+#### Concurrent Writers and the Change Attribute
+
+| Status | Reason |
+|--------|--------|
+| NFSv4: `change` is stable within a write session | Timestamps are frozen per session, and `change` derives from `ctime` |
+
+While a client is writing to a file, DittoFS holds that file's `mtime` and
+`ctime` at the value from the first write of the session instead of advancing
+them on every WRITE. The Linux NFS client keys its page cache on
+`(mtime, ctime, size)` and drops the cache whenever the timestamps move, so
+without this a client would invalidate its own cache on each write it had just
+issued.
+
+The freeze is per file, not per client, and it bites from the *second* write of
+a session onward. NFSv4's `change` attribute is derived from `ctime`, so the
+first write of a session does move `change` and is seen — but every later write
+in that same session leaves it untouched. A second client that noticed the first
+write, refetched the file and re-cached it will then keep serving that copy
+through every later in-place write of that session.
+
+RFC 7530 is specific about why that matters. §10.3.1 has the client revalidate a
+cached file by fetching `change` and comparing it with the cached value, and
+warns implementers off using `time_modify` in its place precisely because
+"[t]he change attribute is guaranteed to change for each update to the file",
+so substituting a timestamp "runs the risk of the client incorrectly marking
+stale data as valid". §5.8.1.4 does allow a server to derive `change` from
+`time_metadata`, but only "if the file system object cannot be updated more
+frequently than the resolution of time_metadata" — and a file under an open
+write session can be. DittoFS is knowingly outside that condition, so this is a
+real divergence rather than merely a coarse timestamp.
+
+`size` is not frozen, so a later write that *extends* the file still moves
+`size`, which the Linux client also watches, and may be noticed on that basis
+alone. A later write that overwrites bytes in place moves no attribute at all.
+
+This is a deliberate trade — DittoFS is single-node and the overwhelmingly
+common case is one writer per file — and it is why the pynfs `WRT18` case is
+listed as a documented divergence rather than a bug. Applications that need two
+clients to observe each other's writes to the *same* file should coordinate
+through locking (NFSv4 in-protocol locks, or NLM over NFSv3) rather than by
+polling attributes.
+
+The window is exactly the open write session. Ending it commits the frozen
+timestamp rather than a fresh one, so `change` does not jump at commit time
+either — it advances again on the first write of the *next* session, which
+carries a current timestamp.
+
 ### SMB Client Limitations
 
 #### macOS Mount Owner-Only Access

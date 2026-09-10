@@ -22,9 +22,11 @@ import (
 //
 // ponytail: the buffer is sized from the package-wide chunker.MaxChunkSize
 // rather than the share's ChunkParams.Max, so a share chunking small still
-// reserves 16 MiB for it — and the block arena adds the same overhang term on
-// top; size both from ChunkParams.Max if that headroom ever shows up in a
-// memory profile.
+// reserves 16 MiB for it. Unlike the block arena this is one buffer per carve
+// pass rather than one per in-flight block, so it scales with files carving at
+// once and not with the upload window on top. Sizing it from ChunkParams.Max
+// also means moving the read loop below off the same constant, or it asks for
+// bytes past the buffer's capacity and stops making progress.
 var carveScratchPool = sync.Pool{New: func() any {
 	b := make([]byte, 0, chunker.MaxChunkSize)
 	return &b
@@ -105,7 +107,7 @@ type BlockSink interface {
 	CommitBlock(ctx context.Context, chunks []CarveChunk) error
 }
 
-// supersededReaper is an optional BlockSink capability. Once a carve pass has
+// SupersededReaper is an optional BlockSink capability. Once a carve pass has
 // committed a file's rows, journal calls ReapSupersededManifest so the sink can
 // delete the manifest rows they superseded — keeping the per-file FileChunk
 // manifest a gap-free, overlap-free tiling of [0,size) after a partial overwrite.
@@ -115,11 +117,11 @@ type BlockSink interface {
 // rather than one per run: the sink re-reads the whole manifest to answer it, and
 // that read happens under this shard's carve lock. Sinks without a metadata store
 // (test fakes) simply don't implement it and the reap is skipped.
-type supersededReaper interface {
+type SupersededReaper interface {
 	ReapSupersededManifest(ctx context.Context, id FileID, spans [][2]int64, newOffsets map[int64]struct{}) error
 }
 
-// manifestRowEnder is an optional BlockSink capability: it reports how far the
+// ManifestRowEnder is an optional BlockSink capability: it reports how far the
 // manifest coverage straddling an offset reaches. Carve uses it to widen a run to
 // a row boundary before packing it, so the fresh tiling covers every row the
 // run-end reap deletes. Sinks without a metadata store (test fakes) don't
@@ -130,11 +132,11 @@ type supersededReaper interface {
 // fake that answers with a constant, or with zero, is not answering this
 // question, and a caller that gates on the result will behave differently
 // against it than against a metadata store.
-type manifestRowEnder interface {
+type ManifestRowEnder interface {
 	ManifestRowEndAfter(ctx context.Context, id FileID, off int64) (int64, error)
 }
 
-// clobberGuard is an optional BlockSink capability, and it exists because a
+// ClobberGuard is an optional BlockSink capability, and it exists because a
 // manifest row is keyed by the file offset of its first claimed byte while the
 // commit that writes a row is an upsert. A run starting exactly on an existing
 // row's offset therefore REPLACES that row rather than superseding it: the row
@@ -157,7 +159,7 @@ type manifestRowEnder interface {
 //
 // Sinks without a metadata store (test fakes) don't implement it, and a run then
 // replaces a row exactly as it did before.
-type clobberGuard interface {
+type ClobberGuard interface {
 	PreserveClobberedRow(ctx context.Context, id FileID, runStart, runEnd int64, owed [][2]int64) error
 }
 
@@ -336,7 +338,7 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 	// those rows, since nothing retries a reap and the records are no longer
 	// dirty; persist a pending-reap intent, or defer the flip until the reap
 	// lands, if that window ever shows up in the field.
-	if r, ok := s.sink.(supersededReaper); ok {
+	if r, ok := s.sink.(SupersededReaper); ok {
 		spans := make([][2]int64, 0, len(rs))
 		newOffsets := make(map[int64]struct{})
 		for _, st := range rs {
@@ -402,13 +404,34 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 	// Each packed block gets its OWN buffer (cap one block plus one overhang chunk)
 	// so its bytes stay live while its CommitBlock runs concurrently with the next
 	// block's packing — the recycled arena of the sequential path can't do that.
-	// Compute in int64 and clamp before the int conversion so a pathological
-	// CarveBlockSize can't silently wrap on 32-bit platforms.
-	arenaCap64 := s.cfg.CarveBlockSize + int64(chunker.MaxChunkSize)
-	if arenaCap64 > math.MaxInt {
-		arenaCap64 = math.MaxInt
+	//
+	// The overhang is one chunk at this share's configured size, not the largest
+	// chunk any share could ask for. A block is flushed once it reaches
+	// CarveBlockSize, so it overshoots by at most the chunk that crossed the line,
+	// and no chunk exceeds ChunkParams.Max. Sizing the overhang from the package
+	// ceiling instead reserves 16 MiB per in-flight block for a share chunking at
+	// 128 KiB — and that reservation is per slot, so it multiplies by the carve
+	// upload window and again by however many files carve at once.
+	//
+	// Invalid params fall back to the default profile because that is what the
+	// chunker itself does with them, so the arena matches the chunks actually cut.
+	//
+	// Clamp the block size before adding the overhang, not after: a pathological
+	// CarveBlockSize near the int64 ceiling would wrap to a negative sum, sail
+	// past a clamp that only tests the upper bound, and reach make() as a
+	// negative length. CarveBlockSize is positive by then (withDefaults replaces
+	// anything <= 0) and the overhang is at most chunker.MaxChunkSize, so the
+	// subtraction below cannot itself go negative.
+	overhang := s.cfg.ChunkParams.Max
+	if s.cfg.ChunkParams.Validate() != nil {
+		overhang = chunker.DefaultParams().Max
 	}
-	arenaCap := int(arenaCap64)
+	overhang64 := int64(overhang)
+	blockCap64 := s.cfg.CarveBlockSize
+	if blockCap64 > math.MaxInt-overhang64 {
+		blockCap64 = math.MaxInt - overhang64
+	}
+	arenaCap := int(blockCap64 + overhang64)
 
 	// The block currently being packed. arena is its private buffer (nil until the
 	// first novel chunk claims a pool buffer and a concurrency slot); arenaOff is
@@ -497,7 +520,7 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 		// keep what that row still owns past where this run will stop — but only
 		// over ranges the interval index says are still owed, since the row may
 		// equally be spanning a hole it has no business re-covering.
-		if guard, ok := s.sink.(clobberGuard); ok {
+		if guard, ok := s.sink.(ClobberGuard); ok {
 			runEnd := rs[ri].end()
 			if owed := syncedRanges(sh, id, runEnd, rowEnd); len(owed) > 0 {
 				if err := guard.PreserveClobberedRow(ctx, id, rs[ri].start(), runEnd, owed); err != nil {
@@ -576,8 +599,10 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 				}
 				// Bound proof: this block's bytes < CarveBlockSize before this append
 				// (else the prior iteration flushed and started a fresh arena), and
-				// boundary <= MaxChunkSize, so arenaOff+boundary <= CarveBlockSize-1+
-				// MaxChunkSize <= cap. The grow is a fail-loud belt: if that invariant
+				// boundary <= the configured ChunkParams.Max — the chunker never cuts
+				// longer than its own ceiling — so arenaOff+boundary <=
+				// CarveBlockSize-1+ChunkParams.Max <= cap, which is how the arena is
+				// sized above. The grow is a fail-loud belt: if that invariant
 				// ever breaks (e.g. a config change), realloc rather than slice out of
 				// bounds. Already-pending Data slices keep pointing at the old backing
 				// (still live), so no copy is needed — the new chunk lands in the larger
@@ -672,7 +697,7 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 // building only if that shape shows up in practice.
 func (s *Store) extendRunToRowEnd(ctx context.Context, sh *shard, id FileID, run []interval, limit int64) ([]interval, int64, error) {
 	runEnd := run[len(run)-1].end()
-	ender, ok := s.sink.(manifestRowEnder)
+	ender, ok := s.sink.(ManifestRowEnder)
 	if !ok {
 		return run, runEnd, nil
 	}

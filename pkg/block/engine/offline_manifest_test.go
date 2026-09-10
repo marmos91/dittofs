@@ -42,13 +42,13 @@ func openOfflineEngine(t *testing.T, dir string, ms metadata.Store, mem *remotem
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}
-	syncer := engine.NewSyncer(local, mem, ms, engine.DefaultConfig())
+	syncer := engine.NewRemoteSync(local, mem, ms, engine.DefaultConfig())
 	syncer.SetSyncedHashStore(shs)
 	syncer.SetRemoteBlockStore(mem)
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           local,
 		Remote:          keepOpenRemote{mem},
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		Coordinator:     &testCoordinator{store: ms},
 		SyncedHashStore: shs,

@@ -50,11 +50,28 @@
         "type": "github"
       }
     },
+    "pynfs-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1774574595,
+        "narHash": "sha256-UiPJ6VKJ6sB+g+xUdmPdxUx3iIvU/rk3hMH7MScff+Y=",
+        "owner": "kofemann",
+        "repo": "pynfs",
+        "rev": "cd4701827a8261fedbfb4c6e39029fb9671321a6",
+        "type": "github"
+      },
+      "original": {
+        "owner": "kofemann",
+        "repo": "pynfs",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
-        "pjdfstest-src": "pjdfstest-src"
+        "pjdfstest-src": "pjdfstest-src",
+        "pynfs-src": "pynfs-src"
       }
     },
     "systems": {

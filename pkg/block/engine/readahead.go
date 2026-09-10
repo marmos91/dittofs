@@ -37,7 +37,7 @@ type raState struct {
 // (bounded by scheduledUpTo); the first read of a payload only establishes the
 // frontier, and a random jump resets the anchor so we never prefetch blocks a
 // random reader will not touch.
-func (m *Syncer) planWindow(payloadID string, start, end uint64) (from, to uint64, fire bool) {
+func (m *RemoteSync) planWindow(payloadID string, start, end uint64) (from, to uint64, fire bool) {
 	maxDepth := m.config.PrefetchBlocks
 	if maxDepth <= 0 {
 		return 0, 0, false // prefetch disabled
@@ -94,7 +94,7 @@ func (m *Syncer) planWindow(payloadID string, start, end uint64) (from, to uint6
 // time; entries are dropped in gosync.Map.Range order (arbitrary) — a dropped
 // payload just re-ramps from a cold frontier on its next read. readaheadN is
 // approximate under concurrent inserts, which is fine for a soft bound.
-func (m *Syncer) pruneReadahead() {
+func (m *RemoteSync) pruneReadahead() {
 	if !m.readaheadPruning.CompareAndSwap(false, true) {
 		return // another goroutine is already pruning
 	}
@@ -121,7 +121,7 @@ func (m *Syncer) pruneReadahead() {
 // No-op without a remote, while the remote is unhealthy, or for a zero-length
 // read. The hot-path cost is one in-memory frontier update (planWindow); the
 // per-block local/remote probes happen in the worker pool, off the read path.
-func (m *Syncer) scheduleReadahead(payloadID string, offset uint64, length uint32) {
+func (m *RemoteSync) scheduleReadahead(payloadID string, offset uint64, length uint32) {
 	if length == 0 || m.queue == nil {
 		return
 	}

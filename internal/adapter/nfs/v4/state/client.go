@@ -52,36 +52,71 @@ func principalHijacks(stored, incoming string) bool {
 // Client Record
 // ============================================================================
 
-// ClientRecord represents the server-side state for a single NFSv4 client.
-// It tracks the client's identity, verifier, confirmation status, and
-// callback information for delegations.
+// ClientRecord represents the server-side state for a single NFSv4 client of
+// any minor version. It tracks the client's identity, verifier, confirmation
+// status, and callback information for delegations.
 //
-// Per RFC 7530 Section 9.1.1, each client is identified by:
+// A v4.0 client is established by SETCLIENTID + SETCLIENTID_CONFIRM and is
+// identified per RFC 7530 Section 9.1.1 by:
 //   - ClientIDString: opaque string from nfs_client_id4.id (unique per client)
 //   - Verifier: 8-byte value that changes on client reboot
 //   - ClientID: server-assigned 64-bit identifier
+//
+// A v4.1 client is established by EXCHANGE_ID + CREATE_SESSION and is
+// identified per RFC 8881 Section 18.35 by OwnerID (co_ownerid) and the same
+// Verifier (co_verifier) and ClientID. The two identity fields stay distinct
+// because they index different lookup maps and different durable
+// client-recovery keys; the wire formats they carry are not interchangeable.
+//
+// MinorVersion discriminates the two registration flows, and fields that
+// apply to only one minor version are marked as such and are left at their
+// zero value for the other. Anything version-independent — lease timing,
+// principal, callback-path liveness — is shared, so a policy decision that
+// reads it does not have to know which registration flow created the record.
 type ClientRecord struct {
 	// ClientID is the server-assigned 64-bit client identifier.
 	// Generated using boot epoch (high 32) + sequence counter (low 32).
 	ClientID uint64
 
-	// ClientIDString is the client-provided opaque identifier (nfs_client_id4.id).
-	// This is the stable identity that persists across reboots.
+	// MinorVersion is the NFSv4 minor version that minted this record: 0 for
+	// the SETCLIENTID flow, 1 for the EXCHANGE_ID flow. generateClientID draws
+	// both flows from one sequence, so client IDs never collide across the
+	// shared numeric index; this field is what keeps a version-sensitive
+	// operation from reaching a record the other flow created.
+	MinorVersion uint32
+
+	// ClientIDString is the client-provided opaque identifier
+	// (nfs_client_id4.id). v4.0 only. This is the stable identity that
+	// persists across reboots.
 	ClientIDString string
 
+	// OwnerID is co_ownerid from client_owner4. v4.1 only. Stored as bytes
+	// for byte-exact comparison.
+	OwnerID []byte
+
 	// Verifier is the client-provided 8-byte value that changes on reboot.
-	// Used to detect client restarts.
+	// Used to detect client restarts. co_verifier on v4.1.
 	Verifier [8]byte
 
 	// ConfirmVerifier is the server-generated 8-byte verifier returned
-	// by SETCLIENTID and validated by SETCLIENTID_CONFIRM.
+	// by SETCLIENTID and validated by SETCLIENTID_CONFIRM. v4.0 only.
 	// Generated using crypto/rand for unpredictability.
 	ConfirmVerifier [8]byte
 
-	// Confirmed indicates whether SETCLIENTID_CONFIRM has been called.
+	// Confirmed indicates whether the client has completed registration:
+	// SETCLIENTID_CONFIRM on v4.0, CREATE_SESSION on v4.1.
 	Confirmed bool
 
+	// Superseded is the confirmed record this unconfirmed one replaces once it
+	// is itself confirmed. v4.1 only: a restarted client's new incarnation is
+	// registered alongside the old one, which keeps its client ID, sessions and
+	// locking state until the replacement's CREATE_SESSION collapses the two.
+	// Nil on every other record.
+	Superseded *ClientRecord
+
 	// Callback holds the client's callback information for delegations.
+	// v4.0 only: a v4.1 client's callbacks travel over the session
+	// backchannel, which carries no separate address.
 	Callback CallbackInfo
 
 	// ClientAddr is the network address of the client (for logging/debugging).
@@ -89,26 +124,59 @@ type ClientRecord struct {
 
 	// Principal is the RPCSEC_GSS / AUTH_SYS principal that established this
 	// client (best-effort; "uid:N" for AUTH_SYS, the GSS principal otherwise,
-	// "" when unknown). Captured at SETCLIENTID and persisted into the durable
-	// client-recovery record at confirm time as a lease-stealing guard.
+	// "" when unknown). Captured at SETCLIENTID or EXCHANGE_ID and persisted
+	// into the durable client-recovery record at confirm time as a
+	// lease-stealing guard.
 	Principal string
+
+	// ImplDomain is the implementation domain from nfs_impl_id4
+	// (e.g. "kernel.org"). v4.1 only.
+	ImplDomain string
+
+	// ImplName is the implementation name from nfs_impl_id4
+	// (e.g. "Linux NFS client"). v4.1 only.
+	ImplName string
+
+	// ImplDate is the build date from nfs_impl_id4. v4.1 only.
+	ImplDate time.Time
+
+	// SequenceID is the CREATE_SESSION slot sequence ID, initialized to 0.
+	// v4.1 only. ExchangeID returns SequenceID+1 as eir_sequenceid so the
+	// client sends that value as csa_sequenceid. CreateSession validates
+	// csa_sequenceid == SequenceID+1 (the "new request" check per RFC 8881
+	// Section 18.36), then advances SequenceID to match.
+	SequenceID uint32
+
+	// CachedCreateSessionRes is the XDR-encoded CREATE_SESSION reply held for
+	// replay per RFC 8881 Section 18.36. v4.1 only. Set when CREATE_SESSION
+	// succeeds.
+	CachedCreateSessionRes []byte
 
 	// CreatedAt is when this record was created.
 	CreatedAt time.Time
 
 	// LastRenewal is the most recent lease renewal time.
-	// Updated by RENEW, OPEN, and any implicit lease renewal.
+	// Updated by RENEW, SEQUENCE, OPEN, and any implicit lease renewal.
 	LastRenewal time.Time
 
 	// Lease is the lease timer for this client.
-	// Created when the client is confirmed via SETCLIENTID_CONFIRM.
+	// Created when the client is confirmed.
 	// Fires onLeaseExpired callback when the lease duration elapses
 	// without renewal.
 	Lease *LeaseState
 
 	// OpenOwners tracks all open-owners for this client.
-	// Keyed by hex-encoded owner data. Populated in .
+	// Keyed by hex-encoded owner data. v4.0 only.
 	OpenOwners map[string]*OpenOwner
+
+	// ReclaimComplete records that this client has completed its reclaim:
+	// RECLAIM_COMPLETE sent (v4.1), or the first successful CLAIM_PREVIOUS
+	// served (v4.0 has no RECLAIM_COMPLETE operation). A second v4.1
+	// RECLAIM_COMPLETE draws NFS4ERR_COMPLETE_ALREADY. It holds whether or not
+	// a grace window was ever opened, and a client instance that re-registers
+	// gets a fresh record with it clear. A pending reclaim-complete persist
+	// retry also re-validates against this flag before writing durably.
+	ReclaimComplete bool
 
 	// CBPathUp indicates whether the callback path to this client has been
 	// verified via CB_NULL. Defaults to false (not verified).

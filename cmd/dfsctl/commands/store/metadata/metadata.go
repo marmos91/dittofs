@@ -12,7 +12,7 @@ var Cmd = &cobra.Command{
 	Long: `Manage metadata stores on the DittoFS server.
 
 Metadata stores hold file system structure, attributes, and permissions.
-Supported types: memory, badger, postgres
+Supported types: memory, badger, sqlite, postgres
 
 Examples:
   # List metadata stores
@@ -31,4 +31,5 @@ func init() {
 	Cmd.AddCommand(editCmd)
 	Cmd.AddCommand(removeCmd)
 	Cmd.AddCommand(healthCmd)
+	Cmd.AddCommand(recomputeUsageCmd)
 }

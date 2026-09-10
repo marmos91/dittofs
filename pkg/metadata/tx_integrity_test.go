@@ -237,7 +237,7 @@ func TestMove_RollsBackOnPutFileFailure(t *testing.T) {
 	fx.faulty.failID = srcID
 
 	// The move must fail with the injected error.
-	_, err = fx.svc.Move(fx.ctx, fx.root, "myfile.txt", destHandle, "moved.txt")
+	_, _, err = fx.svc.Move(fx.ctx, fx.root, "myfile.txt", destHandle, "moved.txt")
 	require.ErrorIs(t, err, errPutFileInjected, "Move must surface the injected UpdateAttrs failure, not swallow it")
 
 	// Full rollback: source still at its original name/path...
@@ -302,7 +302,7 @@ func TestMove_AbortsWhenSourceEntryChangedInTransaction(t *testing.T) {
 		return nil, nil, false
 	}
 
-	_, err = fx.svc.Move(fx.ctx, fx.root, "myfile.txt", fx.root, "moved.txt")
+	_, _, err = fx.svc.Move(fx.ctx, fx.root, "myfile.txt", fx.root, "moved.txt")
 	require.Error(t, err, "Move must abort when the source entry changed inside the transaction")
 
 	// The destination name was never created.
@@ -338,7 +338,7 @@ func TestMove_AbortsWhenDestinationAppearedInTransaction(t *testing.T) {
 		return nil, nil, false
 	}
 
-	_, err = fx.svc.Move(fx.ctx, fx.root, "myfile.txt", fx.root, "moved.txt")
+	_, _, err = fx.svc.Move(fx.ctx, fx.root, "myfile.txt", fx.root, "moved.txt")
 	require.Error(t, err, "Move must abort when the destination appeared inside the transaction")
 	var storeErr *metadata.StoreError
 	require.ErrorAs(t, err, &storeErr)

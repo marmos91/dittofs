@@ -107,7 +107,40 @@ The metadata store interface and implementation guide remains the same as before
 
 - `pkg/metadata/store/memory/`: In-memory (fast, ephemeral)
 - `pkg/metadata/store/badger/`: BadgerDB (persistent, embedded)
+- `pkg/metadata/store/sqlite/`: SQLite (persistent, embedded)
 - `pkg/metadata/store/postgres/`: PostgreSQL (persistent, distributed)
+
+The two SQL backends are one implementation over two dialects. Most
+operation bodies live once in `pkg/metadata/store/sql/`, embedded by both the
+store and its transaction so a method written there is reachable from either.
+The `sqlite/` and `postgres/` packages carry what genuinely differs —
+connection setup, driver error mapping, statement text (via the
+`sql.Dialect` interface), snapshot export, and the handful of bodies whose
+mechanism diverges, such as `ApplyDataWrite` (sqlite selects then updates
+under the single-writer lock; postgres folds both into one statement) —
+along with the store-level wrappers described next. Read
+`pkg/metadata/store/sql/` first when tracing a SQL backend; most of what a
+caller reaches is there, not in the dialect package.
+
+**Multi-statement work needs a transaction, and `Core` cannot supply one.**
+`Core` is embedded by the pool-backed store as well as by the transaction, so
+a `Core` method also runs on the pool, where each statement autocommits
+independently and a crash between two of them leaves torn state. There are
+two ways to keep that from happening, and both are in the tree:
+
+- Make it a package-level function taking `(ctx, x Executor, d Dialect, ...)`,
+  so it can only be called with an executor the caller has already chosen —
+  `PutFileChunkRefs`, `DecrementAndReapMany`, `PutSyncedLocators`.
+- Or write it as a `Core` method and **shadow it** in each dialect package with
+  a store-level wrapper that runs it inside `WithTransaction` —
+  `DeleteShare`, `CreateRootDirectory`, `DecrementRefCountAndReap`.
+
+The shadows are load-bearing and easy to delete by accident: removing one does
+not break the build, because the promoted `Core` method still satisfies the
+interface. The write simply starts going straight to the pool. If you add a
+multi-statement `Core` method, add its shadow to **both** dialect packages in
+the same change, or use the package-level form instead. Single-statement work
+is safe as a plain `Core` method.
 
 Conformance tests: `pkg/metadata/storetest/`
 
@@ -195,8 +228,8 @@ type FileChunkStore interface {
 
 **Engine-internal companion interface:** `pkg/block.EngineFileChunkStore`
 extends `FileChunkStore` with `GetFileChunk(ctx, id)` and
-`ListFileChunks(ctx, payloadID)` for the engine's hot paths. All three built-in
-backends (memory, badger, postgres) satisfy it without changes — the
+`ListFileChunks(ctx, payloadID)` for the engine's hot paths. All four built-in
+backends (memory, badger, sqlite, postgres) satisfy it without changes — the
 narrow public surface is a documentation concern, not a runtime
 restriction. Custom backends implementing `FileChunkStore` SHOULD also
 implement the engine-internal helpers if they intend to slot into the
@@ -251,7 +284,7 @@ The `pkg/metadata/storetest/` suite includes:
 5. **Refcount concurrent fuzz** (`pkg/metadata/storetest/inv02_fuzz_test.go`):
    100-iteration property-based fuzzer creating, deleting, and copying
    files concurrently; asserts the invariant after each operation
-   batch. Runs against all three built-in backends and any custom backend
+   batch. Runs against all four built-in backends and any custom backend
    wired into the conformance harness.
 
 ### FileAttr.ObjectID + FindByObjectID
@@ -877,7 +910,7 @@ Users can then create your store via CLI:
 - **Reference Implementations**:
   - Local: `pkg/block/local/fs/`, `pkg/block/local/memory/`
   - Remote: `pkg/block/remote/s3/`, `pkg/block/remote/memory/`
-  - Metadata: `pkg/metadata/store/memory/`, `pkg/metadata/store/badger/`, `pkg/metadata/store/postgres/`
+  - Metadata: `pkg/metadata/store/memory/`, `pkg/metadata/store/badger/`, `pkg/metadata/store/sqlite/`, `pkg/metadata/store/postgres/` (the SQL pair share `pkg/metadata/store/sql/`)
 - **Conformance Tests**: `pkg/block/blockstoretest/` (block stores), `pkg/metadata/storetest/` (metadata stores)
 - **Architecture**: `docs/ARCHITECTURE.md`
 - **Configuration**: `docs/CONFIGURATION.md`

@@ -26,8 +26,8 @@ type BlockStoreConfig struct {
 	// Remote is the durable backend store (nil for local-only mode).
 	Remote remote.RemoteStore
 
-	// Syncer handles async local-to-remote transfers (required).
-	Syncer *Syncer
+	// RemoteSync handles async local-to-remote transfers (required).
+	RemoteSync *RemoteSync
 
 	// FileChunkStore provides block metadata for block store statistics
 	// AND the engine-internal lookups (GetFileChunk, ListFileChunks) the
@@ -46,7 +46,7 @@ type BlockStoreConfig struct {
 
 	// SyncedHashStore persists per-CAS-hash local→remote sync state.
 	// Sourced from the same per-share metadata-store handle the
-	// Coordinator wraps. Threaded through to the Syncer so the carver
+	// Coordinator wraps. Threaded through to the RemoteSync so the carver
 	// can commit synced markers + block locators atomically
 	// (DefaultCommitBlock). Nil is accepted (local-only / no-remote
 	// fixtures); carve stays disabled in that mode.
@@ -72,7 +72,7 @@ type BlockStoreConfig struct {
 type Store struct {
 	local  local.LocalStore
 	remote remote.RemoteStore
-	syncer *Syncer
+	syncer *RemoteSync
 
 	// metrics is the engine-side data-plane metrics sink (carve/upload
 	// path). Retained from SetMetrics when the injected recorder also
@@ -100,7 +100,7 @@ type Store struct {
 
 	// syncedHashStore persists per-CAS-hash local→remote mirror state.
 	// Held alongside the coordinator so the engine constructor can thread
-	// it into the Syncer (via SetSyncedHashStore). May be nil in tests.
+	// it into the RemoteSync (via SetSyncedHashStore). May be nil in tests.
 	syncedHashStore metadata.SyncedHashStore
 
 	// cache is the CAS-keyed cache (CACHE-01..05). The block-coord
@@ -139,13 +139,6 @@ type Store struct {
 	closed   bool  // guarded by closeMu; true once teardown has run
 	closeErr error // memoized result of the first Close (idempotent)
 
-	// migrateCancel/migrateDone govern the background cas→blocks migration
-	// goroutine spawned by Start. Close cancels the context and waits on the
-	// channel so the goroutine's in-flight remote I/O never races the store
-	// teardown below it. Both nil/zero until Start runs.
-	migrateCancel context.CancelFunc
-	migrateDone   chan struct{}
-
 	// requireDurableCommit gates the strict honest-CLOSE/COMMIT rule (#1274).
 	// When false (the default), CommitBlockStore acks once engine.Flush
 	// succeeds regardless of local/remote durability — the remote mirror
@@ -166,14 +159,14 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 	if cfg.Local == nil {
 		return nil, errors.New("local store is required")
 	}
-	if cfg.Syncer == nil {
-		return nil, errors.New("syncer is required")
+	if cfg.RemoteSync == nil {
+		return nil, errors.New("remote sync is required")
 	}
 
 	bs := &Store{
 		local:           cfg.Local,
 		remote:          cfg.Remote,
-		syncer:          cfg.Syncer,
+		syncer:          cfg.RemoteSync,
 		fileChunkStore:  cfg.FileChunkStore,
 		coordinator:     cfg.Coordinator,
 		syncedHashStore: cfg.SyncedHashStore,
@@ -185,26 +178,26 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 	// so engine code can call bs.cache.* without nil-checks even before
 	// Start runs.
 	bs.cache = nullCache{}
-	// Thread the SyncedHashStore into the Syncer so the carver can commit
+	// Thread the SyncedHashStore into the RemoteSync so the carver can commit
 	// synced markers + block locators atomically. Nil is accepted
 	// (local-only / no-remote fixtures); carve stays disabled in that
 	// mode.
 	if cfg.SyncedHashStore != nil {
-		cfg.Syncer.SetSyncedHashStore(cfg.SyncedHashStore)
+		cfg.RemoteSync.SetSyncedHashStore(cfg.SyncedHashStore)
 	}
 	// Chunk-lifecycle hooks are gone with the journal switchover: chunking now
 	// happens at carve time inside the journal, and the carve BlockSink writes
 	// the per-(file,offset) FileChunk manifest rows atomically in its commit
 	// transaction (metadata.DefaultCommitBlock). There is no rollup-completion
 	// persister, no write-side cache warm hook, and no per-chunk emitter.
-	// wire the Store back-reference onto the Syncer so it can reach the
-	// owning Store for dataplane metrics (Syncer.dataplaneMetrics) and
+	// wire the Store back-reference onto the RemoteSync so it can reach the
+	// owning Store for dataplane metrics (RemoteSync.dataplaneMetrics) and
 	// cache access (InvalidateFile on delete). Reading through the
 	// back-reference (instead of caching a cacheInterface field on the
-	// Syncer at construction time) lets test code swap `bs.cache = rec`
+	// RemoteSync at construction time) lets test code swap `bs.cache = rec`
 	// post-construction and still observe the invalidation — mirrors the
 	// TestClose_ClosesCache pattern.
-	cfg.Syncer.bs = bs
+	cfg.RemoteSync.bs = bs
 	return bs, nil
 }
 
@@ -217,25 +210,6 @@ func (bs *Store) Start(ctx context.Context) error {
 	// Use background context so these outlive the calling request context.
 	bs.local.Start(context.Background())
 
-	// One-shot cas→blocks migration: import pre-flip local per-chunk files
-	// into the log-blob substrate and re-pack standalone remote objects into
-	// packed blocks. Runs in the background so a slow/stalled remote or a
-	// near-full disk can't wedge startup — the share serves immediately and any
-	// not-yet-repacked standalone chunk is read through the legacy fallback
-	// (resolveAndReadChunk). Idempotent and resumable: a failed or cancelled
-	// pass is a no-op retry on the next start. Uses a detached context so it
-	// outlives Start; Close cancels it and waits on migrateDone before tearing
-	// down the stores it uses.
-	migrateCtx, cancel := context.WithCancel(context.Background())
-	bs.migrateCancel = cancel
-	bs.migrateDone = make(chan struct{})
-	go func() {
-		defer close(bs.migrateDone)
-		if err := bs.migrateLegacyCAS(migrateCtx); err != nil && migrateCtx.Err() == nil {
-			logger.Warn("cas→blocks migration: background pass failed; will retry next start", "error", err)
-		}
-	}()
-
 	// Wire the health callback BEFORE starting the syncer. The health monitor
 	// captures the callback at Start time (startHealthMonitor reads
 	// m.onHealthChanged once); registering it afterwards means an initial
@@ -247,10 +221,19 @@ func (bs *Store) Start(ctx context.Context) error {
 	// When remote goes unhealthy, suspend eviction to prevent evicting blocks
 	// that cannot be re-downloaded. When healthy again, re-enable eviction.
 	bs.syncer.SetHealthCallback(func(healthy bool) {
-		bs.local.SetEvictionEnabled(healthy)
-		if healthy {
+		// Log what was actually decided, not what health alone implies: a healthy
+		// remote no longer means eviction resumes, because carve must also be
+		// wired to it. Saying "re-enabled" while eviction stays off would leave a
+		// log that disagrees with the store, which is the hazard this gate exists
+		// to remove.
+		canEvict := bs.syncer.CanEvict()
+		bs.local.SetEvictionEnabled(canEvict)
+		switch {
+		case canEvict:
 			logger.Info("Remote store healthy: eviction re-enabled")
-		} else {
+		case healthy:
+			logger.Info("Remote store healthy but carve is not wired to it: eviction stays suspended")
+		default:
 			logger.Warn("Remote store unhealthy: eviction suspended")
 		}
 	})
@@ -268,7 +251,7 @@ func (bs *Store) Start(ctx context.Context) error {
 	// where the initial probe settled health without driving a transition
 	// callback (e.g. it started unhealthy with no prior state to transition
 	// from).
-	bs.local.SetEvictionEnabled(bs.syncer.IsRemoteHealthy())
+	bs.local.SetEvictionEnabled(bs.syncer.CanEvict())
 
 	// Wire the Cache in Start so the loadByHash closure captures bs and
 	// NewCache spawns workers immediately. A single Cache type replaces
@@ -346,16 +329,6 @@ func (bs *Store) Close() error {
 		return bs.closeErr
 	}
 	bs.closed = true
-
-	// Stop the background cas→blocks migration before tearing down the local,
-	// remote, and syncer stores it uses. Cancel unblocks any in-flight remote
-	// PutBlock/GET; the receive waits for the goroutine to fully exit so it
-	// never races the closes below. Safe from under closeMu: the migration
-	// goroutine does not take closeMu.
-	if bs.migrateCancel != nil {
-		bs.migrateCancel()
-		<-bs.migrateDone
-	}
 
 	// Cache is never nil thanks to the Null Object pattern. Swap in the
 	// Null Object under cacheMu so any concurrent OnChunkComplete read sees
@@ -446,14 +419,6 @@ func (bs *Store) DurableExtent(ctx context.Context, payloadID metadata.PayloadID
 	return reporter.DurableExtent(ctx, string(payloadID))
 }
 
-// LocalStore returns nil: the journal-backed local tier is a per-file byte
-// cache, not a content-addressed block.Store, so there is no hash-namespace to
-// sweep. The journal self-manages local segment reclaim (dead-byte GC +
-// pressure eviction) internally, and the remote-tier FileChunk reap/refcount
-// GC runs on gc_block.go. Controlplane's ShareLocalStores() skips a nil local
-// store, so per-share local GC (CollectGarbageLocal) is a natural no-op.
-func (bs *Store) LocalStore() block.Store { return nil }
-
 // LocalDurable reports whether the engine's local store survives a process
 // crash / restart (block.DurabilityReporter). It is the localDurable input to
 // the honest CLOSE/COMMIT commit rule (#1274). When the local store does not
@@ -533,7 +498,7 @@ func (bs *Store) DrainLocalSynced(ctx context.Context) (int64, error) {
 // WarmAll proactively fetches every remote block of every payload in this
 // share onto the local CAS tier, delegating to the syncer's WarmAll under the
 // store's close-gate so a concurrent Close drains the run instead of racing
-// the local/syncer/remote teardown. See (*Syncer).WarmAll for semantics
+// the local/syncer/remote teardown. See (*RemoteSync).WarmAll for semantics
 // (bounded by ParallelDownloads, errors on a missing remote, terminal on
 // ErrDiskFull, honors ctx cancellation). progress may be nil.
 func (bs *Store) WarmAll(ctx context.Context, progress func(done, total int64)) (WarmResult, error) {

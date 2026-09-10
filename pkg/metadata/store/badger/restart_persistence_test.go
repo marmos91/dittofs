@@ -80,7 +80,7 @@ func TestRestartPersistence_EAsAndADSStream(t *testing.T) {
 	// Directory enumeration still lists both the base and the ADS sibling.
 	names := map[string]bool{}
 	require.NoError(t, store.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		entries, _, err := tx.ListChildren(ctx, root, "", 100)
+		entries, _, err := tx.ListChildren(ctx, root, "", 100, metadata.WithAttrs)
 		if err != nil {
 			return err
 		}
@@ -97,7 +97,6 @@ func TestRestartPersistence_EAsAndADSStream(t *testing.T) {
 func mkShare(t *testing.T, store metadata.Store, shareName string) metadata.FileHandle {
 	t.Helper()
 	ctx := context.Background()
-	require.NoError(t, store.CreateShare(ctx, &metadata.Share{Name: shareName}))
 	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory, Mode: 0o755,
 	})

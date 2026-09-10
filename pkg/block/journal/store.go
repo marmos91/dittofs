@@ -25,6 +25,15 @@ type BlockID string
 // errClosed is returned by every operation attempted on a closed Store.
 var errClosed = errors.New("journal: store closed")
 
+// ErrColdProvenanceAmbiguous is returned by RestoreToVersion when a
+// manifest-seeded cold entry covers a range that a later write overwrote and
+// synced past the requested version. The entry's version dates the scan that
+// found the range remote-durable, not the bytes, and the remote copy it points
+// at is now that later content — so neither serving it nor dropping it answers
+// for the requested version. A seeded entry on its own is not ambiguous and
+// does not produce this: see the fold in RestoreToVersion.
+var ErrColdProvenanceAmbiguous = errors.New("journal: cold entry provenance cannot date the content")
+
 // minSegmentSize is the floor for Config.SegmentSize. A segment must comfortably
 // hold its header plus real records; below this a single write could exceed the
 // cap. 1 MiB clears the largest protocol write plus framing with wide margin.
@@ -69,9 +78,11 @@ type Config struct {
 	// across the whole file, one block at a time, and so are the manifest row-end
 	// lookups that widen each run; only the commits overlap, so a single large
 	// file's carve is not one PutBlock at a time.
-	// Peak carve RAM per file is window x (CarveBlockSize + one overhang chunk)
-	// for the block arenas, plus the single chunker scratch buffer of
-	// chunker.MaxChunkSize the pass holds — so keep it modest.
+	// Peak carve RAM per file is window x (CarveBlockSize + one ChunkParams.Max
+	// chunk) for the block arenas, plus the single chunker scratch buffer of
+	// chunker.MaxChunkSize the pass holds. Per file: whatever bounds how many
+	// files carve at once multiplies the arena term again, so the real ceiling
+	// is that product — keep this modest.
 	// Zero falls back to the default via withDefaults.
 	CarveUploadConcurrency int
 	// DirtyExpiry bounds how long an appended record may sit unfsynced. A
@@ -206,11 +217,21 @@ type Store struct {
 	reads     atomic.Int64
 	coldReads atomic.Int64
 
-	// evictionDisabled gates Evict (and thus the write-path ensureSpace that
-	// drives it). Health-driven: while the remote is unhealthy, cold-marking a
-	// segment would strand bytes that can't be refetched, so eviction is paused.
-	// Zero value = enabled, the safe default.
-	evictionDisabled atomic.Bool
+	// evictionSuspended and evictionPinned are the two independent reasons to
+	// hold eviction off; either one gates Evict (and thus the write-path
+	// ensureSpace that drives it). They are read together by evictionHeld rather
+	// than folded into one derived flag, so two concurrent setters cannot lose
+	// each other's update. Zero values = eviction enabled, the safe default.
+	//
+	// evictionSuspended is health-driven: while the remote is unreachable,
+	// cold-marking a segment would strand bytes that can't be refetched, so
+	// eviction pauses until the remote returns.
+	evictionSuspended atomic.Bool
+
+	// evictionPinned is the retention-policy reason: a pinned share keeps its
+	// bytes local indefinitely. It is held here rather than in a caller so a
+	// health transition re-enabling eviction cannot lift it.
+	evictionPinned atomic.Bool
 
 	// verifyReads turns on per-read record-CRC verification of warm reads (opt-in
 	// for durable tiers; off for the fast writeback path). When off, ReadAt serves
@@ -239,6 +260,11 @@ type Store struct {
 	// production.
 	failTombstone FileID
 	failTruncate  FileID
+	// beforeTruncateMarker is a test seam run between Truncate publishing its
+	// provisional fence and minting the marker that supersedes it, so a test can
+	// land the concurrent write that opens the window between the two versions.
+	// Always nil in production.
+	beforeTruncateMarker func()
 }
 
 // SetVerifyReads enables or disables per-read record-CRC verification of warm
@@ -455,7 +481,7 @@ func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byt
 	sh := s.shardFor(id)
 	sh.mu.Lock()
 	var ranges [][2]int64
-	if !hydrateFenced(sh, id, notAfter) {
+	if !hydrateFenced(sh, id, notAfter, offset, int64(len(data))) {
 		ranges = sh.index[id].hydratable(offset, int64(len(data)), notAfter)
 	}
 	sh.mu.Unlock()
@@ -473,12 +499,39 @@ func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byt
 func (s *Store) WriteVersion() uint64 { return s.version.Load() }
 
 // hydrateFenced reports whether a hydrate's bound predates the file's most
-// recent truncate or delete — the two mutations that leave no interval behind
-// to compare against. A delete's fence may have been evicted from the shard's
-// FIFO, in which case evictedFenceFloor still stands in for it. Callers hold
-// sh.mu.
-func hydrateFenced(sh *shard, id FileID, notAfter uint64) bool {
-	return notAfter > 0 && (notAfter <= sh.hydrateFence[id] || notAfter <= sh.evictedFenceFloor)
+// recent truncate or delete over a range that mutation emptied — the two
+// mutations that leave no interval behind to compare against.
+//
+// The range test is what keeps a truncate from refusing its own survivors: the
+// prefix below newSize kept its intervals, so hydratable can still weigh a
+// stale fill against them there, and only a range reaching into the cleared
+// tail has to be turned away. A straddling range is refused whole rather than
+// trimmed, matching how the caller treats a short answer. A delete survives
+// nothing and so refuses everything.
+//
+// minBound is the lowest bound the fence still admits, and the two mutations
+// set it differently. A truncate admits its own marker version: the survivors
+// it kept are there for hydratable to arbitrate against, and DiscardLocalContent
+// depends on it — that path truncates to zero and hydrates the copied content
+// straight back, under a bound sampled just after. A delete admits nothing at
+// its tombstone version, because it scrubs the index entry and leaves nothing
+// to arbitrate against, so it fences one version higher.
+//
+// evictedFenceFloor stands in for fences the shard's FIFO has dropped, which
+// are all deletes. It stays inclusive: it is the maximum over several dropped
+// fences rather than any one mutation's version, so there is no single version
+// for it to be strict about, and erring wide there costs only a re-fetch.
+//
+// Callers hold sh.mu.
+func hydrateFenced(sh *shard, id FileID, notAfter uint64, offset, n int64) bool {
+	if notAfter == 0 {
+		return false
+	}
+	if notAfter <= sh.evictedFenceFloor {
+		return true
+	}
+	f, ok := sh.hydrateFence[id]
+	return ok && notAfter < f.minBound && offset+n > f.survives
 }
 
 // SeedCold registers a byte range as remote-durable-but-not-local: a read of it
@@ -546,6 +599,8 @@ func (s *Store) SeedCold(_ context.Context, id FileID, extents [][2]int64) error
 			version: e.version,
 			synced:  true,
 			cold:    true,
+			// Carried so a compaction can write it back out (liveColdEntries).
+			provenance: e.provenance,
 		})
 	}
 	return nil
@@ -562,7 +617,10 @@ func (s *Store) planColdSeed(sh *shard, id FileID, extents [][2]int64) []coldEnt
 			continue
 		}
 		if fi == nil { // unknown file: the whole extent is a hole
-			entries = append(entries, coldEntry{id: id, fileOff: e[0], length: e[1], version: s.nextVersion()})
+			entries = append(entries, coldEntry{
+				id: id, fileOff: e[0], length: e[1],
+				version: s.nextVersion(), provenance: coldFromScan,
+			})
 			continue
 		}
 		for _, p := range fi.plan(e[0], e[1]) {
@@ -574,6 +632,8 @@ func (s *Store) planColdSeed(sh *shard, id FileID, extents [][2]int64) []coldEnt
 				fileOff: e[0] + p.dstStart,
 				length:  p.dstEnd - p.dstStart,
 				version: s.nextVersion(),
+				// Minted here, so it dates this scan and not the content.
+				provenance: coldFromScan,
 			})
 		}
 	}
@@ -641,6 +701,8 @@ func (s *Store) SeedColdBatch(_ context.Context, seeds []ColdSeed) error {
 			version: e.version,
 			synced:  true,
 			cold:    true,
+			// Carried so a compaction can write it back out (liveColdEntries).
+			provenance: e.provenance,
 		})
 		sh.mu.Unlock()
 	}
@@ -837,13 +899,16 @@ func (s *Store) FileSize(_ context.Context, id FileID) (int64, bool) {
 	if fi == nil {
 		return 0, false
 	}
-	var size int64
-	for _, iv := range fi.ivs {
-		if e := iv.end(); e > size {
-			size = e
-		}
+	if len(fi.ivs) == 0 {
+		return 0, true
 	}
-	return size, true
+	// ivs is sorted by fileOff and non-overlapping, so end() is strictly
+	// increasing and the last interval carries the high-water mark. insert is the
+	// only path that can reorder or overlap, and it maintains that; every other
+	// rewrite either drops intervals or clamps an end downwards. The same
+	// invariant is what makes the sort.Search predicates in index.go monotone, so
+	// a violation would already have broken lookup before it reached here.
+	return fi.ivs[len(fi.ivs)-1].end(), true
 }
 
 // DurableExtent reports how far a file's bytes survive device loss: the maximum
@@ -887,12 +952,25 @@ func (s *Store) DurableExtent(_ context.Context, id FileID) (int64, bool) {
 	return size, true
 }
 
-// SetEvictionEnabled toggles whole-segment eviction. Disabling it pauses Evict
-// (and the write-path ensureSpace that drives it) so a health monitor can stop
-// the store shedding local bytes while the remote is unreachable — a cold-marked
-// range would otherwise be unrecoverable until the remote returns.
+// SetEvictionEnabled toggles the health-driven half of the eviction gate.
+// Disabling it pauses Evict (and the write-path ensureSpace that drives it) so a
+// health monitor can stop the store shedding local bytes while the remote is
+// unreachable — a cold-marked range would otherwise be unrecoverable until the
+// remote returns. Enabling it does not lift a retention pin.
 func (s *Store) SetEvictionEnabled(enabled bool) {
-	s.evictionDisabled.Store(!enabled)
+	s.evictionSuspended.Store(!enabled)
+}
+
+// SetEvictionPinned toggles the retention-policy half of the eviction gate. A
+// pinned store never evicts, whatever the remote's health does; clearing the pin
+// returns the store to whatever the health monitor last asked for.
+func (s *Store) SetEvictionPinned(pinned bool) {
+	s.evictionPinned.Store(pinned)
+}
+
+// evictionHeld reports whether either reason currently holds eviction off.
+func (s *Store) evictionHeld() bool {
+	return s.evictionSuspended.Load() || s.evictionPinned.Load()
 }
 
 // FileCount reports how many files the journal indexes. It is what a caller that
@@ -970,11 +1048,17 @@ func (s *Store) Truncate(ctx context.Context, id FileID, newSize int64) error {
 	if past {
 		// Published before the marker is stamped, so a hydrate that samples its
 		// bound after this point is never mistaken for one that predates the clip.
-		sh.hydrateFence[id] = s.version.Load()
+		// This is a floor, not the final fence: the marker's own version is not
+		// minted yet, and the fence is raised to it below.
+		sh.raiseHydrateFence(id, s.version.Load()+1, newSize)
 	}
 	sh.mu.Unlock()
 	if !past {
 		return nil
+	}
+
+	if s.beforeTruncateMarker != nil {
+		s.beforeTruncateMarker()
 	}
 
 	// Durability first: the marker must be on disk before the index is clipped.
@@ -984,6 +1068,12 @@ func (s *Store) Truncate(ctx context.Context, id FileID, newSize int64) error {
 	}
 
 	sh.mu.Lock()
+	// The clip below keeps every interval versioned above truncVer, so the fence
+	// has to reach truncVer too. Left at the peek it admits a hydrate bound in
+	// between: above the peek, so not stale, and the interval it writes back is
+	// versioned above truncVer, so the clip keeps it. The tail would come back
+	// and stay back.
+	sh.raiseHydrateFence(id, truncVer, newSize)
 	fi = sh.index[id]
 	var dirty int64
 	if fi != nil {
@@ -1101,6 +1191,16 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 	vIndex := map[FileID]*fileIndex{}
 	tombstones := map[FileID]uint64{}
 	truncations := map[FileID]truncMark{}
+	// postV collects the *synced* ranges written above the watermark, which
+	// phase 1 otherwise only skips. A manifest-seeded cold entry needs them: the
+	// seed says the range is remote-durable but dates only the scan, so it is
+	// the remote's current copy that gets served. A post-V write that reached
+	// the remote replaced that copy, which makes the entry point at content from
+	// after V. An unsynced post-V write does not: its bytes never left the local
+	// tier, the restore is about to drop them, and the remote still holds what
+	// the seed described. Only the synced ones are collected, because only they
+	// make the entry ambiguous.
+	postV := map[FileID][]interval{}
 	for _, sh := range s.shards {
 		sh.mu.Lock()
 		segs := make([]*segmentMeta, 0, len(sh.sealed)+1)
@@ -1116,7 +1216,18 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 			recs, _ := scanValidRecords(seg.fd, s.cfg.SegmentSize, s.cfg.SegmentSize)
 			for _, rec := range recs {
 				if rec.header.Version > v {
-					continue // above the watermark: belongs to a post-snapshot state
+					// Above the watermark: belongs to a post-snapshot state. Keep
+					// the data writes' ranges for the cold fold below.
+					if rec.header.Flags&(flagTombstone|flagTruncate) == 0 &&
+						rec.header.Flags&flagSynced != 0 && rec.header.PayloadLen > 0 {
+						fid := FileID(rec.fileID)
+						postV[fid] = append(postV[fid], interval{
+							fileOff: int64(rec.header.FileOffset),
+							length:  int64(rec.header.PayloadLen),
+							version: rec.header.Version,
+						})
+					}
+					continue
 				}
 				fid := FileID(rec.fileID)
 				switch {
@@ -1159,31 +1270,48 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 	// own tail back on a failed write, so a live store's log ends intact.
 	//
 	// The version test below asks whether the content existed at V, and only one
-	// of the log's two writers records something that answers it. Eviction copies
-	// the version off the interval it replaces, so its entry still dates the data.
-	// A seed mints a fresh one, dating the scan that noticed the range was
-	// remote-durable: that version exists so a racing Delete sweeps below the
-	// entry, and says nothing about when the bytes were written. An entry does not
-	// record which writer made it, so the two cannot be told apart here.
+	// of the log's two writer kinds records something that answers it. Eviction
+	// and invalidation copy the version off the interval they replace, so their
+	// entries still date the data. A manifest seed mints a fresh one, dating the
+	// scan that noticed the range was remote-durable: that version exists so a
+	// racing Delete sweeps below the entry, and says nothing about when the bytes
+	// were written. Each entry records which kind wrote it, so the two are told
+	// apart here rather than assumed.
 	//
-	// Eviction is the only writer that reaches a store this runs against — both
-	// manifest-seed callers require the share to have a remote, and this method
-	// runs only on a restore's local-only branch. The exception is a store seeded
-	// while it had a remote that was later detached.
+	// A seed-dated entry is refused instead of guessed at, because both guesses
+	// are silently wrong: skipping it leaves the hole this fold exists to
+	// prevent, and including it resurrects whatever the manifest holds *now* for
+	// a range that may have been written after V. A restore that cannot answer
+	// for a range must say so rather than return bytes it cannot vouch for.
 	//
-	// ponytail: on that store a seeded entry is skipped as post-V, which is the
-	// same lost cold range this fold exists to prevent. The entry alone cannot do
-	// better — including it unconditionally would instead resurrect content written
-	// after V, because a seed describes the file as the manifest currently has it.
-	// Closing it needs the entry to record its writer, a change to a durable
-	// on-disk format that wants its own migration.
+	// An entry from before provenance was recorded reads as coldFromUnknown and
+	// keeps the version test. That is the pre-existing behaviour, and it is right
+	// for the overwhelming majority of such entries: eviction is the only writer
+	// that reaches a store this method runs against, because both seed callers
+	// require the share to have a remote and this runs on a restore's local-only
+	// branch. The residual case is a store seeded while it had a remote that was
+	// later detached, whose legacy entries cannot be distinguished — those logs
+	// re-stamp themselves as soon as this build appends or compacts.
 	coldEntries, _, cerr := loadCold(s.dir)
 	if cerr != nil {
 		return fmt.Errorf("journal: restore: load cold log: %w", cerr)
 	}
 	for _, e := range coldEntries {
-		if e.length <= 0 || e.version > v {
+		if e.length <= 0 {
 			continue
+		}
+		if e.version > v {
+			continue
+		}
+		if e.provenance == coldFromScan {
+			if w, ok := overlappingWrite(postV[e.id], e.fileOff, e.length); ok {
+				return fmt.Errorf("%w: file %s range [%d,%d) is cold from a manifest seed at version %d, "+
+					"and version %d wrote [%d,%d) over it and reached the remote after the requested version %d — "+
+					"the remote copy the entry points at is that later content, and the seed's version dates the "+
+					"scan, not the bytes",
+					ErrColdProvenanceAmbiguous, e.id, e.fileOff, e.fileOff+e.length, e.version,
+					w.version, w.fileOff, w.end(), v)
+			}
 		}
 		fi := vIndex[e.id]
 		if fi == nil {
@@ -1196,6 +1324,8 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 			version: e.version,
 			synced:  true,
 			cold:    true,
+			// Carried so a compaction can write it back out (liveColdEntries).
+			provenance: e.provenance,
 		})
 	}
 
@@ -1315,6 +1445,23 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 	if err := s.commitDirtyShards(); err != nil {
 		return fmt.Errorf("journal: restore: commit re-materialized view: %w", err)
 	}
+	// The barrier skips a shard whose fsync has permanently failed, deliberately:
+	// syncFailed freezes the durable watermark, so a dirty-driven sweep would
+	// re-fsync every record on every pass forever. Right for syncLoop, which has
+	// no caller to report to; wrong here, because the skip contributes no error
+	// and the barrier returns nil for records that will never reach the device.
+	// The burials above fsynced themselves and may have landed before the failure
+	// while their replacements did not — the burial-without-replacement state the
+	// barrier exists to prevent, reported as a completed restore.
+	//
+	// Every shard, not only the ones this pass wrote: a restore replays all of
+	// them and tombstones every file at the head, and only a shard that has
+	// appended records can have failed an fsync in the first place.
+	for i, sh := range s.shards {
+		if sh.syncFailed.Load() {
+			return fmt.Errorf("journal: restore: shard %d holds records no fsync can make durable: an earlier fsync failed permanently", i)
+		}
+	}
 	return nil
 }
 
@@ -1376,6 +1523,9 @@ func (s *Store) Invalidate(_ context.Context, id FileID, off, length int64) erro
 			fileOff: iv.fileOff,
 			length:  iv.length,
 			version: iv.version,
+			// Copied off the interval whose local bytes just failed checksum, so
+			// it dates the content exactly as eviction's does.
+			provenance: coldFromData,
 		})
 	}
 	if len(entries) == 0 {

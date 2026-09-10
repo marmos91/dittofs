@@ -16,7 +16,7 @@ var errCtrlCommit = errors.New("ctrl sink: forced commit failure")
 // test can observe and control when uploads complete. It counts in-flight commits
 // (to bound concurrency), can fail a chosen block, and marks committed hashes
 // durable on the paired deduper. It deliberately does NOT implement
-// supersededReaper, so carve skips the manifest reap.
+// SupersededReaper, so carve skips the manifest reap.
 type ctrlSink struct {
 	dedup *fakeDeduper
 

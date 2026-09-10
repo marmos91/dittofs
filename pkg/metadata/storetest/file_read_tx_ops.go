@@ -82,7 +82,7 @@ func runFileReadTxOps(t *testing.T, factory StoreFactory) {
 			require.NoError(t, err, "GetFileByPayloadID must see the write from its own transaction")
 			assert.Equal(t, id, byPayload.ID)
 
-			entries, _, err := tx.ListChildren(ctx, root, "", 0)
+			entries, _, err := tx.ListChildren(ctx, root, "", 0, metadata.WithAttrs)
 			require.NoError(t, err)
 			assert.True(t, hasEntryNamed(entries, name),
 				"ListChildren must see the entry added by its own transaction, got %v", entryNames(entries))
@@ -132,7 +132,7 @@ func runFileReadTxOps(t *testing.T, factory StoreFactory) {
 		assert.True(t, metadata.IsNotFoundError(err),
 			"a rolled-back directory entry must not resolve afterwards, got %v", err)
 
-		entries, _, err := store.ListChildren(ctx, root, "", 0)
+		entries, _, err := store.ListChildren(ctx, root, "", 0, metadata.WithAttrs)
 		require.NoError(t, err)
 		assert.False(t, hasEntryNamed(entries, name),
 			"a rolled-back entry must not appear in a listing, got %v", entryNames(entries))

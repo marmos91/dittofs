@@ -22,15 +22,11 @@ func newLockedFile(t *testing.T, sm *StateManager, clientID uint64, fh []byte) t
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
 	}
-	confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+	confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
-	lockResult, err := sm.LockNew(context.Background(),
-		clientID, []byte("lock-owner"), 1,
-		&confirmed.Stateid, 3,
-		fh, types.WRITE_LT, 0, 100, false,
-	)
+	lockResult, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner"), 1, &confirmed.Stateid, 3, fh, types.WRITE_LT, 0, 100, false, 0)
 	if err != nil {
 		t.Fatalf("LockNew: %v", err)
 	}
@@ -55,7 +51,7 @@ func TestValidateStateid_LockStateid_RoutedToLockMap(t *testing.T) {
 
 	// A lock stateid presented to WRITE must validate and return the parent
 	// open state (carrying the share-access bits the caller enforces).
-	openState, err := sm.ValidateStateid(&lockStateid, fh, StateidOpWrite)
+	openState, err := sm.ValidateStateid(&lockStateid, fh, StateidOpWrite, 0)
 	if err != nil {
 		t.Fatalf("ValidateStateid on lock stateid (WRITE): %v", err)
 	}
@@ -67,7 +63,7 @@ func TestValidateStateid_LockStateid_RoutedToLockMap(t *testing.T) {
 	}
 
 	// Same lock stateid must also validate on READ.
-	if _, err := sm.ValidateStateid(&lockStateid, fh, StateidOpRead); err != nil {
+	if _, err := sm.ValidateStateid(&lockStateid, fh, StateidOpRead, 0); err != nil {
 		t.Fatalf("ValidateStateid on lock stateid (READ): %v", err)
 	}
 }
@@ -84,7 +80,7 @@ func TestValidateStateid_LockStateid_Seqid0(t *testing.T) {
 	lockStateid := newLockedFile(t, sm, 0, fh)
 	lockStateid.Seqid = 0
 
-	if _, err := sm.ValidateStateid(&lockStateid, fh, StateidOpRead); err != nil {
+	if _, err := sm.ValidateStateid(&lockStateid, fh, StateidOpRead, 0); err != nil {
 		t.Fatalf("ValidateStateid on lock stateid with seqid=0: %v", err)
 	}
 }
@@ -147,7 +143,7 @@ func TestFreeStateid_CrossClientOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
 	}
-	if _, err := sm.ConfirmOpen(&openResult.Stateid, 2); err != nil {
+	if _, err := sm.ConfirmOpen(&openResult.Stateid, 2, 0); err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
 
@@ -162,9 +158,11 @@ func TestFreeStateid_CrossClientOpen(t *testing.T) {
 		t.Error("victim's open stateid was destroyed by another client")
 	}
 
-	// Owning client can still free it.
-	if err := sm.FreeStateid(victimClientID, &openResult.Stateid); err != nil {
-		t.Fatalf("FreeStateid by owning client: %v", err)
+	// The owning client gets a different refusal — LOCKS_HELD, because the open
+	// is still open — which is what distinguishes "not yours" from "not now".
+	err = sm.FreeStateid(victimClientID, &openResult.Stateid)
+	if stateErr, ok := err.(*NFS4StateError); !ok || stateErr.Status != types.NFS4ERR_LOCKS_HELD {
+		t.Errorf("expected NFS4ERR_LOCKS_HELD for the owning client, got %v", err)
 	}
 }
 
@@ -216,7 +214,7 @@ func TestLockExisting_V41Seqid0(t *testing.T) {
 	// protection). Extend the lock with a second byte range via LockExisting.
 	v41Stateid := lockStateid
 	v41Stateid.Seqid = 0
-	result, err := sm.LockExisting(context.Background(), &v41Stateid, 0, fh, types.WRITE_LT, 200, 100, false)
+	result, err := sm.LockExisting(context.Background(), &v41Stateid, 0, fh, types.WRITE_LT, 200, 100, false, 0)
 	if err != nil {
 		t.Fatalf("LockExisting with v4.1 stateid seqid=0: %v", err)
 	}
@@ -242,24 +240,28 @@ func TestUnlockFile_V41Seqid0(t *testing.T) {
 	// the LOCKU below is unambiguously after a seqid increment.
 	v41Lock := lockStateid
 	v41Lock.Seqid = 0
-	if _, err := sm.LockExisting(context.Background(), &v41Lock, 0, fh, types.WRITE_LT, 200, 100, false); err != nil {
+	if _, err := sm.LockExisting(context.Background(), &v41Lock, 0, fh, types.WRITE_LT, 200, 100, false, 0); err != nil {
 		t.Fatalf("LockExisting setup: %v", err)
 	}
 
 	// v4.1 LOCKU: stateid seqid=0, owner seqid=0.
 	unlockStateid := lockStateid
 	unlockStateid.Seqid = 0
-	if _, err := sm.UnlockFile(&unlockStateid, 0, types.WRITE_LT, 0, 100); err != nil {
+	if _, err := sm.UnlockFile(&unlockStateid, 0, types.WRITE_LT, 0, 100, 0); err != nil {
 		t.Fatalf("UnlockFile with v4.1 stateid seqid=0: %v", err)
 	}
 }
 
 // TestExchangeID_Case2_PrincipalMismatch is the negative control for the
-// EXCHANGE_ID Case 2 principal-mismatch fix (v41_client.go). RFC 8881
-// Section 18.35.4 requires NFS4ERR_CLID_INUSE when the existing record's
-// principal differs from the incoming one. Before the fix Case 2 unconditionally
-// overwrote the principal, allowing a peer that knows the owner ID + verifier to
-// hijack the client.
+// EXCHANGE_ID principal-mismatch guard (v41_client.go). RFC 8881
+// Section 18.35.4 case 3 requires NFS4ERR_CLID_INUSE when the record's
+// principal differs from the incoming one and that record still holds state
+// under a live lease; without the guard a peer that knows the owner ID +
+// verifier hijacks the client's lease and state.
+//
+// The record has to be confirmed and holding a session for the guard to apply:
+// an unconfirmed record is replaced outright by case 4, and a confirmed record
+// holding nothing is taken over by case 3 itself.
 func TestExchangeID_Case2_PrincipalMismatch(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	defer sm.Shutdown()
@@ -267,16 +269,22 @@ func TestExchangeID_Case2_PrincipalMismatch(t *testing.T) {
 	ownerID := []byte("client-owner-principal")
 	verifier := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
 
-	// Establish the record under principal "alice".
-	if _, err := sm.ExchangeID(ownerID, verifier, 0, nil, "10.0.0.1:12345", "alice"); err != nil {
+	// Establish the record under principal "alice" and confirm it, so it holds
+	// a session.
+	exch, err := sm.ExchangeID(ownerID, verifier, 0, nil, "10.0.0.1:12345", "alice")
+	if err != nil {
 		t.Fatalf("ExchangeID (alice): %v", err)
+	}
+	if _, _, err := sm.CreateSession(exch.ClientID, exch.SequenceID, 0,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil, "alice"); err != nil {
+		t.Fatalf("CreateSession (alice): %v", err)
 	}
 
 	// A peer that knows the owner ID + verifier replays EXCHANGE_ID under a
 	// different principal -- must be rejected with NFS4ERR_CLID_INUSE.
-	_, err := sm.ExchangeID(ownerID, verifier, 0, nil, "10.0.0.9:12345", "mallory")
+	_, err = sm.ExchangeID(ownerID, verifier, 0, nil, "10.0.0.9:12345", "mallory")
 	if err == nil {
-		t.Fatal("EXCHANGE_ID Case 2 with a different principal must be rejected")
+		t.Fatal("EXCHANGE_ID with a different principal must be rejected")
 	}
 	if err != ErrClientIDInUse {
 		t.Errorf("expected ErrClientIDInUse, got %v", err)
@@ -310,9 +318,94 @@ func TestExchangeID_Case2_PrincipalMismatch(t *testing.T) {
 	}
 }
 
-func recPrincipal(rec *V41ClientRecord) string {
+func recPrincipal(rec *ClientRecord) string {
 	if rec == nil {
 		return ""
 	}
 	return rec.Principal
+}
+
+// TestValidateStateid_CrossClient covers the owner-to-client binding on the
+// I/O path. A stateid names state owned by one client; another client that
+// learns or guesses its bytes must not be able to use it, the same rule
+// FREE_STATEID already enforces.
+//
+// Each case also asserts the owning client is still accepted, so the guard
+// cannot pass by rejecting everything, and that a zero caller client ID — an
+// NFSv4.0 request, which carries no clientid4 — still validates, since v4.0
+// has no identity to compare against.
+func TestValidateStateid_CrossClient(t *testing.T) {
+	const (
+		clientA uint64 = 0xAAAA
+		clientB uint64 = 0xBBBB
+	)
+
+	t.Run("open stateid", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		defer sm.Shutdown()
+
+		fh := []byte("fh-cross-client-open")
+		openResult, err := sm.OpenFile(clientA, []byte("owner-a"), 1, fh,
+			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+		if err != nil {
+			t.Fatalf("OpenFile: %v", err)
+		}
+		confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2, 0)
+		if err != nil {
+			t.Fatalf("ConfirmOpen: %v", err)
+		}
+		sid := confirmed.Stateid
+
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpWrite, clientB); !isStatus(err, types.NFS4ERR_BAD_STATEID) {
+			t.Errorf("client B writing through client A's open stateid: err = %v, want NFS4ERR_BAD_STATEID", err)
+		}
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpWrite, clientA); err != nil {
+			t.Errorf("owning client rejected: %v", err)
+		}
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpWrite, 0); err != nil {
+			t.Errorf("NFSv4.0 caller (no client identity) rejected: %v", err)
+		}
+	})
+
+	t.Run("lock stateid", func(t *testing.T) {
+		lm := lock.NewManager()
+		sm := NewStateManager(90 * time.Second)
+		sm.SetLockManager(lm)
+		defer sm.Shutdown()
+
+		fh := []byte("fh-cross-client-lock")
+		sid := newLockedFile(t, sm, clientA, fh)
+
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpWrite, clientB); !isStatus(err, types.NFS4ERR_BAD_STATEID) {
+			t.Errorf("client B writing through client A's lock stateid: err = %v, want NFS4ERR_BAD_STATEID", err)
+		}
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpWrite, clientA); err != nil {
+			t.Errorf("owning client rejected: %v", err)
+		}
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpWrite, 0); err != nil {
+			t.Errorf("NFSv4.0 caller (no client identity) rejected: %v", err)
+		}
+	})
+
+	t.Run("delegation stateid", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		defer sm.Shutdown()
+
+		fh := []byte("fh-cross-client-deleg")
+		deleg := sm.GrantDelegation(clientA, fh, types.OPEN_DELEGATE_READ)
+		if deleg == nil {
+			t.Fatal("GrantDelegation returned nil")
+		}
+		sid := deleg.Stateid
+
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpRead, clientB); !isStatus(err, types.NFS4ERR_BAD_STATEID) {
+			t.Errorf("client B reading through client A's delegation stateid: err = %v, want NFS4ERR_BAD_STATEID", err)
+		}
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpRead, clientA); err != nil {
+			t.Errorf("owning client rejected: %v", err)
+		}
+		if _, err := sm.ValidateStateid(&sid, fh, StateidOpRead, 0); err != nil {
+			t.Errorf("NFSv4.0 caller (no client identity) rejected: %v", err)
+		}
+	})
 }

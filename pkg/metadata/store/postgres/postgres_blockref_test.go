@@ -13,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
+	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
 )
 
 // hashOfSeed returns a deterministic ContentHash for the given seed string.
@@ -73,11 +74,8 @@ func createShareAndFile(t *testing.T, store metadata.Store, shareName, fileName 
 	t.Helper()
 	ctx := t.Context()
 
-	// CreateRootDirectory creates both the files row and the shares row
-	// (via ON CONFLICT in transaction.go's CreateRootDirectory). We skip
-	// the standalone CreateShare call because the postgres backend's
-	// CreateShare INSERT does not include root_file_id (pre-existing
-	// scope-boundary issue, not introduced by).
+	// CreateRootDirectory writes both the files row and the shares row, via
+	// the ON CONFLICT upsert in transaction.go's CreateRootDirectory.
 	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0o755,
@@ -250,7 +248,7 @@ func TestPostgres_FileChunkRefs_CascadeDelete(t *testing.T) {
 	}
 
 	// Pre-delete: 2 rows expected.
-	rawSQL, ok := store.(postgres.RawSQLAccessor)
+	rawSQL, ok := store.(storesql.RawSQLAccessor)
 	if !ok {
 		t.Fatalf("store does not implement RawSQLAccessor — cannot count file_block_refs rows")
 	}
@@ -393,7 +391,7 @@ func TestPostgres_Restore_ReconcilesNullHashFileChunks(t *testing.T) {
 	// The file_blocks read-index row ID is "{content_id}/{offset}".
 	blockID := payloadID + "/0"
 
-	rawSQL, ok := store.(postgres.RawSQLAccessor)
+	rawSQL, ok := store.(storesql.RawSQLAccessor)
 	if !ok {
 		t.Fatalf("store does not implement RawSQLAccessor")
 	}

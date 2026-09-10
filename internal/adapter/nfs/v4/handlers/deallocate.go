@@ -39,14 +39,14 @@ func (h *Handler) handleDeallocate(ctx *types.CompoundContext, reader io.Reader)
 		return deallocErr(types.NFS4ERR_ROFS)
 	}
 
-	stateid, offset, length, st := decodeAllocArgs(reader)
+	stateid, offset, length, st := decodeAllocArgs(ctx, reader)
 	if st != types.NFS4_OK {
 		return deallocErr(st)
 	}
 
 	// DEALLOCATE modifies file content: validate the stateid as a write op and
 	// require WRITE share-access on a real open stateid (special stateids pass).
-	if openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpWrite); stateErr != nil {
+	if openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpWrite, ctx.SessionClientID); stateErr != nil {
 		s := mapStateError(stateErr)
 		logger.Debug("NFSv4.2 DEALLOCATE stateid validation failed", "error", stateErr, "nfs_status", s, "client", ctx.ClientAddr)
 		return deallocErr(s)
@@ -66,7 +66,7 @@ func (h *Handler) handleDeallocate(ctx *types.CompoundContext, reader io.Reader)
 	handle := metadata.FileHandle(ctx.CurrentFH)
 	res, err := metaSvc.PunchHole(authCtx, handle, offset, length)
 	if err != nil {
-		return deallocErr(common.MapToNFS4(err))
+		return deallocErr(types.StatusForErr(err))
 	}
 
 	// The engine punch is correctness-critical, not just reclaim: the read path
@@ -91,7 +91,7 @@ func (h *Handler) handleDeallocate(ctx *types.CompoundContext, reader io.Reader)
 		if _, pErr := blockStore.PunchHole(ctx.Context, string(res.PayloadID), res.PreOpBlocks, offset, punchLen(offset, length, res.File.Size)); pErr != nil {
 			logger.Error("NFSv4.2 DEALLOCATE: block store punch failed",
 				"handle", string(handle), "error", pErr)
-			return deallocErr(types.NFS4ERR_IO)
+			return deallocErr(types.StatusFor(common.ClassifyBlockStoreError(pErr)))
 		}
 	}
 
@@ -104,10 +104,10 @@ func (h *Handler) handleDeallocate(ctx *types.CompoundContext, reader io.Reader)
 // decodeAllocArgs decodes the shared (stateid, offset, length) argument tuple of
 // ALLOCATE and DEALLOCATE. Returns NFS4ERR_BADXDR on a malformed stream and
 // NFS4ERR_INVAL when offset+length overflows uint64.
-func decodeAllocArgs(reader io.Reader) (*types.Stateid4, uint64, uint64, uint32) {
-	stateid, err := types.DecodeStateid4(reader)
-	if err != nil {
-		return nil, 0, 0, types.NFS4ERR_BADXDR
+func decodeAllocArgs(ctx *types.CompoundContext, reader io.Reader) (*types.Stateid4, uint64, uint64, uint32) {
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		return nil, 0, 0, argStatus
 	}
 	offset, err := xdr.DecodeUint64(reader)
 	if err != nil {

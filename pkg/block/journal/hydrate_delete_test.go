@@ -125,12 +125,12 @@ func TestDeleteFenceCountIsBounded(t *testing.T) {
 func TestDeleteFenceEvictionSparesARestampedFence(t *testing.T) {
 	sh := newShard(nil)
 	sh.fenceDelete("x", 5)
-	sh.hydrateFence["x"] = 99 // a later Truncate re-stamps the same key
+	sh.raiseHydrateFence("x", 99, 4096) // a later Truncate re-stamps the same key
 	for i := 0; i < maxDeleteFences+1; i++ {
 		sh.fenceDelete(FileID(fmt.Sprintf("f%d", i)), uint64(i+100))
 	}
-	if got := sh.hydrateFence["x"]; got != 99 {
-		t.Fatalf("eviction dropped a re-stamped fence: hydrateFence[x] = %d, want 99", got)
+	if got := sh.hydrateFence["x"]; got.minBound != 99 {
+		t.Fatalf("eviction dropped a re-stamped fence: hydrateFence[x].minBound = %d, want 99", got.minBound)
 	}
 }
 

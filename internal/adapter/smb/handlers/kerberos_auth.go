@@ -546,7 +546,7 @@ func (h *Handler) resolveKerberosIdentity(ctx *SMBHandlerContext, principal, rea
 
 // synthUserFromResolved builds a transient, non-persisted *models.User from a
 // directory-resolved identity so an AD/LDAP user with no local control-plane
-// account can still establish an SMB session. getUserIdentity derives the
+// account can still establish an SMB session. uidGIDFromSessionUser derives the
 // primary GID from the first group, so the resolved primary GID is listed
 // first; the full resolved supplementary set follows so the SMB auth context
 // carries nested AD group GIDs for POSIX-mode group checks, mirroring the NFS

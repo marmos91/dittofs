@@ -10,6 +10,12 @@
       url = "github:pjd/pjdfstest";
       flake = false;
     };
+    # pynfs - the reference NFSv4.0/4.1 protocol conformance suite.
+    # Speaks NFSv4 itself, so it needs no kernel mount and no privileges.
+    pynfs-src = {
+      url = "github:kofemann/pynfs";
+      flake = false;
+    };
   };
 
   outputs =
@@ -18,10 +24,11 @@
       nixpkgs,
       flake-utils,
       pjdfstest-src,
+      pynfs-src,
     }:
     let
       # Version configuration - update this for releases
-      version = "0.31.0";
+      version = "0.31.1";
     in
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -88,8 +95,82 @@
           };
         };
 
+        # pynfs - the reference NFSv4 protocol conformance suite.
+        #
+        # Unlike pjdfstest, pynfs is its own NFSv4 client: it speaks the protocol
+        # over TCP and needs neither a kernel mount nor root, so it runs on any
+        # unix host that can reach the server.
+        #
+        # Python 3.12 is deliberate. pynfs unpacks XDR with the stdlib `xdrlib`
+        # module, which was removed in 3.13; the replacement `xdrlib3` is not in
+        # nixpkgs. Moving to python3 (currently 3.13) silently breaks every test
+        # at import time, so pin the interpreter rather than the alias.
+        pynfs =
+          let
+            python = pkgs.python312;
+          in
+          # stdenvNoCC: pynfs is pure Python, and a plain mkDerivation would pull
+          # the whole C toolchain (on darwin, clang plus the Apple SDK — the best
+          # part of a gigabyte) to run a script that never compiles anything.
+          pkgs.stdenvNoCC.mkDerivation {
+            pname = "pynfs";
+            version = "2026-03-27";
+            src = pynfs-src;
+
+            nativeBuildInputs = [
+              python
+              python.pkgs.ply
+              python.pkgs.setuptools
+              pkgs.makeWrapper
+            ];
+
+            # Generates xdrdef/*_const.py, *_type.py and *_pack.py in place from
+            # the .x files. The top-level setup.py shells out per subdirectory
+            # with os.system and discards the status, so verify the outputs.
+            buildPhase = ''
+              runHook preBuild
+              ${python}/bin/python3 setup.py build
+              for f in nfs4.1/xdrdef/nfs4_const.py \
+                       nfs4.1/xdrdef/nfs4_pack.py \
+                       nfs4.1/xdrdef/nfs3_const.py; do
+                if [ ! -f "$f" ]; then
+                  echo "pynfs: XDR generation did not produce $f" >&2
+                  exit 1
+                fi
+              done
+              runHook postBuild
+            '';
+
+            # -a keeps the symlinks: nfs4.0/xdrdef and nfs4.0/lib/testmod.py both
+            # point into the nfs4.1 tree, and dereferencing them desynchronises
+            # the two suites.
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out/share/pynfs $out/bin
+              cp -a . $out/share/pynfs/
+
+              for v in 4.0 4.1; do
+                makeWrapper ${python}/bin/python3 "$out/bin/pynfs-$v" \
+                  --add-flags "$out/share/pynfs/nfs$v/testserver.py" \
+                  --run "cd $out/share/pynfs/nfs$v"
+              done
+              runHook postInstall
+            '';
+
+            # nfs4.1/testserver.py imports use_local, which builds sys.path from
+            # the current directory, so the wrappers must cd into their own tree.
+            doCheck = false;
+
+            meta = with pkgs.lib; {
+              description = "NFSv4.0/4.1 protocol conformance test suite";
+              homepage = "https://linux-nfs.org/wiki/index.php/Pynfs";
+              license = licenses.gpl2Only;
+              platforms = platforms.unix;
+              mainProgram = "pynfs-4.1";
+            };
+          };
+
         # Helper script to start PostgreSQL for testing
-        # Uses sudo for docker commands to avoid docker group requirement
         dfs-postgres-start = pkgs.writeShellScriptBin "dfs-postgres-start" ''
           container_name="dittofs-postgres-test"
 
@@ -99,26 +180,31 @@
             exit 1
           fi
 
-          # Check if docker daemon is running (using sudo)
-          if ! sudo docker info &>/dev/null; then
+          # Docker Desktop and a rootless daemon answer to the invoking user;
+          # a system daemon usually does not. Probe before reaching for sudo,
+          # so the script neither demands a password it does not need nor
+          # loses, to sudo's secure_path, the docker it just found.
+          DOCKER=(docker)
+          docker info &>/dev/null || DOCKER=(sudo "$(command -v docker)")
+          if ! "''${DOCKER[@]}" info &>/dev/null; then
             echo "Error: Cannot connect to Docker daemon."
-            echo "Make sure Docker daemon is running: sudo systemctl start docker"
+            echo "Start it first (Linux: sudo systemctl start docker)."
             exit 1
           fi
 
           # Check if container already exists
-          if sudo docker ps -a --format '{{.Names}}' | grep -q "^$container_name$"; then
+          if "''${DOCKER[@]}" ps -a --format '{{.Names}}' | grep -q "^$container_name$"; then
             # Check if it's running
-            if sudo docker ps --format '{{.Names}}' | grep -q "^$container_name$"; then
+            if "''${DOCKER[@]}" ps --format '{{.Names}}' | grep -q "^$container_name$"; then
               echo "PostgreSQL container already running"
               exit 0
             else
               echo "Starting existing PostgreSQL container..."
-              sudo docker start "$container_name"
+              "''${DOCKER[@]}" start "$container_name"
             fi
           else
             echo "Creating PostgreSQL container for DittoFS testing..."
-            sudo docker run -d \
+            "''${DOCKER[@]}" run -d \
               --name "$container_name" \
               -e POSTGRES_USER=dittofs \
               -e POSTGRES_PASSWORD=dittofs \
@@ -128,8 +214,8 @@
           fi
 
           echo "Waiting for PostgreSQL to be ready..."
-          for i in $(seq 1 30); do
-            if sudo docker exec "$container_name" pg_isready -U dittofs -d dittofs_test &>/dev/null; then
+          for _ in $(seq 1 30); do
+            if "''${DOCKER[@]}" exec "$container_name" pg_isready -U dittofs -d dittofs_test &>/dev/null; then
               echo "PostgreSQL is ready!"
               echo ""
               echo "Connection details:"
@@ -150,15 +236,17 @@
         '';
 
         # Helper script to stop PostgreSQL test container
-        # Uses sudo for docker commands to avoid docker group requirement
         dfs-postgres-stop = pkgs.writeShellScriptBin "dfs-postgres-stop" ''
           container_name="dittofs-postgres-test"
 
-          if sudo docker ps -a --format '{{.Names}}' | grep -q "^$container_name$"; then
+          DOCKER=(docker)
+          docker info &>/dev/null || DOCKER=(sudo "$(command -v docker)")
+
+          if "''${DOCKER[@]}" ps -a --format '{{.Names}}' | grep -q "^$container_name$"; then
             echo "Stopping PostgreSQL container..."
-            sudo docker stop "$container_name" 2>/dev/null || true
+            "''${DOCKER[@]}" stop "$container_name" 2>/dev/null || true
             echo "Removing PostgreSQL container..."
-            sudo docker rm "$container_name" 2>/dev/null || true
+            "''${DOCKER[@]}" rm "$container_name" 2>/dev/null || true
             echo "PostgreSQL container removed"
           else
             echo "PostgreSQL container not found"
@@ -167,7 +255,8 @@
           # Also clean up content store
           if [ -d "/tmp/dittofs-content-postgres" ]; then
             echo "Cleaning up content store..."
-            sudo rm -rf /tmp/dittofs-content-postgres
+            rm -rf /tmp/dittofs-content-postgres 2>/dev/null \
+              || sudo rm -rf /tmp/dittofs-content-postgres
           fi
 
           echo "Cleanup complete"
@@ -271,14 +360,25 @@
           xmlstarlet # TRX result parsing
           curl # health checks in bootstrap/local mode
 
-          # Benchmark load generator for the dfsbench harness (bench/, cmd/bench)
-          fio
+          # NFSv4 conformance suite. Pure Python speaking NFSv4 over TCP, so it
+          # needs no kernel mount and runs on every platform. Kept on PATH so
+          # run-pynfs.sh finds it instead of rebuilding it per invocation.
+          pynfs
+
+          # PostgreSQL test container helpers. They only drive the docker CLI,
+          # which exists on macOS too.
+          dfs-postgres-start
+          dfs-postgres-stop
         ];
 
         # Platform-specific inputs
         linuxInputs =
           with pkgs;
           lib.optionals stdenv.isLinux [
+            # Benchmark load generator for the dfsbench harness (bench/, cmd/bench).
+            # Its libnbd dependency is Linux-only, and evaluating it on macOS
+            # fails outright, taking the whole dev shell with it.
+            fio
             # NFS testing tools (Linux only)
             nfs-utils
             # ACL support for POSIX compliance testing
@@ -291,13 +391,12 @@
             pjdfstest
             # Docker client for PostgreSQL testing (daemon must be running on host)
             docker-client
-            # Helper scripts (work in any shell - bash, zsh, etc.)
+            # Helper scripts that need the Linux NFS client, /proc/mounts or
+            # pjdfstest. The docker-only helpers live in commonBuildInputs.
             dfs-mount
             dfs-umount
             dfs-posix
             dfs-e2e
-            dfs-postgres-start
-            dfs-postgres-stop
           ];
 
         darwinInputs =
@@ -307,18 +406,18 @@
             # For pjdfstest on macOS, use Docker: see test/posix/README.md
           ];
 
-      in
-      {
-        # Development shell
-        devShells.default = pkgs.mkShell {
+        # Go cache locations, shared by every shell.
+        goEnv = ''
+          # Ensure Go modules are cached in user's home directory
+          export GOPATH="$HOME/go"
+          export GOMODCACHE="$HOME/go/pkg/mod"
+          export GOCACHE="$HOME/.cache/go-build"
+        '';
+
+        devShell = pkgs.mkShell {
           buildInputs = commonBuildInputs ++ linuxInputs ++ darwinInputs;
 
-          shellHook = ''
-            # Ensure Go modules are cached in user's home directory
-            export GOPATH="$HOME/go"
-            export GOMODCACHE="$HOME/go/pkg/mod"
-            export GOCACHE="$HOME/.cache/go-build"
-
+          shellHook = goEnv + ''
             echo "╔═══════════════════════════════════════════╗"
             echo "║     DittoFS Development Environment       ║"
             echo "╚═══════════════════════════════════════════╝"
@@ -348,14 +447,17 @@
               echo "  dfs-posix chmod             Run chmod tests only"
               echo "  dfs-posix chown             Run chown tests only"
               echo ""
-              echo "PostgreSQL testing:"
-              echo "  dfs-postgres-start          Start PostgreSQL container"
-              echo "  dfs-postgres-stop           Stop and remove container"
-              echo ""
               echo "E2E testing (requires sudo for NFS mounts):"
               echo "  dfs-e2e                     Run all E2E tests"
               echo "  dfs-e2e -run TestName       Run specific test"
+              echo ""
             fi
+            echo "PostgreSQL testing:"
+            echo "  dfs-postgres-start          Start PostgreSQL container"
+            echo "  dfs-postgres-stop           Stop and remove container"
+            echo ""
+            echo "NFSv4 protocol conformance (no mount, no root):"
+            echo "  pynfs-4.0 / pynfs-4.1       pynfs test client"
             echo ""
 
             # Use zsh if available and not already in zsh
@@ -366,18 +468,13 @@
             fi
           '';
         };
+      in
+      {
+        devShells.default = devShell;
 
-        # CI shell (minimal, for running tests in CI)
-        devShells.ci = pkgs.mkShell {
-          buildInputs = commonBuildInputs ++ linuxInputs;
-
-          shellHook = ''
-            # Ensure Go modules are cached in user's home directory
-            export GOPATH="$HOME/go"
-            export GOMODCACHE="$HOME/go/pkg/mod"
-            export GOCACHE="$HOME/.cache/go-build"
-          '';
-        };
+        # Same toolchain as the development shell, without the banner and
+        # without exec-ing into zsh.
+        devShells.ci = devShell.overrideAttrs { shellHook = goEnv; };
 
         # Packages for building DittoFS
         packages =
@@ -388,7 +485,7 @@
 
               # Auto-updated by .github/workflows/nix-update-hash.yml on go.mod/go.sum changes.
               # Manual: go run scripts/update-nix-hash.go
-              vendorHash = "sha256-dVBwsfZLS+W6lomOcyVaVJip/ALRHnUJxn3EKfkzuT4=";
+              vendorHash = "sha256-Hpkk/rSv5EGeXF+1YFAI2+OXpQOcVuprXSPqOoJjgBQ=";
 
               ldflags = [
                 "-s"
@@ -441,9 +538,35 @@
                 };
               }
             );
+
+            # NFSv4 protocol conformance suite. Not Linux-gated: pynfs is a
+            # pure-Python NFSv4 client, so it also runs against a server on macOS.
+            inherit pynfs;
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
             inherit pjdfstest;
+          };
+
+        # `nix run .#dfs` / `nix run github:marmos91/dittofs#dfsctl`, so the
+        # binaries are reachable without cloning and building first.
+        apps =
+          let
+            # mkApp alone leaves out meta, which `nix flake check` warns about.
+            app =
+              drv: name: description:
+              flake-utils.lib.mkApp { inherit drv name; } // { meta.description = description; };
+          in
+          rec {
+            default = dfs;
+            dfs = app self.packages.${system}.dfs "dfs" "DittoFS server daemon";
+            dfsctl = app self.packages.${system}.dfsctl "dfsctl" "DittoFS REST client";
+
+            # pynfs ships one entrypoint per NFSv4 minor version; `nix run .#pynfs`
+            # resolves to the 4.1 one through the package's mainProgram. The
+            # attribute names use an underscore because nix splits an attribute
+            # path on dots.
+            pynfs-4_0 = app pynfs "pynfs-4.0" "pynfs NFSv4.0 conformance client";
+            pynfs-4_1 = app pynfs "pynfs-4.1" "pynfs NFSv4.1 conformance client";
           };
 
         # Flake checks - run with `nix flake check`
@@ -469,6 +592,33 @@
           dfsctl-binary = pkgs.runCommand "check-dfsctl-binary" { } ''
             ${self.packages.${system}.dfsctl}/bin/dfsctl version > /dev/null 2>&1 || \
             ${self.packages.${system}.dfsctl}/bin/dfsctl --help > /dev/null 2>&1
+            touch $out
+          '';
+
+          # The conformance graders decide whether a suite run counts as green.
+          # They run against synthetic output in about a second each, with no
+          # server and no network, so they belong in the pre-push check.
+          conformance-graders = pkgs.runCommand "check-conformance-graders" { } ''
+            mkdir -p test/smb-conformance test/nfs-conformance
+            cp -r ${./test/common} test/common
+            cp -r ${./test/smb-conformance/smbtorture} test/smb-conformance/smbtorture
+            cp -r ${./test/nfs-conformance/pynfs} test/nfs-conformance/pynfs
+            chmod -R u+w test
+
+            status=0
+            for suite in test/smb-conformance/smbtorture test/nfs-conformance/pynfs; do
+              echo "== $suite/parse-results_test.sh"
+              report="$(bash "$suite/parse-results_test.sh" 2>&1)" || status=1
+              printf '%s\n' "$report"
+              # A suite that matched no cases exits 0 having asserted nothing,
+              # which reads exactly like a pass.
+              if ! printf '%s\n' "$report" | grep -q '^ok:'; then
+                echo "$suite asserted nothing" >&2
+                status=1
+              fi
+            done
+
+            [ "$status" -eq 0 ]
             touch $out
           '';
         };

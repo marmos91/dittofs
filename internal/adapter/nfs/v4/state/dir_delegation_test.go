@@ -541,15 +541,16 @@ func registerTestV41Client(t *testing.T, sm *StateManager) uint64 {
 	defer sm.mu.Unlock()
 
 	clientID := sm.generateClientID()
-	record := &V41ClientRecord{
-		ClientID:   clientID,
-		OwnerID:    []byte("test-v41-client-dir-deleg"),
-		Confirmed:  true,
-		ClientAddr: "127.0.0.1",
-		CreatedAt:  time.Now(),
-		Lease:      NewLeaseState(clientID, 90*time.Second, nil),
+	record := &ClientRecord{
+		ClientID:     clientID,
+		MinorVersion: 1,
+		OwnerID:      []byte("test-v41-client-dir-deleg"),
+		Confirmed:    true,
+		ClientAddr:   "127.0.0.1",
+		CreatedAt:    time.Now(),
+		Lease:        NewLeaseState(clientID, 90*time.Second, nil),
 	}
-	sm.v41ClientsByID[clientID] = record
+	sm.clientsByID[clientID] = record
 	sm.v41ClientsByOwner[string(record.OwnerID)] = record
 	return clientID
 }

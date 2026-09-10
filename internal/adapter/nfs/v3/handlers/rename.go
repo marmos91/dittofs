@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -80,7 +81,7 @@ type RenameResponse struct {
 // Moves/renames a file or directory between directories, atomically replacing target if it exists.
 // Delegates to MetadataService.Move after cross-share validation; handles .nfs* silly-rename orphaning.
 // Updates source and dest directory entries and timestamps; returns WCC data for both directories.
-// Errors: NFS3ErrNoEnt, NFS3ErrNotDir, NFS3ErrNotEmpty, NFS3ErrAcces, NFS3ErrInval, NFS3ErrIO.
+// Errors: NFS3ErrNoEnt, NFS3ErrNotDir, NFS3ErrNotEmpty, NFS3ErrAcces, NFS3ErrInval, NFS3ErrXDev, NFS3ErrIO.
 func (h *Handler) Rename(
 	ctx *NFSHandlerContext,
 	req *RenameRequest,
@@ -122,7 +123,7 @@ func (h *Handler) Rename(
 
 	if fromShareName != toShareName {
 		logger.WarnCtx(ctx.Context, "RENAME failed: cross-share rename attempted", "from_share", fromShareName, "to_share", toShareName, "client", clientIP)
-		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrInval}}, nil
+		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrXDev}}, nil
 	}
 
 	logger.DebugCtx(ctx.Context, "RENAME", "share", ctx.Share, "from", req.FromName, "to", req.ToName)
@@ -255,8 +256,16 @@ func (h *Handler) Rename(
 	// We don't check for cancellation inside RenameFile to maintain atomicity.
 	// The store should respect context internally for its operations.
 
-	renameWcc, err := metaSvc.Move(authCtx, fromDirHandle, req.FromName, toDirHandle, req.ToName)
+	clobbered, renameWcc, err := metaSvc.Move(authCtx, fromDirHandle, req.FromName, toDirHandle, req.ToName)
 	if err == nil {
+		// Free the bytes of whatever this rename renamed over. The rename is
+		// already committed and the client has its answer, so a failure to
+		// release them is logged rather than surfaced.
+		if relErr := common.ReleaseClobberedPayload(ctx.Context, h.Registry, toDirHandle, clobbered); relErr != nil {
+			logger.WarnCtx(ctx.Context, "RENAME: failed to delete clobbered content",
+				"name", req.ToName, "payload_id", clobbered.PayloadID, "error", relErr)
+		}
+
 		// NFS-specific: Handle silly rename (.nfs* pattern)
 		// When an NFS client deletes a file that's still open, it renames the
 		// file to a temporary name starting with ".nfs". We mark such files as

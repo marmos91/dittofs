@@ -175,11 +175,11 @@ func newPhase19BlockStore(t *testing.T) *engine.Store {
 	t.Helper()
 	localStore := memory.New()
 	fbs := newAggregateStubFileChunkStore()
-	syncer := engine.NewSyncer(localStore, nil, fbs, engine.DefaultConfig())
+	syncer := engine.NewRemoteSync(localStore, nil, fbs, engine.DefaultConfig())
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          localStore,
 		Remote:         nil,
-		Syncer:         syncer,
+		RemoteSync:     syncer,
 		FileChunkStore: fbs,
 	})
 	if err != nil {

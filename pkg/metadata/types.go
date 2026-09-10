@@ -9,7 +9,13 @@
 // Store implementations are in subpackages:
 //   - pkg/metadata/store/memory - In-memory store (for testing)
 //   - pkg/metadata/store/badger - BadgerDB persistent store
+//   - pkg/metadata/store/sqlite - SQLite persistent store
 //   - pkg/metadata/store/postgres - PostgreSQL distributed store
+//
+// The two SQL backends share one schema and most of their operation bodies,
+// which live in pkg/metadata/store/sql. Their own packages hold what
+// genuinely differs — connection handling, error mapping, statement text,
+// snapshots, and the few bodies whose mechanism diverges.
 package metadata
 
 import (

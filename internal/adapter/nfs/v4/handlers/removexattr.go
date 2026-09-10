@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
@@ -70,7 +69,7 @@ func (h *Handler) handleRemoveXattr(ctx *types.CompoundContext, reader io.Reader
 	// missing name, so probe existence first).
 	_, exists, gerr := backend.GetXattr(authCtx, handle, canonical)
 	if gerr != nil {
-		return xattrErr(types.OP_REMOVEXATTR, common.MapToNFS4(gerr))
+		return xattrErr(types.OP_REMOVEXATTR, types.StatusForErr(gerr))
 	}
 	if !exists {
 		return xattrErr(types.OP_REMOVEXATTR, types.NFS4ERR_NOXATTR)
@@ -81,7 +80,7 @@ func (h *Handler) handleRemoveXattr(ctx *types.CompoundContext, reader io.Reader
 		// delete stream entities) or lost a TOCTOU race after the pre-check. Per
 		// RFC 8276 §11.2 a missing xattr is NOXATTR, not the generic NOENT the
 		// store error otherwise maps to.
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		if status == types.NFS4ERR_NOENT {
 			status = types.NFS4ERR_NOXATTR
 		}

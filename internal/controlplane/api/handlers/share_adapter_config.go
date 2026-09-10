@@ -140,6 +140,15 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		opts.AllowAuthSys = *req.AllowAuthSys
 	}
 	if req.RequireKerberos != nil {
+		// A share that requires Kerberos on a server without Kerberos
+		// configured is reachable by no auth flavor at all: AUTH_SYS and
+		// AUTH_NONE are refused by the policy and RPCSEC_GSS cannot be
+		// negotiated. Refusing it here is also what leaves SECINFO with at
+		// least one flavor to report for every share.
+		if *req.RequireKerberos && h.runtime != nil && !h.runtime.KerberosEnabled() {
+			BadRequest(w, "require_kerberos needs Kerberos configured on this server")
+			return
+		}
 		opts.RequireKerberos = *req.RequireKerberos
 	}
 	if req.MinKerberosLevel != nil {

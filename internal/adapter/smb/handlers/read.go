@@ -257,16 +257,11 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		logger.Debug("READ: invalid session ID", "sessionID", openFile.SessionID)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUserSessionDeleted}}, nil
 	}
-	// Per MS-SMB2 §3.3.5.2.5: verify the request's TreeID/SessionID match
-	// the handle's owning TreeConnect/Session — mirrors the gate added to
-	// WRITE/CHANGE_NOTIFY for the smb2.tcon torture test.
-	if openFile.TreeID != ctx.TreeID || openFile.SessionID != ctx.SessionID {
-		logger.Debug("READ: handle does not belong to request's tree/session",
-			"handleTreeID", openFile.TreeID, "reqTreeID", ctx.TreeID,
-			"handleSessionID", openFile.SessionID, "reqSessionID", ctx.SessionID)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileClosed}}, nil
+	// Priming also refuses a handle that does not belong to this request's
+	// TreeConnect/Session (MS-SMB2 §3.3.5.2.5).
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
 	}
-	h.primeAuthContextFromOpenFile(ctx, openFile)
 
 	// ========================================================================
 	// Step 5: Get metadata service and block store
@@ -299,7 +294,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	file, err := metaSvc.GetFileForRead(authCtx.Context, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("READ: failed to get file metadata", "path", path, "error", err)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
 	}
 
 	// Handle symlink reads - SMB clients expect MFsymlink content for symlinks
@@ -317,13 +312,13 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 			rerr = &metadata.StoreError{Code: metadata.ErrIsDirectory, Message: "cannot read directory"}
 		}
 		logger.Debug("READ: not a regular file", "path", path, "type", file.Type)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(rerr)}}, nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(rerr)}}, nil
 	}
 
 	// Validate read permission on the already-loaded file (no re-fetch).
 	if err := metaSvc.CheckReadPermissionFile(authCtx, openFile.MetadataHandle, file); err != nil {
 		logger.Debug("READ: permission check failed", "path", path, "error", err)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
 	}
 
 	// ========================================================================
@@ -409,11 +404,11 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	readResult, err := common.ReadFromBlockStore(authCtx.Context, blockStore, file.PayloadID, req.Offset, actualLength)
 	if err != nil {
 		logger.Warn("READ: content read failed", "path", path, "error", err)
-		// common.MapContentToSMB mirrors the old ContentErrorToSMBStatus
-		// behavior and handles ErrRemoteUnavailable. ReleaseData stays nil
+		// types.StatusFor over ClassifyBlockStoreError mirrors the old
+		// ContentErrorToSMBStatus behavior and handles ErrRemoteUnavailable. ReleaseData stays nil
 		// because ReadFromBlockStore has already released the pooled buffer
 		// on the error path.
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapContentToSMB(err)}}, nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFor(common.ClassifyBlockStoreError(err))}}, nil
 	}
 
 	logger.Debug("READ successful",
@@ -587,6 +582,7 @@ func (h *Handler) handlePipeRead(ctx *SMBHandlerContext, req *ReadRequest, openF
 		pending := &PendingPipeRead{
 			FileID:    req.FileID,
 			SessionID: ctx.SessionID,
+			ConnID:    ctx.ConnID,
 			MessageID: ctx.MessageID,
 			AsyncId:   asyncId,
 			MaxLen:    int(req.Length),

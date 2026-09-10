@@ -174,6 +174,38 @@ func (sm *StateManager) countActiveDelegations() int {
 	return count
 }
 
+// delegationBudgetAvailableLocked reports whether another delegation fits
+// under the configured maximum. A maximum of zero or less means unlimited.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) delegationBudgetAvailableLocked() bool {
+	return sm.maxDelegations <= 0 || sm.countActiveDelegations() < sm.maxDelegations
+}
+
+// clientLeaseLiveLocked reports whether clientID names a client record, v4.0 or
+// v4.1, whose lease has not lapsed. A delegation is lease-backed state, so a
+// client without a live lease cannot hold one.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) clientLeaseLiveLocked(clientID uint64) bool {
+	record := sm.clientRecordLocked(clientID)
+	return record != nil && record.Lease != nil && !record.Lease.IsExpired()
+}
+
+// revokeInLockManagerLocked hands a delegation back to the cross-protocol
+// lock manager, for a grant that succeeded there but can no longer be
+// published. Without it the manager keeps a delegation no NFSv4 state
+// references, and it blocks every later conflicting lease and byte-range lock
+// on the file for the lifetime of the server.
+//
+// Caller must hold sm.mu; the mutex is released for the call and held again on
+// return, as everywhere else the lock manager is called from this package.
+func (sm *StateManager) revokeInLockManagerLocked(lm lock.LockManager, fhKey, delegID string) {
+	sm.mu.Unlock()
+	_ = lm.RevokeDelegation(fhKey, delegID)
+	sm.mu.Lock()
+}
+
 // removeDelegFromFile removes a delegation from the delegByFile map.
 // Cleans up the map entry if no delegations remain for the file.
 //
@@ -243,9 +275,13 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 	sm.pruneStaleRecentlyRecalledLocked()
 
 	// Check total active delegation count against limit
-	if sm.maxDelegations > 0 && sm.countActiveDelegations() >= sm.maxDelegations {
+	if !sm.delegationBudgetAvailableLocked() {
 		return nil
 	}
+
+	// Sampled for the recommit check below, not as an admission rule: this path
+	// has never required a live lease to grant.
+	clientWasLive := sm.clientLeaseLiveLocked(clientID)
 
 	other := sm.generateStateidOther(StateTypeDeleg)
 	stateid := types.Stateid4{
@@ -285,13 +321,35 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 		// (see acquireLock), so break paths that exclude by client can tell a
 		// client's own delegation from another client's.
 		lockDeleg := lock.NewDelegation(lmDelegType, nfsClientIdentity(clientID), "", false)
-		if err := lm.GrantDelegation(fhKey, lockDeleg); err != nil {
+
+		// The manager's grant path is cross-protocol, and sm.mu serializes every
+		// client's state operation server-wide, so the mutex is released across
+		// the call (see acquireLock in manager.go).
+		sm.mu.Unlock()
+		grantErr := lm.GrantDelegation(fhKey, lockDeleg)
+		sm.mu.Lock()
+		if grantErr != nil {
 			logger.Debug("delegation denied by lock manager",
 				"client_id", clientID,
 				"deleg_type", delegType,
-				"error", err)
+				"error", grantErr)
 			return nil
 		}
+
+		// Nothing published references this delegation yet, so what the released
+		// mutex can falsify is the inputs to the decision made above: concurrent
+		// grants may have taken the last of the budget, and a client that had a
+		// live lease going in may have been torn down. The teardown matters
+		// because the sweeper frees a client's delegations in one critical
+		// section and never revisits it, so a grant published after that sweep
+		// is unreachable from cleanup and blocks every later conflicting lease
+		// and byte-range lock on the file. Hand the grant back instead.
+		if !sm.delegationBudgetAvailableLocked() ||
+			(clientWasLive && !sm.clientLeaseLiveLocked(clientID)) {
+			sm.revokeInLockManagerLocked(lm, fhKey, lockDeleg.DelegationID)
+			return nil
+		}
+
 		sm.delegStateidMap[lockDeleg.DelegationID] = stateid
 		deleg.LockManagerDelegID = lockDeleg.DelegationID
 	}
@@ -319,11 +377,16 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 // Idempotent: returning an already-returned delegation succeeds with nil error
 // (per Pitfall 3 from research -- race between DELEGRETURN and CB_RECALL).
 //
-// Returns nil on success. Returns NFS4ERR_STALE_STATEID if the stateid
-// is from a previous server incarnation.
+// Returns nil on success. Returns NFS4ERR_STALE_STATEID if the stateid is from
+// a previous server incarnation, and NFS4ERR_BAD_STATEID when the delegation
+// belongs to a client other than clientID: any client could otherwise revoke a
+// delegation it never held, stopping the holder's recall timer and invalidating
+// its cache authority. A zero clientID means the caller has no trusted client
+// identity — DELEGRETURN carries no clientid4 on NFSv4.0 and there is no
+// session to derive one from — and skips the check; see checkStateidOwner.
 //
 // Caller must NOT hold sm.mu (method acquires it).
-func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
+func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4, clientID uint64) error {
 	sm.mu.Lock()
 	deleg, exists := sm.delegByOther[stateid.Other]
 	if !exists {
@@ -334,6 +397,11 @@ func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
 		}
 		// Current epoch but not found: already returned (idempotent)
 		return nil
+	}
+
+	if err := checkStateidOwner(clientID, deleg.ClientID); err != nil {
+		sm.mu.Unlock()
+		return err
 	}
 
 	deleg.StopRecallTimer()
@@ -460,8 +528,8 @@ func (sm *StateManager) ShouldGrantDelegation(clientID uint64, fileHandle []byte
 		return types.OPEN_DELEGATE_NONE, false
 	}
 
-	client, exists := sm.clientsByID[clientID]
-	if !exists {
+	client := sm.clientRecordLocked(clientID)
+	if client == nil {
 		return types.OPEN_DELEGATE_NONE, false
 	}
 	if !client.CBPathUp {
@@ -595,6 +663,10 @@ func (sm *StateManager) sendRecallV41(deleg *DelegationState, sender *Backchanne
 			logger.Warn("CB_RECALL (v4.1) failed",
 				"client_id", deleg.ClientID,
 				"error", err)
+			// The callback path this client was granted a delegation on no
+			// longer answers, so stop granting more until a probe says
+			// otherwise, exactly as the v4.0 path does.
+			sm.setCBPathUp(deleg.ClientID, false)
 			sm.startRevocationTimer(deleg, 5*time.Second)
 			return
 		}
@@ -641,11 +713,7 @@ func (sm *StateManager) sendRecallV40(deleg *DelegationState) {
 			"client_id", deleg.ClientID,
 			"error", err)
 		sm.startRevocationTimer(deleg, 5*time.Second)
-		sm.mu.Lock()
-		if c, ok := sm.clientsByID[deleg.ClientID]; ok {
-			c.CBPathUp = false
-		}
-		sm.mu.Unlock()
+		sm.setCBPathUp(deleg.ClientID, false)
 		return
 	}
 
@@ -658,6 +726,53 @@ func (sm *StateManager) sendRecallV40(deleg *DelegationState) {
 // ============================================================================
 // EncodeDelegation
 // ============================================================================
+
+// DelegationWantReason reads the delegation-want bits a v4.1 client set in
+// share_access and reports the why_no_delegation4 reason they compel, if they
+// compel refusing a delegation outright (RFC 8881 Section 18.16.3).
+//
+// Only two of the want values are answers in themselves. WANT_NO_DELEG says
+// the client does not want one, which is WND4_NOT_WANTED. WANT_CANCEL
+// withdraws a standing want, and since this server keeps no want queue there
+// is nothing left outstanding to satisfy, which is WND4_CANCELLED. Every other
+// value -- no preference, or a preference for a particular type -- leaves the
+// decision to the normal grant policy, so this reports false for them and the
+// caller goes on to ShouldGrantDelegation.
+func DelegationWantReason(shareAccess uint32) (uint32, bool) {
+	switch shareAccess & types.OPEN4_SHARE_ACCESS_WANT_DELEG_MASK {
+	case types.OPEN4_SHARE_ACCESS_WANT_NO_DELEG:
+		return types.WND4_NOT_WANTED, true
+	case types.OPEN4_SHARE_ACCESS_WANT_CANCEL:
+		return types.WND4_CANCELLED, true
+	default:
+		return 0, false
+	}
+}
+
+// EncodeNoDelegationExt encodes the OPEN_DELEGATE_NONE_EXT arm of
+// open_delegation4, which tells a v4.1 client why it is getting no delegation
+// (RFC 8881 Section 18.16.3):
+//
+//	OPEN_DELEGATE_NONE_EXT: why_no_delegation4 + arm
+//	  WND4_CONTENTION: bool ond_server_will_push_deleg
+//	  WND4_RESOURCE:   bool ond_server_will_signal_avail
+//	  default:         void
+//
+// The two reasons carrying a bool promise a later callback when the obstacle
+// clears. This server makes no such promise, so it encodes false for them
+// rather than leaving the arm off and truncating the reply.
+//
+// Never encode this for a v4.0 client: the arm did not exist in RFC 7530 and a
+// v4.0 client cannot decode past the discriminant.
+func EncodeNoDelegationExt(buf *bytes.Buffer, why uint32) {
+	_ = xdr.WriteUint32(buf, types.OPEN_DELEGATE_NONE_EXT)
+	_ = xdr.WriteUint32(buf, why)
+
+	switch why {
+	case types.WND4_CONTENTION, types.WND4_RESOURCE:
+		_ = xdr.WriteBool(buf, false)
+	}
+}
 
 // EncodeDelegation encodes an open_delegation4 into the given buffer.
 //

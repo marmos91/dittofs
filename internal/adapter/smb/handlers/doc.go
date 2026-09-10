@@ -26,7 +26,7 @@
 // # Error handling
 //
 // Handlers return NT_STATUS codes via HandlerResult. Store errors are mapped to
-// NT_STATUS through internal/adapter/common (errmap.go and friends) so the
+// NT_STATUS through the smb/types StatusFor switch so the
 // mapping stays consistent with the NFS adapters.
 //
 // # References

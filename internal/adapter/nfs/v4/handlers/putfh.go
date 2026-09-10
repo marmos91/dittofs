@@ -3,6 +3,7 @@ package handlers
 import (
 	"io"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -41,6 +42,24 @@ func (h *Handler) handlePutFH(ctx *types.CompoundContext, reader io.Reader) *typ
 			Status: types.NFS4ERR_BADHANDLE,
 			OpCode: types.OP_PUTFH,
 			Data:   encodeStatusOnly(types.NFS4ERR_BADHANDLE),
+		}
+	}
+
+	// A filehandle is either one of the pseudo-fs handles this server mints
+	// or a "<share>:<uuid>" object handle. Anything that parses as neither
+	// was never issued here, and RFC 7530 Section 16.21.4 answers that with
+	// NFS4ERR_BADHANDLE. Accepting it instead deferred the error to whichever
+	// later operation first tried to resolve it, which reports the wrong
+	// status and blames the wrong operation.
+	if !pseudofs.IsPseudoFSHandle(handle) {
+		if _, _, decErr := metadata.DecodeFileHandle(metadata.FileHandle(handle)); decErr != nil {
+			logger.Debug("NFSv4 PUTFH refused: undecodable filehandle",
+				"len", len(handle), "client", ctx.ClientAddr)
+			return &types.CompoundResult{
+				Status: types.NFS4ERR_BADHANDLE,
+				OpCode: types.OP_PUTFH,
+				Data:   encodeStatusOnly(types.NFS4ERR_BADHANDLE),
+			}
 		}
 	}
 

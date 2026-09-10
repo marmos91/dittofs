@@ -46,6 +46,7 @@ func HandleCreateSession(d *Deps, ctx *types.CompoundContext, _ *types.V41Reques
 		args.BackChannelAttrs,
 		args.CbProgram,
 		args.CbSecParms,
+		ctx.Principal(),
 	)
 
 	// Replay case: return cached XDR response bytes directly
@@ -79,11 +80,30 @@ func HandleCreateSession(d *Deps, ctx *types.CompoundContext, _ *types.V41Reques
 	// 18.36). Reuse those bytes directly; re-encoding here would reopen the
 	// replay window the state manager closed.
 
-	// Auto-bind the connection that created the session as fore-channel.
+	// Auto-bind the connection that created the session.
+	//
+	// It carries the back channel too when the client asked for one: RFC 8881
+	// Section 18.36.3 associates the connection CREATE_SESSION arrived on with
+	// the session in both directions when csa_flags requests
+	// CONN_BACK_CHAN. Binding it fore-only leaves a client that never sends
+	// BIND_CONN_TO_SESSION -- which is the normal mount flow for both the Linux
+	// client and pynfs -- with a session whose back-channel slot table exists
+	// but has no connection under it, so no callback can ever be sent and no
+	// delegation can ever be granted.
+	//
+	// The direction comes from the response flags rather than the request: the
+	// server clears CONN_BACK_CHAN when it did not set a back channel up, and
+	// binding a direction the session cannot serve would claim a channel that
+	// is not there.
+	bindDir := uint32(types.CDFC4_FORE)
+	if result.Flags&uint32(types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN) != 0 {
+		bindDir = types.CDFC4_FORE_OR_BOTH
+	}
+
 	// This is best-effort: CREATE_SESSION already succeeded, so we only
 	// log a warning if the bind fails (e.g., connection ID not plumbed).
 	if ctx.ConnectionID != 0 {
-		if _, bindErr := d.StateManager.BindConnToSession(ctx.ConnectionID, result.SessionID, types.CDFC4_FORE); bindErr != nil {
+		if _, bindErr := d.StateManager.BindConnToSession(ctx.ConnectionID, result.SessionID, bindDir); bindErr != nil {
 			logger.Debug("CREATE_SESSION: auto-bind connection failed",
 				"connection_id", ctx.ConnectionID,
 				"session_id", result.SessionID.String(),

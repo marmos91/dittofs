@@ -613,13 +613,13 @@ func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
 		wrappedRemote = newRestoreRemote(innerRemote)
 		engineRemote = wrappedRemote
 	}
-	syncer := engine.NewSyncer(localStore, engineRemote, mem, engine.SyncerConfig{
+	syncer := engine.NewRemoteSync(localStore, engineRemote, mem, engine.RemoteSyncConfig{
 		ParallelDownloads: 1,
 	})
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          localStore,
 		Remote:         engineRemote,
-		Syncer:         syncer,
+		RemoteSync:     syncer,
 		FileChunkStore: mem,
 	})
 	if err != nil {
@@ -639,9 +639,6 @@ func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
 	// Bootstrap the share inside the metadata store so the file-create
 	// helpers below have a valid root to attach files to.
 	bgCtx := context.Background()
-	if err := mem.CreateShare(bgCtx, &metadata.Share{Name: shareName}); err != nil {
-		t.Fatalf("metadata.CreateShare: %v", err)
-	}
 	rootAttr := &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0o755,

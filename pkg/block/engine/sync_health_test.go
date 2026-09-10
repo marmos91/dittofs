@@ -26,7 +26,7 @@ func controllableProbe(shouldFail *atomic.Bool) (func(ctx context.Context) error
 }
 
 // fastHealthConfig returns a Config with short probe intervals for unit tests.
-func fastHealthConfig() SyncerConfig {
+func fastHealthConfig() RemoteSyncConfig {
 	cfg := DefaultConfig()
 	cfg.HealthCheckInterval = 10 * time.Millisecond
 	cfg.UnhealthyCheckInterval = 10 * time.Millisecond
@@ -242,7 +242,7 @@ func TestHealthMonitor_OutageDuration(t *testing.T) {
 }
 
 // TestHealthMonitor_StopJoinsProbe pins that Stop() waits for an in-flight
-// probe. The probe dials the remote store, and Syncer.Close() stops the monitor
+// probe. The probe dials the remote store, and RemoteSync.Close() stops the monitor
 // right before the owning Store closes that remote — a Stop that only signalled
 // would leave a probe reading a closed store.
 func TestHealthMonitor_StopJoinsProbe(t *testing.T) {

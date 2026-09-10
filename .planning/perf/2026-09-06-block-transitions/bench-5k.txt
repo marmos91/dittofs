@@ -1,0 +1,144 @@
+goos: linux
+goarch: amd64
+pkg: github.com/marmos91/dittofs/pkg/block/journal
+cpu: AMD EPYC 7543 32-Core Processor                
+BenchmarkConcurrentCommit1-32      	     729	   1660250 ns/op	   2.47 MB/s	       256.0 intervals	        16.00 segments	         1.010 write-amp	     113 B/op	       2 allocs/op
+BenchmarkConcurrentCommit1-32      	     722	   1964410 ns/op	   2.09 MB/s	       256.0 intervals	        16.00 segments	         1.010 write-amp	     113 B/op	       2 allocs/op
+BenchmarkConcurrentCommit1-32      	     679	   1905395 ns/op	   2.15 MB/s	       256.0 intervals	        16.00 segments	         1.010 write-amp	     116 B/op	       2 allocs/op
+BenchmarkConcurrentCommit1-32      	     609	   1790510 ns/op	   2.29 MB/s	       256.0 intervals	        16.00 segments	         1.010 write-amp	     121 B/op	       2 allocs/op
+BenchmarkConcurrentCommit1-32      	     672	   1767792 ns/op	   2.32 MB/s	       256.0 intervals	        16.00 segments	         1.010 write-amp	     116 B/op	       2 allocs/op
+BenchmarkConcurrentCommit1-32      	     775	   1845865 ns/op	   2.22 MB/s	       256.0 intervals	        16.00 segments	         1.010 write-amp	     110 B/op	       2 allocs/op
+BenchmarkConcurrentCommit32-32     	    8752	    120355 ns/op	  34.03 MB/s	       256.0 intervals	        16.00 segments	         1.010 write-amp	     177 B/op	       2 allocs/op
+BenchmarkConcurrentCommit32-32     	   10000	    118933 ns/op	  34.44 MB/s	       256.0 intervals	        16.00 segments	         1.010 write-amp	     165 B/op	       2 allocs/op
+BenchmarkConcurrentCommit32-32     	   10000	    128875 ns/op	  31.78 MB/s	       256.0 intervals	        16.00 segments	         1.010 write-amp	     164 B/op	       2 allocs/op
+BenchmarkConcurrentCommit32-32     	    8365	    125521 ns/op	  32.63 MB/s	       256.0 intervals	        16.00 segments	         1.010 write-amp	     182 B/op	       2 allocs/op
+BenchmarkConcurrentCommit32-32     	   10000	    143696 ns/op	  28.50 MB/s	       256.0 intervals	        16.00 segments	         1.010 write-amp	     164 B/op	       2 allocs/op
+BenchmarkConcurrentCommit32-32     	   10000	    126284 ns/op	  32.43 MB/s	       256.0 intervals	        16.00 segments	         1.010 write-amp	     166 B/op	       2 allocs/op
+BenchmarkConcurrentCommit128-32    	   28856	     43495 ns/op	  94.17 MB/s	       225.0 intervals	        16.00 segments	         1.010 write-amp	     202 B/op	       2 allocs/op
+BenchmarkConcurrentCommit128-32    	   29796	     41627 ns/op	  98.40 MB/s	       232.0 intervals	        16.00 segments	         1.010 write-amp	     197 B/op	       2 allocs/op
+BenchmarkConcurrentCommit128-32    	   27708	     41058 ns/op	  99.76 MB/s	       216.0 intervals	        16.00 segments	         1.010 write-amp	     209 B/op	       2 allocs/op
+BenchmarkConcurrentCommit128-32    	   30061	     43071 ns/op	  95.10 MB/s	       234.0 intervals	        16.00 segments	         1.010 write-amp	     196 B/op	       2 allocs/op
+BenchmarkConcurrentCommit128-32    	   29824	     42039 ns/op	  97.43 MB/s	       233.0 intervals	        16.00 segments	         1.010 write-amp	     197 B/op	       2 allocs/op
+BenchmarkConcurrentCommit128-32    	   29756	     44130 ns/op	  92.82 MB/s	       232.0 intervals	        16.00 segments	         1.010 write-amp	     197 B/op	       2 allocs/op
+BenchmarkWriteAt-32                	   13282	     95580 ns/op	 685.67 MB/s	     13282 intervals	        19.00 segments	         1.001 write-amp	     408 B/op	       2 allocs/op
+BenchmarkWriteAt-32                	   12483	     99385 ns/op	 659.42 MB/s	     12483 intervals	        19.00 segments	         1.001 write-amp	     344 B/op	       2 allocs/op
+BenchmarkWriteAt-32                	   12708	     97083 ns/op	 675.05 MB/s	     12708 intervals	        19.00 segments	         1.001 write-amp	     339 B/op	       2 allocs/op
+BenchmarkWriteAt-32                	   13207	    102504 ns/op	 639.35 MB/s	     13207 intervals	        19.00 segments	         1.001 write-amp	     410 B/op	       2 allocs/op
+BenchmarkWriteAt-32                	   13305	    107787 ns/op	 608.01 MB/s	     13305 intervals	        19.00 segments	         1.001 write-amp	     408 B/op	       2 allocs/op
+BenchmarkWriteAt-32                	   13365	     99881 ns/op	 656.14 MB/s	     13365 intervals	        19.00 segments	         1.001 write-amp	     406 B/op	       2 allocs/op
+BenchmarkTinyWritesCommit-32       	     710	   1507957 ns/op	   0.34 MB/s	       710.0 intervals	        16.00 segments	         1.087 write-amp	     238 B/op	       2 allocs/op
+BenchmarkTinyWritesCommit-32       	     764	   1829415 ns/op	   0.28 MB/s	       764.0 intervals	        16.00 segments	         1.087 write-amp	     225 B/op	       2 allocs/op
+BenchmarkTinyWritesCommit-32       	     718	   1717201 ns/op	   0.30 MB/s	       718.0 intervals	        16.00 segments	         1.087 write-amp	     236 B/op	       2 allocs/op
+BenchmarkTinyWritesCommit-32       	     714	   1576917 ns/op	   0.32 MB/s	       714.0 intervals	        16.00 segments	         1.087 write-amp	     237 B/op	       2 allocs/op
+BenchmarkTinyWritesCommit-32       	     765	   1867756 ns/op	   0.27 MB/s	       765.0 intervals	        16.00 segments	         1.087 write-amp	     225 B/op	       2 allocs/op
+BenchmarkTinyWritesCommit-32       	     700	   1711493 ns/op	   0.30 MB/s	       700.0 intervals	        16.00 segments	         1.087 write-amp	     240 B/op	       2 allocs/op
+BenchmarkReadWarm-32               	  251707	      5396 ns/op	12144.73 MB/s	      64 B/op	       1 allocs/op
+BenchmarkReadWarm-32               	  210730	      4756 ns/op	13780.95 MB/s	      64 B/op	       1 allocs/op
+BenchmarkReadWarm-32               	  261164	      4731 ns/op	13851.84 MB/s	      64 B/op	       1 allocs/op
+BenchmarkReadWarm-32               	  237426	      5045 ns/op	12990.83 MB/s	      64 B/op	       1 allocs/op
+BenchmarkReadWarm-32               	  241176	      4574 ns/op	14326.68 MB/s	      64 B/op	       1 allocs/op
+BenchmarkReadWarm-32               	  226099	      4580 ns/op	14308.82 MB/s	      64 B/op	       1 allocs/op
+BenchmarkRandWrite4K-32            	   97684	    102025 ns/op	  40.15 MB/s	     97684 intervals	        17.00 segments	         1.008 write-amp	     370 B/op	       2 allocs/op
+BenchmarkRandWrite4K-32            	  100808	    104285 ns/op	  39.28 MB/s	    100808 intervals	        17.00 segments	         1.008 write-amp	     360 B/op	       2 allocs/op
+BenchmarkRandWrite4K-32            	  101707	    104631 ns/op	  39.15 MB/s	    101707 intervals	        17.00 segments	         1.008 write-amp	     357 B/op	       2 allocs/op
+BenchmarkRandWrite4K-32            	  102248	    105544 ns/op	  38.81 MB/s	    102248 intervals	        17.00 segments	         1.008 write-amp	     355 B/op	       2 allocs/op
+BenchmarkRandWrite4K-32            	   99030	    102157 ns/op	  40.10 MB/s	     99030 intervals	        17.00 segments	         1.008 write-amp	     365 B/op	       2 allocs/op
+BenchmarkRandWrite4K-32            	  100689	    103171 ns/op	  39.70 MB/s	    100689 intervals	        17.00 segments	         1.008 write-amp	     360 B/op	       2 allocs/op
+BenchmarkRandWriteBounded-32       	  121606	     11177 ns/op	 366.46 MB/s	      4096 intervals	        17.00 segments	         1.008 write-amp	      64 B/op	       2 allocs/op
+BenchmarkRandWriteBounded-32       	  116954	     11142 ns/op	 367.61 MB/s	      4096 intervals	        17.00 segments	         1.008 write-amp	      64 B/op	       2 allocs/op
+BenchmarkRandWriteBounded-32       	  121299	     11098 ns/op	 369.07 MB/s	      4096 intervals	        17.00 segments	         1.008 write-amp	      64 B/op	       2 allocs/op
+BenchmarkRandWriteBounded-32       	  116329	     11151 ns/op	 367.34 MB/s	      4096 intervals	        17.00 segments	         1.008 write-amp	      64 B/op	       2 allocs/op
+BenchmarkRandWriteBounded-32       	  120513	     11028 ns/op	 371.43 MB/s	      4096 intervals	        17.00 segments	         1.008 write-amp	      64 B/op	       2 allocs/op
+BenchmarkRandWriteBounded-32       	  121093	     11186 ns/op	 366.18 MB/s	      4096 intervals	        17.00 segments	         1.008 write-amp	      64 B/op	       2 allocs/op
+BenchmarkSeqWrite4K-32             	  118136	     11375 ns/op	 360.10 MB/s	    118136 intervals	        17.00 segments	         1.008 write-amp	     384 B/op	       2 allocs/op
+BenchmarkSeqWrite4K-32             	  124321	     11050 ns/op	 370.68 MB/s	    124321 intervals	        17.00 segments	         1.008 write-amp	     367 B/op	       2 allocs/op
+BenchmarkSeqWrite4K-32             	  124771	     11476 ns/op	 356.92 MB/s	    124771 intervals	        17.00 segments	         1.008 write-amp	     365 B/op	       2 allocs/op
+BenchmarkSeqWrite4K-32             	  123991	     16499 ns/op	 248.26 MB/s	    123991 intervals	        17.00 segments	         1.008 write-amp	     368 B/op	       2 allocs/op
+BenchmarkSeqWrite4K-32             	  123892	     11289 ns/op	 362.84 MB/s	    123892 intervals	        17.00 segments	         1.008 write-amp	     368 B/op	       2 allocs/op
+BenchmarkSeqWrite4K-32             	  119864	     11283 ns/op	 363.01 MB/s	    119864 intervals	        17.00 segments	         1.008 write-amp	     379 B/op	       2 allocs/op
+BenchmarkReadCold-32               	 1550907	       773.0 ns/op	84782.03 MB/s	      64 B/op	       1 allocs/op
+BenchmarkReadCold-32               	 1544480	       771.4 ns/op	84952.71 MB/s	      64 B/op	       1 allocs/op
+BenchmarkReadCold-32               	 1550852	       772.6 ns/op	84827.02 MB/s	      64 B/op	       1 allocs/op
+BenchmarkReadCold-32               	 1550228	       772.1 ns/op	84880.39 MB/s	      64 B/op	       1 allocs/op
+BenchmarkReadCold-32               	 1550706	       770.4 ns/op	85072.96 MB/s	      64 B/op	       1 allocs/op
+BenchmarkReadCold-32               	 1545984	       770.5 ns/op	85061.76 MB/s	      64 B/op	       1 allocs/op
+BenchmarkHydrate-32                	   21698	     54808 ns/op	1195.75 MB/s	      88 B/op	       4 allocs/op
+BenchmarkHydrate-32                	   21634	     54940 ns/op	1192.86 MB/s	      88 B/op	       4 allocs/op
+BenchmarkHydrate-32                	   21582	     55321 ns/op	1184.64 MB/s	      88 B/op	       4 allocs/op
+BenchmarkHydrate-32                	   21714	     55211 ns/op	1187.01 MB/s	      88 B/op	       4 allocs/op
+BenchmarkHydrate-32                	   21706	     55224 ns/op	1186.73 MB/s	      88 B/op	       4 allocs/op
+BenchmarkHydrate-32                	   21110	     54973 ns/op	1192.15 MB/s	      88 B/op	       4 allocs/op
+BenchmarkOpenRecovery-32           	      64	  19182039 ns/op	38174931 B/op	    3421 allocs/op
+BenchmarkOpenRecovery-32           	      58	  18965507 ns/op	38174522 B/op	    3422 allocs/op
+BenchmarkOpenRecovery-32           	      57	  18520803 ns/op	38174696 B/op	    3422 allocs/op
+BenchmarkOpenRecovery-32           	      58	  17871051 ns/op	38174523 B/op	    3422 allocs/op
+BenchmarkOpenRecovery-32           	      62	  19138088 ns/op	38175974 B/op	    3420 allocs/op
+BenchmarkOpenRecovery-32           	      68	  18371415 ns/op	38175128 B/op	    3423 allocs/op
+BenchmarkFileSize-32               	   50342	     23947 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFileSize-32               	   50586	     23877 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFileSize-32               	   50156	     24142 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFileSize-32               	   50449	     24040 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFileSize-32               	   50302	     23903 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFileSize-32               	   50199	     23832 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDataExtents-32            	   55429	     21603 ns/op	      16 B/op	       1 allocs/op
+BenchmarkDataExtents-32            	   54476	     21365 ns/op	      16 B/op	       1 allocs/op
+BenchmarkDataExtents-32            	   55832	     21510 ns/op	      16 B/op	       1 allocs/op
+BenchmarkDataExtents-32            	   56182	     21462 ns/op	      16 B/op	       1 allocs/op
+BenchmarkDataExtents-32            	   55983	     21589 ns/op	      16 B/op	       1 allocs/op
+BenchmarkDataExtents-32            	   55754	     21456 ns/op	      16 B/op	       1 allocs/op
+BenchmarkDurableExtent-32          	64703640	        16.78 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDurableExtent-32          	71555667	        16.79 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDurableExtent-32          	71578672	        16.78 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDurableExtent-32          	71025060	        16.85 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDurableExtent-32          	71305611	        16.85 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDurableExtent-32          	70007595	        16.81 ns/op	       0 B/op	       0 allocs/op
+BenchmarkColdExtents-32            	  118146	     10291 ns/op	       0 B/op	       0 allocs/op
+BenchmarkColdExtents-32            	  116542	     10250 ns/op	       0 B/op	       0 allocs/op
+BenchmarkColdExtents-32            	  109812	     10333 ns/op	       0 B/op	       0 allocs/op
+BenchmarkColdExtents-32            	  114916	     10390 ns/op	       0 B/op	       0 allocs/op
+BenchmarkColdExtents-32            	  116635	     10415 ns/op	       0 B/op	       0 allocs/op
+BenchmarkColdExtents-32            	  117548	     10217 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/marmos91/dittofs/pkg/block/journal	233.206s
+goos: linux
+goarch: amd64
+pkg: github.com/marmos91/dittofs/pkg/block/journal
+cpu: AMD EPYC 7543 32-Core Processor                
+BenchmarkCarveScatteredPass-32    	     200	 402201876 ns/op	74278615 B/op	   80221 allocs/op
+BenchmarkCarveScatteredPass-32    	     200	 407112170 ns/op	70753080 B/op	   80218 allocs/op
+BenchmarkCarveScatteredPass-32    	     200	 406316111 ns/op	70396214 B/op	   80215 allocs/op
+BenchmarkCarveScatteredPass-32    	     200	 406631115 ns/op	70480328 B/op	   80221 allocs/op
+BenchmarkCarveScatteredPass-32    	     200	 406802090 ns/op	70920786 B/op	   80220 allocs/op
+BenchmarkCarveScatteredPass-32    	     200	 407098961 ns/op	70941691 B/op	   80222 allocs/op
+BenchmarkCarve-32                 	     200	   9890242 ns/op	 848.17 MB/s	25337948 B/op	    1105 allocs/op
+BenchmarkCarve-32                 	     200	  11857529 ns/op	 707.45 MB/s	26070498 B/op	    1103 allocs/op
+BenchmarkCarve-32                 	     200	  11968289 ns/op	 700.90 MB/s	25755742 B/op	    1101 allocs/op
+BenchmarkCarve-32                 	     200	  11501013 ns/op	 729.38 MB/s	24287420 B/op	    1101 allocs/op
+BenchmarkCarve-32                 	     200	  11944141 ns/op	 702.32 MB/s	24602013 B/op	    1101 allocs/op
+BenchmarkCarve-32                 	     200	  11561775 ns/op	 725.55 MB/s	24811905 B/op	    1102 allocs/op
+BenchmarkEvict-32                 	     200	   2071277 ns/op	    2179 B/op	      22 allocs/op
+BenchmarkEvict-32                 	     200	   2054388 ns/op	    2181 B/op	      22 allocs/op
+BenchmarkEvict-32                 	     200	   2093587 ns/op	    2179 B/op	      22 allocs/op
+BenchmarkEvict-32                 	     200	   2079943 ns/op	    2182 B/op	      22 allocs/op
+BenchmarkEvict-32                 	     200	   2018397 ns/op	    2180 B/op	      22 allocs/op
+BenchmarkEvict-32                 	     200	   1953751 ns/op	    2181 B/op	      22 allocs/op
+BenchmarkGCRepack-32              	     200	   5169174 ns/op	  833235 B/op	      39 allocs/op
+BenchmarkGCRepack-32              	     200	   4389389 ns/op	  847379 B/op	      37 allocs/op
+BenchmarkGCRepack-32              	     200	   4667023 ns/op	  853396 B/op	      38 allocs/op
+BenchmarkGCRepack-32              	     200	   5036323 ns/op	  840795 B/op	      39 allocs/op
+BenchmarkGCRepack-32              	     200	   4463252 ns/op	  849052 B/op	      38 allocs/op
+BenchmarkGCRepack-32              	     200	   4988101 ns/op	  830362 B/op	      39 allocs/op
+BenchmarkTruncate-32              	     200	  23529598 ns/op	      65 B/op	       2 allocs/op
+BenchmarkTruncate-32              	     200	  27326756 ns/op	      65 B/op	       2 allocs/op
+BenchmarkTruncate-32              	     200	  25491400 ns/op	      65 B/op	       2 allocs/op
+BenchmarkTruncate-32              	     200	  24056438 ns/op	      65 B/op	       2 allocs/op
+BenchmarkTruncate-32              	     200	  25175206 ns/op	      65 B/op	       2 allocs/op
+BenchmarkTruncate-32              	     200	  23014748 ns/op	      65 B/op	       2 allocs/op
+BenchmarkDelete-32                	     200	  16165764 ns/op	     176 B/op	       2 allocs/op
+BenchmarkDelete-32                	     200	  13226521 ns/op	     176 B/op	       2 allocs/op
+BenchmarkDelete-32                	     200	  15001656 ns/op	     176 B/op	       2 allocs/op
+BenchmarkDelete-32                	     200	  13811104 ns/op	     176 B/op	       2 allocs/op
+BenchmarkDelete-32                	     200	  14457597 ns/op	     176 B/op	       2 allocs/op
+BenchmarkDelete-32                	     200	  13619581 ns/op	     176 B/op	       2 allocs/op
+PASS
+ok  	github.com/marmos91/dittofs/pkg/block/journal	882.508s

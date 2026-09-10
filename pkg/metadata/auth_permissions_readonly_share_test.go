@@ -28,11 +28,7 @@ func TestCheckPermissions_StoreReadOnlyShareBlocksHandleBypass(t *testing.T) {
 	handle, err := metadata.EncodeShareHandle(f.shareName, created.ID)
 	require.NoError(t, err)
 
-	// Register the share options entry (the fixture's CreateRootDirectory builds
-	// the file tree but not the share-options record) and toggle it read-only at
-	// the store level. CreateShare is a no-op-on-exists guard so the test is
-	// robust to either fixture shape.
-	_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
+	// Toggle the share read-only at the store level.
 	require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
 		&metadata.ShareOptions{ReadOnly: true}))
 
@@ -180,7 +176,6 @@ func TestCheckParentCreateAccess_StoreReadOnlyShareReturnsErrReadOnly(t *testing
 
 	// Toggle the share read-only at the STORE level; per-user ShareReadOnly stays
 	// false so only the store-level flag is in play.
-	_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
 	require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
 		&metadata.ShareOptions{ReadOnly: true}))
 
@@ -220,10 +215,6 @@ func TestCheckParentCreateAccess_NoACLParent_ReadOnlyDiscriminator(t *testing.T)
 
 	t.Run("store-level read-only share is EROFS", func(t *testing.T) {
 		f := newTestFixture(t)
-		// The fixture already registered the share (via CreateRootDirectory), so
-		// CreateShare returns ErrExist here — intentionally ignored; the call only
-		// guarantees a share entry for UpdateShareOptions to target.
-		_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
 		require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
 			&metadata.ShareOptions{ReadOnly: true}))
 		// Owner, per-user ShareReadOnly explicitly false: only the store-level
@@ -273,7 +264,6 @@ func TestCheckParentWriteAccess_ReadOnlyDiscriminator(t *testing.T) {
 
 	t.Run("store-level read-only share is EROFS", func(t *testing.T) {
 		f := newTestFixture(t)
-		_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
 		require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
 			&metadata.ShareOptions{ReadOnly: true}))
 		owner := f.authContext(1101, 1101)
@@ -369,7 +359,6 @@ func TestSetFileAttributes_StoreReadOnlyDeniesOwnerMutation(t *testing.T) {
 	handle, err := metadata.EncodeShareHandle(f.shareName, created.ID)
 	require.NoError(t, err)
 
-	_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
 	require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
 		&metadata.ShareOptions{ReadOnly: true}))
 
@@ -434,7 +423,6 @@ func TestRemoveFile_StoreReadOnlyShareBlocksDeleteAccessBypass(t *testing.T) {
 	require.NoError(t, err)
 
 	// Share flips read-only after the handle was authorized.
-	_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
 	require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
 		&metadata.ShareOptions{ReadOnly: true}))
 
@@ -465,4 +453,54 @@ func TestRemoveFile_DeleteAccessStillSucceedsOnWritableShare(t *testing.T) {
 
 	_, _, err = f.service.RemoveFile(f.smbDeleteContext(uid, gid), f.rootHandle, "removable.txt")
 	require.NoError(t, err, "delete on a writable share must still succeed")
+}
+
+// TestSetFileAttributes_ReadOnlyShareBlocksHandleTimestamp asserts both
+// read-only ceilings beat TimestampAuthorizedByHandle: the per-user
+// AuthContext.ShareReadOnly flag and the store-level ShareOptions.ReadOnly. A
+// SETATTR is a write, so neither a read-only user nor any user on a read-only
+// share may set a timestamp, whatever the handle was granted.
+func TestSetFileAttributes_ReadOnlyShareBlocksHandleTimestamp(t *testing.T) {
+	uid, gid := uint32(1001), uint32(1001)
+
+	t.Run("per-user read-only", func(t *testing.T) {
+		f := newTestFixture(t)
+		created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "ro_user.txt",
+			&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o777, UID: 2002, GID: 2002})
+		require.NoError(t, err)
+		handle, err := metadata.EncodeShareHandle(f.shareName, created.ID)
+		require.NoError(t, err)
+
+		// Baseline: the handle grant works on a writable share.
+		rw := f.authContext(uid, gid)
+		rw.TimestampAuthorizedByHandle = true
+		_, err = f.service.SetFileAttributes(rw, handle, &metadata.SetAttrs{Mtime: &stampTime})
+		require.NoError(t, err, "precondition: handle timestamp grant works on a writable share")
+
+		ro := f.authContext(uid, gid)
+		ro.TimestampAuthorizedByHandle = true
+		ro.ShareReadOnly = true
+		_, err = f.service.SetFileAttributes(ro, handle, &metadata.SetAttrs{Mtime: &stampTime})
+		require.Error(t, err, "per-user read-only must beat TimestampAuthorizedByHandle")
+		requireErrorCode(t, err, metadata.ErrReadOnly)
+	})
+
+	t.Run("store-level read-only", func(t *testing.T) {
+		f := newTestFixture(t)
+		created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "ro_store.txt",
+			&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o777, UID: 2002, GID: 2002})
+		require.NoError(t, err)
+		handle, err := metadata.EncodeShareHandle(f.shareName, created.ID)
+		require.NoError(t, err)
+
+		require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
+			&metadata.ShareOptions{ReadOnly: true}))
+
+		authCtx := f.authContext(uid, gid)
+		authCtx.TimestampAuthorizedByHandle = true
+		authCtx.ShareReadOnly = false
+		_, err = f.service.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{Mtime: &stampTime})
+		require.Error(t, err, "store-level read-only must beat TimestampAuthorizedByHandle")
+		requireErrorCode(t, err, metadata.ErrReadOnly)
+	})
 }

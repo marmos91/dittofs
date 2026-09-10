@@ -17,7 +17,6 @@ func putFileWithACL(t *testing.T, store *MemoryMetadataStore, shareName, name st
 	t.Helper()
 	ctx := context.Background()
 
-	require.NoError(t, store.CreateShare(ctx, &metadata.Share{Name: shareName}))
 	rootAttr := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755}
 	rootFile, err := store.CreateRootDirectory(ctx, shareName, rootAttr)
 	require.NoError(t, err)
