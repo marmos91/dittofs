@@ -162,6 +162,34 @@ deleted. Lane
 prompts at `.planning/2026-09-10-wave4-fix-prompts.md`. Lanes push branches + /tmp PR bodies;
 PRs opened after the review fan-out.
 
+**PRs opened 2026-09-10 after the three-review fan-out**: #2523 (A, `fix/wave4-highs-2518`, Closes
+# 2518), #2524 (C, `fix/wave4-compound-tree-2514`, Closes #2514), #2525 (D,
+`fix/wave4-security-hygiene-2516`, Closes #2516), #2526 (B, `fix/wave4-setinfo-rw-2512`, Closes
+# 2512). Post-review fixes applied before open: A empty-path doc + TREE_DISCONNECT disclosure
+(0 P1, triply-reviewed OK); C FLUSH/OplockBreak FileId restored to offset 8 (the verified P1),
+per-sub-command credit exemption, dead tests strengthened; D vacuous VNEG MaxOutputResponse pin
+made red-without-fix, IS_FSCTL gate-wiring pin, dangling `(refs)` removed; B FileFullEaInformation
+exempted from the step-1b attrs gate (own FILE_WRITE_EA check governs), `onlyEAMutations` excludes
+explicit timestamps, WRITE offset clamp removed, EA-only pass arm strengthened.
+
+**Squash-merged 2026-09-10**: #2525 as `d4535ad56` (D), #2524 as `a751af2bf` (C, after the round-2
+Copilot re-review verified the ReplaceCallback-false early return correct — the CANCEL path drives
+the standalone callback, no interim was ever sent on that path so no ordering violation).
+Round-2 Copilot fixes pushed on the remaining two: A case-insensitive AppInstanceId share/path
+match + pin test (`d0272b01b` — SMB namespaces are case-insensitive, exact match would miss
+different-case spellings of the same file); B AppendUint16 return reassigned in the rename test
+encoder (`c226454c9` — the original dropped the extended slice, encoding an empty FileName); B's
+CreateOptions read-modify-write was already mu-guarded with the struct doc updated.
+# 2523/#2526 CI + Copilot re-review pending at chunk end.
+
+**Source-file naming rule (2026-09-10)**: source files are wave/lane/PR-number agnostic
+(`.planning/CONVENTIONS-WAVE-TEST-NAMES.md`). Wave-named test files renamed to domain names in
+the branches before merge: `wave4_highs_test.go` → `session_durable_test.go` (A),
+`wave4_ct_tree_test.go` → `tree_connect_acl_test.go` + `wave4_ct_compound_test.go` →
+`compound_integrity_test.go` (C), `wave4_rw_gates_test.go` → `set_info_gates_test.go` (B).
+Every future fan-out prompt carries the naming line; reviewers block `wave\d` matches under
+`internal/`, `pkg/`, `cmd/`.
+
 Remaining fix-wave 2 candidates (not yet fanned): #2513 negotiate/session+durable (Kerberos
 MIC-after-commit ordering, AEAD nonce, unlocked session writes) and #2515 auth/session (NTLMv2
 MIC verification, wrong-field credit decoders, oplock break-ack ownership) — both touch
