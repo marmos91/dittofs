@@ -151,8 +151,11 @@ implemented all three HIGHs before its worktree was auto-removed, second relaunc
 saved 368-line patch and pushed). B and D timed out twice before committing; their worktree states
 were saved as patches (`/tmp/wave4-setinfo-rw-2512-partial.patch` 739 lines incl. an out-of-scope
 pkg/metadata/file_modify.go POSIX EA carve-out to disclose, `/tmp/wave4-sec-hygiene-2516-partial.patch`
-579 lines) and relaunched as finish runs `f1a5e821` (B) and `039c0a57` (D). Base drift for the resumed
-lanes is only
+579 lines) and relaunched as finish runs `f1a5e821` (B) and `039c0a57` (D). ALL FOUR LANES LANDED
+GREEN 2026-09-10: A `fix/wave4-highs-2518` @ `0f2ec7a4`, B `fix/wave4-setinfo-rw-2512` @ `a43158adf`
+(land-only run `1904e607` after three timeout/worktree-loss cycles; carries the pkg/metadata
+EA carve-out, disclosed), C `fix/wave4-compound-tree-2514` @ `12ed93178`, D
+`fix/wave4-security-hygiene-2516` @ `2999df102`. Base drift for the resumed lanes is only
 flake.nix + adapter_settings.go (#2510 + v0.31.1) — zero overlap with their SMB files, PRs
 rebase trivially at merge. Stale triage worktrees removed, orphaned pi-subagents branches
 deleted. Lane
