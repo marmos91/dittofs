@@ -703,9 +703,27 @@ func checkEncryptionRequired(reqHeader *header.SMB2Header, connInfo *ConnInfo, i
 		return 0
 	}
 
-	// Per MS-SMB2 3.3.5.2.9: anonymous/null sessions bypass encryption requirements.
-	// Anonymous sessions have no session key and therefore cannot encrypt/decrypt.
-	// Also skip encryption enforcement for guest sessions (no signing key).
+	// Per-share encryption enforcement: if the tree was connected to a share
+	// with EncryptData=true, all requests on that tree must be encrypted.
+	// Runs BEFORE the anonymous/guest bypass below: a share that demands
+	// encryption rejects anonymous/guest traffic outright — those sessions
+	// have no session key to encrypt with, so the request can never be made
+	// compliant and failing closed is the only safe answer.
+	if reqHeader.TreeID != 0 {
+		if tree, ok := connInfo.Handler.GetTree(reqHeader.TreeID); ok && tree.EncryptData {
+			logger.Debug("Rejecting unencrypted request: share requires encryption",
+				"command", reqHeader.Command.String(),
+				"treeID", reqHeader.TreeID,
+				"shareName", tree.ShareName)
+			return types.StatusAccessDenied
+		}
+	}
+
+	// Per MS-SMB2 3.3.5.2.9: anonymous/null sessions cannot negotiate
+	// encryption (no session key to derive keys from), so the global
+	// encryption-required mode cannot apply to them. Skip ONLY the global
+	// enforcement for anonymous/guest sessions; per-share EncryptData above
+	// still rejects them.
 	if reqHeader.SessionID != 0 {
 		if sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID); ok {
 			if sess.IsNull || sess.IsGuest {
@@ -721,18 +739,6 @@ func checkEncryptionRequired(reqHeader *header.SMB2Header, connInfo *ConnInfo, i
 			"command", reqHeader.Command.String(),
 			"sessionID", reqHeader.SessionID)
 		return types.StatusAccessDenied
-	}
-
-	// Per-share encryption enforcement: if the tree was connected to a share
-	// with EncryptData=true, all requests on that tree must be encrypted.
-	if reqHeader.TreeID != 0 {
-		if tree, ok := connInfo.Handler.GetTree(reqHeader.TreeID); ok && tree.EncryptData {
-			logger.Debug("Rejecting unencrypted request: share requires encryption",
-				"command", reqHeader.Command.String(),
-				"treeID", reqHeader.TreeID,
-				"shareName", tree.ShareName)
-			return types.StatusAccessDenied
-		}
 	}
 
 	return 0
