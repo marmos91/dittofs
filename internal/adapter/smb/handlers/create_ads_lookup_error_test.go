@@ -111,7 +111,7 @@ func TestCreate_ADSLookupErrorSurfacesAsStatus(t *testing.T) {
 	}
 
 	// The base file must NOT have been auto-created by the masked path.
-	if _, childErr := failStore.Store.GetChild(context.Background(), rootHandle, "base.txt"); childErr == nil {
+	if _, childErr := failStore.GetChild(context.Background(), rootHandle, "base.txt"); childErr == nil {
 		t.Fatalf("base.txt was auto-created despite the lookup failure; the create status lied about the stream")
 	}
 }
