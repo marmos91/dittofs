@@ -167,6 +167,9 @@ type OpenOwner struct {
 	// server" (RFC 7530 Section 16.28.5).
 	Principal string
 
+	// openRefusal is the last OPEN this server refused on its own, if any.
+	openRefusal *openRefusal
+
 	// ownerSeq carries this owner's seqid sequence and replay cache.
 	ownerSeq
 
@@ -218,6 +221,20 @@ type CachedResult struct {
 	Data []byte
 }
 
+// openRefusal remembers an OPEN this server refused before the state layer saw
+// it: the seqid it consumed and the status it answered.
+//
+// It is deliberately kept apart from OpenOwner.LastResult. That cache is shared
+// by every owner-seqid-advancing operation -- CLOSE, OPEN_CONFIRM and
+// OPEN_DOWNGRADE all write to it -- so at any moment it may hold a reply of a
+// different shape than an OPEN's. Replaying those bytes in an OPEN's place
+// answers with the right operation number and the wrong body, and the client
+// reads the next operation's number out of the middle of it.
+type openRefusal struct {
+	seqid  uint32
+	status uint32
+}
+
 // ReplayError is returned by owner-seqid-advancing StateManager methods when a
 // client retransmits the operation at the last-processed seqid. It carries the
 // exact encoded reply bytes (and status) of the original operation so the
@@ -241,6 +258,16 @@ func (e *ReplayError) Error() string { return "replay of cached owner-seqid resu
 // OpenState
 // ============================================================================
 
+// shareModeBit maps a share_access value to its bit in
+// OpenState.openedAccessModes. A value outside 0..3 is not a share mode at all
+// and gets no bit, so it can never satisfy an OPEN_DOWNGRADE.
+func shareModeBit(mode uint32) uint8 {
+	if mode > types.OPEN4_SHARE_ACCESS_BOTH {
+		return 0
+	}
+	return 1 << mode
+}
+
 // OpenState represents the state of a single open file for an open-owner.
 // Created by OPEN, removed by CLOSE.
 //
@@ -263,6 +290,15 @@ type OpenState struct {
 
 	// ShareDeny is the accumulated share deny mode (OR'd across OPENs).
 	ShareDeny uint32
+
+	// openedAccessModes records the share_access value every OPEN behind this
+	// state asked for, one bit per value (bit 1 READ, bit 2 WRITE, bit 3 BOTH).
+	// OPEN_DOWNGRADE may only name a mode that was actually opened, and the
+	// accumulated ShareAccess union cannot tell that apart: a single OPEN for
+	// BOTH leaves READ and WRITE standing in the union with neither ever
+	// opened. Linux nfsd keeps the same bitmap (st_access_bmap) for the same
+	// reason.
+	openedAccessModes uint8
 
 	// Confirmed indicates whether OPEN_CONFIRM has been called for this state.
 	Confirmed bool

@@ -56,6 +56,11 @@ type HandlerTestFixture struct {
 	// BlockStore provides block storage for content operations.
 	BlockStore *engine.Store
 
+	// LocalStore is the block store's local tier. Exposed so tests can assert
+	// that a payload's bytes actually left the disk, which is the precondition
+	// every reclamation path shares.
+	LocalStore *fs.FSStore
+
 	// ShareName is the name of the test share.
 	ShareName string
 
@@ -108,11 +113,11 @@ func NewHandlerFixtureWithStore(
 		t.Fatalf("Failed to create local store: %v", err)
 	}
 	t.Cleanup(func() { _ = localStore.Close() })
-	syncer := engine.NewSyncer(localStore, nil, metaStore, engine.DefaultConfig())
+	syncer := engine.NewRemoteSync(localStore, nil, metaStore, engine.DefaultConfig())
 
 	blockSvc, err := engine.New(engine.BlockStoreConfig{
-		Local:  localStore,
-		Syncer: syncer,
+		Local:      localStore,
+		RemoteSync: syncer,
 	})
 	if err != nil {
 		t.Fatalf("Failed to create block store: %v", err)
@@ -174,6 +179,7 @@ func NewHandlerFixtureWithStore(
 		MetadataService: reg.GetMetadataService(),
 		MetaStore:       metaStore,
 		BlockStore:      blockSvc,
+		LocalStore:      localStore,
 		ShareName:       DefaultShareName,
 		RootHandle:      rootHandle,
 	}

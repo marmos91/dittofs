@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -139,7 +140,7 @@ func (s *Service) LookupCaseInsensitive(ctx *AuthContext, dirHandle FileHandle, 
 
 	cursor := ""
 	for {
-		entries, nextCursor, listErr := store.ListChildren(ctx.Context, dirHandle, cursor, 500)
+		entries, nextCursor, listErr := store.ListChildren(ctx.Context, dirHandle, cursor, 500, NamesOnly)
 		if listErr != nil {
 			if IsNotFoundError(listErr) {
 				return nil, "", nil
@@ -205,6 +206,51 @@ func (s *Service) ReadSymlink(ctx *AuthContext, handle FileHandle) (string, *Fil
 	}
 
 	return file.LinkTarget, file, nil
+}
+
+// RestoreChangeTimeIfUnchanged writes want into the file's ChangeTime, but only
+// while the stored value is still expected. It is the conditional half of the
+// SMB rename ChangeTime preserve: the renaming handle reads a ChangeTime before
+// Move and asks for it back afterwards, and this refuses to put it back once
+// anything else has advanced the same file's ChangeTime in the meantime.
+//
+// The comparison and the write happen inside one transaction, against a row read
+// inside that transaction, so on a backend whose transaction serialises that
+// read against concurrent writers a WRITE either loses the race and is
+// overwritten by a value newer than its own, or wins it and is left alone.
+// Comparing outside the transaction would only move the window rather than
+// narrow it. What makes this safe is the store's isolation, not the shape of
+// this function: under READ COMMITTED with an unlocked read — postgres — the
+// pair is not atomic and the window stays open.
+//
+// On the losing path nothing is written at all. On the winning path the row
+// read in this transaction is written back with nothing but ChangeTime changed,
+// which spares a concurrent size or mtime advance only where that read is
+// serialised against the writer. Where it is not, a write committing between the
+// read and the update is overwritten wholesale — the residual half of the
+// lost-update shape the rename path shares, which writing the in-transaction
+// row narrows but only the store's isolation can close.
+//
+// There is no permission check: the caller is the rename itself, which the
+// metadata layer has already authorized on the parent directories, and the
+// stored value is only ever moved back to one this file already had. A
+// read-only share cannot reach here, because Move would have refused first.
+func (s *Service) RestoreChangeTimeIfUnchanged(ctx context.Context, handle FileHandle, expected, want time.Time) error {
+	store, err := s.storeForHandle(handle)
+	if err != nil {
+		return err
+	}
+	return withRelaxedTransaction(store, ctx, func(tx Transaction) error {
+		current, err := tx.GetFile(ctx, handle)
+		if err != nil {
+			return err
+		}
+		if !current.Ctime.Equal(expected) {
+			return nil
+		}
+		current.Ctime = want
+		return tx.UpdateAttrs(ctx, current)
+	})
 }
 
 // SetFileAttributes updates file attributes with validation and access control.
@@ -306,11 +352,27 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// as an alternative to ownership (POSIX semantics).
 	writePermSufficient := onlySettingTimesToNow || onlySettingSize || onlyClearingSuidSgid
 
+	// SMB authorizes an explicit timestamp write by FILE_WRITE_ATTRIBUTES on the
+	// open handle rather than by ownership, so such a handle satisfies the
+	// ownership gate below — but only for a SetAttrs that changes nothing except
+	// the four timestamps, and never past an explicit DENY ACE, which encodes
+	// intent POSIX bits cannot express (mirroring the handle write bypass in
+	// checkFilePermissions). Both read-only ceilings are already enforced by
+	// shareForbidsWrites above. See AuthContext.TimestampAuthorizedByHandle.
+	onlySettingExplicitTimes := noOwnershipAttrs && attrs.Size == nil &&
+		attrs.ModeOrMask == nil && attrs.ModeAndNotMask == nil &&
+		attrs.Hidden == nil && attrs.ACL == nil && len(attrs.EAMutations) == 0 &&
+		!attrs.AtimeNow && !attrs.MtimeNow &&
+		(attrs.Atime != nil || attrs.Mtime != nil ||
+			attrs.Ctime != nil || attrs.CreationTime != nil)
+	timestampAuthorizedByHandle := ctx.TimestampAuthorizedByHandle &&
+		onlySettingExplicitTimes && !acl.HasExplicitDeny(file.ACL)
+
 	if writePermSufficient && !isOwner && !isRoot {
 		if err := s.checkWritePermission(ctx, handle); err != nil {
 			return nil, err
 		}
-	} else if !isOwner && !isRoot {
+	} else if !isOwner && !isRoot && !timestampAuthorizedByHandle {
 		return nil, &StoreError{
 			Code:    ErrPermissionDenied,
 			Message: "operation not permitted",
@@ -430,6 +492,25 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	}
 
 	if attrs.Size != nil {
+		// Only a regular file has a length a caller can set. A directory's size
+		// is bookkeeping the store owns, and a symlink, device, fifo or socket
+		// has no byte stream to lengthen or discard, so accepting the value
+		// would record a size no read could ever agree with.
+		if file.Type == FileTypeDirectory {
+			return nil, &StoreError{
+				Code:    ErrIsDirectory,
+				Message: "cannot set size of a directory",
+				Path:    file.Path,
+			}
+		}
+		if file.Type != FileTypeRegular {
+			return nil, &StoreError{
+				Code:    ErrInvalidArgument,
+				Message: "cannot set size of a non-regular file",
+				Path:    file.Path,
+			}
+		}
+
 		// Size change requires write permission
 		if err := s.checkWritePermission(ctx, handle); err != nil {
 			return nil, err
@@ -602,32 +683,46 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 }
 
 // Move moves or renames a file or directory atomically.
-func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, toDir FileHandle, toName string) (*RenameWcc, error) {
+//
+// POSIX rename silently unlinks an existing destination, and Move never
+// touches the block store. The clobbered victim is returned as the first
+// result so the caller can coordinate content deletion, the same contract
+// RemoveFile carries: nil when the rename replaced nothing, replaced a
+// directory (which owns no content), or recycled the victim into the trash bin
+// rather than destroying it; and a non-nil File whose PayloadID is empty when
+// a remaining hard link means the content must survive.
+func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, toDir FileHandle, toName string) (*File, *RenameWcc, error) {
 	store, err := s.storeForHandle(fromDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+
+	// A move re-parents one entry, so both directories must live in the same
+	// share.
+	if err := requireSameShare(fromDir, toDir, "move an entry", toName); err != nil {
+		return nil, nil, err
 	}
 
 	// Validate names
 	if err := ValidateName(fromName); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := ValidateName(toName); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Same directory and same name - no-op (POSIX rename semantics)
 	if string(fromDir) == string(toDir) && fromName == toName {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// Get source directory
 	srcDir, err := store.GetFile(ctx.Context, fromDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if srcDir.Type != FileTypeDirectory {
-		return nil, &StoreError{
+		return nil, nil, &StoreError{
 			Code:    ErrNotDirectory,
 			Message: "source parent is not a directory",
 		}
@@ -636,10 +731,10 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	// Get destination directory
 	dstDir, err := store.GetFile(ctx.Context, toDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if dstDir.Type != FileTypeDirectory {
-		return nil, &StoreError{
+		return nil, nil, &StoreError{
 			Code:    ErrNotDirectory,
 			Message: "destination parent is not a directory",
 		}
@@ -648,30 +743,30 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	// Validate destination path length (POSIX PATH_MAX compliance)
 	destPath := buildPath(dstDir.Path, toName)
 	if err := ValidatePath(destPath); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Check write permission on both directories
 	if err := s.checkWritePermission(ctx, fromDir); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := s.checkWritePermission(ctx, toDir); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Get source file
 	srcHandle, err := store.GetChild(ctx.Context, fromDir, fromName)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	srcFile, err := store.GetFile(ctx.Context, srcHandle)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Check sticky bit on source directory
 	if err := CheckStickyBitRestriction(ctx, &srcDir.FileAttr, &srcFile.FileAttr); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// POSIX: When moving a directory to a different parent from a sticky directory,
@@ -692,7 +787,7 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 				"reason", "caller does not own directory being moved",
 				"src_file_uid", srcFile.UID,
 				"caller_uid", callerUID)
-			return nil, &StoreError{
+			return nil, nil, &StoreError{
 				Code:    ErrAccessDenied,
 				Message: "sticky bit set: cannot move directory you don't own to different parent",
 			}
@@ -704,36 +799,44 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	var dstFile *File
 	dstHandle, err = store.GetChild(ctx.Context, toDir, toName)
 	if err == nil {
+		// Both names already resolve to the same file, so they are hard links
+		// of each other and the rename has nothing to move: renaming one over
+		// the other would destroy a link. POSIX rename(2) and RFC 7530
+		// section 16.27.4 both make this a successful no-op.
+		if string(srcHandle) == string(dstHandle) {
+			return nil, nil, nil
+		}
+
 		// Destination exists - check compatibility
 		dstFile, err = store.GetFile(ctx.Context, dstHandle)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		// Check sticky bit on destination directory
 		if err := CheckStickyBitRestriction(ctx, &dstDir.FileAttr, &dstFile.FileAttr); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		// Type compatibility checks
 		if srcFile.Type == FileTypeDirectory {
 			if dstFile.Type != FileTypeDirectory {
-				return nil, &StoreError{
+				return nil, nil, &StoreError{
 					Code:    ErrNotDirectory,
 					Message: "cannot overwrite non-directory with directory",
 				}
 			}
 			// Check if destination directory is empty
-			entries, _, err := store.ListChildren(ctx.Context, dstHandle, "", 1)
+			entries, _, err := store.ListChildren(ctx.Context, dstHandle, "", 1, NamesOnly)
 			if err == nil && len(entries) > 0 {
-				return nil, &StoreError{
+				return nil, nil, &StoreError{
 					Code:    ErrNotEmpty,
 					Message: "destination directory not empty",
 				}
 			}
 		} else {
 			if dstFile.Type == FileTypeDirectory {
-				return nil, &StoreError{
+				return nil, nil, &StoreError{
 					Code:    ErrIsDirectory,
 					Message: "cannot overwrite directory with non-directory",
 				}
@@ -761,7 +864,7 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 						// into #recycle (the reaper frees its blocks later), so we
 						// have no blocks to release here.
 						if _, err := s.recycleNode(ctx, shareName, toDir, toName, victimRel); err != nil {
-							return nil, err // never silently clobber
+							return nil, nil, err // never silently clobber
 						}
 						// The victim has moved into #recycle, so the destination
 						// name is now free. Drop the cached dest-exists state so
@@ -774,7 +877,7 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 			}
 		}
 	} else if !IsNotFoundError(err) {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// rename carries the source/destination directory pre/post attributes for
@@ -804,6 +907,9 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	// so this is pure namespace. A crash can lose the rename (old name
 	// persists), never corrupt data.
 	now := time.Now()
+	// Link count the transaction below leaves the clobbered destination with.
+	// Only meaningful when a non-directory victim exists.
+	var clobberedNlink uint32
 	txErr := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
 		// The GetChild lookups above ran outside this transaction and are
 		// advisory only: no lock covers a file rename, so a concurrent rename
@@ -882,6 +988,11 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 				if err := tx.SetLinkCount(ctx.Context, dstHandle, newCount); err != nil {
 					return err
 				}
+				// Report content ownership from the count actually written.
+				// Assigned unconditionally: an optimistic backend may run this
+				// closure more than once, and only the committing attempt's
+				// value must survive.
+				clobberedNlink = newCount
 				// Update ctime on the file being unlinked (affects remaining hard links)
 				dstFile.Ctime = now
 				if err := tx.UpdateAttrs(ctx.Context, dstFile); err != nil {
@@ -948,16 +1059,68 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		// This is what makes hard links correct: renaming one name can never
 		// stale another name's path. UpdateAttrs is tx-critical: a failed ctime
 		// write must roll the whole rename back.
-		srcFile.Ctime = now
-		if err := tx.UpdateAttrs(ctx.Context, srcFile); err != nil {
+		//
+		// Read the inode inside the transaction, both before and after the
+		// stamp, so a caller that wants to put the pre-rename ChangeTime back
+		// gets values the store actually holds.
+		//
+		// Before, because srcFile was read outside this transaction: anything
+		// that advanced the inode's ChangeTime since then is already committed,
+		// and restoring the outside-tx value would erase it. After, because the
+		// SQL backends store timestamps as FILETIME ticks and truncate; an
+		// in-memory time.Time would not compare equal to what was written, so a
+		// conditional restore keyed on it would silently never fire.
+		//
+		// Neither read may be discarded on error: a failed "before" with a
+		// successful "after" leaves a zero SourcePreCtime that still matches,
+		// and the restore would then write a zero ChangeTime.
+		//
+		// The "before" read covers the window only on backends whose
+		// transaction serialises it against concurrent writers. Under READ
+		// COMMITTED with an unlocked read — postgres — a write can still commit
+		// between this read and the row lock the update takes, narrowing the
+		// window rather than closing it.
+		pre, err := tx.GetFile(ctx.Context, srcHandle)
+		if err != nil {
 			return err
 		}
+		rename.SourcePreCtime = pre.Ctime
+		// Write the row this transaction read, not the one read before it
+		// opened. Ctime is the only field a rename changes on the source
+		// inode, so every other column must come from committed state:
+		// writing the earlier snapshot back would silently restore whatever
+		// Size or Mtime a concurrent write had already committed.
+		pre.Ctime = now
+		if err := tx.UpdateAttrs(ctx.Context, pre); err != nil {
+			return err
+		}
+		post, err := tx.GetFile(ctx.Context, srcHandle)
+		if err != nil {
+			return err
+		}
+		rename.SourceCtime = post.Ctime
 
 		return nil
 	})
 
 	if txErr != nil {
-		return nil, txErr
+		return nil, nil, txErr
+	}
+
+	// Report the clobbered victim, if the rename replaced a file. Directories
+	// own no content, and dstFile is nil both when the destination was absent
+	// and when trash recycled it above, so neither case reports one.
+	var clobbered *File
+	if dstFile != nil && dstFile.Type != FileTypeDirectory {
+		victim := *dstFile
+		victim.FileAttr = *CopyFileAttr(&dstFile.FileAttr)
+		victim.Nlink = clobberedNlink
+		if clobberedNlink > 0 {
+			// Another hard link still references the content, so it must
+			// survive. An empty PayloadID is how RemoveFile says that too.
+			victim.PayloadID = ""
+		}
+		clobbered = &victim
 	}
 
 	// Coalesce the parent directory mtime/ctime bumps out of the transaction so
@@ -982,7 +1145,7 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		s.notifyDirChange(shareNameForHandle(toDir), toDir, lock.DirChangeAddEntry, ctx)
 	}
 
-	return rename, nil
+	return clobbered, rename, nil
 }
 
 // MarkFileAsOrphaned sets a file's link count to 0, marking it as orphaned.

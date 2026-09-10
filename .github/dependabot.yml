@@ -1,10 +1,20 @@
 # Dependabot raises the bump PRs for the alerts on the Security tab. Without
 # this file GitHub still reports vulnerabilities but never opens a PR for them,
 # so they accumulate until someone bumps by hand.
+#
+# Every ecosystem sets target-branch: develop. That is now the default branch
+# too, so the setting is redundant — but it is kept because it is the only thing
+# in this file that survives the default moving again. Dependabot reads this
+# config from the DEFAULT branch, not from the PR base, so while main was the
+# default and carried a copy without target-branch, the setting on develop was
+# never consulted and every bump opened against main regardless. Bumps landing
+# on main directly would put commits there that develop does not have, breaking
+# the strict-ancestor invariant the release flow depends on.
 version: 2
 updates:
   - package-ecosystem: gomod
     directory: /
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -22,6 +32,7 @@ updates:
 
   - package-ecosystem: gomod
     directory: /k8s/dittofs-operator
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -37,6 +48,7 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

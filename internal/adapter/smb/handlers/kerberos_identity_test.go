@@ -38,10 +38,10 @@ func TestResolveSessionUser_DirectoryResolvedWhenNoLocalAccount(t *testing.T) {
 	if got.Username != "alice" || got.UID == nil || *got.UID != 10001 {
 		t.Fatalf("synthesized user wrong: %+v", got)
 	}
-	// getUserIdentity must derive the resolved UID + primary GID.
-	uid, gid := getUserIdentity(got)
+	// uidGIDFromSessionUser must derive the resolved UID + primary GID.
+	uid, gid := uidGIDFromSessionUser(got)
 	if uid != 10001 || gid != 10000 {
-		t.Fatalf("getUserIdentity = %d/%d, want 10001/10000", uid, gid)
+		t.Fatalf("uidGIDFromSessionUser = %d/%d, want 10001/10000", uid, gid)
 	}
 	if got.SID != "S-1-5-21-1-2-3-1104" || len(got.GroupSIDs) != 1 {
 		t.Fatalf("SID/GroupSIDs not carried: %+v", got)
@@ -49,7 +49,7 @@ func TestResolveSessionUser_DirectoryResolvedWhenNoLocalAccount(t *testing.T) {
 }
 
 // TestSynthUserFromResolved_CarriesSupplementaryGIDs verifies the synthesized
-// user lists the primary GID first (so getUserIdentity picks it) and also
+// user lists the primary GID first (so uidGIDFromSessionUser picks it) and also
 // carries the full resolved supplementary set, deduplicating the primary
 // (#1327).
 func TestSynthUserFromResolved_CarriesSupplementaryGIDs(t *testing.T) {
@@ -61,10 +61,10 @@ func TestSynthUserFromResolved_CarriesSupplementaryGIDs(t *testing.T) {
 
 	got := synthUserFromResolved(resolved)
 
-	// Primary GID must be first for getUserIdentity.
-	uid, gid := getUserIdentity(got)
+	// Primary GID must be first for uidGIDFromSessionUser.
+	uid, gid := uidGIDFromSessionUser(got)
 	if uid != 10001 || gid != 10000 {
-		t.Fatalf("getUserIdentity = %d/%d, want 10001/10000", uid, gid)
+		t.Fatalf("uidGIDFromSessionUser = %d/%d, want 10001/10000", uid, gid)
 	}
 	// All distinct GIDs present exactly once (primary not duplicated).
 	gotGIDs := map[uint32]int{}

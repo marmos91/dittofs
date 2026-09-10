@@ -103,7 +103,7 @@ func (s *Service) recycleNode(ctx *AuthContext, shareName string, parentHandle F
 	//    a directory moves its whole subtree as one entry). If this fails, the
 	//    source is still live but marked-deleted: clear the stamp best-effort so
 	//    a live file is not left looking recycled, then surface the move error.
-	if _, err := s.Move(ctx, parentHandle, name, destParent, destName); err != nil {
+	if _, _, err := s.Move(ctx, parentHandle, name, destParent, destName); err != nil {
 		if clearErr := s.clearRecycleStamp(ctx, victimHandle); clearErr != nil {
 			return nil, &StoreError{
 				Code:    ErrIOError,

@@ -46,7 +46,7 @@ func TestEnumerateOpenFiles_OpenThenClose(t *testing.T) {
 	}
 
 	// Last close of A drops it from the enumeration.
-	if _, err := sm.CloseFile(&sidA, 3); err != nil {
+	if _, err := sm.CloseFile(&sidA, 3, 0); err != nil {
 		t.Fatalf("CloseFile: %v", err)
 	}
 	got = enumerateHandles(t, sm)

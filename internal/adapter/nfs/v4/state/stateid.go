@@ -2,9 +2,9 @@ package state
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"sync/atomic"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -43,6 +43,14 @@ func (e *NFS4StateError) Error() string {
 	return e.Message
 }
 
+// Is matches two state errors on their NFS4 status alone, so errors.Is against
+// one of the sentinels below also matches an error of the same status carrying
+// a more specific message.
+func (e *NFS4StateError) Is(target error) bool {
+	other, ok := target.(*NFS4StateError)
+	return ok && other.Status == e.Status
+}
+
 // Common state errors used throughout the state package.
 var (
 	ErrBadStateid   = &NFS4StateError{Status: types.NFS4ERR_BAD_STATEID, Message: "bad stateid"}
@@ -51,21 +59,24 @@ var (
 	ErrExpired      = &NFS4StateError{Status: types.NFS4ERR_EXPIRED, Message: "lease expired"}
 	ErrBadSeqid     = &NFS4StateError{Status: types.NFS4ERR_BAD_SEQID, Message: "bad seqid"}
 	ErrShareDenied  = &NFS4StateError{Status: types.NFS4ERR_SHARE_DENIED, Message: "share reservation conflict"}
+	ErrLocked       = &NFS4StateError{Status: types.NFS4ERR_LOCKED, Message: "share reservation denies this I/O"}
 )
 
-// StateidOp identifies the operation family using a stateid. It controls which
-// special stateids are accepted: per RFC 7530 Section 9.1.4.3 the all-ones
-// "READ bypass" stateid is valid only on READ; using it on a write-family
-// operation (WRITE / SETATTR-size / LOCK) MUST yield NFS4ERR_BAD_STATEID.
+// StateidOp identifies the operation family using a stateid. It controls how
+// the two special stateids of RFC 7530 Section 9.1.4.3 are treated: on READ the
+// all-ones "READ bypass" stateid skips share-mode enforcement, while on a
+// write-family operation it is treated exactly like the anonymous stateid
+// (RFC 7530 Section 16.36.4).
 type StateidOp uint8
 
 const (
-	// StateidOpRead is a READ-family operation. Both the anonymous (all-zeros)
-	// and the READ-bypass (all-ones) special stateids are permitted.
+	// StateidOpRead is a READ-family operation. The anonymous (all-zeros)
+	// stateid is subject to the file's share-deny modes; the READ-bypass
+	// (all-ones) stateid is not.
 	StateidOpRead StateidOp = iota
 
 	// StateidOpWrite is a write-family operation (WRITE, SETATTR size change,
-	// LOCK). The anonymous stateid is permitted; the READ-bypass stateid is not.
+	// LOCK). Both special stateids are subject to the file's share-deny modes.
 	StateidOpWrite
 )
 
@@ -73,15 +84,22 @@ const (
 // Stateid Generation
 // ============================================================================
 
-// generateStateidOther creates a unique 12-byte "other" field for a stateid.
+// generateStateidOther creates a 12-byte "other" field for a stateid.
 //
 // Layout:
 //   - Byte 0:    state type tag (open=0x01, lock=0x02, deleg=0x03)
 //   - Bytes 1-3: boot epoch fragment (low 24 bits of sm.bootEpoch)
-//   - Bytes 4-11: atomic sequence counter (8 bytes, big-endian)
+//   - Bytes 4-11: 64 bits from crypto/rand
 //
 // The boot epoch fragment allows ValidateStateid to detect stale stateids
 // from a previous server incarnation without a map lookup.
+//
+// The low eight bytes are random rather than sequential, so holding one
+// stateid reveals nothing about any other.
+//
+// ponytail: uniqueness is probabilistic, around one chance in 40 million at a
+// million concurrent stateids; retry against the by-other map at each mint
+// site if a deployment ever holds enough live state to care.
 func (sm *StateManager) generateStateidOther(stateType byte) [types.NFS4_OTHER_SIZE]byte {
 	var other [types.NFS4_OTHER_SIZE]byte
 
@@ -93,16 +111,11 @@ func (sm *StateManager) generateStateidOther(stateType byte) [types.NFS4_OTHER_S
 	other[2] = byte(sm.bootEpoch >> 8)
 	other[3] = byte(sm.bootEpoch)
 
-	// Bytes 4-11: monotonic sequence counter
-	seq := atomic.AddUint64(&sm.nextStateSeq, 1)
-	other[4] = byte(seq >> 56)
-	other[5] = byte(seq >> 48)
-	other[6] = byte(seq >> 40)
-	other[7] = byte(seq >> 32)
-	other[8] = byte(seq >> 24)
-	other[9] = byte(seq >> 16)
-	other[10] = byte(seq >> 8)
-	other[11] = byte(seq)
+	// Bytes 4-11: unpredictable. From Go 1.24 the default crypto/rand Reader
+	// calls fatal() rather than returning an error, so a partial fill that
+	// leaves guessable zeros here is not reachable and the error is dead. If
+	// the module ever drops below Go 1.24 this must become a real error check.
+	_, _ = rand.Read(other[4:])
 
 	return other
 }
@@ -124,39 +137,116 @@ func (sm *StateManager) isCurrentEpoch(other [types.NFS4_OTHER_SIZE]byte) bool {
 // Stateid Validation
 // ============================================================================
 
+// checkStateidOwner returns NFS4ERR_BAD_STATEID when a stateid names state
+// owned by a client other than the caller, and nil when the caller may use it
+// (RFC 8881 Section 18.38.3). A stateid is not a bearer token: a client
+// presenting another client's stateid could otherwise write through that
+// client's exclusive-deny open, or inside a byte range it holds an exclusive
+// lock on.
+//
+// A zero callerClientID means the caller has no trusted client identity —
+// NFSv4.0 carries no clientid4 on an I/O operation and has no session to
+// derive one from — so the comparison is skipped and the stateid stays a
+// bearer token there.
+//
+// That zero-skip is why the free*StateidLocked helpers below compare inline
+// rather than calling this: FREE_STATEID rejects a mismatch whatever the
+// caller's client ID, including zero. The two rules look alike and are not.
+func checkStateidOwner(callerClientID, ownerClientID uint64) error {
+	if callerClientID == 0 || callerClientID == ownerClientID {
+		return nil
+	}
+	return &NFS4StateError{
+		Status:  types.NFS4ERR_BAD_STATEID,
+		Message: "stateid does not belong to the calling client",
+	}
+}
+
+// stateidMissError classifies a stateid that names no live state: state freed
+// when a lease was cancelled answers NFS4ERR_EXPIRED (RFC 7530 Section 9.6.3.2),
+// a stateid minted by an earlier server incarnation answers
+// NFS4ERR_STALE_STATEID, and anything else was never issued at all.
+//
+// A special stateid must be rejected before it reaches here. Its "other" is
+// all-zeros or all-ones, so the boot-epoch fragment reads as some other
+// incarnation's and the miss would be answered stale rather than bad.
+//
+// Caller must hold sm.mu (read or write).
+func (sm *StateManager) stateidMissError(other [types.NFS4_OTHER_SIZE]byte) error {
+	if sm.isExpiredStateidLocked(other) {
+		return ErrExpired
+	}
+	if !sm.isCurrentEpoch(other) {
+		return ErrStaleStateid
+	}
+	return ErrBadStateid
+}
+
+// checkStateidSeqid compares the seqid a client presented against the current
+// seqid of the state its stateid names: an earlier one is NFS4ERR_OLD_STATEID
+// and a later one NFS4ERR_BAD_STATEID (RFC 7530 Section 9.1.4). Seqid zero asks
+// for "the most recent seqid" (RFC 8881 Section 8.2.2) and skips the comparison.
+//
+// An operation that also sequences an owner must compare here only AFTER the
+// owner's own seqid check. A retransmission carries the pre-operation stateid,
+// whose seqid is by then one behind, and RFC 7530 Section 9.1.7 wants it
+// answered from the owner's reply cache rather than rejected as old.
+func checkStateidSeqid(presented, current uint32) error {
+	if presented == 0 || presented == current {
+		return nil
+	}
+	if presented < current {
+		return &NFS4StateError{
+			Status:  types.NFS4ERR_OLD_STATEID,
+			Message: fmt.Sprintf("stateid seqid %d < current %d", presented, current),
+		}
+	}
+	return &NFS4StateError{
+		Status:  types.NFS4ERR_BAD_STATEID,
+		Message: fmt.Sprintf("stateid seqid %d > current %d", presented, current),
+	}
+}
+
 // ValidateStateid validates a stateid for the given operation family and
 // returns the associated OpenState.
 //
 // Per RFC 7530 Section 9.1.4, validation checks:
-//  1. Special stateids: the anonymous (all-zeros) stateid bypasses validation
-//     on any op; the READ-bypass (all-ones) stateid is accepted ONLY when
-//     op == StateidOpRead and otherwise rejected with NFS4ERR_BAD_STATEID
-//     (RFC 7530 Section 9.1.4.3). Both return (nil, nil) when accepted.
+//  1. Special stateids: the anonymous (all-zeros) stateid carries no open
+//     state, so it is checked against the share-deny modes of the opens that
+//     do exist on the file; the READ-bypass (all-ones) stateid skips that
+//     check on READ and is treated as the anonymous stateid everywhere else
+//     (RFC 7530 Sections 9.1.4.3 and 16.36.4). Both return (nil, nil) when
+//     accepted, and NFS4ERR_LOCKED when an open denies the access.
 //  2. Route by type tag: open -> openStateByOther, lock -> lockStateByOther
 //     (returns the parent open state), delegation -> delegByOther
 //  3. If not found -> NFS4ERR_BAD_STATEID (or NFS4ERR_STALE_STATEID for wrong epoch)
-//  4. Compare seqid: < current -> NFS4ERR_OLD_STATEID; > current -> NFS4ERR_BAD_STATEID
-//  5. Verify filehandle matches (if provided and non-nil) -> NFS4ERR_BAD_STATEID
-//  6. Check lease expiry and implicit renewal on success
+//  4. Verify the state belongs to clientID, the caller's trusted client
+//     identity -> NFS4ERR_BAD_STATEID. A zero clientID means the caller has
+//     none (NFSv4.0) and skips the check; see checkStateidOwner.
+//  5. Compare seqid: < current -> NFS4ERR_OLD_STATEID; > current -> NFS4ERR_BAD_STATEID
+//  6. Verify filehandle matches (if provided and non-nil) -> NFS4ERR_BAD_STATEID
+//  7. Check lease expiry and implicit renewal on success
 //
 // For delegation stateids (type 0x03), returns nil OpenState on success
 // (same as special stateids). The caller's permission checks at the metadata
 // layer (PrepareWrite) still apply.
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byte, op StateidOp) (*OpenState, error) {
+func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byte, op StateidOp, clientID uint64) (*OpenState, error) {
 	// Step 1: Special stateids.
-	// The READ-bypass (all-ones) stateid is READ-only: reject it on
-	// write-family operations so a client cannot use it to bypass share-mode
-	// enforcement and byte-range locks (RFC 7530 Section 9.1.4.3).
-	if stateid.IsReadBypassStateid() {
-		if op != StateidOpRead {
-			return nil, ErrBadStateid
-		}
+	// The READ-bypass (all-ones) stateid asks the server to serve a READ even
+	// where an open would deny it, so on READ it skips the share-deny check
+	// below. On a write-family operation it carries no such licence: RFC 7530
+	// Section 16.36.4 makes it behave exactly like the anonymous stateid.
+	if stateid.IsReadBypassStateid() && op == StateidOpRead {
 		return nil, nil
 	}
-	// The anonymous (all-zeros) stateid is permitted on READ and WRITE.
-	if stateid.IsAnonymousStateid() {
+	// Neither special stateid names an open state, so the share reservations
+	// standing on the file are all the server has to judge the I/O by.
+	if stateid.IsSpecialStateid() {
+		if err := sm.anonymousIOBlocked(currentFH, op); err != nil {
+			return nil, err
+		}
 		return nil, nil
 	}
 
@@ -168,7 +258,7 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 
 	// Delegation stateids (type 0x03) are stored in delegByOther, not openStateByOther.
 	if stateType == StateTypeDeleg {
-		return sm.validateDelegStateid(stateid, currentFH)
+		return sm.validateDelegStateid(stateid, currentFH, clientID)
 	}
 
 	// Lock stateids (type 0x02) are stored in lockStateByOther, never in
@@ -176,45 +266,30 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 	// READ/WRITE, so validate it against the lock state and return the parent
 	// open state (whose share-access bits the caller enforces).
 	if stateType == StateTypeLock {
-		return sm.validateLockStateid(stateid, currentFH)
+		return sm.validateLockStateid(stateid, currentFH, clientID)
 	}
 
 	// Open stateids (type 0x01) use openStateByOther.
 	openState, exists := sm.openStateByOther[stateid.Other]
 	if !exists {
-		if !sm.isCurrentEpoch(stateid.Other) {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_STALE_STATEID,
-				Message: "stateid from previous server incarnation",
-			}
-		}
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
-			Message: "stateid not found",
-		}
+		return nil, sm.stateidMissError(stateid.Other)
 	}
 
-	// Step 4: Compare seqid.
-	// Per RFC 8881 Section 8.2.2 (NFSv4.1): if the client sends seqid=0
-	// in a non-special stateid, the server MUST accept it regardless of
-	// the current seqid value.  This is safe for v4.0 too since v4.0
-	// clients never legitimately send seqid=0 for real stateids.
-	if stateid.Seqid != 0 {
-		if stateid.Seqid < openState.Stateid.Seqid {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_OLD_STATEID,
-				Message: fmt.Sprintf("stateid seqid %d < current %d", stateid.Seqid, openState.Stateid.Seqid),
-			}
-		}
-		if stateid.Seqid > openState.Stateid.Seqid {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_BAD_STATEID,
-				Message: fmt.Sprintf("stateid seqid %d > current %d", stateid.Seqid, openState.Stateid.Seqid),
-			}
-		}
+	// Step 4: the state must belong to the calling client.
+	var ownerClientID uint64
+	if openState.Owner != nil {
+		ownerClientID = openState.Owner.ClientID
+	}
+	if err := checkStateidOwner(clientID, ownerClientID); err != nil {
+		return nil, err
 	}
 
-	// Step 5: Verify filehandle matches (if provided)
+	// Step 5: Compare seqid.
+	if err := checkStateidSeqid(stateid.Seqid, openState.Stateid.Seqid); err != nil {
+		return nil, err
+	}
+
+	// Step 6: Verify filehandle matches (if provided)
 	if len(currentFH) > 0 && len(openState.FileHandle) > 0 {
 		if !bytes.Equal(currentFH, openState.FileHandle) {
 			return nil, &NFS4StateError{
@@ -224,7 +299,7 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 		}
 	}
 
-	// Step 6: Lease check and implicit renewal
+	// Step 7: Lease check and implicit renewal
 	// Per RFC 7530 Section 9.6: any operation that uses a stateid implicitly
 	// renews the lease for the associated client. This prevents READ-only
 	// clients from having their state expire (Pitfall 3).
@@ -244,19 +319,10 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 // validateDelegStateid validates a delegation stateid (type 0x03).
 // Returns nil OpenState on success (delegation validated, caller should proceed).
 // Caller must hold sm.mu.RLock.
-func (sm *StateManager) validateDelegStateid(stateid *types.Stateid4, currentFH []byte) (*OpenState, error) {
+func (sm *StateManager) validateDelegStateid(stateid *types.Stateid4, currentFH []byte, clientID uint64) (*OpenState, error) {
 	deleg, exists := sm.delegByOther[stateid.Other]
 	if !exists {
-		if !sm.isCurrentEpoch(stateid.Other) {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_STALE_STATEID,
-				Message: "stateid from previous server incarnation",
-			}
-		}
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
-			Message: "delegation stateid not found",
-		}
+		return nil, sm.stateidMissError(stateid.Other)
 	}
 
 	// Revoked delegations are no longer valid
@@ -267,20 +333,12 @@ func (sm *StateManager) validateDelegStateid(stateid *types.Stateid4, currentFH 
 		}
 	}
 
-	// Compare seqid (seqid=0 means "any" per RFC 8881 Section 8.2.2)
-	if stateid.Seqid != 0 {
-		if stateid.Seqid < deleg.Stateid.Seqid {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_OLD_STATEID,
-				Message: fmt.Sprintf("delegation stateid seqid %d < current %d", stateid.Seqid, deleg.Stateid.Seqid),
-			}
-		}
-		if stateid.Seqid > deleg.Stateid.Seqid {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_BAD_STATEID,
-				Message: fmt.Sprintf("delegation stateid seqid %d > current %d", stateid.Seqid, deleg.Stateid.Seqid),
-			}
-		}
+	if err := checkStateidOwner(clientID, deleg.ClientID); err != nil {
+		return nil, err
+	}
+
+	if err := checkStateidSeqid(stateid.Seqid, deleg.Stateid.Seqid); err != nil {
+		return nil, err
 	}
 
 	// Verify filehandle matches
@@ -310,36 +368,22 @@ func (sm *StateManager) validateDelegStateid(stateid *types.Stateid4, currentFH 
 // lockStateByOther; on success this returns the parent OpenState so the caller
 // can enforce that open's share-access mode (RFC 7530 Section 9.1.4.1).
 // Caller must hold sm.mu.RLock.
-func (sm *StateManager) validateLockStateid(stateid *types.Stateid4, currentFH []byte) (*OpenState, error) {
+func (sm *StateManager) validateLockStateid(stateid *types.Stateid4, currentFH []byte, clientID uint64) (*OpenState, error) {
 	lockState, exists := sm.lockStateByOther[stateid.Other]
 	if !exists {
-		if !sm.isCurrentEpoch(stateid.Other) {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_STALE_STATEID,
-				Message: "stateid from previous server incarnation",
-			}
-		}
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
-			Message: "lock stateid not found",
-		}
+		return nil, sm.stateidMissError(stateid.Other)
 	}
 
-	// Compare seqid. Per RFC 8881 Section 8.2.2, seqid=0 in a non-special
-	// stateid bypasses the seqid comparison entirely.
-	if stateid.Seqid != 0 {
-		if stateid.Seqid < lockState.Stateid.Seqid {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_OLD_STATEID,
-				Message: fmt.Sprintf("lock stateid seqid %d < current %d", stateid.Seqid, lockState.Stateid.Seqid),
-			}
-		}
-		if stateid.Seqid > lockState.Stateid.Seqid {
-			return nil, &NFS4StateError{
-				Status:  types.NFS4ERR_BAD_STATEID,
-				Message: fmt.Sprintf("lock stateid seqid %d > current %d", stateid.Seqid, lockState.Stateid.Seqid),
-			}
-		}
+	var ownerClientID uint64
+	if lockState.LockOwner != nil {
+		ownerClientID = lockState.LockOwner.ClientID
+	}
+	if err := checkStateidOwner(clientID, ownerClientID); err != nil {
+		return nil, err
+	}
+
+	if err := checkStateidSeqid(stateid.Seqid, lockState.Stateid.Seqid); err != nil {
+		return nil, err
 	}
 
 	// Verify filehandle matches the locked file.
@@ -490,8 +534,8 @@ func (sm *StateManager) freeLockStateidLocked(clientID uint64, stateid *types.St
 	return nil
 }
 
-// freeOpenStateidLocked frees an open stateid.
-// Returns NFS4ERR_LOCKS_HELD if the open has associated locks.
+// freeOpenStateidLocked answers FREE_STATEID for an open stateid.
+// A live open is itself a held lock, so this always refuses.
 // Caller must hold sm.mu.
 func (sm *StateManager) freeOpenStateidLocked(clientID uint64, stateid *types.Stateid4) error {
 	openState, exists := sm.openStateByOther[stateid.Other]
@@ -511,41 +555,15 @@ func (sm *StateManager) freeOpenStateidLocked(clientID uint64, stateid *types.St
 		}
 	}
 
-	// Check if any lock stateids reference this open
-	if len(openState.LockStates) > 0 {
-		return &NFS4StateError{
-			Status:  types.NFS4ERR_LOCKS_HELD,
-			Message: fmt.Sprintf("open stateid has %d locks held", len(openState.LockStates)),
-		}
+	// An open stateid that is still in openStateByOther names a live open, and
+	// RFC 8881 Section 18.38.3 counts an open among the "locks (of any kind)"
+	// that make FREE_STATEID return NFS4ERR_LOCKS_HELD. CLOSE, not FREE_STATEID,
+	// is what releases an open; freeing it here would drop the share
+	// reservation while the client still believes it holds one.
+	return &NFS4StateError{
+		Status:  types.NFS4ERR_LOCKS_HELD,
+		Message: fmt.Sprintf("open stateid is still open (%d lock stateids)", len(openState.LockStates)),
 	}
-
-	// Remove from openStateByOther and the per-file index
-	delete(sm.openStateByOther, stateid.Other)
-	sm.removeOpenStateFromFileLocked(openState)
-
-	// Remove from owner's OpenStates slice
-	if openState.Owner != nil {
-		for i, os := range openState.Owner.OpenStates {
-			if os == openState {
-				openState.Owner.OpenStates = append(
-					openState.Owner.OpenStates[:i],
-					openState.Owner.OpenStates[i+1:]...,
-				)
-				break
-			}
-		}
-
-		// If owner has no more open states, clean up the owner
-		if len(openState.Owner.OpenStates) == 0 {
-			delete(sm.openOwners, openState.Owner.Key())
-		}
-	}
-
-	logger.Info("FREE_STATEID: open stateid freed",
-		"client_id", clientID,
-		"stateid_other", hex.EncodeToString(stateid.Other[:]))
-
-	return nil
 }
 
 // freeDelegStateidLocked frees a delegation stateid.
@@ -595,14 +613,18 @@ func (sm *StateManager) freeDelegStateidLocked(clientID uint64, stateid *types.S
 // This is a read-only operation with no side effects: it does NOT renew leases
 // (Pitfall 5 from research).
 //
+// A stateid belonging to another client is reported as NFS4ERR_BAD_STATEID
+// rather than as valid, so the operation cannot be used as an existence oracle
+// for state the caller has no claim to; see checkStateidOwner.
+//
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) TestStateids(stateids []types.Stateid4) []uint32 {
+func (sm *StateManager) TestStateids(stateids []types.Stateid4, callerClientID uint64) []uint32 {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
 	results := make([]uint32, len(stateids))
 	for i := range stateids {
-		results[i] = sm.testSingleStateid(&stateids[i])
+		results[i] = sm.testSingleStateid(&stateids[i], callerClientID)
 	}
 
 	logger.Debug("TEST_STATEID: tested stateids",
@@ -614,7 +636,7 @@ func (sm *StateManager) TestStateids(stateids []types.Stateid4) []uint32 {
 // testSingleStateid validates a single stateid without lease renewal.
 // Returns the NFS4 status code for the stateid.
 // Caller must hold sm.mu.RLock.
-func (sm *StateManager) testSingleStateid(stateid *types.Stateid4) uint32 {
+func (sm *StateManager) testSingleStateid(stateid *types.Stateid4, callerClientID uint64) uint32 {
 	// Special stateids are always valid
 	if stateid.IsSpecialStateid() {
 		return types.NFS4_OK
@@ -629,11 +651,11 @@ func (sm *StateManager) testSingleStateid(stateid *types.Stateid4) uint32 {
 
 	switch stateType {
 	case StateTypeOpen:
-		return sm.testOpenStateid(stateid)
+		return sm.testOpenStateid(stateid, callerClientID)
 	case StateTypeLock:
-		return sm.testLockStateid(stateid)
+		return sm.testLockStateid(stateid, callerClientID)
 	case StateTypeDeleg:
-		return sm.testDelegStateid(stateid)
+		return sm.testDelegStateid(stateid, callerClientID)
 	default:
 		return types.NFS4ERR_BAD_STATEID
 	}
@@ -641,9 +663,12 @@ func (sm *StateManager) testSingleStateid(stateid *types.Stateid4) uint32 {
 
 // testOpenStateid validates an open stateid without lease renewal.
 // Caller must hold sm.mu.RLock.
-func (sm *StateManager) testOpenStateid(stateid *types.Stateid4) uint32 {
+func (sm *StateManager) testOpenStateid(stateid *types.Stateid4, callerClientID uint64) uint32 {
 	openState, exists := sm.openStateByOther[stateid.Other]
 	if !exists {
+		return types.NFS4ERR_BAD_STATEID
+	}
+	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
 		return types.NFS4ERR_BAD_STATEID
 	}
 
@@ -670,9 +695,12 @@ func (sm *StateManager) testOpenStateid(stateid *types.Stateid4) uint32 {
 
 // testLockStateid validates a lock stateid without lease renewal.
 // Caller must hold sm.mu.RLock.
-func (sm *StateManager) testLockStateid(stateid *types.Stateid4) uint32 {
+func (sm *StateManager) testLockStateid(stateid *types.Stateid4, callerClientID uint64) uint32 {
 	lockState, exists := sm.lockStateByOther[stateid.Other]
 	if !exists {
+		return types.NFS4ERR_BAD_STATEID
+	}
+	if err := checkStateidOwner(callerClientID, lockState.LockOwner.ClientID); err != nil {
 		return types.NFS4ERR_BAD_STATEID
 	}
 
@@ -691,9 +719,12 @@ func (sm *StateManager) testLockStateid(stateid *types.Stateid4) uint32 {
 
 // testDelegStateid validates a delegation stateid without lease renewal.
 // Caller must hold sm.mu.RLock.
-func (sm *StateManager) testDelegStateid(stateid *types.Stateid4) uint32 {
+func (sm *StateManager) testDelegStateid(stateid *types.Stateid4, callerClientID uint64) uint32 {
 	deleg, exists := sm.delegByOther[stateid.Other]
 	if !exists {
+		return types.NFS4ERR_BAD_STATEID
+	}
+	if err := checkStateidOwner(callerClientID, deleg.ClientID); err != nil {
 		return types.NFS4ERR_BAD_STATEID
 	}
 
@@ -712,4 +743,46 @@ func (sm *StateManager) testDelegStateid(stateid *types.Stateid4) uint32 {
 	}
 
 	return types.NFS4_OK
+}
+
+// anonymousIOBlocked reports NFS4ERR_LOCKED when a share reservation on the file
+// denies an I/O issued under the anonymous stateid.
+//
+// RFC 7530 Section 9.1.4: "Regardless of whether an anonymous stateid or a
+// stateid returned by the server is used, if there is a conflicting share
+// reservation or mandatory byte-range lock held on the file, the server MUST
+// refuse to service the READ or WRITE operation ... Share reservations are
+// established by OPEN operations and by their nature are mandatory in that when
+// the OPEN denies READ or WRITE operations, that denial results in such
+// operations being rejected with error NFS4ERR_LOCKED."
+//
+// Without this a deny mode was advisory: it refused a conflicting OPEN but not
+// the I/O of a client that skipped OPEN and used the anonymous stateid, which is
+// the case the deny mode exists to stop. Linux nfsd applies the same rule in
+// check_special_stateids.
+//
+// The READ-bypass stateid reaches this on a write-family operation, where
+// RFC 7530 Section 16.36.4 makes it behave exactly like the anonymous stateid.
+// On READ it does not: bypassing this check is the whole point of it.
+func (sm *StateManager) anonymousIOBlocked(currentFH []byte, op StateidOp) error {
+	if len(currentFH) == 0 {
+		return nil
+	}
+
+	// The I/O is judged exactly as an OPEN requesting that access would be, so
+	// it goes through the same conflict test rather than a second copy of the
+	// rule: with no deny of its own to assert, only the "requested access is
+	// denied by an existing open" half can fire.
+	access := uint32(types.OPEN4_SHARE_ACCESS_READ)
+	if op == StateidOpWrite {
+		access = types.OPEN4_SHARE_ACCESS_WRITE
+	}
+
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	if sm.shareConflictLocked(currentFH, access, types.OPEN4_SHARE_DENY_NONE) {
+		return ErrLocked
+	}
+	return nil
 }

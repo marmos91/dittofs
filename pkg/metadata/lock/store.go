@@ -179,17 +179,11 @@ type LockQuery struct {
 	// ShareName filters by share.
 	// Empty string means no share filtering.
 	ShareName string
-
-	// IsLease filters by lock type.
-	// nil means no type filtering (both leases and byte-range locks).
-	// true means leases only.
-	// false means byte-range locks only.
-	IsLease *bool
 }
 
 // IsEmpty returns true if the query has no filters.
 func (q LockQuery) IsEmpty() bool {
-	return q.FileID == "" && q.OwnerID == "" && q.ClientID == "" && q.ShareName == "" && q.IsLease == nil
+	return q.FileID == "" && q.OwnerID == "" && q.ClientID == "" && q.ShareName == ""
 }
 
 // MatchesLock returns true if the lock matches all query filters.
@@ -206,12 +200,6 @@ func (q LockQuery) MatchesLock(lk *PersistedLock) bool {
 	}
 	if q.ShareName != "" && lk.ShareName != q.ShareName {
 		return false
-	}
-	if q.IsLease != nil {
-		isLease := lk.IsLease()
-		if *q.IsLease != isLease {
-			return false
-		}
 	}
 	return true
 }

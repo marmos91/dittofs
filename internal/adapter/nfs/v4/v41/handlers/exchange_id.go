@@ -12,7 +12,9 @@ import (
 // Registers a v4.1 client with the server and returns a client ID for session creation.
 // Delegates to StateManager.ExchangeID for multi-case algorithm logic; rejects SP4_MACH_CRED/SP4_SSV.
 // Creates or updates client record; returns clientid, sequence ID, and server capabilities.
-// Errors: NFS4ERR_CLID_INUSE, NFS4ERR_ENCR_ALG_UNSUPP (non-SP4_NONE), NFS4ERR_BADXDR.
+// Rejects eia_flags bits that are undefined or reply-only.
+// Errors: NFS4ERR_INVAL (bad eia_flags), NFS4ERR_CLID_INUSE, NFS4ERR_NOENT,
+// NFS4ERR_NOT_SAME, NFS4ERR_PERM, NFS4ERR_ENCR_ALG_UNSUPP (non-SP4_NONE), NFS4ERR_BADXDR.
 func HandleExchangeID(d *Deps, ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
 	var args types.ExchangeIdArgs
 	if err := args.Decode(reader); err != nil {
@@ -21,6 +23,25 @@ func HandleExchangeID(d *Deps, ctx *types.CompoundContext, _ *types.V41RequestCo
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_EXCHANGE_ID,
 			Data:   EncodeStatusOnly(types.NFS4ERR_BADXDR),
+		}
+	}
+
+	// eia_flags may carry only the bits defined for the argument direction:
+	// EXCHGID4_FLAG_MASK_A, plus the fencing capability a v4.2 client may
+	// request. Reply-only bits (EXCHGID4_FLAG_CONFIRMED_R) sit outside that
+	// mask, so a client that sets one is refused here along with any bit that
+	// carries no meaning at all.
+	allowedFlags := uint32(types.EXCHGID4_FLAG_MASK_A)
+	if ctx.MinorVersion >= 2 {
+		allowedFlags |= types.EXCHGID4_FLAG_SUPP_FENCE_OPS
+	}
+	if args.Flags&^allowedFlags != 0 {
+		logger.Debug("EXCHANGE_ID: rejecting undefined eia_flags bits",
+			"flags", args.Flags, "allowed", allowedFlags, "client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_INVAL,
+			OpCode: types.OP_EXCHANGE_ID,
+			Data:   EncodeStatusOnly(types.NFS4ERR_INVAL),
 		}
 	}
 

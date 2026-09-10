@@ -3,6 +3,7 @@ package journal
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -362,4 +363,118 @@ func TestRestoreToVersion_KeepsEvictedRange(t *testing.T) {
 	if got := readAll(t, r, peer, len(v1)); !bytes.Equal(got, v1) {
 		t.Fatalf("post-reopen %s: restore did not produce the V1 view", peer)
 	}
+}
+
+// TestRestoreToVersion_RefusesAShardWhoseFsyncHasPermanentlyFailed pins the one
+// case the closing barrier cannot see.
+//
+// syncFailed is sticky and freezes the shard's durable watermark, so dirty()
+// reports the shard clean forever and commitDirtyShards skips it — contributing
+// no error, and leaving the sweep to return nil for records that will never
+// reach the device. The restore then reports a durable V-view it does not have.
+//
+// The injected failure is transient on purpose: the device "recovers", so every
+// fsync the restore itself issues succeeds and nothing on that path can report
+// the problem. That is also the real shape of it — under Linux fsync-error
+// semantics the kernel drops the failed pages and the next fsync returns
+// success for bytes that never landed, which is why the flag is sticky.
+func TestRestoreToVersion_RefusesAShardWhoseFsyncHasPermanentlyFailed(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t, Config{ShardCount: 1, DirtyExpiry: -1, GCDeadRatioForce: 2})
+	sh := s.shards[0]
+
+	v1 := randBytes(4096, 23)
+	if err := s.WriteAt(ctx, "f", 0, v1); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	if err := sh.groupCommit(); err != nil {
+		t.Fatalf("groupCommit: %v", err)
+	}
+	v := s.JournalVersion()
+
+	// Something for the restore to undo, so it is a real pass and not a no-op.
+	if err := s.WriteAt(ctx, "f", 0, bytes.Repeat([]byte{0xEE}, 4096)); err != nil {
+		t.Fatalf("WriteAt(post-V): %v", err)
+	}
+
+	inner := sh.segSync
+	sh.segSync = func(*segmentMeta) error { return errors.New("device gone") }
+	if err := sh.groupCommit(); err == nil {
+		t.Fatal("groupCommit: want the injected fsync failure")
+	}
+	sh.segSync = inner
+	if !sh.syncFailed.Load() {
+		t.Fatal("syncFailed not set: the injected failure did not take")
+	}
+	if sh.dirty() {
+		t.Fatal("shard reports dirty: the barrier would have covered it and this test proves nothing")
+	}
+
+	if err := s.RestoreToVersion(ctx, v); err == nil {
+		t.Fatal("RestoreToVersion reported success for a shard whose fsync has permanently failed")
+	}
+}
+
+// TestRestoreToVersion_RefusesSeededRangeOverwrittenOnRemote pins the one case a
+// manifest-seeded cold entry cannot answer for.
+//
+// The entry's version dates the scan that found the range remote-durable, not
+// the bytes, and what a cold read returns is whatever the remote holds now. A
+// post-V write that reached the remote replaced that copy, so serving the entry
+// would hand back content from after the requested version while reporting
+// success. Neither of the two silent choices is acceptable, so the restore
+// refuses.
+//
+// Hydrate is what makes the post-V write reach the remote: it records the range
+// already synced, where WriteAt leaves it local-only. The sibling cases above
+// use WriteAt and must keep restoring, which is the whole point of testing on
+// the synced flag rather than on the overlap alone.
+func TestRestoreToVersion_RefusesSeededRangeOverwrittenOnRemote(t *testing.T) {
+	f := newRestoreFixture(t, 1)
+	ctx := context.Background()
+
+	const span = 1024
+	id := FileID("seeded-then-remote-overwritten")
+
+	if err := f.SeedCold(ctx, id, [][2]int64{{0, span}}); err != nil {
+		t.Fatalf("SeedCold: %v", err)
+	}
+	target := f.commitAll()
+
+	if err := f.Hydrate(ctx, id, 0, bytes.Repeat([]byte("post"), span/4), 0); err != nil {
+		t.Fatalf("Hydrate post-V: %v", err)
+	}
+	f.commitAll()
+
+	err := f.RestoreToVersion(ctx, target)
+	if !errors.Is(err, ErrColdProvenanceAmbiguous) {
+		t.Fatalf("RestoreToVersion: want ErrColdProvenanceAmbiguous, got %v", err)
+	}
+}
+
+// TestRestoreToVersion_KeepsSeededRangeOverwrittenLocally is the negative half of
+// the case above: the same shape with a post-V write that never left the local
+// tier. The remote still holds what the seed described, the restore is about to
+// drop the local bytes anyway, so the entry is still good and the restore must
+// proceed rather than refuse.
+func TestRestoreToVersion_KeepsSeededRangeOverwrittenLocally(t *testing.T) {
+	f := newRestoreFixture(t, 1)
+	ctx := context.Background()
+
+	const span = 1024
+	id := FileID("seeded-then-locally-overwritten")
+
+	if err := f.SeedCold(ctx, id, [][2]int64{{0, span}}); err != nil {
+		t.Fatalf("SeedCold: %v", err)
+	}
+	target := f.commitAll()
+
+	f.write(id, 0, bytes.Repeat([]byte("post"), span/4))
+	f.commitAll()
+
+	if err := f.RestoreToVersion(ctx, target); err != nil {
+		t.Fatalf("RestoreToVersion: %v", err)
+	}
+	assertColdAt(t, f.Store, id, 0, span, "pre-crash")
+	assertColdAt(t, f.crashReopen(), id, 0, span, "post-crash")
 }

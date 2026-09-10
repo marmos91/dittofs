@@ -604,3 +604,85 @@ func TestEnsureSpaceReclaimsSyncedActiveBelowRotation(t *testing.T) {
 		t.Fatalf("cap never enforced: diskBytes=%d want <=%d", got, max)
 	}
 }
+
+// TestEvictPrefersOlderStampOverUnstamped pins the tiebreak for a segment that
+// is evictable while its lastAccess is still zero — a repack target, or any
+// sealed segment reconstructed at open. Zero must not sort ahead of a real
+// timestamp: the unstamped segment here was created a moment ago, the stamped
+// one was last touched an hour back, so the stamped one is the colder victim.
+func TestEvictPrefersOlderStampOverUnstamped(t *testing.T) {
+	s, clk := evictStore(t, Config{})
+	ctx := context.Background()
+
+	fillUntilSealed(t, s, "f", true, 2)
+	segs := sealedSegs(s.shardFor("f"))
+	if len(segs) < 2 {
+		t.Fatalf("want >=2 sealed segments, got %d", len(segs))
+	}
+	now := clk.Now()
+	// Never stamped, but created just now — the shape repackSegment produces.
+	fresh := segs[0]
+	fresh.lastAccess.Store(0)
+	fresh.createdAt = now
+	// Genuinely cold: last read an hour ago.
+	stale := segs[1]
+	stale.lastAccess.Store(now.Add(-time.Hour).UnixNano())
+	stale.createdAt = now.Add(-2 * time.Hour)
+	for _, seg := range segs[2:] {
+		seg.lastAccess.Store(now.UnixNano())
+	}
+
+	res, err := s.Evict(ctx, 0)
+	if err != nil {
+		t.Fatalf("Evict: %v", err)
+	}
+	if res.SegmentsEvicted != 1 {
+		t.Fatalf("targetBytes=0 must evict exactly one segment, got %d", res.SegmentsEvicted)
+	}
+	if _, err := os.Stat(s.segPath(stale.id)); !os.IsNotExist(err) {
+		t.Fatalf("segment %d, last touched an hour ago, should be the victim; stat err=%v", stale.id, err)
+	}
+	if _, err := os.Stat(s.segPath(fresh.id)); err != nil {
+		t.Fatalf("unstamped but freshly created segment %d must survive; stat err=%v", fresh.id, err)
+	}
+}
+
+// TestReopenedSegmentsHaveEvictionAge covers the second producer of unstamped
+// segments: recovery rebuilds every sealed segment from its header, and nothing
+// on that path stamps lastAccess. Left as zero they would all tie at the bottom
+// of the victim search, so the order among them falls to map iteration and the
+// approx-LRU stops approximating anything after a restart.
+func TestReopenedSegmentsHaveEvictionAge(t *testing.T) {
+	dir := t.TempDir()
+	clk := newFakeClock()
+	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
+
+	s, err := Open(dir, cfg, newFakeRemote(), clk)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	fillUntilSealed(t, s, "f", true, 2)
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	s2, err := Open(dir, cfg, newFakeRemote(), clk)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = s2.Close() })
+
+	segs := sealedSegs(s2.shardFor("f"))
+	if len(segs) < 2 {
+		t.Fatalf("want >=2 sealed segments after reopen, got %d", len(segs))
+	}
+	for _, seg := range segs {
+		if seg.lastAccess.Load() != 0 {
+			t.Fatalf("segment %d: recovery is expected to leave lastAccess unstamped, got %d",
+				seg.id, seg.lastAccess.Load())
+		}
+		if got := seg.evictionAge(); got <= 0 {
+			t.Errorf("segment %d: evictionAge = %d, want its creation stamp", seg.id, got)
+		}
+	}
+}

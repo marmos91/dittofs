@@ -52,8 +52,7 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 
 	// Step 2: Try to find persisted lease via lockStore
 	if lm.lockStore != nil {
-		isLease := true
-		query := LockQuery{IsLease: &isLease}
+		query := LockQuery{}
 		if clientID != "" {
 			query.ClientID = clientID
 		}

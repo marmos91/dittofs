@@ -241,7 +241,9 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 	// BEFORE BuildAuthContext — otherwise ctx.User==nil falls into the
 	// anonymous arm and synthesises UID-0 (root), bypassing all DACL checks
 	// in the metadata layer (#619, same class as #603).
-	h.primeAuthContextFromOpenFile(ctx, openFile)
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return setInfoStatus(status), nil
+	}
 
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
@@ -472,10 +474,20 @@ func (h *Handler) setFileInfoFromStore(
 			setAttrs.Ctime = &preFile.Ctime
 		}
 
-		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
+		// Per MS-FSA 2.1.5.15.2 ("FileBasicInformation") a timestamp write is
+		// authorized by FILE_WRITE_ATTRIBUTES on the open, not by ownership of
+		// the file. Carry that grant so the metadata layer's ownership gate
+		// reflects the protocol's rule. It is scoped to this call rather than
+		// stamped on authCtx, which the rename path also hands to the
+		// parent-directory restore — a different object, on which this handle's
+		// grant says nothing. It relaxes nothing else either: a SET_INFO that
+		// also changes DOS attributes is still ownership checked.
+		basicAuthCtx := withTimestampHandleAuth(authCtx, openFile.GrantedAccess)
+
+		if _, err := metaSvc.SetFileAttributes(basicAuthCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			openFile.mu.Unlock() // release before returning; refs #606.
 			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Name().Path, "error", err)
-			return setInfoStatus(common.MapToSMB(err)), nil
+			return setInfoStatus(types.StatusForErr(err)), nil
 		}
 
 		// NTFS contract: SET_INFO BasicInformation on an ADS handle MUST be
@@ -534,7 +546,9 @@ func (h *Handler) setFileInfoFromStore(
 					basePropagate.Atime != nil || basePropagate.CreationTime != nil ||
 					basePropagate.Mode != nil || basePropagate.Hidden != nil {
 					if baseHandle, encErr := metadata.EncodeFileHandle(baseFile); encErr == nil {
-						_, _ = metaSvc.SetFileAttributes(authCtx, baseHandle, basePropagate)
+						// A stream shares its base file's security descriptor, so
+						// the grant carried on this handle is a grant on the base.
+						_, _ = metaSvc.SetFileAttributes(basicAuthCtx, baseHandle, basePropagate)
 					}
 				}
 			}
@@ -762,24 +776,34 @@ func (h *Handler) setFileInfoFromStore(
 			oldFileName := oldName.FileName
 			oldParentPath := GetParentPath(oldName.Path)
 
-			// Save mtime/ctime before the rename. MS-FSA 2.1.5.15.12 requires
-			// LastChangeTime to be updated; preserving it matches NTFS, which
-			// defers the update to handle close.
-			restoreTimestamps := h.saveTimestamps(authCtx, openFile.MetadataHandle)
-
-			// Perform the rename
+			// Move stamps the renamed inode's LastChangeTime. A client
+			// holding this handle open must keep observing the ChangeTime it
+			// was handed at CREATE, so put the pre-rename value back.
 			metaSvc := h.Registry.GetMetadataService()
-			_, err = metaSvc.Move(authCtx, toDir, oldFileName, toDir, toName)
+
+			var clobberedStream *metadata.File
+			var renameWcc *metadata.RenameWcc
+			clobberedStream, renameWcc, err = metaSvc.Move(authCtx, toDir, oldFileName, toDir, toName)
 			if err != nil {
 				logger.Debug("SET_INFO: stream rename failed",
 					"from", oldFileName,
 					"to", toName,
 					"error", err)
-				return setInfoStatus(common.MapToSMB(err)), nil
+				return setInfoStatus(types.StatusForErr(err)), nil
 			}
 
-			// Restore mtime/ctime after rename
-			restoreTimestamps()
+			h.restorePreRenameChangeTime(authCtx.Context, openFile.MetadataHandle, renameWcc)
+
+			// Renaming a stream onto an existing stream name unlinks the
+			// stream that was there; free its content.
+			if clobberedStream != nil {
+				h.purgeBlockStorePayload(ctx.Context, toDir, clobberedStream.PayloadID, toName, "SET_INFO stream rename")
+			}
+
+			// Move's LastChangeTime stamp is an automatic update, so a
+			// timestamp frozen on this handle has to be put back the same way
+			// WRITE and truncate put theirs back.
+			h.restoreFrozenTimestamps(authCtx, openFile)
 
 			// Clear delete-on-close after rename. Written under the handle
 			// lock: the delete-pending gates and the CLOSE delete-on-close
@@ -1025,6 +1049,35 @@ func (h *Handler) setFileInfoFromStore(
 		isOverwrite := renameInfo.ReplaceIfExists
 		metaSvc := h.Registry.GetMetadataService()
 
+		// A destination name that already resolves to the file being renamed
+		// is another hard link to it, so there is nothing to move: unlinking
+		// either name would drop a link the caller never asked to lose, and
+		// Move returns success without touching the store. Everything below
+		// would then describe a change that did not happen — the lease
+		// breaks, the paired rename notification, and the handle's own name.
+		// The link path takes the same shortcut for a link onto a name the
+		// file already answers to.
+		//
+		// Renaming an entry onto itself is excluded. It reaches the same
+		// no-op inside Move, but it is the ordinary "rename to the name I
+		// already have" request rather than a second link, and the work that
+		// request carries is still owed — a client holding a lease on the
+		// file is broken for it.
+		//
+		// The probe is exact-case, matching the GetChild inside Move, so a
+		// case-mismatched destination still falls through to the overwrite
+		// path below and replaces the entry it found.
+		srcName := openFile.Name()
+		renamingOntoOwnEntry := toName == srcName.FileName && bytes.Equal(toDir, srcName.ParentHandle)
+		if dstHandle, childErr := metaSvc.GetChild(authCtx.Context, toDir, toName); childErr == nil &&
+			!renamingOntoOwnEntry && len(openFile.MetadataHandle) > 0 &&
+			bytes.Equal(dstHandle, openFile.MetadataHandle) {
+			logger.Debug("SET_INFO: rename destination is another link to the source",
+				"from", openFile.Name().Path,
+				"to", newPath)
+			return setInfoStatus(types.StatusSuccess), nil
+		}
+
 		// Dispatch the SOURCE file's break ahead of the destination lookup
 		// below. Every gate that can still reject this rename has already run,
 		// and the source break needs nothing the lookup produces.
@@ -1174,12 +1227,6 @@ func (h *Handler) setFileInfoFromStore(
 		oldParentPath := GetParentPath(oldPath)
 		srcParentHandle := oldName.ParentHandle
 
-		// Save mtime/ctime before the rename so we can restore them after.
-		// MS-FSA 2.1.5.15.12 never touches LastModificationTime but does require
-		// LastChangeTime to be updated; preserving both matches NTFS, which
-		// defers that update to handle close.
-		restoreTimestamps := h.saveTimestamps(authCtx, openFile.MetadataHandle)
-
 		// Pre-overwrite the case-mismatched destination: Move's destination
 		// probe is exact-case GetChild(toName), so a destination that exists
 		// under a different casing (e.g. on disk "Foo.txt", client said
@@ -1187,25 +1234,46 @@ func (h *Handler) setFileInfoFromStore(
 		// sibling entry. Remove the matched-case destination upfront so Move
 		// inserts the source under the client-requested casing.
 		if isOverwrite && dstMatchedName != "" && dstMatchedName != toName {
-			if _, _, rmErr := metaSvc.RemoveFile(authCtx, toDir, dstMatchedName); rmErr != nil {
+			removed, _, rmErr := metaSvc.RemoveFile(authCtx, toDir, dstMatchedName)
+			if rmErr != nil {
 				logger.Debug("SET_INFO: rename overwrite pre-remove failed",
 					"name", dstMatchedName, "error", rmErr)
-				return setInfoStatus(common.MapToSMB(rmErr)), nil
+				return setInfoStatus(types.StatusForErr(rmErr)), nil
+			}
+			// RemoveFile drops the name and the inode but never the bytes; its
+			// PayloadID is empty whenever the content must survive.
+			if removed != nil {
+				h.purgeBlockStorePayload(ctx.Context, toDir, removed.PayloadID, dstMatchedName, "SET_INFO rename overwrite")
 			}
 		}
 
-		// Perform the rename/move
-		_, err = metaSvc.Move(authCtx, srcParentHandle, oldFileName, toDir, toName)
+		// Move stamps the renamed inode's LastChangeTime. A client holding
+		// this handle open must keep observing the ChangeTime it was handed at
+		// CREATE, so put the pre-rename value back.
+		var clobbered *metadata.File
+		var renameWcc *metadata.RenameWcc
+		clobbered, renameWcc, err = metaSvc.Move(authCtx, srcParentHandle, oldFileName, toDir, toName)
 		if err != nil {
 			logger.Debug("SET_INFO: rename failed",
 				"from", openFile.Name().Path,
 				"to", newPath,
 				"error", err)
-			return setInfoStatus(common.MapToSMB(err)), nil
+			return setInfoStatus(types.StatusForErr(err)), nil
 		}
 
-		// Restore mtime/ctime after rename
-		restoreTimestamps()
+		h.restorePreRenameChangeTime(authCtx.Context, openFile.MetadataHandle, renameWcc)
+
+		// The pre-remove above only fires for a case-mismatched destination, so
+		// an exact-case ReplaceIfExists overwrite reaches Move's own clobber
+		// path instead, and its victim's bytes are released here.
+		if clobbered != nil {
+			h.purgeBlockStorePayload(ctx.Context, toDir, clobbered.PayloadID, toName, "SET_INFO rename")
+		}
+
+		// Move's LastChangeTime stamp is an automatic update, so a timestamp
+		// frozen on this handle has to be put back the same way WRITE and
+		// truncate put theirs back.
+		h.restoreFrozenTimestamps(authCtx, openFile)
 
 		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Restore frozen timestamps on parent directories.
 		// Move updates both source and destination parent directory timestamps.
@@ -1428,13 +1496,32 @@ func (h *Handler) setFileInfoFromStore(
 		openFile.mu.Unlock()
 		h.StoreOpenFile(openFile)
 
-		// Per [MS-FSA] 2.1.5.14.3: marking a directory for deletion completes
+		// Per [MS-FSA] 2.1.5.15.3 step 3.2.3.2 (and 2.1.5.15.4 step 4.3.3.2, which
+		// states the same sweep for the Ex class this branch also serves):
+		// marking a directory for deletion completes
 		// every pending CHANGE_NOTIFY on that directory with
 		// STATUS_DELETE_PENDING. The watcher is normally a different handle on
 		// the same directory, so this cannot be reached from the close path
 		// that answers this handle's own watch.
-		if deletePending && openFile.IsDirectory && h.NotifyRegistry != nil {
-			h.NotifyRegistry.CompleteWatchersForDeletePending(openFile.ShareName, openFile.Name().Path)
+		//
+		// Clearing the disposition drops the marker again. The one-way rule in
+		// [MS-FSA] 2.1.1.6 (Per Open, item 21) is scoped to a single Open,
+		// whose flag dies with the handle; the marker here is scoped to the
+		// directory, so keeping it after the deletion has been called off would
+		// leave a live directory permanently unwatchable.
+		//
+		// Only once NO open still carries the disposition, though: the marker
+		// describes the directory, and the write above cleared one handle's
+		// view of it. Dropping it while a sibling open still holds the
+		// directory delete-pending would put the late-arriving CHANGE_NOTIFYs
+		// straight back to waiting on a sweep that has already run.
+		if openFile.IsDirectory && h.NotifyRegistry != nil {
+			switch {
+			case deletePending:
+				h.NotifyRegistry.MarkDirectoryDeletePending(openFile.ShareName, openFile.Name().Path)
+			case !h.isFileDeletePending(openFile.MetadataHandle):
+				h.NotifyRegistry.ClearDeletePendingMark(openFile.ShareName, openFile.Name().Path)
+			}
 		}
 
 		logger.Debug("SET_INFO: delete disposition set",
@@ -1520,7 +1607,7 @@ func (h *Handler) setFileInfoFromStore(
 		_, err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 		if err != nil {
 			logger.Debug("SET_INFO: failed to set EOF", "path", openFile.Name().Path, "error", err)
-			return setInfoStatus(common.MapToSMB(err)), nil
+			return setInfoStatus(types.StatusForErr(err)), nil
 		}
 
 		// Physically discard block data past the new EOF. SetFileAttributes
@@ -1628,7 +1715,7 @@ func (h *Handler) setFileInfoFromStore(
 					}); err != nil {
 						logger.Debug("SET_INFO: allocation-driven truncate failed",
 							"path", openFile.Name().Path, "error", err)
-						return setInfoStatus(common.MapToSMB(err)), nil
+						return setInfoStatus(types.StatusForErr(err)), nil
 					}
 					// Discard block data past the new EOF (curFile is the pre-op
 					// snapshot). Same reclaim the FileEndOfFileInformation path
@@ -1720,7 +1807,7 @@ func (h *Handler) setFileInfoFromStore(
 		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			logger.Debug("SET_INFO: FileFullEaInformation persist failed",
 				"path", openFile.Name().Path, "error", err)
-			return setInfoStatus(common.MapToSMB(err)), nil
+			return setInfoStatus(types.StatusForErr(err)), nil
 		}
 
 		logger.Debug("SET_INFO: FileFullEaInformation persisted",
@@ -1761,26 +1848,70 @@ func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
 	}
 }
 
-// saveTimestamps reads the current Mtime and Ctime of a file and returns a
-// restore function that writes them back. Used to preserve timestamps across
-// rename operations. MS-FSA 2.1.5.15.12 leaves LastModificationTime alone but
-// requires LastChangeTime to be updated; preserving both matches NTFS, which
-// defers that update to handle close.
-// Returns a no-op if the read fails.
-func (h *Handler) saveTimestamps(authCtx *metadata.AuthContext, handle metadata.FileHandle) func() {
-	metaSvc := h.Registry.GetMetadataService()
-	file, err := metaSvc.GetFile(authCtx.Context, handle)
-	if err != nil {
-		return func() {}
+// restorePreRenameChangeTime puts back the ChangeTime the renamed inode had
+// before Service.Move stamped its own. Move stamps the renamed inode's Ctime,
+// but MS-FSA 2.1.5.15.12 note <187> defers that stamp until the handle is
+// closed, so a client that renames through a handle it still holds open keeps
+// observing the pre-rename ChangeTime. The normative text of 2.1.5.15.12 says
+// only that a rename updates LastChangeTime; the note is the half that says
+// when it becomes visible. Conformance case smb2.rename.simple_modtime pins it,
+// by comparing a CREATE reply's change_time against a post-rename query on the
+// same handle.
+//
+// Both timestamps come from the rename's own transaction rather than from a
+// read taken here. That is what keeps the restore from erasing somebody else's
+// update: an advance committed before the rename is already in SourcePreCtime,
+// so putting it back is a no-op rather than a walk backwards, and the value
+// compared against has been through the store, so it still compares equal on
+// backends that truncate timestamps on the way in.
+//
+// The first of those holds on backends whose transaction serialises the read
+// against concurrent writers. Under READ COMMITTED with an unlocked read —
+// postgres — a write can still land inside the rename's own window, so there the
+// erasure is narrowed rather than eliminated (#2324).
+//
+// There is no permission check on the restore. An explicit timestamp write is
+// ownership-gated in the metadata layer while the rename itself is authorized
+// on the parent directories, so writing the stamp back as the caller would land
+// for an owner and be refused for everyone else: one rename, two observable
+// ChangeTimes, chosen by a check the caller never asked for. A read-only share
+// cannot reach here, because Move would already have refused.
+//
+// Only Ctime is restored: Move leaves the renamed inode's Mtime alone, and the
+// parent directories' timestamps are handled by
+// restoreParentDirFrozenTimestamps.
+//
+// ponytail: the rule being implemented is handle-scoped — what a handle that
+// was already open keeps observing — but this writes the stored timestamp, so
+// it stays file-scoped. The conditional restore removes the case that was
+// actively wrong, a concurrent advance being walked backwards for everyone; it
+// does not make the preserve per-handle, so a second handle on the same file
+// still observes the restored value rather than the one the rename stamped.
+// Upgrade to a per-OpenFile overlay consulted by QUERY_INFO — the seam
+// applyFrozenTimestamps already uses — once that overlay can also say when to
+// stop applying: it has to yield to the next real Ctime advance, including one
+// made through a different handle, which an OpenFile field cannot see on its
+// own. A directory enumeration reports a child's ChangeTime with no OpenFile at
+// all, so an overlay does not cover that path either.
+func (h *Handler) restorePreRenameChangeTime(ctx context.Context, handle metadata.FileHandle, wcc *metadata.RenameWcc) {
+	if wcc == nil {
+		return
 	}
-	mtime := file.Mtime
-	ctime := file.Ctime
-	return func() {
-		_, _ = metaSvc.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{
-			Mtime: &mtime,
-			Ctime: &ctime,
-		})
+	if err := h.Registry.GetMetadataService().RestoreChangeTimeIfUnchanged(
+		ctx, handle, wcc.SourceCtime, wcc.SourcePreCtime,
+	); err != nil {
+		logger.Debug("SET_INFO: restoring pre-rename ChangeTime failed", "error", err)
 	}
+}
+
+// withTimestampHandleAuth returns a copy of authCtx carrying the open handle's
+// FILE_WRITE_ATTRIBUTES grant, which authorizes an explicit timestamp write in
+// the metadata layer in place of POSIX ownership. A copy, because the caller's
+// AuthContext outlives the timestamp write the grant is meant for.
+func withTimestampHandleAuth(authCtx *metadata.AuthContext, grantedAccess uint32) *metadata.AuthContext {
+	scoped := *authCtx
+	scoped.TimestampAuthorizedByHandle = hasAccessRight(grantedAccess, uint32(types.FileWriteAttributes))
+	return &scoped
 }
 
 // restoreFrozenTimestamps restores timestamps that are frozen via SET_INFO -1 sentinel.
@@ -1828,7 +1959,13 @@ func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFil
 		"frozenAtime", frozenAtime)
 
 	metaSvc := h.Registry.GetMetadataService()
-	if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, restoreAttrs); err != nil {
+	// The restore writes explicit timestamps. The handle being restored is the
+	// one that froze them, and freezing required FILE_WRITE_ATTRIBUTES on it, so
+	// carry that grant through rather than letting the restore succeed or fail
+	// on who owns the file.
+	if _, err := metaSvc.SetFileAttributes(
+		withTimestampHandleAuth(authCtx, openFile.GrantedAccess),
+		openFile.MetadataHandle, restoreAttrs); err != nil {
 		logger.Debug("restoreFrozenTimestamps: failed", "path", openFile.Name().Path, "error", err)
 		return
 	}
@@ -1853,6 +1990,13 @@ func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFil
 // (createEntry, removeFile, etc.) always updates parent directory timestamps. This
 // method iterates open handles to find directory handles matching the given parent
 // metadata handle and restores any frozen timestamps.
+//
+// The restore writes explicit timestamps, which the metadata layer gates on
+// ownership, and the child operation's caller need not own the directory — so
+// it is authorized by the freezing handle's own FILE_WRITE_ATTRIBUTES grant
+// instead, the right SMB says governs a timestamp write. That grant is always
+// present: the frozen flags are only ever set by SET_INFO FileBasicInformation,
+// which is itself gated on FILE_WRITE_ATTRIBUTES.
 func (h *Handler) restoreParentDirFrozenTimestamps(authCtx *metadata.AuthContext, parentMetadataHandle metadata.FileHandle) {
 	if len(parentMetadataHandle) == 0 {
 		return
@@ -1872,7 +2016,11 @@ func (h *Handler) restoreParentDirFrozenTimestamps(authCtx *metadata.AuthContext
 		}
 
 		metaSvc := h.Registry.GetMetadataService()
-		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, restoreAttrs); err != nil {
+		// Carry the grant of the handle that froze these values, rather than the
+		// identity of whoever drove the child operation.
+		if _, err := metaSvc.SetFileAttributes(
+			withTimestampHandleAuth(authCtx, openFile.GrantedAccess),
+			openFile.MetadataHandle, restoreAttrs); err != nil {
 			logger.Debug("restoreParentDirFrozenTimestamps: failed",
 				"path", openFile.Name().Path, "error", err)
 		} else {
@@ -2102,7 +2250,7 @@ func (h *Handler) setSecurityInfo(
 	_, err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 	if err != nil {
 		logger.Debug("SET_INFO: failed to set security info", "path", openFile.Name().Path, "error", err)
-		return setInfoStatus(common.MapToSMB(err)), nil
+		return setInfoStatus(types.StatusForErr(err)), nil
 	}
 
 	if h.NotifyRegistry != nil {
@@ -2450,14 +2598,41 @@ func (h *Handler) handleFileLinkInformation(
 	// Replace-if-exists for hardlink is rare (most clients pass FALSE). Honor
 	// it by attempting a delete of the existing destination before linking.
 	// If ReplaceIfExists=false and the target exists, CreateHardLink returns
-	// ErrAlreadyExists → STATUS_OBJECT_NAME_COLLISION via common.MapToSMB.
+	// ErrAlreadyExists → STATUS_OBJECT_NAME_COLLISION via smb/types.StatusForErr.
 	metaSvc := h.Registry.GetMetadataService()
 	if linkInfo.ReplaceIfExists {
 		if existing, matchedName, lookupErr := metaSvc.LookupCaseInsensitive(authCtx, dstDir, linkName); lookupErr == nil && existing != nil {
-			if _, _, rmErr := metaSvc.RemoveFile(authCtx, dstDir, matchedName); rmErr != nil {
+			// A destination that already names the file being linked is the
+			// requested end state, so there is nothing to do. Removing it
+			// would drop the inode's last link and free its content, and the
+			// CreateHardLink below would then resurrect the name over bytes
+			// that no longer exist. Move takes the same shortcut for a rename
+			// onto its own name.
+			existingHandle, encErr := metadata.EncodeFileHandle(existing)
+			if encErr != nil {
+				// Identity is unprovable, so the removal below cannot be shown
+				// to be safe. Refuse rather than fall through into it: the
+				// wrong branch here destroys the caller's content.
+				logger.Debug("SET_INFO: hardlink replace cannot identify existing destination",
+					"name", matchedName, "error", encErr)
+				return setInfoStatus(types.StatusInvalidParameter), nil
+			}
+			if bytes.Equal(existingHandle, openFile.MetadataHandle) {
+				return setInfoStatus(types.StatusSuccess), nil
+			}
+
+			removed, _, rmErr := metaSvc.RemoveFile(authCtx, dstDir, matchedName)
+			if rmErr != nil {
 				logger.Debug("SET_INFO: hardlink replace failed to remove existing",
 					"name", matchedName, "error", rmErr)
-				return setInfoStatus(common.MapToSMB(rmErr)), nil
+				return setInfoStatus(types.StatusForErr(rmErr)), nil
+			}
+			// RemoveFile drops the name and the inode but never the bytes; its
+			// PayloadID is empty whenever the content must survive. Left
+			// unreleased, the replaced file's records stay indexed as live in
+			// the local tier, where no reclamation path can reach them.
+			if removed != nil {
+				h.purgeBlockStorePayload(authCtx.Context, dstDir, removed.PayloadID, matchedName, "SET_INFO hardlink replace")
 			}
 		}
 	}
@@ -2471,7 +2646,7 @@ func (h *Handler) handleFileLinkInformation(
 	if _, err := metaSvc.CreateHardLink(authCtx, dstDir, linkName, openFile.MetadataHandle); err != nil {
 		logger.Debug("SET_INFO: CreateHardLink failed",
 			"src", openFile.Name().Path, "dst", newPath, "error", err)
-		return setInfoStatus(common.MapToSMB(err)), nil
+		return setInfoStatus(types.StatusForErr(err)), nil
 	}
 
 	// Break parent directory leases on the destination parent to None

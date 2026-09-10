@@ -3,9 +3,9 @@ package handlers
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
@@ -39,7 +39,7 @@ import (
 //	bitmap4     attrset      (empty - no attrs set by server)
 //	open_delegation4:
 //	  uint32    delegation_type (OPEN_DELEGATE_NONE / READ / WRITE)
-func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
+func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) (result *types.CompoundResult) {
 	// Require current filehandle (parent directory for CLAIM_NULL)
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
 		return openError(status)
@@ -77,13 +77,25 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 	}
 	logger.Debug("NFSv4 OPEN share", "access", shareAccess, "deny", shareDeny)
 
+	// A v4.1 client can use the high share_access bits to say it wants no
+	// delegation, or to cancel a standing want. Read that before the mask
+	// below discards them, since it is the only thing outside the access mode
+	// that this server acts on. A v4.0 client's high bits mean nothing in RFC
+	// 7530 and it could not decode the reply arm that reports a reason, so it
+	// is never asked.
+	var noDelegWhy *uint32
+	if ctx.IsV41OrLater() {
+		if why, refuse := state.DelegationWantReason(shareAccess); refuse {
+			noDelegWhy = &why
+		}
+	}
+
 	// Validate the share_access / share_deny modes (RFC 7530 Section 16.16).
 	// The access mode (low 2 bits) must be exactly READ, WRITE, or BOTH; the
 	// deny mode must be a subset of {READ, WRITE}. Reject anything else with
-	// NFS4ERR_INVAL before touching state. The server ignores any higher
-	// share_access bits (e.g. the v4.1 want-delegation hints), so the access
-	// mode is masked to OPEN4_SHARE_ACCESS_BOTH and the masked value carried
-	// forward consistently with the rest of the handler.
+	// NFS4ERR_INVAL before touching state. Every remaining share_access bit is
+	// ignored, so the access mode is masked to OPEN4_SHARE_ACCESS_BOTH and the
+	// masked value carried forward consistently with the rest of the handler.
 	accessMode := shareAccess & uint32(types.OPEN4_SHARE_ACCESS_BOTH)
 	if accessMode == 0 {
 		logger.Debug("NFSv4 OPEN invalid share_access", "access", shareAccess, "client", ctx.ClientAddr)
@@ -142,7 +154,8 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 			// Decode createattrs (fattr4 = bitmap4 + opaque)
 			setAttrs, _, fattr4Err := attrs.DecodeFattr4ToSetAttrs(reader)
 			if fattr4Err != nil {
-				if nfsErr, ok := fattr4Err.(attrs.NFS4StatusError); ok {
+				var nfsErr attrs.NFS4StatusError
+				if errors.As(fattr4Err, &nfsErr) {
 					return openError(nfsErr.NFS4Status())
 				}
 				return openError(types.NFS4ERR_BADXDR)
@@ -168,7 +181,8 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 			}
 			setAttrs, _, fattr4Err := attrs.DecodeFattr4ToSetAttrs(reader)
 			if fattr4Err != nil {
-				if nfsErr, ok := fattr4Err.(attrs.NFS4StatusError); ok {
+				var nfsErr attrs.NFS4StatusError
+				if errors.As(fattr4Err, &nfsErr) {
 					return openError(nfsErr.NFS4Status())
 				}
 				return openError(types.NFS4ERR_BADXDR)
@@ -186,7 +200,35 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 		return openError(types.NFS4ERR_BADXDR)
 	}
 
-	// Dispatch by claim type
+	// Dispatch by claim type.
+	//
+	// An OPEN this handler refuses on its own -- a create collision, a target
+	// of the wrong object type, a name the server rejects -- never reaches the
+	// state manager, which is where an owner's seqid is normally consumed.
+	// RFC 7530 Section 9.1.7 consumes it for those failures just the same, and
+	// the client advances its own sequence either way, so leaving it unrecorded
+	// put the server permanently one behind and answered every later OPEN for
+	// that owner NFS4ERR_BAD_SEQID. ConsumeOpenSeqid is a no-op when the state
+	// manager already accounted for this seqid.
+	//
+	// The two halves go together. A retransmission at the seqid the server last
+	// recorded must replay that reply rather than run the operation again, and
+	// answering a refusal here without also replaying it would re-execute the
+	// retransmission against the state of the world now instead of the state it
+	// had when the client first asked. NFSv4.1 takes exactly-once from the
+	// session slot table and carries no owner seqid, so it stays out of both.
+	if !ctx.SkipOwnerSeqid {
+		if status, ok := h.StateManager.ReplayOpenSeqid(clientID, ownerData, seqid); ok {
+			logger.Debug("NFSv4 OPEN refusal replayed",
+				"seqid", seqid, "status", status, "client", ctx.ClientAddr)
+			return openError(status)
+		}
+		defer func() {
+			if result != nil && result.Status != types.NFS4_OK {
+				h.StateManager.ConsumeOpenSeqid(clientID, ownerData, seqid, result.Status)
+			}
+		}()
+	}
 
 	switch claimType {
 	case types.CLAIM_NULL:
@@ -200,7 +242,8 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 		}
 
 		return h.handleOpenClaimNull(ctx, reader, seqid, shareAccess, shareDeny,
-			clientID, ownerData, openType, createMode, claimType, createAttrs, createVerifier)
+			clientID, ownerData, openType, createMode, claimType, createAttrs, createVerifier,
+			noDelegWhy)
 
 	case types.CLAIM_FH:
 		// CLAIM_FH (RFC 8881 Section 18.16.3): re-open the file named by the
@@ -223,7 +266,7 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 			return openError(types.NFS4ERR_INVAL)
 		}
 		return h.handleOpenClaimFH(ctx, seqid, shareAccess, shareDeny,
-			clientID, ownerData, claimType)
+			clientID, ownerData, claimType, noDelegWhy)
 
 	case types.CLAIM_PREVIOUS:
 		return h.handleOpenClaimPrevious(ctx, reader, seqid, shareAccess, shareDeny,
@@ -255,6 +298,7 @@ func (h *Handler) handleOpenClaimNull(
 	openType, createMode, claimType uint32,
 	createAttrs *metadata.SetAttrs,
 	createVerifier *uint64,
+	noDelegWhy *uint32,
 ) *types.CompoundResult {
 	// CLAIM_NULL: decode filename (component4 = XDR string)
 	filename, err := xdr.DecodeString(reader)
@@ -286,7 +330,7 @@ func (h *Handler) handleOpenClaimNull(
 	// Get pre-operation parent attributes for change_info
 	parentFile, err := metaSvc.GetFile(ctx.Context, parentHandle)
 	if err != nil {
-		return openError(common.MapToNFS4(err))
+		return openError(types.StatusForErr(err))
 	}
 	beforeCtime := uint64(parentFile.Ctime.UnixNano())
 
@@ -316,15 +360,16 @@ func (h *Handler) handleOpenClaimNull(
 		// Open existing file
 		child, lookupErr := metaSvc.Lookup(authCtx, parentHandle, filename)
 		if lookupErr != nil {
-			return openError(common.MapToNFS4(lookupErr))
+			return openError(types.StatusForErr(lookupErr))
 		}
 		fh, encErr := metadata.EncodeFileHandle(child)
 		if encErr != nil {
 			return openError(types.NFS4ERR_SERVERFAULT)
 		}
-		// Check access permissions for the requested share_access
-		if accessErr := checkOpenAccess(metaSvc, authCtx, fh, shareAccess); accessErr != nil {
-			return openError(common.MapToNFS4(accessErr))
+		// Check that the target is a regular file the caller may open with the
+		// requested share_access.
+		if status := checkOpenTarget(metaSvc, authCtx, fh, child, shareAccess); status != types.NFS4_OK {
+			return openError(status)
 		}
 		fileHandle = fh
 
@@ -376,9 +421,10 @@ func (h *Handler) handleOpenClaimNull(
 			if encErr != nil {
 				return openError(types.NFS4ERR_SERVERFAULT)
 			}
-			// Check access permissions for the requested share_access
-			if accessErr := checkOpenAccess(metaSvc, authCtx, fh, shareAccess); accessErr != nil {
-				return openError(common.MapToNFS4(accessErr))
+			// Check that the target is a regular file the caller may open with
+			// the requested share_access.
+			if status := checkOpenTarget(metaSvc, authCtx, fh, child, shareAccess); status != types.NFS4_OK {
+				return openError(status)
 			}
 			fileHandle = fh
 
@@ -395,23 +441,26 @@ func (h *Handler) handleOpenClaimNull(
 				return openError(types.NFS4ERR_DELAY)
 			}
 
-			// UNCHECKED4 on an existing file applies the supplied createattrs
-			// (RFC 7530 §16.16: "the existing file is opened ... and the
-			// attributes specified are set"). Only the attributes the client
-			// actually sent are applied (the createAttrs bitmap), so e.g.
-			// size=0 truncates while unset attributes are left untouched.
-			// SetFileAttributes enforces its own permission checks. Exclusive
-			// creates do not carry settable createattrs in EXCLUSIVE4, and an
-			// EXCLUSIVE4_1 retry must not re-mutate the existing file, so this
-			// is gated to UNCHECKED4.
-			if createMode == types.UNCHECKED4 && createAttrs != nil {
-				// A size change is a write to the file. Mirror the SETATTR
-				// gating (RFC 7530 §5.11): a size-bearing createattrs on an
-				// open that does not carry WRITE access is rejected with
+			// RFC 7530 §16.16.3: "When an UNCHECKED4 create encounters an
+			// existing file, the attributes specified by createattrs are not
+			// used, except that when a size of zero is specified, the existing
+			// file is truncated."
+			//
+			// Applying the whole set let a client that merely reopened a file
+			// rewrite its mode and ownership as a side effect, and honoured a
+			// non-zero size as a truncation the specification does not ask for.
+			// EXCLUSIVE4 carries no settable createattrs and an EXCLUSIVE4_1
+			// retry must not re-mutate the file, so this stays gated to
+			// UNCHECKED4.
+			if createMode == types.UNCHECKED4 && createAttrs != nil &&
+				createAttrs.Size != nil && *createAttrs.Size == 0 {
+				// A truncation is a write to the file. Mirror the SETATTR
+				// gating (RFC 7530 §5.11): a truncating createattrs on an open
+				// that does not carry WRITE access is rejected with
 				// NFS4ERR_OPENMODE, so a read-only OPEN cannot truncate the
 				// file even when POSIX permissions would otherwise allow it.
-				if createAttrs.Size != nil && shareAccess&types.OPEN4_SHARE_ACCESS_WRITE == 0 {
-					logger.Debug("NFSv4 OPEN UNCHECKED4 rejected: size change on read-only open",
+				if shareAccess&types.OPEN4_SHARE_ACCESS_WRITE == 0 {
+					logger.Debug("NFSv4 OPEN UNCHECKED4 rejected: truncate on read-only open",
 						"file", filename,
 						"share_access", shareAccess,
 						"client", ctx.ClientAddr)
@@ -420,8 +469,9 @@ func (h *Handler) handleOpenClaimNull(
 				// child was fetched via Lookup above and still reflects the full
 				// pre-truncate extent, so it is the pre-op snapshot the reclaim
 				// needs. Shared with the SETATTR path.
-				if setErr := h.applySetAttrsWithTruncateReclaim(ctx, metaSvc, authCtx, fileHandle, child, createAttrs); setErr != nil {
-					return openError(common.MapToNFS4(setErr))
+				truncate := &metadata.SetAttrs{Size: createAttrs.Size}
+				if setErr := h.applySetAttrsWithTruncateReclaim(ctx, metaSvc, authCtx, fileHandle, child, truncate); setErr != nil {
+					return openError(types.StatusForErr(setErr))
 				}
 			}
 		} else {
@@ -444,7 +494,7 @@ func (h *Handler) handleOpenClaimNull(
 			}
 			newFile, _, createErr := metaSvc.CreateFile(authCtx, parentHandle, filename, newAttr)
 			if createErr != nil {
-				return openError(common.MapToNFS4(createErr))
+				return openError(types.StatusForErr(createErr))
 			}
 			fh, encErr := metadata.EncodeFileHandle(newFile)
 			if encErr != nil {
@@ -452,6 +502,20 @@ func (h *Handler) handleOpenClaimNull(
 			}
 			fileHandle = fh
 			created = true
+
+			// RFC 7530 §16.16.3: on a create that actually creates,
+			// "createattrs specifies the initial set of attributes for the
+			// file". CreateFile takes the mode and the ownership; everything
+			// else the client asked for -- a size, timestamps -- goes through
+			// the same path SETATTR uses, which is what makes a create
+			// carrying size=N produce a file of N bytes rather than an empty
+			// one. EXCLUSIVE4 carries a verifier in place of attributes, so
+			// createAttrs is nil there and nothing is applied.
+			if createAttrs != nil {
+				if _, setErr := metaSvc.SetFileAttributes(authCtx, fileHandle, createAttrs); setErr != nil {
+					return openError(types.StatusForErr(setErr))
+				}
+			}
 		}
 	}
 
@@ -495,16 +559,12 @@ func (h *Handler) handleOpenClaimNull(
 		openResult.RFlags &^= types.OPEN4_RESULT_CONFIRM
 		// Auto-confirm the owner so subsequent OPENs don't require confirmation.
 		// Use ConfirmOpenV41 which does NOT increment seqid (must stay at 1).
-		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid)
+		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid, ctx.SessionClientID)
 	}
 
 	// Try to grant a delegation
 
-	delegType, shouldGrant := h.StateManager.ShouldGrantDelegation(clientID, []byte(fileHandle), shareAccess)
-	var deleg *state.DelegationState
-	if shouldGrant {
-		deleg = h.StateManager.GrantDelegation(clientID, []byte(fileHandle), delegType)
-	}
+	deleg, noneExtWhy := h.resolveDelegation(clientID, []byte(fileHandle), shareAccess, noDelegWhy)
 
 	// Directory change notifications for OPEN+CREATE are now handled by
 	// MetadataService.CreateFile via DirChangeNotifier -> LockManager -> BreakCallbacks.
@@ -522,7 +582,7 @@ func (h *Handler) handleOpenClaimNull(
 	// Encode OPEN4resok
 
 	return h.encodeOpenResult(clientID, ownerData, &openResult.Stateid, openResult.RFlags,
-		beforeCtime, afterCtime, deleg)
+		beforeCtime, afterCtime, deleg, noneExtWhy)
 }
 
 // handleOpenClaimFH handles the CLAIM_FH path for OPEN (NFSv4.1).
@@ -537,6 +597,7 @@ func (h *Handler) handleOpenClaimFH(
 	seqid, shareAccess, shareDeny uint32,
 	clientID uint64, ownerData []byte,
 	claimType uint32,
+	noDelegWhy *uint32,
 ) *types.CompoundResult {
 	// The current filehandle is the file being opened.
 	fileHandle := make(metadata.FileHandle, len(ctx.CurrentFH))
@@ -555,9 +616,9 @@ func (h *Handler) handleOpenClaimFH(
 		return openError(types.NFS4ERR_SERVERFAULT)
 	}
 
-	// Enforce the requested share_access against the file's permissions.
-	if accessErr := checkOpenAccess(metaSvc, authCtx, fileHandle, shareAccess); accessErr != nil {
-		return openError(common.MapToNFS4(accessErr))
+	// Enforce the file type and the requested share_access against the file.
+	if status := checkOpenTarget(metaSvc, authCtx, fileHandle, nil, shareAccess); status != types.NFS4_OK {
+		return openError(status)
 	}
 
 	// If another client holds a conflicting delegation, recall it and ask the
@@ -593,14 +654,10 @@ func (h *Handler) handleOpenClaimFH(
 	// session, so strip OPEN4_RESULT_CONFIRM and auto-confirm.
 	if ctx.SkipOwnerSeqid && openResult.RFlags&types.OPEN4_RESULT_CONFIRM != 0 {
 		openResult.RFlags &^= types.OPEN4_RESULT_CONFIRM
-		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid)
+		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid, ctx.SessionClientID)
 	}
 
-	delegType, shouldGrant := h.StateManager.ShouldGrantDelegation(clientID, []byte(fileHandle), shareAccess)
-	var deleg *state.DelegationState
-	if shouldGrant {
-		deleg = h.StateManager.GrantDelegation(clientID, []byte(fileHandle), delegType)
-	}
+	deleg, noneExtWhy := h.resolveDelegation(clientID, []byte(fileHandle), shareAccess, noDelegWhy)
 
 	logger.Debug("NFSv4 OPEN CLAIM_FH successful",
 		"stateid_seqid", openResult.Stateid.Seqid,
@@ -610,7 +667,7 @@ func (h *Handler) handleOpenClaimFH(
 
 	// CLAIM_FH does not create or change a directory, so change_info is empty.
 	return h.encodeOpenResult(clientID, ownerData, &openResult.Stateid, openResult.RFlags,
-		0, 0, deleg)
+		0, 0, deleg, noneExtWhy)
 }
 
 // handleOpenClaimPrevious handles the CLAIM_PREVIOUS path for OPEN.
@@ -676,7 +733,7 @@ func (h *Handler) handleOpenClaimPrevious(
 	// In NFSv4.1, OPEN_CONFIRM was removed; auto-confirm if needed.
 	if ctx.SkipOwnerSeqid && openResult.RFlags&types.OPEN4_RESULT_CONFIRM != 0 {
 		openResult.RFlags &^= types.OPEN4_RESULT_CONFIRM
-		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid)
+		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid, ctx.SessionClientID)
 	}
 
 	logger.Debug("NFSv4 OPEN CLAIM_PREVIOUS successful",
@@ -686,19 +743,57 @@ func (h *Handler) handleOpenClaimPrevious(
 
 	// Use dummy change_info (reclaim doesn't create new files)
 	return h.encodeOpenResult(clientID, ownerData, &openResult.Stateid, openResult.RFlags,
-		0, 0, nil)
+		0, 0, nil, nil)
+}
+
+// resolveDelegation decides the open_delegation4 arm for an OPEN that is
+// eligible to receive a delegation, returning either the delegation it granted
+// or the why_no_delegation4 reason to report for withholding one.
+//
+// A v4.1 client can say in share_access that it does not want a delegation, or
+// that it is cancelling a standing want. Those are answers, not preferences, so
+// they skip the grant policy entirely and come back as a reason. A v4.0 client
+// cannot decode OPEN_DELEGATE_NONE_EXT, so it never gets a reason -- its want
+// bits are meaningless in RFC 7530 and its refusals stay a plain
+// OPEN_DELEGATE_NONE.
+//
+// Everything else -- no callback path, contention, an existing delegation on
+// the file -- also answers plain OPEN_DELEGATE_NONE. Reporting a reason there
+// is permitted but not required, and the reasons that would apply
+// (WND4_CONTENTION, WND4_RESOURCE) each carry a promise to follow up when the
+// obstacle clears that this server does not keep.
+func (h *Handler) resolveDelegation(
+	clientID uint64,
+	fileHandle []byte,
+	shareAccess uint32,
+	noDelegWhy *uint32,
+) (*state.DelegationState, *uint32) {
+	if noDelegWhy != nil {
+		return nil, noDelegWhy
+	}
+
+	delegType, shouldGrant := h.StateManager.ShouldGrantDelegation(clientID, fileHandle, shareAccess)
+	if !shouldGrant {
+		return nil, nil
+	}
+	return h.StateManager.GrantDelegation(clientID, fileHandle, delegType), nil
 }
 
 // encodeOpenResult encodes the OPEN4resok response shared by all claim paths.
 //
-// The deleg parameter controls the open_delegation4 response:
-//   - nil: OPEN_DELEGATE_NONE
-//   - non-nil: full delegation encoding (stateid, recall, ACE, space limit)
+// deleg and noneExtWhy together pick the open_delegation4 arm:
+//   - deleg non-nil: full delegation encoding (stateid, recall, ACE, space limit)
+//   - noneExtWhy non-nil: OPEN_DELEGATE_NONE_EXT carrying that reason (v4.1+)
+//   - both nil: OPEN_DELEGATE_NONE
+//
+// A granted delegation wins if a caller ever supplies both, since the client
+// gets something either way and the reason would contradict it.
 func (h *Handler) encodeOpenResult(
 	clientID uint64, ownerData []byte,
 	stateid *types.Stateid4, rflags uint32,
 	beforeCtime, afterCtime uint64,
 	deleg *state.DelegationState,
+	noneExtWhy *uint32,
 ) *types.CompoundResult {
 	var buf bytes.Buffer
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
@@ -707,15 +802,20 @@ func (h *Handler) encodeOpenResult(
 	encodeChangeInfo4(&buf, true, beforeCtime, afterCtime)
 	_ = xdr.WriteUint32(&buf, rflags)
 	_ = xdr.WriteUint32(&buf, 0) // attrset: empty bitmap
-	state.EncodeDelegation(&buf, deleg)
+	if deleg == nil && noneExtWhy != nil {
+		state.EncodeNoDelegationExt(&buf, *noneExtWhy)
+	} else {
+		state.EncodeDelegation(&buf, deleg)
+	}
 
 	// Cache the result for replay detection
 	h.StateManager.CacheOpenOwnerResult(clientID, ownerData, types.NFS4_OK, buf.Bytes())
 
 	return &types.CompoundResult{
-		Status: types.NFS4_OK,
-		OpCode: types.OP_OPEN,
-		Data:   buf.Bytes(),
+		Status:  types.NFS4_OK,
+		Stateid: stateid,
+		OpCode:  types.OP_OPEN,
+		Data:    buf.Bytes(),
 	}
 }
 
@@ -734,7 +834,9 @@ func (h *Handler) handleOpenConfirm(ctx *types.CompoundContext, reader io.Reader
 		}
 	}
 
-	// Decode OPEN_CONFIRM4args: stateid4 + seqid
+	// Decode OPEN_CONFIRM4args: stateid4 + seqid. OPEN_CONFIRM exists only in
+	// v4.0, where (seqid 1, all-zeros other) is an ordinary stateid rather than
+	// the current-stateid placeholder, so this decodes literally.
 	stateid, err := types.DecodeStateid4(reader)
 	if err != nil {
 		return &types.CompoundResult{
@@ -759,7 +861,7 @@ func (h *Handler) handleOpenConfirm(ctx *types.CompoundContext, reader io.Reader
 		"client", ctx.ClientAddr)
 
 	// Delegate to StateManager
-	confirmResult, stateErr := h.StateManager.ConfirmOpen(stateid, confirmSeqid)
+	confirmResult, stateErr := h.StateManager.ConfirmOpen(stateid, confirmSeqid, ctx.SessionClientID)
 	if stateErr != nil {
 		if replay := asReplay(types.OP_OPEN_CONFIRM, stateErr); replay != nil {
 			return replay
@@ -786,9 +888,10 @@ func (h *Handler) handleOpenConfirm(ctx *types.CompoundContext, reader io.Reader
 	}
 
 	return &types.CompoundResult{
-		Status: types.NFS4_OK,
-		OpCode: types.OP_OPEN_CONFIRM,
-		Data:   buf.Bytes(),
+		Status:  types.NFS4_OK,
+		Stateid: &confirmResult.Stateid,
+		OpCode:  types.OP_OPEN_CONFIRM,
+		Data:    buf.Bytes(),
 	}
 }
 
@@ -811,10 +914,13 @@ func (h *Handler) handleOpenClaimDelegateCur(
 	seqid, shareAccess, shareDeny uint32,
 	clientID uint64, ownerData []byte,
 ) *types.CompoundResult {
-	// Decode CLAIM_DELEGATE_CUR args: stateid4 + component4
-	delegStateid, err := types.DecodeStateid4(reader)
-	if err != nil {
-		return openError(types.NFS4ERR_BADXDR)
+	// Decode CLAIM_DELEGATE_CUR args: stateid4 + component4. OPEN is dispatched
+	// in v4.1 as well as v4.0, so the delegation stateid may be the
+	// current-stateid placeholder naming a stateid an earlier operation in this
+	// COMPOUND returned (RFC 8881 Section 16.2.3.1.2).
+	delegStateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		return openError(argStatus)
 	}
 
 	filename, err := xdr.DecodeString(reader)
@@ -871,14 +977,14 @@ func (h *Handler) handleOpenClaimDelegateCur(
 	// Get pre-operation parent attributes for change_info
 	parentFile, err := metaSvc.GetFile(ctx.Context, parentHandle)
 	if err != nil {
-		return openError(common.MapToNFS4(err))
+		return openError(types.StatusForErr(err))
 	}
 	beforeCtime := uint64(parentFile.Ctime.UnixNano())
 
 	// Lookup the file (delegation holder opening an existing file)
 	child, lookupErr := metaSvc.Lookup(authCtx, parentHandle, filename)
 	if lookupErr != nil {
-		return openError(common.MapToNFS4(lookupErr))
+		return openError(types.StatusForErr(lookupErr))
 	}
 
 	fileHandle, encErr := metadata.EncodeFileHandle(child)
@@ -898,8 +1004,8 @@ func (h *Handler) handleOpenClaimDelegateCur(
 	// Enforce file permissions for the requested share_access, exactly as the
 	// CLAIM_NULL paths do. A delegation stateid proves the client held a
 	// delegation, not that this RPC caller may read/write the file.
-	if accessErr := checkOpenAccess(metaSvc, authCtx, fileHandle, shareAccess); accessErr != nil {
-		return openError(common.MapToNFS4(accessErr))
+	if status := checkOpenTarget(metaSvc, authCtx, fileHandle, child, shareAccess); status != types.NFS4_OK {
+		return openError(status)
 	}
 
 	ctx.CurrentFH = make([]byte, len(fileHandle))
@@ -932,7 +1038,7 @@ func (h *Handler) handleOpenClaimDelegateCur(
 	// In NFSv4.1, OPEN_CONFIRM was removed; auto-confirm if needed.
 	if ctx.SkipOwnerSeqid && openResult.RFlags&types.OPEN4_RESULT_CONFIRM != 0 {
 		openResult.RFlags &^= types.OPEN4_RESULT_CONFIRM
-		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid)
+		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid, ctx.SessionClientID)
 	}
 
 	logger.Debug("NFSv4 OPEN CLAIM_DELEGATE_CUR successful",
@@ -942,7 +1048,7 @@ func (h *Handler) handleOpenClaimDelegateCur(
 
 	// No delegation grant (client already has one)
 	return h.encodeOpenResult(clientID, ownerData, &openResult.Stateid, openResult.RFlags,
-		beforeCtime, beforeCtime, nil)
+		beforeCtime, beforeCtime, nil, nil)
 }
 
 // decodeVerifier reads an 8-byte createverf4 and returns it as a uint64
@@ -967,10 +1073,43 @@ func openError(status uint32) *types.CompoundResult {
 	}
 }
 
-// checkOpenAccess verifies that the caller has appropriate file-level permissions
-// for the requested share_access mode. This is required by NFSv4 OPEN to enforce
-// POSIX access control -- without it, any user can open any file regardless of mode bits.
-func checkOpenAccess(metaSvc *metadata.Service, authCtx *metadata.AuthContext, handle metadata.FileHandle, shareAccess uint32) error {
+// checkOpenTarget gates every OPEN of an object that already exists: the object
+// must be a regular file, and the caller must hold the file-level permissions
+// the requested share_access implies. It returns NFS4_OK when the open may
+// proceed and the NFS4 status to report otherwise.
+//
+// file is the already-resolved target when the caller has one and nil when it
+// does not, in which case it is fetched here. The claim types that resolve a
+// name have it from the lookup they just did; CLAIM_FH does not, because it
+// opens a filehandle the client already holds.
+//
+// The type check is what keeps OPEN to the objects it is defined over. RFC 7530
+// Section 16.16.6: "If the component provided to OPEN resolves to something
+// other than a regular file (or a named attribute), an error will be returned
+// to the client. If it is a directory, NFS4ERR_ISDIR is returned; otherwise,
+// NFS4ERR_SYMLINK is returned" -- and NFS4ERR_SYMLINK covers special files of
+// every other type, not just symbolic links.
+//
+// The permission check enforces POSIX access control; without it any user could
+// open any file regardless of its mode bits.
+func checkOpenTarget(metaSvc *metadata.Service, authCtx *metadata.AuthContext, handle metadata.FileHandle, file *metadata.File, shareAccess uint32) uint32 {
+	if file == nil {
+		var err error
+		// GetFileForRead: handle-addressed, File.Path unused -- skip derivePath.
+		file, err = metaSvc.GetFileForRead(authCtx.Context, handle)
+		if err != nil {
+			return types.StatusForErr(err)
+		}
+	}
+
+	switch file.Type {
+	case metadata.FileTypeRegular:
+	case metadata.FileTypeDirectory:
+		return types.NFS4ERR_ISDIR
+	default:
+		return types.NFS4ERR_SYMLINK
+	}
+
 	var requiredPerm metadata.Permission
 	if shareAccess&types.OPEN4_SHARE_ACCESS_READ != 0 {
 		requiredPerm |= metadata.PermissionRead
@@ -979,25 +1118,20 @@ func checkOpenAccess(metaSvc *metadata.Service, authCtx *metadata.AuthContext, h
 		requiredPerm |= metadata.PermissionWrite
 	}
 	if requiredPerm == 0 {
-		return nil
+		return types.NFS4_OK
 	}
 
 	granted, err := metaSvc.CheckPermissions(authCtx, handle, requiredPerm)
 	if err != nil {
-		return err
+		return types.StatusForErr(err)
 	}
 
 	if granted&requiredPerm != requiredPerm {
-		return &metadata.StoreError{
-			Code:    metadata.ErrAccessDenied,
-			Message: "open access denied",
-		}
+		return types.NFS4ERR_ACCESS
 	}
-	return nil
+	return types.NFS4_OK
 }
 
-// effectiveUIDGID extracts the UID and GID from the auth context identity,
-// defaulting to 0 (root) if the identity or its fields are nil.
 func effectiveUIDGID(authCtx *metadata.AuthContext) (uint32, uint32) {
 	var uid, gid uint32
 	if authCtx.Identity != nil {

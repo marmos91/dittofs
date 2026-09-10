@@ -681,7 +681,7 @@ func testHardLinkListChildrenShowsNlinkGT1(t *testing.T, factory StoreFactory) {
 		t.Fatalf("SetLinkCount(2) failed: %v", err)
 	}
 
-	entries, _, err := store.ListChildren(ctx, rootHandle, "", 0)
+	entries, _, err := store.ListChildren(ctx, rootHandle, "", 0, metadata.WithAttrs)
 	if err != nil {
 		t.Fatalf("ListChildren failed: %v", err)
 	}
@@ -733,7 +733,7 @@ func testHardLinkTxListChildrenShowsNlinkGT1(t *testing.T, factory StoreFactory)
 	var entries []metadata.DirEntry
 	if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		var err error
-		entries, _, err = tx.ListChildren(ctx, rootHandle, "", 0)
+		entries, _, err = tx.ListChildren(ctx, rootHandle, "", 0, metadata.WithAttrs)
 		return err
 	}); err != nil {
 		t.Fatalf("WithTransaction(ListChildren) failed: %v", err)

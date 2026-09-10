@@ -31,7 +31,7 @@ func cloneCtx(current, saved []byte) *types.CompoundContext {
 
 func TestDecodeCloneArgs(t *testing.T) {
 	t.Run("valid", func(t *testing.T) {
-		src, dst, so, do, c, st := decodeCloneArgs(encCloneArgs(anonStateid(), anonStateid(), 100, 200, 300))
+		src, dst, so, do, c, st := decodeCloneArgs(&types.CompoundContext{}, encCloneArgs(anonStateid(), anonStateid(), 100, 200, 300))
 		if st != types.NFS4_OK {
 			t.Fatalf("status = %d, want OK", st)
 		}
@@ -41,21 +41,21 @@ func TestDecodeCloneArgs(t *testing.T) {
 	})
 
 	t.Run("whole-file (count 0)", func(t *testing.T) {
-		_, _, so, do, c, st := decodeCloneArgs(encCloneArgs(anonStateid(), anonStateid(), 0, 0, 0))
+		_, _, so, do, c, st := decodeCloneArgs(&types.CompoundContext{}, encCloneArgs(anonStateid(), anonStateid(), 0, 0, 0))
 		if st != types.NFS4_OK || so != 0 || do != 0 || c != 0 {
 			t.Fatalf("decoded (so=%d do=%d c=%d st=%d)", so, do, c, st)
 		}
 	})
 
 	t.Run("src overflow -> INVAL", func(t *testing.T) {
-		_, _, _, _, _, st := decodeCloneArgs(encCloneArgs(anonStateid(), anonStateid(), ^uint64(0)-5, 0, 100))
+		_, _, _, _, _, st := decodeCloneArgs(&types.CompoundContext{}, encCloneArgs(anonStateid(), anonStateid(), ^uint64(0)-5, 0, 100))
 		if st != types.NFS4ERR_INVAL {
 			t.Fatalf("status = %d, want INVAL", st)
 		}
 	})
 
 	t.Run("dst overflow -> INVAL", func(t *testing.T) {
-		_, _, _, _, _, st := decodeCloneArgs(encCloneArgs(anonStateid(), anonStateid(), 0, ^uint64(0)-5, 100))
+		_, _, _, _, _, st := decodeCloneArgs(&types.CompoundContext{}, encCloneArgs(anonStateid(), anonStateid(), 0, ^uint64(0)-5, 100))
 		if st != types.NFS4ERR_INVAL {
 			t.Fatalf("status = %d, want INVAL", st)
 		}
@@ -66,7 +66,7 @@ func TestDecodeCloneArgs(t *testing.T) {
 		writeStateid(&buf, anonStateid())
 		writeStateid(&buf, anonStateid())
 		_ = xdr.WriteUint64(&buf, 0) // src offset only; dst offset + count missing
-		_, _, _, _, _, st := decodeCloneArgs(bytes.NewReader(buf.Bytes()))
+		_, _, _, _, _, st := decodeCloneArgs(&types.CompoundContext{}, bytes.NewReader(buf.Bytes()))
 		if st != types.NFS4ERR_BADXDR {
 			t.Fatalf("status = %d, want BADXDR", st)
 		}

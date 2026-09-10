@@ -14,68 +14,6 @@ import (
 var BuildDate string
 
 // ============================================================================
-// V41 Client Record (separate from v4.0 ClientRecord)
-// ============================================================================
-
-// V41ClientRecord represents the server-side state for a single NFSv4.1 client
-// registered via EXCHANGE_ID (op 42) per RFC 8881 Section 18.35.
-//
-// This is separate from the v4.0 ClientRecord because v4.1 uses a completely
-// different client registration flow (EXCHANGE_ID -> CREATE_SESSION vs
-// SETCLIENTID -> SETCLIENTID_CONFIRM).
-type V41ClientRecord struct {
-	// ClientID is the server-assigned 64-bit client identifier.
-	ClientID uint64
-
-	// OwnerID is the co_ownerid from client_owner4 (stored as bytes for byte-exact comparison).
-	OwnerID []byte
-
-	// Verifier is the co_verifier from client_owner4.
-	Verifier [8]byte
-
-	// ImplDomain is the implementation domain from nfs_impl_id4 (e.g. "kernel.org").
-	ImplDomain string
-
-	// ImplName is the implementation name from nfs_impl_id4 (e.g. "Linux NFS client").
-	ImplName string
-
-	// ImplDate is the build date from nfs_impl_id4.
-	ImplDate time.Time
-
-	// SequenceID is the CREATE_SESSION slot sequence ID, initialized to 0.
-	// ExchangeID returns SequenceID+1 as eir_sequenceid so the client
-	// sends that value as csa_sequenceid. CreateSession validates
-	// csa_sequenceid == SequenceID+1 (the "new request" check per
-	// RFC 8881 Section 18.36), then advances SequenceID to match.
-	SequenceID uint32
-
-	// Confirmed becomes true after CREATE_SESSION completes.
-	Confirmed bool
-
-	// ClientAddr is the network address of the client (for logging/debugging).
-	ClientAddr string
-
-	// Principal is the RPCSEC_GSS / AUTH_SYS principal that established this
-	// client (best-effort). Persisted into the durable client-recovery record
-	// at CREATE_SESSION confirm time as a lease-stealing guard.
-	Principal string
-
-	// CreatedAt is when this record was created.
-	CreatedAt time.Time
-
-	// LastRenewal is the most recent lease renewal time.
-	LastRenewal time.Time
-
-	// Lease is the lease timer for this client (shared behavior via pointer, same as v4.0 pattern).
-	Lease *LeaseState
-
-	// CachedCreateSessionRes holds the full XDR-encoded CREATE_SESSION
-	// response bytes for replay detection (RFC 8881 Section 18.36).
-	// nil until the first successful CREATE_SESSION.
-	CachedCreateSessionRes []byte
-}
-
-// ============================================================================
 // Server Identity (immutable singleton)
 // ============================================================================
 
@@ -153,20 +91,60 @@ type ExchangeIDResult struct {
 // ExchangeID Algorithm (RFC 8881 Section 18.35)
 // ============================================================================
 
+// Sentinels for the EXCHANGE_ID update cases. They carry their own wire status
+// so the handler maps them without a per-error case.
+var (
+	// ErrNoConfirmedRecord indicates an update request found no confirmed
+	// record for the owner ID.
+	ErrNoConfirmedRecord = &NFS4StateError{
+		Status:  types.NFS4ERR_NOENT,
+		Message: "no confirmed client record for this owner ID",
+	}
+
+	// ErrVerifierNotSame indicates an update request carried a verifier other
+	// than the confirmed record's.
+	ErrVerifierNotSame = &NFS4StateError{
+		Status:  types.NFS4ERR_NOT_SAME,
+		Message: "update verifier does not match the confirmed record",
+	}
+
+	// ErrUpdateNotPermitted indicates an update request came from a principal
+	// other than the one that established the confirmed record.
+	ErrUpdateNotPermitted = &NFS4StateError{
+		Status:  types.NFS4ERR_PERM,
+		Message: "update by a principal other than the record's",
+	}
+)
+
 // ExchangeID implements the NFSv4.1 EXCHANGE_ID multi-case algorithm per
-// RFC 8881 Section 18.35.
+// RFC 8881 Section 18.35.4, whose case numbers the branches below name.
 //
-// The algorithm determines the action based on whether the server has an
-// existing record for the client's owner ID:
+// Without EXCHGID4_FLAG_UPD_CONFIRMED_REC_A in flags the request establishes or
+// replaces a record:
 //
-//   - Case 1 (new client): No existing record -> create new client with fresh clientID
-//   - Case 2 (same owner+verifier): Existing record with matching verifier -> idempotent return
-//   - Case 3 (same owner, different verifier): Client reboot -> replace with fresh clientID
-//   - Case 4 (unconfirmed record exists): Supersede unconfirmed record
+//   - Case 1, new owner ID: create an unconfirmed record with a fresh client ID.
+//   - Case 2, non-update on a confirmed record whose verifier and principal both
+//     match: return the same client ID and leave the record alone.
+//   - Case 3, client collision -- a confirmed record whose principal differs:
+//     replace it if it holds no state under a live lease, otherwise refuse with
+//     NFS4ERR_CLID_INUSE and change nothing.
+//   - Case 4, replacement of an unconfirmed record: discard it whatever its
+//     verifier and principal and create a fresh one, so the owner ID never has
+//     two readings at once.
+//   - Case 5, client restart -- a confirmed record, same principal, different
+//     verifier: add an unconfirmed record with a fresh client ID and keep the
+//     confirmed record and its state until CREATE_SESSION confirms the new one.
 //
-// The flags parameter from the client is currently ignored; the server always
-// sets EXCHGID4_FLAG_USE_NON_PNFS. EXCHGID4_FLAG_CONFIRMED_R is set only
-// if the record has been confirmed via CREATE_SESSION.
+// With the flag set the request is an update of an existing confirmed record:
+//
+//   - Case 6: verifier and principal both match -- apply the update in place.
+//   - Case 7: no confirmed record -- NFS4ERR_NOENT, any unconfirmed record left
+//     intact.
+//   - Case 8: verifier differs -- NFS4ERR_NOT_SAME.
+//   - Case 9: principal differs -- NFS4ERR_PERM.
+//
+// The server always sets EXCHGID4_FLAG_USE_NON_PNFS in the result, and adds
+// EXCHGID4_FLAG_CONFIRMED_R when the record it returns is confirmed.
 //
 // Caller must NOT hold sm.mu.
 // The trailing principal is variadic so existing callers/tests that do not
@@ -174,7 +152,7 @@ type ExchangeIDResult struct {
 func (sm *StateManager) ExchangeID(
 	ownerID []byte,
 	verifier [8]byte,
-	_ uint32,
+	flags uint32,
 	clientImplId []types.NfsImplId4,
 	clientAddr string,
 	principal ...string,
@@ -183,32 +161,70 @@ func (sm *StateManager) ExchangeID(
 	defer sm.mu.Unlock()
 
 	princ := firstOrEmpty(principal)
-	existing := sm.v41ClientsByOwner[string(ownerID)]
+	ownerKey := string(ownerID)
+	existing := sm.v41ClientsByOwner[ownerKey]
 
-	var record *V41ClientRecord
+	// A record that superseded a still-live confirmed one is discarded here and
+	// hands the owner ID back, so the rest of the algorithm sees a single record
+	// per owner (case 5, "delete the unconfirmed record and process the
+	// EXCHANGE_ID in its entirety").
+	if existing != nil && existing.Superseded != nil {
+		logger.Debug("EXCHANGE_ID: discarding a superseding record that was never confirmed",
+			"client_id", existing.ClientID,
+			"client_addr", clientAddr)
+		sm.purgeV41Client(existing)
+		existing = sm.v41ClientsByOwner[ownerKey]
+	}
+
+	if flags&types.EXCHGID4_FLAG_UPD_CONFIRMED_REC_A != 0 {
+		return sm.exchangeIDUpdateLocked(existing, verifier, clientImplId, clientAddr, princ)
+	}
+
+	var record *ClientRecord
 
 	switch {
 	case existing == nil:
-		// Case 1: New client -- no existing record for this owner
+		// Case 1: new owner ID.
 		record = sm.createV41Client(ownerID, verifier, clientImplId, clientAddr, princ)
 		logger.Info("EXCHANGE_ID: new v4.1 client registered",
 			"client_id", record.ClientID,
 			"client_addr", clientAddr)
 
-	case existing.Verifier == verifier:
-		// Case 2: Same owner + same verifier -- idempotent return.
-		// Reject an EXCHANGE_ID by anyone but the principal that established the
-		// existing record (RFC 8881 Section 18.35.4 case 9; mirrors the v4.0
-		// SETCLIENTID guard in reuseConfirmedClient). Without it a third party
-		// that knows a confirmed client's co_ownerid + co_verifier overwrites
-		// the stored principal and hijacks the client's lease and state. See
-		// principalHijacks.
-		if principalHijacks(existing.Principal, princ) {
+	case !existing.Confirmed:
+		// Case 4: replacement of an unconfirmed record.
+		sm.purgeV41Client(existing)
+		record = sm.createV41Client(ownerID, verifier, clientImplId, clientAddr, princ)
+		logger.Info("EXCHANGE_ID: new v4.1 client",
+			"reason", "replaced unconfirmed",
+			"old_client_id", existing.ClientID,
+			"new_client_id", record.ClientID,
+			"client_addr", clientAddr)
+
+	case principalHijacks(existing.Principal, princ):
+		// Case 3: client collision. A confirmed record still holding state under
+		// a live lease belongs to a working client, so the caller is told to pick
+		// another owner ID rather than having that client's state deleted under
+		// it. A record holding nothing is taken over instead.
+		if sm.v41ClientHasStateLocked(existing) {
+			logger.Debug("EXCHANGE_ID: owner ID collision with a client that holds state",
+				"client_id", existing.ClientID,
+				"client_addr", clientAddr)
 			return nil, ErrClientIDInUse
 		}
+		sm.purgeV41Client(existing)
+		record = sm.createV41Client(ownerID, verifier, clientImplId, clientAddr, princ)
+		logger.Info("EXCHANGE_ID: new v4.1 client",
+			"reason", "owner ID collision, previous client held no state",
+			"old_client_id", existing.ClientID,
+			"new_client_id", record.ClientID,
+			"client_addr", clientAddr)
+
+	case existing.Verifier == verifier:
+		// Case 2: non-update on a confirmed record. Only the properties the
+		// server tracks move; the record itself is unchanged.
 		existing.ClientAddr = clientAddr
 		// Only adopt a non-empty incoming principal; never clear a stored
-		// principal with an empty one (that would weaken the hijack guard).
+		// principal with an empty one (that would weaken the collision guard).
 		if princ != "" {
 			existing.Principal = princ
 		}
@@ -220,23 +236,73 @@ func (sm *StateManager) ExchangeID(
 			"client_addr", clientAddr)
 
 	default:
-		// Cases 3 & 4: Different verifier -- purge and replace.
-		// Case 4 (unconfirmed) and Case 3 (confirmed reboot) take the same
-		// action: discard the old record and create a fresh one.
-		reason := "client reboot detected"
-		if !existing.Confirmed {
-			reason = "replaced unconfirmed"
-		}
-		sm.purgeV41Client(existing)
+		// Case 5: client restart. The new incarnation gets its own unconfirmed
+		// record; the previous one keeps its client ID, sessions and locks until
+		// CREATE_SESSION confirms the replacement.
 		record = sm.createV41Client(ownerID, verifier, clientImplId, clientAddr, princ)
+		record.Superseded = existing
 		logger.Info("EXCHANGE_ID: new v4.1 client",
-			"reason", reason,
+			"reason", "client reboot detected",
 			"old_client_id", existing.ClientID,
 			"new_client_id", record.ClientID,
 			"client_addr", clientAddr)
 	}
 
-	// Build result flags
+	return sm.exchangeIDResultLocked(record), nil
+}
+
+// exchangeIDUpdateLocked handles an EXCHANGE_ID that carries
+// EXCHGID4_FLAG_UPD_CONFIRMED_REC_A (RFC 8881 Section 18.35.4 cases 6-9).
+// existing is the record the owner ID currently resolves to, or nil.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) exchangeIDUpdateLocked(
+	existing *ClientRecord,
+	verifier [8]byte,
+	clientImplId []types.NfsImplId4,
+	clientAddr string,
+	princ string,
+) (*ExchangeIDResult, error) {
+	// Case 7: there is no confirmed record to update. An unconfirmed record is
+	// not updatable and is left intact for its own CREATE_SESSION.
+	if existing == nil || !existing.Confirmed {
+		return nil, ErrNoConfirmedRecord
+	}
+
+	// Case 8: the verifier belongs to another incarnation, which cannot update
+	// this record. Reported ahead of the principal, matching the case-8 record
+	// pattern that leaves the principal unconstrained.
+	if existing.Verifier != verifier {
+		return nil, ErrVerifierNotSame
+	}
+
+	// Case 9: only the principal that established the record may update it.
+	if principalHijacks(existing.Principal, princ) {
+		return nil, ErrUpdateNotPermitted
+	}
+
+	// Case 6: the update is allowed and the client record is left intact apart
+	// from the properties it carries.
+	existing.ClientAddr = clientAddr
+	if princ != "" {
+		existing.Principal = princ
+	}
+	existing.LastRenewal = time.Now()
+	applyImplInfo(existing, clientImplId)
+
+	logger.Debug("EXCHANGE_ID: updated confirmed v4.1 client",
+		"client_id", existing.ClientID,
+		"client_addr", clientAddr)
+
+	return sm.exchangeIDResultLocked(existing), nil
+}
+
+// exchangeIDResultLocked builds the EXCHANGE_ID reply for a record.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) exchangeIDResultLocked(record *ClientRecord) *ExchangeIDResult {
+	// EXCHGID4_FLAG_UPD_CONFIRMED_REC_A is never reflected back; CONFIRMED_R
+	// reports whether the record returned has been confirmed.
 	resultFlags := uint32(types.EXCHGID4_FLAG_USE_NON_PNFS)
 	if record.Confirmed {
 		resultFlags |= types.EXCHGID4_FLAG_CONFIRMED_R
@@ -253,10 +319,71 @@ func (sm *StateManager) ExchangeID(
 		ServerOwner:  sm.serverIdentity.ServerOwner,
 		ServerScope:  sm.serverIdentity.ServerScope,
 		ServerImplId: []types.NfsImplId4{sm.serverIdentity.ImplID},
-	}, nil
+	}
 }
 
-// createV41Client creates and stores a new V41ClientRecord.
+// v41ClientHasStateLocked reports whether a client still holds state a colliding
+// owner ID must not destroy: an active session, an open owner, a byte-range lock
+// or a delegation. A client whose lease has already expired holds nothing that
+// needs protecting (RFC 8881 Section 18.35.4 case 3).
+//
+// ponytail: linear scans of the open-owner, lock and delegation indexes, none of
+// which is keyed by client ID; this runs once per colliding EXCHANGE_ID, so add
+// a per-client index only if a profile says these scans matter.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) v41ClientHasStateLocked(record *ClientRecord) bool {
+	if record.Lease != nil && record.Lease.IsExpired() {
+		return false
+	}
+	if len(sm.sessionsByClientID[record.ClientID]) > 0 {
+		return true
+	}
+	for _, owner := range sm.openOwners {
+		if owner.ClientID == record.ClientID {
+			return true
+		}
+	}
+	for _, lockState := range sm.lockStateByOther {
+		if lockState.LockOwner != nil && lockState.LockOwner.ClientID == record.ClientID {
+			return true
+		}
+	}
+	for _, deleg := range sm.delegByOther {
+		if deleg.ClientID == record.ClientID {
+			return true
+		}
+	}
+	return false
+}
+
+// collapseSupersededLocked destroys the confirmed record a newly confirmed one
+// replaces, together with its sessions and locking state. Called when
+// CREATE_SESSION confirms a record established by the client-restart case, which
+// is where the owner ID's two records collapse into one (RFC 8881 Sections
+// 18.35.4 case 5 and 18.36.3).
+//
+// The superseded record is looked up by client ID rather than trusted directly,
+// so a reaper that already removed it is not purged twice.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) collapseSupersededLocked(record *ClientRecord) {
+	superseded := record.Superseded
+	record.Superseded = nil
+	if superseded == nil {
+		return
+	}
+	if sm.clientsByID[superseded.ClientID] != superseded {
+		return
+	}
+
+	logger.Info("CREATE_SESSION: destroying the client incarnation this one replaces",
+		"old_client_id", superseded.ClientID,
+		"new_client_id", record.ClientID)
+	sm.purgeV41Client(superseded)
+}
+
+// createV41Client creates and stores a new ClientRecord.
 // Caller must hold sm.mu.
 func (sm *StateManager) createV41Client(
 	ownerID []byte,
@@ -264,24 +391,25 @@ func (sm *StateManager) createV41Client(
 	clientImplId []types.NfsImplId4,
 	clientAddr string,
 	principal string,
-) *V41ClientRecord {
+) *ClientRecord {
 	now := time.Now()
 
-	record := &V41ClientRecord{
-		ClientID:    sm.generateClientID(),
-		OwnerID:     make([]byte, len(ownerID)),
-		Verifier:    verifier,
-		SequenceID:  0,
-		ClientAddr:  clientAddr,
-		Principal:   principal,
-		CreatedAt:   now,
-		LastRenewal: now,
+	record := &ClientRecord{
+		ClientID:     sm.generateClientID(),
+		MinorVersion: 1,
+		OwnerID:      make([]byte, len(ownerID)),
+		Verifier:     verifier,
+		SequenceID:   0,
+		ClientAddr:   clientAddr,
+		Principal:    principal,
+		CreatedAt:    now,
+		LastRenewal:  now,
 	}
 	copy(record.OwnerID, ownerID)
 	applyImplInfo(record, clientImplId)
 
 	ownerKey := string(ownerID)
-	sm.v41ClientsByID[record.ClientID] = record
+	sm.clientsByID[record.ClientID] = record
 	sm.v41ClientsByOwner[ownerKey] = record
 
 	return record
@@ -290,7 +418,7 @@ func (sm *StateManager) createV41Client(
 // applyImplInfo extracts the first nfs_impl_id4 entry from clientImplId
 // and applies it to the record. Shared between createV41Client and the
 // idempotent branch of ExchangeID.
-func applyImplInfo(record *V41ClientRecord, clientImplId []types.NfsImplId4) {
+func applyImplInfo(record *ClientRecord, clientImplId []types.NfsImplId4) {
 	if len(clientImplId) == 0 {
 		return
 	}
@@ -302,12 +430,14 @@ func applyImplInfo(record *V41ClientRecord, clientImplId []types.NfsImplId4) {
 	}
 }
 
-// purgeV41Client removes a V41ClientRecord from both lookup maps, releases the
+// purgeV41Client removes a ClientRecord from both lookup maps, releases the
 // open and lock state its owners hold, and destroys all associated sessions.
 // Only deletes from v41ClientsByOwner if the map entry still points to this
-// record (guards against a concurrent createV41Client having already replaced it).
+// record (guards against a concurrent createV41Client having already replaced it);
+// where the record superseded a still-live confirmed one, the owner ID goes back
+// to that record instead of being dropped.
 // Caller must hold sm.mu.
-func (sm *StateManager) purgeV41Client(record *V41ClientRecord) {
+func (sm *StateManager) purgeV41Client(record *ClientRecord) {
 	// Drop the durable recovery record: a purged client (eviction, DESTROY_CLIENTID,
 	// or reboot-replace) cannot reclaim under this identity. Best-effort; no-op when
 	// the client was never confirmed (no record was ever persisted) or no store wired.
@@ -320,6 +450,7 @@ func (sm *StateManager) purgeV41Client(record *V41ClientRecord) {
 	}
 
 	sm.removeClientOpenStateLocked(record.ClientID)
+	sm.removeClientLockStateLocked(record.ClientID)
 
 	// Clean up all delegations (file + directory) for this client
 	for other, deleg := range sm.delegByOther {
@@ -341,10 +472,18 @@ func (sm *StateManager) purgeV41Client(record *V41ClientRecord) {
 	}
 	delete(sm.sessionsByClientID, record.ClientID)
 
-	delete(sm.v41ClientsByID, record.ClientID)
+	delete(sm.clientsByID, record.ClientID)
 	ownerKey := string(record.OwnerID)
 	if existing := sm.v41ClientsByOwner[ownerKey]; existing == record {
-		delete(sm.v41ClientsByOwner, ownerKey)
+		// A record that superseded a still-live confirmed one hands the owner ID
+		// back to it, so the confirmed client remains reachable by owner ID once
+		// its unconfirmed replacement is gone.
+		if superseded := record.Superseded; superseded != nil &&
+			sm.clientsByID[superseded.ClientID] == superseded {
+			sm.v41ClientsByOwner[ownerKey] = superseded
+		} else {
+			delete(sm.v41ClientsByOwner, ownerKey)
+		}
 	}
 }
 
@@ -354,12 +493,15 @@ func (sm *StateManager) purgeV41Client(record *V41ClientRecord) {
 
 // ListV41Clients returns pointers to all registered v4.1 client records.
 // Thread-safe: acquires sm.mu.RLock.
-func (sm *StateManager) ListV41Clients() []*V41ClientRecord {
+func (sm *StateManager) ListV41Clients() []*ClientRecord {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	clients := make([]*V41ClientRecord, 0, len(sm.v41ClientsByID))
-	for _, record := range sm.v41ClientsByID {
+	clients := make([]*ClientRecord, 0, len(sm.clientsByID))
+	for _, record := range sm.clientsByID {
+		if record.MinorVersion != 1 {
+			continue
+		}
 		clients = append(clients, record)
 	}
 	return clients
@@ -385,8 +527,8 @@ func (sm *StateManager) EvictV41Client(clientID uint64) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	record, exists := sm.v41ClientsByID[clientID]
-	if !exists {
+	record := sm.v41ClientLocked(clientID)
+	if record == nil {
 		return fmt.Errorf("v4.1 client %d not found", clientID)
 	}
 
@@ -413,8 +555,8 @@ func (sm *StateManager) DestroyV41ClientID(clientID uint64) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	record, exists := sm.v41ClientsByID[clientID]
-	if !exists {
+	record := sm.v41ClientLocked(clientID)
+	if record == nil {
 		return &NFS4StateError{
 			Status:  types.NFS4ERR_STALE_CLIENTID,
 			Message: fmt.Sprintf("v4.1 client %d not found", clientID),
@@ -453,8 +595,8 @@ func (sm *StateManager) EvictV40Client(clientID uint64) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	record, exists := sm.clientsByID[clientID]
-	if !exists {
+	record := sm.v40ClientLocked(clientID)
+	if record == nil {
 		return fmt.Errorf("v4.0 client %d not found", clientID)
 	}
 
@@ -526,6 +668,43 @@ func DefaultForeLimits() ChannelLimits {
 		MaxResponseSizeCached: 65536,   // 64KB
 		MinRequestSize:        8192,    // 8KB
 		MinResponseSize:       8192,    // 8KB
+	}
+}
+
+// Channel size floors. A requested budget below these cannot carry a COMPOUND
+// at all: the XDR framing of even a status-only COMPOUND request or reply
+// exceeds it, so CREATE_SESSION answers NFS4ERR_TOOSMALL instead of
+// negotiating a channel that can never carry traffic (RFC 8881 Section
+// 18.36.3: if a replier on a channel could never send a response, the server
+// SHOULD return NFS4ERR_TOOSMALL). Both floors sit under the small-but-workable
+// budgets the conformance suite accepts (request 400, response 400, whose
+// reply-size answers fire at COMPOUND time) and over the budgets it forces
+// TOOSMALL answers on (request 20 and 10, response 0), so the floors must stay
+// inside (20, 400] on the request side and (0, 400] on the response side.
+const (
+	minChannelRequestSize  uint32 = 256
+	minChannelResponseSize uint32 = 256
+)
+
+// channelAttrsTooSmall returns an NFS4ERR_TOOSMALL error when a requested
+// channel could never carry a COMPOUND request or reply. MaxResponseSizeCached
+// is deliberately not floored here: the answer to an unusable cache budget is
+// NFS4ERR_REP_TOO_BIG_TO_CACHE on the operation that overflows it, not a
+// CREATE_SESSION rejection.
+func channelAttrsTooSmall(requested types.ChannelAttrs) *NFS4StateError {
+	switch {
+	case requested.MaxRequestSize < minChannelRequestSize:
+		return &NFS4StateError{
+			Status:  types.NFS4ERR_TOOSMALL,
+			Message: fmt.Sprintf("ca_maxrequestsize %d below the %d-byte floor; no COMPOUND request could fit", requested.MaxRequestSize, minChannelRequestSize),
+		}
+	case requested.MaxResponseSize < minChannelResponseSize:
+		return &NFS4StateError{
+			Status:  types.NFS4ERR_TOOSMALL,
+			Message: fmt.Sprintf("ca_maxresponsesize %d below the %d-byte floor; no COMPOUND reply could fit", requested.MaxResponseSize, minChannelResponseSize),
+		}
+	default:
+		return nil
 	}
 }
 
@@ -604,7 +783,10 @@ var (
 	ErrDelay = &NFS4StateError{Status: types.NFS4ERR_DELAY, Message: "operation in progress, retry later"}
 
 	// ErrTooManySessions indicates the per-client session limit has been reached.
-	ErrTooManySessions = &NFS4StateError{Status: types.NFS4ERR_RESOURCE, Message: "per-client session limit exceeded"}
+	// NFS4ERR_RESOURCE is absent from CREATE_SESSION's valid-error list in
+	// RFC 8881 Section 18.36; the resource-exhaustion answer there is
+	// NFS4ERR_NOSPC, which is what this sentinel must carry.
+	ErrTooManySessions = &NFS4StateError{Status: types.NFS4ERR_NOSPC, Message: "per-client session limit exceeded"}
 
 	// ErrSeqMisordered indicates a CREATE_SESSION sequence ID mismatch.
 	ErrSeqMisordered = &NFS4StateError{Status: types.NFS4ERR_SEQ_MISORDERED, Message: "sequence ID misordered"}

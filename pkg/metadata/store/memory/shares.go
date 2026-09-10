@@ -67,48 +67,6 @@ func (store *MemoryMetadataStore) GetShareOptions(ctx context.Context, shareName
 // Share Lifecycle Operations
 // ============================================================================
 
-// CreateShare creates a new share with the given configuration.
-func (store *MemoryMetadataStore) CreateShare(ctx context.Context, share *metadata.Share) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	store.mu.Lock()
-	defer store.mu.Unlock()
-
-	if existing, exists := store.shares[share.Name]; exists {
-		// A seeded entry (from CreateRootDirectory) is not a "real" share yet —
-		// finish it by recording the caller's options while keeping the root
-		// handle that the already-materialized root inode is keyed under. A
-		// non-seeded entry is a genuine duplicate.
-		if !existing.seeded {
-			return &metadata.StoreError{
-				Code:    metadata.ErrAlreadyExists,
-				Message: "share already exists",
-				Path:    share.Name,
-			}
-		}
-		store.shares[share.Name] = &shareData{
-			Share:      *share,
-			RootHandle: existing.RootHandle,
-		}
-		return nil
-	}
-
-	// Generate root handle
-	rootHandle, err := metadata.GenerateNewHandle(share.Name)
-	if err != nil {
-		return err
-	}
-
-	store.shares[share.Name] = &shareData{
-		Share:      *share,
-		RootHandle: rootHandle,
-	}
-
-	return nil
-}
-
 // UpdateShareOptions updates the share configuration options.
 func (store *MemoryMetadataStore) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
 	if err := ctx.Err(); err != nil {
@@ -208,23 +166,19 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	}
 	key := handleToKey(rootHandle)
 
-	// Seed the share registry so the share can be resolved by name. The runtime
-	// initialises a share's metadata via CreateRootDirectory (not CreateShare),
-	// so without this GetRootHandle/GetShareOptions return "share not found" for
-	// runtime shares. Idempotent: an existing entry (seeded or from CreateShare)
-	// is left untouched.
+	// Register the share so GetRootHandle and GetShareOptions resolve it by
+	// name; this is the only entry point that records one. Idempotent: an
+	// existing entry keeps the options already set on it.
 	if _, ok := store.shares[shareName]; !ok {
 		store.shares[shareName] = &shareData{
 			Share:      metadata.Share{Name: shareName},
 			RootHandle: rootHandle,
-			seeded:     true,
 		}
 	}
 
-	// Check if root already exists - if so, just return success (idempotent)
+	// An existing root is reconciled against the configured attributes rather
+	// than returned as it stands (see reconcileRootAttrs).
 	if existingData, exists := store.files[key]; exists {
-		// Root already exists, this is OK (idempotent operation)
-		// Decode handle to get ID
 		_, id, err := metadata.DecodeFileHandle(rootHandle)
 		if err != nil {
 			return nil, &metadata.StoreError{
@@ -232,11 +186,14 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 				Message: "failed to decode root handle",
 			}
 		}
+		reconciled := reconcileRootAttrs(existingData.Attr, attr)
+		store.files[key] = &fileData{Attr: reconciled, ShareName: existingData.ShareName}
+
 		return &metadata.File{
 			ID:        id,
 			ShareName: shareName,
 			Path:      "/",
-			FileAttr:  *existingData.Attr,
+			FileAttr:  *reconciled,
 		}, nil
 	}
 
@@ -244,7 +201,7 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	// Complete root directory attributes with defaults
 	rootAttrCopy := *attr
 	if rootAttrCopy.Mode == 0 {
-		rootAttrCopy.Mode = 0777
+		rootAttrCopy.Mode = metadata.DefaultRootMode
 	}
 	now := time.Now()
 	if rootAttrCopy.Atime.IsZero() {
@@ -309,4 +266,33 @@ func (store *MemoryMetadataStore) Close() error {
 	store.lockStore.cleanShutdown = true
 	store.mu.Unlock()
 	return nil
+}
+
+// reconcileRootAttrs brings a stored root directory in line with the attributes
+// a share was configured with, so re-attaching a share with changed root
+// ownership or mode takes effect rather than silently keeping the old values.
+// The configuration is the intent; the stored root records a previous run's.
+//
+// Both entry points call this, because a backend that reconciles on one and not
+// the other makes whether an operator's change lands depend on which call site
+// reached it.
+func reconcileRootAttrs(stored *metadata.FileAttr, configured *metadata.FileAttr) *metadata.FileAttr {
+	mode := configured.Mode
+	if mode == 0 {
+		mode = metadata.DefaultRootMode
+	}
+	if stored.Mode == mode && stored.UID == configured.UID && stored.GID == configured.GID {
+		return stored
+	}
+
+	// A copy rather than an edit in place: a transaction's rollback snapshot
+	// clones the file map only one level deep, so the *FileAttr behind an entry
+	// is shared with the snapshot and an edit through it would survive the
+	// rollback it is supposed to be undone by. Callers replace the entry.
+	updated := *stored
+	updated.Mode = mode
+	updated.UID = configured.UID
+	updated.GID = configured.GID
+	updated.Ctime = time.Now()
+	return &updated
 }

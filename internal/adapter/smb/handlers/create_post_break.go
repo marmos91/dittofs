@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -586,7 +585,7 @@ func (h *Handler) recheckExistingFileGates(d *createDraft, effectiveAccess uint3
 				"granted", fmt.Sprintf("0x%x", granted),
 				"disposition", req.CreateDisposition,
 				"error", err)
-			return 0, false, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}
+			return 0, false, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}
 		}
 		// Preserve the client-visible grant: clear the disposition-implied
 		// bit before propagating so QUERY_INFO / FileAccessInformation report
@@ -767,7 +766,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 						// SUPERSEDE → Overwritten / Superseded.
 						newAction, dispErr := ResolveCreateDisposition(req.CreateDisposition, true)
 						if dispErr != nil {
-							return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(dispErr)}}
+							return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(dispErr)}}
 						}
 						createAction = newAction
 						d.createAction = newAction
@@ -798,7 +797,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 							file, fileHandle, owErr = h.overwriteFile(authCtx, winner, req)
 							if owErr != nil {
 								logger.Warn("CREATE: overwrite-after-create-race failed", "name", baseName, "error", owErr)
-								return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(owErr)}}
+								return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(owErr)}}
 							}
 						}
 						break // exits inner CreateDisposition switch (race handled)
@@ -807,7 +806,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			}
 			if file == nil {
 				logger.Warn("CREATE: failed to create file", "name", baseName, "error", err)
-				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}
+				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}
 			}
 		}
 	case types.FileOverwritten, types.FileSuperseded:
@@ -815,7 +814,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		file, fileHandle, err = h.overwriteFile(authCtx, existingFile, req)
 		if err != nil {
 			logger.Warn("CREATE: failed to overwrite file", "name", baseName, "error", err)
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}
 		}
 	}
 

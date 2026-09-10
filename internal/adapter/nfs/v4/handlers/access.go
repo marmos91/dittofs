@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
@@ -154,7 +153,7 @@ func (h *Handler) accessRealFS(ctx *types.CompoundContext, accessReq uint32) *ty
 	handle := metadata.FileHandle(ctx.CurrentFH)
 	file, err := metaSvc.GetFile(authCtx.Context, handle)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_ACCESS,
@@ -171,7 +170,7 @@ func (h *Handler) accessRealFS(ctx *types.CompoundContext, accessReq uint32) *ty
 
 	grantedPerms, err := metaSvc.CheckPermissions(authCtx, handle, requestedPerms)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_ACCESS,

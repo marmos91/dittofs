@@ -15,8 +15,9 @@ import (
 // Establishes slot-based exactly-once semantics as the first op in every non-exempt v4.1 COMPOUND.
 // Delegates to StateManager for session lookup, slot validation, replay detection, and lease renewal.
 // Validates session/slot/seqid; returns cached reply on replay; builds V41RequestContext for new requests.
-// Errors: NFS4ERR_BADSESSION, NFS4ERR_SEQ_MISORDERED, NFS4ERR_BAD_SLOT, NFS4ERR_BADXDR.
-func HandleSequenceOp(d *Deps, compCtx *types.CompoundContext, reader io.Reader) (
+// Errors: NFS4ERR_BADSESSION, NFS4ERR_SEQ_MISORDERED, NFS4ERR_BAD_SLOT, NFS4ERR_BADXDR,
+// NFS4ERR_TOO_MANY_OPS, NFS4ERR_REQ_TOO_BIG.
+func HandleSequenceOp(d *Deps, compCtx *types.CompoundContext, numOps uint32, reader io.Reader) (
 	sequenceResult *types.CompoundResult,
 	v41ctx *types.V41RequestContext,
 	session *state.Session,
@@ -44,6 +45,27 @@ func HandleSequenceOp(d *Deps, compCtx *types.CompoundContext, reader io.Reader)
 			Status: types.NFS4ERR_BADSESSION,
 			OpCode: types.OP_SEQUENCE,
 			Data:   EncodeStatusOnly(types.NFS4ERR_BADSESSION),
+		}, nil, nil, nil, nil
+	}
+
+	// Enforce the fore channel limits negotiated at CREATE_SESSION, before the
+	// slot is reserved. Reporting them on SEQUENCE is the arm of RFC 8881
+	// Section 2.10.6.4 where no operation executes and the slot's reply-cache
+	// state is unchanged, which is what refusing here achieves; SEQUENCE lists
+	// both errors among its valid ones.
+	if status := foreChannelLimitStatus(sess, numOps, compCtx.RequestSize); status != types.NFS4_OK {
+		logger.Debug("SEQUENCE: fore channel limit exceeded",
+			"session_id", args.SessionID.String(),
+			"status", status,
+			"num_ops", numOps,
+			"request_size", compCtx.RequestSize,
+			"max_operations", sess.ForeChannelAttrs.MaxOperations,
+			"max_request_size", sess.ForeChannelAttrs.MaxRequestSize,
+			"client", compCtx.ClientAddr)
+		return &types.CompoundResult{
+			Status: status,
+			OpCode: types.OP_SEQUENCE,
+			Data:   EncodeStatusOnly(status),
 		}, nil, nil, nil, nil
 	}
 
@@ -153,6 +175,23 @@ func HandleSequenceOp(d *Deps, compCtx *types.CompoundContext, reader io.Reader)
 		OpCode: types.OP_SEQUENCE,
 		Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 	}, nil, nil, nil, nil
+}
+
+// foreChannelLimitStatus returns the error a COMPOUND owes for exceeding one of
+// the session's negotiated fore channel limits, or NFS4_OK when it fits.
+//
+// A COMPOUND carrying more operations than ca_maxoperations MUST be answered
+// with NFS4ERR_TOO_MANY_OPS (RFC 8881 Section 18.36.3); one larger than
+// ca_maxrequestsize is answered with NFS4ERR_REQ_TOO_BIG (Section 2.10.6.4).
+func foreChannelLimitStatus(sess *state.Session, numOps, requestSize uint32) uint32 {
+	switch {
+	case numOps > sess.ForeChannelAttrs.MaxOperations:
+		return types.NFS4ERR_TOO_MANY_OPS
+	case requestSize > sess.ForeChannelAttrs.MaxRequestSize:
+		return types.NFS4ERR_REQ_TOO_BIG
+	default:
+		return types.NFS4_OK
+	}
 }
 
 // isSessionExemptOp returns true if the given operation code is exempt from

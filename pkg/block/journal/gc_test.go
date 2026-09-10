@@ -90,7 +90,7 @@ func TestDeadBytesOnTombstone(t *testing.T) {
 // dead. keepSynced decides whether "keep" lands already synced to the remote,
 // which is what makes the repack target evictable or not. It returns the keep
 // payload for byte-identity checks.
-func seedRepackable(t *testing.T, s *Store, keepSynced bool) []byte {
+func seedRepackable(t testing.TB, s *Store, keepSynced bool) []byte {
 	t.Helper()
 	ctx := context.Background()
 	keep := make([]byte, 300<<10)

@@ -25,6 +25,10 @@ func (h *Handler) handleRestoreFH(ctx *types.CompoundContext, _ io.Reader) *type
 	ctx.CurrentFH = make([]byte, len(ctx.SavedFH))
 	copy(ctx.CurrentFH, ctx.SavedFH)
 
+	// The stateid SAVEFH stored comes back with the filehandle, rather than
+	// being dropped the way a plain PUTFH drops it.
+	ctx.RestoreCurrentStateid()
+
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,
 		OpCode: types.OP_RESTOREFH,

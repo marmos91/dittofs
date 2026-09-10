@@ -63,12 +63,12 @@ func (h *Handler) handleOpenDowngrade(ctx *types.CompoundContext, reader io.Read
 	}
 
 	// Decode args: stateid4 + seqid + share_access + share_deny
-	stateid, err := types.DecodeStateid4(reader)
-	if err != nil {
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
+			Status: argStatus,
 			OpCode: types.OP_OPEN_DOWNGRADE,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   encodeStatusOnly(argStatus),
 		}
 	}
 
@@ -108,7 +108,7 @@ func (h *Handler) handleOpenDowngrade(ctx *types.CompoundContext, reader io.Read
 
 	// Delegate to StateManager
 	downgradeResult, stateErr := h.StateManager.DowngradeOpen(
-		stateid, downgradeSeqid, newShareAccess, newShareDeny,
+		stateid, downgradeSeqid, newShareAccess, newShareDeny, ctx.SessionClientID,
 	)
 	if stateErr != nil {
 		if replay := asReplay(types.OP_OPEN_DOWNGRADE, stateErr); replay != nil {
@@ -136,9 +136,10 @@ func (h *Handler) handleOpenDowngrade(ctx *types.CompoundContext, reader io.Read
 	}
 
 	return &types.CompoundResult{
-		Status: types.NFS4_OK,
-		OpCode: types.OP_OPEN_DOWNGRADE,
-		Data:   buf.Bytes(),
+		Status:  types.NFS4_OK,
+		Stateid: &downgradeResult.Stateid,
+		OpCode:  types.OP_OPEN_DOWNGRADE,
+		Data:    buf.Bytes(),
 	}
 }
 

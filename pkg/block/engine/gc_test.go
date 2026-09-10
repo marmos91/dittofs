@@ -366,11 +366,11 @@ func newReapEngine(t *testing.T, st metadata.Store) *Store {
 	t.Helper()
 	localStore := memory.New()
 	fbs := newStubFileChunkStore()
-	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
+	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
 	bs, err := New(BlockStoreConfig{
 		Local:          localStore,
 		Remote:         nil,
-		Syncer:         syncer,
+		RemoteSync:     syncer,
 		FileChunkStore: fbs,
 		Coordinator:    &reapCoordinator{store: st},
 	})
@@ -787,12 +787,19 @@ func TestGCMarkSweep_SameHashTwoOffsetsBothReaped(t *testing.T) {
 		t.Fatalf("dup hash still in EnumerateFileChunks after deleting both rows; want gone (#832 by-hash leak)")
 	}
 
+	// Resolve the packed block the chunk lives in BEFORE the sweep: reclaiming
+	// the chunk drops its locator, so afterwards the blockID is unrecoverable.
+	loc, ok, err := st.GetLocator(ctx, dup)
+	if err != nil || !ok {
+		t.Fatalf("GetLocator(dup) before sweep: ok=%v err=%v", ok, err)
+	}
+
 	stats := collectGarbageBlocks(t, rec, st, rs, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
 	if stats.ErrorCount != 0 {
 		t.Fatalf("ErrorCount = %d; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
 	}
-	if _, err := rs.Get(ctx, dup); err == nil {
-		t.Errorf("dup chunk still present after deleting both offsets; want swept")
+	if _, err := rs.GetBlock(ctx, loc.BlockID); err == nil {
+		t.Errorf("packed block %s holding the dup chunk still present after deleting both offsets; want swept", loc.BlockID)
 	}
 	if stats.ObjectsSwept != 1 {
 		t.Errorf("ObjectsSwept = %d, want 1 (the now-unreferenced chunk)", stats.ObjectsSwept)

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -31,6 +32,7 @@ func TestClose_PendingNotifyCleanup_DeferredViaPostSend(t *testing.T) {
 		FileID:      fileID,
 		IsDirectory: true,
 		ShareName:   "share",
+		SessionID:   42,
 		OplockLevel: OplockLevelNone,
 	}).WithName(OpenName{Path: "/share/watched-dir", FileName: "watched-dir"})
 	h.StoreOpenFile(openFile)
@@ -134,6 +136,7 @@ func TestClose_NoPendingNotify_PostSendNil(t *testing.T) {
 		FileID:      fileID,
 		IsDirectory: true,
 		ShareName:   "share",
+		SessionID:   1,
 		OplockLevel: OplockLevelNone,
 	}).WithName(OpenName{Path: "/share/plain-dir", FileName: "plain-dir"})
 	h.StoreOpenFile(openFile)
@@ -162,7 +165,7 @@ func TestClose_NoPendingNotify_PostSendNil(t *testing.T) {
 // smb2.notify.rmdir1-4 shape: one handle watches a directory while a second
 // handle on the SAME directory is closed carrying a delete-on-close. The
 // watcher's own handle is untouched, so nothing on the close path answers it
-// unless the delete mark itself does — [MS-FSA] 2.1.5.14.3 requires
+// unless the delete mark itself does — [MS-FSA] 2.1.5.15.3 requires
 // STATUS_DELETE_PENDING.
 func TestClose_DeleteOnClose_CompletesOtherHandlesNotify(t *testing.T) {
 	h := NewHandler()
@@ -187,6 +190,7 @@ func TestClose_DeleteOnClose_CompletesOtherHandlesNotify(t *testing.T) {
 		FileID:               deleterID,
 		IsDirectory:          true,
 		ShareName:            "share",
+		SessionID:            42,
 		MetadataHandle:       metaHandle,
 		InitialDeleteOnClose: true,
 		OplockLevel:          OplockLevelNone,
@@ -225,7 +229,7 @@ func TestClose_DeleteOnClose_CompletesOtherHandlesNotify(t *testing.T) {
 	if !fired.Load() {
 		t.Fatal("the watcher's CHANGE_NOTIFY was never answered: a client watching a " +
 			"directory another handle marked for deletion waits until its own transport " +
-			"gives up (MS-FSA 2.1.5.14.3)")
+			"gives up (MS-FSA 2.1.5.15.3)")
 	}
 	if got := types.Status(gotStatus.Load()); got != types.StatusDeletePending {
 		t.Errorf("expected STATUS_DELETE_PENDING (0x%08X), got 0x%08X",
@@ -233,5 +237,138 @@ func TestClose_DeleteOnClose_CompletesOtherHandlesNotify(t *testing.T) {
 	}
 	if h.NotifyRegistry.WatcherCount() != 0 {
 		t.Errorf("watch survived the delete mark: %d", h.NotifyRegistry.WatcherCount())
+	}
+}
+
+// TestClose_DirectoryDeleteOnClose_RetiresNotifyMarker walks the marker's whole
+// life through the real handlers: SET_INFO commits the delete disposition, a
+// CHANGE_NOTIFY arriving after that is answered rather than parked, and the
+// CLOSE that actually removes the entry frees the name to be watched again.
+//
+// The clear is deliberately not wired to the close paths' own sweep: both of
+// them remove the directory entry before they sweep, so a marker recorded there
+// would be stamped onto a name that has just been freed.
+func TestClose_DirectoryDeleteOnClose_RetiresNotifyMarker(t *testing.T) {
+	h, ctx, _ := setupStreamsDisabledShare(t, false)
+	if h.NotifyRegistry == nil {
+		h.NotifyRegistry = NewNotifyRegistry()
+	}
+
+	dirID := dirTestCreate(t, h, ctx, "doomed", types.FileOpenIf, types.FileDirectoryFile)
+	openFile, ok := h.GetOpenFile(dirID)
+	if !ok {
+		t.Fatal("directory handle missing from the open-file table")
+	}
+	shareName, watchPath := openFile.ShareName, openFile.Name().Path
+
+	lateNotify := func(messageID uint64) *PendingNotify {
+		return &PendingNotify{
+			FileID:           [16]byte{0x51, byte(messageID)},
+			SessionID:        ctx.SessionID,
+			MessageID:        messageID,
+			AsyncId:          messageID * 10,
+			WatchPath:        watchPath,
+			ShareName:        shareName,
+			CompletionFilter: FileNotifyChangeFileName,
+			MaxOutputLength:  4096,
+			AsyncCallback:    func(uint64, uint64, uint64, *ChangeNotifyResponse) error { return nil },
+		}
+	}
+
+	resp, err := h.SetInfo(ctx, &SetInfoRequest{
+		InfoType:      types.SMB2InfoTypeFile,
+		FileInfoClass: uint8(types.FileDispositionInformation),
+		FileID:        dirID,
+		Buffer:        encodeDispositionInfo(true),
+	})
+	if err != nil {
+		t.Fatalf("SetInfo disposition: %v", err)
+	}
+	if resp.Status != types.StatusSuccess {
+		t.Fatalf("disposition on an empty directory = %v, want STATUS_SUCCESS", resp.Status)
+	}
+
+	if err := h.NotifyRegistry.Register(lateNotify(11)); !errors.Is(err, ErrDirectoryDeletePending) {
+		t.Fatalf("a watch registering after the mark: got %v, want ErrDirectoryDeletePending", err)
+	}
+
+	doomedClose, err := h.Close(ctx, &CloseRequest{FileID: dirID})
+	if err != nil {
+		t.Fatalf("close doomed: %v", err)
+	}
+	if doomedClose.GetStatus() != types.StatusSuccess {
+		t.Fatalf("close doomed status = %v, want STATUS_SUCCESS", doomedClose.GetStatus())
+	}
+
+	if err := h.NotifyRegistry.Register(lateNotify(12)); err != nil {
+		t.Fatalf("once the entry is gone the name must be watchable again: %v", err)
+	}
+}
+
+// TestSetInfo_ClearDisposition_KeepsMarkerWhileASiblingStillHoldsIt covers the
+// asymmetry between the marker and the handle field the clear reads. The
+// disposition is per Open; the marker describes the directory. One open
+// retracting its own disposition while another still holds the directory
+// delete-pending must not retire the marker, or the CHANGE_NOTIFYs arriving
+// after the sweep go straight back to waiting on a sweep that has already run.
+func TestSetInfo_ClearDisposition_KeepsMarkerWhileASiblingStillHoldsIt(t *testing.T) {
+	h, ctx, _ := setupStreamsDisabledShare(t, false)
+	if h.NotifyRegistry == nil {
+		h.NotifyRegistry = NewNotifyRegistry()
+	}
+
+	// Both opens are taken before either marks: once a directory is
+	// delete-pending, CREATE refuses further opens of it.
+	markerID := dirTestCreate(t, h, ctx, "doomed", types.FileOpenIf, types.FileDirectoryFile)
+	retractorID := dirTestCreate(t, h, ctx, "doomed", types.FileOpen, types.FileDirectoryFile)
+
+	openFile, ok := h.GetOpenFile(markerID)
+	if !ok {
+		t.Fatal("directory handle missing from the open-file table")
+	}
+	shareName, watchPath := openFile.ShareName, openFile.Name().Path
+
+	setDisposition := func(fileID [16]byte, deleteFile bool) {
+		t.Helper()
+		resp, err := h.SetInfo(ctx, &SetInfoRequest{
+			InfoType:      types.SMB2InfoTypeFile,
+			FileInfoClass: uint8(types.FileDispositionInformation),
+			FileID:        fileID,
+			Buffer:        encodeDispositionInfo(deleteFile),
+		})
+		if err != nil {
+			t.Fatalf("SetInfo disposition(%v): %v", deleteFile, err)
+		}
+		if resp.Status != types.StatusSuccess {
+			t.Fatalf("SetInfo disposition(%v) = %v, want STATUS_SUCCESS", deleteFile, resp.Status)
+		}
+	}
+
+	lateNotify := func(messageID uint64) *PendingNotify {
+		return &PendingNotify{
+			FileID:           [16]byte{0x52, byte(messageID)},
+			SessionID:        ctx.SessionID,
+			MessageID:        messageID,
+			AsyncId:          messageID * 10,
+			WatchPath:        watchPath,
+			ShareName:        shareName,
+			CompletionFilter: FileNotifyChangeFileName,
+			MaxOutputLength:  4096,
+			AsyncCallback:    func(uint64, uint64, uint64, *ChangeNotifyResponse) error { return nil },
+		}
+	}
+
+	setDisposition(markerID, true)
+	setDisposition(retractorID, false)
+
+	if err := h.NotifyRegistry.Register(lateNotify(20)); !errors.Is(err, ErrDirectoryDeletePending) {
+		t.Fatalf("a sibling open still holds the directory delete-pending: got %v, want ErrDirectoryDeletePending", err)
+	}
+
+	// The open that set it retracts too, so nothing holds the directory now.
+	setDisposition(markerID, false)
+
+	if err := h.NotifyRegistry.Register(lateNotify(21)); err != nil {
+		t.Fatalf("with the deletion called off the directory must be watchable: %v", err)
 	}
 }

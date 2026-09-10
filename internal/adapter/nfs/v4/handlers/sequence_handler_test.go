@@ -38,14 +38,18 @@ func createTestSession(t *testing.T) (*Handler, types.SessionId4) {
 func createSessionOn(t *testing.T, h *Handler, ownerID string) types.SessionId4 {
 	t.Helper()
 	clientID, seqID := registerExchangeID(t, h, ownerID)
-
-	ctx := newTestCompoundContext()
 	secParms := []types.CallbackSecParms4{{CbSecFlavor: 0}} // AUTH_NONE
-	csArgs := encodeCreateSessionArgsWithSec(clientID, seqID, 0, secParms)
-	ops := []compoundOp{{opCode: types.OP_CREATE_SESSION, data: csArgs}}
-	data := buildCompoundArgsWithOps([]byte("cs"), 1, ops)
+	return runCreateSession(t, h, encodeCreateSessionArgsWithSec(clientID, seqID, 0, secParms)).SessionID
+}
 
-	resp, err := h.ProcessCompound(ctx, data)
+// runCreateSession sends the given CREATE_SESSION args as a single-op COMPOUND
+// and returns the decoded result, failing the test unless the session was
+// created.
+func runCreateSession(t *testing.T, h *Handler, csArgs []byte) types.CreateSessionRes {
+	t.Helper()
+	ops := []compoundOp{{opCode: types.OP_CREATE_SESSION, data: csArgs}}
+	resp, err := h.ProcessCompound(newTestCompoundContext(),
+		buildCompoundArgsWithOps([]byte("cs"), 1, ops))
 	if err != nil {
 		t.Fatalf("CREATE_SESSION ProcessCompound error: %v", err)
 	}
@@ -67,7 +71,7 @@ func createSessionOn(t *testing.T, h *Handler, ownerID string) types.SessionId4 
 		t.Fatalf("CREATE_SESSION status = %d, want NFS4_OK", csRes.Status)
 	}
 
-	return csRes.SessionID
+	return csRes
 }
 
 // decodeSequenceRes decodes SEQUENCE4res from a COMPOUND response that has
@@ -112,6 +116,66 @@ func decodeSequenceRes(t *testing.T, resp []byte) (*decodedCompoundResponse, *ty
 		},
 	}
 	return decoded, &seqRes
+}
+
+// readPastSequenceResult decodes the header of a successful COMPOUND response,
+// checks the result count, then consumes the leading SEQUENCE result, leaving
+// the reader positioned at the second result. SEQUENCE carries a result body
+// that decodeCompoundResponse does not know how to skip.
+func readPastSequenceResult(t *testing.T, resp []byte, wantResults uint32) *bytes.Reader {
+	t.Helper()
+	reader := bytes.NewReader(resp)
+
+	status := decodeUint32OrFail(t, reader, "overall status")
+	if status != types.NFS4_OK {
+		t.Fatalf("overall status = %d, want NFS4_OK", status)
+	}
+	if _, err := xdr.DecodeOpaque(reader); err != nil { // tag
+		t.Fatalf("decode tag: %v", err)
+	}
+	numResults := decodeUint32OrFail(t, reader, "numResults")
+	if numResults != wantResults {
+		t.Fatalf("numResults = %d, want %d", numResults, wantResults)
+	}
+
+	opCode := decodeUint32OrFail(t, reader, "result[0] opcode")
+	if opCode != types.OP_SEQUENCE {
+		t.Fatalf("result[0] opcode = %d, want OP_SEQUENCE", opCode)
+	}
+	var seqRes types.SequenceRes
+	if err := seqRes.Decode(reader); err != nil {
+		t.Fatalf("decode SEQUENCE result: %v", err)
+	}
+
+	return reader
+}
+
+// decodeUint32OrFail reads one XDR uint32, failing the test on a short or
+// malformed read. A discarded decode error would leave the zero value behind,
+// and NFS4_OK is zero, so a truncated response would otherwise read as success.
+func decodeUint32OrFail(t *testing.T, reader *bytes.Reader, what string) uint32 {
+	t.Helper()
+	v, err := xdr.DecodeUint32(reader)
+	if err != nil {
+		t.Fatalf("decode %s: %v", what, err)
+	}
+	return v
+}
+
+// expectPutRootFHOK asserts that the next result the reader yields is a
+// successful PUTROOTFH, which it only is when the preceding operation consumed
+// its args without desyncing the reader.
+func expectPutRootFHOK(t *testing.T, reader *bytes.Reader) {
+	t.Helper()
+
+	opCode := decodeUint32OrFail(t, reader, "trailing result opcode")
+	if opCode != types.OP_PUTROOTFH {
+		t.Errorf("trailing result opcode = %d, want OP_PUTROOTFH", opCode)
+	}
+	status := decodeUint32OrFail(t, reader, "PUTROOTFH status")
+	if status != types.NFS4_OK {
+		t.Errorf("PUTROOTFH status = %d, want NFS4_OK", status)
+	}
 }
 
 // ============================================================================
@@ -633,9 +697,9 @@ func TestCompound_V41_MultipleSlots(t *testing.T) {
 // Exempt Operations (regression tests with new dispatch)
 // ============================================================================
 
-func TestCompound_V41_ExemptOps_AllFour(t *testing.T) {
-	// Verify all four exempt ops are accepted as first op without SEQUENCE.
-	// EXCHANGE_ID, CREATE_SESSION, DESTROY_SESSION, and BIND_CONN_TO_SESSION.
+func TestCompound_V41_ExemptOps(t *testing.T) {
+	// Verify every operation that may open a COMPOUND without SEQUENCE is
+	// recognised as exempt.
 	tests := []struct {
 		name   string
 		opCode uint32
@@ -643,6 +707,7 @@ func TestCompound_V41_ExemptOps_AllFour(t *testing.T) {
 		{"EXCHANGE_ID", types.OP_EXCHANGE_ID},
 		{"CREATE_SESSION", types.OP_CREATE_SESSION},
 		{"DESTROY_SESSION", types.OP_DESTROY_SESSION},
+		{"DESTROY_CLIENTID", types.OP_DESTROY_CLIENTID},
 		{"BIND_CONN_TO_SESSION", types.OP_BIND_CONN_TO_SESSION},
 	}
 
@@ -807,9 +872,12 @@ func TestCompound_V41_OpCountLimit(t *testing.T) {
 		t.Fatalf("decode response error: %v", err)
 	}
 
-	if decoded.Status != types.NFS4ERR_RESOURCE {
-		t.Errorf("status = %d, want NFS4ERR_RESOURCE (%d)",
-			decoded.Status, types.NFS4ERR_RESOURCE)
+	// NFS4ERR_RESOURCE, which the v4.0 path answers here, is an NFSv4.0 error
+	// that RFC 8881 does not define; the v4.1 cap is below every session's
+	// negotiated ca_maxoperations, so NFS4ERR_TOO_MANY_OPS is what it owes.
+	if decoded.Status != types.NFS4ERR_TOO_MANY_OPS {
+		t.Errorf("status = %d, want NFS4ERR_TOO_MANY_OPS (%d)",
+			decoded.Status, types.NFS4ERR_TOO_MANY_OPS)
 	}
 }
 
@@ -956,4 +1024,273 @@ func createTestSessionBench(b *testing.B, h *Handler, clientID uint64, seqID uin
 		b.Fatalf("CREATE_SESSION status = %d, want NFS4_OK", csRes.Status)
 	}
 	return csRes.SessionID
+}
+
+// createLimitedSession creates a session whose fore channel negotiates the
+// given ca_maxoperations and ca_maxrequestsize, so the COMPOUND limits can be
+// tripped with a small request.
+func createLimitedSession(t *testing.T, h *Handler, ownerID string, maxOps, maxReqSize uint32) types.SessionId4 {
+	t.Helper()
+	clientID, seqID := registerExchangeID(t, h, ownerID)
+
+	var argBuf bytes.Buffer
+	args := types.CreateSessionArgs{
+		ClientID:   clientID,
+		SequenceID: seqID,
+		ForeChannelAttrs: types.ChannelAttrs{
+			MaxRequestSize:        maxReqSize,
+			MaxResponseSize:       1048576,
+			MaxResponseSizeCached: 4096,
+			MaxOperations:         maxOps,
+			MaxRequests:           64,
+		},
+		BackChannelAttrs: types.ChannelAttrs{
+			MaxRequestSize:  4096,
+			MaxResponseSize: 4096,
+			MaxOperations:   2,
+			MaxRequests:     1,
+		},
+		CbProgram:  0x40000000,
+		CbSecParms: []types.CallbackSecParms4{{CbSecFlavor: 0}},
+	}
+	if err := args.Encode(&argBuf); err != nil {
+		t.Fatalf("encode CreateSessionArgs: %v", err)
+	}
+
+	// The server may negotiate the fore channel down but never up, so the test
+	// limits are only usable once the reply confirms them.
+	csRes := runCreateSession(t, h, argBuf.Bytes())
+	if csRes.ForeChannelAttrs.MaxOperations != maxOps {
+		t.Fatalf("negotiated MaxOperations = %d, want %d",
+			csRes.ForeChannelAttrs.MaxOperations, maxOps)
+	}
+	if csRes.ForeChannelAttrs.MaxRequestSize != maxReqSize {
+		t.Fatalf("negotiated MaxRequestSize = %d, want %d",
+			csRes.ForeChannelAttrs.MaxRequestSize, maxReqSize)
+	}
+	return csRes.SessionID
+}
+
+// TestSequence_TooManyOps checks that a COMPOUND carrying more operations than
+// the session's negotiated ca_maxoperations is refused with
+// NFS4ERR_TOO_MANY_OPS (RFC 8881 Section 18.36.3), and that a COMPOUND at
+// exactly the limit still runs.
+func TestSequence_TooManyOps(t *testing.T) {
+	h := newTestHandler()
+	sessionID := createLimitedSession(t, h, "too-many-ops-client", 4, 1048576)
+
+	// SEQUENCE plus three PUTROOTFHs is exactly ca_maxoperations.
+	atLimit := []compoundOp{{opCode: types.OP_SEQUENCE, data: encodeSequenceArgs(sessionID, 0, 1, 0, false)}}
+	for range 3 {
+		atLimit = append(atLimit, compoundOp{opCode: types.OP_PUTROOTFH})
+	}
+	resp, err := h.ProcessCompound(newTestCompoundContext(),
+		buildCompoundArgsWithOps([]byte("ops"), 1, atLimit))
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+	decoded, err := decodeCompoundResponse(resp)
+	if err != nil {
+		t.Fatalf("decode response error: %v", err)
+	}
+	if decoded.Status != types.NFS4_OK {
+		t.Fatalf("at-limit status = %d, want NFS4_OK", decoded.Status)
+	}
+
+	// One more operation exceeds it.
+	overLimit := append(atLimit, compoundOp{opCode: types.OP_PUTROOTFH})
+	overLimit[0].data = encodeSequenceArgs(sessionID, 0, 2, 0, false)
+	resp, err = h.ProcessCompound(newTestCompoundContext(),
+		buildCompoundArgsWithOps([]byte("ops"), 1, overLimit))
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+	decoded, seqRes := decodeSequenceRes(t, resp)
+	if decoded.Status != types.NFS4ERR_TOO_MANY_OPS {
+		t.Errorf("status = %d, want NFS4ERR_TOO_MANY_OPS (%d)",
+			decoded.Status, types.NFS4ERR_TOO_MANY_OPS)
+	}
+	if decoded.NumResults != 1 {
+		t.Fatalf("numResults = %d, want 1 (SEQUENCE only, no op executed)", decoded.NumResults)
+	}
+	if seqRes == nil || decoded.Results[0].OpCode != types.OP_SEQUENCE {
+		t.Fatalf("result opcode = %d, want OP_SEQUENCE", decoded.Results[0].OpCode)
+	}
+
+	// The refusal is reported on SEQUENCE, so no operation executed and the slot
+	// is untouched: seqid 2 is still the next one the slot accepts. Had the
+	// refused request consumed it, this would come back as a retry instead.
+	resp, err = h.ProcessCompound(newTestCompoundContext(),
+		buildCompoundArgsWithOps([]byte("ops"), 1, []compoundOp{
+			{opCode: types.OP_SEQUENCE, data: encodeSequenceArgs(sessionID, 0, 2, 0, false)},
+		}))
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+	if decoded, _ = decodeSequenceRes(t, resp); decoded.Status != types.NFS4_OK {
+		t.Errorf("reusing seqid 2 after the refusal: status = %d, want NFS4_OK", decoded.Status)
+	}
+}
+
+// TestSequence_RequestTooBig checks that a COMPOUND larger than the session's
+// negotiated ca_maxrequestsize is refused with NFS4ERR_REQ_TOO_BIG
+// (RFC 8881 Section 2.10.6.4) before the oversized operation runs.
+func TestSequence_RequestTooBig(t *testing.T) {
+	h := newTestHandler()
+	sessionID := createLimitedSession(t, h, "req-too-big-client", 128, 512)
+
+	// PUTROOTFH plus a LOOKUP whose name alone overruns ca_maxrequestsize. The
+	// name is also longer than NFS4_MAXNAMLEN, so answering NFS4ERR_NAMETOOLONG
+	// here would mean LOOKUP ran instead of the request being refused up front.
+	var nameBuf bytes.Buffer
+	if err := xdr.WriteXDROpaque(&nameBuf, bytes.Repeat([]byte("a"), 500)); err != nil {
+		t.Fatalf("encode LOOKUP name: %v", err)
+	}
+	ops := []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: encodeSequenceArgs(sessionID, 0, 1, 0, false)},
+		{opCode: types.OP_PUTROOTFH},
+		{opCode: types.OP_LOOKUP, data: nameBuf.Bytes()},
+	}
+
+	data := buildCompoundArgsWithOps([]byte("big"), 1, ops)
+	if len(data) <= 512 {
+		t.Fatalf("test request is %d bytes, needs to exceed the negotiated 512", len(data))
+	}
+
+	resp, err := h.ProcessCompound(newTestCompoundContext(), data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+	decoded, _ := decodeSequenceRes(t, resp)
+	if decoded.Status != types.NFS4ERR_REQ_TOO_BIG {
+		t.Errorf("status = %d, want NFS4ERR_REQ_TOO_BIG (%d)",
+			decoded.Status, types.NFS4ERR_REQ_TOO_BIG)
+	}
+	if decoded.NumResults != 1 {
+		t.Errorf("numResults = %d, want 1 (SEQUENCE only, no op executed)", decoded.NumResults)
+	}
+}
+
+// exemptOpArgs returns XDR-encoded args for each operation that may appear as
+// the first operation of a v4.1 COMPOUND without a preceding SEQUENCE. The args
+// are well-formed but refer to no existing client or session, so each operation
+// answers with its own error rather than being rejected for its shape.
+func exemptOpArgs(t *testing.T) []compoundOp {
+	t.Helper()
+
+	var fakeSID types.SessionId4
+	copy(fakeSID[:], "notonlyopsess123")
+
+	var verifier [8]byte
+	copy(verifier[:], "notonlyv")
+
+	var dcBuf bytes.Buffer
+	_ = (&types.DestroyClientidArgs{ClientID: 0}).Encode(&dcBuf)
+
+	var dsBuf bytes.Buffer
+	_ = (&types.DestroySessionArgs{SessionID: fakeSID}).Encode(&dsBuf)
+
+	return []compoundOp{
+		{
+			opCode: types.OP_EXCHANGE_ID,
+			data:   encodeExchangeIdArgs([]byte("not-only-op-client"), verifier, 0, types.SP4_NONE, nil),
+		},
+		{
+			opCode: types.OP_CREATE_SESSION,
+			data:   encodeCreateSessionArgsWithSec(0, 0, 0, []types.CallbackSecParms4{{CbSecFlavor: 0}}),
+		},
+		{opCode: types.OP_DESTROY_SESSION, data: dsBuf.Bytes()},
+		{opCode: types.OP_DESTROY_CLIENTID, data: dcBuf.Bytes()},
+		{
+			opCode: types.OP_BIND_CONN_TO_SESSION,
+			data:   encodeBindConnToSessionArgs(fakeSID, types.CDFC4_FORE, false),
+		},
+	}
+}
+
+// TestCompound_V41_ExemptOpNotOnlyOp covers RFC 8881 Section 15.1.3.3: an
+// operation allowed outside a session must be the only operation in a COMPOUND
+// that does not start with SEQUENCE.
+func TestCompound_V41_ExemptOpNotOnlyOp(t *testing.T) {
+	for _, exempt := range exemptOpArgs(t) {
+		t.Run(types.OpName(exempt.opCode), func(t *testing.T) {
+			// Alone: the op runs, so whatever it answers it is not NOT_ONLY_OP.
+			aloneData := buildCompoundArgsWithOps([]byte("alone"), 1, []compoundOp{exempt})
+			alone, err := newTestHandler().ProcessCompound(newTestCompoundContext(), aloneData)
+			if err != nil {
+				t.Fatalf("ProcessCompound (alone) error: %v", err)
+			}
+			decodedAlone, err := decodeCompoundResponse(alone)
+			if err != nil {
+				t.Fatalf("decode response (alone) error: %v", err)
+			}
+			if decodedAlone.Status == types.NFS4ERR_NOT_ONLY_OP {
+				t.Fatalf("sole %s rejected with NFS4ERR_NOT_ONLY_OP",
+					types.OpName(exempt.opCode))
+			}
+
+			// Sharing the COMPOUND with a second op: rejected, with a single
+			// result naming the offending first operation.
+			sharedData := buildCompoundArgsWithOps([]byte("shared"), 1,
+				[]compoundOp{exempt, {opCode: types.OP_PUTROOTFH}})
+			shared, err := newTestHandler().ProcessCompound(newTestCompoundContext(), sharedData)
+			if err != nil {
+				t.Fatalf("ProcessCompound (shared) error: %v", err)
+			}
+			decodedShared, err := decodeCompoundResponse(shared)
+			if err != nil {
+				t.Fatalf("decode response (shared) error: %v", err)
+			}
+			if decodedShared.Status != types.NFS4ERR_NOT_ONLY_OP {
+				t.Errorf("status = %d, want NFS4ERR_NOT_ONLY_OP (%d)",
+					decodedShared.Status, types.NFS4ERR_NOT_ONLY_OP)
+			}
+			if decodedShared.NumResults != 1 {
+				t.Fatalf("numResults = %d, want 1", decodedShared.NumResults)
+			}
+			if decodedShared.Results[0].OpCode != exempt.opCode {
+				t.Errorf("result[0] opcode = %d, want %d",
+					decodedShared.Results[0].OpCode, exempt.opCode)
+			}
+			if decodedShared.Results[0].Status != types.NFS4ERR_NOT_ONLY_OP {
+				t.Errorf("result[0] status = %d, want NFS4ERR_NOT_ONLY_OP (%d)",
+					decodedShared.Results[0].Status, types.NFS4ERR_NOT_ONLY_OP)
+			}
+		})
+	}
+}
+
+// TestCompound_V41_ExemptOpAfterSequence pins the other half of the rule: the
+// restriction is on a COMPOUND that does not start with SEQUENCE, so an exempt
+// operation preceded by SEQUENCE keeps running alongside other operations.
+func TestCompound_V41_ExemptOpAfterSequence(t *testing.T) {
+	h, sessionID := createTestSession(t)
+
+	var verifier [8]byte
+	copy(verifier[:], "afterseq")
+
+	ops := []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: encodeSequenceArgs(sessionID, 0, 1, 0, true)},
+		{
+			opCode: types.OP_EXCHANGE_ID,
+			data:   encodeExchangeIdArgs([]byte("after-sequence-client"), verifier, 0, types.SP4_NONE, nil),
+		},
+	}
+	data := buildCompoundArgsWithOps([]byte("afterseq"), 1, ops)
+
+	resp, err := h.ProcessCompound(newTestCompoundContext(), data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	reader := readPastSequenceResult(t, resp, 2)
+
+	eidOpCode, _ := xdr.DecodeUint32(reader)
+	if eidOpCode != types.OP_EXCHANGE_ID {
+		t.Errorf("result[1] opcode = %d, want OP_EXCHANGE_ID", eidOpCode)
+	}
+	eidStatus, _ := xdr.DecodeUint32(reader)
+	if eidStatus != types.NFS4_OK {
+		t.Errorf("result[1] status = %d, want NFS4_OK", eidStatus)
+	}
 }

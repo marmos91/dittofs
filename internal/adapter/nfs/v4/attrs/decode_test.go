@@ -309,13 +309,15 @@ func TestDecodeFattr4ToSetAttrs_MultipleAttrs(t *testing.T) {
 	}
 }
 
+// TestDecodeFattr4ToSetAttrs_UnsupportedAttr covers an attribute the server
+// does not implement at all: FATTR4_ARCHIVE is absent from SupportedAttrs, so
+// SETATTR reports the gap rather than calling the request malformed.
 func TestDecodeFattr4ToSetAttrs_UnsupportedAttr(t *testing.T) {
-	// FATTR4_TYPE (bit 1) is a read-only attribute
 	var attrVals bytes.Buffer
-	_ = xdr.WriteUint32(&attrVals, 1) // NF4REG value
+	_ = xdr.WriteUint32(&attrVals, 0)
 
 	var bitmap []uint32
-	SetBit(&bitmap, FATTR4_TYPE) // bit 1 = read-only
+	SetBit(&bitmap, 14) // FATTR4_ARCHIVE
 
 	data := buildFattr4(t, bitmap, attrVals.Bytes())
 	_, _, err := DecodeFattr4ToSetAttrs(bytes.NewReader(data))
@@ -323,13 +325,49 @@ func TestDecodeFattr4ToSetAttrs_UnsupportedAttr(t *testing.T) {
 		t.Fatal("expected error for unsupported attribute")
 	}
 
-	// Check that it's an NFS4StatusError with ATTRNOTSUPP
 	if nfsErr, ok := err.(NFS4StatusError); ok {
 		if nfsErr.NFS4Status() != 10032 { // NFS4ERR_ATTRNOTSUPP
 			t.Errorf("NFS4Status = %d, want NFS4ERR_ATTRNOTSUPP (10032)", nfsErr.NFS4Status())
 		}
 	} else {
 		t.Errorf("expected NFS4StatusError, got %T: %v", err, err)
+	}
+}
+
+// TestDecodeFattr4ToSetAttrs_ReadOnlyAttr covers an attribute the server does
+// maintain but never lets a client write: FATTR4_TYPE. RFC 7530 Section 5.5
+// makes that NFS4ERR_INVAL, and ATTRNOTSUPP would misreport a supported
+// attribute as missing.
+func TestDecodeFattr4ToSetAttrs_ReadOnlyAttr(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		bit  uint32
+	}{
+		{"type", FATTR4_TYPE},
+		{"supported_attrs", FATTR4_SUPPORTED_ATTRS},
+		{"filehandle", FATTR4_FILEHANDLE},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var attrVals bytes.Buffer
+			_ = xdr.WriteUint32(&attrVals, 1)
+
+			var bitmap []uint32
+			SetBit(&bitmap, tc.bit)
+
+			data := buildFattr4(t, bitmap, attrVals.Bytes())
+			_, _, err := DecodeFattr4ToSetAttrs(bytes.NewReader(data))
+			if err == nil {
+				t.Fatal("expected error for read-only attribute")
+			}
+
+			nfsErr, ok := err.(NFS4StatusError)
+			if !ok {
+				t.Fatalf("expected NFS4StatusError, got %T: %v", err, err)
+			}
+			if nfsErr.NFS4Status() != 22 { // NFS4ERR_INVAL
+				t.Errorf("NFS4Status = %d, want NFS4ERR_INVAL (22)", nfsErr.NFS4Status())
+			}
+		})
 	}
 }
 

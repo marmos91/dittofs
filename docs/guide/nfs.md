@@ -612,6 +612,16 @@ operation that resolves the export handle — v4 has no MOUNT call). A refusal
 surfaces as `NFS4ERR_WRONGSEC` (v4) / `MNT3ERR_ACCES` (v3), prompting the client
 to retry with the correct flavor.
 
+On NFSv4 the retry is guided by SECINFO, which reports only the flavors the
+target share's policy actually permits — a share never advertises a flavor it
+would then refuse. A name that crosses an export junction reports the policy of
+the share it lands in, not the parent's; a pseudo-filesystem path, which belongs
+to no share, reports the full set the server offers.
+
+`require_kerberos=true` is rejected when the server has no Kerberos configured:
+such a share would be reachable by no auth flavor at all, and SECINFO would have
+nothing to report. Configure `kerberos.enabled` first.
+
 `min_kerberos_level` only constrains RPCSEC_GSS sessions: it rejects a Kerberos
 session whose negotiated service level is below the floor (e.g. a plain `krb5`
 authentication-only session on a `krb5p` privacy share). Non-GSS flavors are

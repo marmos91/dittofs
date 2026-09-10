@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -292,7 +291,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("QUERY_INFO: failed to get file", "path", openFile.Name().Path, "error", err)
-		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
+		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
 	}
 
 	// READ coalesces its LastAccessTime bumps, so the newest access may still be
@@ -351,7 +350,9 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	// BEFORE BuildAuthContext — otherwise ctx.User==nil falls into the
 	// anonymous arm and synthesises UID-0 (root), bypassing all DACL checks
 	// in the metadata layer (#619, same class as #603).
-	h.primeAuthContextFromOpenFile(ctx, openFile)
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
+	}
 
 	authCtx, authErr := BuildAuthContext(ctx)
 	if authErr != nil {
@@ -424,7 +425,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 			return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported}}, nil
 		}
 		logger.Debug("QUERY_INFO: metadata/filesystem error", "error", err)
-		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
+		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
 	}
 
 	// Truncate if necessary.
@@ -1021,7 +1022,7 @@ func (h *Handler) buildFileStreamInformation(authCtx *metadata.AuthContext, file
 			prefix := baseName + ":"
 			cursor := ""
 			for {
-				entries, nextCursor, listErr := store.ListChildren(ctx, name.ParentHandle, cursor, 1000)
+				entries, nextCursor, listErr := store.ListChildren(ctx, name.ParentHandle, cursor, 1000, metadata.WithAttrs)
 				if listErr != nil {
 					break
 				}

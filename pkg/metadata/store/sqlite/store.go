@@ -19,6 +19,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
 
@@ -35,12 +36,16 @@ const sqliteDriverName = "sqlite"
 // hard-link model (parent_child_map + nlink), and object_id dedup index are all
 // preserved, with SQL adapted to the SQLite dialect.
 type SQLiteMetadataStore struct {
-	// Core carries the executor and dialect the shared SQL bodies run on, and
-	// promotes those bodies onto this type so they exist once for both
-	// backends. Embedded by pointer: the transaction embeds its own Core over
-	// the open transaction, and nothing is shared between the two but the
-	// dialect.
-	*storesql.Core
+	// PoolPath carries the executor and dialect the shared SQL bodies run on,
+	// and promotes those bodies onto this type so they exist once for both
+	// backends. It holds the Core the transaction-free calls run against; the
+	// transaction embeds its own Core over the open transaction, and nothing is
+	// shared between the two but the dialect.
+	//
+	// Embedded here rather than embedding Core directly so the multi-statement
+	// writes PoolPath declares shadow their single-statement Core namesakes;
+	// see its type doc for why the depth matters.
+	storesql.PoolPath
 
 	// db is the database/sql handle over the single SQLite file. SQLite is a
 	// single-writer engine; the pool is bounded to keep contention predictable.
@@ -91,9 +96,8 @@ type SQLiteMetadataStore struct {
 	// thereafter. Immutable for the life of the instance.
 	storeID string
 
-	// Sub-stores for lock / client / durable-handle / NFSv4-recovery
-	// persistence. Each wraps the shared *sql.DB executor.
-	lockStore     *sqliteLockStore
+	// Sub-stores for client / durable-handle / NFSv4-recovery persistence.
+	// Each wraps the shared *sql.DB executor.
 	clientStore   *storesql.ClientStore
 	durableStore  *sqliteDurableStore
 	recoveryStore *storesql.RecoveryStore
@@ -163,12 +167,17 @@ func NewSQLiteMetadataStore(
 		cancel:       cancel,
 		quota:        basestore.NewQuotaCache(),
 	}
-	// The shared SQL bodies run on the pool for store-level calls.
-	store.Core = &storesql.Core{X: store.conn(), D: sqliteDialect, Caps: store.currentCapabilities}
+	// The shared SQL bodies run on the pool for store-level calls. T is the
+	// store itself, so the writes that span several statements can open a
+	// transaction rather than autocommitting piecemeal on the pool.
+	store.PoolPath = storesql.PoolPath{
+		Core:       &storesql.Core{X: store.conn(), D: sqliteDialect, Caps: store.currentCapabilities, Log: log},
+		T:          store,
+		ShareCache: &store.shareCache,
+	}
 
 	// The substores derive only from db, which is never reassigned, so bind
 	// them once here.
-	store.lockStore = newSQLiteLockStore(store.conn())
 	store.clientStore = &storesql.ClientStore{X: store.conn(), D: sqliteDialect}
 	store.durableStore = newSQLiteDurableStore(store.conn())
 	store.recoveryStore = &storesql.RecoveryStore{X: store.conn(), D: sqliteDialect}
@@ -229,7 +238,7 @@ func (s *SQLiteMetadataStore) initUsedBytesCounter(ctx context.Context) error {
 // never user input.
 func (s *SQLiteMetadataStore) seedUsageByColumn(ctx context.Context, col string, scope metadata.QuotaScope, out map[basestore.QuotaKey]*metadata.UsageStat) error {
 	query := fmt.Sprintf(
-		`SELECT share_name, %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE file_type = ?1 GROUP BY share_name, %s`,
+		`SELECT share_name, %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE file_type = ?1 AND nlink > 0 GROUP BY share_name, %s`,
 		col, col,
 	)
 	rows, err := s.db.QueryContext(ctx, query, int(metadata.FileTypeRegular))
@@ -375,4 +384,37 @@ func capabilityArgs(caps metadata.FilesystemCapabilities) []any {
 func initializeFilesystemCapabilities(ctx context.Context, db *sql.DB, caps metadata.FilesystemCapabilities) error {
 	_, err := db.ExecContext(ctx, upsertCapabilitiesSQL, capabilityArgs(caps)...)
 	return err
+}
+
+// RecomputeUsage rebuilds the usage counters from the inodes table, discarding
+// whatever the in-memory buckets hold. Same aggregate the store runs at open,
+// re-run on demand.
+func (s *SQLiteMetadataStore) RecomputeUsage(ctx context.Context) error {
+	// The aggregate runs with no lock held, so arm the cache to record what
+	// commits during it — otherwise a transaction landing between the query and
+	// the seed is scanned out and then overwritten.
+	s.quotaMu.Lock()
+	s.quota.BeginRebuild()
+	s.quotaMu.Unlock()
+	return s.initUsedBytesCounter(ctx)
+}
+
+// metadata.Store does not embed lock.LockStore: the store's lock surface is
+// reached through a runtime type assertion, which skips lock initialisation
+// silently rather than failing when the store no longer satisfies it. This
+// states the requirement where the compiler can see it.
+var _ lock.LockStore = (*SQLiteMetadataStore)(nil)
+
+// PutFileChunkRefsCallCount reports how many writes actually persisted
+// file_block_refs rows — the delta upserted or deleted at least one row — since
+// the store opened. Test-only: it proves that attr-only writes and no-op
+// re-projections of an unchanged manifest perform zero manifest writes.
+func (s *SQLiteMetadataStore) PutFileChunkRefsCallCount() int64 { return s.manifestWrites.Load() }
+
+// PutFileChunkRefsManifestRowsScanned reports how many stored file_block_refs
+// rows the manifest diff has read since the store opened. Test-only: it proves
+// a scoped commit's read cost tracks the changed offsets, not the file's total
+// chunk count.
+func (s *SQLiteMetadataStore) PutFileChunkRefsManifestRowsScanned() int64 {
+	return s.manifestRowsScanned.Load()
 }

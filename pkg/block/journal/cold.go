@@ -19,13 +19,24 @@ package journal
 // Layout: <dir>/cold.log, an append-only entry stream, little-endian
 //
 //	off  size  field
-//	0    1     MagicByte    0xC0, torn-write scan anchor
+//	0    1     MagicByte    0xC1, torn-write scan anchor and layout tag
 //	1    2     FileIDLen
 //	3    8     FileOffset
 //	11   8     Length
 //	19   8     Version
-//	27   4     CRC32        over bytes [0,27) and the FileID bytes
-//	31   var   FileID
+//	27   1     Provenance   what Version dates; see coldProvenance
+//	28   4     CRC32        over bytes [0,28) and the FileID bytes
+//	32   var   FileID
+//
+// Entries written before provenance was recorded carry magic 0xC0 and lack the
+// byte, putting CRC at [27,31) and the FileID at 31. They still load, as
+// coldFromUnknown. Only the reader accepts that shape: every append writes 0xC1,
+// so a log stops growing older entries as soon as this build touches it.
+//
+// A build that predates 0xC1 reads it as bad magic, which is a torn entry, which
+// ends the load and drops every entry after it — the silent-zeros failure this
+// log exists to prevent. That is why formatVersion is 2: an older release must
+// refuse the directory outright rather than read it short.
 //
 // Entries are replayed at recovery like any other record — inserted by Version,
 // so a later warm write shadows a cold entry, and the tombstone and truncate
@@ -44,8 +55,13 @@ import (
 )
 
 const (
-	coldMagic      = 0xC0
-	coldHeaderSize = 31
+	// coldMagicLegacy tags an entry written before provenance was recorded; it
+	// is read, never written. coldMagic is the current layout.
+	coldMagicLegacy      = 0xC0
+	coldHeaderSizeLegacy = 31
+
+	coldMagic      = 0xC1
+	coldHeaderSize = 32
 	coldLogName    = "cold.log"
 
 	// coldSeededName is the marker recording that this journal's cold log has
@@ -57,12 +73,48 @@ const (
 	coldCompactFloor = 1024
 )
 
+// coldProvenance records which writer made an entry, because that is what says
+// whether its version dates the *content* or merely the moment a scan noticed
+// the range was remote-durable. Nothing else in the entry distinguishes them,
+// and a reader that assumes one gets the other silently wrong.
+type coldProvenance uint8
+
+const (
+	// coldFromUnknown is a legacy entry: written before provenance was recorded,
+	// so which writer made it cannot be recovered. Readers must treat it as the
+	// eviction case, which is what every reader did before this field existed.
+	coldFromUnknown coldProvenance = 0
+
+	// coldFromData means version was copied off the interval whose local bytes
+	// this entry replaces, so it still dates the content: eviction and
+	// invalidation. A version test answers "did these bytes exist at V".
+	coldFromData coldProvenance = 1
+
+	// coldFromScan means version was minted when a scan found the range already
+	// remote-durable, so it dates the scan and says nothing about the content:
+	// the manifest-seed writers. The version exists only so a racing Delete
+	// sweeps below the entry. A version test answers nothing about the content.
+	coldFromScan coldProvenance = 2
+)
+
+func (p coldProvenance) String() string {
+	switch p {
+	case coldFromData:
+		return "data"
+	case coldFromScan:
+		return "scan"
+	default:
+		return "unknown"
+	}
+}
+
 // coldEntry is one persisted cold interval.
 type coldEntry struct {
-	id      FileID
-	fileOff int64
-	length  int64
-	version uint64
+	id         FileID
+	fileOff    int64
+	length     int64
+	version    uint64
+	provenance coldProvenance
 }
 
 func (s *Store) coldPath() string { return filepath.Join(s.dir, coldLogName) }
@@ -75,8 +127,9 @@ func encodeColdEntry(e coldEntry) []byte {
 	binary.LittleEndian.PutUint64(buf[3:11], uint64(e.fileOff))
 	binary.LittleEndian.PutUint64(buf[11:19], uint64(e.length))
 	binary.LittleEndian.PutUint64(buf[19:27], e.version)
+	buf[27] = byte(e.provenance)
 	copy(buf[coldHeaderSize:], e.id)
-	binary.LittleEndian.PutUint32(buf[27:31], coldEntryCRC(buf[:27], buf[coldHeaderSize:]))
+	binary.LittleEndian.PutUint32(buf[28:32], coldEntryCRC(buf[:28], buf[coldHeaderSize:]))
 	return buf
 }
 
@@ -90,27 +143,47 @@ func coldEntryCRC(head, id []byte) uint32 {
 // total bytes consumed. A malformed entry (bad magic, short read, CRC mismatch)
 // returns errTornRecord, which ends the load.
 func decodeColdEntry(buf []byte) (coldEntry, int, error) {
-	if len(buf) < coldHeaderSize {
+	if len(buf) < 1 {
 		return coldEntry{}, 0, fmt.Errorf("%w: short cold entry header", errTornRecord)
 	}
-	if buf[0] != coldMagic {
+
+	// The magic byte doubles as the layout tag, so the header size and the
+	// offsets of the trailing fields follow from it.
+	var headerSize, crcOff int
+	switch buf[0] {
+	case coldMagic:
+		headerSize, crcOff = coldHeaderSize, 28
+	case coldMagicLegacy:
+		headerSize, crcOff = coldHeaderSizeLegacy, 27
+	default:
 		return coldEntry{}, 0, fmt.Errorf("%w: bad cold entry magic 0x%02x", errTornRecord, buf[0])
 	}
+	if len(buf) < headerSize {
+		return coldEntry{}, 0, fmt.Errorf("%w: short cold entry header", errTornRecord)
+	}
+
 	idLen := int(binary.LittleEndian.Uint16(buf[1:3]))
-	total := coldHeaderSize + idLen
+	total := headerSize + idLen
 	if len(buf) < total {
 		return coldEntry{}, 0, fmt.Errorf("%w: cold entry runs past end of log", errTornRecord)
 	}
-	id := buf[coldHeaderSize:total]
-	want := binary.LittleEndian.Uint32(buf[27:31])
-	if got := coldEntryCRC(buf[:27], id); got != want {
+	id := buf[headerSize:total]
+	want := binary.LittleEndian.Uint32(buf[crcOff : crcOff+4])
+	if got := coldEntryCRC(buf[:crcOff], id); got != want {
 		return coldEntry{}, 0, fmt.Errorf("%w: cold entry CRC mismatch", errTornRecord)
 	}
+
+	// A legacy entry has no provenance byte, so it stays coldFromUnknown.
+	provenance := coldFromUnknown
+	if buf[0] == coldMagic {
+		provenance = coldProvenance(buf[27])
+	}
 	return coldEntry{
-		id:      FileID(id),
-		fileOff: int64(binary.LittleEndian.Uint64(buf[3:11])),
-		length:  int64(binary.LittleEndian.Uint64(buf[11:19])),
-		version: binary.LittleEndian.Uint64(buf[19:27]),
+		id:         FileID(id),
+		fileOff:    int64(binary.LittleEndian.Uint64(buf[3:11])),
+		length:     int64(binary.LittleEndian.Uint64(buf[11:19])),
+		version:    binary.LittleEndian.Uint64(buf[19:27]),
+		provenance: provenance,
 	}, total, nil
 }
 
@@ -308,7 +381,10 @@ func liveColdEntries(indexByShard []map[FileID]*fileIndex) []coldEntry {
 				if !iv.cold {
 					continue
 				}
-				out = append(out, coldEntry{id: id, fileOff: iv.fileOff, length: iv.length, version: iv.version})
+				out = append(out, coldEntry{
+					id: id, fileOff: iv.fileOff, length: iv.length,
+					version: iv.version, provenance: iv.provenance,
+				})
 			}
 		}
 	}

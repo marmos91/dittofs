@@ -138,7 +138,7 @@ func TestHandleDelegReturn_AlreadyReturned_Idempotent(t *testing.T) {
 
 	// Grant and return a delegation
 	deleg := sm.GrantDelegation(100, fh, types.OPEN_DELEGATE_READ)
-	err := sm.ReturnDelegation(&deleg.Stateid)
+	err := sm.ReturnDelegation(&deleg.Stateid, 0)
 	if err != nil {
 		t.Fatalf("ReturnDelegation: %v", err)
 	}
@@ -169,5 +169,59 @@ func TestHandleDelegReturn_Registered(t *testing.T) {
 	// Verify DELEGRETURN is registered in the dispatch table
 	if _, exists := h.v40DispatchTable[types.OP_DELEGRETURN]; !exists {
 		t.Error("OP_DELEGRETURN should be registered in dispatch table")
+	}
+}
+
+// TestHandleDelegReturn_CrossClient covers the ownership check on DELEGRETURN.
+// A delegation names state one client holds; another client returning it would
+// stop the holder's recall timer and invalidate its cache authority without the
+// holder ever knowing.
+func TestHandleDelegReturn_CrossClient(t *testing.T) {
+	const holder uint64 = 0xAAAA
+
+	tests := []struct {
+		name       string
+		callerID   uint64
+		wantStatus uint32
+		wantDelegs int
+	}{
+		{"another client is refused", 0xBBBB, types.NFS4ERR_BAD_STATEID, 1},
+		{"the holding client succeeds", holder, types.NFS4_OK, 0},
+		// NFSv4.0 sends no clientid4 on DELEGRETURN and has no session to
+		// derive one from, so there is nothing to compare and the delegation
+		// stays a bearer token.
+		{"no client identity to check", 0, types.NFS4_OK, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pfs := pseudofs.New()
+			pfs.Rebuild([]string{"/export"})
+			sm := state.NewStateManager(90 * time.Second)
+			h := NewHandler(nil, pfs, sm)
+
+			fh := []byte("fh-delegreturn-cross-client")
+			deleg := sm.GrantDelegation(holder, fh, types.OPEN_DELEGATE_READ)
+
+			var args bytes.Buffer
+			types.EncodeStateid4(&args, &deleg.Stateid)
+
+			result := h.handleDelegReturn(&types.CompoundContext{
+				Context:         context.Background(),
+				ClientAddr:      "127.0.0.1:9999",
+				CurrentFH:       fh,
+				SessionClientID: tt.callerID,
+			}, bytes.NewReader(args.Bytes()))
+
+			if result.Status != tt.wantStatus {
+				t.Errorf("status = %d, want %d", result.Status, tt.wantStatus)
+			}
+			// A refused return must leave the delegation in place, or the guard
+			// has merely changed the status code on a revocation that still
+			// happened.
+			if got := len(sm.GetDelegationsForFile(fh)); got != tt.wantDelegs {
+				t.Errorf("delegations after DELEGRETURN = %d, want %d", got, tt.wantDelegs)
+			}
+		})
 	}
 }

@@ -18,7 +18,7 @@ test-quick: ## Run smbtorture connect test only (fastest)
 	./run.sh --profile memory --filter smb2.connect
 
 test-full: ## Run smbtorture with all profiles
-	@for profile in memory memory-fs badger-fs; do \
+	@for profile in memory badger; do \
 		echo "=== Profile: $$profile ==="; \
 		./run.sh --profile $$profile || exit 1; \
 	done

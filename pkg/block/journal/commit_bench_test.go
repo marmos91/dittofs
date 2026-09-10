@@ -19,7 +19,7 @@ import (
 // All ops target files that hash to a single shard so the fsync contention is
 // real and not spread across shards.
 func benchConcurrentCommit(b *testing.B, parallelism int) {
-	s := benchStore(b)
+	s, dir := benchStoreDir(b, Config{})
 	ctx := context.Background()
 	data := make([]byte, 4<<10)
 
@@ -35,6 +35,7 @@ func benchConcurrentCommit(b *testing.B, parallelism int) {
 	}
 
 	b.SetBytes(int64(len(data)))
+	b.ReportAllocs()
 	b.ResetTimer()
 
 	var wg sync.WaitGroup
@@ -56,6 +57,9 @@ func benchConcurrentCommit(b *testing.B, parallelism int) {
 		}(ids[g])
 	}
 	wg.Wait()
+	b.StopTimer()
+
+	reportWriteAmp(b, s, dir, ids[0], int64(perG)*int64(parallelism)*int64(len(data)))
 }
 
 func BenchmarkConcurrentCommit1(b *testing.B)   { benchConcurrentCommit(b, 1) }

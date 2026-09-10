@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -36,6 +35,17 @@ func (h *Handler) handleGetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_GETATTR,
 			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+		}
+	}
+
+	// A settable-only attribute has no value to return: RFC 7530 Section 5.5
+	// makes reading one an error rather than a request the server narrows down
+	// to the attributes it can answer.
+	if attrs.HasWriteOnlyAttr(requested) {
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_INVAL,
+			OpCode: types.OP_GETATTR,
+			Data:   encodeStatusOnly(types.NFS4ERR_INVAL),
 		}
 	}
 
@@ -83,7 +93,7 @@ func (h *Handler) getAttrRealFS(ctx *types.CompoundContext, requested []uint32) 
 
 	file, err := metaSvc.GetFile(authCtx.Context, metadata.FileHandle(ctx.CurrentFH))
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		logger.Debug("NFSv4 GETATTR real-FS failed",
 			"error", err,
 			"status", status,
@@ -113,7 +123,7 @@ func (h *Handler) getAttrRealFS(ctx *types.CompoundContext, requested []uint32) 
 			"client", ctx.ClientAddr)
 	}
 
-	// Fetch filesystem statistics if any space attributes are requested (bits 59-61).
+	// Fetch filesystem statistics if any space attributes are requested.
 	// Pass the caller's identity so per-user/per-group quotas are reflected.
 	var fsStats *metadata.FilesystemStatistics
 	if attrs.NeedsFilesystemStats(requested) {
@@ -126,7 +136,7 @@ func (h *Handler) getAttrRealFS(ctx *types.CompoundContext, requested []uint32) 
 	var buf bytes.Buffer
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
 
-	if err := attrs.EncodeRealFileAttrs(&buf, requested, file, metadata.FileHandle(ctx.CurrentFH), fsStats); err != nil {
+	if err := attrs.EncodeRealFileAttrs(&buf, requested, ctx.MinorVersion, file, metadata.FileHandle(ctx.CurrentFH), fsStats); err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_GETATTR,
@@ -158,7 +168,7 @@ func (h *Handler) getAttrPseudoFS(ctx *types.CompoundContext, requested []uint32
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
 
 	// Encode pseudo-fs attributes
-	if err := attrs.EncodePseudoFSAttrs(&buf, requested, node); err != nil {
+	if err := attrs.EncodePseudoFSAttrs(&buf, requested, ctx.MinorVersion, node); err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_GETATTR,

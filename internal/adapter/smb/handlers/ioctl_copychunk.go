@@ -199,10 +199,20 @@ func (h *Handler) handleSrvCopyChunk(ctx *SMBHandlerContext, body []byte) (*Hand
 		return NewErrorResult(types.StatusObjectNameNotFound), nil
 	}
 
-	// Per [MS-SMB2] 3.3.5.15.6: source and destination must be in the same session
-	if srcOpen.SessionID != dstOpen.SessionID {
-		logger.Debug("COPYCHUNK: cross-session copy not allowed",
-			"srcSession", srcOpen.SessionID, "dstSession", dstOpen.SessionID)
+	// Per [MS-SMB2] 3.3.5.15.6: source and destination must be in the same
+	// session — and that session must be the requester's, not merely each
+	// other's.
+	//
+	// SessionID alone, deliberately: the source is reached through a resume key
+	// rather than a TreeID, and §3.3.5.15.6 constrains it to the session, not
+	// the tree connect. A server-side copy between two shares the session holds
+	// is legitimate, so requiring srcOpen.TreeID == ctx.TreeID would break it.
+	// The destination is this IOCTL's own handle and gets the full tree+session
+	// ownership check when it primes the auth context below.
+	if srcOpen.SessionID != ctx.SessionID || dstOpen.SessionID != ctx.SessionID {
+		logger.Debug("COPYCHUNK: handle does not belong to the requesting session",
+			"srcSession", srcOpen.SessionID, "dstSession", dstOpen.SessionID,
+			"reqSession", ctx.SessionID)
 		return NewErrorResult(types.StatusObjectNameNotFound), nil
 	}
 
@@ -372,7 +382,7 @@ func (h *Handler) executeCopyChunks(
 	srcFile, err := metaSvc.GetFileForRead(ctx.Context, srcOpen.MetadataHandle)
 	if err != nil {
 		logger.Debug("COPYCHUNK: failed to get source file", "path", srcPath, "error", err)
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 
 	// Get destination block store
@@ -388,7 +398,9 @@ func (h *Handler) executeCopyChunks(
 	// on the destination write (#619, same class as #603). srcOpen and
 	// dstOpen are required to share a SessionID by the upstream validator,
 	// so priming from dstOpen is equivalent to priming from srcOpen.
-	h.primeAuthContextFromOpenFile(ctx, dstOpen)
+	if status := h.primeAuthContextFromOpenFile(ctx, dstOpen); status != types.StatusSuccess {
+		return NewErrorResult(status), nil
+	}
 
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
@@ -486,14 +498,14 @@ func (h *Handler) executeCopyChunks(
 		if err != nil {
 			logger.Warn("COPYCHUNK: source read failed",
 				"chunk", i, "srcPath", srcPath, "error", err)
-			// COPYCHUNK source read is a content-path op: MapContentToSMB
-			// maps a closed-store error (source share removed
+			// COPYCHUNK source read is a content-path op: StatusFor over
+			// ClassifyBlockStoreError maps a closed-store error (source share removed
 			// mid-copy) to STATUS_FILE_CLOSED and preserves the
 			// CAS-corruption / remote-unavailable mappings, defaulting to
 			// the I/O-class status for opaque failures.
 			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
-				common.MapContentToSMB(err), chunksWritten, totalBytesWritten), nil
+				types.StatusFor(common.ClassifyBlockStoreError(err)), chunksWritten, totalBytesWritten), nil
 		}
 
 		// Reject short reads (TOCTOU: source may have been truncated concurrently)
@@ -516,7 +528,7 @@ func (h *Handler) executeCopyChunks(
 				"chunk", i, "dstPath", dstPath, "error", err)
 			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
-				common.MapToSMB(err), chunksWritten, totalBytesWritten), nil
+				types.StatusForErr(err), chunksWritten, totalBytesWritten), nil
 		}
 
 		// Write to destination.
@@ -527,13 +539,13 @@ func (h *Handler) executeCopyChunks(
 			logger.Warn("COPYCHUNK: destination write failed",
 				"chunk", i, "dstPath", dstPath, "error", err)
 			// COPYCHUNK destination write is a content-path op:
-			// MapContentToSMB maps a closed-store error (dest share removed
+			// StatusForErr (via ClassifyBlockStoreError) maps a closed-store error (dest share removed
 			// mid-copy) to STATUS_FILE_CLOSED and preserves the
 			// CAS-corruption / remote-unavailable mappings, defaulting to
 			// the I/O-class status for opaque failures.
 			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
-				common.MapContentToSMB(err), chunksWritten, totalBytesWritten), nil
+				types.StatusFor(common.ClassifyBlockStoreError(err)), chunksWritten, totalBytesWritten), nil
 		}
 
 		// Commit write metadata

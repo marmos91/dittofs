@@ -714,7 +714,3 @@ type ShareSnapshotPolicySpec struct {
 	// +optional
 	NamePrefix string `json:"namePrefix,omitempty"`
 }
-
-func init() {
-	SchemeBuilder.Register(&DittoServer{}, &DittoServerList{})
-}

@@ -121,8 +121,10 @@ func FileRowToFileWithNlinkAndBlocks(r Row, withBlocks bool) (*metadata.File, er
 		deletedAt    sql.NullInt64
 		originalPath string
 		deletedBy    string
-		nlink        int32
-		blocksJSON   []byte
+		// Signed bit pattern of the opaque create verifier; see InodeValues.
+		idempotencyToken int64
+		nlink            int32
+		blocksJSON       []byte
 	)
 
 	dest := []any{
@@ -149,6 +151,7 @@ func FileRowToFileWithNlinkAndBlocks(r Row, withBlocks bool) (*metadata.File, er
 		&deletedAt,
 		&originalPath,
 		&deletedBy,
+		&idempotencyToken,
 		&nlink,
 	}
 	if withBlocks {
@@ -164,17 +167,18 @@ func FileRowToFileWithNlinkAndBlocks(r Row, withBlocks bool) (*metadata.File, er
 		ShareName: shareName,
 		Path:      path,
 		FileAttr: metadata.FileAttr{
-			Type:         metadata.FileType(fileType),
-			Mode:         uint32(mode),
-			UID:          uint32(uid),
-			GID:          uint32(gid),
-			Nlink:        uint32(nlink),
-			Size:         uint64(size),
-			Atime:        FiletimeToTime(atime),
-			Mtime:        FiletimeToTime(mtime),
-			Ctime:        FiletimeToTime(ctime),
-			CreationTime: FiletimeToTime(creationTime),
-			Hidden:       hidden,
+			Type:             metadata.FileType(fileType),
+			Mode:             uint32(mode),
+			UID:              uint32(uid),
+			GID:              uint32(gid),
+			Nlink:            uint32(nlink),
+			Size:             uint64(size),
+			Atime:            FiletimeToTime(atime),
+			Mtime:            FiletimeToTime(mtime),
+			Ctime:            FiletimeToTime(ctime),
+			CreationTime:     FiletimeToTime(creationTime),
+			Hidden:           hidden,
+			IdempotencyToken: uint64(idempotencyToken),
 		},
 	}
 

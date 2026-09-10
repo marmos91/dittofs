@@ -268,6 +268,20 @@ func (h *Handler) runCompoundOps(compCtx *types.CompoundContext, numOps uint32, 
 		results = append(results, *result)
 		lastStatus = result.Status
 
+		// Current stateid bookkeeping (RFC 8881 Section 16.2.3.1.2): an
+		// operation that returned a stateid becomes the current one; one that
+		// set the current filehandle without returning a stateid drops it.
+		// Everything else — including every operation that merely consumed a
+		// stateid — leaves it as it was.
+		if result.Status == types.NFS4_OK {
+			switch {
+			case result.Stateid != nil:
+				compCtx.SetCurrentStateid(result.Stateid)
+			case types.ClearsCurrentStateid(opCode):
+				compCtx.ClearCurrentStateid()
+			}
+		}
+
 		logger.Debug("NFSv4 COMPOUND op dispatched",
 			"op_index", i, "opcode", opCode, "op_name", types.OpName(opCode),
 			"status", result.Status, "client", compCtx.ClientAddr)
@@ -316,6 +330,7 @@ func (h *Handler) ProcessCompound(compCtx *types.CompoundContext, data []byte) (
 	// hash could allow a malicious client to engineer.
 	digest := sha256.Sum256(data)
 	compCtx.RequestDigest = digest[:]
+	compCtx.RequestSize = uint32(len(data))
 
 	reader := bytes.NewReader(data)
 
@@ -387,9 +402,9 @@ func (h *Handler) dispatchV40(compCtx *types.CompoundContext, tag []byte, numOps
 		return encodeCompoundResponse(types.NFS4ERR_RESOURCE, tag, nil)
 	}
 
-	// v4.0 has no SEQUENCE/replay cache, so an opcode that fails to decode is a
-	// fatal protocol error (hardErrOnDecodeError) rather than a cached partial
-	// reply.
+	// v4.0 has no SEQUENCE, so an opcode that fails to decode is a fatal
+	// protocol error (hardErrOnDecodeError): there is no slot to cache a partial
+	// reply in.
 	results, lastStatus, err := h.runCompoundOps(compCtx, numOps, reader, compoundLoopParams{
 		isV41:                false,
 		hardErrOnDecodeError: true,
@@ -398,33 +413,77 @@ func (h *Handler) dispatchV40(compCtx *types.CompoundContext, tag []byte, numOps
 		return nil, err
 	}
 
+	// Tell the adapter whether this reply has to survive for a retransmission.
+	// Sequenced operations carry their own replay protection in the open- and
+	// lock-owner seqid caches; these four carry none, so re-executing a
+	// retransmitted one turns a success into NFS4ERR_EXIST or NFS4ERR_NOENT.
+	compCtx.CacheReply = compoundIsNonIdempotent(results)
+
 	return encodeCompoundResponse(lastStatus, tag, results)
+}
+
+// nonIdempotentV40Ops are the NFSv4.0 operations that change the namespace and
+// have no seqid of their own, and so rely entirely on the duplicate request
+// cache to survive a retransmission (RFC 7530 Section 16.16.6 refers to it as
+// "the server duplicate request cache mechanism").
+//
+// The rest of the operation set is either seqid-protected (OPEN, CLOSE, LOCK,
+// LOCKU, OPEN_CONFIRM, OPEN_DOWNGRADE, RELEASE_LOCKOWNER) or safe to repeat, and
+// caching a READ reply would pin megabytes to protect an operation that can
+// simply run again.
+var nonIdempotentV40Ops = map[uint32]bool{
+	types.OP_CREATE: true,
+	types.OP_REMOVE: true,
+	types.OP_RENAME: true,
+	types.OP_LINK:   true,
+}
+
+// compoundIsNonIdempotent reports whether a COMPOUND ran an operation that must
+// not be executed a second time.
+func compoundIsNonIdempotent(results []types.CompoundResult) bool {
+	for i := range results {
+		if nonIdempotentV40Ops[results[i].OpCode] {
+			return true
+		}
+	}
+	return false
 }
 
 // dispatchV41 executes the v4.1 COMPOUND dispatch loop with SEQUENCE gating.
 //
 // Per RFC 8881, every non-exempt v4.1 COMPOUND must begin with SEQUENCE.
 // SEQUENCE establishes slot-based exactly-once semantics. Exempt operations
-// (EXCHANGE_ID, CREATE_SESSION, DESTROY_SESSION, BIND_CONN_TO_SESSION) can
-// appear as the first operation without a preceding SEQUENCE.
+// (EXCHANGE_ID, CREATE_SESSION, DESTROY_SESSION, DESTROY_CLIENTID,
+// BIND_CONN_TO_SESSION) can appear as the first operation without a preceding
+// SEQUENCE, in which case they must be the only operation in the COMPOUND.
 //
 // The dispatch flow:
 //  1. Validate op count
 //  2. Read first opcode
-//  3. If exempt op: dispatch all ops with v41ctx=nil (no session context)
-//  4. If SEQUENCE: validate session/slot/seqid, then dispatch remaining ops
-//  5. If neither: return NFS4ERR_OP_NOT_IN_SESSION
+//  3. If exempt op: reject with NFS4ERR_NOT_ONLY_OP unless it is the only
+//     operation, then dispatch it with v41ctx=nil (no session context)
+//  4. If outside this minor version's op-number range: dispatch it, which
+//     answers OP_ILLEGAL/NFS4ERR_OP_ILLEGAL
+//  5. If SEQUENCE: validate session/slot/seqid, then dispatch remaining ops
+//  6. If none of those: return NFS4ERR_OP_NOT_IN_SESSION
 //
 // On SEQUENCE replay (duplicate slot+seqid), returns the cached COMPOUND
 // response bytes directly without re-executing any operations.
 func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps uint32, reader io.Reader, isV42 bool) ([]byte, error) {
-	// Validate operation count limit
+	// Cap the op count before the session is known: numOps is client-supplied and
+	// sizes the result slice, so it is bounded here rather than after SEQUENCE
+	// parses. NFS4ERR_TOO_MANY_OPS is answerable without the session because
+	// negotiateChannelAttrs clamps every session's ca_maxoperations to
+	// MaxCompoundOps, so a COMPOUND over the global cap is over its session's
+	// limit too. NFS4ERR_RESOURCE, which the v4.0 path returns here, is an
+	// NFSv4.0 error (RFC 7530 Section 13.1.3.4) and is absent from both the
+	// NFSv4.1 error registry and every operation's valid-error list in RFC 8881.
 	if numOps > types.MaxCompoundOps {
 		logger.Debug("NFSv4.1 COMPOUND op count exceeds limit",
 			"count", numOps,
 			"max", types.MaxCompoundOps,
 			"client", compCtx.ClientAddr)
-		return encodeCompoundResponse(types.NFS4ERR_RESOURCE, tag, nil)
+		return encodeCompoundResponse(types.NFS4ERR_TOO_MANY_OPS, tag, nil)
 	}
 
 	// Empty compound: just return success
@@ -440,9 +499,53 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 
 	// Check if the first operation is session-exempt
 	if v41handlers.IsSessionExemptOp(firstOpCode) {
+		// A session-exempt operation must be the only operation in a COMPOUND
+		// that does not start with SEQUENCE, else NFS4ERR_NOT_ONLY_OP (RFC 8881
+		// Section 15.1.3.3). The restriction is on the COMPOUND, not on the
+		// operation: the same operations are legal at any position after a
+		// SEQUENCE, and those COMPOUNDs take the SEQUENCE path below instead.
+		//
+		// The reply carries one result for the offending operation rather than
+		// none, so a client can attribute the error to an operation the way it
+		// can for every other per-operation status.
+		if numOps != 1 {
+			logger.Debug("NFSv4.1 COMPOUND session-exempt op is not the only operation",
+				"op_name", types.OpName(firstOpCode),
+				"num_ops", numOps,
+				"client", compCtx.ClientAddr)
+			results := []types.CompoundResult{{
+				Status: types.NFS4ERR_NOT_ONLY_OP,
+				OpCode: firstOpCode,
+				Data:   encodeStatusOnly(types.NFS4ERR_NOT_ONLY_OP),
+			}}
+			return encodeCompoundResponse(types.NFS4ERR_NOT_ONLY_OP, tag, results)
+		}
+
 		logger.Debug("NFSv4.1 COMPOUND exempt op",
 			"op_name", types.OpName(firstOpCode),
 			"num_ops", numOps,
+			"client", compCtx.ClientAddr)
+		return h.dispatchV41Ops(compCtx, tag, firstOpCode, numOps, nil, reader, isV42)
+	}
+
+	// An opcode outside the operation-number range of this minor version is not
+	// an operation at all, so the SEQUENCE requirement does not reach it:
+	// NFS4ERR_OP_NOT_IN_SESSION is defined (RFC 8881 Section 15.1.3.5) for
+	// operations that are only valid inside a session, while RFC 8881
+	// Section 16.2.3 says the reply to an out-of-range opcode encodes OP_ILLEGAL
+	// with NFS4ERR_OP_ILLEGAL and that the COMPOUND status is NFS4ERR_OP_ILLEGAL
+	// too. Dispatching it produces exactly that, and the non-OK status stops the
+	// COMPOUND there.
+	//
+	// The v4.2 table is consulted alongside the range so a v4.2-only op arriving
+	// under v4.1 stays a known operation and still has to meet the SEQUENCE
+	// requirement, the way a v4.0-only op such as SETCLIENTID does. That leaves
+	// only opcodes no table recognises here, which are the ones dispatchOne
+	// answers from its illegal-opcode branch.
+	if h.v42DispatchTable[firstOpCode] == nil &&
+		(firstOpCode < types.OP_ACCESS || firstOpCode > h.maxValidOpCode(true, isV42)) {
+		logger.Debug("NFSv4.1 COMPOUND illegal first opcode",
+			"opcode", firstOpCode,
 			"client", compCtx.ClientAddr)
 		return h.dispatchV41Ops(compCtx, tag, firstOpCode, numOps, nil, reader, isV42)
 	}
@@ -456,7 +559,7 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 	}
 
 	// Process SEQUENCE
-	seqResult, v41ctx, sess, cachedReply, seqErr := v41handlers.HandleSequenceOp(h.v41Deps, compCtx, reader)
+	seqResult, v41ctx, sess, cachedReply, seqErr := v41handlers.HandleSequenceOp(h.v41Deps, compCtx, numOps, reader)
 	if seqErr != nil {
 		return nil, fmt.Errorf("SEQUENCE processing error: %w", seqErr)
 	}

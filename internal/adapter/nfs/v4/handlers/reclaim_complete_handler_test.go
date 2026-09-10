@@ -8,6 +8,41 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 )
 
+// sendReclaimComplete runs SEQUENCE + RECLAIM_COMPLETE on the given session
+// slot 0 at the given sequence ID and returns the COMPOUND's overall status.
+// oneFS selects the rca_one_fs flavour: false is the global reclaim, true the
+// file system-specific one.
+func sendReclaimComplete(
+	t *testing.T,
+	h *Handler,
+	ctx *types.CompoundContext,
+	sessionID types.SessionId4,
+	seqID uint32,
+	oneFS bool,
+) uint32 {
+	t.Helper()
+
+	var rcBuf bytes.Buffer
+	rcArgs := types.ReclaimCompleteArgs{OneFS: oneFS}
+	if err := rcArgs.Encode(&rcBuf); err != nil {
+		t.Fatalf("encode ReclaimCompleteArgs: %v", err)
+	}
+	ops := []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: encodeSequenceArgs(sessionID, 0, seqID, 0, false)},
+		{opCode: types.OP_RECLAIM_COMPLETE, data: rcBuf.Bytes()},
+	}
+
+	resp, err := h.ProcessCompound(ctx, buildCompoundArgsWithOps([]byte("rc"), 1, ops))
+	if err != nil {
+		t.Fatalf("RECLAIM_COMPLETE ProcessCompound error: %v", err)
+	}
+	status, err := xdr.DecodeUint32(bytes.NewReader(resp))
+	if err != nil {
+		t.Fatalf("decode overall status: %v", err)
+	}
+	return status
+}
+
 func TestHandleReclaimComplete(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		// Set up client with session, then send RECLAIM_COMPLETE via SEQUENCE-gated COMPOUND
@@ -84,57 +119,58 @@ func TestHandleReclaimComplete(t *testing.T) {
 
 		ctx := newTestCompoundContext()
 
-		// First RECLAIM_COMPLETE (slot 0, seqid 1)
-		seqArgs1 := encodeSequenceArgs(sessionID, 0, 1, 0, false)
-		var rcBuf1 bytes.Buffer
-		rcArgs1 := types.ReclaimCompleteArgs{OneFS: false}
-		_ = rcArgs1.Encode(&rcBuf1)
-
-		ops1 := []compoundOp{
-			{opCode: types.OP_SEQUENCE, data: seqArgs1},
-			{opCode: types.OP_RECLAIM_COMPLETE, data: rcBuf1.Bytes()},
+		if got := sendReclaimComplete(t, h, ctx, sessionID, 1, false); got != types.NFS4_OK {
+			t.Fatalf("first RECLAIM_COMPLETE overall status = %d, want NFS4_OK", got)
 		}
-		data1 := buildCompoundArgsWithOps([]byte("rc1"), 1, ops1)
-		resp1, err := h.ProcessCompound(ctx, data1)
-		if err != nil {
-			t.Fatalf("first RECLAIM_COMPLETE error: %v", err)
-		}
-		decoded1, _ := decodeCompoundResponse(resp1)
-		if decoded1.Status != types.NFS4_OK {
-			t.Fatalf("first RECLAIM_COMPLETE overall status = %d, want NFS4_OK", decoded1.Status)
-		}
-
-		// Second RECLAIM_COMPLETE (slot 0, seqid 2)
-		seqArgs2 := encodeSequenceArgs(sessionID, 0, 2, 0, false)
-		var rcBuf2 bytes.Buffer
-		rcArgs2 := types.ReclaimCompleteArgs{OneFS: false}
-		_ = rcArgs2.Encode(&rcBuf2)
-
-		ops2 := []compoundOp{
-			{opCode: types.OP_SEQUENCE, data: seqArgs2},
-			{opCode: types.OP_RECLAIM_COMPLETE, data: rcBuf2.Bytes()},
-		}
-		data2 := buildCompoundArgsWithOps([]byte("rc2"), 1, ops2)
-		resp2, err := h.ProcessCompound(ctx, data2)
-		if err != nil {
-			t.Fatalf("second RECLAIM_COMPLETE error: %v", err)
-		}
-
-		// Decode second response to check RECLAIM_COMPLETE status
-		reader := bytes.NewReader(resp2)
-		overallStatus, _ := xdr.DecodeUint32(reader)
-		_, _ = xdr.DecodeOpaque(reader)           // tag
-		numResults, _ := xdr.DecodeUint32(reader) // numResults
-
-		if numResults < 2 {
-			// If only SEQUENCE result, the compound failed at RECLAIM_COMPLETE
-			t.Logf("overall status = %d, numResults = %d", overallStatus, numResults)
-		}
-
-		// The overall status should be NFS4ERR_COMPLETE_ALREADY
-		if overallStatus != types.NFS4ERR_COMPLETE_ALREADY {
+		if got := sendReclaimComplete(t, h, ctx, sessionID, 2, false); got != types.NFS4ERR_COMPLETE_ALREADY {
 			t.Errorf("second RECLAIM_COMPLETE overall status = %d, want NFS4ERR_COMPLETE_ALREADY (%d)",
-				overallStatus, types.NFS4ERR_COMPLETE_ALREADY)
+				got, types.NFS4ERR_COMPLETE_ALREADY)
+		}
+	})
+
+	t.Run("complete_already_outside_grace", func(t *testing.T) {
+		// A client that reclaimed has finished reclaiming whether or not the
+		// server ever opened a grace window, so the second RECLAIM_COMPLETE is
+		// still a duplicate. No grace period is started here.
+		h, sessionID := createTestSession(t)
+		ctx := newTestCompoundContext()
+
+		if got := sendReclaimComplete(t, h, ctx, sessionID, 1, false); got != types.NFS4_OK {
+			t.Fatalf("first RECLAIM_COMPLETE overall status = %d, want NFS4_OK", got)
+		}
+		if got := sendReclaimComplete(t, h, ctx, sessionID, 2, false); got != types.NFS4ERR_COMPLETE_ALREADY {
+			t.Errorf("second RECLAIM_COMPLETE overall status = %d, want NFS4ERR_COMPLETE_ALREADY (%d)",
+				got, types.NFS4ERR_COMPLETE_ALREADY)
+		}
+	})
+
+	t.Run("per_fs_then_global", func(t *testing.T) {
+		// The two rca_one_fs flavours are separate operations with separate
+		// scopes: the global one covers the server instance, the file
+		// system-specific one covers a migration of one file system. A client
+		// may issue both, in either order, so a per-FS reclaim must not retire
+		// the client's global reclaim.
+		h, sessionID := createTestSession(t)
+		ctx := newTestCompoundContext()
+
+		if got := sendReclaimComplete(t, h, ctx, sessionID, 1, true); got != types.NFS4_OK {
+			t.Fatalf("per-FS RECLAIM_COMPLETE overall status = %d, want NFS4_OK", got)
+		}
+		if got := sendReclaimComplete(t, h, ctx, sessionID, 2, false); got != types.NFS4_OK {
+			t.Errorf("global RECLAIM_COMPLETE after a per-FS one = %d, want NFS4_OK", got)
+		}
+	})
+
+	t.Run("repeated_per_fs_is_not_a_duplicate", func(t *testing.T) {
+		// No file system here is ever migrating, so a file system-specific
+		// reclaim is accepted and otherwise ignored however often it arrives.
+		h, sessionID := createTestSession(t)
+		ctx := newTestCompoundContext()
+
+		for seq := uint32(1); seq <= 3; seq++ {
+			if got := sendReclaimComplete(t, h, ctx, sessionID, seq, true); got != types.NFS4_OK {
+				t.Fatalf("per-FS RECLAIM_COMPLETE #%d = %d, want NFS4_OK", seq, got)
+			}
 		}
 	})
 

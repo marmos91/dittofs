@@ -310,7 +310,7 @@ func TestCreateSession_ConfirmsClient(t *testing.T) {
 
 	// Before CREATE_SESSION, client should not be confirmed
 	sm.mu.RLock()
-	record := sm.v41ClientsByID[clientID]
+	record := sm.v41ClientLocked(clientID)
 	confirmed := record.Confirmed
 	sm.mu.RUnlock()
 
@@ -328,7 +328,7 @@ func TestCreateSession_ConfirmsClient(t *testing.T) {
 
 	// After CREATE_SESSION, client should be confirmed with a lease
 	sm.mu.RLock()
-	record = sm.v41ClientsByID[clientID]
+	record = sm.v41ClientLocked(clientID)
 	confirmed = record.Confirmed
 	hasLease := record.Lease != nil
 	sm.mu.RUnlock()
@@ -599,6 +599,183 @@ func TestCreateSession_ChannelNegotiation(t *testing.T) {
 	}
 	if result.ForeChannelAttrs.RdmaIrd != nil {
 		t.Errorf("RdmaIrd = %v, want nil", result.ForeChannelAttrs.RdmaIrd)
+	}
+}
+
+// ============================================================================
+// CreateSession channel-size and flag validation tests
+// ============================================================================
+
+// TestCreateSession_TooSmallRequestSize pins NFS4ERR_TOOSMALL for a channel
+// whose ca_maxrequestsize can never carry a COMPOUND request: the session must
+// be rejected before any slot table, reply cache, or lease is armed for it.
+func TestCreateSession_TooSmallRequestSize(t *testing.T) {
+	sm := NewStateManager(DefaultLeaseDuration)
+	clientID, seqID := registerV41Client(t, sm)
+
+	tooSmallFore := defaultForeAttrs()
+	tooSmallFore.MaxRequestSize = 20
+
+	_, _, err := sm.CreateSession(
+		clientID, seqID, 0,
+		tooSmallFore, defaultBackAttrs(), 0, nil,
+	)
+	if err == nil {
+		t.Fatal("Expected TOOSMALL for a 20-byte ca_maxrequestsize")
+	}
+	if stateErr, ok := err.(*NFS4StateError); !ok || stateErr.Status != types.NFS4ERR_TOOSMALL {
+		t.Errorf("Expected NFS4ERR_TOOSMALL (%d), got: %v", types.NFS4ERR_TOOSMALL, err)
+	}
+
+	// The rejected request consumed no sequence ID: a retry with a workable
+	// budget at the same seqid must succeed, proving no state leaked.
+	smallBack := defaultBackAttrs()
+	smallBack.MaxRequestSize = 10
+	_, _, err = sm.CreateSession(
+		clientID, seqID, 0,
+		defaultForeAttrs(), smallBack, 0, nil,
+	)
+	if err == nil {
+		t.Fatal("Expected TOOSMALL for a 10-byte back-channel ca_maxrequestsize")
+	}
+	if stateErr, ok := err.(*NFS4StateError); !ok || stateErr.Status != types.NFS4ERR_TOOSMALL {
+		t.Errorf("Expected NFS4ERR_TOOSMALL (%d) on the back channel, got: %v", types.NFS4ERR_TOOSMALL, err)
+	}
+
+	// A 400-byte request budget is workable (CSESS26 creates exactly that and
+	// expects success), so the floor must stay under it.
+	csess26 := defaultForeAttrs()
+	csess26.MaxRequestSize = 400
+	result, _, err := sm.CreateSession(
+		clientID, seqID, 0,
+		csess26, defaultBackAttrs(), 0, nil,
+	)
+	if err != nil {
+		t.Fatalf("CreateSession with workable budgets after two rejections: %v", err)
+	}
+	if result.SessionID == (types.SessionId4{}) {
+		t.Error("SessionID should be non-zero after the accepted request")
+	}
+}
+
+// TestCreateSession_TooSmallResponseSize pins NFS4ERR_TOOSMALL for a channel
+// whose ca_maxresponsesize can never carry a COMPOUND reply.
+func TestCreateSession_TooSmallResponseSize(t *testing.T) {
+	sm := NewStateManager(DefaultLeaseDuration)
+	clientID, seqID := registerV41Client(t, sm)
+
+	tooSmallFore := defaultForeAttrs()
+	tooSmallFore.MaxResponseSize = 0
+
+	_, _, err := sm.CreateSession(
+		clientID, seqID, 0,
+		tooSmallFore, defaultBackAttrs(), 0, nil,
+	)
+	if err == nil {
+		t.Fatal("Expected TOOSMALL for a zero ca_maxresponsesize")
+	}
+	if stateErr, ok := err.(*NFS4StateError); !ok || stateErr.Status != types.NFS4ERR_TOOSMALL {
+		t.Errorf("Expected NFS4ERR_TOOSMALL (%d), got: %v", types.NFS4ERR_TOOSMALL, err)
+	}
+
+	// A small-but-workable response budget is accepted: the floor must stay
+	// under it, because the reference suite negotiates one and then forces
+	// reply-size answers on the operations that overflow it.
+	workable := defaultForeAttrs()
+	workable.MaxResponseSize = 400
+	if _, _, err := sm.CreateSession(
+		clientID, seqID, 0,
+		workable, defaultBackAttrs(), 0, nil,
+	); err != nil {
+		t.Fatalf("A 400-byte ca_maxresponsesize must be accepted, got: %v", err)
+	}
+}
+
+// TestCreateSession_SmallCacheSizeAccepted pins that ca_maxresponsesize_cached
+// is NOT floored: an unusable cache budget is answered with
+// NFS4ERR_REP_TOO_BIG_TO_CACHE on the operation that overflows it, not a
+// CREATE_SESSION rejection, so creating the session must succeed.
+func TestCreateSession_SmallCacheSizeAccepted(t *testing.T) {
+	sm := NewStateManager(DefaultLeaseDuration)
+	clientID, seqID := registerV41Client(t, sm)
+
+	smallCache := defaultForeAttrs()
+	smallCache.MaxResponseSizeCached = 10
+
+	result, _, err := sm.CreateSession(
+		clientID, seqID, 0,
+		smallCache, defaultBackAttrs(), 0, nil,
+	)
+	if err != nil {
+		t.Fatalf("A 10-byte ca_maxresponsesize_cached must not reject the session: %v", err)
+	}
+	if result.ForeChannelAttrs.MaxResponseSizeCached != 10 {
+		t.Errorf("negotiated MaxResponseSizeCached = %d, want the client's 10",
+			result.ForeChannelAttrs.MaxResponseSizeCached)
+	}
+}
+
+// TestCreateSession_UnknownFlagBits pins NFS4ERR_INVAL for flag bits the server
+// does not recognise: silently masking would let a client believe it negotiated
+// support it did not get.
+func TestCreateSession_UnknownFlagBits(t *testing.T) {
+	sm := NewStateManager(DefaultLeaseDuration)
+	clientID, seqID := registerV41Client(t, sm)
+
+	_, _, err := sm.CreateSession(
+		clientID, seqID, 0xf,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+	)
+	if err == nil {
+		t.Fatal("Expected INVAL for undefined flag bits (0xf has bit 3 set)")
+	}
+	if stateErr, ok := err.(*NFS4StateError); !ok || stateErr.Status != types.NFS4ERR_INVAL {
+		t.Errorf("Expected NFS4ERR_INVAL (%d), got: %v", types.NFS4ERR_INVAL, err)
+	}
+
+	// All three defined bits together are accepted.
+	all := uint32(types.CREATE_SESSION4_FLAG_PERSIST |
+		types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN |
+		types.CREATE_SESSION4_FLAG_CONN_RDMA)
+	if _, _, err := sm.CreateSession(
+		clientID, seqID, all,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+	); err != nil {
+		t.Fatalf("The three defined flag bits together must be accepted, got: %v", err)
+	}
+}
+
+// TestCreateSession_SessionLimitStatus pins that the per-client session-limit
+// sentinel carries NFS4ERR_NOSPC: NFS4ERR_RESOURCE is absent from
+// CREATE_SESSION's valid-error list in RFC 8881 Section 18.36.
+func TestCreateSession_SessionLimitStatus(t *testing.T) {
+	sm := NewStateManager(DefaultLeaseDuration)
+	sm.mu.Lock()
+	sm.maxSessionsPerClient = 1
+	sm.mu.Unlock()
+
+	clientID, seqID := registerV41Client(t, sm)
+
+	if _, _, err := sm.CreateSession(
+		clientID, seqID, 0,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+	); err != nil {
+		t.Fatalf("first CreateSession: %v", err)
+	}
+	sm.CacheCreateSessionResponse(clientID, []byte("cached"))
+
+	_, _, err := sm.CreateSession(
+		clientID, seqID+1, 0,
+		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+	)
+	if err == nil {
+		t.Fatal("Expected an error for the per-client session limit")
+	}
+	if !errors.Is(err, ErrTooManySessions) {
+		t.Errorf("Expected ErrTooManySessions, got: %v", err)
+	}
+	if stateErr, ok := err.(*NFS4StateError); !ok || stateErr.Status != types.NFS4ERR_NOSPC {
+		t.Errorf("Expected NFS4ERR_NOSPC (%d), got status: %v", types.NFS4ERR_NOSPC, err)
 	}
 }
 
@@ -966,7 +1143,7 @@ func TestReaper_ExpiredLease(t *testing.T) {
 	}
 
 	sm.mu.RLock()
-	_, exists := sm.v41ClientsByID[clientID]
+	exists := sm.v41ClientLocked(clientID) != nil
 	sm.mu.RUnlock()
 
 	if exists {
@@ -981,7 +1158,7 @@ func TestReaper_UnconfirmedTimeout(t *testing.T) {
 
 	// Client is unconfirmed (no CREATE_SESSION yet)
 	sm.mu.RLock()
-	record := sm.v41ClientsByID[clientID]
+	record := sm.v41ClientLocked(clientID)
 	confirmed := record.Confirmed
 	sm.mu.RUnlock()
 
@@ -997,7 +1174,7 @@ func TestReaper_UnconfirmedTimeout(t *testing.T) {
 
 	// Client should be purged
 	sm.mu.RLock()
-	_, exists := sm.v41ClientsByID[clientID]
+	exists := sm.v41ClientLocked(clientID) != nil
 	sm.mu.RUnlock()
 
 	if exists {
@@ -1027,7 +1204,7 @@ func TestReaper_ActiveLeaseNotCleaned(t *testing.T) {
 	}
 
 	sm.mu.RLock()
-	_, exists := sm.v41ClientsByID[clientID]
+	exists := sm.v41ClientLocked(clientID) != nil
 	sm.mu.RUnlock()
 
 	if !exists {
@@ -1037,9 +1214,9 @@ func TestReaper_ActiveLeaseNotCleaned(t *testing.T) {
 
 // TestReaper_ExpiredLeaseReleasesOpenState checks that reaping a client whose
 // lease lapsed also releases the open state its owners hold. v4.1 OPENs run
-// through the same OpenFile path as v4.0 and land in sm.openOwners, but the
-// V41ClientRecord has no owner list of its own, so a purge that only walked the
-// record left them behind — with their share reservations still denying every
+// through the same OpenFile path as v4.0 and land in sm.openOwners, but a
+// v4.1 client record carries no owner list of its own, so a purge that only
+// walked the record left them behind — with their share reservations still denying every
 // other client, and no client record left to ever CLOSE them.
 func TestReaper_ExpiredLeaseReleasesOpenState(t *testing.T) {
 	const lease = 20 * time.Millisecond
@@ -1069,11 +1246,7 @@ func TestReaper_ExpiredLeaseReleasesOpenState(t *testing.T) {
 
 	// A byte-range lock on top of the open: seqid 0 is the v4.1 bypass, the
 	// slot table provides the replay protection the seqids give v4.0.
-	if _, err := sm.LockNew(context.Background(),
-		clientID, []byte("lock-owner-a"), 0,
-		&open.Stateid, 0,
-		fh, types.WRITE_LT, 0, 100, false,
-	); err != nil {
+	if _, err := sm.LockNew(context.Background(), clientID, []byte("lock-owner-a"), 0, &open.Stateid, 0, fh, types.WRITE_LT, 0, 100, false, 0); err != nil {
 		t.Fatalf("LockNew error: %v", err)
 	}
 	if got := len(lm.ListUnifiedLocks(string(fh))); got != 1 {
@@ -1085,7 +1258,7 @@ func TestReaper_ExpiredLeaseReleasesOpenState(t *testing.T) {
 	sm.reapExpiredSessions()
 
 	sm.mu.RLock()
-	_, clientLives := sm.v41ClientsByID[clientID]
+	clientLives := sm.v41ClientLocked(clientID) != nil
 	owners := len(sm.openOwners)
 	opens := len(sm.openStateByOther)
 	lockOwners := len(sm.lockOwners)
@@ -1244,7 +1417,7 @@ func TestCacheCreateSessionResponse(t *testing.T) {
 	sm.CacheCreateSessionResponse(clientID, responseBytes)
 
 	sm.mu.RLock()
-	record := sm.v41ClientsByID[clientID]
+	record := sm.v41ClientLocked(clientID)
 	cached := record.CachedCreateSessionRes
 	sm.mu.RUnlock()
 
@@ -1255,7 +1428,7 @@ func TestCacheCreateSessionResponse(t *testing.T) {
 	// Verify it's a copy (modifying original shouldn't affect cached)
 	responseBytes[0] = 'X'
 	sm.mu.RLock()
-	record = sm.v41ClientsByID[clientID]
+	record = sm.v41ClientLocked(clientID)
 	cached = record.CachedCreateSessionRes
 	sm.mu.RUnlock()
 

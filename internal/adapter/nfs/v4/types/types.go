@@ -56,6 +56,12 @@ type CompoundResult struct {
 
 	// Data contains the XDR-encoded operation-specific result.
 	Data []byte
+
+	// Stateid is the stateid this operation returned, when it returns one
+	// (OPEN, OPEN_CONFIRM, OPEN_DOWNGRADE, CLOSE, LOCK, LOCKU and
+	// GET_DIR_DELEGATION). The COMPOUND loop makes it the current stateid,
+	// per RFC 8881 Section 16.2.3.1.2. Nil for every other operation.
+	Stateid *Stateid4
 }
 
 // Compound4Response represents the COMPOUND4res XDR structure.
@@ -94,6 +100,16 @@ type CompoundContext struct {
 	// SavedFH is the saved filehandle for SAVEFH/RESTOREFH.
 	// Nil means no saved filehandle.
 	SavedFH []byte
+
+	// currentStateid / savedStateid are the NFSv4.1 current and saved stateids
+	// that travel with CurrentFH and SavedFH. The has* flags separate "no
+	// stateid" from the all-zeros stateid, which is a real (anonymous) value:
+	// the placeholder resolves to NFS4ERR_BAD_STATEID only in the former case.
+	// Reached through the methods in current_stateid.go.
+	currentStateid    Stateid4
+	savedStateid      Stateid4
+	hasCurrentStateid bool
+	hasSavedStateid   bool
 
 	// ClientAddr is the remote address of the client connection.
 	ClientAddr string
@@ -135,11 +151,25 @@ type CompoundContext struct {
 	// BIND_CONN_TO_SESSION and connection draining checks.
 	ConnectionID uint64
 
+	// CacheReply is set by the v4.0 dispatcher when the COMPOUND executed an
+	// operation that must not run twice, so the adapter records its reply in the
+	// duplicate request cache and answers a retransmission from there. v4.1 and
+	// v4.2 get exactly-once semantics from the session slot table and never set
+	// it.
+	CacheReply bool
+
 	// RequestDigest is a fingerprint of the full COMPOUND request body,
 	// computed once in ProcessCompound. The v4.1 SEQUENCE path uses it as the
 	// slot request fingerprint to detect false retries (RFC 8881
 	// Section 2.10.6.1.3 -- a slot+seqid reused for a different request).
 	RequestDigest []byte
+
+	// RequestSize is the length in bytes of the COMPOUND arguments, set
+	// alongside RequestDigest in ProcessCompound. SEQUENCE weighs it against the
+	// session's negotiated ca_maxrequestsize. It excludes the RPC header, so it
+	// undercounts what a client's own request-size accounting includes; the
+	// resulting check is more permissive than the negotiated limit, never less.
+	RequestSize uint32
 
 	// MinorVersion is the minorversion field decoded from the COMPOUND
 	// arguments (0 for NFSv4.0, 1 for NFSv4.1, 2 for NFSv4.2). ProcessCompound
@@ -156,6 +186,16 @@ type CompoundContext struct {
 	// NFS4ERR_MINOR_VERS_MISMATCH -- that last case returns a well-formed reply
 	// and a nil error, so the error alone cannot be used to tell them apart.
 	MinorVersionAccepted bool
+}
+
+// IsV41OrLater reports whether this COMPOUND arrived under a minor version
+// that understands the NFSv4.1 additions to the protocol. Encoding one of them
+// into a reply to a v4.0 client would hand it a union arm it cannot decode.
+//
+// It reads both fields together so a caller cannot mistake an unset
+// MinorVersion for NFSv4.0.
+func (c *CompoundContext) IsV41OrLater() bool {
+	return c.MinorVersionAccepted && c.MinorVersion >= 1
 }
 
 // EffectiveClientID returns the client ID an open-owner or lock-owner should be
@@ -266,8 +306,9 @@ func (s *Stateid4) IsAnonymousStateid() bool {
 
 // IsReadBypassStateid reports whether the stateid is the READ-bypass special
 // stateid (seqid=0xFFFFFFFF, other=all-ones). Per RFC 7530 Section 9.1.4.3 it
-// bypasses share-mode and byte-range-lock checks and is valid ONLY on READ;
-// callers MUST reject it on write-family operations with NFS4ERR_BAD_STATEID.
+// bypasses share-mode and byte-range-lock checks on READ; on a write-family
+// operation RFC 7530 Section 16.36.4 makes it behave exactly like the
+// anonymous stateid.
 func (s *Stateid4) IsReadBypassStateid() bool {
 	return s.isReadBypass()
 }
@@ -342,6 +383,19 @@ func RequireCurrentFH(ctx *CompoundContext) uint32 {
 func RequireSavedFH(ctx *CompoundContext) uint32 {
 	if ctx.SavedFH == nil {
 		return NFS4ERR_RESTOREFH
+	}
+	return NFS4_OK
+}
+
+// RequireSavedFHOperand checks that the CompoundContext has a saved filehandle
+// for an operation that takes it as an operand (LINK, RENAME, CLONE).
+//
+// Returns NFS4_OK when SavedFH is set, NFS4ERR_NOFILEHANDLE otherwise.
+// NFS4ERR_RESTOREFH belongs to RESTOREFH alone and is not a valid status for
+// these operations.
+func RequireSavedFHOperand(ctx *CompoundContext) uint32 {
+	if ctx.SavedFH == nil {
+		return NFS4ERR_NOFILEHANDLE
 	}
 	return NFS4_OK
 }

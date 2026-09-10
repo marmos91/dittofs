@@ -62,6 +62,29 @@ type AuthContext struct {
 	// of this flag.
 	WriteAuthorizedByHandle bool
 
+	// TimestampAuthorizedByHandle indicates that the SMB open handle driving this
+	// operation was granted FILE_WRITE_ATTRIBUTES at CREATE time. When set, an
+	// explicit timestamp write (SetAttrs carrying only Atime / Mtime / Ctime /
+	// CreationTime) is authorized without POSIX ownership of the file: MS-FSA
+	// 2.1.5.15.2 ("FileBasicInformation") authorizes the write by that right on
+	// the open, where POSIX requires ownership (or root) for utimensat() with
+	// explicit times. Without this flag a non-owner holding a handle opened with
+	// exactly the right the protocol names is refused by the ownership gate.
+	//
+	// Deliberately NOT the same flag as WriteAuthorizedByHandle, which is derived
+	// from FILE_WRITE_DATA / FILE_APPEND_DATA: MS-FSCC 2.6 keeps the two rights
+	// distinct, so neither may confer the other.
+	//
+	// Scope is exactly the explicit-timestamp write — it does not relax chmod,
+	// chown, ACL replace, truncate or EA mutation — and it never overrides an
+	// explicit DENY ACE or either read-only share ceiling, both of which
+	// SetFileAttributes evaluates first.
+	//
+	// Set ONLY by SMB op handlers, derived from OpenFile.GrantedAccess. NFS is
+	// PATH-BASED — it has no handle and MUST leave this false, so POSIX timestamp
+	// semantics on the NFS path are unchanged.
+	TimestampAuthorizedByHandle bool
+
 	// LockClientID is the lock-layer client identifier used for lease exclusion.
 	// This must match the LockOwner.ClientID format used when acquiring leases.
 	// For SMB: "smb:<sessionID>", for NFS: the NFS client identifier.

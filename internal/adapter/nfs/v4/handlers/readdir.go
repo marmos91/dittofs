@@ -7,7 +7,6 @@ import (
 	"io"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -15,6 +14,25 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// maxcount bounds the READDIR4resok structure, which is the cookieverf
+// followed by the entry list; the operation status preceding it does not
+// count. An empty listing therefore already costs readDirMinResokSize bytes,
+// and a smaller budget cannot hold even that (RFC 7530 Section 16.24.4).
+const (
+	readDirCookieVerfSize = 8 // cookieverf
+	readDirListEndSize    = 8 // dirlist4 terminator (4) + eof flag (4)
+	readDirMinResokSize   = readDirCookieVerfSize + readDirListEndSize
+)
+
+// readDirError builds a status-only READDIR result.
+func readDirError(status uint32) *types.CompoundResult {
+	return &types.CompoundResult{
+		Status: status,
+		OpCode: types.OP_READDIR,
+		Data:   encodeStatusOnly(status),
+	}
+}
 
 // directoryMtimeVerifier generates an 8-byte cookie verifier from directory mtime.
 // Matches NFSv3 pattern in v3/handlers/readdir.go.
@@ -30,61 +48,57 @@ func directoryMtimeVerifier(mtime time.Time) uint64 {
 func (h *Handler) handleReadDir(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
-		return &types.CompoundResult{
-			Status: status,
-			OpCode: types.OP_READDIR,
-			Data:   encodeStatusOnly(status),
-		}
+		return readDirError(status)
 	}
 
 	// Read cookie (uint64)
 	cookie, err := xdr.DecodeUint64(reader)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
-			OpCode: types.OP_READDIR,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-		}
+		return readDirError(types.NFS4ERR_BADXDR)
 	}
 
 	// Read cookieverf (8 raw bytes)
 	var cookieVerf [8]byte
 	if _, err := io.ReadFull(reader, cookieVerf[:]); err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
-			OpCode: types.OP_READDIR,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-		}
+		return readDirError(types.NFS4ERR_BADXDR)
 	}
 
 	// Read dircount (uint32)
 	_, err = xdr.DecodeUint32(reader) // dircount (hint, not enforced)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
-			OpCode: types.OP_READDIR,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-		}
+		return readDirError(types.NFS4ERR_BADXDR)
 	}
 
 	// Read maxcount (uint32)
 	maxcount, err := xdr.DecodeUint32(reader)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
-			OpCode: types.OP_READDIR,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-		}
+		return readDirError(types.NFS4ERR_BADXDR)
 	}
 
 	// Read attr_request bitmap
 	attrRequest, err := attrs.DecodeBitmap4(reader)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
-			OpCode: types.OP_READDIR,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-		}
+		return readDirError(types.NFS4ERR_BADXDR)
+	}
+
+	// Cookies 0, 1 and 2 are reserved so a UNIX client can splice its own "."
+	// and ".." into the listing; the server never issues them as result
+	// cookies, so 1 or 2 arriving as an argument names a bookmark that cannot
+	// exist (RFC 7530 Section 16.24.4).
+	if cookie == 1 || cookie == 2 {
+		return readDirError(types.NFS4ERR_BAD_COOKIE)
+	}
+
+	if maxcount < readDirMinResokSize {
+		return readDirError(types.NFS4ERR_TOOSMALL)
+	}
+
+	// Per-entry attributes go through the same encoder GETATTR uses, which has
+	// no value to write for a settable-only attribute. fattr4_rdattr_error
+	// reports a failure to read one entry's attributes, not a request the
+	// server can never answer, so the whole operation fails instead.
+	if attrs.HasWriteOnlyAttr(attrRequest) {
+		return readDirError(types.NFS4ERR_INVAL)
 	}
 
 	// Check if current FH is a pseudo-fs handle
@@ -100,33 +114,19 @@ func (h *Handler) handleReadDir(ctx *types.CompoundContext, reader io.Reader) *t
 func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, cookieVerf [8]byte, maxcount uint32, attrRequest []uint32) *types.CompoundResult {
 	authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
 	if err != nil {
-		st := nfs4StatusForAuthError(err)
-		return &types.CompoundResult{
-			Status: st,
-			OpCode: types.OP_READDIR,
-			Data:   encodeStatusOnly(st),
-		}
+		return readDirError(nfs4StatusForAuthError(err))
 	}
 
 	metaSvc, err := getMetadataServiceForCtx(h)
 	if err != nil {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
-			OpCode: types.OP_READDIR,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
-		}
+		return readDirError(types.NFS4ERR_SERVERFAULT)
 	}
 
 	dirHandle := metadata.FileHandle(ctx.CurrentFH)
 
 	page, err := metaSvc.ReadDirectory(authCtx, dirHandle, cookie, maxcount)
 	if err != nil {
-		status := common.MapToNFS4(err)
-		return &types.CompoundResult{
-			Status: status,
-			OpCode: types.OP_READDIR,
-			Data:   encodeStatusOnly(status),
-		}
+		return readDirError(types.StatusForErr(err))
 	}
 
 	// Compute cookie verifier from directory mtime (RFC 7530 Section 16.24).
@@ -147,11 +147,7 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, cooki
 			"incoming_verf", fmt.Sprintf("0x%016x", incomingVerf),
 			"current_verf", fmt.Sprintf("0x%016x", currentVerifier),
 			"client", ctx.ClientAddr)
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_BAD_COOKIE,
-			OpCode: types.OP_READDIR,
-			Data:   encodeStatusOnly(types.NFS4ERR_BAD_COOKIE),
-		}
+		return readDirError(types.NFS4ERR_BAD_COOKIE)
 	}
 
 	// Debug logging for READDIR
@@ -176,8 +172,9 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, cooki
 	binary.BigEndian.PutUint64(verfBytes[:], currentVerifier)
 	buf.Write(verfBytes[:])
 
-	// Encode directory entries
-	encodedSize := uint32(buf.Len())
+	// Encode directory entries. The budget counts READDIR4resok bytes, of
+	// which the cookieverf is already written.
+	encodedSize := uint32(readDirCookieVerfSize)
 	entriesEncoded := 0
 	truncatedDueToSize := false
 	for _, entry := range page.Entries {
@@ -201,7 +198,7 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, cooki
 				ShareName: entryShareName,
 				FileAttr:  *entry.Attr,
 			}
-			_ = attrs.EncodeRealFileAttrs(&entryBuf, attrRequest, file, entry.Handle)
+			_ = attrs.EncodeRealFileAttrs(&entryBuf, attrRequest, ctx.MinorVersion, file, entry.Handle)
 		} else {
 			// No attrs available -- encode empty fattr4
 			_ = attrs.EncodeBitmap4(&entryBuf, nil)
@@ -210,13 +207,9 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, cooki
 
 		// Check maxcount limit
 		entrySize := uint32(entryBuf.Len())
-		if maxcount > 0 && encodedSize+entrySize+4 > maxcount { // +4 for eof bool
-			if encodedSize == uint32(12) { // status(4) + cookieverf(8)
-				return &types.CompoundResult{
-					Status: types.NFS4ERR_TOOSMALL,
-					OpCode: types.OP_READDIR,
-					Data:   encodeStatusOnly(types.NFS4ERR_TOOSMALL),
-				}
+		if encodedSize+entrySize+readDirListEndSize > maxcount {
+			if encodedSize == readDirCookieVerfSize { // not even one entry fits
+				return readDirError(types.NFS4ERR_TOOSMALL)
 			}
 			truncatedDueToSize = true
 			break
@@ -257,39 +250,14 @@ func (h *Handler) readDirPseudoFS(ctx *types.CompoundContext, cookie uint64, max
 	// Find the node by handle
 	node, ok := h.PseudoFS.LookupByHandle(ctx.CurrentFH)
 	if !ok {
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_STALE,
-			OpCode: types.OP_READDIR,
-			Data:   encodeStatusOnly(types.NFS4ERR_STALE),
-		}
+		return readDirError(types.NFS4ERR_STALE)
 	}
 
-	// List children (sorted by name)
+	// List children (sorted by name), which gives each one a stable cookie
+	// from its position. "." and ".." are not part of a READDIR listing, and
+	// cookies 0, 1 and 2 are reserved for the client to splice them in itself,
+	// so children start at cookie 3 (RFC 7530 Section 16.24.4).
 	children := h.PseudoFS.ListChildren(node)
-
-	// Build the ordered entry list with stable cookies. RFC 7530 directories
-	// are expected to include the "." (self) and ".." (parent) entries; some
-	// clients (and POSIX getdents-style readers) rely on them. They occupy the
-	// first two cookies so children start at cookie 3. The parent of the
-	// pseudo-fs root is itself (Parent points back to root), which yields the
-	// correct ".." == "." semantics at the top of the namespace.
-	parent := node.Parent
-	if parent == nil {
-		parent = node
-	}
-	type pseudoEntry struct {
-		cookie uint64
-		name   string
-		node   *pseudofs.PseudoNode
-	}
-	entries := make([]pseudoEntry, 0, len(children)+2)
-	entries = append(entries,
-		pseudoEntry{cookie: 1, name: ".", node: node},
-		pseudoEntry{cookie: 2, name: "..", node: parent},
-	)
-	for i, child := range children {
-		entries = append(entries, pseudoEntry{cookie: uint64(i + 3), name: child.Name, node: child})
-	}
 
 	// Build response
 	var buf bytes.Buffer
@@ -304,11 +272,15 @@ func (h *Handler) readDirPseudoFS(ctx *types.CompoundContext, cookie uint64, max
 	//   bool    eof;
 	//
 	// entry4: cookie (uint64) + name (XDR string) + attrs (fattr4)
-	encodedSize := uint32(buf.Len())
+	// The budget counts READDIR4resok bytes, of which the cookieverf is
+	// already written.
+	encodedSize := uint32(readDirCookieVerfSize)
 	allEntriesEncoded := true
-	for _, entry := range entries {
-		// Skip entries with cookie <= requested cookie (continuation support).
-		if entry.cookie <= cookie {
+	for i, child := range children {
+		entryCookie := uint64(i + 3)
+
+		// Skip entries already returned (continuation support).
+		if entryCookie <= cookie {
 			continue
 		}
 
@@ -319,24 +291,19 @@ func (h *Handler) readDirPseudoFS(ctx *types.CompoundContext, cookie uint64, max
 		_ = xdr.WriteUint32(&entryBuf, 1)
 
 		// cookie (uint64)
-		_ = xdr.WriteUint64(&entryBuf, entry.cookie)
+		_ = xdr.WriteUint64(&entryBuf, entryCookie)
 
 		// name (XDR string)
-		_ = xdr.WriteXDRString(&entryBuf, entry.name)
+		_ = xdr.WriteXDRString(&entryBuf, child.Name)
 
 		// attrs (fattr4)
-		_ = attrs.EncodePseudoFSAttrs(&entryBuf, attrRequest, entry.node)
+		_ = attrs.EncodePseudoFSAttrs(&entryBuf, attrRequest, ctx.MinorVersion, child)
 
 		// Check maxcount limit (approximate: include overhead for remaining entries)
 		entrySize := uint32(entryBuf.Len())
-		if maxcount > 0 && encodedSize+entrySize+4 > maxcount { // +4 for eof bool
-			// Would exceed maxcount; if no entries encoded yet, return NFS4ERR_TOOSMALL
-			if encodedSize == uint32(12) { // status(4) + cookieverf(8)
-				return &types.CompoundResult{
-					Status: types.NFS4ERR_TOOSMALL,
-					OpCode: types.OP_READDIR,
-					Data:   encodeStatusOnly(types.NFS4ERR_TOOSMALL),
-				}
+		if encodedSize+entrySize+readDirListEndSize > maxcount {
+			if encodedSize == readDirCookieVerfSize { // not even one entry fits
+				return readDirError(types.NFS4ERR_TOOSMALL)
 			}
 			allEntriesEncoded = false
 			break

@@ -16,7 +16,7 @@ import (
 // Moves/renames a file or directory from SavedFH (source dir) to CurrentFH (target dir).
 // Delegates to MetadataService.Move after cross-share and pseudo-fs validation.
 // Updates source and target directory entries and timestamps; returns change info for both dirs.
-// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_RESTOREFH, NFS4ERR_NOENT, NFS4ERR_XDEV, NFS4ERR_BADXDR.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_NOENT, NFS4ERR_XDEV, NFS4ERR_BADXDR.
 func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle (target directory)
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
@@ -28,7 +28,7 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 	}
 
 	// Require saved filehandle (source directory)
-	if status := types.RequireSavedFH(ctx); status != types.NFS4_OK {
+	if status := types.RequireSavedFHOperand(ctx); status != types.NFS4_OK {
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_RENAME,
@@ -128,7 +128,7 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 	// Get pre-operation attributes for both directories (for change_info4)
 	srcDirFile, err := metaSvc.GetFile(ctx.Context, srcDirHandle)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_RENAME,
@@ -139,7 +139,7 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 
 	tgtDirFile, err := metaSvc.GetFile(ctx.Context, tgtDirHandle)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_RENAME,
@@ -149,9 +149,9 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 	tgtBeforeCtime := uint64(tgtDirFile.Ctime.UnixNano())
 
 	// Perform the rename: Move(fromDir, fromName, toDir, toName)
-	_, renameErr := metaSvc.Move(authCtx, srcDirHandle, oldName, tgtDirHandle, newName)
+	clobbered, _, renameErr := metaSvc.Move(authCtx, srcDirHandle, oldName, tgtDirHandle, newName)
 	if renameErr != nil {
-		status := common.MapToNFS4(renameErr)
+		status := types.StatusForErr(renameErr)
 		logger.Debug("NFSv4 RENAME failed",
 			"oldname", oldName,
 			"newname", newName,
@@ -163,6 +163,16 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 			OpCode: types.OP_RENAME,
 			Data:   encodeStatusOnly(status),
 		}
+	}
+
+	// Free the bytes of whatever this rename renamed over. The rename is
+	// already committed and the client has its answer, so a failure to release
+	// them is logged rather than surfaced.
+	if relErr := common.ReleaseClobberedPayload(ctx.Context, h.Registry, tgtDirHandle, clobbered); relErr != nil {
+		logger.Warn("NFSv4 RENAME: failed to delete clobbered content",
+			"newname", newName,
+			"payload_id", clobbered.PayloadID,
+			"error", relErr)
 	}
 
 	// Get post-operation attributes for both directories

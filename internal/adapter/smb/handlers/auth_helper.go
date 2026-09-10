@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/sid"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -94,11 +95,10 @@ func BuildAuthContext(ctx *SMBHandlerContext) (*metadata.AuthContext, error) {
 	return authCtx, nil
 }
 
-// getUserIdentity returns the UID/GID for a user.
-// UID comes from user.UID field.
-// GID comes from the user's group membership (lowest GID for root-level access).
-// Falls back to defaults if not configured.
-func getUserIdentity(user *models.User) (uid, gid uint32) {
+// uidGIDFromSessionUser returns the UID/GID a *models.User-derived identity
+// carries. UID comes from user.UID; GID comes from the user's group membership
+// (first group with a GID). Falls back to defaults if not configured.
+func uidGIDFromSessionUser(user *models.User) (uid, gid uint32) {
 	uid = defaultUID
 	gid = defaultGID
 
@@ -184,7 +184,7 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metada
 // is treated as immutable — consumers only read it, so it is safe to share via the
 // per-session cache.
 func buildIdentity(ctx *SMBHandlerContext, user *models.User) *metadata.Identity {
-	uid, gid := getUserIdentity(user)
+	uid, gid := uidGIDFromSessionUser(user)
 	identity := &metadata.Identity{
 		UID:      &uid,
 		GID:      &gid,
@@ -260,19 +260,19 @@ func mergeImplicitAuthSIDs(userGroupSIDs []string) []string {
 }
 
 // primeAuthContextFromOpenFile hand-offs the open's recorded session/tree
-// identity onto ctx BEFORE BuildAuthContext is called (refs #603). Follow-up
-// operations CREATE / READ / WRITE / QUERY_DIRECTORY (the four current
-// callers of this helper) arrive keyed only by FileID — the SMB2 dispatcher
-// has no user state to prefill ctx.User with. Without this hand-off
-// BuildAuthContext takes the ctx.User==nil arm and synthesises an
+// identity onto ctx BEFORE BuildAuthContext is called (refs #603). A
+// handle-based request carries its SessionID and TreeID in the SMB2 header,
+// but no user state for the dispatcher to prefill ctx.User from. Without this
+// hand-off BuildAuthContext takes the ctx.User==nil arm and synthesises an
 // unprivileged nobody (65534) identity instead of the authenticated user's
 // UID, causing follow-up ops to be authorized as nobody rather than the
 // real opener.
 //
-// We also realign ctx.TreeID / ctx.SessionID onto the IDs the open was
-// created against. Downstream gates (notably treeHasAccessBasedEnumeration
-// in QueryDirectory) read ctx.TreeID directly; if the dispatcher left a
-// stale or zero TreeID on ctx, ABE would be decided against the wrong tree.
+// It also resolves the open's tree onto ctx.ShareName / ctx.Permission, which
+// downstream gates consult — treeHasAccessBasedEnumeration in QueryDirectory
+// decides ABE from the tree ctx.TreeID names. The ctx.TreeID and ctx.SessionID
+// assignments themselves are no-ops by the time they run, since the ownership
+// check below has already established that they equal the open's.
 //
 // The sess.User nil-guard on the User assignment is load-bearing: GetSession(0)
 // returns the manager's seeded anonymous pre-auth session with User=nil, and
@@ -282,8 +282,43 @@ func mergeImplicitAuthSIDs(userGroupSIDs []string) []string {
 // sessions are created with User=nil and IsGuest=true (see
 // session.NewSession), and the BuildAuthContext guest arm is what maps them
 // to UID/GID 65534 instead of root.
-func (h *Handler) primeAuthContextFromOpenFile(ctx *SMBHandlerContext, openFile *OpenFile) {
+//
+// It refuses a handle the requester does not own (openFileBelongsToRequest),
+// returning StatusFileClosed without touching ctx; callers must surface that
+// status rather than proceed, because everything primed here is the located
+// handle's identity — priming from a foreign handle runs the request as that
+// handle's user, against its share, with its tree permission. StatusFileClosed
+// is what these handlers already return for an unknown FileId, so a handle
+// belonging to somebody else stays indistinguishable from a closed one.
+//
+// ponytail: one gate here covers every handle-based command, since they all
+// adopt the handle's identity through this helper. The ceiling is that Go does
+// not force a caller to consume a non-error return, so a new call site can
+// prime unchecked; a dispatch-level gate would close that but cannot replace
+// this one, because COPYCHUNK resolves its source handle from a resume key in
+// the handler body rather than from a FileId in the request header.
+func (h *Handler) primeAuthContextFromOpenFile(ctx *SMBHandlerContext, openFile *OpenFile) types.Status {
+	if !openFileBelongsToRequest(ctx, openFile) {
+		logger.Debug("Handle does not belong to the request's tree/session",
+			"handleTreeID", openFile.TreeID, "reqTreeID", ctx.TreeID,
+			"handleSessionID", openFile.SessionID, "reqSessionID", ctx.SessionID)
+		return types.StatusFileClosed
+	}
 	h.primeAuthContext(ctx, openFile.TreeID, openFile.SessionID)
+	return types.StatusSuccess
+}
+
+// openFileBelongsToRequest reports whether openFile was opened on the tree and
+// session this request arrived on.
+//
+// MS-SMB2 §3.3.5.2.5 resolves a FileId against Session.OpenTable: the handle
+// must belong to the requesting session, not merely exist somewhere on the
+// server. Opens live in one process-wide table keyed by the FileId alone, so
+// GetOpenFile answers "does this handle exist" and this answers "may this
+// requester use it". smbtorture smb2.tcon deliberately mis-sets the wire-level
+// TreeID/SessionID and expects an error here (Samba returns FILE_CLOSED).
+func openFileBelongsToRequest(ctx *SMBHandlerContext, openFile *OpenFile) bool {
+	return openFile.SessionID == ctx.SessionID && openFile.TreeID == ctx.TreeID
 }
 
 // primeAuthContext is the same as primeAuthContextFromOpenFile but takes raw

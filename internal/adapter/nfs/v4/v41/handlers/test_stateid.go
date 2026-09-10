@@ -35,7 +35,7 @@ func HandleTestStateid(
 	}
 
 	// Delegate to StateManager for per-stateid validation
-	statusCodes := d.StateManager.TestStateids(args.Stateids)
+	statusCodes := d.StateManager.TestStateids(args.Stateids, ctx.SessionClientID)
 
 	// Encode response with per-stateid status codes
 	res := &types.TestStateidRes{

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
 
@@ -90,7 +91,7 @@ func (h *Handler) handleSetClientID(ctx *types.CompoundContext, reader io.Reader
 		return &types.CompoundResult{
 			Status: nfsStatus,
 			OpCode: types.OP_SETCLIENTID,
-			Data:   encodeStatusOnly(nfsStatus),
+			Data:   encodeSetClientIDError(nfsStatus),
 		}
 	}
 
@@ -105,6 +106,29 @@ func (h *Handler) handleSetClientID(ctx *types.CompoundContext, reader io.Reader
 		OpCode: types.OP_SETCLIENTID,
 		Data:   buf.Bytes(),
 	}
+}
+
+// encodeSetClientIDError encodes a failed SETCLIENTID4res. The result is a
+// union over the status, and its NFS4ERR_CLID_INUSE arm carries a clientaddr4
+// (RFC 7530 Section 16.33.3) -- two XDR strings the default arm does not have.
+// A status-only reply for that one status is therefore short on the wire, and
+// the client's decode runs off the end of the whole COMPOUND rather than
+// reading a CLID_INUSE it could act on.
+//
+// ponytail: the address reported back is empty, as Linux nfsd's is. It names
+// the client already holding the id, which SETCLIENTID has no obligation to
+// track; fill it in only if a client turns up that does something with it.
+func encodeSetClientIDError(status uint32) []byte {
+	if status != types.NFS4ERR_CLID_INUSE {
+		return encodeStatusOnly(status)
+	}
+
+	// The status, then client_using as two empty strings: an XDR string is a
+	// length followed by that many bytes, so an empty one is a zero length and
+	// nothing else, and all twelve bytes are zero but the status.
+	b := make([]byte, 12)
+	binary.BigEndian.PutUint32(b, status)
+	return b
 }
 
 // handleSetClientIDConfirm implements the SETCLIENTID_CONFIRM operation (RFC 7530 Section 16.34).

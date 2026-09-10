@@ -1,7 +1,6 @@
 package storetest
 
 import (
-	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -23,7 +22,6 @@ import (
 func runStoreSurfaceTests(t *testing.T, factory StoreFactory) {
 	t.Run("DeleteShare", func(t *testing.T) { testDeleteShare(t, factory) })
 	t.Run("DeleteShareViaTransaction", func(t *testing.T) { testDeleteShareViaTransaction(t, factory) })
-	t.Run("DuplicateCreateShare", func(t *testing.T) { testDuplicateCreateShare(t, factory) })
 	t.Run("GetUsedBytesForShare", func(t *testing.T) { testGetUsedBytesForShare(t, factory) })
 	t.Run("GetQuotaUsage", func(t *testing.T) { testGetQuotaUsage(t, factory) })
 	t.Run("GetQuotaUsageChown", func(t *testing.T) { testGetQuotaUsageChown(t, factory) })
@@ -31,10 +29,12 @@ func runStoreSurfaceTests(t *testing.T, factory StoreFactory) {
 	t.Run("GetFileByPayloadID", func(t *testing.T) { testGetFileByPayloadID(t, factory) })
 	t.Run("FilesystemMetaStatsCaps", func(t *testing.T) { testFilesystemMetaStatsCaps(t, factory) })
 	t.Run("ServerConfigRoundTrip", func(t *testing.T) { testServerConfigRoundTrip(t, factory) })
+	t.Run("IdempotencyTokenRoundTrip", func(t *testing.T) { testIdempotencyTokenRoundTrip(t, factory) })
 	t.Run("Healthcheck", func(t *testing.T) { testHealthcheck(t, factory) })
 	t.Run("Pagination", func(t *testing.T) { testListChildrenPagination(t, factory) })
 	t.Run("DeleteSharePurgesUsedBytesAndObjectIndex", func(t *testing.T) { testDeleteSharePurgesCounters(t, factory) })
 	t.Run("ListChildrenCursorAfterDeletedEntry", func(t *testing.T) { testListChildrenCursorAfterDelete(t, factory) })
+	t.Run("UnlinkReleasesUsedBytes", func(t *testing.T) { testUnlinkReleasesUsedBytes(t, factory) })
 }
 
 func testDeleteSharePurgesCounters(t *testing.T, factory StoreFactory) {
@@ -100,7 +100,7 @@ func testListChildrenCursorAfterDelete(t *testing.T, factory StoreFactory) {
 	}
 
 	// Page 1: limit=2, cursor="". Returns ["a","b"], nextCursor="b".
-	page1, cur1, err := store.ListChildren(ctx, rootHandle, "", 2)
+	page1, cur1, err := store.ListChildren(ctx, rootHandle, "", 2, metadata.WithAttrs)
 	if err != nil {
 		t.Fatalf("ListChildren page1: %v", err)
 	}
@@ -124,7 +124,7 @@ func testListChildrenCursorAfterDelete(t *testing.T, factory StoreFactory) {
 	}
 
 	// Page 2: cursor="b" but "b" no longer exists. Must return ["c","d"], not restart from "a".
-	page2, _, err := store.ListChildren(ctx, rootHandle, cur1, 2)
+	page2, _, err := store.ListChildren(ctx, rootHandle, cur1, 2, metadata.WithAttrs)
 	if err != nil {
 		t.Fatalf("ListChildren page2: %v", err)
 	}
@@ -139,6 +139,96 @@ func testListChildrenCursorAfterDelete(t *testing.T, factory StoreFactory) {
 	if page2[0].Name != "c" {
 		t.Errorf("page2[0] = %q, want 'c' — cursor must resume after the deleted entry's sorted position", page2[0].Name)
 	}
+}
+
+// testUnlinkReleasesUsedBytes pins the per-file half of usage accounting: a
+// share's used bytes must fall when a file is unlinked, not only when the whole
+// share is deleted.
+//
+// Unlinking the last name for a regular file does NOT remove its inode — the
+// row is retained with nlink=0 so fstat(2) on a still-open descriptor keeps
+// working — so the usage counters cannot key off the inode's existence. They
+// key off its link count: a regular inode contributes its size and one file to
+// the share and to its owner's identity buckets exactly while nlink > 0.
+// Dropping one of several hard links moves nothing; dropping the last one
+// releases everything the inode held.
+func testUnlinkReleasesUsedBytes(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const shareName = "/unlink-usage"
+	const uid, gid = uint32(1001), uint32(2002)
+	rootHandle := createTestShare(t, store, shareName)
+
+	assertShareUsed := func(what string, want int64) {
+		t.Helper()
+		got, err := store.GetUsedBytesForShare(ctx, shareName)
+		if err != nil {
+			t.Fatalf("GetUsedBytesForShare(%q) failed after %s: %v", shareName, what, err)
+		}
+		if got != want {
+			t.Fatalf("GetUsedBytesForShare(%q) = %d, want %d after %s", shareName, got, want, what)
+		}
+	}
+
+	handle := createTestFileOwned(t, store, shareName, rootHandle, "big.bin", uid, gid, 8192)
+	assertShareUsed("creating big.bin", 8192)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 8192, 1)
+
+	// A second hard link adds a name, not bytes: one inode, still 8192.
+	if err := store.SetChild(ctx, rootHandle, "link.bin", handle); err != nil {
+		t.Fatalf("SetChild(link.bin) failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 2); err != nil {
+		t.Fatalf("SetLinkCount(2) failed: %v", err)
+	}
+	assertShareUsed("hard-linking big.bin", 8192)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 8192, 1)
+
+	// Dropping one of two names leaves the inode reachable, so it keeps its
+	// bytes.
+	if err := store.DeleteChild(ctx, rootHandle, "link.bin"); err != nil {
+		t.Fatalf("DeleteChild(link.bin) failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 1); err != nil {
+		t.Fatalf("SetLinkCount(1) failed: %v", err)
+	}
+	assertShareUsed("unlinking one of two names", 8192)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 8192, 1)
+
+	// Dropping the last name releases the bytes, even though the inode itself
+	// survives for POSIX open-but-unlinked semantics.
+	if err := store.DeleteChild(ctx, rootHandle, "big.bin"); err != nil {
+		t.Fatalf("DeleteChild(big.bin) failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 0); err != nil {
+		t.Fatalf("SetLinkCount(0) failed: %v", err)
+	}
+	if _, err := store.GetFile(ctx, handle); err != nil {
+		t.Fatalf("GetFile after last unlink: %v — the inode must survive for open descriptors", err)
+	}
+	assertShareUsed("unlinking the last name", 0)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 0, 0)
+	wantUsage(t, store, shareName, metadata.QuotaScopeGroup, gid, 0, 0)
+
+	// The on-demand repair rebuilds the counters from the stored rows, so it
+	// must read the retained inode the same way the transactional deltas did.
+	// A recompute that counted it would put the bytes back — and, for the
+	// backends that seed their counters the same way, so would a restart.
+	if err := store.RecomputeUsage(ctx); err != nil {
+		t.Fatalf("RecomputeUsage() failed: %v", err)
+	}
+	assertShareUsed("recomputing usage", 0)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 0, 0)
+
+	// And it must agree with the live counter for files that are still linked.
+	createTestFileOwned(t, store, shareName, rootHandle, "kept.bin", uid, gid, 4096)
+	assertShareUsed("creating kept.bin", 4096)
+	if err := store.RecomputeUsage(ctx); err != nil {
+		t.Fatalf("RecomputeUsage() after kept.bin failed: %v", err)
+	}
+	assertShareUsed("recomputing usage with a live file", 4096)
+	wantUsage(t, store, shareName, metadata.QuotaScopeUser, uid, 4096, 1)
 }
 
 func namesOf(entries []metadata.DirEntry) []string {
@@ -215,7 +305,7 @@ func testDeleteShare(t *testing.T, factory StoreFactory) {
 	// Recreating a share with the same name must succeed: the orphaned root
 	// inode must not keep the unique root-path index occupied.
 	if root2 := createTestShare(t, store, shareName); root2 == nil {
-		t.Fatal("re-CreateShare after DeleteShare returned nil root handle")
+		t.Fatal("re-creating the share after DeleteShare returned nil root handle")
 	}
 
 	// Deleting a share that does not exist returns not-found.
@@ -259,29 +349,7 @@ func testDeleteShareViaTransaction(t *testing.T, factory StoreFactory) {
 
 	// Same-name recreation must succeed (no stale root inode in the index).
 	if root2 := createTestShare(t, store, shareName); root2 == nil {
-		t.Fatal("re-CreateShare after tx DeleteShare returned nil root handle")
-	}
-}
-
-// testDuplicateCreateShare verifies the store.go:154 clause "Returns
-// ErrAlreadyExists if share already exists" across backends. All three guard
-// this individually; this is the missing shared-suite assertion.
-func testDuplicateCreateShare(t *testing.T, factory StoreFactory) {
-	store := factory(t)
-	ctx := t.Context()
-
-	const shareName = "/dup-share"
-	if err := store.CreateShare(ctx, &metadata.Share{Name: shareName}); err != nil {
-		t.Fatalf("first CreateShare() failed: %v", err)
-	}
-
-	err := store.CreateShare(ctx, &metadata.Share{Name: shareName})
-	if err == nil {
-		t.Fatal("duplicate CreateShare() should fail")
-	}
-	var se *metadata.StoreError
-	if !errors.As(err, &se) || se.Code != metadata.ErrAlreadyExists {
-		t.Fatalf("duplicate CreateShare: got %v, want StoreError{Code: ErrAlreadyExists}", err)
+		t.Fatal("re-creating the share after tx DeleteShare returned nil root handle")
 	}
 }
 
@@ -575,11 +643,11 @@ func assertPayloadBlocks(t *testing.T, variant string, got *metadata.File, want 
 // testFilesystemMetaStatsCaps verifies the filesystem metadata / statistics /
 // capabilities surfaces.
 //
-// Note: GetFilesystemMeta does NOT round-trip a prior PutFilesystemMeta on the
-// memory backend (memory always recomputes from store.capabilities + live
-// statistics rather than reading back a persisted blob), so the cross-backend
-// contract asserted here is the one every backend honors: GetFilesystemMeta
-// returns a populated struct, and SetFilesystemCapabilities is observable via
+// Note: only the capabilities half of FilesystemMeta round-trips on every
+// backend — memory and badger recompute statistics on demand rather than
+// reading back a persisted blob — so the cross-backend contract asserted here
+// is that capabilities written by PutFilesystemMeta come back out of
+// GetFilesystemMeta, and that SetFilesystemCapabilities is observable via
 // GetFilesystemCapabilities. Both capabilities and statistics resolve against
 // a live root handle.
 func testFilesystemMetaStatsCaps(t *testing.T, factory StoreFactory) {
@@ -600,6 +668,26 @@ func testFilesystemMetaStatsCaps(t *testing.T, factory StoreFactory) {
 	}
 	if meta.Capabilities.MaxFilenameLen == 0 {
 		t.Error("GetFilesystemMeta() Capabilities.MaxFilenameLen = 0, want a sane non-zero limit")
+	}
+
+	// Capabilities written through PutFilesystemMeta must come back out of
+	// GetFilesystemMeta. The value is deliberately one no backend's configured
+	// defaults produce, so a store that cannot read its own metadata and
+	// answers with those defaults instead fails here rather than passing on
+	// the strength of a plausible-looking struct.
+	stored := *meta
+	stored.Capabilities.MaxFilenameLen = meta.Capabilities.MaxFilenameLen + 41
+	if err := store.PutFilesystemMeta(ctx, shareName, &stored); err != nil {
+		t.Fatalf("PutFilesystemMeta() failed: %v", err)
+	}
+
+	roundTripped, err := store.GetFilesystemMeta(ctx, shareName)
+	if err != nil {
+		t.Fatalf("GetFilesystemMeta() after Put failed: %v", err)
+	}
+	if roundTripped.Capabilities.MaxFilenameLen != stored.Capabilities.MaxFilenameLen {
+		t.Errorf("GetFilesystemMeta() after Put: Capabilities.MaxFilenameLen = %d, want %d",
+			roundTripped.Capabilities.MaxFilenameLen, stored.Capabilities.MaxFilenameLen)
 	}
 
 	// Statistics resolve against the root handle and report a non-zero total.
@@ -757,7 +845,7 @@ func testListChildrenPagination(t *testing.T, factory StoreFactory) {
 		if pages > total+5 {
 			t.Fatalf("pagination did not terminate after %d pages — cursor likely not advancing", pages)
 		}
-		entries, next, err := store.ListChildren(ctx, rootHandle, cursor, pageSize)
+		entries, next, err := store.ListChildren(ctx, rootHandle, cursor, pageSize, metadata.WithAttrs)
 		if err != nil {
 			t.Fatalf("ListChildren(cursor=%q) failed: %v", cursor, err)
 		}
@@ -798,7 +886,7 @@ func testListChildrenPagination(t *testing.T, factory StoreFactory) {
 
 	// limit==0 selects the default page size, which is large enough to return
 	// every child in a single page (no continuation cursor).
-	entries, next, err := store.ListChildren(ctx, rootHandle, "", 0)
+	entries, next, err := store.ListChildren(ctx, rootHandle, "", 0, metadata.WithAttrs)
 	if err != nil {
 		t.Fatalf("ListChildren(limit=0) failed: %v", err)
 	}
@@ -833,4 +921,91 @@ func testGetQuotaUsagePerShare(t *testing.T, factory StoreFactory) {
 
 	// An unknown share reports no usage for a known identity.
 	wantUsage(t, store, "/no-such-share", metadata.QuotaScopeUser, 1000, 0, 0)
+}
+
+// testIdempotencyTokenRoundTrip pins FileAttr.IdempotencyToken through both
+// inode write paths. The token is the create verifier an exclusive CREATE/OPEN
+// carries: a retransmitted request is recognised as a replay by comparing the
+// client's verifier against the stored one, so a backend that reads it back as
+// zero answers EEXIST to every retry instead.
+//
+// The value deliberately sits above 2^63. The field is uint64 and the SQL
+// column is signed, so a backend that clamps rather than carrying the bit
+// pattern loses exactly the high half of the space and still passes a
+// small-value check.
+//
+// Both paths are exercised because the insert and the update are separate
+// statements: wiring a column into one and forgetting the other is the failure
+// this guards.
+func testIdempotencyTokenRoundTrip(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const shareName = "/idem"
+	const want = uint64(0xdeadbeefcafef00d)
+	rootHandle := createTestShare(t, store, shareName)
+
+	// Update path: an existing inode takes the token on a later write.
+	handle := createTestFile(t, store, shareName, rootHandle, "updated.dat", 0o644)
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() failed: %v", err)
+	}
+	file.IdempotencyToken = want
+	if err := store.UpdateAttrs(ctx, file); err != nil {
+		t.Fatalf("UpdateAttrs() with IdempotencyToken failed: %v", err)
+	}
+	got, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() after UpdateAttrs failed: %v", err)
+	}
+	if got.IdempotencyToken != want {
+		t.Errorf("IdempotencyToken after UpdateAttrs = %#x, want %#x — the token does not survive the update path, so an exclusive-create retry compares against the wrong value",
+			got.IdempotencyToken, want)
+	}
+
+	// Insert path: the token must be on the inode's very FIRST write, so the
+	// insert statement carries the column. Going through createTestFile would
+	// insert the row with a zero token and then set it, which is the update
+	// path again and leaves the insert's column list untested.
+	insertPath := childFullPath(t, store, rootHandle, "created.dat")
+	insertHandle, err := store.GenerateHandle(ctx, shareName, insertPath)
+	if err != nil {
+		t.Fatalf("GenerateHandle() failed: %v", err)
+	}
+	_, insertID, err := metadata.DecodeFileHandle(insertHandle)
+	if err != nil {
+		t.Fatalf("DecodeFileHandle() failed: %v", err)
+	}
+	if err := store.UpdateAttrs(ctx, &metadata.File{
+		ShareName: shareName,
+		Path:      insertPath,
+		ID:        insertID,
+		FileAttr: metadata.FileAttr{
+			Type:             metadata.FileTypeRegular,
+			Mode:             0o644,
+			UID:              1000,
+			GID:              1000,
+			IdempotencyToken: want,
+		},
+	}); err != nil {
+		t.Fatalf("UpdateAttrs() inserting with a token failed: %v", err)
+	}
+	if got, err = store.GetFile(ctx, insertHandle); err != nil {
+		t.Fatalf("GetFile() after insert failed: %v", err)
+	} else if got.IdempotencyToken != want {
+		t.Errorf("IdempotencyToken after insert = %#x, want %#x — the insert statement does not carry the column",
+			got.IdempotencyToken, want)
+	}
+
+	// A file that never carried a token still reads back zero, so the absence
+	// of a verifier stays distinguishable from a stored one.
+	untouched := createTestFile(t, store, shareName, rootHandle, "plain.dat", 0o644)
+	plain, err := store.GetFile(ctx, untouched)
+	if err != nil {
+		t.Fatalf("GetFile() failed: %v", err)
+	}
+	if plain.IdempotencyToken != 0 {
+		t.Errorf("IdempotencyToken on an untouched file = %#x, want 0", plain.IdempotencyToken)
+	}
 }

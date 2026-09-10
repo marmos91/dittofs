@@ -13,6 +13,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sharecache"
 
@@ -21,11 +22,16 @@ import (
 
 // PostgresMetadataStore implements the metadata.Store interface using PostgreSQL
 type PostgresMetadataStore struct {
-	// Core carries the executor and dialect the shared SQL bodies run on, and
-	// promotes those bodies onto this type so they exist once for both
-	// backends. Embedded by pointer: the transaction embeds its own Core over
-	// the open pgx.Tx, and nothing is shared between the two but the dialect.
-	*storesql.Core
+	// PoolPath carries the executor and dialect the shared SQL bodies run on,
+	// and promotes those bodies onto this type so they exist once for both
+	// backends. It holds the Core the transaction-free calls run against; the
+	// transaction embeds its own Core over the open pgx.Tx, and nothing is
+	// shared between the two but the dialect.
+	//
+	// Embedded here rather than embedding Core directly so the multi-statement
+	// writes PoolPath declares shadow their single-statement Core namesakes;
+	// see its type doc for why the depth matters.
+	storesql.PoolPath
 
 	// pool is the PostgreSQL connection pool
 	pool *pgxpool.Pool
@@ -57,9 +63,6 @@ type PostgresMetadataStore struct {
 
 	// cancel cancels the store context
 	cancel context.CancelFunc
-
-	// lockStore holds persisted lock data for NLM/SMB lock persistence.
-	lockStore *postgresLockStore
 
 	// clientStore holds NSM client registration persistence.
 	clientStore *storesql.ClientStore
@@ -150,12 +153,17 @@ func NewPostgresMetadataStore(
 		cancel:       cancel,
 		quota:        basestore.NewQuotaCache(),
 	}
-	// The shared SQL bodies run on the pool for store-level calls.
-	store.Core = &storesql.Core{X: poolExecer{s: store}, D: pgDialect, Caps: store.currentCapabilities}
+	// The shared SQL bodies run on the pool for store-level calls. T is the
+	// store itself, so the writes that span several statements can open a
+	// transaction rather than autocommitting piecemeal on the pool.
+	store.PoolPath = storesql.PoolPath{
+		Core:       &storesql.Core{X: poolExecer{s: store}, D: pgDialect, Caps: store.currentCapabilities, Log: log},
+		T:          store,
+		ShareCache: &store.shareCache,
+	}
 
 	// The substores derive only from pool, which is never reassigned, so bind
 	// them once here.
-	store.lockStore = newPostgresLockStore(poolExecer{s: store})
 	store.clientStore = &storesql.ClientStore{X: poolExecer{s: store}, D: pgDialect}
 	store.durableStore = newPostgresDurableStore(store)
 	store.recoveryStore = &storesql.RecoveryStore{X: poolExecer{s: store}, D: pgDialect}
@@ -229,7 +237,7 @@ func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error 
 // never user input.
 func (s *PostgresMetadataStore) seedUsageByColumn(ctx context.Context, col string, scope metadata.QuotaScope, out map[basestore.QuotaKey]*metadata.UsageStat) error {
 	query := fmt.Sprintf(
-		`SELECT share_name, %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE file_type = $1 GROUP BY share_name, %s`,
+		`SELECT share_name, %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE file_type = $1 AND nlink > 0 GROUP BY share_name, %s`,
 		col, col,
 	)
 	rows, err := s.pool.Query(ctx, query, int(metadata.FileTypeRegular))
@@ -397,4 +405,37 @@ func capabilityArgs(caps metadata.FilesystemCapabilities) []any {
 func initializeFilesystemCapabilities(ctx context.Context, pool *pgxpool.Pool, caps metadata.FilesystemCapabilities) error {
 	_, err := pool.Exec(ctx, upsertCapabilitiesSQL, capabilityArgs(caps)...)
 	return err
+}
+
+// RecomputeUsage rebuilds the usage counters from the inodes table, discarding
+// whatever the in-memory buckets hold. Same aggregate the store runs at open,
+// re-run on demand.
+func (s *PostgresMetadataStore) RecomputeUsage(ctx context.Context) error {
+	// The aggregate runs with no lock held, so arm the cache to record what
+	// commits during it — otherwise a transaction landing between the query and
+	// the seed is scanned out and then overwritten.
+	s.quotaMu.Lock()
+	s.quota.BeginRebuild()
+	s.quotaMu.Unlock()
+	return s.initUsedBytesCounter(ctx)
+}
+
+// metadata.Store does not embed lock.LockStore: the store's lock surface is
+// reached through a runtime type assertion, which skips lock initialisation
+// silently rather than failing when the store no longer satisfies it. This
+// states the requirement where the compiler can see it.
+var _ lock.LockStore = (*PostgresMetadataStore)(nil)
+
+// PutFileChunkRefsCallCount reports how many writes actually persisted
+// file_block_refs rows — the delta upserted or deleted at least one row — since
+// the store opened. Test-only: it proves that attr-only writes and no-op
+// re-projections of an unchanged manifest perform zero manifest writes.
+func (s *PostgresMetadataStore) PutFileChunkRefsCallCount() int64 { return s.manifestWrites.Load() }
+
+// PutFileChunkRefsManifestRowsScanned reports how many stored file_block_refs
+// rows the manifest diff has read since the store opened. Test-only: it proves
+// a scoped commit's read cost tracks the changed offsets, not the file's total
+// chunk count.
+func (s *PostgresMetadataStore) PutFileChunkRefsManifestRowsScanned() int64 {
+	return s.manifestRowsScanned.Load()
 }

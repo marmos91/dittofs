@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -34,6 +35,11 @@ type Core struct {
 	// replaces them at runtime, and a copy taken at construction would go
 	// stale. Never nil.
 	Caps func() metadata.FilesystemCapabilities
+	// Log records what a shared body did when the operation is one an
+	// operator needs to see after the fact — a root inode rewritten to match
+	// a changed config, say. Each dialect passes its own component-tagged
+	// logger, so the backend stays identifiable in the output. Never nil.
+	Log *slog.Logger
 	// Quota accumulates the usage changes a write owes the store's quota
 	// cache, which applies them once the transaction commits. Set only on a
 	// transaction's Core; the pool's Core leaves it nil. Every method that
@@ -191,7 +197,18 @@ func (c *Core) DecrementRefCountAndReap(ctx context.Context, id string) (uint32,
 // data. The statement deliberately has no LIMIT — all matching rows are bumped
 // uniformly, so accounting stays correct regardless of which row a later
 // decrement targets. Only ref_count is touched; chunk state never is.
-func (c *Core) AddRef(ctx context.Context, hash block.ContentHash) error {
+// AddRef implements the block.FileChunkStore signature, which carries a
+// payloadID and a ChunkRef for future GC traceability. This family records a
+// ref count only, so both are deliberately ignored rather than stored.
+//
+// It exists so the store and the transaction inherit the interface method by
+// promotion. Each backend previously declared its own two-line adapter around
+// addRefByHash for exactly this, four copies of it in total.
+func (c *Core) AddRef(ctx context.Context, hash block.ContentHash, _ string, _ block.ChunkRef) error {
+	return c.addRefByHash(ctx, hash)
+}
+
+func (c *Core) addRefByHash(ctx context.Context, hash block.ContentHash) error {
 	result, err := c.X.Exec(ctx, c.D.Chunks().AddRef, hash.String())
 	if err != nil {
 		return fmt.Errorf("add ref: %w", err)

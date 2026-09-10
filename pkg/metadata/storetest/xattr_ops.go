@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"sort"
+	"sync"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -34,6 +36,8 @@ func runXattrOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("MergedListInlinePlusStream", func(t *testing.T) { testXattrMergedList(t, factory) })
 	t.Run("StreamBackedGet", func(t *testing.T) { testXattrStreamBackedGet(t, factory) })
 	t.Run("StreamWinsPrecedence", func(t *testing.T) { testXattrStreamPrecedence(t, factory) })
+	t.Run("ConcurrentDistinctNames", func(t *testing.T) { testXattrConcurrentDistinctNames(t, factory) })
+	t.Run("TransactionIsNotATransactor", func(t *testing.T) { testXattrTransactionIsNotATransactor(t, factory) })
 }
 
 // testReader builds a StreamContentReader serving a fixed value for the given
@@ -319,4 +323,107 @@ func equalNames(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+// testXattrConcurrentDistinctNames pins that a SetXattr which reported success
+// is still readable afterwards, when several writers name *different* xattrs on
+// one file at the same time.
+//
+// The resolver writes the whole EA map: it loads the file, applies the mutation
+// to FileAttr.EAs and persists the file. Two writers that both load before
+// either persists each hold a map missing the other's name, so the second write
+// reinstates the pre-image and silently drops the first — the write returned nil
+// and the value is gone.
+//
+// Asserting on "returned nil implies readable" rather than "all names present"
+// keeps the case mechanism-independent: a backend is free to refuse a colliding
+// write (sqlite's BUSY, a serialization failure), and the caller can retry that.
+// What no backend may do is claim success and lose the value.
+//
+// The case discriminates on the persistent backends, which lose 13-15 of the 16
+// writes when the pair is not atomic. It does not discriminate on the in-memory
+// store: its critical sections are short enough that sixteen writers queued on
+// one mutex serialise by timing rather than by design, so it survives the
+// non-atomic form by luck. The contract is the same for all of them.
+func testXattrConcurrentDistinctNames(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+	root := createTestShare(t, store, "/xattr-concurrent")
+	handle := createTestFile(t, store, "/xattr-concurrent", root, "f.txt", 0o600)
+
+	const writers = 16
+	names := make([]string, writers)
+	for i := range names {
+		names[i] = fmt.Sprintf("attr%02d", i)
+	}
+
+	// One gate released at once, so the loads overlap rather than queueing.
+	var gate sync.WaitGroup
+	var done sync.WaitGroup
+	gate.Add(1)
+	errs := make([]error, writers)
+	for i := range writers {
+		done.Add(1)
+		go func(i int) {
+			defer done.Done()
+			gate.Wait()
+			errs[i] = store.SetXattr(ctx, handle, names[i], []byte("v"))
+		}(i)
+	}
+	gate.Done()
+	done.Wait()
+
+	present, err := store.ListXattr(ctx, handle)
+	if err != nil {
+		t.Fatalf("ListXattr: %v", err)
+	}
+	have := make(map[string]bool, len(present))
+	for _, n := range present {
+		have[n] = true
+	}
+
+	var lost []string
+	accepted := 0
+	for i, name := range names {
+		if errs[i] != nil {
+			continue
+		}
+		accepted++
+		if !have[name] {
+			lost = append(lost, name)
+		}
+	}
+	if len(lost) > 0 {
+		t.Errorf("SetXattr reported success for %d names but %d are absent afterwards: %v\nListXattr returned: %v",
+			accepted, len(lost), lost, present)
+	}
+	if accepted == 0 {
+		t.Fatalf("every concurrent SetXattr failed; the case proves nothing about lost updates: %v", errs)
+	}
+}
+
+// testXattrTransactionIsNotATransactor pins the invariant the xattr write path
+// depends on: a Transaction must NOT open transactions of its own.
+//
+// The resolvers wrap themselves in a transaction by asking whether the target
+// is a metadata.Transactor. An in-transaction caller has to fall through that
+// check unwrapped, which it does only because no backend's transaction type
+// carries WithTransaction. Nothing in the type system enforces that — a
+// transaction that grew the method later (savepoints, say) would silently make
+// every in-transaction SetXattr nest, and nesting is implementation-defined
+// per the Transactor doc, so the symptom would be a deadlock or a discarded
+// write rather than a compile error.
+func testXattrTransactionIsNotATransactor(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+
+	err := store.WithTransaction(t.Context(), func(tx metadata.Transaction) error {
+		if _, ok := tx.(metadata.Transactor); ok {
+			t.Error("this backend's Transaction implements Transactor: the xattr resolvers " +
+				"would open a nested transaction for an in-transaction caller")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithTransaction: %v", err)
+	}
 }

@@ -97,6 +97,22 @@ func (localDeduper) IsChunkDurable(context.Context, journal.ChunkHash) (bool, er
 // (the per-share metadata store, wired unconditionally as SyncedHashStore). The
 // clone fixture has no committer, but its source has no dirty data so CommitBlock
 // never fires — a nil committer there is inert.
+// Both sinks implement journal's BlockSink plus all three of its optional
+// capabilities. Journal discovers those three by type assertion, so without
+// these declarations a signature change on either side compiles cleanly and
+// silently skips the reap, the row-widen and the clobber guard at runtime.
+var (
+	_ journal.BlockSink        = localBlockSink{}
+	_ journal.SupersededReaper = localBlockSink{}
+	_ journal.ManifestRowEnder = localBlockSink{}
+	_ journal.ClobberGuard     = localBlockSink{}
+
+	_ journal.BlockSink        = engineBlockSink{}
+	_ journal.SupersededReaper = engineBlockSink{}
+	_ journal.ManifestRowEnder = engineBlockSink{}
+	_ journal.ClobberGuard     = engineBlockSink{}
+)
+
 type localBlockSink struct {
 	committer   blockCommitter
 	commitLocks *carveCommitLocks
@@ -246,7 +262,7 @@ func (s engineBlockSink) ReapSupersededManifest(ctx context.Context, id journal.
 // engineBlockSink is journal's production BlockSink: it seals each carved chunk,
 // frames them into one block via blockcodec, uploads the block with PutBlock,
 // and atomically commits the block record + synced locators + per-file manifest
-// rows. It mirrors Syncer.carveAndCommitBlock minus the local-byte resolution —
+// rows. It mirrors RemoteSync.carveAndCommitBlock minus the local-byte resolution —
 // journal hands the plaintext in-hand on each CarveChunk.
 type engineBlockSink struct {
 	sealer      remote.ChunkSealer

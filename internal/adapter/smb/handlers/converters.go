@@ -424,9 +424,8 @@ func processFiletimeForSet(ft uint64, target **time.Time) {
 }
 
 // Note: MetadataErrorToSMBStatus and
-// ContentErrorToSMBStatus were consolidated into
-// internal/adapter/common/errmap.go and content_errmap.go. Handlers now call
-// common.MapToSMB and common.MapContentToSMB directly — common uses
+// ContentErrorToSMBStatus were consolidated into the smb/types StatusFor
+// switch. Handlers call smb/types.StatusForErr directly — the switch uses
 // errors.As (via the goerrors alias) so wrapped StoreErrors unwrap
 // correctly, fixing a latent bug in the pre-consolidation type-assertion
 // path.

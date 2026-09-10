@@ -32,6 +32,11 @@ type FSStoreOptions struct {
 	BackpressureMaxWait time.Duration
 	MaxLogBytes         int64
 	ChunkParams         chunker.Params
+	// CarveBlockSize is the pack size the carver hands the remote store; see
+	// journal.Config.CarveBlockSize. Zero takes the journal default. This is
+	// the only route to it: the journal owns the carve loop, so the engine's
+	// syncer config has no say in it.
+	CarveBlockSize int64
 	// DirtyExpiry bounds how long a write may sit unfsynced; see
 	// journal.Config.DirtyExpiry. Zero takes the journal default, negative
 	// disables the loop.
@@ -150,10 +155,11 @@ func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileCh
 		}
 	}
 	cfg := journal.Config{
-		MaxLocalBytes: maxDisk,
-		EvictMaxWait:  opts.BackpressureMaxWait,
-		ChunkParams:   opts.ChunkParams,
-		DirtyExpiry:   opts.DirtyExpiry,
+		MaxLocalBytes:  maxDisk,
+		EvictMaxWait:   opts.BackpressureMaxWait,
+		ChunkParams:    opts.ChunkParams,
+		DirtyExpiry:    opts.DirtyExpiry,
+		CarveBlockSize: opts.CarveBlockSize,
 	}
 	// Check the format stamp before touching the journal: a directory a newer
 	// release wrote would otherwise read as holes wherever the newer format

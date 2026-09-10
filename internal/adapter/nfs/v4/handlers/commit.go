@@ -62,7 +62,17 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 	// GetFileForRead: handle-addressed, File.Path unused — skip derivePath.
 	file, err := metaSvc.GetFileForRead(authCtx.Context, fileHandle)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
+		return commitErr(status)
+	}
+
+	// COMMIT is defined only over regular files: a directory is
+	// NFS4ERR_ISDIR and any other type NFS4ERR_INVAL. Without the gate the
+	// handler flushed whatever the handle named, and an object with no
+	// payload answered NFS4_OK.
+	if status := regularFileStatus(file.Type); status != types.NFS4_OK {
+		logger.Debug("NFSv4 COMMIT on non-regular file",
+			"type", file.Type, "status", status, "client", ctx.ClientAddr)
 		return commitErr(status)
 	}
 
@@ -73,7 +83,7 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 	// not modify. knfsd likewise verifies the handle with NFSD_MAY_WRITE for
 	// COMMIT.
 	if err := metaSvc.CheckWritePermissionFile(authCtx, fileHandle, file); err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		logger.Debug("NFSv4 COMMIT denied", "status", status, "error", err, "client", ctx.ClientAddr)
 		return commitErr(status)
 	}
@@ -98,7 +108,7 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 			"error", flushErr,
 			"payloadID", file.PayloadID,
 			"client", ctx.ClientAddr)
-		return commitErr(types.NFS4ERR_IO)
+		return commitErr(types.StatusFor(common.ClassifyBlockStoreError(flushErr)))
 	}
 
 	// Flush pending metadata writes (deferred commit optimization)

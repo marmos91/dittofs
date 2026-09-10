@@ -208,7 +208,7 @@ func (f *realBackupFixture) assertNoTornFiles(t *testing.T, store metadata.Store
 		t.Fatalf("snapshot %d: root handle missing from restored dump: %v", n, err)
 	}
 
-	entries, _, err := store.ListChildren(ctx, root, "", 0)
+	entries, _, err := store.ListChildren(ctx, root, "", 0, metadata.WithAttrs)
 	if err != nil {
 		t.Fatalf("snapshot %d: list children: %v", n, err)
 	}
@@ -279,20 +279,23 @@ func newRealBackupFixture(t *testing.T) *realBackupFixture {
 	localStoreDir := t.TempDir()
 	shareName := "data"
 
-	if err := mem.CreateShare(context.Background(), &metadata.Share{Name: shareName}); err != nil {
-		t.Fatalf("CreateShare: %v", err)
+	if _, err := mem.CreateRootDirectory(context.Background(), shareName, &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory,
+		Mode: 0o755,
+	}); err != nil {
+		t.Fatalf("CreateRootDirectory: %v", err)
 	}
 
 	localStore := bsmemory.New()
 	innerRemote := remotememory.New()
 	t.Cleanup(func() { _ = innerRemote.Close() })
-	syncer := engine.NewSyncer(localStore, innerRemote, mem, engine.SyncerConfig{
+	syncer := engine.NewRemoteSync(localStore, innerRemote, mem, engine.RemoteSyncConfig{
 		ParallelDownloads: 1,
 	})
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          localStore,
 		Remote:         innerRemote,
-		Syncer:         syncer,
+		RemoteSync:     syncer,
 		FileChunkStore: mem,
 	})
 	if err != nil {

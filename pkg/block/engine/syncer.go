@@ -13,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/block/remote"
+	"github.com/marmos91/dittofs/pkg/block/syncer"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -35,9 +36,9 @@ type fetchResult struct {
 // own collaborator with its own lock buys legibility and costs a second lock
 // order to get right; do it only once a hardware rig can prove the split
 // preserves the fetch/carve/close ordering.
-// Syncer handles async local-to-remote transfers with eager block carving,
+// RemoteSync handles async local-to-remote transfers with eager block carving,
 // parallel download, prefetch, in-flight dedup, and content-addressed dedup.
-type Syncer struct {
+type RemoteSync struct {
 	local       local.LocalStore
 	remoteStore remote.RemoteStore
 	// hasRemote mirrors "remoteStore != nil" as an atomic so hot-path gating
@@ -63,13 +64,13 @@ type Syncer struct {
 	// the file-level dedup short-circuit needs to reach
 	// Store.cache to fire InvalidateFile on orphaned speculative
 	// chunks. Reading through the back-reference (rather than copying a
-	// `cache` field on the Syncer at construction time) lets test code
+	// `cache` field on the RemoteSync at construction time) lets test code
 	// swap `bs.cache = rec` after construction and still observe the
 	// invalidation — mirrors the TestClose_ClosesCache pattern. May be
 	// nil in pre-wiring tests; callers must nil-check before use.
 	bs *Store
 
-	config SyncerConfig
+	config RemoteSyncConfig
 
 	queue *SyncQueue // Transfer queue for non-blocking operations
 
@@ -114,16 +115,19 @@ type Syncer struct {
 	completedSyncs atomic.Int64
 	failedSyncs    atomic.Int64
 
-	// uploadLimiter bounds concurrent block PUTs in carveFlush. When
-	// ParallelUploads is pinned (> 0) its limit is fixed at that value.
+	// uploadLimiter bounds concurrent whole-file carve passes: carveDispatcher
+	// acquires it before starting a file and releases it when that file's pass
+	// returns. It does not bound the block PUTs inside a pass — those have their
+	// own per-file semaphore sized by CarveUploadConcurrency — so the PUTs
+	// actually in flight are the product of the two windows, not this limit.
+	// When ParallelUploads is pinned (> 0) its limit is fixed at that value.
 	// When unset (adaptive mode) the uploadController resizes it every control
-	// interval to track the goodput knee. Lazily created by ensureUploadLimiter
-	// so directly-built test fixtures still get bounded concurrency.
-	uploadLimiter *dynamicSemaphore
+	// interval to track the goodput knee.
+	uploadLimiter *syncer.DynamicSemaphore
 	// uploadController is non-nil only in adaptive mode. It consumes one
 	// (goodput, windowLimited, sawError) sample per control interval and returns
 	// the next target window, applied to uploadLimiter by the control goroutine.
-	uploadController *goodputController
+	uploadController *syncer.GoodputController
 	// uploadedBytesWindow accumulates bytes successfully PutBlock'd since the
 	// last control tick; uploadErrWindow counts block-upload errors in the same
 	// span. The control goroutine swaps both to zero each tick to compute the
@@ -171,14 +175,14 @@ type blockCommitter interface {
 // remote. It is the journal's own dirty-byte counter — the backpressure signal
 // the eviction path consults: a non-zero value with a healthy remote means a
 // stalled writer can make progress once the carve dispatcher drains.
-func (m *Syncer) UnsyncedBytes() int64 {
+func (m *RemoteSync) UnsyncedBytes() int64 {
 	return m.local.UnsyncedBytes()
 }
 
-// NewSyncer creates a new Syncer. The fileChunkStore is required for content-addressed dedup.
-func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileChunkStore block.EngineFileChunkStore, config SyncerConfig) *Syncer {
+// NewRemoteSync creates a new RemoteSync. The fileChunkStore is required for content-addressed dedup.
+func NewRemoteSync(local local.LocalStore, remoteStore remote.RemoteStore, fileChunkStore block.EngineFileChunkStore, config RemoteSyncConfig) *RemoteSync {
 	if fileChunkStore == nil {
-		panic("fileChunkStore is required for Syncer")
+		panic("fileChunkStore is required for RemoteSync")
 	}
 	if config.ParallelDownloads <= 0 {
 		config.ParallelDownloads = DefaultParallelDownloads
@@ -199,14 +203,14 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileChunk
 	// floor and ceiling. The limiter starts at the floor in adaptive mode and at
 	// the pinned value otherwise; the control goroutine (adaptive only, launched
 	// in Start) resizes it at runtime.
-	var uploadController *goodputController
+	var uploadController *syncer.GoodputController
 	startWindow := config.ParallelUploads
 	if config.ParallelUploads <= 0 {
 		startWindow = AdaptiveUploadFloor
-		uploadController = newGoodputController(AdaptiveUploadFloor, AdaptiveUploadCeiling)
+		uploadController = syncer.NewGoodputController(AdaptiveUploadFloor, AdaptiveUploadCeiling)
 	}
 
-	m := &Syncer{
+	m := &RemoteSync{
 		local:          local,
 		remoteStore:    remoteStore,
 		fileChunkStore: fileChunkStore,
@@ -214,7 +218,7 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileChunk
 		inFlight:       make(map[string]*fetchResult),
 		stopCh:         make(chan struct{}),
 
-		uploadLimiter:    newDynamicSemaphore(startWindow),
+		uploadLimiter:    syncer.NewDynamicSemaphore(startWindow),
 		uploadController: uploadController,
 	}
 	m.hasRemote.Store(remoteStore != nil)
@@ -228,14 +232,14 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileChunk
 }
 
 // Queue returns the transfer queue for stats inspection.
-func (m *Syncer) Queue() *SyncQueue { return m.queue }
+func (m *RemoteSync) Queue() *SyncQueue { return m.queue }
 
 // SetSyncedHashStore wires the per-hash sync-state store the restart/drift
 // reseed consults via local.ListUnsynced and the carver updates through
-// DefaultCommitBlock. Idempotent. May be invoked after NewSyncer so the
+// DefaultCommitBlock. Idempotent. May be invoked after NewRemoteSync so the
 // construction sequence does not need to thread a SyncedHashStore through
-// the engine.NewSyncer signature.
-func (m *Syncer) SetSyncedHashStore(s metadata.SyncedHashStore) {
+// the engine.NewRemoteSync signature.
+func (m *RemoteSync) SetSyncedHashStore(s metadata.SyncedHashStore) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.syncedHashStore = s
@@ -259,7 +263,7 @@ func (m *Syncer) SetSyncedHashStore(s metadata.SyncedHashStore) {
 // leaves carve disabled: pending chunks then accumulate locally and Flush
 // reports Finalized=false (there is no legacy per-hash fallback). Idempotent;
 // safe to call before Start.
-func (m *Syncer) SetRemoteBlockStore(rbs remote.RemoteBlockStore) {
+func (m *RemoteSync) SetRemoteBlockStore(rbs remote.RemoteBlockStore) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.remoteBlockStore = rbs
@@ -279,7 +283,7 @@ func (m *Syncer) SetRemoteBlockStore(rbs remote.RemoteBlockStore) {
 // Carve routing does NOT gate on ManualSync: in manual mode the background
 // carver is suppressed but explicit Flush/SyncNow still drains the carve set,
 // so log-blob chunks must still route to it.
-func (m *Syncer) recomputeCarveActive() {
+func (m *RemoteSync) recomputeCarveActive() {
 	active := m.remoteBlockStore != nil &&
 		m.blockCommitter != nil &&
 		m.hasRemote.Load()
@@ -295,7 +299,7 @@ func (m *Syncer) recomputeCarveActive() {
 
 // SetHealthCallback sets the callback invoked when the remote store health state changes.
 // If the HealthMonitor is already running, the callback is forwarded to it immediately.
-func (m *Syncer) SetHealthCallback(fn healthTransitionCallback) {
+func (m *RemoteSync) SetHealthCallback(fn healthTransitionCallback) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onHealthChanged = fn
@@ -304,9 +308,26 @@ func (m *Syncer) SetHealthCallback(fn healthTransitionCallback) {
 	}
 }
 
+// CanEvict reports whether reclaiming local bytes is safe: they may only be
+// dropped when something can fetch them back. That is carveActive — the carve
+// path wired to a remote — AND that remote being healthy.
+//
+// carveActive is deliberately the same flag that decides whether a record can
+// ever become synced, so "may be evicted" and "can be re-fetched" are one answer
+// by construction rather than two that agree by luck. Health alone is not
+// enough: IsRemoteHealthy reports true for a nil monitor, so a share with no
+// remote at all reads as healthy, and a journal carrying synced records from a
+// previous remote-backed life would then satisfy the eviction gate and lose the
+// only copy of those bytes.
+func (m *RemoteSync) CanEvict() bool {
+	return m.carveActive.Load() && m.IsRemoteHealthy()
+}
+
 // IsRemoteHealthy returns the health state of the remote store.
-// Returns true when there is no HealthMonitor (local-only mode).
-func (m *Syncer) IsRemoteHealthy() bool {
+// Returns true when there is no HealthMonitor (local-only mode) — which is why
+// it is not sufficient on its own to decide whether eviction is safe. Use
+// CanEvict for that.
+func (m *RemoteSync) IsRemoteHealthy() bool {
 	if m.healthMonitor == nil {
 		return true
 	}
@@ -315,7 +336,7 @@ func (m *Syncer) IsRemoteHealthy() bool {
 
 // RemoteOutageDuration returns how long the remote store has been unhealthy.
 // Returns 0 when healthy or when there is no HealthMonitor.
-func (m *Syncer) RemoteOutageDuration() time.Duration {
+func (m *RemoteSync) RemoteOutageDuration() time.Duration {
 	if m.healthMonitor == nil {
 		return 0
 	}
@@ -323,21 +344,21 @@ func (m *Syncer) RemoteOutageDuration() time.Duration {
 }
 
 // remoteUnavailableError returns an ErrRemoteUnavailable wrapped with outage duration context.
-func (m *Syncer) remoteUnavailableError() error {
+func (m *RemoteSync) remoteUnavailableError() error {
 	dur := m.RemoteOutageDuration()
 	return fmt.Errorf("remote store unavailable (offline for %s): %w", dur.Truncate(time.Second), block.ErrRemoteUnavailable)
 }
 
 // OfflineReadsBlocked returns the count of read operations that failed
 // because the requested blocks were remote-only during an outage.
-func (m *Syncer) OfflineReadsBlocked() int64 {
+func (m *RemoteSync) OfflineReadsBlocked() int64 {
 	return m.offlineReadsBlocked.Load()
 }
 
 // logOfflineRead logs a read failure due to remote unavailability.
 // First failure after a healthy->unhealthy transition logs at WARN level
 // subsequent failures log at DEBUG to avoid log spam.
-func (m *Syncer) logOfflineRead(method, payloadID string, blockIdx uint64) {
+func (m *RemoteSync) logOfflineRead(method, payloadID string, blockIdx uint64) {
 	if m.firstOfflineRead.CompareAndSwap(false, true) {
 		logger.Warn("Read blocked: remote store unavailable",
 			"method", method,
@@ -353,8 +374,8 @@ func (m *Syncer) logOfflineRead(method, payloadID string, blockIdx uint64) {
 }
 
 // checkReady returns nil if the syncer can process requests.
-// Returns ctx.Err() if the context is cancelled, or ErrClosed if the syncer is closed.
-func (m *Syncer) checkReady(ctx context.Context) error {
+// Returns ctx.Err() if the context is cancelled, or ErrClosed if the RemoteSync is closed.
+func (m *RemoteSync) checkReady(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -366,8 +387,8 @@ func (m *Syncer) checkReady(ctx context.Context) error {
 	return nil
 }
 
-// canProcess returns false if the syncer is closed or context is cancelled.
-func (m *Syncer) canProcess(ctx context.Context) bool {
+// canProcess returns false if the RemoteSync is closed or context is cancelled.
+func (m *RemoteSync) canProcess(ctx context.Context) bool {
 	return m.checkReady(ctx) == nil
 }
 
@@ -392,7 +413,7 @@ func (m *Syncer) canProcess(ctx context.Context) bool {
 // The carve drain serializes on carveMu against the background carve
 // dispatcher, so an explicit Flush may block for the duration of an
 // in-flight block build + PutBlock — bounded by one block (~16 MiB).
-func (m *Syncer) Flush(ctx context.Context, payloadID string) (*block.FlushResult, error) {
+func (m *RemoteSync) Flush(ctx context.Context, payloadID string) (*block.FlushResult, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return nil, err
 	}
@@ -421,7 +442,7 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*block.FlushResul
 // dataplaneMetrics returns the engine's data-plane metrics sink, or nil when
 // the syncer is detached from a Store or no recorder was injected. Call sites
 // must guard the result: it is a plain interface, not a nil-safe *Metrics.
-func (m *Syncer) dataplaneMetrics() DataplaneMetrics {
+func (m *RemoteSync) dataplaneMetrics() DataplaneMetrics {
 	if m.bs == nil {
 		return nil
 	}
@@ -433,7 +454,7 @@ func (m *Syncer) dataplaneMetrics() DataplaneMetrics {
 
 // SyncCounts returns lifetime (completed, failed) sync counts: blocks that
 // reached remote and failed carve upload attempts.
-func (m *Syncer) SyncCounts() (completed, failed int) {
+func (m *RemoteSync) SyncCounts() (completed, failed int) {
 	return int(m.completedSyncs.Load()), int(m.failedSyncs.Load())
 }
 
@@ -442,7 +463,7 @@ func (m *Syncer) SyncCounts() (completed, failed int) {
 // background dispatcher and the drain's force-carve — the latter runs as a
 // single call that can span minutes, and counting only on its return would
 // leave the progress signal flat for that whole time.
-func (m *Syncer) noteBlockCommitted(bytes int64) {
+func (m *RemoteSync) noteBlockCommitted(bytes int64) {
 	m.completedSyncs.Add(1)
 	m.uploadedBytesWindow.Add(bytes)
 }
@@ -455,7 +476,7 @@ func (m *Syncer) noteBlockCommitted(bytes int64) {
 // Exposed via the REST API for the benchmark runner to call between test
 // phases, and used by Close() to ensure no blocks are left stranded in the
 // local store at shutdown.
-func (m *Syncer) DrainAllUploads(ctx context.Context) error {
+func (m *RemoteSync) DrainAllUploads(ctx context.Context) error {
 	if err := m.SyncNow(ctx); err != nil {
 		return err
 	}
@@ -479,7 +500,7 @@ func (m *Syncer) DrainAllUploads(ctx context.Context) error {
 // is not wired (test fixtures), no chunks count as remote-mirrored and
 // the function returns 0 — matching the pre-Phase-18 semantics where
 // State==Remote was never set in that configuration either.
-func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, error) {
+func (m *RemoteSync) GetFileSize(ctx context.Context, payloadID string) (uint64, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return 0, err
 	}
@@ -547,7 +568,7 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 // authoritative. If no SyncedHashStore is wired (test fixtures)
 // Exists returns false — matching the pre-fix behavior under the same
 // configuration.
-func (m *Syncer) Exists(ctx context.Context, payloadID string) (bool, error) {
+func (m *RemoteSync) Exists(ctx context.Context, payloadID string) (bool, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return false, err
 	}
@@ -598,7 +619,7 @@ func (m *Syncer) Exists(ctx context.Context, payloadID string) (bool, error) {
 // a stable seam for callers — engine.Truncate invokes it unconditionally — and
 // so the absence of the legacy prefix scan is explicit rather than inferred
 // from a missing call.
-func (m *Syncer) Truncate(ctx context.Context, payloadID string, newSize uint64) error {
+func (m *RemoteSync) Truncate(ctx context.Context, payloadID string, newSize uint64) error {
 	if err := m.checkReady(ctx); err != nil {
 		return err
 	}
@@ -623,7 +644,7 @@ func (m *Syncer) Truncate(ctx context.Context, payloadID string, newSize uint64)
 // GC sweep reclaims the CAS objects that leaves orphaned. Nothing is removed or
 // recorded here. The legacy per-file prefix sweep is gone, and this method is
 // kept as a stable seam for the call in engine.Delete.
-func (m *Syncer) Delete(ctx context.Context, payloadID string) error {
+func (m *RemoteSync) Delete(ctx context.Context, payloadID string) error {
 	if err := m.checkReady(ctx); err != nil {
 		return err
 	}
@@ -643,7 +664,7 @@ func (m *Syncer) Delete(ctx context.Context, payloadID string) error {
 // Start begins background upload processing and periodic uploader.
 // Must be called after New() to enable async uploads.
 // When remoteStore is nil (local-only mode), the periodic syncer is skipped.
-func (m *Syncer) Start(ctx context.Context) {
+func (m *RemoteSync) Start(ctx context.Context) {
 	// The health monitor's eager probe is a network round trip, so it runs
 	// after m.mu is released: every read and flush path takes that lock, and
 	// holding it for a remote timeout stalls them all. Start still returns only
@@ -655,7 +676,7 @@ func (m *Syncer) Start(ctx context.Context) {
 
 // startLocked performs the locked half of Start and returns the health monitor
 // still to be started, or nil in local-only mode.
-func (m *Syncer) startLocked(ctx context.Context) *HealthMonitor {
+func (m *RemoteSync) startLocked(ctx context.Context) *HealthMonitor {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -664,7 +685,7 @@ func (m *Syncer) startLocked(ctx context.Context) *HealthMonitor {
 	}
 
 	if m.remoteStore == nil {
-		logger.Info("Syncer started in local-only mode (no remote store)")
+		logger.Info("RemoteSync started in local-only mode (no remote store)")
 		return nil
 	}
 
@@ -673,7 +694,7 @@ func (m *Syncer) startLocked(ctx context.Context) *HealthMonitor {
 	// Failure here is logged at WARN — a bad metadata read should not
 	// prevent the syncer from running its periodic loop.
 	if err := m.recoverStaleSyncing(ctx); err != nil {
-		logger.Warn("Syncer janitor: recoverStaleSyncing failed", "error", err)
+		logger.Warn("RemoteSync janitor: recoverStaleSyncing failed", "error", err)
 	}
 
 	// No pending-set to seed from disk: the journal owns the unsynced state
@@ -687,7 +708,7 @@ func (m *Syncer) startLocked(ctx context.Context) *HealthMonitor {
 
 // newHealthMonitorLocked creates and wires the health monitor for the remote
 // store, without starting it. Must be called with m.mu held.
-func (m *Syncer) newHealthMonitorLocked() *HealthMonitor {
+func (m *RemoteSync) newHealthMonitorLocked() *HealthMonitor {
 	m.healthMonitor = NewHealthMonitor(m.remoteStore.HealthCheck, m.config)
 	// Wrap the user's callback to also reset the offline-read WARN flag
 	// on each healthy->unhealthy transition.
@@ -705,7 +726,7 @@ func (m *Syncer) newHealthMonitorLocked() *HealthMonitor {
 
 // startPeriodicUploader launches the carve dispatcher and the maintenance
 // loop, if not already running. Must be called with m.mu held.
-func (m *Syncer) startPeriodicUploader(ctx context.Context) {
+func (m *RemoteSync) startPeriodicUploader(ctx context.Context) {
 	if m.periodicStarted {
 		return
 	}
@@ -745,11 +766,11 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 
 // runUploadController is the adaptive upload-concurrency control loop.
 // Every interval it turns the bytes/error accumulated by carveAndCommitBlock
-// into a goodput sample, feeds the goodputController, and applies the returned
+// into a goodput sample, feeds the GoodputController, and applies the returned
 // window to the shared uploadLimiter. Runs only in adaptive mode (controller
 // non-nil). Idle intervals (no bytes, nothing in flight, no error) are skipped
 // so a write pause is not misread as a goodput collapse.
-func (m *Syncer) runUploadController(ctx context.Context, interval time.Duration) {
+func (m *RemoteSync) runUploadController(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	// Publish the starting window so the gauge is populated before the first
@@ -775,13 +796,13 @@ func (m *Syncer) runUploadController(ctx context.Context, interval time.Duration
 // resulting window to the upload limiter. Extracted from the goroutine loop so
 // the bytes→goodput→window glue is unit-testable without a clock. intervalSec
 // is the control interval in seconds.
-func (m *Syncer) adaptiveUploadTick(intervalSec float64) {
+func (m *RemoteSync) adaptiveUploadTick(intervalSec float64) {
 	bytes := m.uploadedBytesWindow.Swap(0)
 	sawErr := m.uploadErrWindow.Swap(0) > 0
 	// Peak in-flight over the interval distinguishes window-limited from
 	// app-limited: uploads that filled the window mean goodput reflects the
 	// window; otherwise the upstream carve pipeline was the constraint (see
-	// goodputController.observe).
+	// syncer.GoodputController.Observe).
 	peak := m.uploadLimiter.TakePeak()
 	windowLimited := peak >= m.uploadLimiter.Limit()
 
@@ -795,7 +816,7 @@ func (m *Syncer) adaptiveUploadTick(intervalSec float64) {
 	}
 
 	goodput := float64(bytes) / intervalSec
-	window := m.uploadController.observe(goodput, windowLimited, sawErr)
+	window := m.uploadController.Observe(goodput, windowLimited, sawErr)
 	m.uploadLimiter.SetLimit(window)
 	if mx := m.dataplaneMetrics(); mx != nil {
 		mx.SetUploadWindow(window)
@@ -807,7 +828,7 @@ func (m *Syncer) adaptiveUploadTick(intervalSec float64) {
 // dedup oracle and the block sink that seals/frames/uploads/commits) built from
 // the syncer's wired remote/committer/synced deps. One-shot, guarded by m.mu;
 // safe to call again from a late SetRemoteStore attach.
-func (m *Syncer) wireCarveTargets() {
+func (m *RemoteSync) wireCarveTargets() {
 	if m.carveTargetsWired {
 		return
 	}
@@ -836,7 +857,7 @@ func (m *Syncer) wireCarveTargets() {
 // dependency call has run. For a remote-backed share this is a no-op (already
 // wired via recomputeCarveActive); for a local-only share it installs the
 // remote-less carve sink so DrainRollups/Flush populate the FileChunk manifest.
-func (m *Syncer) ensureCarveWired() {
+func (m *RemoteSync) ensureCarveWired() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.wireCarveTargets()
@@ -850,7 +871,7 @@ func (m *Syncer) ensureCarveWired() {
 //
 // Serializes against the background carve dispatcher via carveMu (inside
 // carveFlush), so the explicit drain never packs the same chunk twice.
-func (m *Syncer) SyncNow(ctx context.Context) error {
+func (m *RemoteSync) SyncNow(ctx context.Context) error {
 	if m.remoteStore == nil {
 		return nil
 	}
@@ -878,7 +899,7 @@ func (m *Syncer) SyncNow(ctx context.Context) error {
 //
 // Backends that opt in to syncingEnumerator return precise candidates
 // others degrade to a no-op.
-func (m *Syncer) recoverStaleSyncing(ctx context.Context) error {
+func (m *RemoteSync) recoverStaleSyncing(ctx context.Context) error {
 	if m.fileChunkStore == nil {
 		return nil
 	}
@@ -917,7 +938,7 @@ func (m *Syncer) recoverStaleSyncing(ctx context.Context) error {
 		requeued++
 	}
 	if requeued > 0 {
-		logger.Info("Syncer janitor requeued stale Syncing rows",
+		logger.Info("RemoteSync janitor requeued stale Syncing rows",
 			"count", requeued, "claim_timeout", m.config.ClaimTimeout)
 	}
 	if failed > 0 {
@@ -935,7 +956,7 @@ type syncingEnumerator interface {
 }
 
 // Close shuts down the syncer and waits for pending uploads.
-func (m *Syncer) Close() error {
+func (m *RemoteSync) Close() error {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -968,7 +989,7 @@ func (m *Syncer) Close() error {
 	// returning while a pass is still reading the local store or writing the
 	// remote — the engine closes both the moment Close returns.
 	if !waitBounded(&m.bgWG, defaultShutdownTimeout) {
-		logger.Warn("Syncer background loops did not exit before shutdown timeout")
+		logger.Warn("RemoteSync background loops did not exit before shutdown timeout")
 	}
 
 	return nil
@@ -993,7 +1014,7 @@ func waitBounded(wg *gosync.WaitGroup, timeout time.Duration) bool {
 
 // HealthCheck verifies the remote store is accessible.
 // Returns nil (healthy) when remoteStore is nil -- local-only mode is valid.
-func (m *Syncer) HealthCheck(ctx context.Context) error {
+func (m *RemoteSync) HealthCheck(ctx context.Context) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -1016,7 +1037,7 @@ func (m *Syncer) HealthCheck(ctx context.Context) error {
 // syncer was local-only are picked up by the next periodic drift reconcile
 // (seedPendingFromDisk), not immediately. Not currently wired into any
 // production control-plane path; Start() is the seeded entry point.
-func (m *Syncer) SetRemoteStore(ctx context.Context, remoteStore remote.RemoteStore) error {
+func (m *RemoteSync) SetRemoteStore(ctx context.Context, remoteStore remote.RemoteStore) error {
 	hm, err := m.setRemoteStoreLocked(ctx, remoteStore)
 	if err != nil {
 		return err
@@ -1031,7 +1052,7 @@ func (m *Syncer) SetRemoteStore(ctx context.Context, remoteStore remote.RemoteSt
 
 // setRemoteStoreLocked performs the locked half of SetRemoteStore and returns
 // the health monitor still to be started.
-func (m *Syncer) setRemoteStoreLocked(ctx context.Context, remoteStore remote.RemoteStore) (*HealthMonitor, error) {
+func (m *RemoteSync) setRemoteStoreLocked(ctx context.Context, remoteStore remote.RemoteStore) (*HealthMonitor, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

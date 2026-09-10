@@ -26,7 +26,6 @@ func buildReconcileFixture(tb testing.TB, n int) (*badgerstore.BadgerMetadataSto
 	tb.Cleanup(func() { _ = store.Close() })
 
 	const share = "reconcile"
-	require.NoError(tb, store.CreateShare(ctx, &metadata.Share{Name: share}))
 	rootFile, err := store.CreateRootDirectory(ctx, share, &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755})
 	require.NoError(tb, err)
 	root, err := metadata.EncodeFileHandle(rootFile)

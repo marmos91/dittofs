@@ -195,7 +195,7 @@ func (lm *Manager) hasLeaseKeyOnOtherFile(leaseKey [16]byte, excludeHandleKey, c
 // could each succeed at binding the same lease key to different files
 // before either reclaim happens, breaking MS-SMB2 3.3.5.9.8 uniqueness.
 //
-// Implementation pulls the client-scoped lease set from lockStore and walks
+// Implementation pulls the client's persisted locks from lockStore and walks
 // for a matching key on a different FileID. Same scoping caveats as
 // hasLeaseKeyOnOtherFile (clientID is session-scoped today; tracked under
 // #361). Called BEFORE lm.mu.Lock() — same pattern as the existing
@@ -214,11 +214,7 @@ func (lm *Manager) hasPersistedLeaseKeyOnOtherFile(ctx context.Context, leaseKey
 	if lm.lockStore == nil || clientID == "" {
 		return false
 	}
-	isLease := true
-	persisted, err := lm.lockStore.ListLocks(ctx, LockQuery{
-		ClientID: clientID,
-		IsLease:  &isLease,
-	})
+	persisted, err := lm.lockStore.ListLocks(ctx, LockQuery{ClientID: clientID})
 	if err != nil {
 		logger.Error("hasPersistedLeaseKeyOnOtherFile: ListLocks failed; failing closed to preserve cross-file lease-key uniqueness",
 			"clientID", clientID,

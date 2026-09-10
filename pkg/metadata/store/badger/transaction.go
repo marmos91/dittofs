@@ -396,7 +396,10 @@ func (tx *badgerTransaction) putFile(ctx context.Context, file *metadata.File, w
 
 	// Track size delta for regular files. Accumulated on the tx and applied
 	// once after a successful commit so a conflict-retry never double-counts.
-	if file.Type == metadata.FileTypeRegular {
+	//
+	// This write never touches the l: key, so the pre-write count is also the
+	// post-write one.
+	if basestore.Charged(file.Type, fileLinkCountTxn(tx.txn, file)) {
 		switch {
 		case !hadOldRegular:
 			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
@@ -522,17 +525,21 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 	// PayloadID for secondary-index cleanup.
 	var existingObjectID metadata.ContentHash
 	var existingPayloadID metadata.PayloadID
+	var existing *metadata.File
 	_ = item.Value(func(val []byte) error {
 		file, decErr := decodeFile(val)
 		if decErr == nil {
-			if file.Type == metadata.FileTypeRegular {
-				tx.quota.Add(file.ShareName, file.UID, file.GID, -int64(file.Size), -1)
-			}
+			existing = file
 			existingObjectID = file.ObjectID
 			existingPayloadID = file.PayloadID
 		}
 		return nil
 	})
+	// An inode whose last name went already gave its bytes back, so removing
+	// the row itself owes the counters nothing.
+	if existing != nil && basestore.Charged(existing.Type, fileLinkCountTxn(tx.txn, existing)) {
+		tx.quota.Add(existing.ShareName, existing.UID, existing.GID, -int64(existing.Size), -1)
+	}
 
 	// Delete the primary file row plus parent/link-count/ObjectID/PayloadID
 	// keys via the shared per-file teardown (also used by DeleteShare).
@@ -723,7 +730,7 @@ func (tx *badgerTransaction) anyOtherChildName(parentID, child uuid.UUID, exclud
 	return ""
 }
 
-func (tx *badgerTransaction) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int) ([]metadata.DirEntry, string, error) {
+func (tx *badgerTransaction) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int, attrs metadata.ChildAttrs) ([]metadata.DirEntry, string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
@@ -785,17 +792,27 @@ func (tx *badgerTransaction) ListChildren(ctx context.Context, dirHandle metadat
 		}
 
 		// Try to get attributes (errors are intentionally ignored - attributes are optional)
-		fileItem, err := tx.txn.Get(keyFile(childID))
-		if err == nil {
-			_ = fileItem.Value(func(val []byte) error {
-				file, decErr := decodeFile(val)
-				if decErr != nil {
-					return decErr
-				}
-				file.Nlink = fileLinkCountTxn(tx.txn, file)
-				entry.Attr = &file.FileAttr
-				return nil
-			})
+		//
+		// This is the whole cost of a listing: the child keys iterated above
+		// are contiguous under one prefix, while each attribute costs a
+		// separate Get plus a decode plus the link-count read inside
+		// fileLinkCountTxn. Skipping it for a caller that only wants names
+		// also narrows the transaction's read set to the directory's own
+		// entries, so a concurrent write to a child's attributes no longer
+		// conflicts with a listing that never looked at them.
+		if attrs == metadata.WithAttrs {
+			fileItem, err := tx.txn.Get(keyFile(childID))
+			if err == nil {
+				_ = fileItem.Value(func(val []byte) error {
+					file, decErr := decodeFile(val)
+					if decErr != nil {
+						return decErr
+					}
+					file.Nlink = fileLinkCountTxn(tx.txn, file)
+					entry.Attr = &file.FileAttr
+					return nil
+				})
+			}
 		}
 
 		entries = append(entries, entry)
@@ -932,6 +949,36 @@ func (tx *badgerTransaction) SetLinkCount(ctx context.Context, handle metadata.F
 		}
 	}
 
+	// Read the pre-image before the count moves. A link count crossing zero is
+	// what puts an inode's bytes into the share's usage or takes them back out,
+	// and once the l: key is overwritten there is no way to tell which side it
+	// came from. A missing inode owes the counters nothing.
+	item, gErr := tx.txn.Get(keyFile(fileID))
+	if gErr != nil && !goerrors.Is(gErr, badgerdb.ErrKeyNotFound) {
+		return gErr
+	}
+	if gErr == nil {
+		raw, vErr := item.ValueCopy(nil)
+		if vErr != nil {
+			return vErr
+		}
+		file, decErr := decodeFile(raw)
+		if decErr != nil {
+			return decErr
+		}
+		// Only the crossing between zero and non-zero moves usage: adding or
+		// dropping a hard link alongside others leaves the inode charged
+		// exactly once either way.
+		was := basestore.Charged(file.Type, fileLinkCountTxn(tx.txn, file))
+		now := basestore.Charged(file.Type, count)
+		switch {
+		case was && !now:
+			tx.quota.Add(file.ShareName, file.UID, file.GID, -int64(file.Size), -1)
+		case !was && now:
+			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
+		}
+	}
+
 	tx.dirtyFiles = append(tx.dirtyFiles, fileID.String())
 	return tx.txn.Set(keyLinkCount(fileID), encodeUint32(count))
 }
@@ -1030,41 +1077,6 @@ func (tx *badgerTransaction) GetShareOptions(ctx context.Context, shareName stri
 	}
 
 	return opts, nil
-}
-
-func (tx *badgerTransaction) CreateShare(ctx context.Context, share *metadata.Share) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	_, err := tx.txn.Get(keyShare(share.Name))
-	if err == nil {
-		return &metadata.StoreError{
-			Code:    metadata.ErrAlreadyExists,
-			Message: "share already exists",
-			Path:    share.Name,
-		}
-	}
-	if err != badgerdb.ErrKeyNotFound {
-		return err
-	}
-
-	// Store as shareData for consistency with GetRootHandle and CreateRootDirectory
-	shareDataValue := &shareData{
-		Share: *share,
-		// RootHandle will be set by CreateRootDirectory
-	}
-
-	encoded, err := encodeShareData(shareDataValue)
-	if err != nil {
-		return err
-	}
-
-	if err := tx.txn.Set(keyShare(share.Name), encoded); err != nil {
-		return err
-	}
-	tx.dirtyShares = append(tx.dirtyShares, share.Name)
-	return nil
 }
 
 func (tx *badgerTransaction) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
@@ -1171,50 +1183,25 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 		}
 	}
 
-	// Check if share already exists
+	// An existing root is reconciled against the configured attrs by the same
+	// body the pool path uses, so whether a config change lands does not depend
+	// on which of the two entry points reached it.
 	item, err := tx.txn.Get(keyShare(shareName))
 	if err == nil {
-		// Share exists - load and return existing root
-		var existingShareData *shareData
-		err := item.Value(func(val []byte) error {
-			sd, decErr := decodeShareData(val)
-			if decErr != nil {
-				return decErr
-			}
-			existingShareData = sd
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-
-		_, rootID, err := metadata.DecodeFileHandle(existingShareData.RootHandle)
-		if err != nil {
-			return nil, err
-		}
-
-		rootItem, err := tx.txn.Get(keyFile(rootID))
-		if err != nil {
-			return nil, err
-		}
-
 		var rootFile *metadata.File
-		err = rootItem.Value(func(val []byte) error {
-			rf, decErr := decodeFile(val)
-			if decErr != nil {
-				return decErr
-			}
-			rootFile = rf
-			return nil
-		})
-		if err != nil {
+		if err := tx.store.loadExistingRoot(tx.txn, item, shareName, attr, &rootFile); err != nil {
 			return nil, err
 		}
 
-		// A root directory with no stored link count falls back to the
-		// directory default of 2.
-		rootFile.Nlink = fileLinkCountTxn(tx.txn, rootFile)
-
+		// loadExistingRoot may rewrite the root inode to match the configured
+		// attrs, a write that does not go through the methods that record a
+		// dirty file — so record it here, or the commit leaves the pre-reconcile
+		// mode/UID/GID cached. Recorded whether or not it actually rewrote:
+		// re-reading one root is cheaper than tracking which branch it took.
+		if rootFile != nil {
+			tx.dirtyFiles = append(tx.dirtyFiles, rootFile.ID.String())
+			tx.dirtyShares = append(tx.dirtyShares, shareName)
+		}
 		return rootFile, nil
 	} else if err != badgerdb.ErrKeyNotFound {
 		return nil, err
@@ -1223,7 +1210,7 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 	// Create new root directory
 	rootAttrCopy := *attr
 	if rootAttrCopy.Mode == 0 {
-		rootAttrCopy.Mode = 0755
+		rootAttrCopy.Mode = metadata.DefaultRootMode
 	}
 	now := time.Now()
 	if rootAttrCopy.Atime.IsZero() {
@@ -1264,31 +1251,10 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 		return nil, err
 	}
 
-	// Preserve existing share configuration (e.g. ShareOptions written
-	// by a prior CreateShare call) when materializing the root row.
-	// Mirrors the same fix in the non-transactional createNewRoot — the
-	// original code wrote a fresh `metadata.Share{Name: shareName}`
-	// here, silently wiping any Options the caller had set via
-	// CreateShare.
-	preservedShare := metadata.Share{Name: shareName}
-	if existingItem, getErr := tx.txn.Get(keyShare(shareName)); getErr == nil {
-		if vErr := existingItem.Value(func(val []byte) error {
-			existing, dErr := decodeShareData(val)
-			if dErr != nil {
-				return dErr
-			}
-			preservedShare = existing.Share
-			preservedShare.Name = shareName
-			return nil
-		}); vErr != nil {
-			return nil, fmt.Errorf("failed to read existing share for option preservation: %w", vErr)
-		}
-	} else if getErr != badgerdb.ErrKeyNotFound {
-		return nil, fmt.Errorf("failed to probe existing share: %w", getErr)
-	}
-
+	// This path runs only when the share record was absent above, and nothing
+	// writes one in between, so there are no recorded options to carry over.
 	shareDataObj := &shareData{
-		Share:      preservedShare,
+		Share:      metadata.Share{Name: shareName},
 		RootHandle: rootHandle,
 	}
 	shareBytes, err := encodeShareData(shareDataObj)

@@ -5,14 +5,14 @@ import (
 	"testing"
 )
 
-// newRAsyncer builds a Syncer exercising only planWindow (no queue/remote).
-func newRAsyncer(prefetch int) *Syncer {
-	return &Syncer{config: SyncerConfig{PrefetchBlocks: prefetch}}
+// newRAsyncer builds a RemoteSync exercising only planWindow (no queue/remote).
+func newRAsyncer(prefetch int) *RemoteSync {
+	return &RemoteSync{config: RemoteSyncConfig{PrefetchBlocks: prefetch}}
 }
 
 // window is a test helper: the block indices planWindow schedules for a read
 // spanning [start, end], or nil when it fires nothing.
-func (m *Syncer) window(payloadID string, start, end uint64) []uint64 {
+func (m *RemoteSync) window(payloadID string, start, end uint64) []uint64 {
 	from, to, fire := m.planWindow(payloadID, start, end)
 	if !fire {
 		return nil
@@ -91,10 +91,10 @@ func TestPlanWindow_MapBounded(t *testing.T) {
 	}
 }
 
-// newSchedSyncer builds a Syncer with a real (unstarted) SyncQueue so
+// newSchedSyncer builds a RemoteSync with a real (unstarted) SyncQueue so
 // scheduleReadahead enqueues into an inspectable prefetch channel.
-func newSchedSyncer(prefetch int) *Syncer {
-	m := &Syncer{config: SyncerConfig{PrefetchBlocks: prefetch}}
+func newSchedSyncer(prefetch int) *RemoteSync {
+	m := &RemoteSync{config: RemoteSyncConfig{PrefetchBlocks: prefetch}}
 	m.hasRemote.Store(true) // IsRemoteHealthy() is true with no health monitor
 	m.queue = NewSyncQueue(m, SyncQueueConfig{QueueSize: 1000, DownloadWorkers: 4})
 	return m

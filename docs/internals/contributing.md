@@ -42,6 +42,19 @@ The Nix flake provides:
 - golangci-lint for code quality
 - NFS utilities for E2E testing (Linux)
 - ACL libraries for POSIX compliance testing
+- pjdfstest for POSIX compliance testing (Linux)
+- pynfs for NFSv4 protocol conformance, as `pynfs-4.0` and `pynfs-4.1`
+- `dfs-postgres-start` / `dfs-postgres-stop` for a PostgreSQL test container
+
+`nix flake check` builds both binaries and runs the conformance graders, which is
+what decides whether a suite run counts as green.
+
+The binaries also run straight from the flake, without a clone:
+
+```bash
+nix run github:marmos91/dittofs#dfs -- start
+nix run github:marmos91/dittofs#dfsctl -- --help
+```
 
 ### Manual Setup (Alternative)
 
@@ -336,54 +349,50 @@ See [IMPLEMENTING_STORES.md](implementing-stores.md) for detailed implementation
 ### Adding a new metadata.ErrorCode
 
 Every `metadata.ErrorCode` that should surface to NFS and/or SMB clients is
-mapped to protocol-specific status codes through a single consolidated
-table at `internal/adapter/common/errmap.go`. Adding a new code is a
-one-edit-per-table contract — the Go type system forces you to populate
-every protocol column.
+mapped to protocol-specific status codes by the per-package `StatusFor`
+switch in the adapter types packages (`internal/adapter/nfs/types`,
+`internal/adapter/nfs/v4/types`, `internal/adapter/smb/types`). Adding a
+new code is a one-edit-per-package contract — the enum-walk test in each
+package fails loudly if a switch arm or expectation row is missing.
 
 1. **Declare the constant** — add the new value in
    `pkg/metadata/errors/errors.go` and re-export it from
    `pkg/metadata/errors.go`.
 
-2. **Add the general-context row** — insert a new row in
-   `internal/adapter/common/errmap.go`'s `errorMap`:
+2. **Add the switch arm + expectation row in each types package** —
+   extend the `StatusFor` switch and the `expected` table in
+   `statusfor_test.go` for every package whose protocol should observe
+   the code:
 
    ```go
-   merrs.ErrFooBar: {
-       NFS3: nfs3types.NFS3ErrXXX,
-       NFS4: nfs4types.NFS4ERR_XXX,
-       SMB:  smbtypes.StatusXXX,
-   },
+   case merrs.ErrFooBar:
+       return nfs3types.NFS3ErrXXX
    ```
 
-   The `protoCodes` struct literal requires all three columns — you
-   cannot accidentally forget a protocol.
+   The enum-walk test (`TestStatusFor_EnumWalk`) iterates the full
+   `ErrorCode` range and fails if either the arm or the expectation row
+   is missing.
 
-3. **Lock-context override (if applicable)** — if the code has different
-   semantics in SMB2 LOCK / NFSv4 LOCK requests versus general I/O, add a
-   row in `internal/adapter/common/lock_errmap.go`'s `lockErrorMap` with
-   the lock-context codes. `MapLockTo*` accessors consult this table
-   first and fall through to `errorMap`.
+3. **SMB lock-context override (if applicable)** — if the code has
+   different semantics in SMB2 LOCK requests versus general I/O, give it
+   an arm in `smb/types`'s `StatusForLock` (and a row in the lock
+   expectation table). `StatusForLockErr` consults the lock switch;
+   `StatusForErr` consults the general one.
 
-4. **Update the coverage enumeration** — append the new code to
-   `allErrorCodes()` in `internal/adapter/common/errmap_test.go` and bump
-   the `expectedCount` constant in `TestErrorMapCoverage`. The coverage
-   test fails if you forget this step.
-
-5. **Add a test case** — pick the right tier:
+4. **Add a test case** — pick the right tier:
    - **E2E tier** (triggerable via real NFS/SMB file operations): add a
      trigger helper in `test/e2e/helpers/error_triggers.go` and a row in
      `TestCrossProtocol_ErrorConformance` in
      `test/e2e/cross_protocol_test.go`. Expected errnos are derived at
-     runtime from `common.MapToNFS3` / `common.MapToSMB` — you do not
-     hand-transcribe protocol codes into the test table.
+     runtime from `nfs/types.StatusForErr` / `smb/types.StatusForErr` —
+     you do not hand-transcribe protocol codes into the test table.
    - **Unit tier** (exotic codes — quota, grace-period, deadlock,
-     connection-limits): add the code to `exoticCodes()` in
-     `internal/adapter/common/errmap_test.go`. `TestExoticErrorCodes`
-     picks it up automatically and asserts every protocol mapper
-     returns the `errorMap` row's expected value.
-   - **Not sure which tier**: run `TestCrossProtocolUnitConformance` —
-     it fails if the new code lives in neither list.
+     connection-limits): add the code to the expectation table in the
+     relevant `statusfor_test.go`. `TestStatusFor_EnumWalk` picks it up
+     automatically and asserts every switch returns the expected value.
+   - **Not sure which tier**: the enum-walk test fails on any code
+     missing an expectation row, so the tier decision cannot leave the
+     code uncovered.
 
 6. **Run the test suite** — `go test -race ./internal/adapter/common/...`
    must stay green.
@@ -510,16 +519,22 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 ### Workflow Overview
 
 | Workflow | Trigger | Purpose | Duration |
-|----------|---------|---------|----------|
+| ---------- | --------- | --------- | ---------- |
 | `lint.yml` | PR, push | Go lint + vet + spec citations | ~2 min |
 | `unit-tests.yml` | PR, push | Unit tests with race detection | ~3 min |
 | `windows-build.yml` | PR, push | Windows build + unit tests | ~5 min |
 | `integration-tests.yml` | push, weekly | Integration tests (S3, BadgerDB) | ~10 min |
 | `e2e-tests.yml` | PR, push | E2E tests (NFS, SMB, cross-protocol, Kerberos) | ~15 min |
-| `smb-conformance.yml` | PR (memory), push (all), weekly | WPTS BVT + smbtorture + Kerberos | ~20 min |
+| `conformance.yml` | PR, push, nightly | WPTS BVT, smbtorture, pjdfstest, NFS `sec=krb5` | ~45 min |
 | `smb-client-compat.yml` | push, weekly | Windows/macOS/Linux SMB client testing | ~10 min |
-| `posix-tests.yml` | push, weekly | POSIX compliance (pjdfstest) | ~15 min |
+| `nfs-pynfs.yml` | PR, push, nightly | NFSv4 protocol conformance (pynfs) | ~20 min |
 | `operator-tests.yml` | push, weekly | Operational scenario tests | ~10 min |
+
+### Conformance suites
+
+Every suite's profiles, variants and per-event tiering live in
+[`test/conformance/suites.json`](../../test/conformance/suites.json); the rendered table is in
+[testing.md](testing.md#conformance-test-suites).
 
 ### What Runs on PR (Fast, Must-Pass Before Merge)
 
@@ -528,7 +543,8 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 - **lint.yml** -- Go formatting, vetting, and linting
 - **unit-tests.yml** -- All unit tests with race detection
 - **windows-build.yml** -- Windows cross-compilation verification
-- **smb-conformance.yml** -- Memory-only WPTS BVT + memory-only smbtorture (fast feedback)
+- **conformance.yml** -- The presubmit profiles of each suite (see the table above)
+- **nfs-pynfs.yml** -- NFSv4.0 + NFSv4.1 protocol conformance (memory + postgres-s3)
 - **e2e-tests.yml** -- Full E2E suite including SMB3, cross-protocol, and Kerberos tests
 
 ### What Runs on Push to Develop (Comprehensive)
@@ -536,17 +552,16 @@ These workflows gate pull request merges and should complete in under 5 minutes:
 These run after merging to develop and should complete in under 30 minutes:
 
 - Everything from PR checks
-- **smb-conformance.yml** -- All storage profiles (memory, memory-fs, badger-fs, badger-s3, postgres-s3)
+- **conformance.yml** -- Every profile of every suite
 - **smb-client-compat.yml** -- Multi-OS client compatibility (Linux, macOS, Windows)
 - **integration-tests.yml** -- Backend-specific integration tests
-- **posix-tests.yml** -- POSIX compliance validation
 
 ### What Runs Weekly (Full Matrix)
 
 The weekly cron runs the complete test matrix (Monday mornings UTC):
 
 - Everything from push checks
-- **smb-conformance.yml** -- Kerberos smbtorture (runs only on push/weekly, not PRs)
+- **conformance.yml** -- Kerberos smbtorture (runs only on push/weekly, not PRs)
 - **operator-tests.yml** -- Operational scenarios
 - Auto-creates GitHub issues for regressions
 
@@ -556,8 +571,8 @@ All workflows support `workflow_dispatch` for manual triggering:
 
 ```bash
 # Trigger via GitHub CLI
-gh workflow run smb-conformance.yml
-gh workflow run smb-conformance.yml -f profile=badger-fs
+gh workflow run conformance.yml
+gh workflow run conformance.yml -f suite=smbtorture
 gh workflow run smb-client-compat.yml
 gh workflow run e2e-tests.yml
 ```
@@ -592,7 +607,7 @@ Follow this template pattern for new workflow jobs:
           ${{
             github.event_name == 'pull_request'
               && fromJson('["memory"]')
-            || fromJson('["memory", "memory-fs", "badger-fs"]')
+            || fromJson('["memory", "badger"]')
           }}
     steps:
       - uses: actions/checkout@v4

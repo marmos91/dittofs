@@ -184,7 +184,7 @@ func (c *metadataCoordinator) ReprojectBlocks(ctx context.Context, payloadID str
 // (first-committer-wins) — or the equivalent mderrors.ErrConflict from
 // Memory/Badger — is wrapped into engine.ErrObjectIDConflict by
 // mapObjectIDConflict so the file-level dedup short-circuit retry path
-// in Syncer.applyFileLevelDedupHit detects the race uniformly across
+// in RemoteSync.applyFileLevelDedupHit detects the race uniformly across
 // backends.
 func (c *metadataCoordinator) PersistFileChunks(ctx context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error {
 	return c.metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
@@ -322,7 +322,7 @@ func (c *metadataCoordinator) FindByObjectID(ctx context.Context, objectID block
 
 // GetFileObjectID reads the current FileAttr.ObjectID for payloadID
 // from the metadata store. Returns the all-zero ObjectID + nil when
-// the file does not exist or has never quiesced — callers (Syncer.Flush)
+// the file does not exist or has never quiesced — callers (RemoteSync.Flush)
 // treat zero as "evaluate short-circuit" / "skip short-circuit".
 //
 // Callers use this to evaluate the trigger condition for file-level

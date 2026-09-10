@@ -12,15 +12,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/journal"
 )
 
-// carveBlockSize returns the configured target block size, falling back to the
-// default when unset. Retained for the cas→blocks migration repacker.
-func (m *Syncer) carveBlockSize() int64 {
-	if m.config.BlockCarveBytes > 0 {
-		return m.config.BlockCarveBytes
-	}
-	return DefaultBlockCarveBytes
-}
-
 // carveDispatcher is the background carve loop. Every UploadInterval it asks the
 // journal-backed local store to pack its eligible dirty ranges into remote
 // blocks (journal.Carve applies its own age/size batching gate). The journal
@@ -30,7 +21,7 @@ func (m *Syncer) carveBlockSize() int64 {
 //
 // Runs only when a remote and the carve substrate are wired (carveActive) and
 // not in ManualSync mode (where Flush/SyncNow are the sole carve drivers).
-func (m *Syncer) carveDispatcher(ctx context.Context) {
+func (m *RemoteSync) carveDispatcher(ctx context.Context) {
 	logger.Info("Carve dispatcher started")
 	interval := m.config.UploadInterval
 	if interval <= 0 {
@@ -62,15 +53,21 @@ func (m *Syncer) carveDispatcher(ctx context.Context) {
 // pass (one file, one block, one PutBlock at a time) leaves the uplink almost
 // idle — the block-upload latency, not the link or CPU, caps throughput.
 //
-// Concurrency is bounded by the adaptive upload window: the loop acquires
-// uploadLimiter before starting each file's carve and releases it when that
-// file's blocks are committed, so at most Limit() carves — and thus block
-// PUTs — are in flight. Acquiring the window is also what lets the goodput
-// controller observe real in-flight concurrency (TakePeak) and ramp the window;
-// without it the window is never consumed and stays pinned at the floor. Files
-// in one shard still serialize on the journal's internal carve lock, so the
-// concurrency here overlaps distinct shards' upload latency.
-func (m *Syncer) carvePass(ctx context.Context) {
+// The adaptive upload window bounds how many files carve at once: the loop
+// acquires uploadLimiter before starting each file's carve and releases it when
+// that file's pass returns, so at most Limit() passes run together. It does not
+// bound the block PUTs inside a pass — each pass opens its own window on those —
+// so the PUTs in flight are the product of the two, and so is the memory held by
+// the blocks waiting on them.
+//
+// What the goodput controller samples through TakePeak is therefore this window,
+// the count of files, not the count of PUTs. Draining one large file peaks at a
+// single pass and reads as app-limited however many PUTs that pass has in the
+// air. Acquiring the window is still what keeps it consumed at all; without it
+// the window is never taken and stays pinned at the floor. Files in one shard
+// still serialize on the journal's internal carve lock, so the concurrency here
+// overlaps distinct shards' upload latency.
+func (m *RemoteSync) carvePass(ctx context.Context) {
 	files := m.local.ListFiles(ctx)
 	if len(files) == 0 {
 		return

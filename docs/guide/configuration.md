@@ -1138,8 +1138,9 @@ Metadata stores are managed at runtime via `dfsctl` and persisted in the control
   --config '{"path":"/tmp/dittofs-metadata-isolated"}'
 
 # SQLite for a persistent single-binary / edge appliance (pure-Go, no cgo).
-# Reuses the PostgreSQL data model (parent_child_map hard links, nlink,
-# recursive-CTE path reconstruction, object_id dedup index).
+# Same implementation as PostgreSQL over a different dialect: one schema
+# (parent_child_map hard links, nlink, recursive-CTE path reconstruction,
+# object_id dedup index) and one set of operation bodies.
 ./dfsctl store metadata add --name sqlite-edge --type sqlite \
   --config '{"path":"/var/lib/dittofs/metadata.db"}'
 
@@ -1158,6 +1159,7 @@ Metadata stores are managed at runtime via `dfsctl` and persisted in the control
 > **Persistence Options**:
 > - **Memory**: Fast but ephemeral - all data lost on restart. Ideal for caching and temporary workloads.
 > - **BadgerDB**: Persistent embedded database - single-node deployments. File handles and metadata survive restarts.
+> - **SQLite**: Persistent embedded database - single-node deployments, pure-Go with no cgo. Shares its implementation with PostgreSQL, so the two behave alike apart from concurrency.
 > - **PostgreSQL**: Persistent distributed database - multi-node deployments with horizontal scaling. Survives restarts and supports multiple DittoFS instances sharing the same metadata.
 
 ### 8. Shares (Exports)
@@ -2140,18 +2142,14 @@ stored secret. Equivalent CLI: `dfsctl identity-provider {list,get,set,test}`
 
 ## Migration
 
-### Standalone CAS (v0.16 - v0.21) → packed blocks: automatic
+### Standalone CAS (v0.16 - v0.21) → packed blocks: removed
 
-Current servers store remote data as packed `blocks/<id>` containers. Shares
-that still hold standalone-CAS state (per-chunk `cas/` objects and locators
-from v0.16-v0.21 servers) are converted automatically at startup, per share,
-**before the share serves** — no command, flag, or sentinel involved. The
-conversion is idempotent and resumable; a killed run converges on the next
-start. See [the migration guide](block-store-migration.md).
-
-If a share's remote is unreachable while standalone chunks remain, that
-share fails to start (its data would be unreadable anyway); restore
-connectivity and start again.
+Current servers store remote data as packed `blocks/<id>` containers. The
+automatic startup conversion for shares still holding standalone-CAS state
+(per-chunk `cas/` objects and locators from v0.16-v0.21 servers) has been
+removed: such a store cannot be upgraded in place by this build, and a
+locator still pointing at a standalone object fails closed on read. See
+[the migration guide](block-store-migration.md).
 
 ### Pre-v0.16 `.blk` layouts: migrate with dittofs ≤ v0.21 first
 

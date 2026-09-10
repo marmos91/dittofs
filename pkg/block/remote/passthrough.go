@@ -2,7 +2,6 @@ package remote
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 
@@ -47,24 +46,6 @@ func (p Passthrough) blockInner() (RemoteBlockStore, error) {
 		return nil, ErrChunkReadUnsupported
 	}
 	return rbs, nil
-}
-
-// CASInner exposes s's hash-keyed CAS surface (block.Store), used only by
-// the legacy standalone-CAS read path (block.Store methods +
-// ReadBlockVerified in each decorator's legacy_cas_migration.go). Every
-// shipped remote backend and decorator implements block.Store, so the
-// assertion succeeds in practice; it returns an error rather than
-// panicking for defense in depth.
-//
-// A plain function rather than a method on Passthrough: promoting it
-// would put an exported handle on the untransformed CAS surface into
-// every decorator's public method set.
-func CASInner(s RemoteStore) (block.Store, error) {
-	cs, ok := s.(block.Store)
-	if !ok {
-		return nil, ErrChunkReadUnsupported
-	}
-	return cs, nil
 }
 
 // SliceRange returns [offset, offset+length) of full, clamped to its end.
@@ -134,38 +115,6 @@ func (p Passthrough) WalkBlocks(ctx context.Context, fn func(blockID string, met
 		return err
 	}
 	return rbs.WalkBlocks(ctx, fn)
-}
-
-// Has reports presence by probing inner.Head. NotFound errors map to
-// (false, nil); any other backend error propagates.
-func (p Passthrough) Has(ctx context.Context, hash block.ContentHash) (bool, error) {
-	cs, err := CASInner(p.inner)
-	if err != nil {
-		return false, err
-	}
-	if _, err := cs.Head(ctx, hash); err != nil {
-		if errors.Is(err, block.ErrChunkNotFound) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
-}
-
-// Delete removes the standalone object keyed by hash.
-func (p Passthrough) Delete(ctx context.Context, hash block.ContentHash) error {
-	cs, err := CASInner(p.inner)
-	if err != nil {
-		return err
-	}
-	return cs.Delete(ctx, hash)
-}
-
-// DeleteLegacyChunk implements LegacyCASStore. The legacy standalone
-// object is keyed by the plaintext hash, which no transform changes, so
-// this is the same removal as Delete.
-func (p Passthrough) DeleteLegacyChunk(ctx context.Context, hash block.ContentHash) error {
-	return p.Delete(ctx, hash)
 }
 
 // Close releases inner resources. A decorator holding resources of its

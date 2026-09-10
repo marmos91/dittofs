@@ -1,9 +1,9 @@
-# RFC: splitting the block data flow into pier, crane and ferry
+# RFC: splitting the block data flow into journal, carver and syncer
 
 **Status:** proposed, open for comment. Nothing here is built.
 **Discussion:** https://github.com/marmos91/dittofs/discussions/2234
 **Detail:** `.planning/2026-09-01-block-dataflow-MASTER-PLAN.md` (plan),
-`.planning/2026-09-01-pier-library-design-PLAN.md` (design),
+`.planning/2026-09-01-journal-library-design-PLAN.md` (design),
 `.planning/2026-09-01-journal-audit-report.md`, `-engine-audit-report.md` and
 `-block-root-audit-report.md` (196 verified findings across the three).
 
@@ -87,14 +87,14 @@ not a guard someone remembered to add.
 ## 3. Three libraries
 
 ```
-pier    — stages bytes locally, crash-safe. Chunk-agnostic: you can ingest blobs you
+journal    — stages bytes locally, crash-safe. Chunk-agnostic: you can ingest blobs you
           never chunk. deps: stdlib + golang.org/x/sys
 
-crane   — cuts content-addressed blocks out of a blob: FastCDC boundaries, BLAKE3
+carver   — cuts content-addressed blocks out of a blob: FastCDC boundaries, BLAKE3
           identity, accumulation to BlockSize. OPTIONAL. deps: stdlib
 
-ferry   — moves blocks BOTH WAYS: Put (bounded concurrency, retry, ordered completion
-          reporting) and Get/GetRange, which feeds pier.Fill on a cold read.
+syncer   — moves blocks BOTH WAYS: Put (bounded concurrency, retry, ordered completion
+          reporting) and Get/GetRange, which feeds journal.Fill on a cold read.
           deps: stdlib — the block store itself is injected
 
 dittofs — orchestration and policy: dedup oracle, manifest rows, scheduling.
@@ -104,24 +104,24 @@ Data flow — **note the return edge, which is the crash-safety-critical one:**
 
 ```
 WRITE                                                    ack ────┐
-  NFS/SMB ──► pier.WriteAt ──► staged locally, StateDirty ───────┘
+  NFS/SMB ──► journal.WriteAt ──► staged locally, StateDirty ───────┘
 
-FLUSH  (dittofs schedules; pier offers, dittofs disposes)
-  pier.Flush(id, fn) ──► offers dirty runs ──► fn:
-                                                crane.Box   cut blocks
-                                                ferry.Put   upload
+FLUSH  (dittofs schedules; journal offers, dittofs disposes)
+  journal.Flush(id, fn) ──► offers dirty runs ──► fn:
+                                                carver.Box   cut blocks
+                                                syncer.Put   upload
                                                 dittofs     commit manifest rows
                           ◄── returns durable []Extent ──────────┘
-  pier flips exactly those ──► StateResident        ← THE INVARIANT LIVES HERE
+  journal flips exactly those ──► StateResident        ← THE INVARIANT LIVES HERE
 
 READ
-  NFS/SMB ──► pier.ReadAt ──► (n, fetch []Extent)
+  NFS/SMB ──► journal.ReadAt ──► (n, fetch []Extent)
                  fetch non-empty ──► dittofs resolves manifest
-                                  ──► ferry.Get
-                                  ──► pier.Fill ──► StateResident ──► re-read
+                                  ──► syncer.Get
+                                  ──► journal.Fill ──► StateResident ──► re-read
 ```
 
-Nothing reaches `StateResident` except by pier being **told** what became durable. `Flush` is a
+Nothing reaches `StateResident` except by journal being **told** what became durable. `Flush` is a
 callback rather than a pipeline stage because a linear `write → carve → sync` has nowhere to put
 that acknowledgement — and dropping it is the #1872 family.
 
@@ -135,7 +135,7 @@ records: **541 occurrences across 60 non-test files**. The smear is visible in t
 |---|---|
 | **write** | stage bytes locally and acknowledge the client |
 | **sync** | make durable HERE (fsync) |
-| **flush** | pier's pass: offer dirty runs, accept durability reports |
+| **flush** | journal's pass: offer dirty runs, accept durability reports |
 | **chunk** | find one content-defined boundary |
 | **box** | group chunks into one block |
 | **put** / **get** | make durable THERE / bring it back |
@@ -161,22 +161,22 @@ hold.
 `local.LocalStore` (18 methods) and an informal one reached by embedding `*journal.Store` and by
 unexported structural interfaces (`restorer`, `pinner`, `versioner`, `coldSeeder`,
 `coldRangeReporter`, `coldSeedTracker`). Those assertions **no-op silently on failure** — a
-rename inside pier would quietly disable snapshot pinning rather than break the build. After the
+rename inside journal would quietly disable snapshot pinning rather than break the build. After the
 split, only the construction site may name the concrete type; everything else holds a declared
 interface, so a missing capability is a compile error.
 
 ## 6. Plan
 
-**Order: ferry → crane → pier**, reverse of the data flow. Steps 1 and 2 are
+**Order: syncer → carver → journal**, reverse of the data flow. Steps 1 and 2 are
 behaviour-preserving — no format change, no state-model change — so all semantic risk lands in
 step 3, taken last.
 
 | Step | What | Risk |
 |---|---|---|
 | **0** | Fix #2227-#2231 and #2238 with regression tests first | live bugs, unblocks everything |
-| **1** | ferry — upload transport, ordered completion | behaviour-preserving |
-| **2** | crane — chunking + block assembly | behaviour-preserving |
-| **3** | pier — the seam inversion and state model | the real change |
+| **1** | syncer — upload transport, ordered completion | behaviour-preserving |
+| **2** | carver — chunking + block assembly | behaviour-preserving |
+| **3** | journal — the seam inversion and state model | the real change |
 | **4** | legacy cleanup across the data flow | separate workstream |
 
 Green bar for every step: unit + race + E2E green, **crash rigs green on both the old and the new
@@ -190,11 +190,11 @@ The parts most likely to be wrong, and where comment is most useful:
 
 1. **The `Flush` callback seam** (§4 of the design plan). It has already been redesigned twice
    under adversarial review — v1 could not express blocks spanning multiple dirty runs; v2 put
-   block accumulation in pier, which is impossible because block boundaries are chunk boundaries
-   and pier is chunk-agnostic. v3.1 is the current form. It may still be wrong.
+   block accumulation in journal, which is impossible because block boundaries are chunk boundaries
+   and journal is chunk-agnostic. v3.1 is the current form. It may still be wrong.
 2. **Collapsing five extent queries into `Extents()`.** `Size` and `DurableExtent` were pulled
    back out after review showed the durable-frontier walk is not derivable from a flat slice.
    The remainder still needs a benchmark to defend it.
-3. **Whether `RestoreToVersion` belongs in pier at all** — 180 lines, gocyclo 37, zero tests,
+3. **Whether `RestoreToVersion` belongs in journal at all** — 180 lines, gocyclo 37, zero tests,
    three of the five HIGH findings.
 4. **Anything in the 117 LOW findings** you think is actually a MED or HIGH.
