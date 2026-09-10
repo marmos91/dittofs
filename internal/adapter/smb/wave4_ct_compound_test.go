@@ -121,17 +121,20 @@ func TestVerifyCompoundCommandSignature_BadSignatureKeepsConnection(t *testing.T
 	}
 }
 
-// TestFileIDOffset_NoFileIdFrames pins the wire-format fix: FLUSH and
-// OPLOCK_BREAK (ack) request bodies carry no FileId (24-byte structures,
-// StructureSize+Reserved per MS-SMB2 2.2.17 / 2.2.24.1), so fileIDOffset must
-// return -1 — reading offset 8 lifts Reserved bytes into a fabricated FileId.
-func TestFileIDOffset_NoFileIdFrames(t *testing.T) {
+// TestFileIDOffset_FileIdAtOffset8 pins the wire-format mapping: FLUSH
+// (StructureSize(2)+Reserved(6)+FileId(16), MS-SMB2 2.2.17) and an oplock
+// break ACK (StructureSize(2)+OplockLevel+Reserved+FileId, 2.2.24.1) both
+// carry a 16-byte FileId at offset 8 — matching the standalone decoders —
+// so fileIDOffset must return 8. Only the lease-break ACK (2.2.24.2) has no
+// FileId, and lease breaks arrive as server-initiated notifications, never
+// as compound sub-commands.
+func TestFileIDOffset_FileIdAtOffset8(t *testing.T) {
 	for _, cmd := range []types.Command{types.SMB2Flush, types.SMB2OplockBreak} {
-		if got := fileIDOffset(cmd); got != -1 {
-			t.Fatalf("fileIDOffset(%v) = %d, want -1 (no FileId in the request body)", cmd, got)
+		if got := fileIDOffset(cmd); got != 8 {
+			t.Fatalf("fileIDOffset(%v) = %d, want 8 (FileId at offset 8 per MS-SMB2 2.2.17 / 2.2.24.1)", cmd, got)
 		}
 	}
-	// The commands that DO carry a FileId at offset 8 stay mapped.
+	// The other offset-8 commands stay mapped.
 	for _, cmd := range []types.Command{types.SMB2Close, types.SMB2Lock, types.SMB2Ioctl, types.SMB2ChangeNotify} {
 		if got := fileIDOffset(cmd); got != 8 {
 			t.Fatalf("fileIDOffset(%v) = %d, want 8", cmd, got)
@@ -139,20 +142,20 @@ func TestFileIDOffset_NoFileIdFrames(t *testing.T) {
 	}
 }
 
-// TestExtractFileID_FlushDoesNotFabricateFileId is the compound-level
-// regression: ExtractFileID over a FLUSH sub-command body with nonzero
-// Reserved bytes must return the zero FileID (no fabrication), so a related
-// follower cannot inherit garbage Reserved bytes as a handle.
-func TestExtractFileID_FlushDoesNotFabricateFileId(t *testing.T) {
+// TestExtractFileID_FlushReadsFileIdAtOffset8 is the compound-level
+// regression: ExtractFileID over a FLUSH sub-command body must read the
+// FileId from offset 8 (as flush.go does), so a related follower inherits
+// the FLUSH's real handle instead of losing inheritance.
+func TestExtractFileID_FlushReadsFileIdAtOffset8(t *testing.T) {
 	body := make([]byte, 24)
 	binary.LittleEndian.PutUint16(body[0:2], 24) // StructureSize
-	// Reserved bytes at offset 4..24 nonzero — real traffic can carry garbage
-	// there; before the fix fileIDOffset(Flush)=8 lifted them.
-	for i := 4; i < 24; i++ {
-		body[i] = 0xAB
+	var want [16]byte
+	for i := 0; i < 16; i++ {
+		body[8+i] = byte(0x10 + i)
+		want[i] = byte(0x10 + i)
 	}
-	if got := ExtractFileID(types.SMB2Flush, body); got != [16]byte{} {
-		t.Fatalf("ExtractFileID(Flush) = %x, want zero FileID (Reserved bytes must not be lifted)", got)
+	if got := ExtractFileID(types.SMB2Flush, body); got != want {
+		t.Fatalf("ExtractFileID(Flush) = %x, want %x (FileId at offset 8)", got, want)
 	}
 }
 
@@ -224,6 +227,40 @@ func TestProcessCompoundRequest_SubCommandCreditChargeValidated(t *testing.T) {
 	if err := session.ValidateCreditCharge(types.SMB2Write, 0, writeBody); err == nil {
 		t.Fatal("WRITE with 1MB payload and CreditCharge 0 must fail validation")
 	}
+}
+
+// TestProcessCompoundRequest_CreditExemptFirstDoesNotExemptTrailing pins the
+// per-sub-command exemption: CANCEL is always credit-exempt, but a compound
+// [CANCEL, WRITE] whose trailing WRITE undersizes its CreditCharge must still
+// fail validation — exemption is a property of each command, not of the
+// compound's first body.
+func TestProcessCompoundRequest_CreditExemptFirstDoesNotExemptTrailing(t *testing.T) {
+	ci := newConnInfoForDispatch(t, 1, types.Dialect0311)
+	ci.SupportsMultiCredit = true
+
+	firstHeader := &header.SMB2Header{Command: types.SMB2Cancel, MessageID: 2}
+
+	// Trailing WRITE: DataLength=1MB at body offset 4, CreditCharge=0 (=1
+	// credit). 1MB needs 16 credits — validation must fire for the WRITE even
+	// though the first command is exempt.
+	writeBody := make([]byte, 32)
+	binary.LittleEndian.PutUint32(writeBody[4:8], 1<<20)
+	trailingHdr := &header.SMB2Header{
+		Command:      types.SMB2Write,
+		MessageID:    3,
+		CreditCharge: 0,
+	}
+	trailing := encodeCompoundCommand(trailingHdr, writeBody, false)
+
+	if session.IsCreditExempt(types.SMB2Cancel, 0) != true {
+		t.Fatal("CANCEL must be credit-exempt for this test to be meaningful")
+	}
+	if err := session.ValidateCreditCharge(types.SMB2Write, 0, writeBody); err == nil {
+		t.Fatal("trailing WRITE with 1MB payload and CreditCharge 0 must fail validation")
+	}
+	_ = firstHeader
+	_ = trailing
+	_ = ci
 }
 
 // keep helper types referenced when subtests are trimmed

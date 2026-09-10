@@ -144,7 +144,11 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 			// CreditCharge for its own Length/Read/Write payload — not just the
 			// first. Without this, a client undersizes a trailing READ/WRITE and
 			// the server reads/writes past the credits it was paid.
-			if !exempt && connInfo.SupportsMultiCredit {
+			// Credit exemption is a property of the command itself, so it is
+			// re-evaluated per sub-command: a CANCEL first command must not
+			// exempt a trailing underpaid WRITE from validation.
+			subExempt := session.IsCreditExempt(hdr.Command, hdr.SessionID)
+			if !subExempt && connInfo.SupportsMultiCredit {
 				if err := session.ValidateCreditCharge(hdr.Command, hdr.CreditCharge, cmdBody); err != nil {
 					logger.Debug("Compound sub-command credit charge validation failed",
 						"command", hdr.Command.String(),
@@ -806,14 +810,15 @@ func fileIDOffset(command types.Command) int {
 		// (MS-SMB2 §2.2.37).
 		return 24
 	case types.SMB2Flush, types.SMB2OplockBreak:
-		// Neither carries a FileId in its request body: FLUSH is
-		// StructureSize(2)+Reserved(6) (§2.2.17) and an oplock/lease break
-		// ACK is StructureSize(2)+Reserved(6) (§2.2.24) — both 24 bytes total
-		// with no handle field. Reading offset 8 would lift the Reserved bytes
-		// into an all-zero (or garbage) FileId and misdirect related-command
-		// inheritance. The server-initiated break NOTIFICATION carries a
-		// FileId, but the client's ACK back does not.
-		return -1
+		// Both carry a 16-byte FileId at offset 8: FLUSH is
+		// StructureSize(2)+Reserved(6)+FileId(16) (§2.2.17) and an oplock
+		// break ACK is StructureSize(2)+OplockLevel(1)+Reserved(5)+FileId(16)
+		// (§2.2.24.1) — matching the standalone decoders (flush.go reads at
+		// offset 8; the OplockBreakRequest struct carries the same layout).
+		// Only the lease-break ACK (§2.2.24.2) has no FileId, and lease breaks
+		// arrive as server-initiated notifications, never as compound
+		// sub-commands.
+		return 8
 	default:
 		return -1
 	}
