@@ -18,7 +18,8 @@ Note: develop carries 2 local docs commits (23de25e56 + eda765c47) not yet pushe
 | 0 — Coordination | peer takeover, worktree cleanup | ✅ done (only #2340's 32-row re-derivation left) |
 | 1 — Ownership class | #2393–#2396, #2413, #2414 | ✅ **LANDED 2026-09-08** — 7 PRs, soundness-audited; follow-ups #2449, #2451, #2436 closed; doc rule merged (#2468) |
 | 2 — `sm.mu` + pynfs | #2398 + singles | ✅ **LANDED 2026-09-09** — residual #2340 rows + #2329 confirmation tracked below |
-| 3 — Shared-layer reuse | errmap, identity, lifecycle | ❌ not started — **NEXT** (premises verified, see Step 2) |
+| 3 — Shared-layer reuse | errmap, identity, lifecycle | 🔨 **PRs open** (#2499–#2504), merge babysitter running |
+| 3.5 — Error-universe consolidation | sentinel normalization + `StatusFor` extraction | ❌ not started — **NEXT** (see Step 2.5; lands after Wave 3 merges) |
 | 4 — SMB triage | ~155 untriaged findings | ❌ not started (plan moved it *before* the SMB fix waves) |
 | 5 — God objects | `manager.go` 3,985, `Create()` 1,016… | ❌ blocked behind 1–4 |
 | 6 — Dispatch-core finish line | acceptance test | lands inside 1/3/5 |
@@ -67,6 +68,50 @@ running (guard #2499 first). No lane maps to an open GitHub issue — no Closes 
 | fix/adapter-lifecycle-accept | Stop-path listenerReady close (double-close-guarded) + accept backoff 10ms→1s; bind-failure close killed (awaitListener two-channel select) | 60caff603 |
 | fix/async-credit-grants | 2 async grant sites → GrantCredits + SequenceWindow.Grant + nil-SessionManager floor guard | 3bf0a5fd4 |
 | fix/export-acl-citations | CheckExportAccess → ResolveSharePermission/Tree Connect ACL renames (CLAUDE.md + create.go) | e68dbb49b |
+
+### Step 2.5 — Wave 3.5: error-universe consolidation (sentinel normalization + `StatusFor` extraction) — PLANNED 2026-09-10
+
+One PR, lands after #2499–#2504 merge (it rewrites the same files: `errmap.go`, `lock_errmap.go`,
+`content_errmap.go`, the payload helpers). Two parts, zero behaviour change, ~15 files.
+
+**Part 1 — sentinel normalization at the payload choke point.** `ReadFromBlockStore` /
+`WriteToBlockStore` / `CommitBlockStore` (`internal/adapter/common/read_payload.go`,
+`write_payload.go`) classify block sentinels as real `*merrs.StoreError` (multi-`%w`, sentinel
+preserved in `Cause`): `engine.ErrStoreClosed` → `merrs.ErrStaleHandle`, everything else
+(`ErrChunkContentMismatch`, `ErrChunkRefMissing`, `ErrRemoteUnavailable`, unknown) →
+`merrs.ErrIOError`. Delete `content_errmap.go` + its test (8 pin tests move/convert); convert the
+10 pre-existing `MapContentTo*` call sites plus #2500's five v4 sites to uniform
+`MapToNFS3/4/SMB`.
+
+**Part 2 — `StatusFor` extraction into the adapter types packages.** The per-protocol switches
+move out of `errmap.go`/`lock_errmap.go` into the packages whose wire codes they produce:
+
+- `internal/adapter/nfs/types`: `StatusFor(merrs.ErrorCode) uint32`
+- `internal/adapter/nfs/v4/types`: `StatusFor(merrs.ErrorCode) uint32`
+- `internal/adapter/smb/types`: `StatusFor(merrs.ErrorCode) Status` + `StatusForLock(merrs.ErrorCode) Status`
+
+The naming convention **is** the interface — same name, same signature, same contract in every
+adapter package; no Go interface is declared because no runtime dispatch exists to consume one
+(generics/interfaces were evaluated and rejected: packages aren't type parameters, and every
+`common.To(...)` variant adds machinery without adding a property). A new adapter = new package +
+one switch + one enum-walk test; `common/` untouched. `StatusForLock` is the one second entry
+point, forced by three verified facts: MS-SMB2 3.3.5.14 mandates different lock-failure statuses
+(LOCK denial → `STATUS_LOCK_NOT_GRANTED` vs I/O sharing violation → `STATUS_FILE_LOCK_CONFLICT`);
+`merrs.ErrLocked` is produced in both contexts (lock manager conflict path and `CheckLockForIO`);
+NFS needs no split (`NFS4ERR_DENIED` in both, NFSv3 has no lock procedure). v4's state-machine
+mapper (`MapStateError`, `v41/handlers/deps.go`) stays out: it unwraps `NFS4StateError.Status`
+carried on the error, not `merrs.ErrorCode`. Delete `errmap.go` + `lock_errmap.go`; convert ~15
+call sites to the per-adapter names; one enum-walk test per package (the `walkAllErrorCodes`
+pattern from #2499), CI-failing on any code a switch forgot.
+
+**Accepted trade-off (recorded decision):** cross-protocol consistency review moves from one
+table row (all three answers in one glance — the property that once caught `ErrLockLimitExceeded`
+Jukebox-vs-IO drift) to three enum-walk tests. Completeness stays CI-enforced; consistency across
+packages becomes human attention spanning code. Accepted because adapter addition is the actual
+open/closed win the extraction buys.
+
+**Supersedes:** the previously queued two-fold tidy-up (`fix/errmap-single-file` lock fold +
+content fold) — discarded before landing; it was an intermediate state this extraction rewrites.
 
 ### Step 3 — Wave 4: SMB triage (before the SMB fix waves)
 
