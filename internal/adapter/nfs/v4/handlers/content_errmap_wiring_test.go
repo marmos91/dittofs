@@ -8,7 +8,6 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	nfs4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 )
@@ -188,5 +187,3 @@ func TestRead_CanceledContext_FallsBackToIO(t *testing.T) {
 			got, nfs4types.NFS4ERR_IO)
 	}
 }
-
-var _ = xdr.DecodeUint32 // keep the xdr import if assertions move to encoded status
