@@ -51,9 +51,9 @@ func MapStoreErrorToNFSStatus(err error, clientIP string, operation string) uint
 		return types.NFS3OK
 	}
 
-	// Delegate the code translation to common.MapToNFS3 (the single
-	// source of truth across NFSv3/NFSv4/SMB). This wrapper only adds
-	// audit logging at appropriate levels.
+	// Delegate the code translation to types.StatusForErr (the per-package
+	// StatusFor contract; the package implies the protocol.) This wrapper
+	// only adds audit logging at appropriate levels.
 	nfsCode := types.StatusForErr(err)
 
 	var storeErr *metadata.StoreError

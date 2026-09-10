@@ -44,7 +44,7 @@ var expectedNFS4 = map[merrs.ErrorCode]uint32{
 // expectation table. Drift is loud: an unmapped code returns the
 // server-fault default and fails here.
 func TestStatusFor_EnumWalk(t *testing.T) {
-	for c := merrs.ErrNotFound; c <= merrs.ErrConnectionLimitReached; c++ {
+	for c := merrs.ErrNotFound; c <= merrs.ErrConflict; c++ {
 		want, ok := expectedNFS4[c]
 		if !ok {
 			t.Errorf("StatusFor(%v) has no expectation row — add one to expectedNFS4", c)

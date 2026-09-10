@@ -196,7 +196,8 @@ func TestClose_FlushFailure_SurfacedAsNonSuccess(t *testing.T) {
 		t.Fatalf("Close: status = STATUS_SUCCESS, but the durable flush failed — "+
 			"#1267 regression: a non-flushed payload was acknowledged as committed (resp=%+v)", resp)
 	}
-	// engine.ErrStoreClosed maps to STATUS_FILE_CLOSED via MapContentToSMB; pin
+	// engine.ErrStoreClosed maps to STATUS_FILE_CLOSED via StatusForErr's
+	// stale-handle row; pin
 	// it so the test also guards the chosen mapping, not merely "any non-zero".
 	if resp.Status != types.StatusFileClosed {
 		t.Fatalf("Close: status = 0x%08x, expected STATUS_FILE_CLOSED (0x%08x) for a closed-store flush failure",

@@ -382,8 +382,9 @@ func testDirSMBToNFS(t *testing.T, nfsMount, smbMount *framework.Mount) {
 // NFS mount + one SMB mount, reused across all ~18 subtests (PATTERNS.md
 // gotcha: per-subtest mount bootstrap is flaky and compounds CI time).
 //
-// The assertion is: MapToNFS3(storeErr) AND MapToSMB(storeErr) from
-// the per-adapter types tables match what the kernel NFS/SMB client actually delivers.
+// The assertion is: types.StatusForErr(storeErr) (nfs/types) AND
+// smb/types.StatusForErr(storeErr) from
+// the per-adapter types switches match what the kernel NFS/SMB client actually delivers.
 // Since the kernel translates protocol codes into errnos for userspace, the
 // test compares observed syscall.Errno to the errno that the protocol code
 // maps to (via kernel-stable translations documented in this file's

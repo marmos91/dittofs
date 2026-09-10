@@ -60,7 +60,7 @@ var expectedSMBLock = map[merrs.ErrorCode]Status{
 // tables. Drift is loud: an unmapped code returns the internal-error
 // default and fails here.
 func TestStatusFor_EnumWalk(t *testing.T) {
-	for c := merrs.ErrNotFound; c <= merrs.ErrConnectionLimitReached; c++ {
+	for c := merrs.ErrNotFound; c <= merrs.ErrConflict; c++ {
 		want, ok := expectedSMB[c]
 		if !ok {
 			t.Errorf("StatusFor(%v) has no expectation row — add one to expectedSMB", c)

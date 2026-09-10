@@ -2598,7 +2598,7 @@ func (h *Handler) handleFileLinkInformation(
 	// Replace-if-exists for hardlink is rare (most clients pass FALSE). Honor
 	// it by attempting a delete of the existing destination before linking.
 	// If ReplaceIfExists=false and the target exists, CreateHardLink returns
-	// ErrAlreadyExists → STATUS_OBJECT_NAME_COLLISION via common.MapToSMB.
+	// ErrAlreadyExists → STATUS_OBJECT_NAME_COLLISION via smb/types.StatusForErr.
 	metaSvc := h.Registry.GetMetadataService()
 	if linkInfo.ReplaceIfExists {
 		if existing, matchedName, lookupErr := metaSvc.LookupCaseInsensitive(authCtx, dstDir, linkName); lookupErr == nil && existing != nil {

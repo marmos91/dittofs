@@ -246,7 +246,7 @@ func (h *Handler) resumePendingLock(
 			if !goerrors.As(err, &storeErr) || storeErr.Code != merrs.ErrLocked {
 				// Non-conflict error after parking (e.g. file deleted).
 				// Surface the mapped status and stop retrying. ErrLocked is
-				// excluded above so MapLockToSMB's lock-context routing to
+				// excluded above so StatusForLockErr's lock-context routing to
 				// LOCK_NOT_GRANTED never fires here.
 				finalStatus = types.StatusForLockErr(err)
 				finalBody = nil

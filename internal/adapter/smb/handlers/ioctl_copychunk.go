@@ -498,8 +498,8 @@ func (h *Handler) executeCopyChunks(
 		if err != nil {
 			logger.Warn("COPYCHUNK: source read failed",
 				"chunk", i, "srcPath", srcPath, "error", err)
-			// COPYCHUNK source read is a content-path op: MapContentToSMB
-			// maps a closed-store error (source share removed
+			// COPYCHUNK source read is a content-path op: StatusForErr (via
+			// ClassifyBlockStoreError) maps a closed-store error (source share removed
 			// mid-copy) to STATUS_FILE_CLOSED and preserves the
 			// CAS-corruption / remote-unavailable mappings, defaulting to
 			// the I/O-class status for opaque failures.
@@ -539,7 +539,7 @@ func (h *Handler) executeCopyChunks(
 			logger.Warn("COPYCHUNK: destination write failed",
 				"chunk", i, "dstPath", dstPath, "error", err)
 			// COPYCHUNK destination write is a content-path op:
-			// MapContentToSMB maps a closed-store error (dest share removed
+			// StatusForErr (via ClassifyBlockStoreError) maps a closed-store error (dest share removed
 			// mid-copy) to STATUS_FILE_CLOSED and preserves the
 			// CAS-corruption / remote-unavailable mappings, defaulting to
 			// the I/O-class status for opaque failures.

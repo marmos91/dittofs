@@ -225,8 +225,8 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// error — it surfaces handle-decode / share-registry / config
 			// problems. Map it through the generic mapper (StatusInternalError
 			// etc.), mirroring READ/WRITE/FLUSH which map their resolve/handle
-			// errors via common.MapToSMB. Only the CommitBlockStore failure
-			// below is a true content error (MapContentToSMB).
+			// errors via smb/types.StatusForErr. Only the CommitBlockStore failure
+			// below is a true content error (ClassifyBlockStoreError).
 			logger.Warn("CLOSE: block store not available for handle", "path", closePath, "error", bsErr)
 			flushFailStatus = types.StatusForErr(bsErr)
 		} else if flushErr := common.CommitBlockStore(ctx.Context, blockStore, payloadID); flushErr != nil {
