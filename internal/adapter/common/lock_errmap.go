@@ -4,6 +4,7 @@ import (
 	goerrors "errors"
 
 	smbtypes "github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/block/engine"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
@@ -67,6 +68,12 @@ var lockErrorMap = map[merrs.ErrorCode]protoCodes{
 // lockErrorMap → errorMap (general) → defaultCodes. Callers handle the nil
 // case separately so each protocol can return its own SUCCESS constant.
 func lookupLockErrorRow(err error) protoCodes {
+	// A store removed mid-lock-operation is not a *merrs.StoreError; map it
+	// to the same stale-handle row the general and content mappers use so
+	// the client observes the share going away rather than a server fault.
+	if goerrors.Is(err, engine.ErrStoreClosed) {
+		return errorMap[merrs.ErrStaleHandle]
+	}
 	var storeErr *merrs.StoreError
 	if !goerrors.As(err, &storeErr) {
 		return defaultCodes
