@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -288,5 +287,5 @@ func validateRmdirRequest(req *RmdirRequest) *validationError {
 // This provides consistent error mapping for RMDIR operations.
 func mapRmdirErrorToNFSStatus(err error) uint32 {
 	// Use the common metadata error mapper
-	return common.MapToNFS3(err)
+	return types.StatusForErr(err)
 }

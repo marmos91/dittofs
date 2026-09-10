@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
@@ -491,7 +490,7 @@ func TestResolveAccessFlags(t *testing.T) {
 // TestQueryInfo_FilesystemInfoErrorPassthrough verifies that errors propagated
 // out of the QUERY_INFO sub-builders (notably buildFilesystemInfo, whose
 // FileFsSizeInformation / FileFsFullSizeInformation cases call
-// GetFilesystemStatistics) are translated via common.MapToSMB rather than
+// GetFilesystemStatistics) are translated via smb/types StatusForErr rather than
 // being silently collapsed to STATUS_NOT_SUPPORTED.
 //
 // Regression test: the catch-all at query_info.go returned StatusNotSupported
@@ -530,12 +529,12 @@ func TestQueryInfo_FilesystemInfoErrorPassthrough(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Mirror the exact discriminating logic of the QUERY_INFO catch-all:
 			// the ErrNotSupported sentinel maps to STATUS_NOT_SUPPORTED; every
-			// other error is mapped through common.MapToSMB.
+			// other error is mapped through types.StatusForErr.
 			var got types.Status
 			if errors.Is(tc.injectErr, types.ErrNotSupported) {
 				got = types.StatusNotSupported
 			} else {
-				got = common.MapToSMB(tc.injectErr)
+				got = types.StatusForErr(tc.injectErr)
 			}
 			if got != tc.wantStatus {
 				t.Errorf("error %v mapped to status 0x%x, want 0x%x", tc.injectErr, got, tc.wantStatus)

@@ -85,7 +85,7 @@ func (h *Handler) handleRemove(ctx *types.CompoundContext, reader io.Reader) *ty
 	// Get pre-operation parent attributes for change_info
 	parentFile, err := metaSvc.GetFile(ctx.Context, parentHandle)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_REMOVE,
@@ -120,7 +120,7 @@ func (h *Handler) handleRemove(ctx *types.CompoundContext, reader io.Reader) *ty
 	}
 
 	if removeErr != nil {
-		status := common.MapToNFS4(removeErr)
+		status := types.StatusForErr(removeErr)
 		logger.Debug("NFSv4 REMOVE failed",
 			"target", target,
 			"error", removeErr,

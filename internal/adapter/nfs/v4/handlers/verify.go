@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -85,7 +84,7 @@ func verifyAttributes(h *Handler, ctx *types.CompoundContext, reader io.Reader) 
 		// GetFileForRead: handle-addressed, File.Path unused — skip derivePath.
 		file, getErr := metaSvc.GetFileForRead(authCtx.Context, metadata.FileHandle(ctx.CurrentFH))
 		if getErr != nil {
-			return false, common.MapToNFS4(getErr)
+			return false, types.StatusForErr(getErr)
 		}
 
 		serverAttrData, err = encodeAttrValsOnly(func(buf *bytes.Buffer, responseBitmap []uint32) error {

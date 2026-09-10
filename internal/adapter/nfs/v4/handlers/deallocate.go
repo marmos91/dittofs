@@ -66,7 +66,7 @@ func (h *Handler) handleDeallocate(ctx *types.CompoundContext, reader io.Reader)
 	handle := metadata.FileHandle(ctx.CurrentFH)
 	res, err := metaSvc.PunchHole(authCtx, handle, offset, length)
 	if err != nil {
-		return deallocErr(common.MapToNFS4(err))
+		return deallocErr(types.StatusForErr(err))
 	}
 
 	// The engine punch is correctness-critical, not just reclaim: the read path
@@ -91,7 +91,7 @@ func (h *Handler) handleDeallocate(ctx *types.CompoundContext, reader io.Reader)
 		if _, pErr := blockStore.PunchHole(ctx.Context, string(res.PayloadID), res.PreOpBlocks, offset, punchLen(offset, length, res.File.Size)); pErr != nil {
 			logger.Error("NFSv4.2 DEALLOCATE: block store punch failed",
 				"handle", string(handle), "error", pErr)
-			return deallocErr(common.MapContentToNFS4(pErr))
+			return deallocErr(types.StatusFor(common.ClassifyBlockStoreError(pErr)))
 		}
 	}
 

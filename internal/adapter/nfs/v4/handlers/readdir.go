@@ -7,7 +7,6 @@ import (
 	"io"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -127,7 +126,7 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, cooki
 
 	page, err := metaSvc.ReadDirectory(authCtx, dirHandle, cookie, maxcount)
 	if err != nil {
-		return readDirError(common.MapToNFS4(err))
+		return readDirError(types.StatusForErr(err))
 	}
 
 	// Compute cookie verifier from directory mtime (RFC 7530 Section 16.24).

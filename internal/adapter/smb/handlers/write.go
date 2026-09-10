@@ -421,7 +421,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
 	if err != nil {
 		logger.Debug("WRITE: prepare failed", "path", path, "error", err)
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
 	}
 
 	// ========================================================================
@@ -433,7 +433,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	err = common.WriteToBlockStore(authCtx.Context, blockStore, writeOp.PayloadID, req.Data, req.Offset)
 	if err != nil {
 		logger.Warn("WRITE: content write failed", "path", path, "error", err)
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: common.MapContentToSMB(err)}}, nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFor(common.ClassifyBlockStoreError(err))}}, nil
 	}
 
 	// ========================================================================
@@ -445,7 +445,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		logger.Warn("WRITE: commit failed", "path", path, "error", err)
 		// Data was written but metadata not updated - this is an inconsistent state
 		// but we still report the error
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
 	}
 
 	// Per MS-SMB2 2.2.21 the write-through bit is undefined for the 2.0.2 dialect,
@@ -472,10 +472,10 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		// guarantee that does not hold.
 		if _, flushErr := blockStore.Flush(authCtx.Context, string(writeOp.PayloadID)); flushErr != nil {
 			logger.Warn("WRITE: write-through content flush failed", "path", path, "error", flushErr)
-			writeStatus = common.MapContentToSMB(flushErr)
+			writeStatus = types.StatusFor(common.ClassifyBlockStoreError(flushErr))
 		} else if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, true); flushErr != nil {
 			logger.Warn("WRITE: write-through metadata flush failed", "path", path, "error", flushErr)
-			writeStatus = common.MapToSMB(flushErr)
+			writeStatus = types.StatusForErr(flushErr)
 		}
 	} else {
 		// SMB requires immediate metadata visibility across sessions (unlike NFS

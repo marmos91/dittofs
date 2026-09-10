@@ -5,7 +5,6 @@ import (
 	"io"
 	"sort"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
@@ -64,7 +63,7 @@ func (h *Handler) handleListXattrs(ctx *types.CompoundContext, reader io.Reader)
 	handle := metadata.FileHandle(ctx.CurrentFH)
 	rawNames, err := backend.ListXattr(authCtx, handle)
 	if err != nil {
-		return xattrErr(types.OP_LISTXATTRS, common.MapToNFS4(err))
+		return xattrErr(types.OP_LISTXATTRS, types.StatusForErr(err))
 	}
 
 	// Keep only user-namespace names (the only namespace exposed over the wire);

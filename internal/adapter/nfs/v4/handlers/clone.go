@@ -118,11 +118,11 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 	// files (NFS4ERR_ISDIR for directories, NFS4ERR_WRONG_TYPE otherwise).
 	srcFile, err := metaSvc.GetFile(srcAuth.Context, srcHandle)
 	if err != nil {
-		return cloneErr(common.MapToNFS4(err))
+		return cloneErr(types.StatusForErr(err))
 	}
 	dstFile, err := metaSvc.GetFile(dstAuth.Context, dstHandle)
 	if err != nil {
-		return cloneErr(common.MapToNFS4(err))
+		return cloneErr(types.StatusForErr(err))
 	}
 	if st := cloneRequireRegularFile(srcFile); st != types.NFS4_OK {
 		return cloneErr(st)
@@ -146,10 +146,10 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 	// the Service even after stateid validation). CheckPermissions also rejects
 	// a write to a read-only export.
 	if _, err := metaSvc.CheckPermissions(srcAuth, srcHandle, metadata.PermissionRead); err != nil {
-		return cloneErr(common.MapToNFS4(err))
+		return cloneErr(types.StatusForErr(err))
 	}
 	if _, err := metaSvc.CheckPermissions(dstAuth, dstHandle, metadata.PermissionWrite); err != nil {
-		return cloneErr(common.MapToNFS4(err))
+		return cloneErr(types.StatusForErr(err))
 	}
 
 	// Self-clone (source and destination are the same file) is a no-op: the
@@ -200,7 +200,7 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 		dstFile.PayloadID,
 	); err != nil {
 		logger.Debug("NFSv4.2 CLONE failed", "error", err, "client", ctx.ClientAddr)
-		return cloneErr(common.MapToNFS4(err))
+		return cloneErr(types.StatusForErr(err))
 	}
 
 	logger.Debug("NFSv4.2 CLONE",

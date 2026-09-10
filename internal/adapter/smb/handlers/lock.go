@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -466,7 +465,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 					"offset", lockElem.Offset,
 					"length", lockElem.Length,
 					"error", err)
-				status := common.MapLockToSMB(err)
+				status := types.StatusForLockErr(err)
 				// Rollback previously acquired locks (unlocks are not rolled back)
 				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
 				return NewErrorResult(status), nil
@@ -507,7 +506,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			isLockConflict := goerrors.As(err, &storeErr) && storeErr.Code == merrs.ErrLocked
 			if !isLockConflict {
 				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
-				return NewErrorResult(common.MapLockToSMB(err)), nil
+				return NewErrorResult(types.StatusForLockErr(err)), nil
 			}
 
 			// Conflict path. FailImmediately → return LOCK_NOT_GRANTED.
@@ -563,12 +562,12 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
 				// Lock conflict on retry → LOCK_NOT_GRANTED. Non-conflict
 				// errors (e.g. file deleted while parked) flow through
-				// common.MapLockToSMB.
+				// smb/types.StatusForLockErr.
 				var retryStoreErr *metadata.StoreError
 				if goerrors.As(err, &retryStoreErr) && retryStoreErr.Code == merrs.ErrLocked {
 					return NewErrorResult(types.StatusLockNotGranted), nil
 				}
-				return NewErrorResult(common.MapLockToSMB(err)), nil
+				return NewErrorResult(types.StatusForLockErr(err)), nil
 			}
 
 			acquiredLocks = append(acquiredLocks, lockElem)
@@ -733,6 +732,6 @@ func rollbackLocks(
 }
 
 // Note: lockErrorToStatus was consolidated into
-// internal/adapter/common/lock_errmap.go. Callers now use
-// common.MapLockToSMB — lock-context and general-context mappings are now
-// driven by the same three-column tables used by NFSv3/NFSv4.
+// the smb/types StatusForLock switch. Callers now use
+// smb/types.StatusForLockErr — lock-context and general-context mappings are
+// separate functions in the same package.

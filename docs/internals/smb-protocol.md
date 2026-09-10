@@ -283,8 +283,8 @@ decision.
 ## Error Mapping
 
 Every `metadata.ErrorCode` is translated to an `NTSTATUS` via
-`internal/adapter/common.MapToSMB`, which consumes the same shared table as NFSv3 / NFSv4
-(`internal/adapter/common/errmap.go`). Examples:
+`smb/types.StatusForErr`, whose switch lives in the adapter types package
+(`internal/adapter/smb/types`). Examples:
 
 - `ErrNotFound` → `STATUS_OBJECT_NAME_NOT_FOUND`
 - `ErrAlreadyExists` → `STATUS_OBJECT_NAME_COLLISION`
@@ -295,17 +295,20 @@ Every `metadata.ErrorCode` is translated to an `NTSTATUS` via
 
 ### Lock-Context vs General-Context Divergence
 
-Lock-operation errors (SMB2 LOCK requests) use a separate accessor `common.MapLockToSMB`
-backed by `internal/adapter/common/lock_errmap.go`. The divergence matters:
-**`ErrLocked` in lock context → `STATUS_LOCK_NOT_GRANTED`; `ErrLocked` in general READ/WRITE
-I/O context → `STATUS_FILE_LOCK_CONFLICT`**. Clients react differently to the two codes
-(retry-later vs. hard-fail-with-indication), so the distinction is wire-visible.
+Lock-operation errors (SMB2 LOCK requests) use the separate functions
+`smb/types.StatusForLock` / `StatusForLockErr`, alongside
+`StatusFor` / `StatusForErr` for general I/O — same package, distinct
+functions, so the divergence is visible at the call site. The divergence
+matters: **`ErrLocked` in lock context → `STATUS_LOCK_NOT_GRANTED`;
+`ErrLocked` in general READ/WRITE I/O context → `STATUS_FILE_LOCK_CONFLICT`**.
+Clients react differently to the two codes (retry-later vs.
+hard-fail-with-indication), so the distinction is wire-visible.
 
-See `internal/adapter/common/lock_errmap.go` for the full lock-context override table.
+See `internal/adapter/smb/types/statusfor.go` for both switches.
 
 ### Wrapped Error Unwrapping
 
-`common.MapToSMB` uses `errors.As`, so wrapped `StoreError` values
+`smb/types.StatusForErr` uses `errors.As`, so wrapped `StoreError` values
 (`fmt.Errorf("context: %w", storeErr)`) unwrap correctly. Prior to v0.15.0 the SMB handler
 used an unwrapped type assertion that failed on wrapped errors and fell through to
 `STATUS_INTERNAL_ERROR` — the consolidation fixed that latent bug.

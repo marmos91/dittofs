@@ -2,8 +2,6 @@ package common
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"io"
 
 	"github.com/marmos91/dittofs/internal/adapter/pool"
@@ -55,14 +53,9 @@ func ReadFromBlockStore(
 		return BlockReadResult{Data: data[:n], EOF: true}, nil
 	}
 
-	if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
-		pool.Put(data)
-		return BlockReadResult{}, readErr
-	}
-
 	if readErr != nil {
 		pool.Put(data)
-		return BlockReadResult{}, fmt.Errorf("ReadAt error: %w", readErr)
+		return BlockReadResult{}, normalizeBlockStoreError(readErr)
 	}
 
 	return BlockReadResult{Data: data[:n], EOF: false}, nil

@@ -382,7 +382,7 @@ func (h *Handler) executeCopyChunks(
 	srcFile, err := metaSvc.GetFileForRead(ctx.Context, srcOpen.MetadataHandle)
 	if err != nil {
 		logger.Debug("COPYCHUNK: failed to get source file", "path", srcPath, "error", err)
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 
 	// Get destination block store
@@ -498,14 +498,14 @@ func (h *Handler) executeCopyChunks(
 		if err != nil {
 			logger.Warn("COPYCHUNK: source read failed",
 				"chunk", i, "srcPath", srcPath, "error", err)
-			// COPYCHUNK source read is a content-path op: MapContentToSMB
-			// maps a closed-store error (source share removed
+			// COPYCHUNK source read is a content-path op: StatusFor over
+			// ClassifyBlockStoreError maps a closed-store error (source share removed
 			// mid-copy) to STATUS_FILE_CLOSED and preserves the
 			// CAS-corruption / remote-unavailable mappings, defaulting to
 			// the I/O-class status for opaque failures.
 			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
-				common.MapContentToSMB(err), chunksWritten, totalBytesWritten), nil
+				types.StatusFor(common.ClassifyBlockStoreError(err)), chunksWritten, totalBytesWritten), nil
 		}
 
 		// Reject short reads (TOCTOU: source may have been truncated concurrently)
@@ -528,7 +528,7 @@ func (h *Handler) executeCopyChunks(
 				"chunk", i, "dstPath", dstPath, "error", err)
 			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
-				common.MapToSMB(err), chunksWritten, totalBytesWritten), nil
+				types.StatusForErr(err), chunksWritten, totalBytesWritten), nil
 		}
 
 		// Write to destination.
@@ -539,13 +539,13 @@ func (h *Handler) executeCopyChunks(
 			logger.Warn("COPYCHUNK: destination write failed",
 				"chunk", i, "dstPath", dstPath, "error", err)
 			// COPYCHUNK destination write is a content-path op:
-			// MapContentToSMB maps a closed-store error (dest share removed
+			// StatusForErr (via ClassifyBlockStoreError) maps a closed-store error (dest share removed
 			// mid-copy) to STATUS_FILE_CLOSED and preserves the
 			// CAS-corruption / remote-unavailable mappings, defaulting to
 			// the I/O-class status for opaque failures.
 			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
-				common.MapContentToSMB(err), chunksWritten, totalBytesWritten), nil
+				types.StatusFor(common.ClassifyBlockStoreError(err)), chunksWritten, totalBytesWritten), nil
 		}
 
 		// Commit write metadata

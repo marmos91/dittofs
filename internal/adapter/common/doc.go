@@ -20,9 +20,18 @@
 //
 // # Error mapping
 //
-// errmap.go is the single source of truth mapping metadata store errors to
-// per-protocol status codes (NFS3 / NFS4 / SMB) for the general path;
-// lock_errmap.go and content_errmap.go cover the lock and content paths.
+// The metadata store error → protocol status translation lives in the
+// per-adapter types packages (internal/adapter/nfs/types,
+// internal/adapter/nfs/v4/types, internal/adapter/smb/types) as StatusFor
+// / StatusForErr — the single source of truth per protocol, with a full
+// enum-walk test per package. The SMB LOCK path uses StatusForLock /
+// StatusForLockErr (lock-vs-general divergence, MS-SMB2 3.3.5.14).
+// Block-store errors are classified here: normalizeBlockStoreError wraps
+// every error leaving ReadFromBlockStore / WriteToBlockStore /
+// CommitBlockStore as a *merrs.StoreError (stale-handle for a closed
+// store, I/O for everything else, original preserved as Cause), and
+// ClassifyBlockStoreError maps a raw block-store error to its code for
+// the raw-engine call sites that bypass the payload helpers.
 //
 // # Cache invalidation
 //

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
@@ -65,7 +64,7 @@ func (h *Handler) handleGetXattr(ctx *types.CompoundContext, reader io.Reader) *
 	handle := metadata.FileHandle(ctx.CurrentFH)
 	value, found, err := backend.GetXattr(authCtx, handle, canonical)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		return xattrErr(types.OP_GETXATTR, status)
 	}
 	if !found {
