@@ -1505,10 +1505,10 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	// Dispatch lease break and either park the CREATE async (emit interim
 	// STATUS_PENDING) or wait for the break to drain inline. Async parking
-	// is unsafe mid-compound-chain (NextCommand != 0): the interim PENDING
-	// would let the dispatch loop run the trailing commands against the
-	// pre-break state, and the resume goroutine waits for a break ACK the
-	// client cannot send until it observes the interim — mirroring the LOCK
+	// is forced off mid-compound-chain (NextCommand != 0): the compound
+	// processor defers trailing commands behind the parked CREATE, but that
+	// couples completion to a client-sent break ACK — the inline wait keeps
+	// the whole compound synchronous with the break, mirroring the LOCK
 	// path's ctx.NextCommand guard (MS-SMB2 §3.3.4.2 interim async response).
 	if asyncId := h.breakAndMaybeParkCreateInCompound(ctx, draft); asyncId != 0 {
 		// Parked: the resume goroutine releases the reservation on completion.

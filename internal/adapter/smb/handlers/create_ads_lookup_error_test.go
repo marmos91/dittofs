@@ -19,19 +19,25 @@ import (
 // the auto-create path ran anyway, masking a store failure as a fresh
 // file+stream create.
 
-// adsLookupFailStore wraps the memory metadata store and fails the first
-// listing of the seeded parent directory, so LookupCaseInsensitive returns a
-// real error for the ADS base while every other operation works normally.
+// adsLookupFailStore wraps the memory metadata store and fails the SECOND
+// listing of the seeded parent directory. The main base-file lookup performs
+// its own listing first (the exact-case GetChild misses and falls to
+// ListChildren); failing that first listing would return the error from the
+// main lookup before the fixed ADS-base check runs. Counting listings and
+// failing only the second one lets the main lookup succeed through listing so
+// the injected failure lands on the adsBaseFileName lookup the fix governs.
 type adsLookupFailStore struct {
 	metadata.Store
-	parent metadata.FileHandle
-	called bool
+	parent   metadata.FileHandle
+	listings int
 }
 
 func (s *adsLookupFailStore) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int, attrs metadata.ChildAttrs) ([]metadata.DirEntry, string, error) {
 	if bytes.Equal(dirHandle, s.parent) && cursor == "" {
-		s.called = true
-		return nil, "", fmt.Errorf("injected list failure")
+		s.listings++
+		if s.listings == 2 {
+			return nil, "", fmt.Errorf("injected list failure")
+		}
 	}
 	return s.Store.ListChildren(ctx, dirHandle, cursor, limit, attrs)
 }
@@ -94,7 +100,7 @@ func TestCreate_ADSLookupErrorSurfacesAsStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create returned transport error: %v", err)
 	}
-	if !failStore.called {
+	if failStore.listings < 2 {
 		t.Fatalf("ADS base listing was never attempted; test does not exercise the lookup path (status=%v err=%v)", resp.Status, err)
 	}
 	if resp.Status == types.StatusSuccess {

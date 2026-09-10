@@ -44,10 +44,12 @@ type createDraft struct {
 	excludeOwner *lock.LockOwner
 	// noAsyncPark forces breakAndMaybeParkCreate onto the inline-wait arm:
 	// set by breakAndMaybeParkCreateInCompound when the CREATE carries trailing
-	// compound commands (ctx.NextCommand != 0). An interim PENDING mid-chain
-	// would let the trailing commands run against pre-break state and the
-	// resume goroutine would wait for a break ACK the client cannot send until
-	// it observes the interim (MS-SMB2 §3.3.4.2 interim async response).
+	// compound commands (ctx.NextCommand != 0). The compound processor already
+	// defers trailing commands behind a mid-chain parked CREATE via
+	// ReplaceCallback, but deferring couples the parked CREATE's completion to
+	// a client-sent break ACK; forcing the inline wait keeps the whole compound
+	// synchronous with the break (mirroring the LOCK path's ctx.NextCommand
+	// guard) so no trailing command observes pre-break state.
 	noAsyncPark bool
 	// appInstanceProcessed records that ProcessAppInstanceId already ran in the
 	// pre-break CREATE path (so any conflicting open carrying the same
@@ -218,10 +220,11 @@ func (h *Handler) scanNonStatOpensForFile(
 // breakAndMaybeParkCreateInCompound dispatches the handle-lease break with the
 // compound guard applied: when the CREATE carries trailing compound commands
 // (ctx.NextCommand != 0), async parking is forced off and the break waits
-// inline — an interim PENDING mid-chain would let the trailing commands run
-// against pre-break state and the resume goroutine would wait for a break ACK
-// the client cannot send until it observes the interim (MS-SMB2 §3.3.4.2
-// interim async response; mirrors the LOCK path's ctx.NextCommand guard).
+// inline. The compound processor already defers trailing commands behind a
+// mid-chain parked CREATE via ReplaceCallback, but deferring couples the
+// parked CREATE's completion to a client-sent break ACK; the inline wait keeps
+// the whole compound synchronous with the break (mirroring the LOCK path's
+// ctx.NextCommand guard).
 func (h *Handler) breakAndMaybeParkCreateInCompound(ctx *SMBHandlerContext, d *createDraft) uint64 {
 	if ctx.NextCommand != 0 {
 		d.noAsyncPark = true
