@@ -1871,9 +1871,9 @@ func (h *Handler) handleOpenRootCreate(
 	// Share-root open: report the DACL-evaluated per-bit granted mask per
 	// MS-SMB2 §3.3.5.9 paragraph 8. CheckFileAccess returns the granted
 	// intersection on both arms (allow AND ErrAccessDenied). Share-root
-	// access has already been authorised upstream (CheckExportAccess at
-	// mount + Tree Connect ACL); a partial-deny here therefore reflects a
-	// narrower DACL than the share-level grant, not a fatal denial, so we
+	// access has already been authorised upstream (share-level permission via
+	// ResolveSharePermission at mount + Tree Connect ACL); a partial-deny here
+	// therefore reflects a narrower DACL than the share-level grant, not a fatal denial, so we
 	// log it and continue with the (possibly narrowed) mask rather than
 	// overstate rights by re-resolving DesiredAccess.
 	var grantedAccess uint32
