@@ -41,7 +41,10 @@ type NFSAdapterSettings struct {
 
 	// Version negotiation
 	MinVersion string `gorm:"default:3;size:10" json:"min_version"`
-	MaxVersion string `gorm:"default:4.1;size:10" json:"max_version"`
+	// MaxVersion defaults to 4.0: the server has no EXCHANGE_ID/CREATE_SESSION,
+	// so advertising 4.1 makes real 4.1 clients fail the session bind
+	// (NFS4ERR_CONN_NOT_BOUND_TO_SESSION). 4.1 stays selectable.
+	MaxVersion string `gorm:"default:4.0;size:10" json:"max_version"`
 
 	// Timeouts (seconds)
 	LeaseTime               int `gorm:"default:90" json:"lease_time"`
@@ -258,7 +261,7 @@ func NewDefaultNFSSettings(adapterID string) *NFSAdapterSettings {
 		ID:                           uuid.New().String(),
 		AdapterID:                    adapterID,
 		MinVersion:                   "3",
-		MaxVersion:                   "4.1",
+		MaxVersion:                   "4.0",
 		LeaseTime:                    90,
 		GracePeriod:                  90,
 		DelegationRecallTimeout:      90,
