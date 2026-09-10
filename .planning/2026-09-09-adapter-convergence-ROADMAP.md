@@ -51,29 +51,21 @@ All five PRs merged and assigned marmos91; #2490/#2482/#2487/#2471/#2464 auto-cl
 pynfs delegation confirmation remains open as harness-side verification (no DittoFS change
 warranted — verdict in `.planning/2026-09-09-diag-2329-2464.md`).
 
-### Step 2 — Wave 3: shared-layer reuse + lifecycle (goals 2 + 4) — NEXT
+### Step 2 — Wave 3: shared-layer reuse + lifecycle (goals 2 + 4) — IMPLEMENTED, review passes running
 
-Small, mostly independent PRs; good for a parallel fan-out (disjoint files). Premises re-verified
-on develop 7e5cd2e40 (details in `.planning/2026-09-09-wave2-closure.md`):
+All six branches pushed 2026-09-10 after the fan-out (5 workers, plan-validation corrections baked
+in; full state in `.planning/2026-09-09-wave3-plan.md`). 12 read-only reviewers fanned out
+(correctness + simplification + adversarial per branch); next: PR opens (guard first), serialized
+merges, Copilot babysitting.
 
-1. `TestErrorMapCoverage` enum rewrite — **LAND FIRST** (errmap_test.go:54 types 25, enum has 26
-   with ErrConflict; until this lands every other errmap fix is unguarded)
-2. Wire the NFSv4 bypassing content paths (read.go:143, write.go:215, read_plus.go:125) to the
-   shared mapper; restore `ErrStoreClosed → STALE` end to end (lookupErrorRow already maps it)
-3. Delete dead `MapLockToNFS3/4` (SMB is the only production caller); fix `ErrLockLimitExceeded`
-   Jukebox-vs-IO drift; add the `ErrConflict` row **and name the handler that observes it**
-   (mind the errors.Join wrap at shares/coordinator.go:290-303)
-4. Delete `getUserIdentity` (SMB uses the `ResolvedIdentity` it already has); scope to resolved
-   identities only — AUTH_SYS is exempt by RFC 5531
-5. Listener stop-before-bind leak + EMFILE/ENFILE accept busy-loop (`pkg/adapter/base.go:203-218,
-   246-263`)
-6. `CheckExportAccess` stale-citation fix in `CLAUDE.md:105` + `create.go:1874` (real symbols:
-   `ResolveSharePermission`, `tree_connect.go:442`)
-7. Async credit grants (response.go:1207-1210, 1278-1281) bypass Session.credits — under-counts
-   GetOutstanding for grantAdaptive's throttle (grantAdaptive itself is NOT dead)
-
-Guards from the plan: a dead function does not make its file dead (check `init()`-filled tables
-before deleting).
+| Branch | Content | Head |
+| --- | --- | --- |
+| fix/errmap-coverage-dead-columns | COMBINED GUARD: enum walk + ErrConflict row + exoticCodes pin + delete MapLockToNFS3/4 (L0+L2 merged) | 98769af27 |
+| fix/v4-content-errmap-wiring | 5 sites (read/read_plus/write/commit/deallocate) → MapContentToNFS4, ErrStoreClosed→STALE end to end | 27c86db9a |
+| fix/smb-resolved-identity | getUserIdentity → uidGIDFromSessionUser pure rename (Option B: ResolvedIdentity-consumption deferred to follow-up) | 0bd237197 |
+| fix/adapter-lifecycle-accept | Stop-path listenerReady close (double-close-guarded) + accept backoff 10ms→1s; bind-failure close killed (awaitListener two-channel select) | 60caff603 |
+| fix/async-credit-grants | 2 async grant sites → GrantCredits + SequenceWindow.Grant + nil-SessionManager floor guard | 3bf0a5fd4 |
+| fix/export-acl-citations | CheckExportAccess → ResolveSharePermission/Tree Connect ACL renames (CLAUDE.md + create.go) | e68dbb49b |
 
 ### Step 3 — Wave 4: SMB triage (before the SMB fix waves)
 
