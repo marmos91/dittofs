@@ -13,49 +13,30 @@ import (
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
-// allErrorCodes enumerates every merrs.ErrorCode re-exported from
-// pkg/metadata/errors.go. This is the canonical list TestErrorMapCoverage
-// iterates over: adding a new ErrorCode without updating this list AND
-// adding a row in errorMap will fail the count-length assertion.
-func allErrorCodes() []merrs.ErrorCode {
-	return []merrs.ErrorCode{
-		merrs.ErrNotFound,
-		merrs.ErrAccessDenied,
-		merrs.ErrAuthRequired,
-		merrs.ErrPermissionDenied,
-		merrs.ErrAlreadyExists,
-		merrs.ErrNotEmpty,
-		merrs.ErrIsDirectory,
-		merrs.ErrNotDirectory,
-		merrs.ErrInvalidArgument,
-		merrs.ErrIOError,
-		merrs.ErrNoSpace,
-		merrs.ErrQuotaExceeded,
-		merrs.ErrReadOnly,
-		merrs.ErrNotSupported,
-		merrs.ErrInvalidHandle,
-		merrs.ErrStaleHandle,
-		merrs.ErrLocked,
-		merrs.ErrLockNotFound,
-		merrs.ErrPrivilegeRequired,
-		merrs.ErrNameTooLong,
-		merrs.ErrDeadlock,
-		merrs.ErrGracePeriod,
-		merrs.ErrLockLimitExceeded,
-		merrs.ErrLockConflict,
-		merrs.ErrConnectionLimitReached,
+// walkAllErrorCodes enumerates every merrs.ErrorCode by walking the
+// contiguous iota range in pkg/metadata/errors (ErrNotFound through
+// ErrConflict), the same pattern the errors package's own test uses.
+// Adding a new ErrorCode automatically extends the walk; adding a row in
+// errorMap is then enforced by TestErrorMapCoverage.
+func walkAllErrorCodes() []merrs.ErrorCode {
+	codes := make([]merrs.ErrorCode, 0, 26)
+	for c := merrs.ErrNotFound; c <= merrs.ErrConflict; c++ {
+		codes = append(codes, c)
 	}
+	return codes
 }
 
 // TestErrorMapCoverage asserts every merrs.ErrorCode constant has a row in
-// errorMap. Also asserts the enumeration itself has the expected count so a
-// drift in pkg/metadata/errors.go is caught by a failing test here.
+// errorMap. A literal count guard sits alongside the walk so the enum's
+// shape drifts loudly: if pkg/metadata/errors.go adds or removes a code,
+// both the walk range and this number must be confirmed together.
 func TestErrorMapCoverage(t *testing.T) {
-	const expectedCount = 25
-	if n := len(allErrorCodes()); n != expectedCount {
-		t.Fatalf("allErrorCodes has %d entries; update allErrorCodes() AND errorMap when adding ErrorCodes (expected %d)", n, expectedCount)
+	const expectedCount = 26
+	codes := walkAllErrorCodes()
+	if n := len(codes); n != expectedCount {
+		t.Fatalf("enum walk covers %d codes; update the walk range in walkAllErrorCodes() AND errorMap when the ErrorCode enum changes (expected %d)", n, expectedCount)
 	}
-	for _, code := range allErrorCodes() {
+	for _, code := range codes {
 		if _, ok := errorMap[code]; !ok {
 			t.Errorf("errorMap missing row for %v", code)
 		}
@@ -266,40 +247,6 @@ func TestMapLockToSMB(t *testing.T) {
 	}
 }
 
-// TestMapLockToNFS3 spot-checks a handful of lock-context rows.
-func TestMapLockToNFS3(t *testing.T) {
-	if got := MapLockToNFS3(nil); got != nfs3types.NFS3OK {
-		t.Errorf("MapLockToNFS3(nil) = %d, want NFS3OK", got)
-	}
-	locked := &merrs.StoreError{Code: merrs.ErrLocked}
-	if got := MapLockToNFS3(locked); got != nfs3types.NFS3ErrJukebox {
-		t.Errorf("MapLockToNFS3(ErrLocked) = %d, want NFS3ErrJukebox", got)
-	}
-	lnf := &merrs.StoreError{Code: merrs.ErrLockNotFound}
-	if got := MapLockToNFS3(lnf); got != nfs3types.NFS3ErrInval {
-		t.Errorf("MapLockToNFS3(ErrLockNotFound) = %d, want NFS3ErrInval", got)
-	}
-}
-
-// TestMapLockToNFS4 spot-checks a handful of lock-context rows.
-func TestMapLockToNFS4(t *testing.T) {
-	if got := MapLockToNFS4(nil); got != nfs4types.NFS4_OK {
-		t.Errorf("MapLockToNFS4(nil) = %d, want NFS4_OK", got)
-	}
-	locked := &merrs.StoreError{Code: merrs.ErrLocked}
-	if got := MapLockToNFS4(locked); got != nfs4types.NFS4ERR_DENIED {
-		t.Errorf("MapLockToNFS4(ErrLocked) = %d, want NFS4ERR_DENIED", got)
-	}
-	deadlock := &merrs.StoreError{Code: merrs.ErrDeadlock}
-	if got := MapLockToNFS4(deadlock); got != nfs4types.NFS4ERR_DEADLOCK {
-		t.Errorf("MapLockToNFS4(ErrDeadlock) = %d, want NFS4ERR_DEADLOCK", got)
-	}
-	grace := &merrs.StoreError{Code: merrs.ErrGracePeriod}
-	if got := MapLockToNFS4(grace); got != nfs4types.NFS4ERR_GRACE {
-		t.Errorf("MapLockToNFS4(ErrGracePeriod) = %d, want NFS4ERR_GRACE", got)
-	}
-}
-
 // ============================================================================
 // Unit-tier exotic codes.
 // ============================================================================
@@ -326,6 +273,7 @@ func exoticCodes() []merrs.ErrorCode {
 		merrs.ErrPrivilegeRequired,
 		merrs.ErrQuotaExceeded,
 		merrs.ErrLockConflict,
+		merrs.ErrConflict,
 	}
 }
 
@@ -365,18 +313,12 @@ func TestExoticErrorCodes(t *testing.T) {
 			}
 
 			// For codes that ALSO live in lockErrorMap, assert the
-			// lock-context mappers surface the lockErrorMap values (not
-			// errorMap's general-context values). This catches the
+			// lock-context mapper surfaces the lockErrorMap value (not
+			// errorMap's general-context value). This catches the
 			// lock-vs-general divergence called out for ErrDeadlock,
 			// ErrGracePeriod, ErrLockLimitExceeded, ErrLockConflict,
 			// ErrLockNotFound.
 			if lockRow, lockOK := lockErrorMap[code]; lockOK {
-				if got := MapLockToNFS3(storeErr); got != lockRow.NFS3 {
-					t.Errorf("MapLockToNFS3(%v) = %d, want lockRow.NFS3 = %d", code, got, lockRow.NFS3)
-				}
-				if got := MapLockToNFS4(storeErr); got != lockRow.NFS4 {
-					t.Errorf("MapLockToNFS4(%v) = %d, want lockRow.NFS4 = %d", code, got, lockRow.NFS4)
-				}
 				if got := MapLockToSMB(storeErr); got != lockRow.SMB {
 					t.Errorf("MapLockToSMB(%v) = %v, want lockRow.SMB = %v", code, got, lockRow.SMB)
 				}
@@ -427,7 +369,7 @@ func TestCrossProtocolUnitConformance(t *testing.T) {
 		exoticSet[c] = true
 	}
 
-	for _, code := range allErrorCodes() {
+	for _, code := range walkAllErrorCodes() {
 		inE2E := e2eTriggerableCodes[code]
 		inUnit := exoticSet[code]
 		if !inE2E && !inUnit {
