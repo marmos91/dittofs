@@ -35,7 +35,7 @@ coordination, credit flow control, and code structure.
 ## SMB vs NFS: Conceptual Mapping
 
 | Aspect | NFS (v3/v4) | SMB2 (2.0.2) | SMB3 (3.0-3.1.1) |
-|--------|-------------|--------------|-------------------|
+| -------- | ------------- | -------------- | ------------------- |
 | **Origin** | Unix (Sun Microsystems, 1984) | Windows (IBM/Microsoft, 1983) | Windows (Microsoft, 2012) |
 | **Design** | v3: Stateless / v4: Stateful | Stateful, session-based | Stateful, session-based |
 | **Identity** | UID/GID (Unix) | SID (Windows Security ID) | SID + Kerberos principal |
@@ -54,7 +54,7 @@ coordination, credit flow control, and code structure.
 **NFS-to-SMB concept mapping:**
 
 | NFS Concept | SMB Equivalent | Notes |
-|-------------|----------------|-------|
+| ------------- | ---------------- | ------- |
 | Export | Share | Network-accessible directory |
 | Mount | Tree Connect | Establishing access to a share |
 | File Handle | FileID | Opaque identifier for open file |
@@ -443,7 +443,7 @@ The NEGOTIATE request contains a list of dialect revisions supported by the clie
 selects the highest dialect both sides support:
 
 | Priority | Dialect | Hex | Key Capability |
-|----------|---------|-----|----------------|
+| ---------- | --------- | ----- | ---------------- |
 | 1 (highest) | SMB 3.1.1 | 0x0311 | Preauth integrity, negotiate contexts |
 | 2 | SMB 3.0.2 | 0x0302 | VALIDATE_NEGOTIATE_INFO |
 | 3 | SMB 3.0 | 0x0300 | Encryption (AES-CCM), CMAC signing |
@@ -560,7 +560,7 @@ the session binding and message size cannot be tampered with.
 ### Cipher Suites
 
 | Cipher | ID | Default For | Key Size | Nonce Size | Tag Size |
-|--------|-----|-------------|----------|------------|----------|
+| -------- | ----- | ------------- | ---------- | ------------ | ---------- |
 | AES-128-CCM | 0x0001 | SMB 3.0, 3.0.2 | 128-bit | 11 bytes | 16 bytes |
 | AES-128-GCM | 0x0002 | SMB 3.1.1 | 128-bit | 12 bytes | 16 bytes |
 | AES-256-CCM | 0x0003 | -- | 256-bit | 11 bytes | 16 bytes |
@@ -592,7 +592,7 @@ derivation.
 ### Signing Algorithms by Dialect
 
 | Dialect | Algorithm | Key Derivation |
-|---------|-----------|----------------|
+| --------- | ----------- | ---------------- |
 | SMB 2.0.2 | HMAC-SHA256 | Direct from session key |
 | SMB 3.0 | AES-128-CMAC | SP800-108 KDF |
 | SMB 3.0.2 | AES-128-CMAC | SP800-108 KDF |
@@ -659,7 +659,7 @@ Where `||` denotes concatenation and `PRF` is HMAC-SHA256.
 Four keys are derived per session:
 
 | Key | Label (null-terminated) | Usage |
-|-----|------------------------|-------|
+| ----- | ------------------------ | ------- |
 | SigningKey | `"SMBSigningKey\0"` | Message signing (HMAC/CMAC/GMAC) |
 | EncryptionKey | `"SMBS2CCipherKey\0"` (3.0) / `"SMBServerEncryptionKey\0"` (3.1.1) | Server-to-client encryption |
 | DecryptionKey | `"SMBC2SCipherKey\0"` (3.0) / `"SMBClientEncryptionKey\0"` (3.1.1) | Client-to-server decryption |
@@ -668,7 +668,7 @@ Four keys are derived per session:
 ### Context by Dialect
 
 | Dialect | KDF Context |
-|---------|-------------|
+| --------- | ------------- |
 | SMB 3.0 | `"SmbSign\0"` / `"ServerIn \0"` / `"ServerOut\0"` (fixed strings) |
 | SMB 3.0.2 | Same as 3.0 |
 | SMB 3.1.1 | Preauth integrity hash value (SHA-512 hash chain output) |
@@ -690,7 +690,7 @@ session key is required to be at least 32 bytes (achieved by hashing with SHA-25
 ### Lease V2 vs V1
 
 | Feature | Lease V1 (SMB 2.1) | Lease V2 (SMB 3.0+) |
-|---------|--------------------|--------------------|
+| --------- | -------------------- | -------------------- |
 | ParentLeaseKey | Not available | Links child to parent directory lease |
 | Epoch | Not available | Monotonic counter for stale break detection |
 | Directory Leases | Not supported | Read-caching on directories |
@@ -895,7 +895,7 @@ caching state from the other protocol:
 **NFS operation encountering SMB state:**
 
 | NFS Operation | SMB Read Lease (R) | SMB Write Lease (RW/RWH) | SMB Dir Lease |
-|---------------|--------------------|-----------------------------|---------------|
+| --------------- | -------------------- | ----------------------------- | --------------- |
 | **READ** | Coexists | Break to None, wait for ack | -- |
 | **WRITE** | Break to None | Break to None, wait for ack | -- |
 | **CREATE** | -- | -- | Break directory lease |
@@ -908,7 +908,7 @@ caching state from the other protocol:
 **SMB operation encountering NFS state:**
 
 | SMB Operation | NFS Read Deleg | NFS Write Deleg | NFS Dir Deleg |
-|---------------|----------------|-----------------|---------------|
+| --------------- | ---------------- | ----------------- | --------------- |
 | **CREATE (read)** | Coexists | CB_RECALL, wait | -- |
 | **CREATE (write)** | CB_RECALL, wait | CB_RECALL, wait | -- |
 | **WRITE** | CB_RECALL, wait | CB_RECALL, wait | -- |
@@ -921,7 +921,7 @@ caching state from the other protocol:
 ### Coexistence Rules
 
 | NFS State | SMB State | Result | Rationale |
-|-----------|-----------|--------|-----------|
+| ----------- | ----------- | -------- | ----------- |
 | Read delegation | Read lease (R) | **Coexist** | Both are read-only caching; no data conflict |
 | Read delegation | Write lease (RW/RWH) | **Conflict** | Write lease allows cached writes that read delegation won't see |
 | Write delegation | Any lease | **Conflict** | Write delegation implies exclusive write caching |
@@ -1176,7 +1176,7 @@ SMB adapter delivers CHANGE_NOTIFY response with FILE_NOTIFY_INFORMATION
 The following filters are recognized:
 
 | Filter | Value | Description |
-|--------|-------|-------------|
+| -------- | ------- | ------------- |
 | FILE_NOTIFY_CHANGE_FILE_NAME | 0x0001 | File create/delete/rename |
 | FILE_NOTIFY_CHANGE_DIR_NAME | 0x0002 | Directory create/delete/rename |
 | FILE_NOTIFY_CHANGE_ATTRIBUTES | 0x0004 | Attribute changes |

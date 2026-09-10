@@ -519,7 +519,7 @@ DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, compr
 ### Workflow Overview
 
 | Workflow | Trigger | Purpose | Duration |
-|----------|---------|---------|----------|
+| ---------- | --------- | --------- | ---------- |
 | `lint.yml` | PR, push | Go lint + vet + spec citations | ~2 min |
 | `unit-tests.yml` | PR, push | Unit tests with race detection | ~3 min |
 | `windows-build.yml` | PR, push | Windows build + unit tests | ~5 min |
