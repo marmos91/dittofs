@@ -230,7 +230,7 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 			// Exempt from the FILE_WRITE_ATTRIBUTES gate: EA writes carry
 			// their own FILE_WRITE_EA check in their case arm below, and
 			// requiring both bits would fail handles opened with write-EA
-			// access only (MS-FSA 2.1.5.15.3).
+			// access only (MS-FSA 2.1.5.15.6).
 		default:
 			if !hasAccessRight(openFile.GrantedAccess, uint32(types.FileWriteAttributes)) {
 				return setInfoStatus(types.StatusAccessDenied), nil
@@ -1816,7 +1816,7 @@ func (h *Handler) setFileInfoFromStore(
 		return h.handleFileLinkInformation(ctx, authCtx, openFile, buffer)
 
 	case types.FileFullEaInformation: // [MS-FSCC] 2.4.16 (FileFullEaInformation) - Extended attributes
-		// Per MS-FSA 2.1.5.15.3 ("Set an Extended Attribute"), the open must
+		// Per MS-FSA 2.1.5.15.6 ("FileFullEaInformation"), the open must
 		// include FILE_WRITE_EA; otherwise STATUS_ACCESS_DENIED. This class was
 		// previously exempt from the attribute gate — the reserved-name check
 		// below only guards the ACL xattr, not ordinary EA writes.
