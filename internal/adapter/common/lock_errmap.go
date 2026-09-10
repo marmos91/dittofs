@@ -3,85 +3,63 @@ package common
 import (
 	goerrors "errors"
 
-	nfs3types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
-	nfs4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	smbtypes "github.com/marmos91/dittofs/internal/adapter/smb/types"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
-// Lock-context mapping.
+// Lock-context mapping for the SMB LOCK path.
 //
-// In a LOCK request (SMB2 LOCK, NLM/NFSv3 NLM_LOCK, NFSv4 LOCK/LOCKU) the
-// same merrs.ErrorCode values map to different protocol codes than in the
-// general I/O path:
+// In a LOCK request the same merrs.ErrorCode values map to different SMB
+// codes than in the general I/O path:
 //
-//   - merrs.ErrLocked in LOCK context  →  STATUS_LOCK_NOT_GRANTED (SMB) /
-//     NFS3ERR_JUKEBOX / NFS4ERR_DENIED.
+//   - merrs.ErrLocked in LOCK context  →  STATUS_LOCK_NOT_GRANTED.
 //   - merrs.ErrLocked in general (READ/WRITE) context  →
-//     STATUS_FILE_LOCK_CONFLICT (SMB) — see errorMap in errmap.go.
+//     STATUS_FILE_LOCK_CONFLICT — see errorMap in errmap.go.
 //
-// Sources:
-//   - SMB column: internal/adapter/smb/handlers/lock.go
-//     (lockErrorToStatus — authoritative).
-//   - NFS3 column: internal/adapter/nfs/xdr/errors.go:140-146 (ErrLocked
-//     only; other lock-context codes did not have NFSv3 entries and fall
-//     back to the closest retry-class code).
-//   - NFS4 column: internal/adapter/nfs/v4/types/errors.go:59-64 for
-//     ErrLocked/Deadlock/Grace, extended here with ErrLockNotFound →
-//     NFS4ERR_LOCK_RANGE and ErrLockConflict → NFS4ERR_DENIED per RFC 7530.
+// The NFSv3/NFSv4 lock answers live in errorMap (errmap.go); its lock-class
+// rows already carry the retry-class codes the lock path needs
+// (ErrLocked → NFS4ERR_LOCKED/NFS3ErrJukebox, ErrDeadlock →
+// NFS4ERR_DEADLOCK, ErrLockNotFound → NFS4ERR_LOCK_RANGE). This table holds
+// only the deltas where the SMB lock answer diverges from the SMB general
+// answer.
+//
+// Source: internal/adapter/smb/handlers/lock.go (lockErrorToStatus —
+// authoritative).
 var lockErrorMap = map[merrs.ErrorCode]protoCodes{
 	merrs.ErrLocked: {
-		NFS3: nfs3types.NFS3ErrJukebox,
-		NFS4: nfs4types.NFS4ERR_DENIED,
-		SMB:  smbtypes.StatusLockNotGranted,
+		SMB: smbtypes.StatusLockNotGranted,
 	},
 	merrs.ErrLockNotFound: {
-		NFS3: nfs3types.NFS3ErrInval,
-		NFS4: nfs4types.NFS4ERR_LOCK_RANGE,
-		SMB:  smbtypes.StatusRangeNotLocked,
+		SMB: smbtypes.StatusRangeNotLocked,
 	},
 	merrs.ErrLockConflict: {
-		NFS3: nfs3types.NFS3ErrJukebox,
-		NFS4: nfs4types.NFS4ERR_DENIED,
-		SMB:  smbtypes.StatusLockNotGranted,
+		SMB: smbtypes.StatusLockNotGranted,
 	},
 	merrs.ErrDeadlock: {
-		// SMB: no direct code — StatusLockNotGranted (closest retry
+		// No direct SMB code — StatusLockNotGranted (closest retry
 		// semantic in LOCK context).
-		NFS3: nfs3types.NFS3ErrJukebox,
-		NFS4: nfs4types.NFS4ERR_DEADLOCK,
-		SMB:  smbtypes.StatusLockNotGranted,
+		SMB: smbtypes.StatusLockNotGranted,
 	},
 	merrs.ErrGracePeriod: {
-		// NFSv3 has no dedicated grace-period code — use JUKEBOX (retry
-		// later, matches the NFSv4 semantic).
-		NFS3: nfs3types.NFS3ErrJukebox,
-		NFS4: nfs4types.NFS4ERR_GRACE,
-		SMB:  smbtypes.StatusInternalError,
+		// SMB has no NFSv4-style grace-period concept; clients see a
+		// server-side fault.
+		SMB: smbtypes.StatusInternalError,
 	},
 	merrs.ErrLockLimitExceeded: {
-		NFS3: nfs3types.NFS3ErrJukebox,
-		NFS4: nfs4types.NFS4ERR_DENIED,
-		SMB:  smbtypes.StatusInsufficientResources,
+		SMB: smbtypes.StatusInsufficientResources,
 	},
 	// Lock-context overrides for general errors that SMB's lockErrorToStatus
 	// historically handled (lock.go:540-545). These differ from errorMap in
-	// the SMB column only — NFS3/NFS4 match errorMap, so callers that fall
-	// through to general context get consistent behavior.
+	// the SMB column only, so callers that fall through to general context
+	// get consistent behavior.
 	merrs.ErrNotFound: {
-		NFS3: nfs3types.NFS3ErrNoEnt,
-		NFS4: nfs4types.NFS4ERR_NOENT,
-		SMB:  smbtypes.StatusFileClosed,
+		SMB: smbtypes.StatusFileClosed,
 	},
 	merrs.ErrPermissionDenied: {
-		NFS3: nfs3types.NFS3ErrPerm,
-		NFS4: nfs4types.NFS4ERR_PERM,
-		SMB:  smbtypes.StatusAccessDenied,
+		SMB: smbtypes.StatusAccessDenied,
 	},
 	merrs.ErrIsDirectory: {
-		NFS3: nfs3types.NFS3ErrIsDir,
-		NFS4: nfs4types.NFS4ERR_ISDIR,
-		SMB:  smbtypes.StatusFileIsADirectory,
+		SMB: smbtypes.StatusFileIsADirectory,
 	},
 }
 
@@ -93,30 +71,18 @@ func lookupLockErrorRow(err error) protoCodes {
 	if !goerrors.As(err, &storeErr) {
 		return defaultCodes
 	}
-	if codes, ok := lockErrorMap[storeErr.Code]; ok {
+	if lock, ok := lockErrorMap[storeErr.Code]; ok {
+		// Start from the general row and overlay the lock-context SMB
+		// delta, so the NFS columns stay populated for any future
+		// lock-context caller.
+		codes := errorMap[storeErr.Code]
+		codes.SMB = lock.SMB
 		return codes
 	}
 	if codes, ok := errorMap[storeErr.Code]; ok {
 		return codes
 	}
 	return defaultCodes
-}
-
-// MapLockToNFS3 translates a lock-operation error to an NFS3 status code.
-// Fallback chain: lockErrorMap → errorMap (general) → defaultCodes.
-func MapLockToNFS3(err error) uint32 {
-	if err == nil {
-		return nfs3types.NFS3OK
-	}
-	return lookupLockErrorRow(err).NFS3
-}
-
-// MapLockToNFS4 translates a lock-operation error to an NFS4 status code.
-func MapLockToNFS4(err error) uint32 {
-	if err == nil {
-		return nfs4types.NFS4_OK
-	}
-	return lookupLockErrorRow(err).NFS4
 }
 
 // MapLockToSMB translates a lock-operation error to an SMB status code.
