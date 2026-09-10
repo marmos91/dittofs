@@ -57,6 +57,7 @@ flake worth re-running.
 | DELEG1 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
 | DELEG2 | bug | delegation withheld on this OPEN: the callback-path probe had not answered yet | #2329 |
 | DELEG23 | bug | delegation break not received: every CB_RECALL fails with no back-bound connection for the session | #2329 |
+| DELEG26 | bug | delegation read after close fails: delegation recall handling, same harness-side family | #2329 |
 | DELEG3 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
 | DELEG5 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
 | DELEG6 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
