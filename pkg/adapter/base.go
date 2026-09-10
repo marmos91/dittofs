@@ -15,6 +15,16 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
+// Accept-error backoff bounds. An unexpected Accept error (for example the
+// process hitting its file-descriptor limit) previously spun the accept loop
+// hot, pinning a core. The sleep starts small so a transient failure costs
+// nothing, doubles per consecutive failure, and caps at a ceiling that keeps
+// the loop responsive to shutdown.
+const (
+	acceptRetryBase = 10 * time.Millisecond
+	acceptRetryMax  = 1 * time.Second
+)
+
 // IsNetTimeout reports whether err is a network timeout error. Shared by the
 // NFS and SMB connection loops.
 func IsNetTimeout(err error) bool {
@@ -119,8 +129,15 @@ type BaseAdapter struct {
 	ActiveConnections sync.Map
 
 	// listenerReady is closed once the listener is bound and ready to accept
-	// connections. Read it through [BaseAdapter.ListenerReady].
+	// connections, or once shutdown has been initiated without a bound
+	// listener (Stop before Serve). Read it through [BaseAdapter.ListenerReady].
 	listenerReady chan struct{}
+
+	// listenerReadyClosed guards the listenerReady close: ServeWithFactory
+	// closes it on the bind path and initiateShutdown closes it when no
+	// listener was ever bound. Both check-and-close under listenerMu so the
+	// channel is closed exactly once whichever path wins.
+	listenerReadyClosed bool
 
 	// started flips to true once ServeWithFactory has bound the listener
 	// successfully. Used by [BaseAdapter.Healthcheck] to distinguish a
@@ -213,12 +230,33 @@ func (b *BaseAdapter) ServeWithFactory(
 	// so any concurrent Healthcheck observing a ready listener must
 	// also see started=true. Inverting these two lines would create a
 	// window where a probe sees a ready listener but reports
-	// StatusUnknown.
+	// StatusUnknown. The listener store and the ready close happen
+	// under one critical section so a concurrent shutdown cannot slip
+	// between them and close the channel first.
 	b.listenerMu.Lock()
 	b.listener = listener
+	if !b.listenerReadyClosed {
+		b.listenerReadyClosed = true
+		close(b.listenerReady)
+	}
 	b.listenerMu.Unlock()
 	b.started.Store(true)
-	close(b.listenerReady)
+
+	// A shutdown that was initiated before the bind could not close the
+	// listener (it did not exist yet). If shutdown has already fired, close
+	// the fresh socket and unwind rather than serving after Stop.
+	select {
+	case <-b.Shutdown:
+		b.listenerMu.Lock()
+		if b.listener != nil {
+			if err := b.listener.Close(); err != nil {
+				logger.Debug("Error closing "+b.protocolName+" listener", "error", err)
+			}
+		}
+		b.listenerMu.Unlock()
+		return b.gracefulShutdown()
+	default:
+	}
 
 	logger.Info(b.protocolName+" server listening", "port", b.Config.Port)
 
@@ -229,7 +267,22 @@ func (b *BaseAdapter) ServeWithFactory(
 		b.initiateShutdown()
 	}()
 
-	// Accept connections until shutdown
+	return b.acceptConnections(factory, preAccept, onClose)
+}
+
+// acceptConnections runs the shared TCP accept loop against the bound
+// listener, delegating to factory for protocol-specific connection creation.
+// It returns once shutdown has been initiated (or immediately if shutdown was
+// already initiated when the loop started).
+func (b *BaseAdapter) acceptConnections(
+	factory ConnectionFactory,
+	preAccept func(net.Conn) bool,
+	onClose OnConnectionClose,
+) error {
+	// Backoff before the next Accept after an unexpected error; reset on a
+	// successful accept.
+	var acceptBackoff time.Duration
+
 	for {
 		// Acquire connection semaphore if connection limiting is enabled
 		if b.connSemaphore != nil {
@@ -256,11 +309,31 @@ func (b *BaseAdapter) ServeWithFactory(
 				// Expected error during shutdown (listener was closed)
 				return b.gracefulShutdown()
 			default:
-				// Unexpected error - log but continue
-				logger.Debug("Error accepting "+b.protocolName+" connection", "error", err)
+				// Unexpected error - back off before retrying so a persistent
+				// failure (e.g. the process running out of file descriptors)
+				// cannot spin the loop hot. The sleep stays interruptible by
+				// shutdown.
+				if acceptBackoff == 0 {
+					acceptBackoff = acceptRetryBase
+				} else {
+					acceptBackoff *= 2
+					if acceptBackoff > acceptRetryMax {
+						acceptBackoff = acceptRetryMax
+					}
+				}
+				logger.Debug("Error accepting "+b.protocolName+" connection", "error", err, "retry_in", acceptBackoff)
+				select {
+				case <-time.After(acceptBackoff):
+				case <-b.Shutdown:
+					// Expected error during shutdown (listener was closed)
+					return b.gracefulShutdown()
+				}
 				continue
 			}
 		}
+
+		// A successful accept ends the failure streak.
+		acceptBackoff = 0
 
 		// Configure TCP socket options
 		if tcp, ok := tcpConn.(*net.TCPConn); ok {
@@ -336,8 +409,10 @@ func (b *BaseAdapter) ServeWithFactory(
 // Shutdown sequence:
 //  1. Close shutdown channel (signals accept loop to stop)
 //  2. Close listener (stops accepting new connections)
-//  3. Interrupt blocking reads on all active connections
-//  4. Cancel shutdownCtx (signals in-flight requests to abort)
+//  3. Unblock any caller waiting on listenerReady (no-op when the
+//     listener was already bound)
+//  4. Interrupt blocking reads on all active connections
+//  5. Cancel shutdownCtx (signals in-flight requests to abort)
 //
 // Thread safety:
 // Safe to call multiple times and from multiple goroutines.
@@ -354,6 +429,18 @@ func (b *BaseAdapter) initiateShutdown() {
 			if err := b.listener.Close(); err != nil {
 				logger.Debug("Error closing "+b.protocolName+" listener", "error", err)
 			}
+		}
+		b.listenerMu.Unlock()
+
+		// Unblock any caller waiting on listenerReady. When the listener was
+		// bound, ServeWithFactory already closed the channel; when it was not
+		// (Stop before Serve, or Serve never called), waiting callers would
+		// otherwise block forever. The flag is checked under listenerMu so
+		// this cannot race the bind-path close into a double close.
+		b.listenerMu.Lock()
+		if !b.listenerReadyClosed {
+			b.listenerReadyClosed = true
+			close(b.listenerReady)
 		}
 		b.listenerMu.Unlock()
 
@@ -498,7 +585,9 @@ func (b *BaseAdapter) Stop(ctx context.Context) error {
 }
 
 // GetListenerAddr returns the address the server is listening on.
-// Blocks until the listener is ready, making it safe for tests.
+// Blocks until the listener is ready (or shutdown has been initiated without
+// one), making it safe for tests. Returns "" when the adapter shut down
+// without ever binding a listener.
 func (b *BaseAdapter) GetListenerAddr() string {
 	<-b.listenerReady
 
@@ -513,7 +602,9 @@ func (b *BaseAdapter) GetListenerAddr() string {
 
 // ListenerReady returns a channel closed once the adapter has bound its
 // listening socket. It stays open when the bind fails, so a caller racing it
-// against the result of Serve learns whether the socket came up.
+// against the result of Serve learns whether the socket came up. It also
+// closes when shutdown is initiated without a bound listener (Stop before
+// Serve), so a waiter is never stuck after the adapter is dead.
 func (b *BaseAdapter) ListenerReady() <-chan struct{} {
 	return b.listenerReady
 }
