@@ -74,7 +74,7 @@ body, service.go outside file set); ResolvedIdentity direct consumption (#2501 P
 ### Step 2.5 — Wave 3.5: error-universe consolidation (sentinel normalization + `StatusFor` extraction) — LANDED 2026-09-10
 
 Landed as PR #2505 (squash commit `4f418ff83` on develop, 84 files, +1036/−1521) plus the
-#2506 pynfs v4.1 walk-out (`75b45e987`, 38→15 rows: 24 walked out, DELEG26 added for a newly
+# 2506 pynfs v4.1 walk-out (`75b45e987`, 38→15 rows: 24 walked out, DELEG26 added for a newly
 listed failure) and its #2507 follow-up (`b2927215d`, DELEG26 reason + evidence-tier
 disclosure). Reviews were three rounds (two combined correctness+simplification, one
 dedicated adversarial per branch); all P1s fixed before PR open: the three enum-walk loops

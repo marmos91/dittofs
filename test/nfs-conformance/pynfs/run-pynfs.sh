@@ -47,9 +47,13 @@ SECOND_GID=$((TEST_GID + 1))
 SECOND_USER="pynfs-client2"
 SECOND_PASSWORD="pynfs-client2-password-123"
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
-log()       { echo -e "${GREEN}[PYNFS]${NC} $*"; }
-log_warn()  { echo -e "${YELLOW}[PYNFS]${NC} $*"; }
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BOLD='\033[1m'
+NC='\033[0m'
+log() { echo -e "${GREEN}[PYNFS]${NC} $*"; }
+log_warn() { echo -e "${YELLOW}[PYNFS]${NC} $*"; }
 log_error() { echo -e "${RED}[PYNFS]${NC} $*" >&2; }
 
 usage() {
@@ -88,31 +92,69 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --profile)        PROFILE="$2"; shift 2 ;;
-        --minor-version)  MINOR_VERSION="$2"; shift 2 ;;
-        --server)         SERVER="$2"; shift 2 ;;
-        --export)         EXPORT_PATH="$2"; shift 2 ;;
-        --tests)          TESTS="$2"; shift 2 ;;
-        --lease-time)     LEASE_TIME="$2"; shift 2 ;;
-        --no-setup)       NO_SETUP=true; shift ;;
-        --keep)           KEEP=true; shift ;;
-        --verbose|-v)     VERBOSE=true; shift ;;
-        --help|-h)        usage; exit 0 ;;
-        *)
-            log_error "Unknown option: $1"
-            echo "Run with --help for usage."
-            exit 1
-            ;;
+    --profile)
+        PROFILE="$2"
+        shift 2
+        ;;
+    --minor-version)
+        MINOR_VERSION="$2"
+        shift 2
+        ;;
+    --server)
+        SERVER="$2"
+        shift 2
+        ;;
+    --export)
+        EXPORT_PATH="$2"
+        shift 2
+        ;;
+    --tests)
+        TESTS="$2"
+        shift 2
+        ;;
+    --lease-time)
+        LEASE_TIME="$2"
+        shift 2
+        ;;
+    --no-setup)
+        NO_SETUP=true
+        shift
+        ;;
+    --keep)
+        KEEP=true
+        shift
+        ;;
+    --verbose | -v)
+        VERBOSE=true
+        shift
+        ;;
+    --help | -h)
+        usage
+        exit 0
+        ;;
+    *)
+        log_error "Unknown option: $1"
+        echo "Run with --help for usage."
+        exit 1
+        ;;
     esac
 done
 
 case "$MINOR_VERSION" in
-    4.0) PYNFS_TREE="4.0"; MINOR_NUM=0; KNOWN_FAILURES="${SCRIPT_DIR}/KNOWN_FAILURES_V40.md" ;;
-    4.1) PYNFS_TREE="4.1"; MINOR_NUM=1; KNOWN_FAILURES="${SCRIPT_DIR}/KNOWN_FAILURES_V41.md" ;;
-    *)
-        log_error "Invalid --minor-version '$MINOR_VERSION'. Valid values: 4.0, 4.1"
-        exit 1
-        ;;
+4.0)
+    PYNFS_TREE="4.0"
+    MINOR_NUM=0
+    KNOWN_FAILURES="${SCRIPT_DIR}/KNOWN_FAILURES_V40.md"
+    ;;
+4.1)
+    PYNFS_TREE="4.1"
+    MINOR_NUM=1
+    KNOWN_FAILURES="${SCRIPT_DIR}/KNOWN_FAILURES_V41.md"
+    ;;
+*)
+    log_error "Invalid --minor-version '$MINOR_VERSION'. Valid values: 4.0, 4.1"
+    exit 1
+    ;;
 esac
 
 # --------------------------------------------------------------------------
@@ -181,7 +223,7 @@ if [[ "$NO_SETUP" != true ]]; then
 
     log "Setting NFSv4 lease time to ${LEASE_TIME}s..."
     if ! "${REPO_ROOT}/dfsctl" adapter settings nfs update \
-            --lease-time "$LEASE_TIME" >/dev/null 2>&1; then
+        --lease-time "$LEASE_TIME" >/dev/null 2>&1; then
         log_warn "Could not set lease time; expiry tests will run at the server default."
     fi
 
@@ -195,8 +237,8 @@ if [[ "$NO_SETUP" != true ]]; then
     # invalid.
     applied_lease_ok=false
     for _ in $(seq 1 10); do
-        reported="$("${REPO_ROOT}/dfsctl" adapter settings nfs show -o json 2>/dev/null \
-            | sed -n 's/.*"lease_time"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)"
+        reported="$("${REPO_ROOT}/dfsctl" adapter settings nfs show -o json 2>/dev/null |
+            sed -n 's/.*"lease_time"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)"
         if [[ "$reported" == "$LEASE_TIME" ]]; then
             applied_lease_ok=true
             break
@@ -217,7 +259,7 @@ if [[ "$NO_SETUP" != true ]]; then
         --password "$SECOND_PASSWORD" \
         --uid "$SECOND_UID" --gid "$SECOND_GID" >/dev/null 2>&1 || true
     if ! "${REPO_ROOT}/dfsctl" share permission grant "$EXPORT_PATH" \
-            --user "$SECOND_USER" --level read-write >/dev/null 2>&1; then
+        --user "$SECOND_USER" --level read-write >/dev/null 2>&1; then
         log_warn "Could not provision uid ${SECOND_UID}; multi-client tests will fail on share access."
     fi
 fi
@@ -246,7 +288,7 @@ PYNFS_ARGS=(
 )
 # --tests is a deliberate word-split list of codes, but it must not glob: a
 # selector like "LOCK*" would otherwise expand against the working directory.
-read -ra TESTS_ARGS <<< "$TESTS"
+read -ra TESTS_ARGS <<<"$TESTS"
 PYNFS_ARGS+=("${TESTS_ARGS[@]}")
 
 log "Running pynfs ${MINOR_VERSION} against ${SERVER}${EXPORT_PATH}"
@@ -256,7 +298,7 @@ log "  results: ${RESULTS_DIR}"
 if $VERBOSE; then
     "$PYNFS_BIN" "${PYNFS_ARGS[@]}" 2>&1 | tee "$LOG_FILE"
 else
-    "$PYNFS_BIN" "${PYNFS_ARGS[@]}" > "$LOG_FILE" 2>&1
+    "$PYNFS_BIN" "${PYNFS_ARGS[@]}" >"$LOG_FILE" 2>&1
 fi
 
 # pynfs exits non-zero when tests fail; that is expected input to the grader,
@@ -270,7 +312,7 @@ cp /tmp/dittofs-posix-server.log "${RESULTS_DIR}/dittofs.log" 2>/dev/null || tru
 # names the whole dependency closure and nothing skips.
 if [[ "$TESTS" != "all" ]]; then
     SCOPED_TALLY="$(grep -E '^Of those: [0-9]+ Skipped' "$LOG_FILE" | tail -1 || true)"
-    if [[ "$SCOPED_TALLY" =~ ^Of\ those:\ ([0-9]+)\ Skipped ]] && (( BASH_REMATCH[1] > 0 )); then
+    if [[ "$SCOPED_TALLY" =~ ^Of\ those:\ ([0-9]+)\ Skipped ]] && ((BASH_REMATCH[1] > 0)); then
         echo ""
         echo -e "${RED}${BOLD}ERROR: ${BASH_REMATCH[1]} of the requested tests were skipped.${NC}"
         echo "$SCOPED_TALLY"
