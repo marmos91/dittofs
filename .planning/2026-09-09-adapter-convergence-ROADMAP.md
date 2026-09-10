@@ -146,10 +146,13 @@ dispatch/security, T3/T4 create, T5 adapter+HIGHs), all assigned marmos91.
 **Fix-wave 1 fanned out 2026-09-10** (first two workflows `3ba95578`/`5f6757f4` failed at
 allocation; relaunch `9c327e4f` recovered B/C mid-work while A cold-start-died and D died on a
 malformed sed). Recovery 2026-09-10: C LANDED GREEN (`fix/wave4-compound-tree-2514` @ `12ed93178`,
-D resumed (run `53e4fc93`, first switches to `fix/wave4-security-hygiene-2516`), B resumed for
-full implementation (run `7cc8f849`), A relaunched from its saved 368-line patch (all three HIGHs were implemented before the first
-relaunch's worktree was auto-removed; run `3ae0cece` re-applies `/tmp/wave4-highs-2518-partial.patch`
-and finishes). Base drift for the three resumed lanes is only
+PR body ready), A LANDED GREEN (`fix/wave4-highs-2518` @ `0f2ec7a4`, PR body ready; first relaunch
+implemented all three HIGHs before its worktree was auto-removed, second relaunch re-applied the
+saved 368-line patch and pushed). B and D timed out twice before committing; their worktree states
+were saved as patches (`/tmp/wave4-setinfo-rw-2512-partial.patch` 739 lines incl. an out-of-scope
+pkg/metadata/file_modify.go POSIX EA carve-out to disclose, `/tmp/wave4-sec-hygiene-2516-partial.patch`
+579 lines) and relaunched as finish runs `f1a5e821` (B) and `039c0a57` (D). Base drift for the resumed
+lanes is only
 flake.nix + adapter_settings.go (#2510 + v0.31.1) — zero overlap with their SMB files, PRs
 rebase trivially at merge. Stale triage worktrees removed, orphaned pi-subagents branches
 deleted. Lane
