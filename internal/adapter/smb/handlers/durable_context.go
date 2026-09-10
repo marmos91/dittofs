@@ -909,8 +909,9 @@ func validateAndRestore(
 // force-close filter matches on share + path in addition to the AppInstanceId
 // (MS-SMB2 §3.3.5.9.13 match conditions), so an AppInstanceId reused for a
 // different file — on the same or another share — never displaces an unrelated
-// open. Opens with an empty recorded path are never displaced by the path
-// filter; the AppInstanceId match alone remains authoritative for those.
+// open. Opens with an empty recorded path are never displaced at all: the
+// filter requires a recorded path match, so for those opens the AppInstanceId
+// match alone is never sufficient and the failover does not touch them.
 func ProcessAppInstanceId(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
