@@ -7,14 +7,14 @@ description: DittoFS adapter-convergence program memory (update after each wave)
 
 Last updated: 2026-09-10 (Wave 3 fan-out running with plan-validation corrections)
 
-## Program state (as of 2026-09-09)
+## Program state (as of 2026-09-10)
 
 | Wave | Scope | State |
 | --- | --- | --- |
 | 0 — Coordination | peer takeover, worktree cleanup | ✅ done (32-row #2340 re-derivation left) |
 | 1 — Ownership class | #2393–#2396, #2413, #2414 | ✅ landed 2026-09-08 (7 PRs) |
 | 2 — `sm.mu` + pynfs | #2398 + singles | ✅ **landed 2026-09-09** — PRs #2494-#2498, issues #2471/#2482/#2487/#2464/#2490 closed |
-| 3 — Shared-layer reuse | errmap, identity, lifecycle | 🔄 **fan-out running** — 4 workers in worktrees, review corrections baked in |
+| 3 — Shared-layer reuse | errmap, identity, lifecycle | 🔄 **all 6 PRs open (#2499-#2504)**, review-green, merge babysitter running |
 | 4 — SMB triage | ~155 untriaged findings | ❌ not started |
 | 5 — God objects | manager.go 3,985 LOC | ❌ blocked behind 1-4 |
 | 7 — Perf lens | bufpool, measurement plan | ❌ not started |
