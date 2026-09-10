@@ -313,11 +313,23 @@ func (h *Handler) handleIPCShare(ctx *SMBHandlerContext) (*HandlerResult, error)
 // rejected because the share requires encryption but the session does not support it.
 // This only applies when encryption_mode is "required" and the share has EncryptData=true.
 // In "preferred" mode, unencrypted sessions are allowed (mixed model).
+//
+// EncryptData is an SMB 3.x share flag: an SMB 2.x client cannot negotiate
+// encryption at all, so honoring the flag for it would hand the client a tree
+// it can never send encrypted commands on (MS-SMB2 2.2.10 / 3.3.5.3 —
+// encryption requires a dialect >= 3.0). SMB 2.x clients are rejected up front
+// instead of receiving a dead tree.
 func shouldRejectUnencryptedTreeConnect(encryptionMode string, share *runtime.Share, sess *session.Session) bool {
 	if encryptionMode != "required" || share == nil || !share.EncryptData {
 		return false
 	}
-	return sess == nil || !sess.ShouldEncrypt()
+	if sess == nil {
+		return true
+	}
+	if sess.Dialect > 0 && sess.Dialect < types.Dialect0300 {
+		return true
+	}
+	return !sess.ShouldEncrypt()
 }
 
 // parseSharePath parses \\server\share to /share or just share
