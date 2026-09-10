@@ -116,21 +116,15 @@ func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
 	// Data typically starts at offset 48 in the body (or wherever DataOffset-64 points)
 
 	if req.Length > 0 {
-		// Calculate where data starts in body
+		// Data must sit exactly where DataOffset says. Clamping a bad offset
+		// to 48 would substitute bytes the client did not place in the
+		// message — per MS-SMB2 3.3.5.13 the server must fail the request
+		// with STATUS_INVALID_PARAMETER instead of writing guessed content.
 		dataStart := int(req.DataOffset) - 64
-
-		// Clamp to valid range - data can't start before byte 48 (after fixed fields)
-		dataStart = max(dataStart, 48)
-
-		// Try to extract data from calculated offset
-		if dataStart+int(req.Length) <= len(body) {
-			req.Data = body[dataStart : dataStart+int(req.Length)]
-		} else if len(body) > 48 && int(req.Length) <= len(body)-48 {
-			// Fallback: data might be right after the 48-byte fixed structure
-			req.Data = body[48 : 48+int(req.Length)]
-		} else {
-			return nil, fmt.Errorf("write request body too short: need %d bytes, have %d", req.Length, len(body)-48)
+		if dataStart < 48 || dataStart+int(req.Length) > len(body) {
+			return nil, fmt.Errorf("write request body too short: need %d bytes at offset %d, have %d", req.Length, dataStart, len(body))
 		}
+		req.Data = body[dataStart : dataStart+int(req.Length)]
 	}
 
 	return req, nil
@@ -235,6 +229,15 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	const maxFileSize = uint64(0xFFFFFFF0000) // NTFS max file size (~16TB)
 	if req.Offset > int64Max {
 		logger.Debug("WRITE: invalid offset (high bit set)", "path", path, "offset", req.Offset)
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+	}
+	// Per MS-SMB2 3.3.5.13: Channel selects an RDMA read/write. This transport
+	// has no RDMA support, so any nonzero channel cannot be honored — serving
+	// the payload inline would bypass the RDMA semantics the client asked for.
+	// Fail with STATUS_INVALID_PARAMETER instead of decoding-then-ignoring.
+	if req.Channel != 0 {
+		logger.Debug("WRITE: RDMA channel requested on non-RDMA transport",
+			"path", path, "channel", req.Channel)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
 	if len(req.Data) > 0 {
@@ -526,10 +529,14 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	now := time.Now()
 	// IsAtimeFrozen takes openFile.mu (read); see #606.
 	if !openFile.IsAtimeFrozen() && noteSmbAccess(openFile, now) {
-		_, _ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
+		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now}); err != nil {
+			logger.Debug("WRITE: atime update failed", "path", path, "error", err)
+		}
 	}
 	if len(parentHandle) > 0 && noteSmbParentAccess(openFile, now) {
-		_, _ = metaSvc.SetFileAttributes(authCtx, parentHandle, &metadata.SetAttrs{Atime: &now})
+		if _, err := metaSvc.SetFileAttributes(authCtx, parentHandle, &metadata.SetAttrs{Atime: &now}); err != nil {
+			logger.Debug("WRITE: parent atime update failed", "path", path, "error", err)
+		}
 		// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"): Restore frozen timestamps on the parent directory
 		// if any open handle has them frozen. The SetFileAttributes call above
 		// unconditionally updates atime; if a handle has atime frozen, restore it.
@@ -570,6 +577,12 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		"path", path,
 		"offset", req.Offset,
 		"bytes", len(req.Data))
+
+	// Per MS-FSA 2.1.5.4 ("Server Requests a Write"): on success advance
+	// CurrentByteOffset to ByteOffset + BytesWritten — the write-side
+	// counterpart of READ's recordReadProgress, so QUERY_INFO
+	// FilePositionInformation reports the position after the last pipelined op.
+	recordReadProgress(openFile, req.Offset, uint64(len(req.Data)))
 
 	return &WriteResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},

@@ -751,8 +751,12 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 	case types.FilePositionInformation:
 		// FILE_POSITION_INFORMATION [MS-FSCC] 2.4.40 (FilePositionInformation) (8 bytes)
 		// Round-trip the per-handle CurrentByteOffset (see set_info.go).
+		// Read under openFile.mu — READ/WRITE/SET_INFO mutate it concurrently.
+		openFile.mu.RLock()
+		positionInfo := openFile.PositionInfo
+		openFile.mu.RUnlock()
 		w := smbenc.NewWriter(8)
-		w.WriteUint64(openFile.PositionInfo)
+		w.WriteUint64(positionInfo)
 		return w.Bytes(), nil
 
 	case types.FileModeInformation:
@@ -939,10 +943,13 @@ func (h *Handler) buildFileAllInformationFromStore(authCtx *metadata.AuthContext
 	fileIndex := binary.LittleEndian.Uint64(internalFileID[:8])
 
 	w := smbenc.NewWriter(36)
-	w.WriteUint64(fileIndex)                          // InternalInformation (8 bytes) at offset 64
-	w.WriteUint32(fullEaInformationSize(attr.EAs))    // EaInformation (4 bytes) at offset 72: total EA buffer size
-	w.WriteUint32(openFile.GrantedAccess)             // AccessInformation (4 bytes) at offset 76 — see FileAccessInformation
-	w.WriteUint64(openFile.PositionInfo)              // PositionInformation (8 bytes) at offset 80
+	w.WriteUint64(fileIndex)                       // InternalInformation (8 bytes) at offset 64
+	w.WriteUint32(fullEaInformationSize(attr.EAs)) // EaInformation (4 bytes) at offset 72: total EA buffer size
+	w.WriteUint32(openFile.GrantedAccess)          // AccessInformation (4 bytes) at offset 76 — see FileAccessInformation
+	openFile.mu.RLock()
+	positionInfo := openFile.PositionInfo
+	openFile.mu.RUnlock()
+	w.WriteUint64(positionInfo)                       // PositionInformation (8 bytes) at offset 80
 	w.WriteUint32(fileModeInformationValue(openFile)) // ModeInformation (4 bytes) at offset 88
 	w.WriteUint32(0)                                  // AlignmentInformation (4 bytes) at offset 92
 	w.WriteUint32(uint32(len(nameBytes)))             // NameInformation length at offset 96
@@ -1415,6 +1422,9 @@ func hasAccessRight(grantedAccess, requiredRight uint32) bool {
 	}
 	// GENERIC_WRITE includes FILE_WRITE_DATA, FILE_APPEND_DATA, FILE_WRITE_EA, FILE_WRITE_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE
 	if requiredRight == uint32(types.FileWriteAttributes) && grantedAccess&uint32(types.GenericWrite) != 0 {
+		return true
+	}
+	if requiredRight == uint32(types.FileWriteEA) && grantedAccess&uint32(types.GenericWrite) != 0 {
 		return true
 	}
 	return false
