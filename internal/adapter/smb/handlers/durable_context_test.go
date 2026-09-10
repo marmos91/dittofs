@@ -1106,7 +1106,7 @@ func TestProcessAppInstanceId_NotPresent(t *testing.T) {
 		{Name: "MxAc", Data: make([]byte, 8)},
 	}
 
-	appId := ProcessAppInstanceId(context.Background(), store, nil, contexts, "/share1", "file.txt")
+	appId := ProcessAppInstanceId(context.Background(), store, nil, contexts)
 	if appId != ([16]byte{}) {
 		t.Errorf("Expected zero AppInstanceId when not present, got %x", appId)
 	}
@@ -1141,21 +1141,19 @@ func TestProcessAppInstanceId_ForceClosesOldHandles(t *testing.T) {
 		{Name: AppInstanceIdTag, Data: appIdData},
 	}
 
-	result := ProcessAppInstanceId(ctx, store, nil, contexts, "/share1", "old1.txt")
+	result := ProcessAppInstanceId(ctx, store, nil, contexts)
 	if result != appId {
 		t.Errorf("Expected AppInstanceId %x, got %x", appId, result)
 	}
 
-	// Verify old-001 was force-closed (deleted from store). The failover is
-	// scoped to the claimed share + path, so only the handle at the claimed
-	// path is displaced; old-002 carries a different path and stays.
+	// Verify old handles were force-closed (deleted from store)
 	h1, _ := store.GetDurableHandle(ctx, "old-001")
 	h2, _ := store.GetDurableHandle(ctx, "old-002")
 	if h1 != nil {
 		t.Error("Expected old-001 to be deleted")
 	}
-	if h2 == nil {
-		t.Error("Expected old-002 to survive: it claims a different path")
+	if h2 != nil {
+		t.Error("Expected old-002 to be deleted")
 	}
 }
 
@@ -2456,7 +2454,7 @@ func TestProcessAppInstanceId_ReleasesLocksOnPersistedHandle(t *testing.T) {
 
 	// Call ProcessAppInstanceId — this should displace the persisted handle
 	// and release its byte-range lock.
-	ProcessAppInstanceId(context.Background(), h.DurableStore, h, newOpenCtxs, smbCtx.ShareName, "/locked.txt")
+	ProcessAppInstanceId(context.Background(), h.DurableStore, h, newOpenCtxs)
 
 	// The persisted handle must have been deleted.
 	remaining, _ := mock.GetDurableHandle(context.Background(), "test-handle")

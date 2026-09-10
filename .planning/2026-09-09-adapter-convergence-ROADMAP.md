@@ -20,7 +20,7 @@ Note: develop carries 2 local docs commits (23de25e56 + eda765c47) not yet pushe
 | 2 — `sm.mu` + pynfs | #2398 + singles | ✅ **LANDED 2026-09-09** — residual #2340 rows + #2329 confirmation tracked below |
 | 3 — Shared-layer reuse | errmap, identity, lifecycle | ✅ **LANDED 2026-09-10** — 6 PRs (#2499–#2504), all reviewed green |
 | 3.5 — Error-universe consolidation | sentinel normalization + `StatusFor` extraction | ✅ IMPLEMENTED 2026-09-10 — consolidation @ f1d554b26 on origin (78 files, +933/-1423), pynfs v4.1 walkout @ f6e191892 on origin (38→14 rows; 4 #2340 rows remain: CSESS16a/26/27, RECC3); review fan-out running |
-| 4 — SMB triage | ~155 untriaged findings | ❌ not started (plan moved it *before* the SMB fix waves) |
+| 4 — SMB triage | ~155 untriaged findings | 🔄 **TRIAGED + fix-wave 1 LANDED 2026-09-10** — #2518/#2512/#2514/#2516 closed via #2523/#2526/#2524/#2525; fix-wave 2 next (#2513, #2515, #2517) |
 | 5 — God objects | `manager.go` 3,985, `Create()` 1,016… | ❌ blocked behind 1–4 |
 | 6 — Dispatch-core finish line | acceptance test | lands inside 1/3/5 |
 | 7 — Perf lens | bufpool, measurement plan | ❌ not started |

@@ -1278,7 +1278,6 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	} else if h.DurableStore != nil {
 		appInstanceId = ProcessAppInstanceId(
 			authCtx.Context, h.DurableStore, h, req.CreateContexts,
-			tree.ShareName, filename,
 		)
 	}
 
