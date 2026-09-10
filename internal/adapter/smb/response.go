@@ -1222,14 +1222,26 @@ func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, respons
 	status := response.GetStatus()
 
 	// Build async response header with matching AsyncId.
-	// Grant credits through the connection window so the client's cur_credits
-	// counter stays in sync with the server's bookkeeping (#378). A CHANGE_NOTIFY
-	// completion normally arrives without a correlated client request, so ask
-	// for 1 credit — the window may deliver 0 if the connection is already at
-	// the client's uint16 cap.
+	// Grant credits through the same per-session path the synchronous
+	// completions use (grantConnectionCredits) so the client's cur_credits
+	// counter AND the session's credit bookkeeping stay in sync with the
+	// server's. A CHANGE_NOTIFY completion normally arrives without a
+	// correlated client request, so ask for 1 credit — the strategy may
+	// deliver more, and the window may deliver 0 if the connection is already
+	// at the client's uint16 cap. The SessionManager may be nil when the async
+	// completion fires on a connection whose sync dispatch path never ran; the
+	// grant then falls back to the wire window alone.
 	credits := uint16(0)
 	if connInfo.SequenceWindow != nil {
-		credits = connInfo.SequenceWindow.Grant(1)
+		if connInfo.SessionManager != nil {
+			credits = connInfo.SessionManager.GrantCredits(sessionID, 1, 0)
+		} else {
+			// Per MS-SMB2 3.3.1.2 the server MUST grant at least 1 credit in
+			// every response — Manager.GrantCredits enforces the same floor
+			// when it is wired.
+			credits = 1
+		}
+		credits = connInfo.SequenceWindow.Grant(credits)
 	}
 	respHeader := &header.SMB2Header{
 		Command:   types.SMB2ChangeNotify,
@@ -1296,11 +1308,17 @@ func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, respons
 // This is the general-purpose counterpart to SendAsyncChangeNotifyResponse --
 // it handles any command type, not just CHANGE_NOTIFY.
 func SendAsyncCompletionResponse(sessionID uint64, messageID uint64, asyncId uint64, command types.Command, status types.Status, body []byte, connInfo *ConnInfo) error {
-	// Route the credit grant through the connection window; see
-	// SendAsyncChangeNotifyResponse for the #378 rationale.
+	// Route the credit grant through the same per-session path the
+	// synchronous completions use; see SendAsyncChangeNotifyResponse for the
+	// rationale and the nil-SessionManager fallback.
 	credits := uint16(0)
 	if connInfo.SequenceWindow != nil {
-		credits = connInfo.SequenceWindow.Grant(1)
+		if connInfo.SessionManager != nil {
+			credits = connInfo.SessionManager.GrantCredits(sessionID, 1, 0)
+		} else {
+			credits = 1 // Manager.GrantCredits's per-response floor.
+		}
+		credits = connInfo.SequenceWindow.Grant(credits)
 	}
 	respHeader := &header.SMB2Header{
 		StructureSize: header.HeaderSize,
