@@ -2035,7 +2035,7 @@ func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Ses
 
 	if sess != nil && sess.User != nil {
 		// Use session user's UID/GID from User object
-		uid, gid := getUserIdentity(sess.User)
+		uid, gid := uidGIDFromSessionUser(sess.User)
 		authCtx.Identity.UID = &uid
 		authCtx.Identity.GID = &gid
 		authCtx.Identity.Username = sess.User.Username
