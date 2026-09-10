@@ -1287,7 +1287,15 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// stream implicitly creates the base file.
 	var adsBaseCreatedByUs bool
 	if isADS && (createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded) {
-		if f, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, adsBaseFileName); f == nil {
+		adsBase, _, adsLookupErr := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, adsBaseFileName)
+		// A real lookup failure (permission denied, store error) must surface
+		// as the create status, not be masked by the auto-create path: treating
+		// the base as missing would attempt a CreateFile the caller may not be
+		// allowed to perform, and the eventual failure would be the wrong error.
+		if adsLookupErr != nil && adsBase == nil {
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(adsLookupErr)}}, nil
+		}
+		if adsBase == nil {
 			baseAttr := &metadata.FileAttr{
 				Mode: SMBModeFromAttrs(0, false),
 				Type: metadata.FileTypeRegular,
@@ -1496,8 +1504,13 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	}
 
 	// Dispatch lease break and either park the CREATE async (emit interim
-	// STATUS_PENDING) or wait for the break to drain inline.
-	if asyncId := h.breakAndMaybeParkCreate(ctx, draft); asyncId != 0 {
+	// STATUS_PENDING) or wait for the break to drain inline. Async parking
+	// is unsafe mid-compound-chain (NextCommand != 0): the interim PENDING
+	// would let the dispatch loop run the trailing commands against the
+	// pre-break state, and the resume goroutine waits for a break ACK the
+	// client cannot send until it observes the interim — mirroring the LOCK
+	// path's ctx.NextCommand guard (MS-SMB2 §3.3.4.2 interim async response).
+	if asyncId := h.breakAndMaybeParkCreateInCompound(ctx, draft); asyncId != 0 {
 		// Parked: the resume goroutine releases the reservation on completion.
 		return &CreateResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusPending},

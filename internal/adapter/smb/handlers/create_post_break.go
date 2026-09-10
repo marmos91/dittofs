@@ -42,6 +42,13 @@ type createDraft struct {
 	// excludeOwner scopes lease-break exclusions to the opener's own key. Used
 	// for parent-directory breaks (Step 7c) and post-break oplock/lease work.
 	excludeOwner *lock.LockOwner
+	// noAsyncPark forces breakAndMaybeParkCreate onto the inline-wait arm:
+	// set by breakAndMaybeParkCreateInCompound when the CREATE carries trailing
+	// compound commands (ctx.NextCommand != 0). An interim PENDING mid-chain
+	// would let the trailing commands run against pre-break state and the
+	// resume goroutine would wait for a break ACK the client cannot send until
+	// it observes the interim (MS-SMB2 §3.3.4.2 interim async response).
+	noAsyncPark bool
 	// appInstanceProcessed records that ProcessAppInstanceId already ran in the
 	// pre-break CREATE path (so any conflicting open carrying the same
 	// AppInstanceId was force-closed BEFORE the oplock/lease break dispatch).
@@ -206,6 +213,20 @@ func (h *Handler) scanNonStatOpensForFile(
 		return true
 	})
 	return hasNonStat, hasSameClient
+}
+
+// breakAndMaybeParkCreateInCompound dispatches the handle-lease break with the
+// compound guard applied: when the CREATE carries trailing compound commands
+// (ctx.NextCommand != 0), async parking is forced off and the break waits
+// inline — an interim PENDING mid-chain would let the trailing commands run
+// against pre-break state and the resume goroutine would wait for a break ACK
+// the client cannot send until it observes the interim (MS-SMB2 §3.3.4.2
+// interim async response; mirrors the LOCK path's ctx.NextCommand guard).
+func (h *Handler) breakAndMaybeParkCreateInCompound(ctx *SMBHandlerContext, d *createDraft) uint64 {
+	if ctx.NextCommand != 0 {
+		d.noAsyncPark = true
+	}
+	return h.breakAndMaybeParkCreate(ctx, d)
 }
 
 // breakAndMaybeParkCreate dispatches the handle-lease break required before
@@ -385,8 +406,10 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 		if !h.LeaseManager.HasOtherBreakingLeases(lockFileHandle, shareName, waitExceptKey) {
 			return 0
 		}
-		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey, lease.AsyncCreateBreakWaitTimeout, false); asyncId != 0 {
-			return asyncId
+		if !d.noAsyncPark {
+			if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey, lease.AsyncCreateBreakWaitTimeout, false); asyncId != 0 {
+				return asyncId
+			}
 		}
 		// Park failed (no slots / registry full): fall through to sync
 		// wait, then let completeCreateAfterBreak re-evaluate share mode.
@@ -451,8 +474,10 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	// the test (and real clients) cannot ACK the lease break until they
 	// receive the STATUS_PENDING interim response.
 	if h.LeaseManager.HasOtherBreakingLeases(lockFileHandle, shareName, waitExceptKey) {
-		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey, breakWaitTimeout, shareConflictWait); asyncId != 0 {
-			return asyncId
+		if !d.noAsyncPark {
+			if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey, breakWaitTimeout, shareConflictWait); asyncId != 0 {
+				return asyncId
+			}
 		}
 	}
 
@@ -789,6 +814,44 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 						}
 						grantedAccess = rg
 						grantedComputed = rc
+						// Break the winner's leases/oplocks before the
+						// overwrite/open proceeds. The pre-break break ran
+						// against the stale (nil) view, so the winner's
+						// holders never saw a break: without this, the race
+						// branch truncates a file whose holder still holds a
+						// write lease and a cached read state. Mirrors the
+						// inline-wait arm of breakAndMaybeParkCreate: dispatch
+						// the break on the winner's handle, then wait for the
+						// delay-mask bits to drain (the pre-break wait cannot
+						// be reused — its handle was the nil view).
+						raceReason := lock.BreakReasonDefault
+						if isDestructiveDisposition(req.CreateDisposition) {
+							raceReason = lock.BreakReasonDestructive
+						} else if d.req.CreateOptions&types.FileDeleteOnClose != 0 {
+							raceReason = lock.BreakReasonSharingViolation
+						}
+						raceMask := lock.LeaseStateWrite
+						if raceReason == lock.BreakReasonSharingViolation {
+							raceMask = lock.LeaseStateHandle
+						}
+						if h.LeaseManager != nil {
+							raceHandle := lock.FileHandle(d.existingHandle)
+							var raceExceptKey [16]byte
+							if d.excludeOwner != nil {
+								raceExceptKey = d.excludeOwner.ExcludeLeaseKey
+							}
+							if err := h.LeaseManager.BreakHandleLeasesOnOpenAsync(raceHandle, d.tree.ShareName, raceReason, d.excludeOwner); err != nil {
+								logger.Debug("CREATE: race-recovery winner lease break failed", "error", err)
+							}
+							if h.LeaseManager.AnyHolderHasLeaseBits(raceHandle, d.tree.ShareName, raceExceptKey, raceMask) {
+								releaseResponseOrder(ctx)
+								raceWaitCtx, cancelRaceWait := context.WithTimeout(authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
+								if err := h.LeaseManager.WaitForOtherKeyBreaks(raceWaitCtx, raceHandle, d.tree.ShareName, raceExceptKey); err != nil {
+									logger.Debug("CREATE: race-recovery winner break wait completed", "error", err)
+								}
+								cancelRaceWait()
+							}
+						}
 						if createAction == types.FileOpened {
 							file = winner
 							fileHandle = d.existingHandle
