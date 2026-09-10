@@ -216,6 +216,27 @@ type Session struct {
 	channels   map[uint64]*Channel
 }
 
+// UpdateIdentity replaces the session's identity fields during
+// re-authentication. Called from the SESSION_SETUP re-auth paths (NTLM
+// anonymous/named, Kerberos). The identity fields are otherwise read-only
+// after creation, so this mutator is the single writer: it holds mu so a
+// concurrent reader (AuthContext build, share access) never observes a torn
+// or half-updated identity, and drops the memoized derived identity since
+// User/PAC may both change. Safe for concurrent use.
+func (s *Session) UpdateIdentity(username, domain string, user *models.User, isGuest, isNull bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Username = username
+	s.Domain = domain
+	s.User = user
+	s.IsGuest = isGuest
+	s.IsNull = isNull
+	// User and PAC identity may both have changed; drop the memoized derived
+	// identity so the next consumer rebuilds from the new fields.
+	s.authIdentity = nil
+	s.authIdentityUser = nil
+}
+
 // SetPACIdentity stores the Kerberos PAC group SIDs and user SID for the
 // session, replacing any previous set. Called on SESSION_SETUP and on
 // re-authentication (Kerberos reauth refreshes, NTLM reauth clears with a nil
@@ -309,7 +330,7 @@ func NewSession(sessionID uint64, clientAddr string, isGuest bool, username, dom
 		Domain:     domain,
 		channels:   make(map[uint64]*Channel),
 	}
-	s.cryptoState.Store(&SessionCryptoState{})
+	s.cryptoState.Store(&SessionCryptoState{nonce: &nonceState{}})
 	s.newlyCreated.Store(true)
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s
@@ -329,7 +350,7 @@ func NewSessionWithUser(sessionID uint64, clientAddr string, user *models.User, 
 		User:       user,
 		channels:   make(map[uint64]*Channel),
 	}
-	s.cryptoState.Store(&SessionCryptoState{})
+	s.cryptoState.Store(&SessionCryptoState{nonce: &nonceState{}})
 	s.newlyCreated.Store(true)
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s
@@ -490,6 +511,17 @@ func (s *Session) EnableSigning(required bool) {
 
 // SetCryptoState sets the session's cryptographic state directly.
 // Used by session setup when KDF-derived keys are available (3.x sessions).
+// DestroyCryptoState zeros all key material held by the session's crypto
+// state (signing/encryption/decryption keys, application key) for
+// defense-in-depth on session teardown. Called from DeleteSession before the
+// session record is removed: after deletion no reader can reach the state, so
+// zeroing here closes the window where the freed keys remain recoverable in
+// memory. Safe for concurrent use (the atomic pointer load pairs with
+// SetCryptoState's swap).
+func (s *Session) DestroyCryptoState() {
+	s.GetCryptoState().Destroy()
+}
+
 func (s *Session) SetCryptoState(cs *SessionCryptoState) {
 	s.cryptoState.Store(cs)
 }
@@ -497,6 +529,13 @@ func (s *Session) SetCryptoState(cs *SessionCryptoState) {
 // ShouldEncrypt returns true if outgoing messages should be encrypted.
 func (s *Session) ShouldEncrypt() bool {
 	return s.cryptoState.Load().ShouldEncrypt()
+}
+
+// NextNonce returns a fresh encrypt nonce from the session's crypto state
+// (per-session counter form, MS-SMB2 3.1.4.3 nonce-reuse guard). Part of the
+// encryption middleware's EncryptableSession contract.
+func (s *Session) NextNonce(nonceSize int) ([]byte, error) {
+	return s.GetCryptoState().NextNonce(nonceSize)
 }
 
 // EncryptWithNonce encrypts plaintext using a pre-generated nonce and AAD.

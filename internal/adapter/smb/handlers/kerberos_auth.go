@@ -185,7 +185,7 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 		"signingEnabled", sess.ShouldSign(),
 		"encryptData", sess.ShouldEncrypt())
 
-	return h.buildKerberosAcceptResponse(sess, authResult, parsedToken)
+	return h.buildKerberosAcceptResponse(sess, authResult, parsedToken, true)
 }
 
 // reauthKerberosSession re-authenticates an existing, non-LoggedOff session in
@@ -218,13 +218,9 @@ func (h *Handler) reauthKerberosSession(
 	// Refresh identity and lifetime. Updating ExpiresAt to the fresh ticket
 	// end-time clears the expired state so prepareDispatch lets subsequent
 	// requests through again (expire1/2 recovery).
-	sess.User = user
-	sess.Username = user.Username
-	// Domain-aware session (AD-4): keep the NetBIOS short domain on reauth when
-	// domain-joined; otherwise fall back to the realm (pre-AD-4 behavior).
-	sess.Domain = h.sessionDomain(authResult.Realm)
-	sess.IsGuest = false
-	sess.IsNull = false
+	// UpdateIdentity holds the session lock: a concurrent request goroutine
+	// building an AuthContext must not observe a half-updated identity.
+	sess.UpdateIdentity(user.Username, h.sessionDomain(authResult.Realm), user, false, false)
 	sess.ExpiresAt = ticketEndTime
 	// Refresh the PAC group/user SIDs from the new ticket — group membership may
 	// have changed between the original logon and this re-authentication.
@@ -239,16 +235,21 @@ func (h *Handler) reauthKerberosSession(
 		"signingEnabled", sess.ShouldSign(),
 		"encryptData", sess.ShouldEncrypt())
 
-	return h.buildKerberosAcceptResponse(sess, authResult, parsedToken)
+	return h.buildKerberosAcceptResponse(sess, authResult, parsedToken, false)
 }
 
 // buildKerberosAcceptResponse builds the SPNEGO accept-complete SESSION_SETUP
 // response (mutual-auth AP-REP + optional mechListMIC) shared by the fresh and
-// re-authentication Kerberos paths.
+// re-authentication Kerberos paths. freshSession marks the caller that created
+// the session in this request: on a failed client mechListMIC check the fresh
+// session is deleted so a failed downgrade check cannot leave a live
+// authenticated session behind; the re-authentication path keeps its session
+// (its pre-existing identity was already proven).
 func (h *Handler) buildKerberosAcceptResponse(
 	sess *session.Session,
 	authResult *kerbauth.AuthResult,
 	parsedToken *auth.ParsedToken,
+	freshSession bool,
 ) (*HandlerResult, error) {
 	// Build mutual auth AP-REP and wrap it in a GSS-API InitialContextToken
 	// (RFC 2743 Section 3.1) for the SPNEGO accept-complete response:
@@ -289,7 +290,14 @@ func (h *Handler) buildKerberosAcceptResponse(
 		if parsedToken.HasMechListMIC() {
 			if err := auth.VerifyMechListMIC(authResult.SessionKey, parsedToken.MechListBytes, parsedToken.MechListMIC); err != nil {
 				logger.Debug("Client mechListMIC verification failed", "error", err)
-				// Per RFC 4178, failed MIC verification should reject the negotiation
+				// Per RFC 4178, failed MIC verification should reject the
+				// negotiation. The fresh-session path created the session in
+				// this request, so delete it: a failed downgrade check must not
+				// leave a live authenticated session (with signing keys
+				// configured) attached to the connection.
+				if freshSession {
+					h.DeleteSession(sess.SessionID)
+				}
 				return NewErrorResult(types.StatusLogonFailure), nil
 			}
 			logger.Debug("Client mechListMIC verified successfully")
@@ -392,8 +400,11 @@ func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Ses
 
 	// MS-SMB2 §3.3.5.5.2: the bound channel must authenticate the SAME user as
 	// the existing session. A valid ticket for a different principal must be
-	// rejected with STATUS_ACCESS_DENIED (smb2.session.bind_invalid_auth).
-	if sess.User == nil || user.Username != sess.User.Username {
+	// rejected with STATUS_ACCESS_DENIED (smb2.session.bind_invalid_auth). The
+	// comparison is the same SID-first helper the NTLM bind path uses: username
+	// alone would let a SID-less local account sharing a username bind onto a
+	// SID-bearing session's authorization context.
+	if !bindIdentityMatchesSession(sess, user) {
 		sessUser := "<nil>"
 		if sess.User != nil {
 			sessUser = sess.User.Username

@@ -1,6 +1,7 @@
 package encryption
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 
@@ -10,10 +11,11 @@ import (
 
 // testSession is a minimal mock that provides the crypto methods needed by the middleware.
 type testSession struct {
-	encryptor   Encryptor
-	decryptor   Encryptor
-	encryptData bool
-	isNull      bool
+	encryptor    Encryptor
+	decryptor    Encryptor
+	encryptData  bool
+	isNull       bool
+	nonceCounter uint64
 }
 
 func (s *testSession) ShouldEncrypt() bool {
@@ -32,6 +34,11 @@ func (s *testSession) EncryptorNonceSize() int { return s.encryptor.NonceSize() 
 func (s *testSession) DecryptorNonceSize() int { return s.decryptor.NonceSize() }
 func (s *testSession) EncryptorOverhead() int  { return s.encryptor.Overhead() }
 func (s *testSession) IsNullSession() bool     { return s.isNull }
+
+func (s *testSession) NextNonce(nonceSize int) ([]byte, error) {
+	s.nonceCounter++
+	return bytes.Repeat([]byte{byte(s.nonceCounter)}, nonceSize), nil
+}
 
 func makeTestSession(t *testing.T, cipherId uint16) *testSession {
 	t.Helper()

@@ -96,20 +96,25 @@ func extractPayloadSize(command types.Command, body []byte) (uint32, bool) {
 		return binary.LittleEndian.Uint32(body[4:8]), true
 
 	case types.CommandIoctl:
-		// SMB2 IOCTL request: MaxOutputResponse at body offset 28, uint32 LE
-		// [MS-SMB2] Section 2.2.31
+		// SMB2 IOCTL request: MaxOutputResponse at body offset 44, uint32 LE
+		// [MS-SMB2] Section 2.2.31 (StructureSize 2 + Reserved 2 + CtlCode 4 +
+		// FileId 16 + InputOffset 4 + InputCount 4 + MaxInputResponse 4 +
+		// OutputOffset 4 + OutputCount 4 = 44). Mirrors
+		// parseIoctlMaxOutputSize in the handlers package.
+		if len(body) < 48 {
+			return 0, false
+		}
+		return binary.LittleEndian.Uint32(body[44:48]), true
+
+	case types.CommandQueryDirectory:
+		// SMB2 QUERY_DIRECTORY request: OutputBufferLength at body offset 28,
+		// uint32 LE [MS-SMB2] Section 2.2.33 (StructureSize 2 + FileInfoClass 1
+		// + Flags 1 + FileIndex 4 + FileID 16 + FileNameOffset 2 +
+		// FileNameLength 2 = 28).
 		if len(body) < 32 {
 			return 0, false
 		}
 		return binary.LittleEndian.Uint32(body[28:32]), true
-
-	case types.CommandQueryDirectory:
-		// SMB2 QUERY_DIRECTORY request: OutputBufferLength at body offset 4, uint32 LE
-		// [MS-SMB2] Section 2.2.33
-		if len(body) < 8 {
-			return 0, false
-		}
-		return binary.LittleEndian.Uint32(body[4:8]), true
 
 	default:
 		// All other commands: no payload validation needed

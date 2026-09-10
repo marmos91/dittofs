@@ -358,13 +358,19 @@ func (lm *LeaseManager) requestLeaseInternal(
 	// produced no record. A rejected grant must not leave this client's
 	// binding pointing at the file it was refused — the client may still hold
 	// the key on the file it bound earlier, which is exactly why the grant
-	// was refused.
+	// was refused. The restore is a compare-and-swap: only when the current
+	// binding is still the one THIS request pre-registered is it undone. A
+	// concurrent re-open that re-registered a newer binding between the
+	// pre-registration and the failed grant must not be clobbered by a stale
+	// write.
 	restorePreRegistration := func() {
 		lm.mu.Lock()
-		if hadPrev {
-			lm.bindings[ck] = prev
-		} else {
-			delete(lm.bindings, ck)
+		if cur, ok := lm.bindings[ck]; ok && cur == binding {
+			if hadPrev {
+				lm.bindings[ck] = prev
+			} else {
+				delete(lm.bindings, ck)
+			}
 		}
 		lm.mu.Unlock()
 	}
@@ -414,6 +420,20 @@ func (lm *LeaseManager) requestLeaseInternal(
 	// whether this grant created anything.
 	if grantedState == lock.LeaseStateNone && !lm.HasLeaseOnHandle(fileHandle, shareName, leaseKey) {
 		restorePreRegistration()
+		return grantedState, epoch, err
+	}
+
+	// Success: re-assert the binding under mu. A concurrent
+	// BreakHandleLeasesOnOpenAsync or teardown may have removed or replaced the
+	// pre-registered entry between the grant and this return; the grant
+	// succeeded, so this client holds the key on this file and the binding must
+	// resolve for later acks. Re-asserting is idempotent for the common case.
+	if grantedState != lock.LeaseStateNone {
+		lm.mu.Lock()
+		if cur, ok := lm.bindings[ck]; !ok || cur == binding {
+			lm.bindings[ck] = binding
+		}
+		lm.mu.Unlock()
 	}
 
 	return grantedState, epoch, err

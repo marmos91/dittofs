@@ -1,8 +1,10 @@
 package session
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/encryption"
 	"github.com/marmos91/dittofs/internal/adapter/smb/kdf"
@@ -72,6 +74,56 @@ type SessionCryptoState struct {
 
 	// CipherId is the negotiated cipher ID for this session.
 	CipherId uint16
+
+	// nonce holds the encrypt-nonce counter behind a pointer so the state is
+	// never copied (EnableSigning swaps whole SessionCryptoState values). The
+	// counter must be strictly monotonic per session so the AEAD nonce
+	// (prefix+counter) never repeats — MS-SMB2 3.1.4.3 forbids nonce reuse
+	// under the same key.
+	nonce *nonceState
+}
+
+// nonceState is the encrypt-nonce counter shared by a session's crypto state.
+// Separate struct so the mutex is never copied when a SessionCryptoState value
+// is swapped (EnableSigning).
+type nonceState struct {
+	mu      sync.Mutex
+	prefix  [4]byte
+	counter uint64
+}
+
+// NextNonce returns a fresh encrypt nonce for this session: the per-session
+// random 4-byte prefix followed by a big-endian counter that increments
+// per call. The counter is monotonic under the nonce state's mutex, so the
+// nonce never repeats within a session key's lifetime (MS-SMB2 3.1.4.3:
+// reusing an AEAD nonce with the same key breaks confidentiality and
+// authenticity). Safe for concurrent use.
+func (cs *SessionCryptoState) NextNonce(nonceSize int) ([]byte, error) {
+	ns := cs.nonce
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	if ns.counter == 0 {
+		// First nonce for this session: seed the random prefix.
+		if _, err := rand.Read(ns.prefix[:]); err != nil {
+			return nil, fmt.Errorf("seed nonce prefix: %w", err)
+		}
+	}
+	ns.counter++
+	nonce := make([]byte, nonceSize)
+	copy(nonce, ns.prefix[:])
+	if nonceSize > len(ns.prefix) {
+		// The counter fills the tail big-endian at whatever width the tail
+		// offers: AES-GCM's 12-byte nonce leaves 8 tail bytes, AES-CCM's
+		// 11-byte nonce leaves 7. A fixed PutUint64 would panic on CCM
+		// (nonce[4:] is 7 bytes), so encode into the actual tail and accept
+		// the narrower counter space — 2^56 messages before wrap, far beyond
+		// any session's lifetime.
+		tail := nonce[len(ns.prefix):]
+		for i := 0; i < len(tail); i++ {
+			tail[i] = byte(ns.counter >> (8 * (len(tail) - 1 - i)))
+		}
+	}
+	return nonce, nil
 }
 
 // DeriveAllKeys creates a fully constructed SessionCryptoState with all keys
@@ -112,7 +164,11 @@ type SessionCryptoState struct {
 //     SIGNING_CAPABILITIES negotiate context (required to disambiguate
 //     HMAC-SHA256, whose wire value is 0, from a default-zero placeholder)
 func DeriveAllKeys(sessionKey []byte, dialect types.Dialect, preauthHash [64]byte, cipherId uint16, signingAlgId uint16, signingAlgExplicit bool) *SessionCryptoState {
-	cs := &SessionCryptoState{}
+	// The nonce state is initialized eagerly so concurrent first encryptions
+	// never race on a lazy nil check: two racing initializers would each keep
+	// their own counter and independently seeded prefix, which under the same
+	// session key can repeat an AEAD nonce (MS-SMB2 3.1.4.3 violation).
+	cs := &SessionCryptoState{nonce: &nonceState{}}
 	cs.SessionKey = make([]byte, len(sessionKey))
 	copy(cs.SessionKey, sessionKey)
 

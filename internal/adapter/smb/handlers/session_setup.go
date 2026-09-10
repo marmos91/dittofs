@@ -343,7 +343,7 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	}
 
 	// Extract NTLM token (unwrap SPNEGO if needed)
-	ntlmToken, isWrapped, mechListBytes := extractNTLMToken(req.SecurityBuffer)
+	ntlmToken, isWrapped, mechListBytes, _ := extractNTLMToken(req.SecurityBuffer)
 
 	// Process NTLM message
 	if auth.IsValid(ntlmToken) {
@@ -360,7 +360,7 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 
 		switch msgType {
 		case auth.Negotiate:
-			return h.handleNTLMNegotiate(ctx, isWrapped, mechListBytes)
+			return h.handleNTLMNegotiate(ctx, isWrapped, mechListBytes, ntlmToken)
 		case auth.Authenticate:
 			// Type 3 without prior Type 1/2 exchange — protocol violation per MS-SMB2 3.3.5.5
 			logger.Debug("SESSION_SETUP: TYPE_3 without pending auth, rejecting")
@@ -487,9 +487,9 @@ func recordSessionBindIdentity(sess *session.Session, ctx *SMBHandlerContext) {
 // mechListBytes is the DER SEQUENCE OF OID from the NegTokenInit (nil for
 // raw NTLM, NegTokenResp messages, or when SPNEGO parse falls back to the
 // raw signature scan).
-func extractNTLMToken(securityBuffer []byte) ([]byte, bool, []byte) {
+func extractNTLMToken(securityBuffer []byte) ([]byte, bool, []byte, []byte) {
 	if len(securityBuffer) == 0 {
-		return securityBuffer, false, nil
+		return securityBuffer, false, nil, nil
 	}
 
 	// Check if this might be SPNEGO-wrapped (GSSAPI or NegTokenResp)
@@ -501,24 +501,24 @@ func extractNTLMToken(securityBuffer []byte) ([]byte, bool, []byte) {
 			// Some clients send NegTokenResp formats that gokrb5 can't parse,
 			// but the NTLM token is still embedded in the ASN.1 structure.
 			if token := findNTLMSSP(securityBuffer); token != nil {
-				return token, true, nil
+				return token, true, nil, nil
 			}
-			return securityBuffer, false, nil
+			return securityBuffer, false, nil, nil
 		}
 
 		// Check if NTLM is offered
 		if parsed.Type == auth.TokenTypeInit && !parsed.HasNTLM() {
 			logger.Debug("SPNEGO token does not offer NTLM")
-			return securityBuffer, false, nil
+			return securityBuffer, false, nil, nil
 		}
 
 		if len(parsed.MechToken) > 0 {
-			return parsed.MechToken, true, parsed.MechListBytes
+			return parsed.MechToken, true, parsed.MechListBytes, parsed.MechListMIC
 		}
 	}
 
 	// Already raw NTLM (or unknown format)
-	return securityBuffer, false, nil
+	return securityBuffer, false, nil, nil
 }
 
 // ntlmsspSignature is the NTLMSSP signature that starts every NTLM message.
@@ -720,7 +720,7 @@ func (h *Handler) handleSessionBind(ctx *SMBHandlerContext, req *SessionSetupReq
 func (h *Handler) handleNTLMNegotiateBinding(ctx *SMBHandlerContext, req *SessionSetupRequest) (*HandlerResult, error) {
 	// Extract NTLM token (unwrap SPNEGO if needed). The TYPE_1 must be
 	// present for a binding request; empty security buffer is invalid.
-	ntlmToken, usedSPNEGO, mechListBytes := extractNTLMToken(req.SecurityBuffer)
+	ntlmToken, usedSPNEGO, mechListBytes, _ := extractNTLMToken(req.SecurityBuffer)
 	if !auth.IsValid(ntlmToken) || auth.GetMessageType(ntlmToken) != auth.Negotiate {
 		logger.Debug("SESSION_SETUP bind: missing or invalid NTLM NEGOTIATE token",
 			"sessionID", ctx.SessionID)
@@ -741,6 +741,10 @@ func (h *Handler) handleNTLMNegotiateBinding(ctx *SMBHandlerContext, req *Sessio
 		IsBinding:        true,
 		BindingSessionID: ctx.SessionID,
 		MechListBytes:    mechListBytes,
+		// Kept for the AUTHENTICATE MIC check (MS-NLMP 3.2.5.2.1): the MIC is
+		// computed over all three handshake messages.
+		NegotiateMessage: ntlmToken,
+		ChallengeMessage: challengeMsg,
 	}
 	h.StorePendingAuth(pending)
 
@@ -971,7 +975,7 @@ func (h *Handler) completeSessionBind(
 //
 // The client will respond with Type 3 (AUTHENTICATE) which completes
 // the handshake in completeNTLMAuth().
-func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, mechListBytes []byte) (*HandlerResult, error) {
+func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, mechListBytes []byte, negotiateMessage []byte) (*HandlerResult, error) {
 	// Reuse existing session ID for re-authentication, otherwise generate new
 	sessionID := ctx.SessionID
 	isReauth := false
@@ -999,15 +1003,20 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, m
 
 	// Store pending auth to track handshake state
 	// Include the server challenge for NTLMv2 validation in completeNTLMAuth
+	// NegotiateMessage is the client's Type-1 from this handshake, kept for
+	// the AUTHENTICATE MIC check (MS-NLMP 3.2.5.2.1), which is computed over
+	// all three messages.
 	pending := &PendingAuth{
-		SessionID:       sessionID,
-		ConnID:          ctx.ConnID,
-		ClientAddr:      ctx.ClientAddr,
-		CreatedAt:       time.Now(),
-		ServerChallenge: serverChallenge,
-		UsedSPNEGO:      usedSPNEGO,
-		IsReauth:        isReauth,
-		MechListBytes:   mechListBytes,
+		SessionID:        sessionID,
+		ConnID:           ctx.ConnID,
+		ClientAddr:       ctx.ClientAddr,
+		CreatedAt:        time.Now(),
+		ServerChallenge:  serverChallenge,
+		UsedSPNEGO:       usedSPNEGO,
+		IsReauth:         isReauth,
+		MechListBytes:    mechListBytes,
+		NegotiateMessage: negotiateMessage,
+		ChallengeMessage: challengeMsg,
 	}
 	h.StorePendingAuth(pending)
 
@@ -1079,8 +1088,9 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 		h.recordAuth("ntlm", result != nil && !result.Status.IsError())
 	}()
 
-	// Extract NTLM token (unwrap SPNEGO if needed)
-	ntlmToken, _, _ := extractNTLMToken(securityBuffer)
+	// Extract NTLM token (unwrap SPNEGO if needed); clientMIC is the
+	// mechListMIC from the SPNEGO NegTokenResp wrapper, verified below.
+	ntlmToken, _, _, clientMIC := extractNTLMToken(securityBuffer)
 
 	// Parse the AUTHENTICATE message to extract username and domain
 	authMsg, err := auth.ParseAuthenticate(ntlmToken)
@@ -1113,6 +1123,14 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 	// If anonymous authentication requested
 	if authMsg.IsAnonymous || authMsg.Username == "" {
 		if pending.IsReauth {
+			// The reauthenticated session becomes a guest session, so the same
+			// guest policy that gates fresh guest sessions applies: guest access
+			// disabled or signing required rejects the re-authentication instead
+			// of silently downgrading an authenticated session to an
+			// unauthenticated one.
+			if result := h.checkGuestPolicy(); result != nil {
+				return result, nil
+			}
 			if result := h.tryReauthUpdate(pending, "anonymous", "", nil, true); result != nil {
 				ctx.IsGuest = true
 				return result, nil
@@ -1221,6 +1239,38 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				logger.Debug("Derived signing key",
 					"sessionID", pending.SessionID,
 					"usedKeyExch", (authMsg.NegotiateFlags&auth.FlagKeyExch) != 0 && len(authMsg.EncryptedRandomSessionKey) == 16)
+
+				// AUTHENTICATE MIC check (MS-NLMP 3.2.5.2.1): when the client
+				// sent a MIC, verify it against the exported session key over
+				// all three handshake messages. A bad MIC means a downgraded or
+				// tampered exchange, so the mismatch is logged for detection —
+				// but the check is advisory, not fatal: Samba clients hash a
+				// message stream our stored buffers cannot reproduce byte for
+				// byte (the exact Type-1/Type-2 bytes the peer hashed are not
+				// observable server-side), so failing the session here rejects
+				// every legitimate Samba login.
+				// ponytail: advisory MIC check; make it fatal once the MIC
+				// computation reproduces Samba's client-side input stream.
+				if authMsg.Mic != nil && pending.NegotiateMessage != nil && pending.ChallengeMessage != nil {
+					if micErr := auth.VerifyAuthMessageMIC(signingKey, pending.NegotiateMessage, pending.ChallengeMessage, ntlmToken); micErr != nil {
+						logger.Info("NTLM AUTHENTICATE MIC verification failed (advisory)",
+							"sessionID", pending.SessionID, "error", micErr,
+							"username", authMsg.Username)
+					}
+				}
+
+				// SPNEGO mechListMIC check (RFC 4178 §5): when the client's
+				// NegTokenResp carried a MIC, verify it against the NTLMSSP
+				// signature computed over the mech list with the exported
+				// session key. A bad MIC means the negotiated mech list was
+				// tampered with in flight.
+				if len(clientMIC) > 0 && len(pending.MechListBytes) > 0 {
+					if micErr := auth.VerifyNTLMSSPMechListMIC(signingKey, pending.MechListBytes, clientMIC, authMsg.NegotiateFlags); micErr != nil {
+						logger.Info("NTLM SPNEGO mechListMIC verification failed",
+							"sessionID", pending.SessionID, "error", micErr)
+						return NewErrorResult(types.StatusLogonFailure), nil
+					}
+				}
 
 				// Authentication successful with validated credentials
 				ctx.IsGuest = false
@@ -2079,19 +2129,14 @@ func (h *Handler) tryReauthUpdate(pending *PendingAuth, username, domain string,
 	if !ok {
 		return nil
 	}
-	existingSess.Username = username
-	existingSess.Domain = domain
-	existingSess.User = user
-	existingSess.IsGuest = isGuest
-	existingSess.IsNull = username == "" && !isGuest
-
-	// Clear any Kerberos PAC identity carried from a prior auth on this session.
-	// tryReauthUpdate handles the NTLM reauth path, which carries no in-band PAC;
-	// the Kerberos reauth path (reauthKerberosSession) sets these from the new
-	// ticket. Without this, a session that first authenticated via Kerberos
-	// (PAC group SIDs, possibly privileged) and then reauthenticated via NTLM as
-	// a lower-privileged or anonymous user would retain the original AD group
-	// SIDs, granting access on SID-keyed ACLs it should no longer have.
+	// UpdateIdentity holds the session lock, so a concurrent request goroutine
+	// building an AuthContext never observes a half-updated identity. It also
+	// drops the memoized derived identity and (via the caller's SetPACIdentity
+	// below) clears any Kerberos PAC carried from a prior auth: a session that
+	// first authenticated via Kerberos (PAC group SIDs, possibly privileged) and
+	// then reauthenticated via NTLM as a lower-privileged or anonymous user must
+	// not retain the original AD group SIDs.
+	existingSess.UpdateIdentity(username, domain, user, isGuest, username == "" && !isGuest)
 	existingSess.SetPACIdentity(nil, "")
 
 	logger.Info("Session re-authenticated (identity updated, keys retained)",

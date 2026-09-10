@@ -985,6 +985,18 @@ func (h *Handler) handleOplockBreakAck(ctx *SMBHandlerContext, body []byte) (*Ha
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
+	// Ownership check (mirrors the lease-break-ack sibling): the acking session
+	// must own a binding for this lease key. AcknowledgeLeaseBreak treats an
+	// unbound key as success (CLOSE-beat-ack), so without this check a client
+	// acking another session's lease key would have the acknowledged level
+	// applied to this file's oplock state.
+	if !h.LeaseManager.VerifyLeaseAckOwnership(openFile.LeaseKey, ctx.SessionID, connClientGUID(ctx)) {
+		logger.Debug("OPLOCK_BREAK_ACK: lease not bound to this session",
+			"fileID", fmt.Sprintf("%x", ack.FileID),
+			"sessionID", ctx.SessionID)
+		return NewErrorResult(types.StatusInvalidDeviceRequest), nil
+	}
+
 	// Map acknowledged oplock level to lease state
 	newState := oplockLevelToLeaseState(ack.OplockLevel)
 
