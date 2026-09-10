@@ -382,7 +382,7 @@ func (h *Handler) executeCopyChunks(
 	srcFile, err := metaSvc.GetFileForRead(ctx.Context, srcOpen.MetadataHandle)
 	if err != nil {
 		logger.Debug("COPYCHUNK: failed to get source file", "path", srcPath, "error", err)
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 
 	// Get destination block store
@@ -505,7 +505,7 @@ func (h *Handler) executeCopyChunks(
 			// the I/O-class status for opaque failures.
 			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
-				common.MapContentToSMB(err), chunksWritten, totalBytesWritten), nil
+				types.StatusFor(common.ClassifyBlockStoreError(err)), chunksWritten, totalBytesWritten), nil
 		}
 
 		// Reject short reads (TOCTOU: source may have been truncated concurrently)
@@ -528,7 +528,7 @@ func (h *Handler) executeCopyChunks(
 				"chunk", i, "dstPath", dstPath, "error", err)
 			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
-				common.MapToSMB(err), chunksWritten, totalBytesWritten), nil
+				types.StatusForErr(err), chunksWritten, totalBytesWritten), nil
 		}
 
 		// Write to destination.
@@ -545,7 +545,7 @@ func (h *Handler) executeCopyChunks(
 			// the I/O-class status for opaque failures.
 			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
-				common.MapContentToSMB(err), chunksWritten, totalBytesWritten), nil
+				types.StatusFor(common.ClassifyBlockStoreError(err)), chunksWritten, totalBytesWritten), nil
 		}
 
 		// Commit write metadata

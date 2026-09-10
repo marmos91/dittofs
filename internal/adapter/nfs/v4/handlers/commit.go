@@ -62,7 +62,7 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 	// GetFileForRead: handle-addressed, File.Path unused — skip derivePath.
 	file, err := metaSvc.GetFileForRead(authCtx.Context, fileHandle)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		return commitErr(status)
 	}
 
@@ -83,7 +83,7 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 	// not modify. knfsd likewise verifies the handle with NFSD_MAY_WRITE for
 	// COMMIT.
 	if err := metaSvc.CheckWritePermissionFile(authCtx, fileHandle, file); err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		logger.Debug("NFSv4 COMMIT denied", "status", status, "error", err, "client", ctx.ClientAddr)
 		return commitErr(status)
 	}
@@ -108,7 +108,7 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 			"error", flushErr,
 			"payloadID", file.PayloadID,
 			"client", ctx.ClientAddr)
-		return commitErr(common.MapContentToNFS4(flushErr))
+		return commitErr(types.StatusFor(common.ClassifyBlockStoreError(flushErr)))
 	}
 
 	// Flush pending metadata writes (deferred commit optimization)

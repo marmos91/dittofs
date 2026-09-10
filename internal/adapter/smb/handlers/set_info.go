@@ -487,7 +487,7 @@ func (h *Handler) setFileInfoFromStore(
 		if _, err := metaSvc.SetFileAttributes(basicAuthCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			openFile.mu.Unlock() // release before returning; refs #606.
 			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Name().Path, "error", err)
-			return setInfoStatus(common.MapToSMB(err)), nil
+			return setInfoStatus(types.StatusForErr(err)), nil
 		}
 
 		// NTFS contract: SET_INFO BasicInformation on an ADS handle MUST be
@@ -789,7 +789,7 @@ func (h *Handler) setFileInfoFromStore(
 					"from", oldFileName,
 					"to", toName,
 					"error", err)
-				return setInfoStatus(common.MapToSMB(err)), nil
+				return setInfoStatus(types.StatusForErr(err)), nil
 			}
 
 			h.restorePreRenameChangeTime(authCtx.Context, openFile.MetadataHandle, renameWcc)
@@ -1238,7 +1238,7 @@ func (h *Handler) setFileInfoFromStore(
 			if rmErr != nil {
 				logger.Debug("SET_INFO: rename overwrite pre-remove failed",
 					"name", dstMatchedName, "error", rmErr)
-				return setInfoStatus(common.MapToSMB(rmErr)), nil
+				return setInfoStatus(types.StatusForErr(rmErr)), nil
 			}
 			// RemoveFile drops the name and the inode but never the bytes; its
 			// PayloadID is empty whenever the content must survive.
@@ -1258,7 +1258,7 @@ func (h *Handler) setFileInfoFromStore(
 				"from", openFile.Name().Path,
 				"to", newPath,
 				"error", err)
-			return setInfoStatus(common.MapToSMB(err)), nil
+			return setInfoStatus(types.StatusForErr(err)), nil
 		}
 
 		h.restorePreRenameChangeTime(authCtx.Context, openFile.MetadataHandle, renameWcc)
@@ -1607,7 +1607,7 @@ func (h *Handler) setFileInfoFromStore(
 		_, err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 		if err != nil {
 			logger.Debug("SET_INFO: failed to set EOF", "path", openFile.Name().Path, "error", err)
-			return setInfoStatus(common.MapToSMB(err)), nil
+			return setInfoStatus(types.StatusForErr(err)), nil
 		}
 
 		// Physically discard block data past the new EOF. SetFileAttributes
@@ -1715,7 +1715,7 @@ func (h *Handler) setFileInfoFromStore(
 					}); err != nil {
 						logger.Debug("SET_INFO: allocation-driven truncate failed",
 							"path", openFile.Name().Path, "error", err)
-						return setInfoStatus(common.MapToSMB(err)), nil
+						return setInfoStatus(types.StatusForErr(err)), nil
 					}
 					// Discard block data past the new EOF (curFile is the pre-op
 					// snapshot). Same reclaim the FileEndOfFileInformation path
@@ -1807,7 +1807,7 @@ func (h *Handler) setFileInfoFromStore(
 		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			logger.Debug("SET_INFO: FileFullEaInformation persist failed",
 				"path", openFile.Name().Path, "error", err)
-			return setInfoStatus(common.MapToSMB(err)), nil
+			return setInfoStatus(types.StatusForErr(err)), nil
 		}
 
 		logger.Debug("SET_INFO: FileFullEaInformation persisted",
@@ -2250,7 +2250,7 @@ func (h *Handler) setSecurityInfo(
 	_, err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 	if err != nil {
 		logger.Debug("SET_INFO: failed to set security info", "path", openFile.Name().Path, "error", err)
-		return setInfoStatus(common.MapToSMB(err)), nil
+		return setInfoStatus(types.StatusForErr(err)), nil
 	}
 
 	if h.NotifyRegistry != nil {
@@ -2625,7 +2625,7 @@ func (h *Handler) handleFileLinkInformation(
 			if rmErr != nil {
 				logger.Debug("SET_INFO: hardlink replace failed to remove existing",
 					"name", matchedName, "error", rmErr)
-				return setInfoStatus(common.MapToSMB(rmErr)), nil
+				return setInfoStatus(types.StatusForErr(rmErr)), nil
 			}
 			// RemoveFile drops the name and the inode but never the bytes; its
 			// PayloadID is empty whenever the content must survive. Left
@@ -2646,7 +2646,7 @@ func (h *Handler) handleFileLinkInformation(
 	if _, err := metaSvc.CreateHardLink(authCtx, dstDir, linkName, openFile.MetadataHandle); err != nil {
 		logger.Debug("SET_INFO: CreateHardLink failed",
 			"src", openFile.Name().Path, "dst", newPath, "error", err)
-		return setInfoStatus(common.MapToSMB(err)), nil
+		return setInfoStatus(types.StatusForErr(err)), nil
 	}
 
 	// Break parent directory leases on the destination parent to None

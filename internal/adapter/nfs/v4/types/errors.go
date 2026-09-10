@@ -5,14 +5,9 @@ import (
 	"unicode/utf8"
 )
 
-// Note: MapMetadataErrorToNFS4 was removed as part of consolidating every
-// metadata.ErrorCode -> protocol-code translator into
-// internal/adapter/common/errmap.go. NFSv4 handlers now call
-// common.MapToNFS4(err) directly. Keeping a wrapper here would have created
-// an import cycle (internal/adapter/common imports internal/adapter/nfs/v4/types
-// for the NFS4ERR_* constants), so the wrapper was deleted and callers
-// migrated. The coverage test for every ErrorCode lives in
-// internal/adapter/common/errmap_test.go.
+// The metadata.ErrorCode -> NFS4 status translation lives in StatusFor
+// (statusfor.go, same package): every ErrorCode is mapped there, with a
+// full-enum walk test in statusfor_test.go.
 
 // ValidateUTF8Filename validates an NFSv4 filename component per RFC 7530 Section 12.7.
 //

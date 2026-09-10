@@ -235,7 +235,7 @@ func (h *Handler) Write(
 	writeIntent, err := metaSvc.PrepareWrite(authCtx, fileHandle, newSize)
 	if err != nil {
 		// Map store error to NFS status
-		status := common.MapToNFS3(err)
+		status := types.StatusForErr(err)
 
 		logger.WarnCtx(ctx.Context, "WRITE failed: PrepareWrite error", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP, "error", err)
 
@@ -258,7 +258,7 @@ func (h *Handler) Write(
 	err = common.WriteToBlockStore(ctx.Context, blockStore, writeIntent.PayloadID, req.Data, req.Offset)
 	if err != nil {
 		logError(ctx.Context, err, "WRITE failed: BlockStore write error", "handle", xdr.LazyHandle(req.Handle), "offset", req.Offset, "count", len(req.Data), "payload_id", writeIntent.PayloadID, "client", clientIP)
-		status := common.MapContentToNFS3(err)
+		status := types.StatusFor(common.ClassifyBlockStoreError(err))
 		return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
 	logger.DebugCtx(ctx.Context, "WRITE: cached successfully", "payload_id", writeIntent.PayloadID)
@@ -269,7 +269,7 @@ func (h *Handler) Write(
 
 		// Content is written but metadata not updated - this is an inconsistent state
 		// Map error to NFS status
-		status := common.MapToNFS3(err)
+		status := types.StatusForErr(err)
 
 		return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}

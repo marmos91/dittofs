@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -94,7 +93,7 @@ func (h *Handler) getAttrRealFS(ctx *types.CompoundContext, requested []uint32) 
 
 	file, err := metaSvc.GetFile(authCtx.Context, metadata.FileHandle(ctx.CurrentFH))
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		logger.Debug("NFSv4 GETATTR real-FS failed",
 			"error", err,
 			"status", status,

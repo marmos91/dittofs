@@ -13,23 +13,25 @@ import (
 )
 
 // The block store was closed under an in-flight op (share removed/hot-reloaded
-// mid-transfer): the reply must draw NFS4ERR_STALE via the shared content
-// mapper, not the literal NFS4ERR_IO the handlers used to return. Each test
+// mid-transfer): the reply must draw NFS4ERR_STALE via the payload choke
+// point's normalization (normalizeBlockStoreError in internal/adapter/common),
+// not the literal NFS4ERR_IO the handlers used to return. Each test
 // closes the per-share store after setup, then drives the handler and asserts
 // the wire status.
 
-// mapperBoundary pins the seam this wiring depends on: the content mapper
-// keeps the established classification (unknown/ErrRemoteUnavailable → IO)
-// while lifting ErrStoreClosed to STALE. MapToNFS4 would not — its
-// lookupErrorRow defaults a non-StoreError to NFS4ERR_SERVERFAULT — which is
-// why the handlers route through MapContentToNFS4.
+// mapperBoundary pins the seam this wiring depends on: the block-store
+// classifier (common.ClassifyBlockStoreError) keeps the established
+// classification (unknown/sentinel → I/O row) while lifting ErrStoreClosed to
+// the stale-handle row. The general error path (types.StatusForErr on a raw
+// non-StoreError) defaults to NFS4ERR_SERVERFAULT — which is why the
+// classifier exists and the handlers route block errors through it.
 func TestContentMapperBoundary_RemoteUnavailableStaysIO(t *testing.T) {
-	if got := common.MapContentToNFS4(block.ErrRemoteUnavailable); got != nfs4types.NFS4ERR_IO {
-		t.Errorf("MapContentToNFS4(ErrRemoteUnavailable) = %d, want NFS4ERR_IO (%d)",
+	if got := nfs4types.StatusFor(common.ClassifyBlockStoreError(block.ErrRemoteUnavailable)); got != nfs4types.NFS4ERR_IO {
+		t.Errorf("StatusFor(classify(ErrRemoteUnavailable)) = %d, want NFS4ERR_IO (%d)",
 			got, nfs4types.NFS4ERR_IO)
 	}
-	if got := common.MapContentToNFS4(engine.ErrStoreClosed); got != nfs4types.NFS4ERR_STALE {
-		t.Errorf("MapContentToNFS4(ErrStoreClosed) = %d, want NFS4ERR_STALE (%d)",
+	if got := nfs4types.StatusFor(common.ClassifyBlockStoreError(engine.ErrStoreClosed)); got != nfs4types.NFS4ERR_STALE {
+		t.Errorf("StatusFor(classify(ErrStoreClosed)) = %d, want NFS4ERR_STALE (%d)",
 			got, nfs4types.NFS4ERR_STALE)
 	}
 }
@@ -180,10 +182,13 @@ func TestDeallocate_ClosedStore_ReturnsStale(t *testing.T) {
 
 // contextTests keep the raw context cancellation pass-through covered: a
 // canceled read still surfaces IO (the fallback), never STALE, because
-// cancellation is not a dead-handle signal.
+// cancellation is not a dead-handle signal. The choke point normalizes the
+// canceled error as a StoreError{ErrIOError, Cause: context.Canceled}, so the
+// classifier sees the I/O row while errors.Is(context.Canceled) still
+// traverses via Cause.
 func TestRead_CanceledContext_FallsBackToIO(t *testing.T) {
-	if got := common.MapContentToNFS4(context.Canceled); got != nfs4types.NFS4ERR_IO {
-		t.Errorf("MapContentToNFS4(context.Canceled) = %d, want NFS4ERR_IO (%d)",
+	if got := nfs4types.StatusFor(common.ClassifyBlockStoreError(context.Canceled)); got != nfs4types.NFS4ERR_IO {
+		t.Errorf("StatusFor(classify(context.Canceled)) = %d, want NFS4ERR_IO (%d)",
 			got, nfs4types.NFS4ERR_IO)
 	}
 }

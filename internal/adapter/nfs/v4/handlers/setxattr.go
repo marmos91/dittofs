@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
@@ -100,7 +99,7 @@ func (h *Handler) handleSetXattr(ctx *types.CompoundContext, reader io.Reader) *
 	if option != types.SETXATTR4_EITHER {
 		_, exists, gerr := backend.GetXattr(authCtx, handle, canonical)
 		if gerr != nil {
-			return xattrErr(types.OP_SETXATTR, common.MapToNFS4(gerr))
+			return xattrErr(types.OP_SETXATTR, types.StatusForErr(gerr))
 		}
 		if option == types.SETXATTR4_CREATE && exists {
 			return xattrErr(types.OP_SETXATTR, types.NFS4ERR_EXIST)
@@ -117,7 +116,7 @@ func (h *Handler) handleSetXattr(ctx *types.CompoundContext, reader io.Reader) *
 		if errors.Is(err, metadata.ErrXattrTooLarge) {
 			return xattrErr(types.OP_SETXATTR, types.NFS4ERR_XATTR2BIG)
 		}
-		return xattrErr(types.OP_SETXATTR, common.MapToNFS4(err))
+		return xattrErr(types.OP_SETXATTR, types.StatusForErr(err))
 	}
 
 	after := h.xattrChangeID(ctx, handle)

@@ -83,7 +83,7 @@ func (h *Handler) handleSeek(ctx *types.CompoundContext, reader io.Reader) *type
 	fileHandle := metadata.FileHandle(ctx.CurrentFH)
 	file, err := metaSvc.GetFileForRead(authCtx.Context, fileHandle)
 	if err != nil {
-		return seekErr(common.MapToNFS4(err))
+		return seekErr(types.StatusForErr(err))
 	}
 	if file.Type != metadata.FileTypeRegular {
 		return seekErr(types.NFS4ERR_ISDIR)

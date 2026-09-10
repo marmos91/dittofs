@@ -108,7 +108,7 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 	if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &attrs); err != nil {
 		logger.Warn("IOCTL FSCTL_SET_SPARSE: failed to persist mode",
 			"path", path, "error", err)
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 
 	logger.Debug("IOCTL FSCTL_SET_SPARSE: applied",
@@ -194,7 +194,7 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 	metaSvc := h.Registry.GetMetadataService()
 	file, err := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
 	if err != nil {
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 
 	rangeEnd := reqOffset + reqLength
@@ -211,7 +211,7 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 			if err != nil {
 				logger.Warn("IOCTL FSCTL_QUERY_ALLOCATED_RANGES: scan failed",
 					"path", path, "error", err)
-				return NewErrorResult(common.MapContentToSMB(err)), nil
+				return NewErrorResult(types.StatusFor(common.ClassifyBlockStoreError(err))), nil
 			}
 		} else {
 			ranges = []allocatedRange{{Offset: allocStart, Length: allocEnd - allocStart}}
@@ -442,7 +442,7 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 	metaSvc := h.Registry.GetMetadataService()
 	fileForSize, err := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
 	if err != nil {
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 	if fileOffset >= fileForSize.Size {
 		resp := buildIoctlResponse(FsctlSetZeroData, fileID, nil)
@@ -485,7 +485,7 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 		}
 		logger.Warn("IOCTL FSCTL_SET_ZERO_DATA: write failed",
 			"path", path, "error", err)
-		return NewErrorResult(common.MapContentToSMB(err)), nil
+		return NewErrorResult(types.StatusFor(common.ClassifyBlockStoreError(err))), nil
 	}
 
 	// SMB requires immediate cross-session metadata visibility (unlike NFS

@@ -294,7 +294,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	file, err := metaSvc.GetFileForRead(authCtx.Context, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("READ: failed to get file metadata", "path", path, "error", err)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
 	}
 
 	// Handle symlink reads - SMB clients expect MFsymlink content for symlinks
@@ -312,13 +312,13 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 			rerr = &metadata.StoreError{Code: metadata.ErrIsDirectory, Message: "cannot read directory"}
 		}
 		logger.Debug("READ: not a regular file", "path", path, "type", file.Type)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(rerr)}}, nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(rerr)}}, nil
 	}
 
 	// Validate read permission on the already-loaded file (no re-fetch).
 	if err := metaSvc.CheckReadPermissionFile(authCtx, openFile.MetadataHandle, file); err != nil {
 		logger.Debug("READ: permission check failed", "path", path, "error", err)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
 	}
 
 	// ========================================================================
@@ -408,7 +408,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		// behavior and handles ErrRemoteUnavailable. ReleaseData stays nil
 		// because ReadFromBlockStore has already released the pooled buffer
 		// on the error path.
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapContentToSMB(err)}}, nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFor(common.ClassifyBlockStoreError(err))}}, nil
 	}
 
 	logger.Debug("READ successful",

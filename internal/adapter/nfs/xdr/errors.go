@@ -3,7 +3,6 @@ package xdr
 import (
 	"errors"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -55,7 +54,7 @@ func MapStoreErrorToNFSStatus(err error, clientIP string, operation string) uint
 	// Delegate the code translation to common.MapToNFS3 (the single
 	// source of truth across NFSv3/NFSv4/SMB). This wrapper only adds
 	// audit logging at appropriate levels.
-	nfsCode := common.MapToNFS3(err)
+	nfsCode := types.StatusForErr(err)
 
 	var storeErr *metadata.StoreError
 	if !errors.As(err, &storeErr) {

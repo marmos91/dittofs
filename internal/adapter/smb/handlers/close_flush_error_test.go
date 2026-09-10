@@ -13,7 +13,7 @@
 // block store (the same backends every smb-conformance profile uses) but
 // closes the underlying engine.Store first, so the flush deterministically
 // returns engine.ErrStoreClosed. That sentinel maps to STATUS_FILE_CLOSED via
-// common.MapContentToSMB — any non-success status proves the swallow is fixed.
+// the content error classifier — any non-success status proves the swallow is fixed.
 package handlers
 
 import (
