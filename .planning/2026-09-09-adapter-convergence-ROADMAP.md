@@ -35,7 +35,7 @@ Note: develop carries 2 local docs commits (23de25e56 + eda765c47) not yet pushe
 | #2490 LOCK special-stateid BAD_STATEID | #2498 | `7e5cd2e40` |
 
 Earlier Wave 2 singles: #2398 via #2459+#2466, #2362 via #2458, #2369 via #2460, #2382 via #2456,
-# 2399 via #2457, #2341 via #2484+#2481, #2340 partial via #2491/#2489/#2486/#2485.
+# 2399 via #2457, #2341 via #2484+#2481, #2340 partial via #2491/#2489/#2486/#2485
 
 **Wave 2 residual (carries into Wave 3+):** #2340's remaining pynfs v4.1 rows (walk out of
 KNOWN_FAILURES only on demonstrated CI passes), #2329's pynfs delegation confirmation (server side
@@ -54,9 +54,10 @@ warranted — verdict in `.planning/2026-09-09-diag-2329-2464.md`).
 ### Step 2 — Wave 3: shared-layer reuse + lifecycle (goals 2 + 4) — IMPLEMENTED, review passes running
 
 All six branches pushed 2026-09-10 after the fan-out (5 workers, plan-validation corrections baked
-in; full state in `.planning/2026-09-09-wave3-plan.md`). 12 read-only reviewers fanned out
-(correctness + simplification + adversarial per branch); next: PR opens (guard first), serialized
-merges, Copilot babysitting.
+in; full state in `.planning/2026-09-09-wave3-plan.md`). All six reviewed green (correctness +
+adversarial + simplification per branch; 2 errmap P2s + 1 v4content P2 applied inline). All six
+PRs open against develop, assigned marmos91, Copilot re-requested; serialized merge babysitter
+running (guard #2499 first). No lane maps to an open GitHub issue — no Closes #N.
 
 | Branch | Content | Head |
 | --- | --- | --- |
