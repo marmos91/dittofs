@@ -73,7 +73,7 @@ func buildHealthTestEngine(t *testing.T) (*Store, *fakeRemoteStore) {
 
 	fakeRemote := newFakeRemoteStore()
 
-	syncCfg := SyncerConfig{
+	syncCfg := RemoteSyncConfig{
 		ParallelDownloads:           4,
 		PrefetchBlocks:              0,
 		UploadInterval:              50 * time.Millisecond,
@@ -83,12 +83,12 @@ func buildHealthTestEngine(t *testing.T) (*Store, *fakeRemoteStore) {
 		UnhealthyCheckInterval:      10 * time.Millisecond,
 	}
 
-	syncer := NewSyncer(localStore, fakeRemote, ms, syncCfg)
+	syncer := NewRemoteSync(localStore, fakeRemote, ms, syncCfg)
 
 	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Remote:          fakeRemote,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		SyncedHashStore: ms,
 	})

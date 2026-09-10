@@ -1,11 +1,15 @@
 package handlers_test
 
 import (
+	"bytes"
+	"context"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	handlertesting "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers/testing"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -420,4 +424,82 @@ func TestRename_NestedDirectory(t *testing.T) {
 
 	assert.Nil(t, fx.GetHandle("a/b/c/nested.txt"))
 	assert.NotNil(t, fx.GetHandle("a/b/c/renamed.txt"))
+}
+
+// TestRename_ReclaimsClobberedPayloadBytes pins that a RENAME onto an existing
+// name frees the clobbered file's content, not just its directory entry. The
+// metadata layer deliberately never deletes payload bytes — Move returns the
+// clobbered victim so the handler can — and a handler that ignores that return
+// leaves the victim's records indexed as live in the local tier, where no
+// reclamation path treats them as dead and the bytes survive every restart.
+//
+// Asserting on observable block-store state pins both directions: the victim's
+// payload must be gone AND the renamed file's must survive, so releasing the
+// wrong payload fails here instead of passing.
+func TestRename_ReclaimsClobberedPayloadBytes(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+	ctxBg := context.Background()
+
+	payloadIDOf := func(name string) string {
+		t.Helper()
+		handle, err := fx.MetadataService.GetChild(ctxBg, fx.RootHandle, name)
+		require.NoError(t, err)
+		file, err := fx.MetadataService.GetFile(ctxBg, handle)
+		require.NoError(t, err)
+		return string(file.PayloadID)
+	}
+
+	victimBytes := bytes.Repeat([]byte{0xAB}, 1<<20)
+	fx.CreateFile("victim.bin", victimBytes)
+	fx.CreateFile("incoming.bin", bytes.Repeat([]byte{0xCD}, 4096))
+
+	victimPayload := payloadIDOf("victim.bin")
+	survivorPayload := payloadIDOf("incoming.bin")
+	require.NotEqual(t, victimPayload, survivorPayload,
+		"test setup: both files share a payload, the assertions below cannot discriminate")
+
+	size, ok := fx.LocalStore.FileSize(ctxBg, victimPayload)
+	require.True(t, ok, "victim payload absent from the local tier before RENAME")
+	require.Equal(t, int64(len(victimBytes)), size)
+
+	resp, err := fx.Handler.Rename(fx.ContextWithUID(0, 0), &handlers.RenameRequest{
+		FromDirHandle: fx.RootHandle,
+		FromName:      "incoming.bin",
+		ToDirHandle:   fx.RootHandle,
+		ToName:        "victim.bin",
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, resp.Status)
+
+	leaked, stillThere := fx.LocalStore.FileSize(ctxBg, victimPayload)
+	assert.Falsef(t, stillThere,
+		"clobbered payload %q still holds %d live bytes in the local tier after RENAME", victimPayload, leaked)
+
+	_, survived := fx.LocalStore.FileSize(ctxBg, survivorPayload)
+	assert.Truef(t, survived,
+		"renamed file's payload %q was dropped from the local tier by RENAME", survivorPayload)
+}
+
+// TestRename_CrossShareRejected pins that RENAME reports a cross-share move as
+// NFS3ErrXDev, the same status LINK returns for the same condition, so one
+// condition does not surface as two different errnos.
+func TestRename_CrossShareRejected(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	fx.CreateFile("original.txt", []byte("content"))
+
+	foreignDir, err := metadata.EncodeShareHandle("/other-share", uuid.New())
+	require.NoError(t, err)
+
+	req := &handlers.RenameRequest{
+		FromDirHandle: fx.RootHandle,
+		FromName:      "original.txt",
+		ToDirHandle:   foreignDir,
+		ToName:        "stolen.txt",
+	}
+	resp, err := fx.Handler.Rename(fx.Context(), req)
+
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3ErrXDev, resp.Status,
+		"RENAME across shares should return NFS3ErrXDev")
 }

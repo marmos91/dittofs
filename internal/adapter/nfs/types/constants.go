@@ -92,6 +92,11 @@ const (
 	// NFS3ErrExist - File exists
 	NFS3ErrExist = 17
 
+	// NFS3ErrXDev - Attempt to do a cross-device hard link.
+	// Returned when the two handles of a LINK or RENAME name objects in
+	// different shares.
+	NFS3ErrXDev = 18
+
 	// NFS3ErrNotDir - Not a directory
 	NFS3ErrNotDir = 20
 

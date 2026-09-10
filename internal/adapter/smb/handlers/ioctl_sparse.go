@@ -93,7 +93,9 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 
 	// Persist the sparse bit via SetFileAttributes so QUERY_INFO and
 	// subsequent CREATEs see the FILE_ATTRIBUTE_SPARSE_FILE attribute.
-	h.primeAuthContextFromOpenFile(ctx, openFile)
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return NewErrorResult(status), nil
+	}
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		return NewErrorResult(types.StatusAccessDenied), nil
@@ -106,7 +108,7 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 	if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &attrs); err != nil {
 		logger.Warn("IOCTL FSCTL_SET_SPARSE: failed to persist mode",
 			"path", path, "error", err)
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 
 	logger.Debug("IOCTL FSCTL_SET_SPARSE: applied",
@@ -119,9 +121,9 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 // entry (FileOffset uint64 + Length uint64).
 const fileAllocatedRangeBufSize = 16
 
-// handleQueryAllocatedRanges handles FSCTL_QUERY_ALLOCATED_RANGES [MS-FSCC]
-// 2.3.32. The client supplies a (FileOffset, Length) window and the server
-// reports which sub-ranges are non-sparse.
+// handleQueryAllocatedRanges handles FSCTL_QUERY_ALLOCATED_RANGES. The client
+// supplies a (FileOffset, Length) window ([MS-FSCC] 2.3.51) and the server
+// reports which sub-ranges are non-sparse ([MS-FSCC] 2.3.52).
 //
 // Allocation model: for non-sparse files (modeDOSSparse clear), we report the
 // intersection of the request window with [0, FileSize) as a single range —
@@ -182,7 +184,9 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 	// Prime ctx with the OpenFile's recorded session state — without this
 	// hand-off BuildAuthContext takes the ctx.User==nil arm and synthesises
 	// UID-0 (root), bypassing DACL checks on the GetFile probe (#619).
-	h.primeAuthContextFromOpenFile(ctx, openFile)
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return NewErrorResult(status), nil
+	}
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		return NewErrorResult(types.StatusAccessDenied), nil
@@ -190,7 +194,7 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 	metaSvc := h.Registry.GetMetadataService()
 	file, err := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
 	if err != nil {
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 
 	rangeEnd := reqOffset + reqLength
@@ -207,7 +211,7 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 			if err != nil {
 				logger.Warn("IOCTL FSCTL_QUERY_ALLOCATED_RANGES: scan failed",
 					"path", path, "error", err)
-				return NewErrorResult(common.MapContentToSMB(err)), nil
+				return NewErrorResult(types.StatusFor(common.ClassifyBlockStoreError(err))), nil
 			}
 		} else {
 			ranges = []allocatedRange{{Offset: allocStart, Length: allocEnd - allocStart}}
@@ -422,7 +426,9 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 	// Without this, FileID-only IOCTL requests fall through to anonymous
 	// UID-0 (root) and CommitWrite skips the non-root SUID/SGID clearing
 	// path (#619, same class as #603).
-	h.primeAuthContextFromOpenFile(ctx, openFile)
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return NewErrorResult(status), nil
+	}
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		return NewErrorResult(types.StatusAccessDenied), nil
@@ -436,7 +442,7 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 	metaSvc := h.Registry.GetMetadataService()
 	fileForSize, err := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
 	if err != nil {
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 	if fileOffset >= fileForSize.Size {
 		resp := buildIoctlResponse(FsctlSetZeroData, fileID, nil)
@@ -479,7 +485,7 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 		}
 		logger.Warn("IOCTL FSCTL_SET_ZERO_DATA: write failed",
 			"path", path, "error", err)
-		return NewErrorResult(common.MapContentToSMB(err)), nil
+		return NewErrorResult(types.StatusFor(common.ClassifyBlockStoreError(err))), nil
 	}
 
 	// SMB requires immediate cross-session metadata visibility (unlike NFS

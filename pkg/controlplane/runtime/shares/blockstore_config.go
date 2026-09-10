@@ -209,8 +209,8 @@ func (n *nonClosingRemote) ReadChunk(ctx context.Context, blockID string, offset
 	return cr.ReadChunk(ctx, blockID, offset, length, hash)
 }
 
-// buildSyncerConfigFromDefaults merges SyncerDefaults into a engine.SyncerConfig.
-func buildSyncerConfigFromDefaults(defaults *SyncerDefaults) engine.SyncerConfig {
+// buildSyncerConfigFromDefaults merges SyncerDefaults into a engine.RemoteSyncConfig.
+func buildSyncerConfigFromDefaults(defaults *SyncerDefaults) engine.RemoteSyncConfig {
 	cfg := engine.DefaultConfig()
 	if defaults == nil {
 		return cfg
@@ -365,9 +365,11 @@ func (s *Service) createBlockStoreForShare(
 		}
 	}
 
-	// Eviction requires a remote store (so evicted blocks can be re-fetched) and
-	// must not be pin mode (pin keeps blocks stored locally indefinitely).
-	localStore.SetEvictionEnabled(remoteStore != nil && config.RetentionPolicy != block.RetentionPin)
+	// Pin mode keeps blocks stored locally indefinitely. The local store holds the
+	// pin itself, so the health-driven SetEvictionEnabled calls made by Start and
+	// by the syncer cannot lift it: those calls say only what they know about
+	// remote health, and either reason on its own holds eviction off.
+	localStore.SetEvictionPinned(config.RetentionPolicy == block.RetentionPin)
 	// Note: SetSkipFsync was removed. Local-disk durability is now
 	// unconditional (the syncer will refetch from S3 on the rare crash path).
 
@@ -385,7 +387,7 @@ func (s *Service) createBlockStoreForShare(
 		engineRemote = &nonClosingRemote{remoteStore}
 	}
 
-	syncer := engine.NewSyncer(localStore, engineRemote, fileChunkStore, syncerCfg)
+	syncer := engine.NewRemoteSync(localStore, engineRemote, fileChunkStore, syncerCfg)
 
 	// Write-path backpressure is now internal to the journal-backed local store
 	// (Config.EvictMaxWait): a full local cache stalls the writer while the carve
@@ -433,7 +435,7 @@ func (s *Service) createBlockStoreForShare(
 	engineCfg := engine.BlockStoreConfig{
 		Local:          localStore,
 		Remote:         engineRemote,
-		Syncer:         syncer,
+		RemoteSync:     syncer,
 		FileChunkStore: fileChunkStore,
 		Coordinator:    coordinator,
 	}

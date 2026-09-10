@@ -5,9 +5,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -30,7 +32,7 @@ func TestHandleSecInfo_TwoFlavorsNoKerberos(t *testing.T) {
 
 	// Encode SECINFO args: component name
 	var args bytes.Buffer
-	_ = xdr.WriteXDRString(&args, "testfile")
+	_ = xdr.WriteXDRString(&args, "export")
 
 	result := h.handleSecInfo(ctx, bytes.NewReader(args.Bytes()))
 
@@ -63,32 +65,46 @@ func TestHandleSecInfo_TwoFlavorsNoKerberos(t *testing.T) {
 	}
 }
 
-func TestHandleSecInfo_ClearsFH(t *testing.T) {
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
-	h := NewHandler(nil, pfs)
-
-	rootHandle := pfs.GetRootHandle()
-	ctx := &types.CompoundContext{
-		Context:    context.Background(),
-		ClientAddr: "127.0.0.1:9999",
-		CurrentFH:  make([]byte, len(rootHandle)),
-	}
-	copy(ctx.CurrentFH, rootHandle)
-
-	// Encode SECINFO args: component name
-	var args bytes.Buffer
-	_ = xdr.WriteXDRString(&args, "testfile")
-
-	result := h.handleSecInfo(ctx, bytes.NewReader(args.Bytes()))
-
-	if result.Status != types.NFS4_OK {
-		t.Fatalf("SECINFO status = %d, want NFS4_OK", result.Status)
+func TestHandleSecInfo_CurrentFHPerMinorVersion(t *testing.T) {
+	// NFSv4.1 consumes the current filehandle (RFC 8881 Section 2.6.3.1.1.8);
+	// NFSv4.0 retains it (RFC 7530 Section 16.31.4).
+	tests := []struct {
+		name         string
+		minorVersion uint32
+		wantCleared  bool
+	}{
+		{"v4.0 retains", 0, false},
+		{"v4.1 consumes", 1, true},
 	}
 
-	// Per RFC 7530 Section 16.31.4: CurrentFH should be cleared after SECINFO
-	if ctx.CurrentFH != nil {
-		t.Errorf("CurrentFH should be nil after SECINFO, got %q", string(ctx.CurrentFH))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pfs := pseudofs.New()
+			pfs.Rebuild([]string{"/export"})
+			h := NewHandler(nil, pfs)
+
+			rootHandle := pfs.GetRootHandle()
+			ctx := &types.CompoundContext{
+				Context:              context.Background(),
+				ClientAddr:           "127.0.0.1:9999",
+				CurrentFH:            make([]byte, len(rootHandle)),
+				MinorVersion:         tt.minorVersion,
+				MinorVersionAccepted: true,
+			}
+			copy(ctx.CurrentFH, rootHandle)
+
+			var args bytes.Buffer
+			_ = xdr.WriteXDRString(&args, "export")
+
+			result := h.handleSecInfo(ctx, bytes.NewReader(args.Bytes()))
+			if result.Status != types.NFS4_OK {
+				t.Fatalf("SECINFO status = %d, want NFS4_OK", result.Status)
+			}
+
+			if cleared := ctx.CurrentFH == nil; cleared != tt.wantCleared {
+				t.Errorf("CurrentFH cleared = %v, want %v", cleared, tt.wantCleared)
+			}
+		})
 	}
 }
 
@@ -104,7 +120,7 @@ func TestHandleSecInfo_NoCurrentFH(t *testing.T) {
 	}
 
 	var args bytes.Buffer
-	_ = xdr.WriteXDRString(&args, "testfile")
+	_ = xdr.WriteXDRString(&args, "export")
 
 	result := h.handleSecInfo(ctx, bytes.NewReader(args.Bytes()))
 
@@ -155,7 +171,7 @@ func TestHandleSecInfo_KerberosEnabled_FiveEntries(t *testing.T) {
 	copy(ctx.CurrentFH, rootHandle)
 
 	var args bytes.Buffer
-	_ = xdr.WriteXDRString(&args, "testfile")
+	_ = xdr.WriteXDRString(&args, "export")
 
 	result := h.handleSecInfo(ctx, bytes.NewReader(args.Bytes()))
 
@@ -243,35 +259,6 @@ func TestHandleSecInfo_KerberosEnabled_FiveEntries(t *testing.T) {
 	}
 }
 
-func TestHandleSecInfo_KerberosEnabled_ClearsFH(t *testing.T) {
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
-	h := NewHandler(nil, pfs)
-	h.KerberosEnabled = true
-
-	rootHandle := pfs.GetRootHandle()
-	ctx := &types.CompoundContext{
-		Context:    context.Background(),
-		ClientAddr: "127.0.0.1:9999",
-		CurrentFH:  make([]byte, len(rootHandle)),
-	}
-	copy(ctx.CurrentFH, rootHandle)
-
-	var args bytes.Buffer
-	_ = xdr.WriteXDRString(&args, "testfile")
-
-	result := h.handleSecInfo(ctx, bytes.NewReader(args.Bytes()))
-
-	if result.Status != types.NFS4_OK {
-		t.Fatalf("SECINFO status = %d, want NFS4_OK", result.Status)
-	}
-
-	// Per RFC 7530 Section 16.31.4: CurrentFH should be cleared
-	if ctx.CurrentFH != nil {
-		t.Errorf("CurrentFH should be nil after SECINFO with Kerberos, got %q", string(ctx.CurrentFH))
-	}
-}
-
 func TestHandleSecInfo_KerberosEnabled_SecurityOrder(t *testing.T) {
 	// Verify the ordering is: krb5p > krb5i > krb5 > AUTH_SYS > AUTH_NONE
 	// (most secure first per RFC 7530 convention)
@@ -289,7 +276,7 @@ func TestHandleSecInfo_KerberosEnabled_SecurityOrder(t *testing.T) {
 	copy(ctx.CurrentFH, rootHandle)
 
 	var args bytes.Buffer
-	_ = xdr.WriteXDRString(&args, "testfile")
+	_ = xdr.WriteXDRString(&args, "export")
 
 	result := h.handleSecInfo(ctx, bytes.NewReader(args.Bytes()))
 
@@ -346,7 +333,7 @@ func TestHandleSecInfo_KRB5OIDFormat(t *testing.T) {
 
 func TestEncodeSecInfoGSSEntry_Privacy(t *testing.T) {
 	var buf bytes.Buffer
-	encodeSecInfoGSSEntry(&buf, rpcGSSSvcPrivacy)
+	encodeSecInfoGSSEntry(&buf, gss.RPCGSSSvcPrivacy)
 
 	reader := bytes.NewReader(buf.Bytes())
 
@@ -373,7 +360,7 @@ func TestEncodeSecInfoGSSEntry_Privacy(t *testing.T) {
 
 func TestEncodeSecInfoGSSEntry_Integrity(t *testing.T) {
 	var buf bytes.Buffer
-	encodeSecInfoGSSEntry(&buf, rpcGSSSvcIntegrity)
+	encodeSecInfoGSSEntry(&buf, gss.RPCGSSSvcIntegrity)
 
 	reader := bytes.NewReader(buf.Bytes())
 
@@ -393,7 +380,7 @@ func TestEncodeSecInfoGSSEntry_Integrity(t *testing.T) {
 
 func TestEncodeSecInfoGSSEntry_None(t *testing.T) {
 	var buf bytes.Buffer
-	encodeSecInfoGSSEntry(&buf, rpcGSSSvcNone)
+	encodeSecInfoGSSEntry(&buf, gss.RPCGSSSvcNone)
 
 	reader := bytes.NewReader(buf.Bytes())
 
@@ -408,5 +395,115 @@ func TestEncodeSecInfoGSSEntry_None(t *testing.T) {
 	svc, _ := xdr.DecodeUint32(reader)
 	if svc != 1 {
 		t.Fatalf("service = %d, want 1 (none)", svc)
+	}
+}
+
+func TestHandleSecInfo_RejectsInvalidName(t *testing.T) {
+	pfs := pseudofs.New()
+	pfs.Rebuild([]string{"/export"})
+	h := NewHandler(nil, pfs)
+
+	rootHandle := pfs.GetRootHandle()
+
+	tests := []struct {
+		name string
+		want uint32
+	}{
+		{"", types.NFS4ERR_INVAL},
+		{".", types.NFS4ERR_BADNAME},
+		{"..", types.NFS4ERR_BADNAME},
+		{"a/b", types.NFS4ERR_BADNAME},
+	}
+
+	for _, tt := range tests {
+		ctx := &types.CompoundContext{
+			Context:    context.Background(),
+			ClientAddr: "127.0.0.1:9999",
+			CurrentFH:  make([]byte, len(rootHandle)),
+		}
+		copy(ctx.CurrentFH, rootHandle)
+
+		var args bytes.Buffer
+		_ = xdr.WriteXDRString(&args, tt.name)
+
+		result := h.handleSecInfo(ctx, bytes.NewReader(args.Bytes()))
+		if result.Status != tt.want {
+			t.Errorf("SECINFO %q status = %d, want %d", tt.name, result.Status, tt.want)
+		}
+	}
+}
+
+// ============================================================================
+// SECINFO name resolution
+// ============================================================================
+
+// encodeSecInfoArgs encodes SECINFO4args: a single component name.
+func encodeSecInfoArgs(name string) []byte {
+	var buf bytes.Buffer
+	_ = xdr.WriteXDRString(&buf, name)
+	return buf.Bytes()
+}
+
+func TestHandleSecInfo_MissingNameIsNoEnt(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+
+	ctx := newRealFSContext(0, 0)
+	ctx.CurrentFH = append([]byte(nil), fx.rootHandle...)
+
+	result := fx.handler.handleSecInfo(ctx, bytes.NewReader(encodeSecInfoArgs("vapor")))
+
+	if result.Status != types.NFS4ERR_NOENT {
+		t.Errorf("SECINFO on a missing name status = %d, want NFS4ERR_NOENT (%d)",
+			result.Status, types.NFS4ERR_NOENT)
+	}
+}
+
+func TestHandleSecInfo_NonDirectoryIsNotDir(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+	fileHandle := fx.createTestFile(t, fx.rootHandle, "hello.txt", metadata.FileTypeRegular, 0o644, 0, 0)
+
+	ctx := newRealFSContext(0, 0)
+	ctx.CurrentFH = append([]byte(nil), fileHandle...)
+
+	result := fx.handler.handleSecInfo(ctx, bytes.NewReader(encodeSecInfoArgs("foo")))
+
+	if result.Status != types.NFS4ERR_NOTDIR {
+		t.Errorf("SECINFO with a file as current filehandle status = %d, want NFS4ERR_NOTDIR (%d)",
+			result.Status, types.NFS4ERR_NOTDIR)
+	}
+}
+
+func TestHandleSecInfo_ExistingNameSucceeds(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+	fx.createTestFile(t, fx.rootHandle, "hello.txt", metadata.FileTypeRegular, 0o644, 0, 0)
+
+	ctx := newRealFSContext(0, 0)
+	ctx.CurrentFH = append([]byte(nil), fx.rootHandle...)
+
+	result := fx.handler.handleSecInfo(ctx, bytes.NewReader(encodeSecInfoArgs("hello.txt")))
+
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("SECINFO on an existing name status = %d, want NFS4_OK", result.Status)
+	}
+}
+
+func TestHandleSecInfo_RefusedFlavorStillAnswers(t *testing.T) {
+	// The export's auth-flavor policy refusing this request is what SECINFO is
+	// being asked about, so it must not come back as NFS4ERR_WRONGSEC.
+	fx := newRealFSTestFixture(t, "/export")
+	fx.createTestFile(t, fx.rootHandle, "hello.txt", metadata.FileTypeRegular, 0o644, 0, 0)
+
+	// allowAuthSys=true, requireKerberos=true: this AUTH_SYS request is refused.
+	if err := fx.rt.SetExportAuthPolicyForTesting("/export", true, true); err != nil {
+		t.Fatalf("SetExportAuthPolicyForTesting: %v", err)
+	}
+
+	ctx := newRealFSContext(0, 0)
+	ctx.CurrentFH = append([]byte(nil), fx.rootHandle...)
+
+	result := fx.handler.handleSecInfo(ctx, bytes.NewReader(encodeSecInfoArgs("hello.txt")))
+
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("SECINFO on a Kerberos-only share over AUTH_SYS status = %d, want NFS4_OK", result.Status)
 	}
 }

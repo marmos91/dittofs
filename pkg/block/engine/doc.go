@@ -35,7 +35,7 @@
 // Non-blocking submit drops requests when the worker channel is full
 // providing natural backpressure.
 //
-// # Syncer (formerly pkg/block/sync)
+// # RemoteSync (formerly pkg/block/sync)
 //
 // The syncer is responsible for moving data between the local store and the
 // remote block store (S3 or memory). It handles
@@ -55,7 +55,7 @@
 //   - In-flight deduplication: Avoid duplicate downloads for the same block
 //   - Non-blocking: Most operations return immediately; I/O happens in background
 //
-// The Syncer struct is created via NewSyncer() and requires a LocalStore
+// The RemoteSync struct is created via NewRemoteSync() and requires a LocalStore
 // RemoteStore, and FileChunkStore.
 //
 // # Block garbage collection (formerly pkg/block/gc)
@@ -78,6 +78,6 @@
 //	// Then actually delete
 //	stats := engine.CollectGarbage(ctx, remoteStore, registry, nil)
 //
-// The garbage collector has zero coupling to the Syncer - it only needs a
+// The garbage collector has zero coupling to the RemoteSync - it only needs a
 // RemoteStore and a MetadataReconciler to check metadata existence.
 package engine

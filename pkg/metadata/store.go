@@ -91,8 +91,14 @@ type Files interface {
 	// ListChildren returns directory entries with pagination support.
 	// cursor: Pagination token (empty string = start from beginning)
 	// limit: Maximum entries to return (0 = use default)
+	// attrs: WithAttrs fills each entry's Attr; NamesOnly leaves it nil and
+	//   lets the backend skip the per-entry inode read that fills it
 	// Returns: entries, nextCursor (empty if no more), error
-	ListChildren(ctx context.Context, dirHandle FileHandle, cursor string, limit int) ([]DirEntry, string, error)
+	//
+	// Name, ID, Handle and the cursor are identical under either mode: the
+	// choice changes what work the backend does, never which entries it
+	// reports or in what order.
+	ListChildren(ctx context.Context, dirHandle FileHandle, cursor string, limit int, attrs ChildAttrs) ([]DirEntry, string, error)
 
 	// ========================================================================
 	// Extended Attribute (xattr) Operations
@@ -205,11 +211,6 @@ type Shares interface {
 	// ========================================================================
 	// Share Lifecycle (CRUD)
 	// ========================================================================
-
-	// CreateShare creates a new share with the given configuration.
-	// Also creates the root directory for the share.
-	// Returns ErrAlreadyExists if share already exists.
-	CreateShare(ctx context.Context, share *Share) error
 
 	// UpdateShareOptions updates the share configuration options.
 	// Returns ErrNotFound if share doesn't exist.
@@ -365,6 +366,24 @@ type Transactor interface {
 	WithTransaction(ctx context.Context, fn func(tx Transaction) error) error
 }
 
+// FileRowLocker is implemented by a Transaction that needs an explicit row lock
+// for a read-modify-write of one file's attribute record to serialise against
+// another writer.
+//
+// A backend whose transaction already serialises such a pair does not implement
+// it: sqlite and badger both refuse the second writer (SQLITE_BUSY, an SSI
+// conflict) and their retry loop re-runs the whole body, so the retried attempt
+// re-reads. Postgres under READ COMMITTED does neither — the second UPDATE
+// waits for the first to commit and then writes a value computed from the
+// pre-image, losing the first write with no error — so it takes the lock before
+// the read instead.
+type FileRowLocker interface {
+	// LockFileRow blocks until this transaction holds the file's row, and
+	// reports nil when the handle names no row: the caller's own read is what
+	// turns that into ErrNotFound.
+	LockFileRow(ctx context.Context, handle FileHandle) error
+}
+
 // RelaxedTransactor is an OPTIONAL store capability (#1573 Wall 1): running a
 // transaction whose commit may become durable with bounded lag instead of an
 // inline fsync. It is intended ONLY for pure-namespace/attr writes
@@ -431,6 +450,13 @@ type FilesystemMeta struct {
 //
 // Thread Safety:
 // Implementations must be safe for concurrent use by multiple goroutines.
+// DefaultRootMode is the mode a share root gets when the caller configures
+// none. Every backend and every entry point must use this one value: creating
+// a root and reconciling an existing one both compare against it, so two
+// defaults would each rewrite what the other wrote and a share's root mode
+// would flip depending on which call happened last.
+const DefaultRootMode = 0o755
+
 type Store interface {
 	Files                      // File CRUD operations (non-transactional calls)
 	Shares                     // Share lifecycle and handle management
@@ -548,6 +574,22 @@ type Store interface {
 	// seeded at startup from an aggregate scan (badger/postgres) or naturally
 	// accumulated (memory).
 	GetQuotaUsage(shareName string, scope QuotaScope, id uint32) (UsageStat, error)
+
+	// RecomputeUsage rebuilds the usage counters from the durable file rows,
+	// replacing whatever the in-memory buckets currently hold.
+	//
+	// The counters are maintained by transactional deltas, so a backend bug or
+	// an upgrade from a version that accounted differently leaves a share
+	// reporting a figure its files do not support — and since the number gates
+	// writes through the share quota, a share can report itself full while
+	// holding nothing. This is the repair, run on demand: it is a full scan of
+	// the store's file rows, which is why nothing calls it on the write path or
+	// at startup.
+	//
+	// It is store-wide rather than per-share: one store instance backs every
+	// share naming the same metadata store config, and rebuilding one share's
+	// buckets costs the same scan as rebuilding all of them.
+	RecomputeUsage(ctx context.Context) error
 
 	// ========================================================================
 	// Store Lifecycle (not transactional)

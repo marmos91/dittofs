@@ -53,21 +53,19 @@ import (
 func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// CURRENT_FH is the destination, SAVED_FH is the source. Both must be set
 	// (the client PUTFHs the source, SAVEFHs it, then PUTFHs the destination).
-	// A missing handle on either side is NFS4ERR_NOFILEHANDLE (RFC 7862 15.13);
-	// note RequireSavedFH returns NFS4ERR_RESTOREFH, which is RESTOREFH-specific
-	// and wrong here, so check SavedFH directly.
+	// A missing handle on either side is NFS4ERR_NOFILEHANDLE (RFC 7862 15.13).
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
 		return cloneErr(status)
 	}
-	if ctx.SavedFH == nil {
-		return cloneErr(types.NFS4ERR_NOFILEHANDLE)
+	if status := types.RequireSavedFHOperand(ctx); status != types.NFS4_OK {
+		return cloneErr(status)
 	}
 	// Neither side may be the read-only pseudo-filesystem.
 	if pseudofs.IsPseudoFSHandle(ctx.CurrentFH) || pseudofs.IsPseudoFSHandle(ctx.SavedFH) {
 		return cloneErr(types.NFS4ERR_ROFS)
 	}
 
-	srcStateid, dstStateid, srcOffset, dstOffset, count, st := decodeCloneArgs(reader)
+	srcStateid, dstStateid, srcOffset, dstOffset, count, st := decodeCloneArgs(ctx, reader)
 	if st != types.NFS4_OK {
 		return cloneErr(st)
 	}
@@ -82,14 +80,14 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 
 	// Validate the source stateid for READ and the destination for WRITE. Special
 	// stateids pass; a real open must carry the matching share-access bit.
-	if openState, err := h.StateManager.ValidateStateid(srcStateid, ctx.SavedFH, state.StateidOpRead); err != nil {
+	if openState, err := h.StateManager.ValidateStateid(srcStateid, ctx.SavedFH, state.StateidOpRead, ctx.SessionClientID); err != nil {
 		s := mapStateError(err)
 		logger.Debug("NFSv4.2 CLONE src stateid validation failed", "error", err, "nfs_status", s, "client", ctx.ClientAddr)
 		return cloneErr(s)
 	} else if openState != nil && openState.ShareAccess&types.OPEN4_SHARE_ACCESS_READ == 0 {
 		return cloneErr(types.NFS4ERR_OPENMODE)
 	}
-	if openState, err := h.StateManager.ValidateStateid(dstStateid, ctx.CurrentFH, state.StateidOpWrite); err != nil {
+	if openState, err := h.StateManager.ValidateStateid(dstStateid, ctx.CurrentFH, state.StateidOpWrite, ctx.SessionClientID); err != nil {
 		s := mapStateError(err)
 		logger.Debug("NFSv4.2 CLONE dst stateid validation failed", "error", err, "nfs_status", s, "client", ctx.ClientAddr)
 		return cloneErr(s)
@@ -120,11 +118,11 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 	// files (NFS4ERR_ISDIR for directories, NFS4ERR_WRONG_TYPE otherwise).
 	srcFile, err := metaSvc.GetFile(srcAuth.Context, srcHandle)
 	if err != nil {
-		return cloneErr(common.MapToNFS4(err))
+		return cloneErr(types.StatusForErr(err))
 	}
 	dstFile, err := metaSvc.GetFile(dstAuth.Context, dstHandle)
 	if err != nil {
-		return cloneErr(common.MapToNFS4(err))
+		return cloneErr(types.StatusForErr(err))
 	}
 	if st := cloneRequireRegularFile(srcFile); st != types.NFS4_OK {
 		return cloneErr(st)
@@ -148,10 +146,10 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 	// the Service even after stateid validation). CheckPermissions also rejects
 	// a write to a read-only export.
 	if _, err := metaSvc.CheckPermissions(srcAuth, srcHandle, metadata.PermissionRead); err != nil {
-		return cloneErr(common.MapToNFS4(err))
+		return cloneErr(types.StatusForErr(err))
 	}
 	if _, err := metaSvc.CheckPermissions(dstAuth, dstHandle, metadata.PermissionWrite); err != nil {
-		return cloneErr(common.MapToNFS4(err))
+		return cloneErr(types.StatusForErr(err))
 	}
 
 	// Self-clone (source and destination are the same file) is a no-op: the
@@ -202,7 +200,7 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 		dstFile.PayloadID,
 	); err != nil {
 		logger.Debug("NFSv4.2 CLONE failed", "error", err, "client", ctx.ClientAddr)
-		return cloneErr(common.MapToNFS4(err))
+		return cloneErr(types.StatusForErr(err))
 	}
 
 	logger.Debug("NFSv4.2 CLONE",
@@ -215,14 +213,14 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 // cl_src_offset, cl_dst_offset, cl_count (RFC 7862 Section 15.13). Returns
 // NFS4ERR_BADXDR on a malformed stream and NFS4ERR_INVAL when src/dst range
 // arithmetic overflows uint64.
-func decodeCloneArgs(reader io.Reader) (srcStateid, dstStateid *types.Stateid4, srcOffset, dstOffset, count uint64, st uint32) {
-	src, err := types.DecodeStateid4(reader)
-	if err != nil {
-		return nil, nil, 0, 0, 0, types.NFS4ERR_BADXDR
+func decodeCloneArgs(ctx *types.CompoundContext, reader io.Reader) (srcStateid, dstStateid *types.Stateid4, srcOffset, dstOffset, count uint64, st uint32) {
+	src, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		return nil, nil, 0, 0, 0, argStatus
 	}
-	dst, err := types.DecodeStateid4(reader)
-	if err != nil {
-		return nil, nil, 0, 0, 0, types.NFS4ERR_BADXDR
+	dst, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		return nil, nil, 0, 0, 0, argStatus
 	}
 	so, err := xdr.DecodeUint64(reader)
 	if err != nil {

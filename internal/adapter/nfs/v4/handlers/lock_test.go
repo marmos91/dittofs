@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"testing"
-	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -138,8 +138,23 @@ func TestHandleLock_BadXDR(t *testing.T) {
 	}
 }
 
+// newLockTestHandler builds a handler over a real metadata store and returns it
+// alongside the handle of a regular file to lock. LOCKT resolves the current
+// filehandle to check the object type (RFC 7530 Section 16.10.4), so the handle
+// the lock tests carry has to name a real regular file. The fixture's state
+// manager has no lock manager of its own.
+func newLockTestHandler(t *testing.T) (*Handler, []byte) {
+	t.Helper()
+
+	fx := newRealFSTestFixture(t, "/export")
+	fx.handler.StateManager.SetLockManager(lock.NewManager())
+	fh := fx.createTestFile(t, fx.rootHandle, "lock-test-file", metadata.FileTypeRegular, 0o644, 0, 0)
+
+	return fx.handler, []byte(fh)
+}
+
 // setupHandlerLockClient sets up a confirmed client and open state for handler-level tests.
-func setupHandlerLockClient(t *testing.T, h *Handler) (clientID uint64, openStateid *types.Stateid4, openSeqid uint32) {
+func setupHandlerLockClient(t *testing.T, h *Handler, fileHandle []byte) (clientID uint64, openStateid *types.Stateid4, openSeqid uint32) {
 	t.Helper()
 
 	ctx := &types.CompoundContext{
@@ -178,7 +193,6 @@ func setupHandlerLockClient(t *testing.T, h *Handler) (clientID uint64, openStat
 	}
 
 	// OPEN (create state)
-	fileHandle := []byte("/export:lock-test-file")
 	ctx.CurrentFH = make([]byte, len(fileHandle))
 	copy(ctx.CurrentFH, fileHandle)
 
@@ -198,7 +212,7 @@ func setupHandlerLockClient(t *testing.T, h *Handler) (clientID uint64, openStat
 
 	// OPEN_CONFIRM
 	confirmOpenSeqid := openSeqid + 1
-	confirmRes, err := h.StateManager.ConfirmOpen(&openResult.Stateid, confirmOpenSeqid)
+	confirmRes, err := h.StateManager.ConfirmOpen(&openResult.Stateid, confirmOpenSeqid, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen failed: %v", err)
 	}
@@ -207,17 +221,10 @@ func setupHandlerLockClient(t *testing.T, h *Handler) (clientID uint64, openStat
 }
 
 func TestHandleLock_NewLockOwner_Success(t *testing.T) {
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
+	h, fileHandle := newLockTestHandler(t)
 
-	lm := lock.NewManager()
-	sm := state.NewStateManager(90 * time.Second)
-	sm.SetLockManager(lm)
-	h := NewHandler(nil, pfs, sm)
+	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h, fileHandle)
 
-	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h)
-
-	fileHandle := []byte("/export:lock-test-file")
 	ctx := &types.CompoundContext{
 		Context:    context.Background(),
 		ClientAddr: "127.0.0.1:9999",
@@ -265,17 +272,10 @@ func TestHandleLock_NewLockOwner_Success(t *testing.T) {
 }
 
 func TestHandleLock_ExistingLockOwner_Success(t *testing.T) {
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
+	h, fileHandle := newLockTestHandler(t)
 
-	lm := lock.NewManager()
-	sm := state.NewStateManager(90 * time.Second)
-	sm.SetLockManager(lm)
-	h := NewHandler(nil, pfs, sm)
+	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h, fileHandle)
 
-	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h)
-
-	fileHandle := []byte("/export:lock-test-file")
 	ctx := &types.CompoundContext{
 		Context:    context.Background(),
 		ClientAddr: "127.0.0.1:9999",
@@ -356,10 +356,9 @@ func TestHandleLock_Dispatched(t *testing.T) {
 // returns the lock stateid and lock-owner seqid for further use.
 // ============================================================================
 
-func acquireLockForTest(t *testing.T, h *Handler, clientID uint64, openStateid *types.Stateid4, openSeqid uint32, lockOwnerData []byte, lockType uint32, offset, length uint64) (*types.Stateid4, uint32) {
+func acquireLockForTest(t *testing.T, h *Handler, fileHandle []byte, clientID uint64, openStateid *types.Stateid4, openSeqid uint32, lockOwnerData []byte, lockType uint32, offset, length uint64) (*types.Stateid4, uint32) {
 	t.Helper()
 
-	fileHandle := []byte("/export:lock-test-file")
 	ctx := &types.CompoundContext{
 		Context:    context.Background(),
 		ClientAddr: "127.0.0.1:9999",
@@ -401,17 +400,10 @@ func acquireLockForTest(t *testing.T, h *Handler, clientID uint64, openStateid *
 // ============================================================================
 
 func TestHandleLockT_NoConflict(t *testing.T) {
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
+	h, fileHandle := newLockTestHandler(t)
 
-	lm := lock.NewManager()
-	sm := state.NewStateManager(90 * time.Second)
-	sm.SetLockManager(lm)
-	h := NewHandler(nil, pfs, sm)
+	clientID, _, _ := setupHandlerLockClient(t, h, fileHandle)
 
-	clientID, _, _ := setupHandlerLockClient(t, h)
-
-	fileHandle := []byte("/export:lock-test-file")
 	ctx := &types.CompoundContext{
 		Context:    context.Background(),
 		ClientAddr: "127.0.0.1:9999",
@@ -440,20 +432,13 @@ func TestHandleLockT_NoConflict(t *testing.T) {
 }
 
 func TestHandleLockT_Conflict(t *testing.T) {
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
+	h, fileHandle := newLockTestHandler(t)
 
-	lm := lock.NewManager()
-	sm := state.NewStateManager(90 * time.Second)
-	sm.SetLockManager(lm)
-	h := NewHandler(nil, pfs, sm)
-
-	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h)
+	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h, fileHandle)
 
 	// First: acquire an exclusive lock via LOCK
-	acquireLockForTest(t, h, clientID, openStateid, openSeqid, []byte("holder-owner"), types.WRITE_LT, 0, 100)
+	acquireLockForTest(t, h, fileHandle, clientID, openStateid, openSeqid, []byte("holder-owner"), types.WRITE_LT, 0, 100)
 
-	fileHandle := []byte("/export:lock-test-file")
 	ctx := &types.CompoundContext{
 		Context:    context.Background(),
 		ClientAddr: "127.0.0.1:9999",
@@ -500,20 +485,13 @@ func TestHandleLockT_Conflict(t *testing.T) {
 }
 
 func TestHandleLockT_SharedNoConflict(t *testing.T) {
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
+	h, fileHandle := newLockTestHandler(t)
 
-	lm := lock.NewManager()
-	sm := state.NewStateManager(90 * time.Second)
-	sm.SetLockManager(lm)
-	h := NewHandler(nil, pfs, sm)
-
-	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h)
+	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h, fileHandle)
 
 	// First: acquire a shared (read) lock
-	acquireLockForTest(t, h, clientID, openStateid, openSeqid, []byte("reader-owner"), types.READ_LT, 0, 100)
+	acquireLockForTest(t, h, fileHandle, clientID, openStateid, openSeqid, []byte("reader-owner"), types.READ_LT, 0, 100)
 
-	fileHandle := []byte("/export:lock-test-file")
 	ctx := &types.CompoundContext{
 		Context:    context.Background(),
 		ClientAddr: "127.0.0.1:9999",
@@ -604,20 +582,13 @@ func TestHandleLockT_Dispatched(t *testing.T) {
 // ============================================================================
 
 func TestHandleLockU_Success(t *testing.T) {
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
+	h, fileHandle := newLockTestHandler(t)
 
-	lm := lock.NewManager()
-	sm := state.NewStateManager(90 * time.Second)
-	sm.SetLockManager(lm)
-	h := NewHandler(nil, pfs, sm)
-
-	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h)
+	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h, fileHandle)
 
 	// Acquire a lock
-	lockStateid, lockSeqid := acquireLockForTest(t, h, clientID, openStateid, openSeqid, []byte("unlock-owner"), types.WRITE_LT, 0, 100)
+	lockStateid, lockSeqid := acquireLockForTest(t, h, fileHandle, clientID, openStateid, openSeqid, []byte("unlock-owner"), types.WRITE_LT, 0, 100)
 
-	fileHandle := []byte("/export:lock-test-file")
 	ctx := &types.CompoundContext{
 		Context:    context.Background(),
 		ClientAddr: "127.0.0.1:9999",
@@ -664,15 +635,8 @@ func TestHandleLockU_Success(t *testing.T) {
 }
 
 func TestHandleLockU_BadStateid(t *testing.T) {
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
+	h, fileHandle := newLockTestHandler(t)
 
-	lm := lock.NewManager()
-	sm := state.NewStateManager(90 * time.Second)
-	sm.SetLockManager(lm)
-	h := NewHandler(nil, pfs, sm)
-
-	fileHandle := []byte("/export:lock-test-file")
 	ctx := &types.CompoundContext{
 		Context:    context.Background(),
 		ClientAddr: "127.0.0.1:9999",
@@ -686,9 +650,9 @@ func TestHandleLockU_BadStateid(t *testing.T) {
 	}
 	// Set the epoch bytes to match current boot epoch so we get BAD_STATEID not STALE
 	fakeStateid.Other[0] = state.StateTypeLock
-	fakeStateid.Other[1] = byte(sm.BootEpoch() >> 16)
-	fakeStateid.Other[2] = byte(sm.BootEpoch() >> 8)
-	fakeStateid.Other[3] = byte(sm.BootEpoch())
+	fakeStateid.Other[1] = byte(h.StateManager.BootEpoch() >> 16)
+	fakeStateid.Other[2] = byte(h.StateManager.BootEpoch() >> 8)
+	fakeStateid.Other[3] = byte(h.StateManager.BootEpoch())
 	// Bytes 4-11: random non-matching sequence
 	fakeStateid.Other[4] = 0xFF
 	fakeStateid.Other[5] = 0xFF
@@ -709,20 +673,13 @@ func TestHandleLockU_BadStateid(t *testing.T) {
 }
 
 func TestHandleLockU_BadSeqid(t *testing.T) {
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
+	h, fileHandle := newLockTestHandler(t)
 
-	lm := lock.NewManager()
-	sm := state.NewStateManager(90 * time.Second)
-	sm.SetLockManager(lm)
-	h := NewHandler(nil, pfs, sm)
-
-	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h)
+	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h, fileHandle)
 
 	// Acquire a lock
-	lockStateid, _ := acquireLockForTest(t, h, clientID, openStateid, openSeqid, []byte("seqid-test-owner"), types.WRITE_LT, 0, 100)
+	lockStateid, _ := acquireLockForTest(t, h, fileHandle, clientID, openStateid, openSeqid, []byte("seqid-test-owner"), types.WRITE_LT, 0, 100)
 
-	fileHandle := []byte("/export:lock-test-file")
 	ctx := &types.CompoundContext{
 		Context:    context.Background(),
 		ClientAddr: "127.0.0.1:9999",
@@ -747,20 +704,13 @@ func TestHandleLockU_BadSeqid(t *testing.T) {
 }
 
 func TestHandleLockU_PartialUnlock(t *testing.T) {
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
+	h, fileHandle := newLockTestHandler(t)
 
-	lm := lock.NewManager()
-	sm := state.NewStateManager(90 * time.Second)
-	sm.SetLockManager(lm)
-	h := NewHandler(nil, pfs, sm)
-
-	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h)
+	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h, fileHandle)
 
 	// Acquire a lock on full range [0, 100)
-	lockStateid, lockSeqid := acquireLockForTest(t, h, clientID, openStateid, openSeqid, []byte("partial-owner"), types.WRITE_LT, 0, 100)
+	lockStateid, lockSeqid := acquireLockForTest(t, h, fileHandle, clientID, openStateid, openSeqid, []byte("partial-owner"), types.WRITE_LT, 0, 100)
 
-	fileHandle := []byte("/export:lock-test-file")
 	ctx := &types.CompoundContext{
 		Context:    context.Background(),
 		ClientAddr: "127.0.0.1:9999",
@@ -854,21 +804,14 @@ func TestHandleLockU_Dispatched(t *testing.T) {
 // ============================================================================
 
 func TestHandleReleaseLockOwner_NoLocks(t *testing.T) {
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
+	h, fileHandle := newLockTestHandler(t)
 
-	lm := lock.NewManager()
-	sm := state.NewStateManager(90 * time.Second)
-	sm.SetLockManager(lm)
-	h := NewHandler(nil, pfs, sm)
-
-	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h)
+	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h, fileHandle)
 
 	// Acquire a lock, then release it
-	lockStateid, lockSeqid := acquireLockForTest(t, h, clientID, openStateid, openSeqid,
+	lockStateid, lockSeqid := acquireLockForTest(t, h, fileHandle, clientID, openStateid, openSeqid,
 		[]byte("release-handler-owner"), types.WRITE_LT, 0, 100)
 
-	fileHandle := []byte("/export:lock-test-file")
 	ctx := &types.CompoundContext{
 		Context:    context.Background(),
 		ClientAddr: "127.0.0.1:9999",
@@ -907,18 +850,12 @@ func TestHandleReleaseLockOwner_NoLocks(t *testing.T) {
 }
 
 func TestHandleReleaseLockOwner_LocksHeld(t *testing.T) {
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
+	h, fileHandle := newLockTestHandler(t)
 
-	lm := lock.NewManager()
-	sm := state.NewStateManager(90 * time.Second)
-	sm.SetLockManager(lm)
-	h := NewHandler(nil, pfs, sm)
-
-	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h)
+	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h, fileHandle)
 
 	// Acquire a lock but do NOT release it
-	acquireLockForTest(t, h, clientID, openStateid, openSeqid,
+	acquireLockForTest(t, h, fileHandle, clientID, openStateid, openSeqid,
 		[]byte("held-handler-owner"), types.WRITE_LT, 0, 100)
 
 	ctx := &types.CompoundContext{
@@ -944,21 +881,14 @@ func TestHandleReleaseLockOwner_LocksHeld(t *testing.T) {
 // ============================================================================
 
 func TestHandleClose_LocksHeld(t *testing.T) {
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
+	h, fileHandle := newLockTestHandler(t)
 
-	lm := lock.NewManager()
-	sm := state.NewStateManager(90 * time.Second)
-	sm.SetLockManager(lm)
-	h := NewHandler(nil, pfs, sm)
-
-	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h)
+	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h, fileHandle)
 
 	// Acquire a lock
-	acquireLockForTest(t, h, clientID, openStateid, openSeqid,
+	acquireLockForTest(t, h, fileHandle, clientID, openStateid, openSeqid,
 		[]byte("close-held-owner"), types.WRITE_LT, 0, 100)
 
-	fileHandle := []byte("/export:lock-test-file")
 	ctx := &types.CompoundContext{
 		Context:    context.Background(),
 		ClientAddr: "127.0.0.1:9999",
@@ -980,21 +910,14 @@ func TestHandleClose_LocksHeld(t *testing.T) {
 }
 
 func TestHandleClose_AfterUnlock(t *testing.T) {
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
+	h, fileHandle := newLockTestHandler(t)
 
-	lm := lock.NewManager()
-	sm := state.NewStateManager(90 * time.Second)
-	sm.SetLockManager(lm)
-	h := NewHandler(nil, pfs, sm)
-
-	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h)
+	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h, fileHandle)
 
 	// Acquire a lock
-	lockStateid, lockSeqid := acquireLockForTest(t, h, clientID, openStateid, openSeqid,
+	lockStateid, lockSeqid := acquireLockForTest(t, h, fileHandle, clientID, openStateid, openSeqid,
 		[]byte("close-unlock-owner"), types.WRITE_LT, 0, 100)
 
-	fileHandle := []byte("/export:lock-test-file")
 	ctx := &types.CompoundContext{
 		Context:    context.Background(),
 		ClientAddr: "127.0.0.1:9999",
@@ -1016,7 +939,7 @@ func TestHandleClose_AfterUnlock(t *testing.T) {
 	}
 
 	// RELEASE_LOCKOWNER to clean up lock state
-	relErr := sm.ReleaseLockOwner(clientID, []byte("close-unlock-owner"))
+	relErr := h.StateManager.ReleaseLockOwner(clientID, []byte("close-unlock-owner"))
 	if relErr != nil {
 		t.Fatalf("ReleaseLockOwner failed: %v", relErr)
 	}
@@ -1039,18 +962,11 @@ func TestHandleClose_AfterUnlock(t *testing.T) {
 // ============================================================================
 
 func TestFullLockLifecycle(t *testing.T) {
-	pfs := pseudofs.New()
-	pfs.Rebuild([]string{"/export"})
-
-	lm := lock.NewManager()
-	sm := state.NewStateManager(90 * time.Second)
-	sm.SetLockManager(lm)
-	h := NewHandler(nil, pfs, sm)
+	h, fileHandle := newLockTestHandler(t)
 
 	// 1. SETCLIENTID + CONFIRM
-	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h)
+	clientID, openStateid, openSeqid := setupHandlerLockClient(t, h, fileHandle)
 
-	fileHandle := []byte("/export:lock-test-file")
 	ctx := &types.CompoundContext{
 		Context:    context.Background(),
 		ClientAddr: "127.0.0.1:9999",
@@ -1177,7 +1093,7 @@ func TestFullLockLifecycle(t *testing.T) {
 	t.Logf("Step 7: LOCKU OK")
 
 	// 8. RELEASE_LOCKOWNER
-	relErr := sm.ReleaseLockOwner(clientID, []byte("lifecycle-owner"))
+	relErr := h.StateManager.ReleaseLockOwner(clientID, []byte("lifecycle-owner"))
 	if relErr != nil {
 		t.Fatalf("Step 8: ReleaseLockOwner failed: %v", relErr)
 	}
@@ -1218,17 +1134,10 @@ func TestHandleLock_InvalidRange(t *testing.T) {
 
 	for _, r := range ranges {
 		t.Run(r.name, func(t *testing.T) {
-			pfs := pseudofs.New()
-			pfs.Rebuild([]string{"/export"})
+			h, fileHandle := newLockTestHandler(t)
 
-			lm := lock.NewManager()
-			sm := state.NewStateManager(90 * time.Second)
-			sm.SetLockManager(lm)
-			h := NewHandler(nil, pfs, sm)
+			clientID, openStateid, openSeqid := setupHandlerLockClient(t, h, fileHandle)
 
-			clientID, openStateid, openSeqid := setupHandlerLockClient(t, h)
-
-			fileHandle := []byte("/export:lock-test-file")
 			ctx := &types.CompoundContext{
 				Context:    context.Background(),
 				ClientAddr: "127.0.0.1:9999",
@@ -1293,5 +1202,43 @@ func TestHandleLock_InvalidRange(t *testing.T) {
 				t.Errorf("LOCKU after invalid range status = %d, want NFS4_OK", got.Status)
 			}
 		})
+	}
+}
+
+// TestHandleLock_UnknownClientID and TestHandleLockT_UnknownClientID pin the
+// admission of the clientid inside lock_owner4. Neither operation checked it,
+// so a LOCK keyed a lock-owner under an id no client record covers and a LOCKT
+// answered "no conflict" on behalf of an identity that does not exist. An id
+// whose high half is not this incarnation's boot epoch is stale rather than
+// merely unknown (RFC 7530 Section 13.1.10.2).
+func TestHandleLock_UnknownClientID(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+	handle := fx.createTestFile(t, fx.rootHandle, "lock-badclid.txt", metadata.FileTypeRegular, 0o644, 1000, 1000)
+
+	ctx := newRealFSContext(1000, 1000)
+	ctx.CurrentFH = append([]byte(nil), handle...)
+
+	args := encodeNewLockOwnerArgs(types.WRITE_LT, 0, 100, 2, &types.Stateid4{Seqid: 1}, 1, 0, []byte("lock-owner"))
+	result := fx.handler.handleLock(ctx, bytes.NewReader(args))
+
+	if result.Status != types.NFS4ERR_STALE_CLIENTID {
+		t.Errorf("LOCK with an unknown clientid status = %d, want NFS4ERR_STALE_CLIENTID (%d)",
+			result.Status, types.NFS4ERR_STALE_CLIENTID)
+	}
+}
+
+func TestHandleLockT_UnknownClientID(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+	handle := fx.createTestFile(t, fx.rootHandle, "lockt-badclid.txt", metadata.FileTypeRegular, 0o644, 1000, 1000)
+
+	ctx := newRealFSContext(1000, 1000)
+	ctx.CurrentFH = append([]byte(nil), handle...)
+
+	args := encodeLocktArgs(types.WRITE_LT, 0, 100, 0, []byte("lockt-owner"))
+	result := fx.handler.handleLockT(ctx, bytes.NewReader(args))
+
+	if result.Status != types.NFS4ERR_STALE_CLIENTID {
+		t.Errorf("LOCKT with an unknown clientid status = %d, want NFS4ERR_STALE_CLIENTID (%d)",
+			result.Status, types.NFS4ERR_STALE_CLIENTID)
 	}
 }

@@ -31,10 +31,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
           cache: true  # Built-in caching (replaces actions/cache)
@@ -53,7 +53,7 @@ jobs:
             ./cmd/...
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           file: ./coverage.txt
           flags: unittests
@@ -64,7 +64,7 @@ jobs:
         run: go build -v -o dfs cmd/dfs/main.go
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dfs-${{ matrix.go-version }}
           path: dfs

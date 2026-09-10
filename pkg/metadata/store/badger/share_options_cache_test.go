@@ -20,14 +20,12 @@ func newShareOptionsStore(t *testing.T) (*BadgerMetadataStore, string) {
 
 	const shareName = "/opts"
 	anonUID := uint32(65534)
-	require.NoError(t, store.CreateShare(ctx, &metadata.Share{
-		Name: shareName,
-		Options: metadata.ShareOptions{
-			AllowedClients:     []string{"10.0.0.0/8"},
-			DeniedClients:      []string{"10.1.2.3"},
-			AllowedAuthMethods: []string{"sys"},
-			IdentityMapping:    &metadata.IdentityMapping{AnonymousUID: &anonUID},
-		},
+	createShareRoot(t, store, shareName)
+	require.NoError(t, store.UpdateShareOptions(ctx, shareName, &metadata.ShareOptions{
+		AllowedClients:     []string{"10.0.0.0/8"},
+		DeniedClients:      []string{"10.1.2.3"},
+		AllowedAuthMethods: []string{"sys"},
+		IdentityMapping:    &metadata.IdentityMapping{AnonymousUID: &anonUID},
 	}))
 	return store, shareName
 }
@@ -88,7 +86,8 @@ func TestGetShareOptions_PopulatesCache(t *testing.T) {
 	store, shareName := newShareOptionsStore(t)
 	ctx := context.Background()
 
-	// CreateShare invalidates the entry, so the cache starts cold.
+	// The fixture's UpdateShareOptions invalidates the entry, so the cache
+	// starts cold.
 	_, cached := store.shareCache.Get(shareName)
 	require.False(t, cached, "cache should be cold before the first read")
 

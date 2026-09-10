@@ -21,10 +21,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "1.25.x"
           cache: true  # Built-in Go module caching
@@ -46,10 +46,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "1.25.x"
           cache: true  # Built-in Go module caching
@@ -57,25 +57,55 @@ jobs:
       - name: Check MS-FSCC / MS-FSA / MS-SMB2 citations
         run: go run ./test/spec-citations
 
+  # The conformance manifest is the single description of every suite. This job
+  # is what stops the documentation tables drifting away from it again — the
+  # conformance workflow itself ignores docs-only changes, so it cannot.
+  conformance-manifest:
+    name: Conformance Manifest
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Check the generated documentation tables
+        run: ./test/conformance/check-docs.sh
+
+      - name: Test the common conformance runner
+        run: ./test/conformance/run_test.sh
+
+      - name: Test the shared known-failures parser
+        run: ./test/common/known-failures_test.sh
+
   golangci-lint:
     name: golangci-lint
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "1.25.x"
           cache: true  # Built-in Go module caching
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
           args: --timeout=5m
+          # Analyse cold every run. The action's cache key covers go.sum, but
+          # its restore-key fallback does not: when a dependency bump changes
+          # go.sum the run misses its own key, restores the pre-bump analysis
+          # cache, and then saves a fact set built from it under the new key.
+          # Every later run gets an exact hit on that entry, and staticcheck
+          # loses the cross-package fact that t.Fatal never returns — which
+          # turns every `if x == nil { t.Fatal(...) }` guard into a spurious
+          # SA5011 nil-dereference report. Restoring is what breaks it, so the
+          # cache is skipped rather than pinned: costs ~20s (112s -> 134s).
+          skip-cache: true
           # Skip the action's online `config verify` — it fetches the config
           # JSON schema over the network and times out intermittently, failing
           # the job for reasons unrelated to the diff. golangci-lint still
@@ -89,7 +119,7 @@ jobs:
       has_changes: ${{ steps.filter.outputs.shell }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # Full history so dorny/paths-filter can resolve the
           # merge-base against main on push events. A shallow clone
@@ -98,7 +128,7 @@ jobs:
           fetch-depth: 0
 
       - name: Check for .sh file changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -113,7 +143,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run ShellCheck
         uses: ludeeus/action-shellcheck@2.0.0
@@ -130,7 +160,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run harness self-test
         run: .github/scripts/run-e2e-selftest.sh

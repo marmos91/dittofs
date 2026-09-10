@@ -35,11 +35,10 @@ type memBlock struct {
 // ); previous versions of this package used opaque string
 // blockKeys and stamped x-amz-meta-content-hash separately.
 type Store struct {
-	mu     sync.RWMutex
-	blocks map[block.ContentHash]*memBlock
+	mu sync.RWMutex
 	// blocksByID holds block objects keyed by BlockID (#1414). Populated via PutBlock
 	// (used by tests and the future packer); read by ReadChunk and the new
-	// block-keyed methods. Separate from blocks because block objects are keyed
+	// block-keyed methods. Block objects are keyed
 	// by an opaque BlockID string, not a content hash.
 	blocksByID map[string]*memBlock
 	// nowFn returns the current time for the store. Tests can override
@@ -56,7 +55,6 @@ type Store struct {
 // New creates a new in-memory remote block store.
 func New() *Store {
 	return &Store{
-		blocks:     make(map[block.ContentHash]*memBlock),
 		blocksByID: make(map[string]*memBlock),
 		nowFn:      time.Now,
 	}
@@ -255,7 +253,6 @@ func (s *Store) Close() error {
 	defer s.mu.Unlock()
 
 	s.closed = true
-	s.blocks = nil
 	s.blocksByID = nil
 	return nil
 }
@@ -290,23 +287,4 @@ func (s *Store) Healthcheck(ctx context.Context) health.Report {
 		return health.NewUnknownReport(err.Error(), time.Since(start))
 	}
 	return health.ReportFromError(s.HealthCheck(ctx), time.Since(start))
-}
-
-// BlockCount returns the number of blocks stored (for testing).
-func (s *Store) BlockCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.blocks)
-}
-
-// TotalSize returns the total size of all blocks stored (for testing).
-func (s *Store) TotalSize() int64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var total int64
-	for _, mb := range s.blocks {
-		total += int64(len(mb.data))
-	}
-	return total
 }

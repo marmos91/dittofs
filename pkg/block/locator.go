@@ -4,14 +4,14 @@ package block
 // bytes in the remote store: the enclosing packed block object blocks/<BlockID>
 // (see FormatBlockKey) and the chunk's wire-byte window inside it.
 //
-// A zero locator (BlockID == "") is the LEGACY standalone form: pre-#1493
-// synced markers located the chunk as its own cas/ object. The live read path
-// refuses such locators (post-migration drift, fail-closed); only the one-shot
-// cas→blocks startup migration consumes them, rewriting each to a block
-// locator. Metadata backends still round-trip the zero form byte-compatibly
-// so un-migrated stores can boot into the migration.
+// A zero locator (BlockID == "") is the standalone form written by releases
+// that predate the packed-block format: the synced marker located the chunk as
+// its own cas/ object. Nothing converts them any more, and the read path
+// refuses them fail-closed rather than resolving an empty block key. Metadata
+// backends still round-trip the zero form byte-compatibly, so a store holding
+// them boots and reports the refusal per chunk instead of decoding garbage.
 type ChunkLocator struct {
-	// BlockID identifies the enclosing block object. Empty is the legacy
+	// BlockID identifies the enclosing block object. Empty is the pre-packed
 	// standalone form (see the type comment); the read path refuses it.
 	BlockID string
 	// WireOffset is the chunk's wire-byte offset within the block object.
@@ -22,9 +22,9 @@ type ChunkLocator struct {
 	WireLength int64
 }
 
-// IsStandalone reports whether the locator is the legacy standalone form
-// (BlockID == ""): a pre-#1493 marker not yet rewritten by the cas→blocks
-// migration. The live read path refuses such locators.
+// IsStandalone reports whether the locator is the standalone form
+// (BlockID == ""): a marker written before the packed-block format, which no
+// build still reading it can resolve. The live read path refuses such locators.
 func (l ChunkLocator) IsStandalone() bool { return l.BlockID == "" }
 
 // BlockKeyPrefix is the object-key prefix under which packed block objects live.

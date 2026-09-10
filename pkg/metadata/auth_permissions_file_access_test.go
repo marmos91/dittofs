@@ -359,7 +359,7 @@ func TestCheckFileAccess_ZeroDesiredAccessIsNoop(t *testing.T) {
 }
 
 // TestCheckFileAccess_DenyErrorIsStoreError ensures the returned error is a
-// *StoreError, which is what common.MapToSMB depends on to produce the
+// *StoreError, which is what the wire mapper (smb/types StatusForErr) unwraps to produce the
 // correct STATUS_ACCESS_DENIED on the SMB wire.
 func TestCheckFileAccess_DenyErrorIsStoreError(t *testing.T) {
 	f := newTestFixture(t)

@@ -54,7 +54,7 @@ NFS uses **ONC RPC (Open Network Computing Remote Procedure Call)**, defined in 
 **RPC Call Header Fields:**
 
 | Offset | Field |
-|--------|-------|
+| -------- | ------- |
 | 0-3 | XID (Transaction ID, echoed in reply) |
 | 4-7 | Message Type (0 = CALL, 1 = REPLY) |
 | 8-11 | RPC Version (must be 2) |
@@ -67,7 +67,7 @@ NFS uses **ONC RPC (Open Network Computing Remote Procedure Call)**, defined in 
 **RPC Reply Accept States:**
 
 | Code | Name |
-|------|------|
+| ------ | ------ |
 | 0 | SUCCESS |
 | 1 | PROG_UNAVAIL |
 | 2 | PROG_MISMATCH |
@@ -89,7 +89,7 @@ NFS uses **ONC RPC (Open Network Computing Remote Procedure Call)**, defined in 
 **Basic Types:**
 
 | Type | Size | Description |
-|------|------|-------------|
+| ------ | ------ | ------------- |
 | int | 4 bytes | Signed 32-bit integer |
 | unsigned int | 4 bytes | Unsigned 32-bit integer |
 | hyper | 8 bytes | Signed 64-bit integer |
@@ -113,7 +113,7 @@ The **Mount protocol** (Program 100005, Version 3) is a companion protocol to NF
 **Mount Procedures:**
 
 | Proc | Name | Purpose |
-|------|------|---------|
+| ------ | ------ | --------- |
 | 0 | NULL | Connectivity test (no-op) |
 | 1 | MNT | Mount an export, returns root file handle |
 | 2 | DUMP | List active mounts |
@@ -128,7 +128,7 @@ The **Mount protocol** (Program 100005, Version 3) is a companion protocol to NF
 **Mount Status Codes:**
 
 | Code | Name | Description |
-|------|------|-------------|
+| ------ | ------ | ------------- |
 | 0 | MNT_OK | Success |
 | 1 | MNT_EPERM | Permission denied |
 | 2 | MNT_ENOENT | Export path not found |
@@ -147,7 +147,7 @@ The **Mount protocol** (Program 100005, Version 3) is a companion protocol to NF
 NFSv3 defines 22 procedures (0-21):
 
 | Proc | Name | Description |
-|------|------|-------------|
+| ------ | ------ | ------------- |
 | 0 | NULL | No-op, connectivity test |
 | 1 | GETATTR | Get file attributes |
 | 2 | SETATTR | Set file attributes |
@@ -174,7 +174,7 @@ NFSv3 defines 22 procedures (0-21):
 **Write Stability Levels** (for WRITE procedure):
 
 | Level | Name | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | 0 | UNSTABLE | Data may be cached; requires COMMIT |
 | 1 | DATA_SYNC | Data committed, metadata may be cached |
 | 2 | FILE_SYNC | Both data and metadata committed |
@@ -205,7 +205,7 @@ When a handle becomes invalid (file deleted, server restarted with ephemeral sto
 NFS uses RPC authentication flavors:
 
 | Flavor | Value | Description |
-|--------|-------|-------------|
+| -------- | ------- | ------------- |
 | AUTH_NULL | 0 | No authentication |
 | AUTH_UNIX | 1 | Unix UID/GID credentials |
 | AUTH_SHORT | 2 | Short-hand credential |
@@ -223,7 +223,7 @@ NFS uses RPC authentication flavors:
 **NFS Status Codes:**
 
 | Code | Name | Description |
-|------|------|-------------|
+| ------ | ------ | ------------- |
 | 0 | NFS3_OK | Success |
 | 1 | NFS3ERR_PERM | Not owner |
 | 2 | NFS3ERR_NOENT | No such file/directory |
@@ -245,44 +245,50 @@ NFS uses RPC authentication flavors:
 
 Internal errors are mapped to NFS status codes in `pkg/metadata/errors.go`.
 
-### Canonical translation table
+### Per-package translation switches
 
 Every `metadata.ErrorCode` value is translated to an NFSv3 or NFSv4 status
-code by a single shared table in `internal/adapter/common/errmap.go`. The
+code by the `StatusFor` switch in the adapter types packages
+(`internal/adapter/nfs/types`, `internal/adapter/nfs/v4/types`). The
 accessors are:
 
-- `common.MapToNFS3(err) uint32` — NFSv3 status (e.g., `NFS3ERR_NOENT`)
-- `common.MapToNFS4(err) uint32` — NFSv4 status (e.g., `NFS4ERR_NOENT`)
+- `nfs/types.StatusForErr(err) uint32` — NFSv3 status (e.g., `NFS3ERR_NOENT`)
+- `nfs/v4/types.StatusForErr(err) uint32` — NFSv4 status (e.g., `NFS4ERR_NOENT`)
 
-Both NFSv3 and NFSv4 handlers consume the **same** table — adding a new
-error code requires exactly one struct-literal row edit that populates all
-three protocol columns (NFSv3, NFSv4, SMB) at once. The Go type system
-enforces this: you cannot add a row without filling every column.
+Each package owns its protocol's switch; the package name implies the
+protocol. Adding a new error code means adding one switch arm plus one
+expectation row per package — the enum-walk test in each package fails
+loudly if either is missing.
 
 Unwrapping uses `errors.As`, so wrapped StoreError values
 (`fmt.Errorf("...: %w", storeErr)`) map correctly in every handler path.
+Raw block-store errors are normalized to `*merrs.StoreError` at the
+payload choke point (`internal/adapter/common`), so handler paths see one
+error shape.
 
 ### Audit-logging wrapper
 
 The NFSv3 audit wrapper at `internal/adapter/nfs/xdr/errors.go`
 (`MapStoreErrorToNFSStatus`) is preserved as a thin logging layer: its body
-calls `common.MapToNFS3(err)` and adds a severity-based log dispatch
+calls `nfs/types.StatusForErr(err)` and adds a severity-based log dispatch
 (Warn for client-side faults, Error for server-side I/O/space exhaustion)
 with structured fields (`operation`, `code`, `message`, `path`, `client`).
-Callers that want raw mapping call `common.MapToNFS3` directly; callers
-that want audit output call `xdr.MapStoreErrorToNFSStatus`.
+Callers that want raw mapping call `nfs/types.StatusForErr` directly;
+callers that want audit output call `xdr.MapStoreErrorToNFSStatus`.
 
 ### Lock-context translation
 
 `metadata.ErrLocked`, `ErrDeadlock`, `ErrGracePeriod`, and other
-lock-operation codes have different NFS status codes in lock context
-(NLM_LOCK / NFSv4 LOCK) versus general I/O context (READ/WRITE). The
-dedicated `common.MapLockToNFS3` / `common.MapLockToNFS4` accessors
-consult the parallel `lockErrorMap` table first and fall through to
-`errorMap` for non-lock codes. See `internal/adapter/common/lock_errmap.go`
-for the exact divergences (e.g., `ErrDeadlock` → `NFS4ERR_DEADLOCK` in
-lock context vs. `NFS4ERR_DEADLOCK` also in general context — NFSv4
-converged; SMB diverges).
+lock-operation codes have different status codes in lock context
+(SMB2 LOCK) versus general I/O context (READ/WRITE) on SMB: the
+`smb/types` package exposes `StatusForLock`/`StatusForLockErr` for the
+lock context alongside `StatusFor`/`StatusForErr` for general I/O —
+separate functions, same package, so the divergence is visible at the
+call site. NFS has no lock-context split: `ErrLocked` → `NFS4ERR_LOCKED`
+in both contexts (pinned by the nfs/v4/types enum-walk expectations), and
+NFSv3 has no lock procedure (NLM is unimplemented; only NSM exists). SMB
+diverges (e.g., `ErrLocked` → `STATUS_LOCK_NOT_GRANTED` in lock context
+vs. `STATUS_FILE_LOCK_CONFLICT` in general context).
 
 ### Conformance testing
 
@@ -290,9 +296,10 @@ converged; SMB diverges).
 table-drives every triggerable code through real NFS/SMB mounts and
 asserts the kernel delivers the expected errno. Exotic codes that cannot
 be e2e-triggered (quota, grace-period, connection-limit) are covered by
-`internal/adapter/common/errmap_test.go:TestExoticErrorCodes`. Both tiers
-iterate over the same `common/` tables — adding a new code without adding
-a test case fails `TestErrorMapCoverage` at CI time.
+the enum-walk tests in the types packages (`statusfor_test.go` per
+package). Both tiers derive from the same switches — adding a new code
+without a switch arm or expectation row fails `TestStatusFor_EnumWalk` at
+CI time.
 
 ---
 
@@ -301,7 +308,7 @@ a test case fails `TestErrorMapCoverage` at CI time.
 ### Mount Protocol Status
 
 | Procedure | Status | Notes |
-|-----------|--------|-------|
+| ----------- | -------- | ------- |
 | NULL | Implemented | |
 | MNT | Implemented | |
 | UMNT | Implemented | |
@@ -314,7 +321,7 @@ a test case fails `TestErrorMapCoverage` at CI time.
 **Read Operations:**
 
 | Procedure | Status | Notes |
-|-----------|--------|-------|
+| ----------- | -------- | ------- |
 | NULL | Implemented | |
 | GETATTR | Implemented | |
 | SETATTR | Implemented | |
@@ -331,7 +338,7 @@ a test case fails `TestErrorMapCoverage` at CI time.
 **Write Operations:**
 
 | Procedure | Status | Notes |
-|-----------|--------|-------|
+| ----------- | -------- | ------- |
 | WRITE | Implemented | |
 | CREATE | Implemented | |
 | MKDIR | Implemented | |
@@ -350,7 +357,7 @@ a test case fails `TestErrorMapCoverage` at CI time.
 NFSv4.0 uses compound operations instead of individual RPC procedures. All operations are bundled into COMPOUND requests.
 
 | Operation | Status | Notes |
-|-----------|--------|-------|
+| ----------- | -------- | ------- |
 | ACCESS | Implemented | |
 | CLOSE | Implemented | |
 | COMMIT | Implemented | |
@@ -388,7 +395,7 @@ NFSv4.0 uses compound operations instead of individual RPC procedures. All opera
 NFSv4.1 extends v4.0 with session-based operation, backchannel callbacks, and additional operations.
 
 | Operation | Status | Notes |
-|-----------|--------|-------|
+| ----------- | -------- | ------- |
 | BACKCHANNEL_CTL | Implemented | |
 | BIND_CONN_TO_SESSION | Implemented | |
 | CREATE_SESSION | Implemented | |
@@ -398,6 +405,7 @@ NFSv4.1 extends v4.0 with session-based operation, backchannel callbacks, and ad
 | FREE_STATEID | Implemented | |
 | GET_DIR_DELEGATION | Implemented | Directory delegation with CB_NOTIFY |
 | RECLAIM_COMPLETE | Implemented | |
+| SECINFO_NO_NAME | Implemented | Both styles; PARENT applies LOOKUPP's rules |
 | SEQUENCE | Implemented | |
 | TEST_STATEID | Implemented | |
 
@@ -408,7 +416,7 @@ NFSv4.2 extends v4.1 with sparse file operations (RFC 7862: ALLOCATE, DEALLOCATE
 **Sparse file operations (RFC 7862):**
 
 | Operation | Status | Notes |
-|-----------|--------|-------|
+| ----------- | -------- | ------- |
 | ALLOCATE | Implemented | Space pre-allocation via block store |
 | DEALLOCATE | Implemented | Punch holes in content-addressed/dedup-safe way via `pkg/block` |
 | SEEK | Implemented | SEEK_HOLE and SEEK_DATA ([#1303](https://github.com/marmos91/dittofs/issues/1303)) — returns `NFS4_CONTENT_HOLE` for unwritten regions ([#1304](https://github.com/marmos91/dittofs/issues/1304)) |
@@ -419,7 +427,7 @@ CLONE (reflink) **is** supported. Inter-server COPY (OP_COPY) is **not** — it 
 **Extended attribute operations (RFC 8276):**
 
 | Operation | Status | Notes |
-|-----------|--------|-------|
+| ----------- | -------- | ------- |
 | GETXATTR | Implemented | RFC 8276; metadata store holds xattr values |
 | SETXATTR | Implemented | RFC 8276; supports `SET` and `REPLACE` modes |
 | LISTXATTRS | Implemented | RFC 8276; cookie-based pagination |
@@ -647,7 +655,7 @@ A directory delegation grants a client the right to cache the contents of a dire
 Clients request directory delegations via the GET_DIR_DELEGATION operation, specifying a notification bitmask indicating which change types they want to receive:
 
 | Notification Type | Value | Trigger |
-|-------------------|-------|---------|
+| ------------------- | ------- | --------- |
 | NOTIFY4_CHANGE_CHILD_ATTRS | 0x01 | Child file/directory attributes changed |
 | NOTIFY4_CHANGE_DIR_ATTRS | 0x02 | Directory's own attributes changed (mode, owner, size) |
 | NOTIFY4_REMOVE_ENTRY | 0x04 | Entry removed from directory (REMOVE, RMDIR) |
@@ -672,7 +680,7 @@ This batching reduces backchannel traffic when many mutations happen in quick su
 Each directory-mutating NFSv4 operation triggers the appropriate notification:
 
 | Operation | Notification Type | Details |
-|-----------|-------------------|---------|
+| ----------- | ------------------- | --------- |
 | CREATE | NOTIFY4_ADD_ENTRY | Parent directory notified of new entry |
 | REMOVE | NOTIFY4_REMOVE_ENTRY | Parent directory notified; if removed entry is a directory with its own delegation, that delegation is immediately revoked |
 | RENAME (same dir) | NOTIFY4_RENAME_ENTRY | Single notification with old and new names |
@@ -700,7 +708,7 @@ When a directory is deleted (REMOVE/RMDIR), any directory delegations on that di
 Directory delegation settings are managed via `dfsctl adapter settings nfs`:
 
 | Setting | Default | Description |
-|---------|---------|-------------|
+| --------- | --------- | ------------- |
 | `delegations_enabled` | `true` | Enable/disable all delegations (file and directory) |
 | `max_delegations` | `10000` | Maximum concurrent delegations across all clients |
 | `dir_deleg_batch_window_ms` | `50` | Notification batch window in milliseconds |
@@ -721,7 +729,7 @@ dfsctl adapter settings nfs update --dir-deleg-batch-window-ms 100
 Directory delegation metrics are exposed alongside file delegation metrics with a `type` label:
 
 | Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
+| -------- | ------ | -------- | ------------- |
 | `dittofs_nfs_delegations_granted_total` | Counter | `type` (file/directory) | Total delegations granted |
 | `dittofs_nfs_delegations_recalled_total` | Counter | `type`, `reason` | Total delegations recalled |
 | `dittofs_nfs_delegations_active` | Gauge | `type` (file/directory) | Currently active delegations |

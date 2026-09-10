@@ -3,7 +3,6 @@ package handlers
 import (
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -43,14 +42,14 @@ func (h *Handler) handleAllocate(ctx *types.CompoundContext, reader io.Reader) *
 		return allocErr(types.NFS4ERR_ROFS)
 	}
 
-	stateid, offset, length, st := decodeAllocArgs(reader)
+	stateid, offset, length, st := decodeAllocArgs(ctx, reader)
 	if st != types.NFS4_OK {
 		return allocErr(st)
 	}
 
 	// ALLOCATE may change the file size: validate the stateid as a write op and
 	// require WRITE share-access on a real open stateid (special stateids pass).
-	if openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpWrite); stateErr != nil {
+	if openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpWrite, ctx.SessionClientID); stateErr != nil {
 		s := mapStateError(stateErr)
 		logger.Debug("NFSv4.2 ALLOCATE stateid validation failed", "error", stateErr, "nfs_status", s, "client", ctx.ClientAddr)
 		return allocErr(s)
@@ -68,7 +67,7 @@ func (h *Handler) handleAllocate(ctx *types.CompoundContext, reader io.Reader) *
 	}
 
 	if _, err := metaSvc.Allocate(authCtx, metadata.FileHandle(ctx.CurrentFH), offset, length); err != nil {
-		return allocErr(common.MapToNFS4(err))
+		return allocErr(types.StatusForErr(err))
 	}
 
 	logger.Debug("NFSv4.2 ALLOCATE", "offset", offset, "length", length, "client", ctx.ClientAddr)

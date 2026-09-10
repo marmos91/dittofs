@@ -85,7 +85,7 @@ test-posix:
 	test/posix/run-posix.sh $(ARGS)
 
 # SMB conformance suite (WPTS FileServer BVT). Pass flags via ARGS,
-# e.g. `make test-smb-conformance ARGS="--profile badger-fs"`.
+# e.g. `make test-smb-conformance ARGS="--profile badger"`.
 test-smb-conformance:
 	test/smb-conformance/run.sh $(ARGS)
 

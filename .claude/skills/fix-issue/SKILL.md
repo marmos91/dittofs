@@ -291,10 +291,13 @@ git push -u origin fix/<issue>-<slug>
 gh pr create --base develop --assignee marmos91 --title "..." --body "..."
 ```
 
-The PR body must contain a closing keyword (`Closes #<N>`). GitHub's auto-close
-never fires for us — it only triggers on the default branch, and we merge to
-`develop` — so `.github/workflows/close-linked-issues.yml` greps PR bodies
-instead, at release time. The keyword is what makes that work.
+The PR body must contain a closing keyword (`Closes #<N>`). `develop` is the
+default branch, so GitHub's native auto-close fires on merge and the issue closes
+itself — do not also close it by hand. `gh issue close --comment` on an
+already-closed issue exits 0 and silently discards the comment, so verification
+notes posted that way are lost; use `gh issue comment` for those.
+`.github/workflows/close-linked-issues.yml` still runs at release time as a
+safety net for keywords that appear in a commit message but not a PR body.
 
 Write the body for a reviewer who has not read the issue: what was actually
 wrong, why the obvious fix is wrong if it is, and what evidence you have. If you

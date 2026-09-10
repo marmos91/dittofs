@@ -336,6 +336,76 @@ func testDecrementRefCountAndReapMany(t *testing.T, factory StoreFactory) {
 		}
 	})
 
+	// A set larger than one statement's bound-parameter ceiling still reaps
+	// every row. The SQL backends split it into several IN-list batches, so an
+	// off-by-one in the split leaves a tail of rows alive.
+	t.Run("SpansBatchBoundary", func(t *testing.T) {
+		store := factory(t)
+		ctx := t.Context()
+
+		// Comfortably past the 900-parameter ceiling the SQL backends batch at,
+		// and not a multiple of it, so the last batch is a partial one.
+		ids := make([]string, 1201)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("batch/%d", i*4096)
+		}
+		if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+			for _, id := range ids {
+				if err := tx.Put(ctx, &block.FileChunk{
+					ID: id, Hash: hashOfSeed(id), State: block.BlockStateRemote,
+					DataSize: 4096, RefCount: 1,
+					LastAccess: time.Now(), CreatedAt: time.Now(),
+				}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+			return tx.DecrementRefCountAndReapMany(ctx, ids)
+		}); err != nil {
+			t.Fatalf("DecrementRefCountAndReapMany: %v", err)
+		}
+		for _, id := range []string{ids[0], ids[899], ids[900], ids[1199], ids[1200]} {
+			if chunkRowPresent(t, store, id) {
+				t.Errorf("row %s survived the batched reap; want it gone at refcount 0", id)
+			}
+		}
+	})
+
+	// Seeding at refcount 1 above cannot see a split that OVERLAPS: a boundary
+	// id landing in two batches is decremented twice, but the floor at zero and
+	// the reap leave exactly the state one decrement leaves. Only a row that
+	// has to survive the call can tell the two apart.
+	t.Run("SpansBatchBoundaryWithSurvivors", func(t *testing.T) {
+		store := factory(t)
+		ctx := t.Context()
+
+		ids := make([]string, 1201)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("survive/%d", i*4096)
+		}
+		seedChunkRows(t, store, 2, ids...)
+
+		if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+			return tx.DecrementRefCountAndReapMany(ctx, ids)
+		}); err != nil {
+			t.Fatalf("DecrementRefCountAndReapMany: %v", err)
+		}
+
+		// One decrement takes every row from two references to one, so the whole
+		// set must still be there. A row decremented twice reaches zero and is
+		// reaped, and the ids either side of a batch edge are where that happens.
+		for _, id := range []string{ids[0], ids[898], ids[899], ids[900], ids[901], ids[1199], ids[1200]} {
+			if !chunkRowPresent(t, store, id) {
+				t.Errorf("row %s was reaped by a single decrement; want it held at refcount 1", id)
+			}
+		}
+	})
+
 	// The whole set is one transaction, so an error raised after the batched
 	// call rolls every row back — no half-reaped manifest.
 	t.Run("RollsBackWholeSet", func(t *testing.T) {

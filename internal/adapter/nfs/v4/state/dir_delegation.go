@@ -26,13 +26,43 @@ import (
 // an immediate flush is triggered (count-based flush).
 const maxBatchSize = 100
 
-// GrantDirDelegation creates a new directory delegation for a client.
+// admitDirDelegationLocked decides whether a directory delegation may be
+// granted to this client on this handle: delegations enabled, the client's
+// lease live, the server-wide delegation budget not exhausted, and no
+// directory delegation already held by the same client on the same handle.
 //
-// It performs the following checks before granting:
-//   - Delegations must be enabled
-//   - Client must have a valid lease
-//   - Total delegation count must be below maxDelegations limit
-//   - No duplicate directory delegation for same client+handle
+// It is deliberately re-runnable, so it doubles as the recommit check for the
+// window in which GrantDirDelegation releases sm.mu to call the lock manager.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) admitDirDelegationLocked(clientID uint64, fhKey string) error {
+	if !sm.delegationsEnabled {
+		return fmt.Errorf("delegations disabled")
+	}
+
+	if !sm.clientLeaseLiveLocked(clientID) {
+		return &NFS4StateError{
+			Status:  types.NFS4ERR_EXPIRED,
+			Message: fmt.Sprintf("client %d not found or lease expired", clientID),
+		}
+	}
+
+	// Revoked delegations are excluded from the budget.
+	if !sm.delegationBudgetAvailableLocked() {
+		return fmt.Errorf("delegation limit exceeded (%d)", sm.maxDelegations)
+	}
+
+	for _, existing := range sm.delegByFile[fhKey] {
+		if existing.ClientID == clientID && existing.IsDirectory && !existing.Revoked {
+			return fmt.Errorf("duplicate directory delegation for client %d on handle", clientID)
+		}
+	}
+
+	return nil
+}
+
+// GrantDirDelegation creates a new directory delegation for a client, subject
+// to the checks in admitDirDelegationLocked.
 //
 // Returns the DelegationState on success, or nil with an error.
 //
@@ -41,36 +71,9 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// Check delegations enabled
-	if !sm.delegationsEnabled {
-		return nil, fmt.Errorf("delegations disabled")
-	}
-
-	// Check client has valid, non-expired lease (v4.0 or v4.1)
-	var leaseValid bool
-	if v40, ok := sm.clientsByID[clientID]; ok {
-		leaseValid = v40.Lease != nil && !v40.Lease.IsExpired()
-	} else if v41, ok := sm.v41ClientsByID[clientID]; ok {
-		leaseValid = v41.Lease != nil && !v41.Lease.IsExpired()
-	}
-	if !leaseValid {
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_EXPIRED,
-			Message: fmt.Sprintf("client %d not found or lease expired", clientID),
-		}
-	}
-
-	// Check total active delegation count against limit (revoked delegations excluded)
-	if sm.maxDelegations > 0 && sm.countActiveDelegations() >= sm.maxDelegations {
-		return nil, fmt.Errorf("delegation limit exceeded (%d)", sm.maxDelegations)
-	}
-
-	// Check no existing directory delegation for same client+handle
 	fhKey := string(dirFH)
-	for _, existing := range sm.delegByFile[fhKey] {
-		if existing.ClientID == clientID && existing.IsDirectory && !existing.Revoked {
-			return nil, fmt.Errorf("duplicate directory delegation for client %d on handle", clientID)
-		}
+	if err := sm.admitDirDelegationLocked(clientID, fhKey); err != nil {
+		return nil, err
 	}
 
 	// Generate stateid (same type byte 0x03 as file delegations)
@@ -82,13 +85,7 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 
 	// Generate random cookie verifier
 	var cookieVerf [8]byte
-	if _, err := rand.Read(cookieVerf[:]); err != nil {
-		// Fallback to time-based if crypto/rand fails
-		now := time.Now().UnixNano()
-		for i := range 8 {
-			cookieVerf[i] = byte(now >> (uint(i) * 8))
-		}
-	}
+	_, _ = rand.Read(cookieVerf[:])
 
 	fhCopy := make([]byte, len(dirFH))
 	copy(fhCopy, dirFH)
@@ -110,12 +107,28 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 		// See GrantDelegation comment: NFS delegations lack share context at this layer.
 		lockDeleg := lock.NewDelegation(lock.DelegTypeRead, nfsClientIdentity(clientID), "", true)
 		lockDeleg.NotificationMask = notifMask
-		if err := lm.GrantDelegation(fhKey, lockDeleg); err != nil {
+
+		// sm.mu is released across the manager call (see acquireLock in manager.go).
+		sm.mu.Unlock()
+		grantErr := lm.GrantDelegation(fhKey, lockDeleg)
+		sm.mu.Lock()
+		if grantErr != nil {
 			logger.Debug("directory delegation denied by lock manager",
 				"client_id", clientID,
-				"error", err)
+				"error", grantErr)
+			return nil, grantErr
+		}
+
+		// Nothing published references this delegation yet, so re-running
+		// admission is the whole of the recommit check: while the mutex was
+		// released the client's lease could have expired, the budget could have
+		// been taken by concurrent grants, or the client could have been given a
+		// directory delegation on this same handle.
+		if err := sm.admitDirDelegationLocked(clientID, fhKey); err != nil {
+			sm.revokeInLockManagerLocked(lm, fhKey, lockDeleg.DelegationID)
 			return nil, err
 		}
+
 		sm.delegStateidMap[lockDeleg.DelegationID] = stateid
 		deleg.LockManagerDelegID = lockDeleg.DelegationID
 	}

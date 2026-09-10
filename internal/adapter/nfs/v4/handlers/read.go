@@ -18,7 +18,7 @@ import (
 // Reads file data at a given offset, returning bytes and EOF flag.
 // Delegates to BlockStore.ReadAt via pooled buffers; validates stateid for open state.
 // No side effects; read-only data operation using buffer pools to reduce GC pressure.
-// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_STALE, NFS4ERR_IO, NFS4ERR_BADXDR.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_ACCESS, NFS4ERR_STALE, NFS4ERR_IO, NFS4ERR_BADXDR.
 func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
@@ -31,9 +31,9 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 	}
 
 	// Decode READ4args
-	stateid, err := types.DecodeStateid4(reader)
-	if err != nil {
-		return readErr(types.NFS4ERR_BADXDR)
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		return readErr(argStatus)
 	}
 
 	offset, err := xdr.DecodeUint64(reader)
@@ -51,7 +51,7 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 	// permitted on READ and return a nil openState. Real open stateids are
 	// validated for correctness (seqid, epoch, filehandle match) and carry the
 	// open's share-access bits.
-	openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpRead)
+	openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpRead, ctx.SessionClientID)
 	if stateErr != nil {
 		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 READ stateid validation failed",
@@ -98,7 +98,7 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 	// GetFileForRead: handle-addressed, File.Path unused — skip derivePath.
 	file, err := metaSvc.GetFileForRead(authCtx.Context, fileHandle)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
 		return readErr(status)
 	}
 
@@ -108,6 +108,9 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 		return readErr(status)
 	}
 
+	if status := checkReadPermission(metaSvc, ctx, authCtx, fileHandle, file, types.OP_READ); status != types.NFS4_OK {
+		return readErr(status)
+	}
 	// Empty file or no content
 	if file.Size == 0 || file.PayloadID == "" {
 		return encodeRead4resok(true, nil)
@@ -137,7 +140,7 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 	readResult, err := common.ReadFromBlockStore(ctx.Context, blockStore, file.PayloadID, offset, uint32(actualLen))
 	if err != nil {
 		logger.Debug("NFSv4 READ payload error", "error", err, "client", ctx.ClientAddr)
-		return readErr(types.NFS4ERR_IO)
+		return readErr(types.StatusFor(common.ClassifyBlockStoreError(err)))
 	}
 	// Release the pooled buffer after the compound result has been encoded.
 	// encodeRead4resok copies readResult.Data into a fresh bytes.Buffer before

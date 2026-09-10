@@ -114,8 +114,8 @@ func sweepFromSyncedIndex(
 			return nil
 		}
 		if !handled {
-			// Post-migration every synced hash must resolve to a block
-			// locator in some share. A hash no share can resolve is metadata
+			// Every synced hash must resolve to a block locator in some
+			// share. A hash no share can resolve is metadata
 			// drift: keep the marker (never guess at a remote key) and
 			// surface it.
 			addError("block-reclaim " + key + ": no share resolves a block locator — dead chunk kept (drift)")

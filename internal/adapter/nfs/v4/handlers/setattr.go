@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 
@@ -40,13 +41,13 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 	}
 
 	// 3. Read stateid4 (16 bytes: uint32 seqid + [12]byte other)
-	stateid, err := types.DecodeStateid4(reader)
-	if err != nil {
-		logger.Error("NFSv4 SETATTR decode stateid failed", "error", err)
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		logger.Debug("NFSv4 SETATTR stateid argument rejected", "status", argStatus)
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
+			Status: argStatus,
 			OpCode: types.OP_SETATTR,
-			Data:   encodeSetAttrError(types.NFS4ERR_BADXDR),
+			Data:   encodeSetAttrError(argStatus),
 		}
 	}
 
@@ -59,7 +60,8 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 	setAttrs, requestedBitmap, err := attrs.DecodeFattr4ToSetAttrs(reader)
 	if err != nil {
 		// Check for typed NFS4 error
-		if nfsErr, ok := err.(attrs.NFS4StatusError); ok {
+		var nfsErr attrs.NFS4StatusError
+		if errors.As(err, &nfsErr) {
 			status := nfsErr.NFS4Status()
 			logger.Debug("NFSv4 SETATTR decode attrs error",
 				"error", err,
@@ -95,7 +97,7 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		if sizeChange {
 			op = state.StateidOpWrite
 		}
-		openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, op)
+		openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, op, ctx.SessionClientID)
 		if stateErr != nil {
 			nfsStatus := mapStateError(stateErr)
 			logger.Debug("NFSv4 SETATTR stateid validation failed",
@@ -178,7 +180,7 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		preFile, _ = metaSvc.GetFile(ctx.Context, metadata.FileHandle(ctx.CurrentFH))
 	}
 	if err := h.applySetAttrsWithTruncateReclaim(ctx, metaSvc, authCtx, metadata.FileHandle(ctx.CurrentFH), preFile, setAttrs); err != nil {
-		nfsStatus := common.MapToNFS4(err)
+		nfsStatus := types.StatusForErr(err)
 		logger.Debug("NFSv4 SETATTR failed",
 			"error", err,
 			"nfs4status", nfsStatus,

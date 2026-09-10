@@ -11,7 +11,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -241,6 +241,40 @@ func (h *Handler) checkNetgroupAccess(ctx *types.CompoundContext, shareName stri
 	return nil
 }
 
+// checkReadPermission gates a data read on the caller's read permission for
+// handle, reporting the NFS4 status to answer with — NFS4_OK when the read may
+// proceed.
+//
+// The read-family operations all accept the anonymous (all-zero) and
+// READ-bypass (all-one) special stateids, which carry no open state and so
+// never went through OPEN's permission check. The share-access check on a real
+// open stateid does not cover it either: that constrains how the file was
+// opened, not who the caller is.
+//
+// The gate must stay unconditional rather than narrowing to the special-stateid
+// case. A non-nil open state says the file was opened with the right mode; it
+// says nothing about which client is presenting the stateid, so skipping the
+// check whenever one exists would reopen the same hole through another door.
+func checkReadPermission(
+	metaSvc *metadata.Service,
+	ctx *types.CompoundContext,
+	authCtx *metadata.AuthContext,
+	handle metadata.FileHandle,
+	file *metadata.File,
+	op uint32,
+) uint32 {
+	if err := metaSvc.CheckReadPermissionFile(authCtx, handle, file); err != nil {
+		status := types.StatusForErr(err)
+		logger.Debug("NFSv4 read denied",
+			"op", types.OpName(op),
+			"nfs_status", status,
+			"error", err,
+			"client", ctx.ClientAddr)
+		return status
+	}
+	return types.NFS4_OK
+}
+
 // resolveBlockStore resolves the per-share block store for ctx.CurrentFH,
 // taking the write path when forWrite is set. On failure it returns the
 // SERVERFAULT result the caller returns unchanged, tagged with op.
@@ -294,4 +328,53 @@ func encodeChangeInfo4(buf *bytes.Buffer, atomic bool, before, after uint64) {
 	_ = xdr.WriteBool(buf, atomic)
 	_ = xdr.WriteUint64(buf, before)
 	_ = xdr.WriteUint64(buf, after)
+}
+
+// regularFileStatus reports the status an operation defined only over regular
+// files must return for the type of object its current filehandle designates:
+// NFS4_OK for a regular file, NFS4ERR_ISDIR for a directory and NFS4ERR_INVAL
+// for every other type. COMMIT (RFC 7530 Section 16.5.4), LOCK, LOCKT and LOCKU
+// (Section 16.10.4) and READ and WRITE (Sections 16.22.4 and 16.36.4) all state
+// the rule in the same words.
+func regularFileStatus(fileType metadata.FileType) uint32 {
+	switch fileType {
+	case metadata.FileTypeRegular:
+		return types.NFS4_OK
+	case metadata.FileTypeDirectory:
+		return types.NFS4ERR_ISDIR
+	default:
+		return types.NFS4ERR_INVAL
+	}
+}
+
+// directoryStatus reports the status LOOKUP and LOOKUPP must return for the
+// type of object their current filehandle designates. RFC 7530 Section 16.15.4:
+// a symbolic link is reported as NFS4ERR_SYMLINK so the client knows to resolve
+// it, and every other non-directory type as NFS4ERR_NOTDIR.
+func directoryStatus(fileType metadata.FileType) uint32 {
+	switch fileType {
+	case metadata.FileTypeDirectory:
+		return types.NFS4_OK
+	case metadata.FileTypeSymlink:
+		return types.NFS4ERR_SYMLINK
+	default:
+		return types.NFS4ERR_NOTDIR
+	}
+}
+
+// fileTypeForHandle resolves the object type of a real-filesystem filehandle
+// for the operations that gate on it but never load the file otherwise. The
+// second return is NFS4_OK when the type is usable and the status to report
+// when the handle could not be resolved.
+func (h *Handler) fileTypeForHandle(ctx *types.CompoundContext, handle []byte) (metadata.FileType, uint32) {
+	metaSvc, err := getMetadataServiceForCtx(h)
+	if err != nil {
+		return 0, types.NFS4ERR_SERVERFAULT
+	}
+	// GetFileForRead: handle-addressed, File.Path unused -- skip derivePath.
+	file, err := metaSvc.GetFileForRead(ctx.Context, metadata.FileHandle(handle))
+	if err != nil {
+		return 0, types.StatusForErr(err)
+	}
+	return file.Type, types.NFS4_OK
 }

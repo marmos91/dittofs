@@ -8,10 +8,9 @@
 // keyed by an opaque blockID string; the on-wire key is
 // block.FormatBlockKey(blockID).
 //
-// No hash-keyed CAS read/write/enumerate operation is exposed here. The
-// pre-blocks standalone-CAS layout is reachable only by type-asserting a store
-// to LegacyCASStore (see legacy_cas.go), which the one-shot cas→blocks startup
-// migration does.
+// No hash-keyed CAS read/write/enumerate operation is exposed here. Backends
+// still carry a hash-keyed surface on their concrete types (see each backend's
+// cas.go), reachable only by type-asserting past this interface.
 package remote
 
 import (
@@ -39,9 +38,8 @@ var ErrChunkReadUnsupported = errors.New("remote: wrapped store does not support
 // GetBlockRange / DeleteBlock / WalkBlocks) for whole packed block objects,
 // ChunkReader.ReadChunk / ChunkSealer.SealChunk for the per-chunk transform, and
 // Close / HealthCheck / Healthcheck for lifecycle and health. No hash-keyed CAS
-// operation is exposed here — the legacy standalone-CAS layout is reachable only
-// by type-asserting a store to LegacyCASStore, which only the cas→blocks
-// migration does.
+// operation is exposed here; a backend's hash-keyed surface lives on its
+// concrete type.
 type RemoteStore interface {
 	RemoteBlockStore
 	ChunkReader
@@ -68,8 +66,8 @@ type RemoteStore interface {
 //
 // Objects are keyed by an opaque blockID string; the on-disk/on-wire key shape
 // is block.FormatBlockKey(blockID) = "blocks/<blockID>". This is the production
-// remote surface; the migration-only legacy standalone layout lives under a
-// separate prefix reachable via LegacyCASStore (see legacy_cas.go).
+// remote surface; the hash-keyed layout lives under a separate prefix and is
+// not reachable through this interface.
 type RemoteBlockStore interface {
 	// PutBlock writes the content of r under blocks/<blockID>. Idempotent:
 	// a second call with the same blockID overwrites silently. Implementations

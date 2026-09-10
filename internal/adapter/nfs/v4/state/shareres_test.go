@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ func openConfirmed(t *testing.T, sm *StateManager, clientID uint64, owner, fileH
 	if err != nil {
 		t.Fatalf("OpenFile(%s): %v", owner, err)
 	}
-	confirmed, err := sm.ConfirmOpen(&res.Stateid, 2)
+	confirmed, err := sm.ConfirmOpen(&res.Stateid, 2, 0)
 	if err != nil {
 		t.Fatalf("ConfirmOpen(%s): %v", owner, err)
 	}
@@ -96,7 +97,15 @@ func TestOpenFile_ShareDeny_NonConflictingCombosSucceed(t *testing.T) {
 	})
 }
 
-func TestOpenFile_ShareDeny_SameOwnerAccumulatesNoConflict(t *testing.T) {
+// TestOpenFile_ShareDeny_SameOwnerIsNotExempt pins RFC 7530 Section 9.9, which
+// states the rule and then removes the obvious exception from it: "This checking
+// of share reservations on OPEN is done with no exception for an existing OPEN
+// for the same open-owner."
+//
+// The check used to skip the requesting owner's own opens, so an owner that had
+// denied WRITE to everyone could still open the same file for writing again, and
+// a deny mode was only ever enforced against other owners.
+func TestOpenFile_ShareDeny_SameOwnerIsNotExempt(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	fh := []byte("fh-same-owner")
 
@@ -104,11 +113,19 @@ func TestOpenFile_ShareDeny_SameOwnerAccumulatesNoConflict(t *testing.T) {
 	openConfirmed(t, sm, 0, []byte("ownerA"), fh,
 		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_WRITE)
 
-	// The SAME owner re-opening the same file with WRITE must NOT self-conflict;
-	// bits accumulate per owner (RFC 7530 Section 9.1.7).
-	if _, err := sm.OpenFile(0, []byte("ownerA"), 3, fh,
-		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_WRITE, types.CLAIM_NULL); err != nil {
-		t.Fatalf("same-owner re-open should not conflict: %v", err)
+	// request.access (WRITE) & file_state.deny (WRITE) is non-zero, so the
+	// same owner's second OPEN is refused just as another owner's would be.
+	_, err := sm.OpenFile(0, []byte("ownerA"), 3, fh,
+		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_WRITE, types.CLAIM_NULL)
+	if !errors.Is(err, ErrShareDenied) {
+		t.Fatalf("same-owner OPEN against its own DENY_WRITE: err = %v, want ErrShareDenied", err)
+	}
+
+	// A deny mode the request does not touch is still no conflict: DENY_WRITE
+	// says nothing about reading.
+	if _, err := sm.OpenFile(0, []byte("ownerA"), 4, fh,
+		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); err != nil {
+		t.Fatalf("same-owner READ open against DENY_WRITE: %v", err)
 	}
 }
 
@@ -119,7 +136,7 @@ func TestOpenFile_ShareDeny_ReleasedAfterClose(t *testing.T) {
 	// Owner A opens with DENY_WRITE then closes.
 	aStateid := openConfirmed(t, sm, 0, []byte("ownerA"), fh,
 		types.OPEN4_SHARE_ACCESS_WRITE, types.OPEN4_SHARE_DENY_WRITE)
-	if _, err := sm.CloseFile(&aStateid, 3); err != nil {
+	if _, err := sm.CloseFile(&aStateid, 3, 0); err != nil {
 		t.Fatalf("CloseFile: %v", err)
 	}
 
@@ -155,11 +172,11 @@ func readBypassStateid() *types.Stateid4 {
 	return sid
 }
 
-func TestValidateStateid_ReadBypass_AllowedOnReadRejectedOnWrite(t *testing.T) {
+func TestValidateStateid_ReadBypass_AcceptedOnReadAndWrite(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
 	// READ: all-ones is permitted (returns nil openState, nil error).
-	openState, err := sm.ValidateStateid(readBypassStateid(), nil, StateidOpRead)
+	openState, err := sm.ValidateStateid(readBypassStateid(), nil, StateidOpRead, 0)
 	if err != nil {
 		t.Fatalf("read-bypass on READ should be allowed: %v", err)
 	}
@@ -167,17 +184,14 @@ func TestValidateStateid_ReadBypass_AllowedOnReadRejectedOnWrite(t *testing.T) {
 		t.Error("special stateid should return nil openState")
 	}
 
-	// WRITE: all-ones MUST be rejected with NFS4ERR_BAD_STATEID.
-	_, err = sm.ValidateStateid(readBypassStateid(), nil, StateidOpWrite)
-	if err == nil {
-		t.Fatal("read-bypass on WRITE should be rejected")
+	// WRITE: all-ones is accepted too, behaving as the anonymous stateid
+	// (RFC 7530 Section 16.36.4). With no open on the file nothing denies it.
+	openState, err = sm.ValidateStateid(readBypassStateid(), nil, StateidOpWrite, 0)
+	if err != nil {
+		t.Fatalf("read-bypass on WRITE should be allowed: %v", err)
 	}
-	stateErr, ok := err.(*NFS4StateError)
-	if !ok {
-		t.Fatalf("expected *NFS4StateError, got %T", err)
-	}
-	if stateErr.Status != types.NFS4ERR_BAD_STATEID {
-		t.Errorf("status = %d, want NFS4ERR_BAD_STATEID (%d)", stateErr.Status, types.NFS4ERR_BAD_STATEID)
+	if openState != nil {
+		t.Error("special stateid should return nil openState")
 	}
 }
 
@@ -186,12 +200,122 @@ func TestValidateStateid_Anonymous_AllowedOnReadAndWrite(t *testing.T) {
 	anon := &types.Stateid4{Seqid: 0} // all-zeros other
 
 	for _, op := range []StateidOp{StateidOpRead, StateidOpWrite} {
-		openState, err := sm.ValidateStateid(anon, nil, op)
+		openState, err := sm.ValidateStateid(anon, nil, op, 0)
 		if err != nil {
 			t.Fatalf("anonymous stateid (op=%d) should be allowed: %v", op, err)
 		}
 		if openState != nil {
 			t.Errorf("anonymous stateid (op=%d) should return nil openState", op)
 		}
+	}
+}
+
+// TestValidateStateid_AnonymousBlockedByShareDeny pins RFC 7530 Section 9.1.4:
+// "Regardless of whether an anonymous stateid or a stateid returned by the
+// server is used, if there is a conflicting share reservation ... the server
+// MUST refuse to service the READ or WRITE operation", with NFS4ERR_LOCKED.
+//
+// A deny mode used to be advisory in practice: it refused a conflicting OPEN,
+// but a client that skipped OPEN and issued I/O under the anonymous stateid --
+// the case the deny mode exists to stop -- was served.
+func TestValidateStateid_AnonymousBlockedByShareDeny(t *testing.T) {
+	anonymous := &types.Stateid4{}
+
+	t.Run("deny_read_blocks_anonymous_read", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		fh := []byte("fh-anon-denyread")
+		openConfirmed(t, sm, 0, []byte("ownerA"), fh,
+			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_READ)
+
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpRead, 0); !errors.Is(err, ErrLocked) {
+			t.Fatalf("anonymous READ against DENY_READ: err = %v, want ErrLocked", err)
+		}
+		// DENY_READ says nothing about writing.
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpWrite, 0); err != nil {
+			t.Fatalf("anonymous WRITE against DENY_READ: %v", err)
+		}
+	})
+
+	t.Run("deny_write_blocks_anonymous_write", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		fh := []byte("fh-anon-denywrite")
+		openConfirmed(t, sm, 0, []byte("ownerA"), fh,
+			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_WRITE)
+
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpWrite, 0); !errors.Is(err, ErrLocked) {
+			t.Fatalf("anonymous WRITE against DENY_WRITE: err = %v, want ErrLocked", err)
+		}
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpRead, 0); err != nil {
+			t.Fatalf("anonymous READ against DENY_WRITE: %v", err)
+		}
+	})
+
+	t.Run("no_deny_serves_anonymous_io", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		fh := []byte("fh-anon-nodeny")
+		openConfirmed(t, sm, 0, []byte("ownerA"), fh,
+			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE)
+
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpRead, 0); err != nil {
+			t.Fatalf("anonymous READ with no deny in force: %v", err)
+		}
+		if _, err := sm.ValidateStateid(anonymous, fh, StateidOpWrite, 0); err != nil {
+			t.Fatalf("anonymous WRITE with no deny in force: %v", err)
+		}
+	})
+
+	// The READ-bypass stateid is exempt on READ (RFC 7530 Section 9.1.4.3), and
+	// is rejected outright on a write-family operation, so it never reaches the
+	// share check either way.
+	t.Run("read_bypass_stays_exempt", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		fh := []byte("fh-anon-bypass")
+		openConfirmed(t, sm, 0, []byte("ownerA"), fh,
+			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_READ)
+
+		if _, err := sm.ValidateStateid(readBypassStateid(), fh, StateidOpRead, 0); err != nil {
+			t.Fatalf("read-bypass READ against DENY_READ: %v", err)
+		}
+	})
+}
+
+// TestReplayOpenSeqid_IgnoresOtherOperationsReplies pins what an OPEN may
+// replay. The open-owner's reply cache is shared by every operation that
+// advances the owner's seqid -- CLOSE, OPEN_CONFIRM and OPEN_DOWNGRADE all
+// write to it -- so it routinely holds a reply of a different shape than an
+// OPEN's. Returning those bytes in an OPEN's place answers with OPEN's
+// operation number and another operation's body, and the client then reads the
+// next operation's number out of the middle of it and abandons the COMPOUND.
+//
+// Only a refusal this server recorded against an OPEN may be replayed here.
+func TestReplayOpenSeqid_IgnoresOtherOperationsReplies(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	fh := []byte("fh-replay-scope")
+	owner := []byte("ownerA")
+
+	if _, err := sm.OpenFile(0, owner, 1, fh,
+		types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+
+	// Some other owner-seqid operation caches its reply, as CLOSE does.
+	sm.CacheOpenOwnerResult(0, owner, types.NFS4_OK, []byte("a CLOSE reply body"))
+
+	if status, ok := sm.ReplayOpenSeqid(0, owner, 1); ok {
+		t.Fatalf("replayed another operation's cached reply as an OPEN: status = %d", status)
+	}
+
+	// A refusal recorded against an OPEN is replayable, at its own seqid only.
+	sm.ConsumeOpenSeqid(0, owner, 2, types.NFS4ERR_EXIST)
+
+	status, ok := sm.ReplayOpenSeqid(0, owner, 2)
+	if !ok {
+		t.Fatal("a recorded OPEN refusal was not replayed")
+	}
+	if status != types.NFS4ERR_EXIST {
+		t.Fatalf("replayed status = %d, want NFS4ERR_EXIST (%d)", status, types.NFS4ERR_EXIST)
+	}
+	if _, ok := sm.ReplayOpenSeqid(0, owner, 3); ok {
+		t.Fatal("replayed a refusal at a seqid it does not belong to")
 	}
 }

@@ -12,7 +12,6 @@
 package block
 
 import (
-	"context"
 	"time"
 )
 
@@ -45,14 +44,12 @@ type Meta struct {
 //
 // The production REMOTE tier no longer exposes this hash-keyed surface — it is
 // block-keyed via remote.RemoteBlockStore (packed blocks/<id> objects, #1414).
-// The remote s3/memory backends still implement Store, but only behind the
-// migration-only remote.LegacyCASStore path used to read and purge legacy
-// standalone cas/<hash> objects during the one-shot cas→blocks migration
-// (#1493). New production code must not depend on remote backends implementing
-// this interface.
+// The remote s3/memory backends still implement Store on their concrete types,
+// under the hash-keyed cas/<hash> layout. New production code must not depend on
+// remote backends implementing this interface.
 //
 // Implementations
-//   - pkg/block/remote/s3.Store, pkg/block/remote/memory.Store (legacy-CAS only)
+//   - pkg/block/remote/s3.Store, pkg/block/remote/memory.Store (hash-keyed only)
 //   - the compression / encryption decorators, which forward this surface
 //     inward through remote.Passthrough
 //
@@ -64,98 +61,6 @@ type Meta struct {
 // honor cancellation. All hash arguments are the full 32-byte
 // ContentHash; backends translate to their storage-native location
 // (log-blob index entry, in-memory map, …) internally.
-type Store interface {
-	// Put writes data under the key derived from hash. Put is
-	// idempotent: a second Put with the same hash and identical bytes
-	// is a no-op (or an integrity-verified rewrite, backend's choice)
-	// a Put with the same hash but different bytes is undefined
-	// behavior — callers MUST NOT rely on either outcome and the
-	// conformance suite asserts only the same-bytes idempotent case.
-	//
-	// Returns an error if the backend is closed, the I/O fails, or the
-	// hash is zero (callers must compute the hash before calling).
-	Put(ctx context.Context, hash ContentHash, data []byte) error
-
-	// Get returns the chunk bytes addressed by the given content hash.
-	// The returned []byte is freshly allocated and owned by the caller
-	// — matches the prior mmap-then-copy semantics from the engine
-	// Cache's perspective (the Cache always copied bytes out of the
-	// mmapped region into its LRU slot, so the allocation moves
-	// earlier in the pipeline).
-	//
-	// Returns block.ErrChunkNotFound if the chunk is absent from
-	// the store. Implementations MUST NOT return a slice that aliases
-	// internal storage; no read-buffer pool is used.
-	//
-	// Signature is byte-identical to the *fs.FSStore.Get and
-	// LocalStore.Get methods that this contract supersedes — engine
-	// call sites narrow the receiver type from *fs.FSStore (or
-	// LocalStore) to BlockStore with zero rename churn.
-	Get(ctx context.Context, hash ContentHash) ([]byte, error)
-
-	// GetRange returns a byte sub-range [offset, offset+length) of the
-	// chunk addressed by hash. The returned slice is freshly allocated
-	// and owned by the caller (same no-aliasing rule as Get).
-	//
-	// Returns block.ErrChunkNotFound if the chunk is absent.
-	// Returns block.ErrInvalidOffset if offset is negative or
-	// beyond the chunk size; returns block.ErrInvalidSize if
-	// length is non-positive or offset+length overflows the chunk.
-	// Backends MAY clamp length to the chunk's remaining bytes; the
-	// conformance suite asserts both clamp and explicit-error
-	// behaviors are acceptable as long as callers can detect short
-	// reads via the returned slice length.
-	GetRange(ctx context.Context, hash ContentHash, offset, length int64) ([]byte, error)
-
-	// Has reports whether the store currently holds an object addressed
-	// by hash. Backends MAY implement this as Head (S3 HEAD) or as
-	// Get with a Range: bytes=0-0 probe (more portable, costlier) —
-	// the choice is per-backend.
-	//
-	// Returns (false, nil) for a confirmed miss; (true, nil) for a hit
-	// (_, err) for backend errors that do not constitute a definitive
-	// answer (network failures, permission errors, etc.). Callers MUST
-	// distinguish (false, nil) from (false, err).
-	Has(ctx context.Context, hash ContentHash) (bool, error)
-
-	// Delete removes the object addressed by hash. Delete is idempotent
-	// deleting an absent hash returns nil (no ErrChunkNotFound). The
-	// conformance suite asserts Delete-then-Get returns ErrChunkNotFound
-	// and Delete-then-Delete returns nil.
-	//
-	// Backends MUST make Delete durable before returning nil; partial
-	// state (e.g., a tombstone written but the object body still
-	// present) is not acceptable.
-	Delete(ctx context.Context, hash ContentHash) error
-
-	// Head returns Meta for the object addressed by hash without
-	// transferring the body. Returns block.ErrChunkNotFound when
-	// the object is absent.
-	//
-	// Meta.Size MUST equal the byte length of what Get would return for
-	// the same hash. Meta.LastModified MUST be non-zero (see Meta
-	// godoc).
-	Head(ctx context.Context, hash ContentHash) (Meta, error)
-
-	// Walk enumerates every object in the store. The callback receives
-	// the content hash and Meta for each object; ordering is
-	// unspecified (backends MAY parallelize internally; the conformance
-	// suite does not pin a traversal order).
-	//
-	// Returning block.ErrStopWalk from the callback exits cleanly
-	// — Walk returns nil to the outer caller. Any other non-nil
-	// callback error halts the walk and Walk returns it wrapped with
-	//
-	//   fmt.Errorf("walk halted at %s: %w", hash, err)
-	//
-	// Context cancellation aborts immediately; the callback is NOT
-	// re-invoked after ctx.Err() != nil (Walk MUST surface ctx.Err()
-	// without one final spurious callback). Contract mirrors
-	// filepath.SkipDir / fs.SkipAll.
-	//
-	// See block.ErrStopWalk for the sentinel doc.
-	Walk(ctx context.Context, fn func(hash ContentHash, meta Meta) error) error
-}
 
 // DurabilityReporter is an optional capability a block store (local or
 // remote) MAY implement to report whether data it has accepted survives a

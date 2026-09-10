@@ -27,9 +27,6 @@ func newTestStore(t *testing.T) *memory.MemoryMetadataStore {
 
 	// Create a share and root directory.
 	err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		if err := tx.CreateShare(ctx, &metadata.Share{Name: "/test"}); err != nil {
-			return err
-		}
 		_, err := tx.CreateRootDirectory(ctx, "/test", &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o755,

@@ -47,15 +47,15 @@ func buildSelfHealEngine(t *testing.T, ms metadata.Store, mem *remotememory.Stor
 		ReadBufferBytes: 64 * 1024 * 1024,
 	}
 	if mem != nil {
-		syncer := engine.NewSyncer(localStore, mem, ms, engine.DefaultConfig())
+		syncer := engine.NewRemoteSync(localStore, mem, ms, engine.DefaultConfig())
 		syncer.SetSyncedHashStore(syncedHashStore)
 		syncer.SetRemoteBlockStore(mem)
-		cfg.Syncer = syncer
+		cfg.RemoteSync = syncer
 		cfg.Remote = mem
 	} else {
-		syncer := engine.NewSyncer(localStore, nil, ms, engine.DefaultConfig())
+		syncer := engine.NewRemoteSync(localStore, nil, ms, engine.DefaultConfig())
 		syncer.SetSyncedHashStore(syncedHashStore)
-		cfg.Syncer = syncer
+		cfg.RemoteSync = syncer
 	}
 	bs, err := engine.New(cfg)
 	if err != nil {

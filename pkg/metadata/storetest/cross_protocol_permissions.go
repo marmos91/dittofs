@@ -199,9 +199,6 @@ func newCrossProtocolFixture(t *testing.T, factory StoreFactory) *crossProtocolF
 	shareName := "/xproto"
 	ctx := context.Background()
 
-	if err := store.CreateShare(ctx, &metadata.Share{Name: shareName}); err != nil {
-		t.Fatalf("CreateShare(%q): %v", shareName, err)
-	}
 	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0o777,

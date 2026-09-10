@@ -1,6 +1,6 @@
 // Native Go benchmarks for the blockstore engine write path. Each
 // Benchmark* func wires a production-equivalent FSStore + memory remote
-// + memory metadata + rollup Syncer via newWriteBenchEngine, and the
+// + memory metadata + rollup RemoteSync via newWriteBenchEngine, and the
 // per-op shape mirrors the legacy bench/blockstore RunWorkload step
 // function 1:1 — but with seeding hoisted out of the timed region
 // (b.ResetTimer) so b.N measures only the per-op cost.
@@ -47,7 +47,7 @@ const (
 const writeBenchSeedChunkSize = 8 * 1024 * 1024
 
 // newWriteBenchEngine wires a production-equivalent FSStore + memory
-// remote + memory metadata + rollup Syncer for a single benchmark run,
+// remote + memory metadata + rollup RemoteSync for a single benchmark run,
 // mirroring the block/shares production factory. Cleanup closes the
 // engine (which also closes the remote).
 func newWriteBenchEngine(tb testing.TB) *Store {
@@ -60,11 +60,11 @@ func newWriteBenchEngine(tb testing.TB) *Store {
 		tb.Fatalf("fs.NewWithOptions: %v", err)
 	}
 	rem := remotememory.New()
-	syncer := NewSyncer(localStore, rem, ms, DefaultConfig())
+	syncer := NewRemoteSync(localStore, rem, ms, DefaultConfig())
 	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Remote:          rem,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		SyncedHashStore: ms,
 	})

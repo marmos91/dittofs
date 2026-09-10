@@ -3,15 +3,11 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"log/slog"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
-	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/txretry"
 
 	storesql "github.com/marmos91/dittofs/pkg/metadata/store/sql"
@@ -97,7 +93,7 @@ func (s *SQLiteMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 		}
 
 		ptx := &sqliteTransaction{store: s, tx: execer{e: rawTx, op: "tx"}}
-		ptx.Core = &storesql.Core{X: ptx.tx, D: sqliteDialect, Caps: s.currentCapabilities, Quota: &ptx.quota}
+		ptx.Core = &storesql.Core{X: ptx.tx, D: sqliteDialect, Caps: s.currentCapabilities, Quota: &ptx.quota, Log: s.logger}
 		if err := fn(ptx); err != nil {
 			_ = rawTx.Rollback()
 			if isBusyError(err) {
@@ -163,27 +159,29 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 		return err
 	}
 
-	// For existing files (updates), use UPDATE directly to avoid unique constraint issues.
-	// This is more efficient and handles concurrent updates properly.
+	values, err := storesql.InodeValues(file)
+	if err != nil {
+		return mapDBError(err, "UpdateAttrs", "marshal attributes")
+	}
+
+	// SQLite is a single-writer engine: the transaction holds an exclusive
+	// write lock for its duration, so a SELECT and the UPDATE that follows it
+	// cannot interleave with another writer. That is what lets the pre-update
+	// row be read in a separate statement here, where postgres has to lock and
+	// return it from the UPDATE itself. A zero-row read means the file does
+	// not exist, and the write falls through to the INSERT.
 	//
-	// Namespace uniqueness lives in parent_child_map(parent_id, child_name); the
-	// inodes row no longer carries a path/path_hash column (#1166), so a Move is
-	// just a parent_child_map re-link (SetChild/DeleteChild) — there is nothing
-	// path-related to update on the inode row here. content_id is still set:
-	// it keys file_blocks and is consumed by GetFileByPayloadID.
-	//
-	// SQLite is a single-writer engine: a transaction holds an exclusive write
-	// lock for its duration, so a SELECT-then-UPDATE inside the same tx has no
-	// interleaving window (unlike the multi-writer Postgres case the FROM/CTE
-	// FOR UPDATE form guarded against). Read the pre-update size/owner/type
-	// first, then UPDATE; a zero-row read means the file does not exist and we
-	// fall through to INSERT — the same not-found signal as before.
+	// Namespace uniqueness lives in parent_child_map(parent_id, child_name);
+	// the inodes row carries no path column, so a Move is a re-link there and
+	// touches nothing here. content_id is still written: it keys the
+	// file_blocks GetFileByPayloadID consumes.
 	const selectOldQuery = `
-		SELECT size, uid, gid, file_type
+		SELECT size, uid, gid, file_type, nlink
 		FROM inodes
 		WHERE id = ?1 AND share_name = ?2
 	`
-	updateQuery := `
+
+	const updateQuery = `
 		UPDATE inodes SET
 			file_type = ?1,
 			mode = ?2,
@@ -204,96 +202,23 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 			object_id = ?17,
 			deleted_at = ?18,
 			original_path = ?19,
-			deleted_by = ?20
-		WHERE id = ?21 AND share_name = ?22
+			deleted_by = ?20,
+			idempotency_token = ?21
+		WHERE id = ?22 AND share_name = ?23
 	`
 
-	var deviceMajor, deviceMinor *int32
-	if file.Type == metadata.FileTypeBlockDevice || file.Type == metadata.FileTypeCharDevice {
-		major := int32(metadata.RdevMajor(file.Rdev))
-		minor := int32(metadata.RdevMinor(file.Rdev))
-		deviceMajor = &major
-		deviceMinor = &minor
-	}
+	var old storesql.OldInode
 
-	var payloadIDPtr *string
-	if file.PayloadID != "" {
-		str := string(file.PayloadID)
-		payloadIDPtr = &str
-	}
-
-	var linkTargetPtr *string
-	if file.LinkTarget != "" {
-		linkTargetPtr = &file.LinkTarget
-	}
-
-	// Marshal ACL to JSON for JSONB storage
-	var aclJSON []byte
-	if file.ACL != nil {
-		var marshalErr error
-		aclJSON, marshalErr = json.Marshal(file.ACL)
-		if marshalErr != nil {
-			return mapDBError(marshalErr, "UpdateAttrs", "marshal ACL")
-		}
-	}
-
-	// Marshal extended attributes to JSON for JSONB storage. Empty/nil EAs
-	// write SQL NULL so a file that never had EAs stores nothing.
-	var easJSON []byte
-	if len(file.EAs) > 0 {
-		var marshalErr error
-		easJSON, marshalErr = json.Marshal(file.EAs)
-		if marshalErr != nil {
-			return mapDBError(marshalErr, "UpdateAttrs", "marshal EAs")
-		}
-	}
-
-	// object_id BYTEA argument.
-	// Zero-valued ObjectID writes SQL NULL so the partial unique index
-	// (files_object_id_idx WHERE object_id IS NOT NULL) skips the row —
-	// legacy / never-quiesced / partially-flushed files never collide on
-	// the all-zero sentinel.
-	var objectIDArg interface{}
-	if !file.ObjectID.IsZero() {
-		objectIDArg = file.ObjectID[:]
-	}
-
-	// deleted_at is a BIGINT Windows-FILETIME column (#190), nullable: NULL marks
-	// a live node, a value records the recycle instant losslessly (same encoding
-	// as the other file timestamps — must use sqlcodec.TimeToFiletime, not UnixNano, so it
-	// decodes back correctly via sqlcodec.FiletimeToTime). Pass *int64 so a nil DeletedAt
-	// writes SQL NULL.
-	var deletedAtArg *int64
-	if file.DeletedAt != nil {
-		n := sqlcodec.TimeToFiletime(*file.DeletedAt)
-		deletedAtArg = &n
-	}
-
-	// Read the pre-update size/owner/type, then UPDATE. Under SQLite's single
-	// writer there is no interleaving between the two statements inside this
-	// transaction. A missing row (sql.ErrNoRows) means the file does not exist,
-	// so we fall through to INSERT.
-	var oldSizeVal sql.NullInt64
-	var oldUIDVal, oldGIDVal, oldTypeVal sql.NullInt64
 	// A caller that knows the inode is new skips the probe entirely: on a
-	// create the round-trip can only ever report "no such row", and a stale
+	// create the round-trip could only ever report "no such row", and a stale
 	// claim surfaces as the INSERT's duplicate-key error.
 	updated := !file.NewInode
 	if updated {
 		scanErr := tx.tx.QueryRow(ctx, selectOldQuery, file.ID, file.ShareName).
-			Scan(&oldSizeVal, &oldUIDVal, &oldGIDVal, &oldTypeVal)
+			Scan(&old.Size, &old.UID, &old.GID, &old.Type, &old.Nlink)
 		switch {
 		case scanErr == nil:
-			// Row exists; update it in place.
-			if _, err := tx.tx.Exec(ctx, updateQuery,
-				file.Type, file.Mode, file.UID, file.GID, file.Size,
-				sqlcodec.TimeToFiletime(file.Atime), sqlcodec.TimeToFiletime(file.Mtime),
-				sqlcodec.TimeToFiletime(file.Ctime), sqlcodec.TimeToFiletime(file.CreationTime),
-				payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
-				file.Hidden, aclJSON, easJSON, objectIDArg,
-				deletedAtArg, file.OriginalPath, file.DeletedBy,
-				file.ID, file.ShareName,
-			); err != nil {
+			if _, err := tx.tx.Exec(ctx, updateQuery, append(values, file.ID, file.ShareName)...); err != nil {
 				return mapDBError(err, "UpdateAttrs", "")
 			}
 		case errors.Is(scanErr, sql.ErrNoRows):
@@ -303,59 +228,34 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 		}
 	}
 
-	// Track size delta for regular files after a successful update.
-	// Accumulated on the tx and applied once after a successful commit so a
-	// serialization/deadlock retry never double-counts.
-	if updated && file.Type == metadata.FileTypeRegular {
-		var oldSize uint64
-		if oldSizeVal.Valid {
-			oldSize = uint64(oldSizeVal.Int64)
-		}
-
-		// Per-identity usage. The previous row may not have been a regular file
-		// (type change), in which case it contributed nothing before.
-		oldWasRegular := oldTypeVal.Valid && metadata.FileType(oldTypeVal.Int64) == metadata.FileTypeRegular
-		oldUID := uint32(oldUIDVal.Int64)
-		oldGID := uint32(oldGIDVal.Int64)
-		switch {
-		case !oldWasRegular:
-			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
-		case oldUID == file.UID && oldGID == file.GID:
-			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
-		default:
-			// Chown: move bytes + inode from old owner to new owner.
-			tx.quota.Add(file.ShareName, oldUID, oldGID, -int64(oldSize), -1)
-			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
-		}
+	// The usage delta is accumulated on the transaction and applied once after
+	// a successful commit, so a serialization or deadlock retry never
+	// double-counts it.
+	if updated {
+		storesql.ApplyPutQuota(&tx.quota, file, old)
 	}
 
 	// If no rows were updated, the file doesn't exist - do an INSERT
 	if !updated {
-		insertQuery := `
+		const insertQuery = `
 			INSERT INTO inodes (
 				id, share_name, file_type, mode, uid, gid, size,
 				atime, mtime, ctime, creation_time, content_id, link_target,
 				device_major, device_minor, hidden, acl, eas, object_id,
-				deleted_at, original_path, deleted_by
+				deleted_at, original_path, deleted_by, idempotency_token
 			) VALUES (
 				?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-				?19, ?20, ?21, ?22
+				?19, ?20, ?21, ?22, ?23
 			)
 		`
 
 		if _, err := tx.tx.Exec(ctx, insertQuery,
-			file.ID, file.ShareName,
-			file.Type, file.Mode, file.UID, file.GID, file.Size,
-			sqlcodec.TimeToFiletime(file.Atime), sqlcodec.TimeToFiletime(file.Mtime),
-			sqlcodec.TimeToFiletime(file.Ctime), sqlcodec.TimeToFiletime(file.CreationTime),
-			payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
-			file.Hidden, aclJSON, easJSON, objectIDArg,
-			deletedAtArg, file.OriginalPath, file.DeletedBy,
+			append([]any{file.ID, file.ShareName}, values...)...,
 		); err != nil {
 			return mapDBError(err, "UpdateAttrs", "")
 		}
 
-		// Charge the new regular file to its share and owner.
+		// Charge the new regular file to its owning identity.
 		if file.Type == metadata.FileTypeRegular {
 			tx.quota.Add(file.ShareName, file.UID, file.GID, int64(file.Size), 1)
 		}
@@ -384,7 +284,7 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 		// manifest, so putFileChunkRefs writes nothing and reports wrote=false.
 		// Freshly-inserted rows (!updated) have no prior refs, so every ref is
 		// a plain insert. The counter tracks manifests that truly changed.
-		wrote, scanned, err := putFileChunkRefs(ctx, tx.tx, file.ID, file.Blocks, updated, file.ManifestDirtyOffsets)
+		wrote, scanned, err := storesql.PutFileChunkRefs(ctx, tx.X, tx.D, file.ID, file.Blocks, updated, file.ManifestDirtyOffsets)
 		tx.store.manifestRowsScanned.Add(int64(scanned))
 		if err != nil {
 			return mapDBError(err, "SetManifest", "blocks")
@@ -407,32 +307,6 @@ func (tx *sqliteTransaction) putFile(ctx context.Context, file *metadata.File, w
 // flag is set here and the statement runs there. Delete a shadow and the build
 // still passes, since the promoted method satisfies the interface, but the
 // cache then serves the options the transaction just overwrote.
-//
-// CreateShare keeps its own body: it runs the same UPDATE, but the memory and
-// badger transactions reject a name that already exists where these two
-// silently overwrite it, and collapsing the SQL pair onto Core would fix that
-// divergence in place rather than decide it.
-
-func (tx *sqliteTransaction) CreateShare(ctx context.Context, share *metadata.Share) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	tx.sharesDirty = true
-
-	optionsData, err := json.Marshal(share.Options)
-	if err != nil {
-		return err
-	}
-
-	// Update options for existing share (created by CreateRootDirectory)
-	query := `UPDATE shares SET options = ?1 WHERE share_name = ?2`
-	_, err = tx.tx.Exec(ctx, query, optionsData, share.Name)
-	if err != nil {
-		return mapDBError(err, "CreateShare", share.Name)
-	}
-
-	return nil
-}
 
 func (tx *sqliteTransaction) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
 	tx.sharesDirty = true
@@ -445,152 +319,8 @@ func (tx *sqliteTransaction) DeleteShare(ctx context.Context, shareName string) 
 }
 
 func (tx *sqliteTransaction) CreateRootDirectory(ctx context.Context, shareName string, attr *metadata.FileAttr) (*metadata.File, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
 	tx.sharesDirty = true
-
-	if shareName == "" {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "share name cannot be empty",
-		}
-	}
-
-	// Apply defaults
-	uid := attr.UID
-	gid := attr.GID
-	mode := attr.Mode
-	if mode == 0 {
-		mode = 0o755
-	}
-
-	// Check if root directory already exists (idempotent behavior). The root is
-	// resolved via shares.root_file_id — with the path column gone (#1166), the
-	// share row is the authoritative pointer to its root inode.
-	checkQuery := `
-		SELECT f.id, f.file_type, f.mode, f.uid, f.gid, f.size,
-			   f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.nlink
-		FROM inodes f
-		WHERE f.id = (SELECT root_file_id FROM shares WHERE share_name = ?1)
-	`
-
-	var (
-		id           string
-		fileType     int16
-		existingMode int32
-		existingUID  int32
-		existingGID  int32
-		size         int64
-		atime        int64
-		mtime        int64
-		ctime        int64
-		creationTime int64
-		hidden       bool
-		nlink        int32
-	)
-
-	err := tx.tx.QueryRow(ctx, checkQuery, shareName).Scan(
-		&id, &fileType, &existingMode, &existingUID, &existingGID, &size,
-		&atime, &mtime, &ctime, &creationTime, &hidden, &nlink,
-	)
-
-	if err == nil {
-		// Root exists - return it
-		return &metadata.File{
-			ID:        uuid.MustParse(id),
-			ShareName: shareName,
-			Path:      "/",
-			FileAttr: metadata.FileAttr{
-				Type:         metadata.FileType(fileType),
-				Mode:         uint32(existingMode),
-				Nlink:        uint32(nlink),
-				UID:          uint32(existingUID),
-				GID:          uint32(existingGID),
-				Size:         uint64(size),
-				Atime:        sqlcodec.FiletimeToTime(atime),
-				Mtime:        sqlcodec.FiletimeToTime(mtime),
-				Ctime:        sqlcodec.FiletimeToTime(ctime),
-				CreationTime: sqlcodec.FiletimeToTime(creationTime),
-				Hidden:       hidden,
-			},
-		}, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return nil, mapDBError(err, "CreateRootDirectory", shareName)
-	}
-
-	// Create new root directory
-	rootID := uuid.New()
-	now := time.Now()
-
-	// Directories start with nlink = 2 ("." and the parent's entry). nlink is
-	// the sole source of truth for the hard-link count (#1166).
-	insertFileQuery := `
-		INSERT INTO inodes (
-			id, share_name,
-			file_type, mode, uid, gid, size,
-			atime, mtime, ctime, creation_time,
-			content_id, link_target, device_major, device_minor, nlink
-		) VALUES (
-			?1, ?2,
-			?3, ?4, ?5, ?6, ?7,
-			?8, ?9, ?10, ?11,
-			?12, ?13, ?14, ?15, 2
-		)
-	`
-
-	_, err = tx.tx.Exec(ctx, insertFileQuery,
-		rootID,                            // id
-		shareName,                         // share_name
-		int16(metadata.FileTypeDirectory), // file_type
-		int32(mode),                       // mode
-		int32(uid),                        // uid
-		int32(gid),                        // gid
-		int64(0),                          // size
-		sqlcodec.TimeToFiletime(now),      // atime
-		sqlcodec.TimeToFiletime(now),      // mtime
-		sqlcodec.TimeToFiletime(now),      // ctime
-		sqlcodec.TimeToFiletime(now),      // creation_time
-		nil,                               // content_id (NULL for directories)
-		nil,                               // link_target (NULL)
-		nil,                               // device_major (NULL)
-		nil,                               // device_minor (NULL)
-	)
-	if err != nil {
-		return nil, mapDBError(err, "CreateRootDirectory", shareName)
-	}
-
-	// Insert into shares table
-	insertShareQuery := `
-		INSERT INTO shares (share_name, root_file_id)
-		VALUES (?1, ?2)
-		ON CONFLICT (share_name) DO UPDATE
-		SET root_file_id = EXCLUDED.root_file_id
-	`
-
-	_, err = tx.tx.Exec(ctx, insertShareQuery, shareName, rootID)
-	if err != nil {
-		return nil, mapDBError(err, "CreateRootDirectory", shareName)
-	}
-
-	return &metadata.File{
-		ID:        rootID,
-		ShareName: shareName,
-		Path:      "/",
-		FileAttr: metadata.FileAttr{
-			Type:         metadata.FileTypeDirectory,
-			Mode:         mode,
-			Nlink:        2, // Root directories have 2 links (. and parent's entry)
-			UID:          uid,
-			GID:          gid,
-			Size:         0,
-			Atime:        now,
-			Mtime:        now,
-			Ctime:        now,
-			CreationTime: now,
-		},
-	}, nil
+	return tx.Core.CreateRootDirectory(ctx, shareName, attr)
 }
 
 // ============================================================================

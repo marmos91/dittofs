@@ -120,7 +120,7 @@ type MetadataCoordinator interface {
 
 	// GetFileObjectID returns the current FileAttr.ObjectID for
 	// payloadID, or the all-zero sentinel when the file has never
-	// quiesced (or does not exist). Used by Syncer.Flush to evaluate the
+	// quiesced (or does not exist). Used by RemoteSync.Flush to evaluate the
 	// trigger condition for the file-level dedup short-circuit BEFORE
 	// running the per-block upload pump.
 	//
@@ -148,7 +148,7 @@ var ErrMetadataCoordinatorNotWired = errors.New("engine: metadata coordinator no
 
 // ErrPersistFileChunksNotWired signals that PersistFileChunks was invoked
 // against a coordinator whose payloadID → fileHandle resolution chain has
-// not yet been wired. The Syncer's post-Flush
+// not yet been wired. The RemoteSync's post-Flush
 // hook recognises this sentinel and tolerates it (the dual-read shim keeps
 // reads correct), but logs a warning so the silent-drop window is
 // observable. Other callers should treat it as a hard error so a future

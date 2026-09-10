@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	"github.com/marmos91/dittofs/pkg/metadata/store/basestore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 )
 
@@ -170,6 +171,50 @@ func (c *Core) SetParent(ctx context.Context, handle metadata.FileHandle, parent
 // non-positive limit.
 const listChildrenDefaultLimit = 1000
 
+// listChildNames is ListChildren without the attributes: it runs the query that
+// drops the inode join, so a page costs one row of two columns per entry
+// instead of nineteen columns and two JSON decodes. Paging and ordering are the
+// caller's own, unchanged — only Attr is missing.
+func (c *Core) listChildNames(ctx context.Context, shareName string, parentID uuid.UUID, cursor string, limit int) ([]metadata.DirEntry, string, error) {
+	rows, err := c.X.Query(ctx, c.D.Files().ListChildNames, parentID, cursor, limit+1)
+	if err != nil {
+		return nil, "", c.D.MapError(err, "ListChildren", "")
+	}
+	defer rows.Close()
+
+	var entries []metadata.DirEntry
+	for rows.Next() && len(entries) < limit {
+		var name, childIDStr string
+		if err := rows.Scan(&name, &childIDStr); err != nil {
+			return nil, "", err
+		}
+
+		childHandle, err := EncodeFileHandle(shareName, childIDStr)
+		if err != nil {
+			return nil, "", err
+		}
+
+		entries = append(entries, metadata.DirEntry{
+			ID:     metadata.HandleToINode(childHandle),
+			Name:   name,
+			Handle: childHandle,
+		})
+	}
+
+	// Surface an error that terminated the iteration early. Without this a
+	// partial result would be returned as a complete, successful listing.
+	if err := rows.Err(); err != nil {
+		return nil, "", c.D.MapError(err, "ListChildren", "")
+	}
+
+	nextCursor := ""
+	if len(entries) >= limit {
+		nextCursor = entries[len(entries)-1].Name
+	}
+
+	return entries, nextCursor, nil
+}
+
 // ListChildren returns a page of directory entries plus the cursor for the
 // next page, empty when the listing is exhausted.
 //
@@ -180,7 +225,7 @@ const listChildrenDefaultLimit = 1000
 // Memory and Badger backends do populate Blocks here, because their
 // serialisation already carries the slice. Callers that need the ChunkRef list
 // must re-read through GetFile.
-func (c *Core) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int) ([]metadata.DirEntry, string, error) {
+func (c *Core) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int, attrs metadata.ChildAttrs) ([]metadata.DirEntry, string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
@@ -192,6 +237,10 @@ func (c *Core) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, 
 
 	if limit <= 0 {
 		limit = listChildrenDefaultLimit
+	}
+
+	if attrs == metadata.NamesOnly {
+		return c.listChildNames(ctx, shareName, parentID, cursor, limit)
 	}
 
 	rows, err := c.X.Query(ctx, c.D.Files().ListChildren, parentID, cursor, limit+1)
@@ -370,15 +419,67 @@ func (c *Core) SetLinkCount(ctx context.Context, handle metadata.FileHandle, cou
 		return err
 	}
 
-	_, fileID, err := metadata.DecodeFileHandle(handle)
+	shareName, fileID, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return invalidHandle("file")
+	}
+
+	// Read the pre-image before the count moves. A link count crossing zero is
+	// what puts an inode's bytes into the share's usage or takes them back out,
+	// and once the UPDATE has landed there is no way to tell which side it came
+	// from.
+	pre, err := c.fileUsage(ctx, shareName, fileID, "SetLinkCount")
+	if err != nil {
+		return err
 	}
 
 	if _, err := c.X.Exec(ctx, c.D.Files().SetLinkCount, count, fileID); err != nil {
 		return c.D.MapError(err, "SetLinkCount", "")
 	}
+
+	if pre != nil {
+		// Only the crossing between zero and non-zero moves usage: adding or
+		// dropping a hard link alongside others leaves the inode charged
+		// exactly once either way.
+		was := basestore.Charged(metadata.FileType(pre.fileType), uint32(pre.nlink))
+		now := basestore.Charged(metadata.FileType(pre.fileType), count)
+		switch {
+		case was && !now:
+			c.Quota.Add(shareName, uint32(pre.uid), uint32(pre.gid), -pre.size, -1)
+		case !was && now:
+			c.Quota.Add(shareName, uint32(pre.uid), uint32(pre.gid), pre.size, 1)
+		}
+	}
 	return nil
+}
+
+// usageRow is the inode pre-image the usage counters are computed from.
+type usageRow struct {
+	fileType int
+	size     int64
+	uid, gid int64
+	nlink    int64
+}
+
+// fileUsage reads one inode's usage pre-image. A row that is not there yields
+// (nil, nil): it owes the counters nothing, and callers that need to know it
+// was missing learn that from their own write's RowsAffected.
+//
+// Any other scan failure is fatal rather than silenced, because FileTypeRegular
+// is the zero value: a dropped error would move bytes on uid 0's bucket and
+// leave the real owner's wrong, with nothing to notice it afterwards.
+func (c *Core) fileUsage(ctx context.Context, shareName string, fileID uuid.UUID, op string) (*usageRow, error) {
+	var u usageRow
+	err := c.X.QueryRow(ctx, c.D.Files().FileUsageRow, fileID, shareName).
+		Scan(&u.fileType, &u.size, &u.uid, &u.gid, &u.nlink)
+	switch {
+	case err == nil:
+		return &u, nil
+	case c.D.IsNoRows(err):
+		return nil, nil
+	default:
+		return nil, c.D.MapError(err, op, "")
+	}
 }
 
 // DeleteFile removes one inode, reporting metadata.ErrNotFound when it is not
@@ -400,20 +501,12 @@ func (c *Core) DeleteFile(ctx context.Context, handle metadata.FileHandle) error
 	}
 
 	// Read the size and owner before the row goes, so the usage counters can be
-	// decremented after the delete lands.
-	//
-	// A missing row is expected and not an error here: the RowsAffected check
-	// below turns it into ErrNotFound before the usage is touched. Any other
-	// scan failure is fatal, because FileTypeRegular is the zero value — a
-	// dropped error would charge -1 file to uid 0 and leave the real owner
-	// charged for a file that is gone, with nothing to notice it afterwards.
-	var fileType int
-	var fileSize int64
-	var fileUID, fileGID int64
-	scanErr := c.X.QueryRow(ctx, c.D.Files().DeleteFileOwner, id, shareName).
-		Scan(&fileType, &fileSize, &fileUID, &fileGID)
-	if scanErr != nil && !c.D.IsNoRows(scanErr) {
-		return c.D.MapError(scanErr, "DeleteFile", "")
+	// decremented after the delete lands. A missing row is expected and not an
+	// error here: the RowsAffected check below turns it into ErrNotFound before
+	// the usage is touched.
+	pre, err := c.fileUsage(ctx, shareName, id, "DeleteFile")
+	if err != nil {
+		return err
 	}
 
 	result, err := c.X.Exec(ctx, c.D.Files().DeleteFile, id, shareName)
@@ -427,9 +520,56 @@ func (c *Core) DeleteFile(ctx context.Context, handle metadata.FileHandle) error
 		}
 	}
 
-	if metadata.FileType(fileType) == metadata.FileTypeRegular {
-		c.Quota.Add(shareName, uint32(fileUID), uint32(fileGID), -fileSize, -1)
+	// An inode whose last name went already gave its bytes back, so removing the
+	// row itself owes the counters nothing.
+	if pre != nil && basestore.Charged(metadata.FileType(pre.fileType), uint32(pre.nlink)) {
+		c.Quota.Add(shareName, uint32(pre.uid), uint32(pre.gid), -pre.size, -1)
 	}
 
 	return nil
+}
+
+// ============================================================================
+// Object-ID reads
+// ============================================================================
+
+// FindByObjectID looks up a file by its Merkle-root ObjectID and returns the
+// canonical ChunkRef list of the matching row. Reports (nil, nil) on a miss,
+// which a zero-valued objectID is by definition — it addresses no content, so
+// there is nothing to ask the database.
+func (c *Core) FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.ChunkRef, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if objectID.IsZero() {
+		return nil, nil
+	}
+
+	var fileID uuid.UUID
+	err := c.X.QueryRow(ctx, c.D.Files().FindByObjectID, objectID[:]).Scan(&fileID)
+	if c.D.IsNoRows(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, c.D.MapError(err, "FindByObjectID", objectID.String())
+	}
+
+	return c.LoadFileChunkRefs(ctx, fileID)
+}
+
+// CountObjectIDIndexRows implements the storetest.ObjectIDIndexAccessor
+// optional capability, reporting how many inodes are indexed under objectID.
+//
+// Test-only — never call it from production code. The ConcurrentQuiesceRace
+// scenario uses it to assert exactly one row survives first-committer-wins
+// resolution. Zero-valued input short-circuits the way FindByObjectID does.
+func (c *Core) CountObjectIDIndexRows(ctx context.Context, objectID block.ObjectID) (int, error) {
+	if objectID.IsZero() {
+		return 0, nil
+	}
+	var n int
+	if err := c.X.QueryRow(ctx, c.D.Files().CountByObjectID, objectID[:]).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count inodes.object_id: %w", err)
+	}
+	return n, nil
 }

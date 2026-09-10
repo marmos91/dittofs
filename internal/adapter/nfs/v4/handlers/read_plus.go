@@ -57,9 +57,9 @@ func (h *Handler) handleReadPlus(ctx *types.CompoundContext, reader io.Reader) *
 		return readPlusErr(types.NFS4ERR_ISDIR)
 	}
 
-	stateid, err := types.DecodeStateid4(reader)
-	if err != nil {
-		return readPlusErr(types.NFS4ERR_BADXDR)
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
+		return readPlusErr(argStatus)
 	}
 	offset, err := xdr.DecodeUint64(reader)
 	if err != nil {
@@ -72,7 +72,7 @@ func (h *Handler) handleReadPlus(ctx *types.CompoundContext, reader io.Reader) *
 
 	// READ_PLUS shares READ's stateid semantics: special stateids are allowed,
 	// a real open stateid must carry READ access.
-	if openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpRead); stateErr != nil {
+	if openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpRead, ctx.SessionClientID); stateErr != nil {
 		st := mapStateError(stateErr)
 		logger.Debug("NFSv4.2 READ_PLUS stateid validation failed", "error", stateErr, "nfs_status", st, "client", ctx.ClientAddr)
 		return readPlusErr(st)
@@ -90,12 +90,16 @@ func (h *Handler) handleReadPlus(ctx *types.CompoundContext, reader io.Reader) *
 	}
 
 	// GetFileForRead: handle-addressed, File.Path unused — skip derivePath.
-	file, err := metaSvc.GetFileForRead(authCtx.Context, metadata.FileHandle(ctx.CurrentFH))
+	fileHandle := metadata.FileHandle(ctx.CurrentFH)
+	file, err := metaSvc.GetFileForRead(authCtx.Context, fileHandle)
 	if err != nil {
-		return readPlusErr(common.MapToNFS4(err))
+		return readPlusErr(types.StatusForErr(err))
 	}
 	if file.Type != metadata.FileTypeRegular {
 		return readPlusErr(readTypeError(file.Type))
+	}
+	if status := checkReadPermission(metaSvc, ctx, authCtx, fileHandle, file, types.OP_READ_PLUS); status != types.NFS4_OK {
+		return readPlusErr(status)
 	}
 
 	// Empty file or read entirely past EOF: an empty content array with EOF set.
@@ -114,11 +118,12 @@ func (h *Handler) handleReadPlus(ctx *types.CompoundContext, reader io.Reader) *
 		logger.Debug("NFSv4.2 READ_PLUS content build failed", "error", err, "client", ctx.ClientAddr)
 		// A missing registry is a server misconfiguration, not an I/O fault —
 		// mirror READ's nil-Registry guard (NFS4ERR_SERVERFAULT). All other
-		// failures are block-store read errors → NFS4ERR_IO.
+		// failures are block-store read errors, mapped via the shared content
+		// mapper (ErrStoreClosed → STALE, the rest keep their I/O class).
 		if errors.Is(err, errNoRegistry) {
 			return readPlusErr(types.NFS4ERR_SERVERFAULT)
 		}
-		return readPlusErr(types.NFS4ERR_IO)
+		return readPlusErr(types.StatusFor(common.ClassifyBlockStoreError(err)))
 	}
 	eof := readEnd >= file.Size
 

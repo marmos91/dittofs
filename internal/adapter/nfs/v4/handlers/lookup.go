@@ -3,7 +3,6 @@ package handlers
 import (
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
@@ -80,7 +79,21 @@ func (h *Handler) lookupInRealFS(ctx *types.CompoundContext, name string) *types
 
 	child, err := metaSvc.Lookup(authCtx, metadata.FileHandle(ctx.CurrentFH), name)
 	if err != nil {
-		status := common.MapToNFS4(err)
+		status := types.StatusForErr(err)
+		// The store reports every non-directory the same way, but RFC 7530
+		// Section 16.15.4 separates a symbolic link out as NFS4ERR_SYMLINK so
+		// the client knows to resolve it rather than give up on the path.
+		if status == types.NFS4ERR_NOTDIR {
+			if fileType, st := h.fileTypeForHandle(ctx, ctx.CurrentFH); st == types.NFS4_OK {
+				// Only ever narrows one failure into a more precise one. A
+				// directory maps to NFS4_OK, which here would report success
+				// for a lookup that resolved nothing and leave the current
+				// filehandle where it was.
+				if refined := directoryStatus(fileType); refined != types.NFS4_OK {
+					status = refined
+				}
+			}
+		}
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_LOOKUP,

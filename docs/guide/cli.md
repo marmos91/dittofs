@@ -724,6 +724,7 @@ Global flags:
       - [`dfsctl store metadata edit`](#dfsctl-store-metadata-edit) — Edit a metadata store
       - [`dfsctl store metadata health`](#dfsctl-store-metadata-health) — Check metadata store health
       - [`dfsctl store metadata list`](#dfsctl-store-metadata-list) — List metadata stores
+      - [`dfsctl store metadata recompute-usage`](#dfsctl-store-metadata-recompute-usage) — Rebuild a share's used-bytes counter from its files
       - [`dfsctl store metadata remove`](#dfsctl-store-metadata-remove) — Remove a metadata store
   - [`dfsctl switch-user`](#dfsctl-switch-user) — Switch to a different user on the current server
   - [`dfsctl system`](#dfsctl-system) — System operations
@@ -5642,7 +5643,7 @@ Flags:
       --dry-run                 Run mark + sweep enumeration but skip deletes; print candidate keys
       --grace-period duration   Override the sweep grace for this run (e.g. 30m, 0 to reap immediately); bypasses the server's 5m floor. Unset = server default
       --no-wait                 Start the job and print its id without waiting for completion
-      --reconcile               Also reap stranded file_blocks rows leaked by older versions (server-wide), then sweep both tiers
+      --reconcile               Also reap stranded file_blocks rows leaked by older versions (server-wide), then sweep
 ```
 
 Global flags:
@@ -6059,7 +6060,7 @@ classified report. This is READ-ONLY: it deletes nothing, decrements nothing,
 and changes no markers. Use it to review what the later reclaim stages would
 act on before running them.
 
-Four orphan classes are reported:
+Three orphan classes are reported:
 
 ```
 Zero-ref records       Block records with no live locator and a zero live
@@ -6072,7 +6073,6 @@ Orphan remote objects  blocks/<id> objects with no backing record, older than
                        the grace window — the upload succeeded but the commit
                        failed. Objects within the grace window are preserved
                        (they may be freshly uploaded, commit pending).
-Stranded local chunks  Unsynced, local-durable chunks awaiting upload.
 ```
 
 Each class reports an exact count plus a bounded sample of IDs (truncated is
@@ -6518,7 +6518,7 @@ Manage metadata stores
 Manage metadata stores on the DittoFS server.
 
 Metadata stores hold file system structure, attributes, and permissions.
-Supported types: memory, badger, postgres
+Supported types: memory, badger, sqlite, postgres
 
 **Examples:**
 
@@ -6558,6 +6558,7 @@ Supported types:
 ```
 - memory: In-memory store (fast, ephemeral)
 - badger: BadgerDB store (persistent, embedded)
+- sqlite: SQLite store (persistent, embedded)
 - postgres: PostgreSQL store (persistent, distributed)
 ```
 
@@ -6566,6 +6567,9 @@ Type-specific options:
 ```
 badger:
   --db-path: Path to BadgerDB directory (or prompted interactively)
+
+sqlite:
+  --db-path: Path to the SQLite database file (or prompted interactively)
 
 postgres:
   --config: JSON with connection settings, or omit for interactive prompts
@@ -6587,6 +6591,9 @@ dfsctl store metadata add --name persistent-meta --type badger --db-path /data/m
 # Add a BadgerDB store interactively
 dfsctl store metadata add --name persistent-meta --type badger
 
+# Add a SQLite store with flags
+dfsctl store metadata add --name persistent-meta --type sqlite --db-path /data/meta.db
+
 # Add a PostgreSQL store with JSON config
 dfsctl store metadata add --name pg-meta --type postgres --config '{"host":"localhost","dbname":"dittofs"}'
 
@@ -6598,9 +6605,9 @@ Flags:
 
 ```
       --config string    Store configuration as JSON (for advanced config)
-      --db-path string   Database path (required for badger)
+      --db-path string   Database path (required for badger and sqlite)
       --name string      Store name (required)
-      --type string      Store type: memory, badger, postgres (required)
+      --type string      Store type: memory, badger, sqlite, postgres (required)
 ```
 
 Global flags:
@@ -6650,8 +6657,8 @@ Flags:
 
 ```
       --config string    Store configuration as JSON
-      --db-path string   Database path (for badger)
-      --type string      Store type: memory, badger, postgres
+      --db-path string   Database path (for badger and sqlite)
+      --type string      Store type: memory, badger, sqlite, postgres
 ```
 
 Global flags:
@@ -6738,6 +6745,49 @@ dfsctl store metadata list -o json
 
 # List as YAML
 dfsctl store metadata list -o yaml
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl store metadata recompute-usage`
+
+Rebuild a share's used-bytes counter from its files
+
+Rebuild the used-bytes counters of the metadata store backing the named share.
+
+The counters are maintained transactionally as files are written and removed, so
+they are normally already correct. This repairs a store where they are not: a
+share carrying bytes it no longer holds reports itself fuller than it is, and
+because that figure is what the share quota is checked against, it can refuse
+writes to a share that is actually empty.
+
+The rebuild scans every file row in the store, so it takes time in proportion to
+the store's size, and it repairs every share that store serves — not only the
+one named here. Nothing runs it automatically; a per-file walk on every server
+start is a cost every share would pay forever to fix a number that is almost
+always already right.
+
+```
+dfsctl store metadata recompute-usage <share>
+```
+
+**Examples:**
+
+```bash
+dfsctl store metadata recompute-usage myshare
+dfsctl store metadata recompute-usage myshare -o json
 ```
 
 Global flags:

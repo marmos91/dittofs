@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,7 +33,14 @@ const DefaultLeaseDuration = 90 * time.Second
 type StateManager struct {
 	mu sync.RWMutex
 
-	// clientsByID maps server-assigned client IDs to client records.
+	// clientsByID maps server-assigned client IDs to client records of both
+	// minor versions: v4.0 records (established by SETCLIENTID, MinorVersion 0)
+	// and v4.1 records (established by EXCHANGE_ID, MinorVersion 1). The two
+	// never hold the same ID because generateClientID draws both flows from one
+	// sequence, and ClientRecord.MinorVersion says which flow minted each
+	// entry. Version-sensitive operations read it through the v40Client /
+	// v41Client helpers below; version-agnostic readers (e.g. the shared
+	// recovery-key switch, delegation handback) may index the map directly.
 	clientsByID map[uint64]*ClientRecord
 
 	// clientsByName maps nfs_client_id4.id strings to confirmed client records.
@@ -65,6 +74,21 @@ type StateManager struct {
 	// the NFSv4.0 exactly-once contract (RFC 7530 §9.1.7). Entries are cleared
 	// when the owner is reaped (lease expiry) or the stateid is reused.
 	closedOwnerByOther map[[types.NFS4_OTHER_SIZE]byte]*OpenOwner
+
+	// expiredStateids holds the "other" of every stateid whose state was freed
+	// because the owning client's lease was cancelled. Without it the freed
+	// stateid is simply absent from the tables and looks like one the server
+	// never issued, so the client is told NFS4ERR_BAD_STATEID when RFC 7530
+	// §9.6.3.2 requires NFS4ERR_EXPIRED ("When a lease is canceled, all locking
+	// state associated with it is freed, and the use of any of the associated
+	// stateids will result in NFS4ERR_EXPIRED being returned").
+	//
+	// ponytail: capped and dropped wholesale on overflow rather than aged out
+	// per entry; losing an entry only degrades the answer to the
+	// NFS4ERR_BAD_STATEID the server gave before, and both statuses send the
+	// client into the same recovery. Give entries timestamps and sweep them if
+	// a deployment is ever seen to overflow the cap with clients still retrying.
+	expiredStateids map[[types.NFS4_OTHER_SIZE]byte]struct{}
 
 	// lockOwners maps lock-owner keys to LockOwner records.
 	// Key is composite of clientID + hex(ownerData), same pattern as openOwners.
@@ -125,15 +149,13 @@ type StateManager struct {
 	// handle, taking precedence over lockManager. See SetLockManagerResolver.
 	lockManagerResolver func(handle []byte) lock.LockManager
 
-	// bootEpoch is the server boot epoch, used as the high 32 bits of
-	// client IDs to ensure uniqueness across server restarts.
+	// bootEpoch identifies this incarnation of the server. It is the high 32
+	// bits of every client ID and a 24-bit fragment of every stateid, and both
+	// readers only ever test it for equality, never for order.
 	bootEpoch uint32
 
 	// nextClientSeq is an atomic counter for the low 32 bits of client IDs.
 	nextClientSeq uint32
-
-	// nextStateSeq is an atomic counter for stateid "other" field generation.
-	nextStateSeq uint64
 
 	// leaseDuration is the configured lease duration for all clients.
 	leaseDuration time.Duration
@@ -170,16 +192,23 @@ type StateManager struct {
 	// only by LoadClientRecovery; nil/empty otherwise (reclaim ungated).
 	bootRecoveryVerifiers map[string][8]byte
 
-	// ============================================================================
-	// NFSv4.1 State
-	// ============================================================================
+	// pendingReclaimPersists tracks the at-most-one live retry chain per
+	// recovery key (see pendingReclaimPersist). A re-schedule while an entry
+	// exists adopts it instead of forking a second chain, so a down backend
+	// cannot pile up chains and a new issuer's persist failure is not skipped
+	// while an old chain lives. Entries are dropped on success or when the
+	// issuer no longer holds the key.
+	pendingReclaimPersists map[string]*pendingReclaimPersist
 
-	// v41ClientsByID maps server-assigned client IDs to v4.1 client records.
-	v41ClientsByID map[uint64]*V41ClientRecord
+	// ============================================================================
+	// Version-sensitive lookup helpers
+	// ============================================================================
+	// (methods on StateManager; see v40ClientLocked / v41ClientLocked below)
 
-	// v41ClientsByOwner maps owner ID bytes (string key) to v4.1 client records.
-	// Uses string(ownerID) for byte-exact comparison.
-	v41ClientsByOwner map[string]*V41ClientRecord
+	// v41ClientsByOwner maps v4.1 owner ID bytes (string key) to client
+	// records. EXCHANGE_ID resolves by owner, which no v4.0 flow supplies,
+	// so every entry is a MinorVersion-1 record by construction.
+	v41ClientsByOwner map[string]*ClientRecord
 
 	// sessionsByID maps session IDs to session objects.
 	sessionsByID map[types.SessionId4]*Session
@@ -239,7 +268,7 @@ type StateManager struct {
 }
 
 // NewStateManager creates a new StateManager with the given lease duration.
-// The boot epoch is derived from the current time.
+// The boot epoch is drawn at random.
 // An optional graceDuration parameter controls the grace period length;
 // if omitted or zero, the lease duration is used.
 func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration) *StateManager {
@@ -252,16 +281,36 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		gd = graceDuration[0]
 	}
 
-	epoch := uint32(time.Now().Unix())
+	// The boot epoch has to differ from the last incarnation's, because
+	// generateClientID restarts its sequence at 0 every boot: two runs sharing
+	// an epoch hand out byte-identical client IDs, and a stale one is then
+	// admitted as a live client rather than refused. A clock read at seconds
+	// resolution guaranteed that collision for any restart inside one second,
+	// which is well within a supervisor's restart time.
+	//
+	// ponytail: random and not persisted, so nothing rules out drawing the same
+	// epoch twice -- the 24-bit stateid fragment puts that at roughly one
+	// restart in 16 million before a stale stateid could read as current.
+	// Persisting the epoch and reloading it incremented removes the chance
+	// outright; the durable client-recovery store is already handed this value,
+	// so the seam to persist it through exists.
+	// From Go 1.24 the default crypto/rand Reader calls fatal() rather than
+	// returning an error, so a partial fill that would leave this epoch zeroed
+	// is not reachable and the error is dead, exactly as at the other draw in
+	// generateStateidOther. If the module ever drops below Go 1.24 both must
+	// become real error checks.
+	var epochBytes [4]byte
+	_, _ = rand.Read(epochBytes[:])
+	epoch := binary.BigEndian.Uint32(epochBytes[:])
 
 	return &StateManager{
 		clientsByID:         make(map[uint64]*ClientRecord),
 		clientsByName:       make(map[string]*ClientRecord),
-		unconfirmedByName:   make(map[string]*ClientRecord),
 		openStateByOther:    make(map[[types.NFS4_OTHER_SIZE]byte]*OpenState),
 		openStateByFile:     make(map[string][]*OpenState),
 		openOwners:          make(map[openOwnerKey]*OpenOwner),
 		closedOwnerByOther:  make(map[[types.NFS4_OTHER_SIZE]byte]*OpenOwner),
+		expiredStateids:     make(map[[types.NFS4_OTHER_SIZE]byte]struct{}),
 		lockOwners:          make(map[lockOwnerKey]*LockOwner),
 		lockStateByOther:    make(map[[types.NFS4_OTHER_SIZE]byte]*LockState),
 		delegByOther:        make(map[[types.NFS4_OTHER_SIZE]byte]*DelegationState),
@@ -274,14 +323,16 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		bootEpoch:           epoch,
 		leaseDuration:       leaseDuration,
 		graceDuration:       gd,
-		// NFSv4.1 state
-		v41ClientsByID:       make(map[uint64]*V41ClientRecord),
-		v41ClientsByOwner:    make(map[string]*V41ClientRecord),
-		sessionsByID:         make(map[types.SessionId4]*Session),
-		sessionsByClientID:   make(map[uint64][]*Session),
-		maxSessionsPerClient: 16,
-		foreMaxSlots:         64,
-		serverIdentity:       newServerIdentity(epoch),
+		// v4.0 SETCLIENTID confirmation state
+		unconfirmedByName: make(map[string]*ClientRecord),
+		// v4.1 state
+		v41ClientsByOwner:      make(map[string]*ClientRecord),
+		sessionsByID:           make(map[types.SessionId4]*Session),
+		sessionsByClientID:     make(map[uint64][]*Session),
+		maxSessionsPerClient:   16,
+		foreMaxSlots:           64,
+		serverIdentity:         newServerIdentity(epoch),
+		pendingReclaimPersists: make(map[string]*pendingReclaimPersist),
 		// Connection binding state
 		connByID:           make(map[uint64]*BoundConnection),
 		connBySession:      make(map[types.SessionId4][]*BoundConnection),
@@ -316,18 +367,11 @@ func (sm *StateManager) generateClientID() uint64 {
 // using crypto/rand. This prevents malicious or stale clients from guessing
 // the verifier and confirming someone else's SETCLIENTID.
 //
-// Per research Pitfall 6: Do NOT use timestamps -- they are predictable.
+// Timestamps are not an acceptable source here: they are predictable, which is
+// the whole property the verifier must not have.
 func (sm *StateManager) generateConfirmVerifier() [8]byte {
 	var v [8]byte
-	if _, err := rand.Read(v[:]); err != nil {
-		// crypto/rand.Read should never fail on supported platforms.
-		// If it does, generate a non-zero fallback from time (degraded security).
-		logger.Error("crypto/rand.Read failed, using time-based fallback", "error", err)
-		now := time.Now().UnixNano()
-		for i := range 8 {
-			v[i] = byte(now >> (uint(i) * 8))
-		}
-	}
+	_, _ = rand.Read(v[:])
 	return v
 }
 
@@ -392,6 +436,69 @@ func firstOrEmpty(ss []string) string {
 	return ""
 }
 
+// clientHasLiveStateLocked reports whether clientID still holds leased state
+// that another principal's SETCLIENTID would cancel -- an open, a byte-range
+// lock or a delegation -- under a lease that has not lapsed.
+//
+// Locks are counted separately from opens rather than through them: a lock
+// hangs off an open state, but LOCK takes the lock-owner's client ID from the
+// wire and does not require it to match the client that owns that open, so a
+// client can hold live lock state without owning an open here.
+//
+// This is what makes the principal check in RFC 7530 Section 16.33.5
+// conditional. Section 9.1.2 spells the condition out: when a SETCLIENTID
+// arrives "for a client ID that currently has no state, or it has state but
+// the lease has expired, rather than returning NFS4ERR_CLID_INUSE, the server
+// MUST allow the SETCLIENTID". The security rule the check exists for is the
+// MUST NOT in Section 9.1.1 against cancelling leased state established by a
+// different principal, and a record holding none has nothing to cancel.
+//
+// Refusing unconditionally makes a client id string permanently unusable by
+// every other principal once one has touched it. Clients derive that string
+// from the hostname rather than from their credential, so a second user on the
+// same host would never get a client id at all.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) clientHasLiveStateLocked(clientID uint64) bool {
+	if sm.clientLeaseLapsedLocked(clientID) {
+		return false
+	}
+	for _, owner := range sm.openOwners {
+		if owner.ClientID == clientID && len(owner.OpenStates) > 0 {
+			return true
+		}
+	}
+	for _, lockState := range sm.lockStateByOther {
+		if lockState.LockOwner != nil && lockState.LockOwner.ClientID == clientID {
+			return true
+		}
+	}
+	for _, deleg := range sm.delegByOther {
+		if deleg.ClientID == clientID {
+			return true
+		}
+	}
+	return false
+}
+
+// unknownClientIDError answers a client ID that no record matches. There are
+// two ways that happens and they call for different errors. RFC 7530 Section
+// 9.6.3.2 covers the first: once a lease is cancelled, "the use of the
+// associated clientid will result in NFS4ERR_EXPIRED being returned", telling
+// the client its state is gone and a new client id is what it needs. An id no
+// boot of this server could have issued means something else entirely -- the
+// server restarted -- and stays NFS4ERR_STALE_CLIENTID. generateClientID puts
+// the boot epoch in the high 32 bits, which is what keeps the two apart.
+//
+// Answering STALE_CLIENTID for both makes a client that merely fell behind on
+// RENEW conclude the server rebooted.
+func (sm *StateManager) unknownClientIDError(clientID uint64) error {
+	if uint32(clientID>>32) == sm.bootEpoch {
+		return ErrExpired
+	}
+	return ErrStaleClientID
+}
+
 // createNewClient handles Case 1: completely new client.
 // Creates a new unconfirmed record with a fresh client ID and confirm verifier.
 // Caller must hold sm.mu.
@@ -434,8 +541,8 @@ func (sm *StateManager) createNewClient(clientIDStr string, verifier [8]byte, ca
 func (sm *StateManager) reuseConfirmedClient(confirmed *ClientRecord, clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr, principal string) (*SetClientIDResult, error) {
 	// Reject a re-SETCLIENTID by anyone but the principal that established the
 	// confirmed record: it would hijack the client's lease and state. See
-	// principalHijacks.
-	if principalHijacks(confirmed.Principal, principal) {
+	// principalHijacks and clientHasLiveStateLocked.
+	if principalHijacks(confirmed.Principal, principal) && sm.clientHasLiveStateLocked(confirmed.ClientID) {
 		return nil, ErrClientIDInUse
 	}
 
@@ -489,9 +596,9 @@ func (sm *StateManager) reuseConfirmedClient(confirmed *ClientRecord, clientIDSt
 func (sm *StateManager) handleClientReboot(clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr, principal string) (*SetClientIDResult, error) {
 	// A reboot (different verifier) claimed by anyone but the principal that
 	// established the confirmed record is a hijack attempt, not a real reboot.
-	// See principalHijacks.
+	// See principalHijacks and clientHasLiveStateLocked.
 	if confirmed := sm.clientsByName[clientIDStr]; confirmed != nil {
-		if principalHijacks(confirmed.Principal, principal) {
+		if principalHijacks(confirmed.Principal, principal) && sm.clientHasLiveStateLocked(confirmed.ClientID) {
 			return nil, ErrClientIDInUse
 		}
 	}
@@ -586,20 +693,45 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// Look up the record by client ID
-	record, exists := sm.clientsByID[clientID]
-	if !exists {
+	// Look up the record by client ID. SETCLIENTID_CONFIRM is a v4.0-only
+	// operation, so a v4.1 record under this ID must not be reachable here:
+	// confirming it would arm the CBPathUp probe and the lease timer the
+	// EXCHANGE_ID flow manages through CREATE_SESSION instead.
+	record := sm.v40ClientLocked(clientID)
+	if record == nil {
 		return fmt.Errorf("%w: client ID %d not found", ErrStaleClientID, clientID)
 	}
 
 	// If already confirmed, check for a pending re-SETCLIENTID (Case 5)
 	// where an unconfirmed record exists with the same client ID.
 	if record.Confirmed {
-		// Check if there's an unconfirmed record for the same client name
-		// that reuses this client ID (Case 5: re-SETCLIENTID for confirmed client)
 		if unconfirmed := sm.unconfirmedByName[record.ClientIDString]; unconfirmed != nil && unconfirmed.ClientID == clientID {
-			// Use the unconfirmed record instead - this is confirming the re-SETCLIENTID
-			record = unconfirmed
+			// The re-SETCLIENTID reuses the client ID, so confirm the record
+			// that already owns it and fold in what the new one carried.
+			// Swapping the unconfirmed record in instead would leave two
+			// records under one ID, and the one clientsByID does not point at
+			// keeps a lease timer that RENEW never refreshes yet that still
+			// fires and reaps the client.
+			//
+			// Validated before the fold, not by the shared check below: the
+			// fold writes through to the live client, so a confirm carrying the
+			// wrong verifier must be refused while the record it names is still
+			// untouched. A stale retransmit of the previous confirm reaches
+			// here whenever a re-SETCLIENTID is pending.
+			if unconfirmed.ConfirmVerifier != confirmVerifier {
+				return fmt.Errorf("%w: confirm verifier mismatch for client %d", ErrStaleClientID, clientID)
+			}
+			record.Verifier = unconfirmed.Verifier
+			record.ConfirmVerifier = unconfirmed.ConfirmVerifier
+			record.Callback = unconfirmed.Callback
+			record.ClientAddr = unconfirmed.ClientAddr
+			record.Principal = unconfirmed.Principal
+			// The callback address just changed, so the path to it is unproven
+			// again until the CB_NULL below says otherwise. Carrying the old
+			// generation's verdict forward would let delegations be granted in
+			// the window before that probe answers, and recalled to an address
+			// this client never confirmed it listens on.
+			record.CBPathUp = false
 		} else {
 			// True retransmit - validate verifier matches the confirmed record
 			if record.ConfirmVerifier != confirmVerifier {
@@ -626,6 +758,14 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 		if oldConfirmed.Lease != nil {
 			oldConfirmed.Lease.Stop()
 		}
+		// The client rebooted, and RFC 7530 Section 16.34.5 requires more of
+		// this confirm than forgetting the record: where a confirmed record
+		// for the same id string already exists, "the server MUST remove
+		// client x's relevant leased client state". Leaving it behind keeps
+		// every stateid the client held before the reboot working, so the
+		// files stay share-reserved and byte-range locked on behalf of an
+		// incarnation that no longer exists and will never close them.
+		sm.releaseClientStateLocked(oldConfirmed.ClientID)
 		delete(sm.clientsByID, oldConfirmed.ClientID)
 		logger.Info("SETCLIENTID_CONFIRM: replaced old confirmed client",
 			"old_client_id", oldConfirmed.ClientID,
@@ -636,7 +776,13 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 	record.Confirmed = true
 	sm.clientsByName[record.ClientIDString] = record
 
-	// Create lease timer for the newly confirmed client
+	// Create the lease timer for the newly confirmed client, replacing any
+	// timer the record already carries: an orphaned timer still fires
+	// onLeaseExpired for this client ID on its original schedule, reaping the
+	// client however often RENEW refreshes the lease that replaced it.
+	if record.Lease != nil {
+		record.Lease.Stop()
+	}
 	record.Lease = NewLeaseState(clientID, sm.leaseDuration, sm.onLeaseExpired)
 	record.LastRenewal = time.Now()
 
@@ -661,11 +807,13 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 			err := sm.cbNullFunc(context.Background(), cbInfo)
 			sm.mu.Lock()
 			defer sm.mu.Unlock()
-			rec, ok := sm.clientsByID[clientID]
-			if !ok || rec != recordPtr {
-				// Client was removed, or this client ID now points at a
-				// different record generation (reboot / re-SETCLIENTID) while
-				// CB_NULL was in flight. Do not touch the replacement.
+			rec := sm.v40ClientLocked(clientID)
+			if rec == nil || rec != recordPtr || rec.Callback != cbInfo {
+				// Client was removed, this client ID now points at a different
+				// record generation (reboot) while CB_NULL was in flight, or the
+				// record kept its identity but moved to another callback address
+				// (re-SETCLIENTID). Do not report this probe's verdict about an
+				// address the record no longer uses.
 				return
 			}
 			rec.CBPathUp = (err == nil)
@@ -685,10 +833,54 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 // GetClient returns the client record for the given client ID, or nil
 // if no record exists. Used by RENEW and other operations that need
 // to look up client state.
+//
+// v4.0 only: the shared index holds both minor versions, so a v4.1 client ID
+// is filtered out here and comes back nil. Use clientRecordLocked for a
+// lookup that should not care which flow minted the ID.
 func (sm *StateManager) GetClient(clientID uint64) *ClientRecord {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
+	return sm.v40ClientLocked(clientID)
+}
+
+// clientRecordLocked returns the record for clientID from the shared client
+// index, or nil when no client owns that ID.
+//
+// Callers hold a client ID and have no reason to know which minor version
+// minted it, which is why version-independent policy reads the record through
+// here rather than naming a version.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) clientRecordLocked(clientID uint64) *ClientRecord {
 	return sm.clientsByID[clientID]
+}
+
+// v40ClientLocked returns the v4.0 record for clientID, or nil when the ID is
+// unknown or names a v4.1 record. Every SETCLIENTID-flow operation reads the
+// index through here: a v4.1 client must be invisible to RENEW, to
+// SETCLIENTID_CONFIRM, and to the v4.0 expiry path, all of which would
+// otherwise act on state the EXCHANGE_ID flow owns.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) v40ClientLocked(clientID uint64) *ClientRecord {
+	record := sm.clientsByID[clientID]
+	if record == nil || record.MinorVersion != 0 {
+		return nil
+	}
+	return record
+}
+
+// v41ClientLocked returns the v4.1 record for clientID, or nil when the ID is
+// unknown or names a v4.0 record. Every EXCHANGE_ID-flow operation reads the
+// index through here, mirroring v40ClientLocked.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) v41ClientLocked(clientID uint64) *ClientRecord {
+	record := sm.clientsByID[clientID]
+	if record == nil || record.MinorVersion != 1 {
+		return nil
+	}
+	return record
 }
 
 // renewConfirmedClient admits a confirmed client whose lease is still live and
@@ -697,17 +889,17 @@ func (sm *StateManager) GetClient(clientID uint64) *ClientRecord {
 // disagree about what a renewal updates.
 //
 // Caller must hold sm.mu.
-func renewConfirmedClient(confirmed bool, lease *LeaseState, lastRenewal *time.Time) error {
-	if !confirmed {
+func renewConfirmedClient(record *ClientRecord) error {
+	if !record.Confirmed {
 		return ErrStaleClientID
 	}
-	if lease != nil {
-		if lease.IsExpired() {
+	if record.Lease != nil {
+		if record.Lease.IsExpired() {
 			return ErrExpired
 		}
-		lease.Renew()
+		record.Lease.Renew()
 	}
-	*lastRenewal = time.Now()
+	record.LastRenewal = time.Now()
 	return nil
 }
 
@@ -727,13 +919,11 @@ func (sm *StateManager) ValidateAndRenewClient(clientID uint64) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	if record := sm.clientsByID[clientID]; record != nil {
-		return renewConfirmedClient(record.Confirmed, record.Lease, &record.LastRenewal)
+	record := sm.clientRecordLocked(clientID)
+	if record == nil {
+		return sm.unknownClientIDError(clientID)
 	}
-	if v41 := sm.v41ClientsByID[clientID]; v41 != nil {
-		return renewConfirmedClient(v41.Confirmed, v41.Lease, &v41.LastRenewal)
-	}
-	return ErrStaleClientID
+	return renewConfirmedClient(record)
 }
 
 // RemoveClient removes a client record and all associated state.
@@ -742,8 +932,8 @@ func (sm *StateManager) RemoveClient(clientID uint64) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	record, exists := sm.clientsByID[clientID]
-	if !exists {
+	record := sm.v40ClientLocked(clientID)
+	if record == nil {
 		return
 	}
 
@@ -773,10 +963,10 @@ func (sm *StateManager) RemoveClient(clientID uint64) {
 // together with its open states, its lock states, and the locks those hold in
 // the unified lock manager.
 //
-// It scans sm.openOwners by ClientID rather than walking a per-client owner
-// list: V41ClientRecord carries no such list, and the v4.0 ClientRecord one
-// goes stale because freeOpenStateidLocked removes owners from sm.openOwners
-// without removing them there.
+// It scans sm.openOwners by ClientID rather than walking the record's
+// OpenOwners map: that map is only populated on the v4.0 path, and it goes
+// stale even there because freeOpenStateidLocked removes owners from
+// sm.openOwners without removing them from it.
 //
 // Caller must hold sm.mu.
 func (sm *StateManager) removeClientOpenStateLocked(clientID uint64) {
@@ -806,6 +996,200 @@ func (sm *StateManager) removeClientOpenStateLocked(clientID uint64) {
 	}
 }
 
+// removeClientLockStateLocked frees the byte-range locks clientID holds on
+// opens it does not own. LOCK takes the lock-owner's client ID from the wire
+// and does not require it to match the client owning the open the lock hangs
+// from, so removeClientOpenStateLocked -- which reaches locks through this
+// client's own opens -- does not see these. Left behind, they stay held in the
+// cross-protocol lock manager on behalf of a client that is gone, with nothing
+// left that could ever unlock them.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) removeClientLockStateLocked(clientID uint64) {
+	for other, lockState := range sm.lockStateByOther {
+		if lockState.LockOwner == nil || lockState.LockOwner.ClientID != clientID {
+			continue
+		}
+
+		sm.removeOwnerLocksLocked(lockState)
+		delete(sm.lockStateByOther, other)
+		delete(sm.lockOwners, lockState.LockOwner.Key())
+		detachLockStateFromOpen(lockState)
+	}
+}
+
+// detachLockStateFromOpen drops a lock state from the open state it hangs off,
+// so the open does not keep reporting a lock that is gone.
+func detachLockStateFromOpen(lockState *LockState) {
+	if lockState.OpenState == nil {
+		return
+	}
+	for i, ls := range lockState.OpenState.LockStates {
+		if ls != lockState {
+			continue
+		}
+		lockState.OpenState.LockStates = append(
+			lockState.OpenState.LockStates[:i],
+			lockState.OpenState.LockStates[i+1:]...,
+		)
+		return
+	}
+}
+
+// releaseClientStateLocked frees every open, lock and delegation held by
+// clientID, first remembering the stateids so that a client which comes back
+// and uses one is told its lease expired rather than told the stateid was
+// never valid.
+//
+// It does not touch the client record itself: the caller knows why the state
+// went away and which maps the record still belongs in.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) releaseClientStateLocked(clientID uint64) {
+	sm.markClientStateidsExpiredLocked(clientID)
+	sm.removeClientOpenStateLocked(clientID)
+	sm.removeClientLockStateLocked(clientID)
+
+	for other, deleg := range sm.delegByOther {
+		if deleg.ClientID != clientID {
+			continue
+		}
+		// Both timers outlive the tables they fire against, so they are
+		// stopped before the delegation leaves them.
+		sm.cleanupDirDelegation(deleg)
+		deleg.StopRecallTimer()
+		sm.deleteDelegByOtherLocked(other)
+		sm.removeDelegFromFile(deleg)
+
+		logger.Info("Delegation revoked with the client's state",
+			"client_id", clientID,
+			"deleg_type", deleg.DelegType)
+	}
+}
+
+// clientLeaseLapsedLocked reports whether a confirmed client's lease has run
+// out. Both client generations are checked: the caller has a client ID and no
+// reason to know which minor version minted it.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) clientLeaseLapsedLocked(clientID uint64) bool {
+	record := sm.clientRecordLocked(clientID)
+	return record != nil && record.Confirmed && record.Lease != nil && record.Lease.IsExpired()
+}
+
+// expireLapsedHoldersLocked releases the state of every client that holds an
+// open on fileHandle under a lease that has already run out, except for the
+// clients in keepClientIDs. Callers name every client whose records they are
+// holding a pointer into, since releasing one frees its opens and locks.
+//
+// What keeps an expired client's opens and locks alive is courtesy: a client
+// that merely lost contact for a moment should not come back to find its locks
+// broken, so the state outlives the lease and a sweeper collects it later.
+// RFC 7530 Section 9.6.3.1 says what happens when someone else then wants the
+// file: on "a lock or I/O request that conflicts with one of the courtesy
+// locks", a courtesy lock that is not a delegation "MUST free the courtesy
+// lock and grant the new request".
+//
+// So the collision, not the sweeper's schedule, is what ends the courtesy.
+// Deferring to the sweep refuses a request that nothing live objects to, for
+// however much of the sweep interval is left, which is why the same request is
+// granted or refused depending on when it arrives.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) expireLapsedHoldersLocked(fileHandle []byte, keepClientIDs ...uint64) {
+	// Collected before anything is released: expiring a client rewrites the
+	// index this ranges over.
+	//
+	// ponytail: linear scans of a slice rather than two sets. n is the distinct
+	// clients holding state on ONE file, which is one or two outside a
+	// share-reservation fight, and the allocation two maps would add lands on
+	// every OPEN and LOCK. Switch to sets if a file ever collects enough
+	// simultaneous holders for this to show up in a profile.
+	var lapsed []uint64
+	consider := func(clientID uint64) {
+		if slices.Contains(keepClientIDs, clientID) || slices.Contains(lapsed, clientID) {
+			return
+		}
+		if sm.clientLeaseLapsedLocked(clientID) {
+			lapsed = append(lapsed, clientID)
+		}
+	}
+	for _, os := range sm.openStateByFile[string(fileHandle)] {
+		if os.Owner != nil {
+			consider(os.Owner.ClientID)
+		}
+		// The lock-owner's client can differ from the open-owner's, and it is
+		// the one holding the lock this request may be colliding with.
+		for _, lockState := range os.LockStates {
+			if lockState.LockOwner != nil {
+				consider(lockState.LockOwner.ClientID)
+			}
+		}
+	}
+
+	for _, clientID := range lapsed {
+		logger.Info("Expiring a lapsed client to resolve a conflicting request",
+			"client_id", clientID)
+
+		if v41 := sm.v41ClientLocked(clientID); v41 != nil {
+			sm.markClientStateidsExpiredLocked(clientID)
+			sm.purgeV41Client(v41)
+			continue
+		}
+		sm.expireV40ClientLocked(clientID)
+	}
+}
+
+// maxExpiredStateids caps how many freed-by-lease-cancellation stateids the
+// server remembers; see the expiredStateids field for what overflow costs.
+const maxExpiredStateids = 4096
+
+// markClientStateidsExpiredLocked remembers every open, lock, and delegation
+// stateid belonging to clientID as freed by a lease cancellation, so later use
+// of one answers NFS4ERR_EXPIRED rather than NFS4ERR_BAD_STATEID (RFC 7530
+// Section 9.6.3.2). Call it before the state itself is dropped.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) markClientStateidsExpiredLocked(clientID uint64) {
+	if len(sm.expiredStateids) >= maxExpiredStateids {
+		sm.expiredStateids = make(map[[types.NFS4_OTHER_SIZE]byte]struct{})
+	}
+
+	for _, owner := range sm.openOwners {
+		if owner.ClientID != clientID {
+			continue
+		}
+		for _, openState := range owner.OpenStates {
+			sm.expiredStateids[openState.Stateid.Other] = struct{}{}
+			for _, lockState := range openState.LockStates {
+				sm.expiredStateids[lockState.Stateid.Other] = struct{}{}
+			}
+		}
+	}
+
+	for other, lockState := range sm.lockStateByOther {
+		if lockState.LockOwner != nil && lockState.LockOwner.ClientID == clientID {
+			sm.expiredStateids[other] = struct{}{}
+		}
+	}
+
+	for other, deleg := range sm.delegByOther {
+		if deleg.ClientID == clientID {
+			sm.expiredStateids[other] = struct{}{}
+		}
+	}
+}
+
+// isExpiredStateidLocked reports whether the state this stateid named was freed
+// when the server cancelled the owning client's lease. Callers use it on a
+// table miss, before falling back to NFS4ERR_BAD_STATEID.
+//
+// Caller must hold sm.mu (read or write).
+func (sm *StateManager) isExpiredStateidLocked(other [types.NFS4_OTHER_SIZE]byte) bool {
+	_, ok := sm.expiredStateids[other]
+	return ok
+}
+
 // onLeaseExpired is the callback invoked when a client's lease timer fires.
 // It cleans up all state for the expired client: open states, open owners,
 // and the client record itself.
@@ -817,8 +1201,17 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	record, exists := sm.clientsByID[clientID]
-	if !exists {
+	sm.expireV40ClientLocked(clientID)
+}
+
+// expireV40ClientLocked drops a v4.0 client and everything it holds. It is what
+// a lapsed lease does, and what a conflicting request does to a client whose
+// lease already lapsed.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) expireV40ClientLocked(clientID uint64) {
+	record := sm.v40ClientLocked(clientID)
+	if record == nil {
 		return
 	}
 
@@ -827,25 +1220,19 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 		"client_id_str", record.ClientIDString,
 		"client_addr", record.ClientAddr)
 
+	// The timer is already spent when its own callback brought us here, but a
+	// conflicting request can expire a lapsed client while the timer is still
+	// armed, and a later fire would look up a client that no longer exists.
+	if record.Lease != nil {
+		record.Lease.Stop()
+	}
+
 	// The client's lease lapsed without renewal: it no longer holds reclaimable
 	// state, so drop its durable recovery record. Best-effort; no-op
 	// when no recovery store is wired.
 	sm.deleteClientRecoveryLocked(record.ClientIDString)
 
-	sm.removeClientOpenStateLocked(clientID)
-
-	// Clean up delegations for the expired client
-	for other, deleg := range sm.delegByOther {
-		if deleg.ClientID != clientID {
-			continue
-		}
-		sm.deleteDelegByOtherLocked(other)
-		sm.removeDelegFromFile(deleg)
-
-		logger.Info("Delegation revoked on lease expiry",
-			"client_id", clientID,
-			"deleg_type", deleg.DelegType)
-	}
+	sm.releaseClientStateLocked(clientID)
 
 	// Remove client from all maps
 	delete(sm.clientsByID, clientID)
@@ -1006,32 +1393,65 @@ func (sm *StateManager) ForceEndGrace() {
 	gp.ForceEnd()
 }
 
-// ReclaimComplete tracks per-client RECLAIM_COMPLETE for the grace period.
-// Delegates to GracePeriodState.ReclaimComplete.
-// Returns nil if no grace period has been configured (not an error per RFC 8881).
-func (sm *StateManager) ReclaimComplete(clientID uint64) error {
-	sm.mu.RLock()
+// ReclaimComplete marks a client as having finished reclaiming state.
+//
+// oneFS selects which of the two RECLAIM_COMPLETE scopes the client is
+// retiring (RFC 8881 Section 18.51.3). A global reclaim (oneFS false) covers
+// every lock the client held on the previous server instance. A file
+// system-specific reclaim (oneFS true) covers only the file system named by
+// the current filehandle, and only because that file system is migrating. A
+// client may legitimately issue both forms in either order, so the two do not
+// deduplicate against each other.
+//
+// Section 18.51.4 scopes the duplicate to "once for each server instance or
+// occasion of the transition of a file system", so only the global reclaim is
+// tracked here: it returns NFS4ERR_COMPLETE_ALREADY on a second global call.
+// No file system ever migrates here, and Section 18.51.3 requires that a
+// file system-specific reclaim naming a file system that is not migrating
+// "returns NFS4_OK and is otherwise ignored".
+//
+// The first global call succeeds whether or not a grace period is running:
+// RECLAIM_COMPLETE outside grace is not an error, it just has nothing to
+// reclaim. When a grace period is running, it also retires the client from the
+// reclaim roster so the window can end early.
+func (sm *StateManager) ReclaimComplete(clientID uint64, oneFS bool) error {
+	// ponytail: no per-file-system reclaim set, because nothing here migrates
+	// and an ignored call needs no bookkeeping; add one keyed by file system
+	// if migration ever lands, and refuse the second call per file system.
+	if oneFS {
+		return nil
+	}
+
+	sm.mu.Lock()
 	gp := sm.gracePeriod
 	// Resolve the durable recovery key for this client (v4.1 = co_ownerid,
 	// v4.0 = nfs_client_id4 string) so the boot-loaded string roster early-exits
 	// and the reclaim-done marker is persisted.
 	recoveryKey := sm.recoveryKeyForClientLocked(clientID)
-	sm.mu.RUnlock()
 
+	// A caller with no record has nothing to deduplicate against, so it is let
+	// through: RECLAIM_COMPLETE is SEQUENCE-gated, so a live session always
+	// resolves to a record, and an unknown client ID is refused by the session
+	// lookup before it reaches here.
+	if record := sm.clientRecordLocked(clientID); record != nil {
+		if record.ReclaimComplete {
+			sm.mu.Unlock()
+			return ErrCompleteAlready
+		}
+		record.ReclaimComplete = true
+	}
 	if recoveryKey != "" {
-		if gp != nil {
+		sm.recordReclaimCompleteLocked(clientID, recoveryKey)
+	}
+	sm.mu.Unlock()
+
+	if gp != nil {
+		if recoveryKey != "" {
 			gp.ClientReclaimedByString(recoveryKey)
 		}
-		sm.mu.Lock()
-		sm.recordReclaimCompleteLocked(recoveryKey)
-		sm.mu.Unlock()
+		gp.ClientReclaimed(clientID)
 	}
-
-	if gp == nil {
-		// Not in grace period, but RECLAIM_COMPLETE outside grace is OK per RFC 8881
-		return nil
-	}
-	return gp.ReclaimComplete(clientID)
+	return nil
 }
 
 // CheckGraceForNewState returns NFS4ERR_GRACE if the server is in a grace period
@@ -1138,7 +1558,7 @@ func (sm *StateManager) OpenFile(
 		// a no-op when no durable prior record exists (reclaim allowed as before).
 		sm.mu.RLock()
 		gp := sm.gracePeriod
-		rec := sm.clientsByID[clientID]
+		rec := sm.v40ClientLocked(clientID)
 		sm.mu.RUnlock()
 		if rec != nil {
 			if err := sm.validateReclaimVerifier(rec.ClientIDString, rec.Verifier); err != nil {
@@ -1156,11 +1576,20 @@ func (sm *StateManager) OpenFile(
 			}
 		}
 		// v4.0 has no RECLAIM_COMPLETE; the first successful CLAIM_PREVIOUS is
-		// the analog reclaim marker. Persist it so a second
-		// restart inside one grace window does not wait on this client again.
+		// the analog reclaim marker. On that false→true transition, set the
+		// in-memory flag (the durable write mirrors it, and a pending retry
+		// re-validates against it) and persist it so a second restart inside
+		// one grace window does not wait on this client again. Later reclaim
+		// OPENs short-circuit: a per-OPEN persist attempt would fire a store
+		// write for every reclaimed file even though the durable record is
+		// already marked.
 		if rec != nil {
 			sm.mu.Lock()
-			sm.recordReclaimCompleteLocked(rec.ClientIDString)
+			firstReclaim := !rec.ReclaimComplete
+			rec.ReclaimComplete = true
+			if firstReclaim {
+				sm.recordReclaimCompleteLocked(clientID, rec.ClientIDString)
+			}
 			sm.mu.Unlock()
 		}
 	}
@@ -1197,7 +1626,7 @@ func (sm *StateManager) OpenFile(
 		}
 	} else {
 		// New owner: create it
-		clientRecord := sm.clientsByID[clientID]
+		clientRecord := sm.clientRecordLocked(clientID)
 		owner = &OpenOwner{
 			ClientID:  clientID,
 			OwnerData: make([]byte, len(ownerData)),
@@ -1217,8 +1646,9 @@ func (sm *StateManager) OpenFile(
 		copy(owner.OwnerData, ownerData)
 		sm.openOwners[ownerKey] = owner
 
-		// Nil for v4.1 clients, torn down by purgeV41Client instead.
-		if clientRecord != nil {
+		// OpenOwners is populated on the v4.0 path only; it is left nil on a
+		// v4.1 record, whose owners are torn down by purgeV41Client instead.
+		if clientRecord != nil && clientRecord.OpenOwners != nil {
 			clientRecord.OpenOwners[string(ownerData)] = owner
 		}
 	}
@@ -1228,17 +1658,17 @@ func (sm *StateManager) OpenFile(
 	// does, and the client advances either way.
 	defer func() { owner.consumeSeqidOnError(seqid, err) }()
 
-	// Enforce share reservations across open-owners (RFC 7530 Section 9.7 /
-	// Section 16.16.5; Linux nfsd nfs4_share_conflict). This runs AFTER the
-	// owner seqid/replay gate above: a replayed OPEN must return its cached
-	// result and a bad seqid must return NFS4ERR_BAD_SEQID — neither may be
-	// turned into NFS4ERR_SHARE_DENIED by a conflict that arose after the
-	// original request. Reclaim (CLAIM_PREVIOUS) re-establishes prior state and
-	// is exempt. The scan runs under sm.mu so it observes a consistent snapshot
-	// of every live open; opens by THIS owner are skipped (share bits
-	// accumulate per owner).
+	// Enforce share reservations (RFC 7530 Section 9.9; Linux nfsd
+	// nfs4_share_conflict). This runs AFTER the owner seqid/replay gate above:
+	// a replayed OPEN must return its cached result and a bad seqid must return
+	// NFS4ERR_BAD_SEQID — neither may be turned into NFS4ERR_SHARE_DENIED by a
+	// conflict that arose after the original request. Reclaim (CLAIM_PREVIOUS)
+	// re-establishes prior state and is exempt. The scan runs under sm.mu so it
+	// observes a consistent snapshot of every live open.
 	if claimType != types.CLAIM_PREVIOUS {
-		if conflict := sm.shareConflictLocked(ownerKey, fileHandle, shareAccess, shareDeny); conflict {
+		sm.expireLapsedHoldersLocked(fileHandle, clientID)
+
+		if conflict := sm.shareConflictLocked(fileHandle, shareAccess, shareDeny); conflict {
 			logger.Debug("OpenFile: share reservation conflict",
 				"client_id", clientID,
 				"owner", string(ownerData),
@@ -1263,6 +1693,7 @@ func (sm *StateManager) OpenFile(
 		// Accumulate share_access and share_deny (Pitfall 7)
 		existingState.ShareAccess |= shareAccess
 		existingState.ShareDeny |= shareDeny
+		existingState.openedAccessModes |= shareModeBit(shareAccess)
 
 		// Increment the stateid seqid for this operation
 		existingState.Stateid.Seqid = nextSeqID(existingState.Stateid.Seqid)
@@ -1279,12 +1710,13 @@ func (sm *StateManager) OpenFile(
 		copy(fhCopy, fileHandle)
 
 		openState := &OpenState{
-			Stateid:     resultStateid,
-			Owner:       owner,
-			FileHandle:  fhCopy,
-			ShareAccess: shareAccess,
-			ShareDeny:   shareDeny,
-			Confirmed:   owner.Confirmed,
+			Stateid:           resultStateid,
+			Owner:             owner,
+			FileHandle:        fhCopy,
+			ShareAccess:       shareAccess,
+			ShareDeny:         shareDeny,
+			openedAccessModes: shareModeBit(shareAccess),
+			Confirmed:         owner.Confirmed,
 		}
 
 		owner.OpenStates = append(owner.OpenStates, openState)
@@ -1318,26 +1750,28 @@ func (sm *StateManager) OpenFile(
 }
 
 // shareConflictLocked reports whether granting an OPEN with the requested
-// share_access / share_deny on fileHandle would conflict with an open held by a
-// DIFFERENT open-owner. A conflict exists when the requested access is denied by
-// an existing open, or the requested deny would exclude an existing open's
-// access (RFC 7530 Section 9.7; mirrors Linux nfsd nfs4_share_conflict /
-// test_share). Opens by the requesting owner (ownerKey) are skipped because
-// share bits accumulate per owner on the same file.
+// share_access / share_deny on fileHandle would conflict with an open already
+// held on it. A conflict exists when the requested access is denied by an
+// existing open, or the requested deny would exclude an existing open's access.
 //
-// Caller must hold sm.mu.
+// RFC 7530 Section 9.9 gives the rule as pseudo-code over the file's
+// accumulated state -- "(request.access & file_state.deny) || (request.deny &
+// file_state.access)" -- and then says in as many words that "this checking of
+// share reservations on OPEN is done with no exception for an existing OPEN for
+// the same open-owner". Skipping the requesting owner's own opens, on the theory
+// that share bits merely accumulate per owner, let an owner that had denied
+// READ to everyone go on to open the same file for reading itself. Linux nfsd
+// keeps the deny mask on the file (nfs4_file, fi_share_deny) for the same
+// reason.
+//
+// Caller must hold sm.mu, for reading or for writing.
 func (sm *StateManager) shareConflictLocked(
-	ownerKey openOwnerKey,
 	fileHandle []byte,
 	reqAccess, reqDeny uint32,
 ) bool {
 	// Iterate only the opens on this file via the secondary per-file index
 	// (openStateByFile), not every open in the server.
 	for _, os := range sm.openStateByFile[string(fileHandle)] {
-		// Same owner: bits are OR-merged, never in conflict with themselves.
-		if os.Owner != nil && os.Owner.Key() == ownerKey {
-			continue
-		}
 		if reqAccess&os.ShareDeny != 0 || reqDeny&os.ShareAccess != 0 {
 			return true
 		}
@@ -1373,6 +1807,73 @@ func (sm *StateManager) removeOpenStateFromFileLocked(os *OpenState) {
 			sm.openStateByFile[fhKey] = states
 		}
 		return
+	}
+}
+
+// ReplayOpenSeqid reports the status to replay when seqid retransmits an OPEN
+// this server refused on its own, so the caller can answer it without running
+// the OPEN a second time (RFC 7530 Section 9.1.7).
+//
+// Re-executing such a retransmission answers from the state of the world now
+// rather than the state it had when the client first asked, so a refusal whose
+// cause has since gone away -- the colliding name removed, the permission
+// granted -- came back as a success the client had no reply slot for.
+//
+// It covers only the refusals ConsumeOpenSeqid recorded. An OPEN that reached
+// the state layer is replayed by OpenFile from the owner's shared reply cache,
+// and that cache must not be consulted here: CLOSE, OPEN_CONFIRM and
+// OPEN_DOWNGRADE write to it too, so it may hold a reply of a different shape,
+// which an OPEN replaying it would return under its own operation number.
+func (sm *StateManager) ReplayOpenSeqid(clientID uint64, ownerData []byte, seqid uint32) (uint32, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	owner, exists := sm.openOwners[makeOwnerKey(clientID, ownerData)]
+	if !exists || owner.openRefusal == nil {
+		return 0, false
+	}
+	if owner.openRefusal.seqid != seqid || owner.ValidateSeqID(seqid) != SeqIDReplay {
+		return 0, false
+	}
+	return owner.openRefusal.status, true
+}
+
+// ConsumeOpenSeqid records against an open-owner's sequence an OPEN that failed
+// before it ever reached OpenFile, and caches the status so a retransmission
+// replays it.
+//
+// RFC 7530 Section 9.1.7 advances an owner's sequence for every OPEN that
+// reaches seqid checking, and the client advances its own whether the server
+// answered success or a consuming error. An OPEN the handler refuses on its own
+// -- a create collision, a target of the wrong object type, a name the server
+// rejects -- never reached the state manager, so its seqid went unrecorded and
+// the server fell one behind the client. Every later OPEN for that owner was
+// then answered NFS4ERR_BAD_SEQID, which a client can only escape by tearing
+// the owner down.
+//
+// It is a no-op for an owner that does not exist yet, because a first OPEN that
+// fails leaves no owner behind and the client's retry at seqid 1 is valid
+// against a fresh one; for a seqid that is not the owner's expected next one,
+// so a replay returns its cached reply rather than consuming a second seqid;
+// and for the statuses Section 9.1.7 exempts.
+func (sm *StateManager) ConsumeOpenSeqid(clientID uint64, ownerData []byte, seqid, status uint32) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	owner, exists := sm.openOwners[makeOwnerKey(clientID, ownerData)]
+	if !exists {
+		return
+	}
+	if owner.ValidateSeqID(seqid) != SeqIDOK {
+		return
+	}
+	before := owner.LastSeqID
+	owner.consumeSeqidOnError(seqid, &NFS4StateError{Status: status})
+	// consumeSeqidOnError leaves the sequence alone for the statuses
+	// Section 9.1.7 exempts; nothing was recorded, so there is nothing to
+	// replay either.
+	if owner.LastSeqID != before {
+		owner.openRefusal = &openRefusal{seqid: seqid, status: status}
 	}
 }
 
@@ -1436,17 +1937,27 @@ func (sm *StateManager) CacheLockOwnerResult(clientID uint64, ownerData []byte, 
 //   - Increments the stateid seqid
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32) (result *OpenSeqResult, err error) {
+func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32, callerClientID uint64) (result *OpenSeqResult, err error) {
+	// A special stateid names no state at all, and RFC 7530 Section 9.1.4.3
+	// admits one only on READ, WRITE and SETATTR. stateidMissError documents
+	// why it must be rejected before a table miss is classified.
+	if stateid.IsSpecialStateid() {
+		return nil, ErrBadStateid
+	}
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	// Look up the open state
 	openState, exists := sm.openStateByOther[stateid.Other]
 	if !exists {
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
-			Message: "stateid not found for OPEN_CONFIRM",
-		}
+		return nil, sm.stateidMissError(stateid.Other)
+	}
+
+	// A stateid is not a bearer token: reject one that names another client's
+	// state before acting on it; see checkStateidOwner.
+	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
+		return nil, err
 	}
 
 	owner := openState.Owner
@@ -1471,6 +1982,19 @@ func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32) (resu
 		case SeqIDOK:
 			// Continue
 		}
+	}
+
+	// The stateid must name this open's current seqid, compared after the owner
+	// seqid above so a retransmit still replays; see checkStateidSeqid.
+	if err := checkStateidSeqid(stateid.Seqid, openState.Stateid.Seqid); err != nil {
+		return nil, err
+	}
+
+	// An open confirms once. A second OPEN_CONFIRM finds no unconfirmed state,
+	// so the stateid it carries no longer names anything OPEN_CONFIRM can act
+	// on (RFC 7530 Section 16.18.5).
+	if openState.Confirmed {
+		return nil, ErrBadStateid
 	}
 
 	// Promote to confirmed
@@ -1503,16 +2027,19 @@ func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32) (resu
 // nfs_set_open_stateid_locked() expects sequential stateids starting from 1.
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) ConfirmOpenV41(stateid *types.Stateid4) error {
+func (sm *StateManager) ConfirmOpenV41(stateid *types.Stateid4, callerClientID uint64) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	openState, exists := sm.openStateByOther[stateid.Other]
 	if !exists {
-		return &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
-			Message: "stateid not found for v4.1 auto-confirm",
-		}
+		return sm.stateidMissError(stateid.Other)
+	}
+
+	// A stateid is not a bearer token: another client's open must not be
+	// confirmed through this caller; see checkStateidOwner.
+	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
+		return err
 	}
 
 	openState.Confirmed = true
@@ -1530,10 +2057,13 @@ func (sm *StateManager) ConfirmOpenV41(stateid *types.Stateid4) error {
 //   - Returns a zeroed stateid
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (result *OpenSeqResult, err error) {
-	// Handle special stateids (all-zeros, all-ones): no state to clean up
+func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32, callerClientID uint64) (result *OpenSeqResult, err error) {
+	// A special stateid names no open state, and RFC 7530 Section 9.1.4.3
+	// admits one only on READ, WRITE and SETATTR, so CLOSE has nothing to act
+	// on. stateidMissError documents why it must be rejected before a table
+	// miss is classified.
 	if stateid.IsSpecialStateid() {
-		return &OpenSeqResult{}, nil
+		return nil, ErrBadStateid
 	}
 
 	sm.mu.Lock()
@@ -1545,15 +2075,21 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (result
 		// The state was already removed by a prior CLOSE. If this is a
 		// retransmit of that CLOSE (same owner-seqid), replay its cached reply
 		// (RFC 7530 §9.1.7) rather than returning NFS4ERR_BAD_STATEID.
-		if owner, ok := sm.closedOwnerByOther[stateid.Other]; ok && seqid != 0 {
+		// The cached reply belongs to the owner that sent the original CLOSE, so
+		// it is only replayed to that owner's client; see checkStateidOwner.
+		if owner, ok := sm.closedOwnerByOther[stateid.Other]; ok && seqid != 0 &&
+			checkStateidOwner(callerClientID, owner.ClientID) == nil {
 			if owner.ValidateSeqID(seqid) == SeqIDReplay && owner.LastResult != nil {
 				return nil, &ReplayError{Status: owner.LastResult.Status, Data: owner.LastResult.Data}
 			}
 		}
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
-			Message: "stateid not found for CLOSE",
-		}
+		return nil, sm.stateidMissError(stateid.Other)
+	}
+
+	// A stateid is not a bearer token: reject one that names another client's
+	// state before acting on it; see checkStateidOwner.
+	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
+		return nil, err
 	}
 
 	owner := openState.Owner
@@ -1581,6 +2117,12 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (result
 		case SeqIDOK:
 			// Continue
 		}
+	}
+
+	// The stateid must name this open's current seqid, compared after the owner
+	// seqid above so a retransmit still replays; see checkStateidSeqid.
+	if err := checkStateidSeqid(stateid.Seqid, openState.Stateid.Seqid); err != nil {
+		return nil, err
 	}
 
 	// Refuse while ranges are genuinely held -- RFC 7530 Section 16.2.4 permits
@@ -1721,17 +2263,27 @@ func (sm *StateManager) dropLockOwnerIfUnreferencedLocked(lockOwner *LockOwner) 
 //   - Increments the stateid seqid
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, newShareAccess, newShareDeny uint32) (result *OpenSeqResult, err error) {
+func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, newShareAccess, newShareDeny uint32, callerClientID uint64) (result *OpenSeqResult, err error) {
+	// A special stateid names no state at all, and RFC 7530 Section 9.1.4.3
+	// admits one only on READ, WRITE and SETATTR. stateidMissError documents
+	// why it must be rejected before a table miss is classified.
+	if stateid.IsSpecialStateid() {
+		return nil, ErrBadStateid
+	}
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	// Look up the open state
 	openState, exists := sm.openStateByOther[stateid.Other]
 	if !exists {
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
-			Message: "stateid not found for OPEN_DOWNGRADE",
-		}
+		return nil, sm.stateidMissError(stateid.Other)
+	}
+
+	// A stateid is not a bearer token: reject one that names another client's
+	// state before acting on it; see checkStateidOwner.
+	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
+		return nil, err
 	}
 
 	owner := openState.Owner
@@ -1759,11 +2311,21 @@ func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, new
 		}
 	}
 
-	// Verify the new access is a subset of current (can only remove bits)
-	if newShareAccess & ^openState.ShareAccess != 0 {
+	// The stateid must name this open's current seqid, compared after the owner
+	// seqid above so a retransmit still replays; see checkStateidSeqid.
+	if err := checkStateidSeqid(stateid.Seqid, openState.Stateid.Seqid); err != nil {
+		return nil, err
+	}
+
+	// The new share_access must be a mode some OPEN behind this state actually
+	// asked for, which is stricter than being a subset of the accumulated
+	// union: one OPEN for BOTH leaves READ and WRITE standing in that union
+	// with neither ever opened, and downgrading to one of them would name a
+	// mode the client never held (RFC 7530 Section 16.19.4).
+	if openState.openedAccessModes&shareModeBit(newShareAccess) == 0 {
 		return nil, &NFS4StateError{
 			Status:  types.NFS4ERR_INVAL,
-			Message: "OPEN_DOWNGRADE cannot add share_access bits",
+			Message: "OPEN_DOWNGRADE to a share_access mode no OPEN asked for",
 		}
 	}
 	if newShareDeny & ^openState.ShareDeny != 0 {
@@ -1784,6 +2346,14 @@ func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, new
 	// Update share modes
 	openState.ShareAccess = newShareAccess
 	openState.ShareDeny = newShareDeny
+
+	// Forget the opened modes this downgrade drops: a later OPEN_DOWNGRADE may
+	// only name one this one kept. Downgrading to a single mode leaves that
+	// mode as the only one opened; BOTH still covers all three, so it drops
+	// nothing.
+	if newShareAccess != types.OPEN4_SHARE_ACCESS_BOTH {
+		openState.openedAccessModes = shareModeBit(newShareAccess)
+	}
 
 	// Increment stateid seqid
 	openState.Stateid.Seqid = nextSeqID(openState.Stateid.Seqid)
@@ -1882,9 +2452,11 @@ func (sm *StateManager) RenewLease(clientID uint64, principal ...string) error {
 	defer sm.mu.Unlock()
 
 	// v4.0 only: RENEW does not exist in v4.1, where SEQUENCE renews the lease.
-	record, exists := sm.clientsByID[clientID]
-	if !exists {
-		return ErrStaleClientID
+	// A v4.1 record must be unreachable through this renewal: it would stamp a
+	// lease the SEQUENCE handler owns.
+	record := sm.v40ClientLocked(clientID)
+	if record == nil {
+		return sm.unknownClientIDError(clientID)
 	}
 
 	// Checked before the renewal below: a refused RENEW must leave the lease
@@ -1894,7 +2466,7 @@ func (sm *StateManager) RenewLease(clientID uint64, principal ...string) error {
 		return ErrRenewAccess
 	}
 
-	if err := renewConfirmedClient(record.Confirmed, record.Lease, &record.LastRenewal); err != nil {
+	if err := renewConfirmedClient(record); err != nil {
 		return err
 	}
 
@@ -2001,6 +2573,7 @@ func (sm *StateManager) LockNew(
 	lockClientID uint64, lockOwnerData []byte, lockSeqid uint32,
 	openStateid *types.Stateid4, openSeqid uint32,
 	fileHandle []byte, lockType uint32, offset, length uint64, reclaim bool,
+	callerClientID uint64,
 ) (result *LockResult, err error) {
 	// Grace period check (before acquiring sm.mu)
 	if !reclaim {
@@ -2009,13 +2582,26 @@ func (sm *StateManager) LockNew(
 		}
 	}
 
+	// A special stateid names no state at all, and RFC 7530 Section 9.1.4.3
+	// admits one only on READ, WRITE and SETATTR. stateidMissError documents
+	// why it must be rejected before a table miss is classified.
+	if openStateid.IsSpecialStateid() {
+		return nil, ErrBadStateid
+	}
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	// 1. Validate open stateid
 	openState, exists := sm.openStateByOther[openStateid.Other]
 	if !exists {
-		return nil, ErrBadStateid
+		return nil, sm.stateidMissError(openStateid.Other)
+	}
+
+	// A stateid is not a bearer token: reject one that names another client's
+	// state before acting on it; see checkStateidOwner.
+	if err := checkStateidOwner(callerClientID, openState.Owner.ClientID); err != nil {
+		return nil, err
 	}
 
 	// The request is attributable to this open-owner, so any failure below
@@ -2088,9 +2674,15 @@ func (sm *StateManager) LockNew(
 		return nil, ErrBadSeqid
 	}
 
+	// The open stateid must name that open's current seqid, compared after both
+	// seqid checks above so a retransmit still replays; see checkStateidSeqid.
+	if err := checkStateidSeqid(openStateid.Seqid, openState.Stateid.Seqid); err != nil {
+		return nil, err
+	}
+
 	// 5. Find or create lock-owner -- only after seqid validation passes.
 	if !ownerExists {
-		clientRecord := sm.clientsByID[lockClientID]
+		clientRecord := sm.clientRecordLocked(lockClientID)
 		lockOwner = &LockOwner{
 			ClientID:  lockClientID,
 			OwnerData: make([]byte, len(lockOwnerData)),
@@ -2110,7 +2702,8 @@ func (sm *StateManager) LockNew(
 	// 6. Validate the byte range and the open mode for the lock type. Both run
 	// after the seqid checks so a bad seqid, which must leave the sequence
 	// untouched, outranks NFS4ERR_INVAL and NFS4ERR_OPENMODE, which consume it.
-	if err := validateLockRange(offset, length); err != nil {
+	length, err = normalizeLockRange(offset, length)
+	if err != nil {
 		return nil, err
 	}
 	if err := validateOpenModeForLock(openState, lockType); err != nil {
@@ -2146,7 +2739,7 @@ func (sm *StateManager) LockNew(
 	}
 
 	// 8. Acquire the lock via unified lock manager
-	denied, err := sm.acquireLock(ctx, lockState, lockType, offset, length, reclaim)
+	denied, err := sm.acquireLock(ctx, lockState, lockType, offset, length, reclaim, callerClientID)
 	if err != nil {
 		return nil, err
 	}
@@ -2184,7 +2777,13 @@ func (sm *StateManager) LockExisting(
 	ctx context.Context,
 	lockStateid *types.Stateid4, lockSeqid uint32,
 	fileHandle []byte, lockType uint32, offset, length uint64, reclaim bool,
+	callerClientID uint64,
 ) (result *LockResult, err error) {
+	// Special stateids cannot be used with LOCK
+	if lockStateid.IsSpecialStateid() {
+		return nil, ErrBadStateid
+	}
+
 	// Grace period check
 	if !reclaim {
 		if err := sm.CheckGraceForNewState(); err != nil {
@@ -2195,13 +2794,15 @@ func (sm *StateManager) LockExisting(
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// 1. Look up lock state
+	// 1. Look up lock state. The same check runs again on recommit, once the
+	// lock manager has been called with sm.mu released; here it rejects a
+	// stateid that is not the caller's before any cross-protocol work happens.
 	lockState, exists := sm.lockStateByOther[lockStateid.Other]
 	if !exists {
-		if !sm.isCurrentEpoch(lockStateid.Other) {
-			return nil, ErrStaleStateid
-		}
-		return nil, ErrBadStateid
+		return nil, sm.stateidMissError(lockStateid.Other)
+	}
+	if err := sm.revalidateLockStateLocked(lockState, callerClientID); err != nil {
+		return nil, err
 	}
 
 	lockOwner := lockState.LockOwner
@@ -2234,22 +2835,13 @@ func (sm *StateManager) LockExisting(
 	}
 
 	// 3. Validate stateid seqid (only for non-replay LOCK).
-	// Per RFC 8881 Section 8.2.2, a v4.1 client may send stateid seqid=0 to
-	// mean "the most recent seqid"; the slot table already provides replay
-	// protection, so the server MUST bypass the seqid comparison in that case.
-	// lockState.Stateid.Seqid starts at 1 after LockNew, so without this bypass
-	// every v4.1 LOCK via LockExisting would return NFS4ERR_OLD_STATEID.
-	if lockStateid.Seqid != 0 {
-		if lockStateid.Seqid < lockState.Stateid.Seqid {
-			return nil, ErrOldStateid
-		}
-		if lockStateid.Seqid > lockState.Stateid.Seqid {
-			return nil, ErrBadStateid
-		}
+	if err := checkStateidSeqid(lockStateid.Seqid, lockState.Stateid.Seqid); err != nil {
+		return nil, err
 	}
 
 	// 4. Validate the byte range and the open mode for the lock type
-	if err := validateLockRange(offset, length); err != nil {
+	length, err = normalizeLockRange(offset, length)
+	if err != nil {
 		return nil, err
 	}
 	if err := validateOpenModeForLock(lockState.OpenState, lockType); err != nil {
@@ -2257,7 +2849,7 @@ func (sm *StateManager) LockExisting(
 	}
 
 	// 5. Acquire the lock
-	denied, err := sm.acquireLock(ctx, lockState, lockType, offset, length, reclaim)
+	denied, err := sm.acquireLock(ctx, lockState, lockType, offset, length, reclaim, callerClientID)
 	if err != nil {
 		return nil, err
 	}
@@ -2287,8 +2879,17 @@ func (sm *StateManager) LockExisting(
 // Returns (nil, nil) on success, (*LOCK4denied, nil) on conflict,
 // or (nil, error) on internal errors.
 //
-// Caller must hold sm.mu.
-func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, lockType uint32, offset, length uint64, reclaim bool) (*LOCK4denied, error) {
+// Caller must hold sm.mu. The mutex is RELEASED for the duration of the lock
+// manager call and held again on return: sm.mu serializes every client's state
+// operation server-wide, while the manager is cross-protocol and its acquire
+// path waits for an in-flight lease break in another protocol to drain, for as
+// long as lock.WaitForByteRangeLockBreak's timeout allows. Holding sm.mu across
+// that stalls every other client's SEQUENCE, OPEN, CLOSE and RENEW behind one
+// client's LOCK.
+//
+// The state the caller resolved before that gap is re-validated on return, so a
+// caller may treat a nil error as "still safe to commit against lockState".
+func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, lockType uint32, offset, length uint64, reclaim bool, callerClientID uint64) (*LOCK4denied, error) {
 	lm := sm.lockManagerFor(lockState.FileHandle)
 	if lm == nil {
 		return nil, fmt.Errorf("no lock manager configured")
@@ -2318,6 +2919,92 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 
 	handleKey := string(lockState.FileHandle)
 
+	// A lock held on behalf of a client whose lease has already run out is
+	// courtesy state, and this request is the collision that ends the courtesy.
+	// Released here rather than left to the sweeper, the answer no longer
+	// depends on where in the sweep interval the request happened to land.
+	//
+	// A reclaim is exempt, as CLAIM_PREVIOUS is on the OPEN side: during grace
+	// every client is re-establishing state it already held, and one that has
+	// reclaimed its opens but not yet its locks can outlive the fresh lease it
+	// was given, which would make its half-rebuilt state look abandoned.
+	if !reclaim {
+		sm.expireLapsedHoldersLocked(lockState.FileHandle,
+			lockState.LockOwner.ClientID, lockState.OpenState.Owner.ClientID)
+	}
+
+	sm.mu.Unlock()
+	denied, err := acquireUnifiedLock(ctx, lm, handleKey, enhLock, lockType)
+	sm.mu.Lock()
+
+	if err != nil {
+		return nil, err
+	}
+
+	// While sm.mu was released the resolved state may have been freed under it —
+	// by a CLOSE, a RELEASE_LOCKOWNER, or the lease sweeper expiring the client.
+	// Committing a seqid bump onto freed state would hand the client a stateid
+	// the server no longer knows, and would strand the byte-range lock just
+	// inserted with no NFSv4 state left to ever release it. Give the lock back
+	// and fail the operation instead.
+	if staleErr := sm.revalidateLockStateLocked(lockState, callerClientID); staleErr != nil {
+		if denied == nil {
+			sm.mu.Unlock()
+			_ = lm.RemoveUnifiedLock(handleKey, owner, offset, length)
+			sm.mu.Lock()
+		}
+		return nil, staleErr
+	}
+
+	return denied, nil
+}
+
+// revalidateLockStateLocked reports whether the lock state and its lock-owner
+// are still the records the StateManager's maps point at, and whether the
+// lock-owner belongs to the calling client. It is both the admission check for
+// a lock stateid arriving from the wire and the recommit check for a path that
+// resolves state under sm.mu, releases the mutex for an external call, and then
+// writes a result back — the same three facts have to hold at both points.
+//
+// The comparison is by pointer identity, not by presence: a stateid "other" and
+// a lock-owner key can both be handed out again once the original records are
+// freed, so "something exists under this key" does not mean "the record
+// resolved earlier is still live".
+//
+// The parent open state needs no separate check. Every path that frees an open
+// state frees its lock stateids in the same critical section — CLOSE at
+// openStateByOther, and the lease sweeper via releaseClientStateLocked — so a
+// live lock state implies a live open.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) revalidateLockStateLocked(lockState *LockState, callerClientID uint64) error {
+	if sm.lockStateByOther[lockState.Stateid.Other] != lockState {
+		return sm.stateidMissError(lockState.Stateid.Other)
+	}
+	lockOwner := lockState.LockOwner
+	if lockOwner == nil || sm.lockOwners[lockOwner.Key()] != lockOwner {
+		return ErrBadStateid
+	}
+
+	// A stateid is not a bearer token: a client presenting another client's lock
+	// stateid could otherwise unlock, or lock inside, a byte range it has no
+	// state on; see checkStateidOwner.
+	return checkStateidOwner(callerClientID, lockOwner.ClientID)
+}
+
+// acquireUnifiedLock performs the cross-protocol half of a byte-range lock
+// acquire: break conflicting leases, drain the break, insert the lock, and on
+// refusal describe the conflicting holder. lockType is the requested NFS4 lock
+// type, needed only to describe an unidentifiable conflict.
+//
+// It touches no StateManager state, so it runs without sm.mu.
+func acquireUnifiedLock(
+	ctx context.Context,
+	lm lock.LockManager,
+	handleKey string,
+	enhLock *lock.UnifiedLock,
+	lockType uint32,
+) (*LOCK4denied, error) {
 	// Break any conflicting cross-protocol read leases (e.g. an SMB read/write
 	// oplock) before acquiring the byte-range lock. A held lease lets another
 	// protocol cache the bytes this lock is about to protect, so it must be
@@ -2327,11 +3014,11 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 	// real byte-range lock is held. We pass this lock's owner as excludeOwner for
 	// symmetry with the SMB path; NFS owners never hold SMB leases, so in practice
 	// nothing is excluded.
-	_ = lm.BreakLeasesForByteRangeLock(handleKey, &owner)
+	_ = lm.BreakLeasesForByteRangeLock(handleKey, &enhLock.Owner)
 
 	// Drain the in-flight lease break before inserting the lock: the break is
 	// fire-and-forget, so a still-present (Breaking, not-yet-ACKed) write lease is
-	// otherwise observed as a spurious DENIED → client EIO (#1501). See
+	// otherwise observed as a spurious DENIED → client EIO. See
 	// lock.WaitForByteRangeLockBreak for the deadlock-safety and timeout reasoning.
 	// A non-nil error means the originating request was cancelled, so don't insert
 	// a lock nobody is waiting for.
@@ -2373,8 +3060,8 @@ func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, l
 
 		// Conflict exists but we couldn't identify the exact lock (shouldn't happen)
 		denied := &LOCK4denied{
-			Offset:   offset,
-			Length:   length,
+			Offset:   enhLock.Offset,
+			Length:   enhLock.Length,
 			LockType: lockType,
 		}
 		return denied, nil
@@ -2404,7 +3091,8 @@ func (sm *StateManager) TestLock(
 	clientID uint64, ownerData []byte,
 	fileHandle []byte, lockType uint32, offset, length uint64,
 ) (*LOCK4denied, error) {
-	if err := validateLockRange(offset, length); err != nil {
+	length, err := normalizeLockRange(offset, length)
+	if err != nil {
 		return nil, err
 	}
 
@@ -2490,6 +3178,7 @@ func (sm *StateManager) TestLock(
 func (sm *StateManager) UnlockFile(
 	lockStateid *types.Stateid4, seqid uint32,
 	lockType uint32, offset, length uint64,
+	callerClientID uint64,
 ) (result *LockResult, err error) {
 	// Special stateids cannot be used with LOCKU
 	if lockStateid.IsSpecialStateid() {
@@ -2499,14 +3188,15 @@ func (sm *StateManager) UnlockFile(
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// 1. Look up lock state
+	// 1. Look up lock state. As in LockExisting, the same check runs again on
+	// recommit; here it rejects a stateid that is not the caller's before the
+	// lock manager is touched.
 	lockState, exists := sm.lockStateByOther[lockStateid.Other]
 	if !exists {
-		// Check if it's a stale stateid from a previous boot
-		if !sm.isCurrentEpoch(lockStateid.Other) {
-			return nil, ErrStaleStateid
-		}
-		return nil, ErrBadStateid
+		return nil, sm.stateidMissError(lockStateid.Other)
+	}
+	if err := sm.revalidateLockStateLocked(lockState, callerClientID); err != nil {
+		return nil, err
 	}
 
 	lockOwner := lockState.LockOwner
@@ -2540,25 +3230,19 @@ func (sm *StateManager) UnlockFile(
 	}
 
 	// 3. Validate stateid seqid (only for non-replay LOCKU).
-	// Per RFC 8881 Section 8.2.2, a v4.1 client may send stateid seqid=0;
-	// bypass the seqid comparison as in LockExisting. lockState.Stateid.Seqid
-	// is >=2 after any prior LOCK, so without this bypass every v4.1 LOCKU
-	// would return NFS4ERR_OLD_STATEID, making unlock impossible.
-	if lockStateid.Seqid != 0 {
-		if lockStateid.Seqid < lockState.Stateid.Seqid {
-			return nil, ErrOldStateid
-		}
-		if lockStateid.Seqid > lockState.Stateid.Seqid {
-			return nil, ErrBadStateid
-		}
-	}
-
-	// 4. Validate the byte range
-	if err := validateLockRange(offset, length); err != nil {
+	if err := checkStateidSeqid(lockStateid.Seqid, lockState.Stateid.Seqid); err != nil {
 		return nil, err
 	}
 
-	// 5. Release the lock via unified lock manager
+	// 4. Validate the byte range
+	length, err = normalizeLockRange(offset, length)
+	if err != nil {
+		return nil, err
+	}
+
+	// 5. Release the lock via the unified lock manager, with sm.mu released for
+	// the call: the manager is cross-protocol and sm.mu serializes every
+	// client's state operation server-wide (see acquireLock).
 	if lm := sm.lockManagerFor(lockState.FileHandle); lm != nil {
 		owner := lock.LockOwner{
 			OwnerID:   lockOwner.LockManagerOwnerID(),
@@ -2567,17 +3251,27 @@ func (sm *StateManager) UnlockFile(
 		}
 
 		handleKey := string(lockState.FileHandle)
-		err := lm.RemoveUnifiedLock(handleKey, owner, offset, length)
-		if err != nil {
+		sm.mu.Unlock()
+		rmErr := lm.RemoveUnifiedLock(handleKey, owner, offset, length)
+		sm.mu.Lock()
+		if rmErr != nil {
 			// Lock-not-found is OK for LOCKU (idempotent).
 			// Only fail on unexpected errors.
 			// RemoveUnifiedLock returns StoreError with ErrLockNotFound code.
 			// We treat all errors as non-fatal for idempotency.
 			logger.Debug("LOCKU: lock manager RemoveUnifiedLock returned error (idempotent OK)",
-				"error", err,
+				"error", rmErr,
 				"handle", handleKey,
 				"offset", offset,
 				"length", length)
+		}
+
+		// The state resolved above may have been freed while sm.mu was
+		// released. Removing the lock was the direction LOCKU was heading
+		// anyway, so it stands; the seqid bump below must not be committed onto
+		// state the server has since forgotten.
+		if staleErr := sm.revalidateLockStateLocked(lockState, callerClientID); staleErr != nil {
+			return nil, staleErr
 		}
 	}
 
@@ -2708,8 +3402,8 @@ func (sm *StateManager) RenewV41Lease(clientID uint64) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	record, exists := sm.v41ClientsByID[clientID]
-	if !exists {
+	record := sm.v41ClientLocked(clientID)
+	if record == nil {
 		return
 	}
 
@@ -2753,8 +3447,7 @@ func (sm *StateManager) GetStatusFlags(session *Session) uint32 {
 	}
 
 	// Check client lease expiry
-	record, exists := sm.v41ClientsByID[session.ClientID]
-	if exists && record.Lease != nil && record.Lease.IsExpired() {
+	if record := sm.v41ClientLocked(session.ClientID); record != nil && record.Lease != nil && record.Lease.IsExpired() {
 		flags |= types.SEQ4_STATUS_EXPIRED_ALL_STATE_REVOKED
 	}
 
@@ -2797,14 +3490,40 @@ func (sm *StateManager) CreateSession(
 	foreAttrs, backAttrs types.ChannelAttrs,
 	cbProgram uint32,
 	cbSecParms []types.CallbackSecParms4,
+	principal ...string,
 ) (*CreateSessionResult, []byte, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// Case 1: Unknown client
-	record, exists := sm.v41ClientsByID[clientID]
-	if !exists {
+	// Case 1: Unknown client (or an ID a v4.0 record owns: the two flows draw
+	// from one sequence, so a CREATE_SESSION can never reach a SETCLIENTID
+	// record, but the version filter keeps that invariant explicit)
+	record := sm.v41ClientLocked(clientID)
+	if record == nil {
 		return nil, nil, ErrStaleClientID
+	}
+
+	// An unconfirmed record not confirmed within a lease period is gone, so its
+	// client ID no longer resolves (RFC 8881 Section 18.35.4). Checked here as
+	// well as in the reaper so the client ID stops working the moment the lease
+	// has passed rather than at the next sweep.
+	if !record.Confirmed && time.Since(record.CreatedAt) > sm.leaseDuration {
+		logger.Debug("CREATE_SESSION: unconfirmed client record expired",
+			"client_id", fmt.Sprintf("0x%x", clientID),
+			"age", time.Since(record.CreatedAt).String())
+		sm.purgeV41Client(record)
+		return nil, nil, ErrStaleClientID
+	}
+
+	// Confirming a record is where its principal is bound, so a confirmation
+	// from another principal is a client-ID collision rather than the expected
+	// confirmation, and nothing on the server changes (RFC 8881 Section
+	// 18.36.3). A record already confirmed skips the confirmation phase
+	// entirely, which is why a later principal change is allowed.
+	if !record.Confirmed && principalHijacks(record.Principal, firstOrEmpty(principal)) {
+		logger.Debug("CREATE_SESSION: confirmation attempted by another principal",
+			"client_id", fmt.Sprintf("0x%x", clientID))
+		return nil, nil, ErrClientIDInUse
 	}
 
 	// Case 2: Replay (same seqid)
@@ -2821,6 +3540,37 @@ func (sm *StateManager) CreateSession(
 	}
 
 	// Case 3: New request (seqid == record.SequenceID + 1)
+
+	// A channel budget from which no COMPOUND could ever be sent must be
+	// rejected before any session state is allocated: accepting it would arm a
+	// slot table, a reply cache, and a lease for a channel that can never carry
+	// traffic, which is the resource leak the conformance suite's TOOSMALL rows
+	// probe. Negotiation itself only clamps downward from the server max and
+	// has no floor, so the floor check runs ahead of it.
+	if err := channelAttrsTooSmall(foreAttrs); err != nil {
+		return nil, nil, err
+	}
+	if err := channelAttrsTooSmall(backAttrs); err != nil {
+		return nil, nil, err
+	}
+
+	// Unknown flag bits draw NFS4ERR_INVAL because that is the answer the
+	// conformance suite expects (CSESS15); RFC 8881 Section 18.36.3 defines
+	// exactly three flag bits (PERSIST, CONN_BACK_CHAN, CONN_RDMA) and does
+	// not specify handling for unrecognized ones, so returning INVAL instead
+	// of silently masking is a deliberate choice: masking would let a client
+	// believe it negotiated PERSIST or RDMA support it did not get. An
+	// extension that adds a new flag bit (RFC 8178 sanctions adding bits to
+	// flag fields) must extend this check.
+	const knownFlags = uint32(types.CREATE_SESSION4_FLAG_PERSIST |
+		types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN |
+		types.CREATE_SESSION4_FLAG_CONN_RDMA)
+	if flags&^knownFlags != 0 {
+		return nil, nil, &NFS4StateError{
+			Status:  types.NFS4ERR_INVAL,
+			Message: fmt.Sprintf("unknown CREATE_SESSION flag bits 0x%08x", flags&^knownFlags),
+		}
+	}
 
 	// Check per-client session limit
 	if len(sm.sessionsByClientID[clientID]) >= sm.maxSessionsPerClient {
@@ -2853,6 +3603,11 @@ func (sm *StateManager) CreateSession(
 
 	// First CREATE_SESSION confirms the client
 	if !record.Confirmed {
+		// A record established by the client-restart case replaces the confirmed
+		// record it superseded, which is destroyed here now that the session is
+		// created (RFC 8881 Section 18.36.3).
+		sm.collapseSupersededLocked(record)
+
 		record.Confirmed = true
 		record.Lease = NewLeaseState(record.ClientID, sm.leaseDuration, nil)
 		record.LastRenewal = time.Now()
@@ -2918,8 +3673,8 @@ func (sm *StateManager) CacheCreateSessionResponse(clientID uint64, responseByte
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	record, exists := sm.v41ClientsByID[clientID]
-	if !exists {
+	record := sm.v41ClientLocked(clientID)
+	if record == nil {
 		return
 	}
 
@@ -3032,7 +3787,7 @@ func (sm *StateManager) ListSessionsForClient(clientID uint64) []*Session {
 //
 // The reaper runs every 30 seconds and checks:
 //   - Clients with expired leases: destroys all sessions, purges client
-//   - Unconfirmed clients older than 2x lease duration: purges client
+//   - Unconfirmed clients older than the lease duration: purges client
 //
 // Stops when ctx is cancelled.
 func (sm *StateManager) StartSessionReaper(ctx context.Context) {
@@ -3060,9 +3815,12 @@ func (sm *StateManager) reapExpiredSessions() {
 	now := time.Now()
 
 	// Collect client IDs to purge (avoid modifying map during iteration)
-	var toPurge []*V41ClientRecord
+	var toPurge []*ClientRecord
 
-	for _, record := range sm.v41ClientsByID {
+	for _, record := range sm.clientsByID {
+		if record.MinorVersion != 1 {
+			continue
+		}
 		// Check lease expiry for confirmed clients
 		if record.Lease != nil && record.Lease.IsExpired() {
 			logger.Info("Session reaper: lease expired",
@@ -3076,8 +3834,9 @@ func (sm *StateManager) reapExpiredSessions() {
 			continue
 		}
 
-		// Check for unconfirmed clients that timed out
-		if !record.Confirmed && now.Sub(record.CreatedAt) > 2*sm.leaseDuration {
+		// Check for unconfirmed clients that timed out. A record not confirmed
+		// within a lease period is removed (RFC 8881 Section 18.35.4).
+		if !record.Confirmed && now.Sub(record.CreatedAt) > sm.leaseDuration {
 			logger.Info("Session reaper: unconfirmed client timed out",
 				"client_id", fmt.Sprintf("0x%x", record.ClientID),
 				"client_addr", record.ClientAddr,
@@ -3415,6 +4174,13 @@ func (sm *StateManager) StartBackchannelSender(ctx context.Context, sessionID ty
 	session.backchannelSender = sender
 
 	go sender.Run(ctx)
+
+	// The back channel just became writable, which is the first moment a
+	// CB_NULL to this client can succeed or fail for a real reason. Probing
+	// here rather than in CreateSession keeps the callback round-trip off the
+	// mount path, and this function is the once-per-session gate: it returned
+	// above if a sender already existed.
+	go sm.probeV41CallbackPath(ctx, sender)
 
 	logger.Info("BackchannelSender started for session",
 		"session_id", sessionID.String(),

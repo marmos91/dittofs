@@ -92,7 +92,7 @@ func (s *Service) ReadDirectory(ctx *AuthContext, dirHandle FileHandle, cookie u
 	token := s.cookies.GetToken(cookie)
 
 	// Call store's CRUD ListChildren method
-	entries, nextToken, err := store.ListChildren(ctx.Context, dirHandle, token, limit)
+	entries, nextToken, err := store.ListChildren(ctx.Context, dirHandle, token, limit, WithAttrs)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +206,7 @@ func (s *Service) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, nam
 	}
 
 	// Check if directory is empty
-	entries, _, err := store.ListChildren(ctx.Context, dirHandle, "", 1)
+	entries, _, err := store.ListChildren(ctx.Context, dirHandle, "", 1, NamesOnly)
 	if err == nil && len(entries) > 0 {
 		return nil, &StoreError{
 			Code:    ErrNotEmpty,

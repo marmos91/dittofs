@@ -17,7 +17,7 @@ test-quick: ## Run BVT tests with memory profile (fastest)
 	./run.sh --profile memory
 
 test-full: ## Run BVT tests across all profiles
-	@for p in memory memory-fs badger-fs badger-s3 postgres-s3; do \
+	@for p in memory badger badger-s3 postgres-s3; do \
 		echo "=== Profile: $$p ==="; \
 		./run.sh --profile $$p || exit 1; \
 	done

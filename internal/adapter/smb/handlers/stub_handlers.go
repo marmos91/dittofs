@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"unicode/utf16"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -114,7 +113,9 @@ func (h *Handler) handleGetReparsePoint(ctx *SMBHandlerContext, body []byte) (*H
 	// BEFORE BuildAuthContext — otherwise ctx.User==nil falls into the
 	// anonymous arm and synthesises UID-0 (root), bypassing DACL checks on
 	// the downstream ReadSymlink (#619, same class as #603).
-	h.primeAuthContextFromOpenFile(ctx, openFile)
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return NewErrorResult(status), nil
+	}
 
 	// Build auth context
 	authCtx, err := BuildAuthContext(ctx)
@@ -133,7 +134,7 @@ func (h *Handler) handleGetReparsePoint(ctx *SMBHandlerContext, body []byte) (*H
 		if storeErr, ok := err.(*metadata.StoreError); ok && storeErr.Code == metadata.ErrInvalidArgument {
 			return NewErrorResult(types.StatusNotAReparsePoint), nil
 		}
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 
 	logger.Debug("IOCTL GET_REPARSE_POINT: symlink target", "path", openFile.Name().Path, "target", target)
@@ -248,7 +249,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	if h.NotifyRegistry != nil {
 		var cancelled *PendingNotify
 		if ctx.RequestAsyncId != 0 {
-			cancelled = h.NotifyRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)
+			cancelled = h.NotifyRegistry.UnregisterByAsyncId(ctx.ConnID, ctx.RequestAsyncId)
 		} else {
 			cancelled = h.NotifyRegistry.CancelByMessageID(ctx.ConnID, ctx.MessageID)
 		}
@@ -310,9 +311,9 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	if h.PipeReadRegistry != nil {
 		var pendingRead *PendingPipeRead
 		if ctx.RequestAsyncId != 0 {
-			pendingRead = h.PipeReadRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)
+			pendingRead = h.PipeReadRegistry.UnregisterByAsyncId(ctx.ConnID, ctx.RequestAsyncId)
 		} else {
-			pendingRead = h.PipeReadRegistry.UnregisterByMessageID(ctx.MessageID)
+			pendingRead = h.PipeReadRegistry.UnregisterByMessageID(ctx.ConnID, ctx.MessageID)
 		}
 		if pendingRead != nil {
 			cancelledSomething = true
@@ -350,7 +351,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	if h.PendingLockRegistry != nil {
 		var parked *PendingLock
 		if ctx.RequestAsyncId != 0 {
-			parked = h.PendingLockRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)
+			parked = h.PendingLockRegistry.UnregisterByAsyncId(ctx.ConnID, ctx.RequestAsyncId)
 		} else {
 			parked = h.PendingLockRegistry.UnregisterByMessageID(ctx.ConnID, ctx.MessageID)
 		}
@@ -373,7 +374,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 			}
 		}
 	}
-	if cancelFn, ok := h.pendingLocks.LoadAndDelete(ctx.MessageID); ok {
+	if cancelFn, ok := h.pendingLocks.LoadAndDelete(lockMsgKey{ConnID: ctx.ConnID, MessageID: ctx.MessageID}); ok {
 		cancelledSomething = true
 		cancelFn.(context.CancelFunc)()
 		logger.Debug("CANCEL: cancelled inline blocking LOCK",
@@ -386,7 +387,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	if h.PendingCreateRegistry != nil {
 		var parked *PendingCreate
 		if ctx.RequestAsyncId != 0 {
-			parked = h.PendingCreateRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)
+			parked = h.PendingCreateRegistry.UnregisterByAsyncId(ctx.ConnID, ctx.RequestAsyncId)
 		} else {
 			parked = h.PendingCreateRegistry.UnregisterByMessageID(ctx.ConnID, ctx.MessageID)
 		}
@@ -506,9 +507,13 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 
-	// Verify session and tree match
-	if openFile.SessionID != ctx.SessionID || openFile.TreeID != ctx.TreeID {
-		logger.Debug("CHANGE_NOTIFY: session/tree mismatch")
+	// CHANGE_NOTIFY primes no auth context off the handle, so it applies the
+	// ownership predicate directly. It keeps StatusInvalidHandle, the status
+	// this path has always returned, rather than the helper's StatusFileClosed.
+	if !openFileBelongsToRequest(ctx, openFile) {
+		logger.Debug("CHANGE_NOTIFY: handle does not belong to the request's tree/session",
+			"handleTreeID", openFile.TreeID, "reqTreeID", ctx.TreeID,
+			"handleSessionID", openFile.SessionID, "reqSessionID", ctx.SessionID)
 		return NewErrorResult(types.StatusInvalidHandle), nil
 	}
 
@@ -759,6 +764,17 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 				"sessionID", ctx.SessionID,
 				"messageID", ctx.MessageID)
 			return NewErrorResult(types.StatusCancelled), nil
+		}
+		// Per [MS-FSA] 2.1.5.11 step 4: a CHANGE_NOTIFY on a directory that
+		// is already marked for deletion is completed immediately with
+		// STATUS_DELETE_PENDING rather than left waiting. STATUS_DELETE_PENDING
+		// is error severity, so the error body is the right one here.
+		if errors.Is(err, ErrDirectoryDeletePending) {
+			logger.Debug("CHANGE_NOTIFY: directory marked for deletion — replying STATUS_DELETE_PENDING",
+				"path", watchPath,
+				"sessionID", ctx.SessionID,
+				"messageID", ctx.MessageID)
+			return NewErrorResult(types.StatusDeletePending), nil
 		}
 		logger.Warn("CHANGE_NOTIFY: rejected — too many pending watches",
 			"path", watchPath,
@@ -1082,7 +1098,7 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 	metaSvc := h.Registry.GetMetadataService()
 	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
-		return NewErrorResult(common.MapToSMB(err)), nil
+		return NewErrorResult(types.StatusForErr(err)), nil
 	}
 
 	// Parse READ_FILE_USN_DATA input to determine requested version.

@@ -280,17 +280,11 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		logger.Debug("WRITE: invalid session ID", "sessionID", openFile.SessionID)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUserSessionDeleted}}, nil
 	}
-	// Per MS-SMB2 §3.3.5.2.5: verify the request's TreeID/SessionID match
-	// the handle's owning TreeConnect/Session. The smb2.tcon torture test
-	// exercises this by deliberately mis-setting the wire-level TID/SID
-	// and expecting an error (Samba returns FILE_CLOSED).
-	if openFile.TreeID != ctx.TreeID || openFile.SessionID != ctx.SessionID {
-		logger.Debug("WRITE: handle does not belong to request's tree/session",
-			"handleTreeID", openFile.TreeID, "reqTreeID", ctx.TreeID,
-			"handleSessionID", openFile.SessionID, "reqSessionID", ctx.SessionID)
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileClosed}}, nil
+	// Priming also refuses a handle that does not belong to this request's
+	// TreeConnect/Session (MS-SMB2 §3.3.5.2.5).
+	if status := h.primeAuthContextFromOpenFile(ctx, openFile); status != types.StatusSuccess {
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
 	}
-	h.primeAuthContextFromOpenFile(ctx, openFile)
 
 	// ========================================================================
 	// Step 5: Check write permission at share level
@@ -427,7 +421,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
 	if err != nil {
 		logger.Debug("WRITE: prepare failed", "path", path, "error", err)
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
 	}
 
 	// ========================================================================
@@ -439,7 +433,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	err = common.WriteToBlockStore(authCtx.Context, blockStore, writeOp.PayloadID, req.Data, req.Offset)
 	if err != nil {
 		logger.Warn("WRITE: content write failed", "path", path, "error", err)
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: common.MapContentToSMB(err)}}, nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFor(common.ClassifyBlockStoreError(err))}}, nil
 	}
 
 	// ========================================================================
@@ -451,7 +445,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		logger.Warn("WRITE: commit failed", "path", path, "error", err)
 		// Data was written but metadata not updated - this is an inconsistent state
 		// but we still report the error
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusForErr(err)}}, nil
 	}
 
 	// Per MS-SMB2 2.2.21 the write-through bit is undefined for the 2.0.2 dialect,
@@ -478,10 +472,10 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		// guarantee that does not hold.
 		if _, flushErr := blockStore.Flush(authCtx.Context, string(writeOp.PayloadID)); flushErr != nil {
 			logger.Warn("WRITE: write-through content flush failed", "path", path, "error", flushErr)
-			writeStatus = common.MapContentToSMB(flushErr)
+			writeStatus = types.StatusFor(common.ClassifyBlockStoreError(flushErr))
 		} else if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, true); flushErr != nil {
 			logger.Warn("WRITE: write-through metadata flush failed", "path", path, "error", flushErr)
-			writeStatus = common.MapToSMB(flushErr)
+			writeStatus = types.StatusForErr(flushErr)
 		}
 	} else {
 		// SMB requires immediate metadata visibility across sessions (unlike NFS

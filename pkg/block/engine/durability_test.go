@@ -24,11 +24,11 @@ func TestEngine_Flush_DurableLocalDefault_NoSyncRemote(t *testing.T) {
 		ctx := context.Background()
 		mem := remotememory.New()
 		mem.SetDurable(true)
-		fx := newCarveFixture(t, mem, DefaultBlockCarveBytes) // durable fs local, ManualSync, wired carve
+		fx := newCarveFixture(t, mem, defaultTestCarveBlockSize) // durable fs local, ManualSync, wired carve
 		bs, err := New(BlockStoreConfig{
 			Local:           fx.local,
 			Remote:          mem,
-			Syncer:          fx.syncer,
+			RemoteSync:      fx.syncer,
 			FileChunkStore:  fx.ms,
 			SyncedHashStore: fx.ms,
 		})
@@ -58,8 +58,8 @@ func TestEngine_Flush_DurableLocalDefault_NoSyncRemote(t *testing.T) {
 func TestEngine_LocalDurable_MemoryDefaultsFalse(t *testing.T) {
 	localStore := localmemory.New()
 	fbs := newStubFileChunkStore()
-	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
-	bs, err := New(BlockStoreConfig{Local: localStore, Syncer: syncer, FileChunkStore: fbs})
+	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
+	bs, err := New(BlockStoreConfig{Local: localStore, RemoteSync: syncer, FileChunkStore: fbs})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -77,8 +77,8 @@ func TestEngine_LocalDurable_OverrideTrue(t *testing.T) {
 	localStore := localmemory.New()
 	localStore.SetDurable(true) // operator override
 	fbs := newStubFileChunkStore()
-	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
-	bs, err := New(BlockStoreConfig{Local: localStore, Syncer: syncer, FileChunkStore: fbs})
+	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
+	bs, err := New(BlockStoreConfig{Local: localStore, RemoteSync: syncer, FileChunkStore: fbs})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -93,8 +93,8 @@ func TestEngine_RemoteDurable_MemoryDefaultsFalse(t *testing.T) {
 	localStore := localmemory.New()
 	remoteStore := remotememory.New()
 	fbs := newStubFileChunkStore()
-	syncer := NewSyncer(localStore, remoteStore, fbs, DefaultConfig())
-	bs, err := New(BlockStoreConfig{Local: localStore, Remote: remoteStore, Syncer: syncer, FileChunkStore: fbs})
+	syncer := NewRemoteSync(localStore, remoteStore, fbs, DefaultConfig())
+	bs, err := New(BlockStoreConfig{Local: localStore, Remote: remoteStore, RemoteSync: syncer, FileChunkStore: fbs})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -110,8 +110,8 @@ func TestEngine_RemoteDurable_OverrideTrue(t *testing.T) {
 	remoteStore := remotememory.New()
 	remoteStore.SetDurable(true) // simulate a durable remote (s3 type-default)
 	fbs := newStubFileChunkStore()
-	syncer := NewSyncer(localStore, remoteStore, fbs, DefaultConfig())
-	bs, err := New(BlockStoreConfig{Local: localStore, Remote: remoteStore, Syncer: syncer, FileChunkStore: fbs})
+	syncer := NewRemoteSync(localStore, remoteStore, fbs, DefaultConfig())
+	bs, err := New(BlockStoreConfig{Local: localStore, Remote: remoteStore, RemoteSync: syncer, FileChunkStore: fbs})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -125,8 +125,8 @@ func TestEngine_RemoteDurable_OverrideTrue(t *testing.T) {
 func TestEngine_RequireDurableCommit_DefaultsFalse(t *testing.T) {
 	localStore := localmemory.New()
 	fbs := newStubFileChunkStore()
-	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
-	bs, err := New(BlockStoreConfig{Local: localStore, Syncer: syncer, FileChunkStore: fbs})
+	syncer := NewRemoteSync(localStore, nil, fbs, DefaultConfig())
+	bs, err := New(BlockStoreConfig{Local: localStore, RemoteSync: syncer, FileChunkStore: fbs})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

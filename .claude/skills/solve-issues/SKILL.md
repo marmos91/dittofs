@@ -184,7 +184,9 @@ work rather than the reverse. For each PR in turn:
 ```bash
 gh pr checks <PR>                                  # still green on the current base?
 gh pr merge <PR> --squash --delete-branch
-gh issue close <N> --comment "Fixed in #<PR>."     # manual — auto-close only fires on main
+# The issue auto-closes: develop is the default branch. To add verification
+# notes use `gh issue comment` — `gh issue close --comment` on an already-closed
+# issue exits 0 and drops the comment.
 ```
 
 Then, before the next one:

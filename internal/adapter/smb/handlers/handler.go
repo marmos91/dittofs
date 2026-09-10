@@ -144,7 +144,7 @@ type Handler struct {
 	// smb2.lock.open-brlock-deadlock / ctdb-delrec-deadlock).
 	LockWaitGraph *lock.WaitForGraph
 
-	// Pending blocking lock operations (messageID -> cancel func). Legacy
+	// Pending blocking lock operations (lockMsgKey -> cancel func). Legacy
 	// path for inline retry inside the request goroutine — used as a
 	// fallback when async parking is unavailable (no callback wired,
 	// async-credit pool exhausted, or registry full).
@@ -1597,7 +1597,7 @@ func (h *Handler) closeFilesWithFilter(
 			}
 		}
 
-		// Per [MS-FSA] 2.1.5.14.3: a directory marked for deletion completes
+		// Per [MS-FSA] 2.1.5.15.3 step 3.2.3.2: a directory marked for deletion completes
 		// every pending CHANGE_NOTIFY on it with STATUS_DELETE_PENDING. Runs
 		// after the loop above so a watch on a handle this teardown is closing
 		// still gets the STATUS_NOTIFY_CLEANUP its own close owes it; what is
@@ -2035,7 +2035,7 @@ func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Ses
 
 	if sess != nil && sess.User != nil {
 		// Use session user's UID/GID from User object
-		uid, gid := getUserIdentity(sess.User)
+		uid, gid := uidGIDFromSessionUser(sess.User)
 		authCtx.Identity.UID = &uid
 		authCtx.Identity.GID = &gid
 		authCtx.Identity.Username = sess.User.Username

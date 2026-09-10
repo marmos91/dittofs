@@ -6,6 +6,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // InjectShareForTesting inserts a share directly, bypassing AddShare validation.
@@ -38,6 +39,25 @@ func (s *Service) RegisterShareForTesting(name string) {
 		// auth-flavor policy denies every AUTH_UNIX op.
 		AllowAuthSys: true,
 	}
+}
+
+// SetRootHandleForTesting sets a share's RootHandle in the registry under lock.
+// Test-only — RegisterShareForTesting leaves it empty, which makes an NFSv4
+// LOOKUP across the share's pseudo-fs export junction land on a zero-length
+// handle instead of the share root. Returns ErrShareNotFound if the share is
+// not registered.
+//
+// The handle is copied, so a caller that reuses or mutates its slice afterwards
+// cannot reach into registry state.
+func (s *Service) SetRootHandleForTesting(name string, handle metadata.FileHandle) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	share, ok := s.registry[name]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
+	}
+	share.RootHandle = append(metadata.FileHandle(nil), handle...)
+	return nil
 }
 
 // SetLocalStoreDirForTesting overrides the per-share localStoreDir field.

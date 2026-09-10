@@ -7,6 +7,7 @@ package storetest
 
 import (
 	"context"
+	"crypto/rand"
 	"sync"
 	"testing"
 	"time"
@@ -17,11 +18,17 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// mustSyncedHash derives a deterministic ContentHash from a string. Used to
-// scope subtests on a shared store instance — each subtest picks a
-// distinct seed so its state cannot collide with another subtest's.
+// runID scopes this process's fixture hashes away from the rows an earlier run
+// left in a store that outlives the process: MarkSynced is first-wins, so a row
+// seeded under a fixed hash keeps the syncedAt of the run that created it.
+var runID = rand.Text()
+
+// mustSyncedHash derives a ContentHash from a string, stable within a process
+// and distinct from every other run's. Used to scope subtests on a shared store
+// instance — each subtest picks a distinct seed so its state cannot collide
+// with another subtest's, or another run's.
 func mustSyncedHash(seed string) block.ContentHash {
-	return blake3.Sum256([]byte(seed))
+	return blake3.Sum256([]byte(runID + "/" + seed))
 }
 
 // RunSyncedHashStoreSuite exercises the SyncedHashStore contract for a
@@ -32,9 +39,10 @@ func mustSyncedHash(seed string) block.ContentHash {
 //	    storetest.RunSyncedHashStoreSuite(t, s)
 //	}
 //
-// Each subtest uses a distinct hash seed so subtests on a shared store
-// instance do not collide. Callers MUST pass a freshly-created store —
-// the suite does not reset state between subtests.
+// Each subtest uses a distinct hash seed, scoped to the run (see runID), so
+// subtests on a shared store — or on a store that outlives the process — do
+// not collide. Callers MUST pass a freshly-created store — the suite does
+// not reset state between subtests.
 func RunSyncedHashStoreSuite(t *testing.T, s metadata.SyncedHashStore) {
 	t.Helper()
 

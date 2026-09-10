@@ -70,7 +70,7 @@ func TestOpen_ClientIDSpansPrincipals(t *testing.T) {
 	setCurrentFH(victim, fx.rootHandle)
 	victimStateid := openStateid(t, fx, victim, 1, clientID, owner, "victim.txt",
 		types.OPEN4_CREATE, types.OPEN4_SHARE_ACCESS_BOTH)
-	if _, err := sm.ConfirmOpen(&victimStateid, 2); err != nil {
+	if _, err := sm.ConfirmOpen(&victimStateid, 2, 0); err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
 
@@ -80,8 +80,8 @@ func TestOpen_ClientIDSpansPrincipals(t *testing.T) {
 
 	// The permission check is load-bearing: uid 1001 cannot write the file, and
 	// naming uid 1000's client ID and owner does not get it write access.
-	// checkOpenAccess refuses before the state layer sees the request, so seqid
-	// 3 is still unused when the read OPEN below presents it.
+	// NFS4ERR_ACCESS is one of the statuses RFC 7530 Section 9.1.7 consumes, so
+	// seqid 3 is spent on that refusal and the read OPEN below presents 4.
 	if status := doOpen(fx, other, 3, clientID, owner, "victim.txt",
 		types.OPEN4_NOCREATE, types.OPEN4_SHARE_ACCESS_BOTH).Status; status != types.NFS4ERR_ACCESS {
 		t.Errorf("OPEN for write by a uid without write permission: status = %d, want NFS4ERR_ACCESS", status)
@@ -89,7 +89,7 @@ func TestOpen_ClientIDSpansPrincipals(t *testing.T) {
 
 	// Read access it does have, and there it joins the existing open state --
 	// the documented shape of a shared client ID, not a defect.
-	shared := openStateid(t, fx, other, 3, clientID, owner, "victim.txt",
+	shared := openStateid(t, fx, other, 4, clientID, owner, "victim.txt",
 		types.OPEN4_NOCREATE, types.OPEN4_SHARE_ACCESS_READ)
 	if shared.Other != victimStateid.Other {
 		t.Errorf("second principal got a distinct open state (%x vs %x)", shared.Other, victimStateid.Other)
@@ -131,7 +131,7 @@ func TestRenew_PrincipalBinding(t *testing.T) {
 		setCurrentFH(user, fx.rootHandle)
 		stateid := openStateid(t, fx, user, 1, clientID, []byte("open-owner-1000"), "u1000.txt",
 			types.OPEN4_CREATE, types.OPEN4_SHARE_ACCESS_BOTH)
-		if _, err := sm.ConfirmOpen(&stateid, 2); err != nil {
+		if _, err := sm.ConfirmOpen(&stateid, 2, 0); err != nil {
 			t.Fatalf("ConfirmOpen: %v", err)
 		}
 
@@ -198,7 +198,16 @@ func TestSetClientID_IdentitylessCallerCannotTakeOver(t *testing.T) {
 	sm := fx.handler.StateManager
 
 	const name = "victim-client"
-	testClientID(t, sm, name, "uid:1000")
+	victim := testClientID(t, sm, name, "uid:1000")
+
+	// The bar exists to protect leased state (RFC 7530 Section 9.1.1), and
+	// Section 9.1.2 requires the takeover to be allowed against a client ID
+	// that holds none, so the victim has to hold some for this to be a test of
+	// the credential check rather than of that exemption.
+	if _, err := sm.OpenFile(victim, []byte("victim-owner"), 1, []byte("victim-fh"),
+		types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL); err != nil {
+		t.Fatalf("OpenFile for the victim: %v", err)
+	}
 
 	cb := state.CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "127.0.0.1.8.1"}
 

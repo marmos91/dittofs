@@ -12,7 +12,7 @@ import (
 // worker pool. Uploads do not go through the queue: the carve dispatcher owns
 // the local→remote path.
 type SyncQueue struct {
-	manager *Syncer
+	manager *RemoteSync
 
 	// Priority channels
 	downloads chan TransferRequest // Processed by download workers
@@ -44,7 +44,7 @@ type SyncQueue struct {
 }
 
 // NewSyncQueue creates a new transfer queue with a dedicated worker pool.
-func NewSyncQueue(m *Syncer, cfg SyncQueueConfig) *SyncQueue {
+func NewSyncQueue(m *RemoteSync, cfg SyncQueueConfig) *SyncQueue {
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = 1000
 	}

@@ -15,7 +15,7 @@ var (
 	addName   string
 	addType   string
 	addConfig string
-	// BadgerDB specific
+	// badger and sqlite
 	addDBPath string
 )
 
@@ -27,11 +27,15 @@ var addCmd = &cobra.Command{
 Supported types:
   - memory: In-memory store (fast, ephemeral)
   - badger: BadgerDB store (persistent, embedded)
+  - sqlite: SQLite store (persistent, embedded)
   - postgres: PostgreSQL store (persistent, distributed)
 
 Type-specific options:
   badger:
     --db-path: Path to BadgerDB directory (or prompted interactively)
+
+  sqlite:
+    --db-path: Path to the SQLite database file (or prompted interactively)
 
   postgres:
     --config: JSON with connection settings, or omit for interactive prompts
@@ -46,6 +50,9 @@ Examples:
   # Add a BadgerDB store interactively
   dfsctl store metadata add --name persistent-meta --type badger
 
+  # Add a SQLite store with flags
+  dfsctl store metadata add --name persistent-meta --type sqlite --db-path /data/meta.db
+
   # Add a PostgreSQL store with JSON config
   dfsctl store metadata add --name pg-meta --type postgres --config '{"host":"localhost","dbname":"dittofs"}'
 
@@ -56,9 +63,9 @@ Examples:
 
 func init() {
 	addCmd.Flags().StringVar(&addName, "name", "", "Store name (required)")
-	addCmd.Flags().StringVar(&addType, "type", "", "Store type: memory, badger, postgres (required)")
+	addCmd.Flags().StringVar(&addType, "type", "", "Store type: memory, badger, sqlite, postgres (required)")
 	addCmd.Flags().StringVar(&addConfig, "config", "", "Store configuration as JSON (for advanced config)")
-	addCmd.Flags().StringVar(&addDBPath, "db-path", "", "Database path (required for badger)")
+	addCmd.Flags().StringVar(&addDBPath, "db-path", "", "Database path (required for badger and sqlite)")
 	_ = addCmd.MarkFlagRequired("name")
 	_ = addCmd.MarkFlagRequired("type")
 }
@@ -104,7 +111,9 @@ func buildMetadataConfig(storeType, jsonConfig, dbPath string) (any, error) {
 	case "memory":
 		return nil, nil
 
-	case "badger":
+	// Both take a single path — a directory for badger, a database file for
+	// sqlite — so one prompt covers them.
+	case "badger", "sqlite":
 		path := dbPath
 		if path == "" {
 			var err error
@@ -156,6 +165,6 @@ func buildMetadataConfig(storeType, jsonConfig, dbPath string) (any, error) {
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("unknown store type: %s (supported: memory, badger, postgres)", storeType)
+		return nil, fmt.Errorf("unknown store type: %s (supported: memory, badger, sqlite, postgres)", storeType)
 	}
 }

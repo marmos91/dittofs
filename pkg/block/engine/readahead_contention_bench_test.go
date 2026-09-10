@@ -13,7 +13,7 @@ import (
 // readaheadMu, so ns/op here IS the per-read frontier-update cost under
 // contention. Run with -mutexprofile to confirm the lock, -cpuprofile for CPU.
 func BenchmarkPlanWindow_SinglePayloadConcurrent(b *testing.B) {
-	m := &Syncer{config: SyncerConfig{PrefetchBlocks: 8}}
+	m := &RemoteSync{config: RemoteSyncConfig{PrefetchBlocks: 8}}
 	b.RunParallel(func(pb *testing.PB) {
 		rng := rand.New(rand.NewSource(1)) //nolint:gosec // bench offsets
 		for pb.Next() {
@@ -27,7 +27,7 @@ func BenchmarkPlanWindow_SinglePayloadConcurrent(b *testing.B) {
 // reads spread across many payloads. A per-payload/sharded lock removes the
 // cross-payload contention this has today (all payloads share one readaheadMu).
 func BenchmarkPlanWindow_MultiPayloadConcurrent(b *testing.B) {
-	m := &Syncer{config: SyncerConfig{PrefetchBlocks: 8}}
+	m := &RemoteSync{config: RemoteSyncConfig{PrefetchBlocks: 8}}
 	payloads := make([]string, 256)
 	for i := range payloads {
 		payloads[i] = "payload-" + string(rune('a'+i%26)) + string(rune('a'+i/26))

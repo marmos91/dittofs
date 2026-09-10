@@ -167,7 +167,7 @@ func (h *Handler) Commit(
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err
 		}
-		status := common.MapToNFS3(err)
+		status := types.StatusForErr(err)
 		logger.DebugCtx(ctx.Context, "COMMIT denied", "handle", xdr.LazyHandle(req.Handle), "status", status, "client", clientIP, "error", err)
 		return &CommitResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},

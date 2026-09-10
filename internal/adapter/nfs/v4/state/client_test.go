@@ -631,7 +631,7 @@ func TestValidateAndRenewClient_V41LapsedLeaseBeforeReaping_ReturnsExpired(t *te
 	// Age the lease past its duration without running the reaper, which is the
 	// state a v4.1 client is in for up to one reaper interval.
 	sm.mu.RLock()
-	lease := sm.v41ClientsByID[clientID].Lease
+	lease := sm.v41ClientLocked(clientID).Lease
 	sm.mu.RUnlock()
 	lease.mu.Lock()
 	lease.LastRenew = time.Now().Add(-2 * lease.Duration)
@@ -677,7 +677,7 @@ func TestValidateAndRenewClient_StampsLastRenewal(t *testing.T) {
 			lastRenewal: func(sm *StateManager, clientID uint64) time.Time {
 				sm.mu.RLock()
 				defer sm.mu.RUnlock()
-				return sm.v41ClientsByID[clientID].LastRenewal
+				return sm.v41ClientLocked(clientID).LastRenewal
 			},
 		},
 	}
@@ -717,18 +717,5 @@ func TestNewStateManager_CustomLease(t *testing.T) {
 	sm := NewStateManager(30 * time.Second)
 	if sm.LeaseDuration() != 30*time.Second {
 		t.Errorf("LeaseDuration = %v, want %v", sm.LeaseDuration(), 30*time.Second)
-	}
-}
-
-func TestNewStateManager_BootEpochReasonable(t *testing.T) {
-	sm := NewStateManager(90 * time.Second)
-	now := uint32(time.Now().Unix())
-	// Boot epoch should be within 2 seconds of current time
-	diff := int64(now) - int64(sm.BootEpoch())
-	if diff < 0 {
-		diff = -diff
-	}
-	if diff > 2 {
-		t.Errorf("BootEpoch %d is too far from current time %d", sm.BootEpoch(), now)
 	}
 }

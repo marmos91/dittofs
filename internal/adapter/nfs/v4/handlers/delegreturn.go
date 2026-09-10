@@ -11,6 +11,7 @@ import (
 // Returns a delegation to the server after CB_RECALL or when the client no longer needs it.
 // Delegates to StateManager.ReturnDelegation to remove the delegation tracking state.
 // Releases delegation state; idempotent (returning an already-returned delegation succeeds).
+// A delegation held by another client is refused on NFSv4.1 and later.
 // Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_BAD_STATEID, NFS4ERR_BADXDR.
 func (h *Handler) handleDelegReturn(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
@@ -23,12 +24,12 @@ func (h *Handler) handleDelegReturn(ctx *types.CompoundContext, reader io.Reader
 	}
 
 	// Decode DELEGRETURN4args: stateid4
-	stateid, err := types.DecodeStateid4(reader)
-	if err != nil {
+	stateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
+			Status: argStatus,
 			OpCode: types.OP_DELEGRETURN,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   encodeStatusOnly(argStatus),
 		}
 	}
 
@@ -37,7 +38,7 @@ func (h *Handler) handleDelegReturn(ctx *types.CompoundContext, reader io.Reader
 		"client", ctx.ClientAddr)
 
 	// Remove delegation state
-	stateErr := h.StateManager.ReturnDelegation(stateid)
+	stateErr := h.StateManager.ReturnDelegation(stateid, ctx.SessionClientID)
 	if stateErr != nil {
 		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 DELEGRETURN failed",

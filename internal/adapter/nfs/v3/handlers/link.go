@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -70,7 +69,8 @@ type LinkResponse struct {
 // Creates a hard link to an existing file in a target directory.
 // Delegates to MetadataService.CreateHardLink after cross-share validation.
 // Adds directory entry, increments nlink; returns file attrs and dir WCC data.
-// Errors: NFS3ErrNoEnt, NFS3ErrExist, NFS3ErrIsDir, NFS3ErrNotDir, NFS3ErrAcces.
+// Errors: NFS3ErrNoEnt, NFS3ErrExist, NFS3ErrIsDir, NFS3ErrNotDir, NFS3ErrAcces,
+// NFS3ErrXDev.
 func (h *Handler) Link(
 	ctx *NFSHandlerContext,
 	req *LinkRequest,
@@ -93,18 +93,21 @@ func (h *Handler) Link(
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
-	// Decode file handle to verify it's from the same share
+	// A hard link is a second name for one inode, so both handles must name the
+	// same share. Both are decoded here: ctx.Share is the file handle's share
+	// and cannot stand in for the directory's.
 	fileHandle := metadata.FileHandle(req.FileHandle)
-	fileShareName, _, err := metadata.DecodeFileHandle(fileHandle)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "LINK failed: invalid file handle", "file_handle", fmt.Sprintf("%x", req.FileHandle), "client", clientIP, "error", err)
+	dirHandle := metadata.FileHandle(req.DirHandle)
+	fileShareName, _, fileErr := metadata.DecodeFileHandle(fileHandle)
+	dirShareName, _, dirErr := metadata.DecodeFileHandle(dirHandle)
+	if fileErr != nil || dirErr != nil {
+		logger.WarnCtx(ctx.Context, "LINK failed: invalid handle", "file_handle", fmt.Sprintf("%x", req.FileHandle), "dir_handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "file_error", fileErr, "dir_error", dirErr)
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
-	// Verify both handles are from the same share (cross-share linking not allowed)
-	if ctx.Share != fileShareName {
-		logger.WarnCtx(ctx.Context, "LINK failed: cross-share link attempted", "file_share", fileShareName, "dir_share", ctx.Share, "client", clientIP)
-		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrInval}}, nil
+	if fileShareName != dirShareName {
+		logger.WarnCtx(ctx.Context, "LINK failed: cross-share link attempted", "file_share", fileShareName, "dir_share", dirShareName, "client", clientIP)
+		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrXDev}}, nil
 	}
 
 	metaSvc, svcErr := getMetadataService(h.Registry)
@@ -113,8 +116,7 @@ func (h *Handler) Link(
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	dirHandle := metadata.FileHandle(req.DirHandle)
-	logger.DebugCtx(ctx.Context, "LINK", "share", ctx.Share, "name", req.Name)
+	logger.DebugCtx(ctx.Context, "LINK", "share", dirShareName, "name", req.Name)
 
 	authCtx, err := h.GetCachedAuthContext(ctx)
 	if err != nil {
@@ -215,7 +217,7 @@ func (h *Handler) Link(
 		dirWccAfter := h.wccAfterOrFallback(ctx, metaSvc, dirHandle, &dirFile.FileAttr)
 
 		// Map store errors to NFS status codes
-		status := common.MapToNFS3(err)
+		status := types.StatusForErr(err)
 
 		return &LinkResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},

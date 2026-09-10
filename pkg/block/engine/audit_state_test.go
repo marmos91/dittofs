@@ -29,10 +29,6 @@ func seedAuditTestStore(t *testing.T) (store *metadatamemory.MemoryMetadataStore
 	ctx := context.Background()
 	shareName = "audit-test"
 
-	// Create share + root.
-	if err := store.CreateShare(ctx, &metadata.Share{Name: shareName}); err != nil {
-		t.Fatalf("CreateShare: %v", err)
-	}
 	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0o755,

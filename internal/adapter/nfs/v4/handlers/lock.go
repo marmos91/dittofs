@@ -101,12 +101,12 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 			openSeqid = 0
 		}
 
-		openStateid, decErr := types.DecodeStateid4(reader)
-		if decErr != nil {
+		openStateid, argStatus := types.DecodeStateidArg(ctx, reader)
+		if argStatus != types.NFS4_OK {
 			return &types.CompoundResult{
-				Status: types.NFS4ERR_BADXDR,
+				Status: argStatus,
 				OpCode: types.OP_LOCK,
-				Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+				Data:   encodeStatusOnly(argStatus),
 			}
 		}
 
@@ -133,6 +133,22 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 		}
 		lockOwnerClientID = ctx.EffectiveClientID(lockOwnerClientID)
 
+		// Admit the clientid the lock-owner names before any lock-owner is
+		// keyed under it, as handleOpen does for open_owner4: a lock-owner
+		// behind an id no client record covers holds state no lease reaps.
+		if clientErr := h.StateManager.ValidateAndRenewClient(lockOwnerClientID); clientErr != nil {
+			nfsStatus := mapStateError(clientErr)
+			logger.Debug("NFSv4 LOCK rejected: invalid client id",
+				"client_id", lockOwnerClientID,
+				"error", clientErr,
+				"client", ctx.ClientAddr)
+			return &types.CompoundResult{
+				Status: nfsStatus,
+				OpCode: types.OP_LOCK,
+				Data:   encodeStatusOnly(nfsStatus),
+			}
+		}
+
 		lockOwnerData, decErr := xdr.DecodeOpaque(reader)
 		if decErr != nil {
 			return &types.CompoundResult{
@@ -157,15 +173,16 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 			lockOwnerClientID, lockOwnerData, lockSeqid,
 			openStateid, openSeqid,
 			ctx.CurrentFH, lockType, offset, length, reclaim,
+			ctx.SessionClientID,
 		)
 	} else {
 		// exist_lock_owner4 path
-		lockStateid, decErr := types.DecodeStateid4(reader)
-		if decErr != nil {
+		lockStateid, argStatus := types.DecodeStateidArg(ctx, reader)
+		if argStatus != types.NFS4_OK {
 			return &types.CompoundResult{
-				Status: types.NFS4ERR_BADXDR,
+				Status: argStatus,
 				OpCode: types.OP_LOCK,
-				Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+				Data:   encodeStatusOnly(argStatus),
 			}
 		}
 
@@ -195,6 +212,7 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 			ctx.Context,
 			lockStateid, lockSeqid,
 			ctx.CurrentFH, lockType, offset, length, reclaim,
+			ctx.SessionClientID,
 		)
 	}
 
@@ -246,9 +264,10 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 	}
 
 	return &types.CompoundResult{
-		Status: types.NFS4_OK,
-		OpCode: types.OP_LOCK,
-		Data:   buf.Bytes(),
+		Status:  types.NFS4_OK,
+		Stateid: &result.Stateid,
+		OpCode:  types.OP_LOCK,
+		Data:    buf.Bytes(),
 	}
 }
 
@@ -315,12 +334,46 @@ func (h *Handler) handleLockT(ctx *types.CompoundContext, reader io.Reader) *typ
 	}
 	clientID = ctx.EffectiveClientID(clientID)
 
+	// LOCKT creates no state, but the clientid its lock_owner4 names is the
+	// identity the probe is made on behalf of: one no client record covers
+	// cannot be answered "no conflict".
+	if clientErr := h.StateManager.ValidateAndRenewClient(clientID); clientErr != nil {
+		nfsStatus := mapStateError(clientErr)
+		logger.Debug("NFSv4 LOCKT rejected: invalid client id",
+			"client_id", clientID,
+			"error", clientErr,
+			"client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: nfsStatus,
+			OpCode: types.OP_LOCKT,
+			Data:   encodeStatusOnly(nfsStatus),
+		}
+	}
+
 	ownerData, err := xdr.DecodeOpaque(reader)
 	if err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_LOCKT,
 			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+		}
+	}
+
+	// LOCKT is defined only over regular files (RFC 7530 Section 16.10.4):
+	// a directory is NFS4ERR_ISDIR and any other type NFS4ERR_INVAL. The lock
+	// tables are keyed by filehandle bytes alone, so without this gate a
+	// probe against a directory or a device node answered NFS4_OK.
+	fileType, status := h.fileTypeForHandle(ctx, ctx.CurrentFH)
+	if status == types.NFS4_OK {
+		status = regularFileStatus(fileType)
+	}
+	if status != types.NFS4_OK {
+		logger.Debug("NFSv4 LOCKT refused",
+			"type", fileType, "status", status, "client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: status,
+			OpCode: types.OP_LOCKT,
+			Data:   encodeStatusOnly(status),
 		}
 	}
 
@@ -414,12 +467,12 @@ func (h *Handler) handleLockU(ctx *types.CompoundContext, reader io.Reader) *typ
 		seqid = 0
 	}
 
-	lockStateid, err := types.DecodeStateid4(reader)
-	if err != nil {
+	lockStateid, argStatus := types.DecodeStateidArg(ctx, reader)
+	if argStatus != types.NFS4_OK {
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADXDR,
+			Status: argStatus,
 			OpCode: types.OP_LOCKU,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   encodeStatusOnly(argStatus),
 		}
 	}
 
@@ -452,6 +505,7 @@ func (h *Handler) handleLockU(ctx *types.CompoundContext, reader io.Reader) *typ
 	// Delegate to StateManager
 	unlockResult, stateErr := h.StateManager.UnlockFile(
 		lockStateid, seqid, lockType, offset, length,
+		ctx.SessionClientID,
 	)
 	if stateErr != nil {
 		if replay := asReplay(types.OP_LOCKU, stateErr); replay != nil {
@@ -480,8 +534,9 @@ func (h *Handler) handleLockU(ctx *types.CompoundContext, reader io.Reader) *typ
 	}
 
 	return &types.CompoundResult{
-		Status: types.NFS4_OK,
-		OpCode: types.OP_LOCKU,
-		Data:   buf.Bytes(),
+		Status:  types.NFS4_OK,
+		Stateid: &unlockResult.Stateid,
+		OpCode:  types.OP_LOCKU,
+		Data:    buf.Bytes(),
 	}
 }

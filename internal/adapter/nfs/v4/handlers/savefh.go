@@ -25,6 +25,10 @@ func (h *Handler) handleSaveFH(ctx *types.CompoundContext, _ io.Reader) *types.C
 	ctx.SavedFH = make([]byte, len(ctx.CurrentFH))
 	copy(ctx.SavedFH, ctx.CurrentFH)
 
+	// The current stateid is saved with it (RFC 8881 Section 16.2.3.1.2), so a
+	// later RESTOREFH brings back the pair the client left here.
+	ctx.SaveCurrentStateid()
+
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,
 		OpCode: types.OP_SAVEFH,

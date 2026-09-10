@@ -194,12 +194,6 @@ func (m multiHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID stri
 	return nil
 }
 
-// gcHoldForShare returns the full hold set for a single share's local-tier GC
-// pass: snapshot manifests plus open-but-unlinked files.
-func (r *Runtime) gcHoldForShare(shareName string) engine.HoldProvider {
-	return r.gcHoldForRemote([]string{shareName})
-}
-
 // gcHoldForRemote returns the full hold set for a remote-tier GC pass scoped
 // to the shares that reference the remote: snapshot manifests plus
 // open-but-unlinked files.

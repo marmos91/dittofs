@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"testing"
 
@@ -55,6 +56,10 @@ func runChunkRefOpsTests(t *testing.T, factory StoreFactory) {
 
 	t.Run("MultiPassMerge", func(t *testing.T) {
 		testChunkRef_MultiPassMerge(t, factory)
+	})
+
+	t.Run("ManyBlocksWithStartOffset", func(t *testing.T) {
+		testChunkRef_ManyBlocksWithStartOffset(t, factory)
 	})
 }
 
@@ -111,6 +116,67 @@ func testChunkRef_MultiPassMerge(t *testing.T, factory StoreFactory) {
 	bk := snapshotHashes(t, store)
 	if bk.Contains(hashOfSeed("mp-a1")) {
 		t.Errorf("WriteSnapshot still references superseded hash mp-a1 after overlay")
+	}
+}
+
+// testChunkRef_ManyBlocksWithStartOffset writes a manifest long enough that a
+// backend batching its writes has to split them, and gives every ref a
+// non-zero StartOffset.
+//
+// Both halves cover a blind spot. StartOffset says where a chunk's bytes begin
+// inside a packed block, so a backend that stores or reads a zero there serves
+// the wrong bytes with no error to notice — and assertBlocks compares only
+// hash, offset and size, so nothing else in the suite would see it. The length
+// then pushes past the point where a batching backend starts its second and
+// third statement, where an off-by-one in how a row's parameters are numbered
+// would write the remaining rows under the wrong values.
+//
+// The shrink at the end is the same argument for the delete side: it removes
+// enough offsets to need more than one statement.
+func testChunkRef_ManyBlocksWithStartOffset(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+
+	rootHandle := createTestShare(t, store, "blockref-many")
+	fileHandle := createTestFile(t, store, "blockref-many", rootHandle, "many.bin", 0o644)
+
+	const nBlocks = 401
+	blocks := make([]block.ChunkRef, nBlocks)
+	for i := range blocks {
+		blocks[i] = block.ChunkRef{
+			Hash:   hashOfSeed(fmt.Sprintf("many-%d", i)),
+			Offset: uint64(i) << 20,
+			Size:   1 << 20,
+			// Distinct and non-zero, so a dropped or transposed column shows up
+			// as a specific wrong value rather than a plausible one.
+			StartOffset: uint32(i+1) * 64,
+		}
+	}
+	putBlocks(t, store, fileHandle, blocks)
+	assertBlocksWithStartOffset(t, store, fileHandle, blocks)
+
+	// Shrink to a single ref. Every other offset has to be deleted, which is
+	// more than one statement's worth for a backend that batches them.
+	putBlocks(t, store, fileHandle, blocks[:1])
+	assertBlocksWithStartOffset(t, store, fileHandle, blocks[:1])
+}
+
+// assertBlocksWithStartOffset compares the stored manifest against want in
+// full. assertBlocks deliberately ignores StartOffset; this does not.
+func assertBlocksWithStartOffset(t *testing.T, store metadata.Store, fileHandle metadata.FileHandle, want []block.ChunkRef) {
+	t.Helper()
+	ctx := t.Context()
+
+	got, err := store.GetFile(ctx, fileHandle)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	if len(got.Blocks) != len(want) {
+		t.Fatalf("Blocks len: got %d, want %d", len(got.Blocks), len(want))
+	}
+	for i, w := range want {
+		if got.Blocks[i] != w {
+			t.Fatalf("Blocks[%d] = %+v, want %+v", i, got.Blocks[i], w)
+		}
 	}
 }
 

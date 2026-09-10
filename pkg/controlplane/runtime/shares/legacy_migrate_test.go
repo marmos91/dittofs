@@ -31,11 +31,11 @@ func newMigrateEngine(t *testing.T, dir string, ms *metamem.MemoryMetadataStore,
 	// remote outlives the first store the same way ref-counting keeps it alive in
 	// production (a second engine reopens over the same remote after the upgrade).
 	engineRemote := &nonClosingRemote{rem}
-	syncer := engine.NewSyncer(localStore, engineRemote, ms, cfg)
+	syncer := engine.NewRemoteSync(localStore, engineRemote, ms, cfg)
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
 		Remote:          engineRemote,
-		Syncer:          syncer,
+		RemoteSync:      syncer,
 		FileChunkStore:  ms,
 		SyncedHashStore: ms,
 		ReadBufferBytes: 64 * 1024 * 1024,

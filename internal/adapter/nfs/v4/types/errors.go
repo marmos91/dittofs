@@ -5,14 +5,9 @@ import (
 	"unicode/utf8"
 )
 
-// Note: MapMetadataErrorToNFS4 was removed as part of consolidating every
-// metadata.ErrorCode -> protocol-code translator into
-// internal/adapter/common/errmap.go. NFSv4 handlers now call
-// common.MapToNFS4(err) directly. Keeping a wrapper here would have created
-// an import cycle (internal/adapter/common imports internal/adapter/nfs/v4/types
-// for the NFS4ERR_* constants), so the wrapper was deleted and callers
-// migrated. The coverage test for every ErrorCode lives in
-// internal/adapter/common/errmap_test.go.
+// The metadata.ErrorCode -> NFS4 status translation lives in StatusFor
+// (statusfor.go, same package): every ErrorCode is mapped there, with a
+// full-enum walk test in statusfor_test.go.
 
 // ValidateUTF8Filename validates an NFSv4 filename component per RFC 7530 Section 12.7.
 //
@@ -23,7 +18,7 @@ import (
 //   - NFS4_OK if the filename is valid
 //   - NFS4ERR_INVAL if the filename is empty
 //   - NFS4ERR_BADCHAR if the filename contains invalid UTF-8 or null bytes
-//   - NFS4ERR_BADNAME if the filename contains path separators ('/')
+//   - NFS4ERR_BADNAME if the filename contains path separators ('/'), or is "." or ".."
 //   - NFS4ERR_NAMETOOLONG if the filename exceeds 255 bytes
 func ValidateUTF8Filename(name string) uint32 {
 	// Empty filename is invalid
@@ -43,6 +38,12 @@ func ValidateUTF8Filename(name string) uint32 {
 
 	// Path separators are not allowed in component names
 	if strings.ContainsRune(name, '/') {
+		return NFS4ERR_BADNAME
+	}
+
+	// "." and ".." are directory-relative references, not names a client may
+	// pass as a component: the server must never resolve or create them.
+	if name == "." || name == ".." {
 		return NFS4ERR_BADNAME
 	}
 
