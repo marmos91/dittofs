@@ -52,12 +52,16 @@ flake worth re-running.
 
 ## Expected Failures
 
+This table was last walked out from a full v4.1 memory-backend run; the
+per-backend bar above still applies to future walk-outs — a SQL-backend
+pass is still owed for any row that turns out to be backend-dependent.
+
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | DELEG1 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
 | DELEG2 | bug | delegation withheld on this OPEN: the callback-path probe had not answered yet | #2329 |
 | DELEG23 | bug | delegation break not received: every CB_RECALL fails with no back-bound connection for the session | #2329 |
-| DELEG26 | bug | delegation read after close fails: delegation recall handling, same harness-side family | #2329 |
+| DELEG26 | bug | delegation read after close fails: no delegation granted (Failed to get delegation), same #2329 family | #2329 |
 | DELEG3 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
 | DELEG5 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
 | DELEG6 | bug | delegation granted, then pynfs errors reading the recall event: 'Event' object has no attribute 'stateid' | #2329 |
