@@ -95,11 +95,10 @@ func BuildAuthContext(ctx *SMBHandlerContext) (*metadata.AuthContext, error) {
 	return authCtx, nil
 }
 
-// getUserIdentity returns the UID/GID for a user.
-// UID comes from user.UID field.
-// GID comes from the user's group membership (lowest GID for root-level access).
-// Falls back to defaults if not configured.
-func getUserIdentity(user *models.User) (uid, gid uint32) {
+// uidGIDFromSessionUser returns the UID/GID a *models.User-derived identity
+// carries. UID comes from user.UID; GID comes from the user's group membership
+// (first group with a GID). Falls back to defaults if not configured.
+func uidGIDFromSessionUser(user *models.User) (uid, gid uint32) {
 	uid = defaultUID
 	gid = defaultGID
 
@@ -185,7 +184,7 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metada
 // is treated as immutable — consumers only read it, so it is safe to share via the
 // per-session cache.
 func buildIdentity(ctx *SMBHandlerContext, user *models.User) *metadata.Identity {
-	uid, gid := getUserIdentity(user)
+	uid, gid := uidGIDFromSessionUser(user)
 	identity := &metadata.Identity{
 		UID:      &uid,
 		GID:      &gid,
