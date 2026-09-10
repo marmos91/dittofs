@@ -275,14 +275,15 @@ that want audit output call `xdr.MapStoreErrorToNFSStatus`.
 ### Lock-context translation
 
 `metadata.ErrLocked`, `ErrDeadlock`, `ErrGracePeriod`, and other
-lock-operation codes have different NFS status codes in lock context
-(NLM_LOCK / NFSv4 LOCK) versus general I/O context (READ/WRITE). The
-dedicated `common.MapLockToNFS3` / `common.MapLockToNFS4` accessors
-consult the parallel `lockErrorMap` table first and fall through to
-`errorMap` for non-lock codes. See `internal/adapter/common/lock_errmap.go`
-for the exact divergences (e.g., `ErrDeadlock` → `NFS4ERR_DEADLOCK` in
-lock context vs. `NFS4ERR_DEADLOCK` also in general context — NFSv4
-converged; SMB diverges).
+lock-operation codes have different status codes in lock context
+(SMB2 LOCK) versus general I/O context (READ/WRITE) on SMB: the
+`lockErrorMap` table in `internal/adapter/common/lock_errmap.go` holds the
+lock-context SMB deltas and falls through to `errorMap` for non-lock codes.
+The NFSv3/NFSv4 lock answers live in `errorMap` directly — its lock-class
+rows already carry the retry-class codes (e.g., `ErrLocked` →
+`NFS4ERR_LOCKED`/`NFS3ErrJukebox`, `ErrDeadlock` → `NFS4ERR_DEADLOCK`). SMB
+diverges (e.g., `ErrLocked` → `STATUS_LOCK_NOT_GRANTED` in lock context vs.
+`STATUS_FILE_LOCK_CONFLICT` in general context).
 
 ### Conformance testing
 
