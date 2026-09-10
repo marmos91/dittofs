@@ -330,7 +330,7 @@ func NewSession(sessionID uint64, clientAddr string, isGuest bool, username, dom
 		Domain:     domain,
 		channels:   make(map[uint64]*Channel),
 	}
-	s.cryptoState.Store(&SessionCryptoState{})
+	s.cryptoState.Store(&SessionCryptoState{nonce: &nonceState{}})
 	s.newlyCreated.Store(true)
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s
@@ -350,7 +350,7 @@ func NewSessionWithUser(sessionID uint64, clientAddr string, user *models.User, 
 		User:       user,
 		channels:   make(map[uint64]*Channel),
 	}
-	s.cryptoState.Store(&SessionCryptoState{})
+	s.cryptoState.Store(&SessionCryptoState{nonce: &nonceState{}})
 	s.newlyCreated.Store(true)
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s

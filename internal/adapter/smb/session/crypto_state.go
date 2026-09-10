@@ -2,7 +2,6 @@ package session
 
 import (
 	"crypto/rand"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync"
@@ -100,9 +99,6 @@ type nonceState struct {
 // reusing an AEAD nonce with the same key breaks confidentiality and
 // authenticity). Safe for concurrent use.
 func (cs *SessionCryptoState) NextNonce(nonceSize int) ([]byte, error) {
-	if cs.nonce == nil {
-		cs.nonce = &nonceState{}
-	}
 	ns := cs.nonce
 	ns.mu.Lock()
 	defer ns.mu.Unlock()
@@ -116,7 +112,16 @@ func (cs *SessionCryptoState) NextNonce(nonceSize int) ([]byte, error) {
 	nonce := make([]byte, nonceSize)
 	copy(nonce, ns.prefix[:])
 	if nonceSize > len(ns.prefix) {
-		binary.BigEndian.PutUint64(nonce[len(ns.prefix):], ns.counter)
+		// The counter fills the tail big-endian at whatever width the tail
+		// offers: AES-GCM's 12-byte nonce leaves 8 tail bytes, AES-CCM's
+		// 11-byte nonce leaves 7. A fixed PutUint64 would panic on CCM
+		// (nonce[4:] is 7 bytes), so encode into the actual tail and accept
+		// the narrower counter space — 2^56 messages before wrap, far beyond
+		// any session's lifetime.
+		tail := nonce[len(ns.prefix):]
+		for i := 0; i < len(tail); i++ {
+			tail[i] = byte(ns.counter >> (8 * (len(tail) - 1 - i)))
+		}
 	}
 	return nonce, nil
 }
@@ -159,7 +164,11 @@ func (cs *SessionCryptoState) NextNonce(nonceSize int) ([]byte, error) {
 //     SIGNING_CAPABILITIES negotiate context (required to disambiguate
 //     HMAC-SHA256, whose wire value is 0, from a default-zero placeholder)
 func DeriveAllKeys(sessionKey []byte, dialect types.Dialect, preauthHash [64]byte, cipherId uint16, signingAlgId uint16, signingAlgExplicit bool) *SessionCryptoState {
-	cs := &SessionCryptoState{}
+	// The nonce state is initialized eagerly so concurrent first encryptions
+	// never race on a lazy nil check: two racing initializers would each keep
+	// their own counter and independently seeded prefix, which under the same
+	// session key can repeat an AEAD nonce (MS-SMB2 3.1.4.3 violation).
+	cs := &SessionCryptoState{nonce: &nonceState{}}
 	cs.SessionKey = make([]byte, len(sessionKey))
 	copy(cs.SessionKey, sessionKey)
 
