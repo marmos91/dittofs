@@ -5,7 +5,7 @@ description: DittoFS adapter-convergence program memory (update after each wave)
 
 # DittoFS adapter convergence — program memory
 
-Last updated: 2026-09-10 (Wave 3 fan-out running with plan-validation corrections)
+Last updated: 2026-09-10 (Wave 3 LANDED, Wave 3.5 consolidation NEXT)
 
 ## Program state (as of 2026-09-10)
 
@@ -14,7 +14,8 @@ Last updated: 2026-09-10 (Wave 3 fan-out running with plan-validation correction
 | 0 — Coordination | peer takeover, worktree cleanup | ✅ done (32-row #2340 re-derivation left) |
 | 1 — Ownership class | #2393–#2396, #2413, #2414 | ✅ landed 2026-09-08 (7 PRs) |
 | 2 — `sm.mu` + pynfs | #2398 + singles | ✅ **landed 2026-09-09** — PRs #2494-#2498, issues #2471/#2482/#2487/#2464/#2490 closed |
-| 3 — Shared-layer reuse | errmap, identity, lifecycle | 🔄 **all 6 PRs open (#2499-#2504)**, review-green, merge babysitter running |
+| 3 — Shared-layer reuse | errmap, identity, lifecycle | ✅ **landed 2026-09-10** — 6 PRs (#2499-#2504) squash-merged, review-green, no open issues |
+| 3.5 — Error-universe consolidation | sentinel normalization + StatusFor extraction | ❌ **NEXT** — one PR per roadmap Step 2.5 |
 | 4 — SMB triage | ~155 untriaged findings | ❌ not started |
 | 5 — God objects | manager.go 3,985 LOC | ❌ blocked behind 1-4 |
 | 7 — Perf lens | bufpool, measurement plan | ❌ not started |
@@ -36,7 +37,24 @@ Last updated: 2026-09-10 (Wave 3 fan-out running with plan-validation correction
 | #2497 | #2464 | sync SettingsWatcher.RefreshNFSSettings after settings writes + harness lease guard |
 | #2498 | #2490 | LockExisting special-stateid → NFS4ERR_BAD_STATEID (both forms), before grace check |
 
-## Wave 3 lane plan (fan out immediately — lanes, disjoint files; CORRECTED by plan-validation review)
+## Wave 3 — what landed (all 2026-09-10, squash to 7d7033b39)
+
+| PR | Content | Squash commit |
+| --- | --- | --- |
+| #2499 | guard: enum walk + ErrConflict row + delete MapLockToNFS3/4 | `6ffc4262b` |
+| #2500 | 5 content-path sites → MapContentToNFS4 | `0a0e96c34` |
+| #2501 | getUserIdentity → uidGIDFromSessionUser rename | `cc4a5864d` |
+| #2502 | Stop-path listenerReady close + accept backoff | `7d7033b39` |
+| #2503 | async grant sites → GrantCredits + SequenceWindow.Grant | `c69818453` |
+| #2504 | stale CheckExportAccess citation fixes | `0390b3fb8` |
+
+Deferred disclosures: awaitListener false-'Adapter started' narrow race (#2502 body); ResolvedIdentity direct consumption (#2501 body). No lane maps to an open issue — no Closes #N.
+
+## Wave 3.5 — consolidation plan (NEXT, one PR)
+
+Per roadmap Step 2.5: (1) payload-choke-point sentinel normalization — ReadFromBlockStore/WriteToBlockStore/CommitBlockStore wrap block sentinels as real *merrs.StoreError (engine.ErrStoreClosed → ErrStaleHandle, everything else → ErrIOError), delete content_errmap.go, convert the 10 MapContentTo* sites plus #2500's five v4 sites to uniform MapToNFS3/4/SMB; (2) StatusFor extraction — nfs/types + nfs/v4/types get StatusFor(merrs.ErrorCode) uint32, smb/types gets StatusFor + StatusForLock (MS-SMB2 3.3.5.14 split), delete errmap.go + lock_errmap.go, one enum-walk test per package. Zero behaviour change. Supersedes the discarded fix/errmap-single-file two-fold.
+
+## Wave 3 lane plan (superseded by the table above)
 
 - COMBINED GUARD (fix/errmap-coverage-dead-columns) — enum walk + ErrConflict row + exoticCodes guard + delete MapLockToNFS3/4 (L0+L2 merged: shared errmap_test.go)
 - v4 content wiring (fix/v4-content-errmap-wiring) — read/read_plus/write/commit/deallocate → **MapContentToNFS4** (NOT MapToNFS4: fmt.Errorf wrap defeats StoreError lookup, would regress ErrRemoteUnavailable IO→SERVERFAULT)
