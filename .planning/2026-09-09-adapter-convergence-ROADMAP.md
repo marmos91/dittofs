@@ -163,7 +163,7 @@ prompts at `.planning/2026-09-10-wave4-fix-prompts.md`. Lanes push branches + /t
 PRs opened after the review fan-out.
 
 **PRs opened 2026-09-10 after the three-review fan-out**: #2523 (A, `fix/wave4-highs-2518`, Closes
-# 2518), #2524 (C, `fix/wave4-compound-tree-2514`, Closes #2514), #2525 (D,
+# 2518), #2524 (C, `fix/wave4-compound-tree-2514`, Closes #2514), #2525 (D
 `fix/wave4-security-hygiene-2516`, Closes #2516), #2526 (B, `fix/wave4-setinfo-rw-2512`, Closes
 # 2512). Post-review fixes applied before open: A empty-path doc + TREE_DISCONNECT disclosure
 (0 P1, triply-reviewed OK); C FLUSH/OplockBreak FileId restored to offset 8 (the verified P1),
@@ -180,7 +180,7 @@ match + pin test (`d0272b01b` — SMB namespaces are case-insensitive, exact mat
 different-case spellings of the same file); B AppendUint16 return reassigned in the rename test
 encoder (`c226454c9` — the original dropped the extended slice, encoding an empty FileName); B's
 CreateOptions read-modify-write was already mu-guarded with the struct doc updated.
-# 2523/#2526 CI + Copilot re-review pending at chunk end.
+# 2523/#2526 CI + Copilot re-review pending at chunk end
 
 **Source-file naming rule (2026-09-10)**: source files are wave/lane/PR-number agnostic
 (`.planning/CONVENTIONS-WAVE-TEST-NAMES.md`). Wave-named test files renamed to domain names in
@@ -190,11 +190,18 @@ the branches before merge: `wave4_highs_test.go` → `session_durable_test.go` (
 Every future fan-out prompt carries the naming line; reviewers block `wave\d` matches under
 `internal/`, `pkg/`, `cmd/`.
 
-Remaining fix-wave 2 candidates (not yet fanned): #2513 negotiate/session+durable (Kerberos
-MIC-after-commit ordering, AEAD nonce, unlocked session writes) and #2515 auth/session (NTLMv2
-MIC verification, wrong-field credit decoders, oplock break-ack ownership) — both touch
-session_setup.go/kerberos_auth.go so they serialize after Lane A lands; #2517 create/post-break
-last (touches create.go, also in Lane A's file set).
+Fix-wave 2 fanned 2026-09-10 ~20:40 as two file-disjoint lanes (base 3afd8383c):
+- Lane A session-auth (#2513 + #2515, branch fix/wave4-session-auth @ e755e79d4): all 13 findings
+  fixed GREEN — guest-policy gate on anonymous reauth, locked Session.UpdateIdentity mutator,
+  SID-first Kerberos bind comparison, MIC-failure session deletion, Type-3 AUTHENTICATE MIC
+  verification, NTLMSSP mechListMIC verification, key-material zeroing, corrected CreditCharge
+  wire fields (IOCTL 44, QUERY_DIRECTORY 28), oplock break-ack ownership check, CAS lease
+  pre-registration, per-session counter AEAD nonce, stale replay-cache bound comment. 21 files
+  (15 modified + 6 new domain-named test files).
+- Lane B create (#2517, branch fix/wave4-create-post-break): first child died cold mid-verification
+  with a staged 4-file diff (TOCTOU winner-lease break, compound noAsyncPark guard, ADS swallow
+  fix, partial sessionKeyHash removal); finisher worker completing it in the existing worktree.
+- Merge order after reviews: A -> B.
 
 1. **Priority HIGHs (all three LIVE verbatim, each needs a design decision):** unclaimed
    nonzero SessionId kept at `session_setup.go:976-984`; anonymous/guest encryption bypass at
