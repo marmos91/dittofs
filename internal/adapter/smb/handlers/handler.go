@@ -428,8 +428,9 @@ type TreeConnection struct {
 // read-modify-write region; release before any I/O to the metadata store to
 // keep the critical section bounded. Atomic-typed fields
 // (NotifyOverflowed/NotifyMaxBufferSize/NotifyCompletionFilter) and immutable
-// fields (FileID/TreeID/SessionID/MetadataHandle/CreateOptions) are safe to
-// access without the mutex.
+// fields (FileID/TreeID/SessionID/MetadataHandle) are safe to
+// access without the mutex. CreateOptions is mutable under mu on the
+// SET_INFO FileModeInformation path, so it must be read under mu as well.
 //
 // PayloadID and the name triple are NOT immutable: the first WRITE on a file
 // created empty caches the payload the metadata store allocated,

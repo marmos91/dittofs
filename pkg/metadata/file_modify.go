@@ -335,6 +335,18 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	onlySettingSize := noOwnershipAttrs && attrs.Size != nil &&
 		!attrs.AtimeNow && !attrs.MtimeNow
 
+	// POSIX: setxattr()/removexattr() on an existing xattr require write
+	// permission on the file, not ownership — same rule as truncate() and
+	// utimensat(UTIME_NOW). An EA-mutations-only SetAttrs is that case, so a
+	// caller with write access (the SMB EA case authorizes the open handle's
+	// FILE_WRITE_EA bit at the handler layer) may apply it without owning the
+	// file.
+	onlyEAMutations := noOwnershipAttrs && attrs.Size == nil &&
+		!attrs.AtimeNow && !attrs.MtimeNow &&
+		attrs.ModeOrMask == nil && attrs.ModeAndNotMask == nil &&
+		attrs.Hidden == nil && attrs.ACL == nil &&
+		len(attrs.EAMutations) > 0
+
 	// POSIX: When a non-owner writes to a file with SUID/SGID bits set, those
 	// bits must be cleared. The Linux NFS client implements this via
 	// file_remove_privs() which sends SETATTR(mode = current & ~06000) before
@@ -350,7 +362,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 
 	// Both timestamp-now and truncate-only operations allow write permission
 	// as an alternative to ownership (POSIX semantics).
-	writePermSufficient := onlySettingTimesToNow || onlySettingSize || onlyClearingSuidSgid
+	writePermSufficient := onlySettingTimesToNow || onlySettingSize || onlyClearingSuidSgid || onlyEAMutations
 
 	// SMB authorizes an explicit timestamp write by FILE_WRITE_ATTRIBUTES on the
 	// open handle rather than by ownership, so such a handle satisfies the

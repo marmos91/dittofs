@@ -223,8 +223,7 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 		case types.FileRenameInformation,
 			types.FileLinkInformation,
 			types.FileDispositionInformation, types.FileDispositionInformationEx,
-			types.FileEndOfFileInformation, types.FileAllocationInformation,
-			types.FileFullEaInformation:
+			types.FileEndOfFileInformation, types.FileAllocationInformation:
 			// These have specific access checks in their handlers or
 			// are validated by the metadata layer
 		default:
@@ -548,7 +547,10 @@ func (h *Handler) setFileInfoFromStore(
 					if baseHandle, encErr := metadata.EncodeFileHandle(baseFile); encErr == nil {
 						// A stream shares its base file's security descriptor, so
 						// the grant carried on this handle is a grant on the base.
-						_, _ = metaSvc.SetFileAttributes(basicAuthCtx, baseHandle, basePropagate)
+						if _, err := metaSvc.SetFileAttributes(basicAuthCtx, baseHandle, basePropagate); err != nil {
+							logger.Debug("SET_INFO: base-file attribute propagate failed",
+								"path", openFile.Name().Path, "error", err)
+						}
 					}
 				}
 			}
@@ -867,12 +869,15 @@ func (h *Handler) setFileInfoFromStore(
 		var zeroRootDir [8]byte
 		if !bytes.Equal(renameInfo.RootDirectory[:], zeroRootDir[:]) {
 			// RootDirectory is non-zero: FileName is relative to the directory
-			// identified by RootDirectory. For now, we don't resolve FileId handles
-			// to directory handles, so fall back to same-directory rename.
-			logger.Debug("SET_INFO: rename with non-zero RootDirectory (using same-dir fallback)",
+			// identified by RootDirectory. Handle-relative renames are not
+			// supported — silently falling back to a same-directory rename would
+			// move the file somewhere the client did not ask for, so reject with
+			// STATUS_INVALID_PARAMETER per MS-FSCC 2.4.42.2 (Samba's
+			// smbd_smb2_setinfo rename path rejects unresolvable RootDirectory
+			// handles the same way).
+			logger.Debug("SET_INFO: rename with non-zero RootDirectory rejected",
 				"rootDirectory", fmt.Sprintf("%x", renameInfo.RootDirectory))
-			toDir = openFile.Name().ParentHandle
-			toName = path.Base(newPath)
+			return setInfoStatus(types.StatusInvalidParameter), nil
 		} else {
 			// RootDirectory is zero: FileName is a full path from the share root.
 			// Get root handle for the share.
@@ -1537,6 +1542,16 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(types.StatusInvalidParameter), nil
 		}
 
+		// Per MS-FSA 2.1.5.15.5 ("FileEndOfFileInformation"): if Open.GrantedAccess
+		// does not contain FILE_WRITE_DATA, the operation MUST be failed with
+		// STATUS_ACCESS_DENIED — EOF is a data write, not an attribute write.
+		if !hasAccessRight(openFile.GrantedAccess, uint32(types.FileWriteData)) {
+			logger.Debug("SET_INFO: EOF set without FILE_WRITE_DATA",
+				"path", openFile.Name().Path,
+				"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess))
+			return setInfoStatus(types.StatusAccessDenied), nil
+		}
+
 		// Setting EOF is a size-changing data write. SMB authorizes it from the
 		// open handle's GrantedAccess (post-DACL intersection at CREATE), not the
 		// file's current POSIX mode — so a handle opened with FILE_WRITE_DATA on a
@@ -1651,7 +1666,11 @@ func (h *Handler) setFileInfoFromStore(
 		// dispatch (READ/WRITE carry explicit offsets), but the value must
 		// round-trip through SET/GET FilePositionInformation and survive
 		// durable-handle reconnect (smb2.durable-open.file-position).
+		// Guarded by openFile.mu like every other exported mutable field —
+		// READ and WRITE advance PositionInfo concurrently on pipelined handles.
+		openFile.mu.Lock()
 		openFile.PositionInfo = smbenc.NewReader(buffer[:8]).ReadUint64()
+		openFile.mu.Unlock()
 		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FileAllocationInformation:
@@ -1690,9 +1709,21 @@ func (h *Handler) setFileInfoFromStore(
 		// this only raises the reported allocation, never the file's EndOfFile.
 		// AllocationSize is an 8-byte LE value at offset 0 [MS-FSCC] 2.4.4.
 		// allocReservationFor drops the request for directories.
-		if len(buffer) >= 8 {
+		//
+		// Per MS-FSA 2.1.5.15.1 ("FileAllocationInformation"): If
+		// InputBufferSize is smaller than the size of FILE_ALLOCATION_INFORMATION
+		// (8 bytes), the server MUST fail with STATUS_INFO_LENGTH_MISMATCH.
+		if len(buffer) < 8 {
+			return setInfoStatus(types.StatusInfoLengthMismatch), nil
+		}
+		{
 			requested := smbenc.NewReader(buffer[:8]).ReadUint64()
+			// Guarded by openFile.mu like every other exported mutable field (see
+			// the OpenFile concurrency contract) — SET_INFO legitimately pipelines
+			// against QUERY_INFO on the same handle.
+			openFile.mu.Lock()
 			openFile.RequestedAllocSize = allocReservationFor(openFile.IsDirectory, requested)
+			openFile.mu.Unlock()
 
 			// Per MS-FSA 2.1.5.15.1 ("FileAllocationInformation"): when the requested AllocationSize is
 			// smaller than the file's current EndOfFile, the EndOfFile is
@@ -1763,7 +1794,13 @@ func (h *Handler) setFileInfoFromStore(
 		// here — that disposition is owned by FileDispositionInformation, which
 		// carries its own DELETE-access gate (Samba's setinfo mode handler is
 		// likewise advisory-only).
+		//
+		// CreateOptions is documented immutable-safe-without-mutex, but this SET
+		// path mutates it — take openFile.mu so the write is observed atomically
+		// against a pipelined QUERY_INFO FileModeInformation on the same handle.
+		openFile.mu.Lock()
 		openFile.CreateOptions = (openFile.CreateOptions &^ modeMask) | (mode & modeMask)
+		openFile.mu.Unlock()
 		h.StoreOpenFile(openFile)
 		return setInfoStatus(types.StatusSuccess), nil
 
@@ -1774,6 +1811,16 @@ func (h *Handler) setFileInfoFromStore(
 		return h.handleFileLinkInformation(ctx, authCtx, openFile, buffer)
 
 	case types.FileFullEaInformation: // [MS-FSCC] 2.4.16 (FileFullEaInformation) - Extended attributes
+		// Per MS-FSA 2.1.5.15.3 ("Set an Extended Attribute"), the open must
+		// include FILE_WRITE_EA; otherwise STATUS_ACCESS_DENIED. This class was
+		// previously exempt from the attribute gate — the reserved-name check
+		// below only guards the ACL xattr, not ordinary EA writes.
+		if !hasAccessRight(openFile.GrantedAccess, uint32(types.FileWriteEA)) {
+			logger.Debug("SET_INFO: EA set without FILE_WRITE_EA",
+				"path", openFile.Name().Path,
+				"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess))
+			return setInfoStatus(types.StatusAccessDenied), nil
+		}
 		// Reject SET on the reserved ACL xattr name with ACCESS_DENIED so the
 		// server-stored security descriptor cannot be tampered with through the
 		// FILE_FULL_EA_INFORMATION channel. Mirrors Samba vfs_acl_xattr (which
@@ -1803,6 +1850,10 @@ func (h *Handler) setFileInfoFromStore(
 		// states no matching rule — and the metadata layer resolves them so casing
 		// round-trips.
 		metaSvc := h.Registry.GetMetadataService()
+		// Authorize the attribute change from the open handle's FILE_WRITE_EA bit
+		// (checked at the gate above), not the file's POSIX mode — handle-based
+		// SMB EA authorization, mirroring the Allocation case's write bypass.
+		authCtx.WriteAuthorizedByHandle = hasAccessRight(openFile.GrantedAccess, uint32(types.FileWriteEA))
 		setAttrs := &metadata.SetAttrs{EAMutations: eaMutationsFromEntries(entries)}
 		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			logger.Debug("SET_INFO: FileFullEaInformation persist failed",
