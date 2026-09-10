@@ -139,8 +139,11 @@ Five read-only lanes re-derived all 157 audit findings against develop (workflow
 **7 rows FIXED (6 defects), 61 rows LIVE (~55 defects after de-dup), 91 rows WAVE5**, 0
 DRIFTED/INVALID. Committed as `ff6209016`.
 
-Next in Wave 4: file the GitHub umbrella + area tranches from the triage doc, then fix waves
-ordered by severity:
+Filed on GitHub 2026-09-10: umbrella **#2511** + seven tranches **#2512-#2518** (T1
+set-info/read-write, T1 negotiate/durable, T2 compound/tree, T2 auth/session, T3
+dispatch/security, T3/T4 create, T5 adapter+HIGHs), all assigned marmos91.
+
+Next in Wave 4: fix waves ordered by severity:
 
 1. **Priority HIGHs (all three LIVE verbatim, each needs a design decision):** unclaimed
    nonzero SessionId kept at `session_setup.go:976-984`; anonymous/guest encryption bypass at
