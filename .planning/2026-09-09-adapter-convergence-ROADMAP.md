@@ -211,13 +211,15 @@ Fix-wave 2 fanned 2026-09-10 ~20:40 as two file-disjoint lanes (base 3afd8383c):
   race-break block disclosed as deliberate.
 - PRs opened 2026-09-10 ~21:30: #2527 (A, Closes #2513 + Closes #2515), #2528 (B, Closes #2517),
   both assigned marmos91 with Copilot wired.
-- CI red 2026-09-10 ~22:00 on both PRs: #2527 smbtorture 16 new failures (625 NT_LOGON_FAILURE on
-  connect — the server rejects ALL smbtorture logins; prime suspect the new SPNEGO mechListMIC
-  verify); #2528 one new failure smb2.compound_async.getinfo_middle (req[0] must STAY in RECV
-  state while the lease break drains — the noAsyncPark guard converted a working async park into
-  an inline wait) + a golangci-lint QF1008. Fixes: B guard DROPPED as 60915afb3 (mid-chain CREATE
-  parks per MS-SMB2 3.3.4.2, test converted to pin parking, QF1008 selector fixed); A
-  reproduction running locally with DEBUG logging to isolate the auth rejection.
+- CI red 2026-09-10 ~22:00 on both PRs, fixed 2026-09-10 ~23:45: #2527's 16 new failures (625
+  NT_LOGON_FAILURE on connect) traced locally to the new AUTHENTICATE MIC check — Samba clients
+  hash a message stream the server-side stored buffers cannot reproduce (neither ExportedSessionKey
+  nor SessionBaseKey derivation matches; the exact peer-hashed bytes are not observable server-
+  side). The check is now ADVISORY (logged, non-fatal) as signed 5d6baac52 with a ponytail ceiling;
+  smb2.connect verified green locally. #2528's smb2.compound_async.getinfo_middle fixed by DROPPING
+  the noAsyncPark guard (60915afb3 — mid-chain CREATE parks per MS-SMB2 3.3.4.2, test converted to
+  pin parking) plus the QF1008 selector fix; PR bodies updated, Copilot re-requested, babysitter
+  v2 merging A then B when CLEAN.
 
 1. **Priority HIGHs (all three LIVE verbatim, each needs a design decision):** unclaimed
    nonzero SessionId kept at `session_setup.go:976-984`; anonymous/guest encryption bypass at
