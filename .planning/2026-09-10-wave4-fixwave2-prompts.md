@@ -1,7 +1,7 @@
 # Wave 4 fix-wave 2 lane prompts (2026-09-10)
 
 Base: origin/develop at 83e532d78 (fix-wave 1 fully landed: #2523/#2524/#2525/#2526 merged, issues
-#2518/#2512/#2514/#2516 closed). Two lanes, file-disjoint, parallel. Both lanes push branches and
+# 2518/#2512/#2514/#2516 closed). Two lanes, file-disjoint, parallel. Both lanes push branches and
 write /tmp/pr-body-*.md files with `Closes #N` but do NOT open PRs or run gh.
 
 ## Shared boilerplate (both lanes)
