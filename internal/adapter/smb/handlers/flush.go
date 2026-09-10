@@ -239,8 +239,8 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	_, flushErr := blockStore.Flush(ctx.Context, string(file.PayloadID))
 	if flushErr != nil {
 		logger.Warn("FLUSH: failed", "path", path, "error", flushErr)
-		// FLUSH is a content-path op (same as NFS COMMIT): StatusForErr (via
-		// ClassifyBlockStoreError) maps a closed-store error (the share was removed/hot-reloaded
+		// FLUSH is a content-path op (same as NFS COMMIT): StatusFor over
+		// ClassifyBlockStoreError maps a closed-store error (the share was removed/hot-reloaded
 		// mid-flush) to STATUS_FILE_CLOSED and preserves the
 		// CAS-corruption / remote-unavailable mappings, defaulting to the
 		// I/O-class status for opaque failures.

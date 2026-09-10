@@ -404,8 +404,8 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	readResult, err := common.ReadFromBlockStore(authCtx.Context, blockStore, file.PayloadID, req.Offset, actualLength)
 	if err != nil {
 		logger.Warn("READ: content read failed", "path", path, "error", err)
-		// smb/types.StatusForErr mirrors the old ContentErrorToSMBStatus
-		// behavior (via ClassifyBlockStoreError) and handles ErrRemoteUnavailable. ReleaseData stays nil
+		// types.StatusFor over ClassifyBlockStoreError mirrors the old
+		// ContentErrorToSMBStatus behavior and handles ErrRemoteUnavailable. ReleaseData stays nil
 		// because ReadFromBlockStore has already released the pooled buffer
 		// on the error path.
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFor(common.ClassifyBlockStoreError(err))}}, nil
