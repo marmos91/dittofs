@@ -370,7 +370,7 @@ func w4EncodeEAEntry(name string, value []byte) []byte {
 func w4EncodeRenameInfo(replaceIfExists bool, rootDirectory uint64, fileName string) []byte {
 	nameUTF16 := make([]byte, 0, len(fileName)*2)
 	for _, r := range fileName {
-		binary.LittleEndian.AppendUint16(nameUTF16, uint16(r))
+		nameUTF16 = binary.LittleEndian.AppendUint16(nameUTF16, uint16(r))
 	}
 	buf := make([]byte, 8+8+4+len(nameUTF16))
 	if replaceIfExists {
