@@ -981,6 +981,15 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, m
 		// Session already exists with this ID — this is a re-authentication.
 		// Per MS-SMB2 3.3.5.5.2: existing session keys are retained.
 		isReauth = true
+	} else {
+		// A nonzero SessionId matching no session is a client-supplied ID the
+		// server never allocated. Fail the request rather than authenticate
+		// under an attacker-chosen key: a later client that is legitimately
+		// minted this ID would collide with an already-authenticated session.
+		// Matches the bind-path rejection for a missing session.
+		logger.Debug("SESSION_SETUP: unknown nonzero SessionID",
+			"sessionID", sessionID)
+		return NewErrorResult(types.StatusUserSessionDeleted), nil
 	}
 
 	// Initialize per-session preauth hash for SMB 3.1.1 key derivation.

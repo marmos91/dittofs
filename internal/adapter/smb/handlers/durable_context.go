@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -904,11 +905,21 @@ func validateAndRestore(
 //     this requires the live handle to be removed from Handler.files.
 //
 // Returns the parsed AppInstanceId (zero value if not present or zero).
+//
+// shareName and filePath identify the file the incoming CREATE claims. The
+// force-close filter matches on share + path in addition to the AppInstanceId
+// (MS-SMB2 §3.3.5.9.13 match conditions), so an AppInstanceId reused for a
+// different file — on the same or another share — never displaces an unrelated
+// open. Opens with an empty recorded path are never displaced at all: the
+// filter requires a recorded path match, so for those opens the AppInstanceId
+// match alone is never sufficient and the failover does not touch them.
 func ProcessAppInstanceId(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
 	handler *Handler,
 	contexts []CreateContext,
+	shareName string,
+	filePath string,
 ) [16]byte {
 	appCtx := FindCreateContext(contexts, AppInstanceIdTag)
 	if appCtx == nil {
@@ -949,10 +960,25 @@ func ProcessAppInstanceId(
 			isLease    bool
 		}
 		var displaced []displacedLease
+		claimsFile := func(f *OpenFile) bool {
+			if f.AppInstanceId != appId {
+				return false
+			}
+			// Share and path compare case-insensitively: SMB namespaces are
+			// case-insensitive, so different-case spellings of the same file
+			// must still match (MS-SMB2 2.2.1.1 object names).
+			if !strings.EqualFold(f.ShareName, shareName) {
+				return false
+			}
+			if !strings.EqualFold(f.Name().Path, filePath) {
+				return false
+			}
+			return true
+		}
 		if handler.LeaseManager != nil {
 			handler.files.Range(func(_, value any) bool {
 				f := value.(*OpenFile)
-				if f.AppInstanceId == appId && f.LeaseKey != ([16]byte{}) && len(f.MetadataHandle) > 0 {
+				if claimsFile(f) && f.LeaseKey != ([16]byte{}) && len(f.MetadataHandle) > 0 {
 					displaced = append(displaced, displacedLease{
 						fileHandle: lock.FileHandle(f.MetadataHandle),
 						leaseKey:   f.LeaseKey,
@@ -967,7 +993,7 @@ func ProcessAppInstanceId(
 		liveClosed := handler.closeFilesWithFilter(
 			ctx,
 			0, // no specific sessionID — match across sessions
-			func(f *OpenFile) bool { return f.AppInstanceId == appId },
+			claimsFile,
 			"ProcessAppInstanceId",
 			false, // explicit close, not transport disconnect
 		)
@@ -993,22 +1019,23 @@ func ProcessAppInstanceId(
 	}
 
 	// 2) Force-close persisted (disconnected) durable handles with matching
-	// AppInstanceId.
+	// AppInstanceId. Scoped to the claimed share + path like the live filter:
+	// a persisted record for a different file never displaces this CREATE's
+	// target, so an AppInstanceId reused across files leaves those handles
+	// alone.
+	var persistedClosed int
 	existing, err := durableStore.GetDurableHandlesByAppInstanceId(ctx, appId)
 	if err != nil {
 		logger.Warn("ProcessAppInstanceId: store error", "error", err)
 		return appId
 	}
 
-	if len(existing) == 0 {
-		return appId
-	}
-
-	logger.Debug("ProcessAppInstanceId: force-closing persisted handles",
-		"appInstanceId", fmt.Sprintf("%x", appId),
-		"count", len(existing))
-
 	for _, h := range existing {
+		// Case-insensitive share/path match, same as the live-open filter.
+		if !strings.EqualFold(h.ShareName, shareName) || !strings.EqualFold(h.Path, filePath) {
+			continue
+		}
+		persistedClosed++
 		if handler != nil {
 			cleanupFile := (&OpenFile{
 				FileID:         h.FileID,
@@ -1032,6 +1059,11 @@ func ProcessAppInstanceId(
 				"handleID", h.ID,
 				"error", delErr)
 		}
+	}
+	if persistedClosed > 0 {
+		logger.Debug("ProcessAppInstanceId: force-closed persisted handles",
+			"appInstanceId", fmt.Sprintf("%x", appId),
+			"count", persistedClosed)
 	}
 
 	return appId
