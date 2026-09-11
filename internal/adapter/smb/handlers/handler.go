@@ -1,17 +1,13 @@
 package handlers
 
 import (
-	"bytes"
-	"context"
 	"crypto/rand"
-	"encoding/binary"
 	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
@@ -21,18 +17,11 @@ import (
 	"github.com/marmos91/dittofs/internal/auth/netlogon"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	pkgidentity "github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// Handler manages SMB2 protocol handling including session management,
-// tree connections, open file state, oplocks, leases, and named pipe RPC.
-// It delegates to the Runtime registry for metadata and payload operations,
-// and uses SessionManager for unified session/credit tracking.
-// Thread-safe: all mutable state uses sync.Map or atomic operations.
 type Handler struct {
 	Registry  smbRuntime
 	StartTime time.Time
@@ -337,6 +326,7 @@ type Handler struct {
 // EncryptionConfig holds encryption policy for the handler.
 // This mirrors the adapter-level EncryptionConfig but lives in the handler's
 // package to avoid circular imports between handlers/ and pkg/adapter/smb/.
+
 type EncryptionConfig struct {
 	// Mode controls the encryption policy.
 	// Valid values: "disabled", "preferred", "required"
@@ -351,479 +341,7 @@ type EncryptionConfig struct {
 // It stores the server's challenge for NTLMv2 response validation
 // and session key derivation. Created during Type 1 (NEGOTIATE) and
 // consumed during Type 3 (AUTHENTICATE) of the NTLM handshake.
-type PendingAuth struct {
-	SessionID       uint64
-	ClientAddr      string
-	CreatedAt       time.Time
-	ServerChallenge [8]byte // Random challenge sent in Type 2 message
-	UsedSPNEGO      bool    // Whether client used SPNEGO wrapping
-	IsReauth        bool    // True when re-authenticating an existing session
-	// IsBinding is true when this pending auth is driving an SMB2 session
-	// bind (SESSION_SETUP with SMB2_SESSION_FLAG_BINDING). In that case
-	// BindingSessionID holds the existing session the client is binding to
-	// and auth completion must register the connection as an additional
-	// channel rather than creating a new session. MS-SMB2 §3.3.5.5.2.
-	IsBinding        bool
-	BindingSessionID uint64
-	// ConnID is the TCP connection carrying this authentication. Pending auth
-	// is keyed by (SessionID, ConnID) so concurrent binds on the same session
-	// from different connections (MS-SMB2 §3.3.5.5.2) do not collide.
-	ConnID uint64
-	// MechListBytes: DER-encoded SEQUENCE OF OID from the NegTokenInit's
-	// mechTypes field, needed to compute the SPNEGO mechListMIC in the
-	// final accept-completed response (MS-NLMP 3.4.5.2 + 2.2.2.9.1).
-	// Nil for clients that send raw NTLM without SPNEGO wrapping.
-	MechListBytes []byte
-	// NegotiateMessage holds the client's Type-1 NEGOTIATE message bytes from
-	// the first SESSION_SETUP of this handshake, and ChallengeMessage the
-	// server's Type-2 CHALLENGE reply. Together with the Type-3 AUTHENTICATE
-	// (MIC zeroed) they are the exact input to the AUTHENTICATE MIC check
-	// (MS-NLMP 3.2.5.2.1). Nil when that message was not seen on this
-	// pending-auth flow.
-	NegotiateMessage []byte
-	ChallengeMessage []byte
-}
 
-// TreeConnection represents an active tree connection mapping a client
-// to a DittoFS share. Created by TreeConnect and removed by TreeDisconnect.
-// Stores the effective permission level for access control during file operations.
-type TreeConnection struct {
-	TreeID      uint32
-	SessionID   uint64
-	ShareName   string
-	ShareType   uint8
-	CreatedAt   time.Time
-	Permission  models.SharePermission // User's permission level for this share
-	EncryptData bool                   // Share requires all requests to be encrypted
-	// AccessBasedEnumeration mirrors the share-level toggle. When true,
-	// QUERY_DIRECTORY filters entries the caller cannot read (refs #532,
-	// MS-SMB2 §2.2.10 SMB2_SHAREFLAG_ACCESS_BASED_DIRECTORY_ENUM).
-	AccessBasedEnumeration bool
-	// ChangeNotifyDisabled mirrors the share-level toggle. When true,
-	// CHANGE_NOTIFY requests on this tree are rejected with
-	// STATUS_NOT_IMPLEMENTED — matches Samba `kernel change notify = no`
-	// and the smb2.change_notify_disabled torture test.
-	ChangeNotifyDisabled bool
-	// StreamsDisabled mirrors the share-level toggle. When true, CREATE
-	// requests that reference an Alternate Data Stream are rejected with
-	// STATUS_OBJECT_NAME_INVALID — matches Samba `smbd:streams = no`
-	// and the smb2.create_no_streams.no_stream torture test.
-	StreamsDisabled bool
-	// ContinuousAvailability mirrors the share-level toggle. When true, the
-	// TREE_CONNECT response advertises SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY
-	// (MS-SMB2 §2.2.10) and a DH2Q SMB2_DHANDLE_FLAG_PERSISTENT request is
-	// granted as a persistent durable handle (#739, smbtorture
-	// smb2.durable-v2-open.persistent-open-{oplock,lease}).
-	ContinuousAvailability bool
-	// AllowMFsymlink mirrors the share-level toggle. When false (default),
-	// 1067-byte XSym files written by macOS/Windows clients are stored as
-	// regular files. When true, they are converted to real symlinks on CLOSE.
-	// The conversion target is client-controlled, so promotion is opt-in.
-	AllowMFsymlink bool
-}
-
-// OpenFile represents an open file handle created by the CREATE command.
-// It links the SMB2 FileID to the underlying metadata handle and payload ID,
-// tracks directory enumeration state, delete-on-close flags, and oplock level.
-// Stored in a sync.Map keyed by the 16-byte FileID.
-//
-// Concurrency: SMB clients legitimately pipeline operations on the same handle
-// (e.g. WRITE + QUERY_INFO; multi-channel sessions can also dispatch concurrent
-// QUERY_DIRECTORY on the same FileID). The exported mutable fields below are
-// guarded by `mu` — read-locked when surfacing state to the wire (QUERY_INFO,
-// override application) and write-locked when mutating (enumeration cursor,
-// freeze/thaw, delayed-write arm/flush). Hold the lock around the full
-// read-modify-write region; release before any I/O to the metadata store to
-// keep the critical section bounded. Atomic-typed fields
-// (NotifyOverflowed/NotifyMaxBufferSize/NotifyCompletionFilter) and immutable
-// fields (FileID/TreeID/SessionID/MetadataHandle/CreateOptions) are safe to
-// access without the mutex.
-//
-// PayloadID and the name triple are NOT immutable: the first WRITE on a file
-// created empty caches the payload the metadata store allocated,
-// SET_REPARSE_POINT and COPYCHUNK replace it, and SET_INFO rename rewrites the
-// name/path/parent triple. Reach the payload through GetPayloadID /
-// SetPayloadID and the triple through Name / SetName.
-type OpenFile struct {
-	// mu guards the mutable fields listed in the struct comment above. Held
-	// across QueryDirectory enumeration R-M-W, freeze/thaw bookkeeping in
-	// SET_INFO BasicInfo, the SMB delayed-write timestamp helpers and the
-	// QUERY_INFO frozen/delayed-write overlay reads.
-	mu sync.RWMutex
-
-	// name is the current OpenName. Read via Name, publish via SetName.
-	name atomic.Pointer[OpenName]
-
-	FileID        [16]byte
-	TreeID        uint32
-	SessionID     uint64
-	ShareName     string
-	cachedOpenID  string // cached hex(FileID) for hot-path lock operations
-	OpenTime      time.Time
-	DesiredAccess uint32
-	// GrantedAccess is the effective access mask the open actually holds,
-	// computed at CREATE as the per-bit intersection of the requested mask
-	// with the file's DACL (via metadata.CheckFileAccess). Per MS-SMB2
-	// §3.3.5.9 paragraph 8 / §2.2.13.1, when MAXIMUM_ALLOWED is requested
-	// this is the set of rights the requester is allowed; for explicit
-	// requests it is the requested set (the open would have been rejected
-	// if any non-MAXIMUM_ALLOWED bit was denied). Per MS-SMB2 §3.3.5.20.1
-	// and MS-FSCC §2.4.1, FileAccessInformation and QUERY_INFO open-level
-	// access gates consult this field, not DesiredAccess (smb2.acls.GENERIC
-	// at acls.c:440).
-	//
-	// Per-op gates are INTENTIONALLY frozen to this snapshot, not re-evaluated
-	// through the central metadata permission core on each request:
-	//
-	//   - The single access check happens once, at CREATE, through the central
-	//     metadata.Service (CheckFileAccess / CheckFileAccessWithParent).
-	//     Subsequent READ / WRITE / DELETE / SET_INFO / IOCTL (sparse, copychunk,
-	//     fsctl) handlers gate against this frozen GrantedAccess rather than
-	//     re-running the checker. This is the MS-SMB2 / MS-FSA handle model
-	//     (MS-SMB2 §3.3.5.12/§3.3.5.13 gate READ and WRITE on Open.GrantedAccess
-	//     — MS-FSA's own read and write algorithms never consult it — and MS-FSA
-	//     §2.1.5.5 Phase 1 delete-on-close honors the authorization frozen at
-	//     open), and it is
-	//     deliberately spec-correct: an open's rights do NOT shrink or grow if
-	//     the DACL changes after the handle is granted. Re-evaluating per-op
-	//     would be a protocol bug, not a fix — a Windows client holding a valid
-	//     handle would start seeing STATUS_ACCESS_DENIED mid-stream.
-	//   - DELETE access verified at open (FILE_DELETE_ON_CLOSE / SET_INFO
-	//     FileDispositionInformation) is propagated to the unlink path via
-	//     AuthContext.HasDeleteAccess so the metadata delete check honors the
-	//     same frozen authorization (see metadata.checkDeletePermission, #388).
-	//
-	// So for SMB the central checker is the SOLE authorizer; per-op handlers
-	// only consult the mask it produced. Centralizing the per-op gates further
-	// would change spec-mandated semantics and is explicitly out of scope.
-	GrantedAccess       uint32
-	IsDirectory         bool
-	IsPipe              bool   // True if this is a named pipe (IPC$)
-	PipeName            string // Named pipe name (e.g., "srvsvc")
-	EnumerationComplete bool   // For directories: true if directory listing was returned
-
-	// Store integration fields
-	MetadataHandle metadata.FileHandle // Link to metadata store file handle
-	PayloadID      metadata.PayloadID  // Content identifier for read/write operations
-
-	// Directory enumeration state
-	EnumerationCookie  []byte // Opaque cookie for resuming directory listing
-	EnumerationIndex   int    // Current index in directory listing
-	EnumerationPattern string // Last search pattern used (for detecting pattern changes)
-
-	// EnumerationLastName is the case-folded name of the last directory entry
-	// returned to the client on this handle. Subsequent QUERY_DIRECTORY calls
-	// in the same enumeration sequence re-read the directory fresh and skip
-	// entries with name <= EnumerationLastName (case-insensitive). This is
-	// Samba's name-based cursor model (source3/smbd/dir.c) and is required
-	// for smb2.dir.fixed (#728): when one handle deletes files mid-enumeration
-	// on another, the second handle must see live state (deletions hidden,
-	// new files added) without skipping or duplicating entries.
-	//
-	// EnumerationLastName == "" means "before any entry"; the first call of a
-	// fresh enumeration returns "." / ".." for a wildcard search and then
-	// data entries from the start. Cleared on RESTART_SCANS, REOPEN, pattern
-	// change and EnumerationComplete.
-	//
-	// EnumerationSpecialDone tracks whether the "." and ".." entries have been
-	// returned in this sequence. Without it, deletion of the first real entry
-	// between calls could resurface "." on the next call (LastName="" but
-	// special done).
-	EnumerationLastName    string
-	EnumerationSpecialDone int // count of special entries already returned (0..2)
-
-	// Delete on close support (FileDispositionInformation).
-	//
-	// DeletePending tracks the SHARED, committed delete-on-close state per
-	// MS-FSA 2.1.5.15.3 ("FileDispositionInformation") and Samba `is_delete_on_close_set` (locking.tdb).
-	// It is set ONLY by:
-	//   - SET_INFO FileDispositionInformation with DeleteFile=TRUE (an
-	//     explicit commit by an opener), or
-	//   - CLOSE-time promotion of InitialDeleteOnClose on the last handle
-	//     when nobody else has committed a shared DOC yet (matches Samba
-	//     close.c::close_normal_file: initial_delete_on_close
-	//     && !is_delete_on_close_set => set_delete_on_close_lck).
-	// Subsequent CREATEs see DeletePending and return STATUS_DELETE_PENDING
-	// per MS-SMB2 3.3.5.9 — the gate consumed by isFileDeletePending and
-	// isFileOrBaseDeletePending.
-	//
-	// InitialDeleteOnClose tracks the PER-HANDLE initial DOC flag from a
-	// CREATE with FILE_DELETE_ON_CLOSE (Samba `fsp_flags.initial_delete_on_close`).
-	// It is NOT visible to other handles via isFileDeletePending and does
-	// NOT block subsequent opens — those still succeed and observe the
-	// existing share-mode rules until the DOC is actually committed at
-	// CLOSE time. Required by smbtorture smb2.dirlease.{unlink_same,
-	// unlink_different}_initial_and_close which open a file with initial
-	// DOC and then immediately open a SECOND handle to it (must succeed).
-	DeletePending        bool // committed shared DOC (visible to other opens)
-	InitialDeleteOnClose bool // per-handle initial DOC from CREATE FILE_DELETE_ON_CLOSE
-
-	// docLeaving marks a handle that has already run its delete-on-close
-	// election (electDeleteOnClose) and can therefore no longer honour a DOC
-	// propagated to it; the election's sibling scans skip such handles.
-	//
-	// Guarded by Handler.docElectionMu — NOT by OpenFile.mu — because it is
-	// only ever read as part of a scan that must be atomic with the writes to
-	// it. The handle stays in Handler.files while marked, so every other scan
-	// (CREATE delete-pending gate, share modes, oplocks, rename conflict) still
-	// sees it until its owner's own removal step.
-	docLeaving bool
-
-	// ShareAccess stores the sharing mode from the CREATE request.
-	// Used for share mode conflict checking during rename and other operations.
-	// Bit mask: 0x01 (FILE_SHARE_READ), 0x02 (FILE_SHARE_WRITE), 0x04 (FILE_SHARE_DELETE)
-	ShareAccess uint32
-
-	// CreateOptions stores the original CreateOptions from the CREATE request,
-	// used to populate FileModeInformation (FILE_WRITE_THROUGH, FILE_SEQUENTIAL_ONLY, etc.)
-	CreateOptions types.CreateOptions
-
-	// RequestedAllocSize is the client-requested initial allocation in bytes
-	// from the CREATE SMB2_CREATE_ALLOCATION_SIZE ("AlSi") create context
-	// [MS-SMB2] 2.2.13.2.2, or from a later SET_INFO FileAllocationInformation
-	// [MS-FSCC] 2.4.4. DittoFS does not preallocate backing storage; this value
-	// only raises the (cluster-aligned) AllocationSize reported in the CREATE
-	// response and subsequent QUERY_INFO on this handle, keeping the two
-	// consistent (smb2.create.open, smb2.durable-open.alloc-size). Always 0 for
-	// directories — directories never honour the request
-	// (smb2.create.dir-alloc-size). Per-handle, in-memory, lost on close.
-	RequestedAllocSize uint64
-
-	// Timestamp freeze/unfreeze state per MS-FSA §2.1.5.15.2 ("FileBasicInformation").
-	// When a client sends SET_INFO with FILETIME -1, the corresponding timestamp
-	// is "frozen" and MUST NOT be auto-updated by subsequent operations (WRITE, etc.).
-	// When a client sends SET_INFO with FILETIME -2, the freeze is lifted.
-	// These flags are per-open-handle state and are lost on server restart,
-	// which is correct per the spec (frozen state is tied to the open handle).
-	BtimeFrozen bool       // CreationTime frozen (suppress explicit changes on this handle)
-	MtimeFrozen bool       // LastWriteTime frozen (don't auto-update on WRITE)
-	CtimeFrozen bool       // ChangeTime frozen (don't auto-update on WRITE)
-	AtimeFrozen bool       // LastAccessTime frozen (don't auto-update on READ)
-	FrozenBtime *time.Time // Saved CreationTime value at freeze time
-	FrozenMtime *time.Time // Saved Mtime value at freeze time
-	FrozenCtime *time.Time // Saved Ctime value at freeze time
-	FrozenAtime *time.Time // Saved Atime value at freeze time
-
-	// SMB delayed-write timestamp semantics, mirroring Samba
-	// `source3/smbd/fileio.c::trigger_write_time_update` (2-second delay
-	// before a write becomes visible via QUERY_INFO, then sticky for the
-	// rest of the open) and `write_time_forced` (an explicit SetBasic
-	// write_time pins the value until close).
-	SmbWriteTriggered  bool       // first WRITE on this handle has occurred
-	SmbWritePreMtime   *time.Time // Mtime captured before first WRITE — visible during the 2s window
-	SmbWriteFlushMtime *time.Time // Mtime to surface once the 2s window expires or a flush trigger fires
-	SmbWriteFlushAt    time.Time  // wall-clock when the 2s window expires (zero ⇒ already flushed)
-	SmbStickyWriteTime *time.Time // explicit SetBasic write_time — wins over any pending update
-
-	// READ-driven LastAccessTime coalescing: a READ pushes the access time to
-	// the metadata store at most once per smbAtimeUpdateWindow. In between the
-	// newest access time lives on the handle, surfaced by QUERY_INFO and
-	// persisted at CLOSE.
-	SmbAtimeWrittenAt time.Time // when the last READ-driven atime reached the store
-	SmbPendingAtime   time.Time // newest access time not yet written to the store (zero ⇒ none)
-
-	// SmbParentAtimeWrittenAt bounds the parent-directory LastAccessTime bump a
-	// WRITE performs, the way SmbAtimeWrittenAt bounds the file's. A suppressed
-	// bump is dropped rather than deferred — see noteSmbParentAccess.
-	SmbParentAtimeWrittenAt time.Time
-
-	// Oplock state
-	// OplockLevel is the current oplock level for this handle.
-	// Thread safety: This field is written during CREATE (before storing in sync.Map)
-	// and during OPLOCK_BREAK (for a specific FileID). Since file handles are session-
-	// specific and OPLOCK_BREAK targets a specific FileID, concurrent access is not
-	// expected. If this changes, consider using atomic operations.
-	OplockLevel uint8
-
-	// LeaseKey is the 128-bit lease key for this handle (when OplockLevel == OplockLevelLease).
-	// Used to release the lease when the last handle sharing the key is closed.
-	LeaseKey [16]byte
-
-	// ParentLeaseKey is the 128-bit parent directory lease key carried in the
-	// CREATE RqLs (V2) when the client set SMB2_LEASE_FLAG_PARENT_LEASE_KEY_SET.
-	// Established per MS-SMB2 §3.3.5.9.11 ("Handling the
-	// SMB2_CREATE_REQUEST_LEASE_V2 Create Context"). Used by the dir-lease
-	// parent-key suppression rule: SET_INFO / WRITE / CLOSE-on-delete on this
-	// handle MUST NOT break the parent dir lease whose LeaseKey matches this
-	// value. That suppression is not stated in any MS-SMB2 server section —
-	// §3.3.4.7 hands the break decision to the object store, and the only
-	// spec text naming ParentLeaseKey outside the wire structures is the
-	// client-side §3.2.4.3.8 — so Samba `dirlease_should_break` is the
-	// binding reference for the rule itself. The field is
-	// meaningful only when HasParentLeaseKey is true.
-	ParentLeaseKey    [16]byte
-	HasParentLeaseKey bool
-
-	// DeleteOnCloseParentKey tracks the ParentLeaseKey of the handle that
-	// originally set delete-on-close (via SET_INFO or CREATE option).
-	// When the last handle closes and triggers the actual deletion, the
-	// closer's ParentLeaseKey is compared to this: if they match, parent-key
-	// suppression applies (test_unlink_same_*); if they differ, ALL parent
-	// dir leases are broken without suppression (test_unlink_different_*).
-	// HasDeleteOnCloseParentKey is true when the value is meaningful.
-	DeleteOnCloseParentKey    [16]byte
-	HasDeleteOnCloseParentKey bool
-
-	// BaseFileDeletePending is set on a stream handle when the base file was
-	// unlinked while this stream was still open. Per MS-FSA 2.1.5.5 ("Server Requests Closing an Open"), the
-	// actual base-file removal is deferred until all handles (including
-	// stream handles) are closed. When the last such handle closes, the
-	// CLOSE handler uses BaseFileDeleteParentHandle / BaseFileDeleteFileName
-	// to perform the base file deletion.
-	BaseFileDeletePending      bool
-	BaseFileDeleteParentHandle metadata.FileHandle
-	BaseFileDeleteFileName     string
-
-	// Durable handle state (SMB3 durable handles)
-	// IsDurable indicates this handle has been granted durability.
-	// When true, the handle will be persisted to DurableHandleStore on disconnect
-	// instead of being closed immediately.
-	IsDurable bool
-
-	// CreateGuid is the V2 client-generated GUID for idempotent reconnection.
-	// Zero value for V1 durable handles or non-durable handles.
-	CreateGuid [16]byte
-
-	// ReplayCreateGuid is the DH2Q CreateGuid carried by the originating
-	// CREATE request, recorded whenever a DH2Q request context is present —
-	// independent of whether V2 durability was actually granted. A replayed
-	// CREATE (FLAGS_REPLAY_OPERATION) is keyed solely on the requested
-	// CreateGuid per MS-SMB2 §3.3.5.9 (Samba smb2srv_open_lookup_replay_cache),
-	// so a no-oplock / non-durable open (which never sets CreateGuid above)
-	// must still be replay-cacheable. smbtorture
-	// smb2.replay.dhv2-pending1n-vs-{oplock,lease}-sane replay io24 against an
-	// open created with oplock_level=NONE and assert the same FileId comes back.
-	ReplayCreateGuid [16]byte
-
-	// IsPersistent indicates the handle was granted as a persistent durable
-	// handle (DH2Q SMB2_DHANDLE_FLAG_PERSISTENT) on a continuous-availability
-	// share. Persistent handles are a strict superset of durable handles
-	// (IsDurable is also set); the distinction is that the DH2Q response
-	// echoes the PERSISTENT flag and the grant is unconditional regardless of
-	// oplock/lease level (MS-SMB2 §3.3.5.9.10). Only grantable on a CA share;
-	// on a non-CA share a persistent request degrades to a plain durable grant
-	// with this flag clear.
-	IsPersistent bool
-
-	// AppInstanceId is the application instance ID for Hyper-V failover.
-	// Zero value if not set.
-	AppInstanceId [16]byte
-
-	// DurableTimeoutMs is the granted durable handle timeout in milliseconds.
-	// The handle expires this many milliseconds after client disconnects.
-	DurableTimeoutMs uint32
-
-	// ClientGUID is the SMB2 NEGOTIATE ClientGuid of the connection that
-	// established this open. Captured at CREATE time so it can be persisted
-	// with the durable handle and matched against the reconnecting
-	// connection on V2 lease reconnect (smbtorture
-	// smb2.durable-v2-open.reopen1a-lease — reconnect with a different
-	// ClientGuid fails OBJECT_NAME_NOT_FOUND, reconnect with the original
-	// ClientGuid succeeds). Non-lease V2 reconnect (reopen1a/reopen2/...)
-	// does NOT consult this — those tests reconnect with a fresh ClientGuid.
-	ClientGUID [16]byte
-
-	// csMu guards the SMB3 channel-sequence tracking fields below. It is a
-	// dedicated lock (not the struct mu) so the verification step in the
-	// dispatch hot path never contends with QUERY_INFO/enumeration R-M-W.
-	csMu sync.Mutex
-
-	// channelSeq is the ChannelSequence number the server currently tracks
-	// for this Open (MS-SMB2 §3.3.5.2.10 Open.ChannelSequence). Advanced when
-	// a request arrives with a strictly newer ChannelSequence (a channel
-	// failover), used to reject stale modifying replays.
-	channelSeq uint16
-
-	// channelSeqSet records whether channelSeq has been initialized from a
-	// request yet. The first request on the Open seeds channelSeq with its
-	// own ChannelSequence so an initial nonzero CSN is not mistaken for a
-	// failover.
-	channelSeqSet bool
-
-	// PositionInfo is the FILE_POSITION_INFORMATION CurrentByteOffset
-	// (MS-FSCC 2.4.40 (FilePositionInformation)). Servers track this per-handle so SET/GET via
-	// FilePositionInformation round-trips even though network filesystems
-	// do not use it for I/O dispatch. Preserved across durable handle
-	// disconnect/reconnect (smb2.durable-open.file-position).
-	PositionInfo uint64
-
-	// NotifyOverflowed is the sticky overflow flag for SMB2 CHANGE_NOTIFY on
-	// this directory handle. Set when a notify completes with
-	// STATUS_NOTIFY_ENUM_DIR because the encoded change list exceeds the
-	// requested OutputBufferLength. The next CHANGE_NOTIFY on this handle
-	// MUST also return STATUS_NOTIFY_ENUM_DIR regardless of the new buffer
-	// size — once events are lost the directory state is considered
-	// inconsistent and the client must re-enumerate (Samba notify_buffer
-	// is_overflow semantics; smb2.notify.valid-req "if the first notify
-	// returns NOTIFY_ENUM_DIR, all do"). Cleared after that next notify
-	// consumes it. Lifetime is the handle: closing/reopening resets it.
-	NotifyOverflowed atomic.Bool
-
-	// NotifyMaxBufferSize is the OutputBufferLength captured from the FIRST
-	// CHANGE_NOTIFY issued on this handle. Subsequent notifies cap their
-	// effective max with MIN(req.OutputBufferLength, NotifyMaxBufferSize),
-	// matching Samba `change_notify_create` / `change_notify_reply` semantics
-	// (max_buffer_size is stored on notify_buffer creation and applied to
-	// every reply via MIN). This is what gives the smb2.notify.valid-req
-	// "if the first notify returns NOTIFY_ENUM_DIR, all do" property: a
-	// tiny first buffer permanently caps later notifies on the same handle.
-	//
-	// Encoding: SMB2 OutputBufferLength is uint32 and 0 is a valid request
-	// value (a peer may issue CHANGE_NOTIFY with OutputBufferLength=0), so
-	// we cannot use 0 as the "unset" sentinel. Instead we pack into a
-	// uint64: bit `notifyMaxBufferSizeSetBit` (1<<32) is set on the first
-	// capture, and the low 32 bits hold the captured OutputBufferLength.
-	// "Unset" is the all-zero value. Set once via CompareAndSwap(0, ...)
-	// and never updated after. Use `notifyMaxBufferSizeLoad` to decode.
-	NotifyMaxBufferSize atomic.Uint64
-
-	// NotifyCompletionFilter is the CompletionFilter captured from the FIRST
-	// CHANGE_NOTIFY on this handle. Subsequent requests use this stored filter
-	// regardless of the filter in their request, matching Samba's
-	// change_notify_create behavior where the notify buffer's filter is fixed
-	// at creation. The recursive (WatchTree) flag is NOT sticky — it comes
-	// from each request. Encoding mirrors NotifyMaxBufferSize: bit 32 = set,
-	// low 32 bits = filter value. Zero means unset.
-	NotifyCompletionFilter atomic.Uint64
-
-	// HasByteRangeLocks is set the first time a LOCK request successfully
-	// records at least one byte-range lock under this open. The flag is
-	// strictly monotonic for the lifetime of the open — UNLOCK does NOT
-	// clear it, mirroring the pessimistic check Samba performs in
-	// `vfs_default_durable_disconnect`. The flag participates in the
-	// disconnect-time decision to persist a durable handle (see
-	// shouldPersistDurableOnDisconnect): an open holding any BR-lock under a
-	// lease that lacks W must NOT be persisted, because its locks cannot
-	// reliably survive an in-flight lease downgrade.
-	// smbtorture smb2.durable-v2-open.lock-noW-lease.
-	HasByteRangeLocks atomic.Bool
-
-	// OpenerUser is a snapshot of the SMB session's authenticated DittoFS
-	// user at CREATE time. After SESSION_SETUP re-authentication mutates
-	// Session.User to a different principal, handle-bound operations on
-	// this open (notably SET_INFO SecurityDescriptor) MUST be authorized
-	// against the ORIGINAL opener — MS-SMB2 §3.3.5.5.3 freezes the open's
-	// SecurityContext to the user who opened it. Re-resolving from the
-	// session at op time would (a) trip the ownership gate in
-	// MetadataService.SetFileAttributes when U1's file is being touched
-	// via h1 while the session is currently re-authed to anon/U2, and
-	// (b) misattribute authz audit records to the wrong principal.
-	//
-	// nil means "use the session-current user" — the legacy behaviour
-	// for codepaths and tests that pre-date the snapshot. Guest/Null
-	// opens set OpenerIsGuest / OpenerIsNull so handle-bound ops can
-	// rebuild the same nobody/65534 identity even after the session
-	// re-authenticates to a real user. smbtorture smb2.session.reauth4
-	// (set_secdesc on a U1-opened handle while session is anon) and
-	// reauth5 (same shape via the dir-handle dh1 SET_INFO) gate on this.
-	OpenerUser    *models.User
-	OpenerIsGuest bool
-	OpenerIsNull  bool
-}
-
-// OpenName is the name triple of an open handle: full path, name within the
-// parent, and parent directory handle. SET_INFO rename replaces all three at
-// once, so they are published and read as one immutable value.
 type OpenName struct {
 	Path         string
 	FileName     string
@@ -833,6 +351,7 @@ type OpenName struct {
 // Name returns the current name triple, zero if the handle was never named.
 // Returned by value so callers cannot mutate the published name; safe to call
 // while holding the handle lock.
+
 func (f *OpenFile) Name() OpenName {
 	if n := f.name.Load(); n != nil {
 		return *n
@@ -842,12 +361,14 @@ func (f *OpenFile) Name() OpenName {
 
 // SetName publishes a new name triple. Callers renaming a live handle must
 // hold `mu` across the read-modify-write so two renames cannot interleave.
+
 func (f *OpenFile) SetName(n OpenName) {
 	f.name.Store(&n)
 }
 
 // WithName publishes n and returns f, so a handle can be built and named in a
 // single expression.
+
 func (f *OpenFile) WithName(n OpenName) *OpenFile {
 	f.SetName(n)
 	return f
@@ -856,6 +377,7 @@ func (f *OpenFile) WithName(n OpenName) *OpenFile {
 // OpenID returns a unique identifier for this open file handle.
 // This is used for per-open byte-range lock ownership per MS-SMB2.
 // The identifier is derived from the SMB FileID, which is unique per open.
+
 func (f *OpenFile) OpenID() string {
 	if f.cachedOpenID == "" {
 		f.cachedOpenID = fmt.Sprintf("%x", f.FileID)
@@ -878,6 +400,7 @@ func (f *OpenFile) OpenID() string {
 // on any uncertainty preserves the lock-noW-lease gate at the cost of
 // occasionally declining to persist a genuinely lock-free handle whose
 // lock-manager is transiently unreachable.
+
 func openHasLocks(metaSvc *metadata.Service, openFile *OpenFile) bool {
 	if openFile == nil {
 		// No open to gate; nothing to persist. Caller short-circuits.
@@ -913,14 +436,19 @@ func openHasLocks(metaSvc *metadata.Service, openFile *OpenFile) bool {
 // the OpenFile lock across a longer R-M-W critical section (e.g. QueryDirectory
 // cursor advancement, SET_INFO BasicInfo freeze/thaw bookkeeping). For simple
 // boolean reads prefer IsAtimeFrozen / SnapshotFreeze.
-func (f *OpenFile) Lock()    { f.mu.Lock() }
-func (f *OpenFile) Unlock()  { f.mu.Unlock() }
-func (f *OpenFile) RLock()   { f.mu.RLock() }
+
+func (f *OpenFile) Lock() { f.mu.Lock() }
+
+func (f *OpenFile) Unlock() { f.mu.Unlock() }
+
+func (f *OpenFile) RLock() { f.mu.RLock() }
+
 func (f *OpenFile) RUnlock() { f.mu.RUnlock() }
 
 // IsAtimeFrozen returns the AtimeFrozen flag under the read lock. Used by
 // READ / WRITE / QUERY_DIRECTORY / COPYCHUNK to decide whether to bump
 // LastAccessTime after a successful operation.
+
 func (f *OpenFile) IsAtimeFrozen() bool {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
@@ -930,6 +458,7 @@ func (f *OpenFile) IsAtimeFrozen() bool {
 // GetPayloadID returns the cached payload identifier under the read lock.
 // WRITE, SET_REPARSE_POINT and COPYCHUNK publish it on a live handle, so
 // readers on other channels must not touch the field directly.
+
 func (f *OpenFile) GetPayloadID() metadata.PayloadID {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
@@ -937,6 +466,7 @@ func (f *OpenFile) GetPayloadID() metadata.PayloadID {
 }
 
 // SetPayloadID publishes a new cached payload identifier under the write lock.
+
 func (f *OpenFile) SetPayloadID(id metadata.PayloadID) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -947,6 +477,7 @@ func (f *OpenFile) SetPayloadID(id metadata.PayloadID) {
 // lock. SET_INFO and the CLOSE delete-on-close election write it under the
 // write lock, from goroutines other than the handle's own, so every read
 // outside those critical sections goes through here.
+
 func (f *OpenFile) IsDeletePending() bool {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
@@ -954,6 +485,7 @@ func (f *OpenFile) IsDeletePending() bool {
 }
 
 // IsMtimeFrozen returns the MtimeFrozen flag under the read lock.
+
 func (f *OpenFile) IsMtimeFrozen() bool {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
@@ -961,6 +493,7 @@ func (f *OpenFile) IsMtimeFrozen() bool {
 }
 
 // IsCtimeFrozen returns the CtimeFrozen flag under the read lock.
+
 func (f *OpenFile) IsCtimeFrozen() bool {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
@@ -971,6 +504,7 @@ func (f *OpenFile) IsCtimeFrozen() bool {
 // been initialized by the first CHANGE_NOTIFY on the handle. The low 32 bits
 // of the same uint64 hold the captured OutputBufferLength (which may legally
 // be zero — see the field comment for the encoding rationale).
+
 const notifyMaxBufferSizeSetBit uint64 = 1 << 32
 
 // CaptureNotifyMaxBufferSize atomically records the OutputBufferLength of the
@@ -978,6 +512,7 @@ const notifyMaxBufferSizeSetBit uint64 = 1 << 32
 // and true if this call performed the capture, or the previously-captured
 // value and false if a prior CHANGE_NOTIFY already set it. Safe for
 // concurrent callers; only the first wins.
+
 func (f *OpenFile) CaptureNotifyMaxBufferSize(outputBufferLength uint32) (captured uint32, didCapture bool) {
 	packed := notifyMaxBufferSizeSetBit | uint64(outputBufferLength)
 	if f.NotifyMaxBufferSize.CompareAndSwap(0, packed) {
@@ -989,6 +524,7 @@ func (f *OpenFile) CaptureNotifyMaxBufferSize(outputBufferLength uint32) (captur
 // NotifyMaxBufferSizeValue returns the captured first-CHANGE_NOTIFY
 // OutputBufferLength and whether it has been set yet. Returns (0, false)
 // before the first CHANGE_NOTIFY on this handle.
+
 func (f *OpenFile) NotifyMaxBufferSizeValue() (value uint32, set bool) {
 	raw := f.NotifyMaxBufferSize.Load()
 	if raw&notifyMaxBufferSizeSetBit == 0 {
@@ -1004,6 +540,7 @@ func (f *OpenFile) NotifyMaxBufferSizeValue() (value uint32, set bool) {
 // An empty filter is never captured. It carries no mask to make sticky, and
 // storing it would arm the handle with a filter that matches nothing for as
 // long as the handle lives — including for the later requests that do name one.
+
 func (f *OpenFile) CaptureNotifyCompletionFilter(filter uint32) (captured uint32, didCapture bool) {
 	if filter == 0 {
 		return uint32(f.NotifyCompletionFilter.Load()), false
@@ -1020,6 +557,7 @@ func (f *OpenFile) CaptureNotifyCompletionFilter(filter uint32) (captured uint32
 // server GUID. For custom session management (e.g., shared across adapters),
 // use NewHandlerWithSessionManager. LeaseManager is wired by the adapter
 // layer when the runtime is available.
+
 func NewHandler() *Handler {
 	return NewHandlerWithSessionManager(session.NewDefaultManager())
 }
@@ -1031,6 +569,7 @@ func NewHandler() *Handler {
 // adapter layer when the runtime and LockManager are available.
 // The NETLOGON authenticator is injected separately via SetNetlogonAuthenticator
 // after construction (see pkg/adapter/smb/adapter.go createSMBAdapter).
+
 func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 	h := &Handler{
 		StartTime:               time.Now(),
@@ -1080,6 +619,7 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 // domain rather than the realm or whatever the client supplied. When standalone
 // (NetBIOSDomain empty) it returns the caller-provided fallback (the Kerberos
 // realm or the client-supplied NTLM domain), preserving pre-AD-4 behavior.
+
 func (h *Handler) sessionDomain(fallback string) string {
 	if h.NetBIOSDomain != "" {
 		return h.NetBIOSDomain
@@ -1090,1099 +630,41 @@ func (h *Handler) sessionDomain(fallback string) string {
 // SetIdentityResolver atomically installs the centralized identity resolver.
 // Safe to call while session-setup goroutines read it (used for API-driven
 // identity-provider config hot-reload). Pass nil to clear.
+
 func (h *Handler) SetIdentityResolver(r *pkgidentity.Resolver) {
 	h.identityResolver.Store(r)
 }
 
 // IdentityResolver returns the current centralized identity resolver, or nil
 // when none is installed.
+
 func (h *Handler) IdentityResolver() *pkgidentity.Resolver {
 	return h.identityResolver.Load()
 }
 
 // GetSession retrieves a session by ID.
 // Delegates to SessionManager for unified session/credit management.
-func (h *Handler) GetSession(sessionID uint64) (*session.Session, bool) {
-	return h.SessionManager.GetSession(sessionID)
-}
 
-// DeleteSession removes a session by ID.
-// This automatically cleans up credit tracking as well, and
-// drops any cached SMB3 CREATE replay entries scoped to the
-// session so the cache footprint is freed promptly rather
-// than waiting on replayCacheTTL (MS-SMB2 §3.3.5.9).
-func (h *Handler) DeleteSession(sessionID uint64) {
-	h.SessionManager.DeleteSession(sessionID)
-	if h.CreateReplayCache != nil {
-		h.CreateReplayCache.ForgetSession(sessionID)
-	}
-}
-
-// GetTree retrieves a tree connection by ID
-func (h *Handler) GetTree(treeID uint32) (*TreeConnection, bool) {
-	v, ok := h.trees.Load(treeID)
-	if !ok {
-		return nil, false
-	}
-	return v.(*TreeConnection), true
-}
-
-// DeleteTree removes a tree connection by ID
-func (h *Handler) DeleteTree(treeID uint32) {
-	h.trees.Delete(treeID)
-}
-
-// GetOpenFile retrieves an open file by FileID
-func (h *Handler) GetOpenFile(fileID [16]byte) (*OpenFile, bool) {
-	v, ok := h.files.Load(string(fileID[:]))
-	if !ok {
-		return nil, false
-	}
-	return v.(*OpenFile), true
-}
-
-// handleOpTracker tracks in-flight operations on a FileID via a WaitGroup.
-// Created lazily by AcquireOpenFile; AcquireOpenFile adds and ReleaseOpenFile
-// calls Done. WaitAndDeleteOpenFile waits for the WaitGroup to drain before
-// removing the OpenFile from the map.
-type handleOpTracker struct {
-	wg sync.WaitGroup
-}
-
-// BeginHandleOp registers an in-flight operation on fileID without checking
-// whether the OpenFile is currently present. It is intended for the
-// connection dispatcher to call synchronously on the read loop BEFORE
-// spawning the request goroutine, so that the handleOps counter for the
-// FileID is incremented in wire order (independent of goroutine scheduling).
-// Without this, a later CLOSE on the same TCP connection can race ahead of
-// an earlier request's goroutine, observe handleOps empty, and delete the
-// OpenFile before the prior request calls AcquireOpenFile — yielding a
-// spurious STATUS_FILE_CLOSED (smbtorture compound_find.compound_find_close).
-//
-// The returned release func MUST be called exactly once when the request
-// completes. A subsequent in-handler AcquireOpenFile/ReleaseOpenFile pair on
-// the same FileID still works correctly: the tracker is shared, so the
-// nested Add/Done cancel out and the dispatcher's outer Done fires when the
-// request finishes.
-func (h *Handler) BeginHandleOp(fileID [16]byte) func() {
-	key := string(fileID[:])
-	v, _ := h.handleOps.LoadOrStore(key, &handleOpTracker{})
-	tracker := v.(*handleOpTracker)
-	tracker.wg.Add(1)
-	return func() { tracker.wg.Done() }
-}
-
-// AcquireOpenFile retrieves an open file by FileID and registers an in-flight
-// operation on it. The caller MUST call ReleaseOpenFile when done. Returns
-// nil,false when the handle is not found. This prevents a CLOSE on a concurrent
-// goroutine from deleting the OpenFile before the caller finishes using it
-// (smbtorture compound_find.compound_find_close).
-func (h *Handler) AcquireOpenFile(fileID [16]byte) (*OpenFile, bool) {
-	key := string(fileID[:])
-	// Load-or-store the tracker; add to the WaitGroup BEFORE checking the
-	// files map so that a concurrent WaitAndDeleteOpenFile sees our Add.
-	v, _ := h.handleOps.LoadOrStore(key, &handleOpTracker{})
-	tracker := v.(*handleOpTracker)
-	tracker.wg.Add(1)
-
-	f, ok := h.files.Load(key)
-	if !ok {
-		// File was already deleted; undo the Add.
-		tracker.wg.Done()
-		return nil, false
-	}
-	return f.(*OpenFile), true
-}
-
-// ReleaseOpenFile marks an in-flight operation on fileID as complete.
-// Must be called exactly once for each successful AcquireOpenFile.
-func (h *Handler) ReleaseOpenFile(fileID [16]byte) {
-	key := string(fileID[:])
-	if v, ok := h.handleOps.Load(key); ok {
-		v.(*handleOpTracker).wg.Done()
-	}
-}
-
-// WaitAndDeleteOpenFile waits for in-flight operations on fileID to drain,
-// then deletes the OpenFile from the map and revokes resume keys. This
-// replaces DeleteOpenFile for the CLOSE handler to prevent the race where
-// CLOSE deletes a handle that QueryDirectory is about to look up.
-func (h *Handler) WaitAndDeleteOpenFile(fileID [16]byte) {
-	h.DrainHandleOps(fileID)
-	h.deleteOpenFileEntry(fileID)
-}
-
-// DrainHandleOps blocks until all in-flight operations registered on fileID
-// (via BeginHandleOp / AcquireOpenFile) have completed, then drops the tracker.
-// Split out of WaitAndDeleteOpenFile so the CLOSE handler can drain the closing
-// handle's in-flight ops OUTSIDE renameScanMu (the drain can be unbounded if a
-// slow QueryDirectory is in flight) and take the mutex only for the actual
-// map removal + lease release/signal — see close.go step 10/11.
-func (h *Handler) DrainHandleOps(fileID [16]byte) {
-	key := string(fileID[:])
-	if v, ok := h.handleOps.Load(key); ok {
-		v.(*handleOpTracker).wg.Wait()
-		h.handleOps.Delete(key)
-	}
-}
-
-// deleteOpenFileEntry removes the OpenFile from the files map and revokes its
-// replay/resume state. The caller is responsible for any draining (see
-// DrainHandleOps). The CLOSE path holds renameScanMu across this call so a
-// concurrent rename's conflict re-scan cannot observe a half-removed handle.
-func (h *Handler) deleteOpenFileEntry(fileID [16]byte) {
-	key := string(fileID[:])
-	h.forgetReplayState(fileID)
-	h.files.Delete(key)
-	h.resumeKeys.revoke(fileID)
-}
-
-// DeleteOpenFile removes an open file by FileID and revokes any
-// resume keys issued for this handle (used by FSCTL_SRV_COPYCHUNK and the
-// session-cleanup path closeFilesWithFilter). Also clears the handleOps
-// tracker so trackers created by BeginHandleOp on this FileID do not leak.
-func (h *Handler) DeleteOpenFile(fileID [16]byte) {
-	key := string(fileID[:])
-	h.forgetReplayState(fileID)
-	h.files.Delete(key)
-	h.handleOps.Delete(key)
-	h.resumeKeys.revoke(fileID)
-}
-
-// forgetReplayState drops both CREATE (by CreateGuid via the OpenFile)
-// and LOCK (by FileID) replay-cache entries for a handle that is being
-// closed. The cache windows are only meaningful while a retry could
-// still arrive — once the handle is gone, so is any legitimate replay.
-func (h *Handler) forgetReplayState(fileID [16]byte) {
-	if h.CreateReplayCache != nil {
-		if v, ok := h.files.Load(string(fileID[:])); ok {
-			// Forget by the replay-cache key (the requested CreateGuid),
-			// which is set even for non-durable opens that never populate
-			// CreateGuid. Falls back to CreateGuid for older code paths.
-			of := v.(*OpenFile)
-			guid := of.ReplayCreateGuid
-			if guid == ([16]byte{}) {
-				guid = of.CreateGuid
-			}
-			if guid != ([16]byte{}) {
-				h.CreateReplayCache.Forget(guid)
-			}
-		}
-	}
-	if h.LockReplayCache != nil {
-		h.LockReplayCache.ForgetFile(fileID)
-	}
-}
-
-// ReleaseAllLocksForSession releases all byte-range locks held by a session.
-// This is called during LOGOFF or connection cleanup to ensure locks are released
-// even if CLOSE was not called for all open files.
-func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint64) {
-	h.files.Range(func(key, value any) bool {
-		openFile := value.(*OpenFile)
-		if openFile.SessionID != sessionID {
-			return true // Continue iterating
-		}
-
-		// Skip directories and pipes
-		if openFile.IsDirectory || openFile.IsPipe || len(openFile.MetadataHandle) == 0 {
-			return true
-		}
-
-		// Release locks for this file (per-open ownership)
-		metaSvc := h.Registry.GetMetadataService()
-
-		// UnlockAllForOpen doesn't return errors for missing locks
-		if unlockErr := metaSvc.UnlockAllForOpen(ctx, openFile.MetadataHandle, openFile.OpenID()); unlockErr != nil {
-			logger.Warn("ReleaseAllLocksForSession: failed to release locks",
-				"share", openFile.ShareName,
-				"path", openFile.Name().Path,
-				"error", unlockErr)
-		}
-
-		return true
-	})
-}
-
-// CloseAllFilesForSession closes all open files for a session.
-// For non-persisted opens this releases locks, flushes caches, handles delete-on-close,
-// and removes file handles. When isDisconnect is true, eligible durable handles are
-// instead persisted for reconnection (locks retained, caches NOT flushed, delete-on-close
-// NOT executed). Both a transport drop and an explicit LOGOFF pass true: a durable handle
-// is owned by the durable scope, not the session, so it survives logoff and stays
-// reconnectable via DHnC/DH2C (smb2.durable-open.reopen4). Callers that pass
-// isDisconnect=false — a TREE_DISCONNECT (CloseAllFilesForTree) or a session teardown
-// that is not a reconnectable drop — fully close durable handles instead. Eligibility is
-// further gated inside closeFilesWithFilter: delete-on-close opens and BR-lock-without-W
-// opens are closed, not persisted.
-// Returns the number of files closed.
-func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64, isDisconnect bool) int {
-	filter := func(f *OpenFile) bool {
-		return f.SessionID == sessionID
-	}
-	return h.closeFilesWithFilter(ctx, sessionID, filter, "CloseAllFilesForSession", isDisconnect)
-}
-
-// CloseAllFilesForTree closes all open files associated with a tree connection.
-// This releases locks, flushes caches, handles delete-on-close, and removes file handles.
-// The sessionID parameter is used for authorization context during delete-on-close
-// and lock release operations. Files are filtered by both treeID and sessionID for safety.
-// Returns the number of files closed.
-func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessionID uint64) int {
-	filter := func(f *OpenFile) bool {
-		return f.TreeID == treeID && f.SessionID == sessionID
-	}
-	// Tree disconnect is not a transport disconnect — fully close durable handles
-	return h.closeFilesWithFilter(ctx, sessionID, filter, "CloseAllFilesForTree", false)
-}
-
-// closeFilesWithFilter closes files matching the filter predicate.
-// This is the shared implementation for CloseAllFilesForSession and CloseAllFilesForTree.
-// When isDisconnect is true, durable handles are persisted for later reconnection.
-// When false (explicit LOGOFF or tree disconnect), durable handles are fully closed.
-func (h *Handler) closeFilesWithFilter(
-	ctx context.Context,
-	sessionID uint64,
-	filter func(*OpenFile) bool,
-	caller string,
-	isDisconnect bool,
-) int {
-	var closed int
-	var toDelete [][16]byte
-	// Directory handles only. CHANGE_NOTIFY is rejected on anything else
-	// (stub_handlers.go returns STATUS_INVALID_PARAMETER for a non-directory),
-	// so a file or pipe handle can never carry a watch — and running the
-	// notify completion for one would record a close tombstone nothing will
-	// ever consume, making bulk teardown pay an O(n) tombstone sweep per
-	// handle.
-	var notifyDirs [][16]byte
-	// docDirs holds the (share, path) of every directory handle this teardown
-	// found carrying a delete-on-close. Marking a directory for deletion has to
-	// complete the CHANGE_NOTIFY watches on it, and those normally live on
-	// handles this teardown is not touching — see close.go step 9.
-	var docDirs [][2]string
-	// leaseReleases holds the opens whose per-handle lease/oplock record must be
-	// released AFTER the open-file table has been shrunk (second pass). Releasing
-	// in the first pass would let two opens of the SAME file with the SAME lease
-	// key (still both present in h.files) each observe the other as a surviving
-	// sibling and skip release, leaking the record. Pipes (no lease) and durable
-	// handles persisted for reconnect (lease intentionally retained) are excluded.
-	var leaseReleases []*OpenFile
-
-	// Get session for auth context (may be nil if session already deleted)
-	sess, _ := h.GetSession(sessionID)
-	metaSvc := h.Registry.GetMetadataService()
-
-	// First pass: collect files to close and release locks
-	h.files.Range(func(key, value any) bool {
-		openFile := value.(*OpenFile)
-		if !filter(openFile) {
-			return true // Continue iterating
-		}
-
-		// Handle pipe close
-		if openFile.IsPipe {
-			// Complete any pending async READ with STATUS_CANCELLED before closing.
-			if h.PipeReadRegistry != nil {
-				if pending := h.PipeReadRegistry.UnregisterByFileID(openFile.FileID); pending != nil {
-					if pending.Callback != nil {
-						go func(pr *PendingPipeRead) {
-							if err := pr.Callback(pr.SessionID, pr.MessageID, pr.AsyncId, types.StatusCancelled, nil); err != nil {
-								logger.Warn("pipe close: failed to cancel pending READ", "asyncId", pr.AsyncId, "error", err)
-							}
-						}(pending)
-					}
-				}
-			}
-			h.PipeManager.ClosePipe(openFile.FileID)
-			toDelete = append(toDelete, openFile.FileID)
-			closed++
-			return true
-		}
-
-		// Delete-on-close decision. It runs here, ahead of everything that can
-		// make this handle leave the open-file table — the durable persist
-		// below removes it from h.files just as a full close does — because
-		// the decision and this handle's departure from the set of handles
-		// that can still honour a delete-on-close have to be one step. This
-		// pass decides and the third pass below removes; a concurrent closer
-		// scanning in between must not see a handle already written off, or
-		// it defers the unlink to one that will never perform it. Shared with
-		// close.go step 8; see doc_election.go. The unlink itself runs further
-		// down, after the lock release and the cache flush.
-		decision, docDelete := h.electDeleteOnClose(openFile)
-		if decision != docDecisionNone && openFile.IsDirectory {
-			docDirs = append(docDirs, [2]string{openFile.ShareName, openFile.Name().Path})
-		}
-
-		// Durable handle persistence: when IsDurable is set AND this is a transport
-		// disconnect (not an explicit LOGOFF), persist the handle to the
-		// DurableHandleStore for later reconnection. On explicit LOGOFF the client
-		// is intentionally closing the session, so durable handles are fully closed.
-		//
-		// Refuse to persist if the handle requested FILE_DELETE_ON_CLOSE at CREATE
-		// time or marked DeletePending later via FileDispositionInformation. This
-		// mirrors Samba `vfs_default_durable_disconnect` (source3/smbd/durable.c):
-		// the disconnect path returns NT_STATUS_NOT_SUPPORTED for delete-on-close
-		// opens so the caller falls back to normal close and executes the delete.
-		// Required for smb2.durable-open.delete_on_close1 — without this, the
-		// file persists across the disconnect and a subsequent fresh CREATE sees
-		// the stale content instead of a freshly-created empty file. The matching
-		// delete_on_close2 test stays in KNOWN_FAILURES (same as Samba upstream).
-		// A non-none decision is exactly "this handle carries a delete-on-close",
-		// read inside the election — so a DOC a concurrent closer propagated
-		// onto this handle a moment ago is honoured rather than persisted away.
-		hasDeleteOnClose := decision != docDecisionNone
-		if openFile.IsDurable && h.DurableStore != nil && isDisconnect && !hasDeleteOnClose {
-			username := ""
-			var sessionKeyHash [32]byte
-			if sess != nil {
-				username = sess.Username
-				sessionKeyHash = computeSessionKeyHash(sess)
-			}
-
-			// Capture current lease state + epoch from LeaseManager for reconnect
-			// restoration. The epoch is the live OpLock.Lease.Epoch (lock layer);
-			// persisting it lets the reconnect CREATE response restore the exact
-			// epoch the client last saw (smb2.durable-v2-open.lock-lease).
-			var leaseState uint32
-			var leaseEpoch uint16
-			if h.LeaseManager != nil && openFile.LeaseKey != ([16]byte{}) {
-				if state, epoch, found := h.LeaseManager.GetLeaseState(ctx, lock.FileHandle(openFile.MetadataHandle), openFile.ShareName, openFile.LeaseKey); found {
-					leaseState = state
-					leaseEpoch = epoch
-				}
-			}
-
-			// MS-SMB2 §3.3.7.1 ("Handling Loss of a Connection") persist gate:
-			// refuse to persist when the
-			// open holds a byte-range lock under a lease lacking W. The
-			// disconnected reconnect cannot reliably re-establish the lock
-			// because the BR-lock is bound to the open's OpenID and a
-			// non-W lease cannot promote to W on reconnect without breaking
-			// other holders. Mirrors Samba's vfs_default_durable_disconnect
-			// (NT_STATUS_NOT_SUPPORTED → fall through to normal close).
-			// smbtorture smb2.durable-v2-open.lock-noW-lease.
-			//
-			// Source of truth is the lock manager — not openFile.HasByteRangeLocks
-			// — to close a TOCTOU window where an async-parked LOCK goroutine
-			// could set the flag after this read. The manager carries the
-			// authoritative per-OpenID lock list (lock_async.go::resumePendingLock
-			// adds via metaSvc.LockFile, which the manager records).
-			persistGated := !shouldPersistDurableOnDisconnect(leaseState, openHasLocks(metaSvc, openFile))
-			if persistGated {
-				logger.Debug(caller+": durable persist refused (BR-lock without W lease)",
-					"path", openFile.Name().Path,
-					"leaseState", fmt.Sprintf("0x%x", leaseState),
-					"hasBRLocks", true)
-			} else {
-				// Serialize the persist against concurrent create-time
-				// purge windows; see durablePurgeMu comment.
-				h.durablePurgeMu.Lock()
-				persisted := buildPersistedDurableHandle(openFile, username, sessionKeyHash, h.StartTime, leaseState, leaseEpoch)
-				// Count the handle before the row becomes visible, so a
-				// concurrent WRITE/SET_INFO cannot take its fast path over a
-				// file that already has a disconnected handle. A failed Put is
-				// deliberately not un-counted: it may still have written the
-				// row, and the next scan of this file reconciles the count.
-				h.noteDisconnectedHandle(persisted.MetadataHandle)
-				err := h.DurableStore.PutDurableHandle(ctx, persisted)
-				h.durablePurgeMu.Unlock()
-				if err != nil {
-					logger.Warn(caller+": failed to persist durable handle",
-						"path", openFile.Name().Path,
-						"error", err)
-					// Fall through to normal close on persistence failure
-				} else {
-					logger.Debug(caller+": durable handle persisted for reconnect",
-						"path", openFile.Name().Path,
-						"fileID", fmt.Sprintf("%x", openFile.FileID),
-						"timeout", openFile.DurableTimeoutMs)
-					// Do NOT release locks, flush caches, or execute delete-on-close
-					// The handle lives on in the DurableHandleStore
-					toDelete = append(toDelete, openFile.FileID)
-					if openFile.IsDirectory {
-						notifyDirs = append(notifyDirs, openFile.FileID)
-					}
-					closed++
-					return true
-				}
-			}
-		}
-
-		// Cancel any pending blocking LOCK requests for this handle and
-		// release held byte-range locks. Mirrors the explicit CLOSE path
-		// (close.go step 7) so callers like LOGOFF / tree-disconnect /
-		// transport drop deliver STATUS_RANGE_NOT_LOCKED to parked waiters
-		// per Samba `brl_close_fnum`. Without this, blocking locks parked
-		// on a closing handle wait for the catch-all session/tree drain
-		// which fires STATUS_CANCELLED — failing smb2.lock.cancel-logoff
-		// which expects RANGE_NOT_LOCKED or OK.
-		if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
-			if h.PendingLockRegistry != nil {
-				for _, parked := range h.PendingLockRegistry.UnregisterAllForOwner(openFile.OpenID()) {
-					if parked.Callback != nil {
-						if err := parked.Callback(parked.SessionID, parked.MessageID, parked.AsyncId, types.StatusRangeNotLocked, nil); err != nil {
-							logger.Debug(caller+": failed to send RANGE_NOT_LOCKED",
-								"asyncId", parked.AsyncId, "error", err)
-						}
-					}
-					if h.LockWaitGraph != nil && parked.OwnerID != "" {
-						h.LockWaitGraph.RemoveWaiter(parked.OwnerID)
-					}
-				}
-			}
-			_ = metaSvc.UnlockAllForOpen(ctx, openFile.MetadataHandle, openFile.OpenID())
-		}
-
-		// Flush cache if needed
-		if !openFile.IsDirectory && openFile.GetPayloadID() != "" {
-			h.flushFileCache(ctx, openFile)
-		}
-
-		// Execute the delete-on-close decided above. TDIS / LOGOFF / disconnect
-		// skip the explicit CLOSE handler, so this is where the unlink happens
-		// for them. The target was snapshotted by the election, so a rename
-		// landing since cannot redirect it.
-		if decision == docDecisionDelete && len(docDelete.ParentHandle) > 0 && docDelete.FileName != "" {
-			h.handleDeleteOnClose(ctx, sess, openFile, docDelete, caller)
-		}
-
-		// Queue this handle's per-open lease/oplock record for release in the
-		// second pass (after the open-file table is shrunk). The explicit CLOSE
-		// handler releases inline in close.go step 9, but LOGOFF /
-		// tree-disconnect / transport-drop bypass that handler. Relying solely
-		// on the later LeaseManager.ReleaseSessionLeases (a sessionMap scan
-		// keyed by lease key) leaks the record whenever a later session reused
-		// the same numeric lease key on another file and overwrote the
-		// sessionMap entry — the root cause of the #568 rotating cross-test
-		// lease flake. See releaseHandleLeaseRecord for the full rationale.
-		leaseReleases = append(leaseReleases, openFile)
-
-		toDelete = append(toDelete, openFile.FileID)
-		if openFile.IsDirectory {
-			notifyDirs = append(notifyDirs, openFile.FileID)
-		}
-		closed++
-		return true
-	})
-
-	// Second pass: unregister pending CHANGE_NOTIFY watchers for the collected
-	// handles. The CLOSE handler (close.go) does this for explicit closes, but
-	// closeFilesWithFilter bypasses the CLOSE handler. Without this, stale
-	// watchers persist in the NotifyRegistry after connection cleanup and can
-	// fire during subsequent tests, sending async responses on dead connections
-	// with partially-destroyed sessions. Per MS-SMB2 3.3.4.1: when the watched
-	// handle goes away the pending request MUST complete with
-	// STATUS_NOTIFY_CLEANUP so the client's async recv unblocks
-	// (smb2.notify.tcon, .dir).
-	//
-	// This runs OUTSIDE renameScanMu — it touches only the NotifyRegistry, not
-	// the `files` map a concurrent rename scan inspects — and never blocks on a
-	// wait a concurrent CLOSE must satisfy, preserving the same deadlock-safety
-	// argument as close.go's DrainHandleOps placement.
-	if h.NotifyRegistry != nil {
-		for _, fileID := range notifyDirs {
-			for _, notify := range h.NotifyRegistry.CloseByFileID(fileID) {
-				if notify.AsyncCallback == nil {
-					continue
-				}
-				cleanupResp := &ChangeNotifyResponse{
-					SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
-				}
-				// Gate on interim PENDING — even during teardown, the
-				// interim must reach the wire first or the client sees
-				// out-of-order responses on its still-alive socket.
-				n := notify
-				go h.NotifyRegistry.QueueFinalAfterInterim(n, func() {
-					if err := n.AsyncCallback(n.SessionID, n.MessageID, n.AsyncId, cleanupResp); err != nil {
-						logger.Debug("closeFilesWithFilter: failed to send STATUS_NOTIFY_CLEANUP",
-							"sessionID", n.SessionID,
-							"messageID", n.MessageID,
-							"error", err)
-					}
-				})
-			}
-		}
-
-		// Per [MS-FSA] 2.1.5.15.3 step 3.2.3.2: a directory marked for deletion completes
-		// every pending CHANGE_NOTIFY on it with STATUS_DELETE_PENDING. Runs
-		// after the loop above so a watch on a handle this teardown is closing
-		// still gets the STATUS_NOTIFY_CLEANUP its own close owes it; what is
-		// left are watches held by handles outside this teardown.
-		for _, d := range docDirs {
-			h.NotifyRegistry.CompleteWatchersForDeletePending(d[0], d[1])
-		}
-	}
-
-	// Third pass: remove the collected handles from the `files` map and release
-	// their per-handle lease/oplock records, all under renameScanMu.
-	//
-	// Lock rationale (mirrors close.go step 10/11): a concurrent SET_INFO
-	// rename's post-break conflict re-scan reads the lock-free `files` map to
-	// decide whether a conflicting holder still exists. If a teardown removed a
-	// handle and then released its lease (which signals the rename's break-wait)
-	// WITHOUT this mutex, the woken rename could observe the holder
-	// half-removed — gone from `files` per the signal yet still mid-removal — or
-	// the reverse, yielding a spurious STATUS_SHARING_VIOLATION. Holding
-	// renameScanMu across the map removal + lease release makes the rename's
-	// authoritative scan run entirely before or entirely after this teardown,
-	// never interleaved. closeFilesWithFilter does no DrainHandleOps wait, so
-	// nothing inside this section blocks on a wait a concurrent CLOSE must
-	// satisfy; the mutex never nests under any LockManager/lease lock (the scan
-	// touches only the sync.Map), so lock ordering stays cycle-free.
-	//
-	// The handleOps tracker is cleared outside the mutex: it is an independent
-	// sync.Map the rename scan never reads, and the in-flight ops for a
-	// teardown handle are not waited on here.
-	//
-	// releaseHandleLeaseRecord runs after every map removal so its "any other
-	// open on the same file shares this key" scan sees the shrunk table —
-	// otherwise sibling opens of the same file/key (all still present in the
-	// first pass) would each defer to the other and the record would leak.
-	h.renameScanMu.Lock()
-	for _, fileID := range toDelete {
-		h.deleteOpenFileEntry(fileID)
-	}
-	for _, openFile := range leaseReleases {
-		h.releaseHandleLeaseRecord(ctx, openFile, caller)
-	}
-	h.renameScanMu.Unlock()
-
-	// Clear the handleOps trackers for the removed handles. deleteOpenFileEntry
-	// (used inside renameScanMu above, consistent with close.go) does not touch
-	// handleOps, so do it here to avoid leaking trackers created by
-	// BeginHandleOp on these FileIDs.
-	for _, fileID := range toDelete {
-		h.handleOps.Delete(string(fileID[:]))
-	}
-
-	if closed > 0 {
-		logger.Debug(caller+": closed files", "sessionID", sessionID, "count", closed)
-	}
-
-	return closed
-}
-
-// purgeBlockStorePayload best-effort deletes a deleted file's block-store
-// payload using that file's own stored PayloadID. Files created after #1166
-// PR-3 get a UUID-based PayloadID (metadata.buildPayloadID), so a recreate at
-// the same path now gets a fresh content_id and cannot collide with this
-// file's bytes. This purge is still required to reclaim the deleted file's
-// append-log/CAS state (otherwise its append log and tracked size would leak;
-// historically a path-derived recreate could even read its stale bytes —
-// e.g. a sparse hole surfacing non-zero bytes, smb2.ioctl.copy_chunk_sparse_dest).
-// Callers invoke this only AFTER the metadata removal succeeds, so a block-store
-// miss is harmless and GC reclaims any straggler CAS chunks; all errors are
-// logged at Debug and swallowed.
-func (h *Handler) purgeBlockStorePayload(ctx context.Context, handle metadata.FileHandle, payloadID metadata.PayloadID, path, caller string) {
-	if payloadID == "" || len(handle) == 0 {
-		return
-	}
-	blockStore, err := common.ResolveForWrite(ctx, h.Registry, handle)
-	if err != nil {
-		return
-	}
-	// Pass nil blocks: the block store resolves this payload's manifest and
-	// reaps each row's refcount so the chunks become GC-eligible (#1433), in
-	// addition to purging the append log + tracked size.
-	if delErr := blockStore.Delete(ctx, string(payloadID), nil); delErr != nil {
-		logger.Debug(caller+": block-store payload delete failed (non-fatal)",
-			"path", path, "payloadID", payloadID, "error", delErr)
-	}
-}
-
-// handleDeleteOnClose performs the delete operation for files marked with
-// delete-on-close during session/tree/connection teardown.
-//
-// Two lease breaks fire after the removal, and only when it happened:
-//
-//  1. Strip Handle from other sessions' leases on the file that was
-//     deleted (RH → R, RWH → RW). Handle caching is only stale once the
-//     entry is actually gone — a delete-on-close that meets a non-empty
-//     directory declines the removal (MS-FSA 2.1.5.5 phase 1 step 2.1.1)
-//     and leaves every other holder's caching valid.
-//
-//  2. Break the parent directory's Handle and Read leases (content
-//     change). Matches the explicit CLOSE path at close.go:334.
-//
-// Both breaks are async: the triggering SMB request (TDIS / LOGOFF / CLOSE /
-// transport close) is on tree2/session2, while the lease holder is on a
-// different session/tree on the same transport. Waiting for an ACK here
-// would deadlock — the holder can only ack after the triggering request
-// returns.
-func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session, openFile *OpenFile, target docTarget, caller string) {
-	name := target.Name
-	authCtx := h.buildCleanupAuthContext(ctx, sess)
-	// Thread the closing handle's RqLs ParentLeaseKey so notifyDirChange can
-	// apply the Samba `dirlease_should_break` parent-key
-	// suppression rule on the parent dir lease. Suppression applies only when
-	// the closer's key matches the key whoever committed the delete-on-close
-	// recorded; when they differ every parent dir lease breaks. Same rule the
-	// explicit CLOSE path applies (close.go step 8).
-	docSetterKeysDiffer := target.HasDocSetterParentKey &&
-		openFile.HasParentLeaseKey &&
-		target.DocSetterParentKey != openFile.ParentLeaseKey
-	if !docSetterKeysDiffer {
-		PropagateOpenFileParentLeaseKey(authCtx, openFile)
-	}
-	// Remove what the election resolved — for a stream handle carrying a
-	// base-file delete that is the base file, not the stream's own name —
-	// through the shared helper CLOSE also uses, so the cascade to stream
-	// siblings and the payload purge cannot drift between the two paths.
-	// See doc_election.go.
-	_, removed, err := h.removeElectedTarget(ctx, authCtx, openFile, target, caller)
-
-	if err == nil && removed {
-		if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
-			lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
-			// Exclude the closing session: its leases on this file are about to
-			// be released anyway, and firing self-breaks creates spurious
-			// notifications that leak into later tests (observed regressing
-			// smb2.lease.v1_bug15148 to count=2).
-			excludeOwner := &lock.LockOwner{ClientID: fmt.Sprintf("smb:%d", openFile.SessionID)}
-			if breakErr := h.LeaseManager.BreakFileHandleLeasesOnDelete(lockFileHandle, openFile.ShareName, excludeOwner); breakErr != nil {
-				logger.Debug(caller+": file Handle lease break on delete failed", "path", name.Path, "error", breakErr)
-			}
-		}
-
-		// No SMBHandlerContext available on the TDIS/LOGOFF/disconnect
-		// teardown path — pass nil so the helper falls back to inline
-		// dispatch (those paths don't ship a triggering response on the
-		// same wire, so the deferred-via-PostSend ordering is unneeded).
-		h.breakParentDirLeasesForContentChange(nil, authCtx, openFile)
-	}
-}
-
-// DeleteAllTreesForSession removes all tree connections for a session.
-// Returns the number of trees deleted.
-func (h *Handler) DeleteAllTreesForSession(sessionID uint64) int {
-	var deleted int
-	var toDelete []uint32
-
-	// First pass: collect trees to delete
-	h.trees.Range(func(key, value any) bool {
-		tree := value.(*TreeConnection)
-		if tree.SessionID == sessionID {
-			toDelete = append(toDelete, tree.TreeID)
-			deleted++
-		}
-		return true
-	})
-
-	// Second pass: delete collected trees
-	for _, treeID := range toDelete {
-		h.DeleteTree(treeID)
-	}
-
-	if deleted > 0 {
-		logger.Debug("DeleteAllTreesForSession: deleted trees",
-			"sessionID", sessionID,
-			"count", deleted)
-	}
-
-	return deleted
-}
-
-// WaitForCleanup blocks until all in-progress session cleanups have finished,
-// or until the timeout (3 seconds) expires. Called at the start of SESSION_SETUP
-// to ensure that stale state from a prior disconnected session is fully removed
-// from the shared Handler maps before a new session starts operating.
-//
-// The timeout prevents indefinite blocking when cleanup is slow (e.g., flushing
-// many open files), which would cause smbtorture connection timeouts.
-func (h *Handler) WaitForCleanup() {
-	select {
-	case <-h.cleanup.Idle():
-	case <-time.After(3 * time.Second):
-		logger.Warn("WaitForCleanup: timed out after 3s, proceeding with session setup")
-	}
-}
-
-// SignalPendingCleanup registers count in-progress cleanups on the barrier.
-// It MUST be called before any cleanup work begins — including draining the
-// dying connection's in-flight requests — so WaitForCleanup() in a new
-// session's SESSION_SETUP blocks until that cleanup is done. Every step
-// arming happens after is a window in which WaitForCleanup sees an idle
-// barrier while the old session's open files are still in the handle table.
-func (h *Handler) SignalPendingCleanup(count int) {
-	h.cleanup.Add(count)
-}
-
-// SignalCleanupDone retires one in-progress cleanup on the barrier. Used by
-// the connection close path and by panic recovery in the cleanup loop, to
-// release remaining slots when CleanupSession cannot be called (because it
-// would call Done itself).
-func (h *Handler) SignalCleanupDone() {
-	h.cleanup.Done()
-}
-
-// ExpireSessionNotifies completes any pending CHANGE_NOTIFY requests for a
-// session whose Kerberos ticket has expired, WITHOUT tearing the session down
-// (it may still re-authenticate via SESSION_SETUP). An expired session rejects
-// most commands with STATUS_NETWORK_SESSION_EXPIRED (MS-SMB2 §3.3.5.2.9); an
-// outstanding async CHANGE_NOTIFY armed before expiry must also be completed so
-// the client's smb2_notify_recv unblocks instead of hanging forever. The final
-// response carries STATUS_CANCELLED: the request is being cancelled because the
-// session can no longer serve it, which is exactly what smbtorture
-// smb2.session.expire2s / expire2e assert (session.c:1641 expects
-// NT_STATUS_CANCELLED for the cancelled notify). Unlike
-// releaseSessionLeasesAndNotifies this touches ONLY the notify registry —
-// leases, locks and the session itself survive so the client can
-// reauthenticate and keep using its open handles. Idempotent:
-// ExpirePendingForSession removes the watchers, so repeated calls on the
-// subsequent expired requests of the same window are no-ops.
-func (h *Handler) ExpireSessionNotifies(sessionID uint64) {
-	if h.NotifyRegistry == nil {
-		return
-	}
-	// ExpirePendingForSession (not UnregisterAllForSession): the session
-	// survives the ticket expiry and may re-authenticate, so its handles stay
-	// armed and buffered-event accounting carries into the re-issued NOTIFY.
-	for _, notify := range h.NotifyRegistry.ExpirePendingForSession(sessionID) {
-		if notify.AsyncCallback == nil {
-			continue
-		}
-		resp := &ChangeNotifyResponse{
-			SMBResponseBase: SMBResponseBase{Status: types.StatusCancelled},
-		}
-		n := notify
-		h.NotifyRegistry.QueueFinalAfterInterim(n, func() {
-			if err := n.AsyncCallback(n.SessionID, n.MessageID, n.AsyncId, resp); err != nil {
-				logger.Debug("expired session: failed to complete pending CHANGE_NOTIFY",
-					"sessionID", n.SessionID,
-					"messageID", n.MessageID,
-					"error", err)
-			}
-		})
-	}
-}
-
-// releaseSessionLeasesAndNotifies releases all leases and unregisters all
-// CHANGE_NOTIFY watchers for the given session. This is factored out because
-// it is needed in three places: explicit LOGOFF, re-auth failure, and
-// transport disconnect (CleanupSession).
-func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID uint64) {
-	if h.LeaseManager != nil {
-		if err := h.LeaseManager.ReleaseSessionLeases(ctx, sessionID); err != nil {
-			logger.Warn("releaseSessionLeasesAndNotifies: failed to release leases",
-				"sessionID", sessionID,
-				"error", err)
-		}
-	}
-	if h.NotifyRegistry != nil {
-		// Per MS-SMB2 3.3.5.5.2 / 3.3.5.5.3: when a session is destroyed
-		// (LOGOFF, transport drop, re-auth failure, or PreviousSessionID
-		// supersession), pending CHANGE_NOTIFY requests MUST complete with
-		// STATUS_NOTIFY_CLEANUP so the client unblocks its async recv.
-		// Mirrors the per-file path in close.go.
-		//
-		// Delivery is SYNCHRONOUS — the response carries the OLD session's
-		// SessionID and MUST be signed with that session's key. Our caller
-		// (CleanupSession on the PreviousSessionID path) deletes the session
-		// immediately after this returns; an async (`go func`) delivery would
-		// race with DeleteSession and send the response unsigned, which the
-		// client rejects. This is the missing piece behind
-		// smb2.notify.session-reconnect (issue #473): the client never sees
-		// the cleanup and hangs in smb2_notify_recv. The LOGOFF caller keeps
-		// the session alive for response signing anyway, so sync delivery is
-		// correct there as well.
-		for _, notify := range h.NotifyRegistry.UnregisterAllForSession(sessionID) {
-			if notify.AsyncCallback == nil {
-				continue
-			}
-			cleanupResp := &ChangeNotifyResponse{
-				SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
-			}
-			n := notify
-			h.NotifyRegistry.QueueFinalAfterInterim(n, func() {
-				if err := n.AsyncCallback(n.SessionID, n.MessageID, n.AsyncId, cleanupResp); err != nil {
-					logger.Debug("session cleanup: failed to send STATUS_NOTIFY_CLEANUP",
-						"sessionID", n.SessionID,
-						"messageID", n.MessageID,
-						"error", err)
-				}
-			})
-		}
-	}
-	h.cancelAsyncOpsForSession(sessionID)
-}
-
-// cancelAsyncOpsForSession cancels pending pipe reads, parked CREATEs, and
-// blocked LOCKs for a session. Used by both CleanupSession and
-// PreviousSessionID teardown.
-func (h *Handler) cancelAsyncOpsForSession(sessionID uint64) {
-	if h.PipeReadRegistry != nil {
-		for _, pending := range h.PipeReadRegistry.UnregisterAllForSession(sessionID) {
-			if pending.Callback != nil {
-				go func(pr *PendingPipeRead) {
-					if err := pr.Callback(pr.SessionID, pr.MessageID, pr.AsyncId, types.StatusCancelled, nil); err != nil {
-						logger.Warn("session cleanup: failed to cancel pending pipe READ", "asyncId", pr.AsyncId, "error", err)
-					}
-				}(pending)
-			}
-		}
-	}
-	if h.PendingCreateRegistry != nil {
-		for _, parked := range h.PendingCreateRegistry.UnregisterAllForSession(sessionID) {
-			if parked.Callback != nil {
-				go func(p *PendingCreate) {
-					p.releaseReplay()
-					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusCancelled, nil); err != nil {
-						logger.Debug("session cleanup: failed to cancel pending CREATE",
-							"asyncId", p.AsyncId, "messageID", p.MessageID, "error", err)
-					}
-				}(parked)
-			}
-		}
-	}
-	if h.PendingLockRegistry != nil {
-		for _, parked := range h.PendingLockRegistry.UnregisterAllForSession(sessionID) {
-			if parked.Callback != nil {
-				go func(p *PendingLock) {
-					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusRangeNotLocked, nil); err != nil {
-						logger.Debug("session cleanup: failed to cancel pending LOCK",
-							"asyncId", p.AsyncId, "messageID", p.MessageID, "error", err)
-					}
-				}(parked)
-			}
-			if h.LockWaitGraph != nil && parked.OwnerID != "" {
-				h.LockWaitGraph.RemoveWaiter(parked.OwnerID)
-			}
-		}
-	}
-}
-
-// CleanupSession performs full cleanup for a session.
-// This closes all files, releases all locks, removes all tree connections,
-// and deletes the session. Called on LOGOFF or connection close.
-// When isDisconnect is true (transport drop), durable handles are preserved.
-// When false (explicit LOGOFF), all handles are fully closed.
-//
-// IMPORTANT: this consumes one cleanup-barrier count, retired from a defer so
-// it is released on a panicking unwind too. The caller must have armed that
-// count with SignalPendingCleanup before the call — one per session it is about
-// to clean up — so the barrier is visible to new sessions for the whole span.
-func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64, isDisconnect bool) {
-	defer h.cleanup.Done()
-
-	logger.Debug("CleanupSession: starting cleanup", "sessionID", sessionID, "isDisconnect", isDisconnect)
-
-	// 1. Close all open files (this also releases locks and flushes caches)
-	filesClosed := h.CloseAllFilesForSession(ctx, sessionID, isDisconnect)
-
-	// 2. Release leases and notify watchers that may not have been
-	// cleaned up by per-file CLOSE (e.g. client disconnected without
-	// closing all files, or re-auth failure).
-	h.releaseSessionLeasesAndNotifies(ctx, sessionID)
-
-	// 3. Delete all tree connections
-	treesDeleted := h.DeleteAllTreesForSession(sessionID)
-
-	// 4. Clean up any pending auth state (all channels)
-	h.DeleteAllPendingAuthForSession(sessionID)
-
-	// 5. Delete the session itself
-	h.DeleteSession(sessionID)
-
-	// State leak detection: audit all shared maps for any items still belonging
-	// to the cleaned-up session. Any found items are logged at WARN level.
-	leaked := h.AuditSessionCleanup(sessionID)
-
-	logger.Debug("CleanupSession: completed",
-		"sessionID", sessionID,
-		"filesClosed", filesClosed,
-		"treesDeleted", treesDeleted,
-		"leaked", leaked)
-}
-
-// flushFileCache flushes cached data for an open file.
-// This is a helper used during cleanup to ensure data durability.
-func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
-	payloadID := openFile.GetPayloadID()
-	if payloadID == "" {
-		return
-	}
-	// Snapshot once: a rename landing mid-flush would otherwise let the three
-	// log lines below name different paths for the same operation.
-	path := openFile.Name().Path
-
-	blockStore, err := h.Registry.GetBlockStoreForShare(openFile.ShareName)
-	if err != nil {
-		logger.Warn("flushFileCache: block store not available for handle",
-			"path", path,
-			"error", err)
-		return
-	}
-
-	// Use blocking Flush for immediate durability
-	_, flushErr := blockStore.Flush(ctx, string(payloadID))
-	if flushErr != nil {
-		logger.Warn("flushFileCache: flush failed",
-			"path", path,
-			"payloadID", payloadID,
-			"error", flushErr)
-	} else {
-		logger.Debug("flushFileCache: flushed",
-			"path", path,
-			"payloadID", payloadID)
-	}
-}
-
-// buildCleanupAuthContext creates an AuthContext for cleanup operations.
-// This is used during session/tree cleanup when we need to perform file operations
-// (like delete-on-close) but don't have a full SMBHandlerContext.
-// If the session is available, it uses the session user's UID/GID.
-// Otherwise, it falls back to root credentials for cleanup operations.
-func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Session) *metadata.AuthContext {
-	authCtx := &metadata.AuthContext{
-		Context:                ctx,
-		Identity:               &metadata.Identity{},
-		BypassTraverseChecking: true,
-	}
-
-	if sess != nil && sess.User != nil {
-		// Use session user's UID/GID from User object
-		uid, gid := uidGIDFromSessionUser(sess.User)
-		authCtx.Identity.UID = &uid
-		authCtx.Identity.GID = &gid
-		authCtx.Identity.Username = sess.User.Username
-		authCtx.ClientAddr = sess.ClientAddr
-	} else {
-		// Fallback to root for cleanup operations when session info is unavailable.
-		//
-		// SECURITY NOTE: Using root credentials bypasses normal permission checks.
-		// This is acceptable because:
-		// 1. Delete-on-close can only be set via SET_INFO with FileDispositionInformation,
-		//    which requires the file to have been opened with DELETE access.
-		// 2. The cleanup is completing an operation the user was already authorized
-		//    to perform when they opened the file.
-		// 3. Without this fallback, files marked for deletion during ungraceful
-		//    disconnect would remain orphaned in the metadata store.
-		rootUID := uint32(0)
-		rootGID := uint32(0)
-		authCtx.Identity.UID = &rootUID
-		authCtx.Identity.GID = &rootGID
-	}
-
-	return authCtx
-}
-
-// GenerateSessionID generates a new unique session ID.
-// Delegates to SessionManager for ID generation.
 func (h *Handler) GenerateSessionID() uint64 {
 	return h.SessionManager.GenerateSessionID()
 }
 
 // GenerateTreeID generates a new unique tree ID
+
 func (h *Handler) GenerateTreeID() uint32 {
 	return h.nextTreeID.Add(1)
 }
 
 // generateAsyncId generates a new unique async ID for CHANGE_NOTIFY interim responses.
 // AsyncIds must be unique within a connection and non-zero.
+
 func (h *Handler) generateAsyncId() uint64 {
 	return h.nextAsyncId.Add(1)
 }
 
 // notifyOpenFileModified emits a FileActionModified notification for the
 // handle, taking the parent path and stream name from one name snapshot.
-func (h *Handler) notifyOpenFileModified(openFile *OpenFile, filter uint32) {
-	name := openFile.Name()
-	h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(name.Path), notifyStreamName(name.FileName), FileActionModified, filter)
-}
 
-// baseFileUUID returns the base file's UUID for an ADS path, or fallback for non-ADS.
-// ADS streams share the base file's FileId so that all stream handles compare equal.
-func (h *Handler) baseFileUUID(authCtx *metadata.AuthContext, parentHandle metadata.FileHandle, name string, fallback [16]byte) [16]byte {
-	if colonIdx := strings.Index(name, ":"); colonIdx > 0 && len(parentHandle) > 0 {
-		metaSvc := h.Registry.GetMetadataService()
-		if baseFile, _, err := metaSvc.LookupCaseInsensitive(authCtx, parentHandle, name[:colonIdx]); err == nil && baseFile != nil {
-			return baseFile.ID
-		}
-	}
-	return fallback
-}
-
-// SeedFromDurableHandles restores the in-memory state derived from persisted
-// durable handles after a restart:
-//
-//   - the persistent-half FileID counter is bumped past the highest value
-//     already recorded, so freshly minted FileIDs cannot collide with the
-//     FileID of a still-reclaimable durable open (detailed below); and
-//   - handles persisted in the disconnected state are counted, so the conflict
-//     scans still see the handles a previous process left behind instead of
-//     taking their fast path over them.
-//
-// Without this, the counter restarts at 1 every process start (see NewHandler;
-// the first issued persistent half is 2, since GenerateFileID pre-increments),
-// while durable-handle records in the metadata store retain the persistent
-// halves issued before the restart. A post-restart CREATE would re-mint a
-// persistent half equal to a persisted handle's, and a V1 reconnect (DHnC) —
-// which matches on the persistent half alone, with no CreateGuid to
-// disambiguate — could then reconnect or consume the wrong file
-// (MS-SMB2 §3.3.5.9.7).
-//
-// Called once during adapter startup after the DurableStore is wired in.
-// The persistent half is the little-endian uint64 in bytes 0..7 of FileID,
-// matching the encoding GenerateFileID writes; the volatile half (bytes 8..15)
-// is zeroed in persisted records and ignored here.
-func (h *Handler) SeedFromDurableHandles(ctx context.Context, store lock.DurableHandleStore) {
-	if store == nil {
-		return
-	}
-	handles, err := store.ListDurableHandles(ctx)
-	if err != nil {
-		logger.Warn("SMB: could not seed FileID counter from durable handles; "+
-			"using default start (FileID collision possible across restart)",
-			"error", err)
-		return
-	}
-	// Same lock the disconnect path holds around its count-then-persist, so a
-	// concurrent scan's reconciliation cannot interleave with these counts.
-	h.durablePurgeMu.Lock()
-	var maxID uint64
-	for _, dh := range handles {
-		if !dh.DisconnectedAt.IsZero() {
-			h.noteDisconnectedHandle(dh.MetadataHandle)
-		}
-		id := binary.LittleEndian.Uint64(dh.FileID[:8])
-		if id > maxID {
-			maxID = id
-		}
-	}
-	h.durablePurgeMu.Unlock()
-	if maxID == 0 {
-		return
-	}
-	// Guard the overflow edge: if a persisted FileID already holds the maximum
-	// uint64, seeding to it would make the next GenerateFileID's Add(1) wrap to
-	// 0 (and the log line below wrap too), reintroducing collisions. Such a
-	// value can't be exceeded anyway, so skip seeding and surface it.
-	if maxID == ^uint64(0) {
-		logger.Warn("SMB: persisted durable handle holds max FileID; cannot seed counter safely",
-			"durable_handles", len(handles))
-		return
-	}
-	// The counter holds the *last issued* persistent half — GenerateFileID
-	// pre-increments via Add(1) — so storing maxID makes the next issued
-	// FileID maxID+1, strictly above every persisted handle. Bump only
-	// upward: a concurrent CREATE may already have advanced the counter at or
-	// past maxID, so never lower it.
-	for {
-		cur := h.nextFileID.Load()
-		if cur >= maxID {
-			return
-		}
-		if h.nextFileID.CompareAndSwap(cur, maxID) {
-			logger.Info("SMB: seeded FileID counter past persisted durable handles",
-				"next_file_id", maxID+1, "durable_handles", len(handles))
-			return
-		}
-	}
-}
-
-// GenerateFileID generates a new unique file ID
 func (h *Handler) GenerateFileID() [16]byte {
 	var fileID [16]byte
 	// Use persistent part for the ID counter
@@ -2202,60 +684,7 @@ func (h *Handler) GenerateFileID() [16]byte {
 
 // CreateSession creates and stores a new session.
 // This replaces the old StoreSession method for unified session/credit management.
-func (h *Handler) CreateSession(clientAddr string, isGuest bool, username, domain string) *session.Session {
-	return h.SessionManager.CreateSession(clientAddr, isGuest, username, domain)
-}
 
-// CreateSessionWithID creates a session with a specific ID (for pending auth flows).
-// The session is created in the SessionManager and returned.
-func (h *Handler) CreateSessionWithID(sessionID uint64, clientAddr string, isGuest bool, username, domain string) *session.Session {
-	sess := session.NewSession(sessionID, clientAddr, isGuest, username, domain)
-	// Store directly - this is used for completing pending auth where we already have the ID
-	h.SessionManager.StoreSession(sess)
-	return sess
-}
-
-// CreateSessionWithUser creates an authenticated session with a DittoFS user.
-// The session is linked to the user for permission checking during share access.
-func (h *Handler) CreateSessionWithUser(sessionID uint64, clientAddr string, user *models.User, domain string) *session.Session {
-	sess := session.NewSessionWithUser(sessionID, clientAddr, user, domain)
-	h.SessionManager.StoreSession(sess)
-	return sess
-}
-
-// CreateSessionWithUserAndExpiry creates an authenticated session with a
-// bounded lifetime (e.g. a Kerberos ticket end-time). ExpiresAt is set
-// before StoreSession to avoid a data race window where a concurrent reader
-// could observe a zero ExpiresAt on the published session and skip the
-// per-request expiry check in prepareDispatch (see #341 A1). A zero
-// expiresAt is treated as "no expiry" by session.IsExpired.
-func (h *Handler) CreateSessionWithUserAndExpiry(sessionID uint64, clientAddr string, user *models.User, domain string, expiresAt time.Time) *session.Session {
-	sess := session.NewSessionWithUser(sessionID, clientAddr, user, domain)
-	sess.ExpiresAt = expiresAt
-	h.SessionManager.StoreSession(sess)
-	return sess
-}
-
-// StoreTree stores a tree connection
-func (h *Handler) StoreTree(tree *TreeConnection) {
-	h.trees.Store(tree.TreeID, tree)
-}
-
-// StoreOpenFile stores an open file
-func (h *Handler) StoreOpenFile(file *OpenFile) {
-	h.files.Store(string(file.FileID[:]), file)
-}
-
-// pendingAuthKey is the composite key for pendingAuth lookups. SessionID is
-// the session the handshake targets — the server-generated ID for an initial
-// NTLM NEGOTIATE, the bound session for a bind, or the existing session for
-// re-auth — and is the ID the client carries in the TYPE_3 header. ConnID
-// disambiguates concurrent handshakes on the same SessionID so that parallel
-// SESSION_SETUPs from different TCP connections do not clobber each other.
-// Without per-connection keying, the regression guarded by
-// smb2.multichannel.bugs.bug_15346 fails (Samba bug 15346): parallel binds
-// race on a single slot and the TYPE_3 of one channel picks up the
-// ServerChallenge of another.
 type pendingAuthKey struct {
 	SessionID uint64
 	ConnID    uint64
@@ -2263,315 +692,7 @@ type pendingAuthKey struct {
 
 // StorePendingAuth stores a pending authentication. pending.SessionID and
 // pending.ConnID together form the lookup key.
-func (h *Handler) StorePendingAuth(pending *PendingAuth) {
-	h.pendingAuth.Store(pendingAuthKey{pending.SessionID, pending.ConnID}, pending)
-}
 
-// GetPendingAuth retrieves a pending authentication by (sessionID, connID).
-func (h *Handler) GetPendingAuth(sessionID, connID uint64) (*PendingAuth, bool) {
-	v, ok := h.pendingAuth.Load(pendingAuthKey{sessionID, connID})
-	if !ok {
-		return nil, false
-	}
-	return v.(*PendingAuth), true
-}
-
-// DeletePendingAuth removes a pending authentication for a specific connection.
-func (h *Handler) DeletePendingAuth(sessionID, connID uint64) {
-	h.pendingAuth.Delete(pendingAuthKey{sessionID, connID})
-}
-
-// DeleteAllPendingAuthForSession removes every pending-auth record associated
-// with sessionID, regardless of connection. Used on session teardown (LOGOFF,
-// connection cleanup) to invalidate any in-flight binds for the session.
-func (h *Handler) DeleteAllPendingAuthForSession(sessionID uint64) {
-	h.pendingAuth.Range(func(k, _ any) bool {
-		if key, ok := k.(pendingAuthKey); ok && key.SessionID == sessionID {
-			h.pendingAuth.Delete(key)
-		}
-		return true
-	})
-}
-
-// isFileDeletePending reports whether any existing open on the same file
-// (identified by its metadata handle) has DeletePending set. Per MS-FSA
-// 2.1.5.1.2 and MS-SMB2 3.3.5.9: a subsequent open on a delete-pending
-// file MUST fail with STATUS_DELETE_PENDING. The check runs BEFORE oplock
-// break dispatch so the holder's oplock remains intact.
-//
-// Required by smbtorture smb2.oplock.doc: tree1 opens with Batch oplock,
-// sets delete-on-close; tree2's open must return STATUS_DELETE_PENDING
-// without triggering a break.
-func (h *Handler) isFileDeletePending(fileHandle metadata.FileHandle) bool {
-	pending := false
-	h.files.Range(func(_, value any) bool {
-		existing := value.(*OpenFile)
-		if existing.IsPipe || len(existing.MetadataHandle) == 0 {
-			return true
-		}
-		if !bytes.Equal(existing.MetadataHandle, fileHandle) {
-			return true
-		}
-		// DeletePending is concurrently written by CLOSE DOC propagation under
-		// existing.mu — read it under the read lock.
-		existing.mu.RLock()
-		dp := existing.DeletePending
-		existing.mu.RUnlock()
-		if dp {
-			pending = true
-			return false
-		}
-		return true
-	})
-	return pending
-}
-
-// isFileOrBaseDeletePending extends isFileDeletePending to also check whether
-// a deferred base-file delete is pending across stream/base handles.
-//
-// Per Samba semantics (also matches WPTS expectations): a stream open does
-// NOT inherit the base file's DOC pending state. Streams are tracked as
-// independent fsps; the base's mark-for-delete only fails subsequent stream
-// opens once the base has actually been unlinked and the delete is being
-// deferred for outstanding stream handles (BaseFileDeletePending).
-//
-// Cases handled here:
-//   - Opening a base file: reject if any stream handle on the same base
-//     carries BaseFileDeletePending (base was unlinked, delete deferred).
-//   - Opening a stream:   reject if any handle on the base file or sibling
-//     stream carries BaseFileDeletePending.
-//
-// The open is identified by its resolved parent directory handle and its
-// parent-relative name (e.g. "file" or "file:Stream One"), not by its full
-// path. A base file and its streams are siblings in one directory, so that
-// pair relates them by identity; the full path cannot, because it reproduces
-// whatever spelling the client sent.
-func (h *Handler) isFileOrBaseDeletePending(
-	fileHandle metadata.FileHandle,
-	parentHandle metadata.FileHandle,
-	fileName string,
-) bool {
-	// Fast path: direct metadata-handle match against an existing handle
-	// whose own DeletePending is set. Covers the same-file re-open case
-	// (smbtorture smb2.oplock.doc, smb2.streams.delete).
-	if h.isFileDeletePending(fileHandle) {
-		return true
-	}
-
-	openBase := adsBaseName(fileName) // non-empty if fileName is a stream
-	pending := false
-	h.files.Range(func(_, value any) bool {
-		existing := value.(*OpenFile)
-		if existing.IsPipe || len(existing.MetadataHandle) == 0 {
-			return true
-		}
-		// BaseFileDeletePending is concurrently written by CLOSE deferred-delete
-		// propagation under existing.mu — read it under the read lock.
-		existing.mu.RLock()
-		bdp := existing.BaseFileDeletePending
-		existing.mu.RUnlock()
-		if !bdp {
-			return true
-		}
-		existingName := existing.Name()
-		if !bytes.Equal(existingName.ParentHandle, parentHandle) {
-			return true
-		}
-		existingBase := adsBaseName(existingName.FileName)
-		if openBase == "" {
-			// Opening a base file: match against any stream of this base.
-			if strings.EqualFold(existingBase, fileName) {
-				pending = true
-				return false
-			}
-		} else {
-			// Opening a stream: match against a sibling stream sharing the
-			// same base name, or against a base-file handle of that base.
-			if strings.EqualFold(existingBase, openBase) ||
-				strings.EqualFold(existingName.FileName, openBase) {
-				pending = true
-				return false
-			}
-		}
-		return true
-	})
-	return pending
-}
-
-// checkShareModeConflict checks if opening a file with the given access and sharing
-// modes would conflict with any existing opens on the same file or related
-// streams. Per MS-FSA 2.1.5.1.2.2 ("Algorithm to Check Sharing Access to an Existing Stream or Directory") + Samba semantics, share mode enforcement is:
-//   - Same stream (same metadata handle) → always checked
-//   - Base file vs its stream (or vice versa) → checked
-//   - Stream A vs Stream B (different streams, same base) → NOT checked
-//
-// Returns true if a conflict exists (CREATE should fail with STATUS_SHARING_VIOLATION).
-// The open is identified by its resolved parent directory handle and its
-// parent-relative name, for the reason given on isFileOrBaseDeletePending.
-func (h *Handler) checkShareModeConflict(
-	fileHandle metadata.FileHandle,
-	newDesiredAccess, newShareAccess uint32,
-	parentHandle metadata.FileHandle,
-	fileName string,
-) bool {
-	const (
-		fileShareRead   = uint32(0x01)
-		fileShareWrite  = uint32(0x02)
-		fileShareDelete = uint32(0x04)
-
-		// Access mask bits per MS-SMB2
-		fileReadData   = uint32(0x00000001)
-		fileWriteData  = uint32(0x00000002)
-		fileAppendData = uint32(0x00000004)
-		fileExecute    = uint32(0x00000020)
-		deleteAccess   = uint32(0x00010000)
-		genericRead    = uint32(0x80000000)
-		genericWrite   = uint32(0x40000000)
-		genericAll     = uint32(0x10000000)
-		maxAllowed     = uint32(0x02000000)
-	)
-
-	// Stat-only opens (FILE_READ_ATTRIBUTES / FILE_WRITE_ATTRIBUTES /
-	// READ_CONTROL / SYNCHRONIZE only) impose no share-mode constraint per
-	// MS-SMB2 §3.3.5.9 + Samba `share_conflict` (source3/locking/share_mode_lock.c)
-	// + `is_stat_open` (source3/smbd/open.c). smbtorture smb2.oplock.batch8 /
-	// exclusive4 expect a stat-only second open on a BATCH/EXCLUSIVE holder
-	// with ShareAccess=NONE to succeed with NT_STATUS_OK (no break, no
-	// sharing violation).
-	if isStatOnlyOpen(newDesiredAccess) {
-		return false
-	}
-
-	// Helper: does access mask imply read?
-	hasRead := func(access uint32) bool {
-		return access&(fileReadData|fileExecute|genericRead|genericAll|maxAllowed) != 0
-	}
-	// Helper: does access mask imply write?
-	// MAXIMUM_ALLOWED resolves to the maximal granted rights, which include
-	// write+delete on a writable handle. Samba's share_conflict evaluates the
-	// resolved effective mask; DittoFS keeps the raw 0x02000000 bit in
-	// OpenFile.DesiredAccess (ExpandGenericMask strips GENERIC_* but not
-	// MAXIMUM_ALLOWED), so it must be treated as write/delete here too —
-	// otherwise a MAXIMUM_ALLOWED opener is wrongly treated as read-only and
-	// bypasses SHARE_WRITE / SHARE_DELETE enforcement (matches hasRead above and
-	// the module-level hasWriteAccess/hasDeleteAccess).
-	hasWrite := func(access uint32) bool {
-		return access&(fileWriteData|fileAppendData|genericWrite|genericAll|maxAllowed) != 0
-	}
-	// Helper: does access mask imply delete?
-	hasDelete := func(access uint32) bool {
-		return access&(deleteAccess|genericAll|maxAllowed) != 0
-	}
-
-	newBase := adsBaseName(fileName)
-
-	conflict := false
-	h.files.Range(func(key, value any) bool {
-		existing := value.(*OpenFile)
-		if existing.IsPipe {
-			return true
-		}
-		if len(existing.MetadataHandle) == 0 {
-			return true
-		}
-
-		// Same stream (same metadata handle) → full share mode check.
-		// Base file vs its stream (or vice versa) → DELETE-only check.
-		// Stream A vs stream B (different streams) → skip.
-		sameFile := bytes.Equal(existing.MetadataHandle, fileHandle)
-		crossStream := false
-		if !sameFile {
-			existingName := existing.Name()
-			// A base file and its streams live in one directory; a handle
-			// anywhere else cannot be related to this open.
-			if !bytes.Equal(existingName.ParentHandle, parentHandle) {
-				return true
-			}
-			existingBase := adsBaseName(existingName.FileName)
-			baseVsStream := false
-			if newBase == "" && existingBase != "" {
-				baseVsStream = strings.EqualFold(existingBase, fileName)
-			} else if newBase != "" && existingBase == "" {
-				baseVsStream = strings.EqualFold(newBase, existingName.FileName)
-			}
-			if !baseVsStream {
-				return true
-			}
-			crossStream = true
-		}
-
-		// Cross-stream: only DELETE sharing enforced per Samba.
-		if crossStream {
-			if hasDelete(existing.DesiredAccess) && newShareAccess&fileShareDelete == 0 {
-				conflict = true
-				return false
-			}
-			if hasDelete(newDesiredAccess) && existing.ShareAccess&fileShareDelete == 0 {
-				conflict = true
-				return false
-			}
-			return true
-		}
-
-		// Same-stream: full share mode check.
-		if !hasRead(existing.DesiredAccess) &&
-			!hasWrite(existing.DesiredAccess) &&
-			!hasDelete(existing.DesiredAccess) &&
-			existing.DesiredAccess&fileAppendData == 0 {
-			return true
-		}
-
-		if hasRead(existing.DesiredAccess) && newShareAccess&fileShareRead == 0 {
-			conflict = true
-			return false
-		}
-		if hasWrite(existing.DesiredAccess) && newShareAccess&fileShareWrite == 0 {
-			conflict = true
-			return false
-		}
-		if hasDelete(existing.DesiredAccess) && newShareAccess&fileShareDelete == 0 {
-			conflict = true
-			return false
-		}
-
-		if hasRead(newDesiredAccess) && existing.ShareAccess&fileShareRead == 0 {
-			conflict = true
-			return false
-		}
-		if hasWrite(newDesiredAccess) && existing.ShareAccess&fileShareWrite == 0 {
-			conflict = true
-			return false
-		}
-		if hasDelete(newDesiredAccess) && existing.ShareAccess&fileShareDelete == 0 {
-			conflict = true
-			return false
-		}
-
-		return true
-	})
-	return conflict
-}
-
-// lookupCaseInsensitive is a thin shim around
-// MetadataService.LookupCaseInsensitive that keeps the existing
-// (handler, metaSvc, parent, name) call signature used across the SMB
-// handlers. NTFS-style paths are case-insensitive; DittoFS preserves the
-// original on-disk casing and returns it via the second result.
-func (h *Handler) lookupCaseInsensitive(
-	authCtx *metadata.AuthContext,
-	metaSvc *metadata.Service,
-	parentHandle metadata.FileHandle,
-	name string,
-) (*metadata.File, string, error) {
-	return metaSvc.LookupCaseInsensitive(authCtx, parentHandle, name)
-}
-
-// adsBaseName extracts the base file name from a potentially ADS-qualified
-// parent-relative name. For "file.txt:stream" it returns "file.txt"; for
-// "file.txt" (not a stream) it returns "".
-//
-// Stream names cannot contain a path separator (rejected at CREATE), so this
-// operates on a single name component, never a path.
 func adsBaseName(fileName string) string {
 	colonIdx := strings.Index(fileName, ":")
 	if colonIdx <= 0 {
@@ -2585,48 +706,7 @@ func adsBaseName(fileName string) string {
 // ("FileRenameInformation") states no share-mode check; requiring all other
 // opens to permit delete sharing follows Samba `can_rename`. Returns true if a conflict
 // exists (rename should be blocked with STATUS_SHARING_VIOLATION).
-func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
-	const fileShareDelete = uint32(0x04) // FILE_SHARE_DELETE
 
-	var culprit *OpenFile
-	h.files.Range(func(key, value any) bool {
-		other := value.(*OpenFile)
-		// Skip the handle being renamed
-		if other.FileID == renameFile.FileID {
-			return true
-		}
-		// Only check handles to the same file (same metadata handle)
-		if len(other.MetadataHandle) == 0 || len(renameFile.MetadataHandle) == 0 {
-			return true
-		}
-		if !bytes.Equal(other.MetadataHandle, renameFile.MetadataHandle) {
-			return true
-		}
-		// If this other handle does not allow delete sharing, conflict
-		if other.ShareAccess&fileShareDelete == 0 {
-			culprit = other
-			return false // Stop iterating
-		}
-		return true
-	})
-	if culprit != nil {
-		// #1652: dump the offending holder so a spurious/intermittent
-		// SHARING_VIOLATION on rename is diagnosable — the call-site log only
-		// records the renamer. The conflict is expected only when a live
-		// sibling open lacks FILE_SHARE_DELETE; a holder on a different
-		// session/tree, a durable handle, or a delete-pending stub pointing
-		// here is the fingerprint of a leaked/stale open.
-		logRenameConflictHolder("source-file share-delete gate", renameFile, culprit)
-		return true
-	}
-	return false
-}
-
-// logRenameConflictHolder emits (at Debug) the full identity of the open handle
-// that tripped a rename share-mode gate, alongside the renamer. Fields chosen to
-// answer "is this a legitimate live sibling, or a stale/cross-connection leak?":
-// session/tree locate the owning connection, ShareAccess/DesiredAccess show why
-// it conflicted, IsDurable/DeletePending flag reconnect/teardown stubs. #1652.
 func logRenameConflictHolder(gate string, renamer, holder *OpenFile) {
 	logger.Debug("SET_INFO rename conflict holder",
 		"gate", gate,
@@ -2661,122 +741,7 @@ func logRenameConflictHolder(gate string, renamer, holder *OpenFile) {
 //
 // Caller passes the destination parent handle (same as source parent for a
 // same-directory rename). Returns true on conflict.
-func (h *Handler) checkParentDirRenameConflict(renamer *OpenFile, dstParent metadata.FileHandle) bool {
-	if len(dstParent) == 0 {
-		return false
-	}
-	var culprit *OpenFile
-	h.files.Range(func(_, value any) bool {
-		other := value.(*OpenFile)
-		if other.FileID == renamer.FileID {
-			return true
-		}
-		if len(other.MetadataHandle) == 0 {
-			return true
-		}
-		if !bytes.Equal(other.MetadataHandle, dstParent) {
-			return true
-		}
-		// Stat-only opens (READ_ATTRIBUTES / WRITE_ATTRIBUTES / SYNCHRONIZE /
-		// READ_CONTROL only) impose no share-mode constraint per MS-SMB2
-		// §3.3.5.9.8 + Samba `is_lease_stat_open`. smbtorture rename.msword
-		// opens the parent dir stat-only with ShareAccess=0 and expects the
-		// rename to succeed; without this filter its lack of FILE_SHARE_WRITE
-		// would falsely trip the conflict.
-		if isStatOnlyOpen(other.DesiredAccess) {
-			return true
-		}
-		if other.ShareAccess&smbShareWrite == 0 || hasDeleteAccess(other.DesiredAccess) {
-			culprit = other
-			return false
-		}
-		return true
-	})
-	if culprit != nil {
-		logRenameConflictHolder("dst-parent share-mode gate", renamer, culprit)
-		return true
-	}
-	return false
-}
 
-// snapshotOpenChildren returns the metadata handles of every open file whose
-// ParentHandle equals dirHandle. Caller must read h.files only once; iterating
-// twice could observe inconsistent open state across a concurrent CLOSE.
-func (h *Handler) snapshotOpenChildren(dirHandle metadata.FileHandle) []metadata.FileHandle {
-	var children []metadata.FileHandle
-	h.files.Range(func(_, value any) bool {
-		of := value.(*OpenFile)
-		parent := of.Name().ParentHandle
-		if len(parent) == 0 || len(of.MetadataHandle) == 0 {
-			return true
-		}
-		if !bytes.Equal(parent, dirHandle) {
-			return true
-		}
-		children = append(children, of.MetadataHandle)
-		return true
-	})
-	return children
-}
-
-// anyOpenChild reports whether any open file currently has ParentHandle ==
-// dirHandle. Cheaper than snapshotOpenChildren when only the boolean is
-// needed (post-break recheck in the directory-rename path).
-func (h *Handler) anyOpenChild(dirHandle metadata.FileHandle) bool {
-	open := false
-	h.files.Range(func(_, value any) bool {
-		of := value.(*OpenFile)
-		parent := of.Name().ParentHandle
-		if len(parent) == 0 {
-			return true
-		}
-		if !bytes.Equal(parent, dirHandle) {
-			return true
-		}
-		open = true
-		return false
-	})
-	return open
-}
-
-// hasOpenHandleOnFile reports whether any open file handle (other than the
-// renamer's own handle) currently references targetMeta. Used by the
-// SET_INFO FileRenameInformation handler to enforce MS-FSA §2.1.5.15.12 ("FileRenameInformation")
-// "rename overwrite onto an open file" — once any H-lease on the destination
-// has been broken to RW, the destination's open handle still blocks the
-// overwrite and must surface as STATUS_ACCESS_DENIED.
-//
-// excludeFileID is the rename's own SMB FileID (the source handle). It is
-// excluded from the conflict check so a self-rename via the only handle on
-// targetMeta is allowed (degenerate case; matches Samba behavior).
-func (h *Handler) hasOpenHandleOnFile(targetMeta metadata.FileHandle, excludeFileID [16]byte) bool {
-	if len(targetMeta) == 0 {
-		return false
-	}
-	conflict := false
-	h.files.Range(func(_, value any) bool {
-		other := value.(*OpenFile)
-		if other.FileID == excludeFileID {
-			return true
-		}
-		if len(other.MetadataHandle) == 0 {
-			return true
-		}
-		if !bytes.Equal(other.MetadataHandle, targetMeta) {
-			return true
-		}
-		conflict = true
-		return false
-	})
-	return conflict
-}
-
-// hasReadAccess reports whether the given access mask includes read access.
-// Checks FILE_READ_DATA, FILE_EXECUTE, GENERIC_READ, GENERIC_ALL, and
-// MAXIMUM_ALLOWED. FILE_EXECUTE is treated as read access because the
-// canonical SMB clients (Samba, Windows) allow READ on a handle opened with
-// only FILE_EXECUTE — execution implies read, and the smb2.read.access
-// torture test exercises that path.
 func hasReadAccess(access uint32) bool {
 	m := types.AccessMask(access)
 	return m&types.FileReadData != 0 ||
@@ -2788,6 +753,7 @@ func hasReadAccess(access uint32) bool {
 
 // hasWriteAccess reports whether the given access mask includes write access.
 // Checks FILE_WRITE_DATA, FILE_APPEND_DATA, GENERIC_WRITE, GENERIC_ALL, and MAXIMUM_ALLOWED.
+
 func hasWriteAccess(access uint32) bool {
 	m := types.AccessMask(access)
 	return m&types.FileWriteData != 0 ||
@@ -2799,6 +765,7 @@ func hasWriteAccess(access uint32) bool {
 
 // hasDeleteAccess reports whether the given access mask includes delete access.
 // Checks DELETE, GENERIC_ALL, and MAXIMUM_ALLOWED.
+
 func hasDeleteAccess(access uint32) bool {
 	m := types.AccessMask(access)
 	return m&types.Delete != 0 ||
@@ -2817,6 +784,7 @@ func hasDeleteAccess(access uint32) bool {
 // holder's OpenFile has been torn down but its lease record lingers, which is
 // exactly why the #1331 break-reason reclassification keys on it rather than on
 // the racy live-open scan. Stat-only opens impose no share constraint.
+
 func newOpenIsShareRestrictive(desiredAccess, shareAccess uint32) bool {
 	if isStatOnlyOpen(desiredAccess) {
 		return false
@@ -2835,99 +803,3 @@ func newOpenIsShareRestrictive(desiredAccess, shareAccess uint32) bool {
 
 // getCachedShares returns the cached share list, rebuilding if invalidated.
 // Thread-safe via RWMutex (concurrent reads allowed, exclusive write for rebuild).
-func (h *Handler) getCachedShares() []rpc.ShareInfo1 {
-	h.sharesCacheMu.RLock()
-	if h.sharesCacheValid {
-		shares := h.cachedShares
-		h.sharesCacheMu.RUnlock()
-		return shares
-	}
-	h.sharesCacheMu.RUnlock()
-
-	// Rebuild cache under write lock
-	h.sharesCacheMu.Lock()
-	defer h.sharesCacheMu.Unlock()
-
-	// Double-check after acquiring write lock (another goroutine may have rebuilt)
-	if h.sharesCacheValid {
-		return h.cachedShares
-	}
-
-	if h.Registry == nil {
-		return nil
-	}
-
-	shareNames := h.Registry.ListShares()
-	shares := make([]rpc.ShareInfo1, 0, len(shareNames))
-	for _, name := range shareNames {
-		if strings.EqualFold(name, "/ipc$") {
-			continue
-		}
-		displayName := strings.TrimPrefix(name, "/")
-		shares = append(shares, rpc.ShareInfo1{
-			Name:               displayName,
-			Type:               rpc.STYPE_DISKTREE,
-			Comment:            "DittoFS share",
-			SecurityDescriptor: h.shareSecurityDescriptor(name),
-		})
-	}
-
-	h.cachedShares = shares
-	h.sharesCacheValid = true
-
-	return shares
-}
-
-// shareSecurityDescriptor builds the self-relative security descriptor served
-// for a share at srvsvc info level 502, so Windows Explorer's Advanced Sharing
-// "Permissions" tab is populated. It mirrors the file Security tab: the share's
-// control-plane grants are projected via ShareRootGrantACL and merged into a
-// synthesized owner+SYSTEM descriptor, surfacing the AD/SID principals that
-// govern the share. Best-effort — a lookup or build failure yields a nil
-// descriptor (a level-502 reply with a null SD) rather than failing the pipe.
-func (h *Handler) shareSecurityDescriptor(shareName string) []byte {
-	if h.Registry == nil {
-		return nil
-	}
-
-	var grantACEs []acl.ACE
-	if grantACL, err := h.Registry.ShareRootGrantACL(context.Background(), shareName); err != nil {
-		logger.Debug("share SD: grant ACL lookup failed (non-fatal)", "share", shareName, "error", err)
-	} else if grantACL != nil {
-		grantACEs = grantACL.ACEs
-	}
-
-	// The share root is owned by uid/gid 0 and carries no explicitly-stored
-	// ACL, so BuildSecurityDescriptorWithGrants synthesizes the owner+SYSTEM
-	// default and merges in the direct AD/SID grants (see buildDACL).
-	root := &metadata.File{}
-	sd, err := BuildSecurityDescriptorWithGrants(
-		root,
-		OwnerSecurityInformation|GroupSecurityInformation|DACLSecurityInformation,
-		grantACEs,
-	)
-	if err != nil {
-		logger.Debug("share SD: build failed (non-fatal)", "share", shareName, "error", err)
-		return nil
-	}
-	return sd
-}
-
-// invalidateShareCache marks the share list cache as stale.
-// Called by the Runtime share change callback.
-func (h *Handler) invalidateShareCache() {
-	h.sharesCacheMu.Lock()
-	h.sharesCacheValid = false
-	h.sharesCacheMu.Unlock()
-}
-
-// RegisterShareChangeCallback subscribes to share change events from the Runtime
-// to invalidate the cached share list used by pipe CREATE operations.
-func (h *Handler) RegisterShareChangeCallback() {
-	if h.Registry == nil {
-		return
-	}
-	h.Registry.OnShareChange(func(_ []string) {
-		h.invalidateShareCache()
-	})
-}
