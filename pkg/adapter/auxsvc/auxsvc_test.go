@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // fakeService is a controllable Service for exercising Group.
@@ -38,6 +39,151 @@ func (f *fakeService) Stop(ctx context.Context) error {
 		f.onStop()
 	}
 	return f.stopErr
+}
+
+// blockingService is a fakeService whose Start parks until released, so a test
+// can hold a Start call in flight while other Group operations run.
+type blockingService struct {
+	name         string
+	startErr     error
+	release      chan struct{}
+	startEntered chan struct{}
+
+	started   atomic.Bool
+	startCtx  context.Context
+	stopCalls atomic.Int32
+}
+
+func (b *blockingService) Name() string { return b.name }
+
+func (b *blockingService) Stop(ctx context.Context) error {
+	b.stopCalls.Add(1)
+	return nil
+}
+
+func (b *blockingService) Start(ctx context.Context) error {
+	b.startCtx = ctx
+	b.started.Store(true)
+	// Signal entry, then park until the test releases the Start call; the
+	// injected error (if any) is returned after the park, so a failure can be
+	// observed as a live reservation before it rolls back.
+	close(b.startEntered)
+	<-b.release
+	return b.startErr
+}
+
+func TestGroup_StartBlockedDoesNotWedgeOtherOps(t *testing.T) {
+	g := NewGroup()
+	g.SetBaseContext(context.Background())
+
+	blocking := &blockingService{name: "slow", release: make(chan struct{}), startEntered: make(chan struct{})}
+	other := &fakeService{name: "other"}
+	if err := g.Start(other); err != nil {
+		t.Fatalf("Start(other): %v", err)
+	}
+
+	startDone := make(chan error, 1)
+	go func() { startDone <- g.Start(blocking) }()
+	<-blocking.startEntered // Start is now parked inside s.Start
+
+	// Every other Group op must return promptly while the first Start is wedged.
+	opsDone := make(chan struct{})
+	go func() {
+		defer close(opsDone)
+		if !g.Ready() {
+			t.Error("Ready() should be true while a Start is in flight")
+		}
+		if g.IsRunning("never-started") {
+			t.Error("IsRunning on an unknown name should be false")
+		}
+		if err := g.StopOne("other"); err != nil {
+			t.Errorf("StopOne(other) while Start is in flight: %v", err)
+		}
+		// The same-name Start in flight must lose with ErrAlreadyRunning.
+		err := g.Start(&fakeService{name: "slow"})
+		if !errors.Is(err, ErrAlreadyRunning) {
+			t.Errorf("same-name Start during in-flight Start: got %v, want ErrAlreadyRunning", err)
+		}
+	}()
+	select {
+	case <-opsDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Group ops wedged while a Start was blocked inside s.Start")
+	}
+
+	// Release the blocked Start and confirm success-path tracking.
+	close(blocking.release)
+	if err := <-startDone; err != nil {
+		t.Fatalf("blocking Start: %v", err)
+	}
+	if !g.IsRunning("slow") {
+		t.Fatal("service should be tracked after its Start returns")
+	}
+}
+
+func TestGroup_StartFailureAfterParkUntracks(t *testing.T) {
+	g := NewGroup()
+	g.SetBaseContext(context.Background())
+
+	// A Start that parks, then fails: the reservation taken while it was in
+	// flight must be rolled back once Start returns an error.
+	failing := &blockingService{name: "fails", startErr: errors.New("bind failed"), release: make(chan struct{}), startEntered: make(chan struct{})}
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- g.Start(failing)
+	}()
+	<-failing.startEntered // parked inside s.Start, reservation is in the map
+
+	// While parked, the name is reserved: a duplicate Start must lose.
+	if err := g.Start(&fakeService{name: "fails"}); !errors.Is(err, ErrAlreadyRunning) {
+		t.Fatalf("same-name Start during parked Start: got %v, want ErrAlreadyRunning", err)
+	}
+
+	close(failing.release) // the parked Start now fails via the injected error
+	if err := <-startDone; err == nil {
+		t.Fatal("expected start error")
+	}
+	if g.IsRunning("fails") {
+		t.Fatal("failed service must not stay tracked after rollback")
+	}
+	// The name is free again: a retry succeeds cleanly.
+	if err := g.Start(&fakeService{name: "fails"}); err != nil {
+		t.Fatalf("retry after rollback: %v", err)
+	}
+}
+
+func TestGroup_StartRacingStopAllDoesNotLeakService(t *testing.T) {
+	g := NewGroup()
+	g.SetBaseContext(context.Background())
+
+	// s.Start parks; StopAll runs while it is in flight and clears the base
+	// context. The Start must roll the reservation back and stop the service
+	// instead of leaving it tracked by a group that will never tear it down.
+	blocking := &blockingService{name: "slow", release: make(chan struct{}), startEntered: make(chan struct{})}
+	startDone := make(chan error, 1)
+	go func() { startDone <- g.Start(blocking) }()
+	<-blocking.startEntered // parked inside s.Start, reservation is in the map
+
+	if err := g.StopAll(context.Background()); err != nil {
+		t.Fatalf("StopAll: %v", err)
+	}
+	close(blocking.release)
+
+	if err := <-startDone; err == nil {
+		t.Fatal("Start must fail when the group stopped during the start")
+	}
+	if g.IsRunning("slow") {
+		t.Fatal("service must not stay tracked after the group stopped")
+	}
+	if got := blocking.stopCalls.Load(); got < 1 {
+		t.Fatalf("Stop called %d times after raced shutdown, want at least 1", got)
+	}
+	// The raced path can Stop a second time when StopAll's snapshot already
+	// included the reservation (it does here): Service.Stop must be idempotent.
+	// The group is shut down: a fresh reconcile no-ops.
+	if g.Ready() {
+		t.Fatal("StopAll should have cleared the base context")
+	}
 }
 
 func TestGroup_StartRequiresBaseContext(t *testing.T) {
