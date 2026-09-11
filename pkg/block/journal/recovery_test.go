@@ -21,8 +21,8 @@ func captureWarnings(t *testing.T) (*slog.Logger, func() string) {
 }
 
 // reopen closes s and opens a fresh Store over the same directory, exercising
-// the recovery path. cfg's non-zero fields override s's config; zero fields
-// keep s's values.
+// the recovery path. cfg only overrides s's Logger and Clock; every other
+// field keeps s's value.
 func reopen(t *testing.T, s *Store, cfg Config) *Store {
 	t.Helper()
 	dir := s.dir
