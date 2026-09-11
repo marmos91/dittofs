@@ -391,15 +391,3 @@ func (sm *StateManager) Shutdown() {
 // ============================================================================
 // Grace Period Operations
 // ============================================================================
-
-// StartGracePeriod creates and starts a grace period for server restart recovery.
-//
-// The NFS adapter should call this on startup if there were previous clients
-// (loaded from a saved client state file). During the grace period:
-//   - OPEN with CLAIM_NULL returns NFS4ERR_GRACE
-//   - OPEN with CLAIM_PREVIOUS is allowed (reclaim)
-//   - RENEW, CLOSE, READ/WRITE with existing stateids work normally
-//
-// The grace period ends automatically after graceDuration, or early if
-// all expectedClientIDs have reclaimed. If expectedClientIDs is empty,
-// the grace period is skipped entirely.

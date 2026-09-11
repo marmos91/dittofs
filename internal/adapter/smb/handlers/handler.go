@@ -662,9 +662,7 @@ func (h *Handler) generateAsyncId() uint64 {
 	return h.nextAsyncId.Add(1)
 }
 
-// notifyOpenFileModified emits a FileActionModified notification for the
-// handle, taking the parent path and stream name from one name snapshot.
-
+// GenerateFileID generates a new unique file ID
 func (h *Handler) GenerateFileID() [16]byte {
 	var fileID [16]byte
 	// Use persistent part for the ID counter
@@ -682,17 +680,27 @@ func (h *Handler) GenerateFileID() [16]byte {
 	return fileID
 }
 
-// CreateSession creates and stores a new session.
-// This replaces the old StoreSession method for unified session/credit management.
-
+// pendingAuthKey is the composite key for pendingAuth lookups. SessionID is
+// the session the handshake targets — the server-generated ID for an initial
+// NTLM NEGOTIATE, the bound session for a bind, or the existing session for
+// re-auth — and is the ID the client carries in the TYPE_3 header. ConnID
+// disambiguates concurrent handshakes on the same SessionID so that parallel
+// SESSION_SETUPs from different TCP connections do not clobber each other.
+// Without per-connection keying, the regression guarded by
+// smb2.multichannel.bugs.bug_15346 fails (Samba bug 15346): parallel binds
+// race on a single slot and the TYPE_3 of one channel picks up the
+// ServerChallenge of another.
 type pendingAuthKey struct {
 	SessionID uint64
 	ConnID    uint64
 }
 
-// StorePendingAuth stores a pending authentication. pending.SessionID and
-// pending.ConnID together form the lookup key.
-
+// adsBaseName extracts the base file name from a potentially ADS-qualified
+// parent-relative name. For "file.txt:stream" it returns "file.txt"; for
+// "file.txt" (not a stream) it returns "".
+//
+// Stream names cannot contain a path separator (rejected at CREATE), so this
+// operates on a single name component, never a path.
 func adsBaseName(fileName string) string {
 	colonIdx := strings.Index(fileName, ":")
 	if colonIdx <= 0 {
@@ -701,12 +709,11 @@ func adsBaseName(fileName string) string {
 	return fileName[:colonIdx]
 }
 
-// checkShareDeleteConflict checks if any other open handle on the same file
-// lacks FILE_SHARE_DELETE in its ShareAccess. MS-FSA 2.1.5.15.12
-// ("FileRenameInformation") states no share-mode check; requiring all other
-// opens to permit delete sharing follows Samba `can_rename`. Returns true if a conflict
-// exists (rename should be blocked with STATUS_SHARING_VIOLATION).
-
+// logRenameConflictHolder emits (at Debug) the full identity of the open handle
+// that tripped a rename share-mode gate, alongside the renamer. Fields chosen to
+// answer "is this a legitimate live sibling, or a stale/cross-connection leak?":
+// session/tree locate the owning connection, ShareAccess/DesiredAccess show why
+// it conflicted, IsDurable/DeletePending flag reconnect/teardown stubs.
 func logRenameConflictHolder(gate string, renamer, holder *OpenFile) {
 	logger.Debug("SET_INFO rename conflict holder",
 		"gate", gate,
@@ -725,23 +732,12 @@ func logRenameConflictHolder(gate string, renamer, holder *OpenFile) {
 		"holderDeletePending", holder.IsDeletePending())
 }
 
-// checkParentDirRenameConflict applies the destination-parent share-mode rule
-// from MS-FSA 2.1.5.15.12 ("FileRenameInformation"): the rename opens the destination directory
-// with DesiredAccess FILE_ADD_FILE|SYNCHRONIZE and ShareAccess
-// FILE_SHARE_READ|FILE_SHARE_WRITE. Linking a new name into a directory is
-// therefore a WRITE against that directory, not a delete of it, so an existing
-// open conflicts only when it denies write sharing, or already holds DELETE
-// access — which the rename's withheld share-delete is incompatible with. A
-// holder that merely lacks FILE_SHARE_DELETE does not conflict; nothing in the
-// rename asks to delete the destination parent.
-//
-// Only the renamer's own handle is excluded, by FileID. Another open on the
-// renamer's own session still counts, because the implicit open is a fresh
-// open evaluated against the whole open list.
-//
-// Caller passes the destination parent handle (same as source parent for a
-// same-directory rename). Returns true on conflict.
-
+// hasReadAccess reports whether the given access mask includes read access.
+// Checks FILE_READ_DATA, FILE_EXECUTE, GENERIC_READ, GENERIC_ALL, and
+// MAXIMUM_ALLOWED. FILE_EXECUTE is treated as read access because the
+// canonical SMB clients (Samba, Windows) allow READ on a handle opened with
+// only FILE_EXECUTE — execution implies read, and the smb2.read.access
+// torture test exercises that path.
 func hasReadAccess(access uint32) bool {
 	m := types.AccessMask(access)
 	return m&types.FileReadData != 0 ||

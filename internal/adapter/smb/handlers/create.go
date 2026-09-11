@@ -18,13 +18,15 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
+// CreateContextTagAllocationSize is the SMB2_CREATE_ALLOCATION_SIZE create
+// context tag ("AlSi") [MS-SMB2] 2.2.13.2.2. Its 8-byte little-endian Data is
+// the client-requested initial allocation size for the file.
 const CreateContextTagAllocationSize = "AlSi"
 
 // CreateContextTagExtendedAttributes is the SMB2_CREATE_EA_BUFFER create
 // context tag ("ExtA") [MS-SMB2] 2.2.13.2.1. Its Data is a
 // FILE_FULL_EA_INFORMATION chain (MS-FSCC §2.4.16 ("FileFullEaInformation")) of extended attributes the
 // client wants attached to the file at creation time.
-
 const CreateContextTagExtendedAttributes = "ExtA"
 
 // CreateRequest represents an SMB2 CREATE request from a client [MS-SMB2] 2.2.13.
@@ -1528,16 +1530,6 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 // ============================================================================
 // Named Pipe Handling (IPC$)
 // ============================================================================
-
-// storeCreateReplayIfApplicable mirrors the cache.Store call at the
-// bottom of completeCreateAfterBreak for CREATE return paths that
-// bypass it (notably handlePipeCreate and handleOpenRootCreate). It is
-// the single seam used by those bypass paths so a successful CREATE
-// carrying a DH2Q CreateGuid is recorded into the replay cache; a
-// FLAGS_REPLAY_OPERATION retry within the replay window can then return
-// the cached result. Cache.Store is itself a no-op when CreateGuid is
-// zero or when resp.Status != StatusSuccess, so it is safe to call
-// unconditionally here (MS-SMB2 §3.3.5.9).
 
 func isStatOnlyOpen(desiredAccess uint32) bool {
 	const statOpenBits uint32 = 0x00000080 | // FILE_READ_ATTRIBUTES

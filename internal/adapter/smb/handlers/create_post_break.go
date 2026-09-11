@@ -635,11 +635,26 @@ func (h *Handler) recheckExistingFileGates(d *createDraft, effectiveAccess uint3
 	return grantedAccess, grantedComputed, nil
 }
 
-// completeCreateAfterBreak runs the CREATE flow from the share-mode recheck
-// through the final response build. Split out of Create() so the same code
-// path serves both the synchronous break-wait path and the async-park resume
-// goroutine (MS-SMB2 §3.3.5.9 + §3.3.4.7).
-
+// parkCreateOnLeaseBreak reserves an async slot, registers a pending CREATE,
+// and spawns a resume goroutine that waits for the break to drain and then
+// completes the CREATE via AsyncCreateCompleteCallback. Returns the generated
+// AsyncId on success, or 0 when async parking is not possible (e.g. no async
+// slots left; registry rejected the entry). Callers fall back to sync wait.
+//
+// breakWaitTimeout bounds the server-side wait for the break to drain (or
+// auto-downgrade on expiry). Callers pass TraditionalOplockBreakWaitTimeout
+// (~35 s, MS-SMB2 §3.3.4.6) when the holder is a traditional oplock and
+// AsyncCreateBreakWaitTimeout (~5 s) otherwise.
+//
+// shareConflictWait selects the deferred-open resume semantics for the
+// share-violation case (reason == BreakReasonSharingViolation): instead of
+// force-completing the holder's lease on timeout and rechecking once, the
+// resume goroutine waits for the live share-mode conflict to clear — the holder
+// CLOSEs (conflict gone → CREATE proceeds) or only ACKs the break (open kept →
+// SHARING_VIOLATION on the final recheck), and the holder's deferred ACK still
+// succeeds because the lease is never tombstoned here (smbtorture replay
+// dhv2-pending1n-vs-violation-lease-{close,ack}-sane, MS-SMB2 §3.3.5.9 /
+// Samba defer_open→retry_open).
 func (h *Handler) parkCreateOnLeaseBreak(
 	ctx *SMBHandlerContext,
 	d *createDraft,

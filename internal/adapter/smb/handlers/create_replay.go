@@ -9,6 +9,15 @@ import (
 
 // CREATE replay: durable-handle and lease replay caches, response caching,
 // and the create-context strip helpers.
+// storeCreateReplayIfApplicable mirrors the cache.Store call at the
+// bottom of completeCreateAfterBreak for CREATE return paths that
+// bypass it (notably handlePipeCreate and handleOpenRootCreate). It is
+// the single seam used by those bypass paths so a successful CREATE
+// carrying a DH2Q CreateGuid is recorded into the replay cache; a
+// FLAGS_REPLAY_OPERATION retry within the replay window can then return
+// the cached result. Cache.Store is itself a no-op when CreateGuid is
+// zero or when resp.Status != StatusSuccess, so it is safe to call
+// unconditionally here (MS-SMB2 §3.3.5.9).
 func (h *Handler) storeCreateReplayIfApplicable(ctx *SMBHandlerContext, req *CreateRequest, resp *CreateResponse) {
 	if h.CreateReplayCache == nil || resp == nil || resp.Status != types.StatusSuccess {
 		return

@@ -88,29 +88,8 @@ type TreeConnection struct {
 	AllowMFsymlink bool
 }
 
-// OpenFile represents an open file handle created by the CREATE command.
-// It links the SMB2 FileID to the underlying metadata handle and payload ID,
-// tracks directory enumeration state, delete-on-close flags, and oplock level.
-// Stored in a sync.Map keyed by the 16-byte FileID.
-//
-// Concurrency: SMB clients legitimately pipeline operations on the same handle
-// (e.g. WRITE + QUERY_INFO; multi-channel sessions can also dispatch concurrent
-// QUERY_DIRECTORY on the same FileID). The exported mutable fields below are
-// guarded by `mu` — read-locked when surfacing state to the wire (QUERY_INFO,
-// override application) and write-locked when mutating (enumeration cursor,
-// freeze/thaw, delayed-write arm/flush). Hold the lock around the full
-// read-modify-write region; release before any I/O to the metadata store to
-// keep the critical section bounded. Atomic-typed fields
-// (NotifyOverflowed/NotifyMaxBufferSize/NotifyCompletionFilter) and immutable
-// fields (FileID/TreeID/SessionID/MetadataHandle/CreateOptions) are safe to
-// access without the mutex.
-//
-// PayloadID and the name triple are NOT immutable: the first WRITE on a file
-// created empty caches the payload the metadata store allocated,
-// SET_REPARSE_POINT and COPYCHUNK replace it, and SET_INFO rename rewrites the
-// name/path/parent triple. Reach the payload through GetPayloadID /
-// SetPayloadID and the triple through Name / SetName.
-
+// GetSession retrieves a session by ID.
+// Delegates to SessionManager for unified session/credit management.
 func (h *Handler) GetSession(sessionID uint64) (*session.Session, bool) {
 	return h.SessionManager.GetSession(sessionID)
 }
@@ -154,11 +133,9 @@ func (h *Handler) GetOpenFile(fileID [16]byte) (*OpenFile, bool) {
 	return v.(*OpenFile), true
 }
 
-// handleOpTracker tracks in-flight operations on a FileID via a WaitGroup.
-// Created lazily by AcquireOpenFile; AcquireOpenFile adds and ReleaseOpenFile
-// calls Done. WaitAndDeleteOpenFile waits for the WaitGroup to drain before
-// removing the OpenFile from the map.
-
+// ReleaseAllLocksForSession releases all byte-range locks held by a session.
+// This is called during LOGOFF or connection cleanup to ensure locks are released
+// even if CLOSE was not called for all open files.
 func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint64) {
 	h.files.Range(func(key, value any) bool {
 		openFile := value.(*OpenFile)
@@ -1017,17 +994,8 @@ func (h *Handler) StoreOpenFile(file *OpenFile) {
 	h.files.Store(string(file.FileID[:]), file)
 }
 
-// pendingAuthKey is the composite key for pendingAuth lookups. SessionID is
-// the session the handshake targets — the server-generated ID for an initial
-// NTLM NEGOTIATE, the bound session for a bind, or the existing session for
-// re-auth — and is the ID the client carries in the TYPE_3 header. ConnID
-// disambiguates concurrent handshakes on the same SessionID so that parallel
-// SESSION_SETUPs from different TCP connections do not clobber each other.
-// Without per-connection keying, the regression guarded by
-// smb2.multichannel.bugs.bug_15346 fails (Samba bug 15346): parallel binds
-// race on a single slot and the TYPE_3 of one channel picks up the
-// ServerChallenge of another.
-
+// StorePendingAuth stores a pending authentication. pending.SessionID and
+// pending.ConnID together form the lookup key.
 func (h *Handler) StorePendingAuth(pending *PendingAuth) {
 	h.pendingAuth.Store(pendingAuthKey{pending.SessionID, pending.ConnID}, pending)
 }
@@ -1060,13 +1028,3 @@ func (h *Handler) DeleteAllPendingAuthForSession(sessionID uint64) {
 		return true
 	})
 }
-
-// isFileDeletePending reports whether any existing open on the same file
-// (identified by its metadata handle) has DeletePending set. Per MS-FSA
-// 2.1.5.1.2 and MS-SMB2 3.3.5.9: a subsequent open on a delete-pending
-// file MUST fail with STATUS_DELETE_PENDING. The check runs BEFORE oplock
-// break dispatch so the holder's oplock remains intact.
-//
-// Required by smbtorture smb2.oplock.doc: tree1 opens with Batch oplock,
-// sets delete-on-close; tree2's open must return STATUS_DELETE_PENDING
-// without triggering a break.
