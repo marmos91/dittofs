@@ -41,21 +41,10 @@ type Clock interface{ Now() time.Time }
 // discardLog is where a Config without a Logger sends its warnings.
 var discardLog = slog.New(slog.DiscardHandler)
 
-// logger returns the configured warning sink, discarding when unset.
-func (c Config) logger() *slog.Logger {
-	if c.Logger != nil {
-		return c.Logger
-	}
-	return discardLog
-}
-
 // systemClock is the production Clock.
 type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
-
-// SystemClock returns a Clock backed by time.Now.
-func SystemClock() Clock { return systemClock{} }
 
 // Config tunes a Store. Zero values fall back to defaults via withDefaults.
 type Config struct {
@@ -298,7 +287,10 @@ func Open(dir string, cfg Config) (*Store, error) {
 	if cfg.SegmentSize < minSegmentSize {
 		return nil, fmt.Errorf("journal: SegmentSize %d below floor %d (header+record framing)", cfg.SegmentSize, minSegmentSize)
 	}
-	log := cfg.logger()
+	if cfg.Logger == nil {
+		cfg.Logger = discardLog
+	}
+	log := cfg.Logger
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("journal: mkdir %q: %w", dir, err)
 	}
@@ -319,7 +311,7 @@ func Open(dir string, cfg Config) (*Store, error) {
 
 	clock := cfg.Clock
 	if clock == nil {
-		clock = SystemClock()
+		clock = systemClock{}
 	}
 
 	s := &Store{
