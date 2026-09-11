@@ -3,14 +3,12 @@ package handlers
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"path"
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/smb/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -20,19 +18,13 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// ============================================================================
-// Request and Response Structures
-// ============================================================================
-
-// CreateContextTagAllocationSize is the SMB2_CREATE_ALLOCATION_SIZE create
-// context tag ("AlSi") [MS-SMB2] 2.2.13.2.2. Its 8-byte little-endian Data is
-// the client-requested initial allocation size for the file.
 const CreateContextTagAllocationSize = "AlSi"
 
 // CreateContextTagExtendedAttributes is the SMB2_CREATE_EA_BUFFER create
 // context tag ("ExtA") [MS-SMB2] 2.2.13.2.1. Its Data is a
 // FILE_FULL_EA_INFORMATION chain (MS-FSCC §2.4.16 ("FileFullEaInformation")) of extended attributes the
 // client wants attached to the file at creation time.
+
 const CreateContextTagExtendedAttributes = "ExtA"
 
 // CreateRequest represents an SMB2 CREATE request from a client [MS-SMB2] 2.2.13.
@@ -41,6 +33,7 @@ const CreateContextTagExtendedAttributes = "ExtA"
 // directories, create new ones, or supersede/overwrite existing files.
 // The request specifies the desired path and various options controlling
 // how the operation should be performed. The fixed wire format is 56 bytes.
+
 type CreateRequest struct {
 	// OplockLevel is the requested opportunistic lock level.
 	// Valid values: 0x00 (None), 0x01 (Level II), 0x08 (Batch), 0xFF (Lease)
@@ -105,6 +98,7 @@ type CreateRequest struct {
 //
 // Create contexts provide extensibility for the CREATE command,
 // allowing clients to request additional functionality.
+
 type CreateContext struct {
 	// Name identifies the type of create context.
 	// Standard names: "MxAc", "QFid", "RqLs", etc.
@@ -118,6 +112,7 @@ type CreateContext struct {
 // The response contains the file handle (FileID), file attributes, timestamps,
 // and the action taken (opened, created, overwritten). The fixed wire format
 // is 88 bytes plus optional create context data.
+
 type CreateResponse struct {
 	SMBResponseBase // Embeds Status field and GetStatus() method
 
@@ -170,6 +165,7 @@ type CreateResponse struct {
 // GetAsyncId satisfies the asyncIdCarrier interface in helpers.go so the
 // generic handleRequest wrapper forwards AsyncId to the wire-level
 // HandlerResult when Status == StatusPending.
+
 func (resp *CreateResponse) GetAsyncId() uint64 {
 	return resp.AsyncId
 }
@@ -183,6 +179,7 @@ func (resp *CreateResponse) GetAsyncId() uint64 {
 // the Buffer field contains the path relative to the share root. Windows
 // clients may send paths with leading backslashes (e.g., "\foo\bar" or
 // "\\foo") which must be normalized to "foo/bar" and "foo" respectively.
+
 func normalizeCreatePath(rawPath string) string {
 	filename := strings.ReplaceAll(rawPath, "\\", "/")
 	// Use TrimLeft to handle multiple leading slashes (e.g. "//foo" from "\\foo")
@@ -197,6 +194,7 @@ func normalizeCreatePath(rawPath string) string {
 // It extracts the fixed header fields and the variable-length filename
 // from the request body starting after the SMB2 header (64 bytes).
 // Returns an error if the body is malformed or too short.
+
 func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 	if len(body) < 56 {
 		return nil, fmt.Errorf("CREATE request too short: %d bytes", len(body))
@@ -323,6 +321,7 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 //	10      2     DataOffset      Offset to Data from start of this context
 //	12      4     DataLength      Length of Data in bytes
 //	16      var   Buffer          Name (padded) + Data
+
 func decodeCreateContexts(buf []byte) ([]CreateContext, error) {
 	var contexts []CreateContext
 	// Windows rejects duplicate create-context tags with STATUS_INVALID_PARAMETER
@@ -433,6 +432,7 @@ func decodeCreateContexts(buf []byte) ([]CreateContext, error) {
 // Encode serializes the CreateResponse into SMB2 wire format [MS-SMB2] 2.2.14.
 // The fixed header is 89 bytes. If CreateContexts are present, they are appended
 // and the offset/length fields are set accordingly.
+
 func (resp *CreateResponse) Encode() ([]byte, error) {
 	// Encode create contexts if present
 	ctxBuf, _, ctxLength := EncodeCreateContexts(resp.CreateContexts)
@@ -495,6 +495,7 @@ func (resp *CreateResponse) Encode() ([]byte, error) {
 //
 // Oplock and lease requests are processed for regular files. Named pipe
 // operations on IPC$ are delegated to handlePipeCreate.
+
 func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateResponse, error) {
 	logger.Debug("CREATE request",
 		"filename", req.FileName,
@@ -1537,732 +1538,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 // the cached result. Cache.Store is itself a no-op when CreateGuid is
 // zero or when resp.Status != StatusSuccess, so it is safe to call
 // unconditionally here (MS-SMB2 §3.3.5.9).
-func (h *Handler) storeCreateReplayIfApplicable(ctx *SMBHandlerContext, req *CreateRequest, resp *CreateResponse) {
-	if h.CreateReplayCache == nil || resp == nil || resp.Status != types.StatusSuccess {
-		return
-	}
-	createGuid := dh2qCreateGuid(req)
-	if createGuid == ([16]byte{}) {
-		return
-	}
-	// These bypass paths (pipe / open-root) have no lease- or oplock-bearing
-	// Open to refresh on replay, so the cached snapshot is replayed verbatim.
-	h.CreateReplayCache.Store(ctx.SessionID, createGuid, resp, nil)
-}
 
-// resolveCreateReplay applies the SMB3 DH2Q CreateGuid de-duplication
-// contract (MS-SMB2 §3.3.5.9; Samba smb2srv_open_lookup_replay_cache +
-// the replay block in source3/smbd/smb2_create.c). It returns
-// (resp, true) when the CREATE has been handled by the replay path and
-// the caller must return resp verbatim; (nil, false) when the request
-// should fall through to the normal CREATE path.
-//
-// Three outcomes for a CREATE whose DH2Q CreateGuid matches a live open
-// in the per-session cache:
-//
-//   - FLAGS_REPLAY_OPERATION set → replay. The original open is returned
-//     (same FileId). The lease/oplock state in the response is rebuilt
-//     from the CURRENT open state, not the create-time snapshot, so a
-//     lease upgraded after the original CREATE replays back the upgraded
-//     state (replay-dhv2-lease1/2). Lease replays additionally validate
-//     against the live open: a replay request carrying a lease whose key
-//     differs from the open's, or replaying a lease over an open that is
-//     not lease-backed, returns ACCESS_DENIED (replay-dhv2-lease3 /
-//     oplock-lease).
-//
-//   - FLAGS_REPLAY_OPERATION clear but CreateGuid matches a cached open →
-//     DUPLICATE_OBJECTID. A second non-replay CREATE for an in-flight
-//     CreateGuid is a protocol violation.
-//
-//   - No cache match → fall through.
-func (h *Handler) resolveCreateReplay(ctx *SMBHandlerContext, req *CreateRequest) (*CreateResponse, bool) {
-	if h.CreateReplayCache == nil {
-		return nil, false
-	}
-	createGuid := dh2qCreateGuid(req)
-	if createGuid == ([16]byte{}) {
-		return nil, false
-	}
-
-	entry := h.CreateReplayCache.LookupEntry(ctx.SessionID, createGuid)
-	if entry == nil {
-		// No completed entry yet. A replay that arrives while the original
-		// CREATE for this CreateGuid is still parked on a pending
-		// oplock/lease break must fail fast with STATUS_FILE_NOT_AVAILABLE
-		// rather than block on the same break (Samba FWP_RESERVED /
-		// FILE_NOT_AVAILABLE slot states). The original parked request keeps
-		// running and completes on its own timeline. Checked after the
-		// completed-entry lookup so a parked CREATE that has just finished
-		// (entry present, reservation not yet cleared) replays the open
-		// rather than returning FILE_NOT_AVAILABLE.
-		if ctx.IsReplay && h.CreateReplayCache.IsReserved(ctx.SessionID, createGuid) {
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileNotAvailable}}, true
-		}
-		return nil, false
-	}
-
-	// A duplicate CreateGuid without the replay flag is rejected
-	// (MS-SMB2 §3.3.5.9.12 / Samba NT_STATUS_DUPLICATE_OBJECTID).
-	if !ctx.IsReplay {
-		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDuplicateObjectid}}, true
-	}
-
-	// Shallow copy so per-response stamping never mutates the cache entry.
-	resp := *entry.Response
-
-	// Lease replays are validated and state-refreshed against the live
-	// open. A replay carrying an RqLs context goes through the lease path;
-	// a replay requesting a plain oplock (or none) echoes the REQUESTED
-	// oplock level and re-derives durability for it (replay-dhv2-oplock2).
-	if FindCreateContext(req.CreateContexts, LeaseContextTagRequest) != nil {
-		if status := h.refreshReplayLease(ctx, req, entry, &resp); status != types.StatusSuccess {
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: status}}, true
-		}
-	} else {
-		refreshReplayOplock(req, &resp)
-	}
-	return &resp, true
-}
-
-// refreshReplayOplock applies Samba's plain-oplock replay rule
-// (smbd_smb2_create_replay): the replay response echoes the REQUESTED
-// oplock level of the replay request and only carries a DH2Q durable
-// grant blob if that requested oplock would itself qualify for V2
-// durability (Batch). The original open's held oplock is untouched.
-//
-// For replay-dhv2-oplock1/3 the replay re-requests the same Batch oplock
-// so the cached snapshot already matches and this is a no-op. For
-// replay-dhv2-oplock2 the replay requests NONE over a Batch open: the
-// response must report oplock_level=NONE, durable_open_v2=false, and drop
-// the DH2Q response context (smbtorture asserts exactly these).
-func refreshReplayOplock(req *CreateRequest, resp *CreateResponse) {
-	// A lease-backed cached response (the open holds a lease, OplockLevel
-	// 0xFF) is left untouched here: an oplock-less replay against a
-	// lease-backed open does not re-key the open's lease, and the lease
-	// response context stands. Only plain-oplock cached responses echo the
-	// requested level.
-	if resp.OplockLevel == OplockLevelLease {
-		return
-	}
-
-	resp.OplockLevel = req.OplockLevel
-
-	// Re-derive V2 durability for the requested oplock. Only a Batch oplock
-	// qualifies a non-lease open for V2 durability (MS-SMB2 §3.3.5.9.10).
-	// A weaker/none requested oplock drops the durable grant: strip the
-	// DH2Q response context so out.durable_open_v2 reads false and timeout 0.
-	if req.OplockLevel != OplockLevelBatch {
-		resp.CreateContexts = stripCreateContext(resp.CreateContexts, DurableHandleV2RequestTag)
-	}
-}
-
-// stripCreateContext returns a copy of contexts with every entry named
-// tag removed. Returns the original slice when nothing matches (no
-// allocation on the common path). Never mutates the input backing array,
-// so a cached response shared across replays is safe.
-func stripCreateContext(contexts []CreateContext, tag string) []CreateContext {
-	hasTag := false
-	for i := range contexts {
-		if contexts[i].Name == tag {
-			hasTag = true
-			break
-		}
-	}
-	if !hasTag {
-		return contexts
-	}
-	out := make([]CreateContext, 0, len(contexts))
-	for i := range contexts {
-		if contexts[i].Name != tag {
-			out = append(out, contexts[i])
-		}
-	}
-	return out
-}
-
-// refreshReplayLease applies Samba's replay-with-lease rules to a DH2Q
-// CREATE replay (the `if (state->rqls != NULL)` block in
-// source3/smbd/smb2_create.c). When the replay request carries an RqLs
-// (lease) context it:
-//
-//   - requires the live open to be lease-backed (else ACCESS_DENIED);
-//   - requires the replay's lease key to equal the open's (else
-//     ACCESS_DENIED);
-//   - rewrites the lease response context to the CURRENT lease state and
-//     epoch read from the LeaseManager, so an upgrade applied after the
-//     original CREATE is reflected on replay.
-//
-// It returns StatusSuccess when the response may be returned (possibly
-// mutated) or the ACCESS_DENIED status to reject with. A replay request
-// without a lease context, or an entry with no associated open, is a
-// no-op success — the cached snapshot stands.
-func (h *Handler) refreshReplayLease(ctx *SMBHandlerContext, req *CreateRequest, entry *CachedCreateResponse, resp *CreateResponse) types.Status {
-	leaseCtx := FindCreateContext(req.CreateContexts, LeaseContextTagRequest)
-	if leaseCtx == nil || entry.OpenFile == nil {
-		return types.StatusSuccess
-	}
-	lcc, err := DecodeLeaseCreateContext(leaseCtx.Data)
-	if err != nil {
-		// Malformed lease context on a replay is treated like the
-		// non-lease path (the cached snapshot stands); the original
-		// CREATE already validated the lease.
-		return types.StatusSuccess
-	}
-
-	open := entry.OpenFile
-
-	// Samba: replay with a lease is only allowed against an open that
-	// itself holds a lease, and only with the same lease key.
-	if open.OplockLevel != OplockLevelLease || open.LeaseKey != lcc.LeaseKey {
-		return types.StatusAccessDenied
-	}
-
-	// Refresh the RqLs response context to the open's CURRENT lease state
-	// (e.g. RH→RWH after a later upgrading CREATE on the same key).
-	if h.LeaseManager == nil {
-		return types.StatusSuccess
-	}
-	state, epoch, found := h.LeaseManager.GetLeaseState(ctx.Context, lock.FileHandle(open.MetadataHandle), open.ShareName, open.LeaseKey)
-	if !found {
-		return types.StatusSuccess
-	}
-	// resp is a shallow copy of the cached response, so resp.CreateContexts
-	// still shares the cached entry's backing array. Clone the slice before
-	// rewriting an element so we never mutate (or race another replay on)
-	// the cached entry. rewriteLeaseResponseState itself returns fresh bytes.
-	for i := range resp.CreateContexts {
-		if resp.CreateContexts[i].Name != LeaseContextTagResponse {
-			continue
-		}
-		contexts := make([]CreateContext, len(resp.CreateContexts))
-		copy(contexts, resp.CreateContexts)
-		contexts[i].Data = rewriteLeaseResponseState(contexts[i].Data, state, epoch)
-		resp.CreateContexts = contexts
-		break
-	}
-	return types.StatusSuccess
-}
-
-// rewriteLeaseResponseState patches the LeaseState (and, for a V2
-// response, the Epoch) of an already-encoded RqLs response context in
-// place without disturbing the lease key, flags, parent key, or wire
-// version. Both the V1 (32-byte) and V2 (52-byte) layouts place the
-// 32-bit LeaseState at offset 16; the V2 layout places the 16-bit Epoch
-// at offset 48 (MS-SMB2 §2.2.14.2.10). A buffer too short for either
-// layout is returned unchanged. It returns a fresh slice so the cached
-// entry's bytes are never mutated.
-func rewriteLeaseResponseState(data []byte, state uint32, epoch uint16) []byte {
-	const (
-		leaseStateOff = 16
-		v2EpochOff    = 48
-	)
-	if len(data) < leaseStateOff+4 {
-		return data
-	}
-	out := make([]byte, len(data))
-	copy(out, data)
-	binary.LittleEndian.PutUint32(out[leaseStateOff:leaseStateOff+4], state)
-	if len(out) >= v2EpochOff+2 {
-		binary.LittleEndian.PutUint16(out[v2EpochOff:v2EpochOff+2], epoch)
-	}
-	return out
-}
-
-// dh2qCreateGuid extracts the CreateGuid from a CREATE request's
-// SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2 context. Returns the zero
-// GUID when the context is missing, malformed, or carries a zero
-// CreateGuid — callers must treat that as "no replay keying
-// possible" (MS-SMB2 §2.2.13.2.11).
-func dh2qCreateGuid(req *CreateRequest) [16]byte {
-	dh2qCtx := FindCreateContext(req.CreateContexts, DurableHandleV2RequestTag)
-	if dh2qCtx == nil {
-		return [16]byte{}
-	}
-	_, _, createGuid, err := DecodeDH2QRequest(dh2qCtx.Data)
-	if err != nil {
-		return [16]byte{}
-	}
-	return createGuid
-}
-
-// handlePipeCreate handles CREATE on IPC$ for named pipes.
-// Named pipes are used for DCE/RPC communication, e.g., srvsvc for share enumeration.
-func (h *Handler) handlePipeCreate(ctx *SMBHandlerContext, req *CreateRequest, tree *TreeConnection) (*CreateResponse, error) {
-	// Normalize pipe name (remove leading/backslashes and "pipe\" prefix)
-	pipeName := normalizeCreatePath(req.FileName)
-	pipeName = strings.TrimPrefix(pipeName, "pipe/")
-	pipeName = strings.ToLower(pipeName)
-
-	logger.Debug("CREATE on IPC$ named pipe",
-		"originalName", req.FileName,
-		"normalizedName", pipeName)
-
-	// Check if this is a supported pipe
-	if !rpc.IsSupportedPipe(pipeName) {
-		logger.Debug("CREATE: unsupported pipe", "pipeName", pipeName)
-		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameNotFound}}, nil
-	}
-
-	// Update pipe manager with cached share list.
-	// Cache is invalidated via Runtime.OnShareChange() callback.
-	if shares := h.getCachedShares(); shares != nil {
-		h.PipeManager.SetShares(shares)
-	}
-
-	// Generate file ID for the pipe
-	smbFileID := h.GenerateFileID()
-
-	// Create pipe state
-	h.PipeManager.CreatePipe(smbFileID, pipeName)
-
-	// Store open file entry for the pipe
-	openFile := (&OpenFile{
-		FileID:        smbFileID,
-		TreeID:        ctx.TreeID,
-		SessionID:     ctx.SessionID,
-		ShareName:     tree.ShareName,
-		OpenTime:      time.Now(),
-		DesiredAccess: req.DesiredAccess,
-		// Pipes have no DACL; the granted set is the resolved request.
-		GrantedAccess: resolveAccessFlags(req.DesiredAccess),
-		IsDirectory:   false,
-		IsPipe:        true,
-		PipeName:      pipeName,
-	}).WithName(OpenName{Path: req.FileName})
-	h.StoreOpenFile(openFile)
-
-	logger.Debug("CREATE pipe successful",
-		"fileID", fmt.Sprintf("%x", smbFileID),
-		"pipeName", pipeName)
-
-	// Build success response
-	now := time.Now()
-	return &CreateResponse{
-		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-		OplockLevel:     0,
-		CreateAction:    types.FileOpened,
-		CreationTime:    now,
-		LastAccessTime:  now,
-		LastWriteTime:   now,
-		ChangeTime:      now,
-		AllocationSize:  0,
-		EndOfFile:       0,
-		FileAttributes:  types.FileAttributeNormal,
-		FileID:          smbFileID,
-	}, nil
-}
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-// handleOpenRootCreate handles opening the root directory of a share.
-func (h *Handler) handleOpenRootCreate(
-	ctx *SMBHandlerContext,
-	req *CreateRequest,
-	authCtx *metadata.AuthContext,
-	rootHandle metadata.FileHandle,
-	tree *TreeConnection,
-) (*CreateResponse, error) {
-	// Root can only be opened with FILE_OPEN disposition
-	if req.CreateDisposition != types.FileOpen && req.CreateDisposition != types.FileOpenIf {
-		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameCollision}}, nil
-	}
-
-	// Get root file attributes
-	metaSvc := h.Registry.GetMetadataService()
-	rootFile, err := metaSvc.GetFile(authCtx.Context, rootHandle)
-	if err != nil {
-		logger.Warn("CREATE: failed to get root file", "error", err)
-		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameNotFound}}, nil
-	}
-
-	// Store open file
-	smbFileID := h.GenerateFileID()
-	// Share-root open: report the DACL-evaluated per-bit granted mask per
-	// MS-SMB2 §3.3.5.9 paragraph 8. CheckFileAccess returns the granted
-	// intersection on both arms (allow AND ErrAccessDenied). Share-root
-	// access has already been authorised upstream (share-level permission via
-	// ResolveSharePermission at mount + Tree Connect ACL); a partial-deny here
-	// therefore reflects a narrower DACL than the share-level grant, not a fatal denial, so we
-	// log it and continue with the (possibly narrowed) mask rather than
-	// overstate rights by re-resolving DesiredAccess.
-	var grantedAccess uint32
-	if metaSvc := h.Registry.GetMetadataService(); metaSvc != nil {
-		g, err := metaSvc.CheckFileAccess(rootFile, authCtx, req.DesiredAccess)
-		if err != nil {
-			logger.Debug("CREATE: share-root CheckFileAccess returned narrowed mask",
-				"share", tree.ShareName,
-				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
-				"granted", fmt.Sprintf("0x%x", g),
-				"error", err)
-		}
-		grantedAccess = g
-	} else {
-		// No metadata service available: fall back to the resolved mask.
-		grantedAccess = resolveAccessFlags(req.DesiredAccess)
-	}
-	// Grant a directory lease when the open requests one, mirroring the
-	// fresh directory-open path. The root is always a directory, so this
-	// only ever grants a directory lease (never a traditional oplock).
-	// Without a granted lease the client cannot cache the root directory's
-	// identity at mount, so a later stat re-fetches the real inode number
-	// and, under serverino, the mismatch surfaces as a stale-handle error.
-	var grantedOplock uint8
-	var leaseResponse *LeaseResponseContext
-	if req.OplockLevel == OplockLevelLease && h.LeaseManager != nil {
-		if leaseCtx := FindCreateContext(req.CreateContexts, LeaseContextTagRequest); leaseCtx != nil {
-			var newLeaseKey [16]byte
-			if parsed, decErr := DecodeLeaseCreateContext(leaseCtx.Data); decErr == nil && parsed != nil {
-				newLeaseKey = parsed.LeaseKey
-			}
-			disallowWriteLease := h.disallowWriteLeaseForFile(
-				authCtx.Context, rootHandle, newLeaseKey, smbFileID, connClientGUID(ctx),
-			)
-			statOpenLease := isStatOnlyOpen(req.DesiredAccess) &&
-				!isDestructiveDisposition(req.CreateDisposition)
-			var leaseErr error
-			leaseResponse, leaseErr = ProcessLeaseCreateContext(
-				authCtx.Context,
-				h.LeaseManager,
-				leaseCtx.Data,
-				lock.FileHandle(rootHandle),
-				ctx.SessionID,
-				connClientGUID(ctx),
-				fmt.Sprintf("smb:%d", ctx.SessionID),
-				tree.ShareName,
-				true, // the share root is always a directory
-				disallowWriteLease,
-				statOpenLease,
-			)
-			if leaseErr != nil {
-				logger.Debug("CREATE: share-root lease context processing failed", "error", leaseErr)
-			}
-			if leaseResponse != nil {
-				grantedOplock = OplockLevelLease
-			}
-		}
-	}
-
-	openFile := &OpenFile{
-		FileID:         smbFileID,
-		TreeID:         ctx.TreeID,
-		SessionID:      ctx.SessionID,
-		ShareName:      tree.ShareName,
-		OpenTime:       time.Now(),
-		DesiredAccess:  req.DesiredAccess,
-		GrantedAccess:  grantedAccess,
-		IsDirectory:    true,
-		MetadataHandle: rootHandle,
-		OplockLevel:    grantedOplock,
-	}
-	if leaseResponse != nil && leaseResponse.LeaseState != lock.LeaseStateNone {
-		openFile.LeaseKey = leaseResponse.LeaseKey
-	}
-	// Record the RqLs parent-lease-key linkage so break coordination on this
-	// handle can apply the parent-key suppression rule, matching the non-root
-	// directory-open path.
-	if leaseResponse != nil && leaseResponse.HasParent {
-		openFile.ParentLeaseKey = leaseResponse.ParentLeaseKey
-		openFile.HasParentLeaseKey = true
-	}
-	// Snapshot opener identity so handle-bound ops survive re-auth (#772).
-	h.CaptureOpenerIdentity(ctx, openFile)
-	h.StoreOpenFile(openFile)
-
-	creation, access, write, change := FileAttrToSMBTimes(&rootFile.FileAttr)
-
-	resp := &CreateResponse{
-		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-		OplockLevel:     grantedOplock,
-		CreateAction:    types.FileOpened,
-		CreationTime:    creation,
-		LastAccessTime:  access,
-		LastWriteTime:   write,
-		ChangeTime:      change,
-		AllocationSize:  0,
-		EndOfFile:       0,
-		FileAttributes:  types.FileAttributeDirectory,
-		FileID:          smbFileID,
-	}
-	if leaseResponse != nil {
-		resp.CreateContexts = append(resp.CreateContexts, CreateContext{
-			Name: LeaseContextTagResponse,
-			Data: leaseResponse.Encode(),
-		})
-	}
-	// Answer the on-disk-id (QFid) request with the root's stable file ID, the
-	// same value FILE_ALL reports as the inode number. A serverino client that
-	// asks for the on-disk id at mount (instead of a separate query) uses it as
-	// the root inode identity; without this response it derives a fabricated
-	// number that every later stat then contradicts, yielding a stale handle.
-	if FindCreateContext(req.CreateContexts, "QFid") != nil {
-		qfidFileID := h.baseFileUUID(authCtx, nil, "", rootFile.ID)
-		qfidResp := make([]byte, 32)
-		copy(qfidResp[0:16], qfidFileID[:16])
-		copy(qfidResp[16:32], h.ServerGUID[:])
-		resp.CreateContexts = append(resp.CreateContexts, CreateContext{
-			Name: "QFid",
-			Data: qfidResp,
-		})
-	}
-	return resp, nil
-}
-
-// walkPath walks a path from a starting handle, returning the final handle.
-func (h *Handler) walkPath(
-	authCtx *metadata.AuthContext,
-	startHandle metadata.FileHandle,
-	pathStr string,
-) (metadata.FileHandle, error) {
-	currentHandle := startHandle
-	metaSvc := h.Registry.GetMetadataService()
-
-	// Split path into components
-	parts := strings.Split(pathStr, "/")
-	for _, part := range parts {
-		if part == "" || part == "." {
-			continue
-		}
-		if part == ".." {
-			// Navigate to parent directory using Lookup which handles ".." natively
-			parentFile, err := metaSvc.Lookup(authCtx, currentHandle, "..")
-			if err != nil {
-				return nil, fmt.Errorf("walkPath: lookup parent '..': %w", err)
-			}
-			currentHandle, err = metadata.EncodeFileHandle(parentFile)
-			if err != nil {
-				return nil, fmt.Errorf("encode parent handle: %w", err)
-			}
-			continue
-		}
-
-		file, _, lookupErr := h.lookupCaseInsensitive(authCtx, metaSvc, currentHandle, part)
-		if lookupErr != nil {
-			return nil, lookupErr
-		}
-		if file == nil {
-			return nil, &metadata.StoreError{
-				Code:    metadata.ErrNotFound,
-				Message: fmt.Sprintf("child not found: %s", part),
-			}
-		}
-
-		if file.Type != metadata.FileTypeDirectory {
-			return nil, &metadata.StoreError{
-				Code:    metadata.ErrNotDirectory,
-				Message: fmt.Sprintf("%s is not a directory", part),
-			}
-		}
-
-		var encErr error
-		currentHandle, encErr = metadata.EncodeFileHandle(file)
-		if encErr != nil {
-			return nil, encErr
-		}
-	}
-
-	return currentHandle, nil
-}
-
-// createNewFile creates a new file or directory in the metadata store.
-func (h *Handler) createNewFile(
-	authCtx *metadata.AuthContext,
-	parentHandle metadata.FileHandle,
-	parentFile *metadata.File,
-	name string,
-	req *CreateRequest,
-	isDirectory bool,
-) (*metadata.File, metadata.FileHandle, error) {
-	// Build file attributes
-	fileAttr := &metadata.FileAttr{
-		Mode:   SMBModeFromAttrs(req.FileAttributes, isDirectory),
-		Hidden: req.FileAttributes&types.FileAttributeHidden != 0,
-	}
-
-	// Set owner from auth context
-	if authCtx.Identity.UID != nil {
-		fileAttr.UID = *authCtx.Identity.UID
-	}
-	if authCtx.Identity.GID != nil {
-		fileAttr.GID = *authCtx.Identity.GID
-	}
-
-	if isDirectory {
-		fileAttr.Type = metadata.FileTypeDirectory
-	} else {
-		fileAttr.Type = metadata.FileTypeRegular
-		fileAttr.Size = 0
-	}
-
-	// Inherit compression state from parent directory.
-	// Per MS-FSA 2.1.5.1.1: if the parent directory has FILE_ATTRIBUTE_COMPRESSED,
-	// the new file/directory inherits the compression attribute.
-	// Per MS-SMB2 2.2.13: FILE_NO_COMPRESSION in CreateOptions suppresses inheritance.
-	metaSvc := h.Registry.GetMetadataService()
-	if req.CreateOptions&types.FileNoCompression == 0 {
-		if parentFile != nil && parentFile.Mode&modeDOSCompressed != 0 {
-			fileAttr.Mode |= modeDOSCompressed
-		}
-	}
-
-	// Create appropriate file type based on fileAttr.Type
-	var file *metadata.File
-	var err error
-	if isDirectory {
-		file, _, err = metaSvc.CreateDirectory(authCtx, parentHandle, name, fileAttr)
-	} else {
-		file, _, err = metaSvc.CreateFile(authCtx, parentHandle, name, fileAttr)
-	}
-
-	if err != nil {
-		return nil, nil, err
-	}
-
-	fileHandle, err := metadata.EncodeFileHandle(file)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return file, fileHandle, nil
-}
-
-// overwriteFile truncates an existing file for OVERWRITE/SUPERSEDE operations.
-func (h *Handler) overwriteFile(
-	authCtx *metadata.AuthContext,
-	existingFile *metadata.File,
-	req *CreateRequest,
-) (*metadata.File, metadata.FileHandle, error) {
-	fileHandle, err := metadata.EncodeFileHandle(existingFile)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Truncate to zero size and apply requested attributes
-	zeroSize := uint64(0)
-	setAttrs := &metadata.SetAttrs{
-		Size: &zeroSize,
-	}
-
-	// Per MS-FSA 2.1.5.1.2 ("Open of an Existing File"): OVERWRITE/SUPERSEDE forces FILE_ATTRIBUTE_ARCHIVE
-	// on the post-overwrite metadata regardless of what the client sent — the
-	// data is "needs backup" again. Apply the requested attributes plus ARCHIVE,
-	// and preserve modeDOSCompressed (controlled only via FSCTL_SET_COMPRESSION).
-	attrs := req.FileAttributes | types.FileAttributeArchive
-	mode := SMBModeFromAttrs(attrs, existingFile.Type == metadata.FileTypeDirectory)
-	mode |= existingFile.Mode & modeDOSCompressed
-	setAttrs.Mode = &mode
-	hiddenVal := req.FileAttributes&types.FileAttributeHidden != 0
-	setAttrs.Hidden = &hiddenVal
-
-	metaSvc := h.Registry.GetMetadataService()
-	_, err = metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Get updated file
-	updatedFile, err := metaSvc.GetFile(authCtx.Context, fileHandle)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return updatedFile, fileHandle, nil
-}
-
-// updateBaseObjectCtime updates the ChangeTime of the base file or directory
-// that hosts an ADS. Per MS-FSA / NTFS semantics, creating or modifying an
-// alternate data stream propagates a ChangeTime update to the base object.
-func (h *Handler) updateBaseObjectCtime(
-	authCtx *metadata.AuthContext,
-	metaSvc *metadata.Service,
-	parentHandle metadata.FileHandle,
-	baseObjectName string,
-) {
-	baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, baseObjectName)
-	if baseFile == nil {
-		return
-	}
-	baseHandle, err := metadata.EncodeFileHandle(baseFile)
-	if err != nil {
-		return
-	}
-	now := time.Now()
-	if _, updateErr := metaSvc.SetFileAttributes(authCtx, baseHandle, &metadata.SetAttrs{Ctime: &now}); updateErr != nil {
-		logger.Debug("updateBaseObjectCtime: failed",
-			"baseObject", baseObjectName, "error", updateErr)
-	}
-}
-
-// updateBaseObjectTimestampsForADSWrite updates the ChangeTime and LastWriteTime
-// of the base file or directory that hosts an ADS after a WRITE to the stream.
-// Per MS-FSA / NTFS semantics, data writes to an alternate data stream propagate
-// Mtime and Ctime changes to the base object, unless the corresponding timestamp
-// is frozen on the ADS handle.
-//
-// parentHandle is passed in rather than read off openFile so it stays the same
-// directory the caller derived baseObjectName from: SET_INFO rename can move
-// the handle to another parent while the write is in flight.
-func (h *Handler) updateBaseObjectTimestampsForADSWrite(
-	authCtx *metadata.AuthContext,
-	metaSvc *metadata.Service,
-	openFile *OpenFile,
-	parentHandle metadata.FileHandle,
-	baseObjectName string,
-) {
-	baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, baseObjectName)
-	if baseFile == nil {
-		return
-	}
-	baseHandle, err := metadata.EncodeFileHandle(baseFile)
-	if err != nil {
-		return
-	}
-	now := time.Now()
-	setAttrs := &metadata.SetAttrs{}
-	// Snapshot the freeze flags under the per-OpenFile read lock so we
-	// observe a consistent view against a concurrent SET_INFO freeze/thaw
-	// (#606).
-	openFile.mu.RLock()
-	ctimeFrozen := openFile.CtimeFrozen
-	mtimeFrozen := openFile.MtimeFrozen
-	openFile.mu.RUnlock()
-	if !ctimeFrozen {
-		setAttrs.Ctime = &now
-	}
-	if !mtimeFrozen {
-		setAttrs.Mtime = &now
-	}
-	if setAttrs.Ctime == nil && setAttrs.Mtime == nil {
-		return
-	}
-	// If only one timestamp is frozen, metadata's SetFileAttributes will
-	// auto-bump Ctime to NOW because modified=true and attrs.Ctime==nil
-	// (file_modify.go: `if modified { if attrs.Ctime == nil { file.Ctime = now }}`).
-	// Per MS-FSA §2.1.5.15.2 ("FileBasicInformation"), the freeze sentinel applies to the underlying
-	// object, so an ADS write must not bump the base's frozen ChangeTime
-	// (WPTS FileInfo_Set_FileBasicInformation_Timestamp_MinusOne_Dir_ChangeTime).
-	// Pin Ctime to the base's current value when the ADS handle has Ctime frozen.
-	if ctimeFrozen && setAttrs.Ctime == nil {
-		baseCtime := baseFile.Ctime
-		setAttrs.Ctime = &baseCtime
-	}
-	_, _ = metaSvc.SetFileAttributes(authCtx, baseHandle, setAttrs)
-}
-
-// isStatOnlyOpen returns true when DesiredAccess contains only stat-open bits:
-// FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE —
-// in any combination, but with no other (data/delete/dac/owner) bits set.
-// At least one stat bit must be present.
-//
-// Mirrors Samba `is_lease_stat_open` (source3/smbd/open.c):
-//
-//	SEC_STD_SYNCHRONIZE | SEC_STD_READ_CONTROL |
-//	FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES
-//
-// READ_CONTROL is included per smb2.lease.statopen4 test 8 which
-// requires READ_CONTROL-only opens to NOT break leases. Samba's
-// is_lease_stat_open includes SEC_STD_READ_CONTROL as well.
 func isStatOnlyOpen(desiredAccess uint32) bool {
 	const statOpenBits uint32 = 0x00000080 | // FILE_READ_ATTRIBUTES
 		0x00000100 | // FILE_WRITE_ATTRIBUTES
@@ -2288,6 +1564,7 @@ func isStatOnlyOpen(desiredAccess uint32) bool {
 // FILE_READ_ATTRIBUTES|FILE_WRITE_ATTRIBUTES|SYNCHRONIZE asking for BATCH /
 // EXCLUSIVE — expected grant is NO_OPLOCK_RETURN (LEVEL_NONE) with NO break
 // dispatched to the original holder.
+
 func isOplockStatOpen(desiredAccess uint32) bool {
 	const oplockStatBits uint32 = 0x00000080 | // FILE_READ_ATTRIBUTES
 		0x00000100 | // FILE_WRITE_ATTRIBUTES
@@ -2298,6 +1575,7 @@ func isOplockStatOpen(desiredAccess uint32) bool {
 // computeSessionKeyHash computes the SHA-256 hash of the session's signing key.
 // This is used for durable handle security validation during reconnect.
 // Returns zero hash if the session has no crypto state or signing key.
+
 func computeSessionKeyHash(sess *session.Session) [32]byte {
 	cs := sess.GetCryptoState()
 	if cs == nil || len(cs.SigningKey) == 0 {
