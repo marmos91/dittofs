@@ -11,6 +11,7 @@ import (
 
 	nfs "github.com/marmos91/dittofs/internal/adapter/nfs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/middleware"
+	mount_dispatch "github.com/marmos91/dittofs/internal/adapter/nfs/mount"
 	nlm "github.com/marmos91/dittofs/internal/adapter/nfs/nlm"
 	nlm_callback "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/callback"
 	nlm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/handlers"
@@ -167,7 +168,7 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 // Returns the reply data or an error if the handler fails.
 func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
 	// Look up procedure in dispatch table
-	procedure, ok := nfs.MountDispatchTable[call.Procedure]
+	procedure, ok := mount_dispatch.MountDispatchTable[call.Procedure]
 	if !ok {
 		logger.Debug("Unknown Mount procedure", "procedure", call.Procedure)
 		return []byte{}, nil
