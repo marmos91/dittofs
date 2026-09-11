@@ -56,6 +56,10 @@ func TestCreateHardLink_RejectsCrossShareTarget(t *testing.T) {
 
 	_, err = svc.CreateHardLink(authCtx, dirRoot, "stolen.txt", targetHandle)
 	require.Error(t, err, "hard link across shares must be rejected")
+	var linkErr *metadata.StoreError
+	require.ErrorAs(t, err, &linkErr, "hard link cross-share rejection must be a StoreError")
+	require.Equal(t, metadata.ErrCrossShare, linkErr.Code,
+		"hard link across shares must answer ErrCrossShare, got %v", linkErr.Code)
 
 	// The rejection must leave no entry behind and no inflated link count.
 	_, err = svc.Lookup(authCtx, dirRoot, "stolen.txt")
@@ -84,6 +88,10 @@ func TestMove_RejectsCrossShareDestination(t *testing.T) {
 
 	_, _, err = svc.Move(authCtx, srcRoot, "movable.txt", dstRoot, "stolen.txt")
 	require.Error(t, err, "move across shares must be rejected")
+	var moveErr *metadata.StoreError
+	require.ErrorAs(t, err, &moveErr, "move cross-share rejection must be a StoreError")
+	require.Equal(t, metadata.ErrCrossShare, moveErr.Code,
+		"move across shares must answer ErrCrossShare, got %v", moveErr.Code)
 
 	// The source entry must survive and no entry may appear in the destination.
 	_, err = svc.Lookup(authCtx, srcRoot, "movable.txt")

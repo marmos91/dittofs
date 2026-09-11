@@ -37,6 +37,7 @@ var expectedSMB = map[merrs.ErrorCode]Status{
 	merrs.ErrLockLimitExceeded:      StatusInsufficientResources,
 	merrs.ErrLockConflict:           StatusFileLockConflict,
 	merrs.ErrConflict:               StatusInsufficientResources,
+	merrs.ErrCrossShare:             StatusNotSameDevice,
 	merrs.ErrConnectionLimitReached: StatusInsufficientResources,
 }
 
@@ -60,7 +61,7 @@ var expectedSMBLock = map[merrs.ErrorCode]Status{
 // tables. Drift is loud: an unmapped code returns the internal-error
 // default and fails here.
 func TestStatusFor_EnumWalk(t *testing.T) {
-	for c := merrs.ErrNotFound; c <= merrs.ErrConflict; c++ {
+	for c := merrs.ErrNotFound; c <= merrs.ErrCrossShare; c++ {
 		want, ok := expectedSMB[c]
 		if !ok {
 			t.Errorf("StatusFor(%v) has no expectation row — add one to expectedSMB", c)

@@ -124,6 +124,12 @@ const (
 	// StatusInsufficientResources indicates server lacks resources.
 	StatusInsufficientResources Status = 0xC000009A
 
+	// StatusNotSameDevice indicates a two-handle operation spanned two shares
+	// (NT STATUS_NOT_SAME_DEVICE). One condition, one code: the store-layer
+	// cross-share guard answers ErrCrossShare and this is its SMB lift, so the
+	// condition reports the same way NFS's NFS4ERR_XDEV does.
+	StatusNotSameDevice Status = 0xC00000D4
+
 	// StatusBadImpersonationLevel indicates the CREATE request supplied an
 	// impersonation level outside the four defined values (Anonymous,
 	// Identification, Impersonation, Delegate) per MS-SMB2 §2.2.13. Required

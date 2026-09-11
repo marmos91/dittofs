@@ -62,6 +62,7 @@ const (
 	ErrLockConflict           = errors.ErrLockConflict
 	ErrConnectionLimitReached = errors.ErrConnectionLimitReached
 	ErrConflict               = errors.ErrConflict
+	ErrCrossShare             = errors.ErrCrossShare
 )
 
 // ============================================================================

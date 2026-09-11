@@ -260,10 +260,8 @@ func (s *Service) storeForHandle(handle FileHandle) (Store, error) {
 // share resolves against the first share's store and the mutation lands on a
 // foreign file. Both handles are decoded explicitly rather than via
 // shareNameForHandle, which yields "" for an undecodable handle and would let
-// two malformed handles compare equal.
-//
-// what names the operation for the error message; path carries the entry name
-// the caller was acting on.
+// two malformed handles compare equal. What names the operation for the error
+// message; path carries the entry name the caller was acting on.
 func requireSameShare(a, b FileHandle, what, path string) error {
 	shareA, _, err := DecodeFileHandle(a)
 	if err != nil {
@@ -275,7 +273,7 @@ func requireSameShare(a, b FileHandle, what, path string) error {
 	}
 	if shareA != shareB {
 		return &StoreError{
-			Code:    ErrInvalidArgument,
+			Code:    ErrCrossShare,
 			Message: "cannot " + what + " across shares",
 			Path:    path,
 		}
