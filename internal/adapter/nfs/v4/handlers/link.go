@@ -154,8 +154,8 @@ func (h *Handler) handleLink(ctx *types.CompoundContext, reader io.Reader) *type
 	// its answer, so a notification failure is logged, not surfaced.
 	if h.StateManager != nil {
 		var originClientID uint64
-		if ctx.ClientState != nil {
-			originClientID = ctx.ClientState.ClientID
+		if ctx.SessionClientID != 0 {
+			originClientID = ctx.SessionClientID
 		}
 		h.StateManager.NotifyDirChange(dirHandle, state.DirNotification{
 			Type:           types.NOTIFY4_ADD_ENTRY,

@@ -175,8 +175,8 @@ func (h *Handler) handleRemove(ctx *types.CompoundContext, reader io.Reader) *ty
 	// entry notification.
 	if h.StateManager != nil {
 		var originClientID uint64
-		if ctx.ClientState != nil {
-			originClientID = ctx.ClientState.ClientID
+		if ctx.SessionClientID != 0 {
+			originClientID = ctx.SessionClientID
 		}
 		h.StateManager.NotifyDirChange(ctx.CurrentFH, state.DirNotification{
 			Type:           types.NOTIFY4_REMOVE_ENTRY,

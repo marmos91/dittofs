@@ -367,9 +367,12 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 	// answer, so a notification failure is logged, not surfaced.
 	if h.StateManager != nil {
 		var originClientID uint64
-		if ctx.ClientState != nil {
-			originClientID = ctx.ClientState.ClientID
+		if ctx.SessionClientID != 0 {
+			originClientID = ctx.SessionClientID
 		}
+		// Best-effort identity: for a true v4.0 client there is no better identity
+		// available, so it answers 0 (notify-only); cross-client recall rides
+		// metadata layer's LockClientID division.
 		h.StateManager.NotifyDirChange(parentHandle, state.DirNotification{
 			Type:           types.NOTIFY4_ADD_ENTRY,
 			EntryName:      objName,
