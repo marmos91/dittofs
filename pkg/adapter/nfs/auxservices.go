@@ -167,16 +167,30 @@ func (r sysregSidecar) Start(ctx context.Context) error {
 func (r sysregSidecar) Stop(context.Context) error { r.a.stopSystemPortmapRegistration(); return nil }
 
 // udpSidecar wraps the NLM/NSM/MOUNT-over-UDP transport. Start binds the socket
-// and launches the read loop; Stop closes the socket so the loop unblocks and
-// exits (startUDP also closes it on ctx cancel, so a double close is possible
-// and harmless).
+// and launches the read loop; Stop claims the conn and its shutdown cancel,
+// then closes the socket so the loop unblocks and exits (startUDP also closes
+// it when the per-generation ctx or the adapter ctx fires, so a double close
+// is possible and harmless).
 type udpSidecar struct{ a *NFSAdapter }
 
 func (u udpSidecar) Name() string                    { return "nfs-udp" }
 func (u udpSidecar) Start(ctx context.Context) error { return u.a.startUDP(ctx) }
 func (u udpSidecar) Stop(context.Context) error {
-	if u.a.udpConn != nil {
-		_ = u.a.udpConn.Close()
+	// Claim conn and cancel func together: each generation is stopped exactly
+	// once (a disable racing a re-enable can no longer snapshot the newer conn)
+	// and the per-generation shutdown ctx fires so the conn-close waiter and
+	// the read loop exit instead of parking until adapter shutdown.
+	u.a.sidecarMu.Lock()
+	udpConn := u.a.udpConn
+	udpStop := u.a.udpStop
+	u.a.udpConn = nil
+	u.a.udpStop = nil
+	u.a.sidecarMu.Unlock()
+	if udpStop != nil {
+		udpStop()
+	}
+	if udpConn != nil {
+		_ = udpConn.Close()
 	}
 	return nil
 }

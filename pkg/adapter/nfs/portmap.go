@@ -54,7 +54,6 @@ func (s *NFSAdapter) startPortmapper(ctx context.Context) error {
 	registry := portmap.NewRegistry()
 	registry.RegisterDittoFSServices(s.config.Port, s.isUDPEnabled())
 	registry.RegisterPortmapper(s.config.Portmapper.Port)
-
 	// Create portmapper server
 	server := portmap.NewServer(portmap.ServerConfig{
 		Port:      s.config.Portmapper.Port,
@@ -62,10 +61,6 @@ func (s *NFSAdapter) startPortmapper(ctx context.Context) error {
 		EnableUDP: true,
 		Registry:  registry,
 	})
-
-	// Store references for shutdown
-	s.portmapRegistry = registry
-	s.portmapServer = server
 
 	// Start in background goroutine
 	errCh := make(chan error, 1)
@@ -76,14 +71,36 @@ func (s *NFSAdapter) startPortmapper(ctx context.Context) error {
 		}
 	}()
 
-	// Wait for listeners to be ready (or fail) with a timeout
+	// Wait for listeners to be ready (or fail) with a timeout. Publish the
+	// server only once WaitReady has fired: the server writes its listeners
+	// inside Serve, before closing that channel, so publishing any earlier
+	// would let a concurrent disable (stopPortmapper -> server.Stop) read the
+	// listeners mid-bind or nil and either race Serve or leak a late-bound
+	// port. Before WaitReady the field stays nil, so stopPortmapper is a
+	// correct no-op.
 	select {
 	case <-server.WaitReady():
+		s.sidecarMu.Lock()
+		s.portmapServer = server
+		s.sidecarMu.Unlock()
 		logger.Info("Portmapper started", "port", s.config.Portmapper.Port, "services", registry.Count())
 		return nil
 	case err := <-errCh:
 		return err
 	case <-time.After(2 * time.Second):
+		// Abandoned before ready: nothing published, so no Stop can reach this
+		// server later — stop it ourselves once the bind lands (WaitReady closed
+		// implies the cancellation monitor exists, so Stop closes the listeners
+		// instead of leaking them; Serve's own return also drains errCh). Bounded
+		// by Serve returning, which the adapter shutdown ctx guarantees.
+		go func() {
+			select {
+			case <-server.WaitReady():
+				server.Stop()
+				logger.Info("Portmapper start abandoned; late bind stopped")
+			case <-errCh:
+			}
+		}()
 		return nil // Timeout waiting for ready, but non-fatal
 	}
 }
@@ -195,9 +212,19 @@ func (s *NFSAdapter) stopSystemPortmapRegistration() {
 //
 // Safe to call when portmapper is nil (disabled or never started).
 func (s *NFSAdapter) stopPortmapper() {
-	if s.portmapServer == nil {
+	// Claim and clear: each generation is stopped exactly once. Without the
+	// clear, a disable racing a re-enable snapshots the newer server and shuts
+	// it down even though its reservation says running.
+	// Snapshot then Stop outside the lock: Stop() blocks until all portmapper
+	// goroutines exit, and the send-path snapshot must not stall behind a
+	// teardown. Idempotent via the server's shutdown-once.
+	s.sidecarMu.Lock()
+	server := s.portmapServer
+	s.portmapServer = nil
+	s.sidecarMu.Unlock()
+	if server == nil {
 		return
 	}
-	s.portmapServer.Stop()
+	server.Stop()
 	logger.Info("Portmapper stopped")
 }

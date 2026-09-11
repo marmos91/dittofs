@@ -67,7 +67,8 @@ func NewServer(cfg ServerConfig) *Server {
 
 // Serve starts the portmapper server on both TCP and UDP.
 // It blocks until the context is cancelled or Stop is called.
-// After both TCP and UDP listeners are bound, WaitReady() unblocks.
+// After both TCP and UDP listeners are bound and every goroutine is launched,
+// WaitReady() unblocks.
 func (s *Server) Serve(ctx context.Context) error {
 	addr := fmt.Sprintf(":%d", s.config.Port)
 
@@ -99,12 +100,10 @@ func (s *Server) Serve(ctx context.Context) error {
 		s.udpConn = udpConn
 	}
 
-	// Signal that listeners are ready
-	close(s.listenerReady)
-
-	logger.Info("Portmapper server started", "address", addr, "tcp", s.config.EnableTCP, "udp", s.config.EnableUDP)
-
-	// Launch TCP and UDP goroutines
+	// Signal that listeners are ready — AFTER the serve goroutines and the
+	// cancellation monitor are launched, so a caller that observes readiness
+	// (WaitReady) knows all wg.Adds are done and Stop's wg.Wait sees the true
+	// counter instead of returning at zero (or racing the concurrent Add).
 	if s.config.EnableTCP {
 		s.wg.Add(1)
 		go s.serveTCP(ctx)
@@ -122,6 +121,8 @@ func (s *Server) Serve(ctx context.Context) error {
 		case <-s.shutdown:
 		}
 	}()
+
+	close(s.listenerReady)
 
 	// Block until both goroutines complete
 	s.wg.Wait()

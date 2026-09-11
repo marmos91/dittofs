@@ -137,13 +137,15 @@ type NFSAdapter struct {
 	// auxservices.go.
 	sidecars *auxsvc.Group
 
+	// sidecarMu guards the sidecar shutdown state published by Start and read
+	// by Stop and the NLM async-result send path (portmapServer, udpConn): the
+	// group runs Start outside its lock, so a disable can steal a mid-bind
+	// reservation and tear down concurrently.
+	sidecarMu sync.Mutex
+
 	// portmapServer is the embedded portmapper server (RFC 1057).
 	// nil when portmapper is disabled.
 	portmapServer *portmap.Server
-
-	// portmapRegistry holds the portmap service registry.
-	// nil when portmapper is disabled.
-	portmapRegistry *portmap.Registry
 
 	// sysregActive is true once DittoFS's services have been registered with the
 	// host's system rpcbind (adapters.nfs.portmapper.register_with_system), so
@@ -164,6 +166,12 @@ type NFSAdapter struct {
 	// udpConn is the UDP listener serving NLM/NSM/MOUNT when the UDP transport
 	// is enabled (adapters.nfs.udp.enabled). nil when UDP is disabled.
 	udpConn *net.UDPConn
+
+	// udpStop cancels the current UDP generation's shutdown context (the one
+	// that closes udpConn on teardown). Published with udpConn under sidecarMu;
+	// claimed-and-cleared by udpSidecar.Stop so each generation's waiter fires
+	// exactly once and no waiter parks until adapter shutdown after a toggle.
+	udpStop context.CancelFunc
 
 	// nsmClientStore persists client registrations for crash recovery
 	nsmClientStore lock.ClientRegistrationStore
