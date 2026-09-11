@@ -142,7 +142,7 @@ func TestGCForcedRepackPreservesData(t *testing.T) {
 	sh.mu.Unlock()
 
 	// 0.7 dead ratio >= default GCDeadRatioForce (0.5): an auto pass repacks it.
-	res, err := s.GC(ctx, GCOptions{})
+	res, err := s.gc(ctx, gcOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestGCRepackDirtyTargetNotEvictable(t *testing.T) {
 	keep := seedRepackable(t, s, false)
 
 	// 0.7 dead ratio >= default GCDeadRatioForce (0.5): an auto pass repacks it.
-	res, err := s.GC(ctx, GCOptions{})
+	res, err := s.gc(ctx, gcOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,14 +252,14 @@ func TestGCBelowThresholdNeedsForce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := s.GC(ctx, GCOptions{}) // ~5% dead < 0.5: no-op
+	res, err := s.gc(ctx, gcOptions{}) // ~5% dead < 0.5: no-op
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.SegmentsRepacked != 0 {
 		t.Fatalf("auto GC repacked below threshold: %d", res.SegmentsRepacked)
 	}
-	res, err = s.GC(ctx, GCOptions{Force: true}) // Force repacks the worst offender
+	res, err = s.gc(ctx, gcOptions{Force: true}) // Force repacks the worst offender
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestGCBelowThresholdNeedsForce(t *testing.T) {
 func TestGCCrashBeforeUnlinkOrphanSwept(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{SegmentSize: minSegmentSize, ShardCount: 1}
-	s, err := Open(dir, cfg, newFakeRemote(), SystemClock())
+	s, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestGCCrashBeforeUnlinkOrphanSwept(t *testing.T) {
 	// Repack but stop right before reclaiming the victim: on disk the target is
 	// durable while the victim still exists (crash-before-unlink).
 	testStopBeforeUnlink = true
-	if _, err := s.GC(ctx, GCOptions{Force: true}); err != nil {
+	if _, err := s.gc(ctx, gcOptions{Force: true}); err != nil {
 		testStopBeforeUnlink = false
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestGCCrashBeforeUnlinkOrphanSwept(t *testing.T) {
 	_ = s.Close()
 
 	// Restart: recovery replays both segments (identical Version -> byte-identical).
-	r, err := Open(dir, cfg, newFakeRemote(), SystemClock())
+	r, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("recovery after crash-before-unlink: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestGCCrashBeforeUnlinkOrphanSwept(t *testing.T) {
 	}
 
 	// The redundant orphan is reclaimable: a forced pass frees it, leaving data intact.
-	if _, err := r.GC(ctx, GCOptions{Force: true}); err != nil {
+	if _, err := r.gc(ctx, gcOptions{Force: true}); err != nil {
 		t.Fatal(err)
 	}
 	got2 := make([]byte, len(keep))
@@ -362,7 +362,7 @@ func TestGCTombstoneOnlySegmentTerminates(t *testing.T) {
 	// Non-Force GC must terminate. With the bug it repacks the fully-dead segment
 	// into a tombstone-only one, then loops forever repacking that. Bound the pass.
 	done := make(chan error, 1)
-	go func() { _, err := s.GC(ctx, GCOptions{}); done <- err }()
+	go func() { _, err := s.gc(ctx, gcOptions{}); done <- err }()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -373,7 +373,7 @@ func TestGCTombstoneOnlySegmentTerminates(t *testing.T) {
 	}
 
 	// A second pass finds nothing to reclaim in the tombstone-only segment.
-	res, err := s.GC(ctx, GCOptions{})
+	res, err := s.gc(ctx, gcOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +492,7 @@ func TestGCConcurrentWithWrites(t *testing.T) {
 				return
 			default:
 			}
-			if _, err := s.GC(ctx, GCOptions{Force: true}); err != nil {
+			if _, err := s.gc(ctx, gcOptions{Force: true}); err != nil {
 				t.Errorf("GC: %v", err)
 				return
 			}

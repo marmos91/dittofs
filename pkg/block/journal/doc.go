@@ -4,10 +4,10 @@
 // a remote store, pressure-gated eviction, and garbage collection.
 //
 // It owns all persistent local-cache state and depends only on the standard
-// library plus a pair of narrow injected interfaces (RemoteStore, Clock). It
-// knows nothing about namespaces, protocols, permissions, or the metadata
-// store — callers resolve logical offsets to FileIDs and hand journal opaque
-// byte ranges.
+// library plus narrow injected interfaces (the carve collaborators [Deduper]
+// and [BlockSink], and Clock). It knows nothing about namespaces, protocols,
+// permissions, or the metadata store — callers resolve logical offsets to
+// FileIDs and hand journal opaque byte ranges.
 //
 // The unifying model: client writes (WriteAt) and cold-read hydration
 // (Hydrate) both funnel through one internal append primitive, differing only

@@ -22,6 +22,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
@@ -879,7 +880,8 @@ func handleFormatMismatch(err error, stderr *os.File) bool {
 	if err == nil {
 		return false
 	}
-	if !errors.Is(err, block.ErrFutureFormat) && !errors.Is(err, fs.ErrLegacyLocalFormat) {
+	if !errors.Is(err, block.ErrFutureFormat) && !errors.Is(err, journal.ErrFutureFormat) &&
+		!errors.Is(err, fs.ErrLegacyLocalFormat) {
 		return false
 	}
 	_, _ = fmt.Fprintln(stderr, formatMismatchDirective(err))
@@ -951,7 +953,7 @@ func emitAdminPassword(password string) {
 // downgrade the operator can undo by going forward again, while a pre-journal
 // layout is an upgrade that has not run yet.
 func formatMismatchDirective(err error) string {
-	if errors.Is(err, block.ErrFutureFormat) {
+	if errors.Is(err, block.ErrFutureFormat) || errors.Is(err, journal.ErrFutureFormat) {
 		return fmt.Sprintf(`Refusing to start: %s.
 
 This state was written by a newer release of DittoFS. Opening it with this

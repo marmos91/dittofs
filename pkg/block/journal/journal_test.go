@@ -12,7 +12,7 @@ func TestInputGuards(t *testing.T) {
 	ctx := context.Background()
 
 	// SegmentSize below the floor is rejected at Open.
-	if _, err := Open(t.TempDir(), Config{SegmentSize: 100}, newFakeRemote(), SystemClock()); err == nil {
+	if _, err := Open(t.TempDir(), Config{SegmentSize: 100}); err == nil {
 		t.Fatalf("expected too-small SegmentSize to be rejected")
 	}
 
@@ -42,7 +42,7 @@ func TestInputGuards(t *testing.T) {
 
 func testStore(t *testing.T, cfg Config) *Store {
 	t.Helper()
-	s, err := Open(t.TempDir(), cfg, newFakeRemote(), SystemClock())
+	s, err := Open(t.TempDir(), cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestShardForDeterministicAndMasked(t *testing.T) {
 
 func TestReopenPopulatedDirRecovers(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{}, newFakeRemote(), SystemClock())
+	s, err := Open(dir, Config{})
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestReopenPopulatedDirRecovers(t *testing.T) {
 		t.Fatalf("WriteAt: %v", err)
 	}
 	_ = s.Close()
-	r, err := Open(dir, Config{}, newFakeRemote(), SystemClock())
+	r, err := Open(dir, Config{})
 	if err != nil {
 		t.Fatalf("reopen should recover, got: %v", err)
 	}

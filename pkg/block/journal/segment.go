@@ -401,7 +401,7 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 		version: version,
 		recOff:  segOff,
 		synced:  synced,
-		loc:     SegmentLocation{SegmentID: seg.id, Offset: payloadOff, Length: int64(len(data))},
+		loc:     segmentLocation{SegmentID: seg.id, Offset: payloadOff, Length: int64(len(data))},
 	})
 	// Charge superseded bytes to their segment's dead counter: this is the
 	// size-tiered GC victim signal. sh.segment needs sh.mu, held here.

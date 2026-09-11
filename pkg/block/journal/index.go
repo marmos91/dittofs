@@ -11,10 +11,10 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
-// SegmentLocation points at a record payload inside a shared segment. It
+// segmentLocation points at a record payload inside a shared segment. It
 // replaces the old one-file-per-payload location: because segments are shared,
 // an index entry can no longer assume it names its own file's blob.
-type SegmentLocation struct {
+type segmentLocation struct {
 	SegmentID uint64
 	Offset    int64 // byte offset of the payload within the segment
 	Length    int64 // payload length
@@ -30,7 +30,7 @@ type interval struct {
 	fileOff int64
 	length  int64
 	version uint64
-	loc     SegmentLocation
+	loc     segmentLocation
 	// recOff is the byte offset of the owning record's header start within its
 	// segment. Carve flips that record's synced flag in place at recOff, so it
 	// survives an interval split (trimming the live range never moves the record).
@@ -69,7 +69,7 @@ func (iv interval) clamp(lo, hi int64) interval {
 		// compaction rebuilds the log from the index, so a dropped provenance
 		// here comes back as coldFromUnknown on disk.
 		provenance: iv.provenance,
-		loc: SegmentLocation{
+		loc: segmentLocation{
 			SegmentID: iv.loc.SegmentID,
 			Offset:    iv.loc.Offset + frontTrim,
 			Length:    hi - lo,
@@ -245,7 +245,7 @@ func subtractAll(frags []interval, rs, re int64) []interval {
 type piece struct {
 	dstStart int64
 	dstEnd   int64
-	loc      SegmentLocation
+	loc      segmentLocation
 	subOff   int64
 	// recOff is the segment offset of the owning record's header, carried from the
 	// interval so a verified read can re-read the whole covering record and check

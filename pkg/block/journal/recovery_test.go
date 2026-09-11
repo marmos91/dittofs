@@ -3,36 +3,40 @@ package journal
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// captureWarnings routes the process logger into a buffer for the duration of
-// the test and returns an accessor for what was logged.
-func captureWarnings(t *testing.T) func() string {
+// captureWarnings returns a *slog.Logger writing into a buffer and an accessor
+// for what was logged.
+func captureWarnings(t *testing.T) (*slog.Logger, func() string) {
 	t.Helper()
 	var buf bytes.Buffer
-	logger.InitWithWriter(&buf, "WARN", "text", false)
-	t.Cleanup(func() { logger.InitWithWriter(os.Stdout, "INFO", "text", false) })
-	return buf.String
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	return log, buf.String
 }
 
 // reopen closes s and opens a fresh Store over the same directory, exercising
-// the recovery path.
-func reopen(t *testing.T, s *Store) *Store {
+// the recovery path. cfg only overrides s's Logger and Clock; every other
+// field keeps s's value.
+func reopen(t *testing.T, s *Store, cfg Config) *Store {
 	t.Helper()
 	dir := s.dir
-	cfg := s.cfg
-	clock := s.clock
+	merged := s.cfg
+	if cfg.Logger != nil {
+		merged.Logger = cfg.Logger
+	}
+	if cfg.Clock != nil {
+		merged.Clock = cfg.Clock
+	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	r, err := Open(dir, cfg, newFakeRemote(), clock)
+	r, err := Open(dir, merged)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -53,7 +57,7 @@ func readAll(t *testing.T, s *Store, id FileID, n int) []byte {
 // asserts every byte survives recovery unchanged.
 func TestRecoveryRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 4}, newFakeRemote(), SystemClock())
+	s, err := Open(dir, Config{ShardCount: 4})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -79,7 +83,7 @@ func TestRecoveryRoundTrip(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	r := reopen(t, s)
+	r := reopen(t, s, Config{})
 	for id, data := range want {
 		if got := readAll(t, r, id, len(data)); !bytes.Equal(got, data) {
 			t.Fatalf("file %s mismatch after recovery", id)
@@ -103,7 +107,7 @@ func segTail(t *testing.T, s *Store, id uint64) int64 {
 // record in segment 0.
 func TestTornWriteRecoveryLSL06(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 1}, newFakeRemote(), SystemClock())
+	s, err := Open(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -138,7 +142,7 @@ func TestTornWriteRecoveryLSL06(t *testing.T) {
 	}
 	_ = seg.fd.Sync()
 
-	r := reopen(t, s)
+	r := reopen(t, s, Config{})
 	if got := readAll(t, r, "f", len(good)); !bytes.Equal(got, good) {
 		t.Fatalf("valid prefix corrupted after torn recovery")
 	}
@@ -153,7 +157,7 @@ func TestTornWriteRecoveryLSL06(t *testing.T) {
 // reject it before any allocation, so recovery treats it as the torn boundary.
 func TestCRCCoincidenceTornRecordGuarded(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 1}, newFakeRemote(), SystemClock())
+	s, err := Open(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -181,7 +185,7 @@ func TestCRCCoincidenceTornRecordGuarded(t *testing.T) {
 	}
 	_ = s.shards[0].active.fd.Sync()
 
-	r := reopen(t, s)
+	r := reopen(t, s, Config{})
 	if got := readAll(t, r, "f", len(good)); !bytes.Equal(got, good) {
 		t.Fatalf("valid prefix corrupted")
 	}
@@ -194,7 +198,7 @@ func TestCRCCoincidenceTornRecordGuarded(t *testing.T) {
 // past every replayed record and never reissues an observed version.
 func TestVersionLSNMonotonicAfterReopen(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 1}, newFakeRemote(), SystemClock())
+	s, err := Open(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -206,7 +210,7 @@ func TestVersionLSNMonotonicAfterReopen(t *testing.T) {
 	}
 	maxObserved := s.version.Load() // last issued version
 
-	r := reopen(t, s)
+	r := reopen(t, s, Config{})
 	// Next write must get a version strictly greater than any observed before.
 	if err := r.WriteAt(ctx, "f", 100, []byte("post")); err != nil {
 		t.Fatalf("post-reopen WriteAt: %v", err)
@@ -221,7 +225,7 @@ func TestVersionLSNMonotonicAfterReopen(t *testing.T) {
 func TestMissingIdxRebuilt(t *testing.T) {
 	dir := t.TempDir()
 	// Small segment + single shard forces a seal after ~1 MiB of writes.
-	s, err := Open(dir, Config{ShardCount: 1, SegmentSize: minSegmentSize}, newFakeRemote(), SystemClock())
+	s, err := Open(dir, Config{ShardCount: 1, SegmentSize: minSegmentSize})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -246,9 +250,9 @@ func TestMissingIdxRebuilt(t *testing.T) {
 		t.Fatalf("remove sealed .idx: %v", err)
 	}
 
-	warned := captureWarnings(t)
+	logger, warned := captureWarnings(t)
 
-	r := reopen(t, s)
+	r := reopen(t, s, Config{Logger: logger})
 	if !strings.Contains(warned(), "missing .idx sidecar") {
 		t.Fatalf("expected a Warn for the missing .idx")
 	}
@@ -266,16 +270,11 @@ func TestMissingIdxRebuilt(t *testing.T) {
 	_ = written
 }
 
-// fixedClock is a Clock pinned to a fixed instant, used to drive the age gate.
-type fixedClock struct{ t time.Time }
-
-func (c fixedClock) Now() time.Time { return c.t }
-
 // TestOrphanSweepAgeGated asserts an unattachable, aged segment file is
 // unlinked on reopen, while the store's real data is untouched.
 func TestOrphanSweepAgeGated(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 1}, newFakeRemote(), SystemClock())
+	s, err := Open(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -301,7 +300,7 @@ func TestOrphanSweepAgeGated(t *testing.T) {
 		t.Fatalf("chtimes: %v", err)
 	}
 
-	r, err := Open(dir, Config{ShardCount: 1}, newFakeRemote(), fixedClock{t: time.Now()})
+	r, err := Open(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -318,7 +317,7 @@ func TestOrphanSweepAgeGated(t *testing.T) {
 // TestOrphanSweepSparesYoung asserts a fresh (young) orphan is left in place.
 func TestOrphanSweepSparesYoung(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 1}, newFakeRemote(), SystemClock())
+	s, err := Open(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -333,7 +332,7 @@ func TestOrphanSweepSparesYoung(t *testing.T) {
 	if err := os.WriteFile(s.segPath(orphanID), []byte("not a segment header at all!!!"), 0o644); err != nil {
 		t.Fatalf("write orphan: %v", err)
 	}
-	r, err := Open(dir, Config{ShardCount: 1}, newFakeRemote(), SystemClock())
+	r, err := Open(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -349,7 +348,7 @@ func TestOrphanSweepSparesYoung(t *testing.T) {
 // gate, warns about it, and serves the store's real data untouched.
 func TestSealedSegmentWithNoValidRecords(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 1}, newFakeRemote(), SystemClock())
+	s, err := Open(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -378,9 +377,9 @@ func TestSealedSegmentWithNoValidRecords(t *testing.T) {
 		t.Fatalf("chtimes: %v", err)
 	}
 
-	warned := captureWarnings(t)
+	logger, warned := captureWarnings(t)
 
-	r, err := Open(dir, Config{ShardCount: 1}, newFakeRemote(), fixedClock{t: time.Now()})
+	r, err := Open(dir, Config{ShardCount: 1, Logger: logger})
 	if err != nil {
 		t.Fatalf("reopen over damaged sealed segment: %v", err)
 	}
@@ -410,7 +409,7 @@ func TestSealedSegmentWithNoValidRecords(t *testing.T) {
 // race detector with concurrent readers and writers.
 func TestConcurrentReadWriteAfterRecovery(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 4}, newFakeRemote(), SystemClock())
+	s, err := Open(dir, Config{ShardCount: 4})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -421,7 +420,7 @@ func TestConcurrentReadWriteAfterRecovery(t *testing.T) {
 			t.Fatalf("seed WriteAt: %v", err)
 		}
 	}
-	r := reopen(t, s)
+	r := reopen(t, s, Config{})
 
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -457,7 +456,7 @@ func TestConcurrentReadWriteAfterRecovery(t *testing.T) {
 // writes. Recovery must replay both and every byte must read back.
 func TestRecoveryReadsV1FramedRecords(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir, Config{ShardCount: 1}, newFakeRemote(), SystemClock())
+	s, err := Open(dir, Config{ShardCount: 1})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -471,7 +470,7 @@ func TestRecoveryReadsV1FramedRecords(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 	segPath := s.segPath(0)
-	cfg, clock := s.cfg, s.clock
+	cfg := s.cfg
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -490,7 +489,7 @@ func TestRecoveryReadsV1FramedRecords(t *testing.T) {
 		t.Fatalf("close segment: %v", err)
 	}
 
-	r, err := Open(dir, cfg, newFakeRemote(), clock)
+	r, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}

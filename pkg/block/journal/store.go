@@ -4,23 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
 // FileID identifies a file's byte stream inside the cache. It is the same
 // value space and hash keyspace as today's payloadID.
 type FileID string
-
-// BlockID is the opaque key of a packed block in the remote store.
-type BlockID string
 
 // errClosed is returned by every operation attempted on a closed Store.
 var errClosed = errors.New("journal: store closed")
@@ -39,25 +35,16 @@ var ErrColdProvenanceAmbiguous = errors.New("journal: cold entry provenance cann
 // cap. 1 MiB clears the largest protocol write plus framing with wide margin.
 const minSegmentSize int64 = 1 << 20
 
-// RemoteStore is the narrow remote contract journal carves to and hydrates
-// from. It mirrors the shape of pkg/block/remote's RemoteBlockStore but is
-// declared here so journal imports nothing from the block/remote package.
-type RemoteStore interface {
-	PutBlock(ctx context.Context, id BlockID, r io.Reader, size int64) error
-	GetBlock(ctx context.Context, id BlockID) (io.ReadCloser, error)
-	GetRange(ctx context.Context, id BlockID, off, length int64) (io.ReadCloser, error)
-}
-
 // Clock supplies the current time. Injected so tests can pin it.
 type Clock interface{ Now() time.Time }
+
+// discardLog is where a Config without a Logger sends its warnings.
+var discardLog = slog.New(slog.DiscardHandler)
 
 // systemClock is the production Clock.
 type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
-
-// SystemClock returns a Clock backed by time.Now.
-func SystemClock() Clock { return systemClock{} }
 
 // Config tunes a Store. Zero values fall back to defaults via withDefaults.
 type Config struct {
@@ -94,11 +81,19 @@ type Config struct {
 	// synchronous durability point. Zero falls back to the default via
 	// withDefaults; negative disables the loop entirely.
 	DirtyExpiry time.Duration
+	// Logger receives the store's advisory warnings: recovery degradation,
+	// eviction backpressure, failed repack integrity checks. Nil discards
+	// them — the journal never reaches the process logger on its own, so
+	// wiring one is the caller's choice.
+	Logger *slog.Logger
 	// ChunkParams sets the per-share FastCDC sizing carve feeds the chunker.
 	// The zero value (or any params that fail Validate) degrades to
 	// chunker.DefaultParams — the historical 1M/4M/16M profile — so a
 	// misconfiguration is never a hard error, matching the fs store.
 	ChunkParams chunker.Params
+	// Clock supplies the store's time. Nil falls back to a system clock;
+	// tests pin it to drive age-based batching and expiry deterministically.
+	Clock Clock
 }
 
 const (
@@ -180,10 +175,10 @@ type Stats struct {
 // concurrent use; per-shard mutexes serialize appends and index mutation while
 // positioned reads run unlocked.
 type Store struct {
-	dir    string
-	cfg    Config
-	remote RemoteStore
-	clock  Clock
+	dir   string
+	cfg   Config
+	clock Clock
+	log   *slog.Logger
 
 	// deduper and sink are the carve collaborators, injected via SetCarveTargets
 	// at wiring time. They own every step that touches pkg/block, blockcodec and
@@ -279,7 +274,12 @@ func (s *Store) SetVerifyReads(v bool) { s.verifyReads.Store(v) }
 // segment of each shard is tail-scanned and its torn tail truncated, every
 // valid record is replayed into a fresh interval index, and the global Version
 // LSN is resumed past the highest observed record. See recover.
-func Open(dir string, cfg Config, remote RemoteStore, clock Clock) (*Store, error) {
+func Open(dir string, cfg Config) (*Store, error) {
+	// Check the format stamp before touching state whose shape is unknown: a
+	// directory a newer release wrote must be refused, not read as holes.
+	if err := checkFormat(dir); err != nil {
+		return nil, err
+	}
 	cfg = cfg.withDefaults()
 	if cfg.ShardCount&(cfg.ShardCount-1) != 0 {
 		return nil, fmt.Errorf("journal: ShardCount %d is not a power of two", cfg.ShardCount)
@@ -287,9 +287,10 @@ func Open(dir string, cfg Config, remote RemoteStore, clock Clock) (*Store, erro
 	if cfg.SegmentSize < minSegmentSize {
 		return nil, fmt.Errorf("journal: SegmentSize %d below floor %d (header+record framing)", cfg.SegmentSize, minSegmentSize)
 	}
-	if clock == nil {
-		clock = SystemClock()
+	if cfg.Logger == nil {
+		cfg.Logger = discardLog
 	}
+	log := cfg.Logger
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("journal: mkdir %q: %w", dir, err)
 	}
@@ -303,16 +304,21 @@ func Open(dir string, cfg Config, remote RemoteStore, clock Clock) (*Store, erro
 		if free, ferr := diskFreeBytes(dir); ferr == nil && free > 0 {
 			cfg.MaxLocalBytes = int64(float64(free) * defaultMaxLocalBytesFreeFraction)
 		} else if ferr != nil {
-			logger.Warn("journal: could not determine free disk space; local store cap left unset (unbounded growth risk)",
+			log.Warn("journal: could not determine free disk space; local store cap left unset (unbounded growth risk)",
 				"dir", dir, "error", ferr)
 		}
+	}
+
+	clock := cfg.Clock
+	if clock == nil {
+		clock = systemClock{}
 	}
 
 	s := &Store{
 		dir:       dir,
 		cfg:       cfg,
-		remote:    remote,
 		clock:     clock,
+		log:       log,
 		shardMask: uint64(cfg.ShardCount - 1),
 	}
 
@@ -407,9 +413,9 @@ func (s *Store) gcLoop(ctx context.Context) {
 			// errClosed races Close (which sets s.closed before cancelling
 			// this loop's context); both it and context.Canceled are the
 			// normal shutdown signal, not a failure worth logging.
-			if _, err := s.GC(ctx, GCOptions{}); err != nil &&
+			if _, err := s.gc(ctx, gcOptions{}); err != nil &&
 				!errors.Is(err, context.Canceled) && !errors.Is(err, errClosed) {
-				logger.Warn("journal: background GC pass failed", "error", err)
+				s.log.Warn("journal: background GC pass failed", "error", err)
 			}
 		}
 	}
@@ -428,7 +434,7 @@ func (s *Store) syncLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			if err := s.commitDirtyShards(); err != nil {
-				logger.Warn("journal: dirty-age commit failed", "error", err)
+				s.log.Warn("journal: dirty-age commit failed", "error", err)
 			}
 		}
 	}
@@ -1146,9 +1152,6 @@ func (s *Store) JournalVersion() uint64 { return s.version.Load() }
 // more conservative. Reads are a single atomic load on the reclaim path.
 func (s *Store) SetPinVersion(v uint64) { s.pinVersion.Store(v) }
 
-// PinVersion reports the current pin watermark (0 = no live snapshot).
-func (s *Store) PinVersion() uint64 { return s.pinVersion.Load() }
-
 // RestoreToVersion rewinds every file to its point-in-time view as of the global
 // LSN watermark V and re-materializes that view durably at the log head, so a
 // crash-reopen reconstructs V and the pre-restore records (which a safety snapshot
@@ -1251,7 +1254,7 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 						version: rec.header.Version,
 						synced:  rec.header.Flags&flagSynced != 0,
 						recOff:  rec.segOff,
-						loc: SegmentLocation{
+						loc: segmentLocation{
 							SegmentID: seg.id,
 							Offset:    rec.segOff + recordHeaderSize + int64(len(rec.fileID)),
 							Length:    int64(rec.header.PayloadLen),
@@ -1292,7 +1295,7 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 	// branch. The residual case is a store seeded while it had a remote that was
 	// later detached, whose legacy entries cannot be distinguished — those logs
 	// re-stamp themselves as soon as this build appends or compacts.
-	coldEntries, _, cerr := loadCold(s.dir)
+	coldEntries, _, cerr := loadCold(s.dir, s.log)
 	if cerr != nil {
 		return fmt.Errorf("journal: restore: load cold log: %w", cerr)
 	}

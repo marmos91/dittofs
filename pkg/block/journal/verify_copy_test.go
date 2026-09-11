@@ -99,7 +99,7 @@ func TestRepackRefusesTruncatedRecordStream(t *testing.T) {
 	corruptFirstPayloadByte(t, s, "keep")
 	segsBefore := segFileCount(t, s)
 
-	res, err := s.GC(ctx, GCOptions{Force: true})
+	res, err := s.gc(ctx, gcOptions{Force: true})
 	if !errors.Is(err, errTornRecord) {
 		t.Fatalf("GC must refuse to repack a victim with a torn record, got err=%v res=%+v", err, res)
 	}
@@ -123,7 +123,7 @@ func TestRepackRefusesTruncatedRecordStream(t *testing.T) {
 	}
 	// Quarantined: a later pass skips it, so one damaged segment cannot stall
 	// reclamation for the rest of the shard.
-	if res, err := s.GC(ctx, GCOptions{Force: true}); err != nil || res.SegmentsRepacked != 0 {
+	if res, err := s.gc(ctx, gcOptions{Force: true}); err != nil || res.SegmentsRepacked != 0 {
 		t.Fatalf("second GC pass: err=%v res=%+v, want a clean no-op", err, res)
 	}
 }
@@ -142,7 +142,7 @@ func TestRepackRefusesRecordFramingAnotherFile(t *testing.T) {
 	flipSegByte(t, s, iv.loc.SegmentID, iv.recOff+recordHeaderSize) // first FileID byte
 	segsBefore := segFileCount(t, s)
 
-	res, err := s.GC(ctx, GCOptions{Force: true})
+	res, err := s.gc(ctx, gcOptions{Force: true})
 	if !errors.Is(err, errTornRecord) {
 		t.Fatalf("GC must refuse a record framing another file, got err=%v res=%+v", err, res)
 	}

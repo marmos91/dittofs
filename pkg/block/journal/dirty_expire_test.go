@@ -13,7 +13,7 @@ import (
 // write, so it can never observe it unset.
 func openDirtyExpireStore(t *testing.T, id FileID, expiry time.Duration) (*Store, *shard, *atomic.Int32) {
 	t.Helper()
-	s, err := Open(t.TempDir(), Config{DirtyExpiry: expiry}, newFakeRemote(), SystemClock())
+	s, err := Open(t.TempDir(), Config{DirtyExpiry: expiry})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

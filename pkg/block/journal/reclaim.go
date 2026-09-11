@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"os"
 	"time"
-
-	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // Segment reclamation: two distinct policies over one shared retirement tail.
@@ -376,7 +374,7 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 			// are reported apart because the operator's next move differs —
 			// suspended is a remote outage to fix, pinned is a retention policy to
 			// change. All zero and false leaves a snapshot pinning every candidate.
-			logger.Warn("journal local store full: nothing evictable, backpressuring writes",
+			s.log.Warn("journal local store full: nothing evictable, backpressuring writes",
 				"dir", s.dir,
 				"disk_bytes", s.diskBytes.Load(),
 				"max_local_bytes", s.cfg.MaxLocalBytes,
@@ -488,7 +486,7 @@ func (s *Store) reclaimEmptied(sh *shard) error {
 		}
 		if _, err := s.retireSegment(sh, seg); err != nil {
 			seg.busy.Store(false)
-			logger.Warn("journal: reclaim emptied segment", "segment", seg.id, "err", err)
+			s.log.Warn("journal: reclaim emptied segment", "segment", seg.id, "err", err)
 			return err
 		}
 	}
@@ -513,16 +511,16 @@ func (s *Store) reclaimEmptied(sh *shard) error {
 // LOCAL records and marks LOCAL space dead; the deleted file's remote blocks are
 // freed later by that sweep, off this path.
 
-// GCOptions selects a GC pass's aggressiveness.
-type GCOptions struct {
+// gcOptions selects a GC pass's aggressiveness.
+type gcOptions struct {
 	// Force repacks the single highest-dead-ratio sealed segment in each shard
 	// even when its ratio is below GCDeadRatioForce (an explicit / test trigger).
 	// Without it, a pass repacks every segment at or above the force threshold.
 	Force bool
 }
 
-// GCResult reports what a GC pass reclaimed.
-type GCResult struct {
+// gcResult reports what a GC pass reclaimed.
+type gcResult struct {
 	SegmentsRepacked int
 	BytesReclaimed   int64 // net local bytes freed (victim size minus relocated live)
 }
@@ -530,17 +528,17 @@ type GCResult struct {
 // GC repacks sealed segments whose dead-byte fraction has grown, freeing the
 // space superseded writes and tombstones left behind. It is safe to call from a
 // background loop or explicitly; passes serialize on gcMu.
-func (s *Store) GC(ctx context.Context, opts GCOptions) (GCResult, error) {
+func (s *Store) gc(ctx context.Context, opts gcOptions) (gcResult, error) {
 	if err := ctx.Err(); err != nil {
-		return GCResult{}, err
+		return gcResult{}, err
 	}
 	if s.closed.Load() {
-		return GCResult{}, errClosed
+		return gcResult{}, errClosed
 	}
 	s.gcMu.Lock()
 	defer s.gcMu.Unlock()
 
-	var res GCResult
+	var res gcResult
 	for _, sh := range s.shards {
 		reclaimed, count, err := s.gcShard(ctx, sh, opts)
 		res.SegmentsRepacked += count
@@ -556,7 +554,7 @@ func (s *Store) GC(ctx context.Context, opts GCOptions) (GCResult, error) {
 // carveMu for the whole pass so carve — which flips synced bits by record offset
 // — never runs against a segment repack is relocating (the same segment-busy
 // discipline eviction takes).
-func (s *Store) gcShard(ctx context.Context, sh *shard, opts GCOptions) (reclaimed int64, count int, err error) {
+func (s *Store) gcShard(ctx context.Context, sh *shard, opts gcOptions) (reclaimed int64, count int, err error) {
 	sh.carveMu.Lock()
 	defer sh.carveMu.Unlock()
 
@@ -635,7 +633,7 @@ func shardLiveBytes(sh *shard) map[uint64]int64 {
 // (robust to the recovery-time deadBytes approximation and to the extra dead a
 // crash-during-repack leaves behind); a segment's dead fraction is
 // dead/occupied. Without Force, a victim must reach GCDeadRatioForce.
-func (s *Store) pickVictim(sh *shard, opts GCOptions, live map[uint64]int64) *segmentMeta {
+func (s *Store) pickVictim(sh *shard, opts gcOptions, live map[uint64]int64) *segmentMeta {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	if len(sh.sealed) == 0 {
@@ -767,7 +765,7 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta, live map[uint64]in
 	// by every later pass, so one damaged segment does not stall the shard.
 	quarantine := func(err error) error {
 		victim.corrupt.Store(true)
-		logger.Warn("journal: segment failed a repack integrity check; leaving it in place and skipping it",
+		s.log.Warn("journal: segment failed a repack integrity check; leaving it in place and skipping it",
 			"segment", victim.id, "err", err)
 		return err
 	}
@@ -894,7 +892,7 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta, live map[uint64]in
 		// Defensive: nothing writes to a sealed segment, so this cannot happen;
 		// keep the victim to preserve those bytes rather than lose data. The
 		// target is a redundant orphan the next pass reclaims.
-		logger.Warn("journal: repack left live intervals in the victim segment; keeping it",
+		s.log.Warn("journal: repack left live intervals in the victim segment; keeping it",
 			"segment", victim.id, "live_intervals", remaining)
 		return 0, nil
 	}

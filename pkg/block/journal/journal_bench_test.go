@@ -3,59 +3,9 @@ package journal
 import (
 	"bytes"
 	"context"
-	"errors"
-	"io"
-	"sync"
 	"testing"
 	"time"
 )
-
-// fakeRemote is an in-memory RemoteStore for tests and benchmarks. It buffers
-// each block whole — fine for a fake, never used on a hot path.
-type fakeRemote struct {
-	mu     sync.Mutex
-	blocks map[BlockID][]byte
-}
-
-func newFakeRemote() *fakeRemote { return &fakeRemote{blocks: make(map[BlockID][]byte)} }
-
-func (f *fakeRemote) PutBlock(_ context.Context, id BlockID, r io.Reader, _ int64) error {
-	b, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-	f.mu.Lock()
-	f.blocks[id] = b
-	f.mu.Unlock()
-	return nil
-}
-
-func (f *fakeRemote) GetBlock(_ context.Context, id BlockID) (io.ReadCloser, error) {
-	f.mu.Lock()
-	b, ok := f.blocks[id]
-	f.mu.Unlock()
-	if !ok {
-		return nil, errors.New("fakeRemote: block not found")
-	}
-	return io.NopCloser(bytes.NewReader(b)), nil
-}
-
-func (f *fakeRemote) GetRange(_ context.Context, id BlockID, off, length int64) (io.ReadCloser, error) {
-	f.mu.Lock()
-	b, ok := f.blocks[id]
-	f.mu.Unlock()
-	if !ok {
-		return nil, errors.New("fakeRemote: block not found")
-	}
-	if off < 0 || off > int64(len(b)) {
-		return nil, errors.New("fakeRemote: range out of bounds")
-	}
-	end := off + length
-	if end > int64(len(b)) {
-		end = int64(len(b))
-	}
-	return io.NopCloser(bytes.NewReader(b[off:end])), nil
-}
 
 func benchStore(b *testing.B) *Store {
 	b.Helper()
@@ -133,7 +83,7 @@ func BenchmarkReadWarm(b *testing.B) {
 // The deduper always misses and the sink is a no-op, so every pass does the full
 // chunk-hash-pack work (the worst case) rather than short-circuiting on dedup.
 func BenchmarkCarve(b *testing.B) {
-	s, err := Open(b.TempDir(), Config{}, newFakeRemote(), newFakeClock())
+	s, err := Open(b.TempDir(), Config{})
 	if err != nil {
 		b.Fatalf("Open: %v", err)
 	}

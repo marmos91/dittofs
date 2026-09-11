@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // orphanMinAge gates the recovery orphan sweep: a segment file that recovery
@@ -70,7 +68,7 @@ func (s *Store) recover() error {
 		return err
 	}
 	if r.missingIdx > 0 {
-		logger.Warn("journal: segments missing .idx sidecar, rebuilding from segment scan (recovery slower)",
+		r.s.log.Warn("journal: segments missing .idx sidecar, rebuilding from segment scan (recovery slower)",
 			"segments", r.missingIdx)
 	}
 	if err := r.applyColdLog(); err != nil {
@@ -222,7 +220,7 @@ func (r *recoveryState) loadSegment(id uint64) error {
 		// destroy the only remaining copy of whatever payload is still down
 		// there.
 		_ = fd.Close()
-		logger.Warn("journal: sealed segment scans as zero valid records (damaged first record), skipping it; left in place for inspection",
+		r.s.log.Warn("journal: sealed segment scans as zero valid records (damaged first record), skipping it; left in place for inspection",
 			"segment_path", path)
 		return nil
 	}
@@ -328,7 +326,7 @@ func (r *recoveryState) replayRecords(m *segmentMeta, sh, id uint64, recs []reco
 			version: rec.header.Version,
 			recOff:  rec.segOff,
 			synced:  synced,
-			loc: SegmentLocation{
+			loc: segmentLocation{
 				SegmentID: id,
 				Offset:    payloadOff,
 				Length:    int64(rec.header.PayloadLen),
@@ -356,13 +354,13 @@ func (r *recoveryState) replayRecords(m *segmentMeta, sh, id uint64, recs []reco
 // each entry's original Version, so a later warm write shadows it and the
 // tombstone/truncate passes clip it exactly like a warm interval.
 func (r *recoveryState) applyColdLog() error {
-	coldLoaded, validUpTo, err := loadCold(r.s.dir)
+	coldLoaded, validUpTo, err := loadCold(r.s.dir, r.s.log)
 	if err != nil {
 		return err
 	}
 	// Repair before anything appends: recovery is the only point where the log
 	// is known to end at an intact entry.
-	if err := truncateColdTail(r.s.dir, validUpTo); err != nil {
+	if err := truncateColdTail(r.s.dir, validUpTo, r.s.log); err != nil {
 		return err
 	}
 	r.coldLoaded = len(coldLoaded)
@@ -407,7 +405,7 @@ func (r *recoveryState) compactColdLog() {
 	if werr := r.s.rewriteCold(live); werr != nil {
 		// Non-fatal: a stale-but-valid log costs redundant replay, not
 		// correctness, and refusing to open would strand the whole share.
-		logger.Warn("journal: cold log compaction failed, keeping the existing log", "err", werr)
+		r.s.log.Warn("journal: cold log compaction failed, keeping the existing log", "err", werr)
 	}
 }
 

@@ -8,6 +8,7 @@ package fs
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -160,15 +161,13 @@ func NewWithOptions(dir string, maxDisk int64, fileChunkStore block.EngineFileCh
 		ChunkParams:    opts.ChunkParams,
 		DirtyExpiry:    opts.DirtyExpiry,
 		CarveBlockSize: opts.CarveBlockSize,
+		Logger:         slog.Default(), // slog.SetDefault routes the configured process logger here
 	}
-	// Check the format stamp before touching the journal: a directory a newer
-	// release wrote would otherwise read as holes wherever the newer format
-	// keeps state this binary does not scan.
+	// Open checks the format stamp before touching the journal: a directory a
+	// newer release wrote would otherwise read as holes wherever the newer
+	// format keeps state this binary does not scan.
 	journalDir := filepath.Join(dir, "journal")
-	if err := journal.CheckFormat(journalDir); err != nil {
-		return nil, err
-	}
-	js, err := journal.Open(journalDir, cfg, nil, journal.SystemClock())
+	js, err := journal.Open(journalDir, cfg)
 	if err != nil {
 		return nil, err
 	}

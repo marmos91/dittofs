@@ -31,7 +31,7 @@ func TestColdIntervalSurvivesReopen(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
 
-	s, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestColdIntervalSurvivesReopen(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	s2, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s2, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestSeedColdSurvivesReopen(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
 
-	s, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestSeedColdSurvivesReopen(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	s2, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s2, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestColdLogSupersededByLaterWrite(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
 
-	s, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestColdLogSupersededByLaterWrite(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	s2, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s2, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestColdLogTornTailKeepsIntactEntries(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
 
-	s, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestColdLogTornTailKeepsIntactEntries(t *testing.T) {
 		t.Fatalf("truncate cold log: %v", err)
 	}
 
-	s2, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s2, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestColdLogTornTailIsRepairedOnOpen(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
 
-	s, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestColdLogTornTailIsRepairedOnOpen(t *testing.T) {
 	}
 
 	// The process after the crash records another cold range.
-	s2, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s2, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("reopen over the torn tail: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestColdLogTornTailIsRepairedOnOpen(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	s3, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s3, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestSeedColdLeavesLocalBytesAlone(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
 
-	s, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestSeedColdIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
 
-	s, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestColdSeededMarkerSurvivesReopen(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
 
-	s, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestColdSeededMarkerSurvivesReopen(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	s2, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s2, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -394,7 +394,7 @@ func TestEvictAppendsColdEntriesBeforeReturning(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
 
-	s, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestEvictAppendsColdEntriesBeforeReturning(t *testing.T) {
 
 	// Deliberately no Close and no Sync from the test: whatever is on disk here,
 	// the eviction put there before it returned.
-	entries, _, err := loadCold(dir)
+	entries, _, err := loadCold(dir, nil)
 	if err != nil {
 		t.Fatalf("loadCold: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestSeedColdBatchIsDurableAndMatchesPerFileSeeding(t *testing.T) {
 	cfg := Config{ShardCount: 4, SegmentSize: minSegmentSize}
 
 	batchDir := t.TempDir()
-	batched, err := Open(batchDir, cfg, newFakeRemote(), newFakeClock())
+	batched, err := Open(batchDir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -453,7 +453,7 @@ func TestSeedColdBatchIsDurableAndMatchesPerFileSeeding(t *testing.T) {
 	}
 
 	// Again no Close: a batch that only becomes durable on shutdown is the bug.
-	got, _, err := loadCold(batchDir)
+	got, _, err := loadCold(batchDir, nil)
 	if err != nil {
 		t.Fatalf("loadCold after batch: %v", err)
 	}
@@ -471,7 +471,7 @@ func TestSeedColdBatchIsDurableAndMatchesPerFileSeeding(t *testing.T) {
 	}
 
 	oneDir := t.TempDir()
-	oneAtATime, err := Open(oneDir, cfg, newFakeRemote(), newFakeClock())
+	oneAtATime, err := Open(oneDir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -481,7 +481,7 @@ func TestSeedColdBatchIsDurableAndMatchesPerFileSeeding(t *testing.T) {
 			t.Fatalf("SeedCold %q: %v", sd.ID, err)
 		}
 	}
-	want, _, err := loadCold(oneDir)
+	want, _, err := loadCold(oneDir, nil)
 	if err != nil {
 		t.Fatalf("loadCold after per-file seeding: %v", err)
 	}

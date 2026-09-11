@@ -217,8 +217,9 @@ var (
 	// Detection is per-share but the exit is fatal: a share that cannot be
 	// opened safely must not leave the daemon looking healthy.
 	//
-	// Both block stores and metadata stores return it, so the message carries
-	// no "blockstore:" prefix — unlike the sentinels above, it is not about
-	// blocks.
+	// The local and remote block tiers return it, and so does the metadata
+	// store (whose migrations in sqlite/postgres/badger wrap it for their
+	// side-log names), so the message carries no "blockstore:" prefix — unlike
+	// the sentinels above, it is not about blocks.
 	ErrFutureFormat = errors.New("store: on-disk format is newer than this build")
 )

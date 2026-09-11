@@ -31,7 +31,7 @@ import (
 func benchStoreDir(b *testing.B, cfg Config) (*Store, string) {
 	b.Helper()
 	dir := b.TempDir()
-	s, err := Open(dir, cfg, newFakeRemote(), SystemClock())
+	s, err := Open(dir, cfg)
 	if err != nil {
 		b.Fatalf("Open: %v", err)
 	}
@@ -226,7 +226,7 @@ func BenchmarkGCRepack(b *testing.B) {
 		b.StopTimer()
 		seedRepackable(b, s, true)
 		b.StartTimer()
-		res, err := s.GC(ctx, GCOptions{Force: true})
+		res, err := s.gc(ctx, gcOptions{Force: true})
 		if err != nil {
 			b.Fatalf("GC: %v", err)
 		}
@@ -252,7 +252,7 @@ func BenchmarkOpenRecovery(b *testing.B) {
 		span  = 64 << 10
 	)
 	dir := b.TempDir()
-	seed, err := Open(dir, Config{}, newFakeRemote(), SystemClock())
+	seed, err := Open(dir, Config{})
 	if err != nil {
 		b.Fatalf("Open: %v", err)
 	}
@@ -270,7 +270,7 @@ func BenchmarkOpenRecovery(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		s, err := Open(dir, Config{}, newFakeRemote(), SystemClock())
+		s, err := Open(dir, Config{})
 		if err != nil {
 			b.Fatalf("Open: %v", err)
 		}
