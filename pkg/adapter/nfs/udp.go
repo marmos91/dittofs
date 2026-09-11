@@ -30,7 +30,10 @@ const defaultUDPHandlerLimit = 100
 // isUDPEnabled reports whether the UDP transport for NLM/NSM/MOUNT should be
 // started. Disabled unless adapters.nfs.udp.enabled is explicitly true.
 func (s *NFSAdapter) isUDPEnabled() bool {
-	return s.config.UDP.Enabled != nil && *s.config.UDP.Enabled
+	s.configMu.Lock()
+	enabled := s.config.UDP.Enabled
+	s.configMu.Unlock()
+	return enabled != nil && *enabled
 }
 
 // startUDP binds the UDP transport on the NFS port and serves the lock-manager
@@ -38,9 +41,14 @@ func (s *NFSAdapter) isUDPEnabled() bool {
 // because READ/WRITE payloads do not fit a single datagram; only the small
 // lock/status/mount messages are. The listener is closed when ctx is cancelled.
 func (s *NFSAdapter) startUDP(ctx context.Context) error {
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: s.config.Port})
+	// Snapshot the port under configMu: applies run concurrently with this
+	// start (the accept loop re-applies settings per connection).
+	s.configMu.Lock()
+	nfsPort := s.config.Port
+	s.configMu.Unlock()
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: nfsPort})
 	if err != nil {
-		return fmt.Errorf("listen udp :%d: %w", s.config.Port, err)
+		return fmt.Errorf("listen udp :%d: %w", nfsPort, err)
 	}
 	// Publish under sidecarMu so a concurrent disable (udpSidecar.Stop) either
 	// sees nothing bound yet (no-op) or closes a bound listener. stopCtx is
@@ -53,7 +61,7 @@ func (s *NFSAdapter) startUDP(ctx context.Context) error {
 	s.udpStop = stopCancel
 	s.sidecarMu.Unlock()
 
-	logger.Info("NFS UDP transport listening (NLM/NSM/MOUNT)", "port", s.config.Port)
+	logger.Info("NFS UDP transport listening (NLM/NSM/MOUNT)", "port", nfsPort)
 
 	// Close the socket on shutdown so the read loop unblocks and exits. Fires
 	// on Stop's per-generation cancel or the adapter ctx, whichever first.

@@ -76,26 +76,32 @@ func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
 			"blocked_ops", blockedOps)
 	}
 
-	// Portmapper settings -> adapter config
+	// Portmapper settings -> adapter config. configMu guards these four fields:
+	// applies run concurrently (settings-watcher goroutine, accept loop per
+	// connection, startup) and the sysreg transition goroutine plus the
+	// portmapper/UDP start paths read them.
 	// The DB model uses plain bool; the adapter config uses *bool pointer.
 	// We always set the pointer from the DB value so it's never nil.
+	// The Port read-decide-write stays inside the one critical section so two
+	// concurrent applies cannot race on the int either.
 	enabled := settings.PortmapperEnabled
-	s.config.Portmapper.Enabled = &enabled
-	if settings.PortmapperPort > 0 {
-		s.config.Portmapper.Port = settings.PortmapperPort
-	}
 	registerWithSystem := settings.PortmapperRegisterWithSystem
-	s.config.Portmapper.RegisterWithSystem = &registerWithSystem
-	logger.Debug("NFS adapter: applied portmapper settings from DB",
-		"enabled", settings.PortmapperEnabled, "port", s.config.Portmapper.Port,
-		"register_with_system", settings.PortmapperRegisterWithSystem)
-
-	// UDP transport (NLM/NSM/MOUNT over UDP) -> adapter config. Same pattern as
-	// portmapper: DB plain bool drives the adapter config *bool. Takes effect on
-	// the next (re)start, when Serve() decides whether to bind the UDP listener.
 	udpEnabled := settings.UDPEnabled
+	var port int
+	s.configMu.Lock()
+	port = s.config.Portmapper.Port
+	if settings.PortmapperPort > 0 {
+		port = settings.PortmapperPort
+	}
+	s.config.Portmapper.Enabled = &enabled
+	s.config.Portmapper.Port = port
+	s.config.Portmapper.RegisterWithSystem = &registerWithSystem
 	s.config.UDP.Enabled = &udpEnabled
-	logger.Debug("NFS adapter: applied UDP transport setting from DB", "enabled", settings.UDPEnabled)
+	s.configMu.Unlock()
+	logger.Debug("NFS adapter: applied sidecar settings from DB",
+		"enabled", settings.PortmapperEnabled, "port", port,
+		"register_with_system", settings.PortmapperRegisterWithSystem,
+		"udp_enabled", settings.UDPEnabled)
 
 	// The host-rpcbind registration and the mDNS advertiser are toggled live to
 	// match the settings; the embedded portmapper and the UDP listener still

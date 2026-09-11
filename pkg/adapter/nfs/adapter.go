@@ -143,6 +143,13 @@ type NFSAdapter struct {
 	// reservation and tear down concurrently.
 	sidecarMu sync.Mutex
 
+	// configMu guards the sidecar config fields (Portmapper.Enabled/Port/
+	// RegisterWithSystem, UDP.Enabled) written by applyNFSSettings on the
+	// settings-watcher goroutine, on the accept loop per connection, and at
+	// startup — three concurrent writers — and read by the sysreg transition
+	// goroutine and the portmapper/UDP start paths.
+	configMu sync.Mutex
+
 	// portmapServer is the embedded portmapper server (RFC 1057).
 	// nil when portmapper is disabled.
 	portmapServer *portmap.Server

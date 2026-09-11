@@ -22,10 +22,32 @@ import (
 //   - false (explicitly disabled) -> portmapper disabled
 //   - true (explicitly enabled) -> portmapper enabled
 func (s *NFSAdapter) isPortmapperEnabled() bool {
-	if s.config.Portmapper.Enabled == nil {
+	s.configMu.Lock()
+	enabled := s.config.Portmapper.Enabled
+	s.configMu.Unlock()
+	if enabled == nil {
 		return false // Default: disabled
 	}
-	return *s.config.Portmapper.Enabled
+	return *enabled
+}
+
+// snapshotSidecarConfig reads the sidecar config tuple (main NFS port,
+// portmapper port, UDP enabled) under one configMu critical section. Applies
+// run concurrently with starts, so every consumer that needs a coherent view
+// of the three values — the portmapper registry/server and the system-rpcbind
+// mappings — must go through this helper rather than reading the fields
+// separately. Reads UDP.Enabled directly: isUDPEnabled() would re-acquire the
+// same mutex inside this one (not reentrant) and self-deadlock.
+func (s *NFSAdapter) snapshotSidecarConfig() (nfsPort, portmapPort int, udpEnabled bool) {
+	s.configMu.Lock()
+	nfsPort = s.config.Port
+	portmapPort = s.config.Portmapper.Port
+	enabled := s.config.UDP.Enabled
+	s.configMu.Unlock()
+	if enabled != nil {
+		udpEnabled = *enabled
+	}
+	return nfsPort, portmapPort, udpEnabled
 }
 
 // startPortmapper creates and starts the embedded portmapper server.
@@ -50,13 +72,19 @@ func (s *NFSAdapter) startPortmapper(ctx context.Context) error {
 		return nil
 	}
 
+	// Snapshot the sidecar config under configMu: applies run concurrently with
+	// this start, so the registry and server must see one coherent generation.
+	// All three values (main port, portmapper port, UDP enabled) come from the
+	// same critical section so a concurrent apply cannot land between them.
+	nfsPort, portmapPort, udpEnabled := s.snapshotSidecarConfig()
+
 	// Create registry and register all DittoFS services
 	registry := portmap.NewRegistry()
-	registry.RegisterDittoFSServices(s.config.Port, s.isUDPEnabled())
-	registry.RegisterPortmapper(s.config.Portmapper.Port)
+	registry.RegisterDittoFSServices(nfsPort, udpEnabled)
+	registry.RegisterPortmapper(portmapPort)
 	// Create portmapper server
 	server := portmap.NewServer(portmap.ServerConfig{
-		Port:      s.config.Portmapper.Port,
+		Port:      portmapPort,
 		EnableTCP: true,
 		EnableUDP: true,
 		Registry:  registry,
@@ -83,7 +111,7 @@ func (s *NFSAdapter) startPortmapper(ctx context.Context) error {
 		s.sidecarMu.Lock()
 		s.portmapServer = server
 		s.sidecarMu.Unlock()
-		logger.Info("Portmapper started", "port", s.config.Portmapper.Port, "services", registry.Count())
+		logger.Info("Portmapper started", "port", portmapPort, "services", registry.Count())
 		return nil
 	case err := <-errCh:
 		return err
@@ -109,10 +137,13 @@ func (s *NFSAdapter) startPortmapper(ctx context.Context) error {
 // services with the host's system rpcbind on port 111. Defaults to false when
 // unset (same *bool convention as isPortmapperEnabled).
 func (s *NFSAdapter) registerWithSystemEnabled() bool {
-	if s.config.Portmapper.RegisterWithSystem == nil {
+	s.configMu.Lock()
+	enabled := s.config.Portmapper.RegisterWithSystem
+	s.configMu.Unlock()
+	if enabled == nil {
 		return false
 	}
-	return *s.config.Portmapper.RegisterWithSystem
+	return *enabled
 }
 
 // systemPortmapAddr is the dial address of the host's system rpcbind.
@@ -139,7 +170,8 @@ const systemRegTimeout = 10 * time.Second
 // The kernel only needs NLM (and MOUNT/NFS) discovery to take v3 byte-range
 // locks; status monitoring continues via the host statd.
 func (s *NFSAdapter) systemRegMappings() []*xdr.Mapping {
-	all := portmap.DittoFSServiceMappings(s.config.Port, s.isUDPEnabled())
+	nfsPort, _, _ := s.snapshotSidecarConfig()
+	all := portmap.DittoFSServiceMappings(nfsPort, s.isUDPEnabled())
 	out := all[:0:0]
 	for _, m := range all {
 		if m.Prog == rpc.ProgramNSM {
