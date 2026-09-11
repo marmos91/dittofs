@@ -366,9 +366,13 @@ func (sm *StateManager) LockNew(
 	// both. The authoritative cached reply lives on the lock-owner (it is the
 	// LOCK reply), so on an open-owner replay we do not fail here; we resolve
 	// the lock-owner below (step 4) and return its cached result.
-	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
+	// The per-owner seqid is validated like any other value on a v4.0 client;
+	// only a v4.1 session client skips owner sequencing (the slot table provides
+	// replay protection there, and the handler zeroes the seqid it sends).
+	// Derived from the caller client ID this op already carries.
+	skipOwnerSeqid := sm.v41ClientLocked(callerClientID) != nil
 	openSeqIsReplay := false
-	if openSeqid != 0 {
+	if !skipOwnerSeqid {
 		validation := openState.Owner.ValidateSeqID(openSeqid)
 		switch validation {
 		case SeqIDBad:
@@ -389,8 +393,7 @@ func (sm *StateManager) LockNew(
 	lockOwner, ownerExists := sm.lockOwners[loKey]
 
 	// 4. Validate lock seqid on lock-owner BEFORE any allocation.
-	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
-	if lockSeqid != 0 {
+	if !skipOwnerSeqid {
 		if ownerExists {
 			lockValidation := lockOwner.ValidateSeqID(lockSeqid)
 			switch lockValidation {
@@ -411,18 +414,13 @@ func (sm *StateManager) LockNew(
 					return nil, ErrBadSeqid
 				}
 			}
-		} else {
-			// Brand-new lock-owner: the only valid lock seqid is nextSeqID(0)
-			// (== 1) per RFC 7530 Section 9.1.4. Reject anything else before
-			// allocating, so a bad seqid leaves no orphaned state behind.
-			if lockSeqid != nextSeqID(0) {
-				return nil, ErrBadSeqid
-			}
 		}
-	} else if openSeqIsReplay {
-		// Open seqid replayed but the lock-owner is brand new / not yet
-		// seqid-tracked: nothing consistent to replay.
-		return nil, ErrBadSeqid
+		// A brand-new lock-owner + a replayed open seqid is an inconsistent
+		// retransmit, with or without the v4.1 skip: the replayed OPEN's reply
+		// predates any lock state, so there is nothing consistent to replay.
+		if openSeqIsReplay && !ownerExists {
+			return nil, ErrBadSeqid
+		}
 	}
 
 	// The open stateid must name that open's current seqid, compared after both
@@ -569,8 +567,11 @@ func (sm *StateManager) LockExisting(
 	// now one behind lockState.Stateid.Seqid; the strict stateid-seqid check
 	// below would otherwise reject it as NFS4ERR_OLD_STATEID before the replay
 	// is detected (RFC 7530 §9.1.7).
-	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
-	if lockSeqid != 0 {
+	// The per-owner seqid is validated like any other value on a v4.0 client;
+	// only a v4.1 session client skips owner sequencing (the slot table provides
+	// replay protection there, and the handler zeroes the seqid it sends).
+	// Derived from the caller client ID this op already carries.
+	if sm.v41ClientLocked(callerClientID) == nil {
 		lockValidation := lockOwner.ValidateSeqID(lockSeqid)
 		switch lockValidation {
 		case SeqIDBad:
@@ -968,8 +969,11 @@ func (sm *StateManager) UnlockFile(
 	// is now one behind lockState.Stateid.Seqid. The strict stateid-seqid check
 	// below would reject that as NFS4ERR_OLD_STATEID, so the lock-owner replay
 	// must be detected before it (RFC 7530 §9.1.7: exactly-once wins).
-	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
-	if seqid != 0 {
+	// The per-owner seqid is validated like any other value on a v4.0 client;
+	// only a v4.1 session client skips owner sequencing (the slot table provides
+	// replay protection there, and the handler zeroes the seqid it sends).
+	// Derived from the caller client ID this op already carries.
+	if sm.v41ClientLocked(callerClientID) == nil {
 		validation := lockOwner.ValidateSeqID(seqid)
 		switch validation {
 		case SeqIDBad:

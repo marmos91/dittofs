@@ -54,6 +54,5 @@ flake worth re-running.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| LKU6b | bug | seqid=0 means "v4.1, skip owner sequencing", but a v4.0 client may send 0 | #2483 |
 | WRT18 | feature | write-session freeze deliberately holds ctime, so change cannot advance | - |
 | RPLY8 | suite | knfsd fails this too — replay of a waiting LOCKU | - |
