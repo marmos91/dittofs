@@ -32,10 +32,11 @@ import (
 // keep being served from the journal, and the next carve re-carves the same
 // ranges and reaps them.
 //
-// Concurrency and peak RAM are bounded by sem: a block holds a slot (and its own
-// buffer) from the moment it starts packing until its flip completes, so at most
-// cap(sem) blocks — and thus CommitBlocks — are in flight, and peak carve RAM is
-// cap(sem) x (CarveBlockSize + one overhang chunk).
+// Concurrency and peak RAM are bounded by sem: a block holds a slot from the
+// moment it is submitted until its flip completes, so at most cap(sem) blocks —
+// and thus CommitBlocks — are in flight. Peak carve RAM is cap(sem) x
+// (CarveBlockSize + one overhang chunk) for the submitted blocks' arenas, plus
+// one further block the carver has packed ahead of the window.
 type carveDispatcher struct {
 	ctx context.Context
 	s   *Store
@@ -69,37 +70,29 @@ func newCarveDispatcher(ctx context.Context, s *Store, sh *shard, id FileID, rs 
 	}
 }
 
-// acquire reserves a concurrency slot and returns a pooled buffer with capacity
-// at least arenaCap for the next block being packed. It blocks while the window
-// is full and returns the context error if it is cancelled meanwhile. The slot
-// is released by the block's worker (or by discard for a block never submitted).
-func (d *carveDispatcher) acquire(arenaCap int) (*[]byte, error) {
-	select {
-	case d.sem <- struct{}{}:
-	case <-d.ctx.Done():
-		return nil, d.ctx.Err()
+// hasNovelBytes reports whether any chunk carries payload. A fully deduped
+// batch commits manifest rows but writes no block, so it must not count as one.
+func hasNovelBytes(chunks []CarveChunk) bool {
+	for _, cc := range chunks {
+		if cc.Data != nil {
+			return true
+		}
 	}
-	p := carveArenaPool.Get().(*[]byte)
-	a := *p
-	if cap(a) < arenaCap {
-		a = make([]byte, arenaCap)
-	}
-	*p = a[:cap(a)]
-	return p, nil
+	return false
 }
 
-// submit hands a packed block to the pool. chunks may be empty and arenap nil,
-// which submits a bare watermark advance (records covered only by already-durable
-// chunks flip there) — that carries no buffer and holds no slot. arena is the
-// block's final backing slice (it may have grown past the pooled buffer while
-// packing), stored back into the pool on completion. plan names the runs the
-// block covers and how far into the last of them it reached.
-func (d *carveDispatcher) submit(chunks []CarveChunk, arenap *[]byte, arena []byte, plan flipPlan) {
-	// A batch of only deduped chunks holds no arena and so has claimed no slot in
-	// acquire; take one here so its commit is throttled like any other. Giving up
-	// on a cancelled context is safe: the commit below fails on the same context.
-	slot := arenap != nil
-	if !slot && len(chunks) > 0 {
+// submit hands a packed block to the pool. chunks may be empty, which submits a
+// bare watermark advance (records covered only by already-durable chunks flip
+// there) — that carries no bytes and holds no slot. The chunks' Data slices are
+// backed by the carving carver's per-block arena and stay live until CommitBlock
+// returns. plan names the runs the block covers and how far into the last of
+// them it reached.
+func (d *carveDispatcher) submit(chunks []CarveChunk, plan flipPlan) {
+	// A batch of only deduped chunks carries no bytes but still commits manifest
+	// rows, so its commit is throttled like any other. Giving up on a cancelled
+	// context is safe: the commit below fails on the same context.
+	slot := false
+	if len(chunks) > 0 {
 		select {
 		case d.sem <- struct{}{}:
 			slot = true
@@ -110,21 +103,15 @@ func (d *carveDispatcher) submit(chunks []CarveChunk, arenap *[]byte, arena []by
 	prev := d.prev
 	d.prev = mine
 	d.wg.Add(1)
-	go d.commitAndFlip(chunks, arenap, arena, plan, prev, mine, slot)
+	go d.commitAndFlip(chunks, plan, prev, mine, slot)
 }
 
-func (d *carveDispatcher) commitAndFlip(chunks []CarveChunk, arenap *[]byte, arena []byte, plan flipPlan, prev, mine chan bool, slot bool) {
+func (d *carveDispatcher) commitAndFlip(chunks []CarveChunk, plan flipPlan, prev, mine chan bool, slot bool) {
 	defer d.wg.Done()
 	if slot {
 		// Release the slot only after CommitBlock has consumed the Data slices
 		// (the sink copies them before returning) and the flip ran.
 		defer func() { <-d.sem }()
-	}
-	if arenap != nil {
-		defer func() {
-			*arenap = arena
-			carveArenaPool.Put(arenap)
-		}()
 	}
 
 	var commitErr error
@@ -162,9 +149,9 @@ func (d *carveDispatcher) commitAndFlip(chunks []CarveChunk, arenap *[]byte, are
 				break
 			}
 		}
-		// An arena is claimed only by a chunk carrying bytes: a batch of purely
-		// deduped chunks writes manifest rows but no block.
-		if ok && arenap != nil {
+		// A batch carrying no novel bytes writes manifest rows but no block:
+		// deduped chunks tile the range without shipping payload.
+		if ok && hasNovelBytes(chunks) {
 			d.res.BlocksWritten++
 		}
 	case proceed && commitErr != nil:
@@ -173,17 +160,6 @@ func (d *carveDispatcher) commitAndFlip(chunks []CarveChunk, arenap *[]byte, are
 		d.setErr(commitErr)
 	}
 	mine <- ok
-}
-
-// discard returns an acquired-but-never-submitted buffer and its slot, used when
-// packing aborts mid-block.
-func (d *carveDispatcher) discard(arenap *[]byte, arena []byte) {
-	if arenap == nil {
-		return
-	}
-	*arenap = arena
-	carveArenaPool.Put(arenap)
-	<-d.sem
 }
 
 // wait blocks until every submitted block has committed and flipped (or drained

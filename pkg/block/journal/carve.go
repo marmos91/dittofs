@@ -10,8 +10,7 @@ import (
 	"sort"
 	"sync"
 
-	"lukechampine.com/blake3"
-
+	"github.com/marmos91/dittofs/pkg/block/carver"
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
@@ -29,17 +28,6 @@ import (
 // bytes past the buffer's capacity and stops making progress.
 var carveScratchPool = sync.Pool{New: func() any {
 	b := make([]byte, 0, chunker.MaxChunkSize)
-	return &b
-}}
-
-// carveArenaPool recycles the per-block arenas backing the pending chunk copies
-// handed to the sink. Both production sinks consume CarveChunk.Data synchronously
-// inside CommitBlock (localBlockSink reads only len; engineBlockSink seals/frames
-// into its own buffer before returning) — neither retains it — so a block's arena
-// is safe to return to the pool once its CommitBlock has returned. Each concurrent
-// block owns a distinct arena so overlapping commits never share backing bytes.
-var carveArenaPool = sync.Pool{New: func() any {
-	var b []byte
 	return &b
 }}
 
@@ -100,9 +88,10 @@ type CarveChunk struct {
 // commit makes a re-carve after a crash (or a duplicate concurrent carve) a
 // no-op.
 //
-// Lifetime contract: CarveChunk.Data slices are backed by a pooled arena that
-// the next carve flush reuses. An implementation MUST NOT retain any Data slice
-// after CommitBlock returns; copy the bytes first if it needs them longer.
+// Lifetime contract: CarveChunk.Data slices are backed by the carving carver's
+// per-block arena, which covers only the blocks in flight. An implementation
+// MUST NOT retain any Data slice after CommitBlock returns; copy the bytes
+// first if it needs them longer.
 type BlockSink interface {
 	CommitBlock(ctx context.Context, chunks []CarveChunk) error
 }
@@ -390,87 +379,59 @@ func splitRuns(snap []interval) [][]interval {
 func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runState) (CarveResult, error) {
 	var res CarveResult
 
-	// One semaphore for the whole file: it bounds the in-flight block arenas
-	// across every run, so that term stays cap(sem) x (CarveBlockSize + one
-	// overhang chunk) however many runs the file has. The chunker scratch buffer
-	// is a single pooled buffer for the whole pass, not one per run.
+	// One semaphore for the whole file: it bounds the blocks in flight across
+	// every run, so peak carve RAM stays cap(sem) x (CarveBlockSize + one
+	// overhang chunk) for the submitted blocks, plus one further block the
+	// carver has packed ahead of the window.
 	sem := make(chan struct{}, s.cfg.CarveUploadConcurrency)
 
 	// disp overlaps successive blocks' CommitBlock (upload + commit) while packing
-	// stays sequential. It owns the bounded worker pool, the per-block buffers and
-	// the ordered flip chain; flush hands it a completed block or a bare watermark.
+	// stays sequential. It owns the bounded worker pool and the ordered flip
+	// chain; submit hands it a completed block or a bare watermark.
 	disp := newCarveDispatcher(ctx, s, sh, id, rs, &res, sem)
 
-	// Each packed block gets its OWN buffer (cap one block plus one overhang chunk)
-	// so its bytes stay live while its CommitBlock runs concurrently with the next
-	// block's packing — the recycled arena of the sequential path can't do that.
-	//
-	// The overhang is one chunk at this share's configured size, not the largest
-	// chunk any share could ask for. A block is flushed once it reaches
-	// CarveBlockSize, so it overshoots by at most the chunk that crossed the line,
-	// and no chunk exceeds ChunkParams.Max. Sizing the overhang from the package
-	// ceiling instead reserves 16 MiB per in-flight block for a share chunking at
-	// 128 KiB — and that reservation is per slot, so it multiplies by the carve
-	// upload window and again by however many files carve at once.
-	//
-	// Invalid params fall back to the default profile because that is what the
-	// chunker itself does with them, so the arena matches the chunks actually cut.
-	//
-	// Clamp the block size before adding the overhang, not after: a pathological
-	// CarveBlockSize near the int64 ceiling would wrap to a negative sum, sail
-	// past a clamp that only tests the upper bound, and reach make() as a
-	// negative length. CarveBlockSize is positive by then (withDefaults replaces
-	// anything <= 0) and the overhang is at most chunker.MaxChunkSize, so the
-	// subtraction below cannot itself go negative.
-	overhang := s.cfg.ChunkParams.Max
-	if s.cfg.ChunkParams.Validate() != nil {
-		overhang = chunker.DefaultParams().Max
-	}
-	overhang64 := int64(overhang)
-	blockCap64 := s.cfg.CarveBlockSize
-	if blockCap64 > math.MaxInt-overhang64 {
-		blockCap64 = math.MaxInt - overhang64
-	}
-	arenaCap := int(blockCap64 + overhang64)
-
-	// The block currently being packed. arena is its private buffer (nil until the
-	// first novel chunk claims a pool buffer and a concurrency slot); arenaOff is
-	// the fill cursor. On any early exit these are returned to disp so the slot and
-	// buffer are not leaked.
-	// batchBytes counts the run bytes this batch tiles, deduped chunks included,
-	// so a fully deduped batch (empty arena) is still bounded and committed on the
-	// same cadence as one carrying bytes.
-	var (
-		pending    []CarveChunk
-		arenap     *[]byte
-		arena      []byte
-		arenaOff   int
-		batchBytes int64
-	)
-	ensureArena := func() error {
-		if arenap != nil {
-			return nil
-		}
-		p, err := disp.acquire(arenaCap)
-		if err != nil {
-			return err
-		}
-		arenap, arena, arenaOff = p, *p, 0
-		return nil
-	}
+	// One carver for the whole pass. Cutting and hashing are chunk-agnostic; the
+	// carver owns them, and the batch being packed carries across runs — that is
+	// what lets one block span runs. Its per-block arena backs the chunks' Data
+	// slices and stays live while the sink's CommitBlock runs concurrently with
+	// the next block's packing. The skip oracle is the committed synced-hash
+	// store: a block being committed concurrently has NOT yet marked its hashes
+	// durable, so the carver never observes a sibling block's uncommitted hash
+	// as durable — at worst a duplicate chunk is re-packed, which the
+	// content-addressed commit collapses to a no-op.
+	cv := carver.New(carver.Options{
+		Params:    s.cfg.ChunkParams,
+		BlockSize: s.cfg.CarveBlockSize,
+		Skip: func(ctx context.Context, h carver.Hash) (bool, error) {
+			return s.deduper.IsChunkDurable(ctx, ChunkHash(h))
+		},
+	})
 
 	// blockFirstRun is the index of the run the block being packed started in;
 	// every run from there to the one being packed contributes to it, which is
-	// what the flush's flipPlan names.
+	// what the submit's flipPlan names.
 	blockFirstRun := 0
 
-	// flush hands the packed block (if any) and its flip plan to the dispatcher,
-	// which commits then flips in submission order. Packing continues immediately;
-	// the commit and flip happen on the pool. Ownership of the buffer moves to the
-	// dispatcher, so the local arena state resets to "no block".
-	flush := func(plan flipPlan) {
-		disp.submit(pending, arenap, arena, plan)
-		pending, arenap, arena, arenaOff, batchBytes = nil, nil, nil, 0, 0
+	// submit converts one carved block to sink chunks and hands it to the
+	// dispatcher, which commits then flips in submission order. Packing
+	// continues immediately; the commit and flip happen on the dispatcher's
+	// workers. lastOff is the run-space offset the block's tiling reached: its
+	// last chunk's end, which is what the flip plan must cover.
+	submit := func(b carver.Block, plan flipPlan) {
+		chunks := make([]CarveChunk, len(b.Chunks))
+		for i, ch := range b.Chunks {
+			chunks[i] = CarveChunk{
+				Hash:       ChunkHash(ch.Hash),
+				FileID:     id,
+				FileOffset: ch.Offset,
+				Size:       int(ch.Size),
+				Data:       ch.Data,
+			}
+			if ch.Data != nil {
+				res.BytesCarved += ch.Size
+			}
+		}
+		disp.submit(chunks, plan)
 	}
 
 	// buf accumulates bytes for the chunker; it never exceeds one max chunk, so
@@ -530,14 +491,13 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 			}
 		}
 
-		// A fresh chunker and reader per run, and an empty accumulator, so a chunk
-		// never spans the hole between two runs. The block being packed carries
-		// over: that is what lets one block span them.
-		c := chunker.NewChunkerWithParams(s.cfg.ChunkParams)
+		// A fresh reader per run; the carver's boundary search resets when the
+		// run's last Box call sets final, so a chunk never spans the hole between
+		// two runs. The block being packed carries over: that is what lets one
+		// block span them.
 		rr := &runReader{s: s, sh: sh, id: id, ivs: rs[ri].ivs}
 		fileOff := rs[ri].start()
 		rs[ri].newOffsets = make(map[int64]struct{})
-		buf = buf[:0]
 		eof := false
 
 		for {
@@ -567,66 +527,33 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 			if packErr != nil {
 				break
 			}
-			if len(buf) == 0 {
-				break
-			}
-			boundary, _ := c.Next(buf, eof)
-			if boundary == 0 {
-				if !eof {
-					continue // below MinChunkSize and more is coming: read more
-				}
-				boundary = len(buf)
-			}
-
-			h := ChunkHash(blake3.Sum256(buf[:boundary]))
-			// Dedup consults the committed synced-hash oracle. A block being committed
-			// concurrently has NOT yet marked its hashes durable, so this never observes
-			// a sibling block's uncommitted hash as durable — at worst a duplicate chunk
-			// is re-packed, which the content-addressed commit collapses to a no-op.
-			durable, err := s.deduper.IsChunkDurable(ctx, h)
+			// final=true on the run's last call even with nothing read (the
+			// accumulator may hold the run's below-Min tail): the carver cuts it
+			// as the run's final chunk and resets its boundary search, so a chunk
+			// never spans the hole between two runs. An empty Box with an empty
+			// accumulator is a no-op.
+			blocks, tiled, err := cv.Box(ctx, buf, fileOff, eof)
+			buf = buf[:0]
 			if err != nil {
 				packErr = err
 				break
 			}
-			// A deduped chunk has nothing to upload but still needs its manifest row:
-			// the reap deletes every row in the run span the run did not write, so
-			// dropping it here leaves the range on a stale straddler or on nothing.
-			cc := CarveChunk{Hash: h, FileID: id, FileOffset: fileOff, Size: boundary}
-			if !durable {
-				if err := ensureArena(); err != nil {
-					packErr = err
-					break
+			fileOff += tiled
+			for _, b := range blocks {
+				for _, ch := range b.Chunks {
+					rs[ri].newOffsets[ch.Offset] = struct{}{}
 				}
-				// Bound proof: this block's bytes < CarveBlockSize before this append
-				// (else the prior iteration flushed and started a fresh arena), and
-				// boundary <= the configured ChunkParams.Max — the chunker never cuts
-				// longer than its own ceiling — so arenaOff+boundary <=
-				// CarveBlockSize-1+ChunkParams.Max <= cap, which is how the arena is
-				// sized above. The grow is a fail-loud belt: if that invariant
-				// ever breaks (e.g. a config change), realloc rather than slice out of
-				// bounds. Already-pending Data slices keep pointing at the old backing
-				// (still live), so no copy is needed — the new chunk lands in the larger
-				// arena and the grown slice ships to the dispatcher.
-				if arenaOff+boundary > cap(arena) {
-					arena = make([]byte, arenaOff+boundary)
-				}
-				data := arena[arenaOff : arenaOff+boundary : arenaOff+boundary]
-				copy(data, buf[:boundary])
-				arenaOff += boundary
-				cc.Data = data
-				res.BytesCarved += int64(boundary)
-			}
-			pending = append(pending, cc)
-			batchBytes += int64(boundary)
-			rs[ri].newOffsets[fileOff] = struct{}{}
-			fileOff += int64(boundary)
-			buf = append(buf[:0], buf[boundary:]...)
-
-			if batchBytes >= s.cfg.CarveBlockSize {
-				flush(flipPlan{first: blockFirstRun, last: ri, lastOff: fileOff})
+				// This block's tiling ends inside run ri (its last chunk's end),
+				// and every run from the one it started in to ri contributes to
+				// it — the runs earlier blocks of the batch already covered flip
+				// through their own ends on their own submissions.
+				submit(b, flipPlan{first: blockFirstRun, last: ri, lastOff: b.Chunks[len(b.Chunks)-1].Offset + b.Chunks[len(b.Chunks)-1].Size})
 				blockFirstRun = ri
 			}
-			if eof && len(buf) == 0 {
+			if disp.aborted() {
+				break
+			}
+			if eof {
 				break
 			}
 		}
@@ -637,21 +564,29 @@ func (s *Store) packRuns(ctx context.Context, sh *shard, id FileID, rs []*runSta
 
 	if packErr != nil || disp.aborted() {
 		// A read/dedup error (packErr) or an in-flight commit failure (aborted)
-		// ends the pass. Abandon the half-packed block (return its slot/buffer) and
-		// drain the blocks already in flight, but submit nothing more: advancing
-		// the watermark or committing the tail past a failure only adds orphan
-		// uploads. disp.wait returns the commit error in watermark order.
-		disp.discard(arenap, arena)
+		// ends the pass. Drop the carver's pending batch and drain the blocks
+		// already in flight, but submit nothing more: advancing the watermark or
+		// committing the tail past a failure only adds orphan uploads. The
+		// dropped batch has no committed manifest row, so its ranges stay dirty
+		// and the next pass re-carves them. disp.wait returns the commit error
+		// in watermark order.
 		if err := disp.wait(); err != nil {
 			return res, err
 		}
 		return res, packErr
 	}
 
-	// Tail: commit any remainder and flip through the end of the last run (records
-	// covered only by already-durable chunks flip here too, via the bare watermark).
+	// Tail: emit any remainder and flip through the end of the last run (records
+	// covered only by already-durable chunks flip here too, via the bare watermark
+	// when the tail is empty). The carver's chunker already reset at the last
+	// run's final=true Box call, so the trailing partial block is the batch's last.
 	last := len(rs) - 1
-	flush(flipPlan{first: blockFirstRun, last: last, lastOff: rs[last].end()})
+	for _, b := range cv.Drain() {
+		for _, ch := range b.Chunks {
+			rs[last].newOffsets[ch.Offset] = struct{}{}
+		}
+		submit(b, flipPlan{first: blockFirstRun, last: last, lastOff: b.Chunks[len(b.Chunks)-1].Offset + b.Chunks[len(b.Chunks)-1].Size})
+	}
 	if err := disp.wait(); err != nil {
 		return res, err
 	}
