@@ -168,7 +168,7 @@ func TestTruncateSurvivesReopen(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
 
-	s, err := Open(dir, Config{}, newFakeRemote(), SystemClock())
+	s, err := Open(dir, Config{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestTruncateSurvivesReopen(t *testing.T) {
 
 	// Recovery replays the still-full on-disk record, then re-applies the durable
 	// truncate marker so the truncated bytes never resurrect.
-	r, err := Open(dir, Config{}, newFakeRemote(), SystemClock())
+	r, err := Open(dir, Config{})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestTruncateDeadBytesReconstructedOnReopen(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
 
-	s, err := Open(dir, Config{}, newFakeRemote(), SystemClock())
+	s, err := Open(dir, Config{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

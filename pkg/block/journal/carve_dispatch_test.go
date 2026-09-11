@@ -125,7 +125,7 @@ func ctrlStore(t *testing.T, window int) (*Store, *ctrlSink) {
 		CarveUploadConcurrency: window,
 		ChunkParams:            chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
 	}
-	s, err := Open(t.TempDir(), cfg, newFakeRemote(), newFakeClock())
+	s, err := Open(t.TempDir(), cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

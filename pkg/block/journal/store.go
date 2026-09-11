@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -18,9 +17,6 @@ import (
 // FileID identifies a file's byte stream inside the cache. It is the same
 // value space and hash keyspace as today's payloadID.
 type FileID string
-
-// BlockID is the opaque key of a packed block in the remote store.
-type BlockID string
 
 // errClosed is returned by every operation attempted on a closed Store.
 var errClosed = errors.New("journal: store closed")
@@ -38,15 +34,6 @@ var ErrColdProvenanceAmbiguous = errors.New("journal: cold entry provenance cann
 // hold its header plus real records; below this a single write could exceed the
 // cap. 1 MiB clears the largest protocol write plus framing with wide margin.
 const minSegmentSize int64 = 1 << 20
-
-// RemoteStore is the narrow remote contract journal carves to and hydrates
-// from. It mirrors the shape of pkg/block/remote's RemoteBlockStore but is
-// declared here so journal imports nothing from the block/remote package.
-type RemoteStore interface {
-	PutBlock(ctx context.Context, id BlockID, r io.Reader, size int64) error
-	GetBlock(ctx context.Context, id BlockID) (io.ReadCloser, error)
-	GetRange(ctx context.Context, id BlockID, off, length int64) (io.ReadCloser, error)
-}
 
 // Clock supplies the current time. Injected so tests can pin it.
 type Clock interface{ Now() time.Time }
@@ -115,6 +102,9 @@ type Config struct {
 	// chunker.DefaultParams — the historical 1M/4M/16M profile — so a
 	// misconfiguration is never a hard error, matching the fs store.
 	ChunkParams chunker.Params
+	// Clock supplies the store's time. Nil falls back to a system clock;
+	// tests pin it to drive age-based batching and expiry deterministically.
+	Clock Clock
 }
 
 const (
@@ -196,11 +186,10 @@ type Stats struct {
 // concurrent use; per-shard mutexes serialize appends and index mutation while
 // positioned reads run unlocked.
 type Store struct {
-	dir    string
-	cfg    Config
-	remote RemoteStore
-	clock  Clock
-	log    *slog.Logger
+	dir   string
+	cfg   Config
+	clock Clock
+	log   *slog.Logger
 
 	// deduper and sink are the carve collaborators, injected via SetCarveTargets
 	// at wiring time. They own every step that touches pkg/block, blockcodec and
@@ -296,16 +285,18 @@ func (s *Store) SetVerifyReads(v bool) { s.verifyReads.Store(v) }
 // segment of each shard is tail-scanned and its torn tail truncated, every
 // valid record is replayed into a fresh interval index, and the global Version
 // LSN is resumed past the highest observed record. See recover.
-func Open(dir string, cfg Config, remote RemoteStore, clock Clock) (*Store, error) {
+func Open(dir string, cfg Config) (*Store, error) {
+	// Check the format stamp before touching state whose shape is unknown: a
+	// directory a newer release wrote must be refused, not read as holes.
+	if err := checkFormat(dir); err != nil {
+		return nil, err
+	}
 	cfg = cfg.withDefaults()
 	if cfg.ShardCount&(cfg.ShardCount-1) != 0 {
 		return nil, fmt.Errorf("journal: ShardCount %d is not a power of two", cfg.ShardCount)
 	}
 	if cfg.SegmentSize < minSegmentSize {
 		return nil, fmt.Errorf("journal: SegmentSize %d below floor %d (header+record framing)", cfg.SegmentSize, minSegmentSize)
-	}
-	if clock == nil {
-		clock = SystemClock()
 	}
 	log := cfg.logger()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -326,10 +317,14 @@ func Open(dir string, cfg Config, remote RemoteStore, clock Clock) (*Store, erro
 		}
 	}
 
+	clock := cfg.Clock
+	if clock == nil {
+		clock = SystemClock()
+	}
+
 	s := &Store{
 		dir:       dir,
 		cfg:       cfg,
-		remote:    remote,
 		clock:     clock,
 		log:       log,
 		shardMask: uint64(cfg.ShardCount - 1),
@@ -1164,7 +1159,6 @@ func (s *Store) JournalVersion() uint64 { return s.version.Load() }
 // marked ready / lowers it only after a delete commits, so GC only ever grows
 // more conservative. Reads are a single atomic load on the reclaim path.
 func (s *Store) SetPinVersion(v uint64) { s.pinVersion.Store(v) }
-
 
 // RestoreToVersion rewinds every file to its point-in-time view as of the global
 // LSN watermark V and re-materializes that view durably at the log head, so a

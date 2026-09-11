@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"errors"
-	"io"
 	"math/rand"
 	"sync"
 	"testing"
@@ -13,20 +12,6 @@ import (
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
-
-// stubJournalRemote satisfies journal.RemoteStore for a Store whose cold-read
-// path is never exercised (carve drives the injected sink, not this remote).
-type stubJournalRemote struct{}
-
-func (stubJournalRemote) PutBlock(context.Context, journal.BlockID, io.Reader, int64) error {
-	return errors.New("stub: PutBlock unused")
-}
-func (stubJournalRemote) GetBlock(context.Context, journal.BlockID) (io.ReadCloser, error) {
-	return nil, errors.New("stub: GetBlock unused")
-}
-func (stubJournalRemote) GetRange(context.Context, journal.BlockID, int64, int64) (io.ReadCloser, error) {
-	return nil, errors.New("stub: GetRange unused")
-}
 
 // seamFixture wires a live journal.Store to the production engineDeduper +
 // engineBlockSink, a memory metadata store (committer + synced oracle) and a
@@ -40,7 +25,7 @@ type seamFixture struct {
 
 func newSeamFixture(t *testing.T, dir string, ms *metadatamemory.MemoryMetadataStore, mem *remotememory.Store, sink journal.BlockSink) *seamFixture {
 	t.Helper()
-	j, err := journal.Open(dir, journal.Config{CarveBlockSize: 1 << 20}, stubJournalRemote{}, journal.SystemClock())
+	j, err := journal.Open(dir, journal.Config{CarveBlockSize: 1 << 20})
 	if err != nil {
 		t.Fatalf("journal.Open: %v", err)
 	}
@@ -285,8 +270,7 @@ func TestJournalCarveSeam_ScatteredRunsAllFlipSynced(t *testing.T) {
 	mem := remotememory.New()
 
 	j, err := journal.Open(t.TempDir(),
-		journal.Config{CarveBlockSize: blockSize, CarveUploadConcurrency: 4},
-		stubJournalRemote{}, journal.SystemClock())
+		journal.Config{CarveBlockSize: blockSize, CarveUploadConcurrency: 4})
 	if err != nil {
 		t.Fatalf("journal.Open: %v", err)
 	}

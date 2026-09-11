@@ -19,13 +19,14 @@ const chunk256 = 256 << 10
 func evictStore(t *testing.T, cfg Config) (*Store, *fakeClock) {
 	t.Helper()
 	clk := newFakeClock()
+	cfg.Clock = clk
 	if cfg.ShardCount == 0 {
 		cfg.ShardCount = 1
 	}
 	if cfg.SegmentSize == 0 {
 		cfg.SegmentSize = minSegmentSize
 	}
-	s, err := Open(t.TempDir(), cfg, newFakeRemote(), clk)
+	s, err := Open(t.TempDir(), cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -498,7 +499,7 @@ func TestInvalidatedRangeSurvivesEviction(t *testing.T) {
 	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
 	ctx := context.Background()
 
-	s, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -517,7 +518,7 @@ func TestInvalidatedRangeSurvivesEviction(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	s2, err := Open(dir, cfg, newFakeRemote(), newFakeClock())
+	s2, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -654,10 +655,9 @@ func TestEvictPrefersOlderStampOverUnstamped(t *testing.T) {
 // approx-LRU stops approximating anything after a restart.
 func TestReopenedSegmentsHaveEvictionAge(t *testing.T) {
 	dir := t.TempDir()
-	clk := newFakeClock()
-	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize}
+	cfg := Config{ShardCount: 1, SegmentSize: minSegmentSize, Clock: newFakeClock()}
 
-	s, err := Open(dir, cfg, newFakeRemote(), clk)
+	s, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -666,7 +666,7 @@ func TestReopenedSegmentsHaveEvictionAge(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	s2, err := Open(dir, cfg, newFakeRemote(), clk)
+	s2, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}

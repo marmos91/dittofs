@@ -140,7 +140,8 @@ func (s *fakeSink) blockCount() int {
 func carveStore(t testing.TB, cfg Config) (*Store, *fakeDeduper, *fakeSink, *fakeClock) {
 	t.Helper()
 	clk := newFakeClock()
-	s, err := Open(t.TempDir(), cfg, newFakeRemote(), clk)
+	cfg.Clock = clk
+	s, err := Open(t.TempDir(), cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -406,11 +407,10 @@ func TestCarveReopenReCarveIsNoOp(t *testing.T) {
 	// the records with the correct SegOffset so the re-flip lands on the record —
 	// not the segment header — and dedup must make the re-carve upload-free.
 	dir := t.TempDir()
-	clk := newFakeClock()
 	dd := newFakeDeduper()
 	data := randBytes(2<<20, 11)
 
-	s1, err := Open(dir, Config{CarveBlockSize: 1 << 20}, newFakeRemote(), clk)
+	s1, err := Open(dir, Config{CarveBlockSize: 1 << 20})
 	if err != nil {
 		t.Fatalf("Open s1: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestCarveReopenReCarveIsNoOp(t *testing.T) {
 	_ = s1.Close()
 
 	// Reopen: recovery rebuilds the index from the (now dirty) records.
-	s2, err := Open(dir, Config{CarveBlockSize: 1 << 20}, newFakeRemote(), clk)
+	s2, err := Open(dir, Config{CarveBlockSize: 1 << 20})
 	if err != nil {
 		t.Fatalf("Open s2: %v", err)
 	}

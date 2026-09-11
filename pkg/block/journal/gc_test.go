@@ -271,7 +271,7 @@ func TestGCBelowThresholdNeedsForce(t *testing.T) {
 func TestGCCrashBeforeUnlinkOrphanSwept(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{SegmentSize: minSegmentSize, ShardCount: 1}
-	s, err := Open(dir, cfg, newFakeRemote(), SystemClock())
+	s, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestGCCrashBeforeUnlinkOrphanSwept(t *testing.T) {
 	_ = s.Close()
 
 	// Restart: recovery replays both segments (identical Version -> byte-identical).
-	r, err := Open(dir, cfg, newFakeRemote(), SystemClock())
+	r, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("recovery after crash-before-unlink: %v", err)
 	}

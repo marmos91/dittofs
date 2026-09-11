@@ -21,9 +21,11 @@ import (
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/marmos91/dittofs/pkg/block"
 )
+
+// errFutureFormat is returned when a journal directory was written by a newer
+// layout than this build reads: opening it would serve stored ranges as holes.
+var errFutureFormat = errors.New("journal: on-disk format is from a newer release")
 
 const (
 	// formatVersion is the layout this build reads and writes. Bump it whenever
@@ -47,10 +49,10 @@ type formatStamp struct {
 	WrittenAt string `json:"written_at"`
 }
 
-// CheckFormat verifies that this build understands the journal directory's
+// checkFormat verifies that this build understands the journal directory's
 // on-disk layout, and brings the stamp up to what this build may write. An
 // unstamped directory predates stamping and is adopted; a stamp above
-// formatVersion fails with block.ErrFutureFormat.
+// formatVersion fails with errFutureFormat.
 //
 // A stamp *below* formatVersion is raised, not left alone. The stamp has to
 // describe what the directory may now contain, and this build starts writing
@@ -60,9 +62,9 @@ type formatStamp struct {
 // stamp exists to keep it away from, which for the cold log means reading a
 // remote-durable range as a hole and serving zeros.
 //
-// Call it before opening the journal: the point is to not touch state whose
-// shape is unknown.
-func CheckFormat(dir string) error {
+// Open runs it before anything else in the directory: the point is to not
+// touch state whose shape is unknown.
+func checkFormat(dir string) error {
 	raw, err := os.ReadFile(filepath.Join(dir, formatFileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return writeFormat(dir)
@@ -78,7 +80,7 @@ func CheckFormat(dir string) error {
 	}
 	if st.Version > formatVersion {
 		return fmt.Errorf("%w: %s is at format version %d, this build reads up to %d",
-			block.ErrFutureFormat, dir, st.Version, formatVersion)
+			errFutureFormat, dir, st.Version, formatVersion)
 	}
 	if st.Version < formatVersion {
 		return writeFormat(dir)

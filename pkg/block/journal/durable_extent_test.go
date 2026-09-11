@@ -24,7 +24,7 @@ func TestDurableExtent_PredictsWhatSurvivesDeviceLoss(t *testing.T) {
 	const rec = 4096
 	dir := t.TempDir()
 	cfg := Config{ShardCount: 1}
-	s, err := Open(dir, cfg, newFakeRemote(), SystemClock())
+	s, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestDurableExtent_PredictsWhatSurvivesDeviceLoss(t *testing.T) {
 		t.Fatalf("truncate segment to the last fsync: %v", err)
 	}
 
-	r, err := Open(dir, cfg, newFakeRemote(), SystemClock())
+	r, err := Open(dir, cfg)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
