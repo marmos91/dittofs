@@ -279,6 +279,18 @@ create_post_break.go 1,729→817, handler.go 2,933→805.
 per PR merged same day, `graphify update .` after each, CI guard requiring a `_test.go` per new
 package. Every extracted function gets its own test (no 150-LOC ceiling).
 
+**Post-Wave-5 follow-ups 2026-09-11 — ALL LANDED.** Group 1 doc-strand reattachment: PR #2533
+squash-merged as 385f51c3c (20 files, +269/-308, pure comment relocation; ~24 doc blocks stranded
+by the file splits reattached, Group 2 pre-existing correctness findings disclosed in the body,
+Copilot comment on parseSDOptsForShare addressed in 8367ec0be). NFS dispatch coherence: PR #2534
+squash-merged as 5da8b2ad9 — `dispatch_mount.go` (160 lines) deleted, new `mount/dispatch.go`
+(package mount, mirroring nlm/nsm/portmap) with the table + handlers + `DispatchMount` entrypoint,
+`pkg/adapter/nfs` reads `mount_dispatch.MountDispatchTable` like its `nlm.`/`nsm.` tables,
+helpers.go constraint unions trimmed of dead Mount types, test table moved verbatim to
+`mount/dispatch_test.go` with root `mountStub()` preserving MNT-v1 coverage. Three reviews passed
+pre-PR on both (correctness / lean / adversarial — no valid objection; cosmetics kept:
+`MountResult` struct for nlm/nsm consistency, `GetStatus()` left as pre-existing surface).
+
 ### Step 5 — Wave 7: perf lens (goal 3)
 
 No measurement plan exists. Build it before touching anything: connection ramp both protocols,
