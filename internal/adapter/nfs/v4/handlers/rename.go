@@ -6,6 +6,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -197,8 +198,36 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 		"newname", newName,
 		"client", ctx.ClientAddr)
 
-	// Directory change notifications are now handled by MetadataService via
-	// DirChangeNotifier -> LockManager -> BreakCallbacks (unified path).
+	// Notify directory delegation holders: RENAME_ENTRY on the source
+	// directory when the rename stays within it, otherwise REMOVE_ENTRY on the
+	// source and ADD_ENTRY on the target. Best-effort: the rename is already
+	// committed and the client has its answer, so a notification failure is
+	// logged, not surfaced.
+	if h.StateManager != nil {
+		var originClientID uint64
+		if ctx.ClientState != nil {
+			originClientID = ctx.ClientState.ClientID
+		}
+		if bytes.Equal(srcDirHandle, tgtDirHandle) {
+			h.StateManager.NotifyDirChange(srcDirHandle, state.DirNotification{
+				Type:           types.NOTIFY4_RENAME_ENTRY,
+				EntryName:      oldName,
+				NewName:        newName,
+				OriginClientID: originClientID,
+			})
+		} else {
+			h.StateManager.NotifyDirChange(srcDirHandle, state.DirNotification{
+				Type:           types.NOTIFY4_REMOVE_ENTRY,
+				EntryName:      oldName,
+				OriginClientID: originClientID,
+			})
+			h.StateManager.NotifyDirChange(tgtDirHandle, state.DirNotification{
+				Type:           types.NOTIFY4_ADD_ENTRY,
+				EntryName:      newName,
+				OriginClientID: originClientID,
+			})
+		}
+	}
 
 	// Encode RENAME4resok
 	var buf bytes.Buffer

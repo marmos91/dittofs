@@ -7,6 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -361,8 +362,20 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 		"handle", string(newHandle),
 		"client", ctx.ClientAddr)
 
-	// Directory change notifications are now handled by MetadataService via
-	// DirChangeNotifier -> LockManager -> BreakCallbacks (unified path).
+	// Notify directory delegation holders on the parent about the new entry.
+	// Best-effort: the create is already committed and the client has its
+	// answer, so a notification failure is logged, not surfaced.
+	if h.StateManager != nil {
+		var originClientID uint64
+		if ctx.ClientState != nil {
+			originClientID = ctx.ClientState.ClientID
+		}
+		h.StateManager.NotifyDirChange(parentHandle, state.DirNotification{
+			Type:           types.NOTIFY4_ADD_ENTRY,
+			EntryName:      objName,
+			OriginClientID: originClientID,
+		})
+	}
 
 	// Encode CREATE4resok
 	var buf bytes.Buffer
