@@ -1,0 +1,67 @@
+package nfs
+
+import (
+	"sync"
+	"testing"
+
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+)
+
+// applySidecarConfig writes the four sidecar config fields exactly as the
+// fixed applyNFSSettings does (settings.go:80-95): pointers prepared outside
+// configMu, all four fields stored under one critical section. Extracted here
+// because the real function needs a *runtime.Runtime; the races under test are
+// between these writes and the readers, not between settings sources.
+func applySidecarConfig(a *NFSAdapter, enabled, registerWithSystem, udpEnabled bool, port int) {
+	a.configMu.Lock()
+	a.config.Portmapper.Enabled = &enabled
+	a.config.Portmapper.Port = port
+	a.config.Portmapper.RegisterWithSystem = &registerWithSystem
+	a.config.UDP.Enabled = &udpEnabled
+	a.configMu.Unlock()
+}
+
+// The sidecar config fields (Portmapper.Enabled/Port/RegisterWithSystem,
+// UDP.Enabled) are written by applyNFSSettings on the settings-watcher
+// goroutine, on the accept loop per connection, and at startup — three
+// concurrent writers — and read by the sysreg transition goroutine
+// (registerWithSystemEnabled, isUDPEnabled) and the portmapper start path
+// (isPortmapperEnabled, Portmapper.Port). With -race this fails on any
+// unsynchronized concurrent write/read of the plain *bool/int fields.
+func TestSidecarConfigConcurrentApplyRead(t *testing.T) {
+	a := &NFSAdapter{}
+
+	const iterations = 2000
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	// Two concurrent writers, mirroring the settings poller and the accept
+	// loop both calling applyNFSSettings.
+	for writer := 0; writer < 2; writer++ {
+		go func(writer int) {
+			defer wg.Done()
+			settings := &models.NFSAdapterSettings{}
+			for i := 0; i < iterations; i++ {
+				applySidecarConfig(a, writer == 0, i%2 == 0, i%3 == 0, 10111+i)
+				_ = settings
+			}
+		}(writer)
+	}
+
+	// One reader spinning the exact reads the sysreg transition and the
+	// portmapper start path perform (snapshot under configMu, like the fixed
+	// production readers).
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			_ = a.isPortmapperEnabled()
+			_ = a.isUDPEnabled()
+			_ = a.registerWithSystemEnabled()
+			a.configMu.Lock()
+			_ = a.config.Portmapper.Port
+			a.configMu.Unlock()
+		}
+	}()
+
+	wg.Wait()
+}
