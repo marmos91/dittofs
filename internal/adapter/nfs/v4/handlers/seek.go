@@ -86,7 +86,7 @@ func (h *Handler) handleSeek(ctx *types.CompoundContext, reader io.Reader) *type
 		return seekErr(types.StatusForErr(err))
 	}
 	if file.Type != metadata.FileTypeRegular {
-		return seekErr(types.NFS4ERR_ISDIR)
+		return seekErr(seekTypeError(file.Type))
 	}
 	if status := checkReadPermission(metaSvc, ctx, authCtx, fileHandle, file, types.OP_SEEK); status != types.NFS4_OK {
 		return seekErr(status)
@@ -153,5 +153,24 @@ func seekErr(status uint32) *types.CompoundResult {
 		Status: status,
 		OpCode: types.OP_SEEK,
 		Data:   encodeStatusOnly(status),
+	}
+}
+
+// seekTypeError maps a non-regular file type to the error SEEK reports for it.
+// Section 15.10.3 (READ_PLUS DESCRIPTION) mandates directory → NFS4ERR_ISDIR,
+// symbolic link → NFS4ERR_SYMLINK, and NFS4ERR_WRONG_TYPE for all other
+// non-regular types; SEEK's valid error list (Table 2) includes all three, and
+// Section 15.11 aligns SEEK with READ_PLUS. SEEK is a v4.2-only op (dispatch
+// rejects it under v4.0/v4.1), so NFS4ERR_WRONG_TYPE — which does not exist in
+// RFC 7530 — is available here, unlike the READ/READ_PLUS handler that also
+// serves v4.0 compounds.
+func seekTypeError(fileType metadata.FileType) uint32 {
+	switch fileType {
+	case metadata.FileTypeDirectory:
+		return types.NFS4ERR_ISDIR
+	case metadata.FileTypeSymlink:
+		return types.NFS4ERR_SYMLINK
+	default:
+		return types.NFS4ERR_WRONG_TYPE
 	}
 }
