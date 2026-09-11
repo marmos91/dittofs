@@ -298,7 +298,11 @@ func (c *NFSConnection) handleNLMProcedure(ctx context.Context, call *rpc.RPCCal
 // from the NLM listening socket (so the source address matches the peer lockd
 // is connected to).
 func (c *NFSConnection) sendNLMAsyncResult(ctx context.Context, vers uint32, clientAddr, procName string, async *nlm.AsyncResult) {
+	// Snapshot under sidecarMu so the read does not race the transport's
+	// publish (startUDP) or its shutdown snapshot (udpSidecar.Stop).
+	c.server.sidecarMu.Lock()
 	udpConn := c.server.udpConn
+	c.server.sidecarMu.Unlock()
 	if udpConn == nil {
 		logger.WarnCtx(ctx, "NLM async result: no UDP listener; cannot deliver *_RES",
 			"procedure", procName, "client", clientAddr)

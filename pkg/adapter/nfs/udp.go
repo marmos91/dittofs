@@ -42,13 +42,23 @@ func (s *NFSAdapter) startUDP(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen udp :%d: %w", s.config.Port, err)
 	}
+	// Publish under sidecarMu so a concurrent disable (udpSidecar.Stop) either
+	// sees nothing bound yet (no-op) or closes a bound listener. stopCtx is
+	// published with the conn and cancelled by Stop: without it the ctx-wait
+	// goroutine below parks until adapter shutdown on every enable/disable
+	// toggle, leaking one parked goroutine per generation.
+	stopCtx, stopCancel := context.WithCancel(ctx)
+	s.sidecarMu.Lock()
 	s.udpConn = conn
+	s.udpStop = stopCancel
+	s.sidecarMu.Unlock()
 
 	logger.Info("NFS UDP transport listening (NLM/NSM/MOUNT)", "port", s.config.Port)
 
-	// Close the socket on shutdown so the read loop unblocks and exits.
+	// Close the socket on shutdown so the read loop unblocks and exits. Fires
+	// on Stop's per-generation cancel or the adapter ctx, whichever first.
 	go func() {
-		<-ctx.Done()
+		<-stopCtx.Done()
 		_ = conn.Close()
 	}()
 
