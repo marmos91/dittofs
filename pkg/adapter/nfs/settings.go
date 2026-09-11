@@ -82,14 +82,17 @@ func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
 	// portmapper/UDP start paths read them.
 	// The DB model uses plain bool; the adapter config uses *bool pointer.
 	// We always set the pointer from the DB value so it's never nil.
+	// The Port read-decide-write stays inside the one critical section so two
+	// concurrent applies cannot race on the int either.
 	enabled := settings.PortmapperEnabled
-	port := s.config.Portmapper.Port
+	registerWithSystem := settings.PortmapperRegisterWithSystem
+	udpEnabled := settings.UDPEnabled
+	var port int
+	s.configMu.Lock()
+	port = s.config.Portmapper.Port
 	if settings.PortmapperPort > 0 {
 		port = settings.PortmapperPort
 	}
-	registerWithSystem := settings.PortmapperRegisterWithSystem
-	udpEnabled := settings.UDPEnabled
-	s.configMu.Lock()
 	s.config.Portmapper.Enabled = &enabled
 	s.config.Portmapper.Port = port
 	s.config.Portmapper.RegisterWithSystem = &registerWithSystem

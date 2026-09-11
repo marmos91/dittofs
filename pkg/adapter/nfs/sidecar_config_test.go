@@ -3,17 +3,22 @@ package nfs
 import (
 	"sync"
 	"testing"
-
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 // applySidecarConfig writes the four sidecar config fields exactly as the
-// fixed applyNFSSettings does (settings.go:80-95): pointers prepared outside
-// configMu, all four fields stored under one critical section. Extracted here
-// because the real function needs a *runtime.Runtime; the races under test are
-// between these writes and the readers, not between settings sources.
-func applySidecarConfig(a *NFSAdapter, enabled, registerWithSystem, udpEnabled bool, port int) {
+// fixed applyNFSSettings does (settings.go:81-99): pointers prepared outside
+// configMu, the Port read-decide-write and all four fields stored under one
+// critical section. newPort <= 0 mirrors the DB fallback that keeps the
+// previously applied port. Extracted here because the real function needs a
+// *runtime.Runtime; the races under test are between these writes and the
+// readers, not between settings sources.
+func applySidecarConfig(a *NFSAdapter, enabled, registerWithSystem, udpEnabled bool, newPort int) {
+	var port int
 	a.configMu.Lock()
+	port = a.config.Portmapper.Port
+	if newPort > 0 {
+		port = newPort
+	}
 	a.config.Portmapper.Enabled = &enabled
 	a.config.Portmapper.Port = port
 	a.config.Portmapper.RegisterWithSystem = &registerWithSystem
@@ -36,14 +41,17 @@ func TestSidecarConfigConcurrentApplyRead(t *testing.T) {
 	wg.Add(3)
 
 	// Two concurrent writers, mirroring the settings poller and the accept
-	// loop both calling applyNFSSettings.
+	// loop both calling applyNFSSettings. Writer 0 alternates a zero port to
+	// exercise the keep-previous-port fallback; writer 1 always sets one.
 	for writer := 0; writer < 2; writer++ {
 		go func(writer int) {
 			defer wg.Done()
-			settings := &models.NFSAdapterSettings{}
 			for i := 0; i < iterations; i++ {
-				applySidecarConfig(a, writer == 0, i%2 == 0, i%3 == 0, 10111+i)
-				_ = settings
+				port := 10111 + i
+				if writer == 0 && i%2 == 0 {
+					port = 0
+				}
+				applySidecarConfig(a, writer == 0, i%2 == 0, i%3 == 0, port)
 			}
 		}(writer)
 	}

@@ -93,10 +93,7 @@ func (s *NFSAdapter) startPortmapper(ctx context.Context) error {
 		s.sidecarMu.Lock()
 		s.portmapServer = server
 		s.sidecarMu.Unlock()
-		s.configMu.Lock()
-		loggedPort := s.config.Portmapper.Port
-		s.configMu.Unlock()
-		logger.Info("Portmapper started", "port", loggedPort, "services", registry.Count())
+		logger.Info("Portmapper started", "port", portmapPort, "services", registry.Count())
 		return nil
 	case err := <-errCh:
 		return err
