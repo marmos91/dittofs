@@ -49,16 +49,18 @@ type Service interface {
 	// Group key and in logs. Names must be unique within a Group.
 	Name() string
 
-	// Start binds listeners / launches background goroutines and returns
-	// promptly: nil once the service is ready, or an error if it could not
-	// start. ctx bounds the service's whole lifetime (the owning adapter's
+	// Start binds listeners / launches background goroutines: nil once the
+	// service is ready, or an error if it could not start. Start may be slow
+	// or block — the Group runs it outside the group lock for exactly that
+	// reason. ctx bounds the service's whole lifetime (the owning adapter's
 	// Serve context), not merely the Start call.
 	Start(ctx context.Context) error
 
 	// Stop tears the service down. It must be idempotent and block until the
 	// service's background goroutines have exited. Stop may also be called
 	// before or concurrently with Start (a live disable can race an in-flight
-	// start), so implementations must tolerate that ordering.
+	// start); implementations must synchronize their own fields for that
+	// ordering — existing NFS sidecars do not yet.
 	Stop(ctx context.Context) error
 }
 
@@ -126,7 +128,10 @@ func (g *Group) Start(s Service) error {
 		g.mu.Lock()
 		// Roll back only our own entry: the reservation may have been stolen
 		// by a StopOne mid-flight and the name re-reserved by another Start,
-		// whose entry must survive.
+		// whose entry must survive. cur == s is a plain identity check, valid
+		// because each Start call owns its Service argument; a caller reusing
+		// the same Service object for a new Start while the old call is still
+		// inside s.Start is the documented corner where the two are equal.
 		if cur, ok := g.running[name]; ok && cur == s {
 			delete(g.running, name)
 			g.removeFromOrderLocked(name)
