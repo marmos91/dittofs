@@ -37,6 +37,7 @@ func TestErrorCodeString(t *testing.T) {
 		{ErrLockConflict, "LockConflict"},
 		{ErrConnectionLimitReached, "ConnectionLimitReached"},
 		{ErrConflict, "Conflict"},
+		{ErrCrossShare, "CrossShare"},
 	}
 	for _, c := range cases {
 		if got := c.code.String(); got != c.want {
@@ -58,7 +59,7 @@ func TestErrorCodeStringUnknown(t *testing.T) {
 // Every named code must have a non-Unknown String mapping. This guards against
 // adding a new code constant without a corresponding switch arm.
 func TestEveryCodeHasName(t *testing.T) {
-	for c := ErrNotFound; c <= ErrConflict; c++ {
+	for c := ErrNotFound; c <= ErrCrossShare; c++ {
 		if s := c.String(); len(s) >= 7 && s[:7] == "Unknown" {
 			t.Errorf("code %d has no String() name (got %q)", c, s)
 		}
@@ -156,9 +157,12 @@ func TestClassifiers(t *testing.T) {
 		ErrConflict:          {"IsConflictError": true},
 		ErrInvalidHandle:     {"IsInvalidHandleError": true},
 		ErrStaleHandle:       {"IsStaleHandleError": true},
+		// ErrCrossShare maps to no classifier: it is a wire-code only, so
+		// its expected set is all-false. Extending the walk to it would
+		// force an empty row here — not worth forcing.
 	}
 
-	for c := ErrNotFound; c <= ErrConflict; c++ {
+	for c := ErrNotFound; c <= ErrCrossShare; c++ {
 		err := &StoreError{Code: c, Message: "x"}
 		want := expect[c]
 		for _, cl := range classifiers {
