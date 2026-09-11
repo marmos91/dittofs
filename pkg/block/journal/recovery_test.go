@@ -3,31 +3,32 @@ package journal
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// captureWarnings routes the process logger into a buffer for the duration of
-// the test and returns an accessor for what was logged.
-func captureWarnings(t *testing.T) func() string {
+// captureWarnings opens the store with a Config.Logger writing into a buffer
+// and returns an accessor for what was logged.
+func captureWarnings(t *testing.T) (Config, func() string) {
 	t.Helper()
 	var buf bytes.Buffer
-	logger.InitWithWriter(&buf, "WARN", "text", false)
-	t.Cleanup(func() { logger.InitWithWriter(os.Stdout, "INFO", "text", false) })
-	return buf.String
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	t.Cleanup(func() {})
+	return Config{Logger: log}, buf.String
 }
 
 // reopen closes s and opens a fresh Store over the same directory, exercising
 // the recovery path.
-func reopen(t *testing.T, s *Store) *Store {
+func reopen(t *testing.T, s *Store, cfg Config) *Store {
 	t.Helper()
 	dir := s.dir
-	cfg := s.cfg
+	if cfg.Logger == nil {
+		cfg = s.cfg
+	}
 	clock := s.clock
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -79,7 +80,7 @@ func TestRecoveryRoundTrip(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	r := reopen(t, s)
+	r := reopen(t, s, Config{})
 	for id, data := range want {
 		if got := readAll(t, r, id, len(data)); !bytes.Equal(got, data) {
 			t.Fatalf("file %s mismatch after recovery", id)
@@ -138,7 +139,7 @@ func TestTornWriteRecoveryLSL06(t *testing.T) {
 	}
 	_ = seg.fd.Sync()
 
-	r := reopen(t, s)
+	r := reopen(t, s, Config{})
 	if got := readAll(t, r, "f", len(good)); !bytes.Equal(got, good) {
 		t.Fatalf("valid prefix corrupted after torn recovery")
 	}
@@ -181,7 +182,7 @@ func TestCRCCoincidenceTornRecordGuarded(t *testing.T) {
 	}
 	_ = s.shards[0].active.fd.Sync()
 
-	r := reopen(t, s)
+	r := reopen(t, s, Config{})
 	if got := readAll(t, r, "f", len(good)); !bytes.Equal(got, good) {
 		t.Fatalf("valid prefix corrupted")
 	}
@@ -206,7 +207,7 @@ func TestVersionLSNMonotonicAfterReopen(t *testing.T) {
 	}
 	maxObserved := s.version.Load() // last issued version
 
-	r := reopen(t, s)
+	r := reopen(t, s, Config{})
 	// Next write must get a version strictly greater than any observed before.
 	if err := r.WriteAt(ctx, "f", 100, []byte("post")); err != nil {
 		t.Fatalf("post-reopen WriteAt: %v", err)
@@ -246,9 +247,9 @@ func TestMissingIdxRebuilt(t *testing.T) {
 		t.Fatalf("remove sealed .idx: %v", err)
 	}
 
-	warned := captureWarnings(t)
+	cfg, warned := captureWarnings(t)
 
-	r := reopen(t, s)
+	r := reopen(t, s, cfg)
 	if !strings.Contains(warned(), "missing .idx sidecar") {
 		t.Fatalf("expected a Warn for the missing .idx")
 	}
@@ -378,9 +379,9 @@ func TestSealedSegmentWithNoValidRecords(t *testing.T) {
 		t.Fatalf("chtimes: %v", err)
 	}
 
-	warned := captureWarnings(t)
+	cfg, warned := captureWarnings(t)
 
-	r, err := Open(dir, Config{ShardCount: 1}, newFakeRemote(), fixedClock{t: time.Now()})
+	r, err := Open(dir, Config{ShardCount: 1, Logger: cfg.Logger}, newFakeRemote(), fixedClock{t: time.Now()})
 	if err != nil {
 		t.Fatalf("reopen over damaged sealed segment: %v", err)
 	}
@@ -421,7 +422,7 @@ func TestConcurrentReadWriteAfterRecovery(t *testing.T) {
 			t.Fatalf("seed WriteAt: %v", err)
 		}
 	}
-	r := reopen(t, s)
+	r := reopen(t, s, Config{})
 
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {

@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"os"
 	"time"
-
-	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // Segment reclamation: two distinct policies over one shared retirement tail.
@@ -376,7 +374,7 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 			// are reported apart because the operator's next move differs —
 			// suspended is a remote outage to fix, pinned is a retention policy to
 			// change. All zero and false leaves a snapshot pinning every candidate.
-			logger.Warn("journal local store full: nothing evictable, backpressuring writes",
+			s.log.Warn("journal local store full: nothing evictable, backpressuring writes",
 				"dir", s.dir,
 				"disk_bytes", s.diskBytes.Load(),
 				"max_local_bytes", s.cfg.MaxLocalBytes,
@@ -488,7 +486,7 @@ func (s *Store) reclaimEmptied(sh *shard) error {
 		}
 		if _, err := s.retireSegment(sh, seg); err != nil {
 			seg.busy.Store(false)
-			logger.Warn("journal: reclaim emptied segment", "segment", seg.id, "err", err)
+			s.log.Warn("journal: reclaim emptied segment", "segment", seg.id, "err", err)
 			return err
 		}
 	}
@@ -767,7 +765,7 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta, live map[uint64]in
 	// by every later pass, so one damaged segment does not stall the shard.
 	quarantine := func(err error) error {
 		victim.corrupt.Store(true)
-		logger.Warn("journal: segment failed a repack integrity check; leaving it in place and skipping it",
+		s.log.Warn("journal: segment failed a repack integrity check; leaving it in place and skipping it",
 			"segment", victim.id, "err", err)
 		return err
 	}
@@ -894,7 +892,7 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta, live map[uint64]in
 		// Defensive: nothing writes to a sealed segment, so this cannot happen;
 		// keep the victim to preserve those bytes rather than lose data. The
 		// target is a redundant orphan the next pass reclaims.
-		logger.Warn("journal: repack left live intervals in the victim segment; keeping it",
+		s.log.Warn("journal: repack left live intervals in the victim segment; keeping it",
 			"segment", victim.id, "live_intervals", remaining)
 		return 0, nil
 	}

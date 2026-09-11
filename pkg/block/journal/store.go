@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
@@ -50,6 +50,17 @@ type RemoteStore interface {
 
 // Clock supplies the current time. Injected so tests can pin it.
 type Clock interface{ Now() time.Time }
+
+// discardLog is where a Config without a Logger sends its warnings.
+var discardLog = slog.New(slog.DiscardHandler)
+
+// logger returns the configured warning sink, discarding when unset.
+func (c Config) logger() *slog.Logger {
+	if c.Logger != nil {
+		return c.Logger
+	}
+	return discardLog
+}
 
 // systemClock is the production Clock.
 type systemClock struct{}
@@ -94,6 +105,11 @@ type Config struct {
 	// synchronous durability point. Zero falls back to the default via
 	// withDefaults; negative disables the loop entirely.
 	DirtyExpiry time.Duration
+	// Logger receives the store's advisory warnings: recovery degradation,
+	// eviction backpressure, failed repack integrity checks. Nil discards
+	// them — the journal never reaches the process logger on its own, so
+	// wiring one is the caller's choice.
+	Logger *slog.Logger
 	// ChunkParams sets the per-share FastCDC sizing carve feeds the chunker.
 	// The zero value (or any params that fail Validate) degrades to
 	// chunker.DefaultParams — the historical 1M/4M/16M profile — so a
@@ -184,6 +200,7 @@ type Store struct {
 	cfg    Config
 	remote RemoteStore
 	clock  Clock
+	log    *slog.Logger
 
 	// deduper and sink are the carve collaborators, injected via SetCarveTargets
 	// at wiring time. They own every step that touches pkg/block, blockcodec and
@@ -290,6 +307,7 @@ func Open(dir string, cfg Config, remote RemoteStore, clock Clock) (*Store, erro
 	if clock == nil {
 		clock = SystemClock()
 	}
+	log := cfg.logger()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("journal: mkdir %q: %w", dir, err)
 	}
@@ -303,7 +321,7 @@ func Open(dir string, cfg Config, remote RemoteStore, clock Clock) (*Store, erro
 		if free, ferr := diskFreeBytes(dir); ferr == nil && free > 0 {
 			cfg.MaxLocalBytes = int64(float64(free) * defaultMaxLocalBytesFreeFraction)
 		} else if ferr != nil {
-			logger.Warn("journal: could not determine free disk space; local store cap left unset (unbounded growth risk)",
+			log.Warn("journal: could not determine free disk space; local store cap left unset (unbounded growth risk)",
 				"dir", dir, "error", ferr)
 		}
 	}
@@ -313,6 +331,7 @@ func Open(dir string, cfg Config, remote RemoteStore, clock Clock) (*Store, erro
 		cfg:       cfg,
 		remote:    remote,
 		clock:     clock,
+		log:       log,
 		shardMask: uint64(cfg.ShardCount - 1),
 	}
 
@@ -409,7 +428,7 @@ func (s *Store) gcLoop(ctx context.Context) {
 			// normal shutdown signal, not a failure worth logging.
 			if _, err := s.gc(ctx, gcOptions{}); err != nil &&
 				!errors.Is(err, context.Canceled) && !errors.Is(err, errClosed) {
-				logger.Warn("journal: background GC pass failed", "error", err)
+				s.log.Warn("journal: background GC pass failed", "error", err)
 			}
 		}
 	}
@@ -428,7 +447,7 @@ func (s *Store) syncLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			if err := s.commitDirtyShards(); err != nil {
-				logger.Warn("journal: dirty-age commit failed", "error", err)
+				s.log.Warn("journal: dirty-age commit failed", "error", err)
 			}
 		}
 	}
@@ -1292,7 +1311,7 @@ func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
 	// branch. The residual case is a store seeded while it had a remote that was
 	// later detached, whose legacy entries cannot be distinguished — those logs
 	// re-stamp themselves as soon as this build appends or compacts.
-	coldEntries, _, cerr := loadCold(s.dir)
+	coldEntries, _, cerr := loadCold(s.dir, s.log)
 	if cerr != nil {
 		return fmt.Errorf("journal: restore: load cold log: %w", cerr)
 	}

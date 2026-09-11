@@ -116,7 +116,7 @@ func (f *restoreFixture) crashReopen() *Store {
 			f.t.Fatalf("close segment %d: %v", id, err)
 		}
 	}
-	return reopen(f.t, f.Store)
+	return reopen(f.t, f.Store, Config{})
 }
 
 // idsOnDistinctShards returns one FileID per shard index in [0, n), so a test
@@ -358,7 +358,7 @@ func TestRestoreToVersion_KeepsEvictedRange(t *testing.T) {
 	// A plain reopen is enough for this assertion: the re-asserted entry's
 	// durability comes from appendCold's own fsync of the cold log, not from
 	// buffered segment writes, so there is no page-cache masquerade to defeat.
-	r := reopen(t, s)
+	r := reopen(t, s, Config{})
 	assertColdAt(t, r, evicted, 0, chunk256, "post-reopen")
 	if got := readAll(t, r, peer, len(v1)); !bytes.Equal(got, v1) {
 		t.Fatalf("post-reopen %s: restore did not produce the V1 view", peer)

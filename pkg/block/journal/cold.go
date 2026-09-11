@@ -48,10 +48,9 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"log/slog"
 	"os"
 	"path/filepath"
-
-	"github.com/marmos91/dittofs/internal/logger"
 )
 
 const (
@@ -264,7 +263,7 @@ func (s *Store) appendCold(entries []coldEntry) error {
 // and returns what precedes it, along with the byte offset just past the last
 // intact entry: anything between that offset and the end of the file is garbage
 // the caller is expected to drop with truncateColdTail before appending.
-func loadCold(dir string) ([]coldEntry, int64, error) {
+func loadCold(dir string, log *slog.Logger) ([]coldEntry, int64, error) {
 	raw, err := os.ReadFile(filepath.Join(dir, coldLogName))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -277,7 +276,7 @@ func loadCold(dir string) ([]coldEntry, int64, error) {
 	for off < len(raw) {
 		e, n, derr := decodeColdEntry(raw[off:])
 		if derr != nil {
-			logger.Warn("journal: cold log torn, keeping the intact entries",
+			log.Warn("journal: cold log torn, keeping the intact entries",
 				"offset", off, "intact_entries", len(out), "err", derr)
 			break
 		}
@@ -292,7 +291,7 @@ func loadCold(dir string) ([]coldEntry, int64, error) {
 // left in place sits in front of every later entry: the next load stops at the
 // same offset and discards everything appended in between, turning one torn
 // write into the permanent loss of every cold interval recorded after it.
-func truncateColdTail(dir string, validUpTo int64) error {
+func truncateColdTail(dir string, validUpTo int64, log *slog.Logger) error {
 	fd, err := os.OpenFile(filepath.Join(dir, coldLogName), os.O_WRONLY, 0o644)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -308,7 +307,7 @@ func truncateColdTail(dir string, validUpTo int64) error {
 	if st.Size() <= validUpTo {
 		return nil
 	}
-	logger.Warn("journal: dropping torn cold log tail",
+	log.Warn("journal: dropping torn cold log tail",
 		"valid_up_to", validUpTo, "dropped_bytes", st.Size()-validUpTo)
 	if err := fd.Truncate(validUpTo); err != nil {
 		return fmt.Errorf("journal: truncate torn cold log tail: %w", err)

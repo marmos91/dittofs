@@ -229,7 +229,7 @@ func TestTruncateDeadBytesReconstructedOnReopen(t *testing.T) {
 		t.Fatalf("pre-reopen DeadBytes = %d, want 600", d)
 	}
 
-	r := reopen(t, s)
+	r := reopen(t, s, Config{})
 	if d := r.Stats().DeadBytes; d != 600 {
 		t.Fatalf("recovered DeadBytes = %d, want 600 (deadBytes not reconstructed)", d)
 	}

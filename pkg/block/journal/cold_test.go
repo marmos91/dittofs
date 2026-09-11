@@ -412,7 +412,7 @@ func TestEvictAppendsColdEntriesBeforeReturning(t *testing.T) {
 
 	// Deliberately no Close and no Sync from the test: whatever is on disk here,
 	// the eviction put there before it returned.
-	entries, _, err := loadCold(dir)
+	entries, _, err := loadCold(dir, nil)
 	if err != nil {
 		t.Fatalf("loadCold: %v", err)
 	}
@@ -453,7 +453,7 @@ func TestSeedColdBatchIsDurableAndMatchesPerFileSeeding(t *testing.T) {
 	}
 
 	// Again no Close: a batch that only becomes durable on shutdown is the bug.
-	got, _, err := loadCold(batchDir)
+	got, _, err := loadCold(batchDir, nil)
 	if err != nil {
 		t.Fatalf("loadCold after batch: %v", err)
 	}
@@ -481,7 +481,7 @@ func TestSeedColdBatchIsDurableAndMatchesPerFileSeeding(t *testing.T) {
 			t.Fatalf("SeedCold %q: %v", sd.ID, err)
 		}
 	}
-	want, _, err := loadCold(oneDir)
+	want, _, err := loadCold(oneDir, nil)
 	if err != nil {
 		t.Fatalf("loadCold after per-file seeding: %v", err)
 	}
