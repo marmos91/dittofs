@@ -3,11 +3,12 @@
 // between dirty client writes, fsync-durable checkpoints, background carving to
 // a remote store, pressure-gated eviction, and garbage collection.
 //
-// It owns all persistent local-cache state and depends only on the standard
-// library plus narrow injected interfaces (the carve collaborators [Deduper]
-// and [BlockSink], and Clock). It knows nothing about namespaces, protocols,
-// permissions, or the metadata store — callers resolve logical offsets to
-// FileIDs and hand journal opaque byte ranges.
+// It owns all persistent local-cache state. Its imports are the standard
+// library, pkg/block/chunker (the FastCDC boundary search used in carve), and
+// blake3 (chunk content hashes) — with the carve collaborators ([Deduper] and
+// [BlockSink]) and Clock injected as narrow interfaces. It knows nothing about
+// namespaces, protocols, permissions, or the metadata store — callers resolve
+// logical offsets to FileIDs and hand journal opaque byte ranges.
 //
 // The unifying model: client writes (WriteAt) and cold-read hydration
 // (Hydrate) both funnel through one internal append primitive, differing only
