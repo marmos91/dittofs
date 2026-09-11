@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"strconv"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -29,14 +29,6 @@ type authStatusError struct {
 
 func (e *authStatusError) Error() string { return e.err.Error() }
 
-// lockClientIdentity builds the lock-layer client identity for the auth
-// context's LockClientID. It must stay in lock-step with the StateManager's
-// own identity ("nfs4:" + clientid, NFSLockClientIdentity) — the metadata
-// layer's originator exclusion compares the two, so a divergence would make
-// the delegation holder's own mutations recall the holder's own delegation.
-func lockClientIdentity(clientID uint64) string {
-	return "nfs4:" + strconv.FormatUint(clientID, 10)
-}
 func (e *authStatusError) Unwrap() error { return e.err }
 
 // nfs4StatusForAuthError maps a buildV4AuthContext error to the NFS4 status a
@@ -217,7 +209,7 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 		AuthMethod:    authMethod,
 		Identity:      effectiveIdentity,
 		ShareReadOnly: permResult.ReadOnly,
-		LockClientID:  lockClientIdentity(ctx.EffectiveClientID(0)),
+		LockClientID:  state.NFSLockClientIdentity(ctx.EffectiveClientID(0)),
 	}
 
 	return authCtx, shareName, nil
