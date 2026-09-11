@@ -49,14 +49,18 @@ type Service interface {
 	// Group key and in logs. Names must be unique within a Group.
 	Name() string
 
-	// Start binds listeners / launches background goroutines and returns
-	// promptly: nil once the service is ready, or an error if it could not
-	// start. ctx bounds the service's whole lifetime (the owning adapter's
+	// Start binds listeners / launches background goroutines: nil once the
+	// service is ready, or an error if it could not start. Start may be slow
+	// or block — the Group runs it outside the group lock for exactly that
+	// reason. ctx bounds the service's whole lifetime (the owning adapter's
 	// Serve context), not merely the Start call.
 	Start(ctx context.Context) error
 
 	// Stop tears the service down. It must be idempotent and block until the
-	// service's background goroutines have exited.
+	// service's background goroutines have exited. Stop may also be called
+	// before or concurrently with Start (a live disable can race an in-flight
+	// start); implementations must synchronize their own fields for that
+	// ordering — existing NFS sidecars do not yet.
 	Stop(ctx context.Context) error
 }
 
@@ -91,24 +95,69 @@ func (g *Group) SetBaseContext(ctx context.Context) {
 
 // Start starts s using the stored base context and tracks it by Name(). It is
 // an error to Start before SetBaseContext, or to start a service whose name is
-// already running. When s.Start fails, the service is not tracked and the error
-// is returned.
+// already running or reserved by an in-flight Start. When s.Start fails, the
+// reservation is rolled back, the service is not tracked, and the error is
+// returned.
+//
+// s.Start runs OUTSIDE g.mu: Start can be slow or block (it binds listeners
+// and launches background goroutines), and holding the group lock across it
+// would wedge every other Group operation — Ready, Reconcile, StopOne, StopAll
+// — for the whole duration. The name is reserved under the lock before Start
+// runs, so a second Start of the same name while the first is in flight still
+// loses with ErrAlreadyRunning.
 func (g *Group) Start(s Service) error {
 	g.mu.Lock()
-	defer g.mu.Unlock()
-
 	if g.baseCtx == nil {
+		g.mu.Unlock()
 		return fmt.Errorf("auxsvc: Start(%q) before SetBaseContext", s.Name())
 	}
 	name := s.Name()
 	if _, ok := g.running[name]; ok {
+		g.mu.Unlock()
 		return fmt.Errorf("%w: %q", ErrAlreadyRunning, name)
 	}
-	if err := s.Start(g.baseCtx); err != nil {
-		return fmt.Errorf("auxsvc: start %q: %w", name, err)
-	}
+	// Reserve the name before starting so concurrent Starts of the same
+	// service serialize here, then release the lock for the (possibly slow)
+	// s.Start call.
 	g.running[name] = s
 	g.order = append(g.order, name)
+	baseCtx := g.baseCtx
+	g.mu.Unlock()
+
+	if err := s.Start(baseCtx); err != nil {
+		g.mu.Lock()
+		// Roll back only our own entry: the reservation may have been stolen
+		// by a StopOne mid-flight and the name re-reserved by another Start,
+		// whose entry must survive. cur == s is a plain identity check, valid
+		// because each Start call owns its Service argument; a caller reusing
+		// the same Service object for a new Start while the old call is still
+		// inside s.Start is the documented corner where the two are equal.
+		if cur, ok := g.running[name]; ok && cur == s {
+			delete(g.running, name)
+			g.removeFromOrderLocked(name)
+		}
+		g.mu.Unlock()
+		return fmt.Errorf("auxsvc: start %q: %w", name, err)
+	}
+	// StopAll may have raced the shutdown while s.Start was in flight: it
+	// clears the base context and would never tear down a service tracked
+	// afterwards. A StopOne can also have stolen the reservation mid-flight,
+	// leaving the name absent from running — either way the caller decided
+	// this service should not run, so roll back our entry and stop it here.
+	g.mu.Lock()
+	raced := g.baseCtx == nil || g.running[name] != s
+	if raced && g.running[name] == s {
+		delete(g.running, name)
+		g.removeFromOrderLocked(name)
+	}
+	g.mu.Unlock()
+	if raced {
+		ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
+		defer cancel()
+		_ = s.Stop(ctx)
+		return fmt.Errorf("auxsvc: start %q: group stopped during start", name)
+	}
+
 	logger.Debug("auxsvc started", "name", name)
 	return nil
 }
