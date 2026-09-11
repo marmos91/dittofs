@@ -267,6 +267,12 @@ session_lifecycle.go 1,072 + share_state.go 214). All assigned marmos91, Copilot
 merging serially #2529 → #2530 → #2531 → #2532 (fresh rebase between — all touch smb/handlers and
 one touches v4/state).
 
+**LANDED 2026-09-11:** all four squash-merged with zero review findings on the moves — #2529 as
+7d48ee7f0, #2530 as 99c894303, #2531 as 398ed53f9, #2532 as 3c4a5e6fe (on top of 89f9b312b);
+branches deleted, graphify re-run, builds + state/handlers tests green on develop 3c4a5e6fe.
+Wave 5 is COMPLETE: manager.go 4,326→405, set_info.go 2,721→531, create.go 2,307→1,585,
+create_post_break.go 1,729→817, handler.go 2,933→805.
+
 `manager.go` 3,985 → `setFileInfoFromStore` 1,538 → `Create()` 1,016 → `open.go` 1,103 →
 `completeCreateAfterBreak` 853 → `Handler` 56 fields. Apparatus is load-bearing (119 test files /
 42,810 LOC in `smb/handlers`): move-only, `git diff -M --color-moved` zero body edits, one package
