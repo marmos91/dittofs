@@ -57,7 +57,7 @@ func TestGCReclaimsDeadOverwrites(t *testing.T) {
 	}
 
 	before := s.diskBytes.Load()
-	if _, err := s.GC(ctx, GCOptions{}); err != nil {
+	if _, err := s.gc(ctx, gcOptions{}); err != nil {
 		t.Fatalf("GC: %v", err)
 	}
 	after := s.diskBytes.Load()

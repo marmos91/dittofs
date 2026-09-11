@@ -226,7 +226,7 @@ func BenchmarkGCRepack(b *testing.B) {
 		b.StopTimer()
 		seedRepackable(b, s, true)
 		b.StartTimer()
-		res, err := s.GC(ctx, GCOptions{Force: true})
+		res, err := s.gc(ctx, gcOptions{Force: true})
 		if err != nil {
 			b.Fatalf("GC: %v", err)
 		}

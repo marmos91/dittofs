@@ -407,7 +407,7 @@ func (s *Store) gcLoop(ctx context.Context) {
 			// errClosed races Close (which sets s.closed before cancelling
 			// this loop's context); both it and context.Canceled are the
 			// normal shutdown signal, not a failure worth logging.
-			if _, err := s.GC(ctx, GCOptions{}); err != nil &&
+			if _, err := s.gc(ctx, gcOptions{}); err != nil &&
 				!errors.Is(err, context.Canceled) && !errors.Is(err, errClosed) {
 				logger.Warn("journal: background GC pass failed", "error", err)
 			}

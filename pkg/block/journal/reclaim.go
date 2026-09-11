@@ -513,16 +513,16 @@ func (s *Store) reclaimEmptied(sh *shard) error {
 // LOCAL records and marks LOCAL space dead; the deleted file's remote blocks are
 // freed later by that sweep, off this path.
 
-// GCOptions selects a GC pass's aggressiveness.
-type GCOptions struct {
+// gcOptions selects a GC pass's aggressiveness.
+type gcOptions struct {
 	// Force repacks the single highest-dead-ratio sealed segment in each shard
 	// even when its ratio is below GCDeadRatioForce (an explicit / test trigger).
 	// Without it, a pass repacks every segment at or above the force threshold.
 	Force bool
 }
 
-// GCResult reports what a GC pass reclaimed.
-type GCResult struct {
+// gcResult reports what a GC pass reclaimed.
+type gcResult struct {
 	SegmentsRepacked int
 	BytesReclaimed   int64 // net local bytes freed (victim size minus relocated live)
 }
@@ -530,17 +530,17 @@ type GCResult struct {
 // GC repacks sealed segments whose dead-byte fraction has grown, freeing the
 // space superseded writes and tombstones left behind. It is safe to call from a
 // background loop or explicitly; passes serialize on gcMu.
-func (s *Store) GC(ctx context.Context, opts GCOptions) (GCResult, error) {
+func (s *Store) gc(ctx context.Context, opts gcOptions) (gcResult, error) {
 	if err := ctx.Err(); err != nil {
-		return GCResult{}, err
+		return gcResult{}, err
 	}
 	if s.closed.Load() {
-		return GCResult{}, errClosed
+		return gcResult{}, errClosed
 	}
 	s.gcMu.Lock()
 	defer s.gcMu.Unlock()
 
-	var res GCResult
+	var res gcResult
 	for _, sh := range s.shards {
 		reclaimed, count, err := s.gcShard(ctx, sh, opts)
 		res.SegmentsRepacked += count
@@ -556,7 +556,7 @@ func (s *Store) GC(ctx context.Context, opts GCOptions) (GCResult, error) {
 // carveMu for the whole pass so carve — which flips synced bits by record offset
 // — never runs against a segment repack is relocating (the same segment-busy
 // discipline eviction takes).
-func (s *Store) gcShard(ctx context.Context, sh *shard, opts GCOptions) (reclaimed int64, count int, err error) {
+func (s *Store) gcShard(ctx context.Context, sh *shard, opts gcOptions) (reclaimed int64, count int, err error) {
 	sh.carveMu.Lock()
 	defer sh.carveMu.Unlock()
 
@@ -635,7 +635,7 @@ func shardLiveBytes(sh *shard) map[uint64]int64 {
 // (robust to the recovery-time deadBytes approximation and to the extra dead a
 // crash-during-repack leaves behind); a segment's dead fraction is
 // dead/occupied. Without Force, a victim must reach GCDeadRatioForce.
-func (s *Store) pickVictim(sh *shard, opts GCOptions, live map[uint64]int64) *segmentMeta {
+func (s *Store) pickVictim(sh *shard, opts gcOptions, live map[uint64]int64) *segmentMeta {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	if len(sh.sealed) == 0 {
